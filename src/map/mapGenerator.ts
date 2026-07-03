@@ -9,7 +9,10 @@
  * map, via a seeded PRNG hashed from the file's content signature.
  */
 import type { CodeEntity, ParsedFile } from "../parser/types";
-import type { GameMap, Point, Room, Tile } from "./types";
+import type { Enemy, GameMap, Point, Room, Tile } from "./types";
+
+/** Hit points granted per point of cyclomatic complexity. */
+const HP_PER_COMPLEXITY = 25;
 
 export interface MapGeneratorOptions {
   /** Lower bound for the (square) map size in tiles. */
@@ -49,8 +52,9 @@ export class MapGenerator {
     connectRooms(rooms, grid);
 
     const spawn: Point = rooms.length > 0 ? rooms[0].center : { x: 1, y: 1 };
+    const enemies = spawnEnemies(rooms);
 
-    return { width: size, height: size, grid, rooms, spawn };
+    return { width: size, height: size, grid, rooms, spawn, enemies };
   }
 
   /** Square map size, floored at `minSize` and growing with LOC and entities. */
@@ -165,6 +169,28 @@ function carveRoom(grid: Tile[][], room: Room): void {
       grid[y][x] = 0;
     }
   }
+}
+
+/**
+ * Spawn one enemy per function/method, at its room's center. Classes,
+ * interfaces, and traits get rooms but no enemy — only callable entities are
+ * "monsters". HP scales with the entity's cyclomatic complexity.
+ */
+function spawnEnemies(rooms: Room[]): Enemy[] {
+  const enemies: Enemy[] = [];
+  for (const room of rooms) {
+    if (room.entity.kind !== "function" && room.entity.kind !== "method") continue;
+    const hp = Math.max(1, room.entity.complexityScore) * HP_PER_COMPLEXITY;
+    enemies.push({
+      x: room.x + room.w / 2,
+      y: room.y + room.h / 2,
+      hp,
+      maxHp: hp,
+      alive: true,
+      entity: room.entity,
+    });
+  }
+  return enemies;
 }
 
 /**

@@ -29,6 +29,21 @@ export interface Room {
   entity: CodeEntity;
 }
 
+/**
+ * An enemy spawned for a code entity (a function or method). Lives at a
+ * fractional tile position and carries HP scaled from the entity's complexity.
+ */
+export interface Enemy {
+  /** World position in fractional tile units. */
+  x: number;
+  y: number;
+  hp: number;
+  maxHp: number;
+  alive: boolean;
+  /** The function/method this enemy represents. */
+  entity: CodeEntity;
+}
+
 /** The full generated level. */
 export interface GameMap {
   width: number;
@@ -38,4 +53,6 @@ export interface GameMap {
   rooms: Room[];
   /** Player spawn, at the center of the first room. */
   spawn: Point;
+  /** Enemies to populate the rooms (one per function/method). */
+  enemies: Enemy[];
 }

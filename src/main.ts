@@ -99,8 +99,9 @@ function launchLevel(path: string, parsed: ParsedFile): void {
   const hint = document.createElement("p");
   hint.className = "map-caption";
   hint.textContent =
-    `${path} — ${map.rooms.length} room(s) · ${parsed.linesOfCode} LOC · ` +
-    `Click to look around · W/S move · A/D or mouse turn · Esc releases mouse`;
+    `${path} — ${map.enemies.length} enemies · ${map.rooms.length} room(s) · ` +
+    `Click to capture mouse · W/S move · A/D or mouse turn · ` +
+    `Click / Space to fire · Esc releases mouse`;
 
   viewport.replaceChildren(canvas, hint);
 

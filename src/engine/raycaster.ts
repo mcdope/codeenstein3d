@@ -8,6 +8,7 @@
  */
 import type { GameMap } from "../map/types";
 import type { Player } from "./player";
+import { enemyColor } from "./sprites";
 
 /** Base wall color (a warm dungeon brick), before distance shading. */
 const WALL_RGB: [number, number, number] = [186, 152, 116];
@@ -21,11 +22,16 @@ const MIN_SHADE = 0.12;
 /** y-side walls are dimmed to fake directional lighting. */
 const SIDE_SHADE = 0.68;
 
-/** Draw one frame of the 3D scene into the canvas. */
+/**
+ * Draw one frame of the 3D walls into the canvas, and record the perpendicular
+ * wall distance for each column into `zBuffer` (length must equal the canvas
+ * width). Sprites use that buffer to hide behind walls.
+ */
 export function renderScene(
   ctx: CanvasRenderingContext2D,
   map: GameMap,
   player: Player,
+  zBuffer: Float64Array,
 ): void {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
@@ -93,6 +99,7 @@ export function renderScene(
     const perpDist =
       side === 0 ? sideDistX - deltaDistX : sideDistY - deltaDistY;
     const dist = Math.max(perpDist, 0.0001);
+    zBuffer[x] = dist;
 
     const lineHeight = Math.floor(height / dist);
     const drawStart = Math.max(0, Math.floor((height - lineHeight) / 2));
@@ -108,25 +115,11 @@ export function renderScene(
     ctx.fillStyle = `rgb(${r},${g},${b})`;
     ctx.fillRect(x, drawStart, 1, drawEnd - drawStart + 1);
   }
-
-  drawCrosshair(ctx, width, height);
-}
-
-function drawCrosshair(
-  ctx: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-): void {
-  const cx = Math.floor(width / 2);
-  const cy = Math.floor(height / 2);
-  ctx.fillStyle = "rgba(255,255,255,0.6)";
-  ctx.fillRect(cx - 5, cy, 11, 1);
-  ctx.fillRect(cx, cy - 5, 1, 11);
 }
 
 /**
- * Small top-left minimap: walls, plus the player's position and facing.
- * Useful for confirming movement and collision while developing.
+ * Small top-left minimap: walls, live enemies, and the player's position and
+ * facing. Useful for confirming movement, collision, and combat while playing.
  */
 export function renderMinimap(
   ctx: CanvasRenderingContext2D,
@@ -153,6 +146,18 @@ export function renderMinimap(
     for (let x = 0; x < map.width; x++) {
       if (row[x] === 1) ctx.fillRect(pad + x * cell, pad + y * cell, cell, cell);
     }
+  }
+
+  // Live enemies.
+  for (const enemy of map.enemies) {
+    if (!enemy.alive) continue;
+    ctx.fillStyle = enemyColor(enemy.entity.kind);
+    ctx.fillRect(
+      pad + enemy.x * cell - cell / 2,
+      pad + enemy.y * cell - cell / 2,
+      Math.max(2, cell),
+      Math.max(2, cell),
+    );
   }
 
   // Player position and heading.
