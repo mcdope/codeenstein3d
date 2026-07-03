@@ -7,6 +7,7 @@ import {
   type TreeNode,
 } from "./fs/workspace";
 import { renderFileTree } from "./ui/fileTree";
+import { isParsable, parseFile } from "./parser/registry";
 
 const selectButton = requireElement<HTMLButtonElement>("#select-workspace");
 const workspaceName = requireElement<HTMLParagraphElement>("#workspace-name");
@@ -40,16 +41,28 @@ selectButton.addEventListener("click", async () => {
   }
 });
 
-/** Task 1.4: log a clicked file's text content to the console. */
+/**
+ * On file click: parse supported languages (currently PHP) into normalized
+ * JSON and log that; for everything else fall back to logging raw text.
+ */
 async function handleFileSelected(node: TreeNode): Promise<void> {
   if (node.kind !== "file") return;
   try {
     const text = await readFileText(node.handle as FileSystemFileHandle);
+
+    if (isParsable(node.name)) {
+      const parsed = await parseFile(node.name, text);
+      console.group(`[parse] ${node.path}`);
+      console.log(parsed);
+      console.groupEnd();
+      return;
+    }
+
     console.group(`[file] ${node.path} (${text.length} chars)`);
     console.log(text);
     console.groupEnd();
   } catch (err) {
-    console.error(`[file] Failed to read "${node.path}":`, err);
+    console.error(`[file] Failed to read/parse "${node.path}":`, err);
   }
 }
 
