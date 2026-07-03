@@ -9,8 +9,12 @@ import {
 import { renderFileTree } from "./ui/fileTree";
 import { isParsable, parseFile } from "./parser/registry";
 import { MapGenerator } from "./map/mapGenerator";
-import { renderDebugMap } from "./map/debugView";
+import { RaycasterEngine } from "./engine/engine";
 import type { ParsedFile } from "./parser/types";
+
+/** Internal render resolution; CSS scales it up for a chunky retro look. */
+const SCENE_WIDTH = 640;
+const SCENE_HEIGHT = 400;
 
 const selectButton = requireElement<HTMLButtonElement>("#select-workspace");
 const workspaceName = requireElement<HTMLParagraphElement>("#workspace-name");
@@ -18,6 +22,9 @@ const fileTree = requireElement<HTMLElement>("#file-tree");
 const viewport = requireElement<HTMLElement>("#viewport");
 
 const mapGenerator = new MapGenerator();
+
+/** The engine currently running in the viewport, if any. */
+let activeEngine: RaycasterEngine | null = null;
 
 if (!isFileSystemAccessSupported()) {
   selectButton.disabled = true;
@@ -61,7 +68,7 @@ async function handleFileSelected(node: TreeNode): Promise<void> {
       console.group(`[parse] ${node.path}`);
       console.log(parsed);
       console.groupEnd();
-      if (parsed) showMap(node.path, parsed);
+      if (parsed) launchLevel(node.path, parsed);
       return;
     }
 
@@ -73,22 +80,32 @@ async function handleFileSelected(node: TreeNode): Promise<void> {
   }
 }
 
-/** Generate a level from parsed JSON and render the top-down debug view. */
-function showMap(path: string, parsed: ParsedFile): void {
+/** Generate a level from parsed JSON and start the raycaster in the viewport. */
+function launchLevel(path: string, parsed: ParsedFile): void {
   const map = mapGenerator.generate(parsed);
   console.group(`[map] ${path}`);
   console.log(`${map.width}×${map.height} grid, ${map.rooms.length} room(s)`, map);
   console.groupEnd();
 
-  const caption = document.createElement("p");
-  caption.className = "map-caption";
-  caption.textContent =
-    `${path} — ${map.width}×${map.height} tiles · ${map.rooms.length} room(s) · ` +
-    `${parsed.linesOfCode} LOC · spawn (${map.spawn.x}, ${map.spawn.y})`;
+  // Tear down any level already running before starting the new one.
+  activeEngine?.stop();
 
-  const canvas = renderDebugMap(map);
+  const canvas = document.createElement("canvas");
+  canvas.width = SCENE_WIDTH;
+  canvas.height = SCENE_HEIGHT;
+  canvas.className = "scene-canvas";
+  canvas.tabIndex = 0; // focusable so it can grab keyboard input on click
 
-  viewport.replaceChildren(canvas, caption);
+  const hint = document.createElement("p");
+  hint.className = "map-caption";
+  hint.textContent =
+    `${path} — ${map.rooms.length} room(s) · ${parsed.linesOfCode} LOC · ` +
+    `Click to look around · W/S move · A/D or mouse turn · Esc releases mouse`;
+
+  viewport.replaceChildren(canvas, hint);
+
+  activeEngine = new RaycasterEngine(canvas, map);
+  activeEngine.start();
 }
 
 function requireElement<T extends Element>(selector: string): T {

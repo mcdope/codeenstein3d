@@ -157,6 +157,16 @@ body {
   text-align: center;
 }
 
+.scene-canvas {
+  width: min(100%, 960px);
+  aspect-ratio: 640 / 400;
+  height: auto;
+  image-rendering: pixelated;
+  border: 1px solid var(--border);
+  box-shadow: 0 0 0 4px #000;
+  cursor: crosshair;
+}
+
 .debug-map {
   image-rendering: pixelated;
   border: 1px solid var(--border);
