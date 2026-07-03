@@ -8,10 +8,16 @@ import {
 } from "./fs/workspace";
 import { renderFileTree } from "./ui/fileTree";
 import { isParsable, parseFile } from "./parser/registry";
+import { MapGenerator } from "./map/mapGenerator";
+import { renderDebugMap } from "./map/debugView";
+import type { ParsedFile } from "./parser/types";
 
 const selectButton = requireElement<HTMLButtonElement>("#select-workspace");
 const workspaceName = requireElement<HTMLParagraphElement>("#workspace-name");
 const fileTree = requireElement<HTMLElement>("#file-tree");
+const viewport = requireElement<HTMLElement>("#viewport");
+
+const mapGenerator = new MapGenerator();
 
 if (!isFileSystemAccessSupported()) {
   selectButton.disabled = true;
@@ -55,6 +61,7 @@ async function handleFileSelected(node: TreeNode): Promise<void> {
       console.group(`[parse] ${node.path}`);
       console.log(parsed);
       console.groupEnd();
+      if (parsed) showMap(node.path, parsed);
       return;
     }
 
@@ -64,6 +71,24 @@ async function handleFileSelected(node: TreeNode): Promise<void> {
   } catch (err) {
     console.error(`[file] Failed to read/parse "${node.path}":`, err);
   }
+}
+
+/** Generate a level from parsed JSON and render the top-down debug view. */
+function showMap(path: string, parsed: ParsedFile): void {
+  const map = mapGenerator.generate(parsed);
+  console.group(`[map] ${path}`);
+  console.log(`${map.width}×${map.height} grid, ${map.rooms.length} room(s)`, map);
+  console.groupEnd();
+
+  const caption = document.createElement("p");
+  caption.className = "map-caption";
+  caption.textContent =
+    `${path} — ${map.width}×${map.height} tiles · ${map.rooms.length} room(s) · ` +
+    `${parsed.linesOfCode} LOC · spawn (${map.spawn.x}, ${map.spawn.y})`;
+
+  const canvas = renderDebugMap(map);
+
+  viewport.replaceChildren(canvas, caption);
 }
 
 function requireElement<T extends Element>(selector: string): T {
