@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>🔫 Codeenstein 3D</title>
+  </head>
+  <body>
+    <div id="app">
+      <aside id="sidebar">
+        <header id="sidebar-header">
+          <h1>🔫 Codeenstein 3D</h1>
+          <button id="select-workspace" type="button">Select Workspace</button>
+          <p id="workspace-name" class="muted">No workspace selected</p>
+        </header>
+        <nav id="file-tree" aria-label="File tree"></nav>
+      </aside>
+      <main id="viewport">
+        <p class="muted">
+          Select a workspace, then click a file in the tree.<br />
+          Its text content will be logged to the browser console.
+        </p>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
