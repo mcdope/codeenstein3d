@@ -7,9 +7,10 @@
  * All Tree-sitter usage is contained here; callers receive only `ParsedFile`
  * JSON. The grammar WASM is loaded lazily on first parse and reused after that.
  */
-import { Language, Parser, type Node } from "web-tree-sitter";
+import { Language, Parser } from "web-tree-sitter";
 import phpWasmUrl from "tree-sitter-php/tree-sitter-php.wasm?url";
 import { initTreeSitter } from "../runtime";
+import { countDecisionPoints, countLines } from "../astUtils";
 import type { CodeEntity, CodeParserAdapter, EntityKind, ParsedFile } from "../types";
 
 /** Node types that define an entity, mapped to their normalized kind. */
@@ -70,7 +71,7 @@ export class PhpParserAdapter implements CodeParserAdapter {
           kind: ENTITY_NODE_TYPES[node.type],
           startLine: node.startPosition.row + 1,
           endLine: node.endPosition.row + 1,
-          complexityScore: computeComplexity(node),
+          complexityScore: 1 + countDecisionPoints(node, DECISION_NODE_TYPES, LOGICAL_OPERATORS),
         });
       }
       entities.sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
@@ -85,22 +86,4 @@ export class PhpParserAdapter implements CodeParserAdapter {
       tree.delete();
     }
   }
-}
-
-/** 1 (base path) + number of decision points within the entity's subtree. */
-function computeComplexity(entity: Node): number {
-  let score = 1;
-  score += entity.descendantsOfType(DECISION_NODE_TYPES).length;
-  for (const binary of entity.descendantsOfType("binary_expression")) {
-    const operator = binary.childForFieldName("operator")?.text;
-    if (operator && LOGICAL_OPERATORS.has(operator)) score += 1;
-  }
-  return score;
-}
-
-/** Total line count; a single trailing newline is not counted as a new line. */
-function countLines(text: string): number {
-  if (text.length === 0) return 0;
-  const lines = text.split("\n").length;
-  return text.endsWith("\n") ? lines - 1 : lines;
 }

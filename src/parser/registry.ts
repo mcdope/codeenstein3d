@@ -9,9 +9,10 @@
  * and registering it here — no other part of the app changes.
  */
 import { PhpParserAdapter } from "./php/phpParser";
+import { CParserAdapter } from "./c/cParser";
 import type { CodeParserAdapter, ParsedFile } from "./types";
 
-const ADAPTERS: CodeParserAdapter[] = [new PhpParserAdapter()];
+const ADAPTERS: CodeParserAdapter[] = [new PhpParserAdapter(), new CParserAdapter()];
 
 // extension (lower-case, no dot) -> adapter
 const BY_EXTENSION = new Map<string, CodeParserAdapter>();
