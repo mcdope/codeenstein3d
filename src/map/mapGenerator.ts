@@ -51,10 +51,14 @@ export class MapGenerator {
     const rooms = this.placeRooms(parsed.entities, size, grid, rng);
     connectRooms(rooms, grid);
 
-    const spawn: Point = rooms.length > 0 ? rooms[0].center : { x: 1, y: 1 };
+    // Spawn in a room corner so the player doesn't start inside the room's
+    // center enemy; the exit goes in the room furthest from that spawn.
+    const spawn: Point =
+      rooms.length > 0 ? { x: rooms[0].x + 1, y: rooms[0].y + 1 } : { x: 1, y: 1 };
     const enemies = spawnEnemies(rooms);
+    const exit = pickExit(rooms, spawn);
 
-    return { width: size, height: size, grid, rooms, spawn, enemies };
+    return { width: size, height: size, grid, rooms, spawn, enemies, exit };
   }
 
   /** Square map size, floored at `minSize` and growing with LOC and entities. */
@@ -191,6 +195,24 @@ function spawnEnemies(rooms: Room[]): Enemy[] {
     });
   }
   return enemies;
+}
+
+/** Pick the exit tile: the center of the room whose center is furthest (by
+ * Euclidean distance) from the spawn. Falls back to the spawn for empty maps. */
+function pickExit(rooms: Room[], spawn: Point): Point {
+  if (rooms.length === 0) return { x: spawn.x, y: spawn.y };
+  let best = rooms[0];
+  let bestDist = -1;
+  for (const room of rooms) {
+    const dx = room.center.x - spawn.x;
+    const dy = room.center.y - spawn.y;
+    const dist = dx * dx + dy * dy;
+    if (dist > bestDist) {
+      bestDist = dist;
+      best = room;
+    }
+  }
+  return { x: best.center.x, y: best.center.y };
 }
 
 /**

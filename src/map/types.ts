@@ -51,8 +51,10 @@ export interface GameMap {
   /** Row-major grid; index as `grid[y][x]`. */
   grid: Tile[][];
   rooms: Room[];
-  /** Player spawn, at the center of the first room. */
+  /** Player spawn, in a corner of the first room (clear of its enemy). */
   spawn: Point;
   /** Enemies to populate the rooms (one per function/method). */
   enemies: Enemy[];
+  /** Exit tile (the `return` statement) in the room furthest from spawn. */
+  exit: Point;
 }

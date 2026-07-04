@@ -10,7 +10,7 @@
  * in front of the nearest wall — so what you see under the crosshair is what
  * you shoot.
  */
-import type { Enemy } from "../map/types";
+import type { Enemy, Point } from "../map/types";
 import type { CodeEntity, EntityKind } from "../parser/types";
 import type { Player } from "./player";
 
@@ -41,15 +41,18 @@ export interface EnemyProjection {
   bottom: number;
 }
 
-/** Project an enemy into screen space for `player` on a `width`×`height` view. */
-export function projectEnemy(
+/** Project a world point into screen space for `player` on a `width`×`height`
+ * view, sizing the billboard as `sizeFactor` of a full tile-height sprite. */
+export function projectPoint(
   player: Player,
-  enemy: Enemy,
+  worldX: number,
+  worldY: number,
   width: number,
   height: number,
+  sizeFactor = ENEMY_SIZE,
 ): EnemyProjection {
-  const spriteX = enemy.x - player.posX;
-  const spriteY = enemy.y - player.posY;
+  const spriteX = worldX - player.posX;
+  const spriteY = worldY - player.posY;
 
   // Inverse of the [plane | dir] camera matrix.
   const invDet = 1 / (player.planeX * player.dirY - player.dirX * player.planeY);
@@ -57,7 +60,7 @@ export function projectEnemy(
   const transformY = invDet * (-player.planeY * spriteX + player.planeX * spriteY);
 
   const screenX = (width / 2) * (1 + transformX / transformY);
-  const size = Math.abs(height / transformY) * ENEMY_SIZE;
+  const size = Math.abs(height / transformY) * sizeFactor;
 
   return {
     depth: transformY,
@@ -67,6 +70,16 @@ export function projectEnemy(
     top: height / 2 - size / 2,
     bottom: height / 2 + size / 2,
   };
+}
+
+/** Project an enemy into screen space for `player` on a `width`×`height` view. */
+export function projectEnemy(
+  player: Player,
+  enemy: Enemy,
+  width: number,
+  height: number,
+): EnemyProjection {
+  return projectPoint(player, enemy.x, enemy.y, width, height);
 }
 
 /** Draw all living enemies as billboards, occluded by the wall z-buffer. */
@@ -167,6 +180,46 @@ export function findTargetUnderCrosshair(
     }
   }
   return best;
+}
+
+/**
+ * Draw the green exit marker (the `return` statement) as a billboard at the
+ * center of its tile, occluded by walls via the z-buffer.
+ */
+export function renderExitMarker(
+  ctx: CanvasRenderingContext2D,
+  player: Player,
+  exit: Point,
+  zBuffer: Float64Array,
+): void {
+  const width = ctx.canvas.width;
+  const height = ctx.canvas.height;
+  const proj = projectPoint(player, exit.x + 0.5, exit.y + 0.5, width, height, 0.9);
+  if (proj.depth <= 0.2) return;
+
+  const startX = Math.max(0, Math.floor(proj.left));
+  const endX = Math.min(width - 1, Math.ceil(proj.right));
+  const startY = Math.max(0, Math.floor(proj.top));
+  const markerH = proj.bottom - proj.top;
+
+  ctx.fillStyle = "#37d24a";
+  for (let x = startX; x <= endX; x++) {
+    if (proj.depth >= zBuffer[x]) continue;
+    ctx.fillRect(x, startY, 1, markerH);
+  }
+
+  const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
+  if (proj.depth < zBuffer[centerCol]) {
+    ctx.font = "10px monospace";
+    ctx.textAlign = "center";
+    const label = "return";
+    const labelW = Math.max(40, proj.right - proj.left);
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillRect(proj.screenX - labelW / 2, proj.top - 15, labelW, 12);
+    ctx.fillStyle = "#8effa0";
+    ctx.fillText(label, proj.screenX, proj.top - 5);
+    ctx.textAlign = "start";
+  }
 }
 
 function clamp(value: number, min: number, max: number): number {

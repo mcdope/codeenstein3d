@@ -148,6 +148,15 @@ export function renderMinimap(
     }
   }
 
+  // Exit tile (the return statement).
+  ctx.fillStyle = "#37d24a";
+  ctx.fillRect(
+    pad + map.exit.x * cell,
+    pad + map.exit.y * cell,
+    Math.max(2, cell),
+    Math.max(2, cell),
+  );
+
   // Live enemies.
   for (const enemy of map.enemies) {
     if (!enemy.alive) continue;

@@ -10,6 +10,7 @@ import { renderFileTree } from "./ui/fileTree";
 import { isParsable, parseFile } from "./parser/registry";
 import { MapGenerator } from "./map/mapGenerator";
 import { RaycasterEngine } from "./engine/engine";
+import { GameHud } from "./ui/gameHud";
 import type { ParsedFile } from "./parser/types";
 
 /** Internal render resolution; CSS scales it up for a chunky retro look. */
@@ -84,7 +85,11 @@ async function handleFileSelected(node: TreeNode): Promise<void> {
 function launchLevel(path: string, parsed: ParsedFile): void {
   const map = mapGenerator.generate(parsed);
   console.group(`[map] ${path}`);
-  console.log(`${map.width}×${map.height} grid, ${map.rooms.length} room(s)`, map);
+  console.log(
+    `${map.width}×${map.height} grid, ${map.rooms.length} room(s), ` +
+      `${map.enemies.length} enemies, exit @(${map.exit.x},${map.exit.y})`,
+    map,
+  );
   console.groupEnd();
 
   // Tear down any level already running before starting the new one.
@@ -99,14 +104,33 @@ function launchLevel(path: string, parsed: ParsedFile): void {
   const hint = document.createElement("p");
   hint.className = "map-caption";
   hint.textContent =
-    `${path} — ${map.enemies.length} enemies · ${map.rooms.length} room(s) · ` +
+    `${path} — reach the green "return" tile to build · ` +
     `Click to capture mouse · W/S move · A/D or mouse turn · ` +
     `Click / Space to fire · Esc releases mouse`;
 
-  viewport.replaceChildren(canvas, hint);
+  const hud = new GameHud();
 
-  activeEngine = new RaycasterEngine(canvas, map);
+  viewport.replaceChildren(canvas, hint, hud.bar, hud.overlay);
+
+  activeEngine = new RaycasterEngine(canvas, map, {
+    onStats: (stats) => hud.update(stats),
+    onGameOver: () => hud.showKernelPanic(resetToFileTree),
+    onWin: () => hud.showBuildSuccessful(resetToFileTree),
+  });
   activeEngine.start();
+}
+
+/** Stop any running level and return the viewport to its initial state. */
+function resetToFileTree(): void {
+  activeEngine?.stop();
+  activeEngine = null;
+
+  const placeholder = document.createElement("p");
+  placeholder.className = "muted";
+  placeholder.innerHTML =
+    'Select a file from the tree to build and enter its level.<br />' +
+    "Reach the green <code>return</code> tile to win.";
+  viewport.replaceChildren(placeholder);
 }
 
 function requireElement<T extends Element>(selector: string): T {

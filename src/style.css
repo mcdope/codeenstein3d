@@ -147,13 +147,14 @@ body {
 }
 
 #viewport {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 12px;
   padding: 24px;
-  overflow: auto;
+  overflow: hidden;
   text-align: center;
 }
 
@@ -180,4 +181,162 @@ body {
   font-size: 12px;
   color: var(--muted);
   overflow-wrap: anywhere;
+}
+
+/* --- Doom/terminal HUD (bottom 20% of the viewport) --- */
+.hud {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 20%;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 8px 18px;
+  background: linear-gradient(180deg, rgba(8, 12, 8, 0.86), rgba(3, 5, 3, 0.96));
+  border-top: 2px solid #1c5c24;
+  box-shadow: inset 0 2px 12px rgba(0, 0, 0, 0.7);
+  color: #4cff6a;
+  font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+  text-shadow: 0 0 6px rgba(76, 255, 106, 0.35);
+}
+
+.hud-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.hud-stat--health {
+  flex: 1 1 auto;
+  max-width: 340px;
+}
+
+.hud-stat--target {
+  margin-left: auto;
+  text-align: right;
+}
+
+.hud-label {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #5aa869;
+}
+
+.hud-value {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.hud-value--big {
+  font-size: 26px;
+}
+
+.hud-value--empty {
+  color: #ff5a4a;
+  text-shadow: 0 0 6px rgba(255, 90, 74, 0.4);
+}
+
+.hud-bar {
+  height: 14px;
+  border: 1px solid #2f7a38;
+  background: #071007;
+  overflow: hidden;
+}
+
+.hud-bar-fill {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #1f7a2b, #4cff6a);
+  transition: width 0.12s linear;
+}
+
+.hud-bar-fill--low {
+  background: linear-gradient(90deg, #7a1f1f, #ff5a4a);
+}
+
+.hud-health-val {
+  font-size: 14px;
+}
+
+.hud-target--active {
+  color: #ff6a5a;
+  text-shadow: 0 0 6px rgba(255, 106, 90, 0.45);
+}
+
+/* --- End-of-run overlays --- */
+.game-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(2, 3, 4, 0.82);
+  backdrop-filter: blur(1px);
+  z-index: 10;
+}
+
+.game-overlay.hidden {
+  display: none;
+}
+
+.overlay-box {
+  max-width: 480px;
+  padding: 28px 32px;
+  border: 2px solid currentColor;
+  background: rgba(4, 6, 8, 0.9);
+  box-shadow: 0 0 30px rgba(0, 0, 0, 0.6);
+  font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+  text-align: center;
+}
+
+.game-overlay.kernel-panic .overlay-box {
+  color: #ff4d4d;
+  box-shadow: 0 0 34px rgba(255, 60, 60, 0.35);
+}
+
+.game-overlay.build-ok .overlay-box {
+  color: #37d24a;
+  box-shadow: 0 0 34px rgba(55, 210, 74, 0.35);
+}
+
+.overlay-title {
+  margin: 0 0 12px;
+  font-size: 34px;
+  letter-spacing: 0.12em;
+  text-shadow: 0 0 12px currentColor;
+}
+
+.overlay-msg {
+  margin: 0 0 22px;
+  color: #cdd3cd;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.overlay-btn {
+  padding: 10px 18px;
+  font: inherit;
+  font-weight: 700;
+  color: #04120a;
+  background: #888;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.game-overlay.kernel-panic .overlay-btn {
+  background: #ff4d4d;
+}
+
+.game-overlay.build-ok .overlay-btn {
+  background: #37d24a;
+}
+
+.overlay-btn:hover {
+  filter: brightness(1.1);
 }
