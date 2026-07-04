@@ -16,6 +16,8 @@ export class InputController {
   private mouseDX = 0;
   /** Edge-triggered fire request, set on click / Space press. */
   private fireQueued = false;
+  /** Edge-triggered weapon selection (0-based index), or null. */
+  private weaponRequest: number | null = null;
   private attached = false;
 
   constructor(private readonly canvas: HTMLCanvasElement) {}
@@ -44,6 +46,7 @@ export class InputController {
     this.keys.clear();
     this.mouseDX = 0;
     this.fireQueued = false;
+    this.weaponRequest = null;
   }
 
   isDown(code: string): boolean {
@@ -64,12 +67,23 @@ export class InputController {
     return fired;
   }
 
+  /** Return a requested weapon index (once) from a number-key press, or null. */
+  consumeWeaponRequest(): number | null {
+    const req = this.weaponRequest;
+    this.weaponRequest = null;
+    return req;
+  }
+
   private readonly onKeyDown = (e: KeyboardEvent): void => {
     // Space fires once per physical press (ignore OS auto-repeat).
     if (e.code === "Space") {
       if (!e.repeat) this.fireQueued = true;
       e.preventDefault();
     }
+    // Number keys select a weapon (Digit1/Numpad1 -> 0, Digit2/Numpad2 -> 1, …).
+    const digit = digitKeyIndex(e.code);
+    if (digit !== null) this.weaponRequest = digit;
+
     this.keys.add(e.code);
     if (MOVEMENT_KEYS.has(e.code)) e.preventDefault();
   };
@@ -102,4 +116,10 @@ export class InputController {
       this.mouseDX += e.movementX;
     }
   };
+}
+
+/** Map Digit1..9 / Numpad1..9 to a 0-based weapon index, else null. */
+function digitKeyIndex(code: string): number | null {
+  const match = /^(?:Digit|Numpad)([1-9])$/.exec(code);
+  return match ? Number(match[1]) - 1 : null;
 }

@@ -229,6 +229,11 @@ body {
   color: #5aa869;
 }
 
+.hud-weapon-keys {
+  color: #37804a;
+  letter-spacing: 0;
+}
+
 .hud-value {
   font-size: 18px;
   font-weight: 700;

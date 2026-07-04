@@ -12,12 +12,13 @@
  * Successful). It reports state to the host via `EngineHandlers` and leaves the
  * DOM HUD/overlays to the caller.
  */
-import type { Enemy, GameMap } from "../map/types";
-import { Player } from "./player";
+import { Player, isHazard } from "./player";
 import { InputController } from "./input";
 import { renderMinimap, renderScene } from "./raycaster";
-import { findTargetUnderCrosshair, renderExitMarker, renderSprites } from "./sprites";
+import { findTargetAtColumn, findTargetUnderCrosshair, renderExitMarker, renderSprites } from "./sprites";
 import { drawCrosshair } from "./hud";
+import { WEAPONS, pelletOffsets } from "./weapons";
+import type { Enemy, GameMap } from "../map/types";
 
 /** Movement speed in tiles per second. */
 const MOVE_SPEED = 3.2;
@@ -27,14 +28,14 @@ const ROT_SPEED = 2.6;
 const MOUSE_SENSITIVITY = 0.0025;
 /** Clamp per-frame dt so a background tab / long stall can't teleport the player. */
 const MAX_DT = 0.05;
-/** Damage dealt per hitscan shot from the "echo" pistol. */
-const WEAPON_DAMAGE = 25;
 /** Starting / maximum System Stability (health), as a percentage. */
 const MAX_HEALTH = 100;
 /** Distance (tiles) within which an enemy is "touching" the player. */
 const CONTACT_RADIUS = 0.5;
 /** Health lost per second while in contact with an enemy. */
 const CONTACT_DPS = 30;
+/** Health lost per second while standing in an acid (hazard) tile. */
+const HAZARD_DPS = 18;
 
 /** Live stats pushed to the host each frame. */
 export interface EngineStats {
@@ -47,6 +48,8 @@ export interface EngineStats {
   totalEnemies: number;
   /** Name of the enemy under the crosshair, or null. */
   target: string | null;
+  /** Name of the currently equipped weapon. */
+  weapon: string;
 }
 
 /** Host callbacks. All optional. */
@@ -75,6 +78,8 @@ export class RaycasterEngine {
   private state: GameState = "playing";
   private health = MAX_HEALTH;
   private ammo: number;
+  /** Index into WEAPONS of the equipped weapon (0 = pistol). */
+  private weaponIndex = 0;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -125,9 +130,14 @@ export class RaycasterEngine {
    * driven at a fixed step (e.g. headless/deterministic runs).
    */
   advance(dt: number): void {
-    // Simulate (may end the game via contact damage or reaching the exit).
+    // Weapon switching (1/2/…) can happen even while lining up a shot.
+    const requested = this.input.consumeWeaponRequest();
+    if (requested !== null && requested < WEAPONS.length) this.weaponIndex = requested;
+
+    // Simulate (may end the game via damage or reaching the exit).
     this.handleMovement(dt);
     this.applyContactDamage(dt);
+    this.applyHazardDamage(dt);
     this.checkExit();
 
     // Render — one final frozen frame is still drawn after the game ends.
@@ -146,7 +156,7 @@ export class RaycasterEngine {
 
     if (this.state === "playing" && this.input.consumeFire()) this.fire();
 
-    drawCrosshair(this.ctx, this.target !== null);
+    drawCrosshair(this.ctx, this.target !== null, WEAPONS[this.weaponIndex].spreadPx);
     renderMinimap(this.ctx, this.map, this.player);
 
     this.reportStats();
@@ -181,7 +191,20 @@ export class RaycasterEngine {
     }
     if (!touching) return;
 
-    this.health -= CONTACT_DPS * dt;
+    this.damage(CONTACT_DPS * dt);
+  }
+
+  /** Drain stability while the player stands in an acid (hazard) tile. */
+  private applyHazardDamage(dt: number): void {
+    if (this.state !== "playing") return;
+    const cx = Math.floor(this.player.posX);
+    const cy = Math.floor(this.player.posY);
+    if (isHazard(this.map, cx, cy)) this.damage(HAZARD_DPS * dt);
+  }
+
+  /** Apply `amount` of stability loss; ends the run on reaching 0. */
+  private damage(amount: number): void {
+    this.health -= amount;
     if (this.health <= 0) {
       this.health = 0;
       this.endGame("over");
@@ -199,30 +222,57 @@ export class RaycasterEngine {
     }
   }
 
-  /** Hitscan the "echo" pistol: spend a round of heap, damage what's aimed. */
+  /**
+   * Fire the equipped weapon: spend its heap cost, then resolve one hitscan per
+   * pellet across its cone. The pistol is a single centered ray; the shotgun
+   * sprays several pellets that each independently hit whatever enemy is under
+   * their (offset) screen column.
+   */
   private fire(): void {
-    if (this.ammo <= 0) {
-      console.log("[echo] out of heap — no ammo");
+    const weapon = WEAPONS[this.weaponIndex];
+    if (this.ammo < weapon.ammoPerShot) {
+      console.log(`[${weapon.name}] out of heap — need ${weapon.ammoPerShot} ammo`);
       return;
     }
-    this.ammo -= 1;
+    this.ammo -= weapon.ammoPerShot;
 
-    const target = this.target;
-    if (!target) return;
+    const { width, height } = this.ctx.canvas;
+    const center = width / 2;
+    let pelletsHit = 0;
 
-    target.hp -= WEAPON_DAMAGE;
-    if (target.hp <= 0) {
-      target.hp = 0;
-      target.alive = false;
-      this.target = null;
-      const remaining = this.enemies.reduce((n, e) => n + (e.alive ? 1 : 0), 0);
-      console.log(
-        `%c[KILL] ${target.entity.kind} ${target.entity.name}() eliminated — ${remaining} enemies remaining`,
-        "color:#37d24a;font-weight:bold",
+    for (const offset of pelletOffsets(weapon)) {
+      const enemy = findTargetAtColumn(
+        this.player,
+        this.enemies,
+        this.zBuffer,
+        width,
+        height,
+        center + offset,
       );
-    } else {
-      console.log(`[hit] ${target.entity.name}() — HP ${target.hp}/${target.maxHp}`);
+      if (enemy?.alive) {
+        this.damageEnemy(enemy, weapon.damagePerPellet);
+        pelletsHit += 1;
+      }
     }
+
+    if (pelletsHit === 0) console.log(`[${weapon.name}] missed`);
+  }
+
+  /** Apply weapon damage to one enemy, retiring it (with a log) at 0 HP. */
+  private damageEnemy(enemy: Enemy, amount: number): void {
+    enemy.hp -= amount;
+    if (enemy.hp > 0) {
+      console.log(`[hit] ${enemy.entity.name}() — HP ${enemy.hp}/${enemy.maxHp}`);
+      return;
+    }
+    enemy.hp = 0;
+    enemy.alive = false;
+    if (this.target === enemy) this.target = null;
+    const remaining = this.enemies.reduce((n, e) => n + (e.alive ? 1 : 0), 0);
+    console.log(
+      `%c[KILL] ${enemy.entity.kind} ${enemy.entity.name}() eliminated — ${remaining} enemies remaining`,
+      "color:#37d24a;font-weight:bold",
+    );
   }
 
   private endGame(state: "over" | "won"): void {
@@ -243,17 +293,20 @@ export class RaycasterEngine {
       enemiesRemaining,
       totalEnemies: this.enemies.length,
       target: this.target?.entity.name ?? null,
+      weapon: WEAPONS[this.weaponIndex].name,
     });
   }
 }
 
 /**
- * Give the player enough heap to clear the level by combat, plus a margin:
- * one shot per WEAPON_DAMAGE of total enemy HP, ×1.4, floored at 20.
+ * Give the player enough heap to clear the level with the pistol, plus a
+ * margin: one shot per pistol-damage of total enemy HP, ×1.4, floored at 20.
+ * (The shotgun trades heap efficiency for burst damage.)
  */
 function startingAmmo(enemies: Enemy[]): number {
+  const pistolDamage = WEAPONS[0].damagePerPellet;
   const shotsToClear = enemies.reduce(
-    (n, e) => n + Math.ceil(e.maxHp / WEAPON_DAMAGE),
+    (n, e) => n + Math.ceil(e.maxHp / pistolDamage),
     0,
   );
   return Math.max(20, Math.round(shotsToClear * 1.4) + 8);

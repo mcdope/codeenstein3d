@@ -84,6 +84,23 @@ export class CParserAdapter implements CodeParserAdapter {
           complexityScore: 1 + countDecisionPoints(node, DECISION_NODE_TYPES, LOGICAL_OPERATORS),
         });
       }
+
+      // Global variables: top-level `declaration`s that aren't function
+      // prototypes (those contain a function_declarator).
+      for (const decl of tree.rootNode.descendantsOfType("declaration")) {
+        if (decl.parent?.type !== "translation_unit") continue;
+        if (decl.descendantsOfType("function_declarator").length > 0) continue;
+        const name = firstIdentifier(decl);
+        if (!name) continue;
+        entities.push({
+          name,
+          kind: "global",
+          startLine: decl.startPosition.row + 1,
+          endLine: decl.endPosition.row + 1,
+          complexityScore: 1,
+        });
+      }
+
       entities.sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
 
       return {

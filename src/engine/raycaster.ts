@@ -9,21 +9,25 @@
  *
  * Pure native Canvas 2D — no WebGL, no 3D libraries.
  */
-import type { GameMap } from "../map/types";
+import { HAZARD_TILE, type GameMap } from "../map/types";
 import type { Player } from "./player";
 import { enemyColor } from "./sprites";
 
 /** Base wall color (a warm dungeon brick), before distance shading. */
 const WALL_RGB: [number, number, number] = [186, 152, 116];
-/** Sky/ceiling and floor fills. */
-const CEILING = "#0b0d16";
-const FLOOR = "#15151a";
+/** Ceiling, plain floor, and hazard (acid) floor base colors, as RGB. */
+const CEILING_RGB: [number, number, number] = [11, 13, 22];
+const FLOOR_RGB: [number, number, number] = [21, 21, 26];
+const ACID_RGB: [number, number, number] = [64, 196, 72];
 /** Distance (tiles) at which walls fade to near-black. */
 const SHADE_DISTANCE = 22;
 /** Minimum brightness so distant walls stay faintly visible. */
 const MIN_SHADE = 0.12;
 /** y-side walls are dimmed to fake directional lighting. */
 const SIDE_SHADE = 0.68;
+
+/** Reusable floor-cast frame buffer, re-created only when the size changes. */
+let floorImage: ImageData | null = null;
 
 /**
  * Draw one frame of the 3D walls into the canvas, and record the perpendicular
@@ -39,11 +43,16 @@ export function renderScene(
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
 
-  // Ceiling (top half) and floor (bottom half).
-  ctx.fillStyle = CEILING;
-  ctx.fillRect(0, 0, width, height / 2);
-  ctx.fillStyle = FLOOR;
-  ctx.fillRect(0, height / 2, width, height / 2);
+  if (map.hazards.length > 0) {
+    // Floor-cast so acid pools appear as colored floor tiles.
+    renderBackground(ctx, map, player, width, height);
+  } else {
+    // No hazards: flat ceiling (top half) and floor (bottom half) is cheaper.
+    ctx.fillStyle = rgb(CEILING_RGB);
+    ctx.fillRect(0, 0, width, height / 2);
+    ctx.fillStyle = rgb(FLOOR_RGB);
+    ctx.fillRect(0, height / 2, width, height / 2);
+  }
 
   for (let x = 0; x < width; x++) {
     // Ray direction for this column: dir + plane * cameraX, cameraX ∈ [-1, 1].
@@ -121,6 +130,75 @@ export function renderScene(
 }
 
 /**
+ * Floor-cast the background: ceiling in the top half, and for the bottom half
+ * the actual floor cell under each pixel — tinted acid-green on hazard tiles —
+ * with mild distance shading. Painted before the walls, which then occlude it.
+ */
+function renderBackground(
+  ctx: CanvasRenderingContext2D,
+  map: GameMap,
+  player: Player,
+  width: number,
+  height: number,
+): void {
+  if (!floorImage || floorImage.width !== width || floorImage.height !== height) {
+    floorImage = ctx.createImageData(width, height);
+  }
+  const data = floorImage.data;
+  const halfH = height / 2;
+
+  // Leftmost (cameraX=-1) and rightmost (cameraX=+1) ray directions.
+  const rayDir0X = player.dirX - player.planeX;
+  const rayDir0Y = player.dirY - player.planeY;
+  const rayDir1X = player.dirX + player.planeX;
+  const rayDir1Y = player.dirY + player.planeY;
+  const posZ = 0.5 * height; // camera height in pixels
+
+  let idx = 0;
+  for (let y = 0; y < height; y++) {
+    if (y < halfH) {
+      // Ceiling: flat fill.
+      for (let x = 0; x < width; x++) {
+        data[idx++] = CEILING_RGB[0];
+        data[idx++] = CEILING_RGB[1];
+        data[idx++] = CEILING_RGB[2];
+        data[idx++] = 255;
+      }
+      continue;
+    }
+
+    // Floor row: perpendicular distance to the floor at this scanline.
+    const rowDistance = posZ / (y - halfH);
+    const stepX = (rowDistance * (rayDir1X - rayDir0X)) / width;
+    const stepY = (rowDistance * (rayDir1Y - rayDir0Y)) / width;
+    let floorX = player.posX + rowDistance * rayDir0X;
+    let floorY = player.posY + rowDistance * rayDir0Y;
+
+    const shade = Math.max(MIN_SHADE, 1 - rowDistance / SHADE_DISTANCE);
+
+    for (let x = 0; x < width; x++) {
+      const cx = Math.floor(floorX);
+      const cy = Math.floor(floorY);
+      const hazard =
+        cx >= 0 && cy >= 0 && cx < map.width && cy < map.height && map.grid[cy][cx] === HAZARD_TILE;
+      const base = hazard ? ACID_RGB : FLOOR_RGB;
+      data[idx++] = base[0] * shade;
+      data[idx++] = base[1] * shade;
+      data[idx++] = base[2] * shade;
+      data[idx++] = 255;
+      floorX += stepX;
+      floorY += stepY;
+    }
+  }
+
+  ctx.putImageData(floorImage, 0, 0);
+}
+
+function rgb([r, g, b]: [number, number, number]): string {
+  return `rgb(${r},${g},${b})`;
+}
+
+/**
  * Small top-left minimap: walls, live enemies, and the player's position and
  * facing. Useful for confirming movement, collision, and combat while playing.
  */
@@ -149,6 +227,12 @@ export function renderMinimap(
     for (let x = 0; x < map.width; x++) {
       if (row[x] === 1) ctx.fillRect(pad + x * cell, pad + y * cell, cell, cell);
     }
+  }
+
+  // Hazard (acid) tiles.
+  ctx.fillStyle = "#2f9e3a";
+  for (const hz of map.hazards) {
+    ctx.fillRect(pad + hz.x * cell, pad + hz.y * cell, cell, cell);
   }
 
   // Exit tile (the return statement).

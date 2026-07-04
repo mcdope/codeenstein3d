@@ -152,17 +152,19 @@ function drawEnemyOverlay(
 }
 
 /**
- * Find the living enemy under the crosshair (screen center), in front of the
- * nearest wall, nearest one wins. Returns `null` when nothing is targeted.
+ * Find the living enemy hit by a ray aimed at screen point (`screenX`, mid-
+ * height), in front of the nearest wall — nearest one wins. Returns `null`
+ * when nothing is hit. Used both for the aim reticle and for each shotgun
+ * pellet (which aims at an offset column).
  */
-export function findTargetUnderCrosshair(
+export function findTargetAtColumn(
   player: Player,
   enemies: Enemy[],
   zBuffer: Float64Array,
   width: number,
   height: number,
+  screenX: number,
 ): Enemy | null {
-  const cx = width / 2;
   const cy = height / 2;
 
   let best: Enemy | null = null;
@@ -172,7 +174,9 @@ export function findTargetUnderCrosshair(
     if (!enemy.alive) continue;
     const proj = projectEnemy(player, enemy, width, height);
     if (proj.depth <= 0) continue;
-    if (cx < proj.left || cx > proj.right || cy < proj.top || cy > proj.bottom) continue;
+    if (screenX < proj.left || screenX > proj.right || cy < proj.top || cy > proj.bottom) {
+      continue;
+    }
 
     const col = clamp(Math.round(proj.screenX), 0, width - 1);
     if (proj.depth >= zBuffer[col]) continue; // behind a wall
@@ -183,6 +187,17 @@ export function findTargetUnderCrosshair(
     }
   }
   return best;
+}
+
+/** The living enemy directly under the crosshair (screen center), if any. */
+export function findTargetUnderCrosshair(
+  player: Player,
+  enemies: Enemy[],
+  zBuffer: Float64Array,
+  width: number,
+  height: number,
+): Enemy | null {
+  return findTargetAtColumn(player, enemies, zBuffer, width, height, width / 2);
 }
 
 /**

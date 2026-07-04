@@ -12,7 +12,7 @@
  * map, via a seeded PRNG hashed from the file's content signature.
  */
 import type { CodeEntity, ParsedFile } from "../parser/types";
-import type { Enemy, GameMap, Point, Room, Tile } from "./types";
+import { HAZARD_TILE, type Enemy, type GameMap, type Point, type Room, type Tile } from "./types";
 
 /** Hit points granted per point of cyclomatic complexity. */
 const HP_PER_COMPLEXITY = 25;
@@ -60,8 +60,9 @@ export class MapGenerator {
       rooms.length > 0 ? { x: rooms[0].x + 1, y: rooms[0].y + 1 } : { x: 1, y: 1 };
     const enemies = spawnEnemies(rooms);
     const exit = pickExit(rooms, spawn);
+    const hazards = fillHazards(rooms, grid, spawn, exit);
 
-    return { width: size, height: size, grid, rooms, spawn, enemies, exit };
+    return { width: size, height: size, grid, rooms, spawn, enemies, exit, hazards };
   }
 
   /** Square map size, floored at `minSize` and growing with LOC and entities. */
@@ -198,6 +199,34 @@ function spawnEnemies(rooms: Room[]): Enemy[] {
     });
   }
   return enemies;
+}
+
+/**
+ * Turn each global-variable room into an acid pool: fill its interior (leaving
+ * a 1-tile walkable rim) with hazard tiles. The spawn room is skipped and the
+ * spawn/exit tiles are always kept clear so the player never starts or wins in
+ * acid. Returns every hazard tile for rendering.
+ */
+function fillHazards(
+  rooms: Room[],
+  grid: Tile[][],
+  spawn: Point,
+  exit: Point,
+): Point[] {
+  const hazards: Point[] = [];
+  rooms.forEach((room, index) => {
+    if (room.entity.kind !== "global") return;
+    if (index === 0) return; // never flood the spawn room
+    for (let y = room.y + 1; y < room.y + room.h - 1; y++) {
+      for (let x = room.x + 1; x < room.x + room.w - 1; x++) {
+        if (x === spawn.x && y === spawn.y) continue;
+        if (x === exit.x && y === exit.y) continue;
+        grid[y][x] = HAZARD_TILE;
+        hazards.push({ x, y });
+      }
+    }
+  });
+  return hazards;
 }
 
 /** Pick the exit tile: the center of the room whose center is furthest (by

@@ -109,7 +109,7 @@ function launchLevel(path: string, parsed: ParsedFile): void {
   hint.textContent =
     `${path} — reach the green "return" tile to build · ` +
     `Click to capture mouse · W/S move · A/D or mouse turn · ` +
-    `Click / Space to fire · Esc releases mouse`;
+    `Click / Space to fire · 1 pistol / 2 shotgun · avoid the acid · Esc releases mouse`;
 
   const hud = new GameHud();
 

@@ -74,6 +74,23 @@ export class PhpParserAdapter implements CodeParserAdapter {
           complexityScore: 1 + countDecisionPoints(node, DECISION_NODE_TYPES, LOGICAL_OPERATORS),
         });
       }
+
+      // Global variables: assignments to a variable at file (program) scope,
+      // e.g. `$config = [...];`. Assignments inside functions are locals.
+      for (const assign of tree.rootNode.descendantsOfType("assignment_expression")) {
+        if (assign.parent?.type !== "expression_statement") continue;
+        if (assign.parent.parent?.type !== "program") continue;
+        const left = assign.childForFieldName("left");
+        if (left?.type !== "variable_name") continue;
+        entities.push({
+          name: left.text,
+          kind: "global",
+          startLine: assign.startPosition.row + 1,
+          endLine: assign.endPosition.row + 1,
+          complexityScore: 1,
+        });
+      }
+
       entities.sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
 
       return {

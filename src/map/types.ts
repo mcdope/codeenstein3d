@@ -8,8 +8,11 @@
  */
 import type { CodeEntity } from "../parser/types";
 
-/** A grid cell: 0 = empty (walkable), 1 = wall. */
-export type Tile = 0 | 1;
+/** A grid cell: 0 = empty floor, 1 = wall, 2 = hazard (acid, walkable). */
+export type Tile = 0 | 1 | 2;
+
+/** Tile value for a walkable hazard (acid pool) cell. */
+export const HAZARD_TILE = 2;
 
 /** Tile coordinate (integer grid position). */
 export interface Point {
@@ -60,4 +63,6 @@ export interface GameMap {
   enemies: Enemy[];
   /** Exit tile (the `return` statement) in the room furthest from spawn. */
   exit: Point;
+  /** Hazard (acid) tiles — one pool per global-variable room. */
+  hazards: Point[];
 }

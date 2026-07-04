@@ -12,8 +12,18 @@
  * Nothing outside `src/parser/` should import `web-tree-sitter`.
  */
 
-/** Kind of source entity we surface to the map generator. */
-export type EntityKind = "function" | "method" | "class" | "interface" | "trait";
+/**
+ * Kind of source entity we surface to the map generator. `function`/`method`
+ * become enemies; `global` (a global variable) becomes a hazard room; the rest
+ * are plain rooms.
+ */
+export type EntityKind =
+  | "function"
+  | "method"
+  | "class"
+  | "interface"
+  | "trait"
+  | "global";
 
 /** A single function/method/class/... discovered in a source file. */
 export interface CodeEntity {
