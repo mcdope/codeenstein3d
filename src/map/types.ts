@@ -8,11 +8,16 @@
  */
 import type { CodeEntity } from "../parser/types";
 
-/** A grid cell: 0 = empty floor, 1 = wall, 2 = hazard (acid, walkable). */
-export type Tile = 0 | 1 | 2;
+/**
+ * A grid cell: 0 = empty floor, 1 = wall, 2 = hazard (acid, walkable),
+ * 3 = locked door (solid until opened with a key, then becomes 0).
+ */
+export type Tile = 0 | 1 | 2 | 3;
 
 /** Tile value for a walkable hazard (acid pool) cell. */
 export const HAZARD_TILE = 2;
+/** Tile value for a locked door (blocks like a wall until a key opens it). */
+export const DOOR_TILE = 3;
 
 /** Tile coordinate (integer grid position). */
 export interface Point {
@@ -65,4 +70,16 @@ export interface GameMap {
   exit: Point;
   /** Hazard (acid) tiles — one pool per global-variable room. */
   hazards: Point[];
+  /** Locked-door tiles guarding private/protected-method rooms. */
+  doors: Point[];
+  /** Collectible dependency keys scattered in reachable public areas. */
+  keys: KeyItem[];
+}
+
+/** A collectible "dependency key" (opens one locked door). */
+export interface KeyItem {
+  /** World position in fractional tile units (tile center). */
+  x: number;
+  y: number;
+  collected: boolean;
 }

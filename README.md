@@ -23,6 +23,7 @@ through the dungeon generated from its structure to the `return` statement.
 | 7. C-language support (`tree-sitter-c`) | ✅ Done |
 | 8. Hazards (globals → acid) + weapon arsenal | ✅ Done |
 | 9. Nested-scope labyrinths (deep code → maze) | ✅ Done |
+| 10. Locked doors (private/protected) + keys | ✅ Done |
 | Multi-file "levels" / bosses from complexity | 🔜 Planned |
 | Additional language grammars (JS, Python, …) | 🔜 Planned |
 
@@ -31,16 +32,16 @@ This project is strictly "Local-First". Proprietary code never leaves your machi
 
 1. **Local Access (File System Access API):** Direct read access to your local workspace via `showDirectoryPicker()`. *Strictly no virtual devices or mocked file systems.* — `src/fs/`
 2. **AST Parser (web-tree-sitter via WASM):** Language-agnostic parsing behind a `CodeParserAdapter` interface. Source files are normalized into plain JSON (`linesOfCode` + `entities[]` with start/end lines and a cyclomatic `complexityScore`). The rest of the engine never touches Tree-sitter directly. Grammars: **PHP** (`.php`) and **C** (`.c`, `.h`); adding a language is one adapter + one registry line. — `src/parser/`
-3. **Procedural Map Generator:** Deterministically translates the normalized JSON into a 2D tile matrix (`0` = floor, `1` = wall, `2` = acid hazard). Each entity becomes an enclosed room — but a **deeply nested function turns into a labyrinth** (recursive-division maze of `1`-walls, passages kept ≥1 tile wide) rather than an open box. Rooms are linked by corridors. It places an enemy for every function/method (HP scaled from its complexity), floods every global-variable room with an **acid pool**, and puts a green **exit tile** — the `return` statement — in the room furthest from spawn. — `src/map/`
-4. **Raycaster Engine & Gameplay:** A classic 2.5D raycaster written entirely on the HTML5 `<canvas>` 2D context. No WebGL, no Three.js – pure retro mathematics (DDA algorithm), distance shading, floor-cast acid tiles, delta-timed first-person movement, and AABB wall collision. Layered on top: billboard enemy sprites (z-buffer occluded), a weapon arsenal (hitscan pistol + cone shotgun), contact/hazard damage, and win/lose state. — `src/engine/`
+3. **Procedural Map Generator:** Deterministically translates the normalized JSON into a 2D tile matrix (`0` = floor, `1` = wall, `2` = acid hazard, `3` = locked door). Each entity becomes an enclosed room — but a **deeply nested function turns into a labyrinth** (recursive-division maze of `1`-walls, passages kept ≥1 tile wide) rather than an open box. Rooms are linked by corridors. It places an enemy for every function/method (HP scaled from its complexity), floods every global-variable room with an **acid pool**, locks **private/protected-method** rooms behind **doors** and scatters a matching **dependency key** in reachable public floor (so every level stays solvable), and puts a green **exit tile** — the `return` statement — in the room furthest from spawn. — `src/map/`
+4. **Raycaster Engine & Gameplay:** A classic 2.5D raycaster written entirely on the HTML5 `<canvas>` 2D context. No WebGL, no Three.js – pure retro mathematics (DDA algorithm), distance shading, floor-cast acid tiles, delta-timed first-person movement, and AABB wall collision. Layered on top: billboard enemy sprites (z-buffer occluded), collectible keys, a weapon arsenal (hitscan pistol + cone shotgun), contact/hazard damage, key-unlocked doors, and win/lose state. — `src/engine/`
 
 ### Gameplay loop
-Every **function/method is an enemy** whose **HP equals its cyclomatic complexity** (×25) — so a gnarly function takes more shots to clear. Every **global variable becomes an acid pool** (a hazard room) that drains you if you wade through it. You have **System Stability** (health) and a shared **Heap / RAM** ammo pool sized to the level, plus a two-weapon arsenal: the **echo pistol** (precise single hitscan) and the **Regex Shotgun** (a cone of pellets — devastating up close, useless at range). Touching an enemy or standing in acid drains stability; hitting 0 is a **Kernel Panic** (game over). Reach the green `return` tile for a **Build Successful** and drop back to the file tree.
+Every **function/method is an enemy** whose **HP equals its cyclomatic complexity** (×25) — so a gnarly function takes more shots to clear. Every **global variable becomes an acid pool** (a hazard room) that drains you if you wade through it. **`private`/`protected` methods are locked rooms**: their doors (steel-blue) block you until you pick up a scattered **dependency key** and walk into them, which consumes the key. You have **System Stability** (health) and a shared **Heap / RAM** ammo pool sized to the level, plus a two-weapon arsenal: the **echo pistol** (precise single hitscan) and the **Regex Shotgun** (a cone of pellets — devastating up close, useless at range). Touching an enemy or standing in acid drains stability; hitting 0 is a **Kernel Panic** (game over). Reach the green `return` tile for a **Build Successful** and drop back to the file tree.
 
 ### Data flow
 ```
-Local folder ──▶ CodeParserAdapter ──▶ ParsedFile JSON ──▶ MapGenerator ──▶ GameMap (grid+enemies+exit) ──▶ RaycasterEngine
- (src/fs)          (src/parser)                              (src/map)                                        (src/engine)
+Local folder ──▶ CodeParserAdapter ──▶ ParsedFile JSON ──▶ MapGenerator ──▶ GameMap (grid+enemies+doors+keys+exit) ──▶ RaycasterEngine
+ (src/fs)          (src/parser)                              (src/map)                                               (src/engine)
 ```
 Each stage only depends on the plain data structure produced by the previous one, so languages, map styles, and renderers can evolve independently.
 
@@ -52,8 +53,9 @@ Click a `.php`, `.c`, or `.h` file in the sidebar to generate and enter its leve
 * **Mouse** – click the canvas to capture the pointer and look around (`Esc` releases)
 * **Click / Space** – fire the active weapon
 * **1 / 2** – switch weapon (echo pistol / Regex Shotgun)
-* **Objective** – clear (or dodge) the enemies, avoid the green acid pools, and step on the green `return` tile
-* A bottom **HUD** shows System Stability, Heap/RAM, active weapon, processes remaining, and your current target; a top-left minimap shows walls, enemies, acid, the exit, and your facing.
+* **Keys & doors** – walk over a gold key to collect it; walk into a blue locked door while holding a key to open it (consumes the key)
+* **Objective** – clear (or dodge) the enemies, avoid the green acid pools, unlock any doors in your way, and step on the green `return` tile
+* A bottom **HUD** shows System Stability, Heap/RAM, active weapon, keys held, processes remaining, and your current target; a top-left minimap shows walls, enemies, acid, doors, keys, the exit, and your facing.
 
 ## 💻 Tech Stack
 * **Frontend:** Vanilla TypeScript + Vite (no UI framework; minimal dependencies)

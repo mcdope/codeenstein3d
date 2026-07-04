@@ -13,7 +13,7 @@
  * in front of the nearest wall — so what you see under the crosshair is what
  * you shoot.
  */
-import type { Enemy, Point } from "../map/types";
+import type { Enemy, KeyItem, Point } from "../map/types";
 import type { CodeEntity, EntityKind } from "../parser/types";
 import type { Player } from "./player";
 
@@ -237,6 +237,37 @@ export function renderExitMarker(
     ctx.fillStyle = "#8effa0";
     ctx.fillText(label, proj.screenX, proj.top - 5);
     ctx.textAlign = "start";
+  }
+}
+
+/** Draw uncollected keys as small floating gold "keycard" billboards. */
+export function renderKeys(
+  ctx: CanvasRenderingContext2D,
+  player: Player,
+  keys: KeyItem[],
+  zBuffer: Float64Array,
+): void {
+  const width = ctx.canvas.width;
+  const height = ctx.canvas.height;
+
+  const visible = keys
+    .filter((k) => !k.collected)
+    .map((item) => ({ item, proj: projectPoint(player, item.x, item.y, width, height, 0.28) }))
+    .filter(({ proj }) => proj.depth > 0.2)
+    .sort((a, b) => b.proj.depth - a.proj.depth);
+
+  for (const { proj } of visible) {
+    const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
+    if (proj.depth >= zBuffer[centerCol]) continue; // behind a wall
+
+    const size = proj.right - proj.left;
+    const cx = proj.screenX;
+    // Float the card at roughly waist height, not the floor.
+    const cy = height / 2 + size * 0.4;
+    ctx.fillStyle = "#8a6d12";
+    ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
+    ctx.fillStyle = "#f2d64b";
+    ctx.fillRect(cx - size / 2 + size * 0.15, cy - size / 2 + size * 0.15, size * 0.7, size * 0.7);
   }
 }
 

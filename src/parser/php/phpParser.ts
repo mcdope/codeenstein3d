@@ -7,11 +7,17 @@
  * All Tree-sitter usage is contained here; callers receive only `ParsedFile`
  * JSON. The grammar WASM is loaded lazily on first parse and reused after that.
  */
-import { Language, Parser } from "web-tree-sitter";
+import { Language, Parser, type Node } from "web-tree-sitter";
 import phpWasmUrl from "tree-sitter-php/tree-sitter-php.wasm?url";
 import { initTreeSitter } from "../runtime";
 import { countDecisionPoints, countLines, maxNestingDepth } from "../astUtils";
-import type { CodeEntity, CodeParserAdapter, EntityKind, ParsedFile } from "../types";
+import type {
+  CodeEntity,
+  CodeParserAdapter,
+  EntityKind,
+  ParsedFile,
+  Visibility,
+} from "../types";
 
 /** Node types that define an entity, mapped to their normalized kind. */
 const ENTITY_NODE_TYPES: Record<string, EntityKind> = {
@@ -76,13 +82,15 @@ export class PhpParserAdapter implements CodeParserAdapter {
     try {
       const entities: CodeEntity[] = [];
       for (const node of tree.rootNode.descendantsOfType(Object.keys(ENTITY_NODE_TYPES))) {
+        const kind = ENTITY_NODE_TYPES[node.type];
         entities.push({
           name: node.childForFieldName("name")?.text ?? "<anonymous>",
-          kind: ENTITY_NODE_TYPES[node.type],
+          kind,
           startLine: node.startPosition.row + 1,
           endLine: node.endPosition.row + 1,
           complexityScore: 1 + countDecisionPoints(node, DECISION_NODE_TYPES, LOGICAL_OPERATORS),
           nestingDepth: maxNestingDepth(node, NESTING_NODE_TYPES),
+          ...(kind === "method" ? { visibility: methodVisibility(node) } : {}),
         });
       }
 
@@ -115,4 +123,16 @@ export class PhpParserAdapter implements CodeParserAdapter {
       tree.delete();
     }
   }
+}
+
+/** A method's access modifier from its `visibility_modifier`, defaulting public. */
+function methodVisibility(method: Node): Visibility {
+  for (const child of method.namedChildren) {
+    if (child.type === "visibility_modifier") {
+      const text = child.text.toLowerCase();
+      if (text === "private" || text === "protected") return text;
+      return "public";
+    }
+  }
+  return "public";
 }

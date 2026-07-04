@@ -13,7 +13,7 @@
  * (a square of half-width `radius`) so the player slides along walls instead
  * of sticking, and can never enter a solid cell.
  */
-import { HAZARD_TILE, type GameMap } from "../map/types";
+import { DOOR_TILE, HAZARD_TILE, type GameMap } from "../map/types";
 
 export interface PlayerConfig {
   /** Half-width of the player's collision box, in tiles. */
@@ -40,6 +40,11 @@ export class Player {
     // Spawn in the middle of the spawn tile.
     this.posX = map.spawn.x + 0.5;
     this.posY = map.spawn.y + 0.5;
+  }
+
+  /** Half-width of the collision box, in tiles. */
+  get radius(): number {
+    return this.config.radius;
   }
 
   /** Rotate facing and camera plane by `angle` radians (positive = right). */
@@ -87,7 +92,9 @@ export class Player {
 /** A cell is solid if it's out of bounds or a wall (1). */
 export function isWall(map: GameMap, cx: number, cy: number): boolean {
   if (cx < 0 || cy < 0 || cx >= map.width || cy >= map.height) return true;
-  return map.grid[cy][cx] === 1;
+  const tile = map.grid[cy][cx];
+  // Walls (1) and still-locked doors (3) are solid; acid (2) and floor (0) are not.
+  return tile === 1 || tile === DOOR_TILE;
 }
 
 /** True if the cell is a hazard (acid) tile — walkable, but it drains health. */

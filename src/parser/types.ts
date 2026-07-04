@@ -25,6 +25,9 @@ export type EntityKind =
   | "trait"
   | "global";
 
+/** Access modifier of a method. `public` is the default when unspecified. */
+export type Visibility = "public" | "private" | "protected";
+
 /** A single function/method/class/... discovered in a source file. */
 export interface CodeEntity {
   /** Declared name, or "<anonymous>" when the grammar has none. */
@@ -46,6 +49,11 @@ export interface CodeEntity {
    * becomes a maze rather than an open room.
    */
   nestingDepth: number;
+  /**
+   * Access modifier, for methods. `private`/`protected` methods become
+   * key-locked rooms. Undefined for non-methods (treated as public).
+   */
+  visibility?: Visibility;
 }
 
 /** Normalized, engine-facing result of parsing one source file. */

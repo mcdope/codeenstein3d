@@ -20,6 +20,7 @@ export class GameHud {
   private readonly healthVal: HTMLElement;
   private readonly ammoVal: HTMLElement;
   private readonly weaponVal: HTMLElement;
+  private readonly keysVal: HTMLElement;
   private readonly enemiesVal: HTMLElement;
   private readonly targetVal: HTMLElement;
 
@@ -47,6 +48,10 @@ export class GameHud {
         <span class="hud-value hud-weapon">—</span>
       </div>
       <div class="hud-stat">
+        <span class="hud-label">Keys 🔑</span>
+        <span class="hud-value hud-value--big hud-keys">0</span>
+      </div>
+      <div class="hud-stat">
         <span class="hud-label">Processes</span>
         <span class="hud-value hud-value--big hud-enemies">0</span>
       </div>
@@ -59,6 +64,7 @@ export class GameHud {
     this.healthVal = must(this.bar.querySelector(".hud-health-val"));
     this.ammoVal = must(this.bar.querySelector(".hud-ammo"));
     this.weaponVal = must(this.bar.querySelector(".hud-weapon"));
+    this.keysVal = must(this.bar.querySelector(".hud-keys"));
     this.enemiesVal = must(this.bar.querySelector(".hud-enemies"));
     this.targetVal = must(this.bar.querySelector(".hud-target"));
 
@@ -89,6 +95,9 @@ export class GameHud {
     }
     if (stats.weapon !== this.last.weapon) {
       this.weaponVal.textContent = stats.weapon;
+    }
+    if (stats.keysHeld !== this.last.keysHeld || stats.keysTotal !== this.last.keysTotal) {
+      this.keysVal.textContent = `${stats.keysHeld}/${stats.keysTotal}`;
     }
     if (stats.enemiesRemaining !== this.last.enemiesRemaining) {
       this.enemiesVal.textContent = `${stats.enemiesRemaining}/${stats.totalEnemies}`;

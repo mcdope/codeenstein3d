@@ -9,12 +9,14 @@
  *
  * Pure native Canvas 2D — no WebGL, no 3D libraries.
  */
-import { HAZARD_TILE, type GameMap } from "../map/types";
+import { DOOR_TILE, HAZARD_TILE, type GameMap } from "../map/types";
 import type { Player } from "./player";
 import { enemyColor } from "./sprites";
 
 /** Base wall color (a warm dungeon brick), before distance shading. */
 const WALL_RGB: [number, number, number] = [186, 152, 116];
+/** Locked-door color (a cold steel blue), before distance shading. */
+const DOOR_RGB: [number, number, number] = [86, 142, 190];
 /** Ceiling, plain floor, and hazard (acid) floor base colors, as RGB. */
 const CEILING_RGB: [number, number, number] = [11, 13, 22];
 const FLOOR_RGB: [number, number, number] = [21, 21, 26];
@@ -90,6 +92,7 @@ export function renderScene(
     // DDA: advance to the nearest cell boundary until we hit a wall.
     let side = 0; // 0 = hit on an x-side, 1 = y-side
     let hit = false;
+    let hitTile = 1; // wall (1) or door (DOOR_TILE)
     for (let guard = 0; guard < 4096 && !hit; guard++) {
       if (sideDistX < sideDistY) {
         sideDistX += deltaDistX;
@@ -102,8 +105,13 @@ export function renderScene(
       }
       if (mapX < 0 || mapY < 0 || mapX >= map.width || mapY >= map.height) {
         hit = true; // out of bounds counts as a wall
-      } else if (map.grid[mapY][mapX] === 1) {
-        hit = true;
+        hitTile = 1;
+      } else {
+        const tile = map.grid[mapY][mapX];
+        if (tile === 1 || tile === DOOR_TILE) {
+          hit = true;
+          hitTile = tile;
+        }
       }
     }
 
@@ -117,13 +125,15 @@ export function renderScene(
     const drawStart = Math.max(0, Math.floor((height - lineHeight) / 2));
     const drawEnd = Math.min(height - 1, Math.floor((height + lineHeight) / 2));
 
-    // Distance shading, dimmed further on y-sides for depth.
+    // Distance shading, dimmed further on y-sides for depth. Doors use their
+    // own color so they read as openable, not solid rock.
     let shade = Math.max(MIN_SHADE, 1 - dist / SHADE_DISTANCE);
     if (side === 1) shade *= SIDE_SHADE;
 
-    const r = Math.floor(WALL_RGB[0] * shade);
-    const g = Math.floor(WALL_RGB[1] * shade);
-    const b = Math.floor(WALL_RGB[2] * shade);
+    const base = hitTile === DOOR_TILE ? DOOR_RGB : WALL_RGB;
+    const r = Math.floor(base[0] * shade);
+    const g = Math.floor(base[1] * shade);
+    const b = Math.floor(base[2] * shade);
     ctx.fillStyle = `rgb(${r},${g},${b})`;
     ctx.fillRect(x, drawStart, 1, drawEnd - drawStart + 1);
   }
@@ -233,6 +243,21 @@ export function renderMinimap(
   ctx.fillStyle = "#2f9e3a";
   for (const hz of map.hazards) {
     ctx.fillRect(pad + hz.x * cell, pad + hz.y * cell, cell, cell);
+  }
+
+  // Locked doors still closed (grid is the source of truth once opened).
+  ctx.fillStyle = "#568ebe";
+  for (const door of map.doors) {
+    if (map.grid[door.y][door.x] === DOOR_TILE) {
+      ctx.fillRect(pad + door.x * cell, pad + door.y * cell, cell, cell);
+    }
+  }
+
+  // Uncollected keys.
+  ctx.fillStyle = "#f2d64b";
+  for (const item of map.keys) {
+    if (item.collected) continue;
+    ctx.fillRect(pad + item.x * cell - cell / 2, pad + item.y * cell - cell / 2, Math.max(2, cell), Math.max(2, cell));
   }
 
   // Exit tile (the return statement).

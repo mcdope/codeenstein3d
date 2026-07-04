@@ -15,10 +15,16 @@
 import { Player, isHazard } from "./player";
 import { InputController } from "./input";
 import { renderMinimap, renderScene } from "./raycaster";
-import { findTargetAtColumn, findTargetUnderCrosshair, renderExitMarker, renderSprites } from "./sprites";
+import {
+  findTargetAtColumn,
+  findTargetUnderCrosshair,
+  renderExitMarker,
+  renderKeys,
+  renderSprites,
+} from "./sprites";
 import { drawCrosshair } from "./hud";
 import { WEAPONS, pelletOffsets } from "./weapons";
-import type { Enemy, GameMap } from "../map/types";
+import { DOOR_TILE, type Enemy, type GameMap } from "../map/types";
 
 /** Movement speed in tiles per second. */
 const MOVE_SPEED = 3.2;
@@ -36,6 +42,8 @@ const CONTACT_RADIUS = 0.5;
 const CONTACT_DPS = 30;
 /** Health lost per second while standing in an acid (hazard) tile. */
 const HAZARD_DPS = 18;
+/** How close (tiles) the player must get to pick up a key. */
+const KEY_PICKUP_RADIUS = 0.5;
 
 /** Live stats pushed to the host each frame. */
 export interface EngineStats {
@@ -50,6 +58,10 @@ export interface EngineStats {
   target: string | null;
   /** Name of the currently equipped weapon. */
   weapon: string;
+  /** Dependency keys currently held (unused, in inventory). */
+  keysHeld: number;
+  /** Total keys placed on this level. */
+  keysTotal: number;
 }
 
 /** Host callbacks. All optional. */
@@ -80,6 +92,8 @@ export class RaycasterEngine {
   private ammo: number;
   /** Index into WEAPONS of the equipped weapon (0 = pistol). */
   private weaponIndex = 0;
+  /** Dependency keys collected but not yet spent on a door. */
+  private keysHeld = 0;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -136,6 +150,8 @@ export class RaycasterEngine {
 
     // Simulate (may end the game via damage or reaching the exit).
     this.handleMovement(dt);
+    this.collectKeys();
+    this.openDoorAhead();
     this.applyContactDamage(dt);
     this.applyHazardDamage(dt);
     this.checkExit();
@@ -144,6 +160,7 @@ export class RaycasterEngine {
     const { width, height } = this.ctx.canvas;
     renderScene(this.ctx, this.map, this.player, this.zBuffer);
     renderSprites(this.ctx, this.player, this.enemies, this.zBuffer);
+    renderKeys(this.ctx, this.player, this.map.keys, this.zBuffer);
     renderExitMarker(this.ctx, this.player, this.map.exit, this.zBuffer);
 
     this.target = findTargetUnderCrosshair(
@@ -200,6 +217,53 @@ export class RaycasterEngine {
     const cx = Math.floor(this.player.posX);
     const cy = Math.floor(this.player.posY);
     if (isHazard(this.map, cx, cy)) this.damage(HAZARD_DPS * dt);
+  }
+
+  /** Pick up any key the player has walked onto. */
+  private collectKeys(): void {
+    if (this.state !== "playing") return;
+    for (const item of this.map.keys) {
+      if (item.collected) continue;
+      const dx = item.x - this.player.posX;
+      const dy = item.y - this.player.posY;
+      if (dx * dx + dy * dy < KEY_PICKUP_RADIUS * KEY_PICKUP_RADIUS) {
+        item.collected = true;
+        this.keysHeld += 1;
+        console.log(
+          `%c[key] dependency key acquired — ${this.keysHeld} in inventory`,
+          "color:#f2d64b",
+        );
+      }
+    }
+  }
+
+  /**
+   * If the player is walking into a locked door and holds a key, spend the key
+   * and open the door (its tile becomes plain floor).
+   */
+  private openDoorAhead(): void {
+    if (this.state !== "playing" || this.keysHeld <= 0) return;
+
+    // Which way is the player pushing? Forward (W) or backward (S) along dir.
+    let sign = 0;
+    if (this.input.isDown("KeyW")) sign += 1;
+    if (this.input.isDown("KeyS")) sign -= 1;
+    if (sign === 0) return;
+
+    const reach = this.player.radius + 0.15;
+    const px = this.player.posX + this.player.dirX * sign * reach;
+    const py = this.player.posY + this.player.dirY * sign * reach;
+    const cx = Math.floor(px);
+    const cy = Math.floor(py);
+
+    if (this.map.grid[cy]?.[cx] === DOOR_TILE) {
+      this.map.grid[cy][cx] = 0;
+      this.keysHeld -= 1;
+      console.log(
+        `%c[door] unlocked with a dependency key — ${this.keysHeld} left`,
+        "color:#568ebe;font-weight:bold",
+      );
+    }
   }
 
   /** Apply `amount` of stability loss; ends the run on reaching 0. */
@@ -294,6 +358,8 @@ export class RaycasterEngine {
       totalEnemies: this.enemies.length,
       target: this.target?.entity.name ?? null,
       weapon: WEAPONS[this.weaponIndex].name,
+      keysHeld: this.keysHeld,
+      keysTotal: this.map.keys.length,
     });
   }
 }
