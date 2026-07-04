@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
+
 /**
  * Software raycaster using the DDA (Digital Differential Analyzer) grid
  * traversal. For each screen column we cast one ray, step it cell-by-cell

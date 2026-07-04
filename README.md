@@ -101,3 +101,16 @@ npm run typecheck  # tsc --noEmit
 npm run build      # type-check + production build to dist/
 npm run preview    # serve the production build locally
 ```
+
+## 📜 License
+Copyright (C) 2026 Tobias Bäumer.
+
+Codeenstein 3D is free software: you can redistribute it and/or modify it under
+the terms of the **GNU Affero General Public License** as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version. It is distributed **without any warranty**. See the
+[`LICENSE`](./LICENSE) file for the full text, or
+<https://www.gnu.org/licenses/agpl-3.0.html>.
+
+Note the AGPL's network clause: if you run a modified version of this software
+as a network service, you must offer its users the corresponding source.

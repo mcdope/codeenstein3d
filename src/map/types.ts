@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
+
 /**
  * Map data types produced by the procedural generator and consumed by the
  * raycaster. Like the parser layer, these are plain serializable structures —

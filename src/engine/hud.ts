@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
+
 /**
  * In-world canvas overlay: the aiming crosshair. Player stats (stability,
  * heap, etc.) live in the HTML HUD (see src/ui/gameHud.ts).

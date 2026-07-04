@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
+
 /**
  * Renders a `TreeNode` into a collapsible <ul> file tree in the sidebar.
  * Directories toggle open/closed on click; files invoke `onSelectFile`.

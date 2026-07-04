@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
+
 /**
  * HTML HUD for a running level: a doom/terminal-style status bar (bottom 20%)
  * plus full-screen end-of-run overlays ("Kernel Panic" / "Build Successful").
