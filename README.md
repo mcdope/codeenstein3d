@@ -9,7 +9,8 @@ Every folder is a level. Every file is a room. Every function is an enemy. The h
 Whether it's a massive Symfony enterprise project or low-level C code like the `pam_usb` module – this engine lets you "refactor" with a shotgun.
 
 ## 🚦 Current Status
-The core pipeline is playable end-to-end: pick a local folder, click a PHP file, and walk through the dungeon generated from its structure.
+Playable end-to-end: pick a local folder, click a PHP file, and fight your way
+through the dungeon generated from its structure to the `return` statement.
 
 | Stage | Status |
 | --- | --- |
@@ -17,20 +18,26 @@ The core pipeline is playable end-to-end: pick a local folder, click a PHP file,
 | 2. AST parsing (web-tree-sitter, PHP grammar) | ✅ Done |
 | 3. Procedural map generation (rooms + corridors) | ✅ Done |
 | 4. Raycaster engine (DDA, first-person controls) | ✅ Done |
-| Enemies from entities / bosses from complexity | 🔜 Planned |
+| 5. Enemies from entities + hitscan combat | ✅ Done |
+| 6. Developer HUD + win/lose game state | ✅ Done |
+| Multi-file "levels" / bosses from complexity | 🔜 Planned |
+| Additional language grammars (C, JS, …) | 🔜 Planned |
 
 ## 🏗️ Architecture & Pipeline
 This project is strictly "Local-First". Proprietary code never leaves your machine.
 
 1. **Local Access (File System Access API):** Direct read access to your local workspace via `showDirectoryPicker()`. *Strictly no virtual devices or mocked file systems.* — `src/fs/`
 2. **AST Parser (web-tree-sitter via WASM):** Language-agnostic parsing behind a `CodeParserAdapter` interface. Source files are normalized into plain JSON (`linesOfCode` + `entities[]` with start/end lines and a cyclomatic `complexityScore`). The rest of the engine never touches Tree-sitter directly. First grammar: PHP. — `src/parser/`
-3. **Procedural Map Generator:** Deterministically translates the normalized JSON into a 2D tile matrix (`0` = floor, `1` = wall). Each entity becomes an enclosed rectangular room; rooms are linked by corridors, with a player spawn in the first room. — `src/map/`
-4. **Raycaster Engine:** A classic 2.5D raycaster written entirely on the HTML5 `<canvas>` 2D context. No WebGL, no Three.js – pure retro mathematics (DDA algorithm), distance shading, delta-timed first-person movement, and AABB wall collision. — `src/engine/`
+3. **Procedural Map Generator:** Deterministically translates the normalized JSON into a 2D tile matrix (`0` = floor, `1` = wall). Each entity becomes an enclosed rectangular room; rooms are linked by corridors. It also places an enemy for every function/method (HP scaled from its complexity) and a green **exit tile** — the `return` statement — in the room furthest from spawn. — `src/map/`
+4. **Raycaster Engine & Gameplay:** A classic 2.5D raycaster written entirely on the HTML5 `<canvas>` 2D context. No WebGL, no Three.js – pure retro mathematics (DDA algorithm), distance shading, delta-timed first-person movement, and AABB wall collision. Layered on top: billboard enemy sprites (z-buffer occluded), a hitscan "echo pistol", contact damage, and win/lose state. — `src/engine/`
+
+### Gameplay loop
+Every **function/method is an enemy** whose **HP equals its cyclomatic complexity** (×25) — so a gnarly function takes more shots to clear. You have **System Stability** (health) and a **Heap / RAM** ammo pool sized to the level. Touching an enemy drains stability; hitting 0 is a **Kernel Panic** (game over). Reach the green `return` tile for a **Build Successful** and drop back to the file tree.
 
 ### Data flow
 ```
-Local folder ──▶ CodeParserAdapter ──▶ ParsedFile JSON ──▶ MapGenerator ──▶ GameMap grid ──▶ RaycasterEngine
- (src/fs)          (src/parser)                              (src/map)                          (src/engine)
+Local folder ──▶ CodeParserAdapter ──▶ ParsedFile JSON ──▶ MapGenerator ──▶ GameMap (grid+enemies+exit) ──▶ RaycasterEngine
+ (src/fs)          (src/parser)                              (src/map)                                        (src/engine)
 ```
 Each stage only depends on the plain data structure produced by the previous one, so languages, map styles, and renderers can evolve independently.
 
@@ -40,7 +47,9 @@ Click a `.php` file in the sidebar to generate and enter its level.
 * **W / S** – move forward / backward
 * **A / D** – turn left / right
 * **Mouse** – click the canvas to capture the pointer and look around (`Esc` releases)
-* A top-left minimap shows walls, your position, and your facing.
+* **Click / Space** – fire the echo pistol (hitscan; costs 1 heap)
+* **Objective** – clear (or dodge) the enemies and step on the green `return` tile
+* A bottom **HUD** shows System Stability, Heap/RAM, processes remaining, and your current target; a top-left minimap shows walls, enemies, the exit, and your facing.
 
 ## 💻 Tech Stack
 * **Frontend:** Vanilla TypeScript + Vite (no UI framework; minimal dependencies)
@@ -57,13 +66,14 @@ unsupported browsers and disables the picker with a message.
 ## 📂 Project Structure
 ```
 src/
-├── main.ts            # App entry: wires the sidebar, parser, map, and engine together
+├── main.ts            # App entry: wires the sidebar, parser, map, engine, and HUD together
 ├── fs/                # File System Access API: workspace picker + directory walk
-├── ui/                # File-tree sidebar rendering
+├── ui/                # File-tree sidebar + in-game HTML HUD / end screens (gameHud.ts)
 ├── parser/            # Language-agnostic AST layer (CodeParserAdapter, registry)
 │   └── php/           # PHP adapter backed by tree-sitter-php
-├── map/               # Procedural map generator (+ a top-down debug renderer)
-└── engine/            # 2.5D raycaster: player/camera, DDA renderer, input, game loop
+├── map/               # Procedural map generator: grid, enemies, exit (+ top-down debug renderer)
+└── engine/            # 2.5D raycaster + gameplay: player/camera, DDA renderer, sprites,
+                       #   input, hitscan combat, HUD crosshair, and the game loop
 ```
 
 ## 🚀 Getting Started
