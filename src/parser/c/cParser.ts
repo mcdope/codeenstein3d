@@ -14,7 +14,7 @@
 import { Language, Parser, type Node } from "web-tree-sitter";
 import cWasmUrl from "tree-sitter-c/tree-sitter-c.wasm?url";
 import { initTreeSitter } from "../runtime";
-import { countDecisionPoints, countLines } from "../astUtils";
+import { countDecisionPoints, countLines, maxNestingDepth } from "../astUtils";
 import type { CodeEntity, CodeParserAdapter, EntityKind, ParsedFile } from "../types";
 
 /** Node types that define an entity, mapped to their normalized kind. */
@@ -42,6 +42,15 @@ const DECISION_NODE_TYPES = [
 
 /** Short-circuiting operators that each add a decision point. */
 const LOGICAL_OPERATORS = new Set(["&&", "||"]);
+
+/** Block statements that each deepen the nesting level. */
+const NESTING_NODE_TYPES = new Set([
+  "if_statement",
+  "for_statement",
+  "while_statement",
+  "do_statement",
+  "switch_statement",
+]);
 
 export class CParserAdapter implements CodeParserAdapter {
   readonly language = "c";
@@ -82,6 +91,7 @@ export class CParserAdapter implements CodeParserAdapter {
           startLine: node.startPosition.row + 1,
           endLine: node.endPosition.row + 1,
           complexityScore: 1 + countDecisionPoints(node, DECISION_NODE_TYPES, LOGICAL_OPERATORS),
+          nestingDepth: maxNestingDepth(node, NESTING_NODE_TYPES),
         });
       }
 
@@ -98,6 +108,7 @@ export class CParserAdapter implements CodeParserAdapter {
           startLine: decl.startPosition.row + 1,
           endLine: decl.endPosition.row + 1,
           complexityScore: 1,
+          nestingDepth: 0,
         });
       }
 

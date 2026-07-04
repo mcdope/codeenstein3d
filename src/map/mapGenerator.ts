@@ -17,6 +17,9 @@ import { HAZARD_TILE, type Enemy, type GameMap, type Point, type Room, type Tile
 /** Hit points granted per point of cyclomatic complexity. */
 const HP_PER_COMPLEXITY = 25;
 
+/** Nesting depth at/above which an entity's room becomes a labyrinth. */
+const MAZE_THRESHOLD = 2;
+
 export interface MapGeneratorOptions {
   /** Lower bound for the (square) map size in tiles. */
   minSize?: number;
@@ -62,6 +65,10 @@ export class MapGenerator {
     const exit = pickExit(rooms, spawn);
     const hazards = fillHazards(rooms, grid, spawn, exit);
 
+    // Corridors already punch through labyrinth walls; this guarantees the
+    // spawn, exit, and every enemy stand on open floor even inside a maze.
+    clearCriticalTiles(grid, spawn, exit, enemies);
+
     return { width: size, height: size, grid, rooms, spawn, enemies, exit, hazards };
   }
 
@@ -85,6 +92,11 @@ export class MapGenerator {
       const room = this.tryPlaceRoom(entity, size, rooms, rng);
       if (room) {
         carveRoom(grid, room);
+        // Deeply nested code becomes a labyrinth of internal walls instead of
+        // an open box. Passages stay ≥1 tile wide so the player fits through.
+        if (entity.nestingDepth >= MAZE_THRESHOLD) {
+          carveLabyrinth(grid, room, entity.nestingDepth, rng);
+        }
         rooms.push(room);
       }
     }
@@ -126,11 +138,15 @@ export class MapGenerator {
 
 // --- geometry helpers -------------------------------------------------------
 
-/** Room footprint: wider with complexity, taller with the entity's line span. */
+/**
+ * Room footprint: wider with complexity, taller with the entity's line span,
+ * and enlarged by nesting depth so a labyrinth has room to unfold.
+ */
 function roomDimensions(entity: CodeEntity, size: number): { w: number; h: number } {
   const span = Math.max(1, entity.endLine - entity.startLine + 1);
-  const w = clamp(4 + entity.complexityScore, 4, Math.min(16, size - 2));
-  const h = clamp(4 + Math.floor(span / 3), 4, Math.min(16, size - 2));
+  const cap = Math.min(18, size - 2);
+  const w = clamp(4 + entity.complexityScore + entity.nestingDepth * 2, 4, cap);
+  const h = clamp(4 + Math.floor(span / 3) + entity.nestingDepth * 2, 4, cap);
   return { w, h };
 }
 
@@ -157,6 +173,7 @@ function centeredRoom(entity: CodeEntity | undefined, size: number): Room {
     startLine: 1,
     endLine: 1,
     complexityScore: 1,
+    nestingDepth: 0,
   };
   return makeRoom(x, y, w, h, placeholder);
 }
@@ -176,6 +193,69 @@ function carveRoom(grid: Tile[][], room: Room): void {
     for (let x = room.x; x < room.x + room.w; x++) {
       grid[y][x] = 0;
     }
+  }
+}
+
+/**
+ * Turn an already-carved room into a labyrinth by recursive division: split the
+ * region with a wall (value `1`, native to the raycaster) that has a single
+ * 1-tile gap, then recurse into each half. The recursion budget scales with
+ * `nestingDepth`, so deeper code yields a denser maze. Every passage stays ≥1
+ * tile wide, and the maze remains fully connected (each wall keeps one gap).
+ */
+function carveLabyrinth(grid: Tile[][], room: Room, nestingDepth: number, rng: () => number): void {
+  const budget = Math.min(nestingDepth, 6);
+  divide(grid, room.x, room.y, room.x + room.w - 1, room.y + room.h - 1, budget, rng);
+}
+
+function divide(
+  grid: Tile[][],
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  budget: number,
+  rng: () => number,
+): void {
+  if (budget <= 0) return;
+  const w = x1 - x0 + 1;
+  const h = y1 - y0 + 1;
+
+  // A region needs ≥3 tiles along an axis to hold a wall plus a floor either
+  // side (keeping passages ≥1 wide).
+  const canHorizontal = h >= 3;
+  const canVertical = w >= 3;
+  if (!canHorizontal && !canVertical) return;
+
+  const horizontal =
+    canHorizontal && canVertical ? h > w || (h === w && rng() < 0.5) : canHorizontal;
+
+  if (horizontal) {
+    const wallY = y0 + 1 + Math.floor(rng() * (h - 2)); // interior row
+    for (let x = x0; x <= x1; x++) grid[wallY][x] = 1;
+    grid[wallY][x0 + Math.floor(rng() * w)] = 0; // one 1-wide passage
+    divide(grid, x0, y0, x1, wallY - 1, budget - 1, rng);
+    divide(grid, x0, wallY + 1, x1, y1, budget - 1, rng);
+  } else {
+    const wallX = x0 + 1 + Math.floor(rng() * (w - 2)); // interior column
+    for (let y = y0; y <= y1; y++) grid[y][wallX] = 1;
+    grid[y0 + Math.floor(rng() * h)][wallX] = 0; // one 1-wide passage
+    divide(grid, x0, y0, wallX - 1, y1, budget - 1, rng);
+    divide(grid, wallX + 1, y0, x1, y1, budget - 1, rng);
+  }
+}
+
+/** Force the spawn, exit, and every enemy tile to open floor. */
+function clearCriticalTiles(
+  grid: Tile[][],
+  spawn: Point,
+  exit: Point,
+  enemies: Enemy[],
+): void {
+  grid[spawn.y][spawn.x] = 0;
+  grid[exit.y][exit.x] = 0;
+  for (const enemy of enemies) {
+    grid[Math.floor(enemy.y)][Math.floor(enemy.x)] = 0;
   }
 }
 

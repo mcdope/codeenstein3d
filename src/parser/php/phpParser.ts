@@ -10,7 +10,7 @@
 import { Language, Parser } from "web-tree-sitter";
 import phpWasmUrl from "tree-sitter-php/tree-sitter-php.wasm?url";
 import { initTreeSitter } from "../runtime";
-import { countDecisionPoints, countLines } from "../astUtils";
+import { countDecisionPoints, countLines, maxNestingDepth } from "../astUtils";
 import type { CodeEntity, CodeParserAdapter, EntityKind, ParsedFile } from "../types";
 
 /** Node types that define an entity, mapped to their normalized kind. */
@@ -42,6 +42,16 @@ const DECISION_NODE_TYPES = [
 /** Short-circuiting operators that each add a decision point. */
 const LOGICAL_OPERATORS = new Set(["&&", "||", "and", "or", "xor"]);
 
+/** Block statements that each deepen the nesting level. */
+const NESTING_NODE_TYPES = new Set([
+  "if_statement",
+  "for_statement",
+  "foreach_statement",
+  "while_statement",
+  "do_statement",
+  "switch_statement",
+]);
+
 export class PhpParserAdapter implements CodeParserAdapter {
   readonly language = "php";
   readonly extensions = ["php", "php3", "php4", "php5", "phtml"] as const;
@@ -72,6 +82,7 @@ export class PhpParserAdapter implements CodeParserAdapter {
           startLine: node.startPosition.row + 1,
           endLine: node.endPosition.row + 1,
           complexityScore: 1 + countDecisionPoints(node, DECISION_NODE_TYPES, LOGICAL_OPERATORS),
+          nestingDepth: maxNestingDepth(node, NESTING_NODE_TYPES),
         });
       }
 
@@ -88,6 +99,7 @@ export class PhpParserAdapter implements CodeParserAdapter {
           startLine: assign.startPosition.row + 1,
           endLine: assign.endPosition.row + 1,
           complexityScore: 1,
+          nestingDepth: 0,
         });
       }
 

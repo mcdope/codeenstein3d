@@ -40,6 +40,12 @@ export interface CodeEntity {
    * within the entity's body. Higher = harder "boss".
    */
   complexityScore: number;
+  /**
+   * Maximum nesting depth of control-flow blocks (nested if/for/while/…) inside
+   * the entity. 0 = flat body. Drives labyrinth generation: deeply nested code
+   * becomes a maze rather than an open room.
+   */
+  nestingDepth: number;
 }
 
 /** Normalized, engine-facing result of parsing one source file. */

@@ -22,6 +22,7 @@ through the dungeon generated from its structure to the `return` statement.
 | 6. Developer HUD + win/lose game state | ✅ Done |
 | 7. C-language support (`tree-sitter-c`) | ✅ Done |
 | 8. Hazards (globals → acid) + weapon arsenal | ✅ Done |
+| 9. Nested-scope labyrinths (deep code → maze) | ✅ Done |
 | Multi-file "levels" / bosses from complexity | 🔜 Planned |
 | Additional language grammars (JS, Python, …) | 🔜 Planned |
 
@@ -30,7 +31,7 @@ This project is strictly "Local-First". Proprietary code never leaves your machi
 
 1. **Local Access (File System Access API):** Direct read access to your local workspace via `showDirectoryPicker()`. *Strictly no virtual devices or mocked file systems.* — `src/fs/`
 2. **AST Parser (web-tree-sitter via WASM):** Language-agnostic parsing behind a `CodeParserAdapter` interface. Source files are normalized into plain JSON (`linesOfCode` + `entities[]` with start/end lines and a cyclomatic `complexityScore`). The rest of the engine never touches Tree-sitter directly. Grammars: **PHP** (`.php`) and **C** (`.c`, `.h`); adding a language is one adapter + one registry line. — `src/parser/`
-3. **Procedural Map Generator:** Deterministically translates the normalized JSON into a 2D tile matrix (`0` = floor, `1` = wall, `2` = acid hazard). Each entity becomes an enclosed rectangular room; rooms are linked by corridors. It places an enemy for every function/method (HP scaled from its complexity), floods every global-variable room with an **acid pool**, and puts a green **exit tile** — the `return` statement — in the room furthest from spawn. — `src/map/`
+3. **Procedural Map Generator:** Deterministically translates the normalized JSON into a 2D tile matrix (`0` = floor, `1` = wall, `2` = acid hazard). Each entity becomes an enclosed room — but a **deeply nested function turns into a labyrinth** (recursive-division maze of `1`-walls, passages kept ≥1 tile wide) rather than an open box. Rooms are linked by corridors. It places an enemy for every function/method (HP scaled from its complexity), floods every global-variable room with an **acid pool**, and puts a green **exit tile** — the `return` statement — in the room furthest from spawn. — `src/map/`
 4. **Raycaster Engine & Gameplay:** A classic 2.5D raycaster written entirely on the HTML5 `<canvas>` 2D context. No WebGL, no Three.js – pure retro mathematics (DDA algorithm), distance shading, floor-cast acid tiles, delta-timed first-person movement, and AABB wall collision. Layered on top: billboard enemy sprites (z-buffer occluded), a weapon arsenal (hitscan pistol + cone shotgun), contact/hazard damage, and win/lose state. — `src/engine/`
 
 ### Gameplay loop

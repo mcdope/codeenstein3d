@@ -32,3 +32,28 @@ export function countDecisionPoints(
   }
   return count;
 }
+
+/**
+ * Deepest chain of nested control-flow blocks under `root` — the longest
+ * root-to-leaf path counting only `nestingNodeTypes`. A flat body returns 0;
+ * `for { if { while {} } }` returns 3.
+ *
+ * `else if` (an `if_statement` sitting directly inside an `else_clause`, as C
+ * nests it) is treated as the same level, so a flat else-if ladder doesn't
+ * inflate the depth.
+ */
+export function maxNestingDepth(
+  root: Node,
+  nestingNodeTypes: ReadonlySet<string>,
+): number {
+  let inc = nestingNodeTypes.has(root.type) ? 1 : 0;
+  if (inc && root.type === "if_statement" && root.parent?.type === "else_clause") {
+    inc = 0;
+  }
+  let childMax = 0;
+  for (const child of root.namedChildren) {
+    const d = maxNestingDepth(child, nestingNodeTypes);
+    if (d > childMax) childMax = d;
+  }
+  return inc + childMax;
+}
