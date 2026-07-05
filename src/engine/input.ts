@@ -18,6 +18,8 @@ export class InputController {
   private fireQueued = false;
   /** Edge-triggered weapon selection (0-based index), or null. */
   private weaponRequest: number | null = null;
+  /** Edge-triggered automap toggle, set on a Tab press. */
+  private mapToggleQueued = false;
   private attached = false;
 
   constructor(private readonly canvas: HTMLCanvasElement) {}
@@ -47,6 +49,7 @@ export class InputController {
     this.mouseDX = 0;
     this.fireQueued = false;
     this.weaponRequest = null;
+    this.mapToggleQueued = false;
   }
 
   isDown(code: string): boolean {
@@ -74,6 +77,13 @@ export class InputController {
     return req;
   }
 
+  /** Return true at most once per Tab press (toggles the automap). */
+  consumeMapToggle(): boolean {
+    const toggled = this.mapToggleQueued;
+    this.mapToggleQueued = false;
+    return toggled;
+  }
+
   private readonly onKeyDown = (e: KeyboardEvent): void => {
     // Space fires once per physical press (ignore OS auto-repeat).
     if (e.code === "Space") {
@@ -83,6 +93,12 @@ export class InputController {
     // Number keys select a weapon (Digit1/Numpad1 -> 0, Digit2/Numpad2 -> 1, …).
     const digit = digitKeyIndex(e.code);
     if (digit !== null) this.weaponRequest = digit;
+
+    // Tab toggles the automap; prevent the browser from shifting focus away.
+    if (e.code === "Tab") {
+      if (!e.repeat) this.mapToggleQueued = true;
+      e.preventDefault();
+    }
 
     this.keys.add(e.code);
     if (MOVEMENT_KEYS.has(e.code)) e.preventDefault();

@@ -26,6 +26,7 @@ import {
 } from "./sprites";
 import { drawCrosshair, drawHud } from "./hud";
 import { drawWeapon } from "./viewmodel";
+import { drawAutomap } from "./automap";
 import {
   DAMAGE_FLASH_FRAMES,
   HIT_FLASH_FRAMES,
@@ -152,6 +153,8 @@ export class RaycasterEngine {
   private recoil = 0;
   /** Frames left on the muzzle flash. */
   private muzzleFrames = 0;
+  /** Whether the full-screen automap overlay is up (pauses the sim). */
+  private isMapActive = false;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -175,6 +178,7 @@ export class RaycasterEngine {
     // Warm up the audio context now, while we're still inside the user gesture
     // (the click that launched this level) so playback isn't blocked later.
     audio.resume();
+    this.markVisited(); // reveal the spawn tile before the first step
     this.lastTime = performance.now();
     this.reportStats();
     this.rafId = requestAnimationFrame(this.frame);
@@ -205,12 +209,20 @@ export class RaycasterEngine {
    * driven at a fixed step (e.g. headless/deterministic runs).
    */
   advance(dt: number): void {
+    // Tab toggles the automap, which pauses all game action while it's up.
+    if (this.input.consumeMapToggle()) this.isMapActive = !this.isMapActive;
+    if (this.isMapActive) {
+      this.renderPaused();
+      return;
+    }
+
     // Weapon switching (1/2/…) can happen even while lining up a shot.
     const requested = this.input.consumeWeaponRequest();
     if (requested !== null && requested < WEAPONS.length) this.weaponIndex = requested;
 
     // Simulate (may end the game via damage or reaching the exit).
     this.handleMovement(dt);
+    this.markVisited();
     this.collectKeys();
     this.collectAmmoDrops();
     this.openDoorAhead();
@@ -267,6 +279,33 @@ export class RaycasterEngine {
 
     // Age the frame-based effect timers now that this frame is drawn.
     this.tickEffects();
+  }
+
+  /**
+   * Render one frozen frame with the automap overlay on top. Called instead of
+   * the normal update+render while the map is open, so the world stands still.
+   */
+  private renderPaused(): void {
+    renderScene(this.ctx, this.map, this.player, this.zBuffer, 0);
+    renderSprites(this.ctx, this.player, this.enemies, this.zBuffer);
+    renderKeys(this.ctx, this.player, this.map.keys, this.zBuffer);
+    renderAmmoDrops(this.ctx, this.player, this.drops, this.zBuffer);
+    renderExitMarker(this.ctx, this.player, this.map.exit, this.zBuffer);
+    drawAutomap(this.ctx, this.map, this.player);
+    this.handlers.onStats?.(this.buildStats());
+  }
+
+  /** Fog of war: reveal the player's tile and its immediate neighbors. */
+  private markVisited(): void {
+    const cx = Math.floor(this.player.posX);
+    const cy = Math.floor(this.player.posY);
+    for (let y = cy - 1; y <= cy + 1; y++) {
+      if (y < 0 || y >= this.map.height) continue;
+      const row = this.map.visited[y];
+      for (let x = cx - 1; x <= cx + 1; x++) {
+        if (x >= 0 && x < this.map.width) row[x] = true;
+      }
+    }
   }
 
   /** Advance the frame-based visual-effect timers by one frame. */

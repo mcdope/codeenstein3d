@@ -73,6 +73,12 @@ export interface GameMap {
   height: number;
   /** Row-major grid; index as `grid[y][x]`. */
   grid: Tile[][];
+  /**
+   * Fog-of-war: `visited[y][x]` becomes true once the player has been on or
+   * next to that tile. The automap only reveals visited tiles. Same dimensions
+   * as `grid`; starts all-false.
+   */
+  visited: boolean[][];
   rooms: Room[];
   /** Player spawn, in a corner of the first room (clear of its enemy). */
   spawn: Point;

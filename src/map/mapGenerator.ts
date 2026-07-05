@@ -83,7 +83,12 @@ export class MapGenerator {
     const doors = placeDoors(rooms, grid);
     const keys = placeKeys(grid, spawn, exit, enemies, doors, rng);
 
-    return { width: size, height: size, grid, rooms, spawn, enemies, exit, hazards, doors, keys };
+    // Fog-of-war overlay grid, all unexplored until the player moves through.
+    const visited: boolean[][] = Array.from({ length: size }, () =>
+      new Array<boolean>(size).fill(false),
+    );
+
+    return { width: size, height: size, grid, visited, rooms, spawn, enemies, exit, hazards, doors, keys };
   }
 
   /** Square map size, floored at `minSize` and growing with LOC and entities. */
