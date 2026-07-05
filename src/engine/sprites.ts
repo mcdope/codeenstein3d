@@ -484,11 +484,13 @@ export function renderMines(
 
   const visible = mines
     .filter((m) => m.alive && m.visible)
-    .map((m) => ({ proj: projectPoint(player, m.x, m.y, width, height, 0.3) }))
+    .map((m) => ({ proj: projectPoint(player, m.x, m.y, width, height, 0.42) }))
     .filter(({ proj }) => proj.depth > 0.15)
     .sort((a, b) => b.proj.depth - a.proj.depth);
 
-  const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 130);
+  // A slower, brighter pulse than the original — playtest feedback was that
+  // mines were too easy to miss even once revealed.
+  const pulse = 0.4 + 0.6 * Math.sin(performance.now() / 220);
 
   for (const { proj } of visible) {
     const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
@@ -501,8 +503,8 @@ export function renderMines(
 
     ctx.fillStyle = "#2a1414";
     ctx.fillRect(cx - w / 2, groundY - bodyH, w, bodyH);
-    ctx.fillStyle = `rgba(255,40,40,${0.5 + 0.5 * pulse})`;
-    ctx.fillRect(cx - w * 0.18, groundY - bodyH * 0.7, w * 0.36, w * 0.36);
+    ctx.fillStyle = `rgba(255,60,40,${0.65 + 0.35 * pulse})`;
+    ctx.fillRect(cx - w * 0.26, groundY - bodyH * 0.8, w * 0.52, w * 0.52);
   }
 }
 

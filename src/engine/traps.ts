@@ -11,16 +11,18 @@ import type { Mine, SpikeTrap } from "../map/types";
 import type { Player } from "./player";
 
 /** Stability drained per second while standing on an active spike tile. */
-const SPIKE_DPS = 34;
-/** Tiles within which a mine notices the player and starts its fuse. */
-const MINE_PROXIMITY_RADIUS = 1.6;
+const SPIKE_DPS = 20;
+/** Tiles within which a mine notices the player and starts its fuse. Kept
+ * generous — playtest feedback was that mines were "too well hidden" with a
+ * tighter radius, leaving no real reaction window before the fuse mattered. */
+const MINE_PROXIMITY_RADIUS = 2.8;
 /** Seconds the player must stay inside the proximity radius before it blows. */
-const MINE_FUSE_SECONDS = 0.6;
+const MINE_FUSE_SECONDS = 0.9;
 /** Radius (tiles) of a mine's blast; damage falls off with distance inside it. */
-const MINE_BLAST_RADIUS = 2.2;
+const MINE_BLAST_RADIUS = 2.4;
 /** Damage dealt at ground zero; the falloff floor keeps even an edge-of-blast
  * hit meaningful rather than trailing off to nothing. */
-const MINE_MAX_DAMAGE = 55;
+const MINE_MAX_DAMAGE = 32;
 const MINE_DAMAGE_FALLOFF_FLOOR = 0.35;
 
 /** Whether `trap` is in its damaging half of the cycle at `levelTime` seconds. */

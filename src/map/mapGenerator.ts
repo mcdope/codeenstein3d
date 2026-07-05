@@ -58,9 +58,11 @@ const PROP_ATTEMPTS = 12;
  */
 const DECORATIONS_ENABLED = false;
 
-/** Minimum/maximum full safe→active→safe cycle length for a spike trap. */
-const SPIKE_PERIOD_MIN = 2.2;
-const SPIKE_PERIOD_MAX = 3.6;
+/** Minimum/maximum full safe→active→safe cycle length for a spike trap.
+ * Playtest feedback: the original 2.2-3.6s cycle alternated too fast to read
+ * in time, so both bounds were raised. */
+const SPIKE_PERIOD_MIN = 3.5;
+const SPIKE_PERIOD_MAX = 5.5;
 /** Minimum spacing (tiles) kept between any two traps, and between a trap and
  * any other avoid-listed point (spawn/exit/enemies/doors/keys/pads). */
 const TRAP_SPACING = 3;
