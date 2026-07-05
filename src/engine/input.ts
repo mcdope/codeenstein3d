@@ -142,18 +142,21 @@ export class InputController {
     // called synchronously from a real user-gesture handler — not deferred
     // to a later polled flag consumed inside the rAF-driven game loop, which
     // browsers reject — so this happens directly here, the same way
-    // `onCanvasClick` requests the pointer lock directly. Targets the whole
-    // page (`documentElement`), not the canvas: `launchLevel` creates a brand
-    // new `<canvas>` for every level, and removing the *current* fullscreen
-    // element from the document makes the browser auto-exit fullscreen — so
-    // fullscreening the canvas itself was silently dropping out of fullscreen
-    // on every level transition.
+    // `onCanvasClick` requests the pointer lock directly. Targets the
+    // canvas's parent (`#viewport` in main.ts) rather than the canvas itself
+    // or the whole page: the canvas is recreated on every level transition,
+    // and removing the *current* fullscreen element from the document makes
+    // the browser auto-exit fullscreen, so fullscreening the canvas directly
+    // silently dropped out of fullscreen on every level change. `#viewport`
+    // is never recreated (only its children are swapped), so it persists
+    // across levels, and unlike `document.documentElement` it excludes the
+    // sidebar — just the game area goes fullscreen.
     if (e.code === "KeyF" && !e.repeat) {
       e.preventDefault();
       if (document.fullscreenElement) {
         void document.exitFullscreen();
       } else {
-        void document.documentElement.requestFullscreen();
+        void (this.canvas.parentElement ?? this.canvas).requestFullscreen();
       }
     }
 
