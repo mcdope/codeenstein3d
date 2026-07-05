@@ -216,7 +216,7 @@ export class RaycasterEngine {
     audio.resume();
     this.markVisited(); // reveal the spawn tile before the first step
     this.lastTime = performance.now();
-    this.reportStats();
+    this.handlers.onStats?.(this.buildStats());
     this.rafId = requestAnimationFrame(this.frame);
   }
 
@@ -332,6 +332,14 @@ export class RaycasterEngine {
 
     // Age the frame-based effect timers now that this frame is drawn.
     this.tickEffects();
+
+    // Fire the end-of-run handler last, once this frame is fully painted —
+    // see `endGame()`'s doc comment for why this can't happen any earlier.
+    if (this.state !== "playing") {
+      this.stop();
+      if (this.state === "over") this.handlers.onGameOver?.();
+      else this.handlers.onWin?.(stats);
+    }
   }
 
   /**
@@ -749,17 +757,19 @@ export class RaycasterEngine {
     );
   }
 
+  /**
+   * Flip to the end state — just the state, nothing else. `checkExit()`/
+   * `damage()` (which calls this) run early in `advance()`, well before that
+   * frame's rendering; actually stopping the loop and firing the
+   * `onGameOver`/`onWin` handler here would let the render calls later in the
+   * *same* `advance()` call immediately paint over the end-of-run overlay
+   * those handlers draw (`GameHud` draws straight onto this engine's canvas —
+   * see main.ts). `advance()` does that itself, once, after the frame is
+   * fully rendered.
+   */
   private endGame(state: "over" | "won"): void {
     if (this.state !== "playing") return;
     this.state = state;
-    this.reportStats();
-    this.stop();
-    if (state === "over") this.handlers.onGameOver?.();
-    else this.handlers.onWin?.(this.buildStats());
-  }
-
-  private reportStats(): void {
-    this.handlers.onStats?.(this.buildStats());
   }
 
   /** Snapshot the live stats consumed by both the native HUD and the host. */
