@@ -110,6 +110,21 @@ class AudioManager {
     osc.stop(t + 0.24);
   }
 
+  /** Enemy ranged shot: a buzzy descending sawtooth "zap", distinct from ours. */
+  playEnemyShoot(): void {
+    const ctx = this.resume();
+    if (!ctx || !this.master) return;
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(320, t);
+    osc.frequency.exponentialRampToValueAtTime(140, t + 0.14);
+    const gain = envelope(ctx, 0.26, 0.004, 0.15);
+    osc.connect(gain).connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.18);
+  }
+
   /** Ammo drop: a soft, low "plop" when a defeated enemy sheds a heap pickup. */
   playAmmoDrop(): void {
     const ctx = this.resume();

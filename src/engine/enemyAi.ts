@@ -15,12 +15,18 @@
  * is plain, serializable map state) so the map never depends on the player.
  */
 import { collidesWithWall, isWall, type Player } from "./player";
+import { spawnProjectile, type Projectile } from "./projectiles";
 import type { Enemy, GameMap } from "../map/types";
 
 /** Distance (tiles) within which an enemy notices and chases the player. */
 const AGGRO_RADIUS = 7.5;
 /** Enemy chase speed in tiles per second (slower than the player's 3.2). */
 const MOVEMENT_SPEED = 1.7;
+/** Max distance (tiles) at which a chasing enemy will take a ranged shot. */
+const RANGED_RANGE = 8;
+/** Min / max seconds between an enemy's ranged shots (randomized each time). */
+const FIRE_COOLDOWN_MIN = 1.2;
+const FIRE_COOLDOWN_MAX = 2.6;
 /** Enemy roam (idle wander) speed — a relaxed stroll. */
 const ROAM_SPEED = 0.8;
 /** Distance (tiles) from a roam target at which the enemy picks a new one. */
@@ -44,21 +50,27 @@ export function updateEnemies(
   player: Player,
   map: GameMap,
   dt: number,
+  projectiles: Projectile[],
 ): number {
   let damage = 0;
   for (const enemy of enemies) {
     if (!enemy.alive) continue;
-    damage += updateEnemy(enemy, player, map, dt);
+    damage += updateEnemy(enemy, player, map, dt, projectiles);
   }
   return damage;
 }
 
 /** Update a single enemy; returns the melee damage it deals the player. */
-function updateEnemy(enemy: Enemy, player: Player, map: GameMap, dt: number): number {
-  // Cool down toward the next available bite, whatever the current range.
-  if (enemy.attackCooldown > 0) {
-    enemy.attackCooldown = Math.max(0, enemy.attackCooldown - dt);
-  }
+function updateEnemy(
+  enemy: Enemy,
+  player: Player,
+  map: GameMap,
+  dt: number,
+  projectiles: Projectile[],
+): number {
+  // Cool down toward the next melee bite and the next ranged shot.
+  if (enemy.attackCooldown > 0) enemy.attackCooldown = Math.max(0, enemy.attackCooldown - dt);
+  if (enemy.fireCooldown > 0) enemy.fireCooldown = Math.max(0, enemy.fireCooldown - dt);
 
   const dx = player.posX - enemy.x;
   const dy = player.posY - enemy.y;
@@ -82,14 +94,37 @@ function updateEnemy(enemy: Enemy, player: Player, map: GameMap, dt: number): nu
     return 0;
   }
 
-  // Otherwise home in on the player, steering toward the next cell of a
-  // wall-aware path (rounding corners) and falling back to a straight line.
+  // At range: occasionally lob a bolt at the player if there's a clear shot.
+  if (
+    enemy.fireCooldown === 0 &&
+    dist <= RANGED_RANGE &&
+    hasLineOfSight(map, enemy.x, enemy.y, player.posX, player.posY)
+  ) {
+    spawnProjectile(projectiles, enemy.x, enemy.y, player.posX, player.posY);
+    enemy.fireCooldown = FIRE_COOLDOWN_MIN + Math.random() * (FIRE_COOLDOWN_MAX - FIRE_COOLDOWN_MIN);
+  }
+
+  // Home in on the player, steering toward the next cell of a wall-aware path
+  // (rounding corners) and falling back to a straight line.
   if (dist > 0) {
     const step = MOVEMENT_SPEED * dt;
     const waypoint = nextWaypoint(enemy, player, map);
     chaseToward(enemy, waypoint?.x ?? player.posX, waypoint?.y ?? player.posY, step, map);
   }
   return 0;
+}
+
+/** True if a straight line from (x0,y0) to (x1,y1) crosses no wall tile. */
+function hasLineOfSight(map: GameMap, x0: number, y0: number, x1: number, y1: number): boolean {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const dist = Math.hypot(dx, dy);
+  const steps = Math.ceil(dist / 0.1); // sample every ~0.1 tiles
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    if (isWall(map, Math.floor(x0 + dx * t), Math.floor(y0 + dy * t))) return false;
+  }
+  return true;
 }
 
 /**

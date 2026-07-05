@@ -77,6 +77,12 @@ export interface Enemy {
   /** Current roam destination (world coords) while idle; re-picked on arrival. */
   roamX: number;
   roamY: number;
+  /**
+   * Seconds until this enemy may fire its next ranged bolt. Ticks down each
+   * frame and resets after a shot; randomized on spawn so a pack doesn't volley
+   * in unison. Only fires while chasing with line of sight to the player.
+   */
+  fireCooldown: number;
   /** The function/method this enemy represents. */
   entity: CodeEntity;
 }

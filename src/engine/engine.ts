@@ -14,6 +14,7 @@
  */
 import { Player, isHazard } from "./player";
 import { updateEnemies } from "./enemyAi";
+import { renderProjectiles, updateProjectiles, type Projectile } from "./projectiles";
 import { InputController } from "./input";
 import { renderMinimap, renderScene } from "./raycaster";
 import {
@@ -139,6 +140,8 @@ export class RaycasterEngine {
   private readonly traces: BulletTrace[] = [];
   /** Live "digital blood" particles falling to the floor. */
   private readonly blood: BloodParticle[] = [];
+  /** In-flight enemy projectiles (ranged bolts). */
+  private readonly projectiles: Projectile[] = [];
   /** Countdown (seconds) to the next low-health alarm beep; 0 = beep now. */
   private alarmCountdown = 0;
   /** Ground covered (tiles) since the last footstep sound. */
@@ -227,6 +230,7 @@ export class RaycasterEngine {
     this.collectAmmoDrops();
     this.openDoorAhead();
     this.updateEnemyAi(dt);
+    this.updateProjectiles(dt);
     this.applyHazardDamage(dt);
     this.updateLowHealthAlarm(dt);
     this.checkExit();
@@ -238,6 +242,7 @@ export class RaycasterEngine {
     const { width, height } = this.ctx.canvas;
     renderScene(this.ctx, this.map, this.player, this.zBuffer, view.horizonShift);
     renderSprites(this.ctx, this.player, this.enemies, this.zBuffer);
+    renderProjectiles(this.ctx, this.player, this.projectiles, this.zBuffer);
     renderKeys(this.ctx, this.player, this.map.keys, this.zBuffer);
     renderAmmoDrops(this.ctx, this.player, this.drops, this.zBuffer);
     renderExitMarker(this.ctx, this.player, this.map.exit, this.zBuffer);
@@ -288,6 +293,7 @@ export class RaycasterEngine {
   private renderPaused(): void {
     renderScene(this.ctx, this.map, this.player, this.zBuffer, 0);
     renderSprites(this.ctx, this.player, this.enemies, this.zBuffer);
+    renderProjectiles(this.ctx, this.player, this.projectiles, this.zBuffer);
     renderKeys(this.ctx, this.player, this.map.keys, this.zBuffer);
     renderAmmoDrops(this.ctx, this.player, this.drops, this.zBuffer);
     renderExitMarker(this.ctx, this.player, this.map.exit, this.zBuffer);
@@ -376,7 +382,16 @@ export class RaycasterEngine {
    */
   private updateEnemyAi(dt: number): void {
     if (this.state !== "playing") return;
-    const dmg = updateEnemies(this.enemies, this.player, this.map, dt);
+    const beforeShots = this.projectiles.length;
+    const dmg = updateEnemies(this.enemies, this.player, this.map, dt, this.projectiles);
+    if (this.projectiles.length > beforeShots) audio.playEnemyShoot();
+    if (dmg > 0) this.damage(dmg);
+  }
+
+  /** Advance enemy bolts; apply any that struck the player this frame. */
+  private updateProjectiles(dt: number): void {
+    if (this.state !== "playing") return;
+    const dmg = updateProjectiles(this.projectiles, this.player, this.map, dt);
     if (dmg > 0) this.damage(dmg);
   }
 

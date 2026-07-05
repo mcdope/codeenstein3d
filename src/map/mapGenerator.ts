@@ -440,6 +440,7 @@ function spawnEnemies(rooms: Room[], exit: Point, rng: () => number): Enemy[] {
         aggroed: false,
         roamX: pos.x,
         roamY: pos.y,
+        fireCooldown: rng() * 2, // stagger initial shots across the pack
         entity: room.entity,
       });
     }
