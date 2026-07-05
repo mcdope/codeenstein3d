@@ -38,6 +38,7 @@ import {
   type BloodParticle,
   type BulletTrace,
 } from "./effects";
+import { audio } from "./audio";
 import { WEAPONS, pelletOffsets } from "./weapons";
 import { DOOR_TILE, type AmmoDrop, type Enemy, type GameMap } from "../map/types";
 
@@ -53,6 +54,12 @@ const MAX_DT = 0.05;
 const MAX_HEALTH = 100;
 /** Health lost per second while standing in an acid (hazard) tile. */
 const HAZARD_DPS = 18;
+/** Tiles the player must cover between footstep sounds. */
+const STRIDE_LENGTH = 1.2;
+/** Fraction of max stability below which the low-health alarm sounds. */
+const LOW_HEALTH_FRACTION = 0.25;
+/** Seconds between low-health alarm beeps. */
+const LOW_HEALTH_BEEP_INTERVAL = 1;
 /** How close (tiles) the player must get to pick up a key. */
 const KEY_PICKUP_RADIUS = 0.5;
 /** Heap (ammo) restored by picking up one enemy loot drop. */
@@ -117,6 +124,10 @@ export class RaycasterEngine {
   private readonly traces: BulletTrace[] = [];
   /** Live "digital blood" particles falling to the floor. */
   private readonly blood: BloodParticle[] = [];
+  /** Countdown (seconds) to the next low-health alarm beep; 0 = beep now. */
+  private alarmCountdown = 0;
+  /** Ground covered (tiles) since the last footstep sound. */
+  private stepDistance = 0;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -137,6 +148,9 @@ export class RaycasterEngine {
     if (this.running) return;
     this.running = true;
     this.input.attach();
+    // Warm up the audio context now, while we're still inside the user gesture
+    // (the click that launched this level) so playback isn't blocked later.
+    audio.resume();
     this.lastTime = performance.now();
     this.reportStats();
     this.rafId = requestAnimationFrame(this.frame);
@@ -178,6 +192,7 @@ export class RaycasterEngine {
     this.openDoorAhead();
     this.updateEnemyAi(dt);
     this.applyHazardDamage(dt);
+    this.updateLowHealthAlarm(dt);
     this.checkExit();
 
     // Render — one final frozen frame is still drawn after the game ends.
@@ -230,6 +245,8 @@ export class RaycasterEngine {
 
   private handleMovement(dt: number): void {
     const step = MOVE_SPEED * dt;
+    const startX = this.player.posX;
+    const startY = this.player.posY;
     if (this.input.isDown("KeyW")) this.player.moveForward(step, this.map);
     if (this.input.isDown("KeyS")) this.player.moveForward(-step, this.map);
 
@@ -239,6 +256,17 @@ export class RaycasterEngine {
 
     const mouseDX = this.input.consumeMouseDX();
     if (mouseDX !== 0) this.player.rotate(mouseDX * MOUSE_SENSITIVITY);
+
+    // Footsteps: accumulate ground actually covered (blocked moves count for
+    // nothing) and tick a quiet step once per stride.
+    const moved = Math.hypot(this.player.posX - startX, this.player.posY - startY);
+    if (moved > 1e-4 && this.state === "playing") {
+      this.stepDistance += moved;
+      if (this.stepDistance >= STRIDE_LENGTH) {
+        audio.playStep();
+        this.stepDistance -= STRIDE_LENGTH;
+      }
+    }
   }
 
   /**
@@ -289,6 +317,7 @@ export class RaycasterEngine {
       if (dx * dx + dy * dy < r2) {
         this.drops.splice(i, 1);
         this.ammo += AMMO_DROP_AMOUNT;
+        audio.playPickup();
         console.log(
           `%c[heap] +${AMMO_DROP_AMOUNT} ammo salvaged — ${this.ammo} in heap`,
           "color:#3fd0e0",
@@ -326,11 +355,31 @@ export class RaycasterEngine {
     }
   }
 
+  /**
+   * Sound a pulsing warning beep once per second while stability is critically
+   * low (below 25%). Resets when health recovers or the run ends, so re-entering
+   * the low band beeps immediately.
+   */
+  private updateLowHealthAlarm(dt: number): void {
+    const critical =
+      this.state === "playing" && this.health > 0 && this.health < MAX_HEALTH * LOW_HEALTH_FRACTION;
+    if (!critical) {
+      this.alarmCountdown = 0;
+      return;
+    }
+    if (this.alarmCountdown <= 0) {
+      audio.playAlarm();
+      this.alarmCountdown = LOW_HEALTH_BEEP_INTERVAL;
+    }
+    this.alarmCountdown -= dt;
+  }
+
   /** Apply `amount` of stability loss; ends the run on reaching 0. */
   private damage(amount: number): void {
     if (amount <= 0) return;
     // Kick the red screen flash back to full strength on any damage taken.
     this.flashFrames = DAMAGE_FLASH_FRAMES;
+    audio.playDamage();
     this.health -= amount;
     if (this.health <= 0) {
       this.health = 0;
@@ -362,6 +411,7 @@ export class RaycasterEngine {
       return;
     }
     this.ammo -= weapon.ammoPerShot;
+    audio.playShoot();
 
     const { width, height } = this.ctx.canvas;
     const center = width / 2;
@@ -391,7 +441,8 @@ export class RaycasterEngine {
 
   /** Apply weapon damage to one enemy, retiring it (with a log) at 0 HP. */
   private damageEnemy(enemy: Enemy, amount: number): void {
-    // Hit feedback: tint the sprite red and spray 3–5 "digital blood" pixels.
+    // Hit feedback: thud sound, tint the sprite red, spray "digital blood".
+    audio.playHit();
     enemy.hitFlash = HIT_FLASH_FRAMES;
     spawnBlood(this.blood, enemy.x, enemy.y, 3 + Math.floor(Math.random() * 3));
     enemy.hp -= amount;
@@ -404,6 +455,7 @@ export class RaycasterEngine {
     if (this.target === enemy) this.target = null;
     // Drop a heap (ammo) pickup where the process died.
     this.drops.push({ x: enemy.x, y: enemy.y });
+    audio.playAmmoDrop();
     const remaining = this.enemies.reduce((n, e) => n + (e.alive ? 1 : 0), 0);
     console.log(
       `%c[KILL] ${enemy.entity.kind} ${enemy.entity.name}() eliminated — ${remaining} enemies remaining`,
