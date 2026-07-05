@@ -128,6 +128,18 @@ export class GameHud {
   }
 }
 
+/** Vertical layout constants shared between the box-height calculation and
+ * the actual draw pass in `drawOverlay` — see its doc comment for why they
+ * have to be the exact same numbers, not two independently-tuned formulas. */
+const PAD_TOP = 40;
+const LINE_GAP = 28;
+const STATS_LEAD = 14;
+const STAT_GAP = 20;
+const PAD_BOTTOM = 26;
+const BTN_W = 170;
+const BTN_H = 32;
+const PAD_AFTER_BTN = 22;
+
 /**
  * Paint a dark scrim + centered box over whatever's currently on the canvas
  * (the last rendered game frame, frozen since the engine either hasn't
@@ -137,18 +149,67 @@ export class GameHud {
 function drawOverlay(ctx: CanvasRenderingContext2D, content: OverlayContent): void {
   const w = ctx.canvas.width;
   const h = ctx.canvas.height;
-
-  ctx.fillStyle = "rgba(2,3,4,0.88)";
-  ctx.fillRect(0, 0, w, h);
-
-  const lineH = 18;
-  const statH = 20;
-  const statCount = content.stats?.length ?? 0;
-  const boxH = 108 + content.lines.length * lineH + statCount * statH;
   const boxW = Math.min(420, w - 48);
+
+  /**
+   * Walks title -> lines -> stats, advancing (and returning) a running `y`
+   * offset from `y0`. Called twice: once with `draw: false` purely to learn
+   * how tall the content actually is (so the box/button can be sized and
+   * positioned correctly *before* anything is drawn), then again with
+   * `draw: true` at the real box position. Using one function for both
+   * means the measured height and the real drawing can never drift apart —
+   * which a previous version did, with the box height and the button's
+   * position each computed from their own separate, hand-tuned formula that
+   * didn't actually match the real per-line/per-stat spacing, so the button
+   * sometimes overlapped the last line of text above it.
+   */
+  function layout(y0: number, draw: boolean): number {
+    let y = y0 + PAD_TOP;
+    if (draw) {
+      ctx.font = "bold 22px ui-monospace, monospace";
+      ctx.fillStyle = content.color;
+      ctx.fillText(content.title, w / 2, y, boxW - 32);
+    }
+
+    for (const line of content.lines) {
+      y += LINE_GAP;
+      if (draw) {
+        ctx.font = "13px ui-monospace, monospace";
+        ctx.fillStyle = "#cdd3cd";
+        ctx.fillText(line, w / 2, y, boxW - 32);
+      }
+    }
+
+    if (content.stats && content.stats.length > 0) {
+      y += STATS_LEAD;
+      for (const [label, value] of content.stats) {
+        if (draw) {
+          ctx.font = "13px ui-monospace, monospace";
+          ctx.fillStyle = "#8a9490";
+          ctx.textAlign = "right";
+          ctx.fillText(label, w / 2 - 8, y);
+
+          ctx.font = "bold 13px ui-monospace, monospace";
+          ctx.fillStyle = "#ffffff";
+          ctx.textAlign = "left";
+          ctx.fillText(value, w / 2 + 8, y);
+          ctx.textAlign = "center";
+        }
+        y += STAT_GAP;
+      }
+      y -= STAT_GAP; // the last row doesn't need its own trailing gap
+    }
+
+    return y;
+  }
+
+  const contentEnd = layout(0, false);
+  const boxH = contentEnd + PAD_BOTTOM + BTN_H + PAD_AFTER_BTN;
   const boxX = (w - boxW) / 2;
   const boxY = (h - boxH) / 2;
 
+  ctx.fillStyle = "rgba(2,3,4,0.88)";
+  ctx.fillRect(0, 0, w, h);
   ctx.fillStyle = "rgba(4,6,8,0.95)";
   ctx.fillRect(boxX, boxY, boxW, boxH);
   ctx.strokeStyle = content.color;
@@ -157,45 +218,14 @@ function drawOverlay(ctx: CanvasRenderingContext2D, content: OverlayContent): vo
 
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
-  let y = boxY + 40;
+  layout(boxY, true);
 
-  ctx.font = "bold 22px ui-monospace, monospace";
+  const btnY = boxY + contentEnd + PAD_BOTTOM;
   ctx.fillStyle = content.color;
-  ctx.fillText(content.title, w / 2, y, boxW - 32);
-
-  ctx.font = "13px ui-monospace, monospace";
-  ctx.fillStyle = "#cdd3cd";
-  for (const line of content.lines) {
-    y += lineH + 10;
-    ctx.fillText(line, w / 2, y, boxW - 32);
-  }
-
-  if (content.stats && content.stats.length > 0) {
-    y += statH + 4;
-    for (const [label, value] of content.stats) {
-      ctx.font = "13px ui-monospace, monospace";
-      ctx.fillStyle = "#8a9490";
-      ctx.textAlign = "right";
-      ctx.fillText(label, w / 2 - 8, y);
-
-      ctx.font = "bold 13px ui-monospace, monospace";
-      ctx.fillStyle = "#ffffff";
-      ctx.textAlign = "left";
-      ctx.fillText(value, w / 2 + 8, y);
-
-      y += statH;
-    }
-    ctx.textAlign = "center";
-  }
-
-  const btnW = 170;
-  const btnH = 32;
-  const btnY = boxY + boxH - 22 - btnH;
-  ctx.fillStyle = content.color;
-  ctx.fillRect(w / 2 - btnW / 2, btnY, btnW, btnH);
+  ctx.fillRect(w / 2 - BTN_W / 2, btnY, BTN_W, BTN_H);
   ctx.fillStyle = "#04120a";
   ctx.font = "bold 13px ui-monospace, monospace";
-  ctx.fillText(content.buttonLabel, w / 2, btnY + btnH / 2 + 4);
+  ctx.fillText(content.buttonLabel, w / 2, btnY + BTN_H / 2 + 4);
 
   ctx.textAlign = "start";
 }
