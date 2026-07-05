@@ -45,6 +45,6 @@
 - [ ] ensure the player spawns far enough outside the aggro range of any enemy, except that's not possible without leaving the room
 - [ ] collectible health and armor drops (randomly dropped on top of ammo by enemies)
 - [ ] canvas looses focus on level change - bug
-- [ ] mines need to be visible way earlier, its almost impossible to avoid them
 - [ ] weapons should have a range determined by their type (or realistic equivalent)
 - [ ] drop, enemies, exit etc should be in front based on drawing distance from POV - for example: sometimes a dropped item next to exit "disappears" behind the exit
+- [ ] player needs an unlimited meelee weapon, to be able to continue when out of ammo until dead or looting ammo

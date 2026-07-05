@@ -99,7 +99,7 @@ Objective-C.
 * **Parser:** `web-tree-sitter` (WASM) with 14 grammars: `tree-sitter-php`, `-c`, `-javascript`, `-typescript`, `-python`, `-java`, `-cpp`, `-go`, `-rust`, `-ruby`, `-c-sharp`, `-bash`, `-scala`, `-objc`
 * **Rendering:** HTML5 Canvas 2D API (walls, sprites, HUD, and the automap are all native canvas draws — no DOM overlay for gameplay)
 * **Audio:** Web Audio API — every sound effect is synthesized from oscillators/noise at runtime; no audio files
-* **OS Focus:** Developed and optimized for modern browsers on Linux (CachyOS / Arch / Debian)
+* **Platform:** Nothing in the stack is OS-specific — any OS running a supported Chromium-based browser works identically (see Browser Requirements below). Developed on Linux, but that's just the author's own machine, not a constraint.
 
 ## 🌐 Browser Requirements
 The [File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/Window/showDirectoryPicker)
