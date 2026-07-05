@@ -152,11 +152,22 @@ function roam(enemy: Enemy, map: GameMap, dt: number): void {
   }
 }
 
-/** Choose a new random roam destination inside the enemy's home room. */
+/**
+ * Choose a new random roam destination inside the enemy's home room, snapped
+ * to the center of whichever tile it falls in. For a labyrinth room (deeply
+ * nested functions), most of `home`'s bounding rectangle is actually wall,
+ * not floor — a raw continuous coordinate can land close enough to one that
+ * even a tile the enemy *can* reach leaves it hugging a wall face rather than
+ * settling in the middle of the passage. Movement itself is always
+ * collision-checked (`moveWithinHome`), so this was never a real "walks
+ * through walls" bug, just an unreachable-or-awkward target in maze rooms.
+ */
 function pickRoamTarget(enemy: Enemy): void {
   const h = enemy.home;
-  enemy.roamX = h.x + 0.5 + Math.random() * Math.max(0, h.w - 1);
-  enemy.roamY = h.y + 0.5 + Math.random() * Math.max(0, h.h - 1);
+  const x = h.x + 0.5 + Math.random() * Math.max(0, h.w - 1);
+  const y = h.y + 0.5 + Math.random() * Math.max(0, h.h - 1);
+  enemy.roamX = Math.floor(x) + 0.5;
+  enemy.roamY = Math.floor(y) + 0.5;
 }
 
 /** Per-axis slide that also refuses to leave the enemy's home room bounds. */

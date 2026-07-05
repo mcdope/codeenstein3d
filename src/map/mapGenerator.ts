@@ -548,6 +548,21 @@ function spawnEnemies(rooms: Room[], exit: Point, rng: () => number): Enemy[] {
  * Fractional spawn points for a room's enemy pack: the first at the room center,
  * the rest scattered randomly inside it. Any point landing on the exit tile is
  * re-rolled (then nudged to a corner as a last resort) so nothing hides it.
+ *
+ * Every candidate is snapped to the center of whichever tile it falls in
+ * before being returned — not left at its raw continuous (or, for the room
+ * center, possibly boundary-straddling) coordinate. Two things otherwise leave
+ * an enemy's collision box (`ENEMY_RADIUS` in `enemyAi.ts`) overlapping a
+ * neighboring wall tile, which visually looks like it's embedded in the wall:
+ * a room center calculated as `room.x + room.w / 2` lands exactly *on* a grid
+ * line whenever `room.w`/`room.h` is even, straddling up to four tiles instead
+ * of centering in one; and for a labyrinth room (deeply nested functions —
+ * most of its bounding rectangle is actually wall, not floor), a fully
+ * continuous random point can land close enough to an internal maze wall for
+ * the same overlap even without hitting a boundary exactly. `clearCriticalTiles`
+ * already force-clears the one tile under each enemy's *position* to
+ * guarantee it's floor — snapping to that tile's center is what makes the
+ * enemy's full collision box actually fit inside it, on every side.
  */
 function enemyPositions(room: Room, count: number, exit: Point, rng: () => number): Point[] {
   const spots: Point[] = [];
@@ -556,11 +571,12 @@ function enemyPositions(room: Room, count: number, exit: Point, rng: () => numbe
     x: room.x + 0.5 + rng() * (room.w - 1),
     y: room.y + 0.5 + rng() * (room.h - 1),
   });
+  const tileCenter = (p: Point): Point => ({ x: Math.floor(p.x) + 0.5, y: Math.floor(p.y) + 0.5 });
 
   for (let i = 0; i < count; i++) {
     // First enemy anchors at the room center; the rest scatter randomly.
-    let p = i === 0 ? { x: room.x + room.w / 2, y: room.y + room.h / 2 } : randomInRoom();
-    for (let guard = 0; onExit(p) && guard < 8; guard++) p = randomInRoom();
+    let p = tileCenter(i === 0 ? { x: room.x + room.w / 2, y: room.y + room.h / 2 } : randomInRoom());
+    for (let guard = 0; onExit(p) && guard < 8; guard++) p = tileCenter(randomInRoom());
     if (onExit(p)) p = { x: room.x + 1.5, y: room.y + 1.5 }; // last-resort corner
     spots.push(p);
   }
