@@ -347,27 +347,41 @@ export function renderDecorations(
   for (const { kind, proj } of visible) {
     const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
     if (proj.depth >= zBuffer[centerCol]) continue; // behind a wall
-    drawDecoration(ctx, kind, proj);
+
+    // Anchor to the true floor scanline at this depth — the same line a
+    // full-height wall's bottom edge would project to — rather than a
+    // fraction of the billboard's own (possibly short) size. Using the
+    // billboard's size for the vertical anchor is what made shorter props
+    // (the plant, the desk) float above the ground instead of standing on it.
+    const w = proj.right - proj.left;
+    const groundY = height / 2 + height / proj.depth / 2;
+    drawDecoration(ctx, kind, proj.screenX, w, groundY);
   }
 }
 
-function drawDecoration(ctx: CanvasRenderingContext2D, kind: DecorKind, proj: EnemyProjection): void {
-  const cx = proj.screenX;
-  const w = proj.right - proj.left;
-  const bottom = proj.bottom; // floor level, so the prop stands on the ground
+function drawDecoration(
+  ctx: CanvasRenderingContext2D,
+  kind: DecorKind,
+  cx: number,
+  w: number,
+  groundY: number,
+): void {
+  const top = groundY - w;
 
   switch (kind) {
     case "rack": {
       // A dark server tower with a column of small blinking status lights.
-      const h = proj.bottom - proj.top;
       ctx.fillStyle = "#33383e";
-      ctx.fillRect(cx - w / 2, proj.top, w, h);
+      ctx.fillRect(cx - w / 2, top, w, w);
       ctx.fillStyle = "#1c1f23";
-      ctx.fillRect(cx - w / 2, proj.top, w, h * 0.08); // top vent bar
+      ctx.fillRect(cx - w / 2, top, w, w * 0.08); // top vent bar
+      // Lights sit on the object's vertical centerline (not off to one side):
+      // since a billboard always faces the camera, an off-center detail would
+      // visibly swing around the object as you walk past it.
       const lightColors = ["#37d24a", "#37d24a", "#e0483a"];
       for (let i = 0; i < 3; i++) {
         ctx.fillStyle = lightColors[i];
-        ctx.fillRect(cx + w * 0.22, proj.top + h * (0.2 + i * 0.2), w * 0.12, w * 0.12);
+        ctx.fillRect(cx - w * 0.06, top + w * (0.2 + i * 0.2), w * 0.12, w * 0.12);
       }
       break;
     }
@@ -375,29 +389,30 @@ function drawDecoration(ctx: CanvasRenderingContext2D, kind: DecorKind, proj: En
       // A brown pot with a rounded green top.
       const potH = w * 0.5;
       ctx.fillStyle = "#5a3d24";
-      ctx.fillRect(cx - w / 2, bottom - potH, w, potH);
+      ctx.fillRect(cx - w / 2, groundY - potH, w, potH);
       ctx.fillStyle = "#2f7a38";
-      ctx.fillRect(cx - w * 0.55, bottom - potH - w * 0.6, w * 1.1, w * 0.7);
+      ctx.fillRect(cx - w * 0.55, groundY - potH - w * 0.6, w * 1.1, w * 0.7);
       ctx.fillStyle = "#3f9a4a";
-      ctx.fillRect(cx - w * 0.3, bottom - potH - w * 0.85, w * 0.6, w * 0.4);
+      ctx.fillRect(cx - w * 0.3, groundY - potH - w * 0.85, w * 0.6, w * 0.4);
       break;
     }
     case "desk": {
-      // A low, wide tabletop on short legs.
+      // A low, wide tabletop on short legs (mirrored left/right of center).
+      const legH = w * 0.5;
       const topH = w * 0.18;
       ctx.fillStyle = "#3a2a18";
-      ctx.fillRect(cx - w / 2, bottom - w * 0.5, w * 0.08, w * 0.5);
-      ctx.fillRect(cx + w * 0.42, bottom - w * 0.5, w * 0.08, w * 0.5);
+      ctx.fillRect(cx - w / 2, groundY - legH, w * 0.08, legH);
+      ctx.fillRect(cx + w * 0.42, groundY - legH, w * 0.08, legH);
       ctx.fillStyle = "#6a4a2a";
-      ctx.fillRect(cx - w / 2, bottom - w * 0.5 - topH, w, topH);
+      ctx.fillRect(cx - w / 2, groundY - legH - topH, w, topH);
       break;
     }
     case "block": {
       // A translucent, glowing abstract code-block cube.
       ctx.fillStyle = "rgba(74,111,212,0.55)";
-      ctx.fillRect(cx - w / 2, bottom - w, w, w);
+      ctx.fillRect(cx - w / 2, top, w, w);
       ctx.fillStyle = "rgba(160,190,255,0.75)";
-      ctx.fillRect(cx - w * 0.3, bottom - w * 0.7, w * 0.6, w * 0.4);
+      ctx.fillRect(cx - w * 0.3, top + w * 0.3, w * 0.6, w * 0.4);
       break;
     }
   }
