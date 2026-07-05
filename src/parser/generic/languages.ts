@@ -25,19 +25,20 @@ import bashWasmUrl from "tree-sitter-bash/tree-sitter-bash.wasm?url";
 import scalaWasmUrl from "tree-sitter-scala/tree-sitter-scala.wasm?url";
 import objcWasmUrl from "tree-sitter-objc/tree-sitter-objc.wasm?url";
 import { GenericParserAdapter } from "./genericParser";
+import * as refine from "./refinements";
 
 export const GENERIC_ADAPTERS: GenericParserAdapter[] = [
-  new GenericParserAdapter({ id: "javascript", extensions: ["js", "mjs", "cjs", "jsx"], wasmUrl: jsWasmUrl }),
-  new GenericParserAdapter({ id: "typescript", extensions: ["ts", "mts", "cts"], wasmUrl: tsWasmUrl }),
-  new GenericParserAdapter({ id: "tsx", extensions: ["tsx"], wasmUrl: tsxWasmUrl }),
-  new GenericParserAdapter({ id: "python", extensions: ["py", "pyw"], wasmUrl: pyWasmUrl }),
-  new GenericParserAdapter({ id: "java", extensions: ["java"], wasmUrl: javaWasmUrl }),
-  new GenericParserAdapter({ id: "cpp", extensions: ["cpp", "cc", "cxx", "hpp", "hh", "hxx"], wasmUrl: cppWasmUrl }),
-  new GenericParserAdapter({ id: "go", extensions: ["go"], wasmUrl: goWasmUrl }),
-  new GenericParserAdapter({ id: "rust", extensions: ["rs"], wasmUrl: rustWasmUrl }),
-  new GenericParserAdapter({ id: "ruby", extensions: ["rb"], wasmUrl: rubyWasmUrl }),
-  new GenericParserAdapter({ id: "csharp", extensions: ["cs"], wasmUrl: csharpWasmUrl }),
+  new GenericParserAdapter({ id: "javascript", extensions: ["js", "mjs", "cjs", "jsx"], wasmUrl: jsWasmUrl, ...refine.javascriptLike }),
+  new GenericParserAdapter({ id: "typescript", extensions: ["ts", "mts", "cts"], wasmUrl: tsWasmUrl, ...refine.javascriptLike }),
+  new GenericParserAdapter({ id: "tsx", extensions: ["tsx"], wasmUrl: tsxWasmUrl, ...refine.javascriptLike }),
+  new GenericParserAdapter({ id: "python", extensions: ["py", "pyw"], wasmUrl: pyWasmUrl, ...refine.python }),
+  new GenericParserAdapter({ id: "java", extensions: ["java"], wasmUrl: javaWasmUrl, ...refine.java }),
+  new GenericParserAdapter({ id: "cpp", extensions: ["cpp", "cc", "cxx", "hpp", "hh", "hxx"], wasmUrl: cppWasmUrl, ...refine.cpp }),
+  new GenericParserAdapter({ id: "go", extensions: ["go"], wasmUrl: goWasmUrl, ...refine.go }),
+  new GenericParserAdapter({ id: "rust", extensions: ["rs"], wasmUrl: rustWasmUrl, ...refine.rust }),
+  new GenericParserAdapter({ id: "ruby", extensions: ["rb"], wasmUrl: rubyWasmUrl, ...refine.ruby }),
+  new GenericParserAdapter({ id: "csharp", extensions: ["cs"], wasmUrl: csharpWasmUrl, ...refine.csharp }),
   new GenericParserAdapter({ id: "bash", extensions: ["sh", "bash"], wasmUrl: bashWasmUrl }),
-  new GenericParserAdapter({ id: "scala", extensions: ["scala", "sc"], wasmUrl: scalaWasmUrl }),
-  new GenericParserAdapter({ id: "objc", extensions: ["m", "mm"], wasmUrl: objcWasmUrl }),
+  new GenericParserAdapter({ id: "scala", extensions: ["scala", "sc"], wasmUrl: scalaWasmUrl, ...refine.scala }),
+  new GenericParserAdapter({ id: "objc", extensions: ["m", "mm"], wasmUrl: objcWasmUrl, ...refine.objc }),
 ];

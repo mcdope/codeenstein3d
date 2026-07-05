@@ -41,8 +41,9 @@ export const ENTITY_NODE_TYPES: Record<string, EntityKind> = {
   function_definition: "function", // C++, Python, Bash, ObjC, Scala
   function_declaration: "function", // JS, TS, Go, Scala
   generator_function_declaration: "function", // JS, TS
-  function_item: "function", // Rust (includes methods inside `impl` blocks)
+  function_item: "function", // Rust (refined to "method" inside `impl`/`trait` blocks)
   function_signature: "function", // TS/Scala ambient/abstract signature (no body)
+  function_signature_item: "function", // Rust trait method declaration (no body)
   local_function_statement: "function", // C# local function
 
   // --- method-like ---
@@ -261,6 +262,12 @@ export function extractGotos(root: Node): GotoLink[] {
 const GLOBAL_CONTAINER = /(declaration|assignment|_item)$/;
 const GLOBAL_EXCLUDE = /^(import|using|package|preproc|include|export)/;
 
+/** Position key used to recognize "this exact node was already captured as a
+ * real entity" — see `genericGlobals`'s `consumed` parameter. */
+export function positionKey(node: Node): string {
+  return `${node.startIndex}:${node.endIndex}`;
+}
+
 /**
  * Heuristic global-variable detection: direct children of the file's root
  * node that look like a variable declaration/assignment and aren't already
@@ -269,8 +276,21 @@ const GLOBAL_EXCLUDE = /^(import|using|package|preproc|include|export)/;
  * languages whose top-level variable syntax doesn't match the shared pattern
  * simply yield no globals, which just means no acid-hazard rooms for that
  * file rather than a crash or incorrect data.
+ *
+ * `consumed`/`entityTypeNames` guard against a subtler duplication: some
+ * languages wrap an already-captured entity one level deeper than the
+ * top-level child itself — Go's `type Foo struct{}` is a `type_spec` nested
+ * inside a `type_declaration`, JS's `const foo = () => {}` is a
+ * `variable_declarator` nested inside a `lexical_declaration` (see
+ * `refinements.ts`'s `extraEntityTypes`). If the top-level container's
+ * subtree already contains a node that was captured as a real entity, it's
+ * skipped here rather than counted a second time as a global.
  */
-export function genericGlobals(root: Node): CodeEntity[] {
+export function genericGlobals(
+  root: Node,
+  consumed: ReadonlySet<string>,
+  entityTypeNames: readonly string[],
+): CodeEntity[] {
   const out: CodeEntity[] = [];
   for (const child of root.namedChildren) {
     if (child === root) continue;
@@ -281,6 +301,7 @@ export function genericGlobals(root: Node): CodeEntity[] {
     }
     if (ENTITY_NODE_TYPES[target.type] || ENTITY_NODE_TYPES[child.type]) continue;
     if (!GLOBAL_CONTAINER.test(target.type) || GLOBAL_EXCLUDE.test(target.type)) continue;
+    if (containsConsumedEntity(target, entityTypeNames, consumed)) continue;
 
     const name = labelRef(target) ?? entityNameQuiet(target);
     if (!name) continue;
@@ -294,6 +315,17 @@ export function genericGlobals(root: Node): CodeEntity[] {
     });
   }
   return out;
+}
+
+function containsConsumedEntity(
+  node: Node,
+  entityTypeNames: readonly string[],
+  consumed: ReadonlySet<string>,
+): boolean {
+  for (const match of node.descendantsOfType([...entityTypeNames])) {
+    if (match.isNamed && consumed.has(positionKey(match))) return true;
+  }
+  return false;
 }
 
 /** Like `entityName`, but returns `null` instead of "<anonymous>" so callers

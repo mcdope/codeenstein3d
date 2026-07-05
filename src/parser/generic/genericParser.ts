@@ -8,6 +8,7 @@
  * hand-written). All Tree-sitter usage stays behind this module; callers only
  * ever see normalized `ParsedFile` JSON — see `src/parser/types.ts`.
  */
+import type { Node } from "web-tree-sitter";
 import { Language, Parser } from "web-tree-sitter";
 import { initTreeSitter } from "../runtime";
 import { countDecisionPoints, countLines, maxNestingDepth } from "../astUtils";
@@ -19,10 +20,18 @@ import {
   entityName,
   extractGotos,
   genericGlobals,
+  positionKey,
 } from "./vocabulary";
-import type { CodeEntity, CodeParserAdapter, ParsedFile } from "../types";
+import type { CodeEntity, CodeParserAdapter, EntityKind, ParsedFile } from "../types";
 
-/** Static description of one generically-parsed language. */
+/**
+ * Static description of one generically-parsed language, plus the hooks a
+ * language needs to go beyond the shared defaults. `refinements.ts` has one
+ * of these per bundled language — most languages need at least one hook
+ * (visibility modifiers, method-vs-function distinction, name assembly for
+ * grammars that don't expose a plain `name` field) to score as precisely as
+ * the bespoke PHP/C adapters do.
+ */
 export interface LanguageConfig {
   /** Stable language id, e.g. "python". */
   readonly id: string;
@@ -30,19 +39,35 @@ export interface LanguageConfig {
   readonly extensions: readonly string[];
   /** Grammar wasm asset URL (a Vite `?url` import — see call sites). */
   readonly wasmUrl: string;
+  /** Extra node type -> kind entries layered on top of the shared
+   * `ENTITY_NODE_TYPES` table, scoped to just this language's own parse (e.g.
+   * JS/TS's `const foo = () => {}` pattern, Go's `type Foo struct{}`). */
+  readonly extraEntityTypes?: Record<string, EntityKind>;
+  /** Return `false` to drop an otherwise-matched node entirely — e.g. a
+   * `variable_declarator` whose value isn't a function, or an ObjC
+   * `method_declaration` prototype that's already covered by its
+   * `method_definition` implementation. */
+  readonly filter?: (node: Node) => boolean;
+  /** Adjust the generically-built entity (name/kind/visibility) using node
+   * context the shared traversal doesn't have — e.g. "is this Rust
+   * `function_item` inside an `impl` block", "what access modifier applies
+   * here". Runs after the generic name/complexity/nesting scoring. */
+  readonly refine?: (node: Node, entity: CodeEntity) => CodeEntity;
 }
-
-const ENTITY_TYPE_NAMES = Object.keys(ENTITY_NODE_TYPES);
 
 export class GenericParserAdapter implements CodeParserAdapter {
   readonly language: string;
   readonly extensions: readonly string[];
 
+  private readonly entityTypes: Record<string, EntityKind>;
+  private readonly entityTypeNames: string[];
   private parser: Parser | null = null;
 
   constructor(private readonly config: LanguageConfig) {
     this.language = config.id;
     this.extensions = config.extensions;
+    this.entityTypes = { ...ENTITY_NODE_TYPES, ...(config.extraEntityTypes ?? {}) };
+    this.entityTypeNames = Object.keys(this.entityTypes);
   }
 
   private async getParser(): Promise<Parser> {
@@ -63,26 +88,32 @@ export class GenericParserAdapter implements CodeParserAdapter {
     try {
       const root = tree.rootNode;
       const entities: CodeEntity[] = [];
+      const consumed = new Set<string>();
 
-      for (const node of root.descendantsOfType(ENTITY_TYPE_NAMES)) {
+      for (const node of root.descendantsOfType(this.entityTypeNames)) {
         // `descendantsOfType` also matches anonymous keyword tokens whose
         // type string happens to equal one of our names (e.g. a bare `class`
         // token inside `template<class T>`) — only named nodes are real
         // declarations. Also defensively skip the tree's own root, in case a
         // grammar's root node type ever collides with a table entry.
         if (!node.isNamed || node === root) continue;
-        const kind = ENTITY_NODE_TYPES[node.type];
-        entities.push({
+        if (this.config.filter && !this.config.filter(node)) continue;
+
+        const kind = this.entityTypes[node.type];
+        let entity: CodeEntity = {
           name: entityName(node),
           kind,
           startLine: node.startPosition.row + 1,
           endLine: node.endPosition.row + 1,
           complexityScore: 1 + countDecisionPoints(node, DECISION_NODE_TYPES, LOGICAL_OPERATORS),
           nestingDepth: maxNestingDepth(node, NESTING_NODE_TYPES),
-        });
+        };
+        if (this.config.refine) entity = this.config.refine(node, entity);
+        entities.push(entity);
+        consumed.add(positionKey(node));
       }
 
-      entities.push(...genericGlobals(root));
+      entities.push(...genericGlobals(root, consumed, this.entityTypeNames));
       entities.sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
 
       return {
