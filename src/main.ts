@@ -152,34 +152,37 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
 /**
  * Called when the player reaches the exit. If the workspace has another
  * parsable file after the current one (in tree order), silently loads it as
- * the next level, carrying health and ammo across. Otherwise this was the
- * last file, so show the normal "Build Successful" end-of-run overlay.
+ * the next level, carrying health and ammo across. A candidate file that
+ * fails to read or parse (corrupt, unsupported edge case, etc — `parseFile`
+ * already logs why) is skipped in favor of the next one after it, rather than
+ * ending the run early; only running out of files entirely shows the normal
+ * "Build Successful" end-of-run overlay.
  */
 async function advanceToNextLevel(stats: EngineStats): Promise<void> {
-  const next = workspaceTree && currentLevelPath
-    ? findNextParsableFile(workspaceTree, currentLevelPath)
-    : null;
+  let afterPath = currentLevelPath;
 
-  if (!next) {
-    activeHud?.showBuildSuccessful(resetToFileTree);
-    return;
-  }
+  while (workspaceTree && afterPath) {
+    const next = findNextParsableFile(workspaceTree, afterPath);
+    if (!next) break;
 
-  try {
-    const text = await readFileText(next.handle as FileSystemFileHandle);
-    const parsed = await parseFile(next.name, text);
-    if (parsed) {
-      audio.playLevelComplete();
-      console.log(`%c[level] ${currentLevelPath} cleared — advancing to ${next.path}`, "color:#37d24a;font-weight:bold");
-      launchLevel(next.path, parsed, { health: stats.health, ammo: stats.ammo });
-      return;
+    try {
+      const text = await readFileText(next.handle as FileSystemFileHandle);
+      const parsed = await parseFile(next.name, text);
+      if (parsed) {
+        audio.playLevelComplete();
+        console.log(`%c[level] ${currentLevelPath} cleared — advancing to ${next.path}`, "color:#37d24a;font-weight:bold");
+        launchLevel(next.path, parsed, { health: stats.health, ammo: stats.ammo });
+        return;
+      }
+    } catch (err) {
+      console.error(`[level] Failed to load "${next.path}", skipping to the next file:`, err);
     }
-  } catch (err) {
-    console.error(`[level] Failed to load next level "${next.path}":`, err);
+
+    afterPath = next.path;
   }
 
-  // Next file failed to parse/read — fall back to the normal end-of-run screen
-  // rather than leaving the player stuck on a frozen frame.
+  // No more files left to try — show the normal end-of-run screen rather than
+  // leaving the player stuck on a frozen frame.
   activeHud?.showBuildSuccessful(resetToFileTree);
 }
 

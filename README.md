@@ -9,14 +9,15 @@ Every folder is a level. Every file is a room. Every function is an enemy. The h
 Whether it's a massive Symfony enterprise project or low-level C code like the `pam_usb` module – this engine lets you "refactor" with a shotgun.
 
 ## 🚦 Current Status
-Playable end-to-end: pick a local folder, click a PHP or C file, and fight your
-way through the dungeon generated from its structure to the `return` statement —
-strafing/sprint movement, native HUD, procedural retro audio, a swaying weapon
-viewmodel, an active enemy AI that roams, chases, melees and shoots back, jogged
-corridors with pillar-broken rooms, `goto`-driven teleporter pads, and a
-togglable automap. Reaching `return` doesn't end the run: it carries your health
-and ammo into the next parsable file in the tree, so a whole codebase plays as
-one continuous multi-level run.
+Playable end-to-end: pick a local folder, click a source file in any of 14
+supported languages, and fight your way through the dungeon generated from its
+structure to the `return` statement — strafing/sprint movement, native HUD,
+procedural retro audio, a swaying weapon viewmodel, an active enemy AI that
+roams, chases, melees and shoots back, jogged corridors with pillar-broken
+rooms, `goto`-driven teleporter pads, and a togglable automap. Reaching
+`return` doesn't end the run: it carries your health and ammo into the next
+parsable file in the tree, so a whole codebase plays as one continuous
+multi-level run.
 
 | Stage | Status |
 | --- | --- |
@@ -42,16 +43,16 @@ one continuous multi-level run.
 | 20. Strafing, sprint, Q/E turning, trimmed HUD | ✅ Done |
 | 21. Environment geometry (corridor jogs, pillars) | ✅ Done |
 | 22. Goto teleporters + multi-level progression | ✅ Done |
+| 23. Universal language parsing + parser security hardening | ✅ Done |
 | Room decorations (racks/plants/desks/blocks) | ⏸️ Implemented, disabled (playtest feedback) |
 | Bosses from complexity | 🔜 Planned |
-| Additional language grammars (JS, Python, …) | 🔜 Planned |
 | Scoring + persisted highscores | 🔜 Planned |
 
 ## 🏗️ Architecture & Pipeline
 This project is strictly "Local-First". Proprietary code never leaves your machine.
 
 1. **Local Access (File System Access API):** Direct read access to your local workspace via `showDirectoryPicker()`. *Strictly no virtual devices or mocked file systems.* — `src/fs/`
-2. **AST Parser (web-tree-sitter via WASM):** Language-agnostic parsing behind a `CodeParserAdapter` interface. Source files are normalized into plain JSON (`linesOfCode` + `entities[]` with start/end lines and a cyclomatic `complexityScore`, plus `gotos[]`: every `goto label;` resolved against its `label:` target by line). The rest of the engine never touches Tree-sitter directly. Grammars: **PHP** (`.php`) and **C** (`.c`, `.h`); adding a language is one adapter + one registry line. — `src/parser/`
+2. **AST Parser (web-tree-sitter via WASM):** Language-agnostic parsing behind a `CodeParserAdapter` interface. Source files are normalized into plain JSON (`linesOfCode` + `entities[]` with start/end lines and a cyclomatic `complexityScore`, plus `gotos[]`: every `goto label;` resolved against its `label:` target by line). The rest of the engine never touches Tree-sitter directly. **14 languages** are supported: PHP and C keep bespoke, hand-written adapters (their grammars have quirks — PHP's global-at-program-scope detection, C's buried function declarator — a generic pass can't capture precisely); JavaScript, TypeScript/TSX, Python, Java, C++, Go, Rust, Ruby, C#, Bash, Scala, and Objective-C all go through one data-driven `GenericParserAdapter`, keyed off a cross-language node-type vocabulary (`src/parser/generic/vocabulary.ts`) verified against each grammar's real `node-types.json` — adding another language is one grammar wasm import + one `LanguageConfig` entry, no new parsing code. Every grammar wasm is ABI-checked against the pinned `web-tree-sitter` runtime before use (a bulk `tree-sitter-wasms` package and the `tree-sitter-kotlin`/`tree-sitter-lua` npm packages were tried and rejected — wrong ABI or no prebuilt wasm at all). **Security:** only extensions a registered adapter claims ever reach a parser (`isParsable`); on top of that, a size cap and binary-content sniff (`src/parser/security.ts`) reject oversized or binary-looking files before parsing, and any parse failure is caught, logged as a warning, and skipped rather than crashing the map generator or game loop. Source text is only ever fed to `Parser.parse()` — nothing in `src/parser/` evaluates, compiles, or executes loaded code. — `src/parser/`
 3. **Procedural Map Generator:** Deterministically translates the normalized JSON into a 2D tile matrix (`0` = floor, `1` = wall, `2` = acid hazard, `3` = locked door, `4` = goto teleporter pad). Each entity becomes an enclosed room — but a **deeply nested function turns into a labyrinth** (recursive-division maze of `1`-walls, passages kept ≥1 tile wide) rather than an open box. Rooms are linked by corridors that **jog with 1-2 turns instead of one straight line** once they get long, so hallways don't offer a full sightline end-to-end; large open rooms also get a scattering of **1-tile pillars** to break up empty floor. It places an enemy for every function/method (HP scaled from its complexity, split into a pack above a complexity threshold), floods every global-variable room with an **acid pool**, locks **private/protected-method** rooms behind **doors** and scatters a matching **dependency key** in reachable public floor (so every level stays solvable), turns every resolved `goto` → label jump into a **linked teleporter pad pair** dropped in the rooms containing the goto and its label, and puts a green **exit tile** — the `return` statement — in the room furthest from spawn, always kept clear of enemies/pillars/pads. (Cosmetic room decorations — server racks, plants, desks, code-blocks — are implemented but currently disabled behind a feature flag pending a design rethink.) — `src/map/`
 4. **Raycaster Engine & Gameplay:** A classic 2.5D raycaster written entirely on the HTML5 `<canvas>` 2D context. No WebGL, no Three.js – pure retro mathematics (DDA algorithm), distance-fog shading (full bright near, black beyond ~14 tiles), floor-cast acid/teleporter tiles, delta-timed first-person movement, and AABB wall collision. Layered on top: billboard enemy/key/ammo/teleporter sprites (z-buffer occluded), a weapon arsenal (hitscan pistol + cone shotgun) with a swaying, recoiling viewmodel and head-bob, active enemy AI (roams its room, chases on aggro or on taking damage, melees up close, lobs ranged bolts with line-of-sight at range), impact feedback (screen damage flash, bullet tracers, enemy bleed-flash, falling "digital blood" particles), procedural Web-Audio sound effects, a native-canvas HUD, a togglable automap with fog of war, key-unlocked doors, goto-warp teleporter pads, and win/lose state. When the exit is reached, instead of always ending the run the host (`main.ts`) checks the workspace tree for the next parsable file and — if there is one — silently loads it as the next level with health/ammo carried over; the "Build Successful" screen only appears after the last file. — `src/engine/`
 
@@ -66,7 +67,9 @@ Local folder ──▶ CodeParserAdapter ──▶ ParsedFile JSON ──▶ Map
 Each stage only depends on the plain data structure produced by the previous one, so languages, map styles, and renderers can evolve independently.
 
 ## 🎮 Controls
-Click a `.php`, `.c`, or `.h` file in the sidebar to generate and enter its level.
+Click a supported source file in the sidebar to generate and enter its level —
+PHP, C/C++, JavaScript/TypeScript, Python, Java, Go, Rust, Ruby, C#, Bash,
+Scala, or Objective-C.
 
 * **W / S** – move forward / backward
 * **A / D** – strafe left / right
@@ -84,7 +87,7 @@ Click a `.php`, `.c`, or `.h` file in the sidebar to generate and enter its leve
 
 ## 💻 Tech Stack
 * **Frontend:** Vanilla TypeScript + Vite (no UI framework; minimal dependencies)
-* **Parser:** `web-tree-sitter` (WASM) with `tree-sitter-php` and `tree-sitter-c` grammars
+* **Parser:** `web-tree-sitter` (WASM) with 14 grammars: `tree-sitter-php`, `-c`, `-javascript`, `-typescript`, `-python`, `-java`, `-cpp`, `-go`, `-rust`, `-ruby`, `-c-sharp`, `-bash`, `-scala`, `-objc`
 * **Rendering:** HTML5 Canvas 2D API (walls, sprites, HUD, and the automap are all native canvas draws — no DOM overlay for gameplay)
 * **Audio:** Web Audio API — every sound effect is synthesized from oscillators/noise at runtime; no audio files
 * **OS Focus:** Developed and optimized for modern browsers on Linux (CachyOS / Arch / Debian)
@@ -101,9 +104,10 @@ src/
 ├── main.ts            # App entry: wires the sidebar, parser, map, engine, and HUD together
 ├── fs/                # File System Access API: workspace picker + directory walk
 ├── ui/                # File-tree sidebar + end-of-run overlay (gameHud.ts; the live HUD is native canvas)
-├── parser/            # Language-agnostic AST layer (CodeParserAdapter, registry, astUtils)
-│   ├── php/           # PHP adapter backed by tree-sitter-php
-│   └── c/             # C adapter backed by tree-sitter-c
+├── parser/            # Language-agnostic AST layer (CodeParserAdapter, registry, astUtils, security)
+│   ├── php/           # PHP adapter backed by tree-sitter-php (bespoke)
+│   ├── c/             # C adapter backed by tree-sitter-c (bespoke)
+│   └── generic/       # One data-driven adapter for the other 12 languages + shared node-type vocabulary
 ├── map/               # Procedural map generator: grid, enemies, exit (+ top-down debug renderer)
 └── engine/            # 2.5D raycaster + gameplay
     ├── engine.ts       # Game loop: sim, combat, damage, stats — ties every system below together
@@ -137,7 +141,7 @@ npm run dev
 ```
 
 Then open the printed `localhost` URL in a Chromium-based browser, click **Select
-Workspace**, pick a folder containing PHP, and click a `.php` file to drop into its level.
+Workspace**, pick a folder containing source code, and click a supported file to drop into its level.
 
 ### Useful scripts
 ```bash

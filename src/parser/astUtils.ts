@@ -20,13 +20,20 @@ export function countLines(text: string): number {
  * the given control-flow node types, plus one for each short-circuiting logical
  * operator (&&, ||, …) in a binary expression. A cyclomatic complexity score is
  * `1 + countDecisionPoints(...)`.
+ *
+ * Only *named* matches count — `descendantsOfType` also matches anonymous
+ * keyword tokens (e.g. the literal `if` keyword node inside an `if_statement`
+ * is itself typed `"if"`), which would otherwise silently double-count in any
+ * grammar whose keyword token happens to share a name with a real named node
+ * type from a different grammar in a shared, cross-language type list (see
+ * [[codeenstein-project]]'s generic parser).
  */
 export function countDecisionPoints(
   root: Node,
   decisionNodeTypes: readonly string[],
   logicalOperators: ReadonlySet<string>,
 ): number {
-  let count = root.descendantsOfType([...decisionNodeTypes]).length;
+  let count = root.descendantsOfType([...decisionNodeTypes]).filter((n) => n.isNamed).length;
   for (const binary of root.descendantsOfType("binary_expression")) {
     const operator = binary.childForFieldName("operator")?.text;
     if (operator && logicalOperators.has(operator)) count += 1;
