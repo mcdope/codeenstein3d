@@ -227,6 +227,16 @@ body {
   box-shadow: 0 0 34px rgba(55, 210, 74, 0.35);
 }
 
+.game-overlay.level-start .overlay-box {
+  color: #3fd0e0;
+  box-shadow: 0 0 34px rgba(63, 208, 224, 0.35);
+}
+
+.game-overlay.commit-summary .overlay-box {
+  color: #f2d64b;
+  box-shadow: 0 0 34px rgba(242, 214, 75, 0.35);
+}
+
 .overlay-title {
   margin: 0 0 12px;
   font-size: 34px;
@@ -239,6 +249,29 @@ body {
   color: #cdd3cd;
   font-size: 14px;
   line-height: 1.5;
+}
+
+/* Label/value rows on the level-start and commit-summary overlays. */
+.overlay-stats {
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: center;
+  column-gap: 18px;
+  row-gap: 6px;
+  margin: 0 0 22px;
+  font-size: 14px;
+}
+
+.overlay-stats dt {
+  color: #8a9490;
+  text-align: right;
+}
+
+.overlay-stats dd {
+  margin: 0;
+  color: #fff;
+  font-weight: 700;
+  text-align: left;
 }
 
 .overlay-btn {
@@ -258,6 +291,14 @@ body {
 
 .game-overlay.build-ok .overlay-btn {
   background: #37d24a;
+}
+
+.game-overlay.level-start .overlay-btn {
+  background: #3fd0e0;
+}
+
+.game-overlay.commit-summary .overlay-btn {
+  background: #f2d64b;
 }
 
 .overlay-btn:hover {

@@ -23,6 +23,7 @@ const SCENE_WIDTH = 640;
 const SCENE_HEIGHT = 400;
 
 const selectButton = requireElement<HTMLButtonElement>("#select-workspace");
+const continueButton = requireElement<HTMLButtonElement>("#continue-run");
 const workspaceName = requireElement<HTMLParagraphElement>("#workspace-name");
 const fileTree = requireElement<HTMLElement>("#file-tree");
 const viewport = requireElement<HTMLElement>("#viewport");
@@ -38,13 +39,26 @@ let activeHud: GameHud | null = null;
 let workspaceTree: TreeNode | null = null;
 /** Path of the level currently running (or last launched), for the same. */
 let currentLevelPath: string | null = null;
+/** Name of the picked workspace root, for the campaign name and the save file.
+ * The File System Access API only grants a handle to the picked directory
+ * itself — there's no way to walk up to its parent — so the "or parent
+ * directory if named 'src'" case from the spec isn't reachable in a browser
+ * sandbox; a root literally named "src" just uses "src" as-is. */
+let workspaceRootName: string | null = null;
+/** Most recent stats reported by the running engine, used for the throttled
+ * autosave and the `beforeunload` flush. */
+let lastStats: EngineStats | null = null;
+let lastSaveAt = 0;
 
 if (!isFileSystemAccessSupported()) {
   selectButton.disabled = true;
+  continueButton.disabled = true;
   workspaceName.textContent =
     "This browser does not support the File System Access API. Use Chrome, Edge, or Brave.";
   workspaceName.classList.add("error");
 }
+
+if (loadCampaignSave()) continueButton.style.display = "";
 
 selectButton.addEventListener("click", async () => {
   try {
@@ -56,6 +70,7 @@ selectButton.addEventListener("click", async () => {
 
     const tree = await readDirectoryTree(handle);
     workspaceTree = tree;
+    workspaceRootName = handle.name;
     workspaceName.textContent = handle.name;
 
     renderFileTree(fileTree, tree, { onSelectFile: handleFileSelected });
@@ -67,6 +82,50 @@ selectButton.addEventListener("click", async () => {
       err instanceof Error ? err.message : "Failed to read workspace.";
     workspaceName.classList.add("error");
   }
+});
+
+continueButton.addEventListener("click", async () => {
+  const save = loadCampaignSave();
+  if (!save) return; // button should already be hidden in this case
+
+  try {
+    const handle = await pickWorkspace();
+    if (!handle) return; // user cancelled the picker
+
+    workspaceName.textContent = "Reading workspace…";
+    workspaceName.classList.remove("error");
+
+    const tree = await readDirectoryTree(handle);
+    workspaceTree = tree;
+    workspaceRootName = handle.name;
+    workspaceName.textContent = handle.name;
+    renderFileTree(fileTree, tree, { onSelectFile: handleFileSelected });
+
+    const match = flattenParsableFiles(tree).find((f) => f.path === save.filePath);
+    if (!match) {
+      console.warn(
+        `[continue] Saved file "${save.filePath}" not found in "${handle.name}" — starting a fresh run instead.`,
+      );
+      clearCampaignSave();
+      await autoLaunchInitialLevel(tree);
+      return;
+    }
+
+    const text = await readFileText(match.handle as FileSystemFileHandle);
+    const parsed = await parseFile(match.name, text);
+    if (parsed) {
+      console.log(`%c[continue] resuming at ${match.path}`, "color:#8effa0;font-weight:bold");
+      launchLevel(match.path, parsed, { health: save.health, ammo: save.ammo, weaponIndex: save.weaponIndex });
+    }
+  } catch (err) {
+    console.error("[continue] Failed to resume campaign:", err);
+    workspaceName.textContent = err instanceof Error ? err.message : "Failed to resume campaign.";
+    workspaceName.classList.add("error");
+  }
+});
+
+window.addEventListener("beforeunload", () => {
+  if (activeEngine && lastStats) persistProgress(lastStats);
 });
 
 /**
@@ -185,9 +244,11 @@ async function autoLaunchInitialLevel(tree: TreeNode): Promise<void> {
 }
 
 /**
- * Generate a level from parsed JSON and start the raycaster in the viewport.
- * `carryover` (health/ammo from a just-cleared level) is passed when this is
- * a multi-level progression rather than a fresh pick from the file tree.
+ * Generate a level from parsed JSON and set up the raycaster in the viewport.
+ * `carryover` (health/ammo/weapon from a just-cleared level, or a resumed
+ * save) is passed when this isn't a fresh pick from the file tree. The engine
+ * itself isn't started until the level-start briefing is acknowledged — see
+ * `GameHud.showLevelStart`.
  */
 function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryover): void {
   const map = mapGenerator.generate(parsed);
@@ -237,12 +298,45 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
     canvas,
     map,
     {
-      onGameOver: () => hud.showKernelPanic(resetToFileTree),
-      onWin: (stats) => void advanceToNextLevel(stats),
+      onStats: (stats) => {
+        lastStats = stats;
+        const now = Date.now();
+        if (now - lastSaveAt >= AUTOSAVE_INTERVAL_MS) {
+          lastSaveAt = now;
+          persistProgress(stats);
+        }
+      },
+      onGameOver: () => {
+        clearCampaignSave();
+        hud.showKernelPanic(resetToFileTree);
+      },
+      onWin: (stats) => {
+        hud.showCommitSummary(
+          { linesRefactored: parsed.linesOfCode, bugsSquashed: stats.kills },
+          () => void advanceToNextLevel(stats),
+        );
+      },
     },
     carryover,
   );
-  activeEngine.start();
+
+  const levelName = path.split("/").pop() ?? path;
+  hud.showLevelStart(
+    {
+      campaign: campaignName(),
+      levelName,
+      roomCount: map.rooms.length,
+      enemyCount: map.enemies.length,
+    },
+    () => activeEngine?.start(),
+  );
+}
+
+/** The workspace root's name, or a placeholder if none is loaded yet. See the
+ * `workspaceRootName` doc comment for why the "parent dir named src" case
+ * from the spec can't be implemented in a browser sandbox. */
+function campaignName(): string {
+  return workspaceRootName ?? "Untitled Workspace";
 }
 
 /**
@@ -267,7 +361,19 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
       if (parsed) {
         audio.playLevelComplete();
         console.log(`%c[level] ${currentLevelPath} cleared — advancing to ${next.path}`, "color:#37d24a;font-weight:bold");
-        launchLevel(next.path, parsed, { health: stats.health, ammo: stats.ammo });
+        const carryover: EngineCarryover = { health: stats.health, ammo: stats.ammo, weaponIndex: stats.weaponIndex };
+        // Persist immediately at the transition (not just the throttled
+        // in-play autosave) so a tab closed right after advancing still
+        // resumes at the new file rather than the one just cleared.
+        saveCampaign({
+          workspaceName: workspaceRootName ?? "",
+          filePath: next.path,
+          health: carryover.health,
+          ammo: carryover.ammo,
+          score: stats.score,
+          weaponIndex: stats.weaponIndex,
+        });
+        launchLevel(next.path, parsed, carryover);
         return;
       }
     } catch (err) {
@@ -277,8 +383,9 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
     afterPath = next.path;
   }
 
-  // No more files left to try — show the normal end-of-run screen rather than
-  // leaving the player stuck on a frozen frame.
+  // No more files left to try — the campaign is complete, so the saved
+  // resume point no longer means anything.
+  clearCampaignSave();
   activeHud?.showBuildSuccessful(resetToFileTree);
 }
 
@@ -313,6 +420,79 @@ function resetToFileTree(): void {
     'Select a file from the tree to build and enter its level.<br />' +
     "Reach the green <code>return</code> tile to win.";
   viewport.replaceChildren(placeholder);
+}
+
+// --- Campaign persistence (Continue Run) -----------------------------------
+
+const SAVE_KEY = "codeenstein-campaign-save";
+/** Minimum time between in-play autosaves; level transitions and
+ * `beforeunload` always save immediately regardless of this. */
+const AUTOSAVE_INTERVAL_MS = 3000;
+
+/** Everything needed to resume a campaign in a later session. `filePath` is
+ * matched against the freshly re-picked workspace's tree on "Continue Run" —
+ * there's no way to persist the actual file handle across sessions. */
+interface CampaignSave {
+  workspaceName: string;
+  filePath: string;
+  health: number;
+  ammo: number;
+  score: number;
+  weaponIndex: number;
+}
+
+/** Parse and loosely validate a save from `localStorage`; `null` on any
+ * missing field, parse error, or if storage is unavailable (e.g. private
+ * browsing) — a broken/absent save should never crash the app. */
+export function loadCampaignSave(): CampaignSave | null {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return null;
+    const save = JSON.parse(raw) as Partial<CampaignSave>;
+    if (
+      typeof save.workspaceName !== "string" ||
+      typeof save.filePath !== "string" ||
+      typeof save.health !== "number" ||
+      typeof save.ammo !== "number" ||
+      typeof save.score !== "number" ||
+      typeof save.weaponIndex !== "number"
+    ) {
+      return null;
+    }
+    return save as CampaignSave;
+  } catch {
+    return null;
+  }
+}
+
+export function saveCampaign(save: CampaignSave): void {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(save));
+  } catch (err) {
+    console.warn("[continue] Failed to save campaign progress:", err);
+  }
+}
+
+export function clearCampaignSave(): void {
+  try {
+    localStorage.removeItem(SAVE_KEY);
+  } catch {
+    // Nothing sensible to do if storage itself is unavailable.
+  }
+  continueButton.style.display = "none";
+}
+
+/** Save the current position + stats, if a level is actually running. */
+function persistProgress(stats: EngineStats): void {
+  if (!workspaceRootName || !currentLevelPath) return;
+  saveCampaign({
+    workspaceName: workspaceRootName,
+    filePath: currentLevelPath,
+    health: stats.health,
+    ammo: stats.ammo,
+    score: stats.score,
+    weaponIndex: stats.weaponIndex,
+  });
 }
 
 function requireElement<T extends Element>(selector: string): T {

@@ -104,6 +104,10 @@ export interface EngineStats {
   keysTotal: number;
   /** Run score. Always 0 for now — scoring logic is a future task. */
   score: number;
+  /** Enemies defeated this level ("bugs squashed" for the commit summary). */
+  kills: number;
+  /** Index into `WEAPONS` of the currently-equipped weapon. */
+  weaponIndex: number;
 }
 
 /** Host callbacks. All optional. */
@@ -115,10 +119,13 @@ export interface EngineHandlers {
   onWin?: (stats: EngineStats) => void;
 }
 
-/** Health/ammo carried over from a previous level, for multi-level runs. */
+/** Health/ammo/weapon carried over from a previous level, for multi-level
+ * runs or resuming a saved campaign. */
 export interface EngineCarryover {
   health: number;
   ammo: number;
+  /** Index into `WEAPONS`; defaults to the pistol (0) when omitted. */
+  weaponIndex?: number;
 }
 
 type GameState = "playing" | "over" | "won";
@@ -144,6 +151,8 @@ export class RaycasterEngine {
   private weaponIndex = 0;
   /** Dependency keys collected but not yet spent on a door. */
   private keysHeld = 0;
+  /** Enemies defeated this level. */
+  private kills = 0;
   /** Ammo pickups dropped by defeated enemies, awaiting collection. */
   private readonly drops: AmmoDrop[] = [];
   /** Frames left on the red "took damage" screen flash (0 = none). */
@@ -195,6 +204,7 @@ export class RaycasterEngine {
     this.zBuffer = new Float64Array(canvas.width);
     this.ammo = carryover?.ammo ?? startingAmmo(map.enemies);
     if (carryover) this.health = carryover.health;
+    if (carryover?.weaponIndex !== undefined) this.weaponIndex = carryover.weaponIndex;
   }
 
   start(): void {
@@ -727,6 +737,7 @@ export class RaycasterEngine {
     }
     enemy.hp = 0;
     enemy.alive = false;
+    this.kills += 1;
     if (this.target === enemy) this.target = null;
     // Drop a heap (ammo) pickup where the process died.
     this.drops.push({ x: enemy.x, y: enemy.y });
@@ -760,6 +771,8 @@ export class RaycasterEngine {
       keysHeld: this.keysHeld,
       keysTotal: this.map.keys.length,
       score: 0,
+      kills: this.kills,
+      weaponIndex: this.weaponIndex,
     };
   }
 }
