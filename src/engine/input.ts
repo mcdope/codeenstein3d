@@ -138,25 +138,23 @@ export class InputController {
     // and exit fullscreen natively, and both should still happen.
     if (e.code === "Escape" && !e.repeat) this.escapeQueued = true;
 
-    // F toggles fullscreen. requestFullscreen()/exitFullscreen() must be
-    // called synchronously from a real user-gesture handler — not deferred
-    // to a later polled flag consumed inside the rAF-driven game loop, which
-    // browsers reject — so this happens directly here, the same way
-    // `onCanvasClick` requests the pointer lock directly. Targets the
-    // canvas's parent (`#viewport` in main.ts) rather than the canvas itself
-    // or the whole page: the canvas is recreated on every level transition,
-    // and removing the *current* fullscreen element from the document makes
-    // the browser auto-exit fullscreen, so fullscreening the canvas directly
-    // silently dropped out of fullscreen on every level change. `#viewport`
-    // is never recreated (only its children are swapped), so it persists
-    // across levels, and unlike `document.documentElement` it excludes the
-    // sidebar — just the game area goes fullscreen.
+    // F toggles fullscreen on the canvas itself — nothing else (no control
+    // hints, no HUD overlay DOM, no sidebar). requestFullscreen()/
+    // exitFullscreen() must be called synchronously from a real user-gesture
+    // handler — not deferred to a later polled flag consumed inside the
+    // rAF-driven game loop, which browsers reject — so this happens directly
+    // here, the same way `onCanvasClick` requests the pointer lock directly.
+    // This only stays correct across level transitions because `main.ts`
+    // keeps one `<canvas>` alive for the whole session and reuses it for
+    // every level, rather than creating a new one each time — removing the
+    // *current* fullscreen element from the document makes the browser
+    // auto-exit fullscreen, which a fresh canvas per level used to trigger.
     if (e.code === "KeyF" && !e.repeat) {
       e.preventDefault();
       if (document.fullscreenElement) {
         void document.exitFullscreen();
       } else {
-        void (this.canvas.parentElement ?? this.canvas).requestFullscreen();
+        void this.canvas.requestFullscreen();
       }
     }
 

@@ -28,6 +28,26 @@ const workspaceName = requireElement<HTMLParagraphElement>("#workspace-name");
 const fileTree = requireElement<HTMLElement>("#file-tree");
 const viewport = requireElement<HTMLElement>("#viewport");
 
+/**
+ * The one and only game canvas — created once, attached to `#viewport` once,
+ * and never removed again for the rest of the session. This is what F
+ * fullscreens (see `InputController`). It's only ever shown/hidden via
+ * `canvas.hidden`, never detached: fullscreening an element that gets
+ * disconnected from the document — even briefly, e.g. via a naive
+ * `replaceChildren` call that happens to include it in both the old and new
+ * child list — makes the browser auto-exit fullscreen, which is exactly what
+ * made fullscreen drop on every level transition. `launchLevel` only ever
+ * touches the *other* children of `#viewport` (the hint caption, the HUD
+ * overlay); this canvas is simply left alone.
+ */
+const canvas = document.createElement("canvas");
+canvas.width = SCENE_WIDTH;
+canvas.height = SCENE_HEIGHT;
+canvas.className = "scene-canvas";
+canvas.tabIndex = 0; // focusable so it can grab keyboard input on click
+canvas.hidden = true; // not shown until a level is actually running
+viewport.appendChild(canvas);
+
 const mapGenerator = new MapGenerator();
 
 /** The engine currently running in the viewport, if any. */
@@ -266,12 +286,6 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   // Tear down any level already running before starting the new one.
   activeEngine?.stop();
 
-  const canvas = document.createElement("canvas");
-  canvas.width = SCENE_WIDTH;
-  canvas.height = SCENE_HEIGHT;
-  canvas.className = "scene-canvas";
-  canvas.tabIndex = 0; // focusable so it can grab keyboard input on click
-
   const hint = document.createElement("p");
   hint.className = "map-caption";
   hint.textContent =
@@ -286,8 +300,13 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   activeHud = hud;
 
   // The status bar is drawn natively on the canvas; only the end-of-run
-  // overlay remains in the DOM.
-  viewport.replaceChildren(canvas, hint, hud.overlay);
+  // overlay remains in the DOM. Only the canvas's *siblings* are replaced —
+  // the canvas itself is never removed from #viewport (see its doc comment).
+  for (const child of [...viewport.children]) {
+    if (child !== canvas) child.remove();
+  }
+  viewport.append(hint, hud.overlay);
+  canvas.hidden = false;
   // Grab keyboard focus immediately — without this, the very first WASD press
   // after a level (re)load is silently swallowed until the player clicks the
   // canvas themselves, which reads as "controls don't work" on every level
@@ -420,12 +439,21 @@ function resetToFileTree(): void {
   activeHud = null;
   currentLevelPath = null;
 
+  // Hide (never remove) the canvas — see its doc comment. A display:none
+  // element can't stay the fullscreen target, so this is also the one point
+  // where leaving the game naturally ends fullscreen, rather than it dropping
+  // mid-run on every level transition.
+  canvas.hidden = true;
+  for (const child of [...viewport.children]) {
+    if (child !== canvas) child.remove();
+  }
+
   const placeholder = document.createElement("p");
   placeholder.className = "muted";
   placeholder.innerHTML =
     'Select a file from the tree to build and enter its level.<br />' +
     "Reach the green <code>return</code> tile to win.";
-  viewport.replaceChildren(placeholder);
+  viewport.appendChild(placeholder);
 }
 
 // --- Campaign persistence (Continue Run) -----------------------------------
