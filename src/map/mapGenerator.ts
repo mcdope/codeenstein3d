@@ -46,6 +46,12 @@ const PROP_CLEARANCE = 1.4;
 const PROP_SPACING = 1.8;
 /** Placement attempts per prop before giving up on it. */
 const PROP_ATTEMPTS = 12;
+/**
+ * Whether cosmetic decorations (server racks, plants, desks, code-blocks) are
+ * spawned. Disabled after playtest feedback that they got in the way; the
+ * generation and rendering code is left in place to revisit later.
+ */
+const DECORATIONS_ENABLED = false;
 
 export interface MapGeneratorOptions {
   /** Lower bound for the (square) map size in tiles. */
@@ -108,7 +114,10 @@ export class MapGenerator {
       ...enemies.map((e) => ({ x: e.x, y: e.y })),
     ];
     placePillars(rooms, grid, avoidPoints, rng);
-    const decorations = placeDecorations(rooms, grid, avoidPoints, rng);
+    // Decorative props are disabled for now (playtest feedback: they got in
+    // the way / felt annoying). Generation + rendering code stays intact —
+    // just flip DECORATIONS_ENABLED back on to revisit them.
+    const decorations = DECORATIONS_ENABLED ? placeDecorations(rooms, grid, avoidPoints, rng) : [];
 
     // Lock private/protected-method rooms behind doors, then scatter one key
     // per door in areas reachable before that door (keeps every level solvable).
