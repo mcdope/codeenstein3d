@@ -19,6 +19,12 @@ import type { Player } from "./player";
 
 /** Sprite footprint as a fraction of a full tile-height billboard. */
 const ENEMY_SIZE = 0.7;
+/**
+ * Near clip for sprite billboards, in camera-space depth. Kept well below one
+ * tile so an enemy right in the player's face still draws (its projected quad
+ * just grows huge and is clamped to the screen) instead of popping out of view.
+ */
+const SPRITE_NEAR = 0.05;
 
 /** Per-kind body color. Only functions/methods become enemies today. */
 export function enemyColor(kind: EntityKind): string {
@@ -99,14 +105,17 @@ export function renderSprites(
   const visible = enemies
     .filter((e) => e.alive)
     .map((enemy) => ({ enemy, proj: projectEnemy(player, enemy, width, height) }))
-    .filter(({ proj }) => proj.depth > 0.2)
+    .filter(({ proj }) => proj.depth > SPRITE_NEAR)
     .sort((a, b) => b.proj.depth - a.proj.depth);
 
   for (const { enemy, proj } of visible) {
     const startX = Math.max(0, Math.floor(proj.left));
     const endX = Math.min(width - 1, Math.ceil(proj.right));
+    // Clamp the vertical extent to the screen — a point-blank sprite projects
+    // taller than the canvas, and an unclamped huge rect is wasteful to fill.
     const startY = Math.max(0, Math.floor(proj.top));
-    const spriteH = proj.bottom - proj.top;
+    const endY = Math.min(height - 1, Math.ceil(proj.bottom));
+    const spriteH = endY - startY + 1;
 
     // Body: vertical stripes, skipping columns hidden behind a wall. A recent
     // hit tints the whole body red for a few frames (the "bleed" flash).

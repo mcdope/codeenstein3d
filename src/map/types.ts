@@ -63,6 +63,20 @@ export interface Enemy {
    * Starts at 0.
    */
   hitFlash: number;
+  /**
+   * Origin room's walkable rectangle (tile units): the enemy roams only within
+   * `[x, x+w) × [y, y+h)` while idle, so it never wanders out of its room.
+   */
+  home: { x: number; y: number; w: number; h: number };
+  /**
+   * Whether the enemy is in the chase state. Set once the player comes within
+   * aggro range, or instantly when the enemy is shot ("damage aggro"). Sticky:
+   * an aggroed enemy keeps chasing even after the player leaves aggro range.
+   */
+  aggroed: boolean;
+  /** Current roam destination (world coords) while idle; re-picked on arrival. */
+  roamX: number;
+  roamY: number;
   /** The function/method this enemy represents. */
   entity: CodeEntity;
 }

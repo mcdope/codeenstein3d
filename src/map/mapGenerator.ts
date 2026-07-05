@@ -70,8 +70,10 @@ export class MapGenerator {
     // center enemy; the exit goes in the room furthest from that spawn.
     const spawn: Point =
       rooms.length > 0 ? { x: rooms[0].x + 1, y: rooms[0].y + 1 } : { x: 1, y: 1 };
-    const enemies = spawnEnemies(rooms);
+    // Exit is chosen before enemies so their placement can steer clear of it —
+    // the 'return' tile must never be hidden under a monster.
     const exit = pickExit(rooms, spawn);
+    const enemies = spawnEnemies(rooms, exit, rng);
     const hazards = fillHazards(rooms, grid, spawn, exit);
 
     // Corridors already punch through labyrinth walls; this guarantees the
@@ -404,28 +406,68 @@ function key(p: Point): string {
   return `${p.x},${p.y}`;
 }
 
+/** Extra enemies spawned per this many complexity points, beyond the first. */
+const COMPLEXITY_PER_EXTRA_ENEMY = 10;
+
 /**
- * Spawn one enemy per function/method, at its room's center. Classes,
- * interfaces, and traits get rooms but no enemy — only callable entities are
- * "monsters". HP scales with the entity's cyclomatic complexity.
+ * Populate rooms with enemies. Classes, interfaces, and traits get rooms but no
+ * enemy — only callable entities are "monsters". A room's total HP scales with
+ * the entity's cyclomatic complexity; highly complex functions split that into
+ * a pack (one extra enemy per 10 complexity points) rather than a single boss.
+ * Placements avoid the exit tile so the 'return' marker stays visible.
  */
-function spawnEnemies(rooms: Room[]): Enemy[] {
+function spawnEnemies(rooms: Room[], exit: Point, rng: () => number): Enemy[] {
   const enemies: Enemy[] = [];
   for (const room of rooms) {
     if (room.entity.kind !== "function" && room.entity.kind !== "method") continue;
-    const hp = Math.max(1, room.entity.complexityScore) * HP_PER_COMPLEXITY;
-    enemies.push({
-      x: room.x + room.w / 2,
-      y: room.y + room.h / 2,
-      hp,
-      maxHp: hp,
-      alive: true,
-      attackCooldown: 0,
-      hitFlash: 0,
-      entity: room.entity,
-    });
+
+    const complexity = Math.max(1, room.entity.complexityScore);
+    const count = 1 + Math.floor(complexity / COMPLEXITY_PER_EXTRA_ENEMY);
+    // Split the room's HP budget across the pack so total toughness is stable.
+    const hp = Math.max(HP_PER_COMPLEXITY, Math.round((complexity * HP_PER_COMPLEXITY) / count));
+    const home = { x: room.x, y: room.y, w: room.w, h: room.h };
+
+    for (const pos of enemyPositions(room, count, exit, rng)) {
+      enemies.push({
+        x: pos.x,
+        y: pos.y,
+        hp,
+        maxHp: hp,
+        alive: true,
+        attackCooldown: 0,
+        hitFlash: 0,
+        home,
+        aggroed: false,
+        roamX: pos.x,
+        roamY: pos.y,
+        entity: room.entity,
+      });
+    }
   }
   return enemies;
+}
+
+/**
+ * Fractional spawn points for a room's enemy pack: the first at the room center,
+ * the rest scattered randomly inside it. Any point landing on the exit tile is
+ * re-rolled (then nudged to a corner as a last resort) so nothing hides it.
+ */
+function enemyPositions(room: Room, count: number, exit: Point, rng: () => number): Point[] {
+  const spots: Point[] = [];
+  const onExit = (p: Point): boolean => Math.floor(p.x) === exit.x && Math.floor(p.y) === exit.y;
+  const randomInRoom = (): Point => ({
+    x: room.x + 0.5 + rng() * (room.w - 1),
+    y: room.y + 0.5 + rng() * (room.h - 1),
+  });
+
+  for (let i = 0; i < count; i++) {
+    // First enemy anchors at the room center; the rest scatter randomly.
+    let p = i === 0 ? { x: room.x + room.w / 2, y: room.y + room.h / 2 } : randomInRoom();
+    for (let guard = 0; onExit(p) && guard < 8; guard++) p = randomInRoom();
+    if (onExit(p)) p = { x: room.x + 1.5, y: room.y + 1.5 }; // last-resort corner
+    spots.push(p);
+  }
+  return spots;
 }
 
 /**

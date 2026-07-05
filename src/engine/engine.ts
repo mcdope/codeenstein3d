@@ -547,6 +547,9 @@ export class RaycasterEngine {
     // Hit feedback: thud sound, tint the sprite red, spray "digital blood".
     audio.playHit();
     enemy.hitFlash = HIT_FLASH_FRAMES;
+    // Damage aggro: being shot instantly wakes the enemy, even from beyond its
+    // aggro radius, so you can't safely snipe a roaming enemy from afar.
+    enemy.aggroed = true;
     spawnBlood(this.blood, enemy.x, enemy.y, 3 + Math.floor(Math.random() * 3));
     enemy.hp -= amount;
     if (enemy.hp > 0) {

@@ -2,24 +2,29 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 /**
- * Enemy AI: the per-frame chase-and-melee behaviour that turns the otherwise
- * inert `Enemy` billboards into active threats.
+ * Enemy AI: the per-frame behaviour that turns the otherwise inert `Enemy`
+ * billboards into active threats. Two states:
  *
- * This lives in the engine layer rather than as a method on the `Enemy` data
- * (which is plain, serializable map-layer state) so the map never has to depend
- * on the player/camera. Each living enemy homes in on the player once inside
- * `AGGRO_RADIUS`, slides along walls using the exact AABB grid test the player
- * uses (`collidesWithWall`), and bites for `ATTACK_DAMAGE` on a fixed cooldown
- * once within `ATTACK_RADIUS` — so damage lands in discrete hits, not every
- * frame.
+ * - **Roam** (idle): wander to random points inside the origin room, never
+ *   leaving it, so a room feels alive without monsters spilling into corridors.
+ * - **Chase**: home in on the player, rounding walls, and melee on a cooldown.
+ *
+ * An enemy flips to chase when the player enters its (enlarged) aggro radius or
+ * the instant it is shot ("damage aggro"), and stays aggroed thereafter. This
+ * lives in the engine layer rather than as a method on the `Enemy` data (which
+ * is plain, serializable map state) so the map never depends on the player.
  */
 import { collidesWithWall, isWall, type Player } from "./player";
 import type { Enemy, GameMap } from "../map/types";
 
 /** Distance (tiles) within which an enemy notices and chases the player. */
-const AGGRO_RADIUS = 5;
-/** Enemy movement speed in tiles per second (slower than the player's 3.2). */
+const AGGRO_RADIUS = 7.5;
+/** Enemy chase speed in tiles per second (slower than the player's 3.2). */
 const MOVEMENT_SPEED = 1.7;
+/** Enemy roam (idle wander) speed — a relaxed stroll. */
+const ROAM_SPEED = 0.8;
+/** Distance (tiles) from a roam target at which the enemy picks a new one. */
+const ROAM_ARRIVE = 0.25;
 /** Distance (tiles) at which an enemy stops chasing and melees instead. */
 const ATTACK_RADIUS = 0.5;
 /** Seconds between successive melee bites from a single enemy. */
@@ -48,7 +53,7 @@ export function updateEnemies(
   return damage;
 }
 
-/** Chase/attack a single enemy; returns the melee damage it deals this frame. */
+/** Update a single enemy; returns the melee damage it deals the player. */
 function updateEnemy(enemy: Enemy, player: Player, map: GameMap, dt: number): number {
   // Cool down toward the next available bite, whatever the current range.
   if (enemy.attackCooldown > 0) {
@@ -59,7 +64,16 @@ function updateEnemy(enemy: Enemy, player: Player, map: GameMap, dt: number): nu
   const dy = player.posY - enemy.y;
   const dist = Math.hypot(dx, dy);
 
-  // In melee range: hold position and bite whenever the cooldown has elapsed.
+  // Wake up once the player is within (enlarged) aggro range; damage aggro is
+  // applied separately by the engine when the enemy is shot. Sticky thereafter.
+  if (dist < AGGRO_RADIUS) enemy.aggroed = true;
+
+  if (!enemy.aggroed) {
+    roam(enemy, map, dt);
+    return 0;
+  }
+
+  // Chasing. In melee range: hold and bite whenever the cooldown has elapsed.
   if (dist <= ATTACK_RADIUS) {
     if (enemy.attackCooldown === 0) {
       enemy.attackCooldown = ATTACK_COOLDOWN;
@@ -68,15 +82,68 @@ function updateEnemy(enemy: Enemy, player: Player, map: GameMap, dt: number): nu
     return 0;
   }
 
-  // Otherwise home in on the player if within aggro range. Steer toward the
-  // next cell of a wall-aware path (so the enemy rounds corners and walls) and
-  // fall back to a straight line when no path is found within the window.
-  if (dist < AGGRO_RADIUS && dist > 0) {
+  // Otherwise home in on the player, steering toward the next cell of a
+  // wall-aware path (rounding corners) and falling back to a straight line.
+  if (dist > 0) {
     const step = MOVEMENT_SPEED * dt;
     const waypoint = nextWaypoint(enemy, player, map);
     chaseToward(enemy, waypoint?.x ?? player.posX, waypoint?.y ?? player.posY, step, map);
   }
   return 0;
+}
+
+/**
+ * Idle wandering, confined to the enemy's origin room: stroll toward the
+ * current roam target, and when it's reached (or the path is blocked) pick a
+ * fresh random point inside the room. Movement is clamped so the enemy's box
+ * never crosses the room bounds — it can't drift out through a doorway.
+ */
+function roam(enemy: Enemy, map: GameMap, dt: number): void {
+  const dx = enemy.roamX - enemy.x;
+  const dy = enemy.roamY - enemy.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist < ROAM_ARRIVE) {
+    pickRoamTarget(enemy);
+    return;
+  }
+
+  const step = ROAM_SPEED * dt;
+  const beforeX = enemy.x;
+  const beforeY = enemy.y;
+  moveWithinHome(enemy, (dx / dist) * step, (dy / dist) * step, map);
+  // If a wall blocked the stroll, wander somewhere else instead of pushing.
+  if (Math.hypot(enemy.x - beforeX, enemy.y - beforeY) < step * 0.25) {
+    pickRoamTarget(enemy);
+  }
+}
+
+/** Choose a new random roam destination inside the enemy's home room. */
+function pickRoamTarget(enemy: Enemy): void {
+  const h = enemy.home;
+  enemy.roamX = h.x + 0.5 + Math.random() * Math.max(0, h.w - 1);
+  enemy.roamY = h.y + 0.5 + Math.random() * Math.max(0, h.h - 1);
+}
+
+/** Per-axis slide that also refuses to leave the enemy's home room bounds. */
+function moveWithinHome(enemy: Enemy, dx: number, dy: number, map: GameMap): void {
+  const nextX = enemy.x + dx;
+  if (!collidesWithWall(map, nextX, enemy.y, ENEMY_RADIUS) && withinHome(nextX, enemy.y, enemy.home)) {
+    enemy.x = nextX;
+  }
+  const nextY = enemy.y + dy;
+  if (!collidesWithWall(map, enemy.x, nextY, ENEMY_RADIUS) && withinHome(enemy.x, nextY, enemy.home)) {
+    enemy.y = nextY;
+  }
+}
+
+/** True if a box of half-width `ENEMY_RADIUS` at (x,y) fits inside the room. */
+function withinHome(x: number, y: number, home: Enemy["home"]): boolean {
+  return (
+    x - ENEMY_RADIUS >= home.x &&
+    x + ENEMY_RADIUS <= home.x + home.w &&
+    y - ENEMY_RADIUS >= home.y &&
+    y + ENEMY_RADIUS <= home.y + home.h
+  );
 }
 
 /** How far beyond the aggro radius the path search may look, in tiles. */
