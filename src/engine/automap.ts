@@ -7,7 +7,7 @@
  * A solid triangle marks the player's position and facing. Pure Canvas 2D — the
  * engine pauses the sim while this is up.
  */
-import { DOOR_TILE, SPIKE_TRAP_TILE, TELEPORTER_TILE, type GameMap } from "../map/types";
+import { DOOR_TILE, HAZARD_TILE, SPIKE_TRAP_TILE, TELEPORTER_TILE, type GameMap } from "../map/types";
 import { activeSpikeTileKeys } from "./traps";
 import type { Player } from "./player";
 
@@ -22,6 +22,9 @@ const SPIKE_SAFE_COLOR = "#8a8a90";
 const SPIKE_ACTIVE_COLOR = "#e02818";
 /** Faint wash marking explored open floor. */
 const FLOOR_COLOR = "rgba(57,255,20,0.10)";
+/** Hazard (acid) tiles — same hot, non-green color as the HUD minimap, so it
+ * never blends with the green exit marker or explored-floor wash. */
+const HAZARD_COLOR = "#ff9d1f";
 
 /**
  * Draw the automap centered over the canvas: a dark scrim, then the explored
@@ -70,6 +73,9 @@ export function drawAutomap(
         ctx.fillRect(px, py, cell, cell);
       } else if (tile === SPIKE_TRAP_TILE) {
         ctx.fillStyle = activeSpikes.has(`${x},${y}`) ? SPIKE_ACTIVE_COLOR : SPIKE_SAFE_COLOR;
+        ctx.fillRect(px, py, cell, cell);
+      } else if (tile === HAZARD_TILE) {
+        ctx.fillStyle = HAZARD_COLOR;
         ctx.fillRect(px, py, cell, cell);
       } else {
         ctx.fillStyle = FLOOR_COLOR;

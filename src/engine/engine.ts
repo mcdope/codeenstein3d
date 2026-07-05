@@ -65,6 +65,9 @@ const MAX_DT = 0.05;
 const MAX_HEALTH = 100;
 /** Health lost per second while standing in an acid (hazard) tile. */
 const HAZARD_DPS = 18;
+/** Cone-of-Fire: screen-px of random aim deviation added per tile of range
+ * a ranged weapon's pellet is aimed across (see `fire()`). */
+const RANGE_DEVIATION_PX_PER_TILE = 4;
 /** Tiles the player must cover between footstep sounds. */
 const STRIDE_LENGTH = 1.2;
 /** Head-bob angular frequency while moving (radians/sec). */
@@ -694,22 +697,44 @@ export class RaycasterEngine {
     let pelletsHit = 0;
 
     for (const offset of pelletOffsets(weapon)) {
+      // Cone of Fire: ranged weapons get a small random aim deviation that
+      // grows with how far away whatever's down this column actually is (the
+      // z-buffer depth there, wall or otherwise), instead of a hard max-range
+      // cutoff — a shot lined up on a distant target can still go wide, while
+      // point-blank shots stay accurate. Melee has no business missing this
+      // way (it can't even reach past its own tiny range), so it's exempt.
+      const baseColumn = center + offset;
+      let column = baseColumn;
+      if (weapon.meleeRange === undefined) {
+        const baseCol = Math.min(width - 1, Math.max(0, Math.round(baseColumn)));
+        const range = this.zBuffer[baseCol];
+        const deviation = (Math.random() * 2 - 1) * range * RANGE_DEVIATION_PX_PER_TILE;
+        column = Math.min(width - 1, Math.max(0, baseColumn + deviation));
+      }
+
       // Tracer from the muzzle (bottom center) to this pellet's aim column at
       // crosshair height — drawn whether or not it connects.
-      const column = center + offset;
       this.traces.push(makeBulletTrace(width, height, column, height / 2));
 
       const enemy = findTargetAtColumn(this.player, this.enemies, this.zBuffer, width, height, column);
       if (enemy?.alive) {
-        this.damageEnemy(enemy, weapon.damagePerPellet);
+        // Melee only actually connects within its stabbing range, even if the
+        // column lines up with something farther away down the same sightline.
+        if (weapon.meleeRange !== undefined) {
+          const dist = Math.hypot(enemy.x - this.player.posX, enemy.y - this.player.posY);
+          if (dist > weapon.meleeRange) continue;
+        }
+        this.damageEnemy(enemy, weapon.damagePerPellet, weapon.lifesteal);
         pelletsHit += 1;
         continue;
       }
 
-      const mine = findMineAtColumn(this.player, this.map.mines, this.zBuffer, width, height, column);
-      if (mine) {
-        this.destroyMine(mine);
-        pelletsHit += 1;
+      if (weapon.meleeRange === undefined) {
+        const mine = findMineAtColumn(this.player, this.map.mines, this.zBuffer, width, height, column);
+        if (mine) {
+          this.destroyMine(mine);
+          pelletsHit += 1;
+        }
       }
     }
 
@@ -729,8 +754,11 @@ export class RaycasterEngine {
     if (dmg > 0) this.damage(dmg);
   }
 
-  /** Apply weapon damage to one enemy, retiring it (with a log) at 0 HP. */
-  private damageEnemy(enemy: Enemy, amount: number): void {
+  /**
+   * Apply weapon damage to one enemy, retiring it (with a log) at 0 HP. If the
+   * killing weapon has `lifesteal`, restore that much stability to the player.
+   */
+  private damageEnemy(enemy: Enemy, amount: number, lifesteal?: number): void {
     // Hit feedback: thud sound, tint the sprite red, spray "digital blood".
     audio.playHit();
     enemy.hitFlash = HIT_FLASH_FRAMES;
@@ -747,6 +775,7 @@ export class RaycasterEngine {
     enemy.alive = false;
     this.kills += 1;
     if (this.target === enemy) this.target = null;
+    if (lifesteal) this.health = Math.min(MAX_HEALTH, this.health + lifesteal);
     // Drop a heap (ammo) pickup where the process died.
     this.drops.push({ x: enemy.x, y: enemy.y });
     audio.playAmmoDrop();

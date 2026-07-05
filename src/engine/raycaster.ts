@@ -300,8 +300,9 @@ export function renderMinimap(
     }
   }
 
-  // Hazard (acid) tiles.
-  ctx.fillStyle = "#2f9e3a";
+  // Hazard (acid) tiles — a hot, non-green color so a glance never confuses
+  // them with the green pulsing exit marker drawn below.
+  ctx.fillStyle = "#ff9d1f";
   for (const hz of map.hazards) {
     ctx.fillRect(pad + hz.x * cell, pad + hz.y * cell, cell, cell);
   }

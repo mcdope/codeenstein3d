@@ -9,10 +9,13 @@
  *   leaving it, so a room feels alive without monsters spilling into corridors.
  * - **Chase**: home in on the player, rounding walls, and melee on a cooldown.
  *
- * An enemy flips to chase when the player enters its (enlarged) aggro radius or
- * the instant it is shot ("damage aggro"), and stays aggroed thereafter. This
- * lives in the engine layer rather than as a method on the `Enemy` data (which
- * is plain, serializable map state) so the map never depends on the player.
+ * An enemy flips to chase when the player enters its (enlarged) aggro radius
+ * *and* there's a clear line of sight to them, or the instant it is shot
+ * ("damage aggro" — bypasses the line-of-sight check entirely, since being
+ * shot at all proves the enemy has been found), and stays aggroed thereafter.
+ * This lives in the engine layer rather than as a method on the `Enemy` data
+ * (which is plain, serializable map state) so the map never depends on the
+ * player.
  */
 import { collidesWithWall, isWall, type Player } from "./player";
 import { spawnProjectile, type Projectile } from "./projectiles";
@@ -76,9 +79,13 @@ function updateEnemy(
   const dy = player.posY - enemy.y;
   const dist = Math.hypot(dx, dy);
 
-  // Wake up once the player is within (enlarged) aggro range; damage aggro is
-  // applied separately by the engine when the enemy is shot. Sticky thereafter.
-  if (dist < AGGRO_RADIUS) enemy.aggroed = true;
+  // Wake up once the player is within (enlarged) aggro range AND actually
+  // visible (no wall in between) — a roaming enemy shouldn't sense the player
+  // through solid geometry. Damage aggro is applied separately by the engine
+  // when the enemy is shot, and skips this check entirely. Sticky thereafter.
+  if (dist < AGGRO_RADIUS && hasLineOfSight(map, enemy.x, enemy.y, player.posX, player.posY)) {
+    enemy.aggroed = true;
+  }
 
   if (!enemy.aggroed) {
     roam(enemy, map, dt);
