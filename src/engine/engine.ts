@@ -47,6 +47,8 @@ import { DOOR_TILE, type AmmoDrop, type Enemy, type GameMap } from "../map/types
 
 /** Movement speed in tiles per second. */
 const MOVE_SPEED = 3.2;
+/** Speed multiplier while sprinting (holding Shift). */
+const SPRINT_MULTIPLIER = 2.0;
 /** Keyboard rotation speed in radians per second. */
 const ROT_SPEED = 2.6;
 /** Mouse rotation sensitivity in radians per pixel of movement. */
@@ -90,16 +92,12 @@ export interface EngineStats {
   maxHealth: number;
   /** Heap / RAM (ammo) remaining. */
   ammo: number;
-  enemiesRemaining: number;
-  totalEnemies: number;
-  /** Name of the enemy under the crosshair, or null. */
-  target: string | null;
-  /** Name of the currently equipped weapon. */
-  weapon: string;
   /** Dependency keys currently held (unused, in inventory). */
   keysHeld: number;
   /** Total keys placed on this level. */
   keysTotal: number;
+  /** Run score. Always 0 for now — scoring logic is a future task. */
+  score: number;
 }
 
 /** Host callbacks. All optional. */
@@ -325,15 +323,20 @@ export class RaycasterEngine {
   }
 
   private handleMovement(dt: number): void {
-    const step = MOVE_SPEED * dt;
+    const sprinting = this.input.isDown("ShiftLeft") || this.input.isDown("ShiftRight");
+    const step = MOVE_SPEED * (sprinting ? SPRINT_MULTIPLIER : 1) * dt;
     const startX = this.player.posX;
     const startY = this.player.posY;
     if (this.input.isDown("KeyW")) this.player.moveForward(step, this.map);
     if (this.input.isDown("KeyS")) this.player.moveForward(-step, this.map);
+    if (this.input.isDown("KeyD")) this.player.strafe(step, this.map);
+    if (this.input.isDown("KeyA")) this.player.strafe(-step, this.map);
 
+    // Camera rotation is exclusively Q/E + mouse — A/D strafe instead, so
+    // turning stays a keyboard key away from WASD rather than an arrow-key reach.
     const rot = ROT_SPEED * dt;
-    if (this.input.isDown("KeyA")) this.player.rotate(-rot);
-    if (this.input.isDown("KeyD")) this.player.rotate(rot);
+    if (this.input.isDown("KeyQ")) this.player.rotate(-rot);
+    if (this.input.isDown("KeyE")) this.player.rotate(rot);
 
     const mouseDX = this.input.consumeMouseDX();
     if (mouseDX !== 0) this.player.rotate(mouseDX * MOUSE_SENSITIVITY);
@@ -599,17 +602,13 @@ export class RaycasterEngine {
 
   /** Snapshot the live stats consumed by both the native HUD and the host. */
   private buildStats(): EngineStats {
-    const enemiesRemaining = this.enemies.reduce((n, e) => n + (e.alive ? 1 : 0), 0);
     return {
       health: Math.ceil(this.health),
       maxHealth: MAX_HEALTH,
       ammo: this.ammo,
-      enemiesRemaining,
-      totalEnemies: this.enemies.length,
-      target: this.target?.entity.name ?? null,
-      weapon: WEAPONS[this.weaponIndex].name,
       keysHeld: this.keysHeld,
       keysTotal: this.map.keys.length,
+      score: 0,
     };
   }
 }

@@ -8,7 +8,9 @@
  * relative mouse motion while the canvas holds a pointer lock. Clicking the
  * canvas requests the lock; Esc releases it (handled by the browser).
  */
-const MOVEMENT_KEYS = new Set(["KeyW", "KeyS", "KeyA", "KeyD"]);
+/** Movement/strafe/rotation keys whose default browser behavior we suppress so
+ * gameplay never fights the page. */
+const MOVEMENT_KEYS = new Set(["KeyW", "KeyS", "KeyA", "KeyD", "KeyQ", "KeyE"]);
 
 export class InputController {
   private readonly keys = new Set<string>();

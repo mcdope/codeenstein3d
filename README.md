@@ -9,8 +9,10 @@ Every folder is a level. Every file is a room. Every function is an enemy. The h
 Whether it's a massive Symfony enterprise project or low-level C code like the `pam_usb` module – this engine lets you "refactor" with a shotgun.
 
 ## 🚦 Current Status
-Playable end-to-end: pick a local folder, click a PHP file, and fight your way
-through the dungeon generated from its structure to the `return` statement.
+Playable end-to-end: pick a local folder, click a PHP or C file, and fight your
+way through the dungeon generated from its structure to the `return` statement —
+native HUD, procedural retro audio, a swaying weapon viewmodel, an active enemy
+AI that roams, chases, melees and shoots back, and a togglable automap.
 
 | Stage | Status |
 | --- | --- |
@@ -24,8 +26,18 @@ through the dungeon generated from its structure to the `return` statement.
 | 8. Hazards (globals → acid) + weapon arsenal | ✅ Done |
 | 9. Nested-scope labyrinths (deep code → maze) | ✅ Done |
 | 10. Locked doors (private/protected) + keys | ✅ Done |
+| 11. Native canvas HUD + enemy ammo loot drops | ✅ Done |
+| 12. Active enemy AI (chase + melee) | ✅ Done |
+| 13. Visual feedback (damage flash, tracers, blood) | ✅ Done |
+| 14. Procedural retro audio (Web Audio synthesis) | ✅ Done |
+| 15. Weapon viewmodel, head-bob, recoil | ✅ Done |
+| 16. Distance fog depth shading | ✅ Done |
+| 17. Automap overlay with fog of war | ✅ Done |
+| 18. Enemy AI overhaul (roaming, packs, damage aggro) | ✅ Done |
+| 19. Ranged enemy combat (projectiles) | ✅ Done |
 | Multi-file "levels" / bosses from complexity | 🔜 Planned |
 | Additional language grammars (JS, Python, …) | 🔜 Planned |
+| Scoring + persisted highscores | 🔜 Planned |
 
 ## 🏗️ Architecture & Pipeline
 This project is strictly "Local-First". Proprietary code never leaves your machine.
@@ -33,10 +45,10 @@ This project is strictly "Local-First". Proprietary code never leaves your machi
 1. **Local Access (File System Access API):** Direct read access to your local workspace via `showDirectoryPicker()`. *Strictly no virtual devices or mocked file systems.* — `src/fs/`
 2. **AST Parser (web-tree-sitter via WASM):** Language-agnostic parsing behind a `CodeParserAdapter` interface. Source files are normalized into plain JSON (`linesOfCode` + `entities[]` with start/end lines and a cyclomatic `complexityScore`). The rest of the engine never touches Tree-sitter directly. Grammars: **PHP** (`.php`) and **C** (`.c`, `.h`); adding a language is one adapter + one registry line. — `src/parser/`
 3. **Procedural Map Generator:** Deterministically translates the normalized JSON into a 2D tile matrix (`0` = floor, `1` = wall, `2` = acid hazard, `3` = locked door). Each entity becomes an enclosed room — but a **deeply nested function turns into a labyrinth** (recursive-division maze of `1`-walls, passages kept ≥1 tile wide) rather than an open box. Rooms are linked by corridors. It places an enemy for every function/method (HP scaled from its complexity), floods every global-variable room with an **acid pool**, locks **private/protected-method** rooms behind **doors** and scatters a matching **dependency key** in reachable public floor (so every level stays solvable), and puts a green **exit tile** — the `return` statement — in the room furthest from spawn. — `src/map/`
-4. **Raycaster Engine & Gameplay:** A classic 2.5D raycaster written entirely on the HTML5 `<canvas>` 2D context. No WebGL, no Three.js – pure retro mathematics (DDA algorithm), distance shading, floor-cast acid tiles, delta-timed first-person movement, and AABB wall collision. Layered on top: billboard enemy sprites (z-buffer occluded), collectible keys, a weapon arsenal (hitscan pistol + cone shotgun), contact/hazard damage, key-unlocked doors, and win/lose state. — `src/engine/`
+4. **Raycaster Engine & Gameplay:** A classic 2.5D raycaster written entirely on the HTML5 `<canvas>` 2D context. No WebGL, no Three.js – pure retro mathematics (DDA algorithm), distance-fog shading (full bright near, black beyond ~14 tiles), floor-cast acid tiles, delta-timed first-person movement, and AABB wall collision. Layered on top: billboard enemy/key/ammo sprites (z-buffer occluded), a weapon arsenal (hitscan pistol + cone shotgun) with a swaying, recoiling viewmodel and head-bob, active enemy AI (roams its room, chases on aggro or on taking damage, melees up close, lobs ranged bolts with line-of-sight at range), impact feedback (screen damage flash, bullet tracers, enemy bleed-flash, falling "digital blood" particles), procedural Web-Audio sound effects, a native-canvas HUD, a togglable automap with fog of war, key-unlocked doors, and win/lose state. — `src/engine/`
 
 ### Gameplay loop
-Every **function/method is an enemy** whose **HP equals its cyclomatic complexity** (×25) — so a gnarly function takes more shots to clear. Every **global variable becomes an acid pool** (a hazard room) that drains you if you wade through it. **`private`/`protected` methods are locked rooms**: their doors (steel-blue) block you until you pick up a scattered **dependency key** and walk into them, which consumes the key. You have **System Stability** (health) and a shared **Heap / RAM** ammo pool sized to the level, plus a two-weapon arsenal: the **echo pistol** (precise single hitscan) and the **Regex Shotgun** (a cone of pellets — devastating up close, useless at range). Touching an enemy or standing in acid drains stability; hitting 0 is a **Kernel Panic** (game over). Reach the green `return` tile for a **Build Successful** and drop back to the file tree.
+Every **function/method is an enemy** whose **HP equals its cyclomatic complexity** (×25) — so a gnarly function takes more shots to clear, and functions above a complexity threshold spawn a whole *pack* instead of one boss. Enemies aren't static: they **roam** their room until they notice you (within an aggro radius, or the instant you shoot them from further away), then **chase** you around corners and walls, **melee** you up close on a cooldown, or **lob ranged plasma bolts** when they have a clear line of sight at range. Every **global variable becomes an acid pool** (a hazard room) that drains you if you wade through it. **`private`/`protected` methods are locked rooms**: their doors (steel-blue) block you until you pick up a scattered **dependency key** and walk into them, which consumes the key. You have **System Stability** (health) and a shared **Heap / RAM** ammo pool sized to the level — topped up by ammo pickups dropped by defeated enemies — plus a two-weapon arsenal: the **echo pistol** (precise single hitscan) and the **Regex Shotgun** (a cone of pellets — devastating up close, useless at range). Every hit lands with feedback: a screen-shaking damage flash, bullet tracers, enemies flashing red and spraying "digital blood", and procedurally synthesized retro sound effects (no audio files — pure Web Audio oscillators). Touching an enemy, a bolt, or acid drains stability; below 25% a pulsing alarm kicks in. Hitting 0 is a **Kernel Panic** (game over). Reach the green `return` tile for a **Build Successful** and drop back to the file tree. Lost? Hit **Tab** for a togglable automap that reveals only the rooms and corridors you've already explored.
 
 ### Data flow
 ```
@@ -49,18 +61,23 @@ Each stage only depends on the plain data structure produced by the previous one
 Click a `.php`, `.c`, or `.h` file in the sidebar to generate and enter its level.
 
 * **W / S** – move forward / backward
-* **A / D** – turn left / right
+* **A / D** – strafe left / right
+* **Q / E** – turn left / right
+* **Shift** – sprint (2× move speed)
 * **Mouse** – click the canvas to capture the pointer and look around (`Esc` releases)
 * **Click / Space** – fire the active weapon
 * **1 / 2** – switch weapon (echo pistol / Regex Shotgun)
+* **Tab** – toggle the full-screen automap (pauses the action; only explored areas are revealed)
 * **Keys & doors** – walk over a gold key to collect it; walk into a blue locked door while holding a key to open it (consumes the key)
-* **Objective** – clear (or dodge) the enemies, avoid the green acid pools, unlock any doors in your way, and step on the green `return` tile
-* A bottom **HUD** shows System Stability, Heap/RAM, active weapon, keys held, processes remaining, and your current target; a top-left minimap shows walls, enemies, acid, doors, keys, the exit, and your facing.
+* **Ammo pickups** – defeated enemies drop a heap refill; walk over it to collect
+* **Objective** – clear (or dodge) the enemies, avoid the green acid pools and enemy bolts, unlock any doors in your way, and step on the green `return` tile
+* A native-canvas bottom **HUD** keeps it minimal: System Stability, Heap/RAM, keys held, and score (no weapon name or targeted-entity name); a top-left minimap shows walls, enemies, acid, doors, keys, the exit, and your facing.
 
 ## 💻 Tech Stack
 * **Frontend:** Vanilla TypeScript + Vite (no UI framework; minimal dependencies)
 * **Parser:** `web-tree-sitter` (WASM) with `tree-sitter-php` and `tree-sitter-c` grammars
-* **Rendering:** HTML5 Canvas 2D API
+* **Rendering:** HTML5 Canvas 2D API (walls, sprites, HUD, and the automap are all native canvas draws — no DOM overlay for gameplay)
+* **Audio:** Web Audio API — every sound effect is synthesized from oscillators/noise at runtime; no audio files
 * **OS Focus:** Developed and optimized for modern browsers on Linux (CachyOS / Arch / Debian)
 
 ## 🌐 Browser Requirements
@@ -74,13 +91,25 @@ unsupported browsers and disables the picker with a message.
 src/
 ├── main.ts            # App entry: wires the sidebar, parser, map, engine, and HUD together
 ├── fs/                # File System Access API: workspace picker + directory walk
-├── ui/                # File-tree sidebar + in-game HTML HUD / end screens (gameHud.ts)
+├── ui/                # File-tree sidebar + end-of-run overlay (gameHud.ts; the live HUD is native canvas)
 ├── parser/            # Language-agnostic AST layer (CodeParserAdapter, registry, astUtils)
 │   ├── php/           # PHP adapter backed by tree-sitter-php
 │   └── c/             # C adapter backed by tree-sitter-c
 ├── map/               # Procedural map generator: grid, enemies, exit (+ top-down debug renderer)
-└── engine/            # 2.5D raycaster + gameplay: player/camera, DDA renderer, sprites,
-                       #   input, hitscan combat, HUD crosshair, and the game loop
+└── engine/            # 2.5D raycaster + gameplay
+    ├── engine.ts       # Game loop: sim, combat, damage, stats — ties every system below together
+    ├── raycaster.ts    # DDA wall renderer + floor-cast background, with distance fog
+    ├── player.ts       # Camera/movement + shared AABB wall-collision test
+    ├── sprites.ts      # Billboard rendering for enemies/keys + crosshair hit-testing
+    ├── enemyAi.ts      # Enemy roam/chase/melee/ranged-fire behaviour
+    ├── projectiles.ts  # Enemy ranged bolts: spawn, move, collide, render
+    ├── weapons.ts      # Weapon stats (pistol/shotgun) + pellet spread
+    ├── viewmodel.ts    # First-person weapon sprite, head-bob, recoil
+    ├── effects.ts      # Damage flash, bullet tracers, hit-flash, "digital blood" particles
+    ├── audio.ts        # Procedural Web Audio sound effects (AudioManager singleton)
+    ├── hud.ts          # Native-canvas status bar + crosshair
+    ├── automap.ts      # Togglable fog-of-war map overlay
+    └── input.ts        # Keyboard/mouse polling + pointer lock
 ```
 
 ## 🚀 Getting Started

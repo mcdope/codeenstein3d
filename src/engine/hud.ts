@@ -35,9 +35,10 @@ const HUD_HEIGHT = 58;
 
 /**
  * Doom/terminal-style status bar drawn across the bottom of the canvas. Call
- * this last (after the 3D scene, sprites and minimap) so it sits on top. Shows
- * System Stability (health), Heap (ammo) and Keys, plus the current weapon,
- * remaining processes (enemies) and the targeted enemy.
+ * this last (after the 3D scene, sprites and minimap) so it sits on top. Kept
+ * deliberately minimal: System Stability (health), Heap (ammo), Keys, and
+ * Score — no weapon name, enemy count, or targeted-entity name, so the UI
+ * doesn't spoil source-code details while playing.
  */
 export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void {
   const w = ctx.canvas.width;
@@ -73,32 +74,17 @@ export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void
   drawValue(ctx, `${stats.health}%`, barX + barW + 8, valueY, low ? "#ff6a5a" : "#4cff6a", 13);
 
   // --- Heap (ammo) ---
-  drawLabel(ctx, "HEAP", 185, labelY);
-  drawValue(ctx, String(stats.ammo), 185, valueY, stats.ammo <= 0 ? "#ff5a4a" : "#4cff6a", 22);
-
-  // --- Weapon ---
-  drawLabel(ctx, "WEAPON [1/2]", 250, labelY);
-  drawValue(ctx, stats.weapon, 250, valueY, "#4cff6a", 15);
+  drawLabel(ctx, "HEAP", 230, labelY);
+  drawValue(ctx, String(stats.ammo), 230, valueY, stats.ammo <= 0 ? "#ff5a4a" : "#4cff6a", 22);
 
   // --- Keys ---
-  drawLabel(ctx, "KEYS", 385, labelY);
-  drawValue(ctx, `${stats.keysHeld}/${stats.keysTotal}`, 385, valueY, "#f2d64b", 22);
+  drawLabel(ctx, "KEYS", 330, labelY);
+  drawValue(ctx, `${stats.keysHeld}/${stats.keysTotal}`, 330, valueY, "#f2d64b", 22);
 
-  // --- Processes (enemies remaining) ---
-  drawLabel(ctx, "PROC", 452, labelY);
-  drawValue(ctx, `${stats.enemiesRemaining}/${stats.totalEnemies}`, 452, valueY, "#4cff6a", 22);
-
-  // --- Target (right-aligned) ---
+  // --- Score (right-aligned) ---
   ctx.textAlign = "right";
-  drawLabel(ctx, "TARGET", w - 12, labelY);
-  drawValue(
-    ctx,
-    stats.target ? `${stats.target}()` : "—",
-    w - 12,
-    valueY,
-    stats.target ? "#ff6a5a" : "#5aa869",
-    14,
-  );
+  drawLabel(ctx, "SCORE", w - 12, labelY);
+  drawValue(ctx, String(stats.score), w - 12, valueY, "#4cff6a", 22);
   ctx.textAlign = "left";
 }
 

@@ -64,6 +64,17 @@ export class Player {
     this.move(this.dirX * dist, this.dirY * dist, map);
   }
 
+  /**
+   * Move `dist` tiles perpendicular to the facing vector, without turning
+   * (negative = strafe left, positive = strafe right). The right vector is the
+   * facing vector rotated +90°, matching `rotate`'s positive-angle convention.
+   */
+  strafe(dist: number, map: GameMap): void {
+    const strafeX = -this.dirY;
+    const strafeY = this.dirX;
+    this.move(strafeX * dist, strafeY * dist, map);
+  }
+
   /** Attempt a translation, resolving each axis independently for sliding. */
   private move(dx: number, dy: number, map: GameMap): void {
     const nextX = this.posX + dx;

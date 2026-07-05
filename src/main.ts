@@ -108,9 +108,9 @@ function launchLevel(path: string, parsed: ParsedFile): void {
   hint.className = "map-caption";
   hint.textContent =
     `${path} — reach the green "return" tile to build · ` +
-    `Click to capture mouse · W/S move · A/D or mouse turn · ` +
-    `Click / Space to fire · 1 pistol / 2 shotgun · grab keys to open blue doors · ` +
-    `avoid the acid · Esc releases mouse`;
+    `Click to capture mouse · W/S move, A/D strafe · Q/E or mouse turn · ` +
+    `Shift to sprint · Click / Space to fire · 1 pistol / 2 shotgun · ` +
+    `grab keys to open blue doors · avoid the acid · Tab for map · Esc releases mouse`;
 
   const hud = new GameHud();
 
