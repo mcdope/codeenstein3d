@@ -296,16 +296,17 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
     `avoid the acid and timed spikes · shoot spotted mines to disarm them from range · ` +
     `Tab for map · F for fullscreen · Esc to pause`;
 
-  const hud = new GameHud();
+  const hud = new GameHud(canvas);
   activeHud = hud;
 
-  // The status bar is drawn natively on the canvas; only the end-of-run
-  // overlay remains in the DOM. Only the canvas's *siblings* are replaced —
-  // the canvas itself is never removed from #viewport (see its doc comment).
+  // The status bar and every blocking overlay (briefing, commit summary,
+  // end-of-run) are all drawn natively on the canvas now — nothing but the
+  // hint caption is DOM. Only the canvas's *siblings* are replaced — the
+  // canvas itself is never removed from #viewport (see its doc comment).
   for (const child of [...viewport.children]) {
     if (child !== canvas) child.remove();
   }
-  viewport.append(hint, hud.overlay);
+  viewport.append(hint);
   canvas.hidden = false;
   // Grab keyboard focus immediately — without this, the very first WASD press
   // after a level (re)load is silently swallowed until the player clicks the
