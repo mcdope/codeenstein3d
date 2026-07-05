@@ -18,13 +18,14 @@ import { renderMinimap, renderScene } from "./raycaster";
 import {
   findTargetAtColumn,
   findTargetUnderCrosshair,
+  renderAmmoDrops,
   renderExitMarker,
   renderKeys,
   renderSprites,
 } from "./sprites";
-import { drawCrosshair } from "./hud";
+import { drawCrosshair, drawHud } from "./hud";
 import { WEAPONS, pelletOffsets } from "./weapons";
-import { DOOR_TILE, type Enemy, type GameMap } from "../map/types";
+import { DOOR_TILE, type AmmoDrop, type Enemy, type GameMap } from "../map/types";
 
 /** Movement speed in tiles per second. */
 const MOVE_SPEED = 3.2;
@@ -44,6 +45,10 @@ const CONTACT_DPS = 30;
 const HAZARD_DPS = 18;
 /** How close (tiles) the player must get to pick up a key. */
 const KEY_PICKUP_RADIUS = 0.5;
+/** Heap (ammo) restored by picking up one enemy loot drop. */
+const AMMO_DROP_AMOUNT = 6;
+/** How close (tiles) the player must get to pick up a dropped ammo pack. */
+const AMMO_PICKUP_RADIUS = 0.5;
 
 /** Live stats pushed to the host each frame. */
 export interface EngineStats {
@@ -94,6 +99,8 @@ export class RaycasterEngine {
   private weaponIndex = 0;
   /** Dependency keys collected but not yet spent on a door. */
   private keysHeld = 0;
+  /** Ammo pickups dropped by defeated enemies, awaiting collection. */
+  private readonly drops: AmmoDrop[] = [];
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -151,6 +158,7 @@ export class RaycasterEngine {
     // Simulate (may end the game via damage or reaching the exit).
     this.handleMovement(dt);
     this.collectKeys();
+    this.collectAmmoDrops();
     this.openDoorAhead();
     this.applyContactDamage(dt);
     this.applyHazardDamage(dt);
@@ -161,6 +169,7 @@ export class RaycasterEngine {
     renderScene(this.ctx, this.map, this.player, this.zBuffer);
     renderSprites(this.ctx, this.player, this.enemies, this.zBuffer);
     renderKeys(this.ctx, this.player, this.map.keys, this.zBuffer);
+    renderAmmoDrops(this.ctx, this.player, this.drops, this.zBuffer);
     renderExitMarker(this.ctx, this.player, this.map.exit, this.zBuffer);
 
     this.target = findTargetUnderCrosshair(
@@ -176,7 +185,10 @@ export class RaycasterEngine {
     drawCrosshair(this.ctx, this.target !== null, WEAPONS[this.weaponIndex].spreadPx);
     renderMinimap(this.ctx, this.map, this.player);
 
-    this.reportStats();
+    // Native HUD sits on top of the whole scene.
+    const stats = this.buildStats();
+    drawHud(this.ctx, stats);
+    this.handlers.onStats?.(stats);
   }
 
   private handleMovement(dt: number): void {
@@ -232,6 +244,25 @@ export class RaycasterEngine {
         console.log(
           `%c[key] dependency key acquired — ${this.keysHeld} in inventory`,
           "color:#f2d64b",
+        );
+      }
+    }
+  }
+
+  /** Pick up any ammo drop the player has walked onto, refilling the heap. */
+  private collectAmmoDrops(): void {
+    if (this.state !== "playing" || this.drops.length === 0) return;
+    const r2 = AMMO_PICKUP_RADIUS * AMMO_PICKUP_RADIUS;
+    for (let i = this.drops.length - 1; i >= 0; i--) {
+      const drop = this.drops[i];
+      const dx = drop.x - this.player.posX;
+      const dy = drop.y - this.player.posY;
+      if (dx * dx + dy * dy < r2) {
+        this.drops.splice(i, 1);
+        this.ammo += AMMO_DROP_AMOUNT;
+        console.log(
+          `%c[heap] +${AMMO_DROP_AMOUNT} ammo salvaged — ${this.ammo} in heap`,
+          "color:#3fd0e0",
         );
       }
     }
@@ -332,6 +363,8 @@ export class RaycasterEngine {
     enemy.hp = 0;
     enemy.alive = false;
     if (this.target === enemy) this.target = null;
+    // Drop a heap (ammo) pickup where the process died.
+    this.drops.push({ x: enemy.x, y: enemy.y });
     const remaining = this.enemies.reduce((n, e) => n + (e.alive ? 1 : 0), 0);
     console.log(
       `%c[KILL] ${enemy.entity.kind} ${enemy.entity.name}() eliminated — ${remaining} enemies remaining`,
@@ -349,8 +382,13 @@ export class RaycasterEngine {
   }
 
   private reportStats(): void {
+    this.handlers.onStats?.(this.buildStats());
+  }
+
+  /** Snapshot the live stats consumed by both the native HUD and the host. */
+  private buildStats(): EngineStats {
     const enemiesRemaining = this.enemies.reduce((n, e) => n + (e.alive ? 1 : 0), 0);
-    this.handlers.onStats?.({
+    return {
       health: Math.ceil(this.health),
       maxHealth: MAX_HEALTH,
       ammo: this.ammo,
@@ -360,7 +398,7 @@ export class RaycasterEngine {
       weapon: WEAPONS[this.weaponIndex].name,
       keysHeld: this.keysHeld,
       keysTotal: this.map.keys.length,
-    });
+    };
   }
 }
 

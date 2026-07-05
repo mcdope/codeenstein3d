@@ -13,7 +13,7 @@
  * in front of the nearest wall — so what you see under the crosshair is what
  * you shoot.
  */
-import type { Enemy, KeyItem, Point } from "../map/types";
+import type { AmmoDrop, Enemy, KeyItem, Point } from "../map/types";
 import type { CodeEntity, EntityKind } from "../parser/types";
 import type { Player } from "./player";
 
@@ -268,6 +268,36 @@ export function renderKeys(
     ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
     ctx.fillStyle = "#f2d64b";
     ctx.fillRect(cx - size / 2 + size * 0.15, cy - size / 2 + size * 0.15, size * 0.7, size * 0.7);
+  }
+}
+
+/** Draw dropped ammo pickups as small floating cyan "RAM chip" billboards. */
+export function renderAmmoDrops(
+  ctx: CanvasRenderingContext2D,
+  player: Player,
+  drops: AmmoDrop[],
+  zBuffer: Float64Array,
+): void {
+  const width = ctx.canvas.width;
+  const height = ctx.canvas.height;
+
+  const visible = drops
+    .map((drop) => ({ proj: projectPoint(player, drop.x, drop.y, width, height, 0.26) }))
+    .filter(({ proj }) => proj.depth > 0.2)
+    .sort((a, b) => b.proj.depth - a.proj.depth);
+
+  for (const { proj } of visible) {
+    const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
+    if (proj.depth >= zBuffer[centerCol]) continue; // behind a wall
+
+    const size = proj.right - proj.left;
+    const cx = proj.screenX;
+    // Float the chip at roughly waist height, not the floor.
+    const cy = height / 2 + size * 0.45;
+    ctx.fillStyle = "#0e3540";
+    ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
+    ctx.fillStyle = "#3fd0e0";
+    ctx.fillRect(cx - size / 2 + size * 0.18, cy - size / 2 + size * 0.18, size * 0.64, size * 0.64);
   }
 }
 

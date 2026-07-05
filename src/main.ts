@@ -114,10 +114,11 @@ function launchLevel(path: string, parsed: ParsedFile): void {
 
   const hud = new GameHud();
 
-  viewport.replaceChildren(canvas, hint, hud.bar, hud.overlay);
+  // The status bar is drawn natively on the canvas; only the end-of-run
+  // overlay remains in the DOM.
+  viewport.replaceChildren(canvas, hint, hud.overlay);
 
   activeEngine = new RaycasterEngine(canvas, map, {
-    onStats: (stats) => hud.update(stats),
     onGameOver: () => hud.showKernelPanic(resetToFileTree),
     onWin: () => hud.showBuildSuccessful(resetToFileTree),
   });

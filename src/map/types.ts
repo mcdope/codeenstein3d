@@ -83,3 +83,13 @@ export interface KeyItem {
   y: number;
   collected: boolean;
 }
+
+/**
+ * A heap (ammo) pickup dropped by a defeated enemy at its death position.
+ * Spawned at runtime by the engine and removed once the player walks over it.
+ */
+export interface AmmoDrop {
+  /** World position in fractional tile units. */
+  x: number;
+  y: number;
+}
