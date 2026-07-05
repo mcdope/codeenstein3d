@@ -24,6 +24,7 @@ import {
   renderDecorations,
   renderExitMarker,
   renderKeys,
+  renderMines,
   renderSprites,
   renderTeleporters,
 } from "./sprites";
@@ -45,6 +46,7 @@ import {
 } from "./effects";
 import { audio } from "./audio";
 import { WEAPONS, pelletOffsets } from "./weapons";
+import { spikeDamage, updateMines } from "./traps";
 import { DOOR_TILE, TELEPORTER_TILE, type AmmoDrop, type Enemy, type GameMap } from "../map/types";
 
 /** Movement speed in tiles per second. */
@@ -170,6 +172,8 @@ export class RaycasterEngine {
    * can step off before it can trigger again — otherwise the destination pad
    * (itself a teleporter tile) would bounce them straight back. */
   private suppressTeleportAt: string | null = null;
+  /** Seconds elapsed in this level's simulation; drives timed spike traps. */
+  private levelTime = 0;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -238,8 +242,10 @@ export class RaycasterEngine {
     if (requested !== null && requested < WEAPONS.length) this.weaponIndex = requested;
 
     // Simulate (may end the game via damage or reaching the exit).
+    this.levelTime += dt;
     this.handleMovement(dt);
     this.markVisited();
+    this.updateRoomDiscovery();
     this.collectKeys();
     this.collectAmmoDrops();
     this.openDoorAhead();
@@ -247,6 +253,7 @@ export class RaycasterEngine {
     this.updateEnemyAi(dt);
     this.updateProjectiles(dt);
     this.applyHazardDamage(dt);
+    this.applyTrapDamage(dt);
     this.updateLowHealthAlarm(dt);
     this.checkExit();
 
@@ -255,9 +262,10 @@ export class RaycasterEngine {
 
     // Render — one final frozen frame is still drawn after the game ends.
     const { width, height } = this.ctx.canvas;
-    renderScene(this.ctx, this.map, this.player, this.zBuffer, view.horizonShift);
+    renderScene(this.ctx, this.map, this.player, this.zBuffer, view.horizonShift, this.levelTime);
     renderDecorations(this.ctx, this.player, this.map.decorations, this.zBuffer);
     renderTeleporters(this.ctx, this.player, this.map.teleporters, this.zBuffer);
+    renderMines(this.ctx, this.player, this.map.mines, this.zBuffer);
     renderSprites(this.ctx, this.player, this.enemies, this.zBuffer);
     renderProjectiles(this.ctx, this.player, this.projectiles, this.zBuffer);
     renderKeys(this.ctx, this.player, this.map.keys, this.zBuffer);
@@ -292,7 +300,7 @@ export class RaycasterEngine {
     });
 
     drawCrosshair(this.ctx, this.target !== null, WEAPONS[this.weaponIndex].spreadPx);
-    renderMinimap(this.ctx, this.map, this.player);
+    renderMinimap(this.ctx, this.map, this.player, this.levelTime);
 
     // Native HUD sits on top of the whole scene.
     const stats = this.buildStats();
@@ -308,15 +316,16 @@ export class RaycasterEngine {
    * the normal update+render while the map is open, so the world stands still.
    */
   private renderPaused(): void {
-    renderScene(this.ctx, this.map, this.player, this.zBuffer, 0);
+    renderScene(this.ctx, this.map, this.player, this.zBuffer, 0, this.levelTime);
     renderDecorations(this.ctx, this.player, this.map.decorations, this.zBuffer);
     renderTeleporters(this.ctx, this.player, this.map.teleporters, this.zBuffer);
+    renderMines(this.ctx, this.player, this.map.mines, this.zBuffer);
     renderSprites(this.ctx, this.player, this.enemies, this.zBuffer);
     renderProjectiles(this.ctx, this.player, this.projectiles, this.zBuffer);
     renderKeys(this.ctx, this.player, this.map.keys, this.zBuffer);
     renderAmmoDrops(this.ctx, this.player, this.drops, this.zBuffer);
     renderExitMarker(this.ctx, this.player, this.map.exit, this.zBuffer);
-    drawAutomap(this.ctx, this.map, this.player);
+    drawAutomap(this.ctx, this.map, this.player, this.levelTime);
     this.handlers.onStats?.(this.buildStats());
   }
 
@@ -330,6 +339,25 @@ export class RaycasterEngine {
       for (let x = cx - 1; x <= cx + 1; x++) {
         if (x >= 0 && x < this.map.width) row[x] = true;
       }
+    }
+  }
+
+  /**
+   * Reveal each not-yet-discovered enemy once the player's collision box
+   * (an AABB centered on their position) intersects that enemy's room — its
+   * `home` rectangle. Sticky: a discovered enemy stays visible on the minimap
+   * even after the player leaves the room.
+   */
+  private updateRoomDiscovery(): void {
+    const r = this.player.radius;
+    const px = this.player.posX;
+    const py = this.player.posY;
+    for (const enemy of this.enemies) {
+      if (enemy.discovered) continue;
+      const home = enemy.home;
+      const intersects =
+        px + r > home.x && px - r < home.x + home.w && py + r > home.y && py - r < home.y + home.h;
+      if (intersects) enemy.discovered = true;
     }
   }
 
@@ -425,6 +453,22 @@ export class RaycasterEngine {
     const cx = Math.floor(this.player.posX);
     const cy = Math.floor(this.player.posY);
     if (isHazard(this.map, cx, cy)) this.damage(HAZARD_DPS * dt);
+  }
+
+  /**
+   * Drain stability while standing on an active spike trap, and detonate any
+   * proximity mine whose fuse the player didn't back away from in time.
+   */
+  private applyTrapDamage(dt: number): void {
+    if (this.state !== "playing") return;
+    const spike = spikeDamage(this.map.spikeTraps, this.player, this.levelTime, dt);
+    if (spike > 0) this.damage(spike);
+
+    const mineDamage = updateMines(this.map.mines, this.player, dt);
+    if (mineDamage > 0) {
+      audio.playExplosion();
+      this.damage(mineDamage);
+    }
   }
 
   /** Pick up any key the player has walked onto. */

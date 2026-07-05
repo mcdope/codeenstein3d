@@ -11,9 +11,10 @@ import type { CodeEntity } from "../parser/types";
 /**
  * A grid cell: 0 = empty floor, 1 = wall, 2 = hazard (acid, walkable),
  * 3 = locked door (solid until opened with a key, then becomes 0),
- * 4 = goto/label teleporter pad (walkable; warps the player elsewhere).
+ * 4 = goto/label teleporter pad (walkable; warps the player elsewhere),
+ * 5 = timed spike trap (walkable; damages only while in its active phase).
  */
-export type Tile = 0 | 1 | 2 | 3 | 4;
+export type Tile = 0 | 1 | 2 | 3 | 4 | 5;
 
 /** Tile value for a walkable hazard (acid pool) cell. */
 export const HAZARD_TILE = 2;
@@ -21,6 +22,8 @@ export const HAZARD_TILE = 2;
 export const DOOR_TILE = 3;
 /** Tile value for a goto/label teleporter pad (walkable, not a wall). */
 export const TELEPORTER_TILE = 4;
+/** Tile value for a timed spike trap (walkable; see `SpikeTrap`). */
+export const SPIKE_TRAP_TILE = 5;
 
 /** Tile coordinate (integer grid position). */
 export interface Point {
@@ -77,6 +80,13 @@ export interface Enemy {
    * an aggroed enemy keeps chasing even after the player leaves aggro range.
    */
   aggroed: boolean;
+  /**
+   * Whether the player has ever physically entered this enemy's room (an AABB
+   * intersection between the player's collision box and `home`). Sticky, once
+   * true stays true. Gates whether the always-on HUD minimap draws this enemy
+   * at all — see `renderMinimap` in `raycaster.ts`.
+   */
+  discovered: boolean;
   /** Current roam destination (world coords) while idle; re-picked on arrival. */
   roamX: number;
   roamY: number;
@@ -120,6 +130,10 @@ export interface GameMap {
   /** Goto/label teleporter pads — one entry per pad, each pointing at its
    * paired pad's position. */
   teleporters: Teleporter[];
+  /** Timed spike traps, procedurally placed at corridor choke points. */
+  spikeTraps: SpikeTrap[];
+  /** Proximity mines, procedurally placed at corridor choke points. */
+  mines: Mine[];
 }
 
 /** A collectible "dependency key" (opens one locked door). */
@@ -171,4 +185,44 @@ export interface Teleporter {
   targetY: number;
   /** The label name, for HUD/debug display. */
   label: string;
+}
+
+/**
+ * A timed spike trap tile (grid value `SPIKE_TRAP_TILE`): alternates between a
+ * safe first half and a damaging second half of each `period`-second cycle.
+ * `phase` offsets that cycle per-trap so a level's traps don't all click in
+ * unison. Always walkable — only the active half deals damage.
+ */
+export interface SpikeTrap {
+  /** Tile coordinates (integers). */
+  x: number;
+  y: number;
+  /** Full safe→active→safe cycle length, in seconds. */
+  period: number;
+  /** Per-trap offset into the cycle, in seconds. */
+  phase: number;
+}
+
+/**
+ * A proximity mine: invisible until the player lingers within its trigger
+ * radius, then detonates for AoE damage if they don't back off in time.
+ * One-shot — `alive` goes false forever once it detonates. Runtime behavior
+ * lives in `src/engine/traps.ts`; this stays plain data.
+ */
+export interface Mine {
+  /** World position in fractional tile units (tile center). */
+  x: number;
+  y: number;
+  /** False once detonated (consumed; no longer rendered or dangerous). */
+  alive: boolean;
+  /**
+   * True once the player has come within the proximity radius at least once.
+   * Sticky, like `Enemy.discovered` — a spotted mine stays visible even after
+   * the player backs away.
+   */
+  visible: boolean;
+  /** Seconds the player has been continuously within the proximity radius;
+   * resets to 0 the moment they back out of it. Detonates on reaching the fuse
+   * threshold — see `MINE_FUSE_SECONDS` in `traps.ts`. */
+  closeTimer: number;
 }

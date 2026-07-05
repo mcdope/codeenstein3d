@@ -60,6 +60,7 @@ selectButton.addEventListener("click", async () => {
 
     renderFileTree(fileTree, tree, { onSelectFile: handleFileSelected });
     console.info(`[workspace] Loaded "${handle.name}"`, tree);
+    await autoLaunchInitialLevel(tree);
   } catch (err) {
     console.error("[workspace] Failed to read workspace:", err);
     workspaceName.textContent =
@@ -69,8 +70,8 @@ selectButton.addEventListener("click", async () => {
 });
 
 /**
- * On file click: parse supported languages (currently PHP) into normalized
- * JSON and log that; for everything else fall back to logging raw text.
+ * On file click: parse supported languages into normalized JSON and log that;
+ * for everything else fall back to logging raw text.
  */
 async function handleFileSelected(node: TreeNode): Promise<void> {
   if (node.kind !== "file") return;
@@ -91,6 +92,95 @@ async function handleFileSelected(node: TreeNode): Promise<void> {
     console.groupEnd();
   } catch (err) {
     console.error(`[file] Failed to read/parse "${node.path}":`, err);
+  }
+}
+
+/**
+ * Filenames (case-insensitive) recognized as a project's likely single
+ * entrypoint, checked in order across the whole tree — first match wins. C-
+ * family languages don't get a reliable filename convention, so they also
+ * fall back to a content-based check (`findEntrypointByMainFunction`) when no
+ * name here matches anything in the workspace.
+ */
+const ENTRYPOINT_FILENAMES = [
+  "main.c", "main.cpp", "main.cc", "main.cxx", "main.m", "main.mm",
+  "index.php", "main.php",
+  "index.js", "main.js", "index.ts", "main.ts", "index.tsx", "main.tsx",
+  "main.py", "__main__.py",
+  "main.go",
+  "main.rs",
+  "program.cs",
+  "main.scala",
+];
+
+/** Extensions worth a content-based `main`-function scan (see
+ * `findEntrypointByMainFunction`) — the C family, where the entrypoint can
+ * live in any arbitrarily-named file. */
+const MAIN_FUNCTION_EXTENSIONS = /\.(c|h|cpp|cc|cxx|hpp|hh|hxx|m|mm)$/i;
+
+/** First parsable file anywhere in the tree whose name matches a standard
+ * project-entrypoint convention, or `null` if none does. */
+export function findEntrypointByName(tree: TreeNode): TreeNode | null {
+  const files = flattenParsableFiles(tree);
+  for (const candidate of ENTRYPOINT_FILENAMES) {
+    const match = files.find((f) => f.name.toLowerCase() === candidate);
+    if (match) return match;
+  }
+  return null;
+}
+
+/**
+ * Fallback for the C family: no filename convention reliably marks the
+ * entrypoint, so parse each C/C++/Objective-C file in tree order and return
+ * the first one that actually defines a `main` function. A file that fails to
+ * read or parse is just skipped, same as everywhere else in this app.
+ */
+export async function findEntrypointByMainFunction(tree: TreeNode): Promise<TreeNode | null> {
+  const candidates = flattenParsableFiles(tree).filter((f) => MAIN_FUNCTION_EXTENSIONS.test(f.name));
+  for (const file of candidates) {
+    try {
+      const text = await readFileText(file.handle as FileSystemFileHandle);
+      const parsed = await parseFile(file.name, text);
+      const hasMain = parsed?.entities.some(
+        (e) => e.name === "main" && (e.kind === "function" || e.kind === "method"),
+      );
+      if (hasMain) return file;
+    } catch (err) {
+      console.error(`[entrypoint] Failed to scan "${file.path}" for main():`, err);
+    }
+  }
+  return null;
+}
+
+/** The workspace's logical entrypoint, if any — see the two finder functions
+ * above for the search order (filename convention, then a C-family main()
+ * content scan). */
+export async function findEntrypoint(tree: TreeNode): Promise<TreeNode | null> {
+  return findEntrypointByName(tree) ?? (await findEntrypointByMainFunction(tree));
+}
+
+/**
+ * Auto-start the very first level right after a workspace loads: prefer a
+ * detected project entrypoint (see `findEntrypoint`) over just resolving the
+ * first parsable file alphabetically/by tree order, though that remains the
+ * fallback when no entrypoint is found. Does nothing if the workspace has no
+ * parsable file at all — the sidebar is left for a manual pick as before.
+ */
+async function autoLaunchInitialLevel(tree: TreeNode): Promise<void> {
+  const entry = await findEntrypoint(tree);
+  const target = entry ?? flattenParsableFiles(tree)[0] ?? null;
+  if (!target) return;
+
+  try {
+    const text = await readFileText(target.handle as FileSystemFileHandle);
+    const parsed = await parseFile(target.name, text);
+    if (parsed) {
+      const how = entry ? "detected entrypoint" : "first file in tree order";
+      console.log(`%c[entrypoint] auto-starting at ${target.path} (${how})`, "color:#8effa0;font-weight:bold");
+      launchLevel(target.path, parsed);
+    }
+  } catch (err) {
+    console.error(`[entrypoint] Failed to auto-launch "${target.path}":`, err);
   }
 }
 
@@ -128,7 +218,7 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
     `Click to capture mouse · W/S move, A/D strafe · Q/E or mouse turn · ` +
     `Shift to sprint · Click / Space to fire · 1 pistol / 2 shotgun · ` +
     `grab keys to open blue doors · step on a glowing pad to warp (goto) · ` +
-    `avoid the acid · Tab for map · Esc releases mouse`;
+    `avoid the acid, timed spikes, and proximity mines · Tab for map · Esc releases mouse`;
 
   const hud = new GameHud();
   activeHud = hud;
@@ -188,7 +278,7 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
 
 /** Files parsable by a registered adapter, in the same depth-first,
  * directories-first order the sidebar renders them in. */
-function flattenParsableFiles(node: TreeNode): TreeNode[] {
+export function flattenParsableFiles(node: TreeNode): TreeNode[] {
   if (node.kind === "file") return isParsable(node.name) ? [node] : [];
   const out: TreeNode[] = [];
   for (const child of node.children ?? []) out.push(...flattenParsableFiles(child));

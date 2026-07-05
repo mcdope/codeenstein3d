@@ -15,14 +15,17 @@ import type { CodeEntity, GotoLink, ParsedFile } from "../parser/types";
 import {
   DOOR_TILE,
   HAZARD_TILE,
+  SPIKE_TRAP_TILE,
   TELEPORTER_TILE,
   type Decoration,
   type DecorKind,
   type Enemy,
   type GameMap,
   type KeyItem,
+  type Mine,
   type Point,
   type Room,
+  type SpikeTrap,
   type Teleporter,
   type Tile,
 } from "./types";
@@ -54,6 +57,17 @@ const PROP_ATTEMPTS = 12;
  * generation and rendering code is left in place to revisit later.
  */
 const DECORATIONS_ENABLED = false;
+
+/** Minimum/maximum full safe→active→safe cycle length for a spike trap. */
+const SPIKE_PERIOD_MIN = 2.2;
+const SPIKE_PERIOD_MAX = 3.6;
+/** Minimum spacing (tiles) kept between any two traps, and between a trap and
+ * any other avoid-listed point (spawn/exit/enemies/doors/keys/pads). */
+const TRAP_SPACING = 3;
+/** One trap (spike or mine, roughly split evenly) per this many candidate
+ * choke-point tiles found, capped so tiny levels don't get overloaded. */
+const CHOKE_POINTS_PER_TRAP = 5;
+const MAX_TRAPS = 8;
 
 export interface MapGeneratorOptions {
   /** Lower bound for the (square) map size in tiles. */
@@ -136,6 +150,15 @@ export class MapGenerator {
     ];
     const teleporters = placeTeleporters(rooms, grid, teleporterAvoid, parsed.gotos, rng);
 
+    // Traps go in corridor choke points last, once every room-side system has
+    // claimed its floor tiles — so a trap can never overwrite a door, key,
+    // teleporter pad, or the spawn/exit/enemy clearances.
+    const trapAvoid: Point[] = [
+      ...teleporterAvoid,
+      ...teleporters.map((t) => ({ x: t.x, y: t.y })),
+    ];
+    const { spikeTraps, mines } = placeTraps(rooms, grid, trapAvoid, rng);
+
     // Fog-of-war overlay grid, all unexplored until the player moves through.
     const visited: boolean[][] = Array.from({ length: size }, () =>
       new Array<boolean>(size).fill(false),
@@ -155,6 +178,8 @@ export class MapGenerator {
       keys,
       decorations,
       teleporters,
+      spikeTraps,
+      mines,
     };
   }
 
@@ -503,6 +528,7 @@ function spawnEnemies(rooms: Room[], exit: Point, rng: () => number): Enemy[] {
         hitFlash: 0,
         home,
         aggroed: false,
+        discovered: false,
         roamX: pos.x,
         roamY: pos.y,
         fireCooldown: rng() * 2, // stagger initial shots across the pack
@@ -695,6 +721,103 @@ function placeTeleporters(
     teleporters.push({ x: to.x, y: to.y, targetX: from.x, targetY: from.y, label: link.label });
   }
   return teleporters;
+}
+
+/** A floor tile that belongs to no room — i.e. part of a corridor. */
+function isCorridorFloor(x: number, y: number, grid: Tile[][], rooms: Room[]): boolean {
+  if (grid[y][x] !== 0) return false;
+  for (const room of rooms) {
+    if (x >= room.x && x < room.x + room.w && y >= room.y && y < room.y + room.h) return false;
+  }
+  return true;
+}
+
+/**
+ * A "choke point": a corridor tile exactly one tile wide in cross-section —
+ * open on both sides along one axis, blocked on both sides along the other.
+ * Traps are placed only here, never in open room floor, so they read as a
+ * deliberate hazard blocking a passage rather than random floor clutter.
+ */
+function isChokePoint(x: number, y: number, grid: Tile[][]): boolean {
+  const blocked = (cx: number, cy: number): boolean =>
+    cy < 0 || cy >= grid.length || cx < 0 || cx >= grid[cy].length || grid[cy][cx] === 1;
+  const openL = !blocked(x - 1, y);
+  const openR = !blocked(x + 1, y);
+  const openU = !blocked(x, y - 1);
+  const openD = !blocked(x, y + 1);
+  return (openL && openR && !openU && !openD) || (openU && openD && !openL && !openR);
+}
+
+/** Every corridor choke-point tile in the level, candidates for trap placement. */
+function corridorChokePoints(rooms: Room[], grid: Tile[][]): Point[] {
+  const points: Point[] = [];
+  for (let y = 1; y < grid.length - 1; y++) {
+    for (let x = 1; x < grid[y].length - 1; x++) {
+      if (isCorridorFloor(x, y, grid, rooms) && isChokePoint(x, y, grid)) points.push({ x, y });
+    }
+  }
+  return points;
+}
+
+/** Fisher-Yates shuffle using the level's seeded PRNG, for deterministic but
+ * non-scan-order trap placement. */
+function shuffle<T>(items: T[], rng: () => number): void {
+  for (let i = items.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [items[i], items[j]] = [items[j], items[i]];
+  }
+}
+
+/**
+ * Scatter timed spike traps and proximity mines across corridor choke points,
+ * alternating between the two kinds. Skips any candidate too close to an
+ * `avoid`-listed point (spawn, exit, enemies, doors, keys, teleporter pads) or
+ * to a trap already placed. Never a hard failure — a level with few/no
+ * corridors simply gets few/no traps.
+ */
+function placeTraps(
+  rooms: Room[],
+  grid: Tile[][],
+  avoid: Point[],
+  rng: () => number,
+): { spikeTraps: SpikeTrap[]; mines: Mine[] } {
+  const candidates = corridorChokePoints(rooms, grid);
+  shuffle(candidates, rng);
+
+  const budget = Math.min(MAX_TRAPS, Math.floor(candidates.length / CHOKE_POINTS_PER_TRAP));
+  const spikeTraps: SpikeTrap[] = [];
+  const mines: Mine[] = [];
+  const chosen: Point[] = [];
+
+  const farEnough = (p: Point): boolean => {
+    const px = p.x + 0.5;
+    const py = p.y + 0.5;
+    if (avoid.some((a) => dist(px, py, a.x, a.y) < TRAP_SPACING)) return false;
+    if (chosen.some((c) => dist(px, py, c.x + 0.5, c.y + 0.5) < TRAP_SPACING)) return false;
+    return true;
+  };
+
+  for (const p of candidates) {
+    if (spikeTraps.length + mines.length >= budget) break;
+    if (!farEnough(p)) continue;
+    chosen.push(p);
+
+    if (spikeTraps.length <= mines.length) {
+      grid[p.y][p.x] = SPIKE_TRAP_TILE;
+      spikeTraps.push({
+        x: p.x,
+        y: p.y,
+        period: SPIKE_PERIOD_MIN + rng() * (SPIKE_PERIOD_MAX - SPIKE_PERIOD_MIN),
+        phase: rng() * SPIKE_PERIOD_MAX,
+      });
+    } else {
+      // Mines stay on plain floor (tile 0) — they're invisible until
+      // triggered, so nothing should mark their tile on the grid.
+      mines.push({ x: p.x + 0.5, y: p.y + 0.5, alive: true, visible: false, closeTimer: 0 });
+    }
+  }
+
+  return { spikeTraps, mines };
 }
 
 /**

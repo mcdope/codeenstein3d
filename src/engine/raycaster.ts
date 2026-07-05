@@ -9,9 +9,10 @@
  *
  * Pure native Canvas 2D — no WebGL, no 3D libraries.
  */
-import { DOOR_TILE, HAZARD_TILE, TELEPORTER_TILE, type GameMap } from "../map/types";
+import { DOOR_TILE, HAZARD_TILE, SPIKE_TRAP_TILE, TELEPORTER_TILE, type GameMap } from "../map/types";
 import type { Player } from "./player";
 import { enemyColor } from "./sprites";
+import { activeSpikeTileKeys } from "./traps";
 
 /** Base wall color (a warm dungeon brick), before distance shading. */
 const WALL_RGB: [number, number, number] = [186, 152, 116];
@@ -23,6 +24,9 @@ const FLOOR_RGB: [number, number, number] = [21, 21, 26];
 const ACID_RGB: [number, number, number] = [64, 196, 72];
 /** Base color for goto/label teleporter pad floor tiles, before pulsing. */
 const TELEPORTER_RGB: [number, number, number] = [130, 70, 220];
+/** Spike trap floor tint: dull metal grey while safe, hot pulsing red while active. */
+const SPIKE_SAFE_RGB: [number, number, number] = [90, 90, 96];
+const SPIKE_ACTIVE_RGB: [number, number, number] = [220, 40, 30];
 /** Within this many tiles the world keeps full brightness (no fog). */
 const FOG_NEAR = 2.5;
 /** Beyond this many tiles the world has faded to pure black. */
@@ -56,6 +60,7 @@ export function renderScene(
   player: Player,
   zBuffer: Float64Array,
   horizonShift = 0,
+  levelTime = 0,
 ): void {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
@@ -63,9 +68,10 @@ export function renderScene(
   // floor all rise and fall with the camera.
   const horizon = height / 2 + horizonShift;
 
-  if (map.hazards.length > 0 || map.teleporters.length > 0) {
-    // Floor-cast so acid pools / teleporter pads appear as colored floor tiles.
-    renderBackground(ctx, map, player, width, height, horizon);
+  if (map.hazards.length > 0 || map.teleporters.length > 0 || map.spikeTraps.length > 0) {
+    // Floor-cast so acid pools / teleporter pads / spike traps appear as
+    // colored floor tiles.
+    renderBackground(ctx, map, player, width, height, horizon, levelTime);
   } else {
     // No hazards: flat ceiling (above the horizon) and floor (below) is cheaper.
     const split = Math.max(0, Math.min(height, Math.round(horizon)));
@@ -170,6 +176,7 @@ function renderBackground(
   width: number,
   height: number,
   horizon: number,
+  levelTime: number,
 ): void {
   if (!floorImage || floorImage.width !== width || floorImage.height !== height) {
     floorImage = ctx.createImageData(width, height);
@@ -184,6 +191,17 @@ function renderBackground(
     TELEPORTER_RGB[0] * pulse,
     TELEPORTER_RGB[1] * pulse,
     TELEPORTER_RGB[2] * pulse,
+  ];
+
+  // Which spike traps are in their damaging half of the cycle this frame —
+  // resolved once here, not per pixel. Active tiles pulse hot to read as
+  // dangerous; safe ones stay a flat dull metal.
+  const activeSpikes = activeSpikeTileKeys(map.spikeTraps, levelTime);
+  const spikePulse = 0.75 + 0.25 * Math.sin(performance.now() / 90);
+  const spikeActiveGlow: [number, number, number] = [
+    SPIKE_ACTIVE_RGB[0] * spikePulse,
+    SPIKE_ACTIVE_RGB[1] * spikePulse,
+    SPIKE_ACTIVE_RGB[2] * spikePulse,
   ];
 
   // Leftmost (cameraX=-1) and rightmost (cameraX=+1) ray directions.
@@ -221,7 +239,13 @@ function renderBackground(
       const tile =
         cx >= 0 && cy >= 0 && cx < map.width && cy < map.height ? map.grid[cy][cx] : -1;
       const base =
-        tile === TELEPORTER_TILE ? teleporterGlow : tile === HAZARD_TILE ? ACID_RGB : FLOOR_RGB;
+        tile === TELEPORTER_TILE
+          ? teleporterGlow
+          : tile === HAZARD_TILE
+            ? ACID_RGB
+            : tile === SPIKE_TRAP_TILE
+              ? (activeSpikes.has(`${cx},${cy}`) ? spikeActiveGlow : SPIKE_SAFE_RGB)
+              : FLOOR_RGB;
       data[idx++] = base[0] * shade;
       data[idx++] = base[1] * shade;
       data[idx++] = base[2] * shade;
@@ -239,13 +263,17 @@ function rgb([r, g, b]: [number, number, number]): string {
 }
 
 /**
- * Small top-left minimap: walls, live enemies, and the player's position and
- * facing. Useful for confirming movement, collision, and combat while playing.
+ * Small top-left minimap: walls, discovered enemies, traps, and the player's
+ * exact position and facing. Useful for confirming movement, collision, and
+ * combat while playing. Enemies only appear once the player has physically
+ * entered their room (an AABB check against `Enemy.home`, done once per frame
+ * in `RaycasterEngine`) — see `Enemy.discovered`.
  */
 export function renderMinimap(
   ctx: CanvasRenderingContext2D,
   map: GameMap,
   player: Player,
+  levelTime = 0,
   maxPixels = 140,
 ): void {
   const cell = Math.max(1, Math.floor(maxPixels / Math.max(map.width, map.height)));
@@ -254,11 +282,14 @@ export function renderMinimap(
   const pad = 8;
 
   ctx.save();
-  ctx.globalAlpha = 0.85;
 
-  // Backing panel.
-  ctx.fillStyle = "#000";
+  // Semi-transparent dark backing panel — legible over the 3D scene without
+  // fully occluding it, and without washing out the high-contrast markers
+  // drawn on top (those stay at full opacity for clarity).
+  ctx.fillStyle = "rgba(4,8,10,0.6)";
   ctx.fillRect(pad - 2, pad - 2, w + 4, h + 4);
+
+  ctx.globalAlpha = 0.9;
 
   // Walls.
   ctx.fillStyle = "#4a4a55";
@@ -283,6 +314,23 @@ export function renderMinimap(
     }
   }
 
+  // Spike traps: dull metal when safe, pulsing red when active.
+  const activeSpikes = activeSpikeTileKeys(map.spikeTraps, levelTime);
+  const spikePulse = 0.6 + 0.4 * Math.sin(performance.now() / 90);
+  for (const trap of map.spikeTraps) {
+    ctx.fillStyle = activeSpikes.has(`${trap.x},${trap.y}`)
+      ? `rgba(220,40,30,${spikePulse})`
+      : "#5a5a60";
+    ctx.fillRect(pad + trap.x * cell, pad + trap.y * cell, cell, cell);
+  }
+
+  // Discovered, still-live proximity mines.
+  ctx.fillStyle = "#ff5050";
+  for (const mine of map.mines) {
+    if (!mine.alive || !mine.visible) continue;
+    ctx.fillRect(pad + mine.x * cell - cell / 2, pad + mine.y * cell - cell / 2, Math.max(2, cell), Math.max(2, cell));
+  }
+
   // Goto teleporter pads.
   ctx.fillStyle = "#a855f7";
   for (const t of map.teleporters) {
@@ -296,18 +344,17 @@ export function renderMinimap(
     ctx.fillRect(pad + item.x * cell - cell / 2, pad + item.y * cell - cell / 2, Math.max(2, cell), Math.max(2, cell));
   }
 
-  // Exit tile (the return statement).
-  ctx.fillStyle = "#37d24a";
-  ctx.fillRect(
-    pad + map.exit.x * cell,
-    pad + map.exit.y * cell,
-    Math.max(2, cell),
-    Math.max(2, cell),
-  );
+  // Exit tile (the return statement): high-contrast and pulsing so it never
+  // gets lost among walls/hazards at a glance.
+  const exitPulse = 0.65 + 0.35 * Math.sin(performance.now() / 260);
+  const exitSize = Math.max(2, cell) * (1 + 0.25 * exitPulse);
+  const exitOffset = (exitSize - Math.max(2, cell)) / 2;
+  ctx.fillStyle = `rgba(65,255,110,${0.75 + 0.25 * exitPulse})`;
+  ctx.fillRect(pad + map.exit.x * cell - exitOffset, pad + map.exit.y * cell - exitOffset, exitSize, exitSize);
 
-  // Live enemies.
+  // Discovered, living enemies only — see the doc comment above.
   for (const enemy of map.enemies) {
-    if (!enemy.alive) continue;
+    if (!enemy.alive || !enemy.discovered) continue;
     ctx.fillStyle = enemyColor(enemy.entity.kind);
     ctx.fillRect(
       pad + enemy.x * cell - cell / 2,
@@ -317,19 +364,20 @@ export function renderMinimap(
     );
   }
 
-  // Player position and heading.
+  ctx.globalAlpha = 1;
+
+  // Player: a solid, bright triangle at the exact position pointing along the
+  // facing direction — unmistakably distinct from every other marker color.
   const px = pad + player.posX * cell;
   const py = pad + player.posY * cell;
-  ctx.strokeStyle = "#e21b1b";
-  ctx.lineWidth = 1;
+  const angle = Math.atan2(player.dirY, player.dirX);
+  const size = Math.max(4, cell * 1.4);
+  ctx.fillStyle = "#f5ffef";
   ctx.beginPath();
-  ctx.moveTo(px, py);
-  ctx.lineTo(px + player.dirX * cell * 3, py + player.dirY * cell * 3);
-  ctx.stroke();
-
-  ctx.fillStyle = "#e21b1b";
-  ctx.beginPath();
-  ctx.arc(px, py, Math.max(1.5, cell * 0.6), 0, Math.PI * 2);
+  ctx.moveTo(px + Math.cos(angle) * size, py + Math.sin(angle) * size);
+  ctx.lineTo(px + Math.cos(angle + 2.5) * size * 0.6, py + Math.sin(angle + 2.5) * size * 0.6);
+  ctx.lineTo(px + Math.cos(angle - 2.5) * size * 0.6, py + Math.sin(angle - 2.5) * size * 0.6);
+  ctx.closePath();
   ctx.fill();
 
   ctx.restore();

@@ -220,6 +220,21 @@ class AudioManager {
     });
   }
 
+  /** Proximity mine detonation: a low, distorted booming thud. */
+  playExplosion(): void {
+    const ctx = this.resume();
+    if (!ctx || !this.master) return;
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(90, t);
+    osc.frequency.exponentialRampToValueAtTime(28, t + 0.35);
+    const gain = envelope(ctx, 0.65, 0.005, 0.4);
+    osc.connect(this.distortionNode(ctx)).connect(gain).connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.45);
+  }
+
   /** Shared distortion shaper for the damage voice (built once). */
   private distortionNode(ctx: AudioContext): WaveShaperNode {
     if (!this.distortion) {

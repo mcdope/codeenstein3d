@@ -7,7 +7,8 @@
  * A solid triangle marks the player's position and facing. Pure Canvas 2D — the
  * engine pauses the sim while this is up.
  */
-import { DOOR_TILE, TELEPORTER_TILE, type GameMap } from "../map/types";
+import { DOOR_TILE, SPIKE_TRAP_TILE, TELEPORTER_TILE, type GameMap } from "../map/types";
+import { activeSpikeTileKeys } from "./traps";
 import type { Player } from "./player";
 
 /** Neon green for explored walls / the map frame. */
@@ -16,6 +17,9 @@ const WALL_COLOR = "#39ff14";
 const DOOR_COLOR = "#57c7ff";
 /** Violet for explored goto/label teleporter pads. */
 const TELEPORTER_COLOR = "#c86dff";
+/** Spike trap: dull metal when safe, hot red when active. */
+const SPIKE_SAFE_COLOR = "#8a8a90";
+const SPIKE_ACTIVE_COLOR = "#e02818";
 /** Faint wash marking explored open floor. */
 const FLOOR_COLOR = "rgba(57,255,20,0.10)";
 
@@ -24,7 +28,12 @@ const FLOOR_COLOR = "rgba(57,255,20,0.10)";
  * walls/rooms and the player marker. Only tiles with `map.visited` set are
  * shown.
  */
-export function drawAutomap(ctx: CanvasRenderingContext2D, map: GameMap, player: Player): void {
+export function drawAutomap(
+  ctx: CanvasRenderingContext2D,
+  map: GameMap,
+  player: Player,
+  levelTime = 0,
+): void {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
 
@@ -38,6 +47,8 @@ export function drawAutomap(ctx: CanvasRenderingContext2D, map: GameMap, player:
   const mapH = map.height * cell;
   const ox = Math.floor((width - mapW) / 2);
   const oy = Math.floor((height - mapH) / 2);
+
+  const activeSpikes = activeSpikeTileKeys(map.spikeTraps, levelTime);
 
   // Explored tiles only.
   for (let y = 0; y < map.height; y++) {
@@ -57,11 +68,23 @@ export function drawAutomap(ctx: CanvasRenderingContext2D, map: GameMap, player:
       } else if (tile === TELEPORTER_TILE) {
         ctx.fillStyle = TELEPORTER_COLOR;
         ctx.fillRect(px, py, cell, cell);
+      } else if (tile === SPIKE_TRAP_TILE) {
+        ctx.fillStyle = activeSpikes.has(`${x},${y}`) ? SPIKE_ACTIVE_COLOR : SPIKE_SAFE_COLOR;
+        ctx.fillRect(px, py, cell, cell);
       } else {
         ctx.fillStyle = FLOOR_COLOR;
         ctx.fillRect(px, py, cell, cell);
       }
     }
+  }
+
+  // Discovered, still-live proximity mines.
+  ctx.fillStyle = "#ff5050";
+  for (const mine of map.mines) {
+    if (!mine.alive || !mine.visible) continue;
+    const mx = ox + mine.x * cell - cell / 2;
+    const my = oy + mine.y * cell - cell / 2;
+    ctx.fillRect(mx, my, Math.max(3, cell), Math.max(3, cell));
   }
 
   // Exit tile, once discovered.

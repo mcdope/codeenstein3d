@@ -13,7 +13,7 @@
  * in front of the nearest wall — so what you see under the crosshair is what
  * you shoot.
  */
-import type { AmmoDrop, Decoration, DecorKind, Enemy, KeyItem, Point, Teleporter } from "../map/types";
+import type { AmmoDrop, Decoration, DecorKind, Enemy, KeyItem, Mine, Point, Teleporter } from "../map/types";
 import type { CodeEntity, EntityKind } from "../parser/types";
 import type { Player } from "./player";
 
@@ -464,6 +464,45 @@ export function renderTeleporters(
     ctx.strokeRect(cx - w / 2, top, w, ringH);
     ctx.fillStyle = `rgba(230,210,255,${0.35 + 0.35 * pulse})`;
     ctx.fillRect(cx - w * 0.22, top + ringH * 0.15, w * 0.44, ringH * 0.7);
+  }
+}
+
+/**
+ * Draw discovered-but-undetonated proximity mines as a low, pulsing red
+ * warning device. Invisible (never drawn at all) until the engine marks
+ * `visible` true, so stumbling into one's proximity radius is the only way to
+ * ever see it coming.
+ */
+export function renderMines(
+  ctx: CanvasRenderingContext2D,
+  player: Player,
+  mines: Mine[],
+  zBuffer: Float64Array,
+): void {
+  const width = ctx.canvas.width;
+  const height = ctx.canvas.height;
+
+  const visible = mines
+    .filter((m) => m.alive && m.visible)
+    .map((m) => ({ proj: projectPoint(player, m.x, m.y, width, height, 0.3) }))
+    .filter(({ proj }) => proj.depth > 0.15)
+    .sort((a, b) => b.proj.depth - a.proj.depth);
+
+  const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 130);
+
+  for (const { proj } of visible) {
+    const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
+    if (proj.depth >= zBuffer[centerCol]) continue; // behind a wall
+
+    const w = proj.right - proj.left;
+    const groundY = height / 2 + height / proj.depth / 2;
+    const cx = proj.screenX;
+    const bodyH = w * 0.6;
+
+    ctx.fillStyle = "#2a1414";
+    ctx.fillRect(cx - w / 2, groundY - bodyH, w, bodyH);
+    ctx.fillStyle = `rgba(255,40,40,${0.5 + 0.5 * pulse})`;
+    ctx.fillRect(cx - w * 0.18, groundY - bodyH * 0.7, w * 0.36, w * 0.36);
   }
 }
 
