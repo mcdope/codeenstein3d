@@ -23,18 +23,18 @@
 
 ## Open
 - [ ] rooms need deco of some kind, currently an empty wasteland — implemented in Task 21 (server racks/plants/desks/code-blocks as billboard props) but felt annoying in playtest, so disabled again behind `DECORATIONS_ENABLED = false` in mapGenerator.ts. Code (generation + rendering) is intact; needs a design rethink (placement density? different visual treatment? non-billboard approach?) before re-enabling. Ignore for now.
-- [ ] scoring (HUD has a Score slot since Task 20, always 0 — no scoring logic yet), extra points for health, ammo left, path length (shorter = better) at end of level, plus points for every kill (depending on enemy). score malus at end of level for health below 100%
+- [ ] scoring (HUD has a Score slot since Task 20, always 0 — no scoring logic yet), extra points for health, ammo left, path length (shorter = better) and time needed (faster = better) at end of level, plus points for every kill (depending on enemy). score malus at end of level for health below 100%
 - [ ] persisted highscore list
 - [ ] makefile
 - [ ] tests (unit [coverage target 100%!], end2end/functional/visual [coverage target: all aspects of gameplay])
 - [ ] github ci actions for the tests (to be executed on github, no custom runner)
 - [ ] ability to load github repos instead of local folder
-- [ ] user pickable bgm folder
+- [ ] user pickable bgm folder — needs a simple settings menu for volume control (Master, SFX, BGM) so custom music doesn't overpower game audio
 - [ ] scoresystem should also store a hash (sha256 or similar) of the AST, or code scanned. this should also be displayed in the highscore list, for comparison
 - [ ] more weapons, to be randomly dropped by enemies. Like a rocket-like-launcher for AoE damage, or an MP.
-- [ ] each weapon should use unique ammo
-- [ ] ammo should also be randomly placed across maps for player pickup
-- [ ] fps (if possible: also gpu/cpu usage) display, toggable - default of. use RIGHT_CTRL as hotkey (for now)
+- [ ] each weapon should use unique ammo, also resulting in a slightly but noticeable different tracer
+- [ ] ammo should also be randomly placed across maps for player pickup, only as a sparse backup - primary source should be spawn + loot.
+- [ ] fps (if possible: also gpu/cpu usage) display, toggable - default off. use RIGHT_CTRL as hotkey (for now)
 - [ ] optional replay storage at end of level (even possible?)
 - [ ] pause game if canvas not focussed / ESC was pressed
 - [ ] gamepad/joystick support
@@ -45,6 +45,11 @@
 - [ ] ensure the player spawns far enough outside the aggro range of any enemy, except that's not possible without leaving the room
 - [ ] collectible health and armor drops (randomly dropped on top of ammo by enemies)
 - [ ] canvas looses focus on level change - bug
-- [ ] weapons should have a range determined by their type (or realistic equivalent)
+- [ ] weapons should have a range determined by their type (or realistic equivalent) — hitscan weapons should use a "Cone of Fire" (spread angle that widens with distance) instead of a hard drop-off to 0 damage
 - [ ] drop, enemies, exit etc should be in front based on drawing distance from POV - for example: sometimes a dropped item next to exit "disappears" behind the exit
-- [ ] player needs an unlimited meelee weapon, to be able to continue when out of ammo until dead or looting ammo
+- [ ] player needs an unlimited meelee weapon ("SIGKILL Knife" / "Refactoring Crowbar") to be able to continue when out of ammo until dead or looting ammo. should feature a small lifesteal effect (+1 HP) or force a guaranteed ammo drop on kill to encourage aggressive play
+- [ ] level start screen - showing stats about AST and the resulting lvl (enemy, room etc count). if there is a detectable project name of the loaded workspace: use that as "campaign" name, if not: use directory name except its `src`, in that case use the upper level directory name. use the filename as level name. game should be paused till the player ack's that screen. Also add a "Commit Summary" (Level End Screen) showing stats like "X Lines refactored, Y Bugs squashed".
+- [ ] secret rooms (Secrets) — parse AST for "Dead Code" (unreachable code, blocks after returns) or large comment blocks. generate these as hidden rooms off the main map, accessible via fake walls, containing high-value loot (mega-health, rocket ammo).
+- [ ] elite enemies / bosses — instead of just spawning *more* enemies (complexity packs), functions with extreme cyclomatic complexity (e.g., massive legacy controllers) spawn a single Elite Enemy (different tint/sprite, 4x HP, high damage, guaranteed weapon drop).
+- [ ] lore terminals — parse code comments (`//` or `/* */`) into interactable glowing wall textures. pressing 'E' opens a text popup with the original code comment.
+- [ ] save & quit (campaign persistence) — save the current campaign state (current file, HP, ammo, score, weapons) to `localStorage`. add a "Continue Run" button in the main menu for navigating massive repositories over multiple sessions.
