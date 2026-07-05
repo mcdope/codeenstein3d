@@ -218,7 +218,8 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
     `Click to capture mouse · W/S move, A/D strafe · Q/E or mouse turn · ` +
     `Shift to sprint · Click / Space to fire · 1 pistol / 2 shotgun · ` +
     `grab keys to open blue doors · step on a glowing pad to warp (goto) · ` +
-    `avoid the acid, timed spikes, and proximity mines · Tab for map · Esc releases mouse`;
+    `avoid the acid and timed spikes · shoot spotted mines to disarm them from range · ` +
+    `Tab for map · Esc releases mouse`;
 
   const hud = new GameHud();
   activeHud = hud;

@@ -18,6 +18,7 @@ import { renderProjectiles, updateProjectiles, type Projectile } from "./project
 import { InputController } from "./input";
 import { renderMinimap, renderScene } from "./raycaster";
 import {
+  findMineAtColumn,
   findTargetAtColumn,
   findTargetUnderCrosshair,
   renderAmmoDrops,
@@ -46,8 +47,8 @@ import {
 } from "./effects";
 import { audio } from "./audio";
 import { WEAPONS, pelletOffsets } from "./weapons";
-import { spikeDamage, updateMines } from "./traps";
-import { DOOR_TILE, TELEPORTER_TILE, type AmmoDrop, type Enemy, type GameMap } from "../map/types";
+import { detonateMine, spikeDamage, updateMines } from "./traps";
+import { DOOR_TILE, TELEPORTER_TILE, type AmmoDrop, type Enemy, type GameMap, type Mine } from "../map/types";
 
 /** Movement speed in tiles per second. */
 const MOVE_SPEED = 3.2;
@@ -613,8 +614,9 @@ export class RaycasterEngine {
   /**
    * Fire the equipped weapon: spend its heap cost, then resolve one hitscan per
    * pellet across its cone. The pistol is a single centered ray; the shotgun
-   * sprays several pellets that each independently hit whatever enemy is under
-   * their (offset) screen column.
+   * sprays several pellets that each independently hit whatever's under their
+   * (offset) screen column — an enemy first, or failing that a spotted
+   * proximity mine, which a shot destroys outright (see `destroyMine`).
    */
   private fire(): void {
     const weapon = WEAPONS[this.weaponIndex];
@@ -635,23 +637,37 @@ export class RaycasterEngine {
     for (const offset of pelletOffsets(weapon)) {
       // Tracer from the muzzle (bottom center) to this pellet's aim column at
       // crosshair height — drawn whether or not it connects.
-      this.traces.push(makeBulletTrace(width, height, center + offset, height / 2));
+      const column = center + offset;
+      this.traces.push(makeBulletTrace(width, height, column, height / 2));
 
-      const enemy = findTargetAtColumn(
-        this.player,
-        this.enemies,
-        this.zBuffer,
-        width,
-        height,
-        center + offset,
-      );
+      const enemy = findTargetAtColumn(this.player, this.enemies, this.zBuffer, width, height, column);
       if (enemy?.alive) {
         this.damageEnemy(enemy, weapon.damagePerPellet);
+        pelletsHit += 1;
+        continue;
+      }
+
+      const mine = findMineAtColumn(this.player, this.map.mines, this.zBuffer, width, height, column);
+      if (mine) {
+        this.destroyMine(mine);
         pelletsHit += 1;
       }
     }
 
     if (pelletsHit === 0) console.log(`[${weapon.name}] missed`);
+  }
+
+  /**
+   * Destroy a spotted proximity mine hit by gunfire instead of letting it
+   * detonate underfoot — the same distance-scaled blast as a proximity
+   * detonation applies, so shooting one from beyond its blast radius is a
+   * genuinely safe disarm, while shooting one at point-blank still hurts.
+   */
+  private destroyMine(mine: Mine): void {
+    const dmg = detonateMine(mine, this.player);
+    audio.playExplosion();
+    console.log(`%c[mine] destroyed by gunfire${dmg > 0 ? ` — caught ${Math.round(dmg)} splash damage` : " — safely disarmed at range"}`, "color:#ff5050");
+    if (dmg > 0) this.damage(dmg);
   }
 
   /** Apply weapon damage to one enemy, retiring it (with a log) at 0 HP. */

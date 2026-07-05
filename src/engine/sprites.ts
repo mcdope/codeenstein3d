@@ -211,6 +211,45 @@ export function findTargetUnderCrosshair(
 }
 
 /**
+ * The discovered, still-live mine hit by a shot aimed at screen column
+ * `screenX` — mirrors `findTargetAtColumn`'s enemy hit-test (same fixed
+ * screen-center vertical reticle, no pitch aiming in this engine). Only
+ * `visible` mines are hittable at all — you can't shoot what you haven't
+ * spotted yet, matching the sight-radius reveal in `traps.ts`.
+ */
+export function findMineAtColumn(
+  player: Player,
+  mines: Mine[],
+  zBuffer: Float64Array,
+  width: number,
+  height: number,
+  screenX: number,
+): Mine | null {
+  const cy = height / 2;
+
+  let best: Mine | null = null;
+  let bestDepth = Infinity;
+
+  for (const mine of mines) {
+    if (!mine.alive || !mine.visible) continue;
+    const proj = projectPoint(player, mine.x, mine.y, width, height, MINE_SIZE);
+    if (proj.depth <= 0) continue;
+    if (screenX < proj.left || screenX > proj.right || cy < proj.top || cy > proj.bottom) {
+      continue;
+    }
+
+    const col = clamp(Math.round(proj.screenX), 0, width - 1);
+    if (proj.depth >= zBuffer[col]) continue; // behind a wall
+
+    if (proj.depth < bestDepth) {
+      best = mine;
+      bestDepth = proj.depth;
+    }
+  }
+  return best;
+}
+
+/**
  * Draw the green exit marker (the `return` statement) as a billboard at the
  * center of its tile, occluded by walls via the z-buffer.
  */
@@ -467,10 +506,14 @@ export function renderTeleporters(
   }
 }
 
+/** Footprint (fraction of a full tile-height billboard) for a proximity mine —
+ * shared between rendering and hit-testing so what you see is what you hit. */
+const MINE_SIZE = 0.42;
+
 /**
  * Draw discovered-but-undetonated proximity mines as a low, pulsing red
  * warning device. Invisible (never drawn at all) until the engine marks
- * `visible` true, so stumbling into one's proximity radius is the only way to
+ * `visible` true, so stumbling into one's sight radius is the only way to
  * ever see it coming.
  */
 export function renderMines(
@@ -484,7 +527,7 @@ export function renderMines(
 
   const visible = mines
     .filter((m) => m.alive && m.visible)
-    .map((m) => ({ proj: projectPoint(player, m.x, m.y, width, height, 0.42) }))
+    .map((m) => ({ proj: projectPoint(player, m.x, m.y, width, height, MINE_SIZE) }))
     .filter(({ proj }) => proj.depth > 0.15)
     .sort((a, b) => b.proj.depth - a.proj.depth);
 

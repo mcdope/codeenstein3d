@@ -12,13 +12,21 @@ import type { Player } from "./player";
 
 /** Stability drained per second while standing on an active spike tile. */
 const SPIKE_DPS = 20;
-/** Tiles within which a mine notices the player and starts its fuse. Kept
- * generous — playtest feedback was that mines were "too well hidden" with a
- * tighter radius, leaving no real reaction window before the fuse mattered. */
-const MINE_PROXIMITY_RADIUS = 2.8;
-/** Seconds the player must stay inside the proximity radius before it blows. */
+/**
+ * Tiles within which a mine becomes visible (sticky — once seen, stays seen).
+ * Deliberately much larger than `MINE_FUSE_RADIUS` so spotting one and
+ * actually being in danger from it are two different moments: playtest
+ * feedback was that mines were visible too late to do anything about, so
+ * "seen" now happens well before "dangerous".
+ */
+const MINE_SIGHT_RADIUS = 4.5;
+/** Tiles within which a mine actually starts arming its fuse. */
+const MINE_FUSE_RADIUS = 1.8;
+/** Seconds the player must stay inside the fuse radius before it blows. */
 const MINE_FUSE_SECONDS = 0.9;
-/** Radius (tiles) of a mine's blast; damage falls off with distance inside it. */
+/** Radius (tiles) of a mine's blast; damage falls off with distance inside it,
+ * and is 0 entirely outside it — so shooting one from far enough away (see
+ * `detonateMine`) is a genuinely safe way to clear it, not just a formality. */
 const MINE_BLAST_RADIUS = 2.4;
 /** Damage dealt at ground zero; the falloff floor keeps even an edge-of-blast
  * hit meaningful rather than trailing off to nothing. */
@@ -60,28 +68,44 @@ export function spikeDamage(
 }
 
 /**
- * Advance every live mine's proximity fuse by `dt` seconds. A mine within
- * `MINE_PROXIMITY_RADIUS` becomes visible and starts counting; stepping back
- * out resets its timer (the "immediately back away" grace). One that reaches
- * the fuse threshold detonates: it goes permanently dead and contributes
- * distance-scaled AoE damage to the returned total.
+ * Detonate `mine` (marking it permanently dead) and return the distance-scaled
+ * AoE damage this deals to `player` right now — 0 if they're outside the blast
+ * radius entirely. Shared by the proximity fuse (`updateMines`) and gunfire
+ * (a mine hit by a pellet — see `RaycasterEngine.fire()`): shooting one from
+ * beyond its blast radius is a genuinely safe way to clear it, not just a
+ * formality, since both paths use the same falloff.
+ */
+export function detonateMine(mine: Mine, player: Player): number {
+  mine.alive = false;
+  const distance = Math.hypot(mine.x - player.posX, mine.y - player.posY);
+  if (distance >= MINE_BLAST_RADIUS) return 0;
+  const falloff = Math.max(MINE_DAMAGE_FALLOFF_FLOOR, 1 - distance / MINE_BLAST_RADIUS);
+  return MINE_MAX_DAMAGE * falloff;
+}
+
+/**
+ * Advance every live mine's state by `dt` seconds. A mine within
+ * `MINE_SIGHT_RADIUS` becomes visible — sticky, so once spotted it stays on
+ * the radar even if the player backs out that far again. Only within the much
+ * tighter `MINE_FUSE_RADIUS` does its fuse actually start counting; stepping
+ * back out of that resets the timer (the "immediately back away" grace). One
+ * that reaches the fuse threshold detonates for distance-scaled AoE damage.
  */
 export function updateMines(mines: Mine[], player: Player, dt: number): number {
   let damage = 0;
   for (const mine of mines) {
     if (!mine.alive) continue;
     const distance = Math.hypot(mine.x - player.posX, mine.y - player.posY);
-    if (distance > MINE_PROXIMITY_RADIUS) {
+    if (distance <= MINE_SIGHT_RADIUS) mine.visible = true;
+
+    if (distance > MINE_FUSE_RADIUS) {
       mine.closeTimer = 0;
       continue;
     }
-    mine.visible = true;
     mine.closeTimer += dt;
     if (mine.closeTimer < MINE_FUSE_SECONDS) continue;
 
-    mine.alive = false;
-    const falloff = Math.max(MINE_DAMAGE_FALLOFF_FLOOR, 1 - distance / MINE_BLAST_RADIUS);
-    damage += MINE_MAX_DAMAGE * falloff;
+    damage += detonateMine(mine, player);
   }
   return damage;
 }
