@@ -13,7 +13,7 @@
  * in front of the nearest wall — so what you see under the crosshair is what
  * you shoot.
  */
-import type { AmmoDrop, Enemy, KeyItem, Point } from "../map/types";
+import type { AmmoDrop, Decoration, DecorKind, Enemy, KeyItem, Point } from "../map/types";
 import type { CodeEntity, EntityKind } from "../parser/types";
 import type { Player } from "./player";
 
@@ -308,6 +308,98 @@ export function renderAmmoDrops(
     ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
     ctx.fillStyle = "#3fd0e0";
     ctx.fillRect(cx - size / 2 + size * 0.18, cy - size / 2 + size * 0.18, size * 0.64, size * 0.64);
+  }
+}
+
+/** Footprint (fraction of a full tile-height billboard) per decoration kind. */
+function decorSizeFactor(kind: DecorKind): number {
+  switch (kind) {
+    case "rack":
+      return 0.85; // tall server tower
+    case "desk":
+      return 0.5;
+    case "plant":
+      return 0.45;
+    case "block":
+      return 0.55;
+  }
+}
+
+/**
+ * Draw cosmetic, non-blocking props (server racks, plants, desks, abstract
+ * code-blocks) as floor-standing billboards, occluded by the wall z-buffer.
+ * Purely visual set dressing — no collision, no interaction.
+ */
+export function renderDecorations(
+  ctx: CanvasRenderingContext2D,
+  player: Player,
+  decorations: Decoration[],
+  zBuffer: Float64Array,
+): void {
+  const width = ctx.canvas.width;
+  const height = ctx.canvas.height;
+
+  const visible = decorations
+    .map((d) => ({ kind: d.kind, proj: projectPoint(player, d.x, d.y, width, height, decorSizeFactor(d.kind)) }))
+    .filter(({ proj }) => proj.depth > 0.2)
+    .sort((a, b) => b.proj.depth - a.proj.depth);
+
+  for (const { kind, proj } of visible) {
+    const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
+    if (proj.depth >= zBuffer[centerCol]) continue; // behind a wall
+    drawDecoration(ctx, kind, proj);
+  }
+}
+
+function drawDecoration(ctx: CanvasRenderingContext2D, kind: DecorKind, proj: EnemyProjection): void {
+  const cx = proj.screenX;
+  const w = proj.right - proj.left;
+  const bottom = proj.bottom; // floor level, so the prop stands on the ground
+
+  switch (kind) {
+    case "rack": {
+      // A dark server tower with a column of small blinking status lights.
+      const h = proj.bottom - proj.top;
+      ctx.fillStyle = "#33383e";
+      ctx.fillRect(cx - w / 2, proj.top, w, h);
+      ctx.fillStyle = "#1c1f23";
+      ctx.fillRect(cx - w / 2, proj.top, w, h * 0.08); // top vent bar
+      const lightColors = ["#37d24a", "#37d24a", "#e0483a"];
+      for (let i = 0; i < 3; i++) {
+        ctx.fillStyle = lightColors[i];
+        ctx.fillRect(cx + w * 0.22, proj.top + h * (0.2 + i * 0.2), w * 0.12, w * 0.12);
+      }
+      break;
+    }
+    case "plant": {
+      // A brown pot with a rounded green top.
+      const potH = w * 0.5;
+      ctx.fillStyle = "#5a3d24";
+      ctx.fillRect(cx - w / 2, bottom - potH, w, potH);
+      ctx.fillStyle = "#2f7a38";
+      ctx.fillRect(cx - w * 0.55, bottom - potH - w * 0.6, w * 1.1, w * 0.7);
+      ctx.fillStyle = "#3f9a4a";
+      ctx.fillRect(cx - w * 0.3, bottom - potH - w * 0.85, w * 0.6, w * 0.4);
+      break;
+    }
+    case "desk": {
+      // A low, wide tabletop on short legs.
+      const topH = w * 0.18;
+      ctx.fillStyle = "#3a2a18";
+      ctx.fillRect(cx - w / 2, bottom - w * 0.5, w * 0.08, w * 0.5);
+      ctx.fillRect(cx + w * 0.42, bottom - w * 0.5, w * 0.08, w * 0.5);
+      ctx.fillStyle = "#6a4a2a";
+      ctx.fillRect(cx - w / 2, bottom - w * 0.5 - topH, w, topH);
+      break;
+    }
+    case "block": {
+      // A translucent, glowing abstract code-block cube.
+      ctx.fillStyle = "rgba(74,111,212,0.55)";
+      ctx.fillRect(cx - w / 2, bottom - w, w, w);
+      ctx.fillStyle = "rgba(160,190,255,0.75)";
+      ctx.fillRect(cx - w * 0.3, bottom - w * 0.7, w * 0.6, w * 0.4);
+      break;
+    }
   }
 }
 

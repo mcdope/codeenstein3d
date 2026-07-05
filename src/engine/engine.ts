@@ -21,6 +21,7 @@ import {
   findTargetAtColumn,
   findTargetUnderCrosshair,
   renderAmmoDrops,
+  renderDecorations,
   renderExitMarker,
   renderKeys,
   renderSprites,
@@ -239,6 +240,7 @@ export class RaycasterEngine {
     // Render — one final frozen frame is still drawn after the game ends.
     const { width, height } = this.ctx.canvas;
     renderScene(this.ctx, this.map, this.player, this.zBuffer, view.horizonShift);
+    renderDecorations(this.ctx, this.player, this.map.decorations, this.zBuffer);
     renderSprites(this.ctx, this.player, this.enemies, this.zBuffer);
     renderProjectiles(this.ctx, this.player, this.projectiles, this.zBuffer);
     renderKeys(this.ctx, this.player, this.map.keys, this.zBuffer);
@@ -290,6 +292,7 @@ export class RaycasterEngine {
    */
   private renderPaused(): void {
     renderScene(this.ctx, this.map, this.player, this.zBuffer, 0);
+    renderDecorations(this.ctx, this.player, this.map.decorations, this.zBuffer);
     renderSprites(this.ctx, this.player, this.enemies, this.zBuffer);
     renderProjectiles(this.ctx, this.player, this.projectiles, this.zBuffer);
     renderKeys(this.ctx, this.player, this.map.keys, this.zBuffer);

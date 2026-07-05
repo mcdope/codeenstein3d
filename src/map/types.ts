@@ -112,6 +112,8 @@ export interface GameMap {
   doors: Point[];
   /** Collectible dependency keys scattered in reachable public areas. */
   keys: KeyItem[];
+  /** Cosmetic, non-blocking props scattered in larger rooms (set dressing). */
+  decorations: Decoration[];
 }
 
 /** A collectible "dependency key" (opens one locked door). */
@@ -130,4 +132,19 @@ export interface AmmoDrop {
   /** World position in fractional tile units. */
   x: number;
   y: number;
+}
+
+/** Visual flavor of a decorative prop; purely cosmetic, no gameplay effect. */
+export type DecorKind = "rack" | "plant" | "desk" | "block";
+
+/**
+ * A cosmetic, non-blocking set-dressing sprite (server rack, potted plant,
+ * desk, or abstract code-block) scattered in larger rooms so they don't feel
+ * like an empty wasteland. Purely decorative: no collision, no interaction.
+ */
+export interface Decoration {
+  /** World position in fractional tile units (tile center). */
+  x: number;
+  y: number;
+  kind: DecorKind;
 }

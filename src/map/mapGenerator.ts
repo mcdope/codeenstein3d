@@ -15,6 +15,8 @@ import type { CodeEntity, ParsedFile } from "../parser/types";
 import {
   DOOR_TILE,
   HAZARD_TILE,
+  type Decoration,
+  type DecorKind,
   type Enemy,
   type GameMap,
   type KeyItem,
@@ -28,6 +30,22 @@ const HP_PER_COMPLEXITY = 25;
 
 /** Nesting depth at/above which an entity's room becomes a labyrinth. */
 const MAZE_THRESHOLD = 2;
+
+/** Manhattan distance beyond which a corridor gets 1-2 jogs instead of a
+ * single straight L-turn, so long hallways don't offer one full sightline. */
+const CORRIDOR_JOG_THRESHOLD = 10;
+/** Perpendicular jitter applied to each corridor jog waypoint, in tiles. */
+const CORRIDOR_JOG_JITTER = 3;
+
+/** Minimum room footprint (tiles, both dimensions) to get pillars/decor. */
+const LARGE_ROOM_MIN_DIM = 6;
+/** Tiles kept clear around a room's center, the exit, spawn, and enemies when
+ * placing a pillar or decoration — keeps critical spots visible/reachable. */
+const PROP_CLEARANCE = 1.4;
+/** Minimum spacing (tiles) between two props placed in the same room. */
+const PROP_SPACING = 1.8;
+/** Placement attempts per prop before giving up on it. */
+const PROP_ATTEMPTS = 12;
 
 export interface MapGeneratorOptions {
   /** Lower bound for the (square) map size in tiles. */
@@ -64,7 +82,7 @@ export class MapGenerator {
     );
 
     const rooms = this.placeRooms(parsed.entities, size, grid, rng);
-    connectRooms(rooms, grid);
+    connectRooms(rooms, grid, rng);
 
     // Spawn in a room corner so the player doesn't start inside the room's
     // center enemy; the exit goes in the room furthest from that spawn.
@@ -80,6 +98,18 @@ export class MapGenerator {
     // spawn, exit, and every enemy stand on open floor even inside a maze.
     clearCriticalTiles(grid, spawn, exit, enemies);
 
+    // Break up large empty rooms with structural pillars, then dress them with
+    // cosmetic (non-blocking) props — both steer clear of the spawn, exit, room
+    // centers (primary enemy spawns) and each other. Run before doors/keys so
+    // those systems see the final walkable grid.
+    const avoidPoints: Point[] = [
+      { x: spawn.x + 0.5, y: spawn.y + 0.5 },
+      { x: exit.x + 0.5, y: exit.y + 0.5 },
+      ...enemies.map((e) => ({ x: e.x, y: e.y })),
+    ];
+    placePillars(rooms, grid, avoidPoints, rng);
+    const decorations = placeDecorations(rooms, grid, avoidPoints, rng);
+
     // Lock private/protected-method rooms behind doors, then scatter one key
     // per door in areas reachable before that door (keeps every level solvable).
     const doors = placeDoors(rooms, grid);
@@ -90,7 +120,20 @@ export class MapGenerator {
       new Array<boolean>(size).fill(false),
     );
 
-    return { width: size, height: size, grid, visited, rooms, spawn, enemies, exit, hazards, doors, keys };
+    return {
+      width: size,
+      height: size,
+      grid,
+      visited,
+      rooms,
+      spawn,
+      enemies,
+      exit,
+      hazards,
+      doors,
+      keys,
+      decorations,
+    };
   }
 
   /** Square map size, floored at `minSize` and growing with LOC and entities. */
@@ -472,6 +515,111 @@ function enemyPositions(room: Room, count: number, exit: Point, rng: () => numbe
 }
 
 /**
+ * A room qualifies for pillars/decorations if it's a plain open room: not a
+ * labyrinth (those are already dense with walls) and not a global-variable
+ * hazard room (an acid pool has no business holding a server rack), and at
+ * least `LARGE_ROOM_MIN_DIM` square so there's real empty space to break up.
+ */
+function isLargeOpenRoom(room: Room): boolean {
+  return (
+    room.entity.kind !== "global" &&
+    room.entity.nestingDepth < MAZE_THRESHOLD &&
+    room.w >= LARGE_ROOM_MIN_DIM &&
+    room.h >= LARGE_ROOM_MIN_DIM
+  );
+}
+
+/**
+ * Scatter 1-1x1 wall "pillars" through large open rooms to break up long
+ * sightlines and empty floor. Never touches the spawn room (index 0) — a
+ * pillar right at the entrance would just be an early annoyance.
+ */
+function placePillars(
+  rooms: Room[],
+  grid: Tile[][],
+  avoid: Point[],
+  rng: () => number,
+): void {
+  rooms.forEach((room, index) => {
+    if (index === 0 || !isLargeOpenRoom(room)) return;
+    const count = 1 + Math.floor(rng() * 3); // 1-3
+    const placed: Point[] = [];
+    for (let i = 0; i < count; i++) {
+      const spot = findPropSpot(room, grid, avoid, placed, rng);
+      if (!spot) continue;
+      grid[spot.y][spot.x] = 1;
+      placed.push(spot);
+    }
+  });
+}
+
+const DECOR_KINDS: DecorKind[] = ["rack", "plant", "desk", "block"];
+
+/**
+ * Scatter 1-3 cosmetic, non-blocking props (server racks, plants, desks,
+ * abstract code-blocks) through large open rooms so they feel inhabited rather
+ * than an empty wasteland. Unlike pillars, the spawn room is eligible too —
+ * decorations never block anything, so there's no downside there.
+ */
+function placeDecorations(
+  rooms: Room[],
+  grid: Tile[][],
+  avoid: Point[],
+  rng: () => number,
+): Decoration[] {
+  const decorations: Decoration[] = [];
+  for (const room of rooms) {
+    if (!isLargeOpenRoom(room)) continue;
+    const count = 1 + Math.floor(rng() * 3); // 1-3
+    const placed: Point[] = [];
+    for (let i = 0; i < count; i++) {
+      const spot = findPropSpot(room, grid, avoid, placed, rng);
+      if (!spot) continue;
+      placed.push(spot);
+      const kind = DECOR_KINDS[Math.floor(rng() * DECOR_KINDS.length)];
+      decorations.push({ x: spot.x + 0.5, y: spot.y + 0.5, kind });
+    }
+  }
+  return decorations;
+}
+
+/**
+ * Find an open interior tile in `room` for a pillar or decoration: on plain
+ * floor, clear of the room center (the primary enemy spawn point) and every
+ * point in `avoid` (spawn/exit/enemies), and spaced out from props already
+ * `placed` in this room. Margin 1 keeps it off the room's own walls. Returns
+ * `null` if no spot is found within the attempt budget (the room just gets
+ * fewer props — never a hard failure).
+ */
+function findPropSpot(
+  room: Room,
+  grid: Tile[][],
+  avoid: Point[],
+  placed: Point[],
+  rng: () => number,
+): Point | null {
+  const centerX = room.center.x + 0.5;
+  const centerY = room.center.y + 0.5;
+  for (let attempt = 0; attempt < PROP_ATTEMPTS; attempt++) {
+    const x = room.x + 1 + Math.floor(rng() * (room.w - 2));
+    const y = room.y + 1 + Math.floor(rng() * (room.h - 2));
+    if (grid[y][x] !== 0) continue;
+
+    const px = x + 0.5;
+    const py = y + 0.5;
+    if (dist(px, py, centerX, centerY) < PROP_CLEARANCE) continue;
+    if (avoid.some((a) => dist(px, py, a.x, a.y) < PROP_CLEARANCE)) continue;
+    if (placed.some((p) => dist(px, py, p.x + 0.5, p.y + 0.5) < PROP_SPACING)) continue;
+    return { x, y };
+  }
+  return null;
+}
+
+function dist(x1: number, y1: number, x2: number, y2: number): number {
+  return Math.hypot(x1 - x2, y1 - y2);
+}
+
+/**
  * Turn each global-variable room into an acid pool: fill its interior (leaving
  * a 1-tile walkable rim) with hazard tiles. The spawn room is skipped and the
  * spawn/exit tiles are always kept clear so the player never starts or wins in
@@ -518,18 +666,59 @@ function pickExit(rooms: Room[], spawn: Point): Point {
 }
 
 /**
- * Chain the rooms together with L-shaped corridors (room i ↔ room i-1),
- * guaranteeing the whole level is reachable from the spawn.
+ * Chain the rooms together with corridors (room i ↔ room i-1), guaranteeing
+ * the whole level is reachable from the spawn.
  */
-function connectRooms(rooms: Room[], grid: Tile[][]): void {
+function connectRooms(rooms: Room[], grid: Tile[][], rng: () => number): void {
   for (let i = 1; i < rooms.length; i++) {
-    carveCorridor(grid, rooms[i - 1].center, rooms[i].center);
+    carveCorridor(grid, rooms[i - 1].center, rooms[i].center, rng);
   }
 }
 
-function carveCorridor(grid: Tile[][], from: Point, to: Point): void {
-  carveHLine(grid, from.x, to.x, from.y);
-  carveVLine(grid, from.y, to.y, to.x);
+/**
+ * Carve a corridor between two points. Short hops stay a single L-turn; long
+ * ones (see `corridorWaypoints`) pick up 1-2 jittered intermediate waypoints so
+ * the path bends instead of offering one long straight sightline. Each leg
+ * alternates which axis goes first, so consecutive jogs don't all bend the
+ * same way.
+ */
+function carveCorridor(grid: Tile[][], from: Point, to: Point, rng: () => number): void {
+  const waypoints = corridorWaypoints(from, to, grid.length, rng);
+  for (let i = 1; i < waypoints.length; i++) {
+    const a = waypoints[i - 1];
+    const b = waypoints[i];
+    if (i % 2 === 1) {
+      carveHLine(grid, a.x, b.x, a.y);
+      carveVLine(grid, a.y, b.y, b.x);
+    } else {
+      carveVLine(grid, a.y, b.y, a.x);
+      carveHLine(grid, a.x, b.x, b.y);
+    }
+  }
+}
+
+/**
+ * Intermediate turn points between two room centers. Distances at/under
+ * `CORRIDOR_JOG_THRESHOLD` stay a plain two-point (single L-turn) path; longer
+ * ones get 1-2 waypoints placed along the line and jittered perpendicular to
+ * it, clamped inside the map border.
+ */
+function corridorWaypoints(from: Point, to: Point, size: number, rng: () => number): Point[] {
+  const manhattan = Math.abs(to.x - from.x) + Math.abs(to.y - from.y);
+  if (manhattan <= CORRIDOR_JOG_THRESHOLD) return [from, to];
+
+  const jogs = Math.min(2, Math.floor(manhattan / CORRIDOR_JOG_THRESHOLD));
+  const points: Point[] = [from];
+  for (let i = 1; i <= jogs; i++) {
+    const t = i / (jogs + 1);
+    const bx = from.x + (to.x - from.x) * t;
+    const by = from.y + (to.y - from.y) * t;
+    const jx = clamp(Math.round(bx + (rng() * 2 - 1) * CORRIDOR_JOG_JITTER), 1, size - 2);
+    const jy = clamp(Math.round(by + (rng() * 2 - 1) * CORRIDOR_JOG_JITTER), 1, size - 2);
+    points.push({ x: jx, y: jy });
+  }
+  points.push(to);
+  return points;
 }
 
 function carveHLine(grid: Tile[][], x1: number, x2: number, y: number): void {
