@@ -1,0 +1,50 @@
+# Playtest notes / backlog
+
+## Done
+- [x] to few enemies — complexity packs (1 extra enemy per 10 pts) [Task 18]
+- [x] increase aggro distance — 5 → 7.5 tiles [Task 18]
+- [x] enemies sometimes invisible when very close to the player — sprite near-clip fix [Task 18]
+- [x] enemies shouldnt be melee only — ranged plasma bolts [Task 19]
+- [x] enemies should roam around in their rooms, not wait statically (without leaving the room) [Task 18]
+- [x] enemies dont attack when shot from outside aggro distance — damage aggro [Task 18]
+- [x] return and enemy placed at the same location — exit tile kept clear of spawns [Task 18]
+- [x] to less ammo — defeated enemies drop heap (ammo) pickups [Task 11]
+- [x] strafing — A/D strafe perpendicular to the camera [Task 20]
+- [x] running — Shift sprints at 2x move speed [Task 20]
+- [x] floors to long / paths boring — long corridors now jog/turn instead of one straight sightline; large rooms get 1-3 pillars to break up empty space [Task 21]
+- [x] goto usage should result in a teleport portal, like they exist in e.g UT — `goto`/label pairs are now parsed (C + PHP) and turned into linked, glowing violet teleporter pad pairs; stepping on one warps to the other [Task 22]
+- [x] multi-level / jump to next level on end of level — reaching `return` now auto-loads the next parsable file in the tree (depth-first, dirs-first) instead of ending the run, carrying health/ammo across; only shows the win screen on the last file [Task 22]
+- [x] add languages: asm, js, ts, python, java, c++, objc (and other realworld languages, as long as supported by our libs - we dont want to use multiple libs for that) — added JS, TS/TSX, Python, Java, C++, Go, Rust, Ruby, C#, Bash, Scala, Objective-C via one generic Tree-sitter-driven adapter (still just tree-sitter, no second parsing lib); no ASM (no ABI-compatible prebuilt grammar found), Kotlin/Lua skipped (no prebuilt wasm shipped by their packages) [Task 23]
+- [x] ensure code parser only acts on actual supported code, in case some troll loads his meme folder or whatever. ensure that loaded code is never executed. — strict extension whitelist (only registered adapters' extensions reach a parser at all), plus a size cap + binary-content sniff on top; loaded text is only ever fed to `Parser.parse()` (builds an AST), never eval'd/compiled/run; any parse failure now logs a warning and skips the file instead of crashing the map generator or game loop [Task 23]
+- [x] map top left should be semi-transparent. player and direction should be more clearly visible, same for the exit. enemies shouldnt be show until the room was entered. — always-on minimap now uses a semi-transparent dark rgba backing panel, a bright solid triangle for the player's exact position/facing, a pulsing high-contrast exit marker, and enemies stay hidden until the player's collision box AABB-intersects their room (sticky once discovered) [Task 24]
+- [x] more traps (kinds, but also placement) — added timed spike traps (tile toggles safe/damaging on a per-trap cycle) and invisible proximity mines (reveal + detonate for AoE damage if you linger, timer resets if you back off in time), both scattered procedurally at 1-tile-wide corridor choke points rather than open room floor. Not exhaustive — more kinds/placement variety is still open for later [Task 24]
+- [x] if the AST has a detectable entrypoint (like `main()` for c, index.php for PHP etc), use that a starting level after loading the workspace — workspace load now searches for a standard entrypoint filename (main.c/cpp/py/go/rs, index.php, index.js, Program.cs, etc.) across the whole tree, falling back to a content-based `main()` function scan for the C family, and auto-launches it immediately; falls back further to the first parsable file in tree order if nothing matches [Task 24]
+- [x] mines need to be visible way earlier, its almost impossible to avoid them — sight radius (visible) and fuse-arming radius (actually dangerous) are now separate: mines reveal from 4.5 tiles away but only start their fuse within 1.8, giving real reaction room. Also added the ability to shoot a spotted mine to disarm it outright — safe from beyond its blast radius, but still hurts point-blank — since spotting one you can't do anything about wasn't useful
+
+## Open
+- [ ] rooms need deco of some kind, currently an empty wasteland — implemented in Task 21 (server racks/plants/desks/code-blocks as billboard props) but felt annoying in playtest, so disabled again behind `DECORATIONS_ENABLED = false` in mapGenerator.ts. Code (generation + rendering) is intact; needs a design rethink (placement density? different visual treatment? non-billboard approach?) before re-enabling. Ignore for now.
+- [ ] scoring (HUD has a Score slot since Task 20, always 0 — no scoring logic yet), extra points for health, ammo left, path length (shorter = better) at end of level, plus points for every kill (depending on enemy). score malus at end of level for health below 100%
+- [ ] persisted highscore list
+- [ ] makefile
+- [ ] tests (unit [coverage target 100%!], end2end/functional/visual [coverage target: all aspects of gameplay])
+- [ ] github ci actions for the tests (to be executed on github, no custom runner)
+- [ ] ability to load github repos instead of local folder
+- [ ] user pickable bgm folder
+- [ ] scoresystem should also store a hash (sha256 or similar) of the AST, or code scanned. this should also be displayed in the highscore list, for comparison
+- [ ] more weapons, to be randomly dropped by enemies. Like a rocket-like-launcher for AoE damage, or an MP.
+- [ ] each weapon should use unique ammo
+- [ ] ammo should also be randomly placed across maps for player pickup
+- [ ] fps (if possible: also gpu/cpu usage) display, toggable - default of. use RIGHT_CTRL as hotkey (for now)
+- [ ] optional replay storage at end of level (even possible?)
+- [ ] pause game if canvas not focussed / ESC was pressed
+- [ ] gamepad/joystick support
+- [ ] weapon should be rendered differently, depending on their type/strength
+- [ ] fullscreen support for the canvas
+- [ ] user/player docs in `doc/user`
+- [ ] dev docs, GDD, design descisions etc in `doc/dev`
+- [ ] ensure the player spawns far enough outside the aggro range of any enemy, except that's not possible without leaving the room
+- [ ] collectible health and armor drops (randomly dropped on top of ammo by enemies)
+- [ ] canvas looses focus on level change - bug
+- [ ] mines need to be visible way earlier, its almost impossible to avoid them
+- [ ] weapons should have a range determined by their type (or realistic equivalent)
+- [ ] drop, enemies, exit etc should be in front based on drawing distance from POV - for example: sometimes a dropped item next to exit "disappears" behind the exit
