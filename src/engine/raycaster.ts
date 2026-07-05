@@ -21,12 +21,24 @@ const DOOR_RGB: [number, number, number] = [86, 142, 190];
 const CEILING_RGB: [number, number, number] = [11, 13, 22];
 const FLOOR_RGB: [number, number, number] = [21, 21, 26];
 const ACID_RGB: [number, number, number] = [64, 196, 72];
-/** Distance (tiles) at which walls fade to near-black. */
-const SHADE_DISTANCE = 22;
-/** Minimum brightness so distant walls stay faintly visible. */
-const MIN_SHADE = 0.12;
+/** Within this many tiles the world keeps full brightness (no fog). */
+const FOG_NEAR = 2.5;
+/** Beyond this many tiles the world has faded to pure black. */
+const FOG_FAR = 14;
 /** y-side walls are dimmed to fake directional lighting. */
 const SIDE_SHADE = 0.68;
+
+/**
+ * Distance fog brightness multiplier in [0, 1]: full (1) within `FOG_NEAR`,
+ * pure black (0) at/beyond `FOG_FAR`, smoothstepped in between so walls sink
+ * gently into the dark rather than banding.
+ */
+function fogShade(dist: number): number {
+  if (dist <= FOG_NEAR) return 1;
+  if (dist >= FOG_FAR) return 0;
+  const brightness = 1 - (dist - FOG_NEAR) / (FOG_FAR - FOG_NEAR); // linear 1→0
+  return brightness * brightness * (3 - 2 * brightness); // smoothstep
+}
 
 /** Reusable floor-cast frame buffer, re-created only when the size changes. */
 let floorImage: ImageData | null = null;
@@ -130,9 +142,9 @@ export function renderScene(
     const drawStart = Math.max(0, Math.floor(horizon - lineHeight / 2));
     const drawEnd = Math.min(height - 1, Math.floor(horizon + lineHeight / 2));
 
-    // Distance shading, dimmed further on y-sides for depth. Doors use their
-    // own color so they read as openable, not solid rock.
-    let shade = Math.max(MIN_SHADE, 1 - dist / SHADE_DISTANCE);
+    // Distance fog, dimmed further on y-sides for depth. Doors use their own
+    // color so they read as openable, not solid rock.
+    let shade = fogShade(dist);
     if (side === 1) shade *= SIDE_SHADE;
 
     const base = hitTile === DOOR_TILE ? DOOR_RGB : WALL_RGB;
@@ -190,7 +202,7 @@ function renderBackground(
     let floorX = player.posX + rowDistance * rayDir0X;
     let floorY = player.posY + rowDistance * rayDir0Y;
 
-    const shade = Math.max(MIN_SHADE, 1 - rowDistance / SHADE_DISTANCE);
+    const shade = fogShade(rowDistance);
 
     for (let x = 0; x < width; x++) {
       const cx = Math.floor(floorX);
