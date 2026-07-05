@@ -25,6 +25,7 @@ import {
   renderSprites,
 } from "./sprites";
 import { drawCrosshair, drawHud } from "./hud";
+import { drawWeapon } from "./viewmodel";
 import {
   DAMAGE_FLASH_FRAMES,
   HIT_FLASH_FRAMES,
@@ -56,6 +57,19 @@ const MAX_HEALTH = 100;
 const HAZARD_DPS = 18;
 /** Tiles the player must cover between footstep sounds. */
 const STRIDE_LENGTH = 1.2;
+/** Head-bob angular frequency while moving (radians/sec). */
+const BOB_FREQUENCY = 8.5;
+/** How fast the bob amplitude eases in/out as movement starts/stops. */
+const BOB_EASE = 8;
+/** Peak camera horizon bob, in pixels. */
+const CAMERA_BOB_PX = 3;
+/** Peak weapon bob, in pixels (horizontal, vertical). */
+const WEAPON_BOB_X_PX = 10;
+const WEAPON_BOB_Y_PX = 8;
+/** How fast the weapon recoil eases back to rest (per second). */
+const RECOIL_RECOVERY = 12;
+/** Frames the muzzle flash is drawn after firing. */
+const MUZZLE_FLASH_FRAMES = 3;
 /** Fraction of max stability below which the low-health alarm sounds. */
 const LOW_HEALTH_FRACTION = 0.25;
 /** Seconds between low-health alarm beeps. */
@@ -128,6 +142,16 @@ export class RaycasterEngine {
   private alarmCountdown = 0;
   /** Ground covered (tiles) since the last footstep sound. */
   private stepDistance = 0;
+  /** Whether the player translated (WASD) this frame — drives head-bob. */
+  private moving = false;
+  /** Head-bob phase accumulator; only advances while moving. */
+  private bobTime = 0;
+  /** Eased bob amplitude (0 at rest → 1 at full stride) for smooth start/stop. */
+  private bobAmount = 0;
+  /** Weapon recoil, 1 just after firing, easing back to 0. */
+  private recoil = 0;
+  /** Frames left on the muzzle flash. */
+  private muzzleFrames = 0;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -195,9 +219,12 @@ export class RaycasterEngine {
     this.updateLowHealthAlarm(dt);
     this.checkExit();
 
+    // Head-bob / recoil offsets for this frame (camera + weapon).
+    const view = this.updateViewmodel(dt);
+
     // Render — one final frozen frame is still drawn after the game ends.
     const { width, height } = this.ctx.canvas;
-    renderScene(this.ctx, this.map, this.player, this.zBuffer);
+    renderScene(this.ctx, this.map, this.player, this.zBuffer, view.horizonShift);
     renderSprites(this.ctx, this.player, this.enemies, this.zBuffer);
     renderKeys(this.ctx, this.player, this.map.keys, this.zBuffer);
     renderAmmoDrops(this.ctx, this.player, this.drops, this.zBuffer);
@@ -222,6 +249,14 @@ export class RaycasterEngine {
     // Full-screen red flash when the player is taking damage.
     drawDamageFlash(this.ctx, this.flashFrames / DAMAGE_FLASH_FRAMES);
 
+    // First-person weapon, swaying with the bob and kicking on recoil.
+    drawWeapon(this.ctx, {
+      bobX: view.bobX,
+      bobY: view.bobY,
+      recoil: this.recoil,
+      flash: this.muzzleFrames > 0,
+    });
+
     drawCrosshair(this.ctx, this.target !== null, WEAPONS[this.weaponIndex].spreadPx);
     renderMinimap(this.ctx, this.map, this.player);
 
@@ -237,6 +272,7 @@ export class RaycasterEngine {
   /** Advance the frame-based visual-effect timers by one frame. */
   private tickEffects(): void {
     if (this.flashFrames > 0) this.flashFrames -= 1;
+    if (this.muzzleFrames > 0) this.muzzleFrames -= 1;
     tickBulletTraces(this.traces);
     for (const enemy of this.enemies) {
       if (enemy.hitFlash > 0) enemy.hitFlash -= 1;
@@ -260,13 +296,38 @@ export class RaycasterEngine {
     // Footsteps: accumulate ground actually covered (blocked moves count for
     // nothing) and tick a quiet step once per stride.
     const moved = Math.hypot(this.player.posX - startX, this.player.posY - startY);
-    if (moved > 1e-4 && this.state === "playing") {
+    this.moving = moved > 1e-4 && this.state === "playing";
+    if (this.moving) {
       this.stepDistance += moved;
       if (this.stepDistance >= STRIDE_LENGTH) {
         audio.playStep();
         this.stepDistance -= STRIDE_LENGTH;
       }
     }
+  }
+
+  /**
+   * Advance the head-bob and recoil animation. The bob phase only runs while
+   * moving; its amplitude eases in/out so starting and stopping is smooth. The
+   * recoil lerps back to rest every frame. Returns the derived offsets for this
+   * frame (camera horizon shift plus weapon bob), consumed by the renderer.
+   */
+  private updateViewmodel(dt: number): { horizonShift: number; bobX: number; bobY: number } {
+    if (this.moving) this.bobTime += dt;
+    const target = this.moving ? 1 : 0;
+    this.bobAmount += (target - this.bobAmount) * Math.min(1, dt * BOB_EASE);
+    this.recoil += (0 - this.recoil) * Math.min(1, dt * RECOIL_RECOVERY);
+
+    const phase = this.bobTime * BOB_FREQUENCY;
+    // Horizontal sway is one cycle per stride; vertical bounces twice (a dip on
+    // each footfall) — the classic head-bob relationship.
+    const bobH = Math.sin(phase) * this.bobAmount;
+    const bobV = Math.sin(phase * 2) * this.bobAmount;
+    return {
+      horizonShift: bobV * CAMERA_BOB_PX,
+      bobX: bobH * WEAPON_BOB_X_PX,
+      bobY: bobV * WEAPON_BOB_Y_PX,
+    };
   }
 
   /**
@@ -412,6 +473,9 @@ export class RaycasterEngine {
     }
     this.ammo -= weapon.ammoPerShot;
     audio.playShoot();
+    // Kick the viewmodel: full recoil, easing back over the next frames.
+    this.recoil = 1;
+    this.muzzleFrames = MUZZLE_FLASH_FRAMES;
 
     const { width, height } = this.ctx.canvas;
     const center = width / 2;

@@ -41,19 +41,24 @@ export function renderScene(
   map: GameMap,
   player: Player,
   zBuffer: Float64Array,
+  horizonShift = 0,
 ): void {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
+  // Screen row of the horizon, nudged by the head-bob so walls, ceiling, and
+  // floor all rise and fall with the camera.
+  const horizon = height / 2 + horizonShift;
 
   if (map.hazards.length > 0) {
     // Floor-cast so acid pools appear as colored floor tiles.
-    renderBackground(ctx, map, player, width, height);
+    renderBackground(ctx, map, player, width, height, horizon);
   } else {
-    // No hazards: flat ceiling (top half) and floor (bottom half) is cheaper.
+    // No hazards: flat ceiling (above the horizon) and floor (below) is cheaper.
+    const split = Math.max(0, Math.min(height, Math.round(horizon)));
     ctx.fillStyle = rgb(CEILING_RGB);
-    ctx.fillRect(0, 0, width, height / 2);
+    ctx.fillRect(0, 0, width, split);
     ctx.fillStyle = rgb(FLOOR_RGB);
-    ctx.fillRect(0, height / 2, width, height / 2);
+    ctx.fillRect(0, split, width, height - split);
   }
 
   for (let x = 0; x < width; x++) {
@@ -122,8 +127,8 @@ export function renderScene(
     zBuffer[x] = dist;
 
     const lineHeight = Math.floor(height / dist);
-    const drawStart = Math.max(0, Math.floor((height - lineHeight) / 2));
-    const drawEnd = Math.min(height - 1, Math.floor((height + lineHeight) / 2));
+    const drawStart = Math.max(0, Math.floor(horizon - lineHeight / 2));
+    const drawEnd = Math.min(height - 1, Math.floor(horizon + lineHeight / 2));
 
     // Distance shading, dimmed further on y-sides for depth. Doors use their
     // own color so they read as openable, not solid rock.
@@ -150,12 +155,13 @@ function renderBackground(
   player: Player,
   width: number,
   height: number,
+  horizon: number,
 ): void {
   if (!floorImage || floorImage.width !== width || floorImage.height !== height) {
     floorImage = ctx.createImageData(width, height);
   }
   const data = floorImage.data;
-  const halfH = height / 2;
+  const halfH = horizon;
 
   // Leftmost (cameraX=-1) and rightmost (cameraX=+1) ray directions.
   const rayDir0X = player.dirX - player.planeX;
