@@ -51,6 +51,12 @@ export interface Enemy {
   hp: number;
   maxHp: number;
   alive: boolean;
+  /**
+   * Seconds remaining before this enemy can melee the player again. Ticked
+   * down by the engine's enemy AI each frame; 0 means "ready to bite". Starts
+   * at 0. (Behaviour lives in src/engine/enemyAi.ts — this stays plain data.)
+   */
+  attackCooldown: number;
   /** The function/method this enemy represents. */
   entity: CodeEntity;
 }

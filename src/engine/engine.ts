@@ -7,12 +7,13 @@
  *
  * All motion is scaled by delta time so movement speed is identical whether the
  * display runs at 60, 120, or 30 fps. The engine tracks health ("System
- * Stability") and ammo ("Heap / RAM"), applies contact damage from enemies,
- * and ends the run on death (Kernel Panic) or reaching the exit (Build
- * Successful). It reports state to the host via `EngineHandlers` and leaves the
- * DOM HUD/overlays to the caller.
+ * Stability") and ammo ("Heap / RAM"), runs the enemy AI (enemies chase and
+ * melee the player), and ends the run on death (Kernel Panic) or reaching the
+ * exit (Build Successful). It reports state to the host via `EngineHandlers`
+ * and leaves the DOM HUD/overlays to the caller.
  */
 import { Player, isHazard } from "./player";
+import { updateEnemies } from "./enemyAi";
 import { InputController } from "./input";
 import { renderMinimap, renderScene } from "./raycaster";
 import {
@@ -37,10 +38,6 @@ const MOUSE_SENSITIVITY = 0.0025;
 const MAX_DT = 0.05;
 /** Starting / maximum System Stability (health), as a percentage. */
 const MAX_HEALTH = 100;
-/** Distance (tiles) within which an enemy is "touching" the player. */
-const CONTACT_RADIUS = 0.5;
-/** Health lost per second while in contact with an enemy. */
-const CONTACT_DPS = 30;
 /** Health lost per second while standing in an acid (hazard) tile. */
 const HAZARD_DPS = 18;
 /** How close (tiles) the player must get to pick up a key. */
@@ -160,7 +157,7 @@ export class RaycasterEngine {
     this.collectKeys();
     this.collectAmmoDrops();
     this.openDoorAhead();
-    this.applyContactDamage(dt);
+    this.updateEnemyAi(dt);
     this.applyHazardDamage(dt);
     this.checkExit();
 
@@ -204,23 +201,15 @@ export class RaycasterEngine {
     if (mouseDX !== 0) this.player.rotate(mouseDX * MOUSE_SENSITIVITY);
   }
 
-  /** Drain stability while any live enemy overlaps the player. */
-  private applyContactDamage(dt: number): void {
+  /**
+   * Run the enemy chase/attack AI for this frame and apply any melee damage it
+   * dealt to the player. Enemies home in when the player is within their aggro
+   * radius and bite on a per-enemy cooldown once adjacent.
+   */
+  private updateEnemyAi(dt: number): void {
     if (this.state !== "playing") return;
-    const r2 = CONTACT_RADIUS * CONTACT_RADIUS;
-    let touching = false;
-    for (const enemy of this.enemies) {
-      if (!enemy.alive) continue;
-      const dx = enemy.x - this.player.posX;
-      const dy = enemy.y - this.player.posY;
-      if (dx * dx + dy * dy < r2) {
-        touching = true;
-        break;
-      }
-    }
-    if (!touching) return;
-
-    this.damage(CONTACT_DPS * dt);
+    const dmg = updateEnemies(this.enemies, this.player, this.map, dt);
+    if (dmg > 0) this.damage(dmg);
   }
 
   /** Drain stability while the player stands in an acid (hazard) tile. */

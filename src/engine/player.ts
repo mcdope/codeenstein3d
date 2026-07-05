@@ -75,18 +75,31 @@ export class Player {
 
   /** AABB-vs-grid test: does the box centered at (px,py) touch any wall cell? */
   private collides(map: GameMap, px: number, py: number): boolean {
-    const r = this.config.radius;
-    const minX = Math.floor(px - r);
-    const maxX = Math.floor(px + r);
-    const minY = Math.floor(py - r);
-    const maxY = Math.floor(py + r);
-    for (let cy = minY; cy <= maxY; cy++) {
-      for (let cx = minX; cx <= maxX; cx++) {
-        if (isWall(map, cx, cy)) return true;
-      }
-    }
-    return false;
+    return collidesWithWall(map, px, py, this.config.radius);
   }
+}
+
+/**
+ * AABB-vs-grid test: does a box of half-width `radius` centered at (px,py)
+ * overlap any solid (wall or still-locked door) cell? Shared by the player and
+ * the enemy AI so both resolve collisions against the tile matrix identically.
+ */
+export function collidesWithWall(
+  map: GameMap,
+  px: number,
+  py: number,
+  radius: number,
+): boolean {
+  const minX = Math.floor(px - radius);
+  const maxX = Math.floor(px + radius);
+  const minY = Math.floor(py - radius);
+  const maxY = Math.floor(py + radius);
+  for (let cy = minY; cy <= maxY; cy++) {
+    for (let cx = minX; cx <= maxX; cx++) {
+      if (isWall(map, cx, cy)) return true;
+    }
+  }
+  return false;
 }
 
 /** A cell is solid if it's out of bounds or a wall (1). */

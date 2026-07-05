@@ -415,6 +415,7 @@ function spawnEnemies(rooms: Room[]): Enemy[] {
       hp,
       maxHp: hp,
       alive: true,
+      attackCooldown: 0,
       entity: room.entity,
     });
   }
