@@ -30,6 +30,30 @@ export function drawCrosshair(
   }
 }
 
+/**
+ * Full-screen "PAUSED" scrim, drawn over one frozen frame of the scene —
+ * triggered by the window losing focus or an Escape press (see
+ * `RaycasterEngine`'s `isPaused`). Distinct from the Tab automap overlay,
+ * though both freeze the sim the same way.
+ */
+export function drawPauseOverlay(ctx: CanvasRenderingContext2D): void {
+  const w = ctx.canvas.width;
+  const h = ctx.canvas.height;
+
+  ctx.fillStyle = "rgba(0,4,2,0.72)";
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#37d24a";
+  ctx.font = "bold 28px ui-monospace, monospace";
+  ctx.fillText("PAUSED", w / 2, h / 2 - 6);
+
+  ctx.fillStyle = "#8effa0";
+  ctx.font = "12px ui-monospace, monospace";
+  ctx.fillText("Click to resume, or press Esc again", w / 2, h / 2 + 20);
+  ctx.textAlign = "start";
+}
+
 /** Height, in canvas pixels, of the native status bar at the bottom. */
 const HUD_HEIGHT = 58;
 

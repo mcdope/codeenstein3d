@@ -8,7 +8,7 @@
  * Rendered as glowing billboards, occluded by the wall z-buffer like sprites.
  */
 import { isWall, type Player } from "./player";
-import { projectPoint } from "./sprites";
+import { projectPoint, type BillboardJob } from "./sprites";
 import type { GameMap } from "../map/types";
 
 /** Bolt travel speed, in tiles per second (dodgeable, but faster than a chase). */
@@ -79,35 +79,37 @@ export function updateProjectiles(
   return damage;
 }
 
-/** Draw bolts as small glowing magenta orbs at eye level, wall-occluded. */
-export function renderProjectiles(
+/** Collect bolts as small glowing magenta orb draw jobs at eye level,
+ * wall-occluded. See `BillboardJob` in `sprites.ts`. */
+export function collectProjectileBillboards(
   ctx: CanvasRenderingContext2D,
   player: Player,
   list: Projectile[],
   zBuffer: Float64Array,
-): void {
+): BillboardJob[] {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
 
-  const visible = list
+  return list
     .map((p) => ({ proj: projectPoint(player, p.x, p.y, width, height, 0.3) }))
     .filter(({ proj }) => proj.depth > 0.1)
-    .sort((a, b) => b.proj.depth - a.proj.depth);
+    .map(({ proj }) => ({
+      depth: proj.depth,
+      draw: () => {
+        const col = clamp(Math.round(proj.screenX), 0, width - 1);
+        if (proj.depth >= zBuffer[col]) return; // behind a wall
 
-  for (const { proj } of visible) {
-    const col = clamp(Math.round(proj.screenX), 0, width - 1);
-    if (proj.depth >= zBuffer[col]) continue; // behind a wall
-
-    const size = Math.max(3, (proj.right - proj.left) * 0.5);
-    const cx = proj.screenX;
-    const cy = height / 2; // bolts fly at eye level
-    ctx.fillStyle = "rgba(255,80,200,0.35)";
-    ctx.fillRect(cx - size, cy - size, size * 2, size * 2);
-    ctx.fillStyle = "#ff3ea5";
-    ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
-    ctx.fillStyle = "#ffd0ec";
-    ctx.fillRect(cx - size / 4, cy - size / 4, size / 2, size / 2);
-  }
+        const size = Math.max(3, (proj.right - proj.left) * 0.5);
+        const cx = proj.screenX;
+        const cy = height / 2; // bolts fly at eye level
+        ctx.fillStyle = "rgba(255,80,200,0.35)";
+        ctx.fillRect(cx - size, cy - size, size * 2, size * 2);
+        ctx.fillStyle = "#ff3ea5";
+        ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
+        ctx.fillStyle = "#ffd0ec";
+        ctx.fillRect(cx - size / 4, cy - size / 4, size / 2, size / 2);
+      },
+    }));
 }
 
 function clamp(value: number, min: number, max: number): number {

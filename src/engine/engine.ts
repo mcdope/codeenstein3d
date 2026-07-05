@@ -14,22 +14,23 @@
  */
 import { Player, isHazard } from "./player";
 import { updateEnemies } from "./enemyAi";
-import { renderProjectiles, updateProjectiles, type Projectile } from "./projectiles";
+import { collectProjectileBillboards, updateProjectiles, type Projectile } from "./projectiles";
 import { InputController } from "./input";
 import { renderMinimap, renderScene } from "./raycaster";
 import {
+  collectAmmoDropBillboards,
+  collectDecorationBillboards,
+  collectEnemyBillboards,
+  collectExitBillboard,
+  collectKeyBillboards,
+  collectMineBillboards,
+  collectTeleporterBillboards,
   findMineAtColumn,
   findTargetAtColumn,
   findTargetUnderCrosshair,
-  renderAmmoDrops,
-  renderDecorations,
-  renderExitMarker,
-  renderKeys,
-  renderMines,
-  renderSprites,
-  renderTeleporters,
+  type BillboardJob,
 } from "./sprites";
-import { drawCrosshair, drawHud } from "./hud";
+import { drawCrosshair, drawHud, drawPauseOverlay } from "./hud";
 import { drawWeapon } from "./viewmodel";
 import { drawAutomap } from "./automap";
 import {
@@ -169,6 +170,9 @@ export class RaycasterEngine {
   private muzzleFrames = 0;
   /** Whether the full-screen automap overlay is up (pauses the sim). */
   private isMapActive = false;
+  /** Whether the game is paused (window blur or Escape) — freezes the sim and
+   * shows a "PAUSED" overlay, distinct from the Tab automap. */
+  private isPaused = false;
   /** Tile key ("x,y") of a teleporter pad the player just arrived on, so they
    * can step off before it can trigger again — otherwise the destination pad
    * (itself a teleporter tile) would bounce them straight back. */
@@ -231,6 +235,21 @@ export class RaycasterEngine {
    * driven at a fixed step (e.g. headless/deterministic runs).
    */
   advance(dt: number): void {
+    // Window blur always forces a pause (never a toggle — you can't "un-blur"
+    // by pressing something while the window doesn't have focus); Escape
+    // toggles it explicitly, and a click resumes it. Always drain the click
+    // flag regardless of pause state, so a stale click can't instantly
+    // resume some later, unrelated pause. Checked first so a pause always
+    // wins over the automap and normal play.
+    const clicked = this.input.consumeClick();
+    if (this.input.consumeBlur()) this.isPaused = true;
+    if (this.input.consumeEscape()) this.isPaused = !this.isPaused;
+    if (this.isPaused && clicked) this.isPaused = false;
+    if (this.isPaused) {
+      this.renderPausedOverlay();
+      return;
+    }
+
     // Tab toggles the automap, which pauses all game action while it's up.
     if (this.input.consumeMapToggle()) this.isMapActive = !this.isMapActive;
     if (this.isMapActive) {
@@ -264,14 +283,7 @@ export class RaycasterEngine {
     // Render — one final frozen frame is still drawn after the game ends.
     const { width, height } = this.ctx.canvas;
     renderScene(this.ctx, this.map, this.player, this.zBuffer, view.horizonShift, this.levelTime);
-    renderDecorations(this.ctx, this.player, this.map.decorations, this.zBuffer);
-    renderTeleporters(this.ctx, this.player, this.map.teleporters, this.zBuffer);
-    renderMines(this.ctx, this.player, this.map.mines, this.zBuffer);
-    renderSprites(this.ctx, this.player, this.enemies, this.zBuffer);
-    renderProjectiles(this.ctx, this.player, this.projectiles, this.zBuffer);
-    renderKeys(this.ctx, this.player, this.map.keys, this.zBuffer);
-    renderAmmoDrops(this.ctx, this.player, this.drops, this.zBuffer);
-    renderExitMarker(this.ctx, this.player, this.map.exit, this.zBuffer);
+    this.renderWorldBillboards();
 
     this.target = findTargetUnderCrosshair(
       this.player,
@@ -318,16 +330,45 @@ export class RaycasterEngine {
    */
   private renderPaused(): void {
     renderScene(this.ctx, this.map, this.player, this.zBuffer, 0, this.levelTime);
-    renderDecorations(this.ctx, this.player, this.map.decorations, this.zBuffer);
-    renderTeleporters(this.ctx, this.player, this.map.teleporters, this.zBuffer);
-    renderMines(this.ctx, this.player, this.map.mines, this.zBuffer);
-    renderSprites(this.ctx, this.player, this.enemies, this.zBuffer);
-    renderProjectiles(this.ctx, this.player, this.projectiles, this.zBuffer);
-    renderKeys(this.ctx, this.player, this.map.keys, this.zBuffer);
-    renderAmmoDrops(this.ctx, this.player, this.drops, this.zBuffer);
-    renderExitMarker(this.ctx, this.player, this.map.exit, this.zBuffer);
+    this.renderWorldBillboards();
     drawAutomap(this.ctx, this.map, this.player, this.levelTime);
     this.handlers.onStats?.(this.buildStats());
+  }
+
+  /**
+   * Render one frozen frame with the "PAUSED" scrim on top — triggered by
+   * window blur or Escape, distinct from the Tab automap pause above.
+   */
+  private renderPausedOverlay(): void {
+    renderScene(this.ctx, this.map, this.player, this.zBuffer, 0, this.levelTime);
+    this.renderWorldBillboards();
+    drawPauseOverlay(this.ctx);
+    this.handlers.onStats?.(this.buildStats());
+  }
+
+  /**
+   * Draw every world billboard category (enemies, projectiles, keys, ammo
+   * drops, the exit marker, teleporters, decorations, mines) in one combined
+   * pass, sorted furthest-to-nearest so nearer items always paint over
+   * farther ones — regardless of which category they belong to. Drawing
+   * category-by-category in a fixed order used to let a later category (e.g.
+   * the exit marker, always drawn last) paint over a nearer item from an
+   * earlier one (e.g. an ammo drop), making it vanish even though it was
+   * actually closer to the player.
+   */
+  private renderWorldBillboards(): void {
+    const jobs: BillboardJob[] = [
+      ...collectDecorationBillboards(this.ctx, this.player, this.map.decorations, this.zBuffer),
+      ...collectTeleporterBillboards(this.ctx, this.player, this.map.teleporters, this.zBuffer),
+      ...collectMineBillboards(this.ctx, this.player, this.map.mines, this.zBuffer),
+      ...collectEnemyBillboards(this.ctx, this.player, this.enemies, this.zBuffer),
+      ...collectProjectileBillboards(this.ctx, this.player, this.projectiles, this.zBuffer),
+      ...collectKeyBillboards(this.ctx, this.player, this.map.keys, this.zBuffer),
+      ...collectAmmoDropBillboards(this.ctx, this.player, this.drops, this.zBuffer),
+      ...collectExitBillboard(this.ctx, this.player, this.map.exit, this.zBuffer),
+    ];
+    jobs.sort((a, b) => b.depth - a.depth);
+    for (const job of jobs) job.draw();
   }
 
   /** Fog of war: reveal the player's tile and its immediate neighbors. */

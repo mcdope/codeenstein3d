@@ -17,6 +17,22 @@ import type { AmmoDrop, Decoration, DecorKind, Enemy, KeyItem, Mine, Point, Tele
 import type { CodeEntity, EntityKind } from "../parser/types";
 import type { Player } from "./player";
 
+/**
+ * One item's draw call, tagged with the camera-space depth it should sort by.
+ * Every category of world billboard (enemies, drops, the exit marker,
+ * teleporters, decorations, mines, projectiles) is collected into a flat list
+ * of these, sorted furthest-to-nearest, and drawn in that single combined
+ * order — see `RaycasterEngine`'s `renderWorldBillboards`. Drawing
+ * category-by-category in a fixed order (the old approach) let a later
+ * category always paint over an earlier one regardless of which was actually
+ * closer to the player — e.g. the exit marker, always drawn last, could
+ * paint over a nearer ammo drop and make it vanish.
+ */
+export interface BillboardJob {
+  depth: number;
+  draw: () => void;
+}
+
 /** Sprite footprint as a fraction of a full tile-height billboard. */
 const ENEMY_SIZE = 0.7;
 /**
@@ -91,46 +107,50 @@ export function projectEnemy(
   return projectPoint(player, enemy.x, enemy.y, width, height);
 }
 
-/** Draw all living enemies as billboards, occluded by the wall z-buffer. */
-export function renderSprites(
+/** Collect all living enemies as billboard draw jobs, occluded by the wall
+ * z-buffer. See `BillboardJob` — combined and depth-sorted with every other
+ * world-billboard category before anything is actually drawn. */
+export function collectEnemyBillboards(
   ctx: CanvasRenderingContext2D,
   player: Player,
   enemies: Enemy[],
   zBuffer: Float64Array,
-): void {
+): BillboardJob[] {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
 
-  // Draw farthest first so nearer sprites paint over them.
-  const visible = enemies
+  return enemies
     .filter((e) => e.alive)
     .map((enemy) => ({ enemy, proj: projectEnemy(player, enemy, width, height) }))
     .filter(({ proj }) => proj.depth > SPRITE_NEAR)
-    .sort((a, b) => b.proj.depth - a.proj.depth);
+    .map(({ enemy, proj }) => ({
+      depth: proj.depth,
+      draw: () => {
+        const startX = Math.max(0, Math.floor(proj.left));
+        const endX = Math.min(width - 1, Math.ceil(proj.right));
+        // Clamp the vertical extent to the screen — a point-blank sprite
+        // projects taller than the canvas, and an unclamped huge rect is
+        // wasteful to fill.
+        const startY = Math.max(0, Math.floor(proj.top));
+        const endY = Math.min(height - 1, Math.ceil(proj.bottom));
+        const spriteH = endY - startY + 1;
 
-  for (const { enemy, proj } of visible) {
-    const startX = Math.max(0, Math.floor(proj.left));
-    const endX = Math.min(width - 1, Math.ceil(proj.right));
-    // Clamp the vertical extent to the screen — a point-blank sprite projects
-    // taller than the canvas, and an unclamped huge rect is wasteful to fill.
-    const startY = Math.max(0, Math.floor(proj.top));
-    const endY = Math.min(height - 1, Math.ceil(proj.bottom));
-    const spriteH = endY - startY + 1;
+        // Body: vertical stripes, skipping columns hidden behind a wall. A
+        // recent hit tints the whole body red for a few frames (the "bleed"
+        // flash).
+        ctx.fillStyle = enemy.hitFlash > 0 ? "#ff5a4a" : enemyColor(enemy.entity.kind);
+        for (let x = startX; x <= endX; x++) {
+          if (proj.depth >= zBuffer[x]) continue;
+          ctx.fillRect(x, startY, 1, spriteH);
+        }
 
-    // Body: vertical stripes, skipping columns hidden behind a wall. A recent
-    // hit tints the whole body red for a few frames (the "bleed" flash).
-    ctx.fillStyle = enemy.hitFlash > 0 ? "#ff5a4a" : enemyColor(enemy.entity.kind);
-    for (let x = startX; x <= endX; x++) {
-      if (proj.depth >= zBuffer[x]) continue;
-      ctx.fillRect(x, startY, 1, spriteH);
-    }
-
-    // Only draw the label / HP bar if the sprite's center isn't wall-occluded.
-    const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
-    if (proj.depth < zBuffer[centerCol]) {
-      drawEnemyOverlay(ctx, enemy.entity, enemy.hp, enemy.maxHp, proj);
-    }
-  }
+        // Only draw the label / HP bar if the sprite's center isn't wall-occluded.
+        const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
+        if (proj.depth < zBuffer[centerCol]) {
+          drawEnemyOverlay(ctx, enemy.entity, enemy.hp, enemy.maxHp, proj);
+        }
+      },
+    }));
 }
 
 function drawEnemyOverlay(
@@ -250,104 +270,117 @@ export function findMineAtColumn(
 }
 
 /**
- * Draw the green exit marker (the `return` statement) as a billboard at the
- * center of its tile, occluded by walls via the z-buffer.
+ * Collect the green exit marker (the `return` statement) as a billboard draw
+ * job at the center of its tile, occluded by walls via the z-buffer. Returns
+ * an empty array when it's not renderable at all (too close/behind camera),
+ * so callers can always spread the result into a combined job list.
  */
-export function renderExitMarker(
+export function collectExitBillboard(
   ctx: CanvasRenderingContext2D,
   player: Player,
   exit: Point,
   zBuffer: Float64Array,
-): void {
+): BillboardJob[] {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
   const proj = projectPoint(player, exit.x + 0.5, exit.y + 0.5, width, height, 0.9);
-  if (proj.depth <= 0.2) return;
+  if (proj.depth <= 0.2) return [];
 
-  const startX = Math.max(0, Math.floor(proj.left));
-  const endX = Math.min(width - 1, Math.ceil(proj.right));
-  const startY = Math.max(0, Math.floor(proj.top));
-  const markerH = proj.bottom - proj.top;
+  return [
+    {
+      depth: proj.depth,
+      draw: () => {
+        const startX = Math.max(0, Math.floor(proj.left));
+        const endX = Math.min(width - 1, Math.ceil(proj.right));
+        const startY = Math.max(0, Math.floor(proj.top));
+        const markerH = proj.bottom - proj.top;
 
-  ctx.fillStyle = "#37d24a";
-  for (let x = startX; x <= endX; x++) {
-    if (proj.depth >= zBuffer[x]) continue;
-    ctx.fillRect(x, startY, 1, markerH);
-  }
+        ctx.fillStyle = "#37d24a";
+        for (let x = startX; x <= endX; x++) {
+          if (proj.depth >= zBuffer[x]) continue;
+          ctx.fillRect(x, startY, 1, markerH);
+        }
 
-  const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
-  if (proj.depth < zBuffer[centerCol]) {
-    ctx.font = "10px monospace";
-    ctx.textAlign = "center";
-    const label = "return";
-    const labelW = Math.max(40, proj.right - proj.left);
-    ctx.fillStyle = "rgba(0,0,0,0.6)";
-    ctx.fillRect(proj.screenX - labelW / 2, proj.top - 15, labelW, 12);
-    ctx.fillStyle = "#8effa0";
-    ctx.fillText(label, proj.screenX, proj.top - 5);
-    ctx.textAlign = "start";
-  }
+        const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
+        if (proj.depth < zBuffer[centerCol]) {
+          ctx.font = "10px monospace";
+          ctx.textAlign = "center";
+          const label = "return";
+          const labelW = Math.max(40, proj.right - proj.left);
+          ctx.fillStyle = "rgba(0,0,0,0.6)";
+          ctx.fillRect(proj.screenX - labelW / 2, proj.top - 15, labelW, 12);
+          ctx.fillStyle = "#8effa0";
+          ctx.fillText(label, proj.screenX, proj.top - 5);
+          ctx.textAlign = "start";
+        }
+      },
+    },
+  ];
 }
 
-/** Draw uncollected keys as small floating gold "keycard" billboards. */
-export function renderKeys(
+/** Collect uncollected keys as small floating gold "keycard" billboard draw
+ * jobs. */
+export function collectKeyBillboards(
   ctx: CanvasRenderingContext2D,
   player: Player,
   keys: KeyItem[],
   zBuffer: Float64Array,
-): void {
+): BillboardJob[] {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
 
-  const visible = keys
+  return keys
     .filter((k) => !k.collected)
-    .map((item) => ({ item, proj: projectPoint(player, item.x, item.y, width, height, 0.28) }))
+    .map((item) => ({ proj: projectPoint(player, item.x, item.y, width, height, 0.28) }))
     .filter(({ proj }) => proj.depth > 0.2)
-    .sort((a, b) => b.proj.depth - a.proj.depth);
+    .map(({ proj }) => ({
+      depth: proj.depth,
+      draw: () => {
+        const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
+        if (proj.depth >= zBuffer[centerCol]) return; // behind a wall
 
-  for (const { proj } of visible) {
-    const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
-    if (proj.depth >= zBuffer[centerCol]) continue; // behind a wall
-
-    const size = proj.right - proj.left;
-    const cx = proj.screenX;
-    // Float the card at roughly waist height, not the floor.
-    const cy = height / 2 + size * 0.4;
-    ctx.fillStyle = "#8a6d12";
-    ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
-    ctx.fillStyle = "#f2d64b";
-    ctx.fillRect(cx - size / 2 + size * 0.15, cy - size / 2 + size * 0.15, size * 0.7, size * 0.7);
-  }
+        const size = proj.right - proj.left;
+        const cx = proj.screenX;
+        // Float the card at roughly waist height, not the floor.
+        const cy = height / 2 + size * 0.4;
+        ctx.fillStyle = "#8a6d12";
+        ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
+        ctx.fillStyle = "#f2d64b";
+        ctx.fillRect(cx - size / 2 + size * 0.15, cy - size / 2 + size * 0.15, size * 0.7, size * 0.7);
+      },
+    }));
 }
 
-/** Draw dropped ammo pickups as small floating cyan "RAM chip" billboards. */
-export function renderAmmoDrops(
+/** Collect dropped ammo pickups as small floating cyan "RAM chip" billboard
+ * draw jobs. */
+export function collectAmmoDropBillboards(
   ctx: CanvasRenderingContext2D,
   player: Player,
   drops: AmmoDrop[],
   zBuffer: Float64Array,
-): void {
+): BillboardJob[] {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
 
-  const visible = drops
+  return drops
     .map((drop) => ({ proj: projectPoint(player, drop.x, drop.y, width, height, 0.26) }))
     .filter(({ proj }) => proj.depth > 0.2)
-    .sort((a, b) => b.proj.depth - a.proj.depth);
+    .map(({ proj }) => ({
+      depth: proj.depth,
+      draw: () => {
+        const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
+        if (proj.depth >= zBuffer[centerCol]) return; // behind a wall
 
-  for (const { proj } of visible) {
-    const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
-    if (proj.depth >= zBuffer[centerCol]) continue; // behind a wall
-
-    const size = proj.right - proj.left;
-    const cx = proj.screenX;
-    // Float the chip at roughly waist height, not the floor.
-    const cy = height / 2 + size * 0.45;
-    ctx.fillStyle = "#0e3540";
-    ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
-    ctx.fillStyle = "#3fd0e0";
-    ctx.fillRect(cx - size / 2 + size * 0.18, cy - size / 2 + size * 0.18, size * 0.64, size * 0.64);
-  }
+        const size = proj.right - proj.left;
+        const cx = proj.screenX;
+        // Float the chip at roughly waist height, not the floor.
+        const cy = height / 2 + size * 0.45;
+        ctx.fillStyle = "#0e3540";
+        ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
+        ctx.fillStyle = "#3fd0e0";
+        ctx.fillRect(cx - size / 2 + size * 0.18, cy - size / 2 + size * 0.18, size * 0.64, size * 0.64);
+      },
+    }));
 }
 
 /** Footprint (fraction of a full tile-height billboard) per decoration kind. */
@@ -365,37 +398,38 @@ function decorSizeFactor(kind: DecorKind): number {
 }
 
 /**
- * Draw cosmetic, non-blocking props (server racks, plants, desks, abstract
- * code-blocks) as floor-standing billboards, occluded by the wall z-buffer.
- * Purely visual set dressing — no collision, no interaction.
+ * Collect cosmetic, non-blocking props (server racks, plants, desks, abstract
+ * code-blocks) as floor-standing billboard draw jobs, occluded by the wall
+ * z-buffer. Purely visual set dressing — no collision, no interaction.
  */
-export function renderDecorations(
+export function collectDecorationBillboards(
   ctx: CanvasRenderingContext2D,
   player: Player,
   decorations: Decoration[],
   zBuffer: Float64Array,
-): void {
+): BillboardJob[] {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
 
-  const visible = decorations
+  return decorations
     .map((d) => ({ kind: d.kind, proj: projectPoint(player, d.x, d.y, width, height, decorSizeFactor(d.kind)) }))
     .filter(({ proj }) => proj.depth > 0.2)
-    .sort((a, b) => b.proj.depth - a.proj.depth);
+    .map(({ kind, proj }) => ({
+      depth: proj.depth,
+      draw: () => {
+        const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
+        if (proj.depth >= zBuffer[centerCol]) return; // behind a wall
 
-  for (const { kind, proj } of visible) {
-    const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
-    if (proj.depth >= zBuffer[centerCol]) continue; // behind a wall
-
-    // Anchor to the true floor scanline at this depth — the same line a
-    // full-height wall's bottom edge would project to — rather than a
-    // fraction of the billboard's own (possibly short) size. Using the
-    // billboard's size for the vertical anchor is what made shorter props
-    // (the plant, the desk) float above the ground instead of standing on it.
-    const w = proj.right - proj.left;
-    const groundY = height / 2 + height / proj.depth / 2;
-    drawDecoration(ctx, kind, proj.screenX, w, groundY);
-  }
+        // Anchor to the true floor scanline at this depth — the same line a
+        // full-height wall's bottom edge would project to — rather than a
+        // fraction of the billboard's own (possibly short) size. Using the
+        // billboard's size for the vertical anchor is what made shorter props
+        // (the plant, the desk) float above the ground instead of standing on it.
+        const w = proj.right - proj.left;
+        const groundY = height / 2 + height / proj.depth / 2;
+        drawDecoration(ctx, kind, proj.screenX, w, groundY);
+      },
+    }));
 }
 
 function drawDecoration(
@@ -463,47 +497,48 @@ const PORTAL_SIZE = 0.8;
 const PORTAL_RGB = "168,85,247";
 
 /**
- * Draw goto/label teleporter pads as glowing, pulsing violet UT-style portal
- * billboards, floor-anchored the same way as decorations. Purely visual — the
- * engine handles the actual warp when the player's tile matches a pad.
+ * Collect goto/label teleporter pads as glowing, pulsing violet UT-style
+ * portal billboard draw jobs, floor-anchored the same way as decorations.
+ * Purely visual — the engine handles the actual warp when the player's tile
+ * matches a pad.
  */
-export function renderTeleporters(
+export function collectTeleporterBillboards(
   ctx: CanvasRenderingContext2D,
   player: Player,
   teleporters: Teleporter[],
   zBuffer: Float64Array,
-): void {
+): BillboardJob[] {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
-
-  const visible = teleporters
-    .map((t) => ({ proj: projectPoint(player, t.x, t.y, width, height, PORTAL_SIZE) }))
-    .filter(({ proj }) => proj.depth > 0.15)
-    .sort((a, b) => b.proj.depth - a.proj.depth);
-
   const pulse = 0.55 + 0.45 * Math.sin(performance.now() / 220);
 
-  for (const { proj } of visible) {
-    const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
-    if (proj.depth >= zBuffer[centerCol]) continue; // behind a wall
+  return teleporters
+    .map((t) => ({ proj: projectPoint(player, t.x, t.y, width, height, PORTAL_SIZE) }))
+    .filter(({ proj }) => proj.depth > 0.15)
+    .map(({ proj }) => ({
+      depth: proj.depth,
+      draw: () => {
+        const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
+        if (proj.depth >= zBuffer[centerCol]) return; // behind a wall
 
-    const w = proj.right - proj.left;
-    const groundY = height / 2 + height / proj.depth / 2;
-    const cx = proj.screenX;
-    const ringH = w * 1.6;
-    const top = groundY - ringH;
+        const w = proj.right - proj.left;
+        const groundY = height / 2 + height / proj.depth / 2;
+        const cx = proj.screenX;
+        const ringH = w * 1.6;
+        const top = groundY - ringH;
 
-    // A glowing violet energy column: a translucent fill, a bright pulsing
-    // outline, and a brighter core — reads as "active" rather than a static
-    // prop, the way UT's teleporters shimmer.
-    ctx.fillStyle = `rgba(${PORTAL_RGB},${0.18 + 0.12 * pulse})`;
-    ctx.fillRect(cx - w / 2, top, w, ringH);
-    ctx.strokeStyle = `rgba(${PORTAL_RGB},${0.6 + 0.4 * pulse})`;
-    ctx.lineWidth = Math.max(1, w * 0.08);
-    ctx.strokeRect(cx - w / 2, top, w, ringH);
-    ctx.fillStyle = `rgba(230,210,255,${0.35 + 0.35 * pulse})`;
-    ctx.fillRect(cx - w * 0.22, top + ringH * 0.15, w * 0.44, ringH * 0.7);
-  }
+        // A glowing violet energy column: a translucent fill, a bright
+        // pulsing outline, and a brighter core — reads as "active" rather
+        // than a static prop, the way UT's teleporters shimmer.
+        ctx.fillStyle = `rgba(${PORTAL_RGB},${0.18 + 0.12 * pulse})`;
+        ctx.fillRect(cx - w / 2, top, w, ringH);
+        ctx.strokeStyle = `rgba(${PORTAL_RGB},${0.6 + 0.4 * pulse})`;
+        ctx.lineWidth = Math.max(1, w * 0.08);
+        ctx.strokeRect(cx - w / 2, top, w, ringH);
+        ctx.fillStyle = `rgba(230,210,255,${0.35 + 0.35 * pulse})`;
+        ctx.fillRect(cx - w * 0.22, top + ringH * 0.15, w * 0.44, ringH * 0.7);
+      },
+    }));
 }
 
 /** Footprint (fraction of a full tile-height billboard) for a proximity mine —
@@ -511,44 +546,44 @@ export function renderTeleporters(
 const MINE_SIZE = 0.42;
 
 /**
- * Draw discovered-but-undetonated proximity mines as a low, pulsing red
- * warning device. Invisible (never drawn at all) until the engine marks
- * `visible` true, so stumbling into one's sight radius is the only way to
- * ever see it coming.
+ * Collect discovered-but-undetonated proximity mines as a low, pulsing red
+ * warning device draw jobs. Invisible (never drawn at all) until the engine
+ * marks `visible` true, so stumbling into one's sight radius is the only way
+ * to ever see it coming.
  */
-export function renderMines(
+export function collectMineBillboards(
   ctx: CanvasRenderingContext2D,
   player: Player,
   mines: Mine[],
   zBuffer: Float64Array,
-): void {
+): BillboardJob[] {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
-
-  const visible = mines
-    .filter((m) => m.alive && m.visible)
-    .map((m) => ({ proj: projectPoint(player, m.x, m.y, width, height, MINE_SIZE) }))
-    .filter(({ proj }) => proj.depth > 0.15)
-    .sort((a, b) => b.proj.depth - a.proj.depth);
-
   // A slower, brighter pulse than the original — playtest feedback was that
   // mines were too easy to miss even once revealed.
   const pulse = 0.4 + 0.6 * Math.sin(performance.now() / 220);
 
-  for (const { proj } of visible) {
-    const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
-    if (proj.depth >= zBuffer[centerCol]) continue; // behind a wall
+  return mines
+    .filter((m) => m.alive && m.visible)
+    .map((m) => ({ proj: projectPoint(player, m.x, m.y, width, height, MINE_SIZE) }))
+    .filter(({ proj }) => proj.depth > 0.15)
+    .map(({ proj }) => ({
+      depth: proj.depth,
+      draw: () => {
+        const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
+        if (proj.depth >= zBuffer[centerCol]) return; // behind a wall
 
-    const w = proj.right - proj.left;
-    const groundY = height / 2 + height / proj.depth / 2;
-    const cx = proj.screenX;
-    const bodyH = w * 0.6;
+        const w = proj.right - proj.left;
+        const groundY = height / 2 + height / proj.depth / 2;
+        const cx = proj.screenX;
+        const bodyH = w * 0.6;
 
-    ctx.fillStyle = "#2a1414";
-    ctx.fillRect(cx - w / 2, groundY - bodyH, w, bodyH);
-    ctx.fillStyle = `rgba(255,60,40,${0.65 + 0.35 * pulse})`;
-    ctx.fillRect(cx - w * 0.26, groundY - bodyH * 0.8, w * 0.52, w * 0.52);
-  }
+        ctx.fillStyle = "#2a1414";
+        ctx.fillRect(cx - w / 2, groundY - bodyH, w, bodyH);
+        ctx.fillStyle = `rgba(255,60,40,${0.65 + 0.35 * pulse})`;
+        ctx.fillRect(cx - w * 0.26, groundY - bodyH * 0.8, w * 0.52, w * 0.52);
+      },
+    }));
 }
 
 function clamp(value: number, min: number, max: number): number {

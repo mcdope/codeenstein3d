@@ -22,6 +22,12 @@ export class InputController {
   private weaponRequest: number | null = null;
   /** Edge-triggered automap toggle, set on a Tab press. */
   private mapToggleQueued = false;
+  /** Edge-triggered pause toggle, set on an Escape press. */
+  private escapeQueued = false;
+  /** Edge-triggered "the window just lost focus" signal, set on blur. */
+  private blurQueued = false;
+  /** Edge-triggered "the canvas was clicked" signal — resumes from pause. */
+  private clickQueued = false;
   private attached = false;
 
   constructor(private readonly canvas: HTMLCanvasElement) {}
@@ -47,11 +53,15 @@ export class InputController {
     this.canvas.removeEventListener("mousedown", this.onMouseDown);
     document.removeEventListener("mousemove", this.onMouseMove);
     if (document.pointerLockElement === this.canvas) document.exitPointerLock();
+    if (document.fullscreenElement === this.canvas) void document.exitFullscreen();
     this.keys.clear();
     this.mouseDX = 0;
     this.fireQueued = false;
     this.weaponRequest = null;
     this.mapToggleQueued = false;
+    this.escapeQueued = false;
+    this.blurQueued = false;
+    this.clickQueued = false;
   }
 
   isDown(code: string): boolean {
@@ -86,6 +96,28 @@ export class InputController {
     return toggled;
   }
 
+  /** Return true at most once per Escape press (toggles the pause overlay). */
+  consumeEscape(): boolean {
+    const pressed = this.escapeQueued;
+    this.escapeQueued = false;
+    return pressed;
+  }
+
+  /** Return true at most once per time the window lost focus (forces a pause,
+   * rather than toggling — losing focus should never accidentally resume). */
+  consumeBlur(): boolean {
+    const blurred = this.blurQueued;
+    this.blurQueued = false;
+    return blurred;
+  }
+
+  /** Return true at most once per canvas click (resumes from pause). */
+  consumeClick(): boolean {
+    const clicked = this.clickQueued;
+    this.clickQueued = false;
+    return clicked;
+  }
+
   private readonly onKeyDown = (e: KeyboardEvent): void => {
     // Space fires once per physical press (ignore OS auto-repeat).
     if (e.code === "Space") {
@@ -102,6 +134,25 @@ export class InputController {
       e.preventDefault();
     }
 
+    // Escape toggles the engine's own pause overlay. Deliberately not
+    // preventDefault()'d — the browser also uses Escape to drop pointer lock
+    // and exit fullscreen natively, and both should still happen.
+    if (e.code === "Escape" && !e.repeat) this.escapeQueued = true;
+
+    // F toggles fullscreen. requestFullscreen()/exitFullscreen() must be
+    // called synchronously from a real user-gesture handler — not deferred
+    // to a later polled flag consumed inside the rAF-driven game loop, which
+    // browsers reject — so this happens directly here, the same way
+    // `onCanvasClick` requests the pointer lock directly.
+    if (e.code === "KeyF" && !e.repeat) {
+      e.preventDefault();
+      if (document.fullscreenElement) {
+        void document.exitFullscreen();
+      } else {
+        void this.canvas.requestFullscreen();
+      }
+    }
+
     this.keys.add(e.code);
     if (MOVEMENT_KEYS.has(e.code)) e.preventDefault();
   };
@@ -110,12 +161,15 @@ export class InputController {
     this.keys.delete(e.code);
   };
 
-  // Dropping focus (alt-tab, etc.) should release all keys to avoid "stuck" input.
+  // Dropping focus (alt-tab, etc.) should release all keys to avoid "stuck"
+  // input, and forces the engine into its paused state.
   private readonly onBlur = (): void => {
     this.keys.clear();
+    this.blurQueued = true;
   };
 
   private readonly onCanvasClick = (): void => {
+    this.clickQueued = true;
     if (document.pointerLockElement !== this.canvas) {
       this.canvas.requestPointerLock();
     }

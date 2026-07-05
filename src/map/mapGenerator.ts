@@ -108,10 +108,13 @@ export class MapGenerator {
     const rooms = this.placeRooms(parsed.entities, size, grid, rng);
     connectRooms(rooms, grid, rng);
 
-    // Spawn in a room corner so the player doesn't start inside the room's
-    // center enemy; the exit goes in the room furthest from that spawn.
-    const spawn: Point =
-      rooms.length > 0 ? { x: rooms[0].x + 1, y: rooms[0].y + 1 } : { x: 1, y: 1 };
+    // Spawn in whichever corner of the first room sits farthest from every
+    // enemy-bearing room's center — not just a fixed corner — so the player
+    // doesn't start already inside (or right at the edge of) an enemy's aggro
+    // radius. Aggro is a straight-line distance check (see enemyAi.ts), so an
+    // enemy in an adjacent room can otherwise reach clean through the wall
+    // between them if that corner happens to be the closest one.
+    const spawn: Point = pickSafeSpawn(rooms);
     // Exit is chosen before enemies so their placement can steer clear of it —
     // the 'return' tile must never be hidden under a monster.
     const exit = pickExit(rooms, spawn);
@@ -848,6 +851,44 @@ function fillHazards(
     }
   });
   return hazards;
+}
+
+/**
+ * Pick a spawn point in the first room: whichever of its four corners (1 tile
+ * inset from the room edge) has the greatest minimum distance to any
+ * enemy-bearing room's center. Room centers are known before any enemy is
+ * actually placed (an enemy pack's first member always spawns dead center —
+ * see `enemyPositions`), so this needs no reordering of the generation
+ * pipeline. Best-effort, not a guarantee: a corner can still end up within
+ * another enemy's aggro radius if the level is small or densely packed —
+ * there just isn't a better option to pick instead.
+ */
+function pickSafeSpawn(rooms: Room[]): Point {
+  if (rooms.length === 0) return { x: 1, y: 1 };
+  const room0 = rooms[0];
+
+  const candidates: Point[] = [
+    { x: room0.x + 1, y: room0.y + 1 },
+    { x: room0.x + room0.w - 2, y: room0.y + 1 },
+    { x: room0.x + 1, y: room0.y + room0.h - 2 },
+    { x: room0.x + room0.w - 2, y: room0.y + room0.h - 2 },
+  ];
+
+  const enemyRoomCenters = rooms
+    .filter((r) => r.entity.kind === "function" || r.entity.kind === "method")
+    .map((r) => r.center);
+  if (enemyRoomCenters.length === 0) return candidates[0];
+
+  let best = candidates[0];
+  let bestMinDist = -1;
+  for (const c of candidates) {
+    const minDist = Math.min(...enemyRoomCenters.map((e) => dist(c.x + 0.5, c.y + 0.5, e.x + 0.5, e.y + 0.5)));
+    if (minDist > bestMinDist) {
+      bestMinDist = minDist;
+      best = c;
+    }
+  }
+  return best;
 }
 
 /** Pick the exit tile: the center of the room whose center is furthest (by

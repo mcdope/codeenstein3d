@@ -219,7 +219,7 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
     `Shift to sprint · Click / Space to fire · 1 pistol / 2 shotgun · ` +
     `grab keys to open blue doors · step on a glowing pad to warp (goto) · ` +
     `avoid the acid and timed spikes · shoot spotted mines to disarm them from range · ` +
-    `Tab for map · Esc releases mouse`;
+    `Tab for map · F for fullscreen · Esc to pause`;
 
   const hud = new GameHud();
   activeHud = hud;
@@ -227,6 +227,11 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   // The status bar is drawn natively on the canvas; only the end-of-run
   // overlay remains in the DOM.
   viewport.replaceChildren(canvas, hint, hud.overlay);
+  // Grab keyboard focus immediately — without this, the very first WASD press
+  // after a level (re)load is silently swallowed until the player clicks the
+  // canvas themselves, which reads as "controls don't work" on every level
+  // change (multi-level advance, retry after death, or a fresh manual pick).
+  canvas.focus();
 
   activeEngine = new RaycasterEngine(
     canvas,
