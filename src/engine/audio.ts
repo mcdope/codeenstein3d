@@ -185,6 +185,41 @@ class AudioManager {
     osc.stop(t + 0.14);
   }
 
+  /** Goto teleporter warp: a quick sci-fi sweep, up then settling back down. */
+  playTeleport(): void {
+    const ctx = this.resume();
+    if (!ctx || !this.master) return;
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(220, t);
+    osc.frequency.exponentialRampToValueAtTime(1100, t + 0.09);
+    osc.frequency.exponentialRampToValueAtTime(440, t + 0.18);
+    const gain = envelope(ctx, 0.35, 0.005, 0.2);
+    osc.connect(gain).connect(this.master);
+    osc.start(t);
+    osc.stop(t + 0.22);
+  }
+
+  /** Level cleared, advancing to the next file: a short rising arpeggio. */
+  playLevelComplete(): void {
+    const ctx = this.resume();
+    if (!ctx || !this.master) return;
+    const t = ctx.currentTime;
+    const master = this.master;
+    const notes = [523.25, 659.25, 783.99]; // C5, E5, G5
+    notes.forEach((freq, i) => {
+      const start = t + i * 0.07;
+      const osc = ctx.createOscillator();
+      osc.type = "square";
+      osc.frequency.setValueAtTime(freq, start);
+      const gain = envelope(ctx, 0.3, 0.004, 0.12);
+      osc.connect(gain).connect(master);
+      osc.start(start);
+      osc.stop(start + 0.14);
+    });
+  }
+
   /** Shared distortion shaper for the damage voice (built once). */
   private distortionNode(ctx: AudioContext): WaveShaperNode {
     if (!this.distortion) {

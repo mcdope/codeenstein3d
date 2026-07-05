@@ -7,13 +7,15 @@
  * A solid triangle marks the player's position and facing. Pure Canvas 2D — the
  * engine pauses the sim while this is up.
  */
-import { DOOR_TILE, type GameMap } from "../map/types";
+import { DOOR_TILE, TELEPORTER_TILE, type GameMap } from "../map/types";
 import type { Player } from "./player";
 
 /** Neon green for explored walls / the map frame. */
 const WALL_COLOR = "#39ff14";
 /** Cold steel-blue for explored, still-locked doors. */
 const DOOR_COLOR = "#57c7ff";
+/** Violet for explored goto/label teleporter pads. */
+const TELEPORTER_COLOR = "#c86dff";
 /** Faint wash marking explored open floor. */
 const FLOOR_COLOR = "rgba(57,255,20,0.10)";
 
@@ -51,6 +53,9 @@ export function drawAutomap(ctx: CanvasRenderingContext2D, map: GameMap, player:
         ctx.fillRect(px, py, cell, cell);
       } else if (tile === DOOR_TILE) {
         ctx.fillStyle = DOOR_COLOR;
+        ctx.fillRect(px, py, cell, cell);
+      } else if (tile === TELEPORTER_TILE) {
+        ctx.fillStyle = TELEPORTER_COLOR;
         ctx.fillRect(px, py, cell, cell);
       } else {
         ctx.fillStyle = FLOOR_COLOR;

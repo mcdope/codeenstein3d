@@ -9,7 +9,7 @@
  *
  * Pure native Canvas 2D — no WebGL, no 3D libraries.
  */
-import { DOOR_TILE, HAZARD_TILE, type GameMap } from "../map/types";
+import { DOOR_TILE, HAZARD_TILE, TELEPORTER_TILE, type GameMap } from "../map/types";
 import type { Player } from "./player";
 import { enemyColor } from "./sprites";
 
@@ -21,6 +21,8 @@ const DOOR_RGB: [number, number, number] = [86, 142, 190];
 const CEILING_RGB: [number, number, number] = [11, 13, 22];
 const FLOOR_RGB: [number, number, number] = [21, 21, 26];
 const ACID_RGB: [number, number, number] = [64, 196, 72];
+/** Base color for goto/label teleporter pad floor tiles, before pulsing. */
+const TELEPORTER_RGB: [number, number, number] = [130, 70, 220];
 /** Within this many tiles the world keeps full brightness (no fog). */
 const FOG_NEAR = 2.5;
 /** Beyond this many tiles the world has faded to pure black. */
@@ -61,8 +63,8 @@ export function renderScene(
   // floor all rise and fall with the camera.
   const horizon = height / 2 + horizonShift;
 
-  if (map.hazards.length > 0) {
-    // Floor-cast so acid pools appear as colored floor tiles.
+  if (map.hazards.length > 0 || map.teleporters.length > 0) {
+    // Floor-cast so acid pools / teleporter pads appear as colored floor tiles.
     renderBackground(ctx, map, player, width, height, horizon);
   } else {
     // No hazards: flat ceiling (above the horizon) and floor (below) is cheaper.
@@ -175,6 +177,15 @@ function renderBackground(
   const data = floorImage.data;
   const halfH = horizon;
 
+  // Teleporter pads pulse gently so they read as "active" rather than a
+  // static colored tile; computed once per frame, not per pixel.
+  const pulse = 0.7 + 0.3 * Math.sin(performance.now() / 260);
+  const teleporterGlow: [number, number, number] = [
+    TELEPORTER_RGB[0] * pulse,
+    TELEPORTER_RGB[1] * pulse,
+    TELEPORTER_RGB[2] * pulse,
+  ];
+
   // Leftmost (cameraX=-1) and rightmost (cameraX=+1) ray directions.
   const rayDir0X = player.dirX - player.planeX;
   const rayDir0Y = player.dirY - player.planeY;
@@ -207,9 +218,10 @@ function renderBackground(
     for (let x = 0; x < width; x++) {
       const cx = Math.floor(floorX);
       const cy = Math.floor(floorY);
-      const hazard =
-        cx >= 0 && cy >= 0 && cx < map.width && cy < map.height && map.grid[cy][cx] === HAZARD_TILE;
-      const base = hazard ? ACID_RGB : FLOOR_RGB;
+      const tile =
+        cx >= 0 && cy >= 0 && cx < map.width && cy < map.height ? map.grid[cy][cx] : -1;
+      const base =
+        tile === TELEPORTER_TILE ? teleporterGlow : tile === HAZARD_TILE ? ACID_RGB : FLOOR_RGB;
       data[idx++] = base[0] * shade;
       data[idx++] = base[1] * shade;
       data[idx++] = base[2] * shade;
@@ -269,6 +281,12 @@ export function renderMinimap(
     if (map.grid[door.y][door.x] === DOOR_TILE) {
       ctx.fillRect(pad + door.x * cell, pad + door.y * cell, cell, cell);
     }
+  }
+
+  // Goto teleporter pads.
+  ctx.fillStyle = "#a855f7";
+  for (const t of map.teleporters) {
+    ctx.fillRect(pad + t.x * cell - cell / 2, pad + t.y * cell - cell / 2, Math.max(2, cell), Math.max(2, cell));
   }
 
   // Uncollected keys.

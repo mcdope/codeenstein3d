@@ -56,6 +56,19 @@ export interface CodeEntity {
   visibility?: Visibility;
 }
 
+/**
+ * One resolved `goto label;` → `label:` jump found in a source file. The map
+ * generator turns each of these into a bidirectional teleporter pad pair.
+ */
+export interface GotoLink {
+  /** The label name (debug/HUD display only). */
+  label: string;
+  /** 1-based line of the `goto label;` statement. */
+  gotoLine: number;
+  /** 1-based line of the `label:` target. */
+  labelLine: number;
+}
+
 /** Normalized, engine-facing result of parsing one source file. */
 export interface ParsedFile {
   /** Language id of the adapter that produced this, e.g. "php". */
@@ -64,6 +77,9 @@ export interface ParsedFile {
   linesOfCode: number;
   /** Entities discovered, ordered by `startLine`. */
   entities: CodeEntity[];
+  /** `goto`/label jumps resolved within the file; a goto with no matching
+   * label anywhere in the file is dropped rather than guessed at. */
+  gotos: GotoLink[];
 }
 
 /**

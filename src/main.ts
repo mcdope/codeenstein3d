@@ -13,8 +13,10 @@ import { renderFileTree } from "./ui/fileTree";
 import { isParsable, parseFile } from "./parser/registry";
 import { MapGenerator } from "./map/mapGenerator";
 import { RaycasterEngine } from "./engine/engine";
+import { audio } from "./engine/audio";
 import { GameHud } from "./ui/gameHud";
 import type { ParsedFile } from "./parser/types";
+import type { EngineCarryover, EngineStats } from "./engine/engine";
 
 /** Internal render resolution; CSS scales it up for a chunky retro look. */
 const SCENE_WIDTH = 640;
@@ -29,6 +31,13 @@ const mapGenerator = new MapGenerator();
 
 /** The engine currently running in the viewport, if any. */
 let activeEngine: RaycasterEngine | null = null;
+/** The end-of-run overlay for the level currently running, if any. */
+let activeHud: GameHud | null = null;
+/** The loaded workspace's file tree, kept around so a "return" tile can find
+ * the next parsable file for multi-level progression. */
+let workspaceTree: TreeNode | null = null;
+/** Path of the level currently running (or last launched), for the same. */
+let currentLevelPath: string | null = null;
 
 if (!isFileSystemAccessSupported()) {
   selectButton.disabled = true;
@@ -46,6 +55,7 @@ selectButton.addEventListener("click", async () => {
     workspaceName.classList.remove("error");
 
     const tree = await readDirectoryTree(handle);
+    workspaceTree = tree;
     workspaceName.textContent = handle.name;
 
     renderFileTree(fileTree, tree, { onSelectFile: handleFileSelected });
@@ -84,16 +94,23 @@ async function handleFileSelected(node: TreeNode): Promise<void> {
   }
 }
 
-/** Generate a level from parsed JSON and start the raycaster in the viewport. */
-function launchLevel(path: string, parsed: ParsedFile): void {
+/**
+ * Generate a level from parsed JSON and start the raycaster in the viewport.
+ * `carryover` (health/ammo from a just-cleared level) is passed when this is
+ * a multi-level progression rather than a fresh pick from the file tree.
+ */
+function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryover): void {
   const map = mapGenerator.generate(parsed);
   console.group(`[map] ${path}`);
   console.log(
     `${map.width}×${map.height} grid, ${map.rooms.length} room(s), ` +
-      `${map.enemies.length} enemies, exit @(${map.exit.x},${map.exit.y})`,
+      `${map.enemies.length} enemies, ${map.teleporters.length / 2} teleporter pair(s), ` +
+      `exit @(${map.exit.x},${map.exit.y})`,
     map,
   );
   console.groupEnd();
+
+  currentLevelPath = path;
 
   // Tear down any level already running before starting the new one.
   activeEngine?.stop();
@@ -110,25 +127,86 @@ function launchLevel(path: string, parsed: ParsedFile): void {
     `${path} — reach the green "return" tile to build · ` +
     `Click to capture mouse · W/S move, A/D strafe · Q/E or mouse turn · ` +
     `Shift to sprint · Click / Space to fire · 1 pistol / 2 shotgun · ` +
-    `grab keys to open blue doors · avoid the acid · Tab for map · Esc releases mouse`;
+    `grab keys to open blue doors · step on a glowing pad to warp (goto) · ` +
+    `avoid the acid · Tab for map · Esc releases mouse`;
 
   const hud = new GameHud();
+  activeHud = hud;
 
   // The status bar is drawn natively on the canvas; only the end-of-run
   // overlay remains in the DOM.
   viewport.replaceChildren(canvas, hint, hud.overlay);
 
-  activeEngine = new RaycasterEngine(canvas, map, {
-    onGameOver: () => hud.showKernelPanic(resetToFileTree),
-    onWin: () => hud.showBuildSuccessful(resetToFileTree),
-  });
+  activeEngine = new RaycasterEngine(
+    canvas,
+    map,
+    {
+      onGameOver: () => hud.showKernelPanic(resetToFileTree),
+      onWin: (stats) => void advanceToNextLevel(stats),
+    },
+    carryover,
+  );
   activeEngine.start();
+}
+
+/**
+ * Called when the player reaches the exit. If the workspace has another
+ * parsable file after the current one (in tree order), silently loads it as
+ * the next level, carrying health and ammo across. Otherwise this was the
+ * last file, so show the normal "Build Successful" end-of-run overlay.
+ */
+async function advanceToNextLevel(stats: EngineStats): Promise<void> {
+  const next = workspaceTree && currentLevelPath
+    ? findNextParsableFile(workspaceTree, currentLevelPath)
+    : null;
+
+  if (!next) {
+    activeHud?.showBuildSuccessful(resetToFileTree);
+    return;
+  }
+
+  try {
+    const text = await readFileText(next.handle as FileSystemFileHandle);
+    const parsed = await parseFile(next.name, text);
+    if (parsed) {
+      audio.playLevelComplete();
+      console.log(`%c[level] ${currentLevelPath} cleared — advancing to ${next.path}`, "color:#37d24a;font-weight:bold");
+      launchLevel(next.path, parsed, { health: stats.health, ammo: stats.ammo });
+      return;
+    }
+  } catch (err) {
+    console.error(`[level] Failed to load next level "${next.path}":`, err);
+  }
+
+  // Next file failed to parse/read — fall back to the normal end-of-run screen
+  // rather than leaving the player stuck on a frozen frame.
+  activeHud?.showBuildSuccessful(resetToFileTree);
+}
+
+/** Files parsable by a registered adapter, in the same depth-first,
+ * directories-first order the sidebar renders them in. */
+function flattenParsableFiles(node: TreeNode): TreeNode[] {
+  if (node.kind === "file") return isParsable(node.name) ? [node] : [];
+  const out: TreeNode[] = [];
+  for (const child of node.children ?? []) out.push(...flattenParsableFiles(child));
+  return out;
+}
+
+/** The parsable file immediately after `afterPath` in tree order, or `null`
+ * when `afterPath` is the last one (or wasn't found). */
+function findNextParsableFile(tree: TreeNode, afterPath: string): TreeNode | null {
+  const files = flattenParsableFiles(tree);
+  const index = files.findIndex((f) => f.path === afterPath);
+  if (index === -1 || index + 1 >= files.length) return null;
+  return files[index + 1];
 }
 
 /** Stop any running level and return the viewport to its initial state. */
 function resetToFileTree(): void {
   activeEngine?.stop();
   activeEngine = null;
+  activeHud = null;
+  currentLevelPath = null;
 
   const placeholder = document.createElement("p");
   placeholder.className = "muted";

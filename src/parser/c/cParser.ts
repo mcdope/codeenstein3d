@@ -14,7 +14,7 @@
 import { Language, Parser, type Node } from "web-tree-sitter";
 import cWasmUrl from "tree-sitter-c/tree-sitter-c.wasm?url";
 import { initTreeSitter } from "../runtime";
-import { countDecisionPoints, countLines, maxNestingDepth } from "../astUtils";
+import { countDecisionPoints, countLines, maxNestingDepth, resolveGotos, type RawGotoRef } from "../astUtils";
 import type { CodeEntity, CodeParserAdapter, EntityKind, ParsedFile } from "../types";
 
 /** Node types that define an entity, mapped to their normalized kind. */
@@ -114,10 +114,23 @@ export class CParserAdapter implements CodeParserAdapter {
 
       entities.sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
 
+      // `goto label;` / `label:` pairs become teleporter pads in the map.
+      const rawGotos: RawGotoRef[] = [];
+      for (const node of tree.rootNode.descendantsOfType("goto_statement")) {
+        const label = node.childForFieldName("label")?.text;
+        if (label) rawGotos.push({ label, line: node.startPosition.row + 1 });
+      }
+      const rawLabels: RawGotoRef[] = [];
+      for (const node of tree.rootNode.descendantsOfType("labeled_statement")) {
+        const label = node.childForFieldName("label")?.text;
+        if (label) rawLabels.push({ label, line: node.startPosition.row + 1 });
+      }
+
       return {
         language: this.language,
         linesOfCode: countLines(sourceText),
         entities,
+        gotos: resolveGotos(rawGotos, rawLabels),
       };
     } finally {
       tree.delete();

@@ -10,14 +10,17 @@ import type { CodeEntity } from "../parser/types";
 
 /**
  * A grid cell: 0 = empty floor, 1 = wall, 2 = hazard (acid, walkable),
- * 3 = locked door (solid until opened with a key, then becomes 0).
+ * 3 = locked door (solid until opened with a key, then becomes 0),
+ * 4 = goto/label teleporter pad (walkable; warps the player elsewhere).
  */
-export type Tile = 0 | 1 | 2 | 3;
+export type Tile = 0 | 1 | 2 | 3 | 4;
 
 /** Tile value for a walkable hazard (acid pool) cell. */
 export const HAZARD_TILE = 2;
 /** Tile value for a locked door (blocks like a wall until a key opens it). */
 export const DOOR_TILE = 3;
+/** Tile value for a goto/label teleporter pad (walkable, not a wall). */
+export const TELEPORTER_TILE = 4;
 
 /** Tile coordinate (integer grid position). */
 export interface Point {
@@ -114,6 +117,9 @@ export interface GameMap {
   keys: KeyItem[];
   /** Cosmetic, non-blocking props scattered in larger rooms (set dressing). */
   decorations: Decoration[];
+  /** Goto/label teleporter pads — one entry per pad, each pointing at its
+   * paired pad's position. */
+  teleporters: Teleporter[];
 }
 
 /** A collectible "dependency key" (opens one locked door). */
@@ -147,4 +153,22 @@ export interface Decoration {
   x: number;
   y: number;
   kind: DecorKind;
+}
+
+/**
+ * One pad of a bidirectional goto↔label teleporter pair, generated from a
+ * `goto` statement and the label it jumps to (see `GotoLink`). Stepping onto
+ * this pad's tile warps the player to (`targetX`, `targetY`) — the paired
+ * pad's center. Each resolved goto link contributes two `Teleporter` entries,
+ * one per pad, each pointing at the other.
+ */
+export interface Teleporter {
+  /** World position in fractional tile units (this pad's tile center). */
+  x: number;
+  y: number;
+  /** World position of the paired pad this one warps the player to. */
+  targetX: number;
+  targetY: number;
+  /** The label name, for HUD/debug display. */
+  label: string;
 }

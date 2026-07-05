@@ -13,7 +13,7 @@
  * in front of the nearest wall — so what you see under the crosshair is what
  * you shoot.
  */
-import type { AmmoDrop, Decoration, DecorKind, Enemy, KeyItem, Point } from "../map/types";
+import type { AmmoDrop, Decoration, DecorKind, Enemy, KeyItem, Point, Teleporter } from "../map/types";
 import type { CodeEntity, EntityKind } from "../parser/types";
 import type { Player } from "./player";
 
@@ -415,6 +415,55 @@ function drawDecoration(
       ctx.fillRect(cx - w * 0.3, top + w * 0.3, w * 0.6, w * 0.4);
       break;
     }
+  }
+}
+
+/** Footprint (fraction of a full tile-height billboard) for a teleporter pad. */
+const PORTAL_SIZE = 0.8;
+/** Violet, matching the teleporter floor tint and automap/minimap markers. */
+const PORTAL_RGB = "168,85,247";
+
+/**
+ * Draw goto/label teleporter pads as glowing, pulsing violet UT-style portal
+ * billboards, floor-anchored the same way as decorations. Purely visual — the
+ * engine handles the actual warp when the player's tile matches a pad.
+ */
+export function renderTeleporters(
+  ctx: CanvasRenderingContext2D,
+  player: Player,
+  teleporters: Teleporter[],
+  zBuffer: Float64Array,
+): void {
+  const width = ctx.canvas.width;
+  const height = ctx.canvas.height;
+
+  const visible = teleporters
+    .map((t) => ({ proj: projectPoint(player, t.x, t.y, width, height, PORTAL_SIZE) }))
+    .filter(({ proj }) => proj.depth > 0.15)
+    .sort((a, b) => b.proj.depth - a.proj.depth);
+
+  const pulse = 0.55 + 0.45 * Math.sin(performance.now() / 220);
+
+  for (const { proj } of visible) {
+    const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
+    if (proj.depth >= zBuffer[centerCol]) continue; // behind a wall
+
+    const w = proj.right - proj.left;
+    const groundY = height / 2 + height / proj.depth / 2;
+    const cx = proj.screenX;
+    const ringH = w * 1.6;
+    const top = groundY - ringH;
+
+    // A glowing violet energy column: a translucent fill, a bright pulsing
+    // outline, and a brighter core — reads as "active" rather than a static
+    // prop, the way UT's teleporters shimmer.
+    ctx.fillStyle = `rgba(${PORTAL_RGB},${0.18 + 0.12 * pulse})`;
+    ctx.fillRect(cx - w / 2, top, w, ringH);
+    ctx.strokeStyle = `rgba(${PORTAL_RGB},${0.6 + 0.4 * pulse})`;
+    ctx.lineWidth = Math.max(1, w * 0.08);
+    ctx.strokeRect(cx - w / 2, top, w, ringH);
+    ctx.fillStyle = `rgba(230,210,255,${0.35 + 0.35 * pulse})`;
+    ctx.fillRect(cx - w * 0.22, top + ringH * 0.15, w * 0.44, ringH * 0.7);
   }
 }
 

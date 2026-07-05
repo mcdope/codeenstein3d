@@ -25,6 +25,7 @@ import {
   renderExitMarker,
   renderKeys,
   renderSprites,
+  renderTeleporters,
 } from "./sprites";
 import { drawCrosshair, drawHud } from "./hud";
 import { drawWeapon } from "./viewmodel";
@@ -44,7 +45,7 @@ import {
 } from "./effects";
 import { audio } from "./audio";
 import { WEAPONS, pelletOffsets } from "./weapons";
-import { DOOR_TILE, type AmmoDrop, type Enemy, type GameMap } from "../map/types";
+import { DOOR_TILE, TELEPORTER_TILE, type AmmoDrop, type Enemy, type GameMap } from "../map/types";
 
 /** Movement speed in tiles per second. */
 const MOVE_SPEED = 3.2;
@@ -105,7 +106,15 @@ export interface EngineStats {
 export interface EngineHandlers {
   onStats?: (stats: EngineStats) => void;
   onGameOver?: () => void;
-  onWin?: () => void;
+  /** Fired when the player reaches the exit; receives the final stats so the
+   * host can carry health/ammo into the next level. */
+  onWin?: (stats: EngineStats) => void;
+}
+
+/** Health/ammo carried over from a previous level, for multi-level runs. */
+export interface EngineCarryover {
+  health: number;
+  ammo: number;
 }
 
 type GameState = "playing" | "over" | "won";
@@ -157,11 +166,16 @@ export class RaycasterEngine {
   private muzzleFrames = 0;
   /** Whether the full-screen automap overlay is up (pauses the sim). */
   private isMapActive = false;
+  /** Tile key ("x,y") of a teleporter pad the player just arrived on, so they
+   * can step off before it can trigger again — otherwise the destination pad
+   * (itself a teleporter tile) would bounce them straight back. */
+  private suppressTeleportAt: string | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
     private readonly map: GameMap,
     private readonly handlers: EngineHandlers = {},
+    carryover?: EngineCarryover,
   ) {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2D canvas context unavailable");
@@ -170,7 +184,8 @@ export class RaycasterEngine {
     this.input = new InputController(canvas);
     this.enemies = map.enemies;
     this.zBuffer = new Float64Array(canvas.width);
-    this.ammo = startingAmmo(map.enemies);
+    this.ammo = carryover?.ammo ?? startingAmmo(map.enemies);
+    if (carryover) this.health = carryover.health;
   }
 
   start(): void {
@@ -228,6 +243,7 @@ export class RaycasterEngine {
     this.collectKeys();
     this.collectAmmoDrops();
     this.openDoorAhead();
+    this.checkTeleporters();
     this.updateEnemyAi(dt);
     this.updateProjectiles(dt);
     this.applyHazardDamage(dt);
@@ -241,6 +257,7 @@ export class RaycasterEngine {
     const { width, height } = this.ctx.canvas;
     renderScene(this.ctx, this.map, this.player, this.zBuffer, view.horizonShift);
     renderDecorations(this.ctx, this.player, this.map.decorations, this.zBuffer);
+    renderTeleporters(this.ctx, this.player, this.map.teleporters, this.zBuffer);
     renderSprites(this.ctx, this.player, this.enemies, this.zBuffer);
     renderProjectiles(this.ctx, this.player, this.projectiles, this.zBuffer);
     renderKeys(this.ctx, this.player, this.map.keys, this.zBuffer);
@@ -293,6 +310,7 @@ export class RaycasterEngine {
   private renderPaused(): void {
     renderScene(this.ctx, this.map, this.player, this.zBuffer, 0);
     renderDecorations(this.ctx, this.player, this.map.decorations, this.zBuffer);
+    renderTeleporters(this.ctx, this.player, this.map.teleporters, this.zBuffer);
     renderSprites(this.ctx, this.player, this.enemies, this.zBuffer);
     renderProjectiles(this.ctx, this.player, this.projectiles, this.zBuffer);
     renderKeys(this.ctx, this.player, this.map.keys, this.zBuffer);
@@ -477,6 +495,35 @@ export class RaycasterEngine {
   }
 
   /**
+   * Warp the player when they step onto a goto/label teleporter pad. Tracked
+   * by tile rather than a cooldown timer: arriving on a pad suppresses only
+   * that exact tile until the player leaves it, so the destination pad
+   * (itself a teleporter tile) can't immediately bounce them back, however
+   * long they linger there.
+   */
+  private checkTeleporters(): void {
+    if (this.state !== "playing") return;
+    const cx = Math.floor(this.player.posX);
+    const cy = Math.floor(this.player.posY);
+    if (this.map.grid[cy]?.[cx] !== TELEPORTER_TILE) {
+      this.suppressTeleportAt = null;
+      return;
+    }
+
+    const tileKey = `${cx},${cy}`;
+    if (tileKey === this.suppressTeleportAt) return;
+
+    const pad = this.map.teleporters.find((t) => Math.floor(t.x) === cx && Math.floor(t.y) === cy);
+    if (!pad) return;
+
+    this.player.posX = pad.targetX;
+    this.player.posY = pad.targetY;
+    this.suppressTeleportAt = `${Math.floor(pad.targetX)},${Math.floor(pad.targetY)}`;
+    audio.playTeleport();
+    console.log(`%c[goto] warped via label "${pad.label}"`, "color:#c86dff;font-weight:bold");
+  }
+
+  /**
    * Sound a pulsing warning beep once per second while stability is critically
    * low (below 25%). Resets when health recovers or the run ends, so re-entering
    * the low band beeps immediately.
@@ -596,7 +643,7 @@ export class RaycasterEngine {
     this.reportStats();
     this.stop();
     if (state === "over") this.handlers.onGameOver?.();
-    else this.handlers.onWin?.();
+    else this.handlers.onWin?.(this.buildStats());
   }
 
   private reportStats(): void {

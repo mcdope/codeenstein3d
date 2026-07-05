@@ -10,7 +10,7 @@
 import { Language, Parser, type Node } from "web-tree-sitter";
 import phpWasmUrl from "tree-sitter-php/tree-sitter-php.wasm?url";
 import { initTreeSitter } from "../runtime";
-import { countDecisionPoints, countLines, maxNestingDepth } from "../astUtils";
+import { countDecisionPoints, countLines, maxNestingDepth, resolveGotos, type RawGotoRef } from "../astUtils";
 import type {
   CodeEntity,
   CodeParserAdapter,
@@ -113,10 +113,25 @@ export class PhpParserAdapter implements CodeParserAdapter {
 
       entities.sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
 
+      // `goto label;` / `label:` pairs become teleporter pads in the map.
+      // Neither node type exposes a "label" field in this grammar — the name
+      // is just an unnamed-field child of type `name`.
+      const rawGotos: RawGotoRef[] = [];
+      for (const node of tree.rootNode.descendantsOfType("goto_statement")) {
+        const label = node.namedChildren.find((c) => c.type === "name")?.text;
+        if (label) rawGotos.push({ label, line: node.startPosition.row + 1 });
+      }
+      const rawLabels: RawGotoRef[] = [];
+      for (const node of tree.rootNode.descendantsOfType("named_label_statement")) {
+        const label = node.namedChildren.find((c) => c.type === "name")?.text;
+        if (label) rawLabels.push({ label, line: node.startPosition.row + 1 });
+      }
+
       return {
         language: this.language,
         linesOfCode: countLines(sourceText),
         entities,
+        gotos: resolveGotos(rawGotos, rawLabels),
       };
     } finally {
       // Free the WASM-side syntax tree; the Parser itself is kept for reuse.

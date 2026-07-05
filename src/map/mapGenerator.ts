@@ -11,10 +11,11 @@
  * Generation is deterministic: the same parsed file always yields the same
  * map, via a seeded PRNG hashed from the file's content signature.
  */
-import type { CodeEntity, ParsedFile } from "../parser/types";
+import type { CodeEntity, GotoLink, ParsedFile } from "../parser/types";
 import {
   DOOR_TILE,
   HAZARD_TILE,
+  TELEPORTER_TILE,
   type Decoration,
   type DecorKind,
   type Enemy,
@@ -22,6 +23,7 @@ import {
   type KeyItem,
   type Point,
   type Room,
+  type Teleporter,
   type Tile,
 } from "./types";
 
@@ -124,6 +126,16 @@ export class MapGenerator {
     const doors = placeDoors(rooms, grid);
     const keys = placeKeys(grid, spawn, exit, enemies, doors, rng);
 
+    // Turn each resolved `goto` → label jump into a teleporter pad pair, once
+    // the floor plan (doors/keys included) is final so pads never overwrite
+    // something load-bearing.
+    const teleporterAvoid: Point[] = [
+      ...avoidPoints,
+      ...doors.map((d) => ({ x: d.x + 0.5, y: d.y + 0.5 })),
+      ...keys.map((k) => ({ x: k.x, y: k.y })),
+    ];
+    const teleporters = placeTeleporters(rooms, grid, teleporterAvoid, parsed.gotos, rng);
+
     // Fog-of-war overlay grid, all unexplored until the player moves through.
     const visited: boolean[][] = Array.from({ length: size }, () =>
       new Array<boolean>(size).fill(false),
@@ -142,6 +154,7 @@ export class MapGenerator {
       doors,
       keys,
       decorations,
+      teleporters,
     };
   }
 
@@ -626,6 +639,62 @@ function findPropSpot(
 
 function dist(x1: number, y1: number, x2: number, y2: number): number {
   return Math.hypot(x1 - x2, y1 - y2);
+}
+
+/** The room whose entity's line span contains `line`, if any. Used to anchor
+ * a goto/label teleporter pad inside the room its source line lives in. */
+function roomForLine(rooms: Room[], line: number): Room | undefined {
+  return rooms.find((r) => line >= r.entity.startLine && line <= r.entity.endLine);
+}
+
+/**
+ * Turn each resolved `goto` → label jump into a bidirectional teleporter pad
+ * pair: one pad in the room containing the `goto` statement, one in the room
+ * containing its label, each warping to the other. Falls back to the spawn
+ * room when a line falls outside every entity (e.g. file-scope PHP code).
+ * A link that can't find an open floor spot for both pads is skipped — never
+ * a hard failure, same philosophy as pillar/decoration placement.
+ */
+function placeTeleporters(
+  rooms: Room[],
+  grid: Tile[][],
+  avoid: Point[],
+  gotos: GotoLink[],
+  rng: () => number,
+): Teleporter[] {
+  if (gotos.length === 0 || rooms.length === 0) return [];
+
+  const teleporters: Teleporter[] = [];
+  const placedByRoom = new Map<Room, Point[]>();
+  const placedIn = (room: Room): Point[] => placedByRoom.get(room) ?? [];
+  const addPlaced = (room: Room, p: Point): void => {
+    const list = placedByRoom.get(room);
+    if (list) list.push(p);
+    else placedByRoom.set(room, [p]);
+  };
+
+  for (const link of gotos) {
+    const fromRoom = roomForLine(rooms, link.gotoLine) ?? rooms[0];
+    const toRoom = roomForLine(rooms, link.labelLine) ?? rooms[0];
+
+    const fromSpot = findPropSpot(fromRoom, grid, avoid, placedIn(fromRoom), rng);
+    if (!fromSpot) continue;
+    addPlaced(fromRoom, fromSpot); // reserve before picking the paired spot,
+    // so a same-room pair can't collide with itself.
+
+    const toSpot = findPropSpot(toRoom, grid, avoid, placedIn(toRoom), rng);
+    if (!toSpot) continue;
+    addPlaced(toRoom, toSpot);
+
+    grid[fromSpot.y][fromSpot.x] = TELEPORTER_TILE;
+    grid[toSpot.y][toSpot.x] = TELEPORTER_TILE;
+
+    const from = { x: fromSpot.x + 0.5, y: fromSpot.y + 0.5 };
+    const to = { x: toSpot.x + 0.5, y: toSpot.y + 0.5 };
+    teleporters.push({ x: from.x, y: from.y, targetX: to.x, targetY: to.y, label: link.label });
+    teleporters.push({ x: to.x, y: to.y, targetX: from.x, targetY: from.y, label: link.label });
+  }
+  return teleporters;
 }
 
 /**

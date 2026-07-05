@@ -6,6 +6,7 @@
  * adapter only has to declare its own node-type vocabulary.
  */
 import type { Node } from "web-tree-sitter";
+import type { GotoLink } from "./types";
 
 /** Total line count; a single trailing newline is not counted as a new line. */
 export function countLines(text: string): number {
@@ -56,4 +57,31 @@ export function maxNestingDepth(
     if (d > childMax) childMax = d;
   }
   return inc + childMax;
+}
+
+/** A raw `goto` statement or label found while walking a syntax tree, before
+ * the two are paired up by name. */
+export interface RawGotoRef {
+  label: string;
+  line: number;
+}
+
+/**
+ * Pair `goto` statements with the label they jump to, by name. A `goto` whose
+ * label isn't found anywhere in the file is silently dropped rather than
+ * guessed at. When several labels share a name (illegal, but parsers are
+ * forgiving of malformed input), the first occurrence wins.
+ */
+export function resolveGotos(gotos: RawGotoRef[], labels: RawGotoRef[]): GotoLink[] {
+  const labelLines = new Map<string, number>();
+  for (const l of labels) {
+    if (!labelLines.has(l.label)) labelLines.set(l.label, l.line);
+  }
+  const links: GotoLink[] = [];
+  for (const g of gotos) {
+    const labelLine = labelLines.get(g.label);
+    if (labelLine === undefined) continue;
+    links.push({ label: g.label, gotoLine: g.line, labelLine });
+  }
+  return links;
 }
