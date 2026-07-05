@@ -11,8 +11,9 @@ Whether it's a massive Symfony enterprise project or low-level C code like the `
 ## 🚦 Current Status
 Playable end-to-end: pick a local folder, click a PHP or C file, and fight your
 way through the dungeon generated from its structure to the `return` statement —
-native HUD, procedural retro audio, a swaying weapon viewmodel, an active enemy
-AI that roams, chases, melees and shoots back, and a togglable automap.
+strafing/sprint movement, native HUD, procedural retro audio, a swaying weapon
+viewmodel, an active enemy AI that roams, chases, melees and shoots back, jogged
+corridors with pillar-broken rooms, and a togglable automap.
 
 | Stage | Status |
 | --- | --- |
@@ -35,6 +36,9 @@ AI that roams, chases, melees and shoots back, and a togglable automap.
 | 17. Automap overlay with fog of war | ✅ Done |
 | 18. Enemy AI overhaul (roaming, packs, damage aggro) | ✅ Done |
 | 19. Ranged enemy combat (projectiles) | ✅ Done |
+| 20. Strafing, sprint, Q/E turning, trimmed HUD | ✅ Done |
+| 21. Environment geometry (corridor jogs, pillars) | ✅ Done |
+| Room decorations (racks/plants/desks/blocks) | ⏸️ Implemented, disabled (playtest feedback) |
 | Multi-file "levels" / bosses from complexity | 🔜 Planned |
 | Additional language grammars (JS, Python, …) | 🔜 Planned |
 | Scoring + persisted highscores | 🔜 Planned |
@@ -44,7 +48,7 @@ This project is strictly "Local-First". Proprietary code never leaves your machi
 
 1. **Local Access (File System Access API):** Direct read access to your local workspace via `showDirectoryPicker()`. *Strictly no virtual devices or mocked file systems.* — `src/fs/`
 2. **AST Parser (web-tree-sitter via WASM):** Language-agnostic parsing behind a `CodeParserAdapter` interface. Source files are normalized into plain JSON (`linesOfCode` + `entities[]` with start/end lines and a cyclomatic `complexityScore`). The rest of the engine never touches Tree-sitter directly. Grammars: **PHP** (`.php`) and **C** (`.c`, `.h`); adding a language is one adapter + one registry line. — `src/parser/`
-3. **Procedural Map Generator:** Deterministically translates the normalized JSON into a 2D tile matrix (`0` = floor, `1` = wall, `2` = acid hazard, `3` = locked door). Each entity becomes an enclosed room — but a **deeply nested function turns into a labyrinth** (recursive-division maze of `1`-walls, passages kept ≥1 tile wide) rather than an open box. Rooms are linked by corridors. It places an enemy for every function/method (HP scaled from its complexity), floods every global-variable room with an **acid pool**, locks **private/protected-method** rooms behind **doors** and scatters a matching **dependency key** in reachable public floor (so every level stays solvable), and puts a green **exit tile** — the `return` statement — in the room furthest from spawn. — `src/map/`
+3. **Procedural Map Generator:** Deterministically translates the normalized JSON into a 2D tile matrix (`0` = floor, `1` = wall, `2` = acid hazard, `3` = locked door). Each entity becomes an enclosed room — but a **deeply nested function turns into a labyrinth** (recursive-division maze of `1`-walls, passages kept ≥1 tile wide) rather than an open box. Rooms are linked by corridors that **jog with 1-2 turns instead of one straight line** once they get long, so hallways don't offer a full sightline end-to-end; large open rooms also get a scattering of **1-tile pillars** to break up empty floor. It places an enemy for every function/method (HP scaled from its complexity, split into a pack above a complexity threshold), floods every global-variable room with an **acid pool**, locks **private/protected-method** rooms behind **doors** and scatters a matching **dependency key** in reachable public floor (so every level stays solvable), and puts a green **exit tile** — the `return` statement — in the room furthest from spawn, always kept clear of enemies/pillars. (Cosmetic room decorations — server racks, plants, desks, code-blocks — are implemented but currently disabled behind a feature flag pending a design rethink.) — `src/map/`
 4. **Raycaster Engine & Gameplay:** A classic 2.5D raycaster written entirely on the HTML5 `<canvas>` 2D context. No WebGL, no Three.js – pure retro mathematics (DDA algorithm), distance-fog shading (full bright near, black beyond ~14 tiles), floor-cast acid tiles, delta-timed first-person movement, and AABB wall collision. Layered on top: billboard enemy/key/ammo sprites (z-buffer occluded), a weapon arsenal (hitscan pistol + cone shotgun) with a swaying, recoiling viewmodel and head-bob, active enemy AI (roams its room, chases on aggro or on taking damage, melees up close, lobs ranged bolts with line-of-sight at range), impact feedback (screen damage flash, bullet tracers, enemy bleed-flash, falling "digital blood" particles), procedural Web-Audio sound effects, a native-canvas HUD, a togglable automap with fog of war, key-unlocked doors, and win/lose state. — `src/engine/`
 
 ### Gameplay loop
