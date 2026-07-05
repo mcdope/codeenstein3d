@@ -328,7 +328,13 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
       roomCount: map.rooms.length,
       enemyCount: map.enemies.length,
     },
-    () => activeEngine?.start(),
+    () => {
+      activeEngine?.start();
+      // The overlay focuses its own "Start" button (so Enter/Space dismiss
+      // it) and never gives focus back — without this, WASD silently does
+      // nothing until the player clicks the canvas themselves.
+      canvas.focus();
+    },
   );
 }
 

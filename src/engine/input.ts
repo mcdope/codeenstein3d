@@ -53,7 +53,6 @@ export class InputController {
     this.canvas.removeEventListener("mousedown", this.onMouseDown);
     document.removeEventListener("mousemove", this.onMouseMove);
     if (document.pointerLockElement === this.canvas) document.exitPointerLock();
-    if (document.fullscreenElement === this.canvas) void document.exitFullscreen();
     this.keys.clear();
     this.mouseDX = 0;
     this.fireQueued = false;
@@ -143,13 +142,18 @@ export class InputController {
     // called synchronously from a real user-gesture handler — not deferred
     // to a later polled flag consumed inside the rAF-driven game loop, which
     // browsers reject — so this happens directly here, the same way
-    // `onCanvasClick` requests the pointer lock directly.
+    // `onCanvasClick` requests the pointer lock directly. Targets the whole
+    // page (`documentElement`), not the canvas: `launchLevel` creates a brand
+    // new `<canvas>` for every level, and removing the *current* fullscreen
+    // element from the document makes the browser auto-exit fullscreen — so
+    // fullscreening the canvas itself was silently dropping out of fullscreen
+    // on every level transition.
     if (e.code === "KeyF" && !e.repeat) {
       e.preventDefault();
       if (document.fullscreenElement) {
         void document.exitFullscreen();
       } else {
-        void this.canvas.requestFullscreen();
+        void document.documentElement.requestFullscreen();
       }
     }
 
