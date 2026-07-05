@@ -25,6 +25,19 @@ import {
   renderSprites,
 } from "./sprites";
 import { drawCrosshair, drawHud } from "./hud";
+import {
+  DAMAGE_FLASH_FRAMES,
+  HIT_FLASH_FRAMES,
+  drawBulletTraces,
+  drawDamageFlash,
+  makeBulletTrace,
+  renderBlood,
+  spawnBlood,
+  tickBulletTraces,
+  updateBlood,
+  type BloodParticle,
+  type BulletTrace,
+} from "./effects";
 import { WEAPONS, pelletOffsets } from "./weapons";
 import { DOOR_TILE, type AmmoDrop, type Enemy, type GameMap } from "../map/types";
 
@@ -98,6 +111,12 @@ export class RaycasterEngine {
   private keysHeld = 0;
   /** Ammo pickups dropped by defeated enemies, awaiting collection. */
   private readonly drops: AmmoDrop[] = [];
+  /** Frames left on the red "took damage" screen flash (0 = none). */
+  private flashFrames = 0;
+  /** Live weapon bullet tracers, fading over a few frames. */
+  private readonly traces: BulletTrace[] = [];
+  /** Live "digital blood" particles falling to the floor. */
+  private readonly blood: BloodParticle[] = [];
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -179,6 +198,15 @@ export class RaycasterEngine {
 
     if (this.state === "playing" && this.input.consumeFire()) this.fire();
 
+    // In-world impact effects (above sprites): falling "digital blood" and the
+    // muzzle→impact tracer lines from any shot fired this frame.
+    updateBlood(this.blood, dt);
+    renderBlood(this.ctx, this.player, this.blood, this.zBuffer);
+    drawBulletTraces(this.ctx, this.traces);
+
+    // Full-screen red flash when the player is taking damage.
+    drawDamageFlash(this.ctx, this.flashFrames / DAMAGE_FLASH_FRAMES);
+
     drawCrosshair(this.ctx, this.target !== null, WEAPONS[this.weaponIndex].spreadPx);
     renderMinimap(this.ctx, this.map, this.player);
 
@@ -186,6 +214,18 @@ export class RaycasterEngine {
     const stats = this.buildStats();
     drawHud(this.ctx, stats);
     this.handlers.onStats?.(stats);
+
+    // Age the frame-based effect timers now that this frame is drawn.
+    this.tickEffects();
+  }
+
+  /** Advance the frame-based visual-effect timers by one frame. */
+  private tickEffects(): void {
+    if (this.flashFrames > 0) this.flashFrames -= 1;
+    tickBulletTraces(this.traces);
+    for (const enemy of this.enemies) {
+      if (enemy.hitFlash > 0) enemy.hitFlash -= 1;
+    }
   }
 
   private handleMovement(dt: number): void {
@@ -288,6 +328,9 @@ export class RaycasterEngine {
 
   /** Apply `amount` of stability loss; ends the run on reaching 0. */
   private damage(amount: number): void {
+    if (amount <= 0) return;
+    // Kick the red screen flash back to full strength on any damage taken.
+    this.flashFrames = DAMAGE_FLASH_FRAMES;
     this.health -= amount;
     if (this.health <= 0) {
       this.health = 0;
@@ -325,6 +368,10 @@ export class RaycasterEngine {
     let pelletsHit = 0;
 
     for (const offset of pelletOffsets(weapon)) {
+      // Tracer from the muzzle (bottom center) to this pellet's aim column at
+      // crosshair height — drawn whether or not it connects.
+      this.traces.push(makeBulletTrace(width, height, center + offset, height / 2));
+
       const enemy = findTargetAtColumn(
         this.player,
         this.enemies,
@@ -344,6 +391,9 @@ export class RaycasterEngine {
 
   /** Apply weapon damage to one enemy, retiring it (with a log) at 0 HP. */
   private damageEnemy(enemy: Enemy, amount: number): void {
+    // Hit feedback: tint the sprite red and spray 3–5 "digital blood" pixels.
+    enemy.hitFlash = HIT_FLASH_FRAMES;
+    spawnBlood(this.blood, enemy.x, enemy.y, 3 + Math.floor(Math.random() * 3));
     enemy.hp -= amount;
     if (enemy.hp > 0) {
       console.log(`[hit] ${enemy.entity.name}() — HP ${enemy.hp}/${enemy.maxHp}`);

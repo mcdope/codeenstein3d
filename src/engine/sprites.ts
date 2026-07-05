@@ -108,8 +108,9 @@ export function renderSprites(
     const startY = Math.max(0, Math.floor(proj.top));
     const spriteH = proj.bottom - proj.top;
 
-    // Body: vertical stripes, skipping columns hidden behind a wall.
-    ctx.fillStyle = enemyColor(enemy.entity.kind);
+    // Body: vertical stripes, skipping columns hidden behind a wall. A recent
+    // hit tints the whole body red for a few frames (the "bleed" flash).
+    ctx.fillStyle = enemy.hitFlash > 0 ? "#ff5a4a" : enemyColor(enemy.entity.kind);
     for (let x = startX; x <= endX; x++) {
       if (proj.depth >= zBuffer[x]) continue;
       ctx.fillRect(x, startY, 1, spriteH);

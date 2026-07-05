@@ -57,6 +57,12 @@ export interface Enemy {
    * at 0. (Behaviour lives in src/engine/enemyAi.ts — this stays plain data.)
    */
   attackCooldown: number;
+  /**
+   * Frames remaining for which the sprite renders tinted red after being hit
+   * (a "bleed" flash). Ticked down by the engine each frame; 0 = normal color.
+   * Starts at 0.
+   */
+  hitFlash: number;
   /** The function/method this enemy represents. */
   entity: CodeEntity;
 }
