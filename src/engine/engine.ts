@@ -709,8 +709,14 @@ export class RaycasterEngine {
 
 /**
  * Give the player enough heap to clear the level with the pistol, plus a
- * margin: one shot per pistol-damage of total enemy HP, ×1.4, floored at 20.
- * (The shotgun trades heap efficiency for burst damage.)
+ * generous margin, so the fight itself never grinds to a halt for lack of
+ * ammo — but scattered ammo pickups are still meant to matter across a real
+ * playthrough (missed shots, backtracking, mixing in the heavier shotgun),
+ * not just be a nice-to-have. Scales with both total enemy HP (`shotsToClear`,
+ * the theoretical perfect-accuracy cost) and raw enemy count (`missBuffer`,
+ * covering the missed shots/repositioning a pack of separate encounters
+ * costs that a flat HP-total multiplier alone wouldn't capture). The shotgun
+ * trades heap efficiency for burst damage, so this undercounts its cost.
  */
 function startingAmmo(enemies: Enemy[]): number {
   const pistolDamage = WEAPONS[0].damagePerPellet;
@@ -718,5 +724,6 @@ function startingAmmo(enemies: Enemy[]): number {
     (n, e) => n + Math.ceil(e.maxHp / pistolDamage),
     0,
   );
-  return Math.max(20, Math.round(shotsToClear * 1.4) + 8);
+  const missBuffer = enemies.length * 2.5;
+  return Math.max(28, Math.round(shotsToClear * 1.7 + missBuffer) + 10);
 }
