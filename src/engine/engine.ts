@@ -51,7 +51,7 @@ import {
   type Explosion,
 } from "./effects";
 import { audio } from "./audio";
-import { STARTING_WEAPONS, WEAPONS, pelletOffsets } from "./weapons";
+import { MELEE_WEAPON, STARTING_WEAPONS, WEAPONS, pelletOffsets, type Weapon } from "./weapons";
 import {
   ARMOR_DROP_AMOUNT,
   BULLETS_DROP_AMOUNT,
@@ -240,6 +240,10 @@ export class RaycasterEngine {
   private bobAmount = 0;
   /** Weapon recoil, 1 just after firing, easing back to 0. */
   private recoil = 0;
+  /** Quick-melee "thrust" progress, 1 just after a Left-Ctrl swing, easing
+   * back to 0 — entirely independent of `recoil` so a melee swing never
+   * makes whatever ranged weapon is equipped visually kick as if IT fired. */
+  private meleeRecoil = 0;
   /** Frames left on the muzzle flash. */
   private muzzleFrames = 0;
   /** Whether the full-screen automap overlay is up (pauses the sim). */
@@ -372,13 +376,29 @@ export class RaycasterEngine {
       this.tryOpenSecretWall();
     }
 
-    // Weapon switching (1/2/…) can happen even while lining up a shot — but
-    // only among weapons the player actually owns (see `ownedWeapons`); an
-    // unearned slot just does nothing, rather than switching to a weapon with
-    // no way to have gotten it yet.
+    // Weapon switching (1/2/… or mousewheel) can happen even while lining up
+    // a shot — but only among ranged weapons the player actually owns (see
+    // `ownedWeapons`); an unearned slot just does nothing, rather than
+    // switching to a weapon with no way to have gotten it yet. Melee is
+    // structurally excluded (see `canWieldViaNumberKey`) — it's bound to
+    // Left-Ctrl as its own quick-attack action instead (below).
     const requested = this.input.consumeWeaponRequest();
-    if (requested !== null && requested < WEAPONS.length && this.ownedWeapons.has(requested)) {
+    if (requested !== null && this.canWieldViaNumberKey(requested)) {
       this.weaponIndex = requested;
+    }
+
+    const wheelSteps = this.input.consumeWheelSteps();
+    if (wheelSteps !== 0) {
+      const direction = wheelSteps > 0 ? 1 : -1; // scroll down = next weapon
+      for (let i = 0; i < Math.abs(wheelSteps); i++) this.cycleWeapon(direction);
+    }
+
+    // Quick-melee: an instant knife swing, independent of whatever ranged
+    // weapon is equipped/owned/cooling down — see `fire()`'s doc comment and
+    // the `meleeRecoil`-driven viewmodel overlay in the render section below.
+    if (this.state === "playing" && this.input.consumeMelee()) {
+      this.fire(MELEE_WEAPON);
+      this.meleeRecoil = 1;
     }
 
     // Simulate (may end the game via damage or reaching the exit).
@@ -429,12 +449,16 @@ export class RaycasterEngine {
     drawDamageFlash(this.ctx, this.flashFrames / DAMAGE_FLASH_FRAMES);
 
     // First-person weapon, swaying with the bob and kicking on recoil.
+    // A quick-melee swing briefly overlays the knife's viewmodel on top of
+    // whatever ranged weapon is actually equipped — weaponIndex, ammo, and
+    // the HUD are untouched throughout (see `meleeRecoil`'s doc comment).
+    const meleeOverlayActive = this.meleeRecoil > 0.02;
     drawWeapon(this.ctx, {
       bobX: view.bobX,
       bobY: view.bobY,
-      recoil: this.recoil,
-      flash: this.muzzleFrames > 0,
-      kind: WEAPONS[this.weaponIndex].viewKind,
+      recoil: meleeOverlayActive ? this.meleeRecoil : this.recoil,
+      flash: meleeOverlayActive ? false : this.muzzleFrames > 0,
+      kind: meleeOverlayActive ? MELEE_WEAPON.viewKind : WEAPONS[this.weaponIndex].viewKind,
     });
 
     drawCrosshair(this.ctx, this.target !== null, WEAPONS[this.weaponIndex].spreadPx);
@@ -629,6 +653,7 @@ export class RaycasterEngine {
     const target = this.moving ? 1 : 0;
     this.bobAmount += (target - this.bobAmount) * Math.min(1, dt * BOB_EASE);
     this.recoil += (0 - this.recoil) * Math.min(1, dt * RECOIL_RECOVERY);
+    this.meleeRecoil += (0 - this.meleeRecoil) * Math.min(1, dt * RECOIL_RECOVERY);
 
     const phase = this.bobTime * BOB_FREQUENCY;
     // Horizontal sway is one cycle per stride; vertical bounces twice (a dip on
@@ -916,12 +941,42 @@ export class RaycasterEngine {
   }
 
   /**
+   * Whether `index` is a ranged weapon the player currently owns and can
+   * switch to via a number key or the mousewheel — melee weapons (anything
+   * with `meleeRange` set) are structurally excluded, since the knife is
+   * bound exclusively to Left-Ctrl's quick-melee action instead of a slot.
+   */
+  private canWieldViaNumberKey(index: number): boolean {
+    return index >= 0 && index < WEAPONS.length && WEAPONS[index].meleeRange === undefined && this.ownedWeapons.has(index);
+  }
+
+  /**
+   * Switch to the next/previous number-key-reachable weapon from the
+   * currently equipped one, wrapping around, skipping melee and unowned
+   * slots (see `canWieldViaNumberKey`). Does nothing if no other reachable
+   * weapon is owned.
+   */
+  private cycleWeapon(direction: 1 | -1): void {
+    const n = WEAPONS.length;
+    let i = this.weaponIndex;
+    for (let steps = 0; steps < n; steps++) {
+      i = (i + direction + n) % n;
+      if (this.canWieldViaNumberKey(i)) {
+        this.weaponIndex = i;
+        return;
+      }
+    }
+  }
+
+  /**
    * Resolve firing for this frame: automatic weapons (the MP) re-fire on
    * their own every `fireIntervalSec` while the trigger is held; everything
    * else fires once per press, gated by the same cooldown (mainly there to
    * stop the rocket launcher being click-spammed faster than its own
-   * `fireIntervalSec` — the pistol/shotgun/knife have none, so they're
-   * unaffected and fire exactly as fast as the player can press/click).
+   * `fireIntervalSec` — the pistol/shotgun have none, so they're unaffected
+   * and fire exactly as fast as the player can press/click). Quick-melee
+   * (Left-Ctrl) is a separate, always-available action handled in `advance()`
+   * — it never goes through this cooldown/auto-fire gating at all.
    */
   private updateFiring(dt: number): void {
     if (this.weaponCooldown > 0) this.weaponCooldown = Math.max(0, this.weaponCooldown - dt);
@@ -940,16 +995,18 @@ export class RaycasterEngine {
   }
 
   /**
-   * Fire the equipped weapon: spend its ammo cost from the right pool, then
-   * either resolve one hitscan per pellet across its cone (the pistol is a
+   * Fire `weapon` — the equipped weapon by default, or an arbitrary one (the
+   * quick-melee action passes `MELEE_WEAPON` directly, bypassing `weaponIndex`
+   * entirely — see the Left-Ctrl handling in `advance()`). Spends its ammo
+   * cost from the right pool (a no-op for the knife, which has none), then
+   * either resolves one hitscan per pellet across its cone (the pistol is a
    * single centered ray; the shotgun sprays several pellets that each
    * independently hit whatever's under their offset screen column) or, for
-   * the rocket launcher, launch a real projectile instead (see `rockets.ts`).
+   * the rocket launcher, launches a real projectile instead (see `rockets.ts`).
    * A hitscan pellet hits an enemy first, or failing that a spotted proximity
    * mine, which a shot destroys outright (see `destroyMine`).
    */
-  private fire(): void {
-    const weapon = WEAPONS[this.weaponIndex];
+  private fire(weapon: Weapon = WEAPONS[this.weaponIndex]): void {
     if (weapon.ammoType) {
       const have = weapon.ammoType === "bullets" ? this.bulletsAmmo : this.rocketsAmmo;
       if (have < weapon.ammoPerShot) {
@@ -962,8 +1019,12 @@ export class RaycasterEngine {
 
     audio.playShoot();
     // Kick the viewmodel: full recoil, easing back over the next frames. No
-    // muzzle flash for the knife — a stab doesn't have one.
-    this.recoil = 1;
+    // muzzle flash for the knife — a stab doesn't have one. A melee call
+    // (weapon.meleeRange !== undefined) never touches `recoil` — the caller
+    // already drives its own `meleeRecoil` overlay instead, so a quick-melee
+    // swing can't stomp whatever ranged weapon's recoil animation was
+    // actually mid-flight.
+    if (weapon.meleeRange === undefined) this.recoil = 1;
     if (weapon.ammoType) this.muzzleFrames = MUZZLE_FLASH_FRAMES;
 
     if (weapon.isRocket) {

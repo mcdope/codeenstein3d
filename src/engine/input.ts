@@ -31,6 +31,18 @@ export class InputController {
    * despite that being the more common FPS convention, since E is already the
    * camera-turn-right key in this game's Q/E-turn scheme. */
   private interactQueued = false;
+  /** Edge-triggered "quick-melee" request, set on a Left-Ctrl press — fires
+   * the knife instantly, independent of whatever ranged weapon is equipped
+   * (see `RaycasterEngine`). Left, not Right, so it doesn't collide with the
+   * FPS-overlay toggle on `ControlRight`. */
+  private meleeQueued = false;
+  /** Accumulated mousewheel steps (one per tick, signed) since the last poll —
+   * cycles the equipped ranged weapon. Accumulated rather than a single
+   * boolean so a fast trackpad/wheel firing several `wheel` events between
+   * polls doesn't silently drop ticks (same reasoning as `consumeMouseDX`). */
+  private wheelSteps = 0;
+  /** Edge-triggered FPS/frame-time overlay toggle, set on a Right-Ctrl press. */
+  private fpsToggleQueued = false;
   /** Edge-triggered pause toggle, set on an Escape press. */
   private escapeQueued = false;
   /** Edge-triggered "the window just lost focus" signal, set on blur. */
@@ -51,6 +63,9 @@ export class InputController {
     this.canvas.addEventListener("mousedown", this.onMouseDown);
     window.addEventListener("mouseup", this.onMouseUp);
     document.addEventListener("mousemove", this.onMouseMove);
+    // Bound to the canvas specifically (not window/document) so scrolling the
+    // file-tree or console sidebar is never hijacked by a wheel over the game.
+    this.canvas.addEventListener("wheel", this.onWheel, { passive: true });
   }
 
   detach(): void {
@@ -63,6 +78,7 @@ export class InputController {
     this.canvas.removeEventListener("mousedown", this.onMouseDown);
     window.removeEventListener("mouseup", this.onMouseUp);
     document.removeEventListener("mousemove", this.onMouseMove);
+    this.canvas.removeEventListener("wheel", this.onWheel);
     if (document.pointerLockElement === this.canvas) document.exitPointerLock();
     this.keys.clear();
     this.mouseDX = 0;
@@ -71,6 +87,9 @@ export class InputController {
     this.weaponRequest = null;
     this.mapToggleQueued = false;
     this.interactQueued = false;
+    this.meleeQueued = false;
+    this.wheelSteps = 0;
+    this.fpsToggleQueued = false;
     this.escapeQueued = false;
     this.blurQueued = false;
     this.clickQueued = false;
@@ -123,6 +142,28 @@ export class InputController {
     return interacted;
   }
 
+  /** Return true at most once per Left-Ctrl press (fires a quick-melee attack). */
+  consumeMelee(): boolean {
+    const requested = this.meleeQueued;
+    this.meleeQueued = false;
+    return requested;
+  }
+
+  /** Return accumulated mousewheel steps (signed) since the last poll, and
+   * reset it. Positive = scrolled down (next weapon), negative = up (previous). */
+  consumeWheelSteps(): number {
+    const steps = this.wheelSteps;
+    this.wheelSteps = 0;
+    return steps;
+  }
+
+  /** Return true at most once per Right-Ctrl press (toggles the FPS overlay). */
+  consumeFpsToggle(): boolean {
+    const toggled = this.fpsToggleQueued;
+    this.fpsToggleQueued = false;
+    return toggled;
+  }
+
   /** Return true at most once per Escape press (toggles the pause overlay). */
   consumeEscape(): boolean {
     const pressed = this.escapeQueued;
@@ -163,6 +204,12 @@ export class InputController {
 
     // R interacts with a fake wall or lore terminal directly ahead/nearby.
     if (e.code === "KeyR" && !e.repeat) this.interactQueued = true;
+
+    // Left-Ctrl fires a quick-melee attack; Right-Ctrl toggles the FPS
+    // overlay — deliberately separate keys so a "quick" one-handed melee
+    // never fights a debug-display toggle.
+    if (e.code === "ControlLeft" && !e.repeat) this.meleeQueued = true;
+    if (e.code === "ControlRight" && !e.repeat) this.fpsToggleQueued = true;
 
     // Escape toggles the engine's own pause overlay. Deliberately not
     // preventDefault()'d — the browser also uses Escape to drop pointer lock
@@ -229,6 +276,10 @@ export class InputController {
     if (document.pointerLockElement === this.canvas) {
       this.mouseDX += e.movementX;
     }
+  };
+
+  private readonly onWheel = (e: WheelEvent): void => {
+    this.wheelSteps += Math.sign(e.deltaY);
   };
 }
 

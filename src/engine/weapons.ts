@@ -65,16 +65,22 @@ export interface Weapon {
 }
 
 /**
- * The arsenal, indexed by the number keys (1 → pistol, 2 → shotgun, 3 → knife,
- * 4 → MP, 5 → rocket launcher). Only the first three are owned from the start
- * — the MP and Rocket Launcher have to be earned from an Elite kill's
- * guaranteed weapon drop (see `RaycasterEngine`'s `ownedWeapons`).
+ * The arsenal. Ranged weapons are reachable via the number keys and the
+ * mousewheel (1 → pistol, 2 → shotgun, (4) → MP, (5) → rocket launcher, once
+ * owned) — any weapon with `meleeRange` set is structurally excluded from
+ * both (see `RaycasterEngine`'s `canWieldViaNumberKey`), since melee has its
+ * own dedicated input instead of a number-key slot. Only the pistol/shotgun
+ * (plus the knife, which is always available regardless of slot) are owned
+ * from the start — the MP and Rocket Launcher have to be earned from an
+ * Elite kill's guaranteed weapon drop (see `RaycasterEngine`'s `ownedWeapons`).
  * - **echo pistol**: precise single hitscan, cheap.
  * - **Regex Shotgun**: 7 pellets in a cone — devastating up close, useless at
  *   range as the spread misses; costs more heap.
- * - **SIGKILL Knife**: infinite-ammo melee fallback — point-blank only, but a
- *   kill heals a sliver of stability, rewarding aggressive play when heap runs
- *   dry instead of leaving the player stuck out of options.
+ * - **SIGKILL Knife**: infinite-ammo melee fallback, bound to Left-Ctrl as an
+ *   instant "quick-melee" overlay rather than an equippable slot — point-blank
+ *   only, but a kill heals a sliver of stability, rewarding aggressive play
+ *   when heap runs dry instead of leaving the player stuck out of options.
+ *   See `MELEE_WEAPON` and `RaycasterEngine`'s quick-melee handling.
  * - **MP**: fully automatic, high fire rate, low damage per round — sprays
  *   bullets fast rather than hitting hard.
  * - **Rocket Launcher**: one slow, visible projectile per trigger-pull that
@@ -142,6 +148,15 @@ export const WEAPONS: readonly Weapon[] = [
 /** Weapons owned from the start of every run — everything else has to be
  * earned (currently: an Elite kill's guaranteed weapon drop). */
 export const STARTING_WEAPONS: readonly number[] = [0, 1, 2];
+
+/**
+ * The knife's `Weapon` object, looked up by its defining trait (`meleeRange`
+ * set) rather than a hardcoded array index — so nothing else in the engine
+ * needs to know or assume where it sits in `WEAPONS`. Used directly by the
+ * Left-Ctrl quick-melee action (see `RaycasterEngine`), which fires it
+ * independent of `weaponIndex` entirely.
+ */
+export const MELEE_WEAPON: Weapon = WEAPONS.find((w) => w.meleeRange !== undefined)!;
 
 /**
  * Screen-x offsets (from center) for a weapon's pellets, evenly spread across
