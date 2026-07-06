@@ -44,10 +44,12 @@ triggered one can't instantly close it before it's even read. The console
 sidebar's random hints also never repeat the same line twice in a row. Every
 simulation-relevant random draw (enemy AI timing/roam targets, loot rolls,
 weapon spread) now runs through a seeded PRNG instead of `Math.random()`,
-which powers a new deterministic replay system: each run's input is recorded
-and, from the Highscores dialog, a "Watch Replay" button re-picks the
-workspace, verifies the file's AST hash still matches, and plays the
-recorded run back frame-for-frame against a freshly regenerated map.
+which powers a new deterministic replay system: every level of a run is
+recorded, one segment per level, and from the Highscores dialog a "Watch
+Replay" button re-picks the workspace, verifies each level's file still
+hashes to what was recorded, and plays the whole run back level-by-level
+frame-for-frame against freshly regenerated maps — a full multi-level
+campaign, not just the level it ended on.
 
 | Stage | Status |
 | --- | --- |
@@ -86,6 +88,7 @@ recorded run back frame-for-frame against a freshly regenerated map.
 | 33. Exploration/lore score bonuses, ammo tuning, gamepad support, canvas scaling | ✅ Done |
 | 34. Exit compass fix + redesign, end-game dialog dismiss lock, non-repeating hints | ✅ Done |
 | 35. Compass notch cutout, Cone of Fire tuning, seeded PRNG + deterministic replay system | ✅ Done |
+| 36. Replay system expanded to a whole multi-level campaign run | ✅ Done |
 | Room decorations (racks/plants/desks/blocks) | ⏸️ Implemented, disabled (playtest feedback) |
 
 ## 🏗️ Architecture & Pipeline
@@ -147,7 +150,7 @@ you've even read it.
 * **Difficulty** – a sidebar dropdown (Easy/Normal/Hard) scaling enemy HP (0.7x/1x/1.5x), enemy-dealt damage, and ammo/health/armor pickup amounts (inversely — Hard is scarcer, not just tougher); persisted across sessions, takes effect on the next level load. Normal also rolls enemy loot kind against a slightly ammo-favoring weight table (playtest feedback was that ammo ran too scarce there specifically), and static map ammo pickups grant ~40-50% more per pickup than before across all difficulties
 * **Score** – points per kill (scaled by the killed entity's complexity, tripled for an Elite), plus bonuses for remaining health/ammo, completion speed, route efficiency (how close your path was to the shortest spawn→exit route), a flat bonus per unique lore terminal read, and a large "100% Clear" bonus for exploring over 95% of the level's walkable tiles before reaching the exit, minus a malus for finishing below full health; live in the HUD, final the moment you reach the exit
 * **Highscores** – a sidebar button opens a dialog listing the top-10 scored runs (score, campaign name, levels cleared, and a truncated SHA-256 hash of the run-ending level's AST + campaign name, so you can tell whether a leaderboard entry is really the same code); an entry is only recorded once a run actually ends — on death, or on finishing the whole campaign — not on every intermediate level clear
-* **Watch Replay** – entries recorded since this feature shipped get a "Watch Replay" button: re-pick the same workspace, and — after verifying the re-parsed file's AST hash still matches — the exact run plays back frame-by-frame against a freshly regenerated map (Esc stops early). Covers only the single level the run ended on, not a full multi-level campaign
+* **Watch Replay** – entries recorded since this feature shipped get a "Watch Replay" button: re-pick the same workspace, and — after verifying each level's re-parsed file still hashes to what was recorded — the exact run plays back level-by-level, frame-by-frame, against freshly regenerated maps, carrying health/ammo/weapons forward between levels exactly as recorded (Esc stops early)
 * **Master / SFX / Music** – three sidebar volume sliders balancing the procedural sound effects against any custom BGM, persisted across sessions
 * **Select BGM Folder** – pick a local folder of `.mp3`/`.ogg`/`.wav` files to play as a shuffled, looping background-music playlist behind the game's own sound effects
 * **Keys & doors** – walk over a gold key to collect it; walk into a blue locked door while holding a key to open it (consumes the key)
@@ -200,7 +203,7 @@ src/
     ├── loot.ts         # Weighted random loot-drop resolution (bonus-level and difficulty aware)
     ├── scoring.ts      # End-of-level score breakdown (kills/health/ammo/speed/path/exploration/lore) — pure, recomputed live
     ├── highscores.ts   # SHA-256 AST+campaign hashing, persisted top-10 leaderboard (each entry can carry a replay payload)
-    ├── replay.ts        # Deterministic replay: ReplayRecorder (captures input per frame) + ReplayPlaybackInput (replays it)
+    ├── replay.ts        # Deterministic replay: CampaignReplayRecorder (one segment per level played) + ReplayPlaybackInput (replays it)
     ├── bgm.ts          # Custom BGM: folder pick, shuffled looping playlist over the audio.ts BGM bus
     ├── rockets.ts      # Player rocket projectiles: spawn, move, AoE splash damage
     ├── viewmodel.ts    # First-person weapon sprite, head-bob, recoil
