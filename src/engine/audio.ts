@@ -12,8 +12,12 @@
  * play call resumes it if the browser suspended it. When no `AudioContext` is
  * available (e.g. a non-browser test runner) every method is a safe no-op.
  *
- * All voices route through a shared master gain and a compressor so several
- * simultaneous hits (a shotgun blast, say) can't clip.
+ * Every procedural effect routes through an SFX bus, and a custom BGM track
+ * (see `src/engine/bgm.ts`) routes through a separate BGM bus — both feed a
+ * shared master gain and a compressor, so several simultaneous hits (a
+ * shotgun blast, say) can't clip, and the Master/SFX/BGM sidebar sliders can
+ * balance the two independently (see `setMasterVolume`/`setSfxVolume`/
+ * `setBgmVolume`).
  */
 
 /** Grab whatever AudioContext constructor the environment exposes, if any. */
@@ -26,13 +30,38 @@ function audioContextCtor(): AudioContextCtor | null {
   return g.AudioContext ?? g.webkitAudioContext ?? null;
 }
 
+/** Default gain values for the three user-facing volume sliders (see
+ * `setMasterVolume`/`setSfxVolume`/`setBgmVolume`), applied at context
+ * creation before any saved preference (see main.ts) overrides them. BGM
+ * defaults quieter than SFX so a freshly-picked custom track doesn't drown
+ * out the game's own sound effects before the player ever touches a slider. */
+const DEFAULT_MASTER_VOLUME = 0.5;
+const DEFAULT_SFX_VOLUME = 1;
+const DEFAULT_BGM_VOLUME = 0.5;
+
 class AudioManager {
   private ctx: AudioContext | null = null;
+  /** Final bus before the compressor/destination — both `sfx` and `bgm`
+   * route through this, so the Master slider scales everything at once. */
   private master: GainNode | null = null;
+  /** Bus every procedural sound effect (`playShoot`, `playHit`, …) connects
+   * to, independent of `bgm` — see `setSfxVolume`. */
+  private sfx: GainNode | null = null;
+  /** Bus a custom BGM source connects to via `connectBgmSource` — kept
+   * separate from `sfx` so the two volumes can be balanced independently
+   * (custom music doesn't overpower in-game sound effects, or vice versa). */
+  private bgm: GainNode | null = null;
   private distortion: WaveShaperNode | null = null;
   private unavailable = false;
   /** Timestamp of the last damage sound, to rate-limit continuous hazards. */
   private lastDamageAt = -Infinity;
+
+  /** Pending volumes (0-1), applied to their gain node immediately if the
+   * context already exists, or at creation time otherwise — see `resume()`
+   * and the three `setXVolume` methods below. */
+  private masterVolume = DEFAULT_MASTER_VOLUME;
+  private sfxVolume = DEFAULT_SFX_VOLUME;
+  private bgmVolume = DEFAULT_BGM_VOLUME;
 
   /**
    * Ensure the context exists and is running; returns it, or `null` when audio
@@ -48,27 +77,63 @@ class AudioManager {
       }
       const ctx = new Ctor();
       const master = ctx.createGain();
-      master.gain.value = 0.5;
+      master.gain.value = this.masterVolume;
+      const sfx = ctx.createGain();
+      sfx.gain.value = this.sfxVolume;
+      const bgm = ctx.createGain();
+      bgm.gain.value = this.bgmVolume;
+      sfx.connect(master);
+      bgm.connect(master);
       const comp = ctx.createDynamicsCompressor();
       master.connect(comp).connect(ctx.destination);
       this.ctx = ctx;
       this.master = master;
+      this.sfx = sfx;
+      this.bgm = bgm;
     }
     if (this.ctx.state === "suspended") void this.ctx.resume();
     return this.ctx;
   }
 
+  /** Overall volume (0-1), scaling both SFX and BGM. */
+  setMasterVolume(volume: number): void {
+    this.masterVolume = clamp01(volume);
+    if (this.master) this.master.gain.value = this.masterVolume;
+  }
+
+  /** Volume (0-1) of every procedural sound effect. */
+  setSfxVolume(volume: number): void {
+    this.sfxVolume = clamp01(volume);
+    if (this.sfx) this.sfx.gain.value = this.sfxVolume;
+  }
+
+  /** Volume (0-1) of custom BGM played through `connectBgmSource`. */
+  setBgmVolume(volume: number): void {
+    this.bgmVolume = clamp01(volume);
+    if (this.bgm) this.bgm.gain.value = this.bgmVolume;
+  }
+
+  /** Warm up the context (if needed) and route `node` (e.g. a custom BGM
+   * player's `MediaElementAudioSourceNode`) into the BGM bus. Returns the
+   * live `AudioContext` so the caller can build/connect further nodes of its
+   * own against it, or `null` if audio is unavailable. */
+  connectBgmSource(node: AudioNode): AudioContext | null {
+    const ctx = this.resume();
+    if (ctx && this.bgm) node.connect(this.bgm);
+    return ctx;
+  }
+
   /** Retro blaster: a square wave sweeping rapidly down from a high pitch. */
   playShoot(): void {
     const ctx = this.resume();
-    if (!ctx || !this.master) return;
+    if (!ctx || !this.sfx) return;
     const t = ctx.currentTime;
     const osc = ctx.createOscillator();
     osc.type = "square";
     osc.frequency.setValueAtTime(880, t);
     osc.frequency.exponentialRampToValueAtTime(110, t + 0.12);
     const gain = envelope(ctx, 0.5, 0.005, 0.14);
-    osc.connect(gain).connect(this.master);
+    osc.connect(gain).connect(this.sfx);
     osc.start(t);
     osc.stop(t + 0.16);
   }
@@ -76,14 +141,14 @@ class AudioManager {
   /** Enemy hit: a low, brief triangle-wave "thud". */
   playHit(): void {
     const ctx = this.resume();
-    if (!ctx || !this.master) return;
+    if (!ctx || !this.sfx) return;
     const t = ctx.currentTime;
     const osc = ctx.createOscillator();
     osc.type = "triangle";
     osc.frequency.setValueAtTime(165, t);
     osc.frequency.exponentialRampToValueAtTime(55, t + 0.11);
     const gain = envelope(ctx, 0.55, 0.004, 0.13);
-    osc.connect(gain).connect(this.master);
+    osc.connect(gain).connect(this.sfx);
     osc.start(t);
     osc.stop(t + 0.15);
   }
@@ -95,7 +160,7 @@ class AudioManager {
    */
   playDamage(): void {
     const ctx = this.resume();
-    if (!ctx || !this.master) return;
+    if (!ctx || !this.sfx) return;
     const t = ctx.currentTime;
     if (t - this.lastDamageAt < 0.18) return;
     this.lastDamageAt = t;
@@ -105,7 +170,7 @@ class AudioManager {
     osc.frequency.setValueAtTime(220, t);
     osc.frequency.linearRampToValueAtTime(150, t + 0.2);
     const gain = envelope(ctx, 0.5, 0.003, 0.22);
-    osc.connect(this.distortionNode(ctx)).connect(gain).connect(this.master);
+    osc.connect(this.distortionNode(ctx)).connect(gain).connect(this.sfx);
     osc.start(t);
     osc.stop(t + 0.24);
   }
@@ -113,14 +178,14 @@ class AudioManager {
   /** Enemy ranged shot: a buzzy descending sawtooth "zap", distinct from ours. */
   playEnemyShoot(): void {
     const ctx = this.resume();
-    if (!ctx || !this.master) return;
+    if (!ctx || !this.sfx) return;
     const t = ctx.currentTime;
     const osc = ctx.createOscillator();
     osc.type = "sawtooth";
     osc.frequency.setValueAtTime(320, t);
     osc.frequency.exponentialRampToValueAtTime(140, t + 0.14);
     const gain = envelope(ctx, 0.26, 0.004, 0.15);
-    osc.connect(gain).connect(this.master);
+    osc.connect(gain).connect(this.sfx);
     osc.start(t);
     osc.stop(t + 0.18);
   }
@@ -128,14 +193,14 @@ class AudioManager {
   /** Ammo drop: a soft, low "plop" when a defeated enemy sheds a heap pickup. */
   playAmmoDrop(): void {
     const ctx = this.resume();
-    if (!ctx || !this.master) return;
+    if (!ctx || !this.sfx) return;
     const t = ctx.currentTime;
     const osc = ctx.createOscillator();
     osc.type = "triangle";
     osc.frequency.setValueAtTime(400, t);
     osc.frequency.exponentialRampToValueAtTime(250, t + 0.09);
     const gain = envelope(ctx, 0.22, 0.004, 0.1);
-    osc.connect(gain).connect(this.master);
+    osc.connect(gain).connect(this.sfx);
     osc.start(t);
     osc.stop(t + 0.12);
   }
@@ -143,14 +208,14 @@ class AudioManager {
   /** Ammo pickup: a bright rising square-wave "power-up" blip. */
   playPickup(): void {
     const ctx = this.resume();
-    if (!ctx || !this.master) return;
+    if (!ctx || !this.sfx) return;
     const t = ctx.currentTime;
     const osc = ctx.createOscillator();
     osc.type = "square";
     osc.frequency.setValueAtTime(660, t);
     osc.frequency.exponentialRampToValueAtTime(990, t + 0.08);
     const gain = envelope(ctx, 0.32, 0.004, 0.12);
-    osc.connect(gain).connect(this.master);
+    osc.connect(gain).connect(this.sfx);
     osc.start(t);
     osc.stop(t + 0.14);
   }
@@ -158,7 +223,7 @@ class AudioManager {
   /** Footstep: a very quiet, slightly pitch-varied low thump for each stride. */
   playStep(): void {
     const ctx = this.resume();
-    if (!ctx || !this.master) return;
+    if (!ctx || !this.sfx) return;
     const t = ctx.currentTime;
     const base = 95 + Math.random() * 30;
     const osc = ctx.createOscillator();
@@ -166,7 +231,7 @@ class AudioManager {
     osc.frequency.setValueAtTime(base, t);
     osc.frequency.exponentialRampToValueAtTime(base * 0.7, t + 0.05);
     const gain = envelope(ctx, 0.07, 0.003, 0.05);
-    osc.connect(gain).connect(this.master);
+    osc.connect(gain).connect(this.sfx);
     osc.start(t);
     osc.stop(t + 0.09);
   }
@@ -174,13 +239,13 @@ class AudioManager {
   /** Low-health alarm: a short, high-pitched warning pip (one per beat). */
   playAlarm(): void {
     const ctx = this.resume();
-    if (!ctx || !this.master) return;
+    if (!ctx || !this.sfx) return;
     const t = ctx.currentTime;
     const osc = ctx.createOscillator();
     osc.type = "square";
     osc.frequency.setValueAtTime(1245, t);
     const gain = envelope(ctx, 0.28, 0.004, 0.12);
-    osc.connect(gain).connect(this.master);
+    osc.connect(gain).connect(this.sfx);
     osc.start(t);
     osc.stop(t + 0.14);
   }
@@ -188,7 +253,7 @@ class AudioManager {
   /** Goto teleporter warp: a quick sci-fi sweep, up then settling back down. */
   playTeleport(): void {
     const ctx = this.resume();
-    if (!ctx || !this.master) return;
+    if (!ctx || !this.sfx) return;
     const t = ctx.currentTime;
     const osc = ctx.createOscillator();
     osc.type = "sine";
@@ -196,7 +261,7 @@ class AudioManager {
     osc.frequency.exponentialRampToValueAtTime(1100, t + 0.09);
     osc.frequency.exponentialRampToValueAtTime(440, t + 0.18);
     const gain = envelope(ctx, 0.35, 0.005, 0.2);
-    osc.connect(gain).connect(this.master);
+    osc.connect(gain).connect(this.sfx);
     osc.start(t);
     osc.stop(t + 0.22);
   }
@@ -204,9 +269,9 @@ class AudioManager {
   /** Level cleared, advancing to the next file: a short rising arpeggio. */
   playLevelComplete(): void {
     const ctx = this.resume();
-    if (!ctx || !this.master) return;
+    if (!ctx || !this.sfx) return;
     const t = ctx.currentTime;
-    const master = this.master;
+    const sfx = this.sfx;
     const notes = [523.25, 659.25, 783.99]; // C5, E5, G5
     notes.forEach((freq, i) => {
       const start = t + i * 0.07;
@@ -214,7 +279,7 @@ class AudioManager {
       osc.type = "square";
       osc.frequency.setValueAtTime(freq, start);
       const gain = envelope(ctx, 0.3, 0.004, 0.12);
-      osc.connect(gain).connect(master);
+      osc.connect(gain).connect(sfx);
       osc.start(start);
       osc.stop(start + 0.14);
     });
@@ -223,14 +288,14 @@ class AudioManager {
   /** Proximity mine detonation: a low, distorted booming thud. */
   playExplosion(): void {
     const ctx = this.resume();
-    if (!ctx || !this.master) return;
+    if (!ctx || !this.sfx) return;
     const t = ctx.currentTime;
     const osc = ctx.createOscillator();
     osc.type = "sawtooth";
     osc.frequency.setValueAtTime(90, t);
     osc.frequency.exponentialRampToValueAtTime(28, t + 0.35);
     const gain = envelope(ctx, 0.65, 0.005, 0.4);
-    osc.connect(this.distortionNode(ctx)).connect(gain).connect(this.master);
+    osc.connect(this.distortionNode(ctx)).connect(gain).connect(this.sfx);
     osc.start(t);
     osc.stop(t + 0.45);
   }
@@ -239,9 +304,9 @@ class AudioManager {
    * chime — distinct from the level-complete arpeggio and the pickup blip. */
   playSecret(): void {
     const ctx = this.resume();
-    if (!ctx || !this.master) return;
+    if (!ctx || !this.sfx) return;
     const t = ctx.currentTime;
-    const master = this.master;
+    const sfx = this.sfx;
     const notes = [880, 1108.73, 1318.51]; // A5, C#6, E6
     notes.forEach((freq, i) => {
       const start = t + i * 0.06;
@@ -249,7 +314,7 @@ class AudioManager {
       osc.type = "sine";
       osc.frequency.setValueAtTime(freq, start);
       const gain = envelope(ctx, 0.25, 0.006, 0.16);
-      osc.connect(gain).connect(master);
+      osc.connect(gain).connect(sfx);
       osc.start(start);
       osc.stop(start + 0.2);
     });
@@ -279,6 +344,10 @@ function envelope(ctx: AudioContext, peak: number, attack: number, decay: number
   gain.gain.exponentialRampToValueAtTime(peak, t + attack);
   gain.gain.exponentialRampToValueAtTime(0.0001, t + attack + decay);
   return gain;
+}
+
+function clamp01(n: number): number {
+  return Math.max(0, Math.min(1, n));
 }
 
 /** Classic waveshaper distortion curve; higher `amount` = harsher clipping. */

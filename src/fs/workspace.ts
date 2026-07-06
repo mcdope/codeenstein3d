@@ -44,9 +44,12 @@ export function isFileSystemAccessSupported(): boolean {
 
 /**
  * Prompt the user to pick a local directory. Resolves to the granted handle,
- * or `null` if the user cancels the picker.
+ * or `null` if the user cancels the picker. `id` lets the browser remember a
+ * separate "last used" starting location per picker purpose (workspace vs.
+ * BGM folder — see `pickWorkspace`/main.ts's BGM folder button — so picking
+ * one doesn't reset the other's starting directory).
  */
-export async function pickWorkspace(): Promise<FileSystemDirectoryHandle | null> {
+export async function pickDirectory(id: string): Promise<FileSystemDirectoryHandle | null> {
   if (!window.showDirectoryPicker) {
     throw new Error(
       "The File System Access API is not available in this browser. " +
@@ -55,7 +58,7 @@ export async function pickWorkspace(): Promise<FileSystemDirectoryHandle | null>
   }
 
   try {
-    return await window.showDirectoryPicker({ id: "codeenstein-workspace", mode: "read" });
+    return await window.showDirectoryPicker({ id, mode: "read" });
   } catch (err) {
     // The user dismissing the picker surfaces as an AbortError — treat as a
     // non-error cancellation rather than propagating.
@@ -64,6 +67,11 @@ export async function pickWorkspace(): Promise<FileSystemDirectoryHandle | null>
     }
     throw err;
   }
+}
+
+/** Prompt the user to pick their source workspace — see `pickDirectory`. */
+export async function pickWorkspace(): Promise<FileSystemDirectoryHandle | null> {
+  return pickDirectory("codeenstein-workspace");
 }
 
 /**
