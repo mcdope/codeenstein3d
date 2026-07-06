@@ -42,6 +42,10 @@ const ATTACK_COOLDOWN = 0.8;
 const ATTACK_DAMAGE = 10;
 /** Half-width of an enemy's collision box, in tiles. */
 const ENEMY_RADIUS = 0.3;
+/** Melee/ranged damage multiplier for an Elite (boss-tier) enemy — see
+ * `Enemy.elite`. Its HP scaling already lives in `mapGenerator.ts`; this is
+ * the "high damage" half of the spec. */
+const ELITE_DAMAGE_MULTIPLIER = 2;
 
 /**
  * Advance every living enemy by `dt` seconds and return the total stability
@@ -96,7 +100,7 @@ function updateEnemy(
   if (dist <= ATTACK_RADIUS) {
     if (enemy.attackCooldown === 0) {
       enemy.attackCooldown = ATTACK_COOLDOWN;
-      return ATTACK_DAMAGE;
+      return enemy.elite ? ATTACK_DAMAGE * ELITE_DAMAGE_MULTIPLIER : ATTACK_DAMAGE;
     }
     return 0;
   }
@@ -107,7 +111,14 @@ function updateEnemy(
     dist <= RANGED_RANGE &&
     hasLineOfSight(map, enemy.x, enemy.y, player.posX, player.posY)
   ) {
-    spawnProjectile(projectiles, enemy.x, enemy.y, player.posX, player.posY);
+    spawnProjectile(
+      projectiles,
+      enemy.x,
+      enemy.y,
+      player.posX,
+      player.posY,
+      enemy.elite ? ELITE_DAMAGE_MULTIPLIER : 1,
+    );
     enemy.fireCooldown = FIRE_COOLDOWN_MIN + Math.random() * (FIRE_COOLDOWN_MAX - FIRE_COOLDOWN_MIN);
   }
 

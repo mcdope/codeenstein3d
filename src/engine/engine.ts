@@ -18,11 +18,11 @@ import { collectProjectileBillboards, updateProjectiles, type Projectile } from 
 import { InputController } from "./input";
 import { renderMinimap, renderScene } from "./raycaster";
 import {
-  collectAmmoDropBillboards,
   collectDecorationBillboards,
   collectEnemyBillboards,
   collectExitBillboard,
   collectKeyBillboards,
+  collectLootBillboards,
   collectMineBillboards,
   collectTeleporterBillboards,
   findMineAtColumn,
@@ -40,16 +40,35 @@ import {
   drawDamageFlash,
   makeBulletTrace,
   renderBlood,
+  renderExplosions,
   spawnBlood,
+  spawnExplosion,
   tickBulletTraces,
   updateBlood,
+  updateExplosions,
   type BloodParticle,
   type BulletTrace,
+  type Explosion,
 } from "./effects";
 import { audio } from "./audio";
-import { WEAPONS, pelletOffsets } from "./weapons";
+import { STARTING_WEAPONS, WEAPONS, pelletOffsets } from "./weapons";
+import {
+  ARMOR_DROP_AMOUNT,
+  BULLETS_DROP_AMOUNT,
+  ELITE_HEALTH_DROP_AMOUNT,
+  HEALTH_DROP_AMOUNT,
+  MAX_ARMOR,
+  ROCKETS_DROP_AMOUNT,
+  rollLoot,
+} from "./loot";
+import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, ROCKET_BLAST_RADIUS, type Rocket } from "./rockets";
 import { detonateMine, spikeDamage, updateMines } from "./traps";
-import { DOOR_TILE, TELEPORTER_TILE, type AmmoDrop, type Enemy, type GameMap, type Mine } from "../map/types";
+import { DOOR_TILE, TELEPORTER_TILE, type Enemy, type GameMap, type LootDrop, type Mine } from "../map/types";
+
+/** Weapon indices whose only acquisition path is an Elite kill's guaranteed
+ * drop (see `dropEliteLoot`) — indices into `WEAPONS`, matching its array
+ * order (MP is index 3, Rocket Launcher is index 4). */
+const UNLOCKABLE_WEAPONS = [3, 4];
 
 /** Movement speed in tiles per second. */
 const MOVE_SPEED = 3.2;
@@ -89,9 +108,8 @@ const LOW_HEALTH_FRACTION = 0.25;
 const LOW_HEALTH_BEEP_INTERVAL = 1;
 /** How close (tiles) the player must get to pick up a key. */
 const KEY_PICKUP_RADIUS = 0.5;
-/** Heap (ammo) restored by picking up one enemy loot drop. */
-const AMMO_DROP_AMOUNT = 6;
-/** How close (tiles) the player must get to pick up a dropped ammo pack. */
+/** How close (tiles) the player must get to pick up a dropped loot item or a
+ * statically-placed map ammo pickup. */
 const AMMO_PICKUP_RADIUS = 0.5;
 
 /** Live stats pushed to the host each frame. */
@@ -99,8 +117,12 @@ export interface EngineStats {
   /** System Stability, 0–100. */
   health: number;
   maxHealth: number;
-  /** Heap / RAM (ammo) remaining. */
-  ammo: number;
+  /** Armor points, absorbed 1:1 before health on any hit (see `damage()`). */
+  armor: number;
+  /** Bullets remaining (pistol/shotgun/MP). */
+  bullets: number;
+  /** Rockets remaining (Rocket Launcher). */
+  rockets: number;
   /** Dependency keys currently held (unused, in inventory). */
   keysHeld: number;
   /** Total keys placed on this level. */
@@ -111,6 +133,8 @@ export interface EngineStats {
   kills: number;
   /** Index into `WEAPONS` of the currently-equipped weapon. */
   weaponIndex: number;
+  /** Indices into `WEAPONS` the player currently owns/can switch to. */
+  ownedWeapons: number[];
 }
 
 /** Host callbacks. All optional. */
@@ -126,9 +150,13 @@ export interface EngineHandlers {
  * runs or resuming a saved campaign. */
 export interface EngineCarryover {
   health: number;
-  ammo: number;
+  armor: number;
+  bullets: number;
+  rockets: number;
   /** Index into `WEAPONS`; defaults to the pistol (0) when omitted. */
   weaponIndex?: number;
+  /** Defaults to `STARTING_WEAPONS` when omitted. */
+  ownedWeapons?: number[];
 }
 
 type GameState = "playing" | "over" | "won";
@@ -149,15 +177,27 @@ export class RaycasterEngine {
 
   private state: GameState = "playing";
   private health = MAX_HEALTH;
-  private ammo: number;
+  /** Armor points; absorbed 1:1 before health on any hit (see `damage()`). */
+  private armor = 0;
+  private bulletsAmmo: number;
+  private rocketsAmmo: number;
   /** Index into WEAPONS of the equipped weapon (0 = pistol). */
   private weaponIndex = 0;
+  /** Indices into `WEAPONS` the player can currently switch to — everything
+   * beyond `STARTING_WEAPONS` has to be earned (an Elite kill's guaranteed
+   * weapon drop; see `dropEliteLoot`). */
+  private readonly ownedWeapons: Set<number>;
+  /** Seconds remaining before the next shot is allowed — ticks down every
+   * frame regardless of weapon; automatic weapons (the MP) re-fire on their
+   * own while held once it reaches 0, everything else just gates a stray
+   * double-press faster than the weapon's own `fireIntervalSec` allows. */
+  private weaponCooldown = 0;
   /** Dependency keys collected but not yet spent on a door. */
   private keysHeld = 0;
   /** Enemies defeated this level. */
   private kills = 0;
-  /** Ammo pickups dropped by defeated enemies, awaiting collection. */
-  private readonly drops: AmmoDrop[] = [];
+  /** Loot dropped by defeated enemies, awaiting collection. */
+  private readonly drops: LootDrop[] = [];
   /** Frames left on the red "took damage" screen flash (0 = none). */
   private flashFrames = 0;
   /** Live weapon bullet tracers, fading over a few frames. */
@@ -166,6 +206,10 @@ export class RaycasterEngine {
   private readonly blood: BloodParticle[] = [];
   /** In-flight enemy projectiles (ranged bolts). */
   private readonly projectiles: Projectile[] = [];
+  /** In-flight player-fired rockets. */
+  private readonly rockets: Rocket[] = [];
+  /** Live rocket-blast VFX circles. */
+  private readonly explosions: Explosion[] = [];
   /** Countdown (seconds) to the next low-health alarm beep; 0 = beep now. */
   private alarmCountdown = 0;
   /** Ground covered (tiles) since the last footstep sound. */
@@ -205,8 +249,13 @@ export class RaycasterEngine {
     this.input = new InputController(canvas);
     this.enemies = map.enemies;
     this.zBuffer = new Float64Array(canvas.width);
-    this.ammo = carryover?.ammo ?? startingAmmo(map.enemies);
-    if (carryover) this.health = carryover.health;
+    this.bulletsAmmo = carryover?.bullets ?? startingBullets(map.enemies);
+    this.rocketsAmmo = carryover?.rockets ?? startingRockets();
+    this.ownedWeapons = new Set(carryover?.ownedWeapons ?? STARTING_WEAPONS);
+    if (carryover) {
+      this.health = carryover.health;
+      this.armor = carryover.armor;
+    }
     if (carryover?.weaponIndex !== undefined) this.weaponIndex = carryover.weaponIndex;
   }
 
@@ -270,9 +319,14 @@ export class RaycasterEngine {
       return;
     }
 
-    // Weapon switching (1/2/…) can happen even while lining up a shot.
+    // Weapon switching (1/2/…) can happen even while lining up a shot — but
+    // only among weapons the player actually owns (see `ownedWeapons`); an
+    // unearned slot just does nothing, rather than switching to a weapon with
+    // no way to have gotten it yet.
     const requested = this.input.consumeWeaponRequest();
-    if (requested !== null && requested < WEAPONS.length) this.weaponIndex = requested;
+    if (requested !== null && requested < WEAPONS.length && this.ownedWeapons.has(requested)) {
+      this.weaponIndex = requested;
+    }
 
     // Simulate (may end the game via damage or reaching the exit).
     this.levelTime += dt;
@@ -280,11 +334,12 @@ export class RaycasterEngine {
     this.markVisited();
     this.updateRoomDiscovery();
     this.collectKeys();
-    this.collectAmmoDrops();
+    this.collectLoot();
     this.openDoorAhead();
     this.checkTeleporters();
     this.updateEnemyAi(dt);
     this.updateProjectiles(dt);
+    this.advanceRockets(dt);
     this.applyHazardDamage(dt);
     this.applyTrapDamage(dt);
     this.updateLowHealthAlarm(dt);
@@ -306,13 +361,16 @@ export class RaycasterEngine {
       height,
     );
 
-    if (this.state === "playing" && this.input.consumeFire()) this.fire();
+    if (this.state === "playing") this.updateFiring(dt);
 
-    // In-world impact effects (above sprites): falling "digital blood" and the
-    // muzzle→impact tracer lines from any shot fired this frame.
+    // In-world impact effects (above sprites): falling "digital blood", the
+    // muzzle→impact tracer lines from any shot fired this frame, and any live
+    // rocket-blast VFX circles.
     updateBlood(this.blood, dt);
     renderBlood(this.ctx, this.player, this.blood, this.zBuffer);
     drawBulletTraces(this.ctx, this.traces);
+    updateExplosions(this.explosions, dt);
+    renderExplosions(this.ctx, this.player, this.explosions, this.zBuffer);
 
     // Full-screen red flash when the player is taking damage.
     drawDamageFlash(this.ctx, this.flashFrames / DAMAGE_FLASH_FRAMES);
@@ -323,6 +381,7 @@ export class RaycasterEngine {
       bobY: view.bobY,
       recoil: this.recoil,
       flash: this.muzzleFrames > 0,
+      kind: WEAPONS[this.weaponIndex].viewKind,
     });
 
     drawCrosshair(this.ctx, this.target !== null, WEAPONS[this.weaponIndex].spreadPx);
@@ -368,14 +427,14 @@ export class RaycasterEngine {
   }
 
   /**
-   * Draw every world billboard category (enemies, projectiles, keys, ammo
-   * drops, the exit marker, teleporters, decorations, mines) in one combined
-   * pass, sorted furthest-to-nearest so nearer items always paint over
-   * farther ones — regardless of which category they belong to. Drawing
-   * category-by-category in a fixed order used to let a later category (e.g.
-   * the exit marker, always drawn last) paint over a nearer item from an
-   * earlier one (e.g. an ammo drop), making it vanish even though it was
-   * actually closer to the player.
+   * Draw every world billboard category (enemies, projectiles, rockets, keys,
+   * loot drops, static ammo pickups, the exit marker, teleporters,
+   * decorations, mines) in one combined pass, sorted furthest-to-nearest so
+   * nearer items always paint over farther ones — regardless of which
+   * category they belong to. Drawing category-by-category in a fixed order
+   * used to let a later category (e.g. the exit marker, always drawn last)
+   * paint over a nearer item from an earlier one (e.g. a loot drop), making it
+   * vanish even though it was actually closer to the player.
    */
   private renderWorldBillboards(): void {
     const jobs: BillboardJob[] = [
@@ -384,8 +443,15 @@ export class RaycasterEngine {
       ...collectMineBillboards(this.ctx, this.player, this.map.mines, this.zBuffer),
       ...collectEnemyBillboards(this.ctx, this.player, this.enemies, this.zBuffer),
       ...collectProjectileBillboards(this.ctx, this.player, this.projectiles, this.zBuffer),
+      ...collectRocketBillboards(this.ctx, this.player, this.rockets, this.zBuffer),
       ...collectKeyBillboards(this.ctx, this.player, this.map.keys, this.zBuffer),
-      ...collectAmmoDropBillboards(this.ctx, this.player, this.drops, this.zBuffer),
+      ...collectLootBillboards(this.ctx, this.player, this.drops, this.zBuffer),
+      ...collectLootBillboards(
+        this.ctx,
+        this.player,
+        this.map.ammoPickups.filter((p) => !p.collected),
+        this.zBuffer,
+      ),
       ...collectExitBillboard(this.ctx, this.player, this.map.exit, this.zBuffer),
     ];
     jobs.sort((a, b) => b.depth - a.depth);
@@ -510,6 +576,31 @@ export class RaycasterEngine {
     if (dmg > 0) this.damage(dmg);
   }
 
+  /**
+   * Advance in-flight player rockets, detonating any that hit a wall or a
+   * living enemy this frame. Each explosion fans distance-scaled splash
+   * damage out across every living enemy and the player (see
+   * `rocketDamageAt`) — a rocket doesn't just hurt whatever it directly
+   * struck, and standing too close to your own blast still hurts you too.
+   */
+  private advanceRockets(dt: number): void {
+    if (this.state !== "playing") return;
+    const blasts = updateRockets(this.rockets, this.enemies, this.map, dt);
+    for (const blast of blasts) {
+      audio.playExplosion();
+      spawnExplosion(this.explosions, blast.x, blast.y, ROCKET_BLAST_RADIUS);
+
+      const playerDmg = rocketDamageAt(blast, this.player.posX, this.player.posY);
+      if (playerDmg > 0) this.damage(playerDmg);
+
+      for (const enemy of this.enemies) {
+        if (!enemy.alive) continue;
+        const dmg = rocketDamageAt(blast, enemy.x, enemy.y);
+        if (dmg > 0) this.damageEnemy(enemy, dmg);
+      }
+    }
+  }
+
   /** Drain stability while the player stands in an acid (hazard) tile. */
   private applyHazardDamage(dt: number): void {
     if (this.state !== "playing") return;
@@ -552,23 +643,67 @@ export class RaycasterEngine {
     }
   }
 
-  /** Pick up any ammo drop the player has walked onto, refilling the heap. */
-  private collectAmmoDrops(): void {
-    if (this.state !== "playing" || this.drops.length === 0) return;
+  /**
+   * Pick up any dynamic loot drop or statically-placed map ammo pickup the
+   * player has walked onto, applying whatever it grants.
+   */
+  private collectLoot(): void {
+    if (this.state !== "playing") return;
     const r2 = AMMO_PICKUP_RADIUS * AMMO_PICKUP_RADIUS;
+
     for (let i = this.drops.length - 1; i >= 0; i--) {
       const drop = this.drops[i];
       const dx = drop.x - this.player.posX;
       const dy = drop.y - this.player.posY;
-      if (dx * dx + dy * dy < r2) {
-        this.drops.splice(i, 1);
-        this.ammo += AMMO_DROP_AMOUNT;
-        audio.playPickup();
-        console.log(
-          `%c[heap] +${AMMO_DROP_AMOUNT} ammo salvaged — ${this.ammo} in heap`,
-          "color:#3fd0e0",
-        );
+      if (dx * dx + dy * dy >= r2) continue;
+      this.drops.splice(i, 1);
+      this.applyLoot(drop);
+    }
+
+    for (const pickup of this.map.ammoPickups) {
+      if (pickup.collected) continue;
+      const dx = pickup.x - this.player.posX;
+      const dy = pickup.y - this.player.posY;
+      if (dx * dx + dy * dy >= r2) continue;
+      pickup.collected = true;
+      audio.playPickup();
+      if (pickup.kind === "bullets") this.bulletsAmmo += pickup.amount;
+      else this.rocketsAmmo += pickup.amount;
+      console.log(`%c[ammo] +${pickup.amount} ${pickup.kind} salvaged from the map`, "color:#3fd0e0");
+    }
+  }
+
+  /** Apply one dynamic loot drop's effect and log it. */
+  private applyLoot(drop: LootDrop): void {
+    audio.playPickup();
+    switch (drop.kind) {
+      case "bullets":
+        this.bulletsAmmo += drop.amount ?? BULLETS_DROP_AMOUNT;
+        console.log(`%c[loot] +${drop.amount ?? BULLETS_DROP_AMOUNT} bullets`, "color:#3fd0e0");
+        break;
+      case "rockets":
+        this.rocketsAmmo += drop.amount ?? ROCKETS_DROP_AMOUNT;
+        console.log(`%c[loot] +${drop.amount ?? ROCKETS_DROP_AMOUNT} rockets`, "color:#ff9d3f");
+        break;
+      case "health": {
+        const amount = drop.amount ?? HEALTH_DROP_AMOUNT;
+        this.health = Math.min(MAX_HEALTH, this.health + amount);
+        console.log(`%c[loot] +${amount} stability`, "color:#4cff6a");
+        break;
       }
+      case "armor": {
+        const amount = drop.amount ?? ARMOR_DROP_AMOUNT;
+        this.armor = Math.min(MAX_ARMOR, this.armor + amount);
+        console.log(`%c[loot] +${amount} armor`, "color:#4a7fff");
+        break;
+      }
+      case "weapon":
+        if (drop.weaponIndex !== undefined) {
+          this.ownedWeapons.add(drop.weaponIndex);
+          this.weaponIndex = drop.weaponIndex;
+          console.log(`%c[loot] unlocked ${WEAPONS[drop.weaponIndex].name}!`, "color:#e06aff;font-weight:bold");
+        }
+        break;
     }
   }
 
@@ -649,13 +784,22 @@ export class RaycasterEngine {
     this.alarmCountdown -= dt;
   }
 
-  /** Apply `amount` of stability loss; ends the run on reaching 0. */
+  /**
+   * Apply `amount` of stability loss; ends the run on reaching 0. Armor
+   * absorbs damage 1:1 before health does, so it's spent down first.
+   */
   private damage(amount: number): void {
     if (amount <= 0) return;
     // Kick the red screen flash back to full strength on any damage taken.
     this.flashFrames = DAMAGE_FLASH_FRAMES;
     audio.playDamage();
-    this.health -= amount;
+    let remaining = amount;
+    if (this.armor > 0) {
+      const absorbed = Math.min(this.armor, remaining);
+      this.armor -= absorbed;
+      remaining -= absorbed;
+    }
+    this.health -= remaining;
     if (this.health <= 0) {
       this.health = 0;
       this.endGame("over");
@@ -674,23 +818,61 @@ export class RaycasterEngine {
   }
 
   /**
-   * Fire the equipped weapon: spend its heap cost, then resolve one hitscan per
-   * pellet across its cone. The pistol is a single centered ray; the shotgun
-   * sprays several pellets that each independently hit whatever's under their
-   * (offset) screen column — an enemy first, or failing that a spotted
-   * proximity mine, which a shot destroys outright (see `destroyMine`).
+   * Resolve firing for this frame: automatic weapons (the MP) re-fire on
+   * their own every `fireIntervalSec` while the trigger is held; everything
+   * else fires once per press, gated by the same cooldown (mainly there to
+   * stop the rocket launcher being click-spammed faster than its own
+   * `fireIntervalSec` — the pistol/shotgun/knife have none, so they're
+   * unaffected and fire exactly as fast as the player can press/click).
+   */
+  private updateFiring(dt: number): void {
+    if (this.weaponCooldown > 0) this.weaponCooldown = Math.max(0, this.weaponCooldown - dt);
+    const weapon = WEAPONS[this.weaponIndex];
+    const pressed = this.input.consumeFire();
+
+    if (weapon.auto) {
+      if (this.input.isFireHeld() && this.weaponCooldown <= 0) {
+        this.fire();
+        this.weaponCooldown = weapon.fireIntervalSec ?? 0.1;
+      }
+    } else if (pressed && this.weaponCooldown <= 0) {
+      this.fire();
+      if (weapon.fireIntervalSec) this.weaponCooldown = weapon.fireIntervalSec;
+    }
+  }
+
+  /**
+   * Fire the equipped weapon: spend its ammo cost from the right pool, then
+   * either resolve one hitscan per pellet across its cone (the pistol is a
+   * single centered ray; the shotgun sprays several pellets that each
+   * independently hit whatever's under their offset screen column) or, for
+   * the rocket launcher, launch a real projectile instead (see `rockets.ts`).
+   * A hitscan pellet hits an enemy first, or failing that a spotted proximity
+   * mine, which a shot destroys outright (see `destroyMine`).
    */
   private fire(): void {
     const weapon = WEAPONS[this.weaponIndex];
-    if (this.ammo < weapon.ammoPerShot) {
-      console.log(`[${weapon.name}] out of heap — need ${weapon.ammoPerShot} ammo`);
+    if (weapon.ammoType) {
+      const have = weapon.ammoType === "bullets" ? this.bulletsAmmo : this.rocketsAmmo;
+      if (have < weapon.ammoPerShot) {
+        console.log(`[${weapon.name}] out of ${weapon.ammoType} — need ${weapon.ammoPerShot}`);
+        return;
+      }
+      if (weapon.ammoType === "bullets") this.bulletsAmmo -= weapon.ammoPerShot;
+      else this.rocketsAmmo -= weapon.ammoPerShot;
+    }
+
+    audio.playShoot();
+    // Kick the viewmodel: full recoil, easing back over the next frames. No
+    // muzzle flash for the knife — a stab doesn't have one.
+    this.recoil = 1;
+    if (weapon.ammoType) this.muzzleFrames = MUZZLE_FLASH_FRAMES;
+
+    if (weapon.isRocket) {
+      spawnRocket(this.rockets, this.player.posX, this.player.posY, this.player.dirX, this.player.dirY, weapon.damagePerPellet);
+      console.log(`[${weapon.name}] launched`);
       return;
     }
-    this.ammo -= weapon.ammoPerShot;
-    audio.playShoot();
-    // Kick the viewmodel: full recoil, easing back over the next frames.
-    this.recoil = 1;
-    this.muzzleFrames = MUZZLE_FLASH_FRAMES;
 
     const { width, height } = this.ctx.canvas;
     const center = width / 2;
@@ -713,8 +895,9 @@ export class RaycasterEngine {
       }
 
       // Tracer from the muzzle (bottom center) to this pellet's aim column at
-      // crosshair height — drawn whether or not it connects.
-      this.traces.push(makeBulletTrace(width, height, column, height / 2));
+      // crosshair height, in the weapon's own tracer color — drawn whether or
+      // not it connects.
+      this.traces.push(makeBulletTrace(width, height, column, height / 2, weapon.tracerColor));
 
       const enemy = findTargetAtColumn(this.player, this.enemies, this.zBuffer, width, height, column);
       if (enemy?.alive) {
@@ -776,14 +959,32 @@ export class RaycasterEngine {
     this.kills += 1;
     if (this.target === enemy) this.target = null;
     if (lifesteal) this.health = Math.min(MAX_HEALTH, this.health + lifesteal);
-    // Drop a heap (ammo) pickup where the process died.
-    this.drops.push({ x: enemy.x, y: enemy.y });
+
+    if (enemy.elite) this.dropEliteLoot(enemy);
+    else this.drops.push({ x: enemy.x, y: enemy.y, kind: rollLoot() });
     audio.playAmmoDrop();
+
     const remaining = this.enemies.reduce((n, e) => n + (e.alive ? 1 : 0), 0);
     console.log(
-      `%c[KILL] ${enemy.entity.kind} ${enemy.entity.name}() eliminated — ${remaining} enemies remaining`,
+      `%c[KILL] ${enemy.elite ? "ELITE " : ""}${enemy.entity.kind} ${enemy.entity.name}() eliminated — ${remaining} enemies remaining`,
       "color:#37d24a;font-weight:bold",
     );
+  }
+
+  /**
+   * An Elite's death always leaves something worth the fight: a still-unowned
+   * heavier weapon (MP or Rocket Launcher — see `UNLOCKABLE_WEAPONS`) if the
+   * player doesn't have one yet, picked up automatically like any other
+   * loot drop, or a large stability pack once both are already owned.
+   */
+  private dropEliteLoot(enemy: Enemy): void {
+    const missing = UNLOCKABLE_WEAPONS.filter((i) => !this.ownedWeapons.has(i));
+    if (missing.length > 0 && Math.random() < 0.5) {
+      const weaponIndex = missing[Math.floor(Math.random() * missing.length)];
+      this.drops.push({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex });
+    } else {
+      this.drops.push({ x: enemy.x, y: enemy.y, kind: "health", amount: ELITE_HEALTH_DROP_AMOUNT });
+    }
   }
 
   /**
@@ -806,18 +1007,21 @@ export class RaycasterEngine {
     return {
       health: Math.ceil(this.health),
       maxHealth: MAX_HEALTH,
-      ammo: this.ammo,
+      armor: Math.ceil(this.armor),
+      bullets: this.bulletsAmmo,
+      rockets: this.rocketsAmmo,
       keysHeld: this.keysHeld,
       keysTotal: this.map.keys.length,
       score: 0,
       kills: this.kills,
       weaponIndex: this.weaponIndex,
+      ownedWeapons: [...this.ownedWeapons],
     };
   }
 }
 
 /**
- * Give the player enough heap to clear the level with the pistol, plus a
+ * Give the player enough bullets to clear the level with the pistol, plus a
  * generous margin, so the fight itself never grinds to a halt for lack of
  * ammo — but scattered ammo pickups are still meant to matter across a real
  * playthrough (missed shots, backtracking, mixing in the heavier shotgun),
@@ -825,9 +1029,10 @@ export class RaycasterEngine {
  * the theoretical perfect-accuracy cost) and raw enemy count (`missBuffer`,
  * covering the missed shots/repositioning a pack of separate encounters
  * costs that a flat HP-total multiplier alone wouldn't capture). The shotgun
- * trades heap efficiency for burst damage, so this undercounts its cost.
+ * (and MP) trade bullet efficiency for burst/rate-of-fire, so this
+ * undercounts their cost.
  */
-function startingAmmo(enemies: Enemy[]): number {
+function startingBullets(enemies: Enemy[]): number {
   const pistolDamage = WEAPONS[0].damagePerPellet;
   const shotsToClear = enemies.reduce(
     (n, e) => n + Math.ceil(e.maxHp / pistolDamage),
@@ -835,4 +1040,16 @@ function startingAmmo(enemies: Enemy[]): number {
   );
   const missBuffer = enemies.length * 2.5;
   return Math.max(28, Math.round(shotsToClear * 1.7 + missBuffer) + 10);
+}
+
+/**
+ * A modest flat reserve of rockets — not scaled to the level like
+ * `startingBullets`, since the Rocket Launcher itself has to be earned from
+ * an Elite kill first; most levels' rockets go unused until it's unlocked, at
+ * which point they (and any since scavenged) carry over via `EngineCarryover`.
+ */
+const STARTING_ROCKETS = 4;
+
+function startingRockets(): number {
+  return STARTING_ROCKETS;
 }

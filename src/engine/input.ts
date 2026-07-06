@@ -18,6 +18,10 @@ export class InputController {
   private mouseDX = 0;
   /** Edge-triggered fire request, set on click / Space press. */
   private fireQueued = false;
+  /** Whether the mouse button is currently held down while pointer-locked —
+   * unlike `fireQueued` (consumed once), this stays true for as long as the
+   * trigger is held, for automatic weapons (the MP) to poll each frame. */
+  private mouseHeld = false;
   /** Edge-triggered weapon selection (0-based index), or null. */
   private weaponRequest: number | null = null;
   /** Edge-triggered automap toggle, set on a Tab press. */
@@ -40,6 +44,7 @@ export class InputController {
     window.addEventListener("blur", this.onBlur);
     this.canvas.addEventListener("click", this.onCanvasClick);
     this.canvas.addEventListener("mousedown", this.onMouseDown);
+    window.addEventListener("mouseup", this.onMouseUp);
     document.addEventListener("mousemove", this.onMouseMove);
   }
 
@@ -51,11 +56,13 @@ export class InputController {
     window.removeEventListener("blur", this.onBlur);
     this.canvas.removeEventListener("click", this.onCanvasClick);
     this.canvas.removeEventListener("mousedown", this.onMouseDown);
+    window.removeEventListener("mouseup", this.onMouseUp);
     document.removeEventListener("mousemove", this.onMouseMove);
     if (document.pointerLockElement === this.canvas) document.exitPointerLock();
     this.keys.clear();
     this.mouseDX = 0;
     this.fireQueued = false;
+    this.mouseHeld = false;
     this.weaponRequest = null;
     this.mapToggleQueued = false;
     this.escapeQueued = false;
@@ -79,6 +86,13 @@ export class InputController {
     const fired = this.fireQueued;
     this.fireQueued = false;
     return fired;
+  }
+
+  /** Whether the trigger is currently held down (mouse button, while
+   * pointer-locked, or Space) — polled every frame by automatic weapons,
+   * unlike `consumeFire()`'s one-shot-per-press semantics. */
+  isFireHeld(): boolean {
+    return this.mouseHeld || this.keys.has("Space");
   }
 
   /** Return a requested weapon index (once) from a number-key press, or null. */
@@ -170,6 +184,7 @@ export class InputController {
   // input, and forces the engine into its paused state.
   private readonly onBlur = (): void => {
     this.keys.clear();
+    this.mouseHeld = false;
     this.blurQueued = true;
   };
 
@@ -185,7 +200,12 @@ export class InputController {
   private readonly onMouseDown = (): void => {
     if (document.pointerLockElement === this.canvas) {
       this.fireQueued = true;
+      this.mouseHeld = true;
     }
+  };
+
+  private readonly onMouseUp = (): void => {
+    this.mouseHeld = false;
   };
 
   private readonly onMouseMove = (e: MouseEvent): void => {

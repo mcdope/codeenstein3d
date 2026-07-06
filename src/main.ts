@@ -135,7 +135,14 @@ continueButton.addEventListener("click", async () => {
     const parsed = await parseFile(match.name, text);
     if (parsed) {
       console.log(`%c[continue] resuming at ${match.path}`, "color:#8effa0;font-weight:bold");
-      launchLevel(match.path, parsed, { health: save.health, ammo: save.ammo, weaponIndex: save.weaponIndex });
+      launchLevel(match.path, parsed, {
+        health: save.health,
+        armor: save.armor,
+        bullets: save.bullets,
+        rockets: save.rockets,
+        weaponIndex: save.weaponIndex,
+        ownedWeapons: save.ownedWeapons,
+      });
     }
   } catch (err) {
     console.error("[continue] Failed to resume campaign:", err);
@@ -291,7 +298,8 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   hint.textContent =
     `${path} — reach the green "return" tile to build · ` +
     `Click to capture mouse · W/S move, A/D strafe · Q/E or mouse turn · ` +
-    `Shift to sprint · Click / Space to fire · 1 pistol / 2 shotgun · ` +
+    `Shift to sprint · Click / Space to fire · 1 pistol / 2 shotgun / 3 knife (never runs dry) · ` +
+    `elite kills can unlock the MP (4) or rocket launcher (5) · ` +
     `grab keys to open blue doors · step on a glowing pad to warp (goto) · ` +
     `avoid the acid and timed spikes · shoot spotted mines to disarm them from range · ` +
     `Tab for map · F for fullscreen · Esc to pause`;
@@ -387,7 +395,14 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
       if (parsed) {
         audio.playLevelComplete();
         console.log(`%c[level] ${currentLevelPath} cleared — advancing to ${next.path}`, "color:#37d24a;font-weight:bold");
-        const carryover: EngineCarryover = { health: stats.health, ammo: stats.ammo, weaponIndex: stats.weaponIndex };
+        const carryover: EngineCarryover = {
+          health: stats.health,
+          armor: stats.armor,
+          bullets: stats.bullets,
+          rockets: stats.rockets,
+          weaponIndex: stats.weaponIndex,
+          ownedWeapons: stats.ownedWeapons,
+        };
         // Persist immediately at the transition (not just the throttled
         // in-play autosave) so a tab closed right after advancing still
         // resumes at the new file rather than the one just cleared.
@@ -395,9 +410,12 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
           workspaceName: workspaceRootName ?? "",
           filePath: next.path,
           health: carryover.health,
-          ammo: carryover.ammo,
+          armor: carryover.armor,
+          bullets: carryover.bullets,
+          rockets: carryover.rockets,
           score: stats.score,
           weaponIndex: stats.weaponIndex,
+          ownedWeapons: stats.ownedWeapons,
         });
         launchLevel(next.path, parsed, carryover);
         return;
@@ -471,9 +489,12 @@ interface CampaignSave {
   workspaceName: string;
   filePath: string;
   health: number;
-  ammo: number;
+  armor: number;
+  bullets: number;
+  rockets: number;
   score: number;
   weaponIndex: number;
+  ownedWeapons: number[];
 }
 
 /** Parse and loosely validate a save from `localStorage`; `null` on any
@@ -488,9 +509,13 @@ export function loadCampaignSave(): CampaignSave | null {
       typeof save.workspaceName !== "string" ||
       typeof save.filePath !== "string" ||
       typeof save.health !== "number" ||
-      typeof save.ammo !== "number" ||
+      typeof save.armor !== "number" ||
+      typeof save.bullets !== "number" ||
+      typeof save.rockets !== "number" ||
       typeof save.score !== "number" ||
-      typeof save.weaponIndex !== "number"
+      typeof save.weaponIndex !== "number" ||
+      !Array.isArray(save.ownedWeapons) ||
+      !save.ownedWeapons.every((i) => typeof i === "number")
     ) {
       return null;
     }
@@ -524,9 +549,12 @@ function persistProgress(stats: EngineStats): void {
     workspaceName: workspaceRootName,
     filePath: currentLevelPath,
     health: stats.health,
-    ammo: stats.ammo,
+    armor: stats.armor,
+    bullets: stats.bullets,
+    rockets: stats.rockets,
     score: stats.score,
     weaponIndex: stats.weaponIndex,
+    ownedWeapons: stats.ownedWeapons,
   });
 }
 

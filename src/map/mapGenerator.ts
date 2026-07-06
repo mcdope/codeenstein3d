@@ -17,6 +17,7 @@ import {
   HAZARD_TILE,
   SPIKE_TRAP_TILE,
   TELEPORTER_TILE,
+  type AmmoPickup,
   type Decoration,
   type DecorKind,
   type Enemy,
@@ -164,6 +165,16 @@ export class MapGenerator {
     ];
     const { spikeTraps, mines } = placeTraps(rooms, grid, trapAvoid, rng);
 
+    // Sparse ammo pickups go dead last, once every other floor-claiming
+    // system (pillars/decor/doors/keys/teleporters/traps) has placed its
+    // final tiles, avoiding all of them plus the traps just placed above.
+    const ammoAvoid: Point[] = [
+      ...trapAvoid,
+      ...spikeTraps.map((t) => ({ x: t.x, y: t.y })),
+      ...mines.map((m) => ({ x: m.x, y: m.y })),
+    ];
+    const ammoPickups = placeAmmoPickups(rooms, grid, ammoAvoid, rng);
+
     // Fog-of-war overlay grid, all unexplored until the player moves through.
     const visited: boolean[][] = Array.from({ length: size }, () =>
       new Array<boolean>(size).fill(false),
@@ -185,6 +196,7 @@ export class MapGenerator {
       teleporters,
       spikeTraps,
       mines,
+      ammoPickups,
     };
   }
 
@@ -503,13 +515,25 @@ function key(p: Point): string {
 
 /** Extra enemies spawned per this many complexity points, beyond the first. */
 const COMPLEXITY_PER_EXTRA_ENEMY = 10;
+/**
+ * Complexity at/above which a function spawns as a single Elite enemy instead
+ * of a pack — this is exactly the complexity a pack would hit 5 members at
+ * (`1 + floor(40/10)`), so "extreme complexity" means "would otherwise be the
+ * biggest kind of pack, so make it one boss-tier threat instead."
+ */
+const ELITE_COMPLEXITY_THRESHOLD = 40;
+/** An Elite's HP is this multiple of what a *single* (non-pack) enemy would
+ * have at the same complexity — not the pack's already-split-down HP. */
+const ELITE_HP_MULTIPLIER = 4;
 
 /**
  * Populate rooms with enemies. Classes, interfaces, and traits get rooms but no
  * enemy — only callable entities are "monsters". A room's total HP scales with
  * the entity's cyclomatic complexity; highly complex functions split that into
- * a pack (one extra enemy per 10 complexity points) rather than a single boss.
- * Placements avoid the exit tile so the 'return' marker stays visible.
+ * a pack (one extra enemy per 10 complexity points) rather than a single boss
+ * — unless complexity crosses `ELITE_COMPLEXITY_THRESHOLD`, in which case it's
+ * a single Elite instead of the biggest packs (see `Enemy.elite`). Placements
+ * avoid the exit tile so the 'return' marker stays visible.
  */
 function spawnEnemies(rooms: Room[], exit: Point, rng: () => number): Enemy[] {
   const enemies: Enemy[] = [];
@@ -517,9 +541,15 @@ function spawnEnemies(rooms: Room[], exit: Point, rng: () => number): Enemy[] {
     if (room.entity.kind !== "function" && room.entity.kind !== "method") continue;
 
     const complexity = Math.max(1, room.entity.complexityScore);
-    const count = 1 + Math.floor(complexity / COMPLEXITY_PER_EXTRA_ENEMY);
-    // Split the room's HP budget across the pack so total toughness is stable.
-    const hp = Math.max(HP_PER_COMPLEXITY, Math.round((complexity * HP_PER_COMPLEXITY) / count));
+    const elite = complexity >= ELITE_COMPLEXITY_THRESHOLD;
+    const count = elite ? 1 : 1 + Math.floor(complexity / COMPLEXITY_PER_EXTRA_ENEMY);
+    // Split the room's HP budget across the pack so total toughness is stable
+    // — an Elite instead gets a flat multiple of a single enemy's HP at this
+    // complexity, since it's replacing the pack entirely, not just its first
+    // member.
+    const hp = elite
+      ? complexity * HP_PER_COMPLEXITY * ELITE_HP_MULTIPLIER
+      : Math.max(HP_PER_COMPLEXITY, Math.round((complexity * HP_PER_COMPLEXITY) / count));
     const home = { x: room.x, y: room.y, w: room.w, h: room.h };
 
     for (const pos of enemyPositions(room, count, exit, rng)) {
@@ -538,6 +568,7 @@ function spawnEnemies(rooms: Room[], exit: Point, rng: () => number): Enemy[] {
         roamY: pos.y,
         fireCooldown: rng() * 2, // stagger initial shots across the pack
         entity: room.entity,
+        elite,
       });
     }
   }
@@ -652,13 +683,59 @@ function placeDecorations(
   return decorations;
 }
 
+/** Odds any given non-spawn room gets a scattered ammo pickup — deliberately
+ * sparse, since the primary ammo source is the starting reserve plus enemy
+ * loot drops, not free static pickups. */
+const AMMO_PICKUP_ROOM_CHANCE = 0.22;
+/** Odds a given scattered pickup is rockets rather than bullets — rockets are
+ * the scarcer, higher-value ammo type. */
+const AMMO_PICKUP_ROCKET_CHANCE = 0.3;
+/** Amount granted per scattered pickup, by kind (kept local rather than
+ * imported from the engine layer's `loot.ts` — the map layer never depends on
+ * the engine layer, only the reverse). */
+const AMMO_PICKUP_BULLETS_AMOUNT = 8;
+const AMMO_PICKUP_ROCKETS_AMOUNT = 2;
+
 /**
- * Find an open interior tile in `room` for a pillar or decoration: on plain
- * floor, clear of the room center (the primary enemy spawn point) and every
- * point in `avoid` (spawn/exit/enemies), and spaced out from props already
- * `placed` in this room. Margin 1 keeps it off the room's own walls. Returns
- * `null` if no spot is found within the attempt budget (the room just gets
- * fewer props — never a hard failure).
+ * Scatter a sparse handful of statically-placed ammo pickups (bullets or
+ * rockets) across the map — one candidate roll per non-spawn room, each
+ * independently likely to actually get one. A backup source, not the primary
+ * one (see `AMMO_PICKUP_ROOM_CHANCE`'s doc comment).
+ */
+function placeAmmoPickups(
+  rooms: Room[],
+  grid: Tile[][],
+  avoid: Point[],
+  rng: () => number,
+): AmmoPickup[] {
+  const pickups: AmmoPickup[] = [];
+  rooms.forEach((room, index) => {
+    if (index === 0) return; // never in the spawn room
+    if (rng() >= AMMO_PICKUP_ROOM_CHANCE) return;
+
+    const placedSoFar = pickups.map((p) => ({ x: Math.floor(p.x), y: Math.floor(p.y) }));
+    const spot = findPropSpot(room, grid, avoid, placedSoFar, rng);
+    if (!spot) return;
+
+    const kind = rng() < AMMO_PICKUP_ROCKET_CHANCE ? "rockets" : "bullets";
+    pickups.push({
+      x: spot.x + 0.5,
+      y: spot.y + 0.5,
+      kind,
+      amount: kind === "rockets" ? AMMO_PICKUP_ROCKETS_AMOUNT : AMMO_PICKUP_BULLETS_AMOUNT,
+      collected: false,
+    });
+  });
+  return pickups;
+}
+
+/**
+ * Find an open interior tile in `room` for a pillar, decoration, or ammo
+ * pickup: on plain floor, clear of the room center (the primary enemy spawn
+ * point) and every point in `avoid` (spawn/exit/enemies), and spaced out from
+ * props already `placed` in this room. Margin 1 keeps it off the room's own
+ * walls. Returns `null` if no spot is found within the attempt budget (the
+ * room just gets fewer props — never a hard failure).
  */
 function findPropSpot(
   room: Room,

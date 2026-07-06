@@ -98,6 +98,13 @@ export interface Enemy {
   fireCooldown: number;
   /** The function/method this enemy represents. */
   entity: CodeEntity;
+  /**
+   * An "extreme complexity" function spawned as a single boss-tier enemy
+   * instead of a multi-member pack: 4x HP, higher melee/ranged damage (see
+   * `enemyAi.ts`), a larger sprite and a distinct tint (see `sprites.ts`), and
+   * a guaranteed high-value drop on death instead of the normal loot roll.
+   */
+  elite: boolean;
 }
 
 /** The full generated level. */
@@ -134,6 +141,46 @@ export interface GameMap {
   spikeTraps: SpikeTrap[];
   /** Proximity mines, procedurally placed at corridor choke points. */
   mines: Mine[];
+  /**
+   * Sparse, statically-placed ammo pickups — a backup source, not the primary
+   * one (spawn heap + enemy loot drops cover most of a run). See `LootDrop`
+   * for the runtime, enemy-death equivalent.
+   */
+  ammoPickups: AmmoPickup[];
+}
+
+/** What a defeated enemy (or a scattered map pickup) can leave behind. */
+export type LootKind = "bullets" | "rockets" | "health" | "armor" | "weapon";
+
+/**
+ * A dynamic loot drop left at a defeated enemy's death position. Spawned at
+ * runtime by the engine and removed once the player walks over it — the
+ * runtime counterpart to the map generator's statically-placed `AmmoPickup`.
+ */
+export interface LootDrop {
+  /** World position in fractional tile units. */
+  x: number;
+  y: number;
+  kind: LootKind;
+  /** Overrides the kind's default pickup amount (elite kills drop more). Not
+   * used for `"weapon"`. */
+  amount?: number;
+  /** For a `"weapon"` drop: which `WEAPONS` index it grants. */
+  weaponIndex?: number;
+}
+
+/**
+ * A sparse, statically-placed ammo pickup scattered across the map at
+ * generation time (see `placeAmmoPickups` in `mapGenerator.ts`) — a backup
+ * source of a specific ammo type, separate from enemy loot drops.
+ */
+export interface AmmoPickup {
+  /** World position in fractional tile units (tile center). */
+  x: number;
+  y: number;
+  kind: "bullets" | "rockets";
+  amount: number;
+  collected: boolean;
 }
 
 /** A collectible "dependency key" (opens one locked door). */
@@ -142,16 +189,6 @@ export interface KeyItem {
   x: number;
   y: number;
   collected: boolean;
-}
-
-/**
- * A heap (ammo) pickup dropped by a defeated enemy at its death position.
- * Spawned at runtime by the engine and removed once the player walks over it.
- */
-export interface AmmoDrop {
-  /** World position in fractional tile units. */
-  x: number;
-  y: number;
 }
 
 /** Visual flavor of a decorative prop; purely cosmetic, no gameplay effect. */

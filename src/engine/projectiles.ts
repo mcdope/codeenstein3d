@@ -27,13 +27,15 @@ export interface Projectile {
   damage: number;
 }
 
-/** Spawn a bolt at (x,y) heading straight toward (tx,ty). */
+/** Spawn a bolt at (x,y) heading straight toward (tx,ty). `damageMultiplier`
+ * scales the base damage (Elite enemies hit harder — see `enemyAi.ts`). */
 export function spawnProjectile(
   list: Projectile[],
   x: number,
   y: number,
   tx: number,
   ty: number,
+  damageMultiplier = 1,
 ): void {
   const dx = tx - x;
   const dy = ty - y;
@@ -43,7 +45,7 @@ export function spawnProjectile(
     y,
     vx: (dx / d) * PROJECTILE_SPEED,
     vy: (dy / d) * PROJECTILE_SPEED,
-    damage: PROJECTILE_DAMAGE,
+    damage: PROJECTILE_DAMAGE * damageMultiplier,
   });
 }
 

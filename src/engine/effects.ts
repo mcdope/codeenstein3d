@@ -22,6 +22,8 @@ export const BULLET_TRACE_FRAMES = 4;
 export const HIT_FLASH_FRAMES = 5;
 /** Gravity pulling blood pixels toward the floor, in tiles/sec². */
 const BLOOD_GRAVITY = 6;
+/** Seconds a rocket-blast VFX circle stays on screen. */
+const EXPLOSION_LIFE = 0.35;
 
 /** A weapon tracer: a fading screen-space line from the muzzle to the impact. */
 export interface BulletTrace {
@@ -31,6 +33,20 @@ export interface BulletTrace {
   y2: number;
   /** Frames of life remaining; the line fades linearly to 0. */
   frames: number;
+  /** CSS color string — lets each weapon's tracer read as visually distinct. */
+  color: string;
+}
+
+/** A rocket blast: a screen-space circle that grows and fades over its life,
+ * telegraphing the splash-damage radius at the moment it hits. */
+export interface Explosion {
+  x: number;
+  y: number;
+  /** Final (world-tile) radius the circle grows to — matches the weapon's
+   * actual blast radius, so the visual and the real hitbox agree. */
+  radius: number;
+  life: number;
+  maxLife: number;
 }
 
 /** One "digital blood" pixel, in world (tile) space, falling under gravity. */
@@ -54,29 +70,88 @@ export function drawDamageFlash(ctx: CanvasRenderingContext2D, intensity: number
   ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 }
 
-/** Create a muzzle→impact tracer for a shot aimed at screen (`toX`,`toY`). */
+/** Create a muzzle→impact tracer for a shot aimed at screen (`toX`,`toY`),
+ * in the firing weapon's `color`. */
 export function makeBulletTrace(
   width: number,
   height: number,
   toX: number,
   toY: number,
+  color: string,
 ): BulletTrace {
-  return { x1: width / 2, y1: height, x2: toX, y2: toY, frames: BULLET_TRACE_FRAMES };
+  return { x1: width / 2, y1: height, x2: toX, y2: toY, frames: BULLET_TRACE_FRAMES, color };
 }
 
-/** Draw all live tracers as bright yellow lines, fading with remaining frames. */
+/** Draw all live tracers in their own color, fading with remaining frames. */
 export function drawBulletTraces(ctx: CanvasRenderingContext2D, traces: BulletTrace[]): void {
   ctx.lineCap = "round";
   ctx.lineWidth = 2;
   for (const t of traces) {
     const alpha = 0.9 * Math.max(0, t.frames / BULLET_TRACE_FRAMES);
-    ctx.strokeStyle = `rgba(255,240,90,${alpha.toFixed(3)})`;
+    ctx.strokeStyle = withAlpha(t.color, alpha);
     ctx.beginPath();
     ctx.moveTo(t.x1, t.y1);
     ctx.lineTo(t.x2, t.y2);
     ctx.stroke();
   }
   ctx.lineWidth = 1;
+}
+
+/** Apply `alpha` to a `#rrggbb` color string, for effects whose color is data
+ * (per-weapon tracers) rather than a literal baked into an `rgba()` string. */
+function withAlpha(hex: string, alpha: number): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
+}
+
+/** Spawn a rocket-blast VFX circle at (x,y) that grows to `radius` tiles over
+ * its short life. `radius` should match the weapon's real blast radius so the
+ * visual and the actual splash-damage hitbox agree. */
+export function spawnExplosion(list: Explosion[], x: number, y: number, radius: number): void {
+  list.push({ x, y, radius, life: EXPLOSION_LIFE, maxLife: EXPLOSION_LIFE });
+}
+
+/** Age explosion VFX by `dt`, dropping any that finished (in place). */
+export function updateExplosions(list: Explosion[], dt: number): void {
+  for (let i = list.length - 1; i >= 0; i--) {
+    list[i].life -= dt;
+    if (list[i].life <= 0) list.splice(i, 1);
+  }
+}
+
+/** Draw every live explosion as a growing, fading orange ring at eye level,
+ * wall-occluded via the z-buffer like every other world billboard. */
+export function renderExplosions(
+  ctx: CanvasRenderingContext2D,
+  player: Player,
+  list: Explosion[],
+  zBuffer: Float64Array,
+): void {
+  const width = ctx.canvas.width;
+  const height = ctx.canvas.height;
+  for (const ex of list) {
+    const proj = projectPoint(player, ex.x, ex.y, width, height, 1);
+    if (proj.depth <= 0.1) continue;
+    const col = clamp(Math.round(proj.screenX), 0, width - 1);
+    if (proj.depth >= zBuffer[col]) continue; // behind a wall
+
+    const tilePx = proj.bottom - proj.top; // pixels per world tile at this depth
+    const t = 1 - ex.life / ex.maxLife; // 0 at spawn, 1 at death
+    const r = tilePx * ex.radius * t;
+    const alpha = (1 - t) * 0.8;
+    const cy = height / 2;
+
+    ctx.fillStyle = `rgba(255,150,40,${alpha.toFixed(3)})`;
+    ctx.beginPath();
+    ctx.arc(proj.screenX, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = `rgba(255,230,150,${(alpha * 0.7).toFixed(3)})`;
+    ctx.beginPath();
+    ctx.arc(proj.screenX, cy, r * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
 /** Age tracer lifetimes by one frame, dropping expired ones (in place). */

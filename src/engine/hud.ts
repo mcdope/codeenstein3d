@@ -7,6 +7,7 @@
  * end-of-run overlays remain in the DOM (see src/ui/gameHud.ts).
  */
 import type { EngineStats } from "./engine";
+import { WEAPONS } from "./weapons";
 
 /**
  * Center crosshair; turns red when an enemy is targeted. When `spreadPx` > 0
@@ -60,9 +61,9 @@ const HUD_HEIGHT = 58;
 /**
  * Doom/terminal-style status bar drawn across the bottom of the canvas. Call
  * this last (after the 3D scene, sprites and minimap) so it sits on top. Kept
- * deliberately minimal: System Stability (health), Heap (ammo), Keys, and
- * Score — no weapon name, enemy count, or targeted-entity name, so the UI
- * doesn't spoil source-code details while playing.
+ * deliberately minimal: System Stability (health), Armor, ammo for whichever
+ * weapon is equipped, Keys, and Score — no weapon *name*, enemy count, or
+ * targeted-entity name, so the UI doesn't spoil source-code details.
  */
 export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void {
   const w = ctx.canvas.width;
@@ -86,7 +87,7 @@ export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void
   drawLabel(ctx, "SYSTEM STABILITY", 12, labelY);
   const barX = 12;
   const barY = y0 + 25;
-  const barW = 120;
+  const barW = 108;
   const barH = 14;
   ctx.fillStyle = "#071007";
   ctx.fillRect(barX, barY, barW, barH);
@@ -97,13 +98,28 @@ export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void
   ctx.strokeRect(barX + 0.5, barY + 0.5, barW - 1, barH - 1);
   drawValue(ctx, `${stats.health}%`, barX + barW + 8, valueY, low ? "#ff6a5a" : "#4cff6a", 13);
 
-  // --- Heap (ammo) ---
-  drawLabel(ctx, "HEAP", 230, labelY);
-  drawValue(ctx, String(stats.ammo), 230, valueY, stats.ammo <= 0 ? "#ff5a4a" : "#4cff6a", 22);
+  // --- Armor ---
+  drawLabel(ctx, "ARMOR", 205, labelY);
+  drawValue(ctx, String(stats.armor), 205, valueY, stats.armor > 0 ? "#4a7fff" : "#5a6a8a", 20);
+
+  // --- Ammo for whichever weapon is equipped: melee shows an infinity mark,
+  // otherwise the label/value swap to BULLETS or ROCKETS as the player
+  // switches weapons, so what's on screen always matches what firing spends. ---
+  const weapon = WEAPONS[stats.weaponIndex];
+  if (weapon.ammoType === "rockets") {
+    drawLabel(ctx, "ROCKETS", 275, labelY);
+    drawValue(ctx, String(stats.rockets), 275, valueY, stats.rockets <= 0 ? "#ff5a4a" : "#ff9d3f", 22);
+  } else if (weapon.ammoType === "bullets") {
+    drawLabel(ctx, "BULLETS", 275, labelY);
+    drawValue(ctx, String(stats.bullets), 275, valueY, stats.bullets <= 0 ? "#ff5a4a" : "#4cff6a", 22);
+  } else {
+    drawLabel(ctx, "MELEE", 275, labelY);
+    drawValue(ctx, "∞", 275, valueY, "#d8dde3", 22);
+  }
 
   // --- Keys ---
-  drawLabel(ctx, "KEYS", 330, labelY);
-  drawValue(ctx, `${stats.keysHeld}/${stats.keysTotal}`, 330, valueY, "#f2d64b", 22);
+  drawLabel(ctx, "KEYS", 375, labelY);
+  drawValue(ctx, `${stats.keysHeld}/${stats.keysTotal}`, 375, valueY, "#f2d64b", 22);
 
   // --- Score (right-aligned) ---
   ctx.textAlign = "right";

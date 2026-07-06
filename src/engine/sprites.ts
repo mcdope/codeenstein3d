@@ -13,7 +13,7 @@
  * in front of the nearest wall — so what you see under the crosshair is what
  * you shoot.
  */
-import type { AmmoDrop, Decoration, DecorKind, Enemy, KeyItem, Mine, Point, Teleporter } from "../map/types";
+import type { Decoration, DecorKind, Enemy, KeyItem, LootDrop, Mine, Point, Teleporter } from "../map/types";
 import type { CodeEntity, EntityKind } from "../parser/types";
 import type { Player } from "./player";
 
@@ -35,6 +35,9 @@ export interface BillboardJob {
 
 /** Sprite footprint as a fraction of a full tile-height billboard. */
 const ENEMY_SIZE = 0.7;
+/** Elite (boss-tier) enemies render 1.5x the size of a regular one — a
+ * silhouette you notice as different before you even read its HP bar. */
+const ELITE_SCALE = 1.5;
 /**
  * Near clip for sprite billboards, in camera-space depth. Kept well below one
  * tile so an enemy right in the player's face still draws (its projected quad
@@ -52,6 +55,18 @@ export function enemyColor(kind: EntityKind): string {
     default:
       return "#b84ad0"; // purple (future kinds)
   }
+}
+
+/** An elite's tint overrides its normal kind color entirely — a deep,
+ * unmistakable gold that no regular enemy ever shows. */
+const ELITE_COLOR = "#f2c230";
+
+/** Body color for `enemy`: its elite tint if it's an Elite, else the normal
+ * per-kind color. Hit-flash (a temporary red tint on taking damage) always
+ * takes priority over both — see the `draw` callback in
+ * `collectEnemyBillboards`. */
+function enemyBodyColor(enemy: Enemy): string {
+  return enemy.elite ? ELITE_COLOR : enemyColor(enemy.entity.kind);
 }
 
 /** An enemy's on-screen placement for a given camera. */
@@ -97,14 +112,15 @@ export function projectPoint(
   };
 }
 
-/** Project an enemy into screen space for `player` on a `width`×`height` view. */
+/** Project an enemy into screen space for `player` on a `width`×`height` view.
+ * Elites project 1.5x the size of a regular enemy (see `ELITE_SCALE`). */
 export function projectEnemy(
   player: Player,
   enemy: Enemy,
   width: number,
   height: number,
 ): EnemyProjection {
-  return projectPoint(player, enemy.x, enemy.y, width, height);
+  return projectPoint(player, enemy.x, enemy.y, width, height, enemy.elite ? ENEMY_SIZE * ELITE_SCALE : ENEMY_SIZE);
 }
 
 /** Collect all living enemies as billboard draw jobs, occluded by the wall
@@ -137,8 +153,8 @@ export function collectEnemyBillboards(
 
         // Body: vertical stripes, skipping columns hidden behind a wall. A
         // recent hit tints the whole body red for a few frames (the "bleed"
-        // flash).
-        ctx.fillStyle = enemy.hitFlash > 0 ? "#ff5a4a" : enemyColor(enemy.entity.kind);
+        // flash), which takes priority over an Elite's gold tint.
+        ctx.fillStyle = enemy.hitFlash > 0 ? "#ff5a4a" : enemyBodyColor(enemy);
         for (let x = startX; x <= endX; x++) {
           if (proj.depth >= zBuffer[x]) continue;
           ctx.fillRect(x, startY, 1, spriteH);
@@ -147,7 +163,7 @@ export function collectEnemyBillboards(
         // Only draw the label / HP bar if the sprite's center isn't wall-occluded.
         const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
         if (proj.depth < zBuffer[centerCol]) {
-          drawEnemyOverlay(ctx, enemy.entity, enemy.hp, enemy.maxHp, proj);
+          drawEnemyOverlay(ctx, enemy.entity, enemy.hp, enemy.maxHp, enemy.elite, proj);
         }
       },
     }));
@@ -158,6 +174,7 @@ function drawEnemyOverlay(
   entity: CodeEntity,
   hp: number,
   maxHp: number,
+  elite: boolean,
   proj: EnemyProjection,
 ): void {
   const barWidth = Math.min(80, Math.max(20, proj.right - proj.left));
@@ -165,19 +182,30 @@ function drawEnemyOverlay(
   const barY = proj.top - 12;
   const barH = 4;
 
-  // HP bar: red background, green fill.
+  // HP bar: red background, green fill (gold for an Elite, matching its tint).
   ctx.fillStyle = "#3a0d0d";
   ctx.fillRect(barX, barY, barWidth, barH);
-  ctx.fillStyle = "#37d24a";
+  ctx.fillStyle = elite ? ELITE_COLOR : "#37d24a";
   ctx.fillRect(barX, barY, (barWidth * Math.max(0, hp)) / maxHp, barH);
 
-  // Name label above the bar.
+  // Name label above the bar; an Elite additionally gets a small warning
+  // caption above that, so its extra toughness/damage reads as intentional
+  // rather than the HP bar just looking wrong.
   ctx.font = "10px monospace";
   ctx.textAlign = "center";
   ctx.fillStyle = "rgba(0,0,0,0.6)";
   ctx.fillRect(barX, barY - 13, barWidth, 11);
   ctx.fillStyle = "#fff";
   ctx.fillText(entity.name, proj.screenX, barY - 4);
+
+  if (elite) {
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillRect(barX, barY - 26, barWidth, 11);
+    ctx.fillStyle = ELITE_COLOR;
+    ctx.font = "bold 9px monospace";
+    ctx.fillText("⚠ ELITE", proj.screenX, barY - 17);
+  }
+
   ctx.textAlign = "start";
 }
 
@@ -351,21 +379,44 @@ export function collectKeyBillboards(
     }));
 }
 
-/** Collect dropped ammo pickups as small floating cyan "RAM chip" billboard
- * draw jobs. */
-export function collectAmmoDropBillboards(
+/** Backing-panel / fill color pairs per loot kind — a distinct look so a
+ * glance tells you what a drop actually is before you walk over it. */
+function lootColors(kind: LootDrop["kind"]): { back: string; fill: string } {
+  switch (kind) {
+    case "bullets":
+      return { back: "#0e3540", fill: "#3fd0e0" }; // cyan "RAM chip", unchanged
+    case "rockets":
+      return { back: "#402210", fill: "#ff8a3f" }; // hot orange
+    case "health":
+      return { back: "#0e401c", fill: "#3fe06a" }; // green cross
+    case "armor":
+      return { back: "#101c40", fill: "#4a7fff" }; // blue shard
+    case "weapon":
+      return { back: "#3a1040", fill: "#e06aff" }; // violet — a rare, special drop
+  }
+}
+
+/** Collect dropped loot (ammo, health, armor, or a weapon unlock) as small
+ * floating billboard draw jobs, colored per `LootDrop.kind` (see
+ * `lootColors`). A `"weapon"` drop additionally gets a bright pulsing ring so
+ * it never gets mistaken for an ordinary pickup. */
+export function collectLootBillboards(
   ctx: CanvasRenderingContext2D,
   player: Player,
-  drops: AmmoDrop[],
+  // Structural, not `LootDrop[]`, so the map generator's statically-placed
+  // `AmmoPickup`s (bullets/rockets only, no `weaponIndex`) can share this
+  // renderer with the engine's runtime enemy-kill drops.
+  drops: { x: number; y: number; kind: LootDrop["kind"] }[],
   zBuffer: Float64Array,
 ): BillboardJob[] {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
+  const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 180);
 
   return drops
-    .map((drop) => ({ proj: projectPoint(player, drop.x, drop.y, width, height, 0.26) }))
+    .map((drop) => ({ kind: drop.kind, proj: projectPoint(player, drop.x, drop.y, width, height, 0.26) }))
     .filter(({ proj }) => proj.depth > 0.2)
-    .map(({ proj }) => ({
+    .map(({ kind, proj }) => ({
       depth: proj.depth,
       draw: () => {
         const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
@@ -373,11 +424,18 @@ export function collectAmmoDropBillboards(
 
         const size = proj.right - proj.left;
         const cx = proj.screenX;
-        // Float the chip at roughly waist height, not the floor.
+        // Float the pickup at roughly waist height, not the floor.
         const cy = height / 2 + size * 0.45;
-        ctx.fillStyle = "#0e3540";
+        const { back, fill } = lootColors(kind);
+        if (kind === "weapon") {
+          ctx.strokeStyle = `rgba(224,106,255,${0.5 + 0.5 * pulse})`;
+          ctx.lineWidth = 2;
+          ctx.strokeRect(cx - size * 0.75, cy - size * 0.75, size * 1.5, size * 1.5);
+          ctx.lineWidth = 1;
+        }
+        ctx.fillStyle = back;
         ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
-        ctx.fillStyle = "#3fd0e0";
+        ctx.fillStyle = fill;
         ctx.fillRect(cx - size / 2 + size * 0.18, cy - size / 2 + size * 0.18, size * 0.64, size * 0.64);
       },
     }));
