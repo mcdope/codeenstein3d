@@ -182,73 +182,78 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
   return lines;
 }
 
-/**
- * Disabled for now — playtest feedback found the needle inverted on at least
- * one axis and the dial didn't fit visually next to the minimap. Code stays
- * intact (not deleted) pending a fix/redesign; same disable-behind-a-flag
- * pattern as `DECORATIONS_ENABLED` in `mapGenerator.ts` / `EXTREME_GORE_ENABLED`
- * in `effects.ts`.
- */
-export const COMPASS_ENABLED = false;
+/** Re-enabled — see the doc comment on `drawCompass` for the axis fix and the
+ * redesigned placement (embedded in the minimap's own frame, not a separate
+ * dial). Same flag-gating mechanism as `DECORATIONS_ENABLED` in
+ * `mapGenerator.ts` / `EXTREME_GORE_ENABLED` in `effects.ts`, just flipped
+ * back on now that both playtest complaints are addressed. */
+export const COMPASS_ENABLED = true;
 
-/** Diameter, in canvas pixels, of the exit compass dial. */
-const COMPASS_SIZE = 46;
-/** Top-left placement of the compass — just under the minimap's max possible
- * footprint (`maxPixels` 140 + its 8px pad + a small gap), so it never
- * overlaps a large map's minimap panel. */
-const COMPASS_X = 8;
-const COMPASS_Y = 158;
+/** Half-length, in canvas pixels, of the compass needle — small and
+ * unobtrusive, sized to sit on the minimap's frame rather than announce
+ * itself as a separate widget. */
+const COMPASS_NEEDLE_SIZE = 8;
 
 /**
- * Exit compass: a small dial below the minimap with a needle that always
- * points from the player's current position toward the exit tile, rotated
- * relative to the player's own facing (not true "north") — so it reads the
- * same way regardless of which way the player is looking, exactly like the
- * automap's player-facing-relative marker.
+ * Exit compass: a small needle embedded in the top-right corner of the
+ * minimap's own frame (`panel`, as returned by `renderMinimap`) rather than a
+ * separate floating dial. Rotates to always point from the player's current
+ * position toward the exit tile, *relative to the player's own facing* — so
+ * "dead ahead" always reads as "up" on the needle, no matter which way the
+ * world-space player is actually looking.
+ *
+ * The previous version pointed its rest (bearing-zero) position along local
+ * +X ("east"/3 o'clock) and only ever rotated from there — so a target dead
+ * ahead of the player drew sideways instead of "up", and the left/right sense
+ * of the sweep came out 90° off from what a glance expects (reads as an
+ * inverted axis). Basing the needle geometry on local -Y ("up"/12 o'clock)
+ * for bearing zero, then applying the exact same rotation this engine already
+ * uses everywhere else (canvas `rotate()`/`Player.rotate()` are both
+ * "positive angle = clockwise on screen", since the world grid and canvas
+ * both put +Y down), fixes it: a target dead ahead now points up, one to the
+ * right sweeps clockwise toward 3 o'clock, one to the left sweeps
+ * counter-clockwise toward 9 o'clock.
  */
 export function drawCompass(
   ctx: CanvasRenderingContext2D,
+  panel: { x: number; y: number; w: number; h: number },
   playerX: number,
   playerY: number,
   playerAngle: number,
   exitX: number,
   exitY: number,
 ): void {
-  const r = COMPASS_SIZE / 2;
-  const cx = COMPASS_X + r;
-  const cy = COMPASS_Y + r;
+  const size = COMPASS_NEEDLE_SIZE;
+  const cx = panel.x + panel.w - size - 3;
+  const cy = panel.y + size + 3;
+
+  const angleToExit = Math.atan2(exitY - playerY, exitX - playerX);
+  const bearing = angleToExit - playerAngle;
 
   ctx.save();
 
-  ctx.fillStyle = "rgba(4,8,10,0.6)";
+  // Small dark chip behind the needle so it stays legible over whatever
+  // busy minimap content happens to sit under this corner.
+  ctx.fillStyle = "rgba(4,8,10,0.65)";
   ctx.beginPath();
-  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.arc(cx, cy, size + 3, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = "rgba(65,255,110,0.5)";
+  ctx.strokeStyle = "rgba(140,255,170,0.4)";
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  const angleToExit = Math.atan2(exitY - playerY, exitX - playerX);
-  const needleAngle = angleToExit - playerAngle;
-
   ctx.translate(cx, cy);
-  ctx.rotate(needleAngle);
+  ctx.rotate(bearing);
   ctx.fillStyle = "#8effa0";
   ctx.beginPath();
-  ctx.moveTo(r * 0.75, 0);
-  ctx.lineTo(-r * 0.45, r * 0.42);
-  ctx.lineTo(-r * 0.15, 0);
-  ctx.lineTo(-r * 0.45, -r * 0.42);
+  ctx.moveTo(0, -size); // tip — bearing 0 ("dead ahead") points straight up
+  ctx.lineTo(size * 0.55, size * 0.6);
+  ctx.lineTo(0, size * 0.25);
+  ctx.lineTo(-size * 0.55, size * 0.6);
   ctx.closePath();
   ctx.fill();
 
   ctx.restore();
-
-  ctx.textAlign = "center";
-  ctx.fillStyle = "#5aa869";
-  ctx.font = "9px ui-monospace, monospace";
-  ctx.fillText("EXIT", cx, COMPASS_Y + COMPASS_SIZE + 10);
-  ctx.textAlign = "start";
 }
 
 /** Height, in canvas pixels, of the native status bar at the bottom. */

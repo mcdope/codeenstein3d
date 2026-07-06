@@ -62,12 +62,19 @@ export function initConsoleSidebar(
   updateVisibility();
 
   let hintsActive = false;
+  /** Index of the last hint actually printed, so the next pick can avoid
+   * repeating it back-to-back — `-1` (never matches) until the first hint. */
+  let lastHintIndex = -1;
   const scheduleHint = (): void => {
     const delay = HINT_MIN_DELAY_MS + Math.random() * (HINT_MAX_DELAY_MS - HINT_MIN_DELAY_MS);
     window.setTimeout(() => {
       if (hintsActive) {
-        const hint = HINTS[Math.floor(Math.random() * HINTS.length)];
-        console.log(`%c[hint] ${hint}`, "color:#f2d64b");
+        let index = Math.floor(Math.random() * HINTS.length);
+        while (HINTS.length > 1 && index === lastHintIndex) {
+          index = Math.floor(Math.random() * HINTS.length);
+        }
+        lastHintIndex = index;
+        console.log(`%c[hint] ${HINTS[index]}`, "color:#f2d64b");
       }
       scheduleHint();
     }, delay);

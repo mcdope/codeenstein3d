@@ -105,14 +105,26 @@ export class GameHud {
     const ctx = this.canvas.getContext("2d");
     if (ctx) drawOverlay(ctx, content);
 
+    // Every one of these overlays can appear mid-fight (dying, or stepping on
+    // the exit while still under fire) — with Space/mousedown also being the
+    // fire controls, a player mashing the trigger the instant this appears
+    // would otherwise dismiss it before they even see it. `shownAt` gates
+    // every dismiss trigger below until `DISMISS_LOCK_MS` has actually
+    // elapsed, rather than removing the listeners immediately.
+    const shownAt = performance.now();
+    const isLocked = (): boolean => performance.now() - shownAt < DISMISS_LOCK_MS;
+
     // Confirmable by the same triggers as firing a weapon in-game (Space,
     // mousedown — not "click", which only fires on release; a dialog should
     // dismiss the instant you pull the trigger, same as a shot would go off),
     // plus Enter/Escape for a conventional dialog feel. One-shot: every
-    // listener removes itself the moment any of them fires.
+    // listener removes itself the moment any of them fires (after the lock
+    // above has expired).
     const dismiss = (): void => {
+      if (isLocked()) return;
       window.removeEventListener("keydown", onKey);
       this.canvas.removeEventListener("mousedown", onMouseDown);
+      cancelAnimationFrame(gamepadPollId);
       onAck();
     };
     const onKey = (e: KeyboardEvent): void => {
@@ -125,8 +137,34 @@ export class GameHud {
 
     window.addEventListener("keydown", onKey);
     this.canvas.addEventListener("mousedown", onMouseDown);
+
+    // No engine is running while any of these overlays is up (either it
+    // hasn't started yet, or `RaycasterEngine.stop()` already cancelled its
+    // own rAF loop before firing the handler that shows this one) — so
+    // there's no `InputController` polling gamepad state to piggyback on.
+    // Poll for "any button just pressed" directly here instead, same
+    // one-shot-per-frame edge-trigger shape as `InputController.pollGamepad`,
+    // gated by the same `isLocked()` a keyboard/mouse dismiss already is.
+    let gamepadWasPressed = false;
+    let gamepadPollId = 0;
+    const pollGamepadDismiss = (): void => {
+      const pads = typeof navigator.getGamepads === "function" ? navigator.getGamepads() : [];
+      const pad = Array.from(pads).find((p): p is Gamepad => p !== null);
+      const pressed = pad?.buttons.some((b) => b.pressed) ?? false;
+      if (pressed && !gamepadWasPressed) dismiss();
+      gamepadWasPressed = pressed;
+      gamepadPollId = requestAnimationFrame(pollGamepadDismiss);
+    };
+    gamepadPollId = requestAnimationFrame(pollGamepadDismiss);
   }
 }
+
+/** Minimum time (ms) an overlay must have been visible before any dismiss
+ * trigger is honored — see `show()`'s doc comment. Long enough that a shot
+ * fired (or the fire key already held) in the fight that ended the run can't
+ * also instantly close the overlay it triggered, short enough not to read as
+ * an artificial delay for a genuinely deliberate dismiss. */
+const DISMISS_LOCK_MS = 1200;
 
 /** Vertical layout constants shared between the box-height calculation and
  * the actual draw pass in `drawOverlay` — see its doc comment for why they

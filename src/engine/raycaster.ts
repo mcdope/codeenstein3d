@@ -322,12 +322,24 @@ function rgb([r, g, b]: [number, number, number]): string {
   return `rgb(${r},${g},${b})`;
 }
 
+/** The minimap panel's outer bounding box in canvas pixels, as returned by
+ * `renderMinimap` — lets the compass arrow (see `hud.ts`'s `drawCompass`) sit
+ * precisely on the panel's own frame regardless of how big the actual level
+ * makes the minimap (small maps get a smaller panel than `maxPixels` allows). */
+export interface MinimapPanelRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 /**
  * Small top-left minimap: walls, discovered enemies, traps, and the player's
  * exact position and facing. Useful for confirming movement, collision, and
  * combat while playing. Enemies only appear once the player has physically
  * entered their room (an AABB check against `Enemy.home`, done once per frame
- * in `RaycasterEngine`) — see `Enemy.discovered`.
+ * in `RaycasterEngine`) — see `Enemy.discovered`. Returns the panel's outer
+ * rect so the exit compass can be drawn directly on its frame afterward.
  */
 export function renderMinimap(
   ctx: CanvasRenderingContext2D,
@@ -335,11 +347,12 @@ export function renderMinimap(
   player: Player,
   levelTime = 0,
   maxPixels = 140,
-): void {
+): MinimapPanelRect {
   const cell = Math.max(1, Math.floor(maxPixels / Math.max(map.width, map.height)));
   const w = map.width * cell;
   const h = map.height * cell;
   const pad = 8;
+  const panel: MinimapPanelRect = { x: pad - 2, y: pad - 2, w: w + 4, h: h + 4 };
 
   ctx.save();
 
@@ -347,7 +360,13 @@ export function renderMinimap(
   // fully occluding it, and without washing out the high-contrast markers
   // drawn on top (those stay at full opacity for clarity).
   ctx.fillStyle = "rgba(4,8,10,0.6)";
-  ctx.fillRect(pad - 2, pad - 2, w + 4, h + 4);
+  ctx.fillRect(panel.x, panel.y, panel.w, panel.h);
+
+  // Subtle frame around the panel — the exit compass arrow (see `hud.ts`)
+  // sits directly on this, rather than as a separate floating dial.
+  ctx.strokeStyle = "rgba(140,255,170,0.35)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(panel.x + 0.5, panel.y + 0.5, panel.w - 1, panel.h - 1);
 
   ctx.globalAlpha = 0.9;
 
@@ -463,4 +482,6 @@ export function renderMinimap(
   ctx.fill();
 
   ctx.restore();
+
+  return panel;
 }

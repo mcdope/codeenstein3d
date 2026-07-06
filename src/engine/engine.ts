@@ -593,10 +593,11 @@ export class RaycasterEngine {
     });
 
     drawCrosshair(this.ctx, this.target !== null, WEAPONS[this.weaponIndex].spreadPx);
-    renderMinimap(this.ctx, this.map, this.player, this.levelTime);
+    const minimapPanel = renderMinimap(this.ctx, this.map, this.player, this.levelTime);
     if (COMPASS_ENABLED) {
       drawCompass(
         this.ctx,
+        minimapPanel,
         this.player.posX,
         this.player.posY,
         Math.atan2(this.player.dirY, this.player.dirX),
