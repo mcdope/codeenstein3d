@@ -52,17 +52,17 @@
 - [x] Forced weapon unlock for MP at the 4th level, 8th for rocket launcher (in a campaign only) — a 1-based campaign level counter (persisted in the campaign save) force-adds gdb/ghidra to `ownedWeapons` once reached, regardless of whether an Elite ever dropped them; never removes anything, so an already-looted weapon is unaffected. Only advances via the auto-chain (`advanceToNextLevel`), not manual sidebar picks [Task 31]
 - [x] code smell detection to increase complexity and/or difficulty — functions with >5 parameters or >3 nesting levels now get bonus complexity points (scaled by how far over the threshold, not a flat penalty), added on top of the normal decision-point score in all three parser paths (C, PHP, generic). A smelly function ends up tougher (or spawns as an Elite at extreme complexity) same as genuinely complex control flow already did [Task 31]
 - [x] option for difficulty — an Easy/Normal/Hard sidebar dropdown (persisted to localStorage) scales enemy HP (0.7x/1x/1.5x, rescaled in-place on the map's Enemy objects at engine construction), enemy-dealt damage (melee/ranged only, not traps/hazards/self-splash), and ammo/health/armor pickup amounts (1.3x/1x/0.7x, inverse of HP — harder difficulty is scarcer too, not just tougher) [Task 31]
+- [x] scoring (HUD has a Score slot since Task 20, always 0 — no scoring logic yet), extra points for health, ammo left, path length (shorter = better) and time needed (faster = better) at end of level, plus points for every kill (depending on enemy). score malus at end of level for health below 100% — `src/engine/scoring.ts`: points per kill scaled by the killed entity's `complexityScore` (tripled for an Elite), plus bonuses for remaining health/ammo (against what the level started you with), completion speed (maxed at/under 90s, decaying to 0 by 180s), and route efficiency (actual distance walked vs. a new BFS-shortest spawn→exit tile distance on `GameMap`), minus a malus scaled to how far below full health you finished. Recomputed live every frame (cheap, pure function) so the HUD's Score readout is a running projection, final the instant the exit is reached [Task 32]
+- [x] persisted highscore list — top-10 board in `localStorage` (`src/engine/highscores.ts`), best score first, viewable via a new sidebar "Highscores" button opening a `<dialog>` (Score/Campaign/Level/Hash table) [Task 32]
+- [x] user pickable bgm folder — needs a simple settings menu for volume control (Master, SFX, BGM) so custom music doesn't overpower game audio — `audio.ts`'s single master gain split into independent SFX and BGM buses under one master; three sidebar sliders (persisted to localStorage) control all three. `src/engine/bgm.ts` picks a local folder via the File System Access API and plays its `.mp3`/`.ogg`/`.wav` files back as a shuffled, looping playlist through an `<audio>` element routed into the BGM bus (streamed, not fully decoded up front, so a large file doesn't have to load whole) [Task 32]
+- [x] scoresystem should also store a hash (sha256 or similar) of the AST, or code scanned. this should also be displayed in the highscore list, for comparison. part of that hash should be based on the campaign/project name. — each recorded run hashes `JSON.stringify(parsed AST) + campaignName` with `crypto.subtle.digest('SHA-256', ...)`; the truncated hex digest is shown in the Highscores dialog (full hash in the cell's tooltip) [Task 32]
 
 ## Open
 - [ ] rooms need deco of some kind, currently an empty wasteland — implemented in Task 21 (server racks/plants/desks/code-blocks as billboard props) but felt annoying in playtest, so disabled again behind `DECORATIONS_ENABLED = false` in mapGenerator.ts. Code (generation + rendering) is intact; needs a design rethink (placement density? different visual treatment? non-billboard approach?) before re-enabling. Ignore for now.
-- [ ] scoring (HUD has a Score slot since Task 20, always 0 — no scoring logic yet), extra points for health, ammo left, path length (shorter = better) and time needed (faster = better) at end of level, plus points for every kill (depending on enemy). score malus at end of level for health below 100%
-- [ ] persisted highscore list
 - [ ] makefile
 - [ ] tests (unit [coverage target 100%!], end2end/functional/visual [coverage target: all aspects of gameplay], ensure no data leaves the app (besides highscores at a later time))
 - [ ] github ci actions for the tests (to be executed on github, no custom runner)
-- [ ] ability to load github repos instead of local folder
-- [ ] user pickable bgm folder — needs a simple settings menu for volume control (Master, SFX, BGM) so custom music doesn't overpower game audio
-- [ ] scoresystem should also store a hash (sha256 or similar) of the AST, or code scanned. this should also be displayed in the highscore list, for comparison. part of that hash should be based on the campaign/project name.
+- [ ] ability to load remote git repos instead of local folder
 - [ ] optional replay storage at end of level (even possible?)
 - [ ] gamepad/joystick support
 - [ ] user/player docs in `doc/user`
@@ -72,3 +72,4 @@
 - [ ] code optimization/reuse, complexity reduction etc
 - [ ] balancing
 - [ ] readme barely readable now. add more structure / formatting
+- [ ] canvas should scale to viewport in windowed mode
