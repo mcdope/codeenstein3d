@@ -10,7 +10,8 @@ import {
   type TreeNode,
 } from "./fs/workspace";
 import { renderFileTree } from "./ui/fileTree";
-import { isParsable, parseFile } from "./parser/registry";
+import { initConsoleSidebar } from "./ui/consoleSidebar";
+import { extensionOf, isParsable, parseFile } from "./parser/registry";
 import { MapGenerator } from "./map/mapGenerator";
 import { RaycasterEngine } from "./engine/engine";
 import { audio } from "./engine/audio";
@@ -21,6 +22,10 @@ import type { EngineCarryover, EngineStats } from "./engine/engine";
 /** Internal render resolution; CSS scales it up for a chunky retro look. */
 const SCENE_WIDTH = 640;
 const SCENE_HEIGHT = 400;
+
+/** Extensions treated as a "bonus" restock-arena level (see `launchLevel`) —
+ * just the C header today, the only header-file extension this app parses. */
+const BONUS_LEVEL_EXTENSIONS = new Set(["h"]);
 
 const selectButton = requireElement<HTMLButtonElement>("#select-workspace");
 const continueButton = requireElement<HTMLButtonElement>("#continue-run");
@@ -47,6 +52,12 @@ canvas.className = "scene-canvas";
 canvas.tabIndex = 0; // focusable so it can grab keyboard input on click
 canvas.hidden = true; // not shown until a level is actually running
 viewport.appendChild(canvas);
+
+const consoleSidebar = initConsoleSidebar(
+  canvas,
+  requireElement<HTMLElement>("#console-sidebar"),
+  requireElement<HTMLElement>("#console-log"),
+);
 
 const mapGenerator = new MapGenerator();
 
@@ -278,12 +289,23 @@ async function autoLaunchInitialLevel(tree: TreeNode): Promise<void> {
  * `GameHud.showLevelStart`.
  */
 function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryover): void {
-  const map = mapGenerator.generate(parsed);
+  // Header (or equivalent) files make small, single-purpose "bonus levels" —
+  // a distinct visual theme and a boosted loot rate, treating them as restock
+  // arenas rather than normal combat levels (see `MapGenerator.generate`).
+  const bonusLevel = BONUS_LEVEL_EXTENSIONS.has(extensionOf(path));
+  const map = mapGenerator.generate(parsed, bonusLevel);
+  // Deliberately spoiler-free: no exit/secret-room/lore-terminal coordinates
+  // in the printed text, since that string is also what the console sidebar
+  // mirrors verbatim (see `src/ui/consoleSidebar.ts`) — a glance at it
+  // shouldn't hand over the answer to something the player is meant to find
+  // in-world. The full `map` object is still passed through for devtools
+  // inspection, which takes a deliberate expand-the-object click rather than
+  // a passive read.
   console.group(`[map] ${path}`);
   console.log(
     `${map.width}×${map.height} grid, ${map.rooms.length} room(s), ` +
       `${map.enemies.length} enemies, ${map.teleporters.length / 2} teleporter pair(s), ` +
-      `exit @(${map.exit.x},${map.exit.y})`,
+      `${map.loreTerminals.length} lore terminal(s)${bonusLevel ? " — BONUS restock level" : ""}`,
     map,
   );
   console.groupEnd();
@@ -302,6 +324,7 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
     `elite kills can unlock the MP (4) or rocket launcher (5) · ` +
     `grab keys to open blue doors · step on a glowing pad to warp (goto) · ` +
     `avoid the acid and timed spikes · shoot spotted mines to disarm them from range · ` +
+    `R to read a glowing lore terminal or open a suspicious wall · ` +
     `Tab for map · F for fullscreen · Esc to pause`;
 
   const hud = new GameHud(canvas);
@@ -358,6 +381,7 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
     },
     () => {
       activeEngine?.start();
+      consoleSidebar.setHintsActive(true);
       // The overlay focuses its own "Start" button (so Enter/Space dismiss
       // it) and never gives focus back — without this, WASD silently does
       // nothing until the player clicks the canvas themselves.
@@ -457,6 +481,7 @@ function resetToFileTree(): void {
   activeEngine = null;
   activeHud = null;
   currentLevelPath = null;
+  consoleSidebar.setHintsActive(false);
 
   // Hide (never remove) the canvas — see its doc comment. A display:none
   // element can't stay the fullscreen target, so this is also the one point

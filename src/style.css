@@ -33,7 +33,7 @@ body {
 
 #app {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: 320px 1fr auto;
   height: 100vh;
 }
 
@@ -206,3 +206,45 @@ body {
  * the canvas is the Fullscreen API's target element, since only the
  * fullscreen element (and its descendants) render in that state — a DOM
  * sibling of the canvas, which these used to be, doesn't render at all. */
+
+/* External console sidebar (see src/ui/consoleSidebar.ts) — a DOM panel, so
+ * the same fullscreen rule applies: it's hidden (via .hidden, toggled on
+ * fullscreenchange) whenever the canvas itself is the fullscreen element. */
+.console-sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 260px;
+  min-height: 0;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+}
+
+.console-sidebar.hidden {
+  display: none;
+}
+
+.console-sidebar h2 {
+  margin: 0;
+  padding: 12px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+
+#console-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.console-line {
+  color: var(--text);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
