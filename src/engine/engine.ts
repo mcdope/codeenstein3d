@@ -18,7 +18,7 @@ import { Player, isHazard } from "./player";
 import { updateEnemies } from "./enemyAi";
 import { collectProjectileBillboards, updateProjectiles, type Projectile } from "./projectiles";
 import { InputController, type InputSource } from "./input";
-import type { ReplayRecorder } from "./replay";
+import type { CampaignReplayRecorder } from "./replay";
 import { FOG_FAR, renderMinimap, renderScene } from "./raycaster";
 import {
   collectDecorationBillboards,
@@ -232,7 +232,7 @@ export class RaycasterEngine {
   /** Records this level's input for the replay system, if a run is actively
    * being tracked (see `main.ts`'s `launchLevel`) — `undefined` during replay
    * playback itself, which never re-records what it's replaying. */
-  private readonly replayRecorder?: ReplayRecorder;
+  private readonly replayRecorder?: CampaignReplayRecorder;
   private readonly enemies: Enemy[];
   /** Per-column wall depth from the latest wall render; used for occlusion. */
   private readonly zBuffer: Float64Array;
@@ -377,7 +377,7 @@ export class RaycasterEngine {
     /** Swaps in a `ReplayPlaybackInput` during replay playback instead of a
      * live `InputController` — see `this.input`'s doc comment. */
     inputSource?: InputSource,
-    replayRecorder?: ReplayRecorder,
+    replayRecorder?: CampaignReplayRecorder,
   ) {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2D canvas context unavailable");

@@ -24,7 +24,7 @@ import { DEFAULT_GORE_LEVEL, EXTREME_GORE_ENABLED, type GoreLevel } from "./engi
 import { GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX } from "./engine/weapons";
 import { DEFAULT_DIFFICULTY, type DifficultyLevel } from "./difficulty";
 import { randomSeed } from "./prng";
-import { ReplayPlaybackInput, ReplayRecorder } from "./engine/replay";
+import { CampaignReplayRecorder, ReplayPlaybackInput } from "./engine/replay";
 import type { ParsedFile } from "./parser/types";
 import type { EngineCarryover, EngineStats } from "./engine/engine";
 
@@ -173,13 +173,15 @@ let currentLevelPath: string | null = null;
  * though it isn't nested in `launchLevel`'s closure the way `onGameOver`/
  * `onWin` are. */
 let currentParsedFile: ParsedFile | null = null;
-/** Records the currently-running level's input for the replay system —
- * `null` when replaying (a replay never re-records itself) or if this
- * level's AST hash couldn't be computed at launch. Kept at module scope for
- * the same reason as `currentParsedFile`: `advanceToNextLevel`'s "campaign
- * finished" branch needs whichever level's recording is still live, even
- * though it isn't nested in `launchLevel`'s closure the way `onGameOver` is. */
-let currentReplayRecorder: ReplayRecorder | null = null;
+/** Records this *run's* input, across every level it spans, for the replay
+ * system — `null` when replaying (a replay never re-records itself). A new
+ * one is created only at the start of a genuinely fresh run (see
+ * `launchLevel`); auto-advancing to the next level via `advanceToNextLevel`
+ * reuses the same instance, appending that level's recording to it. Kept at
+ * module scope for the same reason as `currentParsedFile`: `advanceToNextLevel`'s
+ * "campaign finished" branch needs it, even though it isn't nested in
+ * `launchLevel`'s closure the way `onGameOver` is. */
+let currentReplayRecorder: CampaignReplayRecorder | null = null;
 /** True while `startReplay` is driving a "Watch Replay" viewing rather than a
  * real playthrough — guards `beforeunload` against persisting a replay's
  * transient state as if it were real campaign progress. */
@@ -514,15 +516,26 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   // every frame's input) so this exact run can be reproduced later. See
   // `src/prng.ts`'s doc comment for what's seeded vs. left cosmetic.
   const gameplaySeed = randomSeed();
-  currentReplayRecorder = new ReplayRecorder({
-    gameplaySeed,
-    filePath: path,
-    campaignName: campaignName(),
-    bonusLevel,
-    difficulty: currentDifficulty,
-    gore: currentGoreLevel,
-    carryover: effectiveCarryover,
-  });
+
+  // A genuinely fresh run — no carryover, or no in-memory recorder left to
+  // append to (e.g. right after a page reload, via "Continue Run") — starts a
+  // new campaign recording; auto-advancing to this level from the previous
+  // one (see `advanceToNextLevel`) reuses the same recorder instead, so one
+  // run's replay ends up spanning every level it actually visited.
+  if (!carryover || !currentReplayRecorder) {
+    currentReplayRecorder = new CampaignReplayRecorder(campaignName());
+  }
+  currentReplayRecorder.startLevel(
+    {
+      filePath: path,
+      bonusLevel,
+      gameplaySeed,
+      difficulty: currentDifficulty,
+      gore: currentGoreLevel,
+      carryover: effectiveCarryover,
+    },
+    hashRun(JSON.stringify(parsed), campaignName()),
+  );
 
   activeEngine = new RaycasterEngine(
     canvas,
@@ -891,20 +904,17 @@ function saveVolume(key: string, volume: number): void {
  * Fire-and-forget — hashing is cheap but async (`crypto.subtle.digest`), and
  * there's no reason to hold up the caller's own overlay on it.
  *
- * `recorder` (whichever level's `ReplayRecorder` was active when the run
- * ended) is finalized with the *same* hash this function already computes
- * for the entry itself — see `ReplayRecorder.finish`'s doc comment for why it
- * takes the hash as a parameter instead of computing its own — and attached
- * to the saved entry if it produced anything (`null` if recording never
- * captured a frame, overflowed its cap, or no recorder was active at all,
- * e.g. during a replay viewing).
+ * `recorder` (this run's `CampaignReplayRecorder`, spanning every level it
+ * visited) is finalized and attached to the saved entry if it produced
+ * anything (`null` if recording never captured a frame, overflowed a cap, or
+ * no recorder was active at all, e.g. during a replay viewing).
  */
 async function recordRunHighscore(
   parsed: ParsedFile,
   path: string,
   stats: EngineStats,
   levelsCleared: number,
-  recorder: ReplayRecorder | null,
+  recorder: CampaignReplayRecorder | null,
 ): Promise<void> {
   try {
     const hash = await hashRun(JSON.stringify(parsed), campaignName());
@@ -916,7 +926,7 @@ async function recordRunHighscore(
       levelsCleared,
       hash,
       achievedAt: Date.now(),
-      replay: recorder?.finish(hash) ?? undefined,
+      replay: (await recorder?.finish()) ?? undefined,
     });
   } catch (err) {
     console.warn("[highscores] Failed to record this level's score:", err);
@@ -926,21 +936,29 @@ async function recordRunHighscore(
 // --- Replay playback ---------------------------------------------------------
 
 /**
- * Play back a recorded run from the Highscores dialog. Re-picks the
- * workspace (same "file handles can't survive a session, so ask again"
- * pattern as "Continue Run"), locates the same file by path, and verifies its
- * re-parsed AST still hashes to `entry.replay.astHash` before trusting it to
- * regenerate the exact map — a source file edited since the recorded run
- * would hash differently and is refused rather than silently replayed wrong.
+ * Play back a recorded run from the Highscores dialog, level by level. Only
+ * `replay.version === 2` (campaign-scoped) payloads are ever offered a
+ * "Watch Replay" button in the first place — see `renderHighscoreTable`'s
+ * call site — so this never has to handle the older single-level shape.
  *
- * Scope: replays only the *single level* the run ended on (see
- * `replay.ts`'s doc comment) — this is an R&D viewer, not a full
- * multi-level campaign replay. Ends whatever real level is currently
- * running, the same way picking a new file from the sidebar already does.
+ * Re-picks the workspace once (same "file handles can't survive a session,
+ * so ask again" pattern as "Continue Run"), then for each recorded level in
+ * turn: locates the file by path, verifies its re-parsed AST still hashes to
+ * that level's `astHash` before trusting it to regenerate the exact map (a
+ * source file edited since the recorded run would hash differently and is
+ * refused rather than silently replayed wrong), and drives a fresh engine
+ * through that level's recorded frames — carrying over health/ammo/weapons
+ * to the next level exactly as recorded, same as a real multi-level run.
+ * Ends whatever real level is currently running, the same way picking a new
+ * file from the sidebar already does.
  */
 async function startReplay(entry: HighscoreEntry): Promise<void> {
   const payload = entry.replay;
-  if (!payload) return;
+  // Defensive, not just type-driven: this value round-tripped through
+  // localStorage/JSON, so an entry saved before the replay system became
+  // campaign-scoped could still be sitting there with the old single-level
+  // shape (no `levels` array) despite what the type claims.
+  if (!payload || payload.version !== 2 || !payload.levels?.length) return;
 
   // End any replay already playing before starting this one — otherwise its
   // own requestAnimationFrame loop keeps running orphaned (see
@@ -952,39 +970,17 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
     if (!handle) return; // user cancelled the picker
 
     const tree = await readDirectoryTree(handle);
-    const match = flattenParsableFiles(tree).find((f) => f.path === payload.filePath);
-    if (!match) {
-      console.warn(
-        `%c[replay] "${payload.filePath}" wasn't found in "${handle.name}" — pick the same workspace this run was recorded in.`,
-        "color:#e0a04a",
-      );
-      return;
-    }
-
-    const text = await readFileText(match.handle as FileSystemFileHandle);
-    const parsed = await parseFile(match.name, text);
-    if (!parsed) return;
-
-    const hash = await hashRun(JSON.stringify(parsed), payload.campaignName);
-    if (hash !== payload.astHash) {
-      console.warn(
-        "%c[replay] the re-parsed file's AST hash doesn't match the recorded run — refusing to play back what might be a different version of the code.",
-        "color:#e0a04a",
-      );
-      return;
-    }
-
-    const map = mapGenerator.generate(parsed, payload.bonusLevel);
+    const files = flattenParsableFiles(tree);
 
     // Tear down whatever's currently running/shown, same as launching any
-    // other level — see `launchLevel`'s equivalent block.
+    // other level — see `launchLevel`'s equivalent block. Done once, up
+    // front — each level below just swaps the engine underneath it.
     activeEngine?.stop();
     for (const child of [...viewport.children]) {
       if (child !== canvas) child.remove();
     }
     const hint = document.createElement("p");
     hint.className = "map-caption";
-    hint.textContent = `Watching replay: ${payload.filePath} — Esc to stop`;
     viewport.append(hint);
     canvas.hidden = false;
     canvas.focus();
@@ -993,25 +989,15 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
     activeHud = hud;
     isReplaying = true;
 
-    const replayInput = new ReplayPlaybackInput();
-    const engine = new RaycasterEngine(
-      canvas,
-      map,
-      {
-        onGameOver: () => hud.showKernelPanic(() => stopReplay()),
-        onWin: () => hud.showBuildSuccessful(() => stopReplay()),
-      },
-      payload.carryover,
-      payload.gore,
-      payload.difficulty,
-      payload.gameplaySeed,
-      replayInput,
-      undefined, // never record a replay of a replay
-    );
-    activeEngine = engine;
-
+    let levelIndex = 0;
+    let replayInput: ReplayPlaybackInput | null = null;
     let frameIndex = 0;
     let rafId = 0;
+    /** True while `loadLevel` is (asynchronously) setting up the next level —
+     * `step` must not touch `frameIndex`/`replayInput`/`activeEngine` while
+     * this is true, or a frame tick landing mid-transition could act on the
+     * level that's being torn down instead of the one coming up. */
+    let transitioning = false;
 
     const stopReplay = (): void => {
       if (!isReplaying) return;
@@ -1027,18 +1013,96 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
     };
     window.addEventListener("keydown", onStopKey);
 
-    const step = (): void => {
-      if (!isReplaying) return;
-      if (frameIndex >= payload.frames.length) {
+    // Loads `payload.levels[levelIndex]`, advances `levelIndex` past it, and
+    // starts (or resumes, for the next level) the driving loop. Ends the
+    // whole replay if the file can't be relocated/re-verified, or once every
+    // level has played — same failure-handling shape as a live run's
+    // `advanceToNextLevel`, just reporting failure by stopping instead of
+    // falling back to the next file.
+    const loadLevel = async (): Promise<void> => {
+      if (levelIndex >= payload.levels.length) {
         stopReplay();
         return;
       }
-      const frame = payload.frames[frameIndex++];
-      replayInput.loadFrame(frame.input);
-      engine.advance(frame.dt);
+      const segment = payload.levels[levelIndex++];
+
+      const match = files.find((f) => f.path === segment.filePath);
+      if (!match) {
+        console.warn(
+          `%c[replay] "${segment.filePath}" wasn't found in "${handle.name}" — pick the same workspace this run was recorded in.`,
+          "color:#e0a04a",
+        );
+        stopReplay();
+        return;
+      }
+
+      const text = await readFileText(match.handle as FileSystemFileHandle);
+      const parsed = await parseFile(match.name, text);
+      if (!parsed) {
+        stopReplay();
+        return;
+      }
+
+      const hash = await hashRun(JSON.stringify(parsed), payload.campaignName);
+      if (hash !== segment.astHash) {
+        console.warn(
+          `%c[replay] "${segment.filePath}" doesn't hash to the recorded run anymore — refusing to play back what might be a different version of the code.`,
+          "color:#e0a04a",
+        );
+        stopReplay();
+        return;
+      }
+
+      const map = mapGenerator.generate(parsed, segment.bonusLevel);
+      hint.textContent = `Watching replay: level ${levelIndex}/${payload.levels.length} — ${segment.filePath} — Esc to stop`;
+
+      replayInput = new ReplayPlaybackInput();
+      frameIndex = 0;
+      activeEngine = new RaycasterEngine(
+        canvas,
+        map,
+        {
+          onGameOver: () => hud.showKernelPanic(() => stopReplay()),
+          onWin: () => {
+            if (levelIndex >= payload.levels.length) hud.showBuildSuccessful(() => stopReplay());
+            else advanceLevel();
+          },
+        },
+        segment.carryover,
+        segment.gore,
+        segment.difficulty,
+        segment.gameplaySeed,
+        replayInput,
+        undefined, // never record a replay of a replay
+      );
+
       if (isReplaying) rafId = requestAnimationFrame(step);
     };
-    rafId = requestAnimationFrame(step);
+
+    const advanceLevel = (): void => {
+      transitioning = true;
+      void loadLevel().finally(() => {
+        transitioning = false;
+      });
+    };
+
+    const step = (): void => {
+      if (!isReplaying || transitioning || !activeEngine || !replayInput) return;
+      const segment = payload.levels[levelIndex - 1];
+      if (frameIndex >= segment.frames.length) {
+        // A correctly-deterministic replay should already have ended this
+        // level via onGameOver/onWin above by the time its frames run out —
+        // this is just a safety net for the (shouldn't-happen) alternative.
+        advanceLevel();
+        return;
+      }
+      const frame = segment.frames[frameIndex++];
+      replayInput.loadFrame(frame.input);
+      activeEngine.advance(frame.dt);
+      if (isReplaying && !transitioning) rafId = requestAnimationFrame(step);
+    };
+
+    advanceLevel();
   } catch (err) {
     console.error("[replay] Failed to start replay:", err);
   }

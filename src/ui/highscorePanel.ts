@@ -59,7 +59,12 @@ export function renderHighscoreTable(
     hash.title = entry.hash;
 
     const replay = document.createElement("td");
-    if (entry.replay && options.onWatchReplay) {
+    // `version === 2` is guaranteed by the type, but this value round-tripped
+    // through localStorage/JSON — an entry saved before the replay system
+    // became campaign-scoped could still be sitting there with the old
+    // single-level shape (no `levels` array) despite what the type claims, so
+    // this checks the actual runtime shape rather than trusting it blindly.
+    if (entry.replay?.version === 2 && entry.replay.levels?.length > 0 && options.onWatchReplay) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "replay-btn";
