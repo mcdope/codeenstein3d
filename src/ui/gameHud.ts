@@ -101,6 +101,24 @@ export class GameHud {
     );
   }
 
+  /** Replay playback ended for a reason other than a natural in-run win/death
+   * (both of which already show their own Kernel Panic / Build Successful
+   * overlay) — a manual stop, a seek/transport action, or a file that
+   * couldn't be relocated/re-verified against the recorded run. Without this,
+   * every one of those paths would otherwise just silently snap back to the
+   * file tree with no on-screen explanation. */
+  showReplayEnded(reason: string, onReturn: () => void): void {
+    this.show(
+      {
+        title: "REPLAY ENDED",
+        color: "#3fd0e0",
+        lines: [reason],
+        buttonLabel: "Return to file tree",
+      },
+      onReturn,
+    );
+  }
+
   private show(content: OverlayContent, onAck: () => void): void {
     const ctx = this.canvas.getContext("2d");
     if (ctx) drawOverlay(ctx, content);

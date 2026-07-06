@@ -24,7 +24,7 @@ import { DEFAULT_GORE_LEVEL, EXTREME_GORE_ENABLED, type GoreLevel } from "./engi
 import { GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX } from "./engine/weapons";
 import { DEFAULT_DIFFICULTY, type DifficultyLevel } from "./difficulty";
 import { randomSeed } from "./prng";
-import { CampaignReplayRecorder, ReplayPlaybackInput } from "./engine/replay";
+import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelSegment } from "./engine/replay";
 import type { ParsedFile } from "./parser/types";
 import type { EngineCarryover, EngineStats } from "./engine/engine";
 
@@ -935,6 +935,17 @@ async function recordRunHighscore(
 
 // --- Replay playback ---------------------------------------------------------
 
+/** Playback speeds "Watch Replay" cycles through, in playback-speed order —
+ * see the transport control bar `startReplay` builds. Every speed still
+ * advances the sim using each frame's own recorded `dt` unchanged (only *how
+ * many* frames run per real-time tick changes), so the simulated trajectory
+ * itself is never altered by playback speed — only how fast it's watched. */
+const REPLAY_SPEEDS = [0.25, 0.5, 1, 2, 4];
+/** Frames a single seek button press jumps by — not tied to real seconds
+ * (recorded frame `dt`s vary slightly), but close enough at a typical ~60fps
+ * recording to read as "about 5 seconds". */
+const REPLAY_SEEK_FRAMES = 300;
+
 /**
  * Play back a recorded run from the Highscores dialog, level by level. Only
  * `replay.version === 2` (campaign-scoped) payloads are ever offered a
@@ -951,6 +962,13 @@ async function recordRunHighscore(
  * to the next level exactly as recorded, same as a real multi-level run.
  * Ends whatever real level is currently running, the same way picking a new
  * file from the sidebar already does.
+ *
+ * A DOM transport bar (play/pause, seek back/forward, speed) sits alongside
+ * the hint caption, and every way the viewing can end — a natural win/death
+ * (which already shows its own Build Successful / Kernel Panic overlay),
+ * Escape, a failed file relocation/hash check, or the (shouldn't-happen)
+ * frames-exhausted safety net — surfaces a "Replay Ended" overlay explaining
+ * why, rather than silently snapping back to the file tree.
  */
 async function startReplay(entry: HighscoreEntry): Promise<void> {
   const payload = entry.replay;
@@ -981,7 +999,8 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
     }
     const hint = document.createElement("p");
     hint.className = "map-caption";
-    viewport.append(hint);
+    const controls = buildReplayControls();
+    viewport.append(hint, controls.el);
     canvas.hidden = false;
     canvas.focus();
 
@@ -993,78 +1012,82 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
     let replayInput: ReplayPlaybackInput | null = null;
     let frameIndex = 0;
     let rafId = 0;
-    /** True while `loadLevel` is (asynchronously) setting up the next level —
-     * `step` must not touch `frameIndex`/`replayInput`/`activeEngine` while
-     * this is true, or a frame tick landing mid-transition could act on the
-     * level that's being torn down instead of the one coming up. */
+    let paused = false;
+    let speedIndex = REPLAY_SPEEDS.indexOf(1);
+    /** Fractional frame budget carried between ticks so speeds other than 1x
+     * (more or fewer than one frame per real tick) still advance the sim at
+     * exactly the recorded rate on average — see `step()`. */
+    let speedAccumulator = 0;
+    /** True once the active level's engine has already fired onGameOver/
+     * onWin this frame (before its resulting dialog has been dismissed) —
+     * `step` must stop consuming further frames the instant this flips, or
+     * a tick landing before the player dismisses that dialog (or several
+     * frames processed in one burst at a high speed) could advance right
+     * past the point the level actually ended. */
+    let levelEnded = false;
+    /** True while `loadLevel`/a restart is (asynchronously or synchronously)
+     * setting up a level — `step` must not touch `frameIndex`/`replayInput`/
+     * `activeEngine` while this is true, or a frame tick landing mid-
+     * transition could act on the level being torn down instead of the one
+     * coming up. */
     let transitioning = false;
+    /** The currently-loaded level's already-verified parsed AST + segment —
+     * kept around so a seek backward can rebuild this same level from
+     * scratch without re-reading/re-parsing/re-hashing the file again. */
+    let currentParsed: ParsedFile | null = null;
+    let currentSegment: ReplayLevelSegment | null = null;
 
-    const stopReplay = (): void => {
-      if (!isReplaying) return;
+    const teardown = (): void => {
       isReplaying = false;
       stopActiveReplay = null;
       cancelAnimationFrame(rafId);
       window.removeEventListener("keydown", onStopKey);
       resetToFileTree();
     };
-    stopActiveReplay = stopReplay;
+
+    /** Ends the viewing with an on-screen explanation — every termination
+     * path except a natural win/death, which already shows its own overlay
+     * (see `buildEngineFor`'s handlers) and can go straight to `teardown`. */
+    const endReplay = (reason: string): void => {
+      if (!isReplaying) return;
+      window.removeEventListener("keydown", onStopKey); // avoid double-handling Escape against the dialog's own listener
+      hud.showReplayEnded(reason, teardown);
+    };
+    stopActiveReplay = teardown;
+
     const onStopKey = (e: KeyboardEvent): void => {
-      if (e.code === "Escape") stopReplay();
+      if (e.code === "Escape") endReplay("Replay stopped.");
     };
     window.addEventListener("keydown", onStopKey);
 
-    // Loads `payload.levels[levelIndex]`, advances `levelIndex` past it, and
-    // starts (or resumes, for the next level) the driving loop. Ends the
-    // whole replay if the file can't be relocated/re-verified, or once every
-    // level has played — same failure-handling shape as a live run's
-    // `advanceToNextLevel`, just reporting failure by stopping instead of
-    // falling back to the next file.
-    const loadLevel = async (): Promise<void> => {
-      if (levelIndex >= payload.levels.length) {
-        stopReplay();
-        return;
-      }
-      const segment = payload.levels[levelIndex++];
+    const updateHint = (): void => {
+      const segment = currentSegment;
+      hint.textContent = segment
+        ? `Watching replay: level ${levelIndex}/${payload.levels.length} — ${segment.filePath} — Esc to stop`
+        : "";
+    };
 
-      const match = files.find((f) => f.path === segment.filePath);
-      if (!match) {
-        console.warn(
-          `%c[replay] "${segment.filePath}" wasn't found in "${handle.name}" — pick the same workspace this run was recorded in.`,
-          "color:#e0a04a",
-        );
-        stopReplay();
-        return;
-      }
-
-      const text = await readFileText(match.handle as FileSystemFileHandle);
-      const parsed = await parseFile(match.name, text);
-      if (!parsed) {
-        stopReplay();
-        return;
-      }
-
-      const hash = await hashRun(JSON.stringify(parsed), payload.campaignName);
-      if (hash !== segment.astHash) {
-        console.warn(
-          `%c[replay] "${segment.filePath}" doesn't hash to the recorded run anymore — refusing to play back what might be a different version of the code.`,
-          "color:#e0a04a",
-        );
-        stopReplay();
-        return;
-      }
-
+    /** Builds a fresh engine for `segment`/`parsed`, wired the same way for
+     * both a normal level load and an in-place restart (seeking backward). */
+    const buildEngineFor = (segment: ReplayLevelSegment, parsed: ParsedFile): void => {
       const map = mapGenerator.generate(parsed, segment.bonusLevel);
-      hint.textContent = `Watching replay: level ${levelIndex}/${payload.levels.length} — ${segment.filePath} — Esc to stop`;
-
+      currentParsed = parsed;
+      currentSegment = segment;
       replayInput = new ReplayPlaybackInput();
       frameIndex = 0;
+      levelEnded = false;
+      updateHint();
       activeEngine = new RaycasterEngine(
         canvas,
         map,
         {
-          onGameOver: () => hud.showKernelPanic(() => stopReplay()),
+          onGameOver: () => {
+            levelEnded = true;
+            hud.showKernelPanic(teardown);
+          },
           onWin: () => {
-            if (levelIndex >= payload.levels.length) hud.showBuildSuccessful(() => stopReplay());
+            levelEnded = true;
+            if (levelIndex >= payload.levels.length) hud.showBuildSuccessful(teardown);
             else advanceLevel();
           },
         },
@@ -1075,7 +1098,40 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
         replayInput,
         undefined, // never record a replay of a replay
       );
+    };
 
+    // Loads `payload.levels[levelIndex]`, advances `levelIndex` past it, and
+    // (re)starts the driving loop. Ends the whole replay if the file can't be
+    // relocated/re-verified, or once every level has played — same failure-
+    // handling shape as a live run's `advanceToNextLevel`, just reporting
+    // failure by ending the viewing instead of falling back to the next file.
+    const loadLevel = async (): Promise<void> => {
+      if (levelIndex >= payload.levels.length) {
+        endReplay("Replay ended — ran out of recorded levels.");
+        return;
+      }
+      const segment = payload.levels[levelIndex++];
+
+      const match = files.find((f) => f.path === segment.filePath);
+      if (!match) {
+        endReplay(`"${segment.filePath}" wasn't found in "${handle.name}" — pick the same workspace this run was recorded in.`);
+        return;
+      }
+
+      const text = await readFileText(match.handle as FileSystemFileHandle);
+      const parsed = await parseFile(match.name, text);
+      if (!parsed) {
+        endReplay(`"${segment.filePath}" could not be parsed.`);
+        return;
+      }
+
+      const hash = await hashRun(JSON.stringify(parsed), payload.campaignName);
+      if (hash !== segment.astHash) {
+        endReplay(`"${segment.filePath}" doesn't match the recorded run anymore — the source may have changed since.`);
+        return;
+      }
+
+      buildEngineFor(segment, parsed);
       if (isReplaying) rafId = requestAnimationFrame(step);
     };
 
@@ -1086,26 +1142,150 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
       });
     };
 
+    /** Fast-forwards the *current* level's engine through recorded frames,
+     * synchronously and without real-time pacing, until reaching
+     * `targetFrameIndex` (or the level ends, or frames run out) — the engine
+     * for both seek directions (backward first rebuilds the level from
+     * scratch via `restartLevel`, then bursts forward to the target). */
+    const burstTo = (targetFrameIndex: number): void => {
+      const segment = currentSegment;
+      if (!activeEngine || !replayInput || !segment) return;
+      while (frameIndex < targetFrameIndex && frameIndex < segment.frames.length && !levelEnded) {
+        const frame = segment.frames[frameIndex++];
+        replayInput.loadFrame(frame.input);
+        activeEngine.advance(frame.dt);
+      }
+    };
+
+    /** Rebuilds the current level's engine from scratch (frame 0) — the only
+     * way to go "backward", since simulation isn't reversible. Re-verifying
+     * the file isn't needed: `currentParsed`/`currentSegment` are already the
+     * verified result of this same level's `loadLevel` call. */
+    const restartLevel = (): void => {
+      if (!currentParsed || !currentSegment) return;
+      buildEngineFor(currentSegment, currentParsed);
+    };
+
+    const seekBy = (deltaFrames: number): void => {
+      if (!isReplaying || transitioning || !currentSegment) return;
+      const target = Math.max(0, Math.min(currentSegment.frames.length, frameIndex + deltaFrames));
+      if (target < frameIndex) restartLevel();
+      burstTo(target);
+    };
+
     const step = (): void => {
-      if (!isReplaying || transitioning || !activeEngine || !replayInput) return;
-      const segment = payload.levels[levelIndex - 1];
-      if (frameIndex >= segment.frames.length) {
-        // A correctly-deterministic replay should already have ended this
-        // level via onGameOver/onWin above by the time its frames run out —
-        // this is just a safety net for the (shouldn't-happen) alternative.
-        advanceLevel();
+      if (!isReplaying) return;
+      if (transitioning || paused || levelEnded || !activeEngine || !replayInput || !currentSegment) {
+        rafId = requestAnimationFrame(step); // keep polling so unpausing (or a transition finishing) resumes on its own
         return;
       }
-      const frame = segment.frames[frameIndex++];
-      replayInput.loadFrame(frame.input);
-      activeEngine.advance(frame.dt);
+      speedAccumulator += REPLAY_SPEEDS[speedIndex];
+      while (speedAccumulator >= 1) {
+        speedAccumulator -= 1;
+        if (frameIndex >= currentSegment.frames.length) {
+          // A correctly-deterministic replay should already have ended this
+          // level via onGameOver/onWin above by the time its frames run
+          // out — this is just a safety net for the (shouldn't-happen)
+          // alternative, and it's honest about something having gone wrong
+          // rather than quietly barreling into whatever's next.
+          endReplay("Replay ended — ran out of recorded input before the level concluded.");
+          return;
+        }
+        const frame = currentSegment.frames[frameIndex++];
+        replayInput.loadFrame(frame.input);
+        activeEngine.advance(frame.dt);
+        if (levelEnded) break; // onGameOver/onWin just fired mid-burst — stop consuming this tick
+      }
       if (isReplaying && !transitioning) rafId = requestAnimationFrame(step);
     };
+
+    controls.onPlayPause(() => {
+      paused = !paused;
+      controls.setPaused(paused);
+    });
+    controls.onSeek((deltaFrames) => seekBy(deltaFrames * REPLAY_SEEK_FRAMES));
+    controls.onSpeedChange((direction) => {
+      speedIndex = Math.max(0, Math.min(REPLAY_SPEEDS.length - 1, speedIndex + direction));
+      controls.setSpeedLabel(`${REPLAY_SPEEDS[speedIndex]}x`);
+    });
 
     advanceLevel();
   } catch (err) {
     console.error("[replay] Failed to start replay:", err);
   }
+}
+
+/** The replay transport control bar: play/pause, seek back/forward, and a
+ * speed stepper — a plain DOM strip (not a canvas overlay, unlike the rest of
+ * this game's HUD) since it needs real click targets and lives alongside the
+ * hint caption, not inside the rendered scene. Returned as a small handle
+ * rather than raw elements so `startReplay` doesn't have to know its DOM
+ * structure — just how to react to each control. */
+function buildReplayControls(): {
+  el: HTMLElement;
+  onPlayPause: (fn: () => void) => void;
+  onSeek: (fn: (direction: -1 | 1) => void) => void;
+  onSpeedChange: (fn: (direction: -1 | 1) => void) => void;
+  setPaused: (paused: boolean) => void;
+  setSpeedLabel: (label: string) => void;
+} {
+  const el = document.createElement("div");
+  el.className = "replay-controls";
+
+  const seekBack = document.createElement("button");
+  seekBack.type = "button";
+  seekBack.className = "replay-btn";
+  seekBack.textContent = "⏪";
+  seekBack.title = "Seek back";
+
+  const playPause = document.createElement("button");
+  playPause.type = "button";
+  playPause.className = "replay-btn";
+  playPause.textContent = "⏸";
+  playPause.title = "Play/Pause";
+
+  const seekForward = document.createElement("button");
+  seekForward.type = "button";
+  seekForward.className = "replay-btn";
+  seekForward.textContent = "⏩";
+  seekForward.title = "Seek forward";
+
+  const speedDown = document.createElement("button");
+  speedDown.type = "button";
+  speedDown.className = "replay-btn";
+  speedDown.textContent = "−";
+  speedDown.title = "Slower";
+
+  const speedLabel = document.createElement("span");
+  speedLabel.className = "replay-speed-label";
+  speedLabel.textContent = "1x";
+
+  const speedUp = document.createElement("button");
+  speedUp.type = "button";
+  speedUp.className = "replay-btn";
+  speedUp.textContent = "+";
+  speedUp.title = "Faster";
+
+  el.append(seekBack, playPause, seekForward, speedDown, speedLabel, speedUp);
+
+  return {
+    el,
+    onPlayPause: (fn) => playPause.addEventListener("click", fn),
+    onSeek: (fn) => {
+      seekBack.addEventListener("click", () => fn(-1));
+      seekForward.addEventListener("click", () => fn(1));
+    },
+    onSpeedChange: (fn) => {
+      speedDown.addEventListener("click", () => fn(-1));
+      speedUp.addEventListener("click", () => fn(1));
+    },
+    setPaused: (paused) => {
+      playPause.textContent = paused ? "▶" : "⏸";
+    },
+    setSpeedLabel: (label) => {
+      speedLabel.textContent = label;
+    },
+  };
 }
 
 function requireElement<T extends Element>(selector: string): T {

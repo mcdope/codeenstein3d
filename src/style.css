@@ -198,6 +198,23 @@ body {
   background: var(--bg-hover);
 }
 
+/* Replay transport bar (play/pause, seek, speed) — see main.ts's
+ * buildReplayControls(). Sits under the canvas next to the hint caption
+ * while a "Watch Replay" viewing is active. */
+.replay-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.replay-speed-label {
+  min-width: 2.5em;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 #workspace-name {
   margin: 12px 0 0;
   overflow-wrap: anywhere;
