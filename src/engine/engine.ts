@@ -35,6 +35,8 @@ import { drawWeapon } from "./viewmodel";
 import { drawAutomap } from "./automap";
 import {
   DAMAGE_FLASH_FRAMES,
+  DEFAULT_GORE_LEVEL,
+  GORE_MULTIPLIERS,
   HIT_FLASH_FRAMES,
   drawBulletTraces,
   drawDamageFlash,
@@ -49,6 +51,8 @@ import {
   type BloodParticle,
   type BulletTrace,
   type Explosion,
+  type GoreLevel,
+  type GoreMultipliers,
 } from "./effects";
 import { audio } from "./audio";
 import { MELEE_WEAPON, STARTING_WEAPONS, WEAPONS, pelletOffsets, type Weapon } from "./weapons";
@@ -222,6 +226,9 @@ export class RaycasterEngine {
   private readonly traces: BulletTrace[] = [];
   /** Live "digital blood" particles falling to the floor. */
   private readonly blood: BloodParticle[] = [];
+  /** Gore-level count/size/floor-stain-duration multipliers, read once at
+   * construction (see the constructor's `gore` parameter). */
+  private readonly goreMultipliers: GoreMultipliers;
   /** In-flight enemy projectiles (ranged bolts). */
   private readonly projectiles: Projectile[] = [];
   /** In-flight player-fired rockets. */
@@ -270,6 +277,7 @@ export class RaycasterEngine {
     private readonly map: GameMap,
     private readonly handlers: EngineHandlers = {},
     carryover?: EngineCarryover,
+    gore: GoreLevel = DEFAULT_GORE_LEVEL,
   ) {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2D canvas context unavailable");
@@ -281,6 +289,7 @@ export class RaycasterEngine {
     this.bulletsAmmo = carryover?.bullets ?? startingBullets(map.enemies);
     this.rocketsAmmo = carryover?.rockets ?? startingRockets();
     this.ownedWeapons = new Set(carryover?.ownedWeapons ?? STARTING_WEAPONS);
+    this.goreMultipliers = GORE_MULTIPLIERS[gore];
     if (carryover) {
       this.health = carryover.health;
       this.armor = carryover.armor;
@@ -439,8 +448,8 @@ export class RaycasterEngine {
     // In-world impact effects (above sprites): falling "digital blood", the
     // muzzle→impact tracer lines from any shot fired this frame, and any live
     // rocket-blast VFX circles.
-    updateBlood(this.blood, dt);
-    renderBlood(this.ctx, this.player, this.blood, this.zBuffer);
+    updateBlood(this.blood, dt, this.goreMultipliers.stainDuration);
+    renderBlood(this.ctx, this.player, this.blood, this.zBuffer, this.goreMultipliers.size);
     drawBulletTraces(this.ctx, this.traces);
     updateExplosions(this.explosions, dt);
     renderExplosions(this.ctx, this.player, this.explosions, this.zBuffer);
@@ -1107,7 +1116,8 @@ export class RaycasterEngine {
     // Damage aggro: being shot instantly wakes the enemy, even from beyond its
     // aggro radius, so you can't safely snipe a roaming enemy from afar.
     enemy.aggroed = true;
-    spawnBlood(this.blood, enemy.x, enemy.y, 3 + Math.floor(Math.random() * 3));
+    const baseBloodCount = 3 + Math.floor(Math.random() * 3);
+    spawnBlood(this.blood, enemy.x, enemy.y, Math.round(baseBloodCount * this.goreMultipliers.count));
     enemy.hp -= amount;
     if (enemy.hp > 0) {
       console.log(`[hit] ${enemy.entity.name}() — HP ${enemy.hp}/${enemy.maxHp}`);

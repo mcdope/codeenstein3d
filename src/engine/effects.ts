@@ -22,8 +22,39 @@ export const BULLET_TRACE_FRAMES = 4;
 export const HIT_FLASH_FRAMES = 5;
 /** Gravity pulling blood pixels toward the floor, in tiles/sec². */
 const BLOOD_GRAVITY = 6;
+/** Seconds a landed blood particle lingers as a "floor stain" at the Normal
+ * (1x) gore level, before `GoreMultipliers.stainDuration` scales it. */
+const BASE_STAIN_LIFE = 1.5;
 /** Seconds a rocket-blast VFX circle stays on screen. */
 const EXPLOSION_LIFE = 0.35;
+
+/** Gore intensity setting — scales blood-particle count, rendered size, and
+ * how long a landed particle lingers before despawning. Persisted by
+ * `main.ts` and read once per level launch (see `RaycasterEngine`'s
+ * constructor); not part of `EngineCarryover` since it's a standing
+ * preference, not carried-over run state. */
+export type GoreLevel = "none" | "normal" | "more" | "extreme";
+
+export interface GoreMultipliers {
+  /** Multiplies `spawnBlood`'s particle count. */
+  count: number;
+  /** Multiplies rendered particle size (see `renderBlood`). */
+  size: number;
+  /** Multiplies how long a landed particle lingers (see `updateBlood`). */
+  stainDuration: number;
+}
+
+/** Per-level multipliers, per the task spec: None/Normal/More/Extreme =
+ * 0x/1x/3x/10x. Size/stainDuration at `none` are irrelevant (count 0 means no
+ * particles ever spawn) but filled in defensively rather than left unused. */
+export const GORE_MULTIPLIERS: Record<GoreLevel, GoreMultipliers> = {
+  none: { count: 0, size: 1, stainDuration: 1 },
+  normal: { count: 1, size: 1, stainDuration: 1 },
+  more: { count: 3, size: 3, stainDuration: 3 },
+  extreme: { count: 10, size: 10, stainDuration: 10 },
+};
+
+export const DEFAULT_GORE_LEVEL: GoreLevel = "normal";
 
 /** A weapon tracer: a fading screen-space line from the muzzle to the impact. */
 export interface BulletTrace {
@@ -61,6 +92,11 @@ export interface BloodParticle {
   vz: number;
   /** Seconds of life remaining. */
   life: number;
+  /** True once this particle has landed (z reached 0) — the moment it flips
+   * to true, `life` is reset to a gore-scaled "floor stain" duration (see
+   * `updateBlood`); guards against re-triggering that reset every subsequent
+   * frame the particle just sits there. */
+  settled: boolean;
 }
 
 /** Overlay the whole canvas with red at `0.4 * intensity` (intensity 0..1). */
@@ -179,36 +215,49 @@ export function spawnBlood(
       vy: Math.sin(angle) * speed,
       vz: 0.6 + Math.random() * 0.8, // initial upward kick
       life: 0.5 + Math.random() * 0.2,
+      settled: false,
     });
   }
 }
 
-/** Integrate blood particles by `dt`, removing those that expired (in place). */
-export function updateBlood(list: BloodParticle[], dt: number): void {
+/**
+ * Integrate blood particles by `dt`, removing those that expired (in place).
+ * Airborne particles use their original spawn-time `life` unchanged; the
+ * instant one lands (z clamps to 0 for the first time), its `life` is reset
+ * to a fresh "floor stain" duration scaled by `stainDurationMultiplier` (see
+ * `GoreMultipliers`), then decrements normally from there.
+ */
+export function updateBlood(list: BloodParticle[], dt: number, stainDurationMultiplier: number): void {
   for (let i = list.length - 1; i >= 0; i--) {
     const p = list[i];
     p.vz -= BLOOD_GRAVITY * dt;
     p.x += p.vx * dt;
     p.y += p.vy * dt;
     p.z += p.vz * dt;
-    p.life -= dt;
     if (p.z <= 0) {
       // Settle on the floor tile and skid to a stop.
       p.z = 0;
       p.vz = 0;
       p.vx *= 0.4;
       p.vy *= 0.4;
+      if (!p.settled) {
+        p.settled = true;
+        p.life = BASE_STAIN_LIFE * stainDurationMultiplier;
+      }
     }
+    p.life -= dt;
     if (p.life <= 0) list.splice(i, 1);
   }
 }
 
-/** Project and draw blood pixels as small red squares, wall-occluded via zBuffer. */
+/** Project and draw blood pixels as small red squares, wall-occluded via
+ * zBuffer. `sizeMultiplier` scales the rendered size (see `GoreMultipliers`). */
 export function renderBlood(
   ctx: CanvasRenderingContext2D,
   player: Player,
   list: BloodParticle[],
   zBuffer: Float64Array,
+  sizeMultiplier: number,
 ): void {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
@@ -221,7 +270,7 @@ export function renderBlood(
 
     const tilePx = proj.bottom - proj.top; // pixels per world tile at this depth
     const sy = proj.bottom - p.z * tilePx; // lift off the floor by the particle height
-    const s = Math.max(1, Math.round(tilePx * 0.05));
+    const s = Math.max(1, Math.round(tilePx * 0.05 * sizeMultiplier));
     ctx.fillRect(Math.round(proj.screenX) - (s >> 1), Math.round(sy) - (s >> 1), s, s);
   }
 }

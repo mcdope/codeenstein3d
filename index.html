@@ -14,6 +14,13 @@
           <h1>🔫 Codeenstein 3D</h1>
           <button id="select-workspace" type="button">Select Workspace</button>
           <button id="continue-run" type="button" style="display: none">Continue Run</button>
+          <label id="gore-label" for="gore-select" class="muted">Gore</label>
+          <select id="gore-select">
+            <option value="none">None</option>
+            <option value="normal" selected>Normal</option>
+            <option value="more">More</option>
+            <option value="extreme">Extreme</option>
+          </select>
           <p id="workspace-name" class="muted">No workspace selected</p>
         </header>
         <nav id="file-tree" aria-label="File tree"></nav>

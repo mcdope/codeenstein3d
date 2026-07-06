@@ -16,6 +16,7 @@ import { MapGenerator } from "./map/mapGenerator";
 import { RaycasterEngine } from "./engine/engine";
 import { audio } from "./engine/audio";
 import { GameHud } from "./ui/gameHud";
+import { DEFAULT_GORE_LEVEL, type GoreLevel } from "./engine/effects";
 import type { ParsedFile } from "./parser/types";
 import type { EngineCarryover, EngineStats } from "./engine/engine";
 
@@ -32,6 +33,7 @@ const continueButton = requireElement<HTMLButtonElement>("#continue-run");
 const workspaceName = requireElement<HTMLParagraphElement>("#workspace-name");
 const fileTree = requireElement<HTMLElement>("#file-tree");
 const viewport = requireElement<HTMLElement>("#viewport");
+const goreSelect = requireElement<HTMLSelectElement>("#gore-select");
 
 /**
  * The one and only game canvas — created once, attached to `#viewport` once,
@@ -80,6 +82,15 @@ let workspaceRootName: string | null = null;
  * autosave and the `beforeunload` flush. */
 let lastStats: EngineStats | null = null;
 let lastSaveAt = 0;
+/** Standing gore-level preference — not campaign progress, so it's kept
+ * entirely separate from `CampaignSave`/`SAVE_KEY` (see `loadGoreLevel`). */
+let currentGoreLevel: GoreLevel = loadGoreLevel();
+
+goreSelect.value = currentGoreLevel;
+goreSelect.addEventListener("change", () => {
+  currentGoreLevel = goreSelect.value as GoreLevel;
+  saveGoreLevel(currentGoreLevel);
+});
 
 if (!isFileSystemAccessSupported()) {
   selectButton.disabled = true;
@@ -369,6 +380,7 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
       },
     },
     carryover,
+    currentGoreLevel,
   );
 
   const levelName = path.split("/").pop() ?? path;
@@ -581,6 +593,31 @@ function persistProgress(stats: EngineStats): void {
     weaponIndex: stats.weaponIndex,
     ownedWeapons: stats.ownedWeapons,
   });
+}
+
+// --- Gore level (standing preference, independent of any campaign save) ----
+
+const GORE_KEY = "codeenstein-gore-level";
+
+/** Read the saved gore level, falling back to `DEFAULT_GORE_LEVEL` on any
+ * missing/invalid value or if storage is unavailable (e.g. private browsing) —
+ * same "never throw" philosophy as `loadCampaignSave`. */
+function loadGoreLevel(): GoreLevel {
+  try {
+    const raw = localStorage.getItem(GORE_KEY);
+    if (raw === "none" || raw === "normal" || raw === "more" || raw === "extreme") return raw;
+  } catch {
+    // Fall through to the default.
+  }
+  return DEFAULT_GORE_LEVEL;
+}
+
+function saveGoreLevel(level: GoreLevel): void {
+  try {
+    localStorage.setItem(GORE_KEY, level);
+  } catch (err) {
+    console.warn("[settings] Failed to save gore level:", err);
+  }
 }
 
 function requireElement<T extends Element>(selector: string): T {
