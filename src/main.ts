@@ -979,6 +979,7 @@ async function recordRunHighscore(
       hash,
       achievedAt: Date.now(),
       replay: (await recorder?.finish()) ?? undefined,
+      source: workspaceIsRemote ? "github" : undefined,
     });
   } catch (err) {
     console.warn("[highscores] Failed to record this level's score:", err);
@@ -1036,10 +1037,20 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
   stopActiveReplay?.();
 
   try {
-    const handle = await pickWorkspace();
-    if (!handle) return; // user cancelled the picker
-
-    const tree = await readDirectoryTree(handle);
+    let tree: TreeNode;
+    if (entry.source === "github") {
+      // This run's workspace was fetched from GitHub, not picked off local
+      // disk — re-fetch the same repo instead of prompting a local folder
+      // picker, which would never match `entry.campaignName`'s recorded
+      // `owner/repo` paths at all.
+      const ref = parseGithubRepoInput(entry.campaignName);
+      if (!ref) return; // campaign name doesn't parse back to a repo ref — nothing sane to fetch
+      tree = await fetchGithubTree(ref);
+    } else {
+      const handle = await pickWorkspace();
+      if (!handle) return; // user cancelled the picker
+      tree = await readDirectoryTree(handle);
+    }
     const files = flattenParsableFiles(tree);
 
     // Tear down whatever's currently running/shown, same as launching any
@@ -1166,7 +1177,7 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
 
       const match = files.find((f) => f.path === segment.filePath);
       if (!match) {
-        endReplay(`"${segment.filePath}" wasn't found in "${handle.name}" — pick the same workspace this run was recorded in.`);
+        endReplay(`"${segment.filePath}" wasn't found in "${entry.campaignName}" — load the same workspace this run was recorded in.`);
         return;
       }
 
