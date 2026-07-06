@@ -42,6 +42,11 @@
 - [x] lore terminals — parse code comments (`//` or `/* */`) into interactable glowing wall textures. pressing 'E' opens a text popup with the original code comment. — large comments become glowing wall tiles near the room they came from; interacting nearby pauses the game and shows the raw comment text. Uses R, not E — E is already the turn-right key in this game's Q/E-turn scheme (see [[feedback-control-scheme]]) [Task 29]. Follow-up: a long comment could overflow the overlay box with no way to read the rest — the box now caps its own height and holding W/S scrolls the wrapped text, with a scrollbar shown only when it actually overflows
 - [x] by accident, header files (.h) make nice bonus levels for restocking ammo. lets visually differentiate them from normal source levels. loot chances / drops should be slightly higher as well, since its a single closed room with at least one enemy — `.h` files now generate with a distinct cool steel/teal wall+floor theme, a boosted static-pickup rate/amount, and enemy kills lean toward scarcer/higher-value drops [Task 29]
 - [x] if not fullscreen: show console log near to the canvas, randomly drop hints about traps being near and similar — a DOM sidebar next to the canvas mirrors `console.log` and occasionally drops a random in-character hint while a level is running; hidden automatically while the canvas is fullscreen (a DOM sibling can't render in that state) [Task 29]. Follow-up: raw object dumps (e.g. logging a whole `ParsedFile`/`GameMap`) ruined the effect and readability — the sidebar now only ever mirrors an actual string message (an object-only call is dropped entirely, a trailing object after a string message is ignored, not stringified), and any surviving line is length-capped. Second follow-up: the per-level `[map] ...` log line printed the exit tile's exact coordinates in plain text — a spoiler the sidebar then mirrored verbatim; removed from the printed string (the full map object is still passed through for devtools inspection, which takes a deliberate click to expand, not a passive read)
+- [x] avoid pixelation at fullscreen — `.scene-canvas` and `.scene-canvas:fullscreen` both now declare `image-rendering: crisp-edges` (fallback) then `pixelated` explicitly, rather than relying purely on cascade inheritance into the `:fullscreen` state [Task 30]
+- [x] mousewheel weapon switching (shoulder keys on gamepad) — the mousewheel now cycles through owned, non-melee weapons (wrapping), bound to the canvas so it never hijacks scrolling the file-tree/console sidebar. Gamepad shoulder-key support not implemented — no gamepad support exists in this engine yet at all [Task 30]
+- [x] melee weapon can be used with LEFT CTRL, dont add it to the weapon list / number hotkeys — the SIGKILL Knife is now unreachable via number keys or the mousewheel (excluded by its own `meleeRange` field, not a hardcoded slot) and is bound exclusively to Left-Ctrl as an instant "quick-melee" swing: a pure viewmodel overlay independent of whatever ranged weapon is equipped — `weaponIndex`, `ownedWeapons`, and the HUD ammo label never change [Task 30]
+- [x] option for gorelevel, which controls the amount of blood effects. normal/default is current state, add "no gore", "more gore" and "extreme gore" options on top. — a Gore dropdown in the sidebar (None/Normal/More/Extreme = 0x/1x/3x/10x) persisted to localStorage, scaling blood-particle count, rendered size, and how long a landed particle lingers as a floor stain (a genuinely new concept — previously every particle vanished under a second regardless of whether it had landed) [Task 30]
+- [x] fps (if possible: also gpu/cpu usage) display, toggable - default off. use RIGHT_CTRL as hotkey (for now) — Right-Ctrl toggles a top-right FPS + frame-time readout (averaged twice a second, from the real unclamped frame delta so a stutter doesn't get invisibly floored by the sim's own dt clamp), visible across every render state including the automap/pause/lore overlays. GPU/CPU usage not implemented — no standard browser API exposes that to page JS in a sandboxed context [Task 30]
 
 ## Open
 - [ ] rooms need deco of some kind, currently an empty wasteland — implemented in Task 21 (server racks/plants/desks/code-blocks as billboard props) but felt annoying in playtest, so disabled again behind `DECORATIONS_ENABLED = false` in mapGenerator.ts. Code (generation + rendering) is intact; needs a design rethink (placement density? different visual treatment? non-billboard approach?) before re-enabling. Ignore for now.
@@ -53,20 +58,17 @@
 - [ ] ability to load github repos instead of local folder
 - [ ] user pickable bgm folder — needs a simple settings menu for volume control (Master, SFX, BGM) so custom music doesn't overpower game audio
 - [ ] scoresystem should also store a hash (sha256 or similar) of the AST, or code scanned. this should also be displayed in the highscore list, for comparison. part of that hash should be based on the campaign/project name.
-- [ ] fps (if possible: also gpu/cpu usage) display, toggable - default off. use RIGHT_CTRL as hotkey (for now)
 - [ ] optional replay storage at end of level (even possible?)
 - [ ] gamepad/joystick support
 - [ ] user/player docs in `doc/user`
 - [ ] dev docs, GDD, design descisions etc in `doc/dev`
 - [ ] when everything is done: add play tips to readme and user docs, like "dont trust long corridors, they will have traps", "look for secrets" etc pp.
 - [ ] add polyfills to avoid "has been externalized for browser compatibility" on build
-- [ ] mousewheel weapon switching (shoulder keys on gamepad)
-- [ ] melee weapon can be used with LEFT CTRL, dont add it to the weapon list / number hotkeys
 - [ ] code optimization/reuse, complexity reduction etc
 - [ ] option for difficulty
-- [ ] option for gorelevel, which controls the amount of blood effects. normal/default is current state, add "no gore" and "extreme gore" options on top.
 - [ ] balancing
 - [ ] readme barely readable now. add more structure / formatting
 - [ ] Forced weapon unlock for MP at the 4th level, 8th for rocket launcher (in a campaign only)
-- [ ] avoid pixelation at fullscreen
 - [ ] code smell detection to increase complexity and/or difficulty
+- [ ] name mp5 "gdb" and rocket launcher "ghidra"
+- [ ] cone of fire / distance spread is a bit extreme
