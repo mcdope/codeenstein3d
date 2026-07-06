@@ -28,6 +28,17 @@
             <option value="hard">Hard</option>
           </select>
           <p id="workspace-name" class="muted">No workspace selected</p>
+
+          <label id="master-vol-label" for="master-vol" class="settings-label">Master Volume</label>
+          <input id="master-vol" class="volume-slider" type="range" min="0" max="100" value="50" />
+          <label id="sfx-vol-label" for="sfx-vol" class="settings-label">SFX Volume</label>
+          <input id="sfx-vol" class="volume-slider" type="range" min="0" max="100" value="100" />
+          <label id="bgm-vol-label" for="bgm-vol" class="settings-label">Music Volume</label>
+          <input id="bgm-vol" class="volume-slider" type="range" min="0" max="100" value="50" />
+          <button id="select-bgm-folder" class="settings-btn" type="button">Select BGM Folder</button>
+          <p id="bgm-status" class="muted">No custom music loaded</p>
+
+          <button id="view-highscores" class="settings-btn" type="button">Highscores</button>
         </header>
         <nav id="file-tree" aria-label="File tree"></nav>
       </aside>
@@ -42,6 +53,11 @@
         <div id="console-log"></div>
       </aside>
     </div>
+    <dialog id="highscore-dialog">
+      <h2>Highscores</h2>
+      <div id="highscore-list"></div>
+      <button id="close-highscores" class="settings-btn" type="button">Close</button>
+    </dialog>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

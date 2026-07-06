@@ -4,6 +4,7 @@
 import "./style.css";
 import {
   isFileSystemAccessSupported,
+  pickDirectory,
   pickWorkspace,
   readDirectoryTree,
   readFileText,
@@ -15,6 +16,9 @@ import { extensionOf, isParsable, parseFile } from "./parser/registry";
 import { MapGenerator } from "./map/mapGenerator";
 import { RaycasterEngine } from "./engine/engine";
 import { audio } from "./engine/audio";
+import { bgm } from "./engine/bgm";
+import { hashRun, loadHighscores, recordHighscore } from "./engine/highscores";
+import { renderHighscoreTable } from "./ui/highscorePanel";
 import { GameHud } from "./ui/gameHud";
 import { DEFAULT_GORE_LEVEL, EXTREME_GORE_ENABLED, type GoreLevel } from "./engine/effects";
 import { GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX } from "./engine/weapons";
@@ -39,6 +43,11 @@ const GORE_KEY = "codeenstein-gore-level";
 /** localStorage key for the standing difficulty preference — same "declared
  * up here, not next to load/save" reasoning as `GORE_KEY` above. */
 const DIFFICULTY_KEY = "codeenstein-difficulty";
+/** localStorage keys for the three standing volume preferences — same
+ * "declared up here" reasoning as `GORE_KEY`/`DIFFICULTY_KEY` above. */
+const MASTER_VOLUME_KEY = "codeenstein-master-volume";
+const SFX_VOLUME_KEY = "codeenstein-sfx-volume";
+const BGM_VOLUME_KEY = "codeenstein-bgm-volume";
 
 const selectButton = requireElement<HTMLButtonElement>("#select-workspace");
 const continueButton = requireElement<HTMLButtonElement>("#continue-run");
@@ -47,10 +56,72 @@ const fileTree = requireElement<HTMLElement>("#file-tree");
 const viewport = requireElement<HTMLElement>("#viewport");
 const goreSelect = requireElement<HTMLSelectElement>("#gore-select");
 const difficultySelect = requireElement<HTMLSelectElement>("#difficulty-select");
+const masterVolumeInput = requireElement<HTMLInputElement>("#master-vol");
+const sfxVolumeInput = requireElement<HTMLInputElement>("#sfx-vol");
+const bgmVolumeInput = requireElement<HTMLInputElement>("#bgm-vol");
+const selectBgmFolderButton = requireElement<HTMLButtonElement>("#select-bgm-folder");
+const bgmStatus = requireElement<HTMLParagraphElement>("#bgm-status");
+const viewHighscoresButton = requireElement<HTMLButtonElement>("#view-highscores");
+const highscoreDialog = requireElement<HTMLDialogElement>("#highscore-dialog");
+const highscoreList = requireElement<HTMLElement>("#highscore-list");
+const closeHighscoresButton = requireElement<HTMLButtonElement>("#close-highscores");
 // "Extreme" reads as over-the-top per playtest feedback — hidden from the
 // dropdown for now (see EXTREME_GORE_ENABLED's doc comment); the <option>
 // stays in index.html so re-enabling is just flipping that flag back.
 if (!EXTREME_GORE_ENABLED) goreSelect.querySelector('option[value="extreme"]')?.remove();
+
+// --- Audio settings (Master/SFX/BGM volume, standing preferences) ----------
+
+masterVolumeInput.value = String(Math.round(loadVolume(MASTER_VOLUME_KEY, 0.5) * 100));
+sfxVolumeInput.value = String(Math.round(loadVolume(SFX_VOLUME_KEY, 1) * 100));
+bgmVolumeInput.value = String(Math.round(loadVolume(BGM_VOLUME_KEY, 0.5) * 100));
+audio.setMasterVolume(Number(masterVolumeInput.value) / 100);
+audio.setSfxVolume(Number(sfxVolumeInput.value) / 100);
+audio.setBgmVolume(Number(bgmVolumeInput.value) / 100);
+
+masterVolumeInput.addEventListener("input", () => {
+  const v = Number(masterVolumeInput.value) / 100;
+  audio.setMasterVolume(v);
+  saveVolume(MASTER_VOLUME_KEY, v);
+});
+sfxVolumeInput.addEventListener("input", () => {
+  const v = Number(sfxVolumeInput.value) / 100;
+  audio.setSfxVolume(v);
+  saveVolume(SFX_VOLUME_KEY, v);
+});
+bgmVolumeInput.addEventListener("input", () => {
+  const v = Number(bgmVolumeInput.value) / 100;
+  audio.setBgmVolume(v);
+  saveVolume(BGM_VOLUME_KEY, v);
+});
+
+selectBgmFolderButton.addEventListener("click", async () => {
+  try {
+    const handle = await pickDirectory("codeenstein-bgm-folder");
+    if (!handle) return; // user cancelled the picker
+    bgmStatus.textContent = "Loading…";
+    const count = await bgm.loadFolder(handle);
+    bgmStatus.textContent =
+      count > 0 ? `Playing ${count} track(s) from "${handle.name}"` : `No .mp3/.ogg/.wav files found in "${handle.name}"`;
+  } catch (err) {
+    console.error("[bgm] Failed to load BGM folder:", err);
+    bgmStatus.textContent = err instanceof Error ? err.message : "Failed to load BGM folder.";
+  }
+});
+
+// --- Highscores dialog -------------------------------------------------------
+
+viewHighscoresButton.addEventListener("click", () => {
+  renderHighscoreTable(highscoreList, loadHighscores());
+  highscoreDialog.showModal();
+});
+closeHighscoresButton.addEventListener("click", () => highscoreDialog.close());
+// Whether closed via the button above, Escape, or a backdrop click, hand
+// keyboard focus back to the canvas so a running level's WASD doesn't go
+// silently nowhere afterward — same reasoning as `canvas.focus()` elsewhere.
+highscoreDialog.addEventListener("close", () => {
+  if (activeEngine) canvas.focus();
+});
 
 /**
  * The one and only game canvas — created once, attached to `#viewport` once,
@@ -416,6 +487,7 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
         hud.showKernelPanic(resetToFileTree);
       },
       onWin: (stats) => {
+        void recordLevelHighscore(parsed, path, stats);
         hud.showCommitSummary(
           { linesRefactored: parsed.linesOfCode, bugsSquashed: stats.kills },
           () => void advanceToNextLevel(stats),
@@ -716,6 +788,46 @@ function saveDifficulty(level: DifficultyLevel): void {
     localStorage.setItem(DIFFICULTY_KEY, level);
   } catch (err) {
     console.warn("[settings] Failed to save difficulty:", err);
+  }
+}
+
+// --- Volume settings (Master/SFX/BGM, standing preferences) -----------------
+
+/** Read a saved 0-1 volume, falling back to `fallback` on any missing/invalid
+ * value or if storage is unavailable — same shape as `loadGoreLevel`. */
+function loadVolume(key: string, fallback: number): number {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) return parsed;
+  } catch {
+    // Fall through to the default.
+  }
+  return fallback;
+}
+
+function saveVolume(key: string, volume: number): void {
+  try {
+    localStorage.setItem(key, String(volume));
+  } catch (err) {
+    console.warn("[settings] Failed to save volume:", err);
+  }
+}
+
+// --- Highscores --------------------------------------------------------------
+
+/** Hash this level's AST + campaign name and record the resulting score on
+ * the top-10 board. Fire-and-forget from `onWin` — hashing is cheap but
+ * async (`crypto.subtle.digest`), and there's no reason to hold up the commit
+ * summary overlay on it. */
+async function recordLevelHighscore(parsed: ParsedFile, path: string, stats: EngineStats): Promise<void> {
+  try {
+    const hash = await hashRun(JSON.stringify(parsed), campaignName());
+    const levelName = path.split("/").pop() ?? path;
+    recordHighscore({ score: stats.score, campaignName: campaignName(), levelName, hash, achievedAt: Date.now() });
+  } catch (err) {
+    console.warn("[highscores] Failed to record this level's score:", err);
   }
 }
 
