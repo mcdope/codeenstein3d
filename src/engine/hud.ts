@@ -183,29 +183,31 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
 }
 
 /** Re-enabled — see the doc comment on `drawCompass` for the axis fix and the
- * redesigned placement (embedded in the minimap's own frame, not a separate
- * dial). Same flag-gating mechanism as `DECORATIONS_ENABLED` in
- * `mapGenerator.ts` / `EXTREME_GORE_ENABLED` in `effects.ts`, just flipped
- * back on now that both playtest complaints are addressed. */
+ * redesigned placement (a dedicated cutout in the minimap's own frame, not a
+ * separate dial, and not overlapping the grid). Same flag-gating mechanism as
+ * `DECORATIONS_ENABLED` in `mapGenerator.ts` / `EXTREME_GORE_ENABLED` in
+ * `effects.ts`, just flipped back on now both playtest complaints are fixed. */
 export const COMPASS_ENABLED = true;
 
-/** Half-length, in canvas pixels, of the compass needle — small and
- * unobtrusive, sized to sit on the minimap's frame rather than announce
- * itself as a separate widget. */
-const COMPASS_NEEDLE_SIZE = 8;
+/** Half-length, in canvas pixels, of the compass needle — sized to sit
+ * comfortably inside the minimap's notch cutout (see `MinimapPanelRect`)
+ * with a little margin on every side. */
+const COMPASS_NEEDLE_SIZE = 9;
 
 /**
- * Exit compass: a small needle embedded in the top-right corner of the
- * minimap's own frame (`panel`, as returned by `renderMinimap`) rather than a
- * separate floating dial. Rotates to always point from the player's current
- * position toward the exit tile, *relative to the player's own facing* — so
- * "dead ahead" always reads as "up" on the needle, no matter which way the
- * world-space player is actually looking.
+ * Exit compass: a small needle drawn centered in the minimap's own dedicated
+ * notch cutout (`notch`, part of the `MinimapPanelRect` `renderMinimap`
+ * returns) rather than a separate floating dial, or overlapping the grid
+ * corner — the notch's own background/border (drawn by `renderMinimap`)
+ * already separates it visually from the map itself. Rotates to always point
+ * from the player's current position toward the exit tile, *relative to the
+ * player's own facing* — so "dead ahead" always reads as "up" on the needle,
+ * no matter which way the world-space player is actually looking.
  *
- * The previous version pointed its rest (bearing-zero) position along local
- * +X ("east"/3 o'clock) and only ever rotated from there — so a target dead
+ * An earlier version pointed its rest (bearing-zero) position along local +X
+ * ("east"/3 o'clock) and only ever rotated from there — so a target dead
  * ahead of the player drew sideways instead of "up", and the left/right sense
- * of the sweep came out 90° off from what a glance expects (reads as an
+ * of the sweep came out 90° off from what a glance expects (reported as an
  * inverted axis). Basing the needle geometry on local -Y ("up"/12 o'clock)
  * for bearing zero, then applying the exact same rotation this engine already
  * uses everywhere else (canvas `rotate()`/`Player.rotate()` are both
@@ -216,7 +218,7 @@ const COMPASS_NEEDLE_SIZE = 8;
  */
 export function drawCompass(
   ctx: CanvasRenderingContext2D,
-  panel: { x: number; y: number; w: number; h: number },
+  notch: { x: number; y: number; w: number; h: number },
   playerX: number,
   playerY: number,
   playerAngle: number,
@@ -224,24 +226,13 @@ export function drawCompass(
   exitY: number,
 ): void {
   const size = COMPASS_NEEDLE_SIZE;
-  const cx = panel.x + panel.w - size - 3;
-  const cy = panel.y + size + 3;
+  const cx = notch.x + notch.w / 2;
+  const cy = notch.y + notch.h / 2;
 
   const angleToExit = Math.atan2(exitY - playerY, exitX - playerX);
   const bearing = angleToExit - playerAngle;
 
   ctx.save();
-
-  // Small dark chip behind the needle so it stays legible over whatever
-  // busy minimap content happens to sit under this corner.
-  ctx.fillStyle = "rgba(4,8,10,0.65)";
-  ctx.beginPath();
-  ctx.arc(cx, cy, size + 3, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = "rgba(140,255,170,0.4)";
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
   ctx.translate(cx, cy);
   ctx.rotate(bearing);
   ctx.fillStyle = "#8effa0";

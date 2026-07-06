@@ -182,6 +182,22 @@ body {
   color: var(--muted);
 }
 
+.replay-btn {
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.replay-btn:hover {
+  background: var(--bg-hover);
+}
+
 #workspace-name {
   margin: 12px 0 0;
   overflow-wrap: anywhere;

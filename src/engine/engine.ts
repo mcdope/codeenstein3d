@@ -13,10 +13,12 @@
  * and leaves the DOM HUD/overlays to the caller.
  */
 import { DEFAULT_DIFFICULTY, DIFFICULTY_MULTIPLIERS, type DifficultyLevel, type DifficultyMultipliers } from "../difficulty";
+import { mulberry32, randomSeed } from "../prng";
 import { Player, isHazard } from "./player";
 import { updateEnemies } from "./enemyAi";
 import { collectProjectileBillboards, updateProjectiles, type Projectile } from "./projectiles";
-import { InputController } from "./input";
+import { InputController, type InputSource } from "./input";
+import type { ReplayRecorder } from "./replay";
 import { FOG_FAR, renderMinimap, renderScene } from "./raycaster";
 import {
   collectDecorationBillboards,
@@ -115,12 +117,17 @@ const HAZARD_DPS = 18;
 /**
  * Cone-of-Fire: maximum screen-px of random aim deviation, reached only at
  * `FOG_FAR` (the same distance the world fades to black at — "maximum visual
- * range"). Scaled by `(range / FOG_FAR)²`, not linearly, so deviation stays
- * small through medium range and only really opens up near the fog line —
- * playtest feedback was that a linear scale ruined medium-range accuracy
- * (see `fire()`).
+ * range"). Scaled by `(range / FOG_FAR)³`, not linearly or quadratically, so
+ * deviation stays small through medium range and only really opens up in the
+ * last stretch before the fog line — playtest feedback was that a linear
+ * scale ruined medium-range accuracy, and even the quadratic follow-up still
+ * made the pistol/gdb feel unreliable well short of extreme range. Both the
+ * lower max (56px → 38px) and the steeper (cubic) curve are tuned toward the
+ * same goal: medium range should feel reliable, and only the last stretch
+ * before the world fades to black should miss with any regularity (see
+ * `fire()`).
  */
-const MAX_CONE_DEVIATION_PX = 56;
+const MAX_CONE_DEVIATION_PX = 38;
 /** Tiles the player must cover between footstep sounds. */
 const STRIDE_LENGTH = 1.2;
 /** Head-bob angular frequency while moving (radians/sec). */
@@ -213,7 +220,19 @@ type GameState = "playing" | "over" | "won";
 export class RaycasterEngine {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly player: Player;
-  private readonly input: InputController;
+  /** Typed against the narrow `InputSource` shape (not the concrete
+   * `InputController`) so a `ReplayPlaybackInput` (see `./replay.ts`) can
+   * drive the engine identically during replay playback. */
+  private readonly input: InputSource;
+  /** Seeded PRNG for every simulation-relevant random draw this engine itself
+   * makes (weapon spread, elite-loot coinflip) — plus what it hands down to
+   * `updateEnemies`/`rollLoot`. Never `Math.random()` directly; see
+   * `src/prng.ts`'s doc comment for why. */
+  private readonly rng: () => number;
+  /** Records this level's input for the replay system, if a run is actively
+   * being tracked (see `main.ts`'s `launchLevel`) — `undefined` during replay
+   * playback itself, which never re-records what it's replaying. */
+  private readonly replayRecorder?: ReplayRecorder;
   private readonly enemies: Enemy[];
   /** Per-column wall depth from the latest wall render; used for occlusion. */
   private readonly zBuffer: Float64Array;
@@ -348,12 +367,25 @@ export class RaycasterEngine {
     carryover?: EngineCarryover,
     gore: GoreLevel = DEFAULT_GORE_LEVEL,
     difficulty: DifficultyLevel = DEFAULT_DIFFICULTY,
+    /** Seeds every simulation-relevant random draw this run makes (see
+     * `this.rng`'s doc comment) — defaults to a fresh, non-deterministic seed
+     * for live play. `main.ts` always generates and passes one explicitly so
+     * it can record the same value into that level's replay payload; replay
+     * playback passes back the recorded value instead, reproducing the exact
+     * same random stream. */
+    gameplaySeed: number = randomSeed(),
+    /** Swaps in a `ReplayPlaybackInput` during replay playback instead of a
+     * live `InputController` — see `this.input`'s doc comment. */
+    inputSource?: InputSource,
+    replayRecorder?: ReplayRecorder,
   ) {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2D canvas context unavailable");
     this.ctx = ctx;
     this.player = new Player(map);
-    this.input = new InputController(canvas);
+    this.input = inputSource ?? new InputController(canvas);
+    this.rng = mulberry32(gameplaySeed);
+    this.replayRecorder = replayRecorder;
     this.enemies = map.enemies;
     this.zBuffer = new Float64Array(canvas.width);
     this.bulletsAmmo = carryover?.bullets ?? startingBullets(map.enemies);
@@ -446,6 +478,12 @@ export class RaycasterEngine {
     // (fire/weapon-cycle/melee), or a gamepad press made this frame would sit
     // unconsumed until the *next* frame's reads instead.
     this.input.pollGamepad();
+
+    // Record this frame's full input state for the replay system, before
+    // anything below consumes any of its one-shot flags — a non-destructive
+    // peek (see `InputSnapshot`'s doc comment), so this has zero effect on
+    // live play whether or not a recorder is actually attached.
+    this.replayRecorder?.record(dt, this.input.captureSnapshot());
 
     // The FPS overlay toggles independent of pause/map/lore state, so it's
     // consumed unconditionally right here rather than gated behind any of
@@ -597,7 +635,7 @@ export class RaycasterEngine {
     if (COMPASS_ENABLED) {
       drawCompass(
         this.ctx,
-        minimapPanel,
+        minimapPanel.notch,
         this.player.posX,
         this.player.posY,
         Math.atan2(this.player.dirY, this.player.dirX),
@@ -838,7 +876,7 @@ export class RaycasterEngine {
   private updateEnemyAi(dt: number): void {
     if (this.state !== "playing") return;
     const beforeShots = this.projectiles.length;
-    const dmg = updateEnemies(this.enemies, this.player, this.map, dt, this.projectiles);
+    const dmg = updateEnemies(this.enemies, this.player, this.map, dt, this.projectiles, this.rng);
     if (this.projectiles.length > beforeShots) audio.playEnemyShoot();
     // Difficulty scales enemy-*dealt* damage only — melee bites and ranged
     // bolts, not trap/hazard/self-inflicted (rocket splash) damage.
@@ -1219,18 +1257,19 @@ export class RaycasterEngine {
       // grows with how far away whatever's down this column actually is (the
       // z-buffer depth there, wall or otherwise), instead of a hard max-range
       // cutoff — a shot lined up on a distant target can still go wide, while
-      // point-blank shots stay accurate. The scale is quadratic in range (not
-      // linear), so medium-range shots stay reasonably accurate and only
-      // fire near `FOG_FAR` (max visual range) spreads significantly. Melee
-      // has no business missing this way (it can't even reach past its own
-      // tiny range), so it's exempt.
+      // point-blank shots stay accurate. The scale is cubic in range (not
+      // linear or quadratic), so medium-range shots stay reliable and only
+      // the last stretch before `FOG_FAR` (max visual range) spreads
+      // noticeably. Melee has no business missing this way (it can't even
+      // reach past its own tiny range), so it's exempt.
       const baseColumn = center + offset;
       let column = baseColumn;
       if (weapon.meleeRange === undefined) {
         const baseCol = Math.min(width - 1, Math.max(0, Math.round(baseColumn)));
         const range = this.zBuffer[baseCol];
         const rangeFraction = Math.min(1, range / FOG_FAR);
-        const deviation = (Math.random() * 2 - 1) * rangeFraction * rangeFraction * MAX_CONE_DEVIATION_PX;
+        const deviation =
+          (this.rng() * 2 - 1) * rangeFraction * rangeFraction * rangeFraction * MAX_CONE_DEVIATION_PX;
         column = Math.min(width - 1, Math.max(0, baseColumn + deviation));
       }
 
@@ -1303,7 +1342,7 @@ export class RaycasterEngine {
     if (lifesteal) this.health = Math.min(MAX_HEALTH, this.health + lifesteal);
 
     if (enemy.elite) this.dropEliteLoot(enemy);
-    else this.drops.push({ x: enemy.x, y: enemy.y, kind: rollLoot(this.map.bonusLevel, this.difficultyLevel) });
+    else this.drops.push({ x: enemy.x, y: enemy.y, kind: rollLoot(this.map.bonusLevel, this.difficultyLevel, this.rng) });
     audio.playAmmoDrop();
 
     const remaining = this.enemies.reduce((n, e) => n + (e.alive ? 1 : 0), 0);
@@ -1321,8 +1360,8 @@ export class RaycasterEngine {
    */
   private dropEliteLoot(enemy: Enemy): void {
     const missing = UNLOCKABLE_WEAPONS.filter((i) => !this.ownedWeapons.has(i));
-    if (missing.length > 0 && Math.random() < 0.5) {
-      const weaponIndex = missing[Math.floor(Math.random() * missing.length)];
+    if (missing.length > 0 && this.rng() < 0.5) {
+      const weaponIndex = missing[Math.floor(this.rng() * missing.length)];
       this.drops.push({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex });
     } else {
       this.drops.push({ x: enemy.x, y: enemy.y, kind: "health", amount: ELITE_HEALTH_DROP_AMOUNT });

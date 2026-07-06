@@ -17,12 +17,14 @@ import { MapGenerator } from "./map/mapGenerator";
 import { RaycasterEngine } from "./engine/engine";
 import { audio } from "./engine/audio";
 import { bgm } from "./engine/bgm";
-import { hashRun, loadHighscores, recordHighscore } from "./engine/highscores";
+import { hashRun, loadHighscores, recordHighscore, type HighscoreEntry } from "./engine/highscores";
 import { renderHighscoreTable } from "./ui/highscorePanel";
 import { GameHud } from "./ui/gameHud";
 import { DEFAULT_GORE_LEVEL, EXTREME_GORE_ENABLED, type GoreLevel } from "./engine/effects";
 import { GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX } from "./engine/weapons";
 import { DEFAULT_DIFFICULTY, type DifficultyLevel } from "./difficulty";
+import { randomSeed } from "./prng";
+import { ReplayPlaybackInput, ReplayRecorder } from "./engine/replay";
 import type { ParsedFile } from "./parser/types";
 import type { EngineCarryover, EngineStats } from "./engine/engine";
 
@@ -112,7 +114,12 @@ selectBgmFolderButton.addEventListener("click", async () => {
 // --- Highscores dialog -------------------------------------------------------
 
 viewHighscoresButton.addEventListener("click", () => {
-  renderHighscoreTable(highscoreList, loadHighscores());
+  renderHighscoreTable(highscoreList, loadHighscores(), {
+    onWatchReplay: (entry) => {
+      highscoreDialog.close();
+      void startReplay(entry);
+    },
+  });
   highscoreDialog.showModal();
 });
 closeHighscoresButton.addEventListener("click", () => highscoreDialog.close());
@@ -166,6 +173,24 @@ let currentLevelPath: string | null = null;
  * though it isn't nested in `launchLevel`'s closure the way `onGameOver`/
  * `onWin` are. */
 let currentParsedFile: ParsedFile | null = null;
+/** Records the currently-running level's input for the replay system —
+ * `null` when replaying (a replay never re-records itself) or if this
+ * level's AST hash couldn't be computed at launch. Kept at module scope for
+ * the same reason as `currentParsedFile`: `advanceToNextLevel`'s "campaign
+ * finished" branch needs whichever level's recording is still live, even
+ * though it isn't nested in `launchLevel`'s closure the way `onGameOver` is. */
+let currentReplayRecorder: ReplayRecorder | null = null;
+/** True while `startReplay` is driving a "Watch Replay" viewing rather than a
+ * real playthrough — guards `beforeunload` against persisting a replay's
+ * transient state as if it were real campaign progress. */
+let isReplaying = false;
+/** Tears down whatever replay is currently playing, if any — set by
+ * `startReplay`, cleared once it stops. `launchLevel` and `startReplay` both
+ * call this before starting anything new, so a replay that's still running
+ * (its own `requestAnimationFrame` loop, independent of `activeEngine`) can
+ * never end up orphaned, driving a stale engine after the canvas has moved on
+ * to a real level or a different replay. */
+let stopActiveReplay: (() => void) | null = null;
 /** Name of the picked workspace root, for the campaign name and the save file.
  * The File System Access API only grants a handle to the picked directory
  * itself — there's no way to walk up to its parent — so the "or parent
@@ -286,7 +311,7 @@ continueButton.addEventListener("click", async () => {
 });
 
 window.addEventListener("beforeunload", () => {
-  if (activeEngine && lastStats) persistProgress(lastStats);
+  if (activeEngine && lastStats && !isReplaying) persistProgress(lastStats);
 });
 
 /**
@@ -412,6 +437,12 @@ async function autoLaunchInitialLevel(tree: TreeNode): Promise<void> {
  * `GameHud.showLevelStart`.
  */
 function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryover): void {
+  // End any replay still playing — its own requestAnimationFrame loop is
+  // independent of `activeEngine`/this function, so it would otherwise keep
+  // running orphaned once this real level takes over the canvas (see
+  // `stopActiveReplay`'s doc comment).
+  stopActiveReplay?.();
+
   // Header (or equivalent) files make small, single-purpose "bonus levels" —
   // a distinct visual theme and a boosted loot rate, treating them as restock
   // arenas rather than normal combat levels (see `MapGenerator.generate`).
@@ -478,6 +509,21 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
     ? { ...carryover, ownedWeapons: applyForcedUnlocks(carryover.ownedWeapons ?? [], campaignLevelIndex) }
     : undefined;
 
+  // A fresh, non-deterministic seed for this level's own randomness (enemy AI
+  // timing/roam targets, loot rolls, weapon spread) — recorded (alongside
+  // every frame's input) so this exact run can be reproduced later. See
+  // `src/prng.ts`'s doc comment for what's seeded vs. left cosmetic.
+  const gameplaySeed = randomSeed();
+  currentReplayRecorder = new ReplayRecorder({
+    gameplaySeed,
+    filePath: path,
+    campaignName: campaignName(),
+    bonusLevel,
+    difficulty: currentDifficulty,
+    gore: currentGoreLevel,
+    carryover: effectiveCarryover,
+  });
+
   activeEngine = new RaycasterEngine(
     canvas,
     map,
@@ -493,7 +539,7 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
       onGameOver: (stats) => {
         // Died on the current (not yet cleared) level, so only the levels
         // before it actually count as progress.
-        void recordRunHighscore(parsed, path, stats, campaignLevelIndex - 1);
+        void recordRunHighscore(parsed, path, stats, campaignLevelIndex - 1, currentReplayRecorder);
         clearCampaignSave();
         hud.showKernelPanic(resetToFileTree);
       },
@@ -507,6 +553,9 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
     effectiveCarryover,
     currentGoreLevel,
     currentDifficulty,
+    gameplaySeed,
+    undefined,
+    currentReplayRecorder,
   );
 
   const levelName = path.split("/").pop() ?? path;
@@ -617,11 +666,11 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
 
   // No more files left to try — the campaign is complete, so the saved
   // resume point no longer means anything. The level just cleared (still
-  // `currentLevelPath`/`currentParsedFile`, and still counted in
-  // `campaignLevelIndex`) is what the highscore entry hashes/reports as the
-  // final level.
+  // `currentLevelPath`/`currentParsedFile`/`currentReplayRecorder`, and still
+  // counted in `campaignLevelIndex`) is what the highscore entry hashes/
+  // reports/replays as the final level.
   if (currentParsedFile && currentLevelPath) {
-    void recordRunHighscore(currentParsedFile, currentLevelPath, stats, campaignLevelIndex);
+    void recordRunHighscore(currentParsedFile, currentLevelPath, stats, campaignLevelIndex, currentReplayRecorder);
   }
   clearCampaignSave();
   activeHud?.showBuildSuccessful(resetToFileTree);
@@ -841,12 +890,21 @@ function saveVolume(key: string, volume: number): void {
  * "no more files" branch), never on an ordinary mid-campaign level clear.
  * Fire-and-forget — hashing is cheap but async (`crypto.subtle.digest`), and
  * there's no reason to hold up the caller's own overlay on it.
+ *
+ * `recorder` (whichever level's `ReplayRecorder` was active when the run
+ * ended) is finalized with the *same* hash this function already computes
+ * for the entry itself — see `ReplayRecorder.finish`'s doc comment for why it
+ * takes the hash as a parameter instead of computing its own — and attached
+ * to the saved entry if it produced anything (`null` if recording never
+ * captured a frame, overflowed its cap, or no recorder was active at all,
+ * e.g. during a replay viewing).
  */
 async function recordRunHighscore(
   parsed: ParsedFile,
   path: string,
   stats: EngineStats,
   levelsCleared: number,
+  recorder: ReplayRecorder | null,
 ): Promise<void> {
   try {
     const hash = await hashRun(JSON.stringify(parsed), campaignName());
@@ -858,9 +916,131 @@ async function recordRunHighscore(
       levelsCleared,
       hash,
       achievedAt: Date.now(),
+      replay: recorder?.finish(hash) ?? undefined,
     });
   } catch (err) {
     console.warn("[highscores] Failed to record this level's score:", err);
+  }
+}
+
+// --- Replay playback ---------------------------------------------------------
+
+/**
+ * Play back a recorded run from the Highscores dialog. Re-picks the
+ * workspace (same "file handles can't survive a session, so ask again"
+ * pattern as "Continue Run"), locates the same file by path, and verifies its
+ * re-parsed AST still hashes to `entry.replay.astHash` before trusting it to
+ * regenerate the exact map — a source file edited since the recorded run
+ * would hash differently and is refused rather than silently replayed wrong.
+ *
+ * Scope: replays only the *single level* the run ended on (see
+ * `replay.ts`'s doc comment) — this is an R&D viewer, not a full
+ * multi-level campaign replay. Ends whatever real level is currently
+ * running, the same way picking a new file from the sidebar already does.
+ */
+async function startReplay(entry: HighscoreEntry): Promise<void> {
+  const payload = entry.replay;
+  if (!payload) return;
+
+  // End any replay already playing before starting this one — otherwise its
+  // own requestAnimationFrame loop keeps running orphaned (see
+  // `stopActiveReplay`'s doc comment).
+  stopActiveReplay?.();
+
+  try {
+    const handle = await pickWorkspace();
+    if (!handle) return; // user cancelled the picker
+
+    const tree = await readDirectoryTree(handle);
+    const match = flattenParsableFiles(tree).find((f) => f.path === payload.filePath);
+    if (!match) {
+      console.warn(
+        `%c[replay] "${payload.filePath}" wasn't found in "${handle.name}" — pick the same workspace this run was recorded in.`,
+        "color:#e0a04a",
+      );
+      return;
+    }
+
+    const text = await readFileText(match.handle as FileSystemFileHandle);
+    const parsed = await parseFile(match.name, text);
+    if (!parsed) return;
+
+    const hash = await hashRun(JSON.stringify(parsed), payload.campaignName);
+    if (hash !== payload.astHash) {
+      console.warn(
+        "%c[replay] the re-parsed file's AST hash doesn't match the recorded run — refusing to play back what might be a different version of the code.",
+        "color:#e0a04a",
+      );
+      return;
+    }
+
+    const map = mapGenerator.generate(parsed, payload.bonusLevel);
+
+    // Tear down whatever's currently running/shown, same as launching any
+    // other level — see `launchLevel`'s equivalent block.
+    activeEngine?.stop();
+    for (const child of [...viewport.children]) {
+      if (child !== canvas) child.remove();
+    }
+    const hint = document.createElement("p");
+    hint.className = "map-caption";
+    hint.textContent = `Watching replay: ${payload.filePath} — Esc to stop`;
+    viewport.append(hint);
+    canvas.hidden = false;
+    canvas.focus();
+
+    const hud = new GameHud(canvas);
+    activeHud = hud;
+    isReplaying = true;
+
+    const replayInput = new ReplayPlaybackInput();
+    const engine = new RaycasterEngine(
+      canvas,
+      map,
+      {
+        onGameOver: () => hud.showKernelPanic(() => stopReplay()),
+        onWin: () => hud.showBuildSuccessful(() => stopReplay()),
+      },
+      payload.carryover,
+      payload.gore,
+      payload.difficulty,
+      payload.gameplaySeed,
+      replayInput,
+      undefined, // never record a replay of a replay
+    );
+    activeEngine = engine;
+
+    let frameIndex = 0;
+    let rafId = 0;
+
+    const stopReplay = (): void => {
+      if (!isReplaying) return;
+      isReplaying = false;
+      stopActiveReplay = null;
+      cancelAnimationFrame(rafId);
+      window.removeEventListener("keydown", onStopKey);
+      resetToFileTree();
+    };
+    stopActiveReplay = stopReplay;
+    const onStopKey = (e: KeyboardEvent): void => {
+      if (e.code === "Escape") stopReplay();
+    };
+    window.addEventListener("keydown", onStopKey);
+
+    const step = (): void => {
+      if (!isReplaying) return;
+      if (frameIndex >= payload.frames.length) {
+        stopReplay();
+        return;
+      }
+      const frame = payload.frames[frameIndex++];
+      replayInput.loadFrame(frame.input);
+      engine.advance(frame.dt);
+      if (isReplaying) rafId = requestAnimationFrame(step);
+    };
+    rafId = requestAnimationFrame(step);
+  } catch (err) {
+    console.error("[replay] Failed to start replay:", err);
   }
 }
 

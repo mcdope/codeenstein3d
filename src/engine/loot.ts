@@ -45,10 +45,17 @@ const BONUS_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[
  * `LOOT_WEIGHTS` (`NORMAL_LOOT_WEIGHTS` on Normal difficulty specifically, or
  * `BONUS_LOOT_WEIGHTS` on a bonus level, which takes priority over both).
  * Elites use their own guaranteed-drop logic instead — see
- * `RaycasterEngine`'s `dropEliteLoot`. */
+ * `RaycasterEngine`'s `dropEliteLoot`.
+ *
+ * `rng` defaults to `Math.random` but `RaycasterEngine` always passes its own
+ * seeded stream instead — a loot roll changes what ammo/health is available
+ * for the rest of the run, so it has to go through the same deterministic
+ * source as everything else the replay system depends on (see `src/prng.ts`'s
+ * doc comment for the full seeded/cosmetic split). */
 export function rollLoot(
   bonusLevel = false,
   difficulty: DifficultyLevel = "normal",
+  rng: () => number = Math.random,
 ): Exclude<LootKind, "weapon"> {
   const weights = bonusLevel
     ? BONUS_LOOT_WEIGHTS
@@ -56,7 +63,7 @@ export function rollLoot(
       ? NORMAL_LOOT_WEIGHTS
       : LOOT_WEIGHTS;
   const total = weights.reduce((sum, w) => sum + w.weight, 0);
-  let r = Math.random() * total;
+  let r = rng() * total;
   for (const w of weights) {
     if (r < w.weight) return w.kind;
     r -= w.weight;

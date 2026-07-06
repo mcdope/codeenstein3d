@@ -31,7 +31,72 @@ const GAMEPAD_BUTTON_R3 = 11;
  * drift/turn at rest. */
 const GAMEPAD_DEADZONE = 0.18;
 
-export class InputController {
+/**
+ * The subset of `InputController`'s public API `RaycasterEngine` actually
+ * consumes each frame. Exists so the engine can be driven by either a real
+ * `InputController` (live play) or a `ReplayPlaybackInput` (see
+ * `src/engine/replay.ts`) without knowing which — the replay system depends
+ * on the engine treating both identically.
+ */
+export interface InputSource {
+  attach(): void;
+  detach(): void;
+  pollGamepad(): void;
+  isDown(code: string): boolean;
+  consumeMouseDX(): number;
+  consumeFire(): boolean;
+  isFireHeld(): boolean;
+  consumeWeaponRequest(): number | null;
+  consumeMapToggle(): boolean;
+  consumeInteract(): boolean;
+  consumeMelee(): boolean;
+  consumeWheelSteps(): number;
+  consumeFpsToggle(): boolean;
+  consumeEscape(): boolean;
+  consumeBlur(): boolean;
+  consumeClick(): boolean;
+  gamepadForward(): number;
+  gamepadStrafe(): number;
+  gamepadTurn(): number;
+  captureSnapshot(): InputSnapshot;
+}
+
+/**
+ * A single frame's worth of digested input state — exactly what
+ * `RaycasterEngine.advance()` reads from `InputSource` in one frame, captured
+ * as a plain, JSON-serializable snapshot rather than raw DOM events. Recorded
+ * once per frame by `ReplayRecorder` (via `InputController.captureSnapshot`,
+ * a non-destructive peek — it doesn't clear any of the one-shot flags it
+ * reads, so the real `consume*()` calls immediately afterward in the same
+ * frame still behave exactly as they would unrecorded) and replayed frame-by-
+ * frame by `ReplayPlaybackInput`.
+ */
+export interface InputSnapshot {
+  /** Currently-held codes among the ones the engine ever queries via
+   * `isDown()` (movement/turn/sprint) — see `RECORDED_KEYS`. */
+  keys: string[];
+  mouseDX: number;
+  fireQueued: boolean;
+  fireHeld: boolean;
+  weaponRequest: number | null;
+  mapToggle: boolean;
+  interact: boolean;
+  melee: boolean;
+  wheelSteps: number;
+  fpsToggle: boolean;
+  escape: boolean;
+  blur: boolean;
+  click: boolean;
+  gpForward: number;
+  gpStrafe: number;
+  gpTurn: number;
+}
+
+/** The only codes `RaycasterEngine` ever calls `isDown()` with — the complete
+ * key vocabulary `captureSnapshot()` needs to record. */
+const RECORDED_KEYS = ["KeyW", "KeyS", "KeyA", "KeyD", "KeyQ", "KeyE", "ShiftLeft", "ShiftRight"];
+
+export class InputController implements InputSource {
   private readonly keys = new Set<string>();
   /** Accumulated horizontal mouse delta since the last poll. */
   private mouseDX = 0;
@@ -287,6 +352,34 @@ export class InputController {
       (pad.buttons[GAMEPAD_BUTTON_R3]?.pressed ?? false) || (pad.buttons[GAMEPAD_BUTTON_B]?.pressed ?? false);
     if (meleeDown && !this.prevGpMelee) this.meleeQueued = true;
     this.prevGpMelee = meleeDown;
+  }
+
+  /**
+   * A non-destructive peek at this frame's full digested input state — see
+   * `InputSnapshot`'s doc comment for why this has to be read-only (the real
+   * `consume*()` calls right after it in the same frame must see the exact
+   * same values, unaffected by having been recorded). Called once per frame,
+   * before any of those, by `ReplayRecorder` when one is active.
+   */
+  captureSnapshot(): InputSnapshot {
+    return {
+      keys: RECORDED_KEYS.filter((code) => this.keys.has(code)),
+      mouseDX: this.mouseDX,
+      fireQueued: this.fireQueued,
+      fireHeld: this.isFireHeld(),
+      weaponRequest: this.weaponRequest,
+      mapToggle: this.mapToggleQueued,
+      interact: this.interactQueued,
+      melee: this.meleeQueued,
+      wheelSteps: this.wheelSteps,
+      fpsToggle: this.fpsToggleQueued,
+      escape: this.escapeQueued,
+      blur: this.blurQueued,
+      click: this.clickQueued,
+      gpForward: this.gamepadForward(),
+      gpStrafe: this.gamepadStrafe(),
+      gpTurn: this.gamepadTurn(),
+    };
   }
 
   private readonly onKeyDown = (e: KeyboardEvent): void => {

@@ -51,6 +51,12 @@ const ELITE_DAMAGE_MULTIPLIER = 2;
  * Advance every living enemy by `dt` seconds and return the total stability
  * damage the player should take from melee bites this frame. Call once per
  * frame, before rendering.
+ *
+ * `rng` defaults to `Math.random` but `RaycasterEngine` always passes its own
+ * seeded stream instead — roam-target picking and ranged fire-cooldown
+ * jitter both change enemy behavior/timing, which the replay system's
+ * deterministic-simulation guarantee depends on (see `src/prng.ts`'s doc
+ * comment for the full seeded/cosmetic split).
  */
 export function updateEnemies(
   enemies: Enemy[],
@@ -58,11 +64,12 @@ export function updateEnemies(
   map: GameMap,
   dt: number,
   projectiles: Projectile[],
+  rng: () => number = Math.random,
 ): number {
   let damage = 0;
   for (const enemy of enemies) {
     if (!enemy.alive) continue;
-    damage += updateEnemy(enemy, player, map, dt, projectiles);
+    damage += updateEnemy(enemy, player, map, dt, projectiles, rng);
   }
   return damage;
 }
@@ -74,6 +81,7 @@ function updateEnemy(
   map: GameMap,
   dt: number,
   projectiles: Projectile[],
+  rng: () => number,
 ): number {
   // Cool down toward the next melee bite and the next ranged shot.
   if (enemy.attackCooldown > 0) enemy.attackCooldown = Math.max(0, enemy.attackCooldown - dt);
@@ -92,7 +100,7 @@ function updateEnemy(
   }
 
   if (!enemy.aggroed) {
-    roam(enemy, map, dt);
+    roam(enemy, map, dt, rng);
     return 0;
   }
 
@@ -119,7 +127,7 @@ function updateEnemy(
       player.posY,
       enemy.elite ? ELITE_DAMAGE_MULTIPLIER : 1,
     );
-    enemy.fireCooldown = FIRE_COOLDOWN_MIN + Math.random() * (FIRE_COOLDOWN_MAX - FIRE_COOLDOWN_MIN);
+    enemy.fireCooldown = FIRE_COOLDOWN_MIN + rng() * (FIRE_COOLDOWN_MAX - FIRE_COOLDOWN_MIN);
   }
 
   // Home in on the player, steering toward the next cell of a wall-aware path
@@ -151,12 +159,12 @@ function hasLineOfSight(map: GameMap, x0: number, y0: number, x1: number, y1: nu
  * fresh random point inside the room. Movement is clamped so the enemy's box
  * never crosses the room bounds — it can't drift out through a doorway.
  */
-function roam(enemy: Enemy, map: GameMap, dt: number): void {
+function roam(enemy: Enemy, map: GameMap, dt: number, rng: () => number): void {
   const dx = enemy.roamX - enemy.x;
   const dy = enemy.roamY - enemy.y;
   const dist = Math.hypot(dx, dy);
   if (dist < ROAM_ARRIVE) {
-    pickRoamTarget(enemy);
+    pickRoamTarget(enemy, rng);
     return;
   }
 
@@ -166,7 +174,7 @@ function roam(enemy: Enemy, map: GameMap, dt: number): void {
   moveWithinHome(enemy, (dx / dist) * step, (dy / dist) * step, map);
   // If a wall blocked the stroll, wander somewhere else instead of pushing.
   if (Math.hypot(enemy.x - beforeX, enemy.y - beforeY) < step * 0.25) {
-    pickRoamTarget(enemy);
+    pickRoamTarget(enemy, rng);
   }
 }
 
@@ -180,10 +188,10 @@ function roam(enemy: Enemy, map: GameMap, dt: number): void {
  * collision-checked (`moveWithinHome`), so this was never a real "walks
  * through walls" bug, just an unreachable-or-awkward target in maze rooms.
  */
-function pickRoamTarget(enemy: Enemy): void {
+function pickRoamTarget(enemy: Enemy, rng: () => number): void {
   const h = enemy.home;
-  const x = h.x + 0.5 + Math.random() * Math.max(0, h.w - 1);
-  const y = h.y + 0.5 + Math.random() * Math.max(0, h.h - 1);
+  const x = h.x + 0.5 + rng() * Math.max(0, h.w - 1);
+  const y = h.y + 0.5 + rng() * Math.max(0, h.h - 1);
   enemy.roamX = Math.floor(x) + 0.5;
   enemy.roamY = Math.floor(y) + 0.5;
 }

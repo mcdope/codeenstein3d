@@ -12,6 +12,7 @@
  * map, via a seeded PRNG hashed from the file's content signature.
  */
 import type { CodeComment, CodeEntity, DeadCodeRegion, GotoLink, ParsedFile } from "../parser/types";
+import { mulberry32 } from "../prng";
 import {
   DOOR_TILE,
   HAZARD_TILE,
@@ -1331,16 +1332,4 @@ function seedFrom(parsed: ParsedFile): number {
     hash = Math.imul(hash, 0x01000193);
   }
   return hash >>> 0;
-}
-
-/** Small, fast, seedable PRNG. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }

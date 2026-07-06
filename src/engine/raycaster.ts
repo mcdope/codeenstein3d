@@ -323,15 +323,26 @@ function rgb([r, g, b]: [number, number, number]): string {
 }
 
 /** The minimap panel's outer bounding box in canvas pixels, as returned by
- * `renderMinimap` — lets the compass arrow (see `hud.ts`'s `drawCompass`) sit
- * precisely on the panel's own frame regardless of how big the actual level
- * makes the minimap (small maps get a smaller panel than `maxPixels` allows). */
+ * `renderMinimap`. `notch` is a dedicated sub-rect reserved in the panel's
+ * own bottom-right gutter — outside the grid area entirely — for the exit
+ * compass (see `hud.ts`'s `drawCompass`) to draw into, so the needle never
+ * overlaps the map grid itself regardless of how big the level makes the
+ * minimap (small maps get a smaller panel than `maxPixels` allows, but the
+ * notch is always the same fixed size in the same corner). */
 export interface MinimapPanelRect {
   x: number;
   y: number;
   w: number;
   h: number;
+  notch: { x: number; y: number; w: number; h: number };
 }
+
+/** Outer size (both dimensions), in canvas pixels, of the compass notch. */
+const COMPASS_NOTCH_SIZE = 28;
+/** Vertical gap reserved below the map grid, inside the panel, purely to
+ * house the notch — this is what keeps the compass fully clear of the grid
+ * (rather than just drawn on top of it). */
+const COMPASS_NOTCH_GUTTER = 6;
 
 /**
  * Small top-left minimap: walls, discovered enemies, traps, and the player's
@@ -352,7 +363,21 @@ export function renderMinimap(
   const w = map.width * cell;
   const h = map.height * cell;
   const pad = 8;
-  const panel: MinimapPanelRect = { x: pad - 2, y: pad - 2, w: w + 4, h: h + 4 };
+  const panelX = pad - 2;
+  const panelY = pad - 2;
+  const panelW = w + 4;
+  // The panel is taller than the grid alone by a fixed gutter + the notch —
+  // that extra strip is never touched by any of the grid/marker drawing
+  // below (all of which is bounded to `pad, pad, w, h`), so it reads as
+  // empty panel background except for the notch box drawn into it.
+  const panelH = h + 4 + COMPASS_NOTCH_GUTTER + COMPASS_NOTCH_SIZE;
+  const notch = {
+    x: panelX + panelW - COMPASS_NOTCH_SIZE - 3,
+    y: panelY + panelH - COMPASS_NOTCH_SIZE - 3,
+    w: COMPASS_NOTCH_SIZE,
+    h: COMPASS_NOTCH_SIZE,
+  };
+  const panel: MinimapPanelRect = { x: panelX, y: panelY, w: panelW, h: panelH, notch };
 
   ctx.save();
 
@@ -362,11 +387,18 @@ export function renderMinimap(
   ctx.fillStyle = "rgba(4,8,10,0.6)";
   ctx.fillRect(panel.x, panel.y, panel.w, panel.h);
 
-  // Subtle frame around the panel — the exit compass arrow (see `hud.ts`)
-  // sits directly on this, rather than as a separate floating dial.
+  // Subtle frame around the whole panel (grid + the compass gutter below it).
   ctx.strokeStyle = "rgba(140,255,170,0.35)";
   ctx.lineWidth = 1;
   ctx.strokeRect(panel.x + 0.5, panel.y + 0.5, panel.w - 1, panel.h - 1);
+
+  // The compass notch itself: a distinctly-bordered cutout in the gutter,
+  // separated from the grid above it — see `drawCompass` in `hud.ts` for
+  // what gets drawn into it.
+  ctx.fillStyle = "rgba(2,5,6,0.55)";
+  ctx.fillRect(notch.x, notch.y, notch.w, notch.h);
+  ctx.strokeStyle = "rgba(140,255,170,0.45)";
+  ctx.strokeRect(notch.x + 0.5, notch.y + 0.5, notch.w - 1, notch.h - 1);
 
   ctx.globalAlpha = 0.9;
 

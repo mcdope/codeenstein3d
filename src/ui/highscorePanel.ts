@@ -4,7 +4,18 @@
 /** Renders the top-10 leaderboard into the Highscores `<dialog>` (see main.ts). */
 import { truncateHash, type HighscoreEntry } from "../engine/highscores";
 
-export function renderHighscoreTable(container: HTMLElement, entries: HighscoreEntry[]): void {
+export interface HighscoreTableOptions {
+  /** Called with an entry's own `replay` payload when its "Watch Replay"
+   * button is clicked — only rendered for entries that actually have one
+   * (see `HighscoreEntry.replay`'s doc comment for why some don't). */
+  onWatchReplay?: (entry: HighscoreEntry) => void;
+}
+
+export function renderHighscoreTable(
+  container: HTMLElement,
+  entries: HighscoreEntry[],
+  options: HighscoreTableOptions = {},
+): void {
   container.textContent = "";
 
   if (entries.length === 0) {
@@ -20,7 +31,7 @@ export function renderHighscoreTable(container: HTMLElement, entries: HighscoreE
 
   const thead = document.createElement("thead");
   thead.innerHTML =
-    "<tr><th>#</th><th>Score</th><th>Campaign</th><th>Levels</th><th>Ended On</th><th>Hash</th></tr>";
+    "<tr><th>#</th><th>Score</th><th>Campaign</th><th>Levels</th><th>Ended On</th><th>Hash</th><th>Replay</th></tr>";
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
@@ -47,7 +58,20 @@ export function renderHighscoreTable(container: HTMLElement, entries: HighscoreE
     hash.textContent = truncateHash(entry.hash);
     hash.title = entry.hash;
 
-    row.append(rank, score, campaign, levels, level, hash);
+    const replay = document.createElement("td");
+    if (entry.replay && options.onWatchReplay) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "replay-btn";
+      button.textContent = "Watch";
+      button.addEventListener("click", () => options.onWatchReplay?.(entry));
+      replay.appendChild(button);
+    } else {
+      replay.className = "muted";
+      replay.textContent = "—";
+    }
+
+    row.append(rank, score, campaign, levels, level, hash, replay);
     tbody.appendChild(row);
   });
   table.appendChild(tbody);
