@@ -86,3 +86,5 @@
 - [ ] Textures from WADs? (to be discovered/done later)
 - [ ] dont play gameaudio while running tests (either unit/functional, or improvised by claude)
 - [ ] support doom-cheats for the lulz, disable highscore saving when any cheat is active though
+- [ ] avoid or workaround localStorage quota (even by compression if needed)
+- [ ] files with shebang and no extension arent recognized as source
