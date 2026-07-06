@@ -32,6 +32,32 @@ export function drawCrosshair(
 }
 
 /**
+ * Lightweight FPS/frame-time readout, top-right (clear of the top-left
+ * minimap and the bottom status bar) — toggled by Right-Ctrl (see
+ * `RaycasterEngine`'s `showFps`). Deliberately doesn't attempt CPU/GPU usage:
+ * no standard browser API exposes that to page JS in a sandboxed context —
+ * FPS and frame-time are the full, intentional scope.
+ */
+export function drawFpsOverlay(ctx: CanvasRenderingContext2D, fps: number, frameMs: number): void {
+  const w = ctx.canvas.width;
+  ctx.textAlign = "right";
+
+  ctx.font = "9px ui-monospace, monospace";
+  ctx.fillStyle = "#5aa869";
+  ctx.fillText("FPS", w - 8, 14);
+
+  ctx.font = "bold 13px ui-monospace, monospace";
+  ctx.fillStyle = fps < 30 ? "#ff5a4a" : "#4cff6a";
+  ctx.fillText(String(fps), w - 8, 30);
+
+  ctx.font = "9px ui-monospace, monospace";
+  ctx.fillStyle = "#5aa869";
+  ctx.fillText(`${frameMs.toFixed(1)}ms`, w - 8, 44);
+
+  ctx.textAlign = "start";
+}
+
+/**
  * Full-screen "PAUSED" scrim, drawn over one frozen frame of the scene —
  * triggered by the window losing focus or an Escape press (see
  * `RaycasterEngine`'s `isPaused`). Distinct from the Tab automap overlay,

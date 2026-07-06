@@ -30,7 +30,7 @@ import {
   findTargetUnderCrosshair,
   type BillboardJob,
 } from "./sprites";
-import { drawCrosshair, drawHud, drawLoreOverlay, drawPauseOverlay } from "./hud";
+import { drawCrosshair, drawFpsOverlay, drawHud, drawLoreOverlay, drawPauseOverlay } from "./hud";
 import { drawWeapon } from "./viewmodel";
 import { drawAutomap } from "./automap";
 import {
@@ -93,6 +93,9 @@ const ROT_SPEED = 2.6;
 const MOUSE_SENSITIVITY = 0.0025;
 /** Clamp per-frame dt so a background tab / long stall can't teleport the player. */
 const MAX_DT = 0.05;
+/** How often (seconds) the FPS overlay's averaged reading recomputes — often
+ * enough to feel live, slow enough not to jitter every frame. */
+const FPS_UPDATE_INTERVAL = 0.5;
 /** Starting / maximum System Stability (health), as a percentage. */
 const MAX_HEALTH = 100;
 /** Health lost per second while standing in an acid (hazard) tile. */
@@ -196,6 +199,18 @@ export class RaycasterEngine {
   private lastTime = 0;
   /** Enemy under the crosshair this frame, if any. */
   private target: Enemy | null = null;
+
+  /** Whether the FPS/frame-time overlay is showing (Right-Ctrl toggles it).
+   * Default off, not persisted — a debug display, not a setting. */
+  private showFps = false;
+  /** Seconds/frame-count accumulated since the last `displayFps` update. */
+  private fpsAccumTime = 0;
+  private fpsAccumFrames = 0;
+  /** Rolling-averaged FPS, recomputed every `FPS_UPDATE_INTERVAL` seconds. */
+  private displayFps = 0;
+  /** Last frame's raw (unaveraged) time in milliseconds — jitter/stutter is
+   * useful signal the averaged FPS alone would hide. */
+  private displayFrameMs = 0;
 
   private state: GameState = "playing";
   private health = MAX_HEALTH;
@@ -320,14 +335,33 @@ export class RaycasterEngine {
   private readonly frame = (now: number): void => {
     if (!this.running) return;
 
-    let dt = (now - this.lastTime) / 1000;
+    const rawDt = (now - this.lastTime) / 1000;
     this.lastTime = now;
+    let dt = rawDt;
     if (dt > MAX_DT) dt = MAX_DT;
 
+    // Measured from the real, unclamped delta — using the clamped `dt` would
+    // floor the reported FPS at a misleadingly-low ~20fps ceiling during any
+    // real stutter or background-tab throttling.
+    this.updateFpsCounter(rawDt);
     this.advance(dt);
 
     if (this.running) this.rafId = requestAnimationFrame(this.frame);
   };
+
+  /** Accumulate raw frame time toward the next averaged `displayFps` update,
+   * and record this frame's raw time directly (no averaging — a single
+   * stutter should be visible, not smoothed away). */
+  private updateFpsCounter(rawDt: number): void {
+    this.fpsAccumTime += rawDt;
+    this.fpsAccumFrames += 1;
+    this.displayFrameMs = rawDt * 1000;
+    if (this.fpsAccumTime >= FPS_UPDATE_INTERVAL) {
+      this.displayFps = Math.round(this.fpsAccumFrames / this.fpsAccumTime);
+      this.fpsAccumTime = 0;
+      this.fpsAccumFrames = 0;
+    }
+  }
 
   /**
    * Advance the simulation and render exactly one frame over `dt` seconds.
@@ -335,6 +369,11 @@ export class RaycasterEngine {
    * driven at a fixed step (e.g. headless/deterministic runs).
    */
   advance(dt: number): void {
+    // The FPS overlay toggles independent of pause/map/lore state, so it's
+    // consumed unconditionally right here rather than gated behind any of
+    // the early-return branches below.
+    if (this.input.consumeFpsToggle()) this.showFps = !this.showFps;
+
     // Window blur always forces a pause (never a toggle — you can't "un-blur"
     // by pressing something while the window doesn't have focus); Escape
     // toggles it explicitly, and a click resumes it. Always drain the click
@@ -476,6 +515,7 @@ export class RaycasterEngine {
     // Native HUD sits on top of the whole scene.
     const stats = this.buildStats();
     drawHud(this.ctx, stats);
+    if (this.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
     this.handlers.onStats?.(stats);
 
     // Age the frame-based effect timers now that this frame is drawn.
@@ -498,6 +538,7 @@ export class RaycasterEngine {
     renderScene(this.ctx, this.map, this.player, this.zBuffer, 0, this.levelTime);
     this.renderWorldBillboards();
     drawAutomap(this.ctx, this.map, this.player, this.levelTime);
+    if (this.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
     this.handlers.onStats?.(this.buildStats());
   }
 
@@ -509,6 +550,7 @@ export class RaycasterEngine {
     renderScene(this.ctx, this.map, this.player, this.zBuffer, 0, this.levelTime);
     this.renderWorldBillboards();
     drawPauseOverlay(this.ctx);
+    if (this.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
     this.handlers.onStats?.(this.buildStats());
   }
 
@@ -522,6 +564,7 @@ export class RaycasterEngine {
     this.renderWorldBillboards();
     const { maxScrollLines } = drawLoreOverlay(this.ctx, this.loreText ?? "", this.loreScroll);
     this.loreScroll = Math.max(0, Math.min(this.loreScroll, maxScrollLines));
+    if (this.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
     this.handlers.onStats?.(this.buildStats());
   }
 
