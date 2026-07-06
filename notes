@@ -89,3 +89,4 @@
 - [ ] avoid or workaround localStorage quota (even by compression if needed)
 - [ ] files with shebang and no extension arent recognized as source
 - [ ] smarter entrypoint detection, its quite stupid currently
+- [ ] highscore table should also store some stats about the codebase, like complexity and lines of code total
