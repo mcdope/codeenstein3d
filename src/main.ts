@@ -10,6 +10,7 @@ import {
   readFileText,
   type TreeNode,
 } from "./fs/workspace";
+import { fetchGithubTree, parseGithubRepoInput } from "./fs/github";
 import { renderFileTree } from "./ui/fileTree";
 import { initConsoleSidebar } from "./ui/consoleSidebar";
 import { extensionOf, isParsable, parseFile } from "./parser/registry";
@@ -53,6 +54,9 @@ const BGM_VOLUME_KEY = "codeenstein-bgm-volume";
 
 const selectButton = requireElement<HTMLButtonElement>("#select-workspace");
 const continueButton = requireElement<HTMLButtonElement>("#continue-run");
+const githubRepoInput = requireElement<HTMLInputElement>("#github-repo-input");
+const loadGithubRepoButton = requireElement<HTMLButtonElement>("#load-github-repo");
+const githubStatus = requireElement<HTMLParagraphElement>("#github-status");
 const workspaceName = requireElement<HTMLParagraphElement>("#workspace-name");
 const fileTree = requireElement<HTMLElement>("#file-tree");
 const viewport = requireElement<HTMLElement>("#viewport");
@@ -199,6 +203,13 @@ let stopActiveReplay: (() => void) | null = null;
  * directory if named 'src'" case from the spec isn't reachable in a browser
  * sandbox; a root literally named "src" just uses "src" as-is. */
 let workspaceRootName: string | null = null;
+/** True once the active workspace came from `fetchGithubTree` rather than a
+ * local `FileSystemDirectoryHandle` pick. Campaign autosave is skipped
+ * entirely in that case — `persistProgress`'s saved state is only ever
+ * resumable via "Continue Run", which re-picks a *local* folder through
+ * `pickWorkspace()` and has no way to re-fetch a remote repo, so saving would
+ * just leave a dead "Continue Run" button pointing nowhere. */
+let workspaceIsRemote = false;
 /** Most recent stats reported by the running engine, used for the throttled
  * autosave and the `beforeunload` flush. */
 let lastStats: EngineStats | null = null;
@@ -250,6 +261,7 @@ selectButton.addEventListener("click", async () => {
     const tree = await readDirectoryTree(handle);
     workspaceTree = tree;
     workspaceRootName = handle.name;
+    workspaceIsRemote = false;
     workspaceName.textContent = handle.name;
     campaignLevelIndex = 1; // a fresh pick always starts a new campaign
 
@@ -261,6 +273,45 @@ selectButton.addEventListener("click", async () => {
     workspaceName.textContent =
       err instanceof Error ? err.message : "Failed to read workspace.";
     workspaceName.classList.add("error");
+  }
+});
+
+loadGithubRepoButton.addEventListener("click", async () => {
+  const ref = parseGithubRepoInput(githubRepoInput.value);
+  if (!ref) {
+    githubStatus.textContent = 'Enter a repo as "owner/repo" or a github.com URL.';
+    githubStatus.classList.add("error");
+    return;
+  }
+
+  try {
+    loadGithubRepoButton.disabled = true;
+    githubStatus.classList.remove("error");
+    githubStatus.textContent = `Fetching "${ref.owner}/${ref.repo}"…`;
+    workspaceName.textContent = "Reading workspace…";
+    workspaceName.classList.remove("error");
+
+    const tree = await fetchGithubTree(ref);
+    workspaceTree = tree;
+    workspaceRootName = `${ref.owner}/${ref.repo}`;
+    workspaceIsRemote = true;
+    workspaceName.textContent = workspaceRootName;
+    campaignLevelIndex = 1; // a fresh load always starts a new campaign
+    clearCampaignSave(); // a stale local-workspace save shouldn't dangle a "Continue Run" button while a remote repo is loaded
+
+    renderFileTree(fileTree, tree, { onSelectFile: handleFileSelected });
+    console.info(`[github] Loaded "${workspaceRootName}"`, tree);
+    githubStatus.textContent = "";
+    await autoLaunchInitialLevel(tree);
+  } catch (err) {
+    console.error("[github] Failed to load repository:", err);
+    const message = err instanceof Error ? err.message : "Failed to load repository.";
+    githubStatus.textContent = message;
+    githubStatus.classList.add("error");
+    workspaceName.textContent = message;
+    workspaceName.classList.add("error");
+  } finally {
+    loadGithubRepoButton.disabled = false;
   }
 });
 
@@ -278,6 +329,7 @@ continueButton.addEventListener("click", async () => {
     const tree = await readDirectoryTree(handle);
     workspaceTree = tree;
     workspaceRootName = handle.name;
+    workspaceIsRemote = false;
     workspaceName.textContent = handle.name;
     renderFileTree(fileTree, tree, { onSelectFile: handleFileSelected });
 
@@ -806,7 +858,7 @@ export function clearCampaignSave(): void {
 
 /** Save the current position + stats, if a level is actually running. */
 function persistProgress(stats: EngineStats): void {
-  if (!workspaceRootName || !currentLevelPath) return;
+  if (!workspaceRootName || !currentLevelPath || workspaceIsRemote) return;
   saveCampaign({
     workspaceName: workspaceRootName,
     filePath: currentLevelPath,

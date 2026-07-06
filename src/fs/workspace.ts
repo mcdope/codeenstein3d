@@ -9,13 +9,24 @@
  * no in-memory mock, and no network layer anywhere in this module.
  */
 
+/**
+ * Structural subset of `FileSystemFileHandle` that `readFileText` actually
+ * needs — just enough for a non-local source (see `src/fs/github.ts`) to
+ * stand in for a real handle without satisfying the full browser API surface
+ * (`kind`, `name`, `isSameEntry`, `createWritable`, …), which a fetched-over-
+ * the-network file has no real backing for.
+ */
+export interface RemoteFileHandle {
+  getFile(): Promise<{ text(): Promise<string> }>;
+}
+
 /** A node in the workspace file tree. */
 export interface TreeNode {
   name: string;
   /** Path relative to the workspace root, using "/" separators. */
   path: string;
   kind: "file" | "directory";
-  handle: FileSystemFileHandle | FileSystemDirectoryHandle;
+  handle: FileSystemFileHandle | FileSystemDirectoryHandle | RemoteFileHandle;
   /** Populated for directories; undefined for files. */
   children?: TreeNode[];
 }
@@ -23,9 +34,11 @@ export interface TreeNode {
 /**
  * Directory names skipped while walking the tree. These are almost never
  * "source" for our purposes and can contain tens of thousands of entries,
- * which would make the picker unusable on a real project.
+ * which would make the picker unusable on a real project. Exported so
+ * `src/fs/github.ts` applies the exact same skip-list when building a tree
+ * from a remote repo instead of a local directory.
  */
-const IGNORED_DIRECTORIES = new Set<string>([
+export const IGNORED_DIRECTORIES = new Set<string>([
   ".git",
   "node_modules",
   "dist",
@@ -104,7 +117,9 @@ export async function readDirectoryTree(
   return { name: handle.name, path, kind: "directory", handle, children };
 }
 
-function compareNodes(a: TreeNode, b: TreeNode): number {
+/** Directories-first, then alphabetical (case-insensitive) — shared with
+ * `src/fs/github.ts` so a remote tree sorts identically to a local one. */
+export function compareNodes(a: TreeNode, b: TreeNode): number {
   if (a.kind !== b.kind) return a.kind === "directory" ? -1 : 1;
   return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
 }

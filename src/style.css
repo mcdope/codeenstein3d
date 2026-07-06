@@ -121,6 +121,22 @@ body {
   accent-color: var(--accent);
 }
 
+#github-repo-input {
+  width: 100%;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+#github-status {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
 .settings-btn {
   width: 100%;
   margin-top: 12px;

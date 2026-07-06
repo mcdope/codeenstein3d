@@ -14,6 +14,16 @@
           <h1>🔫 Codeenstein 3D</h1>
           <button id="select-workspace" type="button">Select Workspace</button>
           <button id="continue-run" type="button" style="display: none">Continue Run</button>
+          <label id="github-repo-label" for="github-repo-input" class="settings-label">Or load from GitHub</label>
+          <input
+            id="github-repo-input"
+            type="text"
+            placeholder="owner/repo"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button id="load-github-repo" class="settings-btn" type="button">Load from GitHub</button>
+          <p id="github-status" class="muted"></p>
           <label id="gore-label" for="gore-select" class="muted">Gore</label>
           <select id="gore-select">
             <option value="none">None</option>
