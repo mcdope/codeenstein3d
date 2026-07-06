@@ -23,7 +23,9 @@ file in the tree, so a whole codebase plays as one continuous multi-level
 campaign. Progress autosaves to `localStorage`, so a "Continue Run" button can
 pick up a large repository right where you left off in a later session.
 Every level is scored live — kill value, remaining health/ammo, completion
-speed, and route efficiency, minus a malus for finishing hurt. A run records
+speed, route efficiency, a flat bonus per unique lore terminal read, and a
+large "100% Clear" bonus for exploring over 95% of the level's walkable
+tiles, minus a malus for finishing hurt. A run records
 a top-10 leaderboard entry (score, campaign name, how many levels were
 cleared, and a SHA-256 hash of the run-ending level's AST + campaign name,
 for comparing runs) once it actually ends — on death, or on finishing the
@@ -31,6 +33,10 @@ whole campaign — never on an ordinary mid-campaign level clear — viewable in
 a sidebar Highscores dialog. A sidebar Master/SFX/Music volume mixer balances
 the procedural sound effects against an optional custom BGM folder (local
 `.mp3`/`.ogg`/`.wav` files, played back as a shuffled, looping playlist).
+A compass on the HUD always points from the player toward the level's exit,
+the windowed canvas now scales to fit any viewport without clipping, and a
+gamepad can drive the whole game (movement, aiming, firing, weapon cycling,
+quick-melee) alongside keyboard and mouse.
 
 | Stage | Status |
 | --- | --- |
@@ -66,6 +72,7 @@ the procedural sound effects against an optional custom BGM folder (local
 | 30. Controls overhaul (quick-melee, mousewheel), gore levels, FPS overlay | ✅ Done |
 | 31. Weapon tuning/renaming, forced unlocks, code smells, difficulty | ✅ Done |
 | 32. Scoring, persisted highscores (AST/campaign hash), custom BGM + volume mixer | ✅ Done |
+| 33. Exit compass, exploration/lore score bonuses, ammo tuning, gamepad support | ✅ Done |
 | Room decorations (racks/plants/desks/blocks) | ⏸️ Implemented, disabled (playtest feedback) |
 
 ## 🏗️ Architecture & Pipeline
@@ -117,9 +124,11 @@ before the next one loads.
 * **F** – toggle fullscreen
 * **Esc** – pause (freezes the action under a "PAUSED" overlay, distinct from the automap; a click or a second `Esc` resumes); also releases pointer lock / exits fullscreen per normal browser behavior. Losing window focus (alt-tab, etc.) pauses the same way automatically.
 * **Right-Ctrl** – toggle a small FPS/frame-time readout, top-right (off by default)
+* **Gamepad** – left stick moves/strafes, right stick turns, RT/R2 fires, the bumpers (LB/RB) cycle through your owned ranged weapons, and R3 (right stick click) or B triggers quick-melee — works alongside keyboard/mouse at the same time, no mode switch needed
+* **Compass** – a small dial under the minimap with a needle that always points from your current position toward the exit tile, rotating as you turn
 * **Gore** – a sidebar dropdown (None/Normal/More — Extreme is temporarily disabled, playtest feedback called it over-the-top) scaling blood-particle count, size, and how long a landed particle lingers; persisted across sessions, takes effect on the next level load
-* **Difficulty** – a sidebar dropdown (Easy/Normal/Hard) scaling enemy HP (0.7x/1x/1.5x), enemy-dealt damage, and ammo/health/armor pickup amounts (inversely — Hard is scarcer, not just tougher); persisted across sessions, takes effect on the next level load
-* **Score** – points per kill (scaled by the killed entity's complexity, tripled for an Elite), plus bonuses for remaining health/ammo, completion speed, and route efficiency (how close your path was to the shortest spawn→exit route), minus a malus for finishing below full health; live in the HUD, final the moment you reach the exit
+* **Difficulty** – a sidebar dropdown (Easy/Normal/Hard) scaling enemy HP (0.7x/1x/1.5x), enemy-dealt damage, and ammo/health/armor pickup amounts (inversely — Hard is scarcer, not just tougher); persisted across sessions, takes effect on the next level load. Normal also rolls enemy loot kind against a slightly ammo-favoring weight table (playtest feedback was that ammo ran too scarce there specifically), and static map ammo pickups grant ~40-50% more per pickup than before across all difficulties
+* **Score** – points per kill (scaled by the killed entity's complexity, tripled for an Elite), plus bonuses for remaining health/ammo, completion speed, route efficiency (how close your path was to the shortest spawn→exit route), a flat bonus per unique lore terminal read, and a large "100% Clear" bonus for exploring over 95% of the level's walkable tiles before reaching the exit, minus a malus for finishing below full health; live in the HUD, final the moment you reach the exit
 * **Highscores** – a sidebar button opens a dialog listing the top-10 scored runs (score, campaign name, levels cleared, and a truncated SHA-256 hash of the run-ending level's AST + campaign name, so you can tell whether a leaderboard entry is really the same code); an entry is only recorded once a run actually ends — on death, or on finishing the whole campaign — not on every intermediate level clear
 * **Master / SFX / Music** – three sidebar volume sliders balancing the procedural sound effects against any custom BGM, persisted across sessions
 * **Select BGM Folder** – pick a local folder of `.mp3`/`.ogg`/`.wav` files to play as a shuffled, looping background-music playlist behind the game's own sound effects
@@ -169,17 +178,17 @@ src/
     ├── projectiles.ts  # Enemy ranged bolts: spawn, move, collide, render
     ├── traps.ts        # Timed spike trap + proximity mine runtime behavior
     ├── weapons.ts      # Weapon stats/tracers/viewmodel kind per weapon + pellet spread
-    ├── loot.ts         # Weighted random loot-drop resolution (bonus-level aware)
-    ├── scoring.ts      # End-of-level score breakdown (kills/health/ammo/speed/path) — pure, recomputed live
+    ├── loot.ts         # Weighted random loot-drop resolution (bonus-level and difficulty aware)
+    ├── scoring.ts      # End-of-level score breakdown (kills/health/ammo/speed/path/exploration/lore) — pure, recomputed live
     ├── highscores.ts   # SHA-256 AST+campaign hashing, persisted top-10 leaderboard
     ├── bgm.ts          # Custom BGM: folder pick, shuffled looping playlist over the audio.ts BGM bus
     ├── rockets.ts      # Player rocket projectiles: spawn, move, AoE splash damage
     ├── viewmodel.ts    # First-person weapon sprite, head-bob, recoil
     ├── effects.ts      # Damage flash, bullet tracers, hit-flash, "digital blood" particles
     ├── audio.ts        # Procedural Web Audio sound effects (AudioManager singleton) + Master/SFX/BGM gain buses
-    ├── hud.ts          # Native-canvas status bar + crosshair
+    ├── hud.ts          # Native-canvas status bar + crosshair + exit compass
     ├── automap.ts      # Togglable fog-of-war map overlay
-    └── input.ts        # Keyboard/mouse polling + pointer lock
+    └── input.ts        # Keyboard/mouse polling + pointer lock + Gamepad API polling
 ```
 
 ## 🚀 Getting Started
