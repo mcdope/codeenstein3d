@@ -67,3 +67,5 @@
 - [ ] balancing
 - [ ] readme barely readable now. add more structure / formatting
 - [ ] Forced weapon unlock for MP at the 4th level, 8th for rocket launcher (in a campaign only)
+- [ ] avoid pixelation at fullscreen
+- [ ] update git ref in readme to https://github.com/mcdope/codeenstein3d
