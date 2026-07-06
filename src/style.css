@@ -165,6 +165,12 @@ body {
   width: min(100%, 960px);
   aspect-ratio: 640 / 400;
   height: auto;
+  /* Fallback first, preferred value last — some engines only ever supported
+   * crisp-edges before adopting pixelated. Declared explicitly (not just
+   * relied on via inheritance) on both this rule and :fullscreen below, so
+   * scaling the 640x400 backing store up to fill a large display never
+   * softens into a blur in either state. */
+  image-rendering: crisp-edges;
   image-rendering: pixelated;
   border: 1px solid var(--border);
   box-shadow: 0 0 0 4px #000;
@@ -180,6 +186,8 @@ body {
   width: 100vw;
   height: 100vh;
   max-width: none;
+  image-rendering: crisp-edges;
+  image-rendering: pixelated;
   object-fit: contain;
   border: none;
   box-shadow: none;
