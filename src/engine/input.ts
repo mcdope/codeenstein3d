@@ -2,15 +2,34 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 /**
- * Keyboard + mouse input for the engine.
+ * Keyboard + mouse + gamepad input for the engine.
  *
  * Tracks held keys (polled each frame by the game loop) and accumulates
  * relative mouse motion while the canvas holds a pointer lock. Clicking the
  * canvas requests the lock; Esc releases it (handled by the browser).
+ *
+ * Gamepad support piggybacks on the same polled/edge-triggered shape as
+ * keyboard input, via the HTML5 Gamepad API — which has no events for analog
+ * axis/button *state* (only `gamepadconnected`/`disconnected`), so `pollGamepad`
+ * must be called once per frame by the game loop (see `RaycasterEngine.advance`)
+ * rather than driven by listeners like everything else here.
  */
 /** Movement/strafe/rotation keys whose default browser behavior we suppress so
  * gameplay never fights the page. */
 const MOVEMENT_KEYS = new Set(["KeyW", "KeyS", "KeyA", "KeyD", "KeyQ", "KeyE"]);
+
+/** Standard-mapping gamepad button indices used by this game (Xbox-style
+ * layout; PlayStation pads report the same indices under the "standard"
+ * mapping, just different physical labels — RT≈R2, LB/RB≈L1/R1, B≈Circle). */
+const GAMEPAD_BUTTON_RT = 7;
+const GAMEPAD_BUTTON_LB = 4;
+const GAMEPAD_BUTTON_RB = 5;
+const GAMEPAD_BUTTON_B = 1;
+const GAMEPAD_BUTTON_R3 = 11;
+/** Stick deflection below this magnitude reads as zero — cheap analog stick
+ * drift is common enough that skipping this would cause a slow, uncommanded
+ * drift/turn at rest. */
+const GAMEPAD_DEADZONE = 0.18;
 
 export class InputController {
   private readonly keys = new Set<string>();
@@ -50,6 +69,21 @@ export class InputController {
   /** Edge-triggered "the canvas was clicked" signal — resumes from pause. */
   private clickQueued = false;
   private attached = false;
+
+  /** Left stick X/Y and right stick X, deadzone-applied, refreshed once per
+   * frame by `pollGamepad` — 0 whenever no gamepad is connected. */
+  private gamepadMoveX = 0;
+  private gamepadMoveY = 0;
+  private gamepadTurnX = 0;
+  /** Whether RT/R2 is currently held — merged into `isFireHeld()`. */
+  private gamepadFireHeld = false;
+  /** Previous-frame button states, so `pollGamepad` can edge-trigger the
+   * one-shot actions (fire/cycle-weapon/melee) the same way key/mouse presses
+   * do, instead of re-firing every frame a button stays held. */
+  private prevGpFire = false;
+  private prevGpLB = false;
+  private prevGpRB = false;
+  private prevGpMelee = false;
 
   constructor(private readonly canvas: HTMLCanvasElement) {}
 
@@ -93,6 +127,14 @@ export class InputController {
     this.escapeQueued = false;
     this.blurQueued = false;
     this.clickQueued = false;
+    this.gamepadMoveX = 0;
+    this.gamepadMoveY = 0;
+    this.gamepadTurnX = 0;
+    this.gamepadFireHeld = false;
+    this.prevGpFire = false;
+    this.prevGpLB = false;
+    this.prevGpRB = false;
+    this.prevGpMelee = false;
   }
 
   isDown(code: string): boolean {
@@ -114,10 +156,10 @@ export class InputController {
   }
 
   /** Whether the trigger is currently held down (mouse button, while
-   * pointer-locked, or Space) — polled every frame by automatic weapons,
-   * unlike `consumeFire()`'s one-shot-per-press semantics. */
+   * pointer-locked, or Space, or a gamepad's RT/R2) — polled every frame by
+   * automatic weapons, unlike `consumeFire()`'s one-shot-per-press semantics. */
   isFireHeld(): boolean {
-    return this.mouseHeld || this.keys.has("Space");
+    return this.mouseHeld || this.keys.has("Space") || this.gamepadFireHeld;
   }
 
   /** Return a requested weapon index (once) from a number-key press, or null. */
@@ -184,6 +226,67 @@ export class InputController {
     const clicked = this.clickQueued;
     this.clickQueued = false;
     return clicked;
+  }
+
+  /** Left stick, forward axis: -1..1, positive = pushed forward (up). Flips
+   * the stick's raw Y (where up reports negative) to match `moveForward`'s
+   * sign convention. 0 with no gamepad connected or the stick at rest. */
+  gamepadForward(): number {
+    return -this.gamepadMoveY;
+  }
+
+  /** Left stick, strafe axis: -1..1, positive = pushed right, matching
+   * `strafe`'s sign convention. */
+  gamepadStrafe(): number {
+    return this.gamepadMoveX;
+  }
+
+  /** Right stick, turn axis: -1..1, positive = pushed right, matching
+   * `Player.rotate`'s "positive = right" convention. */
+  gamepadTurn(): number {
+    return this.gamepadTurnX;
+  }
+
+  /**
+   * Refresh gamepad axis/button state for this frame and edge-trigger its
+   * one-shot actions (RT fire, bumpers cycle weapons, R3/B quick-melee) into
+   * the same queues a key/mouse press would use. Must be called once per
+   * frame by the game loop — see this class's doc comment for why (the
+   * Gamepad API has no per-axis/button change events to listen for instead).
+   * A no-op, and zeroes every analog reading, when no gamepad is connected.
+   */
+  pollGamepad(): void {
+    const pads = typeof navigator.getGamepads === "function" ? navigator.getGamepads() : [];
+    const pad = Array.from(pads).find((p): p is Gamepad => p !== null);
+    if (!pad) {
+      this.gamepadMoveX = 0;
+      this.gamepadMoveY = 0;
+      this.gamepadTurnX = 0;
+      this.gamepadFireHeld = false;
+      return;
+    }
+
+    this.gamepadMoveX = applyDeadzone(pad.axes[0] ?? 0);
+    this.gamepadMoveY = applyDeadzone(pad.axes[1] ?? 0);
+    this.gamepadTurnX = applyDeadzone(pad.axes[2] ?? 0);
+
+    const fireDown = pad.buttons[GAMEPAD_BUTTON_RT]?.pressed ?? false;
+    if (fireDown && !this.prevGpFire) this.fireQueued = true;
+    this.gamepadFireHeld = fireDown;
+    this.prevGpFire = fireDown;
+
+    const lbDown = pad.buttons[GAMEPAD_BUTTON_LB]?.pressed ?? false;
+    if (lbDown && !this.prevGpLB) this.wheelSteps -= 1; // previous weapon
+    this.prevGpLB = lbDown;
+
+    const rbDown = pad.buttons[GAMEPAD_BUTTON_RB]?.pressed ?? false;
+    if (rbDown && !this.prevGpRB) this.wheelSteps += 1; // next weapon
+    this.prevGpRB = rbDown;
+
+    const meleeDown =
+      (pad.buttons[GAMEPAD_BUTTON_R3]?.pressed ?? false) || (pad.buttons[GAMEPAD_BUTTON_B]?.pressed ?? false);
+    if (meleeDown && !this.prevGpMelee) this.meleeQueued = true;
+    this.prevGpMelee = meleeDown;
   }
 
   private readonly onKeyDown = (e: KeyboardEvent): void => {
@@ -287,4 +390,10 @@ export class InputController {
 function digitKeyIndex(code: string): number | null {
   const match = /^(?:Digit|Numpad)([1-9])$/.exec(code);
   return match ? Number(match[1]) - 1 : null;
+}
+
+/** Zero out sub-deadzone stick noise/drift; passes through everything else
+ * unscaled (a full deflection still reads as exactly ±1). */
+function applyDeadzone(value: number): number {
+  return Math.abs(value) < GAMEPAD_DEADZONE ? 0 : value;
 }

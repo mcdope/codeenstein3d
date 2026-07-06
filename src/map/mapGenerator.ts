@@ -743,9 +743,10 @@ const AMMO_PICKUP_ROOM_CHANCE = 0.22;
 const AMMO_PICKUP_ROCKET_CHANCE = 0.3;
 /** Amount granted per scattered pickup, by kind (kept local rather than
  * imported from the engine layer's `loot.ts` — the map layer never depends on
- * the engine layer, only the reverse). */
-const AMMO_PICKUP_BULLETS_AMOUNT = 8;
-const AMMO_PICKUP_ROCKETS_AMOUNT = 2;
+ * the engine layer, only the reverse). Bumped ~40-50% over the original
+ * 8/2 baseline — playtest feedback was that ammo ran too scarce on Normal. */
+const AMMO_PICKUP_BULLETS_AMOUNT = 11;
+const AMMO_PICKUP_ROCKETS_AMOUNT = 3;
 /** A bonus (restock-arena) level scatters pickups far more liberally, and
  * each one grants more — it's meant to feel like a deliberate resupply stop,
  * not a normal combat level that happens to have a few pickups. */

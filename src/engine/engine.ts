@@ -31,7 +31,7 @@ import {
   findTargetUnderCrosshair,
   type BillboardJob,
 } from "./sprites";
-import { drawCrosshair, drawFpsOverlay, drawHud, drawLoreOverlay, drawPauseOverlay } from "./hud";
+import { drawCompass, drawCrosshair, drawFpsOverlay, drawHud, drawLoreOverlay, drawPauseOverlay } from "./hud";
 import { drawWeapon } from "./viewmodel";
 import { drawAutomap } from "./automap";
 import {
@@ -79,6 +79,7 @@ import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, RO
 import { detonateMine, spikeDamage, updateMines } from "./traps";
 import {
   DOOR_TILE,
+  LORE_TILE,
   SECRET_WALL_TILE,
   TELEPORTER_TILE,
   type Enemy,
@@ -268,6 +269,17 @@ export class RaycasterEngine {
    * for nothing) — never reset mid-level, unlike `stepDistance`; feeds the
    * scoring system's path-efficiency bonus (see `./scoring.ts`). */
   private distanceTraveled = 0;
+  /** Count of unique walkable tiles (see `isWalkableTile`) revealed by
+   * `markVisited` so far — the numerator of the "100% Clear" completion
+   * fraction (see `./scoring.ts`). Updated incrementally there rather than
+   * rescanned every frame, since `map.visited` only ever grows. */
+  private visitedWalkableCount = 0;
+  /** Total walkable tiles on this level, counted once at construction — the
+   * completion fraction's denominator. */
+  private readonly totalWalkableTiles: number;
+  /** Tile keys ("x,y") of lore terminals read at least once this level —
+   * feeds the scoring system's flat per-terminal bonus. */
+  private readonly loreRead = new Set<string>();
   /** Loot dropped by defeated enemies, awaiting collection. */
   private readonly drops: LootDrop[] = [];
   /** Frames left on the red "took damage" screen flash (0 = none). */
@@ -282,6 +294,10 @@ export class RaycasterEngine {
   /** HP/damage/ammo-drop-rate multipliers for the current difficulty, read
    * once at construction (see the constructor's `difficulty` parameter). */
   private readonly difficultyMultipliers: DifficultyMultipliers;
+  /** The raw difficulty level itself, kept alongside `difficultyMultipliers`
+   * since `rollLoot`'s drop-kind odds (Normal only — see `./loot.ts`) need the
+   * level name, not just its numeric multipliers. */
+  private readonly difficultyLevel: DifficultyLevel;
   /** In-flight enemy projectiles (ranged bolts). */
   private readonly projectiles: Projectile[] = [];
   /** In-flight player-fired rockets. */
@@ -345,8 +361,10 @@ export class RaycasterEngine {
     this.startingBulletsRef = startingBullets(map.enemies);
     this.startingRocketsRef = startingRockets();
     this.ownedWeapons = new Set(carryover?.ownedWeapons ?? STARTING_WEAPONS);
+    this.totalWalkableTiles = countWalkableTiles(map);
     this.goreMultipliers = GORE_MULTIPLIERS[gore];
     this.difficultyMultipliers = DIFFICULTY_MULTIPLIERS[difficulty];
+    this.difficultyLevel = difficulty;
     // Enemy HP is "baked in" data on the map's Enemy objects (set once at
     // generation time) rather than something the engine recomputes every
     // frame — rescale it in place here, once, instead of threading difficulty
@@ -422,6 +440,13 @@ export class RaycasterEngine {
    * driven at a fixed step (e.g. headless/deterministic runs).
    */
   advance(dt: number): void {
+    // Gamepad axis/button state has no change events to listen for (unlike
+    // keyboard/mouse), so it must be actively polled once per frame — and
+    // before any of the below reads any of the one-shot queues it can feed
+    // (fire/weapon-cycle/melee), or a gamepad press made this frame would sit
+    // unconsumed until the *next* frame's reads instead.
+    this.input.pollGamepad();
+
     // The FPS overlay toggles independent of pause/map/lore state, so it's
     // consumed unconditionally right here rather than gated behind any of
     // the early-return branches below.
@@ -469,6 +494,11 @@ export class RaycasterEngine {
       const terminal = findNearbyLoreTerminal(this.map.loreTerminals, this.player.posX, this.player.posY);
       if (terminal) {
         audio.playSecret();
+        const key = `${terminal.x},${terminal.y}`;
+        if (!this.loreRead.has(key)) {
+          this.loreRead.add(key);
+          console.log("%c[lore] terminal logged — exploration bonus earned", "color:#78c8d2");
+        }
         this.loreText = terminal.text;
         this.loreScroll = 0;
         this.renderLoreOverlay();
@@ -564,6 +594,14 @@ export class RaycasterEngine {
 
     drawCrosshair(this.ctx, this.target !== null, WEAPONS[this.weaponIndex].spreadPx);
     renderMinimap(this.ctx, this.map, this.player, this.levelTime);
+    drawCompass(
+      this.ctx,
+      this.player.posX,
+      this.player.posY,
+      Math.atan2(this.player.dirY, this.player.dirX),
+      this.map.exit.x + 0.5,
+      this.map.exit.y + 0.5,
+    );
 
     // Native HUD sits on top of the whole scene.
     const stats = this.buildStats();
@@ -673,15 +711,20 @@ export class RaycasterEngine {
     for (const job of jobs) job.draw();
   }
 
-  /** Fog of war: reveal the player's tile and its immediate neighbors. */
+  /** Fog of war: reveal the player's tile and its immediate neighbors. Also
+   * feeds `visitedWalkableCount` (the map-completion score bonus's numerator)
+   * incrementally, counting a tile only the first time it's newly revealed. */
   private markVisited(): void {
     const cx = Math.floor(this.player.posX);
     const cy = Math.floor(this.player.posY);
     for (let y = cy - 1; y <= cy + 1; y++) {
       if (y < 0 || y >= this.map.height) continue;
       const row = this.map.visited[y];
+      const tileRow = this.map.grid[y];
       for (let x = cx - 1; x <= cx + 1; x++) {
-        if (x >= 0 && x < this.map.width) row[x] = true;
+        if (x < 0 || x >= this.map.width || row[x]) continue;
+        row[x] = true;
+        if (isWalkableTile(tileRow[x])) this.visitedWalkableCount += 1;
       }
     }
   }
@@ -725,11 +768,22 @@ export class RaycasterEngine {
     if (this.input.isDown("KeyD")) this.player.strafe(step, this.map);
     if (this.input.isDown("KeyA")) this.player.strafe(-step, this.map);
 
-    // Camera rotation is exclusively Q/E + mouse — A/D strafe instead, so
-    // turning stays a keyboard key away from WASD rather than an arrow-key reach.
+    // Gamepad left stick: analog move/strafe, additive with keyboard (both
+    // read as 0 when idle/absent, so this is a no-op without a pad plugged in).
+    const gpForward = this.input.gamepadForward();
+    const gpStrafe = this.input.gamepadStrafe();
+    if (gpForward !== 0) this.player.moveForward(step * gpForward, this.map);
+    if (gpStrafe !== 0) this.player.strafe(step * gpStrafe, this.map);
+
+    // Camera rotation is exclusively Q/E + mouse (+ the gamepad's right
+    // stick) — A/D strafe instead, so turning stays a keyboard key away from
+    // WASD rather than an arrow-key reach.
     const rot = ROT_SPEED * dt;
     if (this.input.isDown("KeyQ")) this.player.rotate(-rot);
     if (this.input.isDown("KeyE")) this.player.rotate(rot);
+
+    const gpTurn = this.input.gamepadTurn();
+    if (gpTurn !== 0) this.player.rotate(rot * gpTurn);
 
     const mouseDX = this.input.consumeMouseDX();
     if (mouseDX !== 0) this.player.rotate(mouseDX * MOUSE_SENSITIVITY);
@@ -1246,7 +1300,7 @@ export class RaycasterEngine {
     if (lifesteal) this.health = Math.min(MAX_HEALTH, this.health + lifesteal);
 
     if (enemy.elite) this.dropEliteLoot(enemy);
-    else this.drops.push({ x: enemy.x, y: enemy.y, kind: rollLoot(this.map.bonusLevel) });
+    else this.drops.push({ x: enemy.x, y: enemy.y, kind: rollLoot(this.map.bonusLevel, this.difficultyLevel) });
     audio.playAmmoDrop();
 
     const remaining = this.enemies.reduce((n, e) => n + (e.alive ? 1 : 0), 0);
@@ -1300,6 +1354,8 @@ export class RaycasterEngine {
       levelTimeSec: this.levelTime,
       distanceTraveledTiles: this.distanceTraveled,
       shortestPathTiles: this.map.shortestPathTiles,
+      mapCompletionFrac: this.visitedWalkableCount / this.totalWalkableTiles,
+      uniqueLoreTerminalsRead: this.loreRead.size,
     }).total;
 
     return {
@@ -1335,6 +1391,28 @@ function findNearbyLoreTerminal(
     }
   }
   return best;
+}
+
+/** A tile counts toward map-completion exploration if it's ever walkable —
+ * floor, hazard, a door (locked or not), a teleporter pad, or a spike trap.
+ * Walls, unopened secret walls, and lore-terminal walls never are. Secret
+ * rooms (tile 6 until opened) are deliberately excluded from the completion
+ * denominator computed once at level start — finding them is a bonus, not a
+ * requirement for "100% Clear". */
+function isWalkableTile(tile: number): boolean {
+  return tile !== 1 && tile !== SECRET_WALL_TILE && tile !== LORE_TILE;
+}
+
+/** Total walkable tiles on `map`, counted once at construction — the
+ * map-completion score bonus's denominator (see `./scoring.ts`). */
+function countWalkableTiles(map: GameMap): number {
+  let count = 0;
+  for (const row of map.grid) {
+    for (const tile of row) {
+      if (isWalkableTile(tile)) count += 1;
+    }
+  }
+  return Math.max(1, count);
 }
 
 /**

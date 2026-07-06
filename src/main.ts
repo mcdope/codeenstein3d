@@ -449,7 +449,8 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
     `grab keys to open blue doors · step on a glowing pad to warp (goto) · ` +
     `avoid the acid and timed spikes · shoot spotted mines to disarm them from range · ` +
     `R to read a glowing lore terminal or open a suspicious wall · ` +
-    `Tab for map · F for fullscreen · Esc to pause · Right-Ctrl for FPS`;
+    `Tab for map · F for fullscreen · Esc to pause · Right-Ctrl for FPS · ` +
+    `gamepad: left stick move, right stick turn, RT fire, bumpers cycle weapons, R3/B melee`;
 
   const hud = new GameHud(canvas);
   activeHud = hud;

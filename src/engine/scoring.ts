@@ -41,6 +41,14 @@ const PATH_BONUS_MAX = 300;
 /** Max points deducted for finishing below full health, scaled by how far
  * below (finishing at 0%, in principle, would forfeit the whole malus). */
 const HP_MALUS_MAX = 200;
+/** Fraction of walkable tiles that must have been visited to count as a "100%
+ * Clear" — not literally 1.0, since a couple of tiles can be geometrically
+ * unreachable in some layouts (e.g. wedged behind a spawn-side wall corner). */
+const MAP_COMPLETION_THRESHOLD = 0.95;
+/** Flat bonus for reaching that threshold before/at the exit. */
+const MAP_COMPLETION_BONUS = 750;
+/** Flat points per unique lore terminal read this level. */
+const LORE_BONUS_PER_TERMINAL = 100;
 
 export interface ScoreInput {
   /** Sum of `killPoints()` for every enemy defeated so far. */
@@ -59,6 +67,11 @@ export interface ScoreInput {
   distanceTraveledTiles: number;
   /** BFS-shortest tile distance from spawn to exit — the "perfect" route. */
   shortestPathTiles: number;
+  /** Unique walkable tiles visited so far, divided by the level's total
+   * walkable tile count — see `MAP_COMPLETION_THRESHOLD`. */
+  mapCompletionFrac: number;
+  /** Count of unique lore terminals read so far this level. */
+  uniqueLoreTerminalsRead: number;
 }
 
 export interface ScoreBreakdown {
@@ -68,6 +81,8 @@ export interface ScoreBreakdown {
   speedBonus: number;
   pathBonus: number;
   hpMalus: number;
+  mapCompletionBonus: number;
+  loreBonus: number;
   /** Sum of every bonus, minus the malus, floored at 0. */
   total: number;
 }
@@ -95,12 +110,33 @@ export function computeScore(input: ScoreInput): ScoreBreakdown {
 
   const hpMalus = Math.round((1 - healthFrac) * HP_MALUS_MAX);
 
+  const mapCompletionBonus =
+    clamp01(input.mapCompletionFrac) > MAP_COMPLETION_THRESHOLD ? MAP_COMPLETION_BONUS : 0;
+  const loreBonus = input.uniqueLoreTerminalsRead * LORE_BONUS_PER_TERMINAL;
+
   const total = Math.max(
     0,
-    input.killPoints + healthBonus + ammoBonus + speedBonus + pathBonus - hpMalus,
+    input.killPoints +
+      healthBonus +
+      ammoBonus +
+      speedBonus +
+      pathBonus +
+      mapCompletionBonus +
+      loreBonus -
+      hpMalus,
   );
 
-  return { killPoints: input.killPoints, healthBonus, ammoBonus, speedBonus, pathBonus, hpMalus, total };
+  return {
+    killPoints: input.killPoints,
+    healthBonus,
+    ammoBonus,
+    speedBonus,
+    pathBonus,
+    hpMalus,
+    mapCompletionBonus,
+    loreBonus,
+    total,
+  };
 }
 
 function clamp01(n: number): number {

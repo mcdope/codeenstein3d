@@ -259,8 +259,16 @@ body {
 
 .scene-canvas {
   width: min(100%, 960px);
-  aspect-ratio: 640 / 400;
   height: auto;
+  /* Bounds the scaled-up box by viewport height too (not just #viewport's
+   * width-driven min() above) — on a short/narrow window, a width-only cap
+   * could still derive a height taller than the viewport via the aspect
+   * ratio, clipping the bottom of the scene. object-fit: contain then letter-
+   * boxes the actual 640x400 content inside whatever box results, so the
+   * image never gets cropped, just pillar/letterboxed. */
+  max-height: 100vh;
+  aspect-ratio: 640 / 400;
+  object-fit: contain;
   /* Fallback first, preferred value last — some engines only ever supported
    * crisp-edges before adopting pixelated. Declared explicitly (not just
    * relied on via inheritance) on both this rule and :fullscreen below, so

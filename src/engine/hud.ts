@@ -182,6 +182,66 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
   return lines;
 }
 
+/** Diameter, in canvas pixels, of the exit compass dial. */
+const COMPASS_SIZE = 46;
+/** Top-left placement of the compass — just under the minimap's max possible
+ * footprint (`maxPixels` 140 + its 8px pad + a small gap), so it never
+ * overlaps a large map's minimap panel. */
+const COMPASS_X = 8;
+const COMPASS_Y = 158;
+
+/**
+ * Exit compass: a small dial below the minimap with a needle that always
+ * points from the player's current position toward the exit tile, rotated
+ * relative to the player's own facing (not true "north") — so it reads the
+ * same way regardless of which way the player is looking, exactly like the
+ * automap's player-facing-relative marker.
+ */
+export function drawCompass(
+  ctx: CanvasRenderingContext2D,
+  playerX: number,
+  playerY: number,
+  playerAngle: number,
+  exitX: number,
+  exitY: number,
+): void {
+  const r = COMPASS_SIZE / 2;
+  const cx = COMPASS_X + r;
+  const cy = COMPASS_Y + r;
+
+  ctx.save();
+
+  ctx.fillStyle = "rgba(4,8,10,0.6)";
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(65,255,110,0.5)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  const angleToExit = Math.atan2(exitY - playerY, exitX - playerX);
+  const needleAngle = angleToExit - playerAngle;
+
+  ctx.translate(cx, cy);
+  ctx.rotate(needleAngle);
+  ctx.fillStyle = "#8effa0";
+  ctx.beginPath();
+  ctx.moveTo(r * 0.75, 0);
+  ctx.lineTo(-r * 0.45, r * 0.42);
+  ctx.lineTo(-r * 0.15, 0);
+  ctx.lineTo(-r * 0.45, -r * 0.42);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.restore();
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#5aa869";
+  ctx.font = "9px ui-monospace, monospace";
+  ctx.fillText("EXIT", cx, COMPASS_Y + COMPASS_SIZE + 10);
+  ctx.textAlign = "start";
+}
+
 /** Height, in canvas pixels, of the native status bar at the bottom. */
 const HUD_HEIGHT = 58;
 
