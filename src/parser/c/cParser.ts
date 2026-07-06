@@ -15,8 +15,10 @@ import { Language, Parser, type Node } from "web-tree-sitter";
 import cWasmUrl from "tree-sitter-c/tree-sitter-c.wasm?url";
 import { initTreeSitter } from "../runtime";
 import {
+  codeSmellBonus,
   countDecisionPoints,
   countLines,
+  countParameters,
   extractLargeComments,
   findDeadCodeAfterReturn,
   maxNestingDepth,
@@ -65,6 +67,10 @@ const NESTING_NODE_TYPES = new Set([
   "switch_statement",
 ]);
 
+/** A function's own parameter list — see `countParameters`'s "first match
+ * wins" heuristic for why this doesn't need to worry about nested closures. */
+const PARAMETER_LIST_NODE_TYPES = ["parameter_list"];
+
 export class CParserAdapter implements CodeParserAdapter {
   readonly language = "c";
   readonly extensions = ["c", "h"] as const;
@@ -98,13 +104,20 @@ export class CParserAdapter implements CodeParserAdapter {
         const name = kind === "function" ? functionName(node) : typeName(node);
         if (!name) continue; // skip anonymous structs/enums
 
+        const nestingDepth = maxNestingDepth(node, NESTING_NODE_TYPES);
+        // Code smells (too many parameters, too much nesting) only make
+        // sense for callable entities — structs/unions/enums have no
+        // parameter list of their own.
+        const smellBonus =
+          kind === "function" ? codeSmellBonus(countParameters(node, PARAMETER_LIST_NODE_TYPES), nestingDepth) : 0;
+
         entities.push({
           name,
           kind,
           startLine: node.startPosition.row + 1,
           endLine: node.endPosition.row + 1,
-          complexityScore: 1 + countDecisionPoints(node, DECISION_NODE_TYPES, LOGICAL_OPERATORS),
-          nestingDepth: maxNestingDepth(node, NESTING_NODE_TYPES),
+          complexityScore: 1 + countDecisionPoints(node, DECISION_NODE_TYPES, LOGICAL_OPERATORS) + smellBonus,
+          nestingDepth,
         });
       }
 

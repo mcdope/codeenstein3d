@@ -24,7 +24,7 @@ const HINTS = [
   "TIP: header files make good restock stops.",
   "TIP: large comment blocks sometimes glow for a reason.",
   "WARNING: private and protected methods stay locked without a key.",
-  "TIP: the Rocket Launcher's splash damage isn't picky about who's standing in it.",
+  "TIP: ghidra's splash damage isn't picky about who's standing in it.",
   "NOTICE: an aggroed enemy keeps coming, even out of sight.",
   "TIP: dead code doesn't just sit there — it hides things.",
 ];

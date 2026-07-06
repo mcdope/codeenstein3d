@@ -68,8 +68,11 @@ function secretWallTint(base: [number, number, number]): [number, number, number
 }
 /** Within this many tiles the world keeps full brightness (no fog). */
 const FOG_NEAR = 2.5;
-/** Beyond this many tiles the world has faded to pure black. */
-const FOG_FAR = 14;
+/** Beyond this many tiles the world has faded to pure black — also doubles as
+ * the "maximum visual range" the Cone of Fire scales aim deviation against
+ * (see `engine.ts`'s `fire()`), so a shot only really goes wide right at the
+ * edge of what you can actually see. */
+export const FOG_FAR = 14;
 /** y-side walls are dimmed to fake directional lighting. */
 const SIDE_SHADE = 0.68;
 

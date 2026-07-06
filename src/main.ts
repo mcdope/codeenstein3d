@@ -17,6 +17,8 @@ import { RaycasterEngine } from "./engine/engine";
 import { audio } from "./engine/audio";
 import { GameHud } from "./ui/gameHud";
 import { DEFAULT_GORE_LEVEL, EXTREME_GORE_ENABLED, type GoreLevel } from "./engine/effects";
+import { GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX } from "./engine/weapons";
+import { DEFAULT_DIFFICULTY, type DifficultyLevel } from "./difficulty";
 import type { ParsedFile } from "./parser/types";
 import type { EngineCarryover, EngineStats } from "./engine/engine";
 
@@ -34,6 +36,9 @@ const BONUS_LEVEL_EXTENSIONS = new Set(["h"]);
  * `loadGoreLevel()` immediately; a `const` declared later in the file would
  * still be in its temporal dead zone at that point and throw. */
 const GORE_KEY = "codeenstein-gore-level";
+/** localStorage key for the standing difficulty preference — same "declared
+ * up here, not next to load/save" reasoning as `GORE_KEY` above. */
+const DIFFICULTY_KEY = "codeenstein-difficulty";
 
 const selectButton = requireElement<HTMLButtonElement>("#select-workspace");
 const continueButton = requireElement<HTMLButtonElement>("#continue-run");
@@ -41,6 +46,7 @@ const workspaceName = requireElement<HTMLParagraphElement>("#workspace-name");
 const fileTree = requireElement<HTMLElement>("#file-tree");
 const viewport = requireElement<HTMLElement>("#viewport");
 const goreSelect = requireElement<HTMLSelectElement>("#gore-select");
+const difficultySelect = requireElement<HTMLSelectElement>("#difficulty-select");
 // "Extreme" reads as over-the-top per playtest feedback — hidden from the
 // dropdown for now (see EXTREME_GORE_ENABLED's doc comment); the <option>
 // stays in index.html so re-enabling is just flipping that flag back.
@@ -93,6 +99,12 @@ let workspaceRootName: string | null = null;
  * autosave and the `beforeunload` flush. */
 let lastStats: EngineStats | null = null;
 let lastSaveAt = 0;
+/** 1-based position in the current campaign's level sequence — level 1 is
+ * the first file entered after a fresh workspace pick (or "Continue Run"'s
+ * saved level). Incremented only by `advanceToNextLevel`'s auto-chaining, so
+ * a manual sidebar pick doesn't count as "campaign progression" — drives
+ * `applyForcedUnlocks`'s level-4/8 safety net. */
+let campaignLevelIndex = 1;
 /** Standing gore-level preference — not campaign progress, so it's kept
  * entirely separate from `CampaignSave`/`SAVE_KEY` (see `loadGoreLevel`). */
 let currentGoreLevel: GoreLevel = loadGoreLevel();
@@ -101,6 +113,16 @@ goreSelect.value = currentGoreLevel;
 goreSelect.addEventListener("change", () => {
   currentGoreLevel = goreSelect.value as GoreLevel;
   saveGoreLevel(currentGoreLevel);
+});
+
+/** Standing difficulty preference — same "independent standing preference,
+ * not campaign progress" shape as `currentGoreLevel`. */
+let currentDifficulty: DifficultyLevel = loadDifficulty();
+
+difficultySelect.value = currentDifficulty;
+difficultySelect.addEventListener("change", () => {
+  currentDifficulty = difficultySelect.value as DifficultyLevel;
+  saveDifficulty(currentDifficulty);
 });
 
 if (!isFileSystemAccessSupported()) {
@@ -125,6 +147,7 @@ selectButton.addEventListener("click", async () => {
     workspaceTree = tree;
     workspaceRootName = handle.name;
     workspaceName.textContent = handle.name;
+    campaignLevelIndex = 1; // a fresh pick always starts a new campaign
 
     renderFileTree(fileTree, tree, { onSelectFile: handleFileSelected });
     console.info(`[workspace] Loaded "${handle.name}"`, tree);
@@ -167,6 +190,7 @@ continueButton.addEventListener("click", async () => {
     const text = await readFileText(match.handle as FileSystemFileHandle);
     const parsed = await parseFile(match.name, text);
     if (parsed) {
+      campaignLevelIndex = save.levelIndex;
       console.log(`%c[continue] resuming at ${match.path}`, "color:#8effa0;font-weight:bold");
       launchLevel(match.path, parsed, {
         health: save.health,
@@ -343,7 +367,7 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
     `${path} — reach the green "return" tile to build · ` +
     `Click to capture mouse · W/S move, A/D strafe · Q/E or mouse turn · ` +
     `Shift to sprint · Click / Space to fire · 1 pistol / 2 shotgun · mousewheel cycles weapons · ` +
-    `Left-Ctrl quick-melee knife (never runs dry) · elite kills unlock the MP or rocket launcher · ` +
+    `Left-Ctrl quick-melee knife (never runs dry) · elite kills unlock gdb or ghidra · ` +
     `grab keys to open blue doors · step on a glowing pad to warp (goto) · ` +
     `avoid the acid and timed spikes · shoot spotted mines to disarm them from range · ` +
     `R to read a glowing lore terminal or open a suspicious wall · ` +
@@ -366,6 +390,14 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   // canvas themselves, which reads as "controls don't work" on every level
   // change (multi-level advance, retry after death, or a fresh manual pick).
   canvas.focus();
+
+  // Campaign-progression safety net: gdb/ghidra are force-added to
+  // ownedWeapons once the player reaches level 4/8, regardless of whether an
+  // Elite ever dropped them — never removes anything, so a weapon already
+  // earned by looting is unaffected.
+  const effectiveCarryover: EngineCarryover | undefined = carryover
+    ? { ...carryover, ownedWeapons: applyForcedUnlocks(carryover.ownedWeapons ?? [], campaignLevelIndex) }
+    : undefined;
 
   activeEngine = new RaycasterEngine(
     canvas,
@@ -390,8 +422,9 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
         );
       },
     },
-    carryover,
+    effectiveCarryover,
     currentGoreLevel,
+    currentDifficulty,
   );
 
   const levelName = path.split("/").pop() ?? path;
@@ -411,6 +444,30 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
       canvas.focus();
     },
   );
+}
+
+/** Weapon indices force-unlocked once the player reaches the given campaign
+ * level, regardless of whether an Elite has actually dropped them yet — a
+ * progression safety net so a long, loot-unlucky run doesn't leave gdb/ghidra
+ * permanently unreachable. */
+const FORCED_UNLOCK_LEVELS: { level: number; weaponIndex: number; name: string }[] = [
+  { level: 4, weaponIndex: GDB_WEAPON_INDEX, name: "gdb" },
+  { level: 8, weaponIndex: GHIDRA_WEAPON_INDEX, name: "ghidra" },
+];
+
+/** Union `owned` with whichever `FORCED_UNLOCK_LEVELS` entries `levelIndex`
+ * has reached — never removes anything, so a weapon already earned by
+ * looting is unaffected. Logs only the first time an entry actually adds
+ * something (i.e. wasn't already owned), not on every subsequent level. */
+export function applyForcedUnlocks(owned: number[], levelIndex: number): number[] {
+  const unlocked = new Set(owned);
+  for (const { level, weaponIndex, name } of FORCED_UNLOCK_LEVELS) {
+    if (levelIndex >= level && !unlocked.has(weaponIndex)) {
+      unlocked.add(weaponIndex);
+      console.log(`%c[progression] campaign level ${levelIndex}: ${name} unlocked as a safety net`, "color:#e06aff;font-weight:bold");
+    }
+  }
+  return [...unlocked];
 }
 
 /** The workspace root's name, or a placeholder if none is loaded yet. See the
@@ -441,6 +498,7 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
       const parsed = await parseFile(next.name, text);
       if (parsed) {
         audio.playLevelComplete();
+        campaignLevelIndex += 1;
         console.log(`%c[level] ${currentLevelPath} cleared — advancing to ${next.path}`, "color:#37d24a;font-weight:bold");
         const carryover: EngineCarryover = {
           health: stats.health,
@@ -463,6 +521,7 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
           score: stats.score,
           weaponIndex: stats.weaponIndex,
           ownedWeapons: stats.ownedWeapons,
+          levelIndex: campaignLevelIndex,
         });
         launchLevel(next.path, parsed, carryover);
         return;
@@ -543,6 +602,10 @@ interface CampaignSave {
   score: number;
   weaponIndex: number;
   ownedWeapons: number[];
+  /** 1-based campaign level position, for `applyForcedUnlocks`'s level-4/8
+   * safety net. Defaulted to 1 for saves written before this field existed
+   * (see `loadCampaignSave`), rather than rejecting the whole save. */
+  levelIndex: number;
 }
 
 /** Parse and loosely validate a save from `localStorage`; `null` on any
@@ -567,7 +630,7 @@ export function loadCampaignSave(): CampaignSave | null {
     ) {
       return null;
     }
-    return save as CampaignSave;
+    return { ...save, levelIndex: typeof save.levelIndex === "number" ? save.levelIndex : 1 } as CampaignSave;
   } catch {
     return null;
   }
@@ -603,6 +666,7 @@ function persistProgress(stats: EngineStats): void {
     score: stats.score,
     weaponIndex: stats.weaponIndex,
     ownedWeapons: stats.ownedWeapons,
+    levelIndex: campaignLevelIndex,
   });
 }
 
@@ -631,6 +695,27 @@ function saveGoreLevel(level: GoreLevel): void {
     localStorage.setItem(GORE_KEY, level);
   } catch (err) {
     console.warn("[settings] Failed to save gore level:", err);
+  }
+}
+
+/** Read the saved difficulty, falling back to `DEFAULT_DIFFICULTY` on any
+ * missing/invalid value or if storage is unavailable — same shape as
+ * `loadGoreLevel`. */
+function loadDifficulty(): DifficultyLevel {
+  try {
+    const raw = localStorage.getItem(DIFFICULTY_KEY);
+    if (raw === "easy" || raw === "normal" || raw === "hard") return raw;
+  } catch {
+    // Fall through to the default.
+  }
+  return DEFAULT_DIFFICULTY;
+}
+
+function saveDifficulty(level: DifficultyLevel): void {
+  try {
+    localStorage.setItem(DIFFICULTY_KEY, level);
+  } catch (err) {
+    console.warn("[settings] Failed to save difficulty:", err);
   }
 }
 

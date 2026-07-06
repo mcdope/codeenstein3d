@@ -12,11 +12,12 @@
  * exit (Build Successful). It reports state to the host via `EngineHandlers`
  * and leaves the DOM HUD/overlays to the caller.
  */
+import { DEFAULT_DIFFICULTY, DIFFICULTY_MULTIPLIERS, type DifficultyLevel, type DifficultyMultipliers } from "../difficulty";
 import { Player, isHazard } from "./player";
 import { updateEnemies } from "./enemyAi";
 import { collectProjectileBillboards, updateProjectiles, type Projectile } from "./projectiles";
 import { InputController } from "./input";
-import { renderMinimap, renderScene } from "./raycaster";
+import { FOG_FAR, renderMinimap, renderScene } from "./raycaster";
 import {
   collectDecorationBillboards,
   collectEnemyBillboards,
@@ -55,7 +56,15 @@ import {
   type GoreMultipliers,
 } from "./effects";
 import { audio } from "./audio";
-import { MELEE_WEAPON, STARTING_WEAPONS, WEAPONS, pelletOffsets, type Weapon } from "./weapons";
+import {
+  GDB_WEAPON_INDEX,
+  GHIDRA_WEAPON_INDEX,
+  MELEE_WEAPON,
+  STARTING_WEAPONS,
+  WEAPONS,
+  pelletOffsets,
+  type Weapon,
+} from "./weapons";
 import {
   ARMOR_DROP_AMOUNT,
   BULLETS_DROP_AMOUNT,
@@ -78,10 +87,11 @@ import {
   type Mine,
 } from "../map/types";
 
-/** Weapon indices whose only acquisition path is an Elite kill's guaranteed
- * drop (see `dropEliteLoot`) — indices into `WEAPONS`, matching its array
- * order (MP is index 3, Rocket Launcher is index 4). */
-const UNLOCKABLE_WEAPONS = [3, 4];
+/** Weapon indices whose only in-level acquisition path is an Elite kill's
+ * guaranteed drop (see `dropEliteLoot`) — main.ts's forced-unlock safety net
+ * at campaign levels 4/8 is a separate, out-of-band path onto these same
+ * indices. */
+const UNLOCKABLE_WEAPONS = [GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX];
 
 /** Movement speed in tiles per second. */
 const MOVE_SPEED = 3.2;
@@ -100,9 +110,15 @@ const FPS_UPDATE_INTERVAL = 0.5;
 const MAX_HEALTH = 100;
 /** Health lost per second while standing in an acid (hazard) tile. */
 const HAZARD_DPS = 18;
-/** Cone-of-Fire: screen-px of random aim deviation added per tile of range
- * a ranged weapon's pellet is aimed across (see `fire()`). */
-const RANGE_DEVIATION_PX_PER_TILE = 4;
+/**
+ * Cone-of-Fire: maximum screen-px of random aim deviation, reached only at
+ * `FOG_FAR` (the same distance the world fades to black at — "maximum visual
+ * range"). Scaled by `(range / FOG_FAR)²`, not linearly, so deviation stays
+ * small through medium range and only really opens up near the fog line —
+ * playtest feedback was that a linear scale ruined medium-range accuracy
+ * (see `fire()`).
+ */
+const MAX_CONE_DEVIATION_PX = 56;
 /** Tiles the player must cover between footstep sounds. */
 const STRIDE_LENGTH = 1.2;
 /** Head-bob angular frequency while moving (radians/sec). */
@@ -146,7 +162,7 @@ export interface EngineStats {
   armor: number;
   /** Bullets remaining (pistol/shotgun/MP). */
   bullets: number;
-  /** Rockets remaining (Rocket Launcher). */
+  /** Rockets remaining (ghidra). */
   rockets: number;
   /** Dependency keys currently held (unused, in inventory). */
   keysHeld: number;
@@ -244,6 +260,9 @@ export class RaycasterEngine {
   /** Gore-level count/size/floor-stain-duration multipliers, read once at
    * construction (see the constructor's `gore` parameter). */
   private readonly goreMultipliers: GoreMultipliers;
+  /** HP/damage/ammo-drop-rate multipliers for the current difficulty, read
+   * once at construction (see the constructor's `difficulty` parameter). */
+  private readonly difficultyMultipliers: DifficultyMultipliers;
   /** In-flight enemy projectiles (ranged bolts). */
   private readonly projectiles: Projectile[] = [];
   /** In-flight player-fired rockets. */
@@ -293,6 +312,7 @@ export class RaycasterEngine {
     private readonly handlers: EngineHandlers = {},
     carryover?: EngineCarryover,
     gore: GoreLevel = DEFAULT_GORE_LEVEL,
+    difficulty: DifficultyLevel = DEFAULT_DIFFICULTY,
   ) {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2D canvas context unavailable");
@@ -305,6 +325,18 @@ export class RaycasterEngine {
     this.rocketsAmmo = carryover?.rockets ?? startingRockets();
     this.ownedWeapons = new Set(carryover?.ownedWeapons ?? STARTING_WEAPONS);
     this.goreMultipliers = GORE_MULTIPLIERS[gore];
+    this.difficultyMultipliers = DIFFICULTY_MULTIPLIERS[difficulty];
+    // Enemy HP is "baked in" data on the map's Enemy objects (set once at
+    // generation time) rather than something the engine recomputes every
+    // frame — rescale it in place here, once, instead of threading difficulty
+    // through MapGenerator.generate() (which would cross the map/engine
+    // layering boundary for no benefit — see difficulty.ts's doc comment).
+    if (this.difficultyMultipliers.hp !== 1) {
+      for (const enemy of this.enemies) {
+        enemy.hp = Math.round(enemy.hp * this.difficultyMultipliers.hp);
+        enemy.maxHp = Math.round(enemy.maxHp * this.difficultyMultipliers.hp);
+      }
+    }
     if (carryover) {
       this.health = carryover.health;
       this.armor = carryover.armor;
@@ -729,14 +761,16 @@ export class RaycasterEngine {
     const beforeShots = this.projectiles.length;
     const dmg = updateEnemies(this.enemies, this.player, this.map, dt, this.projectiles);
     if (this.projectiles.length > beforeShots) audio.playEnemyShoot();
-    if (dmg > 0) this.damage(dmg);
+    // Difficulty scales enemy-*dealt* damage only — melee bites and ranged
+    // bolts, not trap/hazard/self-inflicted (rocket splash) damage.
+    if (dmg > 0) this.damage(dmg * this.difficultyMultipliers.damage);
   }
 
   /** Advance enemy bolts; apply any that struck the player this frame. */
   private updateProjectiles(dt: number): void {
     if (this.state !== "playing") return;
     const dmg = updateProjectiles(this.projectiles, this.player, this.map, dt);
-    if (dmg > 0) this.damage(dmg);
+    if (dmg > 0) this.damage(dmg * this.difficultyMultipliers.damage);
   }
 
   /**
@@ -830,44 +864,56 @@ export class RaycasterEngine {
       if (dx * dx + dy * dy >= r2) continue;
       pickup.collected = true;
       audio.playPickup();
+      const amount = this.scaledLootAmount(pickup.amount);
       switch (pickup.kind) {
         case "bullets":
-          this.bulletsAmmo += pickup.amount;
+          this.bulletsAmmo += amount;
           break;
         case "rockets":
-          this.rocketsAmmo += pickup.amount;
+          this.rocketsAmmo += amount;
           break;
         case "health":
-          this.health = Math.min(MAX_HEALTH, this.health + pickup.amount);
+          this.health = Math.min(MAX_HEALTH, this.health + amount);
           break;
         case "armor":
-          this.armor = Math.min(MAX_ARMOR, this.armor + pickup.amount);
+          this.armor = Math.min(MAX_ARMOR, this.armor + amount);
           break;
       }
-      console.log(`%c[pickup] +${pickup.amount} ${pickup.kind} found`, "color:#3fd0e0");
+      console.log(`%c[pickup] +${amount} ${pickup.kind} found`, "color:#3fd0e0");
     }
+  }
+
+  /** Scale a base loot/pickup amount by the difficulty's `ammoDropRate`
+   * (Easy is more generous, Hard scarcer) — always at least 1, so rounding
+   * down on Hard can never zero out a pickup entirely. */
+  private scaledLootAmount(baseAmount: number): number {
+    return Math.max(1, Math.round(baseAmount * this.difficultyMultipliers.ammoDropRate));
   }
 
   /** Apply one dynamic loot drop's effect and log it. */
   private applyLoot(drop: LootDrop): void {
     audio.playPickup();
     switch (drop.kind) {
-      case "bullets":
-        this.bulletsAmmo += drop.amount ?? BULLETS_DROP_AMOUNT;
-        console.log(`%c[loot] +${drop.amount ?? BULLETS_DROP_AMOUNT} bullets`, "color:#3fd0e0");
+      case "bullets": {
+        const amount = this.scaledLootAmount(drop.amount ?? BULLETS_DROP_AMOUNT);
+        this.bulletsAmmo += amount;
+        console.log(`%c[loot] +${amount} bullets`, "color:#3fd0e0");
         break;
-      case "rockets":
-        this.rocketsAmmo += drop.amount ?? ROCKETS_DROP_AMOUNT;
-        console.log(`%c[loot] +${drop.amount ?? ROCKETS_DROP_AMOUNT} rockets`, "color:#ff9d3f");
+      }
+      case "rockets": {
+        const amount = this.scaledLootAmount(drop.amount ?? ROCKETS_DROP_AMOUNT);
+        this.rocketsAmmo += amount;
+        console.log(`%c[loot] +${amount} rockets`, "color:#ff9d3f");
         break;
+      }
       case "health": {
-        const amount = drop.amount ?? HEALTH_DROP_AMOUNT;
+        const amount = this.scaledLootAmount(drop.amount ?? HEALTH_DROP_AMOUNT);
         this.health = Math.min(MAX_HEALTH, this.health + amount);
         console.log(`%c[loot] +${amount} stability`, "color:#4cff6a");
         break;
       }
       case "armor": {
-        const amount = drop.amount ?? ARMOR_DROP_AMOUNT;
+        const amount = this.scaledLootAmount(drop.amount ?? ARMOR_DROP_AMOUNT);
         this.armor = Math.min(MAX_ARMOR, this.armor + amount);
         console.log(`%c[loot] +${amount} armor`, "color:#4a7fff");
         break;
@@ -1094,14 +1140,18 @@ export class RaycasterEngine {
       // grows with how far away whatever's down this column actually is (the
       // z-buffer depth there, wall or otherwise), instead of a hard max-range
       // cutoff — a shot lined up on a distant target can still go wide, while
-      // point-blank shots stay accurate. Melee has no business missing this
-      // way (it can't even reach past its own tiny range), so it's exempt.
+      // point-blank shots stay accurate. The scale is quadratic in range (not
+      // linear), so medium-range shots stay reasonably accurate and only
+      // fire near `FOG_FAR` (max visual range) spreads significantly. Melee
+      // has no business missing this way (it can't even reach past its own
+      // tiny range), so it's exempt.
       const baseColumn = center + offset;
       let column = baseColumn;
       if (weapon.meleeRange === undefined) {
         const baseCol = Math.min(width - 1, Math.max(0, Math.round(baseColumn)));
         const range = this.zBuffer[baseCol];
-        const deviation = (Math.random() * 2 - 1) * range * RANGE_DEVIATION_PX_PER_TILE;
+        const rangeFraction = Math.min(1, range / FOG_FAR);
+        const deviation = (Math.random() * 2 - 1) * rangeFraction * rangeFraction * MAX_CONE_DEVIATION_PX;
         column = Math.min(width - 1, Math.max(0, baseColumn + deviation));
       }
 
@@ -1185,7 +1235,7 @@ export class RaycasterEngine {
 
   /**
    * An Elite's death always leaves something worth the fight: a still-unowned
-   * heavier weapon (MP or Rocket Launcher — see `UNLOCKABLE_WEAPONS`) if the
+   * heavier weapon (gdb or ghidra — see `UNLOCKABLE_WEAPONS`) if the
    * player doesn't have one yet, picked up automatically like any other
    * loot drop, or a large stability pack once both are already owned.
    */
@@ -1275,7 +1325,7 @@ function startingBullets(enemies: Enemy[]): number {
 
 /**
  * A modest flat reserve of rockets — not scaled to the level like
- * `startingBullets`, since the Rocket Launcher itself has to be earned from
+ * `startingBullets`, since ghidra itself has to be earned from
  * an Elite kill first; most levels' rockets go unused until it's unlocked, at
  * which point they (and any since scavenged) carry over via `EngineCarryover`.
  */

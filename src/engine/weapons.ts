@@ -66,13 +66,15 @@ export interface Weapon {
 
 /**
  * The arsenal. Ranged weapons are reachable via the number keys and the
- * mousewheel (1 → pistol, 2 → shotgun, (4) → MP, (5) → rocket launcher, once
+ * mousewheel (1 → pistol, 2 → shotgun, (4) → gdb, (5) → ghidra, once
  * owned) — any weapon with `meleeRange` set is structurally excluded from
  * both (see `RaycasterEngine`'s `canWieldViaNumberKey`), since melee has its
  * own dedicated input instead of a number-key slot. Only the pistol/shotgun
  * (plus the knife, which is always available regardless of slot) are owned
- * from the start — the MP and Rocket Launcher have to be earned from an
- * Elite kill's guaranteed weapon drop (see `RaycasterEngine`'s `ownedWeapons`).
+ * from the start — gdb/ghidra have to be earned from an Elite kill's
+ * guaranteed weapon drop, or are force-unlocked at campaign levels 4/8 as a
+ * progression safety net (see `RaycasterEngine`'s `ownedWeapons`, `main.ts`'s
+ * `applyForcedUnlocks`).
  * - **echo pistol**: precise single hitscan, cheap.
  * - **Regex Shotgun**: 7 pellets in a cone — devastating up close, useless at
  *   range as the spread misses; costs more heap.
@@ -81,11 +83,14 @@ export interface Weapon {
  *   only, but a kill heals a sliver of stability, rewarding aggressive play
  *   when heap runs dry instead of leaving the player stuck out of options.
  *   See `MELEE_WEAPON` and `RaycasterEngine`'s quick-melee handling.
- * - **MP**: fully automatic, high fire rate, low damage per round — sprays
- *   bullets fast rather than hitting hard.
- * - **Rocket Launcher**: one slow, visible projectile per trigger-pull that
- *   explodes for splash damage — devastating against packs, but scarce
- *   ammo and a real cooldown between shots keep it from replacing everything.
+ * - **gdb**: fully automatic, high fire rate, low damage per round — sprays
+ *   bullets fast rather than hitting hard. (Named for the GNU debugger — was
+ *   called "MP" through Task 30.)
+ * - **ghidra**: one slow, visible projectile per trigger-pull that explodes
+ *   for splash damage — devastating against packs, but scarce ammo and a
+ *   real cooldown between shots keep it from replacing everything. (Named
+ *   for the reverse-engineering tool — was called "Rocket Launcher" through
+ *   Task 30.)
  */
 export const WEAPONS: readonly Weapon[] = [
   {
@@ -120,7 +125,7 @@ export const WEAPONS: readonly Weapon[] = [
     lifesteal: 1,
   },
   {
-    name: "MP",
+    name: "gdb",
     pellets: 1,
     spreadPx: 6,
     damagePerPellet: 7,
@@ -132,7 +137,7 @@ export const WEAPONS: readonly Weapon[] = [
     fireIntervalSec: 0.09,
   },
   {
-    name: "Rocket Launcher",
+    name: "ghidra",
     pellets: 1,
     spreadPx: 0,
     damagePerPellet: 70,
@@ -146,8 +151,15 @@ export const WEAPONS: readonly Weapon[] = [
 ];
 
 /** Weapons owned from the start of every run — everything else has to be
- * earned (currently: an Elite kill's guaranteed weapon drop). */
+ * earned (currently: an Elite kill's guaranteed weapon drop, or the
+ * campaign-level-4/8 forced-unlock safety net in `main.ts`). */
 export const STARTING_WEAPONS: readonly number[] = [0, 1, 2];
+
+/** Array indices of gdb/ghidra in `WEAPONS` — named so `RaycasterEngine`'s
+ * `UNLOCKABLE_WEAPONS` and `main.ts`'s forced-unlock levels don't each
+ * hardcode the same literal indices independently. */
+export const GDB_WEAPON_INDEX = 3;
+export const GHIDRA_WEAPON_INDEX = 4;
 
 /**
  * The knife's `Weapon` object, looked up by its defining trait (`meleeRange`

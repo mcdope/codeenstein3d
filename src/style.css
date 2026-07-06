@@ -87,7 +87,8 @@ body {
   margin: 12px 0 4px;
 }
 
-#gore-select {
+#gore-select,
+#difficulty-select {
   width: 100%;
   padding: 6px 8px;
   font: inherit;
@@ -97,6 +98,11 @@ body {
   border: 1px solid var(--border);
   border-radius: 4px;
   cursor: pointer;
+}
+
+#difficulty-label {
+  display: block;
+  margin: 12px 0 4px;
 }
 
 .error {

@@ -11,7 +11,15 @@
 import type { Node } from "web-tree-sitter";
 import { Language, Parser } from "web-tree-sitter";
 import { initTreeSitter } from "../runtime";
-import { countDecisionPoints, countLines, extractLargeComments, findDeadCodeAfterReturn, maxNestingDepth } from "../astUtils";
+import {
+  codeSmellBonus,
+  countDecisionPoints,
+  countLines,
+  countParameters,
+  extractLargeComments,
+  findDeadCodeAfterReturn,
+  maxNestingDepth,
+} from "../astUtils";
 import {
   BLOCK_NODE_TYPES,
   COMMENT_NODE_TYPES,
@@ -19,6 +27,7 @@ import {
   ENTITY_NODE_TYPES,
   LOGICAL_OPERATORS,
   NESTING_NODE_TYPES,
+  PARAMETER_LIST_NODE_TYPES,
   RETURN_NODE_TYPES,
   entityName,
   extractGotos,
@@ -103,13 +112,20 @@ export class GenericParserAdapter implements CodeParserAdapter {
         if (this.config.filter && !this.config.filter(node)) continue;
 
         const kind = this.entityTypes[node.type];
+        const nestingDepth = maxNestingDepth(node, NESTING_NODE_TYPES);
+        // Code smells (too many parameters, too much nesting) only make
+        // sense for callable entities — classes/interfaces/traits have no
+        // parameter list of their own.
+        const isCallable = kind === "function" || kind === "method";
+        const smellBonus = isCallable ? codeSmellBonus(countParameters(node, PARAMETER_LIST_NODE_TYPES), nestingDepth) : 0;
+
         let entity: CodeEntity = {
           name: entityName(node),
           kind,
           startLine: node.startPosition.row + 1,
           endLine: node.endPosition.row + 1,
-          complexityScore: 1 + countDecisionPoints(node, DECISION_NODE_TYPES, LOGICAL_OPERATORS),
-          nestingDepth: maxNestingDepth(node, NESTING_NODE_TYPES),
+          complexityScore: 1 + countDecisionPoints(node, DECISION_NODE_TYPES, LOGICAL_OPERATORS) + smellBonus,
+          nestingDepth,
         };
         if (this.config.refine) entity = this.config.refine(node, entity);
         entities.push(entity);

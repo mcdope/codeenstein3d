@@ -221,6 +221,18 @@ export const BLOCK_NODE_TYPES = new Set([
  * expression, not a statement, hence the separate name. */
 export const RETURN_NODE_TYPES = new Set(["return_statement", "return_expression"]);
 
+/**
+ * Parameter-list node types, merged across every bundled grammar — used by
+ * `countParameters` (`astUtils.ts`) for the "too many parameters" code smell.
+ * Only meaningful for function/method-kind entities (see `genericParser.ts`).
+ */
+export const PARAMETER_LIST_NODE_TYPES: readonly string[] = [
+  "formal_parameters", // JS, TS, Java, PHP
+  "parameters", // Python, Rust, Scala
+  "parameter_list", // C++, C#, Go, ObjC
+  "method_parameters", // Ruby
+];
+
 /** Node type suffixes/names treated as "this holds a plain identifier". */
 const IDENTIFIER_LIKE = /(^|_)(identifier|name|constant|label_name)$/;
 

@@ -11,8 +11,10 @@ import { Language, Parser, type Node } from "web-tree-sitter";
 import phpWasmUrl from "tree-sitter-php/tree-sitter-php.wasm?url";
 import { initTreeSitter } from "../runtime";
 import {
+  codeSmellBonus,
   countDecisionPoints,
   countLines,
+  countParameters,
   extractLargeComments,
   findDeadCodeAfterReturn,
   maxNestingDepth,
@@ -71,6 +73,11 @@ const NESTING_NODE_TYPES = new Set([
   "switch_statement",
 ]);
 
+/** A function/method's own parameter list — see `countParameters`'s "first
+ * match wins" heuristic for why this doesn't need to worry about nested
+ * closures. */
+const PARAMETER_LIST_NODE_TYPES = ["formal_parameters"];
+
 export class PhpParserAdapter implements CodeParserAdapter {
   readonly language = "php";
   readonly extensions = ["php", "php3", "php4", "php5", "phtml"] as const;
@@ -96,13 +103,20 @@ export class PhpParserAdapter implements CodeParserAdapter {
       const entities: CodeEntity[] = [];
       for (const node of tree.rootNode.descendantsOfType(Object.keys(ENTITY_NODE_TYPES))) {
         const kind = ENTITY_NODE_TYPES[node.type];
+        const nestingDepth = maxNestingDepth(node, NESTING_NODE_TYPES);
+        // Code smells (too many parameters, too much nesting) only make
+        // sense for callable entities — classes/interfaces/traits have no
+        // parameter list of their own.
+        const isCallable = kind === "function" || kind === "method";
+        const smellBonus = isCallable ? codeSmellBonus(countParameters(node, PARAMETER_LIST_NODE_TYPES), nestingDepth) : 0;
+
         entities.push({
           name: node.childForFieldName("name")?.text ?? "<anonymous>",
           kind,
           startLine: node.startPosition.row + 1,
           endLine: node.endPosition.row + 1,
-          complexityScore: 1 + countDecisionPoints(node, DECISION_NODE_TYPES, LOGICAL_OPERATORS),
-          nestingDepth: maxNestingDepth(node, NESTING_NODE_TYPES),
+          complexityScore: 1 + countDecisionPoints(node, DECISION_NODE_TYPES, LOGICAL_OPERATORS) + smellBonus,
+          nestingDepth,
           ...(kind === "method" ? { visibility: methodVisibility(node) } : {}),
         });
       }

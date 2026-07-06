@@ -66,6 +66,49 @@ export function maxNestingDepth(
   return inc + childMax;
 }
 
+/**
+ * Number of parameters in `entityNode`'s own parameter list — a heuristic,
+ * not a precise count: it takes the *first* descendant matching
+ * `paramListNodeTypes` (parameter lists always appear before a function's
+ * body in every grammar's node order, so this reliably finds the entity's
+ * own list rather than a nested closure's), then counts its named children.
+ * Returns 0 if no parameter list is found at all (e.g. entity kinds that
+ * don't have one, or a grammar quirk).
+ */
+export function countParameters(entityNode: Node, paramListNodeTypes: readonly string[]): number {
+  const list = entityNode.descendantsOfType([...paramListNodeTypes])[0];
+  return list ? list.namedChildren.length : 0;
+}
+
+/** A function/method needs more than this many parameters, or more than this
+ * much nesting depth, to count as a "code smell" (see `codeSmellBonus`). */
+const MAX_PARAMS_BEFORE_SMELL = 5;
+const MAX_NESTING_BEFORE_SMELL = 3;
+/** Bonus complexity points added per parameter/nesting-level *over* the
+ * threshold above — scales with how bad the smell is, rather than a flat
+ * penalty for barely crossing the line. */
+const PARAM_SMELL_BONUS_PER_EXCESS = 2;
+const NESTING_SMELL_BONUS_PER_EXCESS = 3;
+
+/**
+ * Extra complexity points for two heuristic "code smells": too many
+ * parameters (>5) and too much nesting (>3, reusing the same `nestingDepth`
+ * already computed by `maxNestingDepth`). Added on top of the normal
+ * decision-point complexity score — a smelly function ends up with more HP
+ * (or an outright Elite spawn at extreme complexity), same as genuinely
+ * complex control flow does. Returns 0 for a function with neither smell.
+ */
+export function codeSmellBonus(paramCount: number, nestingDepth: number): number {
+  let bonus = 0;
+  if (paramCount > MAX_PARAMS_BEFORE_SMELL) {
+    bonus += (paramCount - MAX_PARAMS_BEFORE_SMELL) * PARAM_SMELL_BONUS_PER_EXCESS;
+  }
+  if (nestingDepth > MAX_NESTING_BEFORE_SMELL) {
+    bonus += (nestingDepth - MAX_NESTING_BEFORE_SMELL) * NESTING_SMELL_BONUS_PER_EXCESS;
+  }
+  return bonus;
+}
+
 /** A raw `goto` statement or label found while walking a syntax tree, before
  * the two are paired up by name. */
 export interface RawGotoRef {
