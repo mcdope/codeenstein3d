@@ -6,7 +6,7 @@
  * adapter only has to declare its own node-type vocabulary.
  */
 import type { Node } from "web-tree-sitter";
-import type { GotoLink } from "./types";
+import type { CodeComment, DeadCodeRegion, GotoLink } from "./types";
 
 /** Total line count; a single trailing newline is not counted as a new line. */
 export function countLines(text: string): number {
@@ -91,4 +91,54 @@ export function resolveGotos(gotos: RawGotoRef[], labels: RawGotoRef[]): GotoLin
     links.push({ label: g.label, gotoLine: g.line, labelLine });
   }
   return links;
+}
+
+/** A comment counts as "large" — worth a lore terminal — once its raw text
+ * reaches this length, or it already spans more than one source line. */
+const LORE_COMMENT_MIN_LENGTH = 60;
+
+/**
+ * Comments substantial enough to surface as in-game "lore terminals": either
+ * long, or already a multi-line block, so a one-line `// eslint-disable` noise
+ * comment doesn't qualify just for having a few extra characters.
+ */
+export function extractLargeComments(
+  root: Node,
+  commentNodeTypes: readonly string[],
+): CodeComment[] {
+  const comments: CodeComment[] = [];
+  for (const node of root.descendantsOfType([...commentNodeTypes])) {
+    if (!node.isNamed) continue;
+    const text = node.text.trim();
+    const startLine = node.startPosition.row + 1;
+    const endLine = node.endPosition.row + 1;
+    if (text.length < LORE_COMMENT_MIN_LENGTH && endLine === startLine) continue;
+    comments.push({ text, startLine, endLine });
+  }
+  return comments;
+}
+
+/**
+ * Unreachable-code spans: statements found after an unconditional `return` in
+ * the same block. Only the block's own direct statement list is checked (a
+ * `return` buried inside a nested `if` doesn't make the rest of the *outer*
+ * block dead — only code following it at the very same nesting level is
+ * genuinely unreachable). A block ending with its `return` (the normal case)
+ * yields nothing.
+ */
+export function findDeadCodeAfterReturn(
+  root: Node,
+  blockNodeTypes: ReadonlySet<string>,
+  returnNodeTypes: ReadonlySet<string>,
+): DeadCodeRegion[] {
+  const regions: DeadCodeRegion[] = [];
+  for (const block of root.descendantsOfType([...blockNodeTypes])) {
+    const stmts = block.namedChildren;
+    const returnIndex = stmts.findIndex((s) => returnNodeTypes.has(s.type));
+    if (returnIndex === -1 || returnIndex >= stmts.length - 1) continue;
+    const first = stmts[returnIndex + 1];
+    const last = stmts[stmts.length - 1];
+    regions.push({ startLine: first.startPosition.row + 1, endLine: last.endPosition.row + 1 });
+  }
+  return regions;
 }

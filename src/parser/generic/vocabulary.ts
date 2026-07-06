@@ -201,6 +201,26 @@ export const NESTING_NODE_TYPES = new Set([
 export const GOTO_NODE_TYPE = "goto_statement";
 export const LABEL_NODE_TYPE = "labeled_statement";
 
+/** Comment node types across every bundled grammar — almost universally just
+ * `"comment"`, with a couple of grammars (Rust) splitting line/block variants. */
+export const COMMENT_NODE_TYPES: readonly string[] = ["comment", "line_comment", "block_comment"];
+
+/**
+ * Block node types whose direct named children are a flat statement list,
+ * merged across every bundled grammar — used to find unreachable code after a
+ * `return` (see `findDeadCodeAfterReturn` in `astUtils.ts`).
+ */
+export const BLOCK_NODE_TYPES = new Set([
+  "statement_block", // JS, TS
+  "block", // Python, Java, Go, Rust, C#, Scala
+  "body_statement", // Ruby (def ... end)
+  "compound_statement", // C++, ObjC
+]);
+
+/** `return`-like node types across every bundled grammar — Rust's is an
+ * expression, not a statement, hence the separate name. */
+export const RETURN_NODE_TYPES = new Set(["return_statement", "return_expression"]);
+
 /** Node type suffixes/names treated as "this holds a plain identifier". */
 const IDENTIFIER_LIKE = /(^|_)(identifier|name|constant|label_name)$/;
 

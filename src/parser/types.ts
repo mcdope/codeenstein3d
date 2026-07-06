@@ -69,6 +69,33 @@ export interface GotoLink {
   labelLine: number;
 }
 
+/**
+ * A source comment large enough to be worth surfacing as a "lore terminal"
+ * (see `placeLoreTerminals` in `mapGenerator.ts`). Raw comment delimiters
+ * (`//`, `/* *\/`, `#`, …) are kept as-is rather than stripped, since the
+ * in-game overlay is meant to read like an artifact of the real source.
+ */
+export interface CodeComment {
+  text: string;
+  /** 1-based, inclusive start line. */
+  startLine: number;
+  /** 1-based, inclusive end line. */
+  endLine: number;
+}
+
+/**
+ * A span of statements that can never execute: code found after an
+ * unconditional `return` in the same block. The map generator turns each of
+ * these into a hidden "secret room" behind a fake wall (see
+ * `placeSecretRooms`).
+ */
+export interface DeadCodeRegion {
+  /** 1-based, inclusive start line of the first unreachable statement. */
+  startLine: number;
+  /** 1-based, inclusive end line of the last unreachable statement in the block. */
+  endLine: number;
+}
+
 /** Normalized, engine-facing result of parsing one source file. */
 export interface ParsedFile {
   /** Language id of the adapter that produced this, e.g. "php". */
@@ -80,6 +107,10 @@ export interface ParsedFile {
   /** `goto`/label jumps resolved within the file; a goto with no matching
    * label anywhere in the file is dropped rather than guessed at. */
   gotos: GotoLink[];
+  /** Large comment blocks, source for in-game "lore terminals". */
+  comments: CodeComment[];
+  /** Unreachable code spans (after a `return`), source for secret rooms. */
+  deadCodeRegions: DeadCodeRegion[];
 }
 
 /**

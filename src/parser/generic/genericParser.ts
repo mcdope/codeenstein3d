@@ -11,12 +11,15 @@
 import type { Node } from "web-tree-sitter";
 import { Language, Parser } from "web-tree-sitter";
 import { initTreeSitter } from "../runtime";
-import { countDecisionPoints, countLines, maxNestingDepth } from "../astUtils";
+import { countDecisionPoints, countLines, extractLargeComments, findDeadCodeAfterReturn, maxNestingDepth } from "../astUtils";
 import {
+  BLOCK_NODE_TYPES,
+  COMMENT_NODE_TYPES,
   DECISION_NODE_TYPES,
   ENTITY_NODE_TYPES,
   LOGICAL_OPERATORS,
   NESTING_NODE_TYPES,
+  RETURN_NODE_TYPES,
   entityName,
   extractGotos,
   genericGlobals,
@@ -121,6 +124,8 @@ export class GenericParserAdapter implements CodeParserAdapter {
         linesOfCode: countLines(sourceText),
         entities,
         gotos: extractGotos(root),
+        comments: extractLargeComments(root, COMMENT_NODE_TYPES),
+        deadCodeRegions: findDeadCodeAfterReturn(root, BLOCK_NODE_TYPES, RETURN_NODE_TYPES),
       };
     } finally {
       tree.delete();

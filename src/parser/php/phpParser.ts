@@ -10,7 +10,15 @@
 import { Language, Parser, type Node } from "web-tree-sitter";
 import phpWasmUrl from "tree-sitter-php/tree-sitter-php.wasm?url";
 import { initTreeSitter } from "../runtime";
-import { countDecisionPoints, countLines, maxNestingDepth, resolveGotos, type RawGotoRef } from "../astUtils";
+import {
+  countDecisionPoints,
+  countLines,
+  extractLargeComments,
+  findDeadCodeAfterReturn,
+  maxNestingDepth,
+  resolveGotos,
+  type RawGotoRef,
+} from "../astUtils";
 import type {
   CodeEntity,
   CodeParserAdapter,
@@ -18,6 +26,11 @@ import type {
   ParsedFile,
   Visibility,
 } from "../types";
+
+/** Block node whose direct children are a flat statement list — used to find
+ * unreachable code after a `return` (see `findDeadCodeAfterReturn`). */
+const BLOCK_NODE_TYPES = new Set(["compound_statement"]);
+const RETURN_NODE_TYPES = new Set(["return_statement"]);
 
 /** Node types that define an entity, mapped to their normalized kind. */
 const ENTITY_NODE_TYPES: Record<string, EntityKind> = {
@@ -132,6 +145,8 @@ export class PhpParserAdapter implements CodeParserAdapter {
         linesOfCode: countLines(sourceText),
         entities,
         gotos: resolveGotos(rawGotos, rawLabels),
+        comments: extractLargeComments(tree.rootNode, ["comment"]),
+        deadCodeRegions: findDeadCodeAfterReturn(tree.rootNode, BLOCK_NODE_TYPES, RETURN_NODE_TYPES),
       };
     } finally {
       // Free the WASM-side syntax tree; the Parser itself is kept for reuse.
