@@ -11,10 +11,12 @@
  * Generation is deterministic: the same parsed file always yields the same
  * map, via a seeded PRNG hashed from the file's content signature.
  */
-import type { CodeEntity, GotoLink, ParsedFile } from "../parser/types";
+import type { CodeComment, CodeEntity, DeadCodeRegion, GotoLink, ParsedFile } from "../parser/types";
 import {
   DOOR_TILE,
   HAZARD_TILE,
+  LORE_TILE,
+  SECRET_WALL_TILE,
   SPIKE_TRAP_TILE,
   TELEPORTER_TILE,
   type AmmoPickup,
@@ -23,6 +25,7 @@ import {
   type Enemy,
   type GameMap,
   type KeyItem,
+  type LoreTerminal,
   type Mine,
   type Point,
   type Room,
@@ -97,7 +100,13 @@ export class MapGenerator {
     this.opts = { ...DEFAULTS, ...options };
   }
 
-  generate(parsed: ParsedFile): GameMap {
+  /**
+   * `bonusLevel` marks this as a "restock arena" (see `main.ts`, which sets it
+   * for header/equivalent files): a distinct visual theme (handled by the
+   * raycaster from the returned `GameMap.bonusLevel` flag) and a boosted
+   * static-pickup rate, treating the level as a loot stop rather than a fight.
+   */
+  generate(parsed: ParsedFile, bonusLevel = false): GameMap {
     const rng = mulberry32(seedFrom(parsed));
     const size = this.mapSize(parsed);
 
@@ -146,6 +155,13 @@ export class MapGenerator {
     const doors = placeDoors(rooms, grid);
     const keys = placeKeys(grid, spawn, exit, enemies, doors, rng);
 
+    // Glowing "lore terminals" from large source comments, and hidden secret
+    // rooms carved behind fake walls from unreachable ("dead") code — both
+    // consume only still-untouched wall tiles (grid value `1`), so they can
+    // never collide with a door, key spot, or each other regardless of order.
+    const loreTerminals = placeLoreTerminals(rooms, grid, parsed.comments, rng);
+    const { secretLoot } = placeSecretRooms(rooms, grid, size, parsed.deadCodeRegions, rng);
+
     // Turn each resolved `goto` → label jump into a teleporter pad pair, once
     // the floor plan (doors/keys included) is final so pads never overwrite
     // something load-bearing.
@@ -173,7 +189,7 @@ export class MapGenerator {
       ...spikeTraps.map((t) => ({ x: t.x, y: t.y })),
       ...mines.map((m) => ({ x: m.x, y: m.y })),
     ];
-    const ammoPickups = placeAmmoPickups(rooms, grid, ammoAvoid, rng);
+    const ammoPickups = [...placeAmmoPickups(rooms, grid, ammoAvoid, rng, bonusLevel), ...secretLoot];
 
     // Fog-of-war overlay grid, all unexplored until the player moves through.
     const visited: boolean[][] = Array.from({ length: size }, () =>
@@ -197,6 +213,8 @@ export class MapGenerator {
       spikeTraps,
       mines,
       ammoPickups,
+      loreTerminals,
+      bonusLevel,
     };
   }
 
@@ -695,38 +713,232 @@ const AMMO_PICKUP_ROCKET_CHANCE = 0.3;
  * the engine layer, only the reverse). */
 const AMMO_PICKUP_BULLETS_AMOUNT = 8;
 const AMMO_PICKUP_ROCKETS_AMOUNT = 2;
+/** A bonus (restock-arena) level scatters pickups far more liberally, and
+ * each one grants more — it's meant to feel like a deliberate resupply stop,
+ * not a normal combat level that happens to have a few pickups. */
+const BONUS_AMMO_ROOM_CHANCE = 0.65;
+const BONUS_AMMO_AMOUNT_MULTIPLIER = 1.5;
 
 /**
  * Scatter a sparse handful of statically-placed ammo pickups (bullets or
  * rockets) across the map — one candidate roll per non-spawn room, each
  * independently likely to actually get one. A backup source, not the primary
- * one (see `AMMO_PICKUP_ROOM_CHANCE`'s doc comment).
+ * one (see `AMMO_PICKUP_ROOM_CHANCE`'s doc comment) — except on a bonus level,
+ * where both the odds and the amounts are boosted (see `BONUS_AMMO_ROOM_CHANCE`).
  */
 function placeAmmoPickups(
   rooms: Room[],
   grid: Tile[][],
   avoid: Point[],
   rng: () => number,
+  bonusLevel: boolean,
 ): AmmoPickup[] {
   const pickups: AmmoPickup[] = [];
+  const roomChance = bonusLevel ? BONUS_AMMO_ROOM_CHANCE : AMMO_PICKUP_ROOM_CHANCE;
+  const amountMultiplier = bonusLevel ? BONUS_AMMO_AMOUNT_MULTIPLIER : 1;
+
   rooms.forEach((room, index) => {
     if (index === 0) return; // never in the spawn room
-    if (rng() >= AMMO_PICKUP_ROOM_CHANCE) return;
+    if (rng() >= roomChance) return;
 
     const placedSoFar = pickups.map((p) => ({ x: Math.floor(p.x), y: Math.floor(p.y) }));
     const spot = findPropSpot(room, grid, avoid, placedSoFar, rng);
     if (!spot) return;
 
     const kind = rng() < AMMO_PICKUP_ROCKET_CHANCE ? "rockets" : "bullets";
+    const base = kind === "rockets" ? AMMO_PICKUP_ROCKETS_AMOUNT : AMMO_PICKUP_BULLETS_AMOUNT;
     pickups.push({
       x: spot.x + 0.5,
       y: spot.y + 0.5,
       kind,
-      amount: kind === "rockets" ? AMMO_PICKUP_ROCKETS_AMOUNT : AMMO_PICKUP_BULLETS_AMOUNT,
+      amount: Math.round(base * amountMultiplier),
       collected: false,
     });
   });
   return pickups;
+}
+
+/** Comments must reach this length (or already span multiple lines — see
+ * `extractLargeComments`) to be worth a lore terminal; kept in step with a cap
+ * on how many any single file spawns, so a huge file doesn't wallpaper every
+ * room in glowing text. */
+const MAX_LORE_TERMINALS = 6;
+
+/**
+ * Turn each large source comment into a glowing "lore terminal": a normal
+ * wall tile, just outside whichever room contains the comment's source line,
+ * re-tagged `LORE_TILE` so the raycaster renders it distinctly. Never a hard
+ * failure — a comment whose room has no free wall tile left simply doesn't
+ * get one.
+ */
+function placeLoreTerminals(
+  rooms: Room[],
+  grid: Tile[][],
+  comments: CodeComment[],
+  rng: () => number,
+): LoreTerminal[] {
+  const terminals: LoreTerminal[] = [];
+  const used = new Set<string>();
+
+  for (const comment of comments.slice(0, MAX_LORE_TERMINALS)) {
+    const room = roomForLine(rooms, comment.startLine) ?? rooms[0];
+    if (!room) continue;
+    const spot = findWallPerimeterSpot(room, grid, used, rng);
+    if (!spot) continue;
+    used.add(key(spot));
+    grid[spot.y][spot.x] = LORE_TILE;
+    terminals.push({ x: spot.x, y: spot.y, text: comment.text });
+  }
+  return terminals;
+}
+
+/** A still-untouched wall tile (`grid` value `1`) on `room`'s own perimeter,
+ * not already claimed by an earlier call — used by lore terminal placement,
+ * which (unlike a door/corridor mouth) doesn't need floor on the far side. */
+function findWallPerimeterSpot(
+  room: Room,
+  grid: Tile[][],
+  used: Set<string>,
+  rng: () => number,
+): Point | null {
+  const candidates: Point[] = [];
+  for (let x = room.x; x < room.x + room.w; x++) {
+    candidates.push({ x, y: room.y - 1 });
+    candidates.push({ x, y: room.y + room.h });
+  }
+  for (let y = room.y; y < room.y + room.h; y++) {
+    candidates.push({ x: room.x - 1, y });
+    candidates.push({ x: room.x + room.w, y });
+  }
+  shuffle(candidates, rng);
+  for (const c of candidates) {
+    if (used.has(key(c))) continue;
+    if (grid[c.y]?.[c.x] === 1) return c;
+  }
+  return null;
+}
+
+/** Interior footprint (both dimensions) of a carved secret room. */
+const SECRET_ROOM_SIZE = 3;
+/** Dead-code regions are capped the same way lore terminals are — a huge
+ * legacy file can have dozens of unreachable blocks, but not every one needs
+ * its own hidden room. */
+const MAX_SECRET_ROOMS = 5;
+/** A secret room's guaranteed pickup, "mega-health" or a fat rockets stash —
+ * noticeably above the normal `AMMO_PICKUP_*`/`HEALTH_DROP_AMOUNT` scale, since
+ * finding one is meant to feel like a real reward for exploring. */
+const SECRET_LOOT_HEALTH_AMOUNT = 60;
+const SECRET_LOOT_ROCKETS_AMOUNT = 4;
+
+/**
+ * Carve a hidden room for each unreachable-code region, off a random side of
+ * whichever room contains its source line, behind a `SECRET_WALL_TILE` that
+ * renders and blocks exactly like a normal wall (see `Tile`'s doc comment) —
+ * the only way to find one is to interact with the right stretch of wall.
+ * Never a hard failure: a region whose anchor room has no free, clear patch of
+ * solid rock beside it on any of its four sides simply doesn't get one.
+ */
+function placeSecretRooms(
+  rooms: Room[],
+  grid: Tile[][],
+  mapSize: number,
+  deadCodeRegions: DeadCodeRegion[],
+  rng: () => number,
+): { secretLoot: AmmoPickup[] } {
+  const secretLoot: AmmoPickup[] = [];
+
+  for (const region of deadCodeRegions.slice(0, MAX_SECRET_ROOMS)) {
+    const anchor = roomForLine(rooms, region.startLine) ?? rooms[0];
+    if (!anchor) continue;
+    const secret = trySecretRoomOffAnchor(anchor, grid, mapSize, rng);
+    if (!secret) continue;
+
+    const kind = rng() < 0.5 ? "health" : "rockets";
+    secretLoot.push({
+      x: secret.center.x + 0.5,
+      y: secret.center.y + 0.5,
+      kind,
+      amount: kind === "health" ? SECRET_LOOT_HEALTH_AMOUNT : SECRET_LOOT_ROCKETS_AMOUNT,
+      collected: false,
+    });
+  }
+  return { secretLoot };
+}
+
+/**
+ * Try each of `anchor`'s four sides (in random order) for a still-untouched
+ * wall tile behind which a `SECRET_ROOM_SIZE`² patch of unclaimed solid rock
+ * exists, fully inside the map border. Carves that patch to floor and turns
+ * the connecting tile into `SECRET_WALL_TILE` on the first fit found.
+ */
+function trySecretRoomOffAnchor(
+  anchor: Room,
+  grid: Tile[][],
+  mapSize: number,
+  rng: () => number,
+): { center: Point } | null {
+  const size = SECRET_ROOM_SIZE;
+  const half = Math.floor(size / 2);
+  const candidates: { wall: Point; x0: number; y0: number; x1: number; y1: number }[] = [];
+
+  for (let x = anchor.x; x < anchor.x + anchor.w; x++) {
+    const nx0 = x - half;
+    candidates.push({
+      wall: { x, y: anchor.y - 1 },
+      x0: nx0,
+      y0: anchor.y - 1 - size,
+      x1: nx0 + size - 1,
+      y1: anchor.y - 2,
+    });
+    candidates.push({
+      wall: { x, y: anchor.y + anchor.h },
+      x0: nx0,
+      y0: anchor.y + anchor.h + 1,
+      x1: nx0 + size - 1,
+      y1: anchor.y + anchor.h + size,
+    });
+  }
+  for (let y = anchor.y; y < anchor.y + anchor.h; y++) {
+    const ny0 = y - half;
+    candidates.push({
+      wall: { x: anchor.x - 1, y },
+      x0: anchor.x - 1 - size,
+      y0: ny0,
+      x1: anchor.x - 2,
+      y1: ny0 + size - 1,
+    });
+    candidates.push({
+      wall: { x: anchor.x + anchor.w, y },
+      x0: anchor.x + anchor.w + 1,
+      y0: ny0,
+      x1: anchor.x + anchor.w + size,
+      y1: ny0 + size - 1,
+    });
+  }
+  shuffle(candidates, rng);
+
+  for (const c of candidates) {
+    if (grid[c.wall.y]?.[c.wall.x] !== 1) continue;
+    if (c.x0 < 1 || c.y0 < 1 || c.x1 > mapSize - 2 || c.y1 > mapSize - 2) continue;
+
+    let clear = true;
+    for (let y = c.y0; y <= c.y1 && clear; y++) {
+      for (let x = c.x0; x <= c.x1; x++) {
+        if (grid[y][x] !== 1) {
+          clear = false;
+          break;
+        }
+      }
+    }
+    if (!clear) continue;
+
+    for (let y = c.y0; y <= c.y1; y++) {
+      for (let x = c.x0; x <= c.x1; x++) grid[y][x] = 0;
+    }
+    grid[c.wall.y][c.wall.x] = SECRET_WALL_TILE;
+    return { center: { x: Math.floor((c.x0 + c.x1) / 2), y: Math.floor((c.y0 + c.y1) / 2) } };
+  }
+  return null;
 }
 
 /**

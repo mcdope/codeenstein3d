@@ -12,9 +12,13 @@ import type { CodeEntity } from "../parser/types";
  * A grid cell: 0 = empty floor, 1 = wall, 2 = hazard (acid, walkable),
  * 3 = locked door (solid until opened with a key, then becomes 0),
  * 4 = goto/label teleporter pad (walkable; warps the player elsewhere),
- * 5 = timed spike trap (walkable; damages only while in its active phase).
+ * 5 = timed spike trap (walkable; damages only while in its active phase),
+ * 6 = fake wall hiding a secret room (solid and indistinguishable from a
+ * normal wall until interacted with, then becomes 0 permanently),
+ * 7 = lore terminal (solid; renders as a distinct glowing wall texture,
+ * readable from an adjacent tile).
  */
-export type Tile = 0 | 1 | 2 | 3 | 4 | 5;
+export type Tile = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 /** Tile value for a walkable hazard (acid pool) cell. */
 export const HAZARD_TILE = 2;
@@ -24,6 +28,10 @@ export const DOOR_TILE = 3;
 export const TELEPORTER_TILE = 4;
 /** Tile value for a timed spike trap (walkable; see `SpikeTrap`). */
 export const SPIKE_TRAP_TILE = 5;
+/** Tile value for a fake wall hiding a secret room (solid; see `Tile`). */
+export const SECRET_WALL_TILE = 6;
+/** Tile value for a lore terminal wall (solid; see `Tile`). */
+export const LORE_TILE = 7;
 
 /** Tile coordinate (integer grid position). */
 export interface Point {
@@ -142,11 +150,28 @@ export interface GameMap {
   /** Proximity mines, procedurally placed at corridor choke points. */
   mines: Mine[];
   /**
-   * Sparse, statically-placed ammo pickups — a backup source, not the primary
-   * one (spawn heap + enemy loot drops cover most of a run). See `LootDrop`
-   * for the runtime, enemy-death equivalent.
+   * Sparse, statically-placed pickups — a backup source, not the primary one
+   * (spawn heap + enemy loot drops cover most of a run). Almost always
+   * bullets/rockets scattered by `placeAmmoPickups`; also carries the
+   * high-value health/rockets left inside a secret room by `placeSecretRooms`
+   * (see `AmmoPickup.kind`). See `LootDrop` for the runtime, enemy-death
+   * equivalent.
    */
   ammoPickups: AmmoPickup[];
+  /**
+   * Wall tiles rendered as glowing "lore terminals" (`LORE_TILE`), each
+   * carrying the source comment it was generated from. Interacting with one
+   * from an adjacent tile pauses the game and shows its text (see
+   * `placeLoreTerminals` in `mapGenerator.ts`).
+   */
+  loreTerminals: LoreTerminal[];
+  /**
+   * True for a "bonus level" generated from a header (or equivalent) file: a
+   * distinct visual theme and a boosted loot rate, treating it as a restock
+   * arena rather than a normal combat level (see `placeAmmoPickups` and
+   * `rollLoot`).
+   */
+  bonusLevel: boolean;
 }
 
 /** What a defeated enemy (or a scattered map pickup) can leave behind. */
@@ -170,17 +195,32 @@ export interface LootDrop {
 }
 
 /**
- * A sparse, statically-placed ammo pickup scattered across the map at
- * generation time (see `placeAmmoPickups` in `mapGenerator.ts`) — a backup
- * source of a specific ammo type, separate from enemy loot drops.
+ * A sparse, statically-placed pickup scattered across the map at generation
+ * time — a backup source, separate from enemy loot drops. `placeAmmoPickups`
+ * only ever creates "bullets"/"rockets" ones; `placeSecretRooms` also drops a
+ * single "health" or "rockets" pickup (a bigger amount, see
+ * `SECRET_LOOT_HEALTH_AMOUNT`/`SECRET_LOOT_ROCKETS_AMOUNT`) inside each secret
+ * room it carves, which is why the type covers more than just ammo.
  */
 export interface AmmoPickup {
   /** World position in fractional tile units (tile center). */
   x: number;
   y: number;
-  kind: "bullets" | "rockets";
+  kind: "bullets" | "rockets" | "health" | "armor";
   amount: number;
   collected: boolean;
+}
+
+/**
+ * A glowing wall texture generated from a large source comment (see
+ * `placeLoreTerminals` in `mapGenerator.ts`). Solid, like a normal wall —
+ * interacting with it from an adjacent tile pauses the game and shows `text`.
+ */
+export interface LoreTerminal {
+  /** Tile coordinates (integers) of the wall tile itself. */
+  x: number;
+  y: number;
+  text: string;
 }
 
 /** A collectible "dependency key" (opens one locked door). */
