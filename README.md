@@ -33,10 +33,10 @@ whole campaign — never on an ordinary mid-campaign level clear — viewable in
 a sidebar Highscores dialog. A sidebar Master/SFX/Music volume mixer balances
 the procedural sound effects against an optional custom BGM folder (local
 `.mp3`/`.ogg`/`.wav` files, played back as a shuffled, looping playlist).
-A compass on the HUD always points from the player toward the level's exit,
-the windowed canvas now scales to fit any viewport without clipping, and a
+The windowed canvas now scales to fit any viewport without clipping, and a
 gamepad can drive the whole game (movement, aiming, firing, weapon cycling,
-quick-melee) alongside keyboard and mouse.
+quick-melee) alongside keyboard and mouse. (An exit-pointing HUD compass was
+also built but is currently disabled — see the Stage table below.)
 
 | Stage | Status |
 | --- | --- |
@@ -72,8 +72,9 @@ quick-melee) alongside keyboard and mouse.
 | 30. Controls overhaul (quick-melee, mousewheel), gore levels, FPS overlay | ✅ Done |
 | 31. Weapon tuning/renaming, forced unlocks, code smells, difficulty | ✅ Done |
 | 32. Scoring, persisted highscores (AST/campaign hash), custom BGM + volume mixer | ✅ Done |
-| 33. Exit compass, exploration/lore score bonuses, ammo tuning, gamepad support | ✅ Done |
+| 33. Exploration/lore score bonuses, ammo tuning, gamepad support, canvas scaling | ✅ Done |
 | Room decorations (racks/plants/desks/blocks) | ⏸️ Implemented, disabled (playtest feedback) |
+| Exit compass (HUD) | ⏸️ Implemented, disabled (needle inverted on an axis, poor visual fit) |
 
 ## 🏗️ Architecture & Pipeline
 This project is strictly "Local-First". Proprietary code never leaves your machine.
@@ -125,7 +126,6 @@ before the next one loads.
 * **Esc** – pause (freezes the action under a "PAUSED" overlay, distinct from the automap; a click or a second `Esc` resumes); also releases pointer lock / exits fullscreen per normal browser behavior. Losing window focus (alt-tab, etc.) pauses the same way automatically.
 * **Right-Ctrl** – toggle a small FPS/frame-time readout, top-right (off by default)
 * **Gamepad** – left stick moves/strafes, right stick turns, RT/R2 fires, the bumpers (LB/RB) cycle through your owned ranged weapons, and R3 (right stick click) or B triggers quick-melee — works alongside keyboard/mouse at the same time, no mode switch needed
-* **Compass** – a small dial under the minimap with a needle that always points from your current position toward the exit tile, rotating as you turn
 * **Gore** – a sidebar dropdown (None/Normal/More — Extreme is temporarily disabled, playtest feedback called it over-the-top) scaling blood-particle count, size, and how long a landed particle lingers; persisted across sessions, takes effect on the next level load
 * **Difficulty** – a sidebar dropdown (Easy/Normal/Hard) scaling enemy HP (0.7x/1x/1.5x), enemy-dealt damage, and ammo/health/armor pickup amounts (inversely — Hard is scarcer, not just tougher); persisted across sessions, takes effect on the next level load. Normal also rolls enemy loot kind against a slightly ammo-favoring weight table (playtest feedback was that ammo ran too scarce there specifically), and static map ammo pickups grant ~40-50% more per pickup than before across all difficulties
 * **Score** – points per kill (scaled by the killed entity's complexity, tripled for an Elite), plus bonuses for remaining health/ammo, completion speed, route efficiency (how close your path was to the shortest spawn→exit route), a flat bonus per unique lore terminal read, and a large "100% Clear" bonus for exploring over 95% of the level's walkable tiles before reaching the exit, minus a malus for finishing below full health; live in the HUD, final the moment you reach the exit
@@ -186,7 +186,7 @@ src/
     ├── viewmodel.ts    # First-person weapon sprite, head-bob, recoil
     ├── effects.ts      # Damage flash, bullet tracers, hit-flash, "digital blood" particles
     ├── audio.ts        # Procedural Web Audio sound effects (AudioManager singleton) + Master/SFX/BGM gain buses
-    ├── hud.ts          # Native-canvas status bar + crosshair + exit compass
+    ├── hud.ts          # Native-canvas status bar + crosshair (exit compass implemented but disabled — see `COMPASS_ENABLED`)
     ├── automap.ts      # Togglable fog-of-war map overlay
     └── input.ts        # Keyboard/mouse polling + pointer lock + Gamepad API polling
 ```
