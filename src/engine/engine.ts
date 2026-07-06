@@ -56,6 +56,7 @@ import {
   type GoreMultipliers,
 } from "./effects";
 import { audio } from "./audio";
+import { computeScore, killPoints } from "./scoring";
 import {
   GDB_WEAPON_INDEX,
   GHIDRA_WEAPON_INDEX,
@@ -168,7 +169,11 @@ export interface EngineStats {
   keysHeld: number;
   /** Total keys placed on this level. */
   keysTotal: number;
-  /** Run score. Always 0 for now — scoring logic is a future task. */
+  /** Run score: kill points (scaled by complexity/elite) plus bonuses for
+   * remaining health/ammo, completion speed, and route efficiency, minus a
+   * malus for finishing below full health — see `./scoring.ts`. Recomputed
+   * live every frame from the run's current state, so this is a running
+   * projection until the exit is actually reached, at which point it's final. */
   score: number;
   /** Enemies defeated this level ("bugs squashed" for the commit summary). */
   kills: number;
@@ -234,6 +239,12 @@ export class RaycasterEngine {
   private armor = 0;
   private bulletsAmmo: number;
   private rocketsAmmo: number;
+  /** What this level would have started the player out with, regardless of
+   * `carryover` — the ammo-bonus baseline `computeScore` scores remaining
+   * ammo against (see `./scoring.ts`), so a low-ammo carryover from a
+   * previous level doesn't unfairly tank this one's ammo bonus. */
+  private readonly startingBulletsRef: number;
+  private readonly startingRocketsRef: number;
   /** Index into WEAPONS of the equipped weapon (0 = pistol). */
   private weaponIndex = 0;
   /** Indices into `WEAPONS` the player can currently switch to — everything
@@ -249,6 +260,12 @@ export class RaycasterEngine {
   private keysHeld = 0;
   /** Enemies defeated this level. */
   private kills = 0;
+  /** Sum of `killPoints()` for every enemy defeated so far this level. */
+  private killScore = 0;
+  /** Tiles of ground actually covered so far this level (blocked moves count
+   * for nothing) — never reset mid-level, unlike `stepDistance`; feeds the
+   * scoring system's path-efficiency bonus (see `./scoring.ts`). */
+  private distanceTraveled = 0;
   /** Loot dropped by defeated enemies, awaiting collection. */
   private readonly drops: LootDrop[] = [];
   /** Frames left on the red "took damage" screen flash (0 = none). */
@@ -323,6 +340,8 @@ export class RaycasterEngine {
     this.zBuffer = new Float64Array(canvas.width);
     this.bulletsAmmo = carryover?.bullets ?? startingBullets(map.enemies);
     this.rocketsAmmo = carryover?.rockets ?? startingRockets();
+    this.startingBulletsRef = startingBullets(map.enemies);
+    this.startingRocketsRef = startingRockets();
     this.ownedWeapons = new Set(carryover?.ownedWeapons ?? STARTING_WEAPONS);
     this.goreMultipliers = GORE_MULTIPLIERS[gore];
     this.difficultyMultipliers = DIFFICULTY_MULTIPLIERS[difficulty];
@@ -718,6 +737,7 @@ export class RaycasterEngine {
     const moved = Math.hypot(this.player.posX - startX, this.player.posY - startY);
     this.moving = moved > 1e-4 && this.state === "playing";
     if (this.moving) {
+      this.distanceTraveled += moved;
       this.stepDistance += moved;
       if (this.stepDistance >= STRIDE_LENGTH) {
         audio.playStep();
@@ -1219,6 +1239,7 @@ export class RaycasterEngine {
     enemy.hp = 0;
     enemy.alive = false;
     this.kills += 1;
+    this.killScore += killPoints(enemy);
     if (this.target === enemy) this.target = null;
     if (lifesteal) this.health = Math.min(MAX_HEALTH, this.health + lifesteal);
 
@@ -1266,6 +1287,19 @@ export class RaycasterEngine {
 
   /** Snapshot the live stats consumed by both the native HUD and the host. */
   private buildStats(): EngineStats {
+    const score = computeScore({
+      killPoints: this.killScore,
+      finalHealth: this.health,
+      maxHealth: MAX_HEALTH,
+      finalBullets: this.bulletsAmmo,
+      finalRockets: this.rocketsAmmo,
+      startingBullets: this.startingBulletsRef,
+      startingRockets: this.startingRocketsRef,
+      levelTimeSec: this.levelTime,
+      distanceTraveledTiles: this.distanceTraveled,
+      shortestPathTiles: this.map.shortestPathTiles,
+    }).total;
+
     return {
       health: Math.ceil(this.health),
       maxHealth: MAX_HEALTH,
@@ -1274,7 +1308,7 @@ export class RaycasterEngine {
       rockets: this.rocketsAmmo,
       keysHeld: this.keysHeld,
       keysTotal: this.map.keys.length,
-      score: 0,
+      score,
       kills: this.kills,
       weaponIndex: this.weaponIndex,
       ownedWeapons: [...this.ownedWeapons],

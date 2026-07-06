@@ -134,6 +134,11 @@ export interface GameMap {
   enemies: Enemy[];
   /** Exit tile (the `return` statement) in the room furthest from spawn. */
   exit: Point;
+  /** BFS-shortest walkable tile distance from `spawn` to `exit` (doors count
+   * as passable — a perfect run always ends up opening every one of them
+   * anyway). The scoring system's path-efficiency bonus compares this against
+   * how much ground the player actually covered (see `src/engine/scoring.ts`). */
+  shortestPathTiles: number;
   /** Hazard (acid) tiles — one pool per global-variable room. */
   hazards: Point[];
   /** Locked-door tiles guarding private/protected-method rooms. */

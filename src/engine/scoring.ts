@@ -1,0 +1,108 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
+
+/**
+ * End-of-level scoring. Pure/deterministic, so it's cheap to recompute every
+ * frame for a live HUD readout (see `RaycasterEngine.buildStats`) rather than
+ * only once at the exit — the final `total` at the moment `onWin` fires is
+ * simply whatever the running readout last showed.
+ */
+import type { Enemy } from "../map/types";
+
+/** Flat points every kill is worth, before the complexity/elite scaling. */
+const BASE_KILL_POINTS = 50;
+/** Extra points per point of the killed entity's `complexityScore`. */
+const COMPLEXITY_POINTS_PER_SCORE = 15;
+/** Elite kills multiply the whole (base + complexity) subtotal. */
+const ELITE_KILL_MULTIPLIER = 3;
+
+/** Points awarded for defeating `enemy` — scaled by its entity's cyclomatic
+ * complexity (a gnarlier function is a more valuable kill) and tripled for an
+ * Elite. Called once per kill, at the moment it dies (see
+ * `RaycasterEngine.damageEnemy`) — the running total lives on the engine, not
+ * here, since a defeated enemy is no longer around to re-derive it from. */
+export function killPoints(enemy: Enemy): number {
+  const subtotal = BASE_KILL_POINTS + enemy.entity.complexityScore * COMPLEXITY_POINTS_PER_SCORE;
+  return enemy.elite ? subtotal * ELITE_KILL_MULTIPLIER : subtotal;
+}
+
+/** Max points awarded for finishing at full health. */
+const HEALTH_BONUS_MAX = 500;
+/** Max points split between remaining bullets/rockets (each contributes up to
+ * half), relative to what the level started the player out with. */
+const AMMO_BONUS_MAX = 250;
+/** Max points for finishing quickly. */
+const SPEED_BONUS_MAX = 400;
+/** Time (seconds) at/under which the speed bonus is maxed out; decays
+ * linearly to 0 by twice this. */
+const SPEED_TARGET_SEC = 90;
+/** Max points for a near-optimal route from spawn to exit. */
+const PATH_BONUS_MAX = 300;
+/** Max points deducted for finishing below full health, scaled by how far
+ * below (finishing at 0%, in principle, would forfeit the whole malus). */
+const HP_MALUS_MAX = 200;
+
+export interface ScoreInput {
+  /** Sum of `killPoints()` for every enemy defeated so far. */
+  killPoints: number;
+  finalHealth: number;
+  maxHealth: number;
+  finalBullets: number;
+  finalRockets: number;
+  /** Bullets/rockets the level started the player out with — the baseline
+   * remaining ammo is scored against (see `AMMO_BONUS_MAX`). */
+  startingBullets: number;
+  startingRockets: number;
+  /** Seconds elapsed so far this level. */
+  levelTimeSec: number;
+  /** Tiles of ground actually covered so far this level. */
+  distanceTraveledTiles: number;
+  /** BFS-shortest tile distance from spawn to exit — the "perfect" route. */
+  shortestPathTiles: number;
+}
+
+export interface ScoreBreakdown {
+  killPoints: number;
+  healthBonus: number;
+  ammoBonus: number;
+  speedBonus: number;
+  pathBonus: number;
+  hpMalus: number;
+  /** Sum of every bonus, minus the malus, floored at 0. */
+  total: number;
+}
+
+/** Score breakdown for the current run state — safe (and cheap) to call every
+ * frame; see this module's doc comment for why it isn't win-only. */
+export function computeScore(input: ScoreInput): ScoreBreakdown {
+  const healthFrac = clamp01(input.finalHealth / input.maxHealth);
+  const healthBonus = Math.round(healthFrac * HEALTH_BONUS_MAX);
+
+  const bulletsFrac = input.startingBullets > 0 ? clamp01(input.finalBullets / input.startingBullets) : 0;
+  const rocketsFrac = input.startingRockets > 0 ? clamp01(input.finalRockets / input.startingRockets) : 0;
+  const ammoBonus = Math.round(((bulletsFrac + rocketsFrac) / 2) * AMMO_BONUS_MAX);
+
+  const speedFrac = clamp01(1 - Math.max(0, input.levelTimeSec - SPEED_TARGET_SEC) / SPEED_TARGET_SEC);
+  const speedBonus = Math.round(speedFrac * SPEED_BONUS_MAX);
+
+  // Ratio of the ideal route to what was actually walked — 1 for a perfect
+  // line, shrinking the more the player wandered/backtracked. No distance
+  // traveled yet (level just started) reads as a perfect ratio rather than a
+  // division by zero.
+  const pathRatio =
+    input.distanceTraveledTiles > 0 ? input.shortestPathTiles / input.distanceTraveledTiles : 1;
+  const pathBonus = Math.round(clamp01(pathRatio) * PATH_BONUS_MAX);
+
+  const hpMalus = Math.round((1 - healthFrac) * HP_MALUS_MAX);
+
+  const total = Math.max(
+    0,
+    input.killPoints + healthBonus + ammoBonus + speedBonus + pathBonus - hpMalus,
+  );
+
+  return { killPoints: input.killPoints, healthBonus, ammoBonus, speedBonus, pathBonus, hpMalus, total };
+}
+
+function clamp01(n: number): number {
+  return Math.max(0, Math.min(1, n));
+}
