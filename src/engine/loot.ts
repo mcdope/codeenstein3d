@@ -19,17 +19,27 @@ const LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[] = [
   { kind: "armor", weight: 20 },
 ];
 
+/** On a bonus (restock-arena) level, kills lean harder toward the scarcer,
+ * higher-value drops — it's meant to feel like a resupply stop. */
+const BONUS_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[] = [
+  { kind: "bullets", weight: 30 },
+  { kind: "rockets", weight: 25 },
+  { kind: "health", weight: 25 },
+  { kind: "armor", weight: 20 },
+];
+
 /** Roll a random loot kind for a regular (non-elite) enemy kill, weighted by
- * `LOOT_WEIGHTS`. Elites use their own guaranteed-drop logic instead — see
- * `RaycasterEngine`'s `dropEliteLoot`. */
-export function rollLoot(): Exclude<LootKind, "weapon"> {
-  const total = LOOT_WEIGHTS.reduce((sum, w) => sum + w.weight, 0);
+ * `LOOT_WEIGHTS` (or `BONUS_LOOT_WEIGHTS` on a bonus level). Elites use their
+ * own guaranteed-drop logic instead — see `RaycasterEngine`'s `dropEliteLoot`. */
+export function rollLoot(bonusLevel = false): Exclude<LootKind, "weapon"> {
+  const weights = bonusLevel ? BONUS_LOOT_WEIGHTS : LOOT_WEIGHTS;
+  const total = weights.reduce((sum, w) => sum + w.weight, 0);
   let r = Math.random() * total;
-  for (const w of LOOT_WEIGHTS) {
+  for (const w of weights) {
     if (r < w.weight) return w.kind;
     r -= w.weight;
   }
-  return LOOT_WEIGHTS[0].kind;
+  return weights[0].kind;
 }
 
 /** Default pickup amounts, per loot kind (overridable per-drop for elite

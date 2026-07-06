@@ -26,6 +26,11 @@ export class InputController {
   private weaponRequest: number | null = null;
   /** Edge-triggered automap toggle, set on a Tab press. */
   private mapToggleQueued = false;
+  /** Edge-triggered "interact" request, set on an R press (opens a fake wall /
+   * reads a nearby lore terminal — see `RaycasterEngine`). Not bound to E,
+   * despite that being the more common FPS convention, since E is already the
+   * camera-turn-right key in this game's Q/E-turn scheme. */
+  private interactQueued = false;
   /** Edge-triggered pause toggle, set on an Escape press. */
   private escapeQueued = false;
   /** Edge-triggered "the window just lost focus" signal, set on blur. */
@@ -65,6 +70,7 @@ export class InputController {
     this.mouseHeld = false;
     this.weaponRequest = null;
     this.mapToggleQueued = false;
+    this.interactQueued = false;
     this.escapeQueued = false;
     this.blurQueued = false;
     this.clickQueued = false;
@@ -109,6 +115,14 @@ export class InputController {
     return toggled;
   }
 
+  /** Return true at most once per R press (opens a fake wall / reads a nearby
+   * lore terminal). */
+  consumeInteract(): boolean {
+    const interacted = this.interactQueued;
+    this.interactQueued = false;
+    return interacted;
+  }
+
   /** Return true at most once per Escape press (toggles the pause overlay). */
   consumeEscape(): boolean {
     const pressed = this.escapeQueued;
@@ -146,6 +160,9 @@ export class InputController {
       if (!e.repeat) this.mapToggleQueued = true;
       e.preventDefault();
     }
+
+    // R interacts with a fake wall or lore terminal directly ahead/nearby.
+    if (e.code === "KeyR" && !e.repeat) this.interactQueued = true;
 
     // Escape toggles the engine's own pause overlay. Deliberately not
     // preventDefault()'d — the browser also uses Escape to drop pointer lock

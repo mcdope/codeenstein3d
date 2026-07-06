@@ -30,7 +30,7 @@ import {
   findTargetUnderCrosshair,
   type BillboardJob,
 } from "./sprites";
-import { drawCrosshair, drawHud, drawPauseOverlay } from "./hud";
+import { drawCrosshair, drawHud, drawLoreOverlay, drawPauseOverlay } from "./hud";
 import { drawWeapon } from "./viewmodel";
 import { drawAutomap } from "./automap";
 import {
@@ -63,7 +63,16 @@ import {
 } from "./loot";
 import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, ROCKET_BLAST_RADIUS, type Rocket } from "./rockets";
 import { detonateMine, spikeDamage, updateMines } from "./traps";
-import { DOOR_TILE, TELEPORTER_TILE, type Enemy, type GameMap, type LootDrop, type Mine } from "../map/types";
+import {
+  DOOR_TILE,
+  SECRET_WALL_TILE,
+  TELEPORTER_TILE,
+  type Enemy,
+  type GameMap,
+  type LootDrop,
+  type LoreTerminal,
+  type Mine,
+} from "../map/types";
 
 /** Weapon indices whose only acquisition path is an Elite kill's guaranteed
  * drop (see `dropEliteLoot`) — indices into `WEAPONS`, matching its array
@@ -111,6 +120,15 @@ const KEY_PICKUP_RADIUS = 0.5;
 /** How close (tiles) the player must get to pick up a dropped loot item or a
  * statically-placed map ammo pickup. */
 const AMMO_PICKUP_RADIUS = 0.5;
+/** How close (tiles) the player must be to a lore terminal for "R" to read
+ * it — proximity, not facing, matching "pressing R nearby" from the spec. */
+const LORE_INTERACT_RADIUS = 1.8;
+/** Wrapped lines per second scrolled while holding W/S in the lore overlay. */
+const LORE_SCROLL_SPEED = 6;
+/** How far ahead of the player (tiles) "R" reaches to open a fake wall —
+ * generous enough to trigger from a normal standing distance, unlike the
+ * door's much tighter walk-into-it reach. */
+const SECRET_WALL_REACH = 0.9;
 
 /** Live stats pushed to the host each frame. */
 export interface EngineStats {
@@ -229,6 +247,13 @@ export class RaycasterEngine {
   /** Whether the game is paused (window blur or Escape) — freezes the sim and
    * shows a "PAUSED" overlay, distinct from the Tab automap. */
   private isPaused = false;
+  /** Text of the lore terminal currently being read (null = no overlay up).
+   * Freezes the sim the same way `isPaused`/`isMapActive` do — see `advance()`. */
+  private loreText: string | null = null;
+  /** Wrapped-line scroll offset into `loreText`, advanced by holding W/S
+   * while the overlay is up (see `drawLoreOverlay`'s doc comment) and reset
+   * whenever a new terminal is opened. */
+  private loreScroll = 0;
   /** Tile key ("x,y") of a teleporter pad the player just arrived on, so they
    * can step off before it can trigger again — otherwise the destination pad
    * (itself a teleporter tile) would bounce them straight back. */
@@ -317,6 +342,34 @@ export class RaycasterEngine {
     if (this.isMapActive) {
       this.renderPaused();
       return;
+    }
+
+    // Lore terminal overlay: opened/closed by "R", independent of Tab/Esc.
+    // Checked before weapon switching / simulation so both freeze the sim the
+    // same way the automap does. A second interact (or a click) dismisses it;
+    // otherwise holding W/S scrolls the text (movement is never simulated
+    // this frame, so repurposing those keys here doesn't fight `handleMovement`).
+    const interacted = this.input.consumeInteract();
+    if (this.loreText !== null) {
+      if (interacted || clicked) {
+        this.loreText = null;
+      } else {
+        if (this.input.isDown("KeyS")) this.loreScroll += LORE_SCROLL_SPEED * dt;
+        if (this.input.isDown("KeyW")) this.loreScroll = Math.max(0, this.loreScroll - LORE_SCROLL_SPEED * dt);
+      }
+      this.renderLoreOverlay();
+      return;
+    }
+    if (interacted && this.state === "playing") {
+      const terminal = findNearbyLoreTerminal(this.map.loreTerminals, this.player.posX, this.player.posY);
+      if (terminal) {
+        audio.playSecret();
+        this.loreText = terminal.text;
+        this.loreScroll = 0;
+        this.renderLoreOverlay();
+        return;
+      }
+      this.tryOpenSecretWall();
     }
 
     // Weapon switching (1/2/…) can happen even while lining up a shot — but
@@ -424,6 +477,39 @@ export class RaycasterEngine {
     this.renderWorldBillboards();
     drawPauseOverlay(this.ctx);
     this.handlers.onStats?.(this.buildStats());
+  }
+
+  /**
+   * Render one frozen frame with a lore terminal's comment text on top —
+   * triggered by "R" near a `LORE_TILE` (see `advance()`), dismissed by
+   * another interact or a click.
+   */
+  private renderLoreOverlay(): void {
+    renderScene(this.ctx, this.map, this.player, this.zBuffer, 0, this.levelTime);
+    this.renderWorldBillboards();
+    const { maxScrollLines } = drawLoreOverlay(this.ctx, this.loreText ?? "", this.loreScroll);
+    this.loreScroll = Math.max(0, Math.min(this.loreScroll, maxScrollLines));
+    this.handlers.onStats?.(this.buildStats());
+  }
+
+  /**
+   * Open the fake wall directly ahead of the player, if there is one — turns
+   * a `SECRET_WALL_TILE` into plain floor permanently, revealing whatever
+   * secret room was carved behind it (see `placeSecretRooms`).
+   */
+  private tryOpenSecretWall(): void {
+    const px = this.player.posX + this.player.dirX * SECRET_WALL_REACH;
+    const py = this.player.posY + this.player.dirY * SECRET_WALL_REACH;
+    const cx = Math.floor(px);
+    const cy = Math.floor(py);
+    if (this.map.grid[cy]?.[cx] !== SECRET_WALL_TILE) return;
+
+    this.map.grid[cy][cx] = 0;
+    audio.playSecret();
+    console.log(
+      "%c[secret] a section of wall slides open — a hidden room lies beyond",
+      "color:#e06aff;font-weight:bold",
+    );
   }
 
   /**
@@ -667,9 +753,21 @@ export class RaycasterEngine {
       if (dx * dx + dy * dy >= r2) continue;
       pickup.collected = true;
       audio.playPickup();
-      if (pickup.kind === "bullets") this.bulletsAmmo += pickup.amount;
-      else this.rocketsAmmo += pickup.amount;
-      console.log(`%c[ammo] +${pickup.amount} ${pickup.kind} salvaged from the map`, "color:#3fd0e0");
+      switch (pickup.kind) {
+        case "bullets":
+          this.bulletsAmmo += pickup.amount;
+          break;
+        case "rockets":
+          this.rocketsAmmo += pickup.amount;
+          break;
+        case "health":
+          this.health = Math.min(MAX_HEALTH, this.health + pickup.amount);
+          break;
+        case "armor":
+          this.armor = Math.min(MAX_ARMOR, this.armor + pickup.amount);
+          break;
+      }
+      console.log(`%c[pickup] +${pickup.amount} ${pickup.kind} found`, "color:#3fd0e0");
     }
   }
 
@@ -961,7 +1059,7 @@ export class RaycasterEngine {
     if (lifesteal) this.health = Math.min(MAX_HEALTH, this.health + lifesteal);
 
     if (enemy.elite) this.dropEliteLoot(enemy);
-    else this.drops.push({ x: enemy.x, y: enemy.y, kind: rollLoot() });
+    else this.drops.push({ x: enemy.x, y: enemy.y, kind: rollLoot(this.map.bonusLevel) });
     audio.playAmmoDrop();
 
     const remaining = this.enemies.reduce((n, e) => n + (e.alive ? 1 : 0), 0);
@@ -1018,6 +1116,25 @@ export class RaycasterEngine {
       ownedWeapons: [...this.ownedWeapons],
     };
   }
+}
+
+/** The closest lore terminal within `LORE_INTERACT_RADIUS` of (px, py), or
+ * `null` if none is close enough — "nearby", not facing-based. */
+function findNearbyLoreTerminal(
+  terminals: LoreTerminal[],
+  px: number,
+  py: number,
+): LoreTerminal | null {
+  let best: LoreTerminal | null = null;
+  let bestDist = LORE_INTERACT_RADIUS;
+  for (const t of terminals) {
+    const dist = Math.hypot(t.x + 0.5 - px, t.y + 0.5 - py);
+    if (dist < bestDist) {
+      best = t;
+      bestDist = dist;
+    }
+  }
+  return best;
 }
 
 /**

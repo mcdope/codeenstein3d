@@ -13,7 +13,7 @@
  * (a square of half-width `radius`) so the player slides along walls instead
  * of sticking, and can never enter a solid cell.
  */
-import { DOOR_TILE, HAZARD_TILE, type GameMap } from "../map/types";
+import { DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, type GameMap } from "../map/types";
 
 export interface PlayerConfig {
   /** Half-width of the player's collision box, in tiles. */
@@ -117,8 +117,9 @@ export function collidesWithWall(
 export function isWall(map: GameMap, cx: number, cy: number): boolean {
   if (cx < 0 || cy < 0 || cx >= map.width || cy >= map.height) return true;
   const tile = map.grid[cy][cx];
-  // Walls (1) and still-locked doors (3) are solid; acid (2) and floor (0) are not.
-  return tile === 1 || tile === DOOR_TILE;
+  // Walls (1), still-locked doors (3), unopened fake walls (6), and lore
+  // terminal walls (7) are all solid; acid (2) and floor (0) are not.
+  return tile === 1 || tile === DOOR_TILE || tile === SECRET_WALL_TILE || tile === LORE_TILE;
 }
 
 /** True if the cell is a hazard (acid) tile — walkable, but it drains health. */

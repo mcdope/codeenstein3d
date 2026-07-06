@@ -235,6 +235,26 @@ class AudioManager {
     osc.stop(t + 0.45);
   }
 
+  /** Secret wall opened, or a lore terminal read: a bright, mysterious rising
+   * chime — distinct from the level-complete arpeggio and the pickup blip. */
+  playSecret(): void {
+    const ctx = this.resume();
+    if (!ctx || !this.master) return;
+    const t = ctx.currentTime;
+    const master = this.master;
+    const notes = [880, 1108.73, 1318.51]; // A5, C#6, E6
+    notes.forEach((freq, i) => {
+      const start = t + i * 0.06;
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, start);
+      const gain = envelope(ctx, 0.25, 0.006, 0.16);
+      osc.connect(gain).connect(master);
+      osc.start(start);
+      osc.stop(start + 0.2);
+    });
+  }
+
   /** Shared distortion shaper for the damage voice (built once). */
   private distortionNode(ctx: AudioContext): WaveShaperNode {
     if (!this.distortion) {

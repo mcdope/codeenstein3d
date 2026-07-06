@@ -55,6 +55,107 @@ export function drawPauseOverlay(ctx: CanvasRenderingContext2D): void {
   ctx.textAlign = "start";
 }
 
+/**
+ * Full-screen overlay showing a lore terminal's source comment — triggered by
+ * "R" near a glowing wall (see `RaycasterEngine`'s `loreText`). Word-wraps the
+ * raw comment text (delimiters and all) into a centered box that caps its own
+ * height rather than growing off-screen; `scrollLines` (from the caller,
+ * advanced by holding W/S while the overlay is up) picks which wrapped lines
+ * are visible when the text doesn't fit. Returns the clamped max scroll
+ * offset so the caller can keep its own scroll state in bounds.
+ */
+export function drawLoreOverlay(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  scrollLines: number,
+): { maxScrollLines: number } {
+  const w = ctx.canvas.width;
+  const h = ctx.canvas.height;
+  const boxW = Math.min(520, w - 48);
+  const innerW = boxW - 48;
+
+  ctx.font = "13px ui-monospace, monospace";
+  const lines = wrapText(ctx, text, innerW);
+  const lineH = 18;
+  const boxH = Math.min(h - 40, 70 + lines.length * lineH);
+  const maxVisibleLines = Math.floor((boxH - 58) / lineH);
+  const maxScrollLines = Math.max(0, lines.length - maxVisibleLines);
+  const scroll = Math.max(0, Math.min(Math.floor(scrollLines), maxScrollLines));
+
+  ctx.fillStyle = "rgba(2,3,4,0.88)";
+  ctx.fillRect(0, 0, w, h);
+
+  const boxX = (w - boxW) / 2;
+  const boxY = (h - boxH) / 2;
+  ctx.fillStyle = "rgba(4,10,10,0.95)";
+  ctx.fillRect(boxX, boxY, boxW, boxH);
+  ctx.strokeStyle = "#3fd0e0";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(boxX + 1, boxY + 1, boxW - 2, boxH - 2);
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#3fd0e0";
+  ctx.font = "bold 15px ui-monospace, monospace";
+  ctx.fillText("LORE TERMINAL", w / 2, boxY + 24);
+
+  ctx.textAlign = "left";
+  ctx.font = "13px ui-monospace, monospace";
+  ctx.fillStyle = "#cdd3cd";
+  const textX = boxX + 24;
+  let y = boxY + 48;
+  for (const line of lines.slice(scroll, scroll + maxVisibleLines)) {
+    ctx.fillText(line, textX, y);
+    y += lineH;
+  }
+
+  // A slim scrollbar track + thumb along the box's right edge, only when the
+  // text actually overflows — otherwise there's nothing to scroll.
+  if (maxScrollLines > 0) {
+    const trackX = boxX + boxW - 14;
+    const trackY = boxY + 40;
+    const trackH = boxH - 56;
+    ctx.fillStyle = "rgba(63,208,224,0.2)";
+    ctx.fillRect(trackX, trackY, 4, trackH);
+    const thumbH = Math.max(16, trackH * (maxVisibleLines / lines.length));
+    const thumbY = trackY + (trackH - thumbH) * (scroll / maxScrollLines);
+    ctx.fillStyle = "#3fd0e0";
+    ctx.fillRect(trackX, thumbY, 4, thumbH);
+  }
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#7a9490";
+  ctx.font = "11px ui-monospace, monospace";
+  ctx.fillText(
+    maxScrollLines > 0 ? "W/S to scroll · R (or click) to close" : "Press R (or click) to close",
+    w / 2,
+    boxY + boxH - 12,
+  );
+  ctx.textAlign = "start";
+
+  return { maxScrollLines };
+}
+
+/** Greedy word-wrap of `text` into lines no wider than `maxWidth`, honoring
+ * existing newlines in the source comment as hard breaks. */
+function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
+  const lines: string[] = [];
+  for (const paragraph of text.split("\n")) {
+    const words = paragraph.split(/\s+/).filter((w) => w.length > 0);
+    let current = "";
+    for (const word of words) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (current && ctx.measureText(candidate).width > maxWidth) {
+        lines.push(current);
+        current = word;
+      } else {
+        current = candidate;
+      }
+    }
+    lines.push(current);
+  }
+  return lines;
+}
+
 /** Height, in canvas pixels, of the native status bar at the bottom. */
 const HUD_HEIGHT = 58;
 
