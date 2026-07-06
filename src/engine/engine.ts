@@ -186,7 +186,9 @@ export interface EngineStats {
 /** Host callbacks. All optional. */
 export interface EngineHandlers {
   onStats?: (stats: EngineStats) => void;
-  onGameOver?: () => void;
+  /** Fired on death; receives the final stats so the host can record a
+   * highscore entry for the run (score, and how far the campaign got). */
+  onGameOver?: (stats: EngineStats) => void;
   /** Fired when the player reaches the exit; receives the final stats so the
    * host can carry health/ammo into the next level. */
   onWin?: (stats: EngineStats) => void;
@@ -576,7 +578,7 @@ export class RaycasterEngine {
     // see `endGame()`'s doc comment for why this can't happen any earlier.
     if (this.state !== "playing") {
       this.stop();
-      if (this.state === "over") this.handlers.onGameOver?.();
+      if (this.state === "over") this.handlers.onGameOver?.(stats);
       else this.handlers.onWin?.(stats);
     }
   }

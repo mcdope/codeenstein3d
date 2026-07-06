@@ -160,6 +160,12 @@ let activeHud: GameHud | null = null;
 let workspaceTree: TreeNode | null = null;
 /** Path of the level currently running (or last launched), for the same. */
 let currentLevelPath: string | null = null;
+/** Parsed AST of the level currently running (or last launched) — kept
+ * alongside `currentLevelPath` so `advanceToNextLevel`'s "campaign finished"
+ * branch can still hash the last-cleared level for a highscore entry, even
+ * though it isn't nested in `launchLevel`'s closure the way `onGameOver`/
+ * `onWin` are. */
+let currentParsedFile: ParsedFile | null = null;
 /** Name of the picked workspace root, for the campaign name and the save file.
  * The File System Access API only grants a handle to the picked directory
  * itself — there's no way to walk up to its parent — so the "or parent
@@ -428,6 +434,7 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   console.groupEnd();
 
   currentLevelPath = path;
+  currentParsedFile = parsed;
 
   // Tear down any level already running before starting the new one.
   activeEngine?.stop();
@@ -482,12 +489,14 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
           persistProgress(stats);
         }
       },
-      onGameOver: () => {
+      onGameOver: (stats) => {
+        // Died on the current (not yet cleared) level, so only the levels
+        // before it actually count as progress.
+        void recordRunHighscore(parsed, path, stats, campaignLevelIndex - 1);
         clearCampaignSave();
         hud.showKernelPanic(resetToFileTree);
       },
       onWin: (stats) => {
-        void recordLevelHighscore(parsed, path, stats);
         hud.showCommitSummary(
           { linesRefactored: parsed.linesOfCode, bugsSquashed: stats.kills },
           () => void advanceToNextLevel(stats),
@@ -606,7 +615,13 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
   }
 
   // No more files left to try — the campaign is complete, so the saved
-  // resume point no longer means anything.
+  // resume point no longer means anything. The level just cleared (still
+  // `currentLevelPath`/`currentParsedFile`, and still counted in
+  // `campaignLevelIndex`) is what the highscore entry hashes/reports as the
+  // final level.
+  if (currentParsedFile && currentLevelPath) {
+    void recordRunHighscore(currentParsedFile, currentLevelPath, stats, campaignLevelIndex);
+  }
   clearCampaignSave();
   activeHud?.showBuildSuccessful(resetToFileTree);
 }
@@ -635,6 +650,7 @@ function resetToFileTree(): void {
   activeEngine = null;
   activeHud = null;
   currentLevelPath = null;
+  currentParsedFile = null;
   consoleSidebar.setHintsActive(false);
 
   // Hide (never remove) the canvas — see its doc comment. A display:none
@@ -817,15 +833,31 @@ function saveVolume(key: string, volume: number): void {
 
 // --- Highscores --------------------------------------------------------------
 
-/** Hash this level's AST + campaign name and record the resulting score on
- * the top-10 board. Fire-and-forget from `onWin` — hashing is cheap but
- * async (`crypto.subtle.digest`), and there's no reason to hold up the commit
- * summary overlay on it. */
-async function recordLevelHighscore(parsed: ParsedFile, path: string, stats: EngineStats): Promise<void> {
+/**
+ * Hash the run-ending level's AST + campaign name and record the resulting
+ * score on the top-10 board. Called once per run, not per level — on death
+ * (`onGameOver`) or on finishing the whole campaign (`advanceToNextLevel`'s
+ * "no more files" branch), never on an ordinary mid-campaign level clear.
+ * Fire-and-forget — hashing is cheap but async (`crypto.subtle.digest`), and
+ * there's no reason to hold up the caller's own overlay on it.
+ */
+async function recordRunHighscore(
+  parsed: ParsedFile,
+  path: string,
+  stats: EngineStats,
+  levelsCleared: number,
+): Promise<void> {
   try {
     const hash = await hashRun(JSON.stringify(parsed), campaignName());
     const levelName = path.split("/").pop() ?? path;
-    recordHighscore({ score: stats.score, campaignName: campaignName(), levelName, hash, achievedAt: Date.now() });
+    recordHighscore({
+      score: stats.score,
+      campaignName: campaignName(),
+      levelName,
+      levelsCleared,
+      hash,
+      achievedAt: Date.now(),
+    });
   } catch (err) {
     console.warn("[highscores] Failed to record this level's score:", err);
   }

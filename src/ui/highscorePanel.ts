@@ -10,7 +10,7 @@ export function renderHighscoreTable(container: HTMLElement, entries: HighscoreE
   if (entries.length === 0) {
     const empty = document.createElement("p");
     empty.className = "muted";
-    empty.textContent = "No runs recorded yet — clear a level to set the first score.";
+    empty.textContent = "No runs recorded yet — die or finish a campaign to set the first score.";
     container.appendChild(empty);
     return;
   }
@@ -19,7 +19,8 @@ export function renderHighscoreTable(container: HTMLElement, entries: HighscoreE
   table.className = "highscore-table";
 
   const thead = document.createElement("thead");
-  thead.innerHTML = "<tr><th>#</th><th>Score</th><th>Campaign</th><th>Level</th><th>Hash</th></tr>";
+  thead.innerHTML =
+    "<tr><th>#</th><th>Score</th><th>Campaign</th><th>Levels</th><th>Ended On</th><th>Hash</th></tr>";
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
@@ -35,6 +36,9 @@ export function renderHighscoreTable(container: HTMLElement, entries: HighscoreE
     const campaign = document.createElement("td");
     campaign.textContent = entry.campaignName;
 
+    const levels = document.createElement("td");
+    levels.textContent = String(entry.levelsCleared);
+
     const level = document.createElement("td");
     level.textContent = entry.levelName;
 
@@ -43,7 +47,7 @@ export function renderHighscoreTable(container: HTMLElement, entries: HighscoreE
     hash.textContent = truncateHash(entry.hash);
     hash.title = entry.hash;
 
-    row.append(rank, score, campaign, level, hash);
+    row.append(rank, score, campaign, levels, level, hash);
     tbody.appendChild(row);
   });
   table.appendChild(tbody);
