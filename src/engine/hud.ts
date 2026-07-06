@@ -182,6 +182,15 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
   return lines;
 }
 
+/**
+ * Disabled for now — playtest feedback found the needle inverted on at least
+ * one axis and the dial didn't fit visually next to the minimap. Code stays
+ * intact (not deleted) pending a fix/redesign; same disable-behind-a-flag
+ * pattern as `DECORATIONS_ENABLED` in `mapGenerator.ts` / `EXTREME_GORE_ENABLED`
+ * in `effects.ts`.
+ */
+export const COMPASS_ENABLED = false;
+
 /** Diameter, in canvas pixels, of the exit compass dial. */
 const COMPASS_SIZE = 46;
 /** Top-left placement of the compass — just under the minimap's max possible

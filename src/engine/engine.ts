@@ -31,7 +31,7 @@ import {
   findTargetUnderCrosshair,
   type BillboardJob,
 } from "./sprites";
-import { drawCompass, drawCrosshair, drawFpsOverlay, drawHud, drawLoreOverlay, drawPauseOverlay } from "./hud";
+import { COMPASS_ENABLED, drawCompass, drawCrosshair, drawFpsOverlay, drawHud, drawLoreOverlay, drawPauseOverlay } from "./hud";
 import { drawWeapon } from "./viewmodel";
 import { drawAutomap } from "./automap";
 import {
@@ -594,14 +594,16 @@ export class RaycasterEngine {
 
     drawCrosshair(this.ctx, this.target !== null, WEAPONS[this.weaponIndex].spreadPx);
     renderMinimap(this.ctx, this.map, this.player, this.levelTime);
-    drawCompass(
-      this.ctx,
-      this.player.posX,
-      this.player.posY,
-      Math.atan2(this.player.dirY, this.player.dirX),
-      this.map.exit.x + 0.5,
-      this.map.exit.y + 0.5,
-    );
+    if (COMPASS_ENABLED) {
+      drawCompass(
+        this.ctx,
+        this.player.posX,
+        this.player.posY,
+        Math.atan2(this.player.dirY, this.player.dirX),
+        this.map.exit.x + 0.5,
+        this.map.exit.y + 0.5,
+      );
+    }
 
     // Native HUD sits on top of the whole scene.
     const stats = this.buildStats();
