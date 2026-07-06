@@ -9,15 +9,31 @@
  *
  * Pure native Canvas 2D — no WebGL, no 3D libraries.
  */
-import { DOOR_TILE, HAZARD_TILE, SPIKE_TRAP_TILE, TELEPORTER_TILE, type GameMap } from "../map/types";
+import {
+  DOOR_TILE,
+  HAZARD_TILE,
+  LORE_TILE,
+  SECRET_WALL_TILE,
+  SPIKE_TRAP_TILE,
+  TELEPORTER_TILE,
+  type GameMap,
+} from "../map/types";
 import type { Player } from "./player";
 import { enemyColor } from "./sprites";
 import { activeSpikeTileKeys } from "./traps";
 
 /** Base wall color (a warm dungeon brick), before distance shading. */
 const WALL_RGB: [number, number, number] = [186, 152, 116];
+/** A bonus (restock-arena) level uses a cool, distinct steel-and-teal theme
+ * instead of the normal warm brick, so it reads as visually different the
+ * instant it loads — see `GameMap.bonusLevel`. */
+const BONUS_WALL_RGB: [number, number, number] = [92, 142, 168];
+const BONUS_CEILING_RGB: [number, number, number] = [8, 16, 24];
+const BONUS_FLOOR_RGB: [number, number, number] = [14, 24, 30];
 /** Locked-door color (a cold steel blue), before distance shading. */
 const DOOR_RGB: [number, number, number] = [86, 142, 190];
+/** Lore terminal wall color (a glowing violet-cyan), before pulsing/shading. */
+const LORE_RGB: [number, number, number] = [120, 200, 210];
 /** Ceiling, plain floor, and hazard (acid) floor base colors, as RGB. */
 const CEILING_RGB: [number, number, number] = [11, 13, 22];
 const FLOOR_RGB: [number, number, number] = [21, 21, 26];
@@ -27,6 +43,29 @@ const TELEPORTER_RGB: [number, number, number] = [130, 70, 220];
 /** Spike trap floor tint: dull metal grey while safe, hot pulsing red while active. */
 const SPIKE_SAFE_RGB: [number, number, number] = [90, 90, 96];
 const SPIKE_ACTIVE_RGB: [number, number, number] = [220, 40, 30];
+
+/** Wall/floor/ceiling base colors for `map`'s theme — bonus (restock arena)
+ * levels get a distinct cool palette (see `BONUS_WALL_RGB`). */
+function scenePalette(map: GameMap): {
+  wall: [number, number, number];
+  floor: [number, number, number];
+  ceiling: [number, number, number];
+} {
+  return map.bonusLevel
+    ? { wall: BONUS_WALL_RGB, floor: BONUS_FLOOR_RGB, ceiling: BONUS_CEILING_RGB }
+    : { wall: WALL_RGB, floor: FLOOR_RGB, ceiling: CEILING_RGB };
+}
+
+/**
+ * A fake secret wall is meant to be findable, not literally invisible: a very
+ * slight cool nudge off the real wall color (a touch less red, a touch more
+ * blue) — subtle enough to blend in at a glance or in the heat of a fight,
+ * but a player who stops and really looks at a stretch of wall has a real
+ * shot at spotting it before ever pressing "R" against it.
+ */
+function secretWallTint(base: [number, number, number]): [number, number, number] {
+  return [Math.max(0, base[0] - 8), base[1], Math.min(255, base[2] + 10)];
+}
 /** Within this many tiles the world keeps full brightness (no fog). */
 const FOG_NEAR = 2.5;
 /** Beyond this many tiles the world has faded to pure black. */
@@ -67,6 +106,7 @@ export function renderScene(
   // Screen row of the horizon, nudged by the head-bob so walls, ceiling, and
   // floor all rise and fall with the camera.
   const horizon = height / 2 + horizonShift;
+  const palette = scenePalette(map);
 
   if (map.hazards.length > 0 || map.teleporters.length > 0 || map.spikeTraps.length > 0) {
     // Floor-cast so acid pools / teleporter pads / spike traps appear as
@@ -75,11 +115,20 @@ export function renderScene(
   } else {
     // No hazards: flat ceiling (above the horizon) and floor (below) is cheaper.
     const split = Math.max(0, Math.min(height, Math.round(horizon)));
-    ctx.fillStyle = rgb(CEILING_RGB);
+    ctx.fillStyle = rgb(palette.ceiling);
     ctx.fillRect(0, 0, width, split);
-    ctx.fillStyle = rgb(FLOOR_RGB);
+    ctx.fillStyle = rgb(palette.floor);
     ctx.fillRect(0, split, width, height - split);
   }
+
+  // Lore terminal walls pulse gently so they read as an active "terminal"
+  // rather than a static tinted wall — computed once per frame, not per column.
+  const lorePulse = 0.75 + 0.25 * Math.sin(performance.now() / 200);
+  const loreGlow: [number, number, number] = [
+    LORE_RGB[0] * lorePulse,
+    LORE_RGB[1] * lorePulse,
+    LORE_RGB[2] * lorePulse,
+  ];
 
   for (let x = 0; x < width; x++) {
     // Ray direction for this column: dir + plane * cameraX, cameraX ∈ [-1, 1].
@@ -133,7 +182,7 @@ export function renderScene(
         hitTile = 1;
       } else {
         const tile = map.grid[mapY][mapX];
-        if (tile === 1 || tile === DOOR_TILE) {
+        if (tile === 1 || tile === DOOR_TILE || tile === SECRET_WALL_TILE || tile === LORE_TILE) {
           hit = true;
           hitTile = tile;
         }
@@ -155,7 +204,14 @@ export function renderScene(
     let shade = fogShade(dist);
     if (side === 1) shade *= SIDE_SHADE;
 
-    const base = hitTile === DOOR_TILE ? DOOR_RGB : WALL_RGB;
+    const base =
+      hitTile === DOOR_TILE
+        ? DOOR_RGB
+        : hitTile === LORE_TILE
+          ? loreGlow
+          : hitTile === SECRET_WALL_TILE
+            ? secretWallTint(palette.wall)
+            : palette.wall;
     const r = Math.floor(base[0] * shade);
     const g = Math.floor(base[1] * shade);
     const b = Math.floor(base[2] * shade);
@@ -183,6 +239,7 @@ function renderBackground(
   }
   const data = floorImage.data;
   const halfH = horizon;
+  const palette = scenePalette(map);
 
   // Teleporter pads pulse gently so they read as "active" rather than a
   // static colored tile; computed once per frame, not per pixel.
@@ -216,9 +273,9 @@ function renderBackground(
     if (y < halfH) {
       // Ceiling: flat fill.
       for (let x = 0; x < width; x++) {
-        data[idx++] = CEILING_RGB[0];
-        data[idx++] = CEILING_RGB[1];
-        data[idx++] = CEILING_RGB[2];
+        data[idx++] = palette.ceiling[0];
+        data[idx++] = palette.ceiling[1];
+        data[idx++] = palette.ceiling[2];
         data[idx++] = 255;
       }
       continue;
@@ -245,7 +302,7 @@ function renderBackground(
             ? ACID_RGB
             : tile === SPIKE_TRAP_TILE
               ? (activeSpikes.has(`${cx},${cy}`) ? spikeActiveGlow : SPIKE_SAFE_RGB)
-              : FLOOR_RGB;
+              : palette.floor;
       data[idx++] = base[0] * shade;
       data[idx++] = base[1] * shade;
       data[idx++] = base[2] * shade;
@@ -292,12 +349,33 @@ export function renderMinimap(
   ctx.globalAlpha = 0.9;
 
   // Walls.
-  ctx.fillStyle = "#4a4a55";
+  ctx.fillStyle = map.bonusLevel ? "#3f7fae" : "#4a4a55";
   for (let y = 0; y < map.height; y++) {
     const row = map.grid[y];
     for (let x = 0; x < map.width; x++) {
-      if (row[x] === 1) ctx.fillRect(pad + x * cell, pad + y * cell, cell, cell);
+      if (row[x] === 1 || row[x] === LORE_TILE) {
+        ctx.fillRect(pad + x * cell, pad + y * cell, cell, cell);
+      }
     }
+  }
+
+  // Fake secret walls: the same very slight cool hue nudge as the 3D scene
+  // (see `secretWallTint`) — close enough to a plain wall to stay hidden at a
+  // glance, but a real (if tiny) hint for a player who looks closely.
+  ctx.fillStyle = map.bonusLevel ? "#377fb8" : "#424a5f";
+  for (let y = 0; y < map.height; y++) {
+    const row = map.grid[y];
+    for (let x = 0; x < map.width; x++) {
+      if (row[x] === SECRET_WALL_TILE) ctx.fillRect(pad + x * cell, pad + y * cell, cell, cell);
+    }
+  }
+
+  // Lore terminals: a small glowing marker layered over their wall tile so
+  // they still stand out from a plain (or secret) wall at a glance.
+  const lorePulse = 0.6 + 0.4 * Math.sin(performance.now() / 200);
+  ctx.fillStyle = `rgba(120,200,210,${lorePulse})`;
+  for (const t of map.loreTerminals) {
+    ctx.fillRect(pad + t.x * cell, pad + t.y * cell, cell, cell);
   }
 
   // Hazard (acid) tiles — a hot, non-green color so a glance never confuses

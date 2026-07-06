@@ -7,7 +7,15 @@
  * A solid triangle marks the player's position and facing. Pure Canvas 2D — the
  * engine pauses the sim while this is up.
  */
-import { DOOR_TILE, HAZARD_TILE, SPIKE_TRAP_TILE, TELEPORTER_TILE, type GameMap } from "../map/types";
+import {
+  DOOR_TILE,
+  HAZARD_TILE,
+  LORE_TILE,
+  SECRET_WALL_TILE,
+  SPIKE_TRAP_TILE,
+  TELEPORTER_TILE,
+  type GameMap,
+} from "../map/types";
 import { activeSpikeTileKeys } from "./traps";
 import type { Player } from "./player";
 
@@ -25,6 +33,12 @@ const FLOOR_COLOR = "rgba(57,255,20,0.10)";
 /** Hazard (acid) tiles — same hot, non-green color as the HUD minimap, so it
  * never blends with the green exit marker or explored-floor wash. */
 const HAZARD_COLOR = "#ff9d1f";
+/** Lore terminal walls — same glowing tint as the 3D scene/minimap. */
+const LORE_COLOR = "#78c8d2";
+/** Fake secret walls: the same very slight cool hue nudge off the normal
+ * wall color as the 3D scene/minimap (see `secretWallTint` in raycaster.ts)
+ * — close enough to blend in, but a real hint on close inspection. */
+const SECRET_WALL_COLOR = "#2ee0a8";
 
 /**
  * Draw the automap centered over the canvas: a dark scrim, then the explored
@@ -64,6 +78,12 @@ export function drawAutomap(
       const py = oy + y * cell;
       if (tile === 1) {
         ctx.fillStyle = WALL_COLOR;
+        ctx.fillRect(px, py, cell, cell);
+      } else if (tile === SECRET_WALL_TILE) {
+        ctx.fillStyle = SECRET_WALL_COLOR;
+        ctx.fillRect(px, py, cell, cell);
+      } else if (tile === LORE_TILE) {
+        ctx.fillStyle = LORE_COLOR;
         ctx.fillRect(px, py, cell, cell);
       } else if (tile === DOOR_TILE) {
         ctx.fillStyle = DOOR_COLOR;
