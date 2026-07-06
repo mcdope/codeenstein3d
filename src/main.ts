@@ -16,7 +16,7 @@ import { MapGenerator } from "./map/mapGenerator";
 import { RaycasterEngine } from "./engine/engine";
 import { audio } from "./engine/audio";
 import { GameHud } from "./ui/gameHud";
-import { DEFAULT_GORE_LEVEL, type GoreLevel } from "./engine/effects";
+import { DEFAULT_GORE_LEVEL, EXTREME_GORE_ENABLED, type GoreLevel } from "./engine/effects";
 import type { ParsedFile } from "./parser/types";
 import type { EngineCarryover, EngineStats } from "./engine/engine";
 
@@ -28,12 +28,23 @@ const SCENE_HEIGHT = 400;
  * just the C header today, the only header-file extension this app parses. */
 const BONUS_LEVEL_EXTENSIONS = new Set(["h"]);
 
+/** localStorage key for the standing gore-level preference (see `loadGoreLevel`
+ * below) — declared up here, not next to `loadGoreLevel`/`saveGoreLevel`
+ * themselves, because `currentGoreLevel`'s module-level initializer calls
+ * `loadGoreLevel()` immediately; a `const` declared later in the file would
+ * still be in its temporal dead zone at that point and throw. */
+const GORE_KEY = "codeenstein-gore-level";
+
 const selectButton = requireElement<HTMLButtonElement>("#select-workspace");
 const continueButton = requireElement<HTMLButtonElement>("#continue-run");
 const workspaceName = requireElement<HTMLParagraphElement>("#workspace-name");
 const fileTree = requireElement<HTMLElement>("#file-tree");
 const viewport = requireElement<HTMLElement>("#viewport");
 const goreSelect = requireElement<HTMLSelectElement>("#gore-select");
+// "Extreme" reads as over-the-top per playtest feedback — hidden from the
+// dropdown for now (see EXTREME_GORE_ENABLED's doc comment); the <option>
+// stays in index.html so re-enabling is just flipping that flag back.
+if (!EXTREME_GORE_ENABLED) goreSelect.querySelector('option[value="extreme"]')?.remove();
 
 /**
  * The one and only game canvas — created once, attached to `#viewport` once,
@@ -596,15 +607,18 @@ function persistProgress(stats: EngineStats): void {
 }
 
 // --- Gore level (standing preference, independent of any campaign save) ----
-
-const GORE_KEY = "codeenstein-gore-level";
+// GORE_KEY itself is declared near the top of the file — see its doc comment
+// for why it can't live down here next to the functions that use it.
 
 /** Read the saved gore level, falling back to `DEFAULT_GORE_LEVEL` on any
  * missing/invalid value or if storage is unavailable (e.g. private browsing) —
- * same "never throw" philosophy as `loadCampaignSave`. */
+ * same "never throw" philosophy as `loadCampaignSave`. A previously-saved
+ * "extreme" is downgraded to "more" while `EXTREME_GORE_ENABLED` is off, since
+ * that option is no longer in the dropdown for the player to see/change. */
 function loadGoreLevel(): GoreLevel {
   try {
     const raw = localStorage.getItem(GORE_KEY);
+    if (raw === "extreme" && !EXTREME_GORE_ENABLED) return "more";
     if (raw === "none" || raw === "normal" || raw === "more" || raw === "extreme") return raw;
   } catch {
     // Fall through to the default.

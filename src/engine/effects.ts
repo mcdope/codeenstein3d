@@ -54,6 +54,16 @@ export const GORE_MULTIPLIERS: Record<GoreLevel, GoreMultipliers> = {
   extreme: { count: 10, size: 10, stainDuration: 10 },
 };
 
+/**
+ * Whether the "Extreme" tier is actually selectable. Playtest feedback: 10x
+ * gore reads as over-the-top, so it's hidden from the sidebar dropdown (see
+ * `main.ts`) and any previously-saved "extreme" preference is downgraded to
+ * "more" — pending a revisit later. The multiplier table entry above is left
+ * intact so re-enabling is just flipping this flag back to `true`, same
+ * pattern as `DECORATIONS_ENABLED` in `mapGenerator.ts`.
+ */
+export const EXTREME_GORE_ENABLED = false;
+
 export const DEFAULT_GORE_LEVEL: GoreLevel = "normal";
 
 /** A weapon tracer: a fading screen-space line from the muzzle to the impact. */
