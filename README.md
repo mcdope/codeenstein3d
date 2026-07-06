@@ -156,8 +156,8 @@ Requires Node.js 18+.
 
 ```bash
 # Clone repository
-git clone https://github.com/your-username/codeenstein-3d.git
-cd codeenstein-3d
+git clone https://github.com/mcdope/codeenstein3d.git
+cd codeenstein3d
 
 # Install dependencies
 npm install
