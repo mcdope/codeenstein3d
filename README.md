@@ -289,6 +289,8 @@ Full player-facing docs live in [`doc/user`](doc/user/README.md) — getting sta
 
 🔒 If you're wondering what happens to the workspace you point this at, or what gets stored on your machine, see [`doc/user/privacy.md`](doc/user/privacy.md).
 
+Developer-facing docs — architecture, game design rationale, and notable design decisions — live in [`doc/dev`](doc/dev/README.md).
+
 ---
 
 ## License

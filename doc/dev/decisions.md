@@ -1,0 +1,47 @@
+# Design Decisions
+
+A themed, evergreen reference of notable tradeoffs and reversals — organized by topic, not by task number or date. Each section states the *current* rationale in prose, with a brief history note only where a real reversal happened, and cites [`notes`](../../notes) task numbers in brackets for the full problem/attempt/verification detail rather than restating it here.
+
+**Maintenance rule:** when a new decision is made, fold it into an existing theme below, or add a new H2 only if it's a genuinely new axis of decision-making. Do not append one entry per completed task — that's what `notes` is for.
+
+## Determinism & Replay
+
+Anything that affects simulation outcome (enemy AI timing, loot rolls, weapon spread, elite-loot coinflips) draws from a shared seeded `mulberry32` PRNG (`src/prng.ts`) instead of `Math.random()`, so a recorded seed plus a recorded per-frame input digest reproduces a byte-identical run. Purely cosmetic randomness (blood particles, SFX pitch, BGM shuffle, console hints) deliberately stays on `Math.random()` — seeding it would add complexity for a divergence no one would notice. See [Architecture](architecture.md#determinism-and-replay) for the mechanism.
+
+Replay scope started at a single level (whichever one a run ended on) and was later expanded to cover a full multi-level campaign, once it became clear a single-level replay was too narrow to be useful for a genuinely multi-level run. The recorded payload format was versioned rather than migrated in place — old single-level recordings are recognized and hidden from playback rather than trusted blindly, since their shape can't be verified from the type alone once read back out of `localStorage`. `[notes: Task 35, 36, 37]`
+
+## Entrypoint Detection
+
+The original entrypoint heuristic (a filename-convention check, then a fallback scan for any C-family file containing a literal `main()`) failed in practice on a real shared-library project with no `main.c` at all — it picked an arbitrary small helper file purely because of alphabetical sort order, and every hand-rolled unit test file in that same repo also had its own `main()` and was *more* complex than the real source, ruling out "just pick whichever main()-having file scores highest" as a fix on its own. The replacement is layered: files are split into a real-source bucket and a test/spec-fixture bucket first (by path segment, case-insensitive); within each bucket, a filename-convention check runs before a language-agnostic scan-and-score pass (any language's `main`/`Main` entity, catching capitalized conventions too); the test bucket is only consulted if the real-source bucket found nothing at either stage. The whole pass is time-capped, degrading to "first file in tree order" if it fires. `[notes: Task 45]`
+
+## Enemy Scaling (Packs vs. Elites)
+
+Complexity below a fixed threshold scales enemy count (one extra enemy per fixed complexity increment) rather than piling more HP onto a single enemy — this was chosen so a big function reads as "several problems," not one implausibly tanky one. Above the threshold, that logic deliberately flips to a single Elite (a large HP multiplier, higher damage, guaranteed drop) instead of an ever-larger pack, specifically because the threshold sits right where a pack would otherwise hit its largest practical size — a genuinely different code shape (a boss-tier function) gets a genuinely different encounter shape, not just a bigger version of the same one. See [Game Design](game-design.md#enemy-and-difficulty-philosophy) for the player-facing intent.
+
+## Persistence & Storage Limits
+
+`localStorage` quota is treated as a real, expected failure mode, not an edge case — a replay payload spanning a multi-level campaign can reach multiple megabytes. The mitigation is layered and ordered by how much it costs: compress the highscore board (gzip via `CompressionStream`, base64-encoded, falling back to plain JSON when compression doesn't actually win) before ever writing; if a write still fails on quota, retry without the new entry's replay; if that alone still doesn't fit, retry without *any* stored entry's replay. A run's score is never allowed to be dropped — only the optional replay attached to it. A version prefix (`"gz1:"`) distinguishes compressed values from pre-existing plain-JSON boards so old data keeps loading unchanged. `[notes: Task 44]`
+
+Separately, a real scoring bug was traced to two causes at once: health lost was being penalized twice (once via a health-fraction bonus, once via a separate malus scaled the same way), and `EngineCarryover` — rebuilt fresh every level — never forwarded prior score, kill points, or bonuses, so score collapsed back toward zero at every level transition instead of accumulating. Both were fixed together: the duplicate malus was removed, and carryover gained a `priorScore` field threaded through every level-transition path. `[notes: Task 47]`
+
+## Ammo/Loot Gating
+
+Loot rolls are filtered to exclude outcomes that would be dead weight given current player/run state, rather than rolling them anyway and wasting the result: rocket ammo is excluded from the loot table entirely until the rocket launcher is owned (its share redistributed to other kinds), and health is excluded once the player is at full health (both the regular loot table and the Elite guaranteed-drop branch). The design goal is that a drop the player can't use at all reads as worse than no drop — see [Game Design](game-design.md#weapon-and-economy-intent). `[notes: Task 46, 50]`
+
+## Feature Scope Reversals
+
+Room decorations (server racks, plants, desks, code-block props as billboards) were implemented once, then disabled behind a flag after playtest feedback found them more annoying than atmospheric — the code was kept rather than deleted, since the underlying goal (rooms feeling less empty) is still considered worth pursuing with a different approach. `[notes: Task 21, and the still-open decorations item]`
+
+The exit compass went through two disable/re-enable cycles: first disabled because its needle read as inverted on at least one axis and it didn't fit visually next to the minimap; root-caused to the needle's rest orientation pointing "east" instead of "up" (a target dead ahead should read as straight up, not sideways); fixed and re-enabled with a redesigned placement (a small badge in the minimap panel's corner rather than a separate bar), then further shrunk after feedback that even the corrected version felt too visually invasive. `[notes: Task 33, 34, 35, 39]`
+
+Billboard draw order was originally fixed-by-category (enemies drawn before items, before the exit marker, etc.), which could let a nearer item visually disappear behind a farther category. Replaced with one combined furthest-to-nearest depth-sorted pass across every billboard type against a shared z-buffer — see [Architecture](architecture.md#rendering). `[notes: Task 25]`
+
+## Dependency Minimalism
+
+The project deliberately avoids adding a new npm dependency where a built-in browser API already covers the need: `crypto.subtle.digest('SHA-256', ...)` is used for the AST/campaign hash shown in highscores instead of a bundled hash library, and highscore-board compression uses `CompressionStream`/`DecompressionStream` instead of a bundled compression library. The same principle drove the parser architecture: rather than pull in a second parsing library to cover additional languages, every non-bespoke language (12 of 14) is handled by one data-driven adapter built on the same Tree-sitter grammars already in use — see [Architecture](architecture.md#parser--source--normalized-ast-data). `[notes: Task 23, 35, 44]`
+
+## Documentation & Transparency
+
+The classic Doom cheat codes (IDDQD/IDKFA/IDCLIP) are implemented but deliberately left out of the public README and player docs — a genuine Easter egg rather than a documented control — while still being fully described here and in `doc/user/controls.md` for anyone actually reading the docs rather than stumbling onto it in play. Highscore recording is disabled for the rest of a campaign once any cheat has been used, so an Easter egg can't be used to inflate a leaderboard entry. `[notes: Task 39]`
+
+TODO/FIXME-flagged comments deliberately bypass the normal lore-terminal length/multi-line gate (see [Game Design](game-design.md#everything-maps-to-something)), while license/copyright headers are explicitly excluded from becoming lore terminals at all — both are content-filtering decisions about what "authored lore" should mean, made after noticing the literal effect each would otherwise have (most real TODOs are one-liners; nearly every file's own license header would otherwise qualify as a lore comment by length alone). `[notes: Task 39, 42]`
