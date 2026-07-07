@@ -107,8 +107,13 @@ export class MapGenerator {
    * for header/equivalent files): a distinct visual theme (handled by the
    * raycaster from the returned `GameMap.bonusLevel` flag) and a boosted
    * static-pickup rate, treating the level as a loot stop rather than a fight.
+   *
+   * `hasRocketLauncher` mirrors the same gate applied to enemy-kill drops (see
+   * `rollLoot` in `engine/loot.ts`): until the player owns the launcher,
+   * static rocket pickups would just be dead loot, so they're generated as
+   * bullets/health instead.
    */
-  generate(parsed: ParsedFile, bonusLevel = false): GameMap {
+  generate(parsed: ParsedFile, bonusLevel = false, hasRocketLauncher = true): GameMap {
     const rng = mulberry32(seedFrom(parsed));
     const size = this.mapSize(parsed);
 
@@ -169,7 +174,7 @@ export class MapGenerator {
     const loreResult = placeLoreTerminals(rooms, grid, parsed.comments, rng);
     const loreTerminals = loreResult.terminals;
     enemies.push(...loreResult.todoEnemies);
-    const { secretLoot } = placeSecretRooms(rooms, grid, size, parsed.deadCodeRegions, rng);
+    const { secretLoot } = placeSecretRooms(rooms, grid, size, parsed.deadCodeRegions, rng, hasRocketLauncher);
 
     // Turn each resolved `goto` → label jump into a teleporter pad pair, once
     // the floor plan (doors/keys included) is final so pads never overwrite
@@ -203,7 +208,10 @@ export class MapGenerator {
       ...spikeTraps.map((t) => ({ x: t.x, y: t.y })),
       ...mines.map((m) => ({ x: m.x, y: m.y })),
     ];
-    const ammoPickups = [...placeAmmoPickups(rooms, grid, ammoAvoid, rng, bonusLevel), ...secretLoot];
+    const ammoPickups = [
+      ...placeAmmoPickups(rooms, grid, ammoAvoid, rng, bonusLevel, hasRocketLauncher),
+      ...secretLoot,
+    ];
 
     // Fog-of-war overlay grid, all unexplored until the player moves through.
     const visited: boolean[][] = Array.from({ length: size }, () =>
@@ -780,6 +788,7 @@ function placeAmmoPickups(
   avoid: Point[],
   rng: () => number,
   bonusLevel: boolean,
+  hasRocketLauncher: boolean,
 ): AmmoPickup[] {
   const pickups: AmmoPickup[] = [];
   const roomChance = bonusLevel ? BONUS_AMMO_ROOM_CHANCE : AMMO_PICKUP_ROOM_CHANCE;
@@ -793,7 +802,7 @@ function placeAmmoPickups(
     const spot = findPropSpot(room, grid, avoid, placedSoFar, rng);
     if (!spot) return;
 
-    const kind = rng() < AMMO_PICKUP_ROCKET_CHANCE ? "rockets" : "bullets";
+    const kind = hasRocketLauncher && rng() < AMMO_PICKUP_ROCKET_CHANCE ? "rockets" : "bullets";
     const base = kind === "rockets" ? AMMO_PICKUP_ROCKETS_AMOUNT : AMMO_PICKUP_BULLETS_AMOUNT;
     pickups.push({
       x: spot.x + 0.5,
@@ -997,6 +1006,7 @@ function placeSecretRooms(
   mapSize: number,
   deadCodeRegions: DeadCodeRegion[],
   rng: () => number,
+  hasRocketLauncher: boolean,
 ): { secretLoot: AmmoPickup[] } {
   const secretLoot: AmmoPickup[] = [];
 
@@ -1006,7 +1016,7 @@ function placeSecretRooms(
     const secret = trySecretRoomOffAnchor(anchor, grid, mapSize, rng);
     if (!secret) continue;
 
-    const kind = rng() < 0.5 ? "health" : "rockets";
+    const kind = hasRocketLauncher && rng() < 0.5 ? "rockets" : "health";
     secretLoot.push({
       x: secret.center.x + 0.5,
       y: secret.center.y + 0.5,

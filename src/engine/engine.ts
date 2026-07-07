@@ -1431,7 +1431,12 @@ export class RaycasterEngine {
     if (lifesteal) this.health = Math.min(MAX_HEALTH, this.health + lifesteal);
 
     if (enemy.elite) this.dropEliteLoot(enemy);
-    else this.drops.push({ x: enemy.x, y: enemy.y, kind: rollLoot(this.map.bonusLevel, this.difficultyLevel, this.rng) });
+    else
+      this.drops.push({
+        x: enemy.x,
+        y: enemy.y,
+        kind: rollLoot(this.map.bonusLevel, this.difficultyLevel, this.rng, this.ownedWeapons.has(GHIDRA_WEAPON_INDEX)),
+      });
     audio.playAmmoDrop();
 
     const remaining = this.enemies.reduce((n, e) => n + (e.alive ? 1 : 0), 0);

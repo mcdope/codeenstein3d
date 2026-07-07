@@ -643,7 +643,8 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   // a distinct visual theme and a boosted loot rate, treating them as restock
   // arenas rather than normal combat levels (see `MapGenerator.generate`).
   const bonusLevel = BONUS_LEVEL_EXTENSIONS.has(extensionOf(path));
-  const map = mapGenerator.generate(parsed, bonusLevel);
+  const hasRocketLauncher = carryover?.ownedWeapons?.includes(GHIDRA_WEAPON_INDEX) ?? false;
+  const map = mapGenerator.generate(parsed, bonusLevel, hasRocketLauncher);
   // Deliberately spoiler-free: no exit/secret-room/lore-terminal coordinates
   // in the printed text, since that string is also what the console sidebar
   // mirrors verbatim (see `src/ui/consoleSidebar.ts`) — a glance at it
@@ -1407,7 +1408,8 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
     /** Builds a fresh engine for `segment`/`parsed`, wired the same way for
      * both a normal level load and an in-place restart (seeking backward). */
     const buildEngineFor = (segment: ReplayLevelSegment, parsed: ParsedFile): void => {
-      const map = mapGenerator.generate(parsed, segment.bonusLevel);
+      const hasRocketLauncher = segment.carryover?.ownedWeapons?.includes(GHIDRA_WEAPON_INDEX) ?? false;
+      const map = mapGenerator.generate(parsed, segment.bonusLevel, hasRocketLauncher);
       currentParsed = parsed;
       currentSegment = segment;
       replayInput = new ReplayPlaybackInput();

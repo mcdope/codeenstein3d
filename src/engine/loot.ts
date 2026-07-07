@@ -51,24 +51,31 @@ const BONUS_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[
  * seeded stream instead — a loot roll changes what ammo/health is available
  * for the rest of the run, so it has to go through the same deterministic
  * source as everything else the replay system depends on (see `src/prng.ts`'s
- * doc comment for the full seeded/cosmetic split). */
+ * doc comment for the full seeded/cosmetic split).
+ *
+ * `hasRocketLauncher` gates the `"rockets"` entry out of the weight table
+ * entirely (rather than re-rolling into it) — until the launcher is
+ * unlocked, rocket ammo would just be dead loot cluttering the drop, so its
+ * share is redistributed across the remaining kinds instead. */
 export function rollLoot(
   bonusLevel = false,
   difficulty: DifficultyLevel = "normal",
   rng: () => number = Math.random,
+  hasRocketLauncher = true,
 ): Exclude<LootKind, "weapon"> {
   const weights = bonusLevel
     ? BONUS_LOOT_WEIGHTS
     : difficulty === "normal"
       ? NORMAL_LOOT_WEIGHTS
       : LOOT_WEIGHTS;
-  const total = weights.reduce((sum, w) => sum + w.weight, 0);
+  const usable = hasRocketLauncher ? weights : weights.filter((w) => w.kind !== "rockets");
+  const total = usable.reduce((sum, w) => sum + w.weight, 0);
   let r = rng() * total;
-  for (const w of weights) {
+  for (const w of usable) {
     if (r < w.weight) return w.kind;
     r -= w.weight;
   }
-  return weights[0].kind;
+  return usable[0].kind;
 }
 
 /** Default pickup amounts, per loot kind (overridable per-drop for elite
