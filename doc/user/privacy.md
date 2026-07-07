@@ -1,0 +1,40 @@
+# Privacy
+
+[← Back to index](README.md)
+
+Codeenstein 3D runs entirely in your browser. There is no backend server, no account, no analytics, and no crash/error reporting of any kind — the only third-party network calls it ever makes are the ones described below, and only when you use the specific feature that triggers them.
+
+## Your workspace (the code you point it at)
+
+- **Local folder** — picked via the browser's File System Access API. The folder is read directly by your browser and parsed locally (client-side, via `web-tree-sitter` running as WebAssembly). Its contents never leave your machine.
+- **GitHub repo** (`owner/repo`, via the "Load from GitHub" tab) — this is the one feature that talks to a remote server, and only when you explicitly use it:
+  - The repository's `owner/repo` name is sent to GitHub's REST API (`api.github.com`) to look up its default branch and fetch the full file tree.
+  - Individual file contents are fetched lazily — only once a file is actually opened/parsed — from `raw.githubusercontent.com`, GitHub's raw-content CDN.
+  - These requests are unauthenticated (no login, no token sent), so they're subject to GitHub's normal public rate limits, and are visible to GitHub the same way any plain `fetch()` to their servers would be (your IP address, standard HTTP headers, and the repo/file path you requested — nothing added by this app on top of a normal browser request).
+  - Nothing is ever pushed, written, or reported back to GitHub — these are read-only `GET` requests.
+
+No other feature makes any network request. A locally-picked workspace never touches the network at all.
+
+## What's stored on your machine
+
+Everything the game remembers between sessions lives in your browser's `localStorage` for this site, under a handful of keys prefixed `codeenstein-`. Nothing is ever synced anywhere — clearing your browser's site data for this page removes all of it.
+
+| Stored as | Contains |
+|---|---|
+| Campaign save (`codeenstein-campaign-save`) | Workspace name, the current file's path *within that workspace* (not its contents), health/swap/ammo/weapons/score, and campaign level position — enough to resume a run, no source code |
+| Highscore board (`codeenstein-highscores`) | Score, campaign/level name, levels cleared, a SHA-256 hash of the parsed code structure (used only to tell "same code" runs apart — not reversible into source), lines-of-code/complexity totals, and — if captured — a replay |
+| Replay (attached to a highscore entry) | Per level: its file path, a random-number seed, the same AST hash as above, difficulty/gore settings, and a frame-by-frame recording of your *inputs* (keys/mouse/gamepad) for that level. No source code or file contents are recorded — a replay is only watchable by re-loading the same workspace/repo and regenerating the map from it |
+| Preferences | Gore level, difficulty, and Master/SFX/Music volume — simple settings, not tied to any run |
+
+Replay/highscore data is gzip-compressed before being stored purely to fit within the browser's storage quota; this is a size optimization, not obfuscation, and doesn't change what's recorded.
+
+## What is never stored or sent anywhere
+
+- The actual text/contents of your source files
+- Anything from a **custom BGM folder** — picked the same way as a workspace, played locally via a local object URL, never read into memory as a whole file or transmitted anywhere
+- Any personal or account information — there's nothing to log in with
+- Any of the above while a Doom-style cheat code (`IDDQD`/`IDCLIP`/`IDKFA`) is active for that run — a cheated run isn't recorded to the highscore board at all
+
+## Automated/bot traffic
+
+The engine checks `navigator.webdriver` (the standard flag automation tools like Playwright/Puppeteer set) purely to silence game audio during automated testing — it has no effect on privacy or data handling.

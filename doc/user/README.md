@@ -9,3 +9,4 @@ Codeenstein 3D turns a folder of source code into a playable retro raycaster dun
 - [HUD & UI](hud-and-ui.md) — the status bar, automap, sidebar settings, and highscores
 - [Game Mechanics](mechanics.md) — how code becomes a level, weapons, loot, enemies, traps, and scoring
 - [Tips](tips.md) — practical advice for staying alive
+- [Privacy](privacy.md) — what happens to your workspace, what's stored locally, and every remote request the app makes
