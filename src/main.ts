@@ -343,7 +343,7 @@ continueButton.addEventListener("click", async () => {
     workspaceName.textContent = handle.name;
     renderFileTree(fileTree, tree, { onSelectFile: handleFileSelected });
 
-    const match = flattenParsableFiles(tree).find((f) => f.path === save.filePath);
+    const match = (await flattenParsableFiles(tree)).find((f) => f.path === save.filePath);
     if (!match) {
       console.warn(
         `[continue] Saved file "${save.filePath}" not found in "${handle.name}" — starting a fresh run instead.`,
@@ -387,7 +387,7 @@ async function handleFileSelected(node: TreeNode): Promise<void> {
   try {
     const text = await readFileText(node.handle as FileSystemFileHandle);
 
-    if (isParsable(node.name)) {
+    if (isParsable(node.name, text)) {
       const parsed = await parseFile(node.name, text);
       console.group(`[parse] ${node.path}`);
       console.log(parsed);
@@ -429,8 +429,8 @@ const MAIN_FUNCTION_EXTENSIONS = /\.(c|h|cpp|cc|cxx|hpp|hh|hxx|m|mm)$/i;
 
 /** First parsable file anywhere in the tree whose name matches a standard
  * project-entrypoint convention, or `null` if none does. */
-export function findEntrypointByName(tree: TreeNode): TreeNode | null {
-  const files = flattenParsableFiles(tree);
+export async function findEntrypointByName(tree: TreeNode): Promise<TreeNode | null> {
+  const files = await flattenParsableFiles(tree);
   for (const candidate of ENTRYPOINT_FILENAMES) {
     const match = files.find((f) => f.name.toLowerCase() === candidate);
     if (match) return match;
@@ -445,7 +445,7 @@ export function findEntrypointByName(tree: TreeNode): TreeNode | null {
  * read or parse is just skipped, same as everywhere else in this app.
  */
 export async function findEntrypointByMainFunction(tree: TreeNode): Promise<TreeNode | null> {
-  const candidates = flattenParsableFiles(tree).filter((f) => MAIN_FUNCTION_EXTENSIONS.test(f.name));
+  const candidates = (await flattenParsableFiles(tree)).filter((f) => MAIN_FUNCTION_EXTENSIONS.test(f.name));
   for (const file of candidates) {
     try {
       const text = await readFileText(file.handle as FileSystemFileHandle);
@@ -465,7 +465,7 @@ export async function findEntrypointByMainFunction(tree: TreeNode): Promise<Tree
  * above for the search order (filename convention, then a C-family main()
  * content scan). */
 export async function findEntrypoint(tree: TreeNode): Promise<TreeNode | null> {
-  return findEntrypointByName(tree) ?? (await findEntrypointByMainFunction(tree));
+  return (await findEntrypointByName(tree)) ?? (await findEntrypointByMainFunction(tree));
 }
 
 /**
@@ -477,7 +477,7 @@ export async function findEntrypoint(tree: TreeNode): Promise<TreeNode | null> {
  */
 async function autoLaunchInitialLevel(tree: TreeNode): Promise<void> {
   const entry = await findEntrypoint(tree);
-  const target = entry ?? flattenParsableFiles(tree)[0] ?? null;
+  const target = entry ?? (await flattenParsableFiles(tree))[0] ?? null;
   if (!target) return;
 
   try {
@@ -699,7 +699,7 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
   let afterPath = currentLevelPath;
 
   while (workspaceTree && afterPath) {
-    const next = findNextParsableFile(workspaceTree, afterPath);
+    const next = await findNextParsableFile(workspaceTree, afterPath);
     if (!next) break;
 
     try {
@@ -754,19 +754,34 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
   activeHud?.showBuildSuccessful(resetToFileTree);
 }
 
+/**
+ * True when `node` is parsable — a plain extension check, except for an
+ * extensionless file, where its content is read and sniffed for a `#!`
+ * shebang (see `isParsable` in the registry) before giving up on it.
+ */
+async function isParsableNode(node: TreeNode): Promise<boolean> {
+  if (extensionOf(node.name)) return isParsable(node.name);
+  try {
+    const text = await readFileText(node.handle as FileSystemFileHandle);
+    return isParsable(node.name, text);
+  } catch {
+    return false;
+  }
+}
+
 /** Files parsable by a registered adapter, in the same depth-first,
  * directories-first order the sidebar renders them in. */
-export function flattenParsableFiles(node: TreeNode): TreeNode[] {
-  if (node.kind === "file") return isParsable(node.name) ? [node] : [];
+export async function flattenParsableFiles(node: TreeNode): Promise<TreeNode[]> {
+  if (node.kind === "file") return (await isParsableNode(node)) ? [node] : [];
   const out: TreeNode[] = [];
-  for (const child of node.children ?? []) out.push(...flattenParsableFiles(child));
+  for (const child of node.children ?? []) out.push(...(await flattenParsableFiles(child)));
   return out;
 }
 
 /** The parsable file immediately after `afterPath` in tree order, or `null`
  * when `afterPath` is the last one (or wasn't found). */
-function findNextParsableFile(tree: TreeNode, afterPath: string): TreeNode | null {
-  const files = flattenParsableFiles(tree);
+async function findNextParsableFile(tree: TreeNode, afterPath: string): Promise<TreeNode | null> {
+  const files = await flattenParsableFiles(tree);
   const index = files.findIndex((f) => f.path === afterPath);
   if (index === -1 || index + 1 >= files.length) return null;
   return files[index + 1];
@@ -1071,7 +1086,7 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
       if (!handle) return; // user cancelled the picker
       tree = await readDirectoryTree(handle);
     }
-    const files = flattenParsableFiles(tree);
+    const files = await flattenParsableFiles(tree);
 
     // Tear down whatever's currently running/shown, same as launching any
     // other level — see `launchLevel`'s equivalent block. Done once, up

@@ -8,9 +8,13 @@
  * `flattenParsableFiles`, entrypoint detection, level launching, replay) only
  * ever reads `kind`/`name`/`path`/`children` and calls `handle.getFile()`, so
  * none of it needs to know or care that a node came from a repo instead of a
- * disk. File content is fetched lazily (only once a file is actually parsed),
- * and only then, from raw.githubusercontent.com — which doesn't count
- * against the REST API's much stricter unauthenticated rate limit.
+ * disk. File content is fetched lazily — not up front with the tree itself —
+ * from raw.githubusercontent.com, which doesn't count against the REST API's
+ * much stricter unauthenticated rate limit. The first fetch is usually the
+ * file actually being parsed, though an extensionless file (see
+ * `flattenParsableFiles`'s shebang sniff in `main.ts`) may trigger one
+ * earlier just to check parsability; either way the result is cached, so a
+ * given file is never fetched twice.
  */
 
 import { compareNodes, IGNORED_DIRECTORIES, type RemoteFileHandle, type TreeNode } from "./workspace";
