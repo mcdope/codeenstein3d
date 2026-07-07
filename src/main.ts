@@ -418,10 +418,11 @@ async function handleFileSelected(node: TreeNode): Promise<void> {
 
 /**
  * Filenames (case-insensitive) recognized as a project's likely single
- * entrypoint, checked in order across the whole tree — first match wins. C-
- * family languages don't get a reliable filename convention, so they also
- * fall back to a content-based check (`findEntrypointByMainFunction`) when no
- * name here matches anything in the workspace.
+ * entrypoint, checked in order across the whole tree — first match wins.
+ * Most languages don't get a reliable filename convention (or none is
+ * registered here), so this is tried first against "real" project source and
+ * falls back to a scored content scan (`findEntrypointByScanning`) when no
+ * name here matches anything — see `findEntrypoint` for the full cascade.
  */
 const ENTRYPOINT_FILENAMES = [
   "main.c", "main.cpp", "main.cc", "main.cxx", "main.m", "main.mm",
@@ -434,15 +435,46 @@ const ENTRYPOINT_FILENAMES = [
   "main.scala",
 ];
 
-/** Extensions worth a content-based `main`-function scan (see
- * `findEntrypointByMainFunction`) — the C family, where the entrypoint can
- * live in any arbitrarily-named file. */
-const MAIN_FUNCTION_EXTENSIONS = /\.(c|h|cpp|cc|cxx|hpp|hh|hxx|m|mm)$/i;
+/** Path segments (case-insensitive, matched whole, not substring) that mark a
+ * file as a test/spec fixture rather than "real" project source for
+ * entrypoint-detection purposes only — see `isSecondaryEntrypointCandidate`.
+ * Does not affect `flattenParsableFiles`/level progression/replay: a file in
+ * one of these directories is still a fully ordinary, fully playable level
+ * once the campaign reaches it — this only demotes it from being picked as
+ * the very first auto-launched level. Verified against the real
+ * `mcdope/pam_usb` repo that this matters in practice: every file under its
+ * `tests/unit/c/` is a 100-700+ line hand-rolled test runner with its own
+ * `main()`, i.e. *higher* raw complexity than any of its real source files —
+ * without this exclusion, a scoring-based scan would pick a test file over
+ * the real implementation, a worse result than the bug being fixed. */
+const SECONDARY_ENTRYPOINT_PATH_SEGMENTS = new Set(["test", "tests", "spec", "specs", "__tests__"]);
 
-/** First parsable file anywhere in the tree whose name matches a standard
- * project-entrypoint convention, or `null` if none does. */
-export async function findEntrypointByName(tree: TreeNode): Promise<TreeNode | null> {
-  const files = await flattenParsableFiles(tree);
+/** True when any path segment of `file` names a conventional test/spec
+ * directory — see `SECONDARY_ENTRYPOINT_PATH_SEGMENTS`. */
+function isSecondaryEntrypointCandidate(file: TreeNode): boolean {
+  return file.path.split("/").some((segment) => SECONDARY_ENTRYPOINT_PATH_SEGMENTS.has(segment.toLowerCase()));
+}
+
+/** Splits an already-flattened file list into "real" project source
+ * (`primary`) and test/spec fixtures (`secondary`) for entrypoint detection —
+ * see `isSecondaryEntrypointCandidate`. `findEntrypoint` tries `primary`
+ * first at every stage, only falling through to `secondary` if that stage
+ * found nothing usable in `primary`. (A workspace whose root folder is
+ * itself literally named e.g. "tests" would classify everything as
+ * secondary — harmless, since the fallback degrades gracefully to exactly
+ * the same result either bucket would have produced.) */
+function partitionEntrypointCandidates(files: TreeNode[]): { primary: TreeNode[]; secondary: TreeNode[] } {
+  const primary: TreeNode[] = [];
+  const secondary: TreeNode[] = [];
+  for (const file of files) (isSecondaryEntrypointCandidate(file) ? secondary : primary).push(file);
+  return { primary, secondary };
+}
+
+/** First file in `files` whose name matches a standard project-entrypoint
+ * convention, or `null` if none does. Takes an already-flattened file list
+ * (see `partitionEntrypointCandidates`) rather than a tree, and does no I/O
+ * of its own — a caller decides which bucket(s) to check and in what order. */
+function findEntrypointByName(files: TreeNode[]): TreeNode | null {
   for (const candidate of ENTRYPOINT_FILENAMES) {
     const match = files.find((f) => f.name.toLowerCase() === candidate);
     if (match) return match;
@@ -450,53 +482,141 @@ export async function findEntrypointByName(tree: TreeNode): Promise<TreeNode | n
   return null;
 }
 
+/** A detected entrypoint file together with its already-parsed AST, so
+ * `autoLaunchInitialLevel` never has to parse the winning file a second
+ * time. */
+interface EntrypointMatch {
+  file: TreeNode;
+  parsed: ParsedFile;
+}
+
+/** Files processed between yields in `findEntrypointByScanning` — same
+ * reasoning as `CODEBASE_STATS_CHUNK_SIZE`, kept as its own constant so the
+ * two independent background scans can be tuned separately. */
+const ENTRYPOINT_SCAN_CHUNK_SIZE = 20;
+
 /**
- * Fallback for the C family: no filename convention reliably marks the
- * entrypoint, so parse each C/C++/Objective-C file in tree order and return
- * the first one that actually defines a `main` function. A file that fails to
- * read or parse is just skipped, same as everywhere else in this app.
+ * Fallback when no file matches a standard entrypoint filename: parse every
+ * file in `files` and score it by summing `complexityScore` across all its
+ * entities — a general, language-agnostic "how much real work does this file
+ * do" signal (no longer restricted to the C family, so this also newly
+ * covers conventions like C#'s capitalized `Main`). Tracks the
+ * highest-complexity file that defines a `main`/`Main` function/method
+ * entity, and separately the highest-complexity file overall; returns the
+ * former if any file had one, else the latter, else `null` if nothing in
+ * `files` parsed successfully at all. A file that fails to read or parse is
+ * skipped, same as everywhere else in this app. Yields to the event loop
+ * every `ENTRYPOINT_SCAN_CHUNK_SIZE` files, same pattern as
+ * `computeCodebaseStats`.
  */
-export async function findEntrypointByMainFunction(tree: TreeNode): Promise<TreeNode | null> {
-  const candidates = (await flattenParsableFiles(tree)).filter((f) => MAIN_FUNCTION_EXTENSIONS.test(f.name));
-  for (const file of candidates) {
+async function findEntrypointByScanning(files: TreeNode[]): Promise<EntrypointMatch | null> {
+  let bestWithMain: EntrypointMatch | null = null;
+  let bestWithMainComplexity = -1;
+  let bestOverall: EntrypointMatch | null = null;
+  let bestOverallComplexity = -1;
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
     try {
       const text = await readFileText(file.handle as FileSystemFileHandle);
       const parsed = await parseFile(file.name, text);
-      const hasMain = parsed?.entities.some(
-        (e) => e.name === "main" && (e.kind === "function" || e.kind === "method"),
-      );
-      if (hasMain) return file;
+      if (parsed) {
+        const complexity = parsed.entities.reduce((sum, e) => sum + e.complexityScore, 0);
+        const hasMain = parsed.entities.some(
+          (e) => (e.kind === "function" || e.kind === "method") && e.name.toLowerCase() === "main",
+        );
+
+        if (complexity > bestOverallComplexity) {
+          bestOverall = { file, parsed };
+          bestOverallComplexity = complexity;
+        }
+        if (hasMain && complexity > bestWithMainComplexity) {
+          bestWithMain = { file, parsed };
+          bestWithMainComplexity = complexity;
+        }
+      }
     } catch (err) {
-      console.error(`[entrypoint] Failed to scan "${file.path}" for main():`, err);
+      console.error(`[entrypoint] Failed to scan "${file.path}":`, err);
+    }
+
+    if (i % ENTRYPOINT_SCAN_CHUNK_SIZE === ENTRYPOINT_SCAN_CHUNK_SIZE - 1) {
+      await yieldToMainThread();
     }
   }
-  return null;
+
+  return bestWithMain ?? bestOverall;
 }
 
-/** The workspace's logical entrypoint, if any — see the two finder functions
- * above for the search order (filename convention, then a C-family main()
- * content scan). */
-export async function findEntrypoint(tree: TreeNode): Promise<TreeNode | null> {
-  return (await findEntrypointByName(tree)) ?? (await findEntrypointByMainFunction(tree));
+/** The workspace's logical entrypoint, if any. Partitions every parsable file
+ * into "real" project source and test/spec fixtures (see
+ * `partitionEntrypointCandidates`), then tries, in order: a filename-
+ * convention match in real source, the same in test/spec fixtures, a scored
+ * main()-scan in real source, and finally a scored main()-scan in test/spec
+ * fixtures. Each stage falls through to the next only when it finds nothing
+ * *usable* — not merely when a bucket is empty — so a workspace whose real
+ * source is present but entirely unparsable still correctly falls back to
+ * whatever test fixtures do parse, rather than giving up early; likewise a
+ * filename match that turns out to fail parsing (a broken/binary file that
+ * happens to have a conventional name) falls through to the scoring stage
+ * rather than dead-ending detection. */
+export async function findEntrypoint(tree: TreeNode): Promise<EntrypointMatch | null> {
+  const { primary, secondary } = partitionEntrypointCandidates(await flattenParsableFiles(tree));
+
+  const byName = findEntrypointByName(primary) ?? findEntrypointByName(secondary);
+  if (byName) {
+    try {
+      const text = await readFileText(byName.handle as FileSystemFileHandle);
+      const parsed = await parseFile(byName.name, text);
+      if (parsed) return { file: byName, parsed };
+    } catch (err) {
+      console.error(`[entrypoint] Matched "${byName.path}" by name but failed to parse it:`, err);
+    }
+  }
+
+  return (await findEntrypointByScanning(primary)) ?? (await findEntrypointByScanning(secondary));
 }
+
+/** Caps how long `findEntrypoint`'s detection scan may run before
+ * `autoLaunchInitialLevel` gives up and falls back to the first parsable file
+ * in tree order — tighter than `CODEBASE_STATS_WAIT_MS` (8s) since this
+ * blocks the very first level launch rather than running silently in the
+ * background after a run has already ended. */
+const ENTRYPOINT_DETECTION_TIMEOUT_MS = 4000;
 
 /**
  * Auto-start the very first level right after a workspace loads: prefer a
  * detected project entrypoint (see `findEntrypoint`) over just resolving the
  * first parsable file alphabetically/by tree order, though that remains the
- * fallback when no entrypoint is found. Does nothing if the workspace has no
- * parsable file at all — the sidebar is left for a manual pick as before.
+ * fallback both when no entrypoint is found and when detection itself times
+ * out (see `ENTRYPOINT_DETECTION_TIMEOUT_MS`). Does nothing if the workspace
+ * has no parsable file at all — the sidebar is left for a manual pick as
+ * before.
  */
 async function autoLaunchInitialLevel(tree: TreeNode): Promise<void> {
-  const entry = await findEntrypoint(tree);
-  const target = entry ?? (await flattenParsableFiles(tree))[0] ?? null;
+  const previousWorkspaceName = workspaceName.textContent;
+  workspaceName.textContent = "Scanning for entrypoint…";
+  const match = await withTimeout(findEntrypoint(tree), ENTRYPOINT_DETECTION_TIMEOUT_MS);
+  workspaceName.textContent = previousWorkspaceName;
+
+  let target: TreeNode | null;
+  let parsed: ParsedFile | null;
+  const how = match ? "detected entrypoint" : "first file in tree order";
+
+  if (match) {
+    target = match.file;
+    parsed = match.parsed;
+  } else {
+    target = (await flattenParsableFiles(tree))[0] ?? null;
+    parsed = null;
+  }
   if (!target) return;
 
   try {
-    const text = await readFileText(target.handle as FileSystemFileHandle);
-    const parsed = await parseFile(target.name, text);
+    if (!parsed) {
+      const text = await readFileText(target.handle as FileSystemFileHandle);
+      parsed = await parseFile(target.name, text);
+    }
     if (parsed) {
-      const how = entry ? "detected entrypoint" : "first file in tree order";
       console.log(`%c[entrypoint] auto-starting at ${target.path} (${how})`, "color:#8effa0;font-weight:bold");
       launchLevel(target.path, parsed);
     }
