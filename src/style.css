@@ -96,7 +96,8 @@ body {
 }
 
 #select-workspace,
-#continue-run {
+#continue-run,
+#load-github-repo {
   width: 100%;
   padding: 10px 12px;
   font: inherit;
@@ -108,13 +109,19 @@ body {
   cursor: pointer;
 }
 
+#load-github-repo {
+  margin-top: 8px;
+}
+
 #select-workspace:hover:not(:disabled),
-#continue-run:hover:not(:disabled) {
+#continue-run:hover:not(:disabled),
+#load-github-repo:hover:not(:disabled) {
   filter: brightness(1.12);
 }
 
 #select-workspace:disabled,
-#continue-run:disabled {
+#continue-run:disabled,
+#load-github-repo:disabled {
   background: var(--border);
   cursor: not-allowed;
 }
