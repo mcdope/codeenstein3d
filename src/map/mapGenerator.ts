@@ -161,10 +161,11 @@ export class MapGenerator {
     // rooms carved behind fake walls from unreachable ("dead") code — both
     // consume only still-untouched wall tiles (grid value `1`), so they can
     // never collide with a door, key spot, or each other regardless of order.
-    // A TODO/FIXME-flagged comment also spawns a small trap or weak enemy
-    // right next to its terminal — folded into `enemies` immediately (so it
-    // flows through to the final `GameMap` like any other enemy) and into
-    // `teleporterAvoid` below (so a teleporter pad can't land on top of one).
+    // A TODO/FIXME-flagged comment also spawns a small trap, mine, or weak
+    // enemy right next to its terminal — folded into `enemies` immediately
+    // (so it flows through to the final `GameMap` like any other enemy) and
+    // into `teleporterAvoid` below (so a teleporter pad can't land on top of
+    // one).
     const loreResult = placeLoreTerminals(rooms, grid, parsed.comments, rng);
     const loreTerminals = loreResult.terminals;
     enemies.push(...loreResult.todoEnemies);
@@ -178,6 +179,7 @@ export class MapGenerator {
       ...doors.map((d) => ({ x: d.x + 0.5, y: d.y + 0.5 })),
       ...keys.map((k) => ({ x: k.x, y: k.y })),
       ...loreResult.todoTraps.map((t) => ({ x: t.x, y: t.y })),
+      ...loreResult.todoMines.map((m) => ({ x: m.x, y: m.y })),
       ...loreResult.todoEnemies.map((e) => ({ x: e.x, y: e.y })),
     ];
     const teleporters = placeTeleporters(rooms, grid, teleporterAvoid, parsed.gotos, rng);
@@ -189,8 +191,9 @@ export class MapGenerator {
       ...teleporterAvoid,
       ...teleporters.map((t) => ({ x: t.x, y: t.y })),
     ];
-    const { spikeTraps: generatedSpikeTraps, mines } = placeTraps(rooms, grid, trapAvoid, rng);
+    const { spikeTraps: generatedSpikeTraps, mines: generatedMines } = placeTraps(rooms, grid, trapAvoid, rng);
     const spikeTraps = [...generatedSpikeTraps, ...loreResult.todoTraps];
+    const mines = [...generatedMines, ...loreResult.todoMines];
 
     // Sparse ammo pickups go dead last, once every other floor-claiming
     // system (pillars/decor/doors/keys/teleporters/traps) has placed its
@@ -820,18 +823,19 @@ const TODO_BUG_HP = 10;
  * re-tagged `LORE_TILE` so the raycaster renders it distinctly. Never a hard
  * failure — a comment whose room has no free wall tile left simply doesn't
  * get one. A TODO/FIXME-flagged comment (see `isTodoFlagged`) also gets a
- * small "technical debt" encounter — a timed spike trap or a weak "Bug"
- * enemy, picked per-instance via the seeded `rng` — on the floor tile just
- * inside the room, right next to its terminal.
+ * small "technical debt" encounter — a timed spike trap, a proximity mine, or
+ * a weak "Bug" enemy, picked per-instance via the seeded `rng` — on the floor
+ * tile just inside the room, right next to its terminal.
  */
 function placeLoreTerminals(
   rooms: Room[],
   grid: Tile[][],
   comments: CodeComment[],
   rng: () => number,
-): { terminals: LoreTerminal[]; todoTraps: SpikeTrap[]; todoEnemies: Enemy[] } {
+): { terminals: LoreTerminal[]; todoTraps: SpikeTrap[]; todoMines: Mine[]; todoEnemies: Enemy[] } {
   const terminals: LoreTerminal[] = [];
   const todoTraps: SpikeTrap[] = [];
+  const todoMines: Mine[] = [];
   const todoEnemies: Enemy[] = [];
   const used = new Set<string>();
   const claimedFloor = new Set<string>();
@@ -848,10 +852,11 @@ function placeLoreTerminals(
     if (isTodoFlagged(comment.text)) {
       const encounter = placeTodoEncounter(room, grid, spot, comment, claimedFloor, rng);
       if (encounter && "trap" in encounter) todoTraps.push(encounter.trap);
+      else if (encounter && "mine" in encounter) todoMines.push(encounter.mine);
       else if (encounter) todoEnemies.push(encounter.enemy);
     }
   }
-  return { terminals, todoTraps, todoEnemies };
+  return { terminals, todoTraps, todoMines, todoEnemies };
 }
 
 /** The floor tile just inside `room`, adjacent to `spot` — `spot` (from
@@ -865,13 +870,14 @@ function interiorNeighborOf(room: Room, spot: Point): Point {
 }
 
 /**
- * Places a small "technical debt" encounter — a timed spike trap or a weak
- * "Bug" enemy — on a free floor tile next to a TODO/FIXME terminal's `spot`.
- * Deliberately a *trap* (safe→active→safe, same as `placeTraps`), not a
+ * Places a small "technical debt" encounter — a timed spike trap, a
+ * proximity mine, or a weak "Bug" enemy, each equally likely — on a free
+ * floor tile next to a TODO/FIXME terminal's `spot`. Deliberately a *trap*
+ * or *mine* (both reusing `placeTraps`' own shapes/mechanics), not a
  * `fillHazards`-style permanent acid pool: the candidate tile is right where
  * the player has to stand to interact with the terminal, and a permanently
  * damaging tile there would make it painful to ever reach rather than just
- * riskier — a trap keeps a genuine safe window instead. Never a hard
+ * riskier — a trap/mine keeps a genuine safe approach instead. Never a hard
  * failure — a room with no free adjacent floor tile simply gets nothing.
  */
 function placeTodoEncounter(
@@ -881,7 +887,7 @@ function placeTodoEncounter(
   comment: CodeComment,
   claimedFloor: Set<string>,
   rng: () => number,
-): { trap: SpikeTrap } | { enemy: Enemy } | null {
+): { trap: SpikeTrap } | { mine: Mine } | { enemy: Enemy } | null {
   const anchor = interiorNeighborOf(room, spot);
   const candidates = [anchor, ...neighbors(anchor)];
   shuffle(candidates, rng);
@@ -891,7 +897,8 @@ function placeTodoEncounter(
   const p = free[0];
   claimedFloor.add(key(p));
 
-  if (rng() < 0.5) {
+  const roll = rng();
+  if (roll < 1 / 3) {
     grid[p.y][p.x] = SPIKE_TRAP_TILE;
     return {
       trap: {
@@ -901,6 +908,12 @@ function placeTodoEncounter(
         phase: rng() * SPIKE_PERIOD_MAX,
       },
     };
+  }
+
+  if (roll < 2 / 3) {
+    // Mines stay on plain floor (tile 0) — same as `placeTraps`' own mines,
+    // invisible until triggered, so nothing marks the grid tile itself.
+    return { mine: { x: p.x + 0.5, y: p.y + 0.5, alive: true, visible: false, closeTimer: 0 } };
   }
 
   const entity: CodeEntity = {
