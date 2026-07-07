@@ -157,11 +157,45 @@ export function isTodoFlagged(text: string): boolean {
   return TODO_MARKERS.some((marker) => text.includes(marker));
 }
 
+/** A comment past this line (1-based) is no longer considered part of the
+ * file's "header" — license-y phrasing found further down is assumed to be
+ * incidental prose, not an actual header, so it isn't suppressed. */
+const LICENSE_HEADER_MAX_LINE = 10;
+
+/** Phrases that mark a comment as license/copyright boilerplate rather than
+ * genuine lore — covers this project's own SPDX+Copyright convention plus
+ * the common full-paragraph headers (MIT, BSD, GPL family, Apache) found
+ * across real-world repos a player might load. */
+const LICENSE_MARKERS: RegExp[] = [
+  /SPDX-License-Identifier/i,
+  /copyright\s*(\(c\)|©|\d{4})/i,
+  /all rights reserved/i,
+  /permission is hereby granted/i,
+  /redistribution and use in source and binary forms/i,
+  /gnu (general|lesser|affero) public license/i,
+  /this program is free software/i,
+  /licensed under the/i,
+  /apache license/i,
+];
+
+/**
+ * True if a comment near the top of the file (within `LICENSE_HEADER_MAX_LINE`)
+ * reads as license/copyright boilerplate. Checked ahead of the TODO bypass in
+ * `extractLargeComments` so a license header can never become a lore
+ * terminal, even if it happens to also contain "TODO" somewhere in its text.
+ */
+export function isLicenseHeader(text: string, startLine: number): boolean {
+  if (startLine > LICENSE_HEADER_MAX_LINE) return false;
+  return LICENSE_MARKERS.some((marker) => marker.test(text));
+}
+
 /**
  * Comments substantial enough to surface as in-game "lore terminals": either
  * long, or already a multi-line block, so a one-line `// eslint-disable` noise
  * comment doesn't qualify just for having a few extra characters — unless
- * it's TODO/FIXME-flagged, which bypasses this gate entirely.
+ * it's TODO/FIXME-flagged, which bypasses this gate entirely. A top-of-file
+ * license/copyright header is excluded outright, overriding even the TODO
+ * bypass — see `isLicenseHeader`.
  */
 export function extractLargeComments(
   root: Node,
@@ -173,6 +207,7 @@ export function extractLargeComments(
     const text = node.text.trim();
     const startLine = node.startPosition.row + 1;
     const endLine = node.endPosition.row + 1;
+    if (isLicenseHeader(text, startLine)) continue;
     if (!isTodoFlagged(text) && text.length < LORE_COMMENT_MIN_LENGTH && endLine === startLine) continue;
     comments.push({ text, startLine, endLine });
   }
