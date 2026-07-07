@@ -12,18 +12,29 @@
       <aside id="sidebar">
         <header id="sidebar-header">
           <h1>🔫 Codeenstein 3D</h1>
-          <button id="select-workspace" type="button">Select Workspace</button>
-          <button id="continue-run" type="button" style="display: none">Continue Run</button>
-          <label id="github-repo-label" for="github-repo-input" class="settings-label">Or load from GitHub</label>
-          <input
-            id="github-repo-input"
-            type="text"
-            placeholder="owner/repo"
-            autocomplete="off"
-            spellcheck="false"
-          />
-          <button id="load-github-repo" class="settings-btn" type="button">Load from GitHub</button>
-          <p id="github-status" class="muted"></p>
+          <div id="launch-tabs" class="launch-tabs" role="tablist" aria-label="Ways to start a run">
+            <button id="tab-local" class="tab-btn" type="button" role="tab" aria-selected="true" aria-controls="tab-panel-local">Local</button>
+            <button id="tab-continue" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-continue" style="display: none">Continue</button>
+            <button id="tab-github" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-github">GitHub</button>
+          </div>
+          <div id="tab-panel-local" class="tab-panel" role="tabpanel" aria-labelledby="tab-local">
+            <button id="select-workspace" type="button">Select Workspace</button>
+          </div>
+          <div id="tab-panel-continue" class="tab-panel" role="tabpanel" aria-labelledby="tab-continue" hidden>
+            <button id="continue-run" type="button">Continue Run</button>
+          </div>
+          <div id="tab-panel-github" class="tab-panel" role="tabpanel" aria-labelledby="tab-github" hidden>
+            <label id="github-repo-label" for="github-repo-input" class="settings-label">GitHub repository</label>
+            <input
+              id="github-repo-input"
+              type="text"
+              placeholder="owner/repo"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button id="load-github-repo" class="settings-btn" type="button">Load from GitHub</button>
+            <p id="github-status" class="muted"></p>
+          </div>
           <label id="gore-label" for="gore-select" class="muted">Gore</label>
           <select id="gore-select">
             <option value="none">None</option>

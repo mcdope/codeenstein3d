@@ -56,7 +56,47 @@ body {
   font-weight: 600;
 }
 
-#select-workspace {
+.launch-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 6px 4px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tab-btn:hover:not(:disabled):not([aria-selected="true"]) {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.tab-btn[aria-selected="true"] {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.tab-btn:disabled {
+  color: var(--border);
+  cursor: not-allowed;
+}
+
+.tab-panel[hidden] {
+  display: none;
+}
+
+#select-workspace,
+#continue-run {
   width: 100%;
   padding: 10px 12px;
   font: inherit;
@@ -68,34 +108,14 @@ body {
   cursor: pointer;
 }
 
-#select-workspace:hover:not(:disabled) {
+#select-workspace:hover:not(:disabled),
+#continue-run:hover:not(:disabled) {
   filter: brightness(1.12);
 }
 
-#select-workspace:disabled {
-  background: var(--border);
-  cursor: not-allowed;
-}
-
-#continue-run {
-  width: 100%;
-  margin-top: 8px;
-  padding: 10px 12px;
-  font: inherit;
-  font-weight: 600;
-  color: var(--text);
-  background: var(--bg-hover);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-#continue-run:hover:not(:disabled) {
-  background: var(--border);
-}
-
+#select-workspace:disabled,
 #continue-run:disabled {
-  color: var(--muted);
+  background: var(--border);
   cursor: not-allowed;
 }
 

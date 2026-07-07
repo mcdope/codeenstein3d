@@ -58,6 +58,12 @@ const BGM_VOLUME_KEY = "codeenstein-bgm-volume";
  * would still be in its temporal dead zone at that point and throw. */
 const SAVE_KEY = "codeenstein-campaign-save";
 
+const tabLocal = requireElement<HTMLButtonElement>("#tab-local");
+const tabContinue = requireElement<HTMLButtonElement>("#tab-continue");
+const tabGithub = requireElement<HTMLButtonElement>("#tab-github");
+const tabPanelLocal = requireElement<HTMLElement>("#tab-panel-local");
+const tabPanelContinue = requireElement<HTMLElement>("#tab-panel-continue");
+const tabPanelGithub = requireElement<HTMLElement>("#tab-panel-github");
 const selectButton = requireElement<HTMLButtonElement>("#select-workspace");
 const continueButton = requireElement<HTMLButtonElement>("#continue-run");
 const githubRepoInput = requireElement<HTMLInputElement>("#github-repo-input");
@@ -81,6 +87,30 @@ const closeHighscoresButton = requireElement<HTMLButtonElement>("#close-highscor
 // dropdown for now (see EXTREME_GORE_ENABLED's doc comment); the <option>
 // stays in index.html so re-enabling is just flipping that flag back.
 if (!EXTREME_GORE_ENABLED) goreSelect.querySelector('option[value="extreme"]')?.remove();
+
+// --- Launch method tabs (Local / Continue / GitHub) -------------------------
+// Select Workspace, Continue Run, and Load from GitHub are three different
+// ways to start the same game loop; grouped into tabs so only one is shown
+// at a time instead of stacking all three permanently in the sidebar.
+type LaunchTab = "local" | "continue" | "github";
+
+const launchTabs: Record<LaunchTab, { button: HTMLButtonElement; panel: HTMLElement }> = {
+  local: { button: tabLocal, panel: tabPanelLocal },
+  continue: { button: tabContinue, panel: tabPanelContinue },
+  github: { button: tabGithub, panel: tabPanelGithub },
+};
+
+function activateLaunchTab(tab: LaunchTab): void {
+  for (const name of Object.keys(launchTabs) as LaunchTab[]) {
+    const active = name === tab;
+    launchTabs[name].button.setAttribute("aria-selected", String(active));
+    launchTabs[name].panel.hidden = !active;
+  }
+}
+
+(Object.keys(launchTabs) as LaunchTab[]).forEach((tab) =>
+  launchTabs[tab].button.addEventListener("click", () => activateLaunchTab(tab)),
+);
 
 // --- Audio settings (Master/SFX/BGM volume, standing preferences) ----------
 
@@ -270,7 +300,7 @@ if (!isFileSystemAccessSupported()) {
   workspaceName.classList.add("error");
 }
 
-if (loadCampaignSave()) continueButton.style.display = "";
+if (loadCampaignSave()) tabContinue.style.display = "";
 
 selectButton.addEventListener("click", async () => {
   try {
@@ -1128,7 +1158,9 @@ export function clearCampaignSave(): void {
   } catch {
     // Nothing sensible to do if storage itself is unavailable.
   }
-  continueButton.style.display = "none";
+  tabContinue.style.display = "none";
+  // The Continue tab can't stay active once it's hidden — fall back to Local.
+  if (tabContinue.getAttribute("aria-selected") === "true") activateLaunchTab("local");
 }
 
 /** Save the current position + stats, if a level is actually running. */
