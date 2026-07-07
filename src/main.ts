@@ -227,6 +227,15 @@ let lastSaveAt = 0;
  * a manual sidebar pick doesn't count as "campaign progression" — drives
  * `applyForcedUnlocks`'s level-4/8 safety net. */
 let campaignLevelIndex = 1;
+/** In-flight (or already-resolved) whole-codebase stats for the currently
+ * loaded workspace — every parsable file in `workspaceTree`, not just the
+ * files this run's levels actually visit. Kicked off by
+ * `kickOffCodebaseStats` right after a fresh pick/GitHub load/Continue Run
+ * re-read, consumed with a bounded wait by `recordRunHighscore`. `null`
+ * before any workspace has ever loaded. Never reset by `resetToFileTree` —
+ * the same workspace's totals stay valid for every run played against it,
+ * not just the one that triggered the computation. */
+let codebaseStatsPromise: Promise<CodebaseStats> | null = null;
 /** Standing gore-level preference — not campaign progress, so it's kept
  * entirely separate from `CampaignSave`/`SAVE_KEY` (see `loadGoreLevel`). */
 let currentGoreLevel: GoreLevel = loadGoreLevel();
@@ -272,6 +281,7 @@ selectButton.addEventListener("click", async () => {
     cheatsUsed = false;
     workspaceName.textContent = handle.name;
     campaignLevelIndex = 1; // a fresh pick always starts a new campaign
+    kickOffCodebaseStats(tree);
 
     renderFileTree(fileTree, tree, { onSelectFile: handleFileSelected });
     console.info(`[workspace] Loaded "${handle.name}"`, tree);
@@ -306,6 +316,7 @@ loadGithubRepoButton.addEventListener("click", async () => {
     cheatsUsed = false;
     workspaceName.textContent = workspaceRootName;
     campaignLevelIndex = 1; // a fresh load always starts a new campaign
+    kickOffCodebaseStats(tree);
     clearCampaignSave(); // a stale local-workspace save shouldn't dangle a "Continue Run" button while a remote repo is loaded
 
     renderFileTree(fileTree, tree, { onSelectFile: handleFileSelected });
@@ -341,6 +352,7 @@ continueButton.addEventListener("click", async () => {
     workspaceIsRemote = false;
     cheatsUsed = false;
     workspaceName.textContent = handle.name;
+    kickOffCodebaseStats(tree);
     renderFileTree(fileTree, tree, { onSelectFile: handleFileSelected });
 
     const match = (await flattenParsableFiles(tree)).find((f) => f.path === save.filePath);
@@ -778,6 +790,103 @@ export async function flattenParsableFiles(node: TreeNode): Promise<TreeNode[]> 
   return out;
 }
 
+interface CodebaseStats {
+  linesOfCode: number;
+  complexity: number;
+}
+
+/** Files processed between yields in `computeCodebaseStats` — small enough
+ * that a slow file (a GitHub raw fetch) doesn't stall input/rendering for
+ * more than a beat, large enough that a big local codebase doesn't spend all
+ * its time on `setTimeout` overhead. */
+const CODEBASE_STATS_CHUNK_SIZE = 20;
+
+/** Hands control back to the browser for one macrotask tick. There's no
+ * `requestIdleCallback`/worker pool anywhere in this codebase to reuse, and
+ * introducing one is more machinery than a background parse loop needs — a
+ * plain `setTimeout(0)` is enough to let pending input/render work run
+ * between chunks. */
+function yieldToMainThread(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/**
+ * Sums `linesOfCode` and every entity's `complexityScore` across every
+ * parsable file in `tree` — the whole codebase, independent of which files
+ * this run's levels actually reach. Reuses the exact same
+ * `readFileText`/`parseFile` pair every level launch already goes through; a
+ * file that fails to read or parse is skipped rather than aborting the whole
+ * aggregation. Yields back to the event loop every
+ * `CODEBASE_STATS_CHUNK_SIZE` files so this background pass never starves
+ * the level the player is actively in.
+ */
+async function computeCodebaseStats(tree: TreeNode): Promise<CodebaseStats> {
+  const files = await flattenParsableFiles(tree);
+  let linesOfCode = 0;
+  let complexity = 0;
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    try {
+      const text = await readFileText(file.handle as FileSystemFileHandle);
+      const parsed = await parseFile(file.name, text);
+      if (parsed) {
+        linesOfCode += parsed.linesOfCode;
+        for (const entity of parsed.entities) complexity += entity.complexityScore;
+      }
+    } catch (err) {
+      console.warn(`[codebase-stats] Failed to parse "${file.path}", skipping:`, err);
+    }
+
+    if (i % CODEBASE_STATS_CHUNK_SIZE === CODEBASE_STATS_CHUNK_SIZE - 1) {
+      await yieldToMainThread();
+    }
+  }
+
+  return { linesOfCode, complexity };
+}
+
+/** (Re)starts the whole-codebase background aggregation for a just-loaded
+ * workspace — fire-and-forget, so it never delays `autoLaunchInitialLevel`.
+ * A failed aggregation resolves to zeroed totals rather than a rejected
+ * promise, so `withTimeout` only ever has to special-case "still running",
+ * not "errored". */
+function kickOffCodebaseStats(tree: TreeNode): void {
+  codebaseStatsPromise = computeCodebaseStats(tree).catch((err) => {
+    console.warn("[codebase-stats] Aggregation failed:", err);
+    return { linesOfCode: 0, complexity: 0 };
+  });
+}
+
+/** Caps how long `recordRunHighscore` will wait on a still-running
+ * `codebaseStatsPromise` before giving up and recording the entry without
+ * codebase totals. Aggregation gets a multi-minute head start (it starts the
+ * moment the workspace loads, not when the run ends), so in the vast
+ * majority of cases it's already resolved by now; this only matters for a
+ * pathologically large tree that genuinely hasn't finished. */
+const CODEBASE_STATS_WAIT_MS = 8000;
+
+/** Resolves `promise` (or `undefined` immediately if `null`), capped at `ms` —
+ * resolves to `undefined` on timeout rather than rejecting, since "no
+ * codebase stats attached" is an accepted degraded outcome (see
+ * `HighscoreEntry.codebaseLinesOfCode`/`codebaseComplexity`, both optional). */
+function withTimeout<T>(promise: Promise<T> | null, ms: number): Promise<T | undefined> {
+  if (!promise) return Promise.resolve(undefined);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(undefined);
+      },
+    );
+  });
+}
+
 /** The parsable file immediately after `afterPath` in tree order, or `null`
  * when `afterPath` is the last one (or wasn't found). */
 async function findNextParsableFile(tree: TreeNode, afterPath: string): Promise<TreeNode | null> {
@@ -1013,6 +1122,7 @@ async function recordRunHighscore(
   try {
     const hash = await hashRun(JSON.stringify(parsed), campaignName());
     const levelName = path.split("/").pop() ?? path;
+    const codebaseStats = await withTimeout(codebaseStatsPromise, CODEBASE_STATS_WAIT_MS);
     recordHighscore({
       score: stats.score,
       campaignName: campaignName(),
@@ -1022,6 +1132,8 @@ async function recordRunHighscore(
       achievedAt: Date.now(),
       replay: (await recorder?.finish()) ?? undefined,
       source: workspaceIsRemote ? "github" : undefined,
+      codebaseLinesOfCode: codebaseStats?.linesOfCode,
+      codebaseComplexity: codebaseStats?.complexity,
     });
   } catch (err) {
     console.warn("[highscores] Failed to record this level's score:", err);

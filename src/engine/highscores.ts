@@ -49,6 +49,17 @@ export interface HighscoreEntry {
    * or fall back to `pickWorkspace()`. Undefined (i.e. local) for every entry
    * recorded before GitHub loading existed, which is the correct default. */
   source?: "github";
+  /** Total `linesOfCode` summed across every parsable file in the whole
+   * workspace/repo tree this run was played against — not just the levels
+   * the run actually reached (see `computeCodebaseStats` in main.ts).
+   * Undefined for any entry recorded before this field existed, or if the
+   * background aggregation hadn't finished within `recordRunHighscore`'s
+   * bounded wait when the run ended. */
+  codebaseLinesOfCode?: number;
+  /** Total `complexityScore` summed across every entity in every parsable
+   * file of the whole codebase — a sum, not an average. See
+   * `codebaseLinesOfCode` for when this is absent. */
+  codebaseComplexity?: number;
 }
 
 /**
@@ -131,6 +142,8 @@ function isHighscoreEntry(value: unknown): value is HighscoreEntry {
     typeof v.levelName === "string" &&
     typeof v.levelsCleared === "number" &&
     typeof v.hash === "string" &&
-    typeof v.achievedAt === "number"
+    typeof v.achievedAt === "number" &&
+    (v.codebaseLinesOfCode === undefined || typeof v.codebaseLinesOfCode === "number") &&
+    (v.codebaseComplexity === undefined || typeof v.codebaseComplexity === "number")
   );
 }

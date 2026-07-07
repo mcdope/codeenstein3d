@@ -31,7 +31,7 @@ export function renderHighscoreTable(
 
   const thead = document.createElement("thead");
   thead.innerHTML =
-    "<tr><th>#</th><th>Score</th><th>Campaign</th><th>Levels</th><th>Ended On</th><th>Hash</th><th>Replay</th></tr>";
+    "<tr><th>#</th><th>Score</th><th>Campaign</th><th>Lines</th><th>Complexity</th><th>Levels</th><th>Ended On</th><th>Hash</th><th>Replay</th></tr>";
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
@@ -46,6 +46,22 @@ export function renderHighscoreTable(
 
     const campaign = document.createElement("td");
     campaign.textContent = entry.campaignName;
+
+    const loc = document.createElement("td");
+    if (typeof entry.codebaseLinesOfCode === "number") {
+      loc.textContent = entry.codebaseLinesOfCode.toLocaleString();
+    } else {
+      loc.className = "muted";
+      loc.textContent = "—";
+    }
+
+    const complexity = document.createElement("td");
+    if (typeof entry.codebaseComplexity === "number") {
+      complexity.textContent = entry.codebaseComplexity.toLocaleString();
+    } else {
+      complexity.className = "muted";
+      complexity.textContent = "—";
+    }
 
     const levels = document.createElement("td");
     levels.textContent = String(entry.levelsCleared);
@@ -76,7 +92,7 @@ export function renderHighscoreTable(
       replay.textContent = "—";
     }
 
-    row.append(rank, score, campaign, levels, level, hash, replay);
+    row.append(rank, score, campaign, loc, complexity, levels, level, hash, replay);
     tbody.appendChild(row);
   });
   table.appendChild(tbody);
