@@ -2,277 +2,290 @@
 
 **Turn your legacy code into a playable retro 3D shooter.**
 
-## 👁️ Project Vision
-What if you could physically walk through your software architecture? *Codeenstein 3D* is a browser-based retro raycaster that translates local source code into playable dungeons.
-Every folder is a level. Every file is a room. Every function is an enemy. The higher the cyclomatic complexity, the harder the boss.
+## Vision
 
-Whether it's a massive Symfony enterprise project or low-level C code like the `pam_usb` module – this engine lets you "refactor" with a shotgun.
+What if you could physically walk through your software architecture? **Codeenstein 3D** is a browser-based retro raycaster that translates local source code into playable dungeons.
 
-## 🚦 Current Status
-Playable end-to-end: pick a local folder and it auto-starts at the workspace's
-detected entrypoint (or the first parsable file if none is found), briefing
-you on the level's AST stats before dropping you into the dungeon generated
-from its structure. Fight through to the `return` statement — strafing/sprint
-movement, native HUD, procedural retro audio, a swaying weapon viewmodel, an
-active enemy AI that roams, chases, melees and shoots back, jogged corridors
-with pillar-broken rooms, `goto`-driven teleporter pads, timed spike traps and
-proximity mines at corridor choke points, and a togglable automap. Reaching
-`return` shows a commit summary of the level just cleared, then — instead of
-ending the run — carries your health, ammo, and weapon into the next parsable
-file in the tree, so a whole codebase plays as one continuous multi-level
-campaign. Progress autosaves to `localStorage`, so a "Continue Run" button can
-pick up a large repository right where you left off in a later session.
-Every level is scored live — kill value, remaining health/ammo, completion
-speed, route efficiency, a flat bonus per unique lore terminal read, and a
-large "100% Clear" bonus for exploring over 95% of the level's walkable
-tiles, minus a malus for finishing hurt. A run records
-a top-10 leaderboard entry (score, campaign name, how many levels were
-cleared, a SHA-256 hash of the run-ending level's AST + campaign name for
-comparing runs, and total lines of code + summed complexity across the
-*whole* picked codebase — not just the levels that run reached, computed in
-the background the moment the workspace loads) once it actually ends — on
-death, or on finishing the whole campaign — never on an ordinary mid-campaign
-level clear — viewable in a sidebar Highscores dialog. A sidebar Master/SFX/Music volume mixer balances
-the procedural sound effects against an optional custom BGM folder (local
-`.mp3`/`.ogg`/`.wav` files, played back as a shuffled, looping playlist).
-The windowed canvas now scales to fit any viewport without clipping, and a
-gamepad can drive the whole game (movement, aiming, firing, weapon cycling,
-quick-melee) alongside keyboard and mouse. A small exit-pointing compass
-needle sits in its own dedicated cutout in the minimap's frame. The end-of-run
-overlays ("Kernel Panic"/"Build Successful"/commit summary/level-start
-briefing) now ignore keyboard, mouse, and gamepad dismiss input for a short
-lock window after they appear, so mashing the fire button in the fight that
-triggered one can't instantly close it before it's even read. The console
-sidebar's random hints also never repeat the same line twice in a row. Every
-simulation-relevant random draw (enemy AI timing/roam targets, loot rolls,
-weapon spread) now runs through a seeded PRNG instead of `Math.random()`,
-which powers a new deterministic replay system: every level of a run is
-recorded, one segment per level, and from the Highscores dialog a "Watch
-Replay" button re-picks the workspace, verifies each level's file still
-hashes to what was recorded, and plays the whole run back level-by-level
-frame-for-frame against freshly regenerated maps — a full multi-level
-campaign, not just the level it ended on. Beyond a local folder, you can now
-also load any public GitHub repo by typing `owner/repo` (or pasting its URL)
-into a sidebar field — the same file tree, entrypoint detection, and
-level-launching pipeline runs unchanged against it, just fetched over the
-network instead of read off disk. Scoring, highscores, and replay recording
-all work identically for a GitHub-sourced run too; "Watch Replay" re-fetches
-the same repo rather than prompting a local folder pick for those entries.
-The exit compass is now a small circular badge attached to the minimap's own
-corner instead of a reserved rectangular strip. A `TODO`/`FIXME` marker in a
-source comment also earns its lore terminal a small "technical debt"
-encounter — a timed trap, a proximity mine, or a weak enemy right next to
-it — even when the comment itself is too short to otherwise qualify as lore.
+- Every **folder** is a level
+- Every **file** is a room  
+- Every **function** is an enemy (HP = cyclomatic complexity)
+- The higher the code complexity, the harder the fight
 
-| Stage | Status |
-| --- | --- |
-| 1. Local file access (File System Access API) | ✅ Done |
-| 2. AST parsing (web-tree-sitter, PHP grammar) | ✅ Done |
-| 3. Procedural map generation (rooms + corridors) | ✅ Done |
-| 4. Raycaster engine (DDA, first-person controls) | ✅ Done |
-| 5. Enemies from entities + hitscan combat | ✅ Done |
-| 6. Developer HUD + win/lose game state | ✅ Done |
-| 7. C-language support (`tree-sitter-c`) | ✅ Done |
-| 8. Hazards (globals → acid) + weapon arsenal | ✅ Done |
-| 9. Nested-scope labyrinths (deep code → maze) | ✅ Done |
-| 10. Locked doors (private/protected) + keys | ✅ Done |
-| 11. Native canvas HUD + enemy ammo loot drops | ✅ Done |
-| 12. Active enemy AI (chase + melee) | ✅ Done |
-| 13. Visual feedback (damage flash, tracers, blood) | ✅ Done |
-| 14. Procedural retro audio (Web Audio synthesis) | ✅ Done |
-| 15. Weapon viewmodel, head-bob, recoil | ✅ Done |
-| 16. Distance fog depth shading | ✅ Done |
-| 17. Automap overlay with fog of war | ✅ Done |
-| 18. Enemy AI overhaul (roaming, packs, damage aggro) | ✅ Done |
-| 19. Ranged enemy combat (projectiles) | ✅ Done |
-| 20. Strafing, sprint, Q/E turning, trimmed HUD | ✅ Done |
-| 21. Environment geometry (corridor jogs, pillars) | ✅ Done |
-| 22. Goto teleporters + multi-level progression | ✅ Done |
-| 23. Universal language parsing + parser security hardening | ✅ Done |
-| 24. Minimap overhaul, logical entrypoints, trap mechanics | ✅ Done |
-| 25. Engine fixes: z-sorting, focus, safe spawns, pause/fullscreen | ✅ Done |
-| 26. Campaign flow: start/commit screens, save & continue | ✅ Done |
-| 27. Line-of-sight aggro, SIGKILL Knife, Cone of Fire | ✅ Done |
-| 28. Full arsenal (MP, Rocket Launcher), loot economy, Elite bosses | ✅ Done |
-| 29. Secret rooms, lore terminals, bonus levels, console sidebar | ✅ Done |
-| 30. Controls overhaul (quick-melee, mousewheel), gore levels, FPS overlay | ✅ Done |
-| 31. Weapon tuning/renaming, forced unlocks, code smells, difficulty | ✅ Done |
-| 32. Scoring, persisted highscores (AST/campaign hash), custom BGM + volume mixer | ✅ Done |
-| 33. Exploration/lore score bonuses, ammo tuning, gamepad support, canvas scaling | ✅ Done |
-| 34. Exit compass fix + redesign, end-game dialog dismiss lock, non-repeating hints | ✅ Done |
-| 35. Compass notch cutout, Cone of Fire tuning, seeded PRNG + deterministic replay system | ✅ Done |
-| 36. Replay system expanded to a whole multi-level campaign run | ✅ Done |
-| 37. Replay "end of viewing" dialog + play/pause/seek/speed transport controls | ✅ Done |
-| 38. Load a workspace directly from a public GitHub repo + fix build polyfill warnings | ✅ Done |
-| 39. Compass badge redesign, TODO/FIXME technical-debt encounters | ✅ Done |
-| Room decorations (racks/plants/desks/blocks) | ⏸️ Implemented, disabled (playtest feedback) |
+Load anything from a massive Symfony enterprise project to low-level C code like `pam_usb` — then grab a shotgun and refactor your way through it.
 
-## 🏗️ Architecture & Pipeline
-This project is strictly "Local-First". Proprietary code never leaves your machine.
+---
 
-1. **Local Access (File System Access API):** Direct read access to your local workspace via `showDirectoryPicker()`. *Strictly no virtual devices or mocked file systems.* — `src/fs/`. Alternatively, a public GitHub repo (`owner/repo` or a full URL) can be loaded straight over the network — `src/fs/github.ts` fetches its tree via the GitHub REST API and file contents lazily from `raw.githubusercontent.com`, reconstructing the exact same tree structure a local pick produces, so every downstream stage (parser, map generator, engine, replay) treats it identically.
-2. **AST Parser (web-tree-sitter via WASM):** Language-agnostic parsing behind a `CodeParserAdapter` interface. Source files are normalized into plain JSON (`linesOfCode` + `entities[]` with start/end lines, `visibility`, and a cyclomatic `complexityScore`, plus `gotos[]`: every `goto label;` resolved against its `label:` target by line, `comments[]`: large/multi-line comments worth surfacing as in-game lore, and `deadCodeRegions[]`: statements found unreachable after an unconditional `return` in the same block). Every function/method's `complexityScore` also folds in two heuristic **code smells** — more than 5 parameters, or more than 3 levels of nesting — as a scaled bonus (worse than the threshold = more bonus, not a flat penalty), on top of the normal decision-point count; a smelly function ends up tougher (or spawns as an Elite at extreme complexity) the same way genuinely complex control flow already did. The rest of the engine never touches Tree-sitter directly. **14 languages** are supported: PHP and C keep bespoke, hand-written adapters (their grammars have quirks — PHP's global-at-program-scope detection, C's buried function declarator — a generic pass can't capture precisely); JavaScript, TypeScript/TSX, Python, Java, C++, Go, Rust, Ruby, C#, Bash, Scala, and Objective-C all go through one data-driven `GenericParserAdapter`, keyed off a cross-language node-type vocabulary (`src/parser/generic/vocabulary.ts`) verified against each grammar's real `node-types.json` — adding another language is one grammar wasm import + one `LanguageConfig` entry, no new parsing code. On top of the shared defaults, each of those 12 languages gets its own precision refinements (`src/parser/generic/refinements.ts`) so nothing is left as a lowest-common-denominator guess: real method-vs-function distinctions (Python/Scala/C++ class-body ancestry, Rust `impl`/`trait` blocks), real visibility (Java/C#/Scala access modifiers, Rust `pub`, Python's underscore convention, Go's export-by-capitalization convention, C++'s `public:`/`private:`/`protected:` section tracking with correct `class`-vs-`struct` defaults, Ruby's stateful `private`/`protected` toggle), full Objective-C selector assembly (`add:with:`, not just the first name fragment), and JS/TS/TSX capturing `const foo = () => {}`/class-field arrow functions as real entities rather than silently dropping the majority of real-world function definitions. Every grammar wasm is ABI-checked against the pinned `web-tree-sitter` runtime before use (a bulk `tree-sitter-wasms` package and the `tree-sitter-kotlin`/`tree-sitter-lua` npm packages were tried and rejected — wrong ABI or no prebuilt wasm at all). **Security:** only extensions a registered adapter claims ever reach a parser (`isParsable`); on top of that, a size cap and binary-content sniff (`src/parser/security.ts`) reject oversized or binary-looking files before parsing, and any parse failure is caught, logged as a warning, and skipped rather than crashing the map generator or game loop. Source text is only ever fed to `Parser.parse()` — nothing in `src/parser/` evaluates, compiles, or executes loaded code. — `src/parser/`
-3. **Procedural Map Generator:** Deterministically translates the normalized JSON into a 2D tile matrix (`0` = floor, `1` = wall, `2` = acid hazard, `3` = locked door, `4` = goto teleporter pad, `5` = timed spike trap, `6` = fake wall hiding a secret room, `7` = lore terminal). Each entity becomes an enclosed room, with the player spawning in whichever corner of the first room sits farthest from every enemy-bearing room's center (best-effort — aggro now requires a clear line of sight in addition to proximity, so it can no longer reach through a wall, but a small/dense level may still have no fully safe corner) — but a **deeply nested function turns into a labyrinth** (recursive-division maze of `1`-walls, passages kept ≥1 tile wide) rather than an open box. Rooms are linked by corridors that **jog with 1-2 turns instead of one straight line** once they get long, so hallways don't offer a full sightline end-to-end; large open rooms also get a scattering of **1-tile pillars** to break up empty floor. It places an enemy for every function/method (HP scaled from its complexity, split into a pack above a complexity threshold — or, at *extreme* complexity, a single 4x-HP **Elite boss** instead of the biggest pack), floods every global-variable room with an **acid pool**, locks **private/protected-method** rooms behind **doors** and scatters a matching **dependency key** in reachable public floor (so every level stays solvable), turns every resolved `goto` → label jump into a **linked teleporter pad pair** dropped in the rooms containing the goto and its label, scatters **timed spike traps** and invisible **proximity mines** at 1-tile-wide corridor choke points (never in open room floor), sprinkles a sparse handful of static **bullets/rockets pickups** across non-spawn rooms as a backup ammo source (boosted in odds and amount on a **bonus level** — see below), carves a hidden room behind a **fake wall** for every unreachable ("dead") code region found (near-indistinguishable from a normal wall until opened — just a very slight hue nudge for a close look — with a guaranteed high-value pickup inside), turns every large source comment into a glowing **lore terminal** wall tile near the room it came from (a `TODO`/`FIXME` marker also earns its terminal a small timed trap, proximity mine, or weak enemy on the floor tile right next to it, and bypasses the usual length requirement so even a short one-liner still gets a terminal), and puts a green **exit tile** — the `return` statement — in the room furthest from spawn, always kept clear of enemies/pillars/pads. A file whose extension marks it as a header (`.h`) generates as a **bonus level** (`GameMap.bonusLevel`) — a restock arena the raycaster themes distinctly and the loot systems favor. (Cosmetic room decorations — server racks, plants, desks, code-blocks — are implemented but currently disabled behind a feature flag pending a design rethink.) — `src/map/`
-4. **Raycaster Engine & Gameplay:** A classic 2.5D raycaster written entirely on the HTML5 `<canvas>` 2D context. No WebGL, no Three.js – pure retro mathematics (DDA algorithm), distance-fog shading (full bright near, black beyond ~14 tiles), floor-cast acid/teleporter/spike-trap tiles, delta-timed first-person movement, and AABB wall collision. Every world billboard (enemies, projectiles, rockets, keys, loot drops, the exit marker, teleporters, decorations, mines) is collected into one list and drawn in a single pass sorted furthest-to-nearest, so a nearer item always paints over a farther one regardless of which category it belongs to. Layered on top: a **five-weapon arsenal**, each with its own bottom-of-screen silhouette and tracer color — the **echo pistol** (hitscan), **Regex Shotgun** (cone of pellets), fully-automatic **gdb** (high fire rate, low damage — renamed from "MP" in Task 31), a **ghidra** launcher firing a real, slow projectile that explodes for distance-scaled AoE splash damage (catching the player too, if they're standing too close; renamed from "Rocket Launcher"), and the infinite-ammo **SIGKILL Knife** bound exclusively to **Left-Ctrl** as an instant "quick-melee" swing — a pure viewmodel overlay, independent of whatever ranged weapon is equipped (the equipped weapon, its ammo, and the HUD never change); number keys and the **mousewheel** cycle only the four ranged weapons. gdb/ghidra aren't available from the start — an Elite kill's guaranteed drop unlocks either early, and a campaign-progression safety net force-unlocks gdb at level 4 and ghidra at level 8 regardless (never removes anything, so an already-looted weapon is unaffected). Ranged pellets carry a small random aim deviation that grows *cubically* with range (not linearly or quadratically) instead of a hard cutoff (a "Cone of Fire") — medium-range shots stay reliable, and only the last stretch before the true maximum visual range (where the world fades to black anyway) spreads noticeably. Active enemy AI roams its room, chases on line-of-sight aggro or on taking damage regardless of sightline, melees up close, or lobs ranged bolts with line-of-sight at range — Elites do this too, just harder (bigger, gold-tinted, 2x damage). Regular kills roll a weighted random drop (bullets, rockets, a health pack, or an **armor** shard — a new stat absorbed 1:1 before health on any hit, capped at 100); Elite kills instead guarantee a still-unowned heavier weapon or a large heal. Impact feedback covers screen damage flash, per-weapon bullet tracers, rocket-blast VFX circles, enemy bleed-flash, and falling "digital blood" particles whose count, rendered size, and landed floor-stain lifetime all scale with a **Gore level** setting (None/Normal/More = 0x/1x/3x, a sidebar dropdown persisted to `localStorage` and read once per level launch — Extreme/10x exists in the code but is hidden behind a disabled flag for now, playtest feedback called it over-the-top), plus procedural Web-Audio sound effects, a native-canvas HUD with a redesigned always-on minimap (semi-transparent dark panel, a bright directional player triangle, a pulsing high-contrast exit marker, and enemies hidden until the player's collision box AABB-intersects their room), a togglable automap with fog of war, key-unlocked doors, goto-warp teleporter pads, timed spike traps and proximity mines, a toggleable Fullscreen API hook (the canvas stays crisply pixelated at any scale, fullscreen included), a **Right-Ctrl-toggled FPS/frame-time overlay** (top-right, visible across every render state), and a distinct pause overlay (window blur forces it, Escape toggles it, a click resumes) separate from the automap pause, plus win/lose state. Pressing **R** near a glowing lore terminal pauses the sim and shows the source comment it was generated from on a native-canvas overlay (holding **W/S** scrolls it if it's too long for one screen, with a scrollbar shown only when it actually overflows); pressing **R** while facing a fake wall opens the secret room hidden behind it permanently. A bonus (`.h`) level renders with a distinct cool steel/teal wall and floor palette instead of the normal warm brick, both in the 3D scene and the minimap. Every level is bracketed by two blocking overlays (`src/ui/gameHud.ts`): a **level-start briefing** (campaign/level name, room/enemy counts — the engine isn't even started until it's acknowledged) and, on reaching the exit, a **commit summary** (lines refactored, bugs squashed) before the next file loads. When the exit is reached, instead of always ending the run the host (`main.ts`) checks the workspace tree for the next parsable file and — if there is one — silently loads it as the next level with health/armor/ammo/weapon(s) carried over; the "Build Successful" screen only appears after the last file. Progress autosaves to `localStorage` on level transitions and periodically during play; a "Continue Run" button re-picks the workspace (file handles can't survive a page reload) and resumes at the saved file, falling back to a fresh entrypoint launch if it's no longer found. Clearing a level scores it (`src/engine/scoring.ts`): points per kill scaled by the killed entity's complexity (tripled for an Elite), plus bonuses for remaining health/ammo, completion speed, and how close the actual route was to the BFS-shortest spawn→exit path (`GameMap.shortestPathTiles`), minus a malus for finishing below full health — recomputed live every frame for the HUD's Score readout, final the instant the exit is reached. That score is recorded (`src/engine/highscores.ts`) once the run actually ends — on death, or on finishing the whole campaign, never on an ordinary mid-campaign level clear — into a persisted top-10 board, alongside how many levels were cleared, a SHA-256 hash of the run-ending level's parsed AST JSON plus the campaign name (`crypto.subtle.digest`) — two runs over the exact same source under the same campaign name hash identically, letting a player spot at a glance whether a leaderboard entry is really the same code — and total lines of code plus summed cyclomatic complexity across every parsable file in the whole picked codebase, not just the levels that run reached. That whole-codebase aggregation runs in the background (chunked, yielding between files) starting the moment a workspace loads, reusing the same parser pipeline every level launch does, and is awaited with a bounded timeout when a run ends so an unusually large repo can't delay recording a score — viewable in a sidebar-triggered Highscores dialog. Audio is now two independent buses under one master gain (`src/engine/audio.ts`): every procedural sound effect through an SFX bus, and an optional custom BGM folder (`src/engine/bgm.ts` — local `.mp3`/`.ogg`/`.wav` files picked via the File System Access API, played back through an `<audio>` element as a shuffled, looping playlist) through its own BGM bus, with a sidebar Master/SFX/Music slider trio (persisted to `localStorage`) balancing all three. — `src/engine/`
+## Features at a Glance
 
-### Gameplay loop
-Every **function/method is an enemy** whose **HP equals its cyclomatic complexity** (×25) — so a gnarly function takes more shots to clear, and functions above a complexity threshold spawn a whole *pack* instead of one boss, or — at *extreme* complexity — a single boss-tier **Elite** (1.5x size, gold tint, 4x HP, 2x damage) instead of the biggest pack. Two **code smells** pad that complexity further: more than 5 parameters, or more than 3 levels of nesting, each add a scaled bonus — a smelly function is a tougher fight, on top of whatever its actual control flow already earned it. A sidebar **Difficulty** setting (Easy/Normal/Hard) then multiplies everyone's HP (0.7x/1x/1.5x) and the damage they deal to you, while inversely scaling how much ammo/health/armor you find — harder is scarcer, not just tougher. Enemies aren't static: they **roam** their room until they notice you — within an aggro radius *and* with a clear line of sight, or instantly regardless of sightline the moment you shoot them from further away — then **chase** you around corners and walls, **melee** you up close on a cooldown, or **lob ranged plasma bolts** when they have a clear line of sight at range — though they stay off your always-on minimap entirely until you've physically walked into their room. Every **global variable becomes an acid pool** (a hazard room) that drains you if you wade through it. **`private`/`protected` methods are locked rooms**: their doors (steel-blue) block you until you pick up a scattered **dependency key** and walk into them, which consumes the key. Corridors hide their own hazards too: **timed spike traps** cycle between safe and damaging on a per-trap clock (metal grey → pulsing red), and **proximity mines** stay completely invisible until you get close — then reveal well before they're actually dangerous, giving you room to back off (resetting the fuse), route around, or shoot the now-spotted mine to disarm it (safe from a distance, but a point-blank shot still catches you in the blast). You have **System Stability** (health), an **Armor** buffer that absorbs damage 1:1 before stability does, and two separate ammo pools — **Bullets** and **Rockets** — sized to the level and topped up by loot drops or sparse map pickups. The arsenal: the **echo pistol** (precise single hitscan), the **Regex Shotgun** (a cone of pellets — devastating up close, useless at range), the fully-automatic **gdb** (high fire rate, low damage per round), and **ghidra** (a real, slow projectile that explodes for distance-scaled splash damage — including on you, if you're standing too close) — switch between these four with number keys or the **mousewheel**. The infinite-ammo **SIGKILL Knife** isn't one of them: it's bound exclusively to **Left-Ctrl** as an instant quick-melee swing (point-blank only, but every kill heals a sliver of stability) that overlays on top of whatever's equipped without ever switching away from it. gdb and ghidra aren't available from the start: an Elite kill's guaranteed drop unlocks one early, carried over between levels — and if you haven't looted either by then, gdb force-unlocks at campaign level 4 and ghidra at level 8 as a progression safety net. Every weapon has its own tracer color and its own bottom-of-screen silhouette. Ranged shots also carry a small random deviation that grows cubically with distance to whatever's downrange, so medium-range shots stay reliable and only a far-off shot near the edge of visibility can go wide. Defeating a regular enemy rolls a random drop — bullets, rockets, a health pack, or an armor shard; an Elite's death instead guarantees a still-unowned weapon or a large heal. Every hit lands with feedback: a screen-shaking damage flash, per-weapon bullet tracers, rocket-blast VFX, enemies flashing red and spraying "digital blood", and procedurally synthesized retro sound effects (no audio files — pure Web Audio oscillators). Touching an enemy, a bolt, acid, an active spike, or a mine blast drains stability (armor first); below 25% a pulsing alarm kicks in. Hitting 0 is a **Kernel Panic** (game over). Any `goto` in the source becomes a pair of linked, pulsing violet **teleporter pads** — step on one and you're warped straight to the other, UT-style. Large source comments become glowing **lore terminals**: press **R** nearby to pause and read the original comment, scrolling with **W/S** if it runs long. Unreachable ("dead") code hides a **secret room** behind a fake wall that blocks like a normal one and looks almost identical — a very slight cool hue nudge is the only tell, for a player who looks closely — press **R** while facing the right stretch of wall to open it and claim the mega-health or fat rockets stash inside. A `.h` (or equivalent header) file loads as a **bonus level**: a visibly different cool steel/teal theme, more static pickups, and kills that favor scarcer, higher-value drops — a deliberate restock stop. Reach the green `return` tile and, if there's another parsable file left in the tree, you're dropped straight into it as the next level with your stability, armor, ammo, and unlocked weapons intact; only run out of files and you get a **Build Successful** screen back to the file tree. Lost? Hit **Tab** for a togglable automap that reveals only the rooms and corridors you've already explored (fake walls carry the same subtle tint there too, not full camouflage). Not fullscreen? A console sidebar next to the canvas mirrors the game's `console.log` output (real messages only — object dumps like a whole parsed AST or generated map are never rendered there, so it stays readable, and the messages themselves are written to never spoil something you're meant to find in-world, like an exit or secret room's coordinates) and occasionally drops a random hint (never the same one twice in a row). A sidebar **Gore** dropdown scales how much "digital blood" a kill sprays (None/Normal/More — Extreme is temporarily disabled), a sidebar **Difficulty** dropdown (Easy/Normal/Hard) scales enemy HP (0.7x/1x/1.5x), enemy-dealt damage, and ammo/health/armor pickup amounts (inversely — harder is scarcer, not just tougher), and **Right-Ctrl** toggles a small FPS/frame-time readout if you want to keep an eye on performance.
+### Core Gameplay
+- ✅ **Multi-language support** — PHP, C/C++, JavaScript/TypeScript, Python, Java, Go, Rust, Ruby, C#, Bash, Scala, Objective-C
+- ✅ **Smart entrypoint detection** — finds `main`, highest complexity, or any parsable file
+- ✅ **Full arsenal** — pistol, shotgun, machine gun, rocket launcher, and a melee knife
+- ✅ **Procedural maps** — rooms, corridors with jogs, pillars, secret rooms, traps, teleporters
+- ✅ **Advanced enemy AI** — roaming, chasing, melee, ranged attacks (packed or elite bosses)
+- ✅ **Multi-level campaigns** — chain together all parsable files; save & continue progress
 
-### Data flow
+### Game Systems
+- ✅ **Retro raycaster engine** — DDA algorithm, distance fog, collision detection
+- ✅ **Scoring system** — kills scaled by complexity, bonuses for speed/health/exploration/lore
+- ✅ **Persistent leaderboards** — top-10 board with AST+campaign hashing (compare runs)
+- ✅ **Deterministic replay** — record and playback entire multi-level campaigns frame-for-frame
+- ✅ **Automap with fog of war** — toggle with Tab, reveals explored areas only
+- ✅ **Fullscreen & gamepad** — canvas stays crisp, gamepad works alongside keyboard/mouse
+
+### Audio & Polish  
+- ✅ **Procedural audio** — every sound effect synthesized from oscillators (no audio files)
+- ✅ **Custom BGM** — pick a local folder of `.mp3`/`.ogg`/`.wav` files, shuffled playlist
+- ✅ **Master/SFX/Music sliders** — balanced audio mixing, persisted across sessions
+- ✅ **Gore levels** — adjustable blood particles (None/Normal/More)
+- ✅ **Difficulty modes** — Easy/Normal/Hard scales enemy HP, damage, ammo scarcity
+
+### Mechanics
+- ✅ **Acid pools** — global variables become hazardous terrain
+- ✅ **Locked doors & keys** — private/protected methods gated behind dependency keys
+- ✅ **Teleporters** — `goto` statements become linked warp pads
+- ✅ **Lore terminals** — large code comments appear as glowing walls (press R to read)
+- ✅ **Secret rooms** — dead code hidden behind fake walls  
+- ✅ **Timed spike traps & proximity mines** — corridor hazards at choke points
+- ✅ **Code smells** — functions with 5+ params or 3+ nesting levels get tougher
+
+### Loading Options
+- ✅ **Local workspace** — pick any folder on your machine (File System Access API)
+- ✅ **GitHub repos** — type `owner/repo` to load any public repo over the network
+- ✅ **Replay from either source** — re-pick workspace or auto-fetch GitHub repo
+
+---
+
+## How It Works
+
+### Data Pipeline
 ```
-Local folder ──▶ CodeParserAdapter ──▶ ParsedFile JSON ──▶ MapGenerator ──▶ GameMap (grid+enemies+doors+keys+teleporters+traps+exit) ──▶ RaycasterEngine
- (src/fs)          (src/parser)                              (src/map)                                                     (src/engine)
-```
-Each stage only depends on the plain data structure produced by the previous one, so languages, map styles, and renderers can evolve independently.
-
-## 🎮 Controls
-Picking a workspace auto-starts the level for its detected entrypoint: a
-recognized filename (`main.c`/`index.php`/`main.py`/`main.go`/`main.rs`/etc.)
-wins first if one exists; otherwise every parsable file (any language, test/
-spec directories deprioritized so a unit test is never picked over real
-source) is scored by summing its total cyclomatic complexity, and the
-highest-scoring file that actually defines a `main`/`Main` function wins,
-falling back to the highest-scoring file overall if none do, and to the first
-parsable file in tree order only as a last resort. Click any other supported
-source file in the sidebar to jump into its level instead — PHP, C/C++,
-JavaScript/TypeScript, Python, Java, Go, Rust, Ruby, C#, Bash, Scala, or
-Objective-C. A **"Continue Run"** button appears next to "Select Workspace"
-whenever a saved campaign exists, letting you re-pick the same workspace and
-resume exactly where you left off (health, armor, ammo, unlocked weapons, and
-file included). Alternatively, type a public repo as `owner/repo` (or paste
-its URL) into the sidebar's "Or load from GitHub" field and click **Load from
-GitHub** to play it straight off the network — no local checkout needed.
-Campaign progress isn't autosaved for a GitHub-sourced run, since "Continue
-Run" can only re-pick a local folder.
-Every level opens on a briefing overlay (room/enemy counts) you have to
-acknowledge before it starts, and reaching the exit shows a commit summary
-before the next one loads. Every one of these overlays (plus the end-of-run
-"Kernel Panic"/"Build Successful" screens) ignores keyboard/mouse/gamepad
-dismiss input for about a second and a half after it appears, so mashing the
-fire button in the fight that triggered it can't instantly close it before
-you've even read it.
-
-* **W / S** – move forward / backward
-* **A / D** – strafe left / right
-* **Q / E** – turn left / right
-* **Shift** – sprint (2× move speed)
-* **Mouse** – click the canvas to capture the pointer and look around (the canvas grabs keyboard focus automatically on load, no extra click needed first)
-* **Click / Space** – fire the active weapon
-* **1 / 2** – switch weapon (echo pistol / Regex Shotgun)
-* **4 / 5** – switch to gdb / ghidra, once unlocked (an Elite kill's guaranteed drop, or a forced unlock at campaign level 4/8 — locked slots just do nothing)
-* **Mousewheel** – cycle through the ranged weapons you currently own (wraps at both ends)
-* **Left-Ctrl** – quick-melee: an instant SIGKILL Knife swing, independent of whatever ranged weapon is equipped (never runs dry, no cooldown beyond your own press rate)
-* **R** – interact: read a nearby glowing lore terminal (hold W/S to scroll if it's too long for one screen), or open a fake wall you're facing to reveal the secret room behind it (not bound to E — E is already turn-right in this game's Q/E-turn scheme)
-* **Tab** – toggle the full-screen automap (pauses the action; only explored areas are revealed)
-* **F** – toggle fullscreen
-* **Esc** – pause (freezes the action under a "PAUSED" overlay, distinct from the automap; a click or a second `Esc` resumes); also releases pointer lock / exits fullscreen per normal browser behavior. Losing window focus (alt-tab, etc.) pauses the same way automatically.
-* **Right-Ctrl** – toggle a small FPS/frame-time readout, top-right (off by default)
-* **Gamepad** – left stick moves/strafes, right stick turns, RT/R2 fires, the bumpers (LB/RB) cycle through your owned ranged weapons, and R3 (right stick click) or B triggers quick-melee — works alongside keyboard/mouse at the same time, no mode switch needed. Also dismisses the level-start/commit-summary/end-of-run overlays (any button, after the dismiss lock above expires)
-* **Compass** – a small needle in a circular badge attached to the minimap's bottom-right corner, always pointing from your current position toward the exit tile *relative to your own facing* — dead ahead reads as "up," directly behind reads as "down"
-* **Gore** – a sidebar dropdown (None/Normal/More — Extreme is temporarily disabled, playtest feedback called it over-the-top) scaling blood-particle count, size, and how long a landed particle lingers; persisted across sessions, takes effect on the next level load
-* **Difficulty** – a sidebar dropdown (Easy/Normal/Hard) scaling enemy HP (0.7x/1x/1.5x), enemy-dealt damage, and ammo/health/armor pickup amounts (inversely — Hard is scarcer, not just tougher); persisted across sessions, takes effect on the next level load. Normal also rolls enemy loot kind against a slightly ammo-favoring weight table (playtest feedback was that ammo ran too scarce there specifically), and static map ammo pickups grant ~40-50% more per pickup than before across all difficulties
-* **Score** – points per kill (scaled by the killed entity's complexity, tripled for an Elite), plus bonuses for remaining health/ammo, completion speed, route efficiency (how close your path was to the shortest spawn→exit route), a flat bonus per unique lore terminal read, and a large "100% Clear" bonus for exploring over 95% of the level's walkable tiles before reaching the exit, minus a malus for finishing below full health; live in the HUD, final the moment you reach the exit
-* **Highscores** – a sidebar button opens a dialog listing the top-10 scored runs (score, campaign name, total lines of code and summed complexity across the whole codebase the run was played against, levels cleared, and a truncated SHA-256 hash of the run-ending level's AST + campaign name, so you can tell whether a leaderboard entry is really the same code); an entry is only recorded once a run actually ends — on death, or on finishing the whole campaign — not on every intermediate level clear. The lines/complexity totals cover every parsable file in the tree, not just the levels that run reached, and are computed in the background as soon as the workspace loads; a run that ends before that finishes (rare, only on very large codebases) shows "—" for those two columns instead
-* **Watch Replay** – entries recorded since this feature shipped get a "Watch Replay" button: re-pick the same workspace (or, for a GitHub-sourced run, automatically re-fetch the same repo), and — after verifying each level's re-parsed file still hashes to what was recorded — the exact run plays back level-by-level, frame-by-frame, against freshly regenerated maps, carrying health/ammo/weapons forward between levels exactly as recorded. A transport bar under the canvas offers play/pause, seek back/forward (~5s), and a 0.25x-4x speed stepper (Esc stops early); however it ends — a natural win/death, Escape, or a file that no longer matches the recorded run — a "Replay Ended" overlay explains why before returning to the file tree. A very long multi-level run's replay can run into the megabytes; the whole leaderboard is gzip-compressed before it's written to `localStorage` (transparent, no new dependency, falls back to plain JSON if that's ever bigger or unsupported), which absorbs most of that growth, but if it still doesn't fit under the browser's quota, the score itself is still saved (missing just its "Watch Replay" button) rather than the whole entry being silently lost
-* **Master / SFX / Music** – three sidebar volume sliders balancing the procedural sound effects against any custom BGM, persisted across sessions
-* **Select BGM Folder** – pick a local folder of `.mp3`/`.ogg`/`.wav` files to play as a shuffled, looping background-music playlist behind the game's own sound effects
-* **Keys & doors** – walk over a gold key to collect it; walk into a blue locked door while holding a key to open it (consumes the key)
-* **Loot drops** – defeated enemies drop bullets, rockets, a health pack, or an armor shard; an Elite instead guarantees a still-unowned weapon or a big heal — walk over any of it to collect
-* **Ammo pickups** – a sparse handful of static bullets/rockets pickups scattered across the map as a backup source (more frequent and generous on a bonus level); walk over one to collect
-* **Teleporter pads** – glowing violet pads generated from `goto`/label jumps; step on one to warp straight to its paired pad
-* **Lore terminals** – glowing wall tiles generated from large source comments; press **R** nearby to pause and read the original comment (hold **W/S** to scroll if it doesn't fit on one screen)
-* **Secret rooms** – hidden behind a fake wall (indistinguishable from a real one) generated from unreachable "dead" code; press **R** while facing one to open it and claim the high-value loot inside
-* **Bonus levels** – a `.h` (or equivalent header) file loads with a distinct cool steel/teal theme and boosted loot, as a restock stop rather than a fight
-* **Spike traps** – floor tiles at corridor choke points that alternate safe (grey) and damaging (pulsing red) on a timer; cross while safe
-* **Proximity mines** – invisible until you get close, revealing well before they're dangerous; back off to reset the fuse, or shoot a spotted mine to disarm it (safe at range, still hurts point-blank)
-* **Objective** – clear (or dodge) the enemies, avoid the green acid pools, enemy bolts, spike traps, and mines, unlock any doors in your way, and step on the green `return` tile — reaching it advances straight into the next file in the workspace (health/armor/ammo/weapons carried over) until you run out of files
-* A native-canvas bottom **HUD** keeps it minimal: System Stability, Armor, ammo for whichever ranged weapon is equipped (Bullets/Rockets), keys held, and score (no weapon name or targeted-entity name — and it never reflects a quick-melee swing, which is a pure overlay); a top-left minimap over a semi-transparent dark panel shows walls, acid, doors, keys, teleporter pads, spike traps, discovered mines, the pulsing exit, and your exact position/facing as a bright triangle — enemies only appear once you've physically entered their room.
-
-## 💻 Tech Stack
-* **Frontend:** Vanilla TypeScript + Vite (no UI framework; minimal dependencies)
-* **Parser:** `web-tree-sitter` (WASM) with 14 grammars: `tree-sitter-php`, `-c`, `-javascript`, `-typescript`, `-python`, `-java`, `-cpp`, `-go`, `-rust`, `-ruby`, `-c-sharp`, `-bash`, `-scala`, `-objc`
-* **Rendering:** HTML5 Canvas 2D API (walls, sprites, HUD, and the automap are all native canvas draws — no DOM overlay for gameplay)
-* **Audio:** Web Audio API — every sound effect is synthesized from oscillators/noise at runtime, no bundled audio files; an optional custom BGM folder plays local `.mp3`/`.ogg`/`.wav` files instead, mixed in via a separate gain bus
-* **Platform:** Nothing in the stack is OS-specific — any OS running a supported Chromium-based browser works identically (see Browser Requirements below). Developed on Linux, but that's just the author's own machine, not a constraint.
-
-## 🌐 Browser Requirements
-The [File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/Window/showDirectoryPicker)
-(`showDirectoryPicker()`) is required and is currently only available in Chromium-based
-browsers (**Chrome, Edge, Brave**) served over `localhost` or HTTPS. The app detects
-unsupported browsers and disables the picker with a message.
-
-## 📂 Project Structure
-```
-src/
-├── main.ts            # App entry: wires the sidebar, parser, map, engine, and HUD together
-├── difficulty.ts       # Difficulty setting (Easy/Normal/Hard) + HP/damage/ammo-rate multiplier table — layer-neutral, shared by main.ts and engine.ts
-├── prng.ts             # Seeded mulberry32 PRNG — layer-neutral, shared by the map generator and the engine's own gameplay randomness
-├── fs/                # File System Access API: workspace picker + directory walk; github.ts loads a public repo's tree/files over the network into the same shape
-├── ui/                # File-tree sidebar, external console sidebar, highscore table, + all DOM overlays (gameHud.ts: level-start briefing, commit summary, end-of-run, replay-ended; the live HUD is native canvas)
-├── parser/            # Language-agnostic AST layer (CodeParserAdapter, registry, astUtils, security)
-│   ├── php/           # PHP adapter backed by tree-sitter-php (bespoke)
-│   ├── c/             # C adapter backed by tree-sitter-c (bespoke)
-│   └── generic/       # One data-driven adapter for the other 12 languages + shared vocabulary + per-language refinements
-├── map/               # Procedural map generator: grid, enemies, exit (+ top-down debug renderer)
-└── engine/            # 2.5D raycaster + gameplay
-    ├── engine.ts       # Game loop: sim, combat, damage, stats — ties every system below together
-    ├── raycaster.ts    # DDA wall renderer + floor-cast background, with distance fog
-    ├── player.ts       # Camera/movement + shared AABB wall-collision test
-    ├── sprites.ts      # Billboard rendering for enemies/keys/teleporters + crosshair hit-testing
-    ├── enemyAi.ts      # Enemy roam/chase/melee/ranged-fire behaviour (roam-target/fire-cooldown randomness takes a seeded rng)
-    ├── projectiles.ts  # Enemy ranged bolts: spawn, move, collide, render
-    ├── traps.ts        # Timed spike trap + proximity mine runtime behavior
-    ├── weapons.ts      # Weapon stats/tracers/viewmodel kind per weapon + pellet spread
-    ├── loot.ts         # Weighted random loot-drop resolution (bonus-level and difficulty aware)
-    ├── scoring.ts      # End-of-level score breakdown (kills/health/ammo/speed/path/exploration/lore) — pure, recomputed live
-    ├── highscores.ts   # SHA-256 AST+campaign hashing, persisted top-10 leaderboard (each entry can carry a replay payload + whole-codebase LOC/complexity totals), gzip-compressed via storageCompression.ts before it hits localStorage
-    ├── storageCompression.ts # Optional gzip (CompressionStream/DecompressionStream) + base64 for anything written to localStorage, transparent fallback to plain JSON
-    ├── replay.ts        # Deterministic replay: CampaignReplayRecorder (one segment per level played) + ReplayPlaybackInput (replays it)
-    ├── bgm.ts          # Custom BGM: folder pick, shuffled looping playlist over the audio.ts BGM bus
-    ├── rockets.ts      # Player rocket projectiles: spawn, move, AoE splash damage
-    ├── viewmodel.ts    # First-person weapon sprite, head-bob, recoil
-    ├── effects.ts      # Damage flash, bullet tracers, hit-flash, "digital blood" particles
-    ├── audio.ts        # Procedural Web Audio sound effects (AudioManager singleton) + Master/SFX/BGM gain buses
-    ├── hud.ts          # Native-canvas status bar + crosshair + exit compass (embedded in the minimap's frame)
-    ├── automap.ts      # Togglable fog-of-war map overlay
-    └── input.ts        # Keyboard/mouse polling + pointer lock + Gamepad API polling; captureSnapshot() feeds the replay recorder
+Source Code
+    ↓
+AST Parser (web-tree-sitter, 14 languages)
+    ↓
+Normalized JSON (entities, complexity, visibility, comments)
+    ↓
+Procedural Map Generator (grid, enemies, hazards, teleporters)
+    ↓
+2.5D Raycaster Engine (DDA, collision, gameplay)
 ```
 
-## 🚀 Getting Started
-Requires Node.js 18+.
+Each stage only consumes the data structure from the previous stage — languages, map styles, and renderers can evolve independently.
 
+### Level Generation
+- **Functions → Enemies** whose HP equals `cyclomatic_complexity × 25`
+  - High complexity = more health, pack spawns, or a single elite boss (4× HP, gold tint, 2× damage)
+  - Functions with code smells (5+ params, 3+ nesting levels) get scaled bonus complexity
+  
+- **Global variables → Acid pools** (hazard terrain)
+  
+- **Private/protected methods → Locked rooms** (need dependency key to enter)
+  
+- **`goto`/label pairs → Teleporter pads** (linked, step on one to warp to the other)
+  
+- **Large comments → Lore terminals** (glowing walls; press R to read, W/S to scroll)
+  
+- **Dead code regions → Secret rooms** (hidden behind near-invisible fake walls)
+  
+- **Headers (`.h` files) → Bonus levels** (distinct cool-teal theme, boosted loot)
+
+### Enemy Behavior
+- **Roams** its room until they notice you (aggro radius + line-of-sight OR just took damage)
+- **Chases** around corners and walls
+- **Melees** up close on a cooldown
+- **Lobs ranged plasma bolts** at range if they have line-of-sight
+- **Elite variants** do everything harder (gold-tinted, 2× damage)
+
+### Player Combat
+- **5 weapons** — echo pistol (hitscan), shotgun (pellet cone), gdb (auto, low damage), ghidra (slow rocket, splash damage), SIGKILL Knife (instant melee, infinite ammo)
+- **Ammo pools** — Bullets and Rockets, with sparse map pickups as backup
+- **Armor buffer** — absorbs damage 1:1 before health, capped at 100
+- **Quick-melee** — Left-Ctrl for instant knife swing (heals sliver on kill, never switches weapon)
+- **Ranged accuracy** — pellets deviate cubically with distance (medium range reliable, far range spreads)
+
+### Scoring
+- **Kill value** scaled by enemy complexity (tripled for elites)
+- **Health/ammo bonuses** for finishing with resources left
+- **Speed bonus** for clearing quickly
+- **Route efficiency** bonus (how close to BFS shortest path)
+- **Lore bonus** flat points per unique terminal read
+- **100% Exploration bonus** for visiting 95%+ walkable tiles
+- **Health malus** for finishing below full health
+
+---
+
+## Quick Start
+
+### Requirements
+- **Node.js** 18+ 
+- **Chromium-based browser** (Chrome, Edge, Brave) — File System Access API required, HTTPS or localhost
+
+### Setup
 ```bash
-# Clone repository
 git clone https://github.com/mcdope/codeenstein3d.git
 cd codeenstein3d
-
-# Install dependencies
 npm install
-
-# Start Vite dev server
 npm run dev
 ```
 
-Then open the printed `localhost` URL in a Chromium-based browser, click **Select
-Workspace**, pick a folder containing source code, and click a supported file to drop into its level.
+Open the printed `localhost` URL, click **Select Workspace**, pick a folder with source code, and click a supported file to drop into its level.
 
-### Useful scripts
+### Development Scripts
 ```bash
 npm run dev        # Vite dev server with HMR
-npm run typecheck  # tsc --noEmit
-npm run build      # type-check + production build to dist/
-npm run preview    # serve the production build locally
+npm run typecheck  # Type-check only
+npm run build      # Production build to dist/
+npm run preview    # Serve production build locally
 ```
 
-## 📜 License
+---
+
+## Controls
+
+### Movement & Aiming
+- **W / S** — Move forward/backward
+- **A / D** — Strafe left/right
+- **Q / E** — Turn left/right
+- **Shift** — Sprint (2× speed)
+- **Mouse** — Look around (click canvas or auto-focused on load)
+
+### Combat & Weapons
+- **Click / Space** — Fire active weapon
+- **1 / 2** — Switch to pistol/shotgun
+- **4 / 5** — Switch to gdb/ghidra (once unlocked)
+- **Mousewheel** — Cycle through owned weapons
+- **Left-Ctrl** — Quick-melee (SIGKILL Knife, infinite ammo, heals on kill)
+
+### Interaction & Navigation
+- **R** — Read nearby lore terminal (hold W/S to scroll) OR open fake wall to reveal secret
+- **Tab** — Toggle automap (pauses; only reveals explored areas)
+- **F** — Toggle fullscreen
+- **Esc** — Pause (freezes action under "PAUSED" overlay)
+- **Right-Ctrl** — Toggle FPS/frame-time display (top-right)
+
+### Gamepad
+- **Left stick** — Move/strafe
+- **Right stick** — Turn
+- **RT/R2** — Fire
+- **LB/RB** — Cycle weapons
+- **R3 or B** — Quick-melee
+- **Any button** — Dismiss level-start/commit-summary overlays (after ~1.5s lock)
+
+### UI Controls
+- **Compass** — Circular badge (bottom-right of minimap), points toward exit relative to your facing
+- **Gore** — Sidebar dropdown (None/Normal/More) scales blood-particle effects
+- **Difficulty** — Sidebar dropdown (Easy/Normal/Hard) scales enemy HP, damage, ammo scarcity
+- **Master / SFX / Music** — Volume sliders for each bus (persisted across sessions)
+- **Select BGM Folder** — Pick a local folder of audio files for custom playlist
+
+### Level Flow
+- **Pick workspace** → Auto-starts at detected entrypoint (or first parsable file)
+- **Reach green exit tile** → Commit summary screen → Next level loads (health/ammo/weapons carry over)
+- **Run out of files** → "Build Successful" screen
+- **Die** → "Kernel Panic" screen
+- **Continue Run button** — Resume a saved campaign exactly where you left off
+
+---
+
+## Completion Status
+
+| # | Feature | Status |
+|---|---------|--------|
+| 1–2 | File access, AST parsing | ✅ |
+| 3–6 | Map generation, raycaster, enemies, HUD | ✅ |
+| 7–8 | C-language support, hazards & weapons | ✅ |
+| 9–10 | Nested-scope mazes, locked doors & keys | ✅ |
+| 11–13 | Canvas HUD, enemy AI, visual feedback | ✅ |
+| 14–16 | Procedural audio, weapon viewmodel, fog | ✅ |
+| 17–19 | Automap, AI overhaul, ranged combat | ✅ |
+| 20–21 | Sprint/strafe/turning, corridor geometry | ✅ |
+| 22–23 | Teleporters, multi-level, parser security | ✅ |
+| 24–26 | Minimap, entrypoints, save & continue | ✅ |
+| 27–30 | Line-of-sight aggro, knife, scoring, sidebar | ✅ |
+| 31–33 | Weapon tuning, gamepad, canvas scaling | ✅ |
+| 34–35 | Compass redesign, seeded PRNG, replay | ✅ |
+| 36–39 | Multi-level replay, GitHub repos, TODO/FIXME | ✅ |
+| — | Room decorations | ⏸️ Implemented, disabled (playtest feedback) |
+
+---
+
+## Architecture & Tech Stack
+
+### Frontend & Rendering
+- **Vanilla TypeScript + Vite** — minimal dependencies, no UI framework
+- **HTML5 Canvas 2D** — walls, sprites, HUD, automap (no DOM overlay during gameplay)
+- **14 Language Grammars** — `web-tree-sitter` with PHP, C, JavaScript, TypeScript, Python, Java, C++, Go, Rust, Ruby, C#, Bash, Scala, Objective-C
+
+### Audio  
+- **Web Audio API** — every sound effect is synthesized from oscillators/noise at runtime
+- **Custom BGM** — optional local `.mp3`/`.ogg`/`.wav` playlist, separate gain bus
+
+### Parser Details (Language Support)
+- **PHP & C** — hand-written adapters (grammar quirks need precision)
+- **12 Generic languages** — single data-driven adapter with per-language refinements
+  - Real method vs function distinctions (Python/Scala/C++)
+  - Visibility modifiers (Java/C#/Go/Rust/Python/C++)
+  - Full Objective-C selector assembly
+  - Arrow functions in JS/TS
+- **Security layer** — file size caps, binary-content sniff, parse-error handling (no code execution)
+
+### Game Systems
+- **Seeded PRNG** — deterministic replay and balance (enemy AI timing, loot rolls, weapon spread)
+- **DDA Raycaster** — classic algorithm, no WebGL
+- **AABB Collision** — wall & world interaction
+- **Scoring** — real-time live updates, final on exit reach
+- **Highscores** — SHA-256 AST+campaign hashing, gzip compression to localStorage
+
+---
+
+## Project Structure
+
+```
+src/
+├── main.ts                  # App entry: wires sidebar, parser, map, engine, HUD
+├── difficulty.ts            # Difficulty multiplier tables (Easy/Normal/Hard)
+├── prng.ts                  # Seeded PRNG (map generation & engine randomness)
+├── fs/                      # File System Access API + GitHub repo loader
+├── ui/                      # Sidebar, console, highscores, overlays (gameHud.ts)
+├── parser/                  # Language-agnostic AST layer
+│   ├── php/                 # PHP adapter (bespoke)
+│   ├── c/                   # C adapter (bespoke)
+│   └── generic/             # 12-language data-driven adapter + vocabulary + refinements
+├── map/                     # Procedural map generator (grid, enemies, hazards)
+└── engine/                  # 2.5D raycaster + gameplay
+    ├── engine.ts            # Game loop (sim, combat, stats)
+    ├── raycaster.ts         # DDA wall renderer + fog
+    ├── player.ts            # Camera, movement, collision
+    ├── sprites.ts           # Enemy/key/teleporter billboards
+    ├── enemyAi.ts           # AI behavior (roam/chase/melee/ranged)
+    ├── projectiles.ts       # Enemy bolts & player rockets
+    ├── traps.ts             # Spike traps & proximity mines
+    ├── weapons.ts           # Weapon stats, tracers, spread
+    ├── loot.ts              # Weighted random drops
+    ├── scoring.ts           # Score calculation
+    ├── highscores.ts        # Leaderboard (hashing, compression)
+    ├── replay.ts            # Recording & playback
+    ├── audio.ts             # Web Audio synthesis + buses
+    ├── hud.ts               # Status bar, crosshair, compass
+    ├── automap.ts           # Fog-of-war overlay
+    └── input.ts             # Keyboard, mouse, gamepad
+```
+
+---
+
+## Browser Requirements
+
+The [File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/Window/showDirectoryPicker) is required and is currently only available in **Chromium-based browsers** (Chrome, Edge, Brave) served over `localhost` or HTTPS.
+
+The app detects unsupported browsers and disables the picker with a message.
+
+---
+
+## License
+
 Copyright (C) 2026 Tobias Bäumer.
 
-Codeenstein 3D is free software: you can redistribute it and/or modify it under
-the terms of the **GNU Affero General Public License** as published by the Free
-Software Foundation, either version 3 of the License, or (at your option) any
-later version. It is distributed **without any warranty**. See the
-[`LICENSE`](./LICENSE) file for the full text, or
-<https://www.gnu.org/licenses/agpl-3.0.html>.
+**Codeenstein 3D** is free software under the **GNU Affero General Public License v3** (or later). See the [`LICENSE`](./LICENSE) file or https://www.gnu.org/licenses/agpl-3.0.html.
 
-Note the AGPL's network clause: if you run a modified version of this software
-as a network service, you must offer its users the corresponding source.
+⚠️ **Note:** The AGPL's network clause requires that if you run a modified version as a network service, you must offer users the corresponding source code.
