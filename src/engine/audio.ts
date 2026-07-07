@@ -10,7 +10,10 @@
  * the first sound (so we respect the browser autoplay policy, which only lets
  * audio start after a user gesture — firing, entering a level, etc.) and every
  * play call resumes it if the browser suspended it. When no `AudioContext` is
- * available (e.g. a non-browser test runner) every method is a safe no-op.
+ * available (e.g. a non-browser test runner) every method is a safe no-op —
+ * likewise when the page is running under browser automation (see
+ * `isSilenced`), so unit/functional tests and Claude-driven verification runs
+ * never make actual noise even in a real (or headless) Chromium.
  *
  * Every procedural effect routes through an SFX bus, and a custom BGM track
  * (see `src/engine/bgm.ts`) routes through a separate BGM bus — both feed a
@@ -28,6 +31,14 @@ function audioContextCtor(): AudioContextCtor | null {
     webkitAudioContext?: AudioContextCtor;
   };
   return g.AudioContext ?? g.webkitAudioContext ?? null;
+}
+
+/** True when the page is running under browser automation — Playwright,
+ * Puppeteer, and Selenium all set `navigator.webdriver` on the browser they
+ * control, so this needs no cooperation from the harness/caller. */
+function isAutomated(): boolean {
+  const nav = (globalThis as unknown as { navigator?: { webdriver?: boolean } }).navigator;
+  return nav?.webdriver === true;
 }
 
 /** Default gain values for the three user-facing volume sliders (see
@@ -68,7 +79,7 @@ class AudioManager {
    * is unavailable. Safe to call from a user-gesture handler to warm it up.
    */
   resume(): AudioContext | null {
-    if (this.unavailable) return null;
+    if (this.isSilenced()) return null;
     if (!this.ctx) {
       const Ctor = audioContextCtor();
       if (!Ctor) {
@@ -93,6 +104,19 @@ class AudioManager {
     }
     if (this.ctx.state === "suspended") void this.ctx.resume();
     return this.ctx;
+  }
+
+  /** True if playback is suppressed — no `AudioContext` exists, or the page
+   * is running under browser automation (see `isAutomated`), so automated or
+   * Claude-driven runs stay silent. Also used by `bgm.ts` to gate its raw
+   * `<audio>` element playback, which doesn't go through `resume()`'s guard. */
+  isSilenced(): boolean {
+    if (this.unavailable) return true;
+    if (isAutomated()) {
+      this.unavailable = true;
+      return true;
+    }
+    return false;
   }
 
   /** Overall volume (0-1), scaling both SFX and BGM. */

@@ -78,6 +78,9 @@ export class BgmPlayer {
   }
 
   private async wireAndPlay(): Promise<void> {
+    // The raw `<audio>` element plays on its own even without a Web Audio
+    // graph wired up, so this needs its own check independent of `resume()`.
+    if (audio.isSilenced()) return;
     if (!this.sourceNode) {
       const ctx = audio.resume();
       if (ctx) {
