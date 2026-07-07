@@ -97,6 +97,6 @@
 - [ ] balancing
 - [ ] Textures from WADs? (to be discovered/done later)
 - [ ] public highscores for public github repos
-- [ ] goto teleporter seems to get active for "harmless" gotos (e.g: error handling in linux kernel crypto code) which results in in-room-teleporters. quite disorienting.
+- [ ] goto teleporter seems to get active for "harmless" gotos (e.g: error handling in linux kernel crypto code) which results in in-room-teleporters. quite disorienting. but then again, they point out exactly why goto is evil lol - keep some of them, but "in room teleporters" should be an exception and not happen regulary
 - [ ] level feel "unpopulated" at times, needs more enemies to shoot at
 - [ ] fixme triggered mines are sometimes placed so close to the spawn point that it results in insta-damage
