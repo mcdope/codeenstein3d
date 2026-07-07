@@ -38,9 +38,6 @@ const SPEED_BONUS_MAX = 400;
 const SPEED_TARGET_SEC = 90;
 /** Max points for a near-optimal route from spawn to exit. */
 const PATH_BONUS_MAX = 300;
-/** Max points deducted for finishing below full health, scaled by how far
- * below (finishing at 0%, in principle, would forfeit the whole malus). */
-const HP_MALUS_MAX = 200;
 /** Fraction of walkable tiles that must have been visited to count as a "100%
  * Clear" — not literally 1.0, since a couple of tiles can be geometrically
  * unreachable in some layouts (e.g. wedged behind a spawn-side wall corner). */
@@ -80,10 +77,9 @@ export interface ScoreBreakdown {
   ammoBonus: number;
   speedBonus: number;
   pathBonus: number;
-  hpMalus: number;
   mapCompletionBonus: number;
   loreBonus: number;
-  /** Sum of every bonus, minus the malus, floored at 0. */
+  /** Sum of every bonus, floored at 0. */
   total: number;
 }
 
@@ -108,8 +104,6 @@ export function computeScore(input: ScoreInput): ScoreBreakdown {
     input.distanceTraveledTiles > 0 ? input.shortestPathTiles / input.distanceTraveledTiles : 1;
   const pathBonus = Math.round(clamp01(pathRatio) * PATH_BONUS_MAX);
 
-  const hpMalus = Math.round((1 - healthFrac) * HP_MALUS_MAX);
-
   const mapCompletionBonus =
     clamp01(input.mapCompletionFrac) > MAP_COMPLETION_THRESHOLD ? MAP_COMPLETION_BONUS : 0;
   const loreBonus = input.uniqueLoreTerminalsRead * LORE_BONUS_PER_TERMINAL;
@@ -122,8 +116,7 @@ export function computeScore(input: ScoreInput): ScoreBreakdown {
       speedBonus +
       pathBonus +
       mapCompletionBonus +
-      loreBonus -
-      hpMalus,
+      loreBonus,
   );
 
   return {
@@ -132,7 +125,6 @@ export function computeScore(input: ScoreInput): ScoreBreakdown {
     ammoBonus,
     speedBonus,
     pathBonus,
-    hpMalus,
     mapCompletionBonus,
     loreBonus,
     total,

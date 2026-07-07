@@ -193,11 +193,13 @@ export interface EngineStats {
   keysHeld: number;
   /** Total keys placed on this level. */
   keysTotal: number;
-  /** Run score: kill points (scaled by complexity/elite) plus bonuses for
-   * remaining health/ammo, completion speed, and route efficiency, minus a
-   * malus for finishing below full health — see `./scoring.ts`. Recomputed
-   * live every frame from the run's current state, so this is a running
-   * projection until the exit is actually reached, at which point it's final. */
+  /** Running campaign score: points banked from every level already cleared
+   * this run (see `EngineCarryover.priorScore`), plus the current level's own
+   * kill points and bonuses for remaining health/ammo, completion speed, and
+   * route efficiency — see `./scoring.ts`. The current level's contribution is
+   * recomputed live every frame from the run's current state, so this rises
+   * (and, within the current level, can fluctuate) until the exit is reached,
+   * at which point it becomes the baseline the next level carries forward. */
   score: number;
   /** Enemies defeated this level ("bugs squashed" for the commit summary). */
   kills: number;
@@ -234,6 +236,11 @@ export interface EngineCarryover {
   armor: number;
   bullets: number;
   rockets: number;
+  /** Score banked from every level already cleared this campaign — the
+   * baseline `EngineStats.score` adds this level's own live score on top of,
+   * so the running total never resets at a level transition. Defaults to 0
+   * for a genuinely fresh run. */
+  priorScore?: number;
   /** Index into `WEAPONS`; defaults to the pistol (0) when omitted. */
   weaponIndex?: number;
   /** Defaults to `STARTING_WEAPONS` when omitted. */
@@ -324,6 +331,10 @@ export class RaycasterEngine {
   private kills = 0;
   /** Sum of `killPoints()` for every enemy defeated so far this level. */
   private killScore = 0;
+  /** Score banked from levels already cleared this campaign — see
+   * `EngineCarryover.priorScore`. Added on top of this level's own live score
+   * in `buildStats()` so the running total never resets at a transition. */
+  private readonly priorScore: number;
   /** Tiles of ground actually covered so far this level (blocked moves count
    * for nothing) — never reset mid-level, unlike `stepDistance`; feeds the
    * scoring system's path-efficiency bonus (see `./scoring.ts`). */
@@ -435,6 +446,7 @@ export class RaycasterEngine {
     this.startingBulletsRef = startingBullets(map.enemies);
     this.startingRocketsRef = startingRockets();
     this.ownedWeapons = new Set(carryover?.ownedWeapons ?? STARTING_WEAPONS);
+    this.priorScore = carryover?.priorScore ?? 0;
     this.totalWalkableTiles = countWalkableTiles(map);
     this.goreMultipliers = GORE_MULTIPLIERS[gore];
     this.difficultyMultipliers = DIFFICULTY_MULTIPLIERS[difficulty];
@@ -1479,20 +1491,22 @@ export class RaycasterEngine {
 
   /** Snapshot the live stats consumed by both the native HUD and the host. */
   private buildStats(): EngineStats {
-    const score = computeScore({
-      killPoints: this.killScore,
-      finalHealth: this.health,
-      maxHealth: MAX_HEALTH,
-      finalBullets: this.bulletsAmmo,
-      finalRockets: this.rocketsAmmo,
-      startingBullets: this.startingBulletsRef,
-      startingRockets: this.startingRocketsRef,
-      levelTimeSec: this.levelTime,
-      distanceTraveledTiles: this.distanceTraveled,
-      shortestPathTiles: this.map.shortestPathTiles,
-      mapCompletionFrac: this.visitedWalkableCount / this.totalWalkableTiles,
-      uniqueLoreTerminalsRead: this.loreRead.size,
-    }).total;
+    const score =
+      this.priorScore +
+      computeScore({
+        killPoints: this.killScore,
+        finalHealth: this.health,
+        maxHealth: MAX_HEALTH,
+        finalBullets: this.bulletsAmmo,
+        finalRockets: this.rocketsAmmo,
+        startingBullets: this.startingBulletsRef,
+        startingRockets: this.startingRocketsRef,
+        levelTimeSec: this.levelTime,
+        distanceTraveledTiles: this.distanceTraveled,
+        shortestPathTiles: this.map.shortestPathTiles,
+        mapCompletionFrac: this.visitedWalkableCount / this.totalWalkableTiles,
+        uniqueLoreTerminalsRead: this.loreRead.size,
+      }).total;
 
     return {
       health: Math.ceil(this.health),

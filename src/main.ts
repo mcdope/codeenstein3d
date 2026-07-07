@@ -375,6 +375,7 @@ continueButton.addEventListener("click", async () => {
         armor: save.armor,
         bullets: save.bullets,
         rockets: save.rockets,
+        priorScore: save.score,
         weaponIndex: save.weaponIndex,
         ownedWeapons: save.ownedWeapons,
       });
@@ -847,6 +848,7 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
           armor: stats.armor,
           bullets: stats.bullets,
           rockets: stats.rockets,
+          priorScore: stats.score,
           weaponIndex: stats.weaponIndex,
           ownedWeapons: stats.ownedWeapons,
         };

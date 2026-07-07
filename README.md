@@ -105,13 +105,13 @@ Each stage only consumes the data structure from the previous stage — language
 - **Ranged accuracy** — pellets deviate cubically with distance (medium range reliable, far range spreads)
 
 ### Scoring
+- **Running campaign total** — carries forward across every level cleared, never resets at a level transition
 - **Kill value** scaled by enemy complexity (tripled for elites)
-- **Health/ammo bonuses** for finishing with resources left
+- **Health/ammo bonuses** for finishing with resources left (lower health/ammo scales the bonus down, no separate penalty on top)
 - **Speed bonus** for clearing quickly
 - **Route efficiency** bonus (how close to BFS shortest path)
 - **Lore bonus** flat points per unique terminal read
 - **100% Exploration bonus** for visiting 95%+ walkable tiles
-- **Health malus** for finishing below full health
 
 ---
 
