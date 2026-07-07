@@ -77,6 +77,28 @@ body {
   cursor: not-allowed;
 }
 
+#continue-run {
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px 12px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#continue-run:hover:not(:disabled) {
+  background: var(--border);
+}
+
+#continue-run:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
 .muted {
   color: var(--muted);
   font-size: 12px;
