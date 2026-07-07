@@ -27,8 +27,9 @@ export interface HighscoreEntry {
   /** The file the run ended on — died on, or the last one cleared before the
    * campaign ran out of files. */
   levelName: string;
-  /** How many levels were actually cleared before the run ended (0 if death
-   * came on the very first level). */
+  /** How many levels were actually cleared before the run ended. Never `0` —
+   * dying on the very first level (0 cleared) isn't recorded at all, see
+   * `recordRunHighscore` in `main.ts`. */
   levelsCleared: number;
   /** Full SHA-256 hex digest of `astJson + campaignName` (see `hashRun`). */
   hash: string;

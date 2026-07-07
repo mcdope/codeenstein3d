@@ -1003,6 +1003,13 @@ async function recordRunHighscore(
     );
     return;
   }
+  if (levelsCleared === 0) {
+    console.log(
+      "%c[highscores] Died on the very first level — not recording a leaderboard entry.",
+      "color:#e0483a",
+    );
+    return;
+  }
   try {
     const hash = await hashRun(JSON.stringify(parsed), campaignName());
     const levelName = path.split("/").pop() ?? path;
