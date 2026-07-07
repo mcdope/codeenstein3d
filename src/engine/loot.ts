@@ -56,19 +56,24 @@ const BONUS_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[
  * `hasRocketLauncher` gates the `"rockets"` entry out of the weight table
  * entirely (rather than re-rolling into it) — until the launcher is
  * unlocked, rocket ammo would just be dead loot cluttering the drop, so its
- * share is redistributed across the remaining kinds instead. */
+ * share is redistributed across the remaining kinds instead.
+ *
+ * `playerAtFullHealth` does the same for `"health"` — a health pack is dead
+ * loot at 100% stability, so its share goes to ammo/swap instead. */
 export function rollLoot(
   bonusLevel = false,
   difficulty: DifficultyLevel = "normal",
   rng: () => number = Math.random,
   hasRocketLauncher = true,
+  playerAtFullHealth = false,
 ): Exclude<LootKind, "weapon"> {
   const weights = bonusLevel
     ? BONUS_LOOT_WEIGHTS
     : difficulty === "normal"
       ? NORMAL_LOOT_WEIGHTS
       : LOOT_WEIGHTS;
-  const usable = hasRocketLauncher ? weights : weights.filter((w) => w.kind !== "rockets");
+  let usable = hasRocketLauncher ? weights : weights.filter((w) => w.kind !== "rockets");
+  if (playerAtFullHealth) usable = usable.filter((w) => w.kind !== "health");
   const total = usable.reduce((sum, w) => sum + w.weight, 0);
   let r = rng() * total;
   for (const w of usable) {
@@ -86,5 +91,10 @@ export const HEALTH_DROP_AMOUNT = 20;
 export const SWAP_DROP_AMOUNT = 15;
 /** Elite kills guarantee a bigger heal than a regular enemy's health drop. */
 export const ELITE_HEALTH_DROP_AMOUNT = 50;
+/** Elite-sized fallbacks for when the health drop above would be wasted
+ * (player already at full health) — same "bigger than a regular drop" scale
+ * as `ELITE_HEALTH_DROP_AMOUNT` is to `HEALTH_DROP_AMOUNT`. */
+export const ELITE_BULLETS_DROP_AMOUNT = 18;
+export const ELITE_SWAP_DROP_AMOUNT = 30;
 /** Maximum swap the player can stockpile. */
 export const MAX_SWAP = 100;

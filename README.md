@@ -101,6 +101,7 @@ Each stage only consumes the data structure from the previous stage — language
 - **5 weapons** — echo pistol (hitscan), shotgun (pellet cone), gdb (auto, low damage), ghidra (slow rocket, splash damage), SIGKILL Knife (instant melee, infinite ammo)
 - **Ammo pools** — Bullets and Rockets, with sparse map pickups as backup; rocket ammo only drops/spawns once ghidra is unlocked, bullets otherwise
 - **Swap buffer** — absorbs damage 1:1 before health, capped at 100
+- **No wasted health drops** — a kill never drops a health pack while you're at full health (elites included); it rolls ammo/swap instead
 - **Quick-melee** — Left-Ctrl for instant knife swing (heals sliver on kill, never switches weapon)
 - **Ranged accuracy** — pellets deviate cubically with distance (medium range reliable, far range spreads)
 

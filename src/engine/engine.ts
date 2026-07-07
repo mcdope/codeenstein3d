@@ -80,7 +80,9 @@ import {
 import {
   SWAP_DROP_AMOUNT,
   BULLETS_DROP_AMOUNT,
+  ELITE_BULLETS_DROP_AMOUNT,
   ELITE_HEALTH_DROP_AMOUNT,
+  ELITE_SWAP_DROP_AMOUNT,
   HEALTH_DROP_AMOUNT,
   MAX_SWAP,
   ROCKETS_DROP_AMOUNT,
@@ -1447,7 +1449,13 @@ export class RaycasterEngine {
       this.drops.push({
         x: enemy.x,
         y: enemy.y,
-        kind: rollLoot(this.map.bonusLevel, this.difficultyLevel, this.rng, this.ownedWeapons.has(GHIDRA_WEAPON_INDEX)),
+        kind: rollLoot(
+          this.map.bonusLevel,
+          this.difficultyLevel,
+          this.rng,
+          this.ownedWeapons.has(GHIDRA_WEAPON_INDEX),
+          this.health >= MAX_HEALTH,
+        ),
       });
     audio.playAmmoDrop();
 
@@ -1462,13 +1470,19 @@ export class RaycasterEngine {
    * An Elite's death always leaves something worth the fight: a still-unowned
    * heavier weapon (gdb or ghidra — see `UNLOCKABLE_WEAPONS`) if the
    * player doesn't have one yet, picked up automatically like any other
-   * loot drop, or a large stability pack once both are already owned.
+   * loot drop, or a large stability pack once both are already owned. A
+   * health pack would be wasted at full health, so that case rolls an
+   * elite-sized ammo/swap drop instead.
    */
   private dropEliteLoot(enemy: Enemy): void {
     const missing = UNLOCKABLE_WEAPONS.filter((i) => !this.ownedWeapons.has(i));
     if (missing.length > 0 && this.rng() < 0.5) {
       const weaponIndex = missing[Math.floor(this.rng() * missing.length)];
       this.drops.push({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex });
+    } else if (this.health >= MAX_HEALTH) {
+      const kind = this.rng() < 0.5 ? "bullets" : "swap";
+      const amount = kind === "bullets" ? ELITE_BULLETS_DROP_AMOUNT : ELITE_SWAP_DROP_AMOUNT;
+      this.drops.push({ x: enemy.x, y: enemy.y, kind, amount });
     } else {
       this.drops.push({ x: enemy.x, y: enemy.y, kind: "health", amount: ELITE_HEALTH_DROP_AMOUNT });
     }
