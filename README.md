@@ -126,11 +126,14 @@ Local folder ──▶ CodeParserAdapter ──▶ ParsedFile JSON ──▶ Map
 Each stage only depends on the plain data structure produced by the previous one, so languages, map styles, and renderers can evolve independently.
 
 ## 🎮 Controls
-Picking a workspace auto-starts the level for its detected entrypoint (a
-recognized filename like `main.c`/`index.php`/`main.py`/`main.go`/`main.rs`,
-or — for the C family, where no filename convention is reliable — the first
-file found to actually define a `main()` function), falling back to the first
-parsable file in tree order if nothing matches. Click any other supported
+Picking a workspace auto-starts the level for its detected entrypoint: a
+recognized filename (`main.c`/`index.php`/`main.py`/`main.go`/`main.rs`/etc.)
+wins first if one exists; otherwise every parsable file (any language, test/
+spec directories deprioritized so a unit test is never picked over real
+source) is scored by summing its total cyclomatic complexity, and the
+highest-scoring file that actually defines a `main`/`Main` function wins,
+falling back to the highest-scoring file overall if none do, and to the first
+parsable file in tree order only as a last resort. Click any other supported
 source file in the sidebar to jump into its level instead — PHP, C/C++,
 JavaScript/TypeScript, Python, Java, Go, Rust, Ruby, C#, Bash, Scala, or
 Objective-C. A **"Continue Run"** button appears next to "Select Workspace"
