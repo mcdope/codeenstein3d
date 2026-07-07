@@ -203,6 +203,13 @@ body {
   background: var(--bg-hover);
 }
 
+a.settings-btn {
+  display: block;
+  box-sizing: border-box;
+  text-align: center;
+  text-decoration: none;
+}
+
 #bgm-status {
   margin: 6px 0 0;
 }

@@ -283,6 +283,14 @@ The app detects unsupported browsers and disables the picker with a message.
 
 ---
 
+## Documentation
+
+Full player-facing docs live in [`doc/user`](doc/user/README.md) — getting started, controls, HUD/UI, game mechanics, and tips.
+
+🔒 If you're wondering what happens to the workspace you point this at, or what gets stored on your machine, see [`doc/user/privacy.md`](doc/user/privacy.md).
+
+---
+
 ## License
 
 Copyright (C) 2026 Tobias Bäumer.
