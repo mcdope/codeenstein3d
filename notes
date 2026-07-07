@@ -92,4 +92,3 @@
 - [ ] smarter entrypoint detection, its quite stupid currently
 - [ ] highscore table should also store some stats about the codebase, like complexity and lines of code total
 - [ ] dont record highscore when player died in the very first level
-- [ ] lore should ignore license headers
