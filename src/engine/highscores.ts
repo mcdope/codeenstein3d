@@ -13,6 +13,7 @@
  */
 
 import type { ReplayPayload } from "./replay";
+import { compressForStorage, decompressFromStorage } from "./storageCompression";
 
 const HIGHSCORE_KEY = "codeenstein-highscores";
 /** Only the best `MAX_ENTRIES` runs are kept — a top-10 board, not a full log. */
@@ -82,11 +83,11 @@ export function truncateHash(hash: string): string {
 /** The current top-10 board, best score first; `[]` on any missing/corrupt
  * storage or if it's unavailable (e.g. private browsing) — a broken/absent
  * board should never crash the app, same philosophy as the campaign save. */
-export function loadHighscores(): HighscoreEntry[] {
+export async function loadHighscores(): Promise<HighscoreEntry[]> {
   try {
     const raw = localStorage.getItem(HIGHSCORE_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown[];
+    const parsed = await decompressFromStorage<unknown[]>(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed.filter(isHighscoreEntry);
   } catch {
@@ -101,32 +102,32 @@ export function loadHighscores(): HighscoreEntry[] {
  * A replay payload (one recorded frame per rendered tick, across every level
  * a run spans) can run into the megabytes for a long multi-level run — easily
  * enough to blow through a browser's `localStorage` quota, which throws on
- * `setItem` rather than partially writing. Losing the *replay* for a run that
- * long is a reasonable tradeoff; silently losing the *entire score* because
- * its replay didn't fit is not, so a quota failure retries with progressively
- * less replay data attached before giving up on saving anything. */
-export function recordHighscore(entry: HighscoreEntry): HighscoreEntry[] {
-  const board = [...loadHighscores(), entry].sort((a, b) => b.score - a.score).slice(0, MAX_ENTRIES);
-  if (trySave(board)) return board;
+ * `setItem` rather than partially writing. Every save attempt below is first
+ * gzip-compressed (see `storageCompression.ts`), which on its own shrinks a
+ * replay's highly repetitive JSON enough to avoid most quota failures; the
+ * drop-replay steps that follow are a last-resort fallback for whatever still
+ * doesn't fit even compressed. Losing the *replay* for a run that long is a
+ * reasonable tradeoff; silently losing the *entire score* because its replay
+ * didn't fit is not, so a quota failure retries with progressively less
+ * replay data attached before giving up on saving anything. */
+export async function recordHighscore(entry: HighscoreEntry): Promise<HighscoreEntry[]> {
+  const board = [...(await loadHighscores()), entry].sort((a, b) => b.score - a.score).slice(0, MAX_ENTRIES);
+  if (await trySave(board)) return board;
 
   console.warn("[highscores] Board didn't fit in localStorage with this run's replay attached — retrying without it.");
   const withoutThisReplay = board.map((e) => (e === entry ? { ...e, replay: undefined } : e));
-  if (trySave(withoutThisReplay)) return withoutThisReplay;
+  if (await trySave(withoutThisReplay)) return withoutThisReplay;
 
   console.warn("[highscores] Still didn't fit — dropping every entry's replay to at least keep the scoreboard itself.");
   const withoutAnyReplay = board.map((e) => ({ ...e, replay: undefined }));
-  try {
-    localStorage.setItem(HIGHSCORE_KEY, JSON.stringify(withoutAnyReplay));
-    return withoutAnyReplay;
-  } catch (err) {
-    console.warn("[highscores] Failed to save the leaderboard even with every replay dropped:", err);
-    return board;
-  }
+  if (await trySave(withoutAnyReplay)) return withoutAnyReplay;
+  console.warn("[highscores] Failed to save the leaderboard even with every replay dropped.");
+  return board;
 }
 
-function trySave(board: HighscoreEntry[]): boolean {
+async function trySave(board: HighscoreEntry[]): Promise<boolean> {
   try {
-    localStorage.setItem(HIGHSCORE_KEY, JSON.stringify(board));
+    localStorage.setItem(HIGHSCORE_KEY, await compressForStorage(board));
     return true;
   } catch {
     return false;

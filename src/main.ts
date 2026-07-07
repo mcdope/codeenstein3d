@@ -117,8 +117,8 @@ selectBgmFolderButton.addEventListener("click", async () => {
 
 // --- Highscores dialog -------------------------------------------------------
 
-viewHighscoresButton.addEventListener("click", () => {
-  renderHighscoreTable(highscoreList, loadHighscores(), {
+viewHighscoresButton.addEventListener("click", async () => {
+  renderHighscoreTable(highscoreList, await loadHighscores(), {
     onWatchReplay: (entry) => {
       highscoreDialog.close();
       void startReplay(entry);
@@ -1123,7 +1123,7 @@ async function recordRunHighscore(
     const hash = await hashRun(JSON.stringify(parsed), campaignName());
     const levelName = path.split("/").pop() ?? path;
     const codebaseStats = await withTimeout(codebaseStatsPromise, CODEBASE_STATS_WAIT_MS);
-    recordHighscore({
+    await recordHighscore({
       score: stats.score,
       campaignName: campaignName(),
       levelName,
