@@ -210,6 +210,13 @@ let workspaceRootName: string | null = null;
  * `pickWorkspace()` and has no way to re-fetch a remote repo, so saving would
  * just leave a dead "Continue Run" button pointing nowhere. */
 let workspaceIsRemote = false;
+/** True once any Doom-style cheat code (IDDQD/IDKFA/IDCLIP) has been entered
+ * during the active campaign — set by the engine's `onCheatActivated`
+ * handler, cleared only at the same 3 points `workspaceIsRemote` resets
+ * (fresh local pick, GitHub load, Continue Run), never mid-campaign. Gates
+ * `recordRunHighscore` so a cheated run can never claim a leaderboard entry
+ * (or attach its replay). */
+let cheatsUsed = false;
 /** Most recent stats reported by the running engine, used for the throttled
  * autosave and the `beforeunload` flush. */
 let lastStats: EngineStats | null = null;
@@ -262,6 +269,7 @@ selectButton.addEventListener("click", async () => {
     workspaceTree = tree;
     workspaceRootName = handle.name;
     workspaceIsRemote = false;
+    cheatsUsed = false;
     workspaceName.textContent = handle.name;
     campaignLevelIndex = 1; // a fresh pick always starts a new campaign
 
@@ -295,6 +303,7 @@ loadGithubRepoButton.addEventListener("click", async () => {
     workspaceTree = tree;
     workspaceRootName = `${ref.owner}/${ref.repo}`;
     workspaceIsRemote = true;
+    cheatsUsed = false;
     workspaceName.textContent = workspaceRootName;
     campaignLevelIndex = 1; // a fresh load always starts a new campaign
     clearCampaignSave(); // a stale local-workspace save shouldn't dangle a "Continue Run" button while a remote repo is loaded
@@ -330,6 +339,7 @@ continueButton.addEventListener("click", async () => {
     workspaceTree = tree;
     workspaceRootName = handle.name;
     workspaceIsRemote = false;
+    cheatsUsed = false;
     workspaceName.textContent = handle.name;
     renderFileTree(fileTree, tree, { onSelectFile: handleFileSelected });
 
@@ -613,6 +623,9 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
           { linesRefactored: parsed.linesOfCode, bugsSquashed: stats.kills },
           () => void advanceToNextLevel(stats),
         );
+      },
+      onCheatActivated: () => {
+        cheatsUsed = true;
       },
     },
     effectiveCarryover,
@@ -968,6 +981,13 @@ async function recordRunHighscore(
   levelsCleared: number,
   recorder: CampaignReplayRecorder | null,
 ): Promise<void> {
+  if (cheatsUsed) {
+    console.log(
+      "%c[highscores] Cheats were used this run — not recording a leaderboard entry.",
+      "color:#e0483a",
+    );
+    return;
+  }
   try {
     const hash = await hashRun(JSON.stringify(parsed), campaignName());
     const levelName = path.split("/").pop() ?? path;

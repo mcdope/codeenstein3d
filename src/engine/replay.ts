@@ -264,6 +264,14 @@ export class ReplayPlaybackInput implements InputSource {
     return this.current.fpsToggle;
   }
 
+  /** Permanent no-op — cheats aren't part of `InputSnapshot`/recorded frames
+   * at all, since a run that ever used one is barred from saving a replay in
+   * the first place (see `cheatsUsed` in `main.ts`), so there's nothing
+   * meaningful to reproduce during playback. */
+  consumeCheat(): string | null {
+    return null;
+  }
+
   consumeEscape(): boolean {
     return this.current.escape;
   }

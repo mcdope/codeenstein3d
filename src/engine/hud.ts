@@ -58,6 +58,30 @@ export function drawFpsOverlay(ctx: CanvasRenderingContext2D, fps: number, frame
 }
 
 /**
+ * Small top-center pill confirming a Doom cheat code just fired (see
+ * `RaycasterEngine.applyCheat`) — transient feedback, not a blocking overlay;
+ * `alpha` fades it out linearly as its frame-counted timer runs down.
+ */
+export function drawCheatToast(ctx: CanvasRenderingContext2D, text: string, alpha: number): void {
+  const w = ctx.canvas.width;
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+  ctx.textAlign = "center";
+  ctx.font = "bold 14px ui-monospace, monospace";
+  const boxW = ctx.measureText(text).width + 24;
+  const boxX = w / 2 - boxW / 2;
+  ctx.fillStyle = "rgba(4,8,10,0.7)";
+  ctx.fillRect(boxX, 26, boxW, 24);
+  ctx.strokeStyle = "rgba(140,255,170,0.5)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(boxX + 0.5, 26.5, boxW - 1, 23);
+  ctx.fillStyle = "#8effa0";
+  ctx.fillText(text, w / 2, 42);
+  ctx.textAlign = "start";
+  ctx.restore();
+}
+
+/**
  * Full-screen "PAUSED" scrim, drawn over one frozen frame of the scene —
  * triggered by the window losing focus or an Escape press (see
  * `RaycasterEngine`'s `isPaused`). Distinct from the Tab automap overlay,
@@ -183,26 +207,28 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
 }
 
 /** Re-enabled — see the doc comment on `drawCompass` for the axis fix and the
- * redesigned placement (a dedicated cutout in the minimap's own frame, not a
- * separate dial, and not overlapping the grid). Same flag-gating mechanism as
- * `DECORATIONS_ENABLED` in `mapGenerator.ts` / `EXTREME_GORE_ENABLED` in
- * `effects.ts`, just flipped back on now both playtest complaints are fixed. */
+ * redesigned placement (a small badge attached to the minimap's own corner,
+ * not a separate dial, and not overlapping the grid). Same flag-gating
+ * mechanism as `DECORATIONS_ENABLED` in `mapGenerator.ts` /
+ * `EXTREME_GORE_ENABLED` in `effects.ts`, just flipped back on now both
+ * playtest complaints are fixed. */
 export const COMPASS_ENABLED = true;
 
 /** Half-length, in canvas pixels, of the compass needle — sized to sit
- * comfortably inside the minimap's notch cutout (see `MinimapPanelRect`)
- * with a little margin on every side. */
-const COMPASS_NEEDLE_SIZE = 9;
+ * comfortably inside the minimap's compass badge circle (see
+ * `MinimapPanelRect.compassBadge`) with a little margin on every side. */
+const COMPASS_NEEDLE_SIZE = 7;
 
 /**
- * Exit compass: a small needle drawn centered in the minimap's own dedicated
- * notch cutout (`notch`, part of the `MinimapPanelRect` `renderMinimap`
- * returns) rather than a separate floating dial, or overlapping the grid
- * corner — the notch's own background/border (drawn by `renderMinimap`)
- * already separates it visually from the map itself. Rotates to always point
- * from the player's current position toward the exit tile, *relative to the
- * player's own facing* — so "dead ahead" always reads as "up" on the needle,
- * no matter which way the world-space player is actually looking.
+ * Exit compass: a small needle drawn centered in the minimap's own compass
+ * badge (`compassBadge`, part of the `MinimapPanelRect` `renderMinimap`
+ * returns) rather than a separate floating dial — the badge's own
+ * background/border (drawn by `renderMinimap`, straddling the panel's
+ * bottom-right corner) already separates it visually from the map itself.
+ * Rotates to always point from the player's current position toward the exit
+ * tile, *relative to the player's own facing* — so "dead ahead" always reads
+ * as "up" on the needle, no matter which way the world-space player is
+ * actually looking.
  *
  * An earlier version pointed its rest (bearing-zero) position along local +X
  * ("east"/3 o'clock) and only ever rotated from there — so a target dead
@@ -218,7 +244,7 @@ const COMPASS_NEEDLE_SIZE = 9;
  */
 export function drawCompass(
   ctx: CanvasRenderingContext2D,
-  notch: { x: number; y: number; w: number; h: number },
+  badge: { cx: number; cy: number; r: number },
   playerX: number,
   playerY: number,
   playerAngle: number,
@@ -226,8 +252,8 @@ export function drawCompass(
   exitY: number,
 ): void {
   const size = COMPASS_NEEDLE_SIZE;
-  const cx = notch.x + notch.w / 2;
-  const cy = notch.y + notch.h / 2;
+  const cx = badge.cx;
+  const cy = badge.cy;
 
   const angleToExit = Math.atan2(exitY - playerY, exitX - playerX);
   const bearing = angleToExit - playerAngle;

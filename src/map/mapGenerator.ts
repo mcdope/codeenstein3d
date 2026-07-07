@@ -12,6 +12,7 @@
  * map, via a seeded PRNG hashed from the file's content signature.
  */
 import type { CodeComment, CodeEntity, DeadCodeRegion, GotoLink, ParsedFile } from "../parser/types";
+import { isTodoFlagged } from "../parser/astUtils";
 import { mulberry32 } from "../prng";
 import {
   DOOR_TILE,
@@ -160,7 +161,13 @@ export class MapGenerator {
     // rooms carved behind fake walls from unreachable ("dead") code — both
     // consume only still-untouched wall tiles (grid value `1`), so they can
     // never collide with a door, key spot, or each other regardless of order.
-    const loreTerminals = placeLoreTerminals(rooms, grid, parsed.comments, rng);
+    // A TODO/FIXME-flagged comment also spawns a small trap or weak enemy
+    // right next to its terminal — folded into `enemies` immediately (so it
+    // flows through to the final `GameMap` like any other enemy) and into
+    // `teleporterAvoid` below (so a teleporter pad can't land on top of one).
+    const loreResult = placeLoreTerminals(rooms, grid, parsed.comments, rng);
+    const loreTerminals = loreResult.terminals;
+    enemies.push(...loreResult.todoEnemies);
     const { secretLoot } = placeSecretRooms(rooms, grid, size, parsed.deadCodeRegions, rng);
 
     // Turn each resolved `goto` → label jump into a teleporter pad pair, once
@@ -170,6 +177,8 @@ export class MapGenerator {
       ...avoidPoints,
       ...doors.map((d) => ({ x: d.x + 0.5, y: d.y + 0.5 })),
       ...keys.map((k) => ({ x: k.x, y: k.y })),
+      ...loreResult.todoTraps.map((t) => ({ x: t.x, y: t.y })),
+      ...loreResult.todoEnemies.map((e) => ({ x: e.x, y: e.y })),
     ];
     const teleporters = placeTeleporters(rooms, grid, teleporterAvoid, parsed.gotos, rng);
 
@@ -180,7 +189,8 @@ export class MapGenerator {
       ...teleporterAvoid,
       ...teleporters.map((t) => ({ x: t.x, y: t.y })),
     ];
-    const { spikeTraps, mines } = placeTraps(rooms, grid, trapAvoid, rng);
+    const { spikeTraps: generatedSpikeTraps, mines } = placeTraps(rooms, grid, trapAvoid, rng);
+    const spikeTraps = [...generatedSpikeTraps, ...loreResult.todoTraps];
 
     // Sparse ammo pickups go dead last, once every other floor-claiming
     // system (pillars/decor/doors/keys/teleporters/traps) has placed its
@@ -799,21 +809,32 @@ function placeAmmoPickups(
  * room in glowing text. */
 const MAX_LORE_TERMINALS = 6;
 
+/** Flat HP for a TODO/FIXME "Bug" enemy — well under `HP_PER_COMPLEXITY`
+ * (25, the existing floor for a normal complexity-scaled enemy from
+ * `spawnEnemies`), so it reads as a minor nuisance, not a real fight. */
+const TODO_BUG_HP = 10;
+
 /**
  * Turn each large source comment into a glowing "lore terminal": a normal
  * wall tile, just outside whichever room contains the comment's source line,
  * re-tagged `LORE_TILE` so the raycaster renders it distinctly. Never a hard
  * failure — a comment whose room has no free wall tile left simply doesn't
- * get one.
+ * get one. A TODO/FIXME-flagged comment (see `isTodoFlagged`) also gets a
+ * small "technical debt" encounter — a timed spike trap or a weak "Bug"
+ * enemy, picked per-instance via the seeded `rng` — on the floor tile just
+ * inside the room, right next to its terminal.
  */
 function placeLoreTerminals(
   rooms: Room[],
   grid: Tile[][],
   comments: CodeComment[],
   rng: () => number,
-): LoreTerminal[] {
+): { terminals: LoreTerminal[]; todoTraps: SpikeTrap[]; todoEnemies: Enemy[] } {
   const terminals: LoreTerminal[] = [];
+  const todoTraps: SpikeTrap[] = [];
+  const todoEnemies: Enemy[] = [];
   const used = new Set<string>();
+  const claimedFloor = new Set<string>();
 
   for (const comment of comments.slice(0, MAX_LORE_TERMINALS)) {
     const room = roomForLine(rooms, comment.startLine) ?? rooms[0];
@@ -823,8 +844,92 @@ function placeLoreTerminals(
     used.add(key(spot));
     grid[spot.y][spot.x] = LORE_TILE;
     terminals.push({ x: spot.x, y: spot.y, text: comment.text });
+
+    if (isTodoFlagged(comment.text)) {
+      const encounter = placeTodoEncounter(room, grid, spot, comment, claimedFloor, rng);
+      if (encounter && "trap" in encounter) todoTraps.push(encounter.trap);
+      else if (encounter) todoEnemies.push(encounter.enemy);
+    }
   }
-  return terminals;
+  return { terminals, todoTraps, todoEnemies };
+}
+
+/** The floor tile just inside `room`, adjacent to `spot` — `spot` (from
+ * `findWallPerimeterSpot`) always sits exactly one tile outside one of the
+ * room's four sides, so this deterministically steps back in from it. */
+function interiorNeighborOf(room: Room, spot: Point): Point {
+  if (spot.y === room.y - 1) return { x: spot.x, y: room.y };
+  if (spot.y === room.y + room.h) return { x: spot.x, y: room.y + room.h - 1 };
+  if (spot.x === room.x - 1) return { x: room.x, y: spot.y };
+  return { x: room.x + room.w - 1, y: spot.y };
+}
+
+/**
+ * Places a small "technical debt" encounter — a timed spike trap or a weak
+ * "Bug" enemy — on a free floor tile next to a TODO/FIXME terminal's `spot`.
+ * Deliberately a *trap* (safe→active→safe, same as `placeTraps`), not a
+ * `fillHazards`-style permanent acid pool: the candidate tile is right where
+ * the player has to stand to interact with the terminal, and a permanently
+ * damaging tile there would make it painful to ever reach rather than just
+ * riskier — a trap keeps a genuine safe window instead. Never a hard
+ * failure — a room with no free adjacent floor tile simply gets nothing.
+ */
+function placeTodoEncounter(
+  room: Room,
+  grid: Tile[][],
+  spot: Point,
+  comment: CodeComment,
+  claimedFloor: Set<string>,
+  rng: () => number,
+): { trap: SpikeTrap } | { enemy: Enemy } | null {
+  const anchor = interiorNeighborOf(room, spot);
+  const candidates = [anchor, ...neighbors(anchor)];
+  shuffle(candidates, rng);
+  const free = candidates.filter((p) => grid[p.y]?.[p.x] === 0 && !claimedFloor.has(key(p)));
+  if (free.length === 0) return null;
+
+  const p = free[0];
+  claimedFloor.add(key(p));
+
+  if (rng() < 0.5) {
+    grid[p.y][p.x] = SPIKE_TRAP_TILE;
+    return {
+      trap: {
+        x: p.x,
+        y: p.y,
+        period: SPIKE_PERIOD_MIN + rng() * (SPIKE_PERIOD_MAX - SPIKE_PERIOD_MIN),
+        phase: rng() * SPIKE_PERIOD_MAX,
+      },
+    };
+  }
+
+  const entity: CodeEntity = {
+    name: "Bug",
+    kind: "class",
+    startLine: comment.startLine,
+    endLine: comment.endLine,
+    complexityScore: 1,
+    nestingDepth: 0,
+  };
+  return {
+    enemy: {
+      x: p.x + 0.5,
+      y: p.y + 0.5,
+      hp: TODO_BUG_HP,
+      maxHp: TODO_BUG_HP,
+      alive: true,
+      attackCooldown: 0,
+      hitFlash: 0,
+      home: { x: room.x, y: room.y, w: room.w, h: room.h },
+      aggroed: false,
+      discovered: false,
+      roamX: p.x + 0.5,
+      roamY: p.y + 0.5,
+      fireCooldown: rng() * 2,
+      entity,
+      elite: false,
+    },
+  };
 }
 
 /** A still-untouched wall tile (`grid` value `1`) on `room`'s own perimeter,

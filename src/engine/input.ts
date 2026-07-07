@@ -31,6 +31,12 @@ const GAMEPAD_BUTTON_R3 = 11;
  * drift/turn at rest. */
 const GAMEPAD_DEADZONE = 0.18;
 
+/** Classic Doom cheat codes this game recognizes — see `consumeCheat()`. */
+const CHEAT_CODES = ["IDDQD", "IDKFA", "IDCLIP"] as const;
+/** How many trailing letters `cheatBuffer` keeps — the longest code (6) plus
+ * a little slack, so it never has to grow unbounded. */
+const CHEAT_BUFFER_MAX = 10;
+
 /**
  * The subset of `InputController`'s public API `RaycasterEngine` actually
  * consumes each frame. Exists so the engine can be driven by either a real
@@ -52,6 +58,7 @@ export interface InputSource {
   consumeMelee(): boolean;
   consumeWheelSteps(): number;
   consumeFpsToggle(): boolean;
+  consumeCheat(): string | null;
   consumeEscape(): boolean;
   consumeBlur(): boolean;
   consumeClick(): boolean;
@@ -127,6 +134,15 @@ export class InputController implements InputSource {
   private wheelSteps = 0;
   /** Edge-triggered FPS/frame-time overlay toggle, set on a Right-Ctrl press. */
   private fpsToggleQueued = false;
+  /** Trailing uppercased letters typed so far, used to detect a classic Doom
+   * cheat code (see `onKeyDown`) — reset the instant a code matches. Never
+   * reset by a non-letter keypress (movement/digits/etc.), so typing WASD
+   * between cheat letters — which happens naturally while moving — can't
+   * break an in-progress sequence. */
+  private cheatBuffer = "";
+  /** Edge-triggered cheat activation, set the instant `cheatBuffer` ends with
+   * one of `CHEAT_CODES` — the matched code itself (e.g. "IDDQD"), or null. */
+  private cheatQueued: string | null = null;
   /** Edge-triggered pause toggle, set on an Escape press. */
   private escapeQueued = false;
   /** Edge-triggered "the window just lost focus" signal, set on blur. */
@@ -189,6 +205,8 @@ export class InputController implements InputSource {
     this.meleeQueued = false;
     this.wheelSteps = 0;
     this.fpsToggleQueued = false;
+    this.cheatBuffer = "";
+    this.cheatQueued = null;
     this.escapeQueued = false;
     this.blurQueued = false;
     this.clickQueued = false;
@@ -269,6 +287,14 @@ export class InputController implements InputSource {
     const toggled = this.fpsToggleQueued;
     this.fpsToggleQueued = false;
     return toggled;
+  }
+
+  /** Return the matched cheat code (e.g. "IDDQD") at most once per completed
+   * sequence, or null if none has just fired — see `onKeyDown`. */
+  consumeCheat(): string | null {
+    const cheat = this.cheatQueued;
+    this.cheatQueued = null;
+    return cheat;
   }
 
   /** Return true at most once per Escape press (toggles the pause overlay). */
@@ -429,6 +455,21 @@ export class InputController implements InputSource {
         void document.exitFullscreen();
       } else {
         void this.canvas.requestFullscreen();
+      }
+    }
+
+    // Classic Doom cheat codes: buffer trailing letters and check for a
+    // match on every keystroke. Deliberately independent of every branch
+    // above (and never `preventDefault()`'d) — a cheat is spelled out using
+    // ordinary gameplay keys (several of which double as real bindings, like
+    // Q/E/F/R above), so this only ever *observes* the letter, it never
+    // consumes or blocks it.
+    if (/^[a-zA-Z]$/.test(e.key)) {
+      this.cheatBuffer = (this.cheatBuffer + e.key.toUpperCase()).slice(-CHEAT_BUFFER_MAX);
+      const matched = CHEAT_CODES.find((code) => this.cheatBuffer.endsWith(code));
+      if (matched) {
+        this.cheatQueued = matched;
+        this.cheatBuffer = "";
       }
     }
 

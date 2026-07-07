@@ -32,6 +32,10 @@ export class Player {
   dirY = 0;
   planeX = 0;
   planeY = FOV_PLANE;
+  /** IDCLIP cheat — bypasses wall collision entirely while true. Toggled at
+   * runtime (see `RaycasterEngine.applyCheat`), not part of `PlayerConfig`
+   * since it's a mid-run cheat state, not a construction-time setting. */
+  noClip = false;
 
   private readonly config: PlayerConfig;
 
@@ -86,6 +90,7 @@ export class Player {
 
   /** AABB-vs-grid test: does the box centered at (px,py) touch any wall cell? */
   private collides(map: GameMap, px: number, py: number): boolean {
+    if (this.noClip) return false;
     return collidesWithWall(map, px, py, this.config.radius);
   }
 }

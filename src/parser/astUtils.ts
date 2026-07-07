@@ -140,10 +140,28 @@ export function resolveGotos(gotos: RawGotoRef[], labels: RawGotoRef[]): GotoLin
  * reaches this length, or it already spans more than one source line. */
 const LORE_COMMENT_MIN_LENGTH = 60;
 
+/** Substrings (checked verbatim/case-sensitive, matching how developers
+ * actually write them) that flag a comment as unresolved technical debt —
+ * see `isTodoFlagged`. */
+const TODO_MARKERS = ["TODO", "FIXME"];
+
+/**
+ * True if a comment's raw text contains a TODO/FIXME marker. Shared by
+ * `extractLargeComments` (bypasses the length gate below, since even the
+ * shortest one-line `// TODO: fix this` is exactly the kind of technical debt
+ * this feature wants to surface) and `MapGenerator`'s TODO/FIXME encounter
+ * mechanic (spawns a trap or a weak enemy next to the resulting terminal),
+ * so both definitions of "flagged" stay in lockstep off one source.
+ */
+export function isTodoFlagged(text: string): boolean {
+  return TODO_MARKERS.some((marker) => text.includes(marker));
+}
+
 /**
  * Comments substantial enough to surface as in-game "lore terminals": either
  * long, or already a multi-line block, so a one-line `// eslint-disable` noise
- * comment doesn't qualify just for having a few extra characters.
+ * comment doesn't qualify just for having a few extra characters — unless
+ * it's TODO/FIXME-flagged, which bypasses this gate entirely.
  */
 export function extractLargeComments(
   root: Node,
@@ -155,7 +173,7 @@ export function extractLargeComments(
     const text = node.text.trim();
     const startLine = node.startPosition.row + 1;
     const endLine = node.endPosition.row + 1;
-    if (text.length < LORE_COMMENT_MIN_LENGTH && endLine === startLine) continue;
+    if (!isTodoFlagged(text) && text.length < LORE_COMMENT_MIN_LENGTH && endLine === startLine) continue;
     comments.push({ text, startLine, endLine });
   }
   return comments;

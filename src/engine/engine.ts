@@ -33,7 +33,16 @@ import {
   findTargetUnderCrosshair,
   type BillboardJob,
 } from "./sprites";
-import { COMPASS_ENABLED, drawCompass, drawCrosshair, drawFpsOverlay, drawHud, drawLoreOverlay, drawPauseOverlay } from "./hud";
+import {
+  COMPASS_ENABLED,
+  drawCheatToast,
+  drawCompass,
+  drawCrosshair,
+  drawFpsOverlay,
+  drawHud,
+  drawLoreOverlay,
+  drawPauseOverlay,
+} from "./hud";
 import { drawWeapon } from "./viewmodel";
 import { drawAutomap } from "./automap";
 import {
@@ -112,6 +121,13 @@ const MAX_DT = 0.05;
 const FPS_UPDATE_INTERVAL = 0.5;
 /** Starting / maximum System Stability (health), as a percentage. */
 const MAX_HEALTH = 100;
+/** IDKFA's ammo grant — a clearly-a-cheat round number; ammo otherwise has no
+ * upper cap at all (only loot/pickups increment it). */
+const CHEAT_MAX_AMMO = 999;
+/** How many frames the "cheat activated" toast stays visible for — frame-
+ * counted like `flashFrames`/`muzzleFrames` below, not `dt`-scaled, so it
+ * needs no change to `tickEffects()`'s signature. ~2s at 60fps. */
+const CHEAT_TOAST_FRAMES = 120;
 /** Health lost per second while standing in an acid (hazard) tile. */
 const HAZARD_DPS = 18;
 /**
@@ -189,6 +205,10 @@ export interface EngineStats {
   weaponIndex: number;
   /** Indices into `WEAPONS` the player currently owns/can switch to. */
   ownedWeapons: number[];
+  /** IDDQD cheat state — see `EngineHandlers.onCheatActivated`. */
+  godMode: boolean;
+  /** IDCLIP cheat state. */
+  noClip: boolean;
 }
 
 /** Host callbacks. All optional. */
@@ -200,6 +220,11 @@ export interface EngineHandlers {
   /** Fired when the player reaches the exit; receives the final stats so the
    * host can carry health/ammo into the next level. */
   onWin?: (stats: EngineStats) => void;
+  /** Fired the instant a Doom cheat code (IDDQD/IDKFA/IDCLIP) is typed —
+   * separate from the engine's own internal `godMode`/`noClip` state, this is
+   * how the host learns a cheat fired at all, so it can bar the run from
+   * saving a highscore/replay for the rest of the campaign. */
+  onCheatActivated?: (code: string) => void;
 }
 
 /** Health/ammo/weapon carried over from a previous level, for multi-level
@@ -213,6 +238,14 @@ export interface EngineCarryover {
   weaponIndex?: number;
   /** Defaults to `STARTING_WEAPONS` when omitted. */
   ownedWeapons?: number[];
+  /** Doom-style cheat flags carried across a level transition — a fresh
+   * `RaycasterEngine`/`Player` is constructed for every level (see
+   * `main.ts`'s `launchLevel`), so an active toggle would otherwise silently
+   * reset at the next file. Omitted on a genuinely fresh run. IDKFA needs no
+   * equivalent field — its effect already persists via `bullets`/`rockets`/
+   * `ownedWeapons` above. */
+  godMode?: boolean;
+  noClip?: boolean;
 }
 
 type GameState = "playing" | "over" | "won";
@@ -259,6 +292,13 @@ export class RaycasterEngine {
   private health = MAX_HEALTH;
   /** Armor points; absorbed 1:1 before health on any hit (see `damage()`). */
   private armor = 0;
+  /** IDDQD cheat — while true, `damage()` is a no-op. */
+  private godMode = false;
+  /** Text of the "cheat activated" toast currently showing, if any. */
+  private cheatToastText: string | null = null;
+  /** Frames remaining for the toast above — ticked down in `tickEffects()`
+   * alongside `flashFrames`/`muzzleFrames`, same frame-counted convention. */
+  private cheatToastFrames = 0;
   private bulletsAmmo: number;
   private rocketsAmmo: number;
   /** What this level would have started the player out with, regardless of
@@ -383,6 +423,8 @@ export class RaycasterEngine {
     if (!ctx) throw new Error("2D canvas context unavailable");
     this.ctx = ctx;
     this.player = new Player(map);
+    this.godMode = carryover?.godMode ?? false;
+    this.player.noClip = carryover?.noClip ?? false;
     this.input = inputSource ?? new InputController(canvas);
     this.rng = mulberry32(gameplaySeed);
     this.replayRecorder = replayRecorder;
@@ -489,6 +531,11 @@ export class RaycasterEngine {
     // consumed unconditionally right here rather than gated behind any of
     // the early-return branches below.
     if (this.input.consumeFpsToggle()) this.showFps = !this.showFps;
+
+    // Doom cheat codes are a debug/fun feature independent of pause/automap
+    // state too, same reasoning as the FPS toggle above.
+    const cheat = this.input.consumeCheat();
+    if (cheat) this.applyCheat(cheat);
 
     // Window blur always forces a pause (never a toggle — you can't "un-blur"
     // by pressing something while the window doesn't have focus); Escape
@@ -635,7 +682,7 @@ export class RaycasterEngine {
     if (COMPASS_ENABLED) {
       drawCompass(
         this.ctx,
-        minimapPanel.notch,
+        minimapPanel.compassBadge,
         this.player.posX,
         this.player.posY,
         Math.atan2(this.player.dirY, this.player.dirX),
@@ -648,6 +695,13 @@ export class RaycasterEngine {
     const stats = this.buildStats();
     drawHud(this.ctx, stats);
     if (this.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
+    // Transient feedback only — not drawn in the paused/automap/lore render
+    // branches below, unlike the FPS overlay, since a 2-second confirmation
+    // toast isn't meant to persist across those states the way a standing
+    // debug readout is.
+    if (this.cheatToastText && this.cheatToastFrames > 0) {
+      drawCheatToast(this.ctx, this.cheatToastText, this.cheatToastFrames / CHEAT_TOAST_FRAMES);
+    }
     this.handlers.onStats?.(stats);
 
     // Age the frame-based effect timers now that this frame is drawn.
@@ -793,6 +847,7 @@ export class RaycasterEngine {
   private tickEffects(): void {
     if (this.flashFrames > 0) this.flashFrames -= 1;
     if (this.muzzleFrames > 0) this.muzzleFrames -= 1;
+    if (this.cheatToastFrames > 0) this.cheatToastFrames -= 1;
     tickBulletTraces(this.traces);
     for (const enemy of this.enemies) {
       if (enemy.hitFlash > 0) enemy.hitFlash -= 1;
@@ -1127,7 +1182,7 @@ export class RaycasterEngine {
    * absorbs damage 1:1 before health does, so it's spent down first.
    */
   private damage(amount: number): void {
-    if (amount <= 0) return;
+    if (this.godMode || amount <= 0) return;
     // Kick the red screen flash back to full strength on any damage taken.
     this.flashFrames = DAMAGE_FLASH_FRAMES;
     audio.playDamage();
@@ -1142,6 +1197,40 @@ export class RaycasterEngine {
       this.health = 0;
       this.endGame("over");
     }
+  }
+
+  /**
+   * Apply a classic Doom cheat code once its full sequence has been typed
+   * (see `InputController.onKeyDown`). IDDQD/IDCLIP toggle (re-typing turns
+   * them back off, exactly like real Doom); IDKFA is a one-time grant, not a
+   * toggle (also matching real Doom — re-typing it is a harmless no-op).
+   */
+  private applyCheat(code: string): void {
+    switch (code) {
+      case "IDDQD":
+        this.godMode = !this.godMode;
+        this.showCheatToast(`IDDQD — God mode ${this.godMode ? "ON" : "OFF"}`);
+        break;
+      case "IDCLIP":
+        this.player.noClip = !this.player.noClip;
+        this.showCheatToast(`IDCLIP — No-clip ${this.player.noClip ? "ON" : "OFF"}`);
+        break;
+      case "IDKFA":
+        for (let i = 0; i < WEAPONS.length; i++) this.ownedWeapons.add(i);
+        this.bulletsAmmo = CHEAT_MAX_AMMO;
+        this.rocketsAmmo = CHEAT_MAX_AMMO;
+        this.armor = MAX_ARMOR;
+        this.showCheatToast("IDKFA — Full arsenal");
+        break;
+      default:
+        return;
+    }
+    this.handlers.onCheatActivated?.(code);
+  }
+
+  private showCheatToast(text: string): void {
+    this.cheatToastText = text;
+    this.cheatToastFrames = CHEAT_TOAST_FRAMES;
   }
 
   /** Win when the player stands on the exit tile (the return statement). */
@@ -1412,6 +1501,8 @@ export class RaycasterEngine {
       kills: this.kills,
       weaponIndex: this.weaponIndex,
       ownedWeapons: [...this.ownedWeapons],
+      godMode: this.godMode,
+      noClip: this.player.noClip,
     };
   }
 }

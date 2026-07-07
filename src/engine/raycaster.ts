@@ -323,26 +323,21 @@ function rgb([r, g, b]: [number, number, number]): string {
 }
 
 /** The minimap panel's outer bounding box in canvas pixels, as returned by
- * `renderMinimap`. `notch` is a dedicated sub-rect reserved in the panel's
- * own bottom-right gutter — outside the grid area entirely — for the exit
- * compass (see `hud.ts`'s `drawCompass`) to draw into, so the needle never
- * overlaps the map grid itself regardless of how big the level makes the
- * minimap (small maps get a smaller panel than `maxPixels` allows, but the
- * notch is always the same fixed size in the same corner). */
+ * `renderMinimap`. `compassBadge` is a small circle straddling the panel's
+ * bottom-right corner — for the exit compass (see `hud.ts`'s `drawCompass`)
+ * to draw into — rather than a rectangular cutout reserved inside the panel
+ * itself; a prior notch design read as "a full bar" since the whole panel
+ * had to grow a dead strip just to fit it. */
 export interface MinimapPanelRect {
   x: number;
   y: number;
   w: number;
   h: number;
-  notch: { x: number; y: number; w: number; h: number };
+  compassBadge: { cx: number; cy: number; r: number };
 }
 
-/** Outer size (both dimensions), in canvas pixels, of the compass notch. */
-const COMPASS_NOTCH_SIZE = 28;
-/** Vertical gap reserved below the map grid, inside the panel, purely to
- * house the notch — this is what keeps the compass fully clear of the grid
- * (rather than just drawn on top of it). */
-const COMPASS_NOTCH_GUTTER = 6;
+/** Outer radius, in canvas pixels, of the compass badge circle. */
+const COMPASS_BADGE_RADIUS = 13;
 
 /**
  * Small top-left minimap: walls, discovered enemies, traps, and the player's
@@ -366,18 +361,17 @@ export function renderMinimap(
   const panelX = pad - 2;
   const panelY = pad - 2;
   const panelW = w + 4;
-  // The panel is taller than the grid alone by a fixed gutter + the notch —
-  // that extra strip is never touched by any of the grid/marker drawing
-  // below (all of which is bounded to `pad, pad, w, h`), so it reads as
-  // empty panel background except for the notch box drawn into it.
-  const panelH = h + 4 + COMPASS_NOTCH_GUTTER + COMPASS_NOTCH_SIZE;
-  const notch = {
-    x: panelX + panelW - COMPASS_NOTCH_SIZE - 3,
-    y: panelY + panelH - COMPASS_NOTCH_SIZE - 3,
-    w: COMPASS_NOTCH_SIZE,
-    h: COMPASS_NOTCH_SIZE,
+  const panelH = h + 4;
+  // Centered exactly on the panel's bottom-right corner point, so the badge
+  // straddles/overlaps it (half in, half out) — drawn last, after every grid
+  // marker below, so it reads as attached on top of the corner rather than
+  // sitting underneath the grid content.
+  const compassBadge = {
+    cx: panelX + panelW,
+    cy: panelY + panelH,
+    r: COMPASS_BADGE_RADIUS,
   };
-  const panel: MinimapPanelRect = { x: panelX, y: panelY, w: panelW, h: panelH, notch };
+  const panel: MinimapPanelRect = { x: panelX, y: panelY, w: panelW, h: panelH, compassBadge };
 
   ctx.save();
 
@@ -387,18 +381,10 @@ export function renderMinimap(
   ctx.fillStyle = "rgba(4,8,10,0.6)";
   ctx.fillRect(panel.x, panel.y, panel.w, panel.h);
 
-  // Subtle frame around the whole panel (grid + the compass gutter below it).
+  // Subtle frame around the whole panel.
   ctx.strokeStyle = "rgba(140,255,170,0.35)";
   ctx.lineWidth = 1;
   ctx.strokeRect(panel.x + 0.5, panel.y + 0.5, panel.w - 1, panel.h - 1);
-
-  // The compass notch itself: a distinctly-bordered cutout in the gutter,
-  // separated from the grid above it — see `drawCompass` in `hud.ts` for
-  // what gets drawn into it.
-  ctx.fillStyle = "rgba(2,5,6,0.55)";
-  ctx.fillRect(notch.x, notch.y, notch.w, notch.h);
-  ctx.strokeStyle = "rgba(140,255,170,0.45)";
-  ctx.strokeRect(notch.x + 0.5, notch.y + 0.5, notch.w - 1, notch.h - 1);
 
   ctx.globalAlpha = 0.9;
 
@@ -512,6 +498,18 @@ export function renderMinimap(
   ctx.lineTo(px + Math.cos(angle - 2.5) * size * 0.6, py + Math.sin(angle - 2.5) * size * 0.6);
   ctx.closePath();
   ctx.fill();
+
+  // Compass badge: drawn last, straddling the panel's bottom-right corner —
+  // see `drawCompass` in `hud.ts` for the needle drawn into it. Painting this
+  // after every grid marker above is what makes it read as attached on top
+  // of the corner rather than sitting underneath the grid content.
+  ctx.beginPath();
+  ctx.arc(compassBadge.cx, compassBadge.cy, compassBadge.r, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(2,5,6,0.55)";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(140,255,170,0.45)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
 
   ctx.restore();
 
