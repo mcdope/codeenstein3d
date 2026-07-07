@@ -12,16 +12,16 @@ import type { LootKind } from "../map/types";
 
 /** Relative odds of each loot kind on a regular enemy kill. Rockets are the
  * scarcest/highest-value ammo type, so they're weighted well below bullets;
- * health and armor sit in between. */
+ * health and swap sit in between. */
 const LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[] = [
   { kind: "bullets", weight: 50 },
   { kind: "rockets", weight: 10 },
   { kind: "health", weight: 20 },
-  { kind: "armor", weight: 20 },
+  { kind: "swap", weight: 20 },
 ];
 
 /** Normal difficulty only: a slightly higher ammo (bullets/rockets) share than
- * the base `LOOT_WEIGHTS`, trimmed from health/armor — Easy/Hard already have
+ * the base `LOOT_WEIGHTS`, trimmed from health/swap — Easy/Hard already have
  * their own scarcity curve via `DifficultyMultipliers.ammoDropRate` (the
  * *amount* per drop), so this only tweaks Normal's drop *kind* odds, per
  * playtest feedback that ammo ran too scarce there specifically. */
@@ -29,7 +29,7 @@ const NORMAL_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }
   { kind: "bullets", weight: 58 },
   { kind: "rockets", weight: 12 },
   { kind: "health", weight: 15 },
-  { kind: "armor", weight: 15 },
+  { kind: "swap", weight: 15 },
 ];
 
 /** On a bonus (restock-arena) level, kills lean harder toward the scarcer,
@@ -38,7 +38,7 @@ const BONUS_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[
   { kind: "bullets", weight: 30 },
   { kind: "rockets", weight: 25 },
   { kind: "health", weight: 25 },
-  { kind: "armor", weight: 20 },
+  { kind: "swap", weight: 20 },
 ];
 
 /** Roll a random loot kind for a regular (non-elite) enemy kill, weighted by
@@ -83,8 +83,8 @@ export function rollLoot(
 export const BULLETS_DROP_AMOUNT = 6;
 export const ROCKETS_DROP_AMOUNT = 2;
 export const HEALTH_DROP_AMOUNT = 20;
-export const ARMOR_DROP_AMOUNT = 15;
+export const SWAP_DROP_AMOUNT = 15;
 /** Elite kills guarantee a bigger heal than a regular enemy's health drop. */
 export const ELITE_HEALTH_DROP_AMOUNT = 50;
-/** Maximum armor the player can stockpile. */
-export const MAX_ARMOR = 100;
+/** Maximum swap the player can stockpile. */
+export const MAX_SWAP = 100;

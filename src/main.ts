@@ -51,6 +51,12 @@ const DIFFICULTY_KEY = "codeenstein-difficulty";
 const MASTER_VOLUME_KEY = "codeenstein-master-volume";
 const SFX_VOLUME_KEY = "codeenstein-sfx-volume";
 const BGM_VOLUME_KEY = "codeenstein-bgm-volume";
+/** localStorage key for the campaign save (see `loadCampaignSave` below) —
+ * same "declared up here" reasoning as `GORE_KEY` above: the "Continue Run"
+ * button's visibility is set by a `loadCampaignSave()` call right after
+ * module setup, so a `const` declared down next to `loadCampaignSave` itself
+ * would still be in its temporal dead zone at that point and throw. */
+const SAVE_KEY = "codeenstein-campaign-save";
 
 const selectButton = requireElement<HTMLButtonElement>("#select-workspace");
 const continueButton = requireElement<HTMLButtonElement>("#continue-run");
@@ -372,7 +378,7 @@ continueButton.addEventListener("click", async () => {
       console.log(`%c[continue] resuming at ${match.path}`, "color:#8effa0;font-weight:bold");
       launchLevel(match.path, parsed, {
         health: save.health,
-        armor: save.armor,
+        swap: save.swap,
         bullets: save.bullets,
         rockets: save.rockets,
         priorScore: save.score,
@@ -845,7 +851,7 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
         console.log(`%c[level] ${currentLevelPath} cleared — advancing to ${next.path}`, "color:#37d24a;font-weight:bold");
         const carryover: EngineCarryover = {
           health: stats.health,
-          armor: stats.armor,
+          swap: stats.swap,
           bullets: stats.bullets,
           rockets: stats.rockets,
           priorScore: stats.score,
@@ -859,7 +865,7 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
           workspaceName: workspaceRootName ?? "",
           filePath: next.path,
           health: carryover.health,
-          armor: carryover.armor,
+          swap: carryover.swap,
           bullets: carryover.bullets,
           rockets: carryover.rockets,
           score: stats.score,
@@ -1046,8 +1052,9 @@ function resetToFileTree(): void {
 }
 
 // --- Campaign persistence (Continue Run) -----------------------------------
+// SAVE_KEY itself is declared near the top of the file — see its doc comment
+// for why it can't live down here next to the functions that use it.
 
-const SAVE_KEY = "codeenstein-campaign-save";
 /** Minimum time between in-play autosaves; level transitions and
  * `beforeunload` always save immediately regardless of this. */
 const AUTOSAVE_INTERVAL_MS = 3000;
@@ -1059,7 +1066,7 @@ interface CampaignSave {
   workspaceName: string;
   filePath: string;
   health: number;
-  armor: number;
+  swap: number;
   bullets: number;
   rockets: number;
   score: number;
@@ -1078,12 +1085,16 @@ export function loadCampaignSave(): CampaignSave | null {
   try {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
-    const save = JSON.parse(raw) as Partial<CampaignSave>;
+    // `armor` was renamed to `swap`; saves written before the rename carry
+    // the old field name, so fall back to it rather than treating those
+    // saves as invalid.
+    const save = JSON.parse(raw) as Partial<CampaignSave> & { armor?: number };
+    const swap = typeof save.swap === "number" ? save.swap : save.armor;
     if (
       typeof save.workspaceName !== "string" ||
       typeof save.filePath !== "string" ||
       typeof save.health !== "number" ||
-      typeof save.armor !== "number" ||
+      typeof swap !== "number" ||
       typeof save.bullets !== "number" ||
       typeof save.rockets !== "number" ||
       typeof save.score !== "number" ||
@@ -1093,7 +1104,11 @@ export function loadCampaignSave(): CampaignSave | null {
     ) {
       return null;
     }
-    return { ...save, levelIndex: typeof save.levelIndex === "number" ? save.levelIndex : 1 } as CampaignSave;
+    return {
+      ...save,
+      swap,
+      levelIndex: typeof save.levelIndex === "number" ? save.levelIndex : 1,
+    } as CampaignSave;
   } catch {
     return null;
   }
@@ -1123,7 +1138,7 @@ function persistProgress(stats: EngineStats): void {
     workspaceName: workspaceRootName,
     filePath: currentLevelPath,
     health: stats.health,
-    armor: stats.armor,
+    swap: stats.swap,
     bullets: stats.bullets,
     rockets: stats.rockets,
     score: stats.score,

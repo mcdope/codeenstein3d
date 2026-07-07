@@ -389,14 +389,14 @@ function lootColors(kind: LootDrop["kind"]): { back: string; fill: string } {
       return { back: "#402210", fill: "#ff8a3f" }; // hot orange
     case "health":
       return { back: "#0e401c", fill: "#3fe06a" }; // green cross
-    case "armor":
+    case "swap":
       return { back: "#101c40", fill: "#4a7fff" }; // blue shard
     case "weapon":
       return { back: "#3a1040", fill: "#e06aff" }; // violet — a rare, special drop
   }
 }
 
-/** Collect dropped loot (ammo, health, armor, or a weapon unlock) as small
+/** Collect dropped loot (ammo, health, swap, or a weapon unlock) as small
  * floating billboard draw jobs, colored per `LootDrop.kind` (see
  * `lootColors`). A `"weapon"` drop additionally gets a bright pulsing ring so
  * it never gets mistaken for an ordinary pickup. */

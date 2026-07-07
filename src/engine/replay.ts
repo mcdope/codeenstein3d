@@ -56,7 +56,7 @@ export interface ReplayLevelSegment {
    * each. */
   difficulty: DifficultyLevel;
   gore: GoreLevel;
-  /** Health/armor/ammo/weapons this level started with — undefined only for
+  /** Health/swap/ammo/weapons this level started with — undefined only for
    * a fresh campaign's very first level. */
   carryover?: EngineCarryover;
   frames: ReplayFrame[];

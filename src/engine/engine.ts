@@ -78,11 +78,11 @@ import {
   type Weapon,
 } from "./weapons";
 import {
-  ARMOR_DROP_AMOUNT,
+  SWAP_DROP_AMOUNT,
   BULLETS_DROP_AMOUNT,
   ELITE_HEALTH_DROP_AMOUNT,
   HEALTH_DROP_AMOUNT,
-  MAX_ARMOR,
+  MAX_SWAP,
   ROCKETS_DROP_AMOUNT,
   rollLoot,
 } from "./loot";
@@ -183,8 +183,8 @@ export interface EngineStats {
   /** System Stability, 0–100. */
   health: number;
   maxHealth: number;
-  /** Armor points, absorbed 1:1 before health on any hit (see `damage()`). */
-  armor: number;
+  /** Swap points, absorbed 1:1 before health on any hit (see `damage()`). */
+  swap: number;
   /** Bullets remaining (pistol/shotgun/MP). */
   bullets: number;
   /** Rockets remaining (ghidra). */
@@ -233,7 +233,7 @@ export interface EngineHandlers {
  * runs or resuming a saved campaign. */
 export interface EngineCarryover {
   health: number;
-  armor: number;
+  swap: number;
   bullets: number;
   rockets: number;
   /** Score banked from every level already cleared this campaign — the
@@ -297,8 +297,8 @@ export class RaycasterEngine {
 
   private state: GameState = "playing";
   private health = MAX_HEALTH;
-  /** Armor points; absorbed 1:1 before health on any hit (see `damage()`). */
-  private armor = 0;
+  /** Swap points; absorbed 1:1 before health on any hit (see `damage()`). */
+  private swap = 0;
   /** IDDQD cheat — while true, `damage()` is a no-op. */
   private godMode = false;
   /** Text of the "cheat activated" toast currently showing, if any. */
@@ -464,7 +464,7 @@ export class RaycasterEngine {
     }
     if (carryover) {
       this.health = carryover.health;
-      this.armor = carryover.armor;
+      this.swap = carryover.swap;
     }
     if (carryover?.weaponIndex !== undefined) this.weaponIndex = carryover.weaponIndex;
   }
@@ -1059,8 +1059,8 @@ export class RaycasterEngine {
         case "health":
           this.health = Math.min(MAX_HEALTH, this.health + amount);
           break;
-        case "armor":
-          this.armor = Math.min(MAX_ARMOR, this.armor + amount);
+        case "swap":
+          this.swap = Math.min(MAX_SWAP, this.swap + amount);
           break;
       }
       console.log(`%c[pickup] +${amount} ${pickup.kind} found`, "color:#3fd0e0");
@@ -1096,10 +1096,10 @@ export class RaycasterEngine {
         console.log(`%c[loot] +${amount} stability`, "color:#4cff6a");
         break;
       }
-      case "armor": {
-        const amount = this.scaledLootAmount(drop.amount ?? ARMOR_DROP_AMOUNT);
-        this.armor = Math.min(MAX_ARMOR, this.armor + amount);
-        console.log(`%c[loot] +${amount} armor`, "color:#4a7fff");
+      case "swap": {
+        const amount = this.scaledLootAmount(drop.amount ?? SWAP_DROP_AMOUNT);
+        this.swap = Math.min(MAX_SWAP, this.swap + amount);
+        console.log(`%c[loot] +${amount} swap`, "color:#4a7fff");
         break;
       }
       case "weapon":
@@ -1190,7 +1190,7 @@ export class RaycasterEngine {
   }
 
   /**
-   * Apply `amount` of stability loss; ends the run on reaching 0. Armor
+   * Apply `amount` of stability loss; ends the run on reaching 0. Swap
    * absorbs damage 1:1 before health does, so it's spent down first.
    */
   private damage(amount: number): void {
@@ -1199,9 +1199,9 @@ export class RaycasterEngine {
     this.flashFrames = DAMAGE_FLASH_FRAMES;
     audio.playDamage();
     let remaining = amount;
-    if (this.armor > 0) {
-      const absorbed = Math.min(this.armor, remaining);
-      this.armor -= absorbed;
+    if (this.swap > 0) {
+      const absorbed = Math.min(this.swap, remaining);
+      this.swap -= absorbed;
       remaining -= absorbed;
     }
     this.health -= remaining;
@@ -1231,7 +1231,7 @@ export class RaycasterEngine {
         for (let i = 0; i < WEAPONS.length; i++) this.ownedWeapons.add(i);
         this.bulletsAmmo = CHEAT_MAX_AMMO;
         this.rocketsAmmo = CHEAT_MAX_AMMO;
-        this.armor = MAX_ARMOR;
+        this.swap = MAX_SWAP;
         this.showCheatToast("IDKFA — Full arsenal");
         break;
       default:
@@ -1511,7 +1511,7 @@ export class RaycasterEngine {
     return {
       health: Math.ceil(this.health),
       maxHealth: MAX_HEALTH,
-      armor: Math.ceil(this.armor),
+      swap: Math.ceil(this.swap),
       bullets: this.bulletsAmmo,
       rockets: this.rocketsAmmo,
       keysHeld: this.keysHeld,

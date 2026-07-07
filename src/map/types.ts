@@ -180,7 +180,7 @@ export interface GameMap {
 }
 
 /** What a defeated enemy (or a scattered map pickup) can leave behind. */
-export type LootKind = "bullets" | "rockets" | "health" | "armor" | "weapon";
+export type LootKind = "bullets" | "rockets" | "health" | "swap" | "weapon";
 
 /**
  * A dynamic loot drop left at a defeated enemy's death position. Spawned at
@@ -211,7 +211,7 @@ export interface AmmoPickup {
   /** World position in fractional tile units (tile center). */
   x: number;
   y: number;
-  kind: "bullets" | "rockets" | "health" | "armor";
+  kind: "bullets" | "rockets" | "health" | "swap";
   amount: number;
   collected: boolean;
 }

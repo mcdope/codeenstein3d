@@ -22,7 +22,7 @@ export interface DifficultyMultipliers {
    * bolts). Does not affect trap/hazard/self-inflicted (rocket splash) damage
    * — those aren't "enemy dealt". */
   damage: number;
-  /** Multiplies the amount granted per ammo/health/armor pickup, both the
+  /** Multiplies the amount granted per ammo/health/swap pickup, both the
    * map's static pickups and enemies' dynamic loot drops. */
   ammoDropRate: number;
 }

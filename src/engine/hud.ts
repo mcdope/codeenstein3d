@@ -279,7 +279,7 @@ const HUD_HEIGHT = 58;
 /**
  * Doom/terminal-style status bar drawn across the bottom of the canvas. Call
  * this last (after the 3D scene, sprites and minimap) so it sits on top. Kept
- * deliberately minimal: System Stability (health), Armor, ammo for whichever
+ * deliberately minimal: System Stability (health), Swap, ammo for whichever
  * weapon is equipped, Keys, and Score — no weapon *name*, enemy count, or
  * targeted-entity name, so the UI doesn't spoil source-code details.
  */
@@ -316,9 +316,9 @@ export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void
   ctx.strokeRect(barX + 0.5, barY + 0.5, barW - 1, barH - 1);
   drawValue(ctx, `${stats.health}%`, barX + barW + 8, valueY, low ? "#ff6a5a" : "#4cff6a", 13);
 
-  // --- Armor ---
-  drawLabel(ctx, "ARMOR", 205, labelY);
-  drawValue(ctx, String(stats.armor), 205, valueY, stats.armor > 0 ? "#4a7fff" : "#5a6a8a", 20);
+  // --- Swap ---
+  drawLabel(ctx, "SWAP", 205, labelY);
+  drawValue(ctx, String(stats.swap), 205, valueY, stats.swap > 0 ? "#4a7fff" : "#5a6a8a", 20);
 
   // --- Ammo for whichever weapon is equipped: melee shows an infinity mark,
   // otherwise the label/value swap to BULLETS or ROCKETS as the player
