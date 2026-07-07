@@ -89,6 +89,6 @@
 - [ ] privacy doc, what exactly happens with the workspace selected and what is stored on your machine
 - [ ] Textures from WADs? (to be discovered/done later)
 - [ ] avoid or workaround localStorage quota (even by compression if needed)
-- [ ] smarter entrypoint detection, its quite stupid currently
+- [ ] smarter entrypoint detection, its quite stupid currently. in example when loading a shared library project (mcdope/pam_usb)
 - [ ] highscore table should also store some stats about the codebase, like complexity and lines of code total
 - [ ] dont record highscore when player died in the very first level
