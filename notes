@@ -93,7 +93,6 @@
 - [ ] makefile
 - [ ] tests (unit [coverage target 100%!], end2end/functional/visual [coverage target: all aspects of gameplay], ensure no data leaves the app (besides highscores at a later time))
 - [ ] github ci actions for the tests (to be executed on github, no custom runner)
-- [ ] when everything is done: add play tips to readme and user docs, like "dont trust long corridors, they will have traps", "look for secrets" etc pp.
 - [ ] code optimization/reuse, complexity reduction etc
 - [ ] balancing
 - [ ] Textures from WADs? (to be discovered/done later)
