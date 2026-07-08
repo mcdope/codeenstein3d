@@ -18,7 +18,7 @@ describe('consoleSidebar', () => {
   });
 
   afterEach(() => {
-    vi.runOnlyPendingTimers();
+    vi.clearAllTimers();
     vi.useRealTimers();
     console.log = originalConsoleLog;
     vi.restoreAllMocks();
@@ -82,8 +82,13 @@ describe('consoleSidebar', () => {
   });
 
   it('schedules and prints random hints when active and avoids duplicates', () => {
-    let mockRandomValue = 0.1;
-    vi.spyOn(Math, 'random').mockImplementation(() => mockRandomValue);
+    let rand = 0.1;
+    vi.spyOn(Math, 'random').mockImplementation(() => {
+      const r = rand;
+      rand += 0.1;
+      if (rand > 0.9) rand = 0.1;
+      return r;
+    });
 
     const handle = initConsoleSidebar(canvas, sidebarEl, logEl);
     
@@ -100,13 +105,9 @@ describe('consoleSidebar', () => {
     const firstHint = logEl.lastElementChild?.textContent;
     expect(firstHint).toContain('[hint]');
     
-    // advance more to get multiple hints. Since Math.random() is still 0.1, it should enter the while loop and we change it inside.
     const hintCount1 = logEl.children.length;
-    mockRandomValue = 0.1; // same
     
-    // mock Math.random to return 0.1 first, then 0.5 to break out of loop
-    vi.spyOn(Math, 'random').mockImplementationOnce(() => 0.1).mockImplementationOnce(() => 0.5);
-    
+    // advance more to get multiple hints. The random mock will naturally avoid infinite loops.
     vi.advanceTimersByTime(40000);
     expect(logEl.children.length).toBeGreaterThan(hintCount1);
   });

@@ -4,14 +4,27 @@ import { RaycasterEngine } from './engine';
 import { GameMap, Enemy, Projectile, Mine, Decoration } from '../map/types';
 
 vi.mock('./audio', () => ({
-  audio: new Proxy({}, { get: () => vi.fn() })
+  audio: {
+    playTeleport: vi.fn(), resume: vi.fn(), playWeaponEmpty: vi.fn(), playShoot: vi.fn(), playStep: vi.fn(),
+    playHit: vi.fn(), playDamage: vi.fn(), setMasterVolume: vi.fn(), setBgmVolume: vi.fn(), setSfxVolume: vi.fn(), isSilenced: vi.fn()
+  }
 }));
-vi.mock('./hud', () => new Proxy({}, { get: () => vi.fn() }));
-vi.mock('./raycaster', () => new Proxy({}, { get: () => vi.fn() }));
-vi.mock('./automap', () => new Proxy({}, { get: () => vi.fn() }));
-vi.mock('./viewmodel', () => new Proxy({}, { get: () => vi.fn() }));
-vi.mock('./effects', () => ({
-  ...vi.importActual('./effects'),
+vi.mock('./hud', () => ({
+  drawHud: vi.fn(), drawCrosshair: vi.fn(), showCheatToast: vi.fn(), setHealth: vi.fn(), setAmmo: vi.fn(), setKeys: vi.fn(),
+  drawCheatToast: vi.fn(), drawCompass: vi.fn(), drawFpsOverlay: vi.fn(), drawLoreOverlay: vi.fn(), drawPauseOverlay: vi.fn(),
+  COMPASS_ENABLED: false
+}));
+vi.mock('./raycaster', () => ({ renderScene: vi.fn(), renderMinimap: vi.fn(), FOG_FAR: 10 }));
+vi.mock('./automap', () => ({ drawAutomap: vi.fn() }));
+vi.mock('./viewmodel', () => ({ drawWeapon: vi.fn() }));
+vi.mock('./sprites', () => ({
+  collectDecorations: vi.fn(() => []), collectEnemyBillboards: vi.fn(() => []), collectLootBillboards: vi.fn(() => []), findTargetAtColumn: vi.fn(() => null),
+  collectDecorationBillboards: vi.fn(() => []), collectTeleporterBillboards: vi.fn(() => []), collectMineBillboards: vi.fn(() => []),
+  collectKeyBillboards: vi.fn(() => []), collectAmmoBillboards: vi.fn(() => []), collectTerminalBillboards: vi.fn(() => []), collectSpikeTrapBillboards: vi.fn(() => []),
+  collectExitBillboard: vi.fn(() => []), findMineAtColumn: vi.fn(() => null), findTargetUnderCrosshair: vi.fn(() => null)
+}));
+vi.mock('./effects', async () => ({
+  ...(await vi.importActual('./effects') as any),
   drawBulletTraces: vi.fn(), drawDamageFlash: vi.fn(),
   renderBlood: vi.fn(), renderExplosions: vi.fn(), spawnBlood: vi.fn(),
   spawnExplosion: vi.fn(), tickBulletTraces: vi.fn(), updateBlood: vi.fn(), updateExplosions: vi.fn()
@@ -21,7 +34,6 @@ vi.mock('./projectiles', () => ({ collectProjectileBillboards: vi.fn(() => []), 
 vi.mock('./rockets', () => ({ collectRocketBillboards: vi.fn(() => []), rocketDamageAt: vi.fn(() => 0), spawnRocket: vi.fn(), updateRockets: vi.fn(() => []), ROCKET_BLAST_RADIUS: 2 }));
 vi.mock('./traps', () => ({ detonateMine: vi.fn(() => 0), spikeDamage: vi.fn(() => 0), updateMines: vi.fn(() => 0) }));
 vi.mock('./scoring', () => ({ computeScore: vi.fn(() => ({ total: 100 })), killPoints: vi.fn(() => 10) }));
-vi.mock('./sprites', () => new Proxy({}, { get: () => vi.fn(() => []) }));
 vi.mock('../prng', () => ({ mulberry32: () => () => 0.5, randomSeed: () => 123 }));
 
 describe('RaycasterEngine Fuzzer', () => {
@@ -32,7 +44,8 @@ describe('RaycasterEngine Fuzzer', () => {
       visited: Array(10).fill(Array(10).fill(false)),
       decorations: [], teleporters: [{ x: 1, y: 1, targetX: 2, targetY: 2, label: 'a' }], mines: [], keys: [{ x: 0, y: 0, collected: false }],
       ammoPickups: [{ x: 0, y: 0, collected: false, amount: 10, kind: 'bullets' }], exit: { x: 5, y: 5 }, enemies: [{ alive: true, x: 0, y: 0, hp: 10, maxHp: 10, entity: { name: 'Bug' }, home: { x: 0, y: 0, w: 10, h: 10 } }],
-      loreTerminals: [{ x: 0, y: 0, text: 'Hello' }], spikeTraps: [], bonusLevel: false, shortestPathTiles: 10
+      loreTerminals: [{ x: 0, y: 0, text: 'Hello' }], spikeTraps: [], bonusLevel: false, shortestPathTiles: 10,
+      spawn: { x: 5, y: 5, angle: 0 }
     } as unknown as GameMap;
 
     let cheats = ['IDDQD', 'IDCLIP', 'IDKFA'];
