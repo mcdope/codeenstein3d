@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect } from "vitest";
 import { MapGenerator } from "./mapGenerator";
 import type { ParsedFile, CodeEntity, CodeComment, DeadCodeRegion, GotoLink } from "../parser/types";

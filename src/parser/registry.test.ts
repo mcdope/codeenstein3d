@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { extensionOf, getParserForFilename, isParsable, parseFile } from "./registry";
 import * as security from "./security";

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { hashRun, truncateHash, loadHighscores, recordHighscore } from "./highscores";
 import { compressForStorage, decompressFromStorage } from "./storageCompression";

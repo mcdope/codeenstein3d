@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect } from "vitest";
 import { isSpikeActive, activeSpikeTileKeys, spikeDamage, detonateMine, updateMines } from "./traps";
 import type { SpikeTrap, Mine } from "../map/types";

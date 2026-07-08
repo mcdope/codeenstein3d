@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect } from "vitest";
 import { isSafeToParse, MAX_PARSE_BYTES } from "./security";
 

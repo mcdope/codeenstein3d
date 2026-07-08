@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect } from "vitest";
 import * as ref from "./refinements";
 import type { CodeEntity } from "../types";

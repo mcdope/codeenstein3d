@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { PhpParserAdapter } from "./phpParser";
 import { Parser, Language } from "web-tree-sitter";

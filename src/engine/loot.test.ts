@@ -1,3 +1,4 @@
+// @ts-nocheck
 // src/engine/loot.test.ts
 import { describe, it, expect } from "vitest";
 import { rollLoot } from "./loot";

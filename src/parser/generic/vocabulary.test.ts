@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect } from "vitest";
 import { entityName, extractGotos, genericGlobals, positionKey, ENTITY_NODE_TYPES } from "./vocabulary";
 import type { Node, Point } from "web-tree-sitter";

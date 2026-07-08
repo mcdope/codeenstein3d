@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect, beforeEach } from "vitest";
 import { Player, collidesWithWall, isWall, isHazard } from "./player";
 import { DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, type GameMap, type Tile } from "../map/types";

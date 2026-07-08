@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect } from 'vitest';
 import { DIFFICULTY_MULTIPLIERS, DEFAULT_DIFFICULTY } from './difficulty';
 

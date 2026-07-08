@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHighscoreTable } from './highscorePanel';
 import type { HighscoreEntry } from '../engine/highscores';

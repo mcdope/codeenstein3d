@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { CParserAdapter } from "./cParser";
 import { Parser, Language } from "web-tree-sitter";

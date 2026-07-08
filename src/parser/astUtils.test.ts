@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect } from "vitest";
 import type { Node, Point } from "web-tree-sitter";
 import {

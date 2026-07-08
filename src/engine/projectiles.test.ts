@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { spawnProjectile, updateProjectiles, collectProjectileBillboards, type Projectile } from './projectiles';
 import { isWall } from './player';

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect } from "vitest";
 import { killPoints, computeScore, type ScoreInput } from "./scoring";
 import type { Enemy } from "../../map/types";

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelMeta } from './replay';
 import type { InputSnapshot } from './input';

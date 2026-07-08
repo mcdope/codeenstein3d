@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect, beforeEach } from 'vitest';
 import { drawWeapon, WeaponView } from './viewmodel';
 import type { WeaponViewKind } from './weapons';

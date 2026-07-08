@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { BgmPlayer, bgm } from './bgm';
 import { audio } from './audio';

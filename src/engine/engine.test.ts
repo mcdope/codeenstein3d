@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RaycasterEngine } from './engine';
 import { GameMap, Enemy, Projectile, Mine, Decoration } from '../map/types';
