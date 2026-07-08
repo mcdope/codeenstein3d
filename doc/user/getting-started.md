@@ -9,6 +9,11 @@
 
 ## Picking a workspace
 
+Before you've loaded anything, the main viewport shows an intro screen explaining what the
+game is, how source code maps onto the dungeon (folders → levels, files → rooms, functions →
+enemies, and so on), and what to expect once you're inside a level. It's replaced the moment a
+level launches and won't reappear for the rest of the session.
+
 The sidebar has three tabs for starting a run:
 
 - **Local** — click **Select Workspace** and pick a folder on your machine. Anything with source code works, from a single script to a large repo.

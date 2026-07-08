@@ -72,10 +72,69 @@
         <nav id="file-tree" aria-label="File tree"></nav>
       </aside>
       <main id="viewport">
-        <p class="muted">
-          Select a workspace, then click a file in the tree.<br />
-          Its text content will be logged to the browser console.
-        </p>
+        <div id="intro-screen" class="intro-screen">
+          <h2 class="intro-title">Turn your legacy code into a playable retro 3D shooter</h2>
+          <p class="intro-lede">
+            Codeenstein 3D reads real source code and procedurally builds it into a raycasted
+            dungeon — then drops you in to fight your way through it.
+          </p>
+
+          <div class="intro-grid">
+            <section class="intro-card">
+              <h3>How it works</h3>
+              <ul class="intro-mapping">
+                <li><span class="intro-mapping-from">Folder</span><span class="intro-mapping-arrow">→</span><span class="intro-mapping-to">Level</span></li>
+                <li><span class="intro-mapping-from">File</span><span class="intro-mapping-arrow">→</span><span class="intro-mapping-to">Room</span></li>
+                <li><span class="intro-mapping-from">Function</span><span class="intro-mapping-arrow">→</span><span class="intro-mapping-to">Enemy (HP = complexity)</span></li>
+                <li><span class="intro-mapping-from">Global variable</span><span class="intro-mapping-arrow">→</span><span class="intro-mapping-to">Acid pool</span></li>
+                <li><span class="intro-mapping-from">Private/protected method</span><span class="intro-mapping-arrow">→</span><span class="intro-mapping-to">Locked door</span></li>
+                <li><span class="intro-mapping-from">goto / label</span><span class="intro-mapping-arrow">→</span><span class="intro-mapping-to">Teleporter</span></li>
+                <li><span class="intro-mapping-from">Large comment</span><span class="intro-mapping-arrow">→</span><span class="intro-mapping-to">Lore terminal</span></li>
+                <li><span class="intro-mapping-from">Dead code</span><span class="intro-mapping-arrow">→</span><span class="intro-mapping-to">Secret room</span></li>
+              </ul>
+            </section>
+
+            <section class="intro-card">
+              <h3>What you'll do</h3>
+              <p>
+                Shoot your way from entrypoint to exit with a pistol, shotgun, machine gun,
+                rocket launcher, and a melee knife. Higher-complexity functions hit harder and
+                soak more damage. Read lore terminals, grab keys for locked rooms, dodge acid
+                pools and spike traps, and reach the green <code>return</code> tile to clear
+                the level.
+              </p>
+              <p>
+                Clearing a level rolls straight into the next parsable file, carrying your
+                health, ammo, and weapons forward — an entire codebase becomes one continuous
+                campaign.
+              </p>
+            </section>
+
+            <section class="intro-card intro-card--full">
+              <h3>Privacy</h3>
+              <p>
+                Everything runs client-side. A local workspace is read and parsed entirely in
+                your browser (WebAssembly, no server) and its contents never leave your
+                machine — no backend, no account, no analytics.
+              </p>
+              <p>
+                The only network calls this app ever makes are the ones you opt into on the
+                <strong>GitHub</strong> tab, to fetch the repo you asked for.
+                <a
+                  href="https://github.com/mcdope/codeenstein3d/blob/master/doc/user/privacy.md"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Full privacy details</a
+                >.
+              </p>
+            </section>
+          </div>
+
+          <p class="intro-cta">
+            Pick a <strong>Local</strong> workspace, load a <strong>GitHub</strong> repo, or
+            <strong>Continue</strong> a saved run from the sidebar to begin.
+          </p>
+        </div>
       </main>
       <aside id="console-sidebar" class="console-sidebar">
         <h2>Console</h2>
