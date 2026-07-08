@@ -2,11 +2,26 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 import { fileURLToPath } from "node:url";
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 
 const emptyNodeShim = fileURLToPath(new URL("./src/empty-node-shim.ts", import.meta.url));
 
 export default defineConfig({
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./vitest.jest-setup.ts', './vitest.setup.ts'],
+    exclude: ['tests/**', 'node_modules/**'],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'html'],
+      thresholds: {
+        lines: 100,
+        functions: 100,
+        branches: 100,
+        statements: 100
+      }
+    }
+  },
   resolve: {
     alias: {
       // web-tree-sitter's single build (web-tree-sitter.js) statically

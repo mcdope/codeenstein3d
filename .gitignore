@@ -9,3 +9,8 @@ dist-ssr
 !.vscode/extensions.json
 .idea
 .DS_Store
+
+# Testing
+coverage/
+playwright-report/
+test-results/

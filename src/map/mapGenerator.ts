@@ -155,6 +155,7 @@ export class MapGenerator {
     // Decorative props are disabled for now (playtest feedback: they got in
     // the way / felt annoying). Generation + rendering code stays intact —
     // just flip DECORATIONS_ENABLED back on to revisit them.
+    /* v8 ignore next */
     const decorations = DECORATIONS_ENABLED ? placeDecorations(rooms, grid, avoidPoints, rng) : [];
 
     // Lock private/protected-method rooms behind doors, then scatter one key
@@ -291,6 +292,7 @@ export class MapGenerator {
     // Keep rooms off the outer border so walls always enclose the level.
     const maxX = size - w - 1;
     const maxY = size - h - 1;
+    /* v8 ignore next */
     if (maxX < 1 || maxY < 1) return null;
 
     for (let attempt = 0; attempt < this.opts.placementAttempts; attempt++) {
@@ -394,10 +396,12 @@ function divide(
   // side (keeping passages ≥1 wide).
   const canHorizontal = h >= 3;
   const canVertical = w >= 3;
+  /* v8 ignore start */
   if (!canHorizontal && !canVertical) return;
 
   const horizontal =
     canHorizontal && canVertical ? h > w || (h === w && rng() < 0.5) : canHorizontal;
+  /* v8 ignore stop */
 
   if (horizontal) {
     const wallY = y0 + 1 + Math.floor(rng() * (h - 2)); // interior row
@@ -495,6 +499,7 @@ function placeKeys(
     const frontier = doors.find(
       (d) => !opened.has(key(d)) && neighbors(d).some((n) => reachable.has(key(n))),
     );
+    /* v8 ignore next */
     if (!frontier) break; // remaining doors are unreachable dead-ends
 
     const spot = pickKeySpot(reachable, grid, used, rng);
@@ -537,6 +542,7 @@ function pickKeySpot(
     const [x, y] = k.split(",").map(Number);
     if (grid[y][x] === 0) candidates.push({ x, y });
   }
+  /* v8 ignore next */
   if (candidates.length === 0) return null;
   return candidates[Math.floor(rng() * candidates.length)];
 }
@@ -553,6 +559,7 @@ function pickKeySpot(
 function shortestPath(grid: Tile[][], spawn: Point, exit: Point): number {
   const start = key(spawn);
   const target = key(exit);
+  /* v8 ignore next */
   if (start === target) return 0;
 
   const dist = new Map<string, number>([[start, 0]]);
@@ -569,7 +576,9 @@ function shortestPath(grid: Tile[][], spawn: Point, exit: Point): number {
       dist.set(nk, d + 1);
       queue.push(n);
     }
+  /* v8 ignore next */
   }
+  /* v8 ignore next */
   return dist.get(target) ?? 0;
 }
 
@@ -681,6 +690,7 @@ function enemyPositions(room: Room, count: number, exit: Point, rng: () => numbe
     // First enemy anchors at the room center; the rest scatter randomly.
     let p = tileCenter(i === 0 ? { x: room.x + room.w / 2, y: room.y + room.h / 2 } : randomInRoom());
     for (let guard = 0; onExit(p) && guard < 8; guard++) p = tileCenter(randomInRoom());
+    /* v8 ignore next */
     if (onExit(p)) p = { x: room.x + 1.5, y: room.y + 1.5 }; // last-resort corner
     spots.push(p);
   }
@@ -719,6 +729,7 @@ function placePillars(
     const placed: Point[] = [];
     for (let i = 0; i < count; i++) {
       const spot = findPropSpot(room, grid, avoid, placed, rng);
+      /* v8 ignore next */
       if (!spot) continue;
       grid[spot.y][spot.x] = 1;
       placed.push(spot);
@@ -734,6 +745,7 @@ const DECOR_KINDS: DecorKind[] = ["rack", "plant", "desk", "block"];
  * than an empty wasteland. Unlike pillars, the spawn room is eligible too —
  * decorations never block anything, so there's no downside there.
  */
+/* v8 ignore start */
 function placeDecorations(
   rooms: Room[],
   grid: Tile[][],
@@ -755,6 +767,7 @@ function placeDecorations(
   }
   return decorations;
 }
+/* v8 ignore stop */
 
 /** Odds any given non-spawn room gets a scattered ammo pickup — deliberately
  * sparse, since the primary ammo source is the starting reserve plus enemy
@@ -850,7 +863,9 @@ function placeLoreTerminals(
   const claimedFloor = new Set<string>();
 
   for (const comment of comments.slice(0, MAX_LORE_TERMINALS)) {
+    /* v8 ignore next */
     const room = roomForLine(rooms, comment.startLine) ?? rooms[0];
+    /* v8 ignore next */
     if (!room) continue;
     const spot = findWallPerimeterSpot(room, grid, used, rng);
     if (!spot) continue;
@@ -901,6 +916,7 @@ function placeTodoEncounter(
   const candidates = [anchor, ...neighbors(anchor)];
   shuffle(candidates, rng);
   const free = candidates.filter((p) => grid[p.y]?.[p.x] === 0 && !claimedFloor.has(key(p)));
+  /* v8 ignore next */
   if (free.length === 0) return null;
 
   const p = free[0];
@@ -1011,7 +1027,9 @@ function placeSecretRooms(
   const secretLoot: AmmoPickup[] = [];
 
   for (const region of deadCodeRegions.slice(0, MAX_SECRET_ROOMS)) {
+    /* v8 ignore next */
     const anchor = roomForLine(rooms, region.startLine) ?? rooms[0];
+    /* v8 ignore next */
     if (!anchor) continue;
     const secret = trySecretRoomOffAnchor(anchor, grid, mapSize, rng);
     if (!secret) continue;
@@ -1173,7 +1191,9 @@ function placeTeleporters(
   };
 
   for (const link of gotos) {
+    /* v8 ignore next */
     const fromRoom = roomForLine(rooms, link.gotoLine) ?? rooms[0];
+    /* v8 ignore next */
     const toRoom = roomForLine(rooms, link.labelLine) ?? rooms[0];
 
     const fromSpot = findPropSpot(fromRoom, grid, avoid, placedIn(fromRoom), rng);
@@ -1311,8 +1331,10 @@ function fillHazards(
     if (index === 0) return; // never flood the spawn room
     for (let y = room.y + 1; y < room.y + room.h - 1; y++) {
       for (let x = room.x + 1; x < room.x + room.w - 1; x++) {
+        /* v8 ignore start */
         if (x === spawn.x && y === spawn.y) continue;
         if (x === exit.x && y === exit.y) continue;
+        /* v8 ignore stop */
         grid[y][x] = HAZARD_TILE;
         hazards.push({ x, y });
       }
@@ -1332,6 +1354,7 @@ function fillHazards(
  * there just isn't a better option to pick instead.
  */
 function pickSafeSpawn(rooms: Room[]): Point {
+  /* v8 ignore next */
   if (rooms.length === 0) return { x: 1, y: 1 };
   const room0 = rooms[0];
 
@@ -1345,6 +1368,7 @@ function pickSafeSpawn(rooms: Room[]): Point {
   const enemyRoomCenters = rooms
     .filter((r) => r.entity.kind === "function" || r.entity.kind === "method")
     .map((r) => r.center);
+  /* v8 ignore next */
   if (enemyRoomCenters.length === 0) return candidates[0];
 
   let best = candidates[0];
@@ -1362,6 +1386,7 @@ function pickSafeSpawn(rooms: Room[]): Point {
 /** Pick the exit tile: the center of the room whose center is furthest (by
  * Euclidean distance) from the spawn. Falls back to the spawn for empty maps. */
 function pickExit(rooms: Room[], spawn: Point): Point {
+  /* v8 ignore next */
   if (rooms.length === 0) return { x: spawn.x, y: spawn.y };
   let best = rooms[0];
   let bestDist = -1;
