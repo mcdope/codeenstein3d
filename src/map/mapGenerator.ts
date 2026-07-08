@@ -171,7 +171,7 @@ export class MapGenerator {
     // (so it flows through to the final `GameMap` like any other enemy) and
     // into `teleporterAvoid` below (so a teleporter pad can't land on top of
     // one).
-    const loreResult = placeLoreTerminals(rooms, grid, parsed.comments, rng);
+    const loreResult = placeLoreTerminals(rooms, grid, parsed.comments, rng, spawn);
     const loreTerminals = loreResult.terminals;
     enemies.push(...loreResult.todoEnemies);
     const { secretLoot } = placeSecretRooms(rooms, grid, size, parsed.deadCodeRegions, rng, hasRocketLauncher);
@@ -834,13 +834,17 @@ const TODO_BUG_HP = 10;
  * get one. A TODO/FIXME-flagged comment (see `isTodoFlagged`) also gets a
  * small "technical debt" encounter — a timed spike trap, a proximity mine, or
  * a weak "Bug" enemy, picked per-instance via the seeded `rng` — on the floor
- * tile just inside the room, right next to its terminal.
+ * tile just inside the room, right next to its terminal. Never placed within
+ * `TRAP_SPACING` of `spawn`, same as every other hazard system, so a comment
+ * that happens to resolve to the spawn room can't ambush the player before
+ * they can react.
  */
 function placeLoreTerminals(
   rooms: Room[],
   grid: Tile[][],
   comments: CodeComment[],
   rng: () => number,
+  spawn: Point,
 ): { terminals: LoreTerminal[]; todoTraps: SpikeTrap[]; todoMines: Mine[]; todoEnemies: Enemy[] } {
   const terminals: LoreTerminal[] = [];
   const todoTraps: SpikeTrap[] = [];
@@ -859,7 +863,7 @@ function placeLoreTerminals(
     terminals.push({ x: spot.x, y: spot.y, text: comment.text });
 
     if (isTodoFlagged(comment.text)) {
-      const encounter = placeTodoEncounter(room, grid, spot, comment, claimedFloor, rng);
+      const encounter = placeTodoEncounter(room, grid, spot, comment, claimedFloor, rng, spawn);
       if (encounter && "trap" in encounter) todoTraps.push(encounter.trap);
       else if (encounter && "mine" in encounter) todoMines.push(encounter.mine);
       else if (encounter) todoEnemies.push(encounter.enemy);
@@ -887,7 +891,10 @@ function interiorNeighborOf(room: Room, spot: Point): Point {
  * the player has to stand to interact with the terminal, and a permanently
  * damaging tile there would make it painful to ever reach rather than just
  * riskier — a trap/mine keeps a genuine safe approach instead. Never a hard
- * failure — a room with no free adjacent floor tile simply gets nothing.
+ * failure — a room with no free adjacent floor tile simply gets nothing, and
+ * the same holds if every free tile is within `TRAP_SPACING` of `spawn` (a
+ * TODO comment can resolve to the spawn room itself), so the player can never
+ * take unavoidable damage in the first instants of a level.
  */
 function placeTodoEncounter(
   room: Room,
@@ -896,11 +903,17 @@ function placeTodoEncounter(
   comment: CodeComment,
   claimedFloor: Set<string>,
   rng: () => number,
+  spawn: Point,
 ): { trap: SpikeTrap } | { mine: Mine } | { enemy: Enemy } | null {
   const anchor = interiorNeighborOf(room, spot);
   const candidates = [anchor, ...neighbors(anchor)];
   shuffle(candidates, rng);
-  const free = candidates.filter((p) => grid[p.y]?.[p.x] === 0 && !claimedFloor.has(key(p)));
+  const free = candidates.filter(
+    (p) =>
+      grid[p.y]?.[p.x] === 0 &&
+      !claimedFloor.has(key(p)) &&
+      dist(p.x + 0.5, p.y + 0.5, spawn.x + 0.5, spawn.y + 0.5) >= TRAP_SPACING,
+  );
   if (free.length === 0) return null;
 
   const p = free[0];

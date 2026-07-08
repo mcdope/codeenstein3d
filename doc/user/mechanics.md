@@ -58,6 +58,7 @@ Enemies roam randomly within their home room until they notice you — which req
 
 - **Spike traps** cycle between safe and damaging on a timer — watch the tile, not just the trap.
 - **Proximity mines** are revealed from a fair distance away but only actually arm (start their detonation timer) once you get close; backing off in time resets the timer. A spotted mine can be shot from outside its blast radius to disarm it safely.
+- No trap, mine, or "technical debt" encounter (spawned by a nearby TODO/FIXME comment) ever lands close enough to your starting point to hit you before you've had a chance to move.
 
 ## Scoring
 
