@@ -82,6 +82,7 @@ import {
   BULLETS_DROP_AMOUNT,
   ELITE_BULLETS_DROP_AMOUNT,
   ELITE_HEALTH_DROP_AMOUNT,
+  ELITE_ROCKETS_DROP_AMOUNT,
   ELITE_SWAP_DROP_AMOUNT,
   HEALTH_DROP_AMOUNT,
   MAX_SWAP,
@@ -1106,9 +1107,26 @@ export class RaycasterEngine {
       }
       case "weapon":
         if (drop.weaponIndex !== undefined) {
-          this.ownedWeapons.add(drop.weaponIndex);
-          this.weaponIndex = drop.weaponIndex;
-          console.log(`%c[loot] unlocked ${WEAPONS[drop.weaponIndex].name}!`, "color:#e06aff;font-weight:bold");
+          const weapon = WEAPONS[drop.weaponIndex];
+          if (this.ownedWeapons.has(drop.weaponIndex)) {
+            // Already unlocked by the time this drop was picked up (e.g. an
+            // earlier Elite's weapon drop got there first) — an elite-sized
+            // shot of its ammo instead of a no-op re-unlock, so the drop is
+            // never just wasted.
+            if (weapon.ammoType === "rockets") {
+              const amount = this.scaledLootAmount(ELITE_ROCKETS_DROP_AMOUNT);
+              this.rocketsAmmo += amount;
+              console.log(`%c[loot] +${amount} rockets (${weapon.name} already owned)`, "color:#ff9d3f");
+            } else if (weapon.ammoType === "bullets") {
+              const amount = this.scaledLootAmount(ELITE_BULLETS_DROP_AMOUNT);
+              this.bulletsAmmo += amount;
+              console.log(`%c[loot] +${amount} bullets (${weapon.name} already owned)`, "color:#3fd0e0");
+            }
+          } else {
+            this.ownedWeapons.add(drop.weaponIndex);
+            this.weaponIndex = drop.weaponIndex;
+            console.log(`%c[loot] unlocked ${weapon.name}!`, "color:#e06aff;font-weight:bold");
+          }
         }
         break;
     }

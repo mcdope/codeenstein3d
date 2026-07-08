@@ -95,6 +95,7 @@ export const ELITE_HEALTH_DROP_AMOUNT = 50;
  * (player already at full health) — same "bigger than a regular drop" scale
  * as `ELITE_HEALTH_DROP_AMOUNT` is to `HEALTH_DROP_AMOUNT`. */
 export const ELITE_BULLETS_DROP_AMOUNT = 18;
+export const ELITE_ROCKETS_DROP_AMOUNT = 6;
 export const ELITE_SWAP_DROP_AMOUNT = 30;
 /** Maximum swap the player can stockpile. */
 export const MAX_SWAP = 100;
