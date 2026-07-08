@@ -117,3 +117,4 @@
 - [ ] code parsing / world generation should show a loading screen or indicator, for large repos it can take a while (to test: use any linux kernel git)
 - [ ] automap not really useful, should work like in diablo instead. rendering is also weird / wasting space.
 - [ ] sometimes rooms without exit are generated, example: src/DockerManager.php of wrp-distributor - there it is even the spawn room. this should never ever happen. each room must have atleast one exit (that leads to atleast one room that has an exit, unlike the example)
+- [ ] spawn sometimes happen right on a trap
