@@ -74,9 +74,14 @@ const DIRECTORY_STUB: RemoteFileHandle = {
 /**
  * Fetches a public repo's default branch, then its full recursive file tree,
  * and builds it into a `TreeNode` rooted at the repo name — same shape
- * `readDirectoryTree` produces for a local folder.
+ * `readDirectoryTree` produces for a local folder. The recursive tree call is
+ * the one genuinely slow step for a large repo (tens of megabytes of JSON for
+ * something like `torvalds/linux`), so `onTreeBytes`, when given, is called
+ * with the cumulative bytes received as the response streams in — letting a
+ * caller show a running counter instead of one static "Fetching…" message
+ * for however many seconds that takes.
  */
-export async function fetchGithubTree(ref: GithubRepoRef): Promise<TreeNode> {
+export async function fetchGithubTree(ref: GithubRepoRef, onTreeBytes?: (bytesReceived: number) => void): Promise<TreeNode> {
   const branch = await resolveDefaultBranch(ref);
 
   const treeRes = await fetch(
@@ -85,7 +90,7 @@ export async function fetchGithubTree(ref: GithubRepoRef): Promise<TreeNode> {
   if (!treeRes.ok) {
     throw new Error(`Failed to fetch repository tree (${treeRes.status} ${treeRes.statusText})`);
   }
-  const treeJson = (await treeRes.json()) as { tree: GithubTreeEntry[]; truncated?: boolean };
+  const treeJson = await readJsonWithProgress<{ tree: GithubTreeEntry[]; truncated?: boolean }>(treeRes, onTreeBytes);
 
   if (treeJson.truncated) {
     console.warn(
@@ -95,6 +100,36 @@ export async function fetchGithubTree(ref: GithubRepoRef): Promise<TreeNode> {
   }
 
   return buildTree(ref, branch, treeJson.tree);
+}
+
+/**
+ * Reads `res`'s body and JSON-parses it, calling `onBytes` with the
+ * cumulative byte count as each chunk of the stream arrives. Falls back to a
+ * plain `res.json()` when no callback was given or the runtime doesn't
+ * expose a streamable body (some test environments) — same end result,
+ * just without the incremental callback.
+ */
+async function readJsonWithProgress<T>(res: Response, onBytes?: (bytesReceived: number) => void): Promise<T> {
+  if (!onBytes || !res.body) return (await res.json()) as T;
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.byteLength;
+    onBytes(received);
+  }
+
+  const merged = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder("utf-8").decode(merged)) as T;
 }
 
 async function resolveDefaultBranch(ref: GithubRepoRef): Promise<string> {

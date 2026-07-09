@@ -1,6 +1,7 @@
 # Playtest notes / backlog
 
 ## Done
+- [x] Progress indicator for github loads — the recursive tree fetch (the one genuinely slow step for a big repo) now streams and shows a running "X MB received" counter, and the "Scanning file tree…" fallback pass (each extensionless file costs a real network round-trip) shows a "(checked/total)" counter, instead of one static message
 - [x] to few enemies — complexity packs (1 extra enemy per 10 pts) [Task 18]
 - [x] increase aggro distance — 5 → 7.5 tiles [Task 18]
 - [x] enemies sometimes invisible when very close to the player — sprite near-clip fix [Task 18]
@@ -148,4 +149,3 @@
     - [ ] Nightmare - magento/magento2
     - btw, all of them demonstrate line 123
 - [ ] Highscore table dialog needs to be larger, see `/home/mcdope/Bilder/Bildschirmfotos/Bildschirmfoto vom 2026-07-09 19-44-52.png`. Wordwraps everywhere currently.
-- [ ] Progress indicator for github loads

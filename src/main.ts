@@ -412,7 +412,9 @@ loadGithubRepoButton.addEventListener("click", async () => {
     workspaceName.classList.remove("error");
     showLoadingScreen(`Fetching "${ref.owner}/${ref.repo}" from GitHub…`);
 
-    const tree = await fetchGithubTree(ref);
+    const tree = await fetchGithubTree(ref, (bytesReceived) => {
+      setLoadingStatus(`Fetching "${ref.owner}/${ref.repo}" from GitHub… (${formatByteCount(bytesReceived)} received)`);
+    });
     workspaceTree = tree;
     workspaceRootName = `${ref.owner}/${ref.repo}`;
     workspaceIsRemote = true;
@@ -698,6 +700,12 @@ export async function findEntrypoint(tree: TreeNode): Promise<EntrypointMatch | 
  * background after a run has already ended. */
 const ENTRYPOINT_DETECTION_TIMEOUT_MS = 4000;
 
+/** How often (in files checked) the "Scanning file tree…" readout updates —
+ * frequent enough to visibly move, coarse enough that a huge local tree
+ * (all-synchronous, no network gaps to naturally space repaints out) isn't
+ * paying for a DOM write on literally every file. */
+const FILE_TREE_SCAN_PROGRESS_INTERVAL = 25;
+
 /**
  * Shows the loading overlay in place of whatever else is in `#viewport` —
  * the intro screen, the "select a file" placeholder, or a previous run's
@@ -726,6 +734,16 @@ function setLoadingStatus(status: string): void {
   loadingStatus.textContent = status;
 }
 
+/** Formats a byte count for the GitHub tree-fetch progress readout — just
+ * enough precision to see the number climbing (KB while small, one decimal
+ * of MB once it's not), not a general-purpose unit formatter. */
+function formatByteCount(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${Math.round(kb)} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
+}
+
 /**
  * Auto-start the very first level right after a workspace loads: prefer a
  * detected project entrypoint (see `findEntrypoint`) over just resolving the
@@ -747,8 +765,18 @@ async function autoLaunchInitialLevel(tree: TreeNode): Promise<void> {
     target = match.file;
     parsed = match.parsed;
   } else {
-    setLoadingStatus("Scanning file tree…");
-    target = (await flattenParsableFiles(tree))[0] ?? null;
+    const totalFiles = countTreeFiles(tree);
+    let checked = 0;
+    setLoadingStatus(`Scanning file tree… (0/${totalFiles})`);
+    target =
+      (
+        await flattenParsableFiles(tree, () => {
+          checked++;
+          if (checked % FILE_TREE_SCAN_PROGRESS_INTERVAL === 0 || checked === totalFiles) {
+            setLoadingStatus(`Scanning file tree… (${checked}/${totalFiles})`);
+          }
+        })
+      )[0] ?? null;
     parsed = null;
   }
   if (!target) {
@@ -1062,12 +1090,29 @@ async function isParsableNode(node: TreeNode): Promise<boolean> {
 }
 
 /** Files parsable by a registered adapter, in the same depth-first,
- * directories-first order the sidebar renders them in. */
-export async function flattenParsableFiles(node: TreeNode): Promise<TreeNode[]> {
-  if (node.kind === "file") return (await isParsableNode(node)) ? [node] : [];
+ * directories-first order the sidebar renders them in. `onFileChecked`, when
+ * given, fires once per file node visited (parsable or not) — a remote
+ * workspace's extensionless files each cost a real network round-trip (see
+ * `isParsableNode`'s shebang sniff), so a big repo can spend real seconds
+ * walking this without it, same problem `fetchGithubTree`'s tree download
+ * had before it got a progress callback of its own. */
+export async function flattenParsableFiles(node: TreeNode, onFileChecked?: () => void): Promise<TreeNode[]> {
+  if (node.kind === "file") {
+    const ok = await isParsableNode(node);
+    onFileChecked?.();
+    return ok ? [node] : [];
+  }
   const out: TreeNode[] = [];
-  for (const child of node.children ?? []) out.push(...(await flattenParsableFiles(child)));
+  for (const child of node.children ?? []) out.push(...(await flattenParsableFiles(child, onFileChecked)));
   return out;
+}
+
+/** Total file (non-directory) node count in `tree` — a synchronous, in-
+ * memory walk of the already-fetched tree structure, no I/O. Denominator for
+ * the "Scanning file tree…" progress readout in `autoLaunchInitialLevel`. */
+function countTreeFiles(node: TreeNode): number {
+  if (node.kind === "file") return 1;
+  return (node.children ?? []).reduce((sum, child) => sum + countTreeFiles(child), 0);
 }
 
 interface CodebaseStats {
