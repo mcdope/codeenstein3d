@@ -47,6 +47,10 @@ const MAP_COMPLETION_THRESHOLD = 0.95;
 const MAP_COMPLETION_BONUS = 750;
 /** Flat points per unique lore terminal read this level. */
 const LORE_BONUS_PER_TERMINAL = 100;
+/** Flat points per unique secret room opened this level — double the lore
+ * bonus, since finding one takes actively interacting with a specific
+ * stretch of wall rather than just walking near a terminal. */
+const SECRET_ROOM_BONUS_PER_ROOM = 200;
 
 export interface ScoreInput {
   /** Sum of `killPoints()` for every enemy defeated so far. */
@@ -72,6 +76,8 @@ export interface ScoreInput {
   mapCompletionFrac: number;
   /** Count of unique lore terminals read so far this level. */
   uniqueLoreTerminalsRead: number;
+  /** Count of unique secret rooms opened so far this level. */
+  uniqueSecretRoomsOpened: number;
 }
 
 export interface ScoreBreakdown {
@@ -82,6 +88,7 @@ export interface ScoreBreakdown {
   pathBonus: number;
   mapCompletionBonus: number;
   loreBonus: number;
+  secretRoomBonus: number;
   /** Sum of every bonus, floored at 0. */
   total: number;
 }
@@ -111,6 +118,7 @@ export function computeScore(input: ScoreInput): ScoreBreakdown {
   const mapCompletionBonus =
     clamp01(input.mapCompletionFrac) > MAP_COMPLETION_THRESHOLD ? MAP_COMPLETION_BONUS : 0;
   const loreBonus = input.uniqueLoreTerminalsRead * LORE_BONUS_PER_TERMINAL;
+  const secretRoomBonus = input.uniqueSecretRoomsOpened * SECRET_ROOM_BONUS_PER_ROOM;
 
   const total = Math.max(
     0,
@@ -120,7 +128,8 @@ export function computeScore(input: ScoreInput): ScoreBreakdown {
       speedBonus +
       pathBonus +
       mapCompletionBonus +
-      loreBonus,
+      loreBonus +
+      secretRoomBonus,
   );
 
   return {
@@ -131,6 +140,7 @@ export function computeScore(input: ScoreInput): ScoreBreakdown {
     pathBonus,
     mapCompletionBonus,
     loreBonus,
+    secretRoomBonus,
     total,
   };
 }

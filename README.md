@@ -45,7 +45,7 @@ Load anything from a massive Symfony enterprise project to low-level C code like
 - ✅ **Locked doors & keys** — private/protected methods gated behind dependency keys
 - ✅ **Teleporters** — `goto` statements become linked warp pads
 - ✅ **Lore terminals** — large code comments appear as glowing walls (press R to read)
-- ✅ **Secret rooms** — dead code hidden behind fake walls  
+- ✅ **Secret rooms** — dead code, swallowed exceptions, deprecated tags, commented-out code, and magic-number/blob literals hidden behind fake walls  
 - ✅ **Timed spike traps & proximity mines** — corridor hazards at choke points
 - ✅ **Code smells** — functions with 5+ params or 3+ nesting levels get tougher
 
@@ -86,7 +86,7 @@ Each stage only consumes the data structure from the previous stage — language
   
 - **Large comments → Lore terminals** (glowing walls; press R to read, W/S to scroll)
   
-- **Dead code regions → Secret rooms** (hidden behind near-invisible fake walls)
+- **Dead code, empty catches, deprecated tags, commented-out code, magic blobs → Secret rooms** (hidden behind near-invisible fake walls)
   
 - **Headers (`.h` files) → Bonus levels** (distinct cool-teal theme, boosted loot)
 
@@ -112,6 +112,7 @@ Each stage only consumes the data structure from the previous stage — language
 - **Speed bonus** for clearing quickly
 - **Route efficiency** bonus (how close to BFS shortest path)
 - **Lore bonus** flat points per unique terminal read
+- **Secret room bonus** flat points per unique secret room opened (double the lore bonus)
 - **100% Exploration bonus** for visiting 95%+ walkable tiles
 
 ---

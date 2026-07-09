@@ -64,4 +64,4 @@ Enemies roam randomly within their home room until they notice you — which req
 
 ## Scoring
 
-Points come from: kill value (scaled by the enemy's complexity, tripled for Elites), bonuses for finishing with health and ammo left, a speed bonus for clearing quickly, a route-efficiency bonus for taking something close to the shortest possible path, a flat bonus per unique lore terminal read, and a bonus for exploring 95%+ of a level's walkable area. Your score is a running campaign total — it carries forward across every level you clear and never resets at a level transition.
+Points come from: kill value (scaled by the enemy's complexity, tripled for Elites), bonuses for finishing with health and ammo left, a speed bonus for clearing quickly, a route-efficiency bonus for taking something close to the shortest possible path, a flat bonus per unique lore terminal read, a flat bonus (double the lore terminal's) per unique secret room opened, and a bonus for exploring 95%+ of a level's walkable area. Your score is a running campaign total — it carries forward across every level you clear and never resets at a level transition.

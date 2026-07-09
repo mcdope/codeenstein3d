@@ -369,6 +369,11 @@ export class RaycasterEngine {
   /** Tile keys ("x,y") of lore terminals read at least once this level —
    * feeds the scoring system's flat per-terminal bonus. */
   private readonly loreRead = new Set<string>();
+  /** Tile keys ("x,y") of the door tile of every secret room opened at least
+   * once this level — feeds the scoring system's flat per-room bonus. Keyed
+   * by the door tile (not any interior tile), since that's the one cell
+   * `tryOpenSecretWall` always has in hand and it's unique per room. */
+  private readonly secretRoomsOpened = new Set<string>();
   /** Loot dropped by defeated enemies, awaiting collection. */
   private readonly drops: LootDrop[] = [];
   /** Frames left on the red "took damage" screen flash (0 = none). */
@@ -817,7 +822,9 @@ export class RaycasterEngine {
    * whole secret room behind it (not just the one tile faced) is carved as
    * `SECRET_WALL_TILE` (see `placeSecretRooms`/`trySecretRoomOffAnchor`), so
    * every 4-connected `SECRET_WALL_TILE` cell reachable from the tile opened
-   * is flood-filled to plain floor at once, revealing the room in full.
+   * is flood-filled to plain floor at once, revealing the room in full. Also
+   * logs the door tile into `secretRoomsOpened`, feeding the scoring
+   * system's flat per-room discovery bonus (same pattern as `loreRead`).
    * Returns whether a wall was actually opened, so the interact handler can
    * fall back to checking for a nearby lore terminal when it wasn't.
    */
@@ -828,6 +835,7 @@ export class RaycasterEngine {
     const cy = Math.floor(py);
     if (this.map.grid[cy]?.[cx] !== SECRET_WALL_TILE) return false;
 
+    this.secretRoomsOpened.add(`${cx},${cy}`);
     const grid = this.map.grid;
     const stack: Point[] = [{ x: cx, y: cy }];
     while (stack.length > 0) {
@@ -838,7 +846,7 @@ export class RaycasterEngine {
     }
     audio.playSecret();
     console.log(
-      "%c[secret] a section of wall slides open — a hidden room lies beyond",
+      "%c[secret] a section of wall slides open — a hidden room lies beyond — exploration bonus earned",
       "color:#e06aff;font-weight:bold",
     );
     return true;
@@ -1636,6 +1644,7 @@ export class RaycasterEngine {
         shortestPathTiles: this.map.shortestPathTiles,
         mapCompletionFrac: this.visitedWalkableCount / this.totalWalkableTiles,
         uniqueLoreTerminalsRead: this.loreRead.size,
+        uniqueSecretRoomsOpened: this.secretRoomsOpened.size,
       }).total;
 
     return {
