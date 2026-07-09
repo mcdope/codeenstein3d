@@ -98,7 +98,6 @@
 ## Open
 - [ ] rooms need deco of some kind, currently an empty wasteland — implemented in Task 21 (server racks/plants/desks/code-blocks as billboard props) but felt annoying in playtest, so disabled again behind `DECORATIONS_ENABLED = false` in mapGenerator.ts. Code (generation + rendering) is intact; needs a design rethink (placement density? different visual treatment? non-billboard approach?) before re-enabling. Ignore for now.
 - [ ] makefile
-- [ ] tests (unit [coverage target 100%!], end2end/functional/visual [coverage target: all aspects of gameplay], ensure no data leaves the app (besides highscores at a later time))
 - [ ] github ci actions for the tests (to be executed on github, no custom runner)
 - [ ] code optimization/reuse, complexity reduction etc
 - [ ] balancing
@@ -125,6 +124,8 @@
     - should result in a campaign so we can also use them for verifing saving, highscores and replays
     - extend as you think is useful with regards to future tests
     - to be placed in `demo_and_testing_levels`
+- [ ] tests (unit [coverage target 100%!], end2end/functional/visual [coverage target: all aspects of gameplay], ensure no data leaves the app (besides highscores at a later time)). needs the generated levels from the entry above this one.
 - [ ] canvas should fill as much of the window as possible while keeping aspect ratio
 - [ ] ghidra causes WAY to less dmg - i had to use 2 rockets for a single enemy, thats ridicolous considering its a rocket launcher
 - [ ] chance for elite mob with "legendary name", like Linus Torvals; Richard Stallman etc pp in the exit room, higher aggro so player cant just run away
+- [ ] add "(Build: $date $time)" in title
