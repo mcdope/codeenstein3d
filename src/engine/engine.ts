@@ -54,15 +54,19 @@ import {
   drawDamageFlash,
   makeBulletTrace,
   renderBlood,
+  renderExplosionParticles,
   renderExplosions,
   spawnBlood,
   spawnExplosion,
+  spawnExplosionParticles,
   tickBulletTraces,
   updateBlood,
+  updateExplosionParticles,
   updateExplosions,
   type BloodParticle,
   type BulletTrace,
   type Explosion,
+  type ExplosionParticle,
   type GoreLevel,
   type GoreMultipliers,
 } from "./effects";
@@ -93,7 +97,7 @@ import {
   rollLoot,
 } from "./loot";
 import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, ROCKET_BLAST_RADIUS, type Rocket } from "./rockets";
-import { detonateMine, spikeDamage, updateMines } from "./traps";
+import { detonateMine, spikeDamage, updateMines, MINE_BLAST_RADIUS } from "./traps";
 import {
   DOOR_TILE,
   LORE_TILE,
@@ -388,6 +392,8 @@ export class RaycasterEngine {
   private readonly rockets: Rocket[] = [];
   /** Live rocket-blast VFX circles. */
   private readonly explosions: Explosion[] = [];
+  /** Live rocket-blast debris/spark particles (see `spawnExplosionParticles`). */
+  private readonly explosionParticles: ExplosionParticle[] = [];
   /** Countdown (seconds) to the next low-health alarm beep; 0 = beep now. */
   private alarmCountdown = 0;
   /** Ground covered (tiles) since the last footstep sound. */
@@ -695,6 +701,8 @@ export class RaycasterEngine {
     drawBulletTraces(this.ctx, this.traces);
     updateExplosions(this.explosions, dt);
     renderExplosions(this.ctx, this.player, this.explosions, this.zBuffer);
+    updateExplosionParticles(this.explosionParticles, dt);
+    renderExplosionParticles(this.ctx, this.player, this.explosionParticles, this.zBuffer);
 
     // Full-screen red flash when the player is taking damage.
     drawDamageFlash(this.ctx, this.flashFrames / DAMAGE_FLASH_FRAMES);
@@ -991,8 +999,9 @@ export class RaycasterEngine {
     if (this.state !== "playing") return;
     const blasts = updateRockets(this.rockets, this.enemies, this.map, dt);
     for (const blast of blasts) {
-      audio.playExplosion();
+      audio.playRocketExplosion();
       spawnExplosion(this.explosions, blast.x, blast.y, ROCKET_BLAST_RADIUS);
+      spawnExplosionParticles(this.explosionParticles, blast.x, blast.y);
 
       const playerDmg = rocketDamageAt(blast, this.player.posX, this.player.posY);
       if (playerDmg > 0) this.damage(playerDmg);
@@ -1022,10 +1031,11 @@ export class RaycasterEngine {
     const spike = spikeDamage(this.map.spikeTraps, this.player, this.levelTime, dt);
     if (spike > 0) this.damage(spike);
 
-    const mineDamage = updateMines(this.map.mines, this.player, dt);
-    if (mineDamage > 0) {
+    for (const detonation of updateMines(this.map.mines, this.player, dt)) {
       audio.playExplosion();
-      this.damage(mineDamage);
+      spawnExplosion(this.explosions, detonation.x, detonation.y, MINE_BLAST_RADIUS);
+      spawnExplosionParticles(this.explosionParticles, detonation.x, detonation.y);
+      if (detonation.damage > 0) this.damage(detonation.damage);
     }
   }
 
@@ -1470,6 +1480,8 @@ export class RaycasterEngine {
   private destroyMine(mine: Mine): void {
     const dmg = detonateMine(mine, this.player);
     audio.playExplosion();
+    spawnExplosion(this.explosions, mine.x, mine.y, MINE_BLAST_RADIUS);
+    spawnExplosionParticles(this.explosionParticles, mine.x, mine.y);
     console.log(`%c[mine] destroyed by gunfire${dmg > 0 ? ` — caught ${Math.round(dmg)} splash damage` : " — safely disarmed at range"}`, "color:#ff5050");
     if (dmg > 0) this.damage(dmg);
   }

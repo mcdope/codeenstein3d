@@ -27,6 +27,11 @@ const BLOOD_GRAVITY = 6;
 const BASE_STAIN_LIFE = 1.5;
 /** Seconds a rocket-blast VFX circle stays on screen. */
 const EXPLOSION_LIFE = 0.35;
+/** Gravity pulling explosion debris back down, in tiles/sec² — lighter than
+ * `BLOOD_GRAVITY` so sparks hang in the air a beat longer than a blood pixel. */
+const EXPLOSION_PARTICLE_GRAVITY = 5;
+/** How many debris/spark particles one rocket detonation kicks up. */
+const EXPLOSION_PARTICLE_COUNT = 16;
 
 /** Gore intensity setting — scales blood-particle count, rendered size, and
  * how long a landed particle lingers before despawning. Persisted by
@@ -87,6 +92,26 @@ export interface Explosion {
    * actual blast radius, so the visual and the real hitbox agree. */
   radius: number;
   life: number;
+  maxLife: number;
+}
+
+/** One debris/spark particle kicked up by a rocket detonation, in world (tile)
+ * space — bursts outward from the blast center and falls under gravity, same
+ * shape as `BloodParticle` but shorter-lived and colored by its own remaining
+ * life (hot white-yellow when fresh, cooling through orange to smoky ember as
+ * it dies) rather than a single fixed color. */
+export interface ExplosionParticle {
+  x: number;
+  y: number;
+  /** Height above the floor, in tiles. */
+  z: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  /** Seconds of life remaining. */
+  life: number;
+  /** Life this particle spawned with — `life / maxLife` drives its color/size
+   * fade, since particles don't share one uniform lifespan (see `spawnExplosionParticles`). */
   maxLife: number;
 }
 
@@ -197,6 +222,72 @@ export function renderExplosions(
     ctx.beginPath();
     ctx.arc(proj.screenX, cy, r * 0.5, 0, Math.PI * 2);
     ctx.fill();
+  }
+}
+
+/** Spawn a burst of debris/spark particles at (x,y) for a rocket detonation —
+ * layered on top of `spawnExplosion`'s growing ring to give the blast some
+ * actual texture instead of just a flat flash. Independent of the Gore
+ * setting (that only scales *blood*); a rocket always kicks up the same
+ * amount of debris regardless of gore level. */
+export function spawnExplosionParticles(list: ExplosionParticle[], x: number, y: number): void {
+  for (let i = 0; i < EXPLOSION_PARTICLE_COUNT; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1.2 + Math.random() * 2.4; // tiles/sec, outward
+    const life = 0.3 + Math.random() * 0.35;
+    list.push({
+      x,
+      y,
+      z: 0.25 + Math.random() * 0.3,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      vz: 1.4 + Math.random() * 2.2, // initial upward kick
+      life,
+      maxLife: life,
+    });
+  }
+}
+
+/** Integrate explosion particles by `dt`, removing those that expired or
+ * fell through the floor (in place) — unlike blood, debris doesn't settle
+ * and linger, it just burns out mid-air. */
+export function updateExplosionParticles(list: ExplosionParticle[], dt: number): void {
+  for (let i = list.length - 1; i >= 0; i--) {
+    const p = list[i];
+    p.vz -= EXPLOSION_PARTICLE_GRAVITY * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.z += p.vz * dt;
+    p.life -= dt;
+    if (p.life <= 0 || p.z < 0) list.splice(i, 1);
+  }
+}
+
+/** Draw every live explosion particle as a small square that cools from a hot
+ * white-yellow core through orange to a smoky ember as its remaining life
+ * drops, wall-occluded via the z-buffer like every other world billboard. */
+export function renderExplosionParticles(
+  ctx: CanvasRenderingContext2D,
+  player: Player,
+  list: ExplosionParticle[],
+  zBuffer: Float64Array,
+): void {
+  const width = ctx.canvas.width;
+  const height = ctx.canvas.height;
+  for (const p of list) {
+    const proj = projectPoint(player, p.x, p.y, width, height, 1);
+    if (proj.depth <= 0.1) continue;
+    const col = clamp(Math.round(proj.screenX), 0, width - 1);
+    if (proj.depth >= zBuffer[col]) continue; // behind a wall
+
+    const tilePx = proj.bottom - proj.top; // pixels per world tile at this depth
+    const sy = proj.bottom - p.z * tilePx; // lift off the floor by the particle height
+    const t = p.life / p.maxLife; // 1 fresh -> 0 dying
+    const s = Math.max(1, Math.round(tilePx * 0.07 * t));
+
+    ctx.fillStyle =
+      t > 0.6 ? `rgba(255,235,190,${t.toFixed(3)})` : t > 0.3 ? `rgba(255,110,35,${t.toFixed(3)})` : `rgba(90,75,65,${t.toFixed(3)})`;
+    ctx.fillRect(Math.round(proj.screenX) - (s >> 1), Math.round(sy) - (s >> 1), s, s);
   }
 }
 

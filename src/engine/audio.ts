@@ -63,6 +63,8 @@ class AudioManager {
    * (custom music doesn't overpower in-game sound effects, or vice versa). */
   private bgm: GainNode | null = null;
   private distortion: WaveShaperNode | null = null;
+  /** Cached white-noise buffer backing `playRocketExplosion`'s crack transient — built once since its content (raw random samples) never needs to vary between explosions. */
+  private explosionNoise: AudioBuffer | null = null;
   private unavailable = false;
   /** Timestamp of the last damage sound, to rate-limit continuous hazards. */
   private lastDamageAt = -Infinity;
@@ -309,7 +311,9 @@ class AudioManager {
     });
   }
 
-  /** Proximity mine detonation: a low, distorted booming thud. */
+  /** Proximity mine detonation (or one shot to disarm one): a low, distorted
+   * booming thud — smaller and duller than a rocket's own boom, see
+   * `playRocketExplosion`. */
   playExplosion(): void {
     const ctx = this.resume();
     if (!ctx || !this.sfx) return;
@@ -322,6 +326,50 @@ class AudioManager {
     osc.connect(this.distortionNode(ctx)).connect(gain).connect(this.sfx);
     osc.start(t);
     osc.stop(t + 0.45);
+  }
+
+  /**
+   * A rocket detonating: a bigger, punchier boom than the mine's own thud
+   * (`playExplosion`) — a deep sub-bass sweep for the body of the blast, plus
+   * a short filtered white-noise "crack" transient layered on top so the
+   * initial impact reads as sharp, not just a rumble.
+   */
+  playRocketExplosion(): void {
+    const ctx = this.resume();
+    if (!ctx || !this.sfx) return;
+    const t = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(75, t);
+    osc.frequency.exponentialRampToValueAtTime(22, t + 0.5);
+    const oscGain = envelope(ctx, 0.85, 0.004, 0.55);
+    osc.connect(this.distortionNode(ctx)).connect(oscGain).connect(this.sfx);
+    osc.start(t);
+    osc.stop(t + 0.6);
+
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.explosionNoiseBuffer(ctx);
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = "lowpass";
+    noiseFilter.frequency.setValueAtTime(2200, t);
+    noiseFilter.frequency.exponentialRampToValueAtTime(180, t + 0.3);
+    const noiseGain = envelope(ctx, 0.5, 0.002, 0.28);
+    noise.connect(noiseFilter).connect(noiseGain).connect(this.sfx);
+    noise.start(t);
+    noise.stop(t + 0.32);
+  }
+
+  /** Shared white-noise buffer for `playRocketExplosion`'s crack transient (built once). */
+  private explosionNoiseBuffer(ctx: AudioContext): AudioBuffer {
+    if (!this.explosionNoise) {
+      const length = Math.floor(ctx.sampleRate * 0.35);
+      const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
+      this.explosionNoise = buffer;
+    }
+    return this.explosionNoise;
   }
 
   /** Secret wall opened, or a lore terminal read: a bright, mysterious rising

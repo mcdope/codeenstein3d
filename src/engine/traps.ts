@@ -26,8 +26,10 @@ const MINE_FUSE_RADIUS = 1.8;
 const MINE_FUSE_SECONDS = 0.9;
 /** Radius (tiles) of a mine's blast; damage falls off with distance inside it,
  * and is 0 entirely outside it — so shooting one from far enough away (see
- * `detonateMine`) is a genuinely safe way to clear it, not just a formality. */
-const MINE_BLAST_RADIUS = 2.4;
+ * `detonateMine`) is a genuinely safe way to clear it, not just a formality.
+ * Exported so `RaycasterEngine` can size the same explosion VFX (ring +
+ * spark particles) a rocket uses (see `rockets.ts`'s `ROCKET_BLAST_RADIUS`). */
+export const MINE_BLAST_RADIUS = 2.4;
 /** Damage dealt at ground zero; the falloff floor keeps even an edge-of-blast
  * hit meaningful rather than trailing off to nothing. */
 const MINE_MAX_DAMAGE = 32;
@@ -83,6 +85,14 @@ export function detonateMine(mine: Mine, player: Player): number {
   return MINE_MAX_DAMAGE * falloff;
 }
 
+/** Where and how hard a mine detonated on its own (proximity fuse), for the
+ * caller to fan out matching VFX — mirrors `RocketExplosion` in `rockets.ts`. */
+export interface MineDetonation {
+  x: number;
+  y: number;
+  damage: number;
+}
+
 /**
  * Advance every live mine's state by `dt` seconds. A mine within
  * `MINE_SIGHT_RADIUS` becomes visible — sticky, so once spotted it stays on
@@ -90,9 +100,11 @@ export function detonateMine(mine: Mine, player: Player): number {
  * tighter `MINE_FUSE_RADIUS` does its fuse actually start counting; stepping
  * back out of that resets the timer (the "immediately back away" grace). One
  * that reaches the fuse threshold detonates for distance-scaled AoE damage.
+ * Returns one entry per mine that went off this frame (almost always 0 or 1,
+ * but never assumed to be capped at that).
  */
-export function updateMines(mines: Mine[], player: Player, dt: number): number {
-  let damage = 0;
+export function updateMines(mines: Mine[], player: Player, dt: number): MineDetonation[] {
+  const detonations: MineDetonation[] = [];
   for (const mine of mines) {
     if (!mine.alive) continue;
     const distance = Math.hypot(mine.x - player.posX, mine.y - player.posY);
@@ -105,7 +117,7 @@ export function updateMines(mines: Mine[], player: Player, dt: number): number {
     mine.closeTimer += dt;
     if (mine.closeTimer < MINE_FUSE_SECONDS) continue;
 
-    damage += detonateMine(mine, player);
+    detonations.push({ x: mine.x, y: mine.y, damage: detonateMine(mine, player) });
   }
-  return damage;
+  return detonations;
 }
