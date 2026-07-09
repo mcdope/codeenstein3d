@@ -171,7 +171,13 @@ export const WEAPONS: readonly Weapon[] = [
     name: "ghidra",
     pellets: 1,
     spreadPx: 0,
-    damagePerPellet: 70,
+    // Up from 70, then 100 — still felt weak in a second playtest pass.
+    // Regular (non-pack, non-Elite) enemies can sit well above 100, up to
+    // ~225 HP at the top of the single-enemy complexity band (see
+    // `HP_PER_COMPLEXITY`/`ELITE_COMPLEXITY_THRESHOLD` in `mapGenerator.ts`),
+    // and a rocket launcher routinely needing 2+ hits to drop something it
+    // should flatten read as backwards for the weapon.
+    damagePerPellet: 150,
     ammoPerShot: 1,
     ammoType: "rockets",
     tracerColor: "#ff6a2a",
