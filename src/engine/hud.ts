@@ -274,7 +274,7 @@ export function drawCompass(
 }
 
 /** Height, in canvas pixels, of the native status bar at the bottom. */
-const HUD_HEIGHT = 58;
+export const HUD_HEIGHT = 58;
 
 /**
  * Doom/terminal-style status bar drawn across the bottom of the canvas. Call

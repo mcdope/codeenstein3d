@@ -412,13 +412,17 @@ export class RaycasterEngine {
   private meleeRecoil = 0;
   /** Frames left on the muzzle flash. */
   private muzzleFrames = 0;
-  /** Whether the full-screen automap overlay is up (pauses the sim). */
+  /** Whether the automap overlay is up. Non-blocking — the sim keeps running
+   * (movement, combat, hazards) while it's shown, Diablo-style; only a few
+   * purely-visual layers (viewmodel, crosshair, corner minimap/compass) are
+   * suppressed while it's open. See `advance()`. */
   private isMapActive = false;
   /** Whether the game is paused (window blur or Escape) — freezes the sim and
    * shows a "PAUSED" overlay, distinct from the Tab automap. */
   private isPaused = false;
   /** Text of the lore terminal currently being read (null = no overlay up).
-   * Freezes the sim the same way `isPaused`/`isMapActive` do — see `advance()`. */
+   * Freezes the sim the same way `isPaused` does (`isMapActive` no longer
+   * freezes — see its doc comment) — see `advance()`. */
   private loreText: string | null = null;
   /** Wrapped-line scroll offset into `loreText`, advanced by holding W/S
    * while the overlay is up (see `drawLoreOverlay`'s doc comment) and reset
@@ -586,12 +590,10 @@ export class RaycasterEngine {
       return;
     }
 
-    // Tab toggles the automap, which pauses all game action while it's up.
+    // Tab toggles the automap. Non-blocking — sim keeps running (movement,
+    // combat, hazards) while it's shown; only a few purely-visual layers are
+    // suppressed while it's open (see the render section below).
     if (this.input.consumeMapToggle()) this.isMapActive = !this.isMapActive;
-    if (this.isMapActive) {
-      this.renderPaused();
-      return;
-    }
 
     // Lore terminal overlay: opened/closed by "R", independent of Tab/Esc.
     // Checked before weapon switching / simulation so both freeze the sim the
@@ -707,34 +709,45 @@ export class RaycasterEngine {
     // Full-screen red flash when the player is taking damage.
     drawDamageFlash(this.ctx, this.flashFrames / DAMAGE_FLASH_FRAMES);
 
-    // First-person weapon, swaying with the bob and kicking on recoil.
-    // A quick-melee swing briefly overlays the knife's viewmodel on top of
-    // whatever ranged weapon is actually equipped — weaponIndex, ammo, and
-    // the HUD are untouched throughout (see `meleeRecoil`'s doc comment).
-    const meleeOverlayActive = this.meleeRecoil > 0.02;
-    drawWeapon(this.ctx, {
-      bobX: view.bobX,
-      bobY: view.bobY,
-      recoil: meleeOverlayActive ? this.meleeRecoil : this.recoil,
-      flash: meleeOverlayActive ? false : this.muzzleFrames > 0,
-      kind: meleeOverlayActive ? MELEE_WEAPON.viewKind : WEAPONS[this.weaponIndex].viewKind,
-    });
+    // First-person weapon, crosshair, corner minimap/compass: all purely
+    // visual clutter the automap would immediately cover, so they're skipped
+    // while it's open rather than drawn and instantly painted over. A quick-
+    // melee swing briefly overlays the knife's viewmodel on top of whatever
+    // ranged weapon is actually equipped — weaponIndex, ammo, and the HUD are
+    // untouched throughout (see `meleeRecoil`'s doc comment).
+    if (!this.isMapActive) {
+      const meleeOverlayActive = this.meleeRecoil > 0.02;
+      drawWeapon(this.ctx, {
+        bobX: view.bobX,
+        bobY: view.bobY,
+        recoil: meleeOverlayActive ? this.meleeRecoil : this.recoil,
+        flash: meleeOverlayActive ? false : this.muzzleFrames > 0,
+        kind: meleeOverlayActive ? MELEE_WEAPON.viewKind : WEAPONS[this.weaponIndex].viewKind,
+      });
 
-    drawCrosshair(this.ctx, this.target !== null, WEAPONS[this.weaponIndex].spreadPx);
-    const minimapPanel = renderMinimap(this.ctx, this.map, this.player, this.levelTime);
-    if (COMPASS_ENABLED) {
-      drawCompass(
-        this.ctx,
-        minimapPanel.compassBadge,
-        this.player.posX,
-        this.player.posY,
-        Math.atan2(this.player.dirY, this.player.dirX),
-        this.map.exit.x + 0.5,
-        this.map.exit.y + 0.5,
-      );
+      drawCrosshair(this.ctx, this.target !== null, WEAPONS[this.weaponIndex].spreadPx);
+      const minimapPanel = renderMinimap(this.ctx, this.map, this.player, this.levelTime);
+      if (COMPASS_ENABLED) {
+        drawCompass(
+          this.ctx,
+          minimapPanel.compassBadge,
+          this.player.posX,
+          this.player.posY,
+          Math.atan2(this.player.dirY, this.player.dirX),
+          this.map.exit.x + 0.5,
+          this.map.exit.y + 0.5,
+        );
+      }
     }
 
-    // Native HUD sits on top of the whole scene.
+    // Diablo-style automap overlay: drawn on top of the still-live 3D scene
+    // (sim never stops for it, unlike `isPaused`/`loreText`) — see automap.ts.
+    if (this.isMapActive) {
+      drawAutomap(this.ctx, this.map, this.player, this.levelTime);
+    }
+
+    // Native HUD sits on top of the whole scene, automap included, so
+    // health/ammo/keys always stay visible and live.
     const stats = this.buildStats();
     drawHud(this.ctx, stats);
     if (this.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
@@ -760,20 +773,9 @@ export class RaycasterEngine {
   }
 
   /**
-   * Render one frozen frame with the automap overlay on top. Called instead of
-   * the normal update+render while the map is open, so the world stands still.
-   */
-  private renderPaused(): void {
-    renderScene(this.ctx, this.map, this.player, this.zBuffer, 0, this.levelTime);
-    this.renderWorldBillboards();
-    drawAutomap(this.ctx, this.map, this.player, this.levelTime);
-    if (this.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
-    this.handlers.onStats?.(this.buildStats());
-  }
-
-  /**
    * Render one frozen frame with the "PAUSED" scrim on top — triggered by
-   * window blur or Escape, distinct from the Tab automap pause above.
+   * window blur or Escape. Distinct from the Tab automap, which no longer
+   * freezes the sim — see `advance()`.
    */
   private renderPausedOverlay(): void {
     renderScene(this.ctx, this.map, this.player, this.zBuffer, 0, this.levelTime);
