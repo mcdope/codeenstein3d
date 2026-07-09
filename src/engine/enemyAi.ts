@@ -46,6 +46,19 @@ const ENEMY_RADIUS = 0.3;
  * `Enemy.elite`. Its HP scaling already lives in `mapGenerator.ts`; this is
  * the "high damage" half of the spec. */
 const ELITE_DAMAGE_MULTIPLIER = 2;
+/** Chase/roam speed multiplier for an Edge Case enemy — see `Enemy.edgeCase`.
+ * "Very high movement speed": noticeably faster than the player can react to. */
+const EDGE_CASE_SPEED_MULTIPLIER = 2.2;
+/** Melee/ranged damage multiplier for an Edge Case enemy — "low melee
+ * damage": a nuisance, not a threat. */
+const EDGE_CASE_DAMAGE_MULTIPLIER = 0.4;
+/** Average per-second chance an Edge Case enemy abandons its current roam
+ * target early (before arriving) — the core of its erratic roaming. */
+const EDGE_CASE_RETARGET_RATE = 2.0;
+/** Random heading wobble (radians) applied to an Edge Case enemy's roam step,
+ * on top of its retargeting — reads as visibly twitchy/darting rather than a
+ * smooth glide even between retargets. */
+const EDGE_CASE_ROAM_JITTER_RAD = 0.9;
 
 /**
  * Advance every living enemy by `dt` seconds and return the total stability
@@ -108,7 +121,9 @@ function updateEnemy(
   if (dist <= ATTACK_RADIUS) {
     if (enemy.attackCooldown === 0) {
       enemy.attackCooldown = ATTACK_COOLDOWN;
-      return enemy.elite ? ATTACK_DAMAGE * ELITE_DAMAGE_MULTIPLIER : ATTACK_DAMAGE;
+      if (enemy.elite) return ATTACK_DAMAGE * ELITE_DAMAGE_MULTIPLIER;
+      if (enemy.edgeCase) return ATTACK_DAMAGE * EDGE_CASE_DAMAGE_MULTIPLIER;
+      return ATTACK_DAMAGE;
     }
     return 0;
   }
@@ -125,7 +140,7 @@ function updateEnemy(
       enemy.y,
       player.posX,
       player.posY,
-      enemy.elite ? ELITE_DAMAGE_MULTIPLIER : 1,
+      enemy.elite ? ELITE_DAMAGE_MULTIPLIER : enemy.edgeCase ? EDGE_CASE_DAMAGE_MULTIPLIER : 1,
     );
     enemy.fireCooldown = FIRE_COOLDOWN_MIN + rng() * (FIRE_COOLDOWN_MAX - FIRE_COOLDOWN_MIN);
   }
@@ -133,7 +148,7 @@ function updateEnemy(
   // Home in on the player, steering toward the next cell of a wall-aware path
   // (rounding corners) and falling back to a straight line.
   if (dist > 0) {
-    const step = MOVEMENT_SPEED * dt;
+    const step = (enemy.edgeCase ? MOVEMENT_SPEED * EDGE_CASE_SPEED_MULTIPLIER : MOVEMENT_SPEED) * dt;
     const waypoint = nextWaypoint(enemy, player, map);
     chaseToward(enemy, waypoint?.x ?? player.posX, waypoint?.y ?? player.posY, step, map);
   }
@@ -158,8 +173,20 @@ function hasLineOfSight(map: GameMap, x0: number, y0: number, x1: number, y1: nu
  * current roam target, and when it's reached (or the path is blocked) pick a
  * fresh random point inside the room. Movement is clamped so the enemy's box
  * never crosses the room bounds — it can't drift out through a doorway.
+ *
+ * An Edge Case enemy (see `Enemy.edgeCase`) roams erratically instead: it may
+ * abandon its current target before arriving (`EDGE_CASE_RETARGET_RATE`), on
+ * top of a much higher base speed and a per-step heading wobble
+ * (`EDGE_CASE_ROAM_JITTER_RAD`) — reads as darting/glitchy rather than a
+ * relaxed stroll-and-pause. For a non-`edgeCase` enemy every added branch is
+ * gated strictly behind `enemy.edgeCase`, so this is byte-for-byte the same
+ * behavior (and draws the same `rng()` sequence) as before.
  */
 function roam(enemy: Enemy, map: GameMap, dt: number, rng: () => number): void {
+  if (enemy.edgeCase && rng() < EDGE_CASE_RETARGET_RATE * dt) {
+    pickRoamTarget(enemy, rng);
+  }
+
   const dx = enemy.roamX - enemy.x;
   const dy = enemy.roamY - enemy.y;
   const dist = Math.hypot(dx, dy);
@@ -168,10 +195,14 @@ function roam(enemy: Enemy, map: GameMap, dt: number, rng: () => number): void {
     return;
   }
 
-  const step = ROAM_SPEED * dt;
+  const speed = enemy.edgeCase ? ROAM_SPEED * EDGE_CASE_SPEED_MULTIPLIER : ROAM_SPEED;
+  const step = speed * dt;
+  let heading = Math.atan2(dy, dx);
+  if (enemy.edgeCase) heading += (rng() * 2 - 1) * EDGE_CASE_ROAM_JITTER_RAD;
+
   const beforeX = enemy.x;
   const beforeY = enemy.y;
-  moveWithinHome(enemy, (dx / dist) * step, (dy / dist) * step, map);
+  moveWithinHome(enemy, Math.cos(heading) * step, Math.sin(heading) * step, map);
   // If a wall blocked the stroll, wander somewhere else instead of pushing.
   if (Math.hypot(enemy.x - beforeX, enemy.y - beforeY) < step * 0.25) {
     pickRoamTarget(enemy, rng);

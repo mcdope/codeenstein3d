@@ -38,6 +38,13 @@ const ENEMY_SIZE = 0.7;
 /** Elite (boss-tier) enemies render 1.5x the size of a regular one — a
  * silhouette you notice as different before you even read its HP bar. */
 const ELITE_SCALE = 1.5;
+/** Edge Case enemies render at roughly half the size of a regular one — small
+ * and jarring, reads as "not supposed to be here". */
+const EDGE_CASE_SCALE = 0.55;
+/** An Edge Case enemy's tint: an unmistakable "glitch" cyan that overrides
+ * both its (synthetic) kind color and being confused for an Elite. Exported
+ * so the minimap dot (`raycaster.ts`) can match it. */
+export const EDGE_CASE_COLOR = "#00FFFF";
 /**
  * Near clip for sprite billboards, in camera-space depth. Kept well below one
  * tile so an enemy right in the player's face still draws (its projected quad
@@ -66,6 +73,7 @@ const ELITE_COLOR = "#f2c230";
  * takes priority over both — see the `draw` callback in
  * `collectEnemyBillboards`. */
 function enemyBodyColor(enemy: Enemy): string {
+  if (enemy.edgeCase) return EDGE_CASE_COLOR;
   return enemy.elite ? ELITE_COLOR : enemyColor(enemy.entity.kind);
 }
 
@@ -113,14 +121,20 @@ export function projectPoint(
 }
 
 /** Project an enemy into screen space for `player` on a `width`×`height` view.
- * Elites project 1.5x the size of a regular enemy (see `ELITE_SCALE`). */
+ * Elites project 1.5x the size of a regular enemy (see `ELITE_SCALE`); Edge
+ * Case enemies project roughly half-size (see `EDGE_CASE_SCALE`). */
 export function projectEnemy(
   player: Player,
   enemy: Enemy,
   width: number,
   height: number,
 ): EnemyProjection {
-  return projectPoint(player, enemy.x, enemy.y, width, height, enemy.elite ? ENEMY_SIZE * ELITE_SCALE : ENEMY_SIZE);
+  const sizeFactor = enemy.edgeCase
+    ? ENEMY_SIZE * EDGE_CASE_SCALE
+    : enemy.elite
+      ? ENEMY_SIZE * ELITE_SCALE
+      : ENEMY_SIZE;
+  return projectPoint(player, enemy.x, enemy.y, width, height, sizeFactor);
 }
 
 /** Collect all living enemies as billboard draw jobs, occluded by the wall
@@ -163,7 +177,7 @@ export function collectEnemyBillboards(
         // Only draw the label / HP bar if the sprite's center isn't wall-occluded.
         const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
         if (proj.depth < zBuffer[centerCol]) {
-          drawEnemyOverlay(ctx, enemy.entity, enemy.hp, enemy.maxHp, enemy.elite, proj);
+          drawEnemyOverlay(ctx, enemy.entity, enemy.hp, enemy.maxHp, enemy.elite, enemy.edgeCase, proj);
         }
       },
     }));
@@ -175,6 +189,7 @@ function drawEnemyOverlay(
   hp: number,
   maxHp: number,
   elite: boolean,
+  edgeCase: boolean,
   proj: EnemyProjection,
 ): void {
   const barWidth = Math.min(80, Math.max(20, proj.right - proj.left));
@@ -182,15 +197,16 @@ function drawEnemyOverlay(
   const barY = proj.top - 12;
   const barH = 4;
 
-  // HP bar: red background, green fill (gold for an Elite, matching its tint).
+  // HP bar: red background, green fill (gold for an Elite, cyan for an Edge
+  // Case, matching each one's tint).
   ctx.fillStyle = "#3a0d0d";
   ctx.fillRect(barX, barY, barWidth, barH);
-  ctx.fillStyle = elite ? ELITE_COLOR : "#37d24a";
+  ctx.fillStyle = elite ? ELITE_COLOR : edgeCase ? EDGE_CASE_COLOR : "#37d24a";
   ctx.fillRect(barX, barY, (barWidth * Math.max(0, hp)) / maxHp, barH);
 
-  // Name label above the bar; an Elite additionally gets a small warning
-  // caption above that, so its extra toughness/damage reads as intentional
-  // rather than the HP bar just looking wrong.
+  // Name label above the bar; an Elite/Edge Case additionally gets a small
+  // warning caption above that, so its stats reading differently from a
+  // normal enemy's feels intentional rather than the HP bar just looking wrong.
   ctx.font = "10px monospace";
   ctx.textAlign = "center";
   ctx.fillStyle = "rgba(0,0,0,0.6)";
@@ -204,6 +220,12 @@ function drawEnemyOverlay(
     ctx.fillStyle = ELITE_COLOR;
     ctx.font = "bold 9px monospace";
     ctx.fillText("⚠ ELITE", proj.screenX, barY - 17);
+  } else if (edgeCase) {
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillRect(barX, barY - 26, barWidth, 11);
+    ctx.fillStyle = EDGE_CASE_COLOR;
+    ctx.font = "bold 9px monospace";
+    ctx.fillText("⚠ EDGE CASE", proj.screenX, barY - 17);
   }
 
   ctx.textAlign = "start";

@@ -23,6 +23,8 @@ Codeenstein 3D parses your source into an AST and turns its structure into a pla
 
 The level-start briefing shows how many secret rooms a level actually has ("Secrets") alongside its room/enemy counts — worth keeping an eye on the walls.
 
+A long, straight corridor gets broken up rather than left as one uninterrupted sightline: either a small extra room gets carved into the middle of it, or (if there's no room for one) the corridor jogs around a short blocked stretch instead. Any injected room comes with its own Edge Case enemies — see [Enemies](#enemies) below.
+
 ## Weapons
 
 | Weapon | Slot | Type | Notes |
@@ -56,6 +58,8 @@ Difficulty only affects enemy-dealt melee/ranged damage — traps and rocket sel
 ## Enemies
 
 Enemies roam randomly within their home room until they notice you — which requires being within roughly 7.5 tiles **and** having line-of-sight, or taking a hit from you at any range (getting shot always counts as being spotted). Once aggro'd, they chase you around corners, and attack with melee at close range or ranged plasma bolts if they have line-of-sight at a distance.
+
+**Edge Cases** are a separate, small breed found only inside a corridor's breakup room (never in a normal room): a jarring cyan tint and a noticeably smaller silhouette make them easy to tell apart from a real enemy at a glance. They have very little HP, dart around erratically rather than roaming smoothly, move faster than anything else in the game, and hit for much less than a normal enemy's melee — a nuisance to swat on your way through, not a real threat.
 
 ## Traps
 

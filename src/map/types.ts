@@ -40,6 +40,21 @@ export interface Point {
 }
 
 /**
+ * A plain axis-aligned tile rectangle: `[x, x+w)` × `[y, y+h)`. Used wherever
+ * geometry needs to be checked/reused without carrying a `Room`'s `CodeEntity`
+ * back-reference — e.g. a corridor-breakup room injected by
+ * `breakUpLongCorridors`, which has no parsed entity behind it. `Room`
+ * structurally satisfies this shape, so helpers that only need `x/y/w/h` can
+ * take a `Rect` and work for both.
+ */
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
  * A rectangular room carved for one code entity. Coordinates are the top-left
  * tile; the room spans `[x, x+w)` × `[y, y+h)`. Keeps a back-reference to the
  * entity so later stages (enemies, bosses) can scale off its complexity.
@@ -113,6 +128,16 @@ export interface Enemy {
    * a guaranteed high-value drop on death instead of the normal loot roll.
    */
   elite: boolean;
+  /**
+   * A weak, small, jarringly-tinted "bug in the system" enemy spawned only in
+   * a corridor-breakup room injected by `breakUpLongCorridors` in
+   * `mapGenerator.ts` (never in a normal AST-derived room). Very low HP, very
+   * fast, erratic idle roaming, low melee/ranged damage (see `enemyAi.ts`);
+   * still uses the ordinary aggro/LOS/chase state machine, just with
+   * different speed/damage constants and a distinct roam behaviour. Visuals
+   * (small size, cyan tint) live in `sprites.ts`.
+   */
+  edgeCase: boolean;
 }
 
 /** The full generated level. */
@@ -128,6 +153,14 @@ export interface GameMap {
    */
   visited: boolean[][];
   rooms: Room[];
+  /**
+   * Small rooms injected mid-corridor by `breakUpLongCorridors`
+   * (`mapGenerator.ts`) to break up otherwise-too-long straight sightlines.
+   * Deliberately not part of `rooms` — they have no backing `CodeEntity`, so
+   * kind-gated systems (enemies, doors, hazards, ...) never see them. Home to
+   * the "Edge Case" enemies exclusively (see `Enemy.edgeCase`).
+   */
+  breakupRooms: Rect[];
   /** Player spawn, in a corner of the first room (clear of its enemy). */
   spawn: Point;
   /** Enemies to populate the rooms (one per function/method). */

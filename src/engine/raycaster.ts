@@ -19,7 +19,7 @@ import {
   type GameMap,
 } from "../map/types";
 import type { Player } from "./player";
-import { enemyColor } from "./sprites";
+import { EDGE_CASE_COLOR, enemyColor } from "./sprites";
 import { activeSpikeTileKeys } from "./traps";
 
 /** Base wall color (a warm dungeon brick), before distance shading. */
@@ -509,7 +509,7 @@ export function renderMinimap(
   // Discovered, living enemies only — see the doc comment above.
   for (const enemy of map.enemies) {
     if (!enemy.alive || !enemy.discovered) continue;
-    ctx.fillStyle = enemyColor(enemy.entity.kind);
+    ctx.fillStyle = enemy.edgeCase ? EDGE_CASE_COLOR : enemyColor(enemy.entity.kind);
     ctx.fillRect(
       pad + enemy.x * cell - cell / 2,
       pad + enemy.y * cell - cell / 2,
