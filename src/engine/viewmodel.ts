@@ -54,6 +54,9 @@ export function drawWeapon(ctx: CanvasRenderingContext2D, v: WeaponView): void {
     case "rocket":
       drawRocketLauncher(ctx, cx, baseY, recoilBack, v.flash);
       break;
+    case "flamethrower":
+      drawFlamethrower(ctx, cx, baseY, recoilBack, v.flash);
+      break;
     case "pistol":
     default:
       drawPistol(ctx, cx, baseY, recoilBack, v.flash);
@@ -238,6 +241,82 @@ function drawRocketLauncher(
   ctx.fillRect(cx - 16, baseY - 46, 34, 26);
 
   if (flash) drawMuzzleFlash(ctx, cx, tubeTop - 10, 30, 14); // biggest flash of the arsenal
+}
+
+/** A stubby, flared nozzle over a squat fuel tank strapped alongside the
+ * receiver — no long barrel at all, the opposite silhouette from every other
+ * ranged weapon here, so a switch to it reads instantly even before the HUD's
+ * "GAS" label catches up. */
+function drawFlamethrower(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  baseY: number,
+  recoilBack: number,
+  flash: boolean,
+): void {
+  const nozzleTop = baseY - 130 + recoilBack;
+
+  // Squat, flared nozzle — wider at the muzzle than the base.
+  ctx.fillStyle = "#2c2620";
+  ctx.beginPath();
+  ctx.moveTo(cx - 12, baseY - 90);
+  ctx.lineTo(cx + 12, baseY - 90);
+  ctx.lineTo(cx + 20, nozzleTop);
+  ctx.lineTo(cx - 20, nozzleTop);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "#4a3f30";
+  ctx.fillRect(cx - 16, nozzleTop, 32, 6); // rim highlight
+
+  // Squat receiver block.
+  ctx.fillStyle = "#26221c";
+  ctx.fillRect(cx - 34, baseY - 94, 68, 60);
+  ctx.fillStyle = "#3f372a";
+  ctx.fillRect(cx - 34, baseY - 94, 68, 6);
+
+  // Fuel tank, strapped alongside the receiver — a rounded cylinder rendered
+  // as a rect with a lighter cap, angled off to the side rather than a long
+  // barrel.
+  ctx.fillStyle = "#5a1e14";
+  ctx.fillRect(cx + 30, baseY - 84, 26, 68);
+  ctx.fillStyle = "#7a2c1c";
+  ctx.fillRect(cx + 30, baseY - 84, 26, 8);
+  ctx.strokeStyle = "#3a1008";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(cx + 30, baseY - 84, 26, 68);
+
+  // Small pilot-light glow at the nozzle tip, always lit (not just on flash).
+  ctx.fillStyle = "rgba(255,150,50,0.8)";
+  ctx.beginPath();
+  ctx.arc(cx, nozzleTop - 2, 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  drawGrip(ctx, cx, baseY);
+
+  if (flash) drawFlameBurst(ctx, cx, nozzleTop - 14);
+}
+
+/** A roaring gout of flame — layered teardrop blobs instead of the sharp
+ * muzzle-flash star every gun-type weapon uses, since this fires a
+ * continuous stream rather than a single muzzle spark. */
+function drawFlameBurst(ctx: CanvasRenderingContext2D, fx: number, fy: number): void {
+  ctx.fillStyle = "rgba(255,90,20,0.9)";
+  flameBlob(ctx, fx, fy, 30, 44);
+  ctx.fillStyle = "rgba(255,160,40,0.9)";
+  flameBlob(ctx, fx, fy + 4, 20, 30);
+  ctx.fillStyle = "rgba(255,230,140,0.95)";
+  flameBlob(ctx, fx, fy + 8, 10, 16);
+}
+
+/** One teardrop-shaped flame blob, tapering upward from (x,y). */
+function flameBlob(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number): void {
+  ctx.beginPath();
+  ctx.moveTo(x, y - height);
+  ctx.quadraticCurveTo(x + width / 2, y - height * 0.4, x + width / 3, y);
+  ctx.quadraticCurveTo(x, y + height * 0.1, x - width / 3, y);
+  ctx.quadraticCurveTo(x - width / 2, y - height * 0.4, x, y - height);
+  ctx.closePath();
+  ctx.fill();
 }
 
 /** Angled trigger-guard/grip polygon shared by the gun-shaped weapons. */

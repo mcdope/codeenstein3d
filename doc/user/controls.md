@@ -57,6 +57,6 @@ Classic Doom-style cheat codes work — just type the letters while playing, no 
 |---|---|
 | `IDDQD` | Toggles god mode (you take no damage) |
 | `IDCLIP` | Toggles no-clip (walk through walls) |
-| `IDKFA` | One-time grant: unlocks every weapon, maxes bullets/rockets, fills your swap buffer |
+| `IDKFA` | One-time grant: unlocks every weapon, maxes bullets/SMG/rockets/gas, fills your swap buffer |
 
 A small toast confirms activation. **Using any cheat disables highscore recording for the rest of that campaign** — a cheated run never gets a leaderboard entry, even if you turn the cheat back off afterward.

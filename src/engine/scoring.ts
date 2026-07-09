@@ -28,8 +28,8 @@ export function killPoints(enemy: Enemy): number {
 
 /** Max points awarded for finishing at full health. */
 const HEALTH_BONUS_MAX = 500;
-/** Max points split three ways between remaining bullets/rockets/smg ammo
- * (each contributes up to a third), relative to what the level started the
+/** Max points split four ways between remaining bullets/rockets/smg/gas ammo
+ * (each contributes up to a quarter), relative to what the level started the
  * player out with. */
 const AMMO_BONUS_MAX = 250;
 /** Max points for finishing quickly. */
@@ -60,11 +60,13 @@ export interface ScoreInput {
   finalBullets: number;
   finalRockets: number;
   finalSmg: number;
-  /** Bullets/rockets/smg ammo the level started the player out with — the
+  finalGas: number;
+  /** Bullets/rockets/smg/gas ammo the level started the player out with — the
    * baseline remaining ammo is scored against (see `AMMO_BONUS_MAX`). */
   startingBullets: number;
   startingRockets: number;
   startingSmg: number;
+  startingGas: number;
   /** Seconds elapsed so far this level. */
   levelTimeSec: number;
   /** Tiles of ground actually covered so far this level. */
@@ -102,7 +104,8 @@ export function computeScore(input: ScoreInput): ScoreBreakdown {
   const bulletsFrac = input.startingBullets > 0 ? clamp01(input.finalBullets / input.startingBullets) : 0;
   const rocketsFrac = input.startingRockets > 0 ? clamp01(input.finalRockets / input.startingRockets) : 0;
   const smgFrac = input.startingSmg > 0 ? clamp01(input.finalSmg / input.startingSmg) : 0;
-  const ammoBonus = Math.round(((bulletsFrac + rocketsFrac + smgFrac) / 3) * AMMO_BONUS_MAX);
+  const gasFrac = input.startingGas > 0 ? clamp01(input.finalGas / input.startingGas) : 0;
+  const ammoBonus = Math.round(((bulletsFrac + rocketsFrac + smgFrac + gasFrac) / 4) * AMMO_BONUS_MAX);
 
   const speedFrac = clamp01(1 - Math.max(0, input.levelTimeSec - SPEED_TARGET_SEC) / SPEED_TARGET_SEC);
   const speedBonus = Math.round(speedFrac * SPEED_BONUS_MAX);

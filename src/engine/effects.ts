@@ -18,6 +18,22 @@ import type { Player } from "./player";
 export const DAMAGE_FLASH_FRAMES = 12;
 /** Frames a bullet tracer line stays on screen. */
 export const BULLET_TRACE_FRAMES = 4;
+
+/** Frames a flame stream stays drawn — a touch longer than a bullet tracer so
+ * the fanning wedge reads as a stream rather than flickering in and out. */
+const FLAME_STREAM_FRAMES = 6;
+
+/** Handful of embers spawned per flamethrower hit — far fewer than a rocket's
+ * `EXPLOSION_PARTICLE_COUNT`, since Friday Hotfix can land several hits a
+ * second and a full detonation-sized burst per pellet would flood the list. */
+const BURN_PARTICLE_COUNT = 4;
+/** Gravity pulling a burn ember down before it settles, in tiles/sec² —
+ * lighter than `EXPLOSION_PARTICLE_GRAVITY` for a slower, lingering fall. */
+const BURN_GRAVITY = 4;
+/** Seconds a settled burn ember keeps glowing before fading out — an order of
+ * magnitude longer than its airborne life, since a quick mid-air burst alone
+ * read as barely noticeable in playtesting. */
+const BURN_SETTLED_LIFE = 1.6;
 /** Frames an enemy sprite stays tinted red after being hit. */
 export const HIT_FLASH_FRAMES = 5;
 /** Gravity pulling blood pixels toward the floor, in tiles/sec². */
@@ -83,6 +99,20 @@ export interface BulletTrace {
   color: string;
 }
 
+/** A flamethrower shot: a fanning wedge of fire from the muzzle up to its
+ * cone's screen-space spread, instead of the thin per-pellet line every other
+ * hitscan weapon draws (see `BulletTrace`) — a continuous flame stream reads
+ * nothing like a bullet tracer. */
+export interface FlameStream {
+  leftX: number;
+  rightX: number;
+  /** Screen y the cone's spread is measured at (crosshair height). */
+  y2: number;
+  /** Frames of life remaining; fades linearly to 0. */
+  frames: number;
+  color: string;
+}
+
 /** A rocket blast: a screen-space circle that grows and fades over its life,
  * telegraphing the splash-damage radius at the moment it hits. */
 export interface Explosion {
@@ -134,6 +164,25 @@ export interface BloodParticle {
   settled: boolean;
 }
 
+/** One burn ember from a flamethrower hit, in world (tile) space — falls
+ * under gravity like `ExplosionParticle` debris, then settles and lingers
+ * like `BloodParticle`'s floor stain instead of burning out the instant it
+ * lands (see `updateBurnParticles`). */
+export interface BurnParticle {
+  x: number;
+  y: number;
+  /** Height above the floor, in tiles. */
+  z: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  /** Seconds of life remaining. */
+  life: number;
+  /** True once this ember has landed — flips `life` to `BURN_SETTLED_LIFE`
+   * the moment it does (see `updateBurnParticles`). */
+  settled: boolean;
+}
+
 /** Overlay the whole canvas with red at `0.4 * intensity` (intensity 0..1). */
 export function drawDamageFlash(ctx: CanvasRenderingContext2D, intensity: number): void {
   if (intensity <= 0) return;
@@ -166,6 +215,75 @@ export function drawBulletTraces(ctx: CanvasRenderingContext2D, traces: BulletTr
     ctx.stroke();
   }
   ctx.lineWidth = 1;
+}
+
+/** Create a flame stream spanning `leftX`..`rightX` (the widest and narrowest
+ * columns any of this shot's pellets actually landed on, post-Cone-of-Fire
+ * deviation — see `RaycasterEngine.fire()`) at crosshair height. */
+export function spawnFlameStream(height: number, leftX: number, rightX: number, color: string): FlameStream {
+  return { leftX, rightX, y2: height / 2, frames: FLAME_STREAM_FRAMES, color };
+}
+
+/** Age flame streams by one frame, dropping expired ones (in place). */
+export function tickFlameStreams(list: FlameStream[]): void {
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (--list[i].frames <= 0) list.splice(i, 1);
+  }
+}
+
+/** Draw every live flame stream as two layered, flickering jets (the
+ * weapon's own tracer-color outer flame, a brighter yellow-orange inner
+ * core) — needle-thin for most of the distance and only actually fanning
+ * out in the last stretch before the cone's tip, a real flamethrower's
+ * shape rather than an immediate wide blast off the nozzle. Re-jittered
+ * every frame so a held trigger reads as a roaring, unstable flame rather
+ * than a static shape. */
+export function drawFlameStreams(ctx: CanvasRenderingContext2D, width: number, height: number, list: FlameStream[]): void {
+  const baseX = width / 2;
+  const baseY = height;
+  const jitter = () => (Math.random() - 0.5) * 6;
+
+  for (const f of list) {
+    const alpha = 0.85 * Math.max(0, f.frames / FLAME_STREAM_FRAMES);
+
+    ctx.fillStyle = withAlpha(f.color, alpha * 0.9);
+    flameJet(ctx, baseX, baseY, f.leftX + jitter(), f.rightX + jitter(), f.y2, 3);
+
+    ctx.fillStyle = `rgba(255,220,120,${(alpha * 0.85).toFixed(3)})`;
+    const coreLeft = baseX + (f.leftX - baseX) * 0.5 + jitter();
+    const coreRight = baseX + (f.rightX - baseX) * 0.5 + jitter();
+    flameJet(ctx, baseX, baseY, coreLeft, coreRight, f.y2, 4);
+  }
+}
+
+/** A flame "jet" silhouette from (x1,y1) up to (leftX,y2)/(rightX,y2) — unlike
+ * a straight-sided wedge, raising the edge's deviation from center to
+ * `power` (> 1) keeps it needle-thin for most of the distance and only
+ * actually widens in the last stretch before the tip. The brighter inner
+ * core layer uses a higher `power` than the outer flame so it stays even
+ * narrower, reading as a hot center inside a wider outer flame. */
+function flameJet(
+  ctx: CanvasRenderingContext2D,
+  x1: number,
+  y1: number,
+  leftX: number,
+  rightX: number,
+  y2: number,
+  power: number,
+): void {
+  const steps = 10;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    ctx.lineTo(x1 + (leftX - x1) * t ** power, y1 + (y2 - y1) * t);
+  }
+  for (let i = steps; i >= 0; i--) {
+    const t = i / steps;
+    ctx.lineTo(x1 + (rightX - x1) * t ** power, y1 + (y2 - y1) * t);
+  }
+  ctx.closePath();
+  ctx.fill();
 }
 
 /** Apply `alpha` to a `#rrggbb` color string, for effects whose color is data
@@ -245,6 +363,86 @@ export function spawnExplosionParticles(list: ExplosionParticle[], x: number, y:
       life,
       maxLife: life,
     });
+  }
+}
+
+/** Spawn a handful of embers at (x,y) for a flamethrower hit. Unlike
+ * `ExplosionParticle` debris (which just burns out mid-air, see
+ * `updateExplosionParticles`'s doc comment), these settle on the floor and
+ * keep glowing for a while — `BURN_SETTLED_LIFE` — the same "land, then
+ * linger" shape as `BloodParticle`'s floor stain, since a quick mid-air burst
+ * alone read as barely noticeable in playtesting. Purely cosmetic — no
+ * damage-over-time follows from this. */
+export function spawnBurnParticles(list: BurnParticle[], x: number, y: number): void {
+  for (let i = 0; i < BURN_PARTICLE_COUNT; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 0.2 + Math.random() * 0.35; // tiles/sec, outward
+    list.push({
+      x,
+      y,
+      z: 0.4 + Math.random() * 0.3,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      vz: 0.3 + Math.random() * 0.4,
+      life: 0, // placeholder — overwritten with BURN_SETTLED_LIFE on landing, see updateBurnParticles
+      settled: false,
+    });
+  }
+}
+
+/**
+ * Integrate burn embers by `dt`. Airborne particles fall under gravity like
+ * `ExplosionParticle` debris and don't age out at all yet (`life` while
+ * airborne is just a placeholder, overwritten the moment they land — a fixed
+ * short airborne life here could otherwise expire an ember mid-fall on an
+ * unlucky spawn roll, deleting it before it ever gets to linger). The instant
+ * one lands it settles (matching `updateBlood`'s pattern), `life` resets to
+ * `BURN_SETTLED_LIFE`, and only then does it actually count down toward
+ * removal — so the ember reads as lingering on the floor rather than a
+ * blink-and-you-miss-it flash.
+ */
+export function updateBurnParticles(list: BurnParticle[], dt: number): void {
+  for (let i = list.length - 1; i >= 0; i--) {
+    const p = list[i];
+    if (!p.settled) {
+      p.vz -= BURN_GRAVITY * dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.z += p.vz * dt;
+      if (p.z <= 0) {
+        p.z = 0;
+        p.vx = 0;
+        p.vy = 0;
+        p.vz = 0;
+        p.settled = true;
+        p.life = BURN_SETTLED_LIFE;
+      }
+      continue;
+    }
+    p.life -= dt;
+    if (p.life <= 0) list.splice(i, 1);
+  }
+}
+
+/** Draw every live burn ember: a hot white-orange spark while airborne, then
+ * a dimming orange glow that fades out over `BURN_SETTLED_LIFE` once
+ * settled, wall-occluded via the z-buffer like every other world billboard. */
+export function renderBurnParticles(ctx: CanvasRenderingContext2D, player: Player, list: BurnParticle[], zBuffer: Float64Array): void {
+  const width = ctx.canvas.width;
+  const height = ctx.canvas.height;
+  for (const p of list) {
+    const proj = projectPoint(player, p.x, p.y, width, height, 1);
+    if (proj.depth <= 0.1) continue;
+    const col = clamp(Math.round(proj.screenX), 0, width - 1);
+    if (proj.depth >= zBuffer[col]) continue; // behind a wall
+
+    const tilePx = proj.bottom - proj.top; // pixels per world tile at this depth
+    const sy = proj.bottom - p.z * tilePx; // lift off the floor by the particle height
+    const t = p.settled ? p.life / BURN_SETTLED_LIFE : 1; // fades only once settled
+    const s = Math.max(1, Math.round(tilePx * 0.06 * t));
+
+    ctx.fillStyle = p.settled ? `rgba(255,110,30,${(t * 0.85).toFixed(3)})` : "rgba(255,225,150,0.95)";
+    ctx.fillRect(Math.round(proj.screenX) - (s >> 1), Math.round(sy) - (s >> 1), s, s);
   }
 }
 

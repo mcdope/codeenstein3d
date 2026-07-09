@@ -183,9 +183,10 @@ export interface GameMap {
 }
 
 /** What a defeated enemy (or a scattered map pickup) can leave behind.
- * `"smg"` (gdb's own ammo pool) is a `LootDrop`-only kind — never a
- * statically-placed `AmmoPickup` — see `AmmoPickup.kind`'s doc comment. */
-export type LootKind = "bullets" | "rockets" | "smg" | "health" | "swap" | "weapon";
+ * `"smg"`/`"gas"` (gdb's/Friday Hotfix's own ammo pools) are `LootDrop`-only
+ * kinds — never a statically-placed `AmmoPickup` — see `AmmoPickup.kind`'s
+ * doc comment. */
+export type LootKind = "bullets" | "rockets" | "smg" | "gas" | "health" | "swap" | "weapon";
 
 /**
  * A dynamic loot drop left at a defeated enemy's death position. Spawned at

@@ -52,27 +52,36 @@ import {
   HIT_FLASH_FRAMES,
   drawBulletTraces,
   drawDamageFlash,
+  drawFlameStreams,
   makeBulletTrace,
   renderBlood,
+  renderBurnParticles,
   renderExplosionParticles,
   renderExplosions,
   spawnBlood,
+  spawnBurnParticles,
   spawnExplosion,
   spawnExplosionParticles,
+  spawnFlameStream,
   tickBulletTraces,
+  tickFlameStreams,
   updateBlood,
+  updateBurnParticles,
   updateExplosionParticles,
   updateExplosions,
   type BloodParticle,
   type BulletTrace,
+  type BurnParticle,
   type Explosion,
   type ExplosionParticle,
+  type FlameStream,
   type GoreLevel,
   type GoreMultipliers,
 } from "./effects";
 import { audio } from "./audio";
 import { computeScore, killPoints } from "./scoring";
 import {
+  FRIDAY_HOTFIX_WEAPON_INDEX,
   GDB_WEAPON_INDEX,
   GHIDRA_WEAPON_INDEX,
   MELEE_WEAPON,
@@ -81,16 +90,19 @@ import {
   UNLOCKABLE_WEAPONS,
   WEAPONS,
   pelletOffsets,
+  type AmmoType,
   type Weapon,
 } from "./weapons";
 import {
   SWAP_DROP_AMOUNT,
   BULLETS_DROP_AMOUNT,
   ELITE_BULLETS_DROP_AMOUNT,
+  ELITE_GAS_DROP_AMOUNT,
   ELITE_HEALTH_DROP_AMOUNT,
   ELITE_ROCKETS_DROP_AMOUNT,
   ELITE_SMG_DROP_AMOUNT,
   ELITE_SWAP_DROP_AMOUNT,
+  GAS_DROP_AMOUNT,
   HEALTH_DROP_AMOUNT,
   MAX_SWAP,
   ROCKETS_DROP_AMOUNT,
@@ -205,6 +217,9 @@ export interface EngineStats {
   /** gdb's own ammo remaining — a separate pool from `bullets` (see
    * `AmmoType`). */
   smg: number;
+  /** Friday Hotfix's own ammo remaining — a separate pool from `bullets`/
+   * `smg`/`rockets` (see `AmmoType`). */
+  gas: number;
   /** Dependency keys currently held (unused, in inventory). */
   keysHeld: number;
   /** Total keys placed on this level. */
@@ -253,6 +268,7 @@ export interface EngineCarryover {
   bullets: number;
   rockets: number;
   smg: number;
+  gas: number;
   /** Score banked from every level already cleared this campaign — the
    * baseline `EngineStats.score` adds this level's own live score on top of,
    * so the running total never resets at a level transition. Defaults to 0
@@ -267,7 +283,7 @@ export interface EngineCarryover {
    * `main.ts`'s `launchLevel`), so an active toggle would otherwise silently
    * reset at the next file. Omitted on a genuinely fresh run. IDKFA needs no
    * equivalent field — its effect already persists via `bullets`/`rockets`/
-   * `smg`/`ownedWeapons` above. */
+   * `smg`/`gas`/`ownedWeapons` above. */
   godMode?: boolean;
   noClip?: boolean;
 }
@@ -326,6 +342,7 @@ export class RaycasterEngine {
   private bulletsAmmo: number;
   private rocketsAmmo: number;
   private smgAmmo: number;
+  private gasAmmo: number;
   /** What this level would have started the player out with, regardless of
    * `carryover` — the ammo-bonus baseline `computeScore` scores remaining
    * ammo against (see `./scoring.ts`), so a low-ammo carryover from a
@@ -333,6 +350,7 @@ export class RaycasterEngine {
   private readonly startingBulletsRef: number;
   private readonly startingRocketsRef: number;
   private readonly startingSmgRef: number;
+  private readonly startingGasRef: number;
   /** Index into WEAPONS of the equipped weapon (0 = pistol). */
   private weaponIndex = 0;
   /** Indices into `WEAPONS` the player can currently switch to — everything
@@ -380,6 +398,9 @@ export class RaycasterEngine {
   private flashFrames = 0;
   /** Live weapon bullet tracers, fading over a few frames. */
   private readonly traces: BulletTrace[] = [];
+  /** Live flamethrower flame streams (Friday Hotfix's tracer replacement),
+   * fading over a few frames — see `FlameStream`. */
+  private readonly flameStreams: FlameStream[] = [];
   /** Live "digital blood" particles falling to the floor. */
   private readonly blood: BloodParticle[] = [];
   /** Gore-level count/size/floor-stain-duration multipliers, read once at
@@ -400,6 +421,9 @@ export class RaycasterEngine {
   private readonly explosions: Explosion[] = [];
   /** Live rocket-blast debris/spark particles (see `spawnExplosionParticles`). */
   private readonly explosionParticles: ExplosionParticle[] = [];
+  /** Live flamethrower-hit burn embers, settling and lingering on the floor
+   * (see `spawnBurnParticles`). */
+  private readonly burnParticles: BurnParticle[] = [];
   /** Countdown (seconds) to the next low-health alarm beep; 0 = beep now. */
   private alarmCountdown = 0;
   /** Ground covered (tiles) since the last footstep sound. */
@@ -475,9 +499,11 @@ export class RaycasterEngine {
     this.bulletsAmmo = carryover?.bullets ?? startingBullets(map.enemies);
     this.rocketsAmmo = carryover?.rockets ?? startingRockets();
     this.smgAmmo = carryover?.smg ?? startingSmg();
+    this.gasAmmo = carryover?.gas ?? startingGas();
     this.startingBulletsRef = startingBullets(map.enemies);
     this.startingRocketsRef = startingRockets();
     this.startingSmgRef = startingSmg();
+    this.startingGasRef = startingGas();
     this.ownedWeapons = new Set(carryover?.ownedWeapons ?? STARTING_WEAPONS);
     this.priorScore = carryover?.priorScore ?? 0;
     this.totalWalkableTiles = countWalkableTiles(map);
@@ -715,10 +741,13 @@ export class RaycasterEngine {
     updateBlood(this.blood, dt, this.goreMultipliers.stainDuration);
     renderBlood(this.ctx, this.player, this.blood, this.zBuffer, this.goreMultipliers.size);
     drawBulletTraces(this.ctx, this.traces);
+    drawFlameStreams(this.ctx, width, height, this.flameStreams);
     updateExplosions(this.explosions, dt);
     renderExplosions(this.ctx, this.player, this.explosions, this.zBuffer);
     updateExplosionParticles(this.explosionParticles, dt);
     renderExplosionParticles(this.ctx, this.player, this.explosionParticles, this.zBuffer);
+    updateBurnParticles(this.burnParticles, dt);
+    renderBurnParticles(this.ctx, this.player, this.burnParticles, this.zBuffer);
 
     // Full-screen red flash when the player is taking damage.
     drawDamageFlash(this.ctx, this.flashFrames / DAMAGE_FLASH_FRAMES);
@@ -934,6 +963,7 @@ export class RaycasterEngine {
     if (this.muzzleFrames > 0) this.muzzleFrames -= 1;
     if (this.cheatToastFrames > 0) this.cheatToastFrames -= 1;
     tickBulletTraces(this.traces);
+    tickFlameStreams(this.flameStreams);
     for (const enemy of this.enemies) {
       if (enemy.hitFlash > 0) enemy.hitFlash -= 1;
     }
@@ -1177,6 +1207,12 @@ export class RaycasterEngine {
         console.log(`%c[loot] +${amount} smg ammo`, "color:#3fa9ff");
         break;
       }
+      case "gas": {
+        const amount = this.scaledLootAmount(drop.amount ?? GAS_DROP_AMOUNT);
+        this.gasAmmo += amount;
+        console.log(`%c[loot] +${amount} gas`, "color:#ff5a1a");
+        break;
+      }
       case "health": {
         const amount = this.scaledLootAmount(drop.amount ?? HEALTH_DROP_AMOUNT);
         this.health = Math.min(MAX_HEALTH, this.health + amount);
@@ -1214,6 +1250,10 @@ export class RaycasterEngine {
         const amount = this.scaledLootAmount(ELITE_SMG_DROP_AMOUNT);
         this.smgAmmo += amount;
         console.log(`%c[loot] +${amount} smg ammo (${weapon.name} already owned)`, "color:#3fa9ff");
+      } else if (weapon.ammoType === "gas") {
+        const amount = this.scaledLootAmount(ELITE_GAS_DROP_AMOUNT);
+        this.gasAmmo += amount;
+        console.log(`%c[loot] +${amount} gas (${weapon.name} already owned)`, "color:#ff5a1a");
       } else if (weapon.ammoType === "bullets") {
         const amount = this.scaledLootAmount(ELITE_BULLETS_DROP_AMOUNT);
         this.bulletsAmmo += amount;
@@ -1346,6 +1386,7 @@ export class RaycasterEngine {
         this.bulletsAmmo = CHEAT_MAX_AMMO;
         this.rocketsAmmo = CHEAT_MAX_AMMO;
         this.smgAmmo = CHEAT_MAX_AMMO;
+        this.gasAmmo = CHEAT_MAX_AMMO;
         this.swap = MAX_SWAP;
         this.showCheatToast("IDKFA — Full arsenal");
         break;
@@ -1409,6 +1450,14 @@ export class RaycasterEngine {
    * (Left-Ctrl) is a separate, always-available action handled in `advance()`
    * — it never goes through this cooldown/auto-fire gating at all.
    */
+  /** Current reserve of `type`'s ammo pool. */
+  private ammoPool(type: AmmoType): number {
+    if (type === "bullets") return this.bulletsAmmo;
+    if (type === "rockets") return this.rocketsAmmo;
+    if (type === "smg") return this.smgAmmo;
+    return this.gasAmmo;
+  }
+
   private updateFiring(dt: number): void {
     if (this.weaponCooldown > 0) this.weaponCooldown = Math.max(0, this.weaponCooldown - dt);
     const weapon = WEAPONS[this.weaponIndex];
@@ -1439,19 +1488,15 @@ export class RaycasterEngine {
    */
   private fire(weapon: Weapon = WEAPONS[this.weaponIndex]): void {
     if (weapon.ammoType) {
-      const have =
-        weapon.ammoType === "bullets"
-          ? this.bulletsAmmo
-          : weapon.ammoType === "rockets"
-            ? this.rocketsAmmo
-            : this.smgAmmo;
+      const have = this.ammoPool(weapon.ammoType);
       if (have < weapon.ammoPerShot) {
         console.log(`[${weapon.name}] out of ${weapon.ammoType} — need ${weapon.ammoPerShot}`);
         return;
       }
       if (weapon.ammoType === "bullets") this.bulletsAmmo -= weapon.ammoPerShot;
       else if (weapon.ammoType === "rockets") this.rocketsAmmo -= weapon.ammoPerShot;
-      else this.smgAmmo -= weapon.ammoPerShot;
+      else if (weapon.ammoType === "smg") this.smgAmmo -= weapon.ammoPerShot;
+      else this.gasAmmo -= weapon.ammoPerShot;
     }
 
     audio.playShoot();
@@ -1473,6 +1518,13 @@ export class RaycasterEngine {
     const { width, height } = this.ctx.canvas;
     const center = width / 2;
     let pelletsHit = 0;
+    // Friday Hotfix draws one fanning flame stream for the whole shot instead
+    // of a per-pellet tracer line (see `FlameStream`'s doc comment) — tracked
+    // across the loop below as the widest spread any pellet actually landed
+    // on, post-Cone-of-Fire deviation.
+    const isFlame = weapon.ammoType === "gas";
+    let flameLeft = Infinity;
+    let flameRight = -Infinity;
 
     for (const offset of pelletOffsets(weapon)) {
       // Cone of Fire: ranged weapons get a small random aim deviation that
@@ -1497,18 +1549,27 @@ export class RaycasterEngine {
 
       // Tracer from the muzzle (bottom center) to this pellet's aim column at
       // crosshair height, in the weapon's own tracer color — drawn whether or
-      // not it connects.
-      this.traces.push(makeBulletTrace(width, height, column, height / 2, weapon.tracerColor));
+      // not it connects. Friday Hotfix skips this in favor of one flame
+      // stream for the whole shot, pushed after the loop below.
+      if (isFlame) {
+        flameLeft = Math.min(flameLeft, column);
+        flameRight = Math.max(flameRight, column);
+      } else {
+        this.traces.push(makeBulletTrace(width, height, column, height / 2, weapon.tracerColor));
+      }
 
       const enemy = findTargetAtColumn(this.player, this.enemies, this.zBuffer, width, height, column);
       if (enemy?.alive) {
         // Melee only actually connects within its stabbing range, even if the
-        // column lines up with something farther away down the same sightline.
-        if (weapon.meleeRange !== undefined) {
+        // column lines up with something farther away down the same
+        // sightline; Friday Hotfix's `maxRange` is the same idea for a
+        // flamethrower's genuinely short reach.
+        const rangeLimit = weapon.meleeRange ?? weapon.maxRange;
+        if (rangeLimit !== undefined) {
           const dist = Math.hypot(enemy.x - this.player.posX, enemy.y - this.player.posY);
-          if (dist > weapon.meleeRange) continue;
+          if (dist > rangeLimit) continue;
         }
-        this.damageEnemy(enemy, weapon.damagePerPellet, weapon.lifesteal);
+        this.damageEnemy(enemy, weapon.damagePerPellet, weapon.lifesteal, isFlame);
         pelletsHit += 1;
         continue;
       }
@@ -1516,10 +1577,18 @@ export class RaycasterEngine {
       if (weapon.meleeRange === undefined) {
         const mine = findMineAtColumn(this.player, this.map.mines, this.zBuffer, width, height, column);
         if (mine) {
+          if (weapon.maxRange !== undefined) {
+            const dist = Math.hypot(mine.x - this.player.posX, mine.y - this.player.posY);
+            if (dist > weapon.maxRange) continue;
+          }
           this.destroyMine(mine);
           pelletsHit += 1;
         }
       }
+    }
+
+    if (isFlame && flameRight >= flameLeft) {
+      this.flameStreams.push(spawnFlameStream(height, flameLeft, flameRight, weapon.tracerColor));
     }
 
     if (pelletsHit === 0) console.log(`[${weapon.name}] missed`);
@@ -1543,11 +1612,14 @@ export class RaycasterEngine {
   /**
    * Apply weapon damage to one enemy, retiring it (with a log) at 0 HP. If the
    * killing weapon has `lifesteal`, restore that much stability to the player.
+   * `burning` (Friday Hotfix hits only) layers a handful of cosmetic embers on
+   * top of the usual blood spray — purely visual, no damage-over-time follows.
    */
-  private damageEnemy(enemy: Enemy, amount: number, lifesteal?: number): void {
+  private damageEnemy(enemy: Enemy, amount: number, lifesteal?: number, burning?: boolean): void {
     // Hit feedback: thud sound, tint the sprite red, spray "digital blood".
     audio.playHit();
     enemy.hitFlash = HIT_FLASH_FRAMES;
+    if (burning) spawnBurnParticles(this.burnParticles, enemy.x, enemy.y);
     // Damage aggro: being shot instantly wakes the enemy, even from beyond its
     // aggro radius, so you can't safely snipe a roaming enemy from afar.
     enemy.aggroed = true;
@@ -1577,6 +1649,7 @@ export class RaycasterEngine {
           this.ownedWeapons.has(GHIDRA_WEAPON_INDEX),
           this.ownedWeapons.has(GDB_WEAPON_INDEX),
           this.health >= MAX_HEALTH,
+          this.ownedWeapons.has(FRIDAY_HOTFIX_WEAPON_INDEX),
         ),
       });
     audio.playAmmoDrop();
@@ -1636,9 +1709,11 @@ export class RaycasterEngine {
         finalBullets: this.bulletsAmmo,
         finalRockets: this.rocketsAmmo,
         finalSmg: this.smgAmmo,
+        finalGas: this.gasAmmo,
         startingBullets: this.startingBulletsRef,
         startingRockets: this.startingRocketsRef,
         startingSmg: this.startingSmgRef,
+        startingGas: this.startingGasRef,
         levelTimeSec: this.levelTime,
         distanceTraveledTiles: this.distanceTraveled,
         shortestPathTiles: this.map.shortestPathTiles,
@@ -1654,6 +1729,7 @@ export class RaycasterEngine {
       bullets: this.bulletsAmmo,
       rockets: this.rocketsAmmo,
       smg: this.smgAmmo,
+      gas: this.gasAmmo,
       keysHeld: this.keysHeld,
       keysTotal: this.map.keys.length,
       score,
@@ -1752,4 +1828,13 @@ const STARTING_SMG_AMMO = 40;
 
 function startingSmg(): number {
   return STARTING_SMG_AMMO;
+}
+
+/** A modest flat reserve of gas ammo — same "not scaled to the level" shape
+ * as `startingRockets`/`startingSmg`, since Friday Hotfix itself has to be
+ * earned first (an Elite kill, or the level-12 forced-unlock safety net). */
+const STARTING_GAS_AMMO = 40;
+
+function startingGas(): number {
+  return STARTING_GAS_AMMO;
 }

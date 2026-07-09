@@ -23,7 +23,7 @@ import { renderHighscoreTable } from "./ui/highscorePanel";
 import { GameHud } from "./ui/gameHud";
 import { buildControlsLegend } from "./ui/controlsLegend";
 import { DEFAULT_GORE_LEVEL, EXTREME_GORE_ENABLED, type GoreLevel } from "./engine/effects";
-import { GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX, UNLOCKABLE_WEAPONS } from "./engine/weapons";
+import { FRIDAY_HOTFIX_WEAPON_INDEX, GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX, UNLOCKABLE_WEAPONS } from "./engine/weapons";
 import { DEFAULT_DIFFICULTY, type DifficultyLevel } from "./difficulty";
 import { randomSeed } from "./prng";
 import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelSegment } from "./engine/replay";
@@ -325,7 +325,7 @@ let lastSaveAt = 0;
  * the first file entered after a fresh workspace pick (or "Continue Run"'s
  * saved level). Incremented only by `advanceToNextLevel`'s auto-chaining, so
  * a manual sidebar pick doesn't count as "campaign progression" — drives
- * `applyForcedUnlocks`'s level-4/8 safety net. */
+ * `applyForcedUnlocks`'s level-4/8/12 safety net. */
 let campaignLevelIndex = 1;
 /** In-flight (or already-resolved) whole-codebase stats for the currently
  * loaded workspace — every parsable file in `workspaceTree`, not just the
@@ -485,6 +485,7 @@ continueButton.addEventListener("click", async () => {
         bullets: save.bullets,
         rockets: save.rockets,
         smg: save.smg,
+        gas: save.gas,
         priorScore: save.score,
         weaponIndex: save.weaponIndex,
         ownedWeapons: save.ownedWeapons,
@@ -826,7 +827,7 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   hint.className = "map-caption";
   hint.textContent =
     `${path} — reach the green "return" tile to build · ` +
-    `elite kills unlock gdb or ghidra · grab keys to open blue doors · ` +
+    `elite kills unlock gdb, ghidra, or Friday Hotfix · grab keys to open blue doors · ` +
     `step on a glowing pad to warp (goto) · avoid the acid and timed spikes · ` +
     `shoot spotted mines to disarm them from range`;
 
@@ -849,10 +850,10 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   // change (multi-level advance, retry after death, or a fresh manual pick).
   canvas.focus();
 
-  // Campaign-progression safety net: gdb/ghidra are force-added to
-  // ownedWeapons once the player reaches level 4/8, regardless of whether an
-  // Elite ever dropped them — never removes anything, so a weapon already
-  // earned by looting is unaffected.
+  // Campaign-progression safety net: gdb/ghidra/Friday Hotfix are
+  // force-added to ownedWeapons once the player reaches level 4/8/12,
+  // regardless of whether an Elite ever dropped them — never removes
+  // anything, so a weapon already earned by looting is unaffected.
   const effectiveCarryover: EngineCarryover | undefined = carryover
     ? { ...carryover, ownedWeapons: applyForcedUnlocks(carryover.ownedWeapons ?? [], campaignLevelIndex) }
     : undefined;
@@ -942,11 +943,12 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
 
 /** Weapon indices force-unlocked once the player reaches the given campaign
  * level, regardless of whether an Elite has actually dropped them yet — a
- * progression safety net so a long, loot-unlucky run doesn't leave gdb/ghidra
- * permanently unreachable. */
+ * progression safety net so a long, loot-unlucky run doesn't leave
+ * gdb/ghidra/Friday Hotfix permanently unreachable. */
 const FORCED_UNLOCK_LEVELS: { level: number; weaponIndex: number; name: string }[] = [
   { level: 4, weaponIndex: GDB_WEAPON_INDEX, name: "gdb" },
   { level: 8, weaponIndex: GHIDRA_WEAPON_INDEX, name: "ghidra" },
+  { level: 12, weaponIndex: FRIDAY_HOTFIX_WEAPON_INDEX, name: "Friday Hotfix" },
 ];
 
 /** Union `owned` with whichever `FORCED_UNLOCK_LEVELS` entries `levelIndex`
@@ -1000,6 +1002,7 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
           bullets: stats.bullets,
           rockets: stats.rockets,
           smg: stats.smg,
+          gas: stats.gas,
           priorScore: stats.score,
           weaponIndex: stats.weaponIndex,
           ownedWeapons: stats.ownedWeapons,
@@ -1015,6 +1018,7 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
           bullets: carryover.bullets,
           rockets: carryover.rockets,
           smg: carryover.smg,
+          gas: carryover.gas,
           score: stats.score,
           weaponIndex: stats.weaponIndex,
           ownedWeapons: stats.ownedWeapons,
@@ -1243,6 +1247,9 @@ interface CampaignSave {
    * gdb already unlocked just starts it dry, exactly as if the player had
    * fired off their last round; not a broken state. */
   smg: number;
+  /** Friday Hotfix's own ammo pool (see `AmmoType`) — same "defaulted to 0
+   * for older saves" shape as `smg` above. */
+  gas: number;
   score: number;
   weaponIndex: number;
   ownedWeapons: number[];
@@ -1281,8 +1288,9 @@ export function loadCampaignSave(): CampaignSave | null {
     return {
       ...save,
       swap,
-      // `smg` is a field new to this save schema — see its doc comment above.
+      // `smg`/`gas` are fields new to this save schema — see their doc comments above.
       smg: typeof save.smg === "number" ? save.smg : 0,
+      gas: typeof save.gas === "number" ? save.gas : 0,
       levelIndex: typeof save.levelIndex === "number" ? save.levelIndex : 1,
     } as CampaignSave;
   } catch {
@@ -1320,6 +1328,7 @@ function persistProgress(stats: EngineStats): void {
     bullets: stats.bullets,
     rockets: stats.rockets,
     smg: stats.smg,
+    gas: stats.gas,
     score: stats.score,
     weaponIndex: stats.weaponIndex,
     ownedWeapons: stats.ownedWeapons,

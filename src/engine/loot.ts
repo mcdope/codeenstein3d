@@ -12,26 +12,28 @@ import type { LootKind } from "../map/types";
 
 /** Relative odds of each loot kind on a regular enemy kill. Rockets are the
  * scarcest/highest-value ammo type, so they're weighted well below bullets;
- * smg (gdb's own pool, see `AmmoType`) sits between the two — it's drawn down
- * fast by a full-auto weapon but each drop is a full "magazine" (see
- * `SMG_DROP_AMOUNT`), not a scarce high-value item like rockets; health and
- * swap sit in between. */
+ * smg/gas (gdb's/Friday Hotfix's own pools, see `AmmoType`) sit between the
+ * two — each is drawn down fast by its full-auto weapon but each drop is a
+ * full "magazine" (see `SMG_DROP_AMOUNT`/`GAS_DROP_AMOUNT`), not a scarce
+ * high-value item like rockets; health and swap sit in between. */
 const LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[] = [
   { kind: "bullets", weight: 40 },
   { kind: "smg", weight: 18 },
+  { kind: "gas", weight: 18 },
   { kind: "rockets", weight: 10 },
   { kind: "health", weight: 16 },
   { kind: "swap", weight: 16 },
 ];
 
-/** Normal difficulty only: a slightly higher ammo (bullets/rockets/smg) share
- * than the base `LOOT_WEIGHTS`, trimmed from health/swap — Easy/Hard already
- * have their own scarcity curve via `DifficultyMultipliers.ammoDropRate` (the
- * *amount* per drop), so this only tweaks Normal's drop *kind* odds, per
+/** Normal difficulty only: a slightly higher ammo (bullets/rockets/smg/gas)
+ * share than the base `LOOT_WEIGHTS`, trimmed from health/swap — Easy/Hard
+ * already have their own scarcity curve via `DifficultyMultipliers.ammoDropRate`
+ * (the *amount* per drop), so this only tweaks Normal's drop *kind* odds, per
  * playtest feedback that ammo ran too scarce there specifically. */
 const NORMAL_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[] = [
   { kind: "bullets", weight: 46 },
   { kind: "smg", weight: 20 },
+  { kind: "gas", weight: 20 },
   { kind: "rockets", weight: 12 },
   { kind: "health", weight: 11 },
   { kind: "swap", weight: 11 },
@@ -42,6 +44,7 @@ const NORMAL_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }
 const BONUS_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[] = [
   { kind: "bullets", weight: 24 },
   { kind: "smg", weight: 20 },
+  { kind: "gas", weight: 20 },
   { kind: "rockets", weight: 20 },
   { kind: "health", weight: 20 },
   { kind: "swap", weight: 16 },
@@ -59,10 +62,11 @@ const BONUS_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[
  * source as everything else the replay system depends on (see `src/prng.ts`'s
  * doc comment for the full seeded/cosmetic split).
  *
- * `hasRocketLauncher`/`hasGdb` gate the `"rockets"`/`"smg"` entries out of the
- * weight table entirely (rather than re-rolling into them) — until a weapon
- * is unlocked, its ammo would just be dead loot cluttering the drop, so its
- * share is redistributed across the remaining kinds instead.
+ * `hasRocketLauncher`/`hasGdb`/`hasFridayHotfix` gate the
+ * `"rockets"`/`"smg"`/`"gas"` entries out of the weight table entirely
+ * (rather than re-rolling into them) — until a weapon is unlocked, its ammo
+ * would just be dead loot cluttering the drop, so its share is redistributed
+ * across the remaining kinds instead.
  *
  * `playerAtFullHealth` does the same for `"health"` — a health pack is dead
  * loot at 100% stability, so its share goes to ammo/swap instead. */
@@ -73,6 +77,7 @@ export function rollLoot(
   hasRocketLauncher = true,
   hasGdb = true,
   playerAtFullHealth = false,
+  hasFridayHotfix = true,
 ): Exclude<LootKind, "weapon"> {
   const weights = bonusLevel
     ? BONUS_LOOT_WEIGHTS
@@ -80,7 +85,10 @@ export function rollLoot(
       ? NORMAL_LOOT_WEIGHTS
       : LOOT_WEIGHTS;
   let usable = weights.filter(
-    (w) => (w.kind !== "rockets" || hasRocketLauncher) && (w.kind !== "smg" || hasGdb),
+    (w) =>
+      (w.kind !== "rockets" || hasRocketLauncher) &&
+      (w.kind !== "smg" || hasGdb) &&
+      (w.kind !== "gas" || hasFridayHotfix),
   );
   if (playerAtFullHealth) usable = usable.filter((w) => w.kind !== "health");
   const total = usable.reduce((sum, w) => sum + w.weight, 0);
@@ -100,6 +108,9 @@ export const ROCKETS_DROP_AMOUNT = 2;
  * `fireIntervalSec`), so a drop sized like the shared bullets pool (6) would
  * empty in about half a second — sized instead like a real SMG magazine. */
 export const SMG_DROP_AMOUNT = 30;
+/** Friday Hotfix burns gas at the same ~10/sec rate as gdb burns smg ammo
+ * (see `WEAPONS`' `fireIntervalSec`) — same magazine-sized drop. */
+export const GAS_DROP_AMOUNT = 30;
 export const HEALTH_DROP_AMOUNT = 20;
 export const SWAP_DROP_AMOUNT = 15;
 /** Elite kills guarantee a bigger heal than a regular enemy's health drop. */
@@ -110,6 +121,7 @@ export const ELITE_HEALTH_DROP_AMOUNT = 50;
 export const ELITE_BULLETS_DROP_AMOUNT = 18;
 export const ELITE_ROCKETS_DROP_AMOUNT = 6;
 export const ELITE_SMG_DROP_AMOUNT = 80;
+export const ELITE_GAS_DROP_AMOUNT = 80;
 export const ELITE_SWAP_DROP_AMOUNT = 30;
 /** Maximum swap the player can stockpile. */
 export const MAX_SWAP = 100;

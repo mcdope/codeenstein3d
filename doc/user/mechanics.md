@@ -18,7 +18,7 @@ Codeenstein 3D parses your source into an AST and turns its structure into a pla
 | `goto`/label pair | A linked teleporter pad pair |
 | Large comment | A glowing lore terminal — press `R` to read it |
 | Comment flagged `TODO`/`FIXME` | Also a lore terminal, plus a small "technical debt" encounter nearby: a spike trap, a proximity mine, or a weak enemy (equally likely) |
-| Dead/unreachable code, an empty (swallowed-exception) catch block, a `@deprecated`/`[Obsolete]` marker, a commented-out code block, or a magic-number/blob literal (long Base64-ish string, `0xDEADBEEF`-style hex constant) | A secret room hidden behind a fake wall (very slightly tinted if you look closely), holding one guaranteed pickup — mega-health, a fat rockets stash, a big armor top-up, or (if you haven't unlocked it yet) gdb/ghidra outright |
+| Dead/unreachable code, an empty (swallowed-exception) catch block, a `@deprecated`/`[Obsolete]` marker, a commented-out code block, or a magic-number/blob literal (long Base64-ish string, `0xDEADBEEF`-style hex constant) | A secret room hidden behind a fake wall (very slightly tinted if you look closely), holding one guaranteed pickup — mega-health, a fat rockets stash, a big armor top-up, or (if you haven't unlocked it yet) gdb/ghidra/Friday Hotfix outright |
 | Header file (`.h`) | A distinct bonus level — cool teal theme, better loot odds, meant as a restock stop |
 
 The level-start briefing shows how many secret rooms a level actually has ("Secrets") alongside its room/enemy counts — worth keeping an eye on the walls.
@@ -32,14 +32,15 @@ The level-start briefing shows how many secret rooms a level actually has ("Secr
 | SIGKILL Knife | `Left Ctrl` only | Melee | Starting weapon, infinite ammo, heals 1 HP per kill, not on the number row |
 | gdb | 3 | Full-auto hitscan | Unlocked by an Elite kill's guaranteed drop, or forced at campaign level 4 |
 | ghidra | 4 | Rocket / splash damage | Unlocked by an Elite kill's guaranteed drop, or forced at campaign level 8 |
+| Friday Hotfix | 5 | Full-auto 6-pellet cone, 3.5-tile max range | Unlocked by an Elite kill's guaranteed drop, or forced at campaign level 12 |
 
-Ranged weapons draw from three separate ammo pools: **Bullets** (pistol/shotgun), **SMG Ammo** (gdb only), and **Rockets** (ghidra only). SMG ammo/rocket ammo won't drop or spawn on the map at all until you actually own the matching weapon. Hitscan pellets deviate more the further away the target is, so point-blank shots are reliable and very long-range ones can miss.
+Ranged weapons draw from four separate ammo pools: **Bullets** (pistol/shotgun), **SMG Ammo** (gdb only), **Rockets** (ghidra only), and **Gas** (Friday Hotfix only). SMG/rocket/gas ammo won't drop or spawn on the map at all until you actually own the matching weapon. Hitscan pellets deviate more the further away the target is, so point-blank shots are reliable and very long-range ones can miss. Friday Hotfix additionally enforces a hard 3.5-tile max range on top of that — a genuine flamethrower's reach, not just a wide cone that happens to scatter — and fires a fanning flame stream instead of the thin tracer line every other gun draws.
 
 ## Loot & Difficulty
 
-Enemy kills roll a random drop: bullets, SMG ammo, rockets, health, or swap. A few rules apply on top of the base odds:
+Enemy kills roll a random drop: bullets, SMG ammo, rockets, gas, health, or swap. A few rules apply on top of the base odds:
 - No health drop is ever rolled while you're already at full health (loot goes to ammo/swap instead).
-- No SMG ammo is rolled until you own gdb; no rockets are rolled until you own ghidra.
+- No SMG ammo is rolled until you own gdb; no rockets are rolled until you own ghidra; no gas is rolled until you own Friday Hotfix.
 - Elite kills guarantee either a large health pack or (if you're already full) a bigger bullets/swap drop, on top of their guaranteed weapon.
 
 ### Difficulty
