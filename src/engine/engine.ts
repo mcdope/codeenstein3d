@@ -147,7 +147,9 @@ const HAZARD_DPS = 18;
  * lower max (56px → 38px) and the steeper (cubic) curve are tuned toward the
  * same goal: medium range should feel reliable, and only the last stretch
  * before the world fades to black should miss with any regularity (see
- * `fire()`).
+ * `fire()`). This is the shared default; an individual weapon can tighten it
+ * via `Weapon.maxConeDeviationPx` (currently only gdb does) rather than
+ * everything sharing one curve tuned primarily around the pistol.
  */
 const MAX_CONE_DEVIATION_PX = 38;
 /** Tiles the player must cover between footstep sounds. */
@@ -1424,8 +1426,8 @@ export class RaycasterEngine {
         const baseCol = Math.min(width - 1, Math.max(0, Math.round(baseColumn)));
         const range = this.zBuffer[baseCol];
         const rangeFraction = Math.min(1, range / FOG_FAR);
-        const deviation =
-          (this.rng() * 2 - 1) * rangeFraction * rangeFraction * rangeFraction * MAX_CONE_DEVIATION_PX;
+        const maxDeviation = weapon.maxConeDeviationPx ?? MAX_CONE_DEVIATION_PX;
+        const deviation = (this.rng() * 2 - 1) * rangeFraction * rangeFraction * rangeFraction * maxDeviation;
         column = Math.min(width - 1, Math.max(0, baseColumn + deviation));
       }
 

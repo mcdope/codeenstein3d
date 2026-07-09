@@ -66,6 +66,14 @@ export interface Weapon {
    * whatever the player can physically click through fire instantly). Weapons
    * that omit this have no cooldown beyond the trigger's own press rate. */
   fireIntervalSec?: number;
+  /** Overrides `RaycasterEngine`'s shared `MAX_CONE_DEVIATION_PX` (see its doc
+   * comment) for this weapon specifically — a smaller value means this
+   * weapon's shots stay accurate further out before the range-based "Cone of
+   * Fire" deviation starts meaningfully throwing them off. Omitted for every
+   * weapon but gdb, which uses this to feel genuinely usable at range despite
+   * its low per-shot damage, rather than sharing the same falloff tuned
+   * primarily around the pistol. */
+  maxConeDeviationPx?: number;
 }
 
 /**
@@ -134,13 +142,23 @@ export const WEAPONS: readonly Weapon[] = [
   {
     name: "gdb",
     pellets: 1,
-    spreadPx: 6,
-    damagePerPellet: 11,
+    // A single-pellet weapon always fires dead-center regardless of this
+    // value (see `pelletOffsets`'s "single-pellet weapon fires straight
+    // ahead" doc comment) — 0 here just says so honestly, rather than an
+    // inert nonzero value implying a pellet cone that was never actually
+    // applied.
+    spreadPx: 0,
+    damagePerPellet: 12,
     ammoPerShot: 1,
     ammoType: "smg",
     tracerColor: "#3fa9ff",
     viewKind: "mp",
     auto: true,
+    // Tighter than the shared default (see `Weapon.maxConeDeviationPx`) — a
+    // playtest follow-up ask for "more range" specifically for gdb, without
+    // retuning the shared curve every other hitscan weapon (pistol
+    // especially) also depends on.
+    maxConeDeviationPx: 20,
     fireIntervalSec: 0.09,
   },
   {
