@@ -527,6 +527,85 @@ a.settings-btn {
   overflow-wrap: anywhere;
 }
 
+/* Keybinding legend shown under the canvas during a level (see
+ * src/ui/controlsLegend.ts) — keycap chips plus a small WASD/QE cluster
+ * graphic, replacing what used to be one long run-on sentence. */
+.controls-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 14px;
+  max-width: 900px;
+}
+
+.key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-bottom: 2px solid var(--border);
+  border-radius: 4px;
+}
+
+.controls-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.controls-chip-label {
+  margin-left: 2px;
+}
+
+.controls-sep {
+  color: var(--border);
+}
+
+.controls-cluster-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 10px;
+  margin-right: 4px;
+  border-right: 1px solid var(--border);
+}
+
+.key-cluster {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.key-cluster-row {
+  display: flex;
+  gap: 3px;
+}
+
+.key-cluster-row--offset {
+  margin-left: 11px;
+}
+
+.cluster-legend {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: left;
+  line-height: 1.5;
+}
+
 /* The live status bar (stability/heap/keys/…) and every blocking overlay
  * (briefing, commit summary, end-of-run) are drawn natively on the canvas —
  * see src/engine/hud.ts and src/ui/gameHud.ts. This keeps them visible while

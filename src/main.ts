@@ -21,6 +21,7 @@ import { bgm } from "./engine/bgm";
 import { hashRun, loadHighscores, recordHighscore, type HighscoreEntry } from "./engine/highscores";
 import { renderHighscoreTable } from "./ui/highscorePanel";
 import { GameHud } from "./ui/gameHud";
+import { buildControlsLegend } from "./ui/controlsLegend";
 import { DEFAULT_GORE_LEVEL, EXTREME_GORE_ENABLED, type GoreLevel } from "./engine/effects";
 import { GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX } from "./engine/weapons";
 import { DEFAULT_DIFFICULTY, type DifficultyLevel } from "./difficulty";
@@ -708,26 +709,22 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   hint.className = "map-caption";
   hint.textContent =
     `${path} — reach the green "return" tile to build · ` +
-    `Click to capture mouse · W/S move, A/D strafe · Q/E or mouse turn · ` +
-    `Shift to sprint · Click / Space to fire · 1 pistol / 2 shotgun · mousewheel cycles weapons · ` +
-    `Left-Ctrl quick-melee knife (never runs dry) · elite kills unlock gdb or ghidra · ` +
-    `grab keys to open blue doors · step on a glowing pad to warp (goto) · ` +
-    `avoid the acid and timed spikes · shoot spotted mines to disarm them from range · ` +
-    `R to read a glowing lore terminal or open a suspicious wall · ` +
-    `Tab for map · F for fullscreen · Esc to pause · Right-Ctrl for FPS · ` +
-    `gamepad: left stick move, right stick turn, RT fire, bumpers cycle weapons, R3/B melee`;
+    `elite kills unlock gdb or ghidra · grab keys to open blue doors · ` +
+    `step on a glowing pad to warp (goto) · avoid the acid and timed spikes · ` +
+    `shoot spotted mines to disarm them from range`;
 
   const hud = new GameHud(canvas);
   activeHud = hud;
 
   // The status bar and every blocking overlay (briefing, commit summary,
   // end-of-run) are all drawn natively on the canvas now — nothing but the
-  // hint caption is DOM. Only the canvas's *siblings* are replaced — the
-  // canvas itself is never removed from #viewport (see its doc comment).
+  // hint caption and controls legend is DOM. Only the canvas's *siblings*
+  // are replaced — the canvas itself is never removed from #viewport (see
+  // its doc comment).
   for (const child of [...viewport.children]) {
     if (child !== canvas) child.remove();
   }
-  viewport.append(hint);
+  viewport.append(hint, buildControlsLegend());
   canvas.hidden = false;
   // Grab keyboard focus immediately — without this, the very first WASD press
   // after a level (re)load is silently swallowed until the player clicks the
