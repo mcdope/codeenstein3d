@@ -17,24 +17,48 @@ import {
   countLines,
   countParameters,
   extractLargeComments,
+  findCommentedOutCodeBlocks,
   findDeadCodeAfterReturn,
+  findDeprecationMarkers,
+  findEmptyCatchBlocks,
+  findMagicNumberBlobs,
   maxNestingDepth,
 } from "../astUtils";
 import {
+  ANNOTATION_NODE_TYPES,
   BLOCK_NODE_TYPES,
+  CATCH_NODE_TYPES,
   COMMENT_NODE_TYPES,
   DECISION_NODE_TYPES,
   ENTITY_NODE_TYPES,
   LOGICAL_OPERATORS,
   NESTING_NODE_TYPES,
+  NUMBER_LITERAL_NODE_TYPES,
   PARAMETER_LIST_NODE_TYPES,
   RETURN_NODE_TYPES,
+  STRING_LITERAL_NODE_TYPES,
   entityName,
   extractGotos,
   genericGlobals,
   positionKey,
 } from "./vocabulary";
 import type { CodeEntity, CodeParserAdapter, EntityKind, ParsedFile } from "../types";
+
+/** Deprecation markers can hide in a comment, an annotation/decorator, or a
+ * docstring (a plain string literal in grammars like Python) — see
+ * `findDeprecationMarkers` in `astUtils.ts`. */
+const DEPRECATION_MARKER_NODE_TYPES: readonly string[] = [
+  ...COMMENT_NODE_TYPES,
+  ...ANNOTATION_NODE_TYPES,
+  ...STRING_LITERAL_NODE_TYPES,
+];
+
+/** Content that doesn't disqualify a catch body from counting as "empty" —
+ * comments, plus Python's `pass_statement`, since `except: pass` (a no-op
+ * required by Python's grammar, which doesn't allow a truly empty block) is
+ * that language's idiomatic form of a swallowed exception. Harmless for
+ * every other bundled grammar, where this type name never occurs. */
+const EMPTY_CATCH_IGNORABLE_NODE_TYPES = new Set([...COMMENT_NODE_TYPES, "pass_statement"]);
 
 /**
  * Static description of one generically-parsed language, plus the hooks a
@@ -141,7 +165,13 @@ export class GenericParserAdapter implements CodeParserAdapter {
         entities,
         gotos: extractGotos(root),
         comments: extractLargeComments(root, COMMENT_NODE_TYPES),
-        deadCodeRegions: findDeadCodeAfterReturn(root, BLOCK_NODE_TYPES, RETURN_NODE_TYPES),
+        secretTriggers: [
+          ...findDeadCodeAfterReturn(root, BLOCK_NODE_TYPES, RETURN_NODE_TYPES),
+          ...findEmptyCatchBlocks(root, CATCH_NODE_TYPES, BLOCK_NODE_TYPES, EMPTY_CATCH_IGNORABLE_NODE_TYPES),
+          ...findDeprecationMarkers(root, DEPRECATION_MARKER_NODE_TYPES),
+          ...findCommentedOutCodeBlocks(root, COMMENT_NODE_TYPES),
+          ...findMagicNumberBlobs(root, STRING_LITERAL_NODE_TYPES, NUMBER_LITERAL_NODE_TYPES),
+        ],
       };
     } finally {
       tree.delete();

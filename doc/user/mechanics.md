@@ -18,8 +18,10 @@ Codeenstein 3D parses your source into an AST and turns its structure into a pla
 | `goto`/label pair | A linked teleporter pad pair |
 | Large comment | A glowing lore terminal — press `R` to read it |
 | Comment flagged `TODO`/`FIXME` | Also a lore terminal, plus a small "technical debt" encounter nearby: a spike trap, a proximity mine, or a weak enemy (equally likely) |
-| Dead/unreachable code | A secret room hidden behind a fake wall (very slightly tinted if you look closely), holding guaranteed loot |
+| Dead/unreachable code, an empty (swallowed-exception) catch block, a `@deprecated`/`[Obsolete]` marker, a commented-out code block, or a magic-number/blob literal (long Base64-ish string, `0xDEADBEEF`-style hex constant) | A secret room hidden behind a fake wall (very slightly tinted if you look closely), holding one guaranteed pickup — mega-health, a fat rockets stash, a big armor top-up, or (if you haven't unlocked it yet) gdb/ghidra outright |
 | Header file (`.h`) | A distinct bonus level — cool teal theme, better loot odds, meant as a restock stop |
+
+The level-start briefing shows how many secret rooms a level actually has ("Secrets") alongside its room/enemy counts — worth keeping an eye on the walls.
 
 ## Weapons
 

@@ -6,7 +6,7 @@
  * adapter only has to declare its own node-type vocabulary.
  */
 import type { Node } from "web-tree-sitter";
-import type { CodeComment, DeadCodeRegion, GotoLink } from "./types";
+import type { CodeComment, GotoLink, SecretTrigger } from "./types";
 
 /** Total line count; a single trailing newline is not counted as a new line. */
 export function countLines(text: string): number {
@@ -226,15 +226,170 @@ export function findDeadCodeAfterReturn(
   root: Node,
   blockNodeTypes: ReadonlySet<string>,
   returnNodeTypes: ReadonlySet<string>,
-): DeadCodeRegion[] {
-  const regions: DeadCodeRegion[] = [];
+): SecretTrigger[] {
+  const regions: SecretTrigger[] = [];
   for (const block of root.descendantsOfType([...blockNodeTypes])) {
     const stmts = block.namedChildren;
     const returnIndex = stmts.findIndex((s) => returnNodeTypes.has(s.type));
     if (returnIndex === -1 || returnIndex >= stmts.length - 1) continue;
     const first = stmts[returnIndex + 1];
     const last = stmts[stmts.length - 1];
-    regions.push({ startLine: first.startPosition.row + 1, endLine: last.endPosition.row + 1 });
+    regions.push({ kind: "deadCode", startLine: first.startPosition.row + 1, endLine: last.endPosition.row + 1 });
+  }
+  return regions;
+}
+
+/**
+ * Catch/except/rescue clauses whose body is empty or contains only
+ * comments — a swallowed-exception code smell, source for secret rooms. The
+ * body is resolved via the grammar's own `body` field where one exists
+ * (PHP/JS/TS/Java/C#/C++); Python's `except_clause` has no such field, so
+ * this falls back to the first direct child matching `blockNodeTypes`.
+ */
+export function findEmptyCatchBlocks(
+  root: Node,
+  catchNodeTypes: readonly string[],
+  blockNodeTypes: ReadonlySet<string>,
+  commentNodeTypes: ReadonlySet<string>,
+): SecretTrigger[] {
+  if (catchNodeTypes.length === 0) return [];
+  const regions: SecretTrigger[] = [];
+  for (const node of root.descendantsOfType([...catchNodeTypes])) {
+    if (!node.isNamed) continue;
+    const body = node.childForFieldName("body") ?? node.namedChildren.find((c) => blockNodeTypes.has(c.type));
+    if (!body) continue;
+    const isEmpty = body.namedChildren.every((c) => commentNodeTypes.has(c.type));
+    if (!isEmpty) continue;
+    regions.push({ kind: "emptyCatch", startLine: node.startPosition.row + 1, endLine: node.endPosition.row + 1 });
+  }
+  return regions;
+}
+
+/** Markers (checked case-insensitively) that flag an annotation/decorator,
+ * comment, or string literal as a deprecation notice — see
+ * `findDeprecationMarkers`. */
+const DEPRECATION_MARKERS: RegExp[] = [/@deprecated\b/i, /\[obsolete\b/i, /\bdeprecated\b/i];
+
+/** True if `text` reads as a deprecation notice — see `DEPRECATION_MARKERS`. */
+export function isDeprecationFlagged(text: string): boolean {
+  return DEPRECATION_MARKERS.some((marker) => marker.test(text));
+}
+
+/**
+ * Deprecation markers found in annotation/decorator/attribute nodes,
+ * comments, or string literals (covers JSDoc/PHPDoc `@deprecated`, Java
+ * `@Deprecated`, Python decorators and docstrings, C# `[Obsolete]`, and plain
+ * `// DEPRECATED:` comments alike) — source for secret rooms.
+ */
+export function findDeprecationMarkers(root: Node, markerNodeTypes: readonly string[]): SecretTrigger[] {
+  if (markerNodeTypes.length === 0) return [];
+  const regions: SecretTrigger[] = [];
+  for (const node of root.descendantsOfType([...markerNodeTypes])) {
+    if (!node.isNamed) continue;
+    if (!isDeprecationFlagged(node.text)) continue;
+    regions.push({ kind: "deprecated", startLine: node.startPosition.row + 1, endLine: node.endPosition.row + 1 });
+  }
+  return regions;
+}
+
+/** A merged run of directly-adjacent comment lines spanning more lines than
+ * this is treated as "commented-out code" worth a secret room, regardless of
+ * content — see `findCommentedOutCodeBlocks`. */
+const COMMENTED_CODE_MIN_LINES = 6;
+
+/** Characters that read as actual code syntax rather than prose, inside a
+ * comment — see `findCommentedOutCodeBlocks`. */
+const CODE_SYNTAX_CHARS = /[{};]/;
+
+/**
+ * Commented-out code / oversized comment blocks: contiguous runs of comment
+ * nodes (merged when one starts on the very next line after the previous one
+ * ends — stacked `//` lines are separate sibling nodes, not one node) that
+ * either span more than `COMMENTED_CODE_MIN_LINES` lines, or contain a
+ * typical code-syntax character (`{`, `}`, `;`) anywhere in the run's
+ * combined text. Source for secret rooms.
+ */
+export function findCommentedOutCodeBlocks(root: Node, commentNodeTypes: readonly string[]): SecretTrigger[] {
+  const nodes = root
+    .descendantsOfType([...commentNodeTypes])
+    .filter((n) => n.isNamed)
+    .sort((a, b) => a.startPosition.row - b.startPosition.row);
+
+  const regions: SecretTrigger[] = [];
+  let runStart = -1;
+  let runEnd = -1;
+  let runText = "";
+
+  const flushRun = (): void => {
+    if (runStart === -1) return;
+    const lineSpan = runEnd - runStart + 1;
+    if (lineSpan > COMMENTED_CODE_MIN_LINES || CODE_SYNTAX_CHARS.test(runText)) {
+      regions.push({ kind: "commentedCode", startLine: runStart, endLine: runEnd });
+    }
+  };
+
+  for (const node of nodes) {
+    const startLine = node.startPosition.row + 1;
+    const endLine = node.endPosition.row + 1;
+    if (runStart !== -1 && startLine === runEnd + 1) {
+      runEnd = endLine;
+      runText += "\n" + node.text;
+    } else {
+      flushRun();
+      runStart = startLine;
+      runEnd = endLine;
+      runText = node.text;
+    }
+  }
+  flushRun();
+  return regions;
+}
+
+/** A string literal longer than this many characters, with no whitespace at
+ * all, reads as an encoded blob (Base64, a hash, ...) rather than prose —
+ * see `findMagicNumberBlobs`. */
+const MAGIC_BLOB_MIN_LENGTH = 100;
+
+/** Well-known "magic" hex constants (checked case-insensitively, substring
+ * match so e.g. a `0xDEADBEEFu` suffix still matches) — see
+ * `findMagicNumberBlobs`. */
+const HEX_MAGIC_PATTERNS: RegExp[] = [
+  /0x1337/i,
+  /0xdeadbeef/i,
+  /0xcafebabe/i,
+  /0xc0ffee/i,
+  /0xbaadf00d/i,
+  /0xdeadc0de/i,
+  /0x8badf00d/i,
+  /0xfeedface/i,
+];
+
+function isMagicBlobString(text: string): boolean {
+  return text.length > MAGIC_BLOB_MIN_LENGTH && !/\s/.test(text);
+}
+
+function isHexMagicNumber(text: string): boolean {
+  return HEX_MAGIC_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/**
+ * Magic numbers and blobs: very long, space-free string literals (indicating
+ * Base64/hashes/similar encoded data) and well-known hex magic-number
+ * literals (`0xDEADBEEF`, `0xCAFEBABE`, `0x1337`, and a handful of other
+ * famous ones). Source for secret rooms.
+ */
+export function findMagicNumberBlobs(
+  root: Node,
+  stringNodeTypes: readonly string[],
+  numberNodeTypes: readonly string[],
+): SecretTrigger[] {
+  const stringTypes = new Set(stringNodeTypes);
+  const regions: SecretTrigger[] = [];
+  for (const node of root.descendantsOfType([...stringNodeTypes, ...numberNodeTypes])) {
+    if (!node.isNamed) continue;
+    const isBlob = stringTypes.has(node.type) ? isMagicBlobString(node.text) : isHexMagicNumber(node.text);
+    if (!isBlob) continue;
+    regions.push({ kind: "magicBlob", startLine: node.startPosition.row + 1, endLine: node.endPosition.row + 1 });
   }
   return regions;
 }

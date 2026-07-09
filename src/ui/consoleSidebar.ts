@@ -27,6 +27,7 @@ const HINTS = [
   "TIP: ghidra's splash damage isn't picky about who's standing in it.",
   "NOTICE: an aggroed enemy keeps coming, even out of sight.",
   "TIP: dead code doesn't just sit there — it hides things.",
+  "TIP: a swallowed exception, a deprecated tag, a suspiciously long string — the code is hiding something.",
 ];
 
 /** Minimum/maximum delay (ms) between random hints. */

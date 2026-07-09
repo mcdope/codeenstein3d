@@ -78,6 +78,7 @@ import {
   MELEE_WEAPON,
   NUMBER_KEY_WEAPONS,
   STARTING_WEAPONS,
+  UNLOCKABLE_WEAPONS,
   WEAPONS,
   pelletOffsets,
   type Weapon,
@@ -108,13 +109,8 @@ import {
   type LootDrop,
   type LoreTerminal,
   type Mine,
+  type Point,
 } from "../map/types";
-
-/** Weapon indices whose only in-level acquisition path is an Elite kill's
- * guaranteed drop (see `dropEliteLoot`) — main.ts's forced-unlock safety net
- * at campaign levels 4/8 is a separate, out-of-band path onto these same
- * indices. */
-const UNLOCKABLE_WEAPONS = [GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX];
 
 /** Movement speed in tiles per second. */
 const MOVE_SPEED = 3.2;
@@ -618,20 +614,27 @@ export class RaycasterEngine {
       return;
     }
     if (interacted && this.state === "playing") {
-      const terminal = findNearbyLoreTerminal(this.map.loreTerminals, this.player.posX, this.player.posY);
-      if (terminal) {
-        audio.playSecret();
-        const key = `${terminal.x},${terminal.y}`;
-        if (!this.loreRead.has(key)) {
-          this.loreRead.add(key);
-          console.log("%c[lore] terminal logged — exploration bonus earned", "color:#78c8d2");
+      // Secret walls are checked first: that check is facing/reach-based (only
+      // the exact tile directly ahead, within `SECRET_WALL_REACH`), a far more
+      // deliberate action than the lore terminal's generous omnidirectional
+      // proximity radius — without this ordering, any lore terminal within
+      // `LORE_INTERACT_RADIUS` (which is more than double the secret-wall
+      // reach) would always win, even while squarely facing a fake wall.
+      if (!this.tryOpenSecretWall()) {
+        const terminal = findNearbyLoreTerminal(this.map.loreTerminals, this.player.posX, this.player.posY);
+        if (terminal) {
+          audio.playSecret();
+          const key = `${terminal.x},${terminal.y}`;
+          if (!this.loreRead.has(key)) {
+            this.loreRead.add(key);
+            console.log("%c[lore] terminal logged — exploration bonus earned", "color:#78c8d2");
+          }
+          this.loreText = terminal.text;
+          this.loreScroll = 0;
+          this.renderLoreOverlay();
+          return;
         }
-        this.loreText = terminal.text;
-        this.loreScroll = 0;
-        this.renderLoreOverlay();
-        return;
       }
-      this.tryOpenSecretWall();
     }
 
     // Weapon switching (1/2/… or mousewheel) can happen even while lining up
@@ -810,23 +813,35 @@ export class RaycasterEngine {
   }
 
   /**
-   * Open the fake wall directly ahead of the player, if there is one — turns
-   * a `SECRET_WALL_TILE` into plain floor permanently, revealing whatever
-   * secret room was carved behind it (see `placeSecretRooms`).
+   * Open the fake wall directly ahead of the player, if there is one — the
+   * whole secret room behind it (not just the one tile faced) is carved as
+   * `SECRET_WALL_TILE` (see `placeSecretRooms`/`trySecretRoomOffAnchor`), so
+   * every 4-connected `SECRET_WALL_TILE` cell reachable from the tile opened
+   * is flood-filled to plain floor at once, revealing the room in full.
+   * Returns whether a wall was actually opened, so the interact handler can
+   * fall back to checking for a nearby lore terminal when it wasn't.
    */
-  private tryOpenSecretWall(): void {
+  private tryOpenSecretWall(): boolean {
     const px = this.player.posX + this.player.dirX * SECRET_WALL_REACH;
     const py = this.player.posY + this.player.dirY * SECRET_WALL_REACH;
     const cx = Math.floor(px);
     const cy = Math.floor(py);
-    if (this.map.grid[cy]?.[cx] !== SECRET_WALL_TILE) return;
+    if (this.map.grid[cy]?.[cx] !== SECRET_WALL_TILE) return false;
 
-    this.map.grid[cy][cx] = 0;
+    const grid = this.map.grid;
+    const stack: Point[] = [{ x: cx, y: cy }];
+    while (stack.length > 0) {
+      const { x, y } = stack.pop()!;
+      if (grid[y]?.[x] !== SECRET_WALL_TILE) continue;
+      grid[y][x] = 0;
+      stack.push({ x: x + 1, y }, { x: x - 1, y }, { x, y: y + 1 }, { x, y: y - 1 });
+    }
     audio.playSecret();
     console.log(
       "%c[secret] a section of wall slides open — a hidden room lies beyond",
       "color:#e06aff;font-weight:bold",
     );
+    return true;
   }
 
   /**
@@ -1100,6 +1115,12 @@ export class RaycasterEngine {
       if (dx * dx + dy * dy >= r2) continue;
       pickup.collected = true;
       audio.playPickup();
+      if (pickup.kind === "weapon") {
+        // Own message/amount logic (unlock vs. already-owned top-up) — the
+        // generic "+N kind found" log below doesn't apply to it.
+        if (pickup.weaponIndex !== undefined) this.grantOrTopUpWeapon(pickup.weaponIndex);
+        continue;
+      }
       const amount = this.scaledLootAmount(pickup.amount);
       switch (pickup.kind) {
         case "bullets":
@@ -1161,33 +1182,39 @@ export class RaycasterEngine {
         break;
       }
       case "weapon":
-        if (drop.weaponIndex !== undefined) {
-          const weapon = WEAPONS[drop.weaponIndex];
-          if (this.ownedWeapons.has(drop.weaponIndex)) {
-            // Already unlocked by the time this drop was picked up (e.g. an
-            // earlier Elite's weapon drop got there first) — an elite-sized
-            // shot of its ammo instead of a no-op re-unlock, so the drop is
-            // never just wasted.
-            if (weapon.ammoType === "rockets") {
-              const amount = this.scaledLootAmount(ELITE_ROCKETS_DROP_AMOUNT);
-              this.rocketsAmmo += amount;
-              console.log(`%c[loot] +${amount} rockets (${weapon.name} already owned)`, "color:#ff9d3f");
-            } else if (weapon.ammoType === "smg") {
-              const amount = this.scaledLootAmount(ELITE_SMG_DROP_AMOUNT);
-              this.smgAmmo += amount;
-              console.log(`%c[loot] +${amount} smg ammo (${weapon.name} already owned)`, "color:#3fa9ff");
-            } else if (weapon.ammoType === "bullets") {
-              const amount = this.scaledLootAmount(ELITE_BULLETS_DROP_AMOUNT);
-              this.bulletsAmmo += amount;
-              console.log(`%c[loot] +${amount} bullets (${weapon.name} already owned)`, "color:#3fd0e0");
-            }
-          } else {
-            this.ownedWeapons.add(drop.weaponIndex);
-            this.weaponIndex = drop.weaponIndex;
-            console.log(`%c[loot] unlocked ${weapon.name}!`, "color:#e06aff;font-weight:bold");
-          }
-        }
+        if (drop.weaponIndex !== undefined) this.grantOrTopUpWeapon(drop.weaponIndex);
         break;
+    }
+  }
+
+  /**
+   * Grant a still-unowned weapon, switching to it immediately — or, if it's
+   * already owned by the time this is collected (e.g. a duplicate roll from
+   * another Elite kill or secret room), an elite-sized top-up of whatever
+   * ammo pool it uses instead, so the pickup/drop is never just wasted.
+   * Shared by `applyLoot`'s `"weapon"` `LootDrop` case and `collectLoot`'s
+   * `"weapon"` static `AmmoPickup` case.
+   */
+  private grantOrTopUpWeapon(weaponIndex: number): void {
+    const weapon = WEAPONS[weaponIndex];
+    if (this.ownedWeapons.has(weaponIndex)) {
+      if (weapon.ammoType === "rockets") {
+        const amount = this.scaledLootAmount(ELITE_ROCKETS_DROP_AMOUNT);
+        this.rocketsAmmo += amount;
+        console.log(`%c[loot] +${amount} rockets (${weapon.name} already owned)`, "color:#ff9d3f");
+      } else if (weapon.ammoType === "smg") {
+        const amount = this.scaledLootAmount(ELITE_SMG_DROP_AMOUNT);
+        this.smgAmmo += amount;
+        console.log(`%c[loot] +${amount} smg ammo (${weapon.name} already owned)`, "color:#3fa9ff");
+      } else if (weapon.ammoType === "bullets") {
+        const amount = this.scaledLootAmount(ELITE_BULLETS_DROP_AMOUNT);
+        this.bulletsAmmo += amount;
+        console.log(`%c[loot] +${amount} bullets (${weapon.name} already owned)`, "color:#3fd0e0");
+      }
+    } else {
+      this.ownedWeapons.add(weaponIndex);
+      this.weaponIndex = weaponIndex;
+      console.log(`%c[loot] unlocked ${weapon.name}!`, "color:#e06aff;font-weight:bold");
     }
   }
 

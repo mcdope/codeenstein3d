@@ -21,6 +21,7 @@ export interface LevelStartInfo {
   levelName: string;
   roomCount: number;
   enemyCount: number;
+  secretRoomCount: number;
 }
 
 /** Stats shown on the post-level commit summary. */
@@ -76,6 +77,7 @@ export class GameHud {
         stats: [
           ["Rooms", String(info.roomCount)],
           ["Enemies", String(info.enemyCount)],
+          ["Secrets", String(info.secretRoomCount)],
         ],
         buttonLabel: "Start",
       },

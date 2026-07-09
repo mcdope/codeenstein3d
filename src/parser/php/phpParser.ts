@@ -16,7 +16,11 @@ import {
   countLines,
   countParameters,
   extractLargeComments,
+  findCommentedOutCodeBlocks,
   findDeadCodeAfterReturn,
+  findDeprecationMarkers,
+  findEmptyCatchBlocks,
+  findMagicNumberBlobs,
   maxNestingDepth,
   resolveGotos,
   type RawGotoRef,
@@ -33,6 +37,20 @@ import type {
  * unreachable code after a `return` (see `findDeadCodeAfterReturn`). */
 const BLOCK_NODE_TYPES = new Set(["compound_statement"]);
 const RETURN_NODE_TYPES = new Set(["return_statement"]);
+
+/** Catch-clause node type — used to find swallowed-exception empty catch
+ * blocks (see `findEmptyCatchBlocks`). */
+const CATCH_NODE_TYPES = ["catch_clause"];
+/** Comment + PHP 8 attribute nodes, and string literals (PHPDoc `@deprecated`
+ * lives in a comment; `#[Deprecated]` in an attribute list) — used to find
+ * deprecation markers (see `findDeprecationMarkers`). */
+const DEPRECATION_MARKER_NODE_TYPES = ["comment", "attribute_list", "string", "encapsed_string"];
+/** String-literal node types — used to find magic-blob strings (see
+ * `findMagicNumberBlobs`). */
+const STRING_LITERAL_NODE_TYPES = ["string", "encapsed_string"];
+/** Integer-literal node type — used to find hex magic numbers (see
+ * `findMagicNumberBlobs`). */
+const NUMBER_LITERAL_NODE_TYPES = ["integer"];
 
 /** Node types that define an entity, mapped to their normalized kind. */
 const ENTITY_NODE_TYPES: Record<string, EntityKind> = {
@@ -160,7 +178,13 @@ export class PhpParserAdapter implements CodeParserAdapter {
         entities,
         gotos: resolveGotos(rawGotos, rawLabels),
         comments: extractLargeComments(tree.rootNode, ["comment"]),
-        deadCodeRegions: findDeadCodeAfterReturn(tree.rootNode, BLOCK_NODE_TYPES, RETURN_NODE_TYPES),
+        secretTriggers: [
+          ...findDeadCodeAfterReturn(tree.rootNode, BLOCK_NODE_TYPES, RETURN_NODE_TYPES),
+          ...findEmptyCatchBlocks(tree.rootNode, CATCH_NODE_TYPES, BLOCK_NODE_TYPES, new Set(["comment"])),
+          ...findDeprecationMarkers(tree.rootNode, DEPRECATION_MARKER_NODE_TYPES),
+          ...findCommentedOutCodeBlocks(tree.rootNode, ["comment"]),
+          ...findMagicNumberBlobs(tree.rootNode, STRING_LITERAL_NODE_TYPES, NUMBER_LITERAL_NODE_TYPES),
+        ],
       };
     } finally {
       // Free the WASM-side syntax tree; the Parser itself is kept for reuse.

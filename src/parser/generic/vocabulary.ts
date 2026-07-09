@@ -221,6 +221,55 @@ export const BLOCK_NODE_TYPES = new Set([
  * expression, not a statement, hence the separate name. */
 export const RETURN_NODE_TYPES = new Set(["return_statement", "return_expression"]);
 
+/** Catch/except/rescue node types across every bundled grammar — used to find
+ * swallowed-exception empty catch blocks (see `findEmptyCatchBlocks` in
+ * `astUtils.ts`). Same set as the `DECISION_NODE_TYPES` exception entries. */
+export const CATCH_NODE_TYPES: readonly string[] = ["catch_clause", "except_clause", "rescue", "rescue_modifier"];
+
+/**
+ * Annotation/decorator/attribute node types across every bundled grammar —
+ * used to find deprecation markers (see `findDeprecationMarkers` in
+ * `astUtils.ts`). Deliberately excludes the bare `attribute` type: it
+ * collides with Python's member-access node (`obj.attr`), and every grammar
+ * that has a real attribute construct (C#, Rust, C++) already surfaces it
+ * through one of these containing/wrapping node types.
+ */
+export const ANNOTATION_NODE_TYPES: readonly string[] = [
+  "decorator", // Python, JS, TS
+  "annotation", // Java, Scala
+  "marker_annotation", // Java
+  "attribute_list", // C#, PHP
+  "attribute_item", // Rust
+  "inner_attribute_item", // Rust
+  "attribute_declaration", // C++
+];
+
+/** String-literal node types across every bundled grammar — used to find
+ * magic-blob strings and deprecation markers hiding in docstrings (see
+ * `findMagicNumberBlobs`/`findDeprecationMarkers` in `astUtils.ts`). */
+export const STRING_LITERAL_NODE_TYPES: readonly string[] = [
+  "string", // JS, TS, PHP, Python, Ruby, Bash, Scala
+  "string_literal", // Java, C#, C++, C, Rust, ObjC
+  "encapsed_string", // PHP double-quoted w/ interpolation
+  "concatenated_string", // Python, C, C++, ObjC
+  "raw_string_literal", // C#, Rust, Go, C++
+  "interpreted_string_literal", // Go
+  "verbatim_string_literal", // C#
+  "interpolated_string", // Scala
+  "bare_string", // Ruby
+];
+
+/** Number-literal node types across every bundled grammar — used to find hex
+ * magic-number literals (see `findMagicNumberBlobs` in `astUtils.ts`). */
+export const NUMBER_LITERAL_NODE_TYPES: readonly string[] = [
+  "number", // JS, TS, Bash
+  "number_literal", // C, C++, ObjC
+  "integer_literal", // C#, Rust, Scala
+  "hex_integer_literal", // Java
+  "integer", // PHP, Ruby, Python
+  "int_literal", // Go
+];
+
 /**
  * Parameter-list node types, merged across every bundled grammar — used by
  * `countParameters` (`astUtils.ts`) for the "too many parameters" code smell.

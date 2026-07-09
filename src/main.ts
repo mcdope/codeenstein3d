@@ -23,7 +23,7 @@ import { renderHighscoreTable } from "./ui/highscorePanel";
 import { GameHud } from "./ui/gameHud";
 import { buildControlsLegend } from "./ui/controlsLegend";
 import { DEFAULT_GORE_LEVEL, EXTREME_GORE_ENABLED, type GoreLevel } from "./engine/effects";
-import { GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX } from "./engine/weapons";
+import { GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX, UNLOCKABLE_WEAPONS } from "./engine/weapons";
 import { DEFAULT_DIFFICULTY, type DifficultyLevel } from "./difficulty";
 import { randomSeed } from "./prng";
 import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelSegment } from "./engine/replay";
@@ -797,7 +797,9 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   // arenas rather than normal combat levels (see `MapGenerator.generate`).
   const bonusLevel = BONUS_LEVEL_EXTENSIONS.has(extensionOf(path));
   const hasRocketLauncher = carryover?.ownedWeapons?.includes(GHIDRA_WEAPON_INDEX) ?? false;
-  const map = mapGenerator.generate(parsed, bonusLevel, hasRocketLauncher);
+  const ownedWeapons = carryover?.ownedWeapons ?? [];
+  const missingWeaponIndices = UNLOCKABLE_WEAPONS.filter((i) => !ownedWeapons.includes(i));
+  const map = mapGenerator.generate(parsed, bonusLevel, hasRocketLauncher, missingWeaponIndices);
   // Deliberately spoiler-free: no exit/secret-room/lore-terminal coordinates
   // in the printed text, since that string is also what the console sidebar
   // mirrors verbatim (see `src/ui/consoleSidebar.ts`) — a glance at it
@@ -925,6 +927,7 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
       levelName,
       roomCount: map.rooms.length,
       enemyCount: map.enemies.length,
+      secretRoomCount: map.secretRoomCount,
     },
     () => {
       activeEngine?.start();
@@ -1606,7 +1609,9 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
      * both a normal level load and an in-place restart (seeking backward). */
     const buildEngineFor = (segment: ReplayLevelSegment, parsed: ParsedFile): void => {
       const hasRocketLauncher = segment.carryover?.ownedWeapons?.includes(GHIDRA_WEAPON_INDEX) ?? false;
-      const map = mapGenerator.generate(parsed, segment.bonusLevel, hasRocketLauncher);
+      const segmentOwnedWeapons = segment.carryover?.ownedWeapons ?? [];
+      const missingWeaponIndices = UNLOCKABLE_WEAPONS.filter((i) => !segmentOwnedWeapons.includes(i));
+      const map = mapGenerator.generate(parsed, segment.bonusLevel, hasRocketLauncher, missingWeaponIndices);
       currentParsed = parsed;
       currentSegment = segment;
       replayInput = new ReplayPlaybackInput();

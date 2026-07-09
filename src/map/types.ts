@@ -177,6 +177,9 @@ export interface GameMap {
    * `rollLoot`).
    */
   bonusLevel: boolean;
+  /** Number of secret rooms actually carved by `placeSecretRooms` — shown on
+   * the level-start briefing so the player knows to watch the walls. */
+  secretRoomCount: number;
 }
 
 /** What a defeated enemy (or a scattered map pickup) can leave behind.
@@ -204,17 +207,23 @@ export interface LootDrop {
 /**
  * A sparse, statically-placed pickup scattered across the map at generation
  * time — a backup source, separate from enemy loot drops. `placeAmmoPickups`
- * only ever creates "bullets"/"rockets" ones; `placeSecretRooms` also drops a
- * single "health" or "rockets" pickup (a bigger amount, see
- * `SECRET_LOOT_HEALTH_AMOUNT`/`SECRET_LOOT_ROCKETS_AMOUNT`) inside each secret
- * room it carves, which is why the type covers more than just ammo.
+ * only ever creates "bullets"/"rockets" ones; `placeSecretRooms` also drops
+ * one guaranteed pickup (a bigger amount, see
+ * `SECRET_LOOT_HEALTH_AMOUNT`/`SECRET_LOOT_ROCKETS_AMOUNT`/`SECRET_LOOT_SWAP_AMOUNT`,
+ * or a still-unowned weapon unlock) inside each secret room it carves, which
+ * is why the type covers more than just ammo.
  */
 export interface AmmoPickup {
   /** World position in fractional tile units (tile center). */
   x: number;
   y: number;
-  kind: "bullets" | "rockets" | "health" | "swap";
+  kind: "bullets" | "rockets" | "health" | "swap" | "weapon";
+  /** Unused (0) for a `"weapon"` pickup — see `weaponIndex` instead. */
   amount: number;
+  /** Only set for a `"weapon"` pickup: which `WEAPONS` index it grants (or,
+   * if already owned by the time it's collected, tops up that weapon's ammo
+   * pool instead — see `RaycasterEngine`'s `grantOrTopUpWeapon`). */
+  weaponIndex?: number;
   collected: boolean;
 }
 

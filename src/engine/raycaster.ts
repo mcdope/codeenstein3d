@@ -388,25 +388,21 @@ export function renderMinimap(
 
   ctx.globalAlpha = 0.9;
 
-  // Walls.
+  // Walls — an unopened secret wall (SECRET_WALL_TILE) renders identically to
+  // a plain one on purpose, so the minimap can't spoil its location before
+  // the player actually finds/opens it (this minimap has no fog-of-war gate
+  // at all, unlike the automap, so a distinct color here would reveal every
+  // secret room's exact position from the moment the level loads). The one
+  // intended discovery hint is the much subtler in-view tint (`secretWallTint`,
+  // used by `renderScene`); once opened, the tile becomes plain floor (0) and
+  // stops being drawn here at all, like any other explored room.
   ctx.fillStyle = map.bonusLevel ? "#3f7fae" : "#4a4a55";
   for (let y = 0; y < map.height; y++) {
     const row = map.grid[y];
     for (let x = 0; x < map.width; x++) {
-      if (row[x] === 1 || row[x] === LORE_TILE) {
+      if (row[x] === 1 || row[x] === LORE_TILE || row[x] === SECRET_WALL_TILE) {
         ctx.fillRect(pad + x * cell, pad + y * cell, cell, cell);
       }
-    }
-  }
-
-  // Fake secret walls: the same very slight cool hue nudge as the 3D scene
-  // (see `secretWallTint`) — close enough to a plain wall to stay hidden at a
-  // glance, but a real (if tiny) hint for a player who looks closely.
-  ctx.fillStyle = map.bonusLevel ? "#377fb8" : "#424a5f";
-  for (let y = 0; y < map.height; y++) {
-    const row = map.grid[y];
-    for (let x = 0; x < map.width; x++) {
-      if (row[x] === SECRET_WALL_TILE) ctx.fillRect(pad + x * cell, pad + y * cell, cell, cell);
     }
   }
 

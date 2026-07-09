@@ -36,10 +36,6 @@ const MARGIN = 12;
  * the map doesn't visually fight the live world still rendering around it.
  * Only danger/goal tiles keep a distinct accent color (see below). */
 const WALL_COLOR = "#c8c8ce";
-/** Fake secret walls: a hair off `WALL_COLOR` — close enough to blend in, but
- * a real hint on close inspection (mirrors `secretWallTint` in raycaster.ts,
- * now within the grey family instead of a green/mint split). */
-const SECRET_WALL_COLOR = "#c2c2c8";
 /** Explored, still-locked doors — a cooler mid-grey, distinguishable from
  * plain wall by tone alone. */
 const DOOR_COLOR = "#9aa0ab";
@@ -130,11 +126,15 @@ export function drawAutomap(
       const tile = tileRow[x];
       const px = vx0 + (x - camX) * CELL_PX;
       const py = vy0 + (y - camY) * CELL_PX;
-      if (tile === 1) {
+      if (tile === 1 || tile === SECRET_WALL_TILE) {
+        // An unopened secret wall is indistinguishable from a plain wall
+        // here on purpose — the automap must not spoil its location before
+        // the player actually finds/opens it. The one intended discovery
+        // hint is the much subtler in-view tint (`secretWallTint` in
+        // raycaster.ts); once opened, the tile becomes plain floor (0) and
+        // falls through to the ordinary floor branch below like any other
+        // explored room.
         ctx.fillStyle = WALL_COLOR;
-        ctx.fillRect(px, py, CELL_PX, CELL_PX);
-      } else if (tile === SECRET_WALL_TILE) {
-        ctx.fillStyle = SECRET_WALL_COLOR;
         ctx.fillRect(px, py, CELL_PX, CELL_PX);
       } else if (tile === LORE_TILE) {
         ctx.fillStyle = LORE_COLOR;

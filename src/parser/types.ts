@@ -84,15 +84,24 @@ export interface CodeComment {
 }
 
 /**
- * A span of statements that can never execute: code found after an
- * unconditional `return` in the same block. The map generator turns each of
- * these into a hidden "secret room" behind a fake wall (see
- * `placeSecretRooms`).
+ * A code pattern the map generator turns into a hidden "secret room" behind a
+ * fake wall (see `placeSecretRooms`): unreachable code after a `return`, an
+ * empty/swallowed catch block, a deprecation marker, a commented-out code
+ * block, or a magic-number/blob literal.
  */
-export interface DeadCodeRegion {
-  /** 1-based, inclusive start line of the first unreachable statement. */
+export type SecretTriggerKind =
+  | "deadCode"
+  | "emptyCatch"
+  | "deprecated"
+  | "commentedCode"
+  | "magicBlob";
+
+/** One occurrence of a `SecretTriggerKind` pattern found in a source file. */
+export interface SecretTrigger {
+  kind: SecretTriggerKind;
+  /** 1-based, inclusive start line of the triggering span. */
   startLine: number;
-  /** 1-based, inclusive end line of the last unreachable statement in the block. */
+  /** 1-based, inclusive end line of the triggering span. */
   endLine: number;
 }
 
@@ -109,8 +118,9 @@ export interface ParsedFile {
   gotos: GotoLink[];
   /** Large comment blocks, source for in-game "lore terminals". */
   comments: CodeComment[];
-  /** Unreachable code spans (after a `return`), source for secret rooms. */
-  deadCodeRegions: DeadCodeRegion[];
+  /** Code smells/patterns (dead code, empty catches, deprecation markers,
+   * commented-out code, magic-number/blob literals), source for secret rooms. */
+  secretTriggers: SecretTrigger[];
 }
 
 /**

@@ -11,7 +11,7 @@
  * Generation is deterministic: the same parsed file always yields the same
  * map, via a seeded PRNG hashed from the file's content signature.
  */
-import type { CodeComment, CodeEntity, DeadCodeRegion, GotoLink, ParsedFile } from "../parser/types";
+import type { CodeComment, CodeEntity, GotoLink, ParsedFile, SecretTrigger } from "../parser/types";
 import { isTodoFlagged } from "../parser/astUtils";
 import { mulberry32 } from "../prng";
 import {
@@ -112,8 +112,13 @@ export class MapGenerator {
    * `rollLoot` in `engine/loot.ts`): until the player owns the launcher,
    * static rocket pickups would just be dead loot, so they're generated as
    * bullets/health instead.
+   *
+   * `missingWeaponIndices` feeds `placeSecretRooms`' weapon-unlock loot slot
+   * — see that function's doc comment for why the map layer only ever
+   * receives an opaque list of numbers here, never an engine-layer weapon
+   * concept.
    */
-  generate(parsed: ParsedFile, bonusLevel = false, hasRocketLauncher = true): GameMap {
+  generate(parsed: ParsedFile, bonusLevel = false, hasRocketLauncher = true, missingWeaponIndices: readonly number[] = []): GameMap {
     const rng = mulberry32(seedFrom(parsed));
     const size = this.mapSize(parsed);
 
@@ -174,7 +179,7 @@ export class MapGenerator {
     const loreResult = placeLoreTerminals(rooms, grid, parsed.comments, rng, spawn);
     const loreTerminals = loreResult.terminals;
     enemies.push(...loreResult.todoEnemies);
-    const { secretLoot } = placeSecretRooms(rooms, grid, size, parsed.deadCodeRegions, rng, hasRocketLauncher);
+    const { secretLoot } = placeSecretRooms(rooms, grid, size, parsed.secretTriggers, rng, hasRocketLauncher, missingWeaponIndices);
 
     // Turn each resolved `goto` → label jump into a teleporter pad pair, once
     // the floor plan (doors/keys included) is final so pads never overwrite
@@ -238,6 +243,7 @@ export class MapGenerator {
       ammoPickups,
       loreTerminals,
       bonusLevel,
+      secretRoomCount: secretLoot.length,
     };
   }
 
@@ -995,46 +1001,95 @@ function findWallPerimeterSpot(
 
 /** Interior footprint (both dimensions) of a carved secret room. */
 const SECRET_ROOM_SIZE = 3;
-/** Dead-code regions are capped the same way lore terminals are — a huge
- * legacy file can have dozens of unreachable blocks, but not every one needs
+/** Secret-room triggers are capped the same way lore terminals are — a huge
+ * legacy file can have dozens of qualifying spots, but not every one needs
  * its own hidden room. */
 const MAX_SECRET_ROOMS = 5;
-/** A secret room's guaranteed pickup, "mega-health" or a fat rockets stash —
- * noticeably above the normal `AMMO_PICKUP_*`/`HEALTH_DROP_AMOUNT` scale, since
- * finding one is meant to feel like a real reward for exploring. */
+/** A secret room's guaranteed pickup — "mega-health", a fat rockets stash, or
+ * a chunky armor top-up — noticeably above the normal
+ * `AMMO_PICKUP_*`/`HEALTH_DROP_AMOUNT`/`SWAP_DROP_AMOUNT` scale, since finding
+ * one is meant to feel like a real reward for exploring. */
 const SECRET_LOOT_HEALTH_AMOUNT = 60;
 const SECRET_LOOT_ROCKETS_AMOUNT = 4;
+const SECRET_LOOT_SWAP_AMOUNT = 40;
+
+/** One candidate outcome for a secret room's guaranteed pickup — see the
+ * `candidates` list built in `placeSecretRooms`. */
+interface SecretLootCandidate {
+  kind: AmmoPickup["kind"];
+  amount: number;
+  weaponIndex?: number;
+}
 
 /**
- * Carve a hidden room for each unreachable-code region, off a random side of
+ * Carve a hidden room for a capped, fairly-sampled, one-per-room subset of
+ * `secretTriggers` (dead code, empty catch blocks, deprecation markers,
+ * commented-out code, magic-number/blob literals), off a random side of
  * whichever room contains its source line, behind a `SECRET_WALL_TILE` that
  * renders and blocks exactly like a normal wall (see `Tile`'s doc comment) —
  * the only way to find one is to interact with the right stretch of wall.
- * Never a hard failure: a region whose anchor room has no free, clear patch of
- * solid rock beside it on any of its four sides simply doesn't get one.
+ * Never a hard failure: a trigger whose anchor room has no free, clear patch
+ * of solid rock beside it on any of its four sides simply doesn't get one.
+ *
+ * `missingWeaponIndices` is an opaque list of `WEAPONS` indices the current
+ * player doesn't own yet (computed by `main.ts` from `ownedWeapons`, same
+ * pattern as `hasRocketLauncher`) — the map layer never imports engine-layer
+ * weapon concepts (see `doc/dev/architecture.md`), it just carries the
+ * numbers through to `AmmoPickup.weaponIndex` for the engine to interpret
+ * once collected.
  */
 function placeSecretRooms(
   rooms: Room[],
   grid: Tile[][],
   mapSize: number,
-  deadCodeRegions: DeadCodeRegion[],
+  secretTriggers: SecretTrigger[],
   rng: () => number,
   hasRocketLauncher: boolean,
+  missingWeaponIndices: readonly number[],
 ): { secretLoot: AmmoPickup[] } {
   const secretLoot: AmmoPickup[] = [];
 
-  for (const region of deadCodeRegions.slice(0, MAX_SECRET_ROOMS)) {
-    const anchor = roomForLine(rooms, region.startLine) ?? rooms[0];
-    if (!anchor) continue;
+  // With five source patterns concatenated in a fixed order, a file with many
+  // dead-code regions (added first) could otherwise starve out every other
+  // trigger kind from ever getting one of the capped slots below — shuffle a
+  // copy first so the cap samples fairly across all kinds. Still fully
+  // deterministic, since `rng` is the map's own seeded PRNG.
+  const shuffled = [...secretTriggers];
+  shuffle(shuffled, rng);
+
+  // A single function/entity can trip several different trigger kinds at
+  // once (e.g. dead code AND a magic number in the same method) and they'd
+  // all resolve to the same anchor room via `roomForLine` — `usedAnchors`
+  // caps it at one secret room per room, so the whole level's worth of
+  // triggers is walked (not just the first `MAX_SECRET_ROOMS` in shuffled
+  // order) until either the room cap is filled or triggers run out.
+  const usedAnchors = new Set<Room>();
+  for (const trigger of shuffled) {
+    if (secretLoot.length >= MAX_SECRET_ROOMS) break;
+    const anchor = roomForLine(rooms, trigger.startLine) ?? rooms[0];
+    if (!anchor || usedAnchors.has(anchor)) continue;
     const secret = trySecretRoomOffAnchor(anchor, grid, mapSize, rng);
     if (!secret) continue;
+    usedAnchors.add(anchor);
 
-    const kind = hasRocketLauncher && rng() < 0.5 ? "rockets" : "health";
+    // Picked uniformly among whatever's actually available this run — a
+    // still-unowned weapon only competes once one exists, rockets only once
+    // the launcher is owned, so "always health" (the reported complaint)
+    // can't happen: swap is always in the running as a real alternative.
+    const candidates: SecretLootCandidate[] = [{ kind: "health", amount: SECRET_LOOT_HEALTH_AMOUNT }, { kind: "swap", amount: SECRET_LOOT_SWAP_AMOUNT }];
+    if (hasRocketLauncher) candidates.push({ kind: "rockets", amount: SECRET_LOOT_ROCKETS_AMOUNT });
+    if (missingWeaponIndices.length > 0) {
+      const weaponIndex = missingWeaponIndices[Math.floor(rng() * missingWeaponIndices.length)];
+      candidates.push({ kind: "weapon", amount: 0, weaponIndex });
+    }
+    const choice = candidates[Math.floor(rng() * candidates.length)];
+
     secretLoot.push({
       x: secret.center.x + 0.5,
       y: secret.center.y + 0.5,
-      kind,
-      amount: kind === "health" ? SECRET_LOOT_HEALTH_AMOUNT : SECRET_LOOT_ROCKETS_AMOUNT,
+      kind: choice.kind,
+      amount: choice.amount,
+      weaponIndex: choice.weaponIndex,
       collected: false,
     });
   }
@@ -1097,10 +1152,17 @@ function trySecretRoomOffAnchor(
     if (grid[c.wall.y]?.[c.wall.x] !== 1) continue;
     if (c.x0 < 1 || c.y0 < 1 || c.x1 > mapSize - 2 || c.y1 > mapSize - 2) continue;
 
+    // Checked with a 1-tile margin beyond the room's own footprint, not just
+    // the footprint itself: opening this room now flood-fills every
+    // 4-connected `SECRET_WALL_TILE` cell reachable from the door (see
+    // `tryOpenSecretWall`), so if another secret room's carved footprint
+    // ended up directly touching this one, opening either would leak into
+    // revealing both. A 1-tile buffer of untouched rock on every side rules
+    // that out entirely.
     let clear = true;
-    for (let y = c.y0; y <= c.y1 && clear; y++) {
-      for (let x = c.x0; x <= c.x1; x++) {
-        if (grid[y][x] !== 1) {
+    for (let y = c.y0 - 1; y <= c.y1 + 1 && clear; y++) {
+      for (let x = c.x0 - 1; x <= c.x1 + 1; x++) {
+        if (grid[y]?.[x] !== 1) {
           clear = false;
           break;
         }
@@ -1108,8 +1170,18 @@ function trySecretRoomOffAnchor(
     }
     if (!clear) continue;
 
+    // The whole room — interior *and* the one connecting tile — is carved as
+    // `SECRET_WALL_TILE`, not floor. Rendering already treats every
+    // `SECRET_WALL_TILE` cell as an ordinary wall (3D view, corner minimap,
+    // automap), so a room made entirely of it is genuinely indistinguishable
+    // from solid rock until opened — a room carved as floor here would show
+    // up as a room-shaped hole in the surrounding walls (no fog-of-war on the
+    // corner minimap) or leak through the automap's `visited` radius (which
+    // has no wall-awareness and reaches past the one doorway tile) well
+    // before the player ever interacts with it. Opening flood-fills this
+    // whole connected patch to floor at once — see `tryOpenSecretWall`.
     for (let y = c.y0; y <= c.y1; y++) {
-      for (let x = c.x0; x <= c.x1; x++) grid[y][x] = 0;
+      for (let x = c.x0; x <= c.x1; x++) grid[y][x] = SECRET_WALL_TILE;
     }
     grid[c.wall.y][c.wall.x] = SECRET_WALL_TILE;
     return { center: { x: Math.floor((c.x0 + c.x1) / 2), y: Math.floor((c.y0 + c.y1) / 2) } };
@@ -1153,10 +1225,29 @@ function dist(x1: number, y1: number, x2: number, y2: number): number {
   return Math.hypot(x1 - x2, y1 - y2);
 }
 
-/** The room whose entity's line span contains `line`, if any. Used to anchor
- * a goto/label teleporter pad inside the room its source line lives in. */
+/**
+ * The *most specific* room whose entity's line span contains `line` — used to
+ * anchor a lore terminal, secret room, or goto/label teleporter pad. A
+ * method's line range always sits inside its enclosing class's range too, so
+ * picking merely the first containing room (in `startLine` order, meaning the
+ * outer class always sorts before its own methods) would anchor everything
+ * physically inside any method to the whole class's room instead — collapsing
+ * what should be several distinct rooms' worth of content onto one. Picking
+ * the containing room with the smallest line span instead always prefers the
+ * innermost (most specific) entity.
+ */
 function roomForLine(rooms: Room[], line: number): Room | undefined {
-  return rooms.find((r) => line >= r.entity.startLine && line <= r.entity.endLine);
+  let best: Room | undefined;
+  let bestSpan = Infinity;
+  for (const room of rooms) {
+    if (line < room.entity.startLine || line > room.entity.endLine) continue;
+    const span = room.entity.endLine - room.entity.startLine;
+    if (span < bestSpan) {
+      best = room;
+      bestSpan = span;
+    }
+  }
+  return best;
 }
 
 /**

@@ -20,7 +20,10 @@ import {
   countLines,
   countParameters,
   extractLargeComments,
+  findCommentedOutCodeBlocks,
   findDeadCodeAfterReturn,
+  findDeprecationMarkers,
+  findMagicNumberBlobs,
   maxNestingDepth,
   resolveGotos,
   type RawGotoRef,
@@ -31,6 +34,18 @@ import type { CodeEntity, CodeParserAdapter, EntityKind, ParsedFile } from "../t
  * unreachable code after a `return` (see `findDeadCodeAfterReturn`). */
 const BLOCK_NODE_TYPES = new Set(["compound_statement"]);
 const RETURN_NODE_TYPES = new Set(["return_statement"]);
+
+/** C has no exceptions/catch construct at all, so empty-catch detection is
+ * skipped entirely for this adapter (see `findEmptyCatchBlocks`'s no-op empty
+ * input case). Deprecation markers only scan comments — C has no bundled
+ * decorator/attribute/annotation node type in this grammar. */
+const DEPRECATION_MARKER_NODE_TYPES = ["comment"];
+/** String-literal node types — used to find magic-blob strings (see
+ * `findMagicNumberBlobs`). */
+const STRING_LITERAL_NODE_TYPES = ["string_literal", "concatenated_string"];
+/** Number-literal node type — used to find hex magic numbers (see
+ * `findMagicNumberBlobs`). */
+const NUMBER_LITERAL_NODE_TYPES = ["number_literal"];
 
 /** Node types that define an entity, mapped to their normalized kind. */
 const ENTITY_NODE_TYPES: Record<string, EntityKind> = {
@@ -158,7 +173,12 @@ export class CParserAdapter implements CodeParserAdapter {
         entities,
         gotos: resolveGotos(rawGotos, rawLabels),
         comments: extractLargeComments(tree.rootNode, ["comment"]),
-        deadCodeRegions: findDeadCodeAfterReturn(tree.rootNode, BLOCK_NODE_TYPES, RETURN_NODE_TYPES),
+        secretTriggers: [
+          ...findDeadCodeAfterReturn(tree.rootNode, BLOCK_NODE_TYPES, RETURN_NODE_TYPES),
+          ...findDeprecationMarkers(tree.rootNode, DEPRECATION_MARKER_NODE_TYPES),
+          ...findCommentedOutCodeBlocks(tree.rootNode, ["comment"]),
+          ...findMagicNumberBlobs(tree.rootNode, STRING_LITERAL_NODE_TYPES, NUMBER_LITERAL_NODE_TYPES),
+        ],
       };
     } finally {
       tree.delete();

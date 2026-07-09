@@ -192,11 +192,23 @@ export const WEAPONS: readonly Weapon[] = [
  * campaign-level-4/8 forced-unlock safety net in `main.ts`). */
 export const STARTING_WEAPONS: readonly number[] = [0, 1, 2];
 
-/** Array indices of gdb/ghidra in `WEAPONS` — named so `RaycasterEngine`'s
- * `UNLOCKABLE_WEAPONS` and `main.ts`'s forced-unlock levels don't each
- * hardcode the same literal indices independently. */
+/** Array indices of gdb/ghidra in `WEAPONS` — named so `UNLOCKABLE_WEAPONS`
+ * and `main.ts`'s forced-unlock levels don't each hardcode the same literal
+ * indices independently. */
 export const GDB_WEAPON_INDEX = 3;
 export const GHIDRA_WEAPON_INDEX = 4;
+
+/** Weapon indices whose only in-level acquisition path is an Elite kill's
+ * guaranteed drop (`RaycasterEngine.dropEliteLoot`) or a secret room's
+ * weapon-unlock loot slot (`placeSecretRooms` in `mapGenerator.ts`) — plus
+ * `main.ts`'s forced-unlock safety net at campaign levels 4/8, a separate,
+ * out-of-band path onto these same indices. Lives here rather than in
+ * `engine.ts` so both the engine layer and `main.ts` (which has to compute
+ * which of these are still missing, to hand the map layer an opaque list of
+ * candidate indices without the map layer importing engine-layer weapon
+ * concepts — see `doc/dev/architecture.md`'s "map must never import engine"
+ * rule) can both import one shared source of truth. */
+export const UNLOCKABLE_WEAPONS: readonly number[] = [GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX];
 
 /**
  * `WEAPONS` indices in number-key order: the Nth entry here is what the
