@@ -37,6 +37,11 @@ const HINT_MAX_DELAY_MS = 40000;
 export interface ConsoleSidebarHandle {
   /** Enable/disable the periodic random hints (kept off outside an active level). */
   setHintsActive: (active: boolean) => void;
+  /** Silence hints while the sim is frozen (paused / reading a lore terminal)
+   * without losing the "a level is running" state `setHintsActive` tracks —
+   * otherwise a hint could fire mid-pause and bury whatever the player was
+   * last reading in the sidebar. */
+  setPaused: (paused: boolean) => void;
 }
 
 /**
@@ -63,13 +68,14 @@ export function initConsoleSidebar(
   updateVisibility();
 
   let hintsActive = false;
+  let paused = false;
   /** Index of the last hint actually printed, so the next pick can avoid
    * repeating it back-to-back — `-1` (never matches) until the first hint. */
   let lastHintIndex = -1;
   const scheduleHint = (): void => {
     const delay = HINT_MIN_DELAY_MS + Math.random() * (HINT_MAX_DELAY_MS - HINT_MIN_DELAY_MS);
     window.setTimeout(() => {
-      if (hintsActive) {
+      if (hintsActive && !paused) {
         let index = Math.floor(Math.random() * HINTS.length);
         while (HINTS.length > 1 && index === lastHintIndex) {
           index = Math.floor(Math.random() * HINTS.length);
@@ -85,6 +91,9 @@ export function initConsoleSidebar(
   return {
     setHintsActive(active: boolean): void {
       hintsActive = active;
+    },
+    setPaused(p: boolean): void {
+      paused = p;
     },
   };
 }

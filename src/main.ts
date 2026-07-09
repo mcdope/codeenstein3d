@@ -962,6 +962,9 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
       onCheatActivated: () => {
         cheatsUsed = true;
       },
+      onFreezeChange: (frozen) => {
+        consoleSidebar.setPaused(frozen);
+      },
     },
     effectiveCarryover,
     currentGoreLevel,
@@ -982,6 +985,7 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
     },
     () => {
       activeEngine?.start();
+      consoleSidebar.setPaused(false);
       consoleSidebar.setHintsActive(true);
       // The overlay focuses its own "Start" button (so Enter/Space dismiss
       // it) and never gives focus back — without this, WASD silently does

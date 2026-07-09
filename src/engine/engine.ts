@@ -258,6 +258,10 @@ export interface EngineHandlers {
    * how the host learns a cheat fired at all, so it can bar the run from
    * saving a highscore/replay for the rest of the campaign. */
   onCheatActivated?: (code: string) => void;
+  /** Fired only on the paused/lore-frozen ↔ running edge (not every frame),
+   * so the host can e.g. silence ambient console hints while the sim isn't
+   * actually advancing. */
+  onFreezeChange?: (frozen: boolean) => void;
 }
 
 /** Health/ammo/weapon carried over from a previous level, for multi-level
@@ -465,6 +469,9 @@ export class RaycasterEngine {
   private suppressTeleportAt: string | null = null;
   /** Seconds elapsed in this level's simulation; drives timed spike traps. */
   private levelTime = 0;
+  /** Last value reported via `onFreezeChange`, so that handler only fires on
+   * an actual edge instead of every frame the sim happens to be paused. */
+  private wasFrozen = false;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -568,6 +575,12 @@ export class RaycasterEngine {
   /** Accumulate raw frame time toward the next averaged `displayFps` update,
    * and record this frame's raw time directly (no averaging — a single
    * stutter should be visible, not smoothed away). */
+  private notifyFrozen(frozen: boolean): void {
+    if (frozen === this.wasFrozen) return;
+    this.wasFrozen = frozen;
+    this.handlers.onFreezeChange?.(frozen);
+  }
+
   private updateFpsCounter(rawDt: number): void {
     this.fpsAccumTime += rawDt;
     this.fpsAccumFrames += 1;
@@ -619,6 +632,7 @@ export class RaycasterEngine {
     if (this.input.consumeEscape()) this.isPaused = !this.isPaused;
     if (this.isPaused && clicked) this.isPaused = false;
     if (this.isPaused) {
+      this.notifyFrozen(true);
       this.renderPausedOverlay();
       return;
     }
@@ -641,9 +655,11 @@ export class RaycasterEngine {
         if (this.input.isDown("KeyS")) this.loreScroll += LORE_SCROLL_SPEED * dt;
         if (this.input.isDown("KeyW")) this.loreScroll = Math.max(0, this.loreScroll - LORE_SCROLL_SPEED * dt);
       }
+      this.notifyFrozen(true);
       this.renderLoreOverlay();
       return;
     }
+    this.notifyFrozen(false);
     if (interacted && this.state === "playing") {
       // Secret walls are checked first: that check is facing/reach-based (only
       // the exact tile directly ahead, within `SECRET_WALL_REACH`), a far more
