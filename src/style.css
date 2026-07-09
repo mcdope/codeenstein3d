@@ -515,16 +515,40 @@ a.settings-btn {
   text-align: center;
 }
 
+/* Flex-grow box around the canvas — absorbs whatever vertical space
+ * #viewport's other children (hint caption, controls legend, replay
+ * transport bar) don't need, so .scene-canvas below has the largest
+ * possible width×height budget to fit its aspect ratio into instead of a
+ * fixed max-width. `min-height: 0` overrides flexbox's default
+ * `min-height: auto`, which would otherwise refuse to shrink this item
+ * below its content's natural size and defeat the whole point of
+ * flex-grow here. `width: 100%` is needed because #viewport sets
+ * `align-items: center` (so flex items don't stretch to the cross-axis by
+ * default) — without it this would only be as wide as the canvas already
+ * is, which is exactly the chicken-and-egg sizing this element exists to
+ * avoid. See main.ts's `canvasArea` for why it's hidden/shown instead of
+ * the canvas itself. */
+.canvas-area {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
 .scene-canvas {
-  width: min(100%, 960px);
+  /* `auto` + `max-width`/`max-height` + `aspect-ratio` is the standard
+   * "largest box that fits both constraints while keeping ratio" sizing
+   * algorithm — the element's own box ends up exactly content-sized (no
+   * leftover space inside its border), unlike stretching to 100%/100% and
+   * relying on object-fit alone to letterbox the content within an
+   * oversized box. */
+  width: auto;
   height: auto;
-  /* Bounds the scaled-up box by viewport height too (not just #viewport's
-   * width-driven min() above) — on a short/narrow window, a width-only cap
-   * could still derive a height taller than the viewport via the aspect
-   * ratio, clipping the bottom of the scene. object-fit: contain then letter-
-   * boxes the actual 640x400 content inside whatever box results, so the
-   * image never gets cropped, just pillar/letterboxed. */
-  max-height: 100vh;
+  max-width: 100%;
+  max-height: 100%;
   aspect-ratio: 640 / 400;
   object-fit: contain;
   /* Fallback first, preferred value last — some engines only ever supported

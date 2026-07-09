@@ -183,22 +183,76 @@ highscoreDialog.addEventListener("close", () => {
 /**
  * The one and only game canvas — created once, attached to `#viewport` once,
  * and never removed again for the rest of the session. This is what F
- * fullscreens (see `InputController`). It's only ever shown/hidden via
- * `canvas.hidden`, never detached: fullscreening an element that gets
- * disconnected from the document — even briefly, e.g. via a naive
- * `replaceChildren` call that happens to include it in both the old and new
- * child list — makes the browser auto-exit fullscreen, which is exactly what
- * made fullscreen drop on every level transition. `launchLevel` only ever
- * touches the *other* children of `#viewport` (the hint caption, the HUD
- * overlay); this canvas is simply left alone.
+ * fullscreens (see `InputController`). Never detached: fullscreening an
+ * element that gets disconnected from the document — even briefly, e.g. via
+ * a naive `replaceChildren` call that happens to include it in both the old
+ * and new child list — makes the browser auto-exit fullscreen, which is
+ * exactly what made fullscreen drop on every level transition. `launchLevel`
+ * only ever touches the *other* children of `#viewport` (the hint caption,
+ * the HUD overlay); this canvas is simply left alone.
+ *
+ * Wrapped in `canvasArea`, a flex-grow box that fills whatever vertical
+ * space `#viewport`'s other children (the hint caption, controls legend,
+ * replay transport bar) don't need — `fitCanvasToArea` below then sizes the
+ * canvas to the largest 640:400 box that fits inside whatever `canvasArea`
+ * ends up with, instead of the fixed max-width the layout used to be capped
+ * at. Shown/hidden via `canvasArea.hidden`, not `canvas.hidden` directly —
+ * hiding an *ancestor* of the fullscreen element ends fullscreen exactly the
+ * same way hiding the element itself does, so this preserves the same
+ * "leaving the game ends fullscreen, a level transition doesn't" behavior
+ * the doc comment above used to describe for `canvas.hidden`.
  */
 const canvas = document.createElement("canvas");
 canvas.width = SCENE_WIDTH;
 canvas.height = SCENE_HEIGHT;
 canvas.className = "scene-canvas";
 canvas.tabIndex = 0; // focusable so it can grab keyboard input on click
-canvas.hidden = true; // not shown until a level is actually running
-viewport.appendChild(canvas);
+const canvasArea = document.createElement("div");
+canvasArea.className = "canvas-area";
+canvasArea.hidden = true; // not shown until a level is actually running
+canvasArea.appendChild(canvas);
+viewport.appendChild(canvasArea);
+
+/**
+ * Sizes `canvas` to the largest 640:400 box that fits inside `canvasArea`'s
+ * current content box, via explicit inline `width`/`height` — CSS alone
+ * can't do this for a replaced element like `<canvas>`: `width: auto` just
+ * falls back to its intrinsic 640×400 size (from the `width`/`height`
+ * attributes above) rather than growing to fill available space, so
+ * `max-width`/`max-height`/`aspect-ratio` alone only ever *shrinks* it, never
+ * grows it. A no-op while `canvas` is the Fullscreen API's target — that
+ * state is sized entirely by the `.scene-canvas:fullscreen` CSS rule
+ * instead, and an inline style here (higher specificity than any class
+ * selector) would otherwise fight it.
+ */
+function fitCanvasToArea(): void {
+  if (document.fullscreenElement === canvas) return;
+  const availW = canvasArea.clientWidth;
+  const availH = canvasArea.clientHeight;
+  if (availW <= 0 || availH <= 0) return; // canvasArea is hidden (display:none) — nothing to size yet
+  const targetRatio = SCENE_WIDTH / SCENE_HEIGHT;
+  let width = availW;
+  let height = width / targetRatio;
+  if (height > availH) {
+    height = availH;
+    width = height * targetRatio;
+  }
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+}
+
+// Re-fit on every size change to canvasArea — window resizes, the sidebar
+// layout changing, or canvasArea itself flipping from hidden (0×0) to shown
+// at a level launch all land here automatically, without needing an
+// explicit fitCanvasToArea() call at each of those call sites.
+new ResizeObserver(fitCanvasToArea).observe(canvasArea);
+// ResizeObserver doesn't fire for this transition on its own (canvasArea's
+// own box is unaffected by the fullscreen element's cross-document
+// popout/return), so exiting fullscreen needs an explicit re-fit — entering
+// is already a no-op inside fitCanvasToArea itself.
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement) fitCanvasToArea();
+});
 
 const consoleSidebar = initConsoleSidebar(
   canvas,
@@ -656,9 +710,9 @@ const ENTRYPOINT_DETECTION_TIMEOUT_MS = 4000;
  * un-hides it again once the new level is actually ready.
  */
 function showLoadingScreen(status: string): void {
-  canvas.hidden = true;
+  canvasArea.hidden = true;
   for (const child of [...viewport.children]) {
-    if (child !== canvas && child !== loadingScreen) child.remove();
+    if (child !== canvasArea && child !== loadingScreen) child.remove();
   }
   loadingStatus.textContent = status;
   loadingScreen.hidden = false;
@@ -779,14 +833,14 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
 
   // The status bar and every blocking overlay (briefing, commit summary,
   // end-of-run) are all drawn natively on the canvas now — nothing but the
-  // hint caption and controls legend is DOM. Only the canvas's *siblings*
-  // are replaced — the canvas itself is never removed from #viewport (see
-  // its doc comment).
+  // hint caption and controls legend is DOM. Only canvasArea's *siblings*
+  // are replaced — the canvas (and its wrapper) is never removed from
+  // #viewport (see its doc comment).
   for (const child of [...viewport.children]) {
-    if (child !== canvas) child.remove();
+    if (child !== canvasArea) child.remove();
   }
   viewport.append(hint, buildControlsLegend());
-  canvas.hidden = false;
+  canvasArea.hidden = false;
   // Grab keyboard focus immediately — without this, the very first WASD press
   // after a level (re)load is silently swallowed until the player clicks the
   // canvas themselves, which reads as "controls don't work" on every level
@@ -1127,9 +1181,9 @@ async function findNextParsableFile(tree: TreeNode, afterPath: string): Promise<
  */
 function showFileTreePlaceholder(): void {
   loadingScreen.hidden = true;
-  canvas.hidden = true;
+  canvasArea.hidden = true;
   for (const child of [...viewport.children]) {
-    if (child !== canvas) child.remove();
+    if (child !== canvasArea) child.remove();
   }
 
   const placeholder = document.createElement("p");
@@ -1460,13 +1514,13 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
     // front — each level below just swaps the engine underneath it.
     activeEngine?.stop();
     for (const child of [...viewport.children]) {
-      if (child !== canvas) child.remove();
+      if (child !== canvasArea) child.remove();
     }
     const hint = document.createElement("p");
     hint.className = "map-caption";
     const controls = buildReplayControls();
     viewport.append(hint, controls.el);
-    canvas.hidden = false;
+    canvasArea.hidden = false;
     canvas.focus();
 
     const hud = new GameHud(canvas);
