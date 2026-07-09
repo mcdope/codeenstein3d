@@ -10,3 +10,4 @@
 - **Reading, exploring, and finding secrets all pay real points.** Every unique lore terminal you read adds a flat bonus, every secret room you open adds double that, and clearing 95%+ of a level's walkable area adds a large one — worth a detour if you're not in a rush.
 - **Header files are restock stops.** If you land on a `.h`-derived bonus level, loot odds are noticeably better than normal — a good place to top off before pushing on.
 - **Difficulty cuts both ways.** Hard doesn't just make enemies tougher — it also thins out how much ammo/health/swap you find, so ammo discipline matters more the higher you go.
+- **Cyan enemies aren't worth taking cover from.** Edge Cases (small, jarringly cyan, found only in a corridor's breakup room) hit for a fraction of a normal enemy's damage and die in about one shot — their erratic darting makes them mildly annoying to line up, but they're a nuisance to swat, not a threat to plan around.
