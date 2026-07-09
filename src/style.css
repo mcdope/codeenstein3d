@@ -538,6 +538,16 @@ a.settings-btn {
   overflow: hidden;
 }
 
+/* `display: flex` above is an author-stylesheet rule, so it wins over the
+ * browser's own `[hidden] { display: none }` UA rule regardless of
+ * specificity — author styles always beat user-agent styles for a matched
+ * property (the same bug this fixed for .loading-screen earlier). Without
+ * this override, canvasArea.hidden = true (set whenever no level is
+ * running) still rendered an empty bordered box. */
+.canvas-area[hidden] {
+  display: none;
+}
+
 .scene-canvas {
   /* `auto` + `max-width`/`max-height` + `aspect-ratio` is the standard
    * "largest box that fits both constraints while keeping ratio" sizing
