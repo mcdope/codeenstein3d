@@ -186,6 +186,32 @@ body {
   overflow-wrap: anywhere;
 }
 
+.github-suggestions {
+  display: flex;
+  gap: 6px;
+}
+
+.suggestion-btn {
+  flex: 1;
+  padding: 6px 4px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.suggestion-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.suggestion-btn:disabled {
+  color: var(--border);
+  cursor: not-allowed;
+}
+
 .settings-btn {
   width: 100%;
   margin-top: 12px;
@@ -220,7 +246,7 @@ a.settings-btn {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 16px 20px 20px;
-  width: min(640px, 90vw);
+  width: min(960px, 95vw);
 }
 
 #highscore-dialog::backdrop {
@@ -247,6 +273,12 @@ a.settings-btn {
   text-align: left;
   padding: 4px 10px 4px 0;
   border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.highscore-table th.wrap,
+.highscore-table td.wrap {
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 

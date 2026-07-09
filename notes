@@ -1,7 +1,9 @@
 # Playtest notes / backlog
 
 ## Done
+- [x] "Suggested repos" section at GitHub loading — four quick-pick buttons (Easy: FizzBuzzEnterpriseEdition, Medium: DOOM, Hard: webpack, Nightmare: magento2) below the repo input fill it in and load immediately, sharing the existing fetch-and-launch flow
 - [x] Progress indicator for github loads — the recursive tree fetch (the one genuinely slow step for a big repo) now streams and shows a running "X MB received" counter, and the "Scanning file tree…" fallback pass (each extensionless file costs a real network round-trip) shows a "(checked/total)" counter, instead of one static message
+- [x] Highscore table dialog wordwrapped every column — widened dialog (640px→960px) and made only the long-text columns (Campaign, Ended On) wrap; # / Score / Lines / Complexity / Levels / Hash / Replay stay on one line now
 - [x] to few enemies — complexity packs (1 extra enemy per 10 pts) [Task 18]
 - [x] increase aggro distance — 5 → 7.5 tiles [Task 18]
 - [x] enemies sometimes invisible when very close to the player — sprite near-clip fix [Task 18]
@@ -139,13 +141,7 @@
     - to be placed in `demo_and_testing_levels`
 - [ ] tests (unit [coverage target 100%!], end2end/functional/visual [coverage target: all aspects of gameplay], ensure no data leaves the app (besides highscores at a later time)). needs the generated levels from the entry above this one.
 - [ ] chance for elite mob with "legendary name", like Linus Torvals; Richard Stallman etc pp in the exit room, higher aggro so player cant just run away
-- [ ] keys part of a ongoing cheat input sequence shouldnt be interpreted as input
+- [ ] keys part of a ongoing cheat input sequence shouldnt be interpreted as input. if input started with "ID", ignore following keys for controls if they could be part of a cheat. else interupt the cheat detection sequence and treat it as normal input
 - [ ] walkable steps to get some height differences in the levels? kinda adding a height / elevation element.
 - [ ] console hints keep coming when game is paused, spamming away previous output
-- [ ] "Suggested repos" section at Github loading
-    - [ ] Easy - EnterpriseQualityCoding/FizzBuzzEnterpriseEdition
-    - [ ] Medium - id-Software/DOOM
-    - [ ] Hard - webpack/webpack
-    - [ ] Nightmare - magento/magento2
-    - btw, all of them demonstrate line 123
-- [ ] Highscore table dialog needs to be larger, see `/home/mcdope/Bilder/Bildschirmfotos/Bildschirmfoto vom 2026-07-09 19-44-52.png`. Wordwraps everywhere currently.
+- [ ] antialiasing for wall edges

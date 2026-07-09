@@ -77,6 +77,7 @@ const continueButton = requireElement<HTMLButtonElement>("#continue-run");
 const githubRepoInput = requireElement<HTMLInputElement>("#github-repo-input");
 const loadGithubRepoButton = requireElement<HTMLButtonElement>("#load-github-repo");
 const githubStatus = requireElement<HTMLParagraphElement>("#github-status");
+const githubSuggestionButtons = document.querySelectorAll<HTMLButtonElement>(".suggestion-btn");
 const workspaceName = requireElement<HTMLParagraphElement>("#workspace-name");
 const fileTree = requireElement<HTMLElement>("#file-tree");
 const viewport = requireElement<HTMLElement>("#viewport");
@@ -396,7 +397,10 @@ selectButton.addEventListener("click", async () => {
   }
 });
 
-loadGithubRepoButton.addEventListener("click", async () => {
+/** Fetches and launches whatever repo reference is currently in
+ * `githubRepoInput`, shared by the "Load from GitHub" button and the
+ * "Suggested repos" quick-pick buttons below it. */
+async function loadGithubRepoFromInput(): Promise<void> {
   const ref = parseGithubRepoInput(githubRepoInput.value);
   if (!ref) {
     githubStatus.textContent = 'Enter a repo as "owner/repo" or a github.com URL.';
@@ -406,6 +410,7 @@ loadGithubRepoButton.addEventListener("click", async () => {
 
   try {
     loadGithubRepoButton.disabled = true;
+    githubSuggestionButtons.forEach((btn) => (btn.disabled = true));
     githubStatus.classList.remove("error");
     githubStatus.textContent = `Fetching "${ref.owner}/${ref.repo}"…`;
     workspaceName.textContent = "Reading workspace…";
@@ -438,7 +443,24 @@ loadGithubRepoButton.addEventListener("click", async () => {
     showFileTreePlaceholder();
   } finally {
     loadGithubRepoButton.disabled = false;
+    githubSuggestionButtons.forEach((btn) => (btn.disabled = false));
   }
+}
+
+loadGithubRepoButton.addEventListener("click", () => {
+  void loadGithubRepoFromInput();
+});
+
+// "Suggested repos" quick-picks: same load path as typing a repo in by hand,
+// just pre-filling the input first so the status/error messaging stays in
+// one place instead of duplicating the fetch-and-launch flow per button.
+githubSuggestionButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const repo = button.dataset.repo;
+    if (!repo) return;
+    githubRepoInput.value = repo;
+    void loadGithubRepoFromInput();
+  });
 });
 
 continueButton.addEventListener("click", async () => {
