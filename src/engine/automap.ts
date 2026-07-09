@@ -26,12 +26,11 @@ import { HUD_HEIGHT } from "./hud";
 
 /** Fixed tile size in canvas pixels — independent of map size, so large maps
  * stay just as readable as small ones (the old fit-to-box math shrank as low
- * as ~2px/tile on big levels). */
-const CELL_PX = 10;
-/** Margin kept clear on the left/right/bottom of the viewport rect. */
+ * as ~2px/tile on big levels). Zoomed out relative to a "1:1" 10px/tile read,
+ * so a given viewport shows twice the map area. */
+const CELL_PX = 5;
+/** Margin kept clear on the left/right/top/bottom of the viewport. */
 const MARGIN = 12;
-/** Extra clearance at the top, above the viewport rect, for the title text. */
-const TITLE_CLEARANCE = 20;
 
 /** Structural/navigational tiles render in muted greyscale, Diablo-style, so
  * the map doesn't visually fight the live world still rendering around it.
@@ -69,12 +68,12 @@ const EXIT_COLOR = "#41ff6e";
 const PLAYER_COLOR = "#ffd23f";
 
 /**
- * Draw the automap as a bounded viewport overlay: a dark panel reserving the
- * bottom HUD strip and a small margin, showing explored tiles in a fixed-size
- * grid that pans to keep the player roughly centered (clamped so it never
- * scrolls past the map's edges — same idea as Diablo's map). Only tiles with
- * `map.visited` set are shown. The live 3D scene stays visible outside the
- * viewport rect, since the sim keeps running while this is up.
+ * Draw the automap as a translucent viewport overlay filling the available
+ * area (margin + bottom HUD strip reserved), so most of the live game stays
+ * dimly visible through it. Shows explored tiles in a fixed-size grid that
+ * pans to keep the player roughly centered (clamped so it never scrolls past
+ * the map's edges — same idea as Diablo's map). Only tiles with
+ * `map.visited` set are shown.
  */
 export function drawAutomap(
   ctx: CanvasRenderingContext2D,
@@ -86,11 +85,9 @@ export function drawAutomap(
   const height = ctx.canvas.height;
 
   const vx0 = MARGIN;
-  const vy0 = MARGIN + TITLE_CLEARANCE;
-  const vx1 = width - MARGIN;
-  const vy1 = height - HUD_HEIGHT - MARGIN;
-  const viewW = Math.max(1, vx1 - vx0);
-  const viewH = Math.max(1, vy1 - vy0);
+  const vy0 = MARGIN;
+  const viewW = Math.max(1, width - MARGIN * 2);
+  const viewH = Math.max(1, height - HUD_HEIGHT - MARGIN * 2);
   const viewTilesW = viewW / CELL_PX;
   const viewTilesH = viewH / CELL_PX;
 
@@ -112,10 +109,9 @@ export function drawAutomap(
   ctx.rect(vx0, vy0, viewW, viewH);
   ctx.clip();
 
-  // Opaque panel behind the map — unlike the old whole-canvas translucent
-  // scrim, this can't visually bleed together with the live, moving 3D scene
-  // now rendering underneath/around it (different coordinate systems).
-  ctx.fillStyle = "#000502";
+  // Translucent panel behind the map, Diablo-style — the live 3D scene stays
+  // dimly visible through it rather than being fully hidden.
+  ctx.fillStyle = "rgba(0,5,2,0.65)";
   ctx.fillRect(vx0, vy0, viewW, viewH);
 
   const activeSpikes = activeSpikeTileKeys(map.spikeTraps, levelTime);
@@ -183,19 +179,6 @@ export function drawAutomap(
   drawPlayerMarker(ctx, player, vx0, vy0, camX, camY, CELL_PX);
 
   ctx.restore();
-
-  // Neon frame around the viewport, drawn outside the clip so it isn't cut off.
-  ctx.strokeStyle = "rgba(200,200,210,0.45)";
-  ctx.lineWidth = 1;
-  ctx.strokeRect(vx0 - 0.5, vy0 - 0.5, viewW + 1, viewH + 1);
-
-  // Title.
-  ctx.fillStyle = WALL_COLOR;
-  ctx.font = "12px ui-monospace, monospace";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "alphabetic";
-  ctx.fillText("AUTOMAP — TAB TO CLOSE", width / 2, Math.max(16, vy0 - 8));
-  ctx.textAlign = "start";
 }
 
 /** Solid triangle at the player's exact position, pointing along their
