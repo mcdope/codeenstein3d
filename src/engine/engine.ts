@@ -414,8 +414,9 @@ export class RaycasterEngine {
   private muzzleFrames = 0;
   /** Whether the automap overlay is up. Non-blocking — the sim keeps running
    * (movement, combat, hazards) while it's shown, Diablo-style; only a few
-   * purely-visual layers (viewmodel, crosshair, corner minimap/compass) are
-   * suppressed while it's open. See `advance()`. */
+   * purely-visual layers (viewmodel, corner minimap/compass) are suppressed
+   * while it's open — the crosshair stays visible since the player can still
+   * aim and fire. See `advance()`. */
   private isMapActive = false;
   /** Whether the game is paused (window blur or Escape) — freezes the sim and
    * shows a "PAUSED" overlay, distinct from the Tab automap. */
@@ -709,11 +710,11 @@ export class RaycasterEngine {
     // Full-screen red flash when the player is taking damage.
     drawDamageFlash(this.ctx, this.flashFrames / DAMAGE_FLASH_FRAMES);
 
-    // First-person weapon, crosshair, corner minimap/compass: all purely
-    // visual clutter the automap would immediately cover, so they're skipped
-    // while it's open rather than drawn and instantly painted over. A quick-
-    // melee swing briefly overlays the knife's viewmodel on top of whatever
-    // ranged weapon is actually equipped — weaponIndex, ammo, and the HUD are
+    // First-person weapon and corner minimap/compass: visual clutter the
+    // automap would immediately cover, so they're skipped while it's open
+    // rather than drawn and instantly painted over. A quick-melee swing
+    // briefly overlays the knife's viewmodel on top of whatever ranged
+    // weapon is actually equipped — weaponIndex, ammo, and the HUD are
     // untouched throughout (see `meleeRecoil`'s doc comment).
     if (!this.isMapActive) {
       const meleeOverlayActive = this.meleeRecoil > 0.02;
@@ -725,7 +726,6 @@ export class RaycasterEngine {
         kind: meleeOverlayActive ? MELEE_WEAPON.viewKind : WEAPONS[this.weaponIndex].viewKind,
       });
 
-      drawCrosshair(this.ctx, this.target !== null, WEAPONS[this.weaponIndex].spreadPx);
       const minimapPanel = renderMinimap(this.ctx, this.map, this.player, this.levelTime);
       if (COMPASS_ENABLED) {
         drawCompass(
@@ -745,6 +745,11 @@ export class RaycasterEngine {
     if (this.isMapActive) {
       drawAutomap(this.ctx, this.map, this.player, this.levelTime);
     }
+
+    // Crosshair stays visible (and on top of the automap, not dimmed by its
+    // translucent panel) even with the map open — the player can still aim
+    // and fire while it's up, so the aim point should still be shown.
+    drawCrosshair(this.ctx, this.target !== null, WEAPONS[this.weaponIndex].spreadPx);
 
     // Native HUD sits on top of the whole scene, automap included, so
     // health/ammo/keys always stay visible and live.
