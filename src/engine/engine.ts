@@ -72,6 +72,7 @@ import {
   GDB_WEAPON_INDEX,
   GHIDRA_WEAPON_INDEX,
   MELEE_WEAPON,
+  NUMBER_KEY_WEAPONS,
   STARTING_WEAPONS,
   WEAPONS,
   pelletOffsets,
@@ -612,10 +613,17 @@ export class RaycasterEngine {
     // `ownedWeapons`); an unearned slot just does nothing, rather than
     // switching to a weapon with no way to have gotten it yet. Melee is
     // structurally excluded (see `canWieldViaNumberKey`) — it's bound to
-    // Left-Ctrl as its own quick-attack action instead (below).
+    // Left-Ctrl as its own quick-attack action instead (below). `requested`
+    // is a 0-based number-key *slot* (digit 1 -> 0), not a raw `WEAPONS`
+    // index — routed through `NUMBER_KEY_WEAPONS` so the melee exclusion
+    // above doesn't leave a dead key in the middle of the number row (see
+    // its doc comment).
     const requested = this.input.consumeWeaponRequest();
-    if (requested !== null && this.canWieldViaNumberKey(requested)) {
-      this.weaponIndex = requested;
+    if (requested !== null) {
+      const targetIndex = NUMBER_KEY_WEAPONS[requested];
+      if (targetIndex !== undefined && this.canWieldViaNumberKey(targetIndex)) {
+        this.weaponIndex = targetIndex;
+      }
     }
 
     const wheelSteps = this.input.consumeWheelSteps();

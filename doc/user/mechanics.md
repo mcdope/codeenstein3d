@@ -28,8 +28,8 @@ Codeenstein 3D parses your source into an AST and turns its structure into a pla
 | echo pistol | 1 | Hitscan | Starting weapon |
 | Regex Shotgun | 2 | 7-pellet cone | Starting weapon |
 | SIGKILL Knife | `Left Ctrl` only | Melee | Starting weapon, infinite ammo, heals 1 HP per kill, not on the number row |
-| gdb | 4 | Full-auto hitscan | Unlocked by an Elite kill's guaranteed drop, or forced at campaign level 4 |
-| ghidra | 5 | Rocket / splash damage | Unlocked by an Elite kill's guaranteed drop, or forced at campaign level 8 |
+| gdb | 3 | Full-auto hitscan | Unlocked by an Elite kill's guaranteed drop, or forced at campaign level 4 |
+| ghidra | 4 | Rocket / splash damage | Unlocked by an Elite kill's guaranteed drop, or forced at campaign level 8 |
 
 Ranged weapons draw from two separate ammo pools: **Bullets** (pistol/shotgun/gdb) and **Rockets** (ghidra only). Rocket ammo won't drop or spawn on the map at all until you actually own the launcher. Hitscan pellets deviate more the further away the target is, so point-blank shots are reliable and very long-range ones can miss.
 

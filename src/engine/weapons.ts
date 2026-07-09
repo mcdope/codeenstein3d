@@ -66,10 +66,12 @@ export interface Weapon {
 
 /**
  * The arsenal. Ranged weapons are reachable via the number keys and the
- * mousewheel (1 → pistol, 2 → shotgun, (4) → gdb, (5) → ghidra, once
- * owned) — any weapon with `meleeRange` set is structurally excluded from
- * both (see `RaycasterEngine`'s `canWieldViaNumberKey`), since melee has its
- * own dedicated input instead of a number-key slot. Only the pistol/shotgun
+ * mousewheel (1 → pistol, 2 → shotgun, (3) → gdb, (4) → ghidra, once
+ * owned — kept contiguous by `NUMBER_KEY_WEAPONS` regardless of where a
+ * ranged weapon actually sits in this array) — any weapon with `meleeRange`
+ * set is structurally excluded from both (see `RaycasterEngine`'s
+ * `canWieldViaNumberKey`), since melee has its own dedicated input instead
+ * of a number-key slot. Only the pistol/shotgun
  * (plus the knife, which is always available regardless of slot) are owned
  * from the start — gdb/ghidra have to be earned from an Elite kill's
  * guaranteed weapon drop, or are force-unlocked at campaign levels 4/8 as a
@@ -160,6 +162,25 @@ export const STARTING_WEAPONS: readonly number[] = [0, 1, 2];
  * hardcode the same literal indices independently. */
 export const GDB_WEAPON_INDEX = 3;
 export const GHIDRA_WEAPON_INDEX = 4;
+
+/**
+ * `WEAPONS` indices in number-key order: the Nth entry here is what the
+ * (N+1)th number key (`1`, `2`, …) switches to, via `RaycasterEngine`'s
+ * `consumeWeaponRequest()` handling — melee (the knife, index 2) is skipped
+ * since it's structurally excluded from number-key switching (see
+ * `canWieldViaNumberKey`) and bound to Left-Ctrl instead. Without this
+ * indirection, a raw digit-to-array-index mapping would leave key `3` dead
+ * (it used to land on the knife's slot) and push gdb/ghidra to `4`/`5`
+ * instead of `3`/`4` — exactly the "hole" a prior playtest flagged. Derived
+ * from `WEAPONS` rather than hardcoded so a future non-melee addition to the
+ * array automatically gets a contiguous slot without this needing an update;
+ * a future *melee* addition just needs the same `meleeRange` exclusion to
+ * keep working. Doesn't change `WEAPONS`' own array order or any persisted
+ * `weaponIndex`/`ownedWeapons` numeric semantics (campaign saves, replays,
+ * highscores) — only how a number-key press is translated into one. */
+export const NUMBER_KEY_WEAPONS: readonly number[] = WEAPONS.map((_, i) => i).filter(
+  (i) => WEAPONS[i].meleeRange === undefined,
+);
 
 /**
  * The knife's `Weapon` object, looked up by its defining trait (`meleeRange`

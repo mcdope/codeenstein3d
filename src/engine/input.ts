@@ -414,7 +414,10 @@ export class InputController implements InputSource {
       if (!e.repeat) this.fireQueued = true;
       e.preventDefault();
     }
-    // Number keys select a weapon (Digit1/Numpad1 -> 0, Digit2/Numpad2 -> 1, …).
+    // Number keys select a weapon slot (Digit1/Numpad1 -> 0, Digit2/Numpad2 -> 1,
+    // …) — RaycasterEngine maps the slot to an actual WEAPONS index (see
+    // NUMBER_KEY_WEAPONS in weapons.ts), so this is a slot number, not a raw
+    // WEAPONS array index.
     const digit = digitKeyIndex(e.code);
     if (digit !== null) this.weaponRequest = digit;
 
