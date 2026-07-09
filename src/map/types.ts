@@ -179,8 +179,10 @@ export interface GameMap {
   bonusLevel: boolean;
 }
 
-/** What a defeated enemy (or a scattered map pickup) can leave behind. */
-export type LootKind = "bullets" | "rockets" | "health" | "swap" | "weapon";
+/** What a defeated enemy (or a scattered map pickup) can leave behind.
+ * `"smg"` (gdb's own ammo pool) is a `LootDrop`-only kind — never a
+ * statically-placed `AmmoPickup` — see `AmmoPickup.kind`'s doc comment. */
+export type LootKind = "bullets" | "rockets" | "smg" | "health" | "swap" | "weapon";
 
 /**
  * A dynamic loot drop left at a defeated enemy's death position. Spawned at

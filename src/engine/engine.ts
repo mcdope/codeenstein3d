@@ -84,10 +84,12 @@ import {
   ELITE_BULLETS_DROP_AMOUNT,
   ELITE_HEALTH_DROP_AMOUNT,
   ELITE_ROCKETS_DROP_AMOUNT,
+  ELITE_SMG_DROP_AMOUNT,
   ELITE_SWAP_DROP_AMOUNT,
   HEALTH_DROP_AMOUNT,
   MAX_SWAP,
   ROCKETS_DROP_AMOUNT,
+  SMG_DROP_AMOUNT,
   rollLoot,
 } from "./loot";
 import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, ROCKET_BLAST_RADIUS, type Rocket } from "./rockets";
@@ -189,10 +191,13 @@ export interface EngineStats {
   maxHealth: number;
   /** Swap points, absorbed 1:1 before health on any hit (see `damage()`). */
   swap: number;
-  /** Bullets remaining (pistol/shotgun/MP). */
+  /** Bullets remaining (pistol/shotgun). */
   bullets: number;
   /** Rockets remaining (ghidra). */
   rockets: number;
+  /** gdb's own ammo remaining — a separate pool from `bullets` (see
+   * `AmmoType`). */
+  smg: number;
   /** Dependency keys currently held (unused, in inventory). */
   keysHeld: number;
   /** Total keys placed on this level. */
@@ -240,6 +245,7 @@ export interface EngineCarryover {
   swap: number;
   bullets: number;
   rockets: number;
+  smg: number;
   /** Score banked from every level already cleared this campaign — the
    * baseline `EngineStats.score` adds this level's own live score on top of,
    * so the running total never resets at a level transition. Defaults to 0
@@ -254,7 +260,7 @@ export interface EngineCarryover {
    * `main.ts`'s `launchLevel`), so an active toggle would otherwise silently
    * reset at the next file. Omitted on a genuinely fresh run. IDKFA needs no
    * equivalent field — its effect already persists via `bullets`/`rockets`/
-   * `ownedWeapons` above. */
+   * `smg`/`ownedWeapons` above. */
   godMode?: boolean;
   noClip?: boolean;
 }
@@ -312,12 +318,14 @@ export class RaycasterEngine {
   private cheatToastFrames = 0;
   private bulletsAmmo: number;
   private rocketsAmmo: number;
+  private smgAmmo: number;
   /** What this level would have started the player out with, regardless of
    * `carryover` — the ammo-bonus baseline `computeScore` scores remaining
    * ammo against (see `./scoring.ts`), so a low-ammo carryover from a
    * previous level doesn't unfairly tank this one's ammo bonus. */
   private readonly startingBulletsRef: number;
   private readonly startingRocketsRef: number;
+  private readonly startingSmgRef: number;
   /** Index into WEAPONS of the equipped weapon (0 = pistol). */
   private weaponIndex = 0;
   /** Indices into `WEAPONS` the player can currently switch to — everything
@@ -447,8 +455,10 @@ export class RaycasterEngine {
     this.zBuffer = new Float64Array(canvas.width);
     this.bulletsAmmo = carryover?.bullets ?? startingBullets(map.enemies);
     this.rocketsAmmo = carryover?.rockets ?? startingRockets();
+    this.smgAmmo = carryover?.smg ?? startingSmg();
     this.startingBulletsRef = startingBullets(map.enemies);
     this.startingRocketsRef = startingRockets();
+    this.startingSmgRef = startingSmg();
     this.ownedWeapons = new Set(carryover?.ownedWeapons ?? STARTING_WEAPONS);
     this.priorScore = carryover?.priorScore ?? 0;
     this.totalWalkableTiles = countWalkableTiles(map);
@@ -1101,6 +1111,12 @@ export class RaycasterEngine {
         console.log(`%c[loot] +${amount} rockets`, "color:#ff9d3f");
         break;
       }
+      case "smg": {
+        const amount = this.scaledLootAmount(drop.amount ?? SMG_DROP_AMOUNT);
+        this.smgAmmo += amount;
+        console.log(`%c[loot] +${amount} smg ammo`, "color:#3fa9ff");
+        break;
+      }
       case "health": {
         const amount = this.scaledLootAmount(drop.amount ?? HEALTH_DROP_AMOUNT);
         this.health = Math.min(MAX_HEALTH, this.health + amount);
@@ -1125,6 +1141,10 @@ export class RaycasterEngine {
               const amount = this.scaledLootAmount(ELITE_ROCKETS_DROP_AMOUNT);
               this.rocketsAmmo += amount;
               console.log(`%c[loot] +${amount} rockets (${weapon.name} already owned)`, "color:#ff9d3f");
+            } else if (weapon.ammoType === "smg") {
+              const amount = this.scaledLootAmount(ELITE_SMG_DROP_AMOUNT);
+              this.smgAmmo += amount;
+              console.log(`%c[loot] +${amount} smg ammo (${weapon.name} already owned)`, "color:#3fa9ff");
             } else if (weapon.ammoType === "bullets") {
               const amount = this.scaledLootAmount(ELITE_BULLETS_DROP_AMOUNT);
               this.bulletsAmmo += amount;
@@ -1259,6 +1279,7 @@ export class RaycasterEngine {
         for (let i = 0; i < WEAPONS.length; i++) this.ownedWeapons.add(i);
         this.bulletsAmmo = CHEAT_MAX_AMMO;
         this.rocketsAmmo = CHEAT_MAX_AMMO;
+        this.smgAmmo = CHEAT_MAX_AMMO;
         this.swap = MAX_SWAP;
         this.showCheatToast("IDKFA — Full arsenal");
         break;
@@ -1352,13 +1373,19 @@ export class RaycasterEngine {
    */
   private fire(weapon: Weapon = WEAPONS[this.weaponIndex]): void {
     if (weapon.ammoType) {
-      const have = weapon.ammoType === "bullets" ? this.bulletsAmmo : this.rocketsAmmo;
+      const have =
+        weapon.ammoType === "bullets"
+          ? this.bulletsAmmo
+          : weapon.ammoType === "rockets"
+            ? this.rocketsAmmo
+            : this.smgAmmo;
       if (have < weapon.ammoPerShot) {
         console.log(`[${weapon.name}] out of ${weapon.ammoType} — need ${weapon.ammoPerShot}`);
         return;
       }
       if (weapon.ammoType === "bullets") this.bulletsAmmo -= weapon.ammoPerShot;
-      else this.rocketsAmmo -= weapon.ammoPerShot;
+      else if (weapon.ammoType === "rockets") this.rocketsAmmo -= weapon.ammoPerShot;
+      else this.smgAmmo -= weapon.ammoPerShot;
     }
 
     audio.playShoot();
@@ -1480,6 +1507,7 @@ export class RaycasterEngine {
           this.difficultyLevel,
           this.rng,
           this.ownedWeapons.has(GHIDRA_WEAPON_INDEX),
+          this.ownedWeapons.has(GDB_WEAPON_INDEX),
           this.health >= MAX_HEALTH,
         ),
       });
@@ -1539,8 +1567,10 @@ export class RaycasterEngine {
         maxHealth: MAX_HEALTH,
         finalBullets: this.bulletsAmmo,
         finalRockets: this.rocketsAmmo,
+        finalSmg: this.smgAmmo,
         startingBullets: this.startingBulletsRef,
         startingRockets: this.startingRocketsRef,
+        startingSmg: this.startingSmgRef,
         levelTimeSec: this.levelTime,
         distanceTraveledTiles: this.distanceTraveled,
         shortestPathTiles: this.map.shortestPathTiles,
@@ -1554,6 +1584,7 @@ export class RaycasterEngine {
       swap: Math.ceil(this.swap),
       bullets: this.bulletsAmmo,
       rockets: this.rocketsAmmo,
+      smg: this.smgAmmo,
       keysHeld: this.keysHeld,
       keysTotal: this.map.keys.length,
       score,
@@ -1639,4 +1670,17 @@ const STARTING_ROCKETS = 4;
 
 function startingRockets(): number {
   return STARTING_ROCKETS;
+}
+
+/**
+ * A modest flat reserve of smg ammo — same "not scaled to the level" shape as
+ * `startingRockets`, since gdb itself has to be earned first (an Elite kill,
+ * or the level-4 forced-unlock safety net). A bit more than one regular
+ * `SMG_DROP_AMOUNT` pickup, so the weapon feels usable right away once it's
+ * actually unlocked rather than emptying in a couple of bursts.
+ */
+const STARTING_SMG_AMMO = 40;
+
+function startingSmg(): number {
+  return STARTING_SMG_AMMO;
 }

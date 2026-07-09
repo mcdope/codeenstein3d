@@ -387,6 +387,8 @@ function lootColors(kind: LootDrop["kind"]): { back: string; fill: string } {
       return { back: "#0e3540", fill: "#3fd0e0" }; // cyan "RAM chip", unchanged
     case "rockets":
       return { back: "#402210", fill: "#ff8a3f" }; // hot orange
+    case "smg":
+      return { back: "#102540", fill: "#3fa9ff" }; // gdb blue, matches its tracer/HUD color
     case "health":
       return { back: "#0e401c", fill: "#3fe06a" }; // green cross
     case "swap":

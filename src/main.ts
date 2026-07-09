@@ -423,6 +423,7 @@ continueButton.addEventListener("click", async () => {
         swap: save.swap,
         bullets: save.bullets,
         rockets: save.rockets,
+        smg: save.smg,
         priorScore: save.score,
         weaponIndex: save.weaponIndex,
         ownedWeapons: save.ownedWeapons,
@@ -934,6 +935,7 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
           swap: stats.swap,
           bullets: stats.bullets,
           rockets: stats.rockets,
+          smg: stats.smg,
           priorScore: stats.score,
           weaponIndex: stats.weaponIndex,
           ownedWeapons: stats.ownedWeapons,
@@ -948,6 +950,7 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
           swap: carryover.swap,
           bullets: carryover.bullets,
           rockets: carryover.rockets,
+          smg: carryover.smg,
           score: stats.score,
           weaponIndex: stats.weaponIndex,
           ownedWeapons: stats.ownedWeapons,
@@ -1159,6 +1162,11 @@ interface CampaignSave {
   swap: number;
   bullets: number;
   rockets: number;
+  /** gdb's own ammo pool (see `AmmoType`). Defaulted to 0 for saves written
+   * before this field existed (see `loadCampaignSave`) — a resumed run with
+   * gdb already unlocked just starts it dry, exactly as if the player had
+   * fired off their last round; not a broken state. */
+  smg: number;
   score: number;
   weaponIndex: number;
   ownedWeapons: number[];
@@ -1197,6 +1205,8 @@ export function loadCampaignSave(): CampaignSave | null {
     return {
       ...save,
       swap,
+      // `smg` is a field new to this save schema — see its doc comment above.
+      smg: typeof save.smg === "number" ? save.smg : 0,
       levelIndex: typeof save.levelIndex === "number" ? save.levelIndex : 1,
     } as CampaignSave;
   } catch {
@@ -1233,6 +1243,7 @@ function persistProgress(stats: EngineStats): void {
     swap: stats.swap,
     bullets: stats.bullets,
     rockets: stats.rockets,
+    smg: stats.smg,
     score: stats.score,
     weaponIndex: stats.weaponIndex,
     ownedWeapons: stats.ownedWeapons,

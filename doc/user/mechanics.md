@@ -31,13 +31,13 @@ Codeenstein 3D parses your source into an AST and turns its structure into a pla
 | gdb | 3 | Full-auto hitscan | Unlocked by an Elite kill's guaranteed drop, or forced at campaign level 4 |
 | ghidra | 4 | Rocket / splash damage | Unlocked by an Elite kill's guaranteed drop, or forced at campaign level 8 |
 
-Ranged weapons draw from two separate ammo pools: **Bullets** (pistol/shotgun/gdb) and **Rockets** (ghidra only). Rocket ammo won't drop or spawn on the map at all until you actually own the launcher. Hitscan pellets deviate more the further away the target is, so point-blank shots are reliable and very long-range ones can miss.
+Ranged weapons draw from three separate ammo pools: **Bullets** (pistol/shotgun), **SMG Ammo** (gdb only), and **Rockets** (ghidra only). SMG ammo/rocket ammo won't drop or spawn on the map at all until you actually own the matching weapon. Hitscan pellets deviate more the further away the target is, so point-blank shots are reliable and very long-range ones can miss.
 
 ## Loot & Difficulty
 
-Enemy kills roll a random drop: bullets, rockets, health, or swap. A few rules apply on top of the base odds:
+Enemy kills roll a random drop: bullets, SMG ammo, rockets, health, or swap. A few rules apply on top of the base odds:
 - No health drop is ever rolled while you're already at full health (loot goes to ammo/swap instead).
-- No rockets are rolled until you own the launcher.
+- No SMG ammo is rolled until you own gdb; no rockets are rolled until you own ghidra.
 - Elite kills guarantee either a large health pack or (if you're already full) a bigger bullets/swap drop, on top of their guaranteed weapon.
 
 ### Difficulty

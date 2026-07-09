@@ -321,8 +321,9 @@ export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void
   drawValue(ctx, String(stats.swap), 205, valueY, stats.swap > 0 ? "#4a7fff" : "#5a6a8a", 20);
 
   // --- Ammo for whichever weapon is equipped: melee shows an infinity mark,
-  // otherwise the label/value swap to BULLETS or ROCKETS as the player
-  // switches weapons, so what's on screen always matches what firing spends. ---
+  // otherwise the label/value swap to BULLETS, ROCKETS, or SMG AMMO as the
+  // player switches weapons, so what's on screen always matches what firing
+  // spends. ---
   const weapon = WEAPONS[stats.weaponIndex];
   if (weapon.ammoType === "rockets") {
     drawLabel(ctx, "ROCKETS", 275, labelY);
@@ -330,6 +331,9 @@ export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void
   } else if (weapon.ammoType === "bullets") {
     drawLabel(ctx, "BULLETS", 275, labelY);
     drawValue(ctx, String(stats.bullets), 275, valueY, stats.bullets <= 0 ? "#ff5a4a" : "#4cff6a", 22);
+  } else if (weapon.ammoType === "smg") {
+    drawLabel(ctx, "SMG AMMO", 275, labelY);
+    drawValue(ctx, String(stats.smg), 275, valueY, stats.smg <= 0 ? "#ff5a4a" : "#3fa9ff", 22);
   } else {
     drawLabel(ctx, "MELEE", 275, labelY);
     drawValue(ctx, "∞", 275, valueY, "#d8dde3", 22);

@@ -8,8 +8,12 @@
  * engine reads these to resolve a shot — see `RaycasterEngine.fire()`.
  */
 
-/** Which ammo pool a weapon draws from; `undefined` = infinite (the knife). */
-export type AmmoType = "bullets" | "rockets";
+/** Which ammo pool a weapon draws from; `undefined` = infinite (the knife).
+ * `"smg"` is gdb's own pool — it used to share `"bullets"` with the pistol/
+ * shotgun, which made a shared bullets pickup implicitly restock three very
+ * different guns at once and made "10 bullets" pickups feel wrong for a
+ * full-auto weapon that burns through them in under a second. */
+export type AmmoType = "bullets" | "rockets" | "smg";
 
 /** Distinct viewmodel silhouette drawn at the bottom of the screen — see
  * `drawWeapon` in `viewmodel.ts`. */
@@ -85,9 +89,10 @@ export interface Weapon {
  *   only, but a kill heals a sliver of stability, rewarding aggressive play
  *   when heap runs dry instead of leaving the player stuck out of options.
  *   See `MELEE_WEAPON` and `RaycasterEngine`'s quick-melee handling.
- * - **gdb**: fully automatic, high fire rate, low damage per round — sprays
- *   bullets fast rather than hitting hard. (Named for the GNU debugger — was
- *   called "MP" through Task 30.)
+ * - **gdb**: fully automatic, high fire rate, moderate damage per round —
+ *   draws from its own `"smg"` ammo pool rather than sharing `"bullets"`
+ *   with the pistol/shotgun (see `AmmoType`). (Named for the GNU debugger —
+ *   was called "MP" through Task 30.)
  * - **ghidra**: one slow, visible projectile per trigger-pull that explodes
  *   for splash damage — devastating against packs, but scarce ammo and a
  *   real cooldown between shots keep it from replacing everything. (Named
@@ -130,9 +135,9 @@ export const WEAPONS: readonly Weapon[] = [
     name: "gdb",
     pellets: 1,
     spreadPx: 6,
-    damagePerPellet: 7,
+    damagePerPellet: 11,
     ammoPerShot: 1,
-    ammoType: "bullets",
+    ammoType: "smg",
     tracerColor: "#3fa9ff",
     viewKind: "mp",
     auto: true,

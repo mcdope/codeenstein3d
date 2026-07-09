@@ -30,7 +30,7 @@ Separately, a real scoring bug was traced to two causes at once: health lost was
 
 ## Ammo/Loot Gating
 
-Loot rolls are filtered to exclude outcomes that would be dead weight given current player/run state, rather than rolling them anyway and wasting the result: rocket ammo is excluded from the loot table entirely until the rocket launcher is owned (its share redistributed to other kinds), and health is excluded once the player is at full health (both the regular loot table and the Elite guaranteed-drop branch). The design goal is that a drop the player can't use at all reads as worse than no drop — see [Game Design](game-design.md#weapon-and-economy-intent). `[notes: Task 46, 50]`
+Loot rolls are filtered to exclude outcomes that would be dead weight given current player/run state, rather than rolling them anyway and wasting the result: rocket ammo (and, since gdb got its own pool, smg ammo) is excluded from the loot table entirely until the matching weapon is owned (its share redistributed to other kinds), and health is excluded once the player is at full health (both the regular loot table and the Elite guaranteed-drop branch). The design goal is that a drop the player can't use at all reads as worse than no drop — see [Game Design](game-design.md#weapon-and-economy-intent). gdb's ammo split from a shared bullets pool into its own `"smg"` pool once a full-auto weapon draining a pistol-sized pickup in under a second stopped reading as a distinct resource identity — same reasoning, applied a second time as gdb's role diverged further from the pistol/shotgun's. `[notes: Task 46, 50, 57]`
 
 ## Feature Scope Reversals
 

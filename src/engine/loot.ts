@@ -12,33 +12,39 @@ import type { LootKind } from "../map/types";
 
 /** Relative odds of each loot kind on a regular enemy kill. Rockets are the
  * scarcest/highest-value ammo type, so they're weighted well below bullets;
- * health and swap sit in between. */
+ * smg (gdb's own pool, see `AmmoType`) sits between the two — it's drawn down
+ * fast by a full-auto weapon but each drop is a full "magazine" (see
+ * `SMG_DROP_AMOUNT`), not a scarce high-value item like rockets; health and
+ * swap sit in between. */
 const LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[] = [
-  { kind: "bullets", weight: 50 },
+  { kind: "bullets", weight: 40 },
+  { kind: "smg", weight: 18 },
   { kind: "rockets", weight: 10 },
-  { kind: "health", weight: 20 },
-  { kind: "swap", weight: 20 },
+  { kind: "health", weight: 16 },
+  { kind: "swap", weight: 16 },
 ];
 
-/** Normal difficulty only: a slightly higher ammo (bullets/rockets) share than
- * the base `LOOT_WEIGHTS`, trimmed from health/swap — Easy/Hard already have
- * their own scarcity curve via `DifficultyMultipliers.ammoDropRate` (the
+/** Normal difficulty only: a slightly higher ammo (bullets/rockets/smg) share
+ * than the base `LOOT_WEIGHTS`, trimmed from health/swap — Easy/Hard already
+ * have their own scarcity curve via `DifficultyMultipliers.ammoDropRate` (the
  * *amount* per drop), so this only tweaks Normal's drop *kind* odds, per
  * playtest feedback that ammo ran too scarce there specifically. */
 const NORMAL_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[] = [
-  { kind: "bullets", weight: 58 },
+  { kind: "bullets", weight: 46 },
+  { kind: "smg", weight: 20 },
   { kind: "rockets", weight: 12 },
-  { kind: "health", weight: 15 },
-  { kind: "swap", weight: 15 },
+  { kind: "health", weight: 11 },
+  { kind: "swap", weight: 11 },
 ];
 
 /** On a bonus (restock-arena) level, kills lean harder toward the scarcer,
  * higher-value drops — it's meant to feel like a resupply stop. */
 const BONUS_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[] = [
-  { kind: "bullets", weight: 30 },
-  { kind: "rockets", weight: 25 },
-  { kind: "health", weight: 25 },
-  { kind: "swap", weight: 20 },
+  { kind: "bullets", weight: 24 },
+  { kind: "smg", weight: 20 },
+  { kind: "rockets", weight: 20 },
+  { kind: "health", weight: 20 },
+  { kind: "swap", weight: 16 },
 ];
 
 /** Roll a random loot kind for a regular (non-elite) enemy kill, weighted by
@@ -53,9 +59,9 @@ const BONUS_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[
  * source as everything else the replay system depends on (see `src/prng.ts`'s
  * doc comment for the full seeded/cosmetic split).
  *
- * `hasRocketLauncher` gates the `"rockets"` entry out of the weight table
- * entirely (rather than re-rolling into it) — until the launcher is
- * unlocked, rocket ammo would just be dead loot cluttering the drop, so its
+ * `hasRocketLauncher`/`hasGdb` gate the `"rockets"`/`"smg"` entries out of the
+ * weight table entirely (rather than re-rolling into them) — until a weapon
+ * is unlocked, its ammo would just be dead loot cluttering the drop, so its
  * share is redistributed across the remaining kinds instead.
  *
  * `playerAtFullHealth` does the same for `"health"` — a health pack is dead
@@ -65,6 +71,7 @@ export function rollLoot(
   difficulty: DifficultyLevel = "normal",
   rng: () => number = Math.random,
   hasRocketLauncher = true,
+  hasGdb = true,
   playerAtFullHealth = false,
 ): Exclude<LootKind, "weapon"> {
   const weights = bonusLevel
@@ -72,7 +79,9 @@ export function rollLoot(
     : difficulty === "normal"
       ? NORMAL_LOOT_WEIGHTS
       : LOOT_WEIGHTS;
-  let usable = hasRocketLauncher ? weights : weights.filter((w) => w.kind !== "rockets");
+  let usable = weights.filter(
+    (w) => (w.kind !== "rockets" || hasRocketLauncher) && (w.kind !== "smg" || hasGdb),
+  );
   if (playerAtFullHealth) usable = usable.filter((w) => w.kind !== "health");
   const total = usable.reduce((sum, w) => sum + w.weight, 0);
   let r = rng() * total;
@@ -87,6 +96,10 @@ export function rollLoot(
  * kills — see `LootDrop.amount`). */
 export const BULLETS_DROP_AMOUNT = 6;
 export const ROCKETS_DROP_AMOUNT = 2;
+/** gdb burns one round per shot at up to ~11/sec (see `WEAPONS`'
+ * `fireIntervalSec`), so a drop sized like the shared bullets pool (6) would
+ * empty in about half a second — sized instead like a real SMG magazine. */
+export const SMG_DROP_AMOUNT = 30;
 export const HEALTH_DROP_AMOUNT = 20;
 export const SWAP_DROP_AMOUNT = 15;
 /** Elite kills guarantee a bigger heal than a regular enemy's health drop. */
@@ -96,6 +109,7 @@ export const ELITE_HEALTH_DROP_AMOUNT = 50;
  * as `ELITE_HEALTH_DROP_AMOUNT` is to `HEALTH_DROP_AMOUNT`. */
 export const ELITE_BULLETS_DROP_AMOUNT = 18;
 export const ELITE_ROCKETS_DROP_AMOUNT = 6;
+export const ELITE_SMG_DROP_AMOUNT = 80;
 export const ELITE_SWAP_DROP_AMOUNT = 30;
 /** Maximum swap the player can stockpile. */
 export const MAX_SWAP = 100;
