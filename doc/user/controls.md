@@ -27,7 +27,7 @@
 |---|---|
 | `R` | Read a nearby lore terminal, or open a fake wall to reveal a secret room |
 | `W` / `S` (while reading) | Scroll a lore terminal's text if it overflows the box |
-| `Tab` | Toggle the automap (pauses the game while open) |
+| `Tab` | Toggle the automap (does not pause — you can keep moving and fighting while it's open) |
 | `F` | Toggle fullscreen |
 | `Escape` | Pause / unpause |
 | `Right Ctrl` | Toggle the FPS / frame-time readout |

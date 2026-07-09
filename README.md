@@ -30,7 +30,7 @@ Load anything from a massive Symfony enterprise project to low-level C code like
 - ✅ **Scoring system** — kills scaled by complexity, bonuses for speed/health/exploration/lore
 - ✅ **Persistent leaderboards** — top-10 board with AST+campaign hashing (compare runs)
 - ✅ **Deterministic replay** — record and playback entire multi-level campaigns frame-for-frame
-- ✅ **Automap with fog of war** — toggle with Tab, reveals explored areas only
+- ✅ **Automap with fog of war** — toggle with Tab, non-blocking (keep moving/fighting while it's open), reveals explored areas only
 - ✅ **Fullscreen & gamepad** — canvas stays crisp, gamepad works alongside keyboard/mouse
 
 ### Audio & Polish  
@@ -160,7 +160,7 @@ npm run preview    # Serve production build locally
 
 ### Interaction & Navigation
 - **R** — Read nearby lore terminal (hold W/S to scroll) OR open fake wall to reveal secret
-- **Tab** — Toggle automap (pauses; only reveals explored areas)
+- **Tab** — Toggle automap (non-blocking — keep moving/fighting while open; only reveals explored areas)
 - **F** — Toggle fullscreen
 - **Esc** — Pause (freezes action under "PAUSED" overlay)
 - **Right-Ctrl** — Toggle FPS/frame-time display (top-right)
