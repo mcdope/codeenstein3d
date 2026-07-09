@@ -352,7 +352,7 @@ export function renderMinimap(
   map: GameMap,
   player: Player,
   levelTime = 0,
-  maxPixels = 140,
+  maxPixels = 70,
 ): MinimapPanelRect {
   const cell = Math.max(1, Math.floor(maxPixels / Math.max(map.width, map.height)));
   const w = map.width * cell;
