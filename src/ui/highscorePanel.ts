@@ -31,7 +31,7 @@ export function renderHighscoreTable(
 
   const thead = document.createElement("thead");
   thead.innerHTML =
-    "<tr><th>#</th><th>Score</th><th>Campaign</th><th>Lines</th><th>Complexity</th><th>Levels</th><th>Ended On</th><th>Hash</th><th>Replay</th></tr>";
+    '<tr><th>#</th><th>Score</th><th class="wrap">Campaign</th><th>Lines</th><th>Complexity</th><th>Levels</th><th class="wrap">Ended On</th><th>Hash</th><th>Replay</th></tr>';
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
@@ -45,6 +45,7 @@ export function renderHighscoreTable(
     score.textContent = entry.score.toLocaleString();
 
     const campaign = document.createElement("td");
+    campaign.className = "wrap";
     campaign.textContent = entry.campaignName;
 
     const loc = document.createElement("td");
@@ -67,6 +68,7 @@ export function renderHighscoreTable(
     levels.textContent = String(entry.levelsCleared);
 
     const level = document.createElement("td");
+    level.className = "wrap";
     level.textContent = entry.levelName;
 
     const hash = document.createElement("td");
