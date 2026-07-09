@@ -42,3 +42,7 @@ Watching a replay gives you a transport bar: seek back/forward (⏪/⏩, jumps ~
 ## Console Sidebar
 
 When not in fullscreen, a console panel next to the canvas mirrors everything logged to the browser console, plus the occasional in-character hint dropped every 18–40 seconds while a level is running. It's automatically hidden while the canvas is fullscreen.
+
+## Footer
+
+The bottom of the left sidebar has a small copyright/license line (AGPL-3.0-or-later) and a link back to the project's GitHub repository.
