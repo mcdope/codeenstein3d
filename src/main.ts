@@ -1066,6 +1066,12 @@ export async function flattenParsableFiles(node: TreeNode): Promise<TreeNode[]> 
 interface CodebaseStats {
   linesOfCode: number;
   complexity: number;
+  /** SHA-256 hash (see `hashRun`) of every parsable file's AST in the whole
+   * workspace, combined — the highscore board's `HighscoreEntry.hash`. Scoped
+   * to the whole workspace rather than just the level a run ended on so that
+   * two runs over the identical, unedited codebase always compare equal
+   * regardless of which level they happened to end on. */
+  hash: string;
 }
 
 /** Files processed between yields in `computeCodebaseStats` — small enough
@@ -1086,7 +1092,10 @@ function yieldToMainThread(): Promise<void> {
 /**
  * Sums `linesOfCode` and every entity's `complexityScore` across every
  * parsable file in `tree` — the whole codebase, independent of which files
- * this run's levels actually reach. Reuses the exact same
+ * this run's levels actually reach — and folds every file's parsed AST into
+ * one combined `hash` (path-prefixed and NUL-joined, in the same stable
+ * depth-first order `flattenParsableFiles` returns, so the digest only
+ * changes when the workspace's actual content does). Reuses the exact same
  * `readFileText`/`parseFile` pair every level launch already goes through; a
  * file that fails to read or parse is skipped rather than aborting the whole
  * aggregation. Yields back to the event loop every
@@ -1097,6 +1106,7 @@ async function computeCodebaseStats(tree: TreeNode): Promise<CodebaseStats> {
   const files = await flattenParsableFiles(tree);
   let linesOfCode = 0;
   let complexity = 0;
+  const astParts: string[] = [];
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
@@ -1106,6 +1116,7 @@ async function computeCodebaseStats(tree: TreeNode): Promise<CodebaseStats> {
       if (parsed) {
         linesOfCode += parsed.linesOfCode;
         for (const entity of parsed.entities) complexity += entity.complexityScore;
+        astParts.push(`${file.path}\n${JSON.stringify(parsed)}`);
       }
     } catch (err) {
       console.warn(`[codebase-stats] Failed to parse "${file.path}", skipping:`, err);
@@ -1116,7 +1127,8 @@ async function computeCodebaseStats(tree: TreeNode): Promise<CodebaseStats> {
     }
   }
 
-  return { linesOfCode, complexity };
+  const hash = await hashRun(astParts.join("\0"), campaignName());
+  return { linesOfCode, complexity, hash };
 }
 
 /** (Re)starts the whole-codebase background aggregation for a just-loaded
@@ -1125,9 +1137,9 @@ async function computeCodebaseStats(tree: TreeNode): Promise<CodebaseStats> {
  * promise, so `withTimeout` only ever has to special-case "still running",
  * not "errored". */
 function kickOffCodebaseStats(tree: TreeNode): void {
-  codebaseStatsPromise = computeCodebaseStats(tree).catch((err) => {
+  codebaseStatsPromise = computeCodebaseStats(tree).catch(async (err) => {
     console.warn("[codebase-stats] Aggregation failed:", err);
-    return { linesOfCode: 0, complexity: 0 };
+    return { linesOfCode: 0, complexity: 0, hash: await hashRun("", campaignName()) };
   });
 }
 
@@ -1422,9 +1434,13 @@ async function recordRunHighscore(
     return;
   }
   try {
-    const hash = await hashRun(JSON.stringify(parsed), campaignName());
     const levelName = path.split("/").pop() ?? path;
     const codebaseStats = await withTimeout(codebaseStatsPromise, CODEBASE_STATS_WAIT_MS);
+    // Prefer the whole-workspace hash so two runs over identical, unedited
+    // source compare equal regardless of which level they ended on. Only
+    // falls back to the single ended-on file's AST if the background
+    // aggregation genuinely never finished in time (see `CodebaseStats.hash`).
+    const hash = codebaseStats?.hash ?? (await hashRun(JSON.stringify(parsed), campaignName()));
     await recordHighscore({
       score: stats.score,
       campaignName: campaignName(),

@@ -33,7 +33,7 @@ All of these are standing preferences, independent of any specific campaign run.
 
 ## Highscores
 
-The **Highscores** button opens a top-10 leaderboard with columns for score, level/campaign name, the codebase's total lines/complexity, levels cleared, when the run ended, and an AST hash (so you can compare runs against the exact same code). Entries with a recorded replay show a **Watch** button.
+The **Highscores** button opens a top-10 leaderboard with columns for score, level/campaign name, the codebase's total lines/complexity, levels cleared, when the run ended, and an AST hash of the *whole workspace* (so you can compare runs against the exact same code, regardless of which level either run happened to end on). Entries with a recorded replay show a **Watch** button.
 
 ### Replay playback
 

@@ -5,11 +5,13 @@
  * Persisted top-10 leaderboard. An entry is recorded once per *run*, not per
  * level — either on death, or on finishing the whole campaign (running out
  * of parsable files) — see main.ts's `onGameOver`/`advanceToNextLevel`. Each
- * entry is stamped with a SHA-256 hash of the run-ending level's parsed AST
- * JSON plus the campaign (workspace) name — two runs over the exact same
- * source, under the same campaign name, hash identically, which is what lets
- * a player compare "did I really beat my own code, or a since-edited version
- * of it" at a glance in the Highscore UI.
+ * entry is stamped with a SHA-256 hash of every parsable file's parsed AST
+ * across the *whole workspace*, combined, plus the campaign (workspace) name
+ * (see `computeCodebaseStats` in main.ts) — two runs over the exact same
+ * workspace, under the same campaign name, hash identically regardless of
+ * which level either run happened to end on, which is what lets a player
+ * compare "did I really beat my own code, or a since-edited version of it"
+ * at a glance in the Highscore UI.
  */
 
 import type { ReplayPayload } from "./replay";
@@ -32,7 +34,11 @@ export interface HighscoreEntry {
    * dying on the very first level (0 cleared) isn't recorded at all, see
    * `recordRunHighscore` in `main.ts`. */
   levelsCleared: number;
-  /** Full SHA-256 hex digest of `astJson + campaignName` (see `hashRun`). */
+  /** Full SHA-256 hex digest of the whole workspace's combined parsed ASTs
+   * plus `campaignName` (see `hashRun` and `computeCodebaseStats` in
+   * main.ts) — scoped to the whole workspace, not just `levelName`, so runs
+   * that end on different levels within the same unedited codebase still
+   * compare equal. */
   hash: string;
   /** `Date.now()` when this run was recorded. */
   achievedAt: number;
@@ -64,10 +70,11 @@ export interface HighscoreEntry {
 }
 
 /**
- * SHA-256 hex digest of the parsed AST JSON combined with the campaign name.
- * Folding the campaign name in means the *same* source under a *different*
- * workspace name still hashes differently — the comparison is "this exact
- * code, in this exact campaign", not source alone.
+ * SHA-256 hex digest of parsed-AST JSON (a single file's, or several files'
+ * combined) plus the campaign name. Folding the campaign name in means the
+ * *same* source under a *different* workspace name still hashes differently
+ * — the comparison is "this exact code, in this exact campaign", not source
+ * alone.
  */
 export async function hashRun(astJson: string, campaignName: string): Promise<string> {
   const bytes = new TextEncoder().encode(`${campaignName} ${astJson}`);
