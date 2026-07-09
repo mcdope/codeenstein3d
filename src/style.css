@@ -484,6 +484,15 @@ a.settings-btn {
   gap: 16px;
 }
 
+/* `display: flex` above is an author-stylesheet rule, so it wins over the
+ * browser's own `[hidden] { display: none }` UA rule regardless of
+ * specificity — author styles always beat user-agent styles for a matched
+ * property. Without this override the spinner showed through on top of the
+ * intro screen even while `#loading-screen` carried the `hidden` attribute. */
+.loading-screen[hidden] {
+  display: none;
+}
+
 .loading-spinner {
   width: 36px;
   height: 36px;
