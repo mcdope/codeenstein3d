@@ -198,9 +198,12 @@ export function renderScene(
     const dist = Math.max(perpDist, 0.0001);
     zBuffer[x] = dist;
 
-    const lineHeight = Math.floor(height / dist);
-    const drawStart = Math.max(0, Math.floor(horizon - lineHeight / 2));
-    const drawEnd = Math.min(height - 1, Math.floor(horizon + lineHeight / 2));
+    // Kept as floats (not floored to whole pixels) so the top/bottom edge can
+    // be antialiased below — flooring here is what causes the classic
+    // raycaster "staircase" silhouette against the ceiling/floor.
+    const lineHeight = height / dist;
+    const wallTop = horizon - lineHeight / 2;
+    const wallBottom = horizon + lineHeight / 2;
 
     // Distance fog, dimmed further on y-sides for depth. Doors use their own
     // color so they read as openable, not solid rock.
@@ -219,7 +222,43 @@ export function renderScene(
     const g = Math.floor(base[1] * shade);
     const b = Math.floor(base[2] * shade);
     ctx.fillStyle = `rgb(${r},${g},${b})`;
-    ctx.fillRect(x, drawStart, 1, drawEnd - drawStart + 1);
+
+    // Fully-covered rows get an opaque fill, same as before.
+    const solidStart = Math.max(0, Math.ceil(wallTop));
+    const solidEnd = Math.min(height, Math.floor(wallBottom));
+    if (solidEnd > solidStart) {
+      ctx.fillRect(x, solidStart, 1, solidEnd - solidStart);
+    }
+
+    // Edge antialiasing: the row straddling `wallTop`/`wallBottom` is only
+    // partially covered by the wall (the rest is ceiling/floor, already
+    // painted underneath) — blend it in proportionally instead of rounding
+    // it to fully wall or fully background. Skipped where the wall runs off
+    // the top/bottom of the screen, since there's no partial coverage there
+    // (the row is either fully wall or off-canvas, not a real edge).
+    if (wallTop > 0 && wallTop < height) {
+      const edgeRow = Math.floor(wallTop);
+      const coverage = Math.min(1, edgeRow + 1 - wallTop, wallBottom - wallTop);
+      if (coverage > 0) {
+        ctx.globalAlpha = coverage;
+        ctx.fillRect(x, edgeRow, 1, 1);
+        ctx.globalAlpha = 1;
+      }
+    }
+    if (wallBottom > 0 && wallBottom < height) {
+      const edgeRow = Math.floor(wallBottom);
+      // A very thin (sub-pixel-height) wall can land its top and bottom edge
+      // in the same row — already fully handled by the block above, so skip
+      // it here to avoid double-blending that row.
+      if (edgeRow !== Math.floor(wallTop) || wallTop <= 0) {
+        const coverage = Math.min(1, wallBottom - edgeRow);
+        if (coverage > 0) {
+          ctx.globalAlpha = coverage;
+          ctx.fillRect(x, edgeRow, 1, 1);
+          ctx.globalAlpha = 1;
+        }
+      }
+    }
   }
 }
 

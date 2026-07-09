@@ -1,6 +1,7 @@
 # Playtest notes / backlog
 
 ## Done
+- [x] antialiasing for wall edges — the top/bottom silhouette against ceiling/floor is now sub-pixel blended per column instead of floored to whole pixels (which caused the classic raycaster "staircase" jaggies), by proportionally alpha-blending the one boundary row at each edge with whatever's already painted underneath (`renderScene` in `src/engine/raycaster.ts`); zBuffer/sprite-occlusion resolution is untouched
 - [x] console hints keep coming when game is paused, spamming away previous output — engine now fires an `onFreezeChange` edge event on the paused/lore-frozen ↔ running transition, which the console sidebar uses to suspend its ambient hint timer while frozen (resumes once unpaused)
 - [x] "Suggested repos" section at GitHub loading — four quick-pick buttons (Easy: FizzBuzzEnterpriseEdition, Medium: DOOM, Hard: webpack, Nightmare: magento2) below the repo input fill it in and load immediately, sharing the existing fetch-and-launch flow
 - [x] Progress indicator for github loads — the recursive tree fetch (the one genuinely slow step for a big repo) now streams and shows a running "X MB received" counter, and the "Scanning file tree…" fallback pass (each extensionless file costs a real network round-trip) shows a "(checked/total)" counter, instead of one static message
@@ -129,7 +130,7 @@
 - [ ] unlockable chainsaw, called "Toolchain" - melee weapon, replaces the knife after pickup/unlock. stronger lifesteal effect than knife, dmg = knife times 2. endless ammo. no forced unlock. unlock spawned in secret rooms starting from the 4th level and dropped by elite mobs. should fire as long as melee hotkey is hold
 - [ ] still annoyingly long corridors at times. if we cant solve it with geometry, add random rooms and enemies (called "edge case", visually different from other enemies and smaller) there to break the "endless walk feeling". best would be: shorter coridors AND that breakup mechanism
 - [ ] collect X of Y, or kill >=Z%, to unlock exit?
-- [ ] enhance soundfx, esp. weapons
+- [ ] enhance soundfx, esp. weapon fire
 - [ ] enhance weapon "sprites", they cause eyecancer
 - [ ] replay playback for github worlds not working properly. loading is slow as hell, and replay is buggy
 - [ ] sometimes rooms without exit are generated, example: src/DockerManager.php of mcdope/wrpdistributor - there it is even the spawn room. this should never ever happen. each room must have atleast one exit (that leads to atleast one room that has an exit, unlike the example). couldnt repro this though.
@@ -144,5 +145,6 @@
 - [ ] tests (unit [coverage target 100%!], end2end/functional/visual [coverage target: all aspects of gameplay], ensure no data leaves the app (besides highscores at a later time)). needs the generated levels from the entry above this one.
 - [ ] chance for elite mob with "legendary name", like Linus Torvalds; Richard Stallman etc pp in the exit room, higher aggro and faster movement so player cant just run away
 - [ ] walkable stairs to get some height differences in the levels? kinda adding a height / elevation element.
-- [ ] antialiasing for wall edges
-- [ ] flamethrower needs way more gas burn considering its dmg
+- [ ] flamethrower must burn way more gas considering its dmg
+- [ ] ship default highscores for suggested repos and own repos
+
