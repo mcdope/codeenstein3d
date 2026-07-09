@@ -3,6 +3,11 @@
 
 /// <reference types="vite/client" />
 
+/** Build timestamp (`YYYY-MM-DD HH:MM`, local to the machine that ran the
+ * build), injected via `vite.config.ts`'s `define` — see `document.title`'s
+ * assignment in `main.ts`. */
+declare const __BUILD_TIME__: string;
+
 // Minimal ambient declarations for the File System Access API.
 //
 // The core handle interfaces (FileSystemDirectoryHandle, FileSystemFileHandle,

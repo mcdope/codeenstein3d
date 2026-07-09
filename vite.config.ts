@@ -6,7 +6,21 @@ import { defineConfig } from "vite";
 
 const emptyNodeShim = fileURLToPath(new URL("./src/empty-node-shim.ts", import.meta.url));
 
+/** `YYYY-MM-DD HH:MM`, local to the machine running `vite build`/`vite dev` —
+ * baked into the bundle as `__BUILD_TIME__` (see `vite-env.d.ts`) so the page
+ * title can show which build is actually loaded, e.g. to catch a stale cached
+ * bundle after a deploy. For `vite dev` this is just "when the dev server
+ * started", not a live-updating clock — computed once when the config loads. */
+function buildTimestamp(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+}
+
 export default defineConfig({
+  define: {
+    __BUILD_TIME__: JSON.stringify(buildTimestamp()),
+  },
   resolve: {
     alias: {
       // web-tree-sitter's single build (web-tree-sitter.js) statically
