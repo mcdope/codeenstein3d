@@ -34,7 +34,6 @@ import {
   type BillboardJob,
 } from "./sprites";
 import {
-  COMPASS_ENABLED,
   drawCheatToast,
   drawCompass,
   drawCrosshair,
@@ -803,17 +802,15 @@ export class RaycasterEngine {
       });
 
       const minimapPanel = renderMinimap(this.ctx, this.map, this.player, this.levelTime);
-      if (COMPASS_ENABLED) {
-        drawCompass(
-          this.ctx,
-          minimapPanel.compassBadge,
-          this.player.posX,
-          this.player.posY,
-          Math.atan2(this.player.dirY, this.player.dirX),
-          this.map.exit.x + 0.5,
-          this.map.exit.y + 0.5,
-        );
-      }
+      drawCompass(
+        this.ctx,
+        minimapPanel.compassBadge,
+        this.player.posX,
+        this.player.posY,
+        Math.atan2(this.player.dirY, this.player.dirX),
+        this.map.exit.x + 0.5,
+        this.map.exit.y + 0.5,
+      );
     }
 
     // Diablo-style automap overlay: drawn on top of the still-live 3D scene

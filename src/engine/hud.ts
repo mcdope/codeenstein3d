@@ -206,14 +206,6 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
   return lines;
 }
 
-/** Re-enabled — see the doc comment on `drawCompass` for the axis fix and the
- * redesigned placement (a small badge attached to the minimap's own corner,
- * not a separate dial, and not overlapping the grid). Same flag-gating
- * mechanism as `DECORATIONS_ENABLED` in `mapGenerator.ts` /
- * `EXTREME_GORE_ENABLED` in `effects.ts`, just flipped back on now both
- * playtest complaints are fixed. */
-export const COMPASS_ENABLED = true;
-
 /** Half-length, in canvas pixels, of the compass needle — sized to sit
  * comfortably inside the minimap's compass badge circle (see
  * `MinimapPanelRect.compassBadge`) with a little margin on every side. */
