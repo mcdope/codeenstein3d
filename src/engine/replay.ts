@@ -189,6 +189,7 @@ const EMPTY_SNAPSHOT: InputSnapshot = {
   fpsToggle: false,
   escape: false,
   blur: false,
+  pointerUnlock: false,
   click: false,
   gpForward: 0,
   gpStrafe: 0,
@@ -278,6 +279,10 @@ export class ReplayPlaybackInput implements InputSource {
 
   consumeBlur(): boolean {
     return this.current.blur;
+  }
+
+  consumePointerUnlock(): boolean {
+    return this.current.pointerUnlock;
   }
 
   consumeClick(): boolean {

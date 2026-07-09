@@ -61,6 +61,7 @@ export interface InputSource {
   consumeCheat(): string | null;
   consumeEscape(): boolean;
   consumeBlur(): boolean;
+  consumePointerUnlock(): boolean;
   consumeClick(): boolean;
   gamepadForward(): number;
   gamepadStrafe(): number;
@@ -93,6 +94,7 @@ export interface InputSnapshot {
   fpsToggle: boolean;
   escape: boolean;
   blur: boolean;
+  pointerUnlock: boolean;
   click: boolean;
   gpForward: number;
   gpStrafe: number;
@@ -143,10 +145,20 @@ export class InputController implements InputSource {
   /** Edge-triggered cheat activation, set the instant `cheatBuffer` ends with
    * one of `CHEAT_CODES` — the matched code itself (e.g. "IDDQD"), or null. */
   private cheatQueued: string | null = null;
-  /** Edge-triggered pause toggle, set on an Escape press. */
+  /** Edge-triggered pause toggle, set on an Escape press. See
+   * `RaycasterEngine.advance()` for why a same-frame blur can't just be
+   * resolved independently of this. */
   private escapeQueued = false;
-  /** Edge-triggered "the window just lost focus" signal, set on blur. */
+  /** Edge-triggered "focus was lost" signal (window blur, or the canvas
+   * losing focus to some other on-page control), set on blur. */
   private blurQueued = false;
+  /** Edge-triggered "pointer lock was released" signal, set on
+   * `pointerlockchange`. See `onPointerLockChange`'s doc comment — this is
+   * the *only* reliable way to detect the most common real-world cause of a
+   * pause, the player pressing Escape while playing: real browsers
+   * deliberately never dispatch that specific Escape press as a `keydown`
+   * event at all, so `onWindowEscape` alone can't see it. */
+  private pointerUnlockQueued = false;
   /** Edge-triggered "the canvas was clicked" signal — resumes from pause. */
   private clickQueued = false;
   private attached = false;
@@ -171,9 +183,26 @@ export class InputController implements InputSource {
   attach(): void {
     if (this.attached) return;
     this.attached = true;
-    window.addEventListener("keydown", this.onKeyDown);
-    window.addEventListener("keyup", this.onKeyUp);
+    // Bound to the canvas specifically (not window) so keydown only ever
+    // fires while the canvas is the actually-focused element — typing into a
+    // sidebar text field (e.g. the GitHub repo URL box) must never move the
+    // player, fire, or have its own keystrokes swallowed by our
+    // preventDefault() calls below. See `onBlur` for the flip side: losing
+    // that focus forces a pause.
+    this.canvas.addEventListener("keydown", this.onKeyDown);
+    this.canvas.addEventListener("keyup", this.onKeyUp);
+    // See `onWindowEscape`'s doc comment for why Escape specifically can't
+    // rely on the canvas-scoped listener above.
+    window.addEventListener("keydown", this.onWindowEscape);
     window.addEventListener("blur", this.onBlur);
+    // The window can stay focused while the canvas itself loses focus (e.g. a
+    // click into a sidebar control) — that must pause the game too, not just
+    // alt-tabbing away entirely.
+    this.canvas.addEventListener("blur", this.onBlur);
+    // See `onPointerLockChange`'s doc comment — this is the actual reliable
+    // signal for "the player pressed Escape while playing", not the Escape
+    // keydown itself.
+    document.addEventListener("pointerlockchange", this.onPointerLockChange);
     this.canvas.addEventListener("click", this.onCanvasClick);
     this.canvas.addEventListener("mousedown", this.onMouseDown);
     window.addEventListener("mouseup", this.onMouseUp);
@@ -186,9 +215,15 @@ export class InputController implements InputSource {
   detach(): void {
     if (!this.attached) return;
     this.attached = false;
-    window.removeEventListener("keydown", this.onKeyDown);
-    window.removeEventListener("keyup", this.onKeyUp);
+    this.canvas.removeEventListener("keydown", this.onKeyDown);
+    this.canvas.removeEventListener("keyup", this.onKeyUp);
+    window.removeEventListener("keydown", this.onWindowEscape);
     window.removeEventListener("blur", this.onBlur);
+    this.canvas.removeEventListener("blur", this.onBlur);
+    // Removed before the `exitPointerLock()` call below so the resulting
+    // (asynchronous) `pointerlockchange` event can never reach this
+    // already-torn-down instance.
+    document.removeEventListener("pointerlockchange", this.onPointerLockChange);
     this.canvas.removeEventListener("click", this.onCanvasClick);
     this.canvas.removeEventListener("mousedown", this.onMouseDown);
     window.removeEventListener("mouseup", this.onMouseUp);
@@ -209,6 +244,7 @@ export class InputController implements InputSource {
     this.cheatQueued = null;
     this.escapeQueued = false;
     this.blurQueued = false;
+    this.pointerUnlockQueued = false;
     this.clickQueued = false;
     this.gamepadMoveX = 0;
     this.gamepadMoveY = 0;
@@ -312,6 +348,14 @@ export class InputController implements InputSource {
     return blurred;
   }
 
+  /** Return true at most once per pointer-lock release (forces a pause, same
+   * as `consumeBlur()`) — see `onPointerLockChange`'s doc comment. */
+  consumePointerUnlock(): boolean {
+    const unlocked = this.pointerUnlockQueued;
+    this.pointerUnlockQueued = false;
+    return unlocked;
+  }
+
   /** Return true at most once per canvas click (resumes from pause). */
   consumeClick(): boolean {
     const clicked = this.clickQueued;
@@ -401,6 +445,7 @@ export class InputController implements InputSource {
       fpsToggle: this.fpsToggleQueued,
       escape: this.escapeQueued,
       blur: this.blurQueued,
+      pointerUnlock: this.pointerUnlockQueued,
       click: this.clickQueued,
       gpForward: this.gamepadForward(),
       gpStrafe: this.gamepadStrafe(),
@@ -436,10 +481,9 @@ export class InputController implements InputSource {
     if (e.code === "ControlLeft" && !e.repeat) this.meleeQueued = true;
     if (e.code === "ControlRight" && !e.repeat) this.fpsToggleQueued = true;
 
-    // Escape toggles the engine's own pause overlay. Deliberately not
-    // preventDefault()'d — the browser also uses Escape to drop pointer lock
-    // and exit fullscreen natively, and both should still happen.
-    if (e.code === "Escape" && !e.repeat) this.escapeQueued = true;
+    // Escape itself is handled by `onWindowEscape`, bound to `window` rather
+    // than the canvas — see that handler's doc comment for why it can't live
+    // here, alongside every other key.
 
     // F toggles fullscreen on the canvas itself — nothing else (no control
     // hints, no HUD overlay DOM, no sidebar). requestFullscreen()/
@@ -484,8 +528,46 @@ export class InputController implements InputSource {
     this.keys.delete(e.code);
   };
 
-  // Dropping focus (alt-tab, etc.) should release all keys to avoid "stuck"
-  // input, and forces the engine into its paused state.
+  // Escape toggles the engine's own pause overlay when the pointer is NOT
+  // currently locked — e.g. the player paused via Escape without ever having
+  // clicked the canvas (playing gamepad-only, say). Bound to `window`, unlike
+  // every other key (which are canvas-scoped, see `attach()`), because it
+  // must always reach this handler regardless of DOM focus — the same reason
+  // `GameHud`'s own overlay-dismiss listener is window-scoped. Deliberately
+  // not preventDefault()'d — the browser also uses Escape to exit fullscreen
+  // natively, and that should still happen.
+  //
+  // This is NOT how a pause-via-Escape is detected during normal play,
+  // though — see `onPointerLockChange` for why keydown can't be relied on at
+  // all once the pointer is actually locked.
+  private readonly onWindowEscape = (e: KeyboardEvent): void => {
+    if (e.code !== "Escape" || e.repeat) return;
+    this.escapeQueued = true;
+  };
+
+  // The real, reliable way to detect "the player wants to pause" during
+  // normal play (pointer locked). Real browsers (not headless Chromium,
+  // which doesn't reproduce any of this) deliberately do NOT dispatch a
+  // keydown event for the specific Escape press that exits pointer lock —
+  // documented Pointer Lock API behavior, so a page can never detect or
+  // interfere with the user's own escape hatch — meaning `onWindowEscape`
+  // above never sees that keypress at all. `pointerlockchange` firing with
+  // the lock no longer held is the only signal left, so it's treated as its
+  // own forced-pause trigger, the same as a blur (not a toggle — this fires
+  // for the *loss* of lock, so "toggling" would only ever pause, never make
+  // sense as a resume). Whatever caused it — Escape being the common case,
+  // but also e.g. the browser's own "click to unlock" UI — losing pointer
+  // lock while playing means mouselook is gone regardless, so pausing here
+  // matches reality either way.
+  private readonly onPointerLockChange = (): void => {
+    if (document.pointerLockElement !== this.canvas) this.pointerUnlockQueued = true;
+  };
+
+  // Losing focus — alt-tabbing away entirely (window blur) or just clicking
+  // into a sidebar control while the window stays focused (canvas blur) —
+  // should release all keys to avoid "stuck" input, and forces the engine
+  // into its paused state either way (see `RaycasterEngine.advance()` for how
+  // that interacts with Escape when both land in the same frame).
   private readonly onBlur = (): void => {
     this.keys.clear();
     this.mouseHeld = false;
@@ -494,6 +576,10 @@ export class InputController implements InputSource {
 
   private readonly onCanvasClick = (): void => {
     this.clickQueued = true;
+    // Some browsers (notably Safari) don't focus a clicked non-text element
+    // by default, which would silently break the canvas-focus-gated keydown
+    // listener above — force it explicitly rather than relying on it.
+    this.canvas.focus();
     if (document.pointerLockElement !== this.canvas) {
       this.canvas.requestPointerLock();
     }

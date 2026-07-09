@@ -621,15 +621,33 @@ export class RaycasterEngine {
     const cheat = this.input.consumeCheat();
     if (cheat) this.applyCheat(cheat);
 
-    // Window blur always forces a pause (never a toggle — you can't "un-blur"
-    // by pressing something while the window doesn't have focus); Escape
-    // toggles it explicitly, and a click resumes it. Always drain the click
-    // flag regardless of pause state, so a stale click can't instantly
-    // resume some later, unrelated pause. Checked first so a pause always
-    // wins over the automap and normal play.
+    // A blur (window losing focus entirely, or the canvas losing focus to
+    // some other on-page control) or a pointer-lock release always forces a
+    // pause — never a toggle, you can't "un-blur" by pressing something while
+    // unfocused; Escape toggles it explicitly, and a click resumes it. Always
+    // drain the click flag regardless of pause state, so a stale click can't
+    // instantly resume some later, unrelated pause. Checked first so a pause
+    // always wins over the automap and normal play.
+    //
+    // Escape is resolved as authoritative over a blur/pointer-unlock that
+    // lands in the same frame, rather than as three independent writes — see
+    // `InputController.onPointerLockChange`'s doc comment for why a
+    // pointer-lock release is even tracked as its own signal separate from
+    // Escape's own (unreliable, during real pointer-locked play) keydown.
+    // Whenever a real Escape keydown *does* also land in the same frame
+    // (e.g. the player wasn't pointer-locked in the first place), resolving
+    // both as independent `isPaused` writes would let them cancel each other
+    // out depending on order (one sets `true`, the other flips it back to
+    // `false`) — Escape taking priority whenever it fires avoids that.
     const clicked = this.input.consumeClick();
-    if (this.input.consumeBlur()) this.isPaused = true;
-    if (this.input.consumeEscape()) this.isPaused = !this.isPaused;
+    const blurred = this.input.consumeBlur();
+    const pointerUnlocked = this.input.consumePointerUnlock();
+    const escaped = this.input.consumeEscape();
+    if (escaped) {
+      this.isPaused = !this.isPaused;
+    } else if (blurred || pointerUnlocked) {
+      this.isPaused = true;
+    }
     if (this.isPaused && clicked) this.isPaused = false;
     if (this.isPaused) {
       this.notifyFrozen(true);
