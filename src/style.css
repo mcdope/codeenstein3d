@@ -472,6 +472,40 @@ a.settings-btn {
   color: var(--text);
 }
 
+/* Shown in #viewport while a workspace's tree is being fetched, its
+ * entrypoint is being scanned, or a level's world is being generated — see
+ * showLoadingScreen()/setLoadingStatus() in main.ts. A large remote repo
+ * (e.g. torvalds/linux) can spend real seconds in these phases; without this
+ * the app looked frozen the whole time. */
+.loading-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.loading-spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: loading-spin 0.8s linear infinite;
+}
+
+@keyframes loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-status {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+}
+
 .scene-canvas {
   width: min(100%, 960px);
   height: auto;

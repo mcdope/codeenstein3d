@@ -20,7 +20,7 @@ The sidebar has three tabs for starting a run:
 - **Continue** — only appears once you have a saved run. Click **Continue Run** to resume exactly where you left off (health, ammo, weapons, and campaign position all restored).
 - **GitHub** — type an `owner/repo` reference and click **Load from GitHub** to pull any public repository over the network instead of picking a local folder.
 
-Once a workspace loads, the game looks for a sensible starting point — a `main` function, `index.php`, the highest-complexity file, or just the first parsable file it finds — and launches straight into it. You don't need to manually pick a file to begin, though you can also click any file in the sidebar's file tree to jump into it directly.
+Once a workspace loads, the game looks for a sensible starting point — a `main` function, `index.php`, the highest-complexity file, or just the first parsable file it finds — and launches straight into it. You don't need to manually pick a file to begin, though you can also click any file in the sidebar's file tree to jump into it directly. A spinner with a status line (fetching the tree, scanning for an entrypoint, parsing, generating the world) shows in the viewport while this is in progress — for a large repository (a full Linux kernel checkout, say) this can take real seconds, especially over GitHub.
 
 ## The first level
 

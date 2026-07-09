@@ -73,6 +73,8 @@ const githubStatus = requireElement<HTMLParagraphElement>("#github-status");
 const workspaceName = requireElement<HTMLParagraphElement>("#workspace-name");
 const fileTree = requireElement<HTMLElement>("#file-tree");
 const viewport = requireElement<HTMLElement>("#viewport");
+const loadingScreen = requireElement<HTMLElement>("#loading-screen");
+const loadingStatus = requireElement<HTMLParagraphElement>("#loading-status");
 const goreSelect = requireElement<HTMLSelectElement>("#gore-select");
 const difficultySelect = requireElement<HTMLSelectElement>("#difficulty-select");
 const masterVolumeInput = requireElement<HTMLInputElement>("#master-vol");
@@ -310,6 +312,7 @@ selectButton.addEventListener("click", async () => {
 
     workspaceName.textContent = "Reading workspace…";
     workspaceName.classList.remove("error");
+    showLoadingScreen(`Reading "${handle.name}"…`);
 
     const tree = await readDirectoryTree(handle);
     workspaceTree = tree;
@@ -328,6 +331,7 @@ selectButton.addEventListener("click", async () => {
     workspaceName.textContent =
       err instanceof Error ? err.message : "Failed to read workspace.";
     workspaceName.classList.add("error");
+    showFileTreePlaceholder();
   }
 });
 
@@ -345,6 +349,7 @@ loadGithubRepoButton.addEventListener("click", async () => {
     githubStatus.textContent = `Fetching "${ref.owner}/${ref.repo}"…`;
     workspaceName.textContent = "Reading workspace…";
     workspaceName.classList.remove("error");
+    showLoadingScreen(`Fetching "${ref.owner}/${ref.repo}" from GitHub…`);
 
     const tree = await fetchGithubTree(ref);
     workspaceTree = tree;
@@ -367,6 +372,7 @@ loadGithubRepoButton.addEventListener("click", async () => {
     githubStatus.classList.add("error");
     workspaceName.textContent = message;
     workspaceName.classList.add("error");
+    showFileTreePlaceholder();
   } finally {
     loadGithubRepoButton.disabled = false;
   }
@@ -382,6 +388,7 @@ continueButton.addEventListener("click", async () => {
 
     workspaceName.textContent = "Reading workspace…";
     workspaceName.classList.remove("error");
+    showLoadingScreen(`Reading "${handle.name}"…`);
 
     const tree = await readDirectoryTree(handle);
     workspaceTree = tree;
@@ -392,6 +399,7 @@ continueButton.addEventListener("click", async () => {
     kickOffCodebaseStats(tree);
     renderFileTree(fileTree, tree, { onSelectFile: handleFileSelected });
 
+    setLoadingStatus("Locating saved level…");
     const match = (await flattenParsableFiles(tree)).find((f) => f.path === save.filePath);
     if (!match) {
       console.warn(
@@ -402,11 +410,14 @@ continueButton.addEventListener("click", async () => {
       return;
     }
 
+    setLoadingStatus(`Parsing ${match.name}…`);
     const text = await readFileText(match.handle as FileSystemFileHandle);
     const parsed = await parseFile(match.name, text);
     if (parsed) {
       campaignLevelIndex = save.levelIndex;
       console.log(`%c[continue] resuming at ${match.path}`, "color:#8effa0;font-weight:bold");
+      setLoadingStatus("Generating world…");
+      await yieldToMainThread(); // let the status above paint before the synchronous map generation below
       launchLevel(match.path, parsed, {
         health: save.health,
         swap: save.swap,
@@ -416,11 +427,14 @@ continueButton.addEventListener("click", async () => {
         weaponIndex: save.weaponIndex,
         ownedWeapons: save.ownedWeapons,
       });
+    } else {
+      showFileTreePlaceholder();
     }
   } catch (err) {
     console.error("[continue] Failed to resume campaign:", err);
     workspaceName.textContent = err instanceof Error ? err.message : "Failed to resume campaign.";
     workspaceName.classList.add("error");
+    showFileTreePlaceholder();
   }
 });
 
@@ -622,19 +636,45 @@ export async function findEntrypoint(tree: TreeNode): Promise<EntrypointMatch | 
 const ENTRYPOINT_DETECTION_TIMEOUT_MS = 4000;
 
 /**
+ * Shows the loading overlay in place of whatever else is in `#viewport` —
+ * the intro screen, the "select a file" placeholder, or a previous run's
+ * canvas — while a workspace's tree is fetched, its entrypoint is scanned,
+ * or a level's world is generated. A large remote repo (`torvalds/linux` is
+ * the standing test case) can spend real seconds in these phases; without
+ * this the app just looked frozen the whole time. Also hides the canvas
+ * (see its own doc comment for why it's otherwise never touched) so a stale
+ * frame from a still-running previous level doesn't show through alongside
+ * the spinner if the player picks a new workspace mid-run — `launchLevel`
+ * un-hides it again once the new level is actually ready.
+ */
+function showLoadingScreen(status: string): void {
+  canvas.hidden = true;
+  for (const child of [...viewport.children]) {
+    if (child !== canvas && child !== loadingScreen) child.remove();
+  }
+  loadingStatus.textContent = status;
+  loadingScreen.hidden = false;
+  viewport.appendChild(loadingScreen);
+}
+
+/** Updates the loading overlay's status text — only meaningful while it's
+ * actually shown (see `showLoadingScreen`). */
+function setLoadingStatus(status: string): void {
+  loadingStatus.textContent = status;
+}
+
+/**
  * Auto-start the very first level right after a workspace loads: prefer a
  * detected project entrypoint (see `findEntrypoint`) over just resolving the
  * first parsable file alphabetically/by tree order, though that remains the
  * fallback both when no entrypoint is found and when detection itself times
- * out (see `ENTRYPOINT_DETECTION_TIMEOUT_MS`). Does nothing if the workspace
- * has no parsable file at all — the sidebar is left for a manual pick as
- * before.
+ * out (see `ENTRYPOINT_DETECTION_TIMEOUT_MS`). Falls back to the "select a
+ * file" placeholder (see `showFileTreePlaceholder`) if the workspace has no
+ * parsable file at all, or nothing could actually be parsed.
  */
 async function autoLaunchInitialLevel(tree: TreeNode): Promise<void> {
-  const previousWorkspaceName = workspaceName.textContent;
-  workspaceName.textContent = "Scanning for entrypoint…";
+  setLoadingStatus("Scanning for entrypoint…");
   const match = await withTimeout(findEntrypoint(tree), ENTRYPOINT_DETECTION_TIMEOUT_MS);
-  workspaceName.textContent = previousWorkspaceName;
 
   let target: TreeNode | null;
   let parsed: ParsedFile | null;
@@ -644,22 +684,35 @@ async function autoLaunchInitialLevel(tree: TreeNode): Promise<void> {
     target = match.file;
     parsed = match.parsed;
   } else {
+    setLoadingStatus("Scanning file tree…");
     target = (await flattenParsableFiles(tree))[0] ?? null;
     parsed = null;
   }
-  if (!target) return;
+  if (!target) {
+    showFileTreePlaceholder();
+    return;
+  }
 
   try {
     if (!parsed) {
+      setLoadingStatus(`Parsing ${target.name}…`);
       const text = await readFileText(target.handle as FileSystemFileHandle);
       parsed = await parseFile(target.name, text);
     }
     if (parsed) {
       console.log(`%c[entrypoint] auto-starting at ${target.path} (${how})`, "color:#8effa0;font-weight:bold");
+      setLoadingStatus("Generating world…");
+      // Let the status above actually paint before the synchronous (and,
+      // for a large/complex file, potentially slow) map generation below
+      // blocks the main thread — see `yieldToMainThread`'s doc comment.
+      await yieldToMainThread();
       launchLevel(target.path, parsed);
+    } else {
+      showFileTreePlaceholder();
     }
   } catch (err) {
     console.error(`[entrypoint] Failed to auto-launch "${target.path}":`, err);
+    showFileTreePlaceholder();
   }
 }
 
@@ -1052,19 +1105,18 @@ async function findNextParsableFile(tree: TreeNode, afterPath: string): Promise<
   return files[index + 1];
 }
 
-/** Stop any running level and return the viewport to its initial state. */
-function resetToFileTree(): void {
-  activeEngine?.stop();
-  activeEngine = null;
-  activeHud = null;
-  currentLevelPath = null;
-  currentParsedFile = null;
-  consoleSidebar.setHintsActive(false);
-
-  // Hide (never remove) the canvas — see its doc comment. A display:none
-  // element can't stay the fullscreen target, so this is also the one point
-  // where leaving the game naturally ends fullscreen, rather than it dropping
-  // mid-run on every level transition.
+/**
+ * Replaces `#viewport`'s contents with the "select a file" placeholder —
+ * shown once a workspace is loaded (tree populated in the sidebar) but no
+ * level is running, whether because nothing has been picked yet or because
+ * `autoLaunchInitialLevel` finished without finding anything launchable.
+ * Also hides (never removes) the canvas — see its doc comment. A
+ * `display:none` element can't stay the Fullscreen API's target, so this is
+ * also the one point where leaving the game naturally ends fullscreen,
+ * rather than it dropping mid-run on every level transition.
+ */
+function showFileTreePlaceholder(): void {
+  loadingScreen.hidden = true;
   canvas.hidden = true;
   for (const child of [...viewport.children]) {
     if (child !== canvas) child.remove();
@@ -1076,6 +1128,17 @@ function resetToFileTree(): void {
     'Select a file from the tree to build and enter its level.<br />' +
     "Reach the green <code>return</code> tile to win.";
   viewport.appendChild(placeholder);
+}
+
+/** Stop any running level and return the viewport to its initial state. */
+function resetToFileTree(): void {
+  activeEngine?.stop();
+  activeEngine = null;
+  activeHud = null;
+  currentLevelPath = null;
+  currentParsedFile = null;
+  consoleSidebar.setHintsActive(false);
+  showFileTreePlaceholder();
 }
 
 // --- Campaign persistence (Continue Run) -----------------------------------
