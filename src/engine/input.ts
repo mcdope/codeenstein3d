@@ -33,9 +33,6 @@ const GAMEPAD_DEADZONE = 0.18;
 
 /** Classic Doom cheat codes this game recognizes — see `consumeCheat()`. */
 const CHEAT_CODES = ["IDDQD", "IDKFA", "IDCLIP"] as const;
-/** How many trailing letters `cheatBuffer` keeps — the longest code (6) plus
- * a little slack, so it never has to grow unbounded. */
-const CHEAT_BUFFER_MAX = 10;
 
 /**
  * The subset of `InputController`'s public API `RaycasterEngine` actually
@@ -136,14 +133,18 @@ export class InputController implements InputSource {
   private wheelSteps = 0;
   /** Edge-triggered FPS/frame-time overlay toggle, set on a Right-Ctrl press. */
   private fpsToggleQueued = false;
-  /** Trailing uppercased letters typed so far, used to detect a classic Doom
-   * cheat code (see `onKeyDown`) — reset the instant a code matches. Never
-   * reset by a non-letter keypress (movement/digits/etc.), so typing WASD
-   * between cheat letters — which happens naturally while moving — can't
-   * break an in-progress sequence. */
+  /** Uppercased letters typed so far that still form a valid prefix of at
+   * least one `CHEAT_CODES` entry (see `onKeyDown`) — reset the instant a
+   * code matches, or the instant a typed letter stops extending any prefix.
+   * While non-empty, letters that keep extending a valid prefix are swallowed
+   * entirely (never reach movement/interact/etc.) so spelling out a cheat
+   * like "IDDQD" can't also strafe or turn the player via its D/Q letters —
+   * the moment a letter breaks every prefix, the buffer resets and that
+   * letter (and everything after it) is treated as ordinary input again. */
   private cheatBuffer = "";
-  /** Edge-triggered cheat activation, set the instant `cheatBuffer` ends with
-   * one of `CHEAT_CODES` — the matched code itself (e.g. "IDDQD"), or null. */
+  /** Edge-triggered cheat activation, set the instant `cheatBuffer` exactly
+   * matches one of `CHEAT_CODES` — the matched code itself (e.g. "IDDQD"), or
+   * null. */
   private cheatQueued: string | null = null;
   /** Edge-triggered pause toggle, set on an Escape press. See
    * `RaycasterEngine.advance()` for why a same-frame blur can't just be
@@ -454,6 +455,27 @@ export class InputController implements InputSource {
   }
 
   private readonly onKeyDown = (e: KeyboardEvent): void => {
+    // Classic Doom cheat codes: while a typed letter keeps `cheatBuffer` a
+    // valid prefix of some `CHEAT_CODES` entry, swallow it here — return
+    // before any control branch below sees it, so e.g. the D/Q in "IDDQD"
+    // can't also strafe/turn the player. The instant a letter stops
+    // extending every prefix, drop the buffer and fall through: that letter,
+    // and anything typed after it, is ordinary input again.
+    if (/^[a-zA-Z]$/.test(e.key)) {
+      const candidate = this.cheatBuffer + e.key.toUpperCase();
+      const matched = CHEAT_CODES.find((code) => code === candidate);
+      if (matched) {
+        this.cheatBuffer = "";
+        this.cheatQueued = matched;
+        return;
+      }
+      if (CHEAT_CODES.some((code) => code.startsWith(candidate))) {
+        this.cheatBuffer = candidate;
+        return;
+      }
+      this.cheatBuffer = "";
+    }
+
     // Space fires once per physical press (ignore OS auto-repeat).
     if (e.code === "Space") {
       if (!e.repeat) this.fireQueued = true;
@@ -502,21 +524,6 @@ export class InputController implements InputSource {
         void document.exitFullscreen();
       } else {
         void this.canvas.requestFullscreen();
-      }
-    }
-
-    // Classic Doom cheat codes: buffer trailing letters and check for a
-    // match on every keystroke. Deliberately independent of every branch
-    // above (and never `preventDefault()`'d) — a cheat is spelled out using
-    // ordinary gameplay keys (several of which double as real bindings, like
-    // Q/E/F/R above), so this only ever *observes* the letter, it never
-    // consumes or blocks it.
-    if (/^[a-zA-Z]$/.test(e.key)) {
-      this.cheatBuffer = (this.cheatBuffer + e.key.toUpperCase()).slice(-CHEAT_BUFFER_MAX);
-      const matched = CHEAT_CODES.find((code) => this.cheatBuffer.endsWith(code));
-      if (matched) {
-        this.cheatQueued = matched;
-        this.cheatBuffer = "";
       }
     }
 
