@@ -26,9 +26,9 @@ import { HUD_HEIGHT } from "./hud";
 
 /** Fixed tile size in canvas pixels — independent of map size, so large maps
  * stay just as readable as small ones (the old fit-to-box math shrank as low
- * as ~2px/tile on big levels). Zoomed out relative to a "1:1" 10px/tile read,
- * so a given viewport shows twice the map area. */
-const CELL_PX = 5;
+ * as ~2px/tile on big levels). Zoomed well out relative to a "1:1" 10px/tile
+ * read, so a given viewport shows a wide swath of the map at once. */
+const CELL_PX = 3;
 /** Margin kept clear on the left/right/top/bottom of the viewport. */
 const MARGIN = 12;
 
@@ -110,8 +110,8 @@ export function drawAutomap(
   ctx.clip();
 
   // Translucent panel behind the map, Diablo-style — the live 3D scene stays
-  // dimly visible through it rather than being fully hidden.
-  ctx.fillStyle = "rgba(0,5,2,0.65)";
+  // clearly visible through it rather than being mostly hidden.
+  ctx.fillStyle = "rgba(0,5,2,0.35)";
   ctx.fillRect(vx0, vy0, viewW, viewH);
 
   const activeSpikes = activeSpikeTileKeys(map.spikeTraps, levelTime);
