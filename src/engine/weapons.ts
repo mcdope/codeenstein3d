@@ -112,7 +112,11 @@ export const WEAPONS: readonly Weapon[] = [
     name: "echo pistol",
     pellets: 1,
     spreadPx: 0,
-    damagePerPellet: 25,
+    // Slightly down from 25, mirrored by the shotgun's +6 below (twice the
+    // reduction) — playtest feedback was that the shotgun felt weaker than
+    // the pistol despite firing 7 pellets per shot, since its wide cone
+    // (spreadPx: 70) means only a fraction connect outside point-blank range.
+    damagePerPellet: 22,
     ammoPerShot: 1,
     ammoType: "bullets",
     tracerColor: "#fff05a",
@@ -122,7 +126,9 @@ export const WEAPONS: readonly Weapon[] = [
     name: "Regex Shotgun",
     pellets: 7,
     spreadPx: 70,
-    damagePerPellet: 12,
+    // Up from 12 by twice the pistol's 3-point reduction above — see its
+    // comment for why.
+    damagePerPellet: 18,
     ammoPerShot: 4,
     ammoType: "bullets",
     tracerColor: "#ff9d3f",
