@@ -189,6 +189,11 @@ const LORE_SCROLL_SPEED = 6;
  * generous enough to trigger from a normal standing distance, unlike the
  * door's much tighter walk-into-it reach. */
 const SECRET_WALL_REACH = 0.9;
+/** Fog-of-war reveal radius (tiles) around the player each frame — feeds
+ * `map.visited`, which drives both the automap and the map-completion score
+ * bonus's numerator (`visitedWalkableCount`). The always-on corner minimap
+ * is a separate, unrelated "radar" that ignores fog of war entirely. */
+const VISITED_REVEAL_RADIUS = 5;
 
 /** Live stats pushed to the host each frame. */
 export interface EngineStats {
@@ -856,18 +861,25 @@ export class RaycasterEngine {
     for (const job of jobs) job.draw();
   }
 
-  /** Fog of war: reveal the player's tile and its immediate neighbors. Also
-   * feeds `visitedWalkableCount` (the map-completion score bonus's numerator)
-   * incrementally, counting a tile only the first time it's newly revealed. */
+  /** Fog of war: reveal every tile within `VISITED_REVEAL_RADIUS` tiles of the
+   * player (a circle, not a square, so the reveal is a clean disc rather than
+   * a diamond-cornered blob). Also feeds `visitedWalkableCount` (the
+   * map-completion score bonus's numerator) incrementally, counting a tile
+   * only the first time it's newly revealed. */
   private markVisited(): void {
     const cx = Math.floor(this.player.posX);
     const cy = Math.floor(this.player.posY);
-    for (let y = cy - 1; y <= cy + 1; y++) {
+    const r = VISITED_REVEAL_RADIUS;
+    const rSq = r * r;
+    for (let y = cy - r; y <= cy + r; y++) {
       if (y < 0 || y >= this.map.height) continue;
+      const dy = y - cy;
       const row = this.map.visited[y];
       const tileRow = this.map.grid[y];
-      for (let x = cx - 1; x <= cx + 1; x++) {
+      for (let x = cx - r; x <= cx + r; x++) {
         if (x < 0 || x >= this.map.width || row[x]) continue;
+        const dx = x - cx;
+        if (dx * dx + dy * dy > rSq) continue;
         row[x] = true;
         if (isWalkableTile(tileRow[x])) this.visitedWalkableCount += 1;
       }
