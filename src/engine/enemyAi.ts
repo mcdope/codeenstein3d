@@ -18,6 +18,7 @@
  * player.
  */
 import { collidesWithWall, isWall, type Player } from "./player";
+import type { PathField } from "./pathField";
 import { spawnProjectile, type Projectile } from "./projectiles";
 import type { Enemy, GameMap } from "../map/types";
 
@@ -77,12 +78,13 @@ export function updateEnemies(
   map: GameMap,
   dt: number,
   projectiles: Projectile[],
+  pathField: PathField,
   rng: () => number = Math.random,
 ): number {
   let damage = 0;
   for (const enemy of enemies) {
     if (!enemy.alive) continue;
-    damage += updateEnemy(enemy, player, map, dt, projectiles, rng);
+    damage += updateEnemy(enemy, player, map, dt, projectiles, pathField, rng);
   }
   return damage;
 }
@@ -94,6 +96,7 @@ function updateEnemy(
   map: GameMap,
   dt: number,
   projectiles: Projectile[],
+  pathField: PathField,
   rng: () => number,
 ): number {
   // Cool down toward the next melee bite and the next ranged shot.
@@ -144,7 +147,7 @@ function updateEnemy(
   // (rounding corners) and falling back to a straight line.
   if (dist > 0) {
     const step = speedFor(MOVEMENT_SPEED, enemy) * dt;
-    const waypoint = nextWaypoint(enemy, player, map);
+    const waypoint = nextWaypoint(enemy, player, map, pathField);
     chaseToward(enemy, waypoint?.x ?? player.posX, waypoint?.y ?? player.posY, step, map);
   }
   return 0;
@@ -270,21 +273,30 @@ function withinHome(x: number, y: number, home: Enemy["home"]): boolean {
   );
 }
 
-/** How far beyond the aggro radius the path search may look, in tiles. */
+/** How far beyond the aggro radius a chasing enemy still gets waypoint
+ * pathing rather than plain straight-at-the-player steering, in tiles —
+ * keeps a sticky-aggroed enemy far across the map from gaining perfect
+ * cross-map navigation just because the shared field happens to reach it. */
 const PATH_MARGIN = 2;
 
 /**
  * Next steering target for a chasing enemy: the center of the walkable cell
  * adjacent to the enemy that lies on the shortest path to the player.
  *
- * Computed with a breadth-first flood fill outward from the player's tile,
- * bounded to a window around the enemy so the cost stays tiny (enemies only
- * path when already within aggro range). Returns `null` when the player's tile
- * is unwalkable, out of the window, or unreachable — the caller then steers
- * straight at the player. This is what lets enemies round convex corners and
- * finite wall segments instead of hanging on them.
+ * Read off the shared player-rooted BFS distance field (see `pathField.ts`)
+ * — one flood, recomputed only when the player changes tile or the grid
+ * mutates, serves every enemy, instead of the per-enemy per-frame windowed
+ * flood this used to run. Returns `null` when the player's tile is
+ * unwalkable, beyond the pathing window, or unreachable — the caller then
+ * steers straight at the player. This is what lets enemies round convex
+ * corners and finite wall segments instead of hanging on them.
  */
-function nextWaypoint(enemy: Enemy, player: Player, map: GameMap): { x: number; y: number } | null {
+function nextWaypoint(
+  enemy: Enemy,
+  player: Player,
+  map: GameMap,
+  pathField: PathField,
+): { x: number; y: number } | null {
   const ex = Math.floor(enemy.x);
   const ey = Math.floor(enemy.y);
   const px = Math.floor(player.posX);
@@ -299,36 +311,15 @@ function nextWaypoint(enemy: Enemy, player: Player, map: GameMap): { x: number; 
   if (px < minX || px > maxX || py < minY || py > maxY) return null;
   if (isWall(map, px, py)) return null;
 
-  const width = map.width;
-  const cellId = (x: number, y: number): number => y * width + x;
-
-  // BFS distances from the player's tile, restricted to the window.
-  const distField = new Map<number, number>();
-  const queue: number[] = [cellId(px, py)];
-  distField.set(cellId(px, py), 0);
-  for (let head = 0; head < queue.length; head++) {
-    const cur = queue[head];
-    const cx = cur % width;
-    const cy = (cur - cx) / width;
-    const cd = distField.get(cur)!;
-    for (const [nx, ny] of neighbors4(cx, cy)) {
-      if (nx < minX || nx > maxX || ny < minY || ny > maxY) continue;
-      if (isWall(map, nx, ny)) continue;
-      const id = cellId(nx, ny);
-      if (distField.has(id)) continue;
-      distField.set(id, cd + 1);
-      queue.push(id);
-    }
-  }
-
   // Descend the distance field: pick the enemy's walkable neighbor closest to
   // the player. Requires a strict decrease so we always make progress inward.
   let best: { x: number; y: number } | null = null;
-  let bestDist = distField.get(cellId(ex, ey)) ?? Infinity;
+  const own = pathField.distAt(ex, ey);
+  let bestDist = own === -1 ? Infinity : own;
   for (const [nx, ny] of neighbors4(ex, ey)) {
     if (isWall(map, nx, ny)) continue;
-    const d = distField.get(cellId(nx, ny));
-    if (d === undefined || d >= bestDist) continue;
+    const d = pathField.distAt(nx, ny);
+    if (d === -1 || d >= bestDist) continue;
     bestDist = d;
     best = { x: nx + 0.5, y: ny + 0.5 };
   }

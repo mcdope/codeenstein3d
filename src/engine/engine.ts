@@ -98,6 +98,7 @@ import { AMMO_TYPES, startingAmmo, type AmmoPools } from "./ammo";
 import { applyLootDrop, dropEliteLoot, grantOrTopUpWeapon, type LootContext } from "./lootApply";
 import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, ROCKET_BLAST_RADIUS, type Rocket } from "./rockets";
 import { EnemySpatialGrid } from "./spatialGrid";
+import { PathField } from "./pathField";
 import { detonateMine, spikeDamage, updateMines, MINE_BLAST_RADIUS } from "./traps";
 import {
   DOOR_TILE,
@@ -309,6 +310,12 @@ export class RaycasterEngine {
   /** Tile-bucketed index over living enemies for proximity queries — rebuilt
    * lazily on frames with rockets in flight (see `advanceRockets`). */
   private readonly enemyGrid = new EnemySpatialGrid();
+  /** Shared player-rooted BFS distance field every chasing enemy steers by —
+   * refloods only when the player changes tile or `gridVersion` bumps. */
+  private readonly pathField = new PathField();
+  /** Bumped on every runtime mutation of `map.grid` (a door opening, a
+   * secret wall sliding away) — the `pathField`'s invalidation signal. */
+  private gridVersion = 0;
   /** Per-column wall depth from the latest wall render; used for occlusion. */
   private readonly zBuffer: Float64Array;
 
@@ -975,6 +982,7 @@ export class RaycasterEngine {
       grid[y][x] = 0;
       stack.push({ x: x + 1, y }, { x: x - 1, y }, { x, y: y + 1 }, { x, y: y - 1 });
     }
+    this.gridVersion += 1;
     audio.playSecret();
     console.log(
       "%c[secret] a section of wall slides open — a hidden room lies beyond — exploration bonus earned",
@@ -1147,8 +1155,9 @@ export class RaycasterEngine {
    */
   private updateEnemyAi(dt: number): void {
     if (this.state !== "playing") return;
+    this.pathField.ensure(this.map, Math.floor(this.player.posX), Math.floor(this.player.posY), this.gridVersion);
     const beforeShots = this.projectiles.length;
-    const dmg = updateEnemies(this.enemies, this.player, this.map, dt, this.projectiles, this.rng);
+    const dmg = updateEnemies(this.enemies, this.player, this.map, dt, this.projectiles, this.pathField, this.rng);
     if (this.projectiles.length > beforeShots) audio.playEnemyShoot();
     // Difficulty scales enemy-*dealt* damage only — melee bites and ranged
     // bolts, not trap/hazard/self-inflicted (rocket splash) damage.
@@ -1313,6 +1322,7 @@ export class RaycasterEngine {
 
     if (this.map.grid[cy]?.[cx] === DOOR_TILE) {
       this.map.grid[cy][cx] = 0;
+      this.gridVersion += 1;
       this.keysHeld -= 1;
       console.log(
         `%c[door] unlocked with a dependency key — ${this.keysHeld} left`,
