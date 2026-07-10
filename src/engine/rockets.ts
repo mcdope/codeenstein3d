@@ -13,7 +13,7 @@
  */
 import { isWall, type Player } from "./player";
 import { collectOrbBillboards, type BillboardJob } from "./sprites";
-import type { Enemy, GameMap } from "../map/types";
+import type { GameMap } from "../map/types";
 
 /** Rocket travel speed, in tiles per second — much slower than a hitscan
  * pellet (instant) so it's a real, dodgeable projectile in flight. */
@@ -75,10 +75,15 @@ export interface RocketExplosion {
  * that went off this frame; applying the actual AoE damage, VFX, and audio is
  * left to the caller (see `RaycasterEngine`), same division of labor as
  * `updateMines`/`detonateMine` in `traps.ts`.
+ *
+ * `nearLivingEnemy(x, y, radius)` answers whether any living enemy is within
+ * `radius` of the point — the engine backs it with its spatial grid (see
+ * `spatialGrid.ts`) instead of the full enemy-array scan this used to do per
+ * rocket per frame.
  */
 export function updateRockets(
   list: Rocket[],
-  enemies: readonly Enemy[],
+  nearLivingEnemy: (x: number, y: number, radius: number) => boolean,
   map: GameMap,
   dt: number,
 ): RocketExplosion[] {
@@ -88,9 +93,7 @@ export function updateRockets(
     r.x += r.vx * dt;
     r.y += r.vy * dt;
 
-    const hitEnemy = enemies.some(
-      (e) => e.alive && Math.hypot(e.x - r.x, e.y - r.y) < ROCKET_ENEMY_TRIGGER_RADIUS,
-    );
+    const hitEnemy = nearLivingEnemy(r.x, r.y, ROCKET_ENEMY_TRIGGER_RADIUS);
     const hitWall = isWall(map, Math.floor(r.x), Math.floor(r.y));
     if (hitEnemy || hitWall) {
       explosions.push({ x: r.x, y: r.y, damage: r.damage });

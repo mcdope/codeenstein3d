@@ -104,11 +104,19 @@ function updateEnemy(
   const dy = player.posY - enemy.y;
   const dist = Math.hypot(dx, dy);
 
+  // Line of sight, lazily memoized for this frame: neither the enemy nor the
+  // player moves between the aggro check and the ranged-shot check below, so
+  // the second reachable call would just ray-march the identical answer again.
+  let losMemo: boolean | undefined;
+  const los = (): boolean => (losMemo ??= hasLineOfSight(map, enemy.x, enemy.y, player.posX, player.posY));
+
   // Wake up once the player is within (enlarged) aggro range AND actually
   // visible (no wall in between) — a roaming enemy shouldn't sense the player
   // through solid geometry. Damage aggro is applied separately by the engine
-  // when the enemy is shot, and skips this check entirely. Sticky thereafter.
-  if (dist < AGGRO_RADIUS && hasLineOfSight(map, enemy.x, enemy.y, player.posX, player.posY)) {
+  // when the enemy is shot, and skips this check entirely. Sticky thereafter —
+  // which is why an already-aggroed enemy skips the ray-march entirely (the
+  // write was idempotent; re-checking was pure wasted work every frame).
+  if (!enemy.aggroed && dist < AGGRO_RADIUS && los()) {
     enemy.aggroed = true;
   }
 
@@ -127,11 +135,7 @@ function updateEnemy(
   }
 
   // At range: occasionally lob a bolt at the player if there's a clear shot.
-  if (
-    enemy.fireCooldown === 0 &&
-    dist <= RANGED_RANGE &&
-    hasLineOfSight(map, enemy.x, enemy.y, player.posX, player.posY)
-  ) {
+  if (enemy.fireCooldown === 0 && dist <= RANGED_RANGE && los()) {
     spawnProjectile(projectiles, enemy.x, enemy.y, player.posX, player.posY, damageMultiplier(enemy));
     enemy.fireCooldown = FIRE_COOLDOWN_MIN + rng() * (FIRE_COOLDOWN_MAX - FIRE_COOLDOWN_MIN);
   }

@@ -97,6 +97,7 @@ import { MAX_SWAP, rollBonusWeaponDrop, rollLoot } from "./loot";
 import { AMMO_TYPES, startingAmmo, type AmmoPools } from "./ammo";
 import { applyLootDrop, dropEliteLoot, grantOrTopUpWeapon, type LootContext } from "./lootApply";
 import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, ROCKET_BLAST_RADIUS, type Rocket } from "./rockets";
+import { EnemySpatialGrid } from "./spatialGrid";
 import { detonateMine, spikeDamage, updateMines, MINE_BLAST_RADIUS } from "./traps";
 import {
   DOOR_TILE,
@@ -305,6 +306,9 @@ export class RaycasterEngine {
    * playback itself, which never re-records what it's replaying. */
   private readonly replayRecorder?: CampaignReplayRecorder;
   private readonly enemies: Enemy[];
+  /** Tile-bucketed index over living enemies for proximity queries — rebuilt
+   * lazily on frames with rockets in flight (see `advanceRockets`). */
+  private readonly enemyGrid = new EnemySpatialGrid();
   /** Per-column wall depth from the latest wall render; used for occlusion. */
   private readonly zBuffer: Float64Array;
 
@@ -1167,7 +1171,19 @@ export class RaycasterEngine {
    */
   private advanceRockets(dt: number): void {
     if (this.state !== "playing") return;
-    const blasts = updateRockets(this.rockets, this.enemies, this.map, dt);
+    // No rockets in flight — the overwhelmingly common frame — costs
+    // nothing: no grid rebuild, no update pass. Enemy positions are stable
+    // from here to the end of the frame (the AI step already ran), which is
+    // what makes one rebuild per frame safe for every query below.
+    if (this.rockets.length === 0) return;
+    this.enemyGrid.rebuild(this.enemies, this.map.width);
+
+    const blasts = updateRockets(
+      this.rockets,
+      (x, y, radius) => this.enemyGrid.anyWithin(x, y, radius, (e) => Math.hypot(e.x - x, e.y - y) < radius),
+      this.map,
+      dt,
+    );
     for (const blast of blasts) {
       audio.playRocketExplosion();
       spawnExplosion(this.explosions, blast.x, blast.y, ROCKET_BLAST_RADIUS);
@@ -1176,7 +1192,11 @@ export class RaycasterEngine {
       const playerDmg = rocketDamageAt(blast, this.player.posX, this.player.posY);
       if (playerDmg > 0) this.damage(playerDmg);
 
-      for (const enemy of this.enemies) {
+      // Ascending candidate indices == the old full-array scan order
+      // restricted to the blast's neighborhood, so kills (and the seeded
+      // loot rolls they draw) happen in exactly the order they always did.
+      for (const index of this.enemyGrid.queryIndices(blast.x, blast.y, ROCKET_BLAST_RADIUS)) {
+        const enemy = this.enemies[index];
         if (!enemy.alive) continue;
         const dmg = rocketDamageAt(blast, enemy.x, enemy.y);
         if (dmg > 0) this.damageEnemy(enemy, dmg);
