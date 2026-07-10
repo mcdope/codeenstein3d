@@ -231,15 +231,40 @@ function drawEnemyOverlay(
   ctx.textAlign = "start";
 }
 
+/** One living enemy's projection, snapshotted for reuse across multiple
+ * hit-tests against the same camera — see `projectLivingEnemies`. */
+export interface ProjectedEnemy {
+  enemy: Enemy;
+  proj: EnemyProjection;
+}
+
+/**
+ * Project every living enemy once, for reuse across multiple hit-tests
+ * against the same shot (e.g. every pellet of one shotgun blast) instead of
+ * recomputing each enemy's projection from scratch per pellet — see
+ * `findTargetInProjections`.
+ */
+export function projectLivingEnemies(player: Player, enemies: Enemy[], width: number, height: number): ProjectedEnemy[] {
+  const result: ProjectedEnemy[] = [];
+  for (const enemy of enemies) {
+    if (!enemy.alive) continue;
+    const proj = projectEnemy(player, enemy, width, height);
+    if (proj.depth <= 0) continue;
+    result.push({ enemy, proj });
+  }
+  return result;
+}
+
 /**
  * Find the living enemy hit by a ray aimed at screen point (`screenX`, mid-
  * height), in front of the nearest wall — nearest one wins. Returns `null`
- * when nothing is hit. Used both for the aim reticle and for each shotgun
- * pellet (which aims at an offset column).
+ * when nothing is hit. Tests against an already-projected list from
+ * `projectLivingEnemies` rather than reprojecting, but still re-checks
+ * `enemy.alive` per entry: an earlier pellet in the same shot can kill an
+ * enemy mid-loop, which the projection snapshot itself doesn't reflect.
  */
-export function findTargetAtColumn(
-  player: Player,
-  enemies: Enemy[],
+export function findTargetInProjections(
+  projected: ProjectedEnemy[],
   zBuffer: Float64Array,
   width: number,
   height: number,
@@ -250,10 +275,8 @@ export function findTargetAtColumn(
   let best: Enemy | null = null;
   let bestDepth = Infinity;
 
-  for (const enemy of enemies) {
+  for (const { enemy, proj } of projected) {
     if (!enemy.alive) continue;
-    const proj = projectEnemy(player, enemy, width, height);
-    if (proj.depth <= 0) continue;
     if (screenX < proj.left || screenX > proj.right || cy < proj.top || cy > proj.bottom) {
       continue;
     }
@@ -269,6 +292,24 @@ export function findTargetAtColumn(
   return best;
 }
 
+/**
+ * Find the living enemy hit by a ray aimed at screen point (`screenX`, mid-
+ * height), in front of the nearest wall — nearest one wins. Returns `null`
+ * when nothing is hit. Used for the aim reticle, which only ever needs one
+ * hit-test per frame — a shot with multiple pellets should instead call
+ * `projectLivingEnemies` once and reuse it via `findTargetInProjections`.
+ */
+export function findTargetAtColumn(
+  player: Player,
+  enemies: Enemy[],
+  zBuffer: Float64Array,
+  width: number,
+  height: number,
+  screenX: number,
+): Enemy | null {
+  return findTargetInProjections(projectLivingEnemies(player, enemies, width, height), zBuffer, width, height, screenX);
+}
+
 /** The living enemy directly under the crosshair (screen center), if any. */
 export function findTargetUnderCrosshair(
   player: Player,
@@ -280,16 +321,40 @@ export function findTargetUnderCrosshair(
   return findTargetAtColumn(player, enemies, zBuffer, width, height, width / 2);
 }
 
+/** One visible, still-live mine's projection, snapshotted for reuse across
+ * multiple hit-tests against the same camera — see `projectVisibleMines`. */
+export interface ProjectedMine {
+  mine: Mine;
+  proj: EnemyProjection;
+}
+
 /**
- * The discovered, still-live mine hit by a shot aimed at screen column
- * `screenX` — mirrors `findTargetAtColumn`'s enemy hit-test (same fixed
- * screen-center vertical reticle, no pitch aiming in this engine). Only
+ * Project every discovered, still-live mine once, for reuse across multiple
+ * hit-tests against the same shot — see `findMineInProjections`. Only
  * `visible` mines are hittable at all — you can't shoot what you haven't
  * spotted yet, matching the sight-radius reveal in `traps.ts`.
  */
-export function findMineAtColumn(
-  player: Player,
-  mines: Mine[],
+export function projectVisibleMines(player: Player, mines: Mine[], width: number, height: number): ProjectedMine[] {
+  const result: ProjectedMine[] = [];
+  for (const mine of mines) {
+    if (!mine.alive || !mine.visible) continue;
+    const proj = projectPoint(player, mine.x, mine.y, width, height, MINE_SIZE);
+    if (proj.depth <= 0) continue;
+    result.push({ mine, proj });
+  }
+  return result;
+}
+
+/**
+ * The discovered, still-live mine hit by a shot aimed at screen column
+ * `screenX` — mirrors `findTargetInProjections`'s enemy hit-test (same fixed
+ * screen-center vertical reticle, no pitch aiming in this engine). Tests
+ * against an already-projected list from `projectVisibleMines`, re-checking
+ * `mine.alive` per entry since an earlier pellet in the same shot can destroy
+ * a mine mid-loop.
+ */
+export function findMineInProjections(
+  projected: ProjectedMine[],
   zBuffer: Float64Array,
   width: number,
   height: number,
@@ -300,10 +365,8 @@ export function findMineAtColumn(
   let best: Mine | null = null;
   let bestDepth = Infinity;
 
-  for (const mine of mines) {
-    if (!mine.alive || !mine.visible) continue;
-    const proj = projectPoint(player, mine.x, mine.y, width, height, MINE_SIZE);
-    if (proj.depth <= 0) continue;
+  for (const { mine, proj } of projected) {
+    if (!mine.alive) continue;
     if (screenX < proj.left || screenX > proj.right || cy < proj.top || cy > proj.bottom) {
       continue;
     }
@@ -317,6 +380,23 @@ export function findMineAtColumn(
     }
   }
   return best;
+}
+
+/**
+ * The discovered, still-live mine hit by a shot aimed at screen column
+ * `screenX` — mirrors `findTargetAtColumn`'s enemy hit-test. A shot with
+ * multiple pellets should instead call `projectVisibleMines` once and reuse
+ * it via `findMineInProjections`.
+ */
+export function findMineAtColumn(
+  player: Player,
+  mines: Mine[],
+  zBuffer: Float64Array,
+  width: number,
+  height: number,
+  screenX: number,
+): Mine | null {
+  return findMineInProjections(projectVisibleMines(player, mines, width, height), zBuffer, width, height, screenX);
 }
 
 /**

@@ -201,8 +201,17 @@ export function extractLargeComments(
   root: Node,
   commentNodeTypes: readonly string[],
 ): CodeComment[] {
+  return extractLargeCommentsFromNodes(root.descendantsOfType([...commentNodeTypes]));
+}
+
+/**
+ * Same as `extractLargeComments`, but against an already-collected list of
+ * comment nodes — lets a caller that also needs `findCommentedOutCodeBlocks`
+ * share one `descendantsOfType` walk instead of each function repeating it.
+ */
+export function extractLargeCommentsFromNodes(nodes: readonly Node[]): CodeComment[] {
   const comments: CodeComment[] = [];
-  for (const node of root.descendantsOfType([...commentNodeTypes])) {
+  for (const node of nodes) {
     if (!node.isNamed) continue;
     const text = node.text.trim();
     const startLine = node.startPosition.row + 1;
@@ -310,8 +319,16 @@ const CODE_SYNTAX_CHARS = /[{};]/;
  * combined text. Source for secret rooms.
  */
 export function findCommentedOutCodeBlocks(root: Node, commentNodeTypes: readonly string[]): SecretTrigger[] {
-  const nodes = root
-    .descendantsOfType([...commentNodeTypes])
+  return findCommentedOutCodeBlocksFromNodes(root.descendantsOfType([...commentNodeTypes]));
+}
+
+/**
+ * Same as `findCommentedOutCodeBlocks`, but against an already-collected list
+ * of comment nodes — lets a caller that also needs `extractLargeComments`
+ * share one `descendantsOfType` walk instead of each function repeating it.
+ */
+export function findCommentedOutCodeBlocksFromNodes(nodes: readonly Node[]): SecretTrigger[] {
+  const sorted = nodes
     .filter((n) => n.isNamed)
     .sort((a, b) => a.startPosition.row - b.startPosition.row);
 
@@ -328,7 +345,7 @@ export function findCommentedOutCodeBlocks(root: Node, commentNodeTypes: readonl
     }
   };
 
-  for (const node of nodes) {
+  for (const node of sorted) {
     const startLine = node.startPosition.row + 1;
     const endLine = node.endPosition.row + 1;
     if (runStart !== -1 && startLine === runEnd + 1) {

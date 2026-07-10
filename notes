@@ -148,4 +148,5 @@
 - [ ] walkable stairs to get some height differences in the levels? kinda adding a height / elevation element.
 - [ ] wave system in exit/return rooms?
 - [ ] When loading magento from github, some users reports tanking performance when shooting in check_copyright_pr.php (and other files) even though the game runs at 120fps for them usually. This does not happen in the demo campaign for them.
-- [ ] revisit extreme gore mode, make it actually useable - without drowning in blood
+- [ ] revisit extreme gore mode, make it actually useable - without visually drowning in blood
+- [ ] chainsaw holdfire crashing my local chromium, wtf? repro on other machines

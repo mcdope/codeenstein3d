@@ -15,8 +15,8 @@ import {
   countDecisionPoints,
   countLines,
   countParameters,
-  extractLargeComments,
-  findCommentedOutCodeBlocks,
+  extractLargeCommentsFromNodes,
+  findCommentedOutCodeBlocksFromNodes,
   findDeadCodeAfterReturn,
   findDeprecationMarkers,
   findEmptyCatchBlocks,
@@ -172,17 +172,22 @@ export class PhpParserAdapter implements CodeParserAdapter {
         if (label) rawLabels.push({ label, line: node.startPosition.row + 1 });
       }
 
+      // `extractLargeComments`/`findCommentedOutCodeBlocks` both want every
+      // "comment" node — collected once here and shared, instead of each
+      // doing its own full-tree walk over the same node type.
+      const commentNodes = tree.rootNode.descendantsOfType("comment");
+
       return {
         language: this.language,
         linesOfCode: countLines(sourceText),
         entities,
         gotos: resolveGotos(rawGotos, rawLabels),
-        comments: extractLargeComments(tree.rootNode, ["comment"]),
+        comments: extractLargeCommentsFromNodes(commentNodes),
         secretTriggers: [
           ...findDeadCodeAfterReturn(tree.rootNode, BLOCK_NODE_TYPES, RETURN_NODE_TYPES),
           ...findEmptyCatchBlocks(tree.rootNode, CATCH_NODE_TYPES, BLOCK_NODE_TYPES, new Set(["comment"])),
           ...findDeprecationMarkers(tree.rootNode, DEPRECATION_MARKER_NODE_TYPES),
-          ...findCommentedOutCodeBlocks(tree.rootNode, ["comment"]),
+          ...findCommentedOutCodeBlocksFromNodes(commentNodes),
           ...findMagicNumberBlobs(tree.rootNode, STRING_LITERAL_NODE_TYPES, NUMBER_LITERAL_NODE_TYPES),
         ],
       };

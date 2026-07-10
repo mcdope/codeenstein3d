@@ -692,9 +692,11 @@ interface EntrypointMatch {
   parsed: ParsedFile;
 }
 
-/** Files processed between yields in `findEntrypointByScanning` — same
- * reasoning as `CODEBASE_STATS_CHUNK_SIZE`, kept as its own constant so the
- * two independent background scans can be tuned separately. */
+/** Files processed between yields in `findEntrypointByScanning` — this scan
+ * runs before the first level launches (nothing is playing yet), unlike
+ * `computeCodebaseStats`'s background pass, so a fixed file count is fine
+ * here; kept as its own constant so the two independent scans can be tuned
+ * separately. */
 const ENTRYPOINT_SCAN_CHUNK_SIZE = 20;
 
 /**
@@ -1239,11 +1241,14 @@ interface CodebaseStats {
   hash: string;
 }
 
-/** Files processed between yields in `computeCodebaseStats` — small enough
- * that a slow file (a GitHub raw fetch) doesn't stall input/rendering for
- * more than a beat, large enough that a big local codebase doesn't spend all
- * its time on `setTimeout` overhead. */
-const CODEBASE_STATS_CHUNK_SIZE = 20;
+/** Wall-clock budget (ms) `computeCodebaseStats` processes files for before
+ * yielding — comfortably under a 120fps frame's ~8.3ms, so a burst of large
+ * or slow-to-parse files (a big real-world file, or several back-to-back
+ * GitHub raw fetches) can't stall input/rendering for more than a beat. A
+ * fixed file-count chunk would let one burst of unusually large files run for
+ * an unbounded amount of wall-clock time; budgeting by elapsed time instead
+ * bounds the worst case regardless of what's in any given file. */
+const CODEBASE_STATS_TIME_BUDGET_MS = 6;
 
 /** Hands control back to the browser for one macrotask tick. There's no
  * `requestIdleCallback`/worker pool anywhere in this codebase to reuse, and
@@ -1263,15 +1268,16 @@ function yieldToMainThread(): Promise<void> {
  * changes when the workspace's actual content does). Reuses the exact same
  * `readFileText`/`parseFile` pair every level launch already goes through; a
  * file that fails to read or parse is skipped rather than aborting the whole
- * aggregation. Yields back to the event loop every
- * `CODEBASE_STATS_CHUNK_SIZE` files so this background pass never starves
- * the level the player is actively in.
+ * aggregation. Yields back to the event loop whenever a chunk has run for
+ * `CODEBASE_STATS_TIME_BUDGET_MS`, so this background pass never starves the
+ * level the player is actively in.
  */
 async function computeCodebaseStats(tree: TreeNode): Promise<CodebaseStats> {
   const files = await flattenParsableFiles(tree);
   let linesOfCode = 0;
   let complexity = 0;
   const astParts: string[] = [];
+  let chunkStart = performance.now();
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
@@ -1287,8 +1293,9 @@ async function computeCodebaseStats(tree: TreeNode): Promise<CodebaseStats> {
       console.warn(`[codebase-stats] Failed to parse "${file.path}", skipping:`, err);
     }
 
-    if (i % CODEBASE_STATS_CHUNK_SIZE === CODEBASE_STATS_CHUNK_SIZE - 1) {
+    if (performance.now() - chunkStart >= CODEBASE_STATS_TIME_BUDGET_MS) {
       await yieldToMainThread();
+      chunkStart = performance.now();
     }
   }
 

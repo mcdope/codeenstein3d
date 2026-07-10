@@ -16,8 +16,8 @@ import {
   countDecisionPoints,
   countLines,
   countParameters,
-  extractLargeComments,
-  findCommentedOutCodeBlocks,
+  extractLargeCommentsFromNodes,
+  findCommentedOutCodeBlocksFromNodes,
   findDeadCodeAfterReturn,
   findDeprecationMarkers,
   findEmptyCatchBlocks,
@@ -159,17 +159,22 @@ export class GenericParserAdapter implements CodeParserAdapter {
       entities.push(...genericGlobals(root, consumed, this.entityTypeNames));
       entities.sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
 
+      // `extractLargeComments`/`findCommentedOutCodeBlocks` both want every
+      // comment node — collected once here and shared, instead of each doing
+      // its own full-tree walk over the same node types.
+      const commentNodes = root.descendantsOfType([...COMMENT_NODE_TYPES]);
+
       return {
         language: this.language,
         linesOfCode: countLines(sourceText),
         entities,
         gotos: extractGotos(root),
-        comments: extractLargeComments(root, COMMENT_NODE_TYPES),
+        comments: extractLargeCommentsFromNodes(commentNodes),
         secretTriggers: [
           ...findDeadCodeAfterReturn(root, BLOCK_NODE_TYPES, RETURN_NODE_TYPES),
           ...findEmptyCatchBlocks(root, CATCH_NODE_TYPES, BLOCK_NODE_TYPES, EMPTY_CATCH_IGNORABLE_NODE_TYPES),
           ...findDeprecationMarkers(root, DEPRECATION_MARKER_NODE_TYPES),
-          ...findCommentedOutCodeBlocks(root, COMMENT_NODE_TYPES),
+          ...findCommentedOutCodeBlocksFromNodes(commentNodes),
           ...findMagicNumberBlobs(root, STRING_LITERAL_NODE_TYPES, NUMBER_LITERAL_NODE_TYPES),
         ],
       };

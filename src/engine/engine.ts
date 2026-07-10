@@ -28,9 +28,11 @@ import {
   collectLootBillboards,
   collectMineBillboards,
   collectTeleporterBillboards,
-  findMineAtColumn,
-  findTargetAtColumn,
+  findMineInProjections,
+  findTargetInProjections,
   findTargetUnderCrosshair,
+  projectLivingEnemies,
+  projectVisibleMines,
   type BillboardJob,
 } from "./sprites";
 import {
@@ -1620,6 +1622,13 @@ export class RaycasterEngine {
     const { width, height } = this.ctx.canvas;
     const center = width / 2;
     let pelletsHit = 0;
+    // Project every living enemy/visible mine once for the whole shot instead
+    // of per pellet — a multi-pellet or automatic weapon otherwise multiplies
+    // an O(enemies) projection pass by the pellet count on every trigger
+    // pull, which is what actually tanks frame rate on files with a large
+    // function count (many enemies), not the per-frame render/crosshair pass.
+    const enemyProjections = projectLivingEnemies(this.player, this.enemies, width, height);
+    const mineProjections = projectVisibleMines(this.player, this.map.mines, width, height);
     // Friday Hotfix draws one fanning flame stream for the whole shot instead
     // of a per-pellet tracer line (see `FlameStream`'s doc comment) — tracked
     // across the loop below as the widest spread any pellet actually landed
@@ -1663,7 +1672,7 @@ export class RaycasterEngine {
         this.traces.push(makeBulletTrace(width, height, column, height / 2, weapon.tracerColor));
       }
 
-      const enemy = findTargetAtColumn(this.player, this.enemies, this.zBuffer, width, height, column);
+      const enemy = findTargetInProjections(enemyProjections, this.zBuffer, width, height, column);
       if (enemy?.alive) {
         // Melee only actually connects within its stabbing range, even if the
         // column lines up with something farther away down the same
@@ -1680,7 +1689,7 @@ export class RaycasterEngine {
       }
 
       if (weapon.meleeRange === undefined) {
-        const mine = findMineAtColumn(this.player, this.map.mines, this.zBuffer, width, height, column);
+        const mine = findMineInProjections(mineProjections, this.zBuffer, width, height, column);
         if (mine) {
           if (weapon.maxRange !== undefined) {
             const dist = Math.hypot(mine.x - this.player.posX, mine.y - this.player.posY);
