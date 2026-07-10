@@ -97,7 +97,8 @@ body {
 
 #select-workspace,
 #continue-run,
-#load-github-repo {
+#load-github-repo,
+#launch-demo-campaign {
   width: 100%;
   padding: 10px 12px;
   font: inherit;
@@ -113,15 +114,21 @@ body {
   margin-top: 8px;
 }
 
+#launch-demo-campaign {
+  margin-top: 8px;
+}
+
 #select-workspace:hover:not(:disabled),
 #continue-run:hover:not(:disabled),
-#load-github-repo:hover:not(:disabled) {
+#load-github-repo:hover:not(:disabled),
+#launch-demo-campaign:hover:not(:disabled) {
   filter: brightness(1.12);
 }
 
 #select-workspace:disabled,
 #continue-run:disabled,
-#load-github-repo:disabled {
+#load-github-repo:disabled,
+#launch-demo-campaign:disabled {
   background: var(--border);
   cursor: not-allowed;
 }

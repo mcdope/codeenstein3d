@@ -11,6 +11,7 @@ import {
   type TreeNode,
 } from "./fs/workspace";
 import { fetchGithubTree, parseGithubRepoInput } from "./fs/github";
+import { DEMO_CAMPAIGN_NAME, loadDemoCampaignTree } from "./fs/demoCampaign";
 import { renderFileTree } from "./ui/fileTree";
 import { initConsoleSidebar } from "./ui/consoleSidebar";
 import { extensionOf, isParsable, parseFile } from "./parser/registry";
@@ -69,15 +70,18 @@ const SAVE_KEY = "codeenstein-campaign-save";
 const tabLocal = requireElement<HTMLButtonElement>("#tab-local");
 const tabContinue = requireElement<HTMLButtonElement>("#tab-continue");
 const tabGithub = requireElement<HTMLButtonElement>("#tab-github");
+const tabDemo = requireElement<HTMLButtonElement>("#tab-demo");
 const tabPanelLocal = requireElement<HTMLElement>("#tab-panel-local");
 const tabPanelContinue = requireElement<HTMLElement>("#tab-panel-continue");
 const tabPanelGithub = requireElement<HTMLElement>("#tab-panel-github");
+const tabPanelDemo = requireElement<HTMLElement>("#tab-panel-demo");
 const selectButton = requireElement<HTMLButtonElement>("#select-workspace");
 const continueButton = requireElement<HTMLButtonElement>("#continue-run");
 const githubRepoInput = requireElement<HTMLInputElement>("#github-repo-input");
 const loadGithubRepoButton = requireElement<HTMLButtonElement>("#load-github-repo");
 const githubStatus = requireElement<HTMLParagraphElement>("#github-status");
 const githubSuggestionButtons = document.querySelectorAll<HTMLButtonElement>(".suggestion-btn");
+const launchDemoCampaignButton = requireElement<HTMLButtonElement>("#launch-demo-campaign");
 const workspaceName = requireElement<HTMLParagraphElement>("#workspace-name");
 const fileTree = requireElement<HTMLElement>("#file-tree");
 const viewport = requireElement<HTMLElement>("#viewport");
@@ -99,16 +103,18 @@ const closeHighscoresButton = requireElement<HTMLButtonElement>("#close-highscor
 // stays in index.html so re-enabling is just flipping that flag back.
 if (!EXTREME_GORE_ENABLED) goreSelect.querySelector('option[value="extreme"]')?.remove();
 
-// --- Launch method tabs (Local / Continue / GitHub) -------------------------
-// Select Workspace, Continue Run, and Load from GitHub are three different
-// ways to start the same game loop; grouped into tabs so only one is shown
-// at a time instead of stacking all three permanently in the sidebar.
-type LaunchTab = "local" | "continue" | "github";
+// --- Launch method tabs (Local / Continue / GitHub / Demo level) -----------
+// Select Workspace, Continue Run, Load from GitHub, and the bundled demo
+// campaign are four different ways to start the same game loop; grouped into
+// tabs so only one is shown at a time instead of stacking all four
+// permanently in the sidebar.
+type LaunchTab = "local" | "continue" | "github" | "demo";
 
 const launchTabs: Record<LaunchTab, { button: HTMLButtonElement; panel: HTMLElement }> = {
   local: { button: tabLocal, panel: tabPanelLocal },
   continue: { button: tabContinue, panel: tabPanelContinue },
   github: { button: tabGithub, panel: tabPanelGithub },
+  demo: { button: tabDemo, panel: tabPanelDemo },
 };
 
 function activateLaunchTab(tab: LaunchTab): void {
@@ -311,12 +317,19 @@ let workspaceRootName: string | null = null;
  * `pickWorkspace()` and has no way to re-fetch a remote repo, so saving would
  * just leave a dead "Continue Run" button pointing nowhere. */
 let workspaceIsRemote = false;
+/** True once the active workspace is the bundled demo campaign rather than a
+ * real GitHub repo — `workspaceIsRemote` is also set alongside this (a
+ * bundled tree can't be re-picked locally either, so autosave/"Continue Run"
+ * stay disabled the same way), but a highscore recorded here needs its own
+ * `source: "demo"` rather than being misattributed to GitHub — see
+ * `recordRunHighscore` and `startReplay`. */
+let workspaceIsDemo = false;
 /** True once any Doom-style cheat code (IDDQD/IDKFA/IDCLIP) has been entered
  * during the active campaign — set by the engine's `onCheatActivated`
- * handler, cleared only at the same 3 points `workspaceIsRemote` resets
- * (fresh local pick, GitHub load, Continue Run), never mid-campaign. Gates
- * `recordRunHighscore` so a cheated run can never claim a leaderboard entry
- * (or attach its replay). */
+ * handler, cleared only at the same reset points `workspaceIsRemote` resets
+ * (fresh local pick, GitHub load, demo load, Continue Run), never
+ * mid-campaign. Gates `recordRunHighscore` so a cheated run can never claim a
+ * leaderboard entry (or attach its replay). */
 let cheatsUsed = false;
 /** Most recent stats reported by the running engine, used for the throttled
  * autosave and the `beforeunload` flush. */
@@ -380,6 +393,7 @@ selectButton.addEventListener("click", async () => {
     workspaceTree = tree;
     workspaceRootName = handle.name;
     workspaceIsRemote = false;
+    workspaceIsDemo = false;
     cheatsUsed = false;
     workspaceName.textContent = handle.name;
     campaignLevelIndex = 1; // a fresh pick always starts a new campaign
@@ -423,6 +437,7 @@ async function loadGithubRepoFromInput(): Promise<void> {
     workspaceTree = tree;
     workspaceRootName = `${ref.owner}/${ref.repo}`;
     workspaceIsRemote = true;
+    workspaceIsDemo = false;
     cheatsUsed = false;
     workspaceName.textContent = workspaceRootName;
     campaignLevelIndex = 1; // a fresh load always starts a new campaign
@@ -463,6 +478,46 @@ githubSuggestionButtons.forEach((button) => {
   });
 });
 
+/** Launches the bundled `demo-campaign/` showcase — same shape as
+ * `loadGithubRepoFromInput`, but the tree is built synchronously from the
+ * app's own bundle (`loadDemoCampaignTree`) instead of a network fetch, so
+ * there's no progress callback and nothing to await before it's ready. */
+async function loadDemoCampaign(): Promise<void> {
+  try {
+    launchDemoCampaignButton.disabled = true;
+    workspaceName.textContent = "Reading workspace…";
+    workspaceName.classList.remove("error");
+    showLoadingScreen(`Reading "${DEMO_CAMPAIGN_NAME}"…`);
+
+    const tree = loadDemoCampaignTree();
+    workspaceTree = tree;
+    workspaceRootName = DEMO_CAMPAIGN_NAME;
+    workspaceIsRemote = true;
+    workspaceIsDemo = true;
+    cheatsUsed = false;
+    workspaceName.textContent = workspaceRootName;
+    campaignLevelIndex = 1; // a fresh load always starts a new campaign
+    kickOffCodebaseStats(tree);
+    clearCampaignSave(); // a stale local-workspace save shouldn't dangle a "Continue Run" button while the demo campaign is loaded
+
+    renderFileTree(fileTree, tree, { onSelectFile: handleFileSelected });
+    console.info(`[demo] Loaded "${workspaceRootName}"`, tree);
+    await autoLaunchInitialLevel(tree);
+  } catch (err) {
+    console.error("[demo] Failed to load demo campaign:", err);
+    const message = err instanceof Error ? err.message : "Failed to load demo campaign.";
+    workspaceName.textContent = message;
+    workspaceName.classList.add("error");
+    showFileTreePlaceholder();
+  } finally {
+    launchDemoCampaignButton.disabled = false;
+  }
+}
+
+launchDemoCampaignButton.addEventListener("click", () => {
+  void loadDemoCampaign();
+});
+
 continueButton.addEventListener("click", async () => {
   const save = loadCampaignSave();
   if (!save) return; // button should already be hidden in this case
@@ -479,6 +534,7 @@ continueButton.addEventListener("click", async () => {
     workspaceTree = tree;
     workspaceRootName = handle.name;
     workspaceIsRemote = false;
+    workspaceIsDemo = false;
     cheatsUsed = false;
     workspaceName.textContent = handle.name;
     kickOffCodebaseStats(tree);
@@ -1532,7 +1588,7 @@ async function recordRunHighscore(
       hash,
       achievedAt: Date.now(),
       replay: (await recorder?.finish()) ?? undefined,
-      source: workspaceIsRemote ? "github" : undefined,
+      source: workspaceIsDemo ? "demo" : workspaceIsRemote ? "github" : undefined,
       codebaseLinesOfCode: codebaseStats?.linesOfCode,
       codebaseComplexity: codebaseStats?.complexity,
     });
@@ -1601,6 +1657,11 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
       const ref = parseGithubRepoInput(entry.campaignName);
       if (!ref) return; // campaign name doesn't parse back to a repo ref — nothing sane to fetch
       tree = await fetchGithubTree(ref);
+    } else if (entry.source === "demo") {
+      // Bundled demo campaign — rebuild the same synthetic tree from the
+      // app's own bundle rather than prompting a local folder picker (there's
+      // no real "demo-campaign" directory on disk to pick).
+      tree = loadDemoCampaignTree();
     } else {
       const handle = await pickWorkspace();
       if (!handle) return; // user cancelled the picker

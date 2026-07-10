@@ -12,6 +12,7 @@ Codeenstein 3D runs entirely in your browser. There is no backend server, no acc
   - Individual file contents are fetched lazily — only once a file is actually opened/parsed — from `raw.githubusercontent.com`, GitHub's raw-content CDN.
   - These requests are unauthenticated (no login, no token sent), so they're subject to GitHub's normal public rate limits, and are visible to GitHub the same way any plain `fetch()` to their servers would be (your IP address, standard HTTP headers, and the repo/file path you requested — nothing added by this app on top of a normal browser request).
   - Nothing is ever pushed, written, or reported back to GitHub — these are read-only `GET` requests.
+- **Demos** (the "Demos" tab's bundled showcase campaign) — makes no network request and reads no local files at all. Every level's source text is baked directly into the app's own bundle at build time, so it works fully offline.
 
 No other feature makes any network request. A locally-picked workspace never touches the network at all.
 

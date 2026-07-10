@@ -51,11 +51,13 @@ export interface HighscoreEntry {
    * a cap and was discarded (see `CampaignReplayRecorder.finish`). */
   replay?: ReplayPayload;
   /** Set when this run's workspace was loaded from a GitHub repo (see
-   * `src/fs/github.ts`) rather than picked off local disk — `startReplay`
-   * needs this to know whether to re-fetch `campaignName` as an `owner/repo`
-   * or fall back to `pickWorkspace()`. Undefined (i.e. local) for every entry
-   * recorded before GitHub loading existed, which is the correct default. */
-  source?: "github";
+   * `src/fs/github.ts`) or the bundled demo campaign (see
+   * `src/fs/demoCampaign.ts`) rather than picked off local disk —
+   * `startReplay` needs this to know whether to re-fetch `campaignName` as an
+   * `owner/repo`, rebuild the bundled demo tree, or fall back to
+   * `pickWorkspace()`. Undefined (i.e. local) for every entry recorded before
+   * GitHub/demo loading existed, which is the correct default. */
+  source?: "github" | "demo";
   /** Total `linesOfCode` summed across every parsable file in the whole
    * workspace/repo tree this run was played against — not just the levels
    * the run actually reached (see `computeCodebaseStats` in main.ts).

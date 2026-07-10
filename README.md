@@ -52,7 +52,8 @@ Load anything from a massive Symfony enterprise project to low-level C code like
 ### Loading Options
 - ✅ **Local workspace** — pick any folder on your machine (File System Access API)
 - ✅ **GitHub repos** — type `owner/repo` to load any public repo over the network
-- ✅ **Replay from either source** — re-pick workspace or auto-fetch GitHub repo
+- ✅ **Bundled demo campaign** — a multi-language showcase campaign baked into the app itself, no local files or network needed
+- ✅ **Replay from any source** — re-pick workspace, auto-fetch GitHub repo, or rebuild the bundled demo campaign
 
 ---
 
@@ -244,11 +245,13 @@ npm run preview    # Serve production build locally
 ## Project Structure
 
 ```
+demo-campaign/                # Bundled "Demos" showcase campaign (one level per parser language)
+scripts/                      # Node/Playwright verification scripts for demo-campaign/
 src/
 ├── main.ts                  # App entry: wires sidebar, parser, map, engine, HUD
 ├── difficulty.ts            # Difficulty multiplier tables (Easy/Normal/Hard)
 ├── prng.ts                  # Seeded PRNG (map generation & engine randomness)
-├── fs/                      # File System Access API + GitHub repo loader
+├── fs/                      # File System Access API, GitHub repo loader, and the bundled demo-campaign loader
 ├── ui/                      # Sidebar, console, highscores, overlays (gameHud.ts)
 ├── parser/                  # Language-agnostic AST layer
 │   ├── php/                 # PHP adapter (bespoke)

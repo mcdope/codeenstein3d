@@ -16,6 +16,7 @@
             <button id="tab-local" class="tab-btn" type="button" role="tab" aria-selected="true" aria-controls="tab-panel-local">Local</button>
             <button id="tab-continue" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-continue" style="display: none">Continue</button>
             <button id="tab-github" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-github">GitHub</button>
+            <button id="tab-demo" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-demo">Demos</button>
           </div>
           <div id="tab-panel-local" class="tab-panel" role="tabpanel" aria-labelledby="tab-local">
             <button id="select-workspace" type="button">Select Workspace</button>
@@ -61,6 +62,10 @@
                 title="magento/magento2"
               >Nightmare</button>
             </div>
+          </div>
+          <div id="tab-panel-demo" class="tab-panel" role="tabpanel" aria-labelledby="tab-demo" hidden>
+            <p class="muted">A bundled multi-language showcase campaign — no local files needed.</p>
+            <button id="launch-demo-campaign" type="button">Launch Demo Campaign</button>
           </div>
           <label id="gore-label" for="gore-select" class="muted">Gore</label>
           <select id="gore-select">
@@ -175,8 +180,8 @@
           </div>
 
           <p class="intro-cta">
-            Pick a <strong>Local</strong> workspace, load a <strong>GitHub</strong> repo, or
-            <strong>Continue</strong> a saved run from the sidebar to begin.
+            Pick a <strong>Local</strong> workspace, load a <strong>GitHub</strong> repo, launch the
+            <strong>Demos</strong>, or <strong>Continue</strong> a saved run from the sidebar to begin.
           </p>
         </div>
         <div id="loading-screen" class="loading-screen" hidden>
