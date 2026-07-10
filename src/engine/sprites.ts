@@ -399,6 +399,52 @@ export function findMineAtColumn(
   return findMineInProjections(projectVisibleMines(player, mines, width, height), zBuffer, width, height, screenX);
 }
 
+/** Halo/core/center fill colors for a small glowing orb billboard — the only
+ * thing that differs between an enemy bolt and a player rocket in flight. */
+export interface OrbPalette {
+  halo: string;
+  core: string;
+  center: string;
+}
+
+/**
+ * Collect small glowing orb billboards flying at eye level, wall-occluded via
+ * the z-buffer — the one shared draw routine behind
+ * `collectProjectileBillboards` (enemy bolts) and `collectRocketBillboards`
+ * (player rockets), which differ only in palette. See `BillboardJob`.
+ */
+export function collectOrbBillboards(
+  ctx: CanvasRenderingContext2D,
+  player: Player,
+  points: readonly Point[],
+  zBuffer: Float64Array,
+  palette: OrbPalette,
+): BillboardJob[] {
+  const width = ctx.canvas.width;
+  const height = ctx.canvas.height;
+
+  return points
+    .map((p) => ({ proj: projectPoint(player, p.x, p.y, width, height, 0.3) }))
+    .filter(({ proj }) => proj.depth > 0.1)
+    .map(({ proj }) => ({
+      depth: proj.depth,
+      draw: () => {
+        const col = clamp(Math.round(proj.screenX), 0, width - 1);
+        if (proj.depth >= zBuffer[col]) return; // behind a wall
+
+        const size = Math.max(3, (proj.right - proj.left) * 0.5);
+        const cx = proj.screenX;
+        const cy = height / 2; // orbs fly at eye level
+        ctx.fillStyle = palette.halo;
+        ctx.fillRect(cx - size, cy - size, size * 2, size * 2);
+        ctx.fillStyle = palette.core;
+        ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
+        ctx.fillStyle = palette.center;
+        ctx.fillRect(cx - size / 4, cy - size / 4, size / 2, size / 2);
+      },
+    }));
+}
+
 /**
  * Collect the green exit marker (the `return` statement) as a billboard draw
  * job at the center of its tile, occluded by walls via the z-buffer. Returns

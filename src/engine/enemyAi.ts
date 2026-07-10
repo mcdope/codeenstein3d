@@ -121,9 +121,7 @@ function updateEnemy(
   if (dist <= ATTACK_RADIUS) {
     if (enemy.attackCooldown === 0) {
       enemy.attackCooldown = ATTACK_COOLDOWN;
-      if (enemy.elite) return ATTACK_DAMAGE * ELITE_DAMAGE_MULTIPLIER;
-      if (enemy.edgeCase) return ATTACK_DAMAGE * EDGE_CASE_DAMAGE_MULTIPLIER;
-      return ATTACK_DAMAGE;
+      return ATTACK_DAMAGE * damageMultiplier(enemy);
     }
     return 0;
   }
@@ -134,25 +132,29 @@ function updateEnemy(
     dist <= RANGED_RANGE &&
     hasLineOfSight(map, enemy.x, enemy.y, player.posX, player.posY)
   ) {
-    spawnProjectile(
-      projectiles,
-      enemy.x,
-      enemy.y,
-      player.posX,
-      player.posY,
-      enemy.elite ? ELITE_DAMAGE_MULTIPLIER : enemy.edgeCase ? EDGE_CASE_DAMAGE_MULTIPLIER : 1,
-    );
+    spawnProjectile(projectiles, enemy.x, enemy.y, player.posX, player.posY, damageMultiplier(enemy));
     enemy.fireCooldown = FIRE_COOLDOWN_MIN + rng() * (FIRE_COOLDOWN_MAX - FIRE_COOLDOWN_MIN);
   }
 
   // Home in on the player, steering toward the next cell of a wall-aware path
   // (rounding corners) and falling back to a straight line.
   if (dist > 0) {
-    const step = (enemy.edgeCase ? MOVEMENT_SPEED * EDGE_CASE_SPEED_MULTIPLIER : MOVEMENT_SPEED) * dt;
+    const step = speedFor(MOVEMENT_SPEED, enemy) * dt;
     const waypoint = nextWaypoint(enemy, player, map);
     chaseToward(enemy, waypoint?.x ?? player.posX, waypoint?.y ?? player.posY, step, map);
   }
   return 0;
+}
+
+/** Melee/ranged damage multiplier for `enemy` — the one elite/edgeCase ladder
+ * shared by both attack paths (an Elite hits harder, an Edge Case softer). */
+function damageMultiplier(enemy: Enemy): number {
+  return enemy.elite ? ELITE_DAMAGE_MULTIPLIER : enemy.edgeCase ? EDGE_CASE_DAMAGE_MULTIPLIER : 1;
+}
+
+/** `base` movement speed scaled for an Edge Case enemy's much faster darting. */
+function speedFor(base: number, enemy: Enemy): number {
+  return enemy.edgeCase ? base * EDGE_CASE_SPEED_MULTIPLIER : base;
 }
 
 /** True if a straight line from (x0,y0) to (x1,y1) crosses no wall tile. */
@@ -195,8 +197,7 @@ function roam(enemy: Enemy, map: GameMap, dt: number, rng: () => number): void {
     return;
   }
 
-  const speed = enemy.edgeCase ? ROAM_SPEED * EDGE_CASE_SPEED_MULTIPLIER : ROAM_SPEED;
-  const step = speed * dt;
+  const step = speedFor(ROAM_SPEED, enemy) * dt;
   let heading = Math.atan2(dy, dx);
   if (enemy.edgeCase) heading += (rng() * 2 - 1) * EDGE_CASE_ROAM_JITTER_RAD;
 
@@ -227,16 +228,32 @@ function pickRoamTarget(enemy: Enemy, rng: () => number): void {
   enemy.roamY = Math.floor(y) + 0.5;
 }
 
+/**
+ * Per-axis AABB slide against the wall grid: X first, then Y against the
+ * already-slid X — the identical collision model the player uses. `allow`
+ * optionally vetoes a slid position on top of the wall check (room
+ * confinement for a roaming enemy — see `moveWithinHome`).
+ */
+function slideAxes(
+  x: number,
+  y: number,
+  dx: number,
+  dy: number,
+  map: GameMap,
+  allow: (x: number, y: number) => boolean = () => true,
+): { x: number; y: number } {
+  const nextX = x + dx;
+  if (!collidesWithWall(map, nextX, y, ENEMY_RADIUS) && allow(nextX, y)) x = nextX;
+  const nextY = y + dy;
+  if (!collidesWithWall(map, x, nextY, ENEMY_RADIUS) && allow(x, nextY)) y = nextY;
+  return { x, y };
+}
+
 /** Per-axis slide that also refuses to leave the enemy's home room bounds. */
 function moveWithinHome(enemy: Enemy, dx: number, dy: number, map: GameMap): void {
-  const nextX = enemy.x + dx;
-  if (!collidesWithWall(map, nextX, enemy.y, ENEMY_RADIUS) && withinHome(nextX, enemy.y, enemy.home)) {
-    enemy.x = nextX;
-  }
-  const nextY = enemy.y + dy;
-  if (!collidesWithWall(map, enemy.x, nextY, ENEMY_RADIUS) && withinHome(enemy.x, nextY, enemy.home)) {
-    enemy.y = nextY;
-  }
+  const pos = slideAxes(enemy.x, enemy.y, dx, dy, map, (x, y) => withinHome(x, y, enemy.home));
+  enemy.x = pos.x;
+  enemy.y = pos.y;
 }
 
 /** True if a box of half-width `ENEMY_RADIUS` at (x,y) fits inside the room. */
@@ -352,7 +369,7 @@ function chaseToward(enemy: Enemy, tx: number, ty: number, step: number, map: Ga
 
   for (const offset of STEER_OFFSETS) {
     const angle = desired + offset;
-    const { x, y } = slidePosition(enemy, Math.cos(angle) * step, Math.sin(angle) * step, map);
+    const { x, y } = slideAxes(enemy.x, enemy.y, Math.cos(angle) * step, Math.sin(angle) * step, map);
     if (Math.hypot(x - enemy.x, y - enemy.y) < step * MIN_PROGRESS) continue;
     const d = Math.hypot(tx - x, ty - y);
     if (d < bestDist) {
@@ -369,20 +386,3 @@ function chaseToward(enemy: Enemy, tx: number, ty: number, step: number, map: Ga
   }
 }
 
-/**
- * Per-axis AABB slide against the wall grid, returning the resulting position
- * without mutating the enemy (identical collision model to the player).
- */
-function slidePosition(
-  enemy: Enemy,
-  dx: number,
-  dy: number,
-  map: GameMap,
-): { x: number; y: number } {
-  let { x, y } = enemy;
-  const nextX = x + dx;
-  if (!collidesWithWall(map, nextX, y, ENEMY_RADIUS)) x = nextX;
-  const nextY = y + dy;
-  if (!collidesWithWall(map, x, nextY, ENEMY_RADIUS)) y = nextY;
-  return { x, y };
-}

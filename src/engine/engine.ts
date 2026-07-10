@@ -87,33 +87,15 @@ import {
   GHIDRA_WEAPON_INDEX,
   NUMBER_KEY_WEAPONS,
   STARTING_WEAPONS,
-  TOOLCHAIN_MIN_LEVEL,
-  TOOLCHAIN_WEAPON_INDEX,
   UNLOCKABLE_WEAPONS,
   WEAPONS,
   currentMeleeWeapon,
   pelletOffsets,
-  type AmmoType,
   type Weapon,
 } from "./weapons";
-import {
-  SWAP_DROP_AMOUNT,
-  BULLETS_DROP_AMOUNT,
-  ELITE_BONUS_WEAPON_DROP_CHANCE,
-  ELITE_BULLETS_DROP_AMOUNT,
-  ELITE_GAS_DROP_AMOUNT,
-  ELITE_HEALTH_DROP_AMOUNT,
-  ELITE_ROCKETS_DROP_AMOUNT,
-  ELITE_SMG_DROP_AMOUNT,
-  ELITE_SWAP_DROP_AMOUNT,
-  GAS_DROP_AMOUNT,
-  HEALTH_DROP_AMOUNT,
-  MAX_SWAP,
-  ROCKETS_DROP_AMOUNT,
-  SMG_DROP_AMOUNT,
-  rollBonusWeaponDrop,
-  rollLoot,
-} from "./loot";
+import { MAX_SWAP, rollBonusWeaponDrop, rollLoot } from "./loot";
+import { AMMO_TYPES, startingAmmo, type AmmoPools } from "./ammo";
+import { applyLootDrop, dropEliteLoot, grantOrTopUpWeapon, type LootContext } from "./lootApply";
 import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, ROCKET_BLAST_RADIUS, type Rocket } from "./rockets";
 import { detonateMine, spikeDamage, updateMines, MINE_BLAST_RADIUS } from "./traps";
 import {
@@ -355,18 +337,16 @@ export class RaycasterEngine {
   /** Frames remaining for the toast above — ticked down in `tickEffects()`
    * alongside `flashFrames`/`muzzleFrames`, same frame-counted convention. */
   private cheatToastFrames = 0;
-  private bulletsAmmo: number;
-  private rocketsAmmo: number;
-  private smgAmmo: number;
-  private gasAmmo: number;
+  /** Live ammo reserves, keyed by pool (see `AmmoType`/`ammo.ts`). */
+  private readonly ammo: AmmoPools;
   /** What this level would have started the player out with, regardless of
    * `carryover` — the ammo-bonus baseline `computeScore` scores remaining
    * ammo against (see `./scoring.ts`), so a low-ammo carryover from a
    * previous level doesn't unfairly tank this one's ammo bonus. */
-  private readonly startingBulletsRef: number;
-  private readonly startingRocketsRef: number;
-  private readonly startingSmgRef: number;
-  private readonly startingGasRef: number;
+  private readonly startingAmmoRef: AmmoPools;
+  /** The narrow slice of this engine's state loot application may touch —
+   * built once in the constructor, handed to `lootApply.ts`. */
+  private readonly lootCtx: LootContext;
   /** Index into WEAPONS of the equipped weapon (0 = pistol). */
   private weaponIndex = 0;
   /** Indices into `WEAPONS` the player can currently switch to — everything
@@ -525,16 +505,33 @@ export class RaycasterEngine {
     this.replayRecorder = replayRecorder;
     this.enemies = map.enemies;
     this.zBuffer = new Float64Array(canvas.width);
-    this.bulletsAmmo = carryover?.bullets ?? startingBullets(map.enemies);
-    this.rocketsAmmo = carryover?.rockets ?? startingRockets();
-    this.smgAmmo = carryover?.smg ?? startingSmg();
-    this.gasAmmo = carryover?.gas ?? startingGas();
-    this.startingBulletsRef = startingBullets(map.enemies);
-    this.startingRocketsRef = startingRockets();
-    this.startingSmgRef = startingSmg();
-    this.startingGasRef = startingGas();
+    this.startingAmmoRef = startingAmmo(map.enemies);
+    this.ammo = {
+      bullets: carryover?.bullets ?? this.startingAmmoRef.bullets,
+      rockets: carryover?.rockets ?? this.startingAmmoRef.rockets,
+      smg: carryover?.smg ?? this.startingAmmoRef.smg,
+      gas: carryover?.gas ?? this.startingAmmoRef.gas,
+    };
     this.ownedWeapons = new Set(carryover?.ownedWeapons ?? STARTING_WEAPONS);
     this.campaignLevelIndex = carryover?.campaignLevelIndex ?? 1;
+    this.lootCtx = {
+      ammo: this.ammo,
+      scaledAmount: (base) => this.scaledLootAmount(base),
+      heal: (amount) => {
+        this.health = Math.min(MAX_HEALTH, this.health + amount);
+      },
+      addSwap: (amount) => {
+        this.swap = Math.min(MAX_SWAP, this.swap + amount);
+      },
+      healthAtMax: () => this.health >= MAX_HEALTH,
+      ownedWeapons: this.ownedWeapons,
+      equip: (index) => {
+        this.weaponIndex = index;
+      },
+      pushDrop: (drop) => this.drops.push(drop),
+      rng: this.rng,
+      campaignLevelIndex: this.campaignLevelIndex,
+    };
     this.priorScore = carryover?.priorScore ?? 0;
     this.totalWalkableTiles = countWalkableTiles(map);
     this.goreMultipliers = GORE_MULTIPLIERS[gore];
@@ -1244,7 +1241,7 @@ export class RaycasterEngine {
       const dy = drop.y - this.player.posY;
       if (dx * dx + dy * dy >= r2) continue;
       this.drops.splice(i, 1);
-      this.applyLoot(drop);
+      applyLootDrop(drop, this.lootCtx);
     }
 
     for (const pickup of this.map.ammoPickups) {
@@ -1257,24 +1254,13 @@ export class RaycasterEngine {
       if (pickup.kind === "weapon") {
         // Own message/amount logic (unlock vs. already-owned top-up) — the
         // generic "+N kind found" log below doesn't apply to it.
-        if (pickup.weaponIndex !== undefined) this.grantOrTopUpWeapon(pickup.weaponIndex);
+        if (pickup.weaponIndex !== undefined) grantOrTopUpWeapon(pickup.weaponIndex, this.lootCtx);
         continue;
       }
       const amount = this.scaledLootAmount(pickup.amount);
-      switch (pickup.kind) {
-        case "bullets":
-          this.bulletsAmmo += amount;
-          break;
-        case "rockets":
-          this.rocketsAmmo += amount;
-          break;
-        case "health":
-          this.health = Math.min(MAX_HEALTH, this.health + amount);
-          break;
-        case "swap":
-          this.swap = Math.min(MAX_SWAP, this.swap + amount);
-          break;
-      }
+      if (pickup.kind === "health") this.health = Math.min(MAX_HEALTH, this.health + amount);
+      else if (pickup.kind === "swap") this.swap = Math.min(MAX_SWAP, this.swap + amount);
+      else this.ammo[pickup.kind] += amount;
       console.log(`%c[pickup] +${amount} ${pickup.kind} found`, "color:#3fd0e0");
     }
   }
@@ -1284,90 +1270,6 @@ export class RaycasterEngine {
    * down on Hard can never zero out a pickup entirely. */
   private scaledLootAmount(baseAmount: number): number {
     return Math.max(1, Math.round(baseAmount * this.difficultyMultipliers.ammoDropRate));
-  }
-
-  /** Apply one dynamic loot drop's effect and log it. */
-  private applyLoot(drop: LootDrop): void {
-    audio.playPickup();
-    switch (drop.kind) {
-      case "bullets": {
-        const amount = this.scaledLootAmount(drop.amount ?? BULLETS_DROP_AMOUNT);
-        this.bulletsAmmo += amount;
-        console.log(`%c[loot] +${amount} bullets`, "color:#3fd0e0");
-        break;
-      }
-      case "rockets": {
-        const amount = this.scaledLootAmount(drop.amount ?? ROCKETS_DROP_AMOUNT);
-        this.rocketsAmmo += amount;
-        console.log(`%c[loot] +${amount} rockets`, "color:#ff9d3f");
-        break;
-      }
-      case "smg": {
-        const amount = this.scaledLootAmount(drop.amount ?? SMG_DROP_AMOUNT);
-        this.smgAmmo += amount;
-        console.log(`%c[loot] +${amount} smg ammo`, "color:#3fa9ff");
-        break;
-      }
-      case "gas": {
-        const amount = this.scaledLootAmount(drop.amount ?? GAS_DROP_AMOUNT);
-        this.gasAmmo += amount;
-        console.log(`%c[loot] +${amount} gas`, "color:#ff5a1a");
-        break;
-      }
-      case "health": {
-        const amount = this.scaledLootAmount(drop.amount ?? HEALTH_DROP_AMOUNT);
-        this.health = Math.min(MAX_HEALTH, this.health + amount);
-        console.log(`%c[loot] +${amount} stability`, "color:#4cff6a");
-        break;
-      }
-      case "swap": {
-        const amount = this.scaledLootAmount(drop.amount ?? SWAP_DROP_AMOUNT);
-        this.swap = Math.min(MAX_SWAP, this.swap + amount);
-        console.log(`%c[loot] +${amount} swap`, "color:#4a7fff");
-        break;
-      }
-      case "weapon":
-        if (drop.weaponIndex !== undefined) this.grantOrTopUpWeapon(drop.weaponIndex);
-        break;
-    }
-  }
-
-  /**
-   * Grant a still-unowned weapon, switching to it immediately — or, if it's
-   * already owned by the time this is collected (e.g. a duplicate roll from
-   * another Elite kill or secret room), an elite-sized top-up of whatever
-   * ammo pool it uses instead, so the pickup/drop is never just wasted.
-   * Shared by `applyLoot`'s `"weapon"` `LootDrop` case and `collectLoot`'s
-   * `"weapon"` static `AmmoPickup` case.
-   */
-  private grantOrTopUpWeapon(weaponIndex: number): void {
-    const weapon = WEAPONS[weaponIndex];
-    if (this.ownedWeapons.has(weaponIndex)) {
-      if (weapon.ammoType === "rockets") {
-        const amount = this.scaledLootAmount(ELITE_ROCKETS_DROP_AMOUNT);
-        this.rocketsAmmo += amount;
-        console.log(`%c[loot] +${amount} rockets (${weapon.name} already owned)`, "color:#ff9d3f");
-      } else if (weapon.ammoType === "smg") {
-        const amount = this.scaledLootAmount(ELITE_SMG_DROP_AMOUNT);
-        this.smgAmmo += amount;
-        console.log(`%c[loot] +${amount} smg ammo (${weapon.name} already owned)`, "color:#3fa9ff");
-      } else if (weapon.ammoType === "gas") {
-        const amount = this.scaledLootAmount(ELITE_GAS_DROP_AMOUNT);
-        this.gasAmmo += amount;
-        console.log(`%c[loot] +${amount} gas (${weapon.name} already owned)`, "color:#ff5a1a");
-      } else if (weapon.ammoType === "bullets") {
-        const amount = this.scaledLootAmount(ELITE_BULLETS_DROP_AMOUNT);
-        this.bulletsAmmo += amount;
-        console.log(`%c[loot] +${amount} bullets (${weapon.name} already owned)`, "color:#3fd0e0");
-      }
-    } else {
-      this.ownedWeapons.add(weaponIndex);
-      // A melee grant (Toolchain) must never stomp `weaponIndex` — that's the
-      // *ranged* slot, and melee is never wielded through it (see
-      // `currentMeleeWeapon`, which picks it up from `ownedWeapons` instead).
-      if (weapon.meleeRange === undefined) this.weaponIndex = weaponIndex;
-      console.log(`%c[loot] unlocked ${weapon.name}!`, "color:#e06aff;font-weight:bold");
-    }
   }
 
   /**
@@ -1487,10 +1389,7 @@ export class RaycasterEngine {
         break;
       case "IDKFA":
         for (let i = 0; i < WEAPONS.length; i++) this.ownedWeapons.add(i);
-        this.bulletsAmmo = CHEAT_MAX_AMMO;
-        this.rocketsAmmo = CHEAT_MAX_AMMO;
-        this.smgAmmo = CHEAT_MAX_AMMO;
-        this.gasAmmo = CHEAT_MAX_AMMO;
+        for (const type of AMMO_TYPES) this.ammo[type] = CHEAT_MAX_AMMO;
         this.swap = MAX_SWAP;
         this.showCheatToast("IDKFA — Full arsenal");
         break;
@@ -1554,14 +1453,6 @@ export class RaycasterEngine {
    * (Left-Ctrl) is a separate, always-available action handled in `advance()`
    * — it never goes through this cooldown/auto-fire gating at all.
    */
-  /** Current reserve of `type`'s ammo pool. */
-  private ammoPool(type: AmmoType): number {
-    if (type === "bullets") return this.bulletsAmmo;
-    if (type === "rockets") return this.rocketsAmmo;
-    if (type === "smg") return this.smgAmmo;
-    return this.gasAmmo;
-  }
-
   private updateFiring(dt: number): void {
     if (this.weaponCooldown > 0) this.weaponCooldown = Math.max(0, this.weaponCooldown - dt);
     const weapon = WEAPONS[this.weaponIndex];
@@ -1592,15 +1483,11 @@ export class RaycasterEngine {
    */
   private fire(weapon: Weapon = WEAPONS[this.weaponIndex]): void {
     if (weapon.ammoType) {
-      const have = this.ammoPool(weapon.ammoType);
-      if (have < weapon.ammoPerShot) {
+      if (this.ammo[weapon.ammoType] < weapon.ammoPerShot) {
         console.log(`[${weapon.name}] out of ${weapon.ammoType} — need ${weapon.ammoPerShot}`);
         return;
       }
-      if (weapon.ammoType === "bullets") this.bulletsAmmo -= weapon.ammoPerShot;
-      else if (weapon.ammoType === "rockets") this.rocketsAmmo -= weapon.ammoPerShot;
-      else if (weapon.ammoType === "smg") this.smgAmmo -= weapon.ammoPerShot;
-      else this.gasAmmo -= weapon.ammoPerShot;
+      this.ammo[weapon.ammoType] -= weapon.ammoPerShot;
     }
 
     audio.playShoot(weapon.viewKind);
@@ -1751,7 +1638,7 @@ export class RaycasterEngine {
     if (this.target === enemy) this.target = null;
     if (lifesteal) this.health = Math.min(MAX_HEALTH, this.health + lifesteal);
 
-    if (enemy.elite) this.dropEliteLoot(enemy);
+    if (enemy.elite) dropEliteLoot(enemy, this.lootCtx);
     else {
       this.drops.push({
         x: enemy.x,
@@ -1782,39 +1669,6 @@ export class RaycasterEngine {
   }
 
   /**
-   * An Elite's death always leaves something worth the fight: a large
-   * stability pack, or (if that would be wasted at full health) an
-   * elite-sized ammo/swap drop instead — always rolled, never skipped. On
-   * top of that guaranteed drop, a still-unowned heavier weapon (see
-   * `UNLOCKABLE_WEAPONS`) has its own independent `ELITE_BONUS_WEAPON_DROP_CHANCE`
-   * (60%) odds of dropping as a *second*, separate pickup — so most Elites
-   * leave two items behind once a weapon's still missing, not a choice
-   * between them. Toolchain rides this same 60% roll once
-   * `campaignLevelIndex` reaches `TOOLCHAIN_MIN_LEVEL` — it's deliberately
-   * not in `UNLOCKABLE_WEAPONS` itself (see that constant's doc comment), so
-   * it's added to the candidate list here instead of flowing through
-   * automatically.
-   */
-  private dropEliteLoot(enemy: Enemy): void {
-    if (this.health >= MAX_HEALTH) {
-      const kind = this.rng() < 0.5 ? "bullets" : "swap";
-      const amount = kind === "bullets" ? ELITE_BULLETS_DROP_AMOUNT : ELITE_SWAP_DROP_AMOUNT;
-      this.drops.push({ x: enemy.x, y: enemy.y, kind, amount });
-    } else {
-      this.drops.push({ x: enemy.x, y: enemy.y, kind: "health", amount: ELITE_HEALTH_DROP_AMOUNT });
-    }
-
-    const missing = UNLOCKABLE_WEAPONS.filter((i) => !this.ownedWeapons.has(i));
-    if (this.campaignLevelIndex >= TOOLCHAIN_MIN_LEVEL && !this.ownedWeapons.has(TOOLCHAIN_WEAPON_INDEX)) {
-      missing.push(TOOLCHAIN_WEAPON_INDEX);
-    }
-    const bonusWeaponIndex = rollBonusWeaponDrop(missing, this.rng, ELITE_BONUS_WEAPON_DROP_CHANCE);
-    if (bonusWeaponIndex !== undefined) {
-      this.drops.push({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: bonusWeaponIndex });
-    }
-  }
-
-  /**
    * Flip to the end state — just the state, nothing else. `checkExit()`/
    * `damage()` (which calls this) run early in `advance()`, well before that
    * frame's rendering; actually stopping the loop and firing the
@@ -1837,14 +1691,14 @@ export class RaycasterEngine {
         killPoints: this.killScore,
         finalHealth: this.health,
         maxHealth: MAX_HEALTH,
-        finalBullets: this.bulletsAmmo,
-        finalRockets: this.rocketsAmmo,
-        finalSmg: this.smgAmmo,
-        finalGas: this.gasAmmo,
-        startingBullets: this.startingBulletsRef,
-        startingRockets: this.startingRocketsRef,
-        startingSmg: this.startingSmgRef,
-        startingGas: this.startingGasRef,
+        finalBullets: this.ammo.bullets,
+        finalRockets: this.ammo.rockets,
+        finalSmg: this.ammo.smg,
+        finalGas: this.ammo.gas,
+        startingBullets: this.startingAmmoRef.bullets,
+        startingRockets: this.startingAmmoRef.rockets,
+        startingSmg: this.startingAmmoRef.smg,
+        startingGas: this.startingAmmoRef.gas,
         levelTimeSec: this.levelTime,
         distanceTraveledTiles: this.distanceTraveled,
         shortestPathTiles: this.map.shortestPathTiles,
@@ -1857,10 +1711,10 @@ export class RaycasterEngine {
       health: Math.ceil(this.health),
       maxHealth: MAX_HEALTH,
       swap: Math.ceil(this.swap),
-      bullets: this.bulletsAmmo,
-      rockets: this.rocketsAmmo,
-      smg: this.smgAmmo,
-      gas: this.gasAmmo,
+      bullets: this.ammo.bullets,
+      rockets: this.ammo.rockets,
+      smg: this.ammo.smg,
+      gas: this.ammo.gas,
       keysHeld: this.keysHeld,
       keysTotal: this.map.keys.length,
       score,
@@ -1914,58 +1768,3 @@ function countWalkableTiles(map: GameMap): number {
   return Math.max(1, count);
 }
 
-/**
- * Give the player enough bullets to clear the level with the pistol, plus a
- * generous margin, so the fight itself never grinds to a halt for lack of
- * ammo — but scattered ammo pickups are still meant to matter across a real
- * playthrough (missed shots, backtracking, mixing in the heavier shotgun),
- * not just be a nice-to-have. Scales with both total enemy HP (`shotsToClear`,
- * the theoretical perfect-accuracy cost) and raw enemy count (`missBuffer`,
- * covering the missed shots/repositioning a pack of separate encounters
- * costs that a flat HP-total multiplier alone wouldn't capture). The shotgun
- * (and MP) trade bullet efficiency for burst/rate-of-fire, so this
- * undercounts their cost.
- */
-function startingBullets(enemies: Enemy[]): number {
-  const pistolDamage = WEAPONS[0].damagePerPellet;
-  const shotsToClear = enemies.reduce(
-    (n, e) => n + Math.ceil(e.maxHp / pistolDamage),
-    0,
-  );
-  const missBuffer = enemies.length * 2.5;
-  return Math.max(28, Math.round(shotsToClear * 1.7 + missBuffer) + 10);
-}
-
-/**
- * A modest flat reserve of rockets — not scaled to the level like
- * `startingBullets`, since ghidra itself has to be earned from
- * an Elite kill first; most levels' rockets go unused until it's unlocked, at
- * which point they (and any since scavenged) carry over via `EngineCarryover`.
- */
-const STARTING_ROCKETS = 4;
-
-function startingRockets(): number {
-  return STARTING_ROCKETS;
-}
-
-/**
- * A modest flat reserve of smg ammo — same "not scaled to the level" shape as
- * `startingRockets`, since gdb itself has to be earned first (an Elite kill,
- * or the level-4 forced-unlock safety net). A bit more than one regular
- * `SMG_DROP_AMOUNT` pickup, so the weapon feels usable right away once it's
- * actually unlocked rather than emptying in a couple of bursts.
- */
-const STARTING_SMG_AMMO = 40;
-
-function startingSmg(): number {
-  return STARTING_SMG_AMMO;
-}
-
-/** A modest flat reserve of gas ammo — same "not scaled to the level" shape
- * as `startingRockets`/`startingSmg`, since Friday Hotfix itself has to be
- * earned first (an Elite kill, or the level-12 forced-unlock safety net). */
-const STARTING_GAS_AMMO = 40;
-
-function startingGas(): number {
-  return STARTING_GAS_AMMO;
-}

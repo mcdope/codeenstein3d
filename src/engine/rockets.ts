@@ -12,7 +12,7 @@
  * the player rather than hitting just one target.
  */
 import { isWall, type Player } from "./player";
-import { projectPoint, type BillboardJob } from "./sprites";
+import { collectOrbBillboards, type BillboardJob } from "./sprites";
 import type { Enemy, GameMap } from "../map/types";
 
 /** Rocket travel speed, in tiles per second — much slower than a hitscan
@@ -110,38 +110,17 @@ export function rocketDamageAt(explosion: RocketExplosion, tx: number, ty: numbe
 }
 
 /** Collect in-flight rockets as small glowing orange billboard draw jobs,
- * wall-occluded like every other world sprite. See `BillboardJob`. */
+ * wall-occluded like every other world sprite. See `collectOrbBillboards` in
+ * `sprites.ts`. */
 export function collectRocketBillboards(
   ctx: CanvasRenderingContext2D,
   player: Player,
   list: Rocket[],
   zBuffer: Float64Array,
 ): BillboardJob[] {
-  const width = ctx.canvas.width;
-  const height = ctx.canvas.height;
-
-  return list
-    .map((r) => ({ proj: projectPoint(player, r.x, r.y, width, height, 0.3) }))
-    .filter(({ proj }) => proj.depth > 0.1)
-    .map(({ proj }) => ({
-      depth: proj.depth,
-      draw: () => {
-        const col = clamp(Math.round(proj.screenX), 0, width - 1);
-        if (proj.depth >= zBuffer[col]) return; // behind a wall
-
-        const size = Math.max(3, (proj.right - proj.left) * 0.5);
-        const cx = proj.screenX;
-        const cy = height / 2; // fired dead level, same as an enemy bolt
-        ctx.fillStyle = "rgba(255,140,40,0.35)";
-        ctx.fillRect(cx - size, cy - size, size * 2, size * 2);
-        ctx.fillStyle = "#ff6a2a";
-        ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
-        ctx.fillStyle = "#ffd9a0";
-        ctx.fillRect(cx - size / 4, cy - size / 4, size / 2, size / 2);
-      },
-    }));
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
+  return collectOrbBillboards(ctx, player, list, zBuffer, {
+    halo: "rgba(255,140,40,0.35)",
+    core: "#ff6a2a",
+    center: "#ffd9a0",
+  });
 }
