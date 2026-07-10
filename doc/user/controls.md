@@ -19,7 +19,7 @@
 | `Space` / mouse click | Fire the active weapon |
 | `1`–`9` | Switch directly to a weapon slot |
 | Mousewheel | Cycle through owned weapons |
-| `Left Ctrl` | Quick-melee (SIGKILL Knife) — swings instantly regardless of what's equipped |
+| `Left Ctrl` | Quick-melee — swings the SIGKILL Knife instantly regardless of what's equipped; once you find the Toolchain chainsaw it permanently takes over this key instead, revving continuously while held |
 
 ## Interaction & Navigation
 

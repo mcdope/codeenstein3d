@@ -146,3 +146,4 @@
 - [ ] walkable stairs to get some height differences in the levels? kinda adding a height / elevation element.
 - [ ] ship default highscores for suggested repos and own repos
 - [ ] wave system in exit/return rooms?
+- [ ] limit engine to 60fps, no point in running faster

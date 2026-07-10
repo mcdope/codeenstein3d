@@ -8,7 +8,7 @@ The bottom status bar shows:
 
 - **System Stability** — your health, as a bar and percentage
 - **Swap** — your armor-like buffer, absorbs damage 1:1 before health, capped at 100
-- **Ammo** — the current weapon's ammo count (or ∞ for the melee knife)
+- **Ammo** — the current weapon's ammo count (or ∞ for a melee weapon — the knife, or Toolchain once it replaces it)
 - **Keys** — how many of the level's keys you're holding, out of the total
 - **Score** — your running total, updated live
 

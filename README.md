@@ -20,7 +20,7 @@ Load anything from a massive Symfony enterprise project to low-level C code like
 ### Core Gameplay
 - ✅ **Multi-language support** — PHP, C/C++, JavaScript/TypeScript, Python, Java, Go, Rust, Ruby, C#, Bash, Scala, Objective-C
 - ✅ **Smart entrypoint detection** — finds `main`, highest complexity, or any parsable file
-- ✅ **Full arsenal** — pistol, shotgun, machine gun, rocket launcher, flamethrower, and a melee knife
+- ✅ **Full arsenal** — pistol, shotgun, machine gun, rocket launcher, flamethrower, and two melee weapons (a knife, later replaced by an unlockable chainsaw)
 - ✅ **Procedural maps** — rooms, corridors with jogs, pillars, secret rooms, traps, teleporters
 - ✅ **Advanced enemy AI** — roaming, chasing, melee, ranged attacks (packed or elite bosses)
 - ✅ **Multi-level campaigns** — chain together all parsable files; save & continue progress
@@ -47,7 +47,7 @@ Load anything from a massive Symfony enterprise project to low-level C code like
 - ✅ **Lore terminals** — large code comments appear as glowing walls (press R to read)
 - ✅ **Secret rooms** — dead code, swallowed exceptions, deprecated tags, commented-out code, and magic-number/blob literals hidden behind fake walls  
 - ✅ **Timed spike traps & proximity mines** — corridor hazards at choke points
-- ✅ **Code smells** — functions with 5+ params or 3+ nesting levels get tougher
+- ✅ **Code smells** — functions with more than 5 params or more than 3 nesting levels get tougher
 
 ### Loading Options
 - ✅ **Local workspace** — pick any folder on your machine (File System Access API)
@@ -77,7 +77,7 @@ Each stage only consumes the data structure from the previous stage — language
 ### Level Generation
 - **Functions → Enemies** whose HP equals `cyclomatic_complexity × 25`
   - High complexity = more health, pack spawns, or a single elite boss (4× HP, gold tint, 2× damage)
-  - Functions with code smells (5+ params, 3+ nesting levels) get scaled bonus complexity
+  - Functions with code smells (more than 5 params, more than 3 nesting levels) get scaled bonus complexity
   
 - **Global variables → Acid pools** (hazard terrain)
   
@@ -99,11 +99,11 @@ Each stage only consumes the data structure from the previous stage — language
 - **Elite variants** do everything harder (gold-tinted, 2× damage)
 
 ### Player Combat
-- **6 weapons** — echo pistol (hitscan), shotgun (pellet cone), gdb (auto, low damage), ghidra (slow rocket, splash damage), Friday Hotfix (auto flamethrower, short hard max range), SIGKILL Knife (instant melee, infinite ammo)
+- **7 weapons** — echo pistol (hitscan), shotgun (pellet cone), gdb (auto, low damage), ghidra (slow rocket, splash damage), Friday Hotfix (auto flamethrower, short hard max range), SIGKILL Knife (instant melee, infinite ammo), Toolchain (unlockable full-auto chainsaw that permanently replaces the knife)
 - **Ammo pools** — Bullets (pistol/shotgun), SMG (gdb), Rockets (ghidra), and Gas (Friday Hotfix), with sparse map pickups as a bullets/rockets backup; gdb/ghidra/Friday Hotfix's own pools only drop/spawn once each weapon is unlocked
 - **Swap buffer** — absorbs damage 1:1 before health, capped at 100
 - **No wasted health drops** — a kill never drops a health pack while you're at full health (elites included); it rolls ammo/swap instead
-- **Quick-melee** — Left-Ctrl for instant knife swing (heals sliver on kill, never switches weapon)
+- **Quick-melee** — Left-Ctrl for an instant knife swing (heals sliver on kill, never switches weapon); once Toolchain is found it permanently takes over Left-Ctrl instead, revving continuously (infinite ammo) for as long as the button's held
 - **Ranged accuracy** — pellets deviate cubically with distance (medium range reliable, far range spreads)
 
 ### Scoring
@@ -158,7 +158,7 @@ npm run preview    # Serve production build locally
 - **1 / 2** — Switch to pistol/shotgun
 - **3 / 4 / 5** — Switch to gdb/ghidra/Friday Hotfix (once unlocked)
 - **Mousewheel** — Cycle through owned weapons
-- **Left-Ctrl** — Quick-melee (SIGKILL Knife, infinite ammo, heals on kill)
+- **Left-Ctrl** — Quick-melee (SIGKILL Knife, infinite ammo, heals on kill — permanently replaced by the Toolchain chainsaw once found)
 
 ### Interaction & Navigation
 - **R** — Read nearby lore terminal (hold W/S to scroll) OR open fake wall to reveal secret
@@ -173,7 +173,7 @@ npm run preview    # Serve production build locally
 - **RT/R2** — Fire
 - **LB/RB** — Cycle weapons
 - **R3 or B** — Quick-melee
-- **Any button** — Dismiss level-start/commit-summary overlays (after ~1.5s lock)
+- **Any button** — Dismiss level-start/commit-summary overlays (after ~1.2s lock)
 
 ### UI Controls
 - **Compass** — Circular badge (bottom-right of minimap), points toward exit relative to your facing
@@ -209,6 +209,14 @@ npm run preview    # Serve production build locally
 | 31–33 | Weapon tuning, gamepad, canvas scaling | ✅ |
 | 34–35 | Compass redesign, seeded PRNG, replay | ✅ |
 | 36–39 | Multi-level replay, GitHub repos, TODO/FIXME | ✅ |
+| 40–42 | Test-audio silencing, shebang/no-extension files, license-header lore exclusion | ✅ |
+| 43–48 | Highscore/scoring fixes, codebase-stats hash, Armor→Swap rename | ✅ |
+| 49–54 | Continue-run fix, full-health drop gating, mine spawn safety, intro screen, control panel redesign | ✅ |
+| 55–59 | Loading indicator, weapon hotkey reorder, gdb's own ammo pool, build timestamp, canvas fill | ✅ |
+| 60–66 | ghidra damage buff, rocket impact VFX, minimap shrink, sidebar license footer, highscore hash fix, broader/bonus-scoring secret rooms | ✅ |
+| 67–70 | Friday Hotfix flamethrower, canvas-blur pause fix, cheat-sequence input guard | ✅ |
+| 71–73 | Wall-edge antialiasing, corridor Edge Case enemies, compass flag removal | ✅ |
+| 74–78 | Bonus/Elite weapon drops, bundled Demo Campaign + Demos tab, Toolchain chainsaw | ✅ |
 | — | Room decorations | ⏸️ Implemented, disabled (playtest feedback) |
 
 ---
@@ -263,15 +271,20 @@ src/
     ├── raycaster.ts         # DDA wall renderer + fog
     ├── player.ts            # Camera, movement, collision
     ├── sprites.ts           # Enemy/key/teleporter billboards
+    ├── effects.ts           # Bullet tracers, flame streams, blood, explosions
     ├── enemyAi.ts           # AI behavior (roam/chase/melee/ranged)
-    ├── projectiles.ts       # Enemy bolts & player rockets
+    ├── projectiles.ts       # Enemy bolts
+    ├── rockets.ts           # Player rocket projectiles & splash damage
     ├── traps.ts             # Spike traps & proximity mines
     ├── weapons.ts           # Weapon stats, tracers, spread
+    ├── viewmodel.ts         # First-person weapon sprite (Canvas 2D)
     ├── loot.ts              # Weighted random drops
     ├── scoring.ts           # Score calculation
     ├── highscores.ts        # Leaderboard (hashing, compression)
+    ├── storageCompression.ts # gzip helpers for localStorage payloads
     ├── replay.ts            # Recording & playback
     ├── audio.ts             # Web Audio synthesis + buses
+    ├── bgm.ts               # Custom background-music playback
     ├── hud.ts               # Status bar, crosshair, compass
     ├── automap.ts           # Fog-of-war overlay
     └── input.ts             # Keyboard, mouse, gamepad

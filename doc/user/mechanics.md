@@ -11,7 +11,7 @@ Codeenstein 3D parses your source into an AST and turns its structure into a pla
 | Folder | A level |
 | File | A room (or set of rooms) |
 | Function | An enemy — HP scales with its cyclomatic complexity |
-| Function with 5+ params or 3+ nesting levels | A tougher enemy (a "code smell" bonus on top of complexity) |
+| Function with more than 5 params or more than 3 nesting levels | A tougher enemy (a "code smell" bonus on top of complexity) |
 | Function at extreme complexity (≥40) | A single **Elite** enemy instead of a pack — 4× HP, 2× damage, gold-tinted, 60% chance of an extra weapon drop |
 | Global variable | An acid pool (hazard terrain) |
 | Private/protected method | A locked room, gated behind a key placed somewhere already reachable |
