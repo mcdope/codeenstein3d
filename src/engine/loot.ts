@@ -125,3 +125,29 @@ export const ELITE_GAS_DROP_AMOUNT = 80;
 export const ELITE_SWAP_DROP_AMOUNT = 30;
 /** Maximum swap the player can stockpile. */
 export const MAX_SWAP = 100;
+
+/** Very small chance for a regular (non-elite) enemy kill to also drop a
+ * still-unlocked heavier weapon, stacked on top of its usual `rollLoot` drop
+ * rather than replacing it. Elites already guarantee this outright at 50%
+ * odds (see `RaycasterEngine.dropEliteLoot`) — this is a rare bonus so
+ * players aren't strictly locked into hunting elites/secret rooms for an
+ * unlock, not a primary drop path. */
+export const NORMAL_KILL_WEAPON_DROP_CHANCE = 0.01;
+
+/**
+ * Roll whether a regular kill's already-rolled loot should be topped with a
+ * bonus unlockable-weapon drop. Returns the weapon index to drop, or
+ * `undefined` if there's nothing left to unlock or the roll missed. Only
+ * draws a second `rng()` value (to pick *which* missing weapon) once the
+ * odds roll actually hits — same "roll odds, then pick which one" order as
+ * `RaycasterEngine.dropEliteLoot`'s guaranteed-drop roll, so a run with
+ * every weapon already owned never spends an extra rng() draw on a kill.
+ */
+export function rollBonusWeaponDrop(
+  missingWeaponIndices: readonly number[],
+  rng: () => number = Math.random,
+): number | undefined {
+  if (missingWeaponIndices.length === 0) return undefined;
+  if (rng() >= NORMAL_KILL_WEAPON_DROP_CHANCE) return undefined;
+  return missingWeaponIndices[Math.floor(rng() * missingWeaponIndices.length)];
+}

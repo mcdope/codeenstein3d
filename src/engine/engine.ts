@@ -106,6 +106,7 @@ import {
   MAX_SWAP,
   ROCKETS_DROP_AMOUNT,
   SMG_DROP_AMOUNT,
+  rollBonusWeaponDrop,
   rollLoot,
 } from "./loot";
 import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, ROCKET_BLAST_RADIUS, type Rocket } from "./rockets";
@@ -1669,7 +1670,7 @@ export class RaycasterEngine {
     if (lifesteal) this.health = Math.min(MAX_HEALTH, this.health + lifesteal);
 
     if (enemy.elite) this.dropEliteLoot(enemy);
-    else
+    else {
       this.drops.push({
         x: enemy.x,
         y: enemy.y,
@@ -1683,6 +1684,12 @@ export class RaycasterEngine {
           this.ownedWeapons.has(FRIDAY_HOTFIX_WEAPON_INDEX),
         ),
       });
+      const missing = UNLOCKABLE_WEAPONS.filter((i) => !this.ownedWeapons.has(i));
+      const bonusWeaponIndex = rollBonusWeaponDrop(missing, this.rng);
+      if (bonusWeaponIndex !== undefined) {
+        this.drops.push({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: bonusWeaponIndex });
+      }
+    }
     audio.playAmmoDrop();
 
     const remaining = this.enemies.reduce((n, e) => n + (e.alive ? 1 : 0), 0);

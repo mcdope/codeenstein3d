@@ -32,9 +32,9 @@ A long, straight corridor gets broken up rather than left as one uninterrupted s
 | echo pistol | 1 | Hitscan | Starting weapon |
 | Regex Shotgun | 2 | 7-pellet cone | Starting weapon |
 | SIGKILL Knife | `Left Ctrl` only | Melee | Starting weapon, infinite ammo, heals 1 HP per kill, not on the number row |
-| gdb | 3 | Full-auto hitscan | Unlocked by an Elite kill's guaranteed drop, or forced at campaign level 4 |
-| ghidra | 4 | Rocket / splash damage | Unlocked by an Elite kill's guaranteed drop, or forced at campaign level 8 |
-| Friday Hotfix | 5 | Full-auto 6-pellet cone, 3.5-tile max range | Unlocked by an Elite kill's guaranteed drop, or forced at campaign level 12 |
+| gdb | 3 | Full-auto hitscan | Unlocked by an Elite kill's guaranteed drop, a rare drop from any kill, or forced at campaign level 4 |
+| ghidra | 4 | Rocket / splash damage | Unlocked by an Elite kill's guaranteed drop, a rare drop from any kill, or forced at campaign level 8 |
+| Friday Hotfix | 5 | Full-auto 6-pellet cone, 3.5-tile max range | Unlocked by an Elite kill's guaranteed drop, a rare drop from any kill, or forced at campaign level 12 |
 
 Ranged weapons draw from four separate ammo pools: **Bullets** (pistol/shotgun), **SMG Ammo** (gdb only), **Rockets** (ghidra only), and **Gas** (Friday Hotfix only). SMG/rocket/gas ammo won't drop or spawn on the map at all until you actually own the matching weapon. Hitscan pellets deviate more the further away the target is, so point-blank shots are reliable and very long-range ones can miss. Friday Hotfix additionally enforces a hard 3.5-tile max range on top of that — a genuine flamethrower's reach, not just a wide cone that happens to scatter — and fires a fanning flame stream instead of the thin tracer line every other gun draws.
 
@@ -44,6 +44,7 @@ Enemy kills roll a random drop: bullets, SMG ammo, rockets, gas, health, or swap
 - No health drop is ever rolled while you're already at full health (loot goes to ammo/swap instead).
 - No SMG ammo is rolled until you own gdb; no rockets are rolled until you own ghidra; no gas is rolled until you own Friday Hotfix.
 - Elite kills guarantee either a large health pack or (if you're already full) a bigger bullets/swap drop, on top of their guaranteed weapon.
+- Any regular kill has a very small (1%) chance to also drop a still-unlocked weapon, stacked on top of its normal roll — a rare bonus, not a reliable unlock path.
 
 ### Difficulty
 
