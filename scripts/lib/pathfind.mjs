@@ -71,3 +71,37 @@ export function bfsPath(map, start, target, avoidTiles = new Set()) {
 export function pathToWaypoints(path) {
   return path.map((p) => ({ x: p.x + 0.5, y: p.y + 0.5 }));
 }
+
+/** Every tile reachable via 4-directional BFS from `start`, subject to the
+ * same blocked/avoid rules as `bfsPath` (see its doc comment) — used by
+ * `routePlanner.mjs` to find a reachable key or a locked door bordering the
+ * currently-reachable region when no direct path to the real target exists
+ * yet. Returns a `Set` of `"x,y"` tile-coordinate strings. */
+export function reachableTiles(map, start, avoidTiles = new Set()) {
+  const { width, height, grid } = map;
+  const key = (x, y) => `${x},${y}`;
+  const visited = new Set([key(start.x, start.y)]);
+  const queue = [start];
+  let head = 0;
+
+  while (head < queue.length) {
+    const cur = queue[head++];
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ]) {
+      const nx = cur.x + dx;
+      const ny = cur.y + dy;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      const tile = grid[ny][nx];
+      if (BLOCKED_TILES.has(tile) || avoidTiles.has(tile)) continue;
+      const nk = key(nx, ny);
+      if (visited.has(nk)) continue;
+      visited.add(nk);
+      queue.push({ x: nx, y: ny });
+    }
+  }
+  return visited;
+}

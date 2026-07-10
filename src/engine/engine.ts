@@ -555,11 +555,12 @@ export class RaycasterEngine {
     }
     if (carryover?.weaponIndex !== undefined) this.weaponIndex = carryover.weaponIndex;
 
-    // Test-only instrumentation for the headless campaign-playthrough
-    // verifier (scripts/verify-campaign-playthrough.mjs): exposes just enough
-    // read-only state to steer the player toward a known exit without a
-    // pixel-scraping or blind dead-reckoning hack. Inert unless the page URL
-    // carries `?testHooks=1` — never touched by normal play.
+    // Test-only instrumentation for headless campaign automation
+    // (scripts/verify-campaign-playthrough.mjs, scripts/generate-default-
+    // highscore.mjs): exposes just enough read-only state to steer the
+    // player toward a known exit and fight back without a pixel-scraping or
+    // blind dead-reckoning hack. Inert unless the page URL carries
+    // `?testHooks=1` — never touched by normal play.
     if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1") {
       (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks = {
         getPlayerState: () => ({
@@ -571,6 +572,16 @@ export class RaycasterEngine {
           state: this.state,
         }),
         getExit: () => ({ x: map.exit.x, y: map.exit.y }),
+        getEnemies: () =>
+          this.enemies.map((e) => ({
+            x: e.x,
+            y: e.y,
+            alive: e.alive,
+            aggroed: e.aggroed,
+            elite: e.elite,
+            hp: e.hp,
+            maxHp: e.maxHp,
+          })),
       };
     }
   }

@@ -104,6 +104,25 @@ export async function loadHighscores(): Promise<HighscoreEntry[]> {
   }
 }
 
+/** Same as `loadHighscores()`, except an empty real board falls back to the
+ * shipped `DEFAULT_HIGHSCORE_ENTRIES` (`./defaultHighscore.ts`) — so a
+ * first-time player still sees a populated Highscores dialog with watchable
+ * replays instead of the "No runs recorded yet" empty state. Display-only:
+ * `recordHighscore` must keep calling the real `loadHighscores()` directly,
+ * never this — merging the shipped entries in there would let a real run's
+ * read-modify-write cycle persist them into the player's actual localStorage
+ * board (could evict a real entry via a shipped score, duplicate it, or make
+ * it permanently "sticky"). Imported dynamically, not statically, since the
+ * shipped entries embed full replay frame data (several MB) that only ever
+ * needs to be fetched once someone actually opens this dialog with an empty
+ * board — not on every page load. */
+export async function loadHighscoresForDisplay(): Promise<HighscoreEntry[]> {
+  const real = await loadHighscores();
+  if (real.length > 0) return real;
+  const { DEFAULT_HIGHSCORE_ENTRIES } = await import("./defaultHighscore");
+  return DEFAULT_HIGHSCORE_ENTRIES;
+}
+
 /** Insert `entry` into the board, keep it sorted best-first, truncate to the
  * top `MAX_ENTRIES`, persist, and return the resulting list (so the caller
  * can render it immediately without a second `loadHighscores` round-trip).

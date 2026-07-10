@@ -29,6 +29,8 @@ Everything the game remembers between sessions lives in your browser's `localSto
 
 Replay/highscore data is gzip-compressed before being stored purely to fit within the browser's storage quota; this is a size optimization, not obfuscation, and doesn't change what's recorded.
 
+If you haven't set any scores of your own yet, the Highscores dialog shows 3 example entries from the bundled Demo Campaign instead of an empty list. These are baked into the app's own bundle at build time (the same offline, no-network approach as the Demos tab itself) — they're never written to your `localStorage`, and disappear from the display the instant you set a real score of your own.
+
 ## What is never stored or sent anywhere
 
 - The actual text/contents of your source files

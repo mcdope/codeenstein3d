@@ -35,6 +35,8 @@ All of these are standing preferences, independent of any specific campaign run.
 
 The **Highscores** button opens a top-10 leaderboard with columns for score, level/campaign name, the codebase's total lines/complexity, levels cleared, when the run ended, and an AST hash of the *whole workspace* (so you can compare runs against the exact same code, regardless of which level either run happened to end on). Entries with a recorded replay show a **Watch** button.
 
+If you haven't set any scores of your own yet, the board shows 3 example entries from the bundled Demo Campaign instead of an empty list, each watchable — these disappear the moment you set a real score of your own.
+
 ### Replay playback
 
 Watching a replay gives you a transport bar: seek back/forward (⏪/⏩, jumps ~5 real-time seconds worth of frames), play/pause, and a speed stepper (0.25×–4×). Seeking backward rebuilds the level from scratch and fast-forwards to the target point, since the simulation itself isn't reversible.

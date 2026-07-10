@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "verify:campaign": "node scripts/verify-demo-campaign.mjs",
-    "verify:campaign:playthrough": "node scripts/verify-campaign-playthrough.mjs"
+    "verify:campaign:playthrough": "node scripts/verify-campaign-playthrough.mjs",
+    "generate:default-highscore": "node scripts/generate-default-highscore.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",

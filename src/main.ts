@@ -19,7 +19,7 @@ import { MapGenerator } from "./map/mapGenerator";
 import { RaycasterEngine } from "./engine/engine";
 import { audio } from "./engine/audio";
 import { bgm } from "./engine/bgm";
-import { hashRun, loadHighscores, recordHighscore, type HighscoreEntry } from "./engine/highscores";
+import { hashRun, loadHighscoresForDisplay, recordHighscore, type HighscoreEntry } from "./engine/highscores";
 import { renderHighscoreTable } from "./ui/highscorePanel";
 import { GameHud } from "./ui/gameHud";
 import { buildControlsLegend } from "./ui/controlsLegend";
@@ -178,7 +178,7 @@ selectBgmFolderButton.addEventListener("click", async () => {
 // --- Highscores dialog -------------------------------------------------------
 
 viewHighscoresButton.addEventListener("click", async () => {
-  renderHighscoreTable(highscoreList, await loadHighscores(), {
+  renderHighscoreTable(highscoreList, await loadHighscoresForDisplay(), {
     onWatchReplay: (entry) => {
       highscoreDialog.close();
       void startReplay(entry);

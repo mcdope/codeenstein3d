@@ -217,6 +217,7 @@ npm run preview    # Serve production build locally
 | 67–70 | Friday Hotfix flamethrower, canvas-blur pause fix, cheat-sequence input guard | ✅ |
 | 71–73 | Wall-edge antialiasing, corridor Edge Case enemies, compass flag removal | ✅ |
 | 74–78 | Bonus/Elite weapon drops, bundled Demo Campaign + Demos tab, Toolchain chainsaw | ✅ |
+| 79–80 | Engine frame-cap investigation (reverted), headless-bot-generated default highscores + replays for the Demo Campaign | ✅ |
 | — | Room decorations | ⏸️ Implemented, disabled (playtest feedback) |
 
 ---
@@ -246,7 +247,7 @@ npm run preview    # Serve production build locally
 - **DDA Raycaster** — classic algorithm, no WebGL
 - **AABB Collision** — wall & world interaction
 - **Scoring** — real-time live updates, final on exit reach
-- **Highscores** — SHA-256 AST+campaign hashing, gzip compression to localStorage
+- **Highscores** — SHA-256 AST+campaign hashing, gzip compression to localStorage; a first-time player with no scores yet sees 3 bundled example entries (real, bot-played Demo Campaign runs) instead of an empty board
 
 ---
 
@@ -254,7 +255,7 @@ npm run preview    # Serve production build locally
 
 ```
 demo-campaign/                # Bundled "Demos" showcase campaign (one level per parser language)
-scripts/                      # Node/Playwright verification scripts for demo-campaign/
+scripts/                      # Node/Playwright verification scripts for demo-campaign/, plus generate-default-highscore.mjs (bakes src/engine/defaultHighscore.ts)
 src/
 ├── main.ts                  # App entry: wires sidebar, parser, map, engine, HUD
 ├── difficulty.ts            # Difficulty multiplier tables (Easy/Normal/Hard)
@@ -281,6 +282,7 @@ src/
     ├── loot.ts              # Weighted random drops
     ├── scoring.ts           # Score calculation
     ├── highscores.ts        # Leaderboard (hashing, compression)
+    ├── defaultHighscore.ts  # Bundled example leaderboard entries (bot-generated, shown when the real board is empty)
     ├── storageCompression.ts # gzip helpers for localStorage payloads
     ├── replay.ts            # Recording & playback
     ├── audio.ts             # Web Audio synthesis + buses
