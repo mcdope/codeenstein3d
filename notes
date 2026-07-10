@@ -150,3 +150,5 @@
 - [ ] When loading magento from github, some users reports tanking performance when shooting in check_copyright_pr.php (and other files) even though the game runs at 120fps for them usually. This does not happen in the demo campaign for them.
 - [ ] revisit extreme gore mode, make it actually useable - without visually drowning in blood
 - [ ] chainsaw holdfire crashing my local chromium, wtf? repro on other machines
+- [ ] support other browsers as good as possible (ignore the non available FS api)
+- [ ] default highscore replay run faster than normal gameplay. dont speed up the engine to be done with recording faster. the point of default replays is a proper presentation of the product.
