@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
+
+/** Spawn-corner and exit-tile selection. */
+import type { Point, Room } from "../types";
+import { dist } from "./util";
+
+/**
+ * Pick a spawn point in the first room: whichever of its four corners (1 tile
+ * inset from the room edge) has the greatest minimum distance to any
+ * enemy-bearing room's center. Room centers are known before any enemy is
+ * actually placed (an enemy pack's first member always spawns dead center —
+ * see `enemyPositions`), so this needs no reordering of the generation
+ * pipeline. Best-effort, not a guarantee: a corner can still end up within
+ * another enemy's aggro radius if the level is small or densely packed —
+ * there just isn't a better option to pick instead.
+ */
+export function pickSafeSpawn(rooms: Room[]): Point {
+  if (rooms.length === 0) return { x: 1, y: 1 };
+  const room0 = rooms[0];
+
+  const candidates: Point[] = [
+    { x: room0.x + 1, y: room0.y + 1 },
+    { x: room0.x + room0.w - 2, y: room0.y + 1 },
+    { x: room0.x + 1, y: room0.y + room0.h - 2 },
+    { x: room0.x + room0.w - 2, y: room0.y + room0.h - 2 },
+  ];
+
+  const enemyRoomCenters = rooms
+    .filter((r) => r.entity.kind === "function" || r.entity.kind === "method")
+    .map((r) => r.center);
+  if (enemyRoomCenters.length === 0) return candidates[0];
+
+  let best = candidates[0];
+  let bestMinDist = -1;
+  for (const c of candidates) {
+    const minDist = Math.min(...enemyRoomCenters.map((e) => dist(c.x + 0.5, c.y + 0.5, e.x + 0.5, e.y + 0.5)));
+    if (minDist > bestMinDist) {
+      bestMinDist = minDist;
+      best = c;
+    }
+  }
+  return best;
+}
+
+/** Pick the exit tile: the center of the room whose center is furthest (by
+ * Euclidean distance) from the spawn. Falls back to the spawn for empty maps. */
+export function pickExit(rooms: Room[], spawn: Point): Point {
+  if (rooms.length === 0) return { x: spawn.x, y: spawn.y };
+  let best = rooms[0];
+  let bestDist = -1;
+  for (const room of rooms) {
+    const dx = room.center.x - spawn.x;
+    const dy = room.center.y - spawn.y;
+    const dist = dx * dx + dy * dy;
+    if (dist > bestDist) {
+      bestDist = dist;
+      best = room;
+    }
+  }
+  return { x: best.center.x, y: best.center.y };
+}
