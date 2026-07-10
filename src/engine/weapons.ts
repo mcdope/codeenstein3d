@@ -213,7 +213,10 @@ export const WEAPONS: readonly Weapon[] = [
     pellets: 6,
     spreadPx: 45,
     damagePerPellet: 8,
-    ammoPerShot: 1,
+    // 2.5x the flat 1-per-shot every other weapon pays — its damage output
+    // (48 dmg/trigger-pull across 6 pellets, autofire at 10/sec) would let a
+    // full 40-unit gas pool outdamage everything else if it cost the same.
+    ammoPerShot: 2.5,
     ammoType: "gas",
     tracerColor: "#ff5a1a",
     viewKind: "flamethrower",

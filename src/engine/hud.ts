@@ -328,7 +328,9 @@ export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void
     drawValue(ctx, String(stats.smg), 275, valueY, stats.smg <= 0 ? "#ff5a4a" : "#3fa9ff", 22);
   } else if (weapon.ammoType === "gas") {
     drawLabel(ctx, "GAS", 275, labelY);
-    drawValue(ctx, String(stats.gas), 275, valueY, stats.gas <= 0 ? "#ff5a4a" : "#ff8a4a", 22);
+    // Friday Hotfix's ammoPerShot is fractional (2.5/shot), so stats.gas can
+    // land on a half-unit — floor it here rather than showing "37.5".
+    drawValue(ctx, String(Math.floor(stats.gas)), 275, valueY, stats.gas <= 0 ? "#ff5a4a" : "#ff8a4a", 22);
   } else {
     drawLabel(ctx, "MELEE", 275, labelY);
     drawValue(ctx, "∞", 275, valueY, "#d8dde3", 22);
