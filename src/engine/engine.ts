@@ -1641,11 +1641,14 @@ export class RaycasterEngine {
       // Tracer from the muzzle (bottom center) to this pellet's aim column at
       // crosshair height, in the weapon's own tracer color — drawn whether or
       // not it connects. Friday Hotfix skips this in favor of one flame
-      // stream for the whole shot, pushed after the loop below.
+      // stream for the whole shot, pushed after the loop below. Melee (the
+      // knife, Toolchain) skips it entirely — a swing isn't a fired
+      // projectile, so a line drawn from the screen center to the crosshair
+      // never made sense for it visually.
       if (isFlame) {
         flameLeft = Math.min(flameLeft, column);
         flameRight = Math.max(flameRight, column);
-      } else {
+      } else if (weapon.meleeRange === undefined) {
         this.traces.push(makeBulletTrace(width, height, column, height / 2, weapon.tracerColor));
       }
 
