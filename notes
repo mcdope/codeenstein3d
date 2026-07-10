@@ -132,7 +132,6 @@
 
 ## Open
 - [ ] rooms need deco of some kind, currently an empty wasteland — implemented in Task 21 (server racks/plants/desks/code-blocks as billboard props) but felt annoying in playtest, so disabled again behind `DECORATIONS_ENABLED = false` in mapGenerator.ts. Code (generation + rendering) is intact; needs a design rethink (placement density? different visual treatment? non-billboard approach?) before re-enabling. Ignore for now.
-- [ ] makefile
 - [ ] github ci actions for the tests (to be executed on github, no custom runner) — partially addressed [Task 81]: `.github/workflows/verify-campaign.yml` now runs `npm run verify:campaign` (the pure-Node, no-browser structural check) on push to master and on every PR. `verify:campaign:playthrough` (needs real Chromium via Playwright) and a broader `tsc`/build/lint gate are still not CI-wired — this item stays open for those.
 - [ ] code optimization/reuse, complexity reduction etc
 - [ ] balancing
