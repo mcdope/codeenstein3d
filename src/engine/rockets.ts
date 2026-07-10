@@ -17,7 +17,7 @@ import type { Enemy, GameMap } from "../map/types";
 
 /** Rocket travel speed, in tiles per second — much slower than a hitscan
  * pellet (instant) so it's a real, dodgeable projectile in flight. */
-const ROCKET_SPEED = 9;
+const ROCKET_SPEED = 18;
 /** Radius (tiles) of a rocket's blast; damage falls off with distance inside
  * it, and is 0 entirely outside it. */
 export const ROCKET_BLAST_RADIUS = 2.6;
