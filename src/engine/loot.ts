@@ -127,27 +127,32 @@ export const ELITE_SWAP_DROP_AMOUNT = 30;
 export const MAX_SWAP = 100;
 
 /** Very small chance for a regular (non-elite) enemy kill to also drop a
- * still-unlocked heavier weapon, stacked on top of its usual `rollLoot` drop
- * rather than replacing it. Elites already guarantee this outright at 50%
- * odds (see `RaycasterEngine.dropEliteLoot`) — this is a rare bonus so
- * players aren't strictly locked into hunting elites/secret rooms for an
- * unlock, not a primary drop path. */
+ * still-locked heavier weapon, stacked on top of its usual `rollLoot` drop
+ * rather than replacing it — a rare bonus so players aren't strictly locked
+ * into hunting elites/secret rooms for an unlock, not a primary drop path. */
 export const NORMAL_KILL_WEAPON_DROP_CHANCE = 0.01;
 
+/** Elites already guarantee their usual health/ammo drop outright (see
+ * `RaycasterEngine.dropEliteLoot`); this is the independent, much higher
+ * odds of *additionally* dropping a still-locked weapon on top of it. */
+export const ELITE_BONUS_WEAPON_DROP_CHANCE = 0.6;
+
 /**
- * Roll whether a regular kill's already-rolled loot should be topped with a
- * bonus unlockable-weapon drop. Returns the weapon index to drop, or
+ * Roll whether a kill's already-rolled loot should be topped with a bonus
+ * unlockable-weapon drop, at the given `chance` (defaults to the regular-kill
+ * rate; elites pass `ELITE_BONUS_WEAPON_DROP_CHANCE` instead — see
+ * `RaycasterEngine.dropEliteLoot`). Returns the weapon index to drop, or
  * `undefined` if there's nothing left to unlock or the roll missed. Only
  * draws a second `rng()` value (to pick *which* missing weapon) once the
- * odds roll actually hits — same "roll odds, then pick which one" order as
- * `RaycasterEngine.dropEliteLoot`'s guaranteed-drop roll, so a run with
- * every weapon already owned never spends an extra rng() draw on a kill.
+ * odds roll actually hits, so a run with every weapon already owned never
+ * spends an extra rng() draw on a kill.
  */
 export function rollBonusWeaponDrop(
   missingWeaponIndices: readonly number[],
   rng: () => number = Math.random,
+  chance: number = NORMAL_KILL_WEAPON_DROP_CHANCE,
 ): number | undefined {
   if (missingWeaponIndices.length === 0) return undefined;
-  if (rng() >= NORMAL_KILL_WEAPON_DROP_CHANCE) return undefined;
+  if (rng() >= chance) return undefined;
   return missingWeaponIndices[Math.floor(rng() * missingWeaponIndices.length)];
 }

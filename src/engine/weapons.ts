@@ -96,9 +96,9 @@ export interface Weapon {
  * dedicated input instead of a number-key slot. Only the pistol/shotgun
  * (plus the knife, which is always available regardless of slot) are owned
  * from the start — gdb/ghidra/Friday Hotfix have to be earned from an Elite
- * kill's guaranteed weapon drop, or are force-unlocked at campaign levels
- * 4/8/12 as a progression safety net (see `RaycasterEngine`'s
- * `ownedWeapons`, `main.ts`'s `applyForcedUnlocks`).
+ * kill's high-odds bonus weapon drop, a rare drop from any kill, or are
+ * force-unlocked at campaign levels 4/8/12 as a progression safety net (see
+ * `RaycasterEngine`'s `ownedWeapons`, `main.ts`'s `applyForcedUnlocks`).
  * - **echo pistol**: precise single hitscan, cheap.
  * - **Regex Shotgun**: 7 pellets in a cone — devastating up close, useless at
  *   range as the spread misses; costs more heap.
@@ -224,8 +224,9 @@ export const WEAPONS: readonly Weapon[] = [
 ];
 
 /** Weapons owned from the start of every run — everything else has to be
- * earned (currently: an Elite kill's guaranteed weapon drop, or the
- * campaign-level-4/8 forced-unlock safety net in `main.ts`). */
+ * earned (currently: an Elite kill's high-odds bonus weapon drop, a rare
+ * drop from any kill, or the campaign-level-4/8 forced-unlock safety net in
+ * `main.ts`). */
 export const STARTING_WEAPONS: readonly number[] = [0, 1, 2];
 
 /** Array indices of gdb/ghidra/Friday Hotfix in `WEAPONS` — named so
@@ -236,8 +237,10 @@ export const GHIDRA_WEAPON_INDEX = 4;
 export const FRIDAY_HOTFIX_WEAPON_INDEX = 5;
 
 /** Weapon indices whose only in-level acquisition path is an Elite kill's
- * guaranteed drop (`RaycasterEngine.dropEliteLoot`) or a secret room's
- * weapon-unlock loot slot (`placeSecretRooms` in `mapGenerator.ts`) — plus
+ * high-odds bonus drop, a regular kill's rare bonus drop (both
+ * `RaycasterEngine.dropEliteLoot`/`damageEnemy`, via `loot.ts`'s
+ * `rollBonusWeaponDrop`), or a secret room's weapon-unlock loot slot
+ * (`placeSecretRooms` in `mapGenerator.ts`) — plus
  * `main.ts`'s forced-unlock safety net at campaign levels 4/8/12, a separate,
  * out-of-band path onto these same indices. Lives here rather than in
  * `engine.ts` so both the engine layer and `main.ts` (which has to compute

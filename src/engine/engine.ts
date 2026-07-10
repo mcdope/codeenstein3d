@@ -95,6 +95,7 @@ import {
 import {
   SWAP_DROP_AMOUNT,
   BULLETS_DROP_AMOUNT,
+  ELITE_BONUS_WEAPON_DROP_CHANCE,
   ELITE_BULLETS_DROP_AMOUNT,
   ELITE_GAS_DROP_AMOUNT,
   ELITE_HEALTH_DROP_AMOUNT,
@@ -358,8 +359,9 @@ export class RaycasterEngine {
   /** Index into WEAPONS of the equipped weapon (0 = pistol). */
   private weaponIndex = 0;
   /** Indices into `WEAPONS` the player can currently switch to — everything
-   * beyond `STARTING_WEAPONS` has to be earned (an Elite kill's guaranteed
-   * weapon drop; see `dropEliteLoot`). */
+   * beyond `STARTING_WEAPONS` has to be earned (an Elite kill's high-odds
+   * bonus weapon drop, a rare drop from any kill, a secret room, or a forced
+   * campaign-level unlock; see `dropEliteLoot`). */
   private readonly ownedWeapons: Set<number>;
   /** Seconds remaining before the next shot is allowed — ticks down every
    * frame regardless of weapon; automatic weapons (the MP) re-fire on their
@@ -1700,24 +1702,28 @@ export class RaycasterEngine {
   }
 
   /**
-   * An Elite's death always leaves something worth the fight: a still-unowned
-   * heavier weapon (gdb or ghidra — see `UNLOCKABLE_WEAPONS`) if the
-   * player doesn't have one yet, picked up automatically like any other
-   * loot drop, or a large stability pack once both are already owned. A
-   * health pack would be wasted at full health, so that case rolls an
-   * elite-sized ammo/swap drop instead.
+   * An Elite's death always leaves something worth the fight: a large
+   * stability pack, or (if that would be wasted at full health) an
+   * elite-sized ammo/swap drop instead — always rolled, never skipped. On
+   * top of that guaranteed drop, a still-unowned heavier weapon (see
+   * `UNLOCKABLE_WEAPONS`) has its own independent `ELITE_BONUS_WEAPON_DROP_CHANCE`
+   * (60%) odds of dropping as a *second*, separate pickup — so most Elites
+   * leave two items behind once a weapon's still missing, not a choice
+   * between them.
    */
   private dropEliteLoot(enemy: Enemy): void {
-    const missing = UNLOCKABLE_WEAPONS.filter((i) => !this.ownedWeapons.has(i));
-    if (missing.length > 0 && this.rng() < 0.5) {
-      const weaponIndex = missing[Math.floor(this.rng() * missing.length)];
-      this.drops.push({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex });
-    } else if (this.health >= MAX_HEALTH) {
+    if (this.health >= MAX_HEALTH) {
       const kind = this.rng() < 0.5 ? "bullets" : "swap";
       const amount = kind === "bullets" ? ELITE_BULLETS_DROP_AMOUNT : ELITE_SWAP_DROP_AMOUNT;
       this.drops.push({ x: enemy.x, y: enemy.y, kind, amount });
     } else {
       this.drops.push({ x: enemy.x, y: enemy.y, kind: "health", amount: ELITE_HEALTH_DROP_AMOUNT });
+    }
+
+    const missing = UNLOCKABLE_WEAPONS.filter((i) => !this.ownedWeapons.has(i));
+    const bonusWeaponIndex = rollBonusWeaponDrop(missing, this.rng, ELITE_BONUS_WEAPON_DROP_CHANCE);
+    if (bonusWeaponIndex !== undefined) {
+      this.drops.push({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: bonusWeaponIndex });
     }
   }
 
