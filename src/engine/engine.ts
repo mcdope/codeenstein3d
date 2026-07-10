@@ -1590,7 +1590,7 @@ export class RaycasterEngine {
       else this.gasAmmo -= weapon.ammoPerShot;
     }
 
-    audio.playShoot();
+    audio.playShoot(weapon.viewKind);
     // Kick the viewmodel: full recoil, easing back over the next frames. No
     // muzzle flash for the knife — a stab doesn't have one. A melee call
     // (weapon.meleeRange !== undefined) never touches `recoil` — the caller

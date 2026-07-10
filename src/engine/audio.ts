@@ -21,7 +21,22 @@
  * shotgun blast, say) can't clip, and the Master/SFX/BGM sidebar sliders can
  * balance the two independently (see `setMasterVolume`/`setSfxVolume`/
  * `setBgmVolume`).
+ *
+ * `playShoot(kind)` dispatches on a weapon's `WeaponViewKind` (the same tag
+ * that already picks its viewmodel silhouette — see `weapons.ts`) to give
+ * every weapon its own fire sound instead of one shared blip: a snappy tone
+ * for the pistol, a noise-layered boom for the shotgun, a cheap flyweight
+ * tick for gdb's full-auto burst, a rising launch whoosh for ghidra (distinct
+ * from `playRocketExplosion`'s impact boom), a continuously-blended hiss for
+ * Friday Hotfix's jet, an airy whoosh for the knife, and a revving buzz for
+ * Toolchain. The three full-auto voices (gdb/Friday Hotfix/Toolchain) add a
+ * small `Math.random()` pitch jitter per shot so a rapid burst doesn't sound
+ * like an identical clone-stamped loop — cosmetic randomness only, per
+ * `doc/dev/architecture.md`'s Determinism section (SFX pitch must never draw
+ * from the seeded replay PRNG).
  */
+
+import type { WeaponViewKind } from "./weapons";
 
 /** Grab whatever AudioContext constructor the environment exposes, if any. */
 type AudioContextCtor = new () => AudioContext;
@@ -63,8 +78,11 @@ class AudioManager {
    * (custom music doesn't overpower in-game sound effects, or vice versa). */
   private bgm: GainNode | null = null;
   private distortion: WaveShaperNode | null = null;
-  /** Cached white-noise buffer backing `playRocketExplosion`'s crack transient — built once since its content (raw random samples) never needs to vary between explosions. */
-  private explosionNoise: AudioBuffer | null = null;
+  /** White-noise buffers backing every noise-based transient (rocket-blast
+   * crack, shotgun blast, rocket launch chuff, flamethrower hiss, knife
+   * whoosh), cached by duration (ms) since raw random samples never need to
+   * vary between plays of the same length. */
+  private noiseBuffers = new Map<number, AudioBuffer>();
   private unavailable = false;
   /** Timestamp of the last damage sound, to rate-limit continuous hazards. */
   private lastDamageAt = -Infinity;
@@ -149,17 +167,176 @@ class AudioManager {
     return ctx;
   }
 
-  /** Retro blaster: a square wave sweeping rapidly down from a high pitch. */
-  playShoot(): void {
+  /** Weapon fire, dispatched by `kind` (a weapon's `viewKind`, reused as its
+   * sound identity — see this file's header comment) so each weapon has its
+   * own distinct voice instead of one shared blip. */
+  playShoot(kind: WeaponViewKind): void {
     const ctx = this.resume();
     if (!ctx || !this.sfx) return;
+    const sfx = this.sfx;
+    switch (kind) {
+      case "pistol":
+        return this.playPistolShot(ctx, sfx);
+      case "shotgun":
+        return this.playShotgunBlast(ctx, sfx);
+      case "mp":
+        return this.playSmgShot(ctx, sfx);
+      case "rocket":
+        return this.playRocketLaunch(ctx, sfx);
+      case "flamethrower":
+        return this.playFlameJet(ctx, sfx);
+      case "knife":
+        return this.playKnifeSwing(ctx, sfx);
+      case "chainsaw":
+        return this.playChainsawSwing(ctx, sfx);
+    }
+  }
+
+  /** echo pistol: a square wave sweeping rapidly down from a high pitch — the
+   * baseline "retro blaster" snap every other weapon's voice is built to
+   * sound distinct from. */
+  private playPistolShot(ctx: AudioContext, sfx: GainNode): void {
     const t = ctx.currentTime;
     const osc = ctx.createOscillator();
     osc.type = "square";
     osc.frequency.setValueAtTime(880, t);
     osc.frequency.exponentialRampToValueAtTime(110, t + 0.12);
     const gain = envelope(ctx, 0.5, 0.005, 0.14);
-    osc.connect(gain).connect(this.sfx);
+    osc.connect(gain).connect(sfx);
+    osc.start(t);
+    osc.stop(t + 0.16);
+  }
+
+  /** Regex Shotgun: a heavier, distorted low thump plus a short filtered
+   * noise burst layered on top, so it reads as a broadband blast rather than
+   * the pistol's clean tone. */
+  private playShotgunBlast(ctx: AudioContext, sfx: GainNode): void {
+    const t = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(150, t);
+    osc.frequency.exponentialRampToValueAtTime(40, t + 0.16);
+    const oscGain = envelope(ctx, 0.7, 0.003, 0.18);
+    osc.connect(this.distortionNode(ctx)).connect(oscGain).connect(sfx);
+    osc.start(t);
+    osc.stop(t + 0.2);
+
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer(ctx, 0.12);
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = "lowpass";
+    noiseFilter.frequency.setValueAtTime(3500, t);
+    noiseFilter.frequency.exponentialRampToValueAtTime(600, t + 0.1);
+    const noiseGain = envelope(ctx, 0.4, 0.002, 0.09);
+    noise.connect(noiseFilter).connect(noiseGain).connect(sfx);
+    noise.start(t);
+    noise.stop(t + 0.11);
+  }
+
+  /** gdb: a short, cheap, low-pitched tick — fires up to ~11x/sec, so this
+   * stays deliberately lightweight, with a small cosmetic pitch jitter per
+   * shot so a sustained burst doesn't sound like a clone-stamped loop.
+   * Tuned down from an initial higher-pitched draft per playtest feedback. */
+  private playSmgShot(ctx: AudioContext, sfx: GainNode): void {
+    const t = ctx.currentTime;
+    const jitter = 1 + (Math.random() * 2 - 1) * 0.06;
+    const osc = ctx.createOscillator();
+    osc.type = "square";
+    osc.frequency.setValueAtTime(340 * jitter, t);
+    osc.frequency.exponentialRampToValueAtTime(160 * jitter, t + 0.04);
+    const gain = envelope(ctx, 0.32, 0.002, 0.045);
+    osc.connect(gain).connect(sfx);
+    osc.start(t);
+    osc.stop(t + 0.06);
+  }
+
+  /** ghidra: the *launch*, distinct from `playRocketExplosion`'s impact boom
+   * — a rising sweep plus a short noise "chuff" for the ignition puff,
+   * instead of every other weapon's falling pitch. */
+  private playRocketLaunch(ctx: AudioContext, sfx: GainNode): void {
+    const t = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(55, t);
+    osc.frequency.exponentialRampToValueAtTime(320, t + 0.22);
+    const oscGain = envelope(ctx, 0.5, 0.02, 0.2);
+    osc.connect(oscGain).connect(sfx);
+    osc.start(t);
+    osc.stop(t + 0.24);
+
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer(ctx, 0.15);
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = "bandpass";
+    noiseFilter.frequency.setValueAtTime(900, t);
+    noiseFilter.Q.value = 0.7;
+    const noiseGain = envelope(ctx, 0.35, 0.01, 0.13);
+    noise.connect(noiseFilter).connect(noiseGain).connect(sfx);
+    noise.start(t);
+    noise.stop(t + 0.15);
+  }
+
+  /** Friday Hotfix: re-triggered every 0.1s while held, so a low rumble plus
+   * a filtered noise hiss are tuned with a soft attack and a cosmetic jitter
+   * per call, so consecutive triggers blend into a continuous jet roar
+   * instead of popping as discrete blips. */
+  private playFlameJet(ctx: AudioContext, sfx: GainNode): void {
+    const t = ctx.currentTime;
+    const jitter = 1 + (Math.random() * 2 - 1) * 0.15;
+
+    const rumble = ctx.createOscillator();
+    rumble.type = "sawtooth";
+    rumble.frequency.setValueAtTime(70 * jitter, t);
+    const rumbleGain = envelope(ctx, 0.22, 0.02, 0.09);
+    rumble.connect(rumbleGain).connect(sfx);
+    rumble.start(t);
+    rumble.stop(t + 0.12);
+
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer(ctx, 0.12);
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = "bandpass";
+    noiseFilter.frequency.setValueAtTime(1500 * jitter, t);
+    noiseFilter.Q.value = 0.6;
+    const noiseGain = envelope(ctx, 0.4, 0.02, 0.09);
+    noise.connect(noiseFilter).connect(noiseGain).connect(sfx);
+    noise.start(t);
+    noise.stop(t + 0.12);
+  }
+
+  /** SIGKILL Knife: a fast, airy noise "whoosh" — no gunshot character at
+   * all, and no low-end boom, since a stab isn't an explosion. */
+  private playKnifeSwing(ctx: AudioContext, sfx: GainNode): void {
+    const t = ctx.currentTime;
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer(ctx, 0.1);
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = "bandpass";
+    noiseFilter.frequency.setValueAtTime(2600, t);
+    noiseFilter.frequency.exponentialRampToValueAtTime(900, t + 0.08);
+    noiseFilter.Q.value = 1.2;
+    const noiseGain = envelope(ctx, 0.3, 0.002, 0.07);
+    noise.connect(noiseFilter).connect(noiseGain).connect(sfx);
+    noise.start(t);
+    noise.stop(t + 0.09);
+  }
+
+  /** Toolchain: a gritty, distorted revving buzz with a quick up-then-down
+   * pitch wobble (rather than every other weapon's plain downward sweep) so
+   * repeated auto-fire triggers read as a sustained motor, not a discrete
+   * blip each time. */
+  private playChainsawSwing(ctx: AudioContext, sfx: GainNode): void {
+    const t = ctx.currentTime;
+    const jitter = 1 + (Math.random() * 2 - 1) * 0.08;
+    const osc = ctx.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(90 * jitter, t);
+    osc.frequency.linearRampToValueAtTime(130 * jitter, t + 0.05);
+    osc.frequency.linearRampToValueAtTime(85 * jitter, t + 0.14);
+    const gain = envelope(ctx, 0.55, 0.004, 0.14);
+    osc.connect(this.distortionNode(ctx)).connect(gain).connect(sfx);
     osc.start(t);
     osc.stop(t + 0.16);
   }
@@ -349,7 +526,7 @@ class AudioManager {
     osc.stop(t + 0.6);
 
     const noise = ctx.createBufferSource();
-    noise.buffer = this.explosionNoiseBuffer(ctx);
+    noise.buffer = this.noiseBuffer(ctx, 0.35);
     const noiseFilter = ctx.createBiquadFilter();
     noiseFilter.type = "lowpass";
     noiseFilter.frequency.setValueAtTime(2200, t);
@@ -360,16 +537,21 @@ class AudioManager {
     noise.stop(t + 0.32);
   }
 
-  /** Shared white-noise buffer for `playRocketExplosion`'s crack transient (built once). */
-  private explosionNoiseBuffer(ctx: AudioContext): AudioBuffer {
-    if (!this.explosionNoise) {
-      const length = Math.floor(ctx.sampleRate * 0.35);
-      const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+  /** Cached-by-duration white-noise buffer backing every noise-based
+   * transient (rocket-blast crack, shotgun blast, rocket launch chuff,
+   * flamethrower hiss, knife whoosh) — built once per distinct length since
+   * raw random samples never need to vary between plays. */
+  private noiseBuffer(ctx: AudioContext, seconds: number): AudioBuffer {
+    const key = Math.round(seconds * 1000);
+    let buffer = this.noiseBuffers.get(key);
+    if (!buffer) {
+      const length = Math.floor(ctx.sampleRate * seconds);
+      buffer = ctx.createBuffer(1, length, ctx.sampleRate);
       const data = buffer.getChannelData(0);
       for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
-      this.explosionNoise = buffer;
+      this.noiseBuffers.set(key, buffer);
     }
-    return this.explosionNoise;
+    return buffer;
   }
 
   /** Secret wall opened, or a lore terminal read: a bright, mysterious rising
