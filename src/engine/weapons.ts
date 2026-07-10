@@ -18,7 +18,7 @@ export type AmmoType = "bullets" | "rockets" | "smg" | "gas";
 
 /** Distinct viewmodel silhouette drawn at the bottom of the screen — see
  * `drawWeapon` in `viewmodel.ts`. */
-export type WeaponViewKind = "pistol" | "shotgun" | "knife" | "mp" | "rocket" | "flamethrower";
+export type WeaponViewKind = "pistol" | "shotgun" | "knife" | "mp" | "rocket" | "flamethrower" | "chainsaw";
 
 export interface Weapon {
   /** Stable id / display name. */
@@ -106,7 +106,9 @@ export interface Weapon {
  *   instant "quick-melee" overlay rather than an equippable slot — point-blank
  *   only, but a kill heals a sliver of stability, rewarding aggressive play
  *   when heap runs dry instead of leaving the player stuck out of options.
- *   See `MELEE_WEAPON` and `RaycasterEngine`'s quick-melee handling.
+ *   See `MELEE_WEAPON`/`currentMeleeWeapon` and `RaycasterEngine`'s
+ *   quick-melee handling. Wielded on Left-Ctrl until Toolchain is unlocked,
+ *   which permanently replaces it there (see `currentMeleeWeapon`).
  * - **gdb**: fully automatic, high fire rate, moderate damage per round —
  *   draws from its own `"smg"` ammo pool rather than sharing `"bullets"`
  *   with the pistol/shotgun (see `AmmoType`). (Named for the GNU debugger —
@@ -122,6 +124,14 @@ export interface Weapon {
  *   couple of tiles no matter how the Cone of Fire spread happens to land.
  *   Draws from its own `"gas"` ammo pool. The latest and heaviest unlock
  *   (forced at campaign level 12, one past ghidra's 8).
+ * - **Toolchain**: a second, stronger melee weapon — infinite ammo like the
+ *   knife, double its damage, a bigger lifesteal heal, and fires repeatedly
+ *   while Left-Ctrl is held instead of once per press (see `auto`). Has no
+ *   forced-unlock safety net and isn't in `UNLOCKABLE_WEAPONS` — only
+ *   reachable via a secret room or an Elite kill, and only from campaign
+ *   level `TOOLCHAIN_MIN_LEVEL` on (see `RaycasterEngine.dropEliteLoot` and
+ *   `main.ts`'s `computeMissingWeaponIndices`). Replaces the knife on
+ *   Left-Ctrl the instant it's owned — see `currentMeleeWeapon`.
  */
 export const WEAPONS: readonly Weapon[] = [
   {
@@ -224,6 +234,24 @@ export const WEAPONS: readonly Weapon[] = [
     fireIntervalSec: 0.1,
     maxRange: 3.5,
   },
+  {
+    // Not in `UNLOCKABLE_WEAPONS` — deliberately excluded from the ordinary
+    // per-kill 1% bonus-drop roll and `main.ts`'s forced-unlock safety net
+    // (see `TOOLCHAIN_MIN_LEVEL` and `RaycasterEngine.dropEliteLoot`'s doc
+    // comment). Only reachable via a secret room or an Elite kill, and only
+    // from campaign level 4 on.
+    name: "Toolchain",
+    pellets: 1,
+    spreadPx: 0,
+    damagePerPellet: 80, // 2x the knife's 40, per its unlock note
+    ammoPerShot: 0,
+    tracerColor: "#e8b23d",
+    viewKind: "chainsaw",
+    meleeRange: 1.5,
+    lifesteal: 3, // stronger than the knife's 1
+    auto: true,
+    fireIntervalSec: 0.35,
+  },
 ];
 
 /** Weapons owned from the start of every run — everything else has to be
@@ -238,6 +266,15 @@ export const STARTING_WEAPONS: readonly number[] = [0, 1, 2];
 export const GDB_WEAPON_INDEX = 3;
 export const GHIDRA_WEAPON_INDEX = 4;
 export const FRIDAY_HOTFIX_WEAPON_INDEX = 5;
+export const TOOLCHAIN_WEAPON_INDEX = 6;
+
+/** Minimum 1-based campaign level Toolchain can appear at all, in either a
+ * secret room (`main.ts`'s `computeMissingWeaponIndices`) or an Elite kill's
+ * bonus drop (`RaycasterEngine.dropEliteLoot`) — unlike gdb/ghidra/Friday
+ * Hotfix, which have no such floor (only a forced-unlock *ceiling*), and
+ * unlike those three, Toolchain has no forced-unlock entry at all: a
+ * loot-unlucky run can finish the whole campaign without ever finding it. */
+export const TOOLCHAIN_MIN_LEVEL = 4;
 
 /** Weapon indices whose only in-level acquisition path is an Elite kill's
  * high-odds bonus drop, a regular kill's rare bonus drop (both
@@ -250,7 +287,11 @@ export const FRIDAY_HOTFIX_WEAPON_INDEX = 5;
  * which of these are still missing, to hand the map layer an opaque list of
  * candidate indices without the map layer importing engine-layer weapon
  * concepts — see `doc/dev/architecture.md`'s "map must never import engine"
- * rule) can both import one shared source of truth. */
+ * rule) can both import one shared source of truth. Deliberately does NOT
+ * include `TOOLCHAIN_WEAPON_INDEX` — Toolchain rides the same Elite-drop and
+ * secret-room mechanisms (via `main.ts`'s `computeMissingWeaponIndices`) but
+ * is excluded here so it never enters the ordinary per-kill 1% roll or the
+ * forced-unlock safety net, only this array's three ranged members do. */
 export const UNLOCKABLE_WEAPONS: readonly number[] = [
   GDB_WEAPON_INDEX,
   GHIDRA_WEAPON_INDEX,
@@ -277,13 +318,26 @@ export const NUMBER_KEY_WEAPONS: readonly number[] = WEAPONS.map((_, i) => i).fi
 );
 
 /**
- * The knife's `Weapon` object, looked up by its defining trait (`meleeRange`
- * set) rather than a hardcoded array index — so nothing else in the engine
- * needs to know or assume where it sits in `WEAPONS`. Used directly by the
- * Left-Ctrl quick-melee action (see `RaycasterEngine`), which fires it
- * independent of `weaponIndex` entirely.
+ * The knife's `Weapon` object — the *first* `meleeRange`-having entry in
+ * `WEAPONS` (still correctly the knife now that Toolchain is a second melee
+ * entry later in the array), looked up by its defining trait rather than a
+ * hardcoded index. Don't use this directly to decide what Left-Ctrl fires —
+ * that depends on which melee weapon is actually owned, so use
+ * `currentMeleeWeapon` instead. Exists as its own constant since it's still
+ * the correct "default/fallback melee weapon" value on a fresh run.
  */
 export const MELEE_WEAPON: Weapon = WEAPONS.find((w) => w.meleeRange !== undefined)!;
+
+/**
+ * Which melee weapon Left-Ctrl's quick-melee action currently wields: the
+ * knife until Toolchain is unlocked, then Toolchain permanently — it
+ * replaces the knife on pickup rather than sitting alongside it (see the
+ * `notes` entry this shipped for). Takes the engine's live `ownedWeapons` set
+ * since, unlike every other `WEAPONS` lookup here, this can change mid-run.
+ */
+export function currentMeleeWeapon(ownedWeapons: ReadonlySet<number>): Weapon {
+  return ownedWeapons.has(TOOLCHAIN_WEAPON_INDEX) ? WEAPONS[TOOLCHAIN_WEAPON_INDEX] : MELEE_WEAPON;
+}
 
 /**
  * Screen-x offsets (from center) for a weapon's pellets, evenly spread across

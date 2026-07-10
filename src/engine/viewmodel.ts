@@ -48,6 +48,9 @@ export function drawWeapon(ctx: CanvasRenderingContext2D, v: WeaponView): void {
     case "knife":
       drawKnife(ctx, cx, baseY, v.recoil);
       break;
+    case "chainsaw":
+      drawChainsaw(ctx, cx, baseY, v.recoil);
+      break;
     case "mp":
       drawMp(ctx, cx, baseY, recoilBack, v.flash);
       break;
@@ -171,6 +174,61 @@ function drawKnife(ctx: CanvasRenderingContext2D, cx: number, baseY: number, rec
   ctx.fill();
   ctx.fillStyle = "#eef1f5";
   ctx.fillRect(bx - 6, by - 132, 3, 76);
+}
+
+/** A bulkier two-handed alternative to the knife: a blocky motor housing and
+ * rear grip with a long, tooth-notched guide bar thrusting forward — no
+ * muzzle flash, same as the knife. Reuses the knife's up-thrust recoil
+ * animation directly (each hold-to-fire swing sets `recoil` back to 1), so
+ * holding the trigger reads as a repeated revving chug for free without any
+ * extra animation state. */
+function drawChainsaw(ctx: CanvasRenderingContext2D, cx: number, baseY: number, recoil: number): void {
+  const thrust = recoil * 40;
+  const bx = cx + 30;
+  const by = baseY - thrust;
+
+  // Rear grip, held low-right.
+  ctx.fillStyle = "#2a2018";
+  ctx.beginPath();
+  ctx.moveTo(bx - 8, by - 2);
+  ctx.lineTo(bx + 20, by - 2);
+  ctx.lineTo(bx + 14, by - 40);
+  ctx.lineTo(bx - 14, by - 40);
+  ctx.closePath();
+  ctx.fill();
+
+  // Motor housing: a blocky body sitting on top of the grip.
+  ctx.fillStyle = "#3a3f36";
+  ctx.fillRect(bx - 26, by - 78, 52, 42);
+  ctx.fillStyle = "#565d51";
+  ctx.fillRect(bx - 26, by - 78, 52, 6); // top rim highlight
+  ctx.fillStyle = "#e0483a";
+  ctx.fillRect(bx - 26, by - 46, 52, 6); // warning stripe, same idea as the rocket launcher's
+
+  // Guide bar, extending up-and-left from the housing.
+  ctx.fillStyle = "#4c4f52";
+  ctx.beginPath();
+  ctx.moveTo(bx - 20, by - 74);
+  ctx.lineTo(bx - 2, by - 74);
+  ctx.lineTo(bx - 10, by - 156);
+  ctx.lineTo(bx - 24, by - 156);
+  ctx.closePath();
+  ctx.fill();
+
+  // Chain teeth: a row of small triangular notches down the bar's leading edge.
+  ctx.fillStyle = "#c7ccd4";
+  const teeth = 6;
+  for (let i = 0; i < teeth; i++) {
+    const t = i / (teeth - 1);
+    const ty = by - 82 - t * 68;
+    const tx = bx - 22 - t * 1.5;
+    ctx.beginPath();
+    ctx.moveTo(tx, ty);
+    ctx.lineTo(tx - 8, ty - 3);
+    ctx.lineTo(tx, ty - 8);
+    ctx.closePath();
+    ctx.fill();
+  }
 }
 
 /** Slim, long-barreled submachine gun with a stick magazine underneath. */

@@ -83,11 +83,13 @@ import {
   FRIDAY_HOTFIX_WEAPON_INDEX,
   GDB_WEAPON_INDEX,
   GHIDRA_WEAPON_INDEX,
-  MELEE_WEAPON,
   NUMBER_KEY_WEAPONS,
   STARTING_WEAPONS,
+  TOOLCHAIN_MIN_LEVEL,
+  TOOLCHAIN_WEAPON_INDEX,
   UNLOCKABLE_WEAPONS,
   WEAPONS,
+  currentMeleeWeapon,
   pelletOffsets,
   type AmmoType,
   type Weapon,
@@ -283,6 +285,13 @@ export interface EngineCarryover {
   weaponIndex?: number;
   /** Defaults to `STARTING_WEAPONS` when omitted. */
   ownedWeapons?: number[];
+  /** 1-based campaign level position, mirroring `main.ts`'s own
+   * `campaignLevelIndex` — the only thing this engine instance needs it for
+   * is gating Toolchain's Elite-kill bonus drop by `TOOLCHAIN_MIN_LEVEL` (see
+   * `dropEliteLoot`). Defaults to 1 (matching a fresh run) when omitted.
+   * Round-trips through a recorded replay's `carryover` for free, since a
+   * `ReplayLevelSegment` carries exactly this type. */
+  campaignLevelIndex?: number;
   /** Doom-style cheat flags carried across a level transition — a fresh
    * `RaycasterEngine`/`Player` is constructed for every level (see
    * `main.ts`'s `launchLevel`), so an active toggle would otherwise silently
@@ -363,11 +372,20 @@ export class RaycasterEngine {
    * bonus weapon drop, a rare drop from any kill, a secret room, or a forced
    * campaign-level unlock; see `dropEliteLoot`). */
   private readonly ownedWeapons: Set<number>;
+  /** 1-based campaign level position — the only thing this is read for is
+   * gating Toolchain's Elite-kill bonus drop by `TOOLCHAIN_MIN_LEVEL` (see
+   * `dropEliteLoot`). See `EngineCarryover.campaignLevelIndex`'s doc comment. */
+  private readonly campaignLevelIndex: number;
   /** Seconds remaining before the next shot is allowed — ticks down every
    * frame regardless of weapon; automatic weapons (the MP) re-fire on their
    * own while held once it reaches 0, everything else just gates a stray
    * double-press faster than the weapon's own `fireIntervalSec` allows. */
   private weaponCooldown = 0;
+  /** Same idea as `weaponCooldown`, but for quick-melee — kept separate so
+   * switching between a ranged weapon and melee never lets one's cooldown
+   * gate the other. Only Toolchain (an `auto` melee weapon) actually uses
+   * this; the knife fires once per press with no cooldown of its own. */
+  private meleeCooldown = 0;
   /** Dependency keys collected but not yet spent on a door. */
   private keysHeld = 0;
   /** Enemies defeated this level. */
@@ -514,6 +532,7 @@ export class RaycasterEngine {
     this.startingSmgRef = startingSmg();
     this.startingGasRef = startingGas();
     this.ownedWeapons = new Set(carryover?.ownedWeapons ?? STARTING_WEAPONS);
+    this.campaignLevelIndex = carryover?.campaignLevelIndex ?? 1;
     this.priorScore = carryover?.priorScore ?? 0;
     this.totalWalkableTiles = countWalkableTiles(map);
     this.goreMultipliers = GORE_MULTIPLIERS[gore];
@@ -747,12 +766,28 @@ export class RaycasterEngine {
       for (let i = 0; i < Math.abs(wheelSteps); i++) this.cycleWeapon(direction);
     }
 
-    // Quick-melee: an instant knife swing, independent of whatever ranged
-    // weapon is equipped/owned/cooling down — see `fire()`'s doc comment and
-    // the `meleeRecoil`-driven viewmodel overlay in the render section below.
-    if (this.state === "playing" && this.input.consumeMelee()) {
-      this.fire(MELEE_WEAPON);
-      this.meleeRecoil = 1;
+    // Quick-melee: an instant swing (or, for Toolchain, a held-down chain of
+    // them) independent of whatever ranged weapon is equipped/owned/cooling
+    // down — see `fire()`'s doc comment and the `meleeRecoil`-driven
+    // viewmodel overlay in the render section below. `currentMeleeWeapon`
+    // resolves to the knife until Toolchain is owned, then Toolchain
+    // permanently (it replaces the knife on Left-Ctrl, not a second slot).
+    if (this.state === "playing") {
+      const melee = currentMeleeWeapon(this.ownedWeapons);
+      if (this.meleeCooldown > 0) this.meleeCooldown = Math.max(0, this.meleeCooldown - dt);
+      if (melee.auto) {
+        // Drain the one-shot edge so it can't "replay" as a stray knife
+        // swing if the player somehow loses Toolchain mid-swing.
+        this.input.consumeMelee();
+        if (this.input.isMeleeHeld() && this.meleeCooldown <= 0) {
+          this.fire(melee);
+          this.meleeRecoil = 1;
+          this.meleeCooldown = melee.fireIntervalSec ?? 0.15;
+        }
+      } else if (this.input.consumeMelee()) {
+        this.fire(melee);
+        this.meleeRecoil = 1;
+      }
     }
 
     // Simulate (may end the game via damage or reaching the exit).
@@ -820,7 +855,7 @@ export class RaycasterEngine {
         bobY: view.bobY,
         recoil: meleeOverlayActive ? this.meleeRecoil : this.recoil,
         flash: meleeOverlayActive ? false : this.muzzleFrames > 0,
-        kind: meleeOverlayActive ? MELEE_WEAPON.viewKind : WEAPONS[this.weaponIndex].viewKind,
+        kind: meleeOverlayActive ? currentMeleeWeapon(this.ownedWeapons).viewKind : WEAPONS[this.weaponIndex].viewKind,
       });
 
       const minimapPanel = renderMinimap(this.ctx, this.map, this.player, this.levelTime);
@@ -1314,7 +1349,10 @@ export class RaycasterEngine {
       }
     } else {
       this.ownedWeapons.add(weaponIndex);
-      this.weaponIndex = weaponIndex;
+      // A melee grant (Toolchain) must never stomp `weaponIndex` — that's the
+      // *ranged* slot, and melee is never wielded through it (see
+      // `currentMeleeWeapon`, which picks it up from `ownedWeapons` instead).
+      if (weapon.meleeRange === undefined) this.weaponIndex = weaponIndex;
       console.log(`%c[loot] unlocked ${weapon.name}!`, "color:#e06aff;font-weight:bold");
     }
   }
@@ -1728,7 +1766,11 @@ export class RaycasterEngine {
    * `UNLOCKABLE_WEAPONS`) has its own independent `ELITE_BONUS_WEAPON_DROP_CHANCE`
    * (60%) odds of dropping as a *second*, separate pickup — so most Elites
    * leave two items behind once a weapon's still missing, not a choice
-   * between them.
+   * between them. Toolchain rides this same 60% roll once
+   * `campaignLevelIndex` reaches `TOOLCHAIN_MIN_LEVEL` — it's deliberately
+   * not in `UNLOCKABLE_WEAPONS` itself (see that constant's doc comment), so
+   * it's added to the candidate list here instead of flowing through
+   * automatically.
    */
   private dropEliteLoot(enemy: Enemy): void {
     if (this.health >= MAX_HEALTH) {
@@ -1740,6 +1782,9 @@ export class RaycasterEngine {
     }
 
     const missing = UNLOCKABLE_WEAPONS.filter((i) => !this.ownedWeapons.has(i));
+    if (this.campaignLevelIndex >= TOOLCHAIN_MIN_LEVEL && !this.ownedWeapons.has(TOOLCHAIN_WEAPON_INDEX)) {
+      missing.push(TOOLCHAIN_WEAPON_INDEX);
+    }
     const bonusWeaponIndex = rollBonusWeaponDrop(missing, this.rng, ELITE_BONUS_WEAPON_DROP_CHANCE);
     if (bonusWeaponIndex !== undefined) {
       this.drops.push({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: bonusWeaponIndex });

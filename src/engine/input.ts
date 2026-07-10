@@ -53,6 +53,7 @@ export interface InputSource {
   consumeMapToggle(): boolean;
   consumeInteract(): boolean;
   consumeMelee(): boolean;
+  isMeleeHeld(): boolean;
   consumeWheelSteps(): number;
   consumeFpsToggle(): boolean;
   consumeCheat(): string | null;
@@ -87,6 +88,11 @@ export interface InputSnapshot {
   mapToggle: boolean;
   interact: boolean;
   melee: boolean;
+  /** Whether Left-Ctrl (or the gamepad's R3/B) is currently held — see
+   * `isMeleeHeld()`. Only meaningfully polled by an `auto` melee weapon
+   * (Toolchain); the knife still only cares about the edge-triggered
+   * `melee` flag above. */
+  meleeHeld: boolean;
   wheelSteps: number;
   fpsToggle: boolean;
   escape: boolean;
@@ -171,6 +177,8 @@ export class InputController implements InputSource {
   private gamepadTurnX = 0;
   /** Whether RT/R2 is currently held — merged into `isFireHeld()`. */
   private gamepadFireHeld = false;
+  /** Whether R3/B is currently held — merged into `isMeleeHeld()`. */
+  private gamepadMeleeHeld = false;
   /** Previous-frame button states, so `pollGamepad` can edge-trigger the
    * one-shot actions (fire/cycle-weapon/melee) the same way key/mouse presses
    * do, instead of re-firing every frame a button stays held. */
@@ -251,6 +259,7 @@ export class InputController implements InputSource {
     this.gamepadMoveY = 0;
     this.gamepadTurnX = 0;
     this.gamepadFireHeld = false;
+    this.gamepadMeleeHeld = false;
     this.prevGpFire = false;
     this.prevGpLB = false;
     this.prevGpRB = false;
@@ -309,6 +318,13 @@ export class InputController implements InputSource {
     const requested = this.meleeQueued;
     this.meleeQueued = false;
     return requested;
+  }
+
+  /** Whether Left-Ctrl (or a gamepad's R3/B) is currently held — polled every
+   * frame by an `auto` melee weapon (Toolchain), unlike `consumeMelee()`'s
+   * one-shot-per-press semantics the knife still uses. */
+  isMeleeHeld(): boolean {
+    return this.keys.has("ControlLeft") || this.gamepadMeleeHeld;
   }
 
   /** Return accumulated mousewheel steps (signed) since the last poll, and
@@ -399,6 +415,7 @@ export class InputController implements InputSource {
       this.gamepadMoveY = 0;
       this.gamepadTurnX = 0;
       this.gamepadFireHeld = false;
+      this.gamepadMeleeHeld = false;
       return;
     }
 
@@ -422,6 +439,7 @@ export class InputController implements InputSource {
     const meleeDown =
       (pad.buttons[GAMEPAD_BUTTON_R3]?.pressed ?? false) || (pad.buttons[GAMEPAD_BUTTON_B]?.pressed ?? false);
     if (meleeDown && !this.prevGpMelee) this.meleeQueued = true;
+    this.gamepadMeleeHeld = meleeDown;
     this.prevGpMelee = meleeDown;
   }
 
@@ -442,6 +460,7 @@ export class InputController implements InputSource {
       mapToggle: this.mapToggleQueued,
       interact: this.interactQueued,
       melee: this.meleeQueued,
+      meleeHeld: this.isMeleeHeld(),
       wheelSteps: this.wheelSteps,
       fpsToggle: this.fpsToggleQueued,
       escape: this.escapeQueued,

@@ -185,6 +185,7 @@ const EMPTY_SNAPSHOT: InputSnapshot = {
   mapToggle: false,
   interact: false,
   melee: false,
+  meleeHeld: false,
   wheelSteps: 0,
   fpsToggle: false,
   escape: false,
@@ -255,6 +256,10 @@ export class ReplayPlaybackInput implements InputSource {
 
   consumeMelee(): boolean {
     return this.current.melee;
+  }
+
+  isMeleeHeld(): boolean {
+    return this.current.meleeHeld;
   }
 
   consumeWheelSteps(): number {

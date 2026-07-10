@@ -24,7 +24,14 @@ import { renderHighscoreTable } from "./ui/highscorePanel";
 import { GameHud } from "./ui/gameHud";
 import { buildControlsLegend } from "./ui/controlsLegend";
 import { DEFAULT_GORE_LEVEL, EXTREME_GORE_ENABLED, type GoreLevel } from "./engine/effects";
-import { FRIDAY_HOTFIX_WEAPON_INDEX, GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX, UNLOCKABLE_WEAPONS } from "./engine/weapons";
+import {
+  FRIDAY_HOTFIX_WEAPON_INDEX,
+  GDB_WEAPON_INDEX,
+  GHIDRA_WEAPON_INDEX,
+  TOOLCHAIN_MIN_LEVEL,
+  TOOLCHAIN_WEAPON_INDEX,
+  UNLOCKABLE_WEAPONS,
+} from "./engine/weapons";
 import { DEFAULT_DIFFICULTY, type DifficultyLevel } from "./difficulty";
 import { randomSeed } from "./prng";
 import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelSegment } from "./engine/replay";
@@ -905,7 +912,7 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   const bonusLevel = BONUS_LEVEL_EXTENSIONS.has(extensionOf(path));
   const hasRocketLauncher = carryover?.ownedWeapons?.includes(GHIDRA_WEAPON_INDEX) ?? false;
   const ownedWeapons = carryover?.ownedWeapons ?? [];
-  const missingWeaponIndices = UNLOCKABLE_WEAPONS.filter((i) => !ownedWeapons.includes(i));
+  const missingWeaponIndices = computeMissingWeaponIndices(ownedWeapons, campaignLevelIndex);
   const map = mapGenerator.generate(parsed, bonusLevel, hasRocketLauncher, missingWeaponIndices);
   // Deliberately spoiler-free: no exit/secret-room/lore-terminal coordinates
   // in the printed text, since that string is also what the console sidebar
@@ -933,7 +940,8 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   hint.className = "map-caption";
   hint.textContent =
     `${path} — reach the green "return" tile to build · ` +
-    `elite kills unlock gdb, ghidra, or Friday Hotfix · grab keys to open blue doors · ` +
+    `elite kills unlock gdb, ghidra, or Friday Hotfix · from level ${TOOLCHAIN_MIN_LEVEL} on, secret rooms and ` +
+    `elites can also drop the Toolchain, replacing your knife · grab keys to open blue doors · ` +
     `step on a glowing pad to warp (goto) · avoid the acid and timed spikes · ` +
     `shoot spotted mines to disarm them from range`;
 
@@ -961,7 +969,11 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   // regardless of whether an Elite ever dropped them — never removes
   // anything, so a weapon already earned by looting is unaffected.
   const effectiveCarryover: EngineCarryover | undefined = carryover
-    ? { ...carryover, ownedWeapons: applyForcedUnlocks(carryover.ownedWeapons ?? [], campaignLevelIndex) }
+    ? {
+        ...carryover,
+        ownedWeapons: applyForcedUnlocks(carryover.ownedWeapons ?? [], campaignLevelIndex),
+        campaignLevelIndex,
+      }
     : undefined;
 
   // A fresh, non-deterministic seed for this level's own randomness (enemy AI
@@ -1074,6 +1086,25 @@ export function applyForcedUnlocks(owned: number[], levelIndex: number): number[
     }
   }
   return [...unlocked];
+}
+
+/** Weapon indices still missing from `owned`, eligible to appear in a secret
+ * room (`MapGenerator.generate`'s `missingWeaponIndices` param) or an Elite's
+ * bonus drop (`RaycasterEngine.dropEliteLoot`) this level. Almost just
+ * `UNLOCKABLE_WEAPONS.filter(...)`, except Toolchain — deliberately excluded
+ * from `UNLOCKABLE_WEAPONS` itself (see its doc comment) — is folded in here
+ * instead, gated by `TOOLCHAIN_MIN_LEVEL`, since it has no forced-unlock
+ * counterpart and isn't reachable via the ordinary per-kill roll. Shared by
+ * `launchLevel` (passed `campaignLevelIndex`) and `buildEngineFor`'s replay
+ * reconstruction (passed the recorded segment's own
+ * `carryover?.campaignLevelIndex`), so a replay recomputes exactly the same
+ * candidate list — and thus the same seeded RNG draw — as the live run did. */
+function computeMissingWeaponIndices(owned: number[], levelIndex: number): number[] {
+  const missing = UNLOCKABLE_WEAPONS.filter((i) => !owned.includes(i));
+  if (levelIndex >= TOOLCHAIN_MIN_LEVEL && !owned.includes(TOOLCHAIN_WEAPON_INDEX)) {
+    missing.push(TOOLCHAIN_WEAPON_INDEX);
+  }
+  return missing;
 }
 
 /** The workspace root's name, or a placeholder if none is loaded yet. See the
@@ -1751,7 +1782,7 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
     const buildEngineFor = (segment: ReplayLevelSegment, parsed: ParsedFile): void => {
       const hasRocketLauncher = segment.carryover?.ownedWeapons?.includes(GHIDRA_WEAPON_INDEX) ?? false;
       const segmentOwnedWeapons = segment.carryover?.ownedWeapons ?? [];
-      const missingWeaponIndices = UNLOCKABLE_WEAPONS.filter((i) => !segmentOwnedWeapons.includes(i));
+      const missingWeaponIndices = computeMissingWeaponIndices(segmentOwnedWeapons, segment.carryover?.campaignLevelIndex ?? 1);
       const map = mapGenerator.generate(parsed, segment.bonusLevel, hasRocketLauncher, missingWeaponIndices);
       currentParsed = parsed;
       currentSegment = segment;
