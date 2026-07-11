@@ -218,6 +218,8 @@ npm run preview    # Serve production build locally
 | 71–73 | Wall-edge antialiasing, corridor Edge Case enemies, compass flag removal | ✅ |
 | 74–78 | Bonus/Elite weapon drops, bundled Demo Campaign + Demos tab, Toolchain chainsaw | ✅ |
 | 79–80 | Engine frame-cap investigation (reverted), headless-bot-generated default highscores + replays for the Demo Campaign | ✅ |
+| 81 | GitHub Action for the demo-campaign structural verify script | ✅ |
+| 82–85 | Perf pass: per-shot enemy/mine projection reuse, ammo/loot/AI dedup, LOS memoization + rocket spatial hash, shared BFS enemy path field | ✅ |
 | — | Room decorations | ⏸️ Implemented, disabled (playtest feedback) |
 
 ---
@@ -274,12 +276,16 @@ src/
     ├── sprites.ts           # Enemy/key/teleporter billboards
     ├── effects.ts           # Bullet tracers, flame streams, blood, explosions
     ├── enemyAi.ts           # AI behavior (roam/chase/melee/ranged)
+    ├── pathField.ts         # Shared player-rooted BFS distance field all chasing enemies steer by
+    ├── spatialGrid.ts       # Tile-bucketed enemy index for rocket proximity/blast queries
     ├── projectiles.ts       # Enemy bolts
     ├── rockets.ts           # Player rocket projectiles & splash damage
     ├── traps.ts             # Spike traps & proximity mines
     ├── weapons.ts           # Weapon stats, tracers, spread
+    ├── ammo.ts              # Ammo pool state & per-pool metadata
     ├── viewmodel.ts         # First-person weapon sprite (Canvas 2D)
     ├── loot.ts              # Weighted random drops
+    ├── lootApply.ts         # Drop/pickup application (grant, top-up, elite bonus)
     ├── scoring.ts           # Score calculation
     ├── highscores.ts        # Leaderboard (hashing, compression)
     ├── defaultHighscore.ts  # Bundled example leaderboard entries (bot-generated, shown when the real board is empty)
