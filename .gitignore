@@ -4,6 +4,7 @@ dist-ssr
 *.local
 .vite
 .verify-output
+coverage
 
 # Editor
 .vscode/*
