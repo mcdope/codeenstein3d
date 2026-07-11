@@ -1,0 +1,62 @@
+name: Verify
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: verify (no browser)
+    runs-on: ubuntu-latest
+    # verify:wad-parser and verify:campaign are pure Node (parser + map
+    # generator via esbuild, no browser at all) — skip Playwright's browser
+    # download, which `npm ci` would otherwise trigger for nothing.
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run verify:wad-parser
+      - run: npm run verify:campaign
+
+  verify-browser:
+    name: verify (Playwright/Chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      # Browser binary download (~100+MB) is skipped on a cache hit; OS
+      # library deps (apt packages) aren't covered by the cache above since
+      # every run gets a fresh VM, so those always need (re)installing.
+      - name: Install Playwright browser binary
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium
+      - name: Install Playwright OS dependencies
+        run: npx playwright install-deps chromium
+      - name: Start dev server
+        run: |
+          npm run dev -- --port 5173 --strictPort &
+          for i in $(seq 1 30); do
+            curl -s -o /dev/null http://localhost:5173/ && break
+            sleep 1
+          done
+      - run: npm run verify:wad-textures
+      - run: npm run verify:campaign:playthrough
+        env:
+          CODEENSTEIN_DEV_URL: "http://localhost:5173"
