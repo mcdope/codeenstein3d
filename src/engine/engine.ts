@@ -20,6 +20,7 @@ import { collectProjectileBillboards, updateProjectiles, type Projectile } from 
 import { InputController, type InputSource } from "./input";
 import type { CampaignReplayRecorder } from "./replay";
 import { FOG_FAR, renderMinimap, renderScene } from "./raycaster";
+import { textures } from "./textures";
 import {
   collectDecorationBillboards,
   collectEnemyBillboards,
@@ -508,6 +509,9 @@ export class RaycasterEngine {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2D canvas context unavailable");
     this.ctx = ctx;
+    // Nearest-neighbor scaling for wall/door texture columns — cheaper than
+    // bilinear and correct for the game's existing chunky low-res look.
+    this.ctx.imageSmoothingEnabled = false;
     this.player = new Player(map);
     this.godMode = carryover?.godMode ?? false;
     this.player.noClip = carryover?.noClip ?? false;
@@ -833,7 +837,7 @@ export class RaycasterEngine {
 
     // Render — one final frozen frame is still drawn after the game ends.
     const { width, height } = this.ctx.canvas;
-    renderScene(this.ctx, this.map, this.player, this.zBuffer, view.horizonShift, this.levelTime);
+    renderScene(this.ctx, this.map, this.player, this.zBuffer, textures.getActiveSet(), view.horizonShift, this.levelTime);
     this.renderWorldBillboards();
 
     this.target = findTargetUnderCrosshair(
@@ -934,7 +938,7 @@ export class RaycasterEngine {
    * freezes the sim — see `advance()`.
    */
   private renderPausedOverlay(): void {
-    renderScene(this.ctx, this.map, this.player, this.zBuffer, 0, this.levelTime);
+    renderScene(this.ctx, this.map, this.player, this.zBuffer, textures.getActiveSet(), 0, this.levelTime);
     this.renderWorldBillboards();
     drawPauseOverlay(this.ctx);
     if (this.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
@@ -947,7 +951,7 @@ export class RaycasterEngine {
    * another interact or a click.
    */
   private renderLoreOverlay(): void {
-    renderScene(this.ctx, this.map, this.player, this.zBuffer, 0, this.levelTime);
+    renderScene(this.ctx, this.map, this.player, this.zBuffer, textures.getActiveSet(), 0, this.levelTime);
     this.renderWorldBillboards();
     const { maxScrollLines } = drawLoreOverlay(this.ctx, this.loreText ?? "", this.loreScroll);
     this.loreScroll = Math.max(0, Math.min(this.loreScroll, maxScrollLines));

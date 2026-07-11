@@ -10,6 +10,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "verify:wad-parser": "node scripts/verify-wad-parser.mjs",
+    "verify:wad-textures": "node scripts/verify-wad-textures.mjs",
     "verify:campaign": "node scripts/verify-demo-campaign.mjs",
     "verify:campaign:playthrough": "node scripts/verify-campaign-playthrough.mjs",
     "generate:default-highscore": "node scripts/generate-default-highscore.mjs"

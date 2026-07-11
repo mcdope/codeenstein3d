@@ -20,23 +20,16 @@ import {
 } from "../map/types";
 import type { Player } from "./player";
 import { EDGE_CASE_COLOR, enemyColor } from "./sprites";
+import type { TextureBitmap, TextureSet } from "./textures";
 import { activeSpikeTileKeys } from "./traps";
 
-/** Base wall color (a warm dungeon brick), before distance shading. */
-const WALL_RGB: [number, number, number] = [186, 152, 116];
-/** A bonus (restock-arena) level uses a cool, distinct steel-and-teal theme
- * instead of the normal warm brick, so it reads as visually different the
- * instant it loads — see `GameMap.bonusLevel`. */
-const BONUS_WALL_RGB: [number, number, number] = [92, 142, 168];
+/** A bonus (restock-arena) level's ceiling stays a distinct cool tone,
+ * matching its steel/teal wall and floor textures — see `GameMap.bonusLevel`. */
 const BONUS_CEILING_RGB: [number, number, number] = [8, 16, 24];
-const BONUS_FLOOR_RGB: [number, number, number] = [14, 24, 30];
-/** Locked-door color (a cold steel blue), before distance shading. */
-const DOOR_RGB: [number, number, number] = [86, 142, 190];
 /** Lore terminal wall color (a glowing violet-cyan), before pulsing/shading. */
 const LORE_RGB: [number, number, number] = [120, 200, 210];
-/** Ceiling, plain floor, and hazard (acid) floor base colors, as RGB. */
+/** Ceiling and hazard (acid) floor base colors, as RGB. */
 const CEILING_RGB: [number, number, number] = [11, 13, 22];
-const FLOOR_RGB: [number, number, number] = [21, 21, 26];
 const ACID_RGB: [number, number, number] = [64, 196, 72];
 /** Base color for goto/label teleporter pad floor tiles, before pulsing. */
 const TELEPORTER_RGB: [number, number, number] = [130, 70, 220];
@@ -44,28 +37,20 @@ const TELEPORTER_RGB: [number, number, number] = [130, 70, 220];
 const SPIKE_SAFE_RGB: [number, number, number] = [90, 90, 96];
 const SPIKE_ACTIVE_RGB: [number, number, number] = [220, 40, 30];
 
-/** Wall/floor/ceiling base colors for `map`'s theme — bonus (restock arena)
- * levels get a distinct cool palette (see `BONUS_WALL_RGB`). */
-function scenePalette(map: GameMap): {
-  wall: [number, number, number];
-  floor: [number, number, number];
-  ceiling: [number, number, number];
-} {
-  return map.bonusLevel
-    ? { wall: BONUS_WALL_RGB, floor: BONUS_FLOOR_RGB, ceiling: BONUS_CEILING_RGB }
-    : { wall: WALL_RGB, floor: FLOOR_RGB, ceiling: CEILING_RGB };
+/** Ceiling base color for `map`'s theme — bonus (restock arena) levels get a
+ * distinct cool ceiling to match their steel/teal wall and floor textures. */
+function sceneCeiling(map: GameMap): [number, number, number] {
+  return map.bonusLevel ? BONUS_CEILING_RGB : CEILING_RGB;
 }
 
 /**
  * A fake secret wall is meant to be findable, not literally invisible: a very
- * slight cool nudge off the real wall color (a touch less red, a touch more
- * blue) — subtle enough to blend in at a glance or in the heat of a fight,
- * but a player who stops and really looks at a stretch of wall has a real
- * shot at spotting it before ever pressing "R" against it.
+ * slight cool translucent overlay drawn on top of the real wall texture —
+ * subtle enough to blend in at a glance or in the heat of a fight, but a
+ * player who stops and really looks at a stretch of wall has a real shot at
+ * spotting it before ever pressing "R" against it.
  */
-function secretWallTint(base: [number, number, number]): [number, number, number] {
-  return [Math.max(0, base[0] - 8), base[1], Math.min(255, base[2] + 10)];
-}
+const SECRET_WALL_OVERLAY = "rgba(20,40,90,0.12)";
 /** Within this many tiles the world keeps full brightness (no fog). */
 const FOG_NEAR = 2.5;
 /** Beyond this many tiles the world has faded to pure black — also doubles as
@@ -92,6 +77,39 @@ function fogShade(dist: number): number {
 let floorImage: ImageData | null = null;
 
 /**
+ * Exact shaded color of one texel at a given screen row, read straight from
+ * `tex.pixels` (no runtime `getImageData`). Used for the wall/door/secret-wall
+ * edge-antialiasing rows, where a flat blend color would visibly smear a flat
+ * tone across a patterned texture instead of blending its true edge color.
+ */
+function shadedTexel(
+  tex: TextureBitmap,
+  texX: number,
+  screenY: number,
+  wallTop: number,
+  wallBottom: number,
+  shade: number,
+  secret: boolean,
+): string {
+  const v = Math.max(
+    0,
+    Math.min(tex.height - 1, Math.floor(((screenY - wallTop) / (wallBottom - wallTop)) * tex.height)),
+  );
+  const i = (v * tex.width + texX) * 4;
+  let r = tex.pixels[i] * shade;
+  let g = tex.pixels[i + 1] * shade;
+  let b = tex.pixels[i + 2] * shade;
+  if (secret) {
+    // Same subtle "findable, not invisible" nudge as `SECRET_WALL_OVERLAY`,
+    // applied directly to the sampled texel since this row is drawn with an
+    // exact color rather than an overlay blend.
+    r *= 0.88;
+    b = Math.min(255, b + 10 * shade);
+  }
+  return `rgb(${r | 0},${g | 0},${b | 0})`;
+}
+
+/**
  * Draw one frame of the 3D walls into the canvas, and record the perpendicular
  * wall distance for each column into `zBuffer` (length must equal the canvas
  * width). Sprites use that buffer to hide behind walls.
@@ -101,6 +119,7 @@ export function renderScene(
   map: GameMap,
   player: Player,
   zBuffer: Float64Array,
+  textureSet: TextureSet,
   horizonShift = 0,
   levelTime = 0,
 ): void {
@@ -109,20 +128,12 @@ export function renderScene(
   // Screen row of the horizon, nudged by the head-bob so walls, ceiling, and
   // floor all rise and fall with the camera.
   const horizon = height / 2 + horizonShift;
-  const palette = scenePalette(map);
 
-  if (map.hazards.length > 0 || map.teleporters.length > 0 || map.spikeTraps.length > 0) {
-    // Floor-cast so acid pools / teleporter pads / spike traps appear as
-    // colored floor tiles.
-    renderBackground(ctx, map, player, width, height, horizon, levelTime);
-  } else {
-    // No hazards: flat ceiling (above the horizon) and floor (below) is cheaper.
-    const split = Math.max(0, Math.min(height, Math.round(horizon)));
-    ctx.fillStyle = rgb(palette.ceiling);
-    ctx.fillRect(0, 0, width, split);
-    ctx.fillStyle = rgb(palette.floor);
-    ctx.fillRect(0, split, width, height - split);
-  }
+  // Floor-cast every frame now that the floor is texture-mapped — this used
+  // to be skipped in favor of two flat `fillRect`s on maps with no hazards/
+  // teleporters/traps, but that fast path can't show floor texture
+  // variation, so it's retired (see renderBackground's doc comment).
+  renderBackground(ctx, map, player, width, height, horizon, levelTime, textureSet);
 
   // Lore terminal walls pulse gently so they read as an active "terminal"
   // rather than a static tinted wall — computed once per frame, not per column.
@@ -198,6 +209,12 @@ export function renderScene(
     const dist = Math.max(perpDist, 0.0001);
     zBuffer[x] = dist;
 
+    // Where exactly the ray hit the wall face, in [0,1) along its width — the
+    // texture-space U coordinate. Classic DDA formula: recover the hit
+    // point's off-axis world coordinate and take its fractional part.
+    let wallX = side === 0 ? player.posY + dist * rayDirY : player.posX + dist * rayDirX;
+    wallX -= Math.floor(wallX);
+
     // Kept as floats (not floored to whole pixels) so the top/bottom edge can
     // be antialiased below — flooring here is what causes the classic
     // raycaster "staircase" silhouette against the ceiling/floor.
@@ -205,41 +222,91 @@ export function renderScene(
     const wallTop = horizon - lineHeight / 2;
     const wallBottom = horizon + lineHeight / 2;
 
-    // Distance fog, dimmed further on y-sides for depth. Doors use their own
-    // color so they read as openable, not solid rock.
+    // Distance fog, dimmed further on y-sides for depth.
     let shade = fogShade(dist);
     if (side === 1) shade *= SIDE_SHADE;
 
-    const base =
+    // Lore terminals stay a flat, pulsing glow — a deliberately distinct
+    // "interactable" signal a generic wall texture would dilute. Every other
+    // solid tile (plain wall, secret wall, door) samples a real texture.
+    const tex: TextureBitmap | null =
       hitTile === DOOR_TILE
-        ? DOOR_RGB
+        ? textureSet.door
         : hitTile === LORE_TILE
-          ? loreGlow
-          : hitTile === SECRET_WALL_TILE
-            ? secretWallTint(palette.wall)
-            : palette.wall;
-    const r = Math.floor(base[0] * shade);
-    const g = Math.floor(base[1] * shade);
-    const b = Math.floor(base[2] * shade);
-    ctx.fillStyle = `rgb(${r},${g},${b})`;
+          ? null
+          : map.bonusLevel
+            ? textureSet.bonusWall
+            : textureSet.wall;
 
-    // Fully-covered rows get an opaque fill, same as before.
     const solidStart = Math.max(0, Math.ceil(wallTop));
     const solidEnd = Math.min(height, Math.floor(wallBottom));
-    if (solidEnd > solidStart) {
-      ctx.fillRect(x, solidStart, 1, solidEnd - solidStart);
+
+    if (!tex) {
+      const r = Math.floor(loreGlow[0] * shade);
+      const g = Math.floor(loreGlow[1] * shade);
+      const b = Math.floor(loreGlow[2] * shade);
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      if (solidEnd > solidStart) {
+        ctx.fillRect(x, solidStart, 1, solidEnd - solidStart);
+      }
+
+      if (wallTop > 0 && wallTop < height) {
+        const edgeRow = Math.floor(wallTop);
+        const coverage = Math.min(1, edgeRow + 1 - wallTop, wallBottom - wallTop);
+        if (coverage > 0) {
+          ctx.globalAlpha = coverage;
+          ctx.fillRect(x, edgeRow, 1, 1);
+          ctx.globalAlpha = 1;
+        }
+      }
+      if (wallBottom > 0 && wallBottom < height) {
+        const edgeRow = Math.floor(wallBottom);
+        if (edgeRow !== Math.floor(wallTop) || wallTop <= 0) {
+          const coverage = Math.min(1, wallBottom - edgeRow);
+          if (coverage > 0) {
+            ctx.globalAlpha = coverage;
+            ctx.fillRect(x, edgeRow, 1, 1);
+            ctx.globalAlpha = 1;
+          }
+        }
+      }
+      continue;
     }
 
-    // Edge antialiasing: the row straddling `wallTop`/`wallBottom` is only
-    // partially covered by the wall (the rest is ceiling/floor, already
-    // painted underneath) — blend it in proportionally instead of rounding
-    // it to fully wall or fully background. Skipped where the wall runs off
-    // the top/bottom of the screen, since there's no partial coverage there
-    // (the row is either fully wall or off-canvas, not a real edge).
+    // Mirror correction: without this, facing walls on the "far" side of a
+    // cell would sample their texture backwards.
+    let texX = Math.floor(wallX * tex.width);
+    if (side === 0 && rayDirX > 0) texX = tex.width - texX - 1;
+    if (side === 1 && rayDirY < 0) texX = tex.width - texX - 1;
+    texX = Math.max(0, Math.min(tex.width - 1, texX));
+
+    // Bulk blit: one source column, scaled to the wall's on-screen span —
+    // drawImage clips to canvas bounds natively, no manual clamping needed.
+    ctx.drawImage(tex.canvas, texX, 0, 1, tex.height, x, wallTop, 1, wallBottom - wallTop);
+
+    if (solidEnd > solidStart) {
+      // Alpha-blending black at (1-shade) over an opaque pixel reproduces
+      // the old flat-fill era's `base*shade` multiply exactly, and composes
+      // for free with the `drawImage` scale above.
+      ctx.globalAlpha = 1 - shade;
+      ctx.fillStyle = "#000";
+      ctx.fillRect(x, solidStart, 1, solidEnd - solidStart);
+      if (hitTile === SECRET_WALL_TILE) {
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = SECRET_WALL_OVERLAY;
+        ctx.fillRect(x, solidStart, 1, solidEnd - solidStart);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // Edge antialiasing: sample the exact shaded texel at the boundary row
+    // instead of a flat blend color, so the partial-coverage row matches the
+    // texture's pattern instead of smearing one flat tone across it.
     if (wallTop > 0 && wallTop < height) {
       const edgeRow = Math.floor(wallTop);
       const coverage = Math.min(1, edgeRow + 1 - wallTop, wallBottom - wallTop);
       if (coverage > 0) {
+        ctx.fillStyle = shadedTexel(tex, texX, edgeRow, wallTop, wallBottom, shade, hitTile === SECRET_WALL_TILE);
         ctx.globalAlpha = coverage;
         ctx.fillRect(x, edgeRow, 1, 1);
         ctx.globalAlpha = 1;
@@ -253,6 +320,7 @@ export function renderScene(
       if (edgeRow !== Math.floor(wallTop) || wallTop <= 0) {
         const coverage = Math.min(1, wallBottom - edgeRow);
         if (coverage > 0) {
+          ctx.fillStyle = shadedTexel(tex, texX, edgeRow, wallTop, wallBottom, shade, hitTile === SECRET_WALL_TILE);
           ctx.globalAlpha = coverage;
           ctx.fillRect(x, edgeRow, 1, 1);
           ctx.globalAlpha = 1;
@@ -263,9 +331,14 @@ export function renderScene(
 }
 
 /**
- * Floor-cast the background: ceiling in the top half, and for the bottom half
- * the actual floor cell under each pixel — tinted acid-green on hazard tiles —
- * with mild distance shading. Painted before the walls, which then occlude it.
+ * Floor-cast the background: ceiling in the top half (flat-colored), and for
+ * the bottom half the actual floor cell under each pixel — the real floor
+ * texture on plain tiles, or a pulsing flat tint on hazard/teleporter/
+ * spike-trap tiles — with mild distance shading. Painted before the walls,
+ * which then occlude it. Runs unconditionally now that the floor is
+ * texture-mapped (it used to be skipped in favor of two flat `fillRect`s on
+ * maps with no hazards/teleporters/traps — that fast path can't show a
+ * texture, so it's retired).
  */
 function renderBackground(
   ctx: CanvasRenderingContext2D,
@@ -275,13 +348,15 @@ function renderBackground(
   height: number,
   horizon: number,
   levelTime: number,
+  textureSet: TextureSet,
 ): void {
   if (!floorImage || floorImage.width !== width || floorImage.height !== height) {
     floorImage = ctx.createImageData(width, height);
   }
   const data = floorImage.data;
   const halfH = horizon;
-  const palette = scenePalette(map);
+  const ceiling = sceneCeiling(map);
+  const floorTex = map.bonusLevel ? textureSet.bonusFloor : textureSet.floor;
 
   // Teleporter pads pulse gently so they read as "active" rather than a
   // static colored tile; computed once per frame, not per pixel.
@@ -315,9 +390,9 @@ function renderBackground(
     if (y < halfH) {
       // Ceiling: flat fill.
       for (let x = 0; x < width; x++) {
-        data[idx++] = palette.ceiling[0];
-        data[idx++] = palette.ceiling[1];
-        data[idx++] = palette.ceiling[2];
+        data[idx++] = ceiling[0];
+        data[idx++] = ceiling[1];
+        data[idx++] = ceiling[2];
         data[idx++] = 255;
       }
       continue;
@@ -337,17 +412,37 @@ function renderBackground(
       const cy = Math.floor(floorY);
       const tile =
         cx >= 0 && cy >= 0 && cx < map.width && cy < map.height ? map.grid[cy][cx] : -1;
-      const base =
-        tile === TELEPORTER_TILE
-          ? teleporterGlow
-          : tile === HAZARD_TILE
-            ? ACID_RGB
-            : tile === SPIKE_TRAP_TILE
-              ? (activeSpikes.has(`${cx},${cy}`) ? spikeActiveGlow : SPIKE_SAFE_RGB)
-              : palette.floor;
-      data[idx++] = base[0] * shade;
-      data[idx++] = base[1] * shade;
-      data[idx++] = base[2] * shade;
+
+      let r: number;
+      let g: number;
+      let b: number;
+      if (tile === TELEPORTER_TILE) {
+        r = teleporterGlow[0];
+        g = teleporterGlow[1];
+        b = teleporterGlow[2];
+      } else if (tile === HAZARD_TILE) {
+        r = ACID_RGB[0];
+        g = ACID_RGB[1];
+        b = ACID_RGB[2];
+      } else if (tile === SPIKE_TRAP_TILE) {
+        const glow = activeSpikes.has(`${cx},${cy}`) ? spikeActiveGlow : SPIKE_SAFE_RGB;
+        r = glow[0];
+        g = glow[1];
+        b = glow[2];
+      } else {
+        // Plain floor (and out-of-bounds/wall-covered background): sample
+        // the floor texture. The fractional part of the already-computed
+        // world position *is* the texture UV — no extra math needed.
+        const u = Math.min(floorTex.width - 1, Math.floor((floorX - cx) * floorTex.width));
+        const v = Math.min(floorTex.height - 1, Math.floor((floorY - cy) * floorTex.height));
+        const i = (v * floorTex.width + u) * 4;
+        r = floorTex.pixels[i];
+        g = floorTex.pixels[i + 1];
+        b = floorTex.pixels[i + 2];
+      }
+      data[idx++] = r * shade;
+      data[idx++] = g * shade;
+      data[idx++] = b * shade;
       data[idx++] = 255;
       floorX += stepX;
       floorY += stepY;
@@ -355,10 +450,6 @@ function renderBackground(
   }
 
   ctx.putImageData(floorImage, 0, 0);
-}
-
-function rgb([r, g, b]: [number, number, number]): string {
-  return `rgb(${r},${g},${b})`;
 }
 
 /** The minimap panel's outer bounding box in canvas pixels, as returned by
@@ -432,9 +523,10 @@ export function renderMinimap(
   // the player actually finds/opens it (this minimap has no fog-of-war gate
   // at all, unlike the automap, so a distinct color here would reveal every
   // secret room's exact position from the moment the level loads). The one
-  // intended discovery hint is the much subtler in-view tint (`secretWallTint`,
-  // used by `renderScene`); once opened, the tile becomes plain floor (0) and
-  // stops being drawn here at all, like any other explored room.
+  // intended discovery hint is the much subtler in-view overlay
+  // (`SECRET_WALL_OVERLAY`, used by `renderScene`); once opened, the tile
+  // becomes plain floor (0) and stops being drawn here at all, like any
+  // other explored room.
   ctx.fillStyle = map.bonusLevel ? "#3f7fae" : "#4a4a55";
   for (let y = 0; y < map.height; y++) {
     const row = map.grid[y];

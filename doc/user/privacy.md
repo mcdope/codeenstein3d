@@ -35,6 +35,7 @@ If you haven't set any scores of your own yet, the Highscores dialog shows 3 exa
 
 - The actual text/contents of your source files
 - Anything from a **custom BGM folder** — picked the same way as a workspace, played locally via a local object URL, never read into memory as a whole file or transmitted anywhere
+- Your **WAD texture pack** file — read locally into memory to extract textures, never transmitted anywhere, and never persisted: it's gone the moment you reload the page
 - Any personal or account information — there's nothing to log in with
 - Any of the above while a Doom-style cheat code (`IDDQD`/`IDCLIP`/`IDKFA`) is active for that run — a cheated run isn't recorded to the highscore board at all
 

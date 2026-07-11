@@ -40,6 +40,5 @@ A few open items in [`notes`](../../notes)' `## Open` section are design-facing 
 
 - **Balancing** is explicitly still open — numbers throughout (HP curves, drop rates, aggro distances) are expected to keep moving.
 - **Room decorations** were implemented once, disabled twice after playtest feedback (felt like visual clutter rather than atmosphere), and are sitting behind a flag pending a design rethink — not deleted, because the underlying idea (rooms feeling less empty) is still worth pursuing.
-- **WAD-sourced textures** are a discovered/considered idea, not committed to.
 
 See `notes` directly for current status on any of these — this doc intentionally doesn't track checkbox state.

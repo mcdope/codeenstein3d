@@ -27,6 +27,7 @@ Load anything from a massive Symfony enterprise project to low-level C code like
 
 ### Game Systems
 - ✅ **Retro raycaster engine** — DDA algorithm, distance fog, collision detection
+- ✅ **Textured walls, doors & floors** — procedural default textures, or load a real DOOM `.wad` file to source them instead
 - ✅ **Scoring system** — kills scaled by complexity, bonuses for speed/health/exploration/lore
 - ✅ **Persistent leaderboards** — top-10 board with AST+campaign hashing (compare runs)
 - ✅ **Deterministic replay** — record and playback entire multi-level campaigns frame-for-frame
@@ -181,6 +182,7 @@ npm run preview    # Serve production build locally
 - **Difficulty** — Sidebar dropdown (Easy/Normal/Hard) scales enemy HP, damage, ammo scarcity
 - **Master / SFX / Music** — Volume sliders for each bus (persisted across sessions)
 - **Select BGM Folder** — Pick a local folder of audio files for custom playlist
+- **Load WAD Texture Pack** — Pick a DOOM `.wad` file to source real wall/door/floor textures from (auto-selected, no picker); session-only, falls back silently to defaults for anything not found
 
 ### Level Flow
 - **Pick workspace** → Auto-starts at detected entrypoint (or first parsable file)
@@ -220,6 +222,7 @@ npm run preview    # Serve production build locally
 | 79–80 | Engine frame-cap investigation (reverted), headless-bot-generated default highscores + replays for the Demo Campaign | ✅ |
 | 81 | GitHub Action for the demo-campaign structural verify script | ✅ |
 | 82–85 | Perf pass: per-shot enemy/mine projection reuse, ammo/loot/AI dedup, LOS memoization + rocket spatial hash, shared BFS enemy path field | ✅ |
+| 86 | Texture-mapped walls/doors/floors (procedural default, or sourced from a loaded DOOM WAD file) | ✅ |
 | — | Room decorations | ⏸️ Implemented, disabled (playtest feedback) |
 
 ---
@@ -269,9 +272,11 @@ src/
 │   ├── c/                   # C adapter (bespoke)
 │   └── generic/             # 12-language data-driven adapter + vocabulary + refinements
 ├── map/                     # Procedural map generator (grid, enemies, hazards)
+├── wad/                     # DOOM WAD parser (PLAYPAL/PNAMES/TEXTUREx/patches/flats) — feeds engine/textures.ts only
 └── engine/                  # 2.5D raycaster + gameplay
     ├── engine.ts            # Game loop (sim, combat, stats)
     ├── raycaster.ts         # DDA wall renderer + fog
+    ├── textures.ts          # Wall/door/floor TextureSet: procedural defaults, or WAD-sourced via src/wad/
     ├── player.ts            # Camera, movement, collision
     ├── sprites.ts           # Enemy/key/teleporter billboards
     ├── effects.ts           # Bullet tracers, flame streams, blood, explosions

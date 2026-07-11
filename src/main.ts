@@ -19,6 +19,7 @@ import { MapGenerator } from "./map/mapGenerator";
 import { RaycasterEngine } from "./engine/engine";
 import { audio } from "./engine/audio";
 import { bgm } from "./engine/bgm";
+import { textures, type WadLoadSummary } from "./engine/textures";
 import { hashRun, loadHighscoresForDisplay, recordHighscore, type HighscoreEntry } from "./engine/highscores";
 import { renderHighscoreTable } from "./ui/highscorePanel";
 import { GameHud } from "./ui/gameHud";
@@ -101,6 +102,9 @@ const sfxVolumeInput = requireElement<HTMLInputElement>("#sfx-vol");
 const bgmVolumeInput = requireElement<HTMLInputElement>("#bgm-vol");
 const selectBgmFolderButton = requireElement<HTMLButtonElement>("#select-bgm-folder");
 const bgmStatus = requireElement<HTMLParagraphElement>("#bgm-status");
+const loadWadTexturesButton = requireElement<HTMLButtonElement>("#load-wad-textures");
+const wadFileInput = requireElement<HTMLInputElement>("#wad-file-input");
+const wadStatus = requireElement<HTMLParagraphElement>("#wad-status");
 const viewHighscoresButton = requireElement<HTMLButtonElement>("#view-highscores");
 const highscoreDialog = requireElement<HTMLDialogElement>("#highscore-dialog");
 const highscoreList = requireElement<HTMLElement>("#highscore-list");
@@ -172,6 +176,45 @@ selectBgmFolderButton.addEventListener("click", async () => {
   } catch (err) {
     console.error("[bgm] Failed to load BGM folder:", err);
     bgmStatus.textContent = err instanceof Error ? err.message : "Failed to load BGM folder.";
+  }
+});
+
+// --- WAD texture pack --------------------------------------------------------
+// Optional: source real wall/door/floor textures from a DOOM WAD instead of
+// the built-in procedural defaults (see `TextureManager` in engine/textures.ts
+// for the auto-selection/fallback rules). A single file, not a folder, so a
+// plain `<input type="file">` is used instead of the File System Access API
+// picker the other launch/BGM flows use — simpler, and works in every
+// Canvas2D-capable browser, not just Chromium.
+
+function describeWadStatus(result: WadLoadSummary, fileName: string): string {
+  if (!result.ok) return `Failed to load ${fileName}: ${result.error}`;
+
+  const matched: string[] = [];
+  if (result.wallName) matched.push(`walls (${result.wallName})`);
+  if (result.bonusWallName) matched.push(`bonus walls (${result.bonusWallName})`);
+  if (result.doorName) matched.push(`doors (${result.doorName})`);
+  if (result.floorName) matched.push(`floors (${result.floorName})`);
+  if (result.bonusFloorName) matched.push(`bonus floors (${result.bonusFloorName})`);
+
+  if (matched.length === 0) return `No matching textures found in ${fileName} — using built-in defaults`;
+  const missing = matched.length < 5 ? " — remaining slots using defaults" : "";
+  return `Using WAD textures: ${matched.join(", ")}${missing}`;
+}
+
+loadWadTexturesButton.addEventListener("click", () => wadFileInput.click());
+wadFileInput.addEventListener("change", async () => {
+  const file = wadFileInput.files?.[0];
+  wadFileInput.value = ""; // allow re-selecting the same file to re-fire "change"
+  if (!file) return;
+  wadStatus.textContent = "Loading…";
+  try {
+    const bytes = await file.arrayBuffer();
+    const result = textures.loadFromWad(bytes);
+    wadStatus.textContent = describeWadStatus(result, file.name);
+  } catch (err) {
+    console.error("[wad] Failed to load WAD file:", err);
+    wadStatus.textContent = err instanceof Error ? err.message : "Failed to load WAD file.";
   }
 });
 

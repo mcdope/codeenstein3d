@@ -3,6 +3,7 @@ dist
 dist-ssr
 *.local
 .vite
+.verify-output
 
 # Editor
 .vscode/*

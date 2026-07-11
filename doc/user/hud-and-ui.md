@@ -28,8 +28,9 @@ Press `Tab` to open the automap — a translucent overlay, Diablo-style, that do
 - **Difficulty** — Easy / Normal / Hard, scales enemy HP, enemy damage, and pickup scarcity. See [Mechanics](mechanics.md#difficulty) for exact numbers.
 - **Master / SFX / Music** volume sliders, persisted across sessions.
 - **Select BGM Folder** — pick a local folder of `.mp3`/`.ogg`/`.wav` files to play as a shuffled custom soundtrack instead of silence.
+- **Load WAD Texture Pack** — pick a DOOM `.wad` file to source real wall/door/floor textures from instead of the built-in default look. The game automatically picks a handful of common, broadly-compatible textures/flats out of the WAD (no picker) and falls back silently to the defaults for anything it can't find — a status line under the button reports what was actually used.
 
-All of these are standing preferences, independent of any specific campaign run.
+All of these are standing preferences, independent of any specific campaign run, except the WAD texture pack — that one is session-only and needs re-selecting after a page reload, rather than being remembered like the others.
 
 ## Highscores
 
