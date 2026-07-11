@@ -43,7 +43,7 @@ first thing at the start of every session, before touching code.
   - [x] typecheck clean, `npm test` green, `npm run coverage` runs and
         correctly excludes defaultHighscore.ts/empty-node-shim.ts while
         including everything else (incl. main.ts) — committing now
-- [ ] Phase 1: src/ root (difficulty.ts, prng.ts)
+- [x] Phase 1: src/ root (difficulty.ts, prng.ts) — both 100% covered
 - [ ] Phase 2: src/wad/ (9 files)
 - [ ] Phase 3: src/parser/ wasm-free (6 files)
 - [ ] Phase 4: src/parser/ wasm-runtime (5 files)
@@ -58,9 +58,9 @@ first thing at the start of every session, before touching code.
 
 ## Current coverage snapshot
 
-All files: 0.09% stmts / 100% branch / 100% funcs / 0.09% lines (only
-runtime.test.ts exists so far — 1 file genuinely covered out of ~85).
-defaultHighscore.ts and empty-node-shim.ts correctly absent from the report.
+src/difficulty.ts and src/prng.ts: 100%/100%/100%/100%. Rest of the repo
+still 0% (not yet reached). defaultHighscore.ts and empty-node-shim.ts
+correctly absent from the report.
 
 ## Known open issues / deferred decisions
 
@@ -74,5 +74,7 @@ defaultHighscore.ts and empty-node-shim.ts correctly absent from the report.
 
 ## Next concrete step
 
-Start Phase 1: write src/difficulty.test.ts and src/prng.test.ts (both pure,
-no mocks needed). Read src/difficulty.ts and src/prng.ts first.
+Start Phase 2: src/wad/ (9 files). Read scripts/verify-wad-parser.mjs and
+scripts/fixtures/buildTestWad.mjs first — reuse buildTestWad.mjs's fixtures
+directly rather than re-deriving synthetic WAD bytes. Start with the
+simplest file (playpal.ts or pnames.ts) and work up to loadWad.ts.
