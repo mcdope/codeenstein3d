@@ -61,8 +61,19 @@ describe("compositeTexture", () => {
     expect(result.rgba.every((b) => b === 0)).toBe(true);
   });
 
+  it("clips a post's pixels that fall outside the height, while destX stays in bounds", () => {
+    const { view, lumps, pnames, palette } = loadFixtureParts();
+    // PATCH1 is 4x4 with a single 4-pixel-tall post per column; a 2-tall
+    // texture clips pixel rows 2-3 (destY out of range) while destX (0-3)
+    // stays within this 4-wide texture the whole time.
+    const def: TextureDef = { name: "X", width: 4, height: 2, patches: [{ originX: 0, originY: 0, patchIndex: 0 }] };
+    const result = compositeTexture(def, pnames, (n) => findLump(lumps, n), view, palette);
+    expect(pixelAt(result, 0, 0)).toEqual([...PALETTE_ENTRIES.patchA, 255]);
+    expect(pixelAt(result, 0, 1)).toEqual([...PALETTE_ENTRIES.patchA, 255]);
+  });
+
   it("falls back to black when a pixel's palette index is out of range", () => {
-    const { view, lumps, palette } = loadFixtureParts();
+    const { view, lumps } = loadFixtureParts();
     // PATCH1's pixels are all palette index 1; give a palette with no entry there.
     const emptyPalette: Palette = [];
     const def: TextureDef = { name: "X", width: 4, height: 4, patches: [{ originX: 0, originY: 0, patchIndex: 0 }] };

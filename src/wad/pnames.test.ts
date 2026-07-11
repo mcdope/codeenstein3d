@@ -31,7 +31,7 @@ describe("parsePnames", () => {
   it("respects a nonzero lump filePos", () => {
     const buf = new Uint8Array(4 + 4 + 8);
     new DataView(buf.buffer).setInt32(4, 1, true);
-    buf.set(nameBuffer("WALL1", 8), 12);
+    buf.set(nameBuffer("WALL1", 8), 8);
     expect(parsePnames(new DataView(buf.buffer), { filePos: 4, size: 12, name: "PNAMES" })).toEqual(["WALL1"]);
   });
 });

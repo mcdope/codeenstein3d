@@ -174,6 +174,7 @@ export function buildTestWad(opts = {}) {
     teleporterFloorName = "GATE1", // real TELEPORTER_FLOOR_TEXTURE_ALLOWLIST entry; pass null to omit
     spikeSafeFloorName = "FLOOR7_1", // real SPIKE_SAFE_FLOOR_TEXTURE_ALLOWLIST entry; pass null to omit
     spikeActiveFloorName = "BLOOD1", // real SPIKE_ACTIVE_FLOOR_TEXTURE_ALLOWLIST entry; pass null to omit
+    texture2Name = null, // when set, adds a second TEXTURE2 lump (real Doom2 IWADs ship both); pass a name to enable
     magic = "IWAD",
     truncate = false,
   } = opts;
@@ -208,6 +209,13 @@ export function buildTestWad(opts = {}) {
     if (loreWallTextureName) textureDefs.push({ name: loreWallTextureName, width: 6, height: 4, patches });
 
     lumps.push({ name: "TEXTURE1", bytes: buildTextureLump(textureDefs) });
+
+    if (texture2Name) {
+      lumps.push({
+        name: "TEXTURE2",
+        bytes: buildTextureLump([{ name: texture2Name, width: 6, height: 4, patches }]),
+      });
+    }
   }
 
   if (includeFlats) {

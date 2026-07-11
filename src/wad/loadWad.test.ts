@@ -1,10 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildTestWad } from "../../scripts/fixtures/buildTestWad.mjs";
 import { loadWadTextures } from "./loadWad";
+import * as wadFileModule from "./wadFile";
 import { findLump, parseLumpDirectory, parseWadHeader } from "./wadFile";
+
+/** Renames a lump in the directory (e.g. "TEXTURE1" -> a name `findLump`
+ * never looks for) so it's effectively absent, without disturbing any other
+ * lump's data or offsets — used to reach the pnamesLump-present-but-no-
+ * texture-lump branch, which `buildTestWad`'s options can't express (PNAMES
+ * and TEXTURE1 are always created together). */
+function renameLump(bytes: ArrayBuffer, lumpName: string, newName: string): ArrayBuffer {
+  const copy = bytes.slice(0);
+  const view = new DataView(copy);
+  const header = parseWadHeader(view);
+  const lumps = parseLumpDirectory(view, header);
+  const index = lumps.findIndex((l) => l.name === lumpName);
+  if (index === -1) throw new Error(`fixture has no lump named ${lumpName}`);
+  const nameOffset = header.infoTableOfs + index * 16 + 8;
+  for (let i = 0; i < 8; i++) view.setUint8(nameOffset + i, i < newName.length ? newName.charCodeAt(i) : 0);
+  return copy;
+}
 
 /** Overwrites a lump's directory `filepos` field so reading its data runs off
  * the end of the buffer — used to force a `RangeError` deep inside a single
@@ -141,6 +159,53 @@ describe("loadWadTextures", () => {
     expect(result.hazardFloorName).toBe("NUKAGE3");
     // Unrelated wall texture parsing is unaffected either.
     expect(result.wallName).toBe("STARTAN3");
+  });
+
+  it("merges TEXTURE2 definitions in on top of TEXTURE1's", () => {
+    const result = loadWadTextures(buildTestWad({ texture2Name: "TEKWALL4" }));
+    expect(result.ok).toBe(true);
+    // TEKWALL4 is 3rd in WALL_TEXTURE_ALLOWLIST, behind STARTAN3 (present) —
+    // proves TEXTURE2's defs were merged in (not ignored), even though
+    // STARTAN3 still wins the allowlist race.
+    expect(result.wallName).toBe("STARTAN3");
+  });
+
+  it("resolves textures from TEXTURE2 alone when TEXTURE1 has no matching name", () => {
+    // No allowlist entries collide between the two: STARTAN3 (fixture default)
+    // is replaced with a name that isn't in the WALL_TEXTURE_ALLOWLIST at all
+    // is impossible via buildTestWad's API (textureName always feeds slot 1
+    // of TEXTURE1), so instead prove the merge by pointing texture2Name at
+    // BONUS_WALL_TEXTURE_ALLOWLIST's first entry — a slot TEXTURE1 alone
+    // never fills in this fixture.
+    const result = loadWadTextures(buildTestWad({ texture2Name: "COMPBLUE" }));
+    expect(result.ok).toBe(true);
+    expect(result.bonusWallName).toBe("COMPBLUE");
+    expect(result.bonusWallTexture).not.toBeNull();
+  });
+
+  it("leaves wall/door/loreWall null when PNAMES exists but no TEXTURE1/TEXTURE2 lump does", () => {
+    const bytes = renameLump(buildTestWad(), "TEXTURE1", "TEXTURE9");
+    const result = loadWadTextures(bytes);
+    expect(result.ok).toBe(true);
+    expect(result.wallName).toBeNull();
+    expect(result.doorName).toBeNull();
+    expect(result.loreWallName).toBeNull();
+    // Unaffected — PNAMES/TEXTURE1 absence doesn't touch flat resolution.
+    expect(result.floorName).toBe("FLOOR4_8");
+  });
+
+  it("falls back to a generic message when a non-Error value is thrown", () => {
+    const spy = vi.spyOn(wadFileModule, "parseWadHeader").mockImplementation(() => {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw "not an Error instance";
+    });
+    try {
+      const result = loadWadTextures(buildTestWad());
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("Failed to parse WAD file.");
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("sanity-checks findLump still works against a real fixture's directory", () => {

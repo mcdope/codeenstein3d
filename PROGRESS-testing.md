@@ -44,60 +44,34 @@ first thing at the start of every session, before touching code.
         correctly excludes defaultHighscore.ts/empty-node-shim.ts while
         including everything else (incl. main.ts) — committing now
 - [x] Phase 1: src/ root (difficulty.ts, prng.ts) — both 100% covered
-- [ ] Phase 2: src/wad/ (9 files) — **IN PROGRESS, INTERRUPTED MID-VERIFICATION**
-  All 9 test files were WRITTEN this session but the session hit its usage
-  limit before `npm run typecheck` / `npx vitest run src/wad/ --coverage`
-  could be confirmed green, and even `git add` stopped going through — so
-  these files are UNCOMMITTED and UNVERIFIED on disk right now:
-  - src/wad/wadFile.test.ts (readPaddedName/parseWadHeader/parseLumpDirectory/findLump)
-  - src/wad/playpal.test.ts (parsePlaypal)
-  - src/wad/pnames.test.ts (parsePnames)
-  - src/wad/patch.test.ts (parsePatch — local buildPatchBuffer helper, multi-post
-    columns, hole columns, nonzero filePos)
-  - src/wad/textureLump.test.ts (parseTextureLump — local buildTextureLumpBuffer
-    helper)
-  - src/wad/compositeTexture.test.ts (compositeTexture — reuses
-    scripts/fixtures/buildTestWad.mjs via relative import `../../scripts/
-    fixtures/buildTestWad.mjs`, plus hand-built edge cases: missing pnames
-    entry, missing lump, out-of-bounds clip, out-of-range palette index,
-    zero patches)
-  - src/wad/flatLump.test.ts (findFlat both marker pairs + edge cases,
-    parseFlat)
-  - src/wad/textureAllowlist.test.ts (data-shape smoke checks via it.each)
-  - src/wad/loadWad.test.ts (loadWadTextures — full success, no-PLAYPAL,
-    bad magic, truncated buffer, includeTextures:false, includeFlats:false,
-    each optional slot omitted individually, and two deliberately-corrupted-
-    lump tests via a local `corruptLumpFilePos` helper that overwrites a
-    lump's directory filepos to run off the buffer end, to prove
-    resolveCompositeSlot/resolveFlatSlot's per-candidate try/catch isolates
-    one candidate's failure from the rest of the parse)
-
-  **NEXT SESSION MUST START HERE, BEFORE ANYTHING ELSE:**
-  1. `npm run typecheck` — confirm no type errors in the 9 new files above.
-  2. `npx vitest run src/wad/ --coverage` — confirm all pass and every
-     src/wad/*.ts file (except none are excluded — wad has no exclusions)
-     hits 100% stmts/branch/funcs/lines. Known risk spots to check first if
-     something's off: (a) the relative import path from src/wad/*.test.ts up
-     to scripts/fixtures/buildTestWad.mjs — confirm Vitest resolves a plain
-     .mjs fixture file correctly; (b) whether the two
-     `corruptLumpFilePos`-based tests in loadWad.test.ts actually land inside
-     resolveCompositeSlot's/resolveFlatSlot's catch blocks as intended, or
-     whether corrupting a lump's filepos to `buffer.byteLength - 1`
-     accidentally throws somewhere the code doesn't catch (e.g. during
-     directory parsing itself, if the corrupted lump happens to be read
-     before the try/catch scope) — reread the failure and adjust the corrupt
-     offset/target lump if so.
-  3. Fix whatever's broken, rerun until green and 100%.
-  4. One known likely coverage gap flagged during writing (not yet
-     confirmed against a real coverage report): loadWad.ts's
-     `pnamesLump && (texture1Lump || texture2Lump)` guard — only the
-     both-true and both-false branches are exercised by the current tests;
-     the pnamesLump-true/no-texture-lump-present branch has no dedicated
-     fixture. Check the coverage report; only add a test for it if v8
-     actually flags that branch as uncovered.
-  5. `git add src/wad/*.test.ts` then commit (message: "test: 100% coverage
-     for src/wad/ (Phase 2)"), update this file's checkbox to `[x]` and the
-     coverage snapshot below, THEN move to Phase 3.
+- [x] Phase 2: src/wad/ (9 files) — verified 100% stmts/branch/funcs/lines,
+      91 tests total green, `npm run verify:wad-parser` (the pre-existing
+      Node script) still passes too. Notes for future reference:
+  - Two real bugs caught by actually running the tests (not just writing
+    them): pnames.test.ts had a wrong byte offset (wrote a name at +12 when
+    the code reads it at +8 for a nonzero filePos case); compositeTexture.test.ts
+    had an unused `palette` destructure under `noUnusedLocals`. Both fixed.
+  - TS couldn't resolve types for the `.mjs` fixture import
+    (`scripts/fixtures/buildTestWad.mjs`) — fixed with a hand-written
+    `scripts/fixtures/buildTestWad.d.mts` ambient declaration file. Gotcha:
+    it must be `.d.mts`, not `.d.ts` — TS only auto-pairs a `.mjs` file with
+    a same-basename `.d.mts` companion.
+  - Reaching true 100% branch coverage (not just stmts/lines) took a few
+    deliberate edge-case tests: a destY-out-of-bounds-while-destX-in-bounds
+    case in compositeTexture.test.ts; a TEXTURE2-lump case in loadWad.test.ts
+    (which required adding a `texture2Name` option to the shared
+    `buildTestWad.mjs` fixture — a real capability gap, since actual Doom2
+    IWADs ship both TEXTURE1 and TEXTURE2, not test-only scope creep); a
+    non-Error-thrown case via `vi.spyOn` on the `./wadFile` module namespace
+    object (confirms Vitest's vite-node lets you spy a named import's
+    binding this way); and a PNAMES-present-but-no-TEXTURE-lump case via a
+    new `renameLump` test helper (buildTestWad's options can't express that
+    combination directly, so the fixture's TEXTURE1 lump is renamed
+    in-place after the fact).
+  - Reuse pattern that worked well: `scripts/fixtures/buildTestWad.mjs`
+    imported directly into compositeTexture.test.ts/loadWad.test.ts via a
+    relative path, unmodified except the one additive `texture2Name` option
+    above — confirms Vitest resolves plain `.mjs` fixtures fine.
 - [ ] Phase 3: src/parser/ wasm-free (6 files)
 - [ ] Phase 4: src/parser/ wasm-runtime (5 files)
 - [ ] Phase 5: src/map/ + src/map/generation/ (18 files)
@@ -111,9 +85,10 @@ first thing at the start of every session, before touching code.
 
 ## Current coverage snapshot
 
-src/difficulty.ts and src/prng.ts: 100%/100%/100%/100%. Rest of the repo
-still 0% (not yet reached). defaultHighscore.ts and empty-node-shim.ts
-correctly absent from the report.
+src/difficulty.ts, src/prng.ts, and all of src/wad/ (9 files): 100% stmts/
+branch/funcs/lines. 91 tests total, all green. Rest of the repo still 0%
+(not yet reached). defaultHighscore.ts and empty-node-shim.ts correctly
+absent from the report.
 
 ## Known open issues / deferred decisions
 
@@ -127,8 +102,11 @@ correctly absent from the report.
 
 ## Next concrete step
 
-Session was interrupted by a usage limit mid-Phase-2, before verification
-could run (Bash access became intermittently/then fully unavailable — not a
-code problem, a session-limit problem). See the detailed "NEXT SESSION MUST
-START HERE" block under Phase 2 above for exact resume steps. Do not trust
-that the 9 wad test files are correct — they are untested code on disk.
+Start Phase 3: src/parser/ wasm-free files (types.ts, registry.ts,
+security.ts, astUtils.ts, generic/refinements.ts, generic/vocabulary.ts —
+all either zero-import or type-only `web-tree-sitter` imports, so no wasm
+runtime needed). Read src/parser/types.ts first (defines the ParsedFile
+contract everything else in this phase produces/consumes), then registry.ts
+and security.ts (both fully dependency-free), then astUtils.ts/refinements.ts/
+vocabulary.ts (need small hand-built mock tree-sitter Node object literals
+since they only import the Node type, erased at compile time).
