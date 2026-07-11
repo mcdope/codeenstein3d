@@ -1,8 +1,11 @@
 # Changelog
 
-## beta-2
+## Unreleased
 
 - Texture-mapped walls, doors, and floors — procedural defaults, or real textures sourced from a loaded DOOM `.wad` file
+
+## beta-2
+
 - Bundled Demo Campaign with default highscores/replays, a Demos launch tab, and verification scripts
 - Unlockable chainsaw "Toolchain" (melee, replaces knife) and flamethrower "Friday Hotfix" (own gas ammo pool)
 - Enemy kills can now drop unlockable weapons (regular: tiny chance, elite: 60% odds)
