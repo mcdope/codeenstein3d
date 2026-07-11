@@ -35,7 +35,7 @@ import {
 } from "./generation/geometry";
 import { carveLabyrinth, MAZE_THRESHOLD } from "./generation/labyrinth";
 import { placeLoreTerminals } from "./generation/lore";
-import { shortestPath } from "./generation/pathing";
+import { assertAllRoomsReachable, shortestPath } from "./generation/pathing";
 import { placeAmmoPickups } from "./generation/pickups";
 import { DECORATIONS_ENABLED, placeDecorations, placePillars } from "./generation/props";
 import { seedFrom } from "./generation/seed";
@@ -61,6 +61,21 @@ const DEFAULTS: Required<MapGeneratorOptions> = {
   maxSize: 160,
   roomMargin: 1,
   placementAttempts: 200,
+};
+
+/** Synthetic `CodeEntity` for a filler room — see `placeFillerRoom`.
+ * `kind: "class"` is deliberate: it fails every "real code" eligibility
+ * check elsewhere in `generation/` (enemy spawning in `enemies.ts`, door
+ * locking in `doorsKeys.ts`), so a placeholder like `<filler>` never leaks
+ * onto an enemy's on-screen nameplate — no actual code backs this room, so
+ * nothing should represent it in-world. */
+const FILLER_ENTITY: CodeEntity = {
+  name: "<filler>",
+  kind: "class",
+  startLine: 1,
+  endLine: 1,
+  complexityScore: 1,
+  nestingDepth: 0,
 };
 
 export class MapGenerator {
@@ -199,6 +214,12 @@ export class MapGenerator {
       new Array<boolean>(size).fill(false),
     );
 
+    // Safety net: should never fire (see `placeRooms`'s room-count floor and
+    // `connectRooms`'s doc comment), but logs loudly instead of silently
+    // shipping an unreachable room if some future change breaks that
+    // invariant some other way (notes:155).
+    assertAllRoomsReachable(grid, spawn, rooms, doors);
+
     return {
       width: size,
       height: size,
@@ -260,6 +281,17 @@ export class MapGenerator {
       rooms.push(fallback);
     }
 
+    // `connectRooms` only carves a corridor once a second room exists — a
+    // level that ends up with a single room (an empty file, or one entity
+    // whose room is the only one that fits) would otherwise get zero
+    // corridors and a sealed, exit-less spawn room (notes:155). Top up to
+    // at least 2 so that can never happen.
+    while (rooms.length < 2) {
+      const filler = this.placeFillerRoom(size, rooms, rng);
+      carveRoom(grid, filler);
+      rooms.push(filler);
+    }
+
     return rooms;
   }
 
@@ -285,5 +317,37 @@ export class MapGenerator {
       }
     }
     return null;
+  }
+
+  /**
+   * A non-overlapping filler room, guaranteed to succeed — see `placeRooms`.
+   * Tries normal random placement first (`tryPlaceRoom`); on the minimum
+   * 64-tile map with only 1-2 rooms placed so far, that all but always
+   * succeeds immediately. Falls back to whichever map corner doesn't
+   * overlap an existing room (corners are always clear of interior rooms,
+   * which stay off the outer border margin) so this can never itself fail
+   * to produce a room.
+   */
+  private placeFillerRoom(size: number, placed: Room[], rng: () => number): Room {
+    const random = this.tryPlaceRoom(FILLER_ENTITY, size, placed, rng);
+    if (random) return random;
+
+    const { w, h } = roomDimensions(FILLER_ENTITY, size);
+    const corners = [
+      { x: 1, y: 1 },
+      { x: size - w - 1, y: 1 },
+      { x: 1, y: size - h - 1 },
+      { x: size - w - 1, y: size - h - 1 },
+    ];
+    for (const { x, y } of corners) {
+      const candidate = makeRoom(x, y, w, h, FILLER_ENTITY);
+      if (!placed.some((r) => roomsOverlap(candidate, r, this.opts.roomMargin))) {
+        return candidate;
+      }
+    }
+    // Every random attempt and every corner overlapped — astronomically
+    // unlikely given the map-size/room-cap math above. Accept a rare
+    // overlap over leaving the level with under 2 rooms.
+    return makeRoom(corners[0].x, corners[0].y, w, h, FILLER_ENTITY);
   }
 }

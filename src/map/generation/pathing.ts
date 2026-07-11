@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 /** Grid reachability / shortest-path helpers over the finished tile grid. */
-import { DOOR_TILE, LORE_TILE, SECRET_WALL_TILE, type Point, type Tile } from "../types";
+import { DOOR_TILE, LORE_TILE, SECRET_WALL_TILE, type Point, type Room, type Tile } from "../types";
 import { key, neighbors } from "./util";
 
 /** BFS of tiles reachable from spawn; walls and unopened doors block. */
@@ -52,4 +52,22 @@ export function shortestPath(grid: Tile[][], spawn: Point, exit: Point): number 
     }
   }
   return dist.get(target) ?? 0;
+}
+
+/**
+ * Dev-time safety net: every room's center should be reachable from spawn.
+ * Doors count as opened regardless of key state — same reasoning as
+ * `shortestPath`'s doc comment: generation guarantees every door is
+ * eventually openable, so this checks raw structural connectivity, not
+ * lock state. Should never actually fire; logs a spoiler-free count (no
+ * coordinates) if it does, so a future generation regression is loud
+ * instead of silently shipping an unreachable room.
+ */
+export function assertAllRoomsReachable(grid: Tile[][], spawn: Point, rooms: Room[], doors: Point[]): void {
+  const opened = new Set(doors.map(key));
+  const reachable = reachableTiles(grid, spawn, opened);
+  const unreachable = rooms.filter((r) => !reachable.has(key(r.center))).length;
+  if (unreachable > 0) {
+    console.error(`[map] ${unreachable} room(s) unreachable from spawn — this should never happen`);
+  }
 }

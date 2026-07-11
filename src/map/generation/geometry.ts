@@ -37,7 +37,12 @@ export function makeRoom(x: number, y: number, w: number, h: number, entity: Cod
   };
 }
 
-/** Fallback room in the middle of the map (used when nothing else fits). */
+/** Fallback room in the middle of the map (used when nothing else fits).
+ * `kind: "class"` on the synthetic placeholder is deliberate: it fails
+ * every "real code" eligibility check elsewhere in `generation/` (enemy
+ * spawning, door locking — see `placeFillerRoom` in `mapGenerator.ts` for
+ * the full reasoning), so a placeholder like `<entry>` never leaks onto an
+ * enemy's on-screen nameplate. */
 export function centeredRoom(entity: CodeEntity | undefined, size: number): Room {
   const w = Math.min(8, size - 2);
   const h = Math.min(8, size - 2);
@@ -45,7 +50,7 @@ export function centeredRoom(entity: CodeEntity | undefined, size: number): Room
   const y = Math.floor((size - h) / 2);
   const placeholder: CodeEntity = entity ?? {
     name: "<entry>",
-    kind: "function",
+    kind: "class",
     startLine: 1,
     endLine: 1,
     complexityScore: 1,

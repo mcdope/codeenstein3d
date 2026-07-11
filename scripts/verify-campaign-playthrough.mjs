@@ -34,6 +34,16 @@
  * exact same real code paths — `pickWorkspace`, `readDirectoryTree`,
  * `parseFile`, `MapGenerator`, `RaycasterEngine`, save/highscore/replay — with
  * content chosen for this script's own limits rather than the campaign's.
+ * `scripts/fixtures/main.c` in particular is deliberately a single trivial
+ * function: `MapGenerator`'s seed is hashed from a file's exact content
+ * (name/LOC/entities), and every function-bearing room spawns its enemy at
+ * the room's own center — exactly where a corridor to the next room starts
+ * — so the walk to the exit unavoidably passes close by it. Editing this
+ * fixture (even just its function's name) reseeds generation and can easily
+ * regenerate a longer/closer path this script's non-fighting walker doesn't
+ * survive; re-run this script after any change to it, and if it starts
+ * failing here, retry with a different trivial name/body rather than adding
+ * combat capability to `walkWaypoints`.
  * `demo-campaign/`'s structural correctness (every map feature/enemy type
  * present) is already covered exhaustively by `verify-demo-campaign.mjs`.
  *
