@@ -812,15 +812,24 @@ const ENTRYPOINT_SCAN_CHUNK_SIZE = 20;
  * `files` parsed successfully at all. A file that fails to read or parse is
  * skipped, same as everywhere else in this app. Yields to the event loop
  * every `ENTRYPOINT_SCAN_CHUNK_SIZE` files, same pattern as
- * `computeCodebaseStats`.
+ * `computeCodebaseStats`. `signal`, when given and already aborted by the
+ * time a given file is reached, stops the scan right there instead of
+ * working through the rest of `files`.
  */
-async function findEntrypointByScanning(files: TreeNode[]): Promise<EntrypointMatch | null> {
+async function findEntrypointByScanning(files: TreeNode[], signal?: AbortSignal): Promise<EntrypointMatch | null> {
   let bestWithMain: EntrypointMatch | null = null;
   let bestWithMainComplexity = -1;
   let bestOverall: EntrypointMatch | null = null;
   let bestOverallComplexity = -1;
 
   for (let i = 0; i < files.length; i++) {
+    // `autoLaunchInitialLevel` has already given up and fallen back to the
+    // first parsable file by the time this fires (see its own
+    // `ENTRYPOINT_DETECTION_TIMEOUT_MS` race) — without this check the scan
+    // would keep fetching and parsing the rest of `files` indefinitely in
+    // the true background regardless, one network round-trip per file, for
+    // a result nothing will ever read.
+    if (signal?.aborted) break;
     const file = files[i];
     try {
       const text = await readFileText(file.handle as FileSystemFileHandle);
@@ -852,22 +861,37 @@ async function findEntrypointByScanning(files: TreeNode[]): Promise<EntrypointMa
   return bestWithMain ?? bestOverall;
 }
 
-/** The workspace's logical entrypoint, if any. Partitions every parsable file
- * into "real" project source and test/spec fixtures (see
- * `partitionEntrypointCandidates`), then tries, in order: a filename-
- * convention match in real source, the same in test/spec fixtures, a scored
- * main()-scan in real source, and finally a scored main()-scan in test/spec
- * fixtures. Each stage falls through to the next only when it finds nothing
- * *usable* — not merely when a bucket is empty — so a workspace whose real
- * source is present but entirely unparsable still correctly falls back to
- * whatever test fixtures do parse, rather than giving up early; likewise a
- * filename match that turns out to fail parsing (a broken/binary file that
- * happens to have a conventional name) falls through to the scoring stage
- * rather than dead-ending detection. */
-export async function findEntrypoint(tree: TreeNode): Promise<EntrypointMatch | null> {
-  const { primary, secondary } = partitionEntrypointCandidates(await flattenParsableFiles(tree));
+/** Every file node in `tree`, depth-first in the same directories-first order
+ * the sidebar renders and `flattenParsableFiles` walks — a synchronous,
+ * in-memory walk with no I/O (unlike `flattenParsableFiles`, which calls
+ * `isParsableNode` per file, a real network round-trip for every extensionless
+ * file on a remote workspace). `findEntrypoint`'s filename-convention stage
+ * only needs to compare names — every `ENTRYPOINT_FILENAMES` entry has a
+ * registered extension, so parsability there is never in question — so it
+ * uses this instead of paying to sniff every extensionless file in a large
+ * remote repo before even checking for a plain `main.c`-style name match. */
+function flattenAllFiles(node: TreeNode): TreeNode[] {
+  if (node.kind === "file") return [node];
+  return (node.children ?? []).flatMap(flattenAllFiles);
+}
 
-  const byName = findEntrypointByName(primary) ?? findEntrypointByName(secondary);
+/** The workspace's logical entrypoint, if any. Tries, in order: a filename-
+ * convention match in real source, the same in test/spec fixtures (see
+ * `partitionEntrypointCandidates`) — both against the raw tree via
+ * `flattenAllFiles`, no I/O — and only if neither hits, a scored main()-scan
+ * (`findEntrypointByScanning`) over real source then test/spec fixtures,
+ * which does need `flattenParsableFiles`'s parsability check. Each stage
+ * falls through to the next only when it finds nothing *usable* — not merely
+ * when a bucket is empty — so a workspace whose real source is present but
+ * entirely unparsable still correctly falls back to whatever test fixtures do
+ * parse, rather than giving up early; likewise a filename match that turns
+ * out to fail parsing (a broken/binary file that happens to have a
+ * conventional name) falls through to the scoring stage rather than
+ * dead-ending detection. `signal`, when given, is forwarded to the scoring
+ * stage — see `findEntrypointByScanning`. */
+export async function findEntrypoint(tree: TreeNode, signal?: AbortSignal): Promise<EntrypointMatch | null> {
+  const allFiles = partitionEntrypointCandidates(flattenAllFiles(tree));
+  const byName = findEntrypointByName(allFiles.primary) ?? findEntrypointByName(allFiles.secondary);
   if (byName) {
     try {
       const text = await readFileText(byName.handle as FileSystemFileHandle);
@@ -878,7 +902,9 @@ export async function findEntrypoint(tree: TreeNode): Promise<EntrypointMatch | 
     }
   }
 
-  return (await findEntrypointByScanning(primary)) ?? (await findEntrypointByScanning(secondary));
+  if (signal?.aborted) return null;
+  const { primary, secondary } = partitionEntrypointCandidates(await flattenParsableFiles(tree));
+  return (await findEntrypointByScanning(primary, signal)) ?? (await findEntrypointByScanning(secondary, signal));
 }
 
 /** Caps how long `findEntrypoint`'s detection scan may run before
@@ -943,7 +969,12 @@ function formatByteCount(bytes: number): string {
  */
 async function autoLaunchInitialLevel(tree: TreeNode): Promise<void> {
   setLoadingStatus("Scanning for entrypoint…");
-  const match = await withTimeout(findEntrypoint(tree), ENTRYPOINT_DETECTION_TIMEOUT_MS);
+  // `withTimeout` alone only stops *waiting* on `findEntrypoint` — the scan
+  // itself would keep running (and fetching) in the true background
+  // afterward. This signal, on the same budget, tells `findEntrypointByScanning`
+  // to actually stop making further file reads once that happens.
+  const signal = AbortSignal.timeout(ENTRYPOINT_DETECTION_TIMEOUT_MS);
+  const match = await withTimeout(findEntrypoint(tree, signal), ENTRYPOINT_DETECTION_TIMEOUT_MS);
 
   let target: TreeNode | null;
   let parsed: ParsedFile | null;
@@ -1404,12 +1435,36 @@ async function computeCodebaseStats(tree: TreeNode): Promise<CodebaseStats> {
   return { linesOfCode, complexity, hash };
 }
 
+/** Above this file count, a *remote* workspace's whole-codebase aggregation
+ * (see `kickOffCodebaseStats`) is skipped entirely rather than started — a
+ * local workspace has no such cap (disk reads are effectively free), but for
+ * a GitHub repo this pass means fetching and parsing every single file over
+ * the network, purely for a highscore's whole-codebase hash/stats, long after
+ * (and regardless of whether) the player ever reaches most of them. Picked
+ * comfortably above a typical hand-sized project but well under "some
+ * thousand files" (the motivating case — `torvalds/linux` is the standing
+ * stress-test repo elsewhere in this file). `recordRunHighscore` already
+ * treats a `null` `codebaseStatsPromise` the same as one that simply didn't
+ * finish in time, falling back to hashing just the single ended-on file —
+ * no new degradation path needed. */
+const REMOTE_CODEBASE_STATS_FILE_CAP = 300;
+
 /** (Re)starts the whole-codebase background aggregation for a just-loaded
  * workspace — fire-and-forget, so it never delays `autoLaunchInitialLevel`.
  * A failed aggregation resolves to zeroed totals rather than a rejected
  * promise, so `withTimeout` only ever has to special-case "still running",
- * not "errored". */
+ * not "errored". Skipped outright for a large remote workspace — see
+ * `REMOTE_CODEBASE_STATS_FILE_CAP`. */
 function kickOffCodebaseStats(tree: TreeNode): void {
+  if (workspaceIsRemote && countTreeFiles(tree) > REMOTE_CODEBASE_STATS_FILE_CAP) {
+    console.info(
+      `[codebase-stats] Skipping whole-codebase aggregation for "${workspaceRootName}" — ` +
+        `too large a remote repo (over ${REMOTE_CODEBASE_STATS_FILE_CAP} files) to fetch and parse ` +
+        "in full just for a highscore's stats; playing further levels doesn't need it either.",
+    );
+    codebaseStatsPromise = null;
+    return;
+  }
   codebaseStatsPromise = computeCodebaseStats(tree).catch(async (err) => {
     console.warn("[codebase-stats] Aggregation failed:", err);
     return { linesOfCode: 0, complexity: 0, hash: await hashRun("", campaignName()) };
