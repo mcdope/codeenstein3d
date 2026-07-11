@@ -406,6 +406,33 @@ let campaignLevelIndex = 1;
  * the same workspace's totals stay valid for every run played against it,
  * not just the one that triggered the computation. */
 let codebaseStatsPromise: Promise<CodebaseStats> | null = null;
+/** Bumped at the start of every workspace load (local pick, GitHub fetch,
+ * demo campaign, Continue Run, Watch Replay) so a slower load already in
+ * flight can tell it's been superseded and bail out — without this, a
+ * GitHub fetch still in flight when the user fires off a second load (a
+ * different repo, a local folder, the demo campaign) would eventually
+ * resolve and clobber whatever that second load already committed to
+ * `workspaceTree`/the file tree UI. See `beginWorkspaceLoad`. */
+let workspaceLoadGeneration = 0;
+/** The `AbortController` behind whichever GitHub tree fetch is currently in
+ * flight, if any — a GitHub fetch is the only workspace-loading step slow
+ * enough to still be running when it gets superseded, so it's the only one
+ * that needs an actual network-level abort rather than just losing the
+ * generation check in `beginWorkspaceLoad`. */
+let activeGithubLoadAbort: AbortController | null = null;
+
+/** Call at the very start of every workspace-loading entry point (before any
+ * `await`). Aborts a still-in-flight GitHub fetch from a previous load and
+ * returns this load's generation token — stash it locally and compare
+ * against `workspaceLoadGeneration` after every subsequent `await` (in both
+ * the success path and any `catch`) before touching shared state or the DOM;
+ * a mismatch means a newer load has since started and this one should bail
+ * out silently. */
+function beginWorkspaceLoad(): number {
+  activeGithubLoadAbort?.abort();
+  activeGithubLoadAbort = null;
+  return ++workspaceLoadGeneration;
+}
 /** Standing gore-level preference — not campaign progress, so it's kept
  * entirely separate from `CampaignSave`/`SAVE_KEY` (see `loadGoreLevel`). */
 let currentGoreLevel: GoreLevel = loadGoreLevel();
@@ -437,15 +464,18 @@ if (!isFileSystemAccessSupported()) {
 if (loadCampaignSave()) tabContinue.style.display = "";
 
 selectButton.addEventListener("click", async () => {
+  const gen = beginWorkspaceLoad();
   try {
     const handle = await pickWorkspace();
     if (!handle) return; // user cancelled the picker
+    if (gen !== workspaceLoadGeneration) return; // superseded while the picker was open
 
     workspaceName.textContent = "Reading workspace…";
     workspaceName.classList.remove("error");
     showLoadingScreen(`Reading "${handle.name}"…`);
 
     const tree = await readDirectoryTree(handle);
+    if (gen !== workspaceLoadGeneration) return; // superseded while reading the workspace
     workspaceTree = tree;
     workspaceRootName = handle.name;
     workspaceIsRemote = false;
@@ -459,6 +489,7 @@ selectButton.addEventListener("click", async () => {
     console.info(`[workspace] Loaded "${handle.name}"`, tree);
     await autoLaunchInitialLevel(tree);
   } catch (err) {
+    if (gen !== workspaceLoadGeneration) return; // a newer load's own error handling owns the screen now
     console.error("[workspace] Failed to read workspace:", err);
     workspaceName.textContent =
       err instanceof Error ? err.message : "Failed to read workspace.";
@@ -478,6 +509,10 @@ async function loadGithubRepoFromInput(): Promise<void> {
     return;
   }
 
+  const gen = beginWorkspaceLoad();
+  const controller = new AbortController();
+  activeGithubLoadAbort = controller;
+
   try {
     loadGithubRepoButton.disabled = true;
     githubSuggestionButtons.forEach((btn) => (btn.disabled = true));
@@ -487,9 +522,14 @@ async function loadGithubRepoFromInput(): Promise<void> {
     workspaceName.classList.remove("error");
     showLoadingScreen(`Fetching "${ref.owner}/${ref.repo}" from GitHub…`);
 
-    const tree = await fetchGithubTree(ref, (bytesReceived) => {
-      setLoadingStatus(`Fetching "${ref.owner}/${ref.repo}" from GitHub… (${formatByteCount(bytesReceived)} received)`);
-    });
+    const tree = await fetchGithubTree(
+      ref,
+      (bytesReceived) => {
+        setLoadingStatus(`Fetching "${ref.owner}/${ref.repo}" from GitHub… (${formatByteCount(bytesReceived)} received)`);
+      },
+      controller.signal,
+    );
+    if (gen !== workspaceLoadGeneration) return; // superseded while fetching — already aborted above
     workspaceTree = tree;
     workspaceRootName = `${ref.owner}/${ref.repo}`;
     workspaceIsRemote = true;
@@ -505,6 +545,10 @@ async function loadGithubRepoFromInput(): Promise<void> {
     githubStatus.textContent = "";
     await autoLaunchInitialLevel(tree);
   } catch (err) {
+    // A superseding load aborts this fetch itself (see `beginWorkspaceLoad`),
+    // which surfaces here as an `AbortError` — that newer load already owns
+    // the screen, so this stale failure has nothing useful to report.
+    if (gen !== workspaceLoadGeneration) return;
     console.error("[github] Failed to load repository:", err);
     const message = err instanceof Error ? err.message : "Failed to load repository.";
     githubStatus.textContent = message;
@@ -513,6 +557,7 @@ async function loadGithubRepoFromInput(): Promise<void> {
     workspaceName.classList.add("error");
     showFileTreePlaceholder();
   } finally {
+    if (activeGithubLoadAbort === controller) activeGithubLoadAbort = null;
     loadGithubRepoButton.disabled = false;
     githubSuggestionButtons.forEach((btn) => (btn.disabled = false));
   }
@@ -539,6 +584,7 @@ githubSuggestionButtons.forEach((button) => {
  * app's own bundle (`loadDemoCampaignTree`) instead of a network fetch, so
  * there's no progress callback and nothing to await before it's ready. */
 async function loadDemoCampaign(): Promise<void> {
+  const gen = beginWorkspaceLoad();
   try {
     launchDemoCampaignButton.disabled = true;
     workspaceName.textContent = "Reading workspace…";
@@ -560,6 +606,7 @@ async function loadDemoCampaign(): Promise<void> {
     console.info(`[demo] Loaded "${workspaceRootName}"`, tree);
     await autoLaunchInitialLevel(tree);
   } catch (err) {
+    if (gen !== workspaceLoadGeneration) return;
     console.error("[demo] Failed to load demo campaign:", err);
     const message = err instanceof Error ? err.message : "Failed to load demo campaign.";
     workspaceName.textContent = message;
@@ -578,15 +625,18 @@ continueButton.addEventListener("click", async () => {
   const save = loadCampaignSave();
   if (!save) return; // button should already be hidden in this case
 
+  const gen = beginWorkspaceLoad();
   try {
     const handle = await pickWorkspace();
     if (!handle) return; // user cancelled the picker
+    if (gen !== workspaceLoadGeneration) return; // superseded while the picker was open
 
     workspaceName.textContent = "Reading workspace…";
     workspaceName.classList.remove("error");
     showLoadingScreen(`Reading "${handle.name}"…`);
 
     const tree = await readDirectoryTree(handle);
+    if (gen !== workspaceLoadGeneration) return; // superseded while reading the workspace
     workspaceTree = tree;
     workspaceRootName = handle.name;
     workspaceIsRemote = false;
@@ -610,6 +660,7 @@ continueButton.addEventListener("click", async () => {
     setLoadingStatus(`Parsing ${match.name}…`);
     const text = await readFileText(match.handle as FileSystemFileHandle);
     const parsed = await parseFile(match.name, text);
+    if (gen !== workspaceLoadGeneration) return; // superseded while parsing the saved level
     if (parsed) {
       campaignLevelIndex = save.levelIndex;
       console.log(`%c[continue] resuming at ${match.path}`, "color:#8effa0;font-weight:bold");
@@ -630,6 +681,7 @@ continueButton.addEventListener("click", async () => {
       showFileTreePlaceholder();
     }
   } catch (err) {
+    if (gen !== workspaceLoadGeneration) return;
     console.error("[continue] Failed to resume campaign:", err);
     workspaceName.textContent = err instanceof Error ? err.message : "Failed to resume campaign.";
     workspaceName.classList.add("error");
@@ -1734,6 +1786,15 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
   // `stopActiveReplay`'s doc comment).
   stopActiveReplay?.();
 
+  // Same supersession guard as the real workspace loaders below — a replay's
+  // GitHub re-fetch is just as capable of still being in flight when the
+  // user starts a real workspace load (or another replay) in the meantime,
+  // and resolving into `activeEngine?.stop()`-ing whatever that newer action
+  // already set up.
+  const gen = beginWorkspaceLoad();
+  const controller = new AbortController();
+  activeGithubLoadAbort = controller;
+
   try {
     let tree: TreeNode;
     if (entry.source === "github") {
@@ -1743,7 +1804,7 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
       // `owner/repo` paths at all.
       const ref = parseGithubRepoInput(entry.campaignName);
       if (!ref) return; // campaign name doesn't parse back to a repo ref — nothing sane to fetch
-      tree = await fetchGithubTree(ref);
+      tree = await fetchGithubTree(ref, undefined, controller.signal);
     } else if (entry.source === "demo") {
       // Bundled demo campaign — rebuild the same synthetic tree from the
       // app's own bundle rather than prompting a local folder picker (there's
@@ -1754,7 +1815,9 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
       if (!handle) return; // user cancelled the picker
       tree = await readDirectoryTree(handle);
     }
+    if (gen !== workspaceLoadGeneration) return; // superseded while loading this replay's workspace
     const files = await flattenParsableFiles(tree);
+    if (gen !== workspaceLoadGeneration) return; // superseded while scanning for parsable files
 
     // Tear down whatever's currently running/shown, same as launching any
     // other level — see `launchLevel`'s equivalent block. Done once, up
@@ -1980,7 +2043,10 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
 
     advanceLevel();
   } catch (err) {
+    if (gen !== workspaceLoadGeneration) return; // a newer load's own error handling owns the screen now
     console.error("[replay] Failed to start replay:", err);
+  } finally {
+    if (activeGithubLoadAbort === controller) activeGithubLoadAbort = null;
   }
 }
 

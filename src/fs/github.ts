@@ -79,13 +79,20 @@ const DIRECTORY_STUB: RemoteFileHandle = {
  * something like `torvalds/linux`), so `onTreeBytes`, when given, is called
  * with the cumulative bytes received as the response streams in — letting a
  * caller show a running counter instead of one static "Fetching…" message
- * for however many seconds that takes.
+ * for however many seconds that takes. `signal`, when given, aborts both
+ * underlying requests — for a caller superseding this load with a different
+ * one before it finishes.
  */
-export async function fetchGithubTree(ref: GithubRepoRef, onTreeBytes?: (bytesReceived: number) => void): Promise<TreeNode> {
-  const branch = await resolveDefaultBranch(ref);
+export async function fetchGithubTree(
+  ref: GithubRepoRef,
+  onTreeBytes?: (bytesReceived: number) => void,
+  signal?: AbortSignal,
+): Promise<TreeNode> {
+  const branch = await resolveDefaultBranch(ref, signal);
 
   const treeRes = await fetch(
     `${GITHUB_API}/repos/${ref.owner}/${ref.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
+    { signal },
   );
   if (!treeRes.ok) {
     throw new Error(`Failed to fetch repository tree (${treeRes.status} ${treeRes.statusText})`);
@@ -132,8 +139,8 @@ async function readJsonWithProgress<T>(res: Response, onBytes?: (bytesReceived: 
   return JSON.parse(new TextDecoder("utf-8").decode(merged)) as T;
 }
 
-async function resolveDefaultBranch(ref: GithubRepoRef): Promise<string> {
-  const res = await fetch(`${GITHUB_API}/repos/${ref.owner}/${ref.repo}`);
+async function resolveDefaultBranch(ref: GithubRepoRef, signal?: AbortSignal): Promise<string> {
+  const res = await fetch(`${GITHUB_API}/repos/${ref.owner}/${ref.repo}`, { signal });
   if (!res.ok) {
     throw new Error(
       `Repository "${ref.owner}/${ref.repo}" not found or inaccessible (${res.status} ${res.statusText}).`,
