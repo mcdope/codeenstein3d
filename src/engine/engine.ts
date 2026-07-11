@@ -1625,8 +1625,6 @@ export class RaycasterEngine {
     if (isFlame && flameRight >= flameLeft) {
       this.flameStreams.push(spawnFlameStream(height, flameLeft, flameRight, weapon.tracerColor));
     }
-
-    if (pelletsHit === 0) console.log(`[${weapon.name}] missed`);
   }
 
   /**
