@@ -38,16 +38,25 @@ export interface TextureBitmap {
 /** One texture per wall-like/floor-like slot the raycaster samples from.
  * Secret walls reuse `wall`/`bonusWall` plus the existing subtle tint
  * overlay (unchanged from before texturing) rather than getting their own
- * slot — they're meant to be visually near-identical to a plain wall. Lore
- * terminals, the ceiling, and hazard/teleporter/spike-trap floor tiles
- * intentionally stay flat-colored/procedural-glow and never consult this set
- * — see raycaster.ts. */
+ * slot — they're meant to be visually near-identical to a plain wall. The
+ * ceiling is the only thing left that intentionally stays flat-colored and
+ * never consults this set — see raycaster.ts. Lore terminals sample
+ * `loreWall` (plus a thin pulsing tint overlay, so the "interact with me"
+ * signal survives the switch to a real texture); hazard/teleporter/spike-trap
+ * floor tiles sample `hazardFloor`/`teleporterFloor`/`spikeSafeFloor`+
+ * `spikeActiveFloor` with no tint at all, matching how Doom itself textures
+ * these. */
 export interface TextureSet {
   wall: TextureBitmap;
   bonusWall: TextureBitmap;
   door: TextureBitmap;
   floor: TextureBitmap;
   bonusFloor: TextureBitmap;
+  loreWall: TextureBitmap;
+  hazardFloor: TextureBitmap;
+  teleporterFloor: TextureBitmap;
+  spikeSafeFloor: TextureBitmap;
+  spikeActiveFloor: TextureBitmap;
 }
 
 // Base tones for the procedural defaults, matching the flat colors this
@@ -63,6 +72,22 @@ const FLOOR_BASE: [number, number, number] = [21, 21, 26];
 const FLOOR_GROUT: [number, number, number] = [10, 10, 13];
 const BONUS_FLOOR_BASE: [number, number, number] = [14, 24, 30];
 const BONUS_FLOOR_GROUT: [number, number, number] = [6, 12, 16];
+
+// Base tones for the lore/hazard/teleporter/spike-trap procedural defaults,
+// matching the flat/pulsing colors this feature replaces (raycaster.ts's
+// former LORE_RGB/ACID_RGB/TELEPORTER_RGB/SPIKE_SAFE_RGB/SPIKE_ACTIVE_RGB).
+/** Also used at runtime by `raycaster.ts` for the lore-terminal pulsing tint
+ * overlay, so the overlay hue stays consistent with this default's base tone. */
+export const LORE_BASE: [number, number, number] = [120, 200, 210];
+const LORE_SEAM: [number, number, number] = [58, 98, 104];
+const HAZARD_FLOOR_BASE: [number, number, number] = [64, 196, 72];
+const HAZARD_FLOOR_GROUT: [number, number, number] = [32, 98, 36];
+const TELEPORTER_FLOOR_BASE: [number, number, number] = [130, 70, 220];
+const TELEPORTER_FLOOR_GROUT: [number, number, number] = [65, 35, 110];
+const SPIKE_SAFE_FLOOR_BASE: [number, number, number] = [90, 90, 96];
+const SPIKE_SAFE_FLOOR_GROUT: [number, number, number] = [45, 45, 48];
+const SPIKE_ACTIVE_FLOOR_BASE: [number, number, number] = [220, 40, 30];
+const SPIKE_ACTIVE_FLOOR_GROUT: [number, number, number] = [110, 20, 15];
 
 function rgb([r, g, b]: [number, number, number]): string {
   return `rgb(${r},${g},${b})`;
@@ -203,6 +228,11 @@ function buildDefaultTextureSet(): TextureSet {
     door: buildDoorTexture(DOOR_BASE),
     floor: buildFloorTexture(FLOOR_BASE, FLOOR_GROUT),
     bonusFloor: buildFloorTexture(BONUS_FLOOR_BASE, BONUS_FLOOR_GROUT),
+    loreWall: buildPanelTexture(LORE_BASE, LORE_SEAM),
+    hazardFloor: buildFloorTexture(HAZARD_FLOOR_BASE, HAZARD_FLOOR_GROUT),
+    teleporterFloor: buildFloorTexture(TELEPORTER_FLOOR_BASE, TELEPORTER_FLOOR_GROUT),
+    spikeSafeFloor: buildFloorTexture(SPIKE_SAFE_FLOOR_BASE, SPIKE_SAFE_FLOOR_GROUT),
+    spikeActiveFloor: buildFloorTexture(SPIKE_ACTIVE_FLOOR_BASE, SPIKE_ACTIVE_FLOOR_GROUT),
   };
 }
 
@@ -249,6 +279,11 @@ export interface WadLoadSummary {
   doorName: string | null;
   floorName: string | null;
   bonusFloorName: string | null;
+  loreWallName: string | null;
+  hazardFloorName: string | null;
+  teleporterFloorName: string | null;
+  spikeSafeFloorName: string | null;
+  spikeActiveFloorName: string | null;
 }
 
 /**
@@ -288,6 +323,11 @@ export class TextureManager {
         doorName: null,
         floorName: null,
         bonusFloorName: null,
+        loreWallName: null,
+        hazardFloorName: null,
+        teleporterFloorName: null,
+        spikeSafeFloorName: null,
+        spikeActiveFloorName: null,
       };
     }
 
@@ -301,6 +341,21 @@ export class TextureManager {
       bonusFloor: result.bonusFloorTexture
         ? bitmapFromWadPixels(result.bonusFloorTexture, BONUS_FLOOR_BASE)
         : this.defaults.bonusFloor,
+      loreWall: result.loreWallTexture
+        ? bitmapFromWadPixels(result.loreWallTexture, LORE_BASE)
+        : this.defaults.loreWall,
+      hazardFloor: result.hazardFloorTexture
+        ? bitmapFromWadPixels(result.hazardFloorTexture, HAZARD_FLOOR_BASE)
+        : this.defaults.hazardFloor,
+      teleporterFloor: result.teleporterFloorTexture
+        ? bitmapFromWadPixels(result.teleporterFloorTexture, TELEPORTER_FLOOR_BASE)
+        : this.defaults.teleporterFloor,
+      spikeSafeFloor: result.spikeSafeFloorTexture
+        ? bitmapFromWadPixels(result.spikeSafeFloorTexture, SPIKE_SAFE_FLOOR_BASE)
+        : this.defaults.spikeSafeFloor,
+      spikeActiveFloor: result.spikeActiveFloorTexture
+        ? bitmapFromWadPixels(result.spikeActiveFloorTexture, SPIKE_ACTIVE_FLOOR_BASE)
+        : this.defaults.spikeActiveFloor,
     };
 
     return {
@@ -311,6 +366,11 @@ export class TextureManager {
       doorName: result.doorName,
       floorName: result.floorName,
       bonusFloorName: result.bonusFloorName,
+      loreWallName: result.loreWallName,
+      hazardFloorName: result.hazardFloorName,
+      teleporterFloorName: result.teleporterFloorName,
+      spikeSafeFloorName: result.spikeSafeFloorName,
+      spikeActiveFloorName: result.spikeActiveFloorName,
     };
   }
 }

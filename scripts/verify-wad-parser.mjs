@@ -37,7 +37,9 @@ async function main() {
     const header = wad.parseWadHeader(view);
     check("header magic recognized as IWAD", header.isPwad === false);
     const lumps = wad.parseLumpDirectory(view, header);
-    check("lump directory has the expected lump count", lumps.length === 9, `got ${lumps.length}`);
+    // PLAYPAL, PNAMES, PATCH1, PATCH2, TEXTURE1, F_START, FLOOR4_8, NUKAGE3,
+    // GATE1, FLOOR7_1, BLOOD1, NOTAFLAT, F_END.
+    check("lump directory has the expected lump count", lumps.length === 13, `got ${lumps.length}`);
 
     const playpalLump = wad.findLump(lumps, "PLAYPAL");
     const palette = wad.parsePlaypal(view, playpalLump);
@@ -98,6 +100,16 @@ async function main() {
     check("doorName resolved", result.doorName === "BIGDOOR2");
     check("doorTexture non-null", result.doorTexture !== null);
     check("bonusFloorName not matched (not in fixture)", result.bonusFloorName === null);
+    check("loreWallName resolved", result.loreWallName === "COMPUTE2");
+    check("loreWallTexture non-null", result.loreWallTexture !== null);
+    check("hazardFloorName resolved", result.hazardFloorName === "NUKAGE3");
+    check("hazardFloorTexture non-null", result.hazardFloorTexture !== null);
+    check("teleporterFloorName resolved", result.teleporterFloorName === "GATE1");
+    check("teleporterFloorTexture non-null", result.teleporterFloorTexture !== null);
+    check("spikeSafeFloorName resolved", result.spikeSafeFloorName === "FLOOR7_1");
+    check("spikeSafeFloorTexture non-null", result.spikeSafeFloorTexture !== null);
+    check("spikeActiveFloorName resolved", result.spikeActiveFloorName === "BLOOD1");
+    check("spikeActiveFloorTexture non-null", result.spikeActiveFloorTexture !== null);
   }
 
   // --- loadWadTextures: allowlist miss ---

@@ -196,9 +196,15 @@ function describeWadStatus(result: WadLoadSummary, fileName: string): string {
   if (result.doorName) matched.push(`doors (${result.doorName})`);
   if (result.floorName) matched.push(`floors (${result.floorName})`);
   if (result.bonusFloorName) matched.push(`bonus floors (${result.bonusFloorName})`);
+  if (result.loreWallName) matched.push(`lore terminals (${result.loreWallName})`);
+  if (result.hazardFloorName) matched.push(`hazard floors (${result.hazardFloorName})`);
+  if (result.teleporterFloorName) matched.push(`teleporter floors (${result.teleporterFloorName})`);
+  if (result.spikeSafeFloorName) matched.push(`spike traps, safe (${result.spikeSafeFloorName})`);
+  if (result.spikeActiveFloorName) matched.push(`spike traps, active (${result.spikeActiveFloorName})`);
 
+  const TOTAL_SLOTS = 10;
   if (matched.length === 0) return `No matching textures found in ${fileName} — using built-in defaults`;
-  const missing = matched.length < 5 ? " — remaining slots using defaults" : "";
+  const missing = matched.length < TOTAL_SLOTS ? " — remaining slots using defaults" : "";
   return `Using WAD textures: ${matched.join(", ")}${missing}`;
 }
 

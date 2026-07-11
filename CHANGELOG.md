@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Texture-mapped walls, doors, and floors — procedural defaults, or real textures sourced from a loaded DOOM `.wad` file
+- Texture-mapped walls, doors, floors, lore terminals, hazard (acid) floors, teleporter pads, and spike traps — procedural defaults, or real textures/flats sourced from a loaded DOOM `.wad` file
 
 ## beta-2
 

@@ -168,7 +168,12 @@ export function buildTestWad(opts = {}) {
     includeFlats = true,
     textureName = "STARTAN3", // real WALL_TEXTURE_ALLOWLIST entry
     doorTextureName = "BIGDOOR2", // real DOOR_TEXTURE_ALLOWLIST entry; pass null to omit
+    loreWallTextureName = "COMPUTE2", // real LORE_WALL_TEXTURE_ALLOWLIST entry; pass null to omit
     flatName = "FLOOR4_8", // real FLOOR_TEXTURE_ALLOWLIST entry
+    hazardFloorName = "NUKAGE3", // real HAZARD_FLOOR_TEXTURE_ALLOWLIST entry; pass null to omit
+    teleporterFloorName = "GATE1", // real TELEPORTER_FLOOR_TEXTURE_ALLOWLIST entry; pass null to omit
+    spikeSafeFloorName = "FLOOR7_1", // real SPIKE_SAFE_FLOOR_TEXTURE_ALLOWLIST entry; pass null to omit
+    spikeActiveFloorName = "BLOOD1", // real SPIKE_ACTIVE_FLOOR_TEXTURE_ALLOWLIST entry; pass null to omit
     magic = "IWAD",
     truncate = false,
   } = opts;
@@ -200,6 +205,7 @@ export function buildTestWad(opts = {}) {
     ];
     const textureDefs = [{ name: textureName, width: 6, height: 4, patches }];
     if (doorTextureName) textureDefs.push({ name: doorTextureName, width: 6, height: 4, patches });
+    if (loreWallTextureName) textureDefs.push({ name: loreWallTextureName, width: 6, height: 4, patches });
 
     lumps.push({ name: "TEXTURE1", bytes: buildTextureLump(textureDefs) });
   }
@@ -207,6 +213,10 @@ export function buildTestWad(opts = {}) {
   if (includeFlats) {
     lumps.push({ name: "F_START", bytes: new Uint8Array(0) });
     lumps.push({ name: flatName, bytes: buildFlat(3) });
+    if (hazardFloorName) lumps.push({ name: hazardFloorName, bytes: buildFlat(3) });
+    if (teleporterFloorName) lumps.push({ name: teleporterFloorName, bytes: buildFlat(3) });
+    if (spikeSafeFloorName) lumps.push({ name: spikeSafeFloorName, bytes: buildFlat(3) });
+    if (spikeActiveFloorName) lumps.push({ name: spikeActiveFloorName, bytes: buildFlat(3) });
     lumps.push({ name: "NOTAFLAT", bytes: new Uint8Array(100) }); // wrong size — must be skipped
     lumps.push({ name: "F_END", bytes: new Uint8Array(0) });
   }

@@ -3,8 +3,10 @@
 
 /**
  * Sole public entry point for `src/wad/` — parses a DOOM WAD `ArrayBuffer`
- * and pulls out real wall/door/floor textures for the 5 slots this game
- * uses, auto-selecting from a hardcoded name allowlist per slot (see
+ * and pulls out real textures/flats for the 10 slots this game uses (wall,
+ * bonus wall, door, floor, bonus floor, lore-terminal wall, hazard floor,
+ * teleporter floor, spike-trap safe floor, spike-trap active floor),
+ * auto-selecting from a hardcoded name allowlist per slot (see
  * `textureAllowlist.ts`). Never throws: any fatal parse failure (bad magic,
  * an out-of-range lump offset that trips a `DataView` `RangeError`) is
  * caught and reported via `ok`/`error`. A slot with no matching name in the
@@ -21,6 +23,11 @@ import {
   BONUS_WALL_TEXTURE_ALLOWLIST,
   DOOR_TEXTURE_ALLOWLIST,
   FLOOR_TEXTURE_ALLOWLIST,
+  HAZARD_FLOOR_TEXTURE_ALLOWLIST,
+  LORE_WALL_TEXTURE_ALLOWLIST,
+  SPIKE_ACTIVE_FLOOR_TEXTURE_ALLOWLIST,
+  SPIKE_SAFE_FLOOR_TEXTURE_ALLOWLIST,
+  TELEPORTER_FLOOR_TEXTURE_ALLOWLIST,
   WALL_TEXTURE_ALLOWLIST,
 } from "./textureAllowlist";
 import { parseTextureLump, type TextureDef } from "./textureLump";
@@ -34,11 +41,21 @@ export interface WadLoadResult {
   doorName: string | null;
   floorName: string | null;
   bonusFloorName: string | null;
+  loreWallName: string | null;
+  hazardFloorName: string | null;
+  teleporterFloorName: string | null;
+  spikeSafeFloorName: string | null;
+  spikeActiveFloorName: string | null;
   wallTexture: WadTexturePixels | null;
   bonusWallTexture: WadTexturePixels | null;
   doorTexture: WadTexturePixels | null;
   floorTexture: WadTexturePixels | null;
   bonusFloorTexture: WadTexturePixels | null;
+  loreWallTexture: WadTexturePixels | null;
+  hazardFloorTexture: WadTexturePixels | null;
+  teleporterFloorTexture: WadTexturePixels | null;
+  spikeSafeFloorTexture: WadTexturePixels | null;
+  spikeActiveFloorTexture: WadTexturePixels | null;
 }
 
 function emptyResult(error: string | null): WadLoadResult {
@@ -50,11 +67,21 @@ function emptyResult(error: string | null): WadLoadResult {
     doorName: null,
     floorName: null,
     bonusFloorName: null,
+    loreWallName: null,
+    hazardFloorName: null,
+    teleporterFloorName: null,
+    spikeSafeFloorName: null,
+    spikeActiveFloorName: null,
     wallTexture: null,
     bonusWallTexture: null,
     doorTexture: null,
     floorTexture: null,
     bonusFloorTexture: null,
+    loreWallTexture: null,
+    hazardFloorTexture: null,
+    teleporterFloorTexture: null,
+    spikeSafeFloorTexture: null,
+    spikeActiveFloorTexture: null,
   };
 }
 
@@ -137,6 +164,10 @@ export function loadWadTextures(bytes: ArrayBuffer): WadLoadResult {
       const door = resolveCompositeSlot(DOOR_TEXTURE_ALLOWLIST, defs, pnames, lumps, view, palette);
       result.doorName = door.name;
       result.doorTexture = door.texture;
+
+      const loreWall = resolveCompositeSlot(LORE_WALL_TEXTURE_ALLOWLIST, defs, pnames, lumps, view, palette);
+      result.loreWallName = loreWall.name;
+      result.loreWallTexture = loreWall.texture;
     }
 
     const floor = resolveFlatSlot(FLOOR_TEXTURE_ALLOWLIST, lumps, view, palette);
@@ -146,6 +177,22 @@ export function loadWadTextures(bytes: ArrayBuffer): WadLoadResult {
     const bonusFloor = resolveFlatSlot(BONUS_FLOOR_TEXTURE_ALLOWLIST, lumps, view, palette);
     result.bonusFloorName = bonusFloor.name;
     result.bonusFloorTexture = bonusFloor.texture;
+
+    const hazardFloor = resolveFlatSlot(HAZARD_FLOOR_TEXTURE_ALLOWLIST, lumps, view, palette);
+    result.hazardFloorName = hazardFloor.name;
+    result.hazardFloorTexture = hazardFloor.texture;
+
+    const teleporterFloor = resolveFlatSlot(TELEPORTER_FLOOR_TEXTURE_ALLOWLIST, lumps, view, palette);
+    result.teleporterFloorName = teleporterFloor.name;
+    result.teleporterFloorTexture = teleporterFloor.texture;
+
+    const spikeSafeFloor = resolveFlatSlot(SPIKE_SAFE_FLOOR_TEXTURE_ALLOWLIST, lumps, view, palette);
+    result.spikeSafeFloorName = spikeSafeFloor.name;
+    result.spikeSafeFloorTexture = spikeSafeFloor.texture;
+
+    const spikeActiveFloor = resolveFlatSlot(SPIKE_ACTIVE_FLOOR_TEXTURE_ALLOWLIST, lumps, view, palette);
+    result.spikeActiveFloorName = spikeActiveFloor.name;
+    result.spikeActiveFloorTexture = spikeActiveFloor.texture;
 
     return result;
   } catch (err) {

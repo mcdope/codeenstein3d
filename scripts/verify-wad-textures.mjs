@@ -2,29 +2,32 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 /**
- * Browser end-to-end verification of wall/door/floor texturing, against a
- * real running dev server (`CODEENSTEIN_DEV_URL`, default
- * `http://localhost:5173`) via headless Chromium — structured like
- * `verify-campaign-playthrough.mjs`. Covers:
+ * Browser end-to-end verification of wall/door/floor/lore-terminal/hazard/
+ * teleporter/spike-trap texturing, against a real running dev server
+ * (`CODEENSTEIN_DEV_URL`, default `http://localhost:5173`) via headless
+ * Chromium — structured like `verify-campaign-playthrough.mjs`. Covers:
  *
  *   (a) the Milestone-1 gate: procedural default textures show real
  *       per-pixel variance, not a flat fill;
  *   (b) loading a synthetic WAD (via `buildTestWad`, in-memory — no real
  *       IWAD bundled, copyright) actually reaches the live renderer: status
- *       text reports the matched slots, and the rendered frame changes;
+ *       text reports all 10 matched slots (wall/bonus wall/door/floor/bonus
+ *       floor/lore terminal/hazard/teleporter/spike-safe/spike-active), and
+ *       the rendered frame changes;
  *   (c) an invalid file produces a graceful status message and never leaves
  *       the game in a broken state;
  *   (e) the ceiling (never textured) stays a single flat color regardless
  *       of which texture pack is active.
  *
- * (d) — secret walls staying visually near-identical to plain walls — is
- * deliberately NOT a hard automated assertion here: reliably steering the
- * bot to a specific secret-wall tile would need new spoiler-risk test-hook
- * support (map grid / teleport) this feature doesn't add, and the property
- * itself is inherently a "can a human tell at a glance" one, not a
- * pixel-exact one (see `SECRET_WALL_OVERLAY`'s doc comment in raycaster.ts).
- * A screenshot is saved for manual spot-checking instead of a fabricated
- * pass/fail.
+ * (d) — secret walls staying visually near-identical to plain walls, and
+ * lore/hazard/teleporter/spike tiles actually rendering their new textures
+ * in a live level — is deliberately NOT a hard automated assertion here:
+ * reliably steering the bot to a specific tile of each kind would need new
+ * spoiler-risk test-hook support (map grid / teleport) this feature doesn't
+ * add, and "does this look like a real texture, not a flat fill" is
+ * inherently a "can a human tell at a glance" property, not a pixel-exact
+ * one (see `SECRET_WALL_OVERLAY`'s doc comment in raycaster.ts). A screenshot
+ * is saved for manual spot-checking instead of a fabricated pass/fail.
  */
 import { chromium } from "playwright";
 import fs from "node:fs";
@@ -136,6 +139,11 @@ async function main() {
   check("status reports the matched wall slot", statusText.includes("STARTAN3"), statusText);
   check("status reports the matched door slot", statusText.includes("BIGDOOR2"), statusText);
   check("status reports the matched floor slot", statusText.includes("FLOOR4_8"), statusText);
+  check("status reports the matched lore-terminal slot", statusText.includes("COMPUTE2"), statusText);
+  check("status reports the matched hazard-floor slot", statusText.includes("NUKAGE3"), statusText);
+  check("status reports the matched teleporter-floor slot", statusText.includes("GATE1"), statusText);
+  check("status reports the matched spike-safe-floor slot", statusText.includes("FLOOR7_1"), statusText);
+  check("status reports the matched spike-active-floor slot", statusText.includes("BLOOD1"), statusText);
 
   // Re-launch so the freshly active TextureSet is what the next frame renders.
   await launchDemoCampaign(page);

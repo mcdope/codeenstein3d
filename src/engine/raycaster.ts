@@ -20,22 +20,14 @@ import {
 } from "../map/types";
 import type { Player } from "./player";
 import { EDGE_CASE_COLOR, enemyColor } from "./sprites";
-import type { TextureBitmap, TextureSet } from "./textures";
+import { LORE_BASE, type TextureBitmap, type TextureSet } from "./textures";
 import { activeSpikeTileKeys } from "./traps";
 
 /** A bonus (restock-arena) level's ceiling stays a distinct cool tone,
  * matching its steel/teal wall and floor textures — see `GameMap.bonusLevel`. */
 const BONUS_CEILING_RGB: [number, number, number] = [8, 16, 24];
-/** Lore terminal wall color (a glowing violet-cyan), before pulsing/shading. */
-const LORE_RGB: [number, number, number] = [120, 200, 210];
-/** Ceiling and hazard (acid) floor base colors, as RGB. */
+/** Ceiling base color — the one thing that stays flat-colored/untextured. */
 const CEILING_RGB: [number, number, number] = [11, 13, 22];
-const ACID_RGB: [number, number, number] = [64, 196, 72];
-/** Base color for goto/label teleporter pad floor tiles, before pulsing. */
-const TELEPORTER_RGB: [number, number, number] = [130, 70, 220];
-/** Spike trap floor tint: dull metal grey while safe, hot pulsing red while active. */
-const SPIKE_SAFE_RGB: [number, number, number] = [90, 90, 96];
-const SPIKE_ACTIVE_RGB: [number, number, number] = [220, 40, 30];
 
 /** Ceiling base color for `map`'s theme — bonus (restock arena) levels get a
  * distinct cool ceiling to match their steel/teal wall and floor textures. */
@@ -135,14 +127,13 @@ export function renderScene(
   // variation, so it's retired (see renderBackground's doc comment).
   renderBackground(ctx, map, player, width, height, horizon, levelTime, textureSet);
 
-  // Lore terminal walls pulse gently so they read as an active "terminal"
-  // rather than a static tinted wall — computed once per frame, not per column.
-  const lorePulse = 0.75 + 0.25 * Math.sin(performance.now() / 200);
-  const loreGlow: [number, number, number] = [
-    LORE_RGB[0] * lorePulse,
-    LORE_RGB[1] * lorePulse,
-    LORE_RGB[2] * lorePulse,
-  ];
+  // Lore terminal walls sample a real texture (see `tex` below) plus a thin
+  // pulsing tint overlay on top, so the "this is interactive, walk up to it"
+  // signal survives the switch away from a flat glow fill — computed once per
+  // frame, not per column. Unlike `SECRET_WALL_OVERLAY` (deliberately barely
+  // noticeable, since secret walls want to blend in), this one wants to be seen.
+  const lorePulseAlpha = 0.4 + 0.15 * Math.sin(performance.now() / 200);
+  const loreOverlay = `rgba(${LORE_BASE[0]},${LORE_BASE[1]},${LORE_BASE[2]},${lorePulseAlpha})`;
 
   for (let x = 0; x < width; x++) {
     // Ray direction for this column: dir + plane * cameraX, cameraX ∈ [-1, 1].
@@ -226,52 +217,20 @@ export function renderScene(
     let shade = fogShade(dist);
     if (side === 1) shade *= SIDE_SHADE;
 
-    // Lore terminals stay a flat, pulsing glow — a deliberately distinct
-    // "interactable" signal a generic wall texture would dilute. Every other
-    // solid tile (plain wall, secret wall, door) samples a real texture.
-    const tex: TextureBitmap | null =
+    // Every solid tile now samples a real texture — lore terminals get their
+    // own composite texture (see `loreOverlay` above for how they stay
+    // distinguishable from a plain wall) instead of a flat fill.
+    const tex: TextureBitmap =
       hitTile === DOOR_TILE
         ? textureSet.door
         : hitTile === LORE_TILE
-          ? null
+          ? textureSet.loreWall
           : map.bonusLevel
             ? textureSet.bonusWall
             : textureSet.wall;
 
     const solidStart = Math.max(0, Math.ceil(wallTop));
     const solidEnd = Math.min(height, Math.floor(wallBottom));
-
-    if (!tex) {
-      const r = Math.floor(loreGlow[0] * shade);
-      const g = Math.floor(loreGlow[1] * shade);
-      const b = Math.floor(loreGlow[2] * shade);
-      ctx.fillStyle = `rgb(${r},${g},${b})`;
-      if (solidEnd > solidStart) {
-        ctx.fillRect(x, solidStart, 1, solidEnd - solidStart);
-      }
-
-      if (wallTop > 0 && wallTop < height) {
-        const edgeRow = Math.floor(wallTop);
-        const coverage = Math.min(1, edgeRow + 1 - wallTop, wallBottom - wallTop);
-        if (coverage > 0) {
-          ctx.globalAlpha = coverage;
-          ctx.fillRect(x, edgeRow, 1, 1);
-          ctx.globalAlpha = 1;
-        }
-      }
-      if (wallBottom > 0 && wallBottom < height) {
-        const edgeRow = Math.floor(wallBottom);
-        if (edgeRow !== Math.floor(wallTop) || wallTop <= 0) {
-          const coverage = Math.min(1, wallBottom - edgeRow);
-          if (coverage > 0) {
-            ctx.globalAlpha = coverage;
-            ctx.fillRect(x, edgeRow, 1, 1);
-            ctx.globalAlpha = 1;
-          }
-        }
-      }
-      continue;
-    }
 
     // Mirror correction: without this, facing walls on the "far" side of a
     // cell would sample their texture backwards.
@@ -294,6 +253,10 @@ export function renderScene(
       if (hitTile === SECRET_WALL_TILE) {
         ctx.globalAlpha = 1;
         ctx.fillStyle = SECRET_WALL_OVERLAY;
+        ctx.fillRect(x, solidStart, 1, solidEnd - solidStart);
+      } else if (hitTile === LORE_TILE) {
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = loreOverlay;
         ctx.fillRect(x, solidStart, 1, solidEnd - solidStart);
       }
       ctx.globalAlpha = 1;
@@ -332,13 +295,13 @@ export function renderScene(
 
 /**
  * Floor-cast the background: ceiling in the top half (flat-colored), and for
- * the bottom half the actual floor cell under each pixel — the real floor
- * texture on plain tiles, or a pulsing flat tint on hazard/teleporter/
- * spike-trap tiles — with mild distance shading. Painted before the walls,
- * which then occlude it. Runs unconditionally now that the floor is
- * texture-mapped (it used to be skipped in favor of two flat `fillRect`s on
- * maps with no hazards/teleporters/traps — that fast path can't show a
- * texture, so it's retired).
+ * the bottom half the actual floor cell under each pixel, sampling whichever
+ * real texture that tile's kind maps to (plain floor, hazard, teleporter, or
+ * — depending on `activeSpikeTileKeys` — one of the two spike-trap flats) —
+ * with mild distance shading. Painted before the walls, which then occlude
+ * it. Runs unconditionally now that the floor is texture-mapped (it used to
+ * be skipped in favor of two flat `fillRect`s on maps with no hazards/
+ * teleporters/traps — that fast path can't show a texture, so it's retired).
  */
 function renderBackground(
   ctx: CanvasRenderingContext2D,
@@ -358,25 +321,11 @@ function renderBackground(
   const ceiling = sceneCeiling(map);
   const floorTex = map.bonusLevel ? textureSet.bonusFloor : textureSet.floor;
 
-  // Teleporter pads pulse gently so they read as "active" rather than a
-  // static colored tile; computed once per frame, not per pixel.
-  const pulse = 0.7 + 0.3 * Math.sin(performance.now() / 260);
-  const teleporterGlow: [number, number, number] = [
-    TELEPORTER_RGB[0] * pulse,
-    TELEPORTER_RGB[1] * pulse,
-    TELEPORTER_RGB[2] * pulse,
-  ];
-
   // Which spike traps are in their damaging half of the cycle this frame —
-  // resolved once here, not per pixel. Active tiles pulse hot to read as
-  // dangerous; safe ones stay a flat dull metal.
+  // resolved once here, not per pixel — decides whether a spike-trap tile
+  // samples `spikeActiveFloor` (a blood/lava-looking flat) or
+  // `spikeSafeFloor` (a plain metal-looking one) this frame.
   const activeSpikes = activeSpikeTileKeys(map.spikeTraps, levelTime);
-  const spikePulse = 0.75 + 0.25 * Math.sin(performance.now() / 90);
-  const spikeActiveGlow: [number, number, number] = [
-    SPIKE_ACTIVE_RGB[0] * spikePulse,
-    SPIKE_ACTIVE_RGB[1] * spikePulse,
-    SPIKE_ACTIVE_RGB[2] * spikePulse,
-  ];
 
   // Leftmost (cameraX=-1) and rightmost (cameraX=+1) ray directions.
   const rayDir0X = player.dirX - player.planeX;
@@ -413,33 +362,26 @@ function renderBackground(
       const tile =
         cx >= 0 && cy >= 0 && cx < map.width && cy < map.height ? map.grid[cy][cx] : -1;
 
-      let r: number;
-      let g: number;
-      let b: number;
-      if (tile === TELEPORTER_TILE) {
-        r = teleporterGlow[0];
-        g = teleporterGlow[1];
-        b = teleporterGlow[2];
-      } else if (tile === HAZARD_TILE) {
-        r = ACID_RGB[0];
-        g = ACID_RGB[1];
-        b = ACID_RGB[2];
-      } else if (tile === SPIKE_TRAP_TILE) {
-        const glow = activeSpikes.has(`${cx},${cy}`) ? spikeActiveGlow : SPIKE_SAFE_RGB;
-        r = glow[0];
-        g = glow[1];
-        b = glow[2];
-      } else {
-        // Plain floor (and out-of-bounds/wall-covered background): sample
-        // the floor texture. The fractional part of the already-computed
-        // world position *is* the texture UV — no extra math needed.
-        const u = Math.min(floorTex.width - 1, Math.floor((floorX - cx) * floorTex.width));
-        const v = Math.min(floorTex.height - 1, Math.floor((floorY - cy) * floorTex.height));
-        const i = (v * floorTex.width + u) * 4;
-        r = floorTex.pixels[i];
-        g = floorTex.pixels[i + 1];
-        b = floorTex.pixels[i + 2];
-      }
+      // Every floor kind samples a real texture — which bitmap depends only
+      // on the tile's kind (and, for a spike trap, its current safe/active
+      // phase). The fractional part of the already-computed world position
+      // *is* the texture UV in every case — no extra math needed.
+      const tex =
+        tile === TELEPORTER_TILE
+          ? textureSet.teleporterFloor
+          : tile === HAZARD_TILE
+            ? textureSet.hazardFloor
+            : tile === SPIKE_TRAP_TILE
+              ? activeSpikes.has(`${cx},${cy}`)
+                ? textureSet.spikeActiveFloor
+                : textureSet.spikeSafeFloor
+              : floorTex;
+      const u = Math.min(tex.width - 1, Math.floor((floorX - cx) * tex.width));
+      const v = Math.min(tex.height - 1, Math.floor((floorY - cy) * tex.height));
+      const i = (v * tex.width + u) * 4;
+      const r = tex.pixels[i];
+      const g = tex.pixels[i + 1];
+      const b = tex.pixels[i + 2];
       data[idx++] = r * shade;
       data[idx++] = g * shade;
       data[idx++] = b * shade;
