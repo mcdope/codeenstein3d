@@ -454,7 +454,7 @@ export class RaycasterEngine {
   private bobAmount = 0;
   /** Weapon recoil, 1 just after firing, easing back to 0. */
   private recoil = 0;
-  /** Quick-melee "thrust" progress, 1 just after a Left-Ctrl swing, easing
+  /** Quick-melee "thrust" progress, 1 just after a Space swing, easing
    * back to 0 — entirely independent of `recoil` so a melee swing never
    * makes whatever ranged weapon is equipped visually kick as if IT fired. */
   private meleeRecoil = 0;
@@ -772,7 +772,7 @@ export class RaycasterEngine {
     // `ownedWeapons`); an unearned slot just does nothing, rather than
     // switching to a weapon with no way to have gotten it yet. Melee is
     // structurally excluded (see `canWieldViaNumberKey`) — it's bound to
-    // Left-Ctrl as its own quick-attack action instead (below). `requested`
+    // Space as its own quick-attack action instead (below). `requested`
     // is a 0-based number-key *slot* (digit 1 -> 0), not a raw `WEAPONS`
     // index — routed through `NUMBER_KEY_WEAPONS` so the melee exclusion
     // above doesn't leave a dead key in the middle of the number row (see
@@ -796,7 +796,7 @@ export class RaycasterEngine {
     // down — see `fire()`'s doc comment and the `meleeRecoil`-driven
     // viewmodel overlay in the render section below. `currentMeleeWeapon`
     // resolves to the knife until Toolchain is owned, then Toolchain
-    // permanently (it replaces the knife on Left-Ctrl, not a second slot).
+    // permanently (it replaces the knife on Space, not a second slot).
     if (this.state === "playing") {
       const melee = currentMeleeWeapon(this.ownedWeapons);
       if (this.meleeCooldown > 0) this.meleeCooldown = Math.max(0, this.meleeCooldown - dt);
@@ -1453,7 +1453,7 @@ export class RaycasterEngine {
    * Whether `index` is a ranged weapon the player currently owns and can
    * switch to via a number key or the mousewheel — melee weapons (anything
    * with `meleeRange` set) are structurally excluded, since the knife is
-   * bound exclusively to Left-Ctrl's quick-melee action instead of a slot.
+   * bound exclusively to Space's quick-melee action instead of a slot.
    */
   private canWieldViaNumberKey(index: number): boolean {
     return index >= 0 && index < WEAPONS.length && WEAPONS[index].meleeRange === undefined && this.ownedWeapons.has(index);
@@ -1484,7 +1484,7 @@ export class RaycasterEngine {
    * stop the rocket launcher being click-spammed faster than its own
    * `fireIntervalSec` — the pistol/shotgun have none, so they're unaffected
    * and fire exactly as fast as the player can press/click). Quick-melee
-   * (Left-Ctrl) is a separate, always-available action handled in `advance()`
+   * (Space) is a separate, always-available action handled in `advance()`
    * — it never goes through this cooldown/auto-fire gating at all.
    */
   private updateFiring(dt: number): void {
@@ -1506,7 +1506,7 @@ export class RaycasterEngine {
   /**
    * Fire `weapon` — the equipped weapon by default, or an arbitrary one (the
    * quick-melee action passes `MELEE_WEAPON` directly, bypassing `weaponIndex`
-   * entirely — see the Left-Ctrl handling in `advance()`). Spends its ammo
+   * entirely — see the Space handling in `advance()`). Spends its ammo
    * cost from the right pool (a no-op for the knife, which has none), then
    * either resolves one hitscan per pellet across its cone (the pistol is a
    * single centered ray; the shotgun sprays several pellets that each

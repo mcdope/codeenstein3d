@@ -88,7 +88,7 @@ export interface InputSnapshot {
   mapToggle: boolean;
   interact: boolean;
   melee: boolean;
-  /** Whether Left-Ctrl (or the gamepad's R3/B) is currently held — see
+  /** Whether Space (or the gamepad's R3/B) is currently held — see
    * `isMeleeHeld()`. Only meaningfully polled by an `auto` melee weapon
    * (Toolchain); the knife still only cares about the edge-triggered
    * `melee` flag above. */
@@ -112,7 +112,8 @@ export class InputController implements InputSource {
   private readonly keys = new Set<string>();
   /** Accumulated horizontal mouse delta since the last poll. */
   private mouseDX = 0;
-  /** Edge-triggered fire request, set on click / Space press. */
+  /** Edge-triggered fire request, set on a click, a gamepad RT press, or the
+   * undocumented `Backquote` automation key (see `isFireHeld()`). */
   private fireQueued = false;
   /** Whether the mouse button is currently held down while pointer-locked —
    * unlike `fireQueued` (consumed once), this stays true for as long as the
@@ -127,10 +128,9 @@ export class InputController implements InputSource {
    * despite that being the more common FPS convention, since E is already the
    * camera-turn-right key in this game's Q/E-turn scheme. */
   private interactQueued = false;
-  /** Edge-triggered "quick-melee" request, set on a Left-Ctrl press — fires
-   * the knife instantly, independent of whatever ranged weapon is equipped
-   * (see `RaycasterEngine`). Left, not Right, so it doesn't collide with the
-   * FPS-overlay toggle on `ControlRight`. */
+  /** Edge-triggered "quick-melee" request, set on a Space press — fires the
+   * knife instantly, independent of whatever ranged weapon is equipped (see
+   * `RaycasterEngine`). See `isMeleeHeld()` for why this isn't Left-Ctrl. */
   private meleeQueued = false;
   /** Accumulated mousewheel steps (one per tick, signed) since the last poll —
    * cycles the equipped ranged weapon. Accumulated rather than a single
@@ -285,10 +285,20 @@ export class InputController implements InputSource {
   }
 
   /** Whether the trigger is currently held down (mouse button, while
-   * pointer-locked, or Space, or a gamepad's RT/R2) — polled every frame by
-   * automatic weapons, unlike `consumeFire()`'s one-shot-per-press semantics. */
+   * pointer-locked, a gamepad's RT/R2, or `Backquote` — see `onKeyDown`) —
+   * polled every frame by automatic weapons, unlike `consumeFire()`'s
+   * one-shot-per-press semantics. No *documented* keyboard fire key exists —
+   * keyboard-only play was never a supported control scheme — but
+   * `Backquote` is a deliberate, undocumented escape hatch for headless
+   * automation (`scripts/generate-default-highscore.mjs`) that needs to fire
+   * ranged weapons without real mouse/Pointer-Lock input, which synthesizes
+   * spurious `mousemove` deltas and spins the camera uncontrollably once
+   * locked (see that script's doc comment). Picked specifically because it's
+   * a lone, non-modifier key nowhere near WASD/Q/E, so it can't combine into
+   * a reserved browser shortcut the way Left-Ctrl+W once did (see
+   * `isMeleeHeld()`). */
   isFireHeld(): boolean {
-    return this.mouseHeld || this.keys.has("Space") || this.gamepadFireHeld;
+    return this.mouseHeld || this.gamepadFireHeld || this.keys.has("Backquote");
   }
 
   /** Return a requested weapon index (once) from a number-key press, or null. */
@@ -313,18 +323,24 @@ export class InputController implements InputSource {
     return interacted;
   }
 
-  /** Return true at most once per Left-Ctrl press (fires a quick-melee attack). */
+  /** Return true at most once per Space press (fires a quick-melee attack). */
   consumeMelee(): boolean {
     const requested = this.meleeQueued;
     this.meleeQueued = false;
     return requested;
   }
 
-  /** Whether Left-Ctrl (or a gamepad's R3/B) is currently held — polled every
+  /** Whether Space (or a gamepad's R3/B) is currently held — polled every
    * frame by an `auto` melee weapon (Toolchain), unlike `consumeMelee()`'s
-   * one-shot-per-press semantics the knife still uses. */
+   * one-shot-per-press semantics the knife still uses. Melee used to be bound
+   * to Left-Ctrl, but holding Ctrl while also pressing W (forward) spells out
+   * `Ctrl+W` — a browser-reserved "close this tab" shortcut that page
+   * JavaScript cannot `preventDefault()` no matter what, which silently
+   * closed the whole browser mid-swing. Space sits away from every modifier
+   * key WASD/Q/E could ever combine with, so it can't collide with a
+   * browser/OS accelerator the same way. */
   isMeleeHeld(): boolean {
-    return this.keys.has("ControlLeft") || this.gamepadMeleeHeld;
+    return this.keys.has("Space") || this.gamepadMeleeHeld;
   }
 
   /** Return accumulated mousewheel steps (signed) since the last poll, and
@@ -495,11 +511,16 @@ export class InputController implements InputSource {
       this.cheatBuffer = "";
     }
 
-    // Space fires once per physical press (ignore OS auto-repeat).
+    // Space fires a quick-melee attack once per physical press (ignore OS
+    // auto-repeat) — see `isMeleeHeld()` for why melee lives here instead of
+    // Left-Ctrl.
     if (e.code === "Space") {
-      if (!e.repeat) this.fireQueued = true;
+      if (!e.repeat) this.meleeQueued = true;
       e.preventDefault();
     }
+    // Backquote: undocumented ranged-fire key — see `isFireHeld()`'s doc
+    // comment for why this exists and why it's this key specifically.
+    if (e.code === "Backquote" && !e.repeat) this.fireQueued = true;
     // Number keys select a weapon slot (Digit1/Numpad1 -> 0, Digit2/Numpad2 -> 1,
     // …) — RaycasterEngine maps the slot to an actual WEAPONS index (see
     // NUMBER_KEY_WEAPONS in weapons.ts), so this is a slot number, not a raw
@@ -516,10 +537,7 @@ export class InputController implements InputSource {
     // R interacts with a fake wall or lore terminal directly ahead/nearby.
     if (e.code === "KeyR" && !e.repeat) this.interactQueued = true;
 
-    // Left-Ctrl fires a quick-melee attack; Right-Ctrl toggles the FPS
-    // overlay — deliberately separate keys so a "quick" one-handed melee
-    // never fights a debug-display toggle.
-    if (e.code === "ControlLeft" && !e.repeat) this.meleeQueued = true;
+    // Right-Ctrl toggles the FPS overlay.
     if (e.code === "ControlRight" && !e.repeat) this.fpsToggleQueued = true;
 
     // Escape itself is handled by `onWindowEscape`, bound to `window` rather

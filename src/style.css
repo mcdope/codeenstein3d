@@ -665,14 +665,14 @@ a.settings-btn {
 }
 
 /* Keybinding legend shown under the canvas during a level (see
- * src/ui/controlsLegend.ts) — keycap chips plus a small WASD/QE cluster
- * graphic, replacing what used to be one long run-on sentence. */
+ * src/ui/controlsLegend.ts) — a small virtual keyboard, each keycap
+ * immediately followed by its function, grouped into rows that roughly
+ * mirror where those keys sit on a real keyboard. */
 .controls-legend {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 6px 14px;
+  gap: 6px;
   max-width: 900px;
 }
 
@@ -701,6 +701,15 @@ a.settings-btn {
   white-space: nowrap;
 }
 
+.controls-chip--freeform {
+  white-space: normal;
+  text-align: center;
+}
+
+.controls-chip--gap {
+  margin-left: 14px;
+}
+
 .controls-chip-label {
   margin-left: 2px;
 }
@@ -709,38 +718,18 @@ a.settings-btn {
   color: var(--border);
 }
 
-.controls-cluster-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-right: 10px;
-  margin-right: 4px;
-  border-right: 1px solid var(--border);
-}
-
-.key-cluster {
+.vkeyboard {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  align-items: center;
+  gap: 4px;
 }
 
-.key-cluster-row {
+.vkeyboard-row {
   display: flex;
-  gap: 3px;
-}
-
-.key-cluster-row--offset {
-  margin-left: 11px;
-}
-
-.cluster-legend {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  font-size: 11px;
-  color: var(--muted);
-  text-align: left;
-  line-height: 1.5;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 14px;
 }
 
 /* The live status bar (stability/heap/keys/…) and every blocking overlay

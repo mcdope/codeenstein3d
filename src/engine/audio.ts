@@ -77,7 +77,9 @@ class AudioManager {
    * separate from `sfx` so the two volumes can be balanced independently
    * (custom music doesn't overpower in-game sound effects, or vice versa). */
   private bgm: GainNode | null = null;
-  private distortion: WaveShaperNode | null = null;
+  /** Cached distortion curve samples — see `distortionNode` for why the
+   * `WaveShaperNode` itself is deliberately *not* cached here. */
+  private distortionCurveCache: Float32Array<ArrayBuffer> | null = null;
   /** White-noise buffers backing every noise-based transient (rocket-blast
    * crack, shotgun blast, rocket launch chuff, flamethrower hiss, knife
    * whoosh), cached by duration (ms) since raw random samples never need to
@@ -574,15 +576,24 @@ class AudioManager {
     });
   }
 
-  /** Shared distortion shaper for the damage voice (built once). */
+  /** A fresh distortion shaper per call — deliberately *not* a single cached
+   * node reused across calls. `connect()` chaining (`osc.connect(shaper).connect(gain)`
+   * at every call site) means a shared node would accumulate one permanent
+   * `shaper → gain` edge per call, and since the shaper is referenced forever
+   * by `this`, every one of those `gain` nodes (and everything upstream of
+   * them) would be kept alive forever too — an unbounded Web Audio node leak
+   * that crashed the tab within seconds of holding Toolchain's auto-fire
+   * trigger. Only the expensive-to-generate curve samples are worth caching;
+   * the node itself is as cheap as the `createOscillator`/`createGain` calls
+   * already made fresh per shot everywhere else in this file. */
   private distortionNode(ctx: AudioContext): WaveShaperNode {
-    if (!this.distortion) {
-      const shaper = ctx.createWaveShaper();
-      shaper.curve = distortionCurve(60);
-      shaper.oversample = "2x";
-      this.distortion = shaper;
+    if (!this.distortionCurveCache) {
+      this.distortionCurveCache = distortionCurve(60);
     }
-    return this.distortion;
+    const shaper = ctx.createWaveShaper();
+    shaper.curve = this.distortionCurveCache;
+    shaper.oversample = "2x";
+    return shaper;
   }
 }
 

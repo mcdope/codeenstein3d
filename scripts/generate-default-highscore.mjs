@@ -20,17 +20,23 @@
  * `scripts/lib/routePlanner.mjs` for the navigation half): BFS-plan a route
  * to the exit (detouring for keys/doors as needed), walk it with real
  * `KeyboardEvent`s, and whenever a nearby aggroed enemy is in view, stop and
- * fight it with real turning (`KeyQ`/`KeyE`) and real firing (`Space`).
- * Firing deliberately never touches the mouse: `Space` alone already drives
- * both a single-shot weapon's edge-triggered `fireQueued` and an auto
- * weapon's held-down `isFireHeld()` (`this.keys.has("Space")`, see
+ * fight it with real turning (`KeyQ`/`KeyE`) and real firing (`Backquote`).
+ * Firing deliberately never touches the mouse: `Backquote` alone already
+ * drives both a single-shot weapon's edge-triggered `fireQueued` and an auto
+ * weapon's held-down `isFireHeld()` (`this.keys.has("Backquote")`, see
  * `src/engine/input.ts`), and empirically, `page.mouse.down()`/`up()` (the
  * first approach tried here) turned out to synthesize real `mousemove`
  * events even with no explicit `page.mouse.move()` call — once Pointer Lock
  * is active, those land as large, uncapped mouse-look rotations (unlike
  * keyboard turning, which is hard-capped at `ROT_SPEED*dt` per frame) and
- * made the bot's facing spin uncontrollably. Space-only input sidesteps
- * Pointer Lock entirely, so the canvas never even needs a click. It is not
+ * made the bot's facing spin uncontrollably. `Backquote`-only firing
+ * sidesteps Pointer Lock entirely, so the canvas never even needs a click —
+ * it used to be `Space` until that key was repurposed for quick-melee (see
+ * `src/engine/input.ts`'s `isMeleeHeld()` doc comment for why: holding the
+ * old Left-Ctrl melee-fire while also pressing W spelled out the
+ * browser-reserved, unblockable `Ctrl+W` "close tab" shortcut).
+ * `Backquote` is a deliberate, undocumented escape hatch that exists
+ * specifically for this bot — see `isFireHeld()`'s doc comment. It is not
  * expected to reliably clear all 17 levels, especially the multi-Elite
  * finale — that's fine: `recordHighscore` accepts any non-cheated run with
  * `levelsCleared >= 1`, and only the best 3 of 10 runs need to ship.
@@ -380,12 +386,12 @@ async function readState(page) {
 
 /** Diffs `desiredMoveKeys` against whatever's currently held (tracked
  * in-page, see `window.__botHeldKeys`), dispatches the resulting
- * keydown/keyup pairs on the canvas, optionally taps a fresh `Space`
- * keydown+keyup (edge-triggered — `Space` alone drives both single-shot and
- * held-auto weapon firing, see the module doc comment), pumps one virtual
- * step, and returns the fresh `{player, enemies}` reading. Keyboard input
- * never needs to be trusted (`InputController` doesn't check `isTrusted`),
- * so this stays a single in-page round trip. */
+ * keydown/keyup pairs on the canvas, optionally taps a fresh `Backquote`
+ * keydown+keyup (edge-triggered — `Backquote` alone drives both single-shot
+ * and held-auto weapon firing, see the module doc comment), pumps one
+ * virtual step, and returns the fresh `{player, enemies}` reading. Keyboard
+ * input never needs to be trusted (`InputController` doesn't check
+ * `isTrusted`), so this stays a single in-page round trip. */
 async function applyAction(page, desiredMoveKeys, fire) {
   return page.evaluate(
     ({ desiredKeys, fire, stepMs }) => {
@@ -397,8 +403,8 @@ async function applyAction(page, desiredMoveKeys, fire) {
       for (const code of desired) if (!held.has(code)) canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
       window.__botHeldKeys = desired;
       if (fire) {
-        canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "Space" }));
-        canvas.dispatchEvent(new KeyboardEvent("keyup", { code: "Space" }));
+        canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "Backquote" }));
+        canvas.dispatchEvent(new KeyboardEvent("keyup", { code: "Backquote" }));
       }
       window.__pumpVirtualTime(stepMs, stepMs);
       return { player: hooks.getPlayerState(), enemies: hooks.getEnemies() };

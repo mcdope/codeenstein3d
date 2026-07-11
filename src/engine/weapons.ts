@@ -102,12 +102,12 @@ export interface Weapon {
  * - **echo pistol**: precise single hitscan, cheap.
  * - **Regex Shotgun**: 7 pellets in a cone — devastating up close, useless at
  *   range as the spread misses; costs more heap.
- * - **SIGKILL Knife**: infinite-ammo melee fallback, bound to Left-Ctrl as an
+ * - **SIGKILL Knife**: infinite-ammo melee fallback, bound to Space as an
  *   instant "quick-melee" overlay rather than an equippable slot — point-blank
  *   only, but a kill heals a sliver of stability, rewarding aggressive play
  *   when heap runs dry instead of leaving the player stuck out of options.
  *   See `MELEE_WEAPON`/`currentMeleeWeapon` and `RaycasterEngine`'s
- *   quick-melee handling. Wielded on Left-Ctrl until Toolchain is unlocked,
+ *   quick-melee handling. Wielded on Space until Toolchain is unlocked,
  *   which permanently replaces it there (see `currentMeleeWeapon`).
  * - **gdb**: fully automatic, high fire rate, moderate damage per round —
  *   draws from its own `"smg"` ammo pool rather than sharing `"bullets"`
@@ -126,12 +126,17 @@ export interface Weapon {
  *   (forced at campaign level 12, one past ghidra's 8).
  * - **Toolchain**: a second, stronger melee weapon — infinite ammo like the
  *   knife, double its damage, a bigger lifesteal heal, and fires repeatedly
- *   while Left-Ctrl is held instead of once per press (see `auto`). Has no
+ *   while Space is held instead of once per press (see `auto`). Has no
  *   forced-unlock safety net and isn't in `UNLOCKABLE_WEAPONS` — only
  *   reachable via a secret room or an Elite kill, and only from campaign
  *   level `TOOLCHAIN_MIN_LEVEL` on (see `RaycasterEngine.dropEliteLoot` and
  *   `main.ts`'s `computeMissingWeaponIndices`). Replaces the knife on
- *   Left-Ctrl the instant it's owned — see `currentMeleeWeapon`.
+ *   Space the instant it's owned — see `currentMeleeWeapon`. (Bound to
+ *   Space, not a modifier key like the original Left-Ctrl, specifically
+ *   because holding Ctrl together with W spells out the browser-reserved
+ *   `Ctrl+W` "close tab" shortcut — unblockable by page JS — which closed
+ *   the whole browser the instant a player swung the chainsaw while moving
+ *   forward.)
  */
 export const WEAPONS: readonly Weapon[] = [
   {
@@ -303,7 +308,7 @@ export const UNLOCKABLE_WEAPONS: readonly number[] = [
  * (N+1)th number key (`1`, `2`, …) switches to, via `RaycasterEngine`'s
  * `consumeWeaponRequest()` handling — melee (the knife, index 2) is skipped
  * since it's structurally excluded from number-key switching (see
- * `canWieldViaNumberKey`) and bound to Left-Ctrl instead. Without this
+ * `canWieldViaNumberKey`) and bound to Space instead. Without this
  * indirection, a raw digit-to-array-index mapping would leave key `3` dead
  * (it used to land on the knife's slot) and push gdb/ghidra to `4`/`5`
  * instead of `3`/`4` — exactly the "hole" a prior playtest flagged. Derived
@@ -321,7 +326,7 @@ export const NUMBER_KEY_WEAPONS: readonly number[] = WEAPONS.map((_, i) => i).fi
  * The knife's `Weapon` object — the *first* `meleeRange`-having entry in
  * `WEAPONS` (still correctly the knife now that Toolchain is a second melee
  * entry later in the array), looked up by its defining trait rather than a
- * hardcoded index. Don't use this directly to decide what Left-Ctrl fires —
+ * hardcoded index. Don't use this directly to decide what Space fires —
  * that depends on which melee weapon is actually owned, so use
  * `currentMeleeWeapon` instead. Exists as its own constant since it's still
  * the correct "default/fallback melee weapon" value on a fresh run.
@@ -329,7 +334,7 @@ export const NUMBER_KEY_WEAPONS: readonly number[] = WEAPONS.map((_, i) => i).fi
 export const MELEE_WEAPON: Weapon = WEAPONS.find((w) => w.meleeRange !== undefined)!;
 
 /**
- * Which melee weapon Left-Ctrl's quick-melee action currently wields: the
+ * Which melee weapon Space's quick-melee action currently wields: the
  * knife until Toolchain is unlocked, then Toolchain permanently — it
  * replaces the knife on pickup rather than sitting alongside it (see the
  * `notes` entry this shipped for). Takes the engine's live `ownedWeapons` set

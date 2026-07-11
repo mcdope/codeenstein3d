@@ -104,7 +104,7 @@ Each stage only consumes the data structure from the previous stage — language
 - **Ammo pools** — Bullets (pistol/shotgun), SMG (gdb), Rockets (ghidra), and Gas (Friday Hotfix), with sparse map pickups as a bullets/rockets backup; gdb/ghidra/Friday Hotfix's own pools only drop/spawn once each weapon is unlocked
 - **Swap buffer** — absorbs damage 1:1 before health, capped at 100
 - **No wasted health drops** — a kill never drops a health pack while you're at full health (elites included); it rolls ammo/swap instead
-- **Quick-melee** — Left-Ctrl for an instant knife swing (heals sliver on kill, never switches weapon); once Toolchain is found it permanently takes over Left-Ctrl instead, revving continuously (infinite ammo) for as long as the button's held
+- **Quick-melee** — Space for an instant knife swing (heals sliver on kill, never switches weapon); once Toolchain is found it permanently takes over Space instead, revving continuously (infinite ammo) for as long as the button's held
 - **Ranged accuracy** — pellets deviate cubically with distance (medium range reliable, far range spreads)
 
 ### Scoring
@@ -155,11 +155,11 @@ npm run preview    # Serve production build locally
 - **Mouse** — Look around (click canvas or auto-focused on load)
 
 ### Combat & Weapons
-- **Click / Space** — Fire active weapon
+- **Click** — Fire active weapon (mouse/gamepad only, no keyboard fire key)
 - **1 / 2** — Switch to pistol/shotgun
 - **3 / 4 / 5** — Switch to gdb/ghidra/Friday Hotfix (once unlocked)
 - **Mousewheel** — Cycle through owned weapons
-- **Left-Ctrl** — Quick-melee (SIGKILL Knife, infinite ammo, heals on kill — permanently replaced by the Toolchain chainsaw once found)
+- **Space** — Quick-melee (SIGKILL Knife, infinite ammo, heals on kill — permanently replaced by the Toolchain chainsaw once found)
 
 ### Interaction & Navigation
 - **R** — Read nearby lore terminal (hold W/S to scroll) OR open fake wall to reveal secret
