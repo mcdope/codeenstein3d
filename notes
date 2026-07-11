@@ -160,4 +160,9 @@
 - [ ] default highscore replay run faster than normal gameplay. dont speed up the engine to be done with recording faster. the point of default replays is a proper presentation of the product.
 - [ ] User reports drastic framedrops when looking around or shooting on the nightmare github level suggestion. I can't repro these locally. He uses Chrome on Win10 and the game usually runs at 120fps, but when shooting - even when out of ammo! - his fps drop to around 30. It's not an hw topic, since he has a Ryzen9, plenty of ram and a RTX3090.
 - [ ] ensure github loaders dont escalate with loading, when the next few levels are preloaded that is enough. no need to parse any file ahead in a repo with some thousand files.
+- [ ] multiplayer support
+    - [ ] server/client architecture - one hosts the session, other players connect. IMPORTANT: only transfer generated level data and sync stuff, never sourcecode or AST
+    - [ ] lobby for lan games
+    - [ ] direct ip/dns connect
+    - [ ] lobby for online games
 
