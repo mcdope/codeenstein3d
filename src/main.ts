@@ -878,17 +878,35 @@ function flattenAllFiles(node: TreeNode): TreeNode[] {
 /** The workspace's logical entrypoint, if any. Tries, in order: a filename-
  * convention match in real source, the same in test/spec fixtures (see
  * `partitionEntrypointCandidates`) — both against the raw tree via
- * `flattenAllFiles`, no I/O — and only if neither hits, a scored main()-scan
- * (`findEntrypointByScanning`) over real source then test/spec fixtures,
- * which does need `flattenParsableFiles`'s parsability check. Each stage
- * falls through to the next only when it finds nothing *usable* — not merely
- * when a bucket is empty — so a workspace whose real source is present but
- * entirely unparsable still correctly falls back to whatever test fixtures do
- * parse, rather than giving up early; likewise a filename match that turns
- * out to fail parsing (a broken/binary file that happens to have a
- * conventional name) falls through to the scoring stage rather than
- * dead-ending detection. `signal`, when given, is forwarded to the scoring
- * stage — see `findEntrypointByScanning`. */
+ * `flattenAllFiles`, no I/O — and only if neither hits, *for a local
+ * workspace only*, a scored main()-scan (`findEntrypointByScanning`) over
+ * real source then test/spec fixtures, which does need
+ * `flattenParsableFiles`'s parsability check. Each stage falls through to the
+ * next only when it finds nothing *usable* — not merely when a bucket is
+ * empty — so a workspace whose real source is present but entirely
+ * unparsable still correctly falls back to whatever test fixtures do parse,
+ * rather than giving up early; likewise a filename match that turns out to
+ * fail parsing (a broken/binary file that happens to have a conventional
+ * name) falls through to the scoring stage rather than dead-ending
+ * detection. `signal`, when given, is forwarded to the scoring stage — see
+ * `findEntrypointByScanning`.
+ *
+ * The scoring stage is skipped entirely for a remote (GitHub) workspace —
+ * confirmed against a real repo (`id-Software/DOOM`, no filename-convention
+ * match since its entrypoint is `d_main.c`/`i_main.c`) that this stage alone
+ * generates on the order of "as many requests as the repo has files" well
+ * within its own timeout, since fetching is fast enough to make real
+ * progress through the whole tree before `ENTRYPOINT_DETECTION_TIMEOUT_MS`
+ * fires — exactly the "parse files ahead of need" cost this whole cascade is
+ * trying to avoid for a network-backed workspace. `autoLaunchInitialLevel`
+ * already has a working fallback for "nothing detected" (first parsable file
+ * in tree order), so a remote workspace goes straight there instead of
+ * paying for a scan that can't be bounded by request count, only by wall
+ * clock. `workspaceIsDemo` is excluded from this skip even though it also
+ * sets `workspaceIsRemote` — the bundled demo campaign's files are already
+ * in memory (see `demoCampaign.ts`), so scoring them costs nothing; it just
+ * never actually needs to; its own `main.c` always resolves via the
+ * filename-convention stage above. */
 export async function findEntrypoint(tree: TreeNode, signal?: AbortSignal): Promise<EntrypointMatch | null> {
   const allFiles = partitionEntrypointCandidates(flattenAllFiles(tree));
   const byName = findEntrypointByName(allFiles.primary) ?? findEntrypointByName(allFiles.secondary);
@@ -902,6 +920,7 @@ export async function findEntrypoint(tree: TreeNode, signal?: AbortSignal): Prom
     }
   }
 
+  if (workspaceIsRemote && !workspaceIsDemo) return null;
   if (signal?.aborted) return null;
   const { primary, secondary } = partitionEntrypointCandidates(await flattenParsableFiles(tree));
   return (await findEntrypointByScanning(primary, signal)) ?? (await findEntrypointByScanning(secondary, signal));
@@ -1336,21 +1355,54 @@ async function isParsableNode(node: TreeNode): Promise<boolean> {
   }
 }
 
+/** Caches `flattenParsableFiles`'s result per root tree node — see that
+ * function's doc comment. Never explicitly invalidated: `workspaceTree` is
+ * replaced wholesale (a fresh root node) on every new load and never mutated
+ * in place, so a stale entry simply becomes unreachable and is
+ * garbage-collected rather than needing a manual reset. */
+const parsableFilesCache = new WeakMap<TreeNode, Promise<TreeNode[]>>();
+
 /** Files parsable by a registered adapter, in the same depth-first,
  * directories-first order the sidebar renders them in. `onFileChecked`, when
  * given, fires once per file node visited (parsable or not) — a remote
  * workspace's extensionless files each cost a real network round-trip (see
  * `isParsableNode`'s shebang sniff), so a big repo can spend real seconds
  * walking this without it, same problem `fetchGithubTree`'s tree download
- * had before it got a progress callback of its own. */
-export async function flattenParsableFiles(node: TreeNode, onFileChecked?: () => void): Promise<TreeNode[]> {
+ * had before it got a progress callback of its own.
+ *
+ * Memoized (via `parsableFilesCache`) whenever no `onFileChecked` is given —
+ * every real caller always passes the workspace root, so this means a full
+ * walk (and, for a remote workspace, every not-yet-seen extensionless file's
+ * network sniff) happens at most once per workspace load rather than once
+ * per level clear, which is what `advanceToNextLevel`'s per-level
+ * progression used to cause by re-walking the whole tree on every single
+ * level. The one caller that does pass `onFileChecked` (`autoLaunchInitialLevel`'s
+ * no-named-entrypoint fallback, for its "Scanning file tree… (N/Total)"
+ * readout) always does a fresh walk and never touches the cache — that path
+ * is rare (only when nothing matches `ENTRYPOINT_FILENAMES`) and needs a
+ * genuine per-file callback on every call, not a cached replay of one. One
+ * accepted side effect of caching: a file whose parsability sniff transiently
+ * fails (e.g. a network hiccup) no longer gets retried on a later level
+ * clear — it stays "not parsable" for the rest of the session, the same as
+ * a genuine parse failure already did before this cache existed. */
+export function flattenParsableFiles(node: TreeNode, onFileChecked?: () => void): Promise<TreeNode[]> {
+  if (!onFileChecked) {
+    const cached = parsableFilesCache.get(node);
+    if (cached) return cached;
+  }
+  const promise = flattenParsableFilesUncached(node, onFileChecked);
+  if (!onFileChecked) parsableFilesCache.set(node, promise);
+  return promise;
+}
+
+async function flattenParsableFilesUncached(node: TreeNode, onFileChecked?: () => void): Promise<TreeNode[]> {
   if (node.kind === "file") {
     const ok = await isParsableNode(node);
     onFileChecked?.();
     return ok ? [node] : [];
   }
   const out: TreeNode[] = [];
-  for (const child of node.children ?? []) out.push(...(await flattenParsableFiles(child, onFileChecked)));
+  for (const child of node.children ?? []) out.push(...(await flattenParsableFilesUncached(child, onFileChecked)));
   return out;
 }
 
@@ -1435,32 +1487,34 @@ async function computeCodebaseStats(tree: TreeNode): Promise<CodebaseStats> {
   return { linesOfCode, complexity, hash };
 }
 
-/** Above this file count, a *remote* workspace's whole-codebase aggregation
- * (see `kickOffCodebaseStats`) is skipped entirely rather than started — a
- * local workspace has no such cap (disk reads are effectively free), but for
- * a GitHub repo this pass means fetching and parsing every single file over
- * the network, purely for a highscore's whole-codebase hash/stats, long after
- * (and regardless of whether) the player ever reaches most of them. Picked
- * comfortably above a typical hand-sized project but well under "some
- * thousand files" (the motivating case — `torvalds/linux` is the standing
- * stress-test repo elsewhere in this file). `recordRunHighscore` already
- * treats a `null` `codebaseStatsPromise` the same as one that simply didn't
- * finish in time, falling back to hashing just the single ended-on file —
- * no new degradation path needed. */
-const REMOTE_CODEBASE_STATS_FILE_CAP = 300;
-
 /** (Re)starts the whole-codebase background aggregation for a just-loaded
  * workspace — fire-and-forget, so it never delays `autoLaunchInitialLevel`.
  * A failed aggregation resolves to zeroed totals rather than a rejected
  * promise, so `withTimeout` only ever has to special-case "still running",
- * not "errored". Skipped outright for a large remote workspace — see
- * `REMOTE_CODEBASE_STATS_FILE_CAP`. */
+ * not "errored".
+ *
+ * Skipped outright for *any* remote (GitHub) workspace, regardless of file
+ * count — a local workspace has no such gate (disk reads are effectively
+ * free), but for a GitHub repo this pass means fetching and parsing every
+ * single parsable file's full content over the network, purely for a
+ * highscore's whole-codebase hash/stats, long after (and regardless of
+ * whether) the player ever reaches most of them. An earlier version of this
+ * gate only skipped repos over a 300-file threshold, on the theory that
+ * smaller repos were cheap enough to fetch in full — measured against a real
+ * repo (`id-Software/DOOM`, ~97 parsable files, comfortably under that
+ * threshold) that theory didn't hold: it alone generated ~97 real
+ * `raw.githubusercontent.com` requests on top of the tree fetch, immediately
+ * on load, well before any level was even reached. `recordRunHighscore`
+ * already treats a `null` `codebaseStatsPromise` the same as one that simply
+ * didn't finish in time, falling back to hashing just the single ended-on
+ * file — no new degradation path needed here. */
 function kickOffCodebaseStats(tree: TreeNode): void {
-  if (workspaceIsRemote && countTreeFiles(tree) > REMOTE_CODEBASE_STATS_FILE_CAP) {
+  if (workspaceIsRemote) {
     console.info(
       `[codebase-stats] Skipping whole-codebase aggregation for "${workspaceRootName}" — ` +
-        `too large a remote repo (over ${REMOTE_CODEBASE_STATS_FILE_CAP} files) to fetch and parse ` +
-        "in full just for a highscore's stats; playing further levels doesn't need it either.",
+        "a remote repo's whole-codebase hash/stats would mean fetching and parsing every " +
+        "single file's content over the network purely for a highscore board; playing " +
+        "further levels doesn't need it either.",
     );
     codebaseStatsPromise = null;
     return;
