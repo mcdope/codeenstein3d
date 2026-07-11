@@ -166,4 +166,6 @@
     - [ ] lobby for lan games
     - [ ] direct ip/dns connect
     - [ ] lobby for online games
-
+    - [ ] teamwork for kill should share pointbonus
+    - [ ] when one player enters the return tile, all players advance to the next level
+    
