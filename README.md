@@ -235,6 +235,11 @@ npm run preview    # Serve production build locally
 | 81 | GitHub Action for the demo-campaign structural verify script | ✅ |
 | 82–85 | Perf pass: per-shot enemy/mine projection reuse, ammo/loot/AI dedup, LOS memoization + rocket spatial hash, shared BFS enemy path field | ✅ |
 | 86 | Texture-mapped walls/doors/floors (procedural default, or sourced from a loaded DOOM WAD file) | ✅ |
+| 87 | Full CI pipeline — browser (Playwright) + no-browser GitHub Actions jobs running every `verify:*` script on push/PR | ✅ |
+| 88 | WAD/procedural texturing extended to lore-terminal walls, hazard/teleporter floors, and spike traps | ✅ |
+| 89–91 | GitHub-repo workspace loading: stale-load cancellation, and entrypoint-scan/codebase-stats request reduction (a ~100-file repo went from 99 to 13 requests) | ✅ |
+| 92 | 100%-coverage Vitest unit test suite (1468 tests), wired as a blocking CI gate | ✅ |
+| — | `tsc --noEmit && vite build` added as its own CI gate, after a TypeScript bump broke a build the existing test jobs didn't catch | ✅ |
 | — | Room decorations | ⏸️ Implemented, disabled (playtest feedback) |
 
 ---
