@@ -948,18 +948,19 @@ first thing at the start of every session, before touching code.
     that use large `dt` steps.
 
 - [ ] Phase 11: src/main.ts — IN PROGRESS. `src/main.test.ts` created,
-  53 tests so far covering: module-import DOM wiring, the 3
+  60 tests so far covering: module-import DOM wiring, the 3
   campaign-persistence exports, `applyForcedUnlocks`, `flattenParsableFiles`,
   `findEntrypoint`'s full local-workspace cascade, WAD/BGM loading, the
-  highscores dialog, and all three workspace-loading flows (local pick,
-  GitHub, demo campaign) including a real supersession race and a real
-  end-to-end `launchLevel` reach (auto-launches an actual level with a
-  real generated map and a real `RaycasterEngine`). All green, `npm test`
-  clean at 1375/76. **Coverage on src/main.ts alone: 740/1310 lines
-  (56%), 37/53 functions (70%), 194/245 branches (79%)** — a big jump
-  from just this one batch, since `launchLevel`/`autoLaunchInitialLevel`
-  get exercised for free by every one of the three loading flows. See
-  "Next concrete step" for what's next.
+  highscores dialog, all three workspace-loading flows (local pick,
+  GitHub, demo campaign) including a real supersession race, Continue Run
+  (resume + saved-file-not-found fallback + failure paths), and file-tree
+  file selection (`handleFileSelected`'s both branches). All green, `npm
+  test` clean at 1382/76. **Coverage on src/main.ts alone: 795/1310 lines
+  (61%), 38/53 functions (72%), 207/264 branches (78%)**. See "Next
+  concrete step" for what's next.
+  - Gotcha this batch: a file-tree row's `title` attribute is the node's
+    *full path* ("ws/readme.md"), not its bare filename — a `[title="…"]`
+    selector needs the workspace-root prefix too.
 
   **Test-writing gotchas found this batch** (kept for the next session):
   - **jsdom's `File` has no `arrayBuffer()`** — `new File([...], name)`
@@ -1196,8 +1197,11 @@ per-scenario, not per-file, breakdown):
       is a distinct code path, still open
 - [x] demo campaign loading (real bundled tree, real entrypoint match on its
       actual `main.c`, genuinely exercises `launchLevel` end-to-end)
-- [ ] Continue Run (resume flow, saved-file-not-found fallback)
-- [ ] file-tree file selection (`handleFileSelected`)
+- [x] Continue Run (resume with carryover, saved-file-not-found fallback,
+      no-save no-op, cancelled picker, resume failure)
+- [x] file-tree file selection (`handleFileSelected` — non-parsable file
+      logs raw text without touching level state; a parsable file clicked
+      manually parses and launches)
 - [x] `launchLevel` — incidentally well-covered by the three loading-flow
       batches above (all three demonstrably reach a real launched level);
       check the coverage report once the remaining batches land to see

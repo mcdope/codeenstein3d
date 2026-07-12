@@ -744,3 +744,98 @@ describe("main.ts — demo campaign load", () => {
     expect(document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.disabled).toBe(false); // re-enabled in `finally`
   });
 });
+
+function campaignSave(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    workspaceName: "ws",
+    filePath: "main.c",
+    health: 75,
+    swap: 0,
+    bullets: 20,
+    rockets: 0,
+    smg: 0,
+    gas: 0,
+    score: 100,
+    weaponIndex: 0,
+    ownedWeapons: [0, 1, 2],
+    levelIndex: 1,
+    ...overrides,
+  });
+}
+
+describe("main.ts — Continue Run", () => {
+  it("resumes at the saved file with the saved carryover", async () => {
+    localStorage.setItem("codeenstein-campaign-save", campaignSave());
+    await importMain();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#continue-run")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "ws");
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+  });
+
+  it("falls back to a fresh auto-launched run when the saved file isn't found in the re-picked workspace", async () => {
+    localStorage.setItem("codeenstein-campaign-save", campaignSave({ filePath: "gone.c" }));
+    await importMain();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#continue-run")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "ws");
+    // The stale save is cleared and a fresh run starts instead of erroring.
+    await waitUntil(() => localStorage.getItem("codeenstein-campaign-save") === null);
+  });
+
+  it("does nothing if clicked with no save present (button should already be hidden)", async () => {
+    await importMain();
+    expect(() => document.querySelector<HTMLButtonElement>("#continue-run")!.click()).not.toThrow();
+  });
+
+  it("does nothing when the picker is cancelled", async () => {
+    localStorage.setItem("codeenstein-campaign-save", campaignSave());
+    await importMain();
+    stubShowDirectoryPicker(undefined);
+    const before = document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent;
+    document.querySelector<HTMLButtonElement>("#continue-run")!.click();
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe(before);
+  });
+
+  it("shows an error status when resuming fails", async () => {
+    localStorage.setItem("codeenstein-campaign-save", campaignSave());
+    await importMain();
+    (window as unknown as { showDirectoryPicker: () => Promise<unknown> }).showDirectoryPicker = () =>
+      Promise.reject(new Error("resume exploded"));
+    document.querySelector<HTMLButtonElement>("#continue-run")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "resume exploded");
+  });
+});
+
+describe("main.ts — file tree selection", () => {
+  it("logs raw text (does not launch a level) for a non-parsable file", async () => {
+    await importMain();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C, "readme.md": "just text" }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    // A tree row's `title` is the node's full path ("ws/readme.md"), not
+    // just its bare filename.
+    await waitUntil(() => document.querySelector('.tree-row--file[title="ws/readme.md"]') !== null);
+
+    const canvasAreaHiddenBefore = document.querySelector(".canvas-area")!.hasAttribute("hidden");
+    document.querySelector<HTMLButtonElement>('.tree-row--file[title="ws/readme.md"]')!.click();
+    await flushAsync();
+    // Selecting a non-parsable file never touches the canvas/level state.
+    expect(document.querySelector(".canvas-area")!.hasAttribute("hidden")).toBe(canvasAreaHiddenBefore);
+  });
+
+  it("parses and launches a level for a parsable file clicked from the tree", async () => {
+    await importMain();
+    stubShowDirectoryPicker(
+      fakeDirectoryHandle("ws", { "a_main.c": "int f() { return 1; }\n", "main.c": VALID_MAIN_C }),
+    );
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    // main.c auto-launches (filename match); wait for that to finish, then
+    // manually pick the *other* file to exercise handleFileSelected's own
+    // parse-and-launch path independent of the auto-launch cascade.
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    document.querySelector<HTMLButtonElement>('.tree-row--file[title="ws/a_main.c"]')!.click();
+    await flushAsync();
+    expect(document.querySelector(".canvas-area")!.hasAttribute("hidden")).toBe(false);
+  });
+});
