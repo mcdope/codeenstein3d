@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildIndexDom, stubResizeObserver } from "../test/mocks/mainDom";
+import { buildIndexDom, stubDialogElement, stubResizeObserver } from "../test/mocks/mainDom";
 import { stubCanvasGetContext } from "../test/mocks/canvas";
 import { FakeFileSystemFileHandle } from "../test/mocks/fsAccess";
 import type { TreeNode } from "./fs/workspace";
@@ -21,7 +21,28 @@ async function importMain(): Promise<typeof import("./main")> {
   buildIndexDom();
   stubCanvasGetContext(document.createElement("canvas"));
   stubResizeObserver();
+  stubDialogElement(document.querySelector<HTMLDialogElement>("#highscore-dialog")!);
   return import("./main");
+}
+
+/** Waits for one microtask + macrotask tick, enough for a `void asyncFn()`
+ * fire-and-forget call (e.g. a button click handler) to run past its first
+ * `await`. Cheaper/more explicit than sprinkling ad hoc
+ * `await Promise.resolve()` chains at each call site. */
+function flushAsync(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/** Polls `check` every macrotask tick until it's truthy or `timeoutMs`
+ * elapses — for a handler whose async chain is deeper than one
+ * `flushAsync()` tick can reliably drain (e.g. `loadHighscoresForDisplay`'s
+ * dynamic `import("./defaultHighscore")`, a genuinely large module). */
+async function waitUntil(check: () => boolean, timeoutMs = 3000): Promise<void> {
+  const start = Date.now();
+  while (!check()) {
+    if (Date.now() - start > timeoutMs) throw new Error("waitUntil: timed out");
+    await flushAsync();
+  }
 }
 
 function fileNode(path: string, content = ""): TreeNode {
@@ -426,5 +447,104 @@ describe("main.ts — findEntrypoint", () => {
     const tree = dirNode("root", [fileNode("root/entry.c", VALID_MAIN_C)]);
     const match = await findEntrypoint(tree, AbortSignal.abort());
     expect(match).toBeNull();
+  });
+});
+
+function setInputFiles(input: HTMLInputElement, files: File[]): void {
+  Object.defineProperty(input, "files", { value: files, configurable: true });
+}
+
+describe("main.ts — WAD texture loading", () => {
+  it("clicking the load button opens the hidden file picker", async () => {
+    await importMain();
+    const fileInput = document.querySelector<HTMLInputElement>("#wad-file-input")!;
+    const clickSpy = vi.spyOn(fileInput, "click");
+    document.querySelector<HTMLButtonElement>("#load-wad-textures")!.click();
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a failure status for an invalid WAD file, and resets the input for re-selection", async () => {
+    await importMain();
+    const fileInput = document.querySelector<HTMLInputElement>("#wad-file-input")!;
+    // jsdom's own `File` has no `arrayBuffer()` implementation — a plain
+    // object with the same shape `wadFileInput`'s change handler actually
+    // reads (`.name`, `.arrayBuffer()`) stands in instead.
+    const bytes = new Uint8Array([1, 2, 3, 4]).buffer;
+    const file = { name: "bad.wad", arrayBuffer: () => Promise.resolve(bytes) } as unknown as File;
+    setInputFiles(fileInput, [file]);
+    fileInput.dispatchEvent(new Event("change"));
+    await flushAsync();
+
+    const status = document.querySelector<HTMLParagraphElement>("#wad-status")!;
+    expect(status.textContent).toContain("Failed to load bad.wad");
+    expect(fileInput.value).toBe(""); // cleared so re-selecting the same file still fires "change"
+  });
+
+  it("does nothing when the change event fires with no file selected", async () => {
+    await importMain();
+    const fileInput = document.querySelector<HTMLInputElement>("#wad-file-input")!;
+    const status = document.querySelector<HTMLParagraphElement>("#wad-status")!;
+    const before = status.textContent;
+    setInputFiles(fileInput, []);
+    fileInput.dispatchEvent(new Event("change"));
+    await flushAsync();
+    expect(status.textContent).toBe(before);
+  });
+
+  it("reports a generic failure message when the read itself throws a non-Error", async () => {
+    await importMain();
+    const fileInput = document.querySelector<HTMLInputElement>("#wad-file-input")!;
+    const file = { name: "bad.wad", arrayBuffer: () => Promise.reject("boom") } as unknown as File;
+    setInputFiles(fileInput, [file]);
+    fileInput.dispatchEvent(new Event("change"));
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent).toBe("Failed to load WAD file.");
+  });
+});
+
+describe("main.ts — BGM folder loading", () => {
+  it("reports an error status when the picker throws", async () => {
+    await importMain();
+    vi.stubGlobal("window", window);
+    (window as unknown as { showDirectoryPicker: () => Promise<unknown> }).showDirectoryPicker = () =>
+      Promise.reject(new Error("picker exploded"));
+    document.querySelector<HTMLButtonElement>("#select-bgm-folder")!.click();
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#bgm-status")!.textContent).toBe("picker exploded");
+  });
+
+  it("does nothing when the picker is cancelled (resolves undefined)", async () => {
+    await importMain();
+    (window as unknown as { showDirectoryPicker: () => Promise<undefined> }).showDirectoryPicker = () =>
+      Promise.resolve(undefined);
+    const status = document.querySelector<HTMLParagraphElement>("#bgm-status")!;
+    const before = status.textContent;
+    document.querySelector<HTMLButtonElement>("#select-bgm-folder")!.click();
+    await flushAsync();
+    expect(status.textContent).toBe(before);
+  });
+});
+
+describe("main.ts — highscores dialog", () => {
+  it("opens the dialog (with an empty table) on click and closes via the Close button", async () => {
+    await importMain();
+    const dialog = document.querySelector<HTMLDialogElement>("#highscore-dialog")!;
+    document.querySelector<HTMLButtonElement>("#view-highscores")!.click();
+    await waitUntil(() => dialog.open);
+    expect(dialog.open).toBe(true);
+    expect(document.querySelector<HTMLElement>("#highscore-list")!.children.length).toBeGreaterThanOrEqual(0);
+
+    document.querySelector<HTMLButtonElement>("#close-highscores")!.click();
+    expect(dialog.open).toBe(false);
+  });
+
+  it("does not refocus the canvas on close when no level is running", async () => {
+    await importMain();
+    const dialog = document.querySelector<HTMLDialogElement>("#highscore-dialog")!;
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    const focusSpy = vi.spyOn(canvas, "focus");
+    dialog.showModal();
+    dialog.close();
+    expect(focusSpy).not.toHaveBeenCalled();
   });
 });

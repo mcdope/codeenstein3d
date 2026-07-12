@@ -107,3 +107,20 @@ export function stubResizeObserver(): void {
   }
   (globalThis as unknown as { ResizeObserver: typeof NoopResizeObserver }).ResizeObserver = NoopResizeObserver;
 }
+
+/** jsdom (this project's pinned 26.1.0) doesn't implement `<dialog>`'s
+ * `showModal()`/`close()` at all — calling either throws
+ * "is not a function". `main.ts`'s `#highscore-dialog` needs both (plus the
+ * `open` property and a `close` event on `close()`, which `HTMLDialogElement`
+ * spec-wise fires synchronously) for the Highscores button/dialog flow. */
+export function stubDialogElement(dialog: HTMLDialogElement): void {
+  Object.defineProperty(dialog, "open", { value: false, writable: true, configurable: true });
+  dialog.showModal = function (this: HTMLDialogElement): void {
+    (this as unknown as { open: boolean }).open = true;
+  };
+  dialog.close = function (this: HTMLDialogElement): void {
+    if (!this.open) return;
+    (this as unknown as { open: boolean }).open = false;
+    this.dispatchEvent(new Event("close"));
+  };
+}

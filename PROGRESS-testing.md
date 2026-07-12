@@ -948,17 +948,41 @@ first thing at the start of every session, before touching code.
     that use large `dt` steps.
 
 - [ ] Phase 11: src/main.ts — IN PROGRESS. `src/main.test.ts` created,
-  34 tests so far covering: module-import DOM wiring (title, extreme-gore
+  42 tests so far covering: module-import DOM wiring (title, extreme-gore
   option removal, tab switching, gore/difficulty/volume settings
   persistence, Continue-tab visibility), the 3 campaign-persistence
   exports (`loadCampaignSave`/`saveCampaign`/`clearCampaignSave`),
-  `applyForcedUnlocks`, `flattenParsableFiles`, and `findEntrypoint`'s
-  full cascade (filename match in primary/secondary, parse-failure
-  fallthrough, scored-scan with/without a `main()`, nothing-parses,
-  aborted signal). All green, `npm test` clean at 1356/76.
-  Coverage so far (from just this batch): 47 functions declared, 15
-  reachable purely from module-import + these exports; the rest need the
-  DOM-interaction batches below. See "Next concrete step" for what's next.
+  `applyForcedUnlocks`, `flattenParsableFiles`, `findEntrypoint`'s full
+  local-workspace cascade, WAD texture loading, BGM folder loading, and
+  the highscores dialog open/close. All green, `npm test` clean at
+  1364/76. See "Next concrete step" for what's next.
+
+  **Test-writing gotchas found this batch** (kept for the next session):
+  - **jsdom's `File` has no `arrayBuffer()`** — `new File([...], name)`
+    constructs an object whose `.arrayBuffer` is `undefined`, not a real
+    method. Anywhere source code calls `file.arrayBuffer()` (the WAD
+    file-input handler), use a plain object literal shaped like
+    `{ name, arrayBuffer: () => Promise.resolve(buffer) }` cast to
+    `File` instead of a real `new File(...)`.
+  - **jsdom has no `<dialog>` support at all** (`showModal`/`close` are
+    literally missing, not just no-ops) — `test/mocks/mainDom.ts`'s new
+    `stubDialogElement()` patches both onto a given dialog element
+    (`close()` fires a real `"close"` event, matching the spec, since
+    `main.ts` relies on that event to refocus the canvas). Call it in
+    `importMain()`'s setup, same as `stubResizeObserver()`.
+  - **A single `flushAsync()` tick isn't always enough** — the
+    Highscores dialog's open handler calls `loadHighscoresForDisplay()`,
+    which on an empty board dynamically `import()`s
+    `defaultHighscore.ts` (a genuine 115k-line generated module) — real
+    parse/eval time that can outlast one `setTimeout(0)` tick. Added a
+    `waitUntil(check, timeoutMs)` poll helper in `main.test.ts` for any
+    click handler whose async chain isn't shallow; reach for it over
+    `flushAsync()` by default once a handler does more than one `await`.
+  - **`window.showDirectoryPicker` is the right stub point**, not
+    `pickWorkspace`/`pickDirectory` themselves — those are real,
+    unmocked `workspace.ts` functions that branch on
+    `typeof window.showDirectoryPicker === "function"`, so stubbing the
+    browser primitive keeps that branch logic genuinely exercised.
 - [ ] Phase 12: wrap-up (thresholds, CI, docs, notes, delete this file)
 
 ## Current coverage snapshot
@@ -1108,8 +1132,20 @@ per-scenario, not per-file, breakdown):
 - [ ] `findEntrypoint`'s remote-workspace skip specifically (`workspaceIsRemote
       && !workspaceIsDemo` — needs a real or demo-campaign GitHub-style load
       first to flip that module state, then a direct `findEntrypoint` call)
-- [ ] WAD texture loading (`describeWadStatus`, the file-input change handler)
-- [ ] highscores dialog open/close + Watch Replay wiring
+- [x] WAD texture loading (file-picker-open wiring, failure path via garbage
+      bytes, empty-selection no-op, non-Error rejection) — `describeWadStatus`'s
+      *success* message (real matched-texture-name listing) still needs a
+      genuinely valid minimal WAD fixture; not yet covered, flagged as a
+      coverage-report follow-up once this file's numbers are checked
+- [x] BGM folder picker (error status on throw, cancelled-picker no-op) — the
+      success path (`bgm.loadFolder` actually finding tracks) has the same
+      "needs a real fixture" gap as the WAD success path above
+- [x] highscores dialog open/close (empty-board render, Close button, no
+      canvas refocus with no level running)
+- [ ] highscores dialog: Watch Replay button wiring specifically (needs a
+      saved `HighscoreEntry` with a `replay.version === 2` payload — natural
+      to build once replay-playback fixtures exist for the `startReplay`
+      batch below)
 - [ ] canvas sizing (`fitCanvasToArea`, the `ResizeObserver`/`fullscreenchange`
       listeners)
 - [ ] workspace loading: local pick (`selectButton` click handler,
