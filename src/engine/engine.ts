@@ -842,7 +842,7 @@ export class RaycasterEngine {
 
     // Render — one final frozen frame is still drawn after the game ends.
     const { width, height } = this.ctx.canvas;
-    renderScene(this.ctx, this.map, this.player, this.zBuffer, textures.getActiveSet(), view.horizonShift, this.levelTime);
+    renderScene(this.ctx, this.map, this.player, this.zBuffer, textures.getActiveSet(), view.horizonShift, this.levelTime, this.loreRead);
     this.renderWorldBillboards();
 
     this.target = findTargetUnderCrosshair(
@@ -888,7 +888,7 @@ export class RaycasterEngine {
         kind: meleeOverlayActive ? currentMeleeWeapon(this.ownedWeapons).viewKind : WEAPONS[this.weaponIndex].viewKind,
       });
 
-      const minimapPanel = renderMinimap(this.ctx, this.map, this.player, this.levelTime);
+      const minimapPanel = renderMinimap(this.ctx, this.map, this.player, this.levelTime, 70, this.loreRead);
       drawCompass(
         this.ctx,
         minimapPanel.compassBadge,
@@ -943,7 +943,7 @@ export class RaycasterEngine {
    * freezes the sim — see `advance()`.
    */
   private renderPausedOverlay(): void {
-    renderScene(this.ctx, this.map, this.player, this.zBuffer, textures.getActiveSet(), 0, this.levelTime);
+    renderScene(this.ctx, this.map, this.player, this.zBuffer, textures.getActiveSet(), 0, this.levelTime, this.loreRead);
     this.renderWorldBillboards();
     drawPauseOverlay(this.ctx);
     if (this.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
@@ -956,7 +956,7 @@ export class RaycasterEngine {
    * another interact or a click.
    */
   private renderLoreOverlay(): void {
-    renderScene(this.ctx, this.map, this.player, this.zBuffer, textures.getActiveSet(), 0, this.levelTime);
+    renderScene(this.ctx, this.map, this.player, this.zBuffer, textures.getActiveSet(), 0, this.levelTime, this.loreRead);
     this.renderWorldBillboards();
     const { maxScrollLines } = drawLoreOverlay(this.ctx, this.loreText ?? "", this.loreScroll);
     this.loreScroll = Math.max(0, Math.min(this.loreScroll, maxScrollLines));

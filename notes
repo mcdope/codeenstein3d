@@ -162,6 +162,8 @@
 
 - [x] github workspace loading when loading a replay doesnt show loading indicator — `startReplay` (`src/main.ts`) re-fetches a GitHub-sourced replay's workspace via the exact same `fetchGithubTree` used by the "Load GitHub repo" button, but never showed the loading screen or wired up its byte-progress/file-scan-progress callbacks, so a replay's re-fetch of a large repo just looked like a frozen page. It now calls `showLoadingScreen`/`setLoadingStatus` the same way the other three loaders (local pick, GitHub button, demo campaign) already do — including the "(X received)" byte readout for the GitHub fetch and the "Scanning file tree… (checked/total)" readout for the parsable-file scan — and falls back to `showFileTreePlaceholder()` on a failed re-fetch instead of leaving the loading screen stuck on-screen forever (a gap that only existed because there was no UI shown to reset in the first place).
 
+- [x] already read lore terminals shouldnt glow anymore — a per-level `loreRead` Set (`src/engine/engine.ts`) already tracked which terminals had been interacted with at least once (only for the scoring bonus), but nothing rendering-side ever consulted it: the in-world pulsing tint overlay (`renderScene`) and the corner minimap's pulsing marker (`renderMinimap`, both `src/engine/raycaster.ts`) glowed for every `LORE_TILE`/`loreTerminals` entry unconditionally, forever. Both now take a `readTerminals: ReadonlySet<string>` param (keyed the same `"x,y"` way as `loreRead`) and skip their glow/pulse for an already-read terminal's coordinates; `engine.ts` passes `this.loreRead` at all four `renderScene`/`renderMinimap` call sites. The 3D view keeps sampling the distinct `loreWall` texture even once read (so it's still findable/re-readable) — only the animated overlay stops. Left the Tab automap's flat lore-tile color untouched: it isn't animated/pulsing to begin with, it's a static wayfinding legend color like doors/hazards/traps get, not a "glow".
+
 ## Open
 - [ ] rooms need deco of some kind, currently an empty wasteland — implemented in Task 21 (server racks/plants/desks/code-blocks as billboard props) but felt annoying in playtest, so disabled again behind `DECORATIONS_ENABLED = false` in mapGenerator.ts. Code (generation + rendering) is intact; needs a design rethink (placement density? different visual treatment? non-billboard approach?) before re-enabling. Ignore for now.
     - [ ] deco objects from wad?
@@ -190,4 +192,3 @@
     - [ ] elite enemies should scale with player count
  - [ ] enemy textures from wad? if yes: what about hitbox?
  - [ ] multikill score bonus, sfx and gfx
- - [ ] already read lore terminals shouldnt glow anymore

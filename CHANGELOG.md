@@ -4,6 +4,7 @@
 
 - Workspace/GitHub loads now skip `test`, `tests`, and `__tests__` directories (matched case-insensitively) alongside the existing `node_modules`/`.git`/etc. noise list, and also skip colocated test files (`foo.test.ts`, `foo_test.go`, `FooTest.java`, and similar conventions) even when they sit right next to real source rather than in a dedicated test folder — so test suites no longer generate levels
 - Fix: watching a replay recorded from a GitHub repo re-fetched the whole repo with no loading indicator at all, unlike every other workspace load — it now shows the same loading screen, byte-received readout, and file-tree-scan progress the "Load GitHub repo" button already had; a failed re-fetch also now resets the UI instead of leaving the screen stuck on "Fetching…" forever
+- Fix: a lore terminal kept pulsing/glowing forever, even after you'd already read it — both the in-world wall tint and the minimap marker now stop pulsing once a terminal's been interacted with at least once (it keeps its distinct wall texture in the 3D view, so it's still findable, just no longer animated)
 
 ## beta-3
 
