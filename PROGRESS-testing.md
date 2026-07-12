@@ -947,7 +947,8 @@ first thing at the start of every session, before touching code.
     overshoot — no risk of "tunneling through" the map bounds in tests
     that use large `dt` steps.
 
-- [ ] Phase 11: src/main.ts
+- [ ] Phase 11: src/main.ts — IN PROGRESS (infra done, no test cases yet;
+  see "Next concrete step" below for the full resume brief)
 - [ ] Phase 12: wrap-up (thresholds, CI, docs, notes, delete this file)
 
 ## Current coverage snapshot
@@ -976,44 +977,127 @@ report.
 ## Next concrete step
 
 **Phase 10 is complete (1/1 file, engine.ts, 100% stmts/branch/funcs/lines,
-96 tests, full `npm test` green at 1322 tests / 75 files).** Start Phase 11:
-src/main.ts (2239 lines — the last file, and the hardest one per the plan).
+96 tests, full `npm test` green at 1322 tests / 75 files).** Phase 11
+(src/main.ts, 2239 lines — the last file) is now **in progress**:
+the whole file has been read fresh this session, the DOM/mocking
+approach has been built and smoke-tested successfully, and two small
+pieces of enabling infrastructure are already committed. No actual
+main.ts test cases have been written yet — this is purely the
+groundwork. Below is everything needed to pick straight back up.
 
-**Structural reality that shapes this phase**: main.ts is NOT a class —
-it's module-top-level code that calls `document.createElement`/
-`querySelectorAll` and wires listeners immediately on import (confirmed
-in the original plan review: `document.title` assignment, canvas
-creation, `.suggestion-btn` listeners, all outside any function). Six
-functions are already exported and directly unit-testable:
-`findEntrypoint` (~line 910), `applyForcedUnlocks` (~1233),
-`flattenParsableFiles` (~1388), `loadCampaignSave` (~1640),
-`saveCampaign` (~1676), `clearCampaignSave` (~1684) — re-verify these
-line numbers first, this file hasn't been re-read since the plan was
-written and may have shifted. The remaining ~40 unexported top-level
-functions/closures are only reachable via simulated DOM interaction
-(`fireEvent`-style click/keydown dispatch) against elements main.ts
-itself creates on import.
+**Structural reality (confirmed by a full fresh read)**: main.ts is NOT
+a class — it's ~2239 lines of module-top-level code. `document.title`,
+canvas creation, `ResizeObserver`, every `addEventListener` call,
+`requireElement`-driven DOM lookups — all of it runs immediately on
+import, not inside any function. There is no way to reach most of this
+file except by importing the module against a real DOM and interacting
+with the elements/listeners it wires up itself.
+
+Six functions are already exported and directly unit-testable (line
+numbers re-verified against the actual current file, not the original
+plan's estimates): `findEntrypoint` (line 910), `applyForcedUnlocks`
+(1233), `flattenParsableFiles` (1388), `loadCampaignSave` (1640),
+`saveCampaign` (1676), `clearCampaignSave` (1684). Everything else —
+roughly 40 unexported top-level functions/closures — is only reachable
+via simulated DOM interaction against what main.ts itself creates on
+import (tab buttons, workspace pickers, volume sliders, the file tree,
+the canvas, dialogs, the replay transport bar it builds dynamically
+inside `startReplay`).
+
+**Mocking-boundary decision (consistent with every prior phase): mock
+browser APIs, not this project's own modules.** No `vi.mock()` of
+`./fs/workspace`, `./fs/github`, `./map/mapGenerator`, `./engine/engine`,
+etc. — those are exercised for real, same as every earlier phase let
+real internal logic run against a mocked browser boundary. Concretely,
+per test:
+- **DOM**: `test/mocks/mainDom.ts`'s `buildIndexDom()` (NEW this
+  session, mirrors `index.html`'s actual `#app`/`#viewport`/
+  `#console-sidebar`/`#highscore-dialog` structure — every id
+  `requireElement` looks up) — call in `beforeEach`, before
+  `vi.resetModules()` + `await import("./main")`. Fresh DOM *and* a
+  fresh module instance are both required per test, since main.ts's
+  module-level `let` state (`activeEngine`, `workspaceTree`,
+  `campaignLevelIndex`, etc.) persists for the life of one imported
+  module instance and there's no reset hook.
+- **`__BUILD_TIME__`**: main.ts reads this at line 47
+  (`document.title = ...`) — it's a Vite `define`-injected global with
+  no real runtime value, so it never existed under Vitest before now.
+  Fixed by adding the same `define` vite.config.ts already has to
+  `vitest.config.ts` (committed this session, verified against the full
+  1322-test suite with zero regressions).
+- **Canvas**: `stubCanvasGetContext` from `test/mocks/canvas.ts` — it
+  patches `HTMLCanvasElement.prototype.getContext`, so it covers
+  main.ts's own `document.createElement("canvas")` at import time
+  automatically (confirmed via the smoke test below), no per-instance
+  wiring needed.
+- **`ResizeObserver`**: jsdom has no implementation at all (unlike most
+  other DOM APIs) — `stubResizeObserver()` in `test/mocks/mainDom.ts`
+  (NEW) installs a no-op stub. main.ts only ever calls `.observe()` on
+  it and never synchronously depends on a callback firing in any path
+  this suite needs, so no-op is sufficient (unlike `installRaf`, which
+  really does need to fire queued callbacks).
+- **File System Access API**: `window.showDirectoryPicker` isn't
+  called directly by main.ts — it goes through `workspace.ts`'s
+  `pickWorkspace`/`pickDirectory`, which check
+  `typeof window.showDirectoryPicker === "function"`. Stub
+  `window.showDirectoryPicker` directly (returning a
+  `test/mocks/fsAccess.ts` `FakeFileSystemDirectoryHandle` via
+  `fakeDirectoryHandle`) rather than mocking `workspace.ts` itself, so
+  `isFileSystemAccessSupported()`'s own real branch logic stays
+  exercised too.
+- **GitHub fetch**: `vi.stubGlobal("fetch", ...)` per test, same
+  pattern Phase 8's `github.test.ts` already established — reuse
+  that file's fixture shapes for the GitHub tree/blob API responses
+  rather than re-deriving them.
+- **Audio/BGM**: real `audio.ts`/`bgm.ts` modules, same
+  `AudioContext`-stubbed-or-absent pattern as Phase 7 — main.ts's own
+  volume-slider/BGM-folder-picker code doesn't need anything beyond
+  what those two files' own tests already cover of the underlying
+  primitives.
+- **Fullscreen API**: same `Object.defineProperty(document,
+  "fullscreenElement", ...)` pattern `consoleSidebar.test.ts` (Phase 9)
+  already uses, only needed for `fitCanvasToArea`'s early-return branch
+  and the `fullscreenchange` listener.
+
+**Verified this session**: a smoke test (`buildIndexDom()` +
+`stubCanvasGetContext` + a `ResizeObserver` stub + `await
+import("./main")`) imports cleanly with no errors — confirms the whole
+approach is sound before investing in the ~40-closure test-writing
+effort. That scratch smoke test was deleted after confirming it worked
+(not committed) — `test/mocks/mainDom.ts` is the real, permanent
+version of its DOM-building half.
 
 **Per the plan (do not deviate unilaterally)**: attempt full coverage
 as-is first — exported functions get direct unit tests, DOM-reachable
-paths get interaction-driven integration tests reusing the Phase 0
-mocks (`test/mocks/canvas.ts`, `test/mocks/audio.ts`,
-`test/mocks/fsAccess.ts`, `test/mocks/raf.ts`) plus this session's newer
-patterns (dynamic-import-after-canvas-stub for anything touching
-`textures.ts`; `EnemySpatialGrid`/`GameMap` fixture-building
-conventions from engine.test.ts). **Only if that genuinely can't reach
-full coverage** (e.g. a closure with no exported or DOM-triggerable path
-in) does a minimal testability seam get considered — and that is an
-explicit checkpoint to raise with the user at the start of this phase,
+paths get interaction-driven integration tests. **Only if that
+genuinely can't reach full coverage** (e.g. a closure with no exported
+or DOM-triggerable path in) does a minimal testability seam get
+considered — and that is an explicit checkpoint to raise with the user,
 not a decision to make alone (the plan calls this out specifically as
 the one place "don't add abstractions beyond what's needed" and "100%
-coverage" could genuinely conflict).
+coverage" could genuinely conflict). Not yet needed — no test-writing
+has started, so no seam gap has been found yet either.
 
-Read the whole file fresh before writing any test — it hasn't been
-touched this session. Given the size and DOM-orchestration complexity,
-consider a nested per-scenario sub-checklist in this file (mirroring
-Phase 10's approach) so a mid-phase interruption doesn't lose track of
-what DOM flows/exported functions are covered.
+**Suggested per-scenario sub-checklist** for this phase (mirroring
+Phase 10's per-scenario, not per-file, breakdown — track each as its own
+checklist item here so a mid-phase interruption doesn't lose track):
+launch tabs (local/continue/github/demo) + tab switching, audio/volume
+settings persistence, WAD texture loading, highscores dialog +
+Watch Replay wiring, canvas sizing (`fitCanvasToArea`/`ResizeObserver`/
+fullscreen), workspace loading (local pick + supersession-guard races),
+GitHub loading (fetch + suggestion buttons + supersession), demo
+campaign loading, Continue Run (save/resume), file-tree file selection
+(`handleFileSelected`), entrypoint detection (`findEntrypoint`'s full
+cascade — filename match, primary/secondary partitioning, scored
+scan, remote-workspace skip), `launchLevel` (map generation wiring,
+engine handler wiring, forced unlocks, HUD callbacks),
+`advanceToNextLevel` (multi-level chaining, campaign-complete path),
+campaign persistence (`loadCampaignSave`/`saveCampaign`/
+`clearCampaignSave`, already exported), gore/difficulty
+settings, highscore recording (`recordRunHighscore`, cheat/first-level
+exclusions), replay playback (`startReplay`'s whole nested-closure
+machinery — play/pause, seek, speed, level-to-level advance, all 4
+termination paths), `beforeunload` autosave.
 
 After Phase 11 (the last content phase): Phase 12 wrap-up — flip
 `vitest.config.ts`'s coverage thresholds to 100% across the board,
