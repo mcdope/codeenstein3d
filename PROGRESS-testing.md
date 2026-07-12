@@ -158,8 +158,12 @@ first thing at the start of every session, before touching code.
   - [x] src/map/generation/util.ts
   - [x] src/map/generation/geometry.ts
   - [x] src/map/generation/labyrinth.ts
-  - [ ] src/map/generation/corridors.ts (next)
-  - [ ] src/map/generation/doorsKeys.ts
+  - [x] src/map/generation/corridors.ts
+  - [x] src/map/generation/pathing.ts
+  - [x] src/map/generation/breakup.ts (the hardest file in this phase, 402
+        lines, 5 rounds of branch-gap iteration — see notes below)
+  - [ ] src/map/generation/doorsKeys.ts (next — depends on breakup.ts's
+        breakupTileKeys and pathing.ts's reachableTiles, both already tested)
   - [ ] src/map/generation/pickups.ts
   - [ ] src/map/generation/props.ts
   - [ ] src/map/generation/enemies.ts
@@ -167,9 +171,7 @@ first thing at the start of every session, before touching code.
   - [ ] src/map/generation/teleporters.ts
   - [ ] src/map/generation/trapsHazards.ts
   - [ ] src/map/generation/lore.ts
-  - [ ] src/map/generation/pathing.ts
   - [ ] src/map/generation/spawnExit.ts
-  - [ ] src/map/generation/breakup.ts
   - [ ] src/map/mapGenerator.ts (orchestrator, do last)
   - [ ] src/map/debugView.ts (needs test/mocks/canvas.ts — first real use)
   Notes: findPropSpot's PROP_CLEARANCE/PROP_SPACING rejection branches needed
@@ -182,6 +184,38 @@ first thing at the start of every session, before touching code.
   in the test file, not exported from source) rather than reaching into its
   private divide/floorComponents/bridgeComponents functions — matches how a
   real caller only ever sees the guarantee, not the internals.
+
+  breakup.ts (402 lines, the hardest file in map/generation) took real
+  effort to get to 100% branch — worth recording the techniques since
+  they'll generalize to remaining files:
+  - A corridor pinned to row y=1 (the minimum interior row) makes room
+    injection geometrically impossible (`rect.y = run.fixed - offset` is
+    always < 1 since offset >= 1) — the cleanest way to force the
+    forced-jog fallback path deterministically without scripting rng.
+  - A run of length exactly 10 makes `segments = ceil(10/10) = 1`, so
+    `breakUpRunAtPoints`'s loop (`for s=1; s<segments`) never executes at
+    all — the run skips the primary pass entirely and goes straight to the
+    safety-net `breakUpRunWide` on the first rescan. Useful for isolating
+    which pass (primary vs. wide-search) actually handled a given case.
+  - A blocking Room placed *one row further back* than the corridor (not
+    immediately adjacent) preserves `isChokePoint`'s precondition while
+    still catching a jog's detour via `roomsOverlap`'s margin — placing it
+    directly adjacent instead breaks the chokepoint check itself and the
+    jog gets rejected for the wrong reason before ever reaching the
+    overlap check you're trying to test.
+  - Found 6 more provably-unreachable defensive branches (marked with v8
+    ignore + rationale, not forced): two `loBound > hiBound` guards in
+    `breakUpAtTarget`/`breakUpRunWide` (impossible given every `run` is
+    already known > `MAX_CORRIDOR_STRAIGHT_LENGTH` by construction), and
+    four `rect.w/h < 3` / `candidates.length === 0` guards in
+    `breakUpRoomSightline` (impossible given `randomBreakupDim` always
+    rolls >= `BREAKUP_ROOM_MIN_DIM` (3)).
+  - When v8's compact coverage table truncates the uncovered-line list with
+    a leading "...", don't trust it as complete — pull the untruncated list
+    via `--coverage.reporter=json` and read `coverage-final.json`'s
+    `branchMap`/`b` counts directly (a one-off Node script), or you'll
+    think a branch is fixed when a different, still-uncovered one just
+    scrolled out of view.
 - [ ] Phase 6: src/engine/ pure-logic (13 files)
 - [ ] Phase 7: src/engine/ browser-API (12 files)
 - [ ] Phase 8: src/fs/ (3 files)
@@ -193,9 +227,9 @@ first thing at the start of every session, before touching code.
 ## Current coverage snapshot
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
-src/parser/, and 5 of 18 Phase-5 files (src/map/types.ts,
-src/map/generation/seed.ts, util.ts, geometry.ts, labyrinth.ts) are 100%
-stmts/branch/funcs/lines. 406 tests total, all green. Rest of src/map/,
+src/parser/, and 8 of 18 Phase-5 files (src/map/types.ts, seed.ts, util.ts,
+geometry.ts, labyrinth.ts, corridors.ts, pathing.ts, breakup.ts) are 100%
+stmts/branch/funcs/lines. 454 tests total, all green. Rest of src/map/,
 src/engine/, src/fs/, src/ui/, src/main.ts still 0% (not yet reached).
 defaultHighscore.ts and empty-node-shim.ts correctly absent from the report.
 
@@ -211,11 +245,13 @@ defaultHighscore.ts and empty-node-shim.ts correctly absent from the report.
 
 ## Next concrete step
 
-Continue Phase 5: read src/map/generation/corridors.ts next, write
-corridors.test.ts, verify 100%, commit. Then doorsKeys.ts, pickups.ts,
-props.ts, enemies.ts, secretRooms.ts, teleporters.ts, trapsHazards.ts,
-lore.ts, pathing.ts, spawnExit.ts, breakup.ts (each its own commit), then
-src/map/mapGenerator.ts last (the orchestrator — golden/determinism test:
-same seed + same ParsedFile input must reproduce byte-identical output,
-call generate() twice and deep-equal), then src/map/debugView.ts (first
-real use of test/mocks/canvas.ts from Phase 0).
+Continue Phase 5: read src/map/generation/doorsKeys.ts next (depends on
+breakup.ts's breakupTileKeys and pathing.ts's reachableTiles, both already
+tested and importable directly — no need to mock them), write
+doorsKeys.test.ts, verify 100%, commit. Then pickups.ts, props.ts,
+enemies.ts, secretRooms.ts, teleporters.ts, trapsHazards.ts, lore.ts,
+spawnExit.ts (each its own commit), then src/map/mapGenerator.ts last (the
+orchestrator — golden/determinism test: same seed + same ParsedFile input
+must reproduce byte-identical output, call generate() twice and
+deep-equal), then src/map/debugView.ts (first real use of
+test/mocks/canvas.ts from Phase 0).

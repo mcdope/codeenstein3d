@@ -188,19 +188,27 @@ function tryInjectBreakupRoom(
  * room rather than a wide spot in the hallway.
  */
 function breakUpRoomSightline(grid: Tile[][], rect: Rect, axis: "h" | "v", fixed: number, rng: () => number): void {
+  // Unreachable: `rect.w`/`rect.h` are always one of `randomBreakupDim`'s two
+  // rolls (along/across), each >= BREAKUP_ROOM_MIN_DIM (3) — so `< 3` can
+  // never hold, and with >= 3 rows/columns there's always at least one
+  // candidate left after excluding the single row/column equal to `fixed`.
   if (axis === "h") {
+    /* v8 ignore next */
     if (rect.w < 3) return;
     const bx = rect.x + 1 + Math.floor(rng() * (rect.w - 2));
     const candidates: number[] = [];
     for (let y = rect.y; y < rect.y + rect.h; y++) if (y !== fixed) candidates.push(y);
+    /* v8 ignore next */
     if (candidates.length === 0) return;
     const gap = candidates[Math.floor(rng() * candidates.length)];
     for (let y = rect.y; y < rect.y + rect.h; y++) if (y !== gap) grid[y][bx] = 1;
   } else {
+    /* v8 ignore next */
     if (rect.h < 3) return;
     const by = rect.y + 1 + Math.floor(rng() * (rect.h - 2));
     const candidates: number[] = [];
     for (let x = rect.x; x < rect.x + rect.w; x++) if (x !== fixed) candidates.push(x);
+    /* v8 ignore next */
     if (candidates.length === 0) return;
     const gap = candidates[Math.floor(rng() * candidates.length)];
     for (let x = rect.x; x < rect.x + rect.w; x++) if (x !== gap) grid[by][x] = 1;
@@ -289,6 +297,11 @@ function breakUpAtTarget(
 ): boolean {
   const loBound = run.lo + 2;
   const hiBound = run.hi - 2;
+  // Unreachable: every `run` reaching this function comes from
+  // findStraightRuns(..., MAX_CORRIDOR_STRAIGHT_LENGTH), which only ever
+  // reports a run longer than that threshold (>= 10 tiles) — loBound can
+  // never exceed hiBound for a run that long.
+  /* v8 ignore next */
   if (loBound > hiBound) return false;
 
   for (let attempt = 0; attempt < BREAKUP_ATTEMPTS_PER_POINT; attempt++) {
@@ -349,6 +362,10 @@ function breakUpRunWide(
 ): boolean {
   const loBound = run.lo + 2;
   const hiBound = run.hi - 2;
+  // Unreachable: same reasoning as breakUpAtTarget's identical guard — every
+  // `run` reaching this function is already known longer than
+  // MAX_CORRIDOR_STRAIGHT_LENGTH (>= 10 tiles).
+  /* v8 ignore next */
   if (loBound > hiBound) return false;
 
   for (let attempt = 0; attempt < BREAKUP_WIDE_ATTEMPTS; attempt++) {
