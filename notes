@@ -179,4 +179,4 @@
  - [ ] multikill score bonus, sfx and gfx
  - [ ] update README.md to point out how code relates to gameplay
  - [ ] Add credits for utilized packages to README, incl. repo link and license info - kinda a software BOM
- - [ ] document the welcome sideeffect that you can describe levels to coding agents to design a level, like we did for the demo campagin or the test fixtures
+ - [ ] document the welcome sideeffect that you can describe levels to coding agents to design a level, like we did for the demo campaign or the test fixtures. Combine it with tips for how to manually write levels.
