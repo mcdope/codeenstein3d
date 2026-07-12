@@ -398,8 +398,8 @@ first thing at the start of every session, before touching code.
   - [x] src/engine/effects.ts
   - [x] src/engine/hud.ts
   - [x] src/engine/projectiles.ts
-  - [ ] src/engine/rockets.ts (next)
-  - [ ] src/engine/raycaster.ts
+  - [x] src/engine/rockets.ts
+  - [ ] src/engine/raycaster.ts (next)
   - [ ] src/engine/sprites.ts
   - [ ] src/engine/textures.ts
   - [ ] src/engine/viewmodel.ts
@@ -575,6 +575,19 @@ first thing at the start of every session, before touching code.
   literally putting a wall tile under the player's own feet and firing a
   bolt at point-blank range — confirms the hit still counts as a player
   hit, not silently absorbed by the wall check first.
+
+  rockets.ts notes: near-identical shape to projectiles.ts (same author,
+  same doc comment cross-references it explicitly) — 100% on the first
+  attempt, 14 tests, reusing the exact same test structure/helpers.
+  Only real difference worth noting: `updateRockets`' detonation
+  condition is `hitEnemy || hitWall` where `hitEnemy` comes from an
+  injected `nearLivingEnemy(x, y, radius)` callback (the caller's
+  spatial-grid query, not a real dependency this test needs to fake
+  beyond a plain function) — needed a dedicated test asserting the
+  callback is actually called with the rocket's *post-move* position and
+  the exact `ROCKET_ENEMY_TRIGGER_RADIUS` constant, plus one test with
+  both OR operands true at once (near an enemy AND in a wall
+  simultaneously) to confirm it only detonates once, not twice.
 - [ ] Phase 8: src/fs/ (3 files)
 - [ ] Phase 9: src/ui/ (5 files)
 - [ ] Phase 10: src/engine/engine.ts
@@ -585,10 +598,11 @@ first thing at the start of every session, before touching code.
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
 src/parser/, ALL of src/map/ (Phase 5 complete), ALL 13 of Phase 6, and
-7 of 12 Phase-7 files (audio.ts, bgm.ts, input.ts, automap.ts,
-effects.ts, hud.ts, projectiles.ts) are 100% stmts/branch/funcs/lines.
-998 tests total, all green. Rest of src/engine/ (5 more Phase-7
-browser-API files), src/fs/, src/ui/, src/main.ts still
+8 of 12 Phase-7 files (audio.ts, bgm.ts, input.ts, automap.ts,
+effects.ts, hud.ts, projectiles.ts, rockets.ts) are 100%
+stmts/branch/funcs/lines. 1012 tests total, all green. Rest of
+src/engine/ (4 more Phase-7 browser-API files), src/fs/, src/ui/,
+src/main.ts still
 0% (not
 yet reached). Note: projectiles.ts/rockets.ts show partial incidental
 coverage already (mixed pure-physics + canvas-drawing files, deliberately
