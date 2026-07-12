@@ -286,7 +286,8 @@ first thing at the start of every session, before touching code.
   - [x] src/engine/scoring.ts
   - [x] src/engine/spatialGrid.ts
   - [x] src/engine/traps.ts
-  - [ ] src/engine/storageCompression.ts (next)
+  - [x] src/engine/storageCompression.ts
+  - [ ] src/engine/highscores.ts (next — last Phase-6 file)
   - [ ] src/engine/spatialGrid.ts
   - [ ] src/engine/traps.ts
   - [ ] src/engine/storageCompression.ts
@@ -353,6 +354,17 @@ first thing at the start of every session, before touching code.
   unseen vs. an already-seen mine staying seen) since it's one boolean
   OR-into, not a toggle; and "never assumed capped at 1" detonation per
   frame got its own explicit two-mines-at-once test.
+
+  storageCompression.ts notes: also 100% first attempt, no mocking of
+  CompressionStream/DecompressionStream needed for the happy paths —
+  Node 18.19.1 has both natively, confirmed by Phase 0 research. Only
+  the "unavailable" and "throws" branches needed `vi.stubGlobal` (with
+  `vi.unstubAllGlobals()` in `afterEach` so the stub doesn't leak into
+  later tests that need the real API). The "compression doesn't
+  actually shrink it" fallback branch was the only non-obvious case —
+  needed a genuinely tiny value (`1`) since gzip's fixed per-stream
+  overhead makes anything below roughly a few dozen bytes bigger
+  compressed than plain, not smaller.
 - [ ] Phase 7: src/engine/ browser-API (12 files)
 - [ ] Phase 8: src/fs/ (3 files)
 - [ ] Phase 9: src/ui/ (5 files)
@@ -363,11 +375,12 @@ first thing at the start of every session, before touching code.
 ## Current coverage snapshot
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
-src/parser/, ALL of src/map/ (Phase 5 complete), and 11 of 13 Phase-6
+src/parser/, ALL of src/map/ (Phase 5 complete), and 12 of 13 Phase-6
 files (weapons.ts, player.ts, ammo.ts, enemyAi.ts, pathField.ts, loot.ts,
-lootApply.ts, replay.ts, scoring.ts, spatialGrid.ts, traps.ts) are 100%
-stmts/branch/funcs/lines. 764 tests total, all green. Rest of
-src/engine/, src/fs/, src/ui/, src/main.ts still
+lootApply.ts, replay.ts, scoring.ts, spatialGrid.ts, traps.ts,
+storageCompression.ts) are 100% stmts/branch/funcs/lines. 770 tests
+total, all green. Rest of src/engine/, src/fs/, src/ui/, src/main.ts
+still
 0% (not
 yet reached). Note: projectiles.ts/rockets.ts show partial incidental
 coverage already (mixed pure-physics + canvas-drawing files, deliberately
@@ -386,16 +399,13 @@ absent from the report.
 
 ## Next concrete step
 
-Continue Phase 6: read src/engine/storageCompression.ts next, write
-storageCompression.test.ts (test against the real
-CompressionStream/DecompressionStream Node 18+ globals, confirmed in
-Phase 0 research — no mock needed), verify 100%, commit. Then
-highscores.ts last (uses jsdom's real localStorage — add `//
-@vitest-environment jsdom` to that one test file; dynamically imports
+Finish Phase 6: read src/engine/highscores.ts next, write
+highscores.test.ts (uses jsdom's real localStorage — add `//
+@vitest-environment jsdom` to that test file; dynamically imports
 src/engine/defaultHighscore.ts, the excluded 115k-line data file, as its
 empty-board fallback — exercising that import is fine, just don't expect
 coverage credit for the data file's own lines, it's excluded from
-instrumentation per vitest.config.ts). Once highscores.ts is done, Phase
-6 (13/13 files) is complete — move on to Phase 7 (src/engine/
-browser-API, 12 files), starting with whichever file has the smallest
-canvas/audio/DOM surface first. 11/13 Phase-6 files done.
+instrumentation per vitest.config.ts), verify 100%, commit. That's
+13/13 Phase-6 files — Phase 6 complete. Then move on to Phase 7
+(src/engine/ browser-API, 12 files), starting with whichever file has
+the smallest canvas/audio/DOM surface first. 12/13 Phase-6 files done.
