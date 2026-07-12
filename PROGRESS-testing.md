@@ -400,8 +400,8 @@ first thing at the start of every session, before touching code.
   - [x] src/engine/projectiles.ts
   - [x] src/engine/rockets.ts
   - [x] src/engine/raycaster.ts
-  - [ ] src/engine/sprites.ts (next)
-  - [ ] src/engine/textures.ts
+  - [x] src/engine/sprites.ts
+  - [ ] src/engine/textures.ts (next)
   - [ ] src/engine/viewmodel.ts
 
   audio.ts notes: 100% took two rounds. First round hit a real gap in
@@ -634,6 +634,34 @@ first thing at the start of every session, before touching code.
   4. `renderMinimap`/`renderScene`'s lore-terminal/spike/exit pulse
      animations call the real `performance.now()` directly — no mock
      needed, matching Phase 0's original research.
+
+  sprites.ts notes: as predicted in the prior next-step note, this one
+  only imports *types* from other engine modules, so a plain static
+  import + `test/mocks/canvas.ts` worked with no jsdom/dynamic-import
+  workaround needed — confirms that gotcha is specific to files with a
+  real *value* import from `textures.ts`. 100% on the first attempt, 58
+  tests, despite being the largest file by symbol count so far (~20
+  exported functions, mostly `collect*Billboards` sharing one shape:
+  filter alive/visible → project → filter by a depth threshold → map to
+  a `{ depth, draw() }` job with a lazy occlusion check inside `draw()`)
+  — the repetition made most of it mechanical once the pattern was
+  established. Two things worth remembering: (1) a naive
+  `expect(x || true).toBe(true)` tautology crept into a first draft (an
+  attempt to check the hit-flash red tint) and had to be rewritten using
+  the `fillRectStylesLog()`-style "capture fillStyle at each fillRect
+  call" technique from hud.ts's notes — fillStyle is overwritten later
+  by the HP-bar/label overlay, so the final state alone doesn't prove
+  the body was ever drawn in the flash color. (2) `findTargetInProjections`/
+  `findMineInProjections`'s vertical AABB check (`cy < proj.top || cy >
+  proj.bottom`) is provably unreachable *through the real
+  `projectEnemy`/`projectPoint` pipeline* — every projected box is
+  constructed symmetrically around `height/2`, and `cy` is always
+  exactly `height/2` — but since both functions take plain projection
+  data as a parameter (not something only `projectPoint` can produce),
+  a hand-built synthetic `proj` object with deliberately mismatched
+  `top`/`bottom` values exercises the branch honestly without needing a
+  `v8 ignore` comment or touching source at all — testing the function
+  against its full input contract rather than only realistic callers.
 - [ ] Phase 8: src/fs/ (3 files)
 - [ ] Phase 9: src/ui/ (5 files)
 - [ ] Phase 10: src/engine/engine.ts
@@ -644,11 +672,11 @@ first thing at the start of every session, before touching code.
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
 src/parser/, ALL of src/map/ (Phase 5 complete), ALL 13 of Phase 6, and
-9 of 12 Phase-7 files (audio.ts, bgm.ts, input.ts, automap.ts,
-effects.ts, hud.ts, projectiles.ts, rockets.ts, raycaster.ts) are 100%
-stmts/branch/funcs/lines. 1039 tests total, all green. Rest of
-src/engine/ (3 more Phase-7 browser-API files), src/fs/, src/ui/,
-src/main.ts still
+10 of 12 Phase-7 files (audio.ts, bgm.ts, input.ts, automap.ts,
+effects.ts, hud.ts, projectiles.ts, rockets.ts, raycaster.ts,
+sprites.ts) are 100% stmts/branch/funcs/lines. 1097 tests total, all
+green. Rest of src/engine/ (2 more Phase-7 browser-API files), src/fs/,
+src/ui/, src/main.ts still
 0% (not
 yet reached). Note: projectiles.ts/rockets.ts show partial incidental
 coverage already (mixed pure-physics + canvas-drawing files, deliberately
@@ -667,37 +695,41 @@ absent from the report.
 
 ## Next concrete step
 
-Continue Phase 7: read src/engine/sprites.ts next, write
-sprites.test.ts. Unlike raycaster.ts/rockets.ts/projectiles.ts,
-sprites.ts only imports *types* from other engine modules (`Player`,
-map types, parser types) — no value import of `textures.ts`, so it
-should NOT need the dynamic-import-after-stubbing-canvas workaround
-raycaster.ts needed (see that file's notes above); a plain static
-import + `test/mocks/canvas.ts` should work directly. `sprites.ts`
-exports `projectPoint` (already relied on and validated indirectly by
-effects.ts/projectiles.ts/rockets.ts's tests, but never tested
-directly in isolation — worth a few direct tests of its own: camera
-transform math at a few known angles/positions), `projectEnemy`,
-`collectOrbBillboards` (already exercised indirectly via
-projectiles.ts/rockets.ts, but its full branch surface — depth cutoff,
-occlusion, palette layering — deserves direct coverage here rather than
-leaning on those two callers), `enemyColor`, `EDGE_CASE_COLOR`, and
-whatever sprite-billboard collection/drawing functions the file
-actually contains (re-read fully before planning, this summary is from
-memory of what's imported elsewhere, not a full read of the file).
-Verify 100%, commit, then continue to textures.ts, viewmodel.ts (each
-its own commit) — that's the rest of Phase 7. **Note: textures.ts
-likely needs `// @vitest-environment jsdom` plus `stubCanvasGetContext()`
-called before its `TextureManager`/`buildDefaultTextureSet` singleton
-construction runs, per the same reasoning raycaster.ts's notes
-describe** — check whether it's a plain importable module or has its
-own top-level singleton side effect before assuming a vanilla test
-setup works. 9/12 Phase-7 files done.
-
-**Process reminder to self:** the last several files (effects.ts
-through raycaster.ts) all got their checklist/snapshot/lessons-notes
-updated correctly, but this "Next concrete step" section itself was
-left stale (still describing the effects.ts mid-interruption recovery)
-for multiple files in a row before being caught and fixed now. Update
-ALL FOUR sections (checklist, snapshot, lessons note, next-step) every
-single file, not just three of them.
+Continue Phase 7: read src/engine/textures.ts next, write
+textures.test.ts. **Confirmed** (not just predicted) that it needs the
+same jsdom + stub-canvas-before-dynamic-import workaround raycaster.ts
+needed: it has its own module-level singleton, `export const textures =
+new TextureManager();` (line 378), whose constructor calls
+`buildDefaultTextureSet()` → `buildBrickTexture`/`buildPanelTexture`/
+`buildDoorTexture`/`buildFloorTexture`, each of which calls
+`document.createElement("canvas")` + `canvas.getContext("2d")` via a
+shared `makeCanvas()` helper. Use the exact same pattern as
+raycaster.test.ts: `// @vitest-environment jsdom` pragma,
+`stubCanvasGetContext()` in a `beforeAll` before dynamically importing
+`{ TextureManager, TEXTURE_SIZE, LORE_BASE, type TextureBitmap, type
+TextureSet, type WadLoadSummary }` from `./textures` — don't statically
+import it. Also imports a real value (`loadWadTextures`) from
+`../wad/loadWad` (already fully tested in Phase 2, safe to call for
+real rather than mocking). Key things to cover: `buildBrickTexture`/
+`buildPanelTexture`/`buildDoorTexture`/`buildFloorTexture`'s drawing
+calls (straightforward, no real branches beyond loops); `TextureManager`
+constructor building all 10 default slots; `getActiveSet()`;
+`loadFromWad()`'s two paths — `result.ok===false` (parse failure,
+returns an all-null `WadLoadSummary`, active set untouched) and
+`result.ok===true` (10 independent `result.xTexture ?
+bitmapFromWadPixels(...) : this.defaults.x` ternaries — needs, for
+genuine 100% branch coverage, at least one test where a given slot's
+WAD texture is present AND one where it's absent/falls back to
+default, though a single call with a MIX of present/absent slots across
+the ten can cover both branches economically in one test rather than
+20 separate calls); `bitmapFromWadPixels`'s alpha-hole-fill loop (pixels
+with alpha===0 get filled with `holeFill`, opaque ones pass through
+unchanged — needs both). For the `loadFromWad` tests, either construct a
+real minimal in-memory WAD via `scripts/fixtures/buildTestWad.mjs`
+(already proven working with the `?url-as-path` plugin machinery back in
+Phase 2) or stub `loadWadTextures` itself via `vi.mock("../wad/loadWad",
+...)` if constructing a real WAD bytes buffer is more overhead than
+warranted here — read `src/wad/loadWad.ts`'s actual return shape
+(`LoadWadTexturesResult` or similar) before deciding which approach is
+less test code. Verify 100%, commit, then continue to viewmodel.ts (its
+own commit) — the last file in Phase 7. 10/12 Phase-7 files done.
