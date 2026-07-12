@@ -282,8 +282,8 @@ first thing at the start of every session, before touching code.
   - [x] src/engine/pathField.ts
   - [x] src/engine/lootApply.ts
   - [x] src/engine/loot.ts
-  - [ ] src/engine/replay.ts (next)
-  - [ ] src/engine/scoring.ts
+  - [x] src/engine/replay.ts
+  - [ ] src/engine/scoring.ts (next)
   - [ ] src/engine/spatialGrid.ts
   - [ ] src/engine/traps.ts
   - [ ] src/engine/storageCompression.ts
@@ -305,6 +305,17 @@ first thing at the start of every session, before touching code.
   (`i < steps`, never `t=1`), so it doesn't itself get blocked by the
   destination tile being solid, meaning aggro/fire can still resolve
   normally even while the player literally stands inside a wall.
+
+  replay.ts notes: straightforward once read in full — hit 100% on the
+  first attempt, no branch-gap iteration needed. `LevelRecorder` isn't
+  exported (private to `CampaignReplayRecorder`) but every one of its
+  branches (MAX_REPLAY_FRAMES_PER_LEVEL overflow + warn-once, zero-frame
+  levels dropped) is reachable indirectly through the public recorder API.
+  `MAX_REPLAY_LEVELS`(100)/`MAX_REPLAY_FRAMES_PER_LEVEL`(21600) caps are
+  cheap to exceed in a real loop (just array pushes) — no need to fake the
+  constants. `console.warn` spied/suppressed via
+  `vi.spyOn(console, "warn").mockImplementation(() => {})`, matching the
+  established pattern from earlier phases.
 - [ ] Phase 7: src/engine/ browser-API (12 files)
 - [ ] Phase 8: src/fs/ (3 files)
 - [ ] Phase 9: src/ui/ (5 files)
@@ -315,10 +326,11 @@ first thing at the start of every session, before touching code.
 ## Current coverage snapshot
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
-src/parser/, ALL of src/map/ (Phase 5 complete), and 7 of 13 Phase-6 files
+src/parser/, ALL of src/map/ (Phase 5 complete), and 8 of 13 Phase-6 files
 (weapons.ts, player.ts, ammo.ts, enemyAi.ts, pathField.ts, loot.ts,
-lootApply.ts) are 100% stmts/branch/funcs/lines. 695 tests total, all
-green. Rest of src/engine/, src/fs/, src/ui/, src/main.ts still 0% (not
+lootApply.ts, replay.ts) are 100% stmts/branch/funcs/lines. 710 tests
+total, all green. Rest of src/engine/, src/fs/, src/ui/, src/main.ts still
+0% (not
 yet reached). Note: projectiles.ts/rockets.ts show partial incidental
 coverage already (mixed pure-physics + canvas-drawing files, deliberately
 deferred to Phase 7). defaultHighscore.ts and empty-node-shim.ts correctly
@@ -336,14 +348,14 @@ absent from the report.
 
 ## Next concrete step
 
-Continue Phase 6: read src/engine/replay.ts next, write replay.test.ts,
-verify 100%, commit. Then scoring.ts, spatialGrid.ts, traps.ts (each its
-own commit), then storageCompression.ts (test against the real
+Continue Phase 6: read src/engine/scoring.ts next, write scoring.test.ts,
+verify 100%, commit. Then spatialGrid.ts, traps.ts (each its own commit),
+then storageCompression.ts (test against the real
 CompressionStream/DecompressionStream Node 18+ globals, confirmed in
 Phase 0 research — no mock needed), then highscores.ts last (uses jsdom's
 real localStorage — add `// @vitest-environment jsdom` to that one test
 file; dynamically imports src/engine/defaultHighscore.ts, the excluded
 115k-line data file, as its empty-board fallback — exercising that import
 is fine, just don't expect coverage credit for the data file's own lines,
-it's excluded from instrumentation per vitest.config.ts). 7/13 Phase-6
+it's excluded from instrumentation per vitest.config.ts). 8/13 Phase-6
 files done.
