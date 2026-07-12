@@ -152,7 +152,8 @@ first thing at the start of every session, before touching code.
     (extractGotos's goto/label lookups, comment scanning) with the same
     shape-incomplete fake node and throws deep inside a helper with a
     confusing stack trace.
-- [ ] Phase 5: src/map/ + src/map/generation/ (18 files) — IN PROGRESS
+- [x] Phase 5: src/map/ + src/map/generation/ (18 files) — ALL 18 DONE, 100%
+      stmts/branch/funcs/lines across the entire src/map/ tree, 238 tests.
   - [x] src/map/types.ts (tile constants)
   - [x] src/map/generation/seed.ts
   - [x] src/map/generation/util.ts
@@ -173,8 +174,8 @@ first thing at the start of every session, before touching code.
   - [x] src/map/generation/spawnExit.ts
   - [x] src/map/mapGenerator.ts (orchestrator) — **found and fixed a real bug**
         while writing this test, see notes below
-  - [ ] src/map/debugView.ts (next and last file in Phase 5 — needs
-        test/mocks/canvas.ts, first real use)
+  - [x] src/map/debugView.ts (last file — first real use of
+        test/mocks/canvas.ts from Phase 0, worked correctly on the first try)
   Notes: findPropSpot's PROP_CLEARANCE/PROP_SPACING rejection branches needed
   scripted (non-random) rng sequences to hit deterministically — a
   probabilistic seeded-rng test that merely *might* trigger a rejection
@@ -282,13 +283,12 @@ first thing at the start of every session, before touching code.
 ## Current coverage snapshot
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
-src/parser/, and 17 of 18 Phase-5 files (everything except debugView.ts)
-are 100% stmts/branch/funcs/lines. 583 tests total, all green. Rest of
-src/map/ (debugView.ts only), src/engine/, src/fs/, src/ui/, src/main.ts
-still 0% (not yet reached). defaultHighscore.ts and empty-node-shim.ts
-correctly absent from the report. `npm run verify:campaign` (the existing
-17-language integration check) also passes clean after the mapGenerator.ts
-bugfix.
+src/parser/, and ALL of src/map/ (18/18 files — Phase 5 complete) are
+100% stmts/branch/funcs/lines. 589 tests total, all green. src/engine/,
+src/fs/, src/ui/, src/main.ts still 0% (not yet reached). defaultHighscore.ts
+and empty-node-shim.ts correctly absent from the report. `npm run
+verify:campaign` (the existing 17-language integration check) also passes
+clean after the mapGenerator.ts bugfix.
 
 ## Known open issues / deferred decisions
 
@@ -302,12 +302,18 @@ bugfix.
 
 ## Next concrete step
 
-Finish Phase 5: read src/map/debugView.ts next — the LAST file in Phase 5.
-It's a small dev-only top-down diagnostic canvas renderer, and the first
-file needing test/mocks/canvas.ts (read that helper file first — it was
-built in Phase 0 but never yet exercised for real). Once debugView.ts is
-100%, run the full src/map/ suite once more, update this file's Phase 5
-checkbox to [x], commit, then start Phase 6 (src/engine/ pure-logic, 13
-files: ammo.ts, enemyAi.ts, lootApply.ts, loot.ts, pathField.ts, player.ts,
-replay.ts, scoring.ts, spatialGrid.ts, traps.ts, weapons.ts,
-storageCompression.ts, highscores.ts).
+Phase 5 is DONE (all 18 files, 100% across src/map/). Start Phase 6:
+src/engine/ pure-logic files (13 files: ammo.ts, enemyAi.ts, lootApply.ts,
+loot.ts, pathField.ts, player.ts, replay.ts, scoring.ts, spatialGrid.ts,
+traps.ts, weapons.ts, storageCompression.ts, highscores.ts). Read
+src/engine/weapons.ts first (pure data table, foundational — many other
+engine files reference WEAPONS), then player.ts (camera/dir vector,
+foundational for raycaster-adjacent logic), then work through the rest.
+storageCompression.ts can be tested against the real CompressionStream/
+DecompressionStream Node 18+ globals (confirmed in Phase 0 research, no
+mock needed). highscores.ts uses jsdom's real localStorage (add
+`// @vitest-environment jsdom` to that one test file) and dynamically
+imports src/engine/defaultHighscore.ts (the excluded 115k-line data file)
+as its empty-board fallback — that dynamic import itself is fine to
+exercise, just don't expect coverage credit for the data file's own lines
+(it's excluded from instrumentation entirely, per vitest.config.ts).
