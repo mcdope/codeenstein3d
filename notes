@@ -171,7 +171,7 @@
     - [ ] direct ip/dns connect
     - [ ] lobby for online games
     - [ ] teamwork for kill should share pointbonus
-    - [ ] when one player enters the return tile, all players advance to the next level
+    - [ ] when one player enters the return tile, all players advance to the next level (after an informational countdown)
     - [ ] elite enemies should scale with player count
  - [ ] enemy textures from wad?
  - [ ] multikill score bonus, sfx and gfx
