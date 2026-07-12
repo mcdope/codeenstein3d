@@ -394,11 +394,11 @@ first thing at the start of every session, before touching code.
   - [x] src/engine/audio.ts
   - [x] src/engine/bgm.ts
   - [x] src/engine/input.ts
-  - [ ] src/engine/automap.ts (next)
-  - [ ] src/engine/effects.ts
-  - [ ] src/engine/hud.ts
-  - [ ] src/engine/projectiles.ts
-  - [ ] src/engine/rockets.ts
+  - [x] src/engine/automap.ts
+  - [x] src/engine/effects.ts
+  - [x] src/engine/hud.ts
+  - [x] src/engine/projectiles.ts
+  - [ ] src/engine/rockets.ts (next)
   - [ ] src/engine/raycaster.ts
   - [ ] src/engine/sprites.ts
   - [ ] src/engine/textures.ts
@@ -493,6 +493,88 @@ first thing at the start of every session, before touching code.
   source's own `onWindowEscape` doc comment for why), so its test helper
   dispatches on `window`, unlike every other key which dispatches on the
   canvas.
+
+  automap.ts notes: needed `createMockCanvasContext` directly (not
+  `stubCanvasGetContext`) since `drawAutomap(ctx, map, player, levelTime)`
+  takes the 2D context as a plain parameter rather than calling
+  `canvas.getContext("2d")` itself — `MockCanvasContext` only implements
+  a subset of the real `CanvasRenderingContext2D` interface by design, so
+  every call site needs an explicit `ctx as unknown as
+  CanvasRenderingContext2D` cast (wrapped in a local `asCtx()` helper to
+  avoid repeating it ~25 times). A real `GameMap`-shaped fixture (mirroring
+  `pathField.test.ts`/`traps.test.ts`'s `fakeMap`) plus a minimal fake
+  `Player` object literal (just `posX`/`posY`/`dirX`/`dirY` — no need to
+  construct a real `Player` instance here, unlike `traps.test.ts`, since
+  none of `Player`'s own methods are called). Two real gotchas: (1)
+  `drawAutomap` always paints one translucent panel `fillRect` before any
+  tile/mine/exit rendering — every "was `fillRect` called N times"
+  assertion needs an `extraFillRectCalls()` helper subtracting that
+  baseline call, not a raw call count; (2) an exit tile that's also a
+  *visited floor tile* gets drawn twice — once by the general tile loop
+  (as ordinary floor), once by the dedicated exit-marker code layered on
+  top — so "renders the exit" asserts 2 fillRect calls, not 1. The
+  camera-pan clamp branches (`map.width <= viewTilesW` centered vs. the
+  clamped-pan formula) were verified by placing the player at the map's
+  extreme corners and checking that tile (0,0) (or the last tile) lands
+  at the exact expected pixel offset — precise enough to pin the formula
+  without hand-deriving float camera positions for every test.
+
+  effects.ts notes: 100% on the first real run (after a Bash-outage
+  interruption mid-write — see the "resume from interruption" story
+  above; a manual read-through while Bash was down caught one bug in
+  the test itself before ever running it). Used a real `Player`
+  instance via `new Player(fakeMap())` facing +X by default and placed
+  particles 3 tiles ahead along X — `projectPoint`'s camera-inverse math
+  (from `sprites.ts`, imported by `effects.ts`) then gives a clean,
+  predictable `depth=3`/`screenX=width/2` without hand-deriving the
+  transform. Every render* function (`renderExplosions`,
+  `renderBurnParticles`, `renderExplosionParticles`, `renderBlood`)
+  shares the same two skip-branches (too-close depth, z-buffer
+  occlusion) — note `renderBlood`'s depth threshold is `0.2`, the other
+  three use `0.1`; doesn't matter for a "particle at the player's exact
+  position" test (depth=0 either way) but would matter for a
+  boundary-precision test. `updateBurnParticles`/`updateBlood` both
+  needed a **second** call in the same test to hit "already-settled,
+  don't re-reset life" branches — the first call's landing transition
+  and a later call's steady-state decay are genuinely different code
+  paths through the same `if` block.
+
+  hud.ts notes: 100% took two rounds — first pass landed at 93.33%
+  branch, missing the `<=0` (red/empty) side of the rockets/smg/gas
+  ammo-color ternaries (only `bullets<=0` had been tested; the other
+  three ammo types were only exercised with a positive value). Fixed
+  with one more test per ammo type. One test-authoring lesson: `fillRect`
+  calls carry no per-call fillStyle in the mock (`fillStyle` is a plain
+  mutable field, not snapshotted per invocation), so "was the stability
+  bar drawn in red vs green" can't be checked via the mock's default
+  call-args recording — needed a small `fillRectStylesLog()` helper that
+  overrides `fillRect`'s mock implementation to push the *currently
+  active* `fillStyle` onto a log array at each call, then asserts
+  `log.toContain(...)`. `drawLoreOverlay`'s word-wrap was tested via
+  `ctx.measureText`'s existing mock formula (`text.length * 6`) to
+  hand-pick word lengths that either always stay under `maxWidth` (no
+  wrap) or force a mid-paragraph split — and separately, explicit `\n`
+  hard-breaks (a different code path: `text.split("\n")`, not the
+  greedy-fill word loop) needed their own dedicated test. Body-line
+  `fillText` calls were isolated from the fixed header/footer calls via
+  `calls.slice(1, -1)` (call order is fixed: header, then N visible body
+  lines top-to-bottom, then footer) rather than trying to match on
+  `fillText`'s numeric x/y position args.
+
+  projectiles.ts notes: small, clean file — 100% on the first attempt,
+  13 tests. `collectProjectileBillboards` just wraps `sprites.ts`'s
+  `collectOrbBillboards` with a fixed magenta palette, which itself
+  returns an array of `{ depth, draw() }` jobs rather than drawing
+  immediately — depth-culling (too close to the player) happens eagerly
+  when building the job list, but z-buffer occlusion is checked lazily
+  *inside* `draw()`, so an occluded bolt still produces a job (length 1)
+  that simply draws nothing when invoked — two genuinely different
+  places in the pipeline, needing two different tests rather than one
+  "is it drawn" check. `updateProjectiles`' player-hit-vs-wall-hit
+  priority (`continue` after a hit skips the wall check) was tested by
+  literally putting a wall tile under the player's own feet and firing a
+  bolt at point-blank range — confirms the hit still counts as a player
+  hit, not silently absorbed by the wall check first.
 - [ ] Phase 8: src/fs/ (3 files)
 - [ ] Phase 9: src/ui/ (5 files)
 - [ ] Phase 10: src/engine/engine.ts
@@ -503,10 +585,10 @@ first thing at the start of every session, before touching code.
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
 src/parser/, ALL of src/map/ (Phase 5 complete), ALL 13 of Phase 6, and
-3 of 12 Phase-7 files (audio.ts, bgm.ts, input.ts) are 100%
-stmts/branch/funcs/lines. 890 tests total, all green. Rest of
-src/engine/ (9 more Phase-7 browser-API files), src/fs/, src/ui/,
-src/main.ts still
+7 of 12 Phase-7 files (audio.ts, bgm.ts, input.ts, automap.ts,
+effects.ts, hud.ts, projectiles.ts) are 100% stmts/branch/funcs/lines.
+998 tests total, all green. Rest of src/engine/ (5 more Phase-7
+browser-API files), src/fs/, src/ui/, src/main.ts still
 0% (not
 yet reached). Note: projectiles.ts/rockets.ts show partial incidental
 coverage already (mixed pure-physics + canvas-drawing files, deliberately
@@ -525,12 +607,34 @@ absent from the report.
 
 ## Next concrete step
 
-Continue Phase 7: read src/engine/automap.ts next, write
-automap.test.ts. Draws to a 2D canvas context — reuse
-`test/mocks/canvas.ts`'s `stubCanvasGetContext` (first proven in Phase
-5's `debugView.test.ts`, and this file's drawing surface is a fair bit
-larger, so expect to extend the canvas mock if it calls a context method
-`debugView.ts` never needed). Verify 100%, commit, then continue to
-effects.ts, hud.ts, projectiles.ts, rockets.ts, raycaster.ts, sprites.ts,
-textures.ts, viewmodel.ts (each its own commit) — that's the rest of
-Phase 7. 3/12 Phase-7 files done.
+**INTERRUPTED MID-FILE — start here.** `src/engine/effects.test.ts` has
+been WRITTEN in full (covers drawDamageFlash, makeBulletTrace/
+drawBulletTraces, spawnFlameStream/tickFlameStreams/drawFlameStreams,
+spawnExplosion/updateExplosions/renderExplosions,
+spawnExplosionParticles/updateExplosionParticles/
+renderExplosionParticles, spawnBurnParticles/updateBurnParticles/
+renderBurnParticles, spawnBlood/updateBlood/renderBlood,
+tickBulletTraces — effects.ts's full public API) but has **NOT yet been
+typechecked or run even once** — the Bash tool went unavailable
+("claude-sonnet-5 is temporarily unavailable...") repeatedly right after
+writing it. Do NOT assume this file is correct, though a manual
+read-through (done while Bash was down) already caught and fixed one
+real bug: the "renders a settled ember as a fading orange glow" test in
+the `renderBurnParticles` describe block had computed its expected
+`fillStyle` alpha from raw `life` instead of `life / BURN_SETTLED_LIFE`
+(the actual `t` the source uses) — already fixed in the file. Resume by:
+`npm run typecheck` (fix any type errors), then `npx vitest run
+src/engine/effects.test.ts --coverage` (iterate on failures/branch
+gaps — this file uses a real `Player` instance via `new
+Player(fakeMap())` facing +X by default, with particles placed 3 tiles
+ahead along X for a clean, predictable `projectPoint` depth/screenX;
+note `renderBlood`'s occlusion-depth threshold is `0.2`, not the `0.1`
+every other render* function in this file uses — already accounted for
+correctly in the "too close" tests since depth=0 there regardless of
+which threshold applies, but worth remembering for any NEW test added
+near that boundary). Then the usual: run `src/engine/` suite, run full
+`npm test`, update this file's checklist/snapshot/next-step, commit
+(`Co-Authored-By` trailer only, no push). After effects.ts: hud.ts,
+projectiles.ts, rockets.ts, raycaster.ts, sprites.ts, textures.ts,
+viewmodel.ts (each its own commit) — that's the rest of Phase 7. 4/12
+Phase-7 files done (effects.ts will make 5/12 once verified).
