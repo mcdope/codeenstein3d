@@ -275,11 +275,13 @@ first thing at the start of every session, before touching code.
 - [ ] Phase 6: src/engine/ pure-logic (13 files) — IN PROGRESS
   - [x] src/engine/weapons.ts
   - [x] src/engine/player.ts
-  - [ ] src/engine/ammo.ts (next)
-  - [ ] src/engine/enemyAi.ts
-  - [ ] src/engine/lootApply.ts
+  - [x] src/engine/ammo.ts
+  - [x] src/engine/enemyAi.ts (the most intricate file in this phase — full
+        AI state machine, 25 tests, needed careful same-tile/wall-standing
+        edge cases to close the last 2 branches)
+  - [x] src/engine/pathField.ts
+  - [ ] src/engine/lootApply.ts (next)
   - [ ] src/engine/loot.ts
-  - [ ] src/engine/pathField.ts
   - [ ] src/engine/replay.ts
   - [ ] src/engine/scoring.ts
   - [ ] src/engine/spatialGrid.ts
@@ -287,6 +289,22 @@ first thing at the start of every session, before touching code.
   - [ ] src/engine/storageCompression.ts
   - [ ] src/engine/highscores.ts (last — dynamically imports the excluded
         defaultHighscore.ts, needs jsdom for localStorage)
+
+  enemyAi.ts notes (most intricate file this phase, full AI state machine):
+  a real `Player`/`PathField` instance (both already-tested Phase 6
+  classes) plus a hand-built minimal `GameMap`/`Enemy` gave far higher
+  fidelity than mocking would have, and cost nothing extra since both were
+  already unit-tested in isolation. Two closing-the-last-branches tricks
+  worth remembering: (1) "enemy and player share a floor tile but are still
+  outside melee range" is reachable (ATTACK_RADIUS is a real distance, not
+  "same tile") by placing both near opposite corners of one tile — e.g.
+  (5.05,5.05) and (5.95,5.95), same `Math.floor` tile, distance ~1.27 >
+  ATTACK_RADIUS(0.5); (2) forcing "the player's own tile is a wall" only
+  needs `player.noClip = true` plus positioning inside a wall tile — the
+  line-of-sight ray-march samples strictly between the two endpoints
+  (`i < steps`, never `t=1`), so it doesn't itself get blocked by the
+  destination tile being solid, meaning aggro/fire can still resolve
+  normally even while the player literally stands inside a wall.
 - [ ] Phase 7: src/engine/ browser-API (12 files)
 - [ ] Phase 8: src/fs/ (3 files)
 - [ ] Phase 9: src/ui/ (5 files)
@@ -297,11 +315,13 @@ first thing at the start of every session, before touching code.
 ## Current coverage snapshot
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
-src/parser/, ALL of src/map/ (Phase 5 complete), and 2 of 13 Phase-6 files
-(weapons.ts, player.ts) are 100% stmts/branch/funcs/lines. 621 tests total,
-all green. Rest of src/engine/, src/fs/, src/ui/, src/main.ts still 0%
-(not yet reached). defaultHighscore.ts and empty-node-shim.ts correctly
-absent from the report.
+src/parser/, ALL of src/map/ (Phase 5 complete), and 5 of 13 Phase-6 files
+(weapons.ts, player.ts, ammo.ts, enemyAi.ts, pathField.ts) are 100%
+stmts/branch/funcs/lines. 661 tests total, all green. Rest of src/engine/,
+src/fs/, src/ui/, src/main.ts still 0% (not yet reached). Note:
+projectiles.ts/rockets.ts show partial incidental coverage already (mixed
+pure-physics + canvas-drawing files, deliberately deferred to Phase 7).
+defaultHighscore.ts and empty-node-shim.ts correctly absent from the report.
 
 ## Known open issues / deferred decisions
 
@@ -315,14 +335,14 @@ absent from the report.
 
 ## Next concrete step
 
-Continue Phase 6: read src/engine/ammo.ts next, write ammo.test.ts, verify
-100%, commit. Then enemyAi.ts, lootApply.ts, loot.ts, pathField.ts,
-replay.ts, scoring.ts, spatialGrid.ts, traps.ts (each its own commit),
-then storageCompression.ts (test against the real CompressionStream/
-DecompressionStream Node 18+ globals, confirmed in Phase 0 research — no
-mock needed), then highscores.ts last (uses jsdom's real localStorage —
-add `// @vitest-environment jsdom` to that one test file; dynamically
-imports src/engine/defaultHighscore.ts, the excluded 115k-line data file,
-as its empty-board fallback — exercising that import is fine, just don't
-expect coverage credit for the data file's own lines, it's excluded from
-instrumentation per vitest.config.ts).
+Continue Phase 6: read src/engine/lootApply.ts next, write lootApply.test.ts,
+verify 100%, commit. Then loot.ts, replay.ts, scoring.ts, spatialGrid.ts,
+traps.ts (each its own commit), then storageCompression.ts (test against
+the real CompressionStream/DecompressionStream Node 18+ globals, confirmed
+in Phase 0 research — no mock needed), then highscores.ts last (uses
+jsdom's real localStorage — add `// @vitest-environment jsdom` to that one
+test file; dynamically imports src/engine/defaultHighscore.ts, the
+excluded 115k-line data file, as its empty-board fallback — exercising
+that import is fine, just don't expect coverage credit for the data
+file's own lines, it's excluded from instrumentation per vitest.config.ts).
+5/13 Phase-6 files done.
