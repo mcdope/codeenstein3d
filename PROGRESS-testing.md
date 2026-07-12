@@ -162,11 +162,10 @@ first thing at the start of every session, before touching code.
   - [x] src/map/generation/pathing.ts
   - [x] src/map/generation/breakup.ts (the hardest file in this phase, 402
         lines, 5 rounds of branch-gap iteration — see notes below)
-  - [ ] src/map/generation/doorsKeys.ts (next — depends on breakup.ts's
-        breakupTileKeys and pathing.ts's reachableTiles, both already tested)
-  - [ ] src/map/generation/pickups.ts
-  - [ ] src/map/generation/props.ts
-  - [ ] src/map/generation/enemies.ts
+  - [x] src/map/generation/doorsKeys.ts
+  - [x] src/map/generation/pickups.ts
+  - [x] src/map/generation/props.ts
+  - [ ] src/map/generation/enemies.ts (next)
   - [ ] src/map/generation/secretRooms.ts
   - [ ] src/map/generation/teleporters.ts
   - [ ] src/map/generation/trapsHazards.ts
@@ -216,6 +215,18 @@ first thing at the start of every session, before touching code.
     `branchMap`/`b` counts directly (a one-off Node script), or you'll
     think a branch is fixed when a different, still-uncovered one just
     scrolled out of view.
+
+  doorsKeys.ts, pickups.ts, props.ts (11/18 done): a rng function that
+  returns the exact same CONSTANT value on every call (e.g. `() => 0.5`) is
+  a trap for anything that calls `findPropSpot` — since x/y candidate
+  coordinates are recomputed identically every retry attempt, a constant
+  draw can land exactly on the room's own center every single time (always
+  rejected by the PROP_CLEARANCE check), silently exhausting all attempts
+  and returning null instead of the success you intended to test. Fix: use
+  a "scripted first call(s), then delegate to a real varying mulberry32"
+  rng wrapper whenever you need to pin one specific roll (e.g. a
+  chance-threshold check) while still letting downstream candidate-search
+  calls vary naturally.
 - [ ] Phase 6: src/engine/ pure-logic (13 files)
 - [ ] Phase 7: src/engine/ browser-API (12 files)
 - [ ] Phase 8: src/fs/ (3 files)
@@ -227,11 +238,12 @@ first thing at the start of every session, before touching code.
 ## Current coverage snapshot
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
-src/parser/, and 8 of 18 Phase-5 files (src/map/types.ts, seed.ts, util.ts,
-geometry.ts, labyrinth.ts, corridors.ts, pathing.ts, breakup.ts) are 100%
-stmts/branch/funcs/lines. 454 tests total, all green. Rest of src/map/,
-src/engine/, src/fs/, src/ui/, src/main.ts still 0% (not yet reached).
-defaultHighscore.ts and empty-node-shim.ts correctly absent from the report.
+src/parser/, and 11 of 18 Phase-5 files (src/map/types.ts, seed.ts, util.ts,
+geometry.ts, labyrinth.ts, corridors.ts, pathing.ts, breakup.ts,
+doorsKeys.ts, pickups.ts, props.ts) are 100% stmts/branch/funcs/lines. 490
+tests total, all green. Rest of src/map/, src/engine/, src/fs/, src/ui/,
+src/main.ts still 0% (not yet reached). defaultHighscore.ts and
+empty-node-shim.ts correctly absent from the report.
 
 ## Known open issues / deferred decisions
 
@@ -245,13 +257,10 @@ defaultHighscore.ts and empty-node-shim.ts correctly absent from the report.
 
 ## Next concrete step
 
-Continue Phase 5: read src/map/generation/doorsKeys.ts next (depends on
-breakup.ts's breakupTileKeys and pathing.ts's reachableTiles, both already
-tested and importable directly — no need to mock them), write
-doorsKeys.test.ts, verify 100%, commit. Then pickups.ts, props.ts,
-enemies.ts, secretRooms.ts, teleporters.ts, trapsHazards.ts, lore.ts,
-spawnExit.ts (each its own commit), then src/map/mapGenerator.ts last (the
-orchestrator — golden/determinism test: same seed + same ParsedFile input
-must reproduce byte-identical output, call generate() twice and
-deep-equal), then src/map/debugView.ts (first real use of
-test/mocks/canvas.ts from Phase 0).
+Continue Phase 5: read src/map/generation/enemies.ts next, write
+enemies.test.ts, verify 100%, commit. Then secretRooms.ts, teleporters.ts,
+trapsHazards.ts, lore.ts, spawnExit.ts (each its own commit), then
+src/map/mapGenerator.ts last (the orchestrator — golden/determinism test:
+same seed + same ParsedFile input must reproduce byte-identical output,
+call generate() twice and deep-equal), then src/map/debugView.ts (first
+real use of test/mocks/canvas.ts from Phase 0).
