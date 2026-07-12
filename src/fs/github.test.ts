@@ -131,6 +131,41 @@ describe("fetchGithubTree", () => {
     expect(tree.children!.map((c) => c.name)).toEqual(["src"]);
   });
 
+  it("drops test directories regardless of casing/pluralization", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          tree: [
+            { path: "test/a.js", type: "blob" },
+            { path: "Test/b.js", type: "blob" },
+            { path: "Tests/c.js", type: "blob" },
+            { path: "__tests__/d.js", type: "blob" },
+            { path: "src/main.c", type: "blob" },
+          ],
+        }),
+      );
+    const tree = await fetchGithubTree(ref);
+    expect(tree.children!.map((c) => c.name)).toEqual(["src"]);
+  });
+
+  it("drops colocated test files without needing a dedicated test directory", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          tree: [
+            { path: "src/main.test.c", type: "blob" },
+            { path: "src/helper_test.go", type: "blob" },
+            { path: "src/HelperTest.java", type: "blob" },
+            { path: "src/main.c", type: "blob" },
+          ],
+        }),
+      );
+    const tree = await fetchGithubTree(ref);
+    expect(tree.children![0].children!.map((c) => c.name)).toEqual(["main.c"]);
+  });
+
   it("reuses one directory node for multiple files under the same path", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Workspace/GitHub loads now skip `test`, `tests`, and `__tests__` directories (matched case-insensitively) alongside the existing `node_modules`/`.git`/etc. noise list, and also skip colocated test files (`foo.test.ts`, `foo_test.go`, `FooTest.java`, and similar conventions) even when they sit right next to real source rather than in a dedicated test folder — so test suites no longer generate levels
+
 ## beta-3
 
 - Texture-mapped walls, doors, floors, lore terminals, hazard (acid) floors, teleporter pads, and spike traps — procedural defaults, or real textures/flats sourced from a loaded DOOM `.wad` file

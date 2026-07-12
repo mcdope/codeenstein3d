@@ -158,6 +158,8 @@
 
 - [x] completion status in the readme looks incomplete — the `README.md` "Completion Status" table stopped at Task 86, missing everything from Task 87 through 92 (full CI pipeline, WAD texture coverage extended to lore/hazard/teleporter/trap tiles, GitHub workspace-loading stale-load cancellation + request-count fixes, the 100%-coverage Vitest suite) plus the newer untasked `tsc --noEmit && vite build` CI gate fix. Added rows for all of it, matching how existing multi-task rows group related work.
 
+- [x] github repo loads should ignore folders like "test", "Test", "tests" and so on — `IGNORED_DIRECTORIES` (`src/fs/workspace.ts`) now also skips `test`/`tests`/`__tests__`, and matching is case-insensitive across the board (via a new `isIgnoredDirectoryName` helper) instead of an exact-string `Set.has`, so `Test`/`Tests`/`__Tests__` etc. are caught too. Shared by both the local File System Access walker and the GitHub tree builder, same as the rest of the skip-list. Follow-up: a dedicated test *directory* doesn't cover ecosystems (including this repo's own) that colocate tests right next to the source they cover — added `isIgnoredFileName`, a regex-based filter for `foo.test.ts`/`foo.spec.js`, `test_foo.py`/`foo_test.go`, `foo_spec.rb`, and `FooTest.java`/`FooTests.cs`-style suffixes, applied to individual files in both walkers. The Java/C#-style suffix match is deliberately case-sensitive on the capital "Test" so real words ending in "test" (`Contest.java`, `Latest.php`) aren't caught.
+
 ## Open
 - [ ] rooms need deco of some kind, currently an empty wasteland — implemented in Task 21 (server racks/plants/desks/code-blocks as billboard props) but felt annoying in playtest, so disabled again behind `DECORATIONS_ENABLED = false` in mapGenerator.ts. Code (generation + rendering) is intact; needs a design rethink (placement density? different visual treatment? non-billboard approach?) before re-enabling. Ignore for now.
     - [ ] deco objects from wad?
@@ -186,6 +188,5 @@
     - [ ] elite enemies should scale with player count
  - [ ] enemy textures from wad?
  - [ ] multikill score bonus, sfx and gfx
- - [ ] github repo loads should ignore folders like "test", "Test", "tests" and so on
  - [ ] already read lore terminals shouldnt glow anymore
  - [ ] github workspace loading when loading a replay doesnt show loading indicator

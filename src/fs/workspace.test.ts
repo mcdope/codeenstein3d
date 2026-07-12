@@ -8,6 +8,8 @@ import {
   compareNodes,
   IGNORED_DIRECTORIES,
   isFileSystemAccessSupported,
+  isIgnoredDirectoryName,
+  isIgnoredFileName,
   pickDirectory,
   pickWorkspace,
   readDirectoryTree,
@@ -24,7 +26,40 @@ describe("IGNORED_DIRECTORIES", () => {
   it("includes the documented common noise directories", () => {
     expect(IGNORED_DIRECTORIES.has("node_modules")).toBe(true);
     expect(IGNORED_DIRECTORIES.has(".git")).toBe(true);
+    expect(IGNORED_DIRECTORIES.has("test")).toBe(true);
+    expect(IGNORED_DIRECTORIES.has("tests")).toBe(true);
+    expect(IGNORED_DIRECTORIES.has("__tests__")).toBe(true);
     expect(IGNORED_DIRECTORIES.has("src")).toBe(false);
+  });
+});
+
+describe("isIgnoredDirectoryName", () => {
+  it("matches regardless of case", () => {
+    expect(isIgnoredDirectoryName("node_modules")).toBe(true);
+    expect(isIgnoredDirectoryName("Test")).toBe(true);
+    expect(isIgnoredDirectoryName("TESTS")).toBe(true);
+    expect(isIgnoredDirectoryName("__Tests__")).toBe(true);
+    expect(isIgnoredDirectoryName("src")).toBe(false);
+  });
+});
+
+describe("isIgnoredFileName", () => {
+  it("matches colocated test files across common conventions", () => {
+    expect(isIgnoredFileName("workspace.test.ts")).toBe(true);
+    expect(isIgnoredFileName("foo.spec.js")).toBe(true);
+    expect(isIgnoredFileName("test_utils.py")).toBe(true);
+    expect(isIgnoredFileName("main_test.go")).toBe(true);
+    expect(isIgnoredFileName("foo_spec.rb")).toBe(true);
+    expect(isIgnoredFileName("WidgetTest.java")).toBe(true);
+    expect(isIgnoredFileName("WidgetTests.cs")).toBe(true);
+  });
+
+  it("does not flag real source files, including ones containing 'test' as a substring", () => {
+    expect(isIgnoredFileName("workspace.ts")).toBe(false);
+    expect(isIgnoredFileName("main.c")).toBe(false);
+    expect(isIgnoredFileName("Contest.java")).toBe(false);
+    expect(isIgnoredFileName("Latest.php")).toBe(false);
+    expect(isIgnoredFileName("manifest.ts")).toBe(false);
   });
 });
 
@@ -100,6 +135,29 @@ describe("readDirectoryTree", () => {
     const tree = await readDirectoryTree(handle as unknown as FileSystemDirectoryHandle);
     expect(tree.children!.some((c) => c.name === "node_modules")).toBe(false);
     expect(tree.children).toHaveLength(1);
+  });
+
+  it("skips test directories regardless of casing/pluralization", async () => {
+    const handle = fakeDirectoryHandle("proj", {
+      "main.c": "int main(){}",
+      test: { "a.c": "" },
+      Test: { "b.c": "" },
+      Tests: { "c.c": "" },
+      __tests__: { "d.c": "" },
+    });
+    const tree = await readDirectoryTree(handle as unknown as FileSystemDirectoryHandle);
+    expect(tree.children!.map((c) => c.name)).toEqual(["main.c"]);
+  });
+
+  it("skips colocated test files without needing a dedicated test directory", async () => {
+    const handle = fakeDirectoryHandle("proj", {
+      "main.c": "int main(){}",
+      "main.test.c": "",
+      "helper_test.go": "",
+      "HelperTest.java": "",
+    });
+    const tree = await readDirectoryTree(handle as unknown as FileSystemDirectoryHandle);
+    expect(tree.children!.map((c) => c.name)).toEqual(["main.c"]);
   });
 
   it("sorts directories before files, then alphabetically case-insensitively", async () => {

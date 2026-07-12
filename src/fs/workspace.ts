@@ -32,11 +32,12 @@ export interface TreeNode {
 }
 
 /**
- * Directory names skipped while walking the tree. These are almost never
- * "source" for our purposes and can contain tens of thousands of entries,
- * which would make the picker unusable on a real project. Exported so
- * `src/fs/github.ts` applies the exact same skip-list when building a tree
- * from a remote repo instead of a local directory.
+ * Directory names (matched case-insensitively) skipped while walking the
+ * tree. These are almost never "source" for our purposes and can contain
+ * tens of thousands of entries, which would make the picker unusable on a
+ * real project. Exported so `src/fs/github.ts` applies the exact same
+ * skip-list when building a tree from a remote repo instead of a local
+ * directory.
  */
 export const IGNORED_DIRECTORIES = new Set<string>([
   ".git",
@@ -48,7 +49,37 @@ export const IGNORED_DIRECTORIES = new Set<string>([
   ".vscode",
   "vendor",
   "__pycache__",
+  "test",
+  "tests",
+  "__tests__",
 ]);
+
+/** True when `name` matches an `IGNORED_DIRECTORIES` entry, regardless of case. */
+export function isIgnoredDirectoryName(name: string): boolean {
+  return IGNORED_DIRECTORIES.has(name.toLowerCase());
+}
+
+/**
+ * Matches individual test files that sit next to real source rather than
+ * inside one of the `IGNORED_DIRECTORIES` (this very repo's own
+ * `workspace.test.ts` is exactly this shape): `foo.test.ts`/`foo.spec.js`
+ * (JS/TS/etc.), `test_foo.py`/`foo_test.go` (Python/Go), `foo_spec.rb`
+ * (Ruby/RSpec). Case-insensitive — these separator-delimited conventions
+ * don't collide with real words.
+ */
+const TEST_FILE_PATTERN_CI = /(?:^test[_-].+|.+[_.](?:tests?|specs?))\.[^.]+$/i;
+
+/**
+ * Matches `FooTest.java`/`FooTests.cs`-style suffixes (Java/C#/Scala).
+ * Deliberately case-sensitive on the capital "Test" so real words like
+ * "Contest.java" or "Latest.php" aren't caught.
+ */
+const TEST_FILE_PATTERN_CS = /.+Tests?\.[^.]+$/;
+
+/** True when `name` looks like a colocated test file rather than real source. */
+export function isIgnoredFileName(name: string): boolean {
+  return TEST_FILE_PATTERN_CI.test(name) || TEST_FILE_PATTERN_CS.test(name);
+}
 
 /** True when this browser exposes the File System Access API we rely on. */
 export function isFileSystemAccessSupported(): boolean {
@@ -100,9 +131,10 @@ export async function readDirectoryTree(
 
   for await (const entry of handle.values()) {
     if (entry.kind === "directory") {
-      if (IGNORED_DIRECTORIES.has(entry.name)) continue;
+      if (isIgnoredDirectoryName(entry.name)) continue;
       children.push(await readDirectoryTree(entry, path));
     } else {
+      if (isIgnoredFileName(entry.name)) continue;
       children.push({
         name: entry.name,
         path: `${path}/${entry.name}`,
