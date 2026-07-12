@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
+import { webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildIndexDom, stubDialogElement, stubResizeObserver } from "../test/mocks/mainDom";
 import { stubCanvasGetContext } from "../test/mocks/canvas";
-import { FakeFileSystemFileHandle } from "../test/mocks/fsAccess";
+import { FakeFileSystemFileHandle, fakeDirectoryHandle } from "../test/mocks/fsAccess";
 import type { TreeNode } from "./fs/workspace";
 
 /**
@@ -22,6 +23,17 @@ async function importMain(): Promise<typeof import("./main")> {
   stubCanvasGetContext(document.createElement("canvas"));
   stubResizeObserver();
   stubDialogElement(document.querySelector<HTMLDialogElement>("#highscore-dialog")!);
+  // main.ts's own `isFileSystemAccessSupported()` check runs at *import*
+  // time and disables #select-workspace/#continue-run forever if
+  // `window.showDirectoryPicker` isn't already a function by then — a
+  // per-test override set up *after* importMain() returns is too late for
+  // that one check (though it's fine for the picker's actual return value,
+  // read fresh on every real call). Default to a never-resolving stub here;
+  // individual tests override it afterward for their own scenario. The
+  // dedicated "unsupported" test builds its own sequence instead of using
+  // this helper, so it can `delete` the property before importing.
+  (window as unknown as { showDirectoryPicker: () => Promise<unknown> }).showDirectoryPicker = () =>
+    new Promise(() => {});
   return import("./main");
 }
 
@@ -62,6 +74,13 @@ function dirNode(path: string, children: TreeNode[]): TreeNode {
 
 beforeEach(() => {
   localStorage.clear();
+  // jsdom's built-in `crypto` global has no SubtleCrypto implementation —
+  // swap in Node's real webcrypto so highscores.ts's hashRun()/
+  // crypto.subtle.digest() call (reached via launchLevel's replay-recorder
+  // hashing, and highscore recording) works the same as it does in an
+  // actual browser. Re-stubbed every test (not just `beforeAll`) since the
+  // shared `afterEach` below calls `vi.unstubAllGlobals()`.
+  vi.stubGlobal("crypto", webcrypto);
 });
 
 afterEach(() => {
@@ -546,5 +565,182 @@ describe("main.ts — highscores dialog", () => {
     dialog.showModal();
     dialog.close();
     expect(focusSpy).not.toHaveBeenCalled();
+  });
+});
+
+function stubShowDirectoryPicker(handle: unknown): void {
+  (window as unknown as { showDirectoryPicker: () => Promise<unknown> }).showDirectoryPicker = () =>
+    Promise.resolve(handle);
+}
+
+describe("main.ts — local workspace pick", () => {
+  it("reads and renders the picked workspace, then auto-launches a level", async () => {
+    await importMain();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
+
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "ws");
+
+    expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(false);
+    // A level auto-launched: the canvas area is shown and the loading
+    // screen/intro placeholder are gone.
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false);
+  });
+
+  it("does nothing when the picker is cancelled", async () => {
+    await importMain();
+    stubShowDirectoryPicker(undefined);
+    const before = document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent;
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe(before);
+  });
+
+  it("shows an error status and the file-tree placeholder when reading the workspace fails", async () => {
+    await importMain();
+    (window as unknown as { showDirectoryPicker: () => Promise<unknown> }).showDirectoryPicker = () =>
+      Promise.reject(new Error("disk exploded"));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "disk exploded");
+    expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(true);
+  });
+
+  it("disables workspace/continue buttons when the File System Access API is unsupported", async () => {
+    vi.resetModules();
+    buildIndexDom();
+    stubCanvasGetContext(document.createElement("canvas"));
+    stubResizeObserver();
+    stubDialogElement(document.querySelector<HTMLDialogElement>("#highscore-dialog")!);
+    delete (window as unknown as { showDirectoryPicker?: unknown }).showDirectoryPicker;
+    await import("./main");
+    expect(document.querySelector<HTMLButtonElement>("#select-workspace")!.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>("#continue-run")!.disabled).toBe(true);
+    expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(true);
+  });
+
+  it("a second pick started while the first is still awaiting the picker supersedes it", async () => {
+    await importMain();
+    let resolveFirst: (h: unknown) => void = () => {};
+    let pickCalls = 0;
+    (window as unknown as { showDirectoryPicker: () => Promise<unknown> }).showDirectoryPicker = () => {
+      pickCalls++;
+      if (pickCalls === 1) return new Promise((resolve) => (resolveFirst = resolve));
+      return Promise.resolve(fakeDirectoryHandle("second", { "main.c": VALID_MAIN_C }));
+    };
+    const selectButton = document.querySelector<HTMLButtonElement>("#select-workspace")!;
+    selectButton.click(); // first pick — hangs, waiting on resolveFirst
+    await flushAsync();
+    selectButton.click(); // second pick — supersedes the first
+    await waitUntil(
+      () => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "second",
+      8000,
+    );
+
+    // Resolving the stale first pick afterward must not clobber the second's result.
+    resolveFirst(fakeDirectoryHandle("first-stale", { "main.c": VALID_MAIN_C }));
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("second");
+  });
+});
+
+describe("main.ts — GitHub workspace load", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  function jsonResponse(body: unknown, ok = true, status = 200, statusText = "OK"): Response {
+    return { ok, status, statusText, json: async () => body, body: null } as unknown as Response;
+  }
+
+  it("fetches, renders, and auto-launches a level for a valid owner/repo input", async () => {
+    await importMain();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+      .mockResolvedValueOnce(jsonResponse({ tree: [{ path: "main.c", type: "blob" }] }))
+      .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK", text: async () => VALID_MAIN_C } as unknown as Response);
+
+    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+    document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "owner/repo");
+    expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(false);
+  });
+
+  it("shows an error for input that doesn't parse as a repo reference", async () => {
+    await importMain();
+    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "not a repo ref!!";
+    document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
+    await flushAsync();
+    const status = document.querySelector<HTMLParagraphElement>("#github-status")!;
+    expect(status.classList.contains("error")).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("shows an error status when the fetch itself fails", async () => {
+    await importMain();
+    fetchMock.mockResolvedValueOnce(jsonResponse(null, false, 404, "Not Found"));
+    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+    document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#github-status")!.classList.contains("error"));
+    expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(true);
+  });
+
+  it("a suggested-repo button pre-fills the input and loads it the same way", async () => {
+    await importMain();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+      .mockResolvedValueOnce(jsonResponse({ tree: [{ path: "main.c", type: "blob" }] }))
+      .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK", text: async () => VALID_MAIN_C } as unknown as Response);
+
+    const suggestion = document.querySelector<HTMLButtonElement>(".suggestion-btn")!;
+    const repo = suggestion.dataset.repo!;
+    suggestion.click();
+    expect(document.querySelector<HTMLInputElement>("#github-repo-input")!.value).toBe(repo);
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === repo);
+  });
+
+  it("clears a stale campaign save when a GitHub repo loads successfully", async () => {
+    await importMain();
+    localStorage.setItem(
+      "codeenstein-campaign-save",
+      JSON.stringify({
+        workspaceName: "old",
+        filePath: "a.c",
+        health: 100,
+        swap: 0,
+        bullets: 0,
+        rockets: 0,
+        smg: 0,
+        gas: 0,
+        score: 0,
+        weaponIndex: 0,
+        ownedWeapons: [],
+        levelIndex: 1,
+      }),
+    );
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+      .mockResolvedValueOnce(jsonResponse({ tree: [{ path: "main.c", type: "blob" }] }))
+      .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK", text: async () => VALID_MAIN_C } as unknown as Response);
+    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+    document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
+    await waitUntil(() => document.querySelector<HTMLButtonElement>("#tab-continue")!.style.display === "none");
+  });
+});
+
+describe("main.ts — demo campaign load", () => {
+  it("loads the bundled demo campaign and auto-launches its entrypoint", async () => {
+    await importMain();
+    document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "demo-campaign");
+    expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(false);
+    // Wait for the real entrypoint scan + map generation + engine
+    // construction to fully settle (not just the synchronous workspace-name
+    // write above) before asserting on post-launch state, so no orphaned
+    // promise from this test's own launchLevel() call bleeds into the next.
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    expect(document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.disabled).toBe(false); // re-enabled in `finally`
   });
 });

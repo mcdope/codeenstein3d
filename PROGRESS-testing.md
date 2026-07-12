@@ -948,14 +948,18 @@ first thing at the start of every session, before touching code.
     that use large `dt` steps.
 
 - [ ] Phase 11: src/main.ts — IN PROGRESS. `src/main.test.ts` created,
-  42 tests so far covering: module-import DOM wiring (title, extreme-gore
-  option removal, tab switching, gore/difficulty/volume settings
-  persistence, Continue-tab visibility), the 3 campaign-persistence
-  exports (`loadCampaignSave`/`saveCampaign`/`clearCampaignSave`),
-  `applyForcedUnlocks`, `flattenParsableFiles`, `findEntrypoint`'s full
-  local-workspace cascade, WAD texture loading, BGM folder loading, and
-  the highscores dialog open/close. All green, `npm test` clean at
-  1364/76. See "Next concrete step" for what's next.
+  53 tests so far covering: module-import DOM wiring, the 3
+  campaign-persistence exports, `applyForcedUnlocks`, `flattenParsableFiles`,
+  `findEntrypoint`'s full local-workspace cascade, WAD/BGM loading, the
+  highscores dialog, and all three workspace-loading flows (local pick,
+  GitHub, demo campaign) including a real supersession race and a real
+  end-to-end `launchLevel` reach (auto-launches an actual level with a
+  real generated map and a real `RaycasterEngine`). All green, `npm test`
+  clean at 1375/76. **Coverage on src/main.ts alone: 740/1310 lines
+  (56%), 37/53 functions (70%), 194/245 branches (79%)** — a big jump
+  from just this one batch, since `launchLevel`/`autoLaunchInitialLevel`
+  get exercised for free by every one of the three loading flows. See
+  "Next concrete step" for what's next.
 
   **Test-writing gotchas found this batch** (kept for the next session):
   - **jsdom's `File` has no `arrayBuffer()`** — `new File([...], name)`
@@ -983,6 +987,39 @@ first thing at the start of every session, before touching code.
     unmocked `workspace.ts` functions that branch on
     `typeof window.showDirectoryPicker === "function"`, so stubbing the
     browser primitive keeps that branch logic genuinely exercised.
+  - **jsdom's `crypto` global has no `SubtleCrypto`** (same gotcha
+    `highscores.test.ts` already documented in Phase 6, easy to forget
+    since it's a different file) — `import { webcrypto } from
+    "node:crypto"` + `vi.stubGlobal("crypto", webcrypto)` in `beforeEach`
+    (not `beforeAll` — the shared `afterEach`'s `vi.unstubAllGlobals()`
+    would strip a `beforeAll`-only stub after the first test). Needed
+    anywhere `launchLevel`/`recordRunHighscore` run for real, since both
+    call `hashRun()`.
+  - **`importMain()`'s setup order matters more than it looks**:
+    `window.showDirectoryPicker` must already be a function *before*
+    `import("./main")` runs, because main.ts's own
+    `isFileSystemAccessSupported()` check fires once, at module-import
+    time, and permanently disables `#select-workspace`/`#continue-run`
+    if it's missing then — reassigning the picker stub *after* import
+    (which every per-scenario test naturally wants to do, to control
+    that specific test's picker behavior) is too late to undo the
+    disabled state. Fixed by having `importMain()` itself install a
+    default (never-resolving) `showDirectoryPicker` stub before
+    importing, which individual tests then overwrite afterward for
+    their own scenario — only the dedicated "FS Access unsupported"
+    test needs to skip `importMain()` and build its own import sequence
+    with the property genuinely absent. Cost 2 confusing test failures
+    (one a flat-out wrong assertion, one an 8-second timeout with no
+    obvious cause) before the root cause was traced to this ordering.
+  - **A real end-to-end `launchLevel` reach is expensive but very high
+    coverage-value** — the demo-campaign-load test alone (a real bundled
+    file → real tree-sitter parse → real `MapGenerator.generate` → real
+    `RaycasterEngine` construction, all through main.ts's actual code,
+    no module mocking) jumped this file's coverage from ~15/53 functions
+    to 37/53 in one batch. Worth reaching for a real end-to-end flow over
+    a narrower unit test whenever the fixture cost is this low (the demo
+    campaign is already bundled, free to use, no network/FS mocking
+    needed at all).
 - [ ] Phase 12: wrap-up (thresholds, CI, docs, notes, delete this file)
 
 ## Current coverage snapshot
@@ -1148,14 +1185,25 @@ per-scenario, not per-file, breakdown):
       batch below)
 - [ ] canvas sizing (`fitCanvasToArea`, the `ResizeObserver`/`fullscreenchange`
       listeners)
-- [ ] workspace loading: local pick (`selectButton` click handler,
-      `beginWorkspaceLoad`'s supersession-guard races)
-- [ ] GitHub loading (fetch mock, suggestion buttons, supersession, abort)
-- [ ] demo campaign loading
+- [x] workspace loading: local pick (`selectButton` click handler — success +
+      auto-launch, cancelled picker, read failure, FS-Access-unsupported
+      button-disable, and a real supersession race between two picks)
+- [x] GitHub loading (fetch mock success + auto-launch, unparseable input,
+      fetch failure, suggestion-button pre-fill, stale-save clearing).
+      Supersession/abort specifically not yet covered — the local-pick
+      supersession test above proves the shared `beginWorkspaceLoad`
+      mechanism works, but GitHub's own mid-fetch abort-controller wiring
+      is a distinct code path, still open
+- [x] demo campaign loading (real bundled tree, real entrypoint match on its
+      actual `main.c`, genuinely exercises `launchLevel` end-to-end)
 - [ ] Continue Run (resume flow, saved-file-not-found fallback)
 - [ ] file-tree file selection (`handleFileSelected`)
-- [ ] `launchLevel` (map generation wiring, engine handler wiring, forced
-      unlocks, HUD callbacks, replay-recorder start)
+- [x] `launchLevel` — incidentally well-covered by the three loading-flow
+      batches above (all three demonstrably reach a real launched level);
+      check the coverage report once the remaining batches land to see
+      what's still missing (forced-unlock-with-real-carryover branches,
+      the bonus-level extension check, and the replay-recorder-reuse
+      branch specifically look likely to still need direct coverage)
 - [ ] `advanceToNextLevel` (multi-level chaining, campaign-complete path)
 - [ ] highscore recording (`recordRunHighscore` — cheat-used and
       died-on-level-1 exclusions, codebase-stats timeout path)
