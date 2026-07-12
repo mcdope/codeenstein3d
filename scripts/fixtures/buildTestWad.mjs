@@ -170,6 +170,7 @@ export function buildTestWad(opts = {}) {
     doorTextureName = "BIGDOOR2", // real DOOR_TEXTURE_ALLOWLIST entry; pass null to omit
     loreWallTextureName = "COMPUTE2", // real LORE_WALL_TEXTURE_ALLOWLIST entry; pass null to omit
     flatName = "FLOOR4_8", // real FLOOR_TEXTURE_ALLOWLIST entry
+    bonusFloorName = null, // real BONUS_FLOOR_TEXTURE_ALLOWLIST entry; pass a name to enable
     hazardFloorName = "NUKAGE3", // real HAZARD_FLOOR_TEXTURE_ALLOWLIST entry; pass null to omit
     teleporterFloorName = "GATE1", // real TELEPORTER_FLOOR_TEXTURE_ALLOWLIST entry; pass null to omit
     spikeSafeFloorName = "FLOOR7_1", // real SPIKE_SAFE_FLOOR_TEXTURE_ALLOWLIST entry; pass null to omit
@@ -221,6 +222,7 @@ export function buildTestWad(opts = {}) {
   if (includeFlats) {
     lumps.push({ name: "F_START", bytes: new Uint8Array(0) });
     lumps.push({ name: flatName, bytes: buildFlat(3) });
+    if (bonusFloorName) lumps.push({ name: bonusFloorName, bytes: buildFlat(3) });
     if (hazardFloorName) lumps.push({ name: hazardFloorName, bytes: buildFlat(3) });
     if (teleporterFloorName) lumps.push({ name: teleporterFloorName, bytes: buildFlat(3) });
     if (spikeSafeFloorName) lumps.push({ name: spikeSafeFloorName, bytes: buildFlat(3) });

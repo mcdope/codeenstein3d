@@ -4,16 +4,18 @@
 
 import { webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildTestWad } from "../scripts/fixtures/buildTestWad.mjs";
 import { buildIndexDom, stubDialogElement, stubResizeObserver } from "../test/mocks/mainDom";
 import { installRaf, type RafController } from "../test/mocks/raf";
 import { stubCanvasGetContext } from "../test/mocks/canvas";
 import { FakeFileSystemFileHandle, fakeDirectoryHandle } from "../test/mocks/fsAccess";
 import type { TreeNode } from "./fs/workspace";
 import { parseFile } from "./parser/registry";
-import { hashRun, recordHighscore } from "./engine/highscores";
+import { hashRun, loadHighscores, recordHighscore } from "./engine/highscores";
 import type { InputSnapshot } from "./engine/input";
 import type { ReplayLevelSegment } from "./engine/replay";
 import type { EngineCarryover } from "./engine/engine";
+import { GHIDRA_WEAPON_INDEX } from "./engine/weapons";
 
 /**
  * main.ts is not a class — importing it runs its whole module body
@@ -87,6 +89,81 @@ function dirNode(path: string, children: TreeNode[]): TreeNode {
   return { name, path, kind: "directory", handle: {} as FileSystemDirectoryHandle, children };
 }
 
+/** A file handle whose `getFile()` always rejects — for exercising the catch
+ * blocks around `readFileText` (a real disk/network read failing partway
+ * through, as opposed to a file that reads fine but fails to *parse*). */
+function throwingFileHandle(name: string): FileSystemFileHandle {
+  return {
+    kind: "file",
+    name,
+    getFile: () => Promise.reject(new Error("disk read failed")),
+  } as unknown as FileSystemFileHandle;
+}
+
+function throwingFileNode(path: string): TreeNode {
+  const name = path.split("/").pop()!;
+  return { name, path, kind: "file", handle: throwingFileHandle(name) };
+}
+
+/** A directory handle yielding exactly `entries`, in order — like
+ * `fakeDirectoryHandle`, but lets a caller mix in a `throwingFileHandle`
+ * alongside ordinary working files, which `fakeDirectoryHandle`'s
+ * string-content-only tree shape can't express. */
+function directoryHandleWithEntries(
+  name: string,
+  entries: (FakeFileSystemFileHandle | FileSystemFileHandle)[],
+): FileSystemDirectoryHandle {
+  return {
+    name,
+    kind: "directory",
+    values: async function* () {
+      for (const entry of entries) yield entry;
+    },
+  } as unknown as FileSystemDirectoryHandle;
+}
+
+/** A directory handle whose `.values()` hangs until `gate.resolve()` is
+ * called, then either yields `entries` (a normal, if late, read) or throws
+ * (a read that fails only after being superseded) — for exercising the
+ * `gen !== workspaceLoadGeneration` supersession guards scattered through
+ * every workspace-loading entry point: park a load mid-read with this,
+ * trigger a second load to bump the generation counter, then release the
+ * gate and observe the first load's own stale-generation checkpoint fire. */
+function gatedDirectoryHandle(
+  name: string,
+  gate: { resolve?: () => void },
+  behavior: { entries: (FakeFileSystemFileHandle | FileSystemFileHandle)[] } | { throws: Error },
+): FileSystemDirectoryHandle {
+  return {
+    name,
+    kind: "directory",
+    values: async function* () {
+      await new Promise<void>((resolve) => {
+        gate.resolve = resolve;
+      });
+      if ("throws" in behavior) throw behavior.throws;
+      for (const entry of behavior.entries) yield entry;
+    },
+  } as unknown as FileSystemDirectoryHandle;
+}
+
+/** A file handle whose `getFile()` hangs until `gate.resolve()` is called —
+ * same "park mid-await, supersede, then release" technique as
+ * `gatedDirectoryHandle`, but for a single file read (e.g. Continue Run's
+ * own saved-file parse step) instead of a whole directory listing. */
+function gatedFileHandle(name: string, content: string, gate: { resolve?: () => void }): FileSystemFileHandle {
+  return {
+    kind: "file",
+    name,
+    getFile: async () => {
+      await new Promise<void>((resolve) => {
+        gate.resolve = resolve;
+      });
+      return { text: async () => content };
+    },
+  } as unknown as FileSystemFileHandle;
+}
+
 beforeEach(() => {
   localStorage.clear();
   // jsdom's built-in `crypto` global has no SubtleCrypto implementation —
@@ -96,6 +173,16 @@ beforeEach(() => {
   // actual browser. Re-stubbed every test (not just `beforeAll`) since the
   // shared `afterEach` below calls `vi.unstubAllGlobals()`.
   vi.stubGlobal("crypto", webcrypto);
+  // `RaycasterEngine`'s constructor sets this directly on `window` (not via
+  // `vi.stubGlobal`, so `vi.unstubAllGlobals()` below doesn't touch it) —
+  // `window` itself persists across every test in this file, unlike the
+  // rebuilt DOM/reset module. Left uncleared, `!!testHooks()` can be
+  // trivially satisfied by a completely unrelated earlier test's own
+  // long-gone engine, making a "has *this* test's engine loaded yet" wait
+  // pass instantly for the wrong reason. Clearing it here guarantees
+  // `!!testHooks()` can only become true again once *this* test's own
+  // engine has actually been constructed.
+  delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
 });
 
 afterEach(async () => {
@@ -157,6 +244,31 @@ describe("main.ts — module import / initial DOM wiring", () => {
     expect(localStorage.getItem("codeenstein-difficulty")).toBe("hard");
   });
 
+  it("logs a warning instead of throwing when saving the gore/difficulty/volume preferences fails", async () => {
+    await importMain();
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota exceeded");
+    });
+    const warnSpy = vi.spyOn(console, "warn");
+
+    const goreSelect = document.querySelector<HTMLSelectElement>("#gore-select")!;
+    goreSelect.value = "more";
+    expect(() => goreSelect.dispatchEvent(new Event("change"))).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith("[settings] Failed to save gore level:", expect.any(Error));
+
+    const difficultySelect = document.querySelector<HTMLSelectElement>("#difficulty-select")!;
+    difficultySelect.value = "hard";
+    expect(() => difficultySelect.dispatchEvent(new Event("change"))).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith("[settings] Failed to save difficulty:", expect.any(Error));
+
+    const masterVolumeInput = document.querySelector<HTMLInputElement>("#master-vol")!;
+    masterVolumeInput.value = "10";
+    expect(() => masterVolumeInput.dispatchEvent(new Event("input"))).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith("[settings] Failed to save volume:", expect.any(Error));
+
+    setItemSpy.mockRestore();
+  });
+
   it("restores a previously-saved gore/difficulty preference on the next import", async () => {
     localStorage.setItem("codeenstein-gore-level", "none");
     localStorage.setItem("codeenstein-difficulty", "easy");
@@ -191,6 +303,14 @@ describe("main.ts — module import / initial DOM wiring", () => {
     master.value = "75";
     master.dispatchEvent(new Event("input"));
     expect(localStorage.getItem("codeenstein-master-volume")).toBe("0.75");
+
+    sfx.value = "40";
+    sfx.dispatchEvent(new Event("input"));
+    expect(localStorage.getItem("codeenstein-sfx-volume")).toBe("0.4");
+
+    bgmVol.value = "20";
+    bgmVol.dispatchEvent(new Event("input"));
+    expect(localStorage.getItem("codeenstein-bgm-volume")).toBe("0.2");
   });
 
   it("restores a previously-saved volume and ignores an out-of-range saved value", async () => {
@@ -223,6 +343,21 @@ describe("main.ts — module import / initial DOM wiring", () => {
   it("leaves the Continue tab hidden when no campaign save exists", async () => {
     await importMain();
     expect(document.querySelector<HTMLButtonElement>("#tab-continue")!.style.display).toBe("none");
+  });
+
+  it("falls back to defaults for gore/difficulty/volume when localStorage.getItem itself throws", async () => {
+    // loadGoreLevel/loadDifficulty/loadVolume all run synchronously at
+    // module-import time (their module-level `let` initializers) — the stub
+    // must already be in place *before* importMain()'s own `import("./main")`
+    // call, not set up afterward like the save-side (setItem) failure tests.
+    const getItemSpy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("storage unavailable");
+    });
+    await importMain();
+    getItemSpy.mockRestore();
+    expect(document.querySelector<HTMLSelectElement>("#gore-select")!.value).toBe("normal");
+    expect(document.querySelector<HTMLSelectElement>("#difficulty-select")!.value).toBe("normal");
+    expect(document.querySelector<HTMLInputElement>("#master-vol")!.value).toBe("50");
   });
 });
 
@@ -353,6 +488,41 @@ describe("main.ts — campaign persistence (loadCampaignSave/saveCampaign/clearC
     expect(() => clearCampaignSave()).not.toThrow();
     expect(tabLocal.getAttribute("aria-selected")).toBe("true");
   });
+
+  it("saveCampaign logs a warning instead of throwing when localStorage.setItem fails", async () => {
+    const { saveCampaign } = await importMain();
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota exceeded");
+    });
+    const warnSpy = vi.spyOn(console, "warn");
+    expect(() =>
+      saveCampaign({
+        workspaceName: "ws",
+        filePath: "a.c",
+        health: 100,
+        swap: 0,
+        bullets: 0,
+        rockets: 0,
+        smg: 0,
+        gas: 0,
+        score: 0,
+        weaponIndex: 0,
+        ownedWeapons: [],
+        levelIndex: 1,
+      }),
+    ).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith("[continue] Failed to save campaign progress:", expect.any(Error));
+    setItemSpy.mockRestore();
+  });
+
+  it("clearCampaignSave swallows a localStorage.removeItem failure", async () => {
+    const { clearCampaignSave } = await importMain();
+    const removeItemSpy = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new Error("storage unavailable");
+    });
+    expect(() => clearCampaignSave()).not.toThrow();
+    removeItemSpy.mockRestore();
+  });
 });
 
 describe("main.ts — applyForcedUnlocks", () => {
@@ -407,12 +577,34 @@ describe("main.ts — flattenParsableFiles", () => {
     expect(seen).toHaveLength(2);
   });
 
+  it("treats a directory node with no children array as empty", async () => {
+    const { flattenParsableFiles } = await importMain();
+    // Every real tree-building call site (readDirectoryTree, fetchGithubTree,
+    // loadDemoCampaignTree) always populates `children`, even for an empty
+    // directory — but TreeNode's own type marks it optional, and this
+    // function's `node.children ?? []` fallback exists for that case
+    // regardless of whether a real constructor currently exercises it.
+    const tree: TreeNode = { name: "root", path: "root", kind: "directory", handle: {} as FileSystemDirectoryHandle };
+    const files = await flattenParsableFiles(tree);
+    expect(files).toEqual([]);
+  });
+
   it("memoizes the no-callback call for the same root node", async () => {
     const { flattenParsableFiles } = await importMain();
     const tree = dirNode("root", [fileNode("root/a.c", "x")]);
     const first = await flattenParsableFiles(tree);
     const second = await flattenParsableFiles(tree);
     expect(first).toBe(second); // literally the same array instance — cached
+  });
+
+  it("treats an extensionless file that fails to read as not parsable", async () => {
+    const { flattenParsableFiles } = await importMain();
+    // Extensionless — isParsableNode has to actually read it (to sniff for a
+    // shebang) rather than deciding from the name alone, so a read failure
+    // here exercises its own catch, not readFileText's caller's.
+    const tree = dirNode("root", [throwingFileNode("root/script"), fileNode("root/a.c", "x")]);
+    const files = await flattenParsableFiles(tree);
+    expect(files.map((f) => f.path)).toEqual(["root/a.c"]);
   });
 });
 
@@ -490,6 +682,73 @@ describe("main.ts — findEntrypoint", () => {
     const match = await findEntrypoint(tree, AbortSignal.abort());
     expect(match).toBeNull();
   });
+
+  it("falls through to the scored scan when a filename match's file itself fails to read", async () => {
+    const { findEntrypoint } = await importMain();
+    const tree = dirNode("root", [throwingFileNode("root/main.c"), fileNode("root/real.c", VALID_MAIN_C)]);
+    const match = await findEntrypoint(tree);
+    expect(match?.file.path).toBe("root/real.c");
+  });
+
+  it("skips an unreadable file mid-scan and still finds the best of the rest, yielding partway through a large scan", async () => {
+    const { findEntrypoint } = await importMain();
+    // None of these names match ENTRYPOINT_FILENAMES, forcing the scored
+    // scan; 25 files (> ENTRYPOINT_SCAN_CHUNK_SIZE's 20) so the scan's
+    // periodic yieldToMainThread() actually fires mid-walk, and one of them
+    // fails to read so the scan's own per-file catch runs too.
+    const files: TreeNode[] = [];
+    for (let i = 0; i < 25; i++) {
+      files.push(i === 10 ? throwingFileNode(`root/f${i}.c`) : fileNode(`root/f${i}.c`, VALID_HELPER_C));
+    }
+    const tree = dirNode("root", files);
+    const match = await findEntrypoint(tree);
+    expect(match?.file.path).toBe("root/f0.c"); // every working file parses identically — first one wins ties
+  });
+
+  it("treats a directory node with no children array as having nothing to check by name", async () => {
+    const { findEntrypoint } = await importMain();
+    // Same "real constructors always populate children, but the type marks
+    // it optional" reasoning as flattenParsableFiles's equivalent test.
+    const tree: TreeNode = { name: "root", path: "root", kind: "directory", handle: {} as FileSystemDirectoryHandle };
+    const match = await findEntrypoint(tree);
+    expect(match).toBeNull();
+  });
+
+  it("scores a file with a non-function/method entity (a global variable) alongside a real, not-yet-fired scan signal", async () => {
+    const { findEntrypoint } = await importMain();
+    // "globals.c" doesn't match ENTRYPOINT_FILENAMES, forcing the scored
+    // scan. Its global-variable entities have kind "global" — neither
+    // "function" nor "method" — short-circuiting scoreEntrypointCandidate's
+    // `(e.kind === "function" || e.kind === "method") && ...` before ever
+    // reaching the name check, a combination the other scan tests (all
+    // function-only fixtures) never exercise.
+    const tree = dirNode("root", [fileNode("root/globals.c", HAZARD_FIXTURE_C)]);
+    const match = await findEntrypoint(tree, AbortSignal.timeout(60_000));
+    expect(match?.file.path).toBe("root/globals.c");
+  });
+
+  it("stops the scored scan mid-walk once its signal becomes aborted partway through", async () => {
+    const { findEntrypoint } = await importMain();
+    // `findEntrypoint`'s OWN `if (signal?.aborted) return null;` guard (run
+    // once, before the scan even starts) is what an *already*-aborted signal
+    // hits — this test targets a DIFFERENT check, inside
+    // findEntrypointByScanning's own per-file loop, which only sees a signal
+    // that *becomes* aborted mid-scan. 25 files (> ENTRYPOINT_SCAN_CHUNK_SIZE's
+    // 20) so the scan's own periodic yieldToMainThread() (a real
+    // setTimeout(0)) actually yields to the event loop at least once;
+    // aborting via a setTimeout(0) registered *before* that first yield
+    // fires first once the event loop's macrotask queue is finally
+    // processed, so `signal.aborted` is already true by the time the scan
+    // resumes for its next file.
+    const files: TreeNode[] = [];
+    for (let i = 0; i < 25; i++) files.push(fileNode(`root/f${i}.c`, VALID_HELPER_C));
+    const tree = dirNode("root", files);
+    const controller = new AbortController();
+    const matchPromise = findEntrypoint(tree, controller.signal);
+    setTimeout(() => controller.abort(), 0);
+    const match = await matchPromise;
+    expect(match?.file.path).toBe("root/f0.c"); // still finds the best of whatever was scanned before aborting
+  });
 });
 
 function setInputFiles(input: HTMLInputElement, files: File[]): void {
@@ -542,6 +801,73 @@ describe("main.ts — WAD texture loading", () => {
     await flushAsync();
     expect(document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent).toBe("Failed to load WAD file.");
   });
+
+  it("reports the thrown Error's own message when the read itself throws a real Error", async () => {
+    await importMain();
+    const fileInput = document.querySelector<HTMLInputElement>("#wad-file-input")!;
+    const file = { name: "bad.wad", arrayBuffer: () => Promise.reject(new Error("disk read failed")) } as unknown as File;
+    setInputFiles(fileInput, [file]);
+    fileInput.dispatchEvent(new Event("change"));
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent).toBe("disk read failed");
+  });
+
+  it("lists every matched texture role for a WAD that resolves most slots", async () => {
+    await importMain();
+    const fileInput = document.querySelector<HTMLInputElement>("#wad-file-input")!;
+    // buildTestWad()'s default fixture resolves wall/door/loreWall (composite)
+    // plus floor/hazardFloor/teleporterFloor/spikeSafeFloor/spikeActiveFloor
+    // (flats) — 8 of the 10 slots (everything but bonusWall/bonusFloor, which
+    // no fixture lump is named for) — enough to exercise every `matched.push`
+    // branch plus the "remaining slots using defaults" partial-match branch.
+    const bytes = buildTestWad();
+    const file = { name: "test.wad", arrayBuffer: () => Promise.resolve(bytes) } as unknown as File;
+    setInputFiles(fileInput, [file]);
+    fileInput.dispatchEvent(new Event("change"));
+    await flushAsync();
+    const status = document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent!;
+    expect(status).toContain("Using WAD textures:");
+    expect(status).toContain("walls (STARTAN3)");
+    expect(status).toContain("doors (BIGDOOR2)");
+    expect(status).toContain("floors (FLOOR4_8)");
+    expect(status).toContain("lore terminals (COMPUTE2)");
+    expect(status).toContain("hazard floors (NUKAGE3)");
+    expect(status).toContain("teleporter floors (GATE1)");
+    expect(status).toContain("spike traps, safe (FLOOR7_1)");
+    expect(status).toContain("spike traps, active (BLOOD1)");
+    expect(status).toContain("remaining slots using defaults");
+  });
+
+  it("lists the bonus wall/floor roles too and drops the defaults caveat when every slot resolves", async () => {
+    await importMain();
+    const fileInput = document.querySelector<HTMLInputElement>("#wad-file-input")!;
+    // texture2Name adds a second composited texture (a real
+    // BONUS_WALL_TEXTURE_ALLOWLIST entry) via a TEXTURE2 lump; bonusFloorName
+    // adds a real BONUS_FLOOR_TEXTURE_ALLOWLIST-named flat — together with
+    // buildTestWad()'s other 8 defaults, all 10 slots resolve.
+    const bytes = buildTestWad({ texture2Name: "COMPBLUE", bonusFloorName: "CEIL5_1" });
+    const file = { name: "full.wad", arrayBuffer: () => Promise.resolve(bytes) } as unknown as File;
+    setInputFiles(fileInput, [file]);
+    fileInput.dispatchEvent(new Event("change"));
+    await flushAsync();
+    const status = document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent!;
+    expect(status).toContain("bonus walls (COMPBLUE)");
+    expect(status).toContain("bonus floors (CEIL5_1)");
+    expect(status).not.toContain("remaining slots using defaults");
+  });
+
+  it("reports the built-in-defaults fallback message when nothing in the WAD matches any allowlisted name", async () => {
+    await importMain();
+    const fileInput = document.querySelector<HTMLInputElement>("#wad-file-input")!;
+    const bytes = buildTestWad({ includeTextures: false, includePlaypal: true, includeFlats: false });
+    const file = { name: "empty.wad", arrayBuffer: () => Promise.resolve(bytes) } as unknown as File;
+    setInputFiles(fileInput, [file]);
+    fileInput.dispatchEvent(new Event("change"));
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent).toBe(
+      "No matching textures found in empty.wad — using built-in defaults",
+    );
+  });
 });
 
 describe("main.ts — BGM folder loading", () => {
@@ -555,6 +881,15 @@ describe("main.ts — BGM folder loading", () => {
     expect(document.querySelector<HTMLParagraphElement>("#bgm-status")!.textContent).toBe("picker exploded");
   });
 
+  it("reports a generic failure message when the picker throws a non-Error", async () => {
+    await importMain();
+    (window as unknown as { showDirectoryPicker: () => Promise<unknown> }).showDirectoryPicker = () =>
+      Promise.reject("boom");
+    document.querySelector<HTMLButtonElement>("#select-bgm-folder")!.click();
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#bgm-status")!.textContent).toBe("Failed to load BGM folder.");
+  });
+
   it("does nothing when the picker is cancelled (resolves undefined)", async () => {
     await importMain();
     (window as unknown as { showDirectoryPicker: () => Promise<undefined> }).showDirectoryPicker = () =>
@@ -564,6 +899,28 @@ describe("main.ts — BGM folder loading", () => {
     document.querySelector<HTMLButtonElement>("#select-bgm-folder")!.click();
     await flushAsync();
     expect(status.textContent).toBe(before);
+  });
+
+  it("reports the loaded track count on a successful folder load", async () => {
+    await importMain();
+    URL.createObjectURL = vi.fn(() => "blob:fake");
+    URL.revokeObjectURL = vi.fn();
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+    stubShowDirectoryPicker(fakeDirectoryHandle("tracks", { "a.mp3": "A", "b.ogg": "B" }));
+    document.querySelector<HTMLButtonElement>("#select-bgm-folder")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#bgm-status")!.textContent !== "No custom music loaded");
+    expect(document.querySelector<HTMLParagraphElement>("#bgm-status")!.textContent).toBe('Playing 2 track(s) from "tracks"');
+    playSpy.mockRestore();
+  });
+
+  it("reports no tracks found for a folder with nothing playable", async () => {
+    await importMain();
+    stubShowDirectoryPicker(fakeDirectoryHandle("tracks", { "notes.txt": "x" }));
+    document.querySelector<HTMLButtonElement>("#select-bgm-folder")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#bgm-status")!.textContent !== "No custom music loaded");
+    expect(document.querySelector<HTMLParagraphElement>("#bgm-status")!.textContent).toBe(
+      'No .mp3/.ogg/.wav files found in "tracks"',
+    );
   });
 });
 
@@ -588,6 +945,21 @@ describe("main.ts — highscores dialog", () => {
     dialog.showModal();
     dialog.close();
     expect(focusSpy).not.toHaveBeenCalled();
+  });
+
+  it("refocuses the canvas on close while a level is running", async () => {
+    await importMain();
+    // activeEngine is assigned synchronously inside launchLevel, before the
+    // level-start briefing is even dismissed — reaching the canvas-visible
+    // state alone is enough, no need to drive the briefing/engine further.
+    document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    const dialog = document.querySelector<HTMLDialogElement>("#highscore-dialog")!;
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    const focusSpy = vi.spyOn(canvas, "focus");
+    dialog.showModal();
+    dialog.close();
+    expect(focusSpy).toHaveBeenCalled();
   });
 });
 
@@ -642,6 +1014,16 @@ describe("main.ts — local workspace pick", () => {
     expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(true);
   });
 
+  it("reports a generic failure message when reading the workspace throws a non-Error", async () => {
+    await importMain();
+    (window as unknown as { showDirectoryPicker: () => Promise<unknown> }).showDirectoryPicker = () =>
+      Promise.reject("boom");
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(
+      () => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "Failed to read workspace.",
+    );
+  });
+
   it("disables workspace/continue buttons when the File System Access API is unsupported", async () => {
     vi.resetModules();
     buildIndexDom();
@@ -653,6 +1035,16 @@ describe("main.ts — local workspace pick", () => {
     expect(document.querySelector<HTMLButtonElement>("#select-workspace")!.disabled).toBe(true);
     expect(document.querySelector<HTMLButtonElement>("#continue-run")!.disabled).toBe(true);
     expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(true);
+  });
+
+  it("throws immediately at import time if index.html is missing a required element", async () => {
+    vi.resetModules();
+    buildIndexDom();
+    document.querySelector("#master-vol")!.remove(); // a required id every real index.html always has
+    stubCanvasGetContext(document.createElement("canvas"));
+    stubResizeObserver();
+    stubDialogElement(document.querySelector<HTMLDialogElement>("#highscore-dialog")!);
+    await expect(import("./main")).rejects.toThrow("Missing required element: #master-vol");
   });
 
   it("a second pick started while the first is still awaiting the picker supersedes it", async () => {
@@ -677,6 +1069,74 @@ describe("main.ts — local workspace pick", () => {
     resolveFirst(fakeDirectoryHandle("first-stale", { "main.c": VALID_MAIN_C }));
     await flushAsync();
     expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("second");
+  });
+
+  it("a load superseded while reading the (already-picked) workspace tree doesn't clobber the newer one", async () => {
+    await importMain();
+    const gate: { resolve?: () => void } = {};
+    stubShowDirectoryPicker(gatedDirectoryHandle("first-stale", gate, { entries: [new FakeFileSystemFileHandle("main.c", VALID_MAIN_C)] }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await flushAsync(); // let pickWorkspace resolve and readDirectoryTree start hanging on the gate
+    stubShowDirectoryPicker(fakeDirectoryHandle("second", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "second", 8000);
+
+    gate.resolve?.(); // release the stale read — it now resolves, but too late
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("second");
+  });
+
+  it("a load whose workspace read fails after being superseded doesn't clobber the newer one's status", async () => {
+    await importMain();
+    const gate: { resolve?: () => void } = {};
+    stubShowDirectoryPicker(gatedDirectoryHandle("first-stale", gate, { throws: new Error("stale read failed") }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await flushAsync();
+    stubShowDirectoryPicker(fakeDirectoryHandle("second", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "second", 8000);
+
+    gate.resolve?.(); // release the stale read — it now rejects, but too late to matter
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("second");
+    expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(false);
+  });
+});
+
+describe("main.ts — whole-codebase stats background aggregation (kickOffCodebaseStats)", () => {
+  it("skips a file that fails to read during aggregation but still aggregates the rest", async () => {
+    await importMain();
+    const warnSpy = vi.spyOn(console, "warn");
+    stubShowDirectoryPicker(
+      directoryHandleWithEntries("ws", [
+        new FakeFileSystemFileHandle("main.c", VALID_MAIN_C),
+        throwingFileHandle("broken.c"),
+      ]),
+    );
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    await waitUntil(
+      () => warnSpy.mock.calls.some((c) => typeof c[0] === "string" && c[0].includes('Failed to parse "ws/broken.c"')),
+      8000,
+    );
+  });
+
+  it("falls back to zeroed stats and logs a warning when the whole aggregation pass rejects", async () => {
+    await importMain();
+    const warnSpy = vi.spyOn(console, "warn");
+    // No parsable files at all: computeCodebaseStats's file loop runs zero
+    // iterations, so its own hashRun(...) call — the one thing that can
+    // still reject with nothing else in flight to race against — is
+    // cleanly isolated to exactly this aggregation pass.
+    const digestSpy = vi.spyOn(webcrypto.subtle, "digest").mockRejectedValueOnce(new Error("digest exploded"));
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "readme.md": "just text" }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "ws");
+    await waitUntil(
+      () => warnSpy.mock.calls.some((c) => typeof c[0] === "string" && c[0] === "[codebase-stats] Aggregation failed:"),
+      8000,
+    );
+    digestSpy.mockRestore();
   });
 });
 
@@ -724,6 +1184,15 @@ describe("main.ts — GitHub workspace load", () => {
     expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(true);
   });
 
+  it("reports a generic failure message when the fetch throws a non-Error", async () => {
+    await importMain();
+    fetchMock.mockRejectedValueOnce("boom");
+    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+    document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#github-status")!.classList.contains("error"));
+    expect(document.querySelector<HTMLParagraphElement>("#github-status")!.textContent).toBe("Failed to load repository.");
+  });
+
   it("a suggested-repo button pre-fills the input and loads it the same way", async () => {
     await importMain();
     fetchMock
@@ -736,6 +1205,15 @@ describe("main.ts — GitHub workspace load", () => {
     suggestion.click();
     expect(document.querySelector<HTMLInputElement>("#github-repo-input")!.value).toBe(repo);
     await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === repo);
+  });
+
+  it("does nothing when a suggested-repo button has no repo data (defensive — every real one is statically set)", async () => {
+    await importMain();
+    const suggestion = document.querySelector<HTMLButtonElement>(".suggestion-btn")!;
+    delete suggestion.dataset.repo;
+    expect(() => suggestion.click()).not.toThrow();
+    await flushAsync();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("clears a stale campaign save when a GitHub repo loads successfully", async () => {
@@ -765,6 +1243,109 @@ describe("main.ts — GitHub workspace load", () => {
     document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
     await waitUntil(() => document.querySelector<HTMLButtonElement>("#tab-continue")!.style.display === "none");
   });
+
+  it("falls back to the first parsable file in tree order when nothing matches an entrypoint name (scoring is skipped for remote workspaces)", async () => {
+    await importMain();
+    const logSpy = vi.spyOn(console, "log");
+    // "helper.c" matches no ENTRYPOINT_FILENAMES convention. findEntrypoint's
+    // scored-scan fallback is skipped entirely for a remote, non-demo
+    // workspace (see its own doc comment) — so autoLaunchInitialLevel's own
+    // "no detected entrypoint" fallback (first parsable file in tree order)
+    // is what launches this file, not the scoring cascade.
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+      .mockResolvedValueOnce(jsonResponse({ tree: [{ path: "helper.c", type: "blob" }] }))
+      .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK", text: async () => VALID_HELPER_C } as unknown as Response);
+    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+    document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    // A GitHub tree's individual file paths are prefixed with just the repo
+    // name (per fs/github.ts's buildTree), not "owner/repo" the way
+    // workspaceRootName itself is — a different prefix than the workspace
+    // name shown elsewhere, easy to get wrong.
+    expect(
+      logSpy.mock.calls.some(
+        (c) => typeof c[0] === "string" && c[0].includes("auto-starting at repo/helper.c (first file in tree order)"),
+      ),
+    ).toBe(true);
+  });
+
+  it("shows the file-tree placeholder when the scan-fallback's chosen file reads fine but fails to parse", async () => {
+    await importMain();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+      .mockResolvedValueOnce(jsonResponse({ tree: [{ path: "helper.c", type: "blob" }] }))
+      // A NUL byte makes isSafeToParse's binary sniff reject it outright —
+      // reads successfully, but parseFile deterministically returns null.
+      .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK", text: async () => "int f() {\0garbage}" } as unknown as Response);
+    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+    document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
+    await waitUntil(() => document.querySelector("#viewport > p.muted") !== null, 8000);
+    expect(document.querySelector("#viewport > p.muted")?.textContent).toContain("Select a file from the tree");
+  });
+
+  it("shows the file-tree placeholder when the scan-fallback's chosen file fails to read entirely", async () => {
+    await importMain();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+      .mockResolvedValueOnce(jsonResponse({ tree: [{ path: "helper.c", type: "blob" }] }))
+      .mockResolvedValueOnce(jsonResponse(null, false, 500, "Internal Server Error"));
+    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+    document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
+    await waitUntil(() => document.querySelector("#viewport > p.muted") !== null, 8000);
+    expect(document.querySelector("#viewport > p.muted")?.textContent).toContain("Select a file from the tree");
+  });
+
+  it("a load superseded while fetching from GitHub doesn't clobber the newer one", async () => {
+    await importMain();
+    // The GitHub load/suggestion buttons disable themselves for the whole
+    // fetch's duration, so a *second* GitHub load can't be the one that
+    // supersedes it via the DOM — but beginWorkspaceLoad's generation
+    // counter is shared across every loading entry point, so a demo
+    // campaign load (its own, always-enabled button) supersedes it exactly
+    // the same way a second GitHub/local load would.
+    let releaseStale: ((res: Response) => void) | undefined;
+    fetchMock.mockImplementation((url: string) => {
+      if (url === "https://api.github.com/repos/owner/stale") {
+        return new Promise<Response>((resolve) => (releaseStale = resolve));
+      }
+      return Promise.resolve(jsonResponse({ tree: [] })); // never actually reached — gen check bails first
+    });
+
+    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/stale";
+    document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
+    await flushAsync(); // let the stale load's default_branch fetch start hanging
+
+    document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "demo-campaign", 8000);
+
+    releaseStale?.(jsonResponse({ default_branch: "main" })); // the stale fetch finally resolves, but too late
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("demo-campaign");
+  });
+
+  it("a load whose GitHub fetch fails after being superseded doesn't clobber the newer one's status", async () => {
+    await importMain();
+    let releaseStale: ((err: unknown) => void) | undefined;
+    fetchMock.mockImplementation((url: string) => {
+      if (url === "https://api.github.com/repos/owner/stale") {
+        return new Promise<Response>((_resolve, reject) => (releaseStale = reject));
+      }
+      return Promise.resolve(jsonResponse({ tree: [] }));
+    });
+
+    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/stale";
+    document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
+    await flushAsync();
+
+    document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "demo-campaign", 8000);
+
+    releaseStale?.(new Error("stale fetch failed")); // rejects only after being superseded
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("demo-campaign");
+    expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(false);
+  });
 });
 
 describe("main.ts — demo campaign load", () => {
@@ -780,12 +1361,52 @@ describe("main.ts — demo campaign load", () => {
     await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
     expect(document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.disabled).toBe(false); // re-enabled in `finally`
   });
+
+  it("shows an error status when building the bundled demo campaign's tree fails", async () => {
+    vi.doMock("./fs/demoCampaign", async () => {
+      const actual = await vi.importActual<typeof import("./fs/demoCampaign")>("./fs/demoCampaign");
+      return {
+        ...actual,
+        loadDemoCampaignTree: () => {
+          throw new Error("bundle exploded");
+        },
+      };
+    });
+    await importMain();
+    document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "bundle exploded");
+    expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.disabled).toBe(false);
+    vi.doUnmock("./fs/demoCampaign");
+  });
+
+  it("reports a generic failure message when building the demo campaign's tree throws a non-Error", async () => {
+    vi.doMock("./fs/demoCampaign", async () => {
+      const actual = await vi.importActual<typeof import("./fs/demoCampaign")>("./fs/demoCampaign");
+      return {
+        ...actual,
+        loadDemoCampaignTree: () => {
+          throw "boom";
+        },
+      };
+    });
+    await importMain();
+    document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+    await waitUntil(
+      () => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "Failed to load demo campaign.",
+    );
+    vi.doUnmock("./fs/demoCampaign");
+  });
 });
 
 function campaignSave(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     workspaceName: "ws",
-    filePath: "main.c",
+    // A TreeNode's path is prefixed with the workspace root's own name (see
+    // readDirectoryTree) — same gotcha noted throughout this file. A bare
+    // "main.c" here would never match "ws/main.c" in the re-picked tree,
+    // silently falling into the "saved file not found" branch instead.
+    filePath: "ws/main.c",
     health: 75,
     swap: 0,
     bullets: 20,
@@ -802,12 +1423,23 @@ function campaignSave(overrides: Record<string, unknown> = {}): string {
 
 describe("main.ts — Continue Run", () => {
   it("resumes at the saved file with the saved carryover", async () => {
-    localStorage.setItem("codeenstein-campaign-save", campaignSave());
+    // levelIndex 4 with no owned weapons crosses both the gdb forced-unlock
+    // threshold (applyForcedUnlocks) and the Toolchain secret-room-eligibility
+    // threshold (computeMissingWeaponIndices) — reached only through a
+    // carryover-bearing launchLevel() call, which a fresh pick never
+    // provides, only Continue Run/advanceToNextLevel do.
+    localStorage.setItem("codeenstein-campaign-save", campaignSave({ levelIndex: 4, ownedWeapons: [] }));
     await importMain();
+    const logSpy = vi.spyOn(console, "log");
     stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
     document.querySelector<HTMLButtonElement>("#continue-run")!.click();
     await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "ws");
     await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    expect(
+      logSpy.mock.calls.some(
+        (c) => typeof c[0] === "string" && c[0].includes("campaign level 4: gdb unlocked as a safety net"),
+      ),
+    ).toBe(true);
   });
 
   it("falls back to a fresh auto-launched run when the saved file isn't found in the re-picked workspace", async () => {
@@ -843,6 +1475,100 @@ describe("main.ts — Continue Run", () => {
     document.querySelector<HTMLButtonElement>("#continue-run")!.click();
     await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "resume exploded");
   });
+
+  it("reports a generic failure message when resuming throws a non-Error", async () => {
+    localStorage.setItem("codeenstein-campaign-save", campaignSave());
+    await importMain();
+    (window as unknown as { showDirectoryPicker: () => Promise<unknown> }).showDirectoryPicker = () =>
+      Promise.reject("boom");
+    document.querySelector<HTMLButtonElement>("#continue-run")!.click();
+    await waitUntil(
+      () => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "Failed to resume campaign.",
+    );
+  });
+
+  it("shows the file-tree placeholder when the saved file is found but no longer parses", async () => {
+    localStorage.setItem("codeenstein-campaign-save", campaignSave());
+    await importMain();
+    // Matches campaignSave()'s "ws/main.c" path, so it gets past the
+    // not-found check — but a NUL byte makes isSafeToParse's binary sniff
+    // reject it outright.
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": "int main() {\0garbage}" }));
+    document.querySelector<HTMLButtonElement>("#continue-run")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "ws");
+    await waitUntil(() => document.querySelector("#viewport > p.muted") !== null, 8000);
+    expect(document.querySelector("#viewport > p.muted")?.textContent).toContain("Select a file from the tree");
+  });
+
+  it("a resume superseded while its own picker is still open doesn't clobber the newer load", async () => {
+    localStorage.setItem("codeenstein-campaign-save", campaignSave());
+    await importMain();
+    let releasePicker: ((h: unknown) => void) | undefined;
+    (window as unknown as { showDirectoryPicker: () => Promise<unknown> }).showDirectoryPicker = () =>
+      new Promise((resolve) => (releasePicker = resolve));
+    document.querySelector<HTMLButtonElement>("#continue-run")!.click();
+    await flushAsync();
+
+    stubShowDirectoryPicker(fakeDirectoryHandle("second", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "second", 8000);
+
+    releasePicker?.(fakeDirectoryHandle("stale", { "main.c": VALID_MAIN_C })); // resolves, but too late
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("second");
+  });
+
+  it("a resume superseded while re-reading the workspace doesn't clobber the newer load", async () => {
+    localStorage.setItem("codeenstein-campaign-save", campaignSave());
+    await importMain();
+    const gate: { resolve?: () => void } = {};
+    stubShowDirectoryPicker(gatedDirectoryHandle("stale", gate, { entries: [new FakeFileSystemFileHandle("main.c", VALID_MAIN_C)] }));
+    document.querySelector<HTMLButtonElement>("#continue-run")!.click();
+    await flushAsync();
+
+    stubShowDirectoryPicker(fakeDirectoryHandle("second", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "second", 8000);
+
+    gate.resolve?.();
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("second");
+  });
+
+  it("a resume superseded while parsing the saved file doesn't clobber the newer load", async () => {
+    localStorage.setItem("codeenstein-campaign-save", campaignSave());
+    await importMain();
+    const gate: { resolve?: () => void } = {};
+    stubShowDirectoryPicker(directoryHandleWithEntries("ws", [gatedFileHandle("main.c", VALID_MAIN_C, gate)]));
+    document.querySelector<HTMLButtonElement>("#continue-run")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "ws", 8000);
+
+    stubShowDirectoryPicker(fakeDirectoryHandle("second", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "second", 8000);
+
+    gate.resolve?.();
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("second");
+  });
+
+  it("a resume whose workspace read fails after being superseded doesn't clobber the newer load's status", async () => {
+    localStorage.setItem("codeenstein-campaign-save", campaignSave());
+    await importMain();
+    const gate: { resolve?: () => void } = {};
+    stubShowDirectoryPicker(gatedDirectoryHandle("stale", gate, { throws: new Error("stale resume failed") }));
+    document.querySelector<HTMLButtonElement>("#continue-run")!.click();
+    await flushAsync();
+
+    stubShowDirectoryPicker(fakeDirectoryHandle("second", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "second", 8000);
+
+    gate.resolve?.();
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("second");
+    expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(false);
+  });
 });
 
 describe("main.ts — file tree selection", () => {
@@ -874,6 +1600,36 @@ describe("main.ts — file tree selection", () => {
     document.querySelector<HTMLButtonElement>('.tree-row--file[title="ws/a_main.c"]')!.click();
     await flushAsync();
     expect(document.querySelector(".canvas-area")!.hasAttribute("hidden")).toBe(false);
+  });
+
+  it("launches a .h file as a BONUS restock level", async () => {
+    await importMain();
+    const logSpy = vi.spyOn(console, "log");
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C, "helper.h": VALID_HELPER_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    document.querySelector<HTMLButtonElement>('.tree-row--file[title="ws/helper.h"]')!.click();
+    await flushAsync();
+    expect(logSpy.mock.calls.some((c) => typeof c[0] === "string" && c[0].includes("BONUS restock level"))).toBe(true);
+  });
+
+  it("logs an error and leaves the level state untouched when a clicked file fails to read", async () => {
+    await importMain();
+    stubShowDirectoryPicker(
+      directoryHandleWithEntries("ws", [
+        new FakeFileSystemFileHandle("main.c", VALID_MAIN_C),
+        throwingFileHandle("broken.c"),
+      ]),
+    );
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    const errorSpy = vi.spyOn(console, "error");
+    document.querySelector<HTMLButtonElement>('.tree-row--file[title="ws/broken.c"]')!.click();
+    await flushAsync();
+    expect(errorSpy.mock.calls.some((c) => typeof c[0] === "string" && c[0].includes('Failed to read/parse "ws/broken.c"'))).toBe(
+      true,
+    );
+    expect(document.querySelector(".canvas-area")!.hasAttribute("hidden")).toBe(false); // the already-running level is untouched
   });
 });
 
@@ -1028,15 +1784,17 @@ describe("main.ts — GitHub tree-fetch progress readout (formatByteCount)", () 
       return { ok: true, status: 200, statusText: "OK", json: async () => body, body: null } as unknown as Response;
     }
     // A streamed tree response, chunked so the byte-progress callback
-    // (formatByteCount's only caller) fires more than once, crossing both
-    // the B->KB and KB->MB formatting thresholds.
+    // (formatByteCount's only caller) fires more than once, crossing all
+    // three formatting thresholds: raw bytes, then KB, then MB.
+    const tinyChunk = new Uint8Array(500); // under 1024 B — stays in the "B" range
     const bigChunk = new Uint8Array(600_000); // 600,000 B ~= 586 KB
     let reads = 0;
     const reader = {
       read: vi.fn(async () => {
         reads++;
-        if (reads === 1) return { done: false, value: bigChunk };
-        if (reads === 2) return { done: false, value: bigChunk }; // cumulative ~1.1 MB
+        if (reads === 1) return { done: false, value: tinyChunk };
+        if (reads === 2) return { done: false, value: bigChunk };
+        if (reads === 3) return { done: false, value: bigChunk }; // cumulative ~1.1 MB
         return { done: true, value: undefined };
       }),
     };
@@ -1269,6 +2027,317 @@ describe("main.ts — reaching a natural win/death via real navigation", () => {
     await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden"), 8000);
     expect(document.querySelector("#viewport > p.muted")?.textContent).toContain("Select a file from the tree");
   });
+
+  it(
+    "winning without any cheats used actually records a leaderboard entry (recordRunHighscore's real path)",
+    // A stalled-in-combat retry attempt can burn through walkPath's full
+    // 500-frame budget as real synchronous engine work — comfortably past
+    // the 5s default test timeout even though a clean run only needs a
+    // couple hundred ms — hence the longer per-attempt timeout, not just retries.
+    { retry: 10, timeout: 15000 },
+    async () => {
+      // The other win test above uses IDDQD to guarantee it survives the walk
+      // to the exit — but that sets cheatsUsed, which makes recordRunHighscore
+      // bail out before its own try body (the codebase-stats wait, hashing,
+      // and recordHighscore call) ever runs. This test skips the cheat
+      // entirely to reach that real path — but without god mode, this
+      // fixture's small pool of seeded-AI enemies can (occasionally) land
+      // enough incidental hits to kill the player before the exit, since
+      // enemy aggro/fire timing is seeded independently of the map layout
+      // itself (see gameplaySeed's own doc comment in launchLevel) — retried
+      // rather than chasing a fixture with zero enemies, which
+      // MapGenerator's own minimum-enemy-count floor makes unreachable
+      // regardless of source complexity (confirmed by brute-forcing several
+      // tiny candidates offline, same technique as NAVIGABLE_FIXTURE_C's own
+      // comment describes).
+      const { loadCampaignSave } = await importMain();
+      const logSpy = vi.spyOn(console, "log");
+      enableTestHooks();
+      stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": NAVIGABLE_FIXTURE_C }));
+      document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+      await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+      const mapLogCall = logSpy.mock.calls.find(
+        (c) => c[1] !== null && typeof c[1] === "object" && "grid" in (c[1] as object),
+      );
+      const map = mapLogCall![1] as { grid: number[][]; spawn: { x: number; y: number }; exit: { x: number; y: number } };
+      const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+      dismissBriefingHelper(raf);
+
+      const path = bfsPath(map.grid, map.spawn, map.exit);
+      expect(path.length).toBeGreaterThan(0);
+      walkPath(canvas, raf, path, () => testHooks()?.getPlayerState().state !== "playing", 500);
+      expect(testHooks()?.getPlayerState().state).toBe("won");
+
+      dismissBriefingHelper(raf); // -> advanceToNextLevel -> campaign complete -> recordRunHighscore
+      await waitUntil(() => loadCampaignSave() === null, 8000);
+      const start = Date.now();
+      let entries: Awaited<ReturnType<typeof loadHighscores>> = [];
+      while (entries.length === 0) {
+        if (Date.now() - start > 8000) throw new Error("timed out waiting for a recorded highscore");
+        entries = await loadHighscores();
+        if (entries.length === 0) await flushAsync();
+      }
+      expect(entries[0].campaignName).toBe("ws");
+      expect(entries[0].levelsCleared).toBe(1);
+    },
+  );
+
+  it(
+    "logs a warning instead of throwing when recordHighscore itself fails",
+    // Same uncheated-navigation flakiness as the test above — see its own comment.
+    { retry: 10, timeout: 15000 },
+    async () => {
+      // Mocking recordHighscore directly (rather than CampaignReplayRecorder's
+      // finish(), tried first) — a prototype spy on finish() left the whole
+      // async chain permanently stuck (recordRunHighscore's own promise never
+      // settled, even though its logic provably can't hang on inspection);
+      // root cause not isolated, so this sidesteps it with a module-level
+      // mock of the one function whose failure this test actually needs.
+      vi.doMock("./engine/highscores", async () => {
+        const actual = await vi.importActual<typeof import("./engine/highscores")>("./engine/highscores");
+        return { ...actual, recordHighscore: vi.fn().mockRejectedValue(new Error("record exploded")) };
+      });
+      const { loadCampaignSave } = await importMain();
+      const logSpy = vi.spyOn(console, "log");
+      const warnSpy = vi.spyOn(console, "warn");
+      enableTestHooks();
+      stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": NAVIGABLE_FIXTURE_C }));
+      document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+      await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+      const mapLogCall = logSpy.mock.calls.find(
+        (c) => c[1] !== null && typeof c[1] === "object" && "grid" in (c[1] as object),
+      );
+      const map = mapLogCall![1] as { grid: number[][]; spawn: { x: number; y: number }; exit: { x: number; y: number } };
+      const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+      dismissBriefingHelper(raf);
+
+      const path = bfsPath(map.grid, map.spawn, map.exit);
+      expect(path.length).toBeGreaterThan(0);
+      walkPath(canvas, raf, path, () => testHooks()?.getPlayerState().state !== "playing", 500);
+      expect(testHooks()?.getPlayerState().state).toBe("won");
+
+      dismissBriefingHelper(raf); // -> advanceToNextLevel -> campaign complete -> recordRunHighscore -> recordHighscore() throws
+      await waitUntil(() => loadCampaignSave() === null, 8000);
+      await waitUntil(
+        () => warnSpy.mock.calls.some((c) => c[0] === "[highscores] Failed to record this level's score:"),
+        8000,
+      );
+      vi.doUnmock("./engine/highscores");
+    },
+  );
+
+  it(
+    "winning a level on a remote (GitHub) workspace records a highscore via the no-codebase-stats hash fallback",
+    // Same uncheated-navigation flakiness as the tests above.
+    { retry: 10, timeout: 15000 },
+    async () => {
+      // kickOffCodebaseStats skips whole-codebase aggregation entirely for
+      // any remote workspace, leaving codebaseStatsPromise permanently
+      // null — the one real way recordRunHighscore's own
+      // `withTimeout(codebaseStatsPromise, ...)` call sees a null promise
+      // (short-circuiting to undefined immediately) instead of a real,
+      // already-resolved one, and falls back to hashing just the
+      // ended-on file's own AST instead of the whole-workspace hash.
+      const { loadCampaignSave } = await importMain();
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      fetchMock
+        .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK", json: async () => ({ default_branch: "main" }), body: null } as unknown as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          json: async () => ({ tree: [{ path: "main.c", type: "blob" }] }),
+          body: null,
+        } as unknown as Response)
+        .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK", text: async () => NAVIGABLE_FIXTURE_C } as unknown as Response);
+      const logSpy = vi.spyOn(console, "log");
+      enableTestHooks();
+      document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+      document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
+      await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+      const mapLogCall = logSpy.mock.calls.find(
+        (c) => c[1] !== null && typeof c[1] === "object" && "grid" in (c[1] as object),
+      );
+      const map = mapLogCall![1] as { grid: number[][]; spawn: { x: number; y: number }; exit: { x: number; y: number } };
+      const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+      dismissBriefingHelper(raf);
+
+      const path = bfsPath(map.grid, map.spawn, map.exit);
+      expect(path.length).toBeGreaterThan(0);
+      walkPath(canvas, raf, path, () => testHooks()?.getPlayerState().state !== "playing", 500);
+      expect(testHooks()?.getPlayerState().state).toBe("won");
+
+      dismissBriefingHelper(raf);
+      await waitUntil(() => loadCampaignSave() === null, 8000);
+      const start = Date.now();
+      let entries: Awaited<ReturnType<typeof loadHighscores>> = [];
+      while (entries.length === 0) {
+        if (Date.now() - start > 8000) throw new Error("timed out waiting for a recorded highscore");
+        entries = await loadHighscores();
+        if (entries.length === 0) await flushAsync();
+      }
+      expect(entries[0].campaignName).toBe("owner/repo");
+      expect(entries[0].source).toBe("github");
+    },
+  );
+
+  it(
+    "winning a level on the bundled demo campaign records a highscore with source \"demo\"",
+    // No IDDQD here (unlike the very first win test above) — cheatsUsed
+    // makes recordRunHighscore bail out before it ever reaches the
+    // recordHighscore call this test needs to observe, same reasoning as
+    // "winning without any cheats used..." above. Retried for the same
+    // uncheated-navigation combat variance that test documents.
+    { retry: 10, timeout: 15000 },
+    async () => {
+      // workspaceIsDemo (checked *before* workspaceIsRemote in
+      // recordRunHighscore's `source: workspaceIsDemo ? "demo" : ...`
+      // ternary — both flags are true for a demo load, see loadDemoCampaign)
+      // is only reachable via an actual demo-campaign win — every other win
+      // test above uses a local or GitHub workspace instead. The *real*
+      // bundled demo-campaign has 17 files/levels, so winning its actual
+      // main.c would just advance to the next file, not complete the
+      // campaign — mock a single-file demo tree instead, using the same
+      // navigable fixture the other win tests already rely on.
+      vi.doMock("./fs/demoCampaign", async () => {
+        const actual = await vi.importActual<typeof import("./fs/demoCampaign")>("./fs/demoCampaign");
+        return {
+          ...actual,
+          loadDemoCampaignTree: () => ({
+            name: actual.DEMO_CAMPAIGN_NAME,
+            path: actual.DEMO_CAMPAIGN_NAME,
+            kind: "directory",
+            handle: { getFile: () => Promise.reject(new Error("not a file")) },
+            children: [
+              {
+                name: "main.c",
+                path: `${actual.DEMO_CAMPAIGN_NAME}/main.c`,
+                kind: "file",
+                handle: { getFile: () => Promise.resolve({ text: () => Promise.resolve(NAVIGABLE_FIXTURE_C) }) },
+              },
+            ],
+          }),
+        };
+      });
+      const { loadCampaignSave } = await importMain();
+      const logSpy = vi.spyOn(console, "log");
+      enableTestHooks();
+      document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+      await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+      const mapLogCall = logSpy.mock.calls.find(
+        (c) => c[1] !== null && typeof c[1] === "object" && "grid" in (c[1] as object),
+      );
+      const map = mapLogCall![1] as { grid: number[][]; spawn: { x: number; y: number }; exit: { x: number; y: number } };
+      const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+      dismissBriefingHelper(raf);
+
+      const path = bfsPath(map.grid, map.spawn, map.exit);
+      expect(path.length).toBeGreaterThan(0);
+      walkPath(canvas, raf, path, () => testHooks()?.getPlayerState().state !== "playing", 500);
+      expect(testHooks()?.getPlayerState().state).toBe("won");
+
+      dismissBriefingHelper(raf);
+      await waitUntil(() => loadCampaignSave() === null, 8000);
+      const start = Date.now();
+      let entries: Awaited<ReturnType<typeof loadHighscores>> = [];
+      while (entries.length === 0) {
+        if (Date.now() - start > 8000) throw new Error("timed out waiting for a recorded highscore");
+        entries = await loadHighscores();
+        if (entries.length === 0) await flushAsync();
+      }
+      expect(entries[0].campaignName).toBe("demo-campaign");
+      expect(entries[0].source).toBe("demo");
+      vi.doUnmock("./fs/demoCampaign");
+    },
+  );
+
+  it("advances to the next parsable file after clearing a level, carrying stats over", async () => {
+    const { loadCampaignSave } = await importMain();
+    const logSpy = vi.spyOn(console, "log");
+    enableTestHooks();
+    // "main.c" (the navigable fixture) sorts before "zzz_next.c" alphabetically
+    // (readDirectoryTree/fakeDirectoryHandle both sort directories-first, then
+    // alphabetically) and matches ENTRYPOINT_FILENAMES, so it's both the
+    // auto-launched level *and* the first one in tree order to advance past.
+    stubShowDirectoryPicker(
+      fakeDirectoryHandle("ws", { "main.c": NAVIGABLE_FIXTURE_C, "zzz_next.c": VALID_MAIN_C }),
+    );
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+    const mapLogCall = logSpy.mock.calls.find(
+      (c) => c[1] !== null && typeof c[1] === "object" && "grid" in (c[1] as object),
+    );
+    const map = mapLogCall![1] as { grid: number[][]; spawn: { x: number; y: number }; exit: { x: number; y: number } };
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    dismissBriefingHelper(raf);
+    for (const key of "IDDQD") canvas.dispatchEvent(new KeyboardEvent("keydown", { key }));
+    raf.flush(1, 16);
+
+    const path = bfsPath(map.grid, map.spawn, map.exit);
+    expect(path.length).toBeGreaterThan(0);
+    walkPath(canvas, raf, path, () => testHooks()?.getPlayerState().state !== "playing", 500);
+    expect(testHooks()?.getPlayerState().state).toBe("won");
+
+    dismissBriefingHelper(raf); // -> advanceToNextLevel -> finds zzz_next.c, reads/parses/launches it
+    await waitUntil(
+      () => logSpy.mock.calls.some((c) => typeof c[0] === "string" && c[0].includes("cleared — advancing to ws/zzz_next.c")),
+      8000,
+    );
+    // A fresh save was written for the new level, and the level index/canvas
+    // both reflect the new level is now actually running.
+    expect(loadCampaignSave()?.filePath).toBe("ws/zzz_next.c");
+    expect(document.querySelector(".canvas-area")!.hasAttribute("hidden")).toBe(false);
+  });
+
+  it("skips a next-in-order file that fails to read, advancing to the one after it instead", async () => {
+    const { loadCampaignSave } = await importMain();
+    const logSpy = vi.spyOn(console, "log");
+    const errorSpy = vi.spyOn(console, "error");
+    enableTestHooks();
+    // Tree order: main.c (auto-launched, win target) -> next_broken.c (fails
+    // to read, skipped) -> zzz_final.c (the one actually advanced to).
+    stubShowDirectoryPicker(
+      directoryHandleWithEntries("ws", [
+        new FakeFileSystemFileHandle("main.c", NAVIGABLE_FIXTURE_C),
+        throwingFileHandle("next_broken.c"),
+        new FakeFileSystemFileHandle("zzz_final.c", VALID_MAIN_C),
+      ]),
+    );
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+    const mapLogCall = logSpy.mock.calls.find(
+      (c) => c[1] !== null && typeof c[1] === "object" && "grid" in (c[1] as object),
+    );
+    const map = mapLogCall![1] as { grid: number[][]; spawn: { x: number; y: number }; exit: { x: number; y: number } };
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    dismissBriefingHelper(raf);
+    for (const key of "IDDQD") canvas.dispatchEvent(new KeyboardEvent("keydown", { key }));
+    raf.flush(1, 16);
+
+    const path = bfsPath(map.grid, map.spawn, map.exit);
+    expect(path.length).toBeGreaterThan(0);
+    walkPath(canvas, raf, path, () => testHooks()?.getPlayerState().state !== "playing", 500);
+    expect(testHooks()?.getPlayerState().state).toBe("won");
+
+    dismissBriefingHelper(raf);
+    await waitUntil(
+      () => logSpy.mock.calls.some((c) => typeof c[0] === "string" && c[0].includes("cleared — advancing to ws/zzz_final.c")),
+      8000,
+    );
+    expect(
+      errorSpy.mock.calls.some(
+        (c) => typeof c[0] === "string" && c[0].includes('Failed to load "ws/next_broken.c", skipping to the next file:'),
+      ),
+    ).toBe(true);
+    expect(loadCampaignSave()?.filePath).toBe("ws/zzz_final.c");
+  });
 });
 
 /** Shared with the win/death navigation batch above — split out since it
@@ -1364,6 +2433,27 @@ async function buildReplaySegment(frameCount: number): Promise<ReplayLevelSegmen
     // readDirectoryTree) — same gotcha as the file-tree row `title`
     // attribute earlier in this file. "main.c" alone never matches.
     filePath: `${REPLAY_CAMPAIGN_NAME}/main.c`,
+    bonusLevel: false,
+    gameplaySeed: 12345,
+    astHash,
+    difficulty: "normal",
+    gore: "normal",
+    frames: Array.from({ length: frameCount }, () => ({ dt: 0.05, input: { ...EMPTY_INPUT_SNAPSHOT } })),
+  };
+}
+
+/** Same shape as `buildReplaySegment`, but for an arbitrary campaign
+ * name/file path — used to seed a GitHub- or demo-sourced replay, whose
+ * `startReplay` re-fetch path needs `entry.campaignName` to actually parse as
+ * a repo ref (GitHub) or resolve via the bundled tree (demo), unlike the
+ * plain local-workspace name `REPLAY_CAMPAIGN_NAME` the other replay tests
+ * use throughout this file. */
+async function buildReplaySegmentFor(campaignName: string, filePath: string, sourceContent: string, frameCount: number): Promise<ReplayLevelSegment> {
+  const fileName = filePath.split("/").pop()!;
+  const parsed = (await parseFile(fileName, sourceContent))!;
+  const astHash = await hashRun(JSON.stringify(parsed), campaignName);
+  return {
+    filePath,
     bonusLevel: false,
     gameplaySeed: 12345,
     astHash,
@@ -1512,6 +2602,12 @@ async function recordNavigatedSegment(options: {
     rockets: 0,
     smg: 0,
     gas: 0,
+    // A real, non-empty ownedWeapons array (rather than omitting the field
+    // entirely, as this project's other replay fixtures do) — needed so a
+    // replay of this recording exercises buildEngineFor's own
+    // `segment.carryover?.ownedWeapons?.includes(...)` truthy-array path,
+    // not just the "carryover/ownedWeapons is undefined" side.
+    ownedWeapons: [GHIDRA_WEAPON_INDEX],
     godMode: options.godMode,
   };
   recorder.startLevel(
@@ -1586,8 +2682,37 @@ async function seedAndOpenReplay(segments: ReplayLevelSegment[]): Promise<void> 
     replay: { version: 2, campaignName: REPLAY_CAMPAIGN_NAME, levels: segments },
   });
   document.querySelector<HTMLButtonElement>("#view-highscores")!.click();
-  await waitUntil(() => document.querySelector(".replay-btn") !== null, 8000);
-  document.querySelector<HTMLButtonElement>(".replay-btn")!.click();
+  // Scoped to the dialog specifically — an already-active replay's own
+  // transport controls (seek/play-pause/speed) share the same "replay-btn"
+  // class (see gameHud.ts's buildReplayControls), so a bare ".replay-btn"
+  // query can match one of *those* instead of the highscore table's own
+  // "Watch Replay" button whenever a replay is already playing.
+  await waitUntil(() => document.querySelector("#highscore-dialog .replay-btn") !== null, 8000);
+  document.querySelector<HTMLButtonElement>("#highscore-dialog .replay-btn")!.click();
+}
+
+/** Same as `seedAndOpenReplay`, but for an arbitrary campaign name/source —
+ * see `buildReplaySegmentFor`'s doc comment for why the GitHub/demo replay
+ * tests need this instead. */
+async function seedAndOpenReplayFor(campaignName: string, source: "github" | "demo", segments: ReplayLevelSegment[]): Promise<void> {
+  await recordHighscore({
+    score: 100,
+    campaignName,
+    levelName: "main.c",
+    levelsCleared: 1,
+    hash: "irrelevant-workspace-hash",
+    achievedAt: Date.now(),
+    source,
+    replay: { version: 2, campaignName, levels: segments },
+  });
+  document.querySelector<HTMLButtonElement>("#view-highscores")!.click();
+  // Scoped to the dialog specifically — an already-active replay's own
+  // transport controls (seek/play-pause/speed) share the same "replay-btn"
+  // class (see gameHud.ts's buildReplayControls), so a bare ".replay-btn"
+  // query can match one of *those* instead of the highscore table's own
+  // "Watch Replay" button whenever a replay is already playing.
+  await waitUntil(() => document.querySelector("#highscore-dialog .replay-btn") !== null, 8000);
+  document.querySelector<HTMLButtonElement>("#highscore-dialog .replay-btn")!.click();
 }
 
 describe("main.ts — replay playback (startReplay)", () => {
@@ -1628,6 +2753,10 @@ describe("main.ts — replay playback (startReplay)", () => {
     expect(playPause.textContent).toBe("⏸"); // starts playing
     playPause.click();
     expect(playPause.textContent).toBe("▶"); // now paused
+    // step()'s own "not ready to advance yet" branch reschedules itself via
+    // requestAnimationFrame rather than consuming any frames while paused —
+    // a tick landing here must not throw or advance frameIndex.
+    expect(() => raf.flush(1, 16)).not.toThrow();
     playPause.click();
     expect(playPause.textContent).toBe("⏸"); // resumed
 
@@ -1661,6 +2790,57 @@ describe("main.ts — replay playback (startReplay)", () => {
     await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden"), 8000);
   });
 
+  it("starting a real level while a replay is actively playing tears the replay down first", async () => {
+    await importMain();
+    const segment = await buildReplaySegment(20);
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": REPLAY_FIXTURE_C }));
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    enableTestHooks();
+    await waitUntil(() => !!testHooks(), 8000); // the replay's own engine is now genuinely driving
+
+    // Picking a fresh workspace while the replay is still playing (never
+    // stopped via Escape) reaches launchLevel's own stopActiveReplay?.()
+    // with a real, still-active teardown to call — not the usual null case
+    // every other launchLevel-reaching test hits.
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "ws", 8000);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+  });
+
+  it("starting a replay while a real level is running stops that level's engine first", async () => {
+    await importMain();
+    const segment = await buildReplaySegment(20);
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": REPLAY_FIXTURE_C }));
+
+    // A real, live level — startReplay's own activeEngine?.stop() has an
+    // actual running engine to tear down here, not the usual null case.
+    document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".replay-controls") !== null, 8000);
+  });
+
+  it("starting a replay while another replay is already playing stops the first one first", async () => {
+    await importMain();
+    const segment = await buildReplaySegment(20);
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": REPLAY_FIXTURE_C }));
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    enableTestHooks();
+    await waitUntil(() => !!testHooks(), 8000);
+
+    // Opening a second "Watch Replay" without ever stopping the first one —
+    // startReplay's own stopActiveReplay?.() has a real, still-active
+    // teardown to call this time.
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".replay-controls") !== null, 8000);
+  });
+
   it("fails gracefully when the recorded file's hash no longer matches the workspace", async () => {
     await importMain();
     const segment = await buildReplaySegment(5);
@@ -1691,6 +2871,21 @@ describe("main.ts — replay playback (startReplay)", () => {
     const segment = await buildReplaySegment(5);
     segment.filePath = "gone.c";
     stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": REPLAY_FIXTURE_C }));
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    dismissBriefingHelper(raf);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden"), 8000);
+  });
+
+  it("fails gracefully when the recorded file is found but no longer parses", async () => {
+    await importMain();
+    const segment = await buildReplaySegment(5);
+    // Matches segment.filePath ("replay-ws/main.c"), so it gets past the
+    // not-found check — but a NUL byte makes isSafeToParse's binary sniff
+    // reject it outright, distinct from the astHash-mismatch case (that one
+    // parses fine but hashes differently).
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": "int main() {\0garbage}" }));
 
     await seedAndOpenReplay([segment]);
     await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
@@ -1757,6 +2952,23 @@ describe("main.ts — replay playback (startReplay)", () => {
     expect(testHooks()!.getPlayerState().health).toBe(100);
   });
 
+  it("seeking before the first level has finished loading is a no-op instead of throwing", async () => {
+    // The controls exist as soon as the canvas area is shown, but
+    // buildEngineFor (which sets transitioning back to false and populates
+    // currentSegment) hasn't necessarily run yet — see the previous test's
+    // own comment on this exact race. Clicking immediately, with none of
+    // that test's extra flushAsync yields, exercises seekBy's own guard.
+    await importMain();
+    const segment = await buildReplaySegment(20);
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": REPLAY_FIXTURE_C }));
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+    const buttons = document.querySelectorAll<HTMLButtonElement>(".replay-controls .replay-btn");
+    expect(() => buttons[2].click()).not.toThrow();
+  });
+
   it("replaying a recording of a real win reaches buildEngineFor's own onWin", async () => {
     // Record a genuine win first (outside main.ts's DOM entirely — see
     // recordNavigatedSegment's doc comment), then feed that real recording
@@ -1768,6 +2980,12 @@ describe("main.ts — replay playback (startReplay)", () => {
       target: (map) => map.exit,
       godMode: true, // prove navigation reaches the exit, not survive incidental combat
     });
+    // recordNavigatedSegment's own recording engine already left
+    // window.__codeensteinTestHooks pointing at itself (already "won") —
+    // clear it so the waitUntil(!!testHooks()) below can only be satisfied
+    // once the *replay's* own buildEngineFor constructs its own engine,
+    // not by reading this stale reference.
+    delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
 
     await importMain();
     enableTestHooks();
@@ -1784,6 +3002,15 @@ describe("main.ts — replay playback (startReplay)", () => {
     await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
     await waitUntil(() => !!testHooks(), 8000);
 
+    // Speed up so a single step() tick burns through several recorded
+    // frames at once (see REPLAY_SPEEDS) — increases the odds the win lands
+    // mid-burst rather than exactly on the loop's last iteration, exercising
+    // the `if (levelEnded) break` guard that stops consuming further frames
+    // once onWin has already fired this tick.
+    const buttons = document.querySelectorAll<HTMLButtonElement>(".replay-controls .replay-btn");
+    buttons[buttons.length - 1].click(); // speedUp: 1x -> 2x
+    buttons[buttons.length - 1].click(); // speedUp: 2x -> 4x
+
     // Burst through the recorded frames (real event-loop yields between
     // rounds, same reasoning as the frames-exhausted/hash-mismatch tests
     // above) until the replayed run reaches its own natural win.
@@ -1793,6 +3020,73 @@ describe("main.ts — replay playback (startReplay)", () => {
       return testHooks()!.getPlayerState().state === "won" || flushed > 400;
     }, 15000);
     expect(testHooks()!.getPlayerState().state).toBe("won");
+  });
+
+  it("winning a non-final level during replay advances to the next recorded level instead of ending the viewing", { timeout: 20000 }, async () => {
+    // The single-level win test above always has levelIndex >= payload
+    // .levels.length once loadLevel's own pre-increment runs, taking
+    // onWin's `hud.showBuildSuccessful` branch — this needs a *second*
+    // recorded level so the first win takes the other branch (advanceLevel)
+    // instead. Both segments reuse the same navigable fixture — map
+    // generation is deterministic per source content, so recording against
+    // it twice (once per file name) is simpler than sourcing a second,
+    // distinct winnable fixture.
+    const firstLevelSegment = await recordNavigatedSegment({
+      sourceContent: NAVIGABLE_FIXTURE_C,
+      target: (map) => map.exit,
+      godMode: true,
+    });
+    delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+    const secondLevelSegment = await recordNavigatedSegment({
+      sourceContent: NAVIGABLE_FIXTURE_C,
+      target: (map) => map.exit,
+      godMode: true,
+    });
+    delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+
+    await importMain();
+    enableTestHooks();
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": NAVIGABLE_FIXTURE_C, "zzz_next.c": NAVIGABLE_FIXTURE_C }));
+    const parsed = (await parseFile("main.c", NAVIGABLE_FIXTURE_C))!;
+    const astHash = await hashRun(JSON.stringify(parsed), REPLAY_CAMPAIGN_NAME);
+    const segments: ReplayLevelSegment[] = [
+      { ...firstLevelSegment, filePath: `${REPLAY_CAMPAIGN_NAME}/main.c`, astHash },
+      { ...secondLevelSegment, filePath: `${REPLAY_CAMPAIGN_NAME}/zzz_next.c`, astHash },
+    ];
+
+    await seedAndOpenReplay(segments);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    await waitUntil(() => !!testHooks(), 8000);
+
+    const buttons = document.querySelectorAll<HTMLButtonElement>(".replay-controls .replay-btn");
+    buttons[buttons.length - 1].click(); // speedUp: 1x -> 2x
+    buttons[buttons.length - 1].click(); // speedUp: 2x -> 4x
+
+    // Burst through the first level to its own win first — a single "won"
+    // reading isn't enough on its own to prove advanceLevel specifically
+    // ran (campaign-complete's hud.showBuildSuccessful wouldn't reset state
+    // back to "playing" either), so this also waits for state to bounce
+    // back to "playing" afterward — only a genuinely *new* engine
+    // (buildEngineFor, called from advanceLevel) does that — before finally
+    // waiting for the second level's own natural win.
+    let flushed = 0;
+    await waitUntil(() => {
+      flushed += raf.flush(1, 16);
+      return testHooks()!.getPlayerState().state === "won" || flushed > 800;
+    }, 15000);
+    expect(testHooks()!.getPlayerState().state).toBe("won");
+
+    await waitUntil(() => {
+      flushed += raf.flush(1, 16);
+      return testHooks()!.getPlayerState().state === "playing" || flushed > 800;
+    }, 15000);
+    expect(testHooks()!.getPlayerState().state).toBe("playing"); // advanceLevel rebuilt a fresh engine for the second level
+
+    await waitUntil(() => {
+      flushed += raf.flush(1, 16);
+      return testHooks()!.getPlayerState().state === "won" || flushed > 800;
+    }, 15000);
+    expect(testHooks()!.getPlayerState().state).toBe("won"); // the second level's own natural win
   });
 
   it("replaying a recording of a real death reaches buildEngineFor's own onGameOver", async () => {
@@ -1805,6 +3099,9 @@ describe("main.ts — replay playback (startReplay)", () => {
       godMode: false,
       extraStandingFrames: 300, // HAZARD_DPS(18) * 0.05 * 300 = 270 — comfortably lethal from full health
     });
+    // See the win test above's identical comment — clears the stale
+    // recording engine's own testHooks reference.
+    delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
 
     await importMain();
     enableTestHooks();
@@ -1823,6 +3120,196 @@ describe("main.ts — replay playback (startReplay)", () => {
       return testHooks()!.getPlayerState().state === "over" || flushed > 700;
     }, 15000);
     expect(testHooks()!.getPlayerState().state).toBe("over");
+  });
+
+  it("re-fetches a GitHub-sourced workspace when replaying a run recorded from a repo", async () => {
+    await importMain();
+    const segment = await buildReplaySegmentFor("owner/repo", "owner/repo/main.c", REPLAY_FIXTURE_C, 5);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({ default_branch: "main" }),
+        body: null,
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({ tree: [{ path: "main.c", type: "blob" }] }),
+        body: null,
+      } as unknown as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: async () => REPLAY_FIXTURE_C,
+      } as unknown as Response);
+
+    await seedAndOpenReplayFor("owner/repo", "github", [segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+  });
+
+  it("does nothing when a GitHub-sourced entry's own campaign name no longer parses as a repo ref", async () => {
+    await importMain();
+    const segment = await buildReplaySegmentFor("not a valid ref!!", "not a valid ref!!/main.c", REPLAY_FIXTURE_C, 5);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await seedAndOpenReplayFor("not a valid ref!!", "github", [segment]);
+    await flushAsync();
+    // Nothing to fetch, nothing to show — the canvas area never opens.
+    expect(document.querySelector(".canvas-area")!.hasAttribute("hidden")).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when the picker is cancelled while re-picking a local workspace for a replay", async () => {
+    await importMain();
+    const segment = await buildReplaySegment(5);
+    stubShowDirectoryPicker(undefined);
+
+    await seedAndOpenReplay([segment]);
+    await flushAsync();
+    expect(document.querySelector(".canvas-area")!.hasAttribute("hidden")).toBe(true);
+  });
+
+  it("a replay superseded while re-reading its own workspace doesn't clobber the newer load", async () => {
+    await importMain();
+    const segment = await buildReplaySegment(5);
+    const gate: { resolve?: () => void } = {};
+    stubShowDirectoryPicker(gatedDirectoryHandle(REPLAY_CAMPAIGN_NAME, gate, { entries: [new FakeFileSystemFileHandle("main.c", REPLAY_FIXTURE_C)] }));
+
+    await seedAndOpenReplay([segment]);
+    await flushAsync(); // let the replay's own readDirectoryTree start hanging on the gate
+
+    stubShowDirectoryPicker(fakeDirectoryHandle("second", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "second", 8000);
+
+    gate.resolve?.(); // the stale replay's tree read finally resolves, but too late
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("second");
+  });
+
+  it("a replay superseded while scanning its own workspace for parsable files doesn't clobber the newer load", async () => {
+    await importMain();
+    const segment = await buildReplaySegment(5);
+    const gate: { resolve?: () => void } = {};
+    // Extensionless — isParsableNode has to actually read it to sniff for a
+    // shebang, which is the one place flattenParsableFiles does real I/O
+    // (an ordinary ".c" file's parsability is decided from its name alone,
+    // no read needed) — the hook this test needs to make the scan hang.
+    stubShowDirectoryPicker(
+      directoryHandleWithEntries(REPLAY_CAMPAIGN_NAME, [
+        new FakeFileSystemFileHandle("main.c", REPLAY_FIXTURE_C),
+        gatedFileHandle("script", "#!/usr/bin/env sh\necho hi", gate),
+      ]),
+    );
+
+    await seedAndOpenReplay([segment]);
+    await flushAsync();
+    await flushAsync(); // let readDirectoryTree finish and flattenParsableFiles start hanging on "script"'s gate
+
+    stubShowDirectoryPicker(fakeDirectoryHandle("second", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "second", 8000);
+
+    gate.resolve?.();
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("second");
+  });
+
+  it("logs an error instead of throwing when a replay's own workspace read fails after being superseded", async () => {
+    await importMain();
+    const segment = await buildReplaySegment(5);
+    const gate: { resolve?: () => void } = {};
+    stubShowDirectoryPicker(gatedDirectoryHandle(REPLAY_CAMPAIGN_NAME, gate, { throws: new Error("stale replay read failed") }));
+    const errorSpy = vi.spyOn(console, "error");
+
+    await seedAndOpenReplay([segment]);
+    await flushAsync();
+
+    stubShowDirectoryPicker(fakeDirectoryHandle("second", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "second", 8000);
+
+    gate.resolve?.();
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("second");
+    expect(errorSpy.mock.calls.some((c) => typeof c[0] === "string" && c[0].includes("[replay] Failed to start replay:"))).toBe(
+      false,
+    ); // the newer load's own error handling owns the screen now — this one stays silent
+  });
+
+  it("a stale loadLevel failure landing after the replay itself was superseded doesn't clobber the newer load", async () => {
+    // Distinct from the tree-read/scan supersession tests above — those
+    // supersede before `isReplaying` is ever set true. This one lets the
+    // replay fully start (isReplaying = true), then supersedes while
+    // loadLevel's own readFileText for the first level is still pending —
+    // exercising endReplay's own `if (!isReplaying) return` guard, which is
+    // this system's supersession check in place of a `gen` counter.
+    await importMain();
+    const segment = await buildReplaySegment(5);
+    const gate: { resolve?: () => void } = {};
+    stubShowDirectoryPicker(directoryHandleWithEntries(REPLAY_CAMPAIGN_NAME, [gatedFileHandle("main.c", "int main() {\0garbage}", gate)]));
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+    stubShowDirectoryPicker(fakeDirectoryHandle("second", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "second", 8000);
+    // workspace-name updates before launchLevel (and its stopActiveReplay()
+    // call, which is what actually flips isReplaying false) — auto-launch's
+    // own entrypoint detection + parse still needs real event-loop turns to
+    // reach it, hence the extra yields before releasing the gate below.
+    for (let i = 0; i < 10; i++) await flushAsync();
+
+    gate.resolve?.(); // the stale replay's own readFileText resolves, but too late — parseFile then rejects the NUL-byte content
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("second");
+  });
+
+  it("rebuilds the bundled demo campaign's tree when replaying a run recorded from it", async () => {
+    await importMain();
+    // The real bundled demo campaign's own entrypoint content — reused
+    // wholesale (rather than a synthetic fixture) so its parsed AST hashes
+    // against the tree `loadDemoCampaignTree()` itself actually returns, no
+    // network/FS mocking required.
+    const { loadDemoCampaignTree, DEMO_CAMPAIGN_NAME } = await import("./fs/demoCampaign");
+    const demoTree = loadDemoCampaignTree();
+    const entryPath = "demo-campaign/main.c";
+    function findByPath(node: TreeNode, path: string): TreeNode | null {
+      if (node.path === path) return node;
+      for (const child of node.children ?? []) {
+        const found = findByPath(child, path);
+        if (found) return found;
+      }
+      return null;
+    }
+    const entryNode = findByPath(demoTree, entryPath)!;
+    const entryText = await (await (entryNode.handle as FileSystemFileHandle).getFile()).text();
+    const segment = await buildReplaySegmentFor(DEMO_CAMPAIGN_NAME, entryPath, entryText, 5);
+
+    await seedAndOpenReplayFor(DEMO_CAMPAIGN_NAME, "demo", [segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+  });
+
+  it("logs an error instead of throwing when re-picking a local workspace for a replay fails", async () => {
+    await importMain();
+    const segment = await buildReplaySegment(5);
+    (window as unknown as { showDirectoryPicker: () => Promise<unknown> }).showDirectoryPicker = () =>
+      Promise.reject(new Error("picker exploded"));
+    const errorSpy = vi.spyOn(console, "error");
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(
+      () => errorSpy.mock.calls.some((c) => typeof c[0] === "string" && c[0].includes("[replay] Failed to start replay:")),
+      8000,
+    );
   });
 });
 

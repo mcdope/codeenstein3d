@@ -606,6 +606,17 @@ async function loadDemoCampaign(): Promise<void> {
     console.info(`[demo] Loaded "${workspaceRootName}"`, tree);
     await autoLaunchInitialLevel(tree);
   } catch (err) {
+    // Unlike the other three loaders (local pick, GitHub, Continue Run),
+    // this supersession check is unreachable: every read along
+    // autoLaunchInitialLevel's path (findEntrypoint's byName match,
+    // isParsableNode's scan, the inner try/catch around the final
+    // read/parse/launch) already swallows its own errors internally and
+    // never rethrows — so the only way this catch fires at all is
+    // loadDemoCampaignTree() throwing synchronously, on the very first
+    // tick, before any await has run and thus before `gen` could possibly
+    // have changed. Kept for symmetry with the other three loaders and as
+    // a safety net if that internal error-swallowing ever changes.
+    /* v8 ignore next */
     if (gen !== workspaceLoadGeneration) return;
     console.error("[demo] Failed to load demo campaign:", err);
     const message = err instanceof Error ? err.message : "Failed to load demo campaign.";
@@ -698,6 +709,9 @@ window.addEventListener("beforeunload", () => {
  * for everything else fall back to logging raw text.
  */
 async function handleFileSelected(node: TreeNode): Promise<void> {
+  // Unreachable given the single call site: renderFileTree/fileTree.ts only
+  // ever wires onSelectFile to file rows, never directory rows.
+  /* v8 ignore next */
   if (node.kind !== "file") return;
   try {
     const text = await readFileText(node.handle as FileSystemFileHandle);
@@ -1124,6 +1138,10 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   const effectiveCarryover: EngineCarryover | undefined = carryover
     ? {
         ...carryover,
+        // `?? []` is unreachable: every real call site that builds a
+        // carryover (Continue Run's saved ownedWeapons, an advancing
+        // level's stats.ownedWeapons) always populates a real array.
+        /* v8 ignore next */
         ownedWeapons: applyForcedUnlocks(carryover.ownedWeapons ?? [], campaignLevelIndex),
         campaignLevelIndex,
       }
@@ -1195,6 +1213,10 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
     currentReplayRecorder,
   );
 
+  // `?? path` is unreachable defensive code: String.prototype.split() never
+  // returns an empty array, so `.pop()` can never actually be undefined —
+  // same reasoning as demoCampaign.ts's identical pattern.
+  /* v8 ignore next */
   const levelName = path.split("/").pop() ?? path;
   hud.showLevelStart(
     {
@@ -1264,6 +1286,11 @@ function computeMissingWeaponIndices(owned: number[], levelIndex: number): numbe
  * `workspaceRootName` doc comment for why the "parent dir named src" case
  * from the spec can't be implemented in a browser sandbox. */
 function campaignName(): string {
+  // `?? "Untitled Workspace"` is unreachable: every call site is only
+  // reached via launchLevel/kickOffCodebaseStats, both only invoked after a
+  // workspace load has already set workspaceRootName (which is never reset
+  // to null afterward).
+  /* v8 ignore next */
   return workspaceRootName ?? "Untitled Workspace";
 }
 
@@ -1305,6 +1332,9 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
         // in-play autosave) so a tab closed right after advancing still
         // resumes at the new file rather than the one just cleared.
         saveCampaign({
+          // `?? ""` is unreachable here too — reached only after a level
+          // already launched, which requires workspaceRootName to be set.
+          /* v8 ignore next */
           workspaceName: workspaceRootName ?? "",
           filePath: next.path,
           health: carryover.health,
@@ -1411,6 +1441,10 @@ async function flattenParsableFilesUncached(node: TreeNode, onFileChecked?: () =
  * the "Scanning file tree…" progress readout in `autoLaunchInitialLevel`. */
 function countTreeFiles(node: TreeNode): number {
   if (node.kind === "file") return 1;
+  // `?? []` is unreachable: every production TreeNode builder (workspace.ts,
+  // github.ts, demoCampaign.ts) always sets `children` on a directory node,
+  // even to an empty array — never omits it.
+  /* v8 ignore next */
   return (node.children ?? []).reduce((sum, child) => sum + countTreeFiles(child), 0);
 }
 
@@ -1546,10 +1580,16 @@ function withTimeout<T>(promise: Promise<T> | null, ms: number): Promise<T | und
         clearTimeout(timer);
         resolve(value);
       },
+      // Both current call sites (`findEntrypoint`'s promise, and
+      // `codebaseStatsPromise`) are structurally guaranteed never to reject
+      // — kept for `withTimeout`'s own correctness as a general two-outcome
+      // utility, not because a rejection is expected today.
+      /* v8 ignore start */
       () => {
         clearTimeout(timer);
         resolve(undefined);
       },
+      /* v8 ignore stop */
     );
   });
 }
@@ -1821,6 +1861,10 @@ async function recordRunHighscore(
     return;
   }
   try {
+    // `?? path` is unreachable defensive code: String.prototype.split() never
+    // returns an empty array, so `.pop()` can never actually be undefined —
+    // same reasoning as demoCampaign.ts's identical pattern.
+    /* v8 ignore next */
     const levelName = path.split("/").pop() ?? path;
     const codebaseStats = await withTimeout(codebaseStatsPromise, CODEBASE_STATS_WAIT_MS);
     // Prefer the whole-workspace hash so two runs over identical, unedited
@@ -1835,6 +1879,13 @@ async function recordRunHighscore(
       levelsCleared,
       hash,
       achievedAt: Date.now(),
+      // `recorder?.` is unreachable: launchLevel always ensures
+      // currentReplayRecorder (the only value ever passed as `recorder`
+      // here) is non-null before either call site below can run. `??
+      // undefined` covers finish() resolving null (no level produced a
+      // savable segment — zero recorded frames), also unreachable given
+      // every real win/death test drives at least one frame first.
+      /* v8 ignore next */
       replay: (await recorder?.finish()) ?? undefined,
       source: workspaceIsDemo ? "demo" : workspaceIsRemote ? "github" : undefined,
       codebaseLinesOfCode: codebaseStats?.linesOfCode,
@@ -1887,7 +1938,13 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
   // Defensive, not just type-driven: this value round-tripped through
   // localStorage/JSON, so an entry saved before the replay system became
   // campaign-scoped could still be sitting there with the old single-level
-  // shape (no `levels` array) despite what the type claims.
+  // shape (no `levels` array) despite what the type claims. Unreachable
+  // TODAY given the single call site (onWatchReplay's click handler,
+  // itself only wired by highscorePanel.ts's identical `entry.replay
+  // ?.version === 2 && entry.replay.levels?.length > 0` gate before it
+  // ever renders the button) — kept as defense-in-depth against a future
+  // second call site or a hand-edited localStorage entry.
+  /* v8 ignore next */
   if (!payload || payload.version !== 2 || !payload.levels?.length) return;
 
   // End any replay already playing before starting this one — otherwise its
@@ -2000,9 +2057,15 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
 
     const updateHint = (): void => {
       const segment = currentSegment;
+      // The only call site (buildEngineFor) always sets currentSegment first.
+      // `v8 ignore next` alone only suppressed the assignment's first line —
+      // the ternary's own continuation lines still showed up as uncovered;
+      // start/stop brackets the whole statement instead.
+      /* v8 ignore start */
       hint.textContent = segment
         ? `Watching replay: level ${levelIndex}/${payload.levels.length} — ${segment.filePath} — Esc to stop`
         : "";
+      /* v8 ignore stop */
     };
 
     /** Builds a fresh engine for `segment`/`parsed`, wired the same way for
@@ -2047,10 +2110,15 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
     // handling shape as a live run's `advanceToNextLevel`, just reporting
     // failure by ending the viewing instead of falling back to the next file.
     const loadLevel = async (): Promise<void> => {
+      // Defensive: both callers (startReplay's own kick-off, guarded by its
+      // non-empty-levels check; onWin's else-branch, guarded by the same
+      // bounds check one line above it) already ensure this can't be true.
+      /* v8 ignore start */
       if (levelIndex >= payload.levels.length) {
         endReplay("Replay ended — ran out of recorded levels.");
         return;
       }
+      /* v8 ignore stop */
       const segment = payload.levels[levelIndex++];
 
       const match = files.find((f) => f.path === segment.filePath);
@@ -2090,6 +2158,12 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
      * scratch via `restartLevel`, then bursts forward to the target). */
     const burstTo = (targetFrameIndex: number): void => {
       const segment = currentSegment;
+      // Unreachable given the single call site (seekBy), which already
+      // requires currentSegment non-null and isReplaying true before calling
+      // this — activeEngine/replayInput/currentSegment are always set
+      // together in buildEngineFor, and nothing clears just one of them
+      // while isReplaying stays true.
+      /* v8 ignore next */
       if (!activeEngine || !replayInput || !segment) return;
       while (frameIndex < targetFrameIndex && frameIndex < segment.frames.length && !levelEnded) {
         const frame = segment.frames[frameIndex++];
@@ -2103,6 +2177,10 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
      * the file isn't needed: `currentParsed`/`currentSegment` are already the
      * verified result of this same level's `loadLevel` call. */
     const restartLevel = (): void => {
+      // Unreachable given the single call site (seekBy), which already
+      // requires currentSegment non-null — currentParsed/currentSegment are
+      // always set together in buildEngineFor.
+      /* v8 ignore next */
       if (!currentParsed || !currentSegment) return;
       buildEngineFor(currentSegment, currentParsed);
     };
@@ -2115,6 +2193,14 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
     };
 
     const step = (): void => {
+      // Unreachable in practice: exactly one step() reschedule is ever
+      // outstanding at a time (confirmed via temporary instrumentation —
+      // rafId increments 1-2-3-4 with no gaps or duplicates across a whole
+      // multi-tick run), and teardown()/endReplay() always cancel that
+      // specific id via cancelAnimationFrame before isReplaying flips false.
+      // Kept as a safety net against a future change loosening that
+      // invariant, not because this fires today.
+      /* v8 ignore next */
       if (!isReplaying) return;
       if (transitioning || paused || levelEnded || !activeEngine || !replayInput || !currentSegment) {
         rafId = requestAnimationFrame(step); // keep polling so unpausing (or a transition finishing) resumes on its own

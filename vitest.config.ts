@@ -72,9 +72,12 @@ export default defineConfig({
         "*.config.ts",
         "test/**",
       ],
-      // Thresholds are intentionally unset during the rollout (see
-      // PROGRESS-testing.md) so intermediate runs don't hard-fail mid-project
-      // — flipped to 100% across the board once every phase is complete.
+      thresholds: {
+        lines: 100,
+        statements: 100,
+        functions: 100,
+        branches: 100,
+      },
     },
   },
 });

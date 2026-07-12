@@ -13,6 +13,7 @@ export interface BuildTestWadOptions {
   doorTextureName?: string | null;
   loreWallTextureName?: string | null;
   flatName?: string;
+  bonusFloorName?: string | null;
   hazardFloorName?: string | null;
   teleporterFloorName?: string | null;
   spikeSafeFloorName?: string | null;
