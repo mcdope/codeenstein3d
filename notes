@@ -160,6 +160,8 @@
 
 - [x] github repo loads should ignore folders like "test", "Test", "tests" and so on — `IGNORED_DIRECTORIES` (`src/fs/workspace.ts`) now also skips `test`/`tests`/`__tests__`, and matching is case-insensitive across the board (via a new `isIgnoredDirectoryName` helper) instead of an exact-string `Set.has`, so `Test`/`Tests`/`__Tests__` etc. are caught too. Shared by both the local File System Access walker and the GitHub tree builder, same as the rest of the skip-list. Follow-up: a dedicated test *directory* doesn't cover ecosystems (including this repo's own) that colocate tests right next to the source they cover — added `isIgnoredFileName`, a regex-based filter for `foo.test.ts`/`foo.spec.js`, `test_foo.py`/`foo_test.go`, `foo_spec.rb`, and `FooTest.java`/`FooTests.cs`-style suffixes, applied to individual files in both walkers. The Java/C#-style suffix match is deliberately case-sensitive on the capital "Test" so real words ending in "test" (`Contest.java`, `Latest.php`) aren't caught.
 
+- [x] github workspace loading when loading a replay doesnt show loading indicator — `startReplay` (`src/main.ts`) re-fetches a GitHub-sourced replay's workspace via the exact same `fetchGithubTree` used by the "Load GitHub repo" button, but never showed the loading screen or wired up its byte-progress/file-scan-progress callbacks, so a replay's re-fetch of a large repo just looked like a frozen page. It now calls `showLoadingScreen`/`setLoadingStatus` the same way the other three loaders (local pick, GitHub button, demo campaign) already do — including the "(X received)" byte readout for the GitHub fetch and the "Scanning file tree… (checked/total)" readout for the parsable-file scan — and falls back to `showFileTreePlaceholder()` on a failed re-fetch instead of leaving the loading screen stuck on-screen forever (a gap that only existed because there was no UI shown to reset in the first place).
+
 ## Open
 - [ ] rooms need deco of some kind, currently an empty wasteland — implemented in Task 21 (server racks/plants/desks/code-blocks as billboard props) but felt annoying in playtest, so disabled again behind `DECORATIONS_ENABLED = false` in mapGenerator.ts. Code (generation + rendering) is intact; needs a design rethink (placement density? different visual treatment? non-billboard approach?) before re-enabling. Ignore for now.
     - [ ] deco objects from wad?
@@ -189,4 +191,3 @@
  - [ ] enemy textures from wad?
  - [ ] multikill score bonus, sfx and gfx
  - [ ] already read lore terminals shouldnt glow anymore
- - [ ] github workspace loading when loading a replay doesnt show loading indicator

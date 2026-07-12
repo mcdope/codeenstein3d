@@ -3153,6 +3153,45 @@ describe("main.ts — replay playback (startReplay)", () => {
     await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
   });
 
+  it("shows the loading screen and byte-progress readout while re-fetching a GitHub-sourced replay", async () => {
+    await importMain();
+    const segment = await buildReplaySegmentFor("owner/repo", "owner/repo/main.c", REPLAY_FIXTURE_C, 5);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    function jsonResponse(body: unknown): Response {
+      return { ok: true, status: 200, statusText: "OK", json: async () => body, body: null } as unknown as Response;
+    }
+    // Deliberately stalls forever after its first chunk (an unresolved
+    // `read()` promise), so the tree fetch can never race ahead to
+    // completion before this test observes the mid-flight progress state —
+    // this test only cares about the loading screen appearing with a byte
+    // count, not the eventual result (already covered by the "re-fetches a
+    // GitHub-sourced workspace..." test above).
+    const chunk = new Uint8Array(600_000);
+    const reader = {
+      read: vi.fn().mockResolvedValueOnce({ done: false, value: chunk }).mockReturnValue(new Promise(() => {})),
+    };
+    const streamed = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      body: { getReader: () => reader },
+      json: async () => {
+        throw new Error("json() should not be called on the streaming path");
+      },
+    } as unknown as Response;
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ default_branch: "main" })).mockResolvedValueOnce(streamed);
+
+    const loadingScreen = document.querySelector<HTMLElement>("#loading-screen")!;
+    const loadingStatus = document.querySelector<HTMLParagraphElement>("#loading-status")!;
+    await seedAndOpenReplayFor("owner/repo", "github", [segment]);
+    await waitUntil(() => /received\)$/.test(loadingStatus.textContent ?? ""), 8000);
+    expect(loadingScreen.hidden).toBe(false);
+    expect(loadingStatus.textContent).toMatch(/^Fetching "owner\/repo" from GitHub… \(.+ received\)$/);
+  });
+
   it("does nothing when a GitHub-sourced entry's own campaign name no longer parses as a repo ref", async () => {
     await importMain();
     const segment = await buildReplaySegmentFor("not a valid ref!!", "not a valid ref!!/main.c", REPLAY_FIXTURE_C, 5);
