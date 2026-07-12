@@ -36,6 +36,10 @@ const DIRECTORY_STUB: RemoteFileHandle = {
  * eager glob import above, so there's no "loading" step to await. */
 export function loadDemoCampaignTree(): TreeNode {
   const children: TreeNode[] = Object.entries(demoFileContents).map(([modulePath, text]) => {
+    // `?? modulePath` is unreachable defensive code: import.meta.glob's
+    // module paths always contain "/", and String.prototype.split() never
+    // returns an empty array, so `.pop()` can never actually be undefined.
+    /* v8 ignore next */
     const name = modulePath.split("/").pop() ?? modulePath;
     const handle: RemoteFileHandle = { getFile: () => Promise.resolve({ text: () => Promise.resolve(text) }) };
     return { name, path: `${DEMO_CAMPAIGN_NAME}/${name}`, kind: "file", handle };

@@ -706,8 +706,8 @@ first thing at the start of every session, before touching code.
   **Phase 7 complete (12/12 files), all 100% stmts/branch/funcs/lines.**
 - [ ] Phase 8: src/fs/ (3 files) — IN PROGRESS
   - [x] src/fs/workspace.ts
-  - [ ] src/fs/demoCampaign.ts (next)
-  - [ ] src/fs/github.ts
+  - [x] src/fs/demoCampaign.ts
+  - [ ] src/fs/github.ts (next — last Phase-8 file)
 
   workspace.ts notes: 100% on the first attempt, 16 tests. The
   `test/mocks/fsAccess.ts` fake (`FakeFileSystemDirectoryHandle`/
@@ -725,6 +725,18 @@ first thing at the start of every session, before touching code.
   `window.showDirectoryPicker`, not a bare global identifier) — cleaned
   up via `delete` in `afterEach` so it doesn't leak into other tests in
   the file.
+
+  demoCampaign.ts notes: 100% took two rounds. `import.meta.glob`
+  resolved against the real `demo-campaign/` directory exactly as
+  predicted, no mock needed — tests just call `loadDemoCampaignTree()`
+  directly and assert against the real 17 bundled files (`main.c` +
+  `stage02`..`stage17`). First round landed at 83.33% branch: the
+  `modulePath.split("/").pop() ?? modulePath` fallback is unreachable
+  with real glob'd paths (they always contain "/", and
+  `Array.prototype.split` never returns an empty array) — same
+  "provably unreachable `?? ` fallback" pattern already documented in
+  `src/parser/registry.ts`. Marked with `/* v8 ignore next */` plus a
+  rationale comment, mirroring that file's existing style.
 - [ ] Phase 9: src/ui/ (5 files)
 - [ ] Phase 10: src/engine/engine.ts
 - [ ] Phase 11: src/main.ts
@@ -734,10 +746,10 @@ first thing at the start of every session, before touching code.
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
 src/parser/, ALL of src/map/ (Phase 5 complete), ALL 13 of Phase 6,
-ALL 12 of Phase 7 (Phase 7 complete), and 1 of 3 Phase-8 files
-(workspace.ts) are 100% stmts/branch/funcs/lines. 1138 tests total, all
-green. Rest of src/fs/ (2 files), src/ui/, src/engine/engine.ts,
-src/main.ts still 0% (not yet reached).
+ALL 12 of Phase 7 (Phase 7 complete), and 2 of 3 Phase-8 files
+(workspace.ts, demoCampaign.ts) are 100% stmts/branch/funcs/lines. 1144
+tests total, all green. Rest of src/fs/ (github.ts), src/ui/,
+src/engine/engine.ts, src/main.ts still 0% (not yet reached).
 defaultHighscore.ts and empty-node-shim.ts correctly absent from the
 report.
 
@@ -753,37 +765,51 @@ report.
 
 ## Next concrete step
 
-Continue Phase 8: read src/fs/demoCampaign.ts next (already read once
-this session — 46 lines, straightforward), write demoCampaign.test.ts.
-Its `import.meta.glob("../../demo-campaign/*", {query:"?raw",
-import:"default", eager:true})` resolves against the REAL
-`demo-campaign/` directory under Vitest's vite-node pipeline (confirmed
-workable per Phase 0 research) — no mock needed, `loadDemoCampaignTree()`
-can just be called directly and asserted against whatever's actually in
-that directory (check `ls demo-campaign/` first to know what to expect
-rather than assuming specific filenames). Key things to verify: root
-node shape (`name`/`path` === `DEMO_CAMPAIGN_NAME` = "demo-campaign",
-`kind: "directory"`), children populated and sorted via `compareNodes`
-(reuse the same sort-order expectations already proven in
-workspace.test.ts), each child's `handle.getFile()` round-trips real
-file content. One likely `v8 ignore` candidate: `modulePath.split("/")
-.pop() ?? modulePath` — `import.meta.glob`'s real module paths always
-contain "/" and `Array.prototype.split` never returns an empty array,
-so `.pop()` can never actually be `undefined` here, matching the exact
-"provably unreachable `?? ` fallback" pattern already documented in
-`src/parser/registry.ts` (see that file's existing comments for the
-exact phrasing/rationale style to mirror) — confirm it's genuinely
-unreachable against the real glob'd paths before reaching for
-`v8 ignore` rather than assuming. Verify 100%, commit (own commit, no
-batching — see workspace.ts's clean per-file precedent above). Then
-github.ts last in Phase 8 (own commit) — needs `vi.stubGlobal("fetch",
-vi.fn())` with `mockResolvedValueOnce` chains matching call order
-(`resolveDefaultBranch`'s repo-info fetch first, then the recursive tree
-fetch, then any lazy per-file `GithubFileHandle.getFile()` fetches);
-`readJsonWithProgress`'s streaming branch needs a fake `Response`-shaped
-object with `.body.getReader()` returning a manually-scripted
-`{done,value}` sequence to drive the `onBytes` callback and the
-chunk-merge/decode path — its non-streaming fallback (`!onBytes ||
-!res.body`) is simpler, just `res.json()`. After Phase 8: Phase 9
-(src/ui/, 5 files), then Phase 10 (engine.ts), Phase 11 (main.ts),
-Phase 12 (wrap-up). 1/3 Phase-8 files done.
+Finish Phase 8: read src/fs/github.ts next (already read once this
+session in full — 199 lines), write github.test.ts. Needs
+`vi.stubGlobal("fetch", vi.fn())`, driven with `mockResolvedValueOnce`
+chains matching call order per test:
+1. `parseGithubRepoInput(input)` — pure regex parsing, no fetch needed:
+   test full URLs (with/without `https://`, with/without `www.`,
+   with/without trailing slash), bare `owner/repo` shorthand, a
+   trailing `.git` suffix stripped, and an unparseable input returning
+   `null`. Also confirm urlMatch takes precedence when both regexes
+   could theoretically match (`m = urlMatch ?? shortMatch`).
+2. `fetchGithubTree(ref, onTreeBytes?, signal?)` — two sequential
+   fetches: `resolveDefaultBranch` (repo info, extracts
+   `default_branch`) then the recursive tree fetch. Each needs its own
+   `!res.ok` failure test (distinct error messages: "not found or
+   inaccessible" vs "Failed to fetch repository tree"). Test
+   `treeJson.truncated` both true (console.warn — `vi.spyOn(console,
+   "warn").mockImplementation(() => {})`) and false/undefined (no
+   warn). Test `signal` is actually threaded through to both `fetch`
+   calls' options (assert on the mock's call args).
+3. `readJsonWithProgress` — the interesting one. Non-streaming fallback
+   (`!onBytes || !res.body`) is simple: a fake `Response`-shaped object
+   with just `.json()`. The streaming path needs a fake `.body` with a
+   `.getReader()` returning an object whose `.read()` is scripted via
+   `mockResolvedValueOnce` for a `{done:false,value:<Uint8Array
+   chunk>}` sequence ending in `{done:true,value:undefined}` — assert
+   `onBytes` was called with the correct cumulative byte counts, and
+   that the merged/decoded JSON matches (build the encoded bytes with
+   `new TextEncoder().encode(JSON.stringify(...))`, sliced into 2+
+   chunks to prove the merge logic, not just a single-chunk pass-through).
+4. `buildTree`/`sortRecursively` (both private, exercised only via
+   `fetchGithubTree`'s return value) — test: `entry.type !== "blob"`
+   entries (real GitHub trees include `"tree"` type entries for
+   directories) are skipped/synthesized rather than causing duplicate
+   nodes; a path segment matching `IGNORED_DIRECTORIES` drops that
+   whole file; nested directories get created once and reused for
+   later files in the same directory (`ensureDir`'s `dir ??=` cache
+   hit vs miss); final tree is sorted directories-first-then-alpha at
+   every level (reuse `compareNodes`'s already-proven semantics from
+   workspace.test.ts).
+5. `GithubFileHandle.getFile()` (private class, exercised via a tree
+   node's `handle` after `fetchGithubTree`) — first call fetches from
+   the correct `raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}`
+   URL and caches; a second call reuses the cache without fetching
+   again (assert `fetch` call count stays at whatever it was); a
+   non-ok response throws with status/statusText in the message.
+Verify 100%, commit (own commit — Phase 8 will then be complete, 3/3).
+Then Phase 9 (src/ui/, 5 files), Phase 10 (engine.ts), Phase 11
+(main.ts), Phase 12 (wrap-up). 2/3 Phase-8 files done.
