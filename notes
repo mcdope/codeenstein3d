@@ -192,3 +192,4 @@
     - [ ] elite enemies should scale with player count
  - [ ] enemy textures from wad? if yes: what about hitbox?
  - [ ] multikill score bonus, sfx and gfx
+ - [ ] end of replay playback should drop back in the highscore dialog
