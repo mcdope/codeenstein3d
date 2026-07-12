@@ -27,10 +27,14 @@ function mockAudioParam(initial = 0) {
 }
 
 function mockAudioNode() {
-  return {
-    connect: vi.fn(),
+  const node = {
+    // Real AudioNode.connect() returns its destination argument, so
+    // `a.connect(b).connect(c)` chains — see AudioManager.resume()'s
+    // `master.connect(comp).connect(ctx.destination)`.
+    connect: vi.fn((destination: unknown) => destination),
     disconnect: vi.fn(),
   };
+  return node;
 }
 
 function mockSourceNode() {

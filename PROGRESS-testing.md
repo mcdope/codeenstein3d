@@ -390,7 +390,48 @@ first thing at the start of every session, before touching code.
   a first-time player hits.
 
   **Phase 6 complete (13/13 files), all 100% stmts/branch/funcs/lines.**
-- [ ] Phase 7: src/engine/ browser-API (12 files)
+- [ ] Phase 7: src/engine/ browser-API (12 files) — IN PROGRESS
+  - [x] src/engine/audio.ts
+  - [ ] src/engine/bgm.ts (next)
+  - [ ] src/engine/input.ts
+  - [ ] src/engine/automap.ts
+  - [ ] src/engine/effects.ts
+  - [ ] src/engine/hud.ts
+  - [ ] src/engine/projectiles.ts
+  - [ ] src/engine/rockets.ts
+  - [ ] src/engine/raycaster.ts
+  - [ ] src/engine/sprites.ts
+  - [ ] src/engine/textures.ts
+  - [ ] src/engine/viewmodel.ts
+
+  audio.ts notes: 100% took two rounds. First round hit a real gap in
+  the shared `test/mocks/audio.ts` helper, not the source under test —
+  `mockAudioNode()`'s `connect` was a bare `vi.fn()` returning
+  `undefined`, so `AudioManager.resume()`'s
+  `master.connect(comp).connect(ctx.destination)` chaining call crashed
+  (`Cannot read properties of undefined (reading 'connect')`). No test
+  before this one had exercised `resume()`'s full graph-building path
+  (Phase 5's `debugView.ts` only used the canvas mock, not audio) — real
+  `AudioNode.connect()` returns its destination argument specifically to
+  support chaining, so fixed by making the mock's `connect` do the same
+  (`vi.fn((destination) => destination)`). This is a shared-mock fix,
+  not an app-code fix — same "trust but verify the test double against
+  the real API contract" lesson as other mock gaps found this project,
+  just the first time it showed up in `test/mocks/`. Also needed
+  `@types/node` as a new devDependency (added, pinned to `^18` to match
+  the installed Node 18.19.1) — unrelated to audio.ts itself, but
+  surfaced because `highscores.test.ts`'s `import { webcrypto } from
+  "node:crypto"` (added last phase to work around jsdom's missing
+  `crypto.subtle`) had never actually been typechecked after that edit;
+  typecheck was run again fresh for this file and caught the gap.
+  Otherwise mechanical: singleton `AudioManager` instance required
+  `vi.resetModules()` + a fresh dynamic `await import("./audio")` per
+  test (in `beforeEach`) since `unavailable`/`ctx` are sticky private
+  state that would otherwise leak between tests; `Ctor` selection
+  (`AudioContext ?? webkitAudioContext ?? null`), the automation gate's
+  stickiness, the pending-volume-before-context-exists queue, the
+  distortion-curve cache, and the per-duration noise-buffer cache each
+  got a dedicated test.
 - [ ] Phase 8: src/fs/ (3 files)
 - [ ] Phase 9: src/ui/ (5 files)
 - [ ] Phase 10: src/engine/engine.ts
@@ -400,12 +441,10 @@ first thing at the start of every session, before touching code.
 ## Current coverage snapshot
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
-src/parser/, ALL of src/map/ (Phase 5 complete), and ALL 13 of Phase 6
-(weapons.ts, player.ts, ammo.ts, enemyAi.ts, pathField.ts, loot.ts,
-lootApply.ts, replay.ts, scoring.ts, spatialGrid.ts, traps.ts,
-storageCompression.ts, highscores.ts) are 100% stmts/branch/funcs/lines.
-789 tests total, all green. Rest of src/engine/ (Phase 7, 12 browser-API
-files), src/fs/, src/ui/, src/main.ts still
+src/parser/, ALL of src/map/ (Phase 5 complete), ALL 13 of Phase 6, and
+1 of 12 Phase-7 files (audio.ts) are 100% stmts/branch/funcs/lines. 817
+tests total, all green. Rest of src/engine/ (11 more Phase-7
+browser-API files), src/fs/, src/ui/, src/main.ts still
 0% (not
 yet reached). Note: projectiles.ts/rockets.ts show partial incidental
 coverage already (mixed pure-physics + canvas-drawing files, deliberately
@@ -424,15 +463,25 @@ absent from the report.
 
 ## Next concrete step
 
-Phase 6 is complete. Start Phase 7 (src/engine/ browser-API, 12 files):
-audio.ts, bgm.ts, input.ts, automap.ts, effects.ts, hud.ts,
+Continue Phase 7: read src/engine/bgm.ts next, write bgm.test.ts.
+Needs `// @vitest-environment jsdom` (constructs `new Audio()`, a real
+`HTMLAudioElement` — jsdom provides the element but its `.play()`/
+`.pause()` are stubs that log "not implemented" unless mocked/spied over
+first), the `test/mocks/fsAccess.ts` in-memory FileSystemDirectoryHandle
+for `loadFolder()`'s `dir.values()` scan, and `test/mocks/audio.ts`'s
+`stubAudioContext()` for the `wireAndPlay()` → `audio.resume()` →
+`createMediaElementSource` path. Also needs `URL.createObjectURL`/
+`revokeObjectURL` stubbed (jsdom doesn't implement these for real Blobs)
+— `vi.stubGlobal("URL", { createObjectURL: vi.fn(() => "blob:fake"),
+revokeObjectURL: vi.fn() })` or similar. Key branches: extension
+filtering (.mp3/.ogg/.wav accepted, others skipped, case-insensitive),
+empty folder (0 tracks, nothing started), `audio.isSilenced()` gating
+playback independently of `resume()`, `sourceNode` wired only once
+across multiple `playCurrent()` calls (second `createMediaElementSource`
+on the same element would throw for real), `currentUrl` revoked on
+track change but not on the very first track, `play()` rejection
+swallowed via `.catch(() => undefined)`, and the `ended` event driving
+`advance()` → wraps `cursor` via modulo back to 0. Verify 100%, commit,
+then continue to input.ts, automap.ts, effects.ts, hud.ts,
 projectiles.ts, rockets.ts, raycaster.ts, sprites.ts, textures.ts,
-viewmodel.ts. Per the plan, this is where the Phase 0 canvas/audio/DOM
-mocks (`test/mocks/canvas.ts`, `test/mocks/audio.ts`) get their first
-real workout — `debugView.ts` in Phase 5 only exercised the canvas mock
-lightly. Read src/engine/audio.ts first (smallest/simplest browser-API
-surface — a good file to re-validate `test/mocks/audio.ts` against
-before tackling the bigger rendering files), write audio.test.ts, verify
-100%, commit. No per-file Phase-7 checklist exists yet in this progress
-file — add one (mirroring the Phase 6 nested checklist above) as part of
-committing the first Phase-7 file's test.
+viewmodel.ts (each its own commit). 1/12 Phase-7 files done.
