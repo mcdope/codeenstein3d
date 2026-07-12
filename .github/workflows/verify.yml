@@ -22,6 +22,11 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      # `build` chains `tsc --noEmit && vite build`, so this is the one CI
+      # step that catches a type error or a Vite build break before it lands
+      # on master — the other jobs run Vitest (transpiles via esbuild, no
+      # type-check) or a dev server (also no type-check/build).
+      - run: npm run build
       - run: npm run verify:wad-parser
       - run: npm run verify:campaign
 

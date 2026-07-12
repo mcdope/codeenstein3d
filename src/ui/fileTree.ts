@@ -60,7 +60,7 @@ function buildItem(node: TreeNode, callbacks: FileTreeCallbacks): HTMLLIElement 
     row.addEventListener("click", () => {
       const open = childList.hidden;
       childList.hidden = !open;
-      twisty.classList.toggle("tree-twisty--open", open);
+      twisty.classList.toggle("tree-twisty--open", Boolean(open));
     });
   } else {
     const label = document.createElement("span");
