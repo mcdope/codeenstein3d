@@ -186,3 +186,6 @@
     - [ ] elite enemies should scale with player count
  - [ ] enemy textures from wad?
  - [ ] multikill score bonus, sfx and gfx
+ - [ ] github repo loads should ignore folders like "test", "Test", "tests" and so on
+ - [ ] already read lore terminals shouldnt glow anymore
+ 
