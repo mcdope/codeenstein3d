@@ -283,7 +283,8 @@ first thing at the start of every session, before touching code.
   - [x] src/engine/lootApply.ts
   - [x] src/engine/loot.ts
   - [x] src/engine/replay.ts
-  - [ ] src/engine/scoring.ts (next)
+  - [x] src/engine/scoring.ts
+  - [ ] src/engine/spatialGrid.ts (next)
   - [ ] src/engine/spatialGrid.ts
   - [ ] src/engine/traps.ts
   - [ ] src/engine/storageCompression.ts
@@ -316,6 +317,14 @@ first thing at the start of every session, before touching code.
   constants. `console.warn` spied/suppressed via
   `vi.spyOn(console, "warn").mockImplementation(() => {})`, matching the
   established pattern from earlier phases.
+
+  scoring.ts notes: also 100% on the first attempt. Only real trap was
+  `mapCompletionBonus`'s strict `>` threshold — the boundary value itself
+  (0.95) must NOT award the bonus, only something strictly above it.
+  Otherwise mechanical: one test pair (starting-pool > 0 vs === 0) per
+  ammo fraction ternary, clamp01 exercised at both ends (negative and
+  >1 inputs) via the map-completion fraction, and the speed-bonus decay
+  checked at under/at/between/at-double/past-double the target time.
 - [ ] Phase 7: src/engine/ browser-API (12 files)
 - [ ] Phase 8: src/fs/ (3 files)
 - [ ] Phase 9: src/ui/ (5 files)
@@ -326,10 +335,11 @@ first thing at the start of every session, before touching code.
 ## Current coverage snapshot
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
-src/parser/, ALL of src/map/ (Phase 5 complete), and 8 of 13 Phase-6 files
+src/parser/, ALL of src/map/ (Phase 5 complete), and 9 of 13 Phase-6 files
 (weapons.ts, player.ts, ammo.ts, enemyAi.ts, pathField.ts, loot.ts,
-lootApply.ts, replay.ts) are 100% stmts/branch/funcs/lines. 710 tests
-total, all green. Rest of src/engine/, src/fs/, src/ui/, src/main.ts still
+lootApply.ts, replay.ts, scoring.ts) are 100% stmts/branch/funcs/lines.
+731 tests total, all green. Rest of src/engine/, src/fs/, src/ui/,
+src/main.ts still
 0% (not
 yet reached). Note: projectiles.ts/rockets.ts show partial incidental
 coverage already (mixed pure-physics + canvas-drawing files, deliberately
@@ -348,8 +358,8 @@ absent from the report.
 
 ## Next concrete step
 
-Continue Phase 6: read src/engine/scoring.ts next, write scoring.test.ts,
-verify 100%, commit. Then spatialGrid.ts, traps.ts (each its own commit),
+Continue Phase 6: read src/engine/spatialGrid.ts next, write
+spatialGrid.test.ts, verify 100%, commit. Then traps.ts (its own commit),
 then storageCompression.ts (test against the real
 CompressionStream/DecompressionStream Node 18+ globals, confirmed in
 Phase 0 research — no mock needed), then highscores.ts last (uses jsdom's
@@ -357,5 +367,5 @@ real localStorage — add `// @vitest-environment jsdom` to that one test
 file; dynamically imports src/engine/defaultHighscore.ts, the excluded
 115k-line data file, as its empty-board fallback — exercising that import
 is fine, just don't expect coverage credit for the data file's own lines,
-it's excluded from instrumentation per vitest.config.ts). 8/13 Phase-6
+it's excluded from instrumentation per vitest.config.ts). 9/13 Phase-6
 files done.
