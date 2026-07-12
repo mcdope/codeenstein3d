@@ -4,14 +4,26 @@
 
 ## Vision
 
-What if you could physically walk through your software architecture? **Codeenstein 3D** is a browser-based retro raycaster that translates local source code into playable dungeons.
-
-- Every **folder** is a level
-- Every **file** is a room  
-- Every **function** is an enemy (HP = cyclomatic complexity)
-- The higher the code complexity, the harder the fight
+What if you could physically walk through your software architecture? **Codeenstein 3D** is a browser-based retro raycaster that translates local source code into playable dungeons. There's no hand-authored level data — everything you walk through, fight, or read is generated directly from parsing the codebase you point it at.
 
 Load anything from a massive Symfony enterprise project to low-level C code like `pam_usb` — then grab a shotgun and refactor your way through it.
+
+### What in your code becomes what in the game
+
+| In your source code... | ...becomes this in-game |
+|---|---|
+| A folder | A level |
+| A file | The rooms/corridors of that level |
+| A function/method (HP = `cyclomatic_complexity × 25`) | An enemy — higher complexity means more health, pack spawns, or a gold-tinted elite boss |
+| A function with code smells (>5 params, >3 nesting levels) | A tougher enemy (scaled bonus complexity) |
+| A global variable | An acid pool (hazard terrain) |
+| A private/protected method | A locked room, gated behind a key found elsewhere in the level |
+| A `goto`/label pair | A pair of linked teleporter pads |
+| A large comment block | A lore terminal (press R to read) |
+| Dead code, empty catch blocks, deprecated tags, commented-out code, magic-number/blob literals | A secret room hidden behind a fake wall |
+| A header file (`.h`) | A bonus level (distinct teal theme, boosted loot) |
+
+See [How It Works](#how-it-works) below for the full detail behind each of these mappings.
 
 ---
 

@@ -12,3 +12,4 @@
 - **Header files are restock stops.** If you land on a `.h`-derived bonus level, loot odds are noticeably better than normal — a good place to top off before pushing on.
 - **Difficulty cuts both ways.** Hard doesn't just make enemies tougher — it also thins out how much ammo/health/swap you find, so ammo discipline matters more the higher you go.
 - **Cyan enemies aren't worth taking cover from.** Edge Cases (small, jarringly cyan, found only in a corridor's breakup room) hit for a fraction of a normal enemy's damage and die in about one shot — their erratic darting makes them mildly annoying to line up, but they're a nuisance to swat, not a threat to plan around.
+- **You can build your own level on purpose.** Since a level is generated straight from a file's actual code structure, you can write (or ask a coding agent to write) a source file specifically to get the enemies/hazards/secrets you want — see [Designing Your Own Levels](level-design.md).
