@@ -390,7 +390,7 @@ first thing at the start of every session, before touching code.
   a first-time player hits.
 
   **Phase 6 complete (13/13 files), all 100% stmts/branch/funcs/lines.**
-- [ ] Phase 7: src/engine/ browser-API (12 files) — IN PROGRESS
+- [x] Phase 7: src/engine/ browser-API (12 files) — COMPLETE
   - [x] src/engine/audio.ts
   - [x] src/engine/bgm.ts
   - [x] src/engine/input.ts
@@ -401,8 +401,8 @@ first thing at the start of every session, before touching code.
   - [x] src/engine/rockets.ts
   - [x] src/engine/raycaster.ts
   - [x] src/engine/sprites.ts
-  - [ ] src/engine/textures.ts (next)
-  - [ ] src/engine/viewmodel.ts
+  - [x] src/engine/textures.ts
+  - [x] src/engine/viewmodel.ts
 
   audio.ts notes: 100% took two rounds. First round hit a real gap in
   the shared `test/mocks/audio.ts` helper, not the source under test —
@@ -662,6 +662,48 @@ first thing at the start of every session, before touching code.
   `top`/`bottom` values exercises the branch honestly without needing a
   `v8 ignore` comment or touching source at all — testing the function
   against its full input contract rather than only realistic callers.
+
+  textures.ts notes: confirmed (not just predicted) it needed the same
+  jsdom + stub-canvas-before-dynamic-import pattern as raycaster.ts —
+  its own module-level `export const textures = new TextureManager()`
+  singleton builds every procedural default texture via
+  `document.createElement("canvas")` at import time. 100% on the first
+  attempt, 8 tests. Rather than constructing a real in-memory WAD file
+  (the `scripts/fixtures/buildTestWad.mjs` route Phase 2 used),
+  `../wad/loadWad`'s `loadWadTextures` was mocked directly via
+  `vi.mock` — `loadWad.ts` is already fully unit-tested in its own
+  right (Phase 2), so re-exercising its internals here would just be
+  redundant; textures.ts's own unit only needs to be tested against
+  `loadWadTextures`'s *contract* (a `WadLoadResult` shape), not its
+  real WAD-parsing behavior. `TextureManager.loadFromWad`'s 10
+  independent `result.xTexture ? bitmapFromWadPixels(...) :
+  this.defaults.x` ternaries were covered economically with just two
+  calls — one `WadLoadResult` with all 10 texture slots present (covers
+  every ternary's true branch at once), one with all 10 absent (covers
+  every false branch at once) — rather than 20 separate single-slot
+  tests. The two `if (!ctx) throw ...` defensive checks (in `makeCanvas()`
+  and `bitmapFromWadPixels`, both hit when `canvas.getContext("2d")`
+  returns null) were tested directly by calling
+  `HTMLCanvasElement.prototype.getContext.mockImplementationOnce(() =>
+  null)` right before the one call meant to trip it — `mockImplementationOnce`
+  only consumes a single future invocation, so every other test in the
+  file keeps using the real (stubbed) working context uninterrupted.
+
+  viewmodel.ts notes: 100% on the first attempt, 17 tests — the
+  simplest Phase-7 file by far (pure Canvas 2D drawing, one exported
+  function `drawWeapon` dispatching on `WeaponViewKind` to 7 per-weapon
+  draw routines, no module-scope singleton, no value import from
+  textures.ts, so a plain static import worked with no jsdom/dynamic-
+  import workaround at all). The one thing worth remembering: knife and
+  chainsaw never reference `v.flash` at all (a stab/revving swing has no
+  muzzle flash), so their "flash is ignored" behavior was verified
+  directly by comparing `beginPath` call counts between `flash: true`
+  and `flash: false` and asserting they're *equal* — the mirror image of
+  the 5 ranged weapons' tests, which assert the count is *greater* with
+  flash on (each additional muzzle-flash/flame-burst draw call adds its
+  own `beginPath()`).
+
+  **Phase 7 complete (12/12 files), all 100% stmts/branch/funcs/lines.**
 - [ ] Phase 8: src/fs/ (3 files)
 - [ ] Phase 9: src/ui/ (5 files)
 - [ ] Phase 10: src/engine/engine.ts
@@ -672,16 +714,11 @@ first thing at the start of every session, before touching code.
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
 src/parser/, ALL of src/map/ (Phase 5 complete), ALL 13 of Phase 6, and
-10 of 12 Phase-7 files (audio.ts, bgm.ts, input.ts, automap.ts,
-effects.ts, hud.ts, projectiles.ts, rockets.ts, raycaster.ts,
-sprites.ts) are 100% stmts/branch/funcs/lines. 1097 tests total, all
-green. Rest of src/engine/ (2 more Phase-7 browser-API files), src/fs/,
-src/ui/, src/main.ts still
-0% (not
-yet reached). Note: projectiles.ts/rockets.ts show partial incidental
-coverage already (mixed pure-physics + canvas-drawing files, deliberately
-deferred to Phase 7). defaultHighscore.ts and empty-node-shim.ts correctly
-absent from the report.
+ALL 12 of Phase 7 (Phase 7 complete) are 100% stmts/branch/funcs/lines.
+1122 tests total, all green. src/fs/, src/ui/, src/engine/engine.ts,
+src/main.ts still 0% (not yet reached — Phases 8-11).
+defaultHighscore.ts and empty-node-shim.ts correctly absent from the
+report.
 
 ## Known open issues / deferred decisions
 
@@ -695,41 +732,21 @@ absent from the report.
 
 ## Next concrete step
 
-Continue Phase 7: read src/engine/textures.ts next, write
-textures.test.ts. **Confirmed** (not just predicted) that it needs the
-same jsdom + stub-canvas-before-dynamic-import workaround raycaster.ts
-needed: it has its own module-level singleton, `export const textures =
-new TextureManager();` (line 378), whose constructor calls
-`buildDefaultTextureSet()` → `buildBrickTexture`/`buildPanelTexture`/
-`buildDoorTexture`/`buildFloorTexture`, each of which calls
-`document.createElement("canvas")` + `canvas.getContext("2d")` via a
-shared `makeCanvas()` helper. Use the exact same pattern as
-raycaster.test.ts: `// @vitest-environment jsdom` pragma,
-`stubCanvasGetContext()` in a `beforeAll` before dynamically importing
-`{ TextureManager, TEXTURE_SIZE, LORE_BASE, type TextureBitmap, type
-TextureSet, type WadLoadSummary }` from `./textures` — don't statically
-import it. Also imports a real value (`loadWadTextures`) from
-`../wad/loadWad` (already fully tested in Phase 2, safe to call for
-real rather than mocking). Key things to cover: `buildBrickTexture`/
-`buildPanelTexture`/`buildDoorTexture`/`buildFloorTexture`'s drawing
-calls (straightforward, no real branches beyond loops); `TextureManager`
-constructor building all 10 default slots; `getActiveSet()`;
-`loadFromWad()`'s two paths — `result.ok===false` (parse failure,
-returns an all-null `WadLoadSummary`, active set untouched) and
-`result.ok===true` (10 independent `result.xTexture ?
-bitmapFromWadPixels(...) : this.defaults.x` ternaries — needs, for
-genuine 100% branch coverage, at least one test where a given slot's
-WAD texture is present AND one where it's absent/falls back to
-default, though a single call with a MIX of present/absent slots across
-the ten can cover both branches economically in one test rather than
-20 separate calls); `bitmapFromWadPixels`'s alpha-hole-fill loop (pixels
-with alpha===0 get filled with `holeFill`, opaque ones pass through
-unchanged — needs both). For the `loadFromWad` tests, either construct a
-real minimal in-memory WAD via `scripts/fixtures/buildTestWad.mjs`
-(already proven working with the `?url-as-path` plugin machinery back in
-Phase 2) or stub `loadWadTextures` itself via `vi.mock("../wad/loadWad",
-...)` if constructing a real WAD bytes buffer is more overhead than
-warranted here — read `src/wad/loadWad.ts`'s actual return shape
-(`LoadWadTexturesResult` or similar) before deciding which approach is
-less test code. Verify 100%, commit, then continue to viewmodel.ts (its
-own commit) — the last file in Phase 7. 10/12 Phase-7 files done.
+**Phase 7 is complete (12/12 files, all 100%).** Start Phase 8:
+src/fs/ (3 files — demoCampaign.ts 46 lines, github.ts 199 lines,
+workspace.ts 131 lines). Per the plan: `demoCampaign.ts`'s
+`import.meta.glob` works against the real `demo-campaign/` files under
+Vitest's vite-node pipeline, no mock needed; `workspace.ts` uses the
+`test/mocks/fsAccess.ts` in-memory `FileSystemDirectoryHandle`/
+`FileSystemFileHandle` fake (already built in Phase 0, first genuinely
+exercised here — check it actually covers everything `workspace.ts`
+calls, since so far only its type shape has been referenced, e.g. in
+raycaster.test.ts's fixtures, never its actual runtime behavior);
+`github.ts` uses `vi.stubGlobal("fetch", ...)` to fake the GitHub API
+responses. Read all three files fully before writing tests — this
+summary is from the plan's Phase-0-era notes, not a fresh read. Verify
+100% per file, commit after each one individually (learn from the
+bgm.ts/automap.ts+effects.ts+hud.ts+projectiles.ts batching slips
+earlier in Phase 7 — commit every single file, no batching). After
+Phase 8: Phase 9 (src/ui/, 5 files), then Phase 10 (engine.ts), Phase 11
+(main.ts), Phase 12 (wrap-up). 0/3 Phase-8 files done.
