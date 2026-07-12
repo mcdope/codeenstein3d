@@ -272,7 +272,21 @@ first thing at the start of every session, before touching code.
   paper over — stop and ask before either fixing engine code or hiding the
   gap, since "should I fix a newly-found bug" is a decision only the user
   should make, not something to resolve unilaterally mid-test-writing.
-- [ ] Phase 6: src/engine/ pure-logic (13 files)
+- [ ] Phase 6: src/engine/ pure-logic (13 files) — IN PROGRESS
+  - [x] src/engine/weapons.ts
+  - [x] src/engine/player.ts
+  - [ ] src/engine/ammo.ts (next)
+  - [ ] src/engine/enemyAi.ts
+  - [ ] src/engine/lootApply.ts
+  - [ ] src/engine/loot.ts
+  - [ ] src/engine/pathField.ts
+  - [ ] src/engine/replay.ts
+  - [ ] src/engine/scoring.ts
+  - [ ] src/engine/spatialGrid.ts
+  - [ ] src/engine/traps.ts
+  - [ ] src/engine/storageCompression.ts
+  - [ ] src/engine/highscores.ts (last — dynamically imports the excluded
+        defaultHighscore.ts, needs jsdom for localStorage)
 - [ ] Phase 7: src/engine/ browser-API (12 files)
 - [ ] Phase 8: src/fs/ (3 files)
 - [ ] Phase 9: src/ui/ (5 files)
@@ -283,12 +297,11 @@ first thing at the start of every session, before touching code.
 ## Current coverage snapshot
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
-src/parser/, and ALL of src/map/ (18/18 files — Phase 5 complete) are
-100% stmts/branch/funcs/lines. 589 tests total, all green. src/engine/,
-src/fs/, src/ui/, src/main.ts still 0% (not yet reached). defaultHighscore.ts
-and empty-node-shim.ts correctly absent from the report. `npm run
-verify:campaign` (the existing 17-language integration check) also passes
-clean after the mapGenerator.ts bugfix.
+src/parser/, ALL of src/map/ (Phase 5 complete), and 2 of 13 Phase-6 files
+(weapons.ts, player.ts) are 100% stmts/branch/funcs/lines. 621 tests total,
+all green. Rest of src/engine/, src/fs/, src/ui/, src/main.ts still 0%
+(not yet reached). defaultHighscore.ts and empty-node-shim.ts correctly
+absent from the report.
 
 ## Known open issues / deferred decisions
 
@@ -302,18 +315,14 @@ clean after the mapGenerator.ts bugfix.
 
 ## Next concrete step
 
-Phase 5 is DONE (all 18 files, 100% across src/map/). Start Phase 6:
-src/engine/ pure-logic files (13 files: ammo.ts, enemyAi.ts, lootApply.ts,
-loot.ts, pathField.ts, player.ts, replay.ts, scoring.ts, spatialGrid.ts,
-traps.ts, weapons.ts, storageCompression.ts, highscores.ts). Read
-src/engine/weapons.ts first (pure data table, foundational — many other
-engine files reference WEAPONS), then player.ts (camera/dir vector,
-foundational for raycaster-adjacent logic), then work through the rest.
-storageCompression.ts can be tested against the real CompressionStream/
-DecompressionStream Node 18+ globals (confirmed in Phase 0 research, no
-mock needed). highscores.ts uses jsdom's real localStorage (add
-`// @vitest-environment jsdom` to that one test file) and dynamically
-imports src/engine/defaultHighscore.ts (the excluded 115k-line data file)
-as its empty-board fallback — that dynamic import itself is fine to
-exercise, just don't expect coverage credit for the data file's own lines
-(it's excluded from instrumentation entirely, per vitest.config.ts).
+Continue Phase 6: read src/engine/ammo.ts next, write ammo.test.ts, verify
+100%, commit. Then enemyAi.ts, lootApply.ts, loot.ts, pathField.ts,
+replay.ts, scoring.ts, spatialGrid.ts, traps.ts (each its own commit),
+then storageCompression.ts (test against the real CompressionStream/
+DecompressionStream Node 18+ globals, confirmed in Phase 0 research — no
+mock needed), then highscores.ts last (uses jsdom's real localStorage —
+add `// @vitest-environment jsdom` to that one test file; dynamically
+imports src/engine/defaultHighscore.ts, the excluded 115k-line data file,
+as its empty-board fallback — exercising that import is fine, just don't
+expect coverage credit for the data file's own lines, it's excluded from
+instrumentation per vitest.config.ts).
