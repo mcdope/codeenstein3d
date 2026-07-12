@@ -1,11 +1,14 @@
 # Changelog
 
-## Unreleased
+## beta-3
 
 - Texture-mapped walls, doors, floors, lore terminals, hazard (acid) floors, teleporter pads, and spike traps — procedural defaults, or real textures/flats sourced from a loaded DOOM `.wad` file
 - Fix: holding Toolchain's melee-fire (previously Left-Ctrl) while also moving forward could close the entire browser — `Ctrl+W` is a browser-reserved "close tab" shortcut page JavaScript cannot block. Quick-melee (knife/Toolchain) is now bound to Space instead; ranged weapon fire is mouse/gamepad-only (no keyboard fire key — keyboard-only play was never a supported control scheme)
 - Fix: a GitHub repo load left running while starting a different workspace (another repo, a local folder, the demo campaign, Continue Run, or Watch Replay) could resolve later and clobber the newer load's state; superseded loads are now aborted and their results discarded
 - Fix: loading a GitHub repo could fire off far more requests than needed to start playing — entrypoint detection now checks filenames before it needs any network content sniffing and no longer falls back to scoring every file's content when a repo has no conventional entrypoint filename, the whole-codebase highscore stats pass now always skips itself for a remote repo instead of trying to fetch and parse every file, and the file list is no longer re-scanned from scratch (with a fresh round of content sniffing) on every single level clear. Measured on a real repo with no conventional entrypoint filename: 99 requests on load down to 13
+- Fix: map generation could silently produce a room with no real exit corridor (surfaced when parsing DockerManager.php) — added a filler-room top-up, a maze connectivity repair pass, and a dev-time reachability check so a regression like this is loud instead of silent
+- Fix: every whiffed shot or melee swing printed a "missed" line to the console sidebar, spamming it during any real firefight — only hits are logged now
+- Fix: the file tree's folder expand/collapse arrow could stop responding
 
 ## beta-2
 
