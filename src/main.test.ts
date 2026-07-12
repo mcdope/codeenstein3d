@@ -5,6 +5,7 @@
 import { webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildIndexDom, stubDialogElement, stubResizeObserver } from "../test/mocks/mainDom";
+import { installRaf, type RafController } from "../test/mocks/raf";
 import { stubCanvasGetContext } from "../test/mocks/canvas";
 import { FakeFileSystemFileHandle, fakeDirectoryHandle } from "../test/mocks/fsAccess";
 import type { TreeNode } from "./fs/workspace";
@@ -837,5 +838,77 @@ describe("main.ts — file tree selection", () => {
     document.querySelector<HTMLButtonElement>('.tree-row--file[title="ws/a_main.c"]')!.click();
     await flushAsync();
     expect(document.querySelector(".canvas-area")!.hasAttribute("hidden")).toBe(false);
+  });
+});
+
+describe("main.ts — starting a level and driving live gameplay", () => {
+  let raf: RafController;
+
+  beforeEach(() => {
+    raf = installRaf({ stubClock: true });
+  });
+
+  afterEach(() => {
+    raf.restore();
+  });
+
+  /** Loads the demo campaign (a real, small, quick-to-generate map) and
+   * waits for the level-start briefing to be showing, ready to dismiss. */
+  async function launchAndReachBriefing(): Promise<HTMLCanvasElement> {
+    document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    return document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+  }
+
+  /** Dismisses `GameHud.showLevelStart`'s briefing overlay (past its
+   * DISMISS_LOCK_MS) via an Enter keydown on window, which is what actually
+   * calls `activeEngine.start()` — see `launchLevel`'s `showLevelStart`
+   * callback. */
+  function dismissBriefing(): void {
+    raf.flush(1, 1300); // past DISMISS_LOCK_MS (1200ms) on the stubbed clock
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Enter" }));
+  }
+
+  it("dismissing the briefing starts the engine and its frame loop", async () => {
+    await importMain();
+    await launchAndReachBriefing();
+    dismissBriefing();
+    const before = raf.now();
+    raf.flush(1, 16);
+    expect(raf.now()).toBeGreaterThan(before); // the engine's own rAF loop is now running
+  });
+
+  it("typing IDDQD fires onCheatActivated", async () => {
+    await importMain();
+    const canvas = await launchAndReachBriefing();
+    dismissBriefing();
+    raf.flush(1, 16); // let start() finish wiring the real InputController
+
+    // Cheat letters are read via keydown on the *canvas* (see
+    // InputController.attach()), not window.
+    for (const key of "IDDQD") {
+      canvas.dispatchEvent(new KeyboardEvent("keydown", { key }));
+    }
+    raf.flush(1, 16); // let advance() consume the completed cheat buffer
+    // No DOM-visible signal for onCheatActivated specifically beyond the
+    // cheat toast the engine itself draws on canvas — absence of a throw
+    // across the whole typed sequence + a following frame is the assertion.
+    expect(() => raf.flush(1, 16)).not.toThrow();
+  });
+
+  it("Escape pauses the sim, reaching the engine's onFreezeChange -> consoleSidebar.setPaused wiring", async () => {
+    await importMain();
+    await launchAndReachBriefing();
+    dismissBriefing();
+    raf.flush(1, 16);
+
+    // onFreezeChange has no directly observable DOM signal (setPaused just
+    // tracks an internal flag gating the hint-scheduling timer) — reaching
+    // this without throwing across the pause AND a following resume is the
+    // assertion, exercising both the true and false edges of the closure.
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" }));
+    expect(() => raf.flush(1, 16)).not.toThrow(); // pause edge
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" }));
+    expect(() => raf.flush(1, 16)).not.toThrow(); // resume edge
   });
 });

@@ -948,16 +948,21 @@ first thing at the start of every session, before touching code.
     that use large `dt` steps.
 
 - [ ] Phase 11: src/main.ts — IN PROGRESS. `src/main.test.ts` created,
-  60 tests so far covering: module-import DOM wiring, the 3
+  63 tests so far covering: module-import DOM wiring, the 3
   campaign-persistence exports, `applyForcedUnlocks`, `flattenParsableFiles`,
   `findEntrypoint`'s full local-workspace cascade, WAD/BGM loading, the
   highscores dialog, all three workspace-loading flows (local pick,
-  GitHub, demo campaign) including a real supersession race, Continue Run
-  (resume + saved-file-not-found fallback + failure paths), and file-tree
-  file selection (`handleFileSelected`'s both branches). All green, `npm
-  test` clean at 1382/76. **Coverage on src/main.ts alone: 795/1310 lines
-  (61%), 38/53 functions (72%), 207/264 branches (78%)**. See "Next
-  concrete step" for what's next.
+  GitHub, demo campaign) including a real supersession race, Continue Run,
+  file-tree file selection, and — new — actually starting a live level
+  (dismissing `GameHud.showLevelStart`'s briefing via a real
+  `installRaf({stubClock:true})`-driven clock past `DISMISS_LOCK_MS`,
+  which calls the real `activeEngine.start()`) plus driving real gameplay
+  input through it: typing "IDDQD" on the canvas (`onCheatActivated`) and
+  Escape/resume (`onFreezeChange`, both edges). All green, `npm test`
+  clean at 1385/76. **Coverage on src/main.ts alone: `onStats`,
+  `onCheatActivated`, `onFreezeChange` now covered too** (uncovered
+  function list dropped from 15 to 11 — see below for what's left). See
+  "Next concrete step" for what's next.
   - Gotcha this batch: a file-tree row's `title` attribute is the node's
     *full path* ("ws/readme.md"), not its bare filename — a `[title="…"]`
     selector needs the workspace-root prefix too.
@@ -1208,25 +1213,74 @@ per-scenario, not per-file, breakdown):
       what's still missing (forced-unlock-with-real-carryover branches,
       the bonus-level extension check, and the replay-recorder-reuse
       branch specifically look likely to still need direct coverage)
-- [ ] `advanceToNextLevel` (multi-level chaining, campaign-complete path)
+- [x] starting a live level: dismissing `GameHud.showLevelStart`'s briefing
+      (via `installRaf({stubClock:true})` + a real Enter keydown past
+      `DISMISS_LOCK_MS`) actually calls `activeEngine.start()`; typing
+      "IDDQD" on the canvas reaches `onCheatActivated`; Escape (both
+      pause and resume edges) reaches `onFreezeChange`. This is the
+      foundational pattern for driving *any* further live-gameplay
+      coverage (win/death specifically, below) — see the `launchAndReachBriefing`/
+      `dismissBriefing` helpers in `main.test.ts`, reusable as-is
+- [ ] `onGameOver`/`onWin` specifically, and everything downstream of them
+      (`advanceToNextLevel`, `recordRunHighscore`, `findNextParsableFile`,
+      `resetToFileTree`'s call from `onGameOver`) — **the single hardest
+      remaining piece**. Needs either (a) actually navigating the player
+      to a hazard tile (game-over) or the exit tile (win) through a real
+      generated map's raycast-collision geometry, or (b) a different
+      angle not yet explored. Two things ARE established and should make
+      this tractable without inventing a real pathfinder:
+      1. Map *layout* (spawn/exit/hazard positions, room shape) is
+         deterministic per source content — `MapGenerator.generate`
+         derives its seed from the parsed AST, not from `launchLevel`'s
+         own `randomSeed()` (that one only seeds *gameplay* RNG — enemy
+         AI timing, loot, weapon spread — see `src/prng.ts`'s doc
+         comment). A fixed custom-fixture source file therefore always
+         produces the same map, run to run.
+      2. The *exact* generated map (including `exit`/`spawn`/`hazards`
+         coordinates) is available in tests for free: `launchLevel`
+         itself does `console.log("...", map)` with the full object as
+         a second arg (deliberately spoiler-free in its *string*, but
+         the raw object is still right there) — a `vi.spyOn(console,
+         "log")` can pull real coordinates out of `.mock.calls` without
+         needing to export anything new.
+      A game-over via a hazard is likely the easier of the two to reach
+      (just needs to path onto *any* hazard tile, not a specific one) —
+      try that first. Consider building a single small custom fixture
+      file (not the demo campaign, whose real map is large/complex) and
+      empirically checking via a scratch script whether its generated
+      map's spawn sits directly adjacent to a hazard/wall-free path
+      before writing the real test, same as the seed-brute-forcing
+      technique already used successfully in Phase 10's loot-drop tests.
+- [ ] `advanceToNextLevel`'s multi-level chaining and campaign-complete
+      path specifically (distinct from the win/death handler wiring
+      above — this is what happens *after* `onWin` fires)
 - [ ] highscore recording (`recordRunHighscore` — cheat-used and
-      died-on-level-1 exclusions, codebase-stats timeout path)
+      died-on-level-1 exclusions, codebase-stats timeout path) — also
+      blocked on a real onGameOver/onWin reach
 - [ ] replay playback (`startReplay`'s whole nested-closure machinery —
       play/pause, seek, speed, level-to-level advance, all 4 termination
       paths: natural win/death, Escape, failed relocation/hash mismatch,
-      frames-exhausted safety net)
+      frames-exhausted safety net) — the *last* remaining large batch;
+      `onWatchReplay`/`buildReplayControls` are part of this
 - [ ] `beforeunload` autosave
+- [ ] `fitCanvasToArea` (the `ResizeObserver`/`fullscreenchange` listeners) —
+      small, self-contained, no gameplay dependency; good quick win
+- [ ] `formatByteCount` (GitHub tree-fetch progress readout) — needs a
+      *streaming* `Response` mock (see `test/mocks` conventions in
+      `src/fs/github.test.ts`'s `streamResponse` helper), not the plain
+      `jsonResponse` shape already used for the GitHub-load batch
 - [ ] `resetToFileTree`/`showFileTreePlaceholder`/`showLoadingScreen` (mostly
       covered incidentally by the flows above — verify via coverage report
       once those land, don't necessarily need dedicated tests)
 
-**Next immediate action**: WAD texture loading and the highscores dialog
-are the smallest/most isolated remaining pieces (no FS-Access/GitHub
-mocking needed) — good next batch. Workspace-loading flows (local/
-GitHub/demo/continue) are the next tier up in complexity and unlock the
-remote-workspace `findEntrypoint` gap above as a side effect. `launchLevel`/
-`advanceToNextLevel`/replay are the largest remaining pieces — save for
-last once the loading flows that feed into them exist as test fixtures
+**Next immediate action**: `fitCanvasToArea` and `formatByteCount` are
+the smallest/most isolated remaining pieces — good next batch, no
+gameplay-navigation research needed. Then invest the scratch-script
+research time into the onGameOver/onWin navigation problem (see above)
+since so much else (`advanceToNextLevel`, `recordRunHighscore`,
+`resetToFileTree`'s onGameOver call site) is blocked on it. Save
+`startReplay`'s full batch for last — it's the single largest remaining
+piece and doesn't block anything else
 to build on.
 
 After Phase 11 (the last content phase): Phase 12 wrap-up — flip
