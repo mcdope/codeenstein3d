@@ -176,3 +176,4 @@
     - [ ] elite enemies should scale with player count
  - [ ] enemy textures from wad?
  - [ ] multikill score bonus, sfx and gfx
+ - [ ] update README.md to point out how code relates to gameplay
