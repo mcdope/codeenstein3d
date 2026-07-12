@@ -285,7 +285,8 @@ first thing at the start of every session, before touching code.
   - [x] src/engine/replay.ts
   - [x] src/engine/scoring.ts
   - [x] src/engine/spatialGrid.ts
-  - [ ] src/engine/traps.ts (next)
+  - [x] src/engine/traps.ts
+  - [ ] src/engine/storageCompression.ts (next)
   - [ ] src/engine/spatialGrid.ts
   - [ ] src/engine/traps.ts
   - [ ] src/engine/storageCompression.ts
@@ -340,6 +341,18 @@ first thing at the start of every session, before touching code.
   an enemy can die between rebuild and query) — tested by flipping
   `e.alive = false` on an already-bucketed enemy instance and confirming
   `anyWithin` no longer finds it.
+
+  traps.ts notes: also 100% on the first attempt. Used a real `Player`
+  instance (already-tested Phase 6 class) with `posX`/`posY` overwritten
+  directly after construction, same "reuse an already-tested real
+  fixture instead of mocking" pattern as `enemyAi.ts`. Key branch traps:
+  `detonateMine`'s falloff floor needed a distance placed just inside
+  the blast radius (`MINE_BLAST_RADIUS - 0.01`) to force `1 -
+  distance/radius` below `MINE_DAMAGE_FALLOFF_FLOOR`; `updateMines`'s
+  sight-radius stickiness needed two separate tests (unseen mine staying
+  unseen vs. an already-seen mine staying seen) since it's one boolean
+  OR-into, not a toggle; and "never assumed capped at 1" detonation per
+  frame got its own explicit two-mines-at-once test.
 - [ ] Phase 7: src/engine/ browser-API (12 files)
 - [ ] Phase 8: src/fs/ (3 files)
 - [ ] Phase 9: src/ui/ (5 files)
@@ -350,10 +363,10 @@ first thing at the start of every session, before touching code.
 ## Current coverage snapshot
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
-src/parser/, ALL of src/map/ (Phase 5 complete), and 10 of 13 Phase-6
+src/parser/, ALL of src/map/ (Phase 5 complete), and 11 of 13 Phase-6
 files (weapons.ts, player.ts, ammo.ts, enemyAi.ts, pathField.ts, loot.ts,
-lootApply.ts, replay.ts, scoring.ts, spatialGrid.ts) are 100%
-stmts/branch/funcs/lines. 743 tests total, all green. Rest of
+lootApply.ts, replay.ts, scoring.ts, spatialGrid.ts, traps.ts) are 100%
+stmts/branch/funcs/lines. 764 tests total, all green. Rest of
 src/engine/, src/fs/, src/ui/, src/main.ts still
 0% (not
 yet reached). Note: projectiles.ts/rockets.ts show partial incidental
@@ -373,13 +386,16 @@ absent from the report.
 
 ## Next concrete step
 
-Continue Phase 6: read src/engine/traps.ts next, write traps.test.ts,
-verify 100%, commit. Then storageCompression.ts (test against the real
+Continue Phase 6: read src/engine/storageCompression.ts next, write
+storageCompression.test.ts (test against the real
 CompressionStream/DecompressionStream Node 18+ globals, confirmed in
-Phase 0 research — no mock needed), then highscores.ts last (uses jsdom's
-real localStorage — add `// @vitest-environment jsdom` to that one test
-file; dynamically imports src/engine/defaultHighscore.ts, the excluded
-115k-line data file, as its empty-board fallback — exercising that import
-is fine, just don't expect coverage credit for the data file's own lines,
-it's excluded from instrumentation per vitest.config.ts). 10/13 Phase-6
-files done.
+Phase 0 research — no mock needed), verify 100%, commit. Then
+highscores.ts last (uses jsdom's real localStorage — add `//
+@vitest-environment jsdom` to that one test file; dynamically imports
+src/engine/defaultHighscore.ts, the excluded 115k-line data file, as its
+empty-board fallback — exercising that import is fine, just don't expect
+coverage credit for the data file's own lines, it's excluded from
+instrumentation per vitest.config.ts). Once highscores.ts is done, Phase
+6 (13/13 files) is complete — move on to Phase 7 (src/engine/
+browser-API, 12 files), starting with whichever file has the smallest
+canvas/audio/DOM surface first. 11/13 Phase-6 files done.
