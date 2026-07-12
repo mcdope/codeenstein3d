@@ -399,8 +399,8 @@ first thing at the start of every session, before touching code.
   - [x] src/engine/hud.ts
   - [x] src/engine/projectiles.ts
   - [x] src/engine/rockets.ts
-  - [ ] src/engine/raycaster.ts (next)
-  - [ ] src/engine/sprites.ts
+  - [x] src/engine/raycaster.ts
+  - [ ] src/engine/sprites.ts (next)
   - [ ] src/engine/textures.ts
   - [ ] src/engine/viewmodel.ts
 
@@ -588,6 +588,52 @@ first thing at the start of every session, before touching code.
   the exact `ROCKET_ENEMY_TRIGGER_RADIUS` constant, plus one test with
   both OR operands true at once (near an enemy AND in a wall
   simultaneously) to confirm it only detonates once, not twice.
+
+  raycaster.ts notes: the biggest/most intricate file in the whole
+  project so far (DDA wall raycasting + per-pixel floor-casting +
+  minimap, ~590 lines) — took several rounds but landed at 100%, 27
+  tests. Real gotchas, roughly in the order they bit:
+  1. **Module-graph side effect on import, not something a test can
+     defer.** `raycaster.ts` imports a real *value* (`LORE_BASE`, not
+     just types) from `textures.ts`, whose module scope constructs a
+     `TextureManager` singleton that calls `document.createElement`
+     and `canvas.getContext("2d")` immediately at import time. Since ES
+     module imports are hoisted ahead of *all* other top-level code —
+     including a `beforeAll` — a plain `import { renderScene } from
+     "./raycaster"` at the top of the test file fails before any test
+     setup can run, even under `@vitest-environment jsdom` (jsdom's
+     canvas doesn't implement `getContext` at all without the `canvas`
+     npm package). Fixed by NOT statically importing `raycaster.ts` —
+     instead `stubCanvasGetContext()` runs first in a `beforeAll`, then
+     `renderScene`/`renderMinimap`/`FOG_FAR` are bound from a dynamic
+     `await import("./raycaster")` afterward. Worth remembering for
+     `sprites.ts`/`viewmodel.ts`/`engine.ts` next — any of them
+     importing a *value* (not just a type) from `textures.ts` will hit
+     the exact same problem.
+  2. **A "doesn't throw" test can silently cover 0% of what it looks
+     like it's testing.** The floor-cast sweep's exact tile-by-tile
+     path depends on player position/facing/viewport geometry in a way
+     that's impractical to hand-predict — an initial test that placed
+     a hazard/teleporter/spike tile at a few fixed grid cells and just
+     asserted `not.toThrow()` left the actual per-tile-kind floor
+     texture ternary at under 100% branch coverage, because the sweep
+     never actually happened to land on any of those cells. Fixed by
+     filling the *entire* map interior with one target tile kind per
+     test (guaranteeing the sweep lands on it somewhere), then reading
+     the real output pixels back out of the `putImageData` call's
+     `ImageData.data` and asserting the target texture's (uniquely
+     colored, since the test fixture textures are flat-filled) RGB
+     triplet is actually present — real behavioral verification, not
+     just absence-of-crash.
+  3. Two more branch gaps closed by v8's report after that: a same-row
+     wall top/bottom edge-antialiasing skip (needs a wall far enough
+     away — a 300-tile corridor — that its whole on-screen height
+     collapses into a single pixel row) and the minimap's edge-case
+     enemy color branch (the fixture only had one `edgeCase: false`
+     enemy; added a second `edgeCase: true` one).
+  4. `renderMinimap`/`renderScene`'s lore-terminal/spike/exit pulse
+     animations call the real `performance.now()` directly — no mock
+     needed, matching Phase 0's original research.
 - [ ] Phase 8: src/fs/ (3 files)
 - [ ] Phase 9: src/ui/ (5 files)
 - [ ] Phase 10: src/engine/engine.ts
@@ -598,10 +644,10 @@ first thing at the start of every session, before touching code.
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
 src/parser/, ALL of src/map/ (Phase 5 complete), ALL 13 of Phase 6, and
-8 of 12 Phase-7 files (audio.ts, bgm.ts, input.ts, automap.ts,
-effects.ts, hud.ts, projectiles.ts, rockets.ts) are 100%
-stmts/branch/funcs/lines. 1012 tests total, all green. Rest of
-src/engine/ (4 more Phase-7 browser-API files), src/fs/, src/ui/,
+9 of 12 Phase-7 files (audio.ts, bgm.ts, input.ts, automap.ts,
+effects.ts, hud.ts, projectiles.ts, rockets.ts, raycaster.ts) are 100%
+stmts/branch/funcs/lines. 1039 tests total, all green. Rest of
+src/engine/ (3 more Phase-7 browser-API files), src/fs/, src/ui/,
 src/main.ts still
 0% (not
 yet reached). Note: projectiles.ts/rockets.ts show partial incidental
@@ -621,34 +667,37 @@ absent from the report.
 
 ## Next concrete step
 
-**INTERRUPTED MID-FILE — start here.** `src/engine/effects.test.ts` has
-been WRITTEN in full (covers drawDamageFlash, makeBulletTrace/
-drawBulletTraces, spawnFlameStream/tickFlameStreams/drawFlameStreams,
-spawnExplosion/updateExplosions/renderExplosions,
-spawnExplosionParticles/updateExplosionParticles/
-renderExplosionParticles, spawnBurnParticles/updateBurnParticles/
-renderBurnParticles, spawnBlood/updateBlood/renderBlood,
-tickBulletTraces — effects.ts's full public API) but has **NOT yet been
-typechecked or run even once** — the Bash tool went unavailable
-("claude-sonnet-5 is temporarily unavailable...") repeatedly right after
-writing it. Do NOT assume this file is correct, though a manual
-read-through (done while Bash was down) already caught and fixed one
-real bug: the "renders a settled ember as a fading orange glow" test in
-the `renderBurnParticles` describe block had computed its expected
-`fillStyle` alpha from raw `life` instead of `life / BURN_SETTLED_LIFE`
-(the actual `t` the source uses) — already fixed in the file. Resume by:
-`npm run typecheck` (fix any type errors), then `npx vitest run
-src/engine/effects.test.ts --coverage` (iterate on failures/branch
-gaps — this file uses a real `Player` instance via `new
-Player(fakeMap())` facing +X by default, with particles placed 3 tiles
-ahead along X for a clean, predictable `projectPoint` depth/screenX;
-note `renderBlood`'s occlusion-depth threshold is `0.2`, not the `0.1`
-every other render* function in this file uses — already accounted for
-correctly in the "too close" tests since depth=0 there regardless of
-which threshold applies, but worth remembering for any NEW test added
-near that boundary). Then the usual: run `src/engine/` suite, run full
-`npm test`, update this file's checklist/snapshot/next-step, commit
-(`Co-Authored-By` trailer only, no push). After effects.ts: hud.ts,
-projectiles.ts, rockets.ts, raycaster.ts, sprites.ts, textures.ts,
-viewmodel.ts (each its own commit) — that's the rest of Phase 7. 4/12
-Phase-7 files done (effects.ts will make 5/12 once verified).
+Continue Phase 7: read src/engine/sprites.ts next, write
+sprites.test.ts. Unlike raycaster.ts/rockets.ts/projectiles.ts,
+sprites.ts only imports *types* from other engine modules (`Player`,
+map types, parser types) — no value import of `textures.ts`, so it
+should NOT need the dynamic-import-after-stubbing-canvas workaround
+raycaster.ts needed (see that file's notes above); a plain static
+import + `test/mocks/canvas.ts` should work directly. `sprites.ts`
+exports `projectPoint` (already relied on and validated indirectly by
+effects.ts/projectiles.ts/rockets.ts's tests, but never tested
+directly in isolation — worth a few direct tests of its own: camera
+transform math at a few known angles/positions), `projectEnemy`,
+`collectOrbBillboards` (already exercised indirectly via
+projectiles.ts/rockets.ts, but its full branch surface — depth cutoff,
+occlusion, palette layering — deserves direct coverage here rather than
+leaning on those two callers), `enemyColor`, `EDGE_CASE_COLOR`, and
+whatever sprite-billboard collection/drawing functions the file
+actually contains (re-read fully before planning, this summary is from
+memory of what's imported elsewhere, not a full read of the file).
+Verify 100%, commit, then continue to textures.ts, viewmodel.ts (each
+its own commit) — that's the rest of Phase 7. **Note: textures.ts
+likely needs `// @vitest-environment jsdom` plus `stubCanvasGetContext()`
+called before its `TextureManager`/`buildDefaultTextureSet` singleton
+construction runs, per the same reasoning raycaster.ts's notes
+describe** — check whether it's a plain importable module or has its
+own top-level singleton side effect before assuming a vanilla test
+setup works. 9/12 Phase-7 files done.
+
+**Process reminder to self:** the last several files (effects.ts
+through raycaster.ts) all got their checklist/snapshot/lessons-notes
+updated correctly, but this "Next concrete step" section itself was
+left stale (still describing the effects.ts mid-interruption recovery)
+for multiple files in a row before being caught and fixed now. Update
+ALL FOUR sections (checklist, snapshot, lessons note, next-step) every
+single file, not just three of them.
