@@ -149,6 +149,7 @@
 
 ## Open
 - [ ] rooms need deco of some kind, currently an empty wasteland — implemented in Task 21 (server racks/plants/desks/code-blocks as billboard props) but felt annoying in playtest, so disabled again behind `DECORATIONS_ENABLED = false` in mapGenerator.ts. Code (generation + rendering) is intact; needs a design rethink (placement density? different visual treatment? non-billboard approach?) before re-enabling. Ignore for now.
+    - [ ] deco objects from wad?
 - [ ] tsc/build/lint CI gate — all four `verify:*` npm scripts are CI-wired now (Task 87), but there is still no CI step running `tsc --noEmit`/`vite build`/any linter, so a type error or build break can land on master unnoticed.
 - [ ] balancing
 - [ ] public highscores for public github repos
