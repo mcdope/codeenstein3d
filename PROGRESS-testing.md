@@ -757,7 +757,115 @@ first thing at the start of every session, before touching code.
   iteration.
 
   **Phase 8 complete (3/3 files), all 100% stmts/branch/funcs/lines.**
-- [ ] Phase 9: src/ui/ (5 files)
+- [x] Phase 9: src/ui/ (5 files) — COMPLETE
+  - [x] src/ui/fileTree.ts
+  - [x] src/ui/highscorePanel.ts
+  - [x] src/ui/controlsLegend.ts
+  - [x] src/ui/consoleSidebar.ts
+  - [x] src/ui/gameHud.ts
+
+  fileTree.ts notes: 100% on the first attempt, 9 tests. First
+  src/ui/ file — pure DOM-building (`document.createElement`), no
+  canvas, no textures.ts-style import gotchas; `@vitest-environment
+  jsdom` plus real DOM query methods (`querySelector`/`.click()`) was
+  all that was needed, no shared mock required at all. Both `?? []`
+  fallbacks (`root.children ?? []` and the recursive `node.children ??
+  []` for a directory) are genuinely reachable here — unlike the
+  `registry.ts`/`demoCampaign.ts` `?? ` fallbacks marked unreachable
+  earlier, `TreeNode.children` really can be `undefined` for a
+  directory node built elsewhere without one (e.g. a freshly-created,
+  not-yet-populated node) — tested directly with a `dirNode(name,
+  undefined)` fixture rather than assuming it's dead code.
+
+  highscorePanel.ts notes: 100% on the first attempt, 13 tests. Cell
+  index constants (`querySelectorAll("tbody td")[N]`) are brittle
+  against future column reordering, but matched the well-defined,
+  fixed 9-column table this file builds — acceptable for now. The
+  "Watch Replay" button's guard (`entry.replay?.version === 2 &&
+  entry.replay.levels?.length > 0 && options.onWatchReplay`) needed
+  four separate tests to hit each independent way it can be
+  false — no replay at all, a legacy non-2 `version` (built via an
+  `as unknown as ReplayPayload` cast, since the type itself pins
+  `version: 2` literally and wouldn't otherwise allow constructing an
+  invalid fixture — deliberately testing the runtime shape-check the
+  source comment explains is there for exactly this reason: a
+  localStorage-persisted entry can outlive the type that describes it),
+  an empty `levels` array, and a missing `onWatchReplay` callback even
+  with an otherwise-valid replay — plus one positive test confirming
+  the button appears and fires the callback when all four conditions
+  hold.
+
+  controlsLegend.ts notes: took two rounds, 5 tests. First round landed
+  at 88.88% branch: `chipEl`'s multi-key separator (`if (i > 0) { ...
+  draw a "/" ... }`) never renders because every chip in the real
+  (private, non-exported) `ROWS` table binds exactly one key today —
+  genuinely different from the `registry.ts`/`demoCampaign.ts` `?? `
+  fallbacks marked unreachable earlier (those are logically *impossible*
+  given an invariant; this one is just *not currently used* by the real
+  data, kept ready for a future multi-key binding). Since inventing a
+  fake multi-key control just to exercise the branch would mean adding
+  behavior the task doesn't call for, and exporting the private
+  `chipEl` purely for testability is its own small scope-creep decision,
+  marked it `/* v8 ignore next 6 */` with a comment explicitly
+  distinguishing "not reachable via current real data" from "provably
+  impossible" — worth revisiting if a future control ever legitimately
+  needs two key labels (e.g. "R / F" for interact), at which point the
+  ignore should come back out and get exercised for real.
+
+  consoleSidebar.ts notes: the hardest src/ui/ file so far — real
+  `console.log` monkeypatching, `window.setTimeout`-driven randomized
+  hint scheduling, and `document.fullscreenElement`. 100% eventually, 15
+  tests, but **hit a genuine test-hang (infinite loop) on the first
+  attempt**, not a coverage gap: a "hint doesn't repeat back-to-back"
+  test mocked `Math.random` with a queue plus a *fixed* `0.5` fallback
+  for whenever the queue ran dry. The source's own anti-repeat retry
+  loop (`while (HINTS.length > 1 && index === lastHintIndex) { index =
+  ... }`) is safe with real `Math.random()` since it varies every call,
+  but a fixed mock fallback can walk the index straight into
+  `lastHintIndex` and then loop forever, since every retry recomputes
+  the *exact same* index from the *exact same* fixed input — a
+  self-inflicted live-lock in the test double, not the source. Fixed by
+  cycling between two *different* fallback values instead of one fixed
+  one (guarantees no fixed point). Separately, `vi.advanceTimersByTime`
+  is the wrong tool for testing a *self-rescheduling* `setTimeout`
+  chain with an assertion on exact fire count: advancing by a large
+  enough window can let the timer that just got (re)scheduled *during*
+  the callback also fire in the same call, cascading into more hints
+  than intended. `vi.runOnlyPendingTimers()` is the correct primitive
+  here — it fires exactly what was already queued at the start of the
+  call, without chasing whatever that callback just scheduled next.
+  Also needed manual `console.log` save/restore in `beforeEach`/
+  `afterEach` (not `vi.stubGlobal`, since `console.log` is monkeypatched
+  as a property assignment on the real `console` object by the source
+  itself, not read as a bare global identifier) to stop each test's
+  wrapped `console.log` compounding onto the next test's.
+
+  gameHud.ts notes: 100% on the first real attempt (one failure along
+  the way, but it was a test-isolation bug, not a coverage gap — see
+  below), 20 tests. `test/mocks/raf.ts`'s `installRaf({stubClock:
+  true})` (built in Phase 0, this is its first real workout) was exactly
+  the right tool — one call gives full control over both
+  `requestAnimationFrame`'s queue AND `performance.now()`, which is
+  what `show()`'s `DISMISS_LOCK_MS` gate and the recursive gamepad-poll
+  loop both key off. A `passLockWindow()` helper (`raf.flush(1,
+  DISMISS_LOCK_MS + 100)`) jumps the clock past the 1200ms lock in one
+  call, harmless even with no gamepad connected. **Real lesson from a
+  failure that looked like a source bug but wasn't:** several gamepad
+  tests stubbed `navigator.getGamepads` via direct property assignment
+  (matching input.ts's/highscorePanel.ts's earlier pattern) but this
+  file's tests never cleaned it up in `afterEach` — so the *last*
+  gamepad test's stub (a *held* button) leaked into the next test
+  ("cancels the gamepad poll loop after a keyboard dismissal", which
+  assumed no gamepad was connected at all). The leaked held-button
+  input triggered a *gamepad-driven* self-dismissal instead of the
+  intended *keyboard*-driven one, and briefly looked like a genuine bug
+  in `show()`'s cleanup (a recurring rAF that never stops) — worth
+  remembering: a failing assertion two calls removed from the actual
+  cause is exactly the shape a leaked-stub bug takes, so re-verify
+  test isolation before concluding the *source* is wrong. Fixed with an
+  explicit `delete navigator.getGamepads` in `afterEach`; re-ran clean.
+
+  **Phase 9 complete (5/5 files), all 100% stmts/branch/funcs/lines.**
 - [ ] Phase 10: src/engine/engine.ts
 - [ ] Phase 11: src/main.ts
 - [ ] Phase 12: wrap-up (thresholds, CI, docs, notes, delete this file)
@@ -766,10 +874,11 @@ first thing at the start of every session, before touching code.
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
 src/parser/, ALL of src/map/ (Phase 5 complete), ALL 13 of Phase 6,
-ALL 12 of Phase 7 (Phase 7 complete), and ALL 3 of Phase 8 (Phase 8
-complete) are 100% stmts/branch/funcs/lines. 1164 tests total, all
-green. src/ui/ (5 files), src/engine/engine.ts, src/main.ts still 0%
-(not yet reached — Phases 9-11).
+ALL 12 of Phase 7 (Phase 7 complete), ALL 3 of Phase 8 (Phase 8
+complete), and ALL 5 of Phase 9 (Phase 9 complete) are 100%
+stmts/branch/funcs/lines. 1226 tests total, all green.
+src/engine/engine.ts and src/main.ts still 0% (not yet reached —
+Phases 10-11).
 defaultHighscore.ts and empty-node-shim.ts correctly absent from the
 report.
 
@@ -785,37 +894,88 @@ report.
 
 ## Next concrete step
 
-**Phase 8 is complete (3/3 files, all 100%).** Start Phase 9: src/ui/
-(5 files — consoleSidebar.ts 140 lines, controlsLegend.ts 111 lines,
-fileTree.ts 77 lines, gameHud.ts 289 lines, highscorePanel.ts 103
-lines). None of the 5 import a *value* from `textures.ts` (checked via
-grep across all 5 files' import statements: only `fileTree.ts` imports
-a type from `../fs/workspace`, `highscorePanel.ts` imports the real
-`truncateHash` value from `../engine/highscores` — safe, `highscores.ts`
-has no module-scope singleton/DOM side effect unlike `textures.ts`), so
-none should need the jsdom-stub-canvas-before-dynamic-import workaround
-raycaster.ts/textures.ts needed. All 5 are pure UI/DOM-manipulation
-files with no prior tests at all, so every one needs `//
-@vitest-environment jsdom` and will likely construct/query real DOM
-elements via `document.createElement`/`querySelector` — read each file
-fully before writing its test (none have been read yet this session,
-this note is from `wc -l` + import-grep only, not real content).
-`gameHud.ts` at 289 lines is the largest and, going by its name, may
-draw to a canvas (`gameHud.ts` — check for `getContext("2d")` calls; if
-so it'll need `test/mocks/canvas.ts`'s `stubCanvasGetContext`, same
-pattern proven throughout Phase 5/7). Suggested order: smallest-to-
-largest (fileTree.ts, highscorePanel.ts, controlsLegend.ts,
-consoleSidebar.ts, gameHud.ts) to build up DOM-testing patterns on
-simpler files first. Verify 100% per file, commit after each one
-individually — no batching (Phase 7's bgm.ts and
-automap.ts+effects.ts+hud.ts+projectiles.ts batching slips are the
-cautionary precedent; Phase 8 kept every file to its own commit
-cleanly, keep doing that). After Phase 9: Phase 10 (engine.ts — the
-`RaycasterEngine` orchestrator, has a real `InputSource` constructor
-seam and `window.__codeensteinTestHooks` per earlier plan research),
-Phase 11 (main.ts — the hardest file, ~40 unexported top-level
-closures, may need a testability-seam checkpoint with the user per the
-plan's own flag), Phase 12 (wrap-up: flip coverage thresholds to 100%
-in vitest.config.ts, add a blocking CI job, update
-doc/dev/architecture.md, move the notes backlog item to Done, delete
-this file). 0/5 Phase-9 files done.
+**Phase 9 is complete (5/5 files, all 100%).** Start Phase 10:
+src/engine/engine.ts (1802 lines — the single biggest, most complex
+file in the whole plan). Already partially read this session
+(constructor, field declarations, `start()`'s opening) — re-read the
+*whole* file fresh before planning tests, this note is not a substitute
+for that.
+
+**Structural reality that shapes the whole test strategy**: `class
+RaycasterEngine`'s ENTIRE public API is exactly 4 members — the
+constructor, `start(): void`, `stop(): void`, and `advance(dt: number):
+void`. Every other method/field is `private`. There is no way to reach
+~1800 lines of branch coverage except by actually *simulating gameplay*
+through repeated `advance(dt)` calls with scripted input, and observing
+results via three channels:
+1. **`EngineHandlers`** (`onStats?`, `onGameOver?`, `onWin?`, and
+   whatever else the full interface (line ~238) declares — re-check) —
+   pass `vi.fn()` spies for all of them and assert on their call
+   args/shapes.
+2. **The injected `InputSource`** (constructor's `inputSource?:
+   InputSource` parameter, line ~506) — the real testability seam. Feed
+   the engine a hand-built fake object implementing `InputSource`
+   (same interface `ReplayPlaybackInput` in `replay.ts` and the real
+   `InputController` in `input.ts` both implement) with `vi.fn()`s or
+   plain scripted return values for `isDown`/`consumeFire`/
+   `consumeMouseDX`/etc., set per-test to drive specific player
+   actions (move into a wall, fire a weapon, pick up loot, open a
+   door, step on a hazard, trigger a teleporter, read lore, reach the
+   exit, take lethal damage, ...). This is by far the primary lever —
+   almost every branch in `advance()`'s internals is reachable only by
+   constructing the right input sequence.
+3. **`window.__codeensteinTestHooks`** (constructor, gated behind the
+   page URL literally containing `?testHooks=1` via
+   `new URLSearchParams(window.location.search).get("testHooks") ===
+   "1"` — so tests need `// @vitest-environment jsdom` PLUS setting
+   `window.location.search` to include that query param before
+   constructing the engine, e.g. via jsdom's `window.history.replaceState`
+   or by checking how `scripts/verify-campaign-playthrough.mjs`/
+   `scripts/generate-default-highscore.mjs` already do this for the
+   Playwright-driven verify scripts — grep those two scripts first for
+   the exact mechanism, don't reinvent it) — exposes `getPlayerState()`,
+   `getExit()`, `getEnemies()` as a read-only window into private state
+   without needing new export surface.
+
+Also needs: a real (or carefully faked) `GameMap` — reuse the
+already-proven `fakeMap()` pattern from Phase 5/6/7 tests, sized and
+laid out deliberately per test (a small room with a door here, a hazard
+there, an enemy positioned for a specific AI-tick scenario) rather than
+one giant generic map, so each test's setup makes its intent legible.
+Canvas: `stubCanvasGetContext` from `test/mocks/canvas.ts` (the
+constructor calls `canvas.getContext("2d")` and throws if null — same
+pattern as `raycaster.ts`, but engine.ts does NOT import a value from
+`textures.ts` directly at a quick grep, so the dynamic-import-after-stub
+workaround likely ISN'T needed here — verify by grepping engine.ts's own
+imports before assuming). `start()`/the render loop need
+`test/mocks/raf.ts`'s `installRaf({stubClock: true})`, same as
+gameHud.ts. `EngineCarryover`/`GoreLevel`/`DifficultyLevel` types are
+already familiar from Phase 6 (scoring.ts, ammo.ts) and Phase 7
+(effects.ts) — reuse those files' constant values (`GORE_MULTIPLIERS`,
+`DEFAULT_GORE_LEVEL`, `DIFFICULTY_MULTIPLIERS`, `DEFAULT_DIFFICULTY`)
+rather than re-deriving them.
+
+**Given the scope, consider whether this needs its own sub-checklist**
+(like Phase 6/7/9's nested per-file lists, but per *scenario/subsystem*
+instead of per-file, since it's one file) — e.g. movement/collision,
+weapon firing (per weapon kind), enemy AI integration, loot/pickup,
+doors/keys, hazards/traps/mines, teleporters, lore/secrets, scoring
+integration, replay recording, win/death conditions, cheats
+(godmode/noclip/IDDQD-etc via `consumeCheat()`), pause/blur, FPS
+overlay/automap toggles, difficulty/gore scaling — track each as its
+own checklist item in this file so a mid-Phase-10 interruption doesn't
+lose track of what's covered, mirroring the "session/weekly limit"
+resilience this whole progress file exists for. This phase is
+meaningfully larger than any single file tackled so far this session
+(bigger in complexity than raycaster.ts+sprites.ts+textures.ts
+combined) — budget accordingly, and don't hesitate to check in with the
+user if a genuine design ambiguity turns up (same standard applied to
+the mapGenerator.ts bug and the Phase-11 main.ts testability-seam
+question already flagged in the plan). After Phase 10: Phase 11
+(main.ts — the hardest file, ~40 unexported top-level closures, MAY
+need a testability-seam checkpoint with the user per the plan's own
+explicit flag — do not decide unilaterally to add one), Phase 12
+(wrap-up: flip coverage thresholds to 100% in vitest.config.ts, add a
+blocking CI job, update doc/dev/architecture.md, move the notes
+backlog item to Done, delete this file). 0/1 Phase-10 files done
+(engine.ts is the only file in Phase 10).

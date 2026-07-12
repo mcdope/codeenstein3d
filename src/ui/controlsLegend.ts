@@ -30,6 +30,11 @@ function chipEl(chip: Chip): HTMLSpanElement {
   el.className = "controls-chip";
   if (chip.gapBefore) el.classList.add("controls-chip--gap");
   chip.keys.forEach((k, i) => {
+    // Every chip in the real ROWS table below binds exactly one key today,
+    // so this multi-key separator never actually renders yet — kept ready
+    // for whenever a control gains an alternate binding (e.g. "R / F" for
+    // interact), rather than reworking Chip's shape then.
+    /* v8 ignore next 6 */
     if (i > 0) {
       const sep = document.createElement("span");
       sep.className = "controls-sep";
