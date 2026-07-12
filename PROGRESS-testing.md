@@ -152,7 +152,36 @@ first thing at the start of every session, before touching code.
     (extractGotos's goto/label lookups, comment scanning) with the same
     shape-incomplete fake node and throws deep inside a helper with a
     confusing stack trace.
-- [ ] Phase 5: src/map/ + src/map/generation/ (18 files)
+- [ ] Phase 5: src/map/ + src/map/generation/ (18 files) — IN PROGRESS
+  - [x] src/map/types.ts (tile constants)
+  - [x] src/map/generation/seed.ts
+  - [x] src/map/generation/util.ts
+  - [x] src/map/generation/geometry.ts
+  - [x] src/map/generation/labyrinth.ts
+  - [ ] src/map/generation/corridors.ts (next)
+  - [ ] src/map/generation/doorsKeys.ts
+  - [ ] src/map/generation/pickups.ts
+  - [ ] src/map/generation/props.ts
+  - [ ] src/map/generation/enemies.ts
+  - [ ] src/map/generation/secretRooms.ts
+  - [ ] src/map/generation/teleporters.ts
+  - [ ] src/map/generation/trapsHazards.ts
+  - [ ] src/map/generation/lore.ts
+  - [ ] src/map/generation/pathing.ts
+  - [ ] src/map/generation/spawnExit.ts
+  - [ ] src/map/generation/breakup.ts
+  - [ ] src/map/mapGenerator.ts (orchestrator, do last)
+  - [ ] src/map/debugView.ts (needs test/mocks/canvas.ts — first real use)
+  Notes: findPropSpot's PROP_CLEARANCE/PROP_SPACING rejection branches needed
+  scripted (non-random) rng sequences to hit deterministically — a
+  probabilistic seeded-rng test that merely *might* trigger a rejection
+  branch is fragile and shouldn't be trusted for coverage; write a rng
+  closure returning a controlled value sequence instead whenever a branch
+  depends on a specific narrow numeric outcome. labyrinth.ts's connectivity
+  guarantee was tested as a black-box invariant (a local flood-fill helper
+  in the test file, not exported from source) rather than reaching into its
+  private divide/floorComponents/bridgeComponents functions — matches how a
+  real caller only ever sees the guarantee, not the internals.
 - [ ] Phase 6: src/engine/ pure-logic (13 files)
 - [ ] Phase 7: src/engine/ browser-API (12 files)
 - [ ] Phase 8: src/fs/ (3 files)
@@ -163,10 +192,11 @@ first thing at the start of every session, before touching code.
 
 ## Current coverage snapshot
 
-src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), and ALL of
-src/parser/ (every file, wasm-free and wasm-runtime alike) are 100% stmts/
-branch/funcs/lines. 351 tests total, all green. Rest of the repo (src/map/,
-src/engine/, src/fs/, src/ui/, src/main.ts) still 0% (not yet reached).
+src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
+src/parser/, and 5 of 18 Phase-5 files (src/map/types.ts,
+src/map/generation/seed.ts, util.ts, geometry.ts, labyrinth.ts) are 100%
+stmts/branch/funcs/lines. 406 tests total, all green. Rest of src/map/,
+src/engine/, src/fs/, src/ui/, src/main.ts still 0% (not yet reached).
 defaultHighscore.ts and empty-node-shim.ts correctly absent from the report.
 
 ## Known open issues / deferred decisions
@@ -181,21 +211,11 @@ defaultHighscore.ts and empty-node-shim.ts correctly absent from the report.
 
 ## Next concrete step
 
-Start Phase 5: src/map/ + src/map/generation/ (18 files, all pure functions
-taking an explicit seeded rng, deterministic by hard architectural
-invariant). Read src/map/types.ts first (defines Tile/Room/Enemy/GameMap
-etc. — note it has REAL runtime constants like HAZARD_TILE=2, unlike
-src/parser/types.ts, so it needs real tests, not exclusion), then
-src/map/generation/seed.ts (FNV-1a content hash -> seed, tiny/foundational),
-then src/map/generation/util.ts (Fisher-Yates shuffle), then work through
-geometry.ts -> labyrinth.ts -> corridors.ts -> doorsKeys.ts -> pickups.ts ->
-props.ts -> enemies.ts -> secretRooms.ts -> teleporters.ts -> trapsHazards.ts
--> lore.ts -> pathing.ts -> spawnExit.ts -> breakup.ts, then
-src/map/mapGenerator.ts last (the orchestrator that calls all of the above
-in a fixed order) and src/map/debugView.ts (small dev-only canvas
-diagnostic — needs test/mocks/canvas.ts from Phase 0, first real use of
-those mocks). Golden/determinism-style tests: same seed + same input must
-reproduce identical output — a stated hard architectural invariant per
-doc/dev/architecture.md, so tests should assert on it directly (call
-generate twice with the same seed, expect deep equality) in addition to
-per-module behavior.
+Continue Phase 5: read src/map/generation/corridors.ts next, write
+corridors.test.ts, verify 100%, commit. Then doorsKeys.ts, pickups.ts,
+props.ts, enemies.ts, secretRooms.ts, teleporters.ts, trapsHazards.ts,
+lore.ts, pathing.ts, spawnExit.ts, breakup.ts (each its own commit), then
+src/map/mapGenerator.ts last (the orchestrator — golden/determinism test:
+same seed + same ParsedFile input must reproduce byte-identical output,
+call generate() twice and deep-equal), then src/map/debugView.ts (first
+real use of test/mocks/canvas.ts from Phase 0).
