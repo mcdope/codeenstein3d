@@ -25,6 +25,29 @@ jobs:
       - run: npm run verify:wad-parser
       - run: npm run verify:campaign
 
+  test:
+    name: unit tests (Vitest, 100% coverage gate)
+    runs-on: ubuntu-latest
+    # Vitest/jsdom, no real browser at all — same reasoning as the `verify`
+    # job above.
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # A handful of individual tests already carry their own per-test retry
+      # budget for genuine, documented gameplay/timing variance (seeded-AI
+      # combat, real event-loop races) — this is a second, coarser layer on
+      # top of that: retry the *whole* run once if it still fails, since a
+      # loaded CI runner can occasionally push a normally-comfortable retry
+      # budget past its limit in a way a local run never does.
+      - name: Run test suite with coverage (retry once on failure)
+        run: npm run coverage || npm run coverage
+
   verify-browser:
     name: verify (Playwright/Chromium)
     runs-on: ubuntu-latest
