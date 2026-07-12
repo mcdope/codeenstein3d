@@ -866,7 +866,87 @@ first thing at the start of every session, before touching code.
   explicit `delete navigator.getGamepads` in `afterEach`; re-ran clean.
 
   **Phase 9 complete (5/5 files), all 100% stmts/branch/funcs/lines.**
-- [ ] Phase 10: src/engine/engine.ts
+- [x] Phase 10: src/engine/engine.ts — COMPLETE
+
+  `engine.ts` (1802 lines, the biggest/most complex file in the plan)
+  is tested entirely through its 4-member public API (constructor,
+  `start()`, `stop()`, `advance(dt)`) — no private-method access needed.
+  96 tests in `src/engine/engine.test.ts`, organized into ~20 `describe`
+  blocks (construction, lifecycle, pause/blur/escape, automap, lore
+  terminals, secret walls, weapon switching, movement, keys/doors,
+  loot/pickups, teleporters, hazards/traps/mines, enemy AI, firing (all
+  6 weapon kinds), enemy death/loot/elites, cheats, win/death, FPS
+  toggle, replay recording, scoring). Final coverage: **100%
+  statements/branches/functions/lines** — 379/379 branches,
+  978/978 lines, 52/52 functions.
+
+  It DOES import `{ textures }` as a real value from `./textures`
+  (confirmed via grep, correcting an earlier guess in this file) — the
+  dynamic-import-after-`stubCanvasGetContext` workaround from
+  raycaster.ts/textures.ts was needed and used.
+
+  **Key gotchas/lessons from this phase** (kept in detail since they're
+  non-obvious and would bite a future session):
+  - **zBuffer frame-staleness for quick-melee**: melee hit-testing runs
+    *before* that frame's own `renderScene()` call populates `this.zBuffer`,
+    so it always reads the *previous* frame's zBuffer — on the very first
+    `advance()` call ever, that's an all-zero array, which reads as
+    "everything is behind a point-blank wall" and swallows every melee
+    hit. Every melee test needs a warm-up `advance()` call first. Ranged
+    fire (`updateFiring`) runs *after* `renderScene()`, so it's unaffected.
+  - **`weaponRequest` is a 0-based number-key *slot* index into
+    `NUMBER_KEY_WEAPONS`** (which skips melee weapons), not a raw
+    `WEAPONS` array index — `weaponRequest = 3` selects the *4th*
+    non-melee weapon (ghidra, index 4), not `WEAPONS[3]` (gdb). Got this
+    wrong on the first pass for every ghidra/Friday-Hotfix test; fixed by
+    always asserting `stats.weaponIndex` right after the switch to catch
+    the mismatch immediately rather than downstream.
+  - **`endGame()`/`onGameOver`/`onWin` re-fire every frame the run stays
+    ended**, not just on the edge — `advance()` itself has no
+    once-only guard; `main.ts`'s real replay fast-forward loop has an
+    explicit `if (levelEnded) break;` specifically to avoid this, which
+    is the documented caller responsibility. A raw `advance()`-loop test
+    must break on first fire to match real usage.
+  - **`applyTrapDamage()` can call `damage()` twice in one frame** (spike
+    then mine), so `endGame()`'s own `if (this.state !== "playing")
+    return;` guard *is* reachable in single-player, non-replay code: rig
+    a spike trap (always-active via `period`/`phase`) and a mine whose
+    fuse both resolve in the same `advance()` call, with the spike alone
+    zeroing health first.
+  - **Two same-weapon rockets can never overlap in blast radius under
+    current tuning** — ghidra's `fireIntervalSec` (1.1s) × `ROCKET_SPEED`
+    (18 tiles/s) forces consecutive rockets ≥19.8 tiles apart, more than
+    2× `ROCKET_BLAST_RADIUS` (2.6) — so the "second blast finds an
+    already-dead enemy" guard in `advanceRockets()` is provably
+    unreachable with today's weapon data. Same story for two `?? default`
+    fallbacks (`melee.fireIntervalSec ?? 0.15`, `weapon.fireIntervalSec ??
+    0.1`) since every `auto: true` weapon in `WEAPONS` currently defines
+    `fireIntervalSec`. All three got `/* v8 ignore next */` with an
+    honest comment explaining *why* (not just "unreachable"), matching
+    `controlsLegend.ts`'s established precedent for this project.
+  - **A narrow projectile spread can make "not destroyed" prove
+    nothing** — Friday Hotfix's 6 pellets are offset ±9/±27/±45px, never
+    dead-center, so at boundary/near-boundary range a "mine survives"
+    result could mean either "correctly out of maxRange" or "no pellet
+    ever hit it at all" (the latter proves nothing about the maxRange
+    check). Fixed by firing for many sustained auto-fire frames in a
+    wide-open room to make at least one hit near-certain regardless of
+    RNG, so a still-alive mine actually demonstrates the range guard.
+  - **Loot-kind/bonus-drop branches needed a brute-forced gameplay
+    seed**: `lootCtx.heal`/`addSwap` and the bonus-weapon-drop roll are
+    gated behind the seeded `mulberry32` stream — found working seeds (5
+    for a health-kind drop, 118 for a bonus weapon drop) via a disposable
+    scratch script instantiating the real engine across a seed range and
+    checking `console.log` output, then hardcoded the winning seed with a
+    comment explaining it was brute-forced. `collectLoot()` also runs
+    *before* `updateFiring()` each frame, so a kill's own drop is only
+    picked up on the *next* `advance()` call, not the killing one.
+  - **`isWall()` treats any out-of-bounds tile as a wall** (`cx<0||cy<0||
+    cx>=width||cy>=height` → `true`), which is why a rocket fired down a
+    long corridor reliably detonates even with generous per-frame
+    overshoot — no risk of "tunneling through" the map bounds in tests
+    that use large `dt` steps.
+
 - [ ] Phase 11: src/main.ts
 - [ ] Phase 12: wrap-up (thresholds, CI, docs, notes, delete this file)
 
@@ -875,10 +955,11 @@ first thing at the start of every session, before touching code.
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
 src/parser/, ALL of src/map/ (Phase 5 complete), ALL 13 of Phase 6,
 ALL 12 of Phase 7 (Phase 7 complete), ALL 3 of Phase 8 (Phase 8
-complete), and ALL 5 of Phase 9 (Phase 9 complete) are 100%
-stmts/branch/funcs/lines. 1226 tests total, all green.
-src/engine/engine.ts and src/main.ts still 0% (not yet reached —
-Phases 10-11).
+complete), ALL 5 of Phase 9 (Phase 9 complete), and now
+src/engine/engine.ts (Phase 10 complete) are 100%
+stmts/branch/funcs/lines. 1322 tests total, all green (`npm test`
+verified across all 75 test files).
+src/main.ts still 0% (not yet reached — Phase 11, the last file).
 defaultHighscore.ts and empty-node-shim.ts correctly absent from the
 report.
 
@@ -894,88 +975,50 @@ report.
 
 ## Next concrete step
 
-**Phase 9 is complete (5/5 files, all 100%).** Start Phase 10:
-src/engine/engine.ts (1802 lines — the single biggest, most complex
-file in the whole plan). Already partially read this session
-(constructor, field declarations, `start()`'s opening) — re-read the
-*whole* file fresh before planning tests, this note is not a substitute
-for that.
+**Phase 10 is complete (1/1 file, engine.ts, 100% stmts/branch/funcs/lines,
+96 tests, full `npm test` green at 1322 tests / 75 files).** Start Phase 11:
+src/main.ts (2239 lines — the last file, and the hardest one per the plan).
 
-**Structural reality that shapes the whole test strategy**: `class
-RaycasterEngine`'s ENTIRE public API is exactly 4 members — the
-constructor, `start(): void`, `stop(): void`, and `advance(dt: number):
-void`. Every other method/field is `private`. There is no way to reach
-~1800 lines of branch coverage except by actually *simulating gameplay*
-through repeated `advance(dt)` calls with scripted input, and observing
-results via three channels:
-1. **`EngineHandlers`** (`onStats?`, `onGameOver?`, `onWin?`, and
-   whatever else the full interface (line ~238) declares — re-check) —
-   pass `vi.fn()` spies for all of them and assert on their call
-   args/shapes.
-2. **The injected `InputSource`** (constructor's `inputSource?:
-   InputSource` parameter, line ~506) — the real testability seam. Feed
-   the engine a hand-built fake object implementing `InputSource`
-   (same interface `ReplayPlaybackInput` in `replay.ts` and the real
-   `InputController` in `input.ts` both implement) with `vi.fn()`s or
-   plain scripted return values for `isDown`/`consumeFire`/
-   `consumeMouseDX`/etc., set per-test to drive specific player
-   actions (move into a wall, fire a weapon, pick up loot, open a
-   door, step on a hazard, trigger a teleporter, read lore, reach the
-   exit, take lethal damage, ...). This is by far the primary lever —
-   almost every branch in `advance()`'s internals is reachable only by
-   constructing the right input sequence.
-3. **`window.__codeensteinTestHooks`** (constructor, gated behind the
-   page URL literally containing `?testHooks=1` via
-   `new URLSearchParams(window.location.search).get("testHooks") ===
-   "1"` — so tests need `// @vitest-environment jsdom` PLUS setting
-   `window.location.search` to include that query param before
-   constructing the engine, e.g. via jsdom's `window.history.replaceState`
-   or by checking how `scripts/verify-campaign-playthrough.mjs`/
-   `scripts/generate-default-highscore.mjs` already do this for the
-   Playwright-driven verify scripts — grep those two scripts first for
-   the exact mechanism, don't reinvent it) — exposes `getPlayerState()`,
-   `getExit()`, `getEnemies()` as a read-only window into private state
-   without needing new export surface.
+**Structural reality that shapes this phase**: main.ts is NOT a class —
+it's module-top-level code that calls `document.createElement`/
+`querySelectorAll` and wires listeners immediately on import (confirmed
+in the original plan review: `document.title` assignment, canvas
+creation, `.suggestion-btn` listeners, all outside any function). Six
+functions are already exported and directly unit-testable:
+`findEntrypoint` (~line 910), `applyForcedUnlocks` (~1233),
+`flattenParsableFiles` (~1388), `loadCampaignSave` (~1640),
+`saveCampaign` (~1676), `clearCampaignSave` (~1684) — re-verify these
+line numbers first, this file hasn't been re-read since the plan was
+written and may have shifted. The remaining ~40 unexported top-level
+functions/closures are only reachable via simulated DOM interaction
+(`fireEvent`-style click/keydown dispatch) against elements main.ts
+itself creates on import.
 
-Also needs: a real (or carefully faked) `GameMap` — reuse the
-already-proven `fakeMap()` pattern from Phase 5/6/7 tests, sized and
-laid out deliberately per test (a small room with a door here, a hazard
-there, an enemy positioned for a specific AI-tick scenario) rather than
-one giant generic map, so each test's setup makes its intent legible.
-Canvas: `stubCanvasGetContext` from `test/mocks/canvas.ts` (the
-constructor calls `canvas.getContext("2d")` and throws if null — same
-pattern as `raycaster.ts`, but engine.ts does NOT import a value from
-`textures.ts` directly at a quick grep, so the dynamic-import-after-stub
-workaround likely ISN'T needed here — verify by grepping engine.ts's own
-imports before assuming). `start()`/the render loop need
-`test/mocks/raf.ts`'s `installRaf({stubClock: true})`, same as
-gameHud.ts. `EngineCarryover`/`GoreLevel`/`DifficultyLevel` types are
-already familiar from Phase 6 (scoring.ts, ammo.ts) and Phase 7
-(effects.ts) — reuse those files' constant values (`GORE_MULTIPLIERS`,
-`DEFAULT_GORE_LEVEL`, `DIFFICULTY_MULTIPLIERS`, `DEFAULT_DIFFICULTY`)
-rather than re-deriving them.
+**Per the plan (do not deviate unilaterally)**: attempt full coverage
+as-is first — exported functions get direct unit tests, DOM-reachable
+paths get interaction-driven integration tests reusing the Phase 0
+mocks (`test/mocks/canvas.ts`, `test/mocks/audio.ts`,
+`test/mocks/fsAccess.ts`, `test/mocks/raf.ts`) plus this session's newer
+patterns (dynamic-import-after-canvas-stub for anything touching
+`textures.ts`; `EnemySpatialGrid`/`GameMap` fixture-building
+conventions from engine.test.ts). **Only if that genuinely can't reach
+full coverage** (e.g. a closure with no exported or DOM-triggerable path
+in) does a minimal testability seam get considered — and that is an
+explicit checkpoint to raise with the user at the start of this phase,
+not a decision to make alone (the plan calls this out specifically as
+the one place "don't add abstractions beyond what's needed" and "100%
+coverage" could genuinely conflict).
 
-**Given the scope, consider whether this needs its own sub-checklist**
-(like Phase 6/7/9's nested per-file lists, but per *scenario/subsystem*
-instead of per-file, since it's one file) — e.g. movement/collision,
-weapon firing (per weapon kind), enemy AI integration, loot/pickup,
-doors/keys, hazards/traps/mines, teleporters, lore/secrets, scoring
-integration, replay recording, win/death conditions, cheats
-(godmode/noclip/IDDQD-etc via `consumeCheat()`), pause/blur, FPS
-overlay/automap toggles, difficulty/gore scaling — track each as its
-own checklist item in this file so a mid-Phase-10 interruption doesn't
-lose track of what's covered, mirroring the "session/weekly limit"
-resilience this whole progress file exists for. This phase is
-meaningfully larger than any single file tackled so far this session
-(bigger in complexity than raycaster.ts+sprites.ts+textures.ts
-combined) — budget accordingly, and don't hesitate to check in with the
-user if a genuine design ambiguity turns up (same standard applied to
-the mapGenerator.ts bug and the Phase-11 main.ts testability-seam
-question already flagged in the plan). After Phase 10: Phase 11
-(main.ts — the hardest file, ~40 unexported top-level closures, MAY
-need a testability-seam checkpoint with the user per the plan's own
-explicit flag — do not decide unilaterally to add one), Phase 12
-(wrap-up: flip coverage thresholds to 100% in vitest.config.ts, add a
-blocking CI job, update doc/dev/architecture.md, move the notes
-backlog item to Done, delete this file). 0/1 Phase-10 files done
-(engine.ts is the only file in Phase 10).
+Read the whole file fresh before writing any test — it hasn't been
+touched this session. Given the size and DOM-orchestration complexity,
+consider a nested per-scenario sub-checklist in this file (mirroring
+Phase 10's approach) so a mid-phase interruption doesn't lose track of
+what DOM flows/exported functions are covered.
+
+After Phase 11 (the last content phase): Phase 12 wrap-up — flip
+`vitest.config.ts`'s coverage thresholds to 100% across the board,
+add a real blocking `test` job to `.github/workflows/verify.yml`,
+update `doc/dev/architecture.md`'s Build paragraph, move the `notes`
+line-158 backlog item from `## Open` to `## Done` as `[Task 92]`
+(verify 92 is still the next free task number — re-check `notes` before
+assuming), and delete this file.

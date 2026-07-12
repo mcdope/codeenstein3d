@@ -807,6 +807,11 @@ export class RaycasterEngine {
         if (this.input.isMeleeHeld() && this.meleeCooldown <= 0) {
           this.fire(melee);
           this.meleeRecoil = 1;
+          // Not reachable via current WEAPONS data — Toolchain, the only
+          // `auto: true` melee weapon today, always defines fireIntervalSec —
+          // but a future auto melee weapon omitting it should still get a
+          // sane cooldown instead of firing every frame.
+          /* v8 ignore next */
           this.meleeCooldown = melee.fireIntervalSec ?? 0.15;
         }
       } else if (this.input.consumeMelee()) {
@@ -1210,6 +1215,15 @@ export class RaycasterEngine {
       // loot rolls they draw) happen in exactly the order they always did.
       for (const index of this.enemyGrid.queryIndices(blast.x, blast.y, ROCKET_BLAST_RADIUS)) {
         const enemy = this.enemies[index];
+        // Defends against two rockets detonating within ROCKET_BLAST_RADIUS
+        // of each other in the same advanceRockets() call — enemyGrid is
+        // only rebuilt once per call, so a later blast's query can still
+        // list an enemy an earlier blast in the *same* call already killed.
+        // Not reachable with today's tuning: ghidra's fireIntervalSec (1.1s)
+        // times ROCKET_SPEED (18 tiles/s) forces consecutive player rockets
+        // at least ~19.8 tiles apart, well outside 2x the blast radius —
+        // but a faster rocket or shorter cooldown could close that gap.
+        /* v8 ignore next */
         if (!enemy.alive) continue;
         const dmg = rocketDamageAt(blast, enemy.x, enemy.y);
         if (dmg > 0) this.damageEnemy(enemy, dmg);
@@ -1495,6 +1509,11 @@ export class RaycasterEngine {
     if (weapon.auto) {
       if (this.input.isFireHeld() && this.weaponCooldown <= 0) {
         this.fire();
+        // Not reachable via current WEAPONS data — every `auto: true` ranged
+        // weapon today (gdb, Friday Hotfix) defines fireIntervalSec — but a
+        // future auto weapon omitting it should still get a sane cooldown
+        // instead of firing every frame.
+        /* v8 ignore next */
         this.weaponCooldown = weapon.fireIntervalSec ?? 0.1;
       }
     } else if (pressed && this.weaponCooldown <= 0) {
