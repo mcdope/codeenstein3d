@@ -116,7 +116,42 @@ first thing at the start of every session, before touching code.
     already shows up in the coverage report (Phase 3's registry.test.ts and
     astUtils.test.ts exercise the JS generic adapter and C adapter in
     passing) — expected and fine, Phase 4 will finish these off properly.
-- [ ] Phase 4: src/parser/ wasm-runtime (5 files)
+- [x] Phase 4: src/parser/ wasm-runtime (5 files) — all of src/parser/ now
+      100% (351 tests total repo-wide, all green). Notes for future reference:
+  - cParser.ts, phpParser.ts: real-source tests (entities, complexity,
+    nesting, gotos, comments, all 5 secretTrigger kinds where applicable).
+    A handful of provably-hard-to-reach-via-valid-syntax branches (the
+    "<anonymous>" name fallback for a function/entity, a top-level
+    declaration with no identifiable name, the "parser returned no syntax
+    tree" defensive throw) were covered via `vi.spyOn(Parser.prototype,
+    "parse")` returning a fully synthetic fake tree/rootNode rather than
+    fighting to construct valid-but-edge-case-triggering real source — this
+    pattern (mock the whole tree, not just the source text) is worth reusing
+    whenever a branch depends on an AST shape no valid syntax produces.
+  - Sort-comparator tie-break gotcha: to actually exercise `a.startLine -
+    b.startLine || a.endLine - b.endLine`'s right-hand side, two entities'
+    startLine must be genuinely EQUAL (not just close/adjacent) — verify by
+    checking the actual source layout, not just "two entities near each
+    other," since a near-miss silently leaves the branch uncovered.
+  - genericParser.ts + languages.ts: languages.test.ts parses one real tiny
+    snippet through routine ALL 13 bundled generic-adapter languages
+    end-to-end (javascript/typescript/tsx/python/java/cpp/go/rust/ruby/
+    csharp/bash/scala/objc) — this alone got genericParser.ts to 100%
+    stmts/funcs/lines from a single test file, branch gaps closed
+    separately in genericParser.test.ts (filter true/false/undefined,
+    method-vs-class code-smell-bonus branch, anonymous-node and
+    tree-root-self-match defensive skips via synthetic trees, parser
+    caching, "no syntax tree" throw). Found and fixed a test-writing mistake
+    along the way: a filtered-out entity can still resurface separately as
+    a heuristic "global" via genericGlobals — assert on `kind`, not mere
+    name presence/absence, when testing a filter rejection.
+  - Synthetic-tree mocks must be careful that `descendantsOfType`'s fake
+    implementation only returns the intended fake node for the SPECIFIC
+    type-name query it's meant to satisfy (e.g. check `types.includes(...)`)
+    — a blanket `() => [fakeNode]` also answers unrelated internal calls
+    (extractGotos's goto/label lookups, comment scanning) with the same
+    shape-incomplete fake node and throws deep inside a helper with a
+    confusing stack trace.
 - [ ] Phase 5: src/map/ + src/map/generation/ (18 files)
 - [ ] Phase 6: src/engine/ pure-logic (13 files)
 - [ ] Phase 7: src/engine/ browser-API (12 files)
@@ -128,14 +163,11 @@ first thing at the start of every session, before touching code.
 
 ## Current coverage snapshot
 
-src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), and src/parser/'s
-6 wasm-free files (types.ts excluded from coverage, astUtils.ts, registry.ts,
-runtime.ts, security.ts, generic/refinements.ts, generic/vocabulary.ts): all
-100% stmts/branch/funcs/lines. 286 tests total, all green. cParser.ts/
-phpParser.ts/genericParser.ts show partial incidental coverage already (from
-Phase 3 tests exercising real adapters) — expected, Phase 4 finishes them.
-Rest of the repo still 0% (not yet reached). defaultHighscore.ts and
-empty-node-shim.ts correctly absent from the report.
+src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), and ALL of
+src/parser/ (every file, wasm-free and wasm-runtime alike) are 100% stmts/
+branch/funcs/lines. 351 tests total, all green. Rest of the repo (src/map/,
+src/engine/, src/fs/, src/ui/, src/main.ts) still 0% (not yet reached).
+defaultHighscore.ts and empty-node-shim.ts correctly absent from the report.
 
 ## Known open issues / deferred decisions
 
@@ -149,16 +181,21 @@ empty-node-shim.ts correctly absent from the report.
 
 ## Next concrete step
 
-Start Phase 4: src/parser/ wasm-runtime files (runtime.ts is already 100%
-covered as a side effect of Phase 0/3, so really: c/cParser.ts,
-php/phpParser.ts, generic/genericParser.ts, generic/languages.ts). Read
-c/cParser.ts first (already read once during Phase 0's throwaway smoke
-test — re-read for real this time), then php/phpParser.ts, then
-generic/genericParser.ts + generic/languages.ts together (genericParser.ts
-is the shared implementation all 12 non-C/PHP bundled languages route
-through; languages.ts just wires up the 12 LanguageConfig instances with
-their refinements.ts hooks — already indirectly exercised by Phase 3's
-refinements.test.ts, but not through the real GenericParserAdapter.parse()
-pipeline end-to-end yet). Follow the same "real grammar, real tiny source
-snippet" pattern used successfully in Phase 3's astUtils.test.ts/
-refinements.test.ts.
+Start Phase 5: src/map/ + src/map/generation/ (18 files, all pure functions
+taking an explicit seeded rng, deterministic by hard architectural
+invariant). Read src/map/types.ts first (defines Tile/Room/Enemy/GameMap
+etc. — note it has REAL runtime constants like HAZARD_TILE=2, unlike
+src/parser/types.ts, so it needs real tests, not exclusion), then
+src/map/generation/seed.ts (FNV-1a content hash -> seed, tiny/foundational),
+then src/map/generation/util.ts (Fisher-Yates shuffle), then work through
+geometry.ts -> labyrinth.ts -> corridors.ts -> doorsKeys.ts -> pickups.ts ->
+props.ts -> enemies.ts -> secretRooms.ts -> teleporters.ts -> trapsHazards.ts
+-> lore.ts -> pathing.ts -> spawnExit.ts -> breakup.ts, then
+src/map/mapGenerator.ts last (the orchestrator that calls all of the above
+in a fixed order) and src/map/debugView.ts (small dev-only canvas
+diagnostic — needs test/mocks/canvas.ts from Phase 0, first real use of
+those mocks). Golden/determinism-style tests: same seed + same input must
+reproduce identical output — a stated hard architectural invariant per
+doc/dev/architecture.md, so tests should assert on it directly (call
+generate twice with the same seed, expect deep equality) in addition to
+per-module behavior.
