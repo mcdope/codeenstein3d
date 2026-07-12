@@ -333,21 +333,32 @@ export class MapGenerator {
     if (random) return random;
 
     const { w, h } = roomDimensions(FILLER_ENTITY, size);
+    // `roomDimensions` always returns at least a 4-tile room regardless of
+    // `size` — on a pathologically tiny configured map (well below any real
+    // minSize this game ships with) that can exceed what the grid actually
+    // has room for, putting a "bottom-right" corner at a negative
+    // coordinate. Filtered out here rather than trusted blindly, so a
+    // later `carveRoom` can never be handed an out-of-bounds room to write.
     const corners = [
       { x: 1, y: 1 },
       { x: size - w - 1, y: 1 },
       { x: 1, y: size - h - 1 },
       { x: size - w - 1, y: size - h - 1 },
-    ];
+    ].filter(({ x, y }) => x >= 0 && y >= 0 && x + w <= size && y + h <= size);
     for (const { x, y } of corners) {
       const candidate = makeRoom(x, y, w, h, FILLER_ENTITY);
       if (!placed.some((r) => roomsOverlap(candidate, r, this.opts.roomMargin))) {
         return candidate;
       }
     }
-    // Every random attempt and every corner overlapped — astronomically
-    // unlikely given the map-size/room-cap math above. Accept a rare
-    // overlap over leaving the level with under 2 rooms.
-    return makeRoom(corners[0].x, corners[0].y, w, h, FILLER_ENTITY);
+    // Every random attempt and every in-bounds corner overlapped — or, on an
+    // extremely small configured map, no corner was even in-bounds at all.
+    // Astronomically unlikely for any realistic map size. Clamp width/height
+    // to whatever room the grid actually has, so this can never itself
+    // produce an out-of-bounds room — accept a rare overlap/undersized
+    // filler over leaving the level with under 2 rooms or crashing.
+    const clampedW = Math.min(w, Math.max(1, size - 2));
+    const clampedH = Math.min(h, Math.max(1, size - 2));
+    return makeRoom(1, 1, clampedW, clampedH, FILLER_ENTITY);
   }
 }

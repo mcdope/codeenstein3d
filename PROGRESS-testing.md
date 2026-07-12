@@ -171,8 +171,10 @@ first thing at the start of every session, before touching code.
   - [x] src/map/generation/trapsHazards.ts
   - [x] src/map/generation/lore.ts
   - [x] src/map/generation/spawnExit.ts
-  - [ ] src/map/mapGenerator.ts (orchestrator, do last)
-  - [ ] src/map/debugView.ts (needs test/mocks/canvas.ts — first real use)
+  - [x] src/map/mapGenerator.ts (orchestrator) — **found and fixed a real bug**
+        while writing this test, see notes below
+  - [ ] src/map/debugView.ts (next and last file in Phase 5 — needs
+        test/mocks/canvas.ts, first real use)
   Notes: findPropSpot's PROP_CLEARANCE/PROP_SPACING rejection branches needed
   scripted (non-random) rng sequences to hit deterministically — a
   probabilistic seeded-rng test that merely *might* trigger a rejection
@@ -246,6 +248,29 @@ first thing at the start of every session, before touching code.
   "same geometry, non-flagged comment" test even if the outer terminal
   placement succeeds identically — match the gating condition, not just
   the geometry, when hunting for a specific branch.
+
+  mapGenerator.ts (orchestrator, 17/18 done): **found and fixed a real
+  pre-existing bug while writing coverage, not just a coverage gap** —
+  `placeFillerRoom`'s corner-fallback path didn't validate a corner
+  candidate was actually within grid bounds. `roomDimensions` always
+  returns >= 4 tiles regardless of the configured map `size`; on a
+  pathologically tiny `minSize` (< ~9, never used by any real caller —
+  default is 64) the "bottom-right" corners compute negative coordinates,
+  and `carveRoom` then crashes writing to `grid[-1][...]`. Asked the user
+  how to handle it (fix now / document gap / v8-ignore) rather than
+  deciding unilaterally, since it's a correctness fix outside pure
+  test-writing scope — they said fix it. Fix: filter corner candidates to
+  ones that actually fit (`x>=0 && y>=0 && x+w<=size && y+h<=size`) before
+  checking overlap, and clamp the final last-resort fallback's width/height
+  to whatever room the grid actually has (`Math.min(w, Math.max(1, size -
+  2))`) instead of trusting the raw dimensions. Verified both by the new
+  unit test AND by rerunning `npm run verify:campaign` (the project's own
+  real-world 17-language integration check) — passed clean, confirming the
+  fix doesn't change behavior for any realistic map size. General lesson:
+  a coverage-hunting test that finds a genuine crash isn't a test bug to
+  paper over — stop and ask before either fixing engine code or hiding the
+  gap, since "should I fix a newly-found bug" is a decision only the user
+  should make, not something to resolve unilaterally mid-test-writing.
 - [ ] Phase 6: src/engine/ pure-logic (13 files)
 - [ ] Phase 7: src/engine/ browser-API (12 files)
 - [ ] Phase 8: src/fs/ (3 files)
@@ -257,11 +282,13 @@ first thing at the start of every session, before touching code.
 ## Current coverage snapshot
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
-src/parser/, and 17 of 18 Phase-5 files (everything except mapGenerator.ts
-and debugView.ts) are 100% stmts/branch/funcs/lines. 568 tests total, all
-green. Rest of src/map/ (2 files), src/engine/, src/fs/, src/ui/,
-src/main.ts still 0% (not yet reached). defaultHighscore.ts and
-empty-node-shim.ts correctly absent from the report.
+src/parser/, and 17 of 18 Phase-5 files (everything except debugView.ts)
+are 100% stmts/branch/funcs/lines. 583 tests total, all green. Rest of
+src/map/ (debugView.ts only), src/engine/, src/fs/, src/ui/, src/main.ts
+still 0% (not yet reached). defaultHighscore.ts and empty-node-shim.ts
+correctly absent from the report. `npm run verify:campaign` (the existing
+17-language integration check) also passes clean after the mapGenerator.ts
+bugfix.
 
 ## Known open issues / deferred decisions
 
@@ -275,11 +302,12 @@ empty-node-shim.ts correctly absent from the report.
 
 ## Next concrete step
 
-Continue Phase 5: read src/map/mapGenerator.ts next (the orchestrator —
-calls every module tested so far in a fixed order; write tests covering
-its own wiring/branches plus a golden/determinism test: same seed + same
-ParsedFile input must reproduce byte-identical output, call generate()
-twice and deep-equal). Then src/map/debugView.ts last (first real use of
-test/mocks/canvas.ts from Phase 0 — read that mock file first). Only 2
-files left in Phase 5, then Phase 6 (src/engine/ pure-logic, 13 files)
-starts.
+Finish Phase 5: read src/map/debugView.ts next — the LAST file in Phase 5.
+It's a small dev-only top-down diagnostic canvas renderer, and the first
+file needing test/mocks/canvas.ts (read that helper file first — it was
+built in Phase 0 but never yet exercised for real). Once debugView.ts is
+100%, run the full src/map/ suite once more, update this file's Phase 5
+checkbox to [x], commit, then start Phase 6 (src/engine/ pure-logic, 13
+files: ammo.ts, enemyAi.ts, lootApply.ts, loot.ts, pathField.ts, player.ts,
+replay.ts, scoring.ts, spatialGrid.ts, traps.ts, weapons.ts,
+storageCompression.ts, highscores.ts).
