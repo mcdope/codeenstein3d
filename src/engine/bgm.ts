@@ -66,6 +66,10 @@ export class BgmPlayer {
   }
 
   private async playCurrent(): Promise<void> {
+    // Both callers (loadFolder, advance) already guard against an empty
+    // playlist before ever reaching this call — belt-and-suspenders, not a
+    // reachable branch.
+    /* v8 ignore next */
     if (this.handles.length === 0) return;
     const handle = this.handles[this.order[this.cursor]];
 

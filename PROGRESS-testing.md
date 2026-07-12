@@ -392,9 +392,9 @@ first thing at the start of every session, before touching code.
   **Phase 6 complete (13/13 files), all 100% stmts/branch/funcs/lines.**
 - [ ] Phase 7: src/engine/ browser-API (12 files) — IN PROGRESS
   - [x] src/engine/audio.ts
-  - [ ] src/engine/bgm.ts (next)
-  - [ ] src/engine/input.ts
-  - [ ] src/engine/automap.ts
+  - [x] src/engine/bgm.ts
+  - [x] src/engine/input.ts
+  - [ ] src/engine/automap.ts (next)
   - [ ] src/engine/effects.ts
   - [ ] src/engine/hud.ts
   - [ ] src/engine/projectiles.ts
@@ -432,6 +432,67 @@ first thing at the start of every session, before touching code.
   stickiness, the pending-volume-before-context-exists queue, the
   distortion-curve cache, and the per-duration noise-buffer cache each
   got a dedicated test.
+
+  bgm.ts notes: one real cross-test-authoring bug and one genuine
+  unreachable-branch case. (1) The shuffled-wraparound test initially
+  forgot to stub `AudioContext` — the first `wireAndPlay()` call's
+  `audio.resume()` then hit the "no Ctor available" path, which sets
+  `AudioManager`'s **sticky** `unavailable` flag permanently, silencing
+  every later track's `wireAndPlay()` (including its `el.play()` call)
+  for the rest of that test — a reminder that `isSilenced()`'s
+  stickiness (already documented from audio.ts's own tests last file)
+  bites any *caller* of `audio.resume()` too, not just direct callers of
+  `isSilenced()`. Fixed by stubbing `AudioContext` in that test. (2)
+  `playCurrent()`'s own `if (this.handles.length === 0) return;` is
+  provably unreachable — both of its callers (`loadFolder`, `advance`)
+  already guard against an empty playlist before ever calling it —
+  marked with `/* v8 ignore next */` (rationale in a `//` comment right
+  above, matching the existing pattern in `parser/registry.ts`; the
+  ignore directive itself must be a bare single-line `/* v8 ignore
+  next */` immediately before the target line — a multi-line block
+  comment combining the rationale and the directive together did NOT
+  get recognized by v8-to-istanbul). Otherwise: `new Audio()`
+  (`HTMLAudioElement`) needed `vi.spyOn(HTMLMediaElement.prototype,
+  "play"/"pause")` since jsdom's real implementations are unimplemented
+  stubs; `URL.createObjectURL`/`revokeObjectURL` needed direct
+  overwriting (jsdom doesn't implement them for arbitrary non-Blob fake
+  file objects); the private `el` field was reached via `(bgm as
+  unknown as { el: HTMLAudioElement }).el` to dispatch a real `"ended"`
+  Event and drive `advance()`; async event-driven assertions used
+  `vi.waitFor(...)` rather than a fixed `setTimeout` flush, since the
+  number of microtask hops between dispatch and the resulting
+  `play()`/`createMediaElementSource()` call isn't worth hand-counting.
+
+  input.ts notes: the biggest/densest file so far (666 lines — keyboard,
+  mouse, gamepad, pointer lock, fullscreen, cheat codes) but hit 100% on
+  the very first coverage run, 61 tests, once two jsdom/IEEE-754
+  environment quirks (not app bugs) were worked around: (1)
+  `gamepadForward()` is `-this.gamepadMoveY`, and negating the default
+  `+0` axis reading produces `-0` — `-0` fails Vitest's `toBe(0)`
+  (`Object.is` semantics) even though it's numerically equal, so those
+  specific zero-assertions use `.toBeCloseTo(0)` instead. (2) jsdom's
+  `MouseEvent` constructor silently drops `movementX` from its init
+  dict (it stays `0` regardless of what's passed), so `e.movementX`
+  read back as `undefined` inside `onMouseMove`, turning
+  `this.mouseDX += e.movementX` into `NaN` — worked around with a small
+  `mousemove(dx)` test helper that constructs a bare `MouseEvent` then
+  `Object.defineProperty`s `movementX` onto it directly. Pointer Lock
+  (`document.pointerLockElement`, `canvas.requestPointerLock`,
+  `document.exitPointerLock`) and the Fullscreen API
+  (`document.fullscreenElement`, `requestFullscreen`/`exitFullscreen`)
+  aren't implemented by jsdom at all, so both were hand-stubbed directly
+  on `document`/the test canvas in `beforeEach` — `pointerLockElement`/
+  `fullscreenElement` via `Object.defineProperty` (plain assignment
+  fails, they're getter-only on the real interfaces) and the four
+  methods as plain `vi.fn()` overwrites. `navigator.getGamepads` doesn't
+  exist in jsdom either, so it's assigned directly onto the real
+  `navigator` object per test (never `vi.stubGlobal("navigator", ...)`
+  — replacing the whole object risks breaking jsdom internals that read
+  other `navigator` properties). One dispatch-target subtlety: Escape is
+  the only key bound to `window` rather than the canvas (see the
+  source's own `onWindowEscape` doc comment for why), so its test helper
+  dispatches on `window`, unlike every other key which dispatches on the
+  canvas.
 - [ ] Phase 8: src/fs/ (3 files)
 - [ ] Phase 9: src/ui/ (5 files)
 - [ ] Phase 10: src/engine/engine.ts
@@ -442,9 +503,10 @@ first thing at the start of every session, before touching code.
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
 src/parser/, ALL of src/map/ (Phase 5 complete), ALL 13 of Phase 6, and
-1 of 12 Phase-7 files (audio.ts) are 100% stmts/branch/funcs/lines. 817
-tests total, all green. Rest of src/engine/ (11 more Phase-7
-browser-API files), src/fs/, src/ui/, src/main.ts still
+3 of 12 Phase-7 files (audio.ts, bgm.ts, input.ts) are 100%
+stmts/branch/funcs/lines. 890 tests total, all green. Rest of
+src/engine/ (9 more Phase-7 browser-API files), src/fs/, src/ui/,
+src/main.ts still
 0% (not
 yet reached). Note: projectiles.ts/rockets.ts show partial incidental
 coverage already (mixed pure-physics + canvas-drawing files, deliberately
@@ -463,25 +525,12 @@ absent from the report.
 
 ## Next concrete step
 
-Continue Phase 7: read src/engine/bgm.ts next, write bgm.test.ts.
-Needs `// @vitest-environment jsdom` (constructs `new Audio()`, a real
-`HTMLAudioElement` — jsdom provides the element but its `.play()`/
-`.pause()` are stubs that log "not implemented" unless mocked/spied over
-first), the `test/mocks/fsAccess.ts` in-memory FileSystemDirectoryHandle
-for `loadFolder()`'s `dir.values()` scan, and `test/mocks/audio.ts`'s
-`stubAudioContext()` for the `wireAndPlay()` → `audio.resume()` →
-`createMediaElementSource` path. Also needs `URL.createObjectURL`/
-`revokeObjectURL` stubbed (jsdom doesn't implement these for real Blobs)
-— `vi.stubGlobal("URL", { createObjectURL: vi.fn(() => "blob:fake"),
-revokeObjectURL: vi.fn() })` or similar. Key branches: extension
-filtering (.mp3/.ogg/.wav accepted, others skipped, case-insensitive),
-empty folder (0 tracks, nothing started), `audio.isSilenced()` gating
-playback independently of `resume()`, `sourceNode` wired only once
-across multiple `playCurrent()` calls (second `createMediaElementSource`
-on the same element would throw for real), `currentUrl` revoked on
-track change but not on the very first track, `play()` rejection
-swallowed via `.catch(() => undefined)`, and the `ended` event driving
-`advance()` → wraps `cursor` via modulo back to 0. Verify 100%, commit,
-then continue to input.ts, automap.ts, effects.ts, hud.ts,
-projectiles.ts, rockets.ts, raycaster.ts, sprites.ts, textures.ts,
-viewmodel.ts (each its own commit). 1/12 Phase-7 files done.
+Continue Phase 7: read src/engine/automap.ts next, write
+automap.test.ts. Draws to a 2D canvas context — reuse
+`test/mocks/canvas.ts`'s `stubCanvasGetContext` (first proven in Phase
+5's `debugView.test.ts`, and this file's drawing surface is a fair bit
+larger, so expect to extend the canvas mock if it calls a context method
+`debugView.ts` never needed). Verify 100%, commit, then continue to
+effects.ts, hud.ts, projectiles.ts, rockets.ts, raycaster.ts, sprites.ts,
+textures.ts, viewmodel.ts (each its own commit) — that's the rest of
+Phase 7. 3/12 Phase-7 files done.
