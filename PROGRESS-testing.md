@@ -704,10 +704,10 @@ first thing at the start of every session, before touching code.
   own `beginPath()`).
 
   **Phase 7 complete (12/12 files), all 100% stmts/branch/funcs/lines.**
-- [ ] Phase 8: src/fs/ (3 files) — IN PROGRESS
+- [x] Phase 8: src/fs/ (3 files) — COMPLETE
   - [x] src/fs/workspace.ts
   - [x] src/fs/demoCampaign.ts
-  - [ ] src/fs/github.ts (next — last Phase-8 file)
+  - [x] src/fs/github.ts
 
   workspace.ts notes: 100% on the first attempt, 16 tests. The
   `test/mocks/fsAccess.ts` fake (`FakeFileSystemDirectoryHandle`/
@@ -737,6 +737,26 @@ first thing at the start of every session, before touching code.
   "provably unreachable `?? ` fallback" pattern already documented in
   `src/parser/registry.ts`. Marked with `/* v8 ignore next */` plus a
   rationale comment, mirroring that file's existing style.
+
+  github.ts notes: took two rounds, 20 tests. `vi.stubGlobal("fetch",
+  vi.fn())` with `mockResolvedValueOnce` chains matching call order
+  handled the two-sequential-fetch shape (`resolveDefaultBranch` then
+  the recursive tree fetch) cleanly. The streaming path
+  (`readJsonWithProgress`) needed a hand-built fake `Response` whose
+  `.body.getReader()` returns a scripted `{done,value}` sequence — split
+  a real `JSON.stringify(...)` payload's encoded bytes into two chunks
+  via `TextEncoder`, to prove the chunk-merge+decode logic actually
+  reassembles multi-chunk input correctly rather than just passing
+  through a single chunk unchanged. First coverage round landed at
+  97.91% branch: `buildTree`'s nested-path ternary
+  (`accPath ? \`${accPath}/${segments[i]}\` : segments[i]`) only had its
+  "first path segment" (accPath still empty) branch covered — every
+  fixture so far used exactly one directory level deep (`"src/a.c"`).
+  Added a dedicated 2-levels-deep fixture (`"src/lib/util.c"`) to hit
+  the "accPath already non-empty" branch on the loop's second
+  iteration.
+
+  **Phase 8 complete (3/3 files), all 100% stmts/branch/funcs/lines.**
 - [ ] Phase 9: src/ui/ (5 files)
 - [ ] Phase 10: src/engine/engine.ts
 - [ ] Phase 11: src/main.ts
@@ -746,10 +766,10 @@ first thing at the start of every session, before touching code.
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
 src/parser/, ALL of src/map/ (Phase 5 complete), ALL 13 of Phase 6,
-ALL 12 of Phase 7 (Phase 7 complete), and 2 of 3 Phase-8 files
-(workspace.ts, demoCampaign.ts) are 100% stmts/branch/funcs/lines. 1144
-tests total, all green. Rest of src/fs/ (github.ts), src/ui/,
-src/engine/engine.ts, src/main.ts still 0% (not yet reached).
+ALL 12 of Phase 7 (Phase 7 complete), and ALL 3 of Phase 8 (Phase 8
+complete) are 100% stmts/branch/funcs/lines. 1164 tests total, all
+green. src/ui/ (5 files), src/engine/engine.ts, src/main.ts still 0%
+(not yet reached — Phases 9-11).
 defaultHighscore.ts and empty-node-shim.ts correctly absent from the
 report.
 
@@ -765,51 +785,37 @@ report.
 
 ## Next concrete step
 
-Finish Phase 8: read src/fs/github.ts next (already read once this
-session in full — 199 lines), write github.test.ts. Needs
-`vi.stubGlobal("fetch", vi.fn())`, driven with `mockResolvedValueOnce`
-chains matching call order per test:
-1. `parseGithubRepoInput(input)` — pure regex parsing, no fetch needed:
-   test full URLs (with/without `https://`, with/without `www.`,
-   with/without trailing slash), bare `owner/repo` shorthand, a
-   trailing `.git` suffix stripped, and an unparseable input returning
-   `null`. Also confirm urlMatch takes precedence when both regexes
-   could theoretically match (`m = urlMatch ?? shortMatch`).
-2. `fetchGithubTree(ref, onTreeBytes?, signal?)` — two sequential
-   fetches: `resolveDefaultBranch` (repo info, extracts
-   `default_branch`) then the recursive tree fetch. Each needs its own
-   `!res.ok` failure test (distinct error messages: "not found or
-   inaccessible" vs "Failed to fetch repository tree"). Test
-   `treeJson.truncated` both true (console.warn — `vi.spyOn(console,
-   "warn").mockImplementation(() => {})`) and false/undefined (no
-   warn). Test `signal` is actually threaded through to both `fetch`
-   calls' options (assert on the mock's call args).
-3. `readJsonWithProgress` — the interesting one. Non-streaming fallback
-   (`!onBytes || !res.body`) is simple: a fake `Response`-shaped object
-   with just `.json()`. The streaming path needs a fake `.body` with a
-   `.getReader()` returning an object whose `.read()` is scripted via
-   `mockResolvedValueOnce` for a `{done:false,value:<Uint8Array
-   chunk>}` sequence ending in `{done:true,value:undefined}` — assert
-   `onBytes` was called with the correct cumulative byte counts, and
-   that the merged/decoded JSON matches (build the encoded bytes with
-   `new TextEncoder().encode(JSON.stringify(...))`, sliced into 2+
-   chunks to prove the merge logic, not just a single-chunk pass-through).
-4. `buildTree`/`sortRecursively` (both private, exercised only via
-   `fetchGithubTree`'s return value) — test: `entry.type !== "blob"`
-   entries (real GitHub trees include `"tree"` type entries for
-   directories) are skipped/synthesized rather than causing duplicate
-   nodes; a path segment matching `IGNORED_DIRECTORIES` drops that
-   whole file; nested directories get created once and reused for
-   later files in the same directory (`ensureDir`'s `dir ??=` cache
-   hit vs miss); final tree is sorted directories-first-then-alpha at
-   every level (reuse `compareNodes`'s already-proven semantics from
-   workspace.test.ts).
-5. `GithubFileHandle.getFile()` (private class, exercised via a tree
-   node's `handle` after `fetchGithubTree`) — first call fetches from
-   the correct `raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}`
-   URL and caches; a second call reuses the cache without fetching
-   again (assert `fetch` call count stays at whatever it was); a
-   non-ok response throws with status/statusText in the message.
-Verify 100%, commit (own commit — Phase 8 will then be complete, 3/3).
-Then Phase 9 (src/ui/, 5 files), Phase 10 (engine.ts), Phase 11
-(main.ts), Phase 12 (wrap-up). 2/3 Phase-8 files done.
+**Phase 8 is complete (3/3 files, all 100%).** Start Phase 9: src/ui/
+(5 files — consoleSidebar.ts 140 lines, controlsLegend.ts 111 lines,
+fileTree.ts 77 lines, gameHud.ts 289 lines, highscorePanel.ts 103
+lines). None of the 5 import a *value* from `textures.ts` (checked via
+grep across all 5 files' import statements: only `fileTree.ts` imports
+a type from `../fs/workspace`, `highscorePanel.ts` imports the real
+`truncateHash` value from `../engine/highscores` — safe, `highscores.ts`
+has no module-scope singleton/DOM side effect unlike `textures.ts`), so
+none should need the jsdom-stub-canvas-before-dynamic-import workaround
+raycaster.ts/textures.ts needed. All 5 are pure UI/DOM-manipulation
+files with no prior tests at all, so every one needs `//
+@vitest-environment jsdom` and will likely construct/query real DOM
+elements via `document.createElement`/`querySelector` — read each file
+fully before writing its test (none have been read yet this session,
+this note is from `wc -l` + import-grep only, not real content).
+`gameHud.ts` at 289 lines is the largest and, going by its name, may
+draw to a canvas (`gameHud.ts` — check for `getContext("2d")` calls; if
+so it'll need `test/mocks/canvas.ts`'s `stubCanvasGetContext`, same
+pattern proven throughout Phase 5/7). Suggested order: smallest-to-
+largest (fileTree.ts, highscorePanel.ts, controlsLegend.ts,
+consoleSidebar.ts, gameHud.ts) to build up DOM-testing patterns on
+simpler files first. Verify 100% per file, commit after each one
+individually — no batching (Phase 7's bgm.ts and
+automap.ts+effects.ts+hud.ts+projectiles.ts batching slips are the
+cautionary precedent; Phase 8 kept every file to its own commit
+cleanly, keep doing that). After Phase 9: Phase 10 (engine.ts — the
+`RaycasterEngine` orchestrator, has a real `InputSource` constructor
+seam and `window.__codeensteinTestHooks` per earlier plan research),
+Phase 11 (main.ts — the hardest file, ~40 unexported top-level
+closures, may need a testability-seam checkpoint with the user per the
+plan's own flag), Phase 12 (wrap-up: flip coverage thresholds to 100%
+in vitest.config.ts, add a blocking CI job, update
+doc/dev/architecture.md, move the notes backlog item to Done, delete
+this file). 0/5 Phase-9 files done.
