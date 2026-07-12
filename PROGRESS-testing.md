@@ -948,21 +948,22 @@ first thing at the start of every session, before touching code.
     that use large `dt` steps.
 
 - [ ] Phase 11: src/main.ts — IN PROGRESS. `src/main.test.ts` created,
-  63 tests so far covering: module-import DOM wiring, the 3
+  69 tests so far covering: module-import DOM wiring, the 3
   campaign-persistence exports, `applyForcedUnlocks`, `flattenParsableFiles`,
   `findEntrypoint`'s full local-workspace cascade, WAD/BGM loading, the
   highscores dialog, all three workspace-loading flows (local pick,
   GitHub, demo campaign) including a real supersession race, Continue Run,
-  file-tree file selection, and — new — actually starting a live level
-  (dismissing `GameHud.showLevelStart`'s briefing via a real
-  `installRaf({stubClock:true})`-driven clock past `DISMISS_LOCK_MS`,
-  which calls the real `activeEngine.start()`) plus driving real gameplay
-  input through it: typing "IDDQD" on the canvas (`onCheatActivated`) and
-  Escape/resume (`onFreezeChange`, both edges). All green, `npm test`
-  clean at 1385/76. **Coverage on src/main.ts alone: `onStats`,
-  `onCheatActivated`, `onFreezeChange` now covered too** (uncovered
-  function list dropped from 15 to 11 — see below for what's left). See
-  "Next concrete step" for what's next.
+  file-tree file selection, starting a live level + cheat codes +
+  pause/resume, `fitCanvasToArea`'s full branch set, and
+  `formatByteCount` (via a real streamed GitHub fetch). All green, `npm
+  test` clean at 1391/76. **Coverage on src/main.ts alone: 838/1310 lines
+  (64%), 44/53 functions (83%), 225/284 branches (79%)**. Only 9
+  functions remain fully uncovered — `onWatchReplay`, `onGameOver`,
+  `onWin`, `advanceToNextLevel`, `findNextParsableFile`,
+  `resetToFileTree`, `recordRunHighscore`, `startReplay`,
+  `buildReplayControls` — every one of them is either the win/death
+  path or the replay system (see below for the plan on both). See "Next
+  concrete step" for what's next.
   - Gotcha this batch: a file-tree row's `title` attribute is the node's
     *full path* ("ws/readme.md"), not its bare filename — a `[title="…"]`
     selector needs the workspace-root prefix too.
@@ -1263,12 +1264,16 @@ per-scenario, not per-file, breakdown):
       frames-exhausted safety net) — the *last* remaining large batch;
       `onWatchReplay`/`buildReplayControls` are part of this
 - [ ] `beforeunload` autosave
-- [ ] `fitCanvasToArea` (the `ResizeObserver`/`fullscreenchange` listeners) —
-      small, self-contained, no gameplay dependency; good quick win
-- [ ] `formatByteCount` (GitHub tree-fetch progress readout) — needs a
-      *streaming* `Response` mock (see `test/mocks` conventions in
-      `src/fs/github.test.ts`'s `streamResponse` helper), not the plain
-      `jsonResponse` shape already used for the GitHub-load batch
+- [x] `fitCanvasToArea` (wide-area/tall-area 640:400 fit, hidden-canvasArea
+      no-op, fullscreen-target no-op, `fullscreenchange`'s re-fit-on-exit-
+      only behavior). `test/mocks/mainDom.ts`'s `stubResizeObserver()` now
+      returns a `{ fire() }` handle (captures whatever callback `main.ts`
+      registered) instead of being a pure no-op — needed since jsdom never
+      fires real resize callbacks on its own
+- [x] `formatByteCount` (byte/KB/MB threshold formatting, via a real
+      streamed-chunks `Response` mock on the GitHub tree fetch, same
+      `getReader()`-shaped fixture `github.test.ts`'s `streamResponse`
+      helper already established)
 - [ ] `resetToFileTree`/`showFileTreePlaceholder`/`showLoadingScreen` (mostly
       covered incidentally by the flows above — verify via coverage report
       once those land, don't necessarily need dedicated tests)

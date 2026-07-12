@@ -18,11 +18,20 @@ import type { TreeNode } from "./fs/workspace";
  * otherwise), so this helper rebuilds both and returns the freshly imported
  * module's exports.
  */
+let resizeObserverStub: { fire: () => void } | null = null;
+
+/** Fires whatever `ResizeObserver` callback `main.ts` registered on
+ * `canvasArea` during the most recent `importMain()` call — see
+ * `stubResizeObserver`'s doc comment. */
+function fireResize(): void {
+  resizeObserverStub?.fire();
+}
+
 async function importMain(): Promise<typeof import("./main")> {
   vi.resetModules();
   buildIndexDom();
   stubCanvasGetContext(document.createElement("canvas"));
-  stubResizeObserver();
+  resizeObserverStub = stubResizeObserver();
   stubDialogElement(document.querySelector<HTMLDialogElement>("#highscore-dialog")!);
   // main.ts's own `isFileSystemAccessSupported()` check runs at *import*
   // time and disables #select-workspace/#continue-run forever if
@@ -910,5 +919,116 @@ describe("main.ts — starting a level and driving live gameplay", () => {
     expect(() => raf.flush(1, 16)).not.toThrow(); // pause edge
     window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" }));
     expect(() => raf.flush(1, 16)).not.toThrow(); // resume edge
+  });
+});
+
+function setClientSize(el: HTMLElement, width: number, height: number): void {
+  Object.defineProperty(el, "clientWidth", { value: width, configurable: true });
+  Object.defineProperty(el, "clientHeight", { value: height, configurable: true });
+}
+
+function setFullscreenElement(el: Element | null): void {
+  Object.defineProperty(document, "fullscreenElement", { value: el, configurable: true });
+}
+
+describe("main.ts — canvas sizing (fitCanvasToArea)", () => {
+  afterEach(() => {
+    setFullscreenElement(null);
+  });
+
+  it("sizes the canvas to the largest 640:400 box that fits a wide area", async () => {
+    await importMain();
+    const canvasArea = document.querySelector<HTMLElement>(".canvas-area")!;
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    setClientSize(canvasArea, 1000, 200); // wide relative to 640:400 — height-constrained
+    fireResize();
+    expect(canvas.style.height).toBe("200px");
+    expect(canvas.style.width).toBe(`${200 * (640 / 400)}px`);
+  });
+
+  it("sizes the canvas to the largest 640:400 box that fits a tall area", async () => {
+    await importMain();
+    const canvasArea = document.querySelector<HTMLElement>(".canvas-area")!;
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    setClientSize(canvasArea, 200, 1000); // tall relative to 640:400 — width-constrained
+    fireResize();
+    expect(canvas.style.width).toBe("200px");
+  });
+
+  it("does nothing while canvasArea is hidden (zero client size)", async () => {
+    await importMain();
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    const before = canvas.style.width;
+    fireResize(); // canvasArea's jsdom clientWidth/Height default to 0
+    expect(canvas.style.width).toBe(before);
+  });
+
+  it("does nothing while the canvas is itself the fullscreen element", async () => {
+    await importMain();
+    const canvasArea = document.querySelector<HTMLElement>(".canvas-area")!;
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    setClientSize(canvasArea, 1000, 200);
+    setFullscreenElement(canvas);
+    const before = canvas.style.width;
+    fireResize();
+    expect(canvas.style.width).toBe(before); // untouched — CSS's :fullscreen rule owns sizing instead
+  });
+
+  it("re-fits on exiting fullscreen, but not while still fullscreen", async () => {
+    await importMain();
+    const canvasArea = document.querySelector<HTMLElement>(".canvas-area")!;
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    setClientSize(canvasArea, 1000, 200);
+
+    setFullscreenElement(canvas);
+    document.dispatchEvent(new Event("fullscreenchange"));
+    const duringFullscreen = canvas.style.width;
+
+    setFullscreenElement(null);
+    document.dispatchEvent(new Event("fullscreenchange"));
+    expect(canvas.style.width).not.toBe(duringFullscreen);
+    expect(canvas.style.height).toBe("200px");
+  });
+});
+
+describe("main.ts — GitHub tree-fetch progress readout (formatByteCount)", () => {
+  it("formats a streamed tree-fetch's progress in bytes, then KB, then MB", async () => {
+    await importMain();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    function jsonResponse(body: unknown): Response {
+      return { ok: true, status: 200, statusText: "OK", json: async () => body, body: null } as unknown as Response;
+    }
+    // A streamed tree response, chunked so the byte-progress callback
+    // (formatByteCount's only caller) fires more than once, crossing both
+    // the B->KB and KB->MB formatting thresholds.
+    const bigChunk = new Uint8Array(600_000); // 600,000 B ~= 586 KB
+    let reads = 0;
+    const reader = {
+      read: vi.fn(async () => {
+        reads++;
+        if (reads === 1) return { done: false, value: bigChunk };
+        if (reads === 2) return { done: false, value: bigChunk }; // cumulative ~1.1 MB
+        return { done: true, value: undefined };
+      }),
+    };
+    const streamed = {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      body: { getReader: () => reader },
+      json: async () => {
+        throw new Error("json() should not be called on the streaming path");
+      },
+    } as unknown as Response;
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ default_branch: "main" })).mockResolvedValueOnce(streamed);
+
+    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+    document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
+    const status = document.querySelector<HTMLParagraphElement>("#loading-status")!;
+    await waitUntil(() => /MB received\)$/.test(status.textContent ?? ""));
+    expect(status.textContent).toMatch(/MB received\)$/);
   });
 });

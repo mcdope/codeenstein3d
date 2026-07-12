@@ -95,17 +95,26 @@ export function buildIndexDom(): void {
   `;
 }
 
-/** jsdom has no `ResizeObserver` implementation at all — `main.ts` only ever
- * calls `.observe()` on `canvasArea` and never reads back a callback
- * synchronously in any code path this suite exercises, so a no-op stub is
- * enough (unlike `installRaf`, there's no need to manually fire callbacks). */
-export function stubResizeObserver(): void {
-  class NoopResizeObserver {
+/** jsdom has no `ResizeObserver` implementation at all. `main.ts` observes
+ * exactly one element (`canvasArea`) with it — the returned `fire()` lets a
+ * test manually invoke whatever callback `main.ts` registered, e.g. to
+ * exercise `fitCanvasToArea`'s recompute path (which a real browser would
+ * trigger on layout/size changes ResizeObserver can't see coming under
+ * jsdom's non-rendering DOM). */
+export function stubResizeObserver(): { fire: () => void } {
+  let callback: ResizeObserverCallback | null = null;
+  class StubResizeObserver {
+    constructor(cb: ResizeObserverCallback) {
+      callback = cb;
+    }
     observe(): void {}
     unobserve(): void {}
     disconnect(): void {}
   }
-  (globalThis as unknown as { ResizeObserver: typeof NoopResizeObserver }).ResizeObserver = NoopResizeObserver;
+  (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+  return {
+    fire: () => callback?.([] as unknown as ResizeObserverEntry[], null as unknown as ResizeObserver),
+  };
 }
 
 /** jsdom (this project's pinned 26.1.0) doesn't implement `<dialog>`'s
