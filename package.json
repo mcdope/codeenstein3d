@@ -39,7 +39,7 @@
     "tree-sitter-rust": "^0.24.0",
     "tree-sitter-scala": "^0.24.0",
     "tree-sitter-typescript": "^0.23.2",
-    "typescript": "^5.6.3",
+    "typescript": "^7.0.2",
     "vite": "^6.0.0",
     "vitest": "3.2.7"
   },
