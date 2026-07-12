@@ -188,4 +188,4 @@
  - [ ] multikill score bonus, sfx and gfx
  - [ ] github repo loads should ignore folders like "test", "Test", "tests" and so on
  - [ ] already read lore terminals shouldnt glow anymore
- 
+ - [ ] github workspace loading when loading a replay doesnt show loading indicator
