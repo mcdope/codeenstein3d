@@ -169,8 +169,8 @@ first thing at the start of every session, before touching code.
   - [x] src/map/generation/secretRooms.ts
   - [x] src/map/generation/teleporters.ts
   - [x] src/map/generation/trapsHazards.ts
-  - [ ] src/map/generation/lore.ts (next)
-  - [ ] src/map/generation/spawnExit.ts
+  - [x] src/map/generation/lore.ts
+  - [ ] src/map/generation/spawnExit.ts (next)
   - [ ] src/map/mapGenerator.ts (orchestrator, do last)
   - [ ] src/map/debugView.ts (needs test/mocks/canvas.ts — first real use)
   Notes: findPropSpot's PROP_CLEARANCE/PROP_SPACING rejection branches needed
@@ -227,6 +227,25 @@ first thing at the start of every session, before touching code.
   rng wrapper whenever you need to pin one specific roll (e.g. a
   chance-threshold check) while still letting downstream candidate-search
   calls vary naturally.
+
+  lore.ts (16/18 done): for a function with a 3-way (or more) probabilistic
+  branch fed by a LONG, hard-to-hand-derive rng call chain (shuffle, then
+  candidate filtering, then a final roll — placeTodoEncounter's trap/mine/
+  Bug enemy split), don't hand-count rng() calls to script a sequence —
+  write a small throwaway Node probe script instead: bundle the real
+  source with esbuild (mirroring scripts/lib/loadEngineModules.mjs's
+  pattern), loop over mulberry32 seeds 1..N calling the real exported
+  function directly, and print which seed produces each outcome you need.
+  Bake the discovered seed into the real test with a comment noting it was
+  found empirically. Must run `node` from the repo root (not the
+  scratchpad) so `esbuild` resolves from node_modules, and delete the probe
+  script when done — it's throwaway, not part of the suite. Also: a
+  private helper only reachable through ONE gated code path (here,
+  interiorNeighborOf is only ever called from inside placeTodoEncounter,
+  which only runs for TODO-flagged comments) won't get exercised by a
+  "same geometry, non-flagged comment" test even if the outer terminal
+  placement succeeds identically — match the gating condition, not just
+  the geometry, when hunting for a specific branch.
 - [ ] Phase 6: src/engine/ pure-logic (13 files)
 - [ ] Phase 7: src/engine/ browser-API (12 files)
 - [ ] Phase 8: src/fs/ (3 files)
@@ -238,10 +257,10 @@ first thing at the start of every session, before touching code.
 ## Current coverage snapshot
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
-src/parser/, and 15 of 18 Phase-5 files (everything except lore.ts,
-spawnExit.ts, mapGenerator.ts, debugView.ts) are 100% stmts/branch/funcs/
-lines. 545 tests total, all green. Rest of src/map/, src/engine/, src/fs/,
-src/ui/, src/main.ts still 0% (not yet reached). defaultHighscore.ts and
+src/parser/, and 16 of 18 Phase-5 files (everything except spawnExit.ts,
+mapGenerator.ts, debugView.ts) are 100% stmts/branch/funcs/lines. 559 tests
+total, all green. Rest of src/map/, src/engine/, src/fs/, src/ui/,
+src/main.ts still 0% (not yet reached). defaultHighscore.ts and
 empty-node-shim.ts correctly absent from the report.
 
 ## Known open issues / deferred decisions
@@ -256,10 +275,10 @@ empty-node-shim.ts correctly absent from the report.
 
 ## Next concrete step
 
-Continue Phase 5: read src/map/generation/lore.ts next, write
-lore.test.ts, verify 100%, commit. Then spawnExit.ts (its own commit),
-then src/map/mapGenerator.ts last (the orchestrator — golden/determinism
-test: same seed + same ParsedFile input must reproduce byte-identical
-output, call generate() twice and deep-equal), then src/map/debugView.ts
-(first real use of test/mocks/canvas.ts from Phase 0). This is the last
-stretch of Phase 5 — 15/18 files done.
+Continue Phase 5: read src/map/generation/spawnExit.ts next, write
+spawnExit.test.ts, verify 100%, commit. Then src/map/mapGenerator.ts (the
+orchestrator — golden/determinism test: same seed + same ParsedFile input
+must reproduce byte-identical output, call generate() twice and
+deep-equal), then src/map/debugView.ts (first real use of
+test/mocks/canvas.ts from Phase 0). This is the last stretch of Phase 5 —
+16/18 files done, only 2 to go before Phase 6.
