@@ -165,9 +165,9 @@ first thing at the start of every session, before touching code.
   - [x] src/map/generation/doorsKeys.ts
   - [x] src/map/generation/pickups.ts
   - [x] src/map/generation/props.ts
-  - [ ] src/map/generation/enemies.ts (next)
-  - [ ] src/map/generation/secretRooms.ts
-  - [ ] src/map/generation/teleporters.ts
+  - [x] src/map/generation/enemies.ts
+  - [x] src/map/generation/secretRooms.ts
+  - [ ] src/map/generation/teleporters.ts (next)
   - [ ] src/map/generation/trapsHazards.ts
   - [ ] src/map/generation/lore.ts
   - [ ] src/map/generation/spawnExit.ts
@@ -238,12 +238,12 @@ first thing at the start of every session, before touching code.
 ## Current coverage snapshot
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
-src/parser/, and 11 of 18 Phase-5 files (src/map/types.ts, seed.ts, util.ts,
+src/parser/, and 13 of 18 Phase-5 files (src/map/types.ts, seed.ts, util.ts,
 geometry.ts, labyrinth.ts, corridors.ts, pathing.ts, breakup.ts,
-doorsKeys.ts, pickups.ts, props.ts) are 100% stmts/branch/funcs/lines. 490
-tests total, all green. Rest of src/map/, src/engine/, src/fs/, src/ui/,
-src/main.ts still 0% (not yet reached). defaultHighscore.ts and
-empty-node-shim.ts correctly absent from the report.
+doorsKeys.ts, pickups.ts, props.ts, enemies.ts, secretRooms.ts) are 100%
+stmts/branch/funcs/lines. 519 tests total, all green. Rest of src/map/,
+src/engine/, src/fs/, src/ui/, src/main.ts still 0% (not yet reached).
+defaultHighscore.ts and empty-node-shim.ts correctly absent from the report.
 
 ## Known open issues / deferred decisions
 
@@ -257,10 +257,10 @@ empty-node-shim.ts correctly absent from the report.
 
 ## Next concrete step
 
-Continue Phase 5: read src/map/generation/enemies.ts next, write
-enemies.test.ts, verify 100%, commit. Then secretRooms.ts, teleporters.ts,
-trapsHazards.ts, lore.ts, spawnExit.ts (each its own commit), then
-src/map/mapGenerator.ts last (the orchestrator — golden/determinism test:
-same seed + same ParsedFile input must reproduce byte-identical output,
-call generate() twice and deep-equal), then src/map/debugView.ts (first
-real use of test/mocks/canvas.ts from Phase 0).
+Continue Phase 5: read src/map/generation/teleporters.ts next, write
+teleporters.test.ts, verify 100%, commit. Then trapsHazards.ts, lore.ts,
+spawnExit.ts (each its own commit), then src/map/mapGenerator.ts last (the
+orchestrator — golden/determinism test: same seed + same ParsedFile input
+must reproduce byte-identical output, call generate() twice and
+deep-equal), then src/map/debugView.ts (first real use of
+test/mocks/canvas.ts from Phase 0).
