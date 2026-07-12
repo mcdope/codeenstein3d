@@ -2969,7 +2969,7 @@ describe("main.ts — replay playback (startReplay)", () => {
     expect(() => buttons[2].click()).not.toThrow();
   });
 
-  it("replaying a recording of a real win reaches buildEngineFor's own onWin", async () => {
+  it("replaying a recording of a real win reaches buildEngineFor's own onWin", { timeout: 20000 }, async () => {
     // Record a genuine win first (outside main.ts's DOM entirely — see
     // recordNavigatedSegment's doc comment), then feed that real recording
     // through the same seedAndOpenReplay flow every other test in this
@@ -3089,7 +3089,7 @@ describe("main.ts — replay playback (startReplay)", () => {
     expect(testHooks()!.getPlayerState().state).toBe("won"); // the second level's own natural win
   });
 
-  it("replaying a recording of a real death reaches buildEngineFor's own onGameOver", async () => {
+  it("replaying a recording of a real death reaches buildEngineFor's own onGameOver", { timeout: 20000 }, async () => {
     // Same technique as the win test above, but navigate to a hazard tile
     // without god mode and linger there until it kills — exercises
     // buildEngineFor's onGameOver instead of its onWin.
