@@ -170,7 +170,7 @@ first thing at the start of every session, before touching code.
   - [x] src/map/generation/teleporters.ts
   - [x] src/map/generation/trapsHazards.ts
   - [x] src/map/generation/lore.ts
-  - [ ] src/map/generation/spawnExit.ts (next)
+  - [x] src/map/generation/spawnExit.ts
   - [ ] src/map/mapGenerator.ts (orchestrator, do last)
   - [ ] src/map/debugView.ts (needs test/mocks/canvas.ts — first real use)
   Notes: findPropSpot's PROP_CLEARANCE/PROP_SPACING rejection branches needed
@@ -257,9 +257,9 @@ first thing at the start of every session, before touching code.
 ## Current coverage snapshot
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
-src/parser/, and 16 of 18 Phase-5 files (everything except spawnExit.ts,
-mapGenerator.ts, debugView.ts) are 100% stmts/branch/funcs/lines. 559 tests
-total, all green. Rest of src/map/, src/engine/, src/fs/, src/ui/,
+src/parser/, and 17 of 18 Phase-5 files (everything except mapGenerator.ts
+and debugView.ts) are 100% stmts/branch/funcs/lines. 568 tests total, all
+green. Rest of src/map/ (2 files), src/engine/, src/fs/, src/ui/,
 src/main.ts still 0% (not yet reached). defaultHighscore.ts and
 empty-node-shim.ts correctly absent from the report.
 
@@ -275,10 +275,11 @@ empty-node-shim.ts correctly absent from the report.
 
 ## Next concrete step
 
-Continue Phase 5: read src/map/generation/spawnExit.ts next, write
-spawnExit.test.ts, verify 100%, commit. Then src/map/mapGenerator.ts (the
-orchestrator — golden/determinism test: same seed + same ParsedFile input
-must reproduce byte-identical output, call generate() twice and
-deep-equal), then src/map/debugView.ts (first real use of
-test/mocks/canvas.ts from Phase 0). This is the last stretch of Phase 5 —
-16/18 files done, only 2 to go before Phase 6.
+Continue Phase 5: read src/map/mapGenerator.ts next (the orchestrator —
+calls every module tested so far in a fixed order; write tests covering
+its own wiring/branches plus a golden/determinism test: same seed + same
+ParsedFile input must reproduce byte-identical output, call generate()
+twice and deep-equal). Then src/map/debugView.ts last (first real use of
+test/mocks/canvas.ts from Phase 0 — read that mock file first). Only 2
+files left in Phase 5, then Phase 6 (src/engine/ pure-logic, 13 files)
+starts.
