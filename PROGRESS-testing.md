@@ -947,8 +947,18 @@ first thing at the start of every session, before touching code.
     overshoot — no risk of "tunneling through" the map bounds in tests
     that use large `dt` steps.
 
-- [ ] Phase 11: src/main.ts — IN PROGRESS (infra done, no test cases yet;
-  see "Next concrete step" below for the full resume brief)
+- [ ] Phase 11: src/main.ts — IN PROGRESS. `src/main.test.ts` created,
+  34 tests so far covering: module-import DOM wiring (title, extreme-gore
+  option removal, tab switching, gore/difficulty/volume settings
+  persistence, Continue-tab visibility), the 3 campaign-persistence
+  exports (`loadCampaignSave`/`saveCampaign`/`clearCampaignSave`),
+  `applyForcedUnlocks`, `flattenParsableFiles`, and `findEntrypoint`'s
+  full cascade (filename match in primary/secondary, parse-failure
+  fallthrough, scored-scan with/without a `main()`, nothing-parses,
+  aborted signal). All green, `npm test` clean at 1356/76.
+  Coverage so far (from just this batch): 47 functions declared, 15
+  reachable purely from module-import + these exports; the rest need the
+  DOM-interaction batches below. See "Next concrete step" for what's next.
 - [ ] Phase 12: wrap-up (thresholds, CI, docs, notes, delete this file)
 
 ## Current coverage snapshot
@@ -1078,26 +1088,58 @@ the one place "don't add abstractions beyond what's needed" and "100%
 coverage" could genuinely conflict). Not yet needed — no test-writing
 has started, so no seam gap has been found yet either.
 
-**Suggested per-scenario sub-checklist** for this phase (mirroring
-Phase 10's per-scenario, not per-file, breakdown — track each as its own
-checklist item here so a mid-phase interruption doesn't lose track):
-launch tabs (local/continue/github/demo) + tab switching, audio/volume
-settings persistence, WAD texture loading, highscores dialog +
-Watch Replay wiring, canvas sizing (`fitCanvasToArea`/`ResizeObserver`/
-fullscreen), workspace loading (local pick + supersession-guard races),
-GitHub loading (fetch + suggestion buttons + supersession), demo
-campaign loading, Continue Run (save/resume), file-tree file selection
-(`handleFileSelected`), entrypoint detection (`findEntrypoint`'s full
-cascade — filename match, primary/secondary partitioning, scored
-scan, remote-workspace skip), `launchLevel` (map generation wiring,
-engine handler wiring, forced unlocks, HUD callbacks),
-`advanceToNextLevel` (multi-level chaining, campaign-complete path),
-campaign persistence (`loadCampaignSave`/`saveCampaign`/
-`clearCampaignSave`, already exported), gore/difficulty
-settings, highscore recording (`recordRunHighscore`, cheat/first-level
-exclusions), replay playback (`startReplay`'s whole nested-closure
-machinery — play/pause, seek, speed, level-to-level advance, all 4
-termination paths), `beforeunload` autosave.
+**Per-scenario sub-checklist** for this phase (mirroring Phase 10's
+per-scenario, not per-file, breakdown):
+
+- [x] tab switching (`activateLaunchTab`)
+- [x] gore/difficulty settings persistence (load/save/corrupt-value fallback/
+      extreme-downgrade)
+- [x] volume settings persistence (load/save/out-of-range fallback)
+- [x] Continue-tab visibility on import (save present/absent)
+- [x] campaign persistence exports (`loadCampaignSave`/`saveCampaign`/
+      `clearCampaignSave`, including the legacy `armor`→`swap` rename and
+      the smg/gas/levelIndex defaulting for older saves)
+- [x] `applyForcedUnlocks`
+- [x] `flattenParsableFiles` (including the extensionless-shebang-sniff path,
+      the `onFileChecked` callback, and the memoization cache)
+- [x] `findEntrypoint`'s cascade against a **local** (non-remote) workspace:
+      filename match in primary/secondary, parse-failure fallthrough, scored
+      scan with/without a `main()`, nothing-parses, an already-aborted signal
+- [ ] `findEntrypoint`'s remote-workspace skip specifically (`workspaceIsRemote
+      && !workspaceIsDemo` — needs a real or demo-campaign GitHub-style load
+      first to flip that module state, then a direct `findEntrypoint` call)
+- [ ] WAD texture loading (`describeWadStatus`, the file-input change handler)
+- [ ] highscores dialog open/close + Watch Replay wiring
+- [ ] canvas sizing (`fitCanvasToArea`, the `ResizeObserver`/`fullscreenchange`
+      listeners)
+- [ ] workspace loading: local pick (`selectButton` click handler,
+      `beginWorkspaceLoad`'s supersession-guard races)
+- [ ] GitHub loading (fetch mock, suggestion buttons, supersession, abort)
+- [ ] demo campaign loading
+- [ ] Continue Run (resume flow, saved-file-not-found fallback)
+- [ ] file-tree file selection (`handleFileSelected`)
+- [ ] `launchLevel` (map generation wiring, engine handler wiring, forced
+      unlocks, HUD callbacks, replay-recorder start)
+- [ ] `advanceToNextLevel` (multi-level chaining, campaign-complete path)
+- [ ] highscore recording (`recordRunHighscore` — cheat-used and
+      died-on-level-1 exclusions, codebase-stats timeout path)
+- [ ] replay playback (`startReplay`'s whole nested-closure machinery —
+      play/pause, seek, speed, level-to-level advance, all 4 termination
+      paths: natural win/death, Escape, failed relocation/hash mismatch,
+      frames-exhausted safety net)
+- [ ] `beforeunload` autosave
+- [ ] `resetToFileTree`/`showFileTreePlaceholder`/`showLoadingScreen` (mostly
+      covered incidentally by the flows above — verify via coverage report
+      once those land, don't necessarily need dedicated tests)
+
+**Next immediate action**: WAD texture loading and the highscores dialog
+are the smallest/most isolated remaining pieces (no FS-Access/GitHub
+mocking needed) — good next batch. Workspace-loading flows (local/
+GitHub/demo/continue) are the next tier up in complexity and unlock the
+remote-workspace `findEntrypoint` gap above as a side effect. `launchLevel`/
+`advanceToNextLevel`/replay are the largest remaining pieces — save for
+last once the loading flows that feed into them exist as test fixtures
+to build on.
 
 After Phase 11 (the last content phase): Phase 12 wrap-up — flip
 `vitest.config.ts`'s coverage thresholds to 100% across the board,
