@@ -13,6 +13,7 @@ import { parseFile } from "./parser/registry";
 import { hashRun, recordHighscore } from "./engine/highscores";
 import type { InputSnapshot } from "./engine/input";
 import type { ReplayLevelSegment } from "./engine/replay";
+import type { EngineCarryover } from "./engine/engine";
 
 /**
  * main.ts is not a class — importing it runs its whole module body
@@ -97,7 +98,15 @@ beforeEach(() => {
   vi.stubGlobal("crypto", webcrypto);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Give any straggling promise from a test's own async chain (e.g.
+  // loadLevel's readFileText/parseFile/hashRun, kicked off by a click and
+  // never explicitly awaited to completion) a few real event-loop ticks to
+  // settle before pulling the crypto/fetch stubs out from under it below —
+  // an orphaned continuation resuming after that point throws "crypto.subtle
+  // is undefined", an unhandled rejection with no effect on any test's own
+  // outcome but noisy across the whole file's run.
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -588,6 +597,20 @@ function stubShowDirectoryPicker(handle: unknown): void {
 }
 
 describe("main.ts — local workspace pick", () => {
+  it("falls back to the file-tree-scan progress readout when nothing matches an entrypoint convention", async () => {
+    await importMain();
+    // No filename matches ENTRYPOINT_FILENAMES, and nothing here parses at
+    // all — findEntrypoint's whole cascade returns null, so
+    // autoLaunchInitialLevel falls to its own "Scanning file tree… (N/Total)"
+    // branch (countTreeFiles + flattenParsableFiles), landing on the
+    // "select a file" placeholder since nothing parsable was found either.
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "readme.md": "just some notes, not source" }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "ws");
+    await waitUntil(() => document.querySelector("#viewport > p.muted") !== null, 8000);
+    expect(document.querySelector("#viewport > p.muted")?.textContent).toContain("Select a file from the tree");
+  });
+
   it("reads and renders the picked workspace, then auto-launches a level", async () => {
     await importMain();
     stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
@@ -1168,6 +1191,21 @@ function walkPath(canvas: HTMLCanvasElement, raf: RafController, tilePath: { x: 
   setHeld(new Set());
 }
 
+// A small, hand-picked source snippet — found by brute-forcing a handful of
+// tiny candidates offline against the real MapGenerator and checking which
+// produced the shortest floor/hazard/door/teleporter/spike-trap-reachable
+// spawn->exit route (secret walls need an explicit "R" interact this simple
+// walker doesn't attempt, so not every generated map's critical path is
+// walkable by it — this one's is). Module-scoped since both the live-DOM win
+// test and recordNavigatedWinSegment() (for the replay batch) reuse it.
+const NAVIGABLE_FIXTURE_C = "void f(int x) { if (x > 0) { x = x - 1; } }\n";
+
+// Another hand-picked, offline-brute-forced fixture (see
+// NAVIGABLE_FIXTURE_C's comment above for the method) — this one's
+// generated map has a hazard (acid pool, from its global variables)
+// reachable from spawn without needing a secret-wall interact.
+const HAZARD_FIXTURE_C = "int a;\nint b;\nvoid f() { a = 1; b = 2; }\n";
+
 describe("main.ts — reaching a natural win/death via real navigation", () => {
   let raf: RafController;
 
@@ -1178,14 +1216,6 @@ describe("main.ts — reaching a natural win/death via real navigation", () => {
   afterEach(() => {
     raf.restore();
   });
-
-  // A small, hand-picked source snippet — found by brute-forcing a handful
-  // of tiny candidates offline against the real MapGenerator and checking
-  // which produced the shortest floor/hazard/door/teleporter/spike-trap-
-  // reachable spawn->exit route (secret walls need an explicit "R"
-  // interact this simple walker doesn't attempt, so not every generated
-  // map's critical path is walkable by it — this one's is).
-  const NAVIGABLE_FIXTURE_C = "void f(int x) { if (x > 0) { x = x - 1; } }\n";
 
   it("winning a level fires onWin, advances/completes the campaign, and records a highscore", async () => {
     const { loadCampaignSave } = await importMain();
@@ -1258,12 +1288,6 @@ describe("main.ts — reaching a natural game over via real navigation", () => {
   afterEach(() => {
     raf.restore();
   });
-
-  // Another hand-picked, offline-brute-forced fixture (see
-  // NAVIGABLE_FIXTURE_C's comment on the win-test above for the method) —
-  // this one's generated map has a hazard (acid pool, from its global
-  // variables) reachable from spawn without needing a secret-wall interact.
-  const HAZARD_FIXTURE_C = "int a;\nint b;\nvoid f() { a = 1; b = 2; }\n";
 
   it("standing in acid drains health to 0, firing onGameOver and skipping highscore recording (died on level 1)", async () => {
     await importMain();
@@ -1347,6 +1371,204 @@ async function buildReplaySegment(frameCount: number): Promise<ReplayLevelSegmen
     gore: "normal",
     frames: Array.from({ length: frameCount }, () => ({ dt: 0.05, input: { ...EMPTY_INPUT_SNAPSHOT } })),
   };
+}
+
+/** A minimal, mutable `InputSource` implementation for directly driving a
+ * `RaycasterEngine` outside main.ts's DOM — same shape as `engine.test.ts`'s
+ * `ScriptedInput`, trimmed to just what `recordNavigatedWinSegment`'s
+ * turn-then-move walker needs (movement/turning; everything else is an
+ * always-off no-op). */
+class MinimalScriptedInput {
+  keys = new Set<string>();
+  attach = vi.fn();
+  detach = vi.fn();
+  pollGamepad = vi.fn();
+  isDown(code: string): boolean {
+    return this.keys.has(code);
+  }
+  consumeMouseDX(): number {
+    return 0;
+  }
+  consumeFire(): boolean {
+    return false;
+  }
+  isFireHeld(): boolean {
+    return false;
+  }
+  consumeWeaponRequest(): number | null {
+    return null;
+  }
+  consumeMapToggle(): boolean {
+    return false;
+  }
+  consumeInteract(): boolean {
+    return false;
+  }
+  consumeMelee(): boolean {
+    return false;
+  }
+  isMeleeHeld(): boolean {
+    return false;
+  }
+  consumeWheelSteps(): number {
+    return 0;
+  }
+  consumeFpsToggle(): boolean {
+    return false;
+  }
+  consumeCheat(): string | null {
+    return null;
+  }
+  consumeEscape(): boolean {
+    return false;
+  }
+  consumeBlur(): boolean {
+    return false;
+  }
+  consumePointerUnlock(): boolean {
+    return false;
+  }
+  consumeClick(): boolean {
+    return false;
+  }
+  gamepadForward(): number {
+    return 0;
+  }
+  gamepadStrafe(): number {
+    return 0;
+  }
+  gamepadTurn(): number {
+    return 0;
+  }
+  captureSnapshot(): InputSnapshot {
+    return {
+      keys: [...this.keys],
+      mouseDX: 0,
+      fireQueued: false,
+      fireHeld: false,
+      weaponRequest: null,
+      mapToggle: false,
+      interact: false,
+      melee: false,
+      meleeHeld: false,
+      wheelSteps: 0,
+      fpsToggle: false,
+      escape: false,
+      blur: false,
+      pointerUnlock: false,
+      click: false,
+      gpForward: 0,
+      gpStrafe: 0,
+      gpTurn: 0,
+    };
+  }
+}
+
+/**
+ * Records a real navigated win or death as an actual `ReplayLevelSegment`,
+ * by constructing a `RaycasterEngine` directly (bypassing main.ts's DOM
+ * entirely) with a real `CampaignReplayRecorder` attached — the engine's own
+ * `advance()` calls `replayRecorder.record()` automatically every frame, so
+ * driving it via `walkPath`'s same turn-then-move BFS logic (against
+ * `window.__codeensteinTestHooks`, still available since this is the exact
+ * same engine constructor `?testHooks=1` gates) yields a genuine, replayable
+ * recording — no hand-authored no-op frames.
+ *
+ * `godMode`, when true, is recorded into the segment's own `carryover` too
+ * (not just used live) — replaying these exact frames must reconstruct an
+ * engine with the *same* god-mode state, or the replay would take the same
+ * damage over again and could reach a different outcome than the recording.
+ */
+async function recordNavigatedSegment(options: {
+  sourceContent: string;
+  target: (map: { spawn: { x: number; y: number }; exit: { x: number; y: number }; hazards: { x: number; y: number }[] }) => { x: number; y: number };
+  godMode: boolean;
+  extraStandingFrames?: number;
+}): Promise<ReplayLevelSegment> {
+  enableTestHooks();
+  // engine.ts (via textures.ts) imports a real *value* — `export const
+  // textures = new TextureManager()` — that calls `canvas.getContext("2d")`
+  // at module-*import* time, before any of this function's own code runs.
+  // Canvas must be stubbed before these dynamic imports, not after — same
+  // pattern engine.test.ts established in Phase 10.
+  stubCanvasGetContext(document.createElement("canvas"));
+  const { MapGenerator } = await import("./map/mapGenerator");
+  const { RaycasterEngine } = await import("./engine/engine");
+  const { CampaignReplayRecorder } = await import("./engine/replay");
+
+  const parsed = (await parseFile("main.c", options.sourceContent))!;
+  const map = new MapGenerator().generate(parsed, false, true, []);
+  const canvas = document.createElement("canvas");
+  canvas.width = 640;
+  canvas.height = 400;
+  stubCanvasGetContext(canvas);
+  const input = new MinimalScriptedInput();
+  const recorder = new CampaignReplayRecorder("recorded-campaign");
+  const gameplaySeed = 777;
+  const carryover: EngineCarryover = {
+    health: 100,
+    swap: 0,
+    bullets: 0,
+    rockets: 0,
+    smg: 0,
+    gas: 0,
+    godMode: options.godMode,
+  };
+  recorder.startLevel(
+    { filePath: "recorded.c", bonusLevel: false, gameplaySeed, difficulty: "normal", gore: "normal", carryover },
+    Promise.resolve("placeholder-hash"),
+  );
+
+  const engine = new RaycasterEngine(
+    canvas,
+    map,
+    {},
+    carryover,
+    "normal",
+    "normal",
+    gameplaySeed,
+    input,
+    recorder,
+  );
+
+  const targetTile = options.target(map);
+  const path = bfsPath(map.grid, map.spawn, targetTile);
+  expect(path.length).toBeGreaterThan(0);
+  const dt = 0.05;
+  let targetIndex = 0;
+  for (let frame = 0; frame < 800 && targetIndex < path.length; frame++) {
+    const state = testHooks()!.getPlayerState();
+    if (state.state !== "playing") break;
+    const target = path[targetIndex];
+    const tx = target.x + 0.5;
+    const ty = target.y + 0.5;
+    const dx = tx - state.x;
+    const dy = ty - state.y;
+    if (Math.hypot(dx, dy) < 0.25) {
+      targetIndex++;
+      continue;
+    }
+    const desiredAngle = Math.atan2(dy, dx);
+    const currentAngle = Math.atan2(state.dirY, state.dirX);
+    let diff = desiredAngle - currentAngle;
+    while (diff > Math.PI) diff -= 2 * Math.PI;
+    while (diff < -Math.PI) diff += 2 * Math.PI;
+    input.keys.clear();
+    input.keys.add(Math.abs(diff) > 0.15 ? (diff > 0 ? "KeyE" : "KeyQ") : "KeyW");
+    engine.advance(dt);
+  }
+
+  // Standing still on the target tile a while longer (e.g. to let hazard
+  // damage actually finish the player off) — no keys held.
+  input.keys.clear();
+  for (let i = 0; i < (options.extraStandingFrames ?? 0) && testHooks()!.getPlayerState().state === "playing"; i++) {
+    engine.advance(dt);
+  }
+
+  const payload = await recorder.finish();
+  const segment = payload?.levels[0];
+  expect(segment).toBeDefined();
+  return segment!;
 }
 
 /** Seeds a real (compressed, via the real `recordHighscore`) localStorage
@@ -1533,5 +1755,151 @@ describe("main.ts — replay playback (startReplay)", () => {
     expect(() => seekBack.click()).not.toThrow(); // seeking backward rebuilds the level from frame 0 via restartLevel
     await waitUntil(() => !!testHooks(), 8000);
     expect(testHooks()!.getPlayerState().health).toBe(100);
+  });
+
+  it("replaying a recording of a real win reaches buildEngineFor's own onWin", async () => {
+    // Record a genuine win first (outside main.ts's DOM entirely — see
+    // recordNavigatedSegment's doc comment), then feed that real recording
+    // through the same seedAndOpenReplay flow every other test in this
+    // block uses, this time actually letting it run to completion instead
+    // of just checking the transport bar/mechanics.
+    const recordedSegment = await recordNavigatedSegment({
+      sourceContent: NAVIGABLE_FIXTURE_C,
+      target: (map) => map.exit,
+      godMode: true, // prove navigation reaches the exit, not survive incidental combat
+    });
+
+    await importMain();
+    enableTestHooks();
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": NAVIGABLE_FIXTURE_C }));
+    // recordNavigatedSegment records against its own standalone engine's
+    // filePath ("recorded.c") and campaign name — rewrite both so this
+    // replay's own re-verification (workspace pick + astHash check) matches
+    // the *replayed* workspace instead.
+    const parsed = (await parseFile("main.c", NAVIGABLE_FIXTURE_C))!;
+    const astHash = await hashRun(JSON.stringify(parsed), REPLAY_CAMPAIGN_NAME);
+    const segment: ReplayLevelSegment = { ...recordedSegment, filePath: `${REPLAY_CAMPAIGN_NAME}/main.c`, astHash };
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    await waitUntil(() => !!testHooks(), 8000);
+
+    // Burst through the recorded frames (real event-loop yields between
+    // rounds, same reasoning as the frames-exhausted/hash-mismatch tests
+    // above) until the replayed run reaches its own natural win.
+    let flushed = 0;
+    await waitUntil(() => {
+      flushed += raf.flush(1, 16);
+      return testHooks()!.getPlayerState().state === "won" || flushed > 400;
+    }, 15000);
+    expect(testHooks()!.getPlayerState().state).toBe("won");
+  });
+
+  it("replaying a recording of a real death reaches buildEngineFor's own onGameOver", async () => {
+    // Same technique as the win test above, but navigate to a hazard tile
+    // without god mode and linger there until it kills — exercises
+    // buildEngineFor's onGameOver instead of its onWin.
+    const recordedSegment = await recordNavigatedSegment({
+      sourceContent: HAZARD_FIXTURE_C,
+      target: (map) => map.hazards[0],
+      godMode: false,
+      extraStandingFrames: 300, // HAZARD_DPS(18) * 0.05 * 300 = 270 — comfortably lethal from full health
+    });
+
+    await importMain();
+    enableTestHooks();
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": HAZARD_FIXTURE_C }));
+    const parsed = (await parseFile("main.c", HAZARD_FIXTURE_C))!;
+    const astHash = await hashRun(JSON.stringify(parsed), REPLAY_CAMPAIGN_NAME);
+    const segment: ReplayLevelSegment = { ...recordedSegment, filePath: `${REPLAY_CAMPAIGN_NAME}/main.c`, astHash };
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    await waitUntil(() => !!testHooks(), 8000);
+
+    let flushed = 0;
+    await waitUntil(() => {
+      flushed += raf.flush(1, 16);
+      return testHooks()!.getPlayerState().state === "over" || flushed > 700;
+    }, 15000);
+    expect(testHooks()!.getPlayerState().state).toBe("over");
+  });
+});
+
+/**
+ * `window.addEventListener("beforeunload", ...)` is a real, permanent
+ * `window`-level listener — unlike everything else `importMain()` resets
+ * (a fresh DOM tree, a fresh module instance), `window` itself persists for
+ * the whole test *file*, so every previous test's own "beforeunload"
+ * listener (closing over *that* test's now-stale `activeEngine`/
+ * `lastStats`) is still registered too. A plain `window.dispatchEvent(new
+ * Event("beforeunload"))` fires all of them at once, which — since
+ * `persistProgress` writes to the shared, real `localStorage` — leaks a
+ * previous test's save data into the current one despite `localStorage.clear()`
+ * running first. Spying on `addEventListener` *before* `importMain()` and
+ * invoking only the listener the current import just registered sidesteps
+ * this entirely.
+ */
+async function importMainAndCaptureBeforeUnload(): Promise<() => void> {
+  const addSpy = vi.spyOn(window, "addEventListener");
+  await importMain();
+  const call = addSpy.mock.calls.find((c) => c[0] === "beforeunload");
+  addSpy.mockRestore();
+  return call![1] as () => void;
+}
+
+describe("main.ts — beforeunload autosave", () => {
+  let raf: RafController;
+
+  beforeEach(() => {
+    raf = installRaf({ stubClock: true });
+  });
+
+  afterEach(async () => {
+    // See the replay-playback describe block's own afterEach for why this
+    // drain (before raf.restore() pulls the stubbed rAF queue out from
+    // under any still-pending loadLevel() continuation) is needed here too.
+    for (let i = 0; i < 5; i++) {
+      raf.flush(3, 16);
+      await flushAsync();
+    }
+    raf.restore();
+  });
+
+  it("persists progress on unload while a level is active", async () => {
+    const onBeforeUnload = await importMainAndCaptureBeforeUnload();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    dismissBriefingHelper(raf);
+    raf.flush(1, 16); // onStats fires once per advance() — populates lastStats
+
+    onBeforeUnload();
+    const saved = JSON.parse(localStorage.getItem("codeenstein-campaign-save")!);
+    expect(saved.filePath).toBe("ws/main.c");
+  });
+
+  it("does nothing on unload when no level is active", async () => {
+    const onBeforeUnload = await importMainAndCaptureBeforeUnload();
+    expect(() => onBeforeUnload()).not.toThrow();
+    expect(localStorage.getItem("codeenstein-campaign-save")).toBeNull();
+  });
+
+  it("does not persist campaign progress on unload while watching a replay", async () => {
+    const onBeforeUnload = await importMainAndCaptureBeforeUnload();
+    const segment = await buildReplaySegment(20);
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": REPLAY_FIXTURE_C }));
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+    onBeforeUnload();
+    // isReplaying guards persistProgress specifically — a replay viewing
+    // must never be mistaken for real campaign progress.
+    expect(localStorage.getItem("codeenstein-campaign-save")).toBeNull();
+
+    // Let loadLevel's own async chain fully settle before this test ends —
+    // see the replay-playback describe block's own afterEach for why.
+    enableTestHooks();
+    await waitUntil(() => !!testHooks(), 8000);
   });
 });

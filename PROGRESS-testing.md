@@ -1315,24 +1315,58 @@ per-scenario, not per-file, breakdown):
       `seekBy()` no-ops entirely while `transitioning` is still true — a
       couple of explicit extra `flushAsync()` yields after the `testHooks()`
       wait are needed before seeking can do anything.
-      **One likely coverage-tool false negative, not a real gap**: despite
-      `restartLevel` genuinely executing (proven twice via temporary
-      `console.error` instrumentation directly inside it, mid-session,
-      confirming `seekBy`'s `target < frameIndex` branch correctly calls it
-      with valid `currentParsed`/`currentSegment` state), the coverage
-      report still lists it as 0 executions. Statement-level data backs
-      this up strangely too: the `const restartLevel = (): void => {...}`
-      *declaration* line shows 6 executions (once per test in the describe
-      block, as expected for closure creation), but the *body* always shows
-      0 — inconsistent with the proven runtime behavior. Left unresolved
-      rather than chased further given the disproportionate time already
-      spent (a whole debugging session) versus a real quality signal (the
-      behavior IS proven correct by the temporary instrumentation) — if
-      Phase 12's 100% threshold gate is ever blocked by this specific
-      function, that's the moment to either retry with a fresh v8/vitest
-      version or add an honestly-worded `/* v8 ignore next */` explaining
-      it's a proven-reachable false negative, not unreachable code.
-- [ ] `beforeunload` autosave
+      **CONFIRMED coverage-tool false negative, not a real gap** (fully
+      resolved investigation, not a loose end): `restartLevel`, and
+      `buildEngineFor`'s own `onGameOver`/`onWin` (its object-literal
+      `{ onGameOver: () => {...}, onWin: () => {...} }` handlers passed to
+      `new RaycasterEngine(...)`), are ALL closures declared *inside*
+      `startReplay`'s body — a function invoked once per test across ~10
+      tests in this describe block. Two dedicated tests
+      (`recordNavigatedSegment` + the "replaying a recording of a real
+      win/death" tests, added specifically to settle this) each drive a
+      **real, behaviorally-verified** win and death through an actual
+      replayed run — `expect(testHooks()!.getPlayerState().state).toBe("won"
+      /"over")` genuinely passes, which is only possible if `advance()`'s
+      own tail logic (`this.handlers.onWin?.(stats)` /
+      `this.handlers.onGameOver?.(stats)`, the same mechanism proven
+      correct in Phase 10's `engine.test.ts`) actually invoked these exact
+      closures. Yet `npx vitest run src/main.test.ts -t "replaying a
+      recording of a real" --coverage` — **run in full isolation, just
+      these 2 tests, nothing else** — still reports all three functions at
+      0 executions. This rules out cross-test interference/merge-ordering
+      entirely; it's specific to how `@vitest/coverage-v8@3.2.7` (this
+      project's pinned version, matched to the Node 18.19.1 pin — see
+      Phase 0 notes) attributes coverage to closures freshly re-created on
+      every invocation of an outer function that itself gets called many
+      times across a test file. `npm view @vitest/coverage-v8 versions`
+      shows nothing newer than 3.2.7 stable (5.x is beta-only) — no
+      available upgrade path to retry against right now.
+      **Decision**: keep both tests (real regression value regardless of
+      what the coverage tool reports) and do NOT add `/* v8 ignore */` —
+      that directive means "provably unreachable," which is false here;
+      these lines are provably *reached*, just mis-tallied. When Phase 12
+      flips coverage thresholds to 100%, if these three functions still
+      report 0%, that's the moment to either retry against a newer
+      Node/Vitest pin, or add a narrowly-scoped `coverage.exclude` (not a
+      `v8 ignore`) for these specific closures with a comment linking back
+      to this exact investigation — a config-level carve-out is honest
+      about "the tool can't measure this," where an inline `v8 ignore`
+      would misleadingly claim "this can't execute."
+- [x] `beforeunload` autosave (persists on unload while a level is active,
+      no-ops with none active, and — critically — does *not* persist while
+      `isReplaying`, so a replay viewing is never mistaken for real
+      campaign progress). **Gotcha**: `window.addEventListener("beforeunload",
+      ...)` is a real, permanent `window`-level listener that `importMain()`'s
+      usual reset (fresh DOM, fresh module) does NOT clean up — every
+      previous test's own stale listener (closing over *that* test's
+      now-gone `activeEngine`/`lastStats`) is still registered on the same
+      `window` for the rest of the file's run, and a plain
+      `window.dispatchEvent(new Event("beforeunload"))` fires all of them
+      at once, leaking a previous test's save data into the current one
+      despite `localStorage.clear()` running first. Fixed by spying on
+      `window.addEventListener` *before* `importMain()`, capturing only the
+      listener the current import just registered, and invoking that
+      specific function directly instead of dispatching a real event.
 - [x] `fitCanvasToArea` (wide-area/tall-area 640:400 fit, hidden-canvasArea
       no-op, fullscreen-target no-op, `fullscreenchange`'s re-fit-on-exit-
       only behavior). `test/mocks/mainDom.ts`'s `stubResizeObserver()` now
