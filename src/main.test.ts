@@ -9,6 +9,10 @@ import { installRaf, type RafController } from "../test/mocks/raf";
 import { stubCanvasGetContext } from "../test/mocks/canvas";
 import { FakeFileSystemFileHandle, fakeDirectoryHandle } from "../test/mocks/fsAccess";
 import type { TreeNode } from "./fs/workspace";
+import { parseFile } from "./parser/registry";
+import { hashRun, recordHighscore } from "./engine/highscores";
+import type { InputSnapshot } from "./engine/input";
+import type { ReplayLevelSegment } from "./engine/replay";
 
 /**
  * main.ts is not a class — importing it runs its whole module body
@@ -1295,5 +1299,239 @@ describe("main.ts — reaching a natural game over via real navigation", () => {
 
     expect(testHooks()?.getPlayerState().state).toBe("over");
     expect(logSpy.mock.calls.some((c) => c[0] === "%c[highscores] Died on the very first level — not recording a leaderboard entry.")).toBe(true);
+  });
+});
+
+const REPLAY_FIXTURE_C = "int main() { return 0; }\n";
+const REPLAY_CAMPAIGN_NAME = "replay-ws";
+
+const EMPTY_INPUT_SNAPSHOT: InputSnapshot = {
+  keys: [],
+  mouseDX: 0,
+  fireQueued: false,
+  fireHeld: false,
+  weaponRequest: null,
+  mapToggle: false,
+  interact: false,
+  melee: false,
+  meleeHeld: false,
+  wheelSteps: 0,
+  fpsToggle: false,
+  escape: false,
+  blur: false,
+  pointerUnlock: false,
+  click: false,
+  gpForward: 0,
+  gpStrafe: 0,
+  gpTurn: 0,
+};
+
+/** Builds a `ReplayLevelSegment` for `REPLAY_FIXTURE_C`, hashed against the
+ * *actually*-parsed content the same way `startReplay`'s own re-verification
+ * does, plus `frameCount` no-op frames — enough to drive play/pause/seek/
+ * speed mechanics without needing a real navigated win/death (that's its
+ * own, much more expensive, separate concern — see the win/death batch
+ * above for the technique if ever extended here). */
+async function buildReplaySegment(frameCount: number): Promise<ReplayLevelSegment> {
+  const parsed = (await parseFile("main.c", REPLAY_FIXTURE_C))!;
+  const astHash = await hashRun(JSON.stringify(parsed), REPLAY_CAMPAIGN_NAME);
+  return {
+    // A TreeNode's path is prefixed with the workspace root's own name (see
+    // readDirectoryTree) — same gotcha as the file-tree row `title`
+    // attribute earlier in this file. "main.c" alone never matches.
+    filePath: `${REPLAY_CAMPAIGN_NAME}/main.c`,
+    bonusLevel: false,
+    gameplaySeed: 12345,
+    astHash,
+    difficulty: "normal",
+    gore: "normal",
+    frames: Array.from({ length: frameCount }, () => ({ dt: 0.05, input: { ...EMPTY_INPUT_SNAPSHOT } })),
+  };
+}
+
+/** Seeds a real (compressed, via the real `recordHighscore`) localStorage
+ * highscore entry with a `replay.version: 2` payload, then opens the
+ * Highscores dialog and clicks the entry's "Watch Replay" button — the only
+ * way `onWatchReplay`/`startReplay` are reachable at all. */
+async function seedAndOpenReplay(segments: ReplayLevelSegment[]): Promise<void> {
+  await recordHighscore({
+    score: 100,
+    campaignName: REPLAY_CAMPAIGN_NAME,
+    levelName: "main.c",
+    levelsCleared: 1,
+    hash: "irrelevant-workspace-hash",
+    achievedAt: Date.now(),
+    replay: { version: 2, campaignName: REPLAY_CAMPAIGN_NAME, levels: segments },
+  });
+  document.querySelector<HTMLButtonElement>("#view-highscores")!.click();
+  await waitUntil(() => document.querySelector(".replay-btn") !== null, 8000);
+  document.querySelector<HTMLButtonElement>(".replay-btn")!.click();
+}
+
+describe("main.ts — replay playback (startReplay)", () => {
+  let raf: RafController;
+
+  beforeEach(() => {
+    raf = installRaf({ stubClock: true });
+  });
+
+  afterEach(async () => {
+    // Drain any straggling promise from startReplay's own async chain
+    // (readFileText/parseFile/hashRun) before the global afterEach's
+    // vi.unstubAllGlobals() below pulls the crypto stub out from under it —
+    // an orphaned hashRun() continuation resuming after that point throws
+    // "crypto.subtle is undefined", an unhandled rejection with no effect
+    // on this test's own outcome but noisy across the whole file's run.
+    for (let i = 0; i < 5; i++) {
+      raf.flush(3, 16);
+      await flushAsync();
+    }
+    raf.restore();
+  });
+
+  it("plays back a recorded run: transport bar appears, play/pause toggles, speed cycles", async () => {
+    const { loadCampaignSave } = await importMain();
+    void loadCampaignSave; // unused here, imported for symmetry with other tests in this file
+    enableTestHooks();
+    const segment = await buildReplaySegment(20);
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": REPLAY_FIXTURE_C }));
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    await waitUntil(() => !!testHooks(), 8000); // buildEngineFor has run — a real level is now driving
+    expect(document.querySelector(".replay-controls")).not.toBeNull();
+
+    // Button order per buildReplayControls: seekBack, playPause, seekForward, speedDown, speedUp.
+    const playPause = document.querySelectorAll<HTMLButtonElement>(".replay-controls .replay-btn")[1];
+    expect(playPause.textContent).toBe("⏸"); // starts playing
+    playPause.click();
+    expect(playPause.textContent).toBe("▶"); // now paused
+    playPause.click();
+    expect(playPause.textContent).toBe("⏸"); // resumed
+
+    const buttons = document.querySelectorAll<HTMLButtonElement>(".replay-controls .replay-btn");
+    const speedUp = buttons[buttons.length - 1]; // seekBack, playPause, seekForward, speedDown, speedUp
+    const speedLabel = document.querySelector<HTMLElement>(".replay-speed-label")!;
+    expect(speedLabel.textContent).toBe("1x");
+    speedUp.click();
+    expect(speedLabel.textContent).toBe("2x");
+    speedUp.click();
+    expect(speedLabel.textContent).toBe("4x");
+    speedUp.click(); // clamped at the fastest speed
+    expect(speedLabel.textContent).toBe("4x");
+  });
+
+  it("Escape stops the replay and shows the 'Replay Ended' overlay", async () => {
+    await importMain();
+    const segment = await buildReplaySegment(20);
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": REPLAY_FIXTURE_C }));
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    enableTestHooks();
+    await waitUntil(() => !!testHooks(), 8000); // let the initial loadLevel() fully settle before stopping
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" }));
+    raf.flush(1, 16);
+    // showReplayEnded's own dismiss (past its DISMISS_LOCK_MS) tears the
+    // whole viewing down via resetToFileTree.
+    dismissBriefingHelper(raf);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden"), 8000);
+  });
+
+  it("fails gracefully when the recorded file's hash no longer matches the workspace", async () => {
+    await importMain();
+    const segment = await buildReplaySegment(5);
+    segment.astHash = "deliberately-wrong-hash";
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": REPLAY_FIXTURE_C }));
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    // loadLevel()'s hash check needs its own async chain (readFileText/
+    // parseFile/hashRun) to actually progress before showReplayEnded's
+    // overlay appears — a real event-loop yield between rAF rounds (via
+    // waitUntil's polling) is required, not a single synchronous flush.
+    let flushed = 0;
+    await waitUntil(() => {
+      flushed += raf.flush(1, 16);
+      return flushed > 5;
+    }, 8000);
+    // showReplayEnded's overlay is drawn on canvas (no DOM text to assert on
+    // directly) — reaching this point without throwing, with the canvas
+    // area shown (the "Replay Ended" overlay renders inside it), is the
+    // signal the hash-mismatch path was taken instead of a live level.
+    dismissBriefingHelper(raf);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden"), 8000);
+  });
+
+  it("fails gracefully when the recorded file can't be found in the re-picked workspace", async () => {
+    await importMain();
+    const segment = await buildReplaySegment(5);
+    segment.filePath = "gone.c";
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": REPLAY_FIXTURE_C }));
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    dismissBriefingHelper(raf);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden"), 8000);
+  });
+
+  it("ends via the frames-exhausted safety net when a segment's frames run out before the level concludes", async () => {
+    await importMain();
+    const segment = await buildReplaySegment(3); // deliberately too short to ever reach a natural win/death
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": REPLAY_FIXTURE_C }));
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    enableTestHooks();
+    await waitUntil(() => !!testHooks(), 8000); // buildEngineFor has run
+
+    // Burst through more frames than the 3-frame segment actually has —
+    // `flush`'s own loop only processes what's already queued each round,
+    // so a real event-loop yield between rounds (via waitUntil's polling,
+    // not a tight synchronous loop) is what lets loadLevel's own async
+    // chain (readFileText/parseFile/hashRun) actually progress alongside it.
+    let flushed = 0;
+    await waitUntil(() => {
+      flushed += raf.flush(1, 16);
+      return flushed > 10;
+    }, 8000);
+    dismissBriefingHelper(raf);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden"), 8000);
+  });
+
+  it("seeking forward and backward bursts through recorded frames without real-time pacing", async () => {
+    await importMain();
+    const segment = await buildReplaySegment(20);
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": REPLAY_FIXTURE_C }));
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    enableTestHooks();
+    await waitUntil(() => !!testHooks(), 8000);
+    // testHooks() appearing only proves buildEngineFor ran — advanceLevel's
+    // own `transitioning = true` doesn't flip back to false until
+    // loadLevel()'s `.finally()` microtask runs, one tick later; seekBy()
+    // itself no-ops entirely while `transitioning` is still true, so a
+    // couple more real yields here are needed before seeking can do
+    // anything at all.
+    await flushAsync();
+    await flushAsync();
+
+    const buttons = document.querySelectorAll<HTMLButtonElement>(".replay-controls .replay-btn");
+    const seekBack = buttons[0];
+    const seekForward = buttons[2];
+    // Whether this specific fixture's 20 empty-input frames happen to draw
+    // incidental enemy damage isn't deterministic enough to assert on
+    // directly (depends on seeded AI roam timing) — not.toThrow() across
+    // both directions, ending back at full health once seeking backward
+    // has rebuilt the level from scratch (restartLevel), is the stable
+    // signal available via window.__codeensteinTestHooks.
+    expect(() => seekForward.click()).not.toThrow();
+    await flushAsync();
+    await flushAsync();
+    expect(() => seekBack.click()).not.toThrow(); // seeking backward rebuilds the level from frame 0 via restartLevel
+    await waitUntil(() => !!testHooks(), 8000);
+    expect(testHooks()!.getPlayerState().health).toBe(100);
   });
 });

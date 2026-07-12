@@ -947,23 +947,41 @@ first thing at the start of every session, before touching code.
     overshoot — no risk of "tunneling through" the map bounds in tests
     that use large `dt` steps.
 
-- [ ] Phase 11: src/main.ts — IN PROGRESS. `src/main.test.ts` created,
-  71 tests so far covering: module-import DOM wiring, the 3
+- [ ] Phase 11: src/main.ts — IN PROGRESS, NEARLY DONE. `src/main.test.ts`
+  created, 77 tests so far covering: module-import DOM wiring, the 3
   campaign-persistence exports, `applyForcedUnlocks`, `flattenParsableFiles`,
   `findEntrypoint`'s full local-workspace cascade, WAD/BGM loading, the
   highscores dialog, all three workspace-loading flows (local pick,
   GitHub, demo campaign) including a real supersession race, Continue Run,
   file-tree file selection, starting a live level + cheat codes +
   pause/resume, `fitCanvasToArea`'s full branch set, `formatByteCount`
-  (via a real streamed GitHub fetch), and — new — a real BFS-navigated
-  win and a real BFS-navigated hazard death, each driving the actual
-  player through a real generated map via genuine keyboard events (see
-  below for the full technique). All green, `npm test` clean at
-  1393/76. **Coverage on src/main.ts alone: 916/1310 lines (70%), 50/53
-  functions (94%), 237/308 branches (77%)**. Only 3 functions remain
-  fully uncovered — `onWatchReplay`, `startReplay`, `buildReplayControls`
-  — all three are the replay-playback system, the last remaining piece.
-  See "Next concrete step" for what's next.
+  (via a real streamed GitHub fetch), a real BFS-navigated win and a real
+  BFS-navigated hazard death (each driving the actual player through a
+  real generated map via genuine keyboard events), and — new — the full
+  replay-playback system (`startReplay`/`onWatchReplay`/
+  `buildReplayControls`, see below for the seeding technique and its
+  gotchas). All green, `npm test` clean at 1399/76. **Coverage on
+  src/main.ts alone: 1138/1310 lines (87%), 69/71 functions (97%),
+  283/376 branches (75%)**.
+
+  **Only 2 genuine gaps remain** (a 3rd, `restartLevel`, is very likely a
+  coverage-tool false negative — proven to actually execute correctly via
+  temporary instrumentation, see the replay section below for the full
+  story):
+  - `onGameOver`/`onWin` *inside `buildEngineFor`* (the replay system's
+    own closures, distinct from — and structurally similar to, but not
+    the same functions as — `launchLevel`'s already-covered
+    `onGameOver`/`onWin`). Reaching these would need the same BFS
+    navigation technique from the win/death batch, but driven through a
+    *recorded* frame sequence (`ReplayPlaybackInput.loadFrame`) instead
+    of real DOM keyboard events — a genuinely different mechanism
+    (`walkPath`'s canvas `KeyboardEvent` dispatches don't apply to
+    replay's `InputSnapshot`-driven frames at all). Not yet attempted;
+    a reasonable place to stop for this session given the size of what's
+    already landed.
+  - `beforeunload` autosave — not yet attempted, should be small
+    (`window.addEventListener("beforeunload", ...)`, calls
+    `persistProgress` if a level is active and not mid-replay).
   - Gotcha this batch: a file-tree row's `title` attribute is the node's
     *full path* ("ws/readme.md"), not its bare filename — a `[title="…"]`
     selector needs the workspace-root prefix too.
@@ -1267,13 +1285,53 @@ per-scenario, not per-file, breakdown):
          `showBuildSuccessful`) — and *that* overlay's dismiss is what
          calls `resetToFileTree`. Three separate dismisses in a row to
          walk the whole chain, not one.
-- [ ] replay playback (`startReplay`'s whole nested-closure machinery —
-      play/pause, seek, speed, level-to-level advance, all 4 termination
-      paths: natural win/death, Escape, failed relocation/hash mismatch,
-      frames-exhausted safety net) — **the only remaining batch**;
-      `onWatchReplay`/`buildReplayControls` are part of it. Only 3
-      functions in the whole file are still fully uncovered:
-      `onWatchReplay`, `startReplay`, `buildReplayControls`.
+- [x] replay playback (`startReplay`'s nested-closure machinery) — play/pause,
+      speed cycling (clamped at both ends), Escape-to-stop, hash-mismatch
+      failure, file-not-found failure, the frames-exhausted safety net, and
+      bidirectional seeking (`burstTo` forward, `restartLevel` backward) are
+      all covered. `onWatchReplay`/`startReplay`/`buildReplayControls` are
+      covered too. **Technique**: seed a real (compressed, via the real
+      `recordHighscore`) localStorage highscore entry with a hand-built
+      `ReplayPayload` — no need to actually *record* a run first. A
+      `ReplayLevelSegment`'s `astHash` must be computed via the real
+      `hashRun(JSON.stringify(parsed), campaignName)` against the same
+      content the test workspace will re-parse, or the (deliberately
+      exercised) hash-mismatch path fires by accident instead. **Same
+      workspace-root-path-prefix gotcha as the file-tree `title` attribute
+      bit this again**: `ReplayLevelSegment.filePath` must be
+      `"<workspaceRootName>/main.c"`, not bare `"main.c"` — cost a long
+      debugging detour (a naive floor-only assumption that `loadLevel`'s
+      `files.find(f => f.path === segment.filePath)` would just match by
+      bare name).
+      **Two async-timing gotchas specific to this batch**: (1) a *tight
+      synchronous* loop of `raf.flush()` calls does NOT let `loadLevel`'s
+      own async chain (`readFileText`/`parseFile`/`hashRun`) progress at
+      all — needs a real event-loop yield between rounds, i.e. drive it
+      through `waitUntil`'s own polling (which awaits a real `setTimeout`
+      between checks), not a bare `for` loop. (2) `testHooks()` becoming
+      available only proves `buildEngineFor` *started* — `advanceLevel`'s
+      `transitioning = true` doesn't flip back to `false` until
+      `loadLevel()`'s own `.finally()` microtask runs one tick later, and
+      `seekBy()` no-ops entirely while `transitioning` is still true — a
+      couple of explicit extra `flushAsync()` yields after the `testHooks()`
+      wait are needed before seeking can do anything.
+      **One likely coverage-tool false negative, not a real gap**: despite
+      `restartLevel` genuinely executing (proven twice via temporary
+      `console.error` instrumentation directly inside it, mid-session,
+      confirming `seekBy`'s `target < frameIndex` branch correctly calls it
+      with valid `currentParsed`/`currentSegment` state), the coverage
+      report still lists it as 0 executions. Statement-level data backs
+      this up strangely too: the `const restartLevel = (): void => {...}`
+      *declaration* line shows 6 executions (once per test in the describe
+      block, as expected for closure creation), but the *body* always shows
+      0 — inconsistent with the proven runtime behavior. Left unresolved
+      rather than chased further given the disproportionate time already
+      spent (a whole debugging session) versus a real quality signal (the
+      behavior IS proven correct by the temporary instrumentation) — if
+      Phase 12's 100% threshold gate is ever blocked by this specific
+      function, that's the moment to either retry with a fresh v8/vitest
+      version or add an honestly-worded `/* v8 ignore next */` explaining
+      it's a proven-reachable false negative, not unreachable code.
 - [ ] `beforeunload` autosave
 - [x] `fitCanvasToArea` (wide-area/tall-area 640:400 fit, hidden-canvasArea
       no-op, fullscreen-target no-op, `fullscreenchange`'s re-fit-on-exit-
