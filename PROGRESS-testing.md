@@ -1369,7 +1369,19 @@ inside a replay to prove `buildEngineFor`'s own `onGameOver`/`onWin`
 After Phase 11 (the last content phase): Phase 12 wrap-up — flip
 `vitest.config.ts`'s coverage thresholds to 100% across the board,
 add a real blocking `test` job to `.github/workflows/verify.yml`,
-update `doc/dev/architecture.md`'s Build paragraph, move the `notes`
-line-158 backlog item from `## Open` to `## Done` as `[Task 92]`
-(verify 92 is still the next free task number — re-check `notes` before
-assuming), and delete this file.
+update `doc/dev/architecture.md`'s Build paragraph, **create
+`doc/dev/testing.md`** (a new, permanent, curated reference — not this
+disposable progress file, which still gets deleted — covering: the
+Vitest setup and `?url`-as-path plugin, the `test/mocks/` shared
+fixture catalog, the co-located `*.test.ts` convention, the
+mocking-boundary philosophy established across every phase in this
+file — mock browser APIs, never this project's own modules — and the
+handful of genuinely reusable techniques worth a permanent home: the
+dynamic-import-after-canvas-stub pattern, the `installRaf`
+fake-clock/rAF driver, the BFS-navigation-through-a-real-generated-map
+technique from Phase 10/11, and the replay-payload-seeding technique;
+link it from `doc/dev/README.md`'s Contents list, same convention as
+the other three entries there), move the `notes` line-158 backlog item
+from `## Open` to `## Done` as
+`[Task 92]` (verify 92 is still the next free task number — re-check
+`notes` before assuming), and delete this file.
