@@ -342,3 +342,33 @@ Copyright (C) 2026 Tobias Bäumer.
 **Codeenstein 3D** is free software under the **GNU Affero General Public License v3** (or later). See the [`LICENSE`](./LICENSE) file or https://www.gnu.org/licenses/agpl-3.0.html.
 
 ⚠️ **Note:** The AGPL's network clause requires that if you run a modified version as a network service, you must offer users the corresponding source code.
+
+---
+
+## Credits & Third-Party Licenses
+
+Codeenstein 3D has almost no runtime dependencies by design (see [Dependency Minimalism](doc/dev/decisions.md#dependency-minimalism)) — the DOOM WAD parser, raycaster, audio synthesis, and PHP/C parser adapters are all hand-rolled. What it does depend on:
+
+### Shipped to players (bundled into the app itself)
+
+| Package | License | Repository |
+|---|---|---|
+| `web-tree-sitter` | MIT | https://github.com/tree-sitter/tree-sitter |
+
+Plus the 14 Tree-sitter language grammars, compiled to WASM and bundled at build time — all MIT-licensed:
+
+`tree-sitter-bash`, `tree-sitter-c`, `tree-sitter-c-sharp`, `tree-sitter-cpp`, `tree-sitter-go`, `tree-sitter-java`, `tree-sitter-javascript`, `tree-sitter-php`, `tree-sitter-python`, `tree-sitter-ruby`, `tree-sitter-rust`, `tree-sitter-scala`, `tree-sitter-typescript` — all from https://github.com/tree-sitter/, plus `tree-sitter-objc` from https://github.com/tree-sitter-grammars/tree-sitter-objc.
+
+### Build & test tooling (development only, never shipped)
+
+| Package | License | Repository |
+|---|---|---|
+| TypeScript | Apache-2.0 | https://github.com/microsoft/TypeScript |
+| Vite | MIT | https://github.com/vitejs/vite |
+| esbuild | MIT | https://github.com/evanw/esbuild |
+| Vitest / `@vitest/coverage-v8` | MIT | https://github.com/vitest-dev/vitest |
+| Playwright | Apache-2.0 | https://github.com/microsoft/playwright |
+| jsdom | MIT | https://github.com/jsdom/jsdom |
+| `@types/node` | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
+
+See each project's own repository for full license text.
