@@ -704,7 +704,27 @@ first thing at the start of every session, before touching code.
   own `beginPath()`).
 
   **Phase 7 complete (12/12 files), all 100% stmts/branch/funcs/lines.**
-- [ ] Phase 8: src/fs/ (3 files)
+- [ ] Phase 8: src/fs/ (3 files) — IN PROGRESS
+  - [x] src/fs/workspace.ts
+  - [ ] src/fs/demoCampaign.ts (next)
+  - [ ] src/fs/github.ts
+
+  workspace.ts notes: 100% on the first attempt, 16 tests. The
+  `test/mocks/fsAccess.ts` fake (`FakeFileSystemDirectoryHandle`/
+  `FakeFileSystemFileHandle`, built way back in Phase 0 but never
+  actually exercised until now) matched `readDirectoryTree`'s real
+  calls (`entry.kind`, async-iterable `values()`, `getFile()`) exactly
+  — no changes needed to the shared mock, first time all session a
+  Phase-0 mock has needed zero adjustment on first real use.
+  `window.showDirectoryPicker` doesn't exist on jsdom's `Window` by
+  default, so `isFileSystemAccessSupported()`'s false case needed no
+  setup at all, and the true/stubbed cases + `pickDirectory`'s tests
+  assign it directly as a plain property (cast through `unknown`) rather
+  than `vi.stubGlobal` (stubGlobal replaces the *global* binding, not a
+  property *on* the existing `window` object, and this API is read as
+  `window.showDirectoryPicker`, not a bare global identifier) — cleaned
+  up via `delete` in `afterEach` so it doesn't leak into other tests in
+  the file.
 - [ ] Phase 9: src/ui/ (5 files)
 - [ ] Phase 10: src/engine/engine.ts
 - [ ] Phase 11: src/main.ts
@@ -713,10 +733,11 @@ first thing at the start of every session, before touching code.
 ## Current coverage snapshot
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
-src/parser/, ALL of src/map/ (Phase 5 complete), ALL 13 of Phase 6, and
-ALL 12 of Phase 7 (Phase 7 complete) are 100% stmts/branch/funcs/lines.
-1122 tests total, all green. src/fs/, src/ui/, src/engine/engine.ts,
-src/main.ts still 0% (not yet reached — Phases 8-11).
+src/parser/, ALL of src/map/ (Phase 5 complete), ALL 13 of Phase 6,
+ALL 12 of Phase 7 (Phase 7 complete), and 1 of 3 Phase-8 files
+(workspace.ts) are 100% stmts/branch/funcs/lines. 1138 tests total, all
+green. Rest of src/fs/ (2 files), src/ui/, src/engine/engine.ts,
+src/main.ts still 0% (not yet reached).
 defaultHighscore.ts and empty-node-shim.ts correctly absent from the
 report.
 
@@ -732,21 +753,37 @@ report.
 
 ## Next concrete step
 
-**Phase 7 is complete (12/12 files, all 100%).** Start Phase 8:
-src/fs/ (3 files — demoCampaign.ts 46 lines, github.ts 199 lines,
-workspace.ts 131 lines). Per the plan: `demoCampaign.ts`'s
-`import.meta.glob` works against the real `demo-campaign/` files under
-Vitest's vite-node pipeline, no mock needed; `workspace.ts` uses the
-`test/mocks/fsAccess.ts` in-memory `FileSystemDirectoryHandle`/
-`FileSystemFileHandle` fake (already built in Phase 0, first genuinely
-exercised here — check it actually covers everything `workspace.ts`
-calls, since so far only its type shape has been referenced, e.g. in
-raycaster.test.ts's fixtures, never its actual runtime behavior);
-`github.ts` uses `vi.stubGlobal("fetch", ...)` to fake the GitHub API
-responses. Read all three files fully before writing tests — this
-summary is from the plan's Phase-0-era notes, not a fresh read. Verify
-100% per file, commit after each one individually (learn from the
-bgm.ts/automap.ts+effects.ts+hud.ts+projectiles.ts batching slips
-earlier in Phase 7 — commit every single file, no batching). After
-Phase 8: Phase 9 (src/ui/, 5 files), then Phase 10 (engine.ts), Phase 11
-(main.ts), Phase 12 (wrap-up). 0/3 Phase-8 files done.
+Continue Phase 8: read src/fs/demoCampaign.ts next (already read once
+this session — 46 lines, straightforward), write demoCampaign.test.ts.
+Its `import.meta.glob("../../demo-campaign/*", {query:"?raw",
+import:"default", eager:true})` resolves against the REAL
+`demo-campaign/` directory under Vitest's vite-node pipeline (confirmed
+workable per Phase 0 research) — no mock needed, `loadDemoCampaignTree()`
+can just be called directly and asserted against whatever's actually in
+that directory (check `ls demo-campaign/` first to know what to expect
+rather than assuming specific filenames). Key things to verify: root
+node shape (`name`/`path` === `DEMO_CAMPAIGN_NAME` = "demo-campaign",
+`kind: "directory"`), children populated and sorted via `compareNodes`
+(reuse the same sort-order expectations already proven in
+workspace.test.ts), each child's `handle.getFile()` round-trips real
+file content. One likely `v8 ignore` candidate: `modulePath.split("/")
+.pop() ?? modulePath` — `import.meta.glob`'s real module paths always
+contain "/" and `Array.prototype.split` never returns an empty array,
+so `.pop()` can never actually be `undefined` here, matching the exact
+"provably unreachable `?? ` fallback" pattern already documented in
+`src/parser/registry.ts` (see that file's existing comments for the
+exact phrasing/rationale style to mirror) — confirm it's genuinely
+unreachable against the real glob'd paths before reaching for
+`v8 ignore` rather than assuming. Verify 100%, commit (own commit, no
+batching — see workspace.ts's clean per-file precedent above). Then
+github.ts last in Phase 8 (own commit) — needs `vi.stubGlobal("fetch",
+vi.fn())` with `mockResolvedValueOnce` chains matching call order
+(`resolveDefaultBranch`'s repo-info fetch first, then the recursive tree
+fetch, then any lazy per-file `GithubFileHandle.getFile()` fetches);
+`readJsonWithProgress`'s streaming branch needs a fake `Response`-shaped
+object with `.body.getReader()` returning a manually-scripted
+`{done,value}` sequence to drive the `onBytes` callback and the
+chunk-merge/decode path — its non-streaming fallback (`!onBytes ||
+!res.body`) is simpler, just `res.json()`. After Phase 8: Phase 9
+(src/ui/, 5 files), then Phase 10 (engine.ts), Phase 11 (main.ts),
+Phase 12 (wrap-up). 1/3 Phase-8 files done.
