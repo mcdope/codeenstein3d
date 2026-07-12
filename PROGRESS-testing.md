@@ -72,7 +72,50 @@ first thing at the start of every session, before touching code.
     imported directly into compositeTexture.test.ts/loadWad.test.ts via a
     relative path, unmodified except the one additive `texture2Name` option
     above — confirms Vitest resolves plain `.mjs` fixtures fine.
-- [ ] Phase 3: src/parser/ wasm-free (6 files)
+- [x] Phase 3: src/parser/ wasm-free (6 files) — 286 tests total repo-wide,
+      all green. Notes for future reference:
+  - types.ts is fully type-only (zero runtime exports) — excluded from
+    vitest.config.ts's coverage.exclude (v8 reports a 0/0-statement file as
+    a literal 0%, not "N/A", which would have wrongly sunk the Phase 12
+    gate). A light types.test.ts still exists (not counted) pinning the
+    documented EntityKind/SecretTriggerKind value sets. Note: src/map/types.ts
+    is NOT the same case — it has real runtime constants (HAZARD_TILE etc.)
+    and needs real tests in Phase 5, not exclusion.
+  - security.ts, registry.ts: straightforward, real adapters used for
+    registry.test.ts's parseFile() success/throw-path tests (the "wasm-free"
+    phase label is about which files import web-tree-sitter directly, not
+    about forbidding real wasm execution in their tests — registry.ts's own
+    dispatch logic is wasm-free, but exercising parseFile() meaningfully
+    still parses real JS via the generic adapter, which already works fine
+    thanks to the Phase 0 plugin).
+  - astUtils.ts, generic/refinements.ts (10 language refinements: js/ts,
+    python, java, csharp, scala, rust, go, cpp, objc, ruby): tested against
+    REAL parsed ASTs (C/JS/python/java/csharp/scala/rust/go/cpp/objc/ruby
+    grammars, all already-bundled deps) rather than hand-built mock nodes —
+    higher fidelity, and the `entity` argument passed to `refine()` is a
+    synthetic stub since only ancestry/structure needs to be real.
+  - generic/vocabulary.ts: fully grammar-agnostic (parameterized purely by
+    node-type-name tables) — used synthetic Node-shaped fixtures instead of
+    real grammars here, since they give precise control over BFS-depth and
+    unwrap-path branches that would be fragile to hit via any one real
+    grammar's exact shape. Real end-to-end exercising of this module through
+    an actual grammar happens naturally in Phase 4.
+  - Found and fixed 3 provably-unreachable defensive branches in
+    registry.ts's shebang parsing (String.prototype.split() never returns
+    an empty array, so `?? ""` fallbacks there can't fire) and one in
+    refinements.ts's cppVisibility (`refine`'s own isMethod guard already
+    ensures node.parent is non-null before cppVisibility is ever called) —
+    marked with `/* v8 ignore next */` + a one-line rationale comment
+    referencing exactly why, rather than either leaving 100% unreachable or
+    weakening the defensive code for a metric. A parallel case in
+    rubyVisibility (`!body`) turned out to be genuinely reachable (ruby's
+    refine has no equivalent pre-guard) and got real synthetic-node test
+    coverage instead — worth checking this reachability distinction
+    carefully rather than assuming symmetry between similar-looking guards.
+  - Incidental partial coverage of cParser.ts/phpParser.ts/genericParser.ts
+    already shows up in the coverage report (Phase 3's registry.test.ts and
+    astUtils.test.ts exercise the JS generic adapter and C adapter in
+    passing) — expected and fine, Phase 4 will finish these off properly.
 - [ ] Phase 4: src/parser/ wasm-runtime (5 files)
 - [ ] Phase 5: src/map/ + src/map/generation/ (18 files)
 - [ ] Phase 6: src/engine/ pure-logic (13 files)
@@ -85,10 +128,14 @@ first thing at the start of every session, before touching code.
 
 ## Current coverage snapshot
 
-src/difficulty.ts, src/prng.ts, and all of src/wad/ (9 files): 100% stmts/
-branch/funcs/lines. 91 tests total, all green. Rest of the repo still 0%
-(not yet reached). defaultHighscore.ts and empty-node-shim.ts correctly
-absent from the report.
+src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), and src/parser/'s
+6 wasm-free files (types.ts excluded from coverage, astUtils.ts, registry.ts,
+runtime.ts, security.ts, generic/refinements.ts, generic/vocabulary.ts): all
+100% stmts/branch/funcs/lines. 286 tests total, all green. cParser.ts/
+phpParser.ts/genericParser.ts show partial incidental coverage already (from
+Phase 3 tests exercising real adapters) — expected, Phase 4 finishes them.
+Rest of the repo still 0% (not yet reached). defaultHighscore.ts and
+empty-node-shim.ts correctly absent from the report.
 
 ## Known open issues / deferred decisions
 
@@ -102,11 +149,16 @@ absent from the report.
 
 ## Next concrete step
 
-Start Phase 3: src/parser/ wasm-free files (types.ts, registry.ts,
-security.ts, astUtils.ts, generic/refinements.ts, generic/vocabulary.ts —
-all either zero-import or type-only `web-tree-sitter` imports, so no wasm
-runtime needed). Read src/parser/types.ts first (defines the ParsedFile
-contract everything else in this phase produces/consumes), then registry.ts
-and security.ts (both fully dependency-free), then astUtils.ts/refinements.ts/
-vocabulary.ts (need small hand-built mock tree-sitter Node object literals
-since they only import the Node type, erased at compile time).
+Start Phase 4: src/parser/ wasm-runtime files (runtime.ts is already 100%
+covered as a side effect of Phase 0/3, so really: c/cParser.ts,
+php/phpParser.ts, generic/genericParser.ts, generic/languages.ts). Read
+c/cParser.ts first (already read once during Phase 0's throwaway smoke
+test — re-read for real this time), then php/phpParser.ts, then
+generic/genericParser.ts + generic/languages.ts together (genericParser.ts
+is the shared implementation all 12 non-C/PHP bundled languages route
+through; languages.ts just wires up the 12 LanguageConfig instances with
+their refinements.ts hooks — already indirectly exercised by Phase 3's
+refinements.test.ts, but not through the real GenericParserAdapter.parse()
+pipeline end-to-end yet). Follow the same "real grammar, real tiny source
+snippet" pattern used successfully in Phase 3's astUtils.test.ts/
+refinements.test.ts.

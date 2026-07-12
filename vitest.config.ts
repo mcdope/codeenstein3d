@@ -48,8 +48,16 @@ export default defineConfig({
       // src/engine/defaultHighscore.ts is a 115k-line generated data literal
       // (baked by scripts/generate-default-highscore.mjs) with no logic to
       // test — excluded from the coverage denominator entirely, not tested.
+      // src/parser/types.ts is fully type-only (interfaces/type aliases, no
+      // runtime exports at all — confirmed by types.test.ts) and therefore
+      // compiles to zero instrumentable statements; v8 reports a 0/0 file as
+      // a literal 0%, not "N/A", which would otherwise wrongly sink the
+      // Phase 12 100% gate for a file with no logic to cover. Files with
+      // *some* runtime code alongside their types (e.g. src/map/types.ts's
+      // tile constants) are NOT excluded — those get real tests instead.
       exclude: [
         "src/engine/defaultHighscore.ts",
+        "src/parser/types.ts",
         "src/empty-node-shim.ts",
         "src/vite-env.d.ts",
         "dist/**",

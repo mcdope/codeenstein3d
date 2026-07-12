@@ -189,6 +189,10 @@ export const go: Refinement = {
 // ---------------------------------------------------------------------------
 function cppVisibility(node: Node): Visibility {
   const list = node.parent;
+  // Unreachable: `cpp.refine`'s own `isMethod` check above already requires
+  // `node.parent?.type === "field_declaration_list"` before this is ever
+  // called, so `list` (== `node.parent`) can never be falsy here.
+  /* v8 ignore next */
   if (!list) return "private";
   const classSpecifier = list.parent;
   let current: Visibility = classSpecifier?.type === "struct_specifier" ? "public" : "private";
