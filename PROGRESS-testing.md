@@ -280,9 +280,9 @@ first thing at the start of every session, before touching code.
         AI state machine, 25 tests, needed careful same-tile/wall-standing
         edge cases to close the last 2 branches)
   - [x] src/engine/pathField.ts
-  - [ ] src/engine/lootApply.ts (next)
-  - [ ] src/engine/loot.ts
-  - [ ] src/engine/replay.ts
+  - [x] src/engine/lootApply.ts
+  - [x] src/engine/loot.ts
+  - [ ] src/engine/replay.ts (next)
   - [ ] src/engine/scoring.ts
   - [ ] src/engine/spatialGrid.ts
   - [ ] src/engine/traps.ts
@@ -315,13 +315,14 @@ first thing at the start of every session, before touching code.
 ## Current coverage snapshot
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
-src/parser/, ALL of src/map/ (Phase 5 complete), and 5 of 13 Phase-6 files
-(weapons.ts, player.ts, ammo.ts, enemyAi.ts, pathField.ts) are 100%
-stmts/branch/funcs/lines. 661 tests total, all green. Rest of src/engine/,
-src/fs/, src/ui/, src/main.ts still 0% (not yet reached). Note:
-projectiles.ts/rockets.ts show partial incidental coverage already (mixed
-pure-physics + canvas-drawing files, deliberately deferred to Phase 7).
-defaultHighscore.ts and empty-node-shim.ts correctly absent from the report.
+src/parser/, ALL of src/map/ (Phase 5 complete), and 7 of 13 Phase-6 files
+(weapons.ts, player.ts, ammo.ts, enemyAi.ts, pathField.ts, loot.ts,
+lootApply.ts) are 100% stmts/branch/funcs/lines. 695 tests total, all
+green. Rest of src/engine/, src/fs/, src/ui/, src/main.ts still 0% (not
+yet reached). Note: projectiles.ts/rockets.ts show partial incidental
+coverage already (mixed pure-physics + canvas-drawing files, deliberately
+deferred to Phase 7). defaultHighscore.ts and empty-node-shim.ts correctly
+absent from the report.
 
 ## Known open issues / deferred decisions
 
@@ -335,14 +336,14 @@ defaultHighscore.ts and empty-node-shim.ts correctly absent from the report.
 
 ## Next concrete step
 
-Continue Phase 6: read src/engine/lootApply.ts next, write lootApply.test.ts,
-verify 100%, commit. Then loot.ts, replay.ts, scoring.ts, spatialGrid.ts,
-traps.ts (each its own commit), then storageCompression.ts (test against
-the real CompressionStream/DecompressionStream Node 18+ globals, confirmed
-in Phase 0 research — no mock needed), then highscores.ts last (uses
-jsdom's real localStorage — add `// @vitest-environment jsdom` to that one
-test file; dynamically imports src/engine/defaultHighscore.ts, the
-excluded 115k-line data file, as its empty-board fallback — exercising
-that import is fine, just don't expect coverage credit for the data
-file's own lines, it's excluded from instrumentation per vitest.config.ts).
-5/13 Phase-6 files done.
+Continue Phase 6: read src/engine/replay.ts next, write replay.test.ts,
+verify 100%, commit. Then scoring.ts, spatialGrid.ts, traps.ts (each its
+own commit), then storageCompression.ts (test against the real
+CompressionStream/DecompressionStream Node 18+ globals, confirmed in
+Phase 0 research — no mock needed), then highscores.ts last (uses jsdom's
+real localStorage — add `// @vitest-environment jsdom` to that one test
+file; dynamically imports src/engine/defaultHighscore.ts, the excluded
+115k-line data file, as its empty-board fallback — exercising that import
+is fine, just don't expect coverage credit for the data file's own lines,
+it's excluded from instrumentation per vitest.config.ts). 7/13 Phase-6
+files done.
