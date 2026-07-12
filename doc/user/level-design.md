@@ -8,7 +8,7 @@ This page covers both halves of that: doing it by hand, and doing it by describi
 
 ## Have a coding agent write it for you
 
-This is the easiest way in, and it's not a stretch — it's literally how `demo-campaign/`'s 18 files were authored. Describe the level you want in plain gameplay terms and ask any coding assistant (Claude Code, Copilot, etc.) to write a source file that produces it, using the [code → gameplay table](mechanics.md#how-code-becomes-a-level) as your shared vocabulary. For example:
+This is the easiest way in, and it's not a stretch — it's literally how `demo-campaign/`'s 17 files were authored. Describe the level you want in plain gameplay terms and ask any coding assistant (Claude Code, Copilot, etc.) to write a source file that produces it, using the [code → gameplay table](mechanics.md#how-code-becomes-a-level) as your shared vocabulary. For example:
 
 > "Write a short C file with one simple enemy, one tough boss-tier function, a global variable for a hazard pool, a private helper function behind a locked door, and a `goto` pair for a teleporter."
 

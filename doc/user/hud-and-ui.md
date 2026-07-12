@@ -16,7 +16,7 @@ The crosshair turns red over a valid target, and shows tick marks for weapons th
 
 ## Minimap & Compass
 
-An always-on minimap sits in the corner, showing your exact position and facing as a bright triangle, and a pulsing marker for the exit once it's been revealed. A small circular compass badge is attached to its bottom-right corner — its needle points toward the exit relative to whichever way you're currently facing (dead ahead reads as "up").
+An always-on minimap sits in the corner, showing the full layout of the current level — walls, doors, hazard tiles, spike traps (color-coded active/safe), teleporters, uncollected keys, lore terminals, and the exit — from the moment the level loads, with **no fog-of-war**: unlike the Tab automap below, nothing here is gated on where you've actually walked. Your own position and facing are shown as a bright triangle, mines and enemies only appear once you've actually spotted them, and the exit marker is always visible, not revealed later. A small circular compass badge is attached to its bottom-right corner — its needle points toward the exit relative to whichever way you're currently facing (dead ahead reads as "up").
 
 ## Automap
 
@@ -30,7 +30,7 @@ Press `Tab` to open the automap — a translucent overlay, Diablo-style, that do
 - **Select BGM Folder** — pick a local folder of `.mp3`/`.ogg`/`.wav` files to play as a shuffled custom soundtrack instead of silence.
 - **Load WAD Texture Pack** — pick a DOOM `.wad` file to source real wall/door/floor textures from instead of the built-in default look. The game automatically picks a handful of common, broadly-compatible textures/flats out of the WAD (no picker) and falls back silently to the defaults for anything it can't find — a status line under the button reports what was actually used.
 
-All of these are standing preferences, independent of any specific campaign run, except the WAD texture pack — that one is session-only and needs re-selecting after a page reload, rather than being remembered like the others.
+Gore, Difficulty, and the volume sliders are standing preferences, independent of any specific campaign run. The BGM folder and the WAD texture pack are both session-only, though: neither the chosen folder nor the loaded WAD is remembered across a page reload — only the BGM volume level persists, not which folder is currently loaded.
 
 ## Highscores
 
