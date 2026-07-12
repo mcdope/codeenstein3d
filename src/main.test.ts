@@ -1032,3 +1032,268 @@ describe("main.ts — GitHub tree-fetch progress readout (formatByteCount)", () 
     expect(status.textContent).toMatch(/MB received\)$/);
   });
 });
+
+/** Read-only test hooks `RaycasterEngine`'s constructor exposes on
+ * `window` when the page URL carries `?testHooks=1` — see engine.ts's
+ * constructor doc comment. Lets a test navigate a *real* generated map
+ * without reaching into any private engine state. */
+interface TestHooks {
+  getPlayerState: () => { x: number; y: number; dirX: number; dirY: number; health: number; state: string };
+  getExit: () => { x: number; y: number };
+}
+
+function testHooks(): TestHooks | undefined {
+  return (window as unknown as { __codeensteinTestHooks?: TestHooks }).__codeensteinTestHooks;
+}
+
+/** Flips `window.location.search` to include `?testHooks=1` before a level
+ * is launched — the only way `RaycasterEngine`'s constructor exposes
+ * `window.__codeensteinTestHooks` (see its own doc comment). Must be called
+ * before `launchLevel` runs (any workspace-loading click is fine, since the
+ * engine isn't constructed until then). */
+function enableTestHooks(): void {
+  const original = window.location;
+  Object.defineProperty(window, "location", {
+    value: { ...original, search: "?testHooks=1" },
+    configurable: true,
+  });
+}
+
+/** BFS shortest path (4-directional) from `from` to `to` over `grid`'s
+ * walkable tiles (0 = floor; treats the destination tile as walkable
+ * regardless of its own value, so a hazard/door goal tile still resolves). */
+/** Tile values BFS treats as passable, beyond plain floor (0): hazard/acid
+ * (2, walkable — just drains health), doors (3, auto-opened by
+ * `openDoorAhead()` on contact once a key is held — keys themselves sit on
+ * floor tiles and are auto-collected just by walking near them, so a route
+ * that happens to cross a door along the way still works out in practice),
+ * teleporter pads (4, walking onto one just warps the player, never
+ * blocks), and spike traps (5, walkable — just damages periodically).
+ * Deliberately excludes secret walls (6) and lore-terminal walls (7) —
+ * those need an explicit "R" interact, not just walking through, which
+ * this simple walker doesn't attempt. */
+const BFS_PASSABLE_TILES = new Set([0, 2, 3, 4, 5]);
+
+function bfsPath(grid: number[][], from: { x: number; y: number }, to: { x: number; y: number }): { x: number; y: number }[] {
+  const key = (p: { x: number; y: number }) => `${p.x},${p.y}`;
+  const visited = new Set([key(from)]);
+  const prev = new Map<string, { x: number; y: number }>();
+  const queue: { x: number; y: number }[] = [from];
+  const height = grid.length;
+  const width = grid[0].length;
+  let reached = false;
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    if (cur.x === to.x && cur.y === to.y) {
+      reached = true;
+      break;
+    }
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ]) {
+      const nx = cur.x + dx;
+      const ny = cur.y + dy;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      const isTarget = nx === to.x && ny === to.y;
+      if (!isTarget && !BFS_PASSABLE_TILES.has(grid[ny][nx])) continue; // walls/etc block — the goal tile itself is always allowed
+      const k = `${nx},${ny}`;
+      if (visited.has(k)) continue;
+      visited.add(k);
+      prev.set(k, cur);
+      queue.push({ x: nx, y: ny });
+    }
+  }
+  if (!reached) return []; // genuinely unreachable via this simple walker's passable-tile set
+  const path: { x: number; y: number }[] = [];
+  let cur: { x: number; y: number } | undefined = to;
+  while (cur && key(cur) !== key(from)) {
+    path.unshift(cur);
+    cur = prev.get(key(cur));
+  }
+  return path;
+}
+
+/** Drives real keyboard input on `canvas` (dispatching real keydown/keyup
+ * `KeyboardEvent`s the actual `InputController` listens for) to walk the
+ * live player along `tilePath`, turning to face each tile's center before
+ * moving into it — a real navigation loop, not a scripted teleport, so it
+ * genuinely exercises collision/movement the same way a player would.
+ * Returns once `isDone()` reports true (e.g. the run ended) or `maxFrames`
+ * is exhausted. */
+function walkPath(canvas: HTMLCanvasElement, raf: RafController, tilePath: { x: number; y: number }[], isDone: () => boolean, maxFrames = 800): void {
+  const dt = 0.05;
+  let held = new Set<string>();
+  const setHeld = (next: Set<string>): void => {
+    for (const code of held) if (!next.has(code)) canvas.dispatchEvent(new KeyboardEvent("keyup", { code }));
+    for (const code of next) if (!held.has(code)) canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
+    held = next;
+  };
+
+  let targetIndex = 0;
+  for (let frame = 0; frame < maxFrames && targetIndex < tilePath.length; frame++) {
+    if (isDone()) break;
+    const hooks = testHooks();
+    if (!hooks) break;
+    const player = hooks.getPlayerState();
+    const target = tilePath[targetIndex];
+    const tx = target.x + 0.5;
+    const ty = target.y + 0.5;
+    const dx = tx - player.x;
+    const dy = ty - player.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 0.25) {
+      targetIndex++;
+      continue;
+    }
+    const desiredAngle = Math.atan2(dy, dx);
+    const currentAngle = Math.atan2(player.dirY, player.dirX);
+    let diff = desiredAngle - currentAngle;
+    while (diff > Math.PI) diff -= 2 * Math.PI;
+    while (diff < -Math.PI) diff += 2 * Math.PI;
+
+    if (Math.abs(diff) > 0.15) {
+      setHeld(new Set([diff > 0 ? "KeyE" : "KeyQ"]));
+    } else {
+      setHeld(new Set(["KeyW"]));
+    }
+    raf.flush(1, dt * 1000);
+  }
+  setHeld(new Set());
+}
+
+describe("main.ts — reaching a natural win/death via real navigation", () => {
+  let raf: RafController;
+
+  beforeEach(() => {
+    raf = installRaf({ stubClock: true });
+  });
+
+  afterEach(() => {
+    raf.restore();
+  });
+
+  // A small, hand-picked source snippet — found by brute-forcing a handful
+  // of tiny candidates offline against the real MapGenerator and checking
+  // which produced the shortest floor/hazard/door/teleporter/spike-trap-
+  // reachable spawn->exit route (secret walls need an explicit "R"
+  // interact this simple walker doesn't attempt, so not every generated
+  // map's critical path is walkable by it — this one's is).
+  const NAVIGABLE_FIXTURE_C = "void f(int x) { if (x > 0) { x = x - 1; } }\n";
+
+  it("winning a level fires onWin, advances/completes the campaign, and records a highscore", async () => {
+    const { loadCampaignSave } = await importMain();
+    const logSpy = vi.spyOn(console, "log");
+    enableTestHooks();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": NAVIGABLE_FIXTURE_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+    // Pull the real generated map (spawn/exit/grid) straight out of
+    // launchLevel's own console.log("[map] ...", map) call — deliberately
+    // spoiler-free in its *string* form, but the raw object argument still
+    // carries exact coordinates, and nothing exported needs to change to
+    // read it.
+    const mapLogCall = logSpy.mock.calls.find(
+      (c) => c[1] !== null && typeof c[1] === "object" && "grid" in (c[1] as object),
+    );
+    const map = mapLogCall![1] as { grid: number[][]; spawn: { x: number; y: number }; exit: { x: number; y: number } };
+
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    dismissBriefingHelper(raf);
+
+    // God mode — this test is about proving *navigation reaches the exit*,
+    // not about surviving whatever enemies/hazards the generated map's
+    // corridor happens to have along the way (a real player would still
+    // have to fight/avoid them, but that's engine.test.ts's job, already
+    // covered there).
+    for (const key of "IDDQD") canvas.dispatchEvent(new KeyboardEvent("keydown", { key }));
+    raf.flush(1, 16);
+
+    const path = bfsPath(map.grid, map.spawn, map.exit);
+    expect(path.length).toBeGreaterThan(0); // this fixture's route was pre-verified reachable — see NAVIGABLE_FIXTURE_C's comment
+
+    walkPath(canvas, raf, path, () => testHooks()?.getPlayerState().state !== "playing", 500);
+    expect(testHooks()?.getPlayerState().state).toBe("won");
+
+    // Reaching the exit only flips engine state to "won" and shows
+    // GameHud's "Commit Summary" overlay — that overlay's own dismiss
+    // (same DISMISS_LOCK_MS-gated mechanism as the level-start briefing)
+    // is what actually calls advanceToNextLevel(stats). This workspace
+    // has only the one file, so with none left to advance to,
+    // advanceToNextLevel falls through to its "campaign complete" branch:
+    // recordRunHighscore + clearCampaignSave + showBuildSuccessful.
+    dismissBriefingHelper(raf);
+    await waitUntil(() => loadCampaignSave() === null, 8000);
+
+    // showBuildSuccessful's own dismiss (same lock-then-Enter mechanism a
+    // third time) is what actually calls resetToFileTree — stop the run,
+    // hide the canvas, and show the "select a file" placeholder again.
+    dismissBriefingHelper(raf);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden"), 8000);
+    expect(document.querySelector("#viewport > p.muted")?.textContent).toContain("Select a file from the tree");
+  });
+});
+
+/** Shared with the win/death navigation batch above — split out since it
+ * doesn't depend on that describe block's own `raf` closure variable. */
+function dismissBriefingHelper(raf: RafController): void {
+  raf.flush(1, 1300);
+  window.dispatchEvent(new KeyboardEvent("keydown", { code: "Enter" }));
+}
+
+describe("main.ts — reaching a natural game over via real navigation", () => {
+  let raf: RafController;
+
+  beforeEach(() => {
+    raf = installRaf({ stubClock: true });
+  });
+
+  afterEach(() => {
+    raf.restore();
+  });
+
+  // Another hand-picked, offline-brute-forced fixture (see
+  // NAVIGABLE_FIXTURE_C's comment on the win-test above for the method) —
+  // this one's generated map has a hazard (acid pool, from its global
+  // variables) reachable from spawn without needing a secret-wall interact.
+  const HAZARD_FIXTURE_C = "int a;\nint b;\nvoid f() { a = 1; b = 2; }\n";
+
+  it("standing in acid drains health to 0, firing onGameOver and skipping highscore recording (died on level 1)", async () => {
+    await importMain();
+    const logSpy = vi.spyOn(console, "log");
+    enableTestHooks();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": HAZARD_FIXTURE_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+    const mapLogCall = logSpy.mock.calls.find(
+      (c) => c[1] !== null && typeof c[1] === "object" && "grid" in (c[1] as object),
+    );
+    const map = mapLogCall![1] as {
+      grid: number[][];
+      spawn: { x: number; y: number };
+      hazards: { x: number; y: number }[];
+    };
+    expect(map.hazards.length).toBeGreaterThan(0); // this fixture's route was pre-verified to have one — see HAZARD_FIXTURE_C's comment
+
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    dismissBriefingHelper(raf);
+
+    // No IDDQD this time — the whole point is to take real hazard damage.
+    const path = bfsPath(map.grid, map.spawn, map.hazards[0]);
+    expect(path.length).toBeGreaterThan(0);
+    walkPath(canvas, raf, path, () => testHooks()?.getPlayerState().state !== "playing", 1000);
+
+    // Once on the hazard tile, standing still (no keys held) still drains
+    // health at HAZARD_DPS — keep advancing until it runs out.
+    for (let i = 0; i < 300 && testHooks()?.getPlayerState().state === "playing"; i++) {
+      raf.flush(1, 50);
+    }
+
+    expect(testHooks()?.getPlayerState().state).toBe("over");
+    expect(logSpy.mock.calls.some((c) => c[0] === "%c[highscores] Died on the very first level — not recording a leaderboard entry.")).toBe(true);
+  });
+});

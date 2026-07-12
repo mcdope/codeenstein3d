@@ -948,22 +948,22 @@ first thing at the start of every session, before touching code.
     that use large `dt` steps.
 
 - [ ] Phase 11: src/main.ts — IN PROGRESS. `src/main.test.ts` created,
-  69 tests so far covering: module-import DOM wiring, the 3
+  71 tests so far covering: module-import DOM wiring, the 3
   campaign-persistence exports, `applyForcedUnlocks`, `flattenParsableFiles`,
   `findEntrypoint`'s full local-workspace cascade, WAD/BGM loading, the
   highscores dialog, all three workspace-loading flows (local pick,
   GitHub, demo campaign) including a real supersession race, Continue Run,
   file-tree file selection, starting a live level + cheat codes +
-  pause/resume, `fitCanvasToArea`'s full branch set, and
-  `formatByteCount` (via a real streamed GitHub fetch). All green, `npm
-  test` clean at 1391/76. **Coverage on src/main.ts alone: 838/1310 lines
-  (64%), 44/53 functions (83%), 225/284 branches (79%)**. Only 9
-  functions remain fully uncovered — `onWatchReplay`, `onGameOver`,
-  `onWin`, `advanceToNextLevel`, `findNextParsableFile`,
-  `resetToFileTree`, `recordRunHighscore`, `startReplay`,
-  `buildReplayControls` — every one of them is either the win/death
-  path or the replay system (see below for the plan on both). See "Next
-  concrete step" for what's next.
+  pause/resume, `fitCanvasToArea`'s full branch set, `formatByteCount`
+  (via a real streamed GitHub fetch), and — new — a real BFS-navigated
+  win and a real BFS-navigated hazard death, each driving the actual
+  player through a real generated map via genuine keyboard events (see
+  below for the full technique). All green, `npm test` clean at
+  1393/76. **Coverage on src/main.ts alone: 916/1310 lines (70%), 50/53
+  functions (94%), 237/308 branches (77%)**. Only 3 functions remain
+  fully uncovered — `onWatchReplay`, `startReplay`, `buildReplayControls`
+  — all three are the replay-playback system, the last remaining piece.
+  See "Next concrete step" for what's next.
   - Gotcha this batch: a file-tree row's `title` attribute is the node's
     *full path* ("ws/readme.md"), not its bare filename — a `[title="…"]`
     selector needs the workspace-root prefix too.
@@ -1222,47 +1222,58 @@ per-scenario, not per-file, breakdown):
       foundational pattern for driving *any* further live-gameplay
       coverage (win/death specifically, below) — see the `launchAndReachBriefing`/
       `dismissBriefing` helpers in `main.test.ts`, reusable as-is
-- [ ] `onGameOver`/`onWin` specifically, and everything downstream of them
-      (`advanceToNextLevel`, `recordRunHighscore`, `findNextParsableFile`,
-      `resetToFileTree`'s call from `onGameOver`) — **the single hardest
-      remaining piece**. Needs either (a) actually navigating the player
-      to a hazard tile (game-over) or the exit tile (win) through a real
-      generated map's raycast-collision geometry, or (b) a different
-      angle not yet explored. Two things ARE established and should make
-      this tractable without inventing a real pathfinder:
-      1. Map *layout* (spawn/exit/hazard positions, room shape) is
-         deterministic per source content — `MapGenerator.generate`
-         derives its seed from the parsed AST, not from `launchLevel`'s
-         own `randomSeed()` (that one only seeds *gameplay* RNG — enemy
-         AI timing, loot, weapon spread — see `src/prng.ts`'s doc
-         comment). A fixed custom-fixture source file therefore always
-         produces the same map, run to run.
-      2. The *exact* generated map (including `exit`/`spawn`/`hazards`
-         coordinates) is available in tests for free: `launchLevel`
-         itself does `console.log("...", map)` with the full object as
-         a second arg (deliberately spoiler-free in its *string*, but
-         the raw object is still right there) — a `vi.spyOn(console,
-         "log")` can pull real coordinates out of `.mock.calls` without
-         needing to export anything new.
-      A game-over via a hazard is likely the easier of the two to reach
-      (just needs to path onto *any* hazard tile, not a specific one) —
-      try that first. Consider building a single small custom fixture
-      file (not the demo campaign, whose real map is large/complex) and
-      empirically checking via a scratch script whether its generated
-      map's spawn sits directly adjacent to a hazard/wall-free path
-      before writing the real test, same as the seed-brute-forcing
-      technique already used successfully in Phase 10's loot-drop tests.
-- [ ] `advanceToNextLevel`'s multi-level chaining and campaign-complete
-      path specifically (distinct from the win/death handler wiring
-      above — this is what happens *after* `onWin` fires)
-- [ ] highscore recording (`recordRunHighscore` — cheat-used and
-      died-on-level-1 exclusions, codebase-stats timeout path) — also
-      blocked on a real onGameOver/onWin reach
+- [x] `onGameOver`/`onWin` and everything downstream (`advanceToNextLevel`,
+      `recordRunHighscore`, `findNextParsableFile`, `resetToFileTree`) —
+      **solved**. `main.test.ts` now has a real BFS-pathfinding walker
+      (`bfsPath`/`walkPath`) that drives the live player to a specific
+      tile via genuine keyboard `KeyboardEvent`s (turn-then-move, not a
+      teleport), using `window.__codeensteinTestHooks` (enabled via
+      `?testHooks=1`, see `enableTestHooks()`) to read live position/
+      state each frame. Two hand-picked, offline-brute-forced tiny C
+      fixtures (`NAVIGABLE_FIXTURE_C`, `HAZARD_FIXTURE_C` in
+      `main.test.ts`) drive a real win and a real hazard-death
+      respectively — each fixture's own comment explains how it was
+      found. **Key discoveries that unblocked this** (all in
+      `main.test.ts`'s `bfsPath` doc comment now):
+      1. Map *layout* (spawn/exit/hazard positions) is deterministic per
+         source content — `MapGenerator.generate` seeds from the parsed
+         AST, not from `launchLevel`'s own `randomSeed()` (gameplay-only
+         RNG — see `src/prng.ts`'s doc comment) — so a fixed fixture
+         always produces the same map.
+      2. The exact generated map is available in tests for free:
+         `launchLevel`'s `console.log("...", map)` call passes the full
+         object as a second arg (its *string* is deliberately
+         spoiler-free, the raw object isn't) — no export needed.
+      3. **A naive floor-only BFS is wrong** — the very first attempt
+         reported a bogus 1-tile "path" because the backtrace loop
+         unshifted the goal unconditionally even when BFS never actually
+         reached it (fixed: return `[]` when unreached). The corrected
+         version also had to treat hazard(2)/door(3)/teleporter(4)/
+         spike-trap(5) tiles as passable, not just plain floor(0) —
+         doors auto-open on contact once a key is held (picked up
+         automatically by proximity), hazards/spikes are walkable (just
+         costly), teleporters just warp. Secret walls (6)/lore walls (7)
+         are NOT included — those need an "R" interact this simple
+         walker doesn't attempt, so **not every generated map's critical
+         path is walkable by it** — brute-force a few candidate fixtures
+         and check reachability before picking one, same technique
+         already used for Phase 10's loot-drop seed-hunting.
+      4. Winning triggers `GameHud.showCommitSummary`, not
+         `advanceToNextLevel` directly — its own dismiss (same
+         `DISMISS_LOCK_MS`-gated mechanism as the level-start briefing)
+         is what actually calls it. A single-file workspace's
+         `advanceToNextLevel` then falls through to campaign-complete
+         (`recordRunHighscore` + `clearCampaignSave` +
+         `showBuildSuccessful`) — and *that* overlay's dismiss is what
+         calls `resetToFileTree`. Three separate dismisses in a row to
+         walk the whole chain, not one.
 - [ ] replay playback (`startReplay`'s whole nested-closure machinery —
       play/pause, seek, speed, level-to-level advance, all 4 termination
       paths: natural win/death, Escape, failed relocation/hash mismatch,
-      frames-exhausted safety net) — the *last* remaining large batch;
-      `onWatchReplay`/`buildReplayControls` are part of this
+      frames-exhausted safety net) — **the only remaining batch**;
+      `onWatchReplay`/`buildReplayControls` are part of it. Only 3
+      functions in the whole file are still fully uncovered:
+      `onWatchReplay`, `startReplay`, `buildReplayControls`.
 - [ ] `beforeunload` autosave
 - [x] `fitCanvasToArea` (wide-area/tall-area 640:400 fit, hidden-canvasArea
       no-op, fullscreen-target no-op, `fullscreenchange`'s re-fit-on-exit-
@@ -1274,19 +1285,28 @@ per-scenario, not per-file, breakdown):
       streamed-chunks `Response` mock on the GitHub tree fetch, same
       `getReader()`-shaped fixture `github.test.ts`'s `streamResponse`
       helper already established)
-- [ ] `resetToFileTree`/`showFileTreePlaceholder`/`showLoadingScreen` (mostly
-      covered incidentally by the flows above — verify via coverage report
-      once those land, don't necessarily need dedicated tests)
+- [x] `resetToFileTree`/`showFileTreePlaceholder`/`showLoadingScreen` —
+      `resetToFileTree` specifically needed a third dismiss chained onto
+      the win-test above (see point 4); the other two were already
+      incidentally covered by the loading-flow batches.
 
-**Next immediate action**: `fitCanvasToArea` and `formatByteCount` are
-the smallest/most isolated remaining pieces — good next batch, no
-gameplay-navigation research needed. Then invest the scratch-script
-research time into the onGameOver/onWin navigation problem (see above)
-since so much else (`advanceToNextLevel`, `recordRunHighscore`,
-`resetToFileTree`'s onGameOver call site) is blocked on it. Save
-`startReplay`'s full batch for last — it's the single largest remaining
-piece and doesn't block anything else
-to build on.
+**Next immediate action**: replay playback (`startReplay`) is the only
+remaining piece. Suggested approach: don't try to reuse a *recorded*
+run from a live-navigation test — instead hand-construct a
+`ReplayLevelSegment`/`ReplayPayload`-shaped fixture directly (a short,
+fixed `frames` array of scripted `InputSnapshot`s), matching the type
+shapes in `src/engine/replay.ts`, and feed it in via a fake
+`HighscoreEntry` passed to `startReplay` (reachable from
+`onWatchReplay`'s click handler in the highscores dialog — see
+`renderHighscoreTable`'s `onWatchReplay` callback wiring). This sidesteps
+needing to actually *record* a real run first. Covers: play/pause,
+seek (both directions — seeking backward needs `restartLevel`, which
+re-verifies the file's hash against `astHash`), speed cycling,
+Escape-to-stop, a deliberately-mismatched `astHash` (failed relocation
+path), and — reusing this session's navigation-walker technique — a
+scripted frame sequence that actually reaches a natural win/death
+inside a replay to prove `buildEngineFor`'s own `onGameOver`/`onWin`
+(distinct closures from `launchLevel`'s, already covered) work too.
 
 After Phase 11 (the last content phase): Phase 12 wrap-up — flip
 `vitest.config.ts`'s coverage thresholds to 100% across the board,
