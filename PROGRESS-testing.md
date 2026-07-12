@@ -272,7 +272,7 @@ first thing at the start of every session, before touching code.
   paper over — stop and ask before either fixing engine code or hiding the
   gap, since "should I fix a newly-found bug" is a decision only the user
   should make, not something to resolve unilaterally mid-test-writing.
-- [ ] Phase 6: src/engine/ pure-logic (13 files) — IN PROGRESS
+- [x] Phase 6: src/engine/ pure-logic (13 files) — COMPLETE
   - [x] src/engine/weapons.ts
   - [x] src/engine/player.ts
   - [x] src/engine/ammo.ts
@@ -287,7 +287,7 @@ first thing at the start of every session, before touching code.
   - [x] src/engine/spatialGrid.ts
   - [x] src/engine/traps.ts
   - [x] src/engine/storageCompression.ts
-  - [ ] src/engine/highscores.ts (next — last Phase-6 file)
+  - [x] src/engine/highscores.ts
   - [ ] src/engine/spatialGrid.ts
   - [ ] src/engine/traps.ts
   - [ ] src/engine/storageCompression.ts
@@ -365,6 +365,31 @@ first thing at the start of every session, before touching code.
   needed a genuinely tiny value (`1`) since gzip's fixed per-stream
   overhead makes anything below roughly a few dozen bytes bigger
   compressed than plain, not smaller.
+
+  highscores.ts notes: the one real gotcha this phase — jsdom's built-in
+  `crypto` global has no `SubtleCrypto` implementation (`crypto.subtle`
+  is `undefined`), so `hashRun()`'s `crypto.subtle.digest(...)` call
+  threw under `@vitest-environment jsdom` even though the exact same
+  code works fine in a real browser and in plain Node. Fixed by
+  `vi.stubGlobal("crypto", webcrypto)` (from `node:crypto`) in a
+  `beforeAll` — Node's real webcrypto has a full `subtle.digest`
+  implementation, so this isn't a mock of the behavior, just swapping in
+  a working native implementation jsdom happens to omit. Worth
+  remembering for any other jsdom test file that touches
+  `crypto.subtle` (none currently do, but Phase 7+ might). Also: the
+  quota-exceeded retry ladder in `recordHighscore` needed a **multi-entry**
+  board to hit 100% branch coverage — `withoutThisReplay`'s `board.map((e)
+  => e === entry ? ... : e)` has a real "some other entry, leave it alone"
+  branch that a single-entry board can never exercise; seeded a second
+  recorded entry with its own replay first, then asserted it survived the
+  retry untouched while only the failing run's replay was stripped.
+  `loadHighscoresForDisplay`'s empty-board fallback test needs a longer
+  timeout (30s) since it actually dynamically imports the real
+  115k-line `defaultHighscore.ts` — slow to parse/transform under
+  vite-node but not something to work around, it's exactly the code path
+  a first-time player hits.
+
+  **Phase 6 complete (13/13 files), all 100% stmts/branch/funcs/lines.**
 - [ ] Phase 7: src/engine/ browser-API (12 files)
 - [ ] Phase 8: src/fs/ (3 files)
 - [ ] Phase 9: src/ui/ (5 files)
@@ -375,12 +400,12 @@ first thing at the start of every session, before touching code.
 ## Current coverage snapshot
 
 src/difficulty.ts, src/prng.ts, all of src/wad/ (9 files), ALL of
-src/parser/, ALL of src/map/ (Phase 5 complete), and 12 of 13 Phase-6
-files (weapons.ts, player.ts, ammo.ts, enemyAi.ts, pathField.ts, loot.ts,
+src/parser/, ALL of src/map/ (Phase 5 complete), and ALL 13 of Phase 6
+(weapons.ts, player.ts, ammo.ts, enemyAi.ts, pathField.ts, loot.ts,
 lootApply.ts, replay.ts, scoring.ts, spatialGrid.ts, traps.ts,
-storageCompression.ts) are 100% stmts/branch/funcs/lines. 770 tests
-total, all green. Rest of src/engine/, src/fs/, src/ui/, src/main.ts
-still
+storageCompression.ts, highscores.ts) are 100% stmts/branch/funcs/lines.
+789 tests total, all green. Rest of src/engine/ (Phase 7, 12 browser-API
+files), src/fs/, src/ui/, src/main.ts still
 0% (not
 yet reached). Note: projectiles.ts/rockets.ts show partial incidental
 coverage already (mixed pure-physics + canvas-drawing files, deliberately
@@ -399,13 +424,15 @@ absent from the report.
 
 ## Next concrete step
 
-Finish Phase 6: read src/engine/highscores.ts next, write
-highscores.test.ts (uses jsdom's real localStorage — add `//
-@vitest-environment jsdom` to that test file; dynamically imports
-src/engine/defaultHighscore.ts, the excluded 115k-line data file, as its
-empty-board fallback — exercising that import is fine, just don't expect
-coverage credit for the data file's own lines, it's excluded from
-instrumentation per vitest.config.ts), verify 100%, commit. That's
-13/13 Phase-6 files — Phase 6 complete. Then move on to Phase 7
-(src/engine/ browser-API, 12 files), starting with whichever file has
-the smallest canvas/audio/DOM surface first. 12/13 Phase-6 files done.
+Phase 6 is complete. Start Phase 7 (src/engine/ browser-API, 12 files):
+audio.ts, bgm.ts, input.ts, automap.ts, effects.ts, hud.ts,
+projectiles.ts, rockets.ts, raycaster.ts, sprites.ts, textures.ts,
+viewmodel.ts. Per the plan, this is where the Phase 0 canvas/audio/DOM
+mocks (`test/mocks/canvas.ts`, `test/mocks/audio.ts`) get their first
+real workout — `debugView.ts` in Phase 5 only exercised the canvas mock
+lightly. Read src/engine/audio.ts first (smallest/simplest browser-API
+surface — a good file to re-validate `test/mocks/audio.ts` against
+before tackling the bigger rendering files), write audio.test.ts, verify
+100%, commit. No per-file Phase-7 checklist exists yet in this progress
+file — add one (mirroring the Phase 6 nested checklist above) as part of
+committing the first Phase-7 file's test.
