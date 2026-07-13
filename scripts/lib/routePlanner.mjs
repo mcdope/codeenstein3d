@@ -149,3 +149,82 @@ export function planRoute(map) {
 
   return risky; // { ok: false, reason, legs } from the more-permissive attempt
 }
+
+/**
+ * Like `planRoute`, but detours through every reachable room center before
+ * the final approach to the exit — for a "maximize map coverage" bot profile
+ * rather than a speedrunner.
+ *
+ * Deliberately reuses `planRoute`'s own key/door-detour solve rather than
+ * re-deriving it: it replays the returned legs against a cloned grid (opening
+ * doors exactly as `planRouteWithAvoidSet` does internally) to reconstruct
+ * "the grid once every door this route ever opens has been opened" and the
+ * position the bot is standing at right before its final walk to the exit.
+ * From there it BFS's a fully deterministic greedy nearest-unvisited-room
+ * tour (not optimal TSP — good enough for "cover most of the map", and
+ * ties/ordering never depend on anything but grid distance and room order,
+ * so two runs of the same level always produce the same tour) and splices it
+ * in immediately before a freshly-computed final walk to the exit.
+ */
+export function planCoverageRoute(map) {
+  const base = planRoute(map);
+  if (!base.ok) return base;
+
+  const avoidTiles = base.crossesHazard
+    ? new Set([...HARD_BLOCK_TILES])
+    : new Set([...HARD_BLOCK_TILES, ...SOFT_AVOID_TILES]);
+
+  const grid = map.grid.map((row) => [...row]);
+  const workingMap = { width: map.width, height: map.height, grid };
+  const preExitLegs = base.legs.slice(0, -1);
+
+  let pos = { x: map.spawn.x, y: map.spawn.y };
+  for (const leg of preExitLegs) {
+    if (leg.kind === "walk") {
+      pos = leg.waypoints[leg.waypoints.length - 1];
+    } else if (leg.kind === "openDoor") {
+      grid[leg.doorTile.y][leg.doorTile.x] = 0; // mirror openDoorAhead(), same simulation planRoute uses internally
+      pos = { x: leg.doorTile.x + 0.5, y: leg.doorTile.y + 0.5 };
+    }
+  }
+
+  const reachable = reachableTiles(workingMap, tileOf(pos), avoidTiles);
+
+  const centers = [];
+  for (const room of map.rooms) {
+    const c = tileOf(room.center);
+    if (reachable.has(`${c.x},${c.y}`)) centers.push(c);
+  }
+  for (const rect of map.breakupRooms) {
+    const c = { x: rect.x + Math.floor(rect.w / 2), y: rect.y + Math.floor(rect.h / 2) };
+    if (reachable.has(`${c.x},${c.y}`)) centers.push(c);
+  }
+
+  const tourLegs = [];
+  let cursor = tileOf(pos);
+  const remaining = [...centers];
+  while (remaining.length > 0) {
+    let bestIdx = -1;
+    let bestPath = null;
+    for (let i = 0; i < remaining.length; i++) {
+      const path = bfsPath(workingMap, cursor, remaining[i], avoidTiles);
+      if (!path) continue;
+      if (!bestPath || path.length < bestPath.length) {
+        bestPath = path;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx === -1) break; // defensive: shouldn't happen, every candidate came from the same reachable set
+    if (bestPath.length > 1) tourLegs.push({ kind: "walk", waypoints: pathToWaypoints(bestPath) });
+    cursor = remaining[bestIdx];
+    remaining.splice(bestIdx, 1);
+  }
+
+  const finalExitPath = bfsPath(workingMap, cursor, map.exit, avoidTiles);
+  if (!finalExitPath) return base; // defensive: fall back to the plain route rather than fail the whole plan
+
+  return {
+    ...base,
+    legs: [...preExitLegs, ...tourLegs, { kind: "walk", waypoints: pathToWaypoints(finalExitPath) }],
+  };
+}

@@ -8,7 +8,7 @@
  * this pickup actually do" rules read in one place — the same
  * behavior-vs-state split `loot.ts` (which *rolls* the drops) already uses.
  */
-import type { Enemy, LootDrop } from "../map/types";
+import type { Enemy, LootDrop, LootKind } from "../map/types";
 import { AMMO_META, type AmmoPools } from "./ammo";
 import { audio } from "./audio";
 import {
@@ -47,6 +47,12 @@ export interface LootContext {
   rng: () => number;
   /** 1-based campaign level — gates Toolchain's Elite bonus drop. */
   campaignLevelIndex: number;
+  /** Balancing telemetry only — fired with the actual (difficulty-scaled)
+   * amount granted, once it's known here (a `LootDrop`'s raw `amount` is
+   * often unset and defaulted internally, so this is the first point the
+   * real number exists). `"weapon"` amount is always `1` (an occurrence, not
+   * a quantity). See `telemetry.ts`'s `recordLootCollected`. */
+  recordApplied?: (kind: LootKind, amount: number, origin: "dynamic" | "static") => void;
 }
 
 /** Apply one dynamic loot drop's effect and log it. */
@@ -54,24 +60,27 @@ export function applyLootDrop(drop: LootDrop, ctx: LootContext): void {
   audio.playPickup();
   const kind = drop.kind;
   if (kind === "weapon") {
-    if (drop.weaponIndex !== undefined) grantOrTopUpWeapon(drop.weaponIndex, ctx);
+    if (drop.weaponIndex !== undefined) grantOrTopUpWeapon(drop.weaponIndex, ctx, "dynamic");
     return;
   }
   if (kind === "health") {
     const amount = ctx.scaledAmount(drop.amount ?? HEALTH_DROP_AMOUNT);
     ctx.heal(amount);
+    ctx.recordApplied?.("health", amount, "dynamic");
     console.log(`%c[loot] +${amount} stability`, "color:#4cff6a");
     return;
   }
   if (kind === "swap") {
     const amount = ctx.scaledAmount(drop.amount ?? SWAP_DROP_AMOUNT);
     ctx.addSwap(amount);
+    ctx.recordApplied?.("swap", amount, "dynamic");
     console.log(`%c[loot] +${amount} swap`, "color:#4a7fff");
     return;
   }
   const meta = AMMO_META[kind];
   const amount = ctx.scaledAmount(drop.amount ?? meta.dropAmount);
   ctx.ammo[kind] += amount;
+  ctx.recordApplied?.(kind, amount, "dynamic");
   console.log(`%c[loot] +${amount} ${meta.label}`, `color:${meta.logColor}`);
 }
 
@@ -83,13 +92,14 @@ export function applyLootDrop(drop: LootDrop, ctx: LootContext): void {
  * Shared by `applyLootDrop`'s `"weapon"` `LootDrop` case and `collectLoot`'s
  * `"weapon"` static `AmmoPickup` case (see `RaycasterEngine`).
  */
-export function grantOrTopUpWeapon(weaponIndex: number, ctx: LootContext): void {
+export function grantOrTopUpWeapon(weaponIndex: number, ctx: LootContext, origin: "dynamic" | "static" = "dynamic"): void {
   const weapon = WEAPONS[weaponIndex];
   if (ctx.ownedWeapons.has(weaponIndex)) {
     if (!weapon.ammoType) return; // an ammo-less duplicate (melee) grants nothing
     const meta = AMMO_META[weapon.ammoType];
     const amount = ctx.scaledAmount(meta.eliteTopUp);
     ctx.ammo[weapon.ammoType] += amount;
+    ctx.recordApplied?.(weapon.ammoType, amount, origin);
     console.log(`%c[loot] +${amount} ${meta.label} (${weapon.name} already owned)`, `color:${meta.logColor}`);
   } else {
     ctx.ownedWeapons.add(weaponIndex);
@@ -97,6 +107,7 @@ export function grantOrTopUpWeapon(weaponIndex: number, ctx: LootContext): void 
     // the *ranged* slot, and melee is never wielded through it (see
     // `currentMeleeWeapon`, which picks it up from `ownedWeapons` instead).
     if (weapon.meleeRange === undefined) ctx.equip(weaponIndex);
+    ctx.recordApplied?.("weapon", 1, origin);
     console.log(`%c[loot] unlocked ${weapon.name}!`, "color:#e06aff;font-weight:bold");
   }
 }

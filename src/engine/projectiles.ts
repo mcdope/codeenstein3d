@@ -59,6 +59,10 @@ export function updateProjectiles(
   player: Player,
   map: GameMap,
   dt: number,
+  /** Balancing telemetry only — fired once per bolt that actually lands on
+   * the player, for the enemy-accuracy metric (fired count comes from
+   * `EnemyAiEvents.onRangedFire` instead, at spawn time). See `telemetry.ts`. */
+  onHit?: () => void,
 ): number {
   let damage = 0;
   const reach = player.radius + PROJECTILE_RADIUS;
@@ -70,6 +74,7 @@ export function updateProjectiles(
     // Player AABB hit takes precedence (you can get shot with your back to a wall).
     if (Math.abs(p.x - player.posX) < reach && Math.abs(p.y - player.posY) < reach) {
       damage += p.damage;
+      onHit?.();
       list.splice(i, 1);
       continue;
     }

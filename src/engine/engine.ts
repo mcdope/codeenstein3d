@@ -15,7 +15,7 @@
 import { DEFAULT_DIFFICULTY, DIFFICULTY_MULTIPLIERS, type DifficultyLevel, type DifficultyMultipliers } from "../difficulty";
 import { mulberry32, randomSeed } from "../prng";
 import { Player, isHazard } from "./player";
-import { updateEnemies } from "./enemyAi";
+import { updateEnemies, type EnemyAiEvents } from "./enemyAi";
 import { collectProjectileBillboards, updateProjectiles, type Projectile } from "./projectiles";
 import { InputController, type InputSource } from "./input";
 import type { CampaignReplayRecorder } from "./replay";
@@ -101,6 +101,30 @@ import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, RO
 import { EnemySpatialGrid } from "./spatialGrid";
 import { PathField } from "./pathField";
 import { detonateMine, spikeDamage, updateMines, MINE_BLAST_RADIUS } from "./traps";
+import {
+  createTelemetryState,
+  recordDamage,
+  recordEnemyAggro,
+  recordEnemyBoltFired,
+  recordEnemyBoltHit,
+  recordEnemyDeath,
+  recordEnemyMeleeAttack,
+  recordFatalDamage,
+  recordHeal,
+  recordHit,
+  recordKill,
+  recordKillForcedByMelee,
+  recordLootCollected,
+  recordLootRolled,
+  recordMineDisarmed,
+  recordMineTriggered,
+  recordShot,
+  updateMinHealth,
+  updatePerFrame as updateTelemetryPerFrame,
+  type DamageSource,
+  type EnemyTtkRecord,
+  type TelemetryState,
+} from "./telemetry";
 import {
   DOOR_TILE,
   LORE_TILE,
@@ -487,6 +511,34 @@ export class RaycasterEngine {
    * an actual edge instead of every frame the sim happens to be paused. */
   private wasFrozen = false;
 
+  /** Balancing telemetry — only populated when `?testHooks=1` gates it on in
+   * the constructor (see `__codeensteinTestHooks`); every recording call
+   * elsewhere in this class is a no-op guarded by `if (this.telemetry)` when
+   * it's `undefined`, so normal play carries zero extra cost. */
+  private readonly telemetry?: TelemetryState;
+  /** Links a live `Enemy` to its open time-to-kill window — see
+   * `telemetry.ts`'s `recordEnemyAggro`/`recordEnemyDeath`. Kept off
+   * `TelemetryState` itself since a `WeakMap` can't cross the
+   * `getTelemetrySnapshot()` structured-clone boundary. */
+  private readonly enemyTtkIndex = new WeakMap<Enemy, EnemyTtkRecord>();
+  /** Bound once (not reallocated per frame) and always passed to
+   * `updateEnemies()` — each closure no-ops internally when `this.telemetry`
+   * is unset, same pattern as every other recording call site. */
+  private readonly enemyAiEvents: EnemyAiEvents = {
+    onAggro: (enemy) => {
+      if (this.telemetry) recordEnemyAggro(this.telemetry, this.enemyTtkIndex, enemy, this.levelTime);
+    },
+    onMeleeAttack: () => {
+      if (this.telemetry) recordEnemyMeleeAttack(this.telemetry);
+    },
+    onRangedFire: () => {
+      if (this.telemetry) recordEnemyBoltFired(this.telemetry);
+    },
+  };
+  private readonly onEnemyBoltHit = (): void => {
+    if (this.telemetry) recordEnemyBoltHit(this.telemetry);
+  };
+
   constructor(
     canvas: HTMLCanvasElement,
     private readonly map: GameMap,
@@ -543,9 +595,12 @@ export class RaycasterEngine {
       equip: (index) => {
         this.weaponIndex = index;
       },
-      pushDrop: (drop) => this.drops.push(drop),
+      pushDrop: (drop) => this.pushLootDrop(drop),
       rng: this.rng,
       campaignLevelIndex: this.campaignLevelIndex,
+      recordApplied: (kind, amount, origin) => {
+        if (this.telemetry) recordLootCollected(this.telemetry, origin, kind, amount);
+      },
     };
     this.priorScore = carryover?.priorScore ?? 0;
     this.totalWalkableTiles = countWalkableTiles(map);
@@ -576,6 +631,9 @@ export class RaycasterEngine {
     // blind dead-reckoning hack. Inert unless the page URL carries
     // `?testHooks=1` — never touched by normal play.
     if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1") {
+      // Balancing telemetry (scripts/run-balancing-telemetry.mjs) rides the
+      // same gate — see `this.telemetry`'s doc comment.
+      this.telemetry = createTelemetryState();
       (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks = {
         getPlayerState: () => ({
           x: this.player.posX,
@@ -583,7 +641,14 @@ export class RaycasterEngine {
           dirX: this.player.dirX,
           dirY: this.player.dirY,
           health: this.health,
+          healthFraction: this.health / MAX_HEALTH,
+          swap: this.swap,
           state: this.state,
+          ammo: { ...this.ammo },
+          weaponIndex: this.weaponIndex,
+          ownedWeapons: [...this.ownedWeapons],
+          levelTime: this.levelTime,
+          distanceTraveled: this.distanceTraveled,
         }),
         getExit: () => ({ x: map.exit.x, y: map.exit.y }),
         getEnemies: () =>
@@ -593,9 +658,44 @@ export class RaycasterEngine {
             alive: e.alive,
             aggroed: e.aggroed,
             elite: e.elite,
+            edgeCase: e.edgeCase,
             hp: e.hp,
             maxHp: e.maxHp,
           })),
+        getMines: () => this.map.mines.map((m) => ({ x: m.x, y: m.y, alive: m.alive, visible: m.visible })),
+        getTelemetrySnapshot: () => {
+          if (!this.telemetry) return null;
+          const t = this.telemetry;
+          const stats = this.buildStats();
+          return {
+            ttkRecords: [...t.ttkFinished, ...t.ttkPending].map((r) => ({ ...r })),
+            peakAggroedCount: t.peakAggroedCount,
+            combatTimeSec: t.combatTimeSec,
+            levelTimeSec: this.levelTime,
+            enemyBoltsFired: t.enemyBoltsFired,
+            enemyBoltsHit: t.enemyBoltsHit,
+            enemyMeleeAttacks: t.enemyMeleeAttacks,
+            minHealthReached: t.minHealthReached === Infinity ? this.health : t.minHealthReached,
+            timeBelow25PctHealthSec: t.timeBelow25PctHealthSec,
+            damageBySource: { ...t.damageBySource },
+            healingBySource: { ...t.healingBySource },
+            weaponTallies: Object.fromEntries(Object.entries(t.weaponTallies).map(([i, tally]) => [i, { ...tally }])),
+            lootRolled: { ...t.lootRolled },
+            lootCollectedDynamic: { ...t.lootCollectedDynamic },
+            lootCollectedStatic: { ...t.lootCollectedStatic },
+            timeAtZeroRangedAmmoSec: t.timeAtZeroRangedAmmoSec,
+            killsForcedByMelee: t.killsForcedByMelee,
+            minesTriggered: t.minesTriggered,
+            minesDisarmed: t.minesDisarmed,
+            fatalDamageSource: t.fatalDamageSource,
+            distanceTraveled: this.distanceTraveled,
+            mapCompletionFrac: this.visitedWalkableCount / this.totalWalkableTiles,
+            secretRoomsOpened: this.secretRoomsOpened.size,
+            secretRoomCount: map.secretRoomCount,
+            kills: stats.kills,
+            score: stats.score,
+          };
+        },
       };
     }
   }
@@ -834,6 +934,10 @@ export class RaycasterEngine {
     this.advanceRockets(dt);
     this.applyHazardDamage(dt);
     this.applyTrapDamage(dt);
+    if (this.telemetry) {
+      updateMinHealth(this.telemetry, this.health);
+      updateTelemetryPerFrame(this.telemetry, dt, this.health / MAX_HEALTH, this.ammo.bullets + this.ammo.smg + this.ammo.gas);
+    }
     this.updateLowHealthAlarm(dt);
     this.checkExit();
 
@@ -1166,18 +1270,25 @@ export class RaycasterEngine {
     if (this.state !== "playing") return;
     this.pathField.ensure(this.map, Math.floor(this.player.posX), Math.floor(this.player.posY), this.gridVersion);
     const beforeShots = this.projectiles.length;
-    const dmg = updateEnemies(this.enemies, this.player, this.map, dt, this.projectiles, this.pathField, this.rng);
+    const dmg = updateEnemies(this.enemies, this.player, this.map, dt, this.projectiles, this.pathField, this.rng, this.enemyAiEvents);
     if (this.projectiles.length > beforeShots) audio.playEnemyShoot();
     // Difficulty scales enemy-*dealt* damage only — melee bites and ranged
     // bolts, not trap/hazard/self-inflicted (rocket splash) damage.
-    if (dmg > 0) this.damage(dmg * this.difficultyMultipliers.damage);
+    if (dmg > 0) this.damage(dmg * this.difficultyMultipliers.damage, "enemyMelee");
+
+    if (this.telemetry) {
+      let aggroedNow = 0;
+      for (const e of this.enemies) if (e.alive && e.aggroed) aggroedNow += 1;
+      if (aggroedNow > this.telemetry.peakAggroedCount) this.telemetry.peakAggroedCount = aggroedNow;
+      if (aggroedNow > 0) this.telemetry.combatTimeSec += dt;
+    }
   }
 
   /** Advance enemy bolts; apply any that struck the player this frame. */
   private updateProjectiles(dt: number): void {
     if (this.state !== "playing") return;
-    const dmg = updateProjectiles(this.projectiles, this.player, this.map, dt);
-    if (dmg > 0) this.damage(dmg * this.difficultyMultipliers.damage);
+    const dmg = updateProjectiles(this.projectiles, this.player, this.map, dt, this.onEnemyBoltHit);
+    if (dmg > 0) this.damage(dmg * this.difficultyMultipliers.damage, "enemyRanged");
   }
 
   /**
@@ -1208,7 +1319,7 @@ export class RaycasterEngine {
       spawnExplosionParticles(this.explosionParticles, blast.x, blast.y);
 
       const playerDmg = rocketDamageAt(blast, this.player.posX, this.player.posY);
-      if (playerDmg > 0) this.damage(playerDmg);
+      if (playerDmg > 0) this.damage(playerDmg, "selfRocket");
 
       // Ascending candidate indices == the old full-array scan order
       // restricted to the blast's neighborhood, so kills (and the seeded
@@ -1226,7 +1337,10 @@ export class RaycasterEngine {
         /* v8 ignore next */
         if (!enemy.alive) continue;
         const dmg = rocketDamageAt(blast, enemy.x, enemy.y);
-        if (dmg > 0) this.damageEnemy(enemy, dmg);
+        if (dmg > 0) {
+          if (this.telemetry) recordHit(this.telemetry, GHIDRA_WEAPON_INDEX);
+          this.damageEnemy(enemy, dmg, undefined, undefined, GHIDRA_WEAPON_INDEX);
+        }
       }
     }
   }
@@ -1236,7 +1350,7 @@ export class RaycasterEngine {
     if (this.state !== "playing") return;
     const cx = Math.floor(this.player.posX);
     const cy = Math.floor(this.player.posY);
-    if (isHazard(this.map, cx, cy)) this.damage(HAZARD_DPS * dt);
+    if (isHazard(this.map, cx, cy)) this.damage(HAZARD_DPS * dt, "hazard");
   }
 
   /**
@@ -1246,13 +1360,14 @@ export class RaycasterEngine {
   private applyTrapDamage(dt: number): void {
     if (this.state !== "playing") return;
     const spike = spikeDamage(this.map.spikeTraps, this.player, this.levelTime, dt);
-    if (spike > 0) this.damage(spike);
+    if (spike > 0) this.damage(spike, "trapSpike");
 
     for (const detonation of updateMines(this.map.mines, this.player, dt)) {
       audio.playExplosion();
       spawnExplosion(this.explosions, detonation.x, detonation.y, MINE_BLAST_RADIUS);
       spawnExplosionParticles(this.explosionParticles, detonation.x, detonation.y);
-      if (detonation.damage > 0) this.damage(detonation.damage);
+      if (this.telemetry) recordMineTriggered(this.telemetry);
+      if (detonation.damage > 0) this.damage(detonation.damage, "trapMine");
     }
   }
 
@@ -1301,13 +1416,14 @@ export class RaycasterEngine {
       if (pickup.kind === "weapon") {
         // Own message/amount logic (unlock vs. already-owned top-up) — the
         // generic "+N kind found" log below doesn't apply to it.
-        if (pickup.weaponIndex !== undefined) grantOrTopUpWeapon(pickup.weaponIndex, this.lootCtx);
+        if (pickup.weaponIndex !== undefined) grantOrTopUpWeapon(pickup.weaponIndex, this.lootCtx, "static");
         continue;
       }
       const amount = this.scaledLootAmount(pickup.amount);
       if (pickup.kind === "health") this.health = Math.min(MAX_HEALTH, this.health + amount);
       else if (pickup.kind === "swap") this.swap = Math.min(MAX_SWAP, this.swap + amount);
       else this.ammo[pickup.kind] += amount;
+      if (this.telemetry) recordLootCollected(this.telemetry, "static", pickup.kind, amount);
       console.log(`%c[pickup] +${amount} ${pickup.kind} found`, "color:#3fd0e0");
     }
   }
@@ -1317,6 +1433,17 @@ export class RaycasterEngine {
    * down on Hard can never zero out a pickup entirely. */
   private scaledLootAmount(baseAmount: number): number {
     return Math.max(1, Math.round(baseAmount * this.difficultyMultipliers.ammoDropRate));
+  }
+
+  /** Leave a dynamic loot drop in the world — the single place `this.drops`
+   * is ever pushed to, so telemetry's "rolled" counter (see `lootRolled`)
+   * never has to be duplicated across call sites. A `LootDrop.amount` is
+   * often unset on purpose (defaulted later, at collection — see
+   * `applyLootDrop`), so this records `1` (an occurrence) for those; an
+   * explicit `amount` (elite drops) records the real quantity instead. */
+  private pushLootDrop(drop: LootDrop): void {
+    this.drops.push(drop);
+    if (this.telemetry) recordLootRolled(this.telemetry, drop.kind, drop.amount ?? 1);
   }
 
   /**
@@ -1400,9 +1527,12 @@ export class RaycasterEngine {
   /**
    * Apply `amount` of stability loss; ends the run on reaching 0. Swap
    * absorbs damage 1:1 before health does, so it's spent down first.
+   * `source` is telemetry-only (see `telemetry.ts`'s `DamageSource`) — every
+   * call site is a first-party literal, never derived from player input.
    */
-  private damage(amount: number): void {
+  private damage(amount: number, source: DamageSource): void {
     if (this.godMode || amount <= 0) return;
+    if (this.telemetry) recordDamage(this.telemetry, source, amount);
     // Kick the red screen flash back to full strength on any damage taken.
     this.flashFrames = DAMAGE_FLASH_FRAMES;
     audio.playDamage();
@@ -1415,6 +1545,7 @@ export class RaycasterEngine {
     this.health -= remaining;
     if (this.health <= 0) {
       this.health = 0;
+      if (this.telemetry) recordFatalDamage(this.telemetry, source);
       this.endGame("over");
     }
   }
@@ -1543,6 +1674,14 @@ export class RaycasterEngine {
       this.ammo[weapon.ammoType] -= weapon.ammoPerShot;
     }
 
+    const weaponIndex = WEAPONS.indexOf(weapon);
+    // "Forced melee": true only when a melee weapon fires because every
+    // ranged pool was empty at the moment of firing — telemetry-only (see
+    // `killsForcedByMelee`), computed here since this is the only place that
+    // still knows the ammo state *before* this shot.
+    const forcedMelee = weapon.meleeRange !== undefined && this.ammo.bullets === 0 && this.ammo.smg === 0 && this.ammo.gas === 0;
+    if (this.telemetry) recordShot(this.telemetry, weaponIndex);
+
     audio.playShoot(weapon.viewKind);
     // Kick the viewmodel: full recoil, easing back over the next frames. No
     // muzzle flash for the knife — a stab doesn't have one. A melee call
@@ -1623,7 +1762,8 @@ export class RaycasterEngine {
           const dist = Math.hypot(enemy.x - this.player.posX, enemy.y - this.player.posY);
           if (dist > rangeLimit) continue;
         }
-        this.damageEnemy(enemy, weapon.damagePerPellet, weapon.lifesteal, isFlame);
+        if (this.telemetry) recordHit(this.telemetry, weaponIndex);
+        this.damageEnemy(enemy, weapon.damagePerPellet, weapon.lifesteal, isFlame, weaponIndex, forcedMelee);
         pelletsHit += 1;
         continue;
       }
@@ -1658,7 +1798,8 @@ export class RaycasterEngine {
     spawnExplosion(this.explosions, mine.x, mine.y, MINE_BLAST_RADIUS);
     spawnExplosionParticles(this.explosionParticles, mine.x, mine.y);
     console.log(`%c[mine] destroyed by gunfire${dmg > 0 ? ` — caught ${Math.round(dmg)} splash damage` : " — safely disarmed at range"}`, "color:#ff5050");
-    if (dmg > 0) this.damage(dmg);
+    if (this.telemetry) recordMineDisarmed(this.telemetry);
+    if (dmg > 0) this.damage(dmg, "trapMine");
   }
 
   /**
@@ -1666,8 +1807,19 @@ export class RaycasterEngine {
    * killing weapon has `lifesteal`, restore that much stability to the player.
    * `burning` (Friday Hotfix hits only) layers a handful of cosmetic embers on
    * top of the usual blood spray — purely visual, no damage-over-time follows.
+   * `weaponIndex`/`forcedMelee` are telemetry-only (see `telemetry.ts`) —
+   * every caller passes a literal weapon index (`advanceRockets` always
+   * passes `GHIDRA_WEAPON_INDEX`); `undefined` only in tests that call this
+   * directly without needing weapon-attribution telemetry.
    */
-  private damageEnemy(enemy: Enemy, amount: number, lifesteal?: number, burning?: boolean): void {
+  private damageEnemy(
+    enemy: Enemy,
+    amount: number,
+    lifesteal?: number,
+    burning?: boolean,
+    weaponIndex?: number,
+    forcedMelee?: boolean,
+  ): void {
     // Hit feedback: thud sound, tint the sprite red, spray "digital blood".
     audio.playHit();
     enemy.hitFlash = HIT_FLASH_FRAMES;
@@ -1675,6 +1827,7 @@ export class RaycasterEngine {
     // Damage aggro: being shot instantly wakes the enemy, even from beyond its
     // aggro radius, so you can't safely snipe a roaming enemy from afar.
     enemy.aggroed = true;
+    if (this.telemetry) recordEnemyAggro(this.telemetry, this.enemyTtkIndex, enemy, this.levelTime);
     const baseBloodCount = 3 + Math.floor(Math.random() * 3);
     spawnBlood(this.blood, enemy.x, enemy.y, Math.round(baseBloodCount * this.goreMultipliers.count));
     enemy.hp -= amount;
@@ -1687,11 +1840,24 @@ export class RaycasterEngine {
     this.kills += 1;
     this.killScore += killPoints(enemy);
     if (this.target === enemy) this.target = null;
-    if (lifesteal) this.health = Math.min(MAX_HEALTH, this.health + lifesteal);
+    if (this.telemetry) {
+      recordEnemyDeath(this.telemetry, this.enemyTtkIndex, enemy, this.levelTime);
+      if (weaponIndex !== undefined) {
+        recordKill(this.telemetry, weaponIndex);
+        if (forcedMelee) recordKillForcedByMelee(this.telemetry);
+      }
+    }
+    if (lifesteal) {
+      if (this.telemetry) {
+        const actualHeal = Math.min(MAX_HEALTH, this.health + lifesteal) - this.health;
+        recordHeal(this.telemetry, "lifesteal", actualHeal);
+      }
+      this.health = Math.min(MAX_HEALTH, this.health + lifesteal);
+    }
 
     if (enemy.elite) dropEliteLoot(enemy, this.lootCtx);
     else {
-      this.drops.push({
+      this.pushLootDrop({
         x: enemy.x,
         y: enemy.y,
         kind: rollLoot(
@@ -1707,7 +1873,7 @@ export class RaycasterEngine {
       const missing = UNLOCKABLE_WEAPONS.filter((i) => !this.ownedWeapons.has(i));
       const bonusWeaponIndex = rollBonusWeaponDrop(missing, this.rng);
       if (bonusWeaponIndex !== undefined) {
-        this.drops.push({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: bonusWeaponIndex });
+        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: bonusWeaponIndex });
       }
     }
     audio.playAmmoDrop();

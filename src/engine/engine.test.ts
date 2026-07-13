@@ -388,11 +388,33 @@ describe("RaycasterEngine — construction", () => {
       const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
         .__codeensteinTestHooks;
       expect(hooks).toBeDefined();
-      expect(hooks!.getPlayerState()).toMatchObject({ x: expect.any(Number), y: expect.any(Number) });
+      expect(hooks!.getPlayerState()).toMatchObject({
+        x: expect.any(Number),
+        y: expect.any(Number),
+        healthFraction: expect.any(Number),
+        swap: expect.any(Number),
+        ammo: expect.any(Object),
+        weaponIndex: expect.any(Number),
+        ownedWeapons: expect.any(Array),
+        levelTime: expect.any(Number),
+        distanceTraveled: expect.any(Number),
+      });
       expect(hooks!.getExit()).toEqual({ x: map.exit.x, y: map.exit.y });
       expect(hooks!.getEnemies()).toEqual([
-        expect.objectContaining({ x: enemy.x, y: enemy.y, alive: true }),
+        expect.objectContaining({ x: enemy.x, y: enemy.y, alive: true, edgeCase: expect.any(Boolean) }),
       ]);
+      expect(hooks!.getMines()).toEqual([]);
+      expect(hooks!.getTelemetrySnapshot()).toMatchObject({
+        peakAggroedCount: 0,
+        combatTimeSec: 0,
+        enemyBoltsFired: 0,
+        enemyBoltsHit: 0,
+        fatalDamageSource: null,
+        minesTriggered: 0,
+        minesDisarmed: 0,
+        secretRoomCount: map.secretRoomCount,
+        kills: 0,
+      });
     } finally {
       Object.defineProperty(window, "location", { value: original, configurable: true });
       delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;

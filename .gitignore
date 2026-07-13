@@ -5,6 +5,7 @@ dist-ssr
 .vite
 .verify-output
 coverage
+balancing_telemetry.json
 
 # Editor
 .vscode/*
