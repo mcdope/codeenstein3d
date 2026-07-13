@@ -687,6 +687,47 @@ export class RaycasterEngine {
             const dist = Math.hypot(target.x - this.player.posX, target.y - this.player.posY);
             return dist <= melee.meleeRange;
           })(),
+          // Whether firing the *currently equipped ranged weapon* right now
+          // is guaranteed to destroy whatever mine is at the crosshair —
+          // mine hits go through the same screen-projection hit test as an
+          // enemy (`findMineInProjections`, mirroring `findTargetInProjections`),
+          // but for a *ranged* shot that also means the Cone-of-Fire
+          // deviation applies (unlike melee, which is exempt — see
+          // `meleeWouldHit`). A bot picking its shot purely by angle
+          // tolerance has no way to know the mine's on-screen width is
+          // narrower than that tolerance at typical disarm range, so it can
+          // "fire" many times while only occasionally actually connecting
+          // (confirmed via trace: ~30 fire attempts at one stationary,
+          // perfectly-angle-aligned mine before it finally died). Rather
+          // than expose the RNG'd deviation itself (which would let a bot
+          // "peek" at the seeded PRNG's next draw without consuming it,
+          // desyncing determinism from a real shot), this checks the
+          // *worst case* deviation magnitude deterministically: only true
+          // if the mine's projected width is wide enough that no possible
+          // random deviation could miss it. See
+          // `scripts/run-balancing-telemetry.mjs`'s `tick()` for the
+          // consumer.
+          wouldMineHit: (() => {
+            const weapon = WEAPONS[this.weaponIndex];
+            if (weapon.meleeRange !== undefined) return false; // this is the ranged-shot check; see meleeWouldHit for melee
+            const { width, height } = this.ctx.canvas;
+            const center = width / 2;
+            const mineProjections = projectVisibleMines(this.player, this.map.mines, width, height);
+            const target = findMineInProjections(mineProjections, this.zBuffer, width, height, center);
+            if (!target?.alive) return false;
+            if (weapon.maxRange !== undefined) {
+              const dist = Math.hypot(target.x - this.player.posX, target.y - this.player.posY);
+              if (dist > weapon.maxRange) return false;
+            }
+            const proj = mineProjections.find((p) => p.mine === target)?.proj;
+            if (!proj) return false;
+            const baseCol = Math.min(width - 1, Math.max(0, Math.round(center)));
+            const range = this.zBuffer[baseCol];
+            const rangeFraction = Math.min(1, range / FOG_FAR);
+            const maxDeviation = weapon.maxConeDeviationPx ?? MAX_CONE_DEVIATION_PX;
+            const worstCaseDeviation = rangeFraction * rangeFraction * rangeFraction * maxDeviation;
+            return center - worstCaseDeviation >= proj.left && center + worstCaseDeviation <= proj.right;
+          })(),
           ownedWeapons: [...this.ownedWeapons],
           levelTime: this.levelTime,
           distanceTraveled: this.distanceTraveled,

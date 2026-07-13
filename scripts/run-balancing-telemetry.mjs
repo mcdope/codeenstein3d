@@ -239,6 +239,15 @@ const MINE_TARGET_GIVEUP_TICKS = 40;
 // forbids — the bot still fights everything down to this threshold first.
 const CRITICAL_HEALTH_FRACTION = 0.2;
 const MELEE_RANGE = 1.5;
+// The engine's own enemy AI only holds an enemy still to bite once within its
+// (much smaller) ATTACK_RADIUS=0.5 — between that and MELEE_RANGE, an aggroed
+// enemy is still actively homing in (path-waypoint chase, which rounds
+// corners), so its position keeps drifting. Below this floor, stop trying to
+// close the last bit of distance during an in-progress melee engagement — any
+// closer risks pushing into the enemy's own collision footprint/oscillating
+// against it — and just keep re-aiming in place, since the enemy is close
+// enough to plausibly settle into ATTACK_RADIUS and hold still on its own.
+const MELEE_CLOSE_MIN_DISTANCE = 0.4;
 // Below this distance, stop advancing while turning to line up a ranged shot
 // — otherwise "keep approaching while aiming" (see the `aimTarget` branch in
 // `tick()`) could walk the bot straight into melee range mid-turn, which
@@ -307,12 +316,16 @@ export const DIFFICULTIES = ["easy", "normal", "hard"];
  * There is deliberately no `meleeRush` field (an earlier version had one,
  * `true` for Pro only) — it was never actually read anywhere in the tick
  * logic, and on reflection the underlying idea doesn't hold up: a genuinely
- * high-accuracy player has no reason to proactively close distance into
- * melee range at all (that's *more* exposure to incoming fire, not less) —
- * the correct "skilled" behavior is exactly what every profile already
- * does, universally: snipe efficiently from range, and only melee
+ * high-accuracy player has no reason to proactively close distance *from
+ * range* into melee at all (that's *more* exposure to incoming fire, not
+ * less) — the correct "skilled" behavior is exactly what every profile
+ * already does, universally: snipe efficiently from range, and only melee
  * opportunistically once something's already adjacent (free, ammo-less,
- * lifesteal).
+ * lifesteal). This is distinct from finishing an *already-committed* melee
+ * engagement (`threat.dist <= MELEE_RANGE`, see `MELEE_CLOSE_MIN_DISTANCE`),
+ * where a small amount of closing movement is needed purely to resolve
+ * `meleeWouldHit`'s narrow hit window against a still-approaching enemy —
+ * that's tightening an opportunity already taken, not manufacturing one.
  *
  * `fireAngleEps` calibration note: earlier values (Casual 0.17-0.22, Gamer
  * 0.15, Pro 0.08) were all *far* too loose, discovered via a `DEBUG_RANGE=1`
@@ -842,6 +855,20 @@ function isWallTile(map, x, y) {
   return tile === undefined || tile === 1 || tile === 6 || tile === 7;
 }
 
+// How far off `navTarget`'s direction a mine can be and still be worth a
+// proactive detour-and-shoot — see `findDisarmableMine`'s doc comment for
+// why this exists. `Math.PI/2` = a mine has to be somewhere in the forward
+// hemisphere (90° either side of the intended heading), not behind the
+// player.
+const MINE_DISARM_MAX_ANGLE_FROM_PATH = Math.PI / 2;
+// How tight to keep refining aim on a mine while `player.wouldMineHit` is
+// still false — much tighter than any profile's `fireAngleEps`, since a
+// mine's on-screen hit window is narrower than that at typical disarm
+// range (see `wouldMineHit`'s doc comment in engine.ts). Small enough that
+// further turning stops mattering once reached; `wouldMineHit` itself (not
+// this) is what actually gates firing.
+const MINE_REALIGN_EPS = 0.01;
+
 /**
  * A mine only counts as "disarmable from here" if there's a clear shot —
  * `visible` only means the mine has been *spotted* (within the engine's
@@ -853,13 +880,31 @@ function isWallTile(map, x, y) {
  * same deterministic map) encountered it. Found via a `DEBUG_FIRE=1` trace:
  * a single mine position was fired at 60-74 times total across a couple of
  * attempts, all at an identical "aligned" angle that should have connected.
+ *
+ * Also excludes mines well off to the side of or behind `navTarget`'s
+ * direction (see `MINE_DISARM_MAX_ANGLE_FROM_PATH`): without this, *any*
+ * visible mine within disarm range got targeted regardless of angle,
+ * including ones almost directly behind the player relative to where it
+ * was actually headed — confirmed via trace: the bot would swing ~150-180°
+ * around to shoot a mine, then swing another ~150-180° back to resume its
+ * original heading, for a mine that was never actually going to be walked
+ * over. A mine this far off-path isn't a real threat to the route; it's
+ * cheaper to just leave it (the reactive "back away if it becomes
+ * dangerous" retreat logic in `tick()` still applies regardless of angle,
+ * so this doesn't affect actual safety).
  */
-function findDisarmableMine(mines, player, abandoned, map) {
+function findDisarmableMine(mines, player, abandoned, map, navTarget) {
+  const navAngle = navTarget ? Math.atan2(navTarget.y - player.y, navTarget.x - player.x) : null;
   return mines
     .filter((m) => m.alive && m.visible && !abandoned?.has(`${m.x},${m.y}`))
     .map((m) => ({ ...m, dist: Math.hypot(m.x - player.x, m.y - player.y) }))
     .filter((m) => m.dist > MINE_BLAST_RADIUS && m.dist <= MINE_DISARM_RANGE)
     .filter((m) => hasLineOfSight(map, player.x, player.y, m.x, m.y))
+    .filter((m) => {
+      if (navAngle === null) return true;
+      const mineAngle = Math.atan2(m.y - player.y, m.x - player.x);
+      return Math.abs(angleDelta(navAngle, mineAngle)) <= MINE_DISARM_MAX_ANGLE_FROM_PATH;
+    })
     .sort((a, b) => a.dist - b.dist)[0];
 }
 
@@ -1058,7 +1103,7 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
     }
   }
 
-  let mineTarget = !threat && profile.proactiveMineDisarm && map ? findDisarmableMine(mines, player, mineMemory?.abandoned, map) : null;
+  let mineTarget = !threat && profile.proactiveMineDisarm && map ? findDisarmableMine(mines, player, mineMemory?.abandoned, map, navTarget) : null;
   if (mineTarget && mineMemory) {
     const key = `${mineTarget.x},${mineTarget.y}`;
     mineMemory.shootTicks = mineMemory.shootKey === key ? mineMemory.shootTicks + 1 : 1;
@@ -1079,7 +1124,8 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
     console.log(
       `[nav] pos=(${player.x.toFixed(2)},${player.y.toFixed(2)}) dir=${currentAngle.toFixed(2)} hpFrac=${player.healthFraction.toFixed(2)} ` +
         `threat=${threat ? `(${threat.x.toFixed(1)},${threat.y.toFixed(1)},dist=${threat.dist.toFixed(1)})` : "none"} ` +
-        `mineTarget=${mineTarget ? `(${mineTarget.x},${mineTarget.y})` : "none"} navTarget=${navTarget ? `(${navTarget.x.toFixed(2)},${navTarget.y.toFixed(2)})` : "none"}`,
+        `mineTarget=${mineTarget ? `(${mineTarget.x},${mineTarget.y})` : "none"} navTarget=${navTarget ? `(${navTarget.x.toFixed(2)},${navTarget.y.toFixed(2)})` : "none"} ` +
+        `weaponIndex=${player.weaponIndex} ammo=${JSON.stringify(player.ammo)} owned=${JSON.stringify(player.ownedWeapons)}`,
     );
   }
   let useMelee = false;
@@ -1118,6 +1164,24 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
         // key-hold isn't safe once turning is fast enough to blow past a
         // narrow window in one step.
         turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, mineMemory, player, currentAngle);
+        // Also keep closing the last bit of distance, not just re-aiming in
+        // place — `meleeWouldHit`'s on-screen hit window narrows the farther
+        // out it's checked, and an enemy this "close" (already inside
+        // MELEE_RANGE) isn't guaranteed to actually be closing distance on
+        // its own: the engine's chase AI only holds an enemy still to bite
+        // once within its own much smaller ATTACK_RADIUS, so between there
+        // and MELEE_RANGE it's still walking (and can visibly drift/round a
+        // corner) while the bot was previously doing nothing but turn.
+        // Confirmed via headless trace: a threat sitting at dist 1.4 with a
+        // narrow, drifting hit window produced 95 consecutive stalled ticks
+        // (no forward movement, meleeWouldHit never true) before this fix.
+        if (map && threat.dist > MELEE_CLOSE_MIN_DISTANCE) {
+          const aheadX = player.x + player.dirX * 0.6;
+          const aheadY = player.y + player.dirY * 0.6;
+          if (!isHazardAt(map, aheadX, aheadY) && !activeSpikeAt(map, aheadX, aheadY, player.levelTime)) {
+            moveKeys.add("KeyW");
+          }
+        }
       } else {
         fire = true;
         useMelee = true;
@@ -1136,8 +1200,20 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
       // (`findDisarmableMine`'s `hasLineOfSight` requirement) for the same
       // reason.
       const hasLos = !threat || !map || hasLineOfSight(map, player.x, player.y, threat.x, threat.y);
-      if (Math.abs(delta) > profile.fireAngleEps || !hasLos) {
-        if (Math.abs(delta) > profile.fireAngleEps) {
+      // A stationary mine's on-screen width at typical disarm range is
+      // narrower than any fixed `fireAngleEps` tolerance — same underlying
+      // issue as melee's `meleeWouldHit`, but for a *ranged* shot, where
+      // Cone-of-Fire deviation is also in play. Without this, the bot could
+      // sit "angle-aligned" per `fireAngleEps` and fire dozens of times
+      // while only occasionally actually connecting (confirmed via trace: a
+      // mine survived ~30 point-blank, perfectly-angle-aligned shots before
+      // finally dying). `player.wouldMineHit` is the engine's own
+      // conservative (worst-case-deviation) hit test — gate firing on it,
+      // and keep refining aim toward exact alignment (not just
+      // `fireAngleEps`) while it's not yet true, same as an unaligned angle.
+      const mineNotReady = !threat && !player.wouldMineHit;
+      if (Math.abs(delta) > profile.fireAngleEps || !hasLos || mineNotReady) {
+        if (Math.abs(delta) > (mineNotReady ? MINE_REALIGN_EPS : profile.fireAngleEps)) {
           moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
           turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, mineMemory, player, currentAngle);
         }
@@ -1154,7 +1230,15 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
         // walking onto one in the first place (found via trace: a run died
         // to 108.9 hazard damage after this movement addition, having
         // walked straight into acid while turning toward a distant enemy).
-        if (threat && threat.dist > MIN_RANGED_APPROACH_DISTANCE && map) {
+        // The `!hasLos` half of this OR is required even *inside*
+        // `MIN_RANGED_APPROACH_DISTANCE` — an aggroed enemy stuck behind a
+        // corner at close range (already angle-aligned, so `delta` stays
+        // ~0) would otherwise never approach *or* fire, freezing solid until
+        // the enemy's own chase AI happened to close the gap on its own
+        // (confirmed via headless trace: 155 consecutive stalled ticks,
+        // moveKeys=[] and fire=false throughout, against a threat sitting at
+        // dist 2.6-3.1 with a constant heading).
+        if (threat && (threat.dist > MIN_RANGED_APPROACH_DISTANCE || !hasLos) && map) {
           const aheadX = player.x + player.dirX * 0.6;
           const aheadY = player.y + player.dirY * 0.6;
           if (!isHazardAt(map, aheadX, aheadY) && !activeSpikeAt(map, aheadX, aheadY, player.levelTime)) {
