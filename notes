@@ -191,6 +191,7 @@
     - [ ] teamwork for kill should share pointbonus
     - [ ] when one player enters the return tile, all players advance to the next level (after an informational countdown)
     - [ ] elite enemies should scale with player count
+    . [ ] adapt balancing AI for deathmatch mode / bots?
  - [ ] enemy textures from wad? if yes: what about hitbox?
  - [ ] multikill score bonus, sfx and gfx
  - [ ] end of replay playback should drop back in the highscore dialog
