@@ -516,6 +516,21 @@ export class RaycasterEngine {
    * elsewhere in this class is a no-op guarded by `if (this.telemetry)` when
    * it's `undefined`, so normal play carries zero extra cost. */
   private readonly telemetry?: TelemetryState;
+  /** Test-only Q/E (+ gamepad) turn-speed multiplier for
+   * `scripts/run-balancing-telemetry.mjs`'s bot — see `handleMovement`'s use
+   * of `ROT_SPEED`. Real mouse-look aiming (near-instant) isn't available to
+   * a Playwright-automated browser: `canvas.requestPointerLock()` reliably
+   * rejects with "The root document of this element is not valid for
+   * pointer lock" under automation, confirmed empirically in both headless
+   * and headed Chromium — not a fixable flakiness, a hard platform
+   * restriction. Rather than have the bot's Q/E-only aiming take far longer
+   * than a real (mouse-using) player's aim time, this lets the bot
+   * approximate a realistic *mouse* turn speed for its skill profile instead
+   * of the real keyboard rate — set only via `?testHooks=1`'s
+   * `botRotSpeedMul` query param, defaulting to 1 (real players are never
+   * affected: the param is never present in normal play). Clamped to a sane
+   * range so a bad value can't spin the player nonsensically fast. */
+  private rotSpeedMultiplier = 1;
   /** Links a live `Enemy` to its open time-to-kill window — see
    * `telemetry.ts`'s `recordEnemyAggro`/`recordEnemyDeath`. Kept off
    * `TelemetryState` itself since a `WeakMap` can't cross the
@@ -634,6 +649,9 @@ export class RaycasterEngine {
       // Balancing telemetry (scripts/run-balancing-telemetry.mjs) rides the
       // same gate — see `this.telemetry`'s doc comment.
       this.telemetry = createTelemetryState();
+      // See `this.rotSpeedMultiplier`'s doc comment.
+      const rotMul = Number(new URLSearchParams(window.location.search).get("botRotSpeedMul"));
+      if (Number.isFinite(rotMul)) this.rotSpeedMultiplier = Math.min(10, Math.max(1, rotMul));
       (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks = {
         getPlayerState: () => ({
           x: this.player.posX,
@@ -646,6 +664,29 @@ export class RaycasterEngine {
           state: this.state,
           ammo: { ...this.ammo },
           weaponIndex: this.weaponIndex,
+          // Whether a quick-melee swing thrown *right now* would actually
+          // connect — mirrors `fire()`'s own crosshair-column hit test
+          // (`findTargetInProjections` against the exact center column, in
+          // front of the nearest wall) rather than a bot-side angle-only
+          // guess. A fixed angle tolerance can't work here: a melee swing
+          // only lands within the target's on-screen width, which shrinks
+          // with distance (even inside melee range) and with an Edge Case's
+          // smaller sprite scale — a bot-side static epsilon was found to
+          // let it "fire" while aimed well off the target's actual hitbox,
+          // especially against Edge Cases near the far edge of melee range
+          // (observed: hundreds of whiffed swings against one enemy before
+          // giving up). See `scripts/run-balancing-telemetry.mjs`'s `tick()`
+          // for the consumer.
+          meleeWouldHit: (() => {
+            const melee = currentMeleeWeapon(this.ownedWeapons);
+            if (melee.meleeRange === undefined) return false;
+            const { width, height } = this.ctx.canvas;
+            const projections = projectLivingEnemies(this.player, this.enemies, width, height);
+            const target = findTargetInProjections(projections, this.zBuffer, width, height, width / 2);
+            if (!target?.alive) return false;
+            const dist = Math.hypot(target.x - this.player.posX, target.y - this.player.posY);
+            return dist <= melee.meleeRange;
+          })(),
           ownedWeapons: [...this.ownedWeapons],
           levelTime: this.levelTime,
           distanceTraveled: this.distanceTraveled,
@@ -663,6 +704,13 @@ export class RaycasterEngine {
             maxHp: e.maxHp,
           })),
         getMines: () => this.map.mines.map((m) => ({ x: m.x, y: m.y, alive: m.alive, visible: m.visible })),
+        // Dynamic kill-drop loot — distinct from the map's static
+        // `AmmoPickup`s (which `scripts/lib/staticLevelAnalysis.mjs` already
+        // knows about from Node-side map generation, before any enemy has
+        // died). Without this, a bot driven purely by pre-planned static
+        // pickup positions has no way to know an enemy just dropped
+        // something and will walk right past it.
+        getDrops: () => this.drops.map((d) => ({ x: d.x, y: d.y, kind: d.kind })),
         getTelemetrySnapshot: () => {
           if (!this.telemetry) return null;
           const t = this.telemetry;
@@ -1212,7 +1260,7 @@ export class RaycasterEngine {
     // Camera rotation is exclusively Q/E + mouse (+ the gamepad's right
     // stick) — A/D strafe instead, so turning stays a keyboard key away from
     // WASD rather than an arrow-key reach.
-    const rot = ROT_SPEED * dt;
+    const rot = ROT_SPEED * this.rotSpeedMultiplier * dt;
     if (this.input.isDown("KeyQ")) this.player.rotate(-rot);
     if (this.input.isDown("KeyE")) this.player.rotate(rot);
 

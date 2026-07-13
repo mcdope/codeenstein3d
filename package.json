@@ -16,6 +16,7 @@
     "verify:campaign:playthrough": "node scripts/verify-campaign-playthrough.mjs",
     "generate:default-highscore": "node scripts/generate-default-highscore.mjs",
     "balancing:telemetry": "node scripts/run-balancing-telemetry.mjs",
+    "balancing:watch": "node scripts/watch-bot-sessions.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage"

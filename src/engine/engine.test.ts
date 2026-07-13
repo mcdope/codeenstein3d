@@ -404,6 +404,7 @@ describe("RaycasterEngine — construction", () => {
         expect.objectContaining({ x: enemy.x, y: enemy.y, alive: true, edgeCase: expect.any(Boolean) }),
       ]);
       expect(hooks!.getMines()).toEqual([]);
+      expect(hooks!.getDrops()).toEqual([]);
       expect(hooks!.getTelemetrySnapshot()).toMatchObject({
         peakAggroedCount: 0,
         combatTimeSec: 0,

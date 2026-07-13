@@ -34,7 +34,7 @@ import { analyzeStaticLevel } from "./lib/staticLevelAnalysis.mjs";
 
 const CAMPAIGN_DIR = path.join(REPO_ROOT, "demo-campaign");
 const CAMPAIGN_NAME = "demo-campaign";
-const DEV_SERVER_URL = process.env.CODEENSTEIN_DEV_URL ?? "http://localhost:5173";
+export const DEV_SERVER_URL = process.env.CODEENSTEIN_DEV_URL ?? "http://localhost:5173";
 const OUTPUT_FILE = path.join(REPO_ROOT, "balancing_telemetry.json");
 
 // --- Scoped-run env vars (permanent — useful for future debugging, not just
@@ -58,6 +58,11 @@ const ATTEMPT_CONCURRENCY = process.env.CODEENSTEIN_TELEMETRY_CONCURRENCY ? Numb
 // Off by default (keeps normal output to just heartbeats + "Telemetry saved")
 // — set to debug a combo that's burning through attempts without qualifying.
 const VERBOSE = process.env.CODEENSTEIN_TELEMETRY_VERBOSE === "1";
+// Permanent (not a one-off debug flag removed once some bug is root-caused —
+// per-tick navigation/combat decisions are useful to inspect on demand for
+// whatever the next "why is the bot doing that" question turns out to be).
+// Off by default, same reasoning as VERBOSE above.
+const DEBUG_NAV = process.env.CODEENSTEIN_TELEMETRY_DEBUG_NAV === "1";
 // Opens a real, visible browser window and runs at a watchable real-time
 // pace instead of the virtual-clock fast-forward, so a human can actually
 // see what the bot is doing tick-by-tick — "a param to view the actual
@@ -77,6 +82,123 @@ const MAX_TICKS_PER_WAYPOINT = 600;
 const FINAL_APPROACH_TICKS = 80;
 const TURN_MOVE_EPS = 0.2;
 const ARRIVE_EPS = 0.15;
+// Mirrors src/engine/engine.ts's ROT_SPEED (rad/sec) — needed here to compute
+// how long a turn-only key-hold should last (see `turnBurstMs`'s doc comment).
+const ENGINE_ROT_SPEED = 2.6;
+
+/**
+ * How long to hold a turn key for a *pure* turn (no simultaneous movement/
+ * fire) so it lands as close as possible to `deltaAngle` without overshooting
+ * past it. Every full decision tick previously held the key for a fixed
+ * `VIRTUAL_STEP_MS`/`WATCH_STEP_MS`, covering a *fixed* angle
+ * (`ENGINE_ROT_SPEED * rotSpeedMultiplier * stepSec`) regardless of how much
+ * turn was actually still needed. That's fine while far from aligned (more
+ * turn is always progress), but once `deltaAngle` shrinks below one fixed
+ * step's worth, committing to the full step blows straight past the target —
+ * and since the very next tick sees the opposite-signed delta and again
+ * commits to a full step, it overshoots back the other way, forever (found
+ * via trace: `dir` oscillating between two fixed values every tick, never
+ * converging, for 50+ consecutive ticks against a stationary mine). Bumping
+ * `rotSpeedMultiplier` (realistic mouse-speed approximation — see
+ * `PROFILES`) made each fixed step bigger and this far more likely to trigger
+ * than at the original real keyboard rate. Capping the hold duration at
+ * exactly what's needed for the remaining angle (still capped at the normal
+ * step for large deltas, so far-off turns are just as fast as before) fixes
+ * it for both headless (shorter virtual-clock pump) and headed (shorter real
+ * wait — the key stays *held* across ticks either way, so a shorter wait just
+ * means the very next re-check happens sooner, before it's had a chance to
+ * sail past the target).
+ *
+ * `mineMemory`/`player`/`currentAngle`, if passed, record what this decision
+ * *expects* to happen (`checkRotationAnomaly` compares against it on the
+ * very next `tick()` call) — see that function's doc comment for why this
+ * exists. Optional so callers that don't care about the anomaly check
+ * (there are none left, but keeps this function usable standalone) aren't
+ * forced to thread them through.
+ */
+function turnBurstMs(deltaAngle, rotSpeedMultiplier, mineMemory, player, currentAngle) {
+  const standardStepMs = HEADED ? WATCH_STEP_MS : VIRTUAL_STEP_MS;
+  const rate = ENGINE_ROT_SPEED * rotSpeedMultiplier; // rad/sec
+  const neededMs = (Math.abs(deltaAngle) / rate) * 1000;
+  if (mineMemory) mineMemory.pendingTurnCheck = { beforeDir: currentAngle, turnBurstMs: Math.min(standardStepMs, neededMs), rotSpeedMultiplier };
+  return Math.max(1, Math.min(standardStepMs, neededMs));
+}
+
+// Mirrors src/engine/engine.ts's MOVE_SPEED/SPRINT_MULTIPLIER — needed here
+// for `moveBurstMs`, the linear-movement counterpart to `turnBurstMs`.
+const ENGINE_MOVE_SPEED = 3.2;
+const ENGINE_SPRINT_MULTIPLIER = 2.0;
+
+/**
+ * Same idea as `turnBurstMs`, for straight-line movement toward a known
+ * distance: cap how long a movement key is held so it doesn't overshoot past
+ * a small arrival tolerance. Found via trace: the hazard-crossing branch
+ * sprints (2x `MOVE_SPEED`, ~0.32 tiles per normal 50ms step) toward
+ * `navTarget` — but `driveToward`'s own arrival check uses a much smaller
+ * `ARRIVE_EPS` (0.15 tiles). When a route waypoint's coordinates land at or
+ * near the hazard tile itself (common — route planning has no reason to
+ * avoid hazard tiles), a full sprint step blows straight past that 0.15-tile
+ * circle every tick, so `dist < eps` is never satisfied — the player just
+ * oscillates back and forth around the target, standing on the hazard tile
+ * the entire time. Confirmed via trace: `driveToward`'s per-tick distance
+ * hovering at 0.15-0.17 (just outside `ARRIVE_EPS`) for 100+ consecutive
+ * ticks while `hpFrac` drained from ~0.5 to 0 (93.6 total hazard damage,
+ * fatal) — the position visibly bounces between two or three nearby points
+ * rather than converging. Only applied where movement is *toward a specific
+ * point* with a real arrival tolerance (hazard-crossing, plain nav-target
+ * walking) — not the "run away from a threat"/mine-retreat branches, which
+ * have no target point to overshoot past in the first place.
+ */
+function moveBurstMs(dist, sprinting) {
+  const standardStepMs = HEADED ? WATCH_STEP_MS : VIRTUAL_STEP_MS;
+  const speed = ENGINE_MOVE_SPEED * (sprinting ? ENGINE_SPRINT_MULTIPLIER : 1); // tiles/sec
+  const neededMs = (dist / speed) * 1000;
+  return Math.max(1, Math.min(standardStepMs, neededMs));
+}
+
+// How much more rotation than `turnBurstMs`'s own math predicts still counts
+// as "plausible" before `checkRotationAnomaly` flags it — generous on
+// purpose (real headed-mode frame-rate variance is real and expected; this
+// is only meant to catch genuinely implausible jumps, not every bit of
+// jitter). See `checkRotationAnomaly`'s doc comment for why this exists at
+// all instead of a real fix.
+const ROTATION_ANOMALY_SLACK = 4;
+
+/**
+ * Defensive net for an intermittent, not-fully-root-caused report: a user
+ * watching `balancing:watch` saw the bot occasionally spin far more than one
+ * decision's worth of turning should ever produce (near/exceeding a full
+ * rotation) at a corner, then visibly correct back over the next several
+ * ticks. Traced extensively (a temporary per-frame engine counter confirmed
+ * every *individual* frame's own rotation stays normal-sized, and the
+ * headless virtual-clock pump was verified to advance exactly one frame per
+ * call) without finding a definitive single mechanism — plausibly explained
+ * by more real engine frames elapsing during a wait than expected under
+ * system/IPC load (real time, not virtual, so no `MAX_DT`-style clamp fully
+ * protects against a *burst* of otherwise-individually-normal frames), but
+ * not confirmed. Since `tick()` already recomputes its target fresh from
+ * *actual* current state every call (nothing here depends on remembering
+ * how the player got to its current facing), a surprise jump doesn't leave
+ * the bot stuck — it just wastes visible time before self-correcting. This
+ * doesn't try to prevent the underlying cause (unknown); it only (a) makes
+ * any recurrence immediately visible in the log instead of requiring
+ * re-instrumentation, and (b) the `ROTATION_ANOMALY_SLACK`-scaled bound
+ * gives a concrete number to tighten if/when the real mechanism is found.
+ */
+function checkRotationAnomaly(mineMemory, player, currentAngle) {
+  const pending = mineMemory?.pendingTurnCheck;
+  if (!pending) return;
+  mineMemory.pendingTurnCheck = null;
+  const actual = Math.abs(angleDelta(pending.beforeDir, currentAngle));
+  const expectedMax = ENGINE_ROT_SPEED * pending.rotSpeedMultiplier * (pending.turnBurstMs / 1000) * ROTATION_ANOMALY_SLACK;
+  if (actual > Math.max(expectedMax, 0.3)) {
+    console.log(
+      `[nav-warn] implausible rotation: turned ${actual.toFixed(2)}rad in one decision ` +
+        `(requested turnBurst=${pending.turnBurstMs.toFixed(0)}ms, expected <=${expectedMax.toFixed(2)}rad) ` +
+        `at (${player.x.toFixed(2)},${player.y.toFixed(2)}) — not a stuck state, self-corrects next tick, logged for diagnosis.`,
+    );
+  }
+}
 const TIGHT_ARRIVE_EPS = 0.05;
 const DOOR_OPEN_TICKS = 10;
 
@@ -117,16 +239,21 @@ const MINE_TARGET_GIVEUP_TICKS = 40;
 // forbids — the bot still fights everything down to this threshold first.
 const CRITICAL_HEALTH_FRACTION = 0.2;
 const MELEE_RANGE = 1.5;
-// Angle tolerance for swinging a melee weapon — deliberately much wider than
-// any profile's `fireAngleEps`, since a stab at something already adjacent
-// doesn't need ranged-shot precision. Gating melee behind the same tight
-// tolerance as ranged fire was a real bug: at melee range, small enemy
-// movements cause large angular swings relative to the player, so Pro's
-// very tight `fireAngleEps` (0.03) meant it could spend many ticks
-// re-aligning against an adjacent enemy without ever landing the free,
-// ammo-less melee hit — meanwhile the enemy bit for free the whole time
-// (observed: up to 100 cumulative enemyMelee damage in a single fight).
-const MELEE_ANGLE_EPS = 0.6;
+// Below this distance, stop advancing while turning to line up a ranged shot
+// — otherwise "keep approaching while aiming" (see the `aimTarget` branch in
+// `tick()`) could walk the bot straight into melee range mid-turn, which
+// defeats the point of choosing a ranged weapon in the first place.
+const MIN_RANGED_APPROACH_DISTANCE = 3;
+// Above this angular error, walking forward while still turning toward a
+// route waypoint would move the bot away from (or perpendicular to) where
+// it actually needs to go — e.g. a near-180° corridor doubling-back. Below
+// it, walking while turning is still net progress. Plain navigation
+// previously never moved at all until fully aligned (`TURN_MOVE_EPS`),
+// which — combined with how often BFS route waypoints require *some*
+// heading correction — made routine walking look stop-start/slow even
+// though `MOVE_SPEED` itself was untouched (user report: "movement seems a
+// bit slow, even on casual").
+const MAX_WALK_WHILE_TURNING_RAD = 1.0;
 const HAZARD_TILE = 2; // src/map/types.ts's Tile enum
 const KNIFE_WEAPON_INDEX = 2;
 const GDB_WEAPON_INDEX = 3;
@@ -135,7 +262,7 @@ const FRIDAY_HOTFIX_WEAPON_INDEX = 5;
 const TOOLCHAIN_WEAPON_INDEX = 6;
 const STARTING_WEAPONS = [0, 1, 2];
 
-const DIFFICULTIES = ["easy", "normal", "hard"];
+export const DIFFICULTIES = ["easy", "normal", "hard"];
 
 /**
  * Bot behavior profiles. `engageRadius` is deliberately identical across all
@@ -204,7 +331,7 @@ const DIFFICULTIES = ["easy", "normal", "hard"];
  * still preserves real skill differentiation (Pro tightest, Casual
  * loosest) without any tier being catastrophically bad.
  */
-const PROFILES = {
+export const PROFILES = {
   Casual: {
     fireAngleEps: 0.08,
     engageRadius: ENGAGE_RADIUS,
@@ -215,6 +342,12 @@ const PROFILES = {
     weaponPriority: [0, 1, GDB_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX, GHIDRA_WEAPON_INDEX],
     healthDetourThreshold: 0.75,
     proactiveMineDisarm: true,
+    // See `botRotSpeedMul`'s doc comment (engine.ts's `rotSpeedMultiplier`)
+    // — approximates a realistic *mouse* turn speed for this skill tier
+    // rather than the real Q/E keyboard rate, since mouse-look itself isn't
+    // available to a Playwright-automated browser. ~2x keyboard (~5.2
+    // rad/sec, ~300°/sec) — an unhurried, average mouse sensitivity.
+    rotSpeedMultiplier: 2,
   },
   Gamer: {
     fireAngleEps: 0.05,
@@ -225,6 +358,9 @@ const PROFILES = {
     weaponPriority: [GDB_WEAPON_INDEX, 0, 1, FRIDAY_HOTFIX_WEAPON_INDEX, GHIDRA_WEAPON_INDEX],
     healthDetourThreshold: 0.5,
     proactiveMineDisarm: true,
+    // ~3.5x keyboard (~9.1 rad/sec, ~520°/sec) — a comfortable, practiced
+    // enthusiast's mouse turn speed.
+    rotSpeedMultiplier: 3.5,
   },
   Pro: {
     fireAngleEps: 0.03,
@@ -237,6 +373,9 @@ const PROFILES = {
     weaponPriority: [GHIDRA_WEAPON_INDEX, GDB_WEAPON_INDEX, 0, 1, FRIDAY_HOTFIX_WEAPON_INDEX],
     healthDetourThreshold: 0.25,
     proactiveMineDisarm: true,
+    // ~5x keyboard (~13 rad/sec, ~745°/sec) — a fast, high-sensitivity
+    // competitive flick-turn, still within real human mouse-aim territory.
+    rotSpeedMultiplier: 5,
   },
 };
 
@@ -254,7 +393,11 @@ function angleDelta(current, target) {
   return Math.atan2(Math.sin(d), Math.cos(d));
 }
 
-async function main() {
+/** Phase 0: parse + generate + route-plan every campaign level in Node,
+ * before any browser launches. Exported so other scripts (e.g. the headed
+ * watch-session driver) can reuse the exact same level plans instead of
+ * duplicating this. */
+export async function planLevels() {
   console.log("Loading engine modules + planning routes in Node...");
   const { parseFile, extensionOf, MapGenerator } = await loadEngineModules();
   const generator = new MapGenerator();
@@ -281,7 +424,11 @@ async function main() {
     levelPlans.push({ filename, filePath: `${CAMPAIGN_NAME}/${filename}`, map, routePlain, routeCoverage, staticAnalysis });
   }
   console.log(`${levelPlans.length} levels planned.\n`);
+  return levelPlans;
+}
 
+async function main() {
+  const levelPlans = await planLevels();
   const profileNames = PROFILE_FILTER ? [PROFILE_FILTER] : Object.keys(PROFILES);
   const difficulties = DIFFICULTY_FILTER ? [DIFFICULTY_FILTER] : DIFFICULTIES;
 
@@ -336,7 +483,7 @@ async function runOneAttempt(browser, profile, difficulty, levelPlans) {
 
     if (!HEADED) await installVirtualClock(page); // headed mode runs on the real clock so a human can follow along
     await installDifficulty(page, difficulty);
-    await page.goto(`${DEV_SERVER_URL}/?testHooks=1`);
+    await page.goto(`${DEV_SERVER_URL}/?testHooks=1&botRotSpeedMul=${profile.rotSpeedMultiplier}`);
     await page.click("#tab-demo");
     await page.click("#launch-demo-campaign");
     await waitForTestHooks(page);
@@ -418,7 +565,7 @@ async function runCombo(browser, profileName, profile, difficulty, levelPlans) {
  * player, incomplete}[]`, one entry per level the run actually reached the
  * end of (won or died on); `incomplete: true` marks the death-level entry.
  */
-async function playRun(page, profile, levelPlans) {
+export async function playRun(page, profile, levelPlans) {
   const reachedExitForLevel = new Array(levelPlans.length).fill(false);
   const levelSnapshots = [];
   const weaponFirstOwnedAtLevel = {};
@@ -567,7 +714,18 @@ async function maybeDetourForLoot(page, map, visitedPickups, profile, mineMemory
   const player = await readState(page);
   if (player.state !== "playing") return { state: player.state };
 
-  const uncollected = map.ammoPickups.filter((p) => !visitedPickups.has(`${p.x},${p.y}`));
+  // Static, pre-placed pickups (known from Node-side map generation) need
+  // our own "already visited" bookkeeping — `map.ammoPickups` never shrinks.
+  // Dynamic kill-drop loot (an enemy's death drop) doesn't exist until
+  // runtime and isn't in `map.ammoPickups` at all — without querying it
+  // separately, the bot has no way to know a drop is there and will walk
+  // right past it (user report: "bot should also collect all loot in his
+  // viewable area, sometimes skips drops"). Queried live and re-checked
+  // every call rather than tracked in `visitedPickups`, since the engine's
+  // own `getDrops()` already naturally stops listing one once collected.
+  const staticUncollected = map.ammoPickups.filter((p) => !visitedPickups.has(`${p.x},${p.y}`));
+  const dynamicDrops = await page.evaluate(() => window.__codeensteinTestHooks.getDrops());
+  const uncollected = [...staticUncollected, ...dynamicDrops];
   if (uncollected.length === 0) return { state: "playing" };
 
   const urgent = player.healthFraction < profile.healthDetourThreshold;
@@ -583,7 +741,7 @@ async function maybeDetourForLoot(page, map, visitedPickups, profile, mineMemory
       best = p;
     }
   }
-  visitedPickups.add(`${best.x},${best.y}`);
+  if (staticUncollected.includes(best)) visitedPickups.add(`${best.x},${best.y}`);
 
   const path = bfsPath(map, { x: Math.floor(player.x), y: Math.floor(player.y) }, { x: Math.floor(best.x), y: Math.floor(best.y) });
   if (!path) return { state: "playing" };
@@ -791,6 +949,7 @@ function pickRangedWeapon(player, profile, enemies, threat) {
  * guaranteed to be a clean shot.
  */
 async function tick(page, player, enemies, mines, navTarget, profile, map, mineMemory) {
+  checkRotationAnomaly(mineMemory, player, Math.atan2(player.dirY, player.dirX));
   // Currently standing on a damaging ground tile (hazard, or a spike trap
   // that flipped active): don't stop to fight (or proactively disarm a
   // mine) — just keep marching toward wherever the bot was already headed,
@@ -811,18 +970,25 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
     const currentAngle = Math.atan2(player.dirY, player.dirX);
     const targetAngle = Math.atan2(navTarget.y - player.y, navTarget.x - player.x);
     const delta = angleDelta(currentAngle, targetAngle);
+    const dist = Math.hypot(navTarget.x - player.x, navTarget.y - player.y);
     const moveKeys = new Set();
+    let turnBurst;
     if (Math.abs(delta) > TURN_MOVE_EPS) {
       moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
+      turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, mineMemory, player, currentAngle);
     } else {
       // Sprint (2x MOVE_SPEED, see engine.ts's SPRINT_MULTIPLIER) while
       // actually crossing — halves time-in-hazard/on-an-active-spike for the
       // same HP cost per tile, worth it since standing still is never free
-      // here (only entering/leaving faster reduces total exposure).
+      // here (only entering/leaving faster reduces total exposure). Capped
+      // via `moveBurstMs` so a sprint step can't blow past `navTarget` and
+      // oscillate forever around it — see that helper's doc comment for the
+      // fatal stuck-in-hazard case this fixes.
       moveKeys.add("KeyW");
       moveKeys.add("ShiftLeft");
+      turnBurst = moveBurstMs(dist, true);
     }
-    return applyAction(page, moveKeys, false, null, false);
+    return applyAction(page, moveKeys, false, null, false, turnBurst);
   }
 
   const threat = pickThreat(enemies, player, profile);
@@ -841,13 +1007,15 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
     const awayAngle = Math.atan2(player.y - threat.y, player.x - threat.x);
     const delta = angleDelta(currentAngle, awayAngle);
     const moveKeys = new Set();
+    let turnBurst;
     if (Math.abs(delta) > TURN_MOVE_EPS) {
       moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
+      turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, mineMemory, player, currentAngle);
     } else {
       moveKeys.add("KeyW");
       moveKeys.add("ShiftLeft");
     }
-    return applyAction(page, moveKeys, false, null, false);
+    return applyAction(page, moveKeys, false, null, false, turnBurst);
   }
 
   // Proper mine handling: stop, back up out of blast range, shoot it, then
@@ -875,9 +1043,14 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
         const awayAngle = Math.atan2(player.y - dangerMine.y, player.x - dangerMine.x);
         const delta = angleDelta(currentAngle, awayAngle);
         const moveKeys = new Set();
-        if (Math.abs(delta) > TURN_MOVE_EPS) moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
-        else moveKeys.add("KeyW");
-        return applyAction(page, moveKeys, false, null, false);
+        let turnBurst;
+        if (Math.abs(delta) > TURN_MOVE_EPS) {
+          moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
+          turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, mineMemory, player, currentAngle);
+        } else {
+          moveKeys.add("KeyW");
+        }
+        return applyAction(page, moveKeys, false, null, false, turnBurst);
       }
       // else: gave up retreating — fall through to normal navigation below
       // rather than freezing here (this mine is now in `abandoned`, so
@@ -899,8 +1072,16 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
 
   const currentAngle = Math.atan2(player.dirY, player.dirX);
   const moveKeys = new Set();
+  let turnBurst;
   let fire = false;
   let weaponSwitch = null;
+  if (DEBUG_NAV) {
+    console.log(
+      `[nav] pos=(${player.x.toFixed(2)},${player.y.toFixed(2)}) dir=${currentAngle.toFixed(2)} hpFrac=${player.healthFraction.toFixed(2)} ` +
+        `threat=${threat ? `(${threat.x.toFixed(1)},${threat.y.toFixed(1)},dist=${threat.dist.toFixed(1)})` : "none"} ` +
+        `mineTarget=${mineTarget ? `(${mineTarget.x},${mineTarget.y})` : "none"} navTarget=${navTarget ? `(${navTarget.x.toFixed(2)},${navTarget.y.toFixed(2)})` : "none"}`,
+    );
+  }
   let useMelee = false;
 
   if (aimTarget) {
@@ -915,40 +1096,112 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
     // melee opportunity (see the module doc comment's note on why
     // `meleeRush` was removed) — enemies close distance on their own via
     // chase AI, so this only ever fires opportunistically. Checked *before*
-    // (and with a much looser tolerance than) the ranged `fireAngleEps`
-    // gate below — see `MELEE_ANGLE_EPS`'s doc comment for why sharing the
-    // ranged tolerance was a real bug.
+    // the ranged `fireAngleEps` gate below. Gated on `player.meleeWouldHit`
+    // (the engine's own crosshair-column hit test — see its doc comment)
+    // rather than a fixed angle tolerance: a melee swing only lands within
+    // the target's on-screen width, which shrinks with distance (even
+    // inside melee range) and with an Edge Case's smaller sprite scale, so
+    // no single static epsilon is ever correct — a fixed 0.6 rad tolerance
+    // was found to fire hundreds of whiffed swings against one Edge Case
+    // near the far edge of melee range before giving up (confirmed via
+    // trace: `aliveAggroed` unchanged and `hp` unchanged across 400+
+    // consecutive `useMelee` ticks). `delta`'s sign still picks which way to
+    // turn — only the *decision to actually swing* changed.
     if (threat && threat.dist <= MELEE_RANGE) {
-      if (Math.abs(delta) > MELEE_ANGLE_EPS) {
+      if (!player.meleeWouldHit) {
         moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
+        // `delta` is the exact angle to the target, so turning by no more
+        // than `delta` lands as close to perfectly aligned as possible —
+        // always within whatever the actual (distance/size-dependent, not
+        // known here) hit window turns out to be, without ever overshooting
+        // past it. See `turnBurstMs`'s doc comment for why a fixed-duration
+        // key-hold isn't safe once turning is fast enough to blow past a
+        // narrow window in one step.
+        turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, mineMemory, player, currentAngle);
       } else {
         fire = true;
         useMelee = true;
       }
-    } else if (Math.abs(delta) > profile.fireAngleEps) {
-      moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
     } else {
-      fire = true;
-      weaponSwitch = pickRangedWeapon(player, profile, enemies, threat);
+      // Don't fire at an aggroed-but-currently-occluded threat: aggro is
+      // sticky (an enemy that was once visible stays aggroed even after
+      // ducking behind a corner or being chased around one), so an aligned
+      // angle doesn't guarantee a clear shot. Without this, the bot would
+      // "fire" straight into the wall corner every tick it happened to be
+      // angle-aligned with an occluded enemy, burning ammo for zero effect
+      // (the engine's own `fire()` already silently no-ops a shot whose
+      // column projects onto a wall before the target — see
+      // `findTargetInProjections`'s z-buffer check — so this wasted ammo
+      // was never even landing). Mirrors the mine-targeting fix
+      // (`findDisarmableMine`'s `hasLineOfSight` requirement) for the same
+      // reason.
+      const hasLos = !threat || !map || hasLineOfSight(map, player.x, player.y, threat.x, threat.y);
+      if (Math.abs(delta) > profile.fireAngleEps || !hasLos) {
+        if (Math.abs(delta) > profile.fireAngleEps) {
+          moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
+          turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, mineMemory, player, currentAngle);
+        }
+        // Keep closing distance while lining up a ranged shot (or trying to
+        // clear a blocked corner) instead of planting both feet the instant
+        // a threat is spotted — a real player doesn't freeze completely
+        // just because their aim/sightline isn't perfect yet. Threat-only
+        // (not while aiming at a mine, where closing distance risks
+        // entering the blast radius) and only while still comfortably
+        // outside melee range, so this can't walk the bot into melee
+        // mid-turn. Also don't step onto a hazard/active-spike tile just to
+        // chase a shot — the top-of-function hazard override only reacts
+        // *after* already standing on one; this is what stops it from
+        // walking onto one in the first place (found via trace: a run died
+        // to 108.9 hazard damage after this movement addition, having
+        // walked straight into acid while turning toward a distant enemy).
+        if (threat && threat.dist > MIN_RANGED_APPROACH_DISTANCE && map) {
+          const aheadX = player.x + player.dirX * 0.6;
+          const aheadY = player.y + player.dirY * 0.6;
+          if (!isHazardAt(map, aheadX, aheadY) && !activeSpikeAt(map, aheadX, aheadY, player.levelTime)) {
+            moveKeys.add("KeyW");
+          }
+        }
+      } else {
+        fire = true;
+        weaponSwitch = pickRangedWeapon(player, profile, enemies, threat);
+      }
     }
   } else if (navTarget) {
     const targetAngle = Math.atan2(navTarget.y - player.y, navTarget.x - player.x);
     const delta = angleDelta(currentAngle, targetAngle);
+    const aheadX = player.x + player.dirX * 0.6;
+    const aheadY = player.y + player.dirY * 0.6;
+    const blockedAhead = map && activeSpikeAt(map, aheadX, aheadY, player.levelTime);
     if (Math.abs(delta) > TURN_MOVE_EPS) {
       moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
-    } else {
+      turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, mineMemory, player, currentAngle);
+      // Walk while still correcting heading, same reasoning as the ranged-
+      // aim branch above — don't stop-start at every waypoint transition
+      // just because it needs a moderate heading correction first. Capped
+      // to angular errors under `MAX_WALK_WHILE_TURNING_RAD` so a sharp
+      // corridor doubling-back doesn't send the bot walking the wrong way
+      // while it turns around.
+      if (Math.abs(delta) < MAX_WALK_WHILE_TURNING_RAD && !blockedAhead) {
+        moveKeys.add("KeyW");
+      }
+    } else if (!blockedAhead) {
       // Don't step onto an active spike trap — wait out its cycle instead
       // (see `activeSpikeAt`). Opposite instinct from hazard-crossing above:
       // spikes cycle safe/active and are harmless in their safe half, so
       // waiting a moment costs nothing, versus hazard which is never safe to
       // linger in and is worth rushing through instead.
-      const aheadX = player.x + player.dirX * 0.6;
-      const aheadY = player.y + player.dirY * 0.6;
-      if (!map || !activeSpikeAt(map, aheadX, aheadY, player.levelTime)) moveKeys.add("KeyW");
+      moveKeys.add("KeyW");
+      // Capped so a normal-speed step can't overshoot a close waypoint
+      // either — see `moveBurstMs`'s doc comment (0.16 tiles/step at
+      // MOVE_SPEED is already larger than `ARRIVE_EPS`=0.15).
+      turnBurst = moveBurstMs(Math.hypot(navTarget.x - player.x, navTarget.y - player.y), false);
     }
   }
 
-  return applyAction(page, moveKeys, fire, weaponSwitch, useMelee);
+  if (DEBUG_NAV) {
+    console.log(`      -> moveKeys=[${[...moveKeys].join(",")}] fire=${fire} useMelee=${useMelee} weaponSwitch=${weaponSwitch} turnBurst=${turnBurst?.toFixed(0)}`);
+  }
+  return applyAction(page, moveKeys, fire, weaponSwitch, useMelee, turnBurst);
 }
 
 async function driveToward(page, point, eps, maxTicks, profile, map, mineMemory) {
@@ -1015,7 +1268,8 @@ async function readState(page) {
  * virtual-clock pump (not installed then — see `installVirtualClock`'s call
  * site) and instead waits `WATCH_STEP_MS` of *real* time so a human watching
  * the visible browser window can actually follow the action. */
-async function applyAction(page, desiredMoveKeys, fire, weaponSwitchIndex, useMelee) {
+async function applyAction(page, desiredMoveKeys, fire, weaponSwitchIndex, useMelee, stepMsOverride) {
+  const stepMs = stepMsOverride ?? (HEADED ? WATCH_STEP_MS : VIRTUAL_STEP_MS);
   const dispatched = await page.evaluate(
     ({ desiredKeys, fire, weaponSwitchIndex, useMelee, stepMs, headed }) => {
       const canvas = document.querySelector("canvas");
@@ -1039,21 +1293,21 @@ async function applyAction(page, desiredMoveKeys, fire, weaponSwitchIndex, useMe
       window.__pumpVirtualTime(stepMs, stepMs);
       return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines() };
     },
-    { desiredKeys: [...desiredMoveKeys], fire, weaponSwitchIndex, useMelee, stepMs: VIRTUAL_STEP_MS, headed: HEADED },
+    { desiredKeys: [...desiredMoveKeys], fire, weaponSwitchIndex, useMelee, stepMs, headed: HEADED },
   );
   if (!HEADED) return dispatched;
-  await page.waitForTimeout(WATCH_STEP_MS);
+  await page.waitForTimeout(stepMs);
   return page.evaluate(() => {
     const hooks = window.__codeensteinTestHooks;
     return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines() };
   });
 }
 
-async function waitForTestHooks(page) {
+export async function waitForTestHooks(page) {
   await page.waitForFunction(() => window.__codeensteinTestHooks !== undefined, undefined, { timeout: 15000, polling: 100 });
 }
 
-async function dismissOverlay(page) {
+export async function dismissOverlay(page) {
   if (HEADED) {
     await page.waitForTimeout(1500);
     await page.evaluate(() => window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space" })));
@@ -1067,7 +1321,7 @@ async function dismissOverlay(page) {
   });
 }
 
-async function installDifficulty(page, difficulty) {
+export async function installDifficulty(page, difficulty) {
   await page.addInitScript((d) => localStorage.setItem("codeenstein-difficulty", d), difficulty);
 }
 
@@ -1396,7 +1650,12 @@ function computeCrossDifficultyFlags(profileResult) {
   return flags;
 }
 
-main().catch((err) => {
-  console.error("run-balancing-telemetry crashed:", err);
-  process.exit(1);
-});
+// Guarded so other scripts (e.g. watch-bot-sessions.mjs) can import this
+// module's exports (PROFILES, playRun, planLevels, ...) without triggering
+// the full 9-combo run as an import side effect.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    console.error("run-balancing-telemetry crashed:", err);
+    process.exit(1);
+  });
+}
