@@ -63,6 +63,16 @@ const VERBOSE = process.env.CODEENSTEIN_TELEMETRY_VERBOSE === "1";
 // whatever the next "why is the bot doing that" question turns out to be).
 // Off by default, same reasoning as VERBOSE above.
 const DEBUG_NAV = process.env.CODEENSTEIN_TELEMETRY_DEBUG_NAV === "1";
+// Permanent, like DEBUG_NAV — an automated, repeatable substitute for "watch
+// the bot play and eyeball whether anything looks erratic" (which previously
+// required a human screen recording + manual ffmpeg contact-sheet review
+// every single time a fix needed re-verifying). When on, `tick()` appends a
+// lightweight per-decision record to `mineMemory.trace` (reusing the
+// already-per-level-scoped `mineMemory` object as the carrier, rather than
+// threading a new parameter through every call site) and `playRun` runs
+// `detectAnomalies` against it after each level, logging any findings. See
+// `detectAnomalies`'s doc comment for exactly what it catches.
+const ANOMALY_SCAN = process.env.CODEENSTEIN_TELEMETRY_ANOMALY_SCAN === "1";
 // Opens a real, visible browser window and runs at a watchable real-time
 // pace instead of the virtual-clock fast-forward, so a human can actually
 // see what the bot is doing tick-by-tick — "a param to view the actual
@@ -199,6 +209,110 @@ function checkRotationAnomaly(mineMemory, player, currentAngle) {
     );
   }
 }
+/** No-op unless `ANOMALY_SCAN` is on. Appends one lightweight per-decision
+ * record to `mineMemory.trace` — reusing the already-per-level-scoped
+ * `mineMemory` object as the carrier (it's threaded through every call site
+ * that reaches `tick()` already) rather than adding a new parameter
+ * everywhere. `playRun` resets `.trace = []` per level and runs
+ * `detectAnomalies` against it once the level's legs finish. */
+function recordTrace(mineMemory, entry) {
+  if (!ANOMALY_SCAN || !mineMemory?.trace) return;
+  mineMemory.trace.push(entry);
+}
+
+// Position-unchanged-for-this-many-consecutive-ticks threshold before
+// `detectAnomalies` calls it a "stall" rather than just an unlucky couple of
+// ticks — roughly matches the shortest genuinely-reproduced freeze found by
+// hand this session (34 ticks, legitimate spike-cycle wait) minus margin, so
+// real bugs (which ran 95-155 ticks) trip it clearly while a normal brief
+// pause doesn't.
+const STALL_TICKS_THRESHOLD = 20;
+// Any run of >=2 consecutive same-position ticks where health is also
+// dropping is worth flagging immediately, regardless of the stall
+// threshold above — health draining while stationary is never expected
+// behavior (see milestone 14's hazard-escape-freeze bug), so this stays far
+// more sensitive than the generic stall detector.
+const HP_DRAIN_FROZEN_TICKS_THRESHOLD = 2;
+const TRACE_POS_EPS = 0.05;
+
+/**
+ * Scans one level's worth of per-decision trace records (see `recordTrace`)
+ * for the two "erratic-looking" patterns actually found and fixed this
+ * session, so future regressions (or new instances of the same underlying
+ * class of bug) surface automatically from a script run instead of requiring
+ * a human to watch/screen-record gameplay and notice something looks wrong:
+ *
+ * - `stall`: position hasn't moved for `STALL_TICKS_THRESHOLD`+ consecutive
+ *   ticks. Excludes ticks explicitly marked `waitingOnSpike` (legitimately
+ *   waiting out an active spike-trap's safe/active cycle — confirmed benign
+ *   via milestone 13's re-verification) — everything else stationary this
+ *   long, threat or no threat, is exactly the shape of every "endless
+ *   useless turning/freeze" bug found so far.
+ * - `healthDrainFrozen`: position unchanged while health is *also* dropping,
+ *   for as few as 2 consecutive ticks — the hazard-escape-freeze bug
+ *   (milestone 14) specifically.
+ *
+ * Returns `{type, startTick, endTick, ticks, detail}[]`.
+ */
+function detectAnomalies(trace) {
+  const findings = [];
+  if (!trace || trace.length === 0) return findings;
+  let runStart = 0;
+  // Compared against the *anchor* (the run's own starting position), not the
+  // immediately preceding tick — comparing only to the previous tick let a
+  // slow but genuine crawl (each individual step under `TRACE_POS_EPS`, e.g.
+  // a heavily-capped `turnBurst` producing tiny per-tick displacement) get
+  // misreported as one giant frozen stall, since every adjacent pair looked
+  // "unchanged" even though the position drifted substantially over the
+  // whole run. Anchoring to the run's start correctly lets that drift
+  // eventually exceed the threshold and close the run out as real movement.
+  let anchor = trace[0];
+  for (let i = 1; i <= trace.length; i++) {
+    const cur = i < trace.length ? trace[i] : null;
+    const samePos = cur && Math.abs(cur.x - anchor.x) < TRACE_POS_EPS && Math.abs(cur.y - anchor.y) < TRACE_POS_EPS;
+    if (!samePos) {
+      const runEnd = i; // exclusive
+      const runLen = runEnd - runStart;
+      if (runLen >= 2) {
+        const first = trace[runStart];
+        const last = trace[runEnd - 1];
+        const allWaitingOnSpike = trace.slice(runStart, runEnd).every((r) => r.waitingOnSpike);
+        if (runLen >= STALL_TICKS_THRESHOLD && !allWaitingOnSpike) {
+          findings.push({
+            type: "stall",
+            startTick: runStart,
+            endTick: runEnd - 1,
+            ticks: runLen,
+            detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)} threatDist=${first.threatDist ?? "none"} mineDist=${first.mineDist ?? "none"}`,
+          });
+        }
+        if (runLen >= HP_DRAIN_FROZEN_TICKS_THRESHOLD && last.hpFrac < first.hpFrac - 0.001) {
+          findings.push({
+            type: "healthDrainFrozen",
+            startTick: runStart,
+            endTick: runEnd - 1,
+            ticks: runLen,
+            detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)}`,
+          });
+        }
+      }
+      runStart = i;
+      anchor = cur;
+    }
+  }
+  return findings;
+}
+
+/** No-op unless `ANOMALY_SCAN` is on. Runs `detectAnomalies` against this
+ * level's accumulated trace and logs any findings, tagged with `label`
+ * (typically `${profileName}/${difficulty}`) and the 1-based level number. */
+function reportAnomalies(mineMemory, label, levelIndex) {
+  if (!ANOMALY_SCAN || !mineMemory?.trace) return;
+  for (const f of detectAnomalies(mineMemory.trace)) {
+    console.log(`  [anomaly] ${label} level ${levelIndex + 1}: ${f.type} (${f.ticks} ticks, decisions ${f.startTick}-${f.endTick}) ${f.detail}`);
+  }
+}
+
 const TIGHT_ARRIVE_EPS = 0.05;
 const DOOR_OPEN_TICKS = 10;
 
@@ -239,6 +353,25 @@ const MINE_TARGET_GIVEUP_TICKS = 40;
 // forbids — the bot still fights everything down to this threshold first.
 const CRITICAL_HEALTH_FRACTION = 0.2;
 const MELEE_RANGE = 1.5;
+// Combat can genuinely deadlock against wall geometry: an aggroed threat
+// close enough to attempt melee/ranged combat on, but positioned diagonally
+// across a solid wall corner from the player — turning further doesn't help
+// (the angle is already essentially correct) and walking forward doesn't
+// either (the player is already pressed against the wall), so
+// `meleeWouldHit`/a clear ranged shot never resolves and the bot stands
+// there indefinitely. Found via the automated anomaly scan (`npm run
+// balancing:scan`): 591 consecutive frozen ticks (position, angle, and
+// health all unchanged) fighting a threat at dist=0.7 always occluded from
+// the exact crosshair column. Once a threat engagement has produced no
+// actual attack (`fire`) for this many consecutive ticks with position
+// frozen, nudge sideways (strafe) instead of just re-aiming in place —
+// still actively fighting (not falling back to navigation, which the
+// module doc comment's "combat always preempts navigation" rule forbids),
+// just trying a different position along the wall to clear the occlusion.
+const COMBAT_STALL_TICKS_THRESHOLD = 40;
+// How often to flip strafe direction while still stalled — guards against
+// picking the one direction that happens to lead further into a dead end.
+const COMBAT_STALL_STRAFE_FLIP_TICKS = 20;
 // The engine's own enemy AI only holds an enemy still to bite once within its
 // (much smaller) ATTACK_RADIUS=0.5 — between that and MELEE_RANGE, an aggroed
 // enemy is still actively homing in (path-waypoint chase, which rounds
@@ -487,7 +620,7 @@ async function main() {
  * mostly I/O-bound (`page.evaluate()` round-trips against a virtual clock,
  * no real rendering work at real speed), so running several at once scales
  * well without needing real parallel CPU work. */
-async function runOneAttempt(browser, profile, difficulty, levelPlans) {
+async function runOneAttempt(browser, profileName, profile, difficulty, levelPlans) {
   let context;
   try {
     context = await browser.newContext();
@@ -502,7 +635,7 @@ async function runOneAttempt(browser, profile, difficulty, levelPlans) {
     await waitForTestHooks(page);
     await dismissOverlay(page);
 
-    const run = await playRun(page, profile, levelPlans);
+    const run = await playRun(page, profile, levelPlans, `${profileName}/${difficulty}`);
     await context.close();
     return run;
   } catch (err) {
@@ -535,7 +668,7 @@ async function runCombo(browser, profileName, profile, difficulty, levelPlans) {
   while (qualifyingRuns.length < REQUIRED_QUALIFYING_RUNS && attempts < ATTEMPT_CAP) {
     const batchSize = Math.min(concurrency, ATTEMPT_CAP - attempts);
     const batch = await Promise.all(
-      Array.from({ length: batchSize }, () => runOneAttempt(browser, profile, difficulty, levelPlans)),
+      Array.from({ length: batchSize }, () => runOneAttempt(browser, profileName, profile, difficulty, levelPlans)),
     );
     const crashedInBatch = batch.filter((run) => run.reason?.startsWith("attemptCrashed")).length;
     // If literally every attempt in a batch crashed, the shared browser
@@ -578,7 +711,7 @@ async function runCombo(browser, profileName, profile, difficulty, levelPlans) {
  * player, incomplete}[]`, one entry per level the run actually reached the
  * end of (won or died on); `incomplete: true` marks the death-level entry.
  */
-export async function playRun(page, profile, levelPlans) {
+export async function playRun(page, profile, levelPlans, label = "") {
   const reachedExitForLevel = new Array(levelPlans.length).fill(false);
   const levelSnapshots = [];
   const weaponFirstOwnedAtLevel = {};
@@ -604,7 +737,7 @@ export async function playRun(page, profile, levelPlans) {
     // real fix for "stop trying" — once give-up fires for a mine in either
     // mode, it's blacklisted from both for the rest of the level, so this
     // can't cycle no matter how the two modes interleave.
-    const mineMemory = { retreatKey: null, retreatTicks: 0, shootKey: null, shootTicks: 0, abandoned: new Set() };
+    const mineMemory = { retreatKey: null, retreatTicks: 0, shootKey: null, shootTicks: 0, abandoned: new Set(), trace: ANOMALY_SCAN ? [] : undefined };
     const { map, routePlain, routeCoverage } = levelPlans[i];
     const route = profile.coverageMode ? routeCoverage : routePlain;
 
@@ -620,9 +753,11 @@ export async function playRun(page, profile, levelPlans) {
       const deathResult = await pullLevelResult(page);
       levelSnapshots.push({ levelIndex: i, ...deathResult, incomplete: true });
       if (VERBOSE) logDeathDetail(i, deathResult);
+      reportAnomalies(mineMemory, label, i);
       return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: i, reason: "died" };
     }
     if (legOutcome.state === "stuck") {
+      reportAnomalies(mineMemory, label, i);
       return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: i, reason: "stuck" };
     }
     if (legOutcome.state === "playing") {
@@ -632,13 +767,16 @@ export async function playRun(page, profile, levelPlans) {
         const deathResult = await pullLevelResult(page);
         levelSnapshots.push({ levelIndex: i, ...deathResult, incomplete: true });
         if (VERBOSE) logDeathDetail(i, deathResult);
+        reportAnomalies(mineMemory, label, i);
         return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: i, reason: "died" };
       }
       if (pushed.state !== "won") {
+        reportAnomalies(mineMemory, label, i);
         return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: i, reason: "stuck" };
       }
     }
     // else legOutcome.state === "won" already — fall through.
+    reportAnomalies(mineMemory, label, i);
 
     const result = await pullLevelResult(page);
     levelSnapshots.push({ levelIndex: i, ...result, incomplete: false });
@@ -758,8 +896,11 @@ async function maybeDetourForLoot(page, map, visitedPickups, profile, mineMemory
 
   const path = bfsPath(map, { x: Math.floor(player.x), y: Math.floor(player.y) }, { x: Math.floor(best.x), y: Math.floor(best.y) });
   if (!path) return { state: "playing" };
+  if (process.env.CODEENSTEIN_WPDEBUG) console.log(`[wpdebug] loot-detour from (${player.x.toFixed(1)},${player.y.toFixed(1)}) to best=(${best.x},${best.y}) kind=${best.kind} pathLen=${path.length}`);
   for (const wp of pathToWaypoints(path)) {
+    if (process.env.CODEENSTEIN_WPDEBUG) console.log(`[wpdebug]   loot wp=(${wp.x},${wp.y})`);
     const result = await driveToward(page, wp, ARRIVE_EPS, MAX_TICKS_PER_WAYPOINT, profile, map, mineMemory);
+    if (process.env.CODEENSTEIN_WPDEBUG) console.log(`[wpdebug]   -> result=${JSON.stringify(result)}`);
     if (result.state !== "playing") return result;
   }
   return { state: "playing" };
@@ -772,7 +913,9 @@ async function driveLegs(page, legs, profile, map, visitedPickups, mineMemory) {
 
     if (leg.kind === "walk") {
       for (const wp of leg.waypoints) {
+        if (process.env.CODEENSTEIN_WPDEBUG) console.log(`[wpdebug] leg-walk wp=(${wp.x},${wp.y})`);
         const result = await driveToward(page, wp, ARRIVE_EPS, MAX_TICKS_PER_WAYPOINT, profile, map, mineMemory);
+        if (process.env.CODEENSTEIN_WPDEBUG) console.log(`[wpdebug]   -> result=${JSON.stringify(result)}`);
         if (result.state !== "playing") return result;
         if (result.reason === "stuck") return { state: "stuck" };
       }
@@ -1016,23 +1159,33 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
     const targetAngle = Math.atan2(navTarget.y - player.y, navTarget.x - player.x);
     const delta = angleDelta(currentAngle, targetAngle);
     const dist = Math.hypot(navTarget.x - player.x, navTarget.y - player.y);
-    const moveKeys = new Set();
+    // Sprint (2x MOVE_SPEED, see engine.ts's SPRINT_MULTIPLIER) unconditionally
+    // while standing on hazard/an active spike — *including* while still
+    // turning to face `navTarget`, unlike the plain-navigation branch (which
+    // caps walk-while-turning to avoid a wrong-direction detour, a tradeoff
+    // that only makes sense without any urgency). Arriving here at a large
+    // misalignment is routine, not rare: the mine-retreat and critical-health
+    // branches back away in whatever direction points away from the danger,
+    // with no awareness of what's underfoot, so landing on hazard already
+    // facing far from `navTarget` happens often. Freezing to turn in place
+    // first (the previous behavior) meant taking full, uninterrupted tick
+    // damage for as long as the turn took — confirmed via screen recording:
+    // health draining 100%->85% over several seconds with the camera static,
+    // only slowly rotating, after a mine-retreat backed the bot onto acid.
+    // Any movement reduces total exposure versus none, even imperfectly
+    // aimed, since standing still is never free here.
+    const moveKeys = new Set(["KeyW", "ShiftLeft"]);
     let turnBurst;
     if (Math.abs(delta) > TURN_MOVE_EPS) {
       moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
       turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, mineMemory, player, currentAngle);
     } else {
-      // Sprint (2x MOVE_SPEED, see engine.ts's SPRINT_MULTIPLIER) while
-      // actually crossing — halves time-in-hazard/on-an-active-spike for the
-      // same HP cost per tile, worth it since standing still is never free
-      // here (only entering/leaving faster reduces total exposure). Capped
-      // via `moveBurstMs` so a sprint step can't blow past `navTarget` and
-      // oscillate forever around it — see that helper's doc comment for the
-      // fatal stuck-in-hazard case this fixes.
-      moveKeys.add("KeyW");
-      moveKeys.add("ShiftLeft");
+      // Capped via `moveBurstMs` so a sprint step can't blow past `navTarget`
+      // and oscillate forever around it — see that helper's doc comment for
+      // the fatal stuck-in-hazard case this fixes.
       turnBurst = moveBurstMs(dist, true);
     }
+    recordTrace(mineMemory, { branch: "hazard", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: null, mineDist: null, waitingOnSpike: false });
     return applyAction(page, moveKeys, false, null, false, turnBurst);
   }
 
@@ -1051,15 +1204,32 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
     const currentAngle = Math.atan2(player.dirY, player.dirX);
     const awayAngle = Math.atan2(player.y - threat.y, player.x - threat.x);
     const delta = angleDelta(currentAngle, awayAngle);
-    const moveKeys = new Set();
-    let turnBurst;
+    // Sprint away unconditionally, *including* while still turning to face
+    // directly away — the same "turn-only, no movement" defect as the
+    // hazard-escape branch (see its doc comment) was found here too via the
+    // automated anomaly scan: multiple runs stood frozen turning in place
+    // for 60-100+ consecutive ticks at critical health, taking free hits the
+    // whole time, and dying (hpFrac reaching 0.00) without ever actually
+    // retreating a single tile. An imperfectly-aimed retreat step is still
+    // strictly better than standing still at the edge of death.
+    const moveKeys = new Set(["KeyW", "ShiftLeft"]);
     if (Math.abs(delta) > TURN_MOVE_EPS) {
       moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
-      turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, mineMemory, player, currentAngle);
-    } else {
-      moveKeys.add("KeyW");
-      moveKeys.add("ShiftLeft");
     }
+    // Deliberately *not* `turnBurstMs` here, unlike combat-aiming branches —
+    // that helper caps duration to protect a narrow hit-window from
+    // overshoot, but fleeing has no such window: "roughly away" is exactly
+    // as good as "precisely away". Using it anyway meant the same
+    // near-zero-duration trap as the hazard-escape/melee-corner bugs: a
+    // small residual "face away" angle produced a ~1ms turnBurst, which then
+    // also throttled the always-added KeyW/ShiftLeft to an imperceptible
+    // fraction of a tile — confirmed via the automated scan still finding
+    // 90+ tick critical-health freezes (hpFrac draining toward 0) even after
+    // the fix above. A full sprint step every tick, overshooting the exact
+    // "away" angle if needed, still converges toward genuinely-away — it
+    // just doesn't stall doing it.
+    const turnBurst = moveBurstMs(10, true);
+    recordTrace(mineMemory, { branch: "criticalHealth", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: threat.dist, mineDist: null, waitingOnSpike: false });
     return applyAction(page, moveKeys, false, null, false, turnBurst);
   }
 
@@ -1095,6 +1265,7 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
         } else {
           moveKeys.add("KeyW");
         }
+        recordTrace(mineMemory, { branch: "mineRetreat", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: null, mineDist: dangerMine.dist, waitingOnSpike: false });
         return applyAction(page, moveKeys, false, null, false, turnBurst);
       }
       // else: gave up retreating — fall through to normal navigation below
@@ -1114,6 +1285,15 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
     }
   }
   const aimTarget = threat ?? mineTarget;
+  // Read the stall counter as last tick left it (updated at the bottom of
+  // this function, after `fire` is known) — see `COMBAT_STALL_TICKS_THRESHOLD`'s
+  // doc comment.
+  const stallStrafeKey =
+    threat && mineMemory && (mineMemory.combatStallTicks ?? 0) >= COMBAT_STALL_TICKS_THRESHOLD
+      ? Math.floor(mineMemory.combatStallTicks / COMBAT_STALL_STRAFE_FLIP_TICKS) % 2 === 0
+        ? "KeyD"
+        : "KeyA"
+      : null;
 
   const currentAngle = Math.atan2(player.dirY, player.dirX);
   const moveKeys = new Set();
@@ -1129,6 +1309,7 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
     );
   }
   let useMelee = false;
+  let waitingOnSpike = false;
 
   if (aimTarget) {
     const targetAngle = Math.atan2(aimTarget.y - player.y, aimTarget.x - player.x);
@@ -1181,6 +1362,26 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
           if (!isHazardAt(map, aheadX, aheadY) && !activeSpikeAt(map, aheadX, aheadY, player.levelTime)) {
             moveKeys.add("KeyW");
           }
+        }
+        // See `COMBAT_STALL_TICKS_THRESHOLD`'s doc comment — turning and
+        // walking forward both do nothing once pinned against a wall
+        // corner, so nudge sideways instead once that's been going on long
+        // enough to be sure it's not just an ordinary in-progress approach.
+        if (stallStrafeKey) {
+          moveKeys.add(stallStrafeKey);
+          // `turnBurst` above was sized for a near-zero residual turn angle
+          // (as little as 1ms) — reusing that same tiny duration as the
+          // held-key time for the strafe key added here would move the
+          // player an imperceptible fraction of a tile, defeating the whole
+          // point. Found via the automated anomaly scan: the strafe key was
+          // confirmed present in the actual action log every tick, yet
+          // position never moved at all, because it was only ever held for
+          // ~1-2ms. Force a full step's worth of hold time whenever actually
+          // trying to strafe out of a stall — the fine turn precision this
+          // tick would normally protect doesn't matter once the bot has
+          // already been stuck in place for `COMBAT_STALL_TICKS_THRESHOLD`
+          // ticks.
+          turnBurst = Math.max(turnBurst ?? 0, moveBurstMs(10, false));
         }
       } else {
         fire = true;
@@ -1245,6 +1446,13 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
             moveKeys.add("KeyW");
           }
         }
+        // See `COMBAT_STALL_TICKS_THRESHOLD`'s doc comment and the matching
+        // melee-branch comment above for why `turnBurst` also needs bumping
+        // here, not just adding the key.
+        if (stallStrafeKey) {
+          moveKeys.add(stallStrafeKey);
+          turnBurst = Math.max(turnBurst ?? 0, moveBurstMs(10, false));
+        }
       } else {
         fire = true;
         weaponSwitch = pickRangedWeapon(player, profile, enemies, threat);
@@ -1256,6 +1464,7 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
     const aheadX = player.x + player.dirX * 0.6;
     const aheadY = player.y + player.dirY * 0.6;
     const blockedAhead = map && activeSpikeAt(map, aheadX, aheadY, player.levelTime);
+    waitingOnSpike = Boolean(blockedAhead);
     if (Math.abs(delta) > TURN_MOVE_EPS) {
       moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
       turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, mineMemory, player, currentAngle);
@@ -1285,6 +1494,32 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
   if (DEBUG_NAV) {
     console.log(`      -> moveKeys=[${[...moveKeys].join(",")}] fire=${fire} useMelee=${useMelee} weaponSwitch=${weaponSwitch} turnBurst=${turnBurst?.toFixed(0)}`);
   }
+  // Update the stall counter `stallStrafeKey` read at the top of this
+  // function — a real attack attempt (`fire`) counts as progress even if
+  // position doesn't change (e.g. repeatedly landing hits on a stationary
+  // enemy is fine to stay still for), so only an unchanging position with
+  // no attack executed counts toward the stall.
+  if (threat && mineMemory) {
+    const posKey = `${player.x.toFixed(2)},${player.y.toFixed(2)}`;
+    if (!fire && mineMemory.combatStallPos === posKey) {
+      mineMemory.combatStallTicks = (mineMemory.combatStallTicks ?? 0) + 1;
+    } else {
+      mineMemory.combatStallPos = posKey;
+      mineMemory.combatStallTicks = 0;
+    }
+  } else if (mineMemory) {
+    mineMemory.combatStallTicks = 0;
+    mineMemory.combatStallPos = null;
+  }
+  recordTrace(mineMemory, {
+    branch: "main",
+    x: player.x,
+    y: player.y,
+    hpFrac: player.healthFraction,
+    threatDist: threat?.dist ?? null,
+    mineDist: mineTarget?.dist ?? null,
+    waitingOnSpike,
+  });
   return applyAction(page, moveKeys, fire, weaponSwitch, useMelee, turnBurst);
 }
 

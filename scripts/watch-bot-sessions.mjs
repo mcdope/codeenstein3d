@@ -56,7 +56,7 @@ async function playOneSession(browser, profileName, levelPlans) {
   await waitForTestHooks(page);
   await dismissOverlay(page);
 
-  const run = await playRun(page, PROFILES[profileName], levelPlans);
+  const run = await playRun(page, PROFILES[profileName], levelPlans, `${profileName}/${DIFFICULTY}`);
   await context.close();
   return run;
 }
