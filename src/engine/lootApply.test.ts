@@ -117,6 +117,13 @@ describe("grantOrTopUpWeapon", () => {
     expect(ctx.equip).not.toHaveBeenCalled();
   });
 
+  it("reports the top-up amount via recordApplied when the weapon is already owned", () => {
+    const recordApplied = vi.fn();
+    const ctx = fakeContext({ ownedWeapons: new Set([0, 1, 2, 3]), recordApplied });
+    grantOrTopUpWeapon(3, ctx, "static"); // gdb -> smg pool
+    expect(recordApplied).toHaveBeenCalledWith("smg", ctx.ammo.smg, "static");
+  });
+
   it("does nothing for an already-owned ammo-less (melee) duplicate", () => {
     const ctx = fakeContext({ ownedWeapons: new Set([0, 1, 2]) }); // knife (index 2) already owned
     const before = { ...ctx.ammo };

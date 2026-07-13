@@ -679,6 +679,10 @@ export class RaycasterEngine {
           // for the consumer.
           meleeWouldHit: (() => {
             const melee = currentMeleeWeapon(this.ownedWeapons);
+            // Unreachable: `currentMeleeWeapon` only ever returns the knife or
+            // Toolchain, both hardcoded with `meleeRange: 1.5` — there's no
+            // owned-weapons state that makes this undefined.
+            /* v8 ignore next */
             if (melee.meleeRange === undefined) return false;
             const { width, height } = this.ctx.canvas;
             const projections = projectLivingEnemies(this.player, this.enemies, width, height);
@@ -720,6 +724,10 @@ export class RaycasterEngine {
               if (dist > weapon.maxRange) return false;
             }
             const proj = mineProjections.find((p) => p.mine === target)?.proj;
+            // Unreachable: `target` is itself one of `mineProjections`' own
+            // `mine` references (returned by `findMineInProjections` from
+            // that exact array), so `.find` above always matches by identity.
+            /* v8 ignore next */
             if (!proj) return false;
             const baseCol = Math.min(width - 1, Math.max(0, Math.round(center)));
             const range = this.zBuffer[baseCol];
@@ -753,6 +761,10 @@ export class RaycasterEngine {
         // something and will walk right past it.
         getDrops: () => this.drops.map((d) => ({ x: d.x, y: d.y, kind: d.kind })),
         getTelemetrySnapshot: () => {
+          // Unreachable: `this.telemetry` is assigned earlier in this same
+          // constructor `if` block that defines `getTelemetrySnapshot`
+          // itself — whenever this hook is callable at all, it's already set.
+          /* v8 ignore next */
           if (!this.telemetry) return null;
           const t = this.telemetry;
           const stats = this.buildStats();
