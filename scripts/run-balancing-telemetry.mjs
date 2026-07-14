@@ -92,6 +92,15 @@ const MAX_TICKS_PER_WAYPOINT = 600;
 const FINAL_APPROACH_TICKS = 80;
 const TURN_MOVE_EPS = 0.2;
 const ARRIVE_EPS = 0.15;
+// How far (in tiles) the bot's actual position may be from an upcoming
+// waypoint before it's considered "displaced" and worth a fresh BFS re-plan
+// (see `driveTowardWithReplan`'s doc comment). Consecutive planned
+// waypoints are exactly 1 tile apart (4-directional BFS) — a threshold at
+// or near 1.0 fires on essentially every normal waypoint transition, not
+// just real displacement (found via the [driftdebug] diagnostic: constant
+// spurious "drift" reports for ordinary step-to-step movement). Comfortably
+// above that spacing so it only fires on a genuine detour/retreat/knockback.
+const LEG_REPLAN_DRIFT_TILES = 2.5;
 // Mirrors src/engine/engine.ts's ROT_SPEED (rad/sec) — needed here to compute
 // how long a turn-only key-hold should last (see `turnBurstMs`'s doc comment).
 const ENGINE_ROT_SPEED = 2.6;
@@ -315,6 +324,9 @@ function reportAnomalies(mineMemory, label, levelIndex) {
 
 const TIGHT_ARRIVE_EPS = 0.05;
 const DOOR_OPEN_TICKS = 10;
+// Same total push duration as `DOOR_OPEN_TICKS * VIRTUAL_STEP_MS` (500ms),
+// just in much finer steps — see `holdForwardFine`'s doc comment.
+const DOOR_OPEN_FINE_STEP_MS = 5;
 
 // Mirrors src/engine/enemyAi.ts / src/engine/traps.ts / src/engine/weapons.ts
 // — plain literals rather than importing those TS modules (this is a plain
@@ -372,6 +384,15 @@ const COMBAT_STALL_TICKS_THRESHOLD = 40;
 // How often to flip strafe direction while still stalled — guards against
 // picking the one direction that happens to lead further into a dead end.
 const COMBAT_STALL_STRAFE_FLIP_TICKS = 20;
+// The critical-health retreat branch's unconditional sprint-away (see its
+// doc comment) can still freeze completely if "directly away from the
+// threat" happens to point straight into a wall (a cornered retreat) —
+// found via the automated anomaly scan: 30-70 tick complete freezes with
+// hpFrac draining toward 0 while pinned in place. Lower threshold than
+// combat's (near-death urgency, and there's no narrow hit-window to protect
+// by waiting longer before reacting).
+const CRITICAL_STALL_TICKS_THRESHOLD = 15;
+const CRITICAL_STALL_STRAFE_FLIP_TICKS = 10;
 // The engine's own enemy AI only holds an enemy still to bite once within its
 // (much smaller) ATTACK_RADIUS=0.5 — between that and MELEE_RANGE, an aggroed
 // enemy is still actively homing in (path-waypoint chase, which rounds
@@ -626,6 +647,7 @@ async function runOneAttempt(browser, profileName, profile, difficulty, levelPla
     context = await browser.newContext();
     const page = await context.newPage();
     page.on("pageerror", (err) => console.log(`  [pageerror] ${err.message}`));
+    if (process.env.CODEENSTEIN_CONSOLE_FORWARD) page.on("console", (msg) => console.log(`  [console] ${msg.text()}`));
 
     if (!HEADED) await installVirtualClock(page); // headed mode runs on the real clock so a human can follow along
     await installDifficulty(page, difficulty);
@@ -861,7 +883,7 @@ function logDeathDetail(levelIndex, { snapshot }) {
  * everything" play. Falls back to "nearest of any kind" even while urgent
  * if no health pickup exists on this map, rather than doing nothing.
  */
-async function maybeDetourForLoot(page, map, visitedPickups, profile, mineMemory) {
+async function maybeDetourForLoot(page, map, visitedPickups, profile, mineMemory, openedDoors) {
   const player = await readState(page);
   if (player.state !== "playing") return { state: player.state };
 
@@ -894,7 +916,13 @@ async function maybeDetourForLoot(page, map, visitedPickups, profile, mineMemory
   }
   if (staticUncollected.includes(best)) visitedPickups.add(`${best.x},${best.y}`);
 
-  const path = bfsPath(map, { x: Math.floor(player.x), y: Math.floor(player.y) }, { x: Math.floor(best.x), y: Math.floor(best.y) });
+  const path = bfsPath(
+    map,
+    { x: Math.floor(player.x), y: Math.floor(player.y) },
+    { x: Math.floor(best.x), y: Math.floor(best.y) },
+    new Set(),
+    openedDoors,
+  );
   if (!path) return { state: "playing" };
   if (process.env.CODEENSTEIN_WPDEBUG) console.log(`[wpdebug] loot-detour from (${player.x.toFixed(1)},${player.y.toFixed(1)}) to best=(${best.x},${best.y}) kind=${best.kind} pathLen=${path.length}`);
   for (const wp of pathToWaypoints(path)) {
@@ -906,25 +934,109 @@ async function maybeDetourForLoot(page, map, visitedPickups, profile, mineMemory
   return { state: "playing" };
 }
 
+/**
+ * Drive toward a single planned waypoint, but re-BFS a detour-safe path to
+ * it first if the bot has drifted `LEG_REPLAN_DRIFT_TILES` or more away from
+ * where it's expected to be. `driveToward` itself is straight-line-only (no
+ * wall awareness) — that's fine between two BFS-adjacent waypoints a route
+ * leg planned together, but not once something (a loot detour, a
+ * critical-health retreat, a mine-avoidance backoff, an in-progress fight
+ * pushing the bot around) has displaced the bot from the route entirely.
+ * Checked before *every* waypoint, not just once per leg: a leg can be
+ * dozens of waypoints long, and displacement found via the automated
+ * anomaly scan (`npm run balancing:scan`) happened mid-leg just as often as
+ * at a leg's start (real combat/retreat mechanics only exist once enemies
+ * are actually in play, unlike the first, doors-and-detour-only repro of
+ * this bug class). See `bfsPath`'s `openDoors` doc comment for why
+ * `openedDoors` must be threaded through here too. */
+async function driveTowardWithReplan(page, wp, map, profile, mineMemory, openedDoors, eps = ARRIVE_EPS) {
+  const player = await readState(page);
+  if (Math.hypot(player.x - wp.x, player.y - wp.y) > LEG_REPLAN_DRIFT_TILES) {
+    const path = bfsPath(
+      map,
+      { x: Math.floor(player.x), y: Math.floor(player.y) },
+      { x: Math.floor(wp.x), y: Math.floor(wp.y) },
+      new Set(),
+      openedDoors,
+    );
+    if (process.env.CODEENSTEIN_DRIFTDEBUG) {
+      console.log(
+        `[driftdebug] drift from (${player.x.toFixed(2)},${player.y.toFixed(2)}) wp=(${wp.x},${wp.y}) openedDoors=${JSON.stringify([...openedDoors])} path=${path ? `${path.length} tiles` : "NULL"}`,
+      );
+    }
+    if (path) {
+      for (const rwp of pathToWaypoints(path)) {
+        if (process.env.CODEENSTEIN_WPDEBUG) console.log(`[wpdebug] replan-walk wp=(${rwp.x},${rwp.y})`);
+        const result = await driveToward(page, rwp, ARRIVE_EPS, MAX_TICKS_PER_WAYPOINT, profile, map, mineMemory);
+        if (process.env.CODEENSTEIN_WPDEBUG) console.log(`[wpdebug]   -> result=${JSON.stringify(result)}`);
+        if (result.state !== "playing" || result.reason === "stuck") return result;
+      }
+      return { state: "playing", reason: "arrived" };
+    }
+  }
+  return driveToward(page, wp, eps, MAX_TICKS_PER_WAYPOINT, profile, map, mineMemory);
+}
+
 async function driveLegs(page, legs, profile, map, visitedPickups, mineMemory) {
+  // `map.grid` is static and never reflects a door's live opened/closed
+  // state — any BFS re-plan mid-run (drift below, or a loot detour) needs
+  // to know which doors *this run* has already opened, or it'll wrongly
+  // treat them as permanently blocked and fail to find a path that in
+  // reality is walkable. See `bfsPath`'s `openDoors` doc comment.
+  const openedDoors = new Set();
+
   for (const leg of legs) {
-    const detour = await maybeDetourForLoot(page, map, visitedPickups, profile, mineMemory);
+    const detour = await maybeDetourForLoot(page, map, visitedPickups, profile, mineMemory, openedDoors);
     if (detour.state !== "playing") return detour;
 
     if (leg.kind === "walk") {
       for (const wp of leg.waypoints) {
         if (process.env.CODEENSTEIN_WPDEBUG) console.log(`[wpdebug] leg-walk wp=(${wp.x},${wp.y})`);
-        const result = await driveToward(page, wp, ARRIVE_EPS, MAX_TICKS_PER_WAYPOINT, profile, map, mineMemory);
+        const result = await driveTowardWithReplan(page, wp, map, profile, mineMemory, openedDoors);
         if (process.env.CODEENSTEIN_WPDEBUG) console.log(`[wpdebug]   -> result=${JSON.stringify(result)}`);
         if (result.state !== "playing") return result;
         if (result.reason === "stuck") return { state: "stuck" };
       }
     } else if (leg.kind === "openDoor") {
+      // `openDoorAhead()` (engine.ts) only detects the door tile within a
+      // short `player.radius + 0.15` (0.35 tile) reach straight ahead of
+      // the player's *exact* position — it never fires if the player
+      // isn't laterally centered on the door's axis first. The preceding
+      // walk leg's last waypoint only guarantees being within `ARRIVE_EPS`
+      // (0.15 tiles) of *a* point near the door, not centered on it, so
+      // AABB wall-collision with the door frame's corner can stop the
+      // player just short of that 0.35 reach whenever it approaches even
+      // slightly off-axis — leaving the door forever locked and the
+      // bot pushing uselessly against it. Found via the automated anomaly
+      // scan: a rare (~1-in-20) 600-tick freeze, correctly aimed
+      // (`dir` matching the door's approach angle) with `moveKeys=[KeyW]`
+      // held every tick, zero net movement — confirmed via forwarded
+      // engine console output that every key on the level had already
+      // been collected but the corresponding "door unlocked" message never
+      // fired. Fixed by explicitly walking to a staging point centered on
+      // the door tile's cross-axis, one tile back along the approach
+      // direction, before facing/pushing.
+      //
+      // First attempt at this fix reused the default `ARRIVE_EPS` (0.15) —
+      // but the staging point is mathematically identical to the preceding
+      // walk leg's own last waypoint (both derived the same way from the
+      // door's coordinates), so arriving there with the *same* loose
+      // tolerance gave no additional centering guarantee at all and the
+      // freeze recurred (once more, same exact spot, next scan). Passing
+      // `TIGHT_ARRIVE_EPS` (0.05, already used for the final exit approach)
+      // is what actually guarantees `openDoorAhead`'s reach check succeeds.
+      const stagingPoint = {
+        x: leg.doorTile.x + 0.5 - leg.approachDir.dx,
+        y: leg.doorTile.y + 0.5 - leg.approachDir.dy,
+      };
+      const staged = await driveTowardWithReplan(page, stagingPoint, map, profile, mineMemory, openedDoors, TIGHT_ARRIVE_EPS);
+      if (staged.state !== "playing") return staged;
       const targetAngle = Math.atan2(leg.approachDir.dy, leg.approachDir.dx);
       const faced = await faceAngle(page, targetAngle, MAX_TICKS_PER_WAYPOINT, profile, mineMemory);
       if (faced.state !== "playing") return faced;
-      const held = await holdForward(page, DOOR_OPEN_TICKS);
+      const held = await holdForwardFine(page, DOOR_OPEN_TICKS * VIRTUAL_STEP_MS, DOOR_OPEN_FINE_STEP_MS);
       if (held.state !== "playing") return held;
+      openedDoors.add(`${leg.doorTile.x},${leg.doorTile.y}`);
     }
   }
   return { state: "playing" };
@@ -1215,6 +1327,25 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
     const moveKeys = new Set(["KeyW", "ShiftLeft"]);
     if (Math.abs(delta) > TURN_MOVE_EPS) {
       moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
+    }
+    // A blocked "away" vector (cornered retreat) still won't move the
+    // player no matter how unconditional the sprint above is. This branch
+    // returns before the shared end-of-tick `combatStallTicks` bookkeeping
+    // ever runs, so it needs its own same-position tracking — see
+    // `CRITICAL_STALL_TICKS_THRESHOLD`'s doc comment.
+    if (mineMemory) {
+      const posKey = `${player.x.toFixed(2)},${player.y.toFixed(2)}`;
+      if (mineMemory.criticalStallPos === posKey) {
+        mineMemory.criticalStallTicks = (mineMemory.criticalStallTicks ?? 0) + 1;
+      } else {
+        mineMemory.criticalStallPos = posKey;
+        mineMemory.criticalStallTicks = 0;
+      }
+      if (mineMemory.criticalStallTicks >= CRITICAL_STALL_TICKS_THRESHOLD) {
+        moveKeys.add(
+          Math.floor(mineMemory.criticalStallTicks / CRITICAL_STALL_STRAFE_FLIP_TICKS) % 2 === 0 ? "KeyD" : "KeyA",
+        );
+      }
     }
     // Deliberately *not* `turnBurstMs` here, unlike combat-aiming branches —
     // that helper caps duration to protect a narrow hit-window from
@@ -1552,6 +1683,41 @@ async function faceAngle(page, targetAngle, maxTicks, profile, mineMemory) {
         await applyAction(page, new Set(), false, null, false);
         return { state: "playing" };
       }
+      // `tick()` only ever turns the player toward a threat, a mine, or
+      // `navTarget` — none of which apply here (this is a bare "face this
+      // specific angle" request, used only to square up to a door before
+      // opening it), so routing this case through `tick()` (as the code
+      // used to) left it idling (`navTarget=null`, no threat/mine to aim
+      // at) for the full `maxTicks` budget whenever a real turn was needed.
+      // Found via the automated anomaly scan: 600-tick complete freezes
+      // (`navTarget=none`, empty moveKeys) recurring right after arriving
+      // at a walk leg's last waypoint, immediately before its matching
+      // openDoor leg — most door approaches happened to already be facing
+      // close enough by chance (from the preceding walk's own heading), so
+      // this only surfaced when the door's approach direction required an
+      // actual turn. Issue the turn directly instead of relying on tick().
+      // `angleDelta` is computed fresh from the *live* `player.dirX/dirY`
+      // every tick, via `atan2(sin(d), cos(d))` — well-behaved for any
+      // single call, but when the needed turn is very close to exactly
+      // 180°, tiny floating-point noise in the recomputed `currentAngle`
+      // from one tick to the next can land the result on either side of
+      // atan2's +-pi branch cut, flipping the *sign* of `delta` (and hence
+      // the chosen turn key) tick to tick — each reversal partially undoes
+      // the previous tick's turn, so the angle never converges. Found via
+      // the automated anomaly scan recurring specifically for the Gamer
+      // profile (3.5x rotation speed) at one exact door approach requiring
+      // close to a full about-face — a rarer residual of the same 600-tick
+      // freeze class as this function's other fix above, surviving it
+      // because that fix only addressed *routing* the turn, not this
+      // separate direction-instability failure mode. Pin the turn
+      // direction once whenever |delta| is this close to pi, instead of
+      // trusting its sign, so a near-180 turn always resolves the same way.
+      const NEAR_PI_TURN_EPS = 0.05;
+      const turnPositive = Math.abs(Math.abs(delta) - Math.PI) < NEAR_PI_TURN_EPS ? true : delta > 0;
+      const moveKeys = new Set([turnPositive ? "KeyE" : "KeyQ"]);
+      const turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, mineMemory, player, currentAngle);
+      ({ player, enemies, mines } = await applyAction(page, moveKeys, false, null, false, turnBurst));
+      continue;
     }
     ({ player, enemies, mines } = await tick(page, player, enemies, mines, null, profile, undefined, mineMemory));
   }
@@ -1559,9 +1725,29 @@ async function faceAngle(page, targetAngle, maxTicks, profile, mineMemory) {
   return { state: "playing" };
 }
 
-async function holdForward(page, ticks) {
-  for (let t = 0; t < ticks; t++) {
-    const { player } = await applyAction(page, new Set(["KeyW"]), false, null, false);
+/**
+ * Holds `KeyW` in much smaller steps than the bot's normal movement grain —
+ * for the final push against a door. `engine.ts`'s `openDoorAhead()` only
+ * fires once a forward probe (`player.radius + 0.15` = 0.35 tiles ahead of
+ * the *current* position) lands inside the door's tile, but wall collision
+ * (`collidesWithWall`) rejects an entire tick's movement outright if its
+ * destination would overlap the still-solid door — it doesn't clamp/slide
+ * to the closest legal position. At the bot's normal `VIRTUAL_STEP_MS` step
+ * size (~0.16 tiles/tick at `MOVE_SPEED`), the player can get rejected while
+ * still short of the 0.35 reach threshold and then can never take a smaller
+ * partial step to close that last bit of distance, freezing forever a
+ * literal hair's-width from the door — found via the automated anomaly
+ * scan surviving two earlier fixes aimed at *positioning* before the push
+ * (a real player's continuous, much-finer per-frame movement doesn't hit
+ * this exact quantization gap in practice, which is why it's bot-specific).
+ * Using a much smaller step size here lets the player converge tile-by-tile
+ * closer to the true collision boundary before a step gets rejected,
+ * reliably landing within the reach threshold instead of short of it.
+ */
+async function holdForwardFine(page, totalMs, stepMs) {
+  const steps = Math.ceil(totalMs / stepMs);
+  for (let t = 0; t < steps; t++) {
+    const { player } = await applyAction(page, new Set(["KeyW"]), false, null, false, stepMs);
     if (player.state !== "playing") return { state: player.state };
   }
   await applyAction(page, new Set(), false, null, false);

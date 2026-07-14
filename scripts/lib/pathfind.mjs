@@ -22,8 +22,15 @@ const BLOCKED_TILES = new Set([1, 3, 6, 7]);
  * are structurally walkable but would hurt the player en route, while still
  * letting a *different* call deliberately target one of those tile types as
  * its destination (see `stage02`'s hazard-seeking path in
- * scripts/verify-campaign-playthrough.mjs). */
-export function bfsPath(map, start, target, avoidTiles = new Set()) {
+ * scripts/verify-campaign-playthrough.mjs).
+ *
+ * `openDoors` (default none, `"x,y"` tile-coordinate strings) treats the
+ * given locked-door(3) tiles as passable — `map.grid` is static and never
+ * reflects a door's *live* opened/closed state, so a caller re-planning a
+ * path mid-run (e.g. after the bot has drifted off its route) must tell
+ * this function which doors its own run has already opened, or BFS will
+ * treat every door as permanently blocked even ones already crossed. */
+export function bfsPath(map, start, target, avoidTiles = new Set(), openDoors = new Set()) {
   const { width, height, grid } = map;
   const key = (x, y) => y * width + x;
   const visited = new Set([key(start.x, start.y)]);
@@ -54,7 +61,8 @@ export function bfsPath(map, start, target, avoidTiles = new Set()) {
       if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
       const tile = grid[ny][nx];
       const isTarget = nx === target.x && ny === target.y;
-      if (BLOCKED_TILES.has(tile)) continue;
+      const isOpenedDoor = tile === 3 && openDoors.has(`${nx},${ny}`);
+      if (!isOpenedDoor && BLOCKED_TILES.has(tile)) continue;
       if (!isTarget && avoidTiles.has(tile)) continue;
       const nk = key(nx, ny);
       if (visited.has(nk)) continue;
