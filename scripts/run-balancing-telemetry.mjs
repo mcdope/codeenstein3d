@@ -73,6 +73,17 @@ const DEBUG_NAV = process.env.CODEENSTEIN_TELEMETRY_DEBUG_NAV === "1";
 // `detectAnomalies` against it after each level, logging any findings. See
 // `detectAnomalies`'s doc comment for exactly what it catches.
 const ANOMALY_SCAN = process.env.CODEENSTEIN_TELEMETRY_ANOMALY_SCAN === "1";
+// Implies ANOMALY_SCAN (the trace has to exist to analyze it). Runs a much
+// more precise, tick-by-tick pass over the same per-decision trace, looking
+// specifically for "a movement key (W/A/D) was held this tick, but position
+// didn't actually change since the last one" — directly correlating intent
+// (keys held) with outcome (real displacement), rather than the coarser
+// anchor-over-a-window `stall` detector above. Added per explicit user
+// request (2026-07-14) after a session of manually grepping raw `DEBUG_NAV`
+// output tick-by-tick to find exactly this signature by hand, chasing
+// several real full-freeze bugs — this makes that specific, recurring
+// manual step automatic. See `detectHeldKeyNoMovement`'s doc comment.
+const NAV_DIAG = process.env.CODEENSTEIN_TELEMETRY_NAV_DIAG === "1";
 // Opens a real, visible browser window and runs at a watchable real-time
 // pace instead of the virtual-clock fast-forward, so a human can actually
 // see what the bot is doing tick-by-tick — "a param to view the actual
@@ -233,7 +244,7 @@ function checkRotationAnomaly(mineMemory, player, currentAngle) {
  * everywhere. `playRun` resets `.trace = []` per level and runs
  * `detectAnomalies` against it once the level's legs finish. */
 function recordTrace(mineMemory, entry) {
-  if (!ANOMALY_SCAN || !mineMemory?.trace) return;
+  if ((!ANOMALY_SCAN && !NAV_DIAG) || !mineMemory?.trace) return;
   mineMemory.trace.push(entry);
 }
 
@@ -251,6 +262,11 @@ const STALL_TICKS_THRESHOLD = 20;
 // more sensitive than the generic stall detector.
 const HP_DRAIN_FROZEN_TICKS_THRESHOLD = 2;
 const TRACE_POS_EPS = 0.05;
+// Lower than STALL_TICKS_THRESHOLD (20) on purpose — `detectHeldKeyNoMovement`
+// is a much more precise signal (real tick-to-tick displacement vs. a held
+// movement key, not just "anchored within a window"), so it doesn't need as
+// long a run to be confident it's a real freeze rather than incidental noise.
+const HELD_KEY_NO_MOVEMENT_TICKS_THRESHOLD = 10;
 
 /**
  * Scans one level's worth of per-decision trace records (see `recordTrace`)
@@ -268,6 +284,14 @@ const TRACE_POS_EPS = 0.05;
  * - `healthDrainFrozen`: position unchanged while health is *also* dropping,
  *   for as few as 2 consecutive ticks — the hazard-escape-freeze bug
  *   (milestone 14) specifically.
+ *
+ * Both also exclude a run where a majority of its ticks have `fire: true` —
+ * a bot holding ground and firing continuously while a threat closes distance
+ * is a correct, intentional ranged standoff, not a freeze. Found via the
+ * diagonal-movement dig: several "stall"/"healthDrainFrozen" reports at
+ * threatDist~5-8 turned out to be exactly this shape (fire=true nearly every
+ * tick, ending in a clean melee kill once the enemy closed in) — false
+ * positives from this detector being otherwise purely position-based.
  *
  * Returns `{type, startTick, endTick, ticks, detail}[]`.
  */
@@ -293,8 +317,22 @@ function detectAnomalies(trace) {
       if (runLen >= 2) {
         const first = trace[runStart];
         const last = trace[runEnd - 1];
-        const allWaitingOnSpike = trace.slice(runStart, runEnd).every((r) => r.waitingOnSpike);
-        if (runLen >= STALL_TICKS_THRESHOLD && !allWaitingOnSpike) {
+        const runSlice = trace.slice(runStart, runEnd);
+        const allWaitingOnSpike = runSlice.every((r) => r.waitingOnSpike);
+        // A ranged standoff — holding ground and firing while a threat closes
+        // distance — is correct, intentional behavior, not a freeze: there's
+        // no reason to walk toward an enemy already being damaged from range.
+        // Found via automated dig: 3 independently-reproduced "stall"/
+        // "healthDrainFrozen" reports at threatDist~5-8 were all this exact
+        // shape (fire=true nearly every tick, ending in a clean melee kill),
+        // false-flagged because this detector is otherwise purely position-
+        // based. Mirrors `combatStallTicks`'s own `!fire` requirement (see its
+        // doc comment) — a majority (not literally 100%, since brief re-aim
+        // ticks between shots are expected and harmless) of the run actually
+        // firing is enough to call this real combat, not a stuck bot.
+        const firingTicks = runSlice.filter((r) => r.fire).length;
+        const mostlyFiring = firingTicks / runLen > 0.5;
+        if (runLen >= STALL_TICKS_THRESHOLD && !allWaitingOnSpike && !mostlyFiring) {
           findings.push({
             type: "stall",
             startTick: runStart,
@@ -303,7 +341,7 @@ function detectAnomalies(trace) {
             detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)} threatDist=${first.threatDist ?? "none"} mineDist=${first.mineDist ?? "none"}`,
           });
         }
-        if (runLen >= HP_DRAIN_FROZEN_TICKS_THRESHOLD && last.hpFrac < first.hpFrac - 0.001) {
+        if (runLen >= HP_DRAIN_FROZEN_TICKS_THRESHOLD && last.hpFrac < first.hpFrac - 0.001 && !mostlyFiring) {
           findings.push({
             type: "healthDrainFrozen",
             startTick: runStart,
@@ -320,11 +358,73 @@ function detectAnomalies(trace) {
   return findings;
 }
 
-/** No-op unless `ANOMALY_SCAN` is on. Runs `detectAnomalies` against this
- * level's accumulated trace and logs any findings, tagged with `label`
- * (typically `${profileName}/${difficulty}`) and the 1-based level number. */
+// Movement keys that actually translate the player — KeyQ/KeyE only rotate,
+// so holding just those (e.g. a pure re-aim) is never expected to move the
+// player and isn't part of this check.
+const TRANSLATING_KEYS = new Set(["KeyW", "KeyA", "KeyD"]);
+
+/**
+ * Gated behind `NAV_DIAG` (see its doc comment): a tick-by-tick pass over
+ * the same trace `detectAnomalies` uses, but checking each tick against the
+ * *immediately preceding* one (not an anchor) and correlating it directly
+ * with which keys were actually held. Flags a run where a translating key
+ * (`TRANSLATING_KEYS`) was held yet real displacement since the previous
+ * tick was under `TRACE_POS_EPS` — i.e. the engine's own per-axis collision
+ * resolution (`player.ts`'s `move()`) rejected the translation outright,
+ * every single tick, for the whole run. This is the exact signature several
+ * real full-freeze bugs shared this session (correctly aimed, a movement
+ * key genuinely held every tick, zero net progress) — before this, finding
+ * it meant manually grepping raw `DEBUG_NAV` tick dumps for the pattern by
+ * eye, repeatedly, across a whole session of chasing hard-to-reproduce
+ * freezes. Reports which keys were actually held throughout the run and the
+ * branch/threat context, since that's normally the first thing worth
+ * checking once one of these is found.
+ */
+function detectHeldKeyNoMovement(trace) {
+  const findings = [];
+  if (!trace || trace.length < 2) return findings;
+  let runStart = null;
+  for (let i = 1; i <= trace.length; i++) {
+    const prev = trace[i - 1];
+    const cur = i < trace.length ? trace[i] : null;
+    const heldTranslatingKey = prev.moveKeys?.some((k) => TRANSLATING_KEYS.has(k));
+    const noRealMovement = cur && Math.abs(cur.x - prev.x) < TRACE_POS_EPS && Math.abs(cur.y - prev.y) < TRACE_POS_EPS;
+    if (heldTranslatingKey && noRealMovement) {
+      if (runStart === null) runStart = i - 1;
+      continue;
+    }
+    if (runStart !== null) {
+      const runEnd = i; // exclusive
+      const runLen = runEnd - runStart;
+      if (runLen >= HELD_KEY_NO_MOVEMENT_TICKS_THRESHOLD) {
+        const first = trace[runStart];
+        const last = trace[runEnd - 1];
+        const heldKeys = new Set(trace.slice(runStart, runEnd).flatMap((r) => r.moveKeys ?? []));
+        findings.push({
+          type: "heldKeyNoMovement",
+          startTick: runStart,
+          endTick: runEnd - 1,
+          ticks: runLen,
+          detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} heldKeys=[${[...heldKeys].join(",")}] threatDist=${first.threatDist ?? "none"} mineDist=${first.mineDist ?? "none"} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)}`,
+        });
+      }
+      runStart = null;
+    }
+  }
+  return findings;
+}
+
+/** No-op unless `ANOMALY_SCAN` is on. Runs `detectAnomalies` (and, if
+ * `NAV_DIAG` is also on, `detectHeldKeyNoMovement`) against this level's
+ * accumulated trace and logs any findings, tagged with `label` (typically
+ * `${profileName}/${difficulty}`) and the 1-based level number. */
 function reportAnomalies(mineMemory, label, levelIndex) {
-  if (!ANOMALY_SCAN || !mineMemory?.trace) return;
+  if ((!ANOMALY_SCAN && !NAV_DIAG) || !mineMemory?.trace) return;
+  if (NAV_DIAG) {
+    for (const f of detectHeldKeyNoMovement(mineMemory.trace)) {
+      console.log(`  [anomaly] ${label} level ${levelIndex + 1}: ${f.type} (${f.ticks} ticks, decisions ${f.startTick}-${f.endTick}) ${f.detail}`);
+    }
+  }
   for (const f of detectAnomalies(mineMemory.trace)) {
     console.log(`  [anomaly] ${label} level ${levelIndex + 1}: ${f.type} (${f.ticks} ticks, decisions ${f.startTick}-${f.endTick}) ${f.detail}`);
   }
@@ -584,6 +684,48 @@ function angleDelta(current, target) {
   return Math.atan2(Math.sin(d), Math.cos(d));
 }
 
+/**
+ * The strafe key ("KeyD"/right or "KeyA"/left) that moves the player toward
+ * a target requiring `delta` radians of turn to face — same-sign
+ * correlation as the engine's own `rotate()`/`strafe()` conventions
+ * (`player.ts`: positive `rotate` = turn right, positive `strafe` = move
+ * right, "the right vector is the facing vector rotated +90°, matching
+ * rotate's positive-angle convention"). A positive `delta` means the target
+ * is to the right (needs `KeyE` to turn toward), so `KeyD` also moves
+ * bodily toward it.
+ *
+ * Lets the bot move diagonally (forward + sideways) instead of
+ * straight-ahead-only while turning. Two independent motivations (user
+ * directive, 2026-07-14): (1) less wasted-looking pure rotation — a diagonal
+ * step makes real progress toward the target with less turning needed
+ * first, rather than "stop, spin to face it, then walk straight"; (2) the
+ * engine's own `move()` (`player.ts`) resolves the X and Y axes of a
+ * translation *independently* ("resolving each axis independently for
+ * sliding") — a diagonal (forward+strafe) vector is a genuinely different
+ * move than forward-only, so it can find an unblocked partial slide in
+ * cases where a wall-aligned pure-forward vector can't move at all.
+ *
+ * CONFIRMED REGRESSION, only used in the plain-navigation branch now: an A/B
+ * test against the pre-diagonal-movement baseline (same map seed, same
+ * concurrency/scale) found Casual/normal's level-2 death rate jumped from
+ * 0% to 72% once diagonal movement was added to every turn-and-move branch.
+ * Part of the cause was a genuine, separately-fixed engine bug (unnormalized
+ * diagonal speed — `handleMovement` in `engine.ts` applied a full,
+ * un-scaled `step` to both axes independently, so moving diagonally covered
+ * ~41%/sqrt(2) more ground per frame than straight movement), but fixing
+ * that alone wasn't sufficient: a second A/B test with the engine fix in
+ * place still showed the same 72%-vs-0% gap, isolated via bisection to
+ * diagonal movement's *direction* itself (not just its speed) — most likely
+ * subtle trajectory/positioning shifts during hazard/critical-health/
+ * mine-retreat/ranged-aim that a low-aim-tolerance profile like Casual can
+ * least absorb. Reverted from those four branches; kept only in plain
+ * navigation (open hallway travel, lowest combat-proximity risk), where the
+ * same A/B methodology found no comparable survival cost.
+ */
+function diagonalStrafeKey(delta) {
+  return delta > 0 ? "KeyD" : "KeyA";
+}
+
 /** Phase 0: parse + generate + route-plan every campaign level in Node,
  * before any browser launches. Exported so other scripts (e.g. the headed
  * watch-session driver) can reuse the exact same level plans instead of
@@ -783,7 +925,7 @@ export async function playRun(page, profile, levelPlans, label = "") {
     // real fix for "stop trying" — once give-up fires for a mine in either
     // mode, it's blacklisted from both for the rest of the level, so this
     // can't cycle no matter how the two modes interleave.
-    const mineMemory = { retreatKey: null, retreatTicks: 0, shootKey: null, shootTicks: 0, abandoned: new Set(), trace: ANOMALY_SCAN ? [] : undefined };
+    const mineMemory = { retreatKey: null, retreatTicks: 0, shootKey: null, shootTicks: 0, abandoned: new Set(), trace: ANOMALY_SCAN || NAV_DIAG ? [] : undefined };
     const { map, routePlain, routeCoverage } = levelPlans[i];
     const route = profile.coverageMode ? routeCoverage : routePlain;
 
@@ -1379,6 +1521,15 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
     let turnBurst;
     if (Math.abs(delta) > TURN_MOVE_EPS) {
       moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
+      // Deliberately no `diagonalStrafeKey` here — see its doc comment's
+      // "confirmed regression" note. Reverted from every branch except plain
+      // navigation after an A/B test showed diagonal movement (even at the
+      // engine's now-normalized speed) still measurably hurt Casual's
+      // survival (72% vs 0% level-2 death rate at matched scale), most
+      // likely via subtle trajectory/positioning shifts a low-aim-tolerance
+      // profile can least absorb — worse during actual danger (hazard,
+      // critical health, mine retreat, ranged aiming) than during open
+      // hallway travel.
       turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, mineMemory, player, currentAngle);
     } else {
       // Capped via `moveBurstMs` so a sprint step can't blow past `navTarget`
@@ -1386,7 +1537,7 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
       // the fatal stuck-in-hazard case this fixes.
       turnBurst = moveBurstMs(dist, true);
     }
-    recordTrace(mineMemory, { branch: "hazard", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: null, mineDist: null, waitingOnSpike: false });
+    recordTrace(mineMemory, { branch: "hazard", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: null, mineDist: null, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false });
     return applyAction(page, moveKeys, false, null, false, turnBurst);
   }
 
@@ -1416,6 +1567,8 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
     const moveKeys = new Set(["KeyW", "ShiftLeft"]);
     if (Math.abs(delta) > TURN_MOVE_EPS) {
       moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
+      // Deliberately no `diagonalStrafeKey` here — see its doc comment's
+      // "confirmed regression" note; reverted from every danger branch.
     }
     // A blocked "away" vector (cornered retreat) still won't move the
     // player no matter how unconditional the sprint above is. This branch
@@ -1431,6 +1584,15 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
         mineMemory.criticalStallTicks = 0;
       }
       if (mineMemory.criticalStallTicks >= CRITICAL_STALL_TICKS_THRESHOLD) {
+        // Take sole control of the strafe key here — `diagonalStrafeKey`
+        // above may have already added the *opposite* direction (it tracks
+        // `delta`'s sign, which stays fixed while cornered, not the
+        // alternation this stall-breaker needs). Both keys held at once
+        // cancel out via the engine's per-axis strafe resolution, silently
+        // neutering this alternation and reproducing the exact frozen-
+        // critical-health symptom it was added to fix.
+        moveKeys.delete("KeyD");
+        moveKeys.delete("KeyA");
         moveKeys.add(
           Math.floor(mineMemory.criticalStallTicks / CRITICAL_STALL_STRAFE_FLIP_TICKS) % 2 === 0 ? "KeyD" : "KeyA",
         );
@@ -1449,7 +1611,7 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
     // "away" angle if needed, still converges toward genuinely-away — it
     // just doesn't stall doing it.
     const turnBurst = moveBurstMs(10, true);
-    recordTrace(mineMemory, { branch: "criticalHealth", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: threat.dist, mineDist: null, waitingOnSpike: false });
+    recordTrace(mineMemory, { branch: "criticalHealth", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: threat.dist, mineDist: null, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false });
     return applyAction(page, moveKeys, false, null, false, turnBurst);
   }
 
@@ -1477,15 +1639,23 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
         const currentAngle = Math.atan2(player.dirY, player.dirX);
         const awayAngle = Math.atan2(player.y - dangerMine.y, player.x - dangerMine.x);
         const delta = angleDelta(currentAngle, awayAngle);
-        const moveKeys = new Set();
+        // Always move (diagonally, while still turning if needed) instead of
+        // stopping to fully face `awayAngle` first — same "any movement beats
+        // freezing to turn in place" reasoning as the hazard/critical-health
+        // branches (see their doc comments), applied here too since this
+        // branch previously never combined a turn with forward movement at
+        // all (turn-only while misaligned, walk-only once aligned).
+        const moveKeys = new Set(["KeyW"]);
         let turnBurst;
         if (Math.abs(delta) > TURN_MOVE_EPS) {
           moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
+          // Deliberately no `diagonalStrafeKey` here — see its doc comment's
+          // "confirmed regression" note; reverted from every danger branch.
           turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, mineMemory, player, currentAngle);
         } else {
-          moveKeys.add("KeyW");
+          turnBurst = moveBurstMs(10, false);
         }
-        recordTrace(mineMemory, { branch: "mineRetreat", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: null, mineDist: dangerMine.dist, waitingOnSpike: false });
+        recordTrace(mineMemory, { branch: "mineRetreat", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: null, mineDist: dangerMine.dist, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false });
         return applyAction(page, moveKeys, false, null, false, turnBurst);
       }
       // else: gave up retreating — fall through to normal navigation below
@@ -1636,6 +1806,11 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
       if (Math.abs(delta) > profile.fireAngleEps || !hasLos || mineNotReady) {
         if (Math.abs(delta) > (mineNotReady ? MINE_REALIGN_EPS : profile.fireAngleEps)) {
           moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
+          // Deliberately no `diagonalStrafeKey` here — see its doc comment's
+          // "confirmed regression" note; reverted from every danger/combat
+          // branch (not added to the melee branch above either, where the
+          // turn is a precision aim adjustment for a swing about to land,
+          // not a "get moving" approach).
           turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, mineMemory, player, currentAngle);
         }
         // Keep closing distance while lining up a ranged shot (or trying to
@@ -1668,8 +1843,15 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
         }
         // See `COMBAT_STALL_TICKS_THRESHOLD`'s doc comment and the matching
         // melee-branch comment above for why `turnBurst` also needs bumping
-        // here, not just adding the key.
+        // here, not just adding the key. Also takes sole control of the
+        // strafe key — see the matching `criticalHealth` branch comment:
+        // `diagonalStrafeKey` above may have already added the opposite
+        // direction (tied to `delta`'s sign, not this alternation), and
+        // both held at once cancel out via the engine's per-axis strafe
+        // resolution, silently neutering the stall-breaker.
         if (stallStrafeKey) {
+          moveKeys.delete("KeyD");
+          moveKeys.delete("KeyA");
           moveKeys.add(stallStrafeKey);
           turnBurst = Math.max(turnBurst ?? 0, moveBurstMs(10, false));
         }
@@ -1688,15 +1870,29 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
     if (Math.abs(delta) > TURN_MOVE_EPS) {
       moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
       turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, mineMemory, player, currentAngle);
-      // Walk while still correcting heading, same reasoning as the ranged-
-      // aim branch above — don't stop-start at every waypoint transition
-      // just because it needs a moderate heading correction first. Capped
+      // Walk while still correcting heading — don't stop-start at every
+      // waypoint transition just because it needs a moderate heading
+      // correction first. Capped
       // to angular errors under `MAX_WALK_WHILE_TURNING_RAD` so a sharp
       // corridor doubling-back doesn't send the bot walking the wrong way
       // while it turns around.
       if (Math.abs(delta) < MAX_WALK_WHILE_TURNING_RAD && !blockedAhead) {
         moveKeys.add("KeyW");
+        // See `diagonalStrafeKey`'s doc comment — moves toward the target's
+        // lateral offset instead of just forward-in-a-not-yet-correct-
+        // direction, which both looks less like aimless spinning and
+        // biases the resultant movement vector *toward* the true bearing
+        // (reducing, not increasing, the overshoot risk this cap already
+        // guards against).
+        moveKeys.add(diagonalStrafeKey(delta));
       }
+      // NOTE: deliberately no strafe-only movement here for large deltas.
+      // Adding lateral motion before heading convergence moves the player,
+      // which shifts `targetAngle` itself — for a close navTarget this is
+      // enough to flip delta's sign every tick, flipping the strafe
+      // direction with it, producing a self-sustaining oscillation with
+      // zero net progress (reproduced as a "stuck" regression). Pure
+      // in-place rotation keeps `targetAngle` fixed and converges cleanly.
     } else if (!blockedAhead) {
       // Don't step onto an active spike trap — wait out its cycle instead
       // (see `activeSpikeAt`). Opposite instinct from hazard-crossing above:
@@ -1739,6 +1935,9 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
     threatDist: threat?.dist ?? null,
     mineDist: mineTarget?.dist ?? null,
     waitingOnSpike,
+    moveKeys: [...moveKeys],
+    turnBurst,
+    fire: fire || useMelee,
   });
   return applyAction(page, moveKeys, fire, weaponSwitch, useMelee, turnBurst);
 }

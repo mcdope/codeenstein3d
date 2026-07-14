@@ -1298,10 +1298,23 @@ export class RaycasterEngine {
     const step = MOVE_SPEED * (sprinting ? SPRINT_MULTIPLIER : 1) * dt;
     const startX = this.player.posX;
     const startY = this.player.posY;
-    if (this.input.isDown("KeyW")) this.player.moveForward(step, this.map);
-    if (this.input.isDown("KeyS")) this.player.moveForward(-step, this.map);
-    if (this.input.isDown("KeyD")) this.player.strafe(step, this.map);
-    if (this.input.isDown("KeyA")) this.player.strafe(-step, this.map);
+    let forwardSign = 0;
+    if (this.input.isDown("KeyW")) forwardSign += 1;
+    if (this.input.isDown("KeyS")) forwardSign -= 1;
+    let strafeSign = 0;
+    if (this.input.isDown("KeyD")) strafeSign += 1;
+    if (this.input.isDown("KeyA")) strafeSign -= 1;
+    // `moveForward`/`strafe` each apply their own full `step` independently,
+    // so holding a forward and a strafe key together covered sqrt(2) (~41%)
+    // more ground per frame than either alone — the classic unnormalized-
+    // diagonal-movement bug. Scale both axes down when moving on both at
+    // once so diagonal movement covers the same distance as straight
+    // movement, matching player expectations (and keeping e.g. the mine
+    // danger-detection radius reliable against someone closing distance
+    // faster than intended).
+    const diagonalScale = forwardSign !== 0 && strafeSign !== 0 ? Math.SQRT1_2 : 1;
+    if (forwardSign !== 0) this.player.moveForward(step * diagonalScale * forwardSign, this.map);
+    if (strafeSign !== 0) this.player.strafe(step * diagonalScale * strafeSign, this.map);
 
     // Gamepad left stick: analog move/strafe, additive with keyboard (both
     // read as 0 when idle/absent, so this is a no-op without a pad plugged in).
