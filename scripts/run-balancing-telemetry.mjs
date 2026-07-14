@@ -92,6 +92,11 @@ const MAX_TICKS_PER_WAYPOINT = 600;
 const FINAL_APPROACH_TICKS = 80;
 const TURN_MOVE_EPS = 0.2;
 const ARRIVE_EPS = 0.15;
+// Any single-tick position jump larger than this is physically impossible
+// via normal movement (max sprint is ~0.32 tiles/tick at `VIRTUAL_STEP_MS`)
+// and can only mean a teleporter pad fired — see `driveToward`'s doc
+// comment on the jump-detection check that uses this.
+const TELEPORT_JUMP_DETECT_TILES = 1.0;
 // How far (in tiles) the bot's actual position may be from an upcoming
 // waypoint before it's considered "displaced" and worth a fresh BFS re-plan
 // (see `driveTowardWithReplan`'s doc comment). Consecutive planned
@@ -416,7 +421,23 @@ const MIN_RANGED_APPROACH_DISTANCE = 3;
 // heading correction — made routine walking look stop-start/slow even
 // though `MOVE_SPEED` itself was untouched (user report: "movement seems a
 // bit slow, even on casual").
-const MAX_WALK_WHILE_TURNING_RAD = 1.0;
+//
+// Originally 1.0 (~57°) — too permissive: watching gameplay, the bot
+// visibly swept its heading back and forth by up to ~180° repeatedly on
+// otherwise straight corridors (user report: "rotates often"). Root cause,
+// confirmed via DEBUG_NAV trace: right after a threat clears (switching
+// from combat-aiming back to plain nav), the heading can still be
+// wildly off from the nav bearing. Walking forward that far off-bearing
+// (up to 57°) drifts the bot meaningfully sideways relative to the true
+// line to a waypoint only ~1 tile away, which can overshoot the waypoint
+// along one axis while the other axis hasn't caught up — flipping the
+// target's bearing to *behind* the bot, forcing a near-full reversal, which
+// then overshoots the other way, repeating. Tightened so only genuinely
+// minor corrections keep walking; anything bigger stops to turn first,
+// same as the original "movement seems slow" fix intended for *routine*
+// waypoint-to-waypoint heading changes (typically small on a mostly-
+// straight route), not a fresh 90°+ reorientation.
+const MAX_WALK_WHILE_TURNING_RAD = 0.35;
 const HAZARD_TILE = 2; // src/map/types.ts's Tile enum
 const KNIFE_WEAPON_INDEX = 2;
 const GDB_WEAPON_INDEX = 3;
@@ -990,7 +1011,18 @@ async function driveLegs(page, legs, profile, map, visitedPickups, mineMemory) {
     if (detour.state !== "playing") return detour;
 
     if (leg.kind === "walk") {
+      // A loot detour only ran once, right here, before this leg's *entire*
+      // waypoint list — but most levels route through as a single giant
+      // leg (dozens to 100+ waypoints), so any pickup that wasn't the
+      // single nearest-to-leg-start one was silently skipped for the rest
+      // of the leg, however close the bot's route later passed by it (user
+      // report, watching gameplay: "doesn't collect all loot, even when
+      // right next to his path"). Re-check before every waypoint instead —
+      // matches the "collect everything" design intent this function's own
+      // doc comment already describes.
       for (const wp of leg.waypoints) {
+        const wpDetour = await maybeDetourForLoot(page, map, visitedPickups, profile, mineMemory, openedDoors);
+        if (wpDetour.state !== "playing") return wpDetour;
         if (process.env.CODEENSTEIN_WPDEBUG) console.log(`[wpdebug] leg-walk wp=(${wp.x},${wp.y})`);
         const result = await driveTowardWithReplan(page, wp, map, profile, mineMemory, openedDoors);
         if (process.env.CODEENSTEIN_WPDEBUG) console.log(`[wpdebug]   -> result=${JSON.stringify(result)}`);
@@ -1665,7 +1697,26 @@ async function driveToward(page, point, eps, maxTicks, profile, map, mineMemory)
       await applyAction(page, new Set(), false, null, false);
       return { state: "playing", reason: "arrived" };
     }
+    const prevX = player.x;
+    const prevY = player.y;
     ({ player, enemies, mines } = await tick(page, player, enemies, mines, point, profile, map, mineMemory));
+    // A BFS-derived waypoint list (see `driveTowardWithReplan`) has no
+    // concept of teleporter (goto/label) tiles — `bfsPath` treats them as
+    // plain floor — so a replanned path can end up targeting a teleporter
+    // pad's exact tile-center as an arrival point. Stepping onto it always
+    // warps the player away (`checkTeleporters()` in engine.ts) before this
+    // loop's own arrival check can ever be satisfied, so it would otherwise
+    // spend the full `maxTicks` budget chasing a target it can structurally
+    // never reach (found via the automated anomaly scan: a real teleporter
+    // pair on `main.c` newly became reachable as an explicit waypoint once
+    // BFS-replanning grew more common — see the loot-detour-per-waypoint
+    // and rotation fixes' doc comments). Detect a jump far larger than any
+    // legitimate single tick of movement and treat it the same as arriving
+    // — the target is moot once the player's been warped elsewhere.
+    if (Math.hypot(player.x - prevX, player.y - prevY) > TELEPORT_JUMP_DETECT_TILES) {
+      await applyAction(page, new Set(), false, null, false);
+      return { state: "playing", reason: "teleported" };
+    }
   }
   await applyAction(page, new Set(), false, null, false);
   return { state: "playing", reason: "stuck" };
