@@ -462,6 +462,33 @@ const MINE_DISARM_RANGE = 4.2;
 // approaching), only a *stationary* target like a mine can be permanently
 // out of reach yet still pass the aim/distance filters every tick.
 const MINE_TARGET_GIVEUP_TICKS = 40;
+// `MINE_REALIGN_EPS` (0.01 rad) assumes `turnBurstMs` can produce an
+// arbitrarily small, precise rotation by holding a turn key for an
+// arbitrarily short duration — exactly true in headless mode (virtual-time
+// pumping advances by precisely the requested duration in one frame), but
+// NOT in headed/watch mode: the engine only actually rotates once per real
+// rendered frame, so a wait shorter than roughly one real frame doesn't
+// reliably produce a proportionally small rotation. Once the remaining angle
+// is smaller than what one real frame's rotation covers, the bot can never
+// converge to 0.01 rad at all — found via `npm run balancing:watch`'s trace
+// log as `dir` bouncing between two fixed values forever, position frozen,
+// chasing an unreachable precision target. A first fix attempt widened the
+// realignment epsilon itself (accept "close enough"), but that backfired
+// worse: once "close enough" per the widened epsilon, the mine branch adds
+// no turn key AND no movement key (mine-targeting deliberately never adds
+// forward/strafe movement, to avoid walking into blast range), so the bot
+// did *nothing* every tick until `MINE_TARGET_GIVEUP_TICKS` — guaranteeing
+// it always gave up rather than sometimes getting lucky via the oscillation,
+// which in turn left more live, un-avoided mines for the bot to walk over
+// later (user report after the first fix: "walked over multiple mines").
+// This threshold instead leaves the fine realignment epsilon untouched (so
+// headless/telemetry behavior, which converges in 1-2 ticks anyway, is
+// completely unaffected) and just forces a shot at the *current* best-effort
+// alignment once stuck on the same mine this many ticks — bounded well under
+// `MINE_TARGET_GIVEUP_TICKS` so the jitter window shortens dramatically and
+// a shot is always attempted before giving up, instead of guaranteeing
+// neither.
+const MINE_REALIGN_STALL_TICKS = 15;
 // Below this health fraction, break contact with the nearest threat instead
 // of trading hits — the base bot previously had zero self-preservation
 // instinct (fight to the death against literally any odds, even at 1 HP
@@ -1841,7 +1868,15 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
       // conservative (worst-case-deviation) hit test — gate firing on it,
       // and keep refining aim toward exact alignment (not just
       // `fireAngleEps`) while it's not yet true, same as an unaligned angle.
-      const mineNotReady = !threat && !player.wouldMineHit;
+      // `mineMemory.shootTicks` (bumped above, before any of this aim logic
+      // runs) already counts consecutive ticks spent on this exact mine —
+      // reused here as a stall counter: once realignment has been stuck long
+      // enough that it's clearly not going to cleanly converge (see
+      // `MINE_REALIGN_STALL_TICKS`'s doc comment), stop insisting on
+      // `wouldMineHit` and just take the shot at the current best-effort
+      // alignment instead of freezing until the much-later full give-up.
+      const mineRealignStalled = Boolean(mineMemory) && mineMemory.shootTicks > MINE_REALIGN_STALL_TICKS;
+      const mineNotReady = !threat && !player.wouldMineHit && !mineRealignStalled;
       if (Math.abs(delta) > profile.fireAngleEps || !hasLos || mineNotReady) {
         if (Math.abs(delta) > (mineNotReady ? MINE_REALIGN_EPS : profile.fireAngleEps)) {
           moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
