@@ -97,6 +97,9 @@ const ARRIVE_EPS = 0.15;
 // and can only mean a teleporter pad fired — see `driveToward`'s doc
 // comment on the jump-detection check that uses this.
 const TELEPORT_JUMP_DETECT_TILES = 1.0;
+// See `maybeDetourForLoot`'s doc comment — caps how far (straight-line) the
+// bot will detour for a single uncollected pickup.
+const MAX_LOOT_DETOUR_TILES = 20;
 // How far (in tiles) the bot's actual position may be from an upcoming
 // waypoint before it's considered "displaced" and worth a fresh BFS re-plan
 // (see `driveTowardWithReplan`'s doc comment). Consecutive planned
@@ -903,6 +906,18 @@ function logDeathDetail(levelIndex, { snapshot }) {
  * free ammo/weapons without detouring for it isn't realistic "collect
  * everything" play. Falls back to "nearest of any kind" even while urgent
  * if no health pickup exists on this map, rather than doing nothing.
+ *
+ * Capped at `MAX_LOOT_DETOUR_TILES` (straight-line): once this started
+ * getting checked before every waypoint instead of once per leg (see
+ * `driveLegs`'s doc comment), the *global* nearest-uncollected-pickup
+ * search could — and did — pick something from a completely different,
+ * already-passed part of the level, sending the bot on a 50+ tile round
+ * trip for a single ammo pickup (user report, watching gameplay: "bot
+ * still sometimes walk back to where he came from"). A pickup beyond the
+ * cap is left for later — it stays in `map.ammoPickups`/`getDrops()`
+ * uncollected, so a *later* check (once the route naturally passes closer
+ * to it) can still pick it up; it's just never worth an immediate detour
+ * this far.
  */
 async function maybeDetourForLoot(page, map, visitedPickups, profile, mineMemory, openedDoors) {
   const player = await readState(page);
@@ -926,25 +941,36 @@ async function maybeDetourForLoot(page, map, visitedPickups, profile, mineMemory
   const healthOnly = uncollected.filter((p) => p.kind === "health");
   const pool = urgent && healthOnly.length > 0 ? healthOnly : uncollected;
 
+  // Rank by actual walking distance (a real BFS path), not straight-line —
+  // a pickup that looks close as the crow flies can require a much longer
+  // detour (or be behind a wall entirely) if it's not directly reachable,
+  // same class of issue as `driveTowardWithReplan`'s line-of-sight fix.
+  // Straight-line distance is only used as a cheap pre-filter (a real path
+  // is never shorter) to skip a wasted BFS call for obviously-too-far
+  // candidates before paying for the real one.
   let best = null;
-  let bestDist = Infinity;
+  let bestPath = null;
   for (const p of pool) {
-    const d = Math.hypot(p.x - player.x, p.y - player.y);
-    if (d < bestDist) {
-      bestDist = d;
+    if (Math.hypot(p.x - player.x, p.y - player.y) > MAX_LOOT_DETOUR_TILES) continue;
+    const path = bfsPath(
+      map,
+      { x: Math.floor(player.x), y: Math.floor(player.y) },
+      { x: Math.floor(p.x), y: Math.floor(p.y) },
+      new Set(),
+      openedDoors,
+    );
+    if (!path || path.length - 1 > MAX_LOOT_DETOUR_TILES) continue;
+    if (!bestPath || path.length < bestPath.length) {
       best = p;
+      bestPath = path;
     }
   }
+  // Leave it uncollected rather than mark it visited — a later check, once
+  // the route naturally passes closer, can still pick it up.
+  if (!best) return { state: "playing" };
   if (staticUncollected.includes(best)) visitedPickups.add(`${best.x},${best.y}`);
 
-  const path = bfsPath(
-    map,
-    { x: Math.floor(player.x), y: Math.floor(player.y) },
-    { x: Math.floor(best.x), y: Math.floor(best.y) },
-    new Set(),
-    openedDoors,
-  );
-  if (!path) return { state: "playing" };
+  const path = bestPath;
   if (process.env.CODEENSTEIN_WPDEBUG) console.log(`[wpdebug] loot-detour from (${player.x.toFixed(1)},${player.y.toFixed(1)}) to best=(${best.x},${best.y}) kind=${best.kind} pathLen=${path.length}`);
   for (const wp of pathToWaypoints(path)) {
     if (process.env.CODEENSTEIN_WPDEBUG) console.log(`[wpdebug]   loot wp=(${wp.x},${wp.y})`);
@@ -958,9 +984,10 @@ async function maybeDetourForLoot(page, map, visitedPickups, profile, mineMemory
 /**
  * Drive toward a single planned waypoint, but re-BFS a detour-safe path to
  * it first if the bot has drifted `LEG_REPLAN_DRIFT_TILES` or more away from
- * where it's expected to be. `driveToward` itself is straight-line-only (no
- * wall awareness) — that's fine between two BFS-adjacent waypoints a route
- * leg planned together, but not once something (a loot detour, a
+ * where it's expected to be — *or* the straight line to it is blocked by a
+ * wall regardless of distance. `driveToward` itself is straight-line-only
+ * (no wall awareness) — that's fine between two BFS-adjacent waypoints a
+ * route leg planned together, but not once something (a loot detour, a
  * critical-health retreat, a mine-avoidance backoff, an in-progress fight
  * pushing the bot around) has displaced the bot from the route entirely.
  * Checked before *every* waypoint, not just once per leg: a leg can be
@@ -969,10 +996,25 @@ async function maybeDetourForLoot(page, map, visitedPickups, profile, mineMemory
  * at a leg's start (real combat/retreat mechanics only exist once enemies
  * are actually in play, unlike the first, doors-and-detour-only repro of
  * this bug class). See `bfsPath`'s `openDoors` doc comment for why
- * `openedDoors` must be threaded through here too. */
+ * `openedDoors` must be threaded through here too.
+ *
+ * The distance-only version of this check had its own bug: a *short*
+ * (under `LEG_REPLAN_DRIFT_TILES`) straight-line gap can still have a wall
+ * directly in it if the true walkable path bends around a corner — found
+ * via the automated anomaly scan as a 596-tick complete freeze (`main.c`,
+ * an L-shaped wall segment), correctly aimed and holding forward every
+ * tick, genuinely unable to move because the straight line to the target
+ * crossed solid wall the whole time and the drift check never fired since
+ * 1.78 tiles was comfortably under the 2.5-tile distance threshold. Added
+ * a `hasLineOfSight` check (already used elsewhere for ranged/mine
+ * targeting) so a blocked line always triggers the wall-aware BFS re-plan
+ * regardless of how short the straight-line distance looks. */
 async function driveTowardWithReplan(page, wp, map, profile, mineMemory, openedDoors, eps = ARRIVE_EPS) {
   const player = await readState(page);
-  if (Math.hypot(player.x - wp.x, player.y - wp.y) > LEG_REPLAN_DRIFT_TILES) {
+  const displaced =
+    Math.hypot(player.x - wp.x, player.y - wp.y) > LEG_REPLAN_DRIFT_TILES ||
+    (map && !hasLineOfSight(map, player.x, player.y, wp.x, wp.y));
+  if (displaced) {
     const path = bfsPath(
       map,
       { x: Math.floor(player.x), y: Math.floor(player.y) },
@@ -1064,7 +1106,7 @@ async function driveLegs(page, legs, profile, map, visitedPickups, mineMemory) {
       const staged = await driveTowardWithReplan(page, stagingPoint, map, profile, mineMemory, openedDoors, TIGHT_ARRIVE_EPS);
       if (staged.state !== "playing") return staged;
       const targetAngle = Math.atan2(leg.approachDir.dy, leg.approachDir.dx);
-      const faced = await faceAngle(page, targetAngle, MAX_TICKS_PER_WAYPOINT, profile, mineMemory);
+      const faced = await faceAngle(page, targetAngle, MAX_TICKS_PER_WAYPOINT, profile, mineMemory, map);
       if (faced.state !== "playing") return faced;
       const held = await holdForwardFine(page, DOOR_OPEN_TICKS * VIRTUAL_STEP_MS, DOOR_OPEN_FINE_STEP_MS);
       if (held.state !== "playing") return held;
@@ -1106,15 +1148,30 @@ function activeSpikeAt(map, x, y, levelTime) {
  * locks onto is more often the swarm itself, not an unrelated single enemy
  * standing apart from it.
  */
-function pickThreat(enemies, player, profile) {
+// `map` is optional (some callers don't have one on hand) — when omitted,
+// every candidate is treated as visible, i.e. the original distance/quick-
+// kill-only ranking, unchanged.
+function pickThreat(enemies, player, profile, map) {
   const candidates = enemies
     .filter((e) => e.alive && e.aggroed)
-    .map((e) => ({ ...e, dist: Math.hypot(e.x - player.x, e.y - player.y) }))
+    .map((e) => ({
+      ...e,
+      dist: Math.hypot(e.x - player.x, e.y - player.y),
+      visible: !map || hasLineOfSight(map, player.x, player.y, e.x, e.y),
+    }))
     .filter((e) => e.dist < profile.engageRadius);
   candidates.sort((a, b) => {
     const aQuick = a.dist <= MELEE_RANGE || a.edgeCase;
     const bQuick = b.dist <= MELEE_RANGE || b.edgeCase;
     if (aQuick !== bQuick) return aQuick ? -1 : 1;
+    // Among otherwise-equal-priority candidates, a visible enemy can be
+    // engaged (fired on, or approached with intent) immediately; an
+    // occluded one first needs the bot to round a corner regardless of how
+    // "close" it is. Locking onto the occluded one when a visible
+    // alternative exists just delays real engagement — see
+    // `driveTowardWithReplan`'s doc comment for the analogous navigation
+    // bug this mirrors (short-distance != actually reachable/usable).
+    if (a.visible !== b.visible) return a.visible ? -1 : 1;
     return a.dist - b.dist;
   });
   return candidates[0];
@@ -1333,7 +1390,7 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
     return applyAction(page, moveKeys, false, null, false, turnBurst);
   }
 
-  const threat = pickThreat(enemies, player, profile);
+  const threat = pickThreat(enemies, player, profile, map);
 
   // Critical health: break contact instead of trading hits — see
   // `CRITICAL_HEALTH_FRACTION`'s doc comment. Turn to face directly away
@@ -1722,11 +1779,11 @@ async function driveToward(page, point, eps, maxTicks, profile, map, mineMemory)
   return { state: "playing", reason: "stuck" };
 }
 
-async function faceAngle(page, targetAngle, maxTicks, profile, mineMemory) {
+async function faceAngle(page, targetAngle, maxTicks, profile, mineMemory, map) {
   let { player, enemies, mines } = await readFull(page);
   for (let t = 0; t < maxTicks; t++) {
     if (player.state !== "playing") return { state: player.state };
-    const threat = pickThreat(enemies, player, profile);
+    const threat = pickThreat(enemies, player, profile, map);
     if (!threat) {
       const currentAngle = Math.atan2(player.dirY, player.dirX);
       const delta = angleDelta(currentAngle, targetAngle);
