@@ -196,3 +196,4 @@
  - [ ] multikill score bonus, sfx and gfx
  - [ ] end of replay playback should drop back in the highscore dialog
  - [ ] add _WEAPON_INDEX consts for all weapons
+ - [ ] ensure all keys are placed so they can be found before needed, i have the feeling that is not the case always
