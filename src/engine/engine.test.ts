@@ -692,6 +692,36 @@ describe("RaycasterEngine — movement", () => {
     expect(() => engine.advance(0.1)).not.toThrow();
   });
 
+  it("normalizes diagonal movement (W+D) to cover the same distance as straight movement, not sqrt(2) more", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const { engine: straightEngine, input: straightInput } = makeEngine(fakeMap());
+      straightInput.keys.add("KeyW");
+      straightEngine.advance(0.1);
+      const straightHooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      const straightDistance = (straightHooks!.getPlayerState() as { distanceTraveled: number }).distanceTraveled;
+
+      const { engine: diagonalEngine, input: diagonalInput } = makeEngine(fakeMap());
+      diagonalInput.keys.add("KeyW");
+      diagonalInput.keys.add("KeyD");
+      diagonalEngine.advance(0.1);
+      const diagonalHooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      const diagonalDistance = (diagonalHooks!.getPlayerState() as { distanceTraveled: number }).distanceTraveled;
+
+      // Both engines take a single unblocked 0.1s step in an open room — a
+      // real diagonal step (both axes independently scaled by SQRT1_2, then
+      // vector-added) should cover exactly the same ground as a straight
+      // one. Before the fix, moveForward/strafe each applied a full,
+      // un-scaled step, so this would have been ~41% (sqrt(2)) larger.
+      expect(diagonalDistance).toBeCloseTo(straightDistance, 6);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
   it("sprint (Shift) moves the player further per frame than a normal walk", () => {
     // Exercised via no-throw + doesn't assert exact distance (Player's own
     // collision math is already unit-tested) — this just confirms the
