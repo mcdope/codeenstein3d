@@ -1294,7 +1294,14 @@ function activeSpikeAt(map, x, y, levelTime) {
 // every candidate is treated as visible, i.e. the original distance/quick-
 // kill-only ranking, unchanged.
 function pickThreat(enemies, player, profile, map) {
+  // `i` is the enemy's index in the engine's own `this.enemies` array
+  // (stable for a whole level — engine.ts only assigns it once at map load
+  // and never splices/reorders it, only flips `alive`), captured before any
+  // filtering so it still matches the live array. Used by `tick()` to
+  // recognize "same enemy as last tick" for the last-visible-position
+  // freeze — see its doc comment.
   const candidates = enemies
+    .map((e, i) => ({ ...e, i }))
     .filter((e) => e.alive && e.aggroed)
     .map((e) => ({
       ...e,
@@ -1674,7 +1681,39 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
       mineTarget = null;
     }
   }
-  const aimTarget = threat ?? mineTarget;
+  // A threat's aggro is sticky (see the "Don't fire at an aggroed-but-
+  // currently-occluded threat" comment below), but `threat.x/y` is the
+  // enemy's live, continuously-updated position from the engine, even while
+  // it's behind a wall the bot can't see through. Aiming — turning to face,
+  // and therefore also walking toward, since movement is relative to facing
+  // — exactly at that live position the whole time looks like the bot has
+  // X-ray vision, tracking an invisible enemy's every move (user report,
+  // watching gameplay: "aims at stuff he cant see because of a wall in the
+  // LOS"). Real knowledge is bounded: freeze the aim at wherever the threat
+  // was *last actually seen* while occluded, only resuming live tracking
+  // once `threat.visible` is true again. Keyed by `threat.i` (the enemy's
+  // stable index into the engine's own enemy array — never reordered or
+  // spliced, only `alive` flips, see `pickThreat`) so switching to a
+  // *different* aggroed enemy doesn't inherit a stale frozen position left
+  // over from whichever enemy was tracked before. Firing itself was already
+  // correctly gated on a fresh, live `hasLineOfSight` check regardless (see
+  // below) — this only changes where the bot visibly looks, never whether
+  // it can cheat a shot.
+  let threatAim = threat;
+  if (threat && mineMemory) {
+    if (threat.visible) {
+      mineMemory.lastVisibleThreat = { i: threat.i, x: threat.x, y: threat.y };
+    } else if (mineMemory.lastVisibleThreat?.i === threat.i) {
+      threatAim = mineMemory.lastVisibleThreat;
+    }
+    // else: aggroed without this specific enemy ever having been seen yet
+    // (aggro can trigger through walls, e.g. proximity, so this isn't rare)
+    // — no memory to fall back on, so aim at the live position same as
+    // before this fix. Only matters for the brief window before the bot
+    // first lays eyes on it; every occlusion after that first sighting is
+    // covered by the freeze above.
+  }
+  const aimTarget = threatAim ?? mineTarget;
   // Read the stall counter as last tick left it (updated at the bottom of
   // this function, after `fire` is known) — see `COMBAT_STALL_TICKS_THRESHOLD`'s
   // doc comment.
