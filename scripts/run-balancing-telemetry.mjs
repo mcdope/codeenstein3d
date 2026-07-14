@@ -1950,7 +1950,16 @@ async function driveToward(page, point, eps, maxTicks, profile, map, mineMemory)
       return { state: player.state, reason: player.state };
     }
     if (Math.hypot(point.x - player.x, point.y - player.y) < eps) {
-      await applyAction(page, new Set(), false, null, false);
+      // Deliberately no `applyAction(page, new Set(), ...)` stop here — this
+      // fires at *every* waypoint arrival, and BFS route waypoints are only
+      // 1 tile apart, so releasing every held key and burning a full extra
+      // step standing still here (real wall-clock time in headed/watch mode,
+      // simulated time in headless) turned ordinary corridor walking into a
+      // visible "step-wait-step" stutter instead of continuous motion — a
+      // real player never has their input zeroed at every tile boundary.
+      // The next `driveToward`/`tick()` call recomputes and applies its own
+      // fresh key set regardless; `applyAction`'s held-vs-desired diff
+      // already issues any needed keyup then, so nothing is left dangling.
       return { state: "playing", reason: "arrived" };
     }
     const prevX = player.x;
