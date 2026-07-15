@@ -6,7 +6,9 @@ import { DEFAULT_DIFFICULTY, DIFFICULTY_MULTIPLIERS } from "./difficulty";
 
 describe("DIFFICULTY_MULTIPLIERS", () => {
   it("scales easy down and hard up for hp/damage, inverted for ammoDropRate", () => {
-    expect(DIFFICULTY_MULTIPLIERS.easy).toEqual({ hp: 0.7, damage: 0.7, ammoDropRate: 1.3 });
+    // easy.damage (0.85) doesn't mirror easy.hp (0.7) the way hard's pair
+    // does — see DIFFICULTY_MULTIPLIERS' doc comment for why.
+    expect(DIFFICULTY_MULTIPLIERS.easy).toEqual({ hp: 0.7, damage: 0.85, ammoDropRate: 1.3 });
     expect(DIFFICULTY_MULTIPLIERS.normal).toEqual({ hp: 1, damage: 1, ammoDropRate: 1 });
     expect(DIFFICULTY_MULTIPLIERS.hard).toEqual({ hp: 1.5, damage: 1.5, ammoDropRate: 0.7 });
   });

@@ -144,3 +144,20 @@ export function dropEliteLoot(enemy: Enemy, ctx: LootContext): void {
     ctx.pushDrop({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: bonusWeaponIndex });
   }
 }
+
+/** Small chance the Toolchain drops anyway on a regular kill's loot "miss"
+ * (see `REGULAR_KILL_NO_DROP_CHANCE` in `loot.ts`) — turning what would
+ * otherwise be a totally empty kill into a rare shot at it. Toolchain's only
+ * other two paths (a secret room's weapon slot, an Elite's 60% bonus roll)
+ * both turned out to be effectively unreachable for a bot that never
+ * explores for secrets and rarely gets a clean Elite kill early (see the
+ * balance report's Toolchain finding) — this is a third, low-odds-but-
+ * guaranteed-eligible path that doesn't depend on either. Same
+ * `TOOLCHAIN_MIN_LEVEL`/already-owned gating as its other two paths, so it
+ * still can't appear before level 4 or stack a second one. */
+export const MISS_CHANCE_TOOLCHAIN_DROP_CHANCE = 0.05;
+
+export function rollMissChanceToolchain(ctx: Pick<LootContext, "campaignLevelIndex" | "ownedWeapons" | "rng">): boolean {
+  if (ctx.campaignLevelIndex < TOOLCHAIN_MIN_LEVEL || ctx.ownedWeapons.has(TOOLCHAIN_WEAPON_INDEX)) return false;
+  return ctx.rng() < MISS_CHANCE_TOOLCHAIN_DROP_CHANCE;
+}

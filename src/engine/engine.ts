@@ -88,15 +88,16 @@ import {
   GHIDRA_WEAPON_INDEX,
   NUMBER_KEY_WEAPONS,
   STARTING_WEAPONS,
+  TOOLCHAIN_WEAPON_INDEX,
   UNLOCKABLE_WEAPONS,
   WEAPONS,
   currentMeleeWeapon,
   pelletOffsets,
   type Weapon,
 } from "./weapons";
-import { MAX_SWAP, rollBonusWeaponDrop, rollLoot } from "./loot";
+import { MAX_SWAP, REGULAR_KILL_NO_DROP_CHANCE, rollBonusWeaponDrop, rollLoot } from "./loot";
 import { AMMO_TYPES, startingAmmo, type AmmoPools } from "./ammo";
-import { applyLootDrop, dropEliteLoot, grantOrTopUpWeapon, type LootContext } from "./lootApply";
+import { applyLootDrop, dropEliteLoot, grantOrTopUpWeapon, rollMissChanceToolchain, type LootContext } from "./lootApply";
 import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, ROCKET_BLAST_RADIUS, type Rocket } from "./rockets";
 import { EnemySpatialGrid } from "./spatialGrid";
 import { PathField } from "./pathField";
@@ -1971,19 +1972,33 @@ export class RaycasterEngine {
 
     if (enemy.elite) dropEliteLoot(enemy, this.lootCtx);
     else {
-      this.pushLootDrop({
-        x: enemy.x,
-        y: enemy.y,
-        kind: rollLoot(
-          this.map.bonusLevel,
-          this.difficultyLevel,
-          this.rng,
-          this.ownedWeapons.has(GHIDRA_WEAPON_INDEX),
-          this.ownedWeapons.has(GDB_WEAPON_INDEX),
-          this.health >= MAX_HEALTH,
-          this.ownedWeapons.has(FRIDAY_HOTFIX_WEAPON_INDEX),
-        ),
-      });
+      // Not every regular kill drops something anymore — see
+      // REGULAR_KILL_NO_DROP_CHANCE's doc comment. A separate rng() draw
+      // ahead of rollLoot's own, same as the existing rollBonusWeaponDrop
+      // pattern below (an independent roll, not folded into rollLoot itself)
+      // so rollLoot's kind-weighting logic and tests stay untouched.
+      if (this.rng() >= REGULAR_KILL_NO_DROP_CHANCE) {
+        this.pushLootDrop({
+          x: enemy.x,
+          y: enemy.y,
+          kind: rollLoot(
+            this.map.bonusLevel,
+            this.difficultyLevel,
+            this.rng,
+            this.ownedWeapons.has(GHIDRA_WEAPON_INDEX),
+            this.ownedWeapons.has(GDB_WEAPON_INDEX),
+            this.health >= MAX_HEALTH,
+            this.ownedWeapons.has(FRIDAY_HOTFIX_WEAPON_INDEX),
+          ),
+        });
+      } else if (rollMissChanceToolchain(this.lootCtx)) {
+        // A kill that drops nothing isn't quite a dead end — a small
+        // independent chance turns the miss into a shot at the Toolchain
+        // instead, a weapon whose other two acquisition paths (secret rooms,
+        // an Elite's own bonus roll) are otherwise easy to never see at all.
+        // See `rollMissChanceToolchain`'s doc comment.
+        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: TOOLCHAIN_WEAPON_INDEX });
+      }
       const missing = UNLOCKABLE_WEAPONS.filter((i) => !this.ownedWeapons.has(i));
       const bonusWeaponIndex = rollBonusWeaponDrop(missing, this.rng);
       if (bonusWeaponIndex !== undefined) {

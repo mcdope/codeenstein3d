@@ -50,6 +50,14 @@ const BONUS_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[
   { kind: "swap", weight: 16 },
 ];
 
+/** Chance a regular (non-elite) kill drops nothing at all — checked by the
+ * caller (`RaycasterEngine`'s kill handler) before it ever calls `rollLoot`,
+ * not inside it, so `rollLoot`'s own weighted-kind logic and its tests stay
+ * untouched. Elites always drop (see `dropEliteLoot`) — this only applies to
+ * the "every regular kill guarantees something" case the balance-telemetry
+ * report flagged as making dynamic supply overwhelm static placement. */
+export const REGULAR_KILL_NO_DROP_CHANCE = 0.2;
+
 /** Roll a random loot kind for a regular (non-elite) enemy kill, weighted by
  * `LOOT_WEIGHTS` (`NORMAL_LOOT_WEIGHTS` on Normal difficulty specifically, or
  * `BONUS_LOOT_WEIGHTS` on a bonus level, which takes priority over both).
@@ -101,18 +109,31 @@ export function rollLoot(
 }
 
 /** Default pickup amounts, per loot kind (overridable per-drop for elite
- * kills — see `LootDrop.amount`). */
-export const BULLETS_DROP_AMOUNT = 6;
-export const ROCKETS_DROP_AMOUNT = 2;
+ * kills — see `LootDrop.amount`). Cut ~30% from the original 6/2/30/30/20/15
+ * per balance-telemetry findings: across a 450-run, 836-attempt campaign,
+ * dynamic (kill-drop) supply so overwhelmingly dominated static placement
+ * (93-100% of everything actually consumed, every resource type, every
+ * combo) that ammo never meaningfully ran low — regular-kill loot alone was
+ * generous enough to make the level-placed pickups nearly vestigial. Elite
+ * drop amounts below are untouched — those are a deliberate bigger reward
+ * for a harder kill, not part of the "every regular kill floods you"
+ * problem this cut addresses. See also `REGULAR_KILL_NO_DROP_CHANCE`. */
+export const BULLETS_DROP_AMOUNT = 4;
+/** Already the scarcest/highest-value drop by design (see `LOOT_WEIGHTS`) —
+ * the same ~30% cut rounds 2 down to 1, a proportionally bigger reduction
+ * than the other pools get purely from rounding at this small a base value,
+ * which is fine here since rockets are supposed to stay the tightest
+ * resource anyway. */
+export const ROCKETS_DROP_AMOUNT = 1;
 /** gdb burns one round per shot at up to ~11/sec (see `WEAPONS`'
  * `fireIntervalSec`), so a drop sized like the shared bullets pool (6) would
  * empty in about half a second — sized instead like a real SMG magazine. */
-export const SMG_DROP_AMOUNT = 30;
+export const SMG_DROP_AMOUNT = 21;
 /** Friday Hotfix burns gas at the same ~10/sec rate as gdb burns smg ammo
  * (see `WEAPONS`' `fireIntervalSec`) — same magazine-sized drop. */
-export const GAS_DROP_AMOUNT = 30;
-export const HEALTH_DROP_AMOUNT = 20;
-export const SWAP_DROP_AMOUNT = 15;
+export const GAS_DROP_AMOUNT = 21;
+export const HEALTH_DROP_AMOUNT = 14;
+export const SWAP_DROP_AMOUNT = 11;
 /** Elite kills guarantee a bigger heal than a regular enemy's health drop. */
 export const ELITE_HEALTH_DROP_AMOUNT = 50;
 /** Elite-sized fallbacks for when the health drop above would be wasted
