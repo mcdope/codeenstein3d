@@ -177,7 +177,7 @@
 - [ ] campaign elite bosses ("Harddrive Failure", "ECC error detected", "BSOD", "Guru Meditation", "Kernel Halt"), higher aggro, larger, more damage, more of everything
 - [ ] random spawn enemies at junctions?
 - [ ] walkable stairs to get some height differences in the levels? kinda adding a height / elevation element.
-- [ ] wave system in exit/return rooms?
+- [ ] wave system in exit/return rooms? for normal and hard difficulties only
 - [ ] revisit extreme gore mode, make it actually useable - without visually drowning in blood
 - [ ] support other browsers as good as possible (ignore the non available FS api)
 - [ ] default highscore replay run faster than normal gameplay. dont speed up the engine to be done with recording faster. the point of default replays is a proper presentation of the product.
