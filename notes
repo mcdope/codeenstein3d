@@ -202,3 +202,4 @@
  - [ ] export replays as video or gif (likely to large for gif?)
  - [ ] reuse `telemetry.ts`/`getTelemetrySnapshot()` for a level-end player-facing stats screen — the recording infrastructure already accumulates most of what a "how'd I do" screen would want (kills, weapon accuracy, damage taken by source, time survived, loot collected), it's just currently gated behind `?testHooks=1` for the balancing bot only. Would need making telemetry recording unconditional (or a lighter always-on subset) and picking a curated player-facing slice — skip the bot/balance-only fields (TTK windows, forced-melee-kill count, mines triggered/disarmed).
  - [ ] export generated level as top-down-view png
+ - [ ] keys often spawned near each other, should be split over all rooms reachable without keys
