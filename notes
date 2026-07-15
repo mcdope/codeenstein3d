@@ -199,5 +199,5 @@
  - [ ] ensure all keys are placed so they can be found before needed, i have the feeling that it is not always the case
  - [ ] generalize telemetry bot into a bot class, use it also for highscore defaults creation (and later multiplayer bots maybe)
  - [ ] reloading for pistol, shotgun, smg and rocketlauncher, including animation and sfx. add R as hotkey to trigger early reload, else reload auto when mag/stack is emptied. mag for pistol: 9, smg: 45, shotgun: 2, rocketlauncher: 1.
- - [ ] export replays as mp4 or gif (likely to large for gif?)
+ - [ ] export replays as video or gif (likely to large for gif?)
  - [ ] export generated level as top-down-view png
