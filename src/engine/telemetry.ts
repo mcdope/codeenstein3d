@@ -56,6 +56,16 @@ export interface TelemetryState {
   /** Which of the 6 damage sources landed the killing blow, if the level
    * ended in death. `null` for a level the run didn't die on. */
   fatalDamageSource: DamageSource | null;
+  /** How many regular (non-elite) kills rolled for ammo/swap loot at all —
+   * denominator for `regularKillLootMisses`, letting balance telemetry
+   * empirically confirm `REGULAR_KILL_NO_DROP_CHANCE`'s ~20% miss rate in
+   * real play rather than trusting the constant alone. Elite kills always
+   * drop (see `dropEliteLoot`) and health is its own always-on check (see
+   * `RaycasterEngine`'s kill handler) — neither counts here. */
+  regularKillLootRolls: number;
+  /** Of `regularKillLootRolls`, how many rolled a miss (no ammo/swap drop —
+   * may still have gotten health and/or the Toolchain miss-chance bonus). */
+  regularKillLootMisses: number;
 }
 
 export function createTelemetryState(): TelemetryState {
@@ -80,6 +90,8 @@ export function createTelemetryState(): TelemetryState {
     minesTriggered: 0,
     minesDisarmed: 0,
     fatalDamageSource: null,
+    regularKillLootRolls: 0,
+    regularKillLootMisses: 0,
   };
 }
 
@@ -139,6 +151,11 @@ export function recordMineDisarmed(state: TelemetryState): void {
 
 export function recordKillForcedByMelee(state: TelemetryState): void {
   state.killsForcedByMelee += 1;
+}
+
+export function recordRegularKillLootRoll(state: TelemetryState, missed: boolean): void {
+  state.regularKillLootRolls += 1;
+  if (missed) state.regularKillLootMisses += 1;
 }
 
 export function recordLootRolled(state: TelemetryState, kind: LootKind, amount: number): void {

@@ -2589,6 +2589,15 @@ function aggregateLevelRuntime(samples, shortestPathTiles) {
     economyLootStarvation: {
       lootRolled,
       consumed: { dynamic: lootCollectedDynamic, static: lootCollectedStatic, total: consumedTotal },
+      // Not a "desperation" signal (a miss doesn't necessarily hurt — health
+      // is unconditional now, see engine.ts's kill handler) — a mechanic-
+      // verification stat, letting real telemetry confirm
+      // REGULAR_KILL_NO_DROP_CHANCE's ~20% design rate empirically instead
+      // of trusting the constant alone.
+      pctRegularKillLootMisses: spread(
+        snaps.map((s) => (s.regularKillLootRolls > 0 ? s.regularKillLootMisses / s.regularKillLootRolls : 0)),
+        "mean",
+      ),
       desperation: {
         timeAtZeroRangedAmmoSec: spread(
           snaps.map((s) => s.timeAtZeroRangedAmmoSec),
@@ -2665,8 +2674,17 @@ function buildComboOutput(levelPlans, combo) {
   campaignAggregate.flags = computeLevelFlags({ static: { enemyDensity: campaignAvgDensity }, runtime: campaignAggregate }, campaignAvgDensity);
 
   const weaponFirstOwnedAtLevel = mergeWeaponFirstOwned(qualifyingRuns);
+  const weaponAcquisitionRate = computeWeaponAcquisitionRate(qualifyingRuns);
 
-  return { attemptsUsed, qualifyingRunCount: qualifyingRuns.length, failureReasons, weaponFirstOwnedAtLevel, levels, campaignAggregate };
+  return {
+    attemptsUsed,
+    qualifyingRunCount: qualifyingRuns.length,
+    failureReasons,
+    weaponFirstOwnedAtLevel,
+    weaponAcquisitionRate,
+    levels,
+    campaignAggregate,
+  };
 }
 
 /** Earliest level each weapon index was first owned, across qualifying runs
@@ -2677,6 +2695,28 @@ function mergeWeaponFirstOwned(qualifyingRuns) {
     for (const [idx, level] of Object.entries(run.weaponFirstOwnedAtLevel)) {
       out[idx] = out[idx] === undefined ? level : Math.min(out[idx], level);
     }
+  }
+  return out;
+}
+
+/** Fraction of qualifying runs that acquired each weapon index *at all* —
+ * distinct from `mergeWeaponFirstOwned`'s min-level, which only answers "how
+ * soon" for whichever runs got it, not "how often" any run got it at all.
+ * Covers every unlockable weapon uniformly (gdb/ghidra/Friday Hotfix/
+ * Toolchain), not just Toolchain — added specifically to verify the new
+ * miss-chance Toolchain drop and the reworked loot economy actually move
+ * these numbers, rather than trusting the balance constants alone. */
+function computeWeaponAcquisitionRate(qualifyingRuns) {
+  const counts = {};
+  for (const run of qualifyingRuns) {
+    for (const idx of Object.keys(run.weaponFirstOwnedAtLevel)) {
+      counts[idx] = (counts[idx] ?? 0) + 1;
+    }
+  }
+  const total = qualifyingRuns.length;
+  const out = {};
+  for (const [idx, count] of Object.entries(counts)) {
+    out[idx] = { count, rate: total > 0 ? count / total : 0 };
   }
   return out;
 }

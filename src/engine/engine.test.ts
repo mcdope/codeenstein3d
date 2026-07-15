@@ -413,6 +413,8 @@ describe("RaycasterEngine — construction", () => {
         fatalDamageSource: null,
         minesTriggered: 0,
         minesDisarmed: 0,
+        regularKillLootRolls: 0,
+        regularKillLootMisses: 0,
         secretRoomCount: map.secretRoomCount,
         kills: 0,
       });
@@ -1394,6 +1396,32 @@ describe("RaycasterEngine — enemy death, loot, and elites", () => {
     expect(lastStats(handlers).swap).toBeGreaterThan(0);
   });
 
+  it("records the real, difficulty-scaled amount for a swap-kind roll in lootRolled telemetry", () => {
+    // Same seed/scenario as the swap-collection test above — verifies
+    // `pushLootDrop` records SWAP_DROP_AMOUNT (11, unscaled at normal
+    // difficulty), not a flat `1` occurrence placeholder — see
+    // `defaultLootAmountFor`'s doc comment for why that distinction matters
+    // for `lootRolled` vs `consumed` unit-compatibility.
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 1 });
+      const map = fakeMap({ enemies: [enemy] });
+      const { engine, input } = makeEngine(map, makeHandlers(), {
+        carryover: { health: 100, swap: 0, bullets: 999, rockets: 0, smg: 0, gas: 0 },
+        seed: 42,
+      });
+      input.fireQueued = true;
+      engine.advance(0.016);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      const snapshot = hooks!.getTelemetrySnapshot() as { lootRolled: Record<string, number> };
+      expect(snapshot.lootRolled.swap).toBe(11); // SWAP_DROP_AMOUNT
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
   it("grants the Toolchain on a lucky miss-chance roll when a regular kill's loot roll misses", () => {
     // Gameplay seed 27 was brute-forced to both miss REGULAR_KILL_NO_DROP_CHANCE's
     // roll (so the normal rollLoot branch is skipped entirely) and hit
@@ -1414,6 +1442,33 @@ describe("RaycasterEngine — enemy death, loot, and elites", () => {
     // drop is only picked up on the *next* frame's advance().
     engine.advance(0.016);
     expect(lastStats(handlers).ownedWeapons).toContain(6); // TOOLCHAIN_WEAPON_INDEX
+  });
+
+  it("records a flat 1 (occurrence) for a weapon-kind roll in lootRolled telemetry", () => {
+    // Same seed/scenario as the Toolchain miss-chance test above — a
+    // "weapon" drop's real value depends on ownership state at *collection*
+    // time, which can change between roll and collection, so `1` is the only
+    // thing `defaultLootAmountFor` can honestly record for it (see its doc
+    // comment) — this is the one kind that's still an occurrence count, not
+    // a real quantity, by design rather than by oversight.
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 1 });
+      const map = fakeMap({ enemies: [enemy] });
+      const { engine, input } = makeEngine(map, makeHandlers(), {
+        carryover: { health: 100, swap: 0, bullets: 999, rockets: 0, smg: 0, gas: 0, campaignLevelIndex: 4 },
+        seed: 27,
+      });
+      input.fireQueued = true;
+      engine.advance(0.016);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      const snapshot = hooks!.getTelemetrySnapshot() as { lootRolled: Record<string, number> };
+      expect(snapshot.lootRolled.weapon).toBe(1);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
   });
 
   it("collects a health-kind kill drop, healing the player (lootCtx.heal)", () => {

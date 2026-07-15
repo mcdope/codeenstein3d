@@ -67,7 +67,7 @@ describe("applyLootDrop", () => {
   it("heals with the default HEALTH_DROP_AMOUNT when the drop has no amount", () => {
     const ctx = fakeContext();
     applyLootDrop({ x: 0, y: 0, kind: "health" } as LootDrop, ctx);
-    expect(ctx.heal).toHaveBeenCalledWith(14); // HEALTH_DROP_AMOUNT
+    expect(ctx.heal).toHaveBeenCalledWith(20); // HEALTH_DROP_AMOUNT
   });
 
   it("adds swap for a 'swap' drop", () => {

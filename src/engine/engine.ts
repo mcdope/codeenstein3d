@@ -95,8 +95,8 @@ import {
   pelletOffsets,
   type Weapon,
 } from "./weapons";
-import { MAX_SWAP, REGULAR_KILL_NO_DROP_CHANCE, rollBonusWeaponDrop, rollLoot } from "./loot";
-import { AMMO_TYPES, startingAmmo, type AmmoPools } from "./ammo";
+import { HEALTH_DROP_AMOUNT, MAX_SWAP, REGULAR_KILL_NO_DROP_CHANCE, SWAP_DROP_AMOUNT, rollBonusWeaponDrop, rollLoot } from "./loot";
+import { AMMO_META, AMMO_TYPES, startingAmmo, type AmmoPools } from "./ammo";
 import { applyLootDrop, dropEliteLoot, grantOrTopUpWeapon, rollMissChanceToolchain, type LootContext } from "./lootApply";
 import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, ROCKET_BLAST_RADIUS, type Rocket } from "./rockets";
 import { EnemySpatialGrid } from "./spatialGrid";
@@ -119,6 +119,7 @@ import {
   recordLootRolled,
   recordMineDisarmed,
   recordMineTriggered,
+  recordRegularKillLootRoll,
   recordShot,
   updateMinHealth,
   updatePerFrame as updateTelemetryPerFrame,
@@ -134,6 +135,7 @@ import {
   type Enemy,
   type GameMap,
   type LootDrop,
+  type LootKind,
   type LoreTerminal,
   type Mine,
   type Point,
@@ -789,6 +791,8 @@ export class RaycasterEngine {
             killsForcedByMelee: t.killsForcedByMelee,
             minesTriggered: t.minesTriggered,
             minesDisarmed: t.minesDisarmed,
+            regularKillLootRolls: t.regularKillLootRolls,
+            regularKillLootMisses: t.regularKillLootMisses,
             fatalDamageSource: t.fatalDamageSource,
             distanceTraveled: this.distanceTraveled,
             mapCompletionFrac: this.visitedWalkableCount / this.totalWalkableTiles,
@@ -1385,7 +1389,17 @@ export class RaycasterEngine {
     if (this.state !== "playing") return;
     this.pathField.ensure(this.map, Math.floor(this.player.posX), Math.floor(this.player.posY), this.gridVersion);
     const beforeShots = this.projectiles.length;
-    const dmg = updateEnemies(this.enemies, this.player, this.map, dt, this.projectiles, this.pathField, this.rng, this.enemyAiEvents);
+    const dmg = updateEnemies(
+      this.enemies,
+      this.player,
+      this.map,
+      dt,
+      this.projectiles,
+      this.pathField,
+      this.rng,
+      this.enemyAiEvents,
+      this.difficultyMultipliers.enemyAimSpreadDeg,
+    );
     if (this.projectiles.length > beforeShots) audio.playEnemyShoot();
     // Difficulty scales enemy-*dealt* damage only — melee bites and ranged
     // bolts, not trap/hazard/self-inflicted (rocket splash) damage.
@@ -1550,15 +1564,40 @@ export class RaycasterEngine {
     return Math.max(1, Math.round(baseAmount * this.difficultyMultipliers.ammoDropRate));
   }
 
+  /** The real amount a fresh (not-already-owned) drop of `kind` will actually
+   * grant, before difficulty scaling — mirrors `applyLootDrop`'s own
+   * `drop.amount ?? <default>` fallback exactly, so `pushLootDrop` below can
+   * record what a drop is *really* worth instead of a placeholder. `"weapon"`
+   * has no real quantity — whether it tops up ammo (already owned) or grants
+   * the weapon outright depends on ownership state at *collection* time, not
+   * roll time, which can change in between (a different weapon could be
+   * picked up first) — so `1` (an occurrence) is the only thing that can
+   * honestly be recorded for it, roll-time or not. */
+  private defaultLootAmountFor(kind: LootKind): number {
+    if (kind === "weapon") return 1;
+    if (kind === "health") return HEALTH_DROP_AMOUNT;
+    if (kind === "swap") return SWAP_DROP_AMOUNT;
+    return AMMO_META[kind].dropAmount;
+  }
+
   /** Leave a dynamic loot drop in the world — the single place `this.drops`
    * is ever pushed to, so telemetry's "rolled" counter (see `lootRolled`)
-   * never has to be duplicated across call sites. A `LootDrop.amount` is
-   * often unset on purpose (defaulted later, at collection — see
-   * `applyLootDrop`), so this records `1` (an occurrence) for those; an
-   * explicit `amount` (elite drops) records the real quantity instead. */
+   * never has to be duplicated across call sites. Records the real,
+   * difficulty-scaled amount the drop is worth (via `defaultLootAmountFor`
+   * for the common unset-`amount` case, matching `applyLootDrop`'s own
+   * fallback, or the drop's own explicit `amount` when set — Elite drops)
+   * — not a placeholder. A prior version of this recorded a flat `1`
+   * ("an occurrence") for every unset-amount drop regardless of kind, which
+   * made `lootRolled` unit-incompatible with `consumed` (a real-amount
+   * total) for anything but Elite drops; confirmed via balance telemetry as
+   * the reason an `ammo_starvation_*` flag built on comparing the two had to
+   * be removed rather than fixed. */
   private pushLootDrop(drop: LootDrop): void {
     this.drops.push(drop);
-    if (this.telemetry) recordLootRolled(this.telemetry, drop.kind, drop.amount ?? 1);
+    if (this.telemetry) {
+      const amount = this.scaledLootAmount(drop.amount ?? this.defaultLootAmountFor(drop.kind));
+      recordLootRolled(this.telemetry, drop.kind, amount);
+    }
   }
 
   /**
@@ -1972,12 +2011,28 @@ export class RaycasterEngine {
 
     if (enemy.elite) dropEliteLoot(enemy, this.lootCtx);
     else {
-      // Not every regular kill drops something anymore — see
+      // Health is handled as its own always-on check, decoupled from
+      // REGULAR_KILL_NO_DROP_CHANCE entirely — unlike ammo (still survivable
+      // via the universal melee fallback), running low on health directly
+      // causes death. Confirmed via live balance verification: cutting
+      // health the same way as ammo (amount *and* a chance to drop nothing)
+      // collapsed Gamer/Hard's qualifying rate from a report-baseline ~48%
+      // to 4% in one batch; even reverting just the amount only partially
+      // recovered it (to ~20%), since the *frequency* cut from the miss
+      // chance was still compounding with Hard's tougher combat. `rollLoot`
+      // below is told to exclude "health" from its own weighted roll (via
+      // `healthHandledSeparately`) so a kill can't double-drop it.
+      if (this.health < MAX_HEALTH) {
+        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "health" });
+      }
+      // Not every regular kill drops ammo/swap anymore — see
       // REGULAR_KILL_NO_DROP_CHANCE's doc comment. A separate rng() draw
       // ahead of rollLoot's own, same as the existing rollBonusWeaponDrop
       // pattern below (an independent roll, not folded into rollLoot itself)
       // so rollLoot's kind-weighting logic and tests stay untouched.
-      if (this.rng() >= REGULAR_KILL_NO_DROP_CHANCE) {
+      const lootRollHit = this.rng() >= REGULAR_KILL_NO_DROP_CHANCE;
+      if (this.telemetry) recordRegularKillLootRoll(this.telemetry, !lootRollHit);
+      if (lootRollHit) {
         this.pushLootDrop({
           x: enemy.x,
           y: enemy.y,
@@ -1989,6 +2044,7 @@ export class RaycasterEngine {
             this.ownedWeapons.has(GDB_WEAPON_INDEX),
             this.health >= MAX_HEALTH,
             this.ownedWeapons.has(FRIDAY_HOTFIX_WEAPON_INDEX),
+            true, // healthHandledSeparately — see above
           ),
         });
       } else if (rollMissChanceToolchain(this.lootCtx)) {

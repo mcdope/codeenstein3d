@@ -27,8 +27,15 @@ export interface Projectile {
   damage: number;
 }
 
-/** Spawn a bolt at (x,y) heading straight toward (tx,ty). `damageMultiplier`
- * scales the base damage (Elite enemies hit harder — see `enemyAi.ts`). */
+/** Spawn a bolt at (x,y) heading toward (tx,ty), optionally rotated off dead-
+ * center by a random angle up to `aimSpreadDeg` in either direction —
+ * `DifficultyMultipliers.enemyAimSpreadDeg`'s actual effect (0 = perfectly
+ * aimed, same as before that difficulty axis existed). `damageMultiplier`
+ * scales the base damage (Elite enemies hit harder — see `enemyAi.ts`).
+ * `rng` defaults to `Math.random` but `RaycasterEngine` always passes its own
+ * seeded stream instead, same reason `enemyAi.ts`'s doc comment gives for
+ * roam-target picking and fire-cooldown jitter — this changes enemy
+ * behavior, which the replay system's determinism depends on. */
 export function spawnProjectile(
   list: Projectile[],
   x: number,
@@ -36,15 +43,28 @@ export function spawnProjectile(
   tx: number,
   ty: number,
   damageMultiplier = 1,
+  aimSpreadDeg = 0,
+  rng: () => number = Math.random,
 ): void {
   const dx = tx - x;
   const dy = ty - y;
   const d = Math.hypot(dx, dy) || 1;
+  let dirX = dx / d;
+  let dirY = dy / d;
+  if (aimSpreadDeg > 0) {
+    const angle = (rng() * 2 - 1) * (aimSpreadDeg * (Math.PI / 180));
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const rotX = dirX * cos - dirY * sin;
+    const rotY = dirX * sin + dirY * cos;
+    dirX = rotX;
+    dirY = rotY;
+  }
   list.push({
     x,
     y,
-    vx: (dx / d) * PROJECTILE_SPEED,
-    vy: (dy / d) * PROJECTILE_SPEED,
+    vx: dirX * PROJECTILE_SPEED,
+    vy: dirY * PROJECTILE_SPEED,
     damage: PROJECTILE_DAMAGE * damageMultiplier,
   });
 }

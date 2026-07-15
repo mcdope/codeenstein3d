@@ -94,11 +94,15 @@ export function updateEnemies(
   pathField: PathField,
   rng: () => number = Math.random,
   events?: EnemyAiEvents,
+  /** See `DifficultyMultipliers.enemyAimSpreadDeg` — how far off dead-center
+   * a ranged bolt can randomly deviate. 0 (default) matches every existing
+   * call site/test's prior behavior (a perfectly aimed shot). */
+  aimSpreadDeg = 0,
 ): number {
   let damage = 0;
   for (const enemy of enemies) {
     if (!enemy.alive) continue;
-    damage += updateEnemy(enemy, player, map, dt, projectiles, pathField, rng, events);
+    damage += updateEnemy(enemy, player, map, dt, projectiles, pathField, rng, events, aimSpreadDeg);
   }
   return damage;
 }
@@ -113,6 +117,7 @@ function updateEnemy(
   pathField: PathField,
   rng: () => number,
   events?: EnemyAiEvents,
+  aimSpreadDeg = 0,
 ): number {
   // Cool down toward the next melee bite and the next ranged shot.
   if (enemy.attackCooldown > 0) enemy.attackCooldown = Math.max(0, enemy.attackCooldown - dt);
@@ -156,7 +161,7 @@ function updateEnemy(
 
   // At range: occasionally lob a bolt at the player if there's a clear shot.
   if (enemy.fireCooldown === 0 && dist <= RANGED_RANGE && los()) {
-    spawnProjectile(projectiles, enemy.x, enemy.y, player.posX, player.posY, damageMultiplier(enemy));
+    spawnProjectile(projectiles, enemy.x, enemy.y, player.posX, player.posY, damageMultiplier(enemy), aimSpreadDeg, rng);
     enemy.fireCooldown = FIRE_COOLDOWN_MIN + rng() * (FIRE_COOLDOWN_MAX - FIRE_COOLDOWN_MIN);
     events?.onRangedFire?.(enemy);
   }

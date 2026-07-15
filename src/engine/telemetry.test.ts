@@ -18,6 +18,7 @@ import {
   recordLootRolled,
   recordMineDisarmed,
   recordMineTriggered,
+  recordRegularKillLootRoll,
   recordShot,
   updateMinHealth,
   updatePerFrame,
@@ -135,6 +136,15 @@ describe("loot counters", () => {
     recordLootCollected(state, "dynamic", "bullets", 6);
     expect(state.lootCollectedDynamic).toEqual({ bullets: 12 });
     expect(state.lootCollectedStatic).toEqual({ bullets: 11 });
+  });
+
+  it("recordRegularKillLootRoll counts total rolls and misses separately", () => {
+    const state = createTelemetryState();
+    recordRegularKillLootRoll(state, false);
+    recordRegularKillLootRoll(state, true);
+    recordRegularKillLootRoll(state, true);
+    expect(state.regularKillLootRolls).toBe(3);
+    expect(state.regularKillLootMisses).toBe(2);
   });
 });
 

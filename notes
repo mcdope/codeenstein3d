@@ -200,4 +200,5 @@
  - [ ] generalize telemetry bot into a bot class, use it also for highscore defaults creation (and later multiplayer bots maybe). highscore creation should run all skill levels until each one has 3 qualifying runs, keep the best one for each.
  - [ ] reloading for pistol, shotgun, smg and rocketlauncher, including animation and sfx. add R as hotkey to trigger early reload, else reload auto when mag/stack is emptied. mag for pistol: 9, smg: 45, shotgun: 2, rocketlauncher: 1.
  - [ ] export replays as video or gif (likely to large for gif?)
+ - [ ] reuse `telemetry.ts`/`getTelemetrySnapshot()` for a level-end player-facing stats screen — the recording infrastructure already accumulates most of what a "how'd I do" screen would want (kills, weapon accuracy, damage taken by source, time survived, loot collected), it's just currently gated behind `?testHooks=1` for the balancing bot only. Would need making telemetry recording unconditional (or a lighter always-on subset) and picking a curated player-facing slice — skip the bot/balance-only fields (TTK windows, forced-melee-kill count, mines triggered/disarmed).
  - [ ] export generated level as top-down-view png
