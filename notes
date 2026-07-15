@@ -196,5 +196,5 @@
  - [ ] multikill score bonus, sfx and gfx
  - [ ] end of replay playback should drop back in the highscore dialog
  - [ ] add _WEAPON_INDEX consts for all weapons
- - [ ] ensure all keys are placed so they can be found before needed, i have the feeling that is not the case always
+ - [ ] ensure all keys are placed so they can be found before needed, i have the feeling that it is not always the case
  - [ ] generalize telemetry bot into a bot class, use it also for highscore defaults creation (and later multiplayer bots maybe)
