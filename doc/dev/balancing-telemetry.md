@@ -11,8 +11,9 @@ The bot itself (`scripts/run-balancing-telemetry.mjs`) drives a headless Chromiu
 | `npm run balancing:telemetry` | Full 9-combo run (Casual/Gamer/Pro × easy/normal/hard), 3 qualifying runs each, writes `balancing_telemetry.json`. Slow (up to 9 × unbounded attempts × up to 17 levels) — this is the "generate real data" entry point. |
 | `npm run balancing:watch` | Opens one real, visible Chromium window per profile (Casual → Gamer → Pro by default), plays one full campaign attempt at watchable real-time speed, prints a summary, waits for Enter before the next profile. `scripts/watch-bot-sessions.mjs`; reuses the same profile definitions and per-attempt driving logic (`playRun`), not a separate bot. `npm run balancing:watch -- Gamer Pro` to pick a subset/order; `CODEENSTEIN_WATCH_DIFFICULTY=hard` to change difficulty. |
 | `npm run balancing:scan` | The permanent automated bot-**behavior** regression check (distinct from balance-*data* review) — see [Anomaly scanning](#anomaly-scanning-npm-run-balancingscan) below. Run this before declaring any navigation/combat change to the bot script fixed. |
+| `npm run balancing:campaign` | Large-scale, resumable data-collection orchestrator — see [Large-scale campaigns](#large-scale-campaigns-npm-run-balancingcampaign) below. Not the same as `balancing:telemetry`'s fixed 3-qualifying-run sweep; this repeatedly spawns it to build up a much bigger sample, keeping every batch as its own file. |
 
-A run only "counts" for `balancing:telemetry`'s aggregate once it clears level 3 (proves it survived the unarmed early game) — a run that dies on level 1 or 2 is discarded entirely; a qualifying run keeps *all* its levels' data, 1–2 included.
+A run only "counts" for `balancing:telemetry`'s aggregate once it clears level 4 (proves it survived the unarmed early game) — a run that dies on level 1-3 is discarded entirely; a qualifying run keeps *all* its levels' data, 1–3 included. Both the qualifying level (`QUALIFY_LEVEL_INDEX`) and the qualifying-run target (`REQUIRED_QUALIFYING_RUNS`, default 3, overridable via `CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET`) live in `run-balancing-telemetry.mjs`.
 
 ## Profiles and difficulty
 
@@ -38,6 +39,8 @@ All scoping/debug flags are read once at module load, so they must be set in the
 | `CODEENSTEIN_WPDEBUG` | Per-waypoint drive-loop trace (`[wpdebug] leg-walk wp=... -> result=...`). |
 | `CODEENSTEIN_DRIFTDEBUG` | Traces `driveTowardWithReplan`'s off-route drift/re-plan decisions. |
 | `CODEENSTEIN_DEV_URL` | Override the dev server URL (default `http://localhost:5173`). |
+| `CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET` | Override `REQUIRED_QUALIFYING_RUNS` (default 3) — how many qualifying runs a combo needs before its retry loop stops. Used by `balancing:campaign` to set a small per-invocation batch size. |
+| `CODEENSTEIN_TELEMETRY_OUTPUT_FILE` | Override the output path (default `balancing_telemetry.json` at repo root). Used by `balancing:campaign` so concurrent invocations each write to their own file instead of racing to overwrite the same one. |
 
 ## Anomaly scanning (`npm run balancing:scan`)
 
@@ -78,6 +81,17 @@ Concretely: a fine-alignment epsilon like `MINE_REALIGN_EPS` (0.01 rad) converge
    ```
 
 3. If a fix candidate widens a convergence epsilon ("accept close enough" instead of chasing precision), check what the branch actually *does* once "satisfied" — if it has no fallback action (e.g. mine-targeting deliberately never adds movement, to avoid walking into blast range), the fix can convert "stuck but still trying" into "immediately idle until an unrelated timeout," which is often strictly worse and can have knock-on effects (an abandoned mine stays live and un-avoided by navigation). Prefer a stall-counter/behavioral trigger — matching this codebase's existing `stallStrafeKey`/`criticalStallTicks` idiom — over a static threshold widening.
+
+## Large-scale campaigns (`npm run balancing:campaign`)
+
+`scripts/run-balancing-campaign.mjs` builds up a much bigger sample than `balancing:telemetry`'s fixed 3-qualifying-run sweep — e.g. 50 qualifying full-campaign runs per combo (450 total) for real balance analysis, rather than the small samples used for regression-testing the bot itself. Differences from `balancing:telemetry`:
+
+- **Resumable, not one-shot.** Before touching a combo, it sums `qualifyingRunCount` (a field `buildComboOutput` already returns) across every file already saved for that combo under `balancing_runs/` — killing and restarting the campaign picks up exactly where it left off, with no separate progress-tracking state to drift out of sync with what's actually on disk.
+- **Every batch is its own file**, kept forever (not overwritten) — each spawned `run-balancing-telemetry.mjs` invocation is scoped to one combo, collects a small batch (`CODEENSTEIN_CAMPAIGN_BATCH_SIZE`, default 5) via `CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET`, and writes directly to its own path via `CODEENSTEIN_TELEMETRY_OUTPUT_FILE` (`balancing_runs/<profile>-<difficulty>-<NNN>.json`) — no shared-file race between concurrently-running combos.
+- **Runs combos as separate OS processes** (`child_process.spawn`, `CODEENSTEIN_CAMPAIGN_LANES` at a time, default 2), each wrapped in a wall-clock watchdog (`CODEENSTEIN_CAMPAIGN_WATCHDOG_MS`, SIGTERM then SIGKILL after a grace period). This is deliberate, not incidental: `run-balancing-telemetry.mjs` has no internal safety net for a genuinely wedged `page.evaluate()`/virtual-clock pump — every internal "stuck" resolution (tick-count give-up counters, `page.waitForFunction` timeouts) is bounded and resolves into a normal, non-throwing result, but a true hang would leave a `Promise.all` inside `runCombo` waiting forever with nothing to catch it. Only an external, OS-level kill can actually stop that.
+- **Calibrate the watchdog before a real run on new hardware** — the default (90 minutes) was derived 2026-07-15 on a Ryzen 5800X from one real production-representative invocation (full 17-level campaign, `CONCURRENCY=8`, `QUALIFYING_TARGET=5`): 5m13s for 8 attempts to reach 5 qualifying (level-4+) runs, extrapolated to a ~50-minute worst case at `ATTEMPT_CAP=80` with headroom on top. Re-run a similar single-combo calibration invocation (no `LEVEL_LIMIT`) if running on meaningfully different hardware before trusting `CODEENSTEIN_CAMPAIGN_WATCHDOG_MS`'s default.
+- **Known risk**: a SIGKILL (only reached if SIGTERM doesn't land within the grace period) can leave orphaned Chromium subprocesses behind, since it doesn't give Playwright's own shutdown handlers a chance to run. Kills should be rare (the watchdog is a safety net, not the normal exit path) but worth an occasional `ps aux | grep chromium` spot-check on a long unattended run.
+- Tune `CODEENSTEIN_CAMPAIGN_LANES`/`_CONCURRENCY` to the machine — each lane's invocation gets its own `CODEENSTEIN_TELEMETRY_CONCURRENCY`-way internal browser-context concurrency (default 8, lower than `balancing:telemetry`'s own default of 12, since `LANES` of these run at once), so total concurrent browser contexts is roughly `LANES × CONCURRENCY_PER_LANE`.
 
 ## Matched-scale verification
 

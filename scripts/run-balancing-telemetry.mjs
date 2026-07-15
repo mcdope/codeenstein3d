@@ -13,14 +13,16 @@
  * BFS route planning done entirely in Node before any browser launches) —
  * see that file's doc comment for the low-level rationale (why firing is
  * `Backquote`-only, why routes are precomputed, etc.). This script adds:
- * per-profile combat/navigation parameters, a 3-qualifying-runs-per-
- * profile×difficulty retry loop, and `window.__codeensteinTestHooks`'s
- * balancing-telemetry surface (`getTelemetrySnapshot()`/`getMines()`).
+ * per-profile combat/navigation parameters, a qualifying-runs-per-
+ * profile×difficulty retry loop (`REQUIRED_QUALIFYING_RUNS`, 3 by default —
+ * see `CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET` to override), and
+ * `window.__codeensteinTestHooks`'s balancing-telemetry surface
+ * (`getTelemetrySnapshot()`/`getMines()`).
  *
- * A run only "counts" once it clears level 3 (proves it survived the
- * unarmed/unupgraded early game) — a run that dies on level 1 or 2 is
+ * A run only "counts" once it clears level 4 (proves it survived the
+ * unarmed/unupgraded early game) — a run that dies on level 1-3 is
  * discarded outright, but once qualified, ALL of its levels' data (including
- * 1–2) is kept. Not CI-wired, not fast (up to 9 combos × 10 attempts × up to
+ * 1–3) is kept. Not CI-wired, not fast (up to 9 combos × 10 attempts × up to
  * 17 levels each) — run manually (`npm run balancing:telemetry`) against a
  * locally running dev server.
  */
@@ -35,7 +37,13 @@ import { analyzeStaticLevel } from "./lib/staticLevelAnalysis.mjs";
 const CAMPAIGN_DIR = path.join(REPO_ROOT, "demo-campaign");
 const CAMPAIGN_NAME = "demo-campaign";
 export const DEV_SERVER_URL = process.env.CODEENSTEIN_DEV_URL ?? "http://localhost:5173";
-const OUTPUT_FILE = path.join(REPO_ROOT, "balancing_telemetry.json");
+// Overridable so multiple concurrent invocations (e.g. a multi-lane campaign
+// orchestrator spawning several of these as separate processes) can each
+// write to their own unique path instead of racing to overwrite the same
+// fixed file — see scripts/run-balancing-campaign.mjs.
+const OUTPUT_FILE = process.env.CODEENSTEIN_TELEMETRY_OUTPUT_FILE
+  ? path.resolve(process.env.CODEENSTEIN_TELEMETRY_OUTPUT_FILE)
+  : path.join(REPO_ROOT, "balancing_telemetry.json");
 
 // --- Scoped-run env vars (permanent — useful for future debugging, not just
 // this file's own smoke test) -----------------------------------------------
@@ -95,8 +103,13 @@ const HEADED = process.env.CODEENSTEIN_TELEMETRY_HEADED === "1";
 // (~7 decisions/sec), fast enough not to be painful to sit through.
 const WATCH_STEP_MS = 130;
 
-const REQUIRED_QUALIFYING_RUNS = 3;
-const QUALIFY_LEVEL_INDEX = 2; // 0-based — "level 3" in 1-based campaign numbering
+// Overridable so a large-scale data-collection campaign can raise the target
+// (e.g. 50) per invocation without touching this default — every existing
+// caller (balancing:scan, ad-hoc smoke tests) is unaffected when unset.
+const REQUIRED_QUALIFYING_RUNS = process.env.CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET
+  ? Number(process.env.CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET)
+  : 3;
+const QUALIFY_LEVEL_INDEX = 3; // 0-based — "level 4" in 1-based campaign numbering
 
 const VIRTUAL_STEP_MS = 50;
 const MAX_TICKS_PER_WAYPOINT = 600;
@@ -1472,7 +1485,7 @@ const ROCKET_SAFE_DISTANCE = 4;
  * always goes through quick-melee (Space), never the equipped ranged slot
  * (mirrors `currentMeleeWeapon` in `src/engine/weapons.ts`).
  */
-function pickRangedWeapon(player, profile, enemies, threat) {
+function pickRangedWeapon(player, profile, enemies, threat, mineTarget) {
   if (threat) {
     const clusterCount = enemies.filter(
       (e) => e.alive && e.aggroed && Math.hypot(e.x - threat.x, e.y - threat.y) <= CLUSTER_RADIUS,
@@ -1486,8 +1499,24 @@ function pickRangedWeapon(player, profile, enemies, threat) {
       }
     }
   }
+  // The doc comment above already claimed "never selects ghidra within
+  // ROCKET_SAFE_DISTANCE regardless of source" — but the code only ever
+  // checked `threat.dist`, so a mine target (aimed at with `threat` null)
+  // never went through this exclusion at all. That's a real gap, not a
+  // narrower one: `findDisarmableMine` only requires a mine be beyond its
+  // own `MINE_BLAST_RADIUS` (2.4) to be targeted, comfortably inside
+  // `ROCKET_SAFE_DISTANCE` (4) — and `ROCKET_BLAST_RADIUS` (engine.ts, 2.6)
+  // is itself slightly *larger* than a mine's own blast radius, so even a
+  // mine sitting right at the 2.4 cutoff was never actually safe to rocket.
+  // Confirmed via a scoped diagnostic trace: every observed unsafe Ghidra
+  // fire in a repro batch had `threat` null (mine-targeting), not an actual
+  // enemy — the enemy-only fix first shipped for this issue barely moved
+  // the self-rocket death rate, because mines, not enemies, turned out to
+  // be the dominant cause. `aimDist` below covers both aim contexts with
+  // the same one check.
+  const aimDist = threat ? threat.dist : mineTarget ? mineTarget.dist : null;
   for (const idx of profile.weaponPriority) {
-    if (idx === GHIDRA_WEAPON_INDEX && threat && threat.dist < ROCKET_SAFE_DISTANCE) continue;
+    if (idx === GHIDRA_WEAPON_INDEX && aimDist !== null && aimDist < ROCKET_SAFE_DISTANCE) continue;
     if (!player.ownedWeapons.includes(idx)) continue;
     if (!hasAmmoFor(player, idx)) continue;
     return player.weaponIndex === idx ? null : idx;
@@ -1930,8 +1959,31 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
           turnBurst = Math.max(turnBurst ?? 0, moveBurstMs(10, false));
         }
       } else {
-        fire = true;
-        weaponSwitch = pickRangedWeapon(player, profile, enemies, threat);
+        weaponSwitch = pickRangedWeapon(player, profile, enemies, threat, mineTarget);
+        // `pickRangedWeapon`'s own Ghidra exclusion only ever gates which
+        // weapon gets *selected* — it has no way to say "don't fire at
+        // all". If Ghidra was already equipped (chosen safely on an earlier
+        // tick, before the target closed distance) and nothing else has
+        // ammo, the loop inside it exhausts and returns `null` —
+        // indistinguishable here from "already on the correct, safe
+        // weapon" — and firing proceeded anyway with the now-unsafe rocket.
+        // Confirmed via balance telemetry: self-rocket splash was the
+        // single leading cause of death for Pro/Easy (29% of all deaths)
+        // and #2 for Gamer/Easy (20%). Re-check the *effective* weapon (the
+        // switch target, or whatever's already equipped if no switch is
+        // happening) against the same safety distance right before
+        // actually firing, not just at selection time — a real player
+        // holding an empty-handed rocket launcher at point-blank range
+        // wouldn't pull the trigger just because nothing better is in
+        // their inventory. Covers both the threat and mine-targeting aim
+        // contexts (see `pickRangedWeapon`'s `aimDist` doc comment) — an
+        // enemy-only version of this check shipped first and barely moved
+        // the self-rocket death rate; a diagnostic trace showed mines, not
+        // enemies, were the dominant unsafe-fire case.
+        const effectiveWeapon = weaponSwitch ?? player.weaponIndex;
+        const aimDist = threat ? threat.dist : mineTarget ? mineTarget.dist : null;
+        const rocketUnsafe = effectiveWeapon === GHIDRA_WEAPON_INDEX && aimDist !== null && aimDist < ROCKET_SAFE_DISTANCE;
+        fire = !rocketUnsafe;
       }
     }
   } else if (navTarget) {
@@ -2454,12 +2506,17 @@ function computeLevelFlags(level, campaignAvgDensity) {
   }
   const normalTtk = level.runtime.combatPacing?.avgTtkByCategory?.normal?.mean;
   if (normalTtk !== undefined && normalTtk > NORMAL_TTK_HIGH_SEC) flags.push("normal_ttk_high");
-  const available = {};
-  const consumed = level.runtime.economyLootStarvation?.consumed?.total ?? {};
-  for (const k of ["bullets", "rockets", "health", "swap"]) {
-    available[k] = (level.static.prePlacedAmmo?.[k] ?? 0) + (level.runtime.economyLootStarvation?.lootRolled?.[k] ?? 0);
-    if (available[k] - (consumed[k] ?? 0) < 0) flags.push(`ammo_starvation_${k}`);
-  }
+  // No ammo_starvation_* flag here (deliberately removed, not just unimplemented):
+  // static per-visit prePlacedAmmo can't be compared against `consumed.total` without
+  // guaranteeing near-universal false positives, since `consumed.total` also includes
+  // dynamic (kill-drop) consumption that's nonzero on almost every level. Restricting
+  // the comparison to `consumed.static` avoids that, but is then close to a tautology
+  // (players structurally can't consume more static ammo than was placed) and carries
+  // no real signal. A trustworthy version needs real per-roll dynamic-drop amounts,
+  // which `lootRolled` doesn't record for most drops (see pushLootDrop in engine.ts) —
+  // an engine-side change, out of scope here. Real resource-scarcity signal already
+  // exists and is reliable: economyLootStarvation.desperation's
+  // timeAtZeroRangedAmmoSec/pctKillsForcedMelee.
   return flags;
 }
 
@@ -2478,17 +2535,11 @@ function buildComboOutput(levelPlans, combo) {
   }
 
   const campaignAggregate = buildCampaignAggregate(levelPlans, qualifyingRuns);
-  campaignAggregate.flags = computeLevelFlags({ static: { enemyDensity: campaignAvgDensity, prePlacedAmmo: sumStaticAmmo(levelPlans) }, runtime: campaignAggregate }, campaignAvgDensity);
+  campaignAggregate.flags = computeLevelFlags({ static: { enemyDensity: campaignAvgDensity }, runtime: campaignAggregate }, campaignAvgDensity);
 
   const weaponFirstOwnedAtLevel = mergeWeaponFirstOwned(qualifyingRuns);
 
   return { attemptsUsed, qualifyingRunCount: qualifyingRuns.length, failureReasons, weaponFirstOwnedAtLevel, levels, campaignAggregate };
-}
-
-function sumStaticAmmo(levelPlans) {
-  const out = { bullets: 0, rockets: 0, health: 0, swap: 0, weaponUnlocks: 0 };
-  for (const lp of levelPlans) for (const k of Object.keys(out)) out[k] += lp.staticAnalysis.prePlacedAmmo[k] ?? 0;
-  return out;
 }
 
 /** Earliest level each weapon index was first owned, across qualifying runs

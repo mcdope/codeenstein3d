@@ -6,6 +6,7 @@ dist-ssr
 .verify-output
 coverage
 balancing_telemetry.json
+balancing_runs/
 
 # Editor
 .vscode/*
