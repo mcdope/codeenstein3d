@@ -673,6 +673,11 @@ export const PROFILES = {
     weaponPriority: [0, 1, GDB_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX, GHIDRA_WEAPON_INDEX],
     healthDetourThreshold: 0.75,
     proactiveMineDisarm: true,
+    // Same "more hesitant with a self-splash launcher" reasoning as the
+    // weaponPriority ordering above, applied to situational cluster-
+    // targeting too (see `pickRangedWeapon`) — sticks to the shotgun for a
+    // distant cluster instead of reaching for rockets.
+    rocketForDistantClusters: false,
     // See `botRotSpeedMul`'s doc comment (engine.ts's `rotSpeedMultiplier`)
     // — approximates a realistic *mouse* turn speed for this skill tier
     // rather than the real Q/E keyboard rate, since mouse-look itself isn't
@@ -689,6 +694,7 @@ export const PROFILES = {
     weaponPriority: [GDB_WEAPON_INDEX, 0, 1, FRIDAY_HOTFIX_WEAPON_INDEX, GHIDRA_WEAPON_INDEX],
     healthDetourThreshold: 0.5,
     proactiveMineDisarm: true,
+    rocketForDistantClusters: true,
     // ~3.5x keyboard (~9.1 rad/sec, ~520°/sec) — a comfortable, practiced
     // enthusiast's mouse turn speed.
     rotSpeedMultiplier: 3.5,
@@ -704,6 +710,7 @@ export const PROFILES = {
     weaponPriority: [GHIDRA_WEAPON_INDEX, GDB_WEAPON_INDEX, 0, 1, FRIDAY_HOTFIX_WEAPON_INDEX],
     healthDetourThreshold: 0.25,
     proactiveMineDisarm: true,
+    rocketForDistantClusters: true,
     // ~5x keyboard (~13 rad/sec, ~745°/sec) — a fast, high-sensitivity
     // competitive flick-turn, still within real human mouse-aim territory.
     rotSpeedMultiplier: 5,
@@ -1538,16 +1545,40 @@ function rocketAimUnsafe(player, enemies, aimDist, isMineTarget) {
   return nearestRocketDetonationDistance(player, enemies) < ROCKET_SAFE_DISTANCE;
 }
 
+// Matches Friday Hotfix's real `maxRange` (weapons.ts) — beyond this its
+// pellets can't even reach the target, so there's no point selecting it.
+const FRIDAY_HOTFIX_MAX_RANGE = 3.5;
+// How far a clustered threat needs to be before rocket splash is worth
+// preferring over the flamethrower/shotgun, for skill tiers confident enough
+// to use it that way (see `rocketForDistantClusters`). Set comfortably past
+// `ROCKET_SAFE_DISTANCE` (4) rather than right at it, so this doesn't flip-
+// flop with the safety check at the boundary — a cluster only counts as
+// "distant" once it's unambiguously past the point rockets are even
+// considered safe.
+const ROCKET_CLUSTER_MIN_DIST = ROCKET_SAFE_DISTANCE + 1;
+
 /**
  * Best ranged weapon for the current situation — not just a fixed per-
- * profile preference order. "The bot should use all weapons at his disposal,
- * depending on situation and ammo availability" (user directive): prefers a
- * spread weapon (Regex Shotgun, 7 pellets — Friday Hotfix as a fallback
- * spread option within its short flamethrower range) once 2+ aggroed
- * enemies are clustered near the current threat, since a multi-pellet cone
- * can land hits on several of them per trigger pull instead of picking them
- * off one at a time; otherwise falls back to `profile.weaponPriority`
- * (unchanged for a single, isolated target). Never selects ghidra within
+ * profile preference order. "Ranged weapons according to situation" (user
+ * directive): once 2+ aggroed enemies are clustered near the current threat,
+ * picks a weapon suited to the cluster's distance rather than always
+ * reaching for the same spread weapon —
+ * - **Close** (within Friday Hotfix's real range): the flamethrower first —
+ *   a sustained cone directly in front does more against a tight, close
+ *   group than one shotgun blast — falling back to Regex Shotgun if Friday
+ *   Hotfix isn't owned/ammo'd.
+ * - **Distant**, and only for skill tiers confident enough to use rockets
+ *   this way (`profile.rocketForDistantClusters` — Casual is more hesitant
+ *   with a self-splash-capable launcher, same reasoning as its
+ *   `weaponPriority` ordering): Ghidra, splashing the whole distant group at
+ *   once instead of one target at a time — still gated by `rocketAimUnsafe`,
+ *   so this never overrides the self-splash safety check.
+ * - **Everything else** (mid-range, or a distant cluster on a profile that
+ *   doesn't trust rockets for this): Regex Shotgun, broad enough to be a
+ *   reasonable default regardless of exact range.
+ *
+ * Falls back to `profile.weaponPriority` for a single, isolated target (not
+ * clustered) or once none of the above apply. Never selects ghidra within
  * `ROCKET_SAFE_DISTANCE` regardless of source, at any priority — self-splash
  * damage isn't worth it that close. Never returns a melee index — melee
  * always goes through quick-melee (Space), never the equipped ranged slot
@@ -1559,11 +1590,21 @@ function pickRangedWeapon(player, profile, enemies, threat, mineTarget) {
       (e) => e.alive && e.aggroed && Math.hypot(e.x - threat.x, e.y - threat.y) <= CLUSTER_RADIUS,
     ).length;
     if (clusterCount >= 2) {
+      if (threat.dist <= FRIDAY_HOTFIX_MAX_RANGE) {
+        if (player.ownedWeapons.includes(FRIDAY_HOTFIX_WEAPON_INDEX) && hasAmmoFor(player, FRIDAY_HOTFIX_WEAPON_INDEX)) {
+          return player.weaponIndex === FRIDAY_HOTFIX_WEAPON_INDEX ? null : FRIDAY_HOTFIX_WEAPON_INDEX;
+        }
+      } else if (
+        threat.dist >= ROCKET_CLUSTER_MIN_DIST &&
+        profile.rocketForDistantClusters &&
+        player.ownedWeapons.includes(GHIDRA_WEAPON_INDEX) &&
+        hasAmmoFor(player, GHIDRA_WEAPON_INDEX) &&
+        !rocketAimUnsafe(player, enemies, threat.dist, false)
+      ) {
+        return player.weaponIndex === GHIDRA_WEAPON_INDEX ? null : GHIDRA_WEAPON_INDEX;
+      }
       if (player.ownedWeapons.includes(1) && hasAmmoFor(player, 1)) {
         return player.weaponIndex === 1 ? null : 1; // Regex Shotgun
-      }
-      if (player.ownedWeapons.includes(FRIDAY_HOTFIX_WEAPON_INDEX) && hasAmmoFor(player, FRIDAY_HOTFIX_WEAPON_INDEX) && threat.dist <= 3.5) {
-        return player.weaponIndex === FRIDAY_HOTFIX_WEAPON_INDEX ? null : FRIDAY_HOTFIX_WEAPON_INDEX;
       }
     }
   }
@@ -2305,23 +2346,35 @@ async function applyAction(page, desiredMoveKeys, fire, weaponSwitchIndex, useMe
         canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
         canvas.dispatchEvent(new KeyboardEvent("keyup", { code }));
       }
-      if (fire) {
-        const code = useMelee ? "Space" : "Backquote";
-        canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
-        canvas.dispatchEvent(new KeyboardEvent("keyup", { code }));
-      }
-      if (headed) return null;
+      // Fire is held for the *whole* tick (pumped virtual time or the real-time
+      // wait in headed mode), not pressed-and-released before any frame runs.
+      // A semi-auto weapon (`Weapon.auto` unset — pistol/shotgun/ghidra) still
+      // fires exactly once per tick either way, since `consumeFire()` is driven
+      // by the one keydown *event*, not by how long the key stays down. But an
+      // `auto: true` weapon (gdb, Friday Hotfix) checks `isFireHeld()` — whether
+      // the key is *currently* down — every frame; releasing it before the pump
+      // even starts meant no frame ever observed it held, so gdb/Friday Hotfix
+      // fired literally zero shots across the entire 836-attempt balance
+      // campaign, confirmed both by `weaponEfficiency` (no "3"/"5" entries
+      // anywhere) and a live ammo-pool trace (smg/gas sat permanently capped,
+      // never spent). Fixed by moving the keyup to the end of the tick.
+      const fireCode = fire ? (useMelee ? "Space" : "Backquote") : null;
+      if (fireCode) canvas.dispatchEvent(new KeyboardEvent("keydown", { code: fireCode }));
+      if (headed) return { fireCode };
       window.__pumpVirtualTime(stepMs, stepMs);
+      if (fireCode) canvas.dispatchEvent(new KeyboardEvent("keyup", { code: fireCode }));
       return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines() };
     },
     { desiredKeys: [...desiredMoveKeys], fire, weaponSwitchIndex, useMelee, stepMs, headed: HEADED },
   );
   if (!HEADED) return dispatched;
   await page.waitForTimeout(stepMs);
-  return page.evaluate(() => {
+  return page.evaluate((fireCode) => {
+    const canvas = document.querySelector("canvas");
+    if (fireCode) canvas.dispatchEvent(new KeyboardEvent("keyup", { code: fireCode }));
     const hooks = window.__codeensteinTestHooks;
     return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines() };
-  });
+  }, dispatched.fireCode);
 }
 
 export async function waitForTestHooks(page) {
