@@ -1469,6 +1469,74 @@ const CLUSTER_RADIUS = 3;
 // fired a rocket at a target barely out of the spawn room and killed itself
 // with the splash 0.3s into the level (45 self-rocket damage, 0 other damage).
 const ROCKET_SAFE_DISTANCE = 4;
+// Mirrors src/engine/rockets.ts's ROCKET_ENEMY_TRIGGER_RADIUS — how close a
+// rocket's flight path has to pass an enemy to detonate on it early. Needed
+// here (not just aimDist) because a rocket detonates on the FIRST living
+// enemy its path comes this close to, not necessarily the intended target —
+// see `nearestRocketDetonationDistance`'s doc comment.
+const ROCKET_ENEMY_TRIGGER_RADIUS = 0.4;
+
+/**
+ * Distance along the player's current firing ray to the nearest point where
+ * an in-flight rocket would actually detonate against a living enemy — not
+ * just the intended target's own distance. `updateRockets` (engine) explodes
+ * a rocket on the FIRST living enemy it comes within `ROCKET_ENEMY_TRIGGER_
+ * RADIUS` of, tracked or not; checking only the intended target's distance
+ * (the original, insufficient fix) misses an untracked enemy sitting between
+ * the player and the target, or just off to the side of the flight path,
+ * which can trigger a much closer detonation than the bot accounted for.
+ * Confirmed via balance telemetry: after the target-distance-only fix
+ * shipped, Pro/Normal's self-rocket death share got *worse* (20%→29%) across
+ * a full re-collection, while three other affected combos improved — this
+ * path-blind gap is the leading suspect.
+ *
+ * Deliberately doesn't account for walls between the player and an in-path
+ * enemy (would need a real raycast sweep, not just this straight-line
+ * projection) — a rare enough edge case not worth the added complexity here.
+ */
+function nearestRocketDetonationDistance(player, enemies) {
+  let nearest = Infinity;
+  const dirX = player.dirX;
+  const dirY = player.dirY;
+  const triggerSq = ROCKET_ENEMY_TRIGGER_RADIUS * ROCKET_ENEMY_TRIGGER_RADIUS;
+  for (const e of enemies) {
+    if (!e.alive) continue;
+    const ex = e.x - player.x;
+    const ey = e.y - player.y;
+    const t = ex * dirX + ey * dirY; // distance along the firing ray to closest approach
+    if (t < 0 || t >= nearest) continue; // behind the player, or already not the closest
+    const perpSq = ex * ex + ey * ey - t * t;
+    if (perpSq <= triggerSq) nearest = t;
+  }
+  return nearest;
+}
+
+/**
+ * True if firing a rocket right now is unsafe. Two independent reasons:
+ *
+ * 1. `isMineTarget` — a rocket has ZERO interaction with mines. Unlike every
+ *    hitscan weapon (which explicitly checks `findMineInProjections` and
+ *    calls `destroyMine`, per `RaycasterEngine`'s fire handler), a rocket
+ *    goes through `spawnRocket`/`updateRockets` instead, which only ever
+ *    checks `nearLivingEnemy`/`isWall` — confirmed by reading both call
+ *    sites, not assumed. A rocket "aimed at" a mine flies straight through
+ *    it, doing nothing, and keeps travelling until it hits a wall or a
+ *    living enemy — at a distance the mine's own `dist` says nothing about.
+ *    The bot has no map-aware wall-distance estimate to fall back on, so the
+ *    only correct answer is: never fire a rocket at a mine, at any distance.
+ *    Confirmed via a concurrency=1 diagnostic trace: the previous
+ *    (target-distance-only) mine-targeting check let the bot fire Ghidra
+ *    repeatedly at the same never-actually-threatened mine, each shot flying
+ *    off to an unaccounted-for wall.
+ * 2. The intended target (an actual enemy) or some other untracked living
+ *    enemy sits close enough to the flight path to trigger an earlier,
+ *    closer detonation than expected. See `nearestRocketDetonationDistance`.
+ */
+function rocketAimUnsafe(player, enemies, aimDist, isMineTarget) {
+  if (isMineTarget) return true;
+  if (aimDist !== null && aimDist < ROCKET_SAFE_DISTANCE) return true;
+  return nearestRocketDetonationDistance(player, enemies) < ROCKET_SAFE_DISTANCE;
+}
 
 /**
  * Best ranged weapon for the current situation — not just a fixed per-
@@ -1502,21 +1570,16 @@ function pickRangedWeapon(player, profile, enemies, threat, mineTarget) {
   // The doc comment above already claimed "never selects ghidra within
   // ROCKET_SAFE_DISTANCE regardless of source" — but the code only ever
   // checked `threat.dist`, so a mine target (aimed at with `threat` null)
-  // never went through this exclusion at all. That's a real gap, not a
-  // narrower one: `findDisarmableMine` only requires a mine be beyond its
-  // own `MINE_BLAST_RADIUS` (2.4) to be targeted, comfortably inside
-  // `ROCKET_SAFE_DISTANCE` (4) — and `ROCKET_BLAST_RADIUS` (engine.ts, 2.6)
-  // is itself slightly *larger* than a mine's own blast radius, so even a
-  // mine sitting right at the 2.4 cutoff was never actually safe to rocket.
-  // Confirmed via a scoped diagnostic trace: every observed unsafe Ghidra
-  // fire in a repro batch had `threat` null (mine-targeting), not an actual
-  // enemy — the enemy-only fix first shipped for this issue barely moved
-  // the self-rocket death rate, because mines, not enemies, turned out to
-  // be the dominant cause. `aimDist` below covers both aim contexts with
-  // the same one check.
+  // never went through this exclusion at all. Fixed once already (checking
+  // `mineTarget.dist` too via `aimDist`), then fixed again: `mineTarget.dist`
+  // was never the right thing to check in the first place, since a rocket
+  // has no interaction with mines at all and flies through to an
+  // unaccounted-for wall — see `rocketAimUnsafe`'s doc comment. Ghidra is
+  // now excluded outright whenever the aim source is a mine, not just when
+  // it's judged "too close".
   const aimDist = threat ? threat.dist : mineTarget ? mineTarget.dist : null;
   for (const idx of profile.weaponPriority) {
-    if (idx === GHIDRA_WEAPON_INDEX && aimDist !== null && aimDist < ROCKET_SAFE_DISTANCE) continue;
+    if (idx === GHIDRA_WEAPON_INDEX && rocketAimUnsafe(player, enemies, aimDist, Boolean(mineTarget))) continue;
     if (!player.ownedWeapons.includes(idx)) continue;
     if (!hasAmmoFor(player, idx)) continue;
     return player.weaponIndex === idx ? null : idx;
@@ -1967,22 +2030,33 @@ async function tick(page, player, enemies, mines, navTarget, profile, map, mineM
         // ammo, the loop inside it exhausts and returns `null` —
         // indistinguishable here from "already on the correct, safe
         // weapon" — and firing proceeded anyway with the now-unsafe rocket.
-        // Confirmed via balance telemetry: self-rocket splash was the
-        // single leading cause of death for Pro/Easy (29% of all deaths)
-        // and #2 for Gamer/Easy (20%). Re-check the *effective* weapon (the
-        // switch target, or whatever's already equipped if no switch is
-        // happening) against the same safety distance right before
-        // actually firing, not just at selection time — a real player
-        // holding an empty-handed rocket launcher at point-blank range
-        // wouldn't pull the trigger just because nothing better is in
+        // Confirmed via balance telemetry: self-rocket splash accounted for
+        // 29% of all Pro/Easy deaths and 20% of Gamer/Easy's — a
+        // disproportionate share given rockets deal less average damage per
+        // level-visit than mines do (not the single leading cause of death
+        // anywhere; that's enemy melee everywhere, in both pre- and post-fix
+        // data — an earlier version of this comment and the published
+        // report both claimed otherwise, incorrectly). Re-check the
+        // *effective* weapon (the switch target, or whatever's already
+        // equipped if no switch is happening) against the same safety check
+        // right before actually firing, not just at selection time — a real
+        // player holding an empty-handed rocket launcher at point-blank
+        // range wouldn't pull the trigger just because nothing better is in
         // their inventory. Covers both the threat and mine-targeting aim
-        // contexts (see `pickRangedWeapon`'s `aimDist` doc comment) — an
-        // enemy-only version of this check shipped first and barely moved
-        // the self-rocket death rate; a diagnostic trace showed mines, not
-        // enemies, were the dominant unsafe-fire case.
+        // contexts, plus untracked in-path enemies (see `rocketAimUnsafe`'s
+        // doc comment) — a target-distance-only version of this check
+        // shipped first and improved 3 of 4 affected combos, but made
+        // Pro/Normal's self-rocket rate *worse* (20%→29%). Root cause,
+        // confirmed by reading `RaycasterEngine`'s fire handler: a rocket has
+        // no interaction with mines at all (`spawnRocket` bypasses the
+        // hitscan mine-detection path entirely) — mine-targeting's `aimDist`
+        // was never a meaningful safety proxy to begin with, since the
+        // rocket flies straight through the mine to an unaccounted-for wall.
+        // Ghidra is now excluded outright for mine-targeting, not just
+        // gated on distance.
         const effectiveWeapon = weaponSwitch ?? player.weaponIndex;
         const aimDist = threat ? threat.dist : mineTarget ? mineTarget.dist : null;
-        const rocketUnsafe = effectiveWeapon === GHIDRA_WEAPON_INDEX && aimDist !== null && aimDist < ROCKET_SAFE_DISTANCE;
+        const rocketUnsafe = effectiveWeapon === GHIDRA_WEAPON_INDEX && rocketAimUnsafe(player, enemies, aimDist, Boolean(mineTarget));
         fire = !rocketUnsafe;
       }
     }
