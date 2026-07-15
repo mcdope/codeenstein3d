@@ -405,6 +405,7 @@ describe("RaycasterEngine — construction", () => {
       ]);
       expect(hooks!.getMines()).toEqual([]);
       expect(hooks!.getDrops()).toEqual([]);
+      expect(hooks!.getKeys()).toEqual([]);
       expect(hooks!.getTelemetrySnapshot()).toMatchObject({
         peakAggroedCount: 0,
         combatTimeSec: 0,
@@ -788,6 +789,23 @@ describe("RaycasterEngine — keys and doors", () => {
     input.keys.add("KeyW");
     for (let i = 0; i < 20; i++) engine.advance(0.1);
     expect(map.grid[5][7]).toBe(DOOR_TILE);
+  });
+
+  it("exposes an uncollected key via getKeys and stops listing it once collected", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const map = doorMap();
+      const { engine } = makeEngine(map);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      expect(hooks!.getKeys()).toEqual([{ x: 5.5, y: 5.5 }]);
+      engine.advance(0.016); // collect the key
+      expect(hooks!.getKeys()).toEqual([]);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+      delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+    }
   });
 
   it("opens a door behind the player when backing into it with S", () => {

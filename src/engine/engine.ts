@@ -763,6 +763,12 @@ export class RaycasterEngine {
         // pickup positions has no way to know an enemy just dropped
         // something and will walk right past it.
         getDrops: () => this.drops.map((d) => ({ x: d.x, y: d.y, kind: d.kind })),
+        // Uncollected dependency keys — without this, a bot's opportunistic
+        // loot detour (which already covers ammo/health/weapon pickups) has
+        // no way to see keys at all and only ever picks one up when its
+        // pre-planned route to a specific locked door happens to pass over
+        // it. See `scripts/run-balancing-telemetry.mjs`'s `maybeDetourForLoot`.
+        getKeys: () => this.map.keys.filter((k) => !k.collected).map((k) => ({ x: k.x, y: k.y })),
         getTelemetrySnapshot: () => {
           // Unreachable: `this.telemetry` is assigned earlier in this same
           // constructor `if` block that defines `getTelemetrySnapshot`

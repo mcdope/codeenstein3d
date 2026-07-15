@@ -1123,7 +1123,20 @@ async function maybeDetourForLoot(page, map, visitedPickups, profile, mineMemory
   // own `getDrops()` already naturally stops listing one once collected.
   const staticUncollected = map.ammoPickups.filter((p) => !visitedPickups.has(`${p.x},${p.y}`));
   const dynamicDrops = await page.evaluate(() => window.__codeensteinTestHooks.getDrops());
-  const uncollected = [...staticUncollected, ...dynamicDrops];
+  // Dependency keys — same "unknown at map-generation time from the bot's
+  // perspective, needs a live query" reasoning as `dynamicDrops` above, but
+  // for a different reason: keys are placed statically, but the *route
+  // planner* only ever detours for one when it's already blocking a specific
+  // planned door leg (see `scripts/lib/routePlanner.mjs`), so a key sitting
+  // near the bot's path but not currently required is otherwise never
+  // targeted (user report, watching gameplay: "bots don't always collect
+  // keys, even if they are next to their path"). Folded into the same
+  // nearest-by-real-path pool as every other pickup kind below, rather than
+  // given its own unconditional detour, so it's still subject to the same
+  // sane distance cap as everything else — a key that's actually adjacent to
+  // the path wins the nearest-path comparison for free.
+  const dynamicKeys = (await page.evaluate(() => window.__codeensteinTestHooks.getKeys())).map((k) => ({ ...k, kind: "key" }));
+  const uncollected = [...staticUncollected, ...dynamicDrops, ...dynamicKeys];
   if (uncollected.length === 0) return { state: "playing" };
 
   const urgent = player.healthFraction < profile.healthDetourThreshold;
