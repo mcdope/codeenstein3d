@@ -35,27 +35,29 @@ A long, straight corridor gets broken up rather than left as one uninterrupted s
 | gdb | 3 | Full-auto hitscan | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 4 |
 | ghidra | 4 | Rocket / splash damage | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 8 |
 | Friday Hotfix | 5 | Full-auto 6-pellet cone, 3.5-tile max range | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 12 |
-| Toolchain | `Space` only | Full-auto melee | Infinite ammo, 2× the knife's damage, a bigger lifesteal heal, fires as long as you hold the key — permanently replaces the knife on Space once picked up. Only found in a secret room or dropped by an Elite kill, and only from campaign level 4 on; **no forced unlock** — a loot-unlucky run can finish without ever finding it |
+| Toolchain | `Space` only | Full-auto melee | Infinite ammo, 2× the knife's damage, a bigger lifesteal heal, fires as long as you hold the key — permanently replaces the knife on Space once picked up. Found in a secret room, dropped by an Elite kill, or a small chance on any regular kill whose loot roll comes up empty — all gated to campaign level 4 on; **no forced unlock** — a loot-unlucky run can still finish without ever finding it |
 
 Ranged weapons draw from four separate ammo pools: **Bullets** (pistol/shotgun), **SMG Ammo** (gdb only), **Rockets** (ghidra only), and **Gas** (Friday Hotfix only). SMG/rocket/gas ammo won't drop or spawn on the map at all until you actually own the matching weapon. Hitscan pellets deviate more the further away the target is, so point-blank shots are reliable and very long-range ones can miss. Friday Hotfix additionally enforces a hard 3.5-tile max range on top of that — a genuine flamethrower's reach, not just a wide cone that happens to scatter — and fires a fanning flame stream instead of the thin tracer line every other gun draws.
 
 ## Loot & Difficulty
 
-Enemy kills roll a random drop: bullets, SMG ammo, rockets, gas, health, or swap. A few rules apply on top of the base odds:
-- No health drop is ever rolled while you're already at full health (loot goes to ammo/swap instead).
+Any regular kill tops up your health if you're not already at full stability — unconditional, not a roll, since running low on health is the one thing that can actually end a run. Separately, the same kill rolls for bullets, SMG ammo, rockets, gas, or swap — but that roll doesn't always land: roughly 1 in 5 regular kills drop no ammo/swap at all. A few more rules apply on top:
 - No SMG ammo is rolled until you own gdb; no rockets are rolled until you own ghidra; no gas is rolled until you own Friday Hotfix.
 - Elite kills always drop either a large health pack or (if you're already full) a bigger bullets/swap drop, plus a separate 60% chance to *additionally* drop a still-locked weapon (two items on the ground once one's missing, not a choice between them). From campaign level 4 on, this can include the Toolchain chainsaw.
-- Any regular kill has a very small (1%) chance to also drop a still-locked weapon, stacked on top of its normal roll — a rare bonus, not a reliable unlock path. Toolchain is exempt from this roll — it's only reachable via a secret room or an Elite kill.
+- Any regular kill has a very small (1%) chance to also drop a still-locked weapon, stacked on top of its normal roll — a rare bonus, not a reliable unlock path.
+- If a regular kill's ammo/swap roll comes up empty, there's a small extra chance (5%) it grants the Toolchain chainsaw instead of nothing — on top of, not instead of, finding one in a secret room or from an Elite.
 
 ### Difficulty
 
-| Difficulty | Enemy HP | Enemy damage | Pickup amounts |
-|---|---|---|---|
-| Easy | ×0.7 | ×0.7 | ×1.3 |
-| Normal | ×1 | ×1 | ×1 |
-| Hard | ×1.5 | ×1.5 | ×0.7 |
+| Difficulty | Enemy HP | Enemy damage | Enemy aim | Pickup amounts |
+|---|---|---|---|---|
+| Easy | ×0.7 | ×0.85 | Sloppy — random deviation up to ±10° per shot | ×1.3 |
+| Normal | ×1 | ×1 | Slightly off — up to ±4° | ×1 |
+| Hard | ×1.5 | ×1.5 | Dead-on — no deviation at all | ×0.7 |
 
-Difficulty only affects enemy-dealt melee/ranged damage — traps and rocket self-splash are unaffected.
+Note Easy's damage (×0.85) doesn't mirror its HP reduction (×0.7) the way Hard's pair does — a deliberate, slightly less forgiving choice made after Easy's original mirrored curve, combined with cautious play, turned out to make it possible to sail through the whole campaign nearly unscathed.
+
+Difficulty affects enemy-dealt melee/ranged damage and ranged aim precision — traps and rocket self-splash are unaffected. "Dead-on" aim still means a real bolt with real travel time, not a hitscan or a homing shot — you can still dodge it, an enemy just won't miss by aiming badly.
 
 ## Enemies
 
