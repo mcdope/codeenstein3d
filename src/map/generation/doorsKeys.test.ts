@@ -8,6 +8,8 @@ import { DOOR_TILE, type Enemy, type Room, type Tile } from "../types";
 import { carveRoom, makeRoom } from "./geometry";
 import { carveHLine } from "./corridors";
 import { placeDoors, placeKeys } from "./doorsKeys";
+import { reachableTiles } from "./pathing";
+import { key } from "./util";
 
 function entity(overrides: Partial<CodeEntity> = {}): CodeEntity {
   return { name: "f", kind: "function", startLine: 1, endLine: 5, complexityScore: 3, nestingDepth: 0, ...overrides };
@@ -180,5 +182,54 @@ describe("placeKeys", () => {
     expect(doors.length).toBeGreaterThanOrEqual(2);
     const keys = placeKeys(g, rooms[0].center, rooms[2].center, [], doors, [], mulberry32(5));
     expect(keys.length).toBeGreaterThan(0);
+  });
+
+  it("confines each later key to area newly reached since the previous door, never back in the initial region", () => {
+    const g = grid(30);
+    const rooms: Room[] = [
+      makeRoom(1, 1, 3, 3, entity()),
+      makeRoom(10, 1, 3, 3, entity({ kind: "method", visibility: "private" })),
+      makeRoom(20, 1, 3, 3, entity({ kind: "method", visibility: "protected" })),
+    ];
+    for (const r of rooms) carveRoom(g, r);
+    carveHLine(g, 3, 10, 2);
+    carveHLine(g, 13, 20, 2);
+    const doors = placeDoors(rooms, g);
+    expect(doors.length).toBeGreaterThanOrEqual(2);
+
+    // Snapshot of what's reachable before any door opens at all — under the
+    // old cumulative-pool bug, later keys could land back in here.
+    const initialReachable = reachableTiles(g, rooms[0].center, new Set());
+
+    const keys = placeKeys(g, rooms[0].center, rooms[2].center, [], doors, [], mulberry32(5));
+    expect(keys.length).toBeGreaterThan(1);
+    for (const k of keys.slice(1)) {
+      const tileKey = key({ x: Math.floor(k.x), y: Math.floor(k.y) });
+      expect(initialReachable.has(tileKey)).toBe(false);
+    }
+  });
+
+  it("falls back to the full reachable set when the newly-opened area has no usable tile left", () => {
+    const g = grid(10);
+    // A straight corridor: spawn, two spare floor tiles, door1, an
+    // enemy-occupied floor tile (the only tile door1's opening reveals),
+    // door2. Door2's newly-opened area is just the door1 tile (excluded,
+    // not floor) and the enemy tile (excluded, already used) — empty of
+    // usable candidates — so its key must fall back to the wider
+    // (still-unused-somewhere) reachable pool instead of being dropped.
+    g[1][1] = 0; // spawn
+    g[1][2] = 0; // spare floor A
+    g[1][3] = 0; // spare floor B
+    g[1][4] = DOOR_TILE; // door1
+    g[1][5] = 0; // enemy-occupied floor (door1's newly-opened area)
+    g[1][6] = DOOR_TILE; // door2
+    const doors = [
+      { x: 4, y: 1 },
+      { x: 6, y: 1 },
+    ];
+    const enemy = { x: 5.5, y: 1.5 } as Enemy;
+
+    const keys = placeKeys(g, { x: 1, y: 1 }, { x: 9, y: 9 }, [enemy], doors, [], mulberry32(1));
+    expect(keys).toHaveLength(2);
   });
 });

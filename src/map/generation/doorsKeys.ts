@@ -71,6 +71,11 @@ export function placeKeys(
     ...enemies.map((e) => key({ x: Math.floor(e.x), y: Math.floor(e.y) })),
     ...breakupTileKeys(breakupRooms),
   ]);
+  // Reachable set from the previous iteration, so each key can be confined
+  // to the room its own door just unlocked (see `newlyReachable` below)
+  // instead of the ever-growing cumulative reachable set, which would let
+  // the (usually largest) initial public area dominate every pick.
+  let previousReachable = new Set<string>();
 
   while (opened.size < doors.length) {
     const reachable = reachableTiles(grid, spawn, opened);
@@ -79,12 +84,17 @@ export function placeKeys(
     );
     if (!frontier) break; // remaining doors are unreachable dead-ends
 
-    const spot = pickKeySpot(reachable, grid, used, rng);
+    const newlyReachable = new Set([...reachable].filter((k) => !previousReachable.has(k)));
+    // Fall back to the full reachable set only when the newly-opened area
+    // has no usable tile left (e.g. a door that loops back into already-
+    // explored floor) — better than silently dropping the key.
+    const spot = pickKeySpot(newlyReachable, grid, used, rng) ?? pickKeySpot(reachable, grid, used, rng);
     if (spot) {
       used.add(key(spot));
       keys.push({ x: spot.x + 0.5, y: spot.y + 0.5, collected: false });
     }
     opened.add(key(frontier));
+    previousReachable = reachable;
   }
   return keys;
 }
