@@ -56,8 +56,36 @@ const OUTPUT_FILE = path.join(REPO_ROOT, "src/engine/defaultHighscore.ts");
 
 const RUN_COUNT = 10;
 const KEEP_COUNT = 3;
+// Each run gets its own fresh browser context (isolated localStorage) and
+// only reads the shared, never-mutated `levelPlans` — so runs are fully
+// independent and safe to drive concurrently, the same batched-Promise.all
+// pattern `run-balancing-telemetry.mjs` already uses (see its
+// `ATTEMPT_CONCURRENCY`). Kept lower than that script's default (12) since
+// each run here plays a *full* campaign (17 levels) rather than one short
+// attempt — default picked to meaningfully cut real wall-clock generation
+// time without oversubscribing a single machine's headless Chromium.
+const RUN_CONCURRENCY = process.env.CODEENSTEIN_HIGHSCORE_CONCURRENCY ? Number(process.env.CODEENSTEIN_HIGHSCORE_CONCURRENCY) : 4;
 
+// How much virtual game-time one bot decision (one `applyAction` round trip)
+// advances — the bot's own AI-tick cadence, not the recorded replay's frame
+// size (see `RECORD_STEP_MS`). Keeping this separate from frame size means
+// `MAX_TICKS_PER_WAYPOINT`/`FINAL_APPROACH_TICKS`/`DOOR_OPEN_TICKS`'s virtual-
+// time budgets, and the real Playwright round-trip count driving them (the
+// actual cost of running this script), are both untouched by how finely the
+// replay gets recorded.
 const VIRTUAL_STEP_MS = 50;
+// Recorded `ReplayFrame` granularity — matches a real 60fps display frame so
+// a default-highscore replay's frame density/dt distribution looks like a
+// real live playthrough's, instead of the coarse `VIRTUAL_STEP_MS`-sized
+// frames a bot-generated recording produced before (which played back ~3x
+// too fast: `main.ts`'s replay `step()` advances exactly one recorded frame
+// per real render tick, regardless of that frame's own `dt`, so a replay
+// with 3x-fewer-but-3x-longer frames covering the same virtual duration
+// finishes in ~1/3 the real time — see the `notes` root-cause entry this
+// fixed). `VIRTUAL_STEP_MS` divides evenly into this (50 / (1000/60) = 3),
+// so each bot decision now records exactly 3 real-frame-sized `ReplayFrame`s
+// instead of 1 coarse one, with the bot's own decision cadence unchanged.
+const RECORD_STEP_MS = 1000 / 60;
 const MAX_TICKS_PER_WAYPOINT = 600; // 30s virtual time per waypoint — the effective per-level ceiling is this times the route's waypoint count
 const FINAL_APPROACH_TICKS = 80; // extra push onto the exit tile's exact center
 
@@ -134,41 +162,17 @@ async function main() {
   const reachableCount = levelPlans.filter((l) => l.route.ok).length;
   console.log(`\n${reachableCount}/${levelPlans.length} levels have a planned route (bot may still die to combat before reaching some of them).\n`);
 
-  console.log(`Launching headless Chromium for ${RUN_COUNT} playthroughs...\n`);
+  console.log(`Launching headless Chromium for ${RUN_COUNT} playthroughs (concurrency ${RUN_CONCURRENCY})...\n`);
   const browser = await chromium.launch();
   const results = [];
 
-  for (let run = 1; run <= RUN_COUNT; run++) {
-    console.log(`${"=".repeat(72)}\nRun ${run}/${RUN_COUNT}\n${"=".repeat(72)}`);
-    const context = await browser.newContext(); // fresh, isolated localStorage per run
-    const page = await context.newPage();
-    page.on("pageerror", (err) => console.log(`  [pageerror] ${err.message}`));
-
-    await installVirtualClock(page);
-    await page.goto(`${DEV_SERVER_URL}/?testHooks=1`);
-    await page.click("#tab-demo");
-    await page.click("#launch-demo-campaign");
-    await waitForTestHooks(page);
-    await dismissOverlay(page);
-
-    const outcome = await playRun(page, levelPlans);
-    console.log(`  run outcome: ${outcome.reason} (levels attempted: ${outcome.levelsAttempted})`);
-
-    const highscoreRaw = await page
-      .waitForFunction(() => localStorage.getItem("codeenstein-highscores"), undefined, { timeout: 15000, polling: 100 })
-      .then((handle) => handle.jsonValue())
-      .catch(() => null);
-
-    if (highscoreRaw) {
-      const board = decompressHighscoreBlob(highscoreRaw);
-      const entry = board[0]; // fresh context — this run's is the only entry
-      console.log(`  recorded entry: score=${entry.score} levelsCleared=${entry.levelsCleared} levelName=${entry.levelName}`);
-      results.push({ run, entry });
-    } else {
-      console.log("  no highscore entry recorded (died on level 1, or got stuck before clearing one)");
-    }
-
-    await context.close();
+  for (let batchStart = 1; batchStart <= RUN_COUNT; batchStart += RUN_CONCURRENCY) {
+    const batchRuns = Array.from(
+      { length: Math.min(RUN_CONCURRENCY, RUN_COUNT - batchStart + 1) },
+      (_, i) => batchStart + i,
+    );
+    const batch = await Promise.all(batchRuns.map((run) => runOnePlaythrough(browser, run, levelPlans)));
+    results.push(...batch.filter(Boolean));
   }
 
   await browser.close();
@@ -209,6 +213,50 @@ async function main() {
 
   writeDefaultHighscoreFile(kept.map((r) => r.entry));
   console.log(`\nWrote ${OUTPUT_FILE} — review with \`git diff\` before committing.`);
+}
+
+/** Drives one full campaign playthrough in its own fresh, isolated browser
+ * context and extracts the highscore entry it recorded, if any. Runs
+ * concurrently with other calls (batched in `main`) — every side effect is
+ * scoped to this call's own `context`/`page`, so there's no shared mutable
+ * state between concurrent playthroughs beyond the read-only `levelPlans`.
+ * Returns `null` instead of pushing/logging directly so `main` can collect
+ * a whole concurrent batch via `Promise.all` before deciding what to do with
+ * it. */
+async function runOnePlaythrough(browser, run, levelPlans) {
+  const log = (msg) => console.log(`[run ${run}] ${msg}`);
+  log(`${"=".repeat(72)}\nRun ${run}/${RUN_COUNT}\n${"=".repeat(72)}`);
+  const context = await browser.newContext(); // fresh, isolated localStorage per run
+  const page = await context.newPage();
+  page.on("pageerror", (err) => log(`[pageerror] ${err.message}`));
+
+  try {
+    await installVirtualClock(page);
+    await page.goto(`${DEV_SERVER_URL}/?testHooks=1`);
+    await page.click("#tab-demo");
+    await page.click("#launch-demo-campaign");
+    await waitForTestHooks(page);
+    await dismissOverlay(page);
+
+    const outcome = await playRun(page, levelPlans);
+    log(`run outcome: ${outcome.reason} (levels attempted: ${outcome.levelsAttempted})`);
+
+    const highscoreRaw = await page
+      .waitForFunction(() => localStorage.getItem("codeenstein-highscores"), undefined, { timeout: 15000, polling: 100 })
+      .then((handle) => handle.jsonValue())
+      .catch(() => null);
+
+    if (!highscoreRaw) {
+      log("no highscore entry recorded (died on level 1, or got stuck before clearing one)");
+      return null;
+    }
+    const board = decompressHighscoreBlob(highscoreRaw);
+    const entry = board[0]; // fresh context — this run's is the only entry
+    log(`recorded entry: score=${entry.score} levelsCleared=${entry.levelsCleared} levelName=${entry.levelName}`);
+    return { run, entry };
+  } finally {
+    await context.close();
+  }
 }
 
 /** Plays one full run: walks the precomputed route for each level in order,
@@ -388,13 +436,16 @@ async function readState(page) {
  * in-page, see `window.__botHeldKeys`), dispatches the resulting
  * keydown/keyup pairs on the canvas, optionally taps a fresh `Backquote`
  * keydown+keyup (edge-triggered — `Backquote` alone drives both single-shot
- * and held-auto weapon firing, see the module doc comment), pumps one
- * virtual step, and returns the fresh `{player, enemies}` reading. Keyboard
- * input never needs to be trusted (`InputController` doesn't check
- * `isTrusted`), so this stays a single in-page round trip. */
+ * and held-auto weapon firing, see the module doc comment), pumps
+ * `VIRTUAL_STEP_MS` of virtual time in `RECORD_STEP_MS`-sized sub-steps (so
+ * this one bot decision still costs one in-page round trip, but records
+ * several real-frame-sized `ReplayFrame`s instead of one coarse one — see
+ * `RECORD_STEP_MS`'s doc comment), and returns the fresh `{player, enemies}`
+ * reading. Keyboard input never needs to be trusted (`InputController`
+ * doesn't check `isTrusted`), so this stays a single in-page round trip. */
 async function applyAction(page, desiredMoveKeys, fire) {
   return page.evaluate(
-    ({ desiredKeys, fire, stepMs }) => {
+    ({ desiredKeys, fire, stepMs, recordStepMs }) => {
       const canvas = document.querySelector("canvas");
       const hooks = window.__codeensteinTestHooks;
       const desired = new Set(desiredKeys);
@@ -406,10 +457,10 @@ async function applyAction(page, desiredMoveKeys, fire) {
         canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "Backquote" }));
         canvas.dispatchEvent(new KeyboardEvent("keyup", { code: "Backquote" }));
       }
-      window.__pumpVirtualTime(stepMs, stepMs);
+      window.__pumpVirtualTime(stepMs, recordStepMs);
       return { player: hooks.getPlayerState(), enemies: hooks.getEnemies() };
     },
-    { desiredKeys: [...desiredMoveKeys], fire, stepMs: VIRTUAL_STEP_MS },
+    { desiredKeys: [...desiredMoveKeys], fire, stepMs: VIRTUAL_STEP_MS, recordStepMs: RECORD_STEP_MS },
   );
 }
 
@@ -422,11 +473,11 @@ async function waitForTestHooks(page) {
  * helper's doc comment in `verify-campaign-playthrough.mjs`. A no-op if none
  * is up. */
 async function dismissOverlay(page) {
-  await page.evaluate(() => {
-    window.__pumpVirtualTime(1500, 50);
+  await page.evaluate((recordStepMs) => {
+    window.__pumpVirtualTime(1500, recordStepMs);
     window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space" }));
-    window.__pumpVirtualTime(50, 50);
-  });
+    window.__pumpVirtualTime(50, recordStepMs);
+  }, RECORD_STEP_MS);
 }
 
 /** Synchronous virtual clock — see the identical stub's doc comment in
