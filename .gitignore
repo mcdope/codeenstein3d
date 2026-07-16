@@ -7,9 +7,13 @@ dist-ssr
 coverage
 balancing_telemetry.json
 balancing_runs/
+balancing_runs_*/
 
 # Editor
 .vscode/*
 !.vscode/extensions.json
 .idea
 .DS_Store
+campaign-launch-*.log
+campaign-ratecheck-*.log
+watch_trace.log
