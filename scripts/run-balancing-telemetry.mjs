@@ -933,10 +933,20 @@ async function runCombo(browser, profileName, profile, difficulty, levelPlans) {
   }
   // A batch can overshoot (e.g. all 4 concurrent attempts qualify at once) —
   // trim to exactly 3 samples so aggregation stays consistent with a
-  // sequential run.
+  // sequential run. IMPORTANT: capture the untrimmed count first. When
+  // ATTEMPT_CONCURRENCY > REQUIRED_QUALIFYING_RUNS (the campaign orchestrator's
+  // default: concurrency 8, target 5), the loop almost always exits after a
+  // single batch once true per-attempt success is reasonably high — every one
+  // of the overnight campaign's 90 files landed at exactly 8 attempts/5
+  // qualifying as a result, which mechanically floors qualifyingRuns.length/
+  // attemptsUsed at REQUIRED_QUALIFYING_RUNS/ATTEMPT_CONCURRENCY (5/8=62.5%)
+  // regardless of the real underlying rate. trueQualifyingCount preserves the
+  // real number of successes in the final batch so downstream rate
+  // calculations aren't silently censored by the sample-size trim.
+  const trueQualifyingCount = qualifyingRuns.length;
   qualifyingRuns.length = Math.min(qualifyingRuns.length, REQUIRED_QUALIFYING_RUNS);
 
-  return { qualifyingRuns, attemptsUsed: attempts, failureReasons };
+  return { qualifyingRuns, attemptsUsed: attempts, failureReasons, trueQualifyingCount };
 }
 
 /**
@@ -2670,7 +2680,7 @@ function computeLevelFlags(level, campaignAvgDensity) {
 }
 
 function buildComboOutput(levelPlans, combo) {
-  const { qualifyingRuns, attemptsUsed, failureReasons } = combo;
+  const { qualifyingRuns, attemptsUsed, failureReasons, trueQualifyingCount } = combo;
 
   const levels = levelPlans.map((lp, i) => {
     const samples = qualifyingRuns.map((run) => run.levelSnapshots.find((s) => s.levelIndex === i)).filter(Boolean);
@@ -2692,6 +2702,10 @@ function buildComboOutput(levelPlans, combo) {
   return {
     attemptsUsed,
     qualifyingRunCount: qualifyingRuns.length,
+    // Real success count before the REQUIRED_QUALIFYING_RUNS sample-size trim
+    // above — use this (not qualifyingRunCount) for a true qualifying-rate
+    // stat. See the trim's doc comment for why the two diverge.
+    trueQualifyingCount,
     failureReasons,
     weaponFirstOwnedAtLevel,
     weaponAcquisitionRate,

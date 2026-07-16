@@ -64,6 +64,14 @@ const ATTEMPT_CAP = process.env.CODEENSTEIN_CAMPAIGN_ATTEMPT_CAP ? Number(proces
 // Internal browser-context concurrency *within* one spawned invocation.
 // Lower than run-balancing-telemetry.mjs's own default (12) since LANES of
 // these run concurrently as separate processes — see the doc comment above.
+// NOTE: since this is > BATCH_SIZE, a single batch almost always contains
+// enough successes to satisfy BATCH_SIZE whenever the true per-attempt
+// success rate is reasonably high — run-balancing-telemetry.mjs's runCombo()
+// then stops after one batch and trims to BATCH_SIZE, which mechanically
+// floors the observed qualifyingRunCount/attemptsUsed ratio at
+// BATCH_SIZE/CONCURRENCY_PER_LANE (5/8=62.5%) rather than measuring the real
+// rate. Use each file's trueQualifyingCount field (untrimmed) for an honest
+// per-attempt rate, not qualifyingRunCount.
 const CONCURRENCY_PER_LANE = process.env.CODEENSTEIN_CAMPAIGN_CONCURRENCY ? Number(process.env.CODEENSTEIN_CAMPAIGN_CONCURRENCY) : 8;
 // How many combos to process concurrently (each as its own child process).
 const LANES = process.env.CODEENSTEIN_CAMPAIGN_LANES ? Number(process.env.CODEENSTEIN_CAMPAIGN_LANES) : 2;
