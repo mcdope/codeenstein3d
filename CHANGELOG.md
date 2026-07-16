@@ -14,6 +14,7 @@
 - Fix: the 3 bundled example replays a first-time player sees in the Highscores dialog played back at roughly 3x real speed instead of matching the pace of the original run
 - Watching a replay now returns you to the Highscores dialog once it ends (a natural win/death, stopping early, or an error), instead of dropping you back at the plain file-tree screen
 - New: export a "Watch Replay" viewing as a downloadable webm video — a Record button on the replay's own transport bar, or a one-click "Export" shortcut next to each Highscores entry's "Watch" button. Recording always captures at real 1x speed and locks the transport controls for the duration
+- The startpage now leads with a plain-English "New to coding?" card pointing straight at the no-setup Demos tab, before the more technical code→dungeon mapping
 
 ## beta-3
 
