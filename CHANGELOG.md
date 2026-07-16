@@ -15,6 +15,7 @@
 - Watching a replay now returns you to the Highscores dialog once it ends (a natural win/death, stopping early, or an error), instead of dropping you back at the plain file-tree screen
 - New: export a "Watch Replay" viewing as a downloadable webm video — a Record button on the replay's own transport bar, or a one-click "Export" shortcut next to each Highscores entry's "Watch" button. Recording always captures at real 1x speed and locks the transport controls for the duration
 - The startpage now leads with a plain-English "New to coding?" card pointing straight at the no-setup Demos tab, before the more technical code→dungeon mapping
+- New: an "Export Map as PNG" button appears once you clear a level — downloads a top-down image of it, textured with the actual walls/doors/floors/hazards you were seeing in-game (not a flat debug-style diagram), for sharing. Only ever available for a level you've already finished
 
 ## beta-3
 

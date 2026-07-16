@@ -118,3 +118,21 @@ export function stubCanvasGetContext(canvas: HTMLCanvasElement): {
     },
   };
 }
+
+/** jsdom's `HTMLCanvasElement.prototype.toBlob` is unimplemented (throws a
+ * "Not implemented" virtual-console error and never invokes its callback at
+ * all) — needed by the "Export Map as PNG" button (`main.ts`). Patches it to
+ * synchronously call back with a real (tiny, content-irrelevant) `Blob`, or
+ * `null` if `returnNull` is set, to exercise the "toBlob handed back nothing"
+ * branch a real browser can also produce. Returns a restore function. */
+export function stubCanvasToBlob(returnNull = false): { restore: () => void } {
+  const original = HTMLCanvasElement.prototype.toBlob;
+  HTMLCanvasElement.prototype.toBlob = function (callback: BlobCallback): void {
+    callback(returnNull ? null : new Blob(["fake-png-bytes"], { type: "image/png" }));
+  };
+  return {
+    restore: () => {
+      HTMLCanvasElement.prototype.toBlob = original;
+    },
+  };
+}

@@ -16,6 +16,8 @@ import { renderFileTree } from "./ui/fileTree";
 import { initConsoleSidebar } from "./ui/consoleSidebar";
 import { extensionOf, isParsable, parseFile } from "./parser/registry";
 import { MapGenerator } from "./map/mapGenerator";
+import type { GameMap } from "./map/types";
+import { renderExportMap } from "./map/exportView";
 import { RaycasterEngine } from "./engine/engine";
 import { audio } from "./engine/audio";
 import { bgm } from "./engine/bgm";
@@ -1210,6 +1212,7 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
           { linesRefactored: parsed.linesOfCode, bugsSquashed: stats.kills },
           () => void advanceToNextLevel(stats),
         );
+        viewport.appendChild(buildExportMapButton(map, campaignName(), levelName));
       },
       onCheatActivated: () => {
         cheatsUsed = true;
@@ -1941,6 +1944,30 @@ function pickSupportedRecordingMimeType(): string | undefined {
  * becomes a `-`. */
 function sanitizeFilenamePart(s: string): string {
   return s.replace(/[^a-zA-Z0-9._-]+/g, "-");
+}
+
+/** Builds the "Export Map as PNG" button shown once a level is won (see
+ * `onWin` in `launchLevel`) — appended into `#viewport`, destroyed
+ * automatically the next time its children get cleared (the next
+ * `launchLevel` call, or a return to the file tree), same as every other
+ * level-scoped DOM addition in this function. No "has this level been
+ * won" state needs tracking anywhere — the button's own presence in the
+ * DOM already is that state, and it closes over this level's own `map`
+ * object directly rather than needing it threaded through anything wider. */
+function buildExportMapButton(map: GameMap, campaign: string, levelName: string): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "settings-btn";
+  button.textContent = "Export Map as PNG";
+  button.addEventListener("click", () => {
+    const mapCanvas = renderExportMap(map, textures.getActiveSet());
+    mapCanvas.toBlob((blob) => {
+      if (blob) {
+        downloadBlob(blob, `codeenstein-${sanitizeFilenamePart(campaign)}-${sanitizeFilenamePart(levelName)}-map.png`);
+      }
+    }, "image/png");
+  });
+  return button;
 }
 
 /**

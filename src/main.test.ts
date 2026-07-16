@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildTestWad } from "../scripts/fixtures/buildTestWad.mjs";
 import { buildIndexDom, stubDialogElement, stubResizeObserver } from "../test/mocks/mainDom";
 import { installRaf, type RafController } from "../test/mocks/raf";
-import { stubCanvasGetContext } from "../test/mocks/canvas";
+import { stubCanvasGetContext, stubCanvasToBlob } from "../test/mocks/canvas";
 import { FakeFileSystemFileHandle, fakeDirectoryHandle } from "../test/mocks/fsAccess";
 import { FakeMediaRecorder, installRecordingSupport } from "../test/mocks/mediaRecorder";
 import type { TreeNode } from "./fs/workspace";
@@ -2011,6 +2011,30 @@ describe("main.ts — reaching a natural win/death via real navigation", () => {
     walkPath(canvas, raf, path, () => testHooks()?.getPlayerState().state !== "playing", 500);
     expect(testHooks()?.getPlayerState().state).toBe("won");
 
+    // Winning also appends the "Export Map as PNG" button (main.ts's onWin)
+    // — no separate "has this level been won" state to check, its mere
+    // presence in the DOM is the gate. jsdom doesn't implement
+    // canvas.toBlob/URL.createObjectURL, and a real HTMLAnchorElement.click()
+    // on a download anchor still queues a spurious "not implemented
+    // navigation" jsdom error — stub all three before clicking it.
+    const { restore: restoreToBlob } = stubCanvasToBlob();
+    const createObjectURLSpy = vi.fn(() => "blob:fake");
+    const revokeObjectURLSpy = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL: createObjectURLSpy, revokeObjectURL: revokeObjectURLSpy });
+    const anchorClickSpy = vi.fn();
+    const originalAnchorClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = anchorClickSpy;
+    try {
+      const exportButton = [...document.querySelectorAll("button")].find((b) => b.textContent === "Export Map as PNG");
+      expect(exportButton).not.toBeUndefined();
+      exportButton!.click();
+      expect(createObjectURLSpy).toHaveBeenCalledOnce();
+      expect(anchorClickSpy).toHaveBeenCalledOnce();
+    } finally {
+      restoreToBlob();
+      HTMLAnchorElement.prototype.click = originalAnchorClick;
+    }
+
     // Reaching the exit only flips engine state to "won" and shows
     // GameHud's "Commit Summary" overlay — that overlay's own dismiss
     // (same DISMISS_LOCK_MS-gated mechanism as the level-start briefing)
@@ -2027,6 +2051,39 @@ describe("main.ts — reaching a natural win/death via real navigation", () => {
     dismissBriefingHelper(raf);
     await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden"), 8000);
     expect(document.querySelector("#viewport > p.muted")?.textContent).toContain("Select a file from the tree");
+    // The Export button was scoped to that one level/win — resetToFileTree's
+    // own viewport-clearing already destroyed it, no separate cleanup needed.
+    expect([...document.querySelectorAll("button")].some((b) => b.textContent === "Export Map as PNG")).toBe(false);
+  });
+
+  it("the Export Map button does nothing if canvas.toBlob hands back no blob", async () => {
+    await importMain();
+    const logSpy = vi.spyOn(console, "log");
+    enableTestHooks();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": NAVIGABLE_FIXTURE_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    dismissBriefingHelper(raf);
+    for (const key of "IDDQD") canvas.dispatchEvent(new KeyboardEvent("keydown", { key }));
+    raf.flush(1, 16);
+    const mapLogCall = logSpy.mock.calls.find((c) => c[1] !== null && typeof c[1] === "object" && "grid" in (c[1] as object));
+    const map = mapLogCall![1] as { grid: number[][]; spawn: { x: number; y: number }; exit: { x: number; y: number } };
+    const path = bfsPath(map.grid, map.spawn, map.exit);
+    walkPath(canvas, raf, path, () => testHooks()?.getPlayerState().state !== "playing", 500);
+    expect(testHooks()?.getPlayerState().state).toBe("won");
+
+    const { restore: restoreToBlob } = stubCanvasToBlob(true); // returnNull
+    const createObjectURLSpy = vi.fn(() => "blob:fake");
+    vi.stubGlobal("URL", { ...URL, createObjectURL: createObjectURLSpy, revokeObjectURL: vi.fn() });
+    try {
+      const exportButton = [...document.querySelectorAll("button")].find((b) => b.textContent === "Export Map as PNG")!;
+      expect(() => exportButton.click()).not.toThrow();
+      expect(createObjectURLSpy).not.toHaveBeenCalled();
+    } finally {
+      restoreToBlob();
+    }
   });
 
   it(
@@ -2393,6 +2450,8 @@ describe("main.ts — reaching a natural game over via real navigation", () => {
 
     expect(testHooks()?.getPlayerState().state).toBe("over");
     expect(logSpy.mock.calls.some((c) => c[0] === "%c[highscores] Died on the very first level — not recording a leaderboard entry.")).toBe(true);
+    // Dying never gets the "Export Map as PNG" button — only a genuine win does.
+    expect([...document.querySelectorAll("button")].some((b) => b.textContent === "Export Map as PNG")).toBe(false);
   });
 });
 
