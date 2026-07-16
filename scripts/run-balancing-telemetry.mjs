@@ -2700,6 +2700,7 @@ function buildComboOutput(levelPlans, combo) {
 
   const weaponFirstOwnedAtLevel = mergeWeaponFirstOwned(qualifyingRuns);
   const weaponAcquisitionRate = computeWeaponAcquisitionRate(qualifyingRuns);
+  const finalScoreReached = computeFinalScoreReached(qualifyingRuns);
 
   return {
     attemptsUsed,
@@ -2711,6 +2712,7 @@ function buildComboOutput(levelPlans, combo) {
     failureReasons,
     weaponFirstOwnedAtLevel,
     weaponAcquisitionRate,
+    finalScoreReached,
     levels,
     campaignAggregate,
   };
@@ -2748,6 +2750,24 @@ function computeWeaponAcquisitionRate(qualifyingRuns) {
     out[idx] = { count, rate: total > 0 ? count / total : 0 };
   }
   return out;
+}
+
+/** The score each qualifying run actually ended at — its last level
+ * snapshot's `score` (a running campaign total, see `EngineStats.score`'s
+ * doc comment, so the last snapshot already reflects everything earned
+ * across every level that run reached, qualifying or not). Distinct from
+ * `campaignAggregate`'s own `score` field (`aggregateLevelRuntime`'s
+ * per-*level* mean, pooled across every level snapshot of every run) —
+ * that one answers "what does a typical level-end score look like", this
+ * one answers "what score does a run actually reach by the time it stops",
+ * which is what the balance question ("is scoring paced sensibly across a
+ * full run") actually needs. `spread(..., "mean")` also carries every raw
+ * per-run sample, so a report can chart the spread, not just the average. */
+function computeFinalScoreReached(qualifyingRuns) {
+  const finalScores = qualifyingRuns
+    .map((run) => run.levelSnapshots.at(-1)?.snapshot.score)
+    .filter((s) => s !== undefined);
+  return spread(finalScores, "mean");
 }
 
 /** Campaign-wide rollup: flattens every qualifying run's level snapshots into
