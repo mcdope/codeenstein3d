@@ -10,6 +10,10 @@
 - Loot rebalanced: regular kills now sometimes drop nothing instead of always dropping something, and drop amounts are lower overall — ammo/health/armor felt too plentiful; a "miss" also now carries a small chance to grant the Toolchain chainsaw, giving it a real, repeatable way to unlock beyond secret rooms or a lucky Elite kill
 - Easy difficulty deals more damage than before — the old curve combined with cautious play could make a run nearly unkillable
 - Enemy aim now gets noticeably worse on Easy and Normal difficulty, not just their HP and damage — difficulty finally affects how "smart" enemies feel, not only how tough they are; Hard is unchanged
+- Fix: a level's keys often spawned clustered near each other, all inside the biggest room reachable before opening any door — later keys are now confined to the tiles newly reached since the previous door, so they're spread across the level instead of piling up in the same starting area
+- Fix: the 3 bundled example replays a first-time player sees in the Highscores dialog played back at roughly 3x real speed instead of matching the pace of the original run
+- Watching a replay now returns you to the Highscores dialog once it ends (a natural win/death, stopping early, or an error), instead of dropping you back at the plain file-tree screen
+- New: export a "Watch Replay" viewing as a downloadable webm video — a Record button on the replay's own transport bar, or a one-click "Export" shortcut next to each Highscores entry's "Watch" button. Recording always captures at real 1x speed and locks the transport controls for the duration
 
 ## beta-3
 

@@ -43,6 +43,7 @@ See [How It Works](#how-it-works) below for the full detail behind each of these
 - ✅ **Scoring system** — kills scaled by complexity, bonuses for speed/health/exploration/lore
 - ✅ **Persistent leaderboards** — top-10 board with AST+campaign hashing (compare runs)
 - ✅ **Deterministic replay** — record and playback entire multi-level campaigns frame-for-frame
+- ✅ **Export replays as video** — record any "Watch Replay" playback as a downloadable webm, from the transport bar or a one-click Highscores "Export" shortcut
 - ✅ **Automap with fog of war** — toggle with Tab, non-blocking (keep moving/fighting while it's open), reveals explored areas only
 - ✅ **Fullscreen & gamepad** — canvas stays crisp, gamepad works alongside keyboard/mouse
 
@@ -238,9 +239,13 @@ npm run preview    # Serve production build locally
 | 87 | Full CI pipeline — browser (Playwright) + no-browser GitHub Actions jobs running every `verify:*` script on push/PR | ✅ |
 | 88 | WAD/procedural texturing extended to lore-terminal walls, hazard/teleporter floors, and spike traps | ✅ |
 | 89–91 | GitHub-repo workspace loading: stale-load cancellation, and entrypoint-scan/codebase-stats request reduction (a ~100-file repo went from 99 to 13 requests) | ✅ |
-| 92 | 100%-coverage Vitest unit test suite (1468 tests), wired as a blocking CI gate | ✅ |
+| 92 | 100%-coverage Vitest unit test suite (1519 tests), wired as a blocking CI gate | ✅ |
 | — | `tsc --noEmit && vite build` added as its own CI gate, after a TypeScript bump broke a build the existing test jobs didn't catch | ✅ |
 | — | Room decorations | ⏸️ Implemented, disabled (playtest feedback) |
+| — | Automated headless-bot balancing/telemetry system, plus 2 real engine bugs it surfaced (diagonal movement ~41% too fast, a corridor-breakup room silently severing unrelated crossing corridors) and an ammo/loot/difficulty rebalance | ✅ |
+| — | Keys no longer cluster in the largest reachable region; default highscore replays now play back at the correct real-time pace instead of ~3x too fast | ✅ |
+| — | Watching a replay now returns to the Highscores dialog it was launched from, instead of the plain file-tree placeholder, once it ends | ✅ |
+| — | Export "Watch Replay" playback as a downloadable webm video — a Record button on the transport bar, plus a one-click "Export" shortcut in the Highscores dialog | ✅ |
 
 ---
 
