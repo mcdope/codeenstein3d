@@ -7,6 +7,50 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>🔫 Codeenstein 3D</title>
 
+    <!-- SEO — see doc/dev/decisions.md's SEO entry for the choices behind these -->
+    <meta
+      name="description"
+      content="Turn any codebase into a playable retro 3D shooter — every file, function, and comment becomes a level, enemy, or secret. No level design, just your own code."
+    />
+    <link rel="canonical" href="https://codeenstein3d.mcdope.org/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Codeenstein 3D" />
+    <meta property="og:title" content="Codeenstein 3D — turn your code into a playable dungeon" />
+    <meta
+      property="og:description"
+      content="Turn any codebase into a playable retro 3D shooter — every file, function, and comment becomes a level, enemy, or secret. No level design, just your own code."
+    />
+    <meta property="og:url" content="https://codeenstein3d.mcdope.org/" />
+    <meta property="og:image" content="https://codeenstein3d.mcdope.org/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:locale" content="en_US" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Codeenstein 3D — turn your code into a playable dungeon" />
+    <meta
+      name="twitter:description"
+      content="Turn any codebase into a playable retro 3D shooter — every file, function, and comment becomes a level, enemy, or secret. No level design, just your own code."
+    />
+    <meta name="twitter:image" content="https://codeenstein3d.mcdope.org/og-image.png" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "VideoGame",
+        "name": "Codeenstein 3D",
+        "description": "Turn any codebase into a playable retro 3D shooter — every file, function, and comment becomes a level, enemy, or secret.",
+        "url": "https://codeenstein3d.mcdope.org/",
+        "image": "https://codeenstein3d.mcdope.org/og-image.png",
+        "genre": ["Shooter", "Roguelike"],
+        "applicationCategory": "Game",
+        "operatingSystem": "Any (runs in a web browser)",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        }
+      }
+    </script>
+
     <!-- Favicons — see doc/dev/decisions.md's Favicons entry for how these were generated -->
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
@@ -19,6 +63,10 @@
     <meta name="msapplication-config" content="/browserconfig.xml" />
   </head>
   <body>
+    <noscript
+      >Codeenstein 3D requires JavaScript (WebAssembly parsing + Canvas rendering, entirely
+      client-side) to run — please enable it to play.</noscript
+    >
     <div id="app">
       <aside id="sidebar">
         <header id="sidebar-header">

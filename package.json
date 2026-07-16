@@ -3,6 +3,8 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "description": "Turn any codebase into a playable retro 3D shooter — every file, function, and comment becomes a level, enemy, or secret.",
+  "homepage": "https://codeenstein3d.mcdope.org/",
   "license": "AGPL-3.0-or-later",
   "author": "Tobias Bäumer",
   "scripts": {

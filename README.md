@@ -1,4 +1,4 @@
-# 🔫 Codeenstein 3D (Working Title)
+# 🔫 Codeenstein 3D
 
 **Turn your legacy code into a playable retro 3D shooter.**
 
@@ -251,6 +251,8 @@ npm run preview    # Serve production build locally
 | — | Startpage leads with a plain-English "New to coding?" card, before the more technical code→dungeon mapping | ✅ |
 | — | Export a cleared level as a top-down PNG — actual wall/door/floor/hazard/teleporter/spike/lore textures stamped from above, not a flat-color diagram; only available once that level is won | ✅ |
 | — | Multi Kill / Ultra Kill score bonus, on-screen banner, and stinger SFX for chaining kills (3-in-3s / 6-in-6s) | ✅ |
+| — | Full favicon/icon set (all platforms) generated from the CODE logo | ✅ |
+| — | SEO: meta description, Open Graph/Twitter Card tags, JSON-LD, robots.txt, sitemap.xml | ✅ |
 
 ---
 
