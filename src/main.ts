@@ -24,6 +24,7 @@ import { hashRun, loadHighscoresForDisplay, recordHighscore, type HighscoreEntry
 import { renderHighscoreTable } from "./ui/highscorePanel";
 import { GameHud } from "./ui/gameHud";
 import { buildControlsLegend } from "./ui/controlsLegend";
+import { downloadBlob } from "./ui/download";
 import { DEFAULT_GORE_LEVEL, EXTREME_GORE_ENABLED, type GoreLevel } from "./engine/effects";
 import {
   FRIDAY_HOTFIX_WEAPON_INDEX,
@@ -237,6 +238,10 @@ async function openHighscoreDialog(): Promise<void> {
     onWatchReplay: (entry) => {
       highscoreDialog.close();
       void startReplay(entry);
+    },
+    onExportReplay: (entry) => {
+      highscoreDialog.close();
+      void startReplay(entry, { autoRecord: true });
     },
   });
   highscoreDialog.showModal();
@@ -1917,6 +1922,27 @@ const REPLAY_SPEEDS = [0.25, 0.5, 1, 2, 4];
  * recording to read as "about 5 seconds". */
 const REPLAY_SEEK_FRAMES = 300;
 
+/** Preferred-to-fallback `MediaRecorder` mime types for a "Watch Replay"
+ * video export — vp9 gives the smallest file at equal quality, vp8 is the
+ * older, more universally-supported webm codec, and the bare container is
+ * the last resort a spec-compliant browser must still accept. */
+const RECORDING_MIME_CANDIDATES = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+
+/** First of `RECORDING_MIME_CANDIDATES` this browser can actually record,
+ * or `undefined` to let `MediaRecorder` pick its own default (still valid —
+ * omitting `mimeType` entirely is allowed by the spec). */
+function pickSupportedRecordingMimeType(): string | undefined {
+  return RECORDING_MIME_CANDIDATES.find((type) => MediaRecorder.isTypeSupported(type));
+}
+
+/** Turns a campaign name (which may be a GitHub `owner/repo` path, or
+ * contain spaces/punctuation from a local folder name) into a safe
+ * filename component — anything other than alphanumerics/`.`/`_`/`-`
+ * becomes a `-`. */
+function sanitizeFilenamePart(s: string): string {
+  return s.replace(/[^a-zA-Z0-9._-]+/g, "-");
+}
+
 /**
  * Play back a recorded run from the Highscores dialog, level by level. Only
  * `replay.version === 2` (campaign-scoped) payloads are ever offered a
@@ -1941,17 +1967,17 @@ const REPLAY_SEEK_FRAMES = 300;
  * frames-exhausted safety net — surfaces a "Replay Ended" overlay explaining
  * why, rather than silently snapping back to the file tree.
  */
-async function startReplay(entry: HighscoreEntry): Promise<void> {
+async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean } = {}): Promise<void> {
   const payload = entry.replay;
   // Defensive, not just type-driven: this value round-tripped through
   // localStorage/JSON, so an entry saved before the replay system became
   // campaign-scoped could still be sitting there with the old single-level
   // shape (no `levels` array) despite what the type claims. Unreachable
-  // TODAY given the single call site (onWatchReplay's click handler,
-  // itself only wired by highscorePanel.ts's identical `entry.replay
-  // ?.version === 2 && entry.replay.levels?.length > 0` gate before it
-  // ever renders the button) — kept as defense-in-depth against a future
-  // second call site or a hand-edited localStorage entry.
+  // TODAY given the two call sites (onWatchReplay's and onExportReplay's
+  // click handlers, both only wired by highscorePanel.ts's identical
+  // `entry.replay?.version === 2 && entry.replay.levels?.length > 0` gate
+  // before either button even renders) — kept as defense-in-depth against
+  // a future third call site or a hand-edited localStorage entry.
   /* v8 ignore next */
   if (!payload || payload.version !== 2 || !payload.levels?.length) return;
 
@@ -2021,6 +2047,13 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
     const hint = document.createElement("p");
     hint.className = "map-caption";
     const controls = buildReplayControls();
+    // Feature-detected once, not assumed: `MediaRecorder`/`captureStream`
+    // are widely but not universally supported (and don't exist in jsdom —
+    // see the test suite's stubs). Missing either means the Record button
+    // just hides itself and `autoRecord` silently falls back to plain
+    // Watch behavior, rather than throwing.
+    const recordingSupported = typeof MediaRecorder !== "undefined" && typeof canvas.captureStream === "function";
+    controls.setRecordAvailable(recordingSupported);
     viewport.append(hint, controls.el);
     canvasArea.hidden = false;
     canvas.focus();
@@ -2035,6 +2068,8 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
     let rafId = 0;
     let paused = false;
     let speedIndex = REPLAY_SPEEDS.indexOf(1);
+    let mediaRecorder: MediaRecorder | null = null;
+    let recordedChunks: Blob[] = [];
     /** Fractional frame budget carried between ticks so speeds other than 1x
      * (more or fewer than one frame per real tick) still advance the sim at
      * exactly the recorded rate on average — see `step()`. */
@@ -2058,11 +2093,57 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
     let currentParsed: ParsedFile | null = null;
     let currentSegment: ReplayLevelSegment | null = null;
 
+    /** Begins capturing the canvas as a webm video — forces 1x playback
+     * speed (a `MediaRecorder` captures in real wall-clock time, so any
+     * other speed would produce a sped-up/slowed-down video instead of an
+     * accurate recording) and locks the rest of the transport bar for the
+     * duration (see `buildReplayControls`'s `lockableButtons`). No-op if
+     * unsupported or already recording. */
+    const startRecording = (): void => {
+      if (!recordingSupported) return;
+      // Unreachable via the UI today: `controls.onRecord`'s ternary and the
+      // `autoRecord` notice's callback are the only two call sites, and
+      // both already guarantee a recording isn't already active before
+      // calling this — kept as defense-in-depth against a future third
+      // call site double-starting (and leaking) a `MediaRecorder`.
+      /* v8 ignore next */
+      if (mediaRecorder) return;
+      controls.setControlsEnabled(false);
+      speedIndex = REPLAY_SPEEDS.indexOf(1);
+      controls.setSpeedLabel(`${REPLAY_SPEEDS[speedIndex]}x`);
+      const mimeType = pickSupportedRecordingMimeType();
+      recordedChunks = [];
+      mediaRecorder = new MediaRecorder(canvas.captureStream(), mimeType ? { mimeType } : undefined);
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordedChunks.push(e.data);
+      };
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(recordedChunks, { type: mimeType ?? "video/webm" });
+        recordedChunks = [];
+        downloadBlob(blob, `codeenstein-${sanitizeFilenamePart(entry.campaignName)}-replay-${Date.now()}.webm`);
+      };
+      mediaRecorder.start();
+      controls.setRecording(true);
+    };
+
+    /** Stops an active recording (a no-op if none is running) — `onstop`
+     * above fires synchronously-enough to finish the download before this
+     * returns in every browser this was tested against, but isn't awaited
+     * either way since there's nothing meaningful to do after. */
+    const stopRecording = (): void => {
+      if (!mediaRecorder) return;
+      mediaRecorder.stop();
+      mediaRecorder = null;
+      controls.setRecording(false);
+      controls.setControlsEnabled(true);
+    };
+
     const teardown = (): void => {
       isReplaying = false;
       stopActiveReplay = null;
       cancelAnimationFrame(rafId);
       window.removeEventListener("keydown", onStopKey);
+      stopRecording(); // flush + download whatever was captured, if a recording was in progress
       resetToFileTree();
     };
 
@@ -2275,8 +2356,33 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
       speedIndex = Math.max(0, Math.min(REPLAY_SPEEDS.length - 1, speedIndex + direction));
       controls.setSpeedLabel(`${REPLAY_SPEEDS[speedIndex]}x`);
     });
+    // Manual click starts capturing immediately — the user is already
+    // looking at the replay and clicked a clearly-labeled button, unlike
+    // `autoRecord` below, which jumps straight from the Highscores dialog
+    // into a recording with no replay UI seen yet and so gets an
+    // explanatory notice first.
+    controls.onRecord(() => (mediaRecorder ? stopRecording() : startRecording()));
 
-    advanceLevel();
+    // The replay's own playback loop only ever starts inside `loadLevel`
+    // (`if (isReplaying) rafId = requestAnimationFrame(step)`), which is
+    // only ever reached via `advanceLevel` — nothing else schedules the
+    // first frame. So gating `advanceLevel` itself behind the notice's
+    // acknowledgement (rather than showing the notice as an afterthought
+    // once playback has already begun) makes it structurally impossible
+    // for the replay to end before the user has seen the notice and
+    // recording has started: nothing is playing yet for it to end.
+    // `recordingSupported` is also checked here (not just inside
+    // `startRecording`'s own no-op guard) — an unsupported browser should
+    // fall back to plain Watch behavior, not show a "recording will start"
+    // notice for a recording that's never actually going to happen.
+    if (opts.autoRecord && recordingSupported) {
+      hud.showRecordingNotice(() => {
+        startRecording();
+        advanceLevel();
+      });
+    } else {
+      advanceLevel();
+    }
   } catch (err) {
     if (gen !== workspaceLoadGeneration) return; // a newer load's own error handling owns the screen now
     console.error("[replay] Failed to start replay:", err);
@@ -2297,8 +2403,12 @@ function buildReplayControls(): {
   onPlayPause: (fn: () => void) => void;
   onSeek: (fn: (direction: -1 | 1) => void) => void;
   onSpeedChange: (fn: (direction: -1 | 1) => void) => void;
+  onRecord: (fn: () => void) => void;
   setPaused: (paused: boolean) => void;
   setSpeedLabel: (label: string) => void;
+  setRecording: (recording: boolean) => void;
+  setRecordAvailable: (available: boolean) => void;
+  setControlsEnabled: (enabled: boolean) => void;
 } {
   const el = document.createElement("div");
   el.className = "replay-controls";
@@ -2337,7 +2447,20 @@ function buildReplayControls(): {
   speedUp.textContent = "+";
   speedUp.title = "Faster";
 
-  el.append(seekBack, playPause, seekForward, speedDown, speedLabel, speedUp);
+  const record = document.createElement("button");
+  record.type = "button";
+  record.className = "replay-btn";
+  record.textContent = "⏺";
+  record.title = "Record video";
+
+  el.append(seekBack, playPause, seekForward, speedDown, speedLabel, speedUp, record);
+
+  // Everything except Record/Stop itself — locked for the whole duration a
+  // recording is active (see `startReplay`'s `startRecording`), since
+  // MediaRecorder captures in real time and a seek/pause/speed change mid-
+  // capture would either desync the video from what it's supposed to show
+  // or (for seeking) look like an instant jump-cut.
+  const lockableButtons = [seekBack, playPause, seekForward, speedDown, speedUp];
 
   return {
     el,
@@ -2350,11 +2473,23 @@ function buildReplayControls(): {
       speedDown.addEventListener("click", () => fn(-1));
       speedUp.addEventListener("click", () => fn(1));
     },
+    onRecord: (fn) => record.addEventListener("click", fn),
     setPaused: (paused) => {
       playPause.textContent = paused ? "▶" : "⏸";
     },
     setSpeedLabel: (label) => {
       speedLabel.textContent = label;
+    },
+    setRecording: (recording) => {
+      record.textContent = recording ? "⏹" : "⏺";
+      record.title = recording ? "Stop recording" : "Record video";
+      record.classList.toggle("recording", recording);
+    },
+    setRecordAvailable: (available) => {
+      record.hidden = !available;
+    },
+    setControlsEnabled: (enabled) => {
+      for (const button of lockableButtons) button.disabled = !enabled;
     },
   };
 }

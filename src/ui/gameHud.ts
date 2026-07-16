@@ -121,6 +121,27 @@ export class GameHud {
     );
   }
 
+  /** Shown once, right before the Highscores dialog's "Export" button jumps
+   * straight into recording with no replay UI seen yet — explains that
+   * capture runs in real time (1x) and locks the transport controls, so
+   * that's not a surprise once acknowledged. `startReplay` gates its own
+   * `advanceLevel()` call behind `onAck` here too, not just the recording
+   * start, so nothing plays until the user has actually seen this. Not
+   * shown for the transport bar's own Record button — by that point the
+   * user is already looking at the replay and clicked a clearly-labeled
+   * button, so the extra step would just be friction. */
+  showRecordingNotice(onAck: () => void): void {
+    this.show(
+      {
+        title: "RECORDING",
+        color: "#ff4d4d",
+        lines: ["Captures in real time (1x) — transport controls", "lock until you stop recording."],
+        buttonLabel: "Start recording",
+      },
+      onAck,
+    );
+  }
+
   private show(content: OverlayContent, onAck: () => void): void {
     const ctx = this.canvas.getContext("2d");
     if (ctx) drawOverlay(ctx, content);

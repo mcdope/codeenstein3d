@@ -40,7 +40,9 @@ If you haven't set any scores of your own yet, the board shows 3 example entries
 
 ### Replay playback
 
-Watching a replay gives you a transport bar: seek back/forward (⏪/⏩, jumps ~5 real-time seconds worth of frames), play/pause, and a speed stepper (0.25×–4×). Seeking backward rebuilds the level from scratch and fast-forwards to the target point, since the simulation itself isn't reversible.
+Watching a replay gives you a transport bar: seek back/forward (⏪/⏩, jumps ~5 real-time seconds worth of frames), play/pause, a speed stepper (0.25×–4×), and a Record button (⏺) that exports the replay as a downloadable webm video. Seeking backward rebuilds the level from scratch and fast-forwards to the target point, since the simulation itself isn't reversible.
+
+Recording captures in real time at 1× — starting it locks the rest of the transport bar (seek/pause/speed) and forces playback to 1× for the duration, so the exported video always plays back at the same pace you'd see live. Click the Record button again (or just let the replay end) to stop and download it. The Highscores dialog also has an "Export" button next to each entry's "Watch" — it jumps straight into a recording from the very first frame, after a one-time confirmation that recording locks the transport controls.
 
 ## Console Sidebar
 

@@ -9,6 +9,11 @@ export interface HighscoreTableOptions {
    * button is clicked — only rendered for entries that actually have one
    * (see `HighscoreEntry.replay`'s doc comment for why some don't). */
   onWatchReplay?: (entry: HighscoreEntry) => void;
+  /** Called with an entry's own `replay` payload when its "Export" button
+   * is clicked — same gating as `onWatchReplay` (both buttons only render
+   * when a real replay payload exists); starts the same viewing but with
+   * recording auto-started (see `startReplay`'s `autoRecord` option). */
+  onExportReplay?: (entry: HighscoreEntry) => void;
 }
 
 export function renderHighscoreTable(
@@ -82,14 +87,24 @@ export function renderHighscoreTable(
     // became campaign-scoped could still be sitting there with the old
     // single-level shape (no `levels` array) despite what the type claims, so
     // this checks the actual runtime shape rather than trusting it blindly.
-    if (entry.replay?.version === 2 && entry.replay.levels?.length > 0 && options.onWatchReplay) {
+    const hasReplay = entry.replay?.version === 2 && entry.replay.levels?.length > 0;
+    if (hasReplay && options.onWatchReplay) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "replay-btn";
       button.textContent = "Watch";
       button.addEventListener("click", () => options.onWatchReplay?.(entry));
       replay.appendChild(button);
-    } else {
+    }
+    if (hasReplay && options.onExportReplay) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "replay-btn";
+      button.textContent = "Export";
+      button.addEventListener("click", () => options.onExportReplay?.(entry));
+      replay.appendChild(button);
+    }
+    if (!hasReplay) {
       replay.className = "muted";
       replay.textContent = "—";
     }

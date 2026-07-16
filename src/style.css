@@ -305,8 +305,20 @@ a.settings-btn {
   white-space: nowrap;
 }
 
-.replay-btn:hover {
+.replay-btn:hover:not(:disabled) {
   background: var(--bg-hover);
+}
+
+.replay-btn:disabled {
+  color: var(--border);
+  cursor: not-allowed;
+}
+
+/* The transport bar's Record button while a recording is active — see
+ * main.ts's buildReplayControls()'s setRecording(). */
+.replay-btn.recording {
+  color: #ff4d4d;
+  border-color: #ff4d4d;
 }
 
 /* Replay transport bar (play/pause, seek, speed) — see main.ts's

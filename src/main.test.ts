@@ -9,6 +9,7 @@ import { buildIndexDom, stubDialogElement, stubResizeObserver } from "../test/mo
 import { installRaf, type RafController } from "../test/mocks/raf";
 import { stubCanvasGetContext } from "../test/mocks/canvas";
 import { FakeFileSystemFileHandle, fakeDirectoryHandle } from "../test/mocks/fsAccess";
+import { FakeMediaRecorder, installRecordingSupport } from "../test/mocks/mediaRecorder";
 import type { TreeNode } from "./fs/workspace";
 import { parseFile } from "./parser/registry";
 import { hashRun, loadHighscores, recordHighscore } from "./engine/highscores";
@@ -2761,7 +2762,7 @@ describe("main.ts — replay playback (startReplay)", () => {
     expect(playPause.textContent).toBe("⏸"); // resumed
 
     const buttons = document.querySelectorAll<HTMLButtonElement>(".replay-controls .replay-btn");
-    const speedUp = buttons[buttons.length - 1]; // seekBack, playPause, seekForward, speedDown, speedUp
+    const speedUp = buttons[4]; // seekBack, playPause, seekForward, speedDown, speedUp, record
     const speedLabel = document.querySelector<HTMLElement>(".replay-speed-label")!;
     expect(speedLabel.textContent).toBe("1x");
     speedUp.click();
@@ -3008,8 +3009,9 @@ describe("main.ts — replay playback (startReplay)", () => {
     // the `if (levelEnded) break` guard that stops consuming further frames
     // once onWin has already fired this tick.
     const buttons = document.querySelectorAll<HTMLButtonElement>(".replay-controls .replay-btn");
-    buttons[buttons.length - 1].click(); // speedUp: 1x -> 2x
-    buttons[buttons.length - 1].click(); // speedUp: 2x -> 4x
+    const speedUp = buttons[4]; // seekBack, playPause, seekForward, speedDown, speedUp, record
+    speedUp.click(); // speedUp: 1x -> 2x
+    speedUp.click(); // speedUp: 2x -> 4x
 
     // Burst through the recorded frames (real event-loop yields between
     // rounds, same reasoning as the frames-exhausted/hash-mismatch tests
@@ -3059,8 +3061,9 @@ describe("main.ts — replay playback (startReplay)", () => {
     await waitUntil(() => !!testHooks(), 8000);
 
     const buttons = document.querySelectorAll<HTMLButtonElement>(".replay-controls .replay-btn");
-    buttons[buttons.length - 1].click(); // speedUp: 1x -> 2x
-    buttons[buttons.length - 1].click(); // speedUp: 2x -> 4x
+    const speedUp = buttons[4]; // seekBack, playPause, seekForward, speedDown, speedUp, record
+    speedUp.click(); // speedUp: 1x -> 2x
+    speedUp.click(); // speedUp: 2x -> 4x
 
     // Burst through the first level to its own win first — a single "won"
     // reading isn't enough on its own to prove advanceLevel specifically
@@ -3349,6 +3352,147 @@ describe("main.ts — replay playback (startReplay)", () => {
       () => errorSpy.mock.calls.some((c) => typeof c[0] === "string" && c[0].includes("[replay] Failed to start replay:")),
       8000,
     );
+  });
+
+  it("Record button starts capturing immediately with no notice, forces 1x, and locks the transport bar", async () => {
+    await importMain();
+    const recording = installRecordingSupport();
+    const segment = await buildReplaySegment(20);
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": REPLAY_FIXTURE_C }));
+    enableTestHooks();
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    await waitUntil(() => !!testHooks(), 8000);
+
+    const buttons = document.querySelectorAll<HTMLButtonElement>(".replay-controls .replay-btn");
+    const [seekBack, playPause, seekForward, speedDown, speedUp, record] = Array.from(buttons);
+    const speedLabel = document.querySelector<HTMLElement>(".replay-speed-label")!;
+    const lockable = [seekBack, playPause, seekForward, speedDown, speedUp];
+
+    expect(record.hidden).toBe(false); // recordingSupported === true thanks to installRecordingSupport()
+    speedUp.click();
+    expect(speedLabel.textContent).toBe("2x");
+
+    record.click(); // start — no notice for the in-viewing transport-bar path
+    expect(speedLabel.textContent).toBe("1x"); // forced back to 1x
+    expect(record.classList.contains("recording")).toBe(true);
+    expect(record.textContent).toBe("⏹");
+    for (const btn of lockable) expect(btn.disabled).toBe(true);
+    expect(record.disabled).toBe(false); // Record/Stop itself always stays interactive
+    expect(FakeMediaRecorder.instances).toHaveLength(1);
+    const recorder = FakeMediaRecorder.instances[0];
+    expect(recorder.start).toHaveBeenCalledOnce();
+    expect(recorder.options?.mimeType).toBe("video/webm;codecs=vp9"); // FakeMediaRecorder.isTypeSupported defaults to true
+
+    // A zero-byte chunk (can happen on a real MediaRecorder's final flush)
+    // must not be pushed into the eventual download.
+    recorder.ondataavailable?.({ data: new Blob([]) });
+
+    record.click(); // stop
+    expect(recorder.stop).toHaveBeenCalledOnce();
+    expect(record.classList.contains("recording")).toBe(false);
+    expect(record.textContent).toBe("⏺");
+    for (const btn of lockable) expect(btn.disabled).toBe(false);
+    expect(URL.createObjectURL).toHaveBeenCalledOnce();
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledOnce();
+
+    recording.restore();
+  });
+
+  it("Highscores dialog Export button shows a notice before any level loads, and only starts recording + playback once acknowledged", async () => {
+    await importMain();
+    const recording = installRecordingSupport();
+    const segment = await buildReplaySegment(20);
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": REPLAY_FIXTURE_C }));
+    enableTestHooks();
+
+    await recordHighscore({
+      score: 100,
+      campaignName: REPLAY_CAMPAIGN_NAME,
+      levelName: "main.c",
+      levelsCleared: 1,
+      hash: "irrelevant-workspace-hash",
+      achievedAt: Date.now(),
+      replay: { version: 2, campaignName: REPLAY_CAMPAIGN_NAME, levels: [segment] },
+    });
+    document.querySelector<HTMLButtonElement>("#view-highscores")!.click();
+    await waitUntil(() => document.querySelector("#highscore-dialog .replay-btn") !== null, 8000);
+    const exportButton = [...document.querySelectorAll<HTMLButtonElement>("#highscore-dialog .replay-btn")].find(
+      (b) => b.textContent === "Export",
+    )!;
+    exportButton.click();
+
+    // The notice is up: the transport bar exists (built unconditionally),
+    // but nothing has loaded yet — no engine constructed, no recording
+    // started.
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    expect(testHooks()).toBeUndefined();
+    expect(FakeMediaRecorder.instances).toHaveLength(0);
+
+    dismissBriefingHelper(raf);
+    await waitUntil(() => !!testHooks(), 8000);
+    expect(FakeMediaRecorder.instances).toHaveLength(1);
+    expect(FakeMediaRecorder.instances[0].start).toHaveBeenCalledOnce();
+    const record = document.querySelectorAll<HTMLButtonElement>(".replay-controls .replay-btn")[5];
+    expect(record.classList.contains("recording")).toBe(true);
+
+    recording.restore();
+  });
+
+  it("Record button stays hidden, and Export falls back to immediate playback with no notice, when recording is unsupported", async () => {
+    FakeMediaRecorder.instances.length = 0; // a prior test's instance would otherwise still be sitting here
+    await importMain(); // no installRecordingSupport() — MediaRecorder/captureStream stay unavailable
+    const segment = await buildReplaySegment(20);
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": REPLAY_FIXTURE_C }));
+    enableTestHooks();
+
+    await recordHighscore({
+      score: 100,
+      campaignName: REPLAY_CAMPAIGN_NAME,
+      levelName: "main.c",
+      levelsCleared: 1,
+      hash: "irrelevant-workspace-hash",
+      achievedAt: Date.now(),
+      replay: { version: 2, campaignName: REPLAY_CAMPAIGN_NAME, levels: [segment] },
+    });
+    document.querySelector<HTMLButtonElement>("#view-highscores")!.click();
+    await waitUntil(() => document.querySelector("#highscore-dialog .replay-btn") !== null, 8000);
+    const exportButton = [...document.querySelectorAll<HTMLButtonElement>("#highscore-dialog .replay-btn")].find(
+      (b) => b.textContent === "Export",
+    )!;
+    exportButton.click();
+
+    // No notice shown (unsupported) — playback starts immediately, same as Watch.
+    await waitUntil(() => !!testHooks(), 8000);
+    const record = document.querySelectorAll<HTMLButtonElement>(".replay-controls .replay-btn")[5];
+    expect(record.hidden).toBe(true);
+    // Clicking a hidden Record button is still possible via direct DOM
+    // access (jsdom doesn't block it) — exercises startRecording's own
+    // `!recordingSupported` guard directly, not just setRecordAvailable's.
+    expect(() => record.click()).not.toThrow();
+    expect(FakeMediaRecorder.instances).toHaveLength(0);
+  });
+
+  it("falls back to MediaRecorder's own default mime type when no candidate is supported", async () => {
+    await importMain();
+    const recording = installRecordingSupport();
+    FakeMediaRecorder.isTypeSupported.mockReturnValue(false);
+    const segment = await buildReplaySegment(20);
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": REPLAY_FIXTURE_C }));
+    enableTestHooks();
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    await waitUntil(() => !!testHooks(), 8000);
+
+    const record = document.querySelectorAll<HTMLButtonElement>(".replay-controls .replay-btn")[5];
+    record.click();
+    expect(FakeMediaRecorder.instances[0].options).toBeUndefined();
+    record.click(); // stop — exercises onstop's `mimeType ?? "video/webm"` fallback
+    expect(URL.createObjectURL).toHaveBeenCalledOnce();
+
+    recording.restore();
   });
 });
 
