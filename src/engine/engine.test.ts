@@ -388,11 +388,37 @@ describe("RaycasterEngine — construction", () => {
       const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
         .__codeensteinTestHooks;
       expect(hooks).toBeDefined();
-      expect(hooks!.getPlayerState()).toMatchObject({ x: expect.any(Number), y: expect.any(Number) });
+      expect(hooks!.getPlayerState()).toMatchObject({
+        x: expect.any(Number),
+        y: expect.any(Number),
+        healthFraction: expect.any(Number),
+        swap: expect.any(Number),
+        ammo: expect.any(Object),
+        weaponIndex: expect.any(Number),
+        ownedWeapons: expect.any(Array),
+        levelTime: expect.any(Number),
+        distanceTraveled: expect.any(Number),
+      });
       expect(hooks!.getExit()).toEqual({ x: map.exit.x, y: map.exit.y });
       expect(hooks!.getEnemies()).toEqual([
-        expect.objectContaining({ x: enemy.x, y: enemy.y, alive: true }),
+        expect.objectContaining({ x: enemy.x, y: enemy.y, alive: true, edgeCase: expect.any(Boolean) }),
       ]);
+      expect(hooks!.getMines()).toEqual([]);
+      expect(hooks!.getDrops()).toEqual([]);
+      expect(hooks!.getKeys()).toEqual([]);
+      expect(hooks!.getTelemetrySnapshot()).toMatchObject({
+        peakAggroedCount: 0,
+        combatTimeSec: 0,
+        enemyBoltsFired: 0,
+        enemyBoltsHit: 0,
+        fatalDamageSource: null,
+        minesTriggered: 0,
+        minesDisarmed: 0,
+        regularKillLootRolls: 0,
+        regularKillLootMisses: 0,
+        secretRoomCount: map.secretRoomCount,
+        kills: 0,
+      });
     } finally {
       Object.defineProperty(window, "location", { value: original, configurable: true });
       delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
@@ -669,6 +695,36 @@ describe("RaycasterEngine — movement", () => {
     expect(() => engine.advance(0.1)).not.toThrow();
   });
 
+  it("normalizes diagonal movement (W+D) to cover the same distance as straight movement, not sqrt(2) more", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const { engine: straightEngine, input: straightInput } = makeEngine(fakeMap());
+      straightInput.keys.add("KeyW");
+      straightEngine.advance(0.1);
+      const straightHooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      const straightDistance = (straightHooks!.getPlayerState() as { distanceTraveled: number }).distanceTraveled;
+
+      const { engine: diagonalEngine, input: diagonalInput } = makeEngine(fakeMap());
+      diagonalInput.keys.add("KeyW");
+      diagonalInput.keys.add("KeyD");
+      diagonalEngine.advance(0.1);
+      const diagonalHooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      const diagonalDistance = (diagonalHooks!.getPlayerState() as { distanceTraveled: number }).distanceTraveled;
+
+      // Both engines take a single unblocked 0.1s step in an open room — a
+      // real diagonal step (both axes independently scaled by SQRT1_2, then
+      // vector-added) should cover exactly the same ground as a straight
+      // one. Before the fix, moveForward/strafe each applied a full,
+      // un-scaled step, so this would have been ~41% (sqrt(2)) larger.
+      expect(diagonalDistance).toBeCloseTo(straightDistance, 6);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
   it("sprint (Shift) moves the player further per frame than a normal walk", () => {
     // Exercised via no-throw + doesn't assert exact distance (Player's own
     // collision math is already unit-tested) — this just confirms the
@@ -735,6 +791,23 @@ describe("RaycasterEngine — keys and doors", () => {
     expect(map.grid[5][7]).toBe(DOOR_TILE);
   });
 
+  it("exposes an uncollected key via getKeys and stops listing it once collected", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const map = doorMap();
+      const { engine } = makeEngine(map);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      expect(hooks!.getKeys()).toEqual([{ x: 5.5, y: 5.5 }]);
+      engine.advance(0.016); // collect the key
+      expect(hooks!.getKeys()).toEqual([]);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+      delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+    }
+  });
+
   it("opens a door behind the player when backing into it with S", () => {
     const size = 12;
     const g = walledRoom(size);
@@ -776,6 +849,22 @@ describe("RaycasterEngine — loot and ammo pickups", () => {
     const { engine, handlers } = makeEngine(fakeMap({ ammoPickups: [pickup] }));
     engine.advance(0.016);
     expect(lastStats(handlers).ownedWeapons).toContain(3);
+  });
+
+  it("records a static pickup collection in telemetry when testHooks is on", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const pickup: AmmoPickup = { x: 5.5, y: 5.5, kind: "bullets", amount: 15, collected: false };
+      const { engine } = makeEngine(fakeMap({ ammoPickups: [pickup] }));
+      engine.advance(0.016);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      const snapshot = hooks!.getTelemetrySnapshot() as { lootCollectedStatic: Record<string, number> };
+      expect(snapshot.lootCollectedStatic.bullets).toBeGreaterThan(0);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
   });
 
   it("leaves an out-of-range pickup alone while collecting an in-range one", () => {
@@ -994,7 +1083,10 @@ describe("RaycasterEngine — firing", () => {
     input.melee = true;
     engine.advance(0.016);
     expect(enemy.alive).toBe(false);
-    expect(lastStats(handlers).bullets).toBe(bulletsBefore); // ranged ammo untouched (melee has no ammoType)
+    // Melee itself never spends bullets (it has no ammoType) — a kill can
+    // still grant some via a lucky loot roll (REGULAR_KILL_NO_DROP_CHANCE),
+    // so "not decreased" is the real invariant here, not "exactly unchanged".
+    expect(lastStats(handlers).bullets).toBeGreaterThanOrEqual(bulletsBefore);
   });
 
   it("misses an enemy centered in the crosshair but beyond the knife's melee range", () => {
@@ -1046,6 +1138,25 @@ describe("RaycasterEngine — firing", () => {
     input.fireQueued = true;
     engine.advance(0.016);
     expect(mine.alive).toBe(false);
+  });
+
+  it("records a mine disarm in telemetry when testHooks is on", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const mine: Mine = { x: 6.5, y: 5.5, alive: true, visible: true, closeTimer: 0 };
+      const map = fakeMap({ mines: [mine] });
+      const { engine, input } = makeEngine(map);
+      input.fireQueued = true;
+      engine.advance(0.016);
+      expect(mine.alive).toBe(false);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      const snapshot = hooks!.getTelemetrySnapshot() as { minesDisarmed: number };
+      expect(snapshot.minesDisarmed).toBe(1);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
   });
 
   it("safely disarms a mine shot from beyond its own blast radius, taking no damage", () => {
@@ -1101,6 +1212,68 @@ describe("RaycasterEngine — firing", () => {
     expect(mine.alive).toBe(true);
   });
 
+  it("getPlayerState().wouldMineHit is true for a mine within Friday Hotfix's maxRange", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const mine: Mine = { x: 7.5, y: 5.5, alive: true, visible: true, closeTimer: 0 }; // 2 tiles out, inside maxRange (3.5)
+      const map = fakeMap({ mines: [mine] });
+      const { engine, input } = makeEngine(map, makeHandlers(), {
+        carryover: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 50, ownedWeapons: [0, 1, 2, 5] },
+      });
+      input.weaponRequest = 4; // Friday Hotfix (index 5)
+      engine.advance(0.016);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      expect((hooks!.getPlayerState() as { wouldMineHit: boolean }).wouldMineHit).toBe(true);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
+  it("getPlayerState().wouldMineHit is false for a mine beyond Friday Hotfix's maxRange", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const size = 20;
+      const mine: Mine = { x: 9.1, y: 10.5, alive: true, visible: true, closeTimer: 0 }; // 3.6 tiles out, past maxRange (3.5)
+      const map = fakeMap({ spawn: { x: 5, y: 10 }, mines: [mine] }, size);
+      const { engine, input } = makeEngine(map, makeHandlers(), {
+        carryover: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 999, ownedWeapons: [0, 1, 2, 5] },
+      });
+      input.weaponRequest = 4; // Friday Hotfix (index 5)
+      engine.advance(0.016);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      expect((hooks!.getPlayerState() as { wouldMineHit: boolean }).wouldMineHit).toBe(false);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
+  it("getPlayerState().wouldMineHit is false when the equipped weapon is melee", () => {
+    // `wouldMineHit` is specifically the *ranged*-shot check (see
+    // `meleeWouldHit` for melee) — normal gameplay never lets `weaponIndex`
+    // land on the knife/Toolchain (number keys and mousewheel cycling both
+    // skip melee slots), but nothing stops a carried-over `weaponIndex` from
+    // pointing at one directly.
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const mine: Mine = { x: 6.5, y: 5.5, alive: true, visible: true, closeTimer: 0 }; // well within any ranged weapon's reach
+      const map = fakeMap({ mines: [mine] });
+      const { engine } = makeEngine(map, makeHandlers(), {
+        carryover: { health: 100, swap: 0, bullets: 40, rockets: 0, smg: 0, gas: 0, weaponIndex: 2 }, // 2 = knife
+      });
+      engine.advance(0.016);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      expect((hooks!.getPlayerState() as { wouldMineHit: boolean }).wouldMineHit).toBe(false);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
   it("launches a rocket that later detonates on hitting a wall", () => {
     const size = 12;
     const map = fakeMap({}, size);
@@ -1139,6 +1312,30 @@ describe("RaycasterEngine — firing", () => {
     for (let i = 0; i < 20; i++) engine.advance(0.05);
     expect(lastStats(handlers).health).toBeLessThan(100); // player caught their own blast
     expect(alive.hp).toBeLessThan(300); // the living neighbor took splash damage
+  });
+
+  it("records a rocket-splash hit in telemetry when testHooks is on", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const size = 12;
+      const alive = fakeEnemy({ x: 9.5, y: 6, hp: 300, maxHp: 300 });
+      const map = fakeMap({ spawn: { x: 10, y: 5 }, enemies: [alive] }, size);
+      const { engine, input } = makeEngine(map, makeHandlers(), {
+        carryover: { health: 100, swap: 0, bullets: 0, rockets: 5, smg: 0, gas: 0, ownedWeapons: [0, 1, 2, 4] },
+      });
+      input.weaponRequest = 3; // slot 3 -> ghidra (index 4)
+      engine.advance(0.016);
+      input.fireQueued = true;
+      engine.advance(0.016);
+      for (let i = 0; i < 20; i++) engine.advance(0.05);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      const snapshot = hooks!.getTelemetrySnapshot() as { weaponTallies: Record<string, { hits: number }> };
+      expect(snapshot.weaponTallies["4"].hits).toBeGreaterThan(0);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
   });
 
   it("fires the flamethrower as a continuous stream", () => {
@@ -1195,9 +1392,107 @@ describe("RaycasterEngine — enemy death, loot, and elites", () => {
     expect(lastStats(handlers).bullets).toBe(bulletsAfterKill); // drop still uncollected
   });
 
+  it("collects a swap-kind kill drop, adding swap (lootCtx.addSwap)", () => {
+    // Gameplay seed 42 was brute-forced to roll a "swap" kind on this kill's
+    // loot draw (after the new REGULAR_KILL_NO_DROP_CHANCE roll clears) — the
+    // only way to deterministically reach lootCtx.addSwap's body via a real
+    // dynamic drop (as opposed to the static-pickup path, which inlines the
+    // same `this.swap = ...` update independently — see `collectLoot`)
+    // without contorting the test into an rng-independent shape.
+    const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 1 });
+    const map = fakeMap({ enemies: [enemy] });
+    const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 999, rockets: 0, smg: 0, gas: 0 },
+      seed: 42,
+    });
+    input.fireQueued = true;
+    engine.advance(0.016);
+    expect(lastStats(handlers).kills).toBe(1);
+    // collectLoot() runs before updateFiring() each frame, so this kill's
+    // drop is only picked up on the *next* frame's advance().
+    engine.advance(0.016);
+    expect(lastStats(handlers).swap).toBeGreaterThan(0);
+  });
+
+  it("records the real, difficulty-scaled amount for a swap-kind roll in lootRolled telemetry", () => {
+    // Same seed/scenario as the swap-collection test above — verifies
+    // `pushLootDrop` records SWAP_DROP_AMOUNT (11, unscaled at normal
+    // difficulty), not a flat `1` occurrence placeholder — see
+    // `defaultLootAmountFor`'s doc comment for why that distinction matters
+    // for `lootRolled` vs `consumed` unit-compatibility.
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 1 });
+      const map = fakeMap({ enemies: [enemy] });
+      const { engine, input } = makeEngine(map, makeHandlers(), {
+        carryover: { health: 100, swap: 0, bullets: 999, rockets: 0, smg: 0, gas: 0 },
+        seed: 42,
+      });
+      input.fireQueued = true;
+      engine.advance(0.016);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      const snapshot = hooks!.getTelemetrySnapshot() as { lootRolled: Record<string, number> };
+      expect(snapshot.lootRolled.swap).toBe(11); // SWAP_DROP_AMOUNT
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
+  it("grants the Toolchain on a lucky miss-chance roll when a regular kill's loot roll misses", () => {
+    // Gameplay seed 27 was brute-forced to both miss REGULAR_KILL_NO_DROP_CHANCE's
+    // roll (so the normal rollLoot branch is skipped entirely) and hit
+    // rollMissChanceToolchain's own roll right after — the only way to
+    // deterministically reach that branch without contorting the test into
+    // an rng-independent shape. campaignLevelIndex is set to Toolchain's
+    // level floor so it's actually eligible.
+    const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 1 });
+    const map = fakeMap({ enemies: [enemy] });
+    const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 999, rockets: 0, smg: 0, gas: 0, campaignLevelIndex: 4 },
+      seed: 27,
+    });
+    input.fireQueued = true;
+    engine.advance(0.016);
+    expect(lastStats(handlers).kills).toBe(1);
+    // collectLoot() runs before updateFiring() each frame, so this kill's
+    // drop is only picked up on the *next* frame's advance().
+    engine.advance(0.016);
+    expect(lastStats(handlers).ownedWeapons).toContain(6); // TOOLCHAIN_WEAPON_INDEX
+  });
+
+  it("records a flat 1 (occurrence) for a weapon-kind roll in lootRolled telemetry", () => {
+    // Same seed/scenario as the Toolchain miss-chance test above — a
+    // "weapon" drop's real value depends on ownership state at *collection*
+    // time, which can change between roll and collection, so `1` is the only
+    // thing `defaultLootAmountFor` can honestly record for it (see its doc
+    // comment) — this is the one kind that's still an occurrence count, not
+    // a real quantity, by design rather than by oversight.
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 1 });
+      const map = fakeMap({ enemies: [enemy] });
+      const { engine, input } = makeEngine(map, makeHandlers(), {
+        carryover: { health: 100, swap: 0, bullets: 999, rockets: 0, smg: 0, gas: 0, campaignLevelIndex: 4 },
+        seed: 27,
+      });
+      input.fireQueued = true;
+      engine.advance(0.016);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      const snapshot = hooks!.getTelemetrySnapshot() as { lootRolled: Record<string, number> };
+      expect(snapshot.lootRolled.weapon).toBe(1);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
   it("collects a health-kind kill drop, healing the player (lootCtx.heal)", () => {
-    // Gameplay seed 5 was found (brute-forced against this exact scenario) to
-    // roll a "health" kind on this kill's loot draw — the only way to
+    // Gameplay seed 10 was found (brute-forced against this exact scenario)
+    // to both clear the new REGULAR_KILL_NO_DROP_CHANCE roll and land a
+    // "health" kind on this kill's loot draw — the only way to
     // deterministically reach lootCtx.heal's body without contorting the test
     // into an rng-independent shape. Enemy at x:5.9 (0.4 tiles from spawn)
     // matches the melee test's proven-safe distance: close enough for the
@@ -1208,7 +1503,7 @@ describe("RaycasterEngine — enemy death, loot, and elites", () => {
     const map = fakeMap({ enemies: [enemy] });
     const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
       carryover: { health: 90, swap: 0, bullets: 999, rockets: 0, smg: 0, gas: 0 },
-      seed: 5,
+      seed: 10,
     });
     input.fireQueued = true;
     engine.advance(0.016);
@@ -1220,14 +1515,16 @@ describe("RaycasterEngine — enemy death, loot, and elites", () => {
   });
 
   it("grants a bonus unlockable weapon on a lucky regular-kill roll", () => {
-    // Gameplay seed 118 was brute-forced to roll a hit on rollBonusWeaponDrop
-    // for this exact kill — the only way to deterministically reach that
-    // branch without contorting the test into an rng-independent shape.
+    // Gameplay seed 26 was brute-forced to roll a hit on rollBonusWeaponDrop
+    // for this exact kill (independent of, and after, the new
+    // REGULAR_KILL_NO_DROP_CHANCE roll and rollLoot's own draw) — the only
+    // way to deterministically reach that branch without contorting the test
+    // into an rng-independent shape.
     const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 1 });
     const map = fakeMap({ enemies: [enemy] });
     const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
       carryover: { health: 100, swap: 0, bullets: 999, rockets: 0, smg: 0, gas: 0 },
-      seed: 118,
+      seed: 26,
     });
     input.fireQueued = true;
     engine.advance(0.016);
@@ -1263,6 +1560,37 @@ describe("RaycasterEngine — enemy death, loot, and elites", () => {
     input.fireHeld = true;
     engine.advance(0.016);
     expect(lastStats(handlers).health).toBeGreaterThanOrEqual(50);
+  });
+
+  it("records a forced-melee kill and its lifesteal heal in telemetry when testHooks is on", () => {
+    // The knife is both meleeRange-having and lifesteal — with every ranged
+    // ammo pool at zero, a quick-melee kill is simultaneously a "forced
+    // melee" kill (no ranged ammo left to fire instead) and a lifesteal
+    // heal, exercising both `damageEnemy`'s forcedMelee/telemetry branch and
+    // its lifesteal/telemetry branch in the same call.
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 1 });
+      const map = fakeMap({ enemies: [enemy] });
+      const { engine, input } = makeEngine(map, makeHandlers(), {
+        carryover: { health: 50, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0, ownedWeapons: [0, 1, 2, 3, 4] },
+      });
+      engine.advance(0.016); // warm-up frame — see the quick-melee test above for why
+      input.melee = true;
+      engine.advance(0.016);
+      expect(enemy.alive).toBe(false);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      const snapshot = hooks!.getTelemetrySnapshot() as {
+        killsForcedByMelee: number;
+        healingBySource: { lifesteal: number };
+      };
+      expect(snapshot.killsForcedByMelee).toBe(1);
+      expect(snapshot.healingBySource.lifesteal).toBeGreaterThan(0);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
   });
 });
 

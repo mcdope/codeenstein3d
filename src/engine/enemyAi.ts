@@ -61,6 +61,19 @@ const EDGE_CASE_RETARGET_RATE = 2.0;
  * smooth glide even between retargets. */
 const EDGE_CASE_ROAM_JITTER_RAD = 0.9;
 
+/** Optional balancing-telemetry observation hooks — see `telemetry.ts`. Every
+ * call site (including every existing test) that omits this trailing
+ * argument behaves exactly as before; only `RaycasterEngine` passes one, and
+ * only to record what already happened, never to change it. */
+export interface EnemyAiEvents {
+  /** Fired the instant an enemy transitions to the chase state (proximity+LOS
+   * trigger only — damage-aggro is set directly by the engine, see
+   * `RaycasterEngine.damageEnemy`, and records its own matching event there). */
+  onAggro?: (enemy: Enemy) => void;
+  onMeleeAttack?: (enemy: Enemy) => void;
+  onRangedFire?: (enemy: Enemy) => void;
+}
+
 /**
  * Advance every living enemy by `dt` seconds and return the total stability
  * damage the player should take from melee bites this frame. Call once per
@@ -80,11 +93,16 @@ export function updateEnemies(
   projectiles: Projectile[],
   pathField: PathField,
   rng: () => number = Math.random,
+  events?: EnemyAiEvents,
+  /** See `DifficultyMultipliers.enemyAimSpreadDeg` — how far off dead-center
+   * a ranged bolt can randomly deviate. 0 (default) matches every existing
+   * call site/test's prior behavior (a perfectly aimed shot). */
+  aimSpreadDeg = 0,
 ): number {
   let damage = 0;
   for (const enemy of enemies) {
     if (!enemy.alive) continue;
-    damage += updateEnemy(enemy, player, map, dt, projectiles, pathField, rng);
+    damage += updateEnemy(enemy, player, map, dt, projectiles, pathField, rng, events, aimSpreadDeg);
   }
   return damage;
 }
@@ -98,6 +116,8 @@ function updateEnemy(
   projectiles: Projectile[],
   pathField: PathField,
   rng: () => number,
+  events?: EnemyAiEvents,
+  aimSpreadDeg = 0,
 ): number {
   // Cool down toward the next melee bite and the next ranged shot.
   if (enemy.attackCooldown > 0) enemy.attackCooldown = Math.max(0, enemy.attackCooldown - dt);
@@ -121,6 +141,7 @@ function updateEnemy(
   // write was idempotent; re-checking was pure wasted work every frame).
   if (!enemy.aggroed && dist < AGGRO_RADIUS && los()) {
     enemy.aggroed = true;
+    events?.onAggro?.(enemy);
   }
 
   if (!enemy.aggroed) {
@@ -132,6 +153,7 @@ function updateEnemy(
   if (dist <= ATTACK_RADIUS) {
     if (enemy.attackCooldown === 0) {
       enemy.attackCooldown = ATTACK_COOLDOWN;
+      events?.onMeleeAttack?.(enemy);
       return ATTACK_DAMAGE * damageMultiplier(enemy);
     }
     return 0;
@@ -139,8 +161,9 @@ function updateEnemy(
 
   // At range: occasionally lob a bolt at the player if there's a clear shot.
   if (enemy.fireCooldown === 0 && dist <= RANGED_RANGE && los()) {
-    spawnProjectile(projectiles, enemy.x, enemy.y, player.posX, player.posY, damageMultiplier(enemy));
+    spawnProjectile(projectiles, enemy.x, enemy.y, player.posX, player.posY, damageMultiplier(enemy), aimSpreadDeg, rng);
     enemy.fireCooldown = FIRE_COOLDOWN_MIN + rng() * (FIRE_COOLDOWN_MAX - FIRE_COOLDOWN_MIN);
+    events?.onRangedFire?.(enemy);
   }
 
   // Home in on the player, steering toward the next cell of a wall-aware path

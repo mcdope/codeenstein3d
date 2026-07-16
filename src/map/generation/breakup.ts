@@ -168,10 +168,24 @@ function tryInjectBreakupRoom(
   if (rooms.some((r) => roomsOverlap(rect, r, roomMargin))) return null;
   if (breakupRooms.some((r) => roomsOverlap(rect, r, roomMargin))) return null;
 
+  // Snapshot which footprint cells are already floor *before* carving over
+  // them — nothing stops an unrelated corridor leg (or, in a synthetic wide
+  // corridor, an adjacent row/column of the same run) from already passing
+  // through here; only real `Room`/breakup-room *rectangles* are checked
+  // above, not arbitrary pre-existing floor. `breakUpRoomSightline` needs
+  // this to avoid its baffle wall silently sealing one of these tiles —
+  // see that function's doc comment for why.
+  const preExisting: boolean[][] = [];
+  for (let y = rect.y; y < rect.y + rect.h; y++) {
+    const row: boolean[] = [];
+    for (let x = rect.x; x < rect.x + rect.w; x++) row.push(grid[y][x] === 0);
+    preExisting.push(row);
+  }
+
   for (let y = rect.y; y < rect.y + rect.h; y++) {
     for (let x = rect.x; x < rect.x + rect.w; x++) grid[y][x] = 0;
   }
-  breakUpRoomSightline(grid, rect, run.axis, run.fixed, rng);
+  breakUpRoomSightline(grid, rect, run.axis, run.fixed, rng, preExisting);
   return rect;
 }
 
@@ -186,8 +200,32 @@ function tryInjectBreakupRoom(
  * empty flanking space rather than requiring an actual detour. This forces
  * a short jog around the baffle instead, so the room reads as an actual
  * room rather than a wide spot in the hallway.
+ *
+ * `preExisting[y-rect.y][x-rect.x]` flags a footprint cell that was already
+ * floor before this room's own carve — e.g. an unrelated corridor leg
+ * crossing through here, or (in a synthetic wide corridor) an adjacent
+ * row/column of the same run. The baffle column/row must never wall off
+ * such a cell at a row/column other than the deliberately-chosen gap, since
+ * that would silently sever whatever depends on passing through it —
+ * confirmed as a real, reproducible bug: exactly this scenario isolated 3
+ * rooms from spawn on a real campaign level, with no route existing at all
+ * afterward. Tries the originally-rolled column/row first (so the common,
+ * collision-free case draws the exact same `rng()` sequence as before, and
+ * a level layout only ever changes for maps where this collision actually
+ * happens), then scans outward for an alternative; if every column/row
+ * would sever more than one pre-existing cell (impossible to route around
+ * with a single gap), skips the baffle entirely rather than risk it — the
+ * room's own footprint already isn't `isCorridorFloor` anymore, so it still
+ * contributes to breaking up the run even without an internal baffle.
  */
-function breakUpRoomSightline(grid: Tile[][], rect: Rect, axis: "h" | "v", fixed: number, rng: () => number): void {
+function breakUpRoomSightline(
+  grid: Tile[][],
+  rect: Rect,
+  axis: "h" | "v",
+  fixed: number,
+  rng: () => number,
+  preExisting: boolean[][],
+): void {
   // Unreachable: `rect.w`/`rect.h` are always one of `randomBreakupDim`'s two
   // rolls (along/across), each >= BREAKUP_ROOM_MIN_DIM (3) — so `< 3` can
   // never hold, and with >= 3 rows/columns there's always at least one
@@ -195,23 +233,39 @@ function breakUpRoomSightline(grid: Tile[][], rect: Rect, axis: "h" | "v", fixed
   if (axis === "h") {
     /* v8 ignore next */
     if (rect.w < 3) return;
-    const bx = rect.x + 1 + Math.floor(rng() * (rect.w - 2));
-    const candidates: number[] = [];
-    for (let y = rect.y; y < rect.y + rect.h; y++) if (y !== fixed) candidates.push(y);
-    /* v8 ignore next */
-    if (candidates.length === 0) return;
-    const gap = candidates[Math.floor(rng() * candidates.length)];
-    for (let y = rect.y; y < rect.y + rect.h; y++) if (y !== gap) grid[y][bx] = 1;
+    const preferredBx = rect.x + 1 + Math.floor(rng() * (rect.w - 2));
+    for (let d = 0; d < rect.w - 2; d++) {
+      const bx = d === 0 ? preferredBx : preferredBx + Math.ceil(d / 2) * (d % 2 === 0 ? -1 : 1);
+      if (bx < rect.x + 1 || bx > rect.x + rect.w - 2) continue;
+      const forced: number[] = [];
+      for (let y = rect.y; y < rect.y + rect.h; y++) {
+        if (y !== fixed && preExisting[y - rect.y][bx - rect.x]) forced.push(y);
+      }
+      if (forced.length > 1) continue;
+      const candidates: number[] = [];
+      for (let y = rect.y; y < rect.y + rect.h; y++) if (y !== fixed) candidates.push(y);
+      const gap = forced.length === 1 ? forced[0] : candidates[Math.floor(rng() * candidates.length)];
+      for (let y = rect.y; y < rect.y + rect.h; y++) if (y !== gap) grid[y][bx] = 1;
+      return;
+    }
   } else {
     /* v8 ignore next */
     if (rect.h < 3) return;
-    const by = rect.y + 1 + Math.floor(rng() * (rect.h - 2));
-    const candidates: number[] = [];
-    for (let x = rect.x; x < rect.x + rect.w; x++) if (x !== fixed) candidates.push(x);
-    /* v8 ignore next */
-    if (candidates.length === 0) return;
-    const gap = candidates[Math.floor(rng() * candidates.length)];
-    for (let x = rect.x; x < rect.x + rect.w; x++) if (x !== gap) grid[by][x] = 1;
+    const preferredBy = rect.y + 1 + Math.floor(rng() * (rect.h - 2));
+    for (let d = 0; d < rect.h - 2; d++) {
+      const by = d === 0 ? preferredBy : preferredBy + Math.ceil(d / 2) * (d % 2 === 0 ? -1 : 1);
+      if (by < rect.y + 1 || by > rect.y + rect.h - 2) continue;
+      const forced: number[] = [];
+      for (let x = rect.x; x < rect.x + rect.w; x++) {
+        if (x !== fixed && preExisting[by - rect.y][x - rect.x]) forced.push(x);
+      }
+      if (forced.length > 1) continue;
+      const candidates: number[] = [];
+      for (let x = rect.x; x < rect.x + rect.w; x++) if (x !== fixed) candidates.push(x);
+      const gap = forced.length === 1 ? forced[0] : candidates[Math.floor(rng() * candidates.length)];
+      for (let x = rect.x; x < rect.x + rect.w; x++) if (x !== gap) grid[by][x] = 1;
+      return;
+    }
   }
 }
 

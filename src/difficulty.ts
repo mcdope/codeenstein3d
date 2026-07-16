@@ -25,17 +25,32 @@ export interface DifficultyMultipliers {
   /** Multiplies the amount granted per ammo/health/swap pickup, both the
    * map's static pickups and enemies' dynamic loot drops. */
   ammoDropRate: number;
+  /** Max random angle (degrees, either direction) an enemy's ranged bolt can
+   * deviate from a dead-on shot at the player's current position — see
+   * `spawnProjectile` in `rockets.ts`'s sibling `projectiles.ts`. 0 means a
+   * perfectly aimed shot (still dodgeable, since bolts don't track/home).
+   * Balance telemetry found enemy hit rate sat in a narrow 70-77% band
+   * regardless of difficulty tier — every difficulty axis before this one
+   * only made enemies *tougher* (hp/damage), never *smarter*; this is the
+   * first one that actually changes how well they aim. */
+  enemyAimSpreadDeg: number;
 }
 
-/** Per the task spec: Easy/Hard = 0.7x/1.5x enemy HP. Damage mirrors the HP
- * curve (a tougher/softer world should also hit proportionally harder/softer);
- * ammoDropRate moves the opposite way — Easy is more forgiving on resources,
- * Hard is scarcer, compounding with the tougher enemies rather than
- * offsetting them. */
+/** Per the task spec: Easy/Hard = 0.7x/1.5x enemy HP. Hard's damage still
+ * mirrors its HP curve (a tougher world should also hit proportionally
+ * harder). Easy's damage no longer mirrors its own HP curve the same way —
+ * balance telemetry (a 450-run, 9-combo campaign) found Easy's original 0.7x
+ * combined with a cautious, health-seeking playstyle to produce near-total
+ * immunity for the whole campaign (100% survival to level 15 in one combo,
+ * where the other two profiles were already down to single digits by then)
+ * — real stakes even on Easy, for a player who plays it safe, needed the
+ * damage floor raised independently of the HP floor. ammoDropRate moves the
+ * opposite way from HP/damage — Easy is more forgiving on resources, Hard is
+ * scarcer, compounding with the tougher enemies rather than offsetting them. */
 export const DIFFICULTY_MULTIPLIERS: Record<DifficultyLevel, DifficultyMultipliers> = {
-  easy: { hp: 0.7, damage: 0.7, ammoDropRate: 1.3 },
-  normal: { hp: 1, damage: 1, ammoDropRate: 1 },
-  hard: { hp: 1.5, damage: 1.5, ammoDropRate: 0.7 },
+  easy: { hp: 0.7, damage: 0.85, ammoDropRate: 1.3, enemyAimSpreadDeg: 10 },
+  normal: { hp: 1, damage: 1, ammoDropRate: 1, enemyAimSpreadDeg: 4 },
+  hard: { hp: 1.5, damage: 1.5, ammoDropRate: 0.7, enemyAimSpreadDeg: 0 },
 };
 
 export const DEFAULT_DIFFICULTY: DifficultyLevel = "normal";
