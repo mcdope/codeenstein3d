@@ -236,6 +236,29 @@ body {
   background: var(--bg-hover);
 }
 
+/* The "Export Map as PNG" button shown below the canvas right after
+ * winning a level (main.ts's onWin) — deliberately NOT .settings-btn
+ * (that's width:100% and muted, built for the sidebar's vertical settings
+ * stack). Styled like this app's other primary calls-to-action
+ * (#select-workspace et al.) — accent-colored, bold, sized to its own
+ * content — so it reads as a fresh, clickable action rather than ambient
+ * chrome a player might skim past right after winning. */
+.export-map-btn {
+  padding: 10px 16px;
+  font: inherit;
+  font-weight: 600;
+  font-size: 14px;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.export-map-btn:hover {
+  filter: brightness(1.12);
+}
+
 a.settings-btn {
   display: block;
   box-sizing: border-box;

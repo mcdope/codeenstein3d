@@ -107,7 +107,7 @@ describe("renderExportMap", () => {
 
   it("stamps the correct texture for every tile kind, including bonus-level variants", () => {
     const grid: Tile[][] = [[1, 0, HAZARD_TILE, DOOR_TILE, TELEPORTER_TILE, SPIKE_TRAP_TILE, SECRET_WALL_TILE, LORE_TILE]];
-    const map = fakeMap({ width: 8, height: 1, grid });
+    const map = fakeMap({ width: 8, height: 1, grid, spawn: { x: 1, y: 0 }, exit: { x: 1, y: 0 } });
     const textureSet = fakeTextureSet();
     const canvas = document.createElement("canvas");
     const { ctx, restore } = stubCanvasGetContext(canvas);
@@ -131,7 +131,7 @@ describe("renderExportMap", () => {
 
   it("uses bonusWall/bonusFloor instead of wall/floor on a bonus level", () => {
     const grid: Tile[][] = [[1, 0, SECRET_WALL_TILE]];
-    const map = fakeMap({ width: 3, height: 1, grid, bonusLevel: true });
+    const map = fakeMap({ width: 3, height: 1, grid, bonusLevel: true, spawn: { x: 1, y: 0 }, exit: { x: 1, y: 0 } });
     const textureSet = fakeTextureSet();
     const canvas = document.createElement("canvas");
     const { ctx, restore } = stubCanvasGetContext(canvas);
@@ -149,7 +149,7 @@ describe("renderExportMap", () => {
     // renderer needs no special-casing for this, it's just an ordinary floor
     // tile by the time a level is won.
     const grid: Tile[][] = [[0]];
-    const map = fakeMap({ width: 1, height: 1, grid });
+    const map = fakeMap({ width: 1, height: 1, grid, spawn: { x: 0, y: 0 }, exit: { x: 0, y: 0 } });
     const textureSet = fakeTextureSet();
     const canvas = document.createElement("canvas");
     const { ctx, restore } = stubCanvasGetContext(canvas);
@@ -169,6 +169,59 @@ describe("renderExportMap", () => {
       renderExportMap(map, fakeTextureSet());
       expect(ctx.arc).toHaveBeenCalledTimes(2);
       expect(ctx.fill).toHaveBeenCalledTimes(2);
+    } finally {
+      restore();
+    }
+  });
+
+  it("crops the canvas to the content's bounding box (content + its 1-tile wall border) instead of the full generated grid", () => {
+    // MapGenerator allocates a full width*height grid of solid wall and
+    // carves rooms out of it — most of a real map's grid is filler never
+    // seen in first-person play. Here, a 2x2 floor room sits in the middle
+    // of a much larger all-wall grid; the export should crop tightly
+    // around it rather than rendering the whole 10x6 grid.
+    const width = 10;
+    const height = 6;
+    const grid: Tile[][] = Array.from({ length: height }, () => new Array(width).fill(1) as Tile[]);
+    grid[2][4] = 0;
+    grid[2][5] = 0;
+    grid[3][4] = 0;
+    grid[3][5] = 0;
+    const map = fakeMap({ width, height, grid, spawn: { x: 4, y: 2 }, exit: { x: 5, y: 3 } });
+    const canvas = document.createElement("canvas");
+    const { restore } = stubCanvasGetContext(canvas);
+    try {
+      const result = renderExportMap(map, fakeTextureSet());
+      // Content spans x:[4,5] y:[2,3]; its 1-tile wall border ring extends
+      // that to x:[3,6] y:[1,4] => a 4x4 box, clamped cell =
+      // clamp(floor(1200/4), 16, 48) = 48.
+      expect(result.width).toBe(4 * 48);
+      expect(result.height).toBe(4 * 48);
+    } finally {
+      restore();
+    }
+  });
+
+  it("skips deep filler wall tiles even within the cropped bounding box (two rooms with a gap between them)", () => {
+    // The crop's bounding box can still contain tiles that are neither real
+    // content nor within one tile of it (e.g. the empty stretch between two
+    // separate rooms) — those must still be skipped individually, not just
+    // tiles outside the crop.
+    const width = 12;
+    const height = 3;
+    const grid: Tile[][] = Array.from({ length: height }, () => new Array(width).fill(1) as Tile[]);
+    grid[1][1] = 0; // room A
+    grid[1][10] = 0; // room B, far enough that their 1-tile borders never touch
+    const map = fakeMap({ width, height, grid, spawn: { x: 1, y: 1 }, exit: { x: 10, y: 1 } });
+    const textureSet = fakeTextureSet();
+    const canvas = document.createElement("canvas");
+    const { ctx, restore } = stubCanvasGetContext(canvas);
+    try {
+      renderExportMap(map, textureSet);
+      // 2 content tiles + up to 8 wall neighbors each (no overlap) = 18 draws,
+      // out of the cropped box's full 12*3 = 36 cells — the untouched gap
+      // tiles in between are genuinely skipped, not just cropped away.
+      expect(ctx.drawImage.mock.calls.length).toBe(18);
     } finally {
       restore();
     }

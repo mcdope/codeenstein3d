@@ -2025,7 +2025,7 @@ describe("main.ts — reaching a natural win/death via real navigation", () => {
     const originalAnchorClick = HTMLAnchorElement.prototype.click;
     HTMLAnchorElement.prototype.click = anchorClickSpy;
     try {
-      const exportButton = [...document.querySelectorAll("button")].find((b) => b.textContent === "Export Map as PNG");
+      const exportButton = [...document.querySelectorAll("button")].find((b) => b.textContent === "🖼️ Export Map as PNG");
       expect(exportButton).not.toBeUndefined();
       exportButton!.click();
       expect(createObjectURLSpy).toHaveBeenCalledOnce();
@@ -2053,7 +2053,7 @@ describe("main.ts — reaching a natural win/death via real navigation", () => {
     expect(document.querySelector("#viewport > p.muted")?.textContent).toContain("Select a file from the tree");
     // The Export button was scoped to that one level/win — resetToFileTree's
     // own viewport-clearing already destroyed it, no separate cleanup needed.
-    expect([...document.querySelectorAll("button")].some((b) => b.textContent === "Export Map as PNG")).toBe(false);
+    expect([...document.querySelectorAll("button")].some((b) => b.textContent === "🖼️ Export Map as PNG")).toBe(false);
   });
 
   it("the Export Map button does nothing if canvas.toBlob hands back no blob", async () => {
@@ -2078,7 +2078,7 @@ describe("main.ts — reaching a natural win/death via real navigation", () => {
     const createObjectURLSpy = vi.fn(() => "blob:fake");
     vi.stubGlobal("URL", { ...URL, createObjectURL: createObjectURLSpy, revokeObjectURL: vi.fn() });
     try {
-      const exportButton = [...document.querySelectorAll("button")].find((b) => b.textContent === "Export Map as PNG")!;
+      const exportButton = [...document.querySelectorAll("button")].find((b) => b.textContent === "🖼️ Export Map as PNG")!;
       expect(() => exportButton.click()).not.toThrow();
       expect(createObjectURLSpy).not.toHaveBeenCalled();
     } finally {
@@ -2451,7 +2451,7 @@ describe("main.ts — reaching a natural game over via real navigation", () => {
     expect(testHooks()?.getPlayerState().state).toBe("over");
     expect(logSpy.mock.calls.some((c) => c[0] === "%c[highscores] Died on the very first level — not recording a leaderboard entry.")).toBe(true);
     // Dying never gets the "Export Map as PNG" button — only a genuine win does.
-    expect([...document.querySelectorAll("button")].some((b) => b.textContent === "Export Map as PNG")).toBe(false);
+    expect([...document.querySelectorAll("button")].some((b) => b.textContent === "🖼️ Export Map as PNG")).toBe(false);
   });
 });
 

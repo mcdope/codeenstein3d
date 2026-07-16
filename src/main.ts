@@ -1212,7 +1212,14 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
           { linesRefactored: parsed.linesOfCode, bugsSquashed: stats.kills },
           () => void advanceToNextLevel(stats),
         );
-        viewport.appendChild(buildExportMapButton(map, campaignName(), levelName));
+        // Inserted *before* hint/the controls legend, not appended after
+        // them — #viewport clips overflow rather than scrolling
+        // (style.css), so a button appended last risked being the one
+        // clipped beneath the (fairly tall) legend, and even when visible
+        // it was easy to miss as the last, smallest thing in the stack.
+        // Being first (right under the canvas) plus its own prominent
+        // styling (see .export-map-btn) fixes both.
+        viewport.insertBefore(buildExportMapButton(map, campaignName(), levelName), hint);
       },
       onCheatActivated: () => {
         cheatsUsed = true;
@@ -1947,18 +1954,22 @@ function sanitizeFilenamePart(s: string): string {
 }
 
 /** Builds the "Export Map as PNG" button shown once a level is won (see
- * `onWin` in `launchLevel`) — appended into `#viewport`, destroyed
+ * `onWin` in `launchLevel`) — inserted into `#viewport`, destroyed
  * automatically the next time its children get cleared (the next
  * `launchLevel` call, or a return to the file tree), same as every other
  * level-scoped DOM addition in this function. No "has this level been
  * won" state needs tracking anywhere — the button's own presence in the
  * DOM already is that state, and it closes over this level's own `map`
- * object directly rather than needing it threaded through anything wider. */
+ * object directly rather than needing it threaded through anything wider.
+ * Uses its own `.export-map-btn` styling, not `.settings-btn` — that
+ * class is `width: 100%` and deliberately muted, built for the sidebar's
+ * vertical stack of settings, not a below-canvas call-to-action a player
+ * needs to actually notice right after winning. */
 function buildExportMapButton(map: GameMap, campaign: string, levelName: string): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "settings-btn";
-  button.textContent = "Export Map as PNG";
+  button.className = "export-map-btn";
+  button.textContent = "🖼️ Export Map as PNG";
   button.addEventListener("click", () => {
     const mapCanvas = renderExportMap(map, textures.getActiveSet());
     mapCanvas.toBlob((blob) => {
