@@ -190,6 +190,29 @@ describe("renderScene — wall-face texture dispatch", () => {
     expect(c.fillRect.mock.calls.length).toBeGreaterThan(0);
   });
 
+  it("stops overlaying the pulse tint on a lore terminal once it's marked as read, but keeps its distinct texture", () => {
+    const size = 8;
+    const g = walledRoom(size);
+    const cy = Math.floor(size / 2);
+    const terminalX = size - 1;
+    g[cy][terminalX] = LORE_TILE;
+    const map = fakeMap({ grid: g }, size);
+    const player = centeredPlayer(map);
+    const c = ctx();
+    const textures = fakeTextureSet();
+    // fillRect doesn't otherwise capture the fillStyle active at call time —
+    // snapshot it ourselves so the lore-pulse rgba (LORE_BASE, see textures.ts)
+    // can be told apart from the other fillRect calls every hit column makes
+    // (the base shading fill, and each edge-antialiasing row).
+    const fillStyles: string[] = [];
+    c.fillRect.mockImplementation(() => fillStyles.push(String(c.fillStyle)));
+
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), textures, 0, 0, new Set([`${terminalX},${cy}`]));
+
+    expect(c.drawImage.mock.calls[midCol][0]).toBe(textures.loreWall.canvas);
+    expect(fillStyles.some((s) => s.startsWith("rgba(120,200,210,"))).toBe(false);
+  });
+
   it("hits an unopened secret wall directly ahead — indistinguishable from a plain wall texture-wise, plus its own overlay", () => {
     const size = 8;
     const g = walledRoom(size);
@@ -458,6 +481,23 @@ describe("renderMinimap", () => {
     map.keys[0].collected = true;
     const player = centeredPlayer(map);
     expect(() => renderMinimap(asCtx(c), map, player)).not.toThrow();
+  });
+
+  it("skips a lore terminal's pulsing marker once it's marked as read", () => {
+    const map = fullMap();
+    const player = centeredPlayer(map);
+
+    const cUnread = ctx();
+    renderMinimap(asCtx(cUnread), map, player);
+    const unreadCalls = cUnread.fillRect.mock.calls.length;
+
+    const cRead = ctx();
+    renderMinimap(asCtx(cRead), map, player, 0, 70, new Set(["2,2"])); // fullMap()'s one terminal
+    const readCalls = cRead.fillRect.mock.calls.length;
+
+    // Skips exactly its own marker fill — everything else on the panel is
+    // otherwise identical between the two calls.
+    expect(readCalls).toBe(unreadCalls - 1);
   });
 
   it("skips an already-opened door (grid no longer shows DOOR_TILE there)", () => {

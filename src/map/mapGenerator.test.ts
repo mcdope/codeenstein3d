@@ -2,7 +2,10 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { loadDemoCampaignTree } from "../fs/demoCampaign";
+import { readFileText } from "../fs/workspace";
 import type { CodeEntity, ParsedFile } from "../parser/types";
+import { extensionOf, parseFile } from "../parser/registry";
 import { MapGenerator } from "./mapGenerator";
 
 function parsedFile(overrides: Partial<ParsedFile> = {}): ParsedFile {
@@ -188,6 +191,35 @@ describe("MapGenerator.generate", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const gen = new MapGenerator();
     gen.generate(parsedFile({ entities: [entity(), entity({ name: "b", startLine: 6, endLine: 10 })] }));
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  // Regression test: `assertAllRoomsReachable` only ever logs a warning —
+  // nothing actually fails CI if it fires, which is exactly how a real
+  // connectivity bug (a corridor-breakup room's internal sightline baffle
+  // silently severing an unrelated corridor leg crossing through its
+  // footprint, isolating 3 rooms from spawn with no possible route at all)
+  // shipped unnoticed on a real bundled campaign level
+  // (`stage06_pipeline.py`) until a player got permanently stuck. Generating
+  // every real, currently-bundled campaign file and asserting the safety
+  // net never fires for any of them ties CI directly to that check's
+  // output, so any future generation regression of this class — on this
+  // exact content or new content added later — fails the build instead of
+  // silently shipping. Every real file only ever exercises `parseFile`'s
+  // actual language-appropriate parser (no synthetic `ParsedFile`), so this
+  // also incidentally re-verifies the whole `parser -> map` pipeline stays
+  // connectivity-safe together, not just `MapGenerator` in isolation.
+  it("never logs an unreachable-room warning for any bundled demo-campaign file", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const tree = loadDemoCampaignTree();
+    const gen = new MapGenerator();
+    for (const child of tree.children ?? []) {
+      if (child.kind !== "file") continue;
+      const text = await readFileText(child.handle as FileSystemFileHandle);
+      const parsed = await parseFile(child.name, text);
+      if (!parsed) continue; // unparsable fixture content, not this test's concern
+      gen.generate(parsed, extensionOf(child.name) === "h");
+    }
     expect(errorSpy).not.toHaveBeenCalled();
   });
 });

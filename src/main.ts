@@ -1970,19 +1970,37 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
       // `owner/repo` paths at all.
       const ref = parseGithubRepoInput(entry.campaignName);
       if (!ref) return; // campaign name doesn't parse back to a repo ref — nothing sane to fetch
-      tree = await fetchGithubTree(ref, undefined, controller.signal);
+      showLoadingScreen(`Fetching "${ref.owner}/${ref.repo}" from GitHub…`);
+      tree = await fetchGithubTree(
+        ref,
+        (bytesReceived) => {
+          setLoadingStatus(`Fetching "${ref.owner}/${ref.repo}" from GitHub… (${formatByteCount(bytesReceived)} received)`);
+        },
+        controller.signal,
+      );
     } else if (entry.source === "demo") {
       // Bundled demo campaign — rebuild the same synthetic tree from the
       // app's own bundle rather than prompting a local folder picker (there's
       // no real "demo-campaign" directory on disk to pick).
+      showLoadingScreen(`Reading "${DEMO_CAMPAIGN_NAME}"…`);
       tree = loadDemoCampaignTree();
     } else {
       const handle = await pickWorkspace();
       if (!handle) return; // user cancelled the picker
+      showLoadingScreen(`Reading "${handle.name}"…`);
       tree = await readDirectoryTree(handle);
     }
     if (gen !== workspaceLoadGeneration) return; // superseded while loading this replay's workspace
-    const files = await flattenParsableFiles(tree);
+
+    setLoadingStatus("Scanning file tree…");
+    const totalFiles = countTreeFiles(tree);
+    let checked = 0;
+    const files = await flattenParsableFiles(tree, () => {
+      checked++;
+      if (checked % FILE_TREE_SCAN_PROGRESS_INTERVAL === 0 || checked === totalFiles) {
+        setLoadingStatus(`Scanning file tree… (${checked}/${totalFiles})`);
+      }
+    });
     if (gen !== workspaceLoadGeneration) return; // superseded while scanning for parsable files
 
     // Tear down whatever's currently running/shown, same as launching any
@@ -2240,6 +2258,7 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
   } catch (err) {
     if (gen !== workspaceLoadGeneration) return; // a newer load's own error handling owns the screen now
     console.error("[replay] Failed to start replay:", err);
+    showFileTreePlaceholder(); // otherwise the loading screen shown above would be left stuck on screen
   } finally {
     if (activeGithubLoadAbort === controller) activeGithubLoadAbort = null;
   }

@@ -43,6 +43,10 @@ function sceneCeiling(map: GameMap): [number, number, number] {
  * spotting it before ever pressing "R" against it.
  */
 const SECRET_WALL_OVERLAY = "rgba(20,40,90,0.12)";
+/** Shared empty default for `renderScene`/`renderMinimap`'s `readTerminals`
+ * param — one instance reused across calls rather than a fresh `Set` every
+ * frame a caller omits it. */
+const NO_READ_TERMINALS: ReadonlySet<string> = new Set();
 /** Within this many tiles the world keeps full brightness (no fog). */
 const FOG_NEAR = 2.5;
 /** Beyond this many tiles the world has faded to pure black — also doubles as
@@ -114,6 +118,7 @@ export function renderScene(
   textureSet: TextureSet,
   horizonShift = 0,
   levelTime = 0,
+  readTerminals: ReadonlySet<string> = NO_READ_TERMINALS,
 ): void {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
@@ -254,7 +259,10 @@ export function renderScene(
         ctx.globalAlpha = 1;
         ctx.fillStyle = SECRET_WALL_OVERLAY;
         ctx.fillRect(x, solidStart, 1, solidEnd - solidStart);
-      } else if (hitTile === LORE_TILE) {
+      } else if (hitTile === LORE_TILE && !readTerminals.has(`${mapX},${mapY}`)) {
+        // Once read, the terminal keeps its distinct wall texture (still
+        // findable) but drops the animated pulse — "glowing" specifically
+        // means this overlay, not the texture itself.
         ctx.globalAlpha = 1;
         ctx.fillStyle = loreOverlay;
         ctx.fillRect(x, solidStart, 1, solidEnd - solidStart);
@@ -425,6 +433,7 @@ export function renderMinimap(
   player: Player,
   levelTime = 0,
   maxPixels = 70,
+  readTerminals: ReadonlySet<string> = NO_READ_TERMINALS,
 ): MinimapPanelRect {
   const cell = Math.max(1, Math.floor(maxPixels / Math.max(map.width, map.height)));
   const w = map.width * cell;
@@ -480,10 +489,13 @@ export function renderMinimap(
   }
 
   // Lore terminals: a small glowing marker layered over their wall tile so
-  // they still stand out from a plain (or secret) wall at a glance.
+  // they still stand out from a plain (or secret) wall at a glance — skipped
+  // once a terminal's been read, so it just fades back into the plain wall
+  // fill drawn above instead of glowing forever.
   const lorePulse = 0.6 + 0.4 * Math.sin(performance.now() / 200);
   ctx.fillStyle = `rgba(120,200,210,${lorePulse})`;
   for (const t of map.loreTerminals) {
+    if (readTerminals.has(`${t.x},${t.y}`)) continue;
     ctx.fillRect(pad + t.x * cell, pad + t.y * cell, cell, cell);
   }
 

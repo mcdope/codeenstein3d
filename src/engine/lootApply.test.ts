@@ -3,7 +3,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type { Enemy, LootDrop } from "../map/types";
-import { applyLootDrop, dropEliteLoot, grantOrTopUpWeapon, type LootContext } from "./lootApply";
+import { applyLootDrop, dropEliteLoot, grantOrTopUpWeapon, rollMissChanceToolchain, type LootContext } from "./lootApply";
 import { TOOLCHAIN_MIN_LEVEL, TOOLCHAIN_WEAPON_INDEX, UNLOCKABLE_WEAPONS } from "./weapons";
 
 function fakeContext(overrides: Partial<LootContext> = {}): LootContext {
@@ -79,7 +79,14 @@ describe("applyLootDrop", () => {
   it("adds swap with the default SWAP_DROP_AMOUNT when unspecified", () => {
     const ctx = fakeContext();
     applyLootDrop({ x: 0, y: 0, kind: "swap" } as LootDrop, ctx);
-    expect(ctx.addSwap).toHaveBeenCalledWith(15); // SWAP_DROP_AMOUNT
+    expect(ctx.addSwap).toHaveBeenCalledWith(11); // SWAP_DROP_AMOUNT
+  });
+
+  it("reports a swap drop via recordApplied when it's provided", () => {
+    const recordApplied = vi.fn();
+    const ctx = fakeContext({ recordApplied });
+    applyLootDrop({ x: 0, y: 0, kind: "swap", amount: 7 }, ctx);
+    expect(recordApplied).toHaveBeenCalledWith("swap", 7, "dynamic");
   });
 
   it("adds to the matching ammo pool for an ammo-kind drop", () => {
@@ -91,7 +98,7 @@ describe("applyLootDrop", () => {
   it("uses the pool's default drop amount when the drop's own amount is unspecified", () => {
     const ctx = fakeContext();
     applyLootDrop({ x: 0, y: 0, kind: "rockets" } as LootDrop, ctx);
-    expect(ctx.ammo.rockets).toBe(2); // ROCKETS_DROP_AMOUNT
+    expect(ctx.ammo.rockets).toBe(1); // ROCKETS_DROP_AMOUNT
   });
 });
 
@@ -115,6 +122,13 @@ describe("grantOrTopUpWeapon", () => {
     grantOrTopUpWeapon(3, ctx); // gdb -> smg pool
     expect(ctx.ammo.smg).toBeGreaterThan(0);
     expect(ctx.equip).not.toHaveBeenCalled();
+  });
+
+  it("reports the top-up amount via recordApplied when the weapon is already owned", () => {
+    const recordApplied = vi.fn();
+    const ctx = fakeContext({ ownedWeapons: new Set([0, 1, 2, 3]), recordApplied });
+    grantOrTopUpWeapon(3, ctx, "static"); // gdb -> smg pool
+    expect(recordApplied).toHaveBeenCalledWith("smg", ctx.ammo.smg, "static");
   });
 
   it("does nothing for an already-owned ammo-less (melee) duplicate", () => {
@@ -183,5 +197,31 @@ describe("dropEliteLoot", () => {
     dropEliteLoot(enemy(), ctx);
     const calls = (ctx.pushDrop as ReturnType<typeof vi.fn>).mock.calls;
     expect(calls.some(([drop]) => drop.kind === "weapon")).toBe(false);
+  });
+});
+
+describe("rollMissChanceToolchain", () => {
+  it("returns false below Toolchain's level floor, regardless of the roll", () => {
+    const ctx = fakeContext({ campaignLevelIndex: TOOLCHAIN_MIN_LEVEL - 1, rng: () => 0 });
+    expect(rollMissChanceToolchain(ctx)).toBe(false);
+  });
+
+  it("returns false once Toolchain is already owned, regardless of the roll", () => {
+    const ctx = fakeContext({
+      campaignLevelIndex: TOOLCHAIN_MIN_LEVEL,
+      ownedWeapons: new Set([0, 1, 2, TOOLCHAIN_WEAPON_INDEX]),
+      rng: () => 0,
+    });
+    expect(rollMissChanceToolchain(ctx)).toBe(false);
+  });
+
+  it("returns true when eligible and the roll hits", () => {
+    const ctx = fakeContext({ campaignLevelIndex: TOOLCHAIN_MIN_LEVEL, rng: () => 0 });
+    expect(rollMissChanceToolchain(ctx)).toBe(true);
+  });
+
+  it("returns false when eligible but the roll misses", () => {
+    const ctx = fakeContext({ campaignLevelIndex: TOOLCHAIN_MIN_LEVEL, rng: () => 0.99 });
+    expect(rollMissChanceToolchain(ctx)).toBe(false);
   });
 });

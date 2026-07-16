@@ -17,7 +17,13 @@
  * given file is never fetched twice.
  */
 
-import { compareNodes, IGNORED_DIRECTORIES, type RemoteFileHandle, type TreeNode } from "./workspace";
+import {
+  compareNodes,
+  isIgnoredDirectoryName,
+  isIgnoredFileName,
+  type RemoteFileHandle,
+  type TreeNode,
+} from "./workspace";
 
 const GITHUB_API = "https://api.github.com";
 
@@ -168,7 +174,10 @@ function buildTree(ref: GithubRepoRef, branch: string, entries: GithubTreeEntry[
     if (entry.type !== "blob") continue; // directories are synthesized from file paths below
 
     const segments = entry.path.split("/");
-    if (segments.some((seg) => IGNORED_DIRECTORIES.has(seg))) continue;
+    if (segments.some((seg) => isIgnoredDirectoryName(seg))) continue;
+
+    const fileName = segments[segments.length - 1];
+    if (isIgnoredFileName(fileName)) continue;
 
     let parent = root;
     let accPath = "";
@@ -177,7 +186,6 @@ function buildTree(ref: GithubRepoRef, branch: string, entries: GithubTreeEntry[
       parent = ensureDir(accPath, segments[i], parent);
     }
 
-    const fileName = segments[segments.length - 1];
     parent.children!.push({
       name: fileName,
       path: `${ref.repo}/${entry.path}`,

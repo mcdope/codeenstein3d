@@ -4,6 +4,8 @@ The unit-test suite (Vitest, `src/**/*.test.ts`, co-located next to what they te
 
 For the separate Playwright-driven scripts (`scripts/verify-*.mjs`) that exercise the real built app end-to-end, see [Architecture](architecture.md#build).
 
+For the automated balancing-bot harness (`scripts/run-balancing-telemetry.mjs`, `npm run balancing:scan`/`balancing:watch`/`balancing:telemetry`) — a separate, not-CI-wired dev tool, not part of this test suite — see [Balancing Telemetry Bot](balancing-telemetry.md). Worth knowing even if you never touch it directly: it demonstrated a real, generalizable gotcha about **headed vs. headless browser automation timing** — a headless Playwright session driven by a virtual clock can achieve arbitrarily fine-grained timing control (hold a key for exactly N ms, advance the engine by exactly N ms), but a *headed* (real, visible) session is bound by real per-frame rendering — a wait shorter than roughly one real display frame doesn't reliably produce a proportionally small effect. A convergence check tight enough to work perfectly headless can be structurally unreachable headed, with the failure invisible to any headless-only verification. See [Headed vs. headless](balancing-telemetry.md#headed-vs-headless-read-this-before-touching-turnburstms-math) for the concrete bug this caused and the repro recipe for this class of issue.
+
 ## Running the suite
 
 - `npm test` — run once (`vitest run`).

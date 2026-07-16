@@ -15,6 +15,10 @@
     "verify:campaign": "node scripts/verify-demo-campaign.mjs",
     "verify:campaign:playthrough": "node scripts/verify-campaign-playthrough.mjs",
     "generate:default-highscore": "node scripts/generate-default-highscore.mjs",
+    "balancing:telemetry": "node scripts/run-balancing-telemetry.mjs",
+    "balancing:watch": "node scripts/watch-bot-sessions.mjs",
+    "balancing:scan": "CODEENSTEIN_TELEMETRY_ANOMALY_SCAN=1 CODEENSTEIN_TELEMETRY_LEVEL_LIMIT=8 CODEENSTEIN_TELEMETRY_ATTEMPT_CAP=5 CODEENSTEIN_TELEMETRY_DIFFICULTY=normal CODEENSTEIN_TELEMETRY_CONCURRENCY=6 node scripts/run-balancing-telemetry.mjs",
+    "balancing:campaign": "node scripts/run-balancing-campaign.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage"
