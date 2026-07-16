@@ -293,6 +293,12 @@ a.settings-btn {
   color: var(--muted);
 }
 
+/* "Watch" and "Export" sit in the same cell (src/ui/highscorePanel.ts) —
+ * matches .replay-controls' own 6px gap between transport-bar buttons. */
+.highscore-table td .replay-btn + .replay-btn {
+  margin-left: 6px;
+}
+
 .replay-btn {
   padding: 4px 10px;
   font: inherit;
