@@ -51,6 +51,14 @@ const LORE_BONUS_PER_TERMINAL = 100;
  * bonus, since finding one takes actively interacting with a specific
  * stretch of wall rather than just walking near a terminal. */
 const SECRET_ROOM_BONUS_PER_ROOM = 200;
+/** Flat points per "Multi Kill" (3 kills within `MULTI_KILL_WINDOW_SEC` of
+ * each other — see `RaycasterEngine.damageEnemy`, which owns the rolling-
+ * window detection and just reports how many times each tier fired). */
+const MULTI_KILL_BONUS = 300;
+/** Flat points per "Ultra Kill" (6 kills within `ULTRA_KILL_WINDOW_SEC`) —
+ * bigger than a Multi Kill, matching the existing top-tier
+ * `MAP_COMPLETION_BONUS` for a cohesive "big bonus" scale. */
+const ULTRA_KILL_BONUS = 750;
 
 export interface ScoreInput {
   /** Sum of `killPoints()` for every enemy defeated so far. */
@@ -80,6 +88,10 @@ export interface ScoreInput {
   uniqueLoreTerminalsRead: number;
   /** Count of unique secret rooms opened so far this level. */
   uniqueSecretRoomsOpened: number;
+  /** Count of "Multi Kill" streaks triggered so far this level. */
+  multiKillCount: number;
+  /** Count of "Ultra Kill" streaks triggered so far this level. */
+  ultraKillCount: number;
 }
 
 export interface ScoreBreakdown {
@@ -91,6 +103,7 @@ export interface ScoreBreakdown {
   mapCompletionBonus: number;
   loreBonus: number;
   secretRoomBonus: number;
+  multikillBonus: number;
   /** Sum of every bonus, floored at 0. */
   total: number;
 }
@@ -122,6 +135,7 @@ export function computeScore(input: ScoreInput): ScoreBreakdown {
     clamp01(input.mapCompletionFrac) > MAP_COMPLETION_THRESHOLD ? MAP_COMPLETION_BONUS : 0;
   const loreBonus = input.uniqueLoreTerminalsRead * LORE_BONUS_PER_TERMINAL;
   const secretRoomBonus = input.uniqueSecretRoomsOpened * SECRET_ROOM_BONUS_PER_ROOM;
+  const multikillBonus = input.multiKillCount * MULTI_KILL_BONUS + input.ultraKillCount * ULTRA_KILL_BONUS;
 
   const total = Math.max(
     0,
@@ -132,7 +146,8 @@ export function computeScore(input: ScoreInput): ScoreBreakdown {
       pathBonus +
       mapCompletionBonus +
       loreBonus +
-      secretRoomBonus,
+      secretRoomBonus +
+      multikillBonus,
   );
 
   return {
@@ -144,6 +159,7 @@ export function computeScore(input: ScoreInput): ScoreBreakdown {
     mapCompletionBonus,
     loreBonus,
     secretRoomBonus,
+    multikillBonus,
     total,
   };
 }

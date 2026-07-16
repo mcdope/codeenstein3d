@@ -576,6 +576,62 @@ class AudioManager {
     });
   }
 
+  /** "Multi Kill" streak bonus (3 kills within a few seconds of each other —
+   * see `RaycasterEngine.registerKillForStreak`): a bright, triumphant
+   * rising arpeggio — smaller and shorter than `playUltraKill`'s own bigger
+   * version, same "smaller vs. bigger" relationship as `playExplosion`/
+   * `playRocketExplosion`. */
+  playMultiKill(): void {
+    const ctx = this.resume();
+    if (!ctx || !this.sfx) return;
+    const t = ctx.currentTime;
+    const sfx = this.sfx;
+    const notes = [659.25, 830.61, 987.77]; // E5, G#5, B5
+    notes.forEach((freq, i) => {
+      const start = t + i * 0.06;
+      const osc = ctx.createOscillator();
+      osc.type = "square";
+      osc.frequency.setValueAtTime(freq, start);
+      const gain = envelope(ctx, 0.35, 0.004, 0.14);
+      osc.connect(gain).connect(sfx);
+      osc.start(start);
+      osc.stop(start + 0.16);
+    });
+  }
+
+  /** "Ultra Kill" streak bonus (6 kills within a few seconds) — a bigger,
+   * more dramatic version of `playMultiKill`: two more notes, a wider pitch
+   * spread, longer per-note duration, plus a short filtered noise "sizzle"
+   * layered under the arpeggio for extra punch (the same "bigger" treatment
+   * `playRocketExplosion` gets over `playExplosion`). */
+  playUltraKill(): void {
+    const ctx = this.resume();
+    if (!ctx || !this.sfx) return;
+    const t = ctx.currentTime;
+    const sfx = this.sfx;
+    const notes = [659.25, 830.61, 987.77, 1174.66, 1318.51]; // E5, G#5, B5, D6, E6
+    notes.forEach((freq, i) => {
+      const start = t + i * 0.07;
+      const osc = ctx.createOscillator();
+      osc.type = "square";
+      osc.frequency.setValueAtTime(freq, start);
+      const gain = envelope(ctx, 0.5, 0.004, 0.2);
+      osc.connect(gain).connect(sfx);
+      osc.start(start);
+      osc.stop(start + 0.22);
+    });
+
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer(ctx, 0.15);
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = "bandpass";
+    noiseFilter.frequency.setValueAtTime(1800, t);
+    const noiseGain = envelope(ctx, 0.3, 0.002, 0.1);
+    noise.connect(noiseFilter).connect(noiseGain).connect(sfx);
+    noise.start(t);
+    noise.stop(t + 0.12);
+  }
+
   /** A fresh distortion shaper per call — deliberately *not* a single cached
    * node reused across calls. `connect()` chaining (`osc.connect(shaper).connect(gain)`
    * at every call site) means a shared node would accumulate one permanent

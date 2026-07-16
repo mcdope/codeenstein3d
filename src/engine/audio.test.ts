@@ -195,6 +195,8 @@ describe("AudioManager simple one-shot effects", () => {
     ["playExplosion", () => audio.playExplosion()],
     ["playRocketExplosion", () => audio.playRocketExplosion()],
     ["playSecret", () => audio.playSecret()],
+    ["playMultiKill", () => audio.playMultiKill()],
+    ["playUltraKill", () => audio.playUltraKill()],
   ];
 
   it("does nothing for any effect when audio is unavailable", () => {
@@ -219,6 +221,20 @@ describe("AudioManager simple one-shot effects", () => {
     ctx.createOscillator.mockClear();
     audio.playSecret();
     expect(ctx.createOscillator).toHaveBeenCalledTimes(3);
+  });
+
+  it("plays a bigger arpeggio plus a noise burst for playUltraKill than playMultiKill", () => {
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const ctx = audio.resume() as unknown as MockAudioContext;
+    audio.playMultiKill();
+    expect(ctx.createOscillator).toHaveBeenCalledTimes(3);
+    expect(ctx.createBufferSource).not.toHaveBeenCalled();
+
+    ctx.createOscillator.mockClear();
+    audio.playUltraKill();
+    expect(ctx.createOscillator).toHaveBeenCalledTimes(5); // two more notes than Multi Kill
+    expect(ctx.createBufferSource).toHaveBeenCalledTimes(1); // extra noise "sizzle" layer
+    expect(ctx.createBiquadFilter.mock.results.at(-1)?.value.type).toBe("bandpass");
   });
 });
 

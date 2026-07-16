@@ -34,6 +34,7 @@ export type MockCanvasContext = {
     | "fillRect"
     | "strokeRect"
     | "fillText"
+    | "strokeText"
     | "drawImage"
     | "putImageData"] : ReturnType<typeof vi.fn>;
 } & {
@@ -77,6 +78,7 @@ export function createMockCanvasContext(canvas: HTMLCanvasElement): MockCanvasCo
     fillRect: vi.fn(),
     strokeRect: vi.fn(),
     fillText: vi.fn(),
+    strokeText: vi.fn(),
     drawImage: vi.fn(),
     putImageData: vi.fn(),
     getImageData: vi.fn((_sx: number, _sy: number, w: number, h: number) => blankImageData(w, h)),

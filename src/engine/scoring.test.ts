@@ -46,6 +46,8 @@ function input(overrides: Partial<ScoreInput> = {}): ScoreInput {
     mapCompletionFrac: 0.5,
     uniqueLoreTerminalsRead: 0,
     uniqueSecretRoomsOpened: 0,
+    multiKillCount: 0,
+    ultraKillCount: 0,
     ...overrides,
   };
 }
@@ -173,6 +175,12 @@ describe("computeScore", () => {
 
   it("adds a flat bonus per unique secret room opened", () => {
     expect(computeScore(input({ uniqueSecretRoomsOpened: 2 })).secretRoomBonus).toBe(400);
+  });
+
+  it("adds a flat bonus per Multi Kill and per Ultra Kill streak triggered", () => {
+    expect(computeScore(input({ multiKillCount: 1 })).multikillBonus).toBe(300);
+    expect(computeScore(input({ ultraKillCount: 1 })).multikillBonus).toBe(750);
+    expect(computeScore(input({ multiKillCount: 2, ultraKillCount: 1 })).multikillBonus).toBe(1350);
   });
 
   it("floors the total at 0 when a deeply negative killPoints outweighs every bonus", () => {

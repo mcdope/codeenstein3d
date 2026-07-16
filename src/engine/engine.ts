@@ -42,6 +42,7 @@ import {
   drawCrosshair,
   drawFpsOverlay,
   drawHud,
+  drawKillStreakToast,
   drawLoreOverlay,
   drawPauseOverlay,
 } from "./hud";
@@ -163,6 +164,21 @@ const CHEAT_MAX_AMMO = 999;
  * counted like `flashFrames`/`muzzleFrames` below, not `dt`-scaled, so it
  * needs no change to `tickEffects()`'s signature. ~2s at 60fps. */
 const CHEAT_TOAST_FRAMES = 120;
+/** Same frame-counted convention as `CHEAT_TOAST_FRAMES`, for the "Multi/
+ * Ultra Kill" banner. */
+const KILL_STREAK_TOAST_FRAMES = 120;
+/** Kills within this many real seconds of each other trigger a "Multi
+ * Kill" (see `damageEnemy`'s rolling-window check) — not Unreal
+ * Tournament's own continuously-extending streak/tier algorithm, just this
+ * project's own simpler fixed-window spec. */
+const MULTI_KILL_WINDOW_SEC = 3;
+/** How many kills within `MULTI_KILL_WINDOW_SEC` triggers a "Multi Kill". */
+const MULTI_KILL_COUNT = 3;
+/** Kills within this many real seconds of each other trigger the bigger
+ * "Ultra Kill" tier instead of "Multi Kill". */
+const ULTRA_KILL_WINDOW_SEC = 6;
+/** How many kills within `ULTRA_KILL_WINDOW_SEC` triggers an "Ultra Kill". */
+const ULTRA_KILL_COUNT = 6;
 /** Health lost per second while standing in an acid (hazard) tile. */
 const HAZARD_DPS = 18;
 /**
@@ -413,6 +429,27 @@ export class RaycasterEngine {
   private kills = 0;
   /** Sum of `killPoints()` for every enemy defeated so far this level. */
   private killScore = 0;
+  /** `levelTime` timestamps of kills within the last `ULTRA_KILL_WINDOW_SEC`
+   * — pruned on every kill (see `damageEnemy`'s rolling-window check), never
+   * grows unbounded. */
+  private recentKillTimes: number[] = [];
+  /** How many times a "Multi Kill" (`MULTI_KILL_COUNT` kills within
+   * `MULTI_KILL_WINDOW_SEC`) has fired this level — see `./scoring.ts`. */
+  private multiKillCount = 0;
+  /** How many times an "Ultra Kill" (`ULTRA_KILL_COUNT` kills within
+   * `ULTRA_KILL_WINDOW_SEC`) has fired this level — see `./scoring.ts`. */
+  private ultraKillCount = 0;
+  /** Text of the "Multi/Ultra Kill" banner currently showing, if any — same
+   * frame-counted toast convention as `cheatToastText`, kept as its own
+   * state rather than reusing that field so a kill streak and a cheat
+   * toggle triggered in the same moment can't stomp each other. */
+  private killStreakText: string | null = null;
+  /** Frames remaining for the banner above — ticked down in `tickEffects()`
+   * alongside `cheatToastFrames`. */
+  private killStreakFrames = 0;
+  /** True for an "Ultra Kill" banner, false for "Multi Kill" — `hud.ts`'s
+   * `drawKillStreakToast` sizes/colors the bigger tier more dramatically. */
+  private killStreakBig = false;
   /** Score banked from levels already cleared this campaign — see
    * `EngineCarryover.priorScore`. Added on top of this level's own live score
    * in `buildStats()` so the running total never resets at a transition. */
@@ -1139,6 +1176,15 @@ export class RaycasterEngine {
     if (this.cheatToastText && this.cheatToastFrames > 0) {
       drawCheatToast(this.ctx, this.cheatToastText, this.cheatToastFrames / CHEAT_TOAST_FRAMES);
     }
+    // Same "transient feedback only" treatment as the cheat toast above.
+    if (this.killStreakText && this.killStreakFrames > 0) {
+      drawKillStreakToast(
+        this.ctx,
+        this.killStreakText,
+        this.killStreakFrames / KILL_STREAK_TOAST_FRAMES,
+        this.killStreakBig,
+      );
+    }
     this.handlers.onStats?.(stats);
 
     // Age the frame-based effect timers now that this frame is drawn.
@@ -1297,6 +1343,7 @@ export class RaycasterEngine {
     if (this.flashFrames > 0) this.flashFrames -= 1;
     if (this.muzzleFrames > 0) this.muzzleFrames -= 1;
     if (this.cheatToastFrames > 0) this.cheatToastFrames -= 1;
+    if (this.killStreakFrames > 0) this.killStreakFrames -= 1;
     tickBulletTraces(this.traces);
     tickFlameStreams(this.flameStreams);
     for (const enemy of this.enemies) {
@@ -1743,6 +1790,14 @@ export class RaycasterEngine {
     this.cheatToastFrames = CHEAT_TOAST_FRAMES;
   }
 
+  /** Same shape as `showCheatToast`, own state — see `killStreakText`'s
+   * doc comment for why. */
+  private showKillStreakToast(text: string, big: boolean): void {
+    this.killStreakText = text;
+    this.killStreakFrames = KILL_STREAK_TOAST_FRAMES;
+    this.killStreakBig = big;
+  }
+
   /** Win when the player stands on the exit tile (the return statement). */
   private checkExit(): void {
     if (this.state !== "playing") return;
@@ -1999,6 +2054,7 @@ export class RaycasterEngine {
     enemy.alive = false;
     this.kills += 1;
     this.killScore += killPoints(enemy);
+    this.registerKillForStreak();
     if (this.target === enemy) this.target = null;
     if (this.telemetry) {
       recordEnemyDeath(this.telemetry, this.enemyTtkIndex, enemy, this.levelTime);
@@ -2077,6 +2133,35 @@ export class RaycasterEngine {
   }
 
   /**
+   * Rolling-window "Multi Kill"/"Ultra Kill" streak detection — called once
+   * per kill, from `damageEnemy`, right after `this.kills`/`this.killScore`
+   * are updated. Counts how many recent kills (including the one that just
+   * happened) fall within each window; a tier only fires on the kill that
+   * *first* pushes the count to its threshold (comparing the before/after
+   * count), so a long streak doesn't re-announce every subsequent kill, and
+   * a fresh streak later can retrigger "Multi Kill" once the window
+   * naturally empties out. Ultra is checked first since 6-in-6 implies
+   * 3-in-3 already fired earlier in the same streak — this kill should only
+   * ever cross one threshold, not both.
+   */
+  private registerKillForStreak(): void {
+    const withinMulti = this.recentKillTimes.filter((t) => this.levelTime - t <= MULTI_KILL_WINDOW_SEC).length;
+    const withinUltra = this.recentKillTimes.length; // already pruned to the (larger) ultra window below
+    this.recentKillTimes.push(this.levelTime);
+    this.recentKillTimes = this.recentKillTimes.filter((t) => this.levelTime - t <= ULTRA_KILL_WINDOW_SEC);
+
+    if (withinUltra < ULTRA_KILL_COUNT && withinUltra + 1 >= ULTRA_KILL_COUNT) {
+      this.ultraKillCount += 1;
+      this.showKillStreakToast("ULTRA KILL!", true);
+      audio.playUltraKill();
+    } else if (withinMulti < MULTI_KILL_COUNT && withinMulti + 1 >= MULTI_KILL_COUNT) {
+      this.multiKillCount += 1;
+      this.showKillStreakToast("MULTI KILL!", false);
+      audio.playMultiKill();
+    }
+  }
+
+  /**
    * Flip to the end state — just the state, nothing else. `checkExit()`/
    * `damage()` (which calls this) run early in `advance()`, well before that
    * frame's rendering; actually stopping the loop and firing the
@@ -2113,6 +2198,8 @@ export class RaycasterEngine {
         mapCompletionFrac: this.visitedWalkableCount / this.totalWalkableTiles,
         uniqueLoreTerminalsRead: this.loreRead.size,
         uniqueSecretRoomsOpened: this.secretRoomsOpened.size,
+        multiKillCount: this.multiKillCount,
+        ultraKillCount: this.ultraKillCount,
       }).total;
 
     return {

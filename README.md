@@ -130,6 +130,7 @@ Each stage only consumes the data structure from the previous stage — language
 - **Lore bonus** flat points per unique terminal read
 - **Secret room bonus** flat points per unique secret room opened (double the lore bonus)
 - **100% Exploration bonus** for visiting 95%+ walkable tiles
+- **Multi Kill / Ultra Kill** — 3 kills within 3 seconds triggers a "MULTI KILL!" bonus + banner + stinger; 6 within 6 seconds triggers a bigger "ULTRA KILL!" instead
 
 ---
 
@@ -249,6 +250,7 @@ npm run preview    # Serve production build locally
 | — | Export "Watch Replay" playback as a downloadable webm video — a Record button on the transport bar, plus a one-click "Export" shortcut in the Highscores dialog | ✅ |
 | — | Startpage leads with a plain-English "New to coding?" card, before the more technical code→dungeon mapping | ✅ |
 | — | Export a cleared level as a top-down PNG — actual wall/door/floor/hazard/teleporter/spike/lore textures stamped from above, not a flat-color diagram; only available once that level is won | ✅ |
+| — | Multi Kill / Ultra Kill score bonus, on-screen banner, and stinger SFX for chaining kills (3-in-3s / 6-in-6s) | ✅ |
 
 ---
 

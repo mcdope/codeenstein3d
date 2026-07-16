@@ -82,6 +82,36 @@ export function drawCheatToast(ctx: CanvasRenderingContext2D, text: string, alph
 }
 
 /**
+ * "Multi Kill"/"Ultra Kill" banner (see
+ * `RaycasterEngine.registerKillForStreak`) — a big, bold, Unreal-
+ * Tournament-style announcement, deliberately not `drawCheatToast`'s small
+ * top-corner confirmation pill: this is meant to read as a dramatic
+ * mid-combat callout, not a quiet status confirmation. `big` (true for
+ * "Ultra Kill") sizes and colors it more intensely than a "Multi Kill" —
+ * same "smaller vs. bigger" relationship the streak's own SFX pair uses
+ * (see `audio.ts`'s `playMultiKill`/`playUltraKill`). Same alpha-fade
+ * convention as `drawCheatToast` — the caller ticks a frame counter down
+ * and passes `framesLeft / totalFrames`. Positioned in the upper third of
+ * the screen, clear of the crosshair and the bottom stat bar.
+ */
+export function drawKillStreakToast(ctx: CanvasRenderingContext2D, text: string, alpha: number, big: boolean): void {
+  const w = ctx.canvas.width;
+  const h = ctx.canvas.height;
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+  ctx.textAlign = "center";
+  ctx.font = `bold ${big ? 48 : 36}px ui-monospace, monospace`;
+  const y = h * 0.28;
+  ctx.lineWidth = big ? 6 : 4;
+  ctx.strokeStyle = big ? "#7a0d0d" : "#5a3d0d";
+  ctx.strokeText(text, w / 2, y);
+  ctx.fillStyle = big ? "#ff4d4d" : "#ffcf4d";
+  ctx.fillText(text, w / 2, y);
+  ctx.textAlign = "start";
+  ctx.restore();
+}
+
+/**
  * Full-screen "PAUSED" scrim, drawn over one frozen frame of the scene —
  * triggered by the window losing focus or an Escape press (see
  * `RaycasterEngine`'s `isPaused`). Distinct from the Tab automap overlay,

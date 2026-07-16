@@ -10,6 +10,7 @@ import {
   drawCrosshair,
   drawFpsOverlay,
   drawHud,
+  drawKillStreakToast,
   drawLoreOverlay,
   drawPauseOverlay,
   HUD_HEIGHT,
@@ -99,6 +100,37 @@ describe("drawCheatToast", () => {
   it("clamps negative alpha up to 0", () => {
     const c = ctx();
     drawCheatToast(asCtx(c), "IDCLIP", -1);
+    expect(c.globalAlpha).toBe(0);
+  });
+});
+
+describe("drawKillStreakToast", () => {
+  it("sizes and colors a Multi Kill (big=false) smaller/duller than an Ultra Kill", () => {
+    const c = ctx();
+    drawKillStreakToast(asCtx(c), "MULTI KILL!", 1, false);
+    expect(c.font).toBe("bold 36px ui-monospace, monospace");
+    expect(c.fillStyle).toBe("#ffcf4d");
+    expect(c.strokeStyle).toBe("#5a3d0d");
+    expect(c.lineWidth).toBe(4);
+    expect(c.textAlign).toBe("start"); // reset before restore()
+    expect(c.save).toHaveBeenCalledTimes(1);
+    expect(c.restore).toHaveBeenCalledTimes(1);
+  });
+
+  it("sizes and colors an Ultra Kill (big=true) bigger/more intense than a Multi Kill", () => {
+    const c = ctx();
+    drawKillStreakToast(asCtx(c), "ULTRA KILL!", 1, true);
+    expect(c.font).toBe("bold 48px ui-monospace, monospace");
+    expect(c.fillStyle).toBe("#ff4d4d");
+    expect(c.strokeStyle).toBe("#7a0d0d");
+    expect(c.lineWidth).toBe(6);
+  });
+
+  it("clamps alpha above 1 down to 1, and negative alpha up to 0", () => {
+    const c = ctx();
+    drawKillStreakToast(asCtx(c), "MULTI KILL!", 5, false);
+    expect(c.globalAlpha).toBe(1);
+    drawKillStreakToast(asCtx(c), "MULTI KILL!", -1, false);
     expect(c.globalAlpha).toBe(0);
   });
 });

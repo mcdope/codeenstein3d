@@ -7,6 +7,7 @@ import { createMockCanvasContext, stubCanvasGetContext } from "../../test/mocks/
 import { installRaf, type RafController } from "../../test/mocks/raf";
 import type { AmmoPickup, Enemy, GameMap, Mine, SpikeTrap, Teleporter, Tile } from "../map/types";
 import { DOOR_TILE, LORE_TILE, SECRET_WALL_TILE, TELEPORTER_TILE } from "../map/types";
+import { audio } from "./audio";
 import type { InputSnapshot, InputSource } from "./input";
 
 // engine.ts imports a real *value* (`textures`) from textures.ts, whose
@@ -1782,5 +1783,129 @@ describe("RaycasterEngine — scoring integration", () => {
     const { engine, handlers } = makeEngine(fakeMap(), makeHandlers(), { carryover: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0, priorScore: 12345 } });
     engine.advance(0.016);
     expect(lastStats(handlers).score).toBeGreaterThanOrEqual(12345);
+  });
+});
+
+describe("RaycasterEngine — Multi Kill / Ultra Kill streaks", () => {
+  // All point-blank, one-hit kills at the same spot the "firing" describe
+  // block already uses — each dies in a single pistol shot, so consecutive
+  // fireQueued frames each consume exactly one of them (projectLivingEnemies
+  // only ever considers the still-alive ones, so which one dies on a given
+  // frame doesn't matter, only that exactly one does).
+  function oneHitEnemies(count: number): Enemy[] {
+    return Array.from({ length: count }, () => fakeEnemy({ x: 6.5, y: 5.5, hp: 1, maxHp: 1 }));
+  }
+
+  // Point-blank enemies aggro (and start meleeing back) the instant they're
+  // shot, so a rapid multi-kill test needs IDDQD, or a several-kill streak
+  // can kill the *player* first — enemy attack damage isn't this feature's
+  // concern. IDKFA (full arsenal) is also applied so a kill's random bonus-
+  // weapon drop (see `rollBonusWeaponDrop`) never has anything left to grant
+  // — with every weapon already owned, no pickup can auto-switch the
+  // player off the pistol and stall the rest of the streak on an
+  // un-owned-ammo weapon mid-test.
+  function makeGodModeEngine(map: GameMap): ReturnType<typeof makeEngine> {
+    const result = makeEngine(map);
+    result.input.cheat = "IDDQD";
+    result.engine.advance(0.001);
+    result.input.cheat = "IDKFA";
+    result.engine.advance(0.001);
+    result.input.cheat = null;
+    return result;
+  }
+
+  it("fires a Multi Kill on the 3rd kill within 3s, and doesn't re-fire on a 4th kill in the same streak", () => {
+    const map = fakeMap({ enemies: oneHitEnemies(4) });
+    const { engine, input, handlers } = makeGodModeEngine(map);
+    const multiSpy = vi.spyOn(audio, "playMultiKill");
+
+    input.fireQueued = true;
+    engine.advance(0.1); // kill 1 @ t=0.1
+    input.fireQueued = true;
+    engine.advance(0.1); // kill 2 @ t=0.2
+    expect(multiSpy).not.toHaveBeenCalled();
+    input.fireQueued = true;
+    engine.advance(0.1); // kill 3 @ t=0.3 -> Multi Kill
+    expect(multiSpy).toHaveBeenCalledTimes(1);
+    expect(lastStats(handlers).kills).toBe(3);
+
+    input.fireQueued = true;
+    engine.advance(0.1); // kill 4 @ t=0.4 -> still within the 3s window, no re-fire
+    expect(multiSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("fires an Ultra Kill (not a 2nd Multi Kill) on the 6th kill within 6s", () => {
+    const map = fakeMap({ enemies: oneHitEnemies(6) });
+    const { engine, input } = makeGodModeEngine(map);
+    const multiSpy = vi.spyOn(audio, "playMultiKill");
+    const ultraSpy = vi.spyOn(audio, "playUltraKill");
+
+    for (let i = 0; i < 6; i++) {
+      input.fireQueued = true;
+      engine.advance(0.1); // 6 kills, 0.1s apart -> all within both windows
+    }
+    expect(multiSpy).toHaveBeenCalledTimes(1); // only the 3rd kill's Multi Kill
+    expect(ultraSpy).toHaveBeenCalledTimes(1); // the 6th kill's Ultra Kill, not a 2nd Multi Kill
+  });
+
+  it("lets a lapsed streak (gap past the Ultra window) retrigger a fresh Multi Kill later", () => {
+    const map = fakeMap({ enemies: oneHitEnemies(9) });
+    const { engine, input } = makeGodModeEngine(map);
+    const multiSpy = vi.spyOn(audio, "playMultiKill");
+    const ultraSpy = vi.spyOn(audio, "playUltraKill");
+
+    for (let i = 0; i < 6; i++) {
+      input.fireQueued = true;
+      engine.advance(0.1); // kills 1-6 @ t=0.1..0.6 -> Multi Kill then Ultra Kill
+    }
+    expect(multiSpy).toHaveBeenCalledTimes(1);
+    expect(ultraSpy).toHaveBeenCalledTimes(1);
+
+    input.fireQueued = true;
+    engine.advance(10.1); // kill 7 @ t=10.7 -> well past the Ultra window, no trigger
+    expect(multiSpy).toHaveBeenCalledTimes(1);
+    expect(ultraSpy).toHaveBeenCalledTimes(1);
+
+    input.fireQueued = true;
+    engine.advance(0.1); // kill 8 @ t=10.8
+    input.fireQueued = true;
+    engine.advance(0.1); // kill 9 @ t=10.9 -> a fresh 3-in-3s streak -> Multi Kill again
+    expect(multiSpy).toHaveBeenCalledTimes(2);
+    expect(ultraSpy).toHaveBeenCalledTimes(1); // unchanged
+  });
+
+  it("never triggers a streak when kills are spaced further apart than the Multi Kill window", () => {
+    const map = fakeMap({ enemies: oneHitEnemies(3) });
+    const { engine, input } = makeGodModeEngine(map);
+    const multiSpy = vi.spyOn(audio, "playMultiKill");
+    const ultraSpy = vi.spyOn(audio, "playUltraKill");
+
+    input.fireQueued = true;
+    engine.advance(0.1); // kill 1 @ t=0.1
+    input.fireQueued = true;
+    engine.advance(4); // kill 2 @ t=4.1 -> 4s since kill 1, past the 3s window
+    input.fireQueued = true;
+    engine.advance(4); // kill 3 @ t=8.1 -> 4s since kill 2, past the 3s window
+    expect(multiSpy).not.toHaveBeenCalled();
+    expect(ultraSpy).not.toHaveBeenCalled();
+  });
+
+  it("scores Ultra Kill's bigger bonus on top of Multi Kill's, via computeScore()'s multikillBonus", () => {
+    const map = fakeMap({ enemies: oneHitEnemies(6) });
+    const { engine, input, handlers } = makeGodModeEngine(map);
+    for (let i = 0; i < 3; i++) {
+      input.fireQueued = true;
+      engine.advance(0.1); // kills 1-3 -> Multi Kill
+    }
+    // The toast itself is drawn straight to canvas (see hud.test.ts's
+    // drawKillStreakToast coverage) — here just confirm the score already
+    // reflects the Multi Kill bonus flowing through computeScore().
+    const afterMulti = lastStats(handlers).score;
+    for (let i = 0; i < 3; i++) {
+      input.fireQueued = true;
+      engine.advance(0.1); // kills 4-6 -> Ultra Kill
+    }
+    const afterUltra = lastStats(handlers).score;
+    expect(afterUltra).toBeGreaterThan(afterMulti); // Ultra's bigger bonus landed
   });
 });
