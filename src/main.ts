@@ -226,7 +226,13 @@ wadFileInput.addEventListener("change", async () => {
 
 // --- Highscores dialog -------------------------------------------------------
 
-viewHighscoresButton.addEventListener("click", async () => {
+/** Re-reads the current board (never cached — a "Watch Replay" viewing that
+ * just ended may have nothing new to show, but the button itself doesn't
+ * know that) and opens the dialog. Shared by the button below and by
+ * `startReplay`'s own `returnToHighscores`, so finishing a replay lands the
+ * viewer back where they launched it from instead of the plain file-tree
+ * placeholder. */
+async function openHighscoreDialog(): Promise<void> {
   renderHighscoreTable(highscoreList, await loadHighscoresForDisplay(), {
     onWatchReplay: (entry) => {
       highscoreDialog.close();
@@ -234,7 +240,9 @@ viewHighscoresButton.addEventListener("click", async () => {
     },
   });
   highscoreDialog.showModal();
-});
+}
+
+viewHighscoresButton.addEventListener("click", () => void openHighscoreDialog());
 closeHighscoresButton.addEventListener("click", () => highscoreDialog.close());
 // Whether closed via the button above, Escape, or a backdrop click, hand
 // keyboard focus back to the canvas so a running level's WASD doesn't go
@@ -2058,13 +2066,27 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
       resetToFileTree();
     };
 
+    /** `teardown`, plus reopening the Highscores dialog this viewing was
+     * launched from — used only by the three "genuinely done watching"
+     * overlays below (natural win/death, Escape, or any load/verify error),
+     * never by `stopActiveReplay`'s supersession call sites (`launchLevel`
+     * picking a real file, or `startReplay` itself starting a *different*
+     * replay) — those are the user explicitly navigating away, not "done",
+     * so popping the dialog back open there would fight whatever they just
+     * launched. */
+    const returnToHighscores = (): void => {
+      teardown();
+      void openHighscoreDialog();
+    };
+
     /** Ends the viewing with an on-screen explanation — every termination
      * path except a natural win/death, which already shows its own overlay
-     * (see `buildEngineFor`'s handlers) and can go straight to `teardown`. */
+     * (see `buildEngineFor`'s handlers) and can go straight to
+     * `returnToHighscores`. */
     const endReplay = (reason: string): void => {
       if (!isReplaying) return;
       window.removeEventListener("keydown", onStopKey); // avoid double-handling Escape against the dialog's own listener
-      hud.showReplayEnded(reason, teardown);
+      hud.showReplayEnded(reason, returnToHighscores);
     };
     stopActiveReplay = teardown;
 
@@ -2105,11 +2127,11 @@ async function startReplay(entry: HighscoreEntry): Promise<void> {
         {
           onGameOver: () => {
             levelEnded = true;
-            hud.showKernelPanic(teardown);
+            hud.showKernelPanic(returnToHighscores);
           },
           onWin: () => {
             levelEnded = true;
-            if (levelIndex >= payload.levels.length) hud.showBuildSuccessful(teardown);
+            if (levelIndex >= payload.levels.length) hud.showBuildSuccessful(returnToHighscores);
             else advanceLevel();
           },
         },
