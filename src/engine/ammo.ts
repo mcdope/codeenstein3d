@@ -18,7 +18,7 @@ import {
   ROCKETS_DROP_AMOUNT,
   SMG_DROP_AMOUNT,
 } from "./loot";
-import { WEAPONS, type AmmoType } from "./weapons";
+import { PISTOL_WEAPON_INDEX, WEAPONS, type AmmoType } from "./weapons";
 
 /** Live (or starting-reference) reserves of every ammo pool. */
 export type AmmoPools = Record<AmmoType, number>;
@@ -84,7 +84,7 @@ const STARTING_GAS_AMMO = 40;
  * undercounts their cost.
  */
 function startingBullets(enemies: Enemy[]): number {
-  const pistolDamage = WEAPONS[0].damagePerPellet;
+  const pistolDamage = WEAPONS[PISTOL_WEAPON_INDEX].damagePerPellet;
   const shotsToClear = enemies.reduce(
     (n, e) => n + Math.ceil(e.maxHp / pistolDamage),
     0,

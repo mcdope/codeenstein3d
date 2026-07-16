@@ -259,19 +259,25 @@ export const WEAPONS: readonly Weapon[] = [
   },
 ];
 
-/** Weapons owned from the start of every run — everything else has to be
- * earned (currently: an Elite kill's high-odds bonus weapon drop, a rare
- * drop from any kill, or the campaign-level-4/8 forced-unlock safety net in
- * `main.ts`). */
-export const STARTING_WEAPONS: readonly number[] = [0, 1, 2];
-
-/** Array indices of gdb/ghidra/Friday Hotfix in `WEAPONS` — named so
- * `UNLOCKABLE_WEAPONS` and `main.ts`'s forced-unlock levels don't each
- * hardcode the same literal indices independently. */
+/** Array indices of every weapon in `WEAPONS`, named so `UNLOCKABLE_WEAPONS`,
+ * `STARTING_WEAPONS`, and `main.ts`'s forced-unlock levels don't each
+ * hardcode the same literal indices independently. Pure array-index
+ * identities (the same thing `ownedWeapons`/`weaponIndex`/saves/replays use)
+ * — unrelated to which number key fires which weapon; see
+ * `NUMBER_KEY_WEAPONS` for that separate, derived mapping. */
+export const PISTOL_WEAPON_INDEX = 0;
+export const SHOTGUN_WEAPON_INDEX = 1;
+export const KNIFE_WEAPON_INDEX = 2;
 export const GDB_WEAPON_INDEX = 3;
 export const GHIDRA_WEAPON_INDEX = 4;
 export const FRIDAY_HOTFIX_WEAPON_INDEX = 5;
 export const TOOLCHAIN_WEAPON_INDEX = 6;
+
+/** Weapons owned from the start of every run — everything else has to be
+ * earned (currently: an Elite kill's high-odds bonus weapon drop, a rare
+ * drop from any kill, or the campaign-level-4/8 forced-unlock safety net in
+ * `main.ts`). */
+export const STARTING_WEAPONS: readonly number[] = [PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, KNIFE_WEAPON_INDEX];
 
 /** Minimum 1-based campaign level Toolchain can appear at all, in either a
  * secret room (`main.ts`'s `computeMissingWeaponIndices`) or an Elite kill's

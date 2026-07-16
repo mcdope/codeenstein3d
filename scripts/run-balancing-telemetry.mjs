@@ -582,12 +582,14 @@ const MIN_RANGED_APPROACH_DISTANCE = 3;
 // straight route), not a fresh 90°+ reorientation.
 const MAX_WALK_WHILE_TURNING_RAD = 0.35;
 const HAZARD_TILE = 2; // src/map/types.ts's Tile enum
+const PISTOL_WEAPON_INDEX = 0;
+const SHOTGUN_WEAPON_INDEX = 1;
 const KNIFE_WEAPON_INDEX = 2;
 const GDB_WEAPON_INDEX = 3;
 const GHIDRA_WEAPON_INDEX = 4;
 const FRIDAY_HOTFIX_WEAPON_INDEX = 5;
 const TOOLCHAIN_WEAPON_INDEX = 6;
-const STARTING_WEAPONS = [0, 1, 2];
+const STARTING_WEAPONS = [PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, KNIFE_WEAPON_INDEX];
 
 export const DIFFICULTIES = ["easy", "normal", "hard"];
 
@@ -670,7 +672,7 @@ export const PROFILES = {
     // Simple/reliable weapons first; ghidra last (a "casual" player is more
     // hesitant with a self-splash-capable rocket launcher) — but still in
     // the list, since every profile should be able to use whatever it has.
-    weaponPriority: [0, 1, GDB_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX, GHIDRA_WEAPON_INDEX],
+    weaponPriority: [PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, GDB_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX, GHIDRA_WEAPON_INDEX],
     healthDetourThreshold: 0.75,
     proactiveMineDisarm: true,
     // Same "more hesitant with a self-splash launcher" reasoning as the
@@ -691,7 +693,7 @@ export const PROFILES = {
     coverageMode: false,
     // Ammo-efficient auto weapon first, heavy hitter last, everything else
     // in between.
-    weaponPriority: [GDB_WEAPON_INDEX, 0, 1, FRIDAY_HOTFIX_WEAPON_INDEX, GHIDRA_WEAPON_INDEX],
+    weaponPriority: [GDB_WEAPON_INDEX, PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX, GHIDRA_WEAPON_INDEX],
     healthDetourThreshold: 0.5,
     proactiveMineDisarm: true,
     rocketForDistantClusters: true,
@@ -707,7 +709,7 @@ export const PROFILES = {
     // was missing 1/FRIDAY_HOTFIX_WEAPON_INDEX entirely before, the direct
     // cause of Pro/normal needing far more attempts to qualify than the
     // "less skilled" profiles.
-    weaponPriority: [GHIDRA_WEAPON_INDEX, GDB_WEAPON_INDEX, 0, 1, FRIDAY_HOTFIX_WEAPON_INDEX],
+    weaponPriority: [GHIDRA_WEAPON_INDEX, GDB_WEAPON_INDEX, PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX],
     healthDetourThreshold: 0.25,
     proactiveMineDisarm: true,
     rocketForDistantClusters: true,
