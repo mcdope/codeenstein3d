@@ -34,7 +34,7 @@ Gore, Difficulty, and the volume sliders are standing preferences, independent o
 
 ## Highscores
 
-The **Highscores** button opens a top-10 leaderboard with columns for score, level/campaign name, the codebase's total lines/complexity, levels cleared, when the run ended, and an AST hash of the *whole workspace* (so you can compare runs against the exact same code, regardless of which level either run happened to end on). Entries with a recorded replay show a **Watch** button.
+The **Highscores** button opens a top-10 leaderboard with columns for score, level/campaign name, the codebase's total lines/complexity, levels cleared, when the run ended, and an AST hash of the *whole workspace* (so you can compare runs against the exact same code, regardless of which level either run happened to end on). Entries with a recorded replay show **Watch** and **Export** buttons.
 
 If you haven't set any scores of your own yet, the board shows 3 example entries from the bundled Demo Campaign instead of an empty list, each watchable — these disappear the moment you set a real score of your own.
 
