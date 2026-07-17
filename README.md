@@ -253,6 +253,7 @@ npm run preview    # Serve production build locally
 | — | Multi Kill / Ultra Kill score bonus, on-screen banner, and stinger SFX for chaining kills (3-in-3s / 6-in-6s) | ✅ |
 | — | Full favicon/icon set (all platforms) generated from the CODE logo | ✅ |
 | — | SEO: meta description, Open Graph/Twitter Card tags, JSON-LD, robots.txt, sitemap.xml | ✅ |
+| — | Curated online WAD catalog (fetched at build time, not committed), sidebar redesign into labeled sections/tabs, GitHub-load button disabled until a valid repo is entered | ✅ |
 
 ---
 
