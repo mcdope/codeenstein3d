@@ -29,10 +29,10 @@ export function buildIndexDom(): void {
             <button id="tab-demo" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-demo">Demos</button>
           </div>
           <div id="tab-panel-local" class="tab-panel" role="tabpanel">
-            <button id="select-workspace" type="button">Select Workspace</button>
+            <button id="select-workspace" type="button">📁 Select Workspace</button>
           </div>
           <div id="tab-panel-continue" class="tab-panel" role="tabpanel" hidden>
-            <button id="continue-run" type="button">Continue Run</button>
+            <button id="continue-run" type="button">📁 Continue Run</button>
           </div>
           <div id="tab-panel-github" class="tab-panel" role="tabpanel" hidden>
             <input id="github-repo-input" type="text" />
@@ -46,6 +46,7 @@ export function buildIndexDom(): void {
           <div id="tab-panel-demo" class="tab-panel" role="tabpanel" hidden>
             <button id="launch-demo-campaign" type="button">Launch Demo Campaign</button>
           </div>
+          <p id="workspace-name" class="muted">No workspace selected</p>
           <label id="gore-label" for="gore-select">Gore</label>
           <select id="gore-select">
             <option value="none">None</option>
@@ -59,17 +60,25 @@ export function buildIndexDom(): void {
             <option value="normal" selected>Normal</option>
             <option value="hard">Hard</option>
           </select>
-          <p id="workspace-name" class="muted">No workspace selected</p>
           <label id="master-vol-label" for="master-vol">Master Volume</label>
           <input id="master-vol" class="volume-slider" type="range" min="0" max="100" value="50" />
           <label id="sfx-vol-label" for="sfx-vol">SFX Volume</label>
           <input id="sfx-vol" class="volume-slider" type="range" min="0" max="100" value="100" />
           <label id="bgm-vol-label" for="bgm-vol">Music Volume</label>
           <input id="bgm-vol" class="volume-slider" type="range" min="0" max="100" value="50" />
-          <button id="select-bgm-folder" class="settings-btn" type="button">Select BGM Folder</button>
+          <button id="select-bgm-folder" class="settings-btn" type="button">📁 Select BGM Folder</button>
           <p id="bgm-status" class="muted">No custom music loaded</p>
-          <button id="load-wad-textures" class="settings-btn" type="button">Load WAD Texture Pack</button>
-          <input id="wad-file-input" type="file" accept=".wad" hidden />
+          <div id="wad-tabs" role="tablist">
+            <button id="wad-tab-local" class="tab-btn" type="button" role="tab" aria-selected="true" aria-controls="wad-tab-panel-local">Local File</button>
+            <button id="wad-tab-online" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="wad-tab-panel-online">Online</button>
+          </div>
+          <div id="wad-tab-panel-local" class="tab-panel" role="tabpanel">
+            <button id="load-wad-textures" class="settings-btn" type="button">📄 Load WAD Texture Pack</button>
+            <input id="wad-file-input" type="file" accept=".wad" hidden />
+          </div>
+          <div id="wad-tab-panel-online" class="tab-panel" role="tabpanel" hidden>
+            <ul id="online-wad-list" class="online-wad-list"></ul>
+          </div>
           <p id="wad-status" class="muted">Using built-in default textures</p>
           <button id="view-highscores" class="settings-btn" type="button">Highscores</button>
           <a id="player-guide-link" class="settings-btn" href="#" target="_blank" rel="noopener noreferrer">Player Guide</a>

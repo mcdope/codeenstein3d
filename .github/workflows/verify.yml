@@ -22,12 +22,22 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      # `build`'s own `prebuild` hook fetches the online WAD catalog
+      # (~170 MB, see onlineWadCatalog.ts) if not already present — cached
+      # the same way the Playwright browser binary below is, so a normal run
+      # restores from cache instead of re-downloading from 3 external hosts.
+      - name: Cache online WAD assets
+        uses: actions/cache@v4
+        with:
+          path: public/wads
+          key: online-wads-${{ hashFiles('src/wad/onlineWadCatalog.ts') }}
       # `build` chains `tsc --noEmit && vite build`, so this is the one CI
       # step that catches a type error or a Vite build break before it lands
       # on master — the other jobs run Vitest (transpiles via esbuild, no
       # type-check) or a dev server (also no type-check/build).
       - run: npm run build
       - run: npm run verify:wad-parser
+      - run: npm run verify:zip-reader
       - run: npm run verify:campaign
 
   test:
@@ -90,6 +100,15 @@ jobs:
         run: npx playwright install ${{ matrix.browser }}
       - name: Install Playwright OS dependencies
         run: npx playwright install-deps ${{ matrix.browser }}
+      # `npm run dev`'s own `predev` hook fetches the online WAD catalog if
+      # not already present — same cache as the `verify` job above, shared
+      # across this matrix's legs by key (not by job), so at most one leg
+      # actually re-downloads on a cache miss.
+      - name: Cache online WAD assets
+        uses: actions/cache@v4
+        with:
+          path: public/wads
+          key: online-wads-${{ hashFiles('src/wad/onlineWadCatalog.ts') }}
       - name: Start dev server
         run: |
           npm run dev -- --port 5173 --strictPort &

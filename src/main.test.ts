@@ -5,6 +5,7 @@
 import { webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildTestWad } from "../scripts/fixtures/buildTestWad.mjs";
+import { ONLINE_WAD_CATALOG } from "./wad/onlineWadCatalog";
 import { buildIndexDom, stubDialogElement, stubResizeObserver } from "../test/mocks/mainDom";
 import { installRaf, type RafController } from "../test/mocks/raf";
 import { stubCanvasGetContext, stubCanvasToBlob } from "../test/mocks/canvas";
@@ -768,6 +769,16 @@ function setInputFiles(input: HTMLInputElement, files: File[]): void {
   Object.defineProperty(input, "files", { value: files, configurable: true });
 }
 
+/** Sets the GitHub repo input's value the way a real user typing would —
+ * `.value = ...` alone doesn't fire `input`, which is what
+ * `updateLoadGithubRepoButtonEnabled` listens for to enable/disable "Load
+ * from GitHub". */
+function setGithubRepoInput(value: string): void {
+  const input = document.querySelector<HTMLInputElement>("#github-repo-input")!;
+  input.value = value;
+  input.dispatchEvent(new Event("input"));
+}
+
 describe("main.ts — WAD texture loading", () => {
   it("clicking the load button opens the hidden file picker", async () => {
     await importMain();
@@ -880,6 +891,109 @@ describe("main.ts — WAD texture loading", () => {
     expect(document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent).toBe(
       "No matching textures found in empty.wad — using built-in defaults",
     );
+  });
+});
+
+describe("main.ts — Online WAD catalog", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  function clickOnlineWadTab(): void {
+    document.querySelector<HTMLButtonElement>("#wad-tab-online")!.click();
+  }
+
+  it("starts on the Local File tab and switches to Online on click, and back", async () => {
+    await importMain();
+    const localTab = document.querySelector<HTMLButtonElement>("#wad-tab-local")!;
+    const onlineTab = document.querySelector<HTMLButtonElement>("#wad-tab-online")!;
+    const localPanel = document.querySelector<HTMLElement>("#wad-tab-panel-local")!;
+    const onlinePanel = document.querySelector<HTMLElement>("#wad-tab-panel-online")!;
+
+    expect(localTab.getAttribute("aria-selected")).toBe("true");
+    expect(localPanel.hidden).toBe(false);
+    expect(onlinePanel.hidden).toBe(true);
+
+    onlineTab.click();
+    expect(onlineTab.getAttribute("aria-selected")).toBe("true");
+    expect(localTab.getAttribute("aria-selected")).toBe("false");
+    expect(onlinePanel.hidden).toBe(false);
+    expect(localPanel.hidden).toBe(true);
+
+    localTab.click();
+    expect(localTab.getAttribute("aria-selected")).toBe("true");
+    expect(localPanel.hidden).toBe(false);
+    expect(onlinePanel.hidden).toBe(true);
+  });
+
+  it("renders one entry per catalog item, flagging only non-commercial licenses", async () => {
+    await importMain();
+    clickOnlineWadTab();
+    const items = document.querySelectorAll("#online-wad-list li");
+    expect(items.length).toBe(ONLINE_WAD_CATALOG.length);
+
+    const hacxMeta = document.querySelector('#online-wad-list li[data-wad-id="hacx"] .online-wad-meta')!;
+    expect(hacxMeta.classList.contains("online-wad-meta--restricted")).toBe(true);
+    expect(hacxMeta.textContent).toContain("non-commercial");
+
+    const freedoomMeta = document.querySelector('#online-wad-list li[data-wad-id="freedoom-phase1"] .online-wad-meta')!;
+    expect(freedoomMeta.classList.contains("online-wad-meta--restricted")).toBe(false);
+
+    const link = document.querySelector<HTMLAnchorElement>('#online-wad-list li[data-wad-id="freedoom-phase1"] .online-wad-link')!;
+    expect(link.href).toBe("https://freedoom.github.io/");
+    expect(link.target).toBe("_blank");
+  });
+
+  it("fetches the selected entry same-origin and loads it into the same status line the local-file picker uses", async () => {
+    await importMain();
+    clickOnlineWadTab();
+    const bytes = buildTestWad();
+    fetchMock.mockResolvedValueOnce({ ok: true, arrayBuffer: () => Promise.resolve(bytes) });
+    document
+      .querySelector<HTMLButtonElement>('#online-wad-list li[data-wad-id="freedoom-phase1"] .online-wad-select-btn')!
+      .click();
+    await flushAsync();
+    expect(fetchMock).toHaveBeenCalledWith("/wads/freedoom1.wad");
+    const status = document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent!;
+    expect(status).toContain("Using WAD textures:");
+    expect(status).toContain("walls (STARTAN3)");
+  });
+
+  it("reports an HTTP failure status when the fetch itself doesn't 404 but returns non-ok", async () => {
+    await importMain();
+    clickOnlineWadTab();
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 404 });
+    document
+      .querySelector<HTMLButtonElement>('#online-wad-list li[data-wad-id="freedoom-phase1"] .online-wad-select-btn')!
+      .click();
+    await flushAsync();
+    const status = document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent!;
+    expect(status).toContain("HTTP 404");
+  });
+
+  it("reports the thrown Error's own message when the fetch itself rejects", async () => {
+    await importMain();
+    clickOnlineWadTab();
+    fetchMock.mockRejectedValueOnce(new Error("network down"));
+    document
+      .querySelector<HTMLButtonElement>('#online-wad-list li[data-wad-id="freedoom-phase1"] .online-wad-select-btn')!
+      .click();
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent).toBe("network down");
+  });
+
+  it("reports a generic failure message when the fetch rejects a non-Error", async () => {
+    await importMain();
+    clickOnlineWadTab();
+    fetchMock.mockRejectedValueOnce("boom");
+    document
+      .querySelector<HTMLButtonElement>('#online-wad-list li[data-wad-id="freedoom-phase1"] .online-wad-select-btn')!
+      .click();
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent).toBe("Failed to load online WAD.");
   });
 });
 
@@ -1172,26 +1286,38 @@ describe("main.ts — GitHub workspace load", () => {
       .mockResolvedValueOnce(jsonResponse({ tree: [{ path: "main.c", type: "blob" }] }))
       .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK", text: async () => VALID_MAIN_C } as unknown as Response);
 
-    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+    setGithubRepoInput("owner/repo");
     document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
     await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "owner/repo");
     expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(false);
   });
 
-  it("shows an error for input that doesn't parse as a repo reference", async () => {
+  it("disables the Load from GitHub button until the input parses as a repo reference, and re-disables it if cleared", async () => {
     await importMain();
-    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "not a repo ref!!";
-    document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
-    await flushAsync();
-    const status = document.querySelector<HTMLParagraphElement>("#github-status")!;
-    expect(status.classList.contains("error")).toBe(true);
-    expect(fetchMock).not.toHaveBeenCalled();
+    const button = document.querySelector<HTMLButtonElement>("#load-github-repo")!;
+    expect(button.disabled).toBe(true); // starts empty
+    expect(button.title).toBe('Enter a repo as "owner/repo" or a github.com URL first');
+
+    setGithubRepoInput("not a repo ref!!");
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe('Enter a repo as "owner/repo" or a github.com URL first');
+
+    setGithubRepoInput("owner/repo");
+    expect(button.disabled).toBe(false);
+    expect(button.title).toBe("");
+
+    setGithubRepoInput("https://github.com/owner/repo");
+    expect(button.disabled).toBe(false);
+    expect(button.title).toBe("");
+
+    setGithubRepoInput("");
+    expect(button.disabled).toBe(true);
   });
 
   it("shows an error status when the fetch itself fails", async () => {
     await importMain();
     fetchMock.mockResolvedValueOnce(jsonResponse(null, false, 404, "Not Found"));
-    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+    setGithubRepoInput("owner/repo");
     document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
     await waitUntil(() => document.querySelector<HTMLParagraphElement>("#github-status")!.classList.contains("error"));
     expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(true);
@@ -1200,7 +1326,7 @@ describe("main.ts — GitHub workspace load", () => {
   it("reports a generic failure message when the fetch throws a non-Error", async () => {
     await importMain();
     fetchMock.mockRejectedValueOnce("boom");
-    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+    setGithubRepoInput("owner/repo");
     document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
     await waitUntil(() => document.querySelector<HTMLParagraphElement>("#github-status")!.classList.contains("error"));
     expect(document.querySelector<HTMLParagraphElement>("#github-status")!.textContent).toBe("Failed to load repository.");
@@ -1252,7 +1378,7 @@ describe("main.ts — GitHub workspace load", () => {
       .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
       .mockResolvedValueOnce(jsonResponse({ tree: [{ path: "main.c", type: "blob" }] }))
       .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK", text: async () => VALID_MAIN_C } as unknown as Response);
-    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+    setGithubRepoInput("owner/repo");
     document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
     await waitUntil(() => document.querySelector<HTMLButtonElement>("#tab-continue")!.style.display === "none");
   });
@@ -1269,7 +1395,7 @@ describe("main.ts — GitHub workspace load", () => {
       .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
       .mockResolvedValueOnce(jsonResponse({ tree: [{ path: "helper.c", type: "blob" }] }))
       .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK", text: async () => VALID_HELPER_C } as unknown as Response);
-    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+    setGithubRepoInput("owner/repo");
     document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
     await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
     // A GitHub tree's individual file paths are prefixed with just the repo
@@ -1291,7 +1417,7 @@ describe("main.ts — GitHub workspace load", () => {
       // A NUL byte makes isSafeToParse's binary sniff reject it outright —
       // reads successfully, but parseFile deterministically returns null.
       .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK", text: async () => "int f() {\0garbage}" } as unknown as Response);
-    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+    setGithubRepoInput("owner/repo");
     document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
     await waitUntil(() => document.querySelector("#viewport > p.muted") !== null, 8000);
     expect(document.querySelector("#viewport > p.muted")?.textContent).toContain("Select a file from the tree");
@@ -1303,7 +1429,7 @@ describe("main.ts — GitHub workspace load", () => {
       .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
       .mockResolvedValueOnce(jsonResponse({ tree: [{ path: "helper.c", type: "blob" }] }))
       .mockResolvedValueOnce(jsonResponse(null, false, 500, "Internal Server Error"));
-    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+    setGithubRepoInput("owner/repo");
     document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
     await waitUntil(() => document.querySelector("#viewport > p.muted") !== null, 8000);
     expect(document.querySelector("#viewport > p.muted")?.textContent).toContain("Select a file from the tree");
@@ -1325,7 +1451,7 @@ describe("main.ts — GitHub workspace load", () => {
       return Promise.resolve(jsonResponse({ tree: [] })); // never actually reached — gen check bails first
     });
 
-    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/stale";
+    setGithubRepoInput("owner/stale");
     document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
     await flushAsync(); // let the stale load's default_branch fetch start hanging
 
@@ -1347,7 +1473,7 @@ describe("main.ts — GitHub workspace load", () => {
       return Promise.resolve(jsonResponse({ tree: [] }));
     });
 
-    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/stale";
+    setGithubRepoInput("owner/stale");
     document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
     await flushAsync();
 
@@ -1823,7 +1949,7 @@ describe("main.ts — GitHub tree-fetch progress readout (formatByteCount)", () 
 
     fetchMock.mockResolvedValueOnce(jsonResponse({ default_branch: "main" })).mockResolvedValueOnce(streamed);
 
-    document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+    setGithubRepoInput("owner/repo");
     document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
     const status = document.querySelector<HTMLParagraphElement>("#loading-status")!;
     await waitUntil(() => /MB received\)$/.test(status.textContent ?? ""));
@@ -2225,7 +2351,7 @@ describe("main.ts — reaching a natural win/death via real navigation", () => {
         .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK", text: async () => NAVIGABLE_FIXTURE_C } as unknown as Response);
       const logSpy = vi.spyOn(console, "log");
       enableTestHooks();
-      document.querySelector<HTMLInputElement>("#github-repo-input")!.value = "owner/repo";
+      setGithubRepoInput("owner/repo");
       document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
       await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
 

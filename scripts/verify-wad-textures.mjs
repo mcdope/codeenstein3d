@@ -22,7 +22,13 @@
  *   (c) an invalid file produces a graceful status message and never leaves
  *       the game in a broken state;
  *   (e) the ceiling (never textured) stays a single flat color regardless
- *       of which texture pack is active.
+ *       of which texture pack is active;
+ *   (f) a real online-catalog entry (Freedoom: Phase 2, fetched at build
+ *       time by `scripts/fetch-online-wads.mjs` into `public/wads/`) loads
+ *       via the sidebar's online-picker click path, not just a synthetic
+ *       in-memory WAD via the local-file `<input>` — catches a regression in
+ *       the catalog's `servedPath`/fetch wiring or a stale allowlist against
+ *       real game data, without hardcoding spoiler-risk map content.
  *
  * (d) — secret walls staying visually near-identical to plain walls, and
  * lore/hazard/teleporter/spike tiles actually rendering their new textures
@@ -174,6 +180,23 @@ async function main() {
   const afterError = await sampleCanvas(page);
   const stillVariance = regionVariance(afterError.data, afterError.width, Math.floor(afterError.height * 0.3), Math.floor(afterError.height * 0.7));
   check("game still renders normally after a failed WAD load (fell back to defaults)", stillVariance > 3, `got ${stillVariance}`);
+
+  // --- online WAD catalog: a real fetched-at-build-time entry loads too ---
+  console.log("\nOnline WAD catalog (Freedoom: Phase 2):");
+  await page.click("#wad-tab-online"); // switch off the Local File sub-tab first — its panel is otherwise hidden
+  await page.click('#online-wad-list li[data-wad-id="freedoom-phase2"] .online-wad-select-btn');
+  await page.waitForFunction(
+    () => {
+      const text = document.querySelector("#wad-status")?.textContent ?? "";
+      return text.includes("Using WAD textures") || text.toLowerCase().includes("failed");
+    },
+    undefined,
+    { timeout: 15000 },
+  );
+  const onlineStatusText = await page.textContent("#wad-status");
+  check("status reports matched slots, not a fetch/parse failure", onlineStatusText.includes("Using WAD textures"), onlineStatusText);
+  check("status reports the matched wall slot", onlineStatusText.includes("walls ("), onlineStatusText);
+  check("status reports the matched floor slot", onlineStatusText.includes("floors ("), onlineStatusText);
 
   check("no console/page errors across the whole run", pageErrors.length === 0, pageErrors.join("; "));
 

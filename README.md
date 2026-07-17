@@ -389,3 +389,19 @@ Plus the 14 Tree-sitter language grammars, compiled to WASM and bundled at build
 | `@types/node` | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
 
 See each project's own repository for full license text.
+
+### Online WAD/texture-pack catalog (fetched at build time, bundled as static assets)
+
+The sidebar's "Or pick an online texture pack" list offers free, redistributable DOOM-engine WADs and texture packs as an alternative to loading your own local `.wad` file. None of their original hosts send CORS headers that would allow a browser to fetch them directly, so `scripts/fetch-online-wads.mjs` downloads and extracts each one at build/dev time (`predev`/`prebuild` npm hooks — see [Dependency Minimalism](doc/dev/decisions.md#dependency-minimalism)) into `public/wads/`, which is gitignored, not committed; the game then serves them same-origin. See `src/wad/onlineWadCatalog.ts` for the full data model.
+
+| Name | License | Credits | Link |
+|---|---|---|---|
+| [Freedoom: Phase 1](https://github.com/freedoom/freedoom/releases/tag/v0.13.0) | BSD-3-Clause | [The Freedoom Project](https://freedoom.github.io/) | [freedoom.github.io](https://freedoom.github.io/) |
+| [Freedoom: Phase 2](https://github.com/freedoom/freedoom/releases/tag/v0.13.0) | BSD-3-Clause | [The Freedoom Project](https://freedoom.github.io/) | [freedoom.github.io](https://freedoom.github.io/) |
+| [FreeDM](https://github.com/freedoom/freedoom/releases/tag/v0.13.0) | BSD-3-Clause | [The Freedoom Project](https://freedoom.github.io/) | [freedoom.github.io](https://freedoom.github.io/) |
+| [DOOM (Shareware)](https://doomwiki.org/wiki/DOOM) | id Software Shareware License — free redistribution, no fee for the WAD | [id Software](https://doomwiki.org/wiki/DOOM) | [doomwiki.org](https://doomwiki.org/wiki/DOOM) |
+| [HACX 1.2](https://doomwiki.org/wiki/HACX) | **Freeware (Banjo Software / id Software) — non-commercial use only** | [Banjo Software, Inc.](https://doomwiki.org/wiki/HACX) | [doomwiki.org](https://doomwiki.org/wiki/HACX) |
+
+Every entry above has been verified against this project's own `loadWadTextures` parser and resolves most or all of the 10 texture slots it looks for (see `src/wad/onlineWadCatalog.ts`'s doc comment) — two earlier candidates, Blasphemer (a Heretic-engine WAD with no matching lump names) and OTEX (a texture-only resource pack, no playable levels), were dropped after resolving 0/10 and 4/10 slots respectively. HACX's license permits free redistribution but for non-commercial use only, same tier as OTEX before it — included because this project is non-commercial; a commercial fork would need to drop it.
+
+If you believe any of these assets shouldn't be redistributed here, please [open an issue](https://github.com/mcdope/codeenstein3d/issues) and it will be removed promptly.

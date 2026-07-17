@@ -22,6 +22,7 @@ import { RaycasterEngine } from "./engine/engine";
 import { audio } from "./engine/audio";
 import { bgm } from "./engine/bgm";
 import { textures, type WadLoadSummary } from "./engine/textures";
+import { ONLINE_WAD_CATALOG, type OnlineWadEntry } from "./wad/onlineWadCatalog";
 import { hashRun, loadHighscoresForDisplay, recordHighscore, type HighscoreEntry } from "./engine/highscores";
 import { renderHighscoreTable } from "./ui/highscorePanel";
 import { GameHud } from "./ui/gameHud";
@@ -108,6 +109,11 @@ const bgmStatus = requireElement<HTMLParagraphElement>("#bgm-status");
 const loadWadTexturesButton = requireElement<HTMLButtonElement>("#load-wad-textures");
 const wadFileInput = requireElement<HTMLInputElement>("#wad-file-input");
 const wadStatus = requireElement<HTMLParagraphElement>("#wad-status");
+const wadTabLocalButton = requireElement<HTMLButtonElement>("#wad-tab-local");
+const wadTabOnlineButton = requireElement<HTMLButtonElement>("#wad-tab-online");
+const wadTabPanelLocal = requireElement<HTMLElement>("#wad-tab-panel-local");
+const wadTabPanelOnline = requireElement<HTMLElement>("#wad-tab-panel-online");
+const onlineWadList = requireElement<HTMLUListElement>("#online-wad-list");
 const viewHighscoresButton = requireElement<HTMLButtonElement>("#view-highscores");
 const highscoreDialog = requireElement<HTMLDialogElement>("#highscore-dialog");
 const highscoreList = requireElement<HTMLElement>("#highscore-list");
@@ -226,6 +232,92 @@ wadFileInput.addEventListener("change", async () => {
     wadStatus.textContent = err instanceof Error ? err.message : "Failed to load WAD file.";
   }
 });
+
+// --- Online WAD/texture-pack catalog ----------------------------------------
+// A curated, license-checked list of free WADs/texture packs (see
+// `onlineWadCatalog.ts`'s doc comment), fetched and extracted at build time
+// (`scripts/fetch-online-wads.mjs`) into `public/wads/` and served
+// same-origin — a direct browser fetch of the original sources isn't
+// possible (none of them send usable CORS headers).
+
+async function loadOnlineWad(entry: OnlineWadEntry): Promise<void> {
+  wadStatus.textContent = `Loading ${entry.name}…`;
+  try {
+    const res = await fetch(`/${entry.servedPath}`);
+    if (!res.ok) throw new Error(`Failed to fetch ${entry.name}: HTTP ${res.status}`);
+    const bytes = await res.arrayBuffer();
+    const result = textures.loadFromWad(bytes);
+    wadStatus.textContent = describeWadStatus(result, entry.name);
+  } catch (err) {
+    console.error("[wad] Failed to load online WAD:", err);
+    wadStatus.textContent = err instanceof Error ? err.message : "Failed to load online WAD.";
+  }
+}
+
+function renderOnlineWadCatalog(): void {
+  for (const entry of ONLINE_WAD_CATALOG) {
+    const li = document.createElement("li");
+    li.className = "online-wad-entry";
+    li.dataset.wadId = entry.id;
+
+    const row = document.createElement("div");
+    row.className = "online-wad-row";
+
+    const selectButton = document.createElement("button");
+    selectButton.type = "button";
+    selectButton.className = "online-wad-select-btn";
+    selectButton.textContent = entry.name;
+    selectButton.addEventListener("click", () => void loadOnlineWad(entry));
+    row.appendChild(selectButton);
+
+    const link = document.createElement("a");
+    link.className = "online-wad-link";
+    link.href = entry.link;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = "info ↗";
+    row.appendChild(link);
+
+    li.appendChild(row);
+
+    const licenseLine = document.createElement("p");
+    licenseLine.className = "online-wad-meta";
+    if (entry.license.toLowerCase().includes("non-commercial")) licenseLine.classList.add("online-wad-meta--restricted");
+    licenseLine.textContent = `License: ${entry.license}`;
+    li.appendChild(licenseLine);
+
+    const creditsLine = document.createElement("p");
+    creditsLine.className = "online-wad-meta";
+    creditsLine.textContent = `Credits: ${entry.credits}`;
+    li.appendChild(creditsLine);
+
+    onlineWadList.appendChild(li);
+  }
+}
+
+renderOnlineWadCatalog();
+
+// --- WAD source sub-tabs (Local File / Online) ------------------------------
+// A small secondary tab pair, same interaction pattern as the top-level
+// launch tabs (`activateLaunchTab`) but scoped to just this one section —
+// splitting the local-file picker from the online catalog list keeps the
+// sidebar from reading as one long, undifferentiated wall of controls.
+type WadTab = "local" | "online";
+
+const wadTabs: Record<WadTab, { button: HTMLButtonElement; panel: HTMLElement }> = {
+  local: { button: wadTabLocalButton, panel: wadTabPanelLocal },
+  online: { button: wadTabOnlineButton, panel: wadTabPanelOnline },
+};
+
+function activateWadTab(tab: WadTab): void {
+  for (const name of Object.keys(wadTabs) as WadTab[]) {
+    const active = name === tab;
+    wadTabs[name].button.setAttribute("aria-selected", String(active));
+    wadTabs[name].panel.hidden = !active;
+  }
+}
+
+(Object.keys(wadTabs) as WadTab[]).forEach((tab) => wadTabs[tab].button.addEventListener("click", () => activateWadTab(tab)));
 
 // --- Highscores dialog -------------------------------------------------------
 
@@ -515,14 +607,12 @@ selectButton.addEventListener("click", async () => {
 
 /** Fetches and launches whatever repo reference is currently in
  * `githubRepoInput`, shared by the "Load from GitHub" button and the
- * "Suggested repos" quick-pick buttons below it. */
+ * "Suggested repos" quick-pick buttons below it. Both callers guarantee a
+ * parseable value before this ever runs: the button is disabled whenever
+ * `githubRepoInput` doesn't parse (`updateLoadGithubRepoButtonEnabled`), and
+ * every suggestion button's `data-repo` is a hardcoded valid "owner/repo". */
 async function loadGithubRepoFromInput(): Promise<void> {
-  const ref = parseGithubRepoInput(githubRepoInput.value);
-  if (!ref) {
-    githubStatus.textContent = 'Enter a repo as "owner/repo" or a github.com URL.';
-    githubStatus.classList.add("error");
-    return;
-  }
+  const ref = parseGithubRepoInput(githubRepoInput.value)!;
 
   const gen = beginWorkspaceLoad();
   const controller = new AbortController();
@@ -573,7 +663,7 @@ async function loadGithubRepoFromInput(): Promise<void> {
     showFileTreePlaceholder();
   } finally {
     if (activeGithubLoadAbort === controller) activeGithubLoadAbort = null;
-    loadGithubRepoButton.disabled = false;
+    updateLoadGithubRepoButtonEnabled();
     githubSuggestionButtons.forEach((btn) => (btn.disabled = false));
   }
 }
@@ -581,6 +671,19 @@ async function loadGithubRepoFromInput(): Promise<void> {
 loadGithubRepoButton.addEventListener("click", () => {
   void loadGithubRepoFromInput();
 });
+
+// Disabled until the input actually parses as a loadable "owner/repo" or
+// github.com URL (see `parseGithubRepoInput`) — `loadGithubRepoFromInput`
+// relies on this as its only validation. A `title` tooltip explains the
+// disabled state, since a greyed-out button alone doesn't say why.
+const LOAD_GITHUB_REPO_DISABLED_TITLE = 'Enter a repo as "owner/repo" or a github.com URL first';
+function updateLoadGithubRepoButtonEnabled(): void {
+  const disabled = parseGithubRepoInput(githubRepoInput.value) === null;
+  loadGithubRepoButton.disabled = disabled;
+  loadGithubRepoButton.title = disabled ? LOAD_GITHUB_REPO_DISABLED_TITLE : "";
+}
+updateLoadGithubRepoButtonEnabled();
+githubRepoInput.addEventListener("input", updateLoadGithubRepoButtonEnabled);
 
 // "Suggested repos" quick-picks: same load path as typing a repo in by hand,
 // just pre-filling the input first so the status/error messaging stays in

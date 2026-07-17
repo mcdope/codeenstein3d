@@ -71,6 +71,8 @@
       <aside id="sidebar">
         <header id="sidebar-header">
           <h1>🔫 Codeenstein 3D</h1>
+
+          <p class="sidebar-section-title">Workspace</p>
           <div id="launch-tabs" class="launch-tabs" role="tablist" aria-label="Ways to start a run">
             <button id="tab-local" class="tab-btn" type="button" role="tab" aria-selected="true" aria-controls="tab-panel-local">Local</button>
             <button id="tab-continue" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-continue" style="display: none">Continue</button>
@@ -78,10 +80,10 @@
             <button id="tab-demo" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-demo">Demos</button>
           </div>
           <div id="tab-panel-local" class="tab-panel" role="tabpanel" aria-labelledby="tab-local">
-            <button id="select-workspace" type="button">Select Workspace</button>
+            <button id="select-workspace" type="button">📁 Select Workspace</button>
           </div>
           <div id="tab-panel-continue" class="tab-panel" role="tabpanel" aria-labelledby="tab-continue" hidden>
-            <button id="continue-run" type="button">Continue Run</button>
+            <button id="continue-run" type="button">📁 Continue Run</button>
           </div>
           <div id="tab-panel-github" class="tab-panel" role="tabpanel" aria-labelledby="tab-github" hidden>
             <label id="github-repo-label" for="github-repo-input" class="settings-label">GitHub repository</label>
@@ -92,7 +94,7 @@
               autocomplete="off"
               spellcheck="false"
             />
-            <button id="load-github-repo" type="button">Load from GitHub</button>
+            <button id="load-github-repo" type="button" disabled title='Enter a repo as "owner/repo" or a github.com URL first'>Load from GitHub</button>
             <p id="github-status" class="muted"></p>
             <label id="github-suggestions-label" class="settings-label">Suggested repos</label>
             <div id="github-suggestions" class="github-suggestions">
@@ -126,6 +128,11 @@
             <p class="muted">A bundled multi-language showcase campaign — no local files needed.</p>
             <button id="launch-demo-campaign" type="button">Launch Demo Campaign</button>
           </div>
+          <p id="workspace-name" class="muted">No workspace selected</p>
+
+          <hr class="sidebar-divider" />
+
+          <p class="sidebar-section-title">Gameplay</p>
           <label id="gore-label" for="gore-select" class="muted">Gore</label>
           <select id="gore-select">
             <option value="none">None</option>
@@ -139,21 +146,38 @@
             <option value="normal" selected>Normal</option>
             <option value="hard">Hard</option>
           </select>
-          <p id="workspace-name" class="muted">No workspace selected</p>
 
+          <hr class="sidebar-divider" />
+
+          <p class="sidebar-section-title">Audio</p>
           <label id="master-vol-label" for="master-vol" class="settings-label">Master Volume</label>
           <input id="master-vol" class="volume-slider" type="range" min="0" max="100" value="50" />
           <label id="sfx-vol-label" for="sfx-vol" class="settings-label">SFX Volume</label>
           <input id="sfx-vol" class="volume-slider" type="range" min="0" max="100" value="100" />
           <label id="bgm-vol-label" for="bgm-vol" class="settings-label">Music Volume</label>
           <input id="bgm-vol" class="volume-slider" type="range" min="0" max="100" value="50" />
-          <button id="select-bgm-folder" class="settings-btn" type="button">Select BGM Folder</button>
+          <button id="select-bgm-folder" class="settings-btn" type="button">📁 Select BGM Folder</button>
           <p id="bgm-status" class="muted">No custom music loaded</p>
 
-          <button id="load-wad-textures" class="settings-btn" type="button">Load WAD Texture Pack</button>
-          <input id="wad-file-input" type="file" accept=".wad" hidden />
+          <hr class="sidebar-divider" />
+
+          <p class="sidebar-section-title">Texture Pack</p>
+          <div id="wad-tabs" class="subtabs" role="tablist" aria-label="Texture pack source">
+            <button id="wad-tab-local" class="tab-btn" type="button" role="tab" aria-selected="true" aria-controls="wad-tab-panel-local">Local File</button>
+            <button id="wad-tab-online" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="wad-tab-panel-online">Online</button>
+          </div>
+          <div id="wad-tab-panel-local" class="tab-panel" role="tabpanel" aria-labelledby="wad-tab-local">
+            <button id="load-wad-textures" class="settings-btn" type="button">📄 Load WAD Texture Pack</button>
+            <input id="wad-file-input" type="file" accept=".wad" hidden />
+          </div>
+          <div id="wad-tab-panel-online" class="tab-panel" role="tabpanel" aria-labelledby="wad-tab-online" hidden>
+            <ul id="online-wad-list" class="online-wad-list"></ul>
+          </div>
           <p id="wad-status" class="muted">Using built-in default textures</p>
 
+          <hr class="sidebar-divider" />
+
+          <p class="sidebar-section-title">Info</p>
           <button id="view-highscores" class="settings-btn" type="button">Highscores</button>
           <a
             id="player-guide-link"
@@ -167,7 +191,8 @@
         <nav id="file-tree" aria-label="File tree"></nav>
         <footer id="sidebar-footer" class="sidebar-footer">
           <p>
-            © 2026 Tobias Bäumer — licensed under
+            © 2026 Tobias Bäumer<br />
+            licensed under
             <a
               href="https://www.gnu.org/licenses/agpl-3.0.html"
               target="_blank"

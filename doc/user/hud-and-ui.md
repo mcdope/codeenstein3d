@@ -29,8 +29,9 @@ Press `Tab` to open the automap — a translucent overlay, Diablo-style, that do
 - **Master / SFX / Music** volume sliders, persisted across sessions.
 - **Select BGM Folder** — pick a local folder of `.mp3`/`.ogg`/`.wav` files to play as a shuffled custom soundtrack instead of silence.
 - **Load WAD Texture Pack** — pick a DOOM `.wad` file to source real wall/door/floor textures from instead of the built-in default look. The game automatically picks a handful of common, broadly-compatible textures/flats out of the WAD (no picker) and falls back silently to the defaults for anything it can't find — a status line under the button reports what was actually used.
+- **Or pick an online texture pack** — a curated list of free, license-checked WADs and texture packs below the local-file button, no download or file picker needed. Each entry shows its license and credits, with an "info" link to the project's homepage; a license flagged in red (currently only HACX) carries a real usage restriction — read it before you rely on that pack for anything beyond casual play. Clicking a name loads it exactly like a local file would, updating the same status line. See [Credits & Third-Party Licenses](../../README.md#credits--third-party-licenses) in the main README for the full list with clickable attribution.
 
-Gore, Difficulty, and the volume sliders are standing preferences, independent of any specific campaign run. The BGM folder and the WAD texture pack are both session-only, though: neither the chosen folder nor the loaded WAD is remembered across a page reload — only the BGM volume level persists, not which folder is currently loaded.
+Gore, Difficulty, and the volume sliders are standing preferences, independent of any specific campaign run. The BGM folder and the WAD texture pack (local or online) are both session-only, though: neither the chosen folder nor the loaded WAD is remembered across a page reload — only the BGM volume level persists, not which folder is currently loaded.
 
 ## Highscores
 
