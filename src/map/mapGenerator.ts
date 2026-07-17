@@ -218,7 +218,7 @@ export class MapGenerator {
     // `connectRooms`'s doc comment), but logs loudly instead of silently
     // shipping an unreachable room if some future change breaks that
     // invariant some other way (notes:155).
-    assertAllRoomsReachable(grid, spawn, rooms, doors);
+    assertAllRoomsReachable(grid, spawn, rooms, doors, keys);
 
     return {
       width: size,

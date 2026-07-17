@@ -109,7 +109,7 @@ describe("assertAllRoomsReachable", () => {
       for (let x = room.x; x < room.x + room.w; x++) g[y][x] = 0;
     }
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    assertAllRoomsReachable(g, room.center, [room], []);
+    assertAllRoomsReachable(g, room.center, [room], [], []);
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
@@ -122,18 +122,52 @@ describe("assertAllRoomsReachable", () => {
     }
     // isolatedRoom's tiles stay walls — never connected.
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    assertAllRoomsReachable(g, spawnRoom.center, [spawnRoom, isolatedRoom], []);
+    assertAllRoomsReachable(g, spawnRoom.center, [spawnRoom, isolatedRoom], [], []);
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("1 room(s) unreachable"));
   });
 
-  it("counts an opened door as passable when checking reachability", () => {
+  it("counts a door as passable when a matching key is reachable before it", () => {
     const g = grid(10);
     g[1][1] = 0;
     g[1][2] = DOOR_TILE;
     g[1][3] = 0;
     const beyondDoor: Room = makeRoom(3, 1, 1, 1, entity());
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    assertAllRoomsReachable(g, { x: 1, y: 1 }, [beyondDoor], [{ x: 2, y: 1 }]);
+    // The key sits on the one tile reachable before the door opens — exactly
+    // what `placeKeys` guarantees in the normal (non-fallback) case.
+    assertAllRoomsReachable(g, { x: 1, y: 1 }, [beyondDoor], [{ x: 2, y: 1 }], [{ x: 1, y: 1 }]);
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it("logs an error when a door has no matching key anywhere (placeKeys' accepted fallback case)", () => {
+    const g = grid(10);
+    g[1][1] = 0;
+    g[1][2] = DOOR_TILE;
+    g[1][3] = 0;
+    const beyondDoor: Room = makeRoom(3, 1, 1, 1, entity());
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    // Same layout as above, but no key was placed for this door — mirrors
+    // `placeKeys.test.ts`'s "skips placing a key... when every reachable
+    // tile is already used" scenario. The door can never actually be
+    // opened by a real player, so `beyondDoor` must be flagged.
+    assertAllRoomsReachable(g, { x: 1, y: 1 }, [beyondDoor], [{ x: 2, y: 1 }], []);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("1 room(s) unreachable"));
+  });
+
+  it("opens a chain of two doors, each gated by its own key placed just before it", () => {
+    const g = grid(20);
+    g[1][1] = 0; // spawn — holds key A
+    g[1][2] = DOOR_TILE; // door A
+    g[1][3] = 0; // room A floor — holds key B
+    g[1][4] = DOOR_TILE; // door B
+    g[1][5] = 0; // room B floor
+    const roomB: Room = makeRoom(5, 1, 1, 1, entity());
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    // Same "solvable in key order" shape `placeKeys` itself guarantees: key A
+    // is reachable before door A, key B only becomes reachable once door A
+    // is open — the iterative simulation must open door A first to ever see
+    // key B, not just check "is there a key somewhere in the whole level."
+    assertAllRoomsReachable(g, { x: 1, y: 1 }, [roomB], [{ x: 2, y: 1 }, { x: 4, y: 1 }], [{ x: 1, y: 1 }, { x: 3, y: 1 }]);
     expect(errorSpy).not.toHaveBeenCalled();
   });
 });
