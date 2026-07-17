@@ -27,6 +27,8 @@ Once a workspace loads, the game looks for a sensible starting point — a `main
 
 Every level opens with a **briefing overlay**: the campaign name, the level name ("Compiling `<file>`…"), and stats on how many rooms and enemies the level generated. Click **Start** (or press Space/Enter/Escape, or any gamepad button) to begin — this and every other blocking overlay ignores its own dismiss inputs for the first 1.2 seconds, so mashing fire in the fight that triggered it can't skip it by accident.
 
+**If the briefing seems unresponsive** (especially right after reloading the page, or on Linux/GNOME): your very first click or keypress may only be re-focusing the browser window itself at the OS level, rather than reaching the page — a real desktop-environment behavior (confirmed with GNOME's own `click` focus mode), not a bug in the game. If Start doesn't respond, just click or press it again.
+
 From there you explore, fight, loot, and make your way to the level's exit tile.
 
 ## Ending a level
