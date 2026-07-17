@@ -3,7 +3,17 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FramePerfLogger, type PerfContext } from "./perfDebug";
+import { FramePerfLogger, type PerfContext, type PerfStatsSnapshot } from "./perfDebug";
+
+/** The benchmark side-channel the logger installs on `window` — see
+ * `FramePerfLogger`'s constructor. */
+type PerfStatsHook = { snapshot: () => PerfStatsSnapshot; reset: () => void };
+
+function statsHook(): PerfStatsHook {
+  const hook = (window as Window & { __codeensteinPerfStats?: PerfStatsHook }).__codeensteinPerfStats;
+  expect(hook).toBeDefined();
+  return hook as PerfStatsHook;
+}
 
 /** Queue up exact return values for successive `performance.now()` calls —
  * `FramePerfLogger` calls it once per `beginFrame`/`mark`, so a test can
@@ -102,11 +112,76 @@ describe("FramePerfLogger.logLevelScale", () => {
 });
 
 describe("FramePerfLogger.dispose", () => {
-  it("removes its mousemove listener", () => {
+  it("removes its mousemove listener and the window stats hook", () => {
     const removeSpy = vi.spyOn(document, "removeEventListener");
     const logger = new FramePerfLogger();
+    expect((window as Window & { __codeensteinPerfStats?: unknown }).__codeensteinPerfStats).toBeDefined();
     logger.dispose();
     expect(removeSpy).toHaveBeenCalledWith("mousemove", expect.any(Function));
+    expect((window as Window & { __codeensteinPerfStats?: unknown }).__codeensteinPerfStats).toBeUndefined();
+  });
+});
+
+describe("FramePerfLogger stats hook (__codeensteinPerfStats)", () => {
+  afterEach(() => {
+    delete (window as Window & { __codeensteinPerfStats?: unknown }).__codeensteinPerfStats;
+  });
+
+  /** One frame with a 4ms "sim" and a 5ms "render" phase inside `rawDtMs`. */
+  function pumpFrame(logger: FramePerfLogger, rawDtMs = 16): void {
+    stubNow(0, 4, 9);
+    logger.beginFrame(rawDtMs);
+    logger.mark("sim");
+    logger.mark("render");
+    logger.endFrame(() => fakeContext());
+  }
+
+  it("accumulates every frame, including ones the rate limiter never logs", () => {
+    const logger = new FramePerfLogger();
+    logSpy.mockClear();
+    pumpFrame(logger); // consumes the initial periodic freebie -> logged
+    pumpFrame(logger); // healthy + inside the periodic window -> NOT logged
+    pumpFrame(logger);
+    expect(logSpy).toHaveBeenCalledTimes(2); // only the first frame's two lines
+
+    const snap = statsHook().snapshot();
+    expect(snap.frames).toBe(3); // ...but all three frames are in the stats
+    expect(snap.busyMs).toEqual([9, 9, 9]);
+    expect(snap.rawDtMs).toEqual([16, 16, 16]);
+    expect(snap.phases.sim).toEqual({ sum: 12, count: 3, max: 4 });
+    expect(snap.phases.render).toEqual({ sum: 15, count: 3, max: 5 });
+  });
+
+  it("keeps only the newest window once the ring wraps, while phase totals keep counting", () => {
+    const logger = new FramePerfLogger(2); // tiny ring so the test can wrap it
+    pumpFrame(logger, 10);
+    pumpFrame(logger, 20);
+    pumpFrame(logger, 30); // overwrites the rawDtMs=10 slot
+    const snap = statsHook().snapshot();
+    expect(snap.frames).toBe(3);
+    expect(snap.rawDtMs).toEqual([20, 30]); // newest two, oldest-first
+    expect(snap.phases.sim.count).toBe(3); // running totals unaffected by the wrap
+  });
+
+  it("reset() drops accumulated frames and phase totals", () => {
+    const logger = new FramePerfLogger();
+    pumpFrame(logger);
+    statsHook().reset();
+    const snap = statsHook().snapshot();
+    expect(snap.frames).toBe(0);
+    expect(snap.busyMs).toEqual([]);
+    expect(snap.phases).toEqual({});
+  });
+
+  it("snapshot() returns copies — mutating them can't corrupt the accumulators", () => {
+    const logger = new FramePerfLogger();
+    pumpFrame(logger);
+    const snap = statsHook().snapshot();
+    snap.phases.sim.sum = 999;
+    snap.busyMs.push(999);
+    const again = statsHook().snapshot();
+    expect(again.phases.sim.sum).toBe(4);
+    expect(again.busyMs).toEqual([9]);
   });
 });
 

@@ -82,20 +82,189 @@ async function dismissOverlay(page) {
   await page.waitForTimeout(200);
 }
 
+async function launchDemoCampaign(page, baseUrl, collector) {
+  await page.goto(`${baseUrl}/?perfDebug=1`);
+  await page.click("#tab-demo");
+  await page.click("#launch-demo-campaign");
+  await waitForLevelReady(collector);
+  await dismissOverlay(page);
+}
+
+/** Type a Doom cheat (IDKFA etc.) as synthetic keydowns — the engine's
+ * cheat buffer consumes letter keydowns (`InputController.onKeyDown`). */
+async function typeCheat(page, cheat) {
+  await page.evaluate((letters) => {
+    for (const ch of letters) {
+      window.dispatchEvent(new KeyboardEvent("keydown", { code: `Key${ch}`, key: ch.toLowerCase() }));
+      window.dispatchEvent(new KeyboardEvent("keyup", { code: `Key${ch}`, key: ch.toLowerCase() }));
+    }
+  }, cheat);
+}
+
+/** Sustained-fire macro, run entirely in-page (no CDP round-trip per event).
+ * Holds `Backquote` (the engine's deliberate keyboard fire key for headless
+ * automation — real mouse fire needs Pointer Lock, which synthesizes
+ * spurious deltas under automation). Re-presses it at `pressEveryMs` so
+ * semi-auto weapons (ghidra rockets) fire too, optionally cycles the given
+ * weapon slots, and sweeps the aim with short `KeyE` turn bursts. */
+async function startFireMacro(page, { weaponSlots = [], pressEveryMs = 700 } = {}) {
+  await page.evaluate(
+    ({ slots, everyMs }) => {
+      const down = (code) => window.dispatchEvent(new KeyboardEvent("keydown", { code }));
+      const up = (code) => window.dispatchEvent(new KeyboardEvent("keyup", { code }));
+      const press = (code) => {
+        down(code);
+        up(code);
+      };
+      down("Backquote");
+      let tick = 0;
+      window.__perfFireMacro = setInterval(() => {
+        tick += 1;
+        up("Backquote");
+        down("Backquote");
+        if (slots.length && tick % 5 === 0) press(slots[(tick / 5) % slots.length | 0]);
+        if (tick % 3 === 0) {
+          down("KeyE");
+          setTimeout(() => up("KeyE"), 350);
+        }
+      }, everyMs);
+    },
+    { slots: weaponSlots, everyMs: pressEveryMs },
+  );
+}
+
+/** Synthetic high-rate mousemove flood (~2000 events/s, movementX=0 so the
+ * camera doesn't spin) — Task 241's high-poll-gaming-mouse theory; perfDebug
+ * reports the observed mouse=<n>/f rate alongside frame times. */
+async function startMouseFlood(page) {
+  await page.evaluate(() => {
+    window.__perfMouseFlood = setInterval(() => {
+      for (let i = 0; i < 10; i += 1) {
+        document.dispatchEvent(new MouseEvent("mousemove", { movementX: 0, movementY: 0 }));
+      }
+    }, 5);
+  });
+}
+
+/** magento2 workspace load via the GitHub tab. Network is HAR-recorded once
+ * (CODEENSTEIN_PERF_HAR_RECORD=1) into scripts/fixtures/perf-har/, then
+ * replayed offline — GitHub's unauthenticated API allows only 60 req/h and
+ * live fetches would add network variance to a benchmark. */
+const HAR_PATH = path.join(ROOT, "scripts", "fixtures", "perf-har", "magento2.har");
+
+async function loadMagentoWorkspace(page, baseUrl, collector) {
+  const record = Boolean(process.env.CODEENSTEIN_PERF_HAR_RECORD);
+  if (!record && !fs.existsSync(HAR_PATH)) {
+    throw new Error(`${path.relative(ROOT, HAR_PATH)} missing — record it once with CODEENSTEIN_PERF_HAR_RECORD=1`);
+  }
+  fs.mkdirSync(path.dirname(HAR_PATH), { recursive: true });
+  await page.routeFromHAR(HAR_PATH, { url: /github/, update: record });
+  await page.goto(`${baseUrl}/?perfDebug=1`);
+  await page.fill("#github-repo-input", "magento/magento2");
+  await page.click("#load-github-repo");
+  // Tree fetch + parse + map generation of a huge repo takes a while.
+  await waitForLevelReady(collector, 300000);
+  await dismissOverlay(page);
+}
+
 const SCENARIOS = {
   /** S1: demo campaign level 1, player standing still — pure render/AI idle
    * baseline and the calibration workload. */
   "s1-idle": {
     defaultDurationSec: 30,
+    setup: launchDemoCampaign,
+  },
+  /** S2: deterministic combat — "Watch Replay" of the bundled default
+   * highscore (exact recorded input through the real engine + rendering).
+   * No Space presses after start: the replay transport listens for keys. */
+  "s2-replay": {
+    defaultDurationSec: 60,
     async setup(page, baseUrl, collector) {
       await page.goto(`${baseUrl}/?perfDebug=1`);
+      await page.click("#view-highscores");
+      await page.click('#highscore-list .replay-btn:text("Watch")');
+      await waitForLevelReady(collector);
+      await page.waitForTimeout(1000);
+    },
+  },
+  /** S3: max-particle stress ceiling — IDKFA, then sustained rocket/flame
+   * fire into walls/enemies with aim sweeps. Approximate by design; this
+   * cell measures the ceiling, not an exact repro. */
+  "s3-stress": {
+    defaultDurationSec: 30,
+    async setup(page, baseUrl, collector) {
+      await launchDemoCampaign(page, baseUrl, collector);
+      await typeCheat(page, "IDKFA");
+      await startFireMacro(page, { weaponSlots: ["Digit5", "Digit6"] }); // ghidra rockets / Friday Hotfix flames
+    },
+  },
+  /** S4 (Task 241 shape): magento2 map, idle look-around only. */
+  "s4-magento": {
+    defaultDurationSec: 30,
+    async setup(page, baseUrl, collector) {
+      await loadMagentoWorkspace(page, baseUrl, collector);
+      await page.evaluate(() => {
+        window.__perfLook = setInterval(() => {
+          window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyE" }));
+          setTimeout(() => window.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyE" })), 500);
+        }, 2000);
+      });
+    },
+  },
+  /** S4-fire: magento2 map + IDKFA + sustained fire — the reported case. */
+  "s4-magento-fire": {
+    defaultDurationSec: 30,
+    async setup(page, baseUrl, collector) {
+      await loadMagentoWorkspace(page, baseUrl, collector);
+      await typeCheat(page, "IDKFA");
+      await startFireMacro(page, { weaponSlots: ["Digit4", "Digit5", "Digit6"] });
+    },
+  },
+  /** S4-dryfire: same fire cadence but NO IDKFA — starting pistol ammo runs
+   * out quickly, so most of the capture is dry-firing (fire() early-returns
+   * before any per-enemy work; the reporter saw drops even out of ammo). */
+  "s4-magento-dryfire": {
+    defaultDurationSec: 30,
+    async setup(page, baseUrl, collector) {
+      await loadMagentoWorkspace(page, baseUrl, collector);
+      await startFireMacro(page, { pressEveryMs: 400 });
+    },
+  },
+  /** S4-mouseflood: magento2 map, idle + ~2000Hz synthetic mousemove. */
+  "s4-magento-mouseflood": {
+    defaultDurationSec: 30,
+    async setup(page, baseUrl, collector) {
+      await loadMagentoWorkspace(page, baseUrl, collector);
+      await startMouseFlood(page);
+    },
+  },
+  /** S5: the balancing bot plays the demo campaign — realistic sustained
+   * movement/combat load, real clock. CAVEAT baked into the cell id: the bot
+   * needs `?testHooks=1`, which switches real telemetry recording ON
+   * (engine.ts:744) — so this cell measures gameplay + telemetry overhead,
+   * unlike every other cell. Compare shapes against S2 (deterministic combat,
+   * no telemetry), don't A/B this cell against the pure ones. Bot runs are
+   * also nondeterministic run-to-run; prefer longer captures over more runs. */
+  "s5-bot-demo": {
+    defaultDurationSec: 60,
+    async setup(page, baseUrl, collector) {
+      // Import lazily and force the balancing module's headed (real-clock)
+      // code paths — it reads this env at import time.
+      process.env.CODEENSTEIN_TELEMETRY_HEADED = "1";
+      const bot = await import("./run-balancing-telemetry.mjs");
+      const profile = bot.PROFILES.Gamer;
+      const levelPlans = await bot.planLevels();
+      await bot.installDifficulty(page, "normal");
+      await page.goto(`${baseUrl}/?perfDebug=1&testHooks=1&botRotSpeedMul=${profile.rotSpeedMultiplier}`);
       await page.click("#tab-demo");
       await page.click("#launch-demo-campaign");
       await waitForLevelReady(collector);
       await dismissOverlay(page);
+      // Fire-and-forget: the bot plays on while the harness samples; the
+      // context closing at capture end aborts it, which is expected.
+      void bot.playRun(page, profile, levelPlans, "perf-bench").catch(() => {});
     },
   },
-  // s2-replay / s3-stress / s4-magento land with milestone 2 of the audit.
 };
 
 // ---------------------------------------------------------------------------
@@ -214,10 +383,14 @@ async function measureRun(browser, scenarioId, baseUrl, { warmupSec, durationSec
 
     const meta = collector.entries.filter((e) => e.kind === "env" || e.kind === "level");
     await resetSampler(page);
+    await page.evaluate(() => window.__codeensteinPerfStats?.reset());
     collector.reset();
     await page.waitForTimeout(durationSec * 1000);
 
     const { frames, heapSamples } = await readSampler(page);
+    // Per-frame busy time from the ?perfDebug=1 stats hook — every frame, not
+    // just the rate-limited console snapshots; this is the A/B metric.
+    const stats = await page.evaluate(() => window.__codeensteinPerfStats?.snapshot() ?? null);
     return {
       startedAt,
       warmupSec,
@@ -228,6 +401,9 @@ async function measureRun(browser, scenarioId, baseUrl, { warmupSec, durationSec
       rawDeltas: frames.deltas, // kept raw for the report's histograms/CDFs
       heapSamples,
       perfLog: summarizeFrameEntries(collector.entries),
+      busyPerFrame: stats ? numberStats(stats.busyMs) : null,
+      rawBusyMs: stats ? stats.busyMs : null, // raw for report histograms
+      phaseTotals: stats ? stats.phases : null,
     };
   } finally {
     await context.close().catch(() => {});
@@ -269,10 +445,11 @@ async function runCell(browser, cell, baseUrl, outDir, manifest) {
       const outFile = path.join(outDir, `${cell.id}.run${i + 1}.json`);
       fs.writeFileSync(outFile, `${JSON.stringify({ cell, runIndex: i + 1, ...run }, null, 2)}\n`);
       const iv = run.intervals;
+      const busy = run.busyPerFrame ?? run.perfLog.busyMs;
       console.log(
         `[perf:bench]   median=${iv.median.toFixed(2)}ms p95=${iv.p95.toFixed(2)}ms ` +
-          `>16.7ms=${iv.pctOver16_7.toFixed(1)}% busy(med)=${run.perfLog.busyMs ? run.perfLog.busyMs.median.toFixed(2) : "n/a"}ms ` +
-          `ticks=${run.perfLog.tickCount} slow=${run.perfLog.slowCount}`,
+          `>16.7ms=${iv.pctOver16_7.toFixed(1)}% busy(med)=${busy ? busy.median.toFixed(2) : "n/a"}ms ` +
+          `busyN=${busy ? busy.n : 0} slow=${run.perfLog.slowCount}`,
       );
     } finally {
       if (flagDef) restoreFlag(flagDef);
@@ -336,7 +513,7 @@ function writeCalibration(outDir) {
   const metrics = {
     intervalMedianMs: runs.map((r) => r.intervals.median),
     intervalP95Ms: runs.map((r) => r.intervals.p95),
-    busyMedianMs: runs.map((r) => r.perfLog.busyMs?.median).filter((v) => v !== undefined),
+    busyMedianMs: runs.map((r) => (r.busyPerFrame ?? r.perfLog.busyMs)?.median).filter((v) => v !== undefined),
   };
   const calibration = {};
   for (const [name, values] of Object.entries(metrics)) {

@@ -95,6 +95,23 @@ function kv(record: Record<string, number | string>): string {
     .join(" ");
 }
 
+/** Aggregate view of every frame since construction/`reset()` — see
+ * `FramePerfLogger`'s `window.__codeensteinPerfStats` hook below. */
+export interface PerfStatsSnapshot {
+  /** Total frames observed (may exceed the ring's length once it wraps). */
+  frames: number;
+  /** Newest-window per-frame busy time (sum of marked phases), oldest first. */
+  busyMs: number[];
+  /** Newest-window per-frame raw frame-to-frame delta, oldest first. */
+  rawDtMs: number[];
+  /** Per-phase running totals across ALL observed frames (not just the ring
+   * window) — `sum/count` gives a true mean unaffected by ring overflow. */
+  phases: Record<string, { sum: number; count: number; max: number }>;
+}
+
+/** Per-frame ring size for the stats hook: ~9 minutes at 120fps. */
+const STATS_RING_CAPACITY = 65536;
+
 export class FramePerfLogger {
   private phases: PhaseTimings = {};
   private phaseOrder: string[] = [];
@@ -103,6 +120,19 @@ export class FramePerfLogger {
   private rawDtMs = 0;
   private lastSlowLogAt = -Infinity;
   private lastPeriodicLogAt = -Infinity;
+
+  /** Every-frame accumulators behind the `window.__codeensteinPerfStats`
+   * benchmark hook. The console lines above are rate-limited (slow frames +
+   * a 2s periodic snapshot), which is fine for a human-readable capture but
+   * gives a benchmark only a handful of busy-time samples per run — far too
+   * coarse to A/B a sub-millisecond cost against ~12% sampling noise
+   * (measured by `perf:bench --calibrate`). These rings cost two
+   * preallocated Float64Arrays and a few adds per frame, and exist only
+   * under `?perfDebug=1` like everything else here. */
+  private readonly statsBusy: Float64Array;
+  private readonly statsRawDt: Float64Array;
+  private statsFrames = 0;
+  private statsPhases: Record<string, { sum: number; count: number; max: number }> = {};
   /** Real-time clock, independent of `dt` (which is clamped/scaled) — every
    * rate limit above is against wall-clock time so a stretch of genuinely
    * slow frames doesn't get logged faster just because each frame's `dt` is
@@ -114,8 +144,17 @@ export class FramePerfLogger {
     this.mouseMoveEvents += 1;
   };
 
-  constructor() {
+  constructor(statsRingCapacity: number = STATS_RING_CAPACITY) {
+    this.statsBusy = new Float64Array(statsRingCapacity);
+    this.statsRawDt = new Float64Array(statsRingCapacity);
     document.addEventListener("mousemove", this.onMouseMove);
+    // Machine-readable side channel for the benchmark harness
+    // (scripts/run-perf-benchmark.mjs) — same lifetime as this logger, i.e.
+    // only ever present under `?perfDebug=1`.
+    (window as Window & { __codeensteinPerfStats?: unknown }).__codeensteinPerfStats = {
+      snapshot: (): PerfStatsSnapshot => this.statsSnapshot(),
+      reset: (): void => this.statsReset(),
+    };
     this.logEnvironmentOnce();
   }
 
@@ -125,6 +164,29 @@ export class FramePerfLogger {
    * the class self-contained instead of assuming that). */
   dispose(): void {
     document.removeEventListener("mousemove", this.onMouseMove);
+    delete (window as Window & { __codeensteinPerfStats?: unknown }).__codeensteinPerfStats;
+  }
+
+  /** Drop everything accumulated so far — the bench calls this after its
+   * warmup window so captures hold steady-state frames only. */
+  private statsReset(): void {
+    this.statsFrames = 0;
+    this.statsPhases = {};
+  }
+
+  private statsSnapshot(): PerfStatsSnapshot {
+    const capacity = this.statsBusy.length;
+    const n = Math.min(this.statsFrames, capacity);
+    const start = this.statsFrames - n;
+    const busyMs = new Array<number>(n);
+    const rawDtMs = new Array<number>(n);
+    for (let i = 0; i < n; i += 1) {
+      busyMs[i] = this.statsBusy[(start + i) % capacity];
+      rawDtMs[i] = this.statsRawDt[(start + i) % capacity];
+    }
+    const phases: PerfStatsSnapshot["phases"] = {};
+    for (const [name, agg] of Object.entries(this.statsPhases)) phases[name] = { ...agg };
+    return { frames: this.statsFrames, busyMs, rawDtMs, phases };
   }
 
   /** One-time environment dump at construction (i.e. the moment `?perfDebug=1`
@@ -198,6 +260,20 @@ export class FramePerfLogger {
   endFrame(context: () => PerfContext): void {
     const totalPhaseMs = this.phaseOrder.reduce((sum, name) => sum + this.phases[name], 0);
     const instantFps = this.rawDtMs > 0 ? 1000 / this.rawDtMs : Infinity;
+
+    // Every-frame stats accumulation for the benchmark hook — must run
+    // before the rate-limit early return below, which is the whole point.
+    const ringIndex = this.statsFrames % this.statsBusy.length;
+    this.statsBusy[ringIndex] = totalPhaseMs;
+    this.statsRawDt[ringIndex] = this.rawDtMs;
+    this.statsFrames += 1;
+    for (const name of this.phaseOrder) {
+      const agg = (this.statsPhases[name] ??= { sum: 0, count: 0, max: 0 });
+      const ms = this.phases[name];
+      agg.sum += ms;
+      agg.count += 1;
+      if (ms > agg.max) agg.max = ms;
+    }
 
     const isSlow = instantFps < SLOW_FPS_THRESHOLD;
     const slowLogDue = isSlow && this.wallClock - this.lastSlowLogAt >= SLOW_LOG_MIN_INTERVAL_MS;

@@ -13,8 +13,8 @@ Full design: `/home/mcdope/.claude/plans/you-re-a-senior-performance-calm-dahl.m
 ## Milestones
 
 - [x] 0. Scaffolding — this file, `.gitignore` (`perf_runs/`, `perf-report.html`), npm scripts `perf:bench`/`perf:report`
-- [ ] 1. Benchmark harness (`scripts/run-perf-benchmark.mjs`, `scripts/lib/perfSampler.mjs`, `scripts/lib/perfConsoleParse.mjs`) + variance calibration (10× idle, CoV → minimum detectable difference)
-- [ ] 2. Scenario matrix drivers: S1 idle, S2 replay-campaign, S3 particle stress, S4 magento2 (HAR-replayed) with sub-cells look/fire/dry-fire/mousemove-flood
+- [x] 1. Benchmark harness + calibration (done 2026-07-18). Calibration (10× idle, headed, 60Hz display): interval median CoV 0.2% (vsync-pinned, useless for A/B — as designed), busy-median CoV 11.7% but from only 2-3 periodic samples/run → decision gate FIRED: added the gated stats accumulator (`window.__codeensteinPerfStats` in perfDebug.ts, per-frame busy ring, +tests). Idle busy ≈5-6ms: raycast-walls ~4-6ms, hud ~0.9ms, rest ≈0.1ms. "SLOW" idle frames = single missed vsyncs (33.3ms, unacct≈27ms) — compositor, not game work. Data: `perf_runs/2026-07-17T23-38-21-892Z/calibration.json`.
+- [ ] 2. Scenario matrix drivers: S1 idle, S2 replay-campaign, S3 particle stress, S4 magento2 (HAR-replayed: idle/fire/dry-fire/mouse-flood), S5 bot-plays-demo (real-clock headed; CAVEAT: needs ?testHooks=1 → telemetry recording ON, not comparable to pure cells) — code written, validation runs pending
 - [ ] 3. Baseline collection (full matrix, baseline flags, chromium headed; headed-vs-headless calibration; firefox/webkit S1+S2 sanity)
 - [ ] 4. Flag A/B: WALL_EDGE_ANTIALIASING (S1/S2/S4), RESPONSIVE_CANVAS_SCALING (S1/S2 + resize storm) — sed-flip + guarded restore, interleaved runs
 - [x] 5. Static audit fan-out (5 subagents: allocations, canvas state, algorithmic scaling, bundle/startup, DOM/side-channel) → findings queue below (done 2026-07-18; ran early, in parallel with M1)
