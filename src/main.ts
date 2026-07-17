@@ -1441,6 +1441,9 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
           priorPlayerStats: stats.runPlayerStats,
           weaponIndex: stats.weaponIndex,
           ownedWeapons: stats.ownedWeapons,
+          showFps: stats.showFps,
+          godMode: stats.godMode,
+          noClip: stats.noClip,
         };
         // Persist immediately at the transition (not just the throttled
         // in-play autosave) so a tab closed right after advancing still

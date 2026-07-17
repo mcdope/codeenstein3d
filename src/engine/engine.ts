@@ -283,6 +283,8 @@ export interface EngineStats {
   godMode: boolean;
   /** IDCLIP cheat state. */
   noClip: boolean;
+  /** FPS/frame-time overlay state (Right-Ctrl) — see `EngineCarryover.showFps`. */
+  showFps: boolean;
   /** This level's own score breakdown by category (kill points plus every
    * bonus) — see `./scoring.ts`. `undefined` whenever telemetry isn't being
    * recorded at all (`PLAYER_STATS_ENABLED` off and no `?testHooks=1` — see
@@ -370,6 +372,12 @@ export interface EngineCarryover {
    * `smg`/`gas`/`ownedWeapons` above. */
   godMode?: boolean;
   noClip?: boolean;
+  /** Whether the FPS/frame-time overlay (Right-Ctrl) was showing — carried
+   * across a level transition for the same reason the cheat flags above are:
+   * a fresh `RaycasterEngine` is constructed per level, so the toggle would
+   * otherwise silently reset and need re-activating every level. Omitted on
+   * a genuinely fresh run. */
+  showFps?: boolean;
 }
 
 type GameState = "playing" | "over" | "won";
@@ -410,8 +418,11 @@ export class RaycasterEngine {
   private target: Enemy | null = null;
 
   /** Whether the FPS/frame-time overlay is showing (Right-Ctrl toggles it).
-   * Default off, not persisted — a debug display, not a setting. */
-  private showFps = false;
+   * Default off; carried across a level transition (see
+   * `EngineCarryover.showFps`) so it doesn't need re-activating every level —
+   * not persisted beyond the current run (e.g. a fresh "Select Workspace"),
+   * a debug display, not a saved setting. */
+  private showFps: boolean;
   /** Seconds/frame-count accumulated since the last `displayFps` update. */
   private fpsAccumTime = 0;
   private fpsAccumFrames = 0;
@@ -689,6 +700,7 @@ export class RaycasterEngine {
     this.player = new Player(map);
     this.godMode = carryover?.godMode ?? false;
     this.player.noClip = carryover?.noClip ?? false;
+    this.showFps = carryover?.showFps ?? false;
     this.input = inputSource ?? new InputController(canvas);
     this.rng = mulberry32(gameplaySeed);
     this.replayRecorder = replayRecorder;
@@ -2378,6 +2390,7 @@ export class RaycasterEngine {
       ownedWeapons: [...this.ownedWeapons],
       godMode: this.godMode,
       noClip: this.player.noClip,
+      showFps: this.showFps,
       levelScoreBreakdown: this.telemetry ? levelScoreBreakdown : undefined,
       runScoreBreakdown,
       levelPlayerStats,

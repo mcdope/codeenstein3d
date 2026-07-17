@@ -43,6 +43,7 @@ function fakeStats(overrides: Partial<EngineStats> = {}): EngineStats {
     ownedWeapons: [0, 1, 2],
     godMode: false,
     noClip: false,
+    showFps: false,
     levelScoreBreakdown: zeroScoreBreakdown(),
     runScoreBreakdown: zeroScoreBreakdown(),
     levelPlayerStats: emptyPlayerFacingStats(),
