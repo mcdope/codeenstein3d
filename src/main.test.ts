@@ -1858,9 +1858,36 @@ function setFullscreenElement(el: Element | null): void {
   Object.defineProperty(document, "fullscreenElement", { value: el, configurable: true });
 }
 
-describe("main.ts — canvas sizing (fitCanvasToArea)", () => {
+describe("main.ts — canvas sizing (fitCanvasToArea), default (RESPONSIVE_CANVAS_SCALING_ENABLED off)", () => {
+  it("never resizes the canvas — no ResizeObserver wiring, no fullscreen-exit re-fit", async () => {
+    await importMain();
+    const canvasArea = document.querySelector<HTMLElement>(".canvas-area")!;
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    setClientSize(canvasArea, 1000, 200);
+    const before = canvas.style.width;
+    fireResize(); // no-op: no ResizeObserver callback was ever registered
+    expect(canvas.style.width).toBe(before);
+
+    setFullscreenElement(canvas);
+    document.dispatchEvent(new Event("fullscreenchange"));
+    setFullscreenElement(null);
+    document.dispatchEvent(new Event("fullscreenchange")); // no-op: no listener was ever added
+    expect(canvas.style.width).toBe(before);
+    setFullscreenElement(null);
+  });
+});
+
+describe("main.ts — canvas sizing (fitCanvasToArea), RESPONSIVE_CANVAS_SCALING_ENABLED on", () => {
+  beforeEach(() => {
+    vi.doMock("./ui/canvasFit", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("./ui/canvasFit")>();
+      return { ...actual, RESPONSIVE_CANVAS_SCALING_ENABLED: true };
+    });
+  });
+
   afterEach(() => {
     setFullscreenElement(null);
+    vi.doUnmock("./ui/canvasFit");
   });
 
   it("sizes the canvas to the largest 640:400 box that fits a wide area", async () => {

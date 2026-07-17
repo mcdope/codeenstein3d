@@ -49,6 +49,7 @@ export function statsScreenInfo(
 }
 import { buildControlsLegend } from "./ui/controlsLegend";
 import { downloadBlob } from "./ui/download";
+import { RESPONSIVE_CANVAS_SCALING_ENABLED, watchCanvasSizing } from "./ui/canvasFit";
 import { DEFAULT_GORE_LEVEL, type GoreLevel } from "./engine/effects";
 import {
   FRIDAY_HOTFIX_WEAPON_INDEX,
@@ -381,10 +382,12 @@ highscoreDialog.addEventListener("close", () => {
  *
  * Wrapped in `canvasArea`, a flex-grow box that fills whatever vertical
  * space `#viewport`'s other children (the hint caption, controls legend,
- * replay transport bar) don't need — `fitCanvasToArea` below then sizes the
- * canvas to the largest 640:400 box that fits inside whatever `canvasArea`
- * ends up with, instead of the fixed max-width the layout used to be capped
- * at. Shown/hidden via `canvasArea.hidden`, not `canvas.hidden` directly —
+ * replay transport bar) don't need — `watchCanvasSizing` (see
+ * `./ui/canvasFit.ts`) then sizes the canvas to the largest 640:400 box
+ * that fits inside whatever `canvasArea` ends up with, instead of the fixed
+ * max-width the layout used to be capped at, when
+ * `RESPONSIVE_CANVAS_SCALING_ENABLED` is on. Shown/hidden via
+ * `canvasArea.hidden`, not `canvas.hidden` directly —
  * hiding an *ancestor* of the fullscreen element ends fullscreen exactly the
  * same way hiding the element itself does, so this preserves the same
  * "leaving the game ends fullscreen, a level transition doesn't" behavior
@@ -401,46 +404,7 @@ canvasArea.hidden = true; // not shown until a level is actually running
 canvasArea.appendChild(canvas);
 viewport.appendChild(canvasArea);
 
-/**
- * Sizes `canvas` to the largest 640:400 box that fits inside `canvasArea`'s
- * current content box, via explicit inline `width`/`height` — CSS alone
- * can't do this for a replaced element like `<canvas>`: `width: auto` just
- * falls back to its intrinsic 640×400 size (from the `width`/`height`
- * attributes above) rather than growing to fill available space, so
- * `max-width`/`max-height`/`aspect-ratio` alone only ever *shrinks* it, never
- * grows it. A no-op while `canvas` is the Fullscreen API's target — that
- * state is sized entirely by the `.scene-canvas:fullscreen` CSS rule
- * instead, and an inline style here (higher specificity than any class
- * selector) would otherwise fight it.
- */
-function fitCanvasToArea(): void {
-  if (document.fullscreenElement === canvas) return;
-  const availW = canvasArea.clientWidth;
-  const availH = canvasArea.clientHeight;
-  if (availW <= 0 || availH <= 0) return; // canvasArea is hidden (display:none) — nothing to size yet
-  const targetRatio = SCENE_WIDTH / SCENE_HEIGHT;
-  let width = availW;
-  let height = width / targetRatio;
-  if (height > availH) {
-    height = availH;
-    width = height * targetRatio;
-  }
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${height}px`;
-}
-
-// Re-fit on every size change to canvasArea — window resizes, the sidebar
-// layout changing, or canvasArea itself flipping from hidden (0×0) to shown
-// at a level launch all land here automatically, without needing an
-// explicit fitCanvasToArea() call at each of those call sites.
-new ResizeObserver(fitCanvasToArea).observe(canvasArea);
-// ResizeObserver doesn't fire for this transition on its own (canvasArea's
-// own box is unaffected by the fullscreen element's cross-document
-// popout/return), so exiting fullscreen needs an explicit re-fit — entering
-// is already a no-op inside fitCanvasToArea itself.
-document.addEventListener("fullscreenchange", () => {
-  if (!document.fullscreenElement) fitCanvasToArea();
-});
+if (RESPONSIVE_CANVAS_SCALING_ENABLED) watchCanvasSizing(canvas, canvasArea, SCENE_WIDTH, SCENE_HEIGHT);
 
 const consoleSidebar = initConsoleSidebar(
   canvas,
