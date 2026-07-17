@@ -259,6 +259,8 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
      - [ ] extend these fields as sum into the highscore?
  - [ ] threaded / forked tests to speed them up?
  - [ ] sounds/bgm (local bgm would override it) from wad?
+ - [ ] Level Design Guide: Add a "Secret-Heavy Dungeon" prompting tip to doc/user/level-design.md. Explain that users should instruct AIs to favor "dead code" and "large comment blocks" over @deprecated tags or "magic-number blobs" to avoid "code vandalism" feel while maintaining secret room density.
+ - [ ] change build tag in title to include commit short hash
  - [ ] random lore terminals with quotes like "There is no cow level", "Stay a while and listen" etc. should give 5x scorepoints compared to normal lore terminals - to encourage searching for them. maybe differentiate a bit visually?
     const RANDOM_LORE_QUOTES = [
       "There is no cow level",
