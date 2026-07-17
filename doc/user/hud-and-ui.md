@@ -24,7 +24,7 @@ Press `Tab` to open the automap — a translucent overlay, Diablo-style, that do
 
 ## Sidebar Settings
 
-- **Gore** — None / Normal / More, controls blood-particle volume and how long stains linger. (An "Extreme" tier exists in the code but is currently disabled and not shown in the dropdown.)
+- **Gore** — None / Normal / More / Extreme, controls blood-particle volume and how long stains linger.
 - **Difficulty** — Easy / Normal / Hard, scales enemy HP, enemy damage, and pickup scarcity. See [Mechanics](mechanics.md#difficulty) for exact numbers.
 - **Master / SFX / Music** volume sliders, persisted across sessions.
 - **Select BGM Folder** — pick a local folder of `.mp3`/`.ogg`/`.wav` files to play as a shuffled custom soundtrack instead of silence.

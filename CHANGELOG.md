@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- New: rebranded with a custom "CODE" wordmark logo — replaces the gun-emoji sidebar header text and the full favicon/icon set (browser tab, bookmarks, Android/iOS home screen, Windows tiles)
 - New: a curated "Or pick an online texture pack" list in the sidebar, next to the existing Load WAD Texture Pack button — Freedoom (Phase 1, Phase 2, FreeDM), DOOM (Shareware), and HACX 1.2, each showing its license, credits, and a link to the source project. No download or file picker needed; fetched at build time, not committed to the repo (see the README's Credits section for full attribution)
 - The 3 example runs shown in the Highscores dialog before you have any of your own are now played by the same Casual/Gamer/Pro skill levels used elsewhere (previously 3 generic, skill-blind attempts) and load much faster the first time you open that dialog — the bundled data shrank from tens of megabytes to under a megabyte
 - Workspace/GitHub loads now skip `test`, `tests`, and `__tests__` directories (matched case-insensitively) alongside the existing `node_modules`/`.git`/etc. noise list, and also skip colocated test files (`foo.test.ts`, `foo_test.go`, `FooTest.java`, and similar conventions) even when they sit right next to real source rather than in a dedicated test folder — so test suites no longer generate levels
@@ -18,6 +19,8 @@
 - New: export a "Watch Replay" viewing as a downloadable webm video — a Record button on the replay's own transport bar, or a one-click "Export" shortcut next to each Highscores entry's "Watch" button. Recording always captures at real 1x speed and locks the transport controls for the duration
 - The startpage now leads with a plain-English "New to coding?" card pointing straight at the no-setup Demos tab, before the more technical code→dungeon mapping
 - New: an "Export Map as PNG" button appears once you clear a level — downloads a top-down image of it, textured with the actual walls/doors/floors/hazards you were seeing in-game (not a flat debug-style diagram), for sharing. Only ever available for a level you've already finished
+- New: chaining 3 kills within 3 seconds now triggers a "Multi Kill" bonus (on-screen banner, stinger sound, and a flat score bonus); chaining 6 within 6 seconds triggers a bigger "Ultra Kill" instead
+- Fix: Extreme gore mode's blood particles could render at nearly twice the canvas height at point-blank range — particle size and particle count are now capped across every gore tier, not just Extreme
 
 ## beta-3
 

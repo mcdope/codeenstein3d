@@ -251,9 +251,11 @@ npm run preview    # Serve production build locally
 | — | Startpage leads with a plain-English "New to coding?" card, before the more technical code→dungeon mapping | ✅ |
 | — | Export a cleared level as a top-down PNG — actual wall/door/floor/hazard/teleporter/spike/lore textures stamped from above, not a flat-color diagram; only available once that level is won | ✅ |
 | — | Multi Kill / Ultra Kill score bonus, on-screen banner, and stinger SFX for chaining kills (3-in-3s / 6-in-6s) | ✅ |
-| — | Full favicon/icon set (all platforms) generated from the CODE logo | ✅ |
+| — | Full favicon/icon set (all platforms) + sidebar header rebrand, both generated from the CODE logo | ✅ |
 | — | SEO: meta description, Open Graph/Twitter Card tags, JSON-LD, robots.txt, sitemap.xml | ✅ |
 | — | Curated online WAD catalog (fetched at build time, not committed), sidebar redesign into labeled sections/tabs, GitHub-load button disabled until a valid repo is entered | ✅ |
+| — | Build tag in the title bar shows the exact git tag (a real release) or short commit hash instead of just a timestamp, so a stale cached build is obvious | ✅ |
+| — | Level-end/run-end player-facing stats screen (kills, weapon accuracy, damage taken by source, loot collected, score breakdown) | ⏸️ Implemented, disabled by default (playtest feedback: measurable frame-time cost) |
 
 ---
 

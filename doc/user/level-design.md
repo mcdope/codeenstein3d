@@ -14,6 +14,10 @@ This is the easiest way in, and it's not a stretch — it's literally how `demo-
 
 Point the agent at a couple of files in `demo-campaign/` (any language) as a style reference — they're real, working examples already tuned to hit specific features, and reading a couple makes the request much more concrete than description alone.
 
+### Prompting tip: Secret-Heavy Dungeon
+
+Want a level dense with hidden rooms? Steer the agent toward **dead/unreachable code after a `return`** and **oversized comment blocks** (more than about half a dozen consecutive comment lines — plain prose is fine, it doesn't need to look like real commented-out code) as its secret-room triggers, rather than `@deprecated`/`[Obsolete]` markers or magic-number/hex-blob literals. All four are equally valid triggers to the generator, but the first two read as things a real, aging codebase would actually accumulate; a file sprinkled with a dozen `@deprecated` tags or hex blobs to farm secret rooms reads as obviously artificial "code vandalism" the moment anyone actually opens it. An oversized comment block is efficient too — long enough and it doubles as a lore terminal in the same spot, not just a secret room.
+
 One thing to tell the agent up front: **it can't know exactly what its file will produce just by reading it.** Map layout, secret-room contents, and even which of three outcomes a TODO comment triggers are all drawn from a seeded RNG — deterministic per file, but not something anyone can compute by eye. The only way to know what a file actually generates is to load it and look. That's exactly how `demo-campaign/` was tuned during development: every file was run through the real map generator repeatedly and adjusted based on what actually came out, not what seemed like it should.
 
 ## Manual authoring cheat sheet
