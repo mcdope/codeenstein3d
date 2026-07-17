@@ -9,6 +9,8 @@ coverage
 balancing_telemetry.json
 balancing_runs/
 balancing_runs_*/
+perf_runs/
+perf-report.html
 
 # Editor
 .vscode/*
