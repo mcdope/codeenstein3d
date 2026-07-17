@@ -152,6 +152,38 @@ async function startMouseFlood(page) {
  * live fetches would add network variance to a benchmark. */
 const HAR_PATH = path.join(ROOT, "scripts", "fixtures", "perf-har", "magento2.har");
 
+/** Task 241's map shape needs a BIG file — the workspace auto-launch picks a
+ * small one. Click down the tree to a known monster (~4k-line class). Each
+ * segment is matched exactly and scoped to the directory just expanded, so
+ * repeated names elsewhere in the repo (e.g. app/code/Magento) can't collide. */
+const MAGENTO_BIG_FILE = ["lib", "internal", "Magento", "Framework", "DB", "Adapter", "Pdo", "Mysql.php"];
+
+async function openTreeFile(page, segments) {
+  // Every row's `title` is its full workspace path (fileTree.ts) — expand
+  // ancestor directories in order, then click the file row itself.
+  for (let i = 0; i < segments.length; i += 1) {
+    const kind = i === segments.length - 1 ? "file" : "directory";
+    // Row titles are full workspace paths prefixed with the repo root name.
+    const title = `magento2/${segments.slice(0, i + 1).join("/")}`;
+    await page.click(`button.tree-row--${kind}[title="${title}"]`);
+  }
+}
+
+function levelLineCount(collector) {
+  return collector.entries.filter((e) => e.kind === "level").length;
+}
+
+/** Wait for the NEXT `[perf] level:` line beyond `alreadySeen` — level loads
+ * after the first one need a count check, not an existence check. */
+async function waitForNextLevel(collector, alreadySeen, timeoutMs = 300000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (levelLineCount(collector) > alreadySeen) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error("no new '[perf] level:' console line — level never finished loading?");
+}
+
 async function loadMagentoWorkspace(page, baseUrl, collector) {
   const record = Boolean(process.env.CODEENSTEIN_PERF_HAR_RECORD);
   if (!record && !fs.existsSync(HAR_PATH)) {
@@ -160,10 +192,16 @@ async function loadMagentoWorkspace(page, baseUrl, collector) {
   fs.mkdirSync(path.dirname(HAR_PATH), { recursive: true });
   await page.routeFromHAR(HAR_PATH, { url: /github/, update: record });
   await page.goto(`${baseUrl}/?perfDebug=1`);
+  await page.click("#tab-github");
   await page.fill("#github-repo-input", "magento/magento2");
   await page.click("#load-github-repo");
-  // Tree fetch + parse + map generation of a huge repo takes a while.
+  // Tree fetch + parse + map generation of a huge repo takes a while. The
+  // workspace auto-launches a (small) first level; we then open the big one.
   await waitForLevelReady(collector, 300000);
+  await dismissOverlay(page);
+  const seen = levelLineCount(collector);
+  await openTreeFile(page, MAGENTO_BIG_FILE);
+  await waitForNextLevel(collector, seen);
   await dismissOverlay(page);
 }
 
@@ -176,9 +214,14 @@ const SCENARIOS = {
   },
   /** S2: deterministic combat — "Watch Replay" of the bundled default
    * highscore (exact recorded input through the real engine + rendering).
-   * No Space presses after start: the replay transport listens for keys. */
+   * No Space presses after start: the replay transport listens for keys.
+   * `busyAccumulates`: the replay viewer drives `engine.advance()` from its
+   * own rAF loop and never calls `perf.beginFrame()` (findings queue F21),
+   * so phase sums grow monotonically — the harness recovers true per-frame
+   * busy time by differencing successive snapshot values. */
   "s2-replay": {
     defaultDurationSec: 60,
+    busyAccumulates: true,
     async setup(page, baseUrl, collector) {
       await page.goto(`${baseUrl}/?perfDebug=1`);
       await page.click("#view-highscores");
@@ -261,8 +304,12 @@ const SCENARIOS = {
       await waitForLevelReady(collector);
       await dismissOverlay(page);
       // Fire-and-forget: the bot plays on while the harness samples; the
-      // context closing at capture end aborts it, which is expected.
-      void bot.playRun(page, profile, levelPlans, "perf-bench").catch(() => {});
+      // context closing at capture end aborts it (logged, expected). Any
+      // OTHER error here means the cell silently measured an idle scene —
+      // that exact failure happened once, hence the loud log.
+      void bot.playRun(page, profile, levelPlans, "perf-bench").catch((err) => {
+        console.log(`[perf:bench] bot stopped: ${err?.message ?? err}`);
+      });
     },
   },
 };
@@ -391,6 +438,18 @@ async function measureRun(browser, scenarioId, baseUrl, { warmupSec, durationSec
     // Per-frame busy time from the ?perfDebug=1 stats hook — every frame, not
     // just the rate-limited console snapshots; this is the A/B metric.
     const stats = await page.evaluate(() => window.__codeensteinPerfStats?.snapshot() ?? null);
+    // Replay mode never resets phases between frames (F21) — recover each
+    // frame's true cost from the monotonic series. Negative deltas mark a
+    // level transition (fresh engine/logger) and are dropped.
+    if (stats && scenario.busyAccumulates) {
+      const diffed = [];
+      for (let i = 1; i < stats.busyMs.length; i += 1) {
+        const d = stats.busyMs[i] - stats.busyMs[i - 1];
+        if (d >= 0) diffed.push(d);
+      }
+      stats.busyMs = diffed;
+      stats.phases = null; // per-phase running sums are equally accumulated — meaningless here
+    }
     return {
       startedAt,
       warmupSec,
