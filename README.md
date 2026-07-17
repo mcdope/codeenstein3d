@@ -256,6 +256,8 @@ npm run preview    # Serve production build locally
 | — | Curated online WAD catalog (fetched at build time, not committed), sidebar redesign into labeled sections/tabs, GitHub-load button disabled until a valid repo is entered | ✅ |
 | — | Build tag in the title bar shows the exact git tag (a real release) or short commit hash instead of just a timestamp, so a stale cached build is obvious | ✅ |
 | — | Level-end/run-end player-facing stats screen (kills, weapon accuracy, damage taken by source, loot collected, score breakdown) | ⏸️ Implemented, disabled by default (playtest feedback: measurable frame-time cost) |
+| — | FPS overlay and IDDQD/IDCLIP cheat toggles now carry across a level transition instead of silently resetting | ✅ |
+| — | Wall-edge antialiasing and windowed-mode responsive canvas resizing | ⏸️ Implemented, disabled by default (perf impact under measurement) |
 
 ---
 
