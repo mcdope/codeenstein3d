@@ -2,100 +2,81 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 /**
- * One-shot dev tool: plays the bundled `demo-campaign/` 10 times via a
- * headless-Chromium bot (real, non-cheated input — see the combat/navigation
- * driver below), keeps the 3 highest-scoring runs, and writes them as
- * `src/engine/defaultHighscore.ts` — a small pre-populated leaderboard shown
- * to a first-time player whose own `localStorage` highscore board is empty
- * (see `loadHighscoresForDisplay` in `src/engine/highscores.ts`).
+ * One-shot dev tool: for each bot skill profile (Casual/Gamer/Pro — see
+ * `scripts/run-balancing-telemetry.mjs`'s `PROFILES`), plays the bundled
+ * `demo-campaign/` via a real, non-cheated headless-Chromium `Bot`
+ * (`scripts/lib/bot.mjs`) until 3 runs qualify — reaching campaign level 4
+ * for Casual, level 5 for Gamer, level 6 for Pro (0-based
+ * `QUALIFY_LEVEL_INDEX_BY_PROFILE`, proving the profile can survive the
+ * unarmed early game at its own claimed skill level) — then keeps the
+ * single highest-scoring qualifying run per profile. Writes the resulting 3
+ * entries as `src/engine/defaultHighscore.ts` — a small pre-populated
+ * leaderboard shown to a first-time player whose own `localStorage`
+ * highscore board is empty (see `loadHighscoresForDisplay` in
+ * `src/engine/highscores.ts`).
  *
  * Not CI-wired — there's no CI in this repo yet, and even once there is, a
- * 10x real-playthrough bot run has no place gating every push. Run manually
+ * multi-playthrough bot run has no place gating every push. Run manually
  * (`npm run generate:default-highscore`) against a locally running dev
  * server, review the printed summary and the resulting file's diff, and
  * commit if it looks right — the same one-shot, hand-reviewed-then-committed
  * workflow `demo-campaign/` itself and its own verifier scripts already use.
  *
- * The bot is a pragmatic heuristic, not a tactical AI (see
- * `scripts/lib/routePlanner.mjs` for the navigation half): BFS-plan a route
- * to the exit (detouring for keys/doors as needed), walk it with real
- * `KeyboardEvent`s, and whenever a nearby aggroed enemy is in view, stop and
- * fight it with real turning (`KeyQ`/`KeyE`) and real firing (`Backquote`).
- * Firing deliberately never touches the mouse: `Backquote` alone already
- * drives both a single-shot weapon's edge-triggered `fireQueued` and an auto
- * weapon's held-down `isFireHeld()` (`this.keys.has("Backquote")`, see
- * `src/engine/input.ts`), and empirically, `page.mouse.down()`/`up()` (the
- * first approach tried here) turned out to synthesize real `mousemove`
- * events even with no explicit `page.mouse.move()` call — once Pointer Lock
- * is active, those land as large, uncapped mouse-look rotations (unlike
- * keyboard turning, which is hard-capped at `ROT_SPEED*dt` per frame) and
- * made the bot's facing spin uncontrollably. `Backquote`-only firing
- * sidesteps Pointer Lock entirely, so the canvas never even needs a click —
- * it used to be `Space` until that key was repurposed for quick-melee (see
- * `src/engine/input.ts`'s `isMeleeHeld()` doc comment for why: holding the
- * old Left-Ctrl melee-fire while also pressing W spelled out the
- * browser-reserved, unblockable `Ctrl+W` "close tab" shortcut).
- * `Backquote` is a deliberate, undocumented escape hatch that exists
- * specifically for this bot — see `isFireHeld()`'s doc comment. It is not
- * expected to reliably clear all 17 levels, especially the multi-Elite
- * finale — that's fine: `recordHighscore` accepts any non-cheated run with
- * `levelsCleared >= 1`, and only the best 3 of 10 runs need to ship.
+ * Shares its navigation/combat/loot decision-making with
+ * `scripts/run-balancing-telemetry.mjs` via `scripts/lib/bot.mjs`'s `Bot`
+ * class — see that script's module doc comment for the low-level bot
+ * rationale (why firing is `Backquote`-only, why routes are precomputed in
+ * Node before any browser launches, etc.) and `scripts/lib/qualifyLoop.mjs`
+ * for the shared retry-until-N-qualifying-runs machinery. Difficulty is
+ * deliberately fixed at `"normal"` for every profile (the engine's own
+ * default) — skill level here means `PROFILES`, an orthogonal axis from
+ * in-game difficulty; only `PROFILES` varies across the 3 generated entries.
+ *
+ * Each attempt records replay frames at real-display-frame granularity
+ * (`RECORD_STEP_MS`, distinct from the bot's own `VIRTUAL_STEP_MS` decision
+ * cadence) — a replay shipped for real playback needs this, unlike a
+ * telemetry-only run: `startReplay` (`src/main.ts`) consumes exactly one
+ * recorded frame per real render tick regardless of that frame's own `dt`,
+ * so fewer-but-coarser frames covering the same virtual duration play back
+ * proportionally faster than real speed. See `scripts/lib/bot.mjs`'s
+ * `recordStepMs` doc comment.
  */
 import { chromium } from "playwright";
 import { createHash } from "node:crypto";
-import { gunzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import fs from "node:fs";
 import path from "node:path";
 import { loadEngineModules, REPO_ROOT } from "./lib/loadEngineModules.mjs";
-import { planRoute } from "./lib/routePlanner.mjs";
+import { Bot } from "./lib/bot.mjs";
+import { runQualifyLoop } from "./lib/qualifyLoop.mjs";
+import { installVirtualClock } from "./lib/virtualClock.mjs";
+import { DEV_SERVER_URL, PROFILES, planLevels, waitForTestHooks, dismissOverlay, installDifficulty } from "./run-balancing-telemetry.mjs";
 
 const CAMPAIGN_DIR = path.join(REPO_ROOT, "demo-campaign");
 const CAMPAIGN_NAME = "demo-campaign";
-const DEV_SERVER_URL = process.env.CODEENSTEIN_DEV_URL ?? "http://localhost:5173";
 const OUTPUT_FILE = path.join(REPO_ROOT, "src/engine/defaultHighscore.ts");
 
-const RUN_COUNT = 10;
-const KEEP_COUNT = 3;
-// Each run gets its own fresh browser context (isolated localStorage) and
-// only reads the shared, never-mutated `levelPlans` — so runs are fully
-// independent and safe to drive concurrently, the same batched-Promise.all
-// pattern `run-balancing-telemetry.mjs` already uses (see its
-// `ATTEMPT_CONCURRENCY`). Kept lower than that script's default (12) since
-// each run here plays a *full* campaign (17 levels) rather than one short
-// attempt — default picked to meaningfully cut real wall-clock generation
-// time without oversubscribing a single machine's headless Chromium.
-const RUN_CONCURRENCY = process.env.CODEENSTEIN_HIGHSCORE_CONCURRENCY ? Number(process.env.CODEENSTEIN_HIGHSCORE_CONCURRENCY) : 4;
+const REQUIRED_QUALIFYING_RUNS = 3;
+// Unbounded, matching run-balancing-telemetry.mjs's own default philosophy
+// — this is a manual, hand-reviewed tool, not CI-gated, so "keep retrying
+// until 3 qualifying runs land, however long that takes" is fine. The only
+// safety net against a truly dead browser is runQualifyLoop's own
+// consecutive-fully-crashed-batch circuit breaker (see runOneAttempt).
+const ATTEMPT_CAP = Infinity;
+// 0-based — "level 4/5/6" in 1-based campaign numbering. Casual only needs
+// to prove it survives the unarmed early game (the same threshold
+// run-balancing-telemetry.mjs uses for every profile); Gamer/Pro raise the
+// bar to match their claimed skill level, per user directive.
+const QUALIFY_LEVEL_INDEX_BY_PROFILE = { Casual: 3, Gamer: 4, Pro: 5 };
+// Each attempt plays a *full* campaign (up to 17 levels), unlike
+// run-balancing-telemetry.mjs's much shorter per-attempt cost — kept lower
+// than that script's default concurrency to avoid oversubscribing a single
+// machine's headless Chromium.
+const ATTEMPT_CONCURRENCY = process.env.CODEENSTEIN_HIGHSCORE_CONCURRENCY ? Number(process.env.CODEENSTEIN_HIGHSCORE_CONCURRENCY) : 4;
 
-// How much virtual game-time one bot decision (one `applyAction` round trip)
-// advances — the bot's own AI-tick cadence, not the recorded replay's frame
-// size (see `RECORD_STEP_MS`). Keeping this separate from frame size means
-// `MAX_TICKS_PER_WAYPOINT`/`FINAL_APPROACH_TICKS`/`DOOR_OPEN_TICKS`'s virtual-
-// time budgets, and the real Playwright round-trip count driving them (the
-// actual cost of running this script), are both untouched by how finely the
-// replay gets recorded.
 const VIRTUAL_STEP_MS = 50;
-// Recorded `ReplayFrame` granularity — matches a real 60fps display frame so
-// a default-highscore replay's frame density/dt distribution looks like a
-// real live playthrough's, instead of the coarse `VIRTUAL_STEP_MS`-sized
-// frames a bot-generated recording produced before (which played back ~3x
-// too fast: `main.ts`'s replay `step()` advances exactly one recorded frame
-// per real render tick, regardless of that frame's own `dt`, so a replay
-// with 3x-fewer-but-3x-longer frames covering the same virtual duration
-// finishes in ~1/3 the real time — see the `notes` root-cause entry this
-// fixed). `VIRTUAL_STEP_MS` divides evenly into this (50 / (1000/60) = 3),
-// so each bot decision now records exactly 3 real-frame-sized `ReplayFrame`s
-// instead of 1 coarse one, with the bot's own decision cadence unchanged.
-const RECORD_STEP_MS = 1000 / 60;
-const MAX_TICKS_PER_WAYPOINT = 600; // 30s virtual time per waypoint — the effective per-level ceiling is this times the route's waypoint count
+const RECORD_STEP_MS = 1000 / 60; // see module doc comment
 const FINAL_APPROACH_TICKS = 80; // extra push onto the exit tile's exact center
-
-const TURN_MOVE_EPS = 0.2; // rad — turn until facing within this before moving
-const FIRE_ANGLE_EPS = 0.12; // rad — only hold fire once aimed this tightly
-const ARRIVE_EPS = 0.15; // tiles — waypoint arrival tolerance (matches verify-campaign-playthrough.mjs)
-const TIGHT_ARRIVE_EPS = 0.05; // tiles — final-approach-onto-exit tolerance
-const AGGRO_RADIUS = 7.5; // src/engine/enemyAi.ts
-const ENGAGE_RADIUS = AGGRO_RADIUS + 2;
-const DOOR_OPEN_TICKS = 10;
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -105,11 +86,6 @@ function check(label, condition, detail) {
     failures += 1;
     console.log(`  [FAIL] ${label}${detail ? ` — ${detail}` : ""}`);
   }
-}
-
-function angleDelta(current, target) {
-  const d = target - current;
-  return Math.atan2(Math.sin(d), Math.cos(d));
 }
 
 /** Node-side port of `decompressFromStorage` (`src/engine/storageCompression.ts`)
@@ -130,163 +106,41 @@ function computeAstHash(parsed, campaignName) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-async function main() {
-  console.log("Loading engine modules + planning routes in Node...\n");
-  const { parseFile, extensionOf, MapGenerator } = await loadEngineModules();
-  const generator = new MapGenerator();
-
-  const filenames = fs
-    .readdirSync(CAMPAIGN_DIR)
-    .filter((f) => fs.statSync(path.join(CAMPAIGN_DIR, f)).isFile())
-    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
-
-  // Phase 0: Node-only feasibility precheck — purely diagnostic, doesn't gate
-  // Phase 1, just tells us up front which levels the bot can structurally
-  // reach the exit of before spending browser time on any of them.
-  const levelPlans = [];
-  for (const filename of filenames) {
-    const text = fs.readFileSync(path.join(CAMPAIGN_DIR, filename), "utf8");
-    const parsed = await parseFile(filename, text);
-    if (!parsed) {
-      console.log(`[${filename}] PARSE FAIL — skipping`);
-      continue;
-    }
-    const bonusLevel = extensionOf(filename) === "h";
-    const map = generator.generate(parsed, bonusLevel, false, [3, 4, 5]);
-    const route = planRoute(map);
-    console.log(
-      `[${filename}] route=${route.ok ? "OK" : `FAIL (${route.reason})`}${route.ok ? ` crossesHazard=${route.crossesHazard}` : ""} doors=${map.doors.length} keys=${map.keys.length} teleporters=${map.teleporters.length}`,
-    );
-    levelPlans.push({ filename, filePath: `${CAMPAIGN_NAME}/${filename}`, map, route });
-  }
-  const reachableCount = levelPlans.filter((l) => l.route.ok).length;
-  console.log(`\n${reachableCount}/${levelPlans.length} levels have a planned route (bot may still die to combat before reaching some of them).\n`);
-
-  console.log(`Launching headless Chromium for ${RUN_COUNT} playthroughs (concurrency ${RUN_CONCURRENCY})...\n`);
-  const browser = await chromium.launch();
-  const results = [];
-
-  for (let batchStart = 1; batchStart <= RUN_COUNT; batchStart += RUN_CONCURRENCY) {
-    const batchRuns = Array.from(
-      { length: Math.min(RUN_CONCURRENCY, RUN_COUNT - batchStart + 1) },
-      (_, i) => batchStart + i,
-    );
-    const batch = await Promise.all(batchRuns.map((run) => runOnePlaythrough(browser, run, levelPlans)));
-    results.push(...batch.filter(Boolean));
-  }
-
-  await browser.close();
-
-  if (results.length === 0) {
-    console.error("\nNo run produced a valid highscore entry — nothing to ship. Bailing out.");
-    process.exit(1);
-  }
-
-  results.sort((a, b) => b.entry.score - a.entry.score);
-  const kept = results.slice(0, KEEP_COUNT);
-
-  console.log(`\n${"=".repeat(72)}\nSummary (all ${results.length} valid runs, sorted by score)\n${"=".repeat(72)}`);
-  for (const r of results) {
-    const keptMark = kept.includes(r) ? "KEPT" : "    ";
-    console.log(`  [${keptMark}] run ${r.run}: score=${r.entry.score} levelsCleared=${r.entry.levelsCleared} levelName=${r.entry.levelName}`);
-  }
-
-  console.log("\nRe-verifying kept entries' replay astHash values against fresh on-disk hashes...");
-  for (const { run, entry } of kept) {
-    check(`run ${run}: entry.source === "demo"`, entry.source === "demo");
-    check(`run ${run}: replay.version === 2`, entry.replay?.version === 2);
-    check(`run ${run}: replay has >=1 level segment`, (entry.replay?.levels?.length ?? 0) >= 1);
-    for (const seg of entry.replay?.levels ?? []) {
-      const filename = seg.filePath.split("/").pop();
-      const text = fs.readFileSync(path.join(CAMPAIGN_DIR, filename), "utf8");
-      const parsed = await parseFile(filename, text);
-      const expected = computeAstHash(parsed, CAMPAIGN_NAME);
-      check(`run ${run}: ${filename} astHash matches fresh on-disk parse`, seg.astHash === expected, `${seg.astHash} !== ${expected}`);
-      check(`run ${run}: ${filename} replay segment has recorded frames`, Array.isArray(seg.frames) && seg.frames.length > 0);
-    }
-  }
-
-  if (failures > 0) {
-    console.error(`\n${failures} check(s) failed — not writing ${OUTPUT_FILE}. Investigate before regenerating.`);
-    process.exit(1);
-  }
-
-  writeDefaultHighscoreFile(kept.map((r) => r.entry));
-  console.log(`\nWrote ${OUTPUT_FILE} — review with \`git diff\` before committing.`);
-}
-
-/** Drives one full campaign playthrough in its own fresh, isolated browser
- * context and extracts the highscore entry it recorded, if any. Runs
- * concurrently with other calls (batched in `main`) — every side effect is
- * scoped to this call's own `context`/`page`, so there's no shared mutable
- * state between concurrent playthroughs beyond the read-only `levelPlans`.
- * Returns `null` instead of pushing/logging directly so `main` can collect
- * a whole concurrent batch via `Promise.all` before deciding what to do with
- * it. */
-async function runOnePlaythrough(browser, run, levelPlans) {
-  const log = (msg) => console.log(`[run ${run}] ${msg}`);
-  log(`${"=".repeat(72)}\nRun ${run}/${RUN_COUNT}\n${"=".repeat(72)}`);
-  const context = await browser.newContext(); // fresh, isolated localStorage per run
-  const page = await context.newPage();
-  page.on("pageerror", (err) => log(`[pageerror] ${err.message}`));
-
-  try {
-    await installVirtualClock(page);
-    await page.goto(`${DEV_SERVER_URL}/?testHooks=1`);
-    await page.click("#tab-demo");
-    await page.click("#launch-demo-campaign");
-    await waitForTestHooks(page);
-    await dismissOverlay(page);
-
-    const outcome = await playRun(page, levelPlans);
-    log(`run outcome: ${outcome.reason} (levels attempted: ${outcome.levelsAttempted})`);
-
-    const highscoreRaw = await page
-      .waitForFunction(() => localStorage.getItem("codeenstein-highscores"), undefined, { timeout: 15000, polling: 100 })
-      .then((handle) => handle.jsonValue())
-      .catch(() => null);
-
-    if (!highscoreRaw) {
-      log("no highscore entry recorded (died on level 1, or got stuck before clearing one)");
-      return null;
-    }
-    const board = decompressHighscoreBlob(highscoreRaw);
-    const entry = board[0]; // fresh context — this run's is the only entry
-    log(`recorded entry: score=${entry.score} levelsCleared=${entry.levelsCleared} levelName=${entry.levelName}`);
-    return { run, entry };
-  } finally {
-    await context.close();
-  }
-}
-
-/** Plays one full run: walks the precomputed route for each level in order,
- * fighting off nearby aggroed enemies along the way, until either death or
- * running out of levels (campaign complete). Returns `{ reason,
- * levelsAttempted }` — `reason` is one of `"died"`, `"campaign-complete"`,
- * `"stuck"` (a level's route/combat never resolved within its tick budget). */
-async function playRun(page, levelPlans) {
-  let prevExit = null;
+/**
+ * Plays one full campaign attempt via a fresh `Bot`, advancing through
+ * every level with the same overlay-dismiss + exit-change/campaign-complete
+ * poll `run-balancing-telemetry.mjs`'s `playRun` uses — trimmed of
+ * telemetry-snapshot pulls, since this generator only needs
+ * `reachedExitForLevel` (to check qualification); the actual score comes
+ * from the `codeenstein-highscores` entry the engine itself records on
+ * death/completion (read separately by the caller, once this returns).
+ */
+async function driveFullCampaign(bot, page, levelPlans) {
+  const reachedExitForLevel = new Array(levelPlans.length).fill(false);
   for (let i = 0; i < levelPlans.length; i++) {
-    const { filename, route } = levelPlans[i];
-    console.log(`  level ${i + 1}/${levelPlans.length}: ${filename}${route.ok ? "" : " (no planned route — combat/stray movement only)"}`);
+    const { map, routePlain, routeCoverage } = levelPlans[i];
+    bot.startLevel(map);
+    const route = bot.profile.coverageMode ? routeCoverage : routePlain;
 
-    const player = await readState(page);
-    if (player.state !== "playing") return { reason: player.state === "over" ? "died" : "stuck", levelsAttempted: i };
-    prevExit = await page.evaluate(() => window.__codeensteinTestHooks.getExit());
-
-    const legOutcome = route.ok ? await driveLegs(page, route.legs) : { state: "stuck" };
-    if (legOutcome.state === "over") return { reason: "died", levelsAttempted: i + 1 };
-    if (legOutcome.state === "stuck") return { reason: "stuck", levelsAttempted: i };
-    if (legOutcome.state === "playing") {
-      // finished every planned waypoint without the engine flipping to "won"
-      // yet (rare epsilon miss) — push directly onto the exact exit center.
-      const exitCenter = { x: levelPlans[i].map.exit.x + 0.5, y: levelPlans[i].map.exit.y + 0.5 };
-      const pushed = await driveToward(page, exitCenter, TIGHT_ARRIVE_EPS, FINAL_APPROACH_TICKS);
-      if (pushed.state === "over") return { reason: "died", levelsAttempted: i + 1 };
-      if (pushed.state !== "won") return { reason: "stuck", levelsAttempted: i + 1 };
+    const player0 = await bot.readState();
+    if (player0.state !== "playing") {
+      return { reachedExitForLevel, diedAtLevelIndex: i, reason: player0.state === "over" ? "died" : "stuck" };
     }
-    // else legOutcome.state === "won" — already flipped mid-drive, fall
-    // through to the advance-or-complete wait below.
+    const prevExit = await page.evaluate(() => window.__codeensteinTestHooks.getExit());
+
+    const legOutcome = route.ok ? await bot.driveLegs(route.legs) : { state: "stuck" };
+
+    if (legOutcome.state === "over") return { reachedExitForLevel, diedAtLevelIndex: i, reason: "died" };
+    if (legOutcome.state === "stuck") return { reachedExitForLevel, diedAtLevelIndex: i, reason: "stuck" };
+    if (legOutcome.state === "playing") {
+      const exitCenter = { x: map.exit.x + 0.5, y: map.exit.y + 0.5 };
+      const pushed = await bot.driveToward(exitCenter, bot.tuning.TIGHT_ARRIVE_EPS, FINAL_APPROACH_TICKS);
+      if (pushed.state === "over") return { reachedExitForLevel, diedAtLevelIndex: i, reason: "died" };
+      if (pushed.state !== "won") return { reachedExitForLevel, diedAtLevelIndex: i, reason: "stuck" };
+    }
+    // else legOutcome.state === "won" already — fall through.
+
+    reachedExitForLevel[i] = true;
 
     await dismissOverlay(page); // Commit Summary overlay
     const advance = await page
@@ -305,222 +159,141 @@ async function playRun(page, levelPlans) {
       .then((handle) => handle.jsonValue())
       .catch(() => "timeout");
 
-    if (advance === "campaign-complete") return { reason: "campaign-complete", levelsAttempted: i + 1 };
-    if (advance !== "advanced") return { reason: "stuck", levelsAttempted: i + 1 };
+    if (advance === "campaign-complete") return { reachedExitForLevel, diedAtLevelIndex: null, reason: "campaign-complete" };
+    if (advance !== "advanced") return { reachedExitForLevel, diedAtLevelIndex: null, reason: "stuck" };
     await dismissOverlay(page); // next level's briefing
   }
-  return { reason: "campaign-complete", levelsAttempted: levelPlans.length };
+  return { reachedExitForLevel, diedAtLevelIndex: null, reason: "campaign-complete" };
 }
 
-/** Drives every leg of a planned route in order. Returns `{ state }` — the
- * player's terminal `state` field the moment it stops being `"playing"`, or
- * `"playing"` if every leg finished without that happening (see the
- * final-approach fallback in `playRun`). */
-async function driveLegs(page, legs) {
-  for (const leg of legs) {
-    if (leg.kind === "walk") {
-      for (const wp of leg.waypoints) {
-        const result = await driveToward(page, wp, ARRIVE_EPS, MAX_TICKS_PER_WAYPOINT);
-        if (result.state !== "playing") return result; // over/won mid-walk
-        if (result.reason === "stuck") return { state: "stuck" };
-      }
-    } else if (leg.kind === "openDoor") {
-      const targetAngle = Math.atan2(leg.approachDir.dy, leg.approachDir.dx);
-      const faced = await faceAngle(page, targetAngle, MAX_TICKS_PER_WAYPOINT);
-      if (faced.state !== "playing") return faced;
-      const held = await holdForward(page, DOOR_OPEN_TICKS);
-      if (held.state !== "playing") return held;
+/**
+ * Drives one full campaign attempt in its own fresh, isolated browser
+ * context and returns `{ reachedExitForLevel, diedAtLevelIndex, reason,
+ * entry }` — `entry` is the `HighscoreEntry` the engine itself recorded to
+ * `localStorage` on death/completion, or `null` if none was recorded (e.g.
+ * died on level 1 — `recordRunHighscore` skips a 0-levels-cleared run
+ * entirely). A crashed context/page is caught and surfaced as a discarded,
+ * non-qualifying attempt (`reason: "attemptCrashed: ..."`) rather than an
+ * uncaught rejection — same convention as
+ * `run-balancing-telemetry.mjs`'s `runOneAttempt`, which `runQualifyLoop`'s
+ * circuit breaker relies on to detect a truly dead browser.
+ */
+async function runOneAttempt(browser, profileName, profile, levelPlans) {
+  let context;
+  try {
+    context = await browser.newContext(); // fresh, isolated localStorage per attempt
+    const page = await context.newPage();
+    page.on("pageerror", (err) => console.log(`  [${profileName}] [pageerror] ${err.message}`));
+
+    await installVirtualClock(page);
+    await installDifficulty(page, "normal");
+    await page.goto(`${DEV_SERVER_URL}/?testHooks=1&botRotSpeedMul=${profile.rotSpeedMultiplier}`);
+    await page.click("#tab-demo");
+    await page.click("#launch-demo-campaign");
+    await waitForTestHooks(page);
+    await dismissOverlay(page);
+
+    const bot = new Bot(page, profile, { realtime: false, stepMs: VIRTUAL_STEP_MS, recordStepMs: RECORD_STEP_MS });
+    const run = await driveFullCampaign(bot, page, levelPlans);
+
+    const highscoreRaw = await page
+      .waitForFunction(() => localStorage.getItem("codeenstein-highscores"), undefined, { timeout: 15000, polling: 100 })
+      .then((handle) => handle.jsonValue())
+      .catch(() => null);
+    const entry = highscoreRaw ? decompressHighscoreBlob(highscoreRaw)[0] : null;
+
+    await context.close();
+    return { ...run, entry };
+  } catch (err) {
+    console.log(`  [${profileName}] [attempt crashed] ${err.message}`);
+    if (context) await context.close().catch(() => {});
+    return { reachedExitForLevel: [], diedAtLevelIndex: null, reason: `attemptCrashed: ${err.message}`, entry: null };
+  }
+}
+
+async function main() {
+  const levelPlans = await planLevels();
+  const reachableCount = levelPlans.filter((l) => l.routePlain.ok).length;
+  console.log(`${reachableCount}/${levelPlans.length} levels have a planned route (bot may still die to combat before reaching some of them).\n`);
+
+  console.log(`Launching headless Chromium (concurrency ${ATTEMPT_CONCURRENCY})...\n`);
+  const browser = await chromium.launch();
+  const keptEntries = [];
+
+  for (const [profileName, profile] of Object.entries(PROFILES)) {
+    const qualifyLevelIndex = QUALIFY_LEVEL_INDEX_BY_PROFILE[profileName];
+    console.log(`${"=".repeat(72)}\n${profileName} — qualifying = reach level ${qualifyLevelIndex + 1}\n${"=".repeat(72)}`);
+
+    const { qualifyingRuns, attemptsUsed } = await runQualifyLoop({
+      runAttempt: () => runOneAttempt(browser, profileName, profile, levelPlans),
+      isQualifying: (run) => Boolean(run.reachedExitForLevel[qualifyLevelIndex] && run.entry),
+      requiredQualifyingRuns: REQUIRED_QUALIFYING_RUNS,
+      attemptCap: ATTEMPT_CAP,
+      concurrency: ATTEMPT_CONCURRENCY,
+      onProgress: (attempts, qualifying) => console.log(`  [${profileName}] attempt ${attempts}, qualifying ${qualifying}/${REQUIRED_QUALIFYING_RUNS}`),
+      onAttemptResult: (run, attempt) => {
+        if (!(run.reachedExitForLevel[qualifyLevelIndex] && run.entry)) {
+          const where = run.diedAtLevelIndex !== null ? ` at level ${run.diedAtLevelIndex + 1}` : "";
+          console.log(`  [${profileName}] attempt ${attempt} did not qualify: ${run.reason}${where}`);
+        }
+      },
+    });
+
+    const best = qualifyingRuns.reduce((a, b) => (b.entry.score > a.entry.score ? b : a));
+    console.log(
+      `  ${profileName}: kept score=${best.entry.score} levelsCleared=${best.entry.levelsCleared} levelName=${best.entry.levelName} ` +
+        `(best of ${qualifyingRuns.length} qualifying runs, ${attemptsUsed} attempts)\n`,
+    );
+    keptEntries.push(best.entry);
+  }
+
+  await browser.close();
+
+  if (keptEntries.length === 0) {
+    console.error("\nNo profile produced a qualifying run — nothing to ship. Bailing out.");
+    process.exit(1);
+  }
+
+  console.log("Re-verifying kept entries' replay astHash values against fresh on-disk hashes...");
+  const { parseFile } = await loadEngineModules();
+  for (const entry of keptEntries) {
+    check(`${entry.levelName}: entry.source === "demo"`, entry.source === "demo");
+    check(`${entry.levelName}: replay.version === 2`, entry.replay?.version === 2);
+    check(`${entry.levelName}: replay has >=1 level segment`, (entry.replay?.levels?.length ?? 0) >= 1);
+    for (const seg of entry.replay?.levels ?? []) {
+      const filename = seg.filePath.split("/").pop();
+      const text = fs.readFileSync(path.join(CAMPAIGN_DIR, filename), "utf8");
+      const parsed = await parseFile(filename, text);
+      const expected = computeAstHash(parsed, CAMPAIGN_NAME);
+      check(`${filename} astHash matches fresh on-disk parse`, seg.astHash === expected, `${seg.astHash} !== ${expected}`);
+      check(`${filename} replay segment has recorded frames`, Array.isArray(seg.frames) && seg.frames.length > 0);
     }
   }
-  return { state: "playing" };
-}
 
-/** One tick's worth of combat-aware decision-making: if a nearby aggroed
- * enemy is alive, turn to face it and fire once aimed (preempting whatever
- * navigation target the caller wanted this tick); otherwise turn/move toward
- * `target` ({x,y}), or just hold still (no `target`) while still fighting
- * back. Applies the decision, pumps one virtual step, and returns the fresh
- * `{player, enemies}` reading. */
-async function tick(page, player, enemies, target) {
-  const threat = enemies
-    .filter((e) => e.alive && e.aggroed)
-    .map((e) => ({ ...e, dist: Math.hypot(e.x - player.x, e.y - player.y) }))
-    .filter((e) => e.dist < ENGAGE_RADIUS)
-    .sort((a, b) => a.dist - b.dist)[0];
-
-  const currentAngle = Math.atan2(player.dirY, player.dirX);
-  const moveKeys = new Set();
-  let fire = false;
-
-  if (threat) {
-    const targetAngle = Math.atan2(threat.y - player.y, threat.x - player.x);
-    const delta = angleDelta(currentAngle, targetAngle);
-    if (Math.abs(delta) > FIRE_ANGLE_EPS) moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
-    else fire = true;
-  } else if (target) {
-    const targetAngle = Math.atan2(target.y - player.y, target.x - player.x);
-    const delta = angleDelta(currentAngle, targetAngle);
-    if (Math.abs(delta) > TURN_MOVE_EPS) moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
-    else moveKeys.add("KeyW");
+  if (failures > 0) {
+    console.error(`\n${failures} check(s) failed — not writing ${OUTPUT_FILE}. Investigate before regenerating.`);
+    process.exit(1);
   }
 
-  return applyAction(page, moveKeys, fire);
+  writeDefaultHighscoreFile(keptEntries);
+  console.log(`\nWrote ${OUTPUT_FILE} — review with \`git diff\` before committing.`);
 }
 
-/** Drives straight toward a fixed `{x,y}` world point until within `eps`
- * tiles of it, the player's `state` stops being `"playing"`, or `maxTicks`
- * elapses (returns `reason: "stuck"` in that last case). Interleaves combat
- * every tick via the shared `tick()` decision function. */
-async function driveToward(page, point, eps, maxTicks) {
-  let { player, enemies } = await readFull(page);
-  for (let t = 0; t < maxTicks; t++) {
-    if (player.state !== "playing") {
-      await applyAction(page, new Set(), false);
-      return { state: player.state, reason: player.state };
-    }
-    if (Math.hypot(point.x - player.x, point.y - player.y) < eps) {
-      await applyAction(page, new Set(), false);
-      return { state: "playing", reason: "arrived" };
-    }
-    ({ player, enemies } = await tick(page, player, enemies, point));
-  }
-  await applyAction(page, new Set(), false);
-  return { state: "playing", reason: "stuck" };
-}
-
-/** Turns in place to face `targetAngle` (no forward movement), still
- * fighting back if something aggroed closes in while turning. */
-async function faceAngle(page, targetAngle, maxTicks) {
-  let { player, enemies } = await readFull(page);
-  for (let t = 0; t < maxTicks; t++) {
-    if (player.state !== "playing") return { state: player.state };
-    const threat = enemies.find((e) => e.alive && e.aggroed && Math.hypot(e.x - player.x, e.y - player.y) < ENGAGE_RADIUS);
-    if (!threat) {
-      const currentAngle = Math.atan2(player.dirY, player.dirX);
-      const delta = angleDelta(currentAngle, targetAngle);
-      if (Math.abs(delta) < TURN_MOVE_EPS) {
-        await applyAction(page, new Set(), false);
-        return { state: "playing" };
-      }
-    }
-    ({ player, enemies } = await tick(page, player, enemies, null));
-  }
-  await applyAction(page, new Set(), false);
-  return { state: "playing" };
-}
-
-/** Holds forward (`KeyW`) for `ticks` virtual steps — used right after
- * `faceAngle` to trigger `openDoorAhead()`, which reads held W/S + facing
- * every frame (no explicit interact key). */
-async function holdForward(page, ticks) {
-  for (let t = 0; t < ticks; t++) {
-    const { player } = await applyAction(page, new Set(["KeyW"]), false);
-    if (player.state !== "playing") return { state: player.state };
-  }
-  await applyAction(page, new Set(), false);
-  return { state: "playing" };
-}
-
-async function readFull(page) {
-  return page.evaluate(() => {
-    const hooks = window.__codeensteinTestHooks;
-    return { player: hooks.getPlayerState(), enemies: hooks.getEnemies() };
-  });
-}
-
-async function readState(page) {
-  return page.evaluate(() => window.__codeensteinTestHooks.getPlayerState());
-}
-
-/** Diffs `desiredMoveKeys` against whatever's currently held (tracked
- * in-page, see `window.__botHeldKeys`), dispatches the resulting
- * keydown/keyup pairs on the canvas, optionally taps a fresh `Backquote`
- * keydown+keyup (edge-triggered — `Backquote` alone drives both single-shot
- * and held-auto weapon firing, see the module doc comment), pumps
- * `VIRTUAL_STEP_MS` of virtual time in `RECORD_STEP_MS`-sized sub-steps (so
- * this one bot decision still costs one in-page round trip, but records
- * several real-frame-sized `ReplayFrame`s instead of one coarse one — see
- * `RECORD_STEP_MS`'s doc comment), and returns the fresh `{player, enemies}`
- * reading. Keyboard input never needs to be trusted (`InputController`
- * doesn't check `isTrusted`), so this stays a single in-page round trip. */
-async function applyAction(page, desiredMoveKeys, fire) {
-  return page.evaluate(
-    ({ desiredKeys, fire, stepMs, recordStepMs }) => {
-      const canvas = document.querySelector("canvas");
-      const hooks = window.__codeensteinTestHooks;
-      const desired = new Set(desiredKeys);
-      const held = (window.__botHeldKeys ??= new Set());
-      for (const code of held) if (!desired.has(code)) canvas.dispatchEvent(new KeyboardEvent("keyup", { code }));
-      for (const code of desired) if (!held.has(code)) canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
-      window.__botHeldKeys = desired;
-      if (fire) {
-        canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "Backquote" }));
-        canvas.dispatchEvent(new KeyboardEvent("keyup", { code: "Backquote" }));
-      }
-      window.__pumpVirtualTime(stepMs, recordStepMs);
-      return { player: hooks.getPlayerState(), enemies: hooks.getEnemies() };
-    },
-    { desiredKeys: [...desiredMoveKeys], fire, stepMs: VIRTUAL_STEP_MS, recordStepMs: RECORD_STEP_MS },
-  );
-}
-
-async function waitForTestHooks(page) {
-  await page.waitForFunction(() => window.__codeensteinTestHooks !== undefined, undefined, { timeout: 15000, polling: 100 });
-}
-
-/** Dismisses whichever `GameHud` canvas-drawn overlay is currently up (the
- * pre-level briefing or the post-exit Commit Summary) — see the identical
- * helper's doc comment in `verify-campaign-playthrough.mjs`. A no-op if none
- * is up. */
-async function dismissOverlay(page) {
-  await page.evaluate((recordStepMs) => {
-    window.__pumpVirtualTime(1500, recordStepMs);
-    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space" }));
-    window.__pumpVirtualTime(50, recordStepMs);
-  }, RECORD_STEP_MS);
-}
-
-/** Synchronous virtual clock — see the identical stub's doc comment in
- * `verify-campaign-playthrough.mjs`. This script doesn't need the OPFS
- * workspace-picker stub that script also installs: the bundled Demo
- * Campaign tab (`#launch-demo-campaign`) needs no picker at all. */
-async function installVirtualClock(page) {
-  await page.addInitScript(() => {
-    let vNow = 0;
-    const epochStart = Date.now();
-    let pending = [];
-    let rafId = 0;
-    window.performance.now = () => vNow;
-    Date.now = () => epochStart + vNow;
-    window.requestAnimationFrame = (cb) => {
-      const id = ++rafId;
-      pending.push({ id, cb });
-      return id;
-    };
-    window.cancelAnimationFrame = (id) => {
-      pending = pending.filter((p) => p.id !== id);
-    };
-    window.__pumpVirtualTime = (totalMs, stepMs) => {
-      const steps = Math.ceil(totalMs / stepMs);
-      for (let i = 0; i < steps; i++) {
-        vNow += stepMs;
-        const due = pending;
-        pending = [];
-        for (const { cb } of due) cb(vNow);
-      }
-    };
-  });
-}
-
-function formatEntry(entry) {
-  const lines = JSON.stringify(entry, null, 2)
-    .split("\n")
-    .map((l) => `  ${l}`)
-    .join("\n");
-  return lines;
-}
-
+// A qualifying run's replay can carry tens of thousands of recorded frames
+// (the smarter `Bot` survives much deeper into the campaign than the old
+// simple bot did before dying) — a plain JSON array literal for 3 such
+// entries measured ~84MB, which is both a real production problem (this
+// file is bundled directly into the shipped JS, dynamically imported the
+// moment a first-time player opens an empty Highscores dialog) and a dev/test
+// problem (parsing tens of thousands of array-literal objects into an AST is
+// slow enough to time out `highscores.test.ts` and blow up test-runner
+// memory). Fixed by reusing the exact same `gz1:` gzip+base64 scheme
+// `compressForStorage` already uses for localStorage — this data is highly
+// repetitive JSON (mostly-identical per-frame objects), so it compresses
+// ~100x smaller, and the shipped module becomes a single string literal
+// (trivial to parse) instead of a giant nested array (expensive to parse).
 function writeDefaultHighscoreFile(entries) {
+  const compressed = gzipSync(Buffer.from(JSON.stringify(entries)), { level: 9 }).toString("base64");
   const header = `// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
@@ -532,23 +305,31 @@ function writeDefaultHighscoreFile(entries) {
  * yet".
  *
  * Generated by \`scripts/generate-default-highscore.mjs\`
- * (\`npm run generate:default-highscore\`): 10 automated headless-Chromium
- * playthroughs of the bundled \`demo-campaign/\`, keeping the 3
- * highest-scoring non-cheated runs. Regenerate this file if
+ * (\`npm run generate:default-highscore\`): for each bot skill profile
+ * (Casual/Gamer/Pro — see \`scripts/run-balancing-telemetry.mjs\`'s
+ * \`PROFILES\`), plays the bundled \`demo-campaign/\` until 3 runs qualify
+ * (reach campaign level 4/5/6 respectively), keeping the single
+ * highest-scoring qualifying run per profile. Regenerate this file if
  * \`demo-campaign/\`'s source files ever change — each entry's
  * \`replay.levels[].astHash\` is a SHA-256 of that level's parsed AST plus the
  * campaign name, and \`startReplay\` (\`src/main.ts\`) refuses to play back a
  * replay whose recomputed hash no longer matches, so an edited demo-campaign
  * file silently breaks these entries' "Watch Replay" buttons until this file
  * is regenerated.
+ *
+ * The entries are stored gzip+base64-encoded (\`gz1:\` prefix, same scheme as
+ * \`storageCompression.ts\`'s \`compressForStorage\`) rather than as a plain
+ * array literal — see \`writeDefaultHighscoreFile\` in the generator script
+ * for why (~100x smaller, and far cheaper for a bundler to parse).
+ * \`loadHighscoresForDisplay\` (\`./highscores.ts\`) decompresses it with
+ * \`decompressFromStorage\` at read time.
  */
-import type { HighscoreEntry } from "./highscores";
 
-export const DEFAULT_HIGHSCORE_ENTRIES: HighscoreEntry[] = [
+/** \`HighscoreEntry[]\`, gzip+base64-encoded — decompress with
+ * \`decompressFromStorage\` from \`./storageCompression\`. */
+export const DEFAULT_HIGHSCORE_ENTRIES_COMPRESSED = "gz1:${compressed}";
 `;
-  const body = entries.map((e) => formatEntry(e)).join(",\n");
-  const footer = `\n];\n`;
-  fs.writeFileSync(OUTPUT_FILE, header + body + footer);
+  fs.writeFileSync(OUTPUT_FILE, header);
 }
 
 main().catch((err) => {

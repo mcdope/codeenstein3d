@@ -2,7 +2,7 @@
 
 A dev-only tool for automated balance review: three scripted bot profiles (Casual/Gamer/Pro) play the bundled `demo-campaign/` across all three difficulties, and their aggregated combat/economy/navigation stats get written to `balancing_telemetry.json` (gitignored) for a human — or an LLM balance-review pass — to spot HP-curve/drop-rate/pacing problems without replaying the whole campaign nine times by hand. **Not CI-wired.** Requires a locally running dev server (`npm run dev`, default `http://localhost:5173`).
 
-The bot itself (`scripts/run-balancing-telemetry.mjs`) drives a headless Chromium session the same way `scripts/generate-default-highscore.mjs` does — a virtual clock, `window.__codeensteinTestHooks` polling, real `KeyboardEvent`s dispatched at the canvas, BFS route planning done entirely in Node before any browser launches. See that file's own doc comment for the low-level harness rationale.
+The bot itself is a shared `Bot` class (`scripts/lib/bot.mjs`) that both this script and `scripts/generate-default-highscore.mjs` drive — a virtual clock, `window.__codeensteinTestHooks` polling, real `KeyboardEvent`s dispatched at the canvas, BFS route planning done entirely in Node before any browser launches. See `bot.mjs`'s own doc comment for the low-level harness rationale, and [Shared bot library (`scripts/lib/`)](#shared-bot-library-scriptslib) below for how the pieces fit together.
 
 ## The three entry points
 
@@ -18,6 +18,16 @@ A run only "counts" for `balancing:telemetry`'s aggregate once it clears level 4
 ## Profiles and difficulty
 
 `PROFILES` (`Casual`/`Gamer`/`Pro`) in `run-balancing-telemetry.mjs` differ by `fireAngleEps` (aim tolerance — Pro tightest at 0.03 rad, Casual loosest at 0.08), `weaponPriority`, `healthDetourThreshold`, and `rotSpeedMultiplier` (a bot-only turn-speed override, `engine.ts`'s `rotSpeedMultiplier`, approximating a realistic *mouse* turn speed per skill tier — real `requestPointerLock()`-based mouse-look was investigated and rejected: it rejects outright under Playwright automation, headed or headless). Difficulty (`easy`/`normal`/`hard`) is wired through `localStorage["codeenstein-difficulty"]`, same as a real player's setting.
+
+## Shared bot library (`scripts/lib/`)
+
+The bot-behavior logic (navigation, combat, hazard/mine handling, loot detours — ~1450 lines) lives in `scripts/lib/bot.mjs`'s `Bot` class, not duplicated per script. Both `run-balancing-telemetry.mjs` and `generate-default-highscore.mjs` construct one `Bot` per attempt (`new Bot(page, profile, opts)`), call `bot.startLevel(map)` per level, then drive it via `bot.tick()`/`bot.driveLegs()`/`bot.driveToward()`/etc.
+
+- **Config is explicit constructor `opts`, not ambient module state.** `opts.realtime`/`opts.stepMs` (headed-vs-headless timing), `opts.recordStepMs` (only the highscore generator sets this — see its own module doc comment for why replay recording needs a finer step granularity than bot decision-making), `opts.logger` (a `{debugNav, wpDebug, driftDebug, trace}` bag of no-op-by-default callbacks, replacing scattered `process.env.CODEENSTEIN_WPDEBUG`-style checks), and `opts.tuning` (deep-merged over `DEFAULT_TUNING`, the ~40 movement/combat constants both scripts used to duplicate). `run-balancing-telemetry.mjs` still resolves its own module-level `HEADED`/`DEBUG_NAV`/etc. consts from `process.env` once at import (this is what preserves `watch-bot-sessions.mjs`'s "set `process.env.CODEENSTEIN_TELEMETRY_HEADED` before dynamically importing" trick) and forwards them into the `Bot` constructor per attempt.
+- **`scripts/lib/qualifyLoop.mjs`'s `runQualifyLoop()`** is the generic "retry attempts in concurrent batches until N qualify (or a cap is hit)" loop both `run-balancing-telemetry.mjs`'s `runCombo` and `generate-default-highscore.mjs`'s per-profile driver are thin wrappers around — the qualifying predicate, attempt function, and concurrency are all caller-supplied.
+- **`scripts/lib/virtualClock.mjs`'s `installVirtualClock()`** is the one virtual-clock installer both scripts import, instead of each keeping its own byte-for-byte-identical copy.
+- **Free (non-`Bot`-state) helper functions** — `angleDelta`, `diagonalStrafeKey`, `isHazardAt`/`activeSpikeAt`, `pickThreat`, `hasLineOfSight`/`isWallTile`, `findDisarmableMine`/`findDangerousMine`, `pickRangedWeapon`, `detectAnomalies`/`detectHeldKeyNoMovement` — also live in `bot.mjs`, exported alongside the class, since they don't need any per-run state.
+- `scripts/lib/pathfind.mjs` and `scripts/lib/routePlanner.mjs` are unaffected by any of this — they were already clean, reusable, stateless modules `bot.mjs` imports.
 
 ## Env var reference
 

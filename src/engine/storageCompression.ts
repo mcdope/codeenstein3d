@@ -41,13 +41,31 @@ function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
+/** A single-chunk stream wrapping `bytes` — used instead of
+ * `new Blob([bytes]).stream()` because jsdom's `Blob` shim (unlike every
+ * real browser) doesn't implement `.stream()` at all, which left this
+ * module's compression path untested: `compressForStorage`'s try/catch
+ * silently swallowed the resulting failure and fell back to plain JSON,
+ * so no test ever exercised real gzip data until `defaultHighscore.ts`
+ * started shipping pre-compressed data directly. `ReadableStream` itself is
+ * a plain JS global jsdom doesn't shadow, so this works identically in a
+ * real browser and under jsdom. */
+function singleChunkStream(bytes: Uint8Array<ArrayBuffer>): ReadableStream<Uint8Array<ArrayBuffer>> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
 async function gzip(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
-  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream("gzip"));
+  const stream = singleChunkStream(bytes).pipeThrough(new CompressionStream("gzip"));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
 async function gunzip(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
-  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+  const stream = singleChunkStream(bytes).pipeThrough(new DecompressionStream("gzip"));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 

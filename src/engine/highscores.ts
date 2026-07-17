@@ -113,14 +113,21 @@ export async function loadHighscores(): Promise<HighscoreEntry[]> {
  * read-modify-write cycle persist them into the player's actual localStorage
  * board (could evict a real entry via a shipped score, duplicate it, or make
  * it permanently "sticky"). Imported dynamically, not statically, since the
- * shipped entries embed full replay frame data (several MB) that only ever
- * needs to be fetched once someone actually opens this dialog with an empty
- * board — not on every page load. */
+ * shipped entries embed full replay frame data that only ever needs to be
+ * fetched once someone actually opens this dialog with an empty board — not
+ * on every page load. The module itself is a single `gz1:`-prefixed
+ * gzip+base64 string (same scheme `compressForStorage` uses), not a plain
+ * array literal — a qualifying bot run's replay is highly repetitive JSON
+ * that gzips ~100x smaller, and just as importantly, parsing one big string
+ * literal is trivial compared to parsing tens of thousands of array-literal
+ * objects (the latter measurably slowed dev-server/build transforms and
+ * blew up test-runner memory once bot runs started surviving deep into the
+ * campaign). */
 export async function loadHighscoresForDisplay(): Promise<HighscoreEntry[]> {
   const real = await loadHighscores();
   if (real.length > 0) return real;
-  const { DEFAULT_HIGHSCORE_ENTRIES } = await import("./defaultHighscore");
-  return DEFAULT_HIGHSCORE_ENTRIES;
+  const { DEFAULT_HIGHSCORE_ENTRIES_COMPRESSED } = await import("./defaultHighscore");
+  return decompressFromStorage<HighscoreEntry[]>(DEFAULT_HIGHSCORE_ENTRIES_COMPRESSED);
 }
 
 /** Insert `entry` into the board, keep it sorted best-first, truncate to the

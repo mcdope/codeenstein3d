@@ -289,7 +289,7 @@ npm run preview    # Serve production build locally
 
 ```
 demo-campaign/                # Bundled "Demos" showcase campaign (one level per parser language)
-scripts/                      # Node/Playwright verification scripts for demo-campaign/, plus generate-default-highscore.mjs (bakes src/engine/defaultHighscore.ts)
+scripts/                      # Node/Playwright verification + balancing-bot scripts; lib/bot.mjs holds the shared Bot class both generate-default-highscore.mjs and run-balancing-telemetry.mjs drive
 src/
 ├── main.ts                  # App entry: wires sidebar, parser, map, engine, HUD
 ├── difficulty.ts            # Difficulty multiplier tables (Easy/Normal/Hard)
@@ -322,7 +322,7 @@ src/
     ├── lootApply.ts         # Drop/pickup application (grant, top-up, elite bonus)
     ├── scoring.ts           # Score calculation
     ├── highscores.ts        # Leaderboard (hashing, compression)
-    ├── defaultHighscore.ts  # Bundled example leaderboard entries (bot-generated, shown when the real board is empty)
+    ├── defaultHighscore.ts  # Bundled example leaderboard entries (bot-generated per skill profile, gzip-compressed, shown when the real board is empty)
     ├── storageCompression.ts # gzip helpers for localStorage payloads
     ├── replay.ts            # Recording & playback
     ├── audio.ts             # Web Audio synthesis + buses
