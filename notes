@@ -201,6 +201,11 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
   - **Empirically, real levels are fine**: swept 613 real, structurally-diverse third-party files across 11 supported languages (this repo's own `src/`, a broad `node_modules` sample, and a large multi-language sample pulled from `~/sources` — C, PHP, Python, Ruby, Go, Objective-C, Scala, TS/TSX, JS, Java, C header files), 105 of which generated at least one locked door. Zero had `keys.length < doors.length`; zero were unsolvable under a real key-consumption simulation (collect any reachable key, spend one to open a reachable locked door, repeat — the same model `RaycasterEngine.openDoorAhead`/`keysHeld` actually uses, shared-pool, any key opens any door). The theoretical gap is real but evidently rare enough to never have manifested in this data.
   - **Fixed anyway, since "evidently rare" isn't "structurally impossible"**: rewrote `assertAllRoomsReachable` to run the same real key-gated reachability simulation used in the sweep above (new `keys` parameter), instead of unconditionally treating every door as passable. Converts a previously-silent assumption into an actively-enforced, permanent dev-time safety net — exactly the job this function already existed for, just implemented against the wrong model. Zero generation-behavior change (purely a stricter verification pass); if a future change to `placeKeys`/`placeSecretRooms`/`placeTraps` ever does strand a room behind a keyless door on a real file, this now logs it loudly (spoiler-free, no coordinates, matching the function's existing convention) instead of silently shipping it.
   - **Verified**: existing `pathing.test.ts` coverage updated (the old "counts an opened door as passable" test unconditionally trusted a locked door — rewritten to require a real, correctly-reachable key, matching what `placeKeys` actually guarantees) plus 2 new tests: one reproducing `placeKeys`' exact accepted-fallback scenario and confirming it's now correctly flagged as an error, one confirming a legitimate multi-door key-in-sequence chain (open door A using a key reachable at spawn, discover key B only after door A opens, use it on door B) is still correctly accepted. Full suite (1545/1545, +2 net new tests), `tsc --noEmit`, and coverage (100% on every touched file, including `pathing.ts`) all clean. The existing `mapGenerator.test.ts` regression test ("never logs an unreachable-room warning for any bundled demo-campaign file") now exercises the *real* key-gated check on all 17 bundled levels, not the old unconditional one, and still passes clean.
+- [x] selectable wads to be loaded via internet — shipped 2026-07-17 as a curated "Or pick an online texture pack" list in the sidebar, next to the existing local-file WAD picker. Architecture ended up different from the user's original ask in one key way (a correction mid-build): a direct browser `fetch()` of any of the drafted sources is impossible (checked directly — GitHub Release assets, `codeload.github.com`, and every small Doom-community host send no usable CORS headers), and the user's own follow-up call was to fetch+extract at **build time** instead (`scripts/fetch-online-wads.mjs`, run via `predev`/`prebuild` npm hooks, idempotent) into `public/wads/`, served same-origin at runtime — not committed to the repo (a first pass committed the ~170MB of extracted WAD bytes as static assets; corrected to gitignored + re-fetched per machine/CI run instead). Needed a hand-rolled ZIP reader (`scripts/lib/zipReader.mjs`, same dependency-minimalism reasoning as the WAD parser itself — see decisions.md) since Node has no built-in ZIP support.
+  - **Every candidate from the user's original draft JSON was independently re-verified, not trusted** — and most didn't survive: Blasphemer's drafted repo (`viti95/Blasphemer`) is a stale fork, the real one is `Blasphemer/blasphemer`, but even fixed it's a **Heretic-engine** WAD with completely different lump names — round-tripped through this project's own `loadWadTextures`, it matched **0/10** texture slots. OTEX's drafted "CC BY-SA 4.0" license was wrong (its real license is non-commercial-use-only, confirmed by downloading and reading its own bundled `.txt`); it also ships with no `PLAYPAL` lump of its own (a texture-only resource pack meant to ride alongside a real IWAD in an actual source port) and even after a donor-palette splice hack only matched 4/10 slots. Zauberer/RETRES/32in24-15/NB_RECOL all had dead or unverifiable URLs. Final catalog: Freedoom Phase 1/Phase 2/FreeDM (BSD-3-Clause, 10/10 each) plus two candidates found during a second alternatives-research pass, DOOM Shareware (`doom1.wad`, id Software's original shareware license — free redistribution, no fee, 8/10) and HACX 1.2 (Banjo Software freeware, non-commercial-only like OTEX was, but **10/10** — it kept classic Doom II lump names throughout despite being a full reskin). Every number above was independently re-verified against the real parser, not just taken from research.
+  - **Full attribution shipped** per the original ask: README's "Credits & Third-Party Licenses" section has a table with every field (name/license/credits/link) as clickable links, a non-commercial callout for HACX, and a takedown-request notice (open a GitHub issue, removed promptly). `doc/user/hud-and-ui.md` and `doc/user/privacy.md` (same-origin fetch, not third-party) updated too.
+  - **Sidebar redesign, same effort** (user follow-up feedback: "ui looks shit... not all elements per wad readable... sidebar feels cluttered"): split local-file vs. online-catalog WAD pickers into sub-tabs, added labeled section dividers (Workspace/Gameplay/Audio/Texture Pack/Info) across the whole sidebar (not just the WAD section), moved each online entry's license/credits onto their own lines instead of one cramped combined line, added folder/file emoji to the 4 buttons that open a real native OS picker, and disabled "Load from GitHub" (with an explanatory tooltip) until the input actually parses as a loadable repo reference.
+  - **Verified**: `tsc --noEmit` clean; full Vitest suite (1551/1551) at 100% coverage; `npm run build` produces a working `dist/` with all 5 real WAD files bundled; `verify:zip-reader` (new, synthetic-ZIP-fixture, CI-wired) and `verify:wad-parser` both green; a live Playwright pass against the real dev server clicked through every catalog entry and confirmed each one's status line reports the expected matched slots.
 
 ## Open
 - [ ] rooms need deco of some kind, currently an empty wasteland — implemented in Task 21 (server racks/plants/desks/code-blocks as billboard props) but felt annoying in playtest, so disabled again behind `DECORATIONS_ENABLED = false` in mapGenerator.ts. **Root cause confirmed by the user (2026-07-16): it's specifically the billboarding** — decor objects rotate to always face the camera, which reads as visibly wrong/artificial for boxy furniture-like shapes (a rack/desk/block spinning to track your POV as you walk past it), unlike round/symmetric things where billboarding is unnoticeable. Not a placement-density or art-style problem — the rendering *technique* itself is the issue. Code (generation + rendering) is intact; re-enabling needs a genuinely non-billboard rendering approach, not just a re-tune. Ignore for now (kept open, see the technical path below).
@@ -261,6 +266,8 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
  - [ ] sounds/bgm (local bgm would override it) from wad?
  - [ ] Level Design Guide: Add a "Secret-Heavy Dungeon" prompting tip to doc/user/level-design.md. Explain that users should instruct AIs to favor "dead code" and "large comment blocks" over @deprecated tags or "magic-number blobs" to avoid "code vandalism" feel while maintaining secret room density.
  - [ ] change build tag in title to include commit short hash
+ - [ ] "dialup sfx" for edgecases when chasing/aggro'd?
+ - [ ] "die screams" for enemies (and for player on death, a different sfx)
  - [ ] random lore terminals with quotes like "There is no cow level", "Stay a while and listen" etc. should give 5x scorepoints compared to normal lore terminals - to encourage searching for them. maybe differentiate a bit visually?
     const RANDOM_LORE_QUOTES = [
       "There is no cow level",
@@ -297,78 +304,3 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
       "Segmentation fault (core dumped)",
       "Have you tried turning it off and on again?"
     ]; // inspiration only, curated 2026-07-17 (~2x the original list)
- - [ ] selectable wads to be loaded via internet. must be agpl compatible. must show credits, license, link in the select entry (without being unreadable or causing eyecancer)
-    - [ ] each wad must be fully attributed in README and docs, incl. all json fields with clickable links
-    - [ ] JSON of the wads to start with (most if not all need unzip):
-       [
-          {
-            "name": "Freedoom: Phase 1",
-            "downloadUrl": "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip",
-            "credits": "The Freedoom Project",
-            "license": "Modified BSD License",
-            "link": "https://freedoom.github.io/"
-          },
-          {
-            "name": "Freedoom: Phase 2",
-            "downloadUrl": "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip",
-            "credits": "The Freedoom Project",
-            "license": "Modified BSD License",
-            "link": "https://freedoom.github.io/"
-          },
-          {
-            "name": "FreeDM",
-            "downloadUrl": "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip",
-            "credits": "The Freedoom Project",
-            "license": "Modified BSD License",
-            "link": "https://freedoom.github.io/"
-          },
-          {
-            "name": "Blasphemer",
-            "downloadUrl": "https://github.com/viti95/Blasphemer/releases/download/v0.1.7/blasphemer-0.1.7.zip",
-            "credits": "The Blasphemer Project",
-            "license": "GNU GPL v3",
-            "link": "https://github.com/viti95/Blasphemer"
-          },
-          {
-            "name": "Zauberer",
-            "downloadUrl": "https://github.com/Blasphemer/zauberer/releases/download/v0.1.0/zauberer-0.1.0.zip",
-            "credits": "The Zauberer Project",
-            "license": "GNU GPL v3",
-            "link": "https://github.com/Blasphemer/zauberer"
-          },
-          {
-            "name": "OTEX (Open Texture Pack)",
-            "downloadUrl": "https://doom.ukiro.com/downloads/otex_1.1.zip",
-            "credits": "Ola Björling (ukiro)",
-            "license": "CC BY-SA 4.0",
-            "link": "https://doom.ukiro.com/about-otex/"
-          },
-          {
-            "name": "RETRES (Retro Textures)",
-            "downloadUrl": "https://doom.ukiro.com/downloads/retres_2.1.zip",
-            "credits": "Ola Björling (ukiro)",
-            "license": "CC BY-SA 4.0",
-            "link": "https://doom.ukiro.com/retres/"
-          },
-          {
-            "name": "Hacx: Twitch 'n Kill",
-            "downloadUrl": "https://www.drnostromo.com/hacx/download/hacx12.zip",
-            "credits": "Banjo Software",
-            "license": "CC BY 4.0",
-            "link": "https://www.drnostromo.com/hacx/"
-          },
-          {
-            "name": "32in24-15 Texture Pack",
-            "downloadUrl": "https://www.doomworld.com/idgames/textures/32in24-15_tex.zip",
-            "credits": "The 32in24 Team",
-            "license": "CC BY-SA 3.0",
-            "link": "https://www.doomworld.com/idgames/textures/32in24-15_tex"
-          },
-          {
-            "name": "NB_RECOL (Nebula's Recolors)",
-            "downloadUrl": "https://realm667.com/index.php/en/texture-stock-mainmenu-152/20-doom-style/128-nbrecol",
-            "credits": "Nebula",
-            "license": "CC BY-SA 3.0",
-            "link": "https://realm667.com/"
-          }
-        ]
