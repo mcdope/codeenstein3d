@@ -43,12 +43,14 @@ import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelSegment } 
 import type { ParsedFile } from "./parser/types";
 import type { EngineCarryover, EngineStats } from "./engine/engine";
 
-// Stamps the build timestamp onto the tab title (index.html's static
-// <title> is just the plain fallback for the instant before this module
-// runs) — mainly so a stale cached bundle after a deploy is obvious from the
-// tab itself instead of silently serving old code. See vite.config.ts's
-// `define` for where `__BUILD_TIME__` comes from.
-document.title = `🔫 Codeenstein 3D (Build: ${__BUILD_TIME__})`;
+// Stamps the build timestamp + git ref onto the tab title (index.html's
+// static <title> is just the plain fallback for the instant before this
+// module runs) — mainly so a stale cached bundle after a deploy is obvious
+// from the tab itself instead of silently serving old code. See
+// vite.config.ts's `define` for where `__BUILD_TIME__`/`__BUILD_REF__` come
+// from — the latter is HEAD's tag if it's exactly tagged, otherwise its
+// short commit hash.
+document.title = `🔫 Codeenstein 3D (Build: ${__BUILD_TIME__} @ ${__BUILD_REF__})`;
 
 /** Internal render resolution; CSS scales it up for a chunky retro look. */
 const SCENE_WIDTH = 640;

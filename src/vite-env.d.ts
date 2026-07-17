@@ -8,6 +8,11 @@
  * assignment in `main.ts`. */
 declare const __BUILD_TIME__: string;
 
+/** `HEAD`'s exact git tag if it has one, otherwise its short commit hash
+ * (or "unknown" with no git available) — injected via `vite.config.ts`'s
+ * `define`, see `document.title`'s assignment in `main.ts`. */
+declare const __BUILD_REF__: string;
+
 // Minimal ambient declarations for the File System Access API.
 //
 // The core handle interfaces (FileSystemDirectoryHandle, FileSystemFileHandle,

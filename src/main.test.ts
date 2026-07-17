@@ -201,10 +201,11 @@ afterEach(async () => {
 });
 
 describe("main.ts — module import / initial DOM wiring", () => {
-  it("stamps the build time onto the tab title", async () => {
+  it("stamps the build time and git ref onto the tab title", async () => {
     await importMain();
     expect(document.title).toContain("Codeenstein 3D");
     expect(document.title).toContain("test-build");
+    expect(document.title).toContain("test-ref");
   });
 
   it("keeps the extreme gore option (EXTREME_GORE_ENABLED is true)", async () => {

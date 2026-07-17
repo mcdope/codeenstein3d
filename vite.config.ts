@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
+import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
@@ -17,9 +18,29 @@ function buildTimestamp(): string {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
 }
 
+/** `HEAD`'s exact tag (e.g. a release build) if it has one, otherwise its
+ * short commit hash — baked into the bundle as `__BUILD_REF__` alongside
+ * `__BUILD_TIME__` so the page title also pins down *which* commit is
+ * actually loaded, not just when it was built. Falls back to "unknown" if
+ * git isn't available at all (e.g. building from a source tarball with no
+ * `.git` directory) rather than failing the whole build over a title detail. */
+function buildRef(): string {
+  const run = (cmd: string) => execSync(cmd, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+  try {
+    return run("git describe --tags --exact-match");
+  } catch {
+    try {
+      return run("git rev-parse --short HEAD");
+    } catch {
+      return "unknown";
+    }
+  }
+}
+
 export default defineConfig({
   define: {
     __BUILD_TIME__: JSON.stringify(buildTimestamp()),
+    __BUILD_REF__: JSON.stringify(buildRef()),
   },
   resolve: {
     alias: {

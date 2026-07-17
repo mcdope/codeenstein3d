@@ -38,11 +38,13 @@ function wasmUrlAsPathPlugin(): Plugin {
 }
 
 export default defineConfig({
-  // main.ts references `__BUILD_TIME__` (see src/vite-env.d.ts) at module
-  // load time — mirrors vite.config.ts's own `define` (a fixed string here,
-  // not a live timestamp, since test output doesn't need to be unique per run).
+  // main.ts references `__BUILD_TIME__`/`__BUILD_REF__` (see src/vite-env.d.ts)
+  // at module load time — mirrors vite.config.ts's own `define` (fixed
+  // strings here, not a live timestamp/git lookup, since test output doesn't
+  // need to be unique per run).
   define: {
     __BUILD_TIME__: JSON.stringify("test-build"),
+    __BUILD_REF__: JSON.stringify("test-ref"),
   },
   plugins: [wasmUrlAsPathPlugin()],
   test: {
