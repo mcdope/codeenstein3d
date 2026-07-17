@@ -408,6 +408,26 @@ describe("spawnBlood / updateBlood", () => {
     updateBlood(list, 0.1, 1);
     expect(list).toHaveLength(0);
   });
+
+  it("evicts the oldest particles once MAX_BLOOD_PARTICLES (300) is exceeded", () => {
+    // Every hit spawns blood (not just kills), and a Multi/Ultra Kill streak
+    // can chain several enemies' worth of hits within a few seconds — this
+    // caps the "mountain of blood" that could otherwise pile up.
+    const list: BloodParticle[] = Array.from({ length: 300 }, (_, i) => ({
+      x: i,
+      y: 0,
+      z: 0,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      life: 1,
+      settled: false,
+    }));
+    spawnBlood(list, 999, 0, 5);
+    expect(list).toHaveLength(300);
+    expect(list[0].x).toBe(5); // the 5 oldest (x: 0-4) were evicted to make room
+    expect(list.filter((p) => p.x === 999)).toHaveLength(5); // the new spawn survives intact
+  });
 });
 
 describe("renderBlood", () => {
@@ -428,6 +448,28 @@ describe("renderBlood", () => {
     renderBlood(asCtx(c), player, [{ x: player.posX + 3, y: player.posY, z: 0.2, vx: 0, vy: 0, vz: 0, life: 1, settled: false }], clearZBuffer(Infinity), 3);
     expect(c.fillStyle).toBe("#c81e1e");
     expect(c.fillRect).toHaveBeenCalledTimes(1);
+    const [, , w, h] = c.fillRect.mock.calls[0];
+    expect(w).toBeLessThan(Math.round(HEIGHT * 0.06)); // unclamped at this depth — the clamp test below is the contrast
+    expect(h).toBe(w);
+  });
+
+  it("clamps a close-range particle's rendered size to a fraction of the canvas height, regardless of sizeMultiplier", () => {
+    const c = ctx();
+    const player = facingPlayer();
+    // Just past the depth<=0.2 render cutoff — tilePx (pixels per world
+    // tile) is huge this close, so the raw formula would render a square
+    // several times taller than the canvas without the clamp.
+    renderBlood(
+      asCtx(c),
+      player,
+      [{ x: player.posX + 0.21, y: player.posY, z: 0, vx: 0, vy: 0, vz: 0, life: 1, settled: false }],
+      clearZBuffer(Infinity),
+      GORE_MULTIPLIERS.extreme.size,
+    );
+    expect(c.fillRect).toHaveBeenCalledTimes(1);
+    const [, , w, h] = c.fillRect.mock.calls[0];
+    expect(w).toBe(Math.round(HEIGHT * 0.06)); // clamped, not the ~hundreds-of-px the raw formula would give here
+    expect(h).toBe(w);
   });
 });
 

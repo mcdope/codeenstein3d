@@ -65,25 +65,53 @@ export interface GoreMultipliers {
   stainDuration: number;
 }
 
-/** Per-level multipliers, per the task spec: None/Normal/More/Extreme =
- * 0x/1x/3x/10x. Size/stainDuration at `none` are irrelevant (count 0 means no
- * particles ever spawn) but filled in defensively rather than left unused. */
+/** Per-level multipliers. None/Normal/More are a uniform 0x/1x/3x across all
+ * three axes; Extreme deliberately is not — see `EXTREME_GORE_ENABLED`'s doc
+ * comment for why count stays high while size/stainDuration are capped well
+ * below a naive 10x. Size/stainDuration at `none` are irrelevant (count 0
+ * means no particles ever spawn) but filled in defensively rather than left
+ * unused. */
 export const GORE_MULTIPLIERS: Record<GoreLevel, GoreMultipliers> = {
   none: { count: 0, size: 1, stainDuration: 1 },
   normal: { count: 1, size: 1, stainDuration: 1 },
   more: { count: 3, size: 3, stainDuration: 3 },
-  extreme: { count: 10, size: 10, stainDuration: 10 },
+  extreme: { count: 16, size: 4, stainDuration: 4 },
 };
 
 /**
- * Whether the "Extreme" tier is actually selectable. Playtest feedback: 10x
- * gore reads as over-the-top, so it's hidden from the sidebar dropdown (see
- * `main.ts`) and any previously-saved "extreme" preference is downgraded to
- * "more" — pending a revisit later. The multiplier table entry above is left
- * intact so re-enabling is just flipping this flag back to `true`, same
+ * Whether the "Extreme" tier is actually selectable — gates both the sidebar
+ * dropdown option and a saved "extreme" preference being downgraded to
+ * "more" (see `main.ts`). Previously `false`: a uniform 10x/10x/10x
+ * count/size/stainDuration made `renderBlood`'s per-particle size (already
+ * unbounded — see `BLOOD_MAX_SIZE_FRACTION`) and `updateBlood`'s floor-stain
+ * lifetime (15s) both blow out, reading as a "mountain of blood" rather than
+ * combat gore. Fixed by capping size/stainDuration far below a naive 10x
+ * (see `GORE_MULTIPLIERS`) and adding the two structural guards below
+ * (`BLOOD_MAX_SIZE_FRACTION`, `MAX_BLOOD_PARTICLES`) that now apply to every
+ * gore tier, not just this one. Left as a flag (not deleted) as a cheap
+ * kill-switch if a future balance pass finds it still needs work — same
  * pattern as `DECORATIONS_ENABLED` in `mapGenerator.ts`.
  */
-export const EXTREME_GORE_ENABLED = false;
+export const EXTREME_GORE_ENABLED = true;
+
+/** Hard ceiling on a single rendered blood particle's on-screen size, as a
+ * fraction of canvas height — independent of gore tier or distance. Without
+ * this, `renderBlood`'s `tilePx * 0.05 * sizeMultiplier` formula is
+ * unbounded: `tilePx` alone can reach several times the canvas height at
+ * true point-blank range (near the `depth <= 0.2` render cutoff), so a
+ * single close-range particle could dwarf the screen. A blood pixel should
+ * always read as floor-level debris, never approach enemy-sprite scale. */
+const BLOOD_MAX_SIZE_FRACTION = 0.06;
+
+/** Hard ceiling on how many `BloodParticle`s can be alive at once, across
+ * every gore tier — `spawnBlood` is called on *every hit*, not just kills,
+ * and Multi Kill/Ultra Kill streaks (see `RaycasterEngine.registerKillForStreak`)
+ * can chain several enemies' worth of hits within a few seconds. The size
+ * clamp above bounds one particle's footprint but not how many can pile up
+ * at once; this bounds that directly. Enforced in `spawnBlood` by evicting
+ * the oldest particles first — they're also the ones closest to their own
+ * natural expiry already, so trimming them reads the least jarring. */
+const MAX_BLOOD_PARTICLES = 300;
 
 export const DEFAULT_GORE_LEVEL: GoreLevel = "normal";
 
@@ -496,7 +524,10 @@ export function tickBulletTraces(traces: BulletTrace[]): void {
   }
 }
 
-/** Spawn a burst of `count` blood pixels bursting out from (x,y) at body height. */
+/** Spawn a burst of `count` blood pixels bursting out from (x,y) at body
+ * height, then trims `list` back down to `MAX_BLOOD_PARTICLES` if this burst
+ * pushed it over — oldest particles evicted first (see that constant's doc
+ * comment for why). */
 export function spawnBlood(
   list: BloodParticle[],
   x: number,
@@ -517,6 +548,7 @@ export function spawnBlood(
       settled: false,
     });
   }
+  if (list.length > MAX_BLOOD_PARTICLES) list.splice(0, list.length - MAX_BLOOD_PARTICLES);
 }
 
 /**
@@ -550,7 +582,11 @@ export function updateBlood(list: BloodParticle[], dt: number, stainDurationMult
 }
 
 /** Project and draw blood pixels as small red squares, wall-occluded via
- * zBuffer. `sizeMultiplier` scales the rendered size (see `GoreMultipliers`). */
+ * zBuffer. `sizeMultiplier` scales the rendered size (see `GoreMultipliers`),
+ * but never past `BLOOD_MAX_SIZE_FRACTION` of the canvas height — `tilePx`
+ * (pixels per world tile) grows unbounded as a particle's depth approaches
+ * the close-range cutoff below, so without this clamp a point-blank particle
+ * could otherwise render several times taller than the canvas itself. */
 export function renderBlood(
   ctx: CanvasRenderingContext2D,
   player: Player,
@@ -560,6 +596,7 @@ export function renderBlood(
 ): void {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
+  const maxSizePx = Math.round(height * BLOOD_MAX_SIZE_FRACTION);
   ctx.fillStyle = "#c81e1e";
   for (const p of list) {
     const proj = projectPoint(player, p.x, p.y, width, height, 1);
@@ -569,7 +606,7 @@ export function renderBlood(
 
     const tilePx = proj.bottom - proj.top; // pixels per world tile at this depth
     const sy = proj.bottom - p.z * tilePx; // lift off the floor by the particle height
-    const s = Math.max(1, Math.round(tilePx * 0.05 * sizeMultiplier));
+    const s = Math.min(maxSizePx, Math.max(1, Math.round(tilePx * 0.05 * sizeMultiplier)));
     ctx.fillRect(Math.round(proj.screenX) - (s >> 1), Math.round(sy) - (s >> 1), s, s);
   }
 }

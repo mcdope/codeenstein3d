@@ -206,9 +206,21 @@ describe("main.ts — module import / initial DOM wiring", () => {
     expect(document.title).toContain("test-build");
   });
 
-  it("removes the extreme gore option (EXTREME_GORE_ENABLED is false)", async () => {
+  it("keeps the extreme gore option (EXTREME_GORE_ENABLED is true)", async () => {
+    await importMain();
+    expect(document.querySelector('#gore-select option[value="extreme"]')).not.toBeNull();
+  });
+
+  it("removes the extreme gore option and downgrades a saved 'extreme' preference to 'more' when EXTREME_GORE_ENABLED is flipped off", async () => {
+    localStorage.setItem("codeenstein-gore-level", "extreme");
+    vi.doMock("./engine/effects", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("./engine/effects")>();
+      return { ...actual, EXTREME_GORE_ENABLED: false };
+    });
     await importMain();
     expect(document.querySelector('#gore-select option[value="extreme"]')).toBeNull();
+    expect(document.querySelector<HTMLSelectElement>("#gore-select")!.value).toBe("more");
+    vi.doUnmock("./engine/effects");
   });
 
   it("switches launch tabs on click, toggling aria-selected and panel hidden state", async () => {
@@ -286,10 +298,10 @@ describe("main.ts — module import / initial DOM wiring", () => {
     expect(document.querySelector<HTMLSelectElement>("#difficulty-select")!.value).toBe("normal");
   });
 
-  it("downgrades a saved 'extreme' gore preference to 'more' while extreme is disabled", async () => {
+  it("honors a saved 'extreme' gore preference now that extreme is enabled", async () => {
     localStorage.setItem("codeenstein-gore-level", "extreme");
     await importMain();
-    expect(document.querySelector<HTMLSelectElement>("#gore-select")!.value).toBe("more");
+    expect(document.querySelector<HTMLSelectElement>("#gore-select")!.value).toBe("extreme");
   });
 
   it("initializes volume sliders from defaults and persists a change", async () => {

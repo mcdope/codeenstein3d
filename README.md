@@ -52,7 +52,7 @@ See [How It Works](#how-it-works) below for the full detail behind each of these
 - ✅ **Procedural audio** — every sound effect synthesized from oscillators (no audio files)
 - ✅ **Custom BGM** — pick a local folder of `.mp3`/`.ogg`/`.wav` files, shuffled playlist
 - ✅ **Master/SFX/Music sliders** — balanced audio mixing, persisted across sessions
-- ✅ **Gore levels** — adjustable blood particles (None/Normal/More)
+- ✅ **Gore levels** — adjustable blood particles (None/Normal/More/Extreme)
 - ✅ **Difficulty modes** — Easy/Normal/Hard scales enemy HP, damage, ammo scarcity
 
 ### Mechanics
@@ -193,7 +193,7 @@ npm run preview    # Serve production build locally
 
 ### UI Controls
 - **Compass** — Circular badge (bottom-right of minimap), points toward exit relative to your facing
-- **Gore** — Sidebar dropdown (None/Normal/More) scales blood-particle effects
+- **Gore** — Sidebar dropdown (None/Normal/More/Extreme) scales blood-particle effects
 - **Difficulty** — Sidebar dropdown (Easy/Normal/Hard) scales enemy HP, damage, ammo scarcity
 - **Master / SFX / Music** — Volume sliders for each bus (persisted across sessions)
 - **Select BGM Folder** — Pick a local folder of audio files for custom playlist
