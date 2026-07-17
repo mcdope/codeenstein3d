@@ -32,6 +32,12 @@ export const GHIDRA_WEAPON_INDEX = 4;
 export const FRIDAY_HOTFIX_WEAPON_INDEX = 5;
 export const TOOLCHAIN_WEAPON_INDEX = 6;
 export const STARTING_WEAPONS = [PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, KNIFE_WEAPON_INDEX];
+// The two ranged weapons WEAPONS.auto=true (mirrors weapons.ts) — fired via
+// isFireHeld() and engine-side rate-limited by their own fireIntervalSec
+// regardless of how the key is dispatched, unlike the semi-auto ranged
+// weapons (pistol/shotgun/ghidra), which have no such cooldown and fire
+// exactly once per keydown — see `profile.fireCooldownMs`'s doc comment.
+export const AUTO_RANGED_WEAPON_INDICES = new Set([GDB_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX]);
 export const HAZARD_TILE = 2; // src/map/types.ts's Tile enum
 
 /**
@@ -169,12 +175,17 @@ const TRANSLATING_KEYS = new Set(["KeyW", "KeyA", "KeyD"]);
  * Scans one level's worth of per-decision trace records (see `Bot#tick`'s
  * `#recordTrace` calls) for two "erratic-looking" patterns:
  * - `stall`: position hasn't moved for STALL_TICKS_THRESHOLD+ consecutive
- *   ticks (excluding legitimate spike-wait/mostly-firing runs).
+ *   ticks (excluding legitimate spike-wait/mostly-engaged runs).
  * - `healthDrainFrozen`: position unchanged while health is also dropping,
  *   for as few as 2 consecutive ticks.
- * Both exclude a run where a majority of its ticks have `fire: true` — a
- * bot holding ground and firing continuously while a threat closes distance
- * is correct behavior, not a freeze.
+ * Both exclude a run where a majority of its ticks have `fire: true` or
+ * `fireOnCooldown: true` — a bot holding ground, aimed and ready, while a
+ * threat closes distance is correct behavior, not a freeze. `fireOnCooldown`
+ * matters here specifically because of `profile.fireCooldownMs` (semi-auto
+ * ranged weapons are now human-paced, not "fire every tick") — most ticks in
+ * a real, correctly-fought firefight don't actually pull the trigger anymore,
+ * so `fire: true` alone would under-count how much of the run was genuinely
+ * "locked on and engaged" rather than stuck.
  *
  * Returns `{type, startTick, endTick, ticks, detail}[]`.
  */
@@ -198,8 +209,8 @@ export function detectAnomalies(trace) {
         const last = trace[runEnd - 1];
         const runSlice = trace.slice(runStart, runEnd);
         const allWaitingOnSpike = runSlice.every((r) => r.waitingOnSpike);
-        const firingTicks = runSlice.filter((r) => r.fire).length;
-        const mostlyFiring = firingTicks / runLen > 0.5;
+        const engagedTicks = runSlice.filter((r) => r.fire || r.fireOnCooldown).length;
+        const mostlyFiring = engagedTicks / runLen > 0.5;
         if (runLen >= STALL_TICKS_THRESHOLD && !allWaitingOnSpike && !mostlyFiring) {
           findings.push({
             type: "stall",
@@ -519,6 +530,14 @@ export class Bot {
     this.map = null;
     this.mineMemory = null;
     this.visitedPickups = new Set();
+    // Cumulative in-game (simulated) time this Bot instance has driven,
+    // and the value it last held at the moment a semi-auto ranged shot was
+    // fired — see `#applyAction`'s increment and `tick()`'s fire-cooldown
+    // gate, `profile.fireCooldownMs`'s doc comment. Persists across levels
+    // within one run/attempt (a human trigger finger doesn't reset at a
+    // level transition), reset only by constructing a fresh `Bot`.
+    this.simTimeMs = 0;
+    this.lastFireSimTimeMs = -Infinity;
   }
 
   /**
@@ -899,6 +918,13 @@ export class Bot {
     const moveKeys = new Set();
     let turnBurst;
     let fire = false;
+    // True when the bot was aimed, aligned, and otherwise ready to fire, but
+    // held back purely by `profile.fireCooldownMs` — a legitimate reason to
+    // sit still, distinct from being stuck (see `detectAnomalies`'s
+    // `mostlyFiring`/`mostlyEngaged` exclusion, which needs this since a
+    // human-paced fire rate now means most ticks in a real firefight don't
+    // actually pull the trigger).
+    let fireOnCooldown = false;
     let weaponSwitch = null;
     this.logger.debugNav?.(
       `[nav] pos=(${player.x.toFixed(2)},${player.y.toFixed(2)}) dir=${currentAngle.toFixed(2)} hpFrac=${player.healthFraction.toFixed(2)} ` +
@@ -979,7 +1005,20 @@ export class Bot {
           const effectiveWeapon = weaponSwitch ?? player.weaponIndex;
           const aimDist = threat ? threat.dist : mineTarget ? mineTarget.dist : null;
           const rocketUnsafe = effectiveWeapon === GHIDRA_WEAPON_INDEX && rocketAimUnsafe(player, enemies, aimDist, Boolean(mineTarget));
-          fire = !rocketUnsafe;
+          // Semi-auto ranged weapons (pistol/shotgun/ghidra) have no engine-
+          // side fire-rate cap — see `profile.fireCooldownMs`'s doc comment —
+          // so a fresh Backquote keydown dispatched every single decision
+          // tick fired as fast as the tick loop allowed (~20/sec headless),
+          // far beyond any human trigger-pull rate. Auto weapons (gdb/Friday
+          // Hotfix) are exempt: their realistic sustained rate is already
+          // enforced by the engine's own `weaponCooldown`/`fireIntervalSec`
+          // while the key is held, so throttling the bot's dispatch here
+          // would only starve them of frames to actually hold the key down.
+          const isAutoRanged = AUTO_RANGED_WEAPON_INDICES.has(effectiveWeapon);
+          const fireReady = isAutoRanged || this.simTimeMs - this.lastFireSimTimeMs >= this.profile.fireCooldownMs;
+          fire = !rocketUnsafe && fireReady;
+          fireOnCooldown = !rocketUnsafe && !fireReady;
+          if (fire && !isAutoRanged) this.lastFireSimTimeMs = this.simTimeMs;
         }
       }
     } else if (navTarget) {
@@ -1034,6 +1073,7 @@ export class Bot {
       moveKeys: [...moveKeys],
       turnBurst,
       fire: fire || useMelee,
+      fireOnCooldown,
     });
     return this.applyAction(moveKeys, fire, weaponSwitch, useMelee, turnBurst);
   }
@@ -1149,6 +1189,7 @@ export class Bot {
    */
   async applyAction(desiredMoveKeys, fire, weaponSwitchIndex, useMelee, stepMsOverride) {
     const stepMs = stepMsOverride ?? this.stepMs;
+    this.simTimeMs += stepMs;
     const headed = this.realtime;
     // Capped at `stepMs` itself: a short precision burst (e.g. `#turnBurstMs`
     // rounding a near-complete turn down to a few ms to avoid overshoot)

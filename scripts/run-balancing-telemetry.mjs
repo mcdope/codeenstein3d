@@ -158,10 +158,25 @@ export const DIFFICULTIES = ["easy", "normal", "hard"];
  * controlled-experiment writeup. Retuned to a much tighter ladder that still
  * preserves real skill differentiation (Pro tightest, Casual loosest)
  * without any tier being catastrophically bad.
+ *
+ * `fireCooldownMs`: the minimum simulated time (`Bot#simTimeMs`, see
+ * `bot.mjs`) between two dispatched shots of a *semi-auto* ranged weapon
+ * (pistol/shotgun/ghidra) — those have no engine-side fire-rate cap (see
+ * `updateFiring`'s doc comment in `engine.ts`) and fire exactly once per
+ * `Backquote` keydown, so a bot re-dispatching that key every single
+ * decision tick fired far faster than any human trigger-pull (~20/sec at
+ * the headless 50ms tick rate — "the pistol becomes an smg"). Auto weapons
+ * (gdb/Friday Hotfix) are unaffected by this field, since their own
+ * `fireIntervalSec` cooldown already caps them realistically while held.
+ * Values are plausible real semi-auto trigger-pull rates, tightest→loosest
+ * matching the `fireAngleEps`/`rotSpeedMultiplier` skill ladder: Pro 120ms
+ * (~8.3/sec, a fast competitive rate), Gamer 160ms (~6.25/sec), Casual
+ * 220ms (~4.5/sec, an unhurried rate).
  */
 export const PROFILES = {
   Casual: {
     fireAngleEps: 0.08,
+    fireCooldownMs: 220,
     engageRadius: ENGAGE_RADIUS,
     coverageMode: false,
     // Simple/reliable weapons first; ghidra last (a "casual" player is more
@@ -184,6 +199,7 @@ export const PROFILES = {
   },
   Gamer: {
     fireAngleEps: 0.05,
+    fireCooldownMs: 160,
     engageRadius: ENGAGE_RADIUS,
     coverageMode: false,
     // Ammo-efficient auto weapon first, heavy hitter last, everything else
@@ -198,6 +214,7 @@ export const PROFILES = {
   },
   Pro: {
     fireAngleEps: 0.03,
+    fireCooldownMs: 120,
     engageRadius: ENGAGE_RADIUS,
     coverageMode: false,
     // Heavy hitters first, complete fallback chain through everything else —
