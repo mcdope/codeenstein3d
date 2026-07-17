@@ -54,8 +54,20 @@ jobs:
         run: npm run coverage || npm run coverage
 
   verify-browser:
-    name: verify (Playwright/Chromium)
+    name: verify (Playwright/${{ matrix.browser }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # WebKit is intentionally not in this matrix yet — its own OS
+        # dependency (libwoff1) needs verifying on a real CI runner image
+        # first; see doc/dev/testing.md's cross-browser section. Neither of
+        # the two scripts run below touches `window.showDirectoryPicker`'s
+        # real, genuinely Chromium-only native picker dialog (one stubs it
+        # via OPFS, the other never calls it at all) — see
+        # `scripts/lib/browserEngine.mjs`'s doc comment — so both are safe to
+        # run against any engine.
+        browser: [chromium, firefox]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -68,15 +80,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          key: playwright-${{ matrix.browser }}-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       # Browser binary download (~100+MB) is skipped on a cache hit; OS
       # library deps (apt packages) aren't covered by the cache above since
       # every run gets a fresh VM, so those always need (re)installing.
       - name: Install Playwright browser binary
         if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: npx playwright install chromium
+        run: npx playwright install ${{ matrix.browser }}
       - name: Install Playwright OS dependencies
-        run: npx playwright install-deps chromium
+        run: npx playwright install-deps ${{ matrix.browser }}
       - name: Start dev server
         run: |
           npm run dev -- --port 5173 --strictPort &
@@ -85,6 +97,9 @@ jobs:
             sleep 1
           done
       - run: npm run verify:wad-textures
+        env:
+          CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
       - run: npm run verify:campaign:playthrough
         env:
           CODEENSTEIN_DEV_URL: "http://localhost:5173"
+          CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
