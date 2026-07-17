@@ -181,6 +181,22 @@ describe("AudioManager.playShoot() dispatch", () => {
   });
 });
 
+describe("AudioManager diagnostics (getShotCount/getContextState)", () => {
+  it("counts every playShoot call, even when audio is unavailable", () => {
+    expect(audio.getShotCount()).toBe(0);
+    audio.playShoot("pistol");
+    audio.playShoot("shotgun");
+    expect(audio.getShotCount()).toBe(2);
+  });
+
+  it('reports "none" before any sound has ever played, then the live AudioContext state', () => {
+    expect(audio.getContextState()).toBe("none");
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    audio.playShoot("pistol");
+    expect(audio.getContextState()).toBe("running");
+  });
+});
+
 describe("AudioManager simple one-shot effects", () => {
   const effects: Array<[string, () => void]> = [
     ["playHit", () => audio.playHit()],

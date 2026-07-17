@@ -103,6 +103,7 @@ import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, RO
 import { EnemySpatialGrid } from "./spatialGrid";
 import { PathField } from "./pathField";
 import { detonateMine, spikeDamage, updateMines, MINE_BLAST_RADIUS } from "./traps";
+import { FramePerfLogger } from "./perfDebug";
 import {
   createTelemetryState,
   recordDamage,
@@ -550,6 +551,18 @@ export class RaycasterEngine {
   /** Last value reported via `onFreezeChange`, so that handler only fires on
    * an actual edge instead of every frame the sim happens to be paused. */
   private wasFrozen = false;
+  /** Per-frame timing/entity-count profiler — only constructed when
+   * `?perfDebug=1` is present (see the constructor), for tracking down the
+   * unreproduced magento2/"nightmare" shooting-framedrop report (see
+   * `notes`). Every call site elsewhere in this class is `this.perf?.…`, so
+   * it's a complete no-op (not even a function call) in normal play. */
+  private readonly perf?: FramePerfLogger;
+  /** This frame's raw (unclamped) wall-clock delta in ms, set by `frame()`
+   * right before `advance()` runs — `advance()` itself only ever sees the
+   * clamped `dt`, but `perf.endFrame` specifically wants the *unclamped*
+   * value so a real stall isn't hidden by `MAX_DT`. Unused when `perf` is
+   * unset. */
+  private lastRawDtMs = 0;
 
   /** Balancing telemetry — only populated when `?testHooks=1` gates it on in
    * the constructor (see `__codeensteinTestHooks`); every recording call
@@ -678,6 +691,24 @@ export class RaycasterEngine {
       this.swap = carryover.swap;
     }
     if (carryover?.weaponIndex !== undefined) this.weaponIndex = carryover.weaponIndex;
+
+    // Opt-in frame-timing/entity-count diagnostics — see `perfDebug.ts`'s doc
+    // comment and `this.perf`'s. Deliberately a separate gate from
+    // `?testHooks=1` below: this is for a real affected player's own browser
+    // (a debug build/URL handed to them), not headless automation.
+    if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("perfDebug") === "1") {
+      this.perf = new FramePerfLogger();
+      this.perf.logLevelScale(
+        map.width,
+        map.height,
+        this.enemies.length,
+        this.enemies.filter((e) => e.elite).length,
+        this.enemies.filter((e) => e.edgeCase).length,
+        map.mines.length,
+        canvas.width,
+        canvas.height,
+      );
+    }
 
     // Test-only instrumentation for headless campaign automation
     // (scripts/verify-campaign-playthrough.mjs, scripts/generate-default-
@@ -881,6 +912,8 @@ export class RaycasterEngine {
     // floor the reported FPS at a misleadingly-low ~20fps ceiling during any
     // real stutter or background-tab throttling.
     this.updateFpsCounter(rawDt);
+    this.lastRawDtMs = rawDt * 1000;
+    this.perf?.beginFrame(this.lastRawDtMs);
     this.advance(dt);
 
     if (this.running) this.rafId = requestAnimationFrame(this.frame);
@@ -934,6 +967,7 @@ export class RaycasterEngine {
     // state too, same reasoning as the FPS toggle above.
     const cheat = this.input.consumeCheat();
     if (cheat) this.applyCheat(cheat);
+    this.perf?.mark("input-poll");
 
     // A blur (window losing focus entirely, or the canvas losing focus to
     // some other on-page control) or a pointer-lock release always forces a
@@ -1068,6 +1102,7 @@ export class RaycasterEngine {
         this.meleeRecoil = 1;
       }
     }
+    this.perf?.mark("input-actions");
 
     // Simulate (may end the game via damage or reaching the exit).
     this.levelTime += dt;
@@ -1089,13 +1124,16 @@ export class RaycasterEngine {
     }
     this.updateLowHealthAlarm(dt);
     this.checkExit();
+    this.perf?.mark("sim");
 
     // Head-bob / recoil offsets for this frame (camera + weapon).
     const view = this.updateViewmodel(dt);
+    this.perf?.mark("viewmodel");
 
     // Render — one final frozen frame is still drawn after the game ends.
     const { width, height } = this.ctx.canvas;
     renderScene(this.ctx, this.map, this.player, this.zBuffer, textures.getActiveSet(), view.horizonShift, this.levelTime, this.loreRead);
+    this.perf?.mark("raycast-walls");
     this.renderWorldBillboards();
 
     this.target = findTargetUnderCrosshair(
@@ -1105,8 +1143,10 @@ export class RaycasterEngine {
       width,
       height,
     );
+    this.perf?.mark("billboards+targeting");
 
     if (this.state === "playing") this.updateFiring(dt);
+    this.perf?.mark("firing");
 
     // In-world impact effects (above sprites): falling "digital blood", the
     // muzzle→impact tracer lines from any shot fired this frame, and any live
@@ -1121,6 +1161,7 @@ export class RaycasterEngine {
     renderExplosionParticles(this.ctx, this.player, this.explosionParticles, this.zBuffer);
     updateBurnParticles(this.burnParticles, dt);
     renderBurnParticles(this.ctx, this.player, this.burnParticles, this.zBuffer);
+    this.perf?.mark("particle-effects");
 
     // Full-screen red flash when the player is taking damage.
     drawDamageFlash(this.ctx, this.flashFrames / DAMAGE_FLASH_FRAMES);
@@ -1186,6 +1227,26 @@ export class RaycasterEngine {
       );
     }
     this.handlers.onStats?.(stats);
+    this.perf?.mark("hud");
+    this.perf?.endFrame(() => ({
+      enemiesAlive: this.enemies.filter((e) => e.alive).length,
+      enemiesTotal: this.enemies.length,
+      eliteEnemies: this.enemies.filter((e) => e.elite).length,
+      edgeCaseEnemies: this.enemies.filter((e) => e.edgeCase).length,
+      mines: this.map.mines.length,
+      enemyBolts: this.projectiles.length,
+      rockets: this.rockets.length,
+      traces: this.traces.length,
+      flameStreams: this.flameStreams.length,
+      blood: this.blood.length,
+      explosions: this.explosions.length,
+      explosionParticles: this.explosionParticles.length,
+      burnParticles: this.burnParticles.length,
+      ammo: { ...this.ammo },
+      weaponName: WEAPONS[this.weaponIndex].name,
+      audioShotCount: audio.getShotCount(),
+      audioCtxState: audio.getContextState(),
+    }));
 
     // Age the frame-based effect timers now that this frame is drawn.
     this.tickEffects();

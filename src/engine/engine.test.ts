@@ -425,6 +425,43 @@ describe("RaycasterEngine — construction", () => {
       delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
     }
   });
+
+  it("logs a perf snapshot on the first frame only when ?perfDebug=1 is on the URL", () => {
+    const original = window.location;
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    Object.defineProperty(window, "location", { value: { ...original, search: "?perfDebug=1" }, configurable: true });
+    try {
+      const enemy = fakeEnemy();
+      const { engine } = makeEngine(fakeMap({ enemies: [enemy] }));
+      // The FramePerfLogger constructor itself logs an "env" and a "level"
+      // line — see perfDebug.ts. Driven through the real `start()`/rAF
+      // `frame()` path (not a direct `advance()` call, unlike every other
+      // test in this file) specifically so `frame()`'s own
+      // `this.perf?.beginFrame(...)` call site is exercised too, not just
+      // the ones inside `advance()`. Perf lines go through plain
+      // `console.log` (not `console.debug`) on purpose — see perfDebug.ts's
+      // header comment — so they ride along in the in-game console sidebar
+      // for a screen recording, not just DevTools.
+      engine.start();
+      raf.flush(1, 16);
+      const messages = logSpy.mock.calls.map((call) => call[0] as string).filter((m) => m.startsWith("[perf]"));
+      expect(messages.some((m) => m.includes("[perf] env:"))).toBe(true);
+      expect(messages.some((m) => m.includes("[perf] level:"))).toBe(true);
+      expect(messages.some((m) => m.includes("[perf] state:"))).toBe(true);
+      expect(messages.some((m) => /\[perf] (SLOW|tick)/.test(m))).toBe(true);
+      engine.stop();
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
+  it("never logs a perf line without ?perfDebug=1 on the URL", () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const { engine } = makeEngine(fakeMap());
+    engine.advance(0);
+    const perfMessages = logSpy.mock.calls.map((call) => call[0]).filter((m) => typeof m === "string" && m.startsWith("[perf]"));
+    expect(perfMessages).toEqual([]);
+  });
 });
 
 describe("RaycasterEngine — start()/stop() lifecycle", () => {

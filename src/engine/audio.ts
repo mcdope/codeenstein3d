@@ -88,6 +88,13 @@ class AudioManager {
   private unavailable = false;
   /** Timestamp of the last damage sound, to rate-limit continuous hazards. */
   private lastDamageAt = -Infinity;
+  /** Total `playShoot` calls this session — a cheap proxy for total
+   * oscillator/gain-node churn, read only by the `?perfDebug=1` profiler (see
+   * `perfDebug.ts`) to rule out (or confirm) Web-Audio node buildup as a
+   * source of the unreproduced magento2/"nightmare" shooting-framedrop
+   * report. The increment itself is free enough to leave unconditional
+   * rather than threading a debug flag through every call site. */
+  private shotCount = 0;
 
   /** Pending volumes (0-1), applied to their gain node immediately if the
    * context already exists, or at creation time otherwise — see `resume()`
@@ -126,6 +133,21 @@ class AudioManager {
     }
     if (this.ctx.state === "suspended") void this.ctx.resume();
     return this.ctx;
+  }
+
+  /** Diagnostics only — see `shotCount`'s doc comment. */
+  getShotCount(): number {
+    return this.shotCount;
+  }
+
+  /** Diagnostics only — the live `AudioContext.state` ("suspended" is the
+   * common real-world surprise: a browser can silently re-suspend a context
+   * that lost the page's audio focus, at which point every `playShoot` still
+   * runs its full oscillator/envelope setup but never actually resumes
+   * playback, see `resume()` above), or `"none"` before any sound has ever
+   * played. */
+  getContextState(): string {
+    return this.ctx?.state ?? "none";
   }
 
   /** True if playback is suppressed — no `AudioContext` exists, or the page
@@ -173,6 +195,7 @@ class AudioManager {
    * sound identity — see this file's header comment) so each weapon has its
    * own distinct voice instead of one shared blip. */
   playShoot(kind: WeaponViewKind): void {
+    this.shotCount += 1;
     const ctx = this.resume();
     if (!ctx || !this.sfx) return;
     const sfx = this.sfx;
