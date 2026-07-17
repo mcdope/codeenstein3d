@@ -295,4 +295,78 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
       "Segmentation fault (core dumped)",
       "Have you tried turning it off and on again?"
     ]; // inspiration only, curated 2026-07-17 (~2x the original list)
- - [ ] selectable wads to be loaded via internet. must be agpl compatible. must show credits, license, link
+ - [ ] selectable wads to be loaded via internet. must be agpl compatible. must show credits, license, link in the select entry (without being unreadable or causing eyecancer)
+    - [ ] each wad must be fully attributed in README and docs, incl. all json fields with clickable links
+    - [ ] JSON of the wads to start with (most if not all need unzip):
+       [
+          {
+            "name": "Freedoom: Phase 1",
+            "downloadUrl": "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip",
+            "credits": "The Freedoom Project",
+            "license": "Modified BSD License",
+            "link": "https://freedoom.github.io/"
+          },
+          {
+            "name": "Freedoom: Phase 2",
+            "downloadUrl": "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip",
+            "credits": "The Freedoom Project",
+            "license": "Modified BSD License",
+            "link": "https://freedoom.github.io/"
+          },
+          {
+            "name": "FreeDM",
+            "downloadUrl": "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip",
+            "credits": "The Freedoom Project",
+            "license": "Modified BSD License",
+            "link": "https://freedoom.github.io/"
+          },
+          {
+            "name": "Blasphemer",
+            "downloadUrl": "https://github.com/viti95/Blasphemer/releases/download/v0.1.7/blasphemer-0.1.7.zip",
+            "credits": "The Blasphemer Project",
+            "license": "GNU GPL v3",
+            "link": "https://github.com/viti95/Blasphemer"
+          },
+          {
+            "name": "Zauberer",
+            "downloadUrl": "https://github.com/Blasphemer/zauberer/releases/download/v0.1.0/zauberer-0.1.0.zip",
+            "credits": "The Zauberer Project",
+            "license": "GNU GPL v3",
+            "link": "https://github.com/Blasphemer/zauberer"
+          },
+          {
+            "name": "OTEX (Open Texture Pack)",
+            "downloadUrl": "https://doom.ukiro.com/downloads/otex_1.1.zip",
+            "credits": "Ola Björling (ukiro)",
+            "license": "CC BY-SA 4.0",
+            "link": "https://doom.ukiro.com/about-otex/"
+          },
+          {
+            "name": "RETRES (Retro Textures)",
+            "downloadUrl": "https://doom.ukiro.com/downloads/retres_2.1.zip",
+            "credits": "Ola Björling (ukiro)",
+            "license": "CC BY-SA 4.0",
+            "link": "https://doom.ukiro.com/retres/"
+          },
+          {
+            "name": "Hacx: Twitch 'n Kill",
+            "downloadUrl": "https://www.drnostromo.com/hacx/download/hacx12.zip",
+            "credits": "Banjo Software",
+            "license": "CC BY 4.0",
+            "link": "https://www.drnostromo.com/hacx/"
+          },
+          {
+            "name": "32in24-15 Texture Pack",
+            "downloadUrl": "https://www.doomworld.com/idgames/textures/32in24-15_tex.zip",
+            "credits": "The 32in24 Team",
+            "license": "CC BY-SA 3.0",
+            "link": "https://www.doomworld.com/idgames/textures/32in24-15_tex"
+          },
+          {
+            "name": "NB_RECOL (Nebula's Recolors)",
+            "downloadUrl": "https://realm667.com/index.php/en/texture-stock-mainmenu-152/20-doom-style/128-nbrecol",
+            "credits": "Nebula",
+            "license": "CC BY-SA 3.0",
+            "link": "https://realm667.com/"
+          }
+        ]
