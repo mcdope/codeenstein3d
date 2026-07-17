@@ -6,6 +6,19 @@ For the separate Playwright-driven scripts (`scripts/verify-*.mjs`) that exercis
 
 For the automated balancing-bot harness (`scripts/run-balancing-telemetry.mjs`, `npm run balancing:scan`/`balancing:watch`/`balancing:telemetry`) — a separate, not-CI-wired dev tool, not part of this test suite — see [Balancing Telemetry Bot](balancing-telemetry.md). Worth knowing even if you never touch it directly: it demonstrated a real, generalizable gotcha about **headed vs. headless browser automation timing** — a headless Playwright session driven by a virtual clock can achieve arbitrarily fine-grained timing control (hold a key for exactly N ms, advance the engine by exactly N ms), but a *headed* (real, visible) session is bound by real per-frame rendering — a wait shorter than roughly one real display frame doesn't reliably produce a proportionally small effect. A convergence check tight enough to work perfectly headless can be structurally unreachable headed, with the failure invisible to any headless-only verification. See [Headed vs. headless](balancing-telemetry.md#headed-vs-headless-read-this-before-touching-turnburstms-math) for the concrete bug this caused and the repro recipe for this class of issue.
 
+## Cross-browser verification
+
+Every Playwright-driven script in this repo used to hardcode `chromium.launch()` — Firefox/WebKit compatibility was entirely unverified, and a regression there would have been invisible to every check described in this doc. `scripts/lib/browserEngine.mjs`'s `resolveBrowserEngine()` reads `CODEENSTEIN_VERIFY_BROWSER` (`chromium`/`firefox`/`webkit`, default `chromium` — zero behavior change for any caller that doesn't set it) instead.
+
+Only scripts that never touch the real, genuinely Chromium-only `window.showDirectoryPicker` native dialog are safe to run against another engine — `isFileSystemAccessSupported()` (`src/fs/workspace.ts`) already feature-detects it and disables the "Select Workspace"/"Continue Run" UI with a clear message when it's missing, so that specific gap is expected and out of scope, not something to work around. Two scripts qualify and are wired up:
+
+- `scripts/verify-campaign-playthrough.mjs` stubs `window.showDirectoryPicker` to resolve an **OPFS** (`navigator.storage.getDirectory()`) handle instead of the real picker — OPFS returns real `FileSystemDirectoryHandle`/`FileSystemFileHandle` objects (the same interface `readDirectoryTree`/`readFileText` already use) and has much broader cross-browser support than the interactive picker dialog itself.
+- `scripts/verify-wad-textures.mjs` never touches the File System Access API at all — the bundled demo campaign loads via `fetch`, and a WAD file loads via a plain `<input type="file">`.
+
+CI runs both against a `browser: [chromium, firefox]` matrix in the `verify-browser` job (`.github/workflows/verify.yml`) — blocking, not just informational. WebKit isn't in the matrix yet: it needs a missing OS dependency (`libwoff1`, WOFF font rendering) that requires `sudo` to install, unverified on a real CI runner image as of this writing.
+
+**A real Firefox-only quirk, confirmed not a bug**: `page.reload()` fires `addInitScript` *twice* on Firefox — once for a transient intermediate document (`location.href === ""`, where `navigator.storage` is genuinely `undefined`) that gets discarded before either verify script ever interacts with it, then once for the real final document, where everything works normally. Confirmed directly by instrumenting the init script to log `location.href`/`typeof navigator.storage` on every invocation — not something a real player's browser would ever hit, since it's specific to how Playwright's `addInitScript` interacts with Firefox's reload navigation lifecycle. Logged, not asserted against, in `verify-campaign-playthrough.mjs`'s `pageerror` handler.
+
 ## Running the suite
 
 - `npm test` — run once (`vitest run`).

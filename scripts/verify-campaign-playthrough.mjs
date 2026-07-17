@@ -2,10 +2,14 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 /**
- * Headless-Chromium playthrough verifier for the save/highscore/replay
- * *mechanism*: drives the real app (src/main.ts) through Playwright, with two
+ * Headless playthrough verifier for the save/highscore/replay *mechanism*:
+ * drives the real app (src/main.ts) through Playwright, with two
  * browser-only seams stubbed out so no native dialog or wall-clock waiting is
- * required:
+ * required. Chromium by default; set `CODEENSTEIN_VERIFY_BROWSER=firefox` or
+ * `webkit` (see `lib/browserEngine.mjs`) to run the same checks against a
+ * different engine — safe to do here specifically because the OPFS stub
+ * below never touches the real, genuinely Chromium-only
+ * `window.showDirectoryPicker` dialog:
  *
  *  - `window.showDirectoryPicker` is replaced (via `page.addInitScript`, so
  *    the stub is in place before the app's own module-load-time feature
@@ -64,12 +68,12 @@
  * integrity (frame count, seed, per-level astHash) rather than bit-for-bit
  * re-simulating it.
  */
-import { chromium } from "playwright";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { loadEngineModules, REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { bfsPath, pathToWaypoints } from "./lib/pathfind.mjs";
+import { resolveBrowserEngine } from "./lib/browserEngine.mjs";
 
 const CAMPAIGN_DIR = path.join(REPO_ROOT, "scripts/fixtures");
 const CAMPAIGN_NAME = "playthrough-fixture";
@@ -134,9 +138,19 @@ async function main() {
   const fileContents = {};
   for (const f of filenames) fileContents[f] = fs.readFileSync(path.join(CAMPAIGN_DIR, f), "utf8");
 
-  console.log("\nLaunching headless Chromium...");
-  const browser = await chromium.launch();
+  const { name: engineName, engine } = resolveBrowserEngine();
+  console.log(`\nLaunching headless ${engineName}...`);
+  const browser = await engine.launch();
   const page = await browser.newPage();
+  // Logged, not asserted against: on Firefox specifically, `page.reload()`
+  // (used below, between phases A and B) fires `addInitScript` twice — once
+  // for a transient intermediate document (`location.href === ""`, where
+  // `navigator.storage` is genuinely undefined) that gets discarded before
+  // this script ever interacts with it, then once for the real final
+  // document (where OPFS works normally). Confirmed directly by instrumenting
+  // the init script — not a bug in this app, and not something a real
+  // player's browser would ever hit (this is specific to how Playwright's
+  // `addInitScript` interacts with Firefox's reload navigation lifecycle).
   page.on("pageerror", (err) => console.log("[pageerror]", err.message));
 
   await installTestStubs(page, fileContents);

@@ -5,7 +5,12 @@
  * Browser end-to-end verification of wall/door/floor/lore-terminal/hazard/
  * teleporter/spike-trap texturing, against a real running dev server
  * (`CODEENSTEIN_DEV_URL`, default `http://localhost:5173`) via headless
- * Chromium — structured like `verify-campaign-playthrough.mjs`. Covers:
+ * Chromium by default — structured like `verify-campaign-playthrough.mjs`,
+ * including the same `CODEENSTEIN_VERIFY_BROWSER` override
+ * (`lib/browserEngine.mjs`) to run against Firefox/WebKit instead; this
+ * script never touches `window.showDirectoryPicker` at all (the bundled demo
+ * campaign loads via `fetch`, and the WAD file loads via a plain
+ * `<input type="file">`), so it's safe to run against any engine. Covers:
  *
  *   (a) the Milestone-1 gate: procedural default textures show real
  *       per-pixel variance, not a flat fill;
@@ -29,11 +34,11 @@
  * one (see `SECRET_WALL_OVERLAY`'s doc comment in raycaster.ts). A screenshot
  * is saved for manual spot-checking instead of a fabricated pass/fail.
  */
-import { chromium } from "playwright";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildTestWad } from "./fixtures/buildTestWad.mjs";
+import { resolveBrowserEngine } from "./lib/browserEngine.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEV_SERVER_URL = process.env.CODEENSTEIN_DEV_URL ?? "http://localhost:5173";
@@ -89,7 +94,9 @@ async function launchDemoCampaign(page) {
 }
 
 async function main() {
-  const browser = await chromium.launch();
+  const { name: engineName, engine } = resolveBrowserEngine();
+  console.log(`Launching headless ${engineName}...\n`);
+  const browser = await engine.launch();
   const page = await browser.newPage();
   const pageErrors = [];
   page.on("pageerror", (err) => pageErrors.push(err.message));
