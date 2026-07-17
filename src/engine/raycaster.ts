@@ -57,6 +57,17 @@ export const FOG_FAR = 14;
 /** y-side walls are dimmed to fake directional lighting. */
 const SIDE_SHADE = 0.68;
 
+/** Off by default — `renderScene`'s default parameter value for its
+ * `antialiasing` argument (see there). Sub-pixel top/bottom wall-edge
+ * antialiasing draws one extra partial-alpha `fillRect` per screen column
+ * that hits a wall, on top of the already-required `drawImage` blit and base
+ * shading fill — real per-frame cost for a purely cosmetic smoothing of the
+ * raycaster's "staircase" silhouette against the ceiling/floor. Same pattern
+ * as `DECORATIONS_ENABLED`/`PLAYER_STATS_ENABLED` — flip this back on (or
+ * pass `antialiasing: true` explicitly at a call site) once/if the cost is
+ * worth it for a given target machine. */
+export const WALL_EDGE_ANTIALIASING_ENABLED = false;
+
 /**
  * Distance fog brightness multiplier in [0, 1]: full (1) within `FOG_NEAR`,
  * pure black (0) at/beyond `FOG_FAR`, smoothstepped in between so walls sink
@@ -119,6 +130,7 @@ export function renderScene(
   horizonShift = 0,
   levelTime = 0,
   readTerminals: ReadonlySet<string> = NO_READ_TERMINALS,
+  antialiasing = WALL_EDGE_ANTIALIASING_ENABLED,
 ): void {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
@@ -272,29 +284,32 @@ export function renderScene(
 
     // Edge antialiasing: sample the exact shaded texel at the boundary row
     // instead of a flat blend color, so the partial-coverage row matches the
-    // texture's pattern instead of smearing one flat tone across it.
-    if (wallTop > 0 && wallTop < height) {
-      const edgeRow = Math.floor(wallTop);
-      const coverage = Math.min(1, edgeRow + 1 - wallTop, wallBottom - wallTop);
-      if (coverage > 0) {
-        ctx.fillStyle = shadedTexel(tex, texX, edgeRow, wallTop, wallBottom, shade, hitTile === SECRET_WALL_TILE);
-        ctx.globalAlpha = coverage;
-        ctx.fillRect(x, edgeRow, 1, 1);
-        ctx.globalAlpha = 1;
-      }
-    }
-    if (wallBottom > 0 && wallBottom < height) {
-      const edgeRow = Math.floor(wallBottom);
-      // A very thin (sub-pixel-height) wall can land its top and bottom edge
-      // in the same row — already fully handled by the block above, so skip
-      // it here to avoid double-blending that row.
-      if (edgeRow !== Math.floor(wallTop) || wallTop <= 0) {
-        const coverage = Math.min(1, wallBottom - edgeRow);
+    // texture's pattern instead of smearing one flat tone across it. See
+    // `WALL_EDGE_ANTIALIASING_ENABLED`'s doc comment for why this is gated.
+    if (antialiasing) {
+      if (wallTop > 0 && wallTop < height) {
+        const edgeRow = Math.floor(wallTop);
+        const coverage = Math.min(1, edgeRow + 1 - wallTop, wallBottom - wallTop);
         if (coverage > 0) {
           ctx.fillStyle = shadedTexel(tex, texX, edgeRow, wallTop, wallBottom, shade, hitTile === SECRET_WALL_TILE);
           ctx.globalAlpha = coverage;
           ctx.fillRect(x, edgeRow, 1, 1);
           ctx.globalAlpha = 1;
+        }
+      }
+      if (wallBottom > 0 && wallBottom < height) {
+        const edgeRow = Math.floor(wallBottom);
+        // A very thin (sub-pixel-height) wall can land its top and bottom edge
+        // in the same row — already fully handled by the block above, so skip
+        // it here to avoid double-blending that row.
+        if (edgeRow !== Math.floor(wallTop) || wallTop <= 0) {
+          const coverage = Math.min(1, wallBottom - edgeRow);
+          if (coverage > 0) {
+            ctx.fillStyle = shadedTexel(tex, texX, edgeRow, wallTop, wallBottom, shade, hitTile === SECRET_WALL_TILE);
+            ctx.globalAlpha = coverage;
+            ctx.fillRect(x, edgeRow, 1, 1);
+            ctx.globalAlpha = 1;
+          }
         }
       }
     }

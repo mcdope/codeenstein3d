@@ -301,13 +301,63 @@ describe("renderScene — distance fog and FOG_FAR", () => {
     // A very long corridor makes the wall so far away that its whole
     // on-screen height collapses into a single row — wallTop and wallBottom
     // both floor to that same row, which the top-edge pass already handled.
+    // antialiasing:true — this scenario only exists to test that pass, which
+    // is off (WALL_EDGE_ANTIALIASING_ENABLED) by default; see the dedicated
+    // describe block below for the default-off behavior itself.
     const size = 300;
     const g = walledRoom(size);
     const map = fakeMap({ grid: g }, size);
     const player = new Player({ ...map, spawn: { x: 1, y: Math.floor(size / 2) } });
     const c = ctx();
     expect(() =>
-      renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeTextureSet(), 0.37),
+      renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeTextureSet(), 0.37, undefined, undefined, true),
+    ).not.toThrow();
+  });
+});
+
+describe("renderScene — wall-edge antialiasing (WALL_EDGE_ANTIALIASING_ENABLED)", () => {
+  it("is off by default — no extra edge-blend fillRect calls beyond the base shading fill", () => {
+    const map = fakeMap();
+    const player = centeredPlayer(map);
+    const cOff = ctx();
+    renderScene(asCtx(cOff), map, player, new Float64Array(WIDTH), fakeTextureSet());
+    const cOn = ctx();
+    renderScene(asCtx(cOn), map, player, new Float64Array(WIDTH), fakeTextureSet(), undefined, undefined, undefined, true);
+    // Every hit column gets exactly one base shading fillRect either way;
+    // antialiasing:true additionally draws up to two 1px edge rows per
+    // column, so the on-run must strictly exceed the off-run's call count.
+    expect(cOn.fillRect.mock.calls.length).toBeGreaterThan(cOff.fillRect.mock.calls.length);
+  });
+
+  it("draws distinct top- and bottom-edge blend rows when explicitly enabled", () => {
+    // centeredPlayer on an 8x8 room hits a wall a few tiles out — tall enough
+    // on screen that its top and bottom edges land in different rows (not
+    // the same-row dedup case covered separately above). A small
+    // horizonShift keeps both edges off exact integer pixel boundaries, so
+    // both get genuine (nonzero) partial coverage rather than one of them
+    // landing precisely on a row line and rounding to a zero-width blend.
+    const map = fakeMap();
+    const player = centeredPlayer(map);
+    const c = ctx();
+    const fillStyles: string[] = [];
+    c.fillRect.mockImplementation(() => fillStyles.push(String(c.fillStyle)));
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeTextureSet(), 0.5, undefined, undefined, true);
+    // shadedTexel() always returns a plain "rgb(...)" string, distinct from
+    // the base shading fill's "#000" and any overlay's "rgba(...)".
+    const edgeBlendCalls = fillStyles.filter((s) => s.startsWith("rgb("));
+    expect(edgeBlendCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("nudges the sampled edge color for an unopened secret wall, same as its overlay does", () => {
+    const size = 8;
+    const g = walledRoom(size);
+    const cy = Math.floor(size / 2);
+    g[cy][size - 1] = SECRET_WALL_TILE;
+    const map = fakeMap({ grid: g }, size);
+    const player = centeredPlayer(map);
+    const c = ctx();
+    expect(() =>
+      renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeTextureSet(), undefined, undefined, undefined, true),
     ).not.toThrow();
   });
 });
