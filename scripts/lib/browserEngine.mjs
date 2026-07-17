@@ -10,6 +10,10 @@
  * for which scripts use this and why they're safe to run against a
  * non-Chromium engine (neither touches `window.showDirectoryPicker`'s real
  * native picker, the one genuinely Chromium-only surface this app has).
+ * Caveat: Playwright's own WebKit build has no `navigator.storage` at all
+ * (confirmed directly, not a real Safari limitation) — a script whose
+ * cross-browser strategy depends on OPFS (`verify-campaign-playthrough.mjs`)
+ * can't run against `webkit` for that reason, not this app's.
  */
 import { chromium, firefox, webkit } from "playwright";
 

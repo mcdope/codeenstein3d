@@ -5,11 +5,15 @@
  * Headless playthrough verifier for the save/highscore/replay *mechanism*:
  * drives the real app (src/main.ts) through Playwright, with two
  * browser-only seams stubbed out so no native dialog or wall-clock waiting is
- * required. Chromium by default; set `CODEENSTEIN_VERIFY_BROWSER=firefox` or
- * `webkit` (see `lib/browserEngine.mjs`) to run the same checks against a
- * different engine — safe to do here specifically because the OPFS stub
- * below never touches the real, genuinely Chromium-only
- * `window.showDirectoryPicker` dialog:
+ * required. Chromium by default; set `CODEENSTEIN_VERIFY_BROWSER=firefox`
+ * (see `lib/browserEngine.mjs`) to run the same checks against Firefox
+ * instead — safe to do here specifically because the OPFS stub below never
+ * touches the real, genuinely Chromium-only `window.showDirectoryPicker`
+ * dialog. **Not `webkit`**: Playwright's own WebKit build has no
+ * `navigator.storage` at all (confirmed directly — a Playwright build gap,
+ * not a real Safari limitation), so the OPFS stub itself has nothing to call
+ * — CI skips this script for the `webkit` matrix leg for that reason, see
+ * `.github/workflows/verify.yml`:
  *
  *  - `window.showDirectoryPicker` is replaced (via `page.addInitScript`, so
  *    the stub is in place before the app's own module-load-time feature
