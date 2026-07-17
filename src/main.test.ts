@@ -208,21 +208,11 @@ describe("main.ts — module import / initial DOM wiring", () => {
     expect(document.title).toContain("test-ref");
   });
 
-  it("keeps the extreme gore option (EXTREME_GORE_ENABLED is true)", async () => {
+  it("always offers the extreme gore option and respects a saved 'extreme' preference", async () => {
+    localStorage.setItem("codeenstein-gore-level", "extreme");
     await importMain();
     expect(document.querySelector('#gore-select option[value="extreme"]')).not.toBeNull();
-  });
-
-  it("removes the extreme gore option and downgrades a saved 'extreme' preference to 'more' when EXTREME_GORE_ENABLED is flipped off", async () => {
-    localStorage.setItem("codeenstein-gore-level", "extreme");
-    vi.doMock("./engine/effects", async (importOriginal) => {
-      const actual = await importOriginal<typeof import("./engine/effects")>();
-      return { ...actual, EXTREME_GORE_ENABLED: false };
-    });
-    await importMain();
-    expect(document.querySelector('#gore-select option[value="extreme"]')).toBeNull();
-    expect(document.querySelector<HTMLSelectElement>("#gore-select")!.value).toBe("more");
-    vi.doUnmock("./engine/effects");
+    expect(document.querySelector<HTMLSelectElement>("#gore-select")!.value).toBe("extreme");
   });
 
   it("switches launch tabs on click, toggling aria-selected and panel hidden state", async () => {
@@ -537,6 +527,20 @@ describe("main.ts — campaign persistence (loadCampaignSave/saveCampaign/clearC
     });
     expect(() => clearCampaignSave()).not.toThrow();
     removeItemSpy.mockRestore();
+  });
+});
+
+describe("main.ts — statsScreenInfo", () => {
+  it("returns undefined when scoreBreakdown is undefined (telemetry not recorded this run)", async () => {
+    const { statsScreenInfo } = await importMain();
+    expect(statsScreenInfo(undefined, undefined)).toBeUndefined();
+  });
+
+  it("returns a StatsScreenInfo pair when both are present", async () => {
+    const { statsScreenInfo } = await importMain();
+    const scoreBreakdown = { killPoints: 1, healthBonus: 0, ammoBonus: 0, speedBonus: 0, pathBonus: 0, mapCompletionBonus: 0, loreBonus: 0, secretRoomBonus: 0, multikillBonus: 0, accuracyBonus: 0, total: 1 };
+    const playerStats = { kills: 1, shotsFired: 1, hits: 1, weaponAccuracyPct: 100, damageTakenBySource: { enemyMelee: 0, enemyRanged: 0, trapSpike: 0, trapMine: 0, hazard: 0, selfRocket: 0 }, timeSurvivedSec: 1, lootCollectedTotal: 0, minHealthReached: 100, fatalDamageSource: null };
+    expect(statsScreenInfo(scoreBreakdown, playerStats)).toEqual({ scoreBreakdown, playerStats });
   });
 });
 

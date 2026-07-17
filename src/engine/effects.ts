@@ -66,33 +66,22 @@ export interface GoreMultipliers {
 }
 
 /** Per-level multipliers. None/Normal/More are a uniform 0x/1x/3x across all
- * three axes; Extreme deliberately is not — see `EXTREME_GORE_ENABLED`'s doc
- * comment for why count stays high while size/stainDuration are capped well
- * below a naive 10x. Size/stainDuration at `none` are irrelevant (count 0
- * means no particles ever spawn) but filled in defensively rather than left
- * unused. */
+ * three axes; Extreme deliberately is not — a uniform 10x/10x/10x
+ * count/size/stainDuration made `renderBlood`'s per-particle size (already
+ * unbounded — see `BLOOD_MAX_SIZE_FRACTION`) and `updateBlood`'s floor-stain
+ * lifetime (15s) both blow out, reading as a "mountain of blood" rather than
+ * combat gore. Fixed by capping size/stainDuration far below a naive 10x
+ * while keeping count high, plus the two structural guards below
+ * (`BLOOD_MAX_SIZE_FRACTION`, `MAX_BLOOD_PARTICLES`) that apply to every gore
+ * tier, not just this one. Size/stainDuration at `none` are irrelevant
+ * (count 0 means no particles ever spawn) but filled in defensively rather
+ * than left unused. */
 export const GORE_MULTIPLIERS: Record<GoreLevel, GoreMultipliers> = {
   none: { count: 0, size: 1, stainDuration: 1 },
   normal: { count: 1, size: 1, stainDuration: 1 },
   more: { count: 3, size: 3, stainDuration: 3 },
   extreme: { count: 16, size: 4, stainDuration: 4 },
 };
-
-/**
- * Whether the "Extreme" tier is actually selectable — gates both the sidebar
- * dropdown option and a saved "extreme" preference being downgraded to
- * "more" (see `main.ts`). Previously `false`: a uniform 10x/10x/10x
- * count/size/stainDuration made `renderBlood`'s per-particle size (already
- * unbounded — see `BLOOD_MAX_SIZE_FRACTION`) and `updateBlood`'s floor-stain
- * lifetime (15s) both blow out, reading as a "mountain of blood" rather than
- * combat gore. Fixed by capping size/stainDuration far below a naive 10x
- * (see `GORE_MULTIPLIERS`) and adding the two structural guards below
- * (`BLOOD_MAX_SIZE_FRACTION`, `MAX_BLOOD_PARTICLES`) that now apply to every
- * gore tier, not just this one. Left as a flag (not deleted) as a cheap
- * kill-switch if a future balance pass finds it still needs work — same
- * pattern as `DECORATIONS_ENABLED` in `mapGenerator.ts`.
- */
-export const EXTREME_GORE_ENABLED = true;
 
 /** Hard ceiling on a single rendered blood particle's on-screen size, as a
  * fraction of canvas height — independent of gore tier or distance. Without

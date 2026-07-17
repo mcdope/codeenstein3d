@@ -4,6 +4,8 @@
 import { describe, expect, it } from "vitest";
 import { createMockCanvasContext, type MockCanvasContext } from "../../test/mocks/canvas";
 import type { EngineStats } from "./engine";
+import { emptyPlayerFacingStats } from "./playerStats";
+import { zeroScoreBreakdown } from "./scoring";
 import {
   drawCheatToast,
   drawCompass,
@@ -41,6 +43,10 @@ function fakeStats(overrides: Partial<EngineStats> = {}): EngineStats {
     ownedWeapons: [0, 1, 2],
     godMode: false,
     noClip: false,
+    levelScoreBreakdown: zeroScoreBreakdown(),
+    runScoreBreakdown: zeroScoreBreakdown(),
+    levelPlayerStats: emptyPlayerFacingStats(),
+    runPlayerStats: emptyPlayerFacingStats(),
     ...overrides,
   };
 }

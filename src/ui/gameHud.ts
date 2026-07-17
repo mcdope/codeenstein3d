@@ -15,6 +15,9 @@
  * canvas itself means these are always visible, fullscreen or not.
  */
 
+import type { ScoreBreakdown } from "../engine/scoring";
+import type { PlayerFacingStats } from "../engine/playerStats";
+
 /** AST/level stats shown on the pre-level briefing. */
 export interface LevelStartInfo {
   campaign: string;
@@ -24,10 +27,20 @@ export interface LevelStartInfo {
   secretRoomCount: number;
 }
 
+/** Curated "how'd I do" numbers shown on the commit summary and the two
+ * run-end screens — see `./engine/playerStats.ts` and `./engine/scoring.ts`. */
+export interface StatsScreenInfo {
+  scoreBreakdown: ScoreBreakdown;
+  playerStats: PlayerFacingStats;
+}
+
 /** Stats shown on the post-level commit summary. */
 export interface CommitSummaryInfo {
   linesRefactored: number;
   bugsSquashed: number;
+  /** This level's own curated stats/breakdown — omitted shows just the two
+   * fields above, same as before this existed. */
+  stats?: StatsScreenInfo;
 }
 
 interface OverlayContent {
@@ -37,30 +50,46 @@ interface OverlayContent {
   lines: string[];
   stats?: [string, string][];
   buttonLabel: string;
+  /** Widens the box's max width — the commit summary and run-end screens
+   * need this once they carry `StatsScreenInfo`'s grouped rows (e.g.
+   * "Health 500 · Ammo 250 · Speed 400 · Accuracy 180"), which run
+   * noticeably longer than the plain 1-2-word stat values every other
+   * overlay uses. */
+  wide?: boolean;
 }
 
 export class GameHud {
   constructor(private readonly canvas: HTMLCanvasElement) {}
 
-  showKernelPanic(onReturn: () => void): void {
+  /** `stats` is the whole *run's* cumulative breakdown/totals (not just the
+   * level died on) — see `EngineStats.runScoreBreakdown`/`runPlayerStats`.
+   * `undefined` shows the screen with no stats rows, same as before this
+   * param existed (e.g. the replay viewer's failure paths). */
+  showKernelPanic(stats: StatsScreenInfo | undefined, onReturn: () => void): void {
     this.show(
       {
         title: "KERNEL PANIC",
         color: "#ff4d4d",
         lines: ["System stability reached 0%.", "The process was terminated."],
+        stats: stats ? statRows(stats) : undefined,
         buttonLabel: "Return to file tree",
+        wide: stats !== undefined,
       },
       onReturn,
     );
   }
 
-  showBuildSuccessful(onReturn: () => void): void {
+  /** `stats` is the whole run's cumulative breakdown/totals — see
+   * `showKernelPanic`'s doc comment. */
+  showBuildSuccessful(stats: StatsScreenInfo | undefined, onReturn: () => void): void {
     this.show(
       {
         title: "BUILD SUCCESSFUL",
         color: "#37d24a",
         lines: ["return statement reached. Exit code 0 —", "the module compiled clean."],
+        stats: stats ? statRows(stats) : undefined,
         buttonLabel: "Return to file tree",
+        wide: stats !== undefined,
       },
       onReturn,
     );
@@ -96,8 +125,10 @@ export class GameHud {
         stats: [
           ["Lines refactored", String(info.linesRefactored)],
           ["Bugs squashed", String(info.bugsSquashed)],
+          ...(info.stats ? statRows(info.stats) : []),
         ],
         buttonLabel: "Continue",
+        wide: info.stats !== undefined,
       },
       onAck,
     );
@@ -200,6 +231,37 @@ export class GameHud {
   }
 }
 
+/** Formats `M:SS` from a seconds count — used only for the stats screens'
+ * "Time survived" row. */
+function formatDuration(totalSec: number): string {
+  const sec = Math.max(0, Math.round(totalSec));
+  const minutes = Math.floor(sec / 60);
+  const seconds = sec % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+/** Grouped label/value rows for a `StatsScreenInfo` — shared by the commit
+ * summary and both run-end screens. Related sub-fields are combined into one
+ * row's value string (rather than one row per raw field) so the box doesn't
+ * grow to 15+ rows tall — see `drawOverlay`'s `layout()`. */
+function statRows({ scoreBreakdown: b, playerStats: p }: StatsScreenInfo): [string, string][] {
+  return [
+    ["Kills", String(p.kills)],
+    ["Weapon accuracy", `${p.weaponAccuracyPct}%`],
+    ["Loot collected", String(p.lootCollectedTotal)],
+    ["Time survived", formatDuration(p.timeSurvivedSec)],
+    ["Closest call", `${Math.round(p.minHealthReached)}% health`],
+    [
+      "Damage taken",
+      `Melee ${Math.round(p.damageTakenBySource.enemyMelee)} · Ranged ${Math.round(p.damageTakenBySource.enemyRanged)} · Traps ${Math.round(
+        p.damageTakenBySource.trapSpike + p.damageTakenBySource.trapMine,
+      )}`,
+    ],
+    ["Score bonuses", `Health ${b.healthBonus} · Ammo ${b.ammoBonus} · Speed ${b.speedBonus} · Accuracy ${b.accuracyBonus}`],
+    ["Bonus features", `Path ${b.pathBonus} · Map ${b.mapCompletionBonus} · Lore ${b.loreBonus} · Secrets ${b.secretRoomBonus} · Streaks ${b.multikillBonus}`],
+  ];
+}
+
 /** Minimum time (ms) an overlay must have been visible before any dismiss
  * trigger is honored — see `show()`'s doc comment. Long enough that a shot
  * fired (or the fire key already held) in the fight that ended the run can't
@@ -228,7 +290,7 @@ const PAD_AFTER_BTN = 22;
 function drawOverlay(ctx: CanvasRenderingContext2D, content: OverlayContent): void {
   const w = ctx.canvas.width;
   const h = ctx.canvas.height;
-  const boxW = Math.min(420, w - 48);
+  const boxW = Math.min(content.wide ? 620 : 420, w - 48);
 
   /**
    * Walks title -> lines -> stats, advancing (and returning) a running `y`
@@ -260,18 +322,22 @@ function drawOverlay(ctx: CanvasRenderingContext2D, content: OverlayContent): vo
     }
 
     if (content.stats && content.stats.length > 0) {
+      // Each side of the label/value split gets half the box, minus its own
+      // padding and the 8px center gap — same "don't run past the box"
+      // guarantee the title/lines above already get via their own maxWidth.
+      const sideMaxWidth = boxW / 2 - 24;
       y += STATS_LEAD;
       for (const [label, value] of content.stats) {
         if (draw) {
           ctx.font = "13px ui-monospace, monospace";
           ctx.fillStyle = "#8a9490";
           ctx.textAlign = "right";
-          ctx.fillText(label, w / 2 - 8, y);
+          ctx.fillText(label, w / 2 - 8, y, sideMaxWidth);
 
           ctx.font = "bold 13px ui-monospace, monospace";
           ctx.fillStyle = "#ffffff";
           ctx.textAlign = "left";
-          ctx.fillText(value, w / 2 + 8, y);
+          ctx.fillText(value, w / 2 + 8, y, sideMaxWidth);
           ctx.textAlign = "center";
         }
         y += STAT_GAP;

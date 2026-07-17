@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { Enemy } from "../map/types";
-import { computeScore, killPoints, type ScoreInput } from "./scoring";
+import { computeScore, killPoints, sumScoreBreakdowns, zeroScoreBreakdown, type ScoreInput } from "./scoring";
 
 function enemy(overrides: Partial<Enemy> = {}): Enemy {
   return {
@@ -48,6 +48,8 @@ function input(overrides: Partial<ScoreInput> = {}): ScoreInput {
     uniqueSecretRoomsOpened: 0,
     multiKillCount: 0,
     ultraKillCount: 0,
+    weaponShotsFired: 0,
+    weaponHits: 0,
     ...overrides,
   };
 }
@@ -223,7 +225,40 @@ describe("computeScore", () => {
       }),
     );
     expect(result.total).toBe(
-      100 + result.healthBonus + result.ammoBonus + 400 + 300 + 750 + 100 + 200,
+      100 + result.healthBonus + result.ammoBonus + 400 + 300 + 750 + 100 + 200 + result.accuracyBonus,
     );
+  });
+
+  describe("accuracyBonus", () => {
+    it("awards the full bonus for 100% accuracy", () => {
+      expect(computeScore(input({ weaponShotsFired: 10, weaponHits: 10 })).accuracyBonus).toBe(250);
+    });
+
+    it("awards 0 when no shots were fired, not 100%", () => {
+      expect(computeScore(input({ weaponShotsFired: 0, weaponHits: 0 })).accuracyBonus).toBe(0);
+    });
+
+    it("scales linearly with partial accuracy", () => {
+      expect(computeScore(input({ weaponShotsFired: 100, weaponHits: 50 })).accuracyBonus).toBe(125);
+    });
+
+    it("clamps hits above shotsFired defensively", () => {
+      expect(computeScore(input({ weaponShotsFired: 10, weaponHits: 999 })).accuracyBonus).toBe(250);
+    });
+  });
+});
+
+describe("zeroScoreBreakdown / sumScoreBreakdowns", () => {
+  it("zeroScoreBreakdown is the identity for sumScoreBreakdowns", () => {
+    const breakdown = computeScore(input({ killPoints: 50, weaponShotsFired: 4, weaponHits: 2 }));
+    expect(sumScoreBreakdowns(zeroScoreBreakdown(), breakdown)).toEqual(breakdown);
+  });
+
+  it("sums every category elementwise, including total", () => {
+    const a = computeScore(input({ killPoints: 50 }));
+    const b = computeScore(input({ killPoints: 25 }));
+    const sum = sumScoreBreakdowns(a, b);
+    expect(sum.killPoints).toBe(a.killPoints + b.killPoints);
+    expect(sum.total).toBe(a.total + b.total);
   });
 });

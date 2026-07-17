@@ -82,7 +82,14 @@ import {
   type GoreMultipliers,
 } from "./effects";
 import { audio } from "./audio";
-import { computeScore, killPoints } from "./scoring";
+import { computeScore, killPoints, sumScoreBreakdowns, zeroScoreBreakdown, type ScoreBreakdown } from "./scoring";
+import {
+  PLAYER_STATS_ENABLED,
+  buildPlayerFacingStats,
+  emptyPlayerFacingStats,
+  mergePlayerFacingStats,
+  type PlayerFacingStats,
+} from "./playerStats";
 import {
   FRIDAY_HOTFIX_WEAPON_INDEX,
   GDB_WEAPON_INDEX,
@@ -276,6 +283,25 @@ export interface EngineStats {
   godMode: boolean;
   /** IDCLIP cheat state. */
   noClip: boolean;
+  /** This level's own score breakdown by category (kill points plus every
+   * bonus) — see `./scoring.ts`. `undefined` whenever telemetry isn't being
+   * recorded at all (`PLAYER_STATS_ENABLED` off and no `?testHooks=1` — see
+   * `playerStats.ts`'s doc comment); all four of these fields are either all
+   * present or all `undefined` together. */
+  levelScoreBreakdown?: ScoreBreakdown;
+  /** `levelScoreBreakdown` summed with every level already cleared this
+   * campaign (see `EngineCarryover.priorScoreBreakdown`) — the run-end stats
+   * screen's cumulative breakdown. `runScoreBreakdown.total` always equals
+   * `score` above, when present. */
+  runScoreBreakdown?: ScoreBreakdown;
+  /** Curated player-facing stats (kills, weapon accuracy, damage taken by
+   * source, time survived, loot collected, closest call) for this level
+   * only — see `./playerStats.ts`. */
+  levelPlayerStats?: PlayerFacingStats;
+  /** `levelPlayerStats` merged with every level already cleared this
+   * campaign (see `EngineCarryover.priorPlayerStats`) — the run-end stats
+   * screen's cumulative totals. */
+  runPlayerStats?: PlayerFacingStats;
 }
 
 /** Host callbacks. All optional. */
@@ -312,6 +338,19 @@ export interface EngineCarryover {
    * so the running total never resets at a level transition. Defaults to 0
    * for a genuinely fresh run. */
   priorScore?: number;
+  /** Score breakdown, by category, summed across every level already
+   * cleared this campaign — the run-end stats screen's cumulative breakdown
+   * adds this level's own on top of. `priorScore` above stays the single
+   * source of truth for the live per-frame total; this is purely additive,
+   * only consumed by the stats screens. Defaults to a zeroed breakdown for a
+   * genuinely fresh run. */
+  priorScoreBreakdown?: ScoreBreakdown;
+  /** Curated player-facing stats (kills, accuracy, damage taken, loot,
+   * survival time, closest call) accumulated across every level already
+   * cleared this campaign — see `./playerStats.ts`'s
+   * `mergePlayerFacingStats`. Defaults to an empty accumulator for a
+   * genuinely fresh run. */
+  priorPlayerStats?: PlayerFacingStats;
   /** Index into `WEAPONS`; defaults to the pistol (0) when omitted. */
   weaponIndex?: number;
   /** Defaults to `STARTING_WEAPONS` when omitted. */
@@ -455,6 +494,17 @@ export class RaycasterEngine {
    * `EngineCarryover.priorScore`. Added on top of this level's own live score
    * in `buildStats()` so the running total never resets at a transition. */
   private readonly priorScore: number;
+  /** Score breakdown, by category, banked from levels already cleared this
+   * campaign — see `EngineCarryover.priorScoreBreakdown`. Purely additive
+   * alongside `priorScore` above: `priorScore` stays the single source of
+   * truth for the live per-frame total, this only feeds the run-end stats
+   * screen's cumulative breakdown (see `buildStats()`'s `runScoreBreakdown`). */
+  private readonly priorScoreBreakdown: ScoreBreakdown;
+  /** Curated player-facing stats (kills, accuracy, damage taken, loot,
+   * survival time, closest call) accumulated from levels already cleared
+   * this campaign — see `EngineCarryover.priorPlayerStats` and
+   * `playerStats.ts`'s `mergePlayerFacingStats`. */
+  private readonly priorPlayerStats: PlayerFacingStats;
   /** Tiles of ground actually covered so far this level (blocked moves count
    * for nothing) — never reset mid-level, unlike `stepDistance`; feeds the
    * scoring system's path-efficiency bonus (see `./scoring.ts`). */
@@ -564,10 +614,14 @@ export class RaycasterEngine {
    * unset. */
   private lastRawDtMs = 0;
 
-  /** Balancing telemetry — only populated when `?testHooks=1` gates it on in
-   * the constructor (see `__codeensteinTestHooks`); every recording call
-   * elsewhere in this class is a no-op guarded by `if (this.telemetry)` when
-   * it's `undefined`, so normal play carries zero extra cost. */
+  /** Balancing telemetry — populated when `?testHooks=1` gates it on (for
+   * the bot) or when `PLAYER_STATS_ENABLED` is flipped on (for the
+   * player-facing stats screen — off by default, see its doc comment: even
+   * with the derived stats gated to only compute at level-end, the ~20
+   * individual recording call sites below measurably slow real gameplay).
+   * Every recording call elsewhere in this class is a no-op guarded by
+   * `if (this.telemetry)` when it's `undefined`, so normal play with the
+   * flag off carries zero extra cost. */
   private readonly telemetry?: TelemetryState;
   /** Test-only Q/E (+ gamepad) turn-speed multiplier for
    * `scripts/run-balancing-telemetry.mjs`'s bot — see `handleMovement`'s use
@@ -671,6 +725,13 @@ export class RaycasterEngine {
       },
     };
     this.priorScore = carryover?.priorScore ?? 0;
+    this.priorScoreBreakdown = carryover?.priorScoreBreakdown ?? zeroScoreBreakdown();
+    this.priorPlayerStats = carryover?.priorPlayerStats ?? emptyPlayerFacingStats();
+    // See `this.telemetry`'s doc comment — `PLAYER_STATS_ENABLED` opts real
+    // play into the same instrumentation `?testHooks=1` always gets.
+    if (PLAYER_STATS_ENABLED || (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1")) {
+      this.telemetry = createTelemetryState();
+    }
     this.totalWalkableTiles = countWalkableTiles(map);
     this.goreMultipliers = GORE_MULTIPLIERS[gore];
     this.difficultyMultipliers = DIFFICULTY_MULTIPLIERS[difficulty];
@@ -715,11 +776,11 @@ export class RaycasterEngine {
     // highscore.mjs): exposes just enough read-only state to steer the
     // player toward a known exit and fight back without a pixel-scraping or
     // blind dead-reckoning hack. Inert unless the page URL carries
-    // `?testHooks=1` — never touched by normal play.
+    // `?testHooks=1` — never touched by normal play. `this.telemetry` is
+    // already created above whenever this param is on (it also gates that,
+    // see its doc comment) — only the window-hook exposure below (and the
+    // bot's rotation-speed override) is exclusive to this param.
     if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1") {
-      // Balancing telemetry (scripts/run-balancing-telemetry.mjs) rides the
-      // same gate — see `this.telemetry`'s doc comment.
-      this.telemetry = createTelemetryState();
       // See `this.rotSpeedMultiplier`'s doc comment.
       const rotMul = Number(new URLSearchParams(window.location.search).get("botRotSpeedMul"));
       if (Number.isFinite(rotMul)) this.rotSpeedMultiplier = Math.min(10, Math.max(1, rotMul));
@@ -838,13 +899,23 @@ export class RaycasterEngine {
         // it. See `scripts/run-balancing-telemetry.mjs`'s `maybeDetourForLoot`.
         getKeys: () => this.map.keys.filter((k) => !k.collected).map((k) => ({ x: k.x, y: k.y })),
         getTelemetrySnapshot: () => {
-          // Unreachable: `this.telemetry` is assigned earlier in this same
-          // constructor `if` block that defines `getTelemetrySnapshot`
-          // itself — whenever this hook is callable at all, it's already set.
+          // Unreachable: `this.telemetry` is always created whenever
+          // `?testHooks=1` gates this whole block on (see the constructor) —
+          // whenever this hook is callable at all, it's already set.
           /* v8 ignore next */
           if (!this.telemetry) return null;
           const t = this.telemetry;
           const stats = this.buildStats();
+          // Reuse the curated player-facing derivation for the fields it
+          // already computes (accuracy inputs, damage-by-source, closest
+          // call, fatal source), then splice the bot-only extras on top —
+          // see `playerStats.ts`'s doc comment for why the two stay separate
+          // types rather than one sharing every field. Derived directly from
+          // `t` (not `stats.levelPlayerStats`, which is only populated when
+          // it's cheap to — see `buildStats()`'s `atLevelEnd` gate) since
+          // this hook is always called after the level has already ended
+          // (see `pullLevelResult` in run-balancing-telemetry.mjs).
+          const player = buildPlayerFacingStats(t, this.levelTime, this.kills);
           return {
             ttkRecords: [...t.ttkFinished, ...t.ttkPending].map((r) => ({ ...r })),
             peakAggroedCount: t.peakAggroedCount,
@@ -853,9 +924,9 @@ export class RaycasterEngine {
             enemyBoltsFired: t.enemyBoltsFired,
             enemyBoltsHit: t.enemyBoltsHit,
             enemyMeleeAttacks: t.enemyMeleeAttacks,
-            minHealthReached: t.minHealthReached === Infinity ? this.health : t.minHealthReached,
+            minHealthReached: player.minHealthReached === Infinity ? this.health : player.minHealthReached,
             timeBelow25PctHealthSec: t.timeBelow25PctHealthSec,
-            damageBySource: { ...t.damageBySource },
+            damageBySource: { ...player.damageTakenBySource },
             healingBySource: { ...t.healingBySource },
             weaponTallies: Object.fromEntries(Object.entries(t.weaponTallies).map(([i, tally]) => [i, { ...tally }])),
             lootRolled: { ...t.lootRolled },
@@ -867,12 +938,12 @@ export class RaycasterEngine {
             minesDisarmed: t.minesDisarmed,
             regularKillLootRolls: t.regularKillLootRolls,
             regularKillLootMisses: t.regularKillLootMisses,
-            fatalDamageSource: t.fatalDamageSource,
+            fatalDamageSource: player.fatalDamageSource,
             distanceTraveled: this.distanceTraveled,
             mapCompletionFrac: this.visitedWalkableCount / this.totalWalkableTiles,
             secretRoomsOpened: this.secretRoomsOpened.size,
             secretRoomCount: map.secretRoomCount,
-            kills: stats.kills,
+            kills: player.kills,
             score: stats.score,
           };
         },
@@ -1708,10 +1779,8 @@ export class RaycasterEngine {
    * be removed rather than fixed. */
   private pushLootDrop(drop: LootDrop): void {
     this.drops.push(drop);
-    if (this.telemetry) {
-      const amount = this.scaledLootAmount(drop.amount ?? this.defaultLootAmountFor(drop.kind));
-      recordLootRolled(this.telemetry, drop.kind, amount);
-    }
+    const amount = this.scaledLootAmount(drop.amount ?? this.defaultLootAmountFor(drop.kind));
+    if (this.telemetry) recordLootRolled(this.telemetry, drop.kind, amount);
   }
 
   /**
@@ -2239,29 +2308,59 @@ export class RaycasterEngine {
 
   /** Snapshot the live stats consumed by both the native HUD and the host. */
   private buildStats(): EngineStats {
-    const score =
-      this.priorScore +
-      computeScore({
-        killPoints: this.killScore,
-        finalHealth: this.health,
-        maxHealth: MAX_HEALTH,
-        finalBullets: this.ammo.bullets,
-        finalRockets: this.ammo.rockets,
-        finalSmg: this.ammo.smg,
-        finalGas: this.ammo.gas,
-        startingBullets: this.startingAmmoRef.bullets,
-        startingRockets: this.startingAmmoRef.rockets,
-        startingSmg: this.startingAmmoRef.smg,
-        startingGas: this.startingAmmoRef.gas,
-        levelTimeSec: this.levelTime,
-        distanceTraveledTiles: this.distanceTraveled,
-        shortestPathTiles: this.map.shortestPathTiles,
-        mapCompletionFrac: this.visitedWalkableCount / this.totalWalkableTiles,
-        uniqueLoreTerminalsRead: this.loreRead.size,
-        uniqueSecretRoomsOpened: this.secretRoomsOpened.size,
-        multiKillCount: this.multiKillCount,
-        ultraKillCount: this.ultraKillCount,
-      }).total;
+    const weaponShotsFired = this.telemetry
+      ? Object.values(this.telemetry.weaponTallies).reduce((sum, t) => sum + t.shotsFired, 0)
+      : 0;
+    const weaponHits = this.telemetry ? Object.values(this.telemetry.weaponTallies).reduce((sum, t) => sum + t.hits, 0) : 0;
+
+    const levelScoreBreakdown = computeScore({
+      killPoints: this.killScore,
+      finalHealth: this.health,
+      maxHealth: MAX_HEALTH,
+      finalBullets: this.ammo.bullets,
+      finalRockets: this.ammo.rockets,
+      finalSmg: this.ammo.smg,
+      finalGas: this.ammo.gas,
+      startingBullets: this.startingAmmoRef.bullets,
+      startingRockets: this.startingAmmoRef.rockets,
+      startingSmg: this.startingAmmoRef.smg,
+      startingGas: this.startingAmmoRef.gas,
+      levelTimeSec: this.levelTime,
+      distanceTraveledTiles: this.distanceTraveled,
+      shortestPathTiles: this.map.shortestPathTiles,
+      mapCompletionFrac: this.visitedWalkableCount / this.totalWalkableTiles,
+      uniqueLoreTerminalsRead: this.loreRead.size,
+      uniqueSecretRoomsOpened: this.secretRoomsOpened.size,
+      multiKillCount: this.multiKillCount,
+      ultraKillCount: this.ultraKillCount,
+      weaponShotsFired,
+      weaponHits,
+    });
+
+    // The curated player-facing breakdown/stats are `undefined` whenever
+    // telemetry isn't being recorded at all (`PLAYER_STATS_ENABLED` off and
+    // no `?testHooks=1` — see `this.telemetry`'s doc comment); `main.ts`
+    // then shows the plain (stats-less) overlay variant, same as before this
+    // feature existed. When telemetry IS on, they're only ever read by
+    // `onGameOver`/`onWin` (see `main.ts`) — never by the live HUD or the
+    // per-frame `onStats` handler, which only reads `score` (already derived
+    // above from `levelScoreBreakdown.total`) — so even then, the real
+    // derivation only happens on the level's terminal frame
+    // (`this.state !== "playing"`); every other call reuses existing object
+    // references as unread placeholders, at zero allocation cost.
+    let runScoreBreakdown: ScoreBreakdown | undefined;
+    let levelPlayerStats: PlayerFacingStats | undefined;
+    let runPlayerStats: PlayerFacingStats | undefined;
+    if (this.telemetry) {
+      const atLevelEnd = this.state !== "playing";
+      runScoreBreakdown = atLevelEnd
+        ? sumScoreBreakdowns(this.priorScoreBreakdown, levelScoreBreakdown)
+        : this.priorScoreBreakdown;
+      levelPlayerStats = atLevelEnd
+        ? buildPlayerFacingStats(this.telemetry, this.levelTime, this.kills)
+        : this.priorPlayerStats;
+      runPlayerStats = atLevelEnd ? mergePlayerFacingStats(this.priorPlayerStats, levelPlayerStats) : this.priorPlayerStats;
+    }
 
     return {
       health: Math.ceil(this.health),
@@ -2273,12 +2372,16 @@ export class RaycasterEngine {
       gas: this.ammo.gas,
       keysHeld: this.keysHeld,
       keysTotal: this.map.keys.length,
-      score,
+      score: this.priorScore + levelScoreBreakdown.total,
       kills: this.kills,
       weaponIndex: this.weaponIndex,
       ownedWeapons: [...this.ownedWeapons],
       godMode: this.godMode,
       noClip: this.player.noClip,
+      levelScoreBreakdown: this.telemetry ? levelScoreBreakdown : undefined,
+      runScoreBreakdown,
+      levelPlayerStats,
+      runPlayerStats,
     };
   }
 }

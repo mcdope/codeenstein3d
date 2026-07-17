@@ -25,10 +25,31 @@ import { textures, type WadLoadSummary } from "./engine/textures";
 import { ONLINE_WAD_CATALOG, type OnlineWadEntry } from "./wad/onlineWadCatalog";
 import { hashRun, loadHighscoresForDisplay, recordHighscore, type HighscoreEntry } from "./engine/highscores";
 import { renderHighscoreTable } from "./ui/highscorePanel";
-import { GameHud } from "./ui/gameHud";
+import { GameHud, type StatsScreenInfo } from "./ui/gameHud";
+import type { ScoreBreakdown } from "./engine/scoring";
+import type { PlayerFacingStats } from "./engine/playerStats";
+
+/** Builds a `StatsScreenInfo` from an `EngineStats` pair, or `undefined` if
+ * telemetry wasn't recorded this run (`PLAYER_STATS_ENABLED` off and no
+ * `?testHooks=1` — see `playerStats.ts`'s doc comment) — `GameHud`'s
+ * overlays already know how to show themselves with no stats rows at all in
+ * that case. */
+export function statsScreenInfo(
+  scoreBreakdown: ScoreBreakdown | undefined,
+  playerStats: PlayerFacingStats | undefined,
+): StatsScreenInfo | undefined {
+  if (!scoreBreakdown) return undefined;
+  // `playerStats` is always populated together with `scoreBreakdown` — see
+  // `buildStats()`'s doc comment, both fields are set or omitted as a
+  // matched pair — so this is unreachable in practice, just satisfying the
+  // type checker for two independently-optional parameters.
+  /* v8 ignore next */
+  if (!playerStats) return undefined;
+  return { scoreBreakdown, playerStats };
+}
 import { buildControlsLegend } from "./ui/controlsLegend";
 import { downloadBlob } from "./ui/download";
-import { DEFAULT_GORE_LEVEL, EXTREME_GORE_ENABLED, type GoreLevel } from "./engine/effects";
+import { DEFAULT_GORE_LEVEL, type GoreLevel } from "./engine/effects";
 import {
   FRIDAY_HOTFIX_WEAPON_INDEX,
   GDB_WEAPON_INDEX,
@@ -120,11 +141,6 @@ const viewHighscoresButton = requireElement<HTMLButtonElement>("#view-highscores
 const highscoreDialog = requireElement<HTMLDialogElement>("#highscore-dialog");
 const highscoreList = requireElement<HTMLElement>("#highscore-list");
 const closeHighscoresButton = requireElement<HTMLButtonElement>("#close-highscores");
-// "Extreme" reads as over-the-top per playtest feedback — hidden from the
-// dropdown for now (see EXTREME_GORE_ENABLED's doc comment); the <option>
-// stays in index.html so re-enabling is just flipping that flag back.
-if (!EXTREME_GORE_ENABLED) goreSelect.querySelector('option[value="extreme"]')?.remove();
-
 // --- Launch method tabs (Local / Continue / GitHub / Demo level) -----------
 // Select Workspace, Continue Run, Load from GitHub, and the bundled demo
 // campaign are four different ways to start the same game loop; grouped into
@@ -1310,11 +1326,15 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
         // before it actually count as progress.
         void recordRunHighscore(parsed, path, stats, campaignLevelIndex - 1, currentReplayRecorder);
         clearCampaignSave();
-        hud.showKernelPanic(resetToFileTree);
+        hud.showKernelPanic(statsScreenInfo(stats.runScoreBreakdown, stats.runPlayerStats), resetToFileTree);
       },
       onWin: (stats) => {
         hud.showCommitSummary(
-          { linesRefactored: parsed.linesOfCode, bugsSquashed: stats.kills },
+          {
+            linesRefactored: parsed.linesOfCode,
+            bugsSquashed: stats.kills,
+            stats: statsScreenInfo(stats.levelScoreBreakdown, stats.levelPlayerStats),
+          },
           () => void advanceToNextLevel(stats),
         );
         // Inserted *before* hint/the controls legend, not appended after
@@ -1453,6 +1473,8 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
           smg: stats.smg,
           gas: stats.gas,
           priorScore: stats.score,
+          priorScoreBreakdown: stats.runScoreBreakdown,
+          priorPlayerStats: stats.runPlayerStats,
           weaponIndex: stats.weaponIndex,
           ownedWeapons: stats.ownedWeapons,
         };
@@ -1495,7 +1517,7 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
     void recordRunHighscore(currentParsedFile, currentLevelPath, stats, campaignLevelIndex, currentReplayRecorder);
   }
   clearCampaignSave();
-  activeHud?.showBuildSuccessful(resetToFileTree);
+  activeHud?.showBuildSuccessful(statsScreenInfo(stats.runScoreBreakdown, stats.runPlayerStats), resetToFileTree);
 }
 
 /**
@@ -1885,13 +1907,10 @@ function persistProgress(stats: EngineStats): void {
 
 /** Read the saved gore level, falling back to `DEFAULT_GORE_LEVEL` on any
  * missing/invalid value or if storage is unavailable (e.g. private browsing) —
- * same "never throw" philosophy as `loadCampaignSave`. A previously-saved
- * "extreme" is downgraded to "more" while `EXTREME_GORE_ENABLED` is off, since
- * that option is no longer in the dropdown for the player to see/change. */
+ * same "never throw" philosophy as `loadCampaignSave`. */
 function loadGoreLevel(): GoreLevel {
   try {
     const raw = localStorage.getItem(GORE_KEY);
-    if (raw === "extreme" && !EXTREME_GORE_ENABLED) return "more";
     if (raw === "none" || raw === "normal" || raw === "more" || raw === "extreme") return raw;
   } catch {
     // Fall through to the default.
@@ -2349,14 +2368,17 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
         canvas,
         map,
         {
-          onGameOver: () => {
+          onGameOver: (stats) => {
             levelEnded = true;
-            hud.showKernelPanic(returnToHighscores);
+            hud.showKernelPanic(statsScreenInfo(stats.runScoreBreakdown, stats.runPlayerStats), returnToHighscores);
           },
-          onWin: () => {
+          onWin: (stats) => {
             levelEnded = true;
-            if (levelIndex >= payload.levels.length) hud.showBuildSuccessful(returnToHighscores);
-            else advanceLevel();
+            if (levelIndex >= payload.levels.length) {
+              hud.showBuildSuccessful(statsScreenInfo(stats.runScoreBreakdown, stats.runPlayerStats), returnToHighscores);
+            } else {
+              advanceLevel();
+            }
           },
         },
         segment.carryover,

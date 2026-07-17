@@ -426,6 +426,30 @@ describe("RaycasterEngine — construction", () => {
     }
   });
 
+  it("getTelemetrySnapshot() reports the real minHealthReached (not this.health) once damage was taken and the level has ended", () => {
+    // `pullLevelResult` (the bot's only caller of `getTelemetrySnapshot()`,
+    // see run-balancing-telemetry.mjs) always calls it after the engine's
+    // state has already left "playing" — matching `buildStats()`'s own
+    // `atLevelEnd` gate, so this is the realistic scenario to exercise.
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][5] = 2; // hazard tile at spawn === exit
+      const map = fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }], spawn: { x: 5, y: 5 }, exit: { x: 5, y: 5 } }, size);
+      const { engine } = makeEngine(map);
+      engine.advance(0.1); // non-fatal hazard tick (18 * 0.1 = 1.8 dmg), then wins this same frame
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => { minHealthReached: number }> })
+        .__codeensteinTestHooks;
+      const snapshot = hooks!.getTelemetrySnapshot();
+      expect(snapshot.minHealthReached).toBeCloseTo(98.2, 5);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+      delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+    }
+  });
+
   it("logs a perf snapshot on the first frame only when ?perfDebug=1 is on the URL", () => {
     const original = window.location;
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -1820,6 +1844,132 @@ describe("RaycasterEngine — scoring integration", () => {
     const { engine, handlers } = makeEngine(fakeMap(), makeHandlers(), { carryover: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0, priorScore: 12345 } });
     engine.advance(0.016);
     expect(lastStats(handlers).score).toBeGreaterThanOrEqual(12345);
+  });
+});
+
+describe("RaycasterEngine — player-facing stats / run accumulation", () => {
+  // `PLAYER_STATS_ENABLED` defaults to false (see its doc comment — it costs
+  // real frame time even with the derivation gated to level-end only), so
+  // every test here that wants the curated stats populated stubs
+  // `?testHooks=1` on the URL, matching how the balancing bot always gets
+  // them for free. `runScoreBreakdown`/`levelPlayerStats`/`runPlayerStats`
+  // are only actually derived on the level's terminal frame
+  // (`this.state !== "playing"`) — see `buildStats()`'s doc comment — so
+  // every test below drives the engine to a real win or death before
+  // asserting on them.
+
+  function withTestHooksUrl<T>(fn: () => T): T {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      return fn();
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+      delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+    }
+  }
+
+  it("leaves levelPlayerStats/levelScoreBreakdown/runScoreBreakdown/runPlayerStats undefined by default (PLAYER_STATS_ENABLED off, no ?testHooks=1)", () => {
+    const size = 12;
+    const map = fakeMap({ spawn: { x: size - 2, y: size - 2 }, exit: { x: size - 2, y: size - 2 } }, size);
+    const { engine, handlers } = makeEngine(map);
+    engine.advance(0.016);
+    expect(handlers.onWin).toHaveBeenCalledTimes(1);
+    const stats = lastStats(handlers);
+    expect(stats.levelPlayerStats).toBeUndefined();
+    expect(stats.levelScoreBreakdown).toBeUndefined();
+    expect(stats.runScoreBreakdown).toBeUndefined();
+    expect(stats.runPlayerStats).toBeUndefined();
+    // The plain numeric score is unaffected either way.
+    expect(stats.score).toBeGreaterThan(0);
+  });
+
+  it("populates levelPlayerStats/levelScoreBreakdown under ?testHooks=1, once the level ends", () => {
+    withTestHooksUrl(() => {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][5] = 2; // hazard tile under spawn — see "ceils fractional health/swap" test
+      const enemy = fakeEnemy({ x: 6.5, y: 5.5, hp: 1, maxHp: 1 });
+      const map = fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }], enemies: [enemy] }, size);
+      const { engine, input, handlers } = makeEngine(map);
+      input.fireQueued = true;
+      engine.advance(0.016); // fires the pistol, kills the enemy; hazard tick this small is harmless
+      expect(enemy.alive).toBe(false);
+      engine.advance(10); // big hazard tick — drains health to 0, ends the run via onGameOver
+      expect(handlers.onGameOver).toHaveBeenCalledTimes(1);
+      const stats = lastStats(handlers);
+      expect(stats.levelPlayerStats?.kills).toBe(1);
+      expect(stats.levelPlayerStats?.shotsFired).toBeGreaterThanOrEqual(1);
+      expect(stats.levelPlayerStats?.hits).toBeGreaterThanOrEqual(1);
+      expect(stats.levelScoreBreakdown?.killPoints).toBeGreaterThan(0);
+    });
+  });
+
+  it("runScoreBreakdown.total equals the reported score at level end, given a consistent priorScore/priorScoreBreakdown pair", () => {
+    withTestHooksUrl(() => {
+      // `score` is `priorScore + levelScoreBreakdown.total`; `runScoreBreakdown.total`
+      // is `priorScoreBreakdown.total + levelScoreBreakdown.total` — the two are
+      // only guaranteed equal when the carryover's `priorScore` and
+      // `priorScoreBreakdown.total` actually agree, exactly as `main.ts` always
+      // sets them together from the same prior frame's `stats.score`/
+      // `stats.runScoreBreakdown`.
+      const priorBreakdown = { killPoints: 999, healthBonus: 0, ammoBonus: 0, speedBonus: 0, pathBonus: 0, mapCompletionBonus: 0, loreBonus: 0, secretRoomBonus: 0, multikillBonus: 0, accuracyBonus: 0, total: 999 };
+      const size = 12;
+      const map = fakeMap({ spawn: { x: size - 2, y: size - 2 }, exit: { x: size - 2, y: size - 2 } }, size);
+      const { engine, handlers } = makeEngine(map, makeHandlers(), {
+        carryover: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0, priorScore: 999, priorScoreBreakdown: priorBreakdown },
+      });
+      engine.advance(0.016); // spawn === exit, so this frame wins immediately
+      expect(handlers.onWin).toHaveBeenCalledTimes(1);
+      const stats = lastStats(handlers);
+      expect(stats.runScoreBreakdown?.total).toBe(stats.score);
+    });
+  });
+
+  it("defaults priorScoreBreakdown/priorPlayerStats to zero/empty when omitted from carryover", () => {
+    withTestHooksUrl(() => {
+      const size = 12;
+      const map = fakeMap({ spawn: { x: size - 2, y: size - 2 }, exit: { x: size - 2, y: size - 2 } }, size);
+      const { engine, handlers } = makeEngine(map);
+      engine.advance(0.016);
+      expect(handlers.onWin).toHaveBeenCalledTimes(1);
+      const stats = lastStats(handlers);
+      expect(stats.runScoreBreakdown).toEqual(stats.levelScoreBreakdown);
+      expect(stats.runPlayerStats).toEqual(stats.levelPlayerStats);
+    });
+  });
+
+  it("seeds runScoreBreakdown/runPlayerStats from EngineCarryover and adds this level's own on top", () => {
+    withTestHooksUrl(() => {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][5] = 2;
+      const enemy = fakeEnemy({ x: 6.5, y: 5.5, hp: 1, maxHp: 1 });
+      const map = fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }], enemies: [enemy] }, size);
+      const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+        carryover: {
+          health: 100,
+          swap: 0,
+          bullets: 50,
+          rockets: 0,
+          smg: 0,
+          gas: 0,
+          priorScore: 1000,
+          priorScoreBreakdown: { killPoints: 500, healthBonus: 0, ammoBonus: 0, speedBonus: 0, pathBonus: 0, mapCompletionBonus: 0, loreBonus: 0, secretRoomBonus: 0, multikillBonus: 0, accuracyBonus: 0, total: 500 },
+          priorPlayerStats: { kills: 5, shotsFired: 10, hits: 10, weaponAccuracyPct: 100, damageTakenBySource: { enemyMelee: 0, enemyRanged: 0, trapSpike: 0, trapMine: 0, hazard: 0, selfRocket: 0 }, timeSurvivedSec: 60, lootCollectedTotal: 2, minHealthReached: 90, fatalDamageSource: null },
+        },
+      });
+      input.fireQueued = true;
+      engine.advance(0.016);
+      expect(enemy.alive).toBe(false);
+      engine.advance(10);
+      expect(handlers.onGameOver).toHaveBeenCalledTimes(1);
+      const stats = lastStats(handlers);
+      expect(stats.runScoreBreakdown?.killPoints).toBe(500 + (stats.levelScoreBreakdown?.killPoints ?? 0));
+      expect(stats.runPlayerStats?.kills).toBe(5 + (stats.levelPlayerStats?.kills ?? 0));
+      expect(stats.runPlayerStats?.shotsFired).toBe(10 + (stats.levelPlayerStats?.shotsFired ?? 0));
+      expect(stats.runPlayerStats?.timeSurvivedSec).toBe(60 + (stats.levelPlayerStats?.timeSurvivedSec ?? 0));
+    });
   });
 });
 

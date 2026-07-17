@@ -59,6 +59,9 @@ const MULTI_KILL_BONUS = 300;
  * bigger than a Multi Kill, matching the existing top-tier
  * `MAP_COMPLETION_BONUS` for a cohesive "big bonus" scale. */
 const ULTRA_KILL_BONUS = 750;
+/** Max points for weapon accuracy — same scale as `AMMO_BONUS_MAX`, the
+ * other "how carefully did you play" bonus. */
+const ACCURACY_BONUS_MAX = 250;
 
 export interface ScoreInput {
   /** Sum of `killPoints()` for every enemy defeated so far. */
@@ -92,6 +95,10 @@ export interface ScoreInput {
   multiKillCount: number;
   /** Count of "Ultra Kill" streaks triggered so far this level. */
   ultraKillCount: number;
+  /** Shots fired so far this level, summed across every weapon. */
+  weaponShotsFired: number;
+  /** Shots that landed so far this level, summed across every weapon. */
+  weaponHits: number;
 }
 
 export interface ScoreBreakdown {
@@ -104,6 +111,7 @@ export interface ScoreBreakdown {
   loreBonus: number;
   secretRoomBonus: number;
   multikillBonus: number;
+  accuracyBonus: number;
   /** Sum of every bonus, floored at 0. */
   total: number;
 }
@@ -137,6 +145,10 @@ export function computeScore(input: ScoreInput): ScoreBreakdown {
   const secretRoomBonus = input.uniqueSecretRoomsOpened * SECRET_ROOM_BONUS_PER_ROOM;
   const multikillBonus = input.multiKillCount * MULTI_KILL_BONUS + input.ultraKillCount * ULTRA_KILL_BONUS;
 
+  // No shots fired reads as 0% accuracy, not a division-by-zero/100% trap.
+  const accuracyFrac = input.weaponShotsFired > 0 ? clamp01(input.weaponHits / input.weaponShotsFired) : 0;
+  const accuracyBonus = Math.round(accuracyFrac * ACCURACY_BONUS_MAX);
+
   const total = Math.max(
     0,
     input.killPoints +
@@ -147,7 +159,8 @@ export function computeScore(input: ScoreInput): ScoreBreakdown {
       mapCompletionBonus +
       loreBonus +
       secretRoomBonus +
-      multikillBonus,
+      multikillBonus +
+      accuracyBonus,
   );
 
   return {
@@ -160,7 +173,45 @@ export function computeScore(input: ScoreInput): ScoreBreakdown {
     loreBonus,
     secretRoomBonus,
     multikillBonus,
+    accuracyBonus,
     total,
+  };
+}
+
+/** Identity value for `sumScoreBreakdowns` — a fresh run's "nothing banked
+ * yet" baseline (see `EngineCarryover.priorScoreBreakdown`). */
+export function zeroScoreBreakdown(): ScoreBreakdown {
+  return {
+    killPoints: 0,
+    healthBonus: 0,
+    ammoBonus: 0,
+    speedBonus: 0,
+    pathBonus: 0,
+    mapCompletionBonus: 0,
+    loreBonus: 0,
+    secretRoomBonus: 0,
+    multikillBonus: 0,
+    accuracyBonus: 0,
+    total: 0,
+  };
+}
+
+/** Elementwise sum of every category, including `total` — used to accumulate
+ * a run-wide breakdown across levels the same way `EngineStats.score` itself
+ * already accumulates via `EngineCarryover.priorScore`. */
+export function sumScoreBreakdowns(a: ScoreBreakdown, b: ScoreBreakdown): ScoreBreakdown {
+  return {
+    killPoints: a.killPoints + b.killPoints,
+    healthBonus: a.healthBonus + b.healthBonus,
+    ammoBonus: a.ammoBonus + b.ammoBonus,
+    speedBonus: a.speedBonus + b.speedBonus,
+    pathBonus: a.pathBonus + b.pathBonus,
+    mapCompletionBonus: a.mapCompletionBonus + b.mapCompletionBonus,
+    loreBonus: a.loreBonus + b.loreBonus,
+    secretRoomBonus: a.secretRoomBonus + b.secretRoomBonus,
+    multikillBonus: a.multikillBonus + b.multikillBonus,
+    accuracyBonus: a.accuracyBonus + b.accuracyBonus,
+    total: a.total + b.total,
   };
 }
 
