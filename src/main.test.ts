@@ -1858,7 +1858,20 @@ function setFullscreenElement(el: Element | null): void {
   Object.defineProperty(document, "fullscreenElement", { value: el, configurable: true });
 }
 
-describe("main.ts — canvas sizing (fitCanvasToArea), default (RESPONSIVE_CANVAS_SCALING_ENABLED off)", () => {
+describe("main.ts — canvas sizing (fitCanvasToArea), RESPONSIVE_CANVAS_SCALING_ENABLED explicitly off", () => {
+  // The flag defaults to ON since the 2026-07 perf audit cleared its cost —
+  // this covers the legacy fixed-max-size path a build could still opt into.
+  beforeEach(() => {
+    vi.doMock("./ui/canvasFit", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("./ui/canvasFit")>();
+      return { ...actual, RESPONSIVE_CANVAS_SCALING_ENABLED: false };
+    });
+  });
+
+  afterEach(() => {
+    vi.doUnmock("./ui/canvasFit");
+  });
+
   it("never resizes the canvas — no ResizeObserver wiring, no fullscreen-exit re-fit", async () => {
     await importMain();
     const canvasArea = document.querySelector<HTMLElement>(".canvas-area")!;

@@ -1,21 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
-/** Off by default — responsive canvas sizing in windowed mode (see
- * `watchCanvasSizing`). Real per-resize cost (a `ResizeObserver` callback
- * plus a `fullscreenchange` listener, each recomputing and writing inline
- * `width`/`height` styles) for a purely cosmetic "fill the available space
- * instead of a fixed max size" upgrade — flip this on to A/B its actual
- * frame-time impact. When off, `.scene-canvas`'s own CSS
- * (`width/height: auto` + `max-width/max-height: 100%` + `aspect-ratio`)
- * still governs sizing on its own — it just can only ever *shrink* the
- * canvas to fit a small viewport, never grow it past its intrinsic 640×400
- * to fill a larger one (the same fixed-max-size behavior the layout had
- * before this feature existed). Fullscreen is entirely unaffected either
- * way — that state is sized by the separate `.scene-canvas:fullscreen` CSS
- * rule, never by this. Same pattern as `DECORATIONS_ENABLED`/
- * `PLAYER_STATS_ENABLED`/`WALL_EDGE_ANTIALIASING_ENABLED`. */
-export const RESPONSIVE_CANVAS_SCALING_ENABLED = false;
+/** On by default since the 2026-07 perf audit — responsive canvas sizing in
+ * windowed mode (see `watchCanvasSizing`): the scene grows to fill the
+ * available window instead of capping at its intrinsic 640×400. Measured
+ * twice (`npm run perf:bench -- --flag scaling`): zero engine-side busy-time
+ * delta headless, and a user-attended on-screen headed A/B showed identical
+ * frame distributions (6.70 vs 6.70ms busy median) — the compositor upscale
+ * is free at desktop window sizes, and the per-resize work is event-driven,
+ * not per-frame. When off, `.scene-canvas`'s own CSS (`width/height: auto` +
+ * `max-width/max-height: 100%` + `aspect-ratio`) still governs sizing — it
+ * just can only ever *shrink* the canvas to fit a small viewport, never grow
+ * it (the pre-feature fixed-max-size behavior). Fullscreen is entirely
+ * unaffected either way — that state is sized by the separate
+ * `.scene-canvas:fullscreen` CSS rule, never by this. Same pattern as
+ * `DECORATIONS_ENABLED`/`PLAYER_STATS_ENABLED`/
+ * `WALL_EDGE_ANTIALIASING_ENABLED`. */
+export const RESPONSIVE_CANVAS_SCALING_ENABLED = true;
 
 /**
  * Sizes `canvas` to the largest `sceneWidth`:`sceneHeight` box that fits
