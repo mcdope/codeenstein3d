@@ -27,6 +27,7 @@
     "balancing:campaign": "node scripts/run-balancing-campaign.mjs",
     "perf:bench": "node scripts/run-perf-benchmark.mjs",
     "perf:report": "node scripts/build-perf-report.mjs",
+    "poc:cross-browser-determinism": "node scripts/poc-cross-browser-determinism.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage"
