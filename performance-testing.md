@@ -27,15 +27,19 @@ Full design: `/home/mcdope/.claude/plans/you-re-a-senior-performance-calm-dahl.m
 - [x] 3b. Browser sanity final: Firefox ~40% slower busy, same shape (clean). WebKit rerun CONFIRMS: raycast-walls 19.1ms vs 4.2 chromium — per-column drawImage is the WebKit killer (headless-WebKit caveat: needs one real-Safari check before acting).
 - [x] 7. Report shipped (2026-07-18): `perf-report.html` (14 cells, 78 runs, 11 findings) built from throttle-clean dirs + `perf-findings.json`; headless calibration for MDD (busy CoV 1.0% → MDD ≈0.1ms). AA verdict from its own interleaved headed pair (cited in findings, excluded from pooled charts to avoid cross-mode pooling).
 
-## Done — awaiting user review
+## Findings work (2026-07-18, commit 85761a7)
 
-Everything measured; report delivered. Open follow-ups for the user to decide (NOT auto-applied):
-1. Flip `WALL_EDGE_ANTIALIASING_ENABLED` on by default? (free on demo, +0.4ms magento)
-2. Quick-win trio (F7+F10): guard `captureSnapshot` behind `if (replayRecorder)`, memoize `computeScore`, drop `Array.from(getGamepads())` copy
-3. Minimap offscreen-cache refactor (F1, ~0.4-2.5ms/frame depending on map size)
-4. F21 replay perf-instrumentation fix
-5. One real-Safari check for the WebKit finding; one attended headed check for the scaling flag
-6. Send the sharpened Task-241 capture request (env line + SLOW lines → likely their compositor/GPU, not engine)
+- [x] F1 minimap wall cache — offscreen canvas keyed (map, gridVersion, cell). MEASURED: hud phase 0.72→0.10ms (demo), 1.09→0.24ms (160×160). Visual spot-check via real-browser screenshot: minimap intact.
+- [x] F10 captureSnapshot guarded (was allocating every frame of every recorder-less run); gamepad Array.from copy removed.
+- [x] F21 perf-frame begin moved into advance() — replay/headless drivers now log correct phases; regression test drives advance() directly.
+- [x] F7 computeScore memoization DROPPED as inapplicable — levelTimeSec is a genuine scoring input (speed bonus); per-frame recompute is correct behavior. Finding annotated.
+- 1610 tests, 100/100/100/100 coverage; report regenerated with outcome notes.
+
+## Still open — needs the user
+
+1. Flip `WALL_EDGE_ANTIALIASING_ENABLED` on by default? (measured: free on demo maps, +0.4ms on 160×160; visual preference call)
+2. One real-Safari run for F23 (headless-WebKit may be software-rendered) + one attended headed `--flag scaling` run (unlocked screen)
+3. Send the Task-241 capture request (draft in the final session summary)
 Delete this file once reviewed.
 
 ## Open findings queue
