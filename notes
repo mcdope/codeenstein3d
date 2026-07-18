@@ -249,7 +249,7 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
     - [ ] teamwork for kill should share pointbonus
     - [ ] when one player enters the return tile, all players advance to the next level (after an informational countdown)
     - [ ] elite enemies should scale with player count
-    . [ ] adapt balancing AI for deathmatch mode / bots?
+    . [ ] adapt balancing AI for deathmatch mode / bots? host should define max players. for every missing player a random bot skill profile is launched. when a player wants to join: remove a bot.
     - [ ] step 1 of the implementation plan (`multiplayer-research.md`) shipped 2026-07-18:
       the WebRTC signaling + lobby server, `scripts/multiplayer-server.mjs` — a single
       dependency-free Node script (`node:http`/`node:crypto`/`node:url` only) implementing
@@ -289,6 +289,17 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
       79 checks total now. `doc/dev/multiplayer-server-spec.md` gained a `GET /stats` section
       alongside the other four endpoints (unlike `--install`/`--uninstall`, which stay
       deployment-only detail outside the spec, `/stats` is real protocol surface).
+    - [ ] step 2 of the implementation plan shipped 2026-07-19: client connect flow —
+      Host/Join UI, signaling client, and WebRTC data-channel setup (`src/multiplayer/`).
+      Two real browsers now reach a connected `RTCDataChannel` via a short code; no
+      session-setup payload, map transfer, or gameplay yet (steps 3+). Found and fixed a
+      real ordering deadlock in the guest's own handshake while manually verifying in two
+      live browsers, not by review: awaiting the incoming data channels before the answer
+      had even been sent back to the host — `ondatachannel` can't fire until that round
+      trip completes, so it deadlocked every guest connection. Verified via
+      `scripts/verify-multiplayer-connect.mjs` (two real Playwright browser *contexts*,
+      all three engines) plus full unit coverage (`src/multiplayer/*.test.ts`,
+      `test/mocks/webrtc.ts`).
 - [ ] enemy textures from wad? if yes: what about hitbox? — investigated (2026-07-16, no code changed yet).
   - **Today: enemies are 100% procedural, zero WAD sprite loading exists.** `src/wad/loadWad.ts`'s `WadLoadResult` only ever loads wall/door/floor-style textures (`wallTexture`/`doorTexture`/`floorTexture`/etc.) — no sprite lump is read at all. Enemies are drawn in `src/engine/sprites.ts` as solid-color rectangular billboards (`enemyColor`/`enemyBodyColor`), sized by a single `sizeFactor` in `projectEnemy` (`ENEMY_SIZE`, scaled by `EDGE_CASE_SCALE`=0.55 or `ELITE_SCALE`).
   - **Loading real sprite art is feasible, same binary format already parsed**: Doom sprite lumps use the exact same "patch" pixel format as wall patches (`src/wad/patch.ts`'s `parsePatch` is already format-generic, not wall-specific) — no new binary parser needed. But the pipeline differs from walls: sprites are used as single patches per frame directly (no `compositeTexture.ts`-style multi-patch tiling/`TEXTURE1` step), and use Doom's frame+rotation lump-naming convention (e.g. `TROOA1`, `TROOA2A8` mirrored) that nothing in this codebase currently parses. This project's WAD-texture system also has a real security/curation stance worth respecting here, not shortcutting: `src/wad/textureAllowlist.ts` is a hand-curated, individually-IWAD-verified name list per slot (not "trust any name present") — real monster sprites (imp/zombieman/demon/etc.) would need the same treatment: a new, separately-verified allowlist, not a generic passthrough.
@@ -312,6 +323,9 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
 - [ ] sounds/bgm (local bgm would override it) from wad?
 - [ ] "dialup sfx" for edgecases when chasing/aggro'd?
 - [ ] "die screams" for enemies (and for player on death, a different sfx)?
+- [ ] extend github into general git support, for gitlab etc. should support any http(s) available git repo.
+- [ ] interface contract for map generation. to make it easier for forks to make this into a totally different game
+- [ ] deploy action should place a file .restart-backend, multiplayer backend should watch via inotify or similar for that file. if it exists: restart itself and delete the file
 - [ ] random lore terminals with quotes like "There is no cow level", "Stay a while and listen" etc. should give 5x scorepoints compared to normal lore terminals - to encourage searching for them. maybe differentiate a bit visually?
   const RANDOM_LORE_QUOTES = [
     "There is no cow level",

@@ -110,6 +110,19 @@ jobs:
         with:
           path: public/wads
           key: online-wads-${{ hashFiles('src/wad/onlineWadCatalog.ts') }}
+      # Started before the dev server, not after: Vite inlines `VITE_*` env
+      # vars at server-*start* time, not per-request, so the dev server below
+      # must already see `VITE_MULTIPLAYER_SERVER_URL` pointed at a live
+      # signaling server when it boots.
+      - name: Start multiplayer signaling server
+        run: |
+          node scripts/multiplayer-server.mjs &
+          for i in $(seq 1 30); do
+            curl -s -o /dev/null http://127.0.0.1:8787/lobby && break
+            sleep 1
+          done
+        env:
+          CODEENSTEIN_MULTIPLAYER_ALLOWED_ORIGIN: "http://localhost:5173"
       - name: Start dev server
         run: |
           npm run dev -- --port 5173 --strictPort &
@@ -117,12 +130,21 @@ jobs:
             curl -s -o /dev/null http://localhost:5173/ && break
             sleep 1
           done
+        env:
+          VITE_MULTIPLAYER_SERVER_URL: "http://127.0.0.1:8787"
       - run: npm run verify:wad-textures
         env:
           CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
       # Skipped for webkit — see the matrix comment above.
       - run: npm run verify:campaign:playthrough
         if: matrix.browser != 'webkit'
+        env:
+          CODEENSTEIN_DEV_URL: "http://localhost:5173"
+          CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
+      # Runs on all three engines, unlike verify:campaign:playthrough above —
+      # it never touches OPFS or `showDirectoryPicker`, so WebKit's
+      # `navigator.storage` gap (see the matrix comment above) doesn't apply.
+      - run: npm run verify:multiplayer-connect
         env:
           CODEENSTEIN_DEV_URL: "http://localhost:5173"
           CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
