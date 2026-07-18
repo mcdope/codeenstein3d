@@ -64,6 +64,10 @@ import { randomSeed } from "./prng";
 import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelSegment } from "./engine/replay";
 import type { ParsedFile } from "./parser/types";
 import type { EngineCarryover, EngineStats } from "./engine/engine";
+import { createSession, fetchSession, fetchSessionAsHost, postAnswer } from "./multiplayer/signalingClient";
+import { fetchLobbyEntries } from "./multiplayer/lobby";
+import { createGuestAnswer, createHostOffer, waitForChannelsOpen } from "./multiplayer/webrtcConnection";
+import { SignalingError, type ConnectionState, type LobbyEntry, type MultiplayerConnection } from "./multiplayer/types";
 
 // Stamps the build timestamp + git ref onto the tab title (index.html's
 // static <title> is just the plain fallback for the instant before this
@@ -107,10 +111,12 @@ const tabLocal = requireElement<HTMLButtonElement>("#tab-local");
 const tabContinue = requireElement<HTMLButtonElement>("#tab-continue");
 const tabGithub = requireElement<HTMLButtonElement>("#tab-github");
 const tabDemo = requireElement<HTMLButtonElement>("#tab-demo");
+const tabMultiplayer = requireElement<HTMLButtonElement>("#tab-multiplayer");
 const tabPanelLocal = requireElement<HTMLElement>("#tab-panel-local");
 const tabPanelContinue = requireElement<HTMLElement>("#tab-panel-continue");
 const tabPanelGithub = requireElement<HTMLElement>("#tab-panel-github");
 const tabPanelDemo = requireElement<HTMLElement>("#tab-panel-demo");
+const tabPanelMultiplayer = requireElement<HTMLElement>("#tab-panel-multiplayer");
 const selectButton = requireElement<HTMLButtonElement>("#select-workspace");
 const continueButton = requireElement<HTMLButtonElement>("#continue-run");
 const githubRepoInput = requireElement<HTMLInputElement>("#github-repo-input");
@@ -142,18 +148,35 @@ const viewHighscoresButton = requireElement<HTMLButtonElement>("#view-highscores
 const highscoreDialog = requireElement<HTMLDialogElement>("#highscore-dialog");
 const highscoreList = requireElement<HTMLElement>("#highscore-list");
 const closeHighscoresButton = requireElement<HTMLButtonElement>("#close-highscores");
+const multiplayerSubtabHost = requireElement<HTMLButtonElement>("#multiplayer-subtab-host");
+const multiplayerSubtabJoin = requireElement<HTMLButtonElement>("#multiplayer-subtab-join");
+const multiplayerSubtabPanelHost = requireElement<HTMLElement>("#multiplayer-subtab-panel-host");
+const multiplayerSubtabPanelJoin = requireElement<HTMLElement>("#multiplayer-subtab-panel-join");
+const multiplayerDisplayNameInput = requireElement<HTMLInputElement>("#multiplayer-display-name-input");
+const multiplayerPublicCheckbox = requireElement<HTMLInputElement>("#multiplayer-public-checkbox");
+const multiplayerHostCreateButton = requireElement<HTMLButtonElement>("#multiplayer-host-create");
+const multiplayerHostCancelButton = requireElement<HTMLButtonElement>("#multiplayer-host-cancel");
+const multiplayerHostCode = requireElement<HTMLParagraphElement>("#multiplayer-host-code");
+const multiplayerJoinCodeInput = requireElement<HTMLInputElement>("#multiplayer-join-code-input");
+const multiplayerJoinConnectButton = requireElement<HTMLButtonElement>("#multiplayer-join-connect");
+const multiplayerBrowseLobbyButton = requireElement<HTMLButtonElement>("#multiplayer-browse-lobby");
+const multiplayerStatus = requireElement<HTMLParagraphElement>("#multiplayer-status");
+const multiplayerLobbyDialog = requireElement<HTMLDialogElement>("#multiplayer-lobby-dialog");
+const multiplayerLobbyList = requireElement<HTMLUListElement>("#multiplayer-lobby-list");
+const closeMultiplayerLobbyButton = requireElement<HTMLButtonElement>("#close-multiplayer-lobby");
 // --- Launch method tabs (Local / Continue / GitHub / Demo level) -----------
 // Select Workspace, Continue Run, Load from GitHub, and the bundled demo
 // campaign are four different ways to start the same game loop; grouped into
 // tabs so only one is shown at a time instead of stacking all four
 // permanently in the sidebar.
-type LaunchTab = "local" | "continue" | "github" | "demo";
+type LaunchTab = "local" | "continue" | "github" | "demo" | "multiplayer";
 
 const launchTabs: Record<LaunchTab, { button: HTMLButtonElement; panel: HTMLElement }> = {
   local: { button: tabLocal, panel: tabPanelLocal },
   continue: { button: tabContinue, panel: tabPanelContinue },
   github: { button: tabGithub, panel: tabPanelGithub },
   demo: { button: tabDemo, panel: tabPanelDemo },
+  multiplayer: { button: tabMultiplayer, panel: tabPanelMultiplayer },
 };
 
 function activateLaunchTab(tab: LaunchTab): void {
@@ -572,6 +595,7 @@ selectButton.addEventListener("click", async () => {
     cheatsUsed = false;
     workspaceName.textContent = handle.name;
     campaignLevelIndex = 1; // a fresh pick always starts a new campaign
+    updateMultiplayerTabEnabled();
     kickOffCodebaseStats(tree);
 
     renderFileTree(fileTree, tree, { onSelectFile: handleFileSelected });
@@ -624,6 +648,7 @@ async function loadGithubRepoFromInput(): Promise<void> {
     cheatsUsed = false;
     workspaceName.textContent = workspaceRootName;
     campaignLevelIndex = 1; // a fresh load always starts a new campaign
+    updateMultiplayerTabEnabled();
     kickOffCodebaseStats(tree);
     clearCampaignSave(); // a stale local-workspace save shouldn't dangle a "Continue Run" button while a remote repo is loaded
 
@@ -699,6 +724,7 @@ async function loadDemoCampaign(): Promise<void> {
     cheatsUsed = false;
     workspaceName.textContent = workspaceRootName;
     campaignLevelIndex = 1; // a fresh load always starts a new campaign
+    updateMultiplayerTabEnabled();
     kickOffCodebaseStats(tree);
     clearCampaignSave(); // a stale local-workspace save shouldn't dangle a "Continue Run" button while the demo campaign is loaded
 
@@ -754,6 +780,7 @@ continueButton.addEventListener("click", async () => {
     workspaceIsDemo = false;
     cheatsUsed = false;
     workspaceName.textContent = handle.name;
+    updateMultiplayerTabEnabled();
     kickOffCodebaseStats(tree);
     renderFileTree(fileTree, tree, { onSelectFile: handleFileSelected });
 
@@ -799,6 +826,363 @@ continueButton.addEventListener("click", async () => {
     showFileTreePlaceholder();
   }
 });
+
+// --- Multiplayer: connect flow (Host/Join UI, signaling, WebRTC) -----------
+// Step 2 of multiplayer-research.md's implementation plan: gets two browsers
+// to hold an open RTCDataChannel via a short code. Deliberately no
+// session-setup payload, no map transfer, no gameplay yet — see
+// doc/dev/multiplayer-netcode-spec.md and doc/dev/multiplayer-server-spec.md
+// for what later steps build on top of this.
+
+/** Multiplayer hosting/joining is only available for a GitHub-loaded repo or
+ * the Demos campaign — never a locally-picked workspace (see
+ * multiplayer-research.md's "Privacy: resolved"). `workspaceIsDemo` always
+ * implies `workspaceIsRemote` in every load path today, but this checks both
+ * explicitly rather than depending on that implication silently holding
+ * forever (see multiplayer-game-state-spec.md §1). */
+function isMultiplayerEligibleWorkspace(): boolean {
+  return workspaceIsRemote || workspaceIsDemo;
+}
+
+const MULTIPLAYER_TAB_DISABLED_TITLE = "Multiplayer requires a GitHub-loaded repo or the Demos campaign";
+/** Called from every workspace-loading entry point right after
+ * `workspaceIsRemote`/`workspaceIsDemo` are set — same "call at every
+ * assignment site" discipline as `updateLoadGithubRepoButtonEnabled`. Bounces
+ * back to the Local tab if Multiplayer was active and just became
+ * ineligible, so the UI never leaves a disabled tab showing as selected. */
+function updateMultiplayerTabEnabled(): void {
+  const eligible = isMultiplayerEligibleWorkspace();
+  tabMultiplayer.disabled = !eligible;
+  tabMultiplayer.title = eligible ? "" : MULTIPLAYER_TAB_DISABLED_TITLE;
+  if (!eligible && tabMultiplayer.getAttribute("aria-selected") === "true") activateLaunchTab("local");
+}
+updateMultiplayerTabEnabled();
+
+// Host/Join sub-tabs — same nested-tab pattern as the WAD source sub-tabs
+// (`activateWadTab` above).
+type MultiplayerSubtab = "host" | "join";
+const multiplayerSubtabs: Record<MultiplayerSubtab, { button: HTMLButtonElement; panel: HTMLElement }> = {
+  host: { button: multiplayerSubtabHost, panel: multiplayerSubtabPanelHost },
+  join: { button: multiplayerSubtabJoin, panel: multiplayerSubtabPanelJoin },
+};
+function activateMultiplayerSubtab(tab: MultiplayerSubtab): void {
+  for (const name of Object.keys(multiplayerSubtabs) as MultiplayerSubtab[]) {
+    const active = name === tab;
+    multiplayerSubtabs[name].button.setAttribute("aria-selected", String(active));
+    multiplayerSubtabs[name].panel.hidden = !active;
+  }
+}
+(Object.keys(multiplayerSubtabs) as MultiplayerSubtab[]).forEach((tab) =>
+  multiplayerSubtabs[tab].button.addEventListener("click", () => activateMultiplayerSubtab(tab)),
+);
+
+const MULTIPLAYER_ICE_GATHERING_TIMEOUT_MS = 10_000;
+const MULTIPLAYER_CHANNELS_OPEN_TIMEOUT_MS = 15_000;
+const MULTIPLAYER_HOST_POLL_INTERVAL_MS = 1_500;
+
+let multiplayerConnectionState: ConnectionState = "idle";
+/** The live connection once "connected" — later steps (netcode core) will
+ * consume this; step 2 only proves it reaches "connected" with both
+ * channels open. */
+let activeMultiplayerConnection: MultiplayerConnection | null = null;
+/** Bumped at the start of every connect attempt (Host create, Join) — same
+ * "supersede a stale in-flight attempt by generation check" discipline as
+ * `workspaceLoadGeneration`/`beginWorkspaceLoad` above. */
+let multiplayerConnectionGeneration = 0;
+let activeMultiplayerAbort: AbortController | null = null;
+let hostAnswerPollTimer: ReturnType<typeof setTimeout> | null = null;
+
+function beginMultiplayerConnect(): { generation: number; signal: AbortSignal } {
+  activeMultiplayerAbort?.abort();
+  if (hostAnswerPollTimer !== null) {
+    clearTimeout(hostAnswerPollTimer);
+    hostAnswerPollTimer = null;
+  }
+  const controller = new AbortController();
+  activeMultiplayerAbort = controller;
+  return { generation: ++multiplayerConnectionGeneration, signal: controller.signal };
+}
+
+function setMultiplayerStatus(message: string, isError: boolean): void {
+  multiplayerStatus.textContent = message;
+  multiplayerStatus.classList.toggle("error", isError);
+}
+
+function describeMultiplayerError(err: unknown): string {
+  if (err instanceof SignalingError) {
+    if (err.code === "rate_limited") return "Rate-limited by the multiplayer server — try again shortly.";
+    if (err.code === "session_not_found") return "No session found for that code — it may have expired.";
+    if (err.code === "already_answered") return "Someone else already joined that session.";
+    return `Multiplayer server error: ${err.code}`;
+  }
+  return err instanceof Error ? err.message : "Multiplayer connection failed.";
+}
+
+// --- Host flow -----------------------------------------------------------
+
+/** Polls `GET /session/<code>` (with the host token, exempt from the
+ * guess-sensitive rate budget) until an answer appears. Resolves to `null`
+ * if superseded or cancelled first — always in lockstep with
+ * `multiplayerConnectionGeneration` also changing (`beginMultiplayerConnect`
+ * and the Cancel handler both bump it in the same breath they abort), so a
+ * caller that's already checked `generation !== multiplayerConnectionGeneration`
+ * and found it unchanged can treat a non-null result as guaranteed — see
+ * `createMultiplayerSession`'s own use of this. Rejects only on
+ * `session_not_found` (the session expired mid-wait, no point continuing);
+ * any other failure (a transient network blip, one rate-limited tick) is
+ * retried rather than surfaced as a hard error. */
+function pollForHostAnswer(
+  code: string,
+  hostToken: string,
+  generation: number,
+  signal: AbortSignal,
+): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    const poll = async () => {
+      // `beginMultiplayerConnect()` and the Cancel handler both clear
+      // `hostAnswerPollTimer` in the same synchronous breath they bump the
+      // generation/abort the signal, so a scheduled retry can never actually
+      // fire with a stale generation — and there's no `await` between this
+      // function's own capture of `generation` and its first (non-retry)
+      // call either. Kept as a guard against a future call site changing
+      // that, not because it's reachable today.
+      /* v8 ignore next */
+      if (generation !== multiplayerConnectionGeneration || signal.aborted) return resolve(null);
+      try {
+        const result = await fetchSessionAsHost(code, hostToken, signal);
+        if (generation !== multiplayerConnectionGeneration || signal.aborted) return resolve(null);
+        if (result.answer) return resolve(result.answer);
+        hostAnswerPollTimer = setTimeout(poll, MULTIPLAYER_HOST_POLL_INTERVAL_MS);
+      } catch (err) {
+        if (generation !== multiplayerConnectionGeneration || signal.aborted) return resolve(null);
+        if (err instanceof SignalingError && err.code === "session_not_found") return reject(err);
+        console.warn("[multiplayer] host poll failed, retrying:", err);
+        hostAnswerPollTimer = setTimeout(poll, MULTIPLAYER_HOST_POLL_INTERVAL_MS);
+      }
+    };
+    void poll();
+  });
+}
+
+async function createMultiplayerSession(): Promise<void> {
+  const { generation, signal } = beginMultiplayerConnect();
+  multiplayerConnectionState = "creating-session";
+  multiplayerHostCreateButton.disabled = true;
+  multiplayerHostCancelButton.hidden = false;
+  multiplayerHostCode.hidden = true;
+  setMultiplayerStatus("Creating session…", false);
+
+  try {
+    const { peerConnection, channels, offerSdp } = await createHostOffer(MULTIPLAYER_ICE_GATHERING_TIMEOUT_MS);
+    if (generation !== multiplayerConnectionGeneration) return;
+
+    const displayName = multiplayerDisplayNameInput.value.trim();
+    const session = await createSession(
+      {
+        offer: offerSdp,
+        public: multiplayerPublicCheckbox.checked,
+        displayName: displayName || undefined,
+        playerCount: 1,
+        // The Multiplayer tab is only ever enabled once `workspaceRootName`
+        // is already a real string (see `isMultiplayerEligibleWorkspace`'s
+        // doc comment) — the fallback is defensive against that gating ever
+        // changing, not a reachable case today.
+        /* v8 ignore next */
+        campaignName: workspaceRootName ?? "unknown",
+      },
+      signal,
+    );
+    if (generation !== multiplayerConnectionGeneration) return;
+
+    multiplayerHostCode.textContent = session.code;
+    multiplayerHostCode.hidden = false;
+    multiplayerConnectionState = "awaiting-answer";
+    setMultiplayerStatus(`Waiting for a guest to join with code ${session.code}…`, false);
+
+    const answer = await pollForHostAnswer(session.code, session.hostToken, generation, signal);
+    if (generation !== multiplayerConnectionGeneration) return;
+    // `answer` is guaranteed non-null here — see `pollForHostAnswer`'s doc
+    // comment for why a null result always accompanies a generation change,
+    // which the check above already caught.
+
+    multiplayerConnectionState = "connecting";
+    setMultiplayerStatus("Guest found — establishing connection…", false);
+    await peerConnection.setRemoteDescription({ type: "answer", sdp: answer! });
+    await waitForChannelsOpen(channels, MULTIPLAYER_CHANNELS_OPEN_TIMEOUT_MS);
+    if (generation !== multiplayerConnectionGeneration) return;
+
+    activeMultiplayerConnection = { role: "host", code: session.code, peerConnection, channels };
+    multiplayerConnectionState = "connected";
+    setMultiplayerStatus("Connected.", false);
+  } catch (err) {
+    if (generation !== multiplayerConnectionGeneration) return;
+    multiplayerConnectionState = "error";
+    setMultiplayerStatus(describeMultiplayerError(err), true);
+  } finally {
+    if (generation === multiplayerConnectionGeneration) {
+      multiplayerHostCreateButton.disabled = false;
+      multiplayerHostCancelButton.hidden = true;
+    }
+  }
+}
+
+multiplayerHostCreateButton.addEventListener("click", () => void createMultiplayerSession());
+multiplayerHostCancelButton.addEventListener("click", () => {
+  activeMultiplayerAbort?.abort();
+  activeMultiplayerAbort = null;
+  multiplayerConnectionGeneration++; // invalidates the in-flight attempt without starting a new one
+  if (hostAnswerPollTimer !== null) {
+    clearTimeout(hostAnswerPollTimer);
+    hostAnswerPollTimer = null;
+  }
+  multiplayerConnectionState = "idle";
+  multiplayerHostCreateButton.disabled = false;
+  multiplayerHostCancelButton.hidden = true;
+  multiplayerHostCode.hidden = true;
+  setMultiplayerStatus("Cancelled.", false);
+});
+
+// --- Join flow -------------------------------------------------------------
+
+async function joinMultiplayerSession(code: string): Promise<void> {
+  const trimmed = code.trim().toUpperCase();
+  if (!trimmed) return;
+  const { generation, signal } = beginMultiplayerConnect();
+  multiplayerConnectionState = "fetching-session";
+  multiplayerJoinConnectButton.disabled = true;
+  setMultiplayerStatus(`Fetching session ${trimmed}…`, false);
+
+  // Hoisted so the `catch` block below can tear down a connection that was
+  // successfully created but never made it to "connected" — in particular
+  // `channelsPromise` (see `createGuestAnswer`'s doc comment): if this
+  // function throws after it exists but before `await channelsPromise`
+  // below ever runs, that promise is otherwise abandoned — nothing left
+  // awaiting it — and its own internal timeout rejecting later becomes a
+  // genuine unhandled rejection.
+  let guestPeerConnection: RTCPeerConnection | null = null;
+  let guestChannelsPromise: Promise<unknown> | null = null;
+
+  try {
+    const session = await fetchSession(trimmed, signal);
+    if (generation !== multiplayerConnectionGeneration) return;
+
+    multiplayerConnectionState = "connecting";
+    setMultiplayerStatus("Establishing connection…", false);
+    const { peerConnection, channelsPromise, answerSdp } = await createGuestAnswer(
+      session.offer,
+      MULTIPLAYER_ICE_GATHERING_TIMEOUT_MS,
+      MULTIPLAYER_CHANNELS_OPEN_TIMEOUT_MS,
+    );
+    guestPeerConnection = peerConnection;
+    guestChannelsPromise = channelsPromise;
+    if (generation !== multiplayerConnectionGeneration) return;
+
+    // Submit the answer *before* awaiting `channelsPromise` — the host can
+    // only apply this answer (and the channels only actually open) once it's
+    // arrived; see `createGuestAnswer`'s doc comment.
+    await postAnswer(trimmed, answerSdp, signal);
+    if (generation !== multiplayerConnectionGeneration) return;
+
+    const channels = await channelsPromise;
+    if (generation !== multiplayerConnectionGeneration) return;
+
+    await waitForChannelsOpen(channels, MULTIPLAYER_CHANNELS_OPEN_TIMEOUT_MS);
+    if (generation !== multiplayerConnectionGeneration) return;
+
+    activeMultiplayerConnection = { role: "guest", code: trimmed, peerConnection, channels };
+    multiplayerConnectionState = "connected";
+    setMultiplayerStatus("Connected.", false);
+  } catch (err) {
+    guestPeerConnection?.close();
+    guestChannelsPromise?.catch(() => {});
+    if (generation !== multiplayerConnectionGeneration) return;
+    multiplayerConnectionState = "error";
+    setMultiplayerStatus(describeMultiplayerError(err), true);
+  } finally {
+    if (generation === multiplayerConnectionGeneration) multiplayerJoinConnectButton.disabled = false;
+  }
+}
+
+multiplayerJoinConnectButton.addEventListener("click", () => void joinMultiplayerSession(multiplayerJoinCodeInput.value));
+
+// --- Lobby browser dialog ---------------------------------------------------
+
+function renderMultiplayerLobbyList(entries: LobbyEntry[]): void {
+  multiplayerLobbyList.innerHTML = "";
+  if (entries.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "muted";
+    empty.textContent = "No public sessions right now.";
+    multiplayerLobbyList.appendChild(empty);
+    return;
+  }
+  for (const entry of entries) {
+    const li = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "multiplayer-lobby-entry";
+    const playerLabel = entry.playerCount === 1 ? "player" : "players";
+    button.textContent = `${entry.displayName ?? "(unnamed)"} — ${entry.campaignName} (${entry.playerCount} ${playerLabel})`;
+    button.addEventListener("click", () => {
+      multiplayerLobbyDialog.close();
+      multiplayerJoinCodeInput.value = entry.code;
+      void joinMultiplayerSession(entry.code);
+    });
+    li.appendChild(button);
+    multiplayerLobbyList.appendChild(li);
+  }
+}
+
+async function openMultiplayerLobbyDialog(): Promise<void> {
+  multiplayerLobbyList.innerHTML = "";
+  const loading = document.createElement("li");
+  loading.className = "muted";
+  loading.textContent = "Loading…";
+  multiplayerLobbyList.appendChild(loading);
+  multiplayerLobbyDialog.showModal();
+  try {
+    const entries = await fetchLobbyEntries(new AbortController().signal);
+    renderMultiplayerLobbyList(entries);
+  } catch (err) {
+    multiplayerLobbyList.innerHTML = "";
+    const errorItem = document.createElement("li");
+    errorItem.className = "error";
+    errorItem.textContent = describeMultiplayerError(err);
+    multiplayerLobbyList.appendChild(errorItem);
+  }
+}
+
+multiplayerBrowseLobbyButton.addEventListener("click", () => void openMultiplayerLobbyDialog());
+closeMultiplayerLobbyButton.addEventListener("click", () => multiplayerLobbyDialog.close());
+multiplayerLobbyDialog.addEventListener("close", () => {
+  if (activeEngine) canvas.focus();
+});
+
+// --- Test-only introspection (?testHooks=1) ---------------------------------
+// Gated the same way as `RaycasterEngine`'s own `window.__codeensteinTestHooks`
+// (`src/engine/engine.ts`) — `?testHooks=1` on the page URL — rather than a
+// visible debug UI element: `scripts/verify-multiplayer-connect.mjs` reads
+// this instead of polling the DOM. Deliberately a **separate** global,
+// `__codeensteinMultiplayerTestHooks`, not folded into
+// `__codeensteinTestHooks` itself: this project's whole test suite uses
+// `!!testHooks()` (reading `__codeensteinTestHooks`) as a proxy for "an
+// engine has been constructed" — installed here at *module import* time,
+// this object would make that check trivially true before any engine exists,
+// racing every `waitUntil(() => !!testHooks())` in `main.test.ts` that
+// expects it to mean exactly that.
+if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1") {
+  (window as unknown as { __codeensteinMultiplayerTestHooks?: Record<string, () => unknown> }).__codeensteinMultiplayerTestHooks = {
+    getConnectionState: () => ({
+      state: multiplayerConnectionState,
+      channels: activeMultiplayerConnection
+        ? {
+            input: activeMultiplayerConnection.channels.input.readyState,
+            reconciliation: activeMultiplayerConnection.channels.reconciliation.readyState,
+          }
+        : null,
+    }),
+  };
+}
 
 window.addEventListener("beforeunload", () => {
   if (activeEngine && lastStats && !isReplaying) persistProgress(lastStats);

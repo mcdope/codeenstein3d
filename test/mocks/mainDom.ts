@@ -27,6 +27,7 @@ export function buildIndexDom(): void {
             <button id="tab-continue" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-continue" style="display: none">Continue</button>
             <button id="tab-github" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-github">GitHub</button>
             <button id="tab-demo" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-demo">Demos</button>
+            <button id="tab-multiplayer" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-multiplayer" disabled title="Multiplayer requires a GitHub-loaded repo or the Demos campaign">Multiplayer</button>
           </div>
           <div id="tab-panel-local" class="tab-panel" role="tabpanel">
             <button id="select-workspace" type="button">📁 Select Workspace</button>
@@ -45,6 +46,28 @@ export function buildIndexDom(): void {
           </div>
           <div id="tab-panel-demo" class="tab-panel" role="tabpanel" hidden>
             <button id="launch-demo-campaign" type="button">Launch Demo Campaign</button>
+          </div>
+          <div id="tab-panel-multiplayer" class="tab-panel" role="tabpanel" hidden>
+            <div id="multiplayer-subtabs" role="tablist">
+              <button id="multiplayer-subtab-host" class="tab-btn" type="button" role="tab" aria-selected="true" aria-controls="multiplayer-subtab-panel-host">Host</button>
+              <button id="multiplayer-subtab-join" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="multiplayer-subtab-panel-join">Join</button>
+            </div>
+            <div id="multiplayer-subtab-panel-host" class="tab-panel" role="tabpanel">
+              <input id="multiplayer-display-name-input" type="text" maxlength="100" />
+              <label id="multiplayer-public-label" class="checkbox-label">
+                <input id="multiplayer-public-checkbox" type="checkbox" />
+                List in public lobby
+              </label>
+              <button id="multiplayer-host-create" class="settings-btn" type="button">Create Session</button>
+              <button id="multiplayer-host-cancel" class="settings-btn" type="button" hidden>Cancel</button>
+              <p id="multiplayer-host-code" class="multiplayer-code" hidden></p>
+            </div>
+            <div id="multiplayer-subtab-panel-join" class="tab-panel" role="tabpanel" hidden>
+              <input id="multiplayer-join-code-input" type="text" />
+              <button id="multiplayer-join-connect" class="settings-btn" type="button">Join</button>
+              <button id="multiplayer-browse-lobby" class="settings-btn" type="button">Browse Lobby</button>
+            </div>
+            <p id="multiplayer-status" class="muted"></p>
           </div>
           <p id="workspace-name" class="muted">No workspace selected</p>
           <label id="gore-label" for="gore-select">Gore</label>
@@ -100,6 +123,10 @@ export function buildIndexDom(): void {
     <dialog id="highscore-dialog">
       <div id="highscore-list"></div>
       <button id="close-highscores" class="settings-btn" type="button">Close</button>
+    </dialog>
+    <dialog id="multiplayer-lobby-dialog">
+      <ul id="multiplayer-lobby-list"></ul>
+      <button id="close-multiplayer-lobby" class="settings-btn" type="button">Close</button>
     </dialog>
   `;
 }
