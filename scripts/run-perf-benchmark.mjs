@@ -314,6 +314,47 @@ const SCENARIOS = {
       await startMouseFlood(page);
     },
   },
+  /** S4-fire-quiet: identical to s4-magento-fire, but console.log is
+   * repointed to console.info after load, bypassing the DOM console-sidebar
+   * mirror (it wraps console.log specifically). Interleave with the fire
+   * cell to isolate finding F8: combat hit/kill/loot logs → sidebar
+   * createElement + scrollTop layout thrash per log. Playwright still
+   * captures info-level lines, so perfDebug scraping is unaffected. */
+  "s4-magento-fire-quiet": {
+    defaultDurationSec: 30,
+    async setup(page, baseUrl, collector) {
+      await loadMagentoWorkspace(page, baseUrl, collector);
+      await page.evaluate(() => {
+        console.log = console.info;
+      });
+      await typeCheat(page, "IDKFA");
+      await typeCheat(page, "IDDQD");
+      await startFireMacro(page, { weaponSlots: ["Digit3", "Digit4", "Digit5"] });
+    },
+  },
+  /** S4-move: magento2 map, continuous movement — the pathField hypothesis
+   * (F2): a full-map BFS reflood fires on every player tile-crossing, so
+   * cost should show up while WALKING, not shooting. IDCLIP (noclip) makes
+   * the forward-hold cross tiles continuously without ever wedging into a
+   * wall; IDDQD survives walking through the enemy horde. */
+  "s4-magento-move": {
+    defaultDurationSec: 30,
+    async setup(page, baseUrl, collector) {
+      await loadMagentoWorkspace(page, baseUrl, collector);
+      await typeCheat(page, "IDDQD");
+      await typeCheat(page, "IDCLIP");
+      await page.evaluate(() => {
+        const canvas = document.querySelector("canvas");
+        canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW" }));
+        // Sweep the heading so the walk covers fresh map area instead of
+        // pacing one corridor: 400ms turn burst every 3s.
+        window.__perfMove = setInterval(() => {
+          canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyE" }));
+          setTimeout(() => canvas.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyE" })), 400);
+        }, 3000);
+      });
+    },
+  },
   /** S5: the balancing bot plays the demo campaign — realistic sustained
    * movement/combat load, real clock. CAVEAT baked into the cell id: the bot
    * needs `?testHooks=1`, which switches real telemetry recording ON
