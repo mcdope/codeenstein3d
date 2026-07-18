@@ -68,6 +68,16 @@ const SIDE_SHADE = 0.68;
  * worth it for a given target machine. */
 export const WALL_EDGE_ANTIALIASING_ENABLED = false;
 
+/** On by default — the distance fog ("farther = darker"). Threaded through
+ * `renderScene` as a parameter (same testability pattern as `antialiasing`
+ * above) so the benchmark harness can A/B its real per-frame cost: per wall
+ * column one `globalAlpha` write + one black overlay `fillRect` (skipped
+ * entirely when off and the column is fully lit — y-side walls keep their
+ * directional `SIDE_SHADE` dimming either way), plus the floor caster's
+ * per-scanline `fogShade` and per-pixel RGB multiply. Turning this off is a
+ * visual change (no depth cue), not a shipping mode — it exists to measure. */
+export const DISTANCE_FOG_ENABLED = true;
+
 /**
  * Distance fog brightness multiplier in [0, 1]: full (1) within `FOG_NEAR`,
  * pure black (0) at/beyond `FOG_FAR`, smoothstepped in between so walls sink
@@ -131,6 +141,7 @@ export function renderScene(
   levelTime = 0,
   readTerminals: ReadonlySet<string> = NO_READ_TERMINALS,
   antialiasing = WALL_EDGE_ANTIALIASING_ENABLED,
+  fog = DISTANCE_FOG_ENABLED,
 ): void {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
@@ -142,7 +153,7 @@ export function renderScene(
   // to be skipped in favor of two flat `fillRect`s on maps with no hazards/
   // teleporters/traps, but that fast path can't show floor texture
   // variation, so it's retired (see renderBackground's doc comment).
-  renderBackground(ctx, map, player, width, height, horizon, levelTime, textureSet);
+  renderBackground(ctx, map, player, width, height, horizon, levelTime, textureSet, fog);
 
   // Lore terminal walls sample a real texture (see `tex` below) plus a thin
   // pulsing tint overlay on top, so the "this is interactive, walk up to it"
@@ -231,7 +242,7 @@ export function renderScene(
     const wallBottom = horizon + lineHeight / 2;
 
     // Distance fog, dimmed further on y-sides for depth.
-    let shade = fogShade(dist);
+    let shade = fog ? fogShade(dist) : 1;
     if (side === 1) shade *= SIDE_SHADE;
 
     // Every solid tile now samples a real texture — lore terminals get their
@@ -260,7 +271,10 @@ export function renderScene(
     // drawImage clips to canvas bounds natively, no manual clamping needed.
     ctx.drawImage(tex.canvas, texX, 0, 1, tex.height, x, wallTop, 1, wallBottom - wallTop);
 
-    if (solidEnd > solidStart) {
+    // With fog on this always draws (even alpha-0 close columns — kept
+    // byte-identical to the pre-flag behavior); with fog off, fully-lit
+    // columns skip the overlay entirely (only SIDE_SHADE'd y-sides draw).
+    if (solidEnd > solidStart && (fog || shade < 1)) {
       // Alpha-blending black at (1-shade) over an opaque pixel reproduces
       // the old flat-fill era's `base*shade` multiply exactly, and composes
       // for free with the `drawImage` scale above.
@@ -335,6 +349,7 @@ function renderBackground(
   horizon: number,
   levelTime: number,
   textureSet: TextureSet,
+  fog: boolean,
 ): void {
   if (!floorImage || floorImage.width !== width || floorImage.height !== height) {
     floorImage = ctx.createImageData(width, height);
@@ -377,7 +392,7 @@ function renderBackground(
     let floorX = player.posX + rowDistance * rayDir0X;
     let floorY = player.posY + rowDistance * rayDir0Y;
 
-    const shade = fogShade(rowDistance);
+    const shade = fog ? fogShade(rowDistance) : 1;
 
     for (let x = 0; x < width; x++) {
       const cx = Math.floor(floorX);

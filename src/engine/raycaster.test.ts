@@ -576,3 +576,53 @@ describe("renderMinimap", () => {
     expect(panel.w).toBeGreaterThan(0);
   });
 });
+
+describe("renderScene — distance fog flag", () => {
+  /** Positional call with everything defaulted except `fog`. */
+  function render(c: MockCanvasContext, map: GameMap, player: Player, fog: boolean): void {
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeTextureSet(), 0, 0, new Set(), false, fog);
+  }
+
+  it("fog off: a fully-lit x-side column skips the base shading fill that fog on always draws", () => {
+    const map = fakeMap();
+    const player = centeredPlayer(map); // faces +X — every column hits an x-side wall
+    const cOn = ctx();
+    render(cOn, map, player, true);
+    const cOff = ctx();
+    render(cOff, map, player, false);
+    const fillsAt = (c: MockCanvasContext, col: number) => c.fillRect.mock.calls.filter((a) => a[0] === col).length;
+    expect(fillsAt(cOn, midCol)).toBe(1); // alpha-(1-shade) overlay, drawn even when shade is 1
+    expect(fillsAt(cOff, midCol)).toBe(0); // fully lit without fog — overlay skipped entirely
+  });
+
+  it("fog off: y-side walls keep their directional SIDE_SHADE overlay", () => {
+    const map = fakeMap();
+    const player = centeredPlayer(map);
+    // Face +Y so the center ray hits a horizontal (y-side) wall: those stay
+    // dimmed by SIDE_SHADE regardless of fog, so the overlay must still draw.
+    player.dirX = 0;
+    player.dirY = 1;
+    player.planeX = -0.66;
+    player.planeY = 0;
+    const c = ctx();
+    render(c, map, player, false);
+    expect(c.fillRect.mock.calls.filter((a) => a[0] === midCol).length).toBe(1);
+  });
+
+  it("fog off: far floor pixels keep their raw texture color instead of sinking to black", () => {
+    const map = fakeMap();
+    const player = centeredPlayer(map);
+    // Row just below the horizon: rowDistance = posZ / 1 = HEIGHT/2, beyond
+    // FOG_FAR — fully fogged to black when on, untouched when off.
+    expect(FOG_FAR).toBeLessThan(HEIGHT / 2);
+    const rowIdx = (Math.floor(HEIGHT / 2) + 1) * WIDTH * 4;
+    const cOn = ctx();
+    render(cOn, map, player, true);
+    const fogged = (cOn.putImageData.mock.calls[0][0] as ImageData).data[rowIdx];
+    const cOff = ctx();
+    render(cOff, map, player, false);
+    const unfogged = (cOff.putImageData.mock.calls[0][0] as ImageData).data[rowIdx];
+    expect(fogged).toBe(0);
+    expect(unfogged).toBe(fakeTextureSet().floor.pixels[0]);
+  });
+});

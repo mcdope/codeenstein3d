@@ -53,6 +53,9 @@ const BROWSERS = { chromium, firefox, webkit };
 const FLAG_DEFS = {
   aa: { file: "src/engine/raycaster.ts", name: "WALL_EDGE_ANTIALIASING_ENABLED" },
   scaling: { file: "src/ui/canvasFit.ts", name: "RESPONSIVE_CANVAS_SCALING_ENABLED" },
+  // invert: default is `true`, so the "flagged" variant flips it OFF —
+  // measures what the distance fog costs, not what enabling it would cost.
+  fog: { file: "src/engine/raycaster.ts", name: "DISTANCE_FOG_ENABLED", invert: true },
 };
 
 // ---------------------------------------------------------------------------
@@ -509,6 +512,13 @@ async function measureRun(browser, scenarioId, baseUrl, { warmupSec, durationSec
     await page.waitForTimeout(durationSec * 1000);
 
     const { frames, heapSamples } = await readSampler(page);
+    // A background/occluded window gets rAF-throttled to ~1Hz — such a run
+    // measures the throttle, not the game. Flag it loudly instead of letting
+    // it pool silently into the medians (a locked screen once contaminated
+    // three whole batches this way).
+    const intervalCheck = summarizeIntervals(frames.deltas);
+    const throttled = Boolean(intervalCheck && intervalCheck.median > 100);
+    if (throttled) console.log(`[perf:bench]   WARNING: median interval ${intervalCheck.median.toFixed(0)}ms — window throttled/occluded, run INVALID`);
     // Per-frame busy time from the ?perfDebug=1 stats hook — every frame, not
     // just the rate-limited console snapshots; this is the A/B metric.
     const stats = await page.evaluate(() => window.__codeensteinPerfStats?.snapshot() ?? null);
@@ -528,8 +538,9 @@ async function measureRun(browser, scenarioId, baseUrl, { warmupSec, durationSec
       startedAt,
       warmupSec,
       durationSec,
+      throttled,
       meta,
-      intervals: summarizeIntervals(frames.deltas),
+      intervals: intervalCheck,
       frameCount: frames.total,
       rawDeltas: frames.deltas, // kept raw for the report's histograms/CDFs
       heapSamples,
@@ -575,7 +586,7 @@ async function runCell(browser, cell, baseUrl, outDir, manifest) {
 
   for (let i = entry.runsDone; i < cell.runs; i += 1) {
     const flagDef = cell.flag ? FLAG_DEFS[cell.flag] : null;
-    if (flagDef) setFlag(flagDef, cell.variant === "flagged");
+    if (flagDef) setFlag(flagDef, (cell.variant === "flagged") !== Boolean(flagDef.invert));
     try {
       console.log(`[perf:bench] ${cell.id}: run ${i + 1}/${cell.runs}`);
       const run = await measureRun(browser, cell.scenario, baseUrl, cell);
@@ -606,8 +617,9 @@ function buildCells(opts) {
     const durationSec = opts.durationSec ?? SCENARIOS[scenario]?.defaultDurationSec ?? 30;
     const base = { scenario, browser: opts.browser, runs: opts.runs, durationSec, warmupSec: opts.warmupSec };
     if (opts.flag) {
+      const flaggedLabel = `${opts.flag}-${FLAG_DEFS[opts.flag].invert ? "off" : "on"}`;
       cells.push({ ...base, id: `${scenario}.${opts.browser}.baseline`, flag: opts.flag, variant: "baseline" });
-      cells.push({ ...base, id: `${scenario}.${opts.browser}.${opts.flag}-on`, flag: opts.flag, variant: "flagged" });
+      cells.push({ ...base, id: `${scenario}.${opts.browser}.${flaggedLabel}`, flag: opts.flag, variant: "flagged" });
     } else {
       cells.push({ ...base, id: `${scenario}.${opts.browser}.baseline`, flag: null, variant: "baseline" });
     }
