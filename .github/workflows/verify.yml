@@ -148,3 +148,7 @@ jobs:
         env:
           CODEENSTEIN_DEV_URL: "http://localhost:5173"
           CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
+          # TODO(temporary): remove once the Firefox CI-only ICE-gathering
+          # issue is confirmed fixed — see scripts/verify-multiplayer-connect.mjs's
+          # installIceDiagnostics() doc comment.
+          CODEENSTEIN_MULTIPLAYER_DEBUG_ICE: "1"
