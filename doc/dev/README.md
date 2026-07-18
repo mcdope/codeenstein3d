@@ -11,3 +11,4 @@ These docs are a **curated, evergreen reference** — they describe current rule
 - [Design Decisions](decisions.md) — a themed reference of notable tradeoffs and reversals, citing `notes` task numbers for full detail
 - [Testing](testing.md) — the Vitest unit-test suite: setup, shared mocks, mocking philosophy, and reusable techniques
 - [Balancing Telemetry Bot](balancing-telemetry.md) — the automated bot-driven balance-review/regression tool: entry points, profiles, env vars, and the headed-vs-headless timing gotcha
+- [Performance Tooling](performance.md) — the `?perfDebug=1` frame diagnostics, the `perf:bench`/`perf:report` benchmark harness, and the measurement gotchas from the 2026-07 audit

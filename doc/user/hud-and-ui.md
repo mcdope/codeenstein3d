@@ -49,6 +49,10 @@ Recording captures in real time at 1× — starting it locks the rest of the tra
 
 When not in fullscreen, a console panel next to the canvas mirrors everything logged to the browser console, plus the occasional in-character hint dropped every 18–40 seconds while a level is running. It's automatically hidden while the canvas is fullscreen.
 
+### Performance diagnostics (`?perfDebug=1`)
+
+If the game ever feels choppy and you want to report it, add `?perfDebug=1` to the page URL and reload. Extra `[perf]` lines appear in the console sidebar — frame timings, what the engine spent each frame on, and basic machine info — updating every couple of seconds and immediately whenever a frame is genuinely slow. Nothing is sent anywhere: the lines only exist in the sidebar (and your browser console), which is exactly the point — a plain screen recording of your game session captures everything needed to diagnose a framedrop, with no developer tools required. Without the URL flag, none of this runs at all.
+
 ## Footer
 
 The bottom of the left sidebar has a small copyright/license line (AGPL-3.0-or-later) and a link back to the project's GitHub repository.

@@ -38,6 +38,7 @@ If you haven't set any scores of your own yet, the Highscores dialog shows 3 exa
 - Your **local WAD texture pack** file — read locally into memory to extract textures, never transmitted anywhere, and never persisted: it's gone the moment you reload the page
 - Nothing about *you* — picking an **online texture pack** from the sidebar's curated list does perform a network request, but only a same-origin one to the game's own server for a static file it already ships (fetched and bundled at build time — see [Credits & Third-Party Licenses](../../README.md#online-wadtexture-pack-catalog-fetched-at-build-time-bundled-as-static-assets)), never to a third party, and no information about you or your workspace is sent
 - Any personal or account information — there's nothing to log in with
+- Anything from the opt-in `?perfDebug=1` diagnostics mode (see [HUD & UI](hud-and-ui.md#performance-diagnostics-perfdebug1)) — its frame-timing and machine-info lines (screen size, CPU core count, browser user-agent) are only printed to your own console sidebar, never transmitted; sharing them is entirely your choice, e.g. via a screen recording you make yourself
 - Any of the above while a Doom-style cheat code (`IDDQD`/`IDCLIP`/`IDKFA`) is active for that run — a cheated run isn't recorded to the highscore board at all
 
 ## Automated/bot traffic
