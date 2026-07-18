@@ -80,7 +80,46 @@ async function makeEligible(page, engineName) {
  * networks. */
 async function grantFakeMediaForFirefox(page, engineName) {
   if (engineName !== "firefox") return;
-  await page.evaluate(() => navigator.mediaDevices.getUserMedia({ audio: true, video: true }));
+  try {
+    await page.evaluate(() => navigator.mediaDevices.getUserMedia({ audio: true, video: true }));
+    console.log("[diag] getUserMedia() resolved");
+  } catch (err) {
+    console.log("[diag] getUserMedia() rejected:", err.message);
+  }
+}
+
+/** Logs every `RTCPeerConnection` this page constructs, its
+ * `iceGatheringState` transitions, and every ICE candidate it discovers (or
+ * the explicit "done gathering, no more candidates" null-candidate signal)
+ * — installed before any app code runs via `addInitScript`, no changes to
+ * the app itself. Diagnostic only, gated behind
+ * `CODEENSTEIN_MULTIPLAYER_DEBUG_ICE=1` — silent otherwise. */
+async function installIceDiagnostics(page, label) {
+  if (process.env.CODEENSTEIN_MULTIPLAYER_DEBUG_ICE !== "1") return;
+  await page.addInitScript((label) => {
+    const OriginalRTCPeerConnection = window.RTCPeerConnection;
+    let counter = 0;
+    window.RTCPeerConnection = class extends OriginalRTCPeerConnection {
+      constructor(...args) {
+        super(...args);
+        const id = ++counter;
+        console.log(`[ice:${label}#${id}] constructed`, JSON.stringify(args[0] ?? {}));
+        this.addEventListener("icegatheringstatechange", () => {
+          console.log(`[ice:${label}#${id}] iceGatheringState -> ${this.iceGatheringState}`);
+        });
+        this.addEventListener("icecandidate", (event) => {
+          if (!event.candidate) {
+            console.log(`[ice:${label}#${id}] icecandidate: end-of-candidates (null)`);
+          } else {
+            console.log(`[ice:${label}#${id}] icecandidate:`, event.candidate.candidate);
+          }
+        });
+        this.addEventListener("iceconnectionstatechange", () => {
+          console.log(`[ice:${label}#${id}] iceConnectionState -> ${this.iceConnectionState}`);
+        });
+      }
+    };
+  }, label);
 }
 
 /** Polls `window.__codeensteinMultiplayerTestHooks.getConnectionState()`
@@ -122,6 +161,12 @@ const FIREFOX_LAUNCH_OPTIONS = {
     "media.peerconnection.ice.obfuscate_host_addresses": false,
     "media.navigator.streams.fake": true,
     "media.navigator.permission.disabled": true,
+    // Firefox's "default route" interface lookup (see
+    // `grantFakeMediaForFirefox`'s doc comment) tries IPv6 first — several
+    // Mozilla reports of this exact lookup hanging/failing in container
+    // network namespaces cite an IPv6 route resolving oddly before falling
+    // back to IPv4. Forcing IPv4-only removes that variable.
+    "network.dns.disableIPv6": true,
   },
 };
 
@@ -137,6 +182,12 @@ async function main() {
     const guestPage = await guestContext.newPage();
     hostPage.on("pageerror", (err) => console.log("[host pageerror]", err.message));
     guestPage.on("pageerror", (err) => console.log("[guest pageerror]", err.message));
+    await installIceDiagnostics(hostPage, "host");
+    await installIceDiagnostics(guestPage, "guest");
+    if (process.env.CODEENSTEIN_MULTIPLAYER_DEBUG_ICE === "1") {
+      hostPage.on("console", (msg) => console.log("[host console]", msg.text()));
+      guestPage.on("console", (msg) => console.log("[guest console]", msg.text()));
+    }
 
     console.log("Loading an eligible workspace (demo campaign) in both browsers...");
     await Promise.all([makeEligible(hostPage, engineName), makeEligible(guestPage, engineName)]);
