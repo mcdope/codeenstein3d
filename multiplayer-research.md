@@ -496,3 +496,37 @@ This is a major initiative, not an incremental feature:
    deterministic-candidate-ordering implementation shape).
 
 All open questions from this research pass are now resolved.
+
+## Implementation plan
+
+High-level steps only — details live in the three specs. Work lands as multiple
+PRs targeting the `multiplayer` branch; each step below is roughly one PR (split
+further if one grows too large, never merged together). Order matters: 1 is
+independent, 2 depends on 1, 3–5 are engine/map work independent of 1–2, and
+6–9 need everything before them.
+
+1. **Signaling + lobby server** — the standalone Node script
+   (`multiplayer-server-spec.md`), including `--install`/`--uninstall` and its
+   own verification script.
+2. **Client connect flow** — Host/Join UI (gated to GitHub/Demos), signaling
+   client, WebRTC connection + data-channel setup, lobby browser screen. Ends at
+   "two browsers hold an open data channel," no gameplay yet.
+3. **Engine: `simulate()`/`render()` split** — gated on the N=1
+   byte-identical checks (test suite, replay playback, trajectory digest).
+4. **Engine: N-player model** — per-player state, camera-parameterized shot
+   resolution, enemy targeting, death/spectate (`multiplayer-game-state-spec.md`
+   §6). Same N=1 gate.
+5. **Map generation: multi-spawn** — `pickMultiplayerSpawns` + the
+   avoidance/hazard integration, behind the `maxPlayers` parameter (inert for
+   single-player).
+6. **Netcode core** — worker tick clock, session-setup payload, input delay
+   buffer, lockstep input sync over the channels from step 2.
+7. **Reconciliation** — snapshots incl. PRNG-state resync, drift correction
+   (snap + render smoothing).
+8. **Session lifecycle** — disconnects (incl. loot drops), host-disconnect
+   handling, level transitions with countdown, MP-specific rules (cheats off,
+   replay/highscore off, pause suppression, lore overlay).
+9. **Scoring & polish** — per-player scoring/assists, comparison table, elite
+   scaling by player count, loot visibility on mini-/automap.
+10. **Verification & docs** — cross-browser determinism check wired into CI,
+    multi-peer e2e smoke test, user/dev docs + privacy.md updates, CHANGELOG.
