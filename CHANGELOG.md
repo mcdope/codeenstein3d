@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## beta-4
+
 - Dev: a repeatable frame-time benchmark harness (`npm run perf:bench`) and chart report (`npm run perf:report`) — real-clock Playwright runs over deterministic scenarios (idle, replay-combat, particle stress, a huge GitHub-repo map, bot play) with per-frame phase timing via `?perfDebug=1` and interleaved A/B for the build flags. First full audit's verdicts: distance fog and wall-edge antialiasing are essentially free on typical maps (antialiasing costs ~0.4ms/frame on huge ones), and no engine-side hotspot reproduces the reported huge-repo framedrops — details in `perf-findings.json`
 - Fix: the FPS overlay (Right-Ctrl) and the IDDQD/IDCLIP cheat toggles all silently reset every time you advanced to the next level, needing to be re-activated each time — they now carry over for the rest of the run, same as your health/ammo/weapons already did
 - Wall-edge antialiasing and windowed-mode canvas resizing are both on by default now: the perf audit measured antialiasing as undetectable on normal maps (~0.4ms/frame on huge ones) and the canvas resizing as completely free on both the engine and compositing side — so you get smoother wall silhouettes, and the game window finally grows past 640×400 to fill the space your browser window actually has
@@ -24,6 +26,7 @@
 - New: an "Export Map as PNG" button appears once you clear a level — downloads a top-down image of it, textured with the actual walls/doors/floors/hazards you were seeing in-game (not a flat debug-style diagram), for sharing. Only ever available for a level you've already finished
 - New: chaining 3 kills within 3 seconds now triggers a "Multi Kill" bonus (on-screen banner, stinger sound, and a flat score bonus); chaining 6 within 6 seconds triggers a bigger "Ultra Kill" instead
 - Fix: Extreme gore mode's blood particles could render at nearly twice the canvas height at point-blank range — particle size and particle count are now capped across every gore tier, not just Extreme
+- Dev: the browser tab title now stamps on the exact git ref of the running build (a real release tag if HEAD is tagged, otherwise a short commit hash), instead of just a build timestamp — makes a stale cached build after a deploy obvious at a glance
 
 ## beta-3
 

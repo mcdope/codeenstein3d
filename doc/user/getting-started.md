@@ -38,3 +38,7 @@ From there you explore, fight, loot, and make your way to the level's exit tile.
 - **Die** → **Kernel Panic**, and you're returned to the file tree.
 
 Your progress autosaves as you play — but only for a **Local** workspace, so if you close the tab mid-campaign, **Continue Run** picks it back up (you'll be asked to re-pick the same local folder, since a browser can't hold onto a file handle across sessions). A **GitHub** or **Demos** run doesn't persist or offer a "Continue Run": there's no local folder to re-pick for either, and re-fetching/rebuilding one from scratch would silently start the campaign back over rather than truly resuming it, so neither pretends to save.
+
+## Watching a replay
+
+Every highscore entry can be watched back frame-for-frame from the Highscores dialog's **Watch** button, regardless of which tab the original run came from — a Local run asks you to re-pick the same folder, a GitHub run re-fetches the same repo automatically, and a Demos run rebuilds the bundled campaign on the spot, so the source code needed to reconstruct the level is always available one way or another. From the replay's transport bar you can also **Record** the playback as a downloadable webm video, or use the one-click **Export** shortcut next to the entry in the Highscores dialog itself.

@@ -20,6 +20,8 @@ Want a level dense with hidden rooms? Steer the agent toward **dead/unreachable 
 
 One thing to tell the agent up front: **it can't know exactly what its file will produce just by reading it.** Map layout, secret-room contents, and even which of three outcomes a TODO comment triggers are all drawn from a seeded RNG — deterministic per file, but not something anyone can compute by eye. The only way to know what a file actually generates is to load it and look. That's exactly how `demo-campaign/` was tuned during development: every file was run through the real map generator repeatedly and adjusted based on what actually came out, not what seemed like it should.
 
+Large open rooms also get a scattering of solid pillars (1-3 per room) to break up sightlines — this isn't tied to any specific source construct, it's an always-on structural pass over whatever rooms the generator already placed, so there's nothing to write in your source to trigger it either way.
+
 ## Manual authoring cheat sheet
 
 If you'd rather write the file yourself, here's what each construct controls. See [Game Mechanics](mechanics.md#how-code-becomes-a-level) for the full reference table — this is the "which knob do I turn" version.

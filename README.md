@@ -257,7 +257,7 @@ npm run preview    # Serve production build locally
 | — | Build tag in the title bar shows the exact git tag (a real release) or short commit hash instead of just a timestamp, so a stale cached build is obvious | ✅ |
 | — | Level-end/run-end player-facing stats screen (kills, weapon accuracy, damage taken by source, loot collected, score breakdown) | ⏸️ Implemented, disabled by default (playtest feedback: measurable frame-time cost) |
 | — | FPS overlay and IDDQD/IDCLIP cheat toggles now carry across a level transition instead of silently resetting | ✅ |
-| — | Wall-edge antialiasing and windowed-mode responsive canvas resizing | ⏸️ Implemented, disabled by default (perf impact under measurement) |
+| — | A repeatable frame-time benchmark harness (`npm run perf:bench`/`perf:report`) with opt-in per-frame diagnostics (`?perfDebug=1`), used to audit and confirm wall-edge antialiasing and windowed-mode responsive canvas resizing are both cheap enough to ship on by default (see `perf-findings.json`) | ✅ |
 
 ---
 
@@ -334,7 +334,10 @@ src/
     ├── bgm.ts               # Custom background-music playback
     ├── hud.ts               # Status bar, crosshair, compass
     ├── automap.ts           # Fog-of-war overlay
-    └── input.ts             # Keyboard, mouse, gamepad
+    ├── input.ts             # Keyboard, mouse, gamepad
+    ├── perfDebug.ts         # Opt-in ?perfDebug=1 per-frame phase-timing diagnostics
+    ├── playerStats.ts       # Level-end stats screen (dormant, disabled by default)
+    └── telemetry.ts         # Balancing-bot tracking types/helpers
 ```
 
 ---
