@@ -425,7 +425,16 @@ export class InputController implements InputSource {
    */
   pollGamepad(): void {
     const pads = typeof navigator.getGamepads === "function" ? navigator.getGamepads() : [];
-    const pad = Array.from(pads).find((p): p is Gamepad => p !== null);
+    // Plain scan, no `Array.from(...).find(...)`: getGamepads() already hands
+    // back a fresh browser-allocated snapshot every call — copying it again
+    // per frame is pure allocation churn on the hot path.
+    let pad: Gamepad | null = null;
+    for (const candidate of pads) {
+      if (candidate !== null) {
+        pad = candidate;
+        break;
+      }
+    }
     if (!pad) {
       this.gamepadMoveX = 0;
       this.gamepadMoveY = 0;

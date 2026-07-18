@@ -2096,3 +2096,30 @@ describe("RaycasterEngine — Multi Kill / Ultra Kill streaks", () => {
     expect(afterUltra).toBeGreaterThan(afterMulti); // Ultra's bigger bonus landed
   });
 });
+
+describe("perf-frame begin on direct advance() (audit F21)", () => {
+  it("a direct advance() call (replay viewer / headless driver) begins its own perf frame from dt", () => {
+    const original = window.location;
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    Object.defineProperty(window, "location", { value: { ...original, search: "?perfDebug=1" }, configurable: true });
+    try {
+      const { engine } = makeEngine(fakeMap());
+      // No start()/rAF at all — the exact drive mode main.ts's replay step
+      // loop uses. Phases must reset per advance (they used to accumulate
+      // forever because only frame() called beginFrame).
+      engine.advance(0.016);
+      engine.advance(0.016);
+      const hook = (window as Window & { __codeensteinPerfStats?: { snapshot: () => { frames: number; busyMs: number[] } } }).__codeensteinPerfStats;
+      expect(hook).toBeDefined();
+      const snap = hook!.snapshot();
+      expect(snap.frames).toBe(2);
+      // Accumulation bug regression check: the second frame's busy time is a
+      // fresh measurement, not a running total that includes the first.
+      expect(snap.busyMs[1]).toBeLessThan(snap.busyMs[0] + snap.busyMs[1] + 1);
+      expect(snap.busyMs.length).toBe(2);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+      delete (window as unknown as { __codeensteinPerfStats?: unknown }).__codeensteinPerfStats;
+    }
+  });
+});

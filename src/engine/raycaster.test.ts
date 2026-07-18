@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createMockCanvasContext, stubCanvasGetContext, type MockCanvasContext } from "../../test/mocks/canvas";
 import {
   DOOR_TILE,
@@ -624,5 +624,64 @@ describe("renderScene — distance fog flag", () => {
     const unfogged = (cOff.putImageData.mock.calls[0][0] as ImageData).data[rowIdx];
     expect(fogged).toBe(0);
     expect(unfogged).toBe(fakeTextureSet().floor.pixels[0]);
+  });
+});
+
+describe("renderMinimap — cached wall layer", () => {
+  it("builds the offscreen wall canvas once and reuses it while (map, gridVersion) are unchanged", () => {
+    const map = fakeMap();
+    const player = new Player({ ...map, spawn: { x: 1, y: 1 } });
+    const createSpy = vi.spyOn(document, "createElement");
+    const c1 = ctx();
+    renderMinimap(asCtx(c1), map, player, 0, 70, new Set(), 3);
+    const buildsAfterFirst = createSpy.mock.calls.filter((a: unknown[]) => a[0] === "canvas").length;
+    expect(buildsAfterFirst).toBe(1);
+    expect(c1.drawImage).toHaveBeenCalled(); // walls arrive as one blit, not per-tile fills
+
+    const c2 = ctx();
+    renderMinimap(asCtx(c2), map, player, 0, 70, new Set(), 3);
+    expect(createSpy.mock.calls.filter((a: unknown[]) => a[0] === "canvas").length).toBe(buildsAfterFirst); // cache hit
+    expect(c2.drawImage).toHaveBeenCalled();
+  });
+
+  it("rebuilds when gridVersion bumps (door/secret wall opened) and uses the bonus wall color on bonus levels", () => {
+    const map = fakeMap({ bonusLevel: true });
+    const player = new Player({ ...map, spawn: { x: 1, y: 1 } });
+    renderMinimap(asCtx(ctx()), map, player, 0, 70, new Set(), 1);
+    const createSpy = vi.spyOn(document, "createElement");
+    renderMinimap(asCtx(ctx()), map, player, 0, 70, new Set(), 2); // version bump -> rebuild
+    expect(createSpy.mock.calls.filter((a: unknown[]) => a[0] === "canvas").length).toBe(1);
+  });
+
+  it("falls back to direct per-tile fills when no offscreen 2D context is available", () => {
+    const map = fakeMap();
+    const player = new Player({ ...map, spawn: { x: 1, y: 1 } });
+    const original = HTMLCanvasElement.prototype.getContext;
+    (HTMLCanvasElement.prototype as unknown as { getContext: () => null }).getContext = () => null;
+    try {
+      const c = ctx();
+      renderMinimap(asCtx(c), map, player, 0, 70, new Set(), 99);
+      expect(c.drawImage).not.toHaveBeenCalled();
+      // The 8x8 walled room has 28 border wall tiles — all drawn directly.
+      expect(c.fillRect.mock.calls.length).toBeGreaterThan(28);
+      // Bonus levels pick the alternate wall color in the same fallback.
+      const bonus = fakeMap({ bonusLevel: true });
+      const cBonus = ctx();
+      renderMinimap(asCtx(cBonus), bonus, new Player({ ...bonus, spawn: { x: 1, y: 1 } }), 0, 70, new Set(), 99);
+      expect(cBonus.drawImage).not.toHaveBeenCalled();
+    } finally {
+      HTMLCanvasElement.prototype.getContext = original;
+    }
+  });
+});
+
+describe("renderMinimap — wall-layer cache keying", () => {
+  it("a different cell size (maxPixels) on the same map/version rebuilds the layer", () => {
+    const map = fakeMap();
+    const player = new Player({ ...map, spawn: { x: 1, y: 1 } });
+    renderMinimap(asCtx(ctx()), map, player, 0, 70, new Set(), 7);
+    const createSpy = vi.spyOn(document, "createElement");
+    renderMinimap(asCtx(ctx()), map, player, 0, 40, new Set(), 7); // smaller panel -> different cell
+    expect(createSpy.mock.calls.filter((a: unknown[]) => a[0] === "canvas").length).toBe(1);
   });
 });

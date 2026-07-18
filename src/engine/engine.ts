@@ -624,6 +624,10 @@ export class RaycasterEngine {
    * value so a real stall isn't hidden by `MAX_DT`. Unused when `perf` is
    * unset. */
   private lastRawDtMs = 0;
+  /** One-shot handoff of `frame()`'s unclamped delta to `advance()`'s
+   * perf-frame begin — `undefined` whenever `advance()` is driven directly
+   * (replay viewer, headless), which then falls back to its own `dt`. */
+  private perfRawDtMs: number | undefined;
 
   /** Balancing telemetry — populated when `?testHooks=1` gates it on (for
    * the bot) or when `PLAYER_STATS_ENABLED` is flipped on (for the
@@ -996,7 +1000,10 @@ export class RaycasterEngine {
     // real stutter or background-tab throttling.
     this.updateFpsCounter(rawDt);
     this.lastRawDtMs = rawDt * 1000;
-    this.perf?.beginFrame(this.lastRawDtMs);
+    // Hand the unclamped delta to `advance()`'s own perf-frame begin (see
+    // there) — a clamped `dt` would hide exactly the stalls perfDebug exists
+    // to catch.
+    this.perfRawDtMs = this.lastRawDtMs;
     this.advance(dt);
 
     if (this.running) this.rafId = requestAnimationFrame(this.frame);
@@ -1028,6 +1035,18 @@ export class RaycasterEngine {
    * driven at a fixed step (e.g. headless/deterministic runs).
    */
   advance(dt: number): void {
+    // Begin the perf-debug frame here, not in `frame()` — `advance()` is
+    // public and also driven directly by the replay viewer (`main.ts`'s
+    // `step`/`burstTo`) and headless harnesses, and those callers used to
+    // skip `beginFrame` entirely, leaving `FramePerfLogger`'s phase map
+    // accumulating monotonically across the whole session (garbage
+    // `?perfDebug=1` output during replay watching — audit finding F21).
+    // `frame()` stashes the real unclamped delta in `perfRawDtMs`; a direct
+    // caller's best equivalent is its own `dt`.
+    if (this.perf) {
+      this.perf.beginFrame(this.perfRawDtMs ?? dt * 1000);
+      this.perfRawDtMs = undefined;
+    }
     // Gamepad axis/button state has no change events to listen for (unlike
     // keyboard/mouse), so it must be actively polled once per frame — and
     // before any of the below reads any of the one-shot queues it can feed
@@ -1038,8 +1057,11 @@ export class RaycasterEngine {
     // Record this frame's full input state for the replay system, before
     // anything below consumes any of its one-shot flags — a non-destructive
     // peek (see `InputSnapshot`'s doc comment), so this has zero effect on
-    // live play whether or not a recorder is actually attached.
-    this.replayRecorder?.record(dt, this.input.captureSnapshot());
+    // live play whether or not a recorder is actually attached. The explicit
+    // guard (not `?.`) matters: an argument is evaluated before optional
+    // chaining can short-circuit, so `?.` would still build the ~18-field
+    // snapshot + filtered key array every frame of every recorder-less run.
+    if (this.replayRecorder) this.replayRecorder.record(dt, this.input.captureSnapshot());
 
     // The FPS overlay toggles independent of pause/map/lore state, so it's
     // consumed unconditionally right here rather than gated behind any of
@@ -1265,7 +1287,7 @@ export class RaycasterEngine {
         kind: meleeOverlayActive ? currentMeleeWeapon(this.ownedWeapons).viewKind : WEAPONS[this.weaponIndex].viewKind,
       });
 
-      const minimapPanel = renderMinimap(this.ctx, this.map, this.player, this.levelTime, 70, this.loreRead);
+      const minimapPanel = renderMinimap(this.ctx, this.map, this.player, this.levelTime, 70, this.loreRead, this.gridVersion);
       drawCompass(
         this.ctx,
         minimapPanel.compassBadge,

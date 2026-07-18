@@ -449,6 +449,50 @@ export interface MinimapPanelRect {
 /** Outer radius, in canvas pixels, of the compass badge circle. */
 const COMPASS_BADGE_RADIUS = 13;
 
+/** Cached static wall layer for the corner minimap (perf audit finding F1):
+ * the walls pass used to issue one `fillRect` per wall tile over the ENTIRE
+ * grid every frame — O(map area) draw calls (~1ms/frame on a 160×160
+ * source-file map, growing linearly) for pixels that only actually change
+ * when a door/secret wall opens (`gridVersion`) or the level itself swaps
+ * (`source` identity). Rebuilt only then; every other frame is one
+ * `drawImage`. Same module-scope single-slot pattern as `floorImage`. */
+let minimapWallLayer: {
+  source: GameMap;
+  gridVersion: number;
+  cell: number;
+  canvas: HTMLCanvasElement;
+} | null = null;
+
+/** Returns the cached walls-only offscreen canvas for `map`, rebuilding on
+ * any (map, gridVersion, cell) change — or `null` when a 2D context isn't
+ * available (defensive; callers then fall back to direct per-tile fills). */
+function minimapWallCanvas(map: GameMap, cell: number, gridVersion: number, w: number, h: number): HTMLCanvasElement | null {
+  if (
+    minimapWallLayer &&
+    minimapWallLayer.source === map &&
+    minimapWallLayer.gridVersion === gridVersion &&
+    minimapWallLayer.cell === cell
+  ) {
+    return minimapWallLayer.canvas;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const wallCtx = canvas.getContext("2d");
+  if (!wallCtx) return null;
+  wallCtx.fillStyle = map.bonusLevel ? "#3f7fae" : "#4a4a55";
+  for (let y = 0; y < map.height; y++) {
+    const row = map.grid[y];
+    for (let x = 0; x < map.width; x++) {
+      if (row[x] === 1 || row[x] === LORE_TILE || row[x] === SECRET_WALL_TILE) {
+        wallCtx.fillRect(x * cell, y * cell, cell, cell);
+      }
+    }
+  }
+  minimapWallLayer = { source: map, gridVersion, cell, canvas };
+  return canvas;
+}
+
 /**
  * Small top-left minimap: walls, discovered enemies, traps, and the player's
  * exact position and facing. Useful for confirming movement, collision, and
@@ -464,6 +508,7 @@ export function renderMinimap(
   levelTime = 0,
   maxPixels = 70,
   readTerminals: ReadonlySet<string> = NO_READ_TERMINALS,
+  gridVersion = 0,
 ): MinimapPanelRect {
   const cell = Math.max(1, Math.floor(maxPixels / Math.max(map.width, map.height)));
   const w = map.width * cell;
@@ -508,12 +553,19 @@ export function renderMinimap(
   // (`SECRET_WALL_OVERLAY`, used by `renderScene`); once opened, the tile
   // becomes plain floor (0) and stops being drawn here at all, like any
   // other explored room.
-  ctx.fillStyle = map.bonusLevel ? "#3f7fae" : "#4a4a55";
-  for (let y = 0; y < map.height; y++) {
-    const row = map.grid[y];
-    for (let x = 0; x < map.width; x++) {
-      if (row[x] === 1 || row[x] === LORE_TILE || row[x] === SECRET_WALL_TILE) {
-        ctx.fillRect(pad + x * cell, pad + y * cell, cell, cell);
+  const wallLayer = minimapWallCanvas(map, cell, gridVersion, w, h);
+  if (wallLayer) {
+    ctx.drawImage(wallLayer, pad, pad);
+  } else {
+    // No offscreen 2D context available — draw the tiles directly, exactly
+    // as the pre-cache implementation always did.
+    ctx.fillStyle = map.bonusLevel ? "#3f7fae" : "#4a4a55";
+    for (let y = 0; y < map.height; y++) {
+      const row = map.grid[y];
+      for (let x = 0; x < map.width; x++) {
+        if (row[x] === 1 || row[x] === LORE_TILE || row[x] === SECRET_WALL_TILE) {
+          ctx.fillRect(pad + x * cell, pad + y * cell, cell, cell);
+        }
       }
     }
   }
