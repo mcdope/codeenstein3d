@@ -75,11 +75,15 @@ async function waitForLevelReady(collector, timeoutMs = 60000) {
 }
 
 /** Real-clock overlay dismiss (briefing/summary screens advance on Space).
- * Same synthetic-keydown trick as the balancing harness's headed branch. */
+ * Same synthetic-keydown trick as the balancing harness's headed branch.
+ * The generous post-dismiss wait is load-bearing: the engine attaches its
+ * canvas key listeners in `start()`, which the dismissal itself triggers —
+ * input dispatched too soon afterwards lands on a listenerless canvas and
+ * silently disappears (cheats typed 200ms after Space were lost that way). */
 async function dismissOverlay(page) {
   await page.waitForTimeout(1500);
   await page.evaluate(() => window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space" })));
-  await page.waitForTimeout(200);
+  await page.waitForTimeout(1000);
 }
 
 async function launchDemoCampaign(page, baseUrl, collector) {
@@ -90,15 +94,21 @@ async function launchDemoCampaign(page, baseUrl, collector) {
   await dismissOverlay(page);
 }
 
-/** Type a Doom cheat (IDKFA etc.) as synthetic keydowns — the engine's
- * cheat buffer consumes letter keydowns (`InputController.onKeyDown`). */
+/** Type a Doom cheat (IDKFA etc.) as synthetic keydowns. IMPORTANT: the
+ * engine's key listeners attach to the CANVAS, not window (input.ts:201) —
+ * dispatching on window silently does nothing (that exact mistake once made
+ * the stress cells measure an idle scene). Same target as scripts/lib/bot.mjs. */
 async function typeCheat(page, cheat) {
   await page.evaluate((letters) => {
+    const canvas = document.querySelector("canvas");
     for (const ch of letters) {
-      window.dispatchEvent(new KeyboardEvent("keydown", { code: `Key${ch}`, key: ch.toLowerCase() }));
-      window.dispatchEvent(new KeyboardEvent("keyup", { code: `Key${ch}`, key: ch.toLowerCase() }));
+      canvas.dispatchEvent(new KeyboardEvent("keydown", { code: `Key${ch}`, key: ch.toLowerCase() }));
+      canvas.dispatchEvent(new KeyboardEvent("keyup", { code: `Key${ch}`, key: ch.toLowerCase() }));
     }
   }, cheat);
+  // `cheatQueued` is a single slot consumed once per engine frame — typing
+  // two cheats back-to-back in the same frame clobbers the first.
+  await page.waitForTimeout(150);
 }
 
 /** Sustained-fire macro, run entirely in-page (no CDP round-trip per event).
@@ -110,19 +120,21 @@ async function typeCheat(page, cheat) {
 async function startFireMacro(page, { weaponSlots = [], pressEveryMs = 700 } = {}) {
   await page.evaluate(
     ({ slots, everyMs }) => {
-      const down = (code) => window.dispatchEvent(new KeyboardEvent("keydown", { code }));
-      const up = (code) => window.dispatchEvent(new KeyboardEvent("keyup", { code }));
+      const canvas = document.querySelector("canvas");
+      const down = (code) => canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
+      const up = (code) => canvas.dispatchEvent(new KeyboardEvent("keyup", { code }));
       const press = (code) => {
         down(code);
         up(code);
       };
+      if (slots.length) press(slots[0]); // switch off the pistol before the first shot
       down("Backquote");
       let tick = 0;
       window.__perfFireMacro = setInterval(() => {
         tick += 1;
         up("Backquote");
         down("Backquote");
-        if (slots.length && tick % 5 === 0) press(slots[(tick / 5) % slots.length | 0]);
+        if (slots.length && tick % 5 === 0) press(slots[Math.floor(tick / 5) % slots.length]);
         if (tick % 3 === 0) {
           down("KeyE");
           setTimeout(() => up("KeyE"), 350);
@@ -236,9 +248,19 @@ const SCENARIOS = {
   "s3-stress": {
     defaultDurationSec: 30,
     async setup(page, baseUrl, collector) {
+      // Extreme gore = 16× particle spawn counts — this cell measures the
+      // particle ceiling, so crank the dial the way a worst-case player can.
+      await page.addInitScript(() => localStorage.setItem("codeenstein-gore-level", "extreme"));
       await launchDemoCampaign(page, baseUrl, collector);
       await typeCheat(page, "IDKFA");
-      await startFireMacro(page, { weaponSlots: ["Digit5", "Digit6"] }); // ghidra rockets / Friday Hotfix flames
+      // God mode is load-bearing, not a convenience: point-blank rockets
+      // self-damage and sustained fire aggroes every enemy onto a stationary
+      // player — without IDDQD the player dies seconds in and the rest of
+      // the capture measures the Kernel Panic screen.
+      await typeCheat(page, "IDDQD");
+      // Ranged slots are contiguous (melee excluded): Digit4=ghidra rockets,
+      // Digit5=Friday Hotfix flamethrower.
+      await startFireMacro(page, { weaponSlots: ["Digit4", "Digit5"], pressEveryMs: 350 });
     },
   },
   /** S4 (Task 241 shape): magento2 map, idle look-around only. */
@@ -247,9 +269,10 @@ const SCENARIOS = {
     async setup(page, baseUrl, collector) {
       await loadMagentoWorkspace(page, baseUrl, collector);
       await page.evaluate(() => {
+        const canvas = document.querySelector("canvas");
         window.__perfLook = setInterval(() => {
-          window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyE" }));
-          setTimeout(() => window.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyE" })), 500);
+          canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyE" }));
+          setTimeout(() => canvas.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyE" })), 500);
         }, 2000);
       });
     },
@@ -260,7 +283,8 @@ const SCENARIOS = {
     async setup(page, baseUrl, collector) {
       await loadMagentoWorkspace(page, baseUrl, collector);
       await typeCheat(page, "IDKFA");
-      await startFireMacro(page, { weaponSlots: ["Digit4", "Digit5", "Digit6"] });
+      await typeCheat(page, "IDDQD"); // survive point-blank splash + 280 aggroed enemies
+      await startFireMacro(page, { weaponSlots: ["Digit3", "Digit4", "Digit5"] }); // gdb SMG / rockets / flames
     },
   },
   /** S4-dryfire: same fire cadence but NO IDKFA — starting pistol ammo runs
@@ -270,6 +294,7 @@ const SCENARIOS = {
     defaultDurationSec: 30,
     async setup(page, baseUrl, collector) {
       await loadMagentoWorkspace(page, baseUrl, collector);
+      await typeCheat(page, "IDDQD"); // stay alive among 280 enemies; no IDKFA — the point is running dry
       await startFireMacro(page, { pressEveryMs: 400 });
     },
   },
@@ -463,6 +488,10 @@ async function measureRun(browser, scenarioId, baseUrl, { warmupSec, durationSec
       busyPerFrame: stats ? numberStats(stats.busyMs) : null,
       rawBusyMs: stats ? stats.busyMs : null, // raw for report histograms
       phaseTotals: stats ? stats.phases : null,
+      // Scene fingerprint: the last few `[perf] state:` lines (entity counts,
+      // ammo, weapon, heap). A cell whose driver silently degrades to an idle
+      // scene is caught here — that exact failure happened once.
+      sceneStates: collector.entries.filter((e) => e.kind === "state").slice(-5).map((e) => e.raw),
     };
   } finally {
     await context.close().catch(() => {});
