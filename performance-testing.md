@@ -38,7 +38,7 @@ Full design: `/home/mcdope/.claude/plans/you-re-a-senior-performance-calm-dahl.m
 ## Still open — needs the user
 
 1. ~~AA default~~ DONE: flipped on (commit aed956e), test/docs updated, screenshot-verified.
-2. ~~Attended headed scaling run~~ DONE 2026-07-18 (user ran it, `perf_runs/2026-07-18T10-54-07-437Z`): busy 6.70 vs 6.70ms, identical distributions — compositor upscale is free. Perf no longer blocks `RESPONSIVE_CANVAS_SCALING_ENABLED`; enabling is now purely a product/UX decision.
+2. ~~Attended headed scaling run~~ DONE 2026-07-18 (user ran it, `perf_runs/2026-07-18T10-54-07-437Z`): busy 6.70 vs 6.70ms, identical distributions — compositor upscale is free. Perf no longer blocks `RESPONSIVE_CANVAS_SCALING_ENABLED` — and it is now ON by default (commit 183ec87), live-verified.
 3. One real-Safari run for F23 (headless-WebKit may be software-rendered).
 4. Send the Task-241 capture request (draft in session summary).
 Delete this file once reviewed.
