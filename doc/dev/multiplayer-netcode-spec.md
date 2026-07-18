@@ -165,6 +165,14 @@ full setup exchange, per guest, after its data channels open and before any tick
    multipliers desync *structurally*, before any float drift enters the picture.
    The session runs on the host's difficulty for every peer; a guest's own local
    preference is ignored for the session's duration (their UI should say so).
+   **Frozen for the whole session, including across level transitions** — in
+   single-player a difficulty change "takes effect on the next level load"
+   (`replay.ts`'s own documented behavior); in a session that rule would let the
+   *host's* selector silently feed a different multiplier into its own
+   next-level engine than the guests construct with, since §7's transition
+   payload doesn't carry difficulty. Simplest correct rule: the difficulty
+   captured here at setup is the session's difficulty until the session ends;
+   the host's selector is inert mid-session like every guest's.
    Gore, by contrast, stays local: it's cosmetic-only (`Math.random`-driven
    particle counts) and never feeds the simulation.
 6. **The session's player count** for elite scaling (game-state §4), fixed per
@@ -944,9 +952,14 @@ session suppressed it," because those two things produce an identical
   lockstep requires every peer to interpret a given input identically — there's
   no way for "W means scroll for the reader but movement for everyone else's
   copy of them" to work. The multiplayer overlay is therefore **static and
-  dismiss-only**, dismissed by Escape or click — precisely the two signals this
-  section already strips from the shared stream, so dismissal is invisible to
-  the simulation *by construction* rather than by careful handling.
+  dismiss-only, dismissed by Escape alone** — a signal this section already
+  strips from the shared stream, so dismissal is invisible to the simulation
+  *by construction*. Click was considered as a second dismiss trigger and
+  rejected on a verified detail: the `click` flag is stripped from the shared
+  stream, but a physical mousedown *also* sets `fireQueued`
+  (`input.ts`'s `onMouseDown`), which is a real sim input that rides the
+  bundle — click-to-dismiss would fire the reader's weapon in everyone's
+  simulation as a side effect.
 
 ### Cheat codes are disabled in multiplayer
 
