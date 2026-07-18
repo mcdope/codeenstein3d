@@ -37,9 +37,10 @@ Full design: `/home/mcdope/.claude/plans/you-re-a-senior-performance-calm-dahl.m
 
 ## Still open — needs the user
 
-1. Flip `WALL_EDGE_ANTIALIASING_ENABLED` on by default? (measured: free on demo maps, +0.4ms on 160×160; visual preference call)
-2. One real-Safari run for F23 (headless-WebKit may be software-rendered) + one attended headed `--flag scaling` run (unlocked screen)
-3. Send the Task-241 capture request (draft in the final session summary)
+1. ~~AA default~~ DONE: flipped on (commit aed956e), test/docs updated, screenshot-verified.
+2. ~~Attended headed scaling run~~ DONE 2026-07-18 (user ran it, `perf_runs/2026-07-18T10-54-07-437Z`): busy 6.70 vs 6.70ms, identical distributions — compositor upscale is free. Perf no longer blocks `RESPONSIVE_CANVAS_SCALING_ENABLED`; enabling is now purely a product/UX decision.
+3. One real-Safari run for F23 (headless-WebKit may be software-rendered).
+4. Send the Task-241 capture request (draft in session summary).
 Delete this file once reviewed.
 
 ## Open findings queue

@@ -120,7 +120,8 @@
     "impact": "Low",
     "effort": "Low",
     "refactor": "Safe to enable from the engine's perspective. Before shipping, do one attended headed spot-check (fps overlay on, window maximized) \u2014 the harness cell exists (--flag scaling), it just needs an unlocked screen.",
-    "evidence": "perf_runs/2026-07-18T09-20-26-931Z"
+    "evidence": "perf_runs/2026-07-18T09-20-26-931Z",
+    "outcomeNote": "VERIFIED on-screen 2026-07-18 (user-attended headed A/B, 5+5 interleaved runs): busy median 6.70 vs 6.70ms, intervals/p95/slow-counts identical \u2014 compositor upscale is free at desktop window sizes. Safe to enable whenever the resizing behavior itself is wanted; perf is no longer a blocker."
   },
   {
     "id": "F19",
