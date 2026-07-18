@@ -10,7 +10,7 @@
     "effort": "Med",
     "refactor": "For WebKit (feature-detect), render walls into the same ImageData buffer the floor-caster already uses (pure typed-array writes + one putImageData) instead of per-column drawImage; cache static HUD text to an offscreen canvas. Alternatively: document Safari as degraded until verified on real hardware.",
     "evidence": "perf_runs/2026-07-18T09-42-09-135Z vs chromium baselines",
-    "outcomeNote": "OPEN: awaiting one real-Safari verification run (headless WebKit may be software-rendered) before investing in the ImageData wall-render path."
+    "outcomeNote": "CLOSED 2026-07-18 (user decision): no Safari verification, no WebKit-specific rendering work \u2014 WebKit isn't a supported target worth the investment. Headless-WebKit numbers stay in the report as documentation; if a real Safari user ever reports slowness, the ImageData wall-render refactor sketched above is the known lever."
   },
   {
     "id": "F1",
