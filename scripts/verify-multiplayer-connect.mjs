@@ -42,6 +42,27 @@ function check(label, condition, detail) {
   }
 }
 
+/** `page.goto()`, retried a few times on a connection-level failure (as
+ * opposed to a real 4xx/5xx from the dev server, which retrying can't fix).
+ * Two contexts navigating to the dev server within ~2s of a fresh headless
+ * browser launch (this script's own shape) has been observed to hit a
+ * transient `NS_ERROR_CONNECTION_REFUSED` in CI even though the dev server
+ * itself is already confirmed up and has just served a different verify
+ * script's request moments earlier — a race in the freshly-launched
+ * browser's own readiness, not a dev-server problem. */
+async function gotoWithRetry(page, url, attempts = 3) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      await page.goto(url);
+      return;
+    } catch (err) {
+      if (attempt === attempts) throw err;
+      console.log(`  [retry] page.goto(${url}) failed (attempt ${attempt}/${attempts}): ${err.message}`);
+      await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+    }
+  }
+}
+
 /** Loads the bundled demo campaign — the cheapest way to reach an
  * `isMultiplayerEligibleWorkspace()` state (no GitHub fetch needed) — and
  * waits for the Multiplayer tab to actually enable before returning.
@@ -49,7 +70,7 @@ function check(label, condition, detail) {
  * in place well before the Host/Join buttons ever construct a real
  * `RTCPeerConnection`. */
 async function makeEligible(page, engineName) {
-  await page.goto(`${DEV_SERVER_URL}/?testHooks=1`);
+  await gotoWithRetry(page, `${DEV_SERVER_URL}/?testHooks=1`);
   await grantFakeMediaForFirefox(page, engineName);
   await page.click("#tab-demo");
   await page.click("#launch-demo-campaign");
