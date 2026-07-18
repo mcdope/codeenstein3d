@@ -190,4 +190,24 @@ describe("initConsoleSidebar — random hints", () => {
     expect(hints).toHaveLength(2);
     expect(hints[0]).not.toBe(hints[1]);
   });
+
+  it("bails out without throwing or rescheduling if window is gone when a pending hint fires", () => {
+    // Simulates a test harness tearing down its jsdom environment out from
+    // under a still-pending timer from an earlier test (see the source's own
+    // doc comment on this guard) — a real production browser never hits
+    // this, since a page's own timers are torn down for free on navigation.
+    const { canvas, sidebarEl, logEl } = setup();
+    const handle = initConsoleSidebar(canvas, sidebarEl, logEl);
+    handle.setHintsActive(true);
+
+    vi.stubGlobal("window", undefined);
+    expect(() => vi.runOnlyPendingTimers()).not.toThrow();
+    vi.unstubAllGlobals();
+
+    expect(lineTexts(logEl).some((t) => t.includes("[hint]"))).toBe(false);
+    // No reschedule happened either — advancing well past another full
+    // interval fires nothing further from this now-dead chain.
+    vi.advanceTimersByTime(HINT_MAX_DELAY_MS * 2);
+    expect(lineTexts(logEl).some((t) => t.includes("[hint]"))).toBe(false);
+  });
 });
