@@ -187,6 +187,64 @@ generous budget than the guess-sensitive endpoints — this isn't a code-guessin
 vector (it only ever reveals sessions their own hosts chose to publish), just needs
 basic scrape/DoS protection like any public endpoint.
 
+### `GET /stats`
+
+An operator-only monitoring endpoint, added for ops visibility (session volume,
+rate-limit pressure) without exposing anything player-identifying. **Entirely
+opt-in**: unset the `CODEENSTEIN_MULTIPLAYER_STATS_TOKEN` env var and this route
+doesn't exist as far as any caller can tell — a request to it gets the exact same
+`404 not_found` as any unknown path, whether or not the caller supplied a token.
+When configured, every request must carry a matching `X-Stats-Token` header; a
+missing or wrong token gets the same indistinguishable `404` (never a `401`/`403`
+that would confirm the feature exists to an unauthenticated prober). Not
+IP/proxy-gated — see §1's `X-Forwarded-For` note for why network position alone
+can't distinguish "the operator" from "a public request via the proxy" once behind
+a reverse proxy; a shared secret is the one mechanism that works regardless of
+network path.
+
+Response `200 OK` — every value a plain number except `nodeVersion`, by design:
+no session codes, hostTokens, IPs, offers, or answers anywhere in this payload:
+
+```jsonc
+{
+  "pid": 12345,
+  "nodeVersion": "v20.11.0",
+  "uptimeSeconds": 3600,
+  "sessions": {
+    "live": 4,
+    "public": 1,
+    "awaitingAnswer": 2,
+    "answered": 2,
+    "maxConcurrent": 500,
+    "totalCreatedSinceStart": 187
+  },
+  "rateLimiting": {
+    "totalRejectionsSinceStart": 12,
+    "trackedIps": { "guess": 3, "hostToken": 1, "lobby": 2, "putSession": 1 },
+    "ipsCurrentlyInCooldown": { "guess": 1, "hostToken": 0, "lobby": 0, "putSession": 0 }
+  }
+}
+```
+
+`sessions.live`/`.public`/`.awaitingAnswer`/`.answered` are current snapshots (derived
+from the live `sessions` Map at request time); `.totalCreatedSinceStart` and
+`rateLimiting.totalRejectionsSinceStart` are cumulative, process-lifetime counters —
+deliberately both kinds, since a snapshot alone can't answer "how much traffic has
+this process actually seen." `trackedIps`/`ipsCurrentlyInCooldown` are per-rate-
+limit-bucket *counts* (how many distinct IPs, not which ones) — enough to notice
+"something is hammering the guess-sensitive budget right now" without the endpoint
+ever holding, let alone returning, an actual IP address.
+
+Not rate-limited itself (unlike every other endpoint): the token requirement is
+already a stronger gate than any per-IP budget, and an operator querying their own
+monitoring endpoint has no reason to be throttled against it.
+
+Companion CLI mode: `node multiplayer-server.mjs --stats` (optionally
+`--port=<n>`, `--json` for machine-readable output) queries a running instance's
+`/stats` the same way, reading `CODEENSTEIN_MULTIPLAYER_STATS_TOKEN` from its own
+environment — a client for this endpoint, not a separate mechanism. `--help`/`-?`
+prints full usage, including every env var and its currently-effective value.
+
 ## 3. In-memory storage mechanics
 
 ### The session `Map`

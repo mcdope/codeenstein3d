@@ -28,6 +28,7 @@
     "perf:bench": "node scripts/run-perf-benchmark.mjs",
     "perf:report": "node scripts/build-perf-report.mjs",
     "poc:cross-browser-determinism": "node scripts/poc-cross-browser-determinism.mjs",
+    "verify:multiplayer-server": "node scripts/verify-multiplayer-server.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage"

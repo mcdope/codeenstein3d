@@ -250,6 +250,45 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
     - [ ] when one player enters the return tile, all players advance to the next level (after an informational countdown)
     - [ ] elite enemies should scale with player count
     . [ ] adapt balancing AI for deathmatch mode / bots?
+    - [ ] step 1 of the implementation plan (`multiplayer-research.md`) shipped 2026-07-18:
+      the WebRTC signaling + lobby server, `scripts/multiplayer-server.mjs` — a single
+      dependency-free Node script (`node:http`/`node:crypto`/`node:url` only) implementing
+      `doc/dev/multiplayer-server-spec.md`'s four endpoints (session mailbox + public lobby
+      list), plus `--install`/`--uninstall`/`--dry-run` systemd-unit management per
+      `multiplayer-research.md`'s "Self-hosting" section. Two real gaps found and resolved
+      during implementation, not silently papered over: the spec's "32-symbol code alphabet"
+      excluding `{0,O,1,I,L}` from the 36-char uppercase-alphanumeric set was an arithmetic
+      slip (36-5=31, not 32) — resolved by adopting Crockford's Base32 alphabet verbatim
+      (a real, proven 32-symbol standard for exactly this purpose) instead of inventing a
+      different one-off set; and `PUT /session`'s documented `429` error was never actually
+      implemented against any budget — added its own dedicated, lighter rate-limit map
+      (`PUT_SESSION_RATE_LIMIT_MAX_REQUESTS`, separate from the guess-sensitive budget, since
+      publishing an offer isn't a guessing vector). Verified via a new
+      `scripts/verify-multiplayer-server.mjs` (51 checks: full endpoint round trip, every
+      documented error case, all four rate-limit budgets and their independence from each
+      other, exponential backoff, TTL sliding/sweep semantics, `--dry-run` install/uninstall
+      output) — pure Node, spawns the real server as a child process, wired into CI's
+      no-browser `verify` job (`npm run verify:multiplayer-server`). Confirmed no orphaned
+      processes survive even a deliberately-failed run. Real (non-dry-run) `--install` is
+      not exercised by CI (mutates root-owned system state) — verification there is manual,
+      on the actual VPS, once, post-merge. No `src/` changes — this step is fully
+      independent of the engine/netcode work still ahead.
+      Follow-up same day: added `GET /stats` + a `--stats` CLI client mode for monitoring
+      (session/rate-limit counts only — no IPs, codes, or tokens; every value a plain number
+      except the Node version string), entirely opt-in behind `CODEENSTEIN_MULTIPLAYER_STATS_TOKEN`
+      — unset or wrong-token requests get the same indistinguishable `404` as an unknown
+      route, never a `401`/`403` confirming the feature exists. Also added `--help`/`-?`,
+      documenting every flag and env var (each shown with its currently-effective value, not
+      a static default, so the output can't drift from the real config it's describing). Two
+      test-writing mistakes caught by running the suite, not by review — a substring check for
+      "answer" false-positived on the legitimate `answered`/`awaitingAnswer` count fields, and
+      an exact-key blocklist including `hostToken` false-positived on a legitimate rate-limit
+      *bucket label* (`rateLimiting.trackedIps.hostToken`, sibling to `guess`/`lobby`/
+      `putSession`) — replaced both with a direct structural check ("every leaf value is a
+      number, except the one expected string") that can't false-positive on a field name.
+      79 checks total now. `doc/dev/multiplayer-server-spec.md` gained a `GET /stats` section
+      alongside the other four endpoints (unlike `--install`/`--uninstall`, which stay
+      deployment-only detail outside the spec, `/stats` is real protocol surface).
 - [ ] enemy textures from wad? if yes: what about hitbox? — investigated (2026-07-16, no code changed yet).
   - **Today: enemies are 100% procedural, zero WAD sprite loading exists.** `src/wad/loadWad.ts`'s `WadLoadResult` only ever loads wall/door/floor-style textures (`wallTexture`/`doorTexture`/`floorTexture`/etc.) — no sprite lump is read at all. Enemies are drawn in `src/engine/sprites.ts` as solid-color rectangular billboards (`enemyColor`/`enemyBodyColor`), sized by a single `sizeFactor` in `projectEnemy` (`ENEMY_SIZE`, scaled by `EDGE_CASE_SCALE`=0.55 or `ELITE_SCALE`).
   - **Loading real sprite art is feasible, same binary format already parsed**: Doom sprite lumps use the exact same "patch" pixel format as wall patches (`src/wad/patch.ts`'s `parsePatch` is already format-generic, not wall-specific) — no new binary parser needed. But the pipeline differs from walls: sprites are used as single patches per frame directly (no `compositeTexture.ts`-style multi-patch tiling/`TEXTURE1` step), and use Doom's frame+rotation lump-naming convention (e.g. `TROOA1`, `TROOA2A8` mirrored) that nothing in this codebase currently parses. This project's WAD-texture system also has a real security/curation stance worth respecting here, not shortcutting: `src/wad/textureAllowlist.ts` is a hand-curated, individually-IWAD-verified name list per slot (not "trust any name present") — real monster sprites (imp/zombieman/demon/etc.) would need the same treatment: a new, separately-verified allowlist, not a generic passthrough.

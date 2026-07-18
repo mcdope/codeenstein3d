@@ -39,6 +39,7 @@ jobs:
       - run: npm run verify:wad-parser
       - run: npm run verify:zip-reader
       - run: npm run verify:campaign
+      - run: npm run verify:multiplayer-server
 
   test:
     name: unit tests (Vitest, 100% coverage gate)

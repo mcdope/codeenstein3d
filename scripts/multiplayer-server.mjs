@@ -1,0 +1,915 @@
+#!/usr/bin/env node
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
+
+/**
+ * WebRTC signaling + lobby server — the one piece of backend infrastructure
+ * `multiplayer-research.md` concluded was unavoidable (a short, human-typable
+ * Host/Join code can't be self-contained SDP; something has to hold the real
+ * offer/answer blobs for the handshake). Implements
+ * `doc/dev/multiplayer-server-spec.md` exactly, plus the `--install`/
+ * `--uninstall` systemd flags from `multiplayer-research.md`'s "Self-hosting"
+ * section (deliberately scoped *out* of the server spec, but into this script).
+ *
+ * Dependency-free by design: only `node:http`/`node:crypto`/`node:url`/
+ * `node:fs`/`node:child_process` (the last two only for --install/--uninstall)
+ * — no `npm install`, no `node_modules` at runtime. The shebang above is a
+ * deliberate exception to this repo's usual no-shebang script convention:
+ * `--install`'s generated systemd unit points `ExecStart=` straight at this
+ * file's own absolute path, which only works if it's directly executable
+ * (`chmod +x`).
+ *
+ * In-memory only — the `sessions` Map below *is* the entire persistence layer.
+ * State here is only ever meant to live minutes (bridging one WebRTC
+ * handshake), so a process restart dropping in-flight sessions is an accepted
+ * trade against running/backing up a real datastore for data this short-lived.
+ */
+
+import { createServer } from "node:http";
+import { randomBytes, randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { writeFileSync, rmSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+
+// ---------------------------------------------------------------------------
+// Config — every tunable overridable via CODEENSTEIN_MULTIPLAYER_<NAME>,
+// matching this repo's house env-var convention (see scripts/run-perf-
+// benchmark.mjs's CODEENSTEIN_PERF_PORT for the same shape). Defaults below
+// are the spec's own numbers except PORT/ALLOWED_ORIGIN, which the spec never
+// pinned — see this script's own doc comment history / the PR description for
+// why 8787 and the production game origin were chosen as defaults.
+// ---------------------------------------------------------------------------
+
+const PORT = Number(process.env.CODEENSTEIN_MULTIPLAYER_PORT ?? 8787);
+const ALLOWED_ORIGIN =
+  process.env.CODEENSTEIN_MULTIPLAYER_ALLOWED_ORIGIN ?? "https://codeenstein3d.mcdope.org";
+
+const SESSION_TTL_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_SESSION_TTL_MS ?? 5 * 60 * 1000);
+const SWEEP_INTERVAL_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_SWEEP_INTERVAL_MS ?? 30_000);
+const MAX_CONCURRENT_SESSIONS = Number(process.env.CODEENSTEIN_MULTIPLAYER_MAX_CONCURRENT_SESSIONS ?? 500);
+
+const RATE_LIMIT_WINDOW_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_RATE_LIMIT_WINDOW_MS ?? 60_000);
+const RATE_LIMIT_MAX_REQUESTS = Number(process.env.CODEENSTEIN_MULTIPLAYER_RATE_LIMIT_MAX_REQUESTS ?? 20);
+const HOST_TOKEN_MAX_REQUESTS = Number(process.env.CODEENSTEIN_MULTIPLAYER_HOST_TOKEN_MAX_REQUESTS ?? 120);
+const LOBBY_RATE_LIMIT_MAX_REQUESTS = Number(
+  process.env.CODEENSTEIN_MULTIPLAYER_LOBBY_RATE_LIMIT_MAX_REQUESTS ?? 60,
+);
+/** The spec's `PUT /session` error list documents a `429` and references "its
+ * own... separate, lighter protection" (§4), but — unlike `GET /lobby`, which
+ * gets a fully-specified subsection — never actually specifies that
+ * protection's mechanism or ceiling. Resolved the same way as the code-
+ * alphabet gap above: implemented as its own dedicated, non-guess-sensitive
+ * budget (own map, own env override) rather than silently left unimplemented
+ * or folded into an unrelated budget. 30/min is deliberately more
+ * conservative than `GET /lobby`'s 60/min — this is a state-mutating
+ * operation (creates/updates a session), not a read. */
+const PUT_SESSION_RATE_LIMIT_MAX_REQUESTS = Number(
+  process.env.CODEENSTEIN_MULTIPLAYER_PUT_SESSION_RATE_LIMIT_MAX_REQUESTS ?? 30,
+);
+const BASE_COOLDOWN_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_BASE_COOLDOWN_MS ?? 5_000);
+
+/** `GET /stats` (and the `--stats` CLI mode that queries it) is entirely
+ * opt-in: unset, the endpoint doesn't exist as far as any caller can tell —
+ * an unauthenticated or unconfigured request gets the same plain 404 as any
+ * other unknown route, never a distinguishable "this feature exists, you're
+ * just not authorized" response. Deliberately not gated by IP/proxy topology
+ * (see getClientIp's own doc comment on why `remoteAddress` can't
+ * distinguish "via the public proxy" from "a local operator" once behind a
+ * reverse proxy) — a shared secret is the one mechanism that works
+ * regardless of network path. */
+const STATS_TOKEN = process.env.CODEENSTEIN_MULTIPLAYER_STATS_TOKEN;
+const MAX_COOLDOWN_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_MAX_COOLDOWN_MS ?? 60 * 60_000);
+
+const MAX_BODY_BYTES = Number(process.env.CODEENSTEIN_MULTIPLAYER_MAX_BODY_BYTES ?? 8192);
+
+const MAX_OFFER_ANSWER_BYTES = 4096;
+const MAX_DISPLAY_NAME_CHARS = 100;
+const MAX_CAMPAIGN_NAME_CHARS = 100;
+
+/**
+ * Session code alphabet. **Corrects an arithmetic slip in the spec docs**:
+ * they describe excluding `{0, O, 1, I, L}` from the 36-character uppercase-
+ * alphanumeric set for a "32-symbol alphabet" — but 36 - 5 = 31, not 32, so
+ * the "low 5 bits of a random byte map uniformly, no rejection sampling
+ * needed" property (which genuinely does require an *exact* power-of-two
+ * alphabet size) wouldn't actually hold against the literal 5-exclusion set
+ * as documented. Resolved here by adopting Crockford's Base32 alphabet
+ * verbatim (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`) instead of inventing a
+ * different one-off 32-character set: it's a real, proven standard designed
+ * for exactly this "short, human-typable, unambiguous code" purpose, and it
+ * is exactly 32 symbols (10 digits + 22 letters, excluding only I/L/O/U).
+ * Confirmed correct: 256 / 32 = 8 exactly, so `byte & 0x1f` is still perfectly
+ * uniform over this alphabet with zero rejection sampling.
+ */
+const SESSION_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+const SESSION_UNIT_NAME = "codeenstein-multiplayer.service";
+const SESSION_UNIT_PATH = `/etc/systemd/system/${SESSION_UNIT_NAME}`;
+
+// ---------------------------------------------------------------------------
+// In-memory stores
+// ---------------------------------------------------------------------------
+
+/** @typedef {{
+ *   code: string, hostToken: string, offer: string, answer: string | null,
+ *   createdAt: number, lastActivityAt: number, expiresAt: number,
+ *   public: boolean, displayName: string | null, playerCount: number,
+ *   campaignName: string,
+ * }} SessionRecord */
+
+/** The entire persistence layer — see this file's own doc comment. */
+const sessions = new Map();
+
+/** @typedef {{ windowStart: number, windowCount: number, violationCount: number, cooldownUntil: number }} IpLimitState */
+
+// Three separate maps, not one shared map with different thresholds per call
+// site — the host-token-exempt budget and the guess-sensitive budget are
+// genuinely different ceilings for the same IP at the same time, which a
+// single map keyed only by IP can't represent (see doc/dev/multiplayer-
+// server-spec.md §4's host exemption: a wrong/missing token still counts
+// against the *strict* budget even for an IP that also holds a valid token
+// for some other, unrelated request).
+/** @type {Map<string, IpLimitState>} */
+const guessLimits = new Map();
+/** @type {Map<string, IpLimitState>} */
+const hostTokenLimits = new Map();
+/** @type {Map<string, IpLimitState>} */
+const lobbyLimits = new Map();
+/** @type {Map<string, IpLimitState>} */
+const putSessionLimits = new Map();
+
+// Cumulative, process-lifetime counters for /stats — deliberately separate
+// from the live Map sizes above, which only ever show a snapshot ("how many
+// right now"), not throughput ("how many total since this process started").
+let serverStartedAt = 0;
+let totalSessionsCreated = 0;
+let totalRateLimitRejections = 0;
+
+// ---------------------------------------------------------------------------
+// Code / token generation
+// ---------------------------------------------------------------------------
+
+function generateCode() {
+  const bytes = randomBytes(6);
+  let code = "";
+  for (const b of bytes) code += SESSION_CODE_ALPHABET[b & 0x1f];
+  return code;
+}
+
+/** A guaranteed-unique code, not just a probabilistically-unique one — see
+ * doc/dev/multiplayer-server-spec.md §3: astronomically unlikely to ever
+ * actually loop, at negligible cost when it does. */
+function generateUniqueCode() {
+  let code = generateCode();
+  while (sessions.has(code)) code = generateCode();
+  return code;
+}
+
+// ---------------------------------------------------------------------------
+// Session lifecycle
+// ---------------------------------------------------------------------------
+
+function touchSession(record, now) {
+  record.lastActivityAt = now;
+  record.expiresAt = now + SESSION_TTL_MS;
+}
+
+/** Looks up a session by code, treating an already-expired-but-not-yet-swept
+ * entry as absent (and lazily removing it) — makes TTL behavior deterministic
+ * for callers regardless of exactly when the sweep last ran, rather than
+ * depending on sweep timing for correctness. */
+function getLiveSession(code, now) {
+  const record = sessions.get(code);
+  if (!record) return undefined;
+  if (record.expiresAt <= now) {
+    sessions.delete(code);
+    return undefined;
+  }
+  return record;
+}
+
+function sweep() {
+  const now = Date.now();
+  for (const [code, record] of sessions) {
+    if (now > record.expiresAt) sessions.delete(code);
+  }
+  for (const map of [guessLimits, hostTokenLimits, lobbyLimits, putSessionLimits]) {
+    for (const [ip, state] of map) {
+      const windowLive = now - state.windowStart < RATE_LIMIT_WINDOW_MS;
+      const cooldownLive = now < state.cooldownUntil;
+      if (!windowLive && !cooldownLive) map.delete(ip);
+    }
+  }
+}
+
+// Intentionally not `.unref()`'d — this is a persistent daemon meant to keep
+// running, not a short-lived script that should be allowed to exit while the
+// timer is pending.
+let sweepTimer;
+function startSweeping() {
+  sweepTimer = setInterval(sweep, SWEEP_INTERVAL_MS);
+}
+
+// ---------------------------------------------------------------------------
+// Rate limiting
+// ---------------------------------------------------------------------------
+
+/** Client IP for rate-limiting: the *rightmost* entry of `X-Forwarded-For`
+ * (the one the trusted local reverse proxy itself appended — safe to trust
+ * specifically because this process binds `127.0.0.1` only, so nothing but
+ * that proxy can ever connect directly and prepend a forged entry ahead of
+ * it), falling back to the raw socket address when the header is absent
+ * (local dev / direct testing only — see doc/dev/multiplayer-server-spec.md
+ * §1's deployment note for why trusting the proxy's own header is safe here). */
+function getClientIp(req) {
+  const xff = req.headers["x-forwarded-for"];
+  if (typeof xff === "string" && xff.length > 0) {
+    const parts = xff.split(",");
+    const rightmost = parts[parts.length - 1].trim();
+    if (rightmost) return rightmost;
+  }
+  return req.socket.remoteAddress ?? "unknown";
+}
+
+/** Returns `{ allowed, retryAfterMs }`. A request currently under
+ * `cooldownUntil` is rejected immediately without even touching the window
+ * counter (matches the spec's exponential-backoff description exactly) — an
+ * IP that keeps hammering after tripping the limit gets a strictly *longer*
+ * cooldown on each subsequent violation, not a flat repeated penalty. */
+function checkRateLimit(map, ip, maxRequests, now) {
+  let state = map.get(ip);
+  if (!state) {
+    state = { windowStart: now, windowCount: 0, violationCount: 0, cooldownUntil: 0 };
+    map.set(ip, state);
+  }
+
+  if (now < state.cooldownUntil) {
+    totalRateLimitRejections += 1;
+    return { allowed: false, retryAfterMs: state.cooldownUntil - now };
+  }
+
+  if (now - state.windowStart >= RATE_LIMIT_WINDOW_MS) {
+    state.windowStart = now;
+    state.windowCount = 0;
+  }
+
+  state.windowCount += 1;
+
+  if (state.windowCount > maxRequests) {
+    state.violationCount += 1;
+    const cooldownMs = Math.min(MAX_COOLDOWN_MS, BASE_COOLDOWN_MS * 2 ** state.violationCount);
+    state.cooldownUntil = now + cooldownMs;
+    totalRateLimitRejections += 1;
+    return { allowed: false, retryAfterMs: cooldownMs };
+  }
+
+  return { allowed: true, retryAfterMs: 0 };
+}
+
+// ---------------------------------------------------------------------------
+// HTTP plumbing
+// ---------------------------------------------------------------------------
+
+function setCorsHeaders(req, res) {
+  const origin = req.headers.origin;
+  // Only ever echoed back when it matches exactly — never a wildcard, never
+  // the caller's own (possibly attacker-controlled) Origin verbatim. A
+  // mismatched/absent Origin simply gets no CORS header at all, which is what
+  // makes the browser refuse to let cross-origin JS read the response.
+  if (origin === ALLOWED_ORIGIN) {
+    res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
+    res.setHeader("Vary", "Origin");
+  }
+  res.setHeader("Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Host-Token");
+  res.setHeader("Access-Control-Max-Age", "600");
+}
+
+function sendJson(res, status, body, { closeConnection } = {}) {
+  const payload = JSON.stringify(body);
+  if (closeConnection) res.setHeader("Connection", "close");
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(payload);
+}
+
+function sendError(res, status, code, extra, opts) {
+  sendJson(res, status, { error: code, ...extra }, opts);
+}
+
+function sendNoContent(res) {
+  res.writeHead(204);
+  res.end();
+}
+
+/** Reads and JSON-parses a request body, enforcing `MAX_BODY_BYTES`
+ * *incrementally* as chunks arrive — not only after fully buffering — so a
+ * slow-trickled oversized body can't be used to hold memory open
+ * indefinitely. Rejects with `{ tooLarge: true }` (caller responds 413) or
+ * `{ invalidJson: true }` (caller responds 400) rather than throwing, since
+ * both are routine client-input cases, not exceptional ones.
+ *
+ * Deliberately does **not** call `req.destroy()` on overflow — that destroys
+ * the whole underlying socket (confirmed directly: it did, breaking the 413
+ * response entirely — the client saw a bare connection reset instead of any
+ * HTTP response). Instead it just stops buffering further chunks and lets the
+ * connection stay alive long enough for the caller to actually send the 413;
+ * the caller closes the connection itself afterward (`Connection: close` on
+ * that response) rather than reusing it, since the unread remainder of this
+ * oversized body would otherwise corrupt whatever request comes next on a
+ * reused keep-alive connection. */
+function readJsonBody(req) {
+  return new Promise((resolve) => {
+    let total = 0;
+    const chunks = [];
+    let settled = false;
+    let overflowed = false;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    req.on("data", (chunk) => {
+      if (overflowed) return; // draining silently post-overflow; already resolved
+      total += chunk.length;
+      if (total > MAX_BODY_BYTES) {
+        overflowed = true;
+        finish({ tooLarge: true });
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on("aborted", () => finish({ invalidJson: true }));
+    req.on("error", () => finish({ invalidJson: true }));
+
+    req.on("end", () => {
+      if (settled) return;
+      try {
+        const text = Buffer.concat(chunks).toString("utf8");
+        const body = text.length > 0 ? JSON.parse(text) : {};
+        finish({ body });
+      } catch {
+        finish({ invalidJson: true });
+      }
+    });
+  });
+}
+
+function byteLength(str) {
+  return Buffer.byteLength(str, "utf8");
+}
+
+// ---------------------------------------------------------------------------
+// Route handlers
+// ---------------------------------------------------------------------------
+
+async function handlePutSession(req, res) {
+  const now = Date.now();
+  const ip = getClientIp(req);
+
+  // Not guess-sensitive (nothing here reveals whether some *other* code
+  // exists), so this uses its own separate, lighter budget — see
+  // PUT_SESSION_RATE_LIMIT_MAX_REQUESTS's doc comment. Checked before reading
+  // the body, same reasoning as the other handlers: don't do request-parsing
+  // work for a call that's going to be rejected anyway.
+  const limit = checkRateLimit(putSessionLimits, ip, PUT_SESSION_RATE_LIMIT_MAX_REQUESTS, now);
+  if (!limit.allowed) {
+    res.setHeader("Retry-After", Math.ceil(limit.retryAfterMs / 1000));
+    return sendError(res, 429, "rate_limited", { retryAfterMs: limit.retryAfterMs });
+  }
+
+  const result = await readJsonBody(req);
+  if (result.tooLarge) return sendError(res, 413, "payload_too_large", undefined, { closeConnection: true });
+  if (result.invalidJson) return sendError(res, 400, "invalid_json");
+  const body = result.body;
+
+  if (typeof body.offer !== "string" || body.offer.length === 0) {
+    return sendError(res, 400, "missing_offer");
+  }
+  if (byteLength(body.offer) > MAX_OFFER_ANSWER_BYTES) {
+    return sendError(res, 400, "offer_too_large");
+  }
+  if (typeof body.campaignName !== "string" || body.campaignName.length === 0) {
+    return sendError(res, 400, "missing_campaign_name");
+  }
+  if (body.campaignName.length > MAX_CAMPAIGN_NAME_CHARS) {
+    return sendError(res, 400, "campaign_name_too_long");
+  }
+  if (
+    !Number.isInteger(body.playerCount) ||
+    body.playerCount < 1 ||
+    body.playerCount > 16
+  ) {
+    return sendError(res, 400, "invalid_player_count");
+  }
+  if (body.displayName !== undefined && body.displayName !== null) {
+    if (typeof body.displayName !== "string") return sendError(res, 400, "invalid_display_name");
+    if (body.displayName.length > MAX_DISPLAY_NAME_CHARS) {
+      return sendError(res, 400, "display_name_too_long");
+    }
+  }
+  if (body.public !== undefined && typeof body.public !== "boolean") {
+    return sendError(res, 400, "invalid_public");
+  }
+
+  const isUpdate = body.code !== undefined && body.code !== null;
+
+  if (isUpdate) {
+    if (typeof body.code !== "string") return sendError(res, 400, "invalid_code");
+    const record = getLiveSession(body.code, now);
+    if (!record) return sendError(res, 404, "session_not_found");
+    if (typeof body.hostToken !== "string" || body.hostToken !== record.hostToken) {
+      return sendError(res, 403, "host_token_mismatch");
+    }
+
+    record.offer = body.offer;
+    record.answer = null; // a fresh offer starts a new handshake round
+    record.public = body.public ?? false;
+    record.displayName = body.displayName ?? null;
+    record.playerCount = body.playerCount;
+    record.campaignName = body.campaignName;
+    touchSession(record, now);
+
+    return sendJson(res, 200, { code: record.code, hostToken: record.hostToken, expiresAt: record.expiresAt });
+  }
+
+  if (sessions.size >= MAX_CONCURRENT_SESSIONS) {
+    return sendError(res, 503, "max_sessions_reached");
+  }
+
+  const code = generateUniqueCode();
+  const record = {
+    code,
+    hostToken: randomUUID(),
+    offer: body.offer,
+    answer: null,
+    createdAt: now,
+    lastActivityAt: now,
+    expiresAt: now, // set for real by touchSession below
+    public: body.public ?? false,
+    displayName: body.displayName ?? null,
+    playerCount: body.playerCount,
+    campaignName: body.campaignName,
+  };
+  touchSession(record, now);
+  sessions.set(code, record);
+  totalSessionsCreated += 1;
+
+  return sendJson(res, 201, { code: record.code, hostToken: record.hostToken, expiresAt: record.expiresAt });
+}
+
+function handleGetSession(req, res, code) {
+  const now = Date.now();
+  const ip = getClientIp(req);
+  const record = getLiveSession(code, now);
+
+  const providedToken = req.headers["x-host-token"];
+  const isHostAuthenticated =
+    !!record && typeof providedToken === "string" && providedToken === record.hostToken;
+
+  const limit = isHostAuthenticated
+    ? checkRateLimit(hostTokenLimits, ip, HOST_TOKEN_MAX_REQUESTS, now)
+    : checkRateLimit(guessLimits, ip, RATE_LIMIT_MAX_REQUESTS, now);
+
+  if (!limit.allowed) {
+    res.setHeader("Retry-After", Math.ceil(limit.retryAfterMs / 1000));
+    return sendError(res, 429, "rate_limited", { retryAfterMs: limit.retryAfterMs });
+  }
+
+  if (!record) return sendError(res, 404, "session_not_found");
+
+  return sendJson(res, 200, {
+    code: record.code,
+    offer: record.offer,
+    answer: record.answer,
+    campaignName: record.campaignName,
+    displayName: record.displayName,
+    playerCount: record.playerCount,
+  });
+}
+
+async function handlePostAnswer(req, res, code) {
+  const now = Date.now();
+  const ip = getClientIp(req);
+
+  // No host-token exemption here, deliberately: the *joiner* posts an
+  // answer, never the host — there's no scenario where a valid host token
+  // would legitimately accompany this request, so every caller uses the
+  // strict guess-sensitive budget, matching the spec's own endpoint
+  // description (only GET /session/<code> documents a token exemption).
+  const limit = checkRateLimit(guessLimits, ip, RATE_LIMIT_MAX_REQUESTS, now);
+  if (!limit.allowed) {
+    res.setHeader("Retry-After", Math.ceil(limit.retryAfterMs / 1000));
+    return sendError(res, 429, "rate_limited", { retryAfterMs: limit.retryAfterMs });
+  }
+
+  const record = getLiveSession(code, now);
+  if (!record) return sendError(res, 404, "session_not_found");
+
+  const result = await readJsonBody(req);
+  if (result.tooLarge) return sendError(res, 413, "payload_too_large", undefined, { closeConnection: true });
+  if (result.invalidJson) return sendError(res, 400, "invalid_json");
+  const body = result.body;
+
+  if (typeof body.answer !== "string" || body.answer.length === 0) {
+    return sendError(res, 400, "missing_answer");
+  }
+  if (byteLength(body.answer) > MAX_OFFER_ANSWER_BYTES) {
+    return sendError(res, 400, "answer_too_large");
+  }
+  if (record.answer !== null) {
+    return sendError(res, 409, "already_answered");
+  }
+
+  record.answer = body.answer;
+  touchSession(record, now); // a real join attempt in progress is real activity
+
+  return sendNoContent(res);
+}
+
+function handleGetLobby(req, res) {
+  const now = Date.now();
+  const ip = getClientIp(req);
+
+  const limit = checkRateLimit(lobbyLimits, ip, LOBBY_RATE_LIMIT_MAX_REQUESTS, now);
+  if (!limit.allowed) {
+    res.setHeader("Retry-After", Math.ceil(limit.retryAfterMs / 1000));
+    return sendError(res, 429, "rate_limited", { retryAfterMs: limit.retryAfterMs });
+  }
+
+  const list = [];
+  for (const record of sessions.values()) {
+    if (record.expiresAt <= now) continue; // defensive; sweep normally handles this
+    if (!record.public) continue;
+    list.push({
+      code: record.code,
+      displayName: record.displayName,
+      campaignName: record.campaignName,
+      playerCount: record.playerCount,
+    });
+  }
+
+  return sendJson(res, 200, { sessions: list });
+}
+
+/** How many entries in a rate-limit map are *currently* in an active
+ * cooldown — a live "is something hammering us right now" signal, distinct
+ * from the map's total size (which also includes IPs that are merely being
+ * tracked within a normal, unremarkable window). */
+function countInCooldown(map, now) {
+  let count = 0;
+  for (const state of map.values()) if (now < state.cooldownUntil) count += 1;
+  return count;
+}
+
+/** Aggregate, numbers-only monitoring snapshot — no session codes, no
+ * hostTokens, no offer/answer contents, no IPs. See `STATS_TOKEN`'s doc
+ * comment for why this whole endpoint is opt-in and 404s indistinguishably
+ * from an unknown route unless explicitly configured and authenticated. */
+function handleGetStats(req, res) {
+  if (!STATS_TOKEN || req.headers["x-stats-token"] !== STATS_TOKEN) {
+    return sendError(res, 404, "not_found");
+  }
+
+  const now = Date.now();
+  let publicCount = 0;
+  let awaitingAnswer = 0;
+  let answered = 0;
+  for (const record of sessions.values()) {
+    if (record.public) publicCount += 1;
+    if (record.answer === null) awaitingAnswer += 1;
+    else answered += 1;
+  }
+
+  return sendJson(res, 200, {
+    pid: process.pid,
+    nodeVersion: process.version,
+    uptimeSeconds: Math.floor((now - serverStartedAt) / 1000),
+    sessions: {
+      live: sessions.size,
+      public: publicCount,
+      awaitingAnswer,
+      answered,
+      maxConcurrent: MAX_CONCURRENT_SESSIONS,
+      totalCreatedSinceStart: totalSessionsCreated,
+    },
+    rateLimiting: {
+      totalRejectionsSinceStart: totalRateLimitRejections,
+      trackedIps: {
+        guess: guessLimits.size,
+        hostToken: hostTokenLimits.size,
+        lobby: lobbyLimits.size,
+        putSession: putSessionLimits.size,
+      },
+      ipsCurrentlyInCooldown: {
+        guess: countInCooldown(guessLimits, now),
+        hostToken: countInCooldown(hostTokenLimits, now),
+        lobby: countInCooldown(lobbyLimits, now),
+        putSession: countInCooldown(putSessionLimits, now),
+      },
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Dispatcher
+// ---------------------------------------------------------------------------
+
+const SESSION_PATH_RE = /^\/session\/([^/]+)$/;
+const ANSWER_PATH_RE = /^\/session\/([^/]+)\/answer$/;
+
+async function requestListener(req, res) {
+  setCorsHeaders(req, res);
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    return res.end();
+  }
+
+  let pathname;
+  try {
+    pathname = new URL(req.url, "http://localhost").pathname;
+  } catch {
+    return sendError(res, 400, "invalid_url");
+  }
+
+  try {
+    if (req.method === "PUT" && pathname === "/session") {
+      return await handlePutSession(req, res);
+    }
+    const sessionMatch = pathname.match(SESSION_PATH_RE);
+    if (req.method === "GET" && sessionMatch) {
+      return handleGetSession(req, res, decodeURIComponent(sessionMatch[1]));
+    }
+    const answerMatch = pathname.match(ANSWER_PATH_RE);
+    if (req.method === "POST" && answerMatch) {
+      return await handlePostAnswer(req, res, decodeURIComponent(answerMatch[1]));
+    }
+    if (req.method === "GET" && pathname === "/lobby") {
+      return handleGetLobby(req, res);
+    }
+    if (req.method === "GET" && pathname === "/stats") {
+      return handleGetStats(req, res);
+    }
+    return sendError(res, 404, "not_found");
+  } catch (err) {
+    console.error("[multiplayer-server] unhandled error:", err);
+    if (!res.headersSent) sendError(res, 500, "internal_error");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// --install / --uninstall / --dry-run
+// ---------------------------------------------------------------------------
+
+function parseCliArgs(argv) {
+  const flags = {
+    install: false,
+    uninstall: false,
+    dryRun: false,
+    stats: false,
+    json: false,
+    help: false,
+    port: undefined,
+    allowedOrigin: undefined,
+  };
+  for (const arg of argv) {
+    if (arg === "--install") flags.install = true;
+    else if (arg === "--uninstall") flags.uninstall = true;
+    else if (arg === "--dry-run") flags.dryRun = true;
+    else if (arg === "--stats") flags.stats = true;
+    else if (arg === "--json") flags.json = true;
+    else if (arg === "--help" || arg === "-?") flags.help = true;
+    else if (arg.startsWith("--port=")) flags.port = arg.slice("--port=".length);
+    else if (arg.startsWith("--allowed-origin=")) flags.allowedOrigin = arg.slice("--allowed-origin=".length);
+  }
+  return flags;
+}
+
+const HELP_TEXT = `Codeenstein 3D multiplayer signaling + lobby server
+
+Usage:
+  node multiplayer-server.mjs                Start the server (default)
+  node multiplayer-server.mjs --install       Install as a systemd service (needs root)
+  node multiplayer-server.mjs --uninstall     Remove the systemd service (needs root)
+  node multiplayer-server.mjs --stats         Query a running instance's monitoring stats
+  node multiplayer-server.mjs --help | -?     Show this help
+
+Flags:
+  --dry-run                Combine with --install/--uninstall: print what would happen,
+                            touch nothing (no root required).
+  --port=<n>                Combine with --install: port baked into the generated unit's
+                            CODEENSTEIN_MULTIPLAYER_PORT. Combine with --stats: which port
+                            to query. Defaults to this invocation's own effective port
+                            (currently ${PORT}, from CODEENSTEIN_MULTIPLAYER_PORT or its built-in default).
+  --allowed-origin=<url>    Combine with --install: origin baked into the generated unit's
+                            CODEENSTEIN_MULTIPLAYER_ALLOWED_ORIGIN.
+  --json                    Combine with --stats: print raw JSON instead of a formatted
+                            summary (for monitoring tools / piping into jq).
+
+Environment variables (all optional, sane defaults otherwise; values below are this
+invocation's currently-effective ones):
+  CODEENSTEIN_MULTIPLAYER_PORT                          Listen port (currently ${PORT}).
+  CODEENSTEIN_MULTIPLAYER_ALLOWED_ORIGIN                 CORS origin (currently ${ALLOWED_ORIGIN}).
+  CODEENSTEIN_MULTIPLAYER_SESSION_TTL_MS                 Session lifetime (currently ${SESSION_TTL_MS}).
+  CODEENSTEIN_MULTIPLAYER_SWEEP_INTERVAL_MS              Expiry sweep interval (currently ${SWEEP_INTERVAL_MS}).
+  CODEENSTEIN_MULTIPLAYER_MAX_CONCURRENT_SESSIONS        Hard session cap (currently ${MAX_CONCURRENT_SESSIONS}).
+  CODEENSTEIN_MULTIPLAYER_RATE_LIMIT_WINDOW_MS           Rate-limit window (currently ${RATE_LIMIT_WINDOW_MS}).
+  CODEENSTEIN_MULTIPLAYER_RATE_LIMIT_MAX_REQUESTS        Guess-sensitive budget (currently ${RATE_LIMIT_MAX_REQUESTS}).
+  CODEENSTEIN_MULTIPLAYER_HOST_TOKEN_MAX_REQUESTS        Host-token-exempt budget (currently ${HOST_TOKEN_MAX_REQUESTS}).
+  CODEENSTEIN_MULTIPLAYER_LOBBY_RATE_LIMIT_MAX_REQUESTS  GET /lobby budget (currently ${LOBBY_RATE_LIMIT_MAX_REQUESTS}).
+  CODEENSTEIN_MULTIPLAYER_PUT_SESSION_RATE_LIMIT_MAX_REQUESTS  PUT /session budget (currently ${PUT_SESSION_RATE_LIMIT_MAX_REQUESTS}).
+  CODEENSTEIN_MULTIPLAYER_BASE_COOLDOWN_MS               Backoff base (currently ${BASE_COOLDOWN_MS}).
+  CODEENSTEIN_MULTIPLAYER_MAX_COOLDOWN_MS                Backoff cap (currently ${MAX_COOLDOWN_MS}).
+  CODEENSTEIN_MULTIPLAYER_MAX_BODY_BYTES                 Request body cap (currently ${MAX_BODY_BYTES}).
+  CODEENSTEIN_MULTIPLAYER_STATS_TOKEN                    Enables GET /stats and --stats;
+                                                          unset means the endpoint doesn't
+                                                          exist (plain 404), by design.
+
+Docs: doc/dev/multiplayer-server-spec.md, multiplayer-research.md ("Self-hosting").
+`;
+
+/** Pure function — the one piece of the install flow that's safe to exercise
+ * in an automated verify script (no filesystem/systemctl side effects). */
+function buildUnitFileContents({ scriptPath, port, allowedOrigin }) {
+  return `[Unit]
+Description=Codeenstein 3D multiplayer signaling + lobby server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${scriptPath}
+Restart=on-failure
+RestartSec=5
+Environment=CODEENSTEIN_MULTIPLAYER_PORT=${port}
+Environment=CODEENSTEIN_MULTIPLAYER_ALLOWED_ORIGIN=${allowedOrigin}
+
+[Install]
+WantedBy=multi-user.target
+`;
+}
+
+function runInstall({ dryRun, port, allowedOrigin }) {
+  const scriptPath = fileURLToPath(import.meta.url);
+  const unitContents = buildUnitFileContents({ scriptPath, port, allowedOrigin });
+  const commands = [
+    "systemctl daemon-reload",
+    `systemctl enable --now ${SESSION_UNIT_NAME}`,
+  ];
+
+  console.log(`Unit file: ${SESSION_UNIT_PATH}\n`);
+  console.log(unitContents);
+  console.log("Commands that will run:");
+  for (const cmd of commands) console.log(`  ${cmd}`);
+
+  if (dryRun) {
+    console.log("\n[dry run] nothing written, no commands executed.");
+    return;
+  }
+
+  if (typeof process.getuid === "function" && process.getuid() !== 0) {
+    console.error("\n--install must be run as root (needs to write /etc/systemd/system and call systemctl).");
+    process.exitCode = 1;
+    return;
+  }
+
+  writeFileSync(SESSION_UNIT_PATH, unitContents, "utf8");
+  execFileSync("systemctl", ["daemon-reload"], { stdio: "inherit" });
+  execFileSync("systemctl", ["enable", "--now", SESSION_UNIT_NAME], { stdio: "inherit" });
+  console.log("\nInstalled and started.");
+}
+
+function runUninstall({ dryRun }) {
+  const commands = [
+    `systemctl disable --now ${SESSION_UNIT_NAME}`,
+    `rm ${SESSION_UNIT_PATH}`,
+    "systemctl daemon-reload",
+  ];
+
+  console.log(`Unit file: ${SESSION_UNIT_PATH}\n`);
+  console.log("Commands that will run:");
+  for (const cmd of commands) console.log(`  ${cmd}`);
+
+  if (dryRun) {
+    console.log("\n[dry run] nothing removed, no commands executed.");
+    return;
+  }
+
+  if (typeof process.getuid === "function" && process.getuid() !== 0) {
+    console.error("\n--uninstall must be run as root.");
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    execFileSync("systemctl", ["disable", "--now", SESSION_UNIT_NAME], { stdio: "inherit" });
+  } catch (err) {
+    console.warn(`Could not stop/disable ${SESSION_UNIT_NAME} (may not have been running):`, err.message);
+  }
+  if (existsSync(SESSION_UNIT_PATH)) rmSync(SESSION_UNIT_PATH, { force: true });
+  execFileSync("systemctl", ["daemon-reload"], { stdio: "inherit" });
+  console.log("\nUninstalled.");
+}
+
+// ---------------------------------------------------------------------------
+// --stats — queries an already-running instance's GET /stats
+// ---------------------------------------------------------------------------
+
+function formatStatsSummary(stats) {
+  const lines = [
+    `pid ${stats.pid}  node ${stats.nodeVersion}  uptime ${stats.uptimeSeconds}s`,
+    "",
+    "Sessions:",
+    `  live               ${stats.sessions.live} / ${stats.sessions.maxConcurrent} max`,
+    `  public (in lobby)  ${stats.sessions.public}`,
+    `  awaiting answer    ${stats.sessions.awaitingAnswer}`,
+    `  answered           ${stats.sessions.answered}`,
+    `  created since start ${stats.sessions.totalCreatedSinceStart}`,
+    "",
+    "Rate limiting:",
+    `  rejections since start  ${stats.rateLimiting.totalRejectionsSinceStart}`,
+    `  tracked IPs   guess=${stats.rateLimiting.trackedIps.guess} hostToken=${stats.rateLimiting.trackedIps.hostToken} lobby=${stats.rateLimiting.trackedIps.lobby} putSession=${stats.rateLimiting.trackedIps.putSession}`,
+    `  in cooldown   guess=${stats.rateLimiting.ipsCurrentlyInCooldown.guess} hostToken=${stats.rateLimiting.ipsCurrentlyInCooldown.hostToken} lobby=${stats.rateLimiting.ipsCurrentlyInCooldown.lobby} putSession=${stats.rateLimiting.ipsCurrentlyInCooldown.putSession}`,
+  ];
+  return lines.join("\n");
+}
+
+async function runStats({ port, json }) {
+  const token = process.env.CODEENSTEIN_MULTIPLAYER_STATS_TOKEN;
+  if (!token) {
+    console.error(
+      "--stats needs CODEENSTEIN_MULTIPLAYER_STATS_TOKEN set to the same value the running " +
+        "server was started with (GET /stats is opt-in and disabled without it).",
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  const url = `http://127.0.0.1:${port}/stats`;
+  let res;
+  try {
+    res = await fetch(url, { headers: { "X-Stats-Token": token }, signal: AbortSignal.timeout(5000) });
+  } catch (err) {
+    console.error(`Could not reach ${url}: ${err.message}`);
+    console.error("Is the server running, and on this port?");
+    process.exitCode = 1;
+    return;
+  }
+
+  if (res.status === 404) {
+    console.error(
+      "Got 404 from /stats — either no server is listening on that port, or the token didn't " +
+        "match what the running instance was started with.",
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (!res.ok) {
+    console.error(`Unexpected response from /stats: ${res.status}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const stats = await res.json();
+  console.log(json ? JSON.stringify(stats, null, 2) : formatStatsSummary(stats));
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+async function main() {
+  const flags = parseCliArgs(process.argv.slice(2));
+
+  if (flags.help) {
+    console.log(HELP_TEXT);
+    return;
+  }
+  if (flags.install) {
+    return runInstall({
+      dryRun: flags.dryRun,
+      port: flags.port ?? String(PORT),
+      allowedOrigin: flags.allowedOrigin ?? ALLOWED_ORIGIN,
+    });
+  }
+  if (flags.uninstall) {
+    return runUninstall({ dryRun: flags.dryRun });
+  }
+  if (flags.stats) {
+    return runStats({ port: flags.port ?? String(PORT), json: flags.json });
+  }
+
+  serverStartedAt = Date.now();
+  startSweeping();
+  const server = createServer(requestListener);
+  server.listen(PORT, "127.0.0.1", () => {
+    console.log(`[multiplayer-server] listening on 127.0.0.1:${PORT} (allowed origin: ${ALLOWED_ORIGIN})`);
+  });
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
