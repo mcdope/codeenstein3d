@@ -26,6 +26,37 @@
  * doc comment on that global — deliberately a separate global from the
  * engine's `__codeensteinTestHooks`, so as not to disturb what that means
  * elsewhere) to assert the end state, never to fake an action.
+ *
+ * **Not run against Firefox in CI** (`.github/workflows/verify.yml`'s
+ * `verify-browser` job skips this step there) — a real, confirmed WebRTC
+ * ICE-gathering limitation, not a Playwright-build gap or an app bug. Real
+ * local Firefox connects fine (verified directly, repeatedly); GitHub
+ * Actions' sandboxed runner network apparently has no internet-routable
+ * default route for Firefox's own interface-discovery heuristic (it opens a
+ * UDP socket and `connect()`s it toward a public IP purely to ask the OS
+ * "which local interface would you use," with no packet ever sent — the
+ * "connected UDP trick") to find, so it gathers zero host candidates and
+ * `iceConnectionState` jumps straight to `"failed"` within milliseconds of
+ * construction, logging "WebRTC: ICE failed, add a TURN server". Confirmed
+ * via `installIceDiagnostics()` below (candidate/gathering-state logging) —
+ * Chromium and WebKit gather real host candidates and connect within
+ * seconds in the identical CI job, so this isn't a general sandbox network
+ * block. Tried and ruled out, in order: `media.peerconnection.ice.obfuscate_host_addresses`
+ * (a different, real Firefox mDNS quirk — kept, still correct, just not
+ * this problem), a granted fake `getUserMedia()` stream (the documented fix
+ * for Firefox's *single*-default-route-interface restriction — doesn't
+ * apply here, since there's no default route interface at all to restrict
+ * to), and `network.dns.disableIPv6` (no effect, removed). Matches Mozilla
+ * bug 1659672 exactly ("ICE gathering fails in a pure LAN environment, no
+ * internet-routable default route") — closed **RESOLVED INVALID** by
+ * Mozilla themselves, i.e. never fixed. The one remaining lever,
+ * `media.peerconnection.ice.force_interface`, needs the runner's exact
+ * network interface name, which GitHub Actions' ephemeral runners don't
+ * expose in any stable, discoverable way — not a viable general fix. This
+ * project's own multiplayer design deliberately ships STUN-only, no TURN
+ * relay (see `multiplayer-research.md`), so "add a TURN server" isn't a
+ * path taken here either. See doc/dev/testing.md's cross-browser section
+ * for the full writeup.
  */
 import { resolveBrowserEngine } from "./lib/browserEngine.mjs";
 
@@ -87,21 +118,20 @@ async function makeEligible(page, engineName) {
 }
 
 /** Without a granted media (camera/mic) permission, Firefox restricts host
- * ICE candidate gathering to a single "default route" interface, discovered
- * via a routing-table lookup that several Mozilla bugs (1672145, 1662288,
- * 1659672) document as unreliable in exactly the kind of ephemeral
- * container network namespace a CI runner uses — leaving zero gatherable
- * candidates, so `iceGatheringState` never reaches `"complete"` at all (not
- * a resolution problem like the mDNS one above — no candidates exist to
- * resolve). Granting a fake `getUserMedia()` stream switches Firefox out of
- * that restrictive mode; `media.navigator.streams.fake`/
- * `media.navigator.permission.disabled` (set at launch, see
- * `FIREFOX_LAUNCH_OPTIONS`) make the grant instant, no real camera/mic
- * needed. This workaround stays entirely inside this verify script — the
- * real app never requests media permissions, which would be a real,
- * unjustified UX intrusion for a game with no media features; this CI
- * network-namespace pathology isn't representative of normal player
- * networks. */
+ * ICE candidate gathering to a *single* "default route" interface — a real,
+ * separate quirk from the "no default route interface exists at all" CI
+ * limitation this script's own top doc comment documents (that one has no
+ * app-side fix; this one does). Granting a fake `getUserMedia()` stream
+ * switches Firefox out of the single-interface restriction;
+ * `media.navigator.streams.fake`/`media.navigator.permission.disabled` (set
+ * at launch, see `FIREFOX_LAUNCH_OPTIONS`) make the grant instant, no real
+ * camera/mic needed. Kept even though CI itself skips Firefox for this
+ * script (see the top doc comment) — this still matters for anyone running
+ * `CODEENSTEIN_VERIFY_BROWSER=firefox` locally, which works correctly (a
+ * real machine has a real default route). This workaround stays entirely
+ * inside this verify script — the real app never requests media
+ * permissions, which would be a genuine, unjustified UX intrusion for a
+ * game with no media features. */
 async function grantFakeMediaForFirefox(page, engineName) {
   if (engineName !== "firefox") return;
   try {
