@@ -21,10 +21,12 @@ instances close enough to a single shared, playable reality — tick pacing, inp
 distribution, drift correction (including keeping the shared PRNG stream itself in
 sync, not just visible entity state — see mechanism 3), what happens when a
 connected player's connection drops mid-session (see
-[Session lifecycle](#5-session-lifecycle-joining-and-disconnects)), and which local
+[Session lifecycle](#5-session-lifecycle-joining-and-disconnects)), which local
 signals (pause/blur/lore-freeze, Doom cheat codes) must never be allowed to reach
 the shared simulation at all (see
-[What the shared simulation's input source must never allow through](#6-what-the-shared-simulations-input-source-must-never-allow-through)).
+[What the shared simulation's input source must never allow through](#6-what-the-shared-simulations-input-source-must-never-allow-through)),
+and how a session moves from one level to the next (see
+[Level transitions](#7-level-transitions)).
 **Out of scope**: the signaling/lobby service itself (`multiplayer-research.md`), per-player
 scoring/kill-bonus rules, multi-spawn generation, deathmatch, anything about the
 actual `RTCPeerConnection`/`RTCDataChannel` setup handshake beyond "assume it already
@@ -46,13 +48,19 @@ enforces it).
   design: guests are not thin clients rendering host-streamed frames).
 - **Tick** — one discrete simulation step, i.e. one `engine.advance(dt)` call. Under
   this spec, ticks — not wall-clock frames — are the unit of network synchronization.
-  `advance()` itself is unmodified; multiplayer only changes *what drives it*, the
-  exact same seam the replay system already uses (`ReplayPlaybackInput` + `main.ts`'s
-  replay-viewer loop already call `engine.advance(frame.dt)` externally instead of
-  relying on the engine's own internal `requestAnimationFrame` loop — see
-  `src/engine/engine.ts`'s `frame()`/`advance()` split. A multiplayer tick driver is
-  a new caller of that same existing public seam, not a new capability the engine
-  needs).
+  The *driving seam* is the one the replay system already proves out
+  (`ReplayPlaybackInput` + `main.ts`'s replay-viewer loop already call
+  `engine.advance(frame.dt)` externally instead of relying on the engine's own
+  internal `requestAnimationFrame` loop — see `src/engine/engine.ts`'s
+  `frame()`/`advance()` split), and a multiplayer tick driver is a new caller of
+  that same existing public seam. **Correction from this document's first pass**: an
+  earlier revision claimed `advance()` itself needs no modification — that was
+  wrong, and contradicted `multiplayer-game-state-spec.md`'s own finding that the
+  engine is internally single-player (one `Player`, one health/ammo/weapon set).
+  `advance()`'s *internals* must become per-player to consume a `TickInputBundle`
+  at all; that engine-side design is specified in
+  [`multiplayer-game-state-spec.md` §6](multiplayer-game-state-spec.md#6-the-n-player-engine-model)
+  and is a hard prerequisite for everything in this document.
 - **Session** — one connected multiplayer game, star-topology: every guest holds one
   `RTCPeerConnection` to the host, none to each other (per `multiplayer-research.md`).
 
@@ -178,6 +186,39 @@ interface TickInputBundle {
 }
 ```
 
+### Tick pacing must survive background tabs
+
+Mechanism 6 below suppresses the *logical* pause (Escape/blur setting `isPaused`) —
+but that alone is defeated one layer down by the browser itself, and this spec's
+first pass missed it: `requestAnimationFrame` stops firing entirely in a hidden
+tab, and main-thread `setTimeout`/`setInterval` are throttled (to ~1Hz baseline,
+and far more aggressively under Chrome's intensive throttling). If the **host's**
+fixed-tick accumulator is driven by rAF or a main-thread timer, the host
+alt-tabbing physically stops `TickInputBundle` production and freezes the session
+for everyone — the exact failure mechanism 6 exists to prevent, reintroduced by
+the scheduler instead of the pause flag.
+
+- **The host's tick clock runs in a dedicated Web Worker**, posting a message per
+  due tick to the main thread, which does the actual collect/finalize/broadcast/
+  `advance()` work. Worker timers are not subject to the hidden-tab throttling
+  that main-thread timers and rAF are — this is the standard, well-trodden fix for
+  exactly this problem in browser game/audio scheduling. (Chrome additionally
+  exempts pages holding an open `RTCPeerConnection` from *intensive* timer
+  throttling, which helps, but that's a browser-specific relaxation to benefit
+  from, not a guarantee to build on — the worker clock is the load-bearing fix.)
+- **Guests are naturally throttle-resistant if bundle application is
+  event-driven, and must be built that way**: a guest advances when a
+  `TickInputBundle` *arrives* (`RTCDataChannel`'s `onmessage`, which still fires
+  in hidden tabs), not on its own rAF/timer schedule — so a backgrounded guest's
+  simulation keeps pace with the host automatically, with no separate catch-up
+  protocol needed. If application ever lags anyway (a slow device, a long GC
+  pause), the reliable/ordered channel means the backlog is simply applied in
+  arrival order, oldest first, in a bounded fast-forward loop — never skipped.
+- **Rendering stays on rAF and is allowed to freeze in a hidden tab** — that's
+  correct behavior, not a gap: nobody is looking at it. Only *simulation* must
+  keep running, which is exactly the split mechanism 1's render/simulation
+  decoupling already established.
+
 ## 2. Input delay buffer
 
 Waiting for a genuinely-current tick's input from every peer before advancing (naive
@@ -289,6 +330,16 @@ interface PlayerSnapshot {
   swap: number;
   ammo: { bullets: number; rockets: number; smg: number; gas: number };
   weaponIndex: number;
+  /** Dependency keys currently held (unused, in inventory). Gameplay-critical,
+   * not cosmetic — keys gate door opening, and a guest can drift on a key
+   * pickup during a PRNG-desync window exactly like any other field here.
+   * Added in review; the first pass omitted it. */
+  keysHeld: number;
+  /** Indices into WEAPONS currently owned, sorted ascending (a canonical
+   * order, so two peers' snapshots of identical state are byte-identical).
+   * Same review rationale as keysHeld: owning a weapon gates firing and
+   * switching, and weapon pickups are loot-roll-derived — drift-prone. */
+  ownedWeapons: number[];
 }
 
 interface EnemySnapshot {
@@ -641,17 +692,22 @@ late") and governs a much longer timescale.
      needs equivalent treatment for a different reason (e.g. the "ordinary
      multiplayer weapon drop" question raised just below), where a boolean would
      need a second, differently-named flag instead of one more tag value.
-   - This surfaces a **related question deliberately left open, not resolved
-     here**: the exact same "shouldn't be silently consumed by someone who
-     doesn't need it" problem applies equally to an *ordinary* (enemy-kill or
-     secret-room) weapon `LootDrop` in a multiplayer session — nothing about it is
-     specific to the disconnect case, it's just where this document happened to
-     hit it first. Whether the new no-op-if-already-owned rule should generalize
-     to every multiplayer weapon drop, not just disconnect-sourced ones, is a real
-     follow-on design question for `multiplayer-game-state-spec.md` (which already
-     owns the broader per-player-inventory work this depends on) — flagged here,
-     not decided here, since resolving it is outside what this document's
-     disconnect-handling section is scoped to.
+   - This question was originally deferred; with the N-player engine model now
+     specified (`multiplayer-game-state-spec.md` §6, which owns loot-pickup
+     interaction), it's **resolved: the no-op-if-already-owned rule applies to
+     *every* weapon-kind drop in a multiplayer session, regardless of origin** —
+     enemy-kill and secret-room weapon drops included. The "shouldn't be silently
+     consumed by someone who doesn't need it" fairness logic is identical no
+     matter what spawned the drop, and one uniform rule keyed on
+     (multiplayer session ∧ `kind === "weapon"`) is simpler to implement, test,
+     and explain to players than two behaviors keyed by drop origin.
+     Single-player is untouched: `grantOrTopUpWeapon`'s already-owned-→-ammo
+     top-up stays exactly as it is there, where it remains the right call (one
+     player, so a same-weapon drop genuinely is just excess ammo). Note this
+     makes the `source` field identity/diagnostic rather than the behavior key
+     for pickups — it still drives the `disconnect:` ID namespace and remains
+     the honest record of where a drop came from, but pickup logic branches on
+     session mode + kind, not on `source`.
    - Every entry from one disconnect is identified as `` `disconnect:${playerId}:${dropSeq}` ``
      (`dropSeq` 0, 1, 2, ... in a fixed, independently-computable order — ammo
      pools first in `bullets`/`rockets`/`smg`/`gas` order, then unlocked weapons in
@@ -660,15 +716,25 @@ late") and governs a much longer timescale.
      defines for enemy-sourced drops, extended here since a single disconnect can
      now drop more than one item, unlike the original ammo-only version of this
      rule.
+   - **Held dependency keys drop too — resolved, no longer an open question**
+     (an earlier revision deferred this to the per-player inventory design; that
+     design now exists as `multiplayer-game-state-spec.md` §6, so deferring is no
+     longer honest). The reason this can't be left vague: keys are **level-scoped**
+     (`EngineCarryover` doesn't carry them across levels) and `placeKeys`
+     generates exactly **one key per door** — a removed player's held keys
+     vanishing with them can permanently lock a door, potentially on the team's
+     only route forward: a real soft-lock, not an inventory nicety. Rule: one
+     `kind: "key"` `LootDrop` per held key, appended after the weapon entries in
+     the `dropSeq` ordering (ammo pools, then weapons, then keys); walking over
+     one grants the collector `keysHeld + 1`. `"key"` is a new `LootKind` value —
+     multiplayer-only in practice (nothing in single-player ever creates one),
+     but an ordinary drop kind mechanically, riding the same pickup and
+     reconciliation paths as everything else.
    - **Deliberately still excludes health/swap**: no precedent in the existing
      single-player design for handing health from one entity to another (unlike
-     ammo and weapons, which are both already ordinary `LootDrop` kinds), and
+     ammo, weapons, and now keys, which are all ordinary `LootDrop` kinds), and
      inventing one here would be scope creep this document doesn't need to
-     resolve. What happens to other non-ammo, non-weapon held state (dependency
-     keys, in particular) is left an open question for whichever design ends up
-     specifying per-player inventory in full (`multiplayer-game-state-spec.md`'s
-     own "engine needs N players" prerequisite) — not silently resolved by this
-     document.
+     resolve.
    - **These drops must be visible on the minimap/automap, not just discoverable
      by walking into them.** A player has no in-fiction reason to know a
      teammate disconnected three rooms away, let alone that it left something
@@ -696,15 +762,44 @@ late") and governs a much longer timescale.
    anyone else) cannot re-enter that specific level's session; the next level (or a
    fresh session) is the earliest they can play again.
 
+### Host disconnect: the session ends
+
+The rules above cover a *guest* dropping. This spec's first pass never said what
+happens when the **host** drops — a real omission, since the host is not just
+another player: it's the tick sequencer (mechanism 1), the reconciliation
+authority (mechanism 3), and every guest's only connection (star topology).
+
+**Rule: if the host's connection is lost, the session is over for everyone.** No
+host migration in v1 — migrating authority to a surviving guest would require a
+full authoritative-state handoff, a new tick sequencer election, and fresh
+signaling between guests who deliberately have no connections to each other; that
+is a large, separate feature, explicitly out of scope, not a small fallback to
+sneak in. Concretely, on each guest:
+
+- Detection uses the same transport-layer signal as guest disconnects
+  (`RTCPeerConnection.connectionState` reaching `disconnected`/`failed`), with the
+  same `DISCONNECT_GRACE_MS` grace period for transient recovery — during which
+  the guest's simulation simply stops receiving bundles and therefore stops
+  advancing (nothing to fabricate: without the sequencer there is no next tick).
+- If the grace period elapses: show a plain "host disconnected — session ended"
+  state, present the end-of-run comparison table from each player's
+  `ScoreBreakdown` as of the last fully-applied tick (every guest has identical
+  data for this, by lockstep construction), and return to the pre-session menu.
+- Nothing needs doing on the signaling server: the host's lobby/mailbox entry
+  simply expires via its own TTL (§ `multiplayer-server-spec.md`), since the host
+  is no longer around to refresh it.
+
 ## 6. What the shared simulation's input source must never allow through
 
 Two distinct gaps, both critical, both share the same underlying shape: a *local*
 signal that today mutates simulation state (or halts the sim outright) directly,
 with no concept of "this is a shared session other peers are also relying on."
 Both need to be neutralized at the same layer — the `InputSource` a networked
-session feeds into `advance()` — not by adding new branching inside `engine.ts`
-itself, which stays exactly as unmodified as this document's opening paragraph
-already commits to.
+session feeds into `advance()` — not by adding multiplayer-aware branching inside
+the engine's pause/cheat handling. (The engine *is* refactored for multiplayer —
+the N-player model in `multiplayer-game-state-spec.md` §6 — but that refactor is
+about per-player state, not about the engine learning to second-guess its input;
+these two suppressions stay in the input layer precisely so it never has to.)
 
 ### Pause/blur/lore-freeze must never halt the tick loop
 
@@ -794,11 +889,57 @@ too — no role-based exception.
   reasonable UX nicety. Not specifying it as a requirement — silently having no
   effect is a complete, correct fix on its own; the toast is polish.
 
+## 7. Level transitions
+
+Flagged as ordinary feature work in `multiplayer-research.md` ("when one player
+enters the return tile, all players advance to the next level (after an
+informational countdown)"), but no spec ever defined the actual mechanism — this
+section closes that gap.
+
+1. **Exit touch is a shared simulation event, not a message.** Any player's
+   collision with the exit tile happens identically on every peer at the same tick
+   (lockstep) — no "player X reached the exit" packet exists or is needed. What it
+   triggers changes for multiplayer: instead of single-player's immediate
+   `onWin`/level-end, it starts the **countdown** — a plain tick counter,
+   `COUNTDOWN_TICKS` (e.g. 5 seconds' worth; tunable, see below), decremented by
+   every peer's own simulation in lockstep, with an informational overlay
+   ("Build finishing in N…") rendered locally by each peer. The simulation keeps
+   running normally during the countdown — players can keep fighting/looting;
+   re-touching or leaving the exit tile doesn't cancel or restart it (simplest
+   rule; a cancelable countdown is a design refinement, not a v1 need).
+2. **At countdown expiry, the host drives the transition; guests wait for it.**
+   The host: stops ticking level N, computes every player's `EngineCarryover`
+   (per-player — each player carries *their own* health/ammo/weapons forward,
+   exactly the existing single-player carryover shape, once per player), generates
+   the next level's `GameMap` exactly as it generated the first (same
+   GitHub/Demos-sourced pipeline, `maxPlayers` param per
+   `multiplayer-game-state-spec.md` §2), picks a fresh `gameplaySeed`, and sends
+   all of it — map, per-player carryovers, seed — to every guest over the
+   `reconciliation` channel. The host's computed carryovers are authoritative by
+   definition (they're derived from its own state, which reconciliation already
+   makes canonical); a guest discards its own locally-computed equivalents.
+3. **Tick numbering and the PRNG stream reset per level.** Each level is its own
+   tick epoch starting at 0, with the shared `mulberry32` stream freshly seeded
+   from the transition payload's `gameplaySeed` — deliberately mirroring the
+   existing per-level structure the replay system already uses
+   (`ReplayLevelSegment`: one seed, one frame sequence, per level). No cross-level
+   PRNG or tick state to keep aligned.
+4. **Guests acknowledge; the host starts ticking level N+1 when every connected
+   guest has acked or `TRANSITION_ACK_TIMEOUT_MS` elapses** — a guest that never
+   acks in time is handled by the existing disconnect path (§5), not a special
+   case. Because both channels are reliable/ordered, a slow guest still applying
+   level-N bundles when the transition payload arrives simply processes it in
+   order after them — no interleaving hazard.
+5. **Dead players revive at the transition** — per the coop death rule in
+   [`multiplayer-game-state-spec.md` §6](multiplayer-game-state-spec.md#6-the-n-player-engine-model),
+   which owns what state they revive with.
+
 ## Open tuning parameters (not final values)
 
 Every constant named above (`TICK_RATE_HZ`, `INPUT_DELAY_TICKS`,
 `RECONCILE_INTERVAL_TICKS`, `CORRECTION_SMOOTH_MS`, `SNAP_THRESHOLD_TILES`,
-`DISCONNECT_GRACE_MS`) is a reasonable starting point grounded in this document's
+`DISCONNECT_GRACE_MS`, `COUNTDOWN_TICKS`, `TRANSITION_ACK_TIMEOUT_MS`) is a
+reasonable starting point grounded in this document's
 own reasoning, not a value this spec claims is correct — real tuning needs actual
 multi-peer network conditions (real RTT distributions, real packet loss) to
 validate against, which a specification pass can't produce. Treat them as the

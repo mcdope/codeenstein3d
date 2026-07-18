@@ -1,13 +1,17 @@
 # Multiplayer game-state adaptation plan
 
 **Status: analysis and plan only — no file under `src/` is modified by this
-document.** Scoped to the four areas `multiplayer-research.md` flagged as ordinary
-feature work with existing extension points: UI gating, multi-spawn generation,
-per-player scoring/assists, and player-count elite scaling. Cross-references:
+document.** Covers the four areas `multiplayer-research.md` flagged as ordinary
+feature work with existing extension points — UI gating, multi-spawn generation,
+per-player scoring/assists, player-count elite scaling — plus loot-drop map
+visibility (§5) and, most substantially, **the N-player engine model itself (§6)**:
+the design for how one `RaycasterEngine` instance simulates every connected
+player, which review identified as the largest unspecified prerequisite for the
+whole initiative. Cross-references:
 [`multiplayer-research.md`](../../multiplayer-research.md) (the governing decisions)
 and [`multiplayer-netcode-spec.md`](multiplayer-netcode-spec.md) (the per-peer,
-full-engine-instance lockstep model this plan assumes — it's why §3 turns out to be
-larger than "reshape one interface").
+full-engine-instance lockstep model this plan assumes — §6 here is what makes that
+model actually implementable).
 
 ## 1. UI gating
 
@@ -100,7 +104,12 @@ here, since there's nothing to reorder relative to.
  * shift as a side effect of adding this. */
 export function pickMultiplayerSpawns(rooms: Room[], exit: Point, count: number): Point[] {
   if (rooms.length === 0) return [{ x: exit.x, y: exit.y }]; // mirrors pickExit's own empty-rooms fallback; expected unreachable in practice, same as that fallback
-  const pool = rooms.map((r) => r.center);
+  // The exit's own room is excluded outright: pickExit returns exactly some
+  // room's center, so without this filter a large-enough player count would
+  // eventually assign a spawn ON the exit tile itself — under the multiplayer
+  // level-advance rule (netcode spec §7, "exit touch is a shared simulation
+  // event") that player would trigger the next-level countdown at tick 0.
+  const pool = rooms.map((r) => r.center).filter((c) => !(c.x === exit.x && c.y === exit.y));
   const chosen: Point[] = [];
   for (let i = 0; i < count && pool.length > 0; i++) {
     let bestIdx = 0;
@@ -126,13 +135,61 @@ centers alone give plenty of spread without the extra complexity of scoring 4
 corners per room too. Worth revisiting only if playtesting shows otherwise — not
 worth the complexity pre-emptively.
 
+### Spawn-on-enemy collision — a flaw caught in review, not in the first pass
+
+Room centers are **also exactly where enemies spawn**: `enemyPositions`
+(`generation/enemies.ts`) anchors every pack's *first member* at the room center
+("the first at the room center, the rest scattered randomly"), and `pickSafeSpawn`'s
+whole reason for picking a *corner* of room 0 is precisely that centers are
+enemy-occupied. As first specced, players 2..N would spawn literally on top of a
+pack's anchor enemy in any `function`/`method` room the greedy selection picks.
+The first pass covered pillars (`avoidPoints`), floor (`clearCriticalTiles`), and
+hazards (`fillHazards`) — and missed the enemies standing right there.
+
+**Fix — mirror the exit-avoidance mechanism that already exists for exactly this
+problem.** `enemyPositions(room, count, exit, rng)` already re-rolls any candidate
+landing on the exit tile (`onExit` check: up to 8 re-rolls, then a corner
+fallback) — because "an enemy must not sit on this special tile" is a problem the
+generator already solved once, for the exit. Extend the same mechanism: thread
+`multiplayerSpawns` into `spawnEnemies` → `enemyPositions` as an additional
+avoid-list, checked by the same tile-coordinate comparison the `onExit` predicate
+uses, triggering the same re-roll-then-corner-fallback path. Enemies move aside
+for spawns (not vice versa) because spawn placement runs on pure geometry the
+greedy dispersal depends on, while enemy placement is already random-with-re-rolls
+by construction — the side that's already built to yield is the side that yields.
+
+Two consequences to state precisely rather than discover later:
+
+- **Generation order**: `multiplayerSpawns` must now be computed **before**
+  `spawnEnemies` runs — in `generate()`, between `pickExit` and `spawnEnemies`
+  (they're adjacent calls, so this is an insertion, not a reordering of anything
+  existing). The "immediately after `exit` is known" hook description below is
+  this same point.
+- **RNG-draw neutrality holds for single-player, and needs one sentence of
+  honesty for multiplayer**: a re-roll consumes `rng()` draws, so an avoid-list
+  hit changes the draw sequence from that point on. For single-player generations
+  the avoid list is empty, no re-roll can trigger, and the sequence is
+  byte-identical to today — the §2 guarantee stands. For *multiplayer*
+  generations the layout may differ from the single-player map of the same file —
+  which is fine by construction: the host generates the map once and *sends* it
+  (peers never independently re-generate it), and multiplayer runs record no
+  replays, so nothing anywhere depends on multiplayer and single-player
+  generations of the same source being identical.
+
 **Fewer eligible rooms than requested spawns** (a tiny map, or a large lobby): the
-function returns however many it could place rather than padding with duplicates.
-Deciding what a session does when it has more joined players than the map has
-spawns for (reject the join? double up two players on one spawn? cap lobby size to
-the map's own room count?) is a **session/join-flow decision, deliberately left
-open here** — not something the map generator should paper over by fabricating
-spawn points that don't correspond to real, well-spread rooms.
+function returns however many it could place rather than padding with duplicates —
+and the session handles the shortfall at *assignment* time, not generation time.
+An earlier revision left this open as a join-flow decision; that can't actually
+work — a campaign spans many levels, and a *later* level can have fewer rooms than
+the already-joined player count no matter what any join cap enforced up front, so
+the mid-campaign case has to be handled regardless. **Rule: spawn assignment
+wraps** — players (in sorted-`playerId` order, the same canonical roster order the
+N-player engine model in §6 uses everywhere) are assigned
+`multiplayerSpawns[i % multiplayerSpawns.length]`, so a shortfall means two
+players share a spawn point. This is made *literally* costless by §6's own
+no-player-collision decision: players pass through each other, so co-located
+spawning has no physical consequence at all — a resolution that would have needed
+real design work under player collision becomes a one-line modulo without it.
 
 ### `GameMap` shape and where this hooks into `generate()`
 
@@ -298,9 +355,10 @@ any drop), not just "the local one." Making `ScoreInput`'s fields
 already hold that data per player — i.e. `this.player: Player` becoming something
 keyed by player ID, and `this.health`/`this.ammo`/`this.weaponIndex` following the
 same shape. That refactor is a prerequisite this document depends on, not something
-§3 can route around — call it out explicitly during implementation sequencing
-rather than discovering it mid-way through what looked like "just wrap
-`computeScore` in a loop."
+§3 can route around — it is now specified in full as
+[§6, The N-player engine model](#6-the-n-player-engine-model), and must be
+sequenced before both this section and all of `multiplayer-netcode-spec.md`'s
+implementation.
 
 ### Given that prerequisite, the scoring refactor itself is small
 
@@ -556,3 +614,189 @@ drop (e.g. so a teammate can tell at a glance "that one's worth a detour") is a
 polish question, not a requirement — a single uniform loot-marker color satisfies
 the actual ask (drops must be *findable*, not necessarily *categorized* at a
 glance) and is simpler to ship first.
+
+## 6. The N-player engine model
+
+Review found this was the largest piece of the whole initiative left unspecified:
+`multiplayer-netcode-spec.md` originally claimed `advance()` needs no modification,
+while this document's own §3 established the engine is internally single-player —
+both couldn't be true, and neither document said how N players actually get
+simulated. This section is that design. It is a **hard prerequisite** for
+implementing anything in `multiplayer-netcode-spec.md`: the netcode drives an
+engine shape that doesn't exist until this refactor lands.
+
+### State split: per-player vs shared
+
+Everything the engine holds today sorts cleanly into one of two buckets. Getting
+this split right *is* most of the design:
+
+| Per-player (one per connected player) | Shared (one per engine instance) |
+|---|---|
+| `Player` instance (position, dir/plane camera, `noClip`) | `GameMap` (grid, `visited`, `gridVersion`) |
+| `health`, `swap` | `enemies`, `lootDrops`, `ammoPickups`, `keys` state |
+| `ammo` pools, `weaponIndex`, `ownedWeapons`, `keysHeld` | `projectiles`, `rockets`, mines/spike state |
+| `InputSource` (see below) | `levelTime` |
+| viewmodel state (recoil, muzzle flash) | the one seeded `mulberry32` stream |
+| score trackers (killScore, kills, accuracy, distance traveled, multikill window) | cosmetic particles/traces (`Math.random`-driven, never sim-relevant) |
+| `PathField` (player-rooted BFS — one per player, refloods on that player's tile change) | |
+| render offsets (netcode spec mechanism 4) | |
+
+Concretely: `this.player`/`this.health`/`this.ammo`/etc. become a
+`players: Map<PlayerId, PlayerState>` plus a `localPlayerId`, where `PlayerState`
+bundles the left column. Single-player is the N=1 case of the same structure —
+**not** a separate code path kept alongside a multiplayer one.
+
+### Input: one `InputSource` per player, reusing the replay seam
+
+Each `PlayerState` carries its own `InputSource`. This is the same abstraction the
+engine already consumes and the replay system already proves out: in a multiplayer
+session, every player — remote *and* local, since the local player's input went
+through the delay buffer too — is fed a `ReplayPlaybackInput`-style object whose
+`loadFrame(snapshot)` is called from the tick's `TickInputBundle` before
+`advance()`. In single-player, the one `PlayerState` holds the live
+`InputController`. `advance()` stops reading `this.input` and instead processes
+each player's input from their own source — same interface, N of them.
+
+### Deterministic iteration order is a correctness requirement, not a style choice
+
+Processing a player's input **consumes shared PRNG draws** — confirmed directly:
+`fire()`'s Cone-of-Fire rolls `this.rng()` once per pellet. If peer A processes
+players in the order `[p1, p2]` and peer B in `[p2, p1]` on a tick where both
+players shoot, the two peers assign different spread rolls to different shots and
+desync instantly — with identical inputs and identical state. Therefore:
+**every per-player loop in `advance()` iterates the roster in sorted-`playerId`
+order, always** — never the received bundle's object-key order, never `Map`
+insertion order. The same rule applies to any "first match wins" world interaction
+(two players on the same loot drop in the same tick: sorted order decides).
+
+### Shot resolution becomes camera-parameterized
+
+Today's hit detection is screen-space *from the local render pass*: `fire()` reads
+`this.ctx.canvas` dimensions, projects enemies from `this.player`'s camera, reads
+the render `zBuffer` for Cone-of-Fire range and occlusion. A remote player's shot
+has no local render pass to read. Two facts make the fix clean, both verified:
+
+- The internal resolution is a **fixed 640×400 on every client**
+  (`main.ts`'s `SCENE_WIDTH`/`SCENE_HEIGHT`; `canvasFit.ts` only ever touches CSS
+  `style.width`/`height`, never the backing store) — so screen-space math at
+  internal resolution is identical on every peer given the same camera.
+- The render `zBuffer` *is* per-column DDA results — casting a fresh DDA ray from
+  the same camera yields the identical value.
+
+So: extract a `resolveShot(camera, weapon, rng)` path that projects
+enemies/mines from the **shooter's** camera at internal resolution and casts one
+DDA occlusion ray per pellet column, instead of reading the local render pass's
+buffers. For the local player this produces byte-identical results to today
+(same math, same inputs) — which is what makes the N=1 compatibility gate below
+achievable. Melee (`meleeWouldHit`) is the same screen-space mechanism and gets
+the same treatment.
+
+### Enemy AI: target selection
+
+`updateEnemies(enemies, player, ...)` takes the one player today. Changes:
+
+- **Target**: each chasing enemy targets the **nearest living, non-dead player**,
+  ties broken by sorted-`playerId` order (determinism again). Aggro triggers if
+  *any* player is within radius+LOS (or on damage, as today); sticky as today.
+- **Steering**: an enemy steers by its *target's* `PathField` — one field per
+  player (the left column above), each refloods on its own player's tile change,
+  same mechanism as today times N.
+- **Attacks**: melee bites and ranged bolts (`spawnProjectile`) go at the target.
+  `updateEnemies`' current single-number melee-damage return becomes per-target
+  attribution (a per-player damage map, or an `applyDamage(playerId, amount)`
+  callback) so difficulty scaling and swap-absorption apply to the right player.
+- **Projectiles in flight** check collision against **every** living player, in
+  sorted order, first hit wins.
+
+### World interactions become any-player
+
+Hazard/spike damage applies to each player standing on the tile; a mine becomes
+`visible` when any player enters sight radius, its fuse arms while ≥1 player is
+inside the fuse radius, and its blast damages every player in range (environmental
+damage, not friendly fire); teleporters warp whichever player steps on the pad;
+loot/keys/pickups collect on any player's walk-over and apply to *that* player —
+with **every** weapon-kind drop in a multiplayer session following the
+no-op-if-already-owned rule (an owner walks through it, a non-owner collects it;
+`multiplayer-netcode-spec.md` §5 resolves this as uniform across drop origins,
+enemy-kill and secret-room drops included — single-player's top-up behavior is
+untouched);
+doors open for the pushing player if *they* hold a key; secret walls and lore
+terminals respond to the interacting player (`interact` is already in
+`InputSnapshot`, so the bundle carries it) — with discoveries (lore read, secret
+opened, `visited`) being team-shared, per §5's fog-of-war decision.
+
+### Friendly fire and player collision: none, by construction
+
+- **Hitscan can't hit players today and keeps it that way**: `fire()` only tests
+  enemy/mine projections; player billboards (below) are simply never added to the
+  hit-test set. No FF logic to write — just don't create the possibility.
+- **Rocket splash**: today it damages "everything in the blast radius — including
+  the player." Multiplayer rule: splash damages enemies and the **firer** (the
+  existing self-damage risk stays — it's a core Ghidra trade-off), but never
+  teammates. One explicit exclusion at the engine's splash fan-out.
+- **Player-player collision: none** — players pass through each other. Avoids
+  doorway-blocking griefs, adds zero new collision code, and removes an entire
+  desync-sensitive interaction surface.
+
+### Rendering, HUD, audio
+
+Remote players render as billboards in the **existing single depth-sorted
+billboard pass** (a new `collectPlayerBillboards` alongside the enemy/item
+collectors — occlusion via the zBuffer comes free). The local player is the
+camera and is never billboarded. HUD, viewmodel, crosshair targeting, and the
+automap/minimap player *marker* are strictly local-player; teammates appear on
+minimap/automap as distinct-colored markers (team-shared knowledge, same spirit
+as §5). Audio stays local-perspective; remote players' shots may play sounds
+(cosmetic, `Math.random` pitch variance stays fine — it never feeds the sim).
+
+### Death in coop
+
+A player reaching 0 health **dies for the remainder of the level**: their entity
+leaves the world simulation (no corpse collision, enemies drop them as a target),
+they keep their score and inventory, and their view becomes a spectator camera
+following a living teammate (cycle targets with fire; local-only, not
+sim-relevant — their `InputSnapshot` still rides the bundle unchanged so the
+roster and bundle shape stay stable, it just applies to nothing). They **revive at
+the next level transition** (`multiplayer-netcode-spec.md` §7) with inventory
+intact and health at `REVIVE_HEALTH` (e.g. 50 — a balance value to validate via
+the telemetry process like everything else here). Death deliberately drops
+nothing — unlike a disconnect, the player is still present and revives with their
+inventory, so stripping it would double-punish; the team already paid the price of
+losing a gun for the rest of the level. **One exception: held dependency keys drop
+at the death position** (as `kind: "key"` `LootDrop`s, the same new kind the
+disconnect rule defines in `multiplayer-netcode-spec.md` §5) — keys are
+level-scoped and one-per-door, so a dead player holding one until next level's
+revive is the same door-soft-lock the disconnect rule exists to prevent, just
+slower; and unlike weapons/ammo, keys are worthless to the dead player anyway
+(they don't carry across levels, and the revive is next level). **All players dead
+ends the run for everyone** — Kernel Panic, comparison table, same as
+single-player death.
+
+### Scoring inputs: which are per-player, which are team-shared
+
+`computeScore()` stays untouched (§3); what changes is the classification of what
+feeds it, stated here so it isn't improvised during implementation: **per-player**
+— killPoints (assist-split, §3), health/swap bonus, ammo bonus, accuracy,
+`distanceTraveledTiles` (each player's own), multikill streaks. **Team-shared** —
+`levelTimeSec` (identical for all, so the speed bonus is equal for everyone),
+`shortestPathTiles`, `mapCompletionFrac` (from the shared `visited`), lore and
+secret-room bonuses (any player's discovery counts for all — the coop-natural
+reading, consistent with shared fog-of-war). Net effect: players differentiate on
+combat performance and efficiency, while exploration achievements reward the team.
+
+### The N=1 compatibility gate — sequencing, and the definition of done
+
+This refactor lands **first, alone, verified in single-player, before any netcode
+exists on top of it**. The bar: with N=1, the refactored engine must be
+*behaviorally byte-identical* to today's. Three existing tools gate it, none new:
+
+1. The full Vitest suite (100%-coverage gate) passes unchanged.
+2. **Existing recorded replays still play back correctly** — the strongest
+   available proof, since replay playback fails visibly if the PRNG draw sequence
+   or any simulation math shifted by even one call.
+3. The map-snapshot-diff + replay-trajectory-digest recipe this project already
+   uses for refactor-exactness verification, run over the demo campaign.
+
+Only once that gate passes does netcode implementation start — against an engine
+whose N-player shape now actually exists and whose N=1 behavior is proven
+unchanged.

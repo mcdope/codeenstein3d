@@ -117,9 +117,11 @@ backstop against unbounded session creation outrunning TTL cleanup).
 
 Fetch the current mailbox contents for a code — used by a joiner (reads `offer`)
 and polled by the host itself (reads `answer` once set; `null` until then). Both
-hit the same endpoint; nothing at the HTTP layer distinguishes "the host checking
-for an answer" from "a joiner reading the offer," which is fine — see the payload
-sensitivity note below.
+hit the same endpoint; the one distinction that matters is rate-limiting: the
+host's poll loop **must** send its `hostToken` in an `X-Host-Token` header, which
+exempts it from the guess-sensitive rate budget (see §4's host exemption — without
+this, the host's own polling would rate-limit it out of its own session). A
+joiner sends no token and is subject to the normal budget.
 
 Response `200 OK`:
 ```jsonc
@@ -318,6 +320,25 @@ const ipLimits = new Map<string, IpLimitState>();
   per window, combined across both guess-sensitive endpoints. A normal join (fetch
   the offer, submit an answer, maybe one retry) is 2–3 requests — 20/minute is
   generous for real use and still a hard ceiling on a brute-force rate.
+- **Host exemption — a flaw caught in review, not in the first pass**: the host
+  itself *polls* `GET /session/<code>` waiting for a joiner's answer (see §2's
+  endpoint flow). At any reasonable poll rate (once per 1–2s), the host burns
+  through 20 requests within the first minute of waiting — while the friend is
+  still typing the code — and then trips its own escalating backoff, locking the
+  host out of its own session. Fix: a request to a guess-sensitive endpoint may
+  carry the session's `hostToken` in an `X-Host-Token` header; if it matches the
+  live session record for that code, the request **bypasses the guess-sensitive
+  budget entirely** (it is, by definition, not a guess — presenting a valid
+  122-bit token proves ownership more strongly than any rate limit could). Safe by
+  construction: the token never appears in any response except the host's own
+  `PUT /session` creation response, so only the host can present it. Two
+  boundaries keep this from weakening anything else: a request with an *invalid*
+  or non-matching token counts against the normal budget like any other request
+  (a wrong token is itself guessing behavior, never a free pass), and
+  token-bearing requests still fall under a separate, generous DoS backstop
+  ceiling (e.g. 120/min per IP — far above any sane poll rate, purely so
+  "valid token" can never mean "unlimited requests" to a buggy or hostile client
+  that happens to hold one).
 - **On exceeding the window's cap**: don't just reset next window — increment
   `violationCount` and set `cooldownUntil = now + BASE_COOLDOWN_MS * 2 ** violationCount`
   (`BASE_COOLDOWN_MS = 5_000`, capped at `MAX_COOLDOWN_MS = 60 * 60_000` — 1 hour).
