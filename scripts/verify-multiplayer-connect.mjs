@@ -42,15 +42,18 @@ function check(label, condition, detail) {
   }
 }
 
-/** `page.goto()`, retried a few times on a connection-level failure (as
- * opposed to a real 4xx/5xx from the dev server, which retrying can't fix).
- * Two contexts navigating to the dev server within ~2s of a fresh headless
- * browser launch (this script's own shape) has been observed to hit a
- * transient `NS_ERROR_CONNECTION_REFUSED` in CI even though the dev server
- * itself is already confirmed up and has just served a different verify
- * script's request moments earlier — a race in the freshly-launched
- * browser's own readiness, not a dev-server problem. */
-async function gotoWithRetry(page, url, attempts = 3) {
+/** `page.goto()`, retried on a connection-level failure (as opposed to a
+ * real 4xx/5xx from the dev server, which retrying can't fix). A freshly
+ * `engine.launch()`ed headless browser's very first navigation — even a
+ * single page, no concurrency involved — has been observed in CI to hit
+ * `NS_ERROR_CONNECTION_REFUSED` for several seconds straight, even though
+ * the dev server itself is already confirmed up and had just served a
+ * different verify script's request moments earlier: the freshly-spawned
+ * browser process's own network stack isn't fully ready yet, not a
+ * dev-server problem. Generous attempt count/backoff since the whole
+ * point is absorbing a real multi-second cold-start window, not a
+ * sub-second blip. */
+async function gotoWithRetry(page, url, attempts = 6) {
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       await page.goto(url);
@@ -58,7 +61,7 @@ async function gotoWithRetry(page, url, attempts = 3) {
     } catch (err) {
       if (attempt === attempts) throw err;
       console.log(`  [retry] page.goto(${url}) failed (attempt ${attempt}/${attempts}): ${err.message}`);
-      await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+      await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
     }
   }
 }
@@ -182,12 +185,6 @@ const FIREFOX_LAUNCH_OPTIONS = {
     "media.peerconnection.ice.obfuscate_host_addresses": false,
     "media.navigator.streams.fake": true,
     "media.navigator.permission.disabled": true,
-    // Firefox's "default route" interface lookup (see
-    // `grantFakeMediaForFirefox`'s doc comment) tries IPv6 first — several
-    // Mozilla reports of this exact lookup hanging/failing in container
-    // network namespaces cite an IPv6 route resolving oddly before falling
-    // back to IPv4. Forcing IPv4-only removes that variable.
-    "network.dns.disableIPv6": true,
   },
 };
 
