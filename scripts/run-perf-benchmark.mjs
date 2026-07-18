@@ -219,10 +219,16 @@ async function loadMagentoWorkspace(page, baseUrl, collector) {
 
 const SCENARIOS = {
   /** S1: demo campaign level 1, player standing still — pure render/AI idle
-   * baseline and the calibration workload. */
+   * baseline and the calibration workload. God mode is required even here:
+   * roaming melee enemies find the stationary player and kill them at
+   * t≈10s (measured), after which an "idle" capture is actually measuring
+   * the Kernel Panic screen. */
   "s1-idle": {
     defaultDurationSec: 30,
-    setup: launchDemoCampaign,
+    async setup(page, baseUrl, collector) {
+      await launchDemoCampaign(page, baseUrl, collector);
+      await typeCheat(page, "IDDQD");
+    },
   },
   /** S2: deterministic combat — "Watch Replay" of the bundled default
    * highscore (exact recorded input through the real engine + rendering).
@@ -268,6 +274,7 @@ const SCENARIOS = {
     defaultDurationSec: 30,
     async setup(page, baseUrl, collector) {
       await loadMagentoWorkspace(page, baseUrl, collector);
+      await typeCheat(page, "IDDQD"); // idle cells die to melee without it (see s1)
       await page.evaluate(() => {
         const canvas = document.querySelector("canvas");
         window.__perfLook = setInterval(() => {
@@ -303,6 +310,7 @@ const SCENARIOS = {
     defaultDurationSec: 30,
     async setup(page, baseUrl, collector) {
       await loadMagentoWorkspace(page, baseUrl, collector);
+      await typeCheat(page, "IDDQD"); // idle cells die to melee without it (see s1)
       await startMouseFlood(page);
     },
   },
