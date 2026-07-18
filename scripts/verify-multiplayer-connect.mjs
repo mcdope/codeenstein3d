@@ -211,7 +211,18 @@ async function main() {
     }
 
     console.log("Loading an eligible workspace (demo campaign) in both browsers...");
-    await Promise.all([makeEligible(hostPage, engineName), makeEligible(guestPage, engineName)]);
+    // Sequential, not `Promise.all` — two contexts navigating to a cold dev
+    // server at the exact same instant, right after a fresh headless
+    // browser launch, was observed in CI to reliably hit
+    // `NS_ERROR_CONNECTION_REFUSED` on *both* simultaneously, surviving
+    // several retries with real backoff in between (so not a sub-second
+    // blip `gotoWithRetry` alone could absorb) — while the same dev server
+    // had just successfully served a different verify script's single-page
+    // navigation moments earlier. Setting up one browser fully before
+    // starting the other removes that concurrent-cold-start pattern
+    // entirely, at the cost of a few extra seconds of total runtime.
+    await makeEligible(hostPage, engineName);
+    await makeEligible(guestPage, engineName);
     check("host: Multiplayer tab enabled", true);
     check("guest: Multiplayer tab enabled", true);
 
