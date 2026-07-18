@@ -44,9 +44,13 @@ function check(label, condition, detail) {
 
 /** Loads the bundled demo campaign — the cheapest way to reach an
  * `isMultiplayerEligibleWorkspace()` state (no GitHub fetch needed) — and
- * waits for the Multiplayer tab to actually enable before returning. */
-async function makeEligible(page) {
+ * waits for the Multiplayer tab to actually enable before returning.
+ * `grantFakeMediaForFirefox` runs first (before any UI interaction), so it's
+ * in place well before the Host/Join buttons ever construct a real
+ * `RTCPeerConnection`. */
+async function makeEligible(page, engineName) {
   await page.goto(`${DEV_SERVER_URL}/?testHooks=1`);
+  await grantFakeMediaForFirefox(page, engineName);
   await page.click("#tab-demo");
   await page.click("#launch-demo-campaign");
   await page.waitForFunction(
@@ -56,6 +60,27 @@ async function makeEligible(page) {
     },
     { timeout: 20_000 },
   );
+}
+
+/** Without a granted media (camera/mic) permission, Firefox restricts host
+ * ICE candidate gathering to a single "default route" interface, discovered
+ * via a routing-table lookup that several Mozilla bugs (1672145, 1662288,
+ * 1659672) document as unreliable in exactly the kind of ephemeral
+ * container network namespace a CI runner uses — leaving zero gatherable
+ * candidates, so `iceGatheringState` never reaches `"complete"` at all (not
+ * a resolution problem like the mDNS one above — no candidates exist to
+ * resolve). Granting a fake `getUserMedia()` stream switches Firefox out of
+ * that restrictive mode; `media.navigator.streams.fake`/
+ * `media.navigator.permission.disabled` (set at launch, see
+ * `FIREFOX_LAUNCH_OPTIONS`) make the grant instant, no real camera/mic
+ * needed. This workaround stays entirely inside this verify script — the
+ * real app never requests media permissions, which would be a real,
+ * unjustified UX intrusion for a game with no media features; this CI
+ * network-namespace pathology isn't representative of normal player
+ * networks. */
+async function grantFakeMediaForFirefox(page, engineName) {
+  if (engineName !== "firefox") return;
+  await page.evaluate(() => navigator.mediaDevices.getUserMedia({ audio: true, video: true }));
 }
 
 /** Polls `window.__codeensteinMultiplayerTestHooks.getConnectionState()`
@@ -79,17 +104,25 @@ async function waitForConnected(page, label) {
   return page.evaluate(() => window.__codeensteinMultiplayerTestHooks.getConnectionState());
 }
 
-/** Firefox delays starting its mDNS responder for local ICE candidates until
- * `setRemoteDescription()` actually runs (Mozilla bug 1691189) — fine for
- * trickle ICE, but this app's non-trickle design (see
- * `webrtcConnection.ts`'s doc comment) blocks on that candidate resolving,
- * and a sandboxed CI runner has no mDNS/avahi service to resolve it at all.
- * Chromium/WebKit don't obfuscate host candidates by default, so only
- * Firefox needs this — confirmed via `firefoxUserPrefs`, the documented
- * fix (not needed for `launchPersistentContext`, which this script doesn't
- * use). */
+/** Two independent Firefox-only WebRTC quirks, both only reachable via
+ * `firefoxUserPrefs` (Chromium/WebKit need neither):
+ *  - `media.peerconnection.ice.obfuscate_host_addresses: false` — Firefox
+ *    delays starting its mDNS responder for local ICE candidates until
+ *    `setRemoteDescription()` actually runs (Mozilla bug 1691189), which
+ *    this app's non-trickle ICE design (see `webrtcConnection.ts`'s doc
+ *    comment) blocks on, and a sandboxed CI runner has no mDNS/avahi
+ *    service to resolve it at all.
+ *  - `media.navigator.streams.fake` / `media.navigator.permission.disabled`
+ *    — paired with `grantFakeMediaForFirefox()`'s actual `getUserMedia()`
+ *    call, lets that call resolve instantly against a synthetic stream
+ *    instead of hanging on (or being denied) a real camera/mic prompt.
+ */
 const FIREFOX_LAUNCH_OPTIONS = {
-  firefoxUserPrefs: { "media.peerconnection.ice.obfuscate_host_addresses": false },
+  firefoxUserPrefs: {
+    "media.peerconnection.ice.obfuscate_host_addresses": false,
+    "media.navigator.streams.fake": true,
+    "media.navigator.permission.disabled": true,
+  },
 };
 
 async function main() {
@@ -106,7 +139,7 @@ async function main() {
     guestPage.on("pageerror", (err) => console.log("[guest pageerror]", err.message));
 
     console.log("Loading an eligible workspace (demo campaign) in both browsers...");
-    await Promise.all([makeEligible(hostPage), makeEligible(guestPage)]);
+    await Promise.all([makeEligible(hostPage, engineName), makeEligible(guestPage, engineName)]);
     check("host: Multiplayer tab enabled", true);
     check("guest: Multiplayer tab enabled", true);
 
