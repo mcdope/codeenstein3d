@@ -22,8 +22,21 @@ Full design: `/home/mcdope/.claude/plans/you-re-a-senior-performance-calm-dahl.m
 - [x] 4c. CONTAMINATION EVENT: all chromium runs 01:27-01:50 (scaling A/B, s4-move) ran rAF-throttled to ~1Hz (p95≈1002ms — occluded/locked-screen desktop). Data discarded (`perf_runs/2026-07-18T01-27-37-187Z`, `...T01-45-17-735Z`); harness now self-marks runs with median interval >100ms as INVALID (`throttled` field). Headed-vs-headless busy medians matched (5.6-5.8 both) → reruns go headless, immune to desktop state.
 - [x] 4d. Browser sanity (partial): Firefox clean — busy 8.0ms idle vs chromium 5.7 (~40% slower, same shape). WebKit first pass suspect (busy 18ms, hud phase 6.1ms vs 0.8 chromium — potential WebKit-specific HUD/text hotspot, F23) — headless rerun in flight.
 - [x] 5. Static audit fan-out (5 subagents: allocations, canvas state, algorithmic scaling, bundle/startup, DOM/side-channel) → findings queue below (done 2026-07-18; ran early, in parallel with M1)
-- [ ] 6. Verification experiments (entity/map-size sweeps, GC attribution, 10-min heap soak, Task 241 repro attempt)
-- [ ] 7. Report `perf-report.html` via `npm run perf:report` (charts; findings as Symptom/Culprit/Impact/Refactor ranked by impact-per-effort) + quick-wins list
+- [x] 6. Verification experiments (2026-07-18, headless reruns `perf_runs/2026-07-18T09-*`, all throttle-clean). VERDICTS: **F22 fog = FREE** (Δ<0.1ms both scenes, below 0.2ms MDD) — user's question answered, keep fog. **F2 pathField REFUTED** at real scales (continuous noclip movement busy 5.50 = idle 5.50; sim +0.05ms — Int32Array BFS amortizes fine). **F8 sidebar: no measurable effect** at real combat log rates (fire vs fire-quiet identical through p99/max/heap-slope; static estimate of 30-100 logs/frame was wrong by ~2 orders). **F23 WebKit CONFIRMED harder**: raycast-walls phase 19.1ms vs 4.2 chromium (per-column drawImage), hud 4.2 vs 0.7 — headless-WebKit caveat, needs one real-Safari check. **Scaling flag: zero engine-side cost** (compositor cost needs one attended headed check). **Heap under sustained fire: ~0.3MB/s with healthy GC cycles, no frame impact.** Headed slow frames NEVER reproduced headless → all environmental. 10-min soak pending (last cell).
+- [x] 6b. 10-min S2 heap soak (2026-07-18): heap 212MB post-load → settles to flat 50MB floor, no growth over 595s; interval p99 16.8ms throughout. **No leak.**
+- [x] 3b. Browser sanity final: Firefox ~40% slower busy, same shape (clean). WebKit rerun CONFIRMS: raycast-walls 19.1ms vs 4.2 chromium — per-column drawImage is the WebKit killer (headless-WebKit caveat: needs one real-Safari check before acting).
+- [x] 7. Report shipped (2026-07-18): `perf-report.html` (14 cells, 78 runs, 11 findings) built from throttle-clean dirs + `perf-findings.json`; headless calibration for MDD (busy CoV 1.0% → MDD ≈0.1ms). AA verdict from its own interleaved headed pair (cited in findings, excluded from pooled charts to avoid cross-mode pooling).
+
+## Done — awaiting user review
+
+Everything measured; report delivered. Open follow-ups for the user to decide (NOT auto-applied):
+1. Flip `WALL_EDGE_ANTIALIASING_ENABLED` on by default? (free on demo, +0.4ms magento)
+2. Quick-win trio (F7+F10): guard `captureSnapshot` behind `if (replayRecorder)`, memoize `computeScore`, drop `Array.from(getGamepads())` copy
+3. Minimap offscreen-cache refactor (F1, ~0.4-2.5ms/frame depending on map size)
+4. F21 replay perf-instrumentation fix
+5. One real-Safari check for the WebKit finding; one attended headed check for the scaling flag
+6. Send the sharpened Task-241 capture request (env line + SLOW lines → likely their compositor/GPU, not engine)
+Delete this file once reviewed.
 
 ## Open findings queue
 

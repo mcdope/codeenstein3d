@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Dev: a repeatable frame-time benchmark harness (`npm run perf:bench`) and chart report (`npm run perf:report`) — real-clock Playwright runs over deterministic scenarios (idle, replay-combat, particle stress, a huge GitHub-repo map, bot play) with per-frame phase timing via `?perfDebug=1` and interleaved A/B for the build flags. First full audit's verdicts: distance fog and wall-edge antialiasing are essentially free on typical maps (antialiasing costs ~0.4ms/frame on huge ones), and no engine-side hotspot reproduces the reported huge-repo framedrops — details in `perf-findings.json`
 - Fix: the FPS overlay (Right-Ctrl) and the IDDQD/IDCLIP cheat toggles all silently reset every time you advanced to the next level, needing to be re-activated each time — they now carry over for the rest of the run, same as your health/ammo/weapons already did
 - Wall-edge antialiasing and windowed-mode canvas resizing (filling the available window instead of staying a fixed size) are temporarily off by default while their real-world performance cost gets measured — a build-flag flip re-enables either, no functional loss, just a temporary step back to the sharper-edged/fixed-size look on `master` for now
 - New: rebranded with a custom "CODE" wordmark logo — replaces the gun-emoji sidebar header text and the full favicon/icon set (browser tab, bookmarks, Android/iOS home screen, Windows tiles)
