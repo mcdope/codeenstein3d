@@ -972,8 +972,17 @@ async function createMultiplayerSession(): Promise<void> {
   multiplayerHostCode.hidden = true;
   setMultiplayerStatus("Creating session…", false);
 
+  // Hoisted so `finally` below can close a peer connection that was
+  // successfully created but never reached "connected" — including every
+  // silent `if (generation !== ...) return` bail-out, not just a thrown
+  // error; a superseded/cancelled attempt shouldn't leave its own
+  // `RTCPeerConnection` sitting open with nothing left driving it forward.
+  let hostPeerConnection: RTCPeerConnection | null = null;
+  let connected = false;
+
   try {
     const { peerConnection, channels, offerSdp } = await createHostOffer(MULTIPLAYER_ICE_GATHERING_TIMEOUT_MS);
+    hostPeerConnection = peerConnection;
     if (generation !== multiplayerConnectionGeneration) return;
 
     const displayName = multiplayerDisplayNameInput.value.trim();
@@ -1014,11 +1023,14 @@ async function createMultiplayerSession(): Promise<void> {
     activeMultiplayerConnection = { role: "host", code: session.code, peerConnection, channels };
     multiplayerConnectionState = "connected";
     setMultiplayerStatus("Connected.", false);
+    connected = true;
   } catch (err) {
-    if (generation !== multiplayerConnectionGeneration) return;
-    multiplayerConnectionState = "error";
-    setMultiplayerStatus(describeMultiplayerError(err), true);
+    if (generation === multiplayerConnectionGeneration) {
+      multiplayerConnectionState = "error";
+      setMultiplayerStatus(describeMultiplayerError(err), true);
+    }
   } finally {
+    if (!connected) hostPeerConnection?.close();
     if (generation === multiplayerConnectionGeneration) {
       multiplayerHostCreateButton.disabled = false;
       multiplayerHostCancelButton.hidden = true;
@@ -1052,15 +1064,17 @@ async function joinMultiplayerSession(code: string): Promise<void> {
   multiplayerJoinConnectButton.disabled = true;
   setMultiplayerStatus(`Fetching session ${trimmed}…`, false);
 
-  // Hoisted so the `catch` block below can tear down a connection that was
-  // successfully created but never made it to "connected" — in particular
-  // `channelsPromise` (see `createGuestAnswer`'s doc comment): if this
-  // function throws after it exists but before `await channelsPromise`
-  // below ever runs, that promise is otherwise abandoned — nothing left
-  // awaiting it — and its own internal timeout rejecting later becomes a
-  // genuine unhandled rejection.
+  // Hoisted so `finally` below can tear down a connection that was
+  // successfully created but never made it to "connected" — including every
+  // silent `if (generation !== ...) return` bail-out, not just a thrown
+  // error. `channelsPromise` in particular (see `createGuestAnswer`'s doc
+  // comment): if execution bails out after it exists but before `await
+  // channelsPromise` below ever runs, that promise is otherwise abandoned —
+  // nothing left awaiting it — and its own internal timeout rejecting later
+  // becomes a genuine unhandled rejection.
   let guestPeerConnection: RTCPeerConnection | null = null;
   let guestChannelsPromise: Promise<unknown> | null = null;
+  let connected = false;
 
   try {
     const session = await fetchSession(trimmed, signal);
@@ -1092,13 +1106,17 @@ async function joinMultiplayerSession(code: string): Promise<void> {
     activeMultiplayerConnection = { role: "guest", code: trimmed, peerConnection, channels };
     multiplayerConnectionState = "connected";
     setMultiplayerStatus("Connected.", false);
+    connected = true;
   } catch (err) {
-    guestPeerConnection?.close();
-    guestChannelsPromise?.catch(() => {});
-    if (generation !== multiplayerConnectionGeneration) return;
-    multiplayerConnectionState = "error";
-    setMultiplayerStatus(describeMultiplayerError(err), true);
+    if (generation === multiplayerConnectionGeneration) {
+      multiplayerConnectionState = "error";
+      setMultiplayerStatus(describeMultiplayerError(err), true);
+    }
   } finally {
+    if (!connected) {
+      guestPeerConnection?.close();
+      guestChannelsPromise?.catch(() => {});
+    }
     if (generation === multiplayerConnectionGeneration) multiplayerJoinConnectButton.disabled = false;
   }
 }

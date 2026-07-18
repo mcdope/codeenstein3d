@@ -79,10 +79,23 @@ async function waitForConnected(page, label) {
   return page.evaluate(() => window.__codeensteinMultiplayerTestHooks.getConnectionState());
 }
 
+/** Firefox delays starting its mDNS responder for local ICE candidates until
+ * `setRemoteDescription()` actually runs (Mozilla bug 1691189) — fine for
+ * trickle ICE, but this app's non-trickle design (see
+ * `webrtcConnection.ts`'s doc comment) blocks on that candidate resolving,
+ * and a sandboxed CI runner has no mDNS/avahi service to resolve it at all.
+ * Chromium/WebKit don't obfuscate host candidates by default, so only
+ * Firefox needs this — confirmed via `firefoxUserPrefs`, the documented
+ * fix (not needed for `launchPersistentContext`, which this script doesn't
+ * use). */
+const FIREFOX_LAUNCH_OPTIONS = {
+  firefoxUserPrefs: { "media.peerconnection.ice.obfuscate_host_addresses": false },
+};
+
 async function main() {
   const { name: engineName, engine } = resolveBrowserEngine();
   console.log(`Launching headless ${engineName} (two contexts: host + guest)...`);
-  const browser = await engine.launch();
+  const browser = await engine.launch(engineName === "firefox" ? FIREFOX_LAUNCH_OPTIONS : undefined);
 
   try {
     const hostContext = await browser.newContext();
