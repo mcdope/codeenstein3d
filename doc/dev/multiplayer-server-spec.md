@@ -54,9 +54,9 @@ things that follow directly from this and matter to the rest of this spec:
 
 ## 2. Endpoints
 
-Every session is identified by its 6-character code (`multiplayer-research.md`'s
-decided format: uppercase letters + digits, excluding `0`/`O`/`1`/`I`/`l`; see §3 for
-exact generation).
+Every session is identified by its 6-character code (from a 32-symbol unambiguous
+alphabet — see §3 for the exact alphabet, and a correction to how
+`multiplayer-research.md` originally described it, made during implementation).
 
 A `code` alone lets anyone read the pending offer/answer for it — that's the whole
 point of the mailbox — but it must **not** let anyone overwrite or hijack a session
@@ -275,11 +275,20 @@ run/back up/migrate a real datastore for data this short-lived).
 
 ### Code generation
 
-`SESSION_CODE_ALPHABET` — the 32-symbol alphabet decided in the research doc:
-uppercase letters and digits minus `0`, `O`, `1`, `I`, `L` (visually ambiguous).
-Since the alphabet is exactly 32 symbols and `256 / 32 = 8` exactly, mapping random
-bytes onto it needs no rejection sampling to avoid modulo bias — the low 5 bits of
-a uniformly-random byte are themselves uniform over `[0, 32)`:
+`SESSION_CODE_ALPHABET` — **corrected during implementation**: the research doc's
+"uppercase letters and digits minus `0`, `O`, `1`, `I`, `L`" description is an
+arithmetic slip, not a valid 32-symbol alphabet — 36 alphanumeric characters minus
+those 5 specific ones leaves 31, not 32, which would have silently broken the "no
+rejection sampling needed" property below (that property only holds for an
+*exact* power-of-two alphabet size). Resolved by adopting
+[Crockford's Base32](https://www.crockford.com/base32.html) alphabet verbatim —
+`0123456789ABCDEFGHJKMNPQRSTVWXYZ` (10 digits + 22 letters, excluding only
+`I`/`L`/`O`/`U`) — instead of inventing a different one-off 32-character set: it's
+a real, proven standard designed for exactly this "short, human-typable,
+unambiguous code" purpose, and it genuinely is 32 symbols. Since the alphabet is
+exactly 32 symbols and `256 / 32 = 8` exactly, mapping random bytes onto it needs
+no rejection sampling to avoid modulo bias — the low 5 bits of a uniformly-random
+byte are themselves uniform over `[0, 32)`:
 
 ```js
 function generateCode() {
