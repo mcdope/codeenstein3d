@@ -388,7 +388,9 @@ periodic state reconciliation as a real component from day one, not a contingenc
 
 This reuses real, already-proven properties of the codebase (`InputSource`,
 `ReplayFrame`'s `{dt, input}` shape, the seeded-PRNG/`Math.random()` split) rather than
-inventing new sync architecture. Three real risks this surfaces that don't exist today:
+inventing new sync architecture. Three real risks this surfaces that don't exist
+today — two listed here, and a third (cross-browser float divergence) big enough
+that it has its own section directly below:
 
 - **`dt` is currently computed independently per client** from each browser's own
   `performance.now()` (`engine.ts`'s internal rAF loop, `frame()`). Lockstep needs one

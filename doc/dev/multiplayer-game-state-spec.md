@@ -669,6 +669,32 @@ order, always** — never the received bundle's object-key order, never `Map`
 insertion order. The same rule applies to any "first match wins" world interaction
 (two players on the same loot drop in the same tick: sorted order decides).
 
+### `advance()` splits into `simulate()` and `render()`
+
+Verified directly, not assumed: today `advance()` doesn't just simulate — **it
+renders, in the same call** (`renderScene`, the billboard pass, and the
+crosshair-target pick all run inside it). The netcode design requires those to
+separate: simulation is tick-locked (30 Hz, worker/bundle-driven per
+`multiplayer-netcode-spec.md` §1) while rendering runs on each peer's own
+`requestAnimationFrame` at native rate. An earlier revision of the netcode spec
+silently assumed this split was free; it's a real, structural piece of this
+refactor. The split:
+
+- **`simulate(dt)`** — input application through `checkExit`, every state
+  mutation. **`render()`** — raycast, billboards, HUD, and the crosshair-target
+  pick, reading whatever simulation state currently exists. The crosshair pick
+  (`findTargetUnderCrosshair`) moves to `render()` safely: verified, it only
+  feeds the crosshair highlight — firing runs its own projection pass and never
+  reads it.
+- **`advance(dt)` remains, as a thin `simulate(dt); render();` wrapper** — so
+  every existing caller (the internal rAF loop, the replay viewer's
+  `step`/`burstTo`, headless harnesses) is untouched, and `advance()`'s composed
+  behavior stays part of the N=1 compatibility surface below: same call, same
+  simulated state, same rendered frame.
+- In multiplayer, ticks call `simulate(FIXED_DT)` alone; a separate local rAF
+  loop calls `render()`. A 144Hz player renders at 144Hz off 30Hz sim state
+  (with mechanism 4's render-offset smoothing layered on the same seam).
+
 ### Shot resolution becomes camera-parameterized
 
 Today's hit detection is screen-space *from the local render pass*: `fire()` reads
@@ -788,7 +814,11 @@ combat performance and efficiency, while exploration achievements reward the tea
 
 This refactor lands **first, alone, verified in single-player, before any netcode
 exists on top of it**. The bar: with N=1, the refactored engine must be
-*behaviorally byte-identical* to today's. Three existing tools gate it, none new:
+*behaviorally byte-identical* to today's — including the
+`advance() = simulate() + render()` split above, whose composed form is part of
+the compatibility surface (the replay viewer and every harness call `advance()`
+directly and expect a rendered frame per step). Three existing tools gate it,
+none new:
 
 1. The full Vitest suite (100%-coverage gate) passes unchanged.
 2. **Existing recorded replays still play back correctly** — the strongest

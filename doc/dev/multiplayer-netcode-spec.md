@@ -128,7 +128,11 @@ session start, not a measured per-frame `dt`.**
   `requestAnimationFrame` loop still runs at its native rate and redraws from
   whatever the most recently completed tick's state is (optionally interpolated —
   see mechanism 4). A 144Hz-monitor player's *rendering* isn't throttled to 30Hz;
-  only the *simulation* (`advance()` calls) is tick-rate-locked.
+  only the *simulation* is tick-rate-locked. **This requires an engine-side seam
+  that doesn't exist yet**: today `advance()` simulates *and renders* in one call
+  — the split into `simulate(dt)` + `render()` is specified in
+  [`multiplayer-game-state-spec.md` §6](multiplayer-game-state-spec.md#6-the-n-player-engine-model)
+  (an earlier revision of this bullet silently assumed the split was free).
 - `levelTime` (`this.levelTime += dt` each `advance()` call, `engine.ts`) needs no
   special handling under this design: since every peer accumulates the exact same
   sequence of the exact same constant, and IEEE-754 addition (unlike `Math.sin`/
@@ -136,6 +140,43 @@ session start, not a measured per-frame `dt`.**
   anything purely derived from it, like `isSpikeActive()`'s phase check in
   `traps.ts` — stays bit-identical across all peers by construction. It does not
   need to be part of the reconciliation payload.
+
+### Session setup: what the host sends before tick 0
+
+The first pass said only "`FIXED_DT`, sent once alongside the `GameMap`" — enough
+of an underspecification to hide a guaranteed desync (difficulty, below). The
+full setup exchange, per guest, after its data channels open and before any tick:
+
+1. **Build-version handshake, both directions, first.** Peers exchange
+   `__BUILD_REF__`/`__BUILD_TIME__` (already baked into every bundle by
+   `vite.config.ts`'s `define`) and the host refuses the join on mismatch. Two
+   peers on different cached bundles run *different simulation code* — a desync
+   source no amount of reconciliation can paper over, and near-impossible to
+   diagnose from symptoms. Cheapest check in this entire document.
+2. **Roster**: the full sorted `playerId` list and the joiner's own assigned id.
+3. **Tick constants**: `TICK_RATE_HZ`/`FIXED_DT`, `INPUT_DELAY_TICKS`.
+4. **The level-1 `gameplaySeed`** — §7 already specifies per-level reseeding at
+   transitions; the *first* level needs the identical treatment at setup, which
+   the first pass only ever implied.
+5. **Difficulty — host-authoritative, because it's sim-relevant.** Verified:
+   difficulty is a per-client localStorage preference passed into the engine
+   constructor, and it scales enemy HP, enemy-dealt damage, and
+   `enemyAimSpreadDeg` — all simulation state. Two peers applying different
+   multipliers desync *structurally*, before any float drift enters the picture.
+   The session runs on the host's difficulty for every peer; a guest's own local
+   preference is ignored for the session's duration (their UI should say so).
+   Gore, by contrast, stays local: it's cosmetic-only (`Math.random`-driven
+   particle counts) and never feeds the simulation.
+6. **The session's player count** for elite scaling (game-state §4), fixed per
+   level per §5's no-mid-level-recompute rule.
+7. **The `GameMap` — chunked, with `visited` stripped.** An `RTCDataChannel`
+   message has a practical cross-browser size floor around 64 KiB; a 160×160
+   map's JSON crosses that on grid data alone (~50 KB before enemies/rooms/
+   terminals). Send the serialized map in fixed-size chunks (16 KiB is the
+   conventional safe size) with a final end-marker over the reliable channel —
+   routine once planned, a mid-implementation surprise otherwise. `visited` is
+   omitted from the wire entirely: it's all-`false` at generation time by
+   definition, so each peer just constructs it locally.
 
 ### Message flow per tick
 
@@ -183,6 +224,12 @@ interface TickInputBundle {
    * lets a guest's UI show a "so-and-so's connection is lagging" hint
    * without needing separate connection-quality plumbing. */
   heldInputFallback: string[];
+  /** playerIds removed from the session effective THIS tick (disconnect
+   * grace-period expiry — §5). Roster changes ride the bundle so removal is a
+   * synchronized lockstep event applied by every peer at the same tick — not
+   * an eventually-consistent side effect of snapshot shape (the superseded
+   * first-pass design; see §5). Empty on almost every tick. */
+  rosterRemove?: string[];
 }
 ```
 
@@ -340,6 +387,17 @@ interface PlayerSnapshot {
    * Same review rationale as keysHeld: owning a weapon gates firing and
    * switching, and weapon pickups are loot-roll-derived — drift-prone. */
   ownedWeapons: number[];
+  /** False once dead-but-spectating (coop death, game-state §6). A dead
+   * player REMAINS in this Record — absence from `players` is a protocol
+   * error, never a signal. (An earlier revision used snapshot omission to
+   * mean "player removed"; that collided head-on with dead-but-present
+   * spectators and is superseded by `TickInputBundle.rosterRemove` — §5.) */
+  alive: boolean;
+  /** Kill/assist score credited so far — the one score component whose drift
+   * would otherwise be permanent (see the score note under "Deliberately
+   * excluded" below). */
+  killScore: number;
+  kills: number;
 }
 
 interface EnemySnapshot {
@@ -476,12 +534,21 @@ every mutable field that exists:
   in practice (it resolves within a fraction of a second), and the outcome that
   actually matters — damage dealt on detonation — is captured by the
   `PlayerSnapshot`/`EnemySnapshot` health corrections regardless.
-- **Score / `ScoreBreakdown`** — not fairness-critical in the collision/damage
-  sense this payload exists to protect; scoring correctness is a scoring-system
-  design question (`multiplayer-research.md`'s "Teamwork kill-bonus sharing" note),
-  not a netcode-drift one. A session wanting every player to see everyone's live
-  score can carry it separately, at a much lower required cadence, without
-  entangling it with this payload's correction semantics.
+- **Score / `ScoreBreakdown`** — *mostly* excluded, with a review correction: the
+  first pass excluded score entirely while elsewhere claiming peers' end-of-run
+  tables are "identical by lockstep construction" — false under the very drift
+  model this document is built on. A kill landing during a desync window credits
+  differently on different peers and, uncorrected, stays different *forever* —
+  kill credit is an accumulator, not derivable from current state. Resolution:
+  the drift-permanent accumulators (`killScore`, `kills`) ride `PlayerSnapshot`
+  (above) and get corrected like any other field. The remaining `ScoreInput`
+  components genuinely need no sync: they're either recomputed live from
+  already-reconciled state (health/ammo bonuses), deterministic-shared
+  (`levelTimeSec`, `shortestPathTiles`), or per-player local counters whose
+  drift is bounded and cosmetic mid-level (accuracy, distance traveled). The
+  authoritative end-of-level table comes from the host with the §7 transition
+  payload; only the host-disconnect case falls back to local best-effort values,
+  labeled as such (§5).
 
 ## 4. Drift correction: hard snap vs. interpolation
 
@@ -620,15 +687,33 @@ late") and governs a much longer timescale.
    introduces no new inter-peer divergence risk on its own; the mechanism this
    section relies on to correct any that occurs anyway is the very fix from
    mechanism 3 above (`rngState`, plus the rest of the snapshot).
-2. **If the grace period elapses without recovery**: the host performs the actual
-   removal. No new message type is needed — the very next `ReconciliationSnapshot`
-   simply **omits that `playerId` from `players` entirely**. A guest's rule for
-   interpreting a snapshot is therefore: a `playerId` present in the previous
-   snapshot but absent from this one has been removed — delete that entity
-   locally, the same as any other authoritative correction.
+2. **If the grace period elapses without recovery**: the host removes the player
+   as a **synchronized lockstep event** — their `playerId` rides
+   `TickInputBundle.rosterRemove` for the tick the removal takes effect, and
+   every peer (host included) applies it at exactly that tick: drop the player
+   from the roster, delete their entity, convert their inventory to drops
+   (item 3). An earlier revision instead signaled removal by *omitting* the
+   player from the next `ReconciliationSnapshot` — superseded, for two reasons
+   caught in review: it deliberately built in a window of up to
+   `RECONCILE_INTERVAL_TICKS` where host and guests simulated *different
+   rosters* (different enemy targeting → different PRNG consumption → a
+   guaranteed desync window by design), and "absent from the snapshot" collided
+   head-on with dead-but-spectating players, who are still session members and
+   must never be deleted. The invariants are now: the snapshot's `players`
+   Record **always contains every current roster member, dead or alive** (the
+   `alive` flag distinguishes them); a bundle **always contains an input for
+   every roster member** (real, held-fallback, or `EMPTY_SNAPSHOT` during
+   grace). A guest receiving a bundle missing a roster member's input — which
+   by construction should never happen — substitutes `EMPTY_SNAPSHOT` and logs
+   a protocol warning rather than guessing at roster intent.
 3. **Their currently-held ammo, and any weapon they'd unlocked beyond the default
    starting set, are converted into ordinary `LootDrop` entries** (reusing the
-   existing `LootKind`s — no new drop type) at their last known position:
+   existing `LootKind`s — no new drop type) at their last known position. The
+   conversion is performed **locally by every peer at the `rosterRemove` tick**
+   (deterministic from each peer's own copy of the departing player's state —
+   which reconciliation keeps corrected like everything else; any residual
+   divergence in the resulting drops is itself corrected by the next snapshot's
+   `lootDrops` list):
    - One entry per non-zero ammo pool (`bullets`/`rockets`/`smg`/`gas`).
    - One `kind: "weapon"` entry per index in their `ownedWeapons` that isn't
      already in `STARTING_WEAPONS` (`weapons.ts`: pistol/shotgun/knife — every
@@ -783,8 +868,14 @@ sneak in. Concretely, on each guest:
   advancing (nothing to fabricate: without the sequencer there is no next tick).
 - If the grace period elapses: show a plain "host disconnected — session ended"
   state, present the end-of-run comparison table from each player's
-  `ScoreBreakdown` as of the last fully-applied tick (every guest has identical
-  data for this, by lockstep construction), and return to the pre-session menu.
+  `ScoreBreakdown` as of the last fully-applied tick — **using the guest's own
+  local values, honestly labeled as provisional**: without the host there is no
+  authoritative score source (§3's `killScore`/`kills` reconciliation and §7's
+  level-end table both come *from* the host), and local accumulators can carry
+  small uncorrected drift. An earlier revision claimed these values were
+  "identical by lockstep construction" — wrong, for the same reason
+  reconciliation exists at all; corrected in review rather than shipped as a
+  quiet false promise. Then return to the pre-session menu.
 - Nothing needs doing on the signaling server: the host's lobby/mailbox entry
   simply expires via its own TTL (§ `multiplayer-server-spec.md`), since the host
   is no longer around to refresh it.
@@ -841,10 +932,21 @@ session suppressed it," because those two things produce an identical
   soften. Every real multiplayer game already works this way; the alternative
   (your character becoming briefly invincible, or the *whole session* freezing,
   because you looked away) is categorically worse.
-- Lore-terminal *reading itself* (the overlay, the text, the scroll) can stay a
-  purely local, cosmetic reaction to proximity — only the "freeze the sim while
-  it's open" half of that branch is the part that needs to go for multiplayer;
-  showing the text doesn't require also stopping the world the way it does today.
+- Lore-terminal *reading itself* stays a purely local, cosmetic overlay — only
+  the "freeze the sim while it's open" half of that branch goes away for
+  multiplayer. But **the overlay's controls must change too, not just its
+  freeze** — a review correction to this bullet's first pass, which glossed over
+  a real conflict: today's overlay repurposes W/S for text scrolling *because*
+  movement is frozen while it's open. With the sim unfrozen, those same W/S
+  presses ride the `TickInputBundle` and every peer's simulation keeps applying
+  them as movement — the reading player would literally walk away (possibly into
+  acid) while "scrolling." And no sim-relevant key can do double duty, because
+  lockstep requires every peer to interpret a given input identically — there's
+  no way for "W means scroll for the reader but movement for everyone else's
+  copy of them" to work. The multiplayer overlay is therefore **static and
+  dismiss-only**, dismissed by Escape or click — precisely the two signals this
+  section already strips from the shared stream, so dismissal is invisible to
+  the simulation *by construction* rather than by careful handling.
 
 ### Cheat codes are disabled in multiplayer
 
@@ -933,6 +1035,30 @@ section closes that gap.
 5. **Dead players revive at the transition** — per the coop death rule in
    [`multiplayer-game-state-spec.md` §6](multiplayer-game-state-spec.md#6-the-n-player-engine-model),
    which owns what state they revive with.
+
+## 8. Replays and the highscore board stay single-player
+
+Two existing systems would silently misbehave in a multiplayer session unless
+explicitly switched off — verified against `main.ts`, which today wires both up
+unconditionally per run:
+
+- **Replay recording is disabled in multiplayer sessions.** `main.ts` constructs
+  a `CampaignReplayRecorder` for every run; a replay records exactly *one*
+  `InputSource`'s frames, and playback reconstructs the run from map + seed +
+  that single input stream. A multiplayer session's outcome depends on N input
+  streams *plus* reconciliation corrections — a recorded MP "replay" would play
+  back as a desynced fiction from its first divergent tick, saved to
+  `localStorage` as if it were real. A multiplayer session simply never
+  constructs a recorder; all existing replay plumbing stays untouched for
+  single-player.
+- **Multiplayer runs don't write the local highscore board in v1.** The board's
+  entries assume single-player comparability — one player's run, an attachable
+  replay, difficulty as a personal setting, the codebase hash as a fairness
+  key. A team-context score mixed into that list would compare
+  apples-to-oranges with every existing entry, for no v1 benefit — the
+  end-of-run comparison table (§7, game-state §3) is multiplayer's own
+  scoreboard. An MP-specific board (or spectator replays) is a possible future
+  feature, deliberately not designed here.
 
 ## Open tuning parameters (not final values)
 
