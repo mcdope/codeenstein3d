@@ -807,10 +807,11 @@ function rankFindings(findings) {
 function buildFindingCard(f) {
   const statusRole = IMPACT_STATUS[f.impact] ?? "warning";
   const evidence = Array.isArray(f.evidence) ? f.evidence.join("\n") : f.evidence;
-  return `<article class="finding-card">
+  return `<article class="finding-card${f.outcomeNote ? " finding-card--actioned" : ""}">
     <header class="finding-head">
       <span class="badge badge-${statusRole}">${esc(f.impact ?? "?")} impact</span>
       <span class="badge badge-effort">${esc(f.effort ?? "?")} effort</span>
+      ${f.outcomeNote ? `<span class="badge badge-good">actioned</span>` : ""}
       <h3>${esc(f.title ?? f.id ?? "untitled finding")}</h3>
     </header>
     <p class="finding-loc muted small">${esc(f.file ?? "?")}${f.line ? `:${esc(f.line)}` : ""}</p>
@@ -819,9 +820,27 @@ function buildFindingCard(f) {
       <dt>Likely Culprit</dt><dd>${esc(f.culprit ?? "n/a")}</dd>
       <dt>Estimated Impact</dt><dd>${esc(f.impact ?? "n/a")}</dd>
       <dt>Actionable Refactor</dt><dd>${esc(f.refactor ?? "n/a")}</dd>
+      ${f.outcomeNote ? `<dt>Action Taken</dt><dd class="finding-outcome">${esc(f.outcomeNote)}</dd>` : ""}
     </dl>
     ${evidence ? `<pre class="finding-evidence">${esc(evidence)}</pre>` : ""}
   </article>`;
+}
+
+/** Top-of-report digest of every finding that already has an outcome —
+ * "what did the audit change" without scrolling the whole ranked list. */
+function buildActionsSection(findings) {
+  if (!findings?.length) return "";
+  const actioned = rankFindings(findings).filter((f) => f.outcomeNote);
+  if (!actioned.length) return "";
+  const items = actioned
+    .map((f) => `<li><strong>${esc(f.id ?? "?")}</strong> — ${esc(f.title ?? "")}<br /><span class="finding-outcome">${esc(f.outcomeNote)}</span></li>`)
+    .join("\n");
+  return `
+  <section class="section">
+    <h2>Actions Taken</h2>
+    <p class="muted">Findings already acted on (details repeat on each card below).</p>
+    <ul class="actions-list">${items}</ul>
+  </section>`;
 }
 
 function buildFindingsSection(findings) {
@@ -976,6 +995,9 @@ function buildStyle() {
     .badge-warning { background: var(--status-warning); color: #1a1a19; }
     .badge-good { background: var(--status-good); }
     .badge-effort { background: var(--text-muted); color: #fff; }
+    .finding-card--actioned { border-left: 3px solid var(--status-good); }
+    .finding-outcome { color: var(--status-good); }
+    .actions-list li { margin-bottom: 0.6em; }
     .finding-loc { margin: 0 0 8px; }
     dl.finding-body { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; margin: 0; }
     dl.finding-body dt { color: var(--text-secondary); font-weight: 600; font-size: 0.85rem; }
@@ -1003,6 +1025,7 @@ ${buildBusySection(cellAggs)}
 ${buildPhaseSection(cellAggs)}
 ${buildAbSection(cellAggs, calibrations)}
 ${buildHeapSection(cellAggs)}
+${buildActionsSection(findings)}
 ${buildFindingsSection(findings)}
 ${buildMethodologyFootnote()}
 </body>

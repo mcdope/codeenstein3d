@@ -9,7 +9,8 @@
     "impact": "High",
     "effort": "Med",
     "refactor": "For WebKit (feature-detect), render walls into the same ImageData buffer the floor-caster already uses (pure typed-array writes + one putImageData) instead of per-column drawImage; cache static HUD text to an offscreen canvas. Alternatively: document Safari as degraded until verified on real hardware.",
-    "evidence": "perf_runs/2026-07-18T09-42-09-135Z vs chromium baselines"
+    "evidence": "perf_runs/2026-07-18T09-42-09-135Z vs chromium baselines",
+    "outcomeNote": "OPEN: awaiting one real-Safari verification run (headless WebKit may be software-rendered) before investing in the ImageData wall-render path."
   },
   {
     "id": "F1",
@@ -34,7 +35,8 @@
     "impact": "Low",
     "effort": "Low",
     "refactor": "Flip the flag on by default (Chromium/Firefox). If WebKit's canvas slowness (F23) is confirmed on real Safari, gate it off there via the same feature-detect.",
-    "evidence": "Interleaved A/B, 5+5 runs per scenario, perf_runs/2026-07-18T01-01-33-870Z"
+    "evidence": "Interleaved A/B, 5+5 runs per scenario, perf_runs/2026-07-18T01-01-33-870Z",
+    "outcomeNote": "DONE 2026-07-18: flag flipped ON by default (commit aed956e) \u2014 default-behavior test updated, docs/changelog reworded, smoothed silhouettes verified via real-browser screenshot."
   },
   {
     "id": "F22",
@@ -46,7 +48,8 @@
     "impact": "Low",
     "effort": "Low",
     "refactor": "No action. Keep the flag (one-line toggle) for future per-browser measurements; it is also the mechanism that would cheaply confirm F23's attribution on real Safari.",
-    "evidence": "Interleaved A/B, 10+10 runs, perf_runs/2026-07-18T09-05-43-260Z"
+    "evidence": "Interleaved A/B, 10+10 runs, perf_runs/2026-07-18T09-05-43-260Z",
+    "outcomeNote": "CLOSED 2026-07-18: no action needed by measurement \u2014 fog stays on; the DISTANCE_FOG_ENABLED flag remains for future per-browser A/Bs."
   },
   {
     "id": "F2",
@@ -58,7 +61,8 @@
     "impact": "Low",
     "effort": "Low",
     "refactor": "None needed at current map scales. If maps ever grow past ~500x500, revisit with an incremental/dirty-region flood.",
-    "evidence": "s4-magento-move vs s4-magento idle, perf_runs/2026-07-18T09-37-56-777Z"
+    "evidence": "s4-magento-move vs s4-magento idle, perf_runs/2026-07-18T09-37-56-777Z",
+    "outcomeNote": "CLOSED 2026-07-18: hypothesis refuted by measurement, no code change warranted at current map scales."
   },
   {
     "id": "F8",
@@ -70,7 +74,8 @@
     "impact": "Low",
     "effort": "Low",
     "refactor": "Optional hygiene: defer the scrollTop assignment to one rAF callback per batch of appends. Worth doing only if a future feature raises log frequency by an order of magnitude.",
-    "evidence": "s4-magento-fire vs s4-magento-fire-quiet, perf_runs/2026-07-18T09-47-30-420Z"
+    "evidence": "s4-magento-fire vs s4-magento-fire-quiet, perf_runs/2026-07-18T09-47-30-420Z",
+    "outcomeNote": "CLOSED 2026-07-18: hypothesis refuted at real log rates, no code change; optional rAF-batched scrollTop noted for the future."
   },
   {
     "id": "F7+F10",
@@ -108,7 +113,8 @@
     "impact": "High",
     "effort": "Low",
     "refactor": "Sharpen the ?perfDebug=1 capture request to the reporter: have them include the [perf] env: line and a few SLOW lines \u2014 if their SLOW frames show small phases + large unacct (matching our headed pattern), direct them to chrome://gpu (hardware acceleration), window size/DPR, and extensions rather than waiting on engine optimizations. The F7+F10 allocation fixes are the only engine-side lever that plausibly helps a memory-constrained machine.",
-    "evidence": "All s4-* cells across perf_runs/2026-07-18T00-13 (headed) and 09-05..09-47 (headless); slow-frame phase attributions"
+    "evidence": "All s4-* cells across perf_runs/2026-07-18T00-13 (headed) and 09-05..09-47 (headless); slow-frame phase attributions",
+    "outcomeNote": "IN PROGRESS: capture-request text drafted for the reporter (env line + SLOW-line unacct pattern -> compositor/GPU checklist); engine-side allocation quick wins (F7+F10) shipped as the only plausible engine lever."
   },
   {
     "id": "F-SCALE",
@@ -133,6 +139,7 @@
     "impact": "Low",
     "effort": "Med",
     "refactor": "Optional: code-split the replay system out of the main bundle (~10-15% startup parse win). Not recommended now \u2014 architectural churn for a page that is already fast.",
-    "evidence": "dist/ size table + startup flow analysis (static audit D)"
+    "evidence": "dist/ size table + startup flow analysis (static audit D)",
+    "outcomeNote": "CLOSED 2026-07-18: healthy by measurement; optional replay-system code-split noted, deliberately not taken."
   }
 ]
