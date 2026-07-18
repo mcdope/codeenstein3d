@@ -1,0 +1,57 @@
+name: Deploy
+
+on:
+  push:
+    tags:
+      - "*"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # A manual (workflow_dispatch) run checks out whatever ref the UI's
+      # branch/tag picker was left on — pin it onto the most recent tag so a
+      # manual test run always deploys the same thing a real tag push would.
+      - name: Pin to most recent tag (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          latest_tag=$(git describe --tags "$(git rev-list --tags --max-count=1)")
+          echo "Checking out most recent tag: $latest_tag"
+          git checkout "$latest_tag"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # `build`'s own `prebuild` hook fetches the online WAD catalog (~170 MB,
+      # see onlineWadCatalog.ts) if not already present — same cache as the
+      # verify workflow, so a normal run restores from cache instead of
+      # re-downloading from 3 external hosts.
+      - name: Cache online WAD assets
+        uses: actions/cache@v4
+        with:
+          path: public/wads
+          key: online-wads-${{ hashFiles('src/wad/onlineWadCatalog.ts') }}
+
+      - run: npm run build
+
+      - name: Deploy to FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.4.0
+        with:
+          server: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          password: ${{ secrets.DEPLOY_PASS }}
+          protocol: ftps
+          local-dir: ./dist/
+          server-dir: ./
