@@ -57,16 +57,17 @@ export const FOG_FAR = 14;
 /** y-side walls are dimmed to fake directional lighting. */
 const SIDE_SHADE = 0.68;
 
-/** Off by default — `renderScene`'s default parameter value for its
- * `antialiasing` argument (see there). Sub-pixel top/bottom wall-edge
- * antialiasing draws one extra partial-alpha `fillRect` per screen column
- * that hits a wall, on top of the already-required `drawImage` blit and base
- * shading fill — real per-frame cost for a purely cosmetic smoothing of the
- * raycaster's "staircase" silhouette against the ceiling/floor. Same pattern
- * as `DECORATIONS_ENABLED`/`PLAYER_STATS_ENABLED` — flip this back on (or
- * pass `antialiasing: true` explicitly at a call site) once/if the cost is
- * worth it for a given target machine. */
-export const WALL_EDGE_ANTIALIASING_ENABLED = false;
+/** On by default since the 2026-07 perf audit measured its real cost —
+ * `renderScene`'s default parameter value for its `antialiasing` argument
+ * (see there). Sub-pixel top/bottom wall-edge antialiasing draws one extra
+ * partial-alpha `fillRect` per screen column that hits a wall, on top of the
+ * already-required `drawImage` blit and base shading fill. Measured via
+ * `npm run perf:bench -- --flag aa`: no detectable busy-time delta on a
+ * demo-scale map (below the harness's 0.2ms floor) and ~+0.4ms/frame on a
+ * 160×160 monster map — affordable for the smoother silhouette. Same
+ * pattern as `DECORATIONS_ENABLED`/`PLAYER_STATS_ENABLED`; flip back off if
+ * a target machine (or real-Safari verification of finding F23) needs it. */
+export const WALL_EDGE_ANTIALIASING_ENABLED = true;
 
 /** On by default — the distance fog ("farther = darker"). Threaded through
  * `renderScene` as a parameter (same testability pattern as `antialiasing`

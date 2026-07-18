@@ -316,17 +316,19 @@ describe("renderScene — distance fog and FOG_FAR", () => {
 });
 
 describe("renderScene — wall-edge antialiasing (WALL_EDGE_ANTIALIASING_ENABLED)", () => {
-  it("is off by default — no extra edge-blend fillRect calls beyond the base shading fill", () => {
+  it("is on by default — the default render draws the extra edge-blend rows an explicit false skips", () => {
+    // Flipped on by the 2026-07 perf audit (measured: free on demo-scale
+    // maps, ~+0.4ms on a 160×160 one — see the flag's doc comment).
     const map = fakeMap();
     const player = centeredPlayer(map);
+    const cDefault = ctx();
+    renderScene(asCtx(cDefault), map, player, new Float64Array(WIDTH), fakeTextureSet());
     const cOff = ctx();
-    renderScene(asCtx(cOff), map, player, new Float64Array(WIDTH), fakeTextureSet());
-    const cOn = ctx();
-    renderScene(asCtx(cOn), map, player, new Float64Array(WIDTH), fakeTextureSet(), undefined, undefined, undefined, true);
+    renderScene(asCtx(cOff), map, player, new Float64Array(WIDTH), fakeTextureSet(), undefined, undefined, undefined, false);
     // Every hit column gets exactly one base shading fillRect either way;
-    // antialiasing:true additionally draws up to two 1px edge rows per
-    // column, so the on-run must strictly exceed the off-run's call count.
-    expect(cOn.fillRect.mock.calls.length).toBeGreaterThan(cOff.fillRect.mock.calls.length);
+    // the default (antialiasing on) additionally draws up to two 1px edge
+    // rows per column, so it must strictly exceed the explicit-off count.
+    expect(cDefault.fillRect.mock.calls.length).toBeGreaterThan(cOff.fillRect.mock.calls.length);
   });
 
   it("draws distinct top- and bottom-edge blend rows when explicitly enabled", () => {
