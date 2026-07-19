@@ -13,7 +13,16 @@
  * and leaves the DOM HUD/overlays to the caller.
  */
 import { DEFAULT_DIFFICULTY, DIFFICULTY_MULTIPLIERS, type DifficultyLevel, type DifficultyMultipliers } from "../difficulty";
-import { mulberry32, randomSeed } from "../prng";
+import { createResumablePrng, randomSeed } from "../prng";
+import { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "./reconciliationConstants";
+import type {
+  EnemySnapshot,
+  LootDropSnapshot,
+  MineSnapshot,
+  PlayerSnapshot,
+  ReconciliationSnapshot,
+  TileMutation,
+} from "./reconciliationSnapshot";
 import { Player, isHazard } from "./player";
 import { updateEnemies, type EnemyAiEvents, type EnemyTarget } from "./enemyAi";
 import { collectProjectileBillboards, updateProjectiles, type Projectile, type ProjectileTarget } from "./projectiles";
@@ -323,6 +332,17 @@ interface PlayerState {
   muzzleFrames: number;
   viewOffsets: { horizonShift: number; bobX: number; bobY: number };
   rotSpeedMultiplier: number;
+  /** A drift correction's render-only smoothing — `null` when this player's
+   * rendered position matches its simulated one exactly (the overwhelming
+   * majority of the time). Set by `applyReconciliationSnapshot()` the moment
+   * a below-`SNAP_THRESHOLD_TILES` correction snaps the *simulated* position;
+   * `x`/`y` is the (world-units) gap the render pass still owes, decaying to
+   * zero over `CORRECTION_SMOOTH_MS` real milliseconds from `capturedAtMs` —
+   * see `render()`'s own read site. Never set for a correction at or above
+   * the threshold: that one snaps the render position too, instantly, no
+   * offset object created at all (`multiplayer-netcode-spec.md` §4). Never
+   * read or written in single-player. */
+  renderOffset: { x: number; y: number; capturedAtMs: number } | null;
   /** Always `SCENE_WIDTH`-sized, for every player, local or remote — see
    * `SCENE_WIDTH`'s doc comment. */
   readonly zBuffer: Float64Array;
@@ -511,8 +531,16 @@ export class RaycasterEngine {
   /** Seeded PRNG for every simulation-relevant random draw this engine itself
    * makes (weapon spread, elite-loot coinflip) — plus what it hands down to
    * `updateEnemies`/`rollLoot`. Never `Math.random()` directly; see
-   * `src/prng.ts`'s doc comment for why. */
+   * `src/prng.ts`'s doc comment for why. Backed by `rngHandle` (see below) —
+   * `this.rng` itself stays a plain callable, unchanged from before
+   * multiplayer reconciliation existed, so none of its many call sites need
+   * to know or care that the stream is resumable underneath. */
   private readonly rng: () => number;
+  /** The same stream `this.rng` draws from, via its `next` — kept alongside
+   * it only so `captureReconciliationSnapshot()`/`applyReconciliationSnapshot()`
+   * can read/resume its raw internal state (`multiplayer-netcode-spec.md`
+   * §3, "the PRNG state gap"). Never read in single-player. */
+  private readonly rngHandle: ReturnType<typeof createResumablePrng>;
   /** Records this level's input for the replay system, if a run is actively
    * being tracked (see `main.ts`'s `launchLevel`) — `undefined` during replay
    * playback itself, which never re-records what it's replaying. Only ever
@@ -523,10 +551,23 @@ export class RaycasterEngine {
   /** Tile-bucketed index over living enemies for proximity queries — rebuilt
    * lazily on frames with rockets in flight (see `advanceRockets`). */
   private readonly enemyGrid = new EnemySpatialGrid();
+  /** An enemy's own drift-correction render offset, keyed by index into
+   * `this.enemies` — same shape/decay/threshold rules as
+   * `PlayerState.renderOffset`, kept as a side-map rather than a field on the
+   * shared `Enemy` map-type since `Enemy` has no other engine-instance-only
+   * (as opposed to map-data) fields today. Absence of an entry means no
+   * offset owed, same as `null` there. Never read in single-player. */
+  private readonly enemyRenderOffsets = new Map<number, { x: number; y: number; capturedAtMs: number }>();
   /** Bumped on every runtime mutation of `map.grid` (a door opening, a
    * secret wall sliding away) — every player's own `pathField`'s
    * invalidation signal. */
   private gridVersion = 0;
+  /** Every individual tile mutation since the last drained
+   * `captureReconciliationSnapshot()` call — `gridVersion` alone tells a
+   * guest *that* something changed, not *what*; multiplayer-reconciliation-
+   * only bookkeeping, drained (not just read) on capture. Never read in
+   * single-player. */
+  private readonly pendingGridDelta: TileMutation[] = [];
 
   private running = false;
   private rafId = 0;
@@ -577,6 +618,14 @@ export class RaycasterEngine {
   /** Loot dropped by defeated enemies (and by a player dying holding keys —
    * see `killPlayer()`), awaiting collection. Team-shared world state. */
   private readonly drops: LootDrop[] = [];
+  /** Per-source drop counters feeding each `LootDrop.id`'s `dropSeq` half
+   * (`${enemyIndex}:${dropSeq}` / `player:${playerId}:${dropSeq}`) — a single
+   * kill/death can push more than one drop (a guaranteed Elite drop plus a
+   * separate bonus-weapon roll; a death's key drop is its own scope), so the
+   * source alone isn't a unique id on its own. Multiplayer-reconciliation-only
+   * bookkeeping — never read in single-player. */
+  private readonly dropSeqByEnemyIndex = new Map<number, number>();
+  private readonly dropSeqByPlayerId = new Map<PlayerId, number>();
   /** Live weapon bullet tracers, fading over a few frames. Team-shared VFX. */
   private readonly traces: BulletTrace[] = [];
   /** Live flamethrower flame streams (Friday Hotfix's tracer replacement),
@@ -699,7 +748,8 @@ export class RaycasterEngine {
     // Nearest-neighbor scaling for wall/door texture columns — cheaper than
     // bilinear and correct for the game's existing chunky low-res look.
     this.ctx.imageSmoothingEnabled = false;
-    this.rng = mulberry32(gameplaySeed);
+    this.rngHandle = createResumablePrng(gameplaySeed);
+    this.rng = this.rngHandle.next;
     this.replayRecorder = replayRecorder;
     this.enemies = map.enemies;
     this.totalWalkableTiles = countWalkableTiles(map);
@@ -1007,6 +1057,7 @@ export class RaycasterEngine {
       meleeRecoil: 0,
       muzzleFrames: 0,
       viewOffsets: { horizonShift: 0, bobX: 0, bobY: 0 },
+      renderOffset: null,
       rotSpeedMultiplier,
       zBuffer: new Float64Array(SCENE_WIDTH),
       pathField: new PathField(),
@@ -1039,7 +1090,7 @@ export class RaycasterEngine {
       equip: (index) => {
         state.weaponIndex = index;
       },
-      pushDrop: (drop) => this.pushLootDrop(drop),
+      pushDrop: (drop, enemy) => this.pushLootDrop(drop, enemy),
       rng: this.rng,
       campaignLevelIndex: state.campaignLevelIndex,
       recordApplied: (kind, amount, origin) => {
@@ -1094,6 +1145,249 @@ export class RaycasterEngine {
   getPlayerPosition(id: PlayerId): { x: number; y: number } | null {
     const p = this.players.get(id);
     return p ? { x: p.player.posX, y: p.player.posY } : null;
+  }
+
+  /** Whether a player currently has a live, still-decaying drift-correction
+   * render offset (`PlayerState.renderOffset`) — read-only introspection,
+   * same spirit as `getPlayerPosition`. Lets
+   * `scripts/verify-multiplayer-reconciliation.mjs` prove a below-
+   * `SNAP_THRESHOLD_TILES` correction actually took the smoothed path, not
+   * just that the simulated position converged (which `getPlayerPosition`
+   * alone can't distinguish from an instant snap — the offset only affects
+   * what's *rendered*, never the simulation value it returns). */
+  hasActiveRenderOffset(id: PlayerId): boolean {
+    return this.players.get(id)?.renderOffset != null;
+  }
+
+  /** The shared PRNG stream's current raw internal state — read-only
+   * introspection, same spirit as `getPlayerPosition`. Needed by
+   * `scripts/verify-multiplayer-reconciliation.mjs`: position/health alone
+   * can't prove the PRNG stream itself resynced after a correction, since
+   * two peers' *visible* state can coincidentally agree while their stream
+   * *positions* have already diverged (see `applyReconciliationSnapshot`'s
+   * own doc comment). */
+  getRngState(): number {
+    return this.rngHandle.getState();
+  }
+
+  /**
+   * Test-only: deliberately perturbs local simulation state to synthesize a
+   * cross-peer divergence, for `scripts/verify-multiplayer-reconciliation.mjs`
+   * to prove the correction mechanism actually converges it back. Real
+   * cross-engine float drift (confirmed by `scripts/poc-cross-browser-determinism.mjs`)
+   * doesn't reliably appear within a short end-to-end run — it compounds
+   * from single-ULP errors, which took roughly the first 1% of a
+   * 500,000-iteration stress loop to surface there — so this stands in for
+   * it under test. Unlike every other `?testHooks=1` hook (read-only
+   * introspection, or a permanent no-op like `consumeCheat()`), this one
+   * genuinely *mutates* simulation state — never called from real gameplay
+   * code, only from a verify script working against its own `localPlayerId`.
+   */
+  debugInjectDesync(injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }): void {
+    if (injection.kind === "position") {
+      const local = this.players.get(this.localPlayerId)!;
+      local.player.posX += injection.deltaTiles;
+    } else {
+      this.rng();
+    }
+  }
+
+  /**
+   * Host-only: build this tick's authoritative `ReconciliationSnapshot`
+   * (`multiplayer-netcode-spec.md` §3) from live engine state, for
+   * `multiplayerSessionHost.ts` to broadcast once every
+   * `RECONCILE_INTERVAL_TICKS`. Drains `pendingGridDelta` — every tile
+   * mutation since the *last* capture, not the last-ever mutation — so a
+   * guest applying every successive snapshot in order sees every change
+   * exactly once, cumulatively.
+   */
+  captureReconciliationSnapshot(tick: number): ReconciliationSnapshot {
+    const players: Record<PlayerId, PlayerSnapshot> = {};
+    for (const [id, p] of this.players) {
+      players[id] = {
+        posX: p.player.posX,
+        posY: p.player.posY,
+        dirX: p.player.dirX,
+        dirY: p.player.dirY,
+        planeX: p.player.planeX,
+        planeY: p.player.planeY,
+        health: p.health,
+        swap: p.swap,
+        ammo: { ...p.ammo },
+        weaponIndex: p.weaponIndex,
+        keysHeld: p.keysHeld,
+        ownedWeapons: [...p.ownedWeapons].sort((a, b) => a - b),
+        alive: p.status === "alive",
+        killScore: p.killScore,
+        kills: p.kills,
+      };
+    }
+
+    const enemies: EnemySnapshot[] = this.enemies.map((e, index) => ({
+      index,
+      x: e.x,
+      y: e.y,
+      hp: e.hp,
+      alive: e.alive,
+      aggroed: e.aggroed,
+    }));
+
+    const mines: MineSnapshot[] = this.map.mines.map((m, index) => ({ index, alive: m.alive, visible: m.visible }));
+
+    // Every drop was id-tagged at push time (pushLootDrop / killPlayer's own
+    // key-drop path) — the `!` trusts that internal invariant rather than
+    // filtering, matching this codebase's usual stance on guarantees the
+    // engine itself upholds (see CLAUDE.md's "trust internal code" guidance).
+    const lootDrops: LootDropSnapshot[] = this.drops.map((d) => ({
+      id: d.id!,
+      x: d.x,
+      y: d.y,
+      kind: d.kind,
+      amount: d.amount,
+      weaponIndex: d.weaponIndex,
+    }));
+
+    const pickupsCollected: number[] = [];
+    this.map.ammoPickups.forEach((pickup, index) => {
+      if (pickup.collected) pickupsCollected.push(index);
+    });
+    const keysCollected: number[] = [];
+    this.map.keys.forEach((key, index) => {
+      if (key.collected) keysCollected.push(index);
+    });
+
+    const gridDelta = this.pendingGridDelta.splice(0, this.pendingGridDelta.length);
+
+    return {
+      tick,
+      rngState: this.rngHandle.getState(),
+      players,
+      enemies,
+      mines,
+      lootDrops,
+      pickupsCollected,
+      keysCollected,
+      gridVersion: this.gridVersion,
+      gridDelta,
+    };
+  }
+
+  /**
+   * Guest-only: overwrite local simulation state with the host's
+   * authoritative `snapshot` (§4). Every field snaps immediately and in
+   * full — continuing to simulate from a known-wrong value even one more
+   * tick lets that tick's own `Math.sin`/`cos`/`atan2` calls compound *more*
+   * drift on top of what's being corrected, the opposite of the goal.
+   * Position specifically also captures a render-only offset (below
+   * `SNAP_THRESHOLD_TILES`) or snaps the render position too (at/above it,
+   * no offset at all) — see `PlayerState.renderOffset`'s doc comment.
+   *
+   * `rngState` is always overwritten unconditionally, with no magnitude
+   * threshold: a PRNG stream position is either already byte-identical (the
+   * write is a no-op) or it's completely wrong from this point forward,
+   * never "off by a little" — skipping this because the *visible* fields
+   * already matched would fix the symptom for exactly one tick and
+   * guarantee a fresh divergence on the very next `rng()`-consuming
+   * decision (how many draws a tick takes is itself state-dependent — see
+   * `reconciliationSnapshot.ts`'s own doc comment).
+   */
+  applyReconciliationSnapshot(snapshot: ReconciliationSnapshot): void {
+    const now = performance.now();
+
+    for (const [id, ps] of Object.entries(snapshot.players)) {
+      const p = this.players.get(id);
+      if (!p) continue; // fixed 2-player roster today — a future roster change is a later step's job
+      p.renderOffset = this.correctionRenderOffset({ x: p.player.posX, y: p.player.posY }, { x: ps.posX, y: ps.posY }, now);
+      p.player.posX = ps.posX;
+      p.player.posY = ps.posY;
+      p.player.dirX = ps.dirX;
+      p.player.dirY = ps.dirY;
+      p.player.planeX = ps.planeX;
+      p.player.planeY = ps.planeY;
+      p.health = ps.health;
+      p.swap = ps.swap;
+      Object.assign(p.ammo, ps.ammo);
+      p.weaponIndex = ps.weaponIndex;
+      p.keysHeld = ps.keysHeld;
+      p.ownedWeapons.clear();
+      for (const w of ps.ownedWeapons) p.ownedWeapons.add(w);
+      p.status = ps.alive ? "alive" : "dead";
+      p.killScore = ps.killScore;
+      p.kills = ps.kills;
+    }
+
+    for (const es of snapshot.enemies) {
+      const e = this.enemies[es.index];
+      if (!e) continue;
+      const offset = this.correctionRenderOffset({ x: e.x, y: e.y }, { x: es.x, y: es.y }, now);
+      if (offset) this.enemyRenderOffsets.set(es.index, offset);
+      else this.enemyRenderOffsets.delete(es.index);
+      e.x = es.x;
+      e.y = es.y;
+      e.hp = es.hp;
+      e.alive = es.alive;
+      e.aggroed = es.aggroed;
+    }
+
+    for (const ms of snapshot.mines) {
+      const m = this.map.mines[ms.index];
+      if (!m) continue;
+      m.alive = ms.alive;
+      m.visible = ms.visible;
+    }
+
+    const incomingIds = new Set(snapshot.lootDrops.map((d) => d.id));
+    for (let i = this.drops.length - 1; i >= 0; i--) {
+      // "" is never a real id (every drop is tagged at push time — see
+      // pushLootDrop/killPlayer) — a safe sentinel for the optional-`id`
+      // type without weakening the Set's element type to `string | undefined`.
+      if (!incomingIds.has(this.drops[i].id ?? "")) this.drops.splice(i, 1);
+    }
+    for (const ds of snapshot.lootDrops) {
+      const existing = this.drops.find((d) => d.id === ds.id);
+      if (existing) {
+        existing.x = ds.x;
+        existing.y = ds.y;
+        existing.kind = ds.kind;
+        existing.amount = ds.amount;
+        existing.weaponIndex = ds.weaponIndex;
+      } else {
+        this.drops.push({ ...ds });
+      }
+    }
+
+    for (const index of snapshot.pickupsCollected) {
+      const pickup = this.map.ammoPickups[index];
+      if (pickup) pickup.collected = true;
+    }
+    for (const index of snapshot.keysCollected) {
+      const key = this.map.keys[index];
+      if (key) key.collected = true;
+    }
+
+    for (const mutation of snapshot.gridDelta) {
+      if (this.map.grid[mutation.y]) this.map.grid[mutation.y][mutation.x] = mutation.value;
+    }
+    this.gridVersion = snapshot.gridVersion;
+
+    this.rngHandle.setState(snapshot.rngState);
+  }
+
+  /** Shared position-correction decision for both players and enemies (§4):
+   * a small delta returns a smoothed render offset for the caller to store;
+   * a zero or large one returns `null` (no offset at all — not a
+   * zero-length smooth, genuinely absent) so the render pass falls straight
+   * back to reading the just-snapped simulation position. */
+  private correctionRenderOffset(
+    oldPos: { x: number; y: number },
+    newPos: { x: number; y: number },
+    nowMs: number,
+  ): { x: number; y: number; capturedAtMs: number } | null {
+    const x = oldPos.x - newPos.x;
+    const y = oldPos.y - newPos.y;
+    const distance = Math.hypot(x, y);
+    if (distance === 0 || distance >= SNAP_THRESHOLD_TILES) return null;
+    return { x, y, capturedAtMs: nowMs };
   }
 
   start(): void {
@@ -1483,10 +1777,92 @@ export class RaycasterEngine {
    * precedence.
    */
   render(): EngineStats {
-    const local = this.players.get(this.localPlayerId)!;
-    if (local.isPaused) return this.renderPausedOverlay();
-    if (local.loreText !== null) return this.renderLoreOverlay();
-    return this.renderNormalFrame();
+    const restoreOffsets = this.applyRenderOffsets();
+    try {
+      const local = this.players.get(this.localPlayerId)!;
+      if (local.isPaused) return this.renderPausedOverlay();
+      if (local.loreText !== null) return this.renderLoreOverlay();
+      return this.renderNormalFrame();
+    } finally {
+      restoreOffsets();
+    }
+  }
+
+  /**
+   * Temporarily nudges every player/enemy with a live drift-correction
+   * render offset (`PlayerState.renderOffset`/`enemyRenderOffsets`) toward
+   * their real simulated position, for exactly the duration of one render
+   * pass — restored immediately after via the returned closure, so the next
+   * `simulate()` tick always resumes from the true, already-snapped
+   * position (§4: the *simulation* value is never perturbed, only what's
+   * drawn). Mutating the live `Player`/`Enemy` objects directly, rather than
+   * threading an offset through every render helper (`renderScene`,
+   * `collectEnemyBillboards`, `collectPlayerBillboards`, the minimap, …),
+   * since all of those already read straight off `this.players`/
+   * `this.enemies` — this is the one seam that reaches every one of them at
+   * once, no render-path restructuring needed.
+   *
+   * Decays each offset by real elapsed wall-clock time
+   * (`performance.now() - capturedAtMs`) against `CORRECTION_SMOOTH_MS`,
+   * clearing it once fully decayed — independent of the simulation tick
+   * rate even though render itself still runs tick-paced today (see step
+   * 7's own render-cadence decision, flagged for revisit once full render
+   * decoupling has a concrete reason to exist).
+   */
+  private applyRenderOffsets(): () => void {
+    const now = performance.now();
+    const restores: Array<() => void> = [];
+
+    for (const p of this.players.values()) {
+      const offset = p.renderOffset;
+      if (!offset) continue;
+      const elapsedMs = now - offset.capturedAtMs;
+      if (elapsedMs >= CORRECTION_SMOOTH_MS) {
+        p.renderOffset = null;
+        continue;
+      }
+      const factor = 1 - elapsedMs / CORRECTION_SMOOTH_MS;
+      const dx = offset.x * factor;
+      const dy = offset.y * factor;
+      p.player.posX += dx;
+      p.player.posY += dy;
+      restores.push(() => {
+        p.player.posX -= dx;
+        p.player.posY -= dy;
+      });
+    }
+
+    for (const [index, offset] of this.enemyRenderOffsets) {
+      const enemy = this.enemies[index];
+      // Unreachable: an offset is only ever added (applyReconciliationSnapshot)
+      // for an index already checked against this.enemies, and this.enemies
+      // never shrinks at runtime (entries go alive: false, never removed) —
+      // kept as a defensive guard against a future change to either
+      // invariant, not because this can happen today.
+      /* v8 ignore next 4 */
+      if (!enemy) {
+        this.enemyRenderOffsets.delete(index);
+        continue;
+      }
+      const elapsedMs = now - offset.capturedAtMs;
+      if (elapsedMs >= CORRECTION_SMOOTH_MS) {
+        this.enemyRenderOffsets.delete(index);
+        continue;
+      }
+      const factor = 1 - elapsedMs / CORRECTION_SMOOTH_MS;
+      const dx = offset.x * factor;
+      const dy = offset.y * factor;
+      enemy.x += dx;
+      enemy.y += dy;
+      restores.push(() => {
+        enemy.x -= dx;
+        enemy.y -= dy;
+      });
+    }
+
+    return () => {
+      for (const restore of restores) restore();
+    };
   }
 
   /**
@@ -1740,6 +2116,7 @@ export class RaycasterEngine {
       const { x, y } = stack.pop()!;
       if (grid[y]?.[x] !== SECRET_WALL_TILE) continue;
       grid[y][x] = 0;
+      this.pendingGridDelta.push({ x, y, value: 0 });
       stack.push({ x: x + 1, y }, { x: x - 1, y }, { x, y: y + 1 }, { x, y: y - 1 });
     }
     this.gridVersion += 1;
@@ -2248,7 +2625,11 @@ export class RaycasterEngine {
    * total) for anything but Elite drops; confirmed via balance telemetry as
    * the reason an `ammo_starvation_*` flag built on comparing the two had to
    * be removed rather than fixed. */
-  private pushLootDrop(drop: LootDrop): void {
+  private pushLootDrop(drop: LootDrop, enemy: Enemy): void {
+    const enemyIndex = this.enemies.indexOf(enemy);
+    const dropSeq = this.dropSeqByEnemyIndex.get(enemyIndex) ?? 0;
+    this.dropSeqByEnemyIndex.set(enemyIndex, dropSeq + 1);
+    drop.id = `${enemyIndex}:${dropSeq}`;
     this.drops.push(drop);
     const amount = this.scaledLootAmount(drop.amount ?? this.defaultLootAmountFor(drop.kind));
     if (this.telemetry) recordLootRolled(this.telemetry, drop.kind, amount);
@@ -2278,6 +2659,7 @@ export class RaycasterEngine {
 
       if (this.map.grid[cy]?.[cx] === DOOR_TILE) {
         this.map.grid[cy][cx] = 0;
+        this.pendingGridDelta.push({ x: cx, y: cy, value: 0 });
         this.gridVersion += 1;
         p.keysHeld -= 1;
         console.log(
@@ -2388,7 +2770,9 @@ export class RaycasterEngine {
   private killPlayer(p: PlayerState): void {
     p.status = "dead";
     if (p.keysHeld > 0) {
-      this.drops.push({ x: p.player.posX, y: p.player.posY, kind: "key", amount: p.keysHeld });
+      const dropSeq = this.dropSeqByPlayerId.get(p.id) ?? 0;
+      this.dropSeqByPlayerId.set(p.id, dropSeq + 1);
+      this.drops.push({ x: p.player.posX, y: p.player.posY, kind: "key", amount: p.keysHeld, id: `player:${p.id}:${dropSeq}` });
       p.keysHeld = 0;
     }
     this.cycleSpectateTarget(p);
@@ -2821,7 +3205,7 @@ export class RaycasterEngine {
       // below is told to exclude "health" from its own weighted roll (via
       // `healthHandledSeparately`) so a kill can't double-drop it.
       if (shooter.health < MAX_HEALTH) {
-        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "health" });
+        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "health" }, enemy);
       }
       // Not every regular kill drops ammo/swap anymore — see
       // REGULAR_KILL_NO_DROP_CHANCE's doc comment. A separate rng() draw
@@ -2844,19 +3228,19 @@ export class RaycasterEngine {
             shooter.ownedWeapons.has(FRIDAY_HOTFIX_WEAPON_INDEX),
             true, // healthHandledSeparately — see above
           ),
-        });
+        }, enemy);
       } else if (rollMissChanceToolchain(shooter.lootCtx)) {
         // A kill that drops nothing isn't quite a dead end — a small
         // independent chance turns the miss into a shot at the Toolchain
         // instead, a weapon whose other two acquisition paths (secret rooms,
         // an Elite's own bonus roll) are otherwise easy to never see at all.
         // See `rollMissChanceToolchain`'s doc comment.
-        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: TOOLCHAIN_WEAPON_INDEX });
+        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: TOOLCHAIN_WEAPON_INDEX }, enemy);
       }
       const missing = UNLOCKABLE_WEAPONS.filter((i) => !shooter.ownedWeapons.has(i));
       const bonusWeaponIndex = rollBonusWeaponDrop(missing, this.rng);
       if (bonusWeaponIndex !== undefined) {
-        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: bonusWeaponIndex });
+        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: bonusWeaponIndex }, enemy);
       }
     }
     audio.playAmmoDrop();

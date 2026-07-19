@@ -18,6 +18,7 @@ import { onJsonMessage, sendJson } from "./dataChannelMessaging";
 import type { MultiplayerSessionHandle } from "./multiplayerSessionHost";
 import { FIXED_DT, INPUT_DELAY_TICKS } from "./netcodeConstants";
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
+import type { ReconciliationSnapshotMessage } from "./reconciliationTypes";
 import { buildSessionEngine } from "./sessionEngine";
 import { GUEST_PLAYER_ID, HOST_PLAYER_ID, type SessionSetupResult } from "./sessionSetupTypes";
 import type { MultiplayerChannels } from "./types";
@@ -38,6 +39,7 @@ export function runMultiplayerSessionAsGuest(
     if (ended) return;
     ended = true;
     unsubscribeInput();
+    unsubscribeReconciliation();
   };
 
   const { engine, myInput, otherInput, localSampler } = buildSessionEngine({
@@ -69,9 +71,21 @@ export function runMultiplayerSessionAsGuest(
     lastAppliedTick = bundle.tick;
   });
 
+  // Independent of the input listener above — session setup's own listener
+  // on this same channel has already unsubscribed by the time this module is
+  // ever constructed (see `startMultiplayerSessionAsGuest` in `main.ts`), so
+  // there's no risk of the two colliding. No re-entrancy guard needed, same
+  // reasoning as `unsubscribeInput` above.
+  const unsubscribeReconciliation = onJsonMessage<ReconciliationSnapshotMessage>(channels.reconciliation, (snapshot) => {
+    engine.applyReconciliationSnapshot(snapshot);
+  });
+
   return {
     stop: teardown,
     getLastAppliedTick: () => lastAppliedTick,
     getPlayerPosition: (id) => engine.getPlayerPosition(id),
+    getRngState: () => engine.getRngState(),
+    hasActiveRenderOffset: (id) => engine.hasActiveRenderOffset(id),
+    debugInjectDesync: (injection) => engine.debugInjectDesync(injection),
   };
 }

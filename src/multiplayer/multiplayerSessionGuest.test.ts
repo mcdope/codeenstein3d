@@ -8,6 +8,7 @@ import { createMockCanvasContext, stubCanvasGetContext } from "../../test/mocks/
 import type { GameMap, Tile } from "../map/types";
 import type { InputSnapshot } from "../engine/input";
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
+import type { PlayerSnapshot, ReconciliationSnapshotMessage } from "./reconciliationTypes";
 import { GUEST_PLAYER_ID, HOST_PLAYER_ID } from "./sessionSetupTypes";
 import type { SessionSetupResult } from "./sessionSetupTypes";
 import type { MultiplayerChannels } from "./types";
@@ -122,6 +123,44 @@ function collectMessages(channel: RTCDataChannel): (TickInput | TickInputBundle)
   return messages;
 }
 
+function fakePlayerSnapshot(overrides: Partial<PlayerSnapshot> = {}): PlayerSnapshot {
+  return {
+    posX: 5.5,
+    posY: 5.5,
+    dirX: 1,
+    dirY: 0,
+    planeX: 0,
+    planeY: 1,
+    health: 100,
+    swap: 0,
+    ammo: { bullets: 0, rockets: 0, smg: 0, gas: 0 },
+    weaponIndex: 0,
+    keysHeld: 0,
+    ownedWeapons: [0, 1, 2],
+    alive: true,
+    killScore: 0,
+    kills: 0,
+    ...overrides,
+  };
+}
+
+function fakeReconciliationSnapshot(overrides: Partial<ReconciliationSnapshotMessage> = {}): ReconciliationSnapshotMessage {
+  return {
+    type: "reconciliation-snapshot",
+    tick: 0,
+    rngState: 0,
+    players: { host: fakePlayerSnapshot(), guest: fakePlayerSnapshot() },
+    enemies: [],
+    mines: [],
+    lootDrops: [],
+    pickupsCollected: [],
+    keysCollected: [],
+    gridVersion: 0,
+    gridDelta: [],
+    ...overrides,
+  };
+}
+
 describe("runMultiplayerSessionAsGuest", () => {
   it("applies a received bundle to the engine and samples+sends its own delayed input in response", () => {
     const channels = linkedChannels();
@@ -203,5 +242,42 @@ describe("runMultiplayerSessionAsGuest", () => {
     }
 
     expect(onSessionEnded).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies an incoming ReconciliationSnapshotMessage from the host, correcting its own simulated state", () => {
+    const channels = linkedChannels();
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map: fakeMap({ spawn: { x: 5, y: 5 } }) }));
+    expect(handle.getPlayerPosition("guest")).toEqual({ x: 5.5, y: 5.5 });
+
+    const snapshot = fakeReconciliationSnapshot({
+      players: {
+        host: fakePlayerSnapshot({ posX: 8.5, posY: 8.5 }),
+        guest: fakePlayerSnapshot({ posX: 2.5, posY: 3.5 }),
+      },
+    });
+    channels.host.reconciliation.send(JSON.stringify(snapshot));
+
+    expect(handle.getPlayerPosition("guest")).toEqual({ x: 2.5, y: 3.5 });
+    expect(handle.getPlayerPosition("host")).toEqual({ x: 8.5, y: 8.5 });
+  });
+
+  it("stops applying reconciliation snapshots after teardown", () => {
+    const channels = linkedChannels();
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map: fakeMap({ spawn: { x: 5, y: 5 } }) }));
+    handle.stop();
+
+    const snapshot = fakeReconciliationSnapshot({ players: { host: fakePlayerSnapshot(), guest: fakePlayerSnapshot({ posX: 9.5, posY: 9.5 }) } });
+    expect(() => channels.host.reconciliation.send(JSON.stringify(snapshot))).not.toThrow();
+    expect(handle.getPlayerPosition("guest")).toEqual({ x: 5.5, y: 5.5 }); // unchanged — never applied
+  });
+
+  it("getRngState/debugInjectDesync/hasActiveRenderOffset delegate to the underlying engine", () => {
+    const channels = linkedChannels();
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+    const before = handle.getPlayerPosition("guest");
+    handle.debugInjectDesync({ kind: "position", deltaTiles: 0.2 });
+    expect(handle.getPlayerPosition("guest")).toEqual({ x: before!.x + 0.2, y: before!.y });
+    expect(typeof handle.getRngState()).toBe("number");
+    expect(handle.hasActiveRenderOffset("guest")).toBe(false);
   });
 });

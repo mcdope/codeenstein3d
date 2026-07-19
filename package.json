@@ -31,6 +31,7 @@
     "verify:multiplayer-server": "node scripts/verify-multiplayer-server.mjs",
     "verify:multiplayer-connect": "node scripts/verify-multiplayer-connect.mjs",
     "verify:multiplayer-netcode": "node scripts/verify-multiplayer-netcode.mjs",
+    "verify:multiplayer-reconciliation": "node scripts/verify-multiplayer-reconciliation.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage"

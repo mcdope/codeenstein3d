@@ -20,8 +20,9 @@
 import type { EngineStats, PlayerId } from "../engine/engine";
 import { sendJson, onJsonMessage } from "./dataChannelMessaging";
 import { InputDelayBuffer } from "./inputDelayBuffer";
-import { FIXED_DT, INPUT_DELAY_TICKS } from "./netcodeConstants";
+import { FIXED_DT, INPUT_DELAY_TICKS, RECONCILE_INTERVAL_TICKS } from "./netcodeConstants";
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
+import type { ReconciliationSnapshotMessage } from "./reconciliationTypes";
 import { buildSessionEngine } from "./sessionEngine";
 import { GUEST_PLAYER_ID, HOST_PLAYER_ID, type SessionSetupResult } from "./sessionSetupTypes";
 import type { TickDueMessage } from "./tickClockWorker";
@@ -36,6 +37,14 @@ export interface MultiplayerSessionHandle {
   stop(): void;
   getLastAppliedTick(): number | null;
   getPlayerPosition(id: PlayerId): { x: number; y: number } | null;
+  /** Read-only PRNG-stream introspection — see `RaycasterEngine.getRngState`'s
+   * doc comment. */
+  getRngState(): number;
+  /** Read-only — see `RaycasterEngine.hasActiveRenderOffset`'s doc comment. */
+  hasActiveRenderOffset(id: PlayerId): boolean;
+  /** Test-only, mutating — see `RaycasterEngine.debugInjectDesync`'s doc
+   * comment. */
+  debugInjectDesync(injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }): void;
 }
 
 export function runMultiplayerSessionAsHost(
@@ -113,11 +122,23 @@ export function runMultiplayerSessionAsHost(
     otherInput.loadFrame(bundle.inputs[GUEST_PLAYER_ID]);
     engine.advance(FIXED_DT);
     lastAppliedTick = tick;
+
+    // Periodic authoritative state reconciliation — the host is the only
+    // source of truth, so it never applies its own broadcast back onto
+    // itself (`multiplayer-netcode-spec.md` §3). Rides `channels.reconciliation`,
+    // idle since session setup's own listener unsubscribed.
+    if (tick % RECONCILE_INTERVAL_TICKS === 0) {
+      const snapshot: ReconciliationSnapshotMessage = { type: "reconciliation-snapshot", ...engine.captureReconciliationSnapshot(tick) };
+      sendJson(channels.reconciliation, snapshot);
+    }
   };
 
   return {
     stop: teardown,
     getLastAppliedTick: () => lastAppliedTick,
     getPlayerPosition: (id) => engine.getPlayerPosition(id),
+    getRngState: () => engine.getRngState(),
+    hasActiveRenderOffset: (id) => engine.hasActiveRenderOffset(id),
+    debugInjectDesync: (injection) => engine.debugInjectDesync(injection),
   };
 }
