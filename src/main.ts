@@ -68,6 +68,10 @@ import { createSession, fetchSession, fetchSessionAsHost, postAnswer } from "./m
 import { fetchLobbyEntries } from "./multiplayer/lobby";
 import { createGuestAnswer, createHostOffer, waitForChannelsOpen } from "./multiplayer/webrtcConnection";
 import { SignalingError, type ConnectionState, type LobbyEntry, type MultiplayerConnection } from "./multiplayer/types";
+import { runMultiplayerSessionAsHost, type MultiplayerSessionHandle } from "./multiplayer/multiplayerSessionHost";
+import { runMultiplayerSessionAsGuest } from "./multiplayer/multiplayerSessionGuest";
+import { runHostSessionSetup } from "./multiplayer/sessionSetupHost";
+import { runGuestSessionSetup } from "./multiplayer/sessionSetupGuest";
 
 // Stamps the build timestamp + git ref onto the tab title (index.html's
 // static <title> is just the plain fallback for the instant before this
@@ -157,6 +161,7 @@ const multiplayerPublicCheckbox = requireElement<HTMLInputElement>("#multiplayer
 const multiplayerHostCreateButton = requireElement<HTMLButtonElement>("#multiplayer-host-create");
 const multiplayerHostCancelButton = requireElement<HTMLButtonElement>("#multiplayer-host-cancel");
 const multiplayerHostCode = requireElement<HTMLParagraphElement>("#multiplayer-host-code");
+const multiplayerStartSessionButton = requireElement<HTMLButtonElement>("#multiplayer-start-session");
 const multiplayerJoinCodeInput = requireElement<HTMLInputElement>("#multiplayer-join-code-input");
 const multiplayerJoinConnectButton = requireElement<HTMLButtonElement>("#multiplayer-join-connect");
 const multiplayerBrowseLobbyButton = requireElement<HTMLButtonElement>("#multiplayer-browse-lobby");
@@ -885,6 +890,12 @@ let multiplayerConnectionState: ConnectionState = "idle";
  * consume this; step 2 only proves it reaches "connected" with both
  * channels open. */
 let activeMultiplayerConnection: MultiplayerConnection | null = null;
+/** The live session once gameplay has actually started (session setup
+ * resolved and `runMultiplayerSessionAsHost`/`Guest` is driving ticks) — set
+ * once `activeMultiplayerConnection` reaches `"connected"` and either the
+ * host clicks Start or the guest's own setup resolves; cleared once the
+ * shared simulation ends (see `onMultiplayerSessionEnded`). */
+let activeMultiplayerSession: MultiplayerSessionHandle | null = null;
 /** Bumped at the start of every connect attempt (Host create, Join) — same
  * "supersede a stale in-flight attempt by generation check" discipline as
  * `workspaceLoadGeneration`/`beginWorkspaceLoad` above. */
@@ -1023,6 +1034,7 @@ async function createMultiplayerSession(): Promise<void> {
     activeMultiplayerConnection = { role: "host", code: session.code, peerConnection, channels };
     multiplayerConnectionState = "connected";
     setMultiplayerStatus("Connected.", false);
+    multiplayerStartSessionButton.hidden = false;
     connected = true;
   } catch (err) {
     if (generation === multiplayerConnectionGeneration) {
@@ -1051,6 +1063,7 @@ multiplayerHostCancelButton.addEventListener("click", () => {
   multiplayerHostCreateButton.disabled = false;
   multiplayerHostCancelButton.hidden = true;
   multiplayerHostCode.hidden = true;
+  multiplayerStartSessionButton.hidden = true;
   setMultiplayerStatus("Cancelled.", false);
 });
 
@@ -1107,6 +1120,7 @@ async function joinMultiplayerSession(code: string): Promise<void> {
     multiplayerConnectionState = "connected";
     setMultiplayerStatus("Connected.", false);
     connected = true;
+    void startMultiplayerSessionAsGuest();
   } catch (err) {
     if (generation === multiplayerConnectionGeneration) {
       multiplayerConnectionState = "error";
@@ -1122,6 +1136,88 @@ async function joinMultiplayerSession(code: string): Promise<void> {
 }
 
 multiplayerJoinConnectButton.addEventListener("click", () => void joinMultiplayerSession(multiplayerJoinCodeInput.value));
+
+// --- Starting a multiplayer level (session setup + netcode, step 6c) -------
+// Picks up exactly where the connect flow above leaves off: two peers
+// holding an open `RTCDataChannel` pair. Coop is scoped to exactly one host +
+// one guest today (see `sessionSetupTypes.ts`'s fixed roster ids) —
+// `playerCount` is hardcoded 2 throughout.
+
+/** Shared DOM setup for a multiplayer level, mirroring `launchLevel`'s own
+ * sequence minus everything single-player-only (briefing gate, replay
+ * recorder, campaign-progression carryover) — those are explicitly out of
+ * scope for this step (see `multiplayer-netcode-spec.md` §8). */
+function beginMultiplayerLevel(): void {
+  stopActiveReplay?.();
+  activeEngine?.stop();
+  for (const child of [...viewport.children]) {
+    if (child !== canvasArea) child.remove();
+  }
+  viewport.append(buildControlsLegend());
+  canvasArea.hidden = false;
+  canvas.focus();
+}
+
+/** Fired once the shared simulation reaches game-over/win — deterministically
+ * the same tick on both peers. Deliberately minimal: no comparison table (a
+ * later step's job, per `multiplayer-research.md`'s plan) — just enough to
+ * not leave the player looking at a frozen canvas. */
+function onMultiplayerSessionEnded(): void {
+  activeMultiplayerSession = null;
+  setMultiplayerStatus("Multiplayer session ended.", false);
+  resetToFileTree();
+}
+
+async function startMultiplayerSessionAsHost(): Promise<void> {
+  if (!activeMultiplayerConnection || activeMultiplayerConnection.role !== "host") return;
+  if (!currentParsedFile || !currentLevelPath) {
+    // Reachable: `isMultiplayerEligibleWorkspace()` only checks
+    // `workspaceIsRemote`/`workspaceIsDemo` (was a real repo/the Demos
+    // campaign loaded at all), not whether a level ever actually
+    // auto-launched from it — a GitHub repo with no recognized entrypoint
+    // stays multiplayer-eligible (the tab enables) but never sets
+    // `currentParsedFile`/`currentLevelPath`.
+    setMultiplayerStatus("No workspace loaded to host a level from.", true);
+    return;
+  }
+  const { channels } = activeMultiplayerConnection;
+  multiplayerStartSessionButton.disabled = true;
+  setMultiplayerStatus("Starting session…", false);
+  try {
+    const bonusLevel = BONUS_LEVEL_EXTENSIONS.has(extensionOf(currentLevelPath));
+    // A fresh multiplayer session always starts with no carryover — same
+    // "no owned weapons yet, level 1" shape `launchLevel` uses for a genuinely
+    // new run.
+    const missingWeaponIndices = computeMissingWeaponIndices([], 1);
+    const map = mapGenerator.generate(currentParsedFile, bonusLevel, false, missingWeaponIndices, 2);
+    const result = await runHostSessionSetup(channels, { map, difficulty: currentDifficulty, playerCount: 2 });
+    beginMultiplayerLevel();
+    const worker = new Worker(new URL("./multiplayer/tickClockWorker.ts", import.meta.url), { type: "module" });
+    activeMultiplayerSession = runMultiplayerSessionAsHost(channels, canvas, result, worker, onMultiplayerSessionEnded);
+  } catch (err) {
+    console.error("[multiplayer] Failed to start session:", err);
+    setMultiplayerStatus(err instanceof Error ? err.message : "Failed to start the multiplayer session.", true);
+    multiplayerStartSessionButton.disabled = false;
+  }
+}
+
+async function startMultiplayerSessionAsGuest(): Promise<void> {
+  // Unlike the host's button-triggered call above, this has exactly one call
+  // site — right after `activeMultiplayerConnection` is set to a guest
+  // connection, synchronously, with no intervening `await` — so the
+  // precondition always holds and there's nothing to guard against.
+  const { channels } = activeMultiplayerConnection!;
+  try {
+    const result = await runGuestSessionSetup(channels);
+    beginMultiplayerLevel();
+    activeMultiplayerSession = runMultiplayerSessionAsGuest(channels, canvas, result, onMultiplayerSessionEnded);
+  } catch (err) {
+    console.error("[multiplayer] Session setup failed:", err);
+    setMultiplayerStatus(err instanceof Error ? err.message : "Multiplayer session setup failed.", true);
+  }
+}
+
+multiplayerStartSessionButton.addEventListener("click", () => void startMultiplayerSessionAsHost());
 
 // --- Lobby browser dialog ---------------------------------------------------
 
@@ -1189,7 +1285,15 @@ multiplayerLobbyDialog.addEventListener("close", () => {
 // racing every `waitUntil(() => !!testHooks())` in `main.test.ts` that
 // expects it to mean exactly that.
 if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1") {
-  (window as unknown as { __codeensteinMultiplayerTestHooks?: Record<string, () => unknown> }).__codeensteinMultiplayerTestHooks = {
+  (
+    window as unknown as {
+      __codeensteinMultiplayerTestHooks?: {
+        getConnectionState: () => unknown;
+        getSimTick: () => number | null;
+        getPlayerPosition: (id: string) => { x: number; y: number } | null;
+      };
+    }
+  ).__codeensteinMultiplayerTestHooks = {
     getConnectionState: () => ({
       state: multiplayerConnectionState,
       channels: activeMultiplayerConnection
@@ -1199,6 +1303,10 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
           }
         : null,
     }),
+    // Both added in step 6c — a live session's tick/position, for the
+    // end-to-end verify script's lockstep-correctness assertions.
+    getSimTick: () => activeMultiplayerSession?.getLastAppliedTick() ?? null,
+    getPlayerPosition: (id) => activeMultiplayerSession?.getPlayerPosition(id) ?? null,
   };
 }
 

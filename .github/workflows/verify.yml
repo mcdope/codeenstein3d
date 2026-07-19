@@ -79,11 +79,11 @@ jobs:
         # real Safari limitation), so the OPFS stub itself is unusable there;
         # `verify:campaign:playthrough` is skipped for webkit below, see
         # doc/dev/testing.md's cross-browser section. Separately,
-        # `verify:multiplayer-connect` is skipped for firefox below — a real,
-        # Mozilla-acknowledged (WONTFIX) WebRTC ICE-gathering limitation
-        # specific to this sandboxed runner's network shape, not a
-        # Playwright-build gap or an app bug — see that step's own comment
-        # and doc/dev/testing.md.
+        # `verify:multiplayer-connect`/`verify:multiplayer-netcode` are
+        # skipped for firefox below — a real, Mozilla-acknowledged (WONTFIX)
+        # WebRTC ICE-gathering limitation specific to this sandboxed
+        # runner's network shape, not a Playwright-build gap or an app bug —
+        # see those steps' own comments and doc/dev/testing.md.
         browser: [chromium, firefox, webkit]
     steps:
       - uses: actions/checkout@v4
@@ -158,6 +158,13 @@ jobs:
       # doc/dev/testing.md's cross-browser section for the full
       # investigation.
       - run: npm run verify:multiplayer-connect
+        if: matrix.browser != 'firefox'
+        env:
+          CODEENSTEIN_DEV_URL: "http://localhost:5173"
+          CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
+      # Same CI-only WebRTC ICE-gathering limitation as verify:multiplayer-connect
+      # above (not a new one) — see that step's own comment.
+      - run: npm run verify:multiplayer-netcode
         if: matrix.browser != 'firefox'
         env:
           CODEENSTEIN_DEV_URL: "http://localhost:5173"

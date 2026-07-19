@@ -65,9 +65,14 @@ describe("runHostSessionSetup / runGuestSessionSetup — successful handshake", 
     const map = bigFakeMap();
     expect(JSON.stringify(map).length).toBeGreaterThan(16 * 1024); // sanity: the fixture is genuinely big
 
-    const [hostResult, guestResult] = await Promise.all([
-      runHostSessionSetup(channels.host, { map, difficulty: "hard", playerCount: 2 }),
+    // Guest first: it only ever listens on `runGuestSessionSetup()` (never
+    // sends until the host's own build-version arrives), so its listener
+    // must be attached before the host's synchronous outbound send below —
+    // see sessionSetupGuest.ts's doc comment for the real race this order
+    // guards against.
+    const [guestResult, hostResult] = await Promise.all([
       runGuestSessionSetup(channels.guest),
+      runHostSessionSetup(channels.host, { map, difficulty: "hard", playerCount: 2 }),
     ]);
 
     expect(guestResult.roster).toEqual(["guest", "host"]);
@@ -84,9 +89,10 @@ describe("runHostSessionSetup / runGuestSessionSetup — successful handshake", 
     const channels = linkedChannels();
     const map = bigFakeMap(10);
 
-    const [hostResult, guestResult] = await Promise.all([
-      runHostSessionSetup(channels.host, { map, difficulty: "normal", playerCount: 2 }),
+    // See the previous test's comment on why guest must go first.
+    const [guestResult, hostResult] = await Promise.all([
       runGuestSessionSetup(channels.guest),
+      runHostSessionSetup(channels.host, { map, difficulty: "normal", playerCount: 2 }),
     ]);
 
     expect(hostResult.assignedId).toBe(HOST_PLAYER_ID);
@@ -99,11 +105,16 @@ describe("runHostSessionSetup — ignores unexpected message types", () => {
     const channels = linkedChannels();
     const hostPromise = runHostSessionSetup(channels.host, { map: bigFakeMap(10), difficulty: "normal", playerCount: 2 });
 
+    // A rogue guest sending a stray, unexpected message type before its real
+    // build-version — isolates the host's own tolerance for it, same manual
+    // "rogue guest" pattern as the mismatch test below (rather than the real
+    // `runGuestSessionSetup`, which never sends this message type at all).
     const stray: SessionSetupMessage = { type: "map-chunk", index: 0, data: "{}" };
     channels.guest.reconciliation.send(JSON.stringify(stray));
+    const realVersion: SessionSetupMessage = { type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ };
+    channels.guest.reconciliation.send(JSON.stringify(realVersion));
 
-    const guestPromise = runGuestSessionSetup(channels.guest);
-    await expect(Promise.all([hostPromise, guestPromise])).resolves.toBeDefined();
+    await expect(hostPromise).resolves.toBeDefined();
   });
 });
 

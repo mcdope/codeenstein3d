@@ -424,6 +424,57 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
       received, and a `visited`-reconstruction check against a *real* `MapGenerator`-produced map.
       `npm run typecheck` clean, full 1775-test/100%-coverage suite green, no `main.ts` changes —
       nothing calls either function yet outside tests, that's 6c's job.
+    - [ ] **6c shipped 2026-07-19: engine integration + `main.ts` wiring + end-to-end verify** —
+      the piece that actually gets two connected peers playing a level in lockstep. Four small,
+      additive engine prerequisites found by reading the engine directly against the design
+      (`engine.ts`/`player.ts`): `startExternallyDriven()` (primes a player without scheduling
+      `start()`'s internal rAF loop, so a session driver's own `advance(FIXED_DT)` calls are the
+      only thing ticking the sim), `getPlayerPosition(id)` (the only public way to read a
+      *specific*, possibly non-local player's position), a threaded-through `spawn?: Point`
+      (constructor/`addPlayer`/`Player`) fixing a real spawn-stacking bug (nothing assigned step
+      5's `multiplayerSpawns` to actual player positions — every added player landed on the
+      constructor's own spawn tile), and a `localPlayerId`-gated bypass of `simulate()`'s
+      lore-terminal early-return (that freeze was local-player-scoped, so either peer opening a
+      terminal desynced the other's tick count instantly). New `src/multiplayer/` input layer —
+      `networkInputSource.ts` (byte-for-byte `ReplayPlaybackInput` mirror), `localInputSampler.ts`
+      (drains a real `InputController`, force-neutralizes `escape`/`blur`/`pointerUnlock`/`click`
+      before they ever reach the shared stream — the netcode spec's pause/blur desync fix, applied
+      at the sampling layer) — then `sessionEngine.ts` (shared engine-construction helper, spawn
+      assignment from the sorted roster), `multiplayerSessionHost.ts` (worker-paced ticking,
+      `InputDelayBuffer`-driven bundle finalize+broadcast, an `ended` idempotency guard for
+      `TickAccumulator`'s already-queued-message re-entrancy on teardown), `multiplayerSessionGuest.ts`
+      (bundle-arrival-paced, no worker). `main.ts` gained a "Start Session" button (host only —
+      guest auto-starts session setup on connect) and `?testHooks=1`-gated `getSimTick`/
+      `getPlayerPosition` hooks. **Deliberate, user-confirmed scope decision**: renders at the
+      ~30Hz simulation tick rate (`engine.advance(FIXED_DT)` reused wholesale, unmodified) rather
+      than decoupling rendering to native display rate — no render-interpolation exists yet to
+      make decoupling buy any visible smoothness, so full decoupling is explicitly deferred,
+      **flagged for revisit once step 7 (reconciliation/interpolation) lands**, not a forgotten
+      shortcut. New `scripts/verify-multiplayer-netcode.mjs` (two real Playwright contexts, past
+      "connected" through a real "Start Session" click: first-applied-tick + spawn-spread, both
+      peers' exact position agreement at tick 60, real held-`KeyW` cross-peer propagation, a
+      final settled-position lockstep re-check), wired into CI the same `!= firefox` way as
+      `verify:multiplayer-connect` (same confirmed CI-only WebRTC ICE limitation, not a new one).
+      **This real end-to-end run — not any mocked-channel unit test — found two genuine protocol
+      bugs no amount of test-driven message ordering could have caught**: the guest's
+      `runGuestSessionSetup` used to send its own build-version *eagerly* on connect, racing the
+      host's own listener attach (only wired up once the user clicks "Start Session," an
+      arbitrarily later moment) — `RTCDataChannel` doesn't replay a message to a listener attached
+      after it already fired, so a real guest's early message was silently lost forever, wedging
+      the host in "Starting session…" indefinitely; fixed by flipping the guest to purely
+      receive-driven (listens immediately, only replies once the host's own build-version
+      arrives), which also required reordering the two existing setup unit-test files' own
+      `Promise.all([...])` calls (guest-first) since they'd coincidentally relied on the old,
+      backwards ordering too. Separately, the host was broadcasting its own delayed `TickInput`
+      over `channels.input` in addition to the real `TickInputBundle` — a stray message shape the
+      guest's listener never expected (`bundle.inputs[...]` off a `TickInput`, which has no
+      `.inputs` field, threw "Cannot read properties of undefined (reading 'guest')" on *every*
+      tick) — fixed by recording the host's own input into its `InputDelayBuffer` locally only
+      (it was never network-dependent in the first place; it reaches the guest properly shaped
+      inside the next finalized bundle regardless). `npm run typecheck` clean, full
+      1827-test/100%-coverage suite green, `verify:multiplayer-netcode` run twice locally against
+      a real dev+signaling server pair (isolated on alternate ports, the user's own dev server on
+      5173 left untouched) — clean both times after the two fixes above.
 - [ ] enemy textures from wad? if yes: what about hitbox? — investigated (2026-07-16, no code changed yet).
   - **Today: enemies are 100% procedural, zero WAD sprite loading exists.** `src/wad/loadWad.ts`'s `WadLoadResult` only ever loads wall/door/floor-style textures (`wallTexture`/`doorTexture`/`floorTexture`/etc.) — no sprite lump is read at all. Enemies are drawn in `src/engine/sprites.ts` as solid-color rectangular billboards (`enemyColor`/`enemyBodyColor`), sized by a single `sizeFactor` in `projectEnemy` (`ENEMY_SIZE`, scaled by `EDGE_CASE_SCALE`=0.55 or `ELITE_SCALE`).
   - **Loading real sprite art is feasible, same binary format already parsed**: Doom sprite lumps use the exact same "patch" pixel format as wall patches (`src/wad/patch.ts`'s `parsePatch` is already format-generic, not wall-specific) — no new binary parser needed. But the pipeline differs from walls: sprites are used as single patches per frame directly (no `compositeTexture.ts`-style multi-patch tiling/`TEXTURE1` step), and use Doom's frame+rotation lump-naming convention (e.g. `TROOA1`, `TROOA2A8` mirrored) that nothing in this codebase currently parses. This project's WAD-texture system also has a real security/curation stance worth respecting here, not shortcutting: `src/wad/textureAllowlist.ts` is a hand-curated, individually-IWAD-verified name list per slot (not "trust any name present") — real monster sprites (imp/zombieman/demon/etc.) would need the same treatment: a new, separately-verified allowlist, not a generic passthrough.
