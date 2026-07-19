@@ -23,12 +23,31 @@
 
 export class FakeRTCDataChannel extends EventTarget {
   readyState: RTCDataChannelState = "connecting";
+  private linkedPeer: FakeRTCDataChannel | null = null;
   constructor(readonly label: string) {
     super();
   }
   simulateOpen(): void {
     this.readyState = "open";
     this.dispatchEvent(new Event("open"));
+  }
+
+  /** Test-only: pairs this channel with the one on "the other side" of a
+   * simulated connection, so `send()` on either dispatches a `"message"`
+   * event on the other. Bidirectional — one `link()` call wires both
+   * directions. */
+  link(other: FakeRTCDataChannel): void {
+    this.linkedPeer = other;
+    other.linkedPeer = this;
+  }
+
+  /** Synchronous dispatch, deliberately — real `RTCDataChannel` delivery is
+   * asynchronous, but this mock's whole point is deterministic unit tests;
+   * genuine async-ordering bugs are a Playwright verify script's job to
+   * catch, not this mock's (see this module's own doc comment for the same
+   * division of labor already established for `datachannel`/ICE events). */
+  send(data: string): void {
+    this.linkedPeer?.dispatchEvent(new MessageEvent("message", { data }));
   }
 }
 
