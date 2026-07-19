@@ -96,7 +96,9 @@ export const DEFAULT_TUNING = {
   CRITICAL_HEALTH_FRACTION: 0.2,
   MELEE_RANGE: 1.5,
   // Below this distance, stop trying to close the last bit of distance
-  // during an in-progress melee engagement — see `tick`'s melee branch.
+  // during an in-progress melee engagement — see `tick`'s melee branch,
+  // which actually gates on `max(this, ENGINE_MOVE_SPEED * stepMs/1000)`,
+  // not this raw value alone — see that branch's own doc comment for why.
   MELEE_CLOSE_MIN_DISTANCE: 0.4,
   // Below this distance, stop advancing while turning to line up a ranged
   // shot — see `tick`'s ranged-aim branch.
@@ -949,8 +951,22 @@ export class Bot {
           turnBurst = this.#turnBurstMs(delta, this.profile.rotSpeedMultiplier, player, currentAngle);
           // Also keep closing the last bit of distance, not just re-aiming
           // in place — the enemy's own chase AI is still walking between
-          // MELEE_CLOSE_MIN_DISTANCE and MELEE_RANGE.
-          if (map && threat.dist > this.tuning.MELEE_CLOSE_MIN_DISTANCE) {
+          // MELEE_CLOSE_MIN_DISTANCE and MELEE_RANGE. Never closer than one
+          // decision's own real forward-movement distance, though — holding
+          // "keep closing" *and* a turn command together for a whole decision
+          // that's long enough to cover that much ground traces a real arc
+          // around the target instead of settling on it (confirmed directly
+          // against a caller using a much longer real decision window than
+          // this project's own single-player defaults —
+          // `scripts/lib/multiplayerBot.mjs` — which spun in place
+          // indefinitely at melee range with the tuning-only default alone).
+          // `MELEE_CLOSE_MIN_DISTANCE` on its own already works out to almost
+          // exactly this same distance at single-player's own realtime
+          // `WATCH_STEP_MS` (0.4 tiles vs. 3.2 tiles/sec × 0.13s ≈ 0.42) —
+          // this is a no-op there; it only widens the gate for a caller
+          // using a longer decision window than that.
+          const closeMinDistance = Math.max(this.tuning.MELEE_CLOSE_MIN_DISTANCE, this.tuning.ENGINE_MOVE_SPEED * (this.stepMs / 1000));
+          if (map && threat.dist > closeMinDistance) {
             const aheadX = player.x + player.dirX * 0.6;
             const aheadY = player.y + player.dirY * 0.6;
             if (!isHazardAt(map, aheadX, aheadY) && !activeSpikeAt(map, aheadX, aheadY, player.levelTime)) {
