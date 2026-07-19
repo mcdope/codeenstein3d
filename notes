@@ -355,6 +355,48 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
       Skipped the heavier map-snapshot/replay-digest recipe used for steps 3/4 — every new branch
       here is gated behind a default parameter that resolves to an empty array, provably a no-op
       by inspection, not just by test.
+    - [ ] step 6 of the implementation plan ("netcode core") turned out markedly larger than its own
+      sizing note implied, and was split into three sub-steps (6a/6b/6c, each its own branch/PR),
+      decided with the user rather than assumed. **6a shipped 2026-07-19: tick/delay-buffer
+      infrastructure.** Reading the engine directly (not just `multiplayer-netcode-spec.md`)
+      surfaced a real, previously-uncaught correctness bug before any netcode existed to trigger
+      it: `RaycasterEngine` hardcoded its own player's map key to the literal string `"local"` with
+      no override, so two peers looking at "the same two physical players" would each substitute a
+      *different* one of the two real ids with `"local"` before `sortedPlayerIds()` sorts them —
+      opposite relative iteration order on the two peers, meaning opposite PRNG-draw order,
+      meaning an instant, permanent desync from tick 1, entirely invisible until real multiplayer
+      combat existed to expose it. Fixed with a new trailing `localPlayerId = LOCAL_PLAYER_ID`
+      constructor parameter (mirrors step 5's `maxPlayers = 1` pattern — every existing call site
+      omits it, byte-identical single-player behavior), plus reordering the constructor's own
+      field assignments so `this.localPlayerId` is set before the first `createPlayerState` call
+      needs to read it, plus fixing one stale `id === LOCAL_PLAYER_ID` comparison (a bot-rotation
+      test hook) to compare against the instance field instead. Regression-tested directly: two
+      engines constructed with swapped `localPlayerId`/`addPlayer` roles for the same two real ids
+      now produce identical `sortedPlayerIds()` output. Also exported `replay.ts`'s previously-
+      private `EMPTY_SNAPSHOT` (needed by 6c's `NetworkInputSource`, the same "loaded snapshot"
+      pattern `ReplayPlaybackInput` already uses) and deduped `engine.test.ts`'s own copy into an
+      import. New `src/multiplayer/` modules, every one pure/host-agnostic and unit-tested without
+      any WebRTC/DOM/Worker runtime: `netcodeConstants.ts` (`TICK_RATE_HZ`/`FIXED_DT`/
+      `INPUT_DELAY_TICKS`/`MAP_CHUNK_SIZE_BYTES`), `netcodeTypes.ts` (`TickInput`/`TickInputBundle`
+      wire shapes — type-only, added to `vitest.config.ts`'s coverage exclude list alongside
+      `parser/types.ts`, same "0/0 statements reports as a literal 0%" reasoning), `tickAccumulator.ts`
+      (a fixed-tick scheduler over injected timestamps), `tickClockWorker.ts` (the first Web Worker
+      in this project — thin glue wiring the accumulator to `self.postMessage`, unit-tested by
+      stubbing `self` and importing the raw module rather than excluded from coverage),
+      `inputDelayBuffer.ts` (host-side per-tick bundle finalization with held-last-input fallback),
+      `chunkedTransfer.ts` (splits/reassembles a large JSON payload for the ~64 KiB `RTCDataChannel`
+      message-size floor), and `buildVersionCheck.ts`. Found and fixed a second, genuine bug while
+      building `tickAccumulator.ts`, caught by its own test suite rather than assumed correct:
+      repeatedly subtracting `FIXED_DT_MS` (`1000/30`, a non-terminating binary fraction) from a
+      banked-remainder accumulator compounds floating-point rounding error and can land one ULP
+      short of an exact boundary, silently dropping a due tick — confirmed concretely (`100 -
+      33.333333333333336 - 33.333333333333336` evaluates to `33.33333333333332`, just under the
+      interval). Fixed by tracking only-ever-additive total elapsed time and recomputing
+      `Math.floor(totalElapsedMs / fixedDtMs)` fresh each call instead of repeated subtraction — no
+      compounding error possible. Verified via `npm run typecheck`, the full 1761-test/100%-coverage
+      suite, and no Playwright verification (nothing in 6a touches WebRTC/DOM/a real engine — that's
+      6c's job). 6b (session-setup handshake + chunked map transfer) and 6c (engine integration,
+      `main.ts` wiring, end-to-end verify) are separate follow-on branches/sessions.
 - [ ] enemy textures from wad? if yes: what about hitbox? — investigated (2026-07-16, no code changed yet).
   - **Today: enemies are 100% procedural, zero WAD sprite loading exists.** `src/wad/loadWad.ts`'s `WadLoadResult` only ever loads wall/door/floor-style textures (`wallTexture`/`doorTexture`/`floorTexture`/etc.) — no sprite lump is read at all. Enemies are drawn in `src/engine/sprites.ts` as solid-color rectangular billboards (`enemyColor`/`enemyBodyColor`), sized by a single `sizeFactor` in `projectEnemy` (`ENEMY_SIZE`, scaled by `EDGE_CASE_SCALE`=0.55 or `ELITE_SCALE`).
   - **Loading real sprite art is feasible, same binary format already parsed**: Doom sprite lumps use the exact same "patch" pixel format as wall patches (`src/wad/patch.ts`'s `parsePatch` is already format-generic, not wall-specific) — no new binary parser needed. But the pipeline differs from walls: sprites are used as single patches per frame directly (no `compositeTexture.ts`-style multi-patch tiling/`TEXTURE1` step), and use Doom's frame+rotation lump-naming convention (e.g. `TROOA1`, `TROOA2A8` mirrored) that nothing in this codebase currently parses. This project's WAD-texture system also has a real security/curation stance worth respecting here, not shortcutting: `src/wad/textureAllowlist.ts` is a hand-curated, individually-IWAD-verified name list per slot (not "trust any name present") — real monster sprites (imp/zombieman/demon/etc.) would need the same treatment: a new, separately-verified allowlist, not a generic passthrough.

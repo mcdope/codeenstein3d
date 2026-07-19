@@ -63,9 +63,13 @@ export default defineConfig({
       // Phase 12 100% gate for a file with no logic to cover. Files with
       // *some* runtime code alongside their types (e.g. src/map/types.ts's
       // tile constants) are NOT excluded — those get real tests instead.
+      // src/multiplayer/netcodeTypes.ts is the same situation: only
+      // `interface` declarations (the per-tick lockstep wire shapes), no
+      // runtime exports.
       exclude: [
         "src/engine/defaultHighscore.ts",
         "src/parser/types.ts",
+        "src/multiplayer/netcodeTypes.ts",
         "src/empty-node-shim.ts",
         "src/vite-env.d.ts",
         "dist/**",

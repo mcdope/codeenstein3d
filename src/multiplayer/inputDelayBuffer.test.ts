@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
+
+import { describe, expect, it } from "vitest";
+import { EMPTY_SNAPSHOT } from "../engine/replay";
+import type { InputSnapshot } from "../engine/input";
+import { InputDelayBuffer } from "./inputDelayBuffer";
+
+function snapshot(overrides: Partial<InputSnapshot> = {}): InputSnapshot {
+  return { ...EMPTY_SNAPSHOT, ...overrides };
+}
+
+describe("InputDelayBuffer", () => {
+  it("uses real recorded input for a tick when every roster player's input arrived", () => {
+    const buffer = new InputDelayBuffer();
+    const p1Input = snapshot({ fireQueued: true });
+    const p2Input = snapshot({ mouseDX: 5 });
+    buffer.record(10, "p1", p1Input);
+    buffer.record(10, "p2", p2Input);
+
+    const bundle = buffer.finalize(10, ["p1", "p2"], 1 / 30);
+    expect(bundle).toEqual({
+      tick: 10,
+      dt: 1 / 30,
+      inputs: { p1: p1Input, p2: p2Input },
+      heldInputFallback: [],
+    });
+  });
+
+  it("holds a player's last-received snapshot when their real input for this tick hasn't arrived", () => {
+    const buffer = new InputDelayBuffer();
+    const p1Tick10 = snapshot({ fireQueued: true });
+    buffer.record(10, "p1", p1Tick10);
+    buffer.record(10, "p2", snapshot({ mouseDX: 1 }));
+    buffer.finalize(10, ["p1", "p2"], 1 / 30); // establishes p1's lastKnown
+
+    buffer.record(11, "p2", snapshot({ mouseDX: 2 })); // p1's tick-11 input never arrives
+    const bundle = buffer.finalize(11, ["p1", "p2"], 1 / 30);
+
+    expect(bundle.inputs.p1).toEqual(p1Tick10); // held from tick 10
+    expect(bundle.heldInputFallback).toEqual(["p1"]);
+  });
+
+  it("falls back to the neutral idle snapshot for a player nothing was ever recorded for", () => {
+    const buffer = new InputDelayBuffer();
+    const bundle = buffer.finalize(0, ["p1"], 1 / 30);
+    expect(bundle.inputs.p1).toEqual(EMPTY_SNAPSHOT);
+    expect(bundle.heldInputFallback).toEqual(["p1"]);
+  });
+
+  it("never stalls: finalize always returns a complete bundle covering every roster id", () => {
+    const buffer = new InputDelayBuffer();
+    const bundle = buffer.finalize(5, ["a", "b", "c"], 1 / 30);
+    expect(Object.keys(bundle.inputs).sort()).toEqual(["a", "b", "c"]);
+  });
+
+  it("drops a finalized tick's buffered entries so pending never grows unbounded", () => {
+    const buffer = new InputDelayBuffer();
+    buffer.record(1, "p1", snapshot({ fireQueued: true }));
+    buffer.finalize(1, ["p1"], 1 / 30);
+    // Re-recording under the same (already-finalized) tick number should
+    // start from a clean slate, not silently reuse a stale buffered entry
+    // that finalize() should have discarded.
+    const bundle = buffer.finalize(1, ["p1"], 1 / 30);
+    expect(bundle.inputs.p1).toEqual(snapshot({ fireQueued: true })); // held from the first finalize's lastKnown update
+    expect(bundle.heldInputFallback).toEqual(["p1"]);
+  });
+
+  it("only marks players actually missing real input as held, in a mixed roster", () => {
+    const buffer = new InputDelayBuffer();
+    buffer.record(3, "p1", snapshot({ fireQueued: true }));
+    const bundle = buffer.finalize(3, ["p1", "p2", "p3"], 1 / 30);
+    expect(bundle.heldInputFallback.sort()).toEqual(["p2", "p3"]);
+  });
+});
