@@ -5,9 +5,12 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeRTCDataChannel } from "../../test/mocks/webrtc";
 import { createMockCanvasContext, stubCanvasGetContext } from "../../test/mocks/canvas";
+import type { EngineCarryover, PlayerId } from "../engine/engine";
+import { COUNTDOWN_TICKS } from "../engine/transitionConstants";
 import type { GameMap, Tile } from "../map/types";
+import type { LevelTransitionAckMessage, LevelTransitionMessage } from "./levelTransitionTypes";
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
-import { DISCONNECT_GRACE_MS, RECONCILE_INTERVAL_TICKS } from "./netcodeConstants";
+import { DISCONNECT_GRACE_MS, RECONCILE_INTERVAL_TICKS, TRANSITION_ACK_TIMEOUT_MS } from "./netcodeConstants";
 import type { ReconciliationSnapshotMessage } from "./reconciliationTypes";
 import { GUEST_PLAYER_ID, HOST_PLAYER_ID } from "./sessionSetupTypes";
 import type { SessionSetupResult } from "./sessionSetupTypes";
@@ -221,6 +224,30 @@ describe("runMultiplayerSessionAsHost", () => {
     const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map: fakeMap({ spawn: { x: 4, y: 4 } }) }), worker);
     expect(handle.getPlayerPosition("host")).toEqual({ x: 4.5, y: 4.5 });
     expect(handle.getPlayerPosition("nope")).toBeNull();
+  });
+
+  it("getPlayerFacing delegates to the underlying engine", () => {
+    const channels = linkedChannels();
+    const worker = fakeWorker();
+    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+    expect(handle.getPlayerFacing("host")).toEqual({ dirX: 1, dirY: 0 });
+    expect(handle.getPlayerFacing("nope")).toBeNull();
+  });
+
+  it("getExitCountdownRemaining delegates to the underlying engine, null before any countdown starts", () => {
+    const channels = linkedChannels();
+    const worker = fakeWorker();
+    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+    expect(handle.getExitCountdownRemaining()).toBeNull();
+  });
+
+  it("getExitCountdownRemaining reports a real tick count once the host is standing on the exit", () => {
+    const channels = linkedChannels();
+    const worker = fakeWorker();
+    const map = fakeMap({ spawn: { x: 5, y: 5 }, exit: { x: 5, y: 5 } });
+    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map }), worker);
+    worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+    expect(handle.getExitCountdownRemaining()).toBe(COUNTDOWN_TICKS);
   });
 
   it("getPlayerStatus/getLootDrops delegate to the underlying engine", () => {
@@ -456,6 +483,247 @@ describe("runMultiplayerSessionAsHost", () => {
       worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
 
       expect(dismissSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("level transition (step 8)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function winMap(overrides: Partial<GameMap> = {}, size = 12): GameMap {
+      return fakeMap({ spawn: { x: 5, y: 5 }, exit: { x: 5, y: 5 }, ...overrides }, size);
+    }
+
+    /** Drives exactly enough ticks for the host's own countdown to reach
+     * zero and fire `onWin` — the first tick only *starts* it (see
+     * `checkExit()`'s own doc comment), `COUNTDOWN_TICKS` further ticks are
+     * needed to exhaust it. */
+    function driveToWin(worker: ReturnType<typeof fakeWorker>): void {
+      for (let i = 0; i < COUNTDOWN_TICKS + 1; i++) {
+        worker.onmessage?.({ data: { type: "tick", tick: i } } as MessageEvent);
+      }
+    }
+
+    it("ends the session with reason 'campaign-complete' when no findNextLevel is provided at all", async () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const onSessionEnded = vi.fn();
+      runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map: winMap() }), worker, onSessionEnded);
+
+      driveToWin(worker);
+      // Even with no findNextLevel to await, `onWinFromEngine` is still an
+      // async function — its own body doesn't resume until the next
+      // microtask, same as the "resolves null" case below.
+      await vi.waitFor(() => expect(onSessionEnded).toHaveBeenCalledTimes(1));
+
+      expect(onSessionEnded.mock.calls[0][1]).toBe("campaign-complete");
+      expect(worker.terminate).toHaveBeenCalledTimes(1);
+    });
+
+    it("ends the session with reason 'campaign-complete' when findNextLevel resolves null (workspace exhausted)", async () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const onSessionEnded = vi.fn();
+      const findNextLevel = vi.fn().mockResolvedValue(null);
+      runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map: winMap() }), worker, onSessionEnded, undefined, findNextLevel);
+
+      driveToWin(worker);
+      await vi.waitFor(() => expect(onSessionEnded).toHaveBeenCalledTimes(1));
+
+      expect(onSessionEnded.mock.calls[0][1]).toBe("campaign-complete");
+      expect(findNextLevel).toHaveBeenCalledTimes(1);
+      const request = findNextLevel.mock.calls[0][0] as { carryovers: Record<PlayerId, EngineCarryover> };
+      expect(Object.keys(request.carryovers).sort()).toEqual(["guest", "host"]);
+    });
+
+    it("broadcasts a chunked level-transition sequence and starts the new level once every guest acks", async () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const guestSeenMessages = collectMessages(channels.guest.reconciliation) as unknown as LevelTransitionMessage[];
+      const nextMap = fakeMap({ spawn: { x: 6, y: 6 } });
+      const findNextLevel = vi.fn().mockResolvedValue({ map: nextMap, gameplaySeed: 999 });
+      const handle = runMultiplayerSessionAsHost(
+        channels.host,
+        makeCanvas(),
+        fakeResult({ map: winMap() }),
+        worker,
+        undefined,
+        undefined,
+        findNextLevel,
+      );
+
+      driveToWin(worker);
+      await vi.waitFor(() => {
+        expect(guestSeenMessages.some((m) => m.type === "level-transition-map-end")).toBe(true);
+      });
+
+      // The channel also carries periodic `reconciliation-snapshot`
+      // broadcasts throughout `driveToWin`'s many ticks — filter down to
+      // just the transition sequence itself.
+      const transitionMessages = guestSeenMessages.filter((m) => m.type.startsWith("level-transition"));
+      expect(transitionMessages[0]).toMatchObject({ type: "level-transition-init", gameplaySeed: 999 });
+      const chunkMessages = transitionMessages.filter((m) => m.type === "level-transition-map-chunk");
+      expect(chunkMessages.length).toBeGreaterThan(0);
+      expect(transitionMessages.at(-1)).toMatchObject({ type: "level-transition-map-end" });
+
+      // Still mid-transition — waiting on the guest's own ack — the new
+      // level hasn't actually started yet.
+      expect(handle.getPlayerPosition("host")).toEqual({ x: 5.5, y: 5.5 });
+
+      const ack: LevelTransitionAckMessage = { type: "level-transition-ack", playerId: "guest" };
+      channels.guest.reconciliation.send(JSON.stringify(ack));
+      await vi.waitFor(() => {
+        expect(handle.getPlayerPosition("host")).toEqual({ x: 6.5, y: 6.5 });
+      });
+    });
+
+    it("revives a player who was dead at REVIVE_HEALTH in the carryover captured for the next level", async () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const canvas = makeCanvas();
+      const size = 12;
+      const g = walledRoom(size);
+      g[3][3] = 2; // hazard tile, exactly on the guest's own spawn — at
+      // HAZARD_DPS(18)/s, lethal (100 HP) after ~5.6s (~167 ticks)
+      // sorted roster is ["guest", "host"] -> guest gets multiplayerSpawns[0]
+      // (the hazard); host gets multiplayerSpawns[1], two tiles from the
+      // exit — reached by holding "W" (default east facing), starting the
+      // countdown only once it arrives, not at tick 0.
+      const map = fakeMap(
+        { grid: g, hazards: [{ x: 3, y: 3 }], exit: { x: 7, y: 5 }, multiplayerSpawns: [{ x: 3, y: 3 }, { x: 5, y: 5 }] },
+        size,
+      );
+      const findNextLevel = vi.fn().mockResolvedValue({ map: fakeMap(), gameplaySeed: 1 });
+      const handle = runMultiplayerSessionAsHost(channels.host, canvas, fakeResult({ map }), worker, undefined, undefined, findNextLevel);
+
+      // Let the guest take real hazard damage for a while — well past its
+      // own ~167-tick death — before the host even starts moving toward the
+      // exit, so there's no race between "guest actually dies" and "host's
+      // own 150-tick countdown completes": the countdown can't even start
+      // until the host arrives, comfortably after this.
+      for (let i = 0; i < 200; i++) worker.onmessage?.({ data: { type: "tick", tick: i } } as MessageEvent);
+      expect(handle.getPlayerStatus("guest")).toBe("dead");
+
+      canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW" }));
+      for (let i = 200; i < 500 && findNextLevel.mock.calls.length === 0; i++) {
+        worker.onmessage?.({ data: { type: "tick", tick: i } } as MessageEvent);
+      }
+      canvas.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW" }));
+
+      await vi.waitFor(() => expect(findNextLevel).toHaveBeenCalledTimes(1));
+      const request = findNextLevel.mock.calls[0][0] as { carryovers: Record<PlayerId, EngineCarryover> };
+      expect(request.carryovers.guest.health).toBe(50); // REVIVE_HEALTH
+      expect(request.carryovers.host.health).toBeGreaterThan(0); // never touched — still alive
+    });
+
+    it("proceeds without waiting forever once TRANSITION_ACK_TIMEOUT_MS elapses with no ack", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const nextMap = fakeMap({ spawn: { x: 6, y: 6 } });
+      const findNextLevel = vi.fn().mockResolvedValue({ map: nextMap, gameplaySeed: 1 });
+      const handle = runMultiplayerSessionAsHost(
+        channels.host,
+        makeCanvas(),
+        fakeResult({ map: winMap() }),
+        worker,
+        undefined,
+        undefined,
+        findNextLevel,
+      );
+
+      driveToWin(worker);
+      return vi.waitFor(() => expect(findNextLevel).toHaveBeenCalledTimes(1)).then(async () => {
+        await vi.advanceTimersByTimeAsync(TRANSITION_ACK_TIMEOUT_MS);
+        expect(handle.getPlayerPosition("host")).toEqual({ x: 6.5, y: 6.5 });
+      });
+    });
+
+    it("an already-won engine's repeated onWin firing doesn't restart an in-progress transition", async () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      let resolveFindNextLevel: (value: { map: GameMap; gameplaySeed: number } | null) => void = () => {};
+      const findNextLevel = vi.fn(() => new Promise<{ map: GameMap; gameplaySeed: number } | null>((resolve) => (resolveFindNextLevel = resolve)));
+      runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map: winMap() }), worker, undefined, undefined, findNextLevel);
+
+      driveToWin(worker);
+      // The engine is already "won" — several more ticks (each re-firing
+      // onWin, since neither onWin nor onGameOver edge-gate) arrive while
+      // findNextLevel's own promise is still pending.
+      worker.onmessage?.({ data: { type: "tick", tick: COUNTDOWN_TICKS + 1 } } as MessageEvent);
+      worker.onmessage?.({ data: { type: "tick", tick: COUNTDOWN_TICKS + 2 } } as MessageEvent);
+      await vi.waitFor(() => expect(findNextLevel).toHaveBeenCalledTimes(1));
+
+      resolveFindNextLevel(null);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(findNextLevel).toHaveBeenCalledTimes(1); // never re-entered
+    });
+
+    it("does nothing if the session is torn down while findNextLevel's own lookup is still in flight", async () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const onSessionEnded = vi.fn();
+      let resolveFindNextLevel: (value: { map: GameMap; gameplaySeed: number } | null) => void = () => {};
+      const findNextLevel = vi.fn(() => new Promise<{ map: GameMap; gameplaySeed: number } | null>((resolve) => (resolveFindNextLevel = resolve)));
+      const handle = runMultiplayerSessionAsHost(
+        channels.host,
+        makeCanvas(),
+        fakeResult({ map: winMap() }),
+        worker,
+        onSessionEnded,
+        undefined,
+        findNextLevel,
+      );
+
+      driveToWin(worker);
+      await vi.waitFor(() => expect(findNextLevel).toHaveBeenCalledTimes(1));
+
+      handle.stop();
+      resolveFindNextLevel({ map: fakeMap({ spawn: { x: 9, y: 9 } }), gameplaySeed: 1 });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      // Torn down before onSessionEnded's own "campaign-complete"/transition
+      // path ever ran — main.ts's own teardown (e.g. leaving the session)
+      // wins, not a stray late transition. `engine` itself isn't destroyed
+      // by stop() (only the driver's own worker/listeners are), so position
+      // still reads through it — the real assertion is that it's still on
+      // the *original* map, never swapped to the late-resolved one.
+      expect(onSessionEnded).not.toHaveBeenCalled();
+      expect(handle.getPlayerPosition("host")).toEqual({ x: 5.5, y: 5.5 });
+    });
+
+    it("does nothing once the ack wait's own timeout fires after the session was already torn down", async () => {
+      // `stop()` unsubscribes the ack listener itself (so a genuinely late
+      // ack can never reach `waitForAcks` at all — nothing to test there),
+      // but doesn't reach into `waitForAcks`'s own internal timer to cancel
+      // it; that timer still fires on its own schedule regardless, and
+      // `onWinFromEngine`'s own `if (ended) return;` right after the await
+      // is what keeps that harmless once it does.
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const guestSeenMessages = collectMessages(channels.guest.reconciliation) as unknown as LevelTransitionMessage[];
+      const nextMap = fakeMap({ spawn: { x: 9, y: 9 } });
+      const findNextLevel = vi.fn().mockResolvedValue({ map: nextMap, gameplaySeed: 1 });
+      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map: winMap() }), worker, undefined, undefined, findNextLevel);
+
+      driveToWin(worker);
+      // Wait for the transition messages to have actually gone out — not
+      // just for findNextLevel to have been *called* (that resolves on an
+      // earlier microtask, before the broadcast+ack-wait code below it ever
+      // runs) — so `stop()` below lands specifically inside the ack wait,
+      // not the still-in-flight-lookup case the previous test covers.
+      await vi.waitFor(() => {
+        expect(guestSeenMessages.some((m) => m.type === "level-transition-map-end")).toBe(true);
+      });
+      handle.stop();
+
+      await vi.advanceTimersByTimeAsync(TRANSITION_ACK_TIMEOUT_MS);
+
+      // Still the original level — the timeout firing after teardown never
+      // resurrected a torn-down transition.
+      expect(handle.getPlayerPosition("host")).toEqual({ x: 5.5, y: 5.5 });
     });
   });
 });

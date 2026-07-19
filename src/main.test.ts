@@ -19,6 +19,7 @@ import type { InputSnapshot } from "./engine/input";
 import type { ReplayLevelSegment } from "./engine/replay";
 import type { EngineCarryover } from "./engine/engine";
 import { GHIDRA_WEAPON_INDEX } from "./engine/weapons";
+import { COUNTDOWN_TICKS } from "./engine/transitionConstants";
 
 /**
  * main.ts is not a class — importing it runs its whole module body
@@ -2567,12 +2568,16 @@ describe("main.ts — multiplayer connect flow", () => {
       getConnectionState: () => unknown;
       getSimTick: () => number | null;
       getPlayerPosition: (id: string) => { x: number; y: number } | null;
+      getPlayerFacing: (id: string) => { dirX: number; dirY: number } | null;
       getRngState: () => number | null;
       injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
       hasActiveRenderOffset: (id: string) => boolean;
       getLastReconciliationRngState: () => number | null;
       getPlayerStatus: (id: string) => string | null;
       getLootDrops: () => readonly unknown[];
+      getMapExit: () => { x: number; y: number } | null;
+      getMapGrid: () => readonly (readonly number[])[] | null;
+      getExitCountdownRemaining: () => number | null;
     } {
       return (
         window as unknown as {
@@ -2580,12 +2585,16 @@ describe("main.ts — multiplayer connect flow", () => {
             getConnectionState: () => unknown;
             getSimTick: () => number | null;
             getPlayerPosition: (id: string) => { x: number; y: number } | null;
+            getPlayerFacing: (id: string) => { dirX: number; dirY: number } | null;
             getRngState: () => number | null;
             injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
             hasActiveRenderOffset: (id: string) => boolean;
             getLastReconciliationRngState: () => number | null;
             getPlayerStatus: (id: string) => string | null;
             getLootDrops: () => readonly unknown[];
+            getMapExit: () => { x: number; y: number } | null;
+            getMapGrid: () => readonly (readonly number[])[] | null;
+            getExitCountdownRemaining: () => number | null;
           };
         }
       ).__codeensteinMultiplayerTestHooks;
@@ -2698,6 +2707,7 @@ describe("main.ts — multiplayer connect flow", () => {
         // Before any session exists, getPlayerPosition's activeMultiplayerSession?.
         // short-circuits straight to its `?? null` fallback.
         expect(multiplayerHooks().getPlayerPosition("host")).toBeNull();
+        expect(multiplayerHooks().getPlayerFacing("host")).toBeNull();
         expect(multiplayerHooks().getRngState()).toBeNull();
         expect(() => multiplayerHooks().injectDesync({ kind: "extraRngDraw" })).not.toThrow();
         // No session yet — activeMultiplayerSession?. short-circuits to the
@@ -2706,6 +2716,9 @@ describe("main.ts — multiplayer connect flow", () => {
         expect(multiplayerHooks().getLastReconciliationRngState()).toBeNull();
         expect(multiplayerHooks().getPlayerStatus("host")).toBeNull();
         expect(multiplayerHooks().getLootDrops()).toEqual([]);
+        expect(multiplayerHooks().getMapExit()).toBeNull();
+        expect(multiplayerHooks().getMapGrid()).toBeNull();
+        expect(multiplayerHooks().getExitCountdownRemaining()).toBeNull();
 
         const startButton = document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!;
         expect(startButton.hidden).toBe(false);
@@ -2727,6 +2740,7 @@ describe("main.ts — multiplayer connect flow", () => {
         const guestPos = hooks.getPlayerPosition("guest");
         expect(hostPos).not.toBeNull();
         expect(guestPos).not.toBeNull();
+        expect(hooks.getPlayerFacing("host")).toEqual({ dirX: 1, dirY: 0 });
 
         const rngBefore = hooks.getRngState();
         expect(rngBefore).not.toBeNull();
@@ -2741,6 +2755,321 @@ describe("main.ts — multiplayer connect flow", () => {
         expect(hooks.getLastReconciliationRngState()).toBe(rngBefore);
         expect(hooks.getPlayerStatus("host")).toBe("alive");
         expect(hooks.getLootDrops()).toEqual([]);
+        const exit = hooks.getMapExit();
+        expect(exit).not.toBeNull();
+        const grid = hooks.getMapGrid();
+        expect(Array.isArray(grid) && grid!.length > 0).toBe(true);
+        // Not standing on the exit — a real, if uninteresting, `null` from
+        // an actual live session (not the pre-session `?? null` short-circuit
+        // above).
+        expect(hooks.getExitCountdownRemaining()).toBeNull();
+      } finally {
+        history.pushState(null, "", "/");
+      }
+    });
+
+    /** A minimal, fully-open 12×12 room with two multiplayer spawn points and
+     * the exit two tiles diagonally from the host's own spawn slot
+     * (`multiplayerSpawns[1]` — the sorted roster is `["guest", "host"]`,
+     * see `sessionEngine.ts`'s `spawnFor`) — no interior walls to navigate
+     * around, so a real host can be driven onto the exit with plain
+     * held-key movement instead of a full pathfinder. `mapGenerator.generate`
+     * is mocked to always return a fresh copy of this fixture below, so the
+     * level-transition tests don't depend on the bundled demo campaign's
+     * actual (large, combat-heavy) generated content. */
+    function fixedTransitionMap(): Record<string, unknown> {
+      const size = 12;
+      const grid = Array.from({ length: size }, (_, y) =>
+        Array.from({ length: size }, (_, x) => (x === 0 || y === 0 || x === size - 1 || y === size - 1 ? 1 : 0)),
+      );
+      return {
+        width: size,
+        height: size,
+        grid,
+        visited: Array.from({ length: size }, () => new Array<boolean>(size).fill(false)),
+        rooms: [],
+        breakupRooms: [],
+        spawn: { x: 5, y: 5 },
+        multiplayerSpawns: [
+          { x: 2, y: 2 },
+          { x: 8, y: 8 },
+        ],
+        enemies: [],
+        exit: { x: 10, y: 10 },
+        shortestPathTiles: 4,
+        hazards: [],
+        doors: [],
+        keys: [],
+        decorations: [],
+        teleporters: [],
+        spikeTraps: [],
+        mines: [],
+        ammoPickups: [],
+        loreTerminals: [],
+        bonusLevel: false,
+        secretRoomCount: 0,
+      };
+    }
+
+    /** Drives the real host session's local player from its current position
+     * straight onto `exit`, then keeps ticking through the whole
+     * multiplayer exit countdown, using real per-tick worker messages and
+     * held movement/turn keys — no pathfinding needed since
+     * `fixedTransitionMap()`'s interior is fully open. Facing starts at
+     * angle 0 (`Player.dirX`/`dirY` default to `1, 0`) and is dead-reckoned
+     * from there using the same `ROT_SPEED`/`FIXED_DT` the engine itself
+     * turns by — cheaper and just as exact as querying it back out, since
+     * nothing else ever turns the host's own player during this walk.
+     * Deliberately synchronous/tick-driven throughout, never `await`ing
+     * mid-loop: the async level-transition chain this walk ultimately
+     * triggers (`findNextMultiplayerLevel`) can't progress until the whole
+     * synchronous call stack unwinds anyway, so the caller awaits
+     * separately once this returns. */
+    function driveHostToWin(
+      canvas: HTMLCanvasElement,
+      worker: { onmessage: ((event: MessageEvent) => void) | null },
+      exit: { x: number; y: number },
+      totalTicks: number,
+    ): void {
+      const ROT_SPEED = 2.6;
+      const FIXED_DT = 1 / 30;
+      const hooks = multiplayerHooks();
+      let held = new Set<string>();
+      const setHeld = (next: Set<string>): void => {
+        for (const code of held) if (!next.has(code)) canvas.dispatchEvent(new KeyboardEvent("keyup", { code }));
+        for (const code of next) if (!held.has(code)) canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
+        held = next;
+      };
+      let angle = 0;
+      let tick = 0;
+      for (let i = 0; i < totalTicks; i++) {
+        const pos = hooks.getPlayerPosition("host");
+        if (pos) {
+          const tx = exit.x + 0.5;
+          const ty = exit.y + 0.5;
+          const dx = tx - pos.x;
+          const dy = ty - pos.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist < 0.4) {
+            setHeld(new Set());
+          } else {
+            const desired = Math.atan2(dy, dx);
+            let diff = desired - angle;
+            while (diff > Math.PI) diff -= 2 * Math.PI;
+            while (diff < -Math.PI) diff += 2 * Math.PI;
+            if (Math.abs(diff) > 0.15) {
+              const key = diff > 0 ? "KeyE" : "KeyQ";
+              setHeld(new Set([key]));
+              angle += (key === "KeyE" ? ROT_SPEED : -ROT_SPEED) * FIXED_DT;
+            } else {
+              setHeld(new Set(["KeyW"]));
+            }
+          }
+        }
+        tick += 1;
+        worker.onmessage?.({ data: { type: "tick", tick } } as MessageEvent);
+      }
+      setHeld(new Set());
+    }
+
+    it("host: a real win triggers a host-driven level transition to the next parsable file", async () => {
+      history.pushState(null, "", "?testHooks=1");
+      try {
+        vi.doMock("./fs/demoCampaign", async () => {
+          const actual = await vi.importActual<typeof import("./fs/demoCampaign")>("./fs/demoCampaign");
+          return {
+            ...actual,
+            loadDemoCampaignTree: () => ({
+              name: actual.DEMO_CAMPAIGN_NAME,
+              path: actual.DEMO_CAMPAIGN_NAME,
+              kind: "directory",
+              handle: { getFile: () => Promise.reject(new Error("not a file")) },
+              children: [
+                {
+                  name: "main.c",
+                  path: `${actual.DEMO_CAMPAIGN_NAME}/main.c`,
+                  kind: "file",
+                  handle: { getFile: () => Promise.resolve({ text: () => Promise.resolve(NAVIGABLE_FIXTURE_C) }) },
+                },
+                // Sorts between "main.c" and "zzz_next.c" — exercises
+                // `findNextMultiplayerLevel`'s catch-and-skip branch (a
+                // candidate that fails to *read*) on the way to the real
+                // next level, the same "tree order: main.c -> broken ->
+                // real" shape the single-player equivalent test uses.
+                throwingFileNode(`${actual.DEMO_CAMPAIGN_NAME}/next_broken.c`),
+                {
+                  name: "zzz_next.c",
+                  path: `${actual.DEMO_CAMPAIGN_NAME}/zzz_next.c`,
+                  kind: "file",
+                  handle: { getFile: () => Promise.resolve({ text: () => Promise.resolve(VALID_MAIN_C) }) },
+                },
+              ],
+            }),
+          };
+        });
+        vi.doMock("./map/mapGenerator", async () => {
+          const actual = await vi.importActual<typeof import("./map/mapGenerator")>("./map/mapGenerator");
+          return {
+            ...actual,
+            MapGenerator: class {
+              generate(): unknown {
+                return fixedTransitionMap();
+              }
+            },
+          };
+        });
+
+        const logSpy = vi.spyOn(console, "log");
+        const errorSpy = vi.spyOn(console, "error");
+        await loadEligibleWorkspace();
+        await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+        fetchMock
+          .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+          .mockResolvedValueOnce(
+            jsonResponse({
+              code: "R4KJ9X",
+              offer: "offer-sdp",
+              answer: "answer-sdp",
+              campaignName: "demo-campaign",
+              displayName: null,
+              playerCount: 1,
+            }),
+          );
+        document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+        const pc = readyHostPeerConnection();
+        await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+        document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!.click();
+        const reconciliation = pc.createdDataChannels.find((c) => c.label === "reconciliation")!;
+        reconciliation.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ }) }),
+        );
+        await waitUntil(() => FakeTickWorker.instances.length > 0);
+        const worker = FakeTickWorker.instances.at(-1)!;
+        worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+
+        const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+        // Walk onto the exit (~40 ticks, generous margin included) plus the
+        // full countdown (`COUNTDOWN_TICKS`) plus a little slack for the win
+        // itself to actually fire on the tick right after the countdown
+        // hits zero.
+        driveHostToWin(canvas, worker, { x: 10, y: 10 }, 80 + COUNTDOWN_TICKS);
+
+        // The tick loop above is deliberately synchronous throughout — the
+        // async `findNextMultiplayerLevel` chain it triggers (real
+        // `readFileText`/`parseFile` calls) can only progress once that
+        // whole call stack has unwound, which is here.
+        await waitUntil(
+          () => logSpy.mock.calls.some((c) => typeof c[0] === "string" && c[0].includes(`cleared — advancing to demo-campaign/zzz_next.c`)),
+          8000,
+        );
+        expect(
+          errorSpy.mock.calls.some(
+            (c) => typeof c[0] === "string" && c[0].includes(`Failed to load "demo-campaign/next_broken.c", skipping to the next file:`),
+          ),
+        ).toBe(true);
+
+        // No real guest is connected — the host's broadcast to
+        // `channels.reconciliation` silently no-ops (nothing linked on the
+        // other end), so nothing but this synthetic ack will ever let
+        // `waitForAcks` resolve before its own 10s timeout.
+        await flushAsync();
+        reconciliation.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify({ type: "level-transition-ack", playerId: "guest" }) }),
+        );
+        await flushAsync();
+
+        const hooks = multiplayerHooks();
+        worker.onmessage?.({ data: { type: "tick", tick: 1000 } } as MessageEvent);
+        expect(hooks.getPlayerStatus("host")).toBe("alive");
+        // Back near the new level's own host spawn (8, 8), not still
+        // sitting on the previous level's exit tile (10, 10) — confirms a
+        // genuinely new engine/level was built, not just a fresh countdown
+        // on the same one.
+        expect(hooks.getPlayerPosition("host")!.x).toBeLessThan(9);
+        expect(hooks.getPlayerPosition("host")!.y).toBeLessThan(9);
+
+        vi.doUnmock("./fs/demoCampaign");
+        vi.doUnmock("./map/mapGenerator");
+      } finally {
+        history.pushState(null, "", "/");
+      }
+    });
+
+    it("host: a real win with no further parsable files ends the session as campaign-complete", async () => {
+      history.pushState(null, "", "?testHooks=1");
+      try {
+        vi.doMock("./fs/demoCampaign", async () => {
+          const actual = await vi.importActual<typeof import("./fs/demoCampaign")>("./fs/demoCampaign");
+          return {
+            ...actual,
+            loadDemoCampaignTree: () => ({
+              name: actual.DEMO_CAMPAIGN_NAME,
+              path: actual.DEMO_CAMPAIGN_NAME,
+              kind: "directory",
+              handle: { getFile: () => Promise.reject(new Error("not a file")) },
+              children: [
+                {
+                  name: "main.c",
+                  path: `${actual.DEMO_CAMPAIGN_NAME}/main.c`,
+                  kind: "file",
+                  handle: { getFile: () => Promise.resolve({ text: () => Promise.resolve(NAVIGABLE_FIXTURE_C) }) },
+                },
+              ],
+            }),
+          };
+        });
+        vi.doMock("./map/mapGenerator", async () => {
+          const actual = await vi.importActual<typeof import("./map/mapGenerator")>("./map/mapGenerator");
+          return {
+            ...actual,
+            MapGenerator: class {
+              generate(): unknown {
+                return fixedTransitionMap();
+              }
+            },
+          };
+        });
+
+        await loadEligibleWorkspace();
+        await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+        fetchMock
+          .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+          .mockResolvedValueOnce(
+            jsonResponse({
+              code: "R4KJ9X",
+              offer: "offer-sdp",
+              answer: "answer-sdp",
+              campaignName: "demo-campaign",
+              displayName: null,
+              playerCount: 1,
+            }),
+          );
+        document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+        const pc = readyHostPeerConnection();
+        await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+        document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!.click();
+        const reconciliation = pc.createdDataChannels.find((c) => c.label === "reconciliation")!;
+        reconciliation.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ }) }),
+        );
+        await waitUntil(() => FakeTickWorker.instances.length > 0);
+        const worker = FakeTickWorker.instances.at(-1)!;
+        worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+
+        const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+        driveHostToWin(canvas, worker, { x: 10, y: 10 }, 80 + COUNTDOWN_TICKS);
+
+        await waitUntil(
+          () => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Multiplayer session ended — campaign complete!",
+          8000,
+        );
+
+        vi.doUnmock("./fs/demoCampaign");
+        vi.doUnmock("./map/mapGenerator");
       } finally {
         history.pushState(null, "", "/");
       }

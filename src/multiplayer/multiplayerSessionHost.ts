@@ -16,15 +16,44 @@
  * `Worker` global, so injection is what keeps this module unit-testable with
  * a small fake, the same spirit as `test/mocks/webrtc.ts`'s fake data
  * channels. `main.ts` constructs the real one.
+ *
+ * Level transitions (`multiplayer-research.md` step 8): the engine
+ * construction closure is rebindable (`startLevel()`), called both for the
+ * initial level and every later transition — `worker`/`channels`/
+ * `inputDelayBuffer` all stay alive across a swap, only the level-scoped
+ * `engine`/`myInput`/`otherInput`/`localSampler` get replaced. A win no
+ * longer ends the session directly (see `sessionEngine.ts`'s own `onWin`
+ * doc comment) — it captures every connected player's own carryover, asks
+ * the injected `findNextLevel` for the next level's content, and either
+ * broadcasts a chunked `LevelTransitionMessage` sequence and calls
+ * `startLevel()` again once every guest has acked (or
+ * `TRANSITION_ACK_TIMEOUT_MS` elapses — a guest that never acks falls into
+ * the disconnect path via the same connection-state signal, not a special
+ * case here), or, once genuinely out of content, ends the session with
+ * reason `"campaign-complete"`.
  */
-import type { EngineStats, PlayerId, PlayerStatus } from "../engine/engine";
-import type { LootDrop } from "../map/types";
+import { REVIVE_HEALTH, type EngineCarryover, type EngineStats, type PlayerId, type PlayerStatus } from "../engine/engine";
+import type { GameMap, LootDrop, Point, Tile } from "../map/types";
+import { chunkJson } from "./chunkedTransfer";
 import { sendJson, onJsonMessage } from "./dataChannelMessaging";
 import { InputDelayBuffer } from "./inputDelayBuffer";
-import { DISCONNECT_GRACE_MS, FIXED_DT, INPUT_DELAY_TICKS, RECONCILE_INTERVAL_TICKS } from "./netcodeConstants";
+import {
+  DISCONNECT_GRACE_MS,
+  FIXED_DT,
+  INPUT_DELAY_TICKS,
+  MAP_CHUNK_SIZE_BYTES,
+  RECONCILE_INTERVAL_TICKS,
+  TRANSITION_ACK_TIMEOUT_MS,
+} from "./netcodeConstants";
+import type {
+  LevelTransitionAckMessage,
+  LevelTransitionInitMessage,
+  LevelTransitionMapChunkMessage,
+  LevelTransitionMapEndMessage,
+} from "./levelTransitionTypes";
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
 import type { ReconciliationSnapshotMessage } from "./reconciliationTypes";
-import { buildSessionEngine, type SessionEndReason } from "./sessionEngine";
+import { buildSessionEngine, type SessionEndReason, type SessionEngineHandle } from "./sessionEngine";
 import { GUEST_PLAYER_ID, HOST_PLAYER_ID, type SessionSetupResult } from "./sessionSetupTypes";
 import type { TickDueMessage } from "./tickClockWorker";
 import type { MultiplayerChannels } from "./types";
@@ -50,6 +79,8 @@ export interface MultiplayerSessionHandle {
   stop(): void;
   getLastAppliedTick(): number | null;
   getPlayerPosition(id: PlayerId): { x: number; y: number } | null;
+  /** Read-only — see `RaycasterEngine.getPlayerFacing`'s doc comment. */
+  getPlayerFacing(id: PlayerId): { dirX: number; dirY: number } | null;
   /** Read-only PRNG-stream introspection — see `RaycasterEngine.getRngState`'s
    * doc comment. */
   getRngState(): number;
@@ -71,29 +102,63 @@ export interface MultiplayerSessionHandle {
   getPlayerStatus(id: PlayerId): PlayerStatus | null;
   /** Read-only — see `RaycasterEngine.getLootDrops`'s doc comment. */
   getLootDrops(): readonly LootDrop[];
+  /** Read-only — see `RaycasterEngine.getMapExit`'s doc comment. `null`
+   * before any level has started. */
+  getMapExit(): Point | null;
+  /** Read-only — see `RaycasterEngine.getMapGrid`'s doc comment. `null`
+   * before any level has started. */
+  getMapGrid(): readonly (readonly Tile[])[] | null;
+  /** Read-only — see `RaycasterEngine.getExitCountdownRemaining`'s doc
+   * comment. `null` before any level has started, same as the map getters
+   * above (as well as whenever no countdown is currently running). */
+  getExitCountdownRemaining(): number | null;
   /** Test-only, mutating — see `RaycasterEngine.debugInjectDesync`'s doc
    * comment. */
   debugInjectDesync(injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }): void;
 }
+
+/** What `findNextLevel` needs to decide the next level's content — every
+ * connected player's own carryover, keyed by roster id, dead players
+ * already revived at `REVIVE_HEALTH` (see `runMultiplayerSessionAsHost`'s
+ * own doc comment on the level-transition flow). */
+export interface HostTransitionContext {
+  carryovers: Record<PlayerId, EngineCarryover>;
+}
+
+/** Resolves to the next level's content once this peer's own simulation
+ * reaches a win, or `null` once the workspace is genuinely out of parsable
+ * files (routes to a `"campaign-complete"` end instead of a phantom
+ * transition). `main.ts` owns the real implementation (file-tree traversal,
+ * parsing, `MapGenerator.generate()` — mirroring its own single-player
+ * `advanceToNextLevel`); this module has no dependency on any of that, only
+ * the injected callback — omitted by every existing unit test (a win simply
+ * always reaches the `"campaign-complete"` fallback without it). */
+export type FindNextLevel = (context: HostTransitionContext) => Promise<{ map: GameMap; gameplaySeed: number } | null>;
 
 export function runMultiplayerSessionAsHost(
   channels: MultiplayerChannels,
   canvas: HTMLCanvasElement,
   result: SessionSetupResult,
   worker: TickWorkerHandle,
-  /** Fired once the shared simulation reaches game-over/win, after this
-   * module's own teardown (worker/listener) has already run — `main.ts`'s
-   * hook for updating its own UI back out of the session. */
+  /** Fired once the shared simulation reaches game-over, or a win with
+   * nowhere left to transition to, after this module's own teardown
+   * (worker/listeners) has already run — `main.ts`'s hook for updating its
+   * own UI back out of the session. */
   onSessionEnded?: (stats: EngineStats, reason: SessionEndReason) => void,
   /** The host's own `RTCPeerConnection` toward the guest — omitted by every
    * existing unit test (disconnect detection simply never triggers without
    * it), real production callers (`main.ts`) always pass one. */
   connection?: ConnectionStateSource,
+  findNextLevel?: FindNextLevel,
 ): MultiplayerSessionHandle {
   const inputDelayBuffer = new InputDelayBuffer();
   let lastAppliedTick: number | null = null;
   let lastReconciliationRngState: number | null = null;
   let ended = false;
+  // Only `map`/`gameplaySeed` ever change across a transition — everything
+  // else (roster/tick constants/difficulty/player count) is fixed for the
+  // whole session, agreed once at setup.
+  let currentResult = result;
 
   // Disconnect handling (§5): the host only ever monitors its own connection
   // toward the guest — there's exactly one `RTCPeerConnection` in a 2-player
@@ -133,24 +198,147 @@ export function runMultiplayerSessionAsHost(
   };
   connection?.addEventListener("connectionstatechange", onConnectionStateChange);
 
+  // Level-transition ack tracking (§7): at most one `waitForAcks()` call is
+  // ever in flight at a time (a transition can't start again until the
+  // previous one has fully resolved — see `transitionInProgress` below), so
+  // a single reassignable callback is enough; no per-call bookkeeping map
+  // needed. Rides `channels.reconciliation`, otherwise idle since session
+  // setup's own listener unsubscribed — the host never receives anything
+  // else there (it only ever *sends* `ReconciliationSnapshotMessage`s).
+  let onAckReceived: ((id: PlayerId) => void) | null = null;
+  const unsubscribeTransitionAck = onJsonMessage<LevelTransitionAckMessage>(channels.reconciliation, (message) => {
+    onAckReceived?.(message.playerId);
+  });
+  function waitForAcks(ids: readonly PlayerId[], timeoutMs: number): Promise<void> {
+    // Unreachable today: the roster is fixed at exactly 2 players (host +
+    // one guest — see `sessionSetupTypes.ts`'s own `HOST_PLAYER_ID`/
+    // `GUEST_PLAYER_ID` doc comment), so `guestIds` below always has exactly
+    // one entry. Kept as a guard against a future N-player roster, not
+    // reachable via any current call site.
+    /* v8 ignore next */
+    if (ids.length === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      const remaining = new Set(ids);
+      const timer = setTimeout(() => {
+        onAckReceived = null;
+        resolve();
+      }, timeoutMs);
+      onAckReceived = (id) => {
+        remaining.delete(id);
+        if (remaining.size === 0) {
+          clearTimeout(timer);
+          onAckReceived = null;
+          resolve();
+        }
+      };
+    });
+  }
+
   const teardown = (): void => {
     if (ended) return;
     ended = true;
     worker.terminate();
     unsubscribeInput();
+    unsubscribeTransitionAck();
     connection?.removeEventListener("connectionstatechange", onConnectionStateChange);
     if (graceTimer !== null) clearTimeout(graceTimer);
   };
 
-  const { engine, myInput, otherInput, localSampler } = buildSessionEngine({
-    result,
-    role: "host",
-    canvas,
-    onSessionEnded: (stats, reason) => {
+  // Assigned synchronously by `startLevel(currentResult)` a few lines below,
+  // before `worker.onmessage`/the returned handle can ever read them —
+  // never actually read while `undefined` in practice, `hasStarted` below is
+  // what makes that provably true rather than just assumed.
+  let engine: SessionEngineHandle["engine"] | undefined;
+  let myInput: SessionEngineHandle["myInput"] | undefined;
+  let otherInput: SessionEngineHandle["otherInput"] | undefined;
+  let localSampler: SessionEngineHandle["localSampler"] | undefined;
+  let hasStarted = false;
+  let transitionInProgress = false;
+
+  /** Fired once this peer's own simulation reaches a win (see
+   * `sessionEngine.ts`'s own `onWin` doc comment for why that's not
+   * automatically an end-of-session event anymore). `transitionInProgress`
+   * guards re-entrancy: an already-won engine's `onWin` refires on every
+   * subsequent `advance()` call (same as `onGameOver` would — no edge-gating
+   * on either, by design, see `engine.ts`'s own tests), and this whole flow
+   * is `async` — several more ticks arrive before it ever resolves. */
+  const onWinFromEngine = async (): Promise<void> => {
+    if (ended || transitionInProgress || !engine) return;
+    transitionInProgress = true;
+
+    const carryovers: Record<PlayerId, EngineCarryover> = {};
+    for (const id of currentResult.roster) {
+      const captured = engine.captureCarryoverFor(id);
+      // A teammate who died earlier this level revives at REVIVE_HEALTH for
+      // the next one — the same revive pattern `addPlayer`'s own carryover
+      // handling already established in step 4, just applied at a level
+      // boundary instead of a mid-level reconnect.
+      carryovers[id] = engine.getPlayerStatus(id) === "dead" ? { ...captured, health: REVIVE_HEALTH } : captured;
+    }
+
+    const next = await findNextLevel?.({ carryovers });
+    if (ended) return; // torn down while the lookup was in flight
+
+    if (!next) {
+      const stats = engine.render();
       teardown();
-      onSessionEnded?.(stats, reason);
-    },
-  });
+      onSessionEnded?.(stats, "campaign-complete");
+      return;
+    }
+
+    if (channels.reconciliation.readyState === "open") {
+      const { visited: _visited, ...mapWithoutVisited } = next.map;
+      const initMessage: LevelTransitionInitMessage = {
+        type: "level-transition-init",
+        carryovers,
+        gameplaySeed: next.gameplaySeed,
+      };
+      sendJson(channels.reconciliation, initMessage);
+      // chunkJson splits by UTF-16 code-unit length, not true byte count —
+      // an approximation that only matters for non-ASCII map content, the
+      // same pre-existing 6b decision `sessionSetupHost.ts`'s own transfer
+      // already makes, not new here.
+      const chunks = chunkJson(mapWithoutVisited, MAP_CHUNK_SIZE_BYTES);
+      chunks.forEach((data, index) => {
+        const chunkMessage: LevelTransitionMapChunkMessage = { type: "level-transition-map-chunk", index, data };
+        sendJson(channels.reconciliation, chunkMessage);
+      });
+      const endMessage: LevelTransitionMapEndMessage = { type: "level-transition-map-end", totalChunks: chunks.length };
+      sendJson(channels.reconciliation, endMessage);
+    }
+
+    // A guest that never acks in time falls into the disconnect path via the
+    // same connection-state signal once it's genuinely gone — not handled
+    // specially here; this just stops waiting and proceeds regardless.
+    const guestIds = currentResult.roster.filter((id) => id !== HOST_PLAYER_ID);
+    await waitForAcks(guestIds, TRANSITION_ACK_TIMEOUT_MS);
+    if (ended) return;
+
+    currentResult = { ...currentResult, map: next.map, gameplaySeed: next.gameplaySeed };
+    startLevel(currentResult, carryovers);
+    transitionInProgress = false;
+  };
+
+  const startLevel = (levelResult: SessionSetupResult, carryovers?: Record<PlayerId, EngineCarryover>): void => {
+    if (hasStarted) localSampler?.detach();
+    hasStarted = true;
+    const built = buildSessionEngine({
+      result: levelResult,
+      role: "host",
+      canvas,
+      carryovers,
+      onSessionEnded: (stats, reason) => {
+        teardown();
+        onSessionEnded?.(stats, reason);
+      },
+      onWin: () => void onWinFromEngine(),
+    });
+    engine = built.engine;
+    myInput = built.myInput;
+    otherInput = built.otherInput;
+    localSampler = built.localSampler;
+  };
+  startLevel(currentResult);
 
   // Every incoming message on `channels.input` is necessarily a `TickInput`
   // from the guest — the guest never broadcasts a `TickInputBundle` (only
@@ -166,7 +354,7 @@ export function runMultiplayerSessionAsHost(
     // and tore this session down mid-batch, every further already-queued
     // "tick" message must be a no-op, not re-run teardown or advance a
     // stopped engine.
-    if (ended) return;
+    if (ended || !engine || !myInput || !otherInput || !localSampler) return;
 
     const { tick } = event.data as TickDueMessage;
 
@@ -191,10 +379,12 @@ export function runMultiplayerSessionAsHost(
     // `dismissLoreOverlay()`'s own doc comment.
     if (localEscapePressed) engine.dismissLoreOverlay();
 
-    // Finalize and broadcast the tick that's actually due now.
+    // Finalize and broadcast the tick that's actually due now. `currentResult.roster`
+    // (not the outer `result` param) so a level transition's roster — unchanged
+    // today, but read fresh either way — is never silently stale.
     const bundle: TickInputBundle = inputDelayBuffer.finalize(
       tick,
-      result.roster,
+      currentResult.roster,
       FIXED_DT,
       neutralInputIds.size > 0 ? neutralInputIds : undefined,
     );
@@ -242,12 +432,29 @@ export function runMultiplayerSessionAsHost(
   return {
     stop: teardown,
     getLastAppliedTick: () => lastAppliedTick,
-    getPlayerPosition: (id) => engine.getPlayerPosition(id),
-    getRngState: () => engine.getRngState(),
-    hasActiveRenderOffset: (id) => engine.hasActiveRenderOffset(id),
+    getPlayerPosition: (id) => engine?.getPlayerPosition(id) ?? null,
+    getPlayerFacing: (id) => engine?.getPlayerFacing(id) ?? null,
+    getRngState: () => engine!.getRngState(),
+    hasActiveRenderOffset: (id) => engine!.hasActiveRenderOffset(id),
     getLastReconciliationRngState: () => lastReconciliationRngState,
-    getPlayerStatus: (id) => engine.getPlayerStatus(id),
-    getLootDrops: () => engine.getLootDrops(),
-    debugInjectDesync: (injection) => engine.debugInjectDesync(injection),
+    getPlayerStatus: (id) => engine?.getPlayerStatus(id) ?? null,
+    // `engine` is always defined by the time any of these handle methods
+    // can be called (assigned synchronously by `startLevel(currentResult)`
+    // before this function ever returns) — the `?? []` fallback is the same
+    // "TypeScript's conservative optional typing vs. what production code
+    // actually guarantees" shape `doc/dev/testing.md`'s own coverage-caveats
+    // section documents elsewhere in this codebase.
+    /* v8 ignore next */
+    getLootDrops: () => engine?.getLootDrops() ?? [],
+    /* v8 ignore next */
+    getMapExit: () => engine?.getMapExit() ?? null,
+    /* v8 ignore next */
+    getMapGrid: () => engine?.getMapGrid() ?? null,
+    // Unlike the getters above, `engine`'s own `getExitCountdownRemaining()`
+    // legitimately returns `null` on its own (no countdown running yet) even
+    // once `engine` is defined — so both outcomes of this fallback are
+    // genuinely reachable through a real call, no ignore needed.
+    getExitCountdownRemaining: () => engine?.getExitCountdownRemaining() ?? null,
+    debugInjectDesync: (injection) => engine!.debugInjectDesync(injection),
   };
 }

@@ -12,7 +12,7 @@
  * driver file has to duplicate it.
  */
 import { DEFAULT_GORE_LEVEL } from "../engine/effects";
-import { RaycasterEngine, type EngineHandlers, type EngineStats, type PlayerId } from "../engine/engine";
+import { RaycasterEngine, type EngineCarryover, type EngineHandlers, type EngineStats, type PlayerId } from "../engine/engine";
 import { InputController } from "../engine/input";
 import type { Point } from "../map/types";
 import { LocalInputSampler } from "./localInputSampler";
@@ -27,21 +27,46 @@ import type { MultiplayerRole } from "./types";
  * `"host-disconnected"`: the guest's own connection toward the host expired
  * its grace period — a *provisional* end, sourced from the guest's own local
  * (not host-authoritative) state, since there's no final snapshot coming.
- * `"campaign-complete"`: `onWin` fired with no next level to transition to
- * (`multiplayer-research.md` step 8's level-transition work) — today (before
- * that work lands) every `onWin` is this case by construction, since nothing
- * yet attempts a transition first. */
+ * `"campaign-complete"`: a win with no next level to transition to (the
+ * workspace is out of parsable files) — see `SessionEngineOptions.onWin`'s
+ * own doc comment for how a win reaches this instead of the more common
+ * level-transition path. */
 export type SessionEndReason = "team-eliminated" | "host-disconnected" | "campaign-complete";
 
 export interface SessionEngineOptions {
   result: SessionSetupResult;
   role: MultiplayerRole;
   canvas: HTMLCanvasElement;
-  /** Fired exactly once, whichever of `onGameOver`/`onWin` the shared
-   * simulation reaches first — deterministically the same tick on every
-   * peer, since the simulation itself is lockstep. This module has already
-   * torn down the local input sampler by the time this fires. */
+  /** Health/ammo/weapons/score to seed each player with, keyed by roster id
+   * — `undefined` (the default) for a genuinely fresh session start, a real
+   * per-player record for a level transition (`multiplayer-research.md`
+   * step 8's own `startLevel()` re-invocation of this function). A roster id
+   * with no entry falls back to a fresh start for that one player, same as
+   * omitting the whole map. */
+  carryovers?: Record<PlayerId, EngineCarryover>;
+  /** Fired once the shared simulation reaches game-over — deterministically
+   * the same tick on every peer, since the simulation itself is lockstep.
+   * This module has already torn down the local input sampler by the time
+   * this fires. Also fired for a win with nowhere to transition to (see
+   * `onWin`'s own doc comment) — this is the *only* case a win still reaches
+   * this callback. */
   onSessionEnded?: (stats: EngineStats, reason: SessionEndReason) => void;
+  /** Fired the instant this peer's own simulation reaches a win — NOT an
+   * end-of-session event by itself (unlike `onGameOver`, which always is): a
+   * multiplayer win almost always means "generate and transition to the next
+   * level," a decision only the session driver (not this generic
+   * engine-construction helper) can make, since it needs `main.ts`-level
+   * workspace access this module deliberately has no dependency on. The
+   * local input sampler is deliberately **not** detached here — the sim
+   * keeps running through the exit countdown either way (see
+   * `RaycasterEngine.checkExit()`), and a transition swaps in a fresh
+   * sampler of its own rather than needing this one to survive.
+   * When omitted, falls back to the simplest possible behavior — ending the
+   * session via `onSessionEnded(stats, "campaign-complete")`, treating every
+   * win as if nothing could ever come after it. Both real session drivers
+   * always provide a real one; this fallback exists for any caller (a unit
+   * test, most likely) that doesn't care about transitions at all. */
+  onWin?: (stats: EngineStats) => void;
 }
 
 export interface SessionEngineHandle {
@@ -81,10 +106,9 @@ export function buildSessionEngine(options: SessionEngineOptions): SessionEngine
   };
   const handlers: EngineHandlers = {
     onGameOver: (stats) => endSession(stats, "team-eliminated"),
-    // Every current call site reaches this with no next level to transition
-    // to (level transitions are `multiplayer-research.md` step 8's own
-    // still-unbuilt work) — see `SessionEndReason`'s doc comment.
-    onWin: (stats) => endSession(stats, "campaign-complete"),
+    // See `SessionEngineOptions.onWin`'s own doc comment for why a win
+    // doesn't end the session directly here anymore.
+    onWin: (stats) => (options.onWin ? options.onWin(stats) : endSession(stats, "campaign-complete")),
     // Cheats are already neutralized below the engine (NetworkInputSource's
     // consumeCheat() is a permanent no-op — this instance's own `local.input`
     // is always one, so `simulate()`'s `local.input.consumeCheat()` can never
@@ -103,7 +127,7 @@ export function buildSessionEngine(options: SessionEngineOptions): SessionEngine
     canvas,
     result.map,
     handlers,
-    undefined,
+    options.carryovers?.[myRosterId],
     DEFAULT_GORE_LEVEL,
     result.difficulty,
     result.gameplaySeed,
@@ -112,7 +136,7 @@ export function buildSessionEngine(options: SessionEngineOptions): SessionEngine
     myRosterId,
     spawnFor(result, myRosterId),
   );
-  engine.addPlayer(otherRosterId, otherInput, undefined, spawnFor(result, otherRosterId));
+  engine.addPlayer(otherRosterId, otherInput, options.carryovers?.[otherRosterId], spawnFor(result, otherRosterId));
   engine.startExternallyDriven();
   localSampler.attach();
 

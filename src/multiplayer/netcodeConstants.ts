@@ -49,14 +49,25 @@ export const RECONCILE_INTERVAL_TICKS = 30;
  * every other constant in this file. */
 export const DISCONNECT_GRACE_MS = 10_000;
 
-/** `CORRECTION_SMOOTH_MS`/`SNAP_THRESHOLD_TILES` live in
- * `engine/reconciliationConstants.ts`, not here, and are re-exported —
- * `RaycasterEngine.applyReconciliationSnapshot()`/`render()` need them
- * directly, and the engine layer never imports from the multiplayer layer
- * (only the reverse), the same reasoning `reconciliationTypes.ts` documents
- * for the snapshot shape itself. That file is deliberately tiny and
- * import-free (not just re-exported from `engine.ts` proper) — `engine.ts`
- * transitively imports `textures.ts`, which touches `document` at module
- * load, which would break every plain-Node consumer of this file (e.g.
- * `tickClockWorker.ts`, running in a Worker with no DOM). */
+/** How long (real wall-clock milliseconds) the host waits for every
+ * connected guest's `level-transition-ack` before proceeding to
+ * `startLevel()` on the new payload anyway — a guest that never acks in
+ * time is presumed gone and falls into the existing disconnect path via the
+ * same connection-state signal, not a special case here. A reasoned
+ * starting point, not a validated value, same caveat as every other
+ * constant in this file. */
+export const TRANSITION_ACK_TIMEOUT_MS = 10_000;
+
+/** `CORRECTION_SMOOTH_MS`/`SNAP_THRESHOLD_TILES`/`COUNTDOWN_TICKS` live in
+ * `engine/reconciliationConstants.ts`/`engine/transitionConstants.ts`, not
+ * here, and are re-exported — `RaycasterEngine.applyReconciliationSnapshot()`/
+ * `render()`/`checkExit()` need them directly, and the engine layer never
+ * imports from the multiplayer layer (only the reverse), the same reasoning
+ * `reconciliationTypes.ts` documents for the snapshot shape itself. Both
+ * source files are deliberately tiny and import-free (not just re-exported
+ * from `engine.ts` proper) — `engine.ts` transitively imports `textures.ts`,
+ * which touches `document` at module load, which would break every
+ * plain-Node consumer of this file (e.g. `tickClockWorker.ts`, running in a
+ * Worker with no DOM). */
 export { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "../engine/reconciliationConstants";
+export { COUNTDOWN_TICKS } from "../engine/transitionConstants";

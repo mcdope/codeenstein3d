@@ -68,12 +68,15 @@ export default defineConfig({
       // runtime exports. src/engine/reconciliationSnapshot.ts and
       // src/multiplayer/reconciliationTypes.ts are the same again, for the
       // reconciliation-snapshot payload shape and its wire wrapper (step 7).
+      // src/multiplayer/levelTransitionTypes.ts is the same again, for the
+      // level-transition wire shapes (step 8).
       exclude: [
         "src/engine/defaultHighscore.ts",
         "src/parser/types.ts",
         "src/multiplayer/netcodeTypes.ts",
         "src/engine/reconciliationSnapshot.ts",
         "src/multiplayer/reconciliationTypes.ts",
+        "src/multiplayer/levelTransitionTypes.ts",
         "src/empty-node-shim.ts",
         "src/vite-env.d.ts",
         "dist/**",

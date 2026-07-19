@@ -15,6 +15,7 @@
 import { DEFAULT_DIFFICULTY, DIFFICULTY_MULTIPLIERS, type DifficultyLevel, type DifficultyMultipliers } from "../difficulty";
 import { createResumablePrng, randomSeed } from "../prng";
 import { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "./reconciliationConstants";
+import { COUNTDOWN_TICKS } from "./transitionConstants";
 import type {
   EnemySnapshot,
   LootDropSnapshot,
@@ -51,6 +52,7 @@ import {
   drawCheatToast,
   drawCompass,
   drawCrosshair,
+  drawExitCountdownToast,
   drawFpsOverlay,
   drawHud,
   drawKillStreakToast,
@@ -159,6 +161,7 @@ import {
   type LoreTerminal,
   type Mine,
   type Point,
+  type Tile,
 } from "../map/types";
 
 /** Movement speed in tiles per second. */
@@ -599,6 +602,13 @@ export class RaycasterEngine {
    * `checkExit()`/`killPlayer()`. Per-player life/death instead lives on
    * `PlayerState.status`. */
   private state: GameState = "playing";
+  /** Multiplayer-only: ticks remaining in the exit countdown, or `null` when
+   * none is active — set once, by the first living player to touch
+   * `map.exit`, never restarted by a later touch or reset by leaving the
+   * tile (see `checkExit()`). Always `null` for a single-player instance,
+   * which never starts one at all (`endGame("won")` fires immediately on
+   * touch, byte-identical to pre-step-8 behavior). */
+  private exitCountdownRemaining: number | null = null;
   /** Tracks who has damaged which still-live enemy this "engagement" (from
    * first hit to death), for `killScore`'s assist split — see
    * `damageEnemy()`. Keyed by index into `this.enemies` (stable for a given
@@ -1186,6 +1196,17 @@ export class RaycasterEngine {
     return p ? { x: p.player.posX, y: p.player.posY } : null;
   }
 
+  /** A specific roster player's current facing direction, or `null` if `id`
+   * isn't a connected player — read-only introspection, same spirit as
+   * `getPlayerPosition`. Lets a verify script compute how far to turn toward
+   * a target tile without needing to dead-reckon it from held-key duration,
+   * which real (jittery, worker-timer-paced) wall-clock ticking can't
+   * guarantee precisely, unlike the fixed-step unit-test environment. */
+  getPlayerFacing(id: PlayerId): { dirX: number; dirY: number } | null {
+    const p = this.players.get(id);
+    return p ? { dirX: p.player.dirX, dirY: p.player.dirY } : null;
+  }
+
   /** A specific roster player's current status, or `null` if `id` isn't a
    * connected player — read-only introspection, same spirit as
    * `getPlayerPosition`. Lets `scripts/verify-multiplayer-disconnect.mjs`
@@ -1202,6 +1223,23 @@ export class RaycasterEngine {
    * `simulate()`'s own per-tick loop). */
   getLootDrops(): readonly LootDrop[] {
     return this.drops;
+  }
+
+  /** This level's exit tile — read-only introspection, same spirit as
+   * `getPlayerPosition`. Lets `scripts/verify-multiplayer-transition.mjs`
+   * navigate a real peer onto the exit without needing a fake/simplified
+   * map: the real, generated level's exit position, straight from the
+   * engine actually running it. */
+  getMapExit(): Point {
+    return this.map.exit;
+  }
+
+  /** This level's walkable grid (`grid[y][x]`) — read-only introspection,
+   * same spirit as `getMapExit`. Lets a verify script compute its own
+   * walls-aware route to the exit client-side, the same way
+   * `main.test.ts`'s own `bfsPath` helper does for single-player. */
+  getMapGrid(): readonly Tile[][] {
+    return this.map.grid;
   }
 
   /** Whether a player currently has a live, still-decaying drift-correction
@@ -2161,6 +2199,15 @@ export class RaycasterEngine {
         local.killStreakBig,
       );
     }
+    // Multiplayer-only (see `checkExit()`) — a quiet, standing readout
+    // (unlike the transient toasts above) while any player counts down to
+    // the level ending. Only drawn on this normal-frame path, same as the
+    // toasts above — automap/lore/paused each render through their own
+    // separate branch below and skip it, matching this file's existing
+    // convention for every other transient/standing overlay.
+    if (this.exitCountdownRemaining !== null) {
+      drawExitCountdownToast(this.ctx, this.exitCountdownRemaining);
+    }
     this.handlers.onStats?.(stats);
     this.perf?.mark("hud");
     return stats;
@@ -2983,21 +3030,52 @@ export class RaycasterEngine {
     p.killStreakBig = big;
   }
 
-  /** Win for the whole team the instant any one living player stands on the
-   * exit tile (sorted order). */
+  /**
+   * Single-player: win for the whole team the instant any one living player
+   * stands on the exit tile (sorted order) — byte-identical to before step 8.
+   *
+   * Multiplayer (`multiplayer-netcode-spec.md` §7): the first living player
+   * to touch the exit starts a fixed `COUNTDOWN_TICKS` countdown instead of
+   * winning immediately — a later host-driven step (level transition) needs
+   * that window to generate and hand off the next level before the win
+   * actually lands. Once started, the countdown is unconditional: it is
+   * never cancelled or restarted by a later touch, and it decrements every
+   * tick regardless of where any player currently stands (leaving the exit
+   * tile doesn't pause or reset it) — the sim keeps running normally
+   * throughout, exactly like every other tick. `endGame("won")` fires only
+   * once it reaches zero.
+   */
   private checkExit(): void {
     if (this.state !== "playing") return;
-    for (const id of this.sortedPlayerIds()) {
-      const p = this.players.get(id)!;
-      if (p.status !== "alive") continue;
-      if (
-        Math.floor(p.player.posX) === this.map.exit.x &&
-        Math.floor(p.player.posY) === this.map.exit.y
-      ) {
+    if (this.isMultiplayerSession() && this.exitCountdownRemaining !== null) {
+      this.exitCountdownRemaining -= 1;
+      if (this.exitCountdownRemaining <= 0) {
+        this.exitCountdownRemaining = null;
         this.endGame("won");
-        return;
       }
+      return;
     }
+    const touching = this.sortedPlayerIds().some((id) => {
+      const p = this.players.get(id)!;
+      return p.status === "alive" && Math.floor(p.player.posX) === this.map.exit.x && Math.floor(p.player.posY) === this.map.exit.y;
+    });
+    if (!touching) return;
+    if (this.isMultiplayerSession()) {
+      this.exitCountdownRemaining = COUNTDOWN_TICKS;
+    } else {
+      this.endGame("won");
+    }
+  }
+
+  /** Multiplayer-only: ticks remaining in the exit countdown, or `null` if
+   * none is active — read-only introspection for a "Build finishing in N…"
+   * overlay (`multiplayer-research.md` step 8's own UI, built alongside the
+   * host-driven transition itself), polled once per render frame rather
+   * than a new `EngineHandlers` callback, same spirit as
+   * `getRngState()`/`hasActiveRenderOffset()`. Always `null` for a
+   * single-player instance. */
+  getExitCountdownRemaining(): number | null {
+    return this.exitCountdownRemaining;
   }
 
   /**
@@ -3440,36 +3518,89 @@ export class RaycasterEngine {
    * local-player-only in shape (no new fields for other players), reading
    * through `this.players.get(this.localPlayerId)!` instead of bare
    * `this.*` — byte-identical for N=1. */
-  private buildStats(): EngineStats {
-    const local = this.players.get(this.localPlayerId)!;
+  /** `p`'s own level-score breakdown so far, from purely per-player inputs
+   * (kills/health/ammo/distance/streaks) plus this level's team-shared
+   * completion/discovery state (map completion, lore/secrets read —
+   * genuinely shared, not a per-player approximation) and telemetry (also
+   * engine-wide, not split per player — an existing characteristic, not a
+   * new gap introduced here). Shared by `buildStats()` (always for
+   * `this.localPlayerId`) and `captureCarryoverFor()` (for an arbitrary
+   * roster id). */
+  private computeLevelScoreBreakdown(p: PlayerState): ScoreBreakdown {
     const weaponShotsFired = this.telemetry
       ? Object.values(this.telemetry.weaponTallies).reduce((sum, t) => sum + t.shotsFired, 0)
       : 0;
     const weaponHits = this.telemetry ? Object.values(this.telemetry.weaponTallies).reduce((sum, t) => sum + t.hits, 0) : 0;
-
-    const levelScoreBreakdown = computeScore({
-      killPoints: local.killScore,
-      finalHealth: local.health,
+    return computeScore({
+      killPoints: p.killScore,
+      finalHealth: p.health,
       maxHealth: MAX_HEALTH,
-      finalBullets: local.ammo.bullets,
-      finalRockets: local.ammo.rockets,
-      finalSmg: local.ammo.smg,
-      finalGas: local.ammo.gas,
-      startingBullets: local.startingAmmoRef.bullets,
-      startingRockets: local.startingAmmoRef.rockets,
-      startingSmg: local.startingAmmoRef.smg,
-      startingGas: local.startingAmmoRef.gas,
+      finalBullets: p.ammo.bullets,
+      finalRockets: p.ammo.rockets,
+      finalSmg: p.ammo.smg,
+      finalGas: p.ammo.gas,
+      startingBullets: p.startingAmmoRef.bullets,
+      startingRockets: p.startingAmmoRef.rockets,
+      startingSmg: p.startingAmmoRef.smg,
+      startingGas: p.startingAmmoRef.gas,
       levelTimeSec: this.levelTime,
-      distanceTraveledTiles: local.distanceTraveled,
+      distanceTraveledTiles: p.distanceTraveled,
       shortestPathTiles: this.map.shortestPathTiles,
       mapCompletionFrac: this.visitedWalkableCount / this.totalWalkableTiles,
       uniqueLoreTerminalsRead: this.loreRead.size,
       uniqueSecretRoomsOpened: this.secretRoomsOpened.size,
-      multiKillCount: local.multiKillCount,
-      ultraKillCount: local.ultraKillCount,
+      multiKillCount: p.multiKillCount,
+      ultraKillCount: p.ultraKillCount,
       weaponShotsFired,
       weaponHits,
     });
+  }
+
+  /** Captures `id`'s current state as a fresh `EngineCarryover` — the same
+   * shape `buildStats()` derives for `this.localPlayerId` alone (`main.ts`'s
+   * own single-player `advanceToNextLevel` builds an identical object from
+   * `EngineStats`), generalized to any roster id. Built for step 8's
+   * host-driven level transition (`multiplayer-research.md`): the host
+   * captures every connected player's own carryover right before generating
+   * the next level, so each peer's health/ammo/weapons/score genuinely
+   * persists across the swap to a fresh `RaycasterEngine` instead of
+   * resetting. A snapshot as of the moment it's called — never mutates `p`.
+   * `priorScoreBreakdown`/`priorPlayerStats` stay `undefined` whenever
+   * telemetry isn't being recorded at all, the same gating `buildStats()`
+   * itself uses for `runScoreBreakdown`/`runPlayerStats` — `priorScore`
+   * itself is never gated, it's core carryover, not a telemetry feature. */
+  captureCarryoverFor(id: PlayerId): EngineCarryover {
+    const p = this.players.get(id)!;
+    const levelScoreBreakdown = this.computeLevelScoreBreakdown(p);
+    let priorScoreBreakdown: ScoreBreakdown | undefined;
+    let priorPlayerStats: PlayerFacingStats | undefined;
+    if (this.telemetry) {
+      priorScoreBreakdown = sumScoreBreakdowns(p.priorScoreBreakdown, levelScoreBreakdown);
+      const levelPlayerStats = buildPlayerFacingStats(this.telemetry, this.levelTime, p.kills);
+      priorPlayerStats = mergePlayerFacingStats(p.priorPlayerStats, levelPlayerStats);
+    }
+    return {
+      health: Math.ceil(p.health),
+      swap: Math.ceil(p.swap),
+      bullets: p.ammo.bullets,
+      rockets: p.ammo.rockets,
+      smg: p.ammo.smg,
+      gas: p.ammo.gas,
+      priorScore: p.priorScore + levelScoreBreakdown.total,
+      priorScoreBreakdown,
+      priorPlayerStats,
+      weaponIndex: p.weaponIndex,
+      ownedWeapons: [...p.ownedWeapons],
+      campaignLevelIndex: p.campaignLevelIndex,
+      godMode: p.godMode,
+      noClip: p.player.noClip,
+      showFps: p.showFps,
+    };
+  }
+
+  private buildStats(): EngineStats {
+    const local = this.players.get(this.localPlayerId)!;
+    const levelScoreBreakdown = this.computeLevelScoreBreakdown(local);
 
     // The curated player-facing breakdown/stats are `undefined` whenever
     // telemetry isn't being recorded at all (`PLAYER_STATS_ENABLED` off and
