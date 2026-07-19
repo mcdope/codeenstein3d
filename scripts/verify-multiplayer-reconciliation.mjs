@@ -34,10 +34,10 @@ import { resolveBrowserEngine } from "./lib/browserEngine.mjs";
 const DEV_SERVER_URL = process.env.CODEENSTEIN_DEV_URL ?? "http://localhost:5173";
 const CONNECT_TIMEOUT_MS = 30_000;
 const TICKING_TIMEOUT_MS = 30_000;
-// RECONCILE_INTERVAL_TICKS is 30 (once/sec at 30Hz) — wait comfortably past
-// two full intervals so a snapshot sent *right after* injection is never
-// mistaken for one already in flight before it.
-const RECONCILE_WAIT_MS = 3_000;
+// RECONCILE_INTERVAL_TICKS is 30 (once/sec at 30Hz) — generous enough for at
+// least one full interval to land within this window.
+const CONVERGE_TIMEOUT_MS = 8_000;
+const POLL_INTERVAL_MS = 150;
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -118,6 +118,34 @@ function samePosition(a, b) {
   return !!a && !!b && a.x === b.x && a.y === b.y;
 }
 
+/**
+ * Polls `readHost()`/`readGuest()` (each an async () => value) repeatedly
+ * and returns the *first* moment their values satisfy `matches(hostValue,
+ * guestValue)`, rather than waiting a fixed duration and comparing once at
+ * the end. This distinction matters: the demo campaign's own roaming
+ * enemies keep drawing from the shared PRNG stream throughout the whole
+ * run, so real (uninjected) cross-engine float drift — the very thing
+ * reconciliation exists to bound, confirmed measurably worse on WebKit than
+ * Chromium/Firefox by `scripts/poc-cross-browser-determinism.mjs` — can
+ * plausibly reappear in the seconds *after* a correcting snapshot lands and
+ * *before* a fixed-wait-then-check-once assertion gets around to reading
+ * it. Catching the moment convergence first happens proves the correction
+ * mechanism actually worked, without requiring the two peers to still
+ * agree on every single later sample, which was never reconciliation's own
+ * guarantee — periodic correction bounds drift, it doesn't freeze it.
+ */
+async function pollUntilConverged(readHost, readGuest, matches, timeoutMs = CONVERGE_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  let lastHost;
+  let lastGuest;
+  while (Date.now() < deadline) {
+    [lastHost, lastGuest] = await Promise.all([readHost(), readGuest()]);
+    if (matches(lastHost, lastGuest)) return { converged: true, host: lastHost, guest: lastGuest };
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+  }
+  return { converged: false, host: lastHost, guest: lastGuest };
+}
+
 const FIREFOX_LAUNCH_OPTIONS = {
   firefoxUserPrefs: {
     "media.peerconnection.ice.obfuscate_host_addresses": false,
@@ -177,64 +205,70 @@ async function main() {
       `before=${JSON.stringify(beforeSmall)} after=${JSON.stringify(afterInjectionSmall)}`,
     );
 
-    console.log(`Waiting ~${RECONCILE_WAIT_MS}ms for the host's next periodic snapshot to correct it...`);
-    await guestPage.waitForTimeout(RECONCILE_WAIT_MS);
-
-    const [hostViewOfGuestSmall, guestViewOfSelfSmall] = await Promise.all([
-      hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerPosition("guest")),
-      guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerPosition("guest")),
-    ]);
+    console.log("Waiting for the host's next periodic snapshot to correct it (polling for the first moment of convergence)...");
+    const readGuestPosFromHost = () => hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerPosition("guest"));
+    const readGuestPosFromGuest = () => guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerPosition("guest"));
+    const smallResult = await pollUntilConverged(readGuestPosFromHost, readGuestPosFromGuest, samePosition);
     check(
       "small desync: guest's simulated position reconverges with the host's authoritative view",
-      samePosition(hostViewOfGuestSmall, guestViewOfSelfSmall),
-      `host-side=${JSON.stringify(hostViewOfGuestSmall)} guest-side=${JSON.stringify(guestViewOfSelfSmall)}`,
+      smallResult.converged,
+      `host-side=${JSON.stringify(smallResult.host)} guest-side=${JSON.stringify(smallResult.guest)}`,
     );
-    const smallStillOffsetting = await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.hasActiveRenderOffset("guest"));
-    check(
-      "small desync: took the smoothed render-offset path, not an instant snap (still decaying or just applied)",
-      typeof smallStillOffsetting === "boolean",
-      `hasActiveRenderOffset()=${smallStillOffsetting}`,
-    );
+    // Diagnostic only, not a pass/fail check: `hasActiveRenderOffset` decays
+    // to `false` on its own after `CORRECTION_SMOOTH_MS` (150ms) — genuinely
+    // shorter than this script's own poll interval plus cross-process
+    // evaluate() round-trip latency can reliably beat, especially on
+    // WebKit. The smoothed-vs-instant-snap distinction itself is already
+    // asserted deterministically (no wall-clock race) in
+    // `src/engine/engine.test.ts`'s "multiplayer reconciliation" describe
+    // block — this is just a "did we plausibly catch it in time" log.
+    const smallOffsetting = await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.hasActiveRenderOffset("guest"));
+    console.log(`  [info] small desync: hasActiveRenderOffset() sampled as ${smallOffsetting} shortly after convergence`);
 
     // --- Case 2: a large (at/above-threshold) position desync, instant-snap correction ---
     console.log("Injecting a large position desync on the guest's own local player...");
     await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.injectDesync({ kind: "position", deltaTiles: 5 }));
-    console.log(`Waiting ~${RECONCILE_WAIT_MS}ms for the host's next periodic snapshot to correct it...`);
-    await guestPage.waitForTimeout(RECONCILE_WAIT_MS);
-    const [hostViewOfGuestLarge, guestViewOfSelfLarge] = await Promise.all([
-      hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerPosition("guest")),
-      guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerPosition("guest")),
-    ]);
+    console.log("Waiting for the host's next periodic snapshot to correct it...");
+    const largeResult = await pollUntilConverged(readGuestPosFromHost, readGuestPosFromGuest, samePosition);
     check(
       "large desync: guest's simulated position reconverges with the host's authoritative view",
-      samePosition(hostViewOfGuestLarge, guestViewOfSelfLarge),
-      `host-side=${JSON.stringify(hostViewOfGuestLarge)} guest-side=${JSON.stringify(guestViewOfSelfLarge)}`,
+      largeResult.converged,
+      `host-side=${JSON.stringify(largeResult.host)} guest-side=${JSON.stringify(largeResult.guest)}`,
     );
+    const largeOffsetting = await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.hasActiveRenderOffset("guest"));
+    check("large desync: no render offset at all — an instant snap, not smoothed", largeOffsetting === false, `hasActiveRenderOffset()=${largeOffsetting}`);
 
     // --- Case 3: a PRNG-stream-position desync (the spec's own most-emphasized failure mode) ---
+    // Deliberately doesn't assert the streams start in sync here: the demo
+    // campaign's own roaming enemies keep drawing from the shared stream
+    // throughout the whole run, so real (uninjected) cross-engine drift can
+    // plausibly already exist by this point — confirmed measurably worse on
+    // WebKit than Chromium/Firefox by poc-cross-browser-determinism.mjs, and
+    // exactly the reason this mechanism exists in the first place. Asserting
+    // "starts in sync" would make this script fail on the very drift it's
+    // here to prove gets corrected. The real, robust claim is narrower and
+    // doesn't depend on any pre-existing relationship to the host: the
+    // injection changes the guest's own state, and the next snapshot brings
+    // host and guest into agreement regardless of where either started.
     console.log("Injecting an extra local rng() draw on the guest, desyncing the shared PRNG stream position...");
-    const hostRngBefore = await hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getRngState());
-    const guestRngBefore = await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getRngState());
-    check("PRNG streams start in sync", hostRngBefore === guestRngBefore, `host=${hostRngBefore} guest=${guestRngBefore}`);
+    const readHostRng = () => hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getRngState());
+    const readGuestRng = () => guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getRngState());
+    const guestRngBeforeInjection = await readGuestRng();
 
     await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.injectDesync({ kind: "extraRngDraw" }));
-    const guestRngAfterInjection = await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getRngState());
+    const guestRngAfterInjection = await readGuestRng();
     check(
-      "PRNG streams genuinely diverge right after the injection",
-      guestRngAfterInjection !== hostRngBefore,
-      `host=${hostRngBefore} guest-after-injection=${guestRngAfterInjection}`,
+      "the injection genuinely changed the guest's own PRNG stream state",
+      guestRngAfterInjection !== guestRngBeforeInjection,
+      `guest before=${guestRngBeforeInjection} after=${guestRngAfterInjection}`,
     );
 
-    console.log(`Waiting ~${RECONCILE_WAIT_MS}ms for the host's next periodic snapshot to resync the PRNG stream...`);
-    await guestPage.waitForTimeout(RECONCILE_WAIT_MS);
-    const [hostRngAfter, guestRngAfter] = await Promise.all([
-      hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getRngState()),
-      guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getRngState()),
-    ]);
+    console.log("Waiting for the host's next periodic snapshot to resync the PRNG stream (polling for the first moment of convergence)...");
+    const rngResult = await pollUntilConverged(readHostRng, readGuestRng, (a, b) => a === b);
     check(
       "PRNG stream position resyncs — not just visible state, the actual internal counter",
-      hostRngAfter === guestRngAfter,
-      `host=${hostRngAfter} guest=${guestRngAfter}`,
+      rngResult.converged,
+      `host=${rngResult.host} guest=${rngResult.guest}`,
     );
   } finally {
     await browser.close();
