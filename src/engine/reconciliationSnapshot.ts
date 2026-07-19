@@ -86,6 +86,9 @@ export interface LootDropSnapshot {
   kind: LootKind;
   amount?: number;
   weaponIndex?: number;
+  /** See `LootDrop.source`'s doc comment (`map/types.ts`) — set only for a
+   * disconnect-converted-inventory drop. */
+  source?: "disconnect";
 }
 
 /** One tile's value changed since the receiver's last applied snapshot

@@ -283,7 +283,15 @@ export type PlayerId = string;
  * literal for anyone but this engine's own local peer. */
 export const LOCAL_PLAYER_ID: PlayerId = "local";
 
-type PlayerStatus = "alive" | "dead";
+/** `"disconnected"` is a real, distinct terminal state from `"dead"` — a
+ * transport-layer disconnect (`multiplayer-netcode-spec.md` §5), not a
+ * combat death. Both are excluded from world simulation/rendering the same
+ * way (every relevant loop already gates on `status === "alive"`, not
+ * `status !== "dead"`), but only a disconnected player is excluded from the
+ * *wire-level* roster (`captureReconciliationSnapshot()`) — a dead player
+ * stays a full roster member, spectating; a disconnected one is genuinely
+ * gone. Never single-player: nothing there ever sets this value. */
+export type PlayerStatus = "alive" | "dead" | "disconnected";
 
 /** Everything `RaycasterEngine` used to track as a single `this.*` field for
  * "the player" now lives here, one instance per connected player — single-
@@ -1096,6 +1104,7 @@ export class RaycasterEngine {
       recordApplied: (kind, amount, origin) => {
         if (this.telemetry) recordLootCollected(this.telemetry, origin, kind, amount);
       },
+      isMultiplayerSession: this.isMultiplayerSession(),
     };
     Object.assign(state, { lootCtx });
 
@@ -1125,6 +1134,36 @@ export class RaycasterEngine {
     return [...this.players.keys()].sort();
   }
 
+  /** True for a real multiplayer session (host or guest), false for
+   * single-player/replay — promotes the `localPlayerId !== LOCAL_PLAYER_ID`
+   * comparison already used inline for the lore-terminal freeze bypass
+   * (step 6c) into a named helper, reused by the multiplayer-only rules
+   * added in step 8 (loot-drop no-op-if-owned, lore-overlay dismiss-only,
+   * exit countdown). */
+  private isMultiplayerSession(): boolean {
+    return this.localPlayerId !== LOCAL_PLAYER_ID;
+  }
+
+  /** Multiplayer-only: closes this peer's own lore overlay, if one is open —
+   * a no-op for a single-player instance (which dismisses its overlay
+   * through the ordinary `simulate()` input pipeline instead, via
+   * `interacted`/`clicked`) or if no overlay is open. Called directly by the
+   * session driver, entirely outside `simulate()`'s per-tick pipeline — a
+   * real Escape press is the one local, purely-cosmetic action with no
+   * shared-simulation channel to carry it: `LocalInputSampler.sampleAndReset()`
+   * forces `escape` to `false` before it ever reaches the shared input
+   * stream (multiplayer-netcode-spec.md §6), so `local.input.consumeEscape()`
+   * inside `simulate()` can never observe a real press for a multiplayer
+   * peer. Reusing `interacted`/`clicked` instead (as single-player does)
+   * isn't safe here: both carry real shared-simulation side effects (secret-
+   * wall discovery, `fireQueued`) unrelated to closing a purely local
+   * overlay. */
+  dismissLoreOverlay(): void {
+    if (!this.isMultiplayerSession()) return;
+    const local = this.players.get(this.localPlayerId);
+    if (local) local.loreText = null;
+  }
+
   /** Read-only per-player snapshot for a session-lifecycle layer above this
    * engine to build an end-of-run comparison table from — not consumed by
    * anything in this step itself (deciding when/how to show it is later
@@ -1145,6 +1184,24 @@ export class RaycasterEngine {
   getPlayerPosition(id: PlayerId): { x: number; y: number } | null {
     const p = this.players.get(id);
     return p ? { x: p.player.posX, y: p.player.posY } : null;
+  }
+
+  /** A specific roster player's current status, or `null` if `id` isn't a
+   * connected player — read-only introspection, same spirit as
+   * `getPlayerPosition`. Lets `scripts/verify-multiplayer-disconnect.mjs`
+   * observe a peer flipping from `"alive"` to `"disconnected"`. */
+  getPlayerStatus(id: PlayerId): PlayerStatus | null {
+    return this.players.get(id)?.status ?? null;
+  }
+
+  /** Every currently-live loot drop, world-space, read-only. Lets
+   * `scripts/verify-multiplayer-disconnect.mjs` observe a disconnected
+   * player's inventory converting to loot (`source: "disconnect"`) at their
+   * last known position — the only external way to read `this.drops`, which
+   * has no other public surface (drops are collected/removed purely by
+   * `simulate()`'s own per-tick loop). */
+  getLootDrops(): readonly LootDrop[] {
+    return this.drops;
   }
 
   /** Whether a player currently has a live, still-decaying drift-correction
@@ -1204,6 +1261,13 @@ export class RaycasterEngine {
   captureReconciliationSnapshot(tick: number): ReconciliationSnapshot {
     const players: Record<PlayerId, PlayerSnapshot> = {};
     for (const [id, p] of this.players) {
+      // A disconnected player is no longer a *wire-level* roster member
+      // (`multiplayer-netcode-spec.md` §5) — their `PlayerState` stays in
+      // `this.players` forever (frozen, matching a dead player's own
+      // treatment, so their final score survives for a later comparison
+      // table), but they're excluded here, from bundle-building, and from
+      // the elimination check.
+      if (p.status === "disconnected") continue;
       players[id] = {
         posX: p.player.posX,
         posY: p.player.posY,
@@ -1245,6 +1309,7 @@ export class RaycasterEngine {
       kind: d.kind,
       amount: d.amount,
       weaponIndex: d.weaponIndex,
+      source: d.source,
     }));
 
     const pickupsCollected: number[] = [];
@@ -1351,6 +1416,7 @@ export class RaycasterEngine {
         existing.kind = ds.kind;
         existing.amount = ds.amount;
         existing.weaponIndex = ds.weaponIndex;
+        existing.source = ds.source;
       } else {
         this.drops.push({ ...ds });
       }
@@ -1371,6 +1437,65 @@ export class RaycasterEngine {
     this.gridVersion = snapshot.gridVersion;
 
     this.rngHandle.setState(snapshot.rngState);
+  }
+
+  /**
+   * A synchronized lockstep event (`multiplayer-netcode-spec.md` §5):
+   * called by both session drivers for the tick a `TickInputBundle` carries
+   * `rosterRemove`, so every peer — host included — applies the exact same
+   * removal at the exact same tick. Marks each id `"disconnected"` (never
+   * deleted from `this.players` — see `PlayerStatus`'s own doc comment) and
+   * converts their inventory to ordinary `LootDrop`s at their last known
+   * position, in the spec's fixed order: one entry per non-zero ammo pool,
+   * then one `"weapon"` entry per owned-but-not-starting weapon (in
+   * `WEAPONS`-index order), then one `"key"` entry per held key. Health/swap
+   * are deliberately never dropped — no precedent elsewhere for handing
+   * health between entities. A no-op for an id that's already gone or
+   * already dead (nothing left to convert, and re-marking would be wrong).
+   */
+  applyRosterRemoval(ids: PlayerId[]): void {
+    if (this.state !== "playing") return;
+    for (const id of ids) {
+      const p = this.players.get(id);
+      if (!p || p.status !== "alive") continue;
+      p.status = "disconnected";
+
+      let dropSeq = 0;
+      for (const type of AMMO_TYPES) {
+        if (p.ammo[type] <= 0) continue;
+        this.drops.push({
+          x: p.player.posX,
+          y: p.player.posY,
+          kind: type,
+          amount: p.ammo[type],
+          id: `disconnect:${id}:${dropSeq++}`,
+          source: "disconnect",
+        });
+      }
+      for (const weaponIndex of [...p.ownedWeapons].sort((a, b) => a - b)) {
+        if (STARTING_WEAPONS.includes(weaponIndex)) continue;
+        this.drops.push({
+          x: p.player.posX,
+          y: p.player.posY,
+          kind: "weapon",
+          weaponIndex,
+          id: `disconnect:${id}:${dropSeq++}`,
+          source: "disconnect",
+        });
+      }
+      for (let i = 0; i < p.keysHeld; i++) {
+        this.drops.push({
+          x: p.player.posX,
+          y: p.player.posY,
+          kind: "key",
+          amount: 1,
+          id: `disconnect:${id}:${dropSeq++}`,
+          source: "disconnect",
+        });
+      }
+      p.keysHeld = 0;
+    }
+    if ([...this.players.values()].every((q) => q.status !== "alive")) this.endGame("over");
   }
 
   /** Shared position-correction decision for both players and enemies (§4):
@@ -1573,27 +1698,24 @@ export class RaycasterEngine {
     // otherwise holding W/S scrolls the text (movement is never simulated
     // this frame, so repurposing those keys here doesn't fight `handleMovement`).
     //
-    // Multiplayer-only exception (see `multiplayer-netcode-spec.md` §6): the
-    // freeze itself is skipped here for a non-`LOCAL_PLAYER_ID` instance — the
-    // overlay (open/close/scroll) stays a purely local, cosmetic per-peer
-    // thing, but the tick keeps simulating underneath it. Unlike the
-    // pause/blur/click case (fixed further down the input pipeline, before a
-    // snapshot ever reaches the shared stream), this can't be fixed by
-    // stripping a field: `interacted` legitimately must stay shared — it also
-    // drives secret-wall discovery, real shared-world state — so the freeze
-    // has to be bypassed here, at the point it would otherwise happen.
+    // Multiplayer-only exception (see `multiplayer-netcode-spec.md` §6): none
+    // of this — freeze, dismiss, scroll — applies to a non-`LOCAL_PLAYER_ID`
+    // instance. The tick keeps simulating underneath the overlay (never
+    // frozen), it's static (no W/S scroll: those keys drive real shared
+    // movement, so repurposing them here would actually move the player in
+    // the live simulation while the overlay is open), and it's dismissed
+    // exclusively via `dismissLoreOverlay()`, called directly by the session
+    // driver — see that method's own doc comment for why.
     const interacted = local.input.consumeInteract();
-    if (local.loreText !== null) {
+    if (local.loreText !== null && !this.isMultiplayerSession()) {
       if (interacted || clicked) {
         local.loreText = null;
       } else {
         if (local.input.isDown("KeyS")) local.loreScroll += LORE_SCROLL_SPEED * dt;
         if (local.input.isDown("KeyW")) local.loreScroll = Math.max(0, local.loreScroll - LORE_SCROLL_SPEED * dt);
       }
-      if (this.localPlayerId === LOCAL_PLAYER_ID) {
-        this.notifyFrozen(true);
-        return false;
-      }
+      this.notifyFrozen(true);
+      return false;
     }
     this.notifyFrozen(false);
     // Secret-wall/lore-terminal *discovery* runs for any living player's own
@@ -1628,7 +1750,7 @@ export class RaycasterEngine {
           local.loreScroll = 0;
           // See the multiplayer-only exception noted above this loop's own
           // sibling branch: same bypass, same reasoning.
-          if (this.localPlayerId === LOCAL_PLAYER_ID) return false;
+          if (!this.isMultiplayerSession()) return false;
         }
       }
     }
@@ -2776,7 +2898,15 @@ export class RaycasterEngine {
       p.keysHeld = 0;
     }
     this.cycleSpectateTarget(p);
-    if ([...this.players.values()].every((q) => q.status === "dead")) this.endGame("over");
+    // A strict generalization of the old `every(status === "dead")` check —
+    // identical for the no-disconnect case, but also correctly ends the run
+    // once every *remaining* player is dead even if a teammate already
+    // disconnected (a `[dead, disconnected]` team must still end the run;
+    // literal `every(=== "dead")` never would, since "disconnected" isn't
+    // "dead"). A still-connected survivor alone keeps playing regardless of
+    // how many teammates disconnected — this predicate is false as long as
+    // at least one player is genuinely `"alive"`.
+    if ([...this.players.values()].every((q) => q.status !== "alive")) this.endGame("over");
   }
 
   /**

@@ -40,6 +40,15 @@ export const MAP_CHUNK_SIZE_BYTES = 16 * 1024;
  * multi-peer data exists. */
 export const RECONCILE_INTERVAL_TICKS = 30;
 
+/** How long a peer's connection can sit in a non-`"connected"` transport
+ * state before the other side treats it as gone (see
+ * `doc/dev/multiplayer-netcode-spec.md` §5) — long enough to ride out a
+ * brief ICE restart/network blip without dropping a still-recoverable peer,
+ * short enough that a genuinely gone peer doesn't leave the session stalled
+ * for long. A reasoned starting point, not a validated value, same caveat as
+ * every other constant in this file. */
+export const DISCONNECT_GRACE_MS = 10_000;
+
 /** `CORRECTION_SMOOTH_MS`/`SNAP_THRESHOLD_TILES` live in
  * `engine/reconciliationConstants.ts`, not here, and are re-exported —
  * `RaycasterEngine.applyReconciliationSnapshot()`/`render()` need them

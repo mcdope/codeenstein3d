@@ -19,6 +19,7 @@ function fakeContext(overrides: Partial<LootContext> = {}): LootContext {
     pushDrop: vi.fn(),
     rng: () => 0,
     campaignLevelIndex: 1,
+    isMultiplayerSession: false,
     ...overrides,
   };
 }

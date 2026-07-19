@@ -63,6 +63,17 @@ export interface LootContext {
    * real number exists). `"weapon"` amount is always `1` (an occurrence, not
    * a quantity). See `telemetry.ts`'s `recordLootCollected`. */
   recordApplied?: (kind: LootKind, amount: number, origin: "dynamic" | "static") => void;
+  /** True for a real multiplayer session (host or guest), false for
+   * single-player. Changes exactly one rule: `grantOrTopUpWeapon`'s
+   * already-owned branch normally tops up ammo instead of wasting the
+   * pickup — `multiplayer-netcode-spec.md` §5 calls that "the wrong rule"
+   * once a weapon drop can also come from a teammate's disconnected
+   * inventory (§5's own conversion), and widens the fix to *every*
+   * weapon-kind drop in a multiplayer session regardless of origin (enemy
+   * kill, secret room, or disconnect): a player who already owns it gets no
+   * effect at all — no grant, no top-up, the drop stays exactly where it
+   * is. */
+  isMultiplayerSession: boolean;
 }
 
 /** Apply one dynamic loot drop's effect and log it. */
@@ -112,6 +123,9 @@ export function applyLootDrop(drop: LootDrop, ctx: LootContext): void {
 export function grantOrTopUpWeapon(weaponIndex: number, ctx: LootContext, origin: "dynamic" | "static" = "dynamic"): void {
   const weapon = WEAPONS[weaponIndex];
   if (ctx.ownedWeapons.has(weaponIndex)) {
+    // See LootContext.isMultiplayerSession's doc comment — no effect at
+    // all in multiplayer, not even an ammo top-up.
+    if (ctx.isMultiplayerSession) return;
     if (!weapon.ammoType) return; // an ammo-less duplicate (melee) grants nothing
     const meta = AMMO_META[weapon.ammoType];
     const amount = ctx.scaledAmount(meta.eliteTopUp);

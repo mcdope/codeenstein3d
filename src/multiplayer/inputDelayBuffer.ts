@@ -42,13 +42,24 @@ export class InputDelayBuffer {
    * Never stalls: always returns a complete bundle, covering every roster
    * id. Drops the now-finalized tick's buffered entries afterward, so
    * `pending` never grows past the ticks genuinely still in flight.
+   *
+   * `graceIds` (a player currently inside its post-disconnect grace period —
+   * see `DISCONNECT_GRACE_MS`) always gets the neutral idle snapshot for
+   * this tick and skips the `lastKnown` update entirely, real input or not:
+   * grace means genuinely inert (nobody's driving that player anymore, so it
+   * should stand still, not keep repeating whatever it was last doing —
+   * held-last-input is for a brief real-input gap, not a peer that's gone).
    */
-  finalize(tick: number, rosterIds: readonly PlayerId[], dt: number): TickInputBundle {
+  finalize(tick: number, rosterIds: readonly PlayerId[], dt: number, graceIds?: ReadonlySet<PlayerId>): TickInputBundle {
     const forTick = this.pending.get(tick);
     const inputs: Record<PlayerId, InputSnapshot> = {};
     const heldInputFallback: PlayerId[] = [];
 
     for (const playerId of rosterIds) {
+      if (graceIds?.has(playerId)) {
+        inputs[playerId] = EMPTY_SNAPSHOT;
+        continue;
+      }
       const real = forTick?.get(playerId);
       if (real) {
         inputs[playerId] = real;

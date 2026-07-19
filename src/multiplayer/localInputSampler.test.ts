@@ -156,7 +156,7 @@ describe("LocalInputSampler", () => {
     controller.fireQueued = true;
     controller.mouseDX = 5;
     const sampler = new LocalInputSampler(controller);
-    const snapshot = sampler.sampleAndReset();
+    const { snapshot } = sampler.sampleAndReset();
     expect(snapshot.keys).toEqual(["KeyW"]);
     expect(snapshot.fireQueued).toBe(true);
     expect(snapshot.mouseDX).toBe(5);
@@ -171,7 +171,7 @@ describe("LocalInputSampler", () => {
     const sampler = new LocalInputSampler(controller);
     sampler.sampleAndReset();
 
-    const second = sampler.sampleAndReset();
+    const { snapshot: second } = sampler.sampleAndReset();
     expect(second.fireQueued).toBe(false);
     expect(second.mouseDX).toBe(0);
     expect(second.wheelSteps).toBe(0);
@@ -185,7 +185,7 @@ describe("LocalInputSampler", () => {
     controller.pointerUnlock = true;
     controller.click = true;
     const sampler = new LocalInputSampler(controller);
-    const snapshot = sampler.sampleAndReset();
+    const { snapshot } = sampler.sampleAndReset();
     expect(snapshot.escape).toBe(false);
     expect(snapshot.blur).toBe(false);
     expect(snapshot.pointerUnlock).toBe(false);
@@ -210,8 +210,16 @@ describe("LocalInputSampler", () => {
     const controller = new ScriptedInput();
     controller.interact = true;
     const sampler = new LocalInputSampler(controller);
-    const snapshot = sampler.sampleAndReset();
+    const { snapshot } = sampler.sampleAndReset();
     expect(snapshot.interact).toBe(true);
+  });
+
+  it("returns localEscapePressed as the real, undrained escape value — true when pressed, false otherwise", () => {
+    const controller = new ScriptedInput();
+    controller.escape = true;
+    const sampler = new LocalInputSampler(controller);
+    expect(sampler.sampleAndReset().localEscapePressed).toBe(true);
+    expect(sampler.sampleAndReset().localEscapePressed).toBe(false); // already drained
   });
 
   it("never calls consumeCheat() on the wrapped controller", () => {

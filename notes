@@ -592,6 +592,7 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
 - [ ] extend github into general git support, for gitlab etc. should support any http(s) available git repo.
 - [ ] interface contract for map generation. to make it easier for forks to make this into a totally different game
 - [ ] deploy action should place a file .restart-backend, multiplayer backend should watch via inotify or similar for that file. if it exists: restart itself and delete the file
+- [ ] UI should disable all multiplayer functionality if lobby/handshake backend isnt reachable
 - [ ] random lore terminals with quotes like "There is no cow level", "Stay a while and listen" etc. should give 5x scorepoints compared to normal lore terminals - to encourage searching for them. maybe differentiate a bit visually?
   const RANDOM_LORE_QUOTES = [
     "There is no cow level",

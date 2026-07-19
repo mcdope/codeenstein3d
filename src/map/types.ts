@@ -255,6 +255,12 @@ export interface LootDrop {
    * during play — see `RaycasterEngine.pushLootDrop`'s doc comment for the
    * assignment scheme. */
   id?: string;
+  /** Set only for a drop created by a player's inventory converting to loot
+   * on disconnect (`multiplayer-netcode-spec.md` §5) — `undefined` for
+   * every other drop source (enemy kill, death-key-drop). A tag rather than
+   * a boolean deliberately, so a future drop origin can add its own value
+   * instead of overloading this one. */
+  source?: "disconnect";
 }
 
 /**

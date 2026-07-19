@@ -2,22 +2,45 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeRTCDataChannel } from "../../test/mocks/webrtc";
 import { createMockCanvasContext, stubCanvasGetContext } from "../../test/mocks/canvas";
 import type { GameMap, Tile } from "../map/types";
 import type { InputSnapshot } from "../engine/input";
+import { DISCONNECT_GRACE_MS } from "./netcodeConstants";
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
 import type { PlayerSnapshot, ReconciliationSnapshotMessage } from "./reconciliationTypes";
 import { GUEST_PLAYER_ID, HOST_PLAYER_ID } from "./sessionSetupTypes";
 import type { SessionSetupResult } from "./sessionSetupTypes";
 import type { MultiplayerChannels } from "./types";
 
+/** Same fake as `multiplayerSessionHost.test.ts`'s own — see its doc
+ * comment. Not shared via an import: each test file keeps its dependencies
+ * self-contained, the established pattern every other helper in these two
+ * files already follows (`fakeMap`/`fakeResult`/`linkedChannels` are all
+ * duplicated too, not extracted to a shared test-utils module). */
+class FakeConnection {
+  connectionState: RTCPeerConnectionState = "connected";
+  private readonly listeners = new Set<() => void>();
+  addEventListener(_type: "connectionstatechange", listener: () => void): void {
+    this.listeners.add(listener);
+  }
+  removeEventListener(_type: "connectionstatechange", listener: () => void): void {
+    this.listeners.delete(listener);
+  }
+  setState(state: RTCPeerConnectionState): void {
+    this.connectionState = state;
+    for (const listener of this.listeners) listener();
+  }
+}
+
 let runMultiplayerSessionAsGuest: typeof import("./multiplayerSessionGuest").runMultiplayerSessionAsGuest;
+let RaycasterEngine: typeof import("../engine/engine").RaycasterEngine;
 
 beforeAll(async () => {
   stubCanvasGetContext(document.createElement("canvas"));
   ({ runMultiplayerSessionAsGuest } = await import("./multiplayerSessionGuest"));
+  ({ RaycasterEngine } = await import("../engine/engine"));
 });
 
 function makeCanvas(): HTMLCanvasElement {
@@ -290,5 +313,152 @@ describe("runMultiplayerSessionAsGuest", () => {
     channels.host.reconciliation.send(JSON.stringify(snapshot));
 
     expect(handle.getLastReconciliationRngState()).toBe(424242);
+  });
+
+  it("applies a bundle's rosterRemove before advancing that tick, same synchronized ordering the host itself uses", () => {
+    const channels = linkedChannels();
+    // Distinct multiplayerSpawns, far apart — the default map spawns both
+    // players on the same tile, which would have the guest immediately
+    // auto-collect the disconnect-converted loot in the same tick it's
+    // dropped, leaving nothing in getLootDrops() to observe below.
+    const map = fakeMap({ multiplayerSpawns: [{ x: 2, y: 2 }, { x: 9, y: 9 }] });
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map }));
+    expect(handle.getPlayerStatus("host")).toBe("alive");
+
+    const bundle: TickInputBundle = {
+      tick: 0,
+      dt: 1 / 30,
+      inputs: { host: emptySnapshot(), guest: emptySnapshot() },
+      heldInputFallback: [],
+      rosterRemove: ["host"],
+    };
+    channels.host.input.send(JSON.stringify(bundle));
+
+    expect(handle.getPlayerStatus("host")).toBe("disconnected");
+    expect(handle.getLootDrops().some((d) => d.id?.startsWith("disconnect:host:"))).toBe(true);
+  });
+
+  it("a bundle with no rosterRemove field leaves every roster player's status untouched", () => {
+    const channels = linkedChannels();
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+
+    const bundle: TickInputBundle = { tick: 0, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+    channels.host.input.send(JSON.stringify(bundle));
+
+    expect(handle.getPlayerStatus("host")).toBe("alive");
+    expect(handle.getPlayerStatus("guest")).toBe("alive");
+  });
+
+  describe("host-disconnect handling (step 8, guest side)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("does nothing without an injected connection", () => {
+      const channels = linkedChannels();
+      const onSessionEnded = vi.fn();
+      runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult(), onSessionEnded);
+      expect(onSessionEnded).not.toHaveBeenCalled();
+    });
+
+    it("ends the session with reason 'host-disconnected' once the connection stays down for the full grace period", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const connection = new FakeConnection();
+      const onSessionEnded = vi.fn();
+      runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult(), onSessionEnded, connection);
+
+      connection.setState("disconnected");
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS);
+
+      expect(onSessionEnded).toHaveBeenCalledTimes(1);
+      expect(onSessionEnded.mock.calls[0][1]).toBe("host-disconnected");
+    });
+
+    it("does not fire before the grace period has fully elapsed", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const connection = new FakeConnection();
+      const onSessionEnded = vi.fn();
+      runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult(), onSessionEnded, connection);
+
+      connection.setState("disconnected");
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS - 1);
+
+      expect(onSessionEnded).not.toHaveBeenCalled();
+    });
+
+    it("a second 'disconnected' state while already in grace doesn't restart the timer", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const connection = new FakeConnection();
+      const onSessionEnded = vi.fn();
+      runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult(), onSessionEnded, connection);
+
+      connection.setState("disconnected");
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS - 1);
+      connection.setState("disconnected"); // e.g. a duplicate/spurious event
+      vi.advanceTimersByTime(1);
+
+      expect(onSessionEnded).toHaveBeenCalledTimes(1);
+    });
+
+    it("recovering to 'connected' before grace expires cancels the pending end", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const connection = new FakeConnection();
+      const onSessionEnded = vi.fn();
+      runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult(), onSessionEnded, connection);
+
+      connection.setState("disconnected");
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS / 2);
+      connection.setState("connected");
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS);
+
+      expect(onSessionEnded).not.toHaveBeenCalled();
+    });
+
+    it("stop() before grace expires prevents it from firing after teardown", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const connection = new FakeConnection();
+      const onSessionEnded = vi.fn();
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult(), onSessionEnded, connection);
+
+      connection.setState("disconnected");
+      handle.stop();
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS * 2);
+
+      expect(onSessionEnded).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("local Escape → dismissLoreOverlay (step 8)", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("a raw local Escape keypress calls dismissLoreOverlay() on the underlying engine once the next bundle arrives", () => {
+      const channels = linkedChannels();
+      const dismissSpy = vi.spyOn(RaycasterEngine.prototype, "dismissLoreOverlay");
+      runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+
+      window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" }));
+      const bundle: TickInputBundle = { tick: 0, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+      channels.host.input.send(JSON.stringify(bundle));
+
+      expect(dismissSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not call dismissLoreOverlay() when no Escape was pressed", () => {
+      const channels = linkedChannels();
+      const dismissSpy = vi.spyOn(RaycasterEngine.prototype, "dismissLoreOverlay");
+      runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+
+      const bundle: TickInputBundle = { tick: 0, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+      channels.host.input.send(JSON.stringify(bundle));
+
+      expect(dismissSpy).not.toHaveBeenCalled();
+    });
   });
 });
