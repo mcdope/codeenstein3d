@@ -2,22 +2,42 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeRTCDataChannel } from "../../test/mocks/webrtc";
 import { createMockCanvasContext, stubCanvasGetContext } from "../../test/mocks/canvas";
 import type { GameMap, Tile } from "../map/types";
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
-import { RECONCILE_INTERVAL_TICKS } from "./netcodeConstants";
+import { DISCONNECT_GRACE_MS, RECONCILE_INTERVAL_TICKS } from "./netcodeConstants";
 import type { ReconciliationSnapshotMessage } from "./reconciliationTypes";
 import { GUEST_PLAYER_ID, HOST_PLAYER_ID } from "./sessionSetupTypes";
 import type { SessionSetupResult } from "./sessionSetupTypes";
 import type { MultiplayerChannels } from "./types";
 
+/** A small fake of the `ConnectionStateSource` slice of `RTCPeerConnection`
+ * — same spirit as `FakeRTCDataChannel`, this project's test environment has
+ * no real `RTCPeerConnection`. */
+class FakeConnection {
+  connectionState: RTCPeerConnectionState = "connected";
+  private readonly listeners = new Set<() => void>();
+  addEventListener(_type: "connectionstatechange", listener: () => void): void {
+    this.listeners.add(listener);
+  }
+  removeEventListener(_type: "connectionstatechange", listener: () => void): void {
+    this.listeners.delete(listener);
+  }
+  setState(state: RTCPeerConnectionState): void {
+    this.connectionState = state;
+    for (const listener of this.listeners) listener();
+  }
+}
+
 let runMultiplayerSessionAsHost: typeof import("./multiplayerSessionHost").runMultiplayerSessionAsHost;
+let RaycasterEngine: typeof import("../engine/engine").RaycasterEngine;
 
 beforeAll(async () => {
   stubCanvasGetContext(document.createElement("canvas"));
   ({ runMultiplayerSessionAsHost } = await import("./multiplayerSessionHost"));
+  ({ RaycasterEngine } = await import("../engine/engine"));
 });
 
 function makeCanvas(): HTMLCanvasElement {
@@ -33,6 +53,17 @@ function linkedChannels(): { host: MultiplayerChannels; guest: MultiplayerChanne
   const hostReconciliation = new FakeRTCDataChannel("reconciliation");
   const guestReconciliation = new FakeRTCDataChannel("reconciliation");
   hostReconciliation.link(guestReconciliation);
+  // Every real caller only ever drives ticks once `waitForChannelsOpen()`
+  // has already resolved (see `webrtcConnection.ts`) — matching that here
+  // keeps this fixture's default state realistic, now that the host driver
+  // itself checks `readyState === "open"` before broadcasting (see
+  // `multiplayerSessionHost.ts`'s own doc comment on that guard). A test
+  // that specifically wants a *not-open* channel sets `readyState` back
+  // after this call.
+  hostInput.simulateOpen();
+  guestInput.simulateOpen();
+  hostReconciliation.simulateOpen();
+  guestReconciliation.simulateOpen();
   return {
     host: { input: hostInput as unknown as RTCDataChannel, reconciliation: hostReconciliation as unknown as RTCDataChannel },
     guest: { input: guestInput as unknown as RTCDataChannel, reconciliation: guestReconciliation as unknown as RTCDataChannel },
@@ -192,6 +223,15 @@ describe("runMultiplayerSessionAsHost", () => {
     expect(handle.getPlayerPosition("nope")).toBeNull();
   });
 
+  it("getPlayerStatus/getLootDrops delegate to the underlying engine", () => {
+    const channels = linkedChannels();
+    const worker = fakeWorker();
+    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+    expect(handle.getPlayerStatus("host")).toBe("alive");
+    expect(handle.getPlayerStatus("nope")).toBeNull();
+    expect(handle.getLootDrops()).toEqual([]);
+  });
+
   it("forwards onSessionEnded once game-over fires, after tearing down the worker", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();
@@ -248,6 +288,175 @@ describe("runMultiplayerSessionAsHost", () => {
     handle.debugInjectDesync({ kind: "extraRngDraw" });
     expect(handle.getRngState()).not.toBe(before);
     expect(handle.hasActiveRenderOffset("host")).toBe(false);
+  });
+
+  describe("disconnect handling (step 8, host side)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("does nothing without an injected connection — disconnect detection simply never triggers", () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+      expect(handle.getPlayerStatus("guest")).toBe("alive");
+    });
+
+    it("applies rosterRemove and marks the guest disconnected once the connection stays down for the full grace period", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const connection = new FakeConnection();
+      const guestSeenMessages = collectMessages(channels.guest.input);
+      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker, undefined, connection);
+
+      connection.setState("disconnected");
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS);
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+
+      expect(handle.getPlayerStatus("guest")).toBe("disconnected");
+      const bundle = guestSeenMessages[0] as TickInputBundle;
+      expect(bundle.rosterRemove).toEqual(["guest"]);
+    });
+
+    it("feeds the neutral idle snapshot for the guest during the grace window, even if real input arrived", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const connection = new FakeConnection();
+      const guestSeenMessages = collectMessages(channels.guest.input);
+      runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker, undefined, connection);
+
+      connection.setState("disconnected");
+      const guestInput: TickInput = { tick: 0, playerId: "guest", input: { ...emptySnapshot(), fireQueued: true } };
+      channels.guest.input.send(JSON.stringify(guestInput));
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+
+      const bundle = guestSeenMessages[0] as TickInputBundle;
+      expect(bundle.inputs.guest.fireQueued).toBe(false);
+      expect(bundle.heldInputFallback).not.toContain("guest"); // neutral, not "held" — a distinct code path
+    });
+
+    it("recovering to 'connected' before grace expires cancels the pending removal", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const connection = new FakeConnection();
+      const guestSeenMessages = collectMessages(channels.guest.input);
+      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker, undefined, connection);
+
+      connection.setState("disconnected");
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS / 2);
+      connection.setState("connected");
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS);
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+
+      expect(handle.getPlayerStatus("guest")).toBe("alive");
+      const bundle = guestSeenMessages[0] as TickInputBundle;
+      expect(bundle.rosterRemove).toBeUndefined();
+      // Back on the ordinary bootstrap-transient held-fallback path, not the
+      // forced-neutral grace path — proves recovery actually cleared
+      // `neutralInputIds`, not just skipped the roster removal itself.
+      expect(bundle.heldInputFallback).toContain("guest");
+    });
+
+    it("stop() before grace expires clears the timer, so it never fires after teardown", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const connection = new FakeConnection();
+      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker, undefined, connection);
+
+      connection.setState("disconnected");
+      handle.stop();
+      expect(() => vi.advanceTimersByTime(DISCONNECT_GRACE_MS * 2)).not.toThrow();
+      // No further tick was ever processed (worker is terminated) — this is
+      // really just proving the timer callback itself never throws once its
+      // captured closures reference an already-torn-down session.
+    });
+
+    it("a second 'disconnected' state while already in grace doesn't restart the timer", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const connection = new FakeConnection();
+      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker, undefined, connection);
+
+      connection.setState("disconnected");
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS - 1);
+      connection.setState("disconnected"); // e.g. a duplicate/spurious event
+      vi.advanceTimersByTime(1);
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+
+      expect(handle.getPlayerStatus("guest")).toBe("disconnected");
+    });
+
+    // Regression: a real `RTCDataChannel.send()` throws synchronously once
+    // `readyState` isn't `"open"` — this mock doesn't enforce that (see its
+    // own doc comment), so the bug this guards is verified by observing the
+    // *skip* directly (readyState checked, no message sent) rather than by
+    // simulating the throw itself. Caught for real by
+    // `scripts/verify-multiplayer-disconnect.mjs`'s own real-transport run:
+    // without the `readyState === "open"` guard in the production code, the
+    // host's own simulation silently stalled forever the instant the
+    // guest's real channel closed — every subsequent tick threw before ever
+    // reaching `engine.advance()`, so `getSimTick()`/`getPlayerStatus()`
+    // both froze mid-session with no error visible anywhere in the app.
+    it("skips broadcasting (but keeps advancing the engine) once the input channel is no longer open", () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const guestSeenMessages = collectMessages(channels.guest.input);
+      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+
+      (channels.host.input as unknown as { readyState: RTCDataChannelState }).readyState = "closed";
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+
+      expect(guestSeenMessages).toHaveLength(0);
+      expect(handle.getLastAppliedTick()).toBe(0); // engine.advance() still ran
+    });
+
+    it("skips the periodic reconciliation broadcast once that channel is no longer open, without throwing", () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const guestSeenSnapshots = collectReconciliationMessages(channels.guest.reconciliation);
+      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+
+      (channels.host.reconciliation as unknown as { readyState: RTCDataChannelState }).readyState = "closed";
+      expect(() => worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent)).not.toThrow();
+
+      expect(guestSeenSnapshots).toHaveLength(0);
+      expect(handle.getLastAppliedTick()).toBe(0);
+    });
+  });
+
+  describe("local Escape → dismissLoreOverlay (step 8)", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("a raw local Escape keypress calls dismissLoreOverlay() on the underlying engine", () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const dismissSpy = vi.spyOn(RaycasterEngine.prototype, "dismissLoreOverlay");
+      runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+
+      window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" }));
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+
+      expect(dismissSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not call dismissLoreOverlay() when no Escape was pressed", () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const dismissSpy = vi.spyOn(RaycasterEngine.prototype, "dismissLoreOverlay");
+      runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+
+      expect(dismissSpy).not.toHaveBeenCalled();
+    });
   });
 });
 

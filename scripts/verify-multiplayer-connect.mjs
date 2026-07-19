@@ -113,6 +113,7 @@ async function makeEligible(page, engineName) {
       const tab = document.querySelector("#tab-multiplayer");
       return tab instanceof HTMLButtonElement && !tab.disabled;
     },
+    undefined,
     { timeout: 20_000 },
   );
 }
@@ -188,6 +189,7 @@ async function waitForConnected(page, label) {
         if (state?.state === "error") throw new Error("multiplayer connect flow reported an error state");
         return state?.state === "connected";
       },
+      undefined,
       { timeout: CONNECT_TIMEOUT_MS },
     );
   } catch (err) {

@@ -152,4 +152,17 @@ describe("buildSessionEngine", () => {
     engine.advance(1);
     expect(onSessionEnded).toHaveBeenCalledTimes(1);
   });
+
+  it("onSessionEnded fires with reason 'campaign-complete' once the engine reaches a win", () => {
+    // Spawn placed directly on the exit tile — checkExit() fires on the very
+    // first tick, no movement needed.
+    const map = fakeMap({ spawn: { x: 5, y: 5 }, exit: { x: 5, y: 5 } });
+    const onSessionEnded = vi.fn();
+    const { engine } = buildSessionEngine({ result: fakeResult({ map }), role: "host", canvas: makeCanvas(), onSessionEnded });
+
+    engine.advance(1 / 30);
+
+    expect(onSessionEnded).toHaveBeenCalledTimes(1);
+    expect(onSessionEnded.mock.calls[0][1]).toBe("campaign-complete");
+  });
 });

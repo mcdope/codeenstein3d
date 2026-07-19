@@ -72,4 +72,39 @@ describe("InputDelayBuffer", () => {
     const bundle = buffer.finalize(3, ["p1", "p2", "p3"], 1 / 30);
     expect(bundle.heldInputFallback.sort()).toEqual(["p2", "p3"]);
   });
+
+  describe("graceIds", () => {
+    it("forces the neutral idle snapshot for a grace-period player, even when real input arrived", () => {
+      const buffer = new InputDelayBuffer();
+      buffer.record(10, "p1", snapshot({ fireQueued: true }));
+      const bundle = buffer.finalize(10, ["p1"], 1 / 30, new Set(["p1"]));
+      expect(bundle.inputs.p1).toEqual(EMPTY_SNAPSHOT);
+    });
+
+    it("does not count a grace-period player as held-fallback", () => {
+      const buffer = new InputDelayBuffer();
+      const bundle = buffer.finalize(10, ["p1"], 1 / 30, new Set(["p1"]));
+      expect(bundle.heldInputFallback).toEqual([]);
+    });
+
+    it("does not update lastKnown for a grace-period player, so a later non-grace tick doesn't resurrect stale real input", () => {
+      const buffer = new InputDelayBuffer();
+      buffer.record(10, "p1", snapshot({ fireQueued: true })); // establishes lastKnown, pre-grace
+      buffer.finalize(10, ["p1"], 1 / 30);
+
+      buffer.record(11, "p1", snapshot({ mouseDX: 9 })); // real input arrives, but p1 is now in grace
+      buffer.finalize(11, ["p1"], 1 / 30, new Set(["p1"]));
+
+      const bundle = buffer.finalize(12, ["p1"], 1 / 30); // grace lifted, nothing recorded for tick 12
+      expect(bundle.inputs.p1).toEqual(snapshot({ fireQueued: true })); // still tick-10's lastKnown, not tick-11's
+    });
+
+    it("leaves other roster players unaffected", () => {
+      const buffer = new InputDelayBuffer();
+      buffer.record(5, "p2", snapshot({ mouseDX: 3 }));
+      const bundle = buffer.finalize(5, ["p1", "p2"], 1 / 30, new Set(["p1"]));
+      expect(bundle.inputs.p1).toEqual(EMPTY_SNAPSHOT);
+      expect(bundle.inputs.p2).toEqual(snapshot({ mouseDX: 3 }));
+    });
+  });
 });

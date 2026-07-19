@@ -74,6 +74,7 @@ async function makeEligible(page, engineName) {
       const tab = document.querySelector("#tab-multiplayer");
       return tab instanceof HTMLButtonElement && !tab.disabled;
     },
+    undefined,
     { timeout: 20_000 },
   );
   await page.waitForSelector(".canvas-area:not([hidden])", { timeout: 20_000 });
@@ -98,6 +99,7 @@ async function waitForConnected(page, label) {
         if (state?.state === "error") throw new Error("multiplayer connect flow reported an error state");
         return state?.state === "connected";
       },
+      undefined,
       { timeout: CONNECT_TIMEOUT_MS },
     );
   } catch (err) {
@@ -108,7 +110,11 @@ async function waitForConnected(page, label) {
 
 async function waitForFirstTick(page, label) {
   try {
-    await page.waitForFunction(() => window.__codeensteinMultiplayerTestHooks?.getSimTick() !== null, { timeout: TICKING_TIMEOUT_MS });
+    await page.waitForFunction(
+      () => window.__codeensteinMultiplayerTestHooks?.getSimTick() !== null,
+      undefined,
+      { timeout: TICKING_TIMEOUT_MS },
+    );
   } catch (err) {
     throw new Error(`${label} never reached its first applied tick: ${err.message}`);
   }

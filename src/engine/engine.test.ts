@@ -12,6 +12,7 @@ import type { InputSnapshot, InputSource } from "./input";
 import { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "./reconciliationConstants";
 import type { ReconciliationSnapshot } from "./reconciliationSnapshot";
 import { EMPTY_SNAPSHOT } from "./replay";
+import { GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX } from "./weapons";
 
 // engine.ts imports a real *value* (`textures`) from textures.ts, whose
 // module-level `TextureManager` singleton calls `document.createElement`
@@ -685,15 +686,89 @@ describe("RaycasterEngine — lore terminals", () => {
     expect(engine.simulate(0.016)).toBe(true); // opens the overlay, but still progressed
   });
 
-  it("multiplayer-only: the overlay still stays open (and still dismisses/scrolls) even though the tick keeps progressing", () => {
-    const input = new ScriptedInput();
-    const engine = new RaycasterEngine(makeCanvas(), loreMap(), {}, undefined, undefined, undefined, 1, input, undefined, "H");
-    input.interact = true;
-    expect(engine.simulate(0.016)).toBe(true); // opens it
-    input.interact = false;
-    expect(engine.simulate(0.016)).toBe(true); // still open (no dismiss this tick), still progressed
-    input.interact = true;
-    expect(engine.simulate(0.016)).toBe(true); // dismiss
+  // Step 8 (multiplayer-netcode-spec.md §6): the overlay is static and
+  // dismiss-only in multiplayer — neither a second interact nor a click
+  // closes it anymore (both carry real shared-simulation side effects
+  // unrelated to a purely local, cosmetic overlay), and W/S no longer
+  // scrolls it (those keys drive real shared movement — holding them while
+  // the overlay is open must actually move the player, not just scroll
+  // text). See `dismissLoreOverlay()`'s own doc comment for the real close
+  // mechanism.
+  describe("multiplayer-only: static, dismiss-only overlay (step 8)", () => {
+    function loreStateOf(engine: InstanceType<typeof RaycasterEngine>): Map<
+      string,
+      { loreText: string | null; loreScroll: number; player: { posX: number; posY: number } }
+    > {
+      return (
+        engine as unknown as {
+          players: Map<string, { loreText: string | null; loreScroll: number; player: { posX: number; posY: number } }>;
+        }
+      ).players;
+    }
+
+    it("stays open across a second interact and a click — neither dismisses it anymore", () => {
+      const input = new ScriptedInput();
+      const engine = new RaycasterEngine(makeCanvas(), loreMap(), {}, undefined, undefined, undefined, 1, input, undefined, "H");
+      input.interact = true;
+      engine.simulate(0.016); // opens it
+      const state = loreStateOf(engine);
+      expect(state.get("H")!.loreText).not.toBeNull();
+
+      input.interact = true;
+      engine.simulate(0.016);
+      expect(state.get("H")!.loreText).not.toBeNull();
+
+      input.interact = false;
+      input.click = true;
+      engine.simulate(0.016);
+      expect(state.get("H")!.loreText).not.toBeNull();
+    });
+
+    it("holding W/S while it's open moves the player instead of scrolling — loreScroll never changes", () => {
+      const input = new ScriptedInput();
+      const engine = new RaycasterEngine(makeCanvas(), loreMap(), {}, undefined, undefined, undefined, 1, input, undefined, "H");
+      input.interact = true;
+      engine.simulate(0.016); // opens it
+      input.interact = false;
+
+      // Spawn faces the lore terminal itself (a wall tile, directly ahead) —
+      // "S" (backward) is the direction that's actually unobstructed, so
+      // this proves real movement rather than colliding with the terminal.
+      const state = loreStateOf(engine);
+      const before = { x: state.get("H")!.player.posX, y: state.get("H")!.player.posY };
+      input.keys.add("KeyS");
+      engine.simulate(0.5);
+
+      const after = state.get("H")!.player;
+      expect(after.posX !== before.x || after.posY !== before.y).toBe(true); // the real fix: S actually moved the player
+      expect(state.get("H")!.loreScroll).toBe(0); // never touched
+    });
+
+    it("dismissLoreOverlay() closes it, and is a harmless no-op when nothing is open", () => {
+      const input = new ScriptedInput();
+      const engine = new RaycasterEngine(makeCanvas(), loreMap(), {}, undefined, undefined, undefined, 1, input, undefined, "H");
+      input.interact = true;
+      engine.simulate(0.016); // opens it
+      const state = loreStateOf(engine);
+      expect(state.get("H")!.loreText).not.toBeNull();
+
+      engine.dismissLoreOverlay();
+      expect(state.get("H")!.loreText).toBeNull();
+
+      expect(() => engine.dismissLoreOverlay()).not.toThrow();
+      expect(state.get("H")!.loreText).toBeNull();
+    });
+
+    it("dismissLoreOverlay() is a no-op for a single-player/replay instance — it uses its own interact/click dismiss path instead", () => {
+      const { engine, input } = makeEngine(loreMap());
+      input.interact = true;
+      engine.advance(0.016); // opens it
+      const state = loreStateOf(engine);
+      expect(state.get("local")!.loreText).not.toBeNull();
+
+      engine.dismissLoreOverlay();
+      expect(state.get("local")!.loreText).not.toBeNull(); // untouched
+    });
   });
 });
 
@@ -2350,6 +2425,12 @@ describe("RaycasterEngine — addPlayer / roster (N-player)", () => {
     expect(engine.getPlayerPosition("nope")).toBeNull();
   });
 
+  it("getPlayerStatus reads any roster player's status, or null if absent", () => {
+    const { engine } = makeEngine(fakeMap());
+    expect(engine.getPlayerStatus("local")).toBe("alive");
+    expect(engine.getPlayerStatus("nope")).toBeNull();
+  });
+
   // Regression coverage for a real gap found while building multiplayer's
   // spawn-spreading (step 5, GameMap.multiplayerSpawns): before this, every
   // addPlayer()-added player spawned stacked on the exact same tile as the
@@ -3129,6 +3210,158 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
 
       expect(() => engine.render()).not.toThrow();
       expect(p.player.posX).toBe(originalX);
+    });
+  });
+});
+
+describe("RaycasterEngine — multiplayer disconnect (step 8)", () => {
+  function makeMpEngine(
+    map: GameMap,
+    handlers: ReturnType<typeof makeHandlers> = makeHandlers(),
+    localPlayerId = "host",
+  ): InstanceType<typeof RaycasterEngine> {
+    return new RaycasterEngine(makeCanvas(), map, handlers, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, localPlayerId);
+  }
+
+  function dropsOf(engine: InstanceType<typeof RaycasterEngine>): LootDrop[] {
+    return (engine as unknown as { drops: LootDrop[] }).drops;
+  }
+
+  type MpPlayerState = {
+    status: string;
+    health: number;
+    swap: number;
+    ammo: { bullets: number; rockets: number; smg: number; gas: number };
+    ownedWeapons: Set<number>;
+    keysHeld: number;
+  };
+  function mpPlayersOf(engine: InstanceType<typeof RaycasterEngine>): Map<string, MpPlayerState> {
+    return (engine as unknown as { players: Map<string, MpPlayerState> }).players;
+  }
+
+  describe("applyRosterRemoval", () => {
+    it("marks the player disconnected and converts inventory to loot in the spec's fixed order", () => {
+      const engine = makeMpEngine(fakeMap({ spawn: { x: 5, y: 5 } }));
+      engine.addPlayer("guest", new ScriptedInput());
+      const host = mpPlayersOf(engine).get("host")!;
+      host.ammo.bullets = 10;
+      host.ammo.rockets = 0; // zero pool — must NOT produce a drop
+      host.ammo.smg = 5;
+      host.ammo.gas = 3;
+      host.ownedWeapons.add(GDB_WEAPON_INDEX);
+      host.ownedWeapons.add(GHIDRA_WEAPON_INDEX);
+      host.keysHeld = 2;
+
+      engine.applyRosterRemoval(["host"]);
+
+      expect(engine.rosterSnapshot().get("host")?.status).toBe("disconnected");
+      const drops = dropsOf(engine).map((d) => ({ kind: d.kind, amount: d.amount, weaponIndex: d.weaponIndex, id: d.id, source: d.source }));
+      expect(drops).toEqual([
+        { kind: "bullets", amount: 10, weaponIndex: undefined, id: "disconnect:host:0", source: "disconnect" },
+        { kind: "smg", amount: 5, weaponIndex: undefined, id: "disconnect:host:1", source: "disconnect" },
+        { kind: "gas", amount: 3, weaponIndex: undefined, id: "disconnect:host:2", source: "disconnect" },
+        { kind: "weapon", amount: undefined, weaponIndex: GDB_WEAPON_INDEX, id: "disconnect:host:3", source: "disconnect" },
+        { kind: "weapon", amount: undefined, weaponIndex: GHIDRA_WEAPON_INDEX, id: "disconnect:host:4", source: "disconnect" },
+        { kind: "key", amount: 1, weaponIndex: undefined, id: "disconnect:host:5", source: "disconnect" },
+        { kind: "key", amount: 1, weaponIndex: undefined, id: "disconnect:host:6", source: "disconnect" },
+      ]);
+    });
+
+    it("never drops health or swap, and clears keysHeld", () => {
+      const engine = makeMpEngine(fakeMap());
+      engine.addPlayer("guest", new ScriptedInput());
+      const host = mpPlayersOf(engine).get("host")!;
+      host.health = 50;
+      host.swap = 20;
+      host.keysHeld = 1;
+      engine.applyRosterRemoval(["host"]);
+      expect(dropsOf(engine).some((d) => d.kind === "health" || d.kind === "swap")).toBe(false);
+      expect(mpPlayersOf(engine).get("host")!.keysHeld).toBe(0);
+    });
+
+    it("only drops owned weapons not already in STARTING_WEAPONS", () => {
+      const engine = makeMpEngine(fakeMap());
+      engine.addPlayer("guest", new ScriptedInput());
+      // host starts owning pistol/shotgun/knife (STARTING_WEAPONS) by default.
+      engine.applyRosterRemoval(["host"]);
+      expect(dropsOf(engine).some((d) => d.kind === "weapon")).toBe(false);
+    });
+
+    it("is a no-op for an unknown id, an already-dead id, or an already-disconnected id", () => {
+      const map = fakeMap({ enemies: [fakeEnemy({ x: 5.5, y: 5.5, hp: 1, maxHp: 1 })] });
+      const engine = makeMpEngine(map);
+      engine.addPlayer("guest", new ScriptedInput());
+      engine.applyRosterRemoval(["nope"]);
+      expect(dropsOf(engine)).toHaveLength(0);
+
+      // guest never picks up anything, so a repeat call after already
+      // disconnected must not push a second, duplicate batch of drops.
+      engine.applyRosterRemoval(["guest"]);
+      const afterFirst = dropsOf(engine).length;
+      engine.applyRosterRemoval(["guest"]);
+      expect(dropsOf(engine)).toHaveLength(afterFirst);
+    });
+
+    it("does nothing once the run has already ended", () => {
+      const engine = makeMpEngine(fakeMap());
+      engine.addPlayer("guest", new ScriptedInput());
+      engine.applyRosterRemoval(["guest"]); // ends nothing yet — host still alive
+      (engine as unknown as { state: string }).state = "over";
+      const before = dropsOf(engine).length;
+      engine.applyRosterRemoval(["host"]);
+      expect(dropsOf(engine)).toHaveLength(before);
+      expect(engine.rosterSnapshot().get("host")?.status).toBe("alive");
+    });
+
+    it("excludes a disconnected player from captureReconciliationSnapshot but keeps other roster members", () => {
+      const engine = makeMpEngine(fakeMap());
+      engine.addPlayer("guest", new ScriptedInput());
+      engine.applyRosterRemoval(["guest"]);
+      const snapshot = engine.captureReconciliationSnapshot(0);
+      expect(snapshot.players).not.toHaveProperty("guest");
+      expect(snapshot.players).toHaveProperty("host");
+    });
+
+    it("ends the run once every remaining player is dead or disconnected, but a lone connected survivor keeps playing", () => {
+      const map = fakeMap({ enemies: [fakeEnemy({ x: 5.5, y: 5.5, hp: 1, maxHp: 1 })] });
+      const handlers = makeHandlers();
+      const engine = makeMpEngine(map, handlers);
+      engine.addPlayer("guest", new ScriptedInput());
+
+      engine.applyRosterRemoval(["guest"]);
+      expect(handlers.onGameOver).not.toHaveBeenCalled(); // host is still alive
+
+      const host = mpPlayersOf(engine).get("host")!;
+      host.status = "dead"; // simulate host dying too, without a real damage() call
+      engine.applyRosterRemoval(["guest"]); // already disconnected — re-checks elimination anyway
+      // A third player, still connected and alive, must keep the run going
+      // even though both of these are gone.
+      engine.addPlayer("third", new ScriptedInput());
+      expect(handlers.onGameOver).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("multiplayer weapon-drop rule (grantOrTopUpWeapon)", () => {
+    // Pistol (index 0) is a STARTING_WEAPONS entry with a real ammoType
+    // (bullets) — unlike knife (index 2, melee/no ammoType), collecting a
+    // duplicate genuinely would top up ammo in single-player, so it's the
+    // one case that actually distinguishes "no effect" from "no-op anyway".
+    it("in multiplayer, collecting a weapon drop for an already-owned weapon has no effect at all (no top-up)", () => {
+      const map = fakeMap({ spawn: { x: 5, y: 5 } });
+      const engine = makeMpEngine(map);
+      const before = { ...mpPlayersOf(engine).get("host")!.ammo };
+      dropsOf(engine).push({ x: 5.5, y: 5.5, kind: "weapon", weaponIndex: 0, id: "test:0" });
+      engine.advance(0.016);
+      expect(mpPlayersOf(engine).get("host")!.ammo).toEqual(before);
+    });
+
+    it("in single-player, the same already-owned weapon drop still tops up ammo (unchanged behavior)", () => {
+      const { engine } = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }));
+      const players = playersOf(engine) as unknown as Map<string, { ammo: Record<string, number> }>;
+      const before = { ...players.get("local")!.ammo };
+      (engine as unknown as { drops: LootDrop[] }).drops.push({ x: 5.5, y: 5.5, kind: "weapon", weaponIndex: 0, id: "test:0" });
+      engine.advance(0.016);
+      expect(players.get("local")!.ammo).not.toEqual(before);
     });
   });
 });

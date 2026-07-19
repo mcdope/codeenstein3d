@@ -70,6 +70,7 @@ import { createGuestAnswer, createHostOffer, waitForChannelsOpen } from "./multi
 import { SignalingError, type ConnectionState, type LobbyEntry, type MultiplayerConnection } from "./multiplayer/types";
 import { runMultiplayerSessionAsHost, type MultiplayerSessionHandle } from "./multiplayer/multiplayerSessionHost";
 import { runMultiplayerSessionAsGuest } from "./multiplayer/multiplayerSessionGuest";
+import type { SessionEndReason } from "./multiplayer/sessionEngine";
 import { runHostSessionSetup } from "./multiplayer/sessionSetupHost";
 import { runGuestSessionSetup } from "./multiplayer/sessionSetupGuest";
 
@@ -1159,12 +1160,19 @@ function beginMultiplayerLevel(): void {
 }
 
 /** Fired once the shared simulation reaches game-over/win — deterministically
- * the same tick on both peers. Deliberately minimal: no comparison table (a
- * later step's job, per `multiplayer-research.md`'s plan) — just enough to
- * not leave the player looking at a frozen canvas. */
-function onMultiplayerSessionEnded(): void {
+ * the same tick on both peers, except for `"host-disconnected"` (guest-only,
+ * fired from the guest's own local grace-timer expiry, never simultaneous
+ * with the host). Deliberately minimal: no comparison table (a later step's
+ * job, per `multiplayer-research.md`'s plan) — just enough to not leave the
+ * player looking at a frozen canvas, with copy distinguishing *why* it ended. */
+function onMultiplayerSessionEnded(_stats: EngineStats, reason: SessionEndReason): void {
   activeMultiplayerSession = null;
-  setMultiplayerStatus("Multiplayer session ended.", false);
+  const message: Record<SessionEndReason, string> = {
+    "team-eliminated": "Multiplayer session ended — every player was eliminated.",
+    "host-disconnected": "Multiplayer session ended — the host disconnected.",
+    "campaign-complete": "Multiplayer session ended — campaign complete!",
+  };
+  setMultiplayerStatus(message[reason], false);
   resetToFileTree();
 }
 
@@ -1180,7 +1188,7 @@ async function startMultiplayerSessionAsHost(): Promise<void> {
     setMultiplayerStatus("No workspace loaded to host a level from.", true);
     return;
   }
-  const { channels } = activeMultiplayerConnection;
+  const { channels, peerConnection } = activeMultiplayerConnection;
   multiplayerStartSessionButton.disabled = true;
   setMultiplayerStatus("Starting session…", false);
   try {
@@ -1193,7 +1201,7 @@ async function startMultiplayerSessionAsHost(): Promise<void> {
     const result = await runHostSessionSetup(channels, { map, difficulty: currentDifficulty, playerCount: 2 });
     beginMultiplayerLevel();
     const worker = new Worker(new URL("./multiplayer/tickClockWorker.ts", import.meta.url), { type: "module" });
-    activeMultiplayerSession = runMultiplayerSessionAsHost(channels, canvas, result, worker, onMultiplayerSessionEnded);
+    activeMultiplayerSession = runMultiplayerSessionAsHost(channels, canvas, result, worker, onMultiplayerSessionEnded, peerConnection);
   } catch (err) {
     console.error("[multiplayer] Failed to start session:", err);
     setMultiplayerStatus(err instanceof Error ? err.message : "Failed to start the multiplayer session.", true);
@@ -1206,11 +1214,11 @@ async function startMultiplayerSessionAsGuest(): Promise<void> {
   // site — right after `activeMultiplayerConnection` is set to a guest
   // connection, synchronously, with no intervening `await` — so the
   // precondition always holds and there's nothing to guard against.
-  const { channels } = activeMultiplayerConnection!;
+  const { channels, peerConnection } = activeMultiplayerConnection!;
   try {
     const result = await runGuestSessionSetup(channels);
     beginMultiplayerLevel();
-    activeMultiplayerSession = runMultiplayerSessionAsGuest(channels, canvas, result, onMultiplayerSessionEnded);
+    activeMultiplayerSession = runMultiplayerSessionAsGuest(channels, canvas, result, onMultiplayerSessionEnded, peerConnection);
   } catch (err) {
     console.error("[multiplayer] Session setup failed:", err);
     setMultiplayerStatus(err instanceof Error ? err.message : "Multiplayer session setup failed.", true);
@@ -1295,6 +1303,8 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
         injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
         hasActiveRenderOffset: (id: string) => boolean;
         getLastReconciliationRngState: () => number | null;
+        getPlayerStatus: (id: string) => string | null;
+        getLootDrops: () => readonly unknown[];
       };
     }
   ).__codeensteinMultiplayerTestHooks = {
@@ -1331,6 +1341,11 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
     // the verify script's PRNG-resync check robust against real, ongoing
     // per-tick drift from the demo campaign's own roaming enemies.
     getLastReconciliationRngState: () => activeMultiplayerSession?.getLastReconciliationRngState() ?? null,
+    // Both added in step 8 (session lifecycle) — read-only introspection for
+    // `scripts/verify-multiplayer-disconnect.mjs` to observe a peer's status
+    // flipping to `"disconnected"` and its inventory converting to loot.
+    getPlayerStatus: (id) => activeMultiplayerSession?.getPlayerStatus(id) ?? null,
+    getLootDrops: () => activeMultiplayerSession?.getLootDrops() ?? [],
   };
 }
 

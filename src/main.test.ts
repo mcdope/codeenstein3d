@@ -2571,6 +2571,8 @@ describe("main.ts — multiplayer connect flow", () => {
       injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
       hasActiveRenderOffset: (id: string) => boolean;
       getLastReconciliationRngState: () => number | null;
+      getPlayerStatus: (id: string) => string | null;
+      getLootDrops: () => readonly unknown[];
     } {
       return (
         window as unknown as {
@@ -2582,6 +2584,8 @@ describe("main.ts — multiplayer connect flow", () => {
             injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
             hasActiveRenderOffset: (id: string) => boolean;
             getLastReconciliationRngState: () => number | null;
+            getPlayerStatus: (id: string) => string | null;
+            getLootDrops: () => readonly unknown[];
           };
         }
       ).__codeensteinMultiplayerTestHooks;
@@ -2700,6 +2704,8 @@ describe("main.ts — multiplayer connect flow", () => {
         // `?? false` fallback, distinct from a real session's own `false`.
         expect(multiplayerHooks().hasActiveRenderOffset("host")).toBe(false);
         expect(multiplayerHooks().getLastReconciliationRngState()).toBeNull();
+        expect(multiplayerHooks().getPlayerStatus("host")).toBeNull();
+        expect(multiplayerHooks().getLootDrops()).toEqual([]);
 
         const startButton = document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!;
         expect(startButton.hidden).toBe(false);
@@ -2733,6 +2739,8 @@ describe("main.ts — multiplayer connect flow", () => {
         // Frozen at tick 0's own broadcast — unaffected by the injectDesync()
         // call just above, which only touched *live* rng state.
         expect(hooks.getLastReconciliationRngState()).toBe(rngBefore);
+        expect(hooks.getPlayerStatus("host")).toBe("alive");
+        expect(hooks.getLootDrops()).toEqual([]);
       } finally {
         history.pushState(null, "", "/");
       }
@@ -2879,12 +2887,12 @@ describe("main.ts — multiplayer connect flow", () => {
       // Both players spawn standing in a hazard — repeatedly apply bundles
       // (each 1/30s of hazard damage) until the shared simulation reaches
       // game-over and tears the session down.
-      for (let i = 0; i < 300 && document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent !== "Multiplayer session ended."; i++) {
+      for (let i = 0; i < 300 && document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent !== "Multiplayer session ended — every player was eliminated."; i++) {
         const bundle = { tick: i, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
         input.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(bundle) }));
       }
 
-      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Multiplayer session ended.");
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Multiplayer session ended — every player was eliminated.");
       expect(document.querySelector<HTMLElement>(".canvas-area")!.hasAttribute("hidden")).toBe(true);
     });
 

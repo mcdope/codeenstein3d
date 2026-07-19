@@ -70,6 +70,7 @@ async function makeEligible(page, engineName) {
       const tab = document.querySelector("#tab-multiplayer");
       return tab instanceof HTMLButtonElement && !tab.disabled;
     },
+    undefined,
     { timeout: 20_000 },
   );
   // The demo campaign's own level finishes auto-launching slightly after the
@@ -102,6 +103,7 @@ async function waitForConnected(page, label) {
         if (state?.state === "error") throw new Error("multiplayer connect flow reported an error state");
         return state?.state === "connected";
       },
+      undefined,
       { timeout: CONNECT_TIMEOUT_MS },
     );
   } catch (err) {
@@ -128,6 +130,7 @@ async function captureEarliestSnapshot(page, label) {
         if (!host || !guest) return false;
         return { tick, host, guest };
       },
+      undefined,
       { timeout: TICKING_TIMEOUT_MS },
     );
     return await handle.jsonValue();

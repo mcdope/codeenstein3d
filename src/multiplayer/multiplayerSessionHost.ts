@@ -17,13 +17,14 @@
  * a small fake, the same spirit as `test/mocks/webrtc.ts`'s fake data
  * channels. `main.ts` constructs the real one.
  */
-import type { EngineStats, PlayerId } from "../engine/engine";
+import type { EngineStats, PlayerId, PlayerStatus } from "../engine/engine";
+import type { LootDrop } from "../map/types";
 import { sendJson, onJsonMessage } from "./dataChannelMessaging";
 import { InputDelayBuffer } from "./inputDelayBuffer";
-import { FIXED_DT, INPUT_DELAY_TICKS, RECONCILE_INTERVAL_TICKS } from "./netcodeConstants";
+import { DISCONNECT_GRACE_MS, FIXED_DT, INPUT_DELAY_TICKS, RECONCILE_INTERVAL_TICKS } from "./netcodeConstants";
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
 import type { ReconciliationSnapshotMessage } from "./reconciliationTypes";
-import { buildSessionEngine } from "./sessionEngine";
+import { buildSessionEngine, type SessionEndReason } from "./sessionEngine";
 import { GUEST_PLAYER_ID, HOST_PLAYER_ID, type SessionSetupResult } from "./sessionSetupTypes";
 import type { TickDueMessage } from "./tickClockWorker";
 import type { MultiplayerChannels } from "./types";
@@ -31,6 +32,18 @@ import type { MultiplayerChannels } from "./types";
 export interface TickWorkerHandle {
   onmessage: ((event: MessageEvent) => void) | null;
   terminate(): void;
+}
+
+/** The narrow slice of `RTCPeerConnection` disconnect detection needs — typed
+ * against just the two members this module actually uses (mirrors
+ * `TickWorkerHandle`'s own injection style above), so a small fake keeps this
+ * module unit-testable without a real `RTCPeerConnection` (this project's
+ * test environment has none). `main.ts` passes the real
+ * `activeMultiplayerConnection.peerConnection` for production use. */
+export interface ConnectionStateSource {
+  readonly connectionState: RTCPeerConnectionState;
+  addEventListener(type: "connectionstatechange", listener: () => void): void;
+  removeEventListener(type: "connectionstatechange", listener: () => void): void;
 }
 
 export interface MultiplayerSessionHandle {
@@ -54,6 +67,10 @@ export interface MultiplayerSessionHandle {
    * actually transmitted/applied is stable regardless of what's happened to
    * live state since. */
   getLastReconciliationRngState(): number | null;
+  /** Read-only — see `RaycasterEngine.getPlayerStatus`'s doc comment. */
+  getPlayerStatus(id: PlayerId): PlayerStatus | null;
+  /** Read-only — see `RaycasterEngine.getLootDrops`'s doc comment. */
+  getLootDrops(): readonly LootDrop[];
   /** Test-only, mutating — see `RaycasterEngine.debugInjectDesync`'s doc
    * comment. */
   debugInjectDesync(injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }): void;
@@ -67,27 +84,71 @@ export function runMultiplayerSessionAsHost(
   /** Fired once the shared simulation reaches game-over/win, after this
    * module's own teardown (worker/listener) has already run — `main.ts`'s
    * hook for updating its own UI back out of the session. */
-  onSessionEnded?: (stats: EngineStats) => void,
+  onSessionEnded?: (stats: EngineStats, reason: SessionEndReason) => void,
+  /** The host's own `RTCPeerConnection` toward the guest — omitted by every
+   * existing unit test (disconnect detection simply never triggers without
+   * it), real production callers (`main.ts`) always pass one. */
+  connection?: ConnectionStateSource,
 ): MultiplayerSessionHandle {
   const inputDelayBuffer = new InputDelayBuffer();
   let lastAppliedTick: number | null = null;
   let lastReconciliationRngState: number | null = null;
   let ended = false;
 
+  // Disconnect handling (§5): the host only ever monitors its own connection
+  // toward the guest — there's exactly one `RTCPeerConnection` in a 2-player
+  // session, so there's nothing to distinguish by id here (unlike a future
+  // N-player roster). `neutralInputIds` covers both "currently inside its
+  // grace window" and "grace expired, now genuinely removed" — once a player
+  // enters either state, `InputDelayBuffer` must feed it the neutral idle
+  // snapshot forever, not just for the bounded grace window (see
+  // `InputDelayBuffer.finalize`'s own doc comment).
+  const neutralInputIds = new Set<PlayerId>();
+  let graceTimer: ReturnType<typeof setTimeout> | null = null;
+  let rosterRemovalToApply: PlayerId | null = null;
+
+  const onConnectionStateChange = (): void => {
+    // Genuinely unreachable without `connection`: this listener is only ever
+    // registered when `connection` is defined (see the `addEventListener`
+    // call right below this closure), so it's the only thing that can invoke
+    // it.
+    /* v8 ignore next */
+    if (!connection) return;
+    const state = connection.connectionState;
+    if (state === "disconnected" || state === "failed") {
+      if (graceTimer !== null || neutralInputIds.has(GUEST_PLAYER_ID)) return; // already tracked
+      neutralInputIds.add(GUEST_PLAYER_ID);
+      graceTimer = setTimeout(() => {
+        graceTimer = null;
+        rosterRemovalToApply = GUEST_PLAYER_ID;
+      }, DISCONNECT_GRACE_MS);
+    } else if (state === "connected" && graceTimer !== null) {
+      // Recovered before grace expired — once expired (graceTimer already
+      // null), reconnection is out of scope (no v1 host migration/rejoin
+      // per the spec) and this branch no longer applies.
+      clearTimeout(graceTimer);
+      graceTimer = null;
+      neutralInputIds.delete(GUEST_PLAYER_ID);
+    }
+  };
+  connection?.addEventListener("connectionstatechange", onConnectionStateChange);
+
   const teardown = (): void => {
     if (ended) return;
     ended = true;
     worker.terminate();
     unsubscribeInput();
+    connection?.removeEventListener("connectionstatechange", onConnectionStateChange);
+    if (graceTimer !== null) clearTimeout(graceTimer);
   };
 
   const { engine, myInput, otherInput, localSampler } = buildSessionEngine({
     result,
     role: "host",
     canvas,
-    onSessionEnded: (stats) => {
+    onSessionEnded: (stats, reason) => {
       teardown();
-      onSessionEnded?.(stats);
+      onSessionEnded?.(stats, reason);
     },
   });
 
@@ -124,12 +185,42 @@ export function runMultiplayerSessionAsHost(
     // to each other) — caught by `scripts/verify-multiplayer-netcode.mjs`'s
     // real end-to-end run instead.
     const futureTick = tick + INPUT_DELAY_TICKS;
-    const sampled = localSampler.sampleAndReset();
+    const { snapshot: sampled, localEscapePressed } = localSampler.sampleAndReset();
     inputDelayBuffer.record(futureTick, HOST_PLAYER_ID, sampled);
+    // Local-only, no shared-simulation channel to carry it — see
+    // `dismissLoreOverlay()`'s own doc comment.
+    if (localEscapePressed) engine.dismissLoreOverlay();
 
     // Finalize and broadcast the tick that's actually due now.
-    const bundle: TickInputBundle = inputDelayBuffer.finalize(tick, result.roster, FIXED_DT);
-    sendJson(channels.input, bundle);
+    const bundle: TickInputBundle = inputDelayBuffer.finalize(
+      tick,
+      result.roster,
+      FIXED_DT,
+      neutralInputIds.size > 0 ? neutralInputIds : undefined,
+    );
+
+    // A grace timer that expired since the last tick is applied on this
+    // tick, synchronously with the broadcast — every peer (host included)
+    // applies the same `rosterRemove` from this exact bundle, the same
+    // synchronized-lockstep-event shape `applyRosterRemoval` itself expects.
+    if (rosterRemovalToApply) {
+      const id = rosterRemovalToApply;
+      rosterRemovalToApply = null;
+      engine.applyRosterRemoval([id]);
+      bundle.rosterRemove = [id];
+    }
+
+    // `RTCDataChannel.send()` throws synchronously once `readyState` isn't
+    // `"open"` — a guest whose transport is already gone (channel closed
+    // before this peer's own `connectionstatechange` even fires; disconnect
+    // detection above is best-effort and inherently lags the real transport)
+    // must never crash this handler on that throw: an uncaught exception
+    // here would abort *this whole tick* before `engine.advance()` ever
+    // runs, permanently stalling the host's own simulation the instant the
+    // guest's channel closes — exactly the "never stall waiting on a peer
+    // that's gone" guarantee this step exists to provide. Skipping the send
+    // is harmless either way: nothing is listening on a closed channel.
+    if (channels.input.readyState === "open") sendJson(channels.input, bundle);
 
     myInput.loadFrame(bundle.inputs[HOST_PLAYER_ID]);
     otherInput.loadFrame(bundle.inputs[GUEST_PLAYER_ID]);
@@ -143,7 +234,8 @@ export function runMultiplayerSessionAsHost(
     if (tick % RECONCILE_INTERVAL_TICKS === 0) {
       const snapshot: ReconciliationSnapshotMessage = { type: "reconciliation-snapshot", ...engine.captureReconciliationSnapshot(tick) };
       lastReconciliationRngState = snapshot.rngState;
-      sendJson(channels.reconciliation, snapshot);
+      // Same reasoning as `channels.input` above.
+      if (channels.reconciliation.readyState === "open") sendJson(channels.reconciliation, snapshot);
     }
   };
 
@@ -154,6 +246,8 @@ export function runMultiplayerSessionAsHost(
     getRngState: () => engine.getRngState(),
     hasActiveRenderOffset: (id) => engine.hasActiveRenderOffset(id),
     getLastReconciliationRngState: () => lastReconciliationRngState,
+    getPlayerStatus: (id) => engine.getPlayerStatus(id),
+    getLootDrops: () => engine.getLootDrops(),
     debugInjectDesync: (injection) => engine.debugInjectDesync(injection),
   };
 }

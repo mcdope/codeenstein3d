@@ -20,6 +20,19 @@ import { NetworkInputSource } from "./networkInputSource";
 import { GUEST_PLAYER_ID, HOST_PLAYER_ID, type SessionSetupResult } from "./sessionSetupTypes";
 import type { MultiplayerRole } from "./types";
 
+/** Why a multiplayer session ended, threaded through to `main.ts` so it can
+ * render distinct copy per path instead of one generic "session ended"
+ * message — see `doc/dev/multiplayer-netcode-spec.md` §5/§7.
+ * `"team-eliminated"`: every connected player is dead (`onGameOver`).
+ * `"host-disconnected"`: the guest's own connection toward the host expired
+ * its grace period — a *provisional* end, sourced from the guest's own local
+ * (not host-authoritative) state, since there's no final snapshot coming.
+ * `"campaign-complete"`: `onWin` fired with no next level to transition to
+ * (`multiplayer-research.md` step 8's level-transition work) — today (before
+ * that work lands) every `onWin` is this case by construction, since nothing
+ * yet attempts a transition first. */
+export type SessionEndReason = "team-eliminated" | "host-disconnected" | "campaign-complete";
+
 export interface SessionEngineOptions {
   result: SessionSetupResult;
   role: MultiplayerRole;
@@ -28,7 +41,7 @@ export interface SessionEngineOptions {
    * simulation reaches first — deterministically the same tick on every
    * peer, since the simulation itself is lockstep. This module has already
    * torn down the local input sampler by the time this fires. */
-  onSessionEnded?: (stats: EngineStats) => void;
+  onSessionEnded?: (stats: EngineStats, reason: SessionEndReason) => void;
 }
 
 export interface SessionEngineHandle {
@@ -60,24 +73,29 @@ export function buildSessionEngine(options: SessionEngineOptions): SessionEngine
   const localSampler = new LocalInputSampler(new InputController(canvas));
 
   let ended = false;
-  const endSession = (stats: EngineStats): void => {
+  const endSession = (stats: EngineStats, reason: SessionEndReason): void => {
     if (ended) return;
     ended = true;
     localSampler.detach();
-    options.onSessionEnded?.(stats);
+    options.onSessionEnded?.(stats, reason);
   };
   const handlers: EngineHandlers = {
-    onGameOver: endSession,
-    onWin: endSession,
+    onGameOver: (stats) => endSession(stats, "team-eliminated"),
+    // Every current call site reaches this with no next level to transition
+    // to (level transitions are `multiplayer-research.md` step 8's own
+    // still-unbuilt work) — see `SessionEndReason`'s doc comment.
+    onWin: (stats) => endSession(stats, "campaign-complete"),
     // Cheats are already neutralized below the engine (NetworkInputSource's
     // consumeCheat() is a permanent no-op — this instance's own `local.input`
     // is always one, so `simulate()`'s `local.input.consumeCheat()` can never
     // return non-null here) — genuinely unreachable, not just unused.
     /* v8 ignore next */
     onCheatActivated: () => {},
-    // Pause/blur are NOT suppressed yet (that's step 8's job, per the plan) —
-    // this can fire for real if this peer's own input pauses. No local UI
-    // reaction needed for 6c's scope; a later step may want one.
+    // Pause/blur are suppressed upstream, before they ever reach the shared
+    // simulation — see `LocalInputSampler.sampleAndReset()`'s own doc
+    // comment. This handler exists purely to satisfy `EngineHandlers`; it
+    // cannot fire for a real multiplayer peer.
+    /* v8 ignore next */
     onFreezeChange: () => {},
   };
 

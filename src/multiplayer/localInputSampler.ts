@@ -44,13 +44,21 @@ export class LocalInputSampler {
    * lore-terminal-freeze half of this same problem is fixed instead where it
    * actually happens, inside `RaycasterEngine.simulate()`.
    *
+   * `localEscapePressed` is `escape`'s real, undrained value — captured
+   * before the field is zeroed on the returned `snapshot`, not discarded:
+   * the session driver uses it to call `RaycasterEngine.dismissLoreOverlay()`
+   * directly, a genuinely local-only action with no shared-simulation
+   * channel to carry it (see that method's own doc comment). Every other
+   * neutralized field has no such local-only use, so only this one is
+   * surfaced.
+   *
    * Cheats need no equivalent handling: `consumeCheat()` is never called
    * here (nothing ever needs it — `InputSnapshot` has no cheat field at
    * all), so a typed cheat code just sits queued on this controller forever,
    * unread. That's an accurate side effect of this design, not a deliberate
    * step-8 "cheats disabled" mechanism to rely on elsewhere.
    */
-  sampleAndReset(): InputSnapshot {
+  sampleAndReset(): { snapshot: InputSnapshot; localEscapePressed: boolean } {
     const snapshot = this.controller.captureSnapshot();
     this.controller.consumeFire();
     this.controller.consumeMouseDX();
@@ -60,7 +68,7 @@ export class LocalInputSampler {
     this.controller.consumeMelee();
     this.controller.consumeWheelSteps();
     this.controller.consumeFpsToggle();
-    this.controller.consumeEscape();
+    const localEscapePressed = this.controller.consumeEscape();
     this.controller.consumeBlur();
     this.controller.consumePointerUnlock();
     this.controller.consumeClick();
@@ -68,6 +76,6 @@ export class LocalInputSampler {
     snapshot.blur = false;
     snapshot.pointerUnlock = false;
     snapshot.click = false;
-    return snapshot;
+    return { snapshot, localEscapePressed };
   }
 }
