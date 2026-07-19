@@ -209,6 +209,60 @@ describe("MapGenerator.generate", () => {
   // actual language-appropriate parser (no synthetic `ParsedFile`), so this
   // also incidentally re-verifies the whole `parser -> map` pipeline stays
   // connectivity-safe together, not just `MapGenerator` in isolation.
+  it("N=1 exactness gate: an explicit maxPlayers=1 is byte-identical to omitting it entirely", () => {
+    const gen = new MapGenerator();
+    const parsed = parsedFile({
+      entities: [
+        entity({ name: "a", complexityScore: 8, startLine: 1, endLine: 10 }),
+        entity({ name: "b", kind: "method", visibility: "private", startLine: 11, endLine: 20 }),
+        entity({ name: "Global", kind: "global", startLine: 21, endLine: 21 }),
+      ],
+    });
+    const omitted = gen.generate(parsed);
+    const explicit = gen.generate(parsed, false, true, [], 1);
+    expect(omitted).toEqual(explicit);
+  });
+
+  it("leaves multiplayerSpawns undefined when maxPlayers is omitted or 1", () => {
+    const gen = new MapGenerator();
+    const parsed = parsedFile({ entities: [entity(), entity({ name: "b", startLine: 6, endLine: 10 })] });
+    expect(gen.generate(parsed).multiplayerSpawns).toBeUndefined();
+    expect(gen.generate(parsed, false, true, [], 1).multiplayerSpawns).toBeUndefined();
+  });
+
+  it("produces maxPlayers spread, open-floor spawns clear of the exit and each other", () => {
+    const gen = new MapGenerator();
+    const many = Array.from({ length: 6 }, (_, i) => entity({ name: `f${i}`, startLine: i * 10 + 1, endLine: i * 10 + 5, complexityScore: 5 }));
+    const parsed = parsedFile({ linesOfCode: 200, entities: many });
+    const map = gen.generate(parsed, false, true, [], 3);
+    expect(map.multiplayerSpawns).toHaveLength(3);
+    const seen = new Set<string>();
+    for (const s of map.multiplayerSpawns ?? []) {
+      expect(map.grid[s.y][s.x]).toBe(0);
+      expect(s.x === map.exit.x && s.y === map.exit.y).toBe(false);
+      const key = `${s.x},${s.y}`;
+      expect(seen.has(key)).toBe(false);
+      seen.add(key);
+    }
+  });
+
+  it("returns fewer than maxPlayers spawns without padding when the level has too few rooms", () => {
+    const gen = new MapGenerator({ minSize: 40, maxSize: 40 });
+    const parsed = parsedFile({ entities: [entity()] }); // tops up to exactly 2 rooms
+    const map = gen.generate(parsed, false, true, [], 16);
+    expect(map.multiplayerSpawns).toBeDefined();
+    expect((map.multiplayerSpawns ?? []).length).toBeLessThan(16);
+  });
+
+  it("is deterministic for the same input with maxPlayers > 1 too", () => {
+    const gen = new MapGenerator();
+    const many = Array.from({ length: 6 }, (_, i) => entity({ name: `f${i}`, startLine: i * 10 + 1, endLine: i * 10 + 5, complexityScore: 5 }));
+    const parsed = parsedFile({ linesOfCode: 200, entities: many });
+    const a = gen.generate(parsed, false, true, [], 4);
+    const b = gen.generate(parsed, false, true, [], 4);
+    expect(a).toEqual(b);
+  });
+
   it("never logs an unreachable-room warning for any bundled demo-campaign file", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const tree = loadDemoCampaignTree();

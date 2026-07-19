@@ -60,3 +60,38 @@ export function pickExit(rooms: Room[], spawn: Point): Point {
   }
   return { x: best.center.x, y: best.center.y };
 }
+
+/**
+ * Multiplayer spawn selection: greedily pick up to `count` room centers, each
+ * one maximizing its minimum distance to the exit and every spawn already
+ * chosen — spreads players across the level instead of clustering them. The
+ * exit's own room center is excluded from the candidate pool up front, or a
+ * large enough `count` would eventually assign a spawn onto the exit tile
+ * itself. Pure geometry, like `pickSafeSpawn`/`pickExit` — draws nothing from
+ * `rng`, so calling it changes nothing about single-player's deterministic
+ * draw sequence regardless of where in `generate()` it's invoked. Returns
+ * fewer than `count` points if `rooms.length < count` (no padding, no
+ * duplicates) — wrapping a player index into a short result is the caller's
+ * job, not this function's.
+ */
+export function pickMultiplayerSpawns(rooms: Room[], exit: Point, count: number): Point[] {
+  if (rooms.length === 0) return [{ x: exit.x, y: exit.y }];
+  const pool = rooms.map((r) => r.center).filter((c) => !(c.x === exit.x && c.y === exit.y));
+  const chosen: Point[] = [];
+  for (let i = 0; i < count && pool.length > 0; i++) {
+    let bestIdx = 0;
+    let bestMinDist = -1;
+    for (let j = 0; j < pool.length; j++) {
+      const c = pool[j];
+      let minDist = dist(c.x + 0.5, c.y + 0.5, exit.x + 0.5, exit.y + 0.5);
+      for (const s of chosen) minDist = Math.min(minDist, dist(c.x + 0.5, c.y + 0.5, s.x + 0.5, s.y + 0.5));
+      if (minDist > bestMinDist) {
+        bestMinDist = minDist;
+        bestIdx = j;
+      }
+    }
+    chosen.push(pool[bestIdx]);
+    pool.splice(bestIdx, 1);
+  }
+  return chosen;
+}

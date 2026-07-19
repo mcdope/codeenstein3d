@@ -109,6 +109,47 @@ describe("spawnEnemies", () => {
     expect(enemies[0].x).toBe(room.x + 1.5);
     expect(enemies[0].y).toBe(room.y + 1.5);
   });
+
+  it("rerolls (and eventually resolves) when a spawn point would land on a multiplayer spawn tile", () => {
+    const room = makeRoom(1, 1, 5, 5, entity({ complexityScore: 5 })); // center tile (3,3)
+    const sequence = [0.5, 0.5, 0, 0];
+    let i = 0;
+    const scripted = () => sequence[i++ % sequence.length];
+    const enemies = spawnEnemies([room], { x: 99, y: 99 }, scripted, [{ x: 3, y: 3 }]);
+    expect(enemies).toHaveLength(1);
+    expect(enemies[0].x).toBe(1.5);
+    expect(enemies[0].y).toBe(1.5);
+  });
+
+  it("falls back to the room's corner when every reroll still lands on a multiplayer spawn tile", () => {
+    const room = makeRoom(1, 1, 5, 5, entity({ complexityScore: 5 })); // center tile (3,3)
+    const alwaysCenter = () => 0.5;
+    const enemies = spawnEnemies([room], { x: 99, y: 99 }, alwaysCenter, [{ x: 3, y: 3 }]);
+    expect(enemies).toHaveLength(1);
+    expect(enemies[0].x).toBe(room.x + 1.5);
+    expect(enemies[0].y).toBe(room.y + 1.5);
+  });
+
+  it("avoids both the exit and a multiplayer spawn tile in the same reroll sequence", () => {
+    const room = makeRoom(1, 1, 5, 5, entity({ complexityScore: 5 })); // center tile (3,3)
+    // i=0's center pick (3,3) is blocked by the multiplayer spawn; the first
+    // reroll lands on (2,2), blocked by the exit; the second reroll lands
+    // clear on (5,5).
+    const sequence = [0.25, 0.25, 0.9, 0.9];
+    let i = 0;
+    const scripted = () => sequence[i++ % sequence.length];
+    const enemies = spawnEnemies([room], { x: 2, y: 2 }, scripted, [{ x: 3, y: 3 }]);
+    expect(enemies).toHaveLength(1);
+    expect(enemies[0].x).toBe(5.5);
+    expect(enemies[0].y).toBe(5.5);
+  });
+
+  it("omitted multiplayerSpawns behaves exactly like an empty avoid-list", () => {
+    const room = makeRoom(1, 1, 6, 6, entity({ complexityScore: 5 }));
+    const withDefault = spawnEnemies([room], { x: 99, y: 99 }, mulberry32(1));
+    const withEmpty = spawnEnemies([room], { x: 99, y: 99 }, mulberry32(1), []);
+    expect(withDefault).toEqual(withEmpty);
+  });
 });
 
 describe("spawnEdgeCaseEnemies", () => {

@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import type { CodeEntity } from "../../parser/types";
 import { makeRoom } from "./geometry";
-import { pickExit, pickSafeSpawn } from "./spawnExit";
+import { pickExit, pickMultiplayerSpawns, pickSafeSpawn } from "./spawnExit";
 
 function entity(overrides: Partial<CodeEntity> = {}): CodeEntity {
   return { name: "f", kind: "function", startLine: 1, endLine: 5, complexityScore: 3, nestingDepth: 0, ...overrides };
@@ -73,5 +73,53 @@ describe("pickExit", () => {
     const spawn = { x: 1, y: 11 };
     const exit = pickExit([a, b], spawn);
     expect(exit).toEqual(a.center);
+  });
+});
+
+describe("pickMultiplayerSpawns", () => {
+  it("returns the exit point itself for zero rooms", () => {
+    expect(pickMultiplayerSpawns([], { x: 5, y: 5 }, 3)).toEqual([{ x: 5, y: 5 }]);
+  });
+
+  it("returns [] when count is 0", () => {
+    const room = makeRoom(1, 1, 2, 2, entity()); // center (2, 2)
+    expect(pickMultiplayerSpawns([room], { x: 99, y: 99 }, 0)).toEqual([]);
+  });
+
+  it("returns the single room's center when there's exactly one eligible room", () => {
+    const room = makeRoom(1, 1, 2, 2, entity()); // center (2, 2)
+    expect(pickMultiplayerSpawns([room], { x: 99, y: 99 }, 1)).toEqual([room.center]);
+  });
+
+  it("excludes the exit's own room center from the candidate pool", () => {
+    const room = makeRoom(1, 1, 2, 2, entity()); // center (2, 2)
+    expect(pickMultiplayerSpawns([room], { x: 2, y: 2 }, 1)).toEqual([]);
+  });
+
+  it("greedily disperses picks by maximizing distance from the exit and from each other", () => {
+    const a = makeRoom(1, 1, 2, 2, entity()); // center (2, 2)
+    const b = makeRoom(19, 1, 2, 2, entity()); // center (20, 2)
+    const c = makeRoom(10, 1, 2, 2, entity()); // center (11, 2)
+    const exit = { x: 2, y: 20 };
+    // First pick maximizes raw distance to the exit -> b (farthest at (20,2)).
+    // Second pick maximizes the *minimum* of (distance to exit, distance to b)
+    // among the remainder -> a, since c sits close to b while a doesn't.
+    const spawns = pickMultiplayerSpawns([a, b, c], exit, 2);
+    expect(spawns).toEqual([b.center, a.center]);
+  });
+
+  it("returns fewer than count points when there aren't enough eligible rooms, without padding or duplicates", () => {
+    const a = makeRoom(1, 1, 2, 2, entity());
+    const b = makeRoom(19, 1, 2, 2, entity());
+    const spawns = pickMultiplayerSpawns([a, b], { x: 99, y: 99 }, 5);
+    expect(spawns).toHaveLength(2);
+    expect(spawns).toEqual(expect.arrayContaining([a.center, b.center]));
+  });
+
+  it("only ever returns points drawn from the rooms' own centers", () => {
+    const rooms = [makeRoom(1, 1, 4, 4, entity()), makeRoom(10, 10, 4, 4, entity()), makeRoom(30, 5, 4, 4, entity())];
+    const centers = rooms.map((r) => r.center);
+    const spawns = pickMultiplayerSpawns(rooms, { x: 99, y: 99 }, 3);
+    for (const s of spawns) expect(centers).toContainEqual(s);
   });
 });
