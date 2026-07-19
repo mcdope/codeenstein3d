@@ -12,22 +12,39 @@
  * naturally throttle-resistant per the netcode spec, no separate timer
  * needed guest-side), then apply the bundle via `engine.advance(FIXED_DT)` —
  * the identical call the host makes from its own tick-due handler.
+ *
+ * Level transitions (`multiplayer-research.md` step 8): this peer's own
+ * simulation reaches a win at the exact same tick the host's does (lockstep)
+ * — but only the host is authoritative for what happens next, so a local win
+ * does nothing here beyond what `sessionEngine.ts`'s own `onWin` doc comment
+ * already covers (the sim keeps running, never auto-ends). The real
+ * transition is entirely wire-driven: a `LevelTransitionMessage` sequence
+ * arrives on `channels.reconciliation` (the same channel
+ * `ReconciliationSnapshotMessage`s already use, now discriminated by
+ * `type`), reassembled via `ChunkReassembler` the same way the initial
+ * session-setup handshake reassembles its own `GameMap` transfer; once
+ * complete, this peer acks and calls the same rebindable `startLevel()` the
+ * host itself uses.
  */
-import type { EngineStats } from "../engine/engine";
 import { onJsonMessage, sendJson } from "./dataChannelMessaging";
+import { ChunkReassembler } from "./chunkedTransfer";
+import type { EngineCarryover, EngineStats, PlayerId } from "../engine/engine";
 import type { ConnectionStateSource, MultiplayerSessionHandle } from "./multiplayerSessionHost";
 import { DISCONNECT_GRACE_MS, FIXED_DT, INPUT_DELAY_TICKS } from "./netcodeConstants";
+import type { LevelTransitionAckMessage, LevelTransitionMessage } from "./levelTransitionTypes";
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
 import type { ReconciliationSnapshotMessage } from "./reconciliationTypes";
-import { buildSessionEngine, type SessionEndReason } from "./sessionEngine";
+import { buildSessionEngine, type SessionEndReason, type SessionEngineHandle } from "./sessionEngine";
 import { GUEST_PLAYER_ID, HOST_PLAYER_ID, type SessionSetupResult } from "./sessionSetupTypes";
+import type { GameMap } from "../map/types";
 import type { MultiplayerChannels } from "./types";
 
 export function runMultiplayerSessionAsGuest(
   channels: MultiplayerChannels,
   canvas: HTMLCanvasElement,
   result: SessionSetupResult,
-  /** Fired once the shared simulation reaches game-over/win, after this
+  /** Fired once the shared simulation reaches game-over, or (guest-side
+   * only) the host's own connection expires its grace period, after this
    * module's own teardown (listener unsubscribe) has already run —
    * `main.ts`'s hook for updating its own UI back out of the session. */
   onSessionEnded?: (stats: EngineStats, reason: SessionEndReason) => void,
@@ -40,6 +57,7 @@ export function runMultiplayerSessionAsGuest(
   let lastAppliedTick: number | null = null;
   let lastReconciliationRngState: number | null = null;
   let ended = false;
+  let currentResult = result;
 
   // Host-disconnect handling (§5, guest side): unlike the host, there's no
   // roster-removal/loot-conversion machinery to run here — a bundle simply
@@ -57,13 +75,13 @@ export function runMultiplayerSessionAsGuest(
     // event to slip through afterward (same reasoning `unsubscribeInput`'s
     // own doc comment gives for why *it* needs no re-entrancy guard).
     /* v8 ignore next */
-    if (!connection || ended) return;
+    if (!connection || ended || !engine) return;
     const state = connection.connectionState;
     if (state === "disconnected" || state === "failed") {
       if (graceTimer !== null) return; // already tracked
       graceTimer = setTimeout(() => {
         graceTimer = null;
-        const stats = engine.render();
+        const stats = engine!.render();
         teardown();
         onSessionEnded?.(stats, "host-disconnected");
       }, DISCONNECT_GRACE_MS);
@@ -83,15 +101,48 @@ export function runMultiplayerSessionAsGuest(
     if (graceTimer !== null) clearTimeout(graceTimer);
   };
 
-  const { engine, myInput, otherInput, localSampler } = buildSessionEngine({
-    result,
-    role: "guest",
-    canvas,
-    onSessionEnded: (stats, reason) => {
-      teardown();
-      onSessionEnded?.(stats, reason);
-    },
-  });
+  // Assigned synchronously by `startLevel(currentResult)` a few lines below,
+  // before anything else can read them — see the identical `hasStarted`
+  // pattern in `multiplayerSessionHost.ts`'s own `startLevel()`.
+  let engine: SessionEngineHandle["engine"] | undefined;
+  let myInput: SessionEngineHandle["myInput"] | undefined;
+  let otherInput: SessionEngineHandle["otherInput"] | undefined;
+  let localSampler: SessionEngineHandle["localSampler"] | undefined;
+  let hasStarted = false;
+
+  // In-flight level-transition reassembly (§7) — `null` outside of one,
+  // mirroring `sessionSetupGuest.ts`'s own `reassembler`/`pending` split for
+  // its identical chunked-transfer shape. At most one transition is ever in
+  // flight at a time (the host only starts a new one after the previous
+  // fully resolves), so this needs no per-transition bookkeeping.
+  let transitionReassembler: ChunkReassembler | null = null;
+  let transitionCarryovers: Record<PlayerId, EngineCarryover> | null = null;
+  let transitionGameplaySeed: number | null = null;
+
+  const startLevel = (levelResult: SessionSetupResult, carryovers?: Record<PlayerId, EngineCarryover>): void => {
+    if (hasStarted) localSampler?.detach();
+    hasStarted = true;
+    const built = buildSessionEngine({
+      result: levelResult,
+      role: "guest",
+      canvas,
+      carryovers,
+      onSessionEnded: (stats, reason) => {
+        teardown();
+        onSessionEnded?.(stats, reason);
+      },
+      // A local win here does nothing beyond keeping the fallback
+      // "campaign-complete" auto-end from firing — only the host decides
+      // whether a transition happens; this peer just waits for the wire
+      // message sequence handled below.
+      onWin: () => {},
+    });
+    engine = built.engine;
+    myInput = built.myInput;
+    otherInput = built.otherInput;
+    localSampler = built.localSampler;
+  };
+  startLevel(currentResult);
 
   // No re-entrancy guard needed here, unlike the host's own worker.onmessage
   // handler: `teardown()` unsubscribes this exact listener synchronously, on
@@ -101,6 +152,14 @@ export function runMultiplayerSessionAsGuest(
   // by the time `terminate()` runs) for a stray already-queued message to
   // slip through after teardown.
   const unsubscribeInput = onJsonMessage<TickInputBundle>(channels.input, (bundle) => {
+    // Unreachable: `engine`/`myInput`/`otherInput`/`localSampler` are always
+    // assigned synchronously by `startLevel(currentResult)` above, before
+    // this listener could ever be invoked — the same "TypeScript's
+    // conservative optional typing vs. what production code actually
+    // guarantees" shape `doc/dev/testing.md`'s own coverage-caveats section
+    // documents elsewhere in this codebase.
+    /* v8 ignore next */
+    if (!engine || !myInput || !otherInput || !localSampler) return;
     const futureTick = bundle.tick + INPUT_DELAY_TICKS;
     const { snapshot: sampled, localEscapePressed } = localSampler.sampleAndReset();
     const outgoing: TickInput = { tick: futureTick, playerId: GUEST_PLAYER_ID, input: sampled };
@@ -124,21 +183,80 @@ export function runMultiplayerSessionAsGuest(
   // on this same channel has already unsubscribed by the time this module is
   // ever constructed (see `startMultiplayerSessionAsGuest` in `main.ts`), so
   // there's no risk of the two colliding. No re-entrancy guard needed, same
-  // reasoning as `unsubscribeInput` above.
-  const unsubscribeReconciliation = onJsonMessage<ReconciliationSnapshotMessage>(channels.reconciliation, (snapshot) => {
-    engine.applyReconciliationSnapshot(snapshot);
-    lastReconciliationRngState = snapshot.rngState;
-  });
+  // reasoning as `unsubscribeInput` above. Now discriminates by `type` —
+  // this channel carries both `ReconciliationSnapshotMessage`s and, since
+  // step 8, a `LevelTransitionMessage` sequence.
+  const unsubscribeReconciliation = onJsonMessage<ReconciliationSnapshotMessage | LevelTransitionMessage>(
+    channels.reconciliation,
+    (message) => {
+      // Same reasoning as `unsubscribeInput`'s own doc comment above.
+      /* v8 ignore next */
+      if (!engine) return;
+      switch (message.type) {
+        case "reconciliation-snapshot": {
+          engine.applyReconciliationSnapshot(message);
+          lastReconciliationRngState = message.rngState;
+          return;
+        }
+        case "level-transition-init": {
+          transitionReassembler = new ChunkReassembler();
+          transitionCarryovers = message.carryovers;
+          transitionGameplaySeed = message.gameplaySeed;
+          return;
+        }
+        case "level-transition-map-chunk": {
+          transitionReassembler?.push(message.data, message.index);
+          return;
+        }
+        case "level-transition-map-end": {
+          if (!transitionReassembler || transitionCarryovers === null || transitionGameplaySeed === null) return;
+          if (!transitionReassembler.isComplete(message.totalChunks)) return;
+          const mapWithoutVisited = transitionReassembler.finish<Omit<GameMap, "visited">>();
+          // Reconstructed locally rather than transferred — see
+          // `sessionSetupGuest.ts`'s identical reasoning for its own initial
+          // map transfer.
+          const visited: boolean[][] = Array.from({ length: mapWithoutVisited.height }, () =>
+            new Array<boolean>(mapWithoutVisited.width).fill(false),
+          );
+          const carryovers = transitionCarryovers;
+          const gameplaySeed = transitionGameplaySeed;
+          transitionReassembler = null;
+          transitionCarryovers = null;
+          transitionGameplaySeed = null;
+
+          const ack: LevelTransitionAckMessage = { type: "level-transition-ack", playerId: GUEST_PLAYER_ID };
+          if (channels.reconciliation.readyState === "open") sendJson(channels.reconciliation, ack);
+
+          currentResult = { ...currentResult, map: { ...mapWithoutVisited, visited }, gameplaySeed };
+          startLevel(currentResult, carryovers);
+          return;
+        }
+      }
+    },
+  );
 
   return {
     stop: teardown,
     getLastAppliedTick: () => lastAppliedTick,
-    getPlayerPosition: (id) => engine.getPlayerPosition(id),
-    getRngState: () => engine.getRngState(),
-    hasActiveRenderOffset: (id) => engine.hasActiveRenderOffset(id),
+    getPlayerPosition: (id) => engine?.getPlayerPosition(id) ?? null,
+    getPlayerFacing: (id) => engine?.getPlayerFacing(id) ?? null,
+    getRngState: () => engine!.getRngState(),
+    hasActiveRenderOffset: (id) => engine!.hasActiveRenderOffset(id),
     getLastReconciliationRngState: () => lastReconciliationRngState,
-    getPlayerStatus: (id) => engine.getPlayerStatus(id),
-    getLootDrops: () => engine.getLootDrops(),
-    debugInjectDesync: (injection) => engine.debugInjectDesync(injection),
+    // `engine` is always defined by the time any of these handle methods
+    // can be called — same reasoning as `unsubscribeInput`'s own doc comment
+    // above; the `?? null`/`?? []` fallbacks are defensive-only.
+    /* v8 ignore next */
+    getPlayerStatus: (id) => engine?.getPlayerStatus(id) ?? null,
+    /* v8 ignore next */
+    getLootDrops: () => engine?.getLootDrops() ?? [],
+    /* v8 ignore next */
+    getMapExit: () => engine?.getMapExit() ?? null,
+    /* v8 ignore next */
+    getMapGrid: () => engine?.getMapGrid() ?? null,
+    // See `multiplayerSessionHost.ts`'s identical getter for why this one
+    // needs no ignore comment, unlike the getters above it.
+    getExitCountdownRemaining: () => engine?.getExitCountdownRemaining() ?? null,
+    debugInjectDesync: (injection) => engine!.debugInjectDesync(injection),
   };
 }

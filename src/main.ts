@@ -68,7 +68,7 @@ import { createSession, fetchSession, fetchSessionAsHost, postAnswer } from "./m
 import { fetchLobbyEntries } from "./multiplayer/lobby";
 import { createGuestAnswer, createHostOffer, waitForChannelsOpen } from "./multiplayer/webrtcConnection";
 import { SignalingError, type ConnectionState, type LobbyEntry, type MultiplayerConnection } from "./multiplayer/types";
-import { runMultiplayerSessionAsHost, type MultiplayerSessionHandle } from "./multiplayer/multiplayerSessionHost";
+import { runMultiplayerSessionAsHost, type FindNextLevel, type MultiplayerSessionHandle } from "./multiplayer/multiplayerSessionHost";
 import { runMultiplayerSessionAsGuest } from "./multiplayer/multiplayerSessionGuest";
 import type { SessionEndReason } from "./multiplayer/sessionEngine";
 import { runHostSessionSetup } from "./multiplayer/sessionSetupHost";
@@ -1189,6 +1189,7 @@ async function startMultiplayerSessionAsHost(): Promise<void> {
     return;
   }
   const { channels, peerConnection } = activeMultiplayerConnection;
+  const initialLevelPath = currentLevelPath;
   multiplayerStartSessionButton.disabled = true;
   setMultiplayerStatus("Starting session…", false);
   try {
@@ -1201,12 +1202,89 @@ async function startMultiplayerSessionAsHost(): Promise<void> {
     const result = await runHostSessionSetup(channels, { map, difficulty: currentDifficulty, playerCount: 2 });
     beginMultiplayerLevel();
     const worker = new Worker(new URL("./multiplayer/tickClockWorker.ts", import.meta.url), { type: "module" });
-    activeMultiplayerSession = runMultiplayerSessionAsHost(channels, canvas, result, worker, onMultiplayerSessionEnded, peerConnection);
+    activeMultiplayerSession = runMultiplayerSessionAsHost(
+      channels,
+      canvas,
+      result,
+      worker,
+      onMultiplayerSessionEnded,
+      peerConnection,
+      findNextMultiplayerLevel(initialLevelPath),
+    );
   } catch (err) {
     console.error("[multiplayer] Failed to start session:", err);
     setMultiplayerStatus(err instanceof Error ? err.message : "Failed to start the multiplayer session.", true);
     multiplayerStartSessionButton.disabled = false;
   }
+}
+
+/**
+ * Builds the host-side `FindNextLevel` callback `runMultiplayerSessionAsHost`
+ * calls on every win — mirrors `advanceToNextLevel`'s own file-tree
+ * traversal (`findNextParsableFile`/`readFileText`/`parseFile`, skipping a
+ * candidate that fails to read/parse in favor of the next one) closely
+ * enough to share its own shape, but returns the new map/seed instead of
+ * driving UI directly — the session driver owns broadcasting/applying it,
+ * and `null` (workspace exhausted) routes to the `"campaign-complete"` end
+ * state instead of a phantom transition. `afterPath` is tracked in a local
+ * closure variable, updated after each successful transition, so a second
+ * win later in the same session resumes the search from where the last one
+ * left off — never re-derived from `currentLevelPath` (which this same
+ * closure also keeps in sync, for anything else that reads it, but doesn't
+ * itself depend on for its own traversal position).
+ */
+function findNextMultiplayerLevel(initialLevelPath: string): FindNextLevel {
+  let afterPath = initialLevelPath;
+  return async ({ carryovers }) => {
+    // `workspaceTree` is set once at every workspace-load entry point and
+    // never reset to null afterward — this closure is only ever reachable
+    // via a win inside a session `startMultiplayerSessionAsHost` already
+    // required a loaded workspace (and therefore a non-null `workspaceTree`)
+    // to start, so the null case can't actually happen here.
+    /* v8 ignore next */
+    if (!workspaceTree) return null;
+    while (true) {
+      const next = await findNextParsableFile(workspaceTree, afterPath);
+      if (!next) return null;
+
+      try {
+        const text = await readFileText(next.handle as FileSystemFileHandle);
+        const parsed = await parseFile(next.name, text);
+        if (parsed) {
+          audio.playLevelComplete();
+          campaignLevelIndex += 1;
+          console.log(`%c[multiplayer] ${afterPath} cleared — advancing to ${next.path}`, "color:#37d24a;font-weight:bold");
+          // A weapon counts as "still missing" (eligible for a secret room
+          // or an Elite's bonus drop) only once *every* connected player
+          // lacks it — the same spirit `computeMissingWeaponIndices`'s own
+          // single-player `owned` param already uses, generalized from one
+          // player's inventory to the whole team's.
+          const rosterIds = Object.keys(carryovers);
+          // Every roster id is always present in `carryovers` with a real,
+          // fully-populated `EngineCarryover` (`onWinFromEngine` builds one
+          // per `currentResult.roster` entry before calling this) and the
+          // roster itself is never empty (today's fixed 2-player session
+          // always has both slots) — the `?.`/`?? []` fallback and the
+          // empty-roster branch below only satisfy the index signature's and
+          // `Array.prototype.reduce`'s own conservative typing, neither is
+          // reachable in practice.
+          /* v8 ignore next 2 */
+          const perPlayerOwned: number[][] = rosterIds.map((id) => carryovers[id]?.ownedWeapons ?? []);
+          const ownedByEveryone = perPlayerOwned.length === 0 ? [] : perPlayerOwned.reduce((acc, owned) => acc.filter((w) => owned.includes(w)));
+          const missingWeaponIndices = computeMissingWeaponIndices(ownedByEveryone, campaignLevelIndex);
+          const bonusLevel = BONUS_LEVEL_EXTENSIONS.has(extensionOf(next.path));
+          const nextMap = mapGenerator.generate(parsed, bonusLevel, false, missingWeaponIndices, rosterIds.length);
+          afterPath = next.path;
+          currentLevelPath = next.path;
+          currentParsedFile = parsed;
+          return { map: nextMap, gameplaySeed: randomSeed() };
+        }
+      } catch (err) {
+        console.error(`[multiplayer] Failed to load "${next.path}", skipping to the next file:`, err);
+      }
+      afterPath = next.path;
+    }
+  };
 }
 
 async function startMultiplayerSessionAsGuest(): Promise<void> {
@@ -1299,12 +1377,16 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
         getConnectionState: () => unknown;
         getSimTick: () => number | null;
         getPlayerPosition: (id: string) => { x: number; y: number } | null;
+        getPlayerFacing: (id: string) => { dirX: number; dirY: number } | null;
         getRngState: () => number | null;
         injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
         hasActiveRenderOffset: (id: string) => boolean;
         getLastReconciliationRngState: () => number | null;
         getPlayerStatus: (id: string) => string | null;
         getLootDrops: () => readonly unknown[];
+        getMapExit: () => { x: number; y: number } | null;
+        getMapGrid: () => readonly (readonly number[])[] | null;
+        getExitCountdownRemaining: () => number | null;
       };
     }
   ).__codeensteinMultiplayerTestHooks = {
@@ -1321,6 +1403,7 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
     // end-to-end verify script's lockstep-correctness assertions.
     getSimTick: () => activeMultiplayerSession?.getLastAppliedTick() ?? null,
     getPlayerPosition: (id) => activeMultiplayerSession?.getPlayerPosition(id) ?? null,
+    getPlayerFacing: (id) => activeMultiplayerSession?.getPlayerFacing(id) ?? null,
     // Both added in step 7 (reconciliation) — `getRngState` is read-only
     // introspection, same spirit as the two above. `injectDesync` is
     // different in kind, not just in name: every hook above (and
@@ -1346,6 +1429,14 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
     // flipping to `"disconnected"` and its inventory converting to loot.
     getPlayerStatus: (id) => activeMultiplayerSession?.getPlayerStatus(id) ?? null,
     getLootDrops: () => activeMultiplayerSession?.getLootDrops() ?? [],
+    // Both added in step 8 (level transitions) — read-only introspection for
+    // `scripts/verify-multiplayer-transition.mjs` to compute its own real,
+    // walls-aware route to the exit on the actual generated level, rather
+    // than needing a fake/simplified map the way the unit-test-only
+    // `main.test.ts` transition tests do.
+    getMapExit: () => activeMultiplayerSession?.getMapExit() ?? null,
+    getMapGrid: () => activeMultiplayerSession?.getMapGrid() ?? null,
+    getExitCountdownRemaining: () => activeMultiplayerSession?.getExitCountdownRemaining() ?? null,
   };
 }
 

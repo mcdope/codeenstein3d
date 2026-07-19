@@ -6,7 +6,15 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeRTCDataChannel } from "../../test/mocks/webrtc";
 import { createMockCanvasContext, stubCanvasGetContext } from "../../test/mocks/canvas";
 import type { GameMap, Tile } from "../map/types";
+import type { EngineCarryover, PlayerId } from "../engine/engine";
 import type { InputSnapshot } from "../engine/input";
+import { COUNTDOWN_TICKS } from "../engine/transitionConstants";
+import { chunkJson } from "./chunkedTransfer";
+import type {
+  LevelTransitionInitMessage,
+  LevelTransitionMapChunkMessage,
+  LevelTransitionMapEndMessage,
+} from "./levelTransitionTypes";
 import { DISCONNECT_GRACE_MS } from "./netcodeConstants";
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
 import type { PlayerSnapshot, ReconciliationSnapshotMessage } from "./reconciliationTypes";
@@ -56,6 +64,17 @@ function linkedChannels(): { host: MultiplayerChannels; guest: MultiplayerChanne
   const hostReconciliation = new FakeRTCDataChannel("reconciliation");
   const guestReconciliation = new FakeRTCDataChannel("reconciliation");
   hostReconciliation.link(guestReconciliation);
+  // Every real caller only ever drives ticks once `waitForChannelsOpen()`
+  // has already resolved (see `webrtcConnection.ts`) — matching that here
+  // keeps this fixture's default state realistic, same reasoning
+  // `multiplayerSessionHost.test.ts`'s own identical fixture gives (needed
+  // there once the host driver started checking `readyState === "open"`
+  // before broadcasting; needed here now that the guest's own
+  // level-transition ack does the same).
+  hostInput.simulateOpen();
+  guestInput.simulateOpen();
+  hostReconciliation.simulateOpen();
+  guestReconciliation.simulateOpen();
   return {
     host: { input: hostInput as unknown as RTCDataChannel, reconciliation: hostReconciliation as unknown as RTCDataChannel },
     guest: { input: guestInput as unknown as RTCDataChannel, reconciliation: guestReconciliation as unknown as RTCDataChannel },
@@ -246,6 +265,24 @@ describe("runMultiplayerSessionAsGuest", () => {
     const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map: fakeMap({ spawn: { x: 6, y: 7 } }) }));
     expect(handle.getPlayerPosition("guest")).toEqual({ x: 6.5, y: 7.5 });
     expect(handle.getPlayerPosition("nope")).toBeNull();
+  });
+
+  it("getPlayerFacing delegates to the underlying engine", () => {
+    const channels = linkedChannels();
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+    expect(handle.getPlayerFacing("guest")).toEqual({ dirX: 1, dirY: 0 });
+    expect(handle.getPlayerFacing("nope")).toBeNull();
+  });
+
+  it("getExitCountdownRemaining delegates to the underlying engine, real once a bundle lands the guest on the exit", () => {
+    const size = 12;
+    const map = fakeMap({ spawn: { x: size - 2, y: size - 2 }, exit: { x: size - 2, y: size - 2 } }, size);
+    const channels = linkedChannels();
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map }));
+    expect(handle.getExitCountdownRemaining()).toBeNull();
+    const bundle: TickInputBundle = { tick: 0, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+    channels.host.input.send(JSON.stringify(bundle));
+    expect(handle.getExitCountdownRemaining()).toBe(COUNTDOWN_TICKS);
   });
 
   it("forwards onSessionEnded once game-over fires, after tearing down its own listener", () => {
@@ -459,6 +496,130 @@ describe("runMultiplayerSessionAsGuest", () => {
       channels.host.input.send(JSON.stringify(bundle));
 
       expect(dismissSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("level transition (step 8)", () => {
+    /** Sends the same init -> chunk(s) -> end sequence the real host driver
+     * broadcasts, mirroring `sessionSetupHost.ts`'s own chunking of its
+     * initial map transfer. */
+    function sendLevelTransition(
+      channels: { host: MultiplayerChannels; guest: MultiplayerChannels },
+      map: GameMap,
+      carryovers: Record<PlayerId, EngineCarryover>,
+      gameplaySeed: number,
+    ): void {
+      const { visited: _visited, ...mapWithoutVisited } = map;
+      const initMessage: LevelTransitionInitMessage = { type: "level-transition-init", carryovers, gameplaySeed };
+      channels.host.reconciliation.send(JSON.stringify(initMessage));
+      const chunks = chunkJson(mapWithoutVisited, 16 * 1024);
+      chunks.forEach((data, index) => {
+        const chunkMessage: LevelTransitionMapChunkMessage = { type: "level-transition-map-chunk", index, data };
+        channels.host.reconciliation.send(JSON.stringify(chunkMessage));
+      });
+      const endMessage: LevelTransitionMapEndMessage = { type: "level-transition-map-end", totalChunks: chunks.length };
+      channels.host.reconciliation.send(JSON.stringify(endMessage));
+    }
+
+    it("reassembles the map, applies carryovers, sends an ack, and swaps in a new engine", () => {
+      const channels = linkedChannels();
+      const hostSeenMessages = collectMessages(channels.host.reconciliation as unknown as RTCDataChannel) as unknown as { type: string }[];
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+      expect(handle.getPlayerPosition("guest")).toEqual({ x: 5.5, y: 5.5 }); // default fakeMap() spawn
+
+      const nextMap = fakeMap({ spawn: { x: 7, y: 7 } });
+      const carryovers: Record<PlayerId, EngineCarryover> = {
+        host: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 },
+        guest: { health: 66, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 },
+      };
+      sendLevelTransition(channels, nextMap, carryovers, 999);
+
+      expect(handle.getPlayerPosition("guest")).toEqual({ x: 7.5, y: 7.5 });
+      expect(handle.getPlayerStatus("guest")).toBe("alive");
+      expect(hostSeenMessages).toContainEqual({ type: "level-transition-ack", playerId: "guest" });
+    });
+
+    it("carries each player's own health from the carryover into the new level", () => {
+      const channels = linkedChannels();
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+      const carryovers: Record<PlayerId, EngineCarryover> = {
+        host: { health: 42, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 },
+        guest: { health: 66, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 },
+      };
+      sendLevelTransition(channels, fakeMap(), carryovers, 1);
+
+      // No public per-player-health hook on MultiplayerSessionHandle — the
+      // engine reaching game over from a hazard at exactly this health is
+      // the only externally-observable proxy available here (the real
+      // per-field carryover mapping itself is already covered directly by
+      // `engine.test.ts`'s own `captureCarryoverFor`/`addPlayer` carryover
+      // tests) — status staying "alive" at all is still a meaningful signal
+      // that construction didn't reject/ignore the carryover outright.
+      expect(handle.getPlayerStatus("guest")).toBe("alive");
+      expect(handle.getPlayerStatus("host")).toBe("alive");
+    });
+
+    it("ignores a stray map-chunk/map-end with no preceding init — nothing to reassemble", () => {
+      const channels = linkedChannels();
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+      const before = handle.getPlayerPosition("guest");
+
+      const chunkMessage: LevelTransitionMapChunkMessage = { type: "level-transition-map-chunk", index: 0, data: "{}" };
+      channels.host.reconciliation.send(JSON.stringify(chunkMessage));
+      const endMessage: LevelTransitionMapEndMessage = { type: "level-transition-map-end", totalChunks: 1 };
+      expect(() => channels.host.reconciliation.send(JSON.stringify(endMessage))).not.toThrow();
+
+      expect(handle.getPlayerPosition("guest")).toEqual(before);
+    });
+
+    it("ignores an incomplete chunk sequence — never starts the new level", () => {
+      const channels = linkedChannels();
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+      const before = handle.getPlayerPosition("guest");
+
+      const carryovers: Record<PlayerId, EngineCarryover> = {
+        host: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 },
+        guest: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 },
+      };
+      const initMessage: LevelTransitionInitMessage = { type: "level-transition-init", carryovers, gameplaySeed: 1 };
+      channels.host.reconciliation.send(JSON.stringify(initMessage));
+      // Claims 2 chunks arrived but only 1 was ever actually sent.
+      const endMessage: LevelTransitionMapEndMessage = { type: "level-transition-map-end", totalChunks: 2 };
+      channels.host.reconciliation.send(JSON.stringify(endMessage));
+
+      expect(handle.getPlayerPosition("guest")).toEqual(before);
+    });
+
+    it("does not send an ack when the reconciliation channel is no longer open, but still starts the new level", () => {
+      const channels = linkedChannels();
+      const hostSeenMessages = collectMessages(channels.host.reconciliation as unknown as RTCDataChannel) as unknown as { type: string }[];
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+
+      (channels.guest.reconciliation as unknown as { readyState: RTCDataChannelState }).readyState = "closed";
+      const nextMap = fakeMap({ spawn: { x: 7, y: 7 } });
+      const carryovers: Record<PlayerId, EngineCarryover> = {
+        host: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 },
+        guest: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 },
+      };
+      sendLevelTransition(channels, nextMap, carryovers, 1);
+
+      expect(hostSeenMessages.some((m) => m.type === "level-transition-ack")).toBe(false);
+      expect(handle.getPlayerPosition("guest")).toEqual({ x: 7.5, y: 7.5 });
+    });
+
+    it("reaching a local win does not end the session by itself — only the host's own transition/campaign-complete decides that", () => {
+      const size = 12;
+      const map = fakeMap({ spawn: { x: size - 2, y: size - 2 }, exit: { x: size - 2, y: size - 2 } }, size);
+      const channels = linkedChannels();
+      const onSessionEnded = vi.fn();
+      runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map }), onSessionEnded);
+
+      for (let i = 0; i < COUNTDOWN_TICKS + 1; i++) {
+        const bundle: TickInputBundle = { tick: i, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+        channels.host.input.send(JSON.stringify(bundle));
+      }
+
+      expect(onSessionEnded).not.toHaveBeenCalled();
     });
   });
 });

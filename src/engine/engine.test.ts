@@ -3,7 +3,7 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { createMockCanvasContext, stubCanvasGetContext } from "../../test/mocks/canvas";
+import { createMockCanvasContext, stubCanvasGetContext, type MockCanvasContext } from "../../test/mocks/canvas";
 import { installRaf, type RafController } from "../../test/mocks/raf";
 import type { AmmoPickup, Enemy, GameMap, KeyItem, LootDrop, Mine, SpikeTrap, Teleporter, Tile } from "../map/types";
 import { DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, TELEPORTER_TILE } from "../map/types";
@@ -12,6 +12,7 @@ import type { InputSnapshot, InputSource } from "./input";
 import { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "./reconciliationConstants";
 import type { ReconciliationSnapshot } from "./reconciliationSnapshot";
 import { EMPTY_SNAPSHOT } from "./replay";
+import { COUNTDOWN_TICKS } from "./transitionConstants";
 import { GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX } from "./weapons";
 
 // engine.ts imports a real *value* (`textures`) from textures.ts, whose
@@ -1894,6 +1895,160 @@ describe("RaycasterEngine — win and death", () => {
   });
 });
 
+describe("RaycasterEngine — multiplayer exit countdown (step 8)", () => {
+  function exitMap(size = 12) {
+    return fakeMap({ spawn: { x: size - 2, y: size - 2 }, exit: { x: size - 2, y: size - 2 } }, size);
+  }
+
+  it("touching the exit starts the countdown instead of winning immediately, and getExitCountdownRemaining() reports it", () => {
+    const handlers = makeHandlers();
+    const engine = new RaycasterEngine(makeCanvas(), exitMap(), handlers, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    expect(engine.getExitCountdownRemaining()).toBeNull();
+    engine.advance(0.016);
+    expect(handlers.onWin).not.toHaveBeenCalled();
+    expect(engine.getExitCountdownRemaining()).toBe(COUNTDOWN_TICKS);
+  });
+
+  it("counts down by exactly one tick per simulate() call, regardless of dt", () => {
+    const engine = new RaycasterEngine(makeCanvas(), exitMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    engine.simulate(0.016); // starts it
+    engine.simulate(5); // a huge dt must still only cost one tick of countdown
+    expect(engine.getExitCountdownRemaining()).toBe(COUNTDOWN_TICKS - 1);
+  });
+
+  it("does not restart or cancel when the player leaves and re-touches the exit tile", () => {
+    const input = new ScriptedInput();
+    const engine = new RaycasterEngine(makeCanvas(), exitMap(), {}, undefined, undefined, undefined, 1, input, undefined, "H");
+    engine.simulate(0.016); // starts it, at COUNTDOWN_TICKS
+    engine.simulate(0.016); // COUNTDOWN_TICKS - 1
+    engine.simulate(0.016); // COUNTDOWN_TICKS - 2 — still counting, whether or not the player moved
+    expect(engine.getExitCountdownRemaining()).toBe(COUNTDOWN_TICKS - 2);
+  });
+
+  it("keeps the sim running normally throughout — other simulate() side effects still happen", () => {
+    const input = new ScriptedInput();
+    const engine = new RaycasterEngine(makeCanvas(), exitMap(), {}, undefined, undefined, undefined, 1, input, undefined, "H");
+    engine.simulate(0.016); // starts the countdown
+    const before = engine.getPlayerPosition("H")!;
+    input.keys.add("KeyS"); // back away from the exit-adjacent wall, into open floor
+    engine.simulate(0.5);
+    const after = engine.getPlayerPosition("H")!;
+    expect(after.x !== before.x || after.y !== before.y).toBe(true);
+  });
+
+  it("fires endGame(\"won\") only once the countdown reaches zero, not before", () => {
+    // onWin/onGameOver fire from render(), not simulate() — advance() (which
+    // calls both) is the real driver every session uses, so this test uses
+    // it too rather than simulate() alone.
+    const handlers = makeHandlers();
+    const engine = new RaycasterEngine(makeCanvas(), exitMap(), handlers, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    // The first call only *starts* the countdown (no decrement that tick —
+    // see `checkExit()`'s own doc comment) — COUNTDOWN_TICKS further calls
+    // are needed to actually exhaust it.
+    for (let i = 0; i < COUNTDOWN_TICKS + 1; i++) {
+      engine.advance(0.016);
+      if (i < COUNTDOWN_TICKS) expect(handlers.onWin).not.toHaveBeenCalled();
+    }
+    expect(handlers.onWin).toHaveBeenCalledTimes(1);
+    expect(engine.getExitCountdownRemaining()).toBeNull();
+  });
+
+  it("render() draws the countdown toast once active, and not before", () => {
+    const canvas = makeCanvas();
+    const ctx = canvas.getContext("2d") as unknown as MockCanvasContext;
+    const engine = new RaycasterEngine(canvas, exitMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    engine.render();
+    expect(ctx.fillText).not.toHaveBeenCalledWith(expect.stringContaining("Build finishing"), expect.anything(), expect.anything());
+    engine.simulate(0.016); // starts the countdown
+    engine.render();
+    expect(ctx.fillText).toHaveBeenCalledWith("Build finishing in 5s…", WIDTH / 2, 40);
+  });
+
+  it("getExitCountdownRemaining() stays null for a single-player instance, which wins immediately (regression)", () => {
+    const { engine, handlers } = makeEngine(exitMap());
+    engine.advance(0.016);
+    expect(handlers.onWin).toHaveBeenCalledTimes(1);
+    expect(engine.getExitCountdownRemaining()).toBeNull();
+  });
+});
+
+describe("RaycasterEngine — captureCarryoverFor (step 8)", () => {
+  it("captures health/swap/ammo/weapon/owned-weapons/cheat-flags/campaignLevelIndex for the given roster id", () => {
+    const carryover: EngineCarryover = {
+      health: 40,
+      swap: 5,
+      bullets: 10,
+      rockets: 2,
+      smg: 3,
+      gas: 4,
+      weaponIndex: GDB_WEAPON_INDEX,
+      ownedWeapons: [0, 1, 2, GDB_WEAPON_INDEX],
+      godMode: true,
+      noClip: true,
+      showFps: true,
+      campaignLevelIndex: 3,
+    };
+    const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, carryover, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    const result = engine.captureCarryoverFor("H");
+    expect(result.health).toBe(40);
+    expect(result.swap).toBe(5);
+    expect(result.bullets).toBe(10);
+    expect(result.rockets).toBe(2);
+    expect(result.smg).toBe(3);
+    expect(result.gas).toBe(4);
+    expect(result.weaponIndex).toBe(GDB_WEAPON_INDEX);
+    expect(result.ownedWeapons?.sort()).toEqual([0, 1, 2, GDB_WEAPON_INDEX].sort());
+    expect(result.godMode).toBe(true);
+    expect(result.noClip).toBe(true);
+    expect(result.showFps).toBe(true);
+    expect(result.campaignLevelIndex).toBe(3);
+  });
+
+  it("adds this level's own score on top of any prior score already carried in", () => {
+    const carryover: EngineCarryover = { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0, priorScore: 500 };
+    const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, carryover, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    const result = engine.captureCarryoverFor("H");
+    expect(result.priorScore).toBeGreaterThan(500); // 500 baseline + this level's own (nonzero completion/health) contribution
+  });
+
+  it("leaves priorScoreBreakdown/priorPlayerStats undefined when telemetry isn't being recorded (default)", () => {
+    const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    const result = engine.captureCarryoverFor("H");
+    expect(result.priorScoreBreakdown).toBeUndefined();
+    expect(result.priorPlayerStats).toBeUndefined();
+  });
+
+  it("populates priorScoreBreakdown/priorPlayerStats under ?testHooks=1 (telemetry on)", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+      const result = engine.captureCarryoverFor("H");
+      expect(result.priorScoreBreakdown).toBeDefined();
+      expect(result.priorPlayerStats).toBeDefined();
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
+  it("captures a non-local roster player's own state, not just the local player's", () => {
+    const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    engine.addPlayer("G", new ScriptedInput(), { health: 33, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 });
+    const hostResult = engine.captureCarryoverFor("H");
+    const guestResult = engine.captureCarryoverFor("G");
+    expect(hostResult.health).toBe(100); // default full health, no carryover given
+    expect(guestResult.health).toBe(33);
+  });
+
+  it("is a pure snapshot — never mutates the captured player's own live state", () => {
+    const carryover: EngineCarryover = { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0, priorScore: 42 };
+    const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, carryover, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    const first = engine.captureCarryoverFor("H");
+    const second = engine.captureCarryoverFor("H");
+    expect(second.priorScore).toBe(first.priorScore); // unchanged by the first call — not accumulated twice
+  });
+});
+
 describe("RaycasterEngine — FPS overlay toggle", () => {
   it("Right-Ctrl equivalent (consumeFpsToggle) flips the overlay without throwing", () => {
     const { engine, input } = makeEngine(fakeMap());
@@ -2425,10 +2580,23 @@ describe("RaycasterEngine — addPlayer / roster (N-player)", () => {
     expect(engine.getPlayerPosition("nope")).toBeNull();
   });
 
+  it("getPlayerFacing reads any roster player's facing direction, or null if absent", () => {
+    const { engine } = makeEngine(fakeMap());
+    expect(engine.getPlayerFacing("local")).toEqual({ dirX: 1, dirY: 0 });
+    expect(engine.getPlayerFacing("nope")).toBeNull();
+  });
+
   it("getPlayerStatus reads any roster player's status, or null if absent", () => {
     const { engine } = makeEngine(fakeMap());
     expect(engine.getPlayerStatus("local")).toBe("alive");
     expect(engine.getPlayerStatus("nope")).toBeNull();
+  });
+
+  it("getMapExit/getMapGrid read this level's exit tile and walkable grid", () => {
+    const map = fakeMap({ exit: { x: 6, y: 7 } });
+    const { engine } = makeEngine(map);
+    expect(engine.getMapExit()).toEqual({ x: 6, y: 7 });
+    expect(engine.getMapGrid()).toBe(map.grid);
   });
 
   // Regression coverage for a real gap found while building multiplayer's

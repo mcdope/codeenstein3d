@@ -5,6 +5,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createMockCanvasContext, stubCanvasGetContext } from "../../test/mocks/canvas";
 import { InputController } from "../engine/input";
+import { COUNTDOWN_TICKS } from "../engine/transitionConstants";
 import type { GameMap, Tile } from "../map/types";
 import { GUEST_PLAYER_ID, HOST_PLAYER_ID } from "./sessionSetupTypes";
 import type { SessionSetupResult } from "./sessionSetupTypes";
@@ -155,14 +156,44 @@ describe("buildSessionEngine", () => {
 
   it("onSessionEnded fires with reason 'campaign-complete' once the engine reaches a win", () => {
     // Spawn placed directly on the exit tile — checkExit() fires on the very
-    // first tick, no movement needed.
+    // first tick, no movement needed. A multiplayer session doesn't win
+    // immediately though (step 8's exit countdown) — COUNTDOWN_TICKS more
+    // ticks are needed to actually exhaust it.
     const map = fakeMap({ spawn: { x: 5, y: 5 }, exit: { x: 5, y: 5 } });
     const onSessionEnded = vi.fn();
     const { engine } = buildSessionEngine({ result: fakeResult({ map }), role: "host", canvas: makeCanvas(), onSessionEnded });
 
-    engine.advance(1 / 30);
+    for (let i = 0; i < COUNTDOWN_TICKS + 1; i++) engine.advance(1 / 30);
 
     expect(onSessionEnded).toHaveBeenCalledTimes(1);
     expect(onSessionEnded.mock.calls[0][1]).toBe("campaign-complete");
+  });
+
+  it("calls the provided onWin instead of ending the session directly, and does not detach the local sampler", () => {
+    const detachSpy = vi.spyOn(InputController.prototype, "detach");
+    const map = fakeMap({ spawn: { x: 5, y: 5 }, exit: { x: 5, y: 5 } });
+    const onSessionEnded = vi.fn();
+    const onWin = vi.fn();
+    const { engine } = buildSessionEngine({ result: fakeResult({ map }), role: "host", canvas: makeCanvas(), onSessionEnded, onWin });
+
+    for (let i = 0; i < COUNTDOWN_TICKS + 1; i++) engine.advance(1 / 30);
+
+    expect(onWin).toHaveBeenCalledTimes(1);
+    expect(onSessionEnded).not.toHaveBeenCalled();
+    expect(detachSpy).not.toHaveBeenCalled();
+  });
+
+  it("seeds both players' own state from carryovers, keyed by roster id", () => {
+    const hostCarryover = { health: 42, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 };
+    const guestCarryover = { health: 77, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 };
+    const { engine } = buildSessionEngine({
+      result: fakeResult(),
+      role: "host",
+      canvas: makeCanvas(),
+      carryovers: { host: hostCarryover, guest: guestCarryover },
+    });
+    const roster = engine.rosterSnapshot();
+    expect(roster.get("host")?.health).toBe(42);
+    expect(roster.get("guest")?.health).toBe(77);
   });
 });
