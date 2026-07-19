@@ -33,6 +33,7 @@
     "verify:multiplayer-netcode": "node scripts/verify-multiplayer-netcode.mjs",
     "verify:multiplayer-reconciliation": "node scripts/verify-multiplayer-reconciliation.mjs",
     "verify:multiplayer-disconnect": "node scripts/verify-multiplayer-disconnect.mjs",
+    "verify:multiplayer-transition": "node scripts/verify-multiplayer-transition.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage"
