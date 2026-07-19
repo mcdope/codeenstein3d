@@ -2578,6 +2578,10 @@ describe("main.ts — multiplayer connect flow", () => {
       getMapExit: () => { x: number; y: number } | null;
       getMapGrid: () => readonly (readonly number[])[] | null;
       getExitCountdownRemaining: () => number | null;
+      getMap: () => unknown | null;
+      getEnemiesSnapshot: () => unknown[];
+      getMinesSnapshot: () => unknown[];
+      getBotPlayerState: (id: string) => { x: number; y: number; state: string } | null;
     } {
       return (
         window as unknown as {
@@ -2595,6 +2599,10 @@ describe("main.ts — multiplayer connect flow", () => {
             getMapExit: () => { x: number; y: number } | null;
             getMapGrid: () => readonly (readonly number[])[] | null;
             getExitCountdownRemaining: () => number | null;
+            getMap: () => unknown | null;
+            getEnemiesSnapshot: () => unknown[];
+            getMinesSnapshot: () => unknown[];
+            getBotPlayerState: (id: string) => { x: number; y: number; state: string } | null;
           };
         }
       ).__codeensteinMultiplayerTestHooks;
@@ -2719,6 +2727,10 @@ describe("main.ts — multiplayer connect flow", () => {
         expect(multiplayerHooks().getMapExit()).toBeNull();
         expect(multiplayerHooks().getMapGrid()).toBeNull();
         expect(multiplayerHooks().getExitCountdownRemaining()).toBeNull();
+        expect(multiplayerHooks().getMap()).toBeNull();
+        expect(multiplayerHooks().getEnemiesSnapshot()).toEqual([]);
+        expect(multiplayerHooks().getMinesSnapshot()).toEqual([]);
+        expect(multiplayerHooks().getBotPlayerState("host")).toBeNull();
 
         const startButton = document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!;
         expect(startButton.hidden).toBe(false);
@@ -2763,6 +2775,10 @@ describe("main.ts — multiplayer connect flow", () => {
         // an actual live session (not the pre-session `?? null` short-circuit
         // above).
         expect(hooks.getExitCountdownRemaining()).toBeNull();
+        expect(hooks.getMap()).not.toBeNull();
+        expect(Array.isArray(hooks.getEnemiesSnapshot())).toBe(true);
+        expect(Array.isArray(hooks.getMinesSnapshot())).toBe(true);
+        expect(hooks.getBotPlayerState("host")).toMatchObject({ state: "playing" });
       } finally {
         history.pushState(null, "", "/");
       }

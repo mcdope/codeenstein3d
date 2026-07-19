@@ -257,6 +257,15 @@ export function runMultiplayerSessionAsGuest(
     // See `multiplayerSessionHost.ts`'s identical getter for why this one
     // needs no ignore comment, unlike the getters above it.
     getExitCountdownRemaining: () => engine?.getExitCountdownRemaining() ?? null,
+    /* v8 ignore next */
+    getMap: () => engine?.getMap() ?? null,
+    /* v8 ignore next */
+    getEnemiesSnapshot: () => engine?.getEnemiesSnapshot() ?? [],
+    /* v8 ignore next */
+    getMinesSnapshot: () => engine?.getMinesSnapshot() ?? [],
+    // See `multiplayerSessionHost.ts`'s identical getter for why this one
+    // needs no ignore comment.
+    getBotPlayerState: (id) => engine?.getBotPlayerState(id) ?? null,
     debugInjectDesync: (injection) => engine!.debugInjectDesync(injection),
   };
 }

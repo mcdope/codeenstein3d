@@ -250,6 +250,18 @@ describe("runMultiplayerSessionAsHost", () => {
     expect(handle.getExitCountdownRemaining()).toBe(COUNTDOWN_TICKS);
   });
 
+  it("getMap/getEnemiesSnapshot/getMinesSnapshot/getBotPlayerState delegate to the underlying engine", () => {
+    const channels = linkedChannels();
+    const worker = fakeWorker();
+    const map = fakeMap({ spawn: { x: 4, y: 4 } });
+    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map }), worker);
+    expect(handle.getMap()).toBe(map);
+    expect(handle.getEnemiesSnapshot()).toEqual([]);
+    expect(handle.getMinesSnapshot()).toEqual([]);
+    expect(handle.getBotPlayerState("host")).toMatchObject({ x: 4.5, y: 4.5, state: "playing" });
+    expect(handle.getBotPlayerState("nope")).toBeNull();
+  });
+
   it("getPlayerStatus/getLootDrops delegate to the underlying engine", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();

@@ -112,6 +112,36 @@ export interface MultiplayerSessionHandle {
    * comment. `null` before any level has started, same as the map getters
    * above (as well as whenever no countdown is currently running). */
   getExitCountdownRemaining(): number | null;
+  /** Read-only — see `RaycasterEngine.getMap`'s doc comment. `null` before
+   * any level has started. */
+  getMap(): GameMap | null;
+  /** Read-only — see `RaycasterEngine.getEnemiesSnapshot`'s doc comment.
+   * `[]` before any level has started (same "nothing to report yet" shape
+   * as `getLootDrops`, not `null`). */
+  getEnemiesSnapshot(): { x: number; y: number; alive: boolean; aggroed: boolean; elite: boolean; edgeCase: boolean; hp: number; maxHp: number }[];
+  /** Read-only — see `RaycasterEngine.getMinesSnapshot`'s doc comment. `[]`
+   * before any level has started. */
+  getMinesSnapshot(): { x: number; y: number; alive: boolean; visible: boolean }[];
+  /** Read-only — see `RaycasterEngine.getBotPlayerState`'s doc comment.
+   * `null` before any level has started, or if `id` isn't a connected
+   * player. */
+  getBotPlayerState(id: PlayerId): {
+    x: number;
+    y: number;
+    dirX: number;
+    dirY: number;
+    health: number;
+    healthFraction: number;
+    swap: number;
+    state: "playing" | "over";
+    ammo: { bullets: number; rockets: number; smg: number; gas: number };
+    weaponIndex: number;
+    meleeWouldHit: boolean;
+    wouldMineHit: boolean;
+    ownedWeapons: number[];
+    levelTime: number;
+    distanceTraveled: number;
+  } | null;
   /** Test-only, mutating — see `RaycasterEngine.debugInjectDesync`'s doc
    * comment. */
   debugInjectDesync(injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }): void;
@@ -455,6 +485,17 @@ export function runMultiplayerSessionAsHost(
     // once `engine` is defined — so both outcomes of this fallback are
     // genuinely reachable through a real call, no ignore needed.
     getExitCountdownRemaining: () => engine?.getExitCountdownRemaining() ?? null,
+    /* v8 ignore next */
+    getMap: () => engine?.getMap() ?? null,
+    /* v8 ignore next */
+    getEnemiesSnapshot: () => engine?.getEnemiesSnapshot() ?? [],
+    /* v8 ignore next */
+    getMinesSnapshot: () => engine?.getMinesSnapshot() ?? [],
+    // Same reasoning as `getPlayerPosition`/`getPlayerFacing` above — the
+    // inner call itself already returns `null` for an unrecognized id, so
+    // both fallback outcomes are reachable through a real call, no ignore
+    // needed.
+    getBotPlayerState: (id) => engine?.getBotPlayerState(id) ?? null,
     debugInjectDesync: (injection) => engine!.debugInjectDesync(injection),
   };
 }

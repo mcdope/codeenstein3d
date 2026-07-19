@@ -2599,6 +2599,42 @@ describe("RaycasterEngine — addPlayer / roster (N-player)", () => {
     expect(engine.getMapGrid()).toBe(map.grid);
   });
 
+  it("getMap returns the full generated GameMap this engine is running", () => {
+    const map = fakeMap({ exit: { x: 6, y: 7 } });
+    const { engine } = makeEngine(map);
+    expect(engine.getMap()).toBe(map);
+  });
+
+  it("getEnemiesSnapshot/getMinesSnapshot mirror __codeensteinTestHooks' getEnemies/getMines, roster-agnostic", () => {
+    const map = fakeMap({
+      enemies: [fakeEnemy({ x: 3, y: 3, hp: 10, maxHp: 10 })],
+      mines: [{ x: 4, y: 4, alive: true, visible: true, closeTimer: 0 }],
+    });
+    const { engine } = makeEngine(map);
+    expect(engine.getEnemiesSnapshot()).toEqual([
+      { x: 3, y: 3, alive: true, aggroed: false, elite: false, edgeCase: false, hp: 10, maxHp: 10 },
+    ]);
+    expect(engine.getMinesSnapshot()).toEqual([{ x: 4, y: 4, alive: true, visible: true }]);
+  });
+
+  it("getBotPlayerState reads any roster player's full bot-facing state, or null if absent", () => {
+    const { engine } = makeEngine(fakeMap({ spawn: { x: 3, y: 4 } }));
+    const state = engine.getBotPlayerState("local");
+    expect(state).not.toBeNull();
+    expect(state!.x).toBe(3.5);
+    expect(state!.y).toBe(4.5);
+    expect(state!.state).toBe("playing");
+    expect(engine.getBotPlayerState("nope")).toBeNull();
+  });
+
+  it("getBotPlayerState reports state \"over\" once the player is no longer alive, \"playing\" while alive (no per-player \"won\")", () => {
+    const { engine } = makeEngine(fakeMap());
+    engine.addPlayer("p2", new ScriptedInput());
+    engine.applyRosterRemoval(["p2"]);
+    expect(engine.getBotPlayerState("p2")!.state).toBe("over");
+    expect(engine.getBotPlayerState("local")!.state).toBe("playing");
+  });
+
   // Regression coverage for a real gap found while building multiplayer's
   // spawn-spreading (step 5, GameMap.multiplayerSpawns): before this, every
   // addPlayer()-added player spawned stacked on the exact same tile as the
