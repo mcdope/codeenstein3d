@@ -61,6 +61,7 @@ export function buildIndexDom(): void {
               <button id="multiplayer-host-create" class="settings-btn" type="button">Create Session</button>
               <button id="multiplayer-host-cancel" class="settings-btn" type="button" hidden>Cancel</button>
               <p id="multiplayer-host-code" class="multiplayer-code" hidden></p>
+              <button id="multiplayer-start-session" class="settings-btn" type="button" hidden>Start Session</button>
             </div>
             <div id="multiplayer-subtab-panel-join" class="tab-panel" role="tabpanel" hidden>
               <input id="multiplayer-join-code-input" type="text" />

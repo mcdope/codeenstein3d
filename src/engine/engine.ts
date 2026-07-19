@@ -687,6 +687,11 @@ export class RaycasterEngine {
      * string "local"), desyncing the shared PRNG stream from tick 1 — see
      * `sortedPlayerIds()`'s own doc comment. */
     localPlayerId: PlayerId = LOCAL_PLAYER_ID,
+    /** Where this instance's own player spawns — defaults to `map.spawn`
+     * (today's single-player behavior). A multiplayer session passes one of
+     * `GameMap.multiplayerSpawns`'s spread-out points instead, matching
+     * `addPlayer`'s own `spawn` parameter for every other connected player. */
+    localSpawn?: Point,
   ) {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2D canvas context unavailable");
@@ -720,7 +725,7 @@ export class RaycasterEngine {
 
     this.localPlayerId = localPlayerId;
     this.players = new Map([
-      [localPlayerId, this.createPlayerState(localPlayerId, inputSource ?? new InputController(canvas), carryover)],
+      [localPlayerId, this.createPlayerState(localPlayerId, inputSource ?? new InputController(canvas), carryover, localSpawn)],
     ]);
 
     // Opt-in frame-timing/entity-count diagnostics — see `perfDebug.ts`'s doc
@@ -936,8 +941,8 @@ export class RaycasterEngine {
    * (`map`, `enemies`, `rng`, `drops`, …) is built once in the constructor,
    * outside this method.
    */
-  private createPlayerState(id: PlayerId, inputSource: InputSource, carryover?: EngineCarryover): PlayerState {
-    const player = new Player(this.map);
+  private createPlayerState(id: PlayerId, inputSource: InputSource, carryover?: EngineCarryover, spawn?: Point): PlayerState {
+    const player = new Player(this.map, {}, spawn);
     player.noClip = carryover?.noClip ?? false;
     const startingAmmoRef = startingAmmo(this.map.enemies);
     const ammo: AmmoPools = {
@@ -1050,14 +1055,14 @@ export class RaycasterEngine {
    * Add a new connected player mid-session — the real revive mechanism too:
    * a later session-lifecycle step calls this with
    * `{ ...carryover, health: REVIVE_HEALTH }` for a player who died the
-   * level before (see `REVIVE_HEALTH`'s doc comment). Not yet called from
-   * anywhere else in this step — real, unit-tested by this step's own tests,
-   * exercised for real once the netcode layer above one `RaycasterEngine`
-   * instance exists.
+   * level before (see `REVIVE_HEALTH`'s doc comment). `spawn` defaults to
+   * `map.spawn` (today's exact stacked-spawn behavior) — a multiplayer
+   * session passes one of `GameMap.multiplayerSpawns`'s spread-out points
+   * instead, per `multiplayer-game-state-spec.md` §2's assignment rule.
    */
-  addPlayer(id: PlayerId, inputSource: InputSource, carryover?: EngineCarryover): void {
+  addPlayer(id: PlayerId, inputSource: InputSource, carryover?: EngineCarryover, spawn?: Point): void {
     if (this.players.has(id)) throw new Error(`RaycasterEngine.addPlayer: "${id}" already present`);
-    this.players.set(id, this.createPlayerState(id, inputSource, carryover));
+    this.players.set(id, this.createPlayerState(id, inputSource, carryover, spawn));
   }
 
   /** Determinism primitive every per-player simulation loop uses — iterating
@@ -1081,17 +1086,53 @@ export class RaycasterEngine {
     return snapshot;
   }
 
+  /** A specific roster player's current world position, or `null` if `id`
+   * isn't a connected player — the only public way to read a *non-local*
+   * player's position (every `?testHooks=1` position hook resolves
+   * exclusively through `this.localPlayerId`). Needed by a multiplayer
+   * session driver to verify two peers' simulations actually agree. */
+  getPlayerPosition(id: PlayerId): { x: number; y: number } | null {
+    const p = this.players.get(id);
+    return p ? { x: p.player.posX, y: p.player.posY } : null;
+  }
+
   start(): void {
     if (this.running) return;
+    this.primeForPlay();
+    this.lastTime = performance.now();
+    this.rafId = requestAnimationFrame(this.frame);
+  }
+
+  /**
+   * Everything `start()` does except scheduling the internal rAF loop —
+   * attaching every player's input, warming up audio, revealing the spawn
+   * tile, and the initial stats push. Split out so a multiplayer session can
+   * get these same "ready to play" side effects without ever letting the
+   * internal loop compete with (or feed a measured, non-fixed `dt` into) the
+   * tick-driven `advance(FIXED_DT)` calls it makes itself.
+   */
+  private primeForPlay(): void {
     this.running = true;
     for (const p of this.players.values()) p.input.attach();
     // Warm up the audio context now, while we're still inside the user gesture
     // (the click that launched this level) so playback isn't blocked later.
     audio.resume();
     this.markVisited(); // reveal the spawn tile before the first step
-    this.lastTime = performance.now();
     this.handlers.onStats?.(this.buildStats());
-    this.rafId = requestAnimationFrame(this.frame);
+  }
+
+  /**
+   * For an externally-driven session (multiplayer, headless harnesses) that
+   * calls `simulate()`/`render()`/`advance()` itself on its own pacing —
+   * runs exactly the same "ready to play" side effects `start()` does,
+   * without touching `rafId` or scheduling a frame. `stop()` still applies
+   * afterward the same way (it's already idempotent on `running`), and
+   * `advance()`'s own end-of-run handling already calls `stop()` for real
+   * once the run ends, since `primeForPlay()` sets `running = true` here too.
+   */
+  startExternallyDriven(): void {
+    if (this.running) return;
+    this.primeForPlay();
   }
 
   stop(): void {
@@ -1237,6 +1278,16 @@ export class RaycasterEngine {
     // same way the automap does. A second interact (or a click) dismisses it;
     // otherwise holding W/S scrolls the text (movement is never simulated
     // this frame, so repurposing those keys here doesn't fight `handleMovement`).
+    //
+    // Multiplayer-only exception (see `multiplayer-netcode-spec.md` §6): the
+    // freeze itself is skipped here for a non-`LOCAL_PLAYER_ID` instance — the
+    // overlay (open/close/scroll) stays a purely local, cosmetic per-peer
+    // thing, but the tick keeps simulating underneath it. Unlike the
+    // pause/blur/click case (fixed further down the input pipeline, before a
+    // snapshot ever reaches the shared stream), this can't be fixed by
+    // stripping a field: `interacted` legitimately must stay shared — it also
+    // drives secret-wall discovery, real shared-world state — so the freeze
+    // has to be bypassed here, at the point it would otherwise happen.
     const interacted = local.input.consumeInteract();
     if (local.loreText !== null) {
       if (interacted || clicked) {
@@ -1245,8 +1296,10 @@ export class RaycasterEngine {
         if (local.input.isDown("KeyS")) local.loreScroll += LORE_SCROLL_SPEED * dt;
         if (local.input.isDown("KeyW")) local.loreScroll = Math.max(0, local.loreScroll - LORE_SCROLL_SPEED * dt);
       }
-      this.notifyFrozen(true);
-      return false;
+      if (this.localPlayerId === LOCAL_PLAYER_ID) {
+        this.notifyFrozen(true);
+        return false;
+      }
     }
     this.notifyFrozen(false);
     // Secret-wall/lore-terminal *discovery* runs for any living player's own
@@ -1279,7 +1332,9 @@ export class RaycasterEngine {
         if (id === this.localPlayerId) {
           local.loreText = terminal.text;
           local.loreScroll = 0;
-          return false;
+          // See the multiplayer-only exception noted above this loop's own
+          // sibling branch: same bypass, same reasoning.
+          if (this.localPlayerId === LOCAL_PLAYER_ID) return false;
         }
       }
     }

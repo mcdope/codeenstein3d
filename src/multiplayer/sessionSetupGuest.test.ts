@@ -93,9 +93,14 @@ describe("runGuestSessionSetup — visited reconstruction", () => {
     const gen = new MapGenerator();
     const map = gen.generate(parsedFile());
 
-    const [, guestResult] = await Promise.all([
-      runHostSessionSetup(channels.host, { map, difficulty: "normal", playerCount: 2 }),
+    // Guest first: it only listens until the host's own build-version
+    // arrives (never sends eagerly), so its listener must be attached
+    // before the host's synchronous outbound send below — see
+    // sessionSetupGuest.ts's doc comment for the real race this order
+    // guards against.
+    const [guestResult] = await Promise.all([
       runGuestSessionSetup(channels.guest),
+      runHostSessionSetup(channels.host, { map, difficulty: "normal", playerCount: 2 }),
     ]);
 
     expect(guestResult.map.visited).toHaveLength(map.height);

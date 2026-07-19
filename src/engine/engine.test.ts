@@ -516,6 +516,32 @@ describe("RaycasterEngine — start()/stop() lifecycle", () => {
   });
 });
 
+describe("RaycasterEngine — startExternallyDriven() (multiplayer/headless)", () => {
+  it("attaches input and pushes initial stats, without scheduling an internal frame", () => {
+    const { engine, input, handlers } = makeEngine(fakeMap());
+    engine.startExternallyDriven();
+    expect(input.attach).toHaveBeenCalledTimes(1);
+    expect(handlers.onStats).toHaveBeenCalledTimes(1);
+    expect(raf.flush(1)).toBe(0); // nothing queued — no competing internal loop
+  });
+
+  it("is idempotent, same as start()", () => {
+    const { engine, input } = makeEngine(fakeMap());
+    engine.startExternallyDriven();
+    engine.startExternallyDriven();
+    expect(input.attach).toHaveBeenCalledTimes(1);
+  });
+
+  it("a caller can still drive simulate()/advance() directly afterward", () => {
+    const { engine, handlers } = makeEngine(fakeMap());
+    engine.startExternallyDriven();
+    const before = handlers.onStats.mock.calls.length;
+    engine.advance(1 / 30);
+    expect(handlers.onStats.mock.calls.length).toBe(before + 1); // render()'s own onStats push
+    expect(() => engine.stop()).not.toThrow(); // rafId was never assigned; cancelAnimationFrame(0) must still be safe
+  });
+});
+
 describe("RaycasterEngine — pause / blur / escape", () => {
   it("Escape toggles pause and fires onFreezeChange only on the edge", () => {
     const { engine, input, handlers } = makeEngine(fakeMap());
@@ -641,6 +667,31 @@ describe("RaycasterEngine — lore terminals", () => {
     input.interact = true;
     engine.advance(0.016);
     expect(handlers.onFreezeChange).not.toHaveBeenCalledWith(true);
+  });
+
+  // Multiplayer-only regression test (multiplayer-netcode-spec.md §6): a
+  // single-player/replay instance (localPlayerId === LOCAL_PLAYER_ID) must
+  // keep freezing exactly as every test above proves. A non-LOCAL_PLAYER_ID
+  // instance (a real multiplayer peer) must NOT — every peer runs its own
+  // independent RaycasterEngine, so a local-only freeze on just one of them
+  // would desync the shared simulation the instant either player reads a
+  // terminal.
+  it("multiplayer-only: opening a lore terminal doesn't freeze simulate() for a non-LOCAL_PLAYER_ID instance", () => {
+    const input = new ScriptedInput();
+    const engine = new RaycasterEngine(makeCanvas(), loreMap(), {}, undefined, undefined, undefined, 1, input, undefined, "H");
+    input.interact = true;
+    expect(engine.simulate(0.016)).toBe(true); // opens the overlay, but still progressed
+  });
+
+  it("multiplayer-only: the overlay still stays open (and still dismisses/scrolls) even though the tick keeps progressing", () => {
+    const input = new ScriptedInput();
+    const engine = new RaycasterEngine(makeCanvas(), loreMap(), {}, undefined, undefined, undefined, 1, input, undefined, "H");
+    input.interact = true;
+    expect(engine.simulate(0.016)).toBe(true); // opens it
+    input.interact = false;
+    expect(engine.simulate(0.016)).toBe(true); // still open (no dismiss this tick), still progressed
+    input.interact = true;
+    expect(engine.simulate(0.016)).toBe(true); // dismiss
   });
 });
 
@@ -2289,6 +2340,45 @@ describe("RaycasterEngine — addPlayer / roster (N-player)", () => {
   it("defaults localPlayerId to LOCAL_PLAYER_ID ('local') when omitted, unchanged from single-player behavior", () => {
     const { engine } = makeEngine(fakeMap());
     expect([...playersOf(engine).keys()]).toEqual(["local"]);
+  });
+
+  it("getPlayerPosition reads any roster player's world position, or null if absent", () => {
+    const { engine } = makeEngine(fakeMap({ spawn: { x: 3, y: 4 } }));
+    expect(engine.getPlayerPosition("local")).toEqual({ x: 3.5, y: 4.5 });
+    expect(engine.getPlayerPosition("nope")).toBeNull();
+  });
+
+  // Regression coverage for a real gap found while building multiplayer's
+  // spawn-spreading (step 5, GameMap.multiplayerSpawns): before this, every
+  // addPlayer()-added player spawned stacked on the exact same tile as the
+  // constructor's own player, regardless of any spread-out spawn candidates
+  // the map generator had already computed — contradicting the whole point
+  // of generating them. `spawn` defaulting to `map.spawn` when omitted keeps
+  // every existing single-player/N-player test's stacked-spawn assumption
+  // (see the tests above/below this one) intact.
+  it("addPlayer's spawn param overrides where a new player appears, defaulting to map.spawn when omitted", () => {
+    const { engine } = makeEngine(fakeMap({ spawn: { x: 3, y: 4 } }));
+    engine.addPlayer("p2", new ScriptedInput(), undefined, { x: 8, y: 9 });
+    engine.addPlayer("p3", new ScriptedInput());
+    expect(engine.getPlayerPosition("p2")).toEqual({ x: 8.5, y: 9.5 });
+    expect(engine.getPlayerPosition("p3")).toEqual({ x: 3.5, y: 4.5 });
+  });
+
+  it("the constructor's own localSpawn param overrides where the local player appears", () => {
+    const engine = new RaycasterEngine(
+      makeCanvas(),
+      fakeMap({ spawn: { x: 3, y: 4 } }),
+      {},
+      undefined,
+      undefined,
+      undefined,
+      1,
+      new ScriptedInput(),
+      undefined,
+      "H",
+      { x: 10, y: 11 },
+    );
+    expect(engine.getPlayerPosition("H")).toEqual({ x: 10.5, y: 11.5 });
   });
 
   it("each player's zBuffer is its own independent Float64Array (resolveShot for one never touches another's)", () => {
