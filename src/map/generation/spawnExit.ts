@@ -62,21 +62,49 @@ export function pickExit(rooms: Room[], spawn: Point): Point {
 }
 
 /**
- * Multiplayer spawn selection: greedily pick up to `count` room centers, each
- * one maximizing its minimum distance to the exit and every spawn already
- * chosen — spreads players across the level instead of clustering them. The
- * exit's own room center is excluded from the candidate pool up front, or a
- * large enough `count` would eventually assign a spawn onto the exit tile
- * itself. Pure geometry, like `pickSafeSpawn`/`pickExit` — draws nothing from
- * `rng`, so calling it changes nothing about single-player's deterministic
- * draw sequence regardless of where in `generate()` it's invoked. Returns
- * fewer than `count` points if `rooms.length < count` (no padding, no
+ * Multiplayer spawn selection: greedily pick up to `count` per-room safe
+ * points, each one maximizing its minimum distance to the exit and every
+ * spawn already chosen — spreads players across the level instead of
+ * clustering them. Each room's own candidate is its farthest-from-every-
+ * enemy-room-center *corner* (`pickSafeSpawn`'s own per-room logic, reused
+ * per room here instead of just for room0) — never the room's raw center.
+ * Real bug this fixes, found while building a real, no-cheats multiplayer
+ * E2E bot: a room's own first enemy always spawns dead center too (see
+ * `enemyPositions`' doc comment) — a spawn placed at that same center
+ * landed a real player directly on top of an already-aggroed enemy from
+ * tick one, with none of single-player's `pickSafeSpawn` protection. The
+ * exit's own tile is excluded from the candidate pool up front, or a large
+ * enough `count` would eventually assign a spawn onto the exit tile itself.
+ * Pure geometry, like `pickSafeSpawn`/`pickExit` — draws nothing from `rng`,
+ * so calling it changes nothing about single-player's deterministic draw
+ * sequence regardless of where in `generate()` it's invoked. Returns fewer
+ * than `count` points if `rooms.length < count` (no padding, no
  * duplicates) — wrapping a player index into a short result is the caller's
  * job, not this function's.
  */
 export function pickMultiplayerSpawns(rooms: Room[], exit: Point, count: number): Point[] {
   if (rooms.length === 0) return [{ x: exit.x, y: exit.y }];
-  const pool = rooms.map((r) => r.center).filter((c) => !(c.x === exit.x && c.y === exit.y));
+  const enemyRoomCenters = rooms.filter((r) => r.entity.kind === "function" || r.entity.kind === "method").map((r) => r.center);
+  const safePointFor = (room: Room): Point => {
+    const candidates: Point[] = [
+      { x: room.x + 1, y: room.y + 1 },
+      { x: room.x + room.w - 2, y: room.y + 1 },
+      { x: room.x + 1, y: room.y + room.h - 2 },
+      { x: room.x + room.w - 2, y: room.y + room.h - 2 },
+    ];
+    if (enemyRoomCenters.length === 0) return candidates[0];
+    let best = candidates[0];
+    let bestMinDist = -1;
+    for (const c of candidates) {
+      const minDist = Math.min(...enemyRoomCenters.map((e) => dist(c.x + 0.5, c.y + 0.5, e.x + 0.5, e.y + 0.5)));
+      if (minDist > bestMinDist) {
+        bestMinDist = minDist;
+        best = c;
+      }
+    }
+    return best;
+  };
+  const pool = rooms.map(safePointFor).filter((c) => !(c.x === exit.x && c.y === exit.y));
   const chosen: Point[] = [];
   for (let i = 0; i < count && pool.length > 0; i++) {
     let bestIdx = 0;
