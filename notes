@@ -539,6 +539,33 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
       re-run of `verify:multiplayer-netcode` (regression check) run locally against a real
       dev+signaling server pair (isolated on alternate ports, the user's own dev server on 5173
       left untouched) — clean every time.
+      Follow-up same day: PR #22's own CI caught two real, independent flakes on the `webkit`
+      leg specifically — one in the new `verify:multiplayer-reconciliation` script (PRNG-resync
+      check), one in the pre-existing `verify:multiplayer-netcode` script from step 6c (post-
+      movement lockstep check, previously always green). Both traced to the same root cause, not
+      two separate bugs: WebKit's cross-engine float divergence (already confirmed present but
+      slowest-to-surface on Chromium/Firefox by `scripts/poc-cross-browser-determinism.mjs`) is
+      measurably *fastest* on WebKit, and both scripts asserted exact cross-peer state equality
+      once, after a single fixed wait — since reconciliation only corrects drift once a second,
+      a downstream read can land in the gap where a fresh, genuine divergence has already
+      reappeared but the next correction hasn't arrived. One failure showed a real, non-synthetic
+      ~0.1-tile position gap after a few seconds of real movement — not a synthetic injection.
+      Fixed in both scripts by polling for the first moment two peers' state agrees
+      (`pollUntilConverged()`) instead of checking once at a fixed later instant; also replaced an
+      unfounded "PRNG streams start in sync" assertion (false in a real level with 18 roaming
+      enemies continuously drawing from the shared stream) with a new
+      `MultiplayerSessionHandle.getLastReconciliationRngState()` (each peer's own *frozen*
+      last-broadcast/last-applied snapshot value, immune to the same live-state race). Verified
+      clean 3-4x per script running against real `webkit` locally, plus Chromium regression runs,
+      before re-pushing — all green on CI's full matrix afterward. Full writeup, including the
+      general "poll for convergence, never assert-once-after-a-fixed-wait" lesson for any future
+      cross-peer verify script, in `doc/dev/testing.md`'s "Cross-browser verification" section.
+      Discussed explicitly with the user whether this pattern (WebKit consistently needing the
+      most cross-browser accommodation across this whole multiplayer effort) warranted declaring
+      WebKit unsupported for multiplayer — declined: both flakes were test-script bugs (racy
+      live-state comparison), not WebKit defects or app bugs, and real sessions self-correct
+      within about a second regardless of which peer's browser diverges first, invisible to an
+      actual player.
 - [ ] enemy textures from wad? if yes: what about hitbox? — investigated (2026-07-16, no code changed yet).
   - **Today: enemies are 100% procedural, zero WAD sprite loading exists.** `src/wad/loadWad.ts`'s `WadLoadResult` only ever loads wall/door/floor-style textures (`wallTexture`/`doorTexture`/`floorTexture`/etc.) — no sprite lump is read at all. Enemies are drawn in `src/engine/sprites.ts` as solid-color rectangular billboards (`enemyColor`/`enemyBodyColor`), sized by a single `sizeFactor` in `projectEnemy` (`ENEMY_SIZE`, scaled by `EDGE_CASE_SCALE`=0.55 or `ELITE_SCALE`).
   - **Loading real sprite art is feasible, same binary format already parsed**: Doom sprite lumps use the exact same "patch" pixel format as wall patches (`src/wad/patch.ts`'s `parsePatch` is already format-generic, not wall-specific) — no new binary parser needed. But the pipeline differs from walls: sprites are used as single patches per frame directly (no `compositeTexture.ts`-style multi-patch tiling/`TEXTURE1` step), and use Doom's frame+rotation lump-naming convention (e.g. `TROOA1`, `TROOA2A8` mirrored) that nothing in this codebase currently parses. This project's WAD-texture system also has a real security/curation stance worth respecting here, not shortcutting: `src/wad/textureAllowlist.ts` is a hand-curated, individually-IWAD-verified name list per slot (not "trust any name present") — real monster sprites (imp/zombieman/demon/etc.) would need the same treatment: a new, separately-verified allowlist, not a generic passthrough.
