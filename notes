@@ -395,8 +395,35 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
       `Math.floor(totalElapsedMs / fixedDtMs)` fresh each call instead of repeated subtraction — no
       compounding error possible. Verified via `npm run typecheck`, the full 1761-test/100%-coverage
       suite, and no Playwright verification (nothing in 6a touches WebRTC/DOM/a real engine — that's
-      6c's job). 6b (session-setup handshake + chunked map transfer) and 6c (engine integration,
-      `main.ts` wiring, end-to-end verify) are separate follow-on branches/sessions.
+      6c's job). 6b/6c continued on the same `multiplayer-step6` branch (one PR for all of step 6),
+      not separate branches as first planned.
+    - [ ] **6b shipped 2026-07-19: session-setup handshake + chunked map transfer**, per
+      `multiplayer-netcode-spec.md`'s "Session setup" section — what the host sends a guest, over
+      the already-open `reconciliation` data channel (by elimination: `netcodeTypes.ts` already
+      reserves `input` for per-tick traffic only), before any tick traffic: a build-version
+      handshake both directions first (host *and* guest each independently reject on mismatch,
+      not just trusting the other's judgment), roster assignment, tick constants, a freshly-
+      generated `gameplaySeed`, host-authoritative difficulty, player count, and the `GameMap`
+      itself chunked via 6a's `chunkedTransfer.ts` with `visited` stripped (reconstructed locally
+      on the guest as a fresh all-`false` grid — `visited` is all-false at generation time by
+      definition, so there's nothing to transfer). New `sessionSetupTypes.ts` (wire message union +
+      fixed `"host"`/`"guest"` roster ids — right-sized for step 2's connect flow, which only ever
+      supports exactly one guest slot; a typed `SessionSetupError` mirroring `signalingClient.ts`'s
+      existing `SignalingError` pattern, not a bare `Error`), `dataChannelMessaging.ts`
+      (`sendJson`/`onJsonMessage`, factored out since 6c's tick loop needs the identical
+      send/receive shape over the `input` channel), `sessionSetupHost.ts` (drives: sends its own
+      map directly to itself, no round-trip needed), `sessionSetupGuest.ts` (purely receive-driven,
+      dispatches on message `type`). Extended `test/mocks/webrtc.ts`'s `FakeRTCDataChannel` with a
+      `link()`/`send()` pair (additive-only, confirmed `webrtcConnection.test.ts` untouched) so
+      tests can drive a real host+guest exchange in-process — this is what step 2's own mock never
+      needed, since it only ever proved the channels reach `"open"`. Verified via
+      `sessionSetupHost.test.ts`/`sessionSetupGuest.test.ts`: a real round-trip over a >16 KiB
+      fixture map (genuinely exercises multi-chunk transfer, not just a single-chunk happy path),
+      independent mismatch rejection on both sides (a hand-crafted rogue message, not two real
+      calls disagreeing), a protocol-error rejection when `map-end` arrives before every chunk was
+      received, and a `visited`-reconstruction check against a *real* `MapGenerator`-produced map.
+      `npm run typecheck` clean, full 1775-test/100%-coverage suite green, no `main.ts` changes —
+      nothing calls either function yet outside tests, that's 6c's job.
 - [ ] enemy textures from wad? if yes: what about hitbox? — investigated (2026-07-16, no code changed yet).
   - **Today: enemies are 100% procedural, zero WAD sprite loading exists.** `src/wad/loadWad.ts`'s `WadLoadResult` only ever loads wall/door/floor-style textures (`wallTexture`/`doorTexture`/`floorTexture`/etc.) — no sprite lump is read at all. Enemies are drawn in `src/engine/sprites.ts` as solid-color rectangular billboards (`enemyColor`/`enemyBodyColor`), sized by a single `sizeFactor` in `projectEnemy` (`ENEMY_SIZE`, scaled by `EDGE_CASE_SCALE`=0.55 or `ELITE_SCALE`).
   - **Loading real sprite art is feasible, same binary format already parsed**: Doom sprite lumps use the exact same "patch" pixel format as wall patches (`src/wad/patch.ts`'s `parsePatch` is already format-generic, not wall-specific) — no new binary parser needed. But the pipeline differs from walls: sprites are used as single patches per frame directly (no `compositeTexture.ts`-style multi-patch tiling/`TEXTURE1` step), and use Doom's frame+rotation lump-naming convention (e.g. `TROOA1`, `TROOA2A8` mirrored) that nothing in this codebase currently parses. This project's WAD-texture system also has a real security/curation stance worth respecting here, not shortcutting: `src/wad/textureAllowlist.ts` is a hand-curated, individually-IWAD-verified name list per slot (not "trust any name present") — real monster sprites (imp/zombieman/demon/etc.) would need the same treatment: a new, separately-verified allowlist, not a generic passthrough.
