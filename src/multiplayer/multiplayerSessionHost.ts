@@ -122,6 +122,12 @@ export interface MultiplayerSessionHandle {
   /** Read-only — see `RaycasterEngine.getMinesSnapshot`'s doc comment. `[]`
    * before any level has started. */
   getMinesSnapshot(): { x: number; y: number; alive: boolean; visible: boolean }[];
+  /** Read-only — see `RaycasterEngine.getDropsSnapshot`'s doc comment. `[]`
+   * before any level has started. */
+  getDropsSnapshot(): { x: number; y: number; kind: LootDrop["kind"] }[];
+  /** Read-only — see `RaycasterEngine.getKeysSnapshot`'s doc comment. `[]`
+   * before any level has started. */
+  getKeysSnapshot(): { x: number; y: number }[];
   /** Read-only — see `RaycasterEngine.getBotPlayerState`'s doc comment.
    * `null` before any level has started, or if `id` isn't a connected
    * player. */
@@ -491,6 +497,10 @@ export function runMultiplayerSessionAsHost(
     getEnemiesSnapshot: () => engine?.getEnemiesSnapshot() ?? [],
     /* v8 ignore next */
     getMinesSnapshot: () => engine?.getMinesSnapshot() ?? [],
+    /* v8 ignore next */
+    getDropsSnapshot: () => engine?.getDropsSnapshot() ?? [],
+    /* v8 ignore next */
+    getKeysSnapshot: () => engine?.getKeysSnapshot() ?? [],
     // Same reasoning as `getPlayerPosition`/`getPlayerFacing` above — the
     // inner call itself already returns `null` for an unrecognized id, so
     // both fallback outcomes are reachable through a real call, no ignore

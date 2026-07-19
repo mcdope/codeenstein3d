@@ -2581,6 +2581,8 @@ describe("main.ts — multiplayer connect flow", () => {
       getMap: () => unknown | null;
       getEnemiesSnapshot: () => unknown[];
       getMinesSnapshot: () => unknown[];
+      getDropsSnapshot: () => unknown[];
+      getKeysSnapshot: () => unknown[];
       getBotPlayerState: (id: string) => { x: number; y: number; state: string } | null;
     } {
       return (
@@ -2602,6 +2604,8 @@ describe("main.ts — multiplayer connect flow", () => {
             getMap: () => unknown | null;
             getEnemiesSnapshot: () => unknown[];
             getMinesSnapshot: () => unknown[];
+            getDropsSnapshot: () => unknown[];
+            getKeysSnapshot: () => unknown[];
             getBotPlayerState: (id: string) => { x: number; y: number; state: string } | null;
           };
         }
@@ -2731,6 +2735,8 @@ describe("main.ts — multiplayer connect flow", () => {
         expect(multiplayerHooks().getEnemiesSnapshot()).toEqual([]);
         expect(multiplayerHooks().getMinesSnapshot()).toEqual([]);
         expect(multiplayerHooks().getBotPlayerState("host")).toBeNull();
+        expect(multiplayerHooks().getDropsSnapshot()).toEqual([]);
+        expect(multiplayerHooks().getKeysSnapshot()).toEqual([]);
 
         const startButton = document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!;
         expect(startButton.hidden).toBe(false);
@@ -2779,6 +2785,8 @@ describe("main.ts — multiplayer connect flow", () => {
         expect(Array.isArray(hooks.getEnemiesSnapshot())).toBe(true);
         expect(Array.isArray(hooks.getMinesSnapshot())).toBe(true);
         expect(hooks.getBotPlayerState("host")).toMatchObject({ state: "playing" });
+        expect(Array.isArray(hooks.getDropsSnapshot())).toBe(true);
+        expect(Array.isArray(hooks.getKeysSnapshot())).toBe(true);
       } finally {
         history.pushState(null, "", "/");
       }
