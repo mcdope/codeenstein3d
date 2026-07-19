@@ -80,8 +80,8 @@ jobs:
         # `verify:campaign:playthrough` is skipped for webkit below, see
         # doc/dev/testing.md's cross-browser section. Separately,
         # `verify:multiplayer-connect`/`verify:multiplayer-netcode`/
-        # `verify:multiplayer-reconciliation`/`verify:multiplayer-disconnect`
-        # are skipped for firefox below —
+        # `verify:multiplayer-reconciliation`/`verify:multiplayer-disconnect`/
+        # `verify:multiplayer-transition` are skipped for firefox below —
         # a real, Mozilla-acknowledged (WONTFIX) WebRTC ICE-gathering
         # limitation specific to this sandboxed runner's network shape, not a
         # Playwright-build gap or an app bug — see those steps' own comments
@@ -181,6 +181,13 @@ jobs:
       # Same CI-only WebRTC ICE-gathering limitation as verify:multiplayer-connect
       # above (not a new one) — see that step's own comment.
       - run: npm run verify:multiplayer-disconnect
+        if: matrix.browser != 'firefox'
+        env:
+          CODEENSTEIN_DEV_URL: "http://localhost:5173"
+          CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
+      # Same CI-only WebRTC ICE-gathering limitation as verify:multiplayer-connect
+      # above (not a new one) — see that step's own comment.
+      - run: npm run verify:multiplayer-transition
         if: matrix.browser != 'firefox'
         env:
           CODEENSTEIN_DEV_URL: "http://localhost:5173"
