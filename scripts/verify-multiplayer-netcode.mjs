@@ -164,6 +164,32 @@ function samePosition(a, b) {
   return !!a && !!b && a.x === b.x && a.y === b.y;
 }
 
+/**
+ * Polls `readHost()`/`readGuest()` repeatedly and returns the *first* moment
+ * their values satisfy `matches(hostValue, guestValue)`, rather than waiting
+ * a fixed duration and comparing once at the end. Real movement math
+ * (turning/moving is `Math.sin`/`cos`-heavy) is confirmed to diverge
+ * measurably faster on WebKit than Chromium/Firefox
+ * (`scripts/poc-cross-browser-determinism.mjs`), and step 7's own periodic
+ * reconciliation only corrects it once a second — a fixed-wait-then-check-
+ * once assertion shortly after real movement can land in the window where a
+ * fresh, genuine (if small) divergence has reappeared but the next
+ * correction hasn't landed yet. Catching the moment agreement first happens
+ * proves lockstep is working, without requiring it to still hold at an
+ * arbitrary later instant.
+ */
+async function pollUntilConverged(readHost, readGuest, matches, timeoutMs = TICKING_TIMEOUT_MS, intervalMs = 150) {
+  const deadline = Date.now() + timeoutMs;
+  let lastHost;
+  let lastGuest;
+  while (Date.now() < deadline) {
+    [lastHost, lastGuest] = await Promise.all([readHost(), readGuest()]);
+    if (matches(lastHost, lastGuest)) return { converged: true, host: lastHost, guest: lastGuest };
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return { converged: false, host: lastHost, guest: lastGuest };
+}
+
 const FIREFOX_LAUNCH_OPTIONS = {
   firefoxUserPrefs: {
     "media.peerconnection.ice.obfuscate_host_addresses": false,
@@ -273,28 +299,31 @@ async function main() {
       check("guest: sees the host's real movement (cross-peer input propagation)", false, err.message);
     }
 
-    console.log("Letting the movement settle, then re-checking final lockstep agreement...");
+    console.log("Letting the movement settle, then polling for the first moment of final lockstep agreement...");
     await hostPage.waitForTimeout(500);
-    const [hostFinal, guestFinal] = await Promise.all([
+    const readHostView = () =>
       hostPage.evaluate(() => {
         const hooks = window.__codeensteinMultiplayerTestHooks;
         return { tick: hooks.getSimTick(), host: hooks.getPlayerPosition("host"), guest: hooks.getPlayerPosition("guest") };
-      }),
+      });
+    const readGuestView = () =>
       guestPage.evaluate(() => {
         const hooks = window.__codeensteinMultiplayerTestHooks;
         return { tick: hooks.getSimTick(), host: hooks.getPlayerPosition("host"), guest: hooks.getPlayerPosition("guest") };
-      }),
-    ]);
+      });
+    const hostAgreement = await pollUntilConverged(readHostView, readGuestView, (h, g) => samePosition(h.host, g.host));
     check(
       "after movement settles, both peers still agree on the host player's position",
-      samePosition(hostFinal.host, guestFinal.host),
-      `host-side=${JSON.stringify(hostFinal.host)} guest-side=${JSON.stringify(guestFinal.host)}`,
+      hostAgreement.converged,
+      `host-side=${JSON.stringify(hostAgreement.host?.host)} guest-side=${JSON.stringify(hostAgreement.guest?.host)}`,
     );
+    const guestAgreement = await pollUntilConverged(readHostView, readGuestView, (h, g) => samePosition(h.guest, g.guest));
     check(
       "after movement settles, both peers still agree on the guest player's position",
-      samePosition(hostFinal.guest, guestFinal.guest),
-      `host-side=${JSON.stringify(hostFinal.guest)} guest-side=${JSON.stringify(guestFinal.guest)}`,
+      guestAgreement.converged,
+      `host-side=${JSON.stringify(guestAgreement.host?.guest)} guest-side=${JSON.stringify(guestAgreement.guest?.guest)}`,
     );
+    const hostFinal = await readHostView();
     check(
       "the host player actually moved from its spawn",
       !samePosition(hostEarly.host, hostFinal.host),
