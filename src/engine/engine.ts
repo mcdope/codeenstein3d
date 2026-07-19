@@ -19,7 +19,7 @@ import { updateEnemies, type EnemyAiEvents } from "./enemyAi";
 import { collectProjectileBillboards, updateProjectiles, type Projectile } from "./projectiles";
 import { InputController, type InputSource } from "./input";
 import type { CampaignReplayRecorder } from "./replay";
-import { FOG_FAR, renderMinimap, renderScene } from "./raycaster";
+import { castWallDistances, FOG_FAR, renderMinimap, renderScene } from "./raycaster";
 import { textures } from "./textures";
 import {
   collectDecorationBillboards,
@@ -416,6 +416,10 @@ export class RaycasterEngine {
   private lastTime = 0;
   /** Enemy under the crosshair this frame, if any. */
   private target: Enemy | null = null;
+  /** Head-bob/recoil camera+weapon offsets computed by `updateViewmodel` at
+   * the end of `simulate()`'s last full tick — `render()` reads this instead
+   * of taking a `dt`-derived local, since it has no `dt` of its own. */
+  private viewOffsets: { horizonShift: number; bobX: number; bobY: number } = { horizonShift: 0, bobX: 0, bobY: 0 };
 
   /** Whether the FPS/frame-time overlay is showing (Right-Ctrl toggles it).
    * Default off; carried across a level transition (see
@@ -1030,23 +1034,17 @@ export class RaycasterEngine {
   }
 
   /**
-   * Advance the simulation and render exactly one frame over `dt` seconds.
-   * Normally called by the internal rAF loop; exposed so the game can also be
-   * driven at a fixed step (e.g. headless/deterministic runs).
+   * Advance the simulation by one fixed tick, mutating all gameplay state
+   * (position, AI, combat, effects physics) — draws nothing. Returns whether
+   * this tick reached the full simulation path: `false` if it hit the
+   * pause/lore-open early return (only input/overlay-state resolution ran),
+   * `true` otherwise. `render()` always runs after this regardless of the
+   * return value (see `advance()`) — `simulate()` resolves `isPaused`/
+   * `loreText` to their final-for-this-tick values before returning either
+   * way, and `render()` picks its own overlay variant from those, rather
+   * than relying on this return value to skip drawing.
    */
-  advance(dt: number): void {
-    // Begin the perf-debug frame here, not in `frame()` — `advance()` is
-    // public and also driven directly by the replay viewer (`main.ts`'s
-    // `step`/`burstTo`) and headless harnesses, and those callers used to
-    // skip `beginFrame` entirely, leaving `FramePerfLogger`'s phase map
-    // accumulating monotonically across the whole session (garbage
-    // `?perfDebug=1` output during replay watching — audit finding F21).
-    // `frame()` stashes the real unclamped delta in `perfRawDtMs`; a direct
-    // caller's best equivalent is its own `dt`.
-    if (this.perf) {
-      this.perf.beginFrame(this.perfRawDtMs ?? dt * 1000);
-      this.perfRawDtMs = undefined;
-    }
+  simulate(dt: number): boolean {
     // Gamepad axis/button state has no change events to listen for (unlike
     // keyboard/mouse), so it must be actively polled once per frame — and
     // before any of the below reads any of the one-shot queues it can feed
@@ -1104,13 +1102,12 @@ export class RaycasterEngine {
     if (this.isPaused && clicked) this.isPaused = false;
     if (this.isPaused) {
       this.notifyFrozen(true);
-      this.renderPausedOverlay();
-      return;
+      return false;
     }
 
     // Tab toggles the automap. Non-blocking — sim keeps running (movement,
     // combat, hazards) while it's shown; only a few purely-visual layers are
-    // suppressed while it's open (see the render section below).
+    // suppressed while it's open (see `renderNormalFrame`).
     if (this.input.consumeMapToggle()) this.isMapActive = !this.isMapActive;
 
     // Lore terminal overlay: opened/closed by "R", independent of Tab/Esc.
@@ -1127,8 +1124,7 @@ export class RaycasterEngine {
         if (this.input.isDown("KeyW")) this.loreScroll = Math.max(0, this.loreScroll - LORE_SCROLL_SPEED * dt);
       }
       this.notifyFrozen(true);
-      this.renderLoreOverlay();
-      return;
+      return false;
     }
     this.notifyFrozen(false);
     if (interacted && this.state === "playing") {
@@ -1149,8 +1145,7 @@ export class RaycasterEngine {
           }
           this.loreText = terminal.text;
           this.loreScroll = 0;
-          this.renderLoreOverlay();
-          return;
+          return false;
         }
       }
     }
@@ -1182,7 +1177,7 @@ export class RaycasterEngine {
     // Quick-melee: an instant swing (or, for Toolchain, a held-down chain of
     // them) independent of whatever ranged weapon is equipped/owned/cooling
     // down — see `fire()`'s doc comment and the `meleeRecoil`-driven
-    // viewmodel overlay in the render section below. `currentMeleeWeapon`
+    // viewmodel overlay in `renderNormalFrame`. `currentMeleeWeapon`
     // resolves to the knife until Toolchain is owned, then Toolchain
     // permanently (it replaces the knife on Space, not a second slot).
     if (this.state === "playing") {
@@ -1231,11 +1226,121 @@ export class RaycasterEngine {
     this.checkExit();
     this.perf?.mark("sim");
 
-    // Head-bob / recoil offsets for this frame (camera + weapon).
-    const view = this.updateViewmodel(dt);
+    // Head-bob / recoil offsets for this frame (camera + weapon) — stashed
+    // on `this.viewOffsets` for `render()` to read, since it has no `dt` of
+    // its own to integrate against.
+    this.viewOffsets = this.updateViewmodel(dt);
     this.perf?.mark("viewmodel");
 
-    // Render — one final frozen frame is still drawn after the game ends.
+    if (this.state === "playing") this.updateFiring(dt);
+    this.perf?.mark("firing");
+
+    // Physics integration for in-world impact particles (falling blood,
+    // rocket-blast VFX rings, burn embers) — dt-integrated, so like
+    // `updateViewmodel` above it has to run here rather than in `render()`.
+    // `renderNormalFrame()` only draws whatever this leaves behind.
+    updateBlood(this.blood, dt, this.goreMultipliers.stainDuration);
+    updateExplosions(this.explosions, dt);
+    updateExplosionParticles(this.explosionParticles, dt);
+    updateBurnParticles(this.burnParticles, dt);
+
+    return true;
+  }
+
+  /**
+   * Draw exactly one frame from whatever `simulate()` last left in `this` —
+   * no `dt`, no gameplay-state mutation. Picks its own overlay variant from
+   * state rather than trusting `simulate()`'s return value, since
+   * `advance()` calls this unconditionally regardless of which path
+   * `simulate()` took this tick — see `simulate()`'s doc comment for why
+   * that still reproduces today's exact pause-beats-lore-beats-normal
+   * precedence.
+   */
+  render(): EngineStats {
+    if (this.isPaused) return this.renderPausedOverlay();
+    if (this.loreText !== null) return this.renderLoreOverlay();
+    return this.renderNormalFrame();
+  }
+
+  /**
+   * Advance the simulation and render exactly one frame over `dt` seconds.
+   * Normally called by the internal rAF loop; exposed so the game can also be
+   * driven at a fixed step (e.g. headless/deterministic runs). A thin
+   * composition of `simulate()`/`render()` — kept as one public entry point
+   * so every existing caller (the internal rAF `frame()`, the replay
+   * viewer's `step`/`burstTo`, headless harnesses) needs zero changes.
+   */
+  advance(dt: number): void {
+    // Begin the perf-debug frame here, not in `frame()` — `advance()` is
+    // public and also driven directly by the replay viewer (`main.ts`'s
+    // `step`/`burstTo`) and headless harnesses, and those callers used to
+    // skip `beginFrame` entirely, leaving `FramePerfLogger`'s phase map
+    // accumulating monotonically across the whole session (garbage
+    // `?perfDebug=1` output during replay watching — audit finding F21).
+    // `frame()` stashes the real unclamped delta in `perfRawDtMs`; a direct
+    // caller's best equivalent is its own `dt`.
+    if (this.perf) {
+      this.perf.beginFrame(this.perfRawDtMs ?? dt * 1000);
+      this.perfRawDtMs = undefined;
+    }
+    const progressed = this.simulate(dt);
+    const stats = this.render();
+    this.perf?.endFrame(() => ({
+      enemiesAlive: this.enemies.filter((e) => e.alive).length,
+      enemiesTotal: this.enemies.length,
+      eliteEnemies: this.enemies.filter((e) => e.elite).length,
+      edgeCaseEnemies: this.enemies.filter((e) => e.edgeCase).length,
+      mines: this.map.mines.length,
+      enemyBolts: this.projectiles.length,
+      rockets: this.rockets.length,
+      traces: this.traces.length,
+      flameStreams: this.flameStreams.length,
+      blood: this.blood.length,
+      explosions: this.explosions.length,
+      explosionParticles: this.explosionParticles.length,
+      burnParticles: this.burnParticles.length,
+      ammo: { ...this.ammo },
+      weaponName: WEAPONS[this.weaponIndex].name,
+      audioShotCount: audio.getShotCount(),
+      audioCtxState: audio.getContextState(),
+    }));
+
+    // Age the frame-based effect timers now that this frame is drawn — only
+    // on ticks that reached the full simulation path (`progressed`): a
+    // paused/lore-open tick already skipped this before the split too, and
+    // must keep doing so, since `tickEffects()`'s frame-counted decay
+    // (muzzle flash, cheat toast, hit flash) has to freeze while paused
+    // rather than keep ticking toward zero underneath the overlay. This
+    // can't fold into `simulate()` itself either: `cheatToastFrames` is SET
+    // (via `applyCheat`, unconditionally, before pause is even resolved)
+    // strictly before `simulate()` knows whether this tick is about to
+    // pause — a same-tick decrement there would shave the cheat toast one
+    // frame short on its first visible tick. NOTE for a future
+    // decoupled-render step: this bracketing relies on `render()` running
+    // exactly once immediately after every `simulate()` call — once
+    // rendering decouples to its own cadence, this most likely moves fully
+    // inside `simulate()` (running unconditionally once per tick), since the
+    // byte-identical "visible for exactly N frames" concern this solves
+    // stops applying once render is decoupled and smoothed by construction.
+    if (progressed) this.tickEffects();
+
+    // Fire the end-of-run handler last, once this frame is fully painted —
+    // see `endGame()`'s doc comment for why this can't happen any earlier.
+    if (this.state !== "playing") {
+      this.stop();
+      if (this.state === "over") this.handlers.onGameOver?.(stats);
+      else this.handlers.onWin?.(stats);
+    }
+  }
+
+  /**
+   * The normal (not paused, not lore-open) render path — walls, billboards,
+   * particle/effect draws, weapon viewmodel, minimap/automap, HUD. One final
+   * frozen frame is still drawn after the game ends (`advance()` fires the
+   * end-of-run handlers only after `render()` returns).
+   */
+  private renderNormalFrame(): EngineStats {
+    const view = this.viewOffsets;
     const { width, height } = this.ctx.canvas;
     renderScene(this.ctx, this.map, this.player, this.zBuffer, textures.getActiveSet(), view.horizonShift, this.levelTime, this.loreRead);
     this.perf?.mark("raycast-walls");
@@ -1250,21 +1355,16 @@ export class RaycasterEngine {
     );
     this.perf?.mark("billboards+targeting");
 
-    if (this.state === "playing") this.updateFiring(dt);
-    this.perf?.mark("firing");
-
     // In-world impact effects (above sprites): falling "digital blood", the
     // muzzle→impact tracer lines from any shot fired this frame, and any live
-    // rocket-blast VFX circles.
-    updateBlood(this.blood, dt, this.goreMultipliers.stainDuration);
+    // rocket-blast VFX circles. The physics integration for these already ran
+    // in `simulate()` (right after `updateFiring`) — this only draws
+    // whatever that left behind.
     renderBlood(this.ctx, this.player, this.blood, this.zBuffer, this.goreMultipliers.size);
     drawBulletTraces(this.ctx, this.traces);
     drawFlameStreams(this.ctx, width, height, this.flameStreams);
-    updateExplosions(this.explosions, dt);
     renderExplosions(this.ctx, this.player, this.explosions, this.zBuffer);
-    updateExplosionParticles(this.explosionParticles, dt);
     renderExplosionParticles(this.ctx, this.player, this.explosionParticles, this.zBuffer);
-    updateBurnParticles(this.burnParticles, dt);
     renderBurnParticles(this.ctx, this.player, this.burnParticles, this.zBuffer);
     this.perf?.mark("particle-effects");
 
@@ -1316,7 +1416,7 @@ export class RaycasterEngine {
     drawHud(this.ctx, stats);
     if (this.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
     // Transient feedback only — not drawn in the paused/automap/lore render
-    // branches below, unlike the FPS overlay, since a 2-second confirmation
+    // branches, unlike the FPS overlay, since a 2-second confirmation
     // toast isn't meant to persist across those states the way a standing
     // debug readout is.
     if (this.cheatToastText && this.cheatToastFrames > 0) {
@@ -1333,63 +1433,47 @@ export class RaycasterEngine {
     }
     this.handlers.onStats?.(stats);
     this.perf?.mark("hud");
-    this.perf?.endFrame(() => ({
-      enemiesAlive: this.enemies.filter((e) => e.alive).length,
-      enemiesTotal: this.enemies.length,
-      eliteEnemies: this.enemies.filter((e) => e.elite).length,
-      edgeCaseEnemies: this.enemies.filter((e) => e.edgeCase).length,
-      mines: this.map.mines.length,
-      enemyBolts: this.projectiles.length,
-      rockets: this.rockets.length,
-      traces: this.traces.length,
-      flameStreams: this.flameStreams.length,
-      blood: this.blood.length,
-      explosions: this.explosions.length,
-      explosionParticles: this.explosionParticles.length,
-      burnParticles: this.burnParticles.length,
-      ammo: { ...this.ammo },
-      weaponName: WEAPONS[this.weaponIndex].name,
-      audioShotCount: audio.getShotCount(),
-      audioCtxState: audio.getContextState(),
-    }));
-
-    // Age the frame-based effect timers now that this frame is drawn.
-    this.tickEffects();
-
-    // Fire the end-of-run handler last, once this frame is fully painted —
-    // see `endGame()`'s doc comment for why this can't happen any earlier.
-    if (this.state !== "playing") {
-      this.stop();
-      if (this.state === "over") this.handlers.onGameOver?.(stats);
-      else this.handlers.onWin?.(stats);
-    }
+    return stats;
   }
 
   /**
    * Render one frozen frame with the "PAUSED" scrim on top — triggered by
    * window blur or Escape. Distinct from the Tab automap, which no longer
-   * freezes the sim — see `advance()`.
+   * freezes the sim — see `simulate()`.
    */
-  private renderPausedOverlay(): void {
+  private renderPausedOverlay(): EngineStats {
     renderScene(this.ctx, this.map, this.player, this.zBuffer, textures.getActiveSet(), 0, this.levelTime, this.loreRead);
     this.renderWorldBillboards();
     drawPauseOverlay(this.ctx);
     if (this.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
-    this.handlers.onStats?.(this.buildStats());
+    const stats = this.buildStats();
+    this.handlers.onStats?.(stats);
+    return stats;
   }
 
   /**
    * Render one frozen frame with a lore terminal's comment text on top —
-   * triggered by "R" near a `LORE_TILE` (see `advance()`), dismissed by
-   * another interact or a click.
+   * triggered by "R" near a `LORE_TILE` (see `simulate()`), dismissed by
+   * another interact or a click. Only ever called by `render()`'s own
+   * `this.loreText !== null` guard, so `loreText` is always a real string
+   * here — unlike pre-split code, which also called this directly at the
+   * exact moment `simulate()`'s dismiss branch had just nulled it out
+   * (rendering one stray blank-text overlay frame before falling back to
+   * normal next tick); `render()` re-deriving its overlay choice from
+   * current state instead removes that one-frame flash rather than
+   * preserving it — a deliberate, harmless side effect of `render()` being a
+   * pure function of state (required so it can be called repeatedly with no
+   * intervening `simulate()`, once rendering decouples from the tick rate).
    */
-  private renderLoreOverlay(): void {
+  private renderLoreOverlay(): EngineStats {
     renderScene(this.ctx, this.map, this.player, this.zBuffer, textures.getActiveSet(), 0, this.levelTime, this.loreRead);
     this.renderWorldBillboards();
-    const { maxScrollLines } = drawLoreOverlay(this.ctx, this.loreText ?? "", this.loreScroll);
+    const { maxScrollLines } = drawLoreOverlay(this.ctx, this.loreText as string, this.loreScroll);
     this.loreScroll = Math.max(0, Math.min(this.loreScroll, maxScrollLines));
     if (this.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
-    this.handlers.onStats?.(this.buildStats());
+    const stats = this.buildStats();
+    this.handlers.onStats?.(stats);
+    return stats;
   }
 
   /**
@@ -2044,7 +2128,29 @@ export class RaycasterEngine {
    * A hitscan pellet hits an enemy first, or failing that a spotted proximity
    * mine, which a shot destroys outright (see `destroyMine`).
    */
+  /**
+   * Recompute `this.zBuffer` from the player's exact current position,
+   * called as the first line of `fire()` itself — not a per-tick call from
+   * `updateFiring()` — so it's self-sufficient regardless of which call site
+   * invokes `fire()` (quick-melee's early call in `simulate()`, before
+   * `handleMovement` even runs this tick, or `updateFiring`'s later call,
+   * after movement): each recomputes the zBuffer fresh from the player's
+   * *actual current* position at the moment of firing, rather than relying
+   * on whatever `render()` last drew — which may be a whole tick, or, once
+   * netcode decouples ticks from renders, many ticks, stale.
+   *
+   * TODO(step 4): replace with `multiplayer-game-state-spec.md`'s
+   * camera-parameterized `resolveShot(camera, weapon, rng)`, which
+   * generalizes this to an arbitrary camera — needed for a remote player's
+   * shot, which has no local render pass at all. N=1 never needs a camera
+   * parameter other than `this.player`, so this step doesn't build that yet.
+   */
+  private refreshFiringZBuffer(): void {
+    castWallDistances(this.map, this.player, this.ctx.canvas.width, this.zBuffer);
+  }
+
   private fire(weapon: Weapon = WEAPONS[this.weaponIndex]): void {
+    this.refreshFiringZBuffer();
     if (weapon.ammoType) {
       if (this.ammo[weapon.ammoType] < weapon.ammoPerShot) {
         console.log(`[${weapon.name}] out of ${weapon.ammoType} — need ${weapon.ammoPerShot}`);

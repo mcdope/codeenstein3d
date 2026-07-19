@@ -127,6 +127,100 @@ function shadedTexel(
   return `rgb(${r | 0},${g | 0},${b | 0})`;
 }
 
+/** One column's DDA wall hit — `castWallRay`'s return shape. */
+interface WallHit {
+  dist: number;
+  side: 0 | 1;
+  hitTile: number;
+  mapX: number;
+  mapY: number;
+}
+
+/**
+ * Cast a single ray from `player` in direction `(rayDirX, rayDirY)` through
+ * `map`'s tile grid via DDA, and return the perpendicular distance to the
+ * wall it hits plus which side/tile/cell it hit. The one source of truth for
+ * the DDA traversal — both `castWallDistances` (the firing zBuffer refresh,
+ * which needs only `dist`) and `renderScene`'s own per-column loop (which
+ * also needs `side`/`hitTile`/`mapX`/`mapY` for texturing) call this instead
+ * of each inlining their own copy of the walk.
+ */
+function castWallRay(map: GameMap, player: Player, rayDirX: number, rayDirY: number): WallHit {
+  let mapX = Math.floor(player.posX);
+  let mapY = Math.floor(player.posY);
+
+  // Distance the ray travels to cross one full cell in x / y.
+  const deltaDistX = rayDirX === 0 ? Infinity : Math.abs(1 / rayDirX);
+  const deltaDistY = rayDirY === 0 ? Infinity : Math.abs(1 / rayDirY);
+
+  let stepX: number;
+  let stepY: number;
+  let sideDistX: number;
+  let sideDistY: number;
+
+  if (rayDirX < 0) {
+    stepX = -1;
+    sideDistX = (player.posX - mapX) * deltaDistX;
+  } else {
+    stepX = 1;
+    sideDistX = (mapX + 1 - player.posX) * deltaDistX;
+  }
+  if (rayDirY < 0) {
+    stepY = -1;
+    sideDistY = (player.posY - mapY) * deltaDistY;
+  } else {
+    stepY = 1;
+    sideDistY = (mapY + 1 - player.posY) * deltaDistY;
+  }
+
+  // DDA: advance to the nearest cell boundary until we hit a wall.
+  let side: 0 | 1 = 0; // 0 = hit on an x-side, 1 = y-side
+  let hit = false;
+  let hitTile = 1; // wall (1) or door (DOOR_TILE)
+  for (let guard = 0; guard < 4096 && !hit; guard++) {
+    if (sideDistX < sideDistY) {
+      sideDistX += deltaDistX;
+      mapX += stepX;
+      side = 0;
+    } else {
+      sideDistY += deltaDistY;
+      mapY += stepY;
+      side = 1;
+    }
+    if (mapX < 0 || mapY < 0 || mapX >= map.width || mapY >= map.height) {
+      hit = true; // out of bounds counts as a wall
+      hitTile = 1;
+    } else {
+      const tile = map.grid[mapY][mapX];
+      if (tile === 1 || tile === DOOR_TILE || tile === SECRET_WALL_TILE || tile === LORE_TILE) {
+        hit = true;
+        hitTile = tile;
+      }
+    }
+  }
+
+  // Perpendicular distance (avoids the fisheye a Euclidean distance gives).
+  const perpDist = side === 0 ? sideDistX - deltaDistX : sideDistY - deltaDistY;
+  const dist = Math.max(perpDist, 0.0001);
+  return { dist, side, hitTile, mapX, mapY };
+}
+
+/**
+ * Recompute just the per-column wall distances into `zBuffer` (length must
+ * equal `width`), with no texture/canvas work — `RaycasterEngine.fire()`
+ * calls this to refresh the zBuffer immediately before resolving a shot,
+ * independent of whatever `renderScene` last drew. Same ray directions,
+ * same DDA walk (via `castWallRay`) as `renderScene`'s own loop below.
+ */
+export function castWallDistances(map: GameMap, player: Player, width: number, zBuffer: Float64Array): void {
+  for (let x = 0; x < width; x++) {
+    const cameraX = (2 * x) / width - 1;
+    const rayDirX = player.dirX + player.planeX * cameraX;
+    const rayDirY = player.dirY + player.planeY * cameraX;
+    zBuffer[x] = castWallRay(map, player, rayDirX, rayDirY).dist;
+  }
+}
+
 /**
  * Draw one frame of the 3D walls into the canvas, and record the perpendicular
  * wall distance for each column into `zBuffer` (length must equal the canvas
@@ -170,63 +264,7 @@ export function renderScene(
     const rayDirX = player.dirX + player.planeX * cameraX;
     const rayDirY = player.dirY + player.planeY * cameraX;
 
-    let mapX = Math.floor(player.posX);
-    let mapY = Math.floor(player.posY);
-
-    // Distance the ray travels to cross one full cell in x / y.
-    const deltaDistX = rayDirX === 0 ? Infinity : Math.abs(1 / rayDirX);
-    const deltaDistY = rayDirY === 0 ? Infinity : Math.abs(1 / rayDirY);
-
-    let stepX: number;
-    let stepY: number;
-    let sideDistX: number;
-    let sideDistY: number;
-
-    if (rayDirX < 0) {
-      stepX = -1;
-      sideDistX = (player.posX - mapX) * deltaDistX;
-    } else {
-      stepX = 1;
-      sideDistX = (mapX + 1 - player.posX) * deltaDistX;
-    }
-    if (rayDirY < 0) {
-      stepY = -1;
-      sideDistY = (player.posY - mapY) * deltaDistY;
-    } else {
-      stepY = 1;
-      sideDistY = (mapY + 1 - player.posY) * deltaDistY;
-    }
-
-    // DDA: advance to the nearest cell boundary until we hit a wall.
-    let side = 0; // 0 = hit on an x-side, 1 = y-side
-    let hit = false;
-    let hitTile = 1; // wall (1) or door (DOOR_TILE)
-    for (let guard = 0; guard < 4096 && !hit; guard++) {
-      if (sideDistX < sideDistY) {
-        sideDistX += deltaDistX;
-        mapX += stepX;
-        side = 0;
-      } else {
-        sideDistY += deltaDistY;
-        mapY += stepY;
-        side = 1;
-      }
-      if (mapX < 0 || mapY < 0 || mapX >= map.width || mapY >= map.height) {
-        hit = true; // out of bounds counts as a wall
-        hitTile = 1;
-      } else {
-        const tile = map.grid[mapY][mapX];
-        if (tile === 1 || tile === DOOR_TILE || tile === SECRET_WALL_TILE || tile === LORE_TILE) {
-          hit = true;
-          hitTile = tile;
-        }
-      }
-    }
-
-    // Perpendicular distance (avoids the fisheye a Euclidean distance gives).
-    const perpDist =
-      side === 0 ? sideDistX - deltaDistX : sideDistY - deltaDistY;
-    const dist = Math.max(perpDist, 0.0001);
+    const { dist, side, hitTile, mapX, mapY } = castWallRay(map, player, rayDirX, rayDirY);
     zBuffer[x] = dist;
 
     // Where exactly the ray hit the wall face, in [0,1) along its width — the

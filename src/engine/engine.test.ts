@@ -2123,3 +2123,114 @@ describe("perf-frame begin on direct advance() (audit F21)", () => {
     }
   });
 });
+
+describe("RaycasterEngine — simulate()/render() split", () => {
+  it("render() can be called repeatedly with no intervening simulate()/advance() — each call succeeds and re-invokes onStats", () => {
+    const { engine, handlers } = makeEngine(fakeMap());
+    engine.advance(0.016); // one real tick so there's something to draw
+    handlers.onStats.mockClear();
+
+    expect(() => engine.render()).not.toThrow();
+    expect(() => engine.render()).not.toThrow();
+    expect(() => engine.render()).not.toThrow();
+
+    expect(handlers.onStats).toHaveBeenCalledTimes(3);
+    for (const call of handlers.onStats.mock.calls) {
+      expect(call[0]).toMatchObject({ health: expect.any(Number), weaponIndex: expect.any(Number) });
+    }
+  });
+
+  it("simulate(dt) x N followed by one render() reaches the same observable state as advance(dt) x N", () => {
+    // Movement + firing over identical scripted input, driven two different
+    // ways on two separate engines with the same seed/map — proves the
+    // decomposition doesn't silently change any gameplay-observable value
+    // (position, health, ammo, state), independent of the trajectory digest
+    // (which only spot-checks one particular scripted run, not this specific
+    // equivalence property).
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      type PlayerState = { x: number; y: number; health: number; state: string; ammo: Record<string, number> };
+      const getHooks = () =>
+        (window as unknown as { __codeensteinTestHooks: Record<string, () => unknown> }).__codeensteinTestHooks;
+      const dt = 1 / 30;
+
+      // Only one engine's testHooks are live on the shared window global at a
+      // time (the constructor overwrites it) — fully drive and sample engine
+      // A before ever constructing engine B, not interleaved.
+      const { engine: engineA, input: inputA } = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }, 16), undefined, { seed: 42 });
+      inputA.keys.add("KeyD");
+      for (let i = 0; i < 10; i++) engineA.advance(dt);
+      inputA.keys.delete("KeyD");
+      for (let i = 0; i < 5; i++) {
+        inputA.fireQueued = true;
+        engineA.advance(dt);
+      }
+      const stateA = getHooks().getPlayerState() as PlayerState;
+
+      const { engine: engineB, input: inputB } = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }, 16), undefined, { seed: 42 });
+      inputB.keys.add("KeyD");
+      for (let i = 0; i < 10; i++) engineB.simulate(dt);
+      inputB.keys.delete("KeyD");
+      for (let i = 0; i < 5; i++) {
+        inputB.fireQueued = true;
+        engineB.simulate(dt);
+      }
+      engineB.render();
+      const stateB = getHooks().getPlayerState() as PlayerState;
+
+      expect(stateB.x).toBeCloseTo(stateA.x, 10);
+      expect(stateB.y).toBeCloseTo(stateA.y, 10);
+      expect(stateB.health).toBe(stateA.health);
+      expect(stateB.state).toBe(stateA.state);
+      expect(stateB.ammo).toEqual(stateA.ammo);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+      delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+    }
+  });
+
+  it("render()'s three overlay branches (normal, paused, lore) each return a populated EngineStats", () => {
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][6] = LORE_TILE; // just east of spawn (5,5)
+    const map = fakeMap({ grid: g, loreTerminals: [{ x: 6, y: 5, text: "// a secret comment" }] }, size);
+    const { engine, input } = makeEngine(map);
+
+    engine.advance(0.016);
+    const normalStats = engine.render();
+    expect(normalStats.health).toBeGreaterThan(0);
+    expect(normalStats.weaponIndex).toBeDefined();
+
+    input.escape = true;
+    engine.simulate(0.016); // resolves the pause this tick
+    const pausedStats = engine.render();
+    expect(pausedStats.health).toBe(normalStats.health);
+
+    input.escape = true;
+    engine.simulate(0.016); // unpauses
+
+    input.interact = true;
+    engine.simulate(0.016); // opens the lore terminal this tick
+    const loreStats = engine.render();
+    expect(loreStats.health).toBe(normalStats.health);
+  });
+
+  it("advance() still fires onGameOver/onWin with the same EngineStats render() itself returns, on a real death/win", () => {
+    const size = 12;
+    const winMap = fakeMap({ spawn: { x: size - 2, y: size - 2 }, exit: { x: size - 2, y: size - 2 } }, size);
+    const { engine: winEngine, handlers: winHandlers } = makeEngine(winMap);
+    winEngine.advance(0.016);
+    expect(winHandlers.onWin).toHaveBeenCalledTimes(1);
+    expect(winHandlers.onWin.mock.calls[0][0]).toMatchObject({ health: expect.any(Number) });
+
+    const g = walledRoom(size);
+    g[5][5] = 2; // hazard tile at spawn
+    const deathMap = fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }] }, size);
+    const { engine: deathEngine, handlers: deathHandlers } = makeEngine(deathMap);
+    for (let i = 0; i < 10 && deathHandlers.onGameOver.mock.calls.length === 0; i++) deathEngine.advance(1);
+    expect(deathHandlers.onGameOver).toHaveBeenCalledTimes(1);
+    expect(deathHandlers.onGameOver.mock.calls[0][0]).toMatchObject({ health: 0 });
+  });
+});
+
