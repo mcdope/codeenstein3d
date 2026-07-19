@@ -40,6 +40,11 @@ export interface Rocket {
    * `Projectile.damage` in `projectiles.ts`).
    */
   damage: number;
+  /** Which player fired this rocket — splash damages every enemy plus the
+   * firer (the existing self-damage risk, a core Ghidra trade-off), but
+   * never a teammate. Threaded through to `RocketExplosion` so the engine
+   * can apply that exclusion at the damage-fan-out step. */
+  firedBy: string;
 }
 
 /** Fire a rocket from (x,y) heading straight along (dirX,dirY) — the
@@ -51,6 +56,7 @@ export function spawnRocket(
   dirX: number,
   dirY: number,
   damage: number,
+  firedBy: string,
 ): void {
   list.push({
     x: x + dirX * 0.4,
@@ -58,6 +64,7 @@ export function spawnRocket(
     vx: dirX * ROCKET_SPEED,
     vy: dirY * ROCKET_SPEED,
     damage,
+    firedBy,
   });
 }
 
@@ -67,6 +74,7 @@ export interface RocketExplosion {
   x: number;
   y: number;
   damage: number;
+  firedBy: string;
 }
 
 /**
@@ -96,7 +104,7 @@ export function updateRockets(
     const hitEnemy = nearLivingEnemy(r.x, r.y, ROCKET_ENEMY_TRIGGER_RADIUS);
     const hitWall = isWall(map, Math.floor(r.x), Math.floor(r.y));
     if (hitEnemy || hitWall) {
-      explosions.push({ x: r.x, y: r.y, damage: r.damage });
+      explosions.push({ x: r.x, y: r.y, damage: r.damage, firedBy: r.firedBy });
       list.splice(i, 1);
     }
   }

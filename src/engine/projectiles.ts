@@ -69,35 +69,52 @@ export function spawnProjectile(
   });
 }
 
+/** A living player this bolt can strike, for `updateProjectiles`' per-player
+ * attribution — the same `{id, player}` shape `enemyAi.ts`'s `EnemyTarget`
+ * uses, so both modules share one calling convention. */
+export interface ProjectileTarget {
+  id: string;
+  player: Player;
+}
+
 /**
- * Advance every bolt by `dt`, removing any that struck the player (whose AABB
- * is a box of half-width `player.radius`) or hit a wall / left the map. Returns
- * the total stability damage the player should take this frame.
+ * Advance every bolt by `dt`, removing any that struck a living player (whose
+ * AABB is a box of half-width `player.radius`) or hit a wall / left the map.
+ * `targets` must already be in sorted-`id` order (the caller's contract, same
+ * as `enemyAi.ts`'s `updateEnemies`) — a bolt tests every target in that
+ * order and stops at the first hit, so two players standing close enough to
+ * both be in reach resolve deterministically. Returns per-player damage
+ * attribution for whoever a bolt actually landed on.
  */
 export function updateProjectiles(
   list: Projectile[],
-  player: Player,
+  targets: readonly ProjectileTarget[],
   map: GameMap,
   dt: number,
-  /** Balancing telemetry only — fired once per bolt that actually lands on
-   * the player, for the enemy-accuracy metric (fired count comes from
+  /** Balancing telemetry only — fired once per bolt that actually lands on a
+   * player, for the enemy-accuracy metric (fired count comes from
    * `EnemyAiEvents.onRangedFire` instead, at spawn time). See `telemetry.ts`. */
   onHit?: () => void,
-): number {
-  let damage = 0;
-  const reach = player.radius + PROJECTILE_RADIUS;
+): Map<string, number> {
+  const damage = new Map<string, number>();
   for (let i = list.length - 1; i >= 0; i--) {
     const p = list[i];
     p.x += p.vx * dt;
     p.y += p.vy * dt;
 
     // Player AABB hit takes precedence (you can get shot with your back to a wall).
-    if (Math.abs(p.x - player.posX) < reach && Math.abs(p.y - player.posY) < reach) {
-      damage += p.damage;
-      onHit?.();
-      list.splice(i, 1);
-      continue;
+    let hit = false;
+    for (const target of targets) {
+      const reach = target.player.radius + PROJECTILE_RADIUS;
+      if (Math.abs(p.x - target.player.posX) < reach && Math.abs(p.y - target.player.posY) < reach) {
+        damage.set(target.id, (damage.get(target.id) ?? 0) + p.damage);
+        onHit?.();
+        list.splice(i, 1);
+        hit = true;
+        break;
+      }
     }
+    if (hit) continue;
     // Wall (or out-of-bounds, which isWall reports as solid) destroys the bolt.
     if (isWall(map, Math.floor(p.x), Math.floor(p.y))) {
       list.splice(i, 1);

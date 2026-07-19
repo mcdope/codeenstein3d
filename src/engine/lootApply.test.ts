@@ -12,6 +12,7 @@ function fakeContext(overrides: Partial<LootContext> = {}): LootContext {
     scaledAmount: (base) => base,
     heal: vi.fn(),
     addSwap: vi.fn(),
+    addKey: vi.fn(),
     healthAtMax: () => false,
     ownedWeapons: new Set([0, 1, 2]),
     equip: vi.fn(),
@@ -87,6 +88,25 @@ describe("applyLootDrop", () => {
     const ctx = fakeContext({ recordApplied });
     applyLootDrop({ x: 0, y: 0, kind: "swap", amount: 7 }, ctx);
     expect(recordApplied).toHaveBeenCalledWith("swap", 7, "dynamic");
+  });
+
+  it("adds a key for a 'key' drop — the coop key-drop-on-death path", () => {
+    const ctx = fakeContext();
+    applyLootDrop({ x: 0, y: 0, kind: "key", amount: 3 }, ctx);
+    expect(ctx.addKey).toHaveBeenCalledWith(3);
+  });
+
+  it("adds a single key with the default amount when unspecified", () => {
+    const ctx = fakeContext();
+    applyLootDrop({ x: 0, y: 0, kind: "key" } as LootDrop, ctx);
+    expect(ctx.addKey).toHaveBeenCalledWith(1);
+  });
+
+  it("reports a key drop via recordApplied when it's provided", () => {
+    const recordApplied = vi.fn();
+    const ctx = fakeContext({ recordApplied });
+    applyLootDrop({ x: 0, y: 0, kind: "key", amount: 2 }, ctx);
+    expect(recordApplied).toHaveBeenCalledWith("key", 2, "dynamic");
   });
 
   it("adds to the matching ammo pool for an ammo-kind drop", () => {
