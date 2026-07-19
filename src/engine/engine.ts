@@ -677,6 +677,16 @@ export class RaycasterEngine {
      * live `InputController` — see `this.input`'s doc comment. */
     inputSource?: InputSource,
     replayRecorder?: CampaignReplayRecorder,
+    /** Which `PlayerId` this instance's own player is keyed as — defaults to
+     * `LOCAL_PLAYER_ID` ("local"), today's single-player behavior. A
+     * multiplayer session must override this to the peer's real, globally-
+     * shared roster id: every peer's `players` map has to use the *same* key
+     * strings for the *same* physical players, or `sortedPlayerIds()`
+     * produces a different relative order on each peer (each one would
+     * otherwise substitute a different player's real id with the literal
+     * string "local"), desyncing the shared PRNG stream from tick 1 — see
+     * `sortedPlayerIds()`'s own doc comment. */
+    localPlayerId: PlayerId = LOCAL_PLAYER_ID,
   ) {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2D canvas context unavailable");
@@ -708,10 +718,10 @@ export class RaycasterEngine {
       this.telemetry = createTelemetryState();
     }
 
+    this.localPlayerId = localPlayerId;
     this.players = new Map([
-      [LOCAL_PLAYER_ID, this.createPlayerState(LOCAL_PLAYER_ID, inputSource ?? new InputController(canvas), carryover)],
+      [localPlayerId, this.createPlayerState(localPlayerId, inputSource ?? new InputController(canvas), carryover)],
     ]);
-    this.localPlayerId = LOCAL_PLAYER_ID;
 
     // Opt-in frame-timing/entity-count diagnostics — see `perfDebug.ts`'s doc
     // comment and `this.perf`'s. Deliberately a separate gate from
@@ -949,7 +959,7 @@ export class RaycasterEngine {
     // See `PlayerState.rotSpeedMultiplier`'s doc comment — only ever applies
     // to the local peer (the only one a headless bot ever drives).
     let rotSpeedMultiplier = 1;
-    if (id === LOCAL_PLAYER_ID && typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1") {
+    if (id === this.localPlayerId && typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1") {
       const rotMul = Number(new URLSearchParams(window.location.search).get("botRotSpeedMul"));
       if (Number.isFinite(rotMul)) rotSpeedMultiplier = Math.min(10, Math.max(1, rotMul));
     }

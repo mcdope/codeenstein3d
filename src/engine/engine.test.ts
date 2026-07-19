@@ -9,6 +9,7 @@ import type { AmmoPickup, Enemy, GameMap, Mine, SpikeTrap, Teleporter, Tile } fr
 import { DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, TELEPORTER_TILE } from "../map/types";
 import { audio } from "./audio";
 import type { InputSnapshot, InputSource } from "./input";
+import { EMPTY_SNAPSHOT } from "./replay";
 
 // engine.ts imports a real *value* (`textures`) from textures.ts, whose
 // module-level `TextureManager` singleton calls `document.createElement`
@@ -92,27 +93,6 @@ function fakeEnemy(overrides: Partial<Enemy> = {}): Enemy {
     ...overrides,
   };
 }
-
-const EMPTY_SNAPSHOT: InputSnapshot = {
-  keys: [],
-  mouseDX: 0,
-  fireQueued: false,
-  fireHeld: false,
-  weaponRequest: null,
-  mapToggle: false,
-  interact: false,
-  melee: false,
-  meleeHeld: false,
-  wheelSteps: 0,
-  fpsToggle: false,
-  escape: false,
-  blur: false,
-  pointerUnlock: false,
-  click: false,
-  gpForward: 0,
-  gpStrafe: 0,
-  gpTurn: 0,
-};
 
 /** A hand-scripted, mutable InputSource — flip its fields between
  * `advance()` calls to drive specific player actions deterministically,
@@ -2257,6 +2237,58 @@ describe("RaycasterEngine — addPlayer / roster (N-player)", () => {
     const { engine } = makeEngine(fakeMap());
     engine.addPlayer("p2", new ScriptedInput());
     expect(() => engine.addPlayer("p2", new ScriptedInput())).toThrow('"p2" already present');
+  });
+
+  // Regression test for a real desync bug caught before any multiplayer
+  // netcode existed to trigger it: without the `localPlayerId` constructor
+  // param, every engine keys its own player as the literal string "local"
+  // regardless of which real, globally-shared roster id it represents. Two
+  // peers looking at "the same two physical players" would then each
+  // substitute a *different* one of the two real ids with "local" before
+  // `sortedPlayerIds()` sorts them, producing opposite relative iteration
+  // order — and since per-player simulation loops consume the shared PRNG
+  // stream in that order (e.g. fire()'s Cone-of-Fire spread), opposite order
+  // means an instant, permanent desync from tick 1. Passing each peer's own
+  // real roster id as `localPlayerId` (instead of relying on the "local"
+  // default) is what keeps `sortedPlayerIds()`'s output identical everywhere.
+  it("keys every peer's own player by its real roster id, keeping sortedPlayerIds() order identical across swapped-role constructions", () => {
+    const hostView = new RaycasterEngine(
+      makeCanvas(),
+      fakeMap(),
+      {},
+      undefined,
+      undefined,
+      undefined,
+      1,
+      new ScriptedInput(),
+      undefined,
+      "H",
+    );
+    hostView.addPlayer("G", new ScriptedInput());
+
+    const guestView = new RaycasterEngine(
+      makeCanvas(),
+      fakeMap(),
+      {},
+      undefined,
+      undefined,
+      undefined,
+      1,
+      new ScriptedInput(),
+      undefined,
+      "G",
+    );
+    guestView.addPlayer("H", new ScriptedInput());
+
+    const hostOrder = [...playersOf(hostView).keys()].sort();
+    const guestOrder = [...playersOf(guestView).keys()].sort();
+    expect(hostOrder).toEqual(["G", "H"]);
+    expect(guestOrder).toEqual(hostOrder);
+  });
+
+  it("defaults localPlayerId to LOCAL_PLAYER_ID ('local') when omitted, unchanged from single-player behavior", () => {
+    const { engine } = makeEngine(fakeMap());
+    expect([...playersOf(engine).keys()]).toEqual(["local"]);
   });
 
   it("each player's zBuffer is its own independent Float64Array (resolveShot for one never touches another's)", () => {
