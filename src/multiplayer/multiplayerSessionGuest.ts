@@ -33,6 +33,7 @@ export function runMultiplayerSessionAsGuest(
   onSessionEnded?: (stats: EngineStats) => void,
 ): MultiplayerSessionHandle {
   let lastAppliedTick: number | null = null;
+  let lastReconciliationRngState: number | null = null;
   let ended = false;
 
   const teardown = (): void => {
@@ -78,6 +79,7 @@ export function runMultiplayerSessionAsGuest(
   // reasoning as `unsubscribeInput` above.
   const unsubscribeReconciliation = onJsonMessage<ReconciliationSnapshotMessage>(channels.reconciliation, (snapshot) => {
     engine.applyReconciliationSnapshot(snapshot);
+    lastReconciliationRngState = snapshot.rngState;
   });
 
   return {
@@ -86,6 +88,7 @@ export function runMultiplayerSessionAsGuest(
     getPlayerPosition: (id) => engine.getPlayerPosition(id),
     getRngState: () => engine.getRngState(),
     hasActiveRenderOffset: (id) => engine.hasActiveRenderOffset(id),
+    getLastReconciliationRngState: () => lastReconciliationRngState,
     debugInjectDesync: (injection) => engine.debugInjectDesync(injection),
   };
 }

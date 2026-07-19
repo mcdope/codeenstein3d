@@ -230,6 +230,16 @@ describe("runMultiplayerSessionAsHost", () => {
     expect(guestSeenSnapshots[0].players).toHaveProperty("guest");
   });
 
+  it("getLastReconciliationRngState reflects the rngState of the most recently broadcast snapshot, null before the first one", () => {
+    const channels = linkedChannels();
+    const worker = fakeWorker();
+    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+    expect(handle.getLastReconciliationRngState()).toBeNull();
+
+    worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+    expect(handle.getLastReconciliationRngState()).toBe(handle.getRngState());
+  });
+
   it("getRngState/debugInjectDesync/hasActiveRenderOffset delegate to the underlying engine", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();

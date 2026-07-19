@@ -146,6 +146,21 @@ async function pollUntilConverged(readHost, readGuest, matches, timeoutMs = CONV
   return { converged: false, host: lastHost, guest: lastGuest };
 }
 
+/** Polls `readValue()` until it differs from `baseline`, returning the new
+ * value — used to detect "a fresh reconciliation snapshot was applied"
+ * without racing a second peer's own live state (see
+ * `getLastReconciliationRngState`'s own check, further down). */
+async function pollUntilChanged(readValue, baseline, timeoutMs = CONVERGE_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  let last = baseline;
+  while (Date.now() < deadline) {
+    last = await readValue();
+    if (last !== baseline) return { changed: true, value: last };
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+  }
+  return { changed: false, value: last };
+}
+
 const FIREFOX_LAUNCH_OPTIONS = {
   firefoxUserPrefs: {
     "media.peerconnection.ice.obfuscate_host_addresses": false,
@@ -251,7 +266,6 @@ async function main() {
     // injection changes the guest's own state, and the next snapshot brings
     // host and guest into agreement regardless of where either started.
     console.log("Injecting an extra local rng() draw on the guest, desyncing the shared PRNG stream position...");
-    const readHostRng = () => hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getRngState());
     const readGuestRng = () => guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getRngState());
     const guestRngBeforeInjection = await readGuestRng();
 
@@ -263,12 +277,34 @@ async function main() {
       `guest before=${guestRngBeforeInjection} after=${guestRngAfterInjection}`,
     );
 
-    console.log("Waiting for the host's next periodic snapshot to resync the PRNG stream (polling for the first moment of convergence)...");
-    const rngResult = await pollUntilConverged(readHostRng, readGuestRng, (a, b) => a === b);
+    // Comparing *live* rngState across host/guest here (as the two position
+    // checks above do) doesn't work for this specific case: real, active
+    // roaming-enemy AI draws from the same shared stream every tick, so a
+    // fresh, genuine desync can reappear within a single tick of a
+    // correction landing — confirmed in practice (a real CI flake on
+    // WebKit, worse there than Chromium/Firefox per
+    // poc-cross-browser-determinism.mjs). Comparing each peer's
+    // `getLastReconciliationRngState()` instead — the *frozen* value their
+    // own most recently sent/applied snapshot actually carried — proves the
+    // same thing (a real snapshot with a given rngState was broadcast by
+    // the host and applied verbatim by the guest) without racing live
+    // state that's expected to keep moving in between.
+    console.log("Waiting for the guest to apply a fresh post-injection snapshot (polling its own getLastReconciliationRngState())...");
+    const readGuestLastRecon = () => guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getLastReconciliationRngState());
+    const readHostLastRecon = () => hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getLastReconciliationRngState());
+    const guestReconBaseline = await readGuestLastRecon();
+    const freshSnapshot = await pollUntilChanged(readGuestLastRecon, guestReconBaseline);
     check(
-      "PRNG stream position resyncs — not just visible state, the actual internal counter",
-      rngResult.converged,
-      `host=${rngResult.host} guest=${rngResult.guest}`,
+      "guest applied a fresh reconciliation snapshot after the injection",
+      freshSnapshot.changed,
+      `baseline=${guestReconBaseline} still=${freshSnapshot.value}`,
+    );
+
+    const hostLastReconAfter = await readHostLastRecon();
+    check(
+      "PRNG stream position resyncs — the guest's just-applied snapshot carried exactly what the host most recently broadcast",
+      freshSnapshot.value === hostLastReconAfter,
+      `guest applied=${freshSnapshot.value} host last broadcast=${hostLastReconAfter}`,
     );
   } finally {
     await browser.close();

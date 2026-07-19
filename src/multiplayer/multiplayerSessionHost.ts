@@ -42,6 +42,18 @@ export interface MultiplayerSessionHandle {
   getRngState(): number;
   /** Read-only — see `RaycasterEngine.hasActiveRenderOffset`'s doc comment. */
   hasActiveRenderOffset(id: PlayerId): boolean;
+  /** The `rngState` this peer's own most recently sent (host) or applied
+   * (guest) `ReconciliationSnapshot` carried, or `null` before the first one.
+   * Deliberately a *frozen*, already-happened value rather than each peer's
+   * current live `getRngState()` — comparing two peers' *live* PRNG state
+   * across real process/page boundaries is inherently racy for a value that
+   * changes every tick (real, active roaming-enemy AI draws from the same
+   * stream continuously, so a fresh, genuine desync can reappear within a
+   * single tick of a correction landing — confirmed in practice on WebKit
+   * by `scripts/verify-multiplayer-reconciliation.mjs`). Comparing what was
+   * actually transmitted/applied is stable regardless of what's happened to
+   * live state since. */
+  getLastReconciliationRngState(): number | null;
   /** Test-only, mutating — see `RaycasterEngine.debugInjectDesync`'s doc
    * comment. */
   debugInjectDesync(injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }): void;
@@ -59,6 +71,7 @@ export function runMultiplayerSessionAsHost(
 ): MultiplayerSessionHandle {
   const inputDelayBuffer = new InputDelayBuffer();
   let lastAppliedTick: number | null = null;
+  let lastReconciliationRngState: number | null = null;
   let ended = false;
 
   const teardown = (): void => {
@@ -129,6 +142,7 @@ export function runMultiplayerSessionAsHost(
     // idle since session setup's own listener unsubscribed.
     if (tick % RECONCILE_INTERVAL_TICKS === 0) {
       const snapshot: ReconciliationSnapshotMessage = { type: "reconciliation-snapshot", ...engine.captureReconciliationSnapshot(tick) };
+      lastReconciliationRngState = snapshot.rngState;
       sendJson(channels.reconciliation, snapshot);
     }
   };
@@ -139,6 +153,7 @@ export function runMultiplayerSessionAsHost(
     getPlayerPosition: (id) => engine.getPlayerPosition(id),
     getRngState: () => engine.getRngState(),
     hasActiveRenderOffset: (id) => engine.hasActiveRenderOffset(id),
+    getLastReconciliationRngState: () => lastReconciliationRngState,
     debugInjectDesync: (injection) => engine.debugInjectDesync(injection),
   };
 }

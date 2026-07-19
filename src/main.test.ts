@@ -2570,6 +2570,7 @@ describe("main.ts — multiplayer connect flow", () => {
       getRngState: () => number | null;
       injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
       hasActiveRenderOffset: (id: string) => boolean;
+      getLastReconciliationRngState: () => number | null;
     } {
       return (
         window as unknown as {
@@ -2580,6 +2581,7 @@ describe("main.ts — multiplayer connect flow", () => {
             getRngState: () => number | null;
             injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
             hasActiveRenderOffset: (id: string) => boolean;
+            getLastReconciliationRngState: () => number | null;
           };
         }
       ).__codeensteinMultiplayerTestHooks;
@@ -2697,6 +2699,7 @@ describe("main.ts — multiplayer connect flow", () => {
         // No session yet — activeMultiplayerSession?. short-circuits to the
         // `?? false` fallback, distinct from a real session's own `false`.
         expect(multiplayerHooks().hasActiveRenderOffset("host")).toBe(false);
+        expect(multiplayerHooks().getLastReconciliationRngState()).toBeNull();
 
         const startButton = document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!;
         expect(startButton.hidden).toBe(false);
@@ -2727,6 +2730,9 @@ describe("main.ts — multiplayer connect flow", () => {
         // (unlike the earlier no-session check above), so this reaches the
         // engine's own real `false`, not the `?? false` fallback.
         expect(hooks.hasActiveRenderOffset("host")).toBe(false);
+        // Frozen at tick 0's own broadcast — unaffected by the injectDesync()
+        // call just above, which only touched *live* rng state.
+        expect(hooks.getLastReconciliationRngState()).toBe(rngBefore);
       } finally {
         history.pushState(null, "", "/");
       }
