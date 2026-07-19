@@ -280,4 +280,15 @@ describe("runMultiplayerSessionAsGuest", () => {
     expect(typeof handle.getRngState()).toBe("number");
     expect(handle.hasActiveRenderOffset("guest")).toBe(false);
   });
+
+  it("getLastReconciliationRngState reflects the rngState of the most recently applied snapshot, null before the first one", () => {
+    const channels = linkedChannels();
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+    expect(handle.getLastReconciliationRngState()).toBeNull();
+
+    const snapshot = fakeReconciliationSnapshot({ rngState: 424242 });
+    channels.host.reconciliation.send(JSON.stringify(snapshot));
+
+    expect(handle.getLastReconciliationRngState()).toBe(424242);
+  });
 });

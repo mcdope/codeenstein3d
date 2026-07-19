@@ -1294,6 +1294,7 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
         getRngState: () => number | null;
         injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
         hasActiveRenderOffset: (id: string) => boolean;
+        getLastReconciliationRngState: () => number | null;
       };
     }
   ).__codeensteinMultiplayerTestHooks = {
@@ -1324,6 +1325,12 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
     getRngState: () => activeMultiplayerSession?.getRngState() ?? null,
     injectDesync: (injection) => activeMultiplayerSession?.debugInjectDesync(injection),
     hasActiveRenderOffset: (id) => activeMultiplayerSession?.hasActiveRenderOffset(id) ?? false,
+    // A *frozen* value, unlike getRngState() above — see
+    // MultiplayerSessionHandle.getLastReconciliationRngState's own doc
+    // comment for why comparing this instead of live state is what makes
+    // the verify script's PRNG-resync check robust against real, ongoing
+    // per-tick drift from the demo campaign's own roaming enemies.
+    getLastReconciliationRngState: () => activeMultiplayerSession?.getLastReconciliationRngState() ?? null,
   };
 }
 
