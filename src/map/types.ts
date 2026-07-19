@@ -163,6 +163,16 @@ export interface GameMap {
   breakupRooms: Rect[];
   /** Player spawn, in a corner of the first room (clear of its enemy). */
   spawn: Point;
+  /**
+   * Spread spawn points for a multiplayer session, one per potential player
+   * slot — undefined for a normal single-player generation call. Never used
+   * by single-player code; `spawn` above remains the one true single-player
+   * spawn, computed exactly as before. May be shorter than the requested
+   * player count if the level doesn't have enough rooms — a session assigns
+   * players via `multiplayerSpawns[i % multiplayerSpawns.length]`. See
+   * `pickMultiplayerSpawns` (`generation/spawnExit.ts`).
+   */
+  multiplayerSpawns?: Point[];
   /** Enemies to populate the rooms (one per function/method). */
   enemies: Enemy[];
   /** Exit tile (the `return` statement) in the room furthest from spawn. */

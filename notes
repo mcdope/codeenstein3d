@@ -330,6 +330,31 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
       via the same byte-identical-at-N=1 gate as step 3, plus new tests built by actually
       constructing 2-3-player engines directly — this refactor touches nearly every method in the
       class, so unlike step 3 it needed real new coverage, not just structural reshuffling.
+    - [ ] step 5 of the implementation plan shipped 2026-07-19: map generation multi-spawn
+      (`multiplayer-game-state-spec.md` §2) — a new `pickMultiplayerSpawns(rooms, exit, count)`
+      in `spawnExit.ts` (greedy farthest-point dispersal over room centers, excluding the exit's
+      own room, drawing nothing from `rng`), wired into `mapGenerator.ts` behind a new trailing
+      `maxPlayers = 1` parameter on `generate()` (inert by default — every one of the 18 existing
+      call sites needed zero edits). Threaded the resulting spawn points through every system that
+      could otherwise place something lethal on top of one: `enemyPositions`/`spawnEnemies` now
+      reroll (then corner-fallback) off a multiplayer spawn tile the same way they already do for
+      the exit tile; `clearCriticalTiles` force-clears them to floor; `fillHazards` protects them
+      at both the room level (skip flooding a `"global"`-kind room whose center is a spawn) and
+      the tile level (belt-and-suspenders carve-out), since a multiplayer spawn — unlike the
+      single-player `spawn` — can land in any room, including a global-variable one. Confirmed by
+      reading `breakup.ts` directly, not assumed: `spawnEdgeCaseEnemies` needs none of this — a
+      breakup room is only ever injected where it doesn't overlap any real room, and a multiplayer
+      spawn is always a real room's center, so the two can never coincide. `GameMap.multiplayerSpawns?`
+      is `undefined` for every single-player call, so this is purely additive. Assigning
+      `playerId -> spawn index` (with wraparound for a shortfall) is documented as the session
+      layer's job, out of scope here. Verified via new/extended tests in `spawnExit.test.ts`,
+      `enemies.test.ts`, `geometry.test.ts`, `trapsHazards.test.ts`, and `mapGenerator.test.ts`
+      (including an explicit N=1 exactness gate — `generate(parsed)` vs `generate(parsed, false,
+      true, [], 1)` — `toEqual`), the 100%-coverage suite (no existing test edited), and
+      `npm run verify:campaign` over every real bundled campaign file at the default `maxPlayers`.
+      Skipped the heavier map-snapshot/replay-digest recipe used for steps 3/4 — every new branch
+      here is gated behind a default parameter that resolves to an empty array, provably a no-op
+      by inspection, not just by test.
 - [ ] enemy textures from wad? if yes: what about hitbox? — investigated (2026-07-16, no code changed yet).
   - **Today: enemies are 100% procedural, zero WAD sprite loading exists.** `src/wad/loadWad.ts`'s `WadLoadResult` only ever loads wall/door/floor-style textures (`wallTexture`/`doorTexture`/`floorTexture`/etc.) — no sprite lump is read at all. Enemies are drawn in `src/engine/sprites.ts` as solid-color rectangular billboards (`enemyColor`/`enemyBodyColor`), sized by a single `sizeFactor` in `projectEnemy` (`ENEMY_SIZE`, scaled by `EDGE_CASE_SCALE`=0.55 or `ELITE_SCALE`).
   - **Loading real sprite art is feasible, same binary format already parsed**: Doom sprite lumps use the exact same "patch" pixel format as wall patches (`src/wad/patch.ts`'s `parsePatch` is already format-generic, not wall-specific) — no new binary parser needed. But the pipeline differs from walls: sprites are used as single patches per frame directly (no `compositeTexture.ts`-style multi-patch tiling/`TEXTURE1` step), and use Doom's frame+rotation lump-naming convention (e.g. `TROOA1`, `TROOA2A8` mirrored) that nothing in this codebase currently parses. This project's WAD-texture system also has a real security/curation stance worth respecting here, not shortcutting: `src/wad/textureAllowlist.ts` is a hand-curated, individually-IWAD-verified name list per slot (not "trust any name present") — real monster sprites (imp/zombieman/demon/etc.) would need the same treatment: a new, separately-verified allowlist, not a generic passthrough.
