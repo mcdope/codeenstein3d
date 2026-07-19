@@ -5,10 +5,12 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMockCanvasContext, stubCanvasGetContext } from "../../test/mocks/canvas";
 import { installRaf, type RafController } from "../../test/mocks/raf";
-import type { AmmoPickup, Enemy, GameMap, Mine, SpikeTrap, Teleporter, Tile } from "../map/types";
+import type { AmmoPickup, Enemy, GameMap, KeyItem, LootDrop, Mine, SpikeTrap, Teleporter, Tile } from "../map/types";
 import { DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, TELEPORTER_TILE } from "../map/types";
 import { audio } from "./audio";
 import type { InputSnapshot, InputSource } from "./input";
+import { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "./reconciliationConstants";
+import type { ReconciliationSnapshot } from "./reconciliationSnapshot";
 import { EMPTY_SNAPSHOT } from "./replay";
 
 // engine.ts imports a real *value* (`textures`) from textures.ts, whose
@@ -2644,5 +2646,489 @@ describe("RaycasterEngine — death, spectate, and revive (N-player)", () => {
     roster = engine.rosterSnapshot();
     expect(roster.get("revived")!.kills).toBe(1);
     expect(roster.get("revived")!.killScore).toBeGreaterThan(0);
+  });
+});
+
+describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
+  function dropsOf(engine: InstanceType<typeof RaycasterEngine>): LootDrop[] {
+    return (engine as unknown as { drops: LootDrop[] }).drops;
+  }
+
+  function rngOf(engine: InstanceType<typeof RaycasterEngine>): () => number {
+    return (engine as unknown as { rng: () => number }).rng;
+  }
+
+  function callApplyRenderOffsets(engine: InstanceType<typeof RaycasterEngine>): () => void {
+    return (engine as unknown as { applyRenderOffsets(): () => void }).applyRenderOffsets();
+  }
+
+  function fakeSnapshot(overrides: Partial<ReconciliationSnapshot> = {}): ReconciliationSnapshot {
+    return {
+      tick: 0,
+      rngState: 0,
+      players: {},
+      enemies: [],
+      mines: [],
+      lootDrops: [],
+      pickupsCollected: [],
+      keysCollected: [],
+      gridVersion: 0,
+      gridDelta: [],
+      ...overrides,
+    };
+  }
+
+  describe("captureReconciliationSnapshot", () => {
+    it("captures a player's full state — position/facing/health/ammo/weapons — sorted ascending, tagged with the given tick", () => {
+      const map = fakeMap({ spawn: { x: 3, y: 4 } });
+      const { engine } = makeEngine(map, undefined, { seed: 42 });
+      const players = playersOf(engine) as unknown as Map<string, { ownedWeapons: Set<number> }>;
+      players.get("local")!.ownedWeapons.add(4);
+      players.get("local")!.ownedWeapons.add(1);
+
+      const snapshot = engine.captureReconciliationSnapshot(17);
+      expect(snapshot.tick).toBe(17);
+      expect(snapshot.players.local).toMatchObject({
+        posX: 3.5,
+        posY: 4.5,
+        dirX: 1,
+        dirY: 0,
+        health: 100,
+        killScore: 0,
+        kills: 0,
+        alive: true,
+      });
+      expect(snapshot.players.local.ownedWeapons).toEqual([0, 1, 2, 4]); // 0/2 are the default starting weapons
+    });
+
+    it("captures every enemy/mine index-aligned with the map's own arrays", () => {
+      const enemy = fakeEnemy({ x: 6, y: 5, hp: 20, alive: true, aggroed: true });
+      const mine: Mine = { x: 4, y: 4, alive: true, visible: true, closeTimer: 0 };
+      const map = fakeMap({ enemies: [enemy], mines: [mine] });
+      const { engine } = makeEngine(map);
+      const snapshot = engine.captureReconciliationSnapshot(0);
+      expect(snapshot.enemies).toEqual([{ index: 0, x: 6, y: 5, hp: 20, alive: true, aggroed: true }]);
+      expect(snapshot.mines).toEqual([{ index: 0, alive: true, visible: true }]);
+    });
+
+    it("captures collected ammo pickups/keys by index only", () => {
+      const pickups: AmmoPickup[] = [
+        { x: 1, y: 1, kind: "bullets", amount: 5, collected: true },
+        { x: 2, y: 2, kind: "bullets", amount: 5, collected: false },
+      ];
+      const keys: KeyItem[] = [{ x: 3, y: 3, collected: true }];
+      const map = fakeMap({ ammoPickups: pickups, keys });
+      const { engine } = makeEngine(map);
+      const snapshot = engine.captureReconciliationSnapshot(0);
+      expect(snapshot.pickupsCollected).toEqual([0]);
+      expect(snapshot.keysCollected).toEqual([0]);
+    });
+
+    it("tags every dynamic loot drop with a stable id at push time", () => {
+      const enemy = fakeEnemy({ x: 6.5, y: 5.5, hp: 1, maxHp: 1 });
+      const map = fakeMap({ enemies: [enemy] });
+      const { engine, input } = makeEngine(map, undefined, { seed: 1 });
+      input.fireQueued = true;
+      engine.advance(0.016);
+      const snapshot = engine.captureReconciliationSnapshot(0);
+      expect(snapshot.lootDrops.length).toBeGreaterThan(0);
+      for (const drop of snapshot.lootDrops) expect(drop.id).toMatch(/^0:\d+$/); // enemy index 0
+    });
+
+    it("drains pendingGridDelta on every capture — a tile mutation is reported exactly once, not on a later capture too", () => {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][7] = DOOR_TILE; // directly east of spawn
+      const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+      const { engine, input } = makeEngine(map);
+      engine.advance(0.016); // collect the key first
+      input.keys.add("KeyW"); // push toward the door
+      for (let i = 0; i < 20; i++) engine.advance(0.1);
+      expect(map.grid[5][7]).toBe(0); // sanity: the door really opened
+
+      const first = engine.captureReconciliationSnapshot(1);
+      expect(first.gridDelta).toEqual([{ x: 7, y: 5, value: 0 }]);
+      expect(first.gridVersion).toBe(1);
+
+      const second = engine.captureReconciliationSnapshot(2);
+      expect(second.gridDelta).toEqual([]);
+      expect(second.gridVersion).toBe(1);
+    });
+  });
+
+  describe("hasActiveRenderOffset (test-hook surface)", () => {
+    it("is false with no correction applied, and false for an unknown id", () => {
+      const { engine } = makeEngine(fakeMap());
+      expect(engine.hasActiveRenderOffset("local")).toBe(false);
+      expect(engine.hasActiveRenderOffset("nope")).toBe(false);
+    });
+
+    it("is true right after a small (smoothed) correction, false after a large (instant-snap) one", () => {
+      const host = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      const smallGuest = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      const largeGuest = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      smallGuest.debugInjectDesync({ kind: "position", deltaTiles: SNAP_THRESHOLD_TILES / 2 });
+      largeGuest.debugInjectDesync({ kind: "position", deltaTiles: SNAP_THRESHOLD_TILES + 1 });
+
+      const snapshot = host.captureReconciliationSnapshot(0);
+      smallGuest.applyReconciliationSnapshot(snapshot);
+      largeGuest.applyReconciliationSnapshot(snapshot);
+
+      expect(smallGuest.hasActiveRenderOffset("local")).toBe(true);
+      expect(largeGuest.hasActiveRenderOffset("local")).toBe(false);
+    });
+  });
+
+  describe("getRngState / debugInjectDesync (test-hook surface)", () => {
+    it("getRngState reflects the same stream this.rng draws from", () => {
+      const { engine } = makeEngine(fakeMap(), undefined, { seed: 55 });
+      const stateBefore = engine.getRngState();
+      rngOf(engine)();
+      expect(engine.getRngState()).not.toBe(stateBefore);
+    });
+
+    it("debugInjectDesync({kind:'position'}) nudges the local player's own posX by the given delta", () => {
+      const { engine } = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }));
+      expect(engine.getPlayerPosition("local")).toEqual({ x: 5.5, y: 5.5 });
+      engine.debugInjectDesync({ kind: "position", deltaTiles: 0.3 });
+      expect(engine.getPlayerPosition("local")).toEqual({ x: 5.8, y: 5.5 });
+    });
+
+    it("debugInjectDesync({kind:'extraRngDraw'}) consumes exactly one rng() draw", () => {
+      const { engine } = makeEngine(fakeMap(), undefined, { seed: 55 });
+      const stateBefore = engine.getRngState();
+      engine.debugInjectDesync({ kind: "extraRngDraw" });
+      const afterOneRealDraw = (() => {
+        const reference = makeEngine(fakeMap(), undefined, { seed: 55 }).engine;
+        rngOf(reference)();
+        return reference.getRngState();
+      })();
+      expect(engine.getRngState()).toBe(afterOneRealDraw);
+      expect(engine.getRngState()).not.toBe(stateBefore);
+    });
+  });
+
+  describe("applyReconciliationSnapshot", () => {
+    it("resyncs a diverged PRNG stream *position*, not just visible fields — the spec's own most-emphasized failure mode", () => {
+      // Two identically-seeded engines start with byte-identical rng streams.
+      const host = makeEngine(fakeMap(), undefined, { seed: 777 }).engine;
+      const guest = makeEngine(fakeMap(), undefined, { seed: 777 }).engine;
+
+      // Simulate the real divergence cause the spec calls out: not the
+      // algorithm (bit-identical 32-bit int math either way), but the
+      // *count* of draws — a different code path on one peer consumed one
+      // extra rng() call.
+      rngOf(guest)();
+
+      const snapshot = host.captureReconciliationSnapshot(0);
+      guest.applyReconciliationSnapshot(snapshot);
+
+      const hostNext = [rngOf(host)(), rngOf(host)(), rngOf(host)()];
+      const guestNext = [rngOf(guest)(), rngOf(guest)(), rngOf(guest)()];
+      expect(guestNext).toEqual(hostNext);
+    });
+
+    it("a small position correction (below SNAP_THRESHOLD_TILES) snaps the simulated position and sets a smoothed render offset", () => {
+      const host = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      const guest = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      const guestPlayers = playersOf(guest) as unknown as Map<
+        string,
+        { player: { posX: number; posY: number }; renderOffset: { x: number; y: number; capturedAtMs: number } | null }
+      >;
+      const gp = guestPlayers.get("local")!;
+      const nudge = SNAP_THRESHOLD_TILES / 2;
+      gp.player.posX += nudge;
+
+      const snapshot = host.captureReconciliationSnapshot(0);
+      guest.applyReconciliationSnapshot(snapshot);
+
+      expect(guest.getPlayerPosition("local")).toEqual(host.getPlayerPosition("local"));
+      expect(gp.renderOffset).not.toBeNull();
+      expect(gp.renderOffset!.x).toBeCloseTo(nudge, 5);
+      expect(gp.renderOffset!.y).toBeCloseTo(0, 5);
+    });
+
+    it("a large position correction (at/above SNAP_THRESHOLD_TILES) snaps instantly with no render offset at all", () => {
+      const host = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      const guest = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      const guestPlayers = playersOf(guest) as unknown as Map<
+        string,
+        { player: { posX: number; posY: number }; renderOffset: { x: number; y: number; capturedAtMs: number } | null }
+      >;
+      const gp = guestPlayers.get("local")!;
+      gp.player.posX += SNAP_THRESHOLD_TILES + 1;
+
+      const snapshot = host.captureReconciliationSnapshot(0);
+      guest.applyReconciliationSnapshot(snapshot);
+
+      expect(guest.getPlayerPosition("local")).toEqual(host.getPlayerPosition("local"));
+      expect(gp.renderOffset).toBeNull();
+    });
+
+    it("an exactly-matching position sets no render offset at all (a zero-length smooth is treated as absent)", () => {
+      const host = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      const guest = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      const guestPlayers = playersOf(guest) as unknown as Map<
+        string,
+        { renderOffset: { x: number; y: number; capturedAtMs: number } | null }
+      >;
+
+      const snapshot = host.captureReconciliationSnapshot(0);
+      guest.applyReconciliationSnapshot(snapshot);
+
+      expect(guestPlayers.get("local")!.renderOffset).toBeNull();
+    });
+
+    it("diffs loot drops by id — adds a new one, updates a mismatched one, removes one no longer present", () => {
+      const { engine } = makeEngine(fakeMap());
+      const drops = dropsOf(engine);
+      drops.push({ x: 1, y: 1, kind: "health", id: "0:0" }); // removed: not in the incoming list
+      drops.push({ x: 2, y: 2, kind: "bullets", amount: 5, id: "0:1" }); // updated
+
+      engine.applyReconciliationSnapshot(
+        fakeSnapshot({
+          lootDrops: [
+            { id: "0:1", x: 3, y: 3, kind: "swap", amount: 9 },
+            { id: "1:0", x: 4, y: 4, kind: "weapon", weaponIndex: 2 },
+          ],
+        }),
+      );
+
+      const result = dropsOf(engine);
+      expect(result).toHaveLength(2);
+      expect(result.find((d) => d.id === "0:0")).toBeUndefined();
+      expect(result.find((d) => d.id === "0:1")).toMatchObject({ x: 3, y: 3, kind: "swap", amount: 9 });
+      expect(result.find((d) => d.id === "1:0")).toMatchObject({ x: 4, y: 4, kind: "weapon", weaponIndex: 2 });
+    });
+
+    it("writes every gridDelta tile and updates gridVersion", () => {
+      const map = fakeMap({}, 12); // walledRoom border: grid[0][0] is a wall (1)
+      const { engine } = makeEngine(map);
+      expect(map.grid[0][0]).toBe(1);
+
+      engine.applyReconciliationSnapshot(fakeSnapshot({ gridVersion: 9, gridDelta: [{ x: 0, y: 0, value: 0 }] }));
+
+      expect(map.grid[0][0]).toBe(0);
+      expect(engine.captureReconciliationSnapshot(0).gridVersion).toBe(9);
+    });
+
+    it("marks pickups/keys collected by index", () => {
+      const pickups: AmmoPickup[] = [{ x: 1, y: 1, kind: "bullets", amount: 5, collected: false }];
+      const keys: KeyItem[] = [{ x: 3, y: 3, collected: false }];
+      const map = fakeMap({ ammoPickups: pickups, keys });
+      const { engine } = makeEngine(map);
+
+      engine.applyReconciliationSnapshot(fakeSnapshot({ pickupsCollected: [0], keysCollected: [0] }));
+
+      expect(map.ammoPickups[0].collected).toBe(true);
+      expect(map.keys[0].collected).toBe(true);
+    });
+
+    it("applies every enemy/mine field, index-aligned", () => {
+      const enemy = fakeEnemy({ x: 6, y: 5, hp: 30, alive: true, aggroed: false });
+      const mine: Mine = { x: 4, y: 4, alive: true, visible: false, closeTimer: 0 };
+      const map = fakeMap({ enemies: [enemy], mines: [mine] });
+      const { engine } = makeEngine(map);
+
+      engine.applyReconciliationSnapshot(
+        fakeSnapshot({
+          enemies: [{ index: 0, x: 7, y: 8, hp: 5, alive: false, aggroed: true }],
+          mines: [{ index: 0, alive: false, visible: true }],
+        }),
+      );
+
+      expect(enemy).toMatchObject({ x: 7, y: 8, hp: 5, alive: false, aggroed: true });
+      expect(mine).toMatchObject({ alive: false, visible: true });
+    });
+
+    it("ignores an incoming player id no longer in the local roster (fixed 2-player roster today)", () => {
+      const { engine } = makeEngine(fakeMap());
+      expect(() =>
+        engine.applyReconciliationSnapshot(
+          fakeSnapshot({
+            players: {
+              ghost: {
+                posX: 1,
+                posY: 1,
+                dirX: 1,
+                dirY: 0,
+                planeX: 0,
+                planeY: 1,
+                health: 100,
+                swap: 0,
+                ammo: { bullets: 0, rockets: 0, smg: 0, gas: 0 },
+                weaponIndex: 0,
+                keysHeld: 0,
+                ownedWeapons: [],
+                alive: true,
+                killScore: 0,
+                kills: 0,
+              },
+            },
+          }),
+        ),
+      ).not.toThrow();
+      expect(engine.rosterSnapshot().has("ghost")).toBe(false);
+    });
+
+    it("applies alive:false, marking the player dead", () => {
+      const { engine } = makeEngine(fakeMap());
+      const snapshot = engine.captureReconciliationSnapshot(0);
+      snapshot.players.local.alive = false;
+      engine.applyReconciliationSnapshot(snapshot);
+      expect(engine.rosterSnapshot().get("local")?.status).toBe("dead");
+    });
+
+    it("ignores an incoming enemy index with no matching local enemy", () => {
+      const { engine } = makeEngine(fakeMap()); // no enemies
+      expect(() =>
+        engine.applyReconciliationSnapshot(fakeSnapshot({ enemies: [{ index: 5, x: 1, y: 1, hp: 10, alive: true, aggroed: false }] })),
+      ).not.toThrow();
+    });
+
+    it("clears an enemy's previous render offset once a new correction reports no divergence at all", () => {
+      const enemy = fakeEnemy({ x: 6, y: 5 });
+      const map = fakeMap({ enemies: [enemy] });
+      const { engine } = makeEngine(map);
+      const offsets = (engine as unknown as { enemyRenderOffsets: Map<number, unknown> }).enemyRenderOffsets;
+      offsets.set(0, { x: 0.4, y: 0, capturedAtMs: 0 }); // a stale offset from an earlier correction
+
+      engine.applyReconciliationSnapshot(
+        fakeSnapshot({ enemies: [{ index: 0, x: enemy.x, y: enemy.y, hp: enemy.hp, alive: true, aggroed: false }] }),
+      );
+
+      expect(offsets.has(0)).toBe(false);
+    });
+
+    it("a small enemy position correction sets a smoothed render offset, same as for a player", () => {
+      const enemy = fakeEnemy({ x: 6, y: 5, hp: 30, alive: true, aggroed: false });
+      const map = fakeMap({ enemies: [enemy] });
+      const { engine } = makeEngine(map);
+      const offsets = (engine as unknown as { enemyRenderOffsets: Map<number, { x: number; y: number }> }).enemyRenderOffsets;
+      const nudge = SNAP_THRESHOLD_TILES / 2;
+
+      engine.applyReconciliationSnapshot(
+        fakeSnapshot({ enemies: [{ index: 0, x: enemy.x + nudge, y: enemy.y, hp: enemy.hp, alive: true, aggroed: false }] }),
+      );
+
+      expect(enemy.x).toBeCloseTo(6 + nudge, 5);
+      expect(offsets.get(0)).toMatchObject({ x: -nudge });
+    });
+
+    it("ignores an incoming mine index with no matching local mine", () => {
+      const { engine } = makeEngine(fakeMap()); // no mines
+      expect(() => engine.applyReconciliationSnapshot(fakeSnapshot({ mines: [{ index: 3, alive: true, visible: true }] }))).not.toThrow();
+    });
+
+    it("a drop with no id (never a real one — every push tags one) never matches any incoming id and is removed", () => {
+      const { engine } = makeEngine(fakeMap());
+      dropsOf(engine).push({ x: 1, y: 1, kind: "health" }); // no `id` at all
+      engine.applyReconciliationSnapshot(fakeSnapshot({ lootDrops: [] }));
+      expect(dropsOf(engine)).toHaveLength(0);
+    });
+
+    it("full round-trip: a guest diverged on position, PRNG draw count, and loot fully converges on the host's authoritative state", () => {
+      const host = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 314 }).engine;
+      const guest = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 314 }).engine;
+      const guestPlayers = playersOf(guest) as unknown as Map<string, { player: { posX: number } }>;
+      guestPlayers.get("local")!.player.posX += SNAP_THRESHOLD_TILES / 4;
+      dropsOf(guest).push({ x: 9, y: 9, kind: "health", id: "stray" });
+      rngOf(guest)();
+
+      const snapshot = host.captureReconciliationSnapshot(5);
+      guest.applyReconciliationSnapshot(snapshot);
+
+      expect(guest.getPlayerPosition("local")).toEqual(host.getPlayerPosition("local"));
+      expect(dropsOf(guest).find((d) => d.id === "stray")).toBeUndefined();
+      expect(rngOf(guest)()).toBe(rngOf(host)());
+    });
+  });
+
+  describe("applyRenderOffsets (render-only smoothing)", () => {
+    it("nudges a player toward its pre-correction position, decaying by real elapsed time, then restores exactly", () => {
+      const { engine } = makeEngine(fakeMap());
+      const players = playersOf(engine) as unknown as Map<
+        string,
+        { player: { posX: number; posY: number }; renderOffset: { x: number; y: number; capturedAtMs: number } | null }
+      >;
+      const p = players.get("local")!;
+      const originalX = p.player.posX;
+      const originalY = p.player.posY;
+      p.renderOffset = { x: 0.2, y: -0.1, capturedAtMs: 0 };
+
+      vi.spyOn(performance, "now").mockReturnValue(CORRECTION_SMOOTH_MS / 2); // 50% decayed
+
+      const restore = callApplyRenderOffsets(engine);
+      expect(p.player.posX).toBeCloseTo(originalX + 0.1, 5);
+      expect(p.player.posY).toBeCloseTo(originalY - 0.05, 5);
+
+      restore();
+      expect(p.player.posX).toBe(originalX);
+      expect(p.player.posY).toBe(originalY);
+    });
+
+    it("clears a fully-decayed offset instead of applying it", () => {
+      const { engine } = makeEngine(fakeMap());
+      const players = playersOf(engine) as unknown as Map<
+        string,
+        { player: { posX: number }; renderOffset: { x: number; y: number; capturedAtMs: number } | null }
+      >;
+      const p = players.get("local")!;
+      const originalX = p.player.posX;
+      p.renderOffset = { x: 0.3, y: 0, capturedAtMs: 0 };
+
+      vi.spyOn(performance, "now").mockReturnValue(CORRECTION_SMOOTH_MS + 1);
+
+      const restore = callApplyRenderOffsets(engine);
+      expect(p.player.posX).toBe(originalX);
+      expect(p.renderOffset).toBeNull();
+      expect(() => restore()).not.toThrow();
+    });
+
+    it("nudges and restores an enemy's own render offset the same way", () => {
+      const enemy = fakeEnemy({ x: 6, y: 5 });
+      const map = fakeMap({ enemies: [enemy] });
+      const { engine } = makeEngine(map);
+      const offsets = (engine as unknown as { enemyRenderOffsets: Map<number, { x: number; y: number; capturedAtMs: number }> })
+        .enemyRenderOffsets;
+      offsets.set(0, { x: 0.4, y: 0, capturedAtMs: 0 });
+
+      vi.spyOn(performance, "now").mockReturnValue(0); // no decay yet
+
+      const restore = callApplyRenderOffsets(engine);
+      expect(enemy.x).toBeCloseTo(6.4, 5);
+      restore();
+      expect(enemy.x).toBe(6);
+    });
+
+    it("clears a fully-decayed enemy offset instead of applying it", () => {
+      const enemy = fakeEnemy({ x: 6, y: 5 });
+      const map = fakeMap({ enemies: [enemy] });
+      const { engine } = makeEngine(map);
+      const offsets = (engine as unknown as { enemyRenderOffsets: Map<number, { x: number; y: number; capturedAtMs: number }> })
+        .enemyRenderOffsets;
+      offsets.set(0, { x: 0.4, y: 0, capturedAtMs: 0 });
+
+      vi.spyOn(performance, "now").mockReturnValue(CORRECTION_SMOOTH_MS + 1);
+
+      const restore = callApplyRenderOffsets(engine);
+      expect(enemy.x).toBe(6);
+      expect(offsets.has(0)).toBe(false);
+      expect(() => restore()).not.toThrow();
+    });
+
+    it("render() applies and restores render offsets around a real frame without leaking a bogus position", () => {
+      const { engine } = makeEngine(fakeMap());
+      const players = playersOf(engine) as unknown as Map<
+        string,
+        { player: { posX: number }; renderOffset: { x: number; y: number; capturedAtMs: number } | null }
+      >;
+      const p = players.get("local")!;
+      const originalX = p.player.posX;
+      p.renderOffset = { x: 0.1, y: 0, capturedAtMs: 0 };
+
+      expect(() => engine.render()).not.toThrow();
+      expect(p.player.posX).toBe(originalX);
+    });
   });
 });

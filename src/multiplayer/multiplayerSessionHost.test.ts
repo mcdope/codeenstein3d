@@ -7,6 +7,8 @@ import { FakeRTCDataChannel } from "../../test/mocks/webrtc";
 import { createMockCanvasContext, stubCanvasGetContext } from "../../test/mocks/canvas";
 import type { GameMap, Tile } from "../map/types";
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
+import { RECONCILE_INTERVAL_TICKS } from "./netcodeConstants";
+import type { ReconciliationSnapshotMessage } from "./reconciliationTypes";
 import { GUEST_PLAYER_ID, HOST_PLAYER_ID } from "./sessionSetupTypes";
 import type { SessionSetupResult } from "./sessionSetupTypes";
 import type { MultiplayerChannels } from "./types";
@@ -97,6 +99,14 @@ function fakeWorker(): { onmessage: ((event: MessageEvent) => void) | null; term
  * the host broadcast) for assertions. */
 function collectMessages(channel: RTCDataChannel): (TickInput | TickInputBundle)[] {
   const messages: (TickInput | TickInputBundle)[] = [];
+  channel.addEventListener("message", (event) => {
+    messages.push(JSON.parse((event as MessageEvent).data as string));
+  });
+  return messages;
+}
+
+function collectReconciliationMessages(channel: RTCDataChannel): ReconciliationSnapshotMessage[] {
+  const messages: ReconciliationSnapshotMessage[] = [];
   channel.addEventListener("message", (event) => {
     messages.push(JSON.parse((event as MessageEvent).data as string));
   });
@@ -200,6 +210,34 @@ describe("runMultiplayerSessionAsHost", () => {
 
     expect(onSessionEnded).toHaveBeenCalledTimes(1);
     expect(worker.terminate).toHaveBeenCalledTimes(1);
+  });
+
+  it("broadcasts a ReconciliationSnapshotMessage over channels.reconciliation only every RECONCILE_INTERVAL_TICKS ticks", () => {
+    const channels = linkedChannels();
+    const worker = fakeWorker();
+    const guestSeenSnapshots = collectReconciliationMessages(channels.guest.reconciliation);
+
+    runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+    for (let tick = 0; tick < RECONCILE_INTERVAL_TICKS + 1; tick++) {
+      worker.onmessage?.({ data: { type: "tick", tick } } as MessageEvent);
+    }
+
+    // Due at tick 0 and tick RECONCILE_INTERVAL_TICKS — nowhere in between.
+    expect(guestSeenSnapshots).toHaveLength(2);
+    expect(guestSeenSnapshots[0]).toMatchObject({ type: "reconciliation-snapshot", tick: 0 });
+    expect(guestSeenSnapshots[1]).toMatchObject({ type: "reconciliation-snapshot", tick: RECONCILE_INTERVAL_TICKS });
+    expect(guestSeenSnapshots[0].players).toHaveProperty("host");
+    expect(guestSeenSnapshots[0].players).toHaveProperty("guest");
+  });
+
+  it("getRngState/debugInjectDesync/hasActiveRenderOffset delegate to the underlying engine", () => {
+    const channels = linkedChannels();
+    const worker = fakeWorker();
+    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+    const before = handle.getRngState();
+    handle.debugInjectDesync({ kind: "extraRngDraw" });
+    expect(handle.getRngState()).not.toBe(before);
+    expect(handle.hasActiveRenderOffset("host")).toBe(false);
   });
 });
 

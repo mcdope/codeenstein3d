@@ -65,11 +65,15 @@ export default defineConfig({
       // tile constants) are NOT excluded — those get real tests instead.
       // src/multiplayer/netcodeTypes.ts is the same situation: only
       // `interface` declarations (the per-tick lockstep wire shapes), no
-      // runtime exports.
+      // runtime exports. src/engine/reconciliationSnapshot.ts and
+      // src/multiplayer/reconciliationTypes.ts are the same again, for the
+      // reconciliation-snapshot payload shape and its wire wrapper (step 7).
       exclude: [
         "src/engine/defaultHighscore.ts",
         "src/parser/types.ts",
         "src/multiplayer/netcodeTypes.ts",
+        "src/engine/reconciliationSnapshot.ts",
+        "src/multiplayer/reconciliationTypes.ts",
         "src/empty-node-shim.ts",
         "src/vite-env.d.ts",
         "dist/**",

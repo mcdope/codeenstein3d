@@ -46,8 +46,13 @@ export interface LootContext {
   ownedWeapons: Set<number>;
   /** Equip the (ranged) weapon at this index. */
   equip: (index: number) => void;
-  /** Leave a world drop behind (at a defeated Elite's position). */
-  pushDrop: (drop: LootDrop) => void;
+  /** Leave a world drop behind (at a defeated Elite's position). `enemy` is
+   * always the same instance the caller (`dropEliteLoot`, or `RaycasterEngine`
+   * directly for a regular kill) already has — forwarded through rather than
+   * an index, so this module never needs `RaycasterEngine.enemies` itself;
+   * the engine derives the index (and assigns the drop's reconciliation id
+   * from it — see `multiplayer-netcode-spec.md` §3) on the receiving end. */
+  pushDrop: (drop: LootDrop, enemy: Enemy) => void;
   /** The engine's seeded rng stream — every loot roll must stay on it. */
   rng: () => number;
   /** 1-based campaign level — gates Toolchain's Elite bonus drop. */
@@ -142,9 +147,9 @@ export function dropEliteLoot(enemy: Enemy, ctx: LootContext): void {
   if (ctx.healthAtMax()) {
     const kind = ctx.rng() < 0.5 ? "bullets" : "swap";
     const amount = kind === "bullets" ? ELITE_BULLETS_DROP_AMOUNT : ELITE_SWAP_DROP_AMOUNT;
-    ctx.pushDrop({ x: enemy.x, y: enemy.y, kind, amount });
+    ctx.pushDrop({ x: enemy.x, y: enemy.y, kind, amount }, enemy);
   } else {
-    ctx.pushDrop({ x: enemy.x, y: enemy.y, kind: "health", amount: ELITE_HEALTH_DROP_AMOUNT });
+    ctx.pushDrop({ x: enemy.x, y: enemy.y, kind: "health", amount: ELITE_HEALTH_DROP_AMOUNT }, enemy);
   }
 
   const missing = UNLOCKABLE_WEAPONS.filter((i) => !ctx.ownedWeapons.has(i));
@@ -153,7 +158,7 @@ export function dropEliteLoot(enemy: Enemy, ctx: LootContext): void {
   }
   const bonusWeaponIndex = rollBonusWeaponDrop(missing, ctx.rng, ELITE_BONUS_WEAPON_DROP_CHANCE);
   if (bonusWeaponIndex !== undefined) {
-    ctx.pushDrop({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: bonusWeaponIndex });
+    ctx.pushDrop({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: bonusWeaponIndex }, enemy);
   }
 }
 

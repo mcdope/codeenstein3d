@@ -2567,6 +2567,9 @@ describe("main.ts — multiplayer connect flow", () => {
       getConnectionState: () => unknown;
       getSimTick: () => number | null;
       getPlayerPosition: (id: string) => { x: number; y: number } | null;
+      getRngState: () => number | null;
+      injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
+      hasActiveRenderOffset: (id: string) => boolean;
     } {
       return (
         window as unknown as {
@@ -2574,6 +2577,9 @@ describe("main.ts — multiplayer connect flow", () => {
             getConnectionState: () => unknown;
             getSimTick: () => number | null;
             getPlayerPosition: (id: string) => { x: number; y: number } | null;
+            getRngState: () => number | null;
+            injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
+            hasActiveRenderOffset: (id: string) => boolean;
           };
         }
       ).__codeensteinMultiplayerTestHooks;
@@ -2686,6 +2692,11 @@ describe("main.ts — multiplayer connect flow", () => {
         // Before any session exists, getPlayerPosition's activeMultiplayerSession?.
         // short-circuits straight to its `?? null` fallback.
         expect(multiplayerHooks().getPlayerPosition("host")).toBeNull();
+        expect(multiplayerHooks().getRngState()).toBeNull();
+        expect(() => multiplayerHooks().injectDesync({ kind: "extraRngDraw" })).not.toThrow();
+        // No session yet — activeMultiplayerSession?. short-circuits to the
+        // `?? false` fallback, distinct from a real session's own `false`.
+        expect(multiplayerHooks().hasActiveRenderOffset("host")).toBe(false);
 
         const startButton = document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!;
         expect(startButton.hidden).toBe(false);
@@ -2707,6 +2718,15 @@ describe("main.ts — multiplayer connect flow", () => {
         const guestPos = hooks.getPlayerPosition("guest");
         expect(hostPos).not.toBeNull();
         expect(guestPos).not.toBeNull();
+
+        const rngBefore = hooks.getRngState();
+        expect(rngBefore).not.toBeNull();
+        hooks.injectDesync({ kind: "extraRngDraw" });
+        expect(hooks.getRngState()).not.toBe(rngBefore);
+        // A real session now exists — activeMultiplayerSession?. resolves
+        // (unlike the earlier no-session check above), so this reaches the
+        // engine's own real `false`, not the `?? false` fallback.
+        expect(hooks.hasActiveRenderOffset("host")).toBe(false);
       } finally {
         history.pushState(null, "", "/");
       }

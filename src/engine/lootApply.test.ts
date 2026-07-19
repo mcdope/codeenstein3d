@@ -163,20 +163,23 @@ describe("grantOrTopUpWeapon", () => {
 describe("dropEliteLoot", () => {
   it("drops health when the player isn't at full stability", () => {
     const ctx = fakeContext({ healthAtMax: () => false });
-    dropEliteLoot(enemy(), ctx);
-    expect(ctx.pushDrop).toHaveBeenCalledWith(expect.objectContaining({ kind: "health", amount: 50 }));
+    const e = enemy();
+    dropEliteLoot(e, ctx);
+    expect(ctx.pushDrop).toHaveBeenCalledWith(expect.objectContaining({ kind: "health", amount: 50 }), e);
   });
 
   it("drops bullets or swap instead when the player is at full stability", () => {
     const ctx = fakeContext({ healthAtMax: () => true, rng: () => 0 });
-    dropEliteLoot(enemy(), ctx);
-    expect(ctx.pushDrop).toHaveBeenCalledWith(expect.objectContaining({ kind: "bullets" }));
+    const e = enemy();
+    dropEliteLoot(e, ctx);
+    expect(ctx.pushDrop).toHaveBeenCalledWith(expect.objectContaining({ kind: "bullets" }), e);
   });
 
   it("drops swap (not bullets) at full stability when the coin flip lands the other way", () => {
     const ctx = fakeContext({ healthAtMax: () => true, rng: () => 0.99 });
-    dropEliteLoot(enemy(), ctx);
-    expect(ctx.pushDrop).toHaveBeenCalledWith(expect.objectContaining({ kind: "swap" }));
+    const e = enemy();
+    dropEliteLoot(e, ctx);
+    expect(ctx.pushDrop).toHaveBeenCalledWith(expect.objectContaining({ kind: "swap" }), e);
   });
 
   it("can also drop a bonus unlockable weapon on top of the guaranteed drop", () => {

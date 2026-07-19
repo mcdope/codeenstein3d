@@ -31,3 +31,23 @@ export const INPUT_DELAY_TICKS = 3;
  * chunked transfer (the session-setup `GameMap` payload) stays comfortably
  * under it. */
 export const MAP_CHUNK_SIZE_BYTES = 16 * 1024;
+
+/** How many ticks between the host's periodic `ReconciliationSnapshot`
+ * broadcasts (once per second, at `TICK_RATE_HZ`). This is also the upper
+ * bound on how long a PRNG-stream desync can persist before being corrected
+ * (see `reconciliationTypes.ts`'s `rngState` doc comment) — a second
+ * pressure on this value beyond bandwidth, worth weighing together once real
+ * multi-peer data exists. */
+export const RECONCILE_INTERVAL_TICKS = 30;
+
+/** `CORRECTION_SMOOTH_MS`/`SNAP_THRESHOLD_TILES` live in
+ * `engine/reconciliationConstants.ts`, not here, and are re-exported —
+ * `RaycasterEngine.applyReconciliationSnapshot()`/`render()` need them
+ * directly, and the engine layer never imports from the multiplayer layer
+ * (only the reverse), the same reasoning `reconciliationTypes.ts` documents
+ * for the snapshot shape itself. That file is deliberately tiny and
+ * import-free (not just re-exported from `engine.ts` proper) — `engine.ts`
+ * transitively imports `textures.ts`, which touches `document` at module
+ * load, which would break every plain-Node consumer of this file (e.g.
+ * `tickClockWorker.ts`, running in a Worker with no DOM). */
+export { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "../engine/reconciliationConstants";

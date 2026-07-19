@@ -475,6 +475,70 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
       1827-test/100%-coverage suite green, `verify:multiplayer-netcode` run twice locally against
       a real dev+signaling server pair (isolated on alternate ports, the user's own dev server on
       5173 left untouched) — clean both times after the two fixes above.
+    - [ ] **step 7 ("Reconciliation") shipped 2026-07-19: periodic host-authoritative snapshots,
+      PRNG-stream resync, drift correction (snap + render smoothing)**, per
+      `multiplayer-netcode-spec.md` §3/§4 — the fix for the confirmed-real drift lockstep alone
+      can't prevent (`scripts/poc-cross-browser-determinism.mjs`'s cross-engine `Math.sin`/`cos`
+      ULP divergence, plus `InputDelayBuffer`'s held-last-input fallback). Landed as one PR for
+      3 sub-steps (7a engine primitives, 7b wire wiring, 7c test hooks + e2e verify), same
+      one-branch precedent as step 6. `src/prng.ts`'s `mulberry32` is now defined *in terms of* a
+      new `createResumablePrng(seed)` (`{next, getState, setState}`) rather than duplicating the
+      algorithm — `RaycasterEngine.rng` stays a plain `() => number` at every existing call site,
+      unchanged, while a parallel `rngHandle` field gives `captureReconciliationSnapshot`/
+      `applyReconciliationSnapshot` read/resume access to the stream's raw 32-bit counter. New
+      `src/engine/reconciliationSnapshot.ts` (`ReconciliationSnapshot`/`PlayerSnapshot`/
+      `EnemySnapshot`/`MineSnapshot`/`LootDropSnapshot`/`TileMutation`) and
+      `src/engine/reconciliationConstants.ts` (`CORRECTION_SMOOTH_MS`/`SNAP_THRESHOLD_TILES`)
+      **live in `src/engine/`, not `src/multiplayer/`** — the engine layer never imports from the
+      multiplayer layer (only the reverse, same rule `PlayerId` already follows) —
+      `src/multiplayer/reconciliationTypes.ts`/`netcodeConstants.ts` just re-export them. Found
+      this the hard way, not by inspection: an early draft put the constants as plain exports on
+      `engine.ts` itself and had `netcodeConstants.ts` re-export from there, which transitively
+      dragged `engine.ts`'s own `textures.ts` import (a module-load-time `document.createElement`
+      call) into `tickClockWorker.ts` (a real Web Worker, no DOM) and broke
+      `netcodeConstants.test.ts` under plain-Node — fixed by giving the constants their own
+      tiny, dependency-free file instead of exporting them from `engine.ts` proper. Two new
+      `RaycasterEngine` methods: `captureReconciliationSnapshot(tick)` (host-only; drains a new
+      `pendingGridDelta` tile-mutation log fed by `tryOpenSecretWall()`/`openDoorAhead()`) and
+      `applyReconciliationSnapshot(snapshot)` (guest-only; every field snaps immediately and
+      fully — continuing to simulate from a known-wrong value even one more tick compounds *more*
+      drift via the same `sin`/`cos` calls that caused the problem in the first place). Position
+      corrections additionally get a `PlayerState.renderOffset`/`enemyRenderOffsets` side-map
+      entry when the delta is below `SNAP_THRESHOLD_TILES` (decayed by real elapsed
+      `performance.now()` time over `CORRECTION_SMOOTH_MS`, applied only at render time via a new
+      `applyRenderOffsets()`/restore wrapper around `render()`) or none at all when at/above it
+      (an instant, unsmoothed snap — a mismatch that large means something categorically worse
+      than float drift happened). **Real gap found and fixed along the way**: `killPlayer()`'s own
+      key-drop-on-death push bypassed `pushLootDrop` entirely (a pre-existing, deliberate design,
+      not a bug) and so never got the same id-tagging scheme `pushLootDrop`'s enemy-kill drops
+      needed for the reconciliation payload's loot-drop diff — fixed with a parallel
+      `player:${playerId}:${dropSeq}` id scheme and a `LootContext.pushDrop` signature change
+      (now takes the source `Enemy`, not just the drop, so the engine can derive `${enemyIndex}:
+      ${dropSeq}` from it — `dropEliteLoot`'s 3 call sites and `lootApply.test.ts`'s assertions
+      updated to match). **Deliberate decision, confirmed with the user**: rendering stays
+      tick-locked (called once per 30Hz sim tick, exactly as step 6c shipped it) rather than
+      decoupling to a real independent rAF loop — the decay math is still genuinely wall-clock-
+      time-based (correct, just sampled at 30fps instead of native refresh rate), and full
+      decoupling would first require moving `tickEffects()`'s frame-counted decay (muzzle flash/
+      cheat-toast/hit-flash) into `simulate()`, real separate engine surgery this step doesn't
+      otherwise need — deferred again, this time with a concrete trigger (revisit once the
+      coarser smoothing is a real, felt problem). New `?testHooks=1` hooks on
+      `__codeensteinMultiplayerTestHooks`: `getRngState()` (read-only), `hasActiveRenderOffset(id)`
+      (read-only), and `injectDesync(...)` — the first *mutating* test hook in the project (every
+      earlier one is read-only introspection or a permanent no-op like `consumeCheat()`),
+      deliberately so `scripts/verify-multiplayer-reconciliation.mjs` can force a real, known
+      divergence and prove the correction converges it, since real cross-engine float drift
+      doesn't reliably appear within a short end-to-end run (the PoC's own divergence took
+      roughly the first 1% of a 500k-iteration *stress* loop to surface, not a couple seconds of
+      ordinary play). That script proves, over a real WebRTC connection: a small
+      (below-threshold) position injection reconverges via the smoothed path; a large
+      (at/above-threshold) one snaps instantly; and an injected extra `rng()` draw — the spec's
+      own most-emphasized failure mode, a PRNG *stream-position* desync, not just a bad value —
+      fully resyncs, including subsequent draws matching again. `npm run typecheck` clean, full
+      1871-test/100%-coverage suite green, both `verify:multiplayer-reconciliation` and a
+      re-run of `verify:multiplayer-netcode` (regression check) run locally against a real
+      dev+signaling server pair (isolated on alternate ports, the user's own dev server on 5173
+      left untouched) — clean every time.
 - [ ] enemy textures from wad? if yes: what about hitbox? — investigated (2026-07-16, no code changed yet).
   - **Today: enemies are 100% procedural, zero WAD sprite loading exists.** `src/wad/loadWad.ts`'s `WadLoadResult` only ever loads wall/door/floor-style textures (`wallTexture`/`doorTexture`/`floorTexture`/etc.) — no sprite lump is read at all. Enemies are drawn in `src/engine/sprites.ts` as solid-color rectangular billboards (`enemyColor`/`enemyBodyColor`), sized by a single `sizeFactor` in `projectEnemy` (`ENEMY_SIZE`, scaled by `EDGE_CASE_SCALE`=0.55 or `ELITE_SCALE`).
   - **Loading real sprite art is feasible, same binary format already parsed**: Doom sprite lumps use the exact same "patch" pixel format as wall patches (`src/wad/patch.ts`'s `parsePatch` is already format-generic, not wall-specific) — no new binary parser needed. But the pipeline differs from walls: sprites are used as single patches per frame directly (no `compositeTexture.ts`-style multi-patch tiling/`TEXTURE1` step), and use Doom's frame+rotation lump-naming convention (e.g. `TROOA1`, `TROOA2A8` mirrored) that nothing in this codebase currently parses. This project's WAD-texture system also has a real security/curation stance worth respecting here, not shortcutting: `src/wad/textureAllowlist.ts` is a hand-curated, individually-IWAD-verified name list per slot (not "trust any name present") — real monster sprites (imp/zombieman/demon/etc.) would need the same treatment: a new, separately-verified allowlist, not a generic passthrough.

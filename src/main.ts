@@ -1291,6 +1291,9 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
         getConnectionState: () => unknown;
         getSimTick: () => number | null;
         getPlayerPosition: (id: string) => { x: number; y: number } | null;
+        getRngState: () => number | null;
+        injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
+        hasActiveRenderOffset: (id: string) => boolean;
       };
     }
   ).__codeensteinMultiplayerTestHooks = {
@@ -1307,6 +1310,20 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
     // end-to-end verify script's lockstep-correctness assertions.
     getSimTick: () => activeMultiplayerSession?.getLastAppliedTick() ?? null,
     getPlayerPosition: (id) => activeMultiplayerSession?.getPlayerPosition(id) ?? null,
+    // Both added in step 7 (reconciliation) — `getRngState` is read-only
+    // introspection, same spirit as the two above. `injectDesync` is
+    // different in kind, not just in name: every hook above (and
+    // `consumeCheat()`'s permanent no-op) is either read-only or inert —
+    // this one genuinely *mutates* live simulation state, deliberately
+    // desyncing this peer from its counterpart so
+    // `scripts/verify-multiplayer-reconciliation.mjs` can prove the
+    // correction mechanism converges it back without waiting on organic
+    // cross-engine float drift (which doesn't reliably appear within a
+    // short end-to-end run — see `RaycasterEngine.debugInjectDesync`'s own
+    // doc comment). Never called from real gameplay code.
+    getRngState: () => activeMultiplayerSession?.getRngState() ?? null,
+    injectDesync: (injection) => activeMultiplayerSession?.debugInjectDesync(injection),
+    hasActiveRenderOffset: (id) => activeMultiplayerSession?.hasActiveRenderOffset(id) ?? false,
   };
 }
 

@@ -249,6 +249,12 @@ export interface LootDrop {
   amount?: number;
   /** For a `"weapon"` drop: which `WEAPONS` index it grants. */
   weaponIndex?: number;
+  /** Stable multiplayer-reconciliation identity, assigned at push time —
+   * `undefined` in single-player, which never reconciles. Not index-stable
+   * (unlike `GameMap.enemies`/`.mines`), since drops are appended dynamically
+   * during play — see `RaycasterEngine.pushLootDrop`'s doc comment for the
+   * assignment scheme. */
+  id?: string;
 }
 
 /**
