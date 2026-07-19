@@ -218,8 +218,11 @@ export interface GameMap {
 /** What a defeated enemy (or a scattered map pickup) can leave behind.
  * `"smg"`/`"gas"` (gdb's/Friday Hotfix's own ammo pools) are `LootDrop`-only
  * kinds — never a statically-placed `AmmoPickup` — see `AmmoPickup.kind`'s
- * doc comment. */
-export type LootKind = "bullets" | "rockets" | "smg" | "gas" | "health" | "swap" | "weapon";
+ * doc comment. `"key"` is also `LootDrop`-only: dropped at a coop player's
+ * death position (held dependency keys are level-scoped and one-per-door, so
+ * a dead player holding one until revive would soft-lock a door — see
+ * `RaycasterEngine.killPlayer`), collectible by any living player. */
+export type LootKind = "bullets" | "rockets" | "smg" | "gas" | "health" | "swap" | "weapon" | "key";
 
 /**
  * A dynamic loot drop left at a defeated enemy's death position. Spawned at

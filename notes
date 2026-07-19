@@ -314,6 +314,22 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
       `render()` deriving state honestly — not a regression. Verified byte-identical via this
       project's map-snapshot/replay-digest recipe, the full coverage suite (zero existing-test
       edits), 4 new targeted tests, and a real playthrough verify run.
+    - [ ] step 4 of the implementation plan shipped 2026-07-19: engine N-player model
+      (`engine.ts` plus `enemyAi.ts`/`projectiles.ts`/`rockets.ts`/`traps.ts`/`lootApply.ts`/
+      `sprites.ts`) — `this.player`/`this.health`/etc. became `players: Map<PlayerId, PlayerState>`
+      + `localPlayerId`; single-player is the N=1 case of the same shape now, not a separate code
+      path. Camera-parameterized `resolveShot()` replaces render-pass-dependent hit detection; enemy
+      AI targets the nearest living player with per-player `PathField`s; every world interaction
+      becomes any-living-player; friendly fire excluded by construction (hitscan never targets
+      players, rocket splash spares teammates, mines hit everyone). A dead player's camera resolves
+      separately at render time rather than overwriting their frozen `Player`, since every
+      world-interaction loop trusts `status` alone. Kill points split across contributors via an
+      assist `Map`; kill/streak credit goes only to the finishing blow — a gap the design review
+      caught and resolved explicitly rather than leaving ambiguous. Telemetry/audio deliberately
+      stay single-instance/unscoped for now (flagged, revisit if a later step needs them). Verified
+      via the same byte-identical-at-N=1 gate as step 3, plus new tests built by actually
+      constructing 2-3-player engines directly — this refactor touches nearly every method in the
+      class, so unlike step 3 it needed real new coverage, not just structural reshuffling.
 - [ ] enemy textures from wad? if yes: what about hitbox? — investigated (2026-07-16, no code changed yet).
   - **Today: enemies are 100% procedural, zero WAD sprite loading exists.** `src/wad/loadWad.ts`'s `WadLoadResult` only ever loads wall/door/floor-style textures (`wallTexture`/`doorTexture`/`floorTexture`/etc.) — no sprite lump is read at all. Enemies are drawn in `src/engine/sprites.ts` as solid-color rectangular billboards (`enemyColor`/`enemyBodyColor`), sized by a single `sizeFactor` in `projectEnemy` (`ENEMY_SIZE`, scaled by `EDGE_CASE_SCALE`=0.55 or `ELITE_SCALE`).
   - **Loading real sprite art is feasible, same binary format already parsed**: Doom sprite lumps use the exact same "patch" pixel format as wall patches (`src/wad/patch.ts`'s `parsePatch` is already format-generic, not wall-specific) — no new binary parser needed. But the pipeline differs from walls: sprites are used as single patches per frame directly (no `compositeTexture.ts`-style multi-patch tiling/`TEXTURE1` step), and use Doom's frame+rotation lump-naming convention (e.g. `TROOA1`, `TROOA2A8` mirrored) that nothing in this codebase currently parses. This project's WAD-texture system also has a real security/curation stance worth respecting here, not shortcutting: `src/wad/textureAllowlist.ts` is a hand-curated, individually-IWAD-verified name list per slot (not "trust any name present") — real monster sprites (imp/zombieman/demon/etc.) would need the same treatment: a new, separately-verified allowlist, not a generic passthrough.

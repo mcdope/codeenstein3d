@@ -183,6 +183,52 @@ export function collectEnemyBillboards(
     }));
 }
 
+/** A living, connected teammate the local viewer can see — never the viewer
+ * themselves (they're the camera, never billboarded; enforced by the
+ * caller's list construction, not an identity check here) and never a dead
+ * teammate (they've left the world simulation — see
+ * `RaycasterEngine.killPlayer`). `color` is that player's distinct marker
+ * color, reused for their automap/minimap dot too (one color source, not
+ * two). */
+export interface OtherPlayerBillboard {
+  player: Player;
+  color: string;
+}
+
+/** Collect every other connected, living player as a billboard draw job,
+ * occluded by the wall z-buffer — the same vertical-stripe fill
+ * `collectEnemyBillboards` uses, tinted per player instead of by hit-flash/
+ * Elite state, with no HP bar/name overlay (not asked for by the spec). */
+export function collectPlayerBillboards(
+  ctx: CanvasRenderingContext2D,
+  viewer: Player,
+  others: readonly OtherPlayerBillboard[],
+  zBuffer: Float64Array,
+): BillboardJob[] {
+  const width = ctx.canvas.width;
+  const height = ctx.canvas.height;
+
+  return others
+    .map(({ player, color }) => ({ color, proj: projectPoint(viewer, player.posX, player.posY, width, height) }))
+    .filter(({ proj }) => proj.depth > SPRITE_NEAR)
+    .map(({ color, proj }) => ({
+      depth: proj.depth,
+      draw: () => {
+        const startX = Math.max(0, Math.floor(proj.left));
+        const endX = Math.min(width - 1, Math.ceil(proj.right));
+        const startY = Math.max(0, Math.floor(proj.top));
+        const endY = Math.min(height - 1, Math.ceil(proj.bottom));
+        const spriteH = endY - startY + 1;
+
+        ctx.fillStyle = color;
+        for (let x = startX; x <= endX; x++) {
+          if (proj.depth >= zBuffer[x]) continue;
+          ctx.fillRect(x, startY, 1, spriteH);
+        }
+      },
+    }));
+}
+
 function drawEnemyOverlay(
   ctx: CanvasRenderingContext2D,
   entity: CodeEntity,
@@ -545,6 +591,8 @@ function lootColors(kind: LootDrop["kind"]): { back: string; fill: string } {
       return { back: "#101c40", fill: "#4a7fff" }; // blue shard
     case "weapon":
       return { back: "#3a1040", fill: "#e06aff" }; // violet — a rare, special drop
+    case "key":
+      return { back: "#403610", fill: "#f2d64b" }; // gold — matches the HUD key icon
   }
 }
 

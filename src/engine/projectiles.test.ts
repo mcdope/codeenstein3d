@@ -89,12 +89,17 @@ describe("updateProjectiles", () => {
     return { x: 0, y: 0, vx: 0, vy: 0, damage: 8, ...overrides };
   }
 
+  /** One-target roster, the N=1 shape every existing test exercises. */
+  function targetsFor(player: Player, id = "p1"): { id: string; player: Player }[] {
+    return [{ id, player }];
+  }
+
   it("advances a surviving bolt's position and deals no damage", () => {
     const player = facingPlayer(); // spawn (5,5) -> posX/posY 5.5,5.5
     const map = fakeMap();
     const list = [bolt({ x: 1, y: 1, vx: 1, vy: 0 })];
-    const damage = updateProjectiles(list, player, map, 0.1);
-    expect(damage).toBe(0);
+    const damage = updateProjectiles(list, targetsFor(player), map, 0.1);
+    expect(damage.size).toBe(0);
     expect(list).toHaveLength(1);
     expect(list[0].x).toBeCloseTo(1.1);
   });
@@ -103,8 +108,8 @@ describe("updateProjectiles", () => {
     const player = facingPlayer();
     const map = fakeMap();
     const list = [bolt({ x: player.posX, y: player.posY, vx: 0, vy: 0, damage: 8 })];
-    const damage = updateProjectiles(list, player, map, 0.1);
-    expect(damage).toBe(8);
+    const damage = updateProjectiles(list, targetsFor(player), map, 0.1);
+    expect(damage.get("p1")).toBe(8);
     expect(list).toHaveLength(0);
   });
 
@@ -115,8 +120,8 @@ describe("updateProjectiles", () => {
       bolt({ x: player.posX, y: player.posY, damage: 8 }),
       bolt({ x: player.posX, y: player.posY, damage: 12 }),
     ];
-    const damage = updateProjectiles(list, player, map, 0.1);
-    expect(damage).toBe(20);
+    const damage = updateProjectiles(list, targetsFor(player), map, 0.1);
+    expect(damage.get("p1")).toBe(20);
     expect(list).toHaveLength(0);
   });
 
@@ -126,8 +131,8 @@ describe("updateProjectiles", () => {
     g[2][2] = 1; // wall
     const map = fakeMap({ grid: g });
     const list = [bolt({ x: 2.4, y: 2.4, vx: 0, vy: 0 })]; // already sitting in the wall tile
-    const damage = updateProjectiles(list, player, map, 0.1);
-    expect(damage).toBe(0);
+    const damage = updateProjectiles(list, targetsFor(player), map, 0.1);
+    expect(damage.size).toBe(0);
     expect(list).toHaveLength(0);
   });
 
@@ -135,8 +140,8 @@ describe("updateProjectiles", () => {
     const player = facingPlayer();
     const map = fakeMap();
     const list = [bolt({ x: -5, y: -5, vx: 0, vy: 0 })];
-    const damage = updateProjectiles(list, player, map, 0.1);
-    expect(damage).toBe(0);
+    const damage = updateProjectiles(list, targetsFor(player), map, 0.1);
+    expect(damage.size).toBe(0);
     expect(list).toHaveLength(0);
   });
 
@@ -146,8 +151,8 @@ describe("updateProjectiles", () => {
     g[Math.floor(player.posY)][Math.floor(player.posX)] = 1; // player's own tile is (weirdly) a wall
     const map = fakeMap({ grid: g });
     const list = [bolt({ x: player.posX, y: player.posY, damage: 8 })];
-    const damage = updateProjectiles(list, player, map, 0.1);
-    expect(damage).toBe(8); // still counted as a player hit, not silently eaten by the wall check
+    const damage = updateProjectiles(list, targetsFor(player), map, 0.1);
+    expect(damage.get("p1")).toBe(8); // still counted as a player hit, not silently eaten by the wall check
     expect(list).toHaveLength(0);
   });
 
@@ -161,10 +166,20 @@ describe("updateProjectiles", () => {
       bolt({ x: 2.4, y: 2.4, vx: 0, vy: 0 }), // hits wall
       bolt({ x: player.posX, y: player.posY, vx: 0, vy: 0, damage: 8 }), // hits player
     ];
-    const damage = updateProjectiles(list, player, map, 0.1);
-    expect(damage).toBe(8);
+    const damage = updateProjectiles(list, targetsFor(player), map, 0.1);
+    expect(damage.get("p1")).toBe(8);
     expect(list).toHaveLength(1);
     expect(list[0].x).toBeCloseTo(8);
+  });
+
+  it("resolves a bolt against the first target in sorted order when two players are both in reach", () => {
+    const playerA = facingPlayer();
+    const playerB = facingPlayer();
+    const map = fakeMap();
+    const list = [bolt({ x: playerA.posX, y: playerA.posY, damage: 8 })];
+    const damage = updateProjectiles(list, [{ id: "a", player: playerA }, { id: "b", player: playerB }], map, 0.1);
+    expect(damage.get("a")).toBe(8);
+    expect(damage.has("b")).toBe(false);
   });
 });
 

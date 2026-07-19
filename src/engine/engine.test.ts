@@ -6,7 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { createMockCanvasContext, stubCanvasGetContext } from "../../test/mocks/canvas";
 import { installRaf, type RafController } from "../../test/mocks/raf";
 import type { AmmoPickup, Enemy, GameMap, Mine, SpikeTrap, Teleporter, Tile } from "../map/types";
-import { DOOR_TILE, LORE_TILE, SECRET_WALL_TILE, TELEPORTER_TILE } from "../map/types";
+import { DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, TELEPORTER_TILE } from "../map/types";
 import { audio } from "./audio";
 import type { InputSnapshot, InputSource } from "./input";
 
@@ -17,13 +17,14 @@ import type { InputSnapshot, InputSource } from "./input";
 // all other top-level code. Stub the canvas context first, then
 // dynamically import engine.ts. Same gotcha as raycaster.ts/textures.ts.
 let RaycasterEngine: typeof import("./engine").RaycasterEngine;
+let REVIVE_HEALTH: number;
 type EngineStats = import("./engine").EngineStats;
 type EngineHandlers = import("./engine").EngineHandlers;
 type EngineCarryover = import("./engine").EngineCarryover;
 
 beforeAll(async () => {
   stubCanvasGetContext(document.createElement("canvas"));
-  ({ RaycasterEngine } = await import("./engine"));
+  ({ RaycasterEngine, REVIVE_HEALTH } = await import("./engine"));
 });
 
 const WIDTH = 200;
@@ -2234,3 +2235,292 @@ describe("RaycasterEngine — simulate()/render() split", () => {
   });
 });
 
+/** Reaches into `RaycasterEngine`'s private `players` map for the handful of
+ * N-player mechanics (per-player `zBuffer` identity, `spectateTargetId`)
+ * that have no public surface at all — by design, since neither is meant to
+ * ever be observed by a real host. Every other N-player test below drives
+ * only the public surface (`addPlayer`/`rosterSnapshot`/`advance`/testHooks). */
+function playersOf(engine: InstanceType<typeof RaycasterEngine>): Map<string, { zBuffer: Float64Array; spectateTargetId: string | null; status: string }> {
+  return (engine as unknown as { players: Map<string, { zBuffer: Float64Array; spectateTargetId: string | null; status: string }> }).players;
+}
+
+describe("RaycasterEngine — addPlayer / roster (N-player)", () => {
+  it("adds a second player, reflected in rosterSnapshot", () => {
+    const { engine } = makeEngine(fakeMap());
+    engine.addPlayer("p2", new ScriptedInput());
+    const roster = engine.rosterSnapshot();
+    expect([...roster.keys()].sort()).toEqual(["local", "p2"]);
+    expect(roster.get("p2")).toMatchObject({ status: "alive", health: 100, killScore: 0, kills: 0, distanceTraveled: 0 });
+  });
+
+  it("throws when adding a player id that's already present", () => {
+    const { engine } = makeEngine(fakeMap());
+    engine.addPlayer("p2", new ScriptedInput());
+    expect(() => engine.addPlayer("p2", new ScriptedInput())).toThrow('"p2" already present');
+  });
+
+  it("each player's zBuffer is its own independent Float64Array (resolveShot for one never touches another's)", () => {
+    const { engine } = makeEngine(fakeMap());
+    engine.addPlayer("p2", new ScriptedInput());
+    const players = playersOf(engine);
+    const a = players.get("local")!.zBuffer;
+    const b = players.get("p2")!.zBuffer;
+    expect(a).not.toBe(b);
+    expect(a.length).toBe(640); // SCENE_WIDTH
+    expect(b.length).toBe(640);
+  });
+
+  it("resolves a same-tile collection tie by sorted-playerId order, not insertion order", () => {
+    const pickup: AmmoPickup = { x: 5.5, y: 5.5, kind: "health", amount: 30, collected: false };
+    const map = fakeMap({ ammoPickups: [pickup] });
+    const carryover: EngineCarryover = { health: 40, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 };
+    const { engine } = makeEngine(map, makeHandlers(), { carryover });
+    // "aaa" sorts before "local" alphabetically despite being *added* second —
+    // both spawn on the exact same tile as the pickup, a genuine tie.
+    engine.addPlayer("aaa", new ScriptedInput(), carryover);
+    engine.advance(0.016);
+    const roster = engine.rosterSnapshot();
+    expect(roster.get("aaa")!.health).toBeGreaterThan(40); // sorted-first player collects it
+    expect(roster.get("local")!.health).toBe(40); // untouched
+  });
+});
+
+describe("RaycasterEngine — multiplayer combat & friendly fire (N-player)", () => {
+  it("enemy melee damage attributes to whichever player is nearest, not fixed to the local player", () => {
+    const enemy = fakeEnemy({ x: 5.5, y: 5.5, aggroed: true, attackCooldown: 0, hp: 999, maxHp: 999 });
+    const map = fakeMap({ enemies: [enemy] }, 20);
+    const { engine, input } = makeEngine(map);
+    engine.addPlayer("p2", new ScriptedInput()); // p2 spawns right next to the enemy and never moves
+    input.keys.add("KeyS"); // local backs straight away from the enemy's position
+    for (let i = 0; i < 30; i++) engine.advance(0.1);
+    const roster = engine.rosterSnapshot();
+    expect(roster.get("p2")!.health).toBeLessThan(100); // p2 (nearest) got bitten
+    expect(roster.get("local")!.health).toBe(100); // local (farther away) untouched
+  });
+
+  it("splits killScore across both shooters via assist share, but credits kills/streak only to the final blow", () => {
+    const enemy = fakeEnemy({ x: 6.5, y: 5.5, hp: 40, maxHp: 40 }); // pistol does 22/hit — two hits needed
+    const map = fakeMap({ enemies: [enemy] });
+    const { engine, input } = makeEngine(map);
+    const p2Input = new ScriptedInput();
+    engine.addPlayer("p2", p2Input);
+
+    input.fireQueued = true; // local lands the first, non-lethal hit
+    engine.advance(0.016);
+    expect(enemy.alive).toBe(true);
+
+    p2Input.fireQueued = true; // p2 lands the killing blow
+    engine.advance(0.016);
+    expect(enemy.alive).toBe(false);
+
+    const roster = engine.rosterSnapshot();
+    expect(roster.get("p2")!.kills).toBe(1);
+    expect(roster.get("local")!.kills).toBe(0); // only the final blow gets kill/streak credit
+    expect(roster.get("local")!.killScore).toBeGreaterThan(0); // assist share
+    expect(roster.get("p2")!.killScore).toBeGreaterThan(0);
+    expect(roster.get("local")!.killScore).toBeCloseTo(roster.get("p2")!.killScore, 5); // even split, 2 assists
+  });
+
+  it("hitscan fire can't hit a teammate standing in the crosshair (players are never in the hit-test list)", () => {
+    const map = fakeMap();
+    const { engine, input } = makeEngine(map);
+    engine.addPlayer("p2", new ScriptedInput()); // spawns exactly where local is aiming
+    input.fireQueued = true;
+    engine.advance(0.016);
+    expect(engine.rosterSnapshot().get("p2")!.health).toBe(100);
+  });
+
+  it("a proximity mine's blast damages every living player, no exclusion", () => {
+    const mine: Mine = { x: 5.5, y: 5.5, alive: true, visible: false, closeTimer: 0 }; // right at spawn
+    const map = fakeMap({ mines: [mine] });
+    const { engine } = makeEngine(map);
+    engine.addPlayer("p2", new ScriptedInput());
+    for (let i = 0; i < 30 && mine.alive; i++) engine.advance(0.1);
+    expect(mine.alive).toBe(false);
+    const roster = engine.rosterSnapshot();
+    expect(roster.get("local")!.health).toBeLessThan(100);
+    expect(roster.get("p2")!.health).toBeLessThan(100);
+  });
+
+  it("a mine destroyed by gunfire fans splash damage to every living player, not just the shooter", () => {
+    const mine: Mine = { x: 6.5, y: 5.5, alive: true, visible: true, closeTimer: 0 }; // close enough to splash spawn too
+    const map = fakeMap({ mines: [mine] });
+    const { engine, input } = makeEngine(map);
+    engine.addPlayer("p2", new ScriptedInput()); // p2 stays right at spawn, within the blast
+    input.fireQueued = true; // local (the shooter) destroys the mine
+    engine.advance(0.016);
+    expect(mine.alive).toBe(false);
+    const roster = engine.rosterSnapshot();
+    expect(roster.get("local")!.health).toBeLessThan(100); // shooter's own splash
+    expect(roster.get("p2")!.health).toBeLessThan(100); // bystander teammate also caught it
+  });
+
+  it("rocket splash damages the firer but excludes a teammate standing in the blast", () => {
+    const size = 12;
+    const map = fakeMap({ spawn: { x: 10, y: 5 } }, size);
+    const carryover: EngineCarryover = { health: 100, swap: 0, bullets: 0, rockets: 5, smg: 0, gas: 0, ownedWeapons: [0, 1, 2, 4] };
+    const { engine, input } = makeEngine(map, makeHandlers(), { carryover });
+    engine.addPlayer("p2", new ScriptedInput(), { ...carryover }); // p2 stays put, right next to the blast
+    input.weaponRequest = 3; // slot 3 -> ghidra (index 4)
+    engine.advance(0.016);
+    input.fireQueued = true;
+    engine.advance(0.016);
+    for (let i = 0; i < 20; i++) engine.advance(0.05);
+    const roster = engine.rosterSnapshot();
+    expect(roster.get("local")!.health).toBeLessThan(100); // firer catches their own blast
+    expect(roster.get("p2")!.health).toBe(100); // teammate excluded, even though in range
+  });
+});
+
+describe("RaycasterEngine — death, spectate, and revive (N-player)", () => {
+  function hazardSpawnMap(size = 14): GameMap {
+    const g = walledRoom(size);
+    g[5][5] = HAZARD_TILE; // the spawn tile itself is a hazard
+    return fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }] }, size);
+  }
+
+  it("a player who dies drops their held keys at their death position; a living teammate can then collect them", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const size = 14;
+      const g = walledRoom(size);
+      g[5][5] = HAZARD_TILE;
+      const map = fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }], keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+      const { engine } = makeEngine(map);
+      const p2Input = new ScriptedInput();
+      engine.addPlayer("p2", p2Input);
+      engine.advance(0.016); // local (sorted-first) collects the key this same tick
+      expect(engine.rosterSnapshot().get("local")!.status).toBe("alive");
+
+      p2Input.keys.add("KeyW"); // p2 clears the hazard tile; local stays and cooks
+      for (let i = 0; i < 10; i++) engine.advance(0.1);
+      p2Input.keys.delete("KeyW");
+      for (let i = 0; i < 10 && engine.rosterSnapshot().get("local")!.status === "alive"; i++) engine.advance(1);
+      expect(engine.rosterSnapshot().get("local")!.status).toBe("dead");
+      expect(engine.rosterSnapshot().get("local")!.health).toBe(0);
+      // The team isn't over — p2 is still alive.
+      expect(engine.rosterSnapshot().get("p2")!.status).toBe("alive");
+
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> }).__codeensteinTestHooks;
+      let drops = hooks!.getDrops() as { x: number; y: number; kind: string }[];
+      expect(drops).toContainEqual(expect.objectContaining({ kind: "key", x: 5.5, y: 5.5 }));
+
+      p2Input.keys.add("KeyS"); // walk back to the death position
+      for (let i = 0; i < 15; i++) engine.advance(0.1);
+      p2Input.keys.delete("KeyS");
+      drops = hooks!.getDrops() as { x: number; y: number; kind: string }[];
+      expect(drops.some((d) => d.kind === "key")).toBe(false); // p2 collected it
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+      delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+    }
+  });
+
+  it("a dead player's spectateTargetId resolves to a living teammate and cycles via consumeFire (3 players)", () => {
+    const { engine, input } = makeEngine(hazardSpawnMap());
+    const p2Input = new ScriptedInput();
+    const p3Input = new ScriptedInput();
+    engine.addPlayer("p2", p2Input);
+    engine.addPlayer("p3", p3Input);
+    // p2 and p3 step off the hazard immediately; local stays and dies on it.
+    p2Input.keys.add("KeyW");
+    p3Input.keys.add("KeyW");
+    for (let i = 0; i < 10; i++) engine.advance(0.1);
+    p2Input.keys.delete("KeyW");
+    p3Input.keys.delete("KeyW");
+    for (let i = 0; i < 10 && engine.rosterSnapshot().get("local")!.status === "alive"; i++) engine.advance(1);
+    expect(engine.rosterSnapshot().get("local")!.status).toBe("dead");
+
+    const players = playersOf(engine);
+    const local = players.get("local")!;
+    expect(local.spectateTargetId).toBe("p2"); // first living teammate, sorted order
+
+    input.fireQueued = true; // repurposed while dead: cycles the spectate target
+    engine.advance(0.1);
+    expect(local.spectateTargetId).toBe("p3");
+    input.fireQueued = true;
+    engine.advance(0.1);
+    expect(local.spectateTargetId).toBe("p2"); // wraps back around — cycling past both candidates
+  });
+
+  it("state flips to 'over' only once every connected player is dead", () => {
+    const { engine, handlers } = makeEngine(hazardSpawnMap());
+    engine.addPlayer("p2", new ScriptedInput()); // p2 never moves off the hazard either
+    for (let i = 0; i < 20 && handlers.onGameOver.mock.calls.length === 0; i++) engine.advance(1);
+    expect(handlers.onGameOver).toHaveBeenCalledTimes(1);
+    expect(engine.rosterSnapshot().get("local")!.status).toBe("dead");
+    expect(engine.rosterSnapshot().get("p2")!.status).toBe("dead");
+  });
+
+  it("world-interaction per-player loops skip a dead player without throwing (keys, static loot, room discovery, gunfire-mine splash)", () => {
+    const size = 20;
+    const g = walledRoom(size);
+    g[5][5] = HAZARD_TILE;
+    const pickup: AmmoPickup = { x: 17.5, y: 17.5, kind: "bullets", amount: 5, collected: false }; // stays uncollected — unreachable by either player
+    const enemy = fakeEnemy({ x: 17, y: 17, home: { x: 16, y: 16, w: 2, h: 2 } }); // stays undiscovered
+    // Far past both where p2 ends up (~x=8.7) and MINE_FUSE_RADIUS (1.8) /
+    // MINE_SIGHT_RADIUS (4.5) from there — the proximity fuse never arms, so
+    // only gunfire (below) can destroy it; `visible` is set explicitly since
+    // it's well outside MINE_SIGHT_RADIUS too.
+    const mine: Mine = { x: 15.5, y: 5.5, alive: true, visible: true, closeTimer: 0 };
+    const map = fakeMap(
+      {
+        grid: g,
+        hazards: [{ x: 5, y: 5 }],
+        keys: [{ x: 17.5, y: 17.5, collected: false }],
+        ammoPickups: [pickup],
+        enemies: [enemy],
+        mines: [mine],
+      },
+      size,
+    );
+    const { engine } = makeEngine(map);
+    const p2Input = new ScriptedInput();
+    engine.addPlayer("p2", p2Input);
+    p2Input.keys.add("KeyW"); // p2 clears the hazard tile and lines up on the mine far ahead
+    for (let i = 0; i < 10; i++) engine.advance(0.1);
+    p2Input.keys.delete("KeyW");
+    for (let i = 0; i < 10 && engine.rosterSnapshot().get("local")!.status === "alive"; i++) engine.advance(1);
+    expect(engine.rosterSnapshot().get("local")!.status).toBe("dead");
+    expect(mine.alive).toBe(true); // still alive — the fuse never armed at this range
+
+    // Drive several more ticks with local dead, p2 alive — exercises every
+    // per-player world-interaction loop's dead-player skip branch (keys,
+    // static loot, room discovery), then p2 destroys the mine via gunfire —
+    // exercising destroyMine's own dead-player skip in its splash fan-out.
+    p2Input.fireQueued = true;
+    expect(() => {
+      for (let i = 0; i < 5; i++) engine.advance(0.1);
+    }).not.toThrow();
+    expect(mine.alive).toBe(false);
+  });
+
+  it("addPlayer with carryover.health === REVIVE_HEALTH revives a player alive at that health, with inventory/score intact", () => {
+    const enemy = fakeEnemy({ x: 6.5, y: 5.5, hp: 1, maxHp: 1 });
+    const map = fakeMap({ enemies: [enemy] });
+    const { engine } = makeEngine(map);
+    const revivedInput = new ScriptedInput();
+    engine.addPlayer("revived", revivedInput, {
+      health: REVIVE_HEALTH,
+      swap: 0,
+      bullets: 10,
+      rockets: 0,
+      smg: 0,
+      gas: 0,
+      ownedWeapons: [0, 1, 2],
+      priorScore: 250,
+    });
+    let roster = engine.rosterSnapshot();
+    expect(roster.get("revived")).toMatchObject({ status: "alive", health: REVIVE_HEALTH, killScore: 0, kills: 0 });
+
+    // Inventory carried over for real: the revived player can fire their
+    // carried-over bullets and land a kill (proving `ownedWeapons`/`ammo`
+    // round-tripped through `addPlayer`, not just `health`).
+    revivedInput.fireQueued = true;
+    engine.advance(0.016);
+    roster = engine.rosterSnapshot();
+    expect(roster.get("revived")!.kills).toBe(1);
+    expect(roster.get("revived")!.killScore).toBeGreaterThan(0);
+  });
+});
