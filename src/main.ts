@@ -1390,6 +1390,8 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
         getMap: () => unknown | null;
         getEnemiesSnapshot: () => { x: number; y: number; alive: boolean; aggroed: boolean; elite: boolean; edgeCase: boolean; hp: number; maxHp: number }[];
         getMinesSnapshot: () => { x: number; y: number; alive: boolean; visible: boolean }[];
+        getDropsSnapshot: () => { x: number; y: number; kind: string }[];
+        getKeysSnapshot: () => { x: number; y: number }[];
         getBotPlayerState: (id: string) => {
           x: number;
           y: number;
@@ -1463,6 +1465,8 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
     getMap: () => activeMultiplayerSession?.getMap() ?? null,
     getEnemiesSnapshot: () => activeMultiplayerSession?.getEnemiesSnapshot() ?? [],
     getMinesSnapshot: () => activeMultiplayerSession?.getMinesSnapshot() ?? [],
+    getDropsSnapshot: () => activeMultiplayerSession?.getDropsSnapshot() ?? [],
+    getKeysSnapshot: () => activeMultiplayerSession?.getKeysSnapshot() ?? [],
     getBotPlayerState: (id) => activeMultiplayerSession?.getBotPlayerState(id) ?? null,
   };
 }

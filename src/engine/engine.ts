@@ -1202,6 +1202,21 @@ export class RaycasterEngine {
     return this.map.mines.map((m) => ({ x: m.x, y: m.y, alive: m.alive, visible: m.visible }));
   }
 
+  /** Multiplayer-only equivalent of `__codeensteinTestHooks.getDrops()` —
+   * roster-agnostic (dynamic kill-drop loot belongs to the shared
+   * simulation, not any one player), identical shape. Lets
+   * `scripts/lib/multiplayerBot.mjs`'s own `maybeDetourForLoot` see the same
+   * dynamic loot the single-player bot already can. */
+  getDropsSnapshot(): { x: number; y: number; kind: LootKind }[] {
+    return this.drops.map((d) => ({ x: d.x, y: d.y, kind: d.kind }));
+  }
+
+  /** Multiplayer-only equivalent of `__codeensteinTestHooks.getKeys()` —
+   * roster-agnostic, identical shape. */
+  getKeysSnapshot(): { x: number; y: number }[] {
+    return this.map.keys.filter((k) => !k.collected).map((k) => ({ x: k.x, y: k.y }));
+  }
+
   /** Multiplayer-only equivalent of `__codeensteinTestHooks.getPlayerState()`
    * for an arbitrary roster `id` — read-only introspection built for
    * `scripts/lib/multiplayerBot.mjs` to drive combat and navigation the same

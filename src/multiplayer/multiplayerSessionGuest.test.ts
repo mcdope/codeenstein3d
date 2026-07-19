@@ -296,6 +296,14 @@ describe("runMultiplayerSessionAsGuest", () => {
     expect(handle.getBotPlayerState("nope")).toBeNull();
   });
 
+  it("getDropsSnapshot/getKeysSnapshot delegate to the underlying engine", () => {
+    const map = fakeMap({ keys: [{ x: 6, y: 6, collected: false }] });
+    const channels = linkedChannels();
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map }));
+    expect(handle.getDropsSnapshot()).toEqual([]);
+    expect(handle.getKeysSnapshot()).toEqual([{ x: 6, y: 6 }]);
+  });
+
   it("forwards onSessionEnded once game-over fires, after tearing down its own listener", () => {
     const channels = linkedChannels();
     const size = 12;

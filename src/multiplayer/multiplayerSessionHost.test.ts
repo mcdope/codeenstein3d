@@ -262,6 +262,15 @@ describe("runMultiplayerSessionAsHost", () => {
     expect(handle.getBotPlayerState("nope")).toBeNull();
   });
 
+  it("getDropsSnapshot/getKeysSnapshot delegate to the underlying engine", () => {
+    const channels = linkedChannels();
+    const worker = fakeWorker();
+    const map = fakeMap({ keys: [{ x: 6, y: 6, collected: false }] });
+    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map }), worker);
+    expect(handle.getDropsSnapshot()).toEqual([]);
+    expect(handle.getKeysSnapshot()).toEqual([{ x: 6, y: 6 }]);
+  });
+
   it("getPlayerStatus/getLootDrops delegate to the underlying engine", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();

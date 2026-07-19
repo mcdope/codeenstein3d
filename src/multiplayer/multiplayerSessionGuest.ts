@@ -263,6 +263,10 @@ export function runMultiplayerSessionAsGuest(
     getEnemiesSnapshot: () => engine?.getEnemiesSnapshot() ?? [],
     /* v8 ignore next */
     getMinesSnapshot: () => engine?.getMinesSnapshot() ?? [],
+    /* v8 ignore next */
+    getDropsSnapshot: () => engine?.getDropsSnapshot() ?? [],
+    /* v8 ignore next */
+    getKeysSnapshot: () => engine?.getKeysSnapshot() ?? [],
     // See `multiplayerSessionHost.ts`'s identical getter for why this one
     // needs no ignore comment.
     getBotPlayerState: (id) => engine?.getBotPlayerState(id) ?? null,

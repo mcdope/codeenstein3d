@@ -2617,6 +2617,23 @@ describe("RaycasterEngine — addPlayer / roster (N-player)", () => {
     expect(engine.getMinesSnapshot()).toEqual([{ x: 4, y: 4, alive: true, visible: true }]);
   });
 
+  it("getDropsSnapshot/getKeysSnapshot mirror __codeensteinTestHooks' getDrops/getKeys, roster-agnostic", () => {
+    const map = fakeMap({
+      spawn: { x: 5, y: 5 },
+      keys: [
+        { x: 6, y: 6, collected: false },
+        { x: 7, y: 7, collected: true },
+      ],
+    });
+    const { engine } = makeEngine(map, makeHandlers(), { input: new ScriptedInput() });
+    engine.addPlayer("p2", new ScriptedInput());
+    // A real, already-tested way to push a real LootDrop onto `this.drops` —
+    // see the "multiplayer disconnect (step 8)" describe block above.
+    engine.applyRosterRemoval(["p2"]);
+    expect(engine.getKeysSnapshot()).toEqual([{ x: 6, y: 6 }]);
+    expect(engine.getDropsSnapshot().length).toBeGreaterThan(0);
+  });
+
   it("getBotPlayerState reads any roster player's full bot-facing state, or null if absent", () => {
     const { engine } = makeEngine(fakeMap({ spawn: { x: 3, y: 4 } }));
     const state = engine.getBotPlayerState("local");
