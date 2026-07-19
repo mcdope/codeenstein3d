@@ -830,12 +830,7 @@ export class RaycasterEngine {
       (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks = {
         getPlayerState: () => {
           const p = this.players.get(this.localPlayerId)!;
-          // Self-sufficient, like `resolveShot()` — recomputed fresh here
-          // (rather than reusing whatever `render()` last left in `p.zBuffer`,
-          // which is only ever populated up to `this.ctx.canvas.width`, not
-          // necessarily `SCENE_WIDTH`) so `meleeWouldHit`/`wouldMineHit` below
-          // are correct regardless of the real canvas's size or render timing.
-          castWallDistances(this.map, p.player, SCENE_WIDTH, p.zBuffer);
+          const { meleeWouldHit, wouldMineHit } = this.computeMeleeAndMineHitChecks(this.localPlayerId);
           return {
             x: p.player.posX,
             y: p.player.posY,
@@ -847,76 +842,8 @@ export class RaycasterEngine {
             state: this.state,
             ammo: { ...p.ammo },
             weaponIndex: p.weaponIndex,
-            // Whether a quick-melee swing thrown *right now* would actually
-            // connect — mirrors `fire()`'s own crosshair-column hit test
-            // (`findTargetInProjections` against the exact center column, in
-            // front of the nearest wall) rather than a bot-side angle-only
-            // guess. A fixed angle tolerance can't work here: a melee swing
-            // only lands within the target's on-screen width, which shrinks
-            // with distance (even inside melee range) and with an Edge Case's
-            // smaller sprite scale — a bot-side static epsilon was found to
-            // let it "fire" while aimed well off the target's actual hitbox,
-            // especially against Edge Cases near the far edge of melee range
-            // (observed: hundreds of whiffed swings against one enemy before
-            // giving up). See `scripts/run-balancing-telemetry.mjs`'s `tick()`
-            // for the consumer.
-            meleeWouldHit: (() => {
-              const melee = currentMeleeWeapon(p.ownedWeapons);
-              // Unreachable: `currentMeleeWeapon` only ever returns the knife or
-              // Toolchain, both hardcoded with `meleeRange: 1.5` — there's no
-              // owned-weapons state that makes this undefined.
-              /* v8 ignore next */
-              if (melee.meleeRange === undefined) return false;
-              const projections = projectLivingEnemies(p.player, this.enemies, SCENE_WIDTH, SCENE_HEIGHT);
-              const target = findTargetInProjections(projections, p.zBuffer, SCENE_WIDTH, SCENE_HEIGHT, SCENE_WIDTH / 2);
-              if (!target?.alive) return false;
-              const dist = Math.hypot(target.x - p.player.posX, target.y - p.player.posY);
-              return dist <= melee.meleeRange;
-            })(),
-            // Whether firing the *currently equipped ranged weapon* right now
-            // is guaranteed to destroy whatever mine is at the crosshair —
-            // mine hits go through the same screen-projection hit test as an
-            // enemy (`findMineInProjections`, mirroring `findTargetInProjections`),
-            // but for a *ranged* shot that also means the Cone-of-Fire
-            // deviation applies (unlike melee, which is exempt — see
-            // `meleeWouldHit`). A bot picking its shot purely by angle
-            // tolerance has no way to know the mine's on-screen width is
-            // narrower than that tolerance at typical disarm range, so it can
-            // "fire" many times while only occasionally actually connecting
-            // (confirmed via trace: ~30 fire attempts at one stationary,
-            // perfectly-angle-aligned mine before it finally died). Rather
-            // than expose the RNG'd deviation itself (which would let a bot
-            // "peek" at the seeded PRNG's next draw without consuming it,
-            // desyncing determinism from a real shot), this checks the
-            // *worst case* deviation magnitude deterministically: only true
-            // if the mine's projected width is wide enough that no possible
-            // random deviation could miss it. See
-            // `scripts/run-balancing-telemetry.mjs`'s `tick()` for the
-            // consumer.
-            wouldMineHit: (() => {
-              const weapon = WEAPONS[p.weaponIndex];
-              if (weapon.meleeRange !== undefined) return false; // this is the ranged-shot check; see meleeWouldHit for melee
-              const center = SCENE_WIDTH / 2;
-              const mineProjections = projectVisibleMines(p.player, this.map.mines, SCENE_WIDTH, SCENE_HEIGHT);
-              const target = findMineInProjections(mineProjections, p.zBuffer, SCENE_WIDTH, SCENE_HEIGHT, center);
-              if (!target?.alive) return false;
-              if (weapon.maxRange !== undefined) {
-                const dist = Math.hypot(target.x - p.player.posX, target.y - p.player.posY);
-                if (dist > weapon.maxRange) return false;
-              }
-              const proj = mineProjections.find((mp) => mp.mine === target)?.proj;
-              // Unreachable: `target` is itself one of `mineProjections`' own
-              // `mine` references (returned by `findMineInProjections` from
-              // that exact array), so `.find` above always matches by identity.
-              /* v8 ignore next */
-              if (!proj) return false;
-              const baseCol = Math.min(SCENE_WIDTH - 1, Math.max(0, Math.round(center)));
-              const range = p.zBuffer[baseCol];
-              const rangeFraction = Math.min(1, range / FOG_FAR);
-              const maxDeviation = weapon.maxConeDeviationPx ?? MAX_CONE_DEVIATION_PX;
-              const worstCaseDeviation = rangeFraction * rangeFraction * rangeFraction * maxDeviation;
-              return center - worstCaseDeviation >= proj.left && center + worstCaseDeviation <= proj.right;
-            })(),
+            meleeWouldHit,
+            wouldMineHit,
             ownedWeapons: [...p.ownedWeapons],
             levelTime: this.levelTime,
             distanceTraveled: p.distanceTraveled,
@@ -1240,6 +1167,171 @@ export class RaycasterEngine {
    * `main.test.ts`'s own `bfsPath` helper does for single-player. */
   getMapGrid(): readonly Tile[][] {
     return this.map.grid;
+  }
+
+  /** The full generated `GameMap` this engine is running — read-only
+   * introspection, same spirit as `getMapExit`/`getMapGrid` but exposing
+   * everything real route-planning (`scripts/lib/routePlanner.mjs`'s
+   * `planRoute`, driven by `scripts/lib/multiplayerBot.mjs`) needs —
+   * doors/keys/rooms included, not just the two fields a plain bfs walker
+   * needs. */
+  getMap(): GameMap {
+    return this.map;
+  }
+
+  /** Multiplayer-only equivalent of `__codeensteinTestHooks.getEnemies()` —
+   * roster-agnostic (enemies aren't owned by any one player), identical
+   * shape. Built for `scripts/lib/multiplayerBot.mjs`, the same way the
+   * single-player hook was built for `scripts/lib/bot.mjs`. */
+  getEnemiesSnapshot(): { x: number; y: number; alive: boolean; aggroed: boolean; elite: boolean; edgeCase: boolean; hp: number; maxHp: number }[] {
+    return this.enemies.map((e) => ({
+      x: e.x,
+      y: e.y,
+      alive: e.alive,
+      aggroed: e.aggroed,
+      elite: e.elite,
+      edgeCase: e.edgeCase,
+      hp: e.hp,
+      maxHp: e.maxHp,
+    }));
+  }
+
+  /** Multiplayer-only equivalent of `__codeensteinTestHooks.getMines()` —
+   * roster-agnostic, identical shape. */
+  getMinesSnapshot(): { x: number; y: number; alive: boolean; visible: boolean }[] {
+    return this.map.mines.map((m) => ({ x: m.x, y: m.y, alive: m.alive, visible: m.visible }));
+  }
+
+  /** Multiplayer-only equivalent of `__codeensteinTestHooks.getPlayerState()`
+   * for an arbitrary roster `id` — read-only introspection built for
+   * `scripts/lib/multiplayerBot.mjs` to drive combat and navigation the same
+   * way the single-player balancing bot already does. `state` maps this
+   * player's own `PlayerStatus` onto the same `"playing"`/`"over"`
+   * vocabulary `scripts/lib/bot.mjs`'s decision logic already expects —
+   * multiplayer has no per-player `"won"` (a win is a whole-team, countdown-
+   * gated event, see `checkExit()`), so a caller driving this bot toward the
+   * exit needs to watch for that separately (e.g. `getExitCountdownRemaining()`)
+   * once navigation itself completes. Returns `null` if `id` isn't a
+   * connected player. */
+  getBotPlayerState(id: PlayerId): {
+    x: number;
+    y: number;
+    dirX: number;
+    dirY: number;
+    health: number;
+    healthFraction: number;
+    swap: number;
+    state: "playing" | "over";
+    ammo: AmmoPools;
+    weaponIndex: number;
+    meleeWouldHit: boolean;
+    wouldMineHit: boolean;
+    ownedWeapons: number[];
+    levelTime: number;
+    distanceTraveled: number;
+  } | null {
+    const p = this.players.get(id);
+    if (!p) return null;
+    const { meleeWouldHit, wouldMineHit } = this.computeMeleeAndMineHitChecks(id);
+    return {
+      x: p.player.posX,
+      y: p.player.posY,
+      dirX: p.player.dirX,
+      dirY: p.player.dirY,
+      health: p.health,
+      healthFraction: p.health / MAX_HEALTH,
+      swap: p.swap,
+      state: p.status === "alive" ? "playing" : "over",
+      ammo: { ...p.ammo },
+      weaponIndex: p.weaponIndex,
+      meleeWouldHit,
+      wouldMineHit,
+      ownedWeapons: [...p.ownedWeapons],
+      levelTime: this.levelTime,
+      distanceTraveled: p.distanceTraveled,
+    };
+  }
+
+  /** Whether a quick-melee swing / the currently equipped ranged weapon
+   * would connect right now, for `id` — shared by `__codeensteinTestHooks`'s
+   * `getPlayerState()` (always `this.localPlayerId`) and
+   * `getBotPlayerState(id)` (multiplayer, arbitrary roster id).
+   *
+   * `meleeWouldHit` mirrors `fire()`'s own crosshair-column hit test
+   * (`findTargetInProjections` against the exact center column, in front of
+   * the nearest wall) rather than a bot-side angle-only guess. A fixed
+   * angle tolerance can't work here: a melee swing only lands within the
+   * target's on-screen width, which shrinks with distance (even inside
+   * melee range) and with an Edge Case's smaller sprite scale — a bot-side
+   * static epsilon was found to let it "fire" while aimed well off the
+   * target's actual hitbox, especially against Edge Cases near the far edge
+   * of melee range (observed: hundreds of whiffed swings against one enemy
+   * before giving up). See `scripts/run-balancing-telemetry.mjs`'s `tick()`
+   * for the consumer.
+   *
+   * `wouldMineHit` is whether firing the *currently equipped ranged weapon*
+   * right now is guaranteed to destroy whatever mine is at the crosshair —
+   * mine hits go through the same screen-projection hit test as an enemy
+   * (`findMineInProjections`, mirroring `findTargetInProjections`), but for
+   * a *ranged* shot that also means the Cone-of-Fire deviation applies
+   * (unlike melee, which is exempt). A bot picking its shot purely by angle
+   * tolerance has no way to know the mine's on-screen width is narrower
+   * than that tolerance at typical disarm range, so it can "fire" many
+   * times while only occasionally actually connecting (confirmed via
+   * trace: ~30 fire attempts at one stationary, perfectly-angle-aligned
+   * mine before it finally died). Rather than expose the RNG'd deviation
+   * itself (which would let a bot "peek" at the seeded PRNG's next draw
+   * without consuming it, desyncing determinism from a real shot), this
+   * checks the *worst case* deviation magnitude deterministically: only
+   * true if the mine's projected width is wide enough that no possible
+   * random deviation could miss it.
+   */
+  private computeMeleeAndMineHitChecks(id: PlayerId): { meleeWouldHit: boolean; wouldMineHit: boolean } {
+    const p = this.players.get(id)!;
+    // Self-sufficient, like `resolveShot()` — recomputed fresh here (rather
+    // than reusing whatever `render()` last left in `p.zBuffer`, which is
+    // only ever populated up to `this.ctx.canvas.width`, not necessarily
+    // `SCENE_WIDTH`) so both checks below are correct regardless of the real
+    // canvas's size or render timing.
+    castWallDistances(this.map, p.player, SCENE_WIDTH, p.zBuffer);
+    const meleeWouldHit = (() => {
+      const melee = currentMeleeWeapon(p.ownedWeapons);
+      // Unreachable: `currentMeleeWeapon` only ever returns the knife or
+      // Toolchain, both hardcoded with `meleeRange: 1.5` — there's no
+      // owned-weapons state that makes this undefined.
+      /* v8 ignore next */
+      if (melee.meleeRange === undefined) return false;
+      const projections = projectLivingEnemies(p.player, this.enemies, SCENE_WIDTH, SCENE_HEIGHT);
+      const target = findTargetInProjections(projections, p.zBuffer, SCENE_WIDTH, SCENE_HEIGHT, SCENE_WIDTH / 2);
+      if (!target?.alive) return false;
+      const dist = Math.hypot(target.x - p.player.posX, target.y - p.player.posY);
+      return dist <= melee.meleeRange;
+    })();
+    const wouldMineHit = (() => {
+      const weapon = WEAPONS[p.weaponIndex];
+      if (weapon.meleeRange !== undefined) return false; // this is the ranged-shot check; see meleeWouldHit for melee
+      const center = SCENE_WIDTH / 2;
+      const mineProjections = projectVisibleMines(p.player, this.map.mines, SCENE_WIDTH, SCENE_HEIGHT);
+      const target = findMineInProjections(mineProjections, p.zBuffer, SCENE_WIDTH, SCENE_HEIGHT, center);
+      if (!target?.alive) return false;
+      if (weapon.maxRange !== undefined) {
+        const dist = Math.hypot(target.x - p.player.posX, target.y - p.player.posY);
+        if (dist > weapon.maxRange) return false;
+      }
+      const proj = mineProjections.find((mp) => mp.mine === target)?.proj;
+      // Unreachable: `target` is itself one of `mineProjections`' own
+      // `mine` references (returned by `findMineInProjections` from that
+      // exact array), so `.find` above always matches by identity.
+      /* v8 ignore next */
+      if (!proj) return false;
+      const baseCol = Math.min(SCENE_WIDTH - 1, Math.max(0, Math.round(center)));
+      const range = p.zBuffer[baseCol];
+      const rangeFraction = Math.min(1, range / FOG_FAR);
+      const maxDeviation = weapon.maxConeDeviationPx ?? MAX_CONE_DEVIATION_PX;
+      const worstCaseDeviation = rangeFraction * rangeFraction * rangeFraction * maxDeviation;
+      return center - worstCaseDeviation >= proj.left && center + worstCaseDeviation <= proj.right;
+    })();
+    return { meleeWouldHit, wouldMineHit };
   }
 
   /** Whether a player currently has a live, still-decaying drift-correction

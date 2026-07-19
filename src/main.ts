@@ -1387,6 +1387,26 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
         getMapExit: () => { x: number; y: number } | null;
         getMapGrid: () => readonly (readonly number[])[] | null;
         getExitCountdownRemaining: () => number | null;
+        getMap: () => unknown | null;
+        getEnemiesSnapshot: () => { x: number; y: number; alive: boolean; aggroed: boolean; elite: boolean; edgeCase: boolean; hp: number; maxHp: number }[];
+        getMinesSnapshot: () => { x: number; y: number; alive: boolean; visible: boolean }[];
+        getBotPlayerState: (id: string) => {
+          x: number;
+          y: number;
+          dirX: number;
+          dirY: number;
+          health: number;
+          healthFraction: number;
+          swap: number;
+          state: "playing" | "over";
+          ammo: { bullets: number; rockets: number; smg: number; gas: number };
+          weaponIndex: number;
+          meleeWouldHit: boolean;
+          wouldMineHit: boolean;
+          ownedWeapons: number[];
+          levelTime: number;
+          distanceTraveled: number;
+        } | null;
       };
     }
   ).__codeensteinMultiplayerTestHooks = {
@@ -1437,6 +1457,13 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
     getMapExit: () => activeMultiplayerSession?.getMapExit() ?? null,
     getMapGrid: () => activeMultiplayerSession?.getMapGrid() ?? null,
     getExitCountdownRemaining: () => activeMultiplayerSession?.getExitCountdownRemaining() ?? null,
+    // Added for `scripts/lib/multiplayerBot.mjs` — see
+    // `RaycasterEngine.getMap`/`getEnemiesSnapshot`/`getMinesSnapshot`/
+    // `getBotPlayerState`'s own doc comments.
+    getMap: () => activeMultiplayerSession?.getMap() ?? null,
+    getEnemiesSnapshot: () => activeMultiplayerSession?.getEnemiesSnapshot() ?? [],
+    getMinesSnapshot: () => activeMultiplayerSession?.getMinesSnapshot() ?? [],
+    getBotPlayerState: (id) => activeMultiplayerSession?.getBotPlayerState(id) ?? null,
   };
 }
 
