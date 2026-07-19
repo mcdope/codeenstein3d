@@ -300,6 +300,20 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
       `scripts/verify-multiplayer-connect.mjs` (two real Playwright browser *contexts*,
       all three engines) plus full unit coverage (`src/multiplayer/*.test.ts`,
       `test/mocks/webrtc.ts`).
+    - [ ] step 3 of the implementation plan shipped 2026-07-19: engine `simulate()`/`render()`
+      split (`engine.ts`), the prerequisite for step 4's N-player model — `advance(dt)` used to
+      fuse input/simulation/rendering into one call, incompatible with a fixed-tick sim decoupled
+      from each peer's own render rate. `render()` re-derives its own overlay choice from state
+      rather than trusting `simulate()`'s return value, so it stays safely callable repeatedly with
+      no intervening `simulate()`. Also extracted `castWallDistances`/`castWallRay` in
+      `raycaster.ts` so `fire()` can refresh its own zBuffer fresh from the player's current
+      position, regardless of which tick's `simulate()` called it. Two real gaps found beyond the
+      plan: the dt-integrated particle-effect updates (blood/explosions/burn embers) had the same
+      "no dt in render()" problem as the viewmodel bob and moved into `simulate()` too; and the
+      lore-dismiss frame's old one-frame blank-overlay flash quietly went away as a side effect of
+      `render()` deriving state honestly — not a regression. Verified byte-identical via this
+      project's map-snapshot/replay-digest recipe, the full coverage suite (zero existing-test
+      edits), 4 new targeted tests, and a real playthrough verify run.
 - [ ] enemy textures from wad? if yes: what about hitbox? — investigated (2026-07-16, no code changed yet).
   - **Today: enemies are 100% procedural, zero WAD sprite loading exists.** `src/wad/loadWad.ts`'s `WadLoadResult` only ever loads wall/door/floor-style textures (`wallTexture`/`doorTexture`/`floorTexture`/etc.) — no sprite lump is read at all. Enemies are drawn in `src/engine/sprites.ts` as solid-color rectangular billboards (`enemyColor`/`enemyBodyColor`), sized by a single `sizeFactor` in `projectEnemy` (`ENEMY_SIZE`, scaled by `EDGE_CASE_SCALE`=0.55 or `ELITE_SCALE`).
   - **Loading real sprite art is feasible, same binary format already parsed**: Doom sprite lumps use the exact same "patch" pixel format as wall patches (`src/wad/patch.ts`'s `parsePatch` is already format-generic, not wall-specific) — no new binary parser needed. But the pipeline differs from walls: sprites are used as single patches per frame directly (no `compositeTexture.ts`-style multi-patch tiling/`TEXTURE1` step), and use Doom's frame+rotation lump-naming convention (e.g. `TROOA1`, `TROOA2A8` mirrored) that nothing in this codebase currently parses. This project's WAD-texture system also has a real security/curation stance worth respecting here, not shortcutting: `src/wad/textureAllowlist.ts` is a hand-curated, individually-IWAD-verified name list per slot (not "trust any name present") — real monster sprites (imp/zombieman/demon/etc.) would need the same treatment: a new, separately-verified allowlist, not a generic passthrough.
