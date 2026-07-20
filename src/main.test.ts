@@ -567,6 +567,38 @@ describe("main.ts — statsScreenInfo", () => {
   });
 });
 
+describe("main.ts — multiplayerResultRows", () => {
+  const zeroBreakdown = {
+    killPoints: 0,
+    healthBonus: 0,
+    ammoBonus: 0,
+    speedBonus: 0,
+    pathBonus: 0,
+    mapCompletionBonus: 0,
+    loreBonus: 0,
+    secretRoomBonus: 0,
+    multikillBonus: 0,
+    accuracyBonus: 0,
+    total: 0,
+  };
+
+  it("labels a live roster player with capitalized id, points, and kills", async () => {
+    const { multiplayerResultRows } = await importMain();
+    const comparison = new Map([
+      ["host", { status: "alive" as const, health: 100, killScore: 400, kills: 5, distanceTraveled: 12, breakdown: { ...zeroBreakdown, total: 1234 } }],
+    ]);
+    expect(multiplayerResultRows(comparison)).toEqual([["Host", "1234 pts · 5 kills"]]);
+  });
+
+  it("appends a disconnected suffix for a roster player whose status is 'disconnected'", async () => {
+    const { multiplayerResultRows } = await importMain();
+    const comparison = new Map([
+      ["guest", { status: "disconnected" as const, health: 0, killScore: 200, kills: 3, distanceTraveled: 4, breakdown: { ...zeroBreakdown, total: 987 } }],
+    ]);
+    expect(multiplayerResultRows(comparison)).toEqual([["Guest", "987 pts · 3 kills (disconnected)"]]);
+  });
+});
+
 describe("main.ts — applyForcedUnlocks", () => {
   it("adds nothing below level 4", async () => {
     const { applyForcedUnlocks } = await importMain();
@@ -3091,6 +3123,14 @@ describe("main.ts — multiplayer connect flow", () => {
           () => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Multiplayer session ended — campaign complete!",
           8000,
         );
+        // The end-of-run comparison table (multiplayer step 9) shows on the
+        // canvas itself once the session truly ends — see
+        // onMultiplayerSessionEnded's own doc comment.
+        expect(document.querySelector<HTMLElement>(".canvas-area")!.hasAttribute("hidden")).toBe(false);
+        const ctxAfterWin = canvas.getContext("2d") as unknown as { fillText: { mock: { calls: unknown[][] } } };
+        const textsAfterWin = ctxAfterWin.fillText.mock.calls.map(([text]) => text as string);
+        expect(textsAfterWin).toContain("MULTIPLAYER: CAMPAIGN COMPLETE");
+        expect(textsAfterWin).toContain("Host");
 
         vi.doUnmock("./fs/demoCampaign");
         vi.doUnmock("./map/mapGenerator");
@@ -3180,7 +3220,7 @@ describe("main.ts — multiplayer connect flow", () => {
       }
     });
 
-    it("guest: session ends (status + back to the file tree) once every player dies", async () => {
+    it("guest: session ends (status + comparison table shown) once every player dies", async () => {
       await loadEligibleWorkspace();
       await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
       document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
@@ -3246,7 +3286,23 @@ describe("main.ts — multiplayer connect flow", () => {
       }
 
       expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Multiplayer session ended — every player was eliminated.");
-      expect(document.querySelector<HTMLElement>(".canvas-area")!.hasAttribute("hidden")).toBe(true);
+      // The end-of-run comparison table (multiplayer step 9) is drawn on the
+      // canvas itself and blocks until dismissed — resetToFileTree() no
+      // longer fires immediately (see onMultiplayerSessionEnded's own doc
+      // comment), so the canvas area is still showing right after game-over,
+      // with both roster players' rows drawn on it. Dismissing the overlay
+      // (past its own real-time dismiss lock) and confirming the eventual
+      // return to the file tree is exercised end-to-end by the Playwright
+      // verify scripts instead (real timing, no clock-stub gymnastics needed
+      // there) — see `scripts/verify-multiplayer-disconnect.mjs`.
+      expect(document.querySelector<HTMLElement>(".canvas-area")!.hasAttribute("hidden")).toBe(false);
+      const ctx = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!.getContext("2d") as unknown as {
+        fillText: { mock: { calls: unknown[][] } };
+      };
+      const texts = ctx.fillText.mock.calls.map(([text]) => text as string);
+      expect(texts).toContain("MULTIPLAYER: TEAM ELIMINATED");
+      expect(texts).toContain("Host");
+      expect(texts).toContain("Guest");
     });
 
     it("host: shows an error status if session setup fails (build-version mismatch)", async () => {

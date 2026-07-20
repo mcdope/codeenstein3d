@@ -17,6 +17,7 @@ import {
   SPIKE_TRAP_TILE,
   TELEPORTER_TILE,
   type GameMap,
+  type LootDrop,
 } from "../map/types";
 import type { Player } from "./player";
 import { EDGE_CASE_COLOR, enemyColor } from "./sprites";
@@ -540,6 +541,15 @@ function minimapWallCanvas(map: GameMap, cell: number, gridVersion: number, w: n
  * in `RaycasterEngine`) — see `Enemy.discovered`. Returns the panel's outer
  * rect so the exit compass can be drawn directly on its frame afterward.
  */
+/** Multiplayer-only loot-drop marker color (`drawAutomap`'s own constant
+ * matches this by value, not by shared import — same "each renderer keeps
+ * its own independently-defined, thematically-matched constants" convention
+ * every other marker color here already follows, e.g. `EXIT_COLOR`). A muted
+ * gold/amber, distinct from every existing marker hue on this panel
+ * (lore teal, hazard/mine warm reds/orange, exit green, the player marker's
+ * near-white) — see `multiplayer-game-state-spec.md` §5. */
+const LOOT_DROP_COLOR = "#b8860b";
+
 export function renderMinimap(
   ctx: CanvasRenderingContext2D,
   map: GameMap,
@@ -548,6 +558,11 @@ export function renderMinimap(
   maxPixels = 70,
   readTerminals: ReadonlySet<string> = NO_READ_TERMINALS,
   gridVersion = 0,
+  /** Multiplayer-only (`multiplayer-game-state-spec.md` §5) — always `[]` for
+   * single-player, so an always-empty array is indistinguishable from this
+   * parameter not existing at all. Gated by the caller
+   * (`engine.ts`'s `isMultiplayerSession()` check), not here. */
+  lootDrops: readonly LootDrop[] = [],
 ): MinimapPanelRect {
   const cell = Math.max(1, Math.floor(maxPixels / Math.max(map.width, map.height)));
   const w = map.width * cell;
@@ -663,6 +678,18 @@ export function renderMinimap(
   for (const item of map.keys) {
     if (item.collected) continue;
     ctx.fillRect(pad + item.x * cell - cell / 2, pad + item.y * cell - cell / 2, Math.max(2, cell), Math.max(2, cell));
+  }
+
+  // Multiplayer-only loot drops (ammo/weapon/health/key drops on the ground
+  // — e.g. left behind by a disconnected player) — gated on `map.visited`,
+  // the same fog-of-war precedent `Enemy.discovered` already sets on this
+  // panel: an ungated drop would otherwise broadcast a disconnect's exact
+  // location the instant it happens, in a room nobody's been near yet. `[]`
+  // for single-player, so this loop is a no-op there.
+  ctx.fillStyle = LOOT_DROP_COLOR;
+  for (const drop of lootDrops) {
+    if (!map.visited[Math.floor(drop.y)]?.[Math.floor(drop.x)]) continue;
+    ctx.fillRect(pad + drop.x * cell - cell / 2, pad + drop.y * cell - cell / 2, Math.max(2, cell), Math.max(2, cell));
   }
 
   // Exit tile (the return statement): high-contrast and pulsing so it never

@@ -491,6 +491,17 @@ no real benefit over a one-line formula.
 
 ### The two injection points
 
+**Correction, caught during implementation**: this section originally implied the
+HP multiplier could read `playerCount` from the roster directly available at
+construction time (e.g. `this.players.size`) — wrong. `RaycasterEngine`'s
+constructor only ever has the *local* peer in `this.players` at that point; every
+other roster member is added afterward via `addPlayer()` (see
+`sessionEngine.ts`'s `buildSessionEngine()`). The constructor needs an explicit
+`playerCount` parameter instead, supplied by the caller (which already knows the
+full roster size upfront — `result.roster.length` — the same "known before
+per-player objects exist" reason `mapGenerator.generate()` already takes a
+`maxPlayers` param rather than inferring one from generated state).
+
 - **HP** (`engine.ts` constructor, immediately alongside the existing difficulty
   rescale loop at ~753–765): a second pass, filtered to `enemy.elite` only —
   `if (enemy.elite) { enemy.hp = Math.round(enemy.hp * eliteMultipliers.hp); enemy.maxHp

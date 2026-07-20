@@ -107,11 +107,17 @@ export function updateEnemies(
    * a ranged bolt can randomly deviate. 0 (default) matches every existing
    * call site/test's prior behavior (a perfectly aimed shot). */
   aimSpreadDeg = 0,
+  /** See `EliteScalingMultipliers.damage` (`multiplayerScaling.ts`) — extra
+   * multiplier on top of `ELITE_DAMAGE_MULTIPLIER`'s own base for player-count
+   * scaling (multiplayer step 9). 1 (default) matches every existing call
+   * site/test's prior behavior (no extra scaling), and is single-player's
+   * permanent value. */
+  eliteDamageScale = 1,
 ): Map<string, number> {
   const damage = new Map<string, number>();
   for (const enemy of enemies) {
     if (!enemy.alive) continue;
-    const hit = updateEnemy(enemy, targets, map, dt, projectiles, pathFields, rng, events, aimSpreadDeg);
+    const hit = updateEnemy(enemy, targets, map, dt, projectiles, pathFields, rng, events, aimSpreadDeg, eliteDamageScale);
     if (hit) damage.set(hit.id, (damage.get(hit.id) ?? 0) + hit.amount);
   }
   return damage;
@@ -129,6 +135,7 @@ function updateEnemy(
   rng: () => number,
   events?: EnemyAiEvents,
   aimSpreadDeg = 0,
+  eliteDamageScale = 1,
 ): { id: string; amount: number } | null {
   // Cool down toward the next melee bite and the next ranged shot.
   if (enemy.attackCooldown > 0) enemy.attackCooldown = Math.max(0, enemy.attackCooldown - dt);
@@ -185,14 +192,14 @@ function updateEnemy(
     if (enemy.attackCooldown === 0) {
       enemy.attackCooldown = ATTACK_COOLDOWN;
       events?.onMeleeAttack?.(enemy);
-      return { id: nearest.id, amount: ATTACK_DAMAGE * damageMultiplier(enemy) };
+      return { id: nearest.id, amount: ATTACK_DAMAGE * damageMultiplier(enemy, eliteDamageScale) };
     }
     return null;
   }
 
   // At range: occasionally lob a bolt at the nearest target if there's a clear shot.
   if (enemy.fireCooldown === 0 && dist <= RANGED_RANGE && los()) {
-    spawnProjectile(projectiles, enemy.x, enemy.y, nearest.player.posX, nearest.player.posY, damageMultiplier(enemy), aimSpreadDeg, rng);
+    spawnProjectile(projectiles, enemy.x, enemy.y, nearest.player.posX, nearest.player.posY, damageMultiplier(enemy, eliteDamageScale), aimSpreadDeg, rng);
     enemy.fireCooldown = FIRE_COOLDOWN_MIN + rng() * (FIRE_COOLDOWN_MAX - FIRE_COOLDOWN_MIN);
     events?.onRangedFire?.(enemy);
   }
@@ -209,9 +216,13 @@ function updateEnemy(
 }
 
 /** Melee/ranged damage multiplier for `enemy` — the one elite/edgeCase ladder
- * shared by both attack paths (an Elite hits harder, an Edge Case softer). */
-function damageMultiplier(enemy: Enemy): number {
-  return enemy.elite ? ELITE_DAMAGE_MULTIPLIER : enemy.edgeCase ? EDGE_CASE_DAMAGE_MULTIPLIER : 1;
+ * shared by both attack paths (an Elite hits harder, an Edge Case softer).
+ * `eliteDamageScale` (default 1, single-player's permanent value) is the
+ * player-count Elite scaling from `multiplayerScaling.ts` — deliberately
+ * multiplied only into the Elite branch, never Edge Case's: player-count
+ * scaling is Elite-only, per `multiplayer-game-state-spec.md` §4. */
+function damageMultiplier(enemy: Enemy, eliteDamageScale = 1): number {
+  return enemy.elite ? ELITE_DAMAGE_MULTIPLIER * eliteDamageScale : enemy.edgeCase ? EDGE_CASE_DAMAGE_MULTIPLIER : 1;
 }
 
 /** `base` movement speed scaled for an Edge Case enemy's much faster darting. */

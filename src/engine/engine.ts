@@ -13,6 +13,7 @@
  * and leaves the DOM HUD/overlays to the caller.
  */
 import { DEFAULT_DIFFICULTY, DIFFICULTY_MULTIPLIERS, type DifficultyLevel, type DifficultyMultipliers } from "../difficulty";
+import { eliteScalingFor, type EliteScalingMultipliers } from "./multiplayerScaling";
 import { createResumablePrng, randomSeed } from "../prng";
 import { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "./reconciliationConstants";
 import { COUNTDOWN_TICKS } from "./transitionConstants";
@@ -296,6 +297,18 @@ export const LOCAL_PLAYER_ID: PlayerId = "local";
  * stays a full roster member, spectating; a disconnected one is genuinely
  * gone. Never single-player: nothing there ever sets this value. */
 export type PlayerStatus = "alive" | "dead" | "disconnected";
+
+/** One roster player's row in `RaycasterEngine.rosterSnapshot()` — see that
+ * method's own doc comment for what each field means and why `breakdown` is
+ * a cumulative run total, not a single level's. */
+export interface RosterSnapshotEntry {
+  status: PlayerStatus;
+  health: number;
+  killScore: number;
+  kills: number;
+  distanceTraveled: number;
+  breakdown: ScoreBreakdown;
+}
 
 /** Everything `RaycasterEngine` used to track as a single `this.*` field for
  * "the player" now lives here, one instance per connected player — single-
@@ -662,6 +675,11 @@ export class RaycasterEngine {
    * since `rollLoot`'s drop-kind odds (Normal only — see `./loot.ts`) need the
    * level name, not just its numeric multipliers. */
   private readonly difficultyLevel: DifficultyLevel;
+  /** Elite HP/damage multipliers for the constructor's `playerCount`
+   * parameter (multiplayer step 9, `multiplayerScaling.ts`) — read once at
+   * construction, same lifecycle as `difficultyMultipliers`. Identity (1/1)
+   * for every single-player session. */
+  private readonly eliteScalingMultipliers: EliteScalingMultipliers;
   /** In-flight enemy projectiles (ranged bolts). Team-shared world state. */
   private readonly projectiles: Projectile[] = [];
   /** In-flight player-fired rockets. Team-shared world state. */
@@ -767,6 +785,18 @@ export class RaycasterEngine {
      * `GameMap.multiplayerSpawns`'s spread-out points instead, matching
      * `addPlayer`'s own `spawn` parameter for every other connected player. */
     localSpawn?: Point,
+    /** How many players this session has, for Elite HP/damage scaling
+     * (`multiplayer-game-state-spec.md` §4, `eliteScalingFor()`) — defaults
+     * to 1 (today's single-player behavior, identity multiplier). Must be
+     * passed explicitly by a multiplayer session rather than read from
+     * `this.players.size`: at construction time this instance's own
+     * `players` map holds only the local player — every other roster member
+     * is added afterward via `addPlayer()` (see `sessionEngine.ts`'s
+     * `buildSessionEngine`), so the real count has to come from the caller,
+     * which already knows the full roster size upfront (the same reason
+     * `mapGenerator.generate()` already takes a `maxPlayers` param instead of
+     * inferring it from generated state). */
+    playerCount = 1,
   ) {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2D canvas context unavailable");
@@ -791,6 +821,19 @@ export class RaycasterEngine {
       for (const enemy of this.enemies) {
         enemy.hp = Math.round(enemy.hp * this.difficultyMultipliers.hp);
         enemy.maxHp = Math.round(enemy.maxHp * this.difficultyMultipliers.hp);
+      }
+    }
+    this.eliteScalingMultipliers = eliteScalingFor(playerCount);
+    // A second, Elite-only pass — kept visually separate from the
+    // unconditional difficulty loop above rather than folded into it, so
+    // "this only touches Elites" is obvious at the call site instead of a
+    // reader having to trace a conditional buried inside a loop meant for
+    // everyone (see `multiplayer-game-state-spec.md` §4).
+    if (this.eliteScalingMultipliers.hp !== 1) {
+      for (const enemy of this.enemies) {
+        if (!enemy.elite) continue;
+        enemy.hp = Math.round(enemy.hp * this.eliteScalingMultipliers.hp);
+        enemy.maxHp = Math.round(enemy.maxHp * this.eliteScalingMultipliers.hp);
       }
     }
     // See `this.telemetry`'s doc comment — `PLAYER_STATS_ENABLED` opts real
@@ -1163,13 +1206,21 @@ export class RaycasterEngine {
   }
 
   /** Read-only per-player snapshot for a session-lifecycle layer above this
-   * engine to build an end-of-run comparison table from — not consumed by
-   * anything in this step itself (deciding when/how to show it is later
-   * steps' job), exercised only by this step's own tests. */
-  rosterSnapshot(): ReadonlyMap<PlayerId, { status: PlayerStatus; health: number; killScore: number; kills: number; distanceTraveled: number }> {
-    const snapshot = new Map<PlayerId, { status: PlayerStatus; health: number; killScore: number; kills: number; distanceTraveled: number }>();
-    for (const [id, p] of this.players) {
-      snapshot.set(id, { status: p.status, health: p.health, killScore: p.killScore, kills: p.kills, distanceTraveled: p.distanceTraveled });
+   * engine to build an end-of-run comparison table from (multiplayer step 9)
+   * — `breakdown` is the cumulative *run* total (every level played this
+   * session, not just the current one), mirroring `buildStats()`'s own
+   * `runScoreBreakdown` derivation (`sumScoreBreakdowns(p.priorScoreBreakdown,
+   * computeLevelScoreBreakdown(p))`) rather than a single level's total,
+   * since this is meant to be read once, at true session end. Iterates
+   * `sortedPlayerIds()` (not raw `Map` insertion order) purely so every peer
+   * builds the same row order — cosmetic, not a correctness requirement,
+   * since the caller keys off `PlayerId` either way. */
+  rosterSnapshot(): ReadonlyMap<PlayerId, RosterSnapshotEntry> {
+    const snapshot = new Map<PlayerId, RosterSnapshotEntry>();
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      const breakdown = sumScoreBreakdowns(p.priorScoreBreakdown, this.computeLevelScoreBreakdown(p));
+      snapshot.set(id, { status: p.status, health: p.health, killScore: p.killScore, kills: p.kills, distanceTraveled: p.distanceTraveled, breakdown });
     }
     return snapshot;
   }
@@ -2324,7 +2375,16 @@ export class RaycasterEngine {
         kind: meleeOverlayActive ? currentMeleeWeapon(local.ownedWeapons).viewKind : WEAPONS[local.weaponIndex].viewKind,
       });
 
-      const minimapPanel = renderMinimap(this.ctx, this.map, camera, this.levelTime, 70, this.loreRead, this.gridVersion);
+      const minimapPanel = renderMinimap(
+        this.ctx,
+        this.map,
+        camera,
+        this.levelTime,
+        70,
+        this.loreRead,
+        this.gridVersion,
+        this.isMultiplayerSession() ? this.drops : [],
+      );
       drawCompass(
         this.ctx,
         minimapPanel.compassBadge,
@@ -2339,7 +2399,7 @@ export class RaycasterEngine {
     // Diablo-style automap overlay: drawn on top of the still-live 3D scene
     // (sim never stops for it, unlike `isPaused`/`loreText`) — see automap.ts.
     if (local.isMapActive) {
-      drawAutomap(this.ctx, this.map, camera, this.levelTime);
+      drawAutomap(this.ctx, this.map, camera, this.levelTime, this.isMultiplayerSession() ? this.drops : []);
     }
 
     // Crosshair stays visible (and on top of the automap, not dimmed by its
@@ -2707,6 +2767,7 @@ export class RaycasterEngine {
       this.rng,
       this.enemyAiEvents,
       this.difficultyMultipliers.enemyAimSpreadDeg,
+      this.eliteScalingMultipliers.damage,
     );
     if (this.projectiles.length > beforeShots) audio.playEnemyShoot();
     // Difficulty scales enemy-*dealt* damage only — melee bites and ranged
