@@ -163,7 +163,14 @@ export function runMultiplayerSessionAsGuest(
     const futureTick = bundle.tick + INPUT_DELAY_TICKS;
     const { snapshot: sampled, localEscapePressed } = localSampler.sampleAndReset();
     const outgoing: TickInput = { tick: futureTick, playerId: GUEST_PLAYER_ID, input: sampled };
-    sendJson(channels.input, outgoing);
+    // Same guard, same reasoning as the host's own mirror-image send in
+    // `multiplayerSessionHost.ts` — an uncaught `RTCDataChannel.send()`
+    // throw here (the transport gone before this peer's own
+    // `connectionstatechange` even fires) would abort the rest of this
+    // handler before `engine.advance()` ever runs, permanently stalling
+    // this peer's own simulation. Skipping the send is harmless either way:
+    // nothing is listening on a closed channel.
+    if (channels.input.readyState === "open") sendJson(channels.input, outgoing);
     // Local-only, no shared-simulation channel to carry it — see
     // `dismissLoreOverlay()`'s own doc comment.
     if (localEscapePressed) engine.dismissLoreOverlay();
