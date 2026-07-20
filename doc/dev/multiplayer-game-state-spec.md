@@ -841,3 +841,39 @@ none new:
 Only once that gate passes does netcode implementation start — against an engine
 whose N-player shape now actually exists and whose N=1 behavior is proven
 unchanged.
+
+## 7. N-player support (2-4): what changed, and what stayed the same
+
+Everything in §§1-6 above was designed and built generically against an
+arbitrary-length `roster`/`playerCount` from the start (`pickMultiplayerSpawns`,
+`eliteScalingFor`, the engine's own `players: Map<PlayerId, PlayerState>`) — the
+connect/session layer was the one piece that shipped as a fixed 2-player (1
+host + 1 guest) MVP, a deliberate simplification flagged at the time for later
+revisit. That revisit is this section: real support for up to 3 guests,
+star-topology (guests only ever connect to the host, never to each other).
+
+The host chooses `maxPlayers` (2-4) before creating a session — needed anyway
+since map generation's own `pickMultiplayerSpawns` must know the spawn count up
+front. Guests join sequentially against the *same* short code (per
+`multiplayer-server-spec.md` §2's own documented mechanism — publishing a fresh
+offer under an existing code), automatically, with no manual step between
+joins. All joining happens before the host clicks "Start Session," which
+finalizes the roster at whatever's actually connected then (not the
+`maxPlayers` ceiling) and is the moment map generation/elite scaling actually
+run. Mid-session/late joining (a guest connecting after the level is already
+running) is explicitly out of scope — it would need an in-progress map/entity
+catch-up transfer, a materially larger feature than this one.
+
+## Testing & verification
+
+`verify:multiplayer-multiguest` is this section's own end-to-end proof: a real
+3-peer (host + 2 guests) session, joined sequentially against one code,
+reaching lockstep agreement across every pairwise peer combination, Elite
+scaling engaging at `playerCount=3`, and one guest's disconnect leaving the
+other guest's and the host's sessions running uninterrupted. The existing
+2-player scripts (`verify:multiplayer-connect`/`-netcode`/`-reconciliation`/
+`-disconnect`/`-transition`) needed no changes — `maxPlayers=2` stays a fully
+supported, byte-identical-shaped case, the same "N=1/N=2 is just a case of the
+general shape" precedent this spec's own §6 already established for the
+engine layer. See `doc/dev/testing.md`'s "Cross-browser verification" section
+for the shared browser-support caveats.

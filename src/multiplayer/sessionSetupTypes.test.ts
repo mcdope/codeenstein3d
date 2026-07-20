@@ -2,16 +2,23 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 import { describe, expect, it } from "vitest";
-import { GUEST_PLAYER_ID, HOST_PLAYER_ID, SessionSetupError } from "./sessionSetupTypes";
+import { guestPlayerId, HOST_PLAYER_ID, SessionSetupError } from "./sessionSetupTypes";
 
 describe("roster id constants", () => {
-  it("are the documented literal values", () => {
+  it("HOST_PLAYER_ID is the documented literal value", () => {
     expect(HOST_PLAYER_ID).toBe("host");
-    expect(GUEST_PLAYER_ID).toBe("guest");
+  });
+});
+
+describe("guestPlayerId", () => {
+  it("produces a distinct id per join-order slot", () => {
+    expect(guestPlayerId(1)).toBe("guest-1");
+    expect(guestPlayerId(2)).toBe("guest-2");
+    expect(guestPlayerId(3)).toBe("guest-3");
   });
 
-  it("are mutually distinct", () => {
-    expect(HOST_PLAYER_ID).not.toBe(GUEST_PLAYER_ID);
+  it("never collides with HOST_PLAYER_ID for any slot", () => {
+    expect(guestPlayerId(1)).not.toBe(HOST_PLAYER_ID);
   });
 });
 

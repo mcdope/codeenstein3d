@@ -455,3 +455,20 @@ generous headroom over the "several hundred bytes to a couple KB" real-world SDP
 size the research doc estimated, while still refusing to let this mailbox become a
 general-purpose paste bin. Exceeding the cap destroys the request stream and
 responds `413 Payload Too Large` immediately, rather than continuing to read.
+
+## Testing & verification
+
+`verify:multiplayer-server` (pure Node, no browser) spawns a real instance of
+this script as a child process and drives its full endpoint surface directly —
+every documented error case, all four rate-limit budgets and their independence
+from each other, exponential backoff, TTL sliding/sweep semantics, and
+`--install`/`--uninstall --dry-run` output. This is also the spec's own proof
+that §2's "a lobby with more than two players is supported by the host
+publishing a fresh offer under the same code" mechanism (`updateSession()`/
+`PUT /session` with an existing `code`/`hostToken`) works as documented — the
+client-side consumer of that mechanism (sequential guest-arming, once per open
+slot up to a host-chosen `maxPlayers`) is exercised end-to-end by
+`verify:multiplayer-multiguest` instead, since that requires real client-side
+WebRTC connect flow this server-only script doesn't touch. See
+`doc/dev/testing.md`'s "Cross-browser verification" section for the browser-side
+scripts' shared caveats.

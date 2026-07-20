@@ -5,8 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import { FakeRTCDataChannel } from "../../test/mocks/webrtc";
 import type { GameMap, Tile } from "../map/types";
 import { runGuestSessionSetup } from "./sessionSetupGuest";
-import { runHostSessionSetup } from "./sessionSetupHost";
-import { GUEST_PLAYER_ID, HOST_PLAYER_ID, SessionSetupError, type SessionSetupMessage } from "./sessionSetupTypes";
+import { buildHostSessionSetupResult, runHostSessionSetup, type HostSessionSetupOptions } from "./sessionSetupHost";
+import { HOST_PLAYER_ID, SessionSetupError, type SessionSetupMessage } from "./sessionSetupTypes";
 import type { MultiplayerChannels } from "./types";
 
 /** Two host/guest `MultiplayerChannels` pairs, both channels linked so a
@@ -68,50 +68,49 @@ function bigFakeMap(size = 150): GameMap {
 }
 
 describe("runHostSessionSetup / runGuestSessionSetup — successful handshake", () => {
-  it("host and guest converge on the same SessionSetupResult, exercising real multi-chunk map transfer", async () => {
+  it("host and guest converge on the same session shape, exercising real multi-chunk map transfer", async () => {
     const channels = linkedChannels();
     const map = bigFakeMap();
     expect(JSON.stringify(map).length).toBeGreaterThan(16 * 1024); // sanity: the fixture is genuinely big
+    const options: HostSessionSetupOptions = { map, difficulty: "hard", roster: ["guest", "host"], gameplaySeed: 42 };
 
     // Guest first: it only ever listens on `runGuestSessionSetup()` (never
     // sends until the host's own build-version arrives), so its listener
     // must be attached before the host's synchronous outbound send below —
     // see sessionSetupGuest.ts's doc comment for the real race this order
     // guards against.
-    const [guestResult, hostResult] = await Promise.all([
-      runGuestSessionSetup(channels.guest),
-      runHostSessionSetup(channels.host, { map, difficulty: "hard", playerCount: 2 }),
-    ]);
+    const [guestResult] = await Promise.all([runGuestSessionSetup(channels.guest), runHostSessionSetup(channels.host, "guest", options)]);
+    const hostResult = buildHostSessionSetupResult(options);
 
     expect(guestResult.roster).toEqual(["guest", "host"]);
     expect(guestResult.tickRateHz).toBe(hostResult.tickRateHz);
     expect(guestResult.fixedDt).toBe(hostResult.fixedDt);
     expect(guestResult.inputDelayTicks).toBe(hostResult.inputDelayTicks);
     expect(guestResult.gameplaySeed).toBe(hostResult.gameplaySeed);
+    expect(guestResult.gameplaySeed).toBe(42);
     expect(guestResult.difficulty).toBe("hard");
     expect(guestResult.playerCount).toBe(2);
     expect(guestResult.map).toEqual(map);
   });
 
-  it("assigns HOST_PLAYER_ID to the host's own result and GUEST_PLAYER_ID to the guest's", async () => {
+  it("assigns HOST_PLAYER_ID to the host's own result and the given assignedId to the guest's", async () => {
     const channels = linkedChannels();
-    const map = bigFakeMap(10);
+    const options: HostSessionSetupOptions = { map: bigFakeMap(10), difficulty: "normal", roster: ["guest", "host"], gameplaySeed: 1 };
 
     // See the previous test's comment on why guest must go first.
-    const [guestResult, hostResult] = await Promise.all([
-      runGuestSessionSetup(channels.guest),
-      runHostSessionSetup(channels.host, { map, difficulty: "normal", playerCount: 2 }),
-    ]);
+    const [guestResult] = await Promise.all([runGuestSessionSetup(channels.guest), runHostSessionSetup(channels.host, "guest", options)]);
+    const hostResult = buildHostSessionSetupResult(options);
 
     expect(hostResult.assignedId).toBe(HOST_PLAYER_ID);
-    expect(guestResult.assignedId).toBe(GUEST_PLAYER_ID);
+    expect(guestResult.assignedId).toBe("guest");
   });
 });
 
 describe("runHostSessionSetup — ignores unexpected message types", () => {
   it("ignores a stray non-build-version message and still completes once the real build-version arrives", async () => {
     const channels = linkedChannels();
-    const hostPromise = runHostSessionSetup(channels.host, { map: bigFakeMap(10), difficulty: "normal", playerCount: 2 });
+    const options: HostSessionSetupOptions = { map: bigFakeMap(10), difficulty: "normal", roster: ["guest", "host"], gameplaySeed: 1 };
+    const hostPromise = runHostSessionSetup(channels.host, "guest", options);
 
     // A rogue guest sending a stray, unexpected message type before its real
     // build-version — isolates the host's own tolerance for it, same manual
@@ -122,7 +121,7 @@ describe("runHostSessionSetup — ignores unexpected message types", () => {
     const realVersion: SessionSetupMessage = { type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ };
     channels.guest.reconciliation.send(JSON.stringify(realVersion));
 
-    await expect(hostPromise).resolves.toBeDefined();
+    await expect(hostPromise).resolves.toBeUndefined();
   });
 });
 
@@ -130,8 +129,9 @@ describe("runHostSessionSetup — build-version mismatch", () => {
   it("rejects when the guest's build-version doesn't match, and sends nothing further", async () => {
     const channels = linkedChannels();
     const sendSpy = vi.spyOn(channels.host.reconciliation, "send");
+    const options: HostSessionSetupOptions = { map: bigFakeMap(10), difficulty: "easy", roster: ["guest", "host"], gameplaySeed: 1 };
 
-    const hostPromise = runHostSessionSetup(channels.host, { map: bigFakeMap(10), difficulty: "easy", playerCount: 2 });
+    const hostPromise = runHostSessionSetup(channels.host, "guest", options);
 
     // A rogue guest sending a mismatched build-version instead of the real
     // runGuestSessionSetup — isolates the host's own mismatch handling.
@@ -144,5 +144,45 @@ describe("runHostSessionSetup — build-version mismatch", () => {
     // Only the host's own outbound build-version — no session-init/map-chunk/map-end.
     const sentTypes = sendSpy.mock.calls.map((call) => (JSON.parse(call[0] as unknown as string) as SessionSetupMessage).type);
     expect(sentTypes).toEqual(["build-version"]);
+  });
+});
+
+describe("runHostSessionSetup — multiple guests (step 10: N-player)", () => {
+  it("sets up each guest independently, with the same roster/seed but its own assignedId", async () => {
+    const linkA = linkedChannels(); // host <-> guest-1
+    const linkB = linkedChannels(); // host <-> guest-2
+    const options: HostSessionSetupOptions = {
+      map: bigFakeMap(10),
+      difficulty: "normal",
+      roster: ["guest-1", "guest-2", "host"],
+      gameplaySeed: 777,
+    };
+
+    // Both guests' listeners attached before either host setup call sends
+    // anything — same ordering discipline as the 2-player test above,
+    // applied per guest.
+    const [guest1Result, guest2Result] = await Promise.all([
+      runGuestSessionSetup(linkA.guest),
+      runGuestSessionSetup(linkB.guest),
+      runHostSessionSetup(linkA.host, "guest-1", options),
+      runHostSessionSetup(linkB.host, "guest-2", options),
+    ]);
+    const hostResult = buildHostSessionSetupResult(options);
+
+    expect(guest1Result.assignedId).toBe("guest-1");
+    expect(guest2Result.assignedId).toBe("guest-2");
+    expect(guest1Result.roster).toEqual(["guest-1", "guest-2", "host"]);
+    expect(guest2Result.roster).toEqual(["guest-1", "guest-2", "host"]);
+    expect(guest1Result.gameplaySeed).toBe(guest2Result.gameplaySeed);
+    expect(hostResult.assignedId).toBe(HOST_PLAYER_ID);
+    expect(hostResult.roster).toEqual(["guest-1", "guest-2", "host"]);
+    expect(hostResult.playerCount).toBe(3);
+  });
+});
+
+describe("buildHostSessionSetupResult", () => {
+  it("derives playerCount from the roster's own length, never a separately-tracked value", () => {
+    const options: HostSessionSetupOptions = { map: bigFakeMap(5), difficulty: "normal", roster: ["guest-1", "guest-2", "guest-3", "host"], gameplaySeed: 1 };
+    expect(buildHostSessionSetupResult(options).playerCount).toBe(4);
   });
 });

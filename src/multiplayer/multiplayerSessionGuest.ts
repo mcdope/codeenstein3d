@@ -4,7 +4,7 @@
 /**
  * The guest's half of a live multiplayer session — purely event-driven, no
  * worker, no `InputDelayBuffer` of its own (only the host ever finalizes a
- * bundle; the guest just applies whatever it's sent). Every incoming message
+ * bundle; a guest just applies whatever it's sent). Every incoming message
  * on `channels.input` is necessarily a `TickInputBundle` from the host (the
  * host never receives its own broadcast back, and nothing else rides this
  * channel). On each bundle: sample this peer's own input, tag it for a
@@ -12,6 +12,14 @@
  * naturally throttle-resistant per the netcode spec, no separate timer
  * needed guest-side), then apply the bundle via `engine.advance(FIXED_DT)` —
  * the identical call the host makes from its own tick-due handler.
+ *
+ * A guest only ever holds one link — toward the host (star topology, see
+ * `multiplayerSessionHost.ts`'s own doc comment on why the host is the one
+ * side that needed a `links` map for step 10's N-player support). Every
+ * *other* roster member (the host, plus 0-2 other guests once step 10
+ * ships), this peer only ever hears about indirectly, via the host's own
+ * broadcast bundle — `otherInputs` below is a local `Map` feeding the shared
+ * simulation, not a second network connection.
  *
  * Level transitions (`multiplayer-research.md` step 8): this peer's own
  * simulation reaches a win at the exact same tick the host's does (lockstep)
@@ -35,7 +43,7 @@ import type { LevelTransitionAckMessage, LevelTransitionMessage } from "./levelT
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
 import type { ReconciliationSnapshotMessage } from "./reconciliationTypes";
 import { buildSessionEngine, type SessionEndReason, type SessionEngineHandle } from "./sessionEngine";
-import { GUEST_PLAYER_ID, HOST_PLAYER_ID, type SessionSetupResult } from "./sessionSetupTypes";
+import type { SessionSetupResult } from "./sessionSetupTypes";
 import type { GameMap } from "../map/types";
 import type { MultiplayerChannels } from "./types";
 
@@ -53,15 +61,18 @@ export function runMultiplayerSessionAsGuest(
    * provisional caveat as `stats` there. */
   onSessionEnded?: (stats: EngineStats, reason: SessionEndReason, comparison: ReadonlyMap<PlayerId, RosterSnapshotEntry>) => void,
   /** The guest's own `RTCPeerConnection` toward the host — same injection
-   * spirit as `runMultiplayerSessionAsHost`'s own `connection` param (see
+   * spirit as `runMultiplayerSessionAsHost`'s own per-guest links (see
    * `ConnectionStateSource`'s doc comment). Monitored here for the reverse
-   * direction: the host going away, not the guest. */
+   * direction: the host going away, not a guest. */
   connection?: ConnectionStateSource,
 ): MultiplayerSessionHandle {
   let lastAppliedTick: number | null = null;
   let lastReconciliationRngState: number | null = null;
   let ended = false;
   let currentResult = result;
+  // This peer's own roster id — fixed for the whole session (never
+  // reassigned by a level transition, only `map`/`gameplaySeed` change).
+  const myPlayerId = result.assignedId;
 
   // Host-disconnect handling (§5, guest side): unlike the host, there's no
   // roster-removal/loot-conversion machinery to run here — a bundle simply
@@ -111,7 +122,7 @@ export function runMultiplayerSessionAsGuest(
   // pattern in `multiplayerSessionHost.ts`'s own `startLevel()`.
   let engine: SessionEngineHandle["engine"] | undefined;
   let myInput: SessionEngineHandle["myInput"] | undefined;
-  let otherInput: SessionEngineHandle["otherInput"] | undefined;
+  let otherInputs: SessionEngineHandle["otherInputs"] | undefined;
   let localSampler: SessionEngineHandle["localSampler"] | undefined;
   let hasStarted = false;
 
@@ -129,7 +140,6 @@ export function runMultiplayerSessionAsGuest(
     hasStarted = true;
     const built = buildSessionEngine({
       result: levelResult,
-      role: "guest",
       canvas,
       carryovers,
       onSessionEnded: (stats, reason, comparison) => {
@@ -144,7 +154,7 @@ export function runMultiplayerSessionAsGuest(
     });
     engine = built.engine;
     myInput = built.myInput;
-    otherInput = built.otherInput;
+    otherInputs = built.otherInputs;
     localSampler = built.localSampler;
   };
   startLevel(currentResult);
@@ -157,17 +167,17 @@ export function runMultiplayerSessionAsGuest(
   // by the time `terminate()` runs) for a stray already-queued message to
   // slip through after teardown.
   const unsubscribeInput = onJsonMessage<TickInputBundle>(channels.input, (bundle) => {
-    // Unreachable: `engine`/`myInput`/`otherInput`/`localSampler` are always
+    // Unreachable: `engine`/`myInput`/`otherInputs`/`localSampler` are always
     // assigned synchronously by `startLevel(currentResult)` above, before
     // this listener could ever be invoked — the same "TypeScript's
     // conservative optional typing vs. what production code actually
     // guarantees" shape `doc/dev/testing.md`'s own coverage-caveats section
     // documents elsewhere in this codebase.
     /* v8 ignore next */
-    if (!engine || !myInput || !otherInput || !localSampler) return;
+    if (!engine || !myInput || !otherInputs || !localSampler) return;
     const futureTick = bundle.tick + INPUT_DELAY_TICKS;
     const { snapshot: sampled, localEscapePressed } = localSampler.sampleAndReset();
-    const outgoing: TickInput = { tick: futureTick, playerId: GUEST_PLAYER_ID, input: sampled };
+    const outgoing: TickInput = { tick: futureTick, playerId: myPlayerId, input: sampled };
     // Same guard, same reasoning as the host's own mirror-image send in
     // `multiplayerSessionHost.ts` — an uncaught `RTCDataChannel.send()`
     // throw here (the transport gone before this peer's own
@@ -180,11 +190,11 @@ export function runMultiplayerSessionAsGuest(
     // `dismissLoreOverlay()`'s own doc comment.
     if (localEscapePressed) engine.dismissLoreOverlay();
 
-    myInput.loadFrame(bundle.inputs[GUEST_PLAYER_ID]);
-    otherInput.loadFrame(bundle.inputs[HOST_PLAYER_ID]);
+    myInput.loadFrame(bundle.inputs[myPlayerId]);
+    for (const [id, input] of otherInputs) input.loadFrame(bundle.inputs[id]);
     // Applied before advance() — the same synchronized-lockstep-event
     // ordering the host itself uses (see its own worker.onmessage handler),
-    // so both peers reach the exact same tick's elimination check/loot-drop
+    // so every peer reaches the exact same tick's elimination check/loot-drop
     // state identically.
     if (bundle.rosterRemove) engine.applyRosterRemoval(bundle.rosterRemove);
     engine.advance(FIXED_DT);
@@ -236,7 +246,7 @@ export function runMultiplayerSessionAsGuest(
           transitionCarryovers = null;
           transitionGameplaySeed = null;
 
-          const ack: LevelTransitionAckMessage = { type: "level-transition-ack", playerId: GUEST_PLAYER_ID };
+          const ack: LevelTransitionAckMessage = { type: "level-transition-ack", playerId: myPlayerId };
           if (channels.reconciliation.readyState === "open") sendJson(channels.reconciliation, ack);
 
           currentResult = { ...currentResult, map: { ...mapWithoutVisited, visited }, gameplaySeed };

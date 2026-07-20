@@ -21,15 +21,20 @@ import type { PlayerId } from "../engine/engine";
 import type { GameMap } from "../map/types";
 import type { BuildVersion } from "./buildVersionCheck";
 
-/** Fixed roster ids for the 2-player MVP: the connect flow (step 2) only
- * ever supports exactly one host + one guest — one `RTCPeerConnection`, one
- * offer/answer code, no multi-guest-slot concept anywhere. Randomly
- * generating ids would be solving a collision problem that can't occur at
- * this slot count; revisit only if the connect flow itself grows multi-guest
- * support. Reuses the same literal vocabulary `MultiplayerRole` already
- * establishes (`types.ts`), not new terms. */
+/** The host's fixed roster id — always `"host"`, the one id never assigned
+ * dynamically (the host is the sole authority handing out every other id, so
+ * there's nothing for it to be assigned by). */
 export const HOST_PLAYER_ID: PlayerId = "host";
-export const GUEST_PLAYER_ID: PlayerId = "guest";
+
+/** A guest's roster id, assigned by the host in join order (step 10: N-player,
+ * up to `maxPlayers - 1` guests, chosen by the host before creating a
+ * session — see `multiplayer-server-spec.md` §2's "sequential, not
+ * concurrent, per-code joins," which is what makes serial assignment safe:
+ * the host is the sole authority handing these out, one guest connects at a
+ * time, so there's no collision risk to guard against with random ids. */
+export function guestPlayerId(n: number): PlayerId {
+  return `guest-${n}`;
+}
 
 export interface BuildVersionMessage extends BuildVersion {
   type: "build-version";

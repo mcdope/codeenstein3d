@@ -7,7 +7,7 @@ import { createMockCanvasContext, stubCanvasGetContext } from "../../test/mocks/
 import { InputController } from "../engine/input";
 import { COUNTDOWN_TICKS } from "../engine/transitionConstants";
 import type { GameMap, Tile } from "../map/types";
-import { GUEST_PLAYER_ID, HOST_PLAYER_ID } from "./sessionSetupTypes";
+import { HOST_PLAYER_ID } from "./sessionSetupTypes";
 import type { SessionSetupResult } from "./sessionSetupTypes";
 
 let buildSessionEngine: typeof import("./sessionEngine").buildSessionEngine;
@@ -66,7 +66,7 @@ function fakeMap(overrides: Partial<GameMap> = {}, size = 12): GameMap {
 
 function fakeResult(overrides: Partial<SessionSetupResult> = {}): SessionSetupResult {
   return {
-    roster: [GUEST_PLAYER_ID, HOST_PLAYER_ID].sort(),
+    roster: ["guest", HOST_PLAYER_ID].sort(),
     assignedId: HOST_PLAYER_ID,
     tickRateHz: 30,
     fixedDt: 1 / 30,
@@ -80,14 +80,14 @@ function fakeResult(overrides: Partial<SessionSetupResult> = {}): SessionSetupRe
 }
 
 describe("buildSessionEngine", () => {
-  it("keys the host's own player 'host' and the other player 'guest'", () => {
-    const { engine } = buildSessionEngine({ result: fakeResult(), role: "host", canvas: makeCanvas() });
+  it("keys this peer's own player by result.assignedId, and every other roster id as an added player", () => {
+    const { engine } = buildSessionEngine({ result: fakeResult({ assignedId: "host" }), canvas: makeCanvas() });
     const roster = engine.rosterSnapshot();
     expect([...roster.keys()].sort()).toEqual(["guest", "host"]);
   });
 
-  it("keys the guest's own player 'guest' and the other player 'host'", () => {
-    const { engine } = buildSessionEngine({ result: fakeResult(), role: "guest", canvas: makeCanvas() });
+  it("keys this peer's own player 'guest' when assignedId is 'guest', 'host' as the other player", () => {
+    const { engine } = buildSessionEngine({ result: fakeResult({ assignedId: "guest" }), canvas: makeCanvas() });
     const roster = engine.rosterSnapshot();
     expect([...roster.keys()].sort()).toEqual(["guest", "host"]);
   });
@@ -100,7 +100,7 @@ describe("buildSessionEngine", () => {
       ],
     });
     const result = fakeResult({ map });
-    const { engine } = buildSessionEngine({ result, role: "host", canvas: makeCanvas() });
+    const { engine } = buildSessionEngine({ result, canvas: makeCanvas() });
     // sorted roster is ["guest", "host"] -> guest gets index 0, host gets index 1
     expect(engine.getPlayerPosition("guest")).toEqual({ x: 2.5, y: 2.5 });
     expect(engine.getPlayerPosition("host")).toEqual({ x: 8.5, y: 8.5 });
@@ -108,29 +108,43 @@ describe("buildSessionEngine", () => {
 
   it("falls back to map.spawn for both players when multiplayerSpawns is undefined", () => {
     const result = fakeResult({ map: fakeMap({ spawn: { x: 4, y: 4 } }) });
-    const { engine } = buildSessionEngine({ result, role: "host", canvas: makeCanvas() });
+    const { engine } = buildSessionEngine({ result, canvas: makeCanvas() });
     expect(engine.getPlayerPosition("guest")).toEqual({ x: 4.5, y: 4.5 });
     expect(engine.getPlayerPosition("host")).toEqual({ x: 4.5, y: 4.5 });
   });
 
   it("falls back to map.spawn when multiplayerSpawns is an empty array", () => {
-    const result = fakeResult({ map: fakeMap({ spawn: { x: 4, y: 4 }, multiplayerSpawns: [] }) });
-    const { engine } = buildSessionEngine({ result, role: "guest", canvas: makeCanvas() });
+    const result = fakeResult({ map: fakeMap({ spawn: { x: 4, y: 4 }, multiplayerSpawns: [] }), assignedId: "guest" });
+    const { engine } = buildSessionEngine({ result, canvas: makeCanvas() });
     expect(engine.getPlayerPosition("guest")).toEqual({ x: 4.5, y: 4.5 });
     expect(engine.getPlayerPosition("host")).toEqual({ x: 4.5, y: 4.5 });
   });
 
   it("returns network input sources both feedable via loadFrame, and attaches the local sampler", () => {
     const attachSpy = vi.spyOn(InputController.prototype, "attach");
-    const { myInput, otherInput, localSampler } = buildSessionEngine({ result: fakeResult(), role: "host", canvas: makeCanvas() });
+    const { myInput, otherInputs, localSampler } = buildSessionEngine({ result: fakeResult(), canvas: makeCanvas() });
     expect(() => myInput.loadFrame({ ...myInput.captureSnapshot() })).not.toThrow();
-    expect(() => otherInput.loadFrame({ ...otherInput.captureSnapshot() })).not.toThrow();
+    expect(otherInputs.size).toBe(1);
+    for (const input of otherInputs.values()) {
+      expect(() => input.loadFrame({ ...input.captureSnapshot() })).not.toThrow();
+    }
     expect(localSampler).toBeDefined();
     expect(attachSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("creates one NetworkInputSource per other roster member for a 3-player roster (step 10: N-player)", () => {
+    const result = fakeResult({ roster: ["guest-1", "guest-2", "host"], assignedId: "host" });
+    const { engine, otherInputs } = buildSessionEngine({ result, canvas: makeCanvas() });
+    expect([...otherInputs.keys()].sort()).toEqual(["guest-1", "guest-2"]);
+    for (const input of otherInputs.values()) {
+      expect(() => input.loadFrame({ ...input.captureSnapshot() })).not.toThrow();
+    }
+    const roster = engine.rosterSnapshot();
+    expect([...roster.keys()].sort()).toEqual(["guest-1", "guest-2", "host"]);
+  });
+
   it("still fires onFreezeChange for this peer's own pause (pause suppression isn't this step's job)", () => {
-    const { engine, myInput } = buildSessionEngine({ result: fakeResult(), role: "host", canvas: makeCanvas() });
+    const { engine, myInput } = buildSessionEngine({ result: fakeResult(), canvas: makeCanvas() });
     myInput.loadFrame({ ...myInput.captureSnapshot(), escape: true });
     expect(() => engine.advance(1 / 30)).not.toThrow();
   });
@@ -142,7 +156,7 @@ describe("buildSessionEngine", () => {
     g[5][5] = 2; // hazard tile at spawn
     const map = fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }] }, size);
     const onSessionEnded = vi.fn();
-    const { engine } = buildSessionEngine({ result: fakeResult({ map }), role: "host", canvas: makeCanvas(), onSessionEnded });
+    const { engine } = buildSessionEngine({ result: fakeResult({ map }), canvas: makeCanvas(), onSessionEnded });
 
     for (let i = 0; i < 10 && onSessionEnded.mock.calls.length === 0; i++) engine.advance(1);
 
@@ -161,7 +175,7 @@ describe("buildSessionEngine", () => {
     // ticks are needed to actually exhaust it.
     const map = fakeMap({ spawn: { x: 5, y: 5 }, exit: { x: 5, y: 5 } });
     const onSessionEnded = vi.fn();
-    const { engine } = buildSessionEngine({ result: fakeResult({ map }), role: "host", canvas: makeCanvas(), onSessionEnded });
+    const { engine } = buildSessionEngine({ result: fakeResult({ map }), canvas: makeCanvas(), onSessionEnded });
 
     for (let i = 0; i < COUNTDOWN_TICKS + 1; i++) engine.advance(1 / 30);
 
@@ -174,7 +188,7 @@ describe("buildSessionEngine", () => {
     const map = fakeMap({ spawn: { x: 5, y: 5 }, exit: { x: 5, y: 5 } });
     const onSessionEnded = vi.fn();
     const onWin = vi.fn();
-    const { engine } = buildSessionEngine({ result: fakeResult({ map }), role: "host", canvas: makeCanvas(), onSessionEnded, onWin });
+    const { engine } = buildSessionEngine({ result: fakeResult({ map }), canvas: makeCanvas(), onSessionEnded, onWin });
 
     for (let i = 0; i < COUNTDOWN_TICKS + 1; i++) engine.advance(1 / 30);
 
@@ -188,7 +202,6 @@ describe("buildSessionEngine", () => {
     const guestCarryover = { health: 77, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 };
     const { engine } = buildSessionEngine({
       result: fakeResult(),
-      role: "host",
       canvas: makeCanvas(),
       carryovers: { host: hostCarryover, guest: guestCarryover },
     });

@@ -81,14 +81,17 @@ jobs:
         # doc/dev/testing.md's cross-browser section. Separately,
         # `verify:multiplayer-connect`/`verify:multiplayer-netcode`/
         # `verify:multiplayer-reconciliation`/`verify:multiplayer-disconnect`/
-        # `verify:multiplayer-transition` are skipped for firefox below —
-        # a real, Mozilla-acknowledged (WONTFIX) WebRTC ICE-gathering
-        # limitation specific to this sandboxed runner's network shape, not a
-        # Playwright-build gap or an app bug — see those steps' own comments
-        # and doc/dev/testing.md. `verify:multiplayer-transition` is also
-        # skipped for webkit specifically — real combat-timing variance under
-        # webkit's own CI execution characteristics, not a bug in the
-        # mechanism it proves; see that step's own comment.
+        # `verify:multiplayer-transition`/`verify:multiplayer-multiguest` are
+        # skipped for firefox below — a real, Mozilla-acknowledged (WONTFIX)
+        # WebRTC ICE-gathering limitation specific to this sandboxed runner's
+        # network shape, not a Playwright-build gap or an app bug — see those
+        # steps' own comments and doc/dev/testing.md. `verify:multiplayer-transition`
+        # is also skipped for webkit specifically — real combat-timing
+        # variance under webkit's own CI execution characteristics, not a bug
+        # in the mechanism it proves; see that step's own comment.
+        # `verify:multiplayer-determinism` (step 10, cross-browser float
+        # determinism) runs in its own dedicated `verify-determinism` job
+        # below, not this matrix — it needs all three engines in one job.
         browser: [chromium, firefox, webkit]
     steps:
       - uses: actions/checkout@v4
@@ -208,3 +211,44 @@ jobs:
         env:
           CODEENSTEIN_DEV_URL: "http://localhost:5173"
           CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
+      # Step 10 (N-player): real 1-host/2-guest session — auto-rearm join,
+      # 3-way lockstep, Elite scaling at playerCount=3, per-guest disconnect
+      # isolation. Same CI-only WebRTC ICE-gathering limitation as
+      # verify:multiplayer-connect above (not a new one) — runs on
+      # chromium/webkit only.
+      - run: npm run verify:multiplayer-multiguest
+        if: matrix.browser != 'firefox'
+        env:
+          CODEENSTEIN_DEV_URL: "http://localhost:5173"
+          CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
+
+  # Step 10: cross-browser floating-point determinism check
+  # (scripts/verify-multiplayer-determinism.mjs). Unlike verify-browser above,
+  # this needs all three Playwright engines installed in the SAME job (it
+  # diffs their outputs against each other and a Node reference) rather than
+  # one engine per matrix leg — and it never opens WebRTC (each engine just
+  # runs an identical synthetic seeded-math loop independently), so Firefox's
+  # confirmed CI-only WebRTC ICE-gathering limitation doesn't apply here; all
+  # three run together, no skips needed.
+  verify-determinism:
+    name: verify (cross-browser determinism)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-all-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browser binaries (chromium, firefox, webkit)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium firefox webkit
+      - name: Install Playwright OS dependencies
+        run: npx playwright install-deps chromium firefox webkit
+      - run: npm run verify:multiplayer-determinism

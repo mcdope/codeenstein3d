@@ -1120,3 +1120,21 @@ decision. `RECONCILE_INTERVAL_TICKS` specifically now has a second pressure on i
 beyond bandwidth, worth weighing together rather than separately once real data
 exists: it's also the upper bound on how long a PRNG-stream desync (§3) can persist
 before being corrected.
+
+## Testing & verification
+
+Nothing in this spec is verified by inspection alone — every mechanism above has
+a real, end-to-end Playwright check behind it, run against a live signaling
+server + dev server pair (never the developer's own dev server) and wired into
+CI: `verify:multiplayer-connect` (the connect flow itself), `verify:multiplayer-netcode`
+(§1/§2, lockstep tick agreement), `verify:multiplayer-reconciliation` (§3/§4,
+forced-divergence correction), `verify:multiplayer-disconnect` (§5),
+`verify:multiplayer-transition` (§7), and `verify:multiplayer-multiguest` (a
+3-peer — host + 2 guests — smoke test covering the same ground at N>2, including
+that one guest's disconnect never affects another's session). A separate
+`verify:multiplayer-determinism` guards this spec's own core assumption — that
+lockstep survives long enough for periodic reconciliation to actually catch a
+real cross-engine float divergence — as a regression alarm, not a claim of
+eternal bit-identical engines. See `doc/dev/testing.md`'s "Cross-browser
+verification" section for the shared cross-browser caveats (confirmed
+CI-only WebRTC/ICE limitations, timing lessons) all of these scripts inherit.

@@ -18,7 +18,7 @@ import type {
 import { DISCONNECT_GRACE_MS } from "./netcodeConstants";
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
 import type { PlayerSnapshot, ReconciliationSnapshotMessage } from "./reconciliationTypes";
-import { GUEST_PLAYER_ID, HOST_PLAYER_ID } from "./sessionSetupTypes";
+import { HOST_PLAYER_ID } from "./sessionSetupTypes";
 import type { SessionSetupResult } from "./sessionSetupTypes";
 import type { MultiplayerChannels } from "./types";
 
@@ -120,8 +120,8 @@ function fakeMap(overrides: Partial<GameMap> = {}, size = 12): GameMap {
 
 function fakeResult(overrides: Partial<SessionSetupResult> = {}): SessionSetupResult {
   return {
-    roster: [GUEST_PLAYER_ID, HOST_PLAYER_ID].sort(),
-    assignedId: GUEST_PLAYER_ID,
+    roster: ["guest", HOST_PLAYER_ID].sort(),
+    assignedId: "guest",
     tickRateHz: 30,
     fixedDt: 1 / 30,
     inputDelayTicks: 3,
@@ -234,6 +234,23 @@ describe("runMultiplayerSessionAsGuest", () => {
     };
     channels.host.input.send(JSON.stringify(bundle));
     expect(() => handle.getPlayerPosition("host")).not.toThrow();
+  });
+
+  it("applies every roster player's input from a 3-player bundle (step 10: N-player), not just one other", () => {
+    const channels = linkedChannels();
+    const result = fakeResult({ roster: ["guest", "guest-2", "host"], assignedId: "guest" });
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), result);
+
+    const bundle: TickInputBundle = {
+      tick: 0,
+      dt: 1 / 30,
+      inputs: { host: emptySnapshot(), guest: emptySnapshot(), "guest-2": emptySnapshot({ fireQueued: true }) },
+      heldInputFallback: [],
+    };
+    channels.host.input.send(JSON.stringify(bundle));
+
+    expect(() => handle.getPlayerPosition("host")).not.toThrow();
+    expect(() => handle.getPlayerPosition("guest-2")).not.toThrow();
   });
 
   it("stop() is idempotent", () => {
