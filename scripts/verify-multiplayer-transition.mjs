@@ -361,7 +361,7 @@ async function runScenario(browser, engineName) {
     check("host: the sim keeps advancing", typeof tickAfter === "number" && tickAfter > tickBefore, `before=${tickBefore} after=${tickAfter}`);
 
     const guestStatusBeforeTransition = await guestPage
-      .evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerStatus("guest"))
+      .evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerStatus("guest-1"))
       .catch(() => null);
     console.log(`  Guest status right before the transition completes: "${guestStatusBeforeTransition}"`);
 
@@ -391,7 +391,7 @@ async function runScenario(browser, engineName) {
       }),
       guestPage.evaluate(() => {
         const hooks = window.__codeensteinMultiplayerTestHooks;
-        return { exit: hooks.getMapExit(), grid: hooks.getMapGrid(), status: hooks.getPlayerStatus("guest") };
+        return { exit: hooks.getMapExit(), grid: hooks.getMapGrid(), status: hooks.getPlayerStatus("guest-1") };
       }),
     ]);
     check(

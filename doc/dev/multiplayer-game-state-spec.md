@@ -870,10 +870,17 @@ catch-up transfer, a materially larger feature than this one.
 3-peer (host + 2 guests) session, joined sequentially against one code,
 reaching lockstep agreement across every pairwise peer combination, Elite
 scaling engaging at `playerCount=3`, and one guest's disconnect leaving the
-other guest's and the host's sessions running uninterrupted. The existing
-2-player scripts (`verify:multiplayer-connect`/`-netcode`/`-reconciliation`/
-`-disconnect`/`-transition`) needed no changes — `maxPlayers=2` stays a fully
-supported, byte-identical-shaped case, the same "N=1/N=2 is just a case of the
-general shape" precedent this spec's own §6 already established for the
-engine layer. See `doc/dev/testing.md`'s "Cross-browser verification" section
-for the shared browser-support caveats.
+other guest's and the host's sessions running uninterrupted. `maxPlayers=2`
+stays a fully supported, byte-identical-shaped case (same "N=1/N=2 is just a
+case of the general shape" precedent this spec's own §6 already established
+for the engine layer) — but the existing 2-player scripts
+(`verify:multiplayer-netcode`/`-reconciliation`/`-disconnect`/`-transition`)
+*did* need one small update, caught by CI, not assumed away: the single
+guest's roster id is now `"guest-1"` (assigned in join order, same as any
+other guest), not the old fixed `"guest"` — every hardcoded
+`getPlayerPosition("guest")`/`getPlayerStatus("guest")`/
+`hasActiveRenderOffset("guest")` call in those four scripts was updated to
+`"guest-1"` accordingly. `verify:multiplayer-connect` needed no change (it
+never looks up a player by roster id, only by connection-state label). See
+`doc/dev/testing.md`'s "Cross-browser verification" section for the shared
+browser-support caveats.
