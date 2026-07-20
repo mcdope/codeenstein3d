@@ -22,6 +22,14 @@ function linkedChannels(): { host: MultiplayerChannels; guest: MultiplayerChanne
   const guestInput = new FakeRTCDataChannel("input");
   hostInput.link(guestInput);
 
+  // A real session-setup handshake only ever starts once both peers'
+  // channels are already `readyState: "open"` (the host's own "Start
+  // Session" button stays disabled/unclickable until then) —
+  // `sendJsonWithBackpressure` now enforces that for real, so these fakes
+  // must model it too, matching every other multiplayer test file's own
+  // "open before use" setup.
+  for (const channel of [hostReconciliation, guestReconciliation, hostInput, guestInput]) channel.simulateOpen();
+
   return {
     host: { input: hostInput as unknown as RTCDataChannel, reconciliation: hostReconciliation as unknown as RTCDataChannel },
     guest: { input: guestInput as unknown as RTCDataChannel, reconciliation: guestReconciliation as unknown as RTCDataChannel },

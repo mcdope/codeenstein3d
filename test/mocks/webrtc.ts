@@ -23,6 +23,13 @@
 
 export class FakeRTCDataChannel extends EventTarget {
   readyState: RTCDataChannelState = "connecting";
+  /** Plain fields, matching the real `RTCDataChannel` API shape
+   * `dataChannelMessaging.ts`'s backpressure helpers read/write — tests
+   * drive `"bufferedamountlow"` by dispatching the real event directly
+   * (this class already extends a real `EventTarget`), no extra simulate*
+   * method needed. */
+  bufferedAmount = 0;
+  bufferedAmountLowThreshold = 0;
   private linkedPeer: FakeRTCDataChannel | null = null;
   constructor(readonly label: string) {
     super();

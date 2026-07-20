@@ -26,7 +26,7 @@
 import type { GameMap } from "../map/types";
 import { ChunkReassembler } from "./chunkedTransfer";
 import { checkBuildVersionMatch } from "./buildVersionCheck";
-import { onJsonMessage, sendJson } from "./dataChannelMessaging";
+import { onJsonMessage, sendJsonWithBackpressure } from "./dataChannelMessaging";
 import { SessionSetupError, type BuildVersionMessage, type SessionSetupMessage, type SessionSetupResult } from "./sessionSetupTypes";
 import type { MultiplayerChannels } from "./types";
 
@@ -49,8 +49,12 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
           // Only reply once the host's own build-version has actually
           // arrived — see this module's doc comment for why sending eagerly
           // on connect (instead) is the real race this guards against.
+          // `.catch(reject)`, not a bare `sendJson` — see
+          // `sessionSetupHost.ts`'s identical reasoning for why a real
+          // `RTCDataChannel.send()` failure here must settle this module's
+          // own `Promise` instead of escaping as an uncaught exception.
           const ownVersion: BuildVersionMessage = { type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ };
-          sendJson(channel, ownVersion);
+          sendJsonWithBackpressure(channel, ownVersion).catch(reject);
           return;
         }
         case "session-init": {

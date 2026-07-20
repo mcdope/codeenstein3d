@@ -52,6 +52,31 @@ export const DISCONNECT_GRACE_MS = 10_000;
  * constant in this file. */
 export const TRANSITION_ACK_TIMEOUT_MS = 10_000;
 
+/** Above this much buffered-but-not-yet-transmitted data on a chunked
+ * `RTCDataChannel` transfer (session setup's/a level transition's `GameMap`
+ * payload), `sendJsonWithBackpressure()` pauses and waits for the buffer to
+ * drain before sending more — real `RTCDataChannel.send()` calls have no
+ * built-in flow control of their own, and firing many chunks synchronously
+ * with none can overflow a channel's internal send buffer and throw
+ * (confirmed directly: this was the real cause of a real, reproducible CI
+ * failure — see that function's own doc comment). Sized relative to
+ * `MAP_CHUNK_SIZE_BYTES` rather than an unrelated magic number — a handful
+ * of chunks' worth of slack before backpressure kicks in. */
+export const BACKPRESSURE_HIGH_WATERMARK_BYTES = MAP_CHUNK_SIZE_BYTES * 4;
+
+/** The `bufferedAmountLowThreshold` `sendJsonWithBackpressure()` waits for
+ * once paused — draining back down to roughly one chunk's worth before
+ * resuming, not all the way to zero (that would mean waiting for the
+ * transport to go fully idle between every pause, needlessly slow). */
+export const BACKPRESSURE_LOW_THRESHOLD_BYTES = MAP_CHUNK_SIZE_BYTES;
+
+/** Safety timeout on a backpressure wait — a buffer that never drains this
+ * long indicates a genuinely broken channel, not ordinary flow control;
+ * matches `TRANSITION_ACK_TIMEOUT_MS`'s own order of magnitude, the same
+ * "never wait forever on something that might not happen" discipline this
+ * file already applies elsewhere. */
+export const BUFFER_DRAIN_TIMEOUT_MS = 10_000;
+
 /** `CORRECTION_SMOOTH_MS`/`SNAP_THRESHOLD_TILES`/`COUNTDOWN_TICKS`/
  * `INPUT_DELAY_TICKS` live in `engine/reconciliationConstants.ts`/
  * `engine/transitionConstants.ts`/`engine/lagCompensationConstants.ts`, not

@@ -21,7 +21,7 @@ import type { DifficultyLevel } from "../difficulty";
 import type { GameMap } from "../map/types";
 import { randomSeed } from "../prng";
 import { chunkJson } from "./chunkedTransfer";
-import { onJsonMessage, sendJson } from "./dataChannelMessaging";
+import { onJsonMessage, sendJsonSequence, sendJsonWithBackpressure } from "./dataChannelMessaging";
 import { FIXED_DT, INPUT_DELAY_TICKS, MAP_CHUNK_SIZE_BYTES, TICK_RATE_HZ } from "./netcodeConstants";
 import {
   GUEST_PLAYER_ID,
@@ -56,8 +56,8 @@ export function runHostSessionSetup(channels: MultiplayerChannels, options: Host
       const roster = [HOST_PLAYER_ID, GUEST_PLAYER_ID].sort();
       const gameplaySeed = randomSeed();
 
-      sendJson(channel, {
-        type: "session-init",
+      const sessionInitMessage = {
+        type: "session-init" as const,
         roster,
         assignedId: GUEST_PLAYER_ID,
         tickRateHz: TICK_RATE_HZ,
@@ -66,30 +66,42 @@ export function runHostSessionSetup(channels: MultiplayerChannels, options: Host
         gameplaySeed,
         difficulty: options.difficulty,
         playerCount: options.playerCount,
-      });
+      };
 
       const { visited: _visited, ...mapWithoutVisited } = options.map;
       // chunkJson splits by UTF-16 code-unit length, not true byte count —
       // an approximation that only matters for non-ASCII map content (e.g.
       // non-ASCII identifiers); a pre-existing 6a decision, not new here.
       const chunks = chunkJson(mapWithoutVisited, MAP_CHUNK_SIZE_BYTES);
-      chunks.forEach((data, index) => sendJson(channel, { type: "map-chunk", index, data }));
-      sendJson(channel, { type: "map-end", totalChunks: chunks.length });
+      const chunkMessages = chunks.map((data, index) => ({ type: "map-chunk" as const, index, data }));
+      const mapEndMessage = { type: "map-end" as const, totalChunks: chunks.length };
 
-      resolve({
-        roster,
-        assignedId: HOST_PLAYER_ID,
-        tickRateHz: TICK_RATE_HZ,
-        fixedDt: FIXED_DT,
-        inputDelayTicks: INPUT_DELAY_TICKS,
-        gameplaySeed,
-        difficulty: options.difficulty,
-        playerCount: options.playerCount,
-        map: options.map,
-      });
+      // Backpressure-aware and stops (rejects) the instant any one message
+      // fails — see `sendJsonSequence`'s own doc comment for why a real
+      // `RTCDataChannel.send()` burst needs this (confirmed directly as the
+      // cause of a real CI failure, not a theoretical concern). `.catch`,
+      // not `try`/`await` here: `onJsonMessage`'s handler type is
+      // synchronous (`(message: T) => void`), so an `async` callback's own
+      // rejection would never actually reach anything — this settles the
+      // outer `Promise` explicitly instead of relying on that.
+      sendJsonSequence(channel, [sessionInitMessage, ...chunkMessages, mapEndMessage])
+        .then(() =>
+          resolve({
+            roster,
+            assignedId: HOST_PLAYER_ID,
+            tickRateHz: TICK_RATE_HZ,
+            fixedDt: FIXED_DT,
+            inputDelayTicks: INPUT_DELAY_TICKS,
+            gameplaySeed,
+            difficulty: options.difficulty,
+            playerCount: options.playerCount,
+            map: options.map,
+          }),
+        )
+        .catch(reject);
     });
 
     const ownVersion: BuildVersionMessage = { type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ };
-    sendJson(channel, ownVersion);
+    sendJsonWithBackpressure(channel, ownVersion).catch(reject);
   });
 }

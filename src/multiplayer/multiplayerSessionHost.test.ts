@@ -599,6 +599,42 @@ describe("runMultiplayerSessionAsHost", () => {
       });
     });
 
+    it("logs and falls through to the ack-timeout path, instead of crashing the tick handler, when the transition send itself fails", async () => {
+      // A real send() failure (readyState flipping mid-burst, a genuine
+      // transport error — the actual root cause of a real CI failure this
+      // guards against) must never crash `onWinFromEngine`'s own tick
+      // handler; the guest that never received a complete transition also
+      // never acks it, so it falls into the exact same "never acked in
+      // time -> proceed anyway" path a merely-slow guest already takes.
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      // Only the transition messages themselves fail — the periodic
+      // reconciliation-snapshot broadcast (a real, unrelated send on this
+      // same channel, happening throughout `driveToWin`'s many ticks) must
+      // keep working normally, so this can't be a blanket "every send()
+      // throws" mock.
+      const realSend = channels.host.reconciliation.send.bind(channels.host.reconciliation);
+      const sendSpy = vi.spyOn(channels.host.reconciliation, "send").mockImplementation((data) => {
+        const str = data as unknown as string;
+        if ((JSON.parse(str) as { type?: string }).type?.startsWith("level-transition")) {
+          throw new Error("simulated RTCDataChannel send failure");
+        }
+        realSend(str);
+      });
+      const worker = fakeWorker();
+      const nextMap = fakeMap({ spawn: { x: 9, y: 9 } });
+      const findNextLevel = vi.fn().mockResolvedValue({ map: nextMap, gameplaySeed: 1 });
+      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map: winMap() }), worker, undefined, undefined, findNextLevel);
+
+      driveToWin(worker);
+      await vi.waitFor(() => expect(sendSpy).toHaveBeenCalled());
+
+      await vi.advanceTimersByTimeAsync(TRANSITION_ACK_TIMEOUT_MS);
+
+      // Proceeded to the new level anyway, despite every send having failed.
+      expect(handle.getPlayerPosition("host")).toEqual({ x: 9.5, y: 9.5 });
+    });
+
     it("revives a player who was dead at REVIVE_HEALTH in the carryover captured for the next level", async () => {
       const channels = linkedChannels();
       const worker = fakeWorker();

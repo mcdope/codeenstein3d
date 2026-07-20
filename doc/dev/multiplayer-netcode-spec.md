@@ -177,14 +177,23 @@ full setup exchange, per guest, after its data channels open and before any tick
    particle counts) and never feeds the simulation.
 6. **The session's player count** for elite scaling (game-state §4), fixed per
    level per §5's no-mid-level-recompute rule.
-7. **The `GameMap` — chunked, with `visited` stripped.** An `RTCDataChannel`
-   message has a practical cross-browser size floor around 64 KiB; a 160×160
-   map's JSON crosses that on grid data alone (~50 KB before enemies/rooms/
-   terminals). Send the serialized map in fixed-size chunks (16 KiB is the
-   conventional safe size) with a final end-marker over the reliable channel —
-   routine once planned, a mid-implementation surprise otherwise. `visited` is
-   omitted from the wire entirely: it's all-`false` at generation time by
-   definition, so each peer just constructs it locally.
+7. **The `GameMap` — chunked, with `visited` stripped, and backpressure-aware.**
+   An `RTCDataChannel` message has a practical cross-browser size floor around
+   64 KiB; a 160×160 map's JSON crosses that on grid data alone (~50 KB before
+   enemies/rooms/terminals). Send the serialized map in fixed-size chunks (16
+   KiB is the conventional safe size) with a final end-marker over the
+   reliable channel — routine once planned, a mid-implementation surprise
+   otherwise. `visited` is omitted from the wire entirely: it's all-`false` at
+   generation time by definition, so each peer just constructs it locally.
+   **Firing every chunk synchronously with nothing watching
+   `bufferedAmount` is a real bug, not a theoretical one** — confirmed
+   directly as the cause of a real, reproducible CI failure (WebKit's own
+   `RTCDataChannel.send()` throwing mid-burst). `sendJsonWithBackpressure`/
+   `sendJsonSequence` (`dataChannelMessaging.ts`) pause and wait for a real
+   `"bufferedamountlow"` event once buffered data exceeds a watermark, and
+   reject cleanly (instead of throwing synchronously into a message-handler
+   callback) on a non-`"open"` channel — every chunked transfer (this one, and
+   §7's level-transition payload) must go through them, not a bare `send()`.
 
 ### Message flow per tick
 

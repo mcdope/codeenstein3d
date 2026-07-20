@@ -35,7 +35,7 @@
 import { REVIVE_HEALTH, type EngineCarryover, type EngineStats, type PlayerId, type PlayerStatus } from "../engine/engine";
 import type { GameMap, LootDrop, Point, Tile } from "../map/types";
 import { chunkJson } from "./chunkedTransfer";
-import { sendJson, onJsonMessage } from "./dataChannelMessaging";
+import { sendJson, sendJsonSequence, onJsonMessage } from "./dataChannelMessaging";
 import { InputDelayBuffer } from "./inputDelayBuffer";
 import {
   DISCONNECT_GRACE_MS,
@@ -329,18 +329,27 @@ export function runMultiplayerSessionAsHost(
         carryovers,
         gameplaySeed: next.gameplaySeed,
       };
-      sendJson(channels.reconciliation, initMessage);
       // chunkJson splits by UTF-16 code-unit length, not true byte count —
       // an approximation that only matters for non-ASCII map content, the
       // same pre-existing 6b decision `sessionSetupHost.ts`'s own transfer
       // already makes, not new here.
       const chunks = chunkJson(mapWithoutVisited, MAP_CHUNK_SIZE_BYTES);
-      chunks.forEach((data, index) => {
-        const chunkMessage: LevelTransitionMapChunkMessage = { type: "level-transition-map-chunk", index, data };
-        sendJson(channels.reconciliation, chunkMessage);
-      });
+      const chunkMessages: LevelTransitionMapChunkMessage[] = chunks.map((data, index) => ({ type: "level-transition-map-chunk", index, data }));
       const endMessage: LevelTransitionMapEndMessage = { type: "level-transition-map-end", totalChunks: chunks.length };
-      sendJson(channels.reconciliation, endMessage);
+      try {
+        // Backpressure-aware — see `sendJsonSequence`'s own doc comment for
+        // why a real `RTCDataChannel.send()` burst needs this (confirmed
+        // directly as the cause of a real CI failure, not theoretical).
+        await sendJsonSequence(channels.reconciliation, [initMessage, ...chunkMessages, endMessage]);
+      } catch (err) {
+        // No special handling needed: a guest that never receives a
+        // complete transition also never acks it, and falls into the
+        // disconnect path below via the ordinary "never acked in time"
+        // signal — the same outcome a guest that was simply gone already
+        // produces, so a failed send here doesn't need its own separate
+        // recovery path.
+        console.log(`[multiplayer] level-transition send failed, guest(s) will time out via the normal ack path: ${err}`);
+      }
     }
 
     // A guest that never acks in time falls into the disconnect path via the
