@@ -9,6 +9,7 @@ import type { AmmoPickup, Enemy, GameMap, KeyItem, LootDrop, Mine, SpikeTrap, Te
 import { DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, TELEPORTER_TILE } from "../map/types";
 import { audio } from "./audio";
 import type { InputSnapshot, InputSource } from "./input";
+import { INPUT_DELAY_TICKS } from "./lagCompensationConstants";
 import { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "./reconciliationConstants";
 import type { ReconciliationSnapshot } from "./reconciliationSnapshot";
 import { EMPTY_SNAPSHOT } from "./replay";
@@ -3584,5 +3585,93 @@ describe("RaycasterEngine — multiplayer disconnect (step 8)", () => {
       engine.advance(0.016);
       expect(players.get("local")!.ammo).not.toEqual(before);
     });
+  });
+});
+
+describe("RaycasterEngine — lag-compensated hit resolution (multiplayer only)", () => {
+  function makeMpEngineWithEnemy(enemy: Enemy): InstanceType<typeof RaycasterEngine> {
+    const map = fakeMap({ enemies: [enemy] });
+    return new RaycasterEngine(makeCanvas(), map, makeHandlers(), undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "host");
+  }
+
+  function historyOf(engine: InstanceType<typeof RaycasterEngine>): ReadonlyMap<Enemy, { x: number; y: number }>[] {
+    return (engine as unknown as { enemyPositionHistory: ReadonlyMap<Enemy, { x: number; y: number }>[] }).enemyPositionHistory;
+  }
+  function captureNow(engine: InstanceType<typeof RaycasterEngine>): void {
+    (engine as unknown as { captureEnemyPositionHistory: () => void }).captureEnemyPositionHistory();
+  }
+  function rewound(engine: InstanceType<typeof RaycasterEngine>): ReadonlyMap<Enemy, { x: number; y: number }> | undefined {
+    return (engine as unknown as { rewoundEnemyPositions: () => ReadonlyMap<Enemy, { x: number; y: number }> | undefined }).rewoundEnemyPositions();
+  }
+
+  it("stays permanently empty in single-player, and rewoundEnemyPositions returns undefined", () => {
+    const enemy = fakeEnemy({ x: 6, y: 5 });
+    const { engine } = makeEngine(fakeMap({ enemies: [enemy] }));
+    for (let i = 0; i < 10; i++) engine.advance(0.016);
+    expect(historyOf(engine)).toHaveLength(0);
+    expect(rewound(engine)).toBeUndefined();
+  });
+
+  it("fills and caps at INPUT_DELAY_TICKS + 1 frames in multiplayer", () => {
+    const enemy = fakeEnemy({ x: 6, y: 5 });
+    const engine = makeMpEngineWithEnemy(enemy);
+    for (let i = 0; i < INPUT_DELAY_TICKS + 5; i++) engine.advance(0.016);
+    expect(historyOf(engine)).toHaveLength(INPUT_DELAY_TICKS + 1);
+  });
+
+  it("rewinds to exactly the oldest frame in the capped buffer, ignoring the enemy's current live position", () => {
+    const enemy = fakeEnemy({ x: 0, y: 0 });
+    const engine = makeMpEngineWithEnemy(enemy);
+    for (let x = 1; x <= INPUT_DELAY_TICKS + 1; x++) {
+      enemy.x = x;
+      captureNow(engine);
+    }
+    enemy.x = 999; // live position moves far away — must not affect the rewound read
+    expect(rewound(engine)?.get(enemy)?.x).toBe(1); // oldest surviving frame
+  });
+
+  it("drops the oldest frame once a new capture pushes past the cap", () => {
+    const enemy = fakeEnemy({ x: 0, y: 0 });
+    const engine = makeMpEngineWithEnemy(enemy);
+    for (let x = 1; x <= INPUT_DELAY_TICKS + 2; x++) {
+      enemy.x = x;
+      captureNow(engine);
+    }
+    // INPUT_DELAY_TICKS + 2 pushes into a cap of INPUT_DELAY_TICKS + 1 -> the very first frame (x=1) is gone.
+    expect(rewound(engine)?.get(enemy)?.x).toBe(2);
+  });
+
+  it("only captures living enemies", () => {
+    const alive = fakeEnemy({ x: 1, y: 1 });
+    const dead = fakeEnemy({ x: 2, y: 2, alive: false });
+    const map = fakeMap({ enemies: [alive, dead] });
+    const engine = new RaycasterEngine(makeCanvas(), map, makeHandlers(), undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "host");
+    captureNow(engine);
+    const frame = historyOf(engine)[0];
+    expect(frame.has(alive)).toBe(true);
+    expect(frame.has(dead)).toBe(false);
+  });
+
+  it("fire() hit-tests against the rewound (stale) position instead of the enemy's current live position", () => {
+    // Point-blank in front of the host's spawn-facing direction, mirroring
+    // the existing "fires the pistol at a point-blank enemy" test's setup.
+    const enemy = fakeEnemy({ x: 6.5, y: 5.5, hp: 30, maxHp: 30, aggroed: false });
+    const map = fakeMap({ enemies: [enemy] });
+    const input = new ScriptedInput();
+    const engine = new RaycasterEngine(makeCanvas(), map, makeHandlers(), undefined, undefined, undefined, 1, input, undefined, "host");
+
+    // Fully populate the ring buffer while the enemy sits in real range —
+    // this is the "what the shooter actually saw when they decided to fire"
+    // state a real ~INPUT_DELAY_TICKS-ticks-later execution should still hit.
+    for (let i = 0; i < INPUT_DELAY_TICKS + 1; i++) captureNow(engine);
+    // Now the enemy has genuinely moved far away — a live-position hit-test
+    // (today's single-player behavior) would clearly miss this.
+    enemy.x = 60;
+    enemy.y = 60;
+
+    input.fireQueued = true;
+    engine.advance(0.016);
+
+    expect(enemy.hp).toBeLessThan(30);
   });
 });

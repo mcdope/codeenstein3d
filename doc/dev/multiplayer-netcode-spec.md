@@ -311,6 +311,28 @@ time to deliver it before that tick actually needs to run.
 - The delay is deliberately expressed in **ticks**, not milliseconds, so it composes
   cleanly with the fixed tick rate above — no unit conversion at the point of use.
 
+### A consequence of the delay: hit resolution needs lag compensation
+
+Because a fire input's *execution* is `INPUT_DELAY_TICKS` ticks behind the
+*decision* it represents (for every player, host included — see above), naively
+hit-testing a shot against a target's live, current-tick position is wrong: a
+moving enemy has had up to `INPUT_DELAY_TICKS` ticks (~100ms) to leave the window
+the shooter actually aimed at by the time the shot resolves. This is negligible for
+a slow, wide ranged cone-of-fire but breaks melee outright (a very tight
+range/facing check) — found the hard way, via a real end-to-end bot that could
+never land a single melee hit in multiplayer despite winning single-player
+reliably with byte-identical decision logic.
+
+`RaycasterEngine` fixes this the standard way real networked shooters do (rewind
+the *target*, never the shooter — the shooter's own position, itself continuously
+informed by the same fixed delay, is already the correct reference frame the
+decision was made from): a per-tick ring buffer of past enemy positions
+(`enemyPositionHistory`, capped at `INPUT_DELAY_TICKS + 1` frames, multiplayer-only)
+feeds `resolveShot()` the enemy positions from exactly `INPUT_DELAY_TICKS` ticks
+ago instead of live ones. Only the *hit-test* projection is rewound — actual
+damage still mutates the real, live `Enemy` object. Single-player never populates
+the buffer at all, so it's byte-identical to pre-lag-compensation behavior.
+
 ## 3. State reconciliation payload
 
 ### Cadence and transport

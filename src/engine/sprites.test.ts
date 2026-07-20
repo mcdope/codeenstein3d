@@ -170,6 +170,16 @@ describe("projectEnemy", () => {
     const edgeCase = projectEnemy(player, enemy({ x: player.posX + 3, y: player.posY, edgeCase: true }), WIDTH, HEIGHT);
     expect(edgeCase.right - edgeCase.left).toBeLessThan(regular.right - regular.left);
   });
+
+  it("projects from positionOverride instead of the enemy's own live x/y when given", () => {
+    const player = facingPlayer();
+    const e = enemy({ x: player.posX + 3, y: player.posY });
+    const overridden = projectEnemy(player, e, WIDTH, HEIGHT, { x: player.posX + 6, y: player.posY });
+    const asLive = projectEnemy(player, e, WIDTH, HEIGHT);
+    const asOverrideTarget = projectPoint(player, player.posX + 6, player.posY, WIDTH, HEIGHT);
+    expect(overridden.depth).toBeCloseTo(asOverrideTarget.depth);
+    expect(overridden.depth).not.toBeCloseTo(asLive.depth);
+  });
 });
 
 describe("collectEnemyBillboards", () => {
@@ -303,6 +313,23 @@ describe("projectLivingEnemies", () => {
       HEIGHT,
     );
     expect(result).toHaveLength(1);
+  });
+
+  it("projects an enemy found in positions from its overridden position, not its live one", () => {
+    const player = facingPlayer();
+    const e = enemy({ x: player.posX + 3, y: player.posY });
+    const positions = new Map([[e, { x: player.posX + 6, y: player.posY }]]);
+    const [{ proj }] = projectLivingEnemies(player, [e], WIDTH, HEIGHT, positions);
+    const expected = projectPoint(player, player.posX + 6, player.posY, WIDTH, HEIGHT);
+    expect(proj.depth).toBeCloseTo(expected.depth);
+  });
+
+  it("falls back to an enemy's live position when positions is given but doesn't contain it", () => {
+    const player = facingPlayer();
+    const e = enemy({ x: player.posX + 3, y: player.posY });
+    const [{ proj }] = projectLivingEnemies(player, [e], WIDTH, HEIGHT, new Map());
+    const expected = projectPoint(player, player.posX + 3, player.posY, WIDTH, HEIGHT);
+    expect(proj.depth).toBeCloseTo(expected.depth);
   });
 });
 

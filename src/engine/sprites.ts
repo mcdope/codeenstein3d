@@ -122,19 +122,28 @@ export function projectPoint(
 
 /** Project an enemy into screen space for `player` on a `width`×`height` view.
  * Elites project 1.5x the size of a regular enemy (see `ELITE_SCALE`); Edge
- * Case enemies project roughly half-size (see `EDGE_CASE_SCALE`). */
+ * Case enemies project roughly half-size (see `EDGE_CASE_SCALE`).
+ *
+ * `positionOverride`, when given, projects from that position instead of the
+ * enemy's own live `x`/`y` — used only for multiplayer's lag-compensated hit
+ * resolution (see `RaycasterEngine.rewoundEnemyPositions()`'s doc comment).
+ * Every other caller (rendering included — a billboard must always show
+ * where the enemy actually, currently is) omits it and gets exactly today's
+ * live-position behavior. */
 export function projectEnemy(
   player: Player,
   enemy: Enemy,
   width: number,
   height: number,
+  positionOverride?: { x: number; y: number },
 ): EnemyProjection {
   const sizeFactor = enemy.edgeCase
     ? ENEMY_SIZE * EDGE_CASE_SCALE
     : enemy.elite
       ? ENEMY_SIZE * ELITE_SCALE
       : ENEMY_SIZE;
-  return projectPoint(player, enemy.x, enemy.y, width, height, sizeFactor);
+  const pos = positionOverride ?? enemy;
+  return projectPoint(player, pos.x, pos.y, width, height, sizeFactor);
 }
 
 /** Collect all living enemies as billboard draw jobs, occluded by the wall
@@ -289,12 +298,23 @@ export interface ProjectedEnemy {
  * against the same shot (e.g. every pellet of one shotgun blast) instead of
  * recomputing each enemy's projection from scratch per pellet — see
  * `findTargetInProjections`.
+ *
+ * `positions`, when given, overrides individual enemies' projected position
+ * (looked up by object reference — see `projectEnemy`'s doc comment); an
+ * enemy missing from the map falls back to its own live position. Omitted
+ * for every caller except multiplayer's lag-compensated hit resolution.
  */
-export function projectLivingEnemies(player: Player, enemies: Enemy[], width: number, height: number): ProjectedEnemy[] {
+export function projectLivingEnemies(
+  player: Player,
+  enemies: Enemy[],
+  width: number,
+  height: number,
+  positions?: ReadonlyMap<Enemy, { x: number; y: number }>,
+): ProjectedEnemy[] {
   const result: ProjectedEnemy[] = [];
   for (const enemy of enemies) {
     if (!enemy.alive) continue;
-    const proj = projectEnemy(player, enemy, width, height);
+    const proj = projectEnemy(player, enemy, width, height, positions?.get(enemy));
     if (proj.depth <= 0) continue;
     result.push({ enemy, proj });
   }

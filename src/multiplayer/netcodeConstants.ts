@@ -20,12 +20,6 @@ export const TICK_RATE_HZ = 30;
  * peer passes to `engine.simulate()`, every tick, never a measured value. */
 export const FIXED_DT = 1 / TICK_RATE_HZ;
 
-/** How many ticks in the future a sampled input is scheduled for, at
- * `TICK_RATE_HZ` (~100ms) — gives the network time to deliver a tick's input
- * before that tick is actually due, so ordinary latency doesn't stall the
- * session (see the spec's "Input delay buffer" section). */
-export const INPUT_DELAY_TICKS = 3;
-
 /** Conventional safe `RTCDataChannel` message chunk size in bytes — a real
  * message has a practical cross-browser size floor around 64 KiB, so a
  * chunked transfer (the session-setup `GameMap` payload) stays comfortably
@@ -58,16 +52,18 @@ export const DISCONNECT_GRACE_MS = 10_000;
  * constant in this file. */
 export const TRANSITION_ACK_TIMEOUT_MS = 10_000;
 
-/** `CORRECTION_SMOOTH_MS`/`SNAP_THRESHOLD_TILES`/`COUNTDOWN_TICKS` live in
- * `engine/reconciliationConstants.ts`/`engine/transitionConstants.ts`, not
+/** `CORRECTION_SMOOTH_MS`/`SNAP_THRESHOLD_TILES`/`COUNTDOWN_TICKS`/
+ * `INPUT_DELAY_TICKS` live in `engine/reconciliationConstants.ts`/
+ * `engine/transitionConstants.ts`/`engine/lagCompensationConstants.ts`, not
  * here, and are re-exported — `RaycasterEngine.applyReconciliationSnapshot()`/
- * `render()`/`checkExit()` need them directly, and the engine layer never
- * imports from the multiplayer layer (only the reverse), the same reasoning
- * `reconciliationTypes.ts` documents for the snapshot shape itself. Both
- * source files are deliberately tiny and import-free (not just re-exported
- * from `engine.ts` proper) — `engine.ts` transitively imports `textures.ts`,
- * which touches `document` at module load, which would break every
- * plain-Node consumer of this file (e.g. `tickClockWorker.ts`, running in a
- * Worker with no DOM). */
+ * `render()`/`checkExit()`/`rewoundEnemyPositions()` need them directly, and
+ * the engine layer never imports from the multiplayer layer (only the
+ * reverse), the same reasoning `reconciliationTypes.ts` documents for the
+ * snapshot shape itself. Every source file is deliberately tiny and
+ * import-free (not just re-exported from `engine.ts` proper) — `engine.ts`
+ * transitively imports `textures.ts`, which touches `document` at module
+ * load, which would break every plain-Node consumer of this file (e.g.
+ * `tickClockWorker.ts`, running in a Worker with no DOM). */
 export { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "../engine/reconciliationConstants";
 export { COUNTDOWN_TICKS } from "../engine/transitionConstants";
+export { INPUT_DELAY_TICKS } from "../engine/lagCompensationConstants";
