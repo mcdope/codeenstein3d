@@ -217,9 +217,9 @@ async function main() {
 
     // --- Case 1: a small (below-threshold) position desync, smoothed correction ---
     console.log("Injecting a small position desync on the guest's own local player...");
-    const beforeSmall = await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerPosition("guest"));
+    const beforeSmall = await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerPosition("guest-1"));
     await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.injectDesync({ kind: "position", deltaTiles: 0.2 }));
-    const afterInjectionSmall = await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerPosition("guest"));
+    const afterInjectionSmall = await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerPosition("guest-1"));
     check(
       "small desync: guest's own position actually moved after injection",
       !samePosition(beforeSmall, afterInjectionSmall),
@@ -227,8 +227,8 @@ async function main() {
     );
 
     console.log("Waiting for the host's next periodic snapshot to correct it (polling for the first moment of convergence)...");
-    const readGuestPosFromHost = () => hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerPosition("guest"));
-    const readGuestPosFromGuest = () => guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerPosition("guest"));
+    const readGuestPosFromHost = () => hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerPosition("guest-1"));
+    const readGuestPosFromGuest = () => guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerPosition("guest-1"));
     const smallResult = await pollUntilConverged(readGuestPosFromHost, readGuestPosFromGuest, samePosition);
     check(
       "small desync: guest's simulated position reconverges with the host's authoritative view",
@@ -243,7 +243,7 @@ async function main() {
     // asserted deterministically (no wall-clock race) in
     // `src/engine/engine.test.ts`'s "multiplayer reconciliation" describe
     // block — this is just a "did we plausibly catch it in time" log.
-    const smallOffsetting = await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.hasActiveRenderOffset("guest"));
+    const smallOffsetting = await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.hasActiveRenderOffset("guest-1"));
     console.log(`  [info] small desync: hasActiveRenderOffset() sampled as ${smallOffsetting} shortly after convergence`);
 
     // --- Case 2: a large (at/above-threshold) position desync, instant-snap correction ---
@@ -256,7 +256,7 @@ async function main() {
       largeResult.converged,
       `host-side=${JSON.stringify(largeResult.host)} guest-side=${JSON.stringify(largeResult.guest)}`,
     );
-    const largeOffsetting = await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.hasActiveRenderOffset("guest"));
+    const largeOffsetting = await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.hasActiveRenderOffset("guest-1"));
     check("large desync: no render offset at all — an instant snap, not smoothed", largeOffsetting === false, `hasActiveRenderOffset()=${largeOffsetting}`);
 
     // --- Case 3: a PRNG-stream-position desync (the spec's own most-emphasized failure mode) ---

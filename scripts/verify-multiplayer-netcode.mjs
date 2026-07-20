@@ -126,7 +126,7 @@ async function captureEarliestSnapshot(page, label) {
         const tick = hooks?.getSimTick();
         if (tick === null || tick === undefined) return false;
         const host = hooks.getPlayerPosition("host");
-        const guest = hooks.getPlayerPosition("guest");
+        const guest = hooks.getPlayerPosition("guest-1");
         if (!host || !guest) return false;
         return { tick, host, guest };
       },
@@ -150,7 +150,7 @@ async function waitForTargetTick(page, label) {
         const tick = hooks?.getSimTick();
         if (tick === null || tick === undefined || tick < targetTick) return false;
         const host = hooks.getPlayerPosition("host");
-        const guest = hooks.getPlayerPosition("guest");
+        const guest = hooks.getPlayerPosition("guest-1");
         if (!host || !guest) return false;
         return { tick, host, guest };
       },
@@ -307,12 +307,12 @@ async function main() {
     const readHostView = () =>
       hostPage.evaluate(() => {
         const hooks = window.__codeensteinMultiplayerTestHooks;
-        return { tick: hooks.getSimTick(), host: hooks.getPlayerPosition("host"), guest: hooks.getPlayerPosition("guest") };
+        return { tick: hooks.getSimTick(), host: hooks.getPlayerPosition("host"), guest: hooks.getPlayerPosition("guest-1") };
       });
     const readGuestView = () =>
       guestPage.evaluate(() => {
         const hooks = window.__codeensteinMultiplayerTestHooks;
-        return { tick: hooks.getSimTick(), host: hooks.getPlayerPosition("host"), guest: hooks.getPlayerPosition("guest") };
+        return { tick: hooks.getSimTick(), host: hooks.getPlayerPosition("host"), guest: hooks.getPlayerPosition("guest-1") };
       });
     const hostAgreement = await pollUntilConverged(readHostView, readGuestView, (h, g) => samePosition(h.host, g.host));
     check(

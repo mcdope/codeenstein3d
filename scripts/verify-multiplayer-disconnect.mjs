@@ -295,7 +295,7 @@ async function scenarioGuestDisconnect(browser, engineName) {
       // Immediately after the transport is gone — before real ICE detection
       // or the grace period could plausibly have elapsed — the guest must
       // still read "alive": disconnection is never instant.
-      return hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerStatus("guest"));
+      return hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerStatus("guest-1"));
     })();
     check(
       "host: the guest is NOT yet marked disconnected the instant the transport closes",
@@ -308,7 +308,7 @@ async function scenarioGuestDisconnect(browser, engineName) {
     try {
       const handle = await hostPage.waitForFunction(
         () => {
-          const s = window.__codeensteinMultiplayerTestHooks.getPlayerStatus("guest");
+          const s = window.__codeensteinMultiplayerTestHooks.getPlayerStatus("guest-1");
           return s === "disconnected" || s === "dead" ? s : false;
         },
         undefined,
@@ -322,7 +322,7 @@ async function scenarioGuestDisconnect(browser, engineName) {
       );
     } catch (err) {
       const status = await hostPage
-        .evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerStatus("guest"))
+        .evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerStatus("guest-1"))
         .catch(() => "<unavailable>");
       const hostStatus = await hostPage
         .evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerStatus("host"))
