@@ -12,9 +12,9 @@ import type { LevelTransitionAckMessage, LevelTransitionMessage } from "./levelT
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
 import { DISCONNECT_GRACE_MS, RECONCILE_INTERVAL_TICKS, TRANSITION_ACK_TIMEOUT_MS } from "./netcodeConstants";
 import type { ReconciliationSnapshotMessage } from "./reconciliationTypes";
-import { GUEST_PLAYER_ID, HOST_PLAYER_ID } from "./sessionSetupTypes";
+import { HOST_PLAYER_ID } from "./sessionSetupTypes";
 import type { SessionSetupResult } from "./sessionSetupTypes";
-import type { MultiplayerChannels } from "./types";
+import type { HostGuestLink, MultiplayerChannels } from "./types";
 
 /** A small fake of the `ConnectionStateSource` slice of `RTCPeerConnection`
  * — same spirit as `FakeRTCDataChannel`, this project's test environment has
@@ -49,7 +49,7 @@ function makeCanvas(): HTMLCanvasElement {
   return canvas;
 }
 
-function linkedChannels(): { host: MultiplayerChannels; guest: MultiplayerChannels } {
+function channelPair(): { host: MultiplayerChannels; guest: MultiplayerChannels } {
   const hostInput = new FakeRTCDataChannel("input");
   const guestInput = new FakeRTCDataChannel("input");
   hostInput.link(guestInput);
@@ -71,6 +71,40 @@ function linkedChannels(): { host: MultiplayerChannels; guest: MultiplayerChanne
     host: { input: hostInput as unknown as RTCDataChannel, reconciliation: hostReconciliation as unknown as RTCDataChannel },
     guest: { input: guestInput as unknown as RTCDataChannel, reconciliation: guestReconciliation as unknown as RTCDataChannel },
   };
+}
+
+/** A single connected guest ("guest") — the common 2-player case every test
+ * originally exercised. `links` is what `runMultiplayerSessionAsHost` now
+ * takes directly (step 10: was a bare `channels` pair); `connection` is the
+ * same `FakeConnection` embedded in that one link, exposed separately so
+ * disconnect tests can drive `.setState(...)` on it without having to reach
+ * back into the `Map`. */
+function linkedChannels(): { host: MultiplayerChannels; guest: MultiplayerChannels; connection: FakeConnection; links: Map<PlayerId, HostGuestLink> } {
+  const channels = channelPair();
+  const connection = new FakeConnection();
+  const links = new Map<PlayerId, HostGuestLink>([["guest", { peerConnection: connection as unknown as RTCPeerConnection, channels: channels.host }]]);
+  return { host: channels.host, guest: channels.guest, connection, links };
+}
+
+/** Two connected guests ("guest-1"/"guest-2") — for step 10's N-player
+ * coverage (tick fan-out, per-guest disconnect isolation, multi-guest
+ * level-transition acks). */
+function twoGuestLinks(): {
+  guest1: MultiplayerChannels;
+  guest2: MultiplayerChannels;
+  connection1: FakeConnection;
+  connection2: FakeConnection;
+  links: Map<PlayerId, HostGuestLink>;
+} {
+  const pair1 = channelPair();
+  const pair2 = channelPair();
+  const connection1 = new FakeConnection();
+  const connection2 = new FakeConnection();
+  const links = new Map<PlayerId, HostGuestLink>([
+    ["guest-1", { peerConnection: connection1 as unknown as RTCPeerConnection, channels: pair1.host }],
+    ["guest-2", { peerConnection: connection2 as unknown as RTCPeerConnection, channels: pair2.host }],
+  ]);
+  return { guest1: pair1.guest, guest2: pair2.guest, connection1, connection2, links };
 }
 
 function walledRoom(size: number): Tile[][] {
@@ -112,7 +146,7 @@ function fakeMap(overrides: Partial<GameMap> = {}, size = 12): GameMap {
 
 function fakeResult(overrides: Partial<SessionSetupResult> = {}): SessionSetupResult {
   return {
-    roster: [GUEST_PLAYER_ID, HOST_PLAYER_ID].sort(),
+    roster: ["guest", HOST_PLAYER_ID].sort(),
     assignedId: HOST_PLAYER_ID,
     tickRateHz: 30,
     fixedDt: 1 / 30,
@@ -129,7 +163,7 @@ function fakeWorker(): { onmessage: ((event: MessageEvent) => void) | null; term
   return { onmessage: null, terminate: vi.fn() };
 }
 
-/** Collects every JSON message sent on a channel (guest's own view of what
+/** Collects every JSON message sent on a channel (a guest's own view of what
  * the host broadcast) for assertions. */
 function collectMessages(channel: RTCDataChannel): (TickInput | TickInputBundle)[] {
   const messages: (TickInput | TickInputBundle)[] = [];
@@ -153,7 +187,7 @@ describe("runMultiplayerSessionAsHost", () => {
     const worker = fakeWorker();
     const guestSeenMessages = collectMessages(channels.guest.input);
 
-    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+    const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
     worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
 
     expect(handle.getLastAppliedTick()).toBe(0);
@@ -172,7 +206,7 @@ describe("runMultiplayerSessionAsHost", () => {
     const worker = fakeWorker();
     const guestSeenMessages = collectMessages(channels.guest.input);
 
-    runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+    runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
     worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
 
     const bundle = guestSeenMessages[0] as TickInputBundle;
@@ -184,7 +218,7 @@ describe("runMultiplayerSessionAsHost", () => {
     const worker = fakeWorker();
     const guestSeenMessages = collectMessages(channels.guest.input);
 
-    runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+    runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
 
     // Guest sends its own input for tick 3 ahead of time.
     const guestInput: TickInput = { tick: 3, playerId: "guest", input: { ...emptySnapshot(), fireQueued: true } };
@@ -203,7 +237,7 @@ describe("runMultiplayerSessionAsHost", () => {
   it("stop() is idempotent and terminates the worker exactly once", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();
-    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+    const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
     handle.stop();
     handle.stop();
     expect(worker.terminate).toHaveBeenCalledTimes(1);
@@ -212,7 +246,7 @@ describe("runMultiplayerSessionAsHost", () => {
   it("ignores further tick-due messages after teardown (re-entrancy guard for a batch of queued ticks)", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();
-    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+    const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
     handle.stop();
     expect(() => worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent)).not.toThrow();
     expect(handle.getLastAppliedTick()).toBeNull();
@@ -221,7 +255,7 @@ describe("runMultiplayerSessionAsHost", () => {
   it("getPlayerPosition delegates to the underlying engine", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();
-    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map: fakeMap({ spawn: { x: 4, y: 4 } }) }), worker);
+    const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map: fakeMap({ spawn: { x: 4, y: 4 } }) }), worker);
     expect(handle.getPlayerPosition("host")).toEqual({ x: 4.5, y: 4.5 });
     expect(handle.getPlayerPosition("nope")).toBeNull();
   });
@@ -229,7 +263,7 @@ describe("runMultiplayerSessionAsHost", () => {
   it("getPlayerFacing delegates to the underlying engine", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();
-    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+    const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
     expect(handle.getPlayerFacing("host")).toEqual({ dirX: 1, dirY: 0 });
     expect(handle.getPlayerFacing("nope")).toBeNull();
   });
@@ -237,7 +271,7 @@ describe("runMultiplayerSessionAsHost", () => {
   it("getExitCountdownRemaining delegates to the underlying engine, null before any countdown starts", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();
-    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+    const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
     expect(handle.getExitCountdownRemaining()).toBeNull();
   });
 
@@ -245,7 +279,7 @@ describe("runMultiplayerSessionAsHost", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();
     const map = fakeMap({ spawn: { x: 5, y: 5 }, exit: { x: 5, y: 5 } });
-    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map }), worker);
+    const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map }), worker);
     worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
     expect(handle.getExitCountdownRemaining()).toBe(COUNTDOWN_TICKS);
   });
@@ -254,7 +288,7 @@ describe("runMultiplayerSessionAsHost", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();
     const map = fakeMap({ spawn: { x: 4, y: 4 } });
-    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map }), worker);
+    const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map }), worker);
     expect(handle.getMap()).toBe(map);
     expect(handle.getEnemiesSnapshot()).toEqual([]);
     expect(handle.getMinesSnapshot()).toEqual([]);
@@ -266,7 +300,7 @@ describe("runMultiplayerSessionAsHost", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();
     const map = fakeMap({ keys: [{ x: 6, y: 6, collected: false }] });
-    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map }), worker);
+    const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map }), worker);
     expect(handle.getDropsSnapshot()).toEqual([]);
     expect(handle.getKeysSnapshot()).toEqual([{ x: 6, y: 6 }]);
   });
@@ -274,7 +308,7 @@ describe("runMultiplayerSessionAsHost", () => {
   it("getPlayerStatus/getLootDrops delegate to the underlying engine", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();
-    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+    const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
     expect(handle.getPlayerStatus("host")).toBe("alive");
     expect(handle.getPlayerStatus("nope")).toBeNull();
     expect(handle.getLootDrops()).toEqual([]);
@@ -288,7 +322,7 @@ describe("runMultiplayerSessionAsHost", () => {
     g[5][5] = 2; // hazard tile at spawn
     const map = fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }] }, size);
     const onSessionEnded = vi.fn();
-    runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map }), worker, onSessionEnded);
+    runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map }), worker, onSessionEnded);
 
     // FIXED_DT-paced ticks (1/30s each) — needs many more iterations than a
     // dt=1 advance() loop would to cover the same in-sim elapsed time.
@@ -305,7 +339,7 @@ describe("runMultiplayerSessionAsHost", () => {
     const worker = fakeWorker();
     const guestSeenSnapshots = collectReconciliationMessages(channels.guest.reconciliation);
 
-    runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+    runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
     for (let tick = 0; tick < RECONCILE_INTERVAL_TICKS + 1; tick++) {
       worker.onmessage?.({ data: { type: "tick", tick } } as MessageEvent);
     }
@@ -321,7 +355,7 @@ describe("runMultiplayerSessionAsHost", () => {
   it("getLastReconciliationRngState reflects the rngState of the most recently broadcast snapshot, null before the first one", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();
-    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+    const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
     expect(handle.getLastReconciliationRngState()).toBeNull();
 
     worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
@@ -331,7 +365,7 @@ describe("runMultiplayerSessionAsHost", () => {
   it("getRngState/debugInjectDesync/hasActiveRenderOffset delegate to the underlying engine", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();
-    const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+    const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
     const before = handle.getRngState();
     handle.debugInjectDesync({ kind: "extraRngDraw" });
     expect(handle.getRngState()).not.toBe(before);
@@ -343,10 +377,10 @@ describe("runMultiplayerSessionAsHost", () => {
       vi.useRealTimers();
     });
 
-    it("does nothing without an injected connection — disconnect detection simply never triggers", () => {
+    it("does nothing unless a guest's connection state actually changes from its default 'connected'", () => {
       const channels = linkedChannels();
       const worker = fakeWorker();
-      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
       worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
       expect(handle.getPlayerStatus("guest")).toBe("alive");
     });
@@ -355,11 +389,10 @@ describe("runMultiplayerSessionAsHost", () => {
       vi.useFakeTimers();
       const channels = linkedChannels();
       const worker = fakeWorker();
-      const connection = new FakeConnection();
       const guestSeenMessages = collectMessages(channels.guest.input);
-      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker, undefined, connection);
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
 
-      connection.setState("disconnected");
+      channels.connection.setState("disconnected");
       vi.advanceTimersByTime(DISCONNECT_GRACE_MS);
       worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
 
@@ -372,11 +405,10 @@ describe("runMultiplayerSessionAsHost", () => {
       vi.useFakeTimers();
       const channels = linkedChannels();
       const worker = fakeWorker();
-      const connection = new FakeConnection();
       const guestSeenMessages = collectMessages(channels.guest.input);
-      runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker, undefined, connection);
+      runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
 
-      connection.setState("disconnected");
+      channels.connection.setState("disconnected");
       const guestInput: TickInput = { tick: 0, playerId: "guest", input: { ...emptySnapshot(), fireQueued: true } };
       channels.guest.input.send(JSON.stringify(guestInput));
       worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
@@ -390,13 +422,12 @@ describe("runMultiplayerSessionAsHost", () => {
       vi.useFakeTimers();
       const channels = linkedChannels();
       const worker = fakeWorker();
-      const connection = new FakeConnection();
       const guestSeenMessages = collectMessages(channels.guest.input);
-      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker, undefined, connection);
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
 
-      connection.setState("disconnected");
+      channels.connection.setState("disconnected");
       vi.advanceTimersByTime(DISCONNECT_GRACE_MS / 2);
-      connection.setState("connected");
+      channels.connection.setState("connected");
       vi.advanceTimersByTime(DISCONNECT_GRACE_MS);
       worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
 
@@ -413,10 +444,9 @@ describe("runMultiplayerSessionAsHost", () => {
       vi.useFakeTimers();
       const channels = linkedChannels();
       const worker = fakeWorker();
-      const connection = new FakeConnection();
-      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker, undefined, connection);
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
 
-      connection.setState("disconnected");
+      channels.connection.setState("disconnected");
       handle.stop();
       expect(() => vi.advanceTimersByTime(DISCONNECT_GRACE_MS * 2)).not.toThrow();
       // No further tick was ever processed (worker is terminated) — this is
@@ -428,12 +458,11 @@ describe("runMultiplayerSessionAsHost", () => {
       vi.useFakeTimers();
       const channels = linkedChannels();
       const worker = fakeWorker();
-      const connection = new FakeConnection();
-      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker, undefined, connection);
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
 
-      connection.setState("disconnected");
+      channels.connection.setState("disconnected");
       vi.advanceTimersByTime(DISCONNECT_GRACE_MS - 1);
-      connection.setState("disconnected"); // e.g. a duplicate/spurious event
+      channels.connection.setState("disconnected"); // e.g. a duplicate/spurious event
       vi.advanceTimersByTime(1);
       worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
 
@@ -455,7 +484,7 @@ describe("runMultiplayerSessionAsHost", () => {
       const channels = linkedChannels();
       const worker = fakeWorker();
       const guestSeenMessages = collectMessages(channels.guest.input);
-      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
 
       (channels.host.input as unknown as { readyState: RTCDataChannelState }).readyState = "closed";
       worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
@@ -468,7 +497,7 @@ describe("runMultiplayerSessionAsHost", () => {
       const channels = linkedChannels();
       const worker = fakeWorker();
       const guestSeenSnapshots = collectReconciliationMessages(channels.guest.reconciliation);
-      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
 
       (channels.host.reconciliation as unknown as { readyState: RTCDataChannelState }).readyState = "closed";
       expect(() => worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent)).not.toThrow();
@@ -487,7 +516,7 @@ describe("runMultiplayerSessionAsHost", () => {
       const channels = linkedChannels();
       const worker = fakeWorker();
       const dismissSpy = vi.spyOn(RaycasterEngine.prototype, "dismissLoreOverlay");
-      runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+      runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
 
       window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" }));
       worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
@@ -499,7 +528,7 @@ describe("runMultiplayerSessionAsHost", () => {
       const channels = linkedChannels();
       const worker = fakeWorker();
       const dismissSpy = vi.spyOn(RaycasterEngine.prototype, "dismissLoreOverlay");
-      runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult(), worker);
+      runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
 
       worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
 
@@ -530,7 +559,7 @@ describe("runMultiplayerSessionAsHost", () => {
       const channels = linkedChannels();
       const worker = fakeWorker();
       const onSessionEnded = vi.fn();
-      runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map: winMap() }), worker, onSessionEnded);
+      runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map: winMap() }), worker, onSessionEnded);
 
       driveToWin(worker);
       // Even with no findNextLevel to await, `onWinFromEngine` is still an
@@ -547,7 +576,7 @@ describe("runMultiplayerSessionAsHost", () => {
       const worker = fakeWorker();
       const onSessionEnded = vi.fn();
       const findNextLevel = vi.fn().mockResolvedValue(null);
-      runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map: winMap() }), worker, onSessionEnded, undefined, findNextLevel);
+      runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map: winMap() }), worker, onSessionEnded, findNextLevel);
 
       driveToWin(worker);
       await vi.waitFor(() => expect(onSessionEnded).toHaveBeenCalledTimes(1));
@@ -564,15 +593,7 @@ describe("runMultiplayerSessionAsHost", () => {
       const guestSeenMessages = collectMessages(channels.guest.reconciliation) as unknown as LevelTransitionMessage[];
       const nextMap = fakeMap({ spawn: { x: 6, y: 6 } });
       const findNextLevel = vi.fn().mockResolvedValue({ map: nextMap, gameplaySeed: 999 });
-      const handle = runMultiplayerSessionAsHost(
-        channels.host,
-        makeCanvas(),
-        fakeResult({ map: winMap() }),
-        worker,
-        undefined,
-        undefined,
-        findNextLevel,
-      );
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map: winMap() }), worker, undefined, findNextLevel);
 
       driveToWin(worker);
       await vi.waitFor(() => {
@@ -624,7 +645,7 @@ describe("runMultiplayerSessionAsHost", () => {
       const worker = fakeWorker();
       const nextMap = fakeMap({ spawn: { x: 9, y: 9 } });
       const findNextLevel = vi.fn().mockResolvedValue({ map: nextMap, gameplaySeed: 1 });
-      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map: winMap() }), worker, undefined, undefined, findNextLevel);
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map: winMap() }), worker, undefined, findNextLevel);
 
       driveToWin(worker);
       await vi.waitFor(() => expect(sendSpy).toHaveBeenCalled());
@@ -652,7 +673,7 @@ describe("runMultiplayerSessionAsHost", () => {
         size,
       );
       const findNextLevel = vi.fn().mockResolvedValue({ map: fakeMap(), gameplaySeed: 1 });
-      const handle = runMultiplayerSessionAsHost(channels.host, canvas, fakeResult({ map }), worker, undefined, undefined, findNextLevel);
+      const handle = runMultiplayerSessionAsHost(channels.links, canvas, fakeResult({ map }), worker, undefined, findNextLevel);
 
       // Let the guest take real hazard damage for a while — well past its
       // own ~167-tick death — before the host even starts moving toward the
@@ -680,15 +701,7 @@ describe("runMultiplayerSessionAsHost", () => {
       const worker = fakeWorker();
       const nextMap = fakeMap({ spawn: { x: 6, y: 6 } });
       const findNextLevel = vi.fn().mockResolvedValue({ map: nextMap, gameplaySeed: 1 });
-      const handle = runMultiplayerSessionAsHost(
-        channels.host,
-        makeCanvas(),
-        fakeResult({ map: winMap() }),
-        worker,
-        undefined,
-        undefined,
-        findNextLevel,
-      );
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map: winMap() }), worker, undefined, findNextLevel);
 
       driveToWin(worker);
       return vi.waitFor(() => expect(findNextLevel).toHaveBeenCalledTimes(1)).then(async () => {
@@ -702,7 +715,7 @@ describe("runMultiplayerSessionAsHost", () => {
       const worker = fakeWorker();
       let resolveFindNextLevel: (value: { map: GameMap; gameplaySeed: number } | null) => void = () => {};
       const findNextLevel = vi.fn(() => new Promise<{ map: GameMap; gameplaySeed: number } | null>((resolve) => (resolveFindNextLevel = resolve)));
-      runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map: winMap() }), worker, undefined, undefined, findNextLevel);
+      runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map: winMap() }), worker, undefined, findNextLevel);
 
       driveToWin(worker);
       // The engine is already "won" — several more ticks (each re-firing
@@ -723,15 +736,7 @@ describe("runMultiplayerSessionAsHost", () => {
       const onSessionEnded = vi.fn();
       let resolveFindNextLevel: (value: { map: GameMap; gameplaySeed: number } | null) => void = () => {};
       const findNextLevel = vi.fn(() => new Promise<{ map: GameMap; gameplaySeed: number } | null>((resolve) => (resolveFindNextLevel = resolve)));
-      const handle = runMultiplayerSessionAsHost(
-        channels.host,
-        makeCanvas(),
-        fakeResult({ map: winMap() }),
-        worker,
-        onSessionEnded,
-        undefined,
-        findNextLevel,
-      );
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map: winMap() }), worker, onSessionEnded, findNextLevel);
 
       driveToWin(worker);
       await vi.waitFor(() => expect(findNextLevel).toHaveBeenCalledTimes(1));
@@ -763,7 +768,7 @@ describe("runMultiplayerSessionAsHost", () => {
       const guestSeenMessages = collectMessages(channels.guest.reconciliation) as unknown as LevelTransitionMessage[];
       const nextMap = fakeMap({ spawn: { x: 9, y: 9 } });
       const findNextLevel = vi.fn().mockResolvedValue({ map: nextMap, gameplaySeed: 1 });
-      const handle = runMultiplayerSessionAsHost(channels.host, makeCanvas(), fakeResult({ map: winMap() }), worker, undefined, undefined, findNextLevel);
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map: winMap() }), worker, undefined, findNextLevel);
 
       driveToWin(worker);
       // Wait for the transition messages to have actually gone out — not
@@ -781,6 +786,153 @@ describe("runMultiplayerSessionAsHost", () => {
       // Still the original level — the timeout firing after teardown never
       // resurrected a torn-down transition.
       expect(handle.getPlayerPosition("host")).toEqual({ x: 5.5, y: 5.5 });
+    });
+  });
+
+  describe("N-player (step 10): multiple guests", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("broadcasts the identical finalized TickInputBundle to every connected guest", () => {
+      const { guest1, guest2, links } = twoGuestLinks();
+      const worker = fakeWorker();
+      const guest1Seen = collectMessages(guest1.input);
+      const guest2Seen = collectMessages(guest2.input);
+      const result = fakeResult({ roster: ["guest-1", "guest-2", "host"].sort(), playerCount: 3 });
+
+      runMultiplayerSessionAsHost(links, makeCanvas(), result, worker);
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+
+      expect(guest1Seen).toHaveLength(1);
+      expect(guest2Seen).toHaveLength(1);
+      expect(guest1Seen[0]).toEqual(guest2Seen[0]); // one canonical bundle, fanned out to both
+    });
+
+    it("a guest-2 disconnect doesn't affect guest-1's session — only guest-2 is marked disconnected", () => {
+      vi.useFakeTimers();
+      const { guest1, connection2, links } = twoGuestLinks();
+      const worker = fakeWorker();
+      const guest1Seen = collectMessages(guest1.input);
+      const result = fakeResult({ roster: ["guest-1", "guest-2", "host"].sort(), playerCount: 3 });
+      const handle = runMultiplayerSessionAsHost(links, makeCanvas(), result, worker);
+
+      connection2.setState("disconnected");
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS);
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+
+      expect(handle.getPlayerStatus("guest-2")).toBe("disconnected");
+      expect(handle.getPlayerStatus("guest-1")).toBe("alive");
+      expect(handle.getPlayerStatus("host")).toBe("alive");
+      const bundle = guest1Seen[0] as TickInputBundle;
+      expect(bundle.rosterRemove).toEqual(["guest-2"]); // guest-1 never removed
+    });
+
+    it("a later guest-1 disconnect, after guest-2 already left, removes only guest-1", () => {
+      vi.useFakeTimers();
+      const { connection1, connection2, links } = twoGuestLinks();
+      const worker = fakeWorker();
+      const result = fakeResult({ roster: ["guest-1", "guest-2", "host"].sort(), playerCount: 3 });
+      const handle = runMultiplayerSessionAsHost(links, makeCanvas(), result, worker);
+
+      connection2.setState("disconnected");
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS);
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+      expect(handle.getPlayerStatus("guest-2")).toBe("disconnected");
+      expect(handle.getPlayerStatus("guest-1")).toBe("alive");
+
+      connection1.setState("disconnected");
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS);
+      worker.onmessage?.({ data: { type: "tick", tick: 1 } } as MessageEvent);
+      expect(handle.getPlayerStatus("guest-1")).toBe("disconnected");
+      expect(handle.getPlayerStatus("host")).toBe("alive");
+    });
+
+    it("a solo host (0 connected guests) transitions immediately — nothing to wait an ack for", async () => {
+      const links = new Map<PlayerId, HostGuestLink>();
+      const worker = fakeWorker();
+      const result = fakeResult({ roster: ["host"], playerCount: 1, map: fakeMap({ spawn: { x: 5, y: 5 }, exit: { x: 5, y: 5 } }) });
+      const nextMap = fakeMap({ spawn: { x: 6, y: 6 } });
+      const findNextLevel = vi.fn().mockResolvedValue({ map: nextMap, gameplaySeed: 1 });
+      const handle = runMultiplayerSessionAsHost(links, makeCanvas(), result, worker, undefined, findNextLevel);
+
+      for (let i = 0; i < COUNTDOWN_TICKS + 1; i++) worker.onmessage?.({ data: { type: "tick", tick: i } } as MessageEvent);
+
+      // No guest to broadcast to or wait an ack from — `waitForAcks([], ...)`
+      // resolves immediately, so the transition completes without needing a
+      // timeout or any message traffic at all.
+      await vi.waitFor(() => {
+        expect(handle.getPlayerPosition("host")).toEqual({ x: 6.5, y: 6.5 });
+      });
+    });
+
+    it("skips the transition send to a guest whose channel isn't open, without blocking the others or throwing", async () => {
+      vi.useFakeTimers();
+      const { guest1: _guest1, guest2, links } = twoGuestLinks();
+      const worker = fakeWorker();
+      const guest2Seen = collectMessages(guest2.reconciliation) as unknown as LevelTransitionMessage[];
+      const result = fakeResult({ roster: ["guest-1", "guest-2", "host"].sort(), playerCount: 3, map: fakeMap({ spawn: { x: 5, y: 5 }, exit: { x: 5, y: 5 } }) });
+      const nextMap = fakeMap({ spawn: { x: 6, y: 6 } });
+      const findNextLevel = vi.fn().mockResolvedValue({ map: nextMap, gameplaySeed: 1 });
+
+      // guest-1's own reconciliation channel (the host's side of that link)
+      // is already closed by the time the transition fires.
+      (links.get("guest-1")!.channels.reconciliation as unknown as { readyState: RTCDataChannelState }).readyState = "closed";
+      const handle = runMultiplayerSessionAsHost(links, makeCanvas(), result, worker, undefined, findNextLevel);
+
+      for (let i = 0; i < COUNTDOWN_TICKS + 1; i++) worker.onmessage?.({ data: { type: "tick", tick: i } } as MessageEvent);
+      await vi.waitFor(() => expect(guest2Seen.some((m) => m.type === "level-transition-map-end")).toBe(true));
+
+      // guest-2 got the full transition; guest-1 never received anything
+      // (its channel was closed, skipped without throwing) and will simply
+      // time out via the ordinary ack-timeout path rather than crashing this
+      // whole flow.
+      const ack2: LevelTransitionAckMessage = { type: "level-transition-ack", playerId: "guest-2" };
+      guest2.reconciliation.send(JSON.stringify(ack2));
+      await vi.advanceTimersByTimeAsync(TRANSITION_ACK_TIMEOUT_MS);
+      expect(handle.getPlayerPosition("host")).toEqual({ x: 6.5, y: 6.5 });
+    });
+
+    describe("level transition waits for every connected guest's own ack", () => {
+      function winMap3(): GameMap {
+        return fakeMap({ spawn: { x: 5, y: 5 }, exit: { x: 5, y: 5 } });
+      }
+
+      it("proceeds only once both guests have acked, not just one", async () => {
+        const { guest1, guest2, links } = twoGuestLinks();
+        const worker = fakeWorker();
+        const guest1Seen = collectMessages(guest1.reconciliation) as unknown as LevelTransitionMessage[];
+        const guest2Seen = collectMessages(guest2.reconciliation) as unknown as LevelTransitionMessage[];
+        const result = fakeResult({ roster: ["guest-1", "guest-2", "host"].sort(), playerCount: 3, map: winMap3() });
+        const nextMap = fakeMap({ spawn: { x: 6, y: 6 } });
+        const findNextLevel = vi.fn().mockResolvedValue({ map: nextMap, gameplaySeed: 1 });
+        const handle = runMultiplayerSessionAsHost(links, makeCanvas(), result, worker, undefined, findNextLevel);
+
+        for (let i = 0; i < COUNTDOWN_TICKS + 1; i++) worker.onmessage?.({ data: { type: "tick", tick: i } } as MessageEvent);
+        // Wait for the transition messages to have actually gone out to BOTH
+        // guests (not just for findNextLevel to have been *called* — that
+        // resolves on an earlier microtask, before the concurrent broadcast
+        // + `waitForAcks` registration below it ever run) — otherwise an ack
+        // sent too early arrives before `waitForAcks` is listening and is
+        // silently dropped, the same "poll for the real synchronization
+        // point, don't assume-and-race" lesson this project's own
+        // cross-browser verify scripts already learned the hard way.
+        await vi.waitFor(() => {
+          expect(guest1Seen.some((m) => m.type === "level-transition-map-end")).toBe(true);
+          expect(guest2Seen.some((m) => m.type === "level-transition-map-end")).toBe(true);
+        });
+
+        const ack1: LevelTransitionAckMessage = { type: "level-transition-ack", playerId: "guest-1" };
+        guest1.reconciliation.send(JSON.stringify(ack1));
+        // Still waiting on guest-2's own ack — the new level hasn't started.
+        expect(handle.getPlayerPosition("host")).toEqual({ x: 5.5, y: 5.5 });
+
+        const ack2: LevelTransitionAckMessage = { type: "level-transition-ack", playerId: "guest-2" };
+        guest2.reconciliation.send(JSON.stringify(ack2));
+        await vi.waitFor(() => {
+          expect(handle.getPlayerPosition("host")).toEqual({ x: 6.5, y: 6.5 });
+        });
+      });
     });
   });
 });

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- New: Multiplayer — host or join a real-time coop session (2-4 players) with a friend, no account or setup needed. Pick a campaign/workspace as usual, choose how many players you want, then share the short code your browser gives you; anyone who joins with that code connects directly to you (peer-to-peer), and more players can join the same code one at a time with nothing extra to share. A public lobby list is also available if you'd rather browse for an open session than trade a code
+- Everyone in a session stays in perfect lockstep — the exact same simulation, ticking in sync — even across different browsers or devices, with automatic correction if anything ever drifts
+- If a player's connection drops, the rest of the session keeps going without them after a short grace period; when the group reaches a level's exit together, a countdown gives everyone a moment to catch up before advancing
+- A shared end-of-run scoreboard shows everyone's score and kills side by side. Elite enemies get tougher (more HP and damage) the more players join, and any loot dropped is visible to the whole team on the minimap/automap. Multiplayer runs don't use cheat codes, highscores, or replays — those stay single-player features
+
 ## beta-4
 
 - Dev: a repeatable frame-time benchmark harness (`npm run perf:bench`) and chart report (`npm run perf:report`) — real-clock Playwright runs over deterministic scenarios (idle, replay-combat, particle stress, a huge GitHub-repo map, bot play) with per-frame phase timing via `?perfDebug=1` and interleaved A/B for the build flags. First full audit's verdicts: distance fog and wall-edge antialiasing are essentially free on typical maps (antialiasing costs ~0.4ms/frame on huge ones), and no engine-side hotspot reproduces the reported huge-repo framedrops — details in `perf-findings.json`

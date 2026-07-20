@@ -105,7 +105,7 @@ describe("runGuestSessionSetup — visited reconstruction", () => {
     // guards against.
     const [guestResult] = await Promise.all([
       runGuestSessionSetup(channels.guest),
-      runHostSessionSetup(channels.host, { map, difficulty: "normal", playerCount: 2 }),
+      runHostSessionSetup(channels.host, "guest", { map, difficulty: "normal", roster: ["guest", "host"], gameplaySeed: 1 }),
     ]);
 
     expect(guestResult.map.visited).toHaveLength(map.height);

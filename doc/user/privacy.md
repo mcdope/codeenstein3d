@@ -2,7 +2,7 @@
 
 [← Back to index](README.md)
 
-Codeenstein 3D runs entirely in your browser. There is no backend server, no account, no analytics, and no crash/error reporting of any kind — the only third-party network calls it ever makes are the ones described below, and only when you use the specific feature that triggers them.
+Codeenstein 3D runs entirely in your browser. There is no account, no analytics, and no crash/error reporting of any kind. The only network calls it ever makes are the ones described below, and only when you use the specific feature that triggers them — that includes one first-party backend, the multiplayer signaling server (see [Multiplayer](#multiplayer)), which exists solely to introduce two browsers to each other and holds nothing beyond that.
 
 ## Your workspace (the code you point it at)
 
@@ -14,7 +14,15 @@ Codeenstein 3D runs entirely in your browser. There is no backend server, no acc
   - Nothing is ever pushed, written, or reported back to GitHub — these are read-only `GET` requests.
 - **Demos** (the "Demos" tab's bundled showcase campaign) — makes no network request and reads no local files at all. Every level's source text is baked directly into the app's own bundle at build time, so it works fully offline.
 
-No other feature makes any network request. A locally-picked workspace never touches the network at all.
+No other feature besides Multiplayer (below) makes any network request. A locally-picked workspace never touches the network at all, including in multiplayer — hosting or joining a session is only available for a GitHub-loaded repo or the Demos campaign, never a local folder.
+
+## Multiplayer
+
+Hosting or joining a multiplayer session (see the [Multiplayer](multiplayer.md) guide) talks to one first-party backend: a small signaling/lobby server, used only to introduce your browser and a friend's to each other. It's only ever contacted if you actively open the Multiplayer tab and click Host, Join, or Browse Lobby.
+
+- **What it sees**: the short join code, the WebRTC connection-setup blobs (SDP offer/answer — handshake metadata, not gameplay data) needed to establish a direct connection, and your IP address, held only transiently to rate-limit abuse (guessing at other players' codes). None of this is stored beyond a session's few-minute handshake window, and the server has no database — everything lives in memory and expires on its own.
+- **What it never sees**: once two browsers are connected, all real gameplay — the generated map, player positions, inputs — travels directly between them (peer-to-peer), never through the signaling server. And per this project's own hard rule, only that generated map and sync data is ever transferred at all — your actual source code or its parsed structure never crosses the wire to another player, exactly as it never leaves your machine in single-player.
+- A public lobby listing (if you check "List in public lobby" while hosting) shows your session's display name and campaign name to anyone browsing it — don't set a display name if you'd rather stay anonymous.
 
 ## What's stored on your machine
 

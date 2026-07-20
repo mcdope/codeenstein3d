@@ -1714,6 +1714,228 @@ describe("main.ts — multiplayer connect flow", () => {
       expect(pollInit.headers).toMatchObject({ "X-Host-Token": "host-tok" });
     });
 
+    it("N-player (step 10): with maxPlayers=3, a second guest auto-joins sequentially against the same code", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLSelectElement>("#multiplayer-max-players")!.value = "3";
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201)) // PUT create
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ) // GET poll — guest-1 answered
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update — re-armed for guest-2
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-2", answer: "answer-sdp-2", campaignName: "demo-campaign", displayName: null, playerCount: 2 }),
+        ); // GET poll — guest-2 answered
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection(); // guest-1's own peer connection
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.textContent).toBe("2/3 players connected");
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.hidden).toBe(false);
+
+      // armNextGuestSlot automatically arms a second offer/answer round
+      // against the same code — no manual "ready for next joiner" action.
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      const pc2 = readyHostPeerConnection(); // guest-2's own peer connection
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.textContent === "3/3 players connected");
+
+      expect(pc2.remoteDescription).toEqual({ type: "answer", sdp: "answer-sdp-2" });
+      const [updateUrl, updateInit] = fetchMock.mock.calls[2];
+      expect(updateUrl).toBe(`${SERVER_URL}/session`);
+      expect(JSON.parse(updateInit.body)).toMatchObject({ code: "R4KJ9X", hostToken: "host-tok" });
+
+      // Every slot is now filled (maxPlayers=3, 2 guests joined) — no third
+      // re-arm round, so no further fetch calls happen.
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    it("N-player (step 10): a failed re-arm attempt is logged and non-fatal — the host keeps its one connected guest", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLSelectElement>("#multiplayer-max-players")!.value = "3";
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201)) // PUT create
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ) // GET poll — guest-1 answered
+        .mockRejectedValueOnce(new Error("network blip")); // PUT update — re-arm for guest-2 fails
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.textContent).toBe("2/3 players connected");
+
+      // armNextGuestSlot's own createHostOffer() needs its (second) peer
+      // connection's ICE gathering completed for real, same as the first —
+      // otherwise it only resolves after the real 10s ICE-gathering timeout,
+      // far past any reasonable test wait.
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      readyHostPeerConnection();
+
+      await vi.waitFor(() => expect(warnSpy).toHaveBeenCalledWith("[multiplayer] failed to arm the next guest slot:", expect.any(Error)));
+
+      // Non-fatal: the host is still fully connected with its one guest and
+      // can Start Session right now, despite the failed re-arm.
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!.hidden).toBe(false);
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.classList.contains("error")).toBe(false);
+    });
+
+    it("N-player (step 10): a stale re-arm is dropped if cancelled while its channels are still opening", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLSelectElement>("#multiplayer-max-players")!.value = "3";
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        )
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200))
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-2", answer: "answer-sdp-2", campaignName: "demo-campaign", displayName: null, playerCount: 2 }),
+        );
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      const pc2 = FakeRTCPeerConnection.instances.at(-1)!;
+      // ICE completes, but pc2's own data channels are deliberately left
+      // un-opened — parks the in-flight re-arm attempt inside its own
+      // `waitForChannelsOpen()` await, right before the point that needs
+      // this test.
+      pc2.simulateIceGatheringComplete();
+      await waitUntil(() => pc2.remoteDescription !== null);
+
+      // Cancel bumps the generation — the exact same guard that already
+      // protects every other step of this flow.
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-cancel")!.click();
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Cancelled.");
+
+      // Now let the channels actually open — the stale re-arm's own
+      // post-await generation check must close pc2 and never add it as a
+      // guest, rather than resurrecting a cancelled connection.
+      pc2.createdDataChannels.forEach((c) => c.simulateOpen());
+      await flushAsync();
+
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.hidden).toBe(true);
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Cancelled.");
+    });
+
+    it("N-player (step 10): a stale re-arm is dropped if cancelled while the next guest's answer poll is in flight", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLSelectElement>("#multiplayer-max-players")!.value = "3";
+      let resolvePoll2: ((response: Response) => void) | null = null;
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        )
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200))
+        .mockImplementationOnce(() => new Promise((resolve) => (resolvePoll2 = resolve)));
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      readyHostPeerConnection(); // guest-2's own peer connection, ready
+      await waitUntil(() => resolvePoll2 !== null); // the poll GET for guest-2's answer is now in flight
+
+      // Cancel bumps the generation while that fetch is still pending.
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-cancel")!.click();
+      resolvePoll2!(
+        jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-2", answer: "answer-sdp-2", campaignName: "demo-campaign", displayName: null, playerCount: 2 }),
+      );
+      await flushAsync();
+
+      // pollForHostAnswer's own post-await generation check resolves null;
+      // armNextGuestSlot must treat that exactly like any other stale result
+      // — close the connection, never add it as a guest.
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.hidden).toBe(true);
+    });
+
+    it("N-player (step 10): a stale re-arm is dropped if cancelled while the re-arm's own updateSession() is in flight", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLSelectElement>("#multiplayer-max-players")!.value = "3";
+      let resolveUpdate: ((response: Response) => void) | null = null;
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        )
+        .mockImplementationOnce(() => new Promise((resolve) => (resolveUpdate = resolve)));
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      readyHostPeerConnection(); // guest-2's own peer connection, ready
+      await waitUntil(() => resolveUpdate !== null); // the re-arm's own updateSession() PUT is now in flight
+
+      // Cancel bumps the generation while that fetch is still pending.
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-cancel")!.click();
+      resolveUpdate!(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200));
+      await flushAsync();
+
+      // Never even reaches the answer poll — closed and abandoned right
+      // after updateSession() resolves, the same stale-generation guard as
+      // every other await in this function.
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.hidden).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it("N-player (step 10): a stale re-arm is dropped if cancelled while its own createHostOffer() is still gathering ICE", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLSelectElement>("#multiplayer-max-players")!.value = "3";
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        );
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      // The re-arm's own createHostOffer() has constructed a second
+      // RTCPeerConnection synchronously (before its first `await`), but its
+      // ICE gathering is deliberately left incomplete — parks the whole
+      // re-arm attempt at its very first `await`.
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      const pc2 = FakeRTCPeerConnection.instances.at(-1)!;
+      pc2.createdDataChannels.forEach((c) => c.simulateOpen());
+
+      // Cancel bumps the generation while ICE gathering is still pending.
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-cancel")!.click();
+      pc2.simulateIceGatheringComplete();
+      await flushAsync();
+
+      // No further fetch — the generation check right after createHostOffer()
+      // catches this before updateSession() is ever called.
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.hidden).toBe(true);
+    });
+
+    it("N-player (step 10): maxPlayers=2 (the default) never re-arms for a second guest", async () => {
+      await loadEligibleWorkspace();
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        );
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.textContent).toBe("2/2 players connected");
+
+      // Give any stray re-arm attempt a chance to fire before asserting it didn't.
+      await flushAsync();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(FakeRTCPeerConnection.instances.length).toBe(1);
+    });
+
     it("shows an error status when session creation fails", async () => {
       await loadEligibleWorkspace();
       fetchMock.mockResolvedValueOnce(jsonResponse({ error: "missing_campaign_name" }, false, 400));
@@ -2564,6 +2786,61 @@ describe("main.ts — multiplayer connect flow", () => {
 
         const hooks = (window as unknown as { __codeensteinMultiplayerTestHooks?: Record<string, () => unknown> })
           .__codeensteinMultiplayerTestHooks;
+        // Host role (step 10): `channels` still reflects guest-1's own pair
+        // for backward compatibility, plus the new per-guest `links`
+        // breakdown and `connectedGuestCount`/`maxPlayers`.
+        expect(hooks!.getConnectionState()).toEqual({
+          state: "connected",
+          channels: { input: "open", reconciliation: "open" },
+          links: [{ id: "guest-1", input: "open", reconciliation: "open" }],
+          connectedGuestCount: 1,
+          maxPlayers: 2,
+        });
+      } finally {
+        Object.defineProperty(window, "location", { value: original, configurable: true });
+      }
+    });
+
+    it("reflects a connected guest's own single channel pair (step 10: guest role is unchanged)", async () => {
+      const original = window.location;
+      Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+      try {
+        await loadEligibleWorkspace();
+        document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+        fetchMock
+          .mockResolvedValueOnce(
+            jsonResponse({
+              code: "R4KJ9X",
+              offer: "offer-sdp",
+              answer: null,
+              campaignName: "demo-campaign",
+              displayName: null,
+              playerCount: 1,
+            }),
+          )
+          .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
+
+        document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "r4kj9x";
+        document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+
+        await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
+        const pc = FakeRTCPeerConnection.instances.at(-1)!;
+        pc.simulateIceGatheringComplete();
+        await waitUntil(() => pc.remoteDescription !== null);
+
+        const input = new FakeRTCDataChannel("input");
+        const reconciliation = new FakeRTCDataChannel("reconciliation");
+        await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Establishing connection…");
+        pc.simulateIncomingDataChannel(input);
+        pc.simulateIncomingDataChannel(reconciliation);
+        input.simulateOpen();
+        reconciliation.simulateOpen();
+        await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+        const hooks = (window as unknown as { __codeensteinMultiplayerTestHooks?: Record<string, () => unknown> })
+          .__codeensteinMultiplayerTestHooks;
+        // Guest role: no `links`/`connectedGuestCount`/`maxPlayers` — a guest
+        // only ever has one link, toward the host.
         expect(hooks!.getConnectionState()).toEqual({
           state: "connected",
           channels: { input: "open", reconciliation: "open" },
@@ -2787,7 +3064,7 @@ describe("main.ts — multiplayer connect flow", () => {
         const hooks = multiplayerHooks();
         expect(hooks.getSimTick()).toBe(0);
         const hostPos = hooks.getPlayerPosition("host");
-        const guestPos = hooks.getPlayerPosition("guest");
+        const guestPos = hooks.getPlayerPosition("guest-1");
         expect(hostPos).not.toBeNull();
         expect(guestPos).not.toBeNull();
         expect(hooks.getPlayerFacing("host")).toEqual({ dirX: 1, dirY: 0 });
@@ -2826,7 +3103,7 @@ describe("main.ts — multiplayer connect flow", () => {
 
     /** A minimal, fully-open 12×12 room with two multiplayer spawn points and
      * the exit two tiles diagonally from the host's own spawn slot
-     * (`multiplayerSpawns[1]` — the sorted roster is `["guest", "host"]`,
+     * (`multiplayerSpawns[1]` — the sorted roster is `["guest-1", "host"]`,
      * see `sessionEngine.ts`'s `spawnFor`) — no interior walls to navigate
      * around, so a real host can be driven onto the exit with plain
      * held-key movement instead of a full pathfinder. `mapGenerator.generate`
@@ -3032,7 +3309,7 @@ describe("main.ts — multiplayer connect flow", () => {
         // `waitForAcks` resolve before its own 10s timeout.
         await flushAsync();
         reconciliation.dispatchEvent(
-          new MessageEvent("message", { data: JSON.stringify({ type: "level-transition-ack", playerId: "guest" }) }),
+          new MessageEvent("message", { data: JSON.stringify({ type: "level-transition-ack", playerId: "guest-1" }) }),
         );
         await flushAsync();
 

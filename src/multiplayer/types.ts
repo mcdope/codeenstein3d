@@ -9,6 +9,7 @@
  * the session-setup payload (`multiplayer-netcode-spec.md`'s "Session setup"
  * section) is later work.
  */
+import type { PlayerId } from "../engine/engine";
 
 /** Every error code `scripts/multiplayer-server.mjs` can return in a
  * `{"error": "<code>"}` body, across all four endpoints — enumerated
@@ -109,9 +110,17 @@ export interface MultiplayerChannels {
   reconciliation: RTCDataChannel;
 }
 
-export interface MultiplayerConnection {
-  role: MultiplayerRole;
-  code: string;
+/** One guest's own peer connection + channel pair, as tracked by the host —
+ * a guest only ever holds one of these (toward the host); the host holds one
+ * per connected guest (star topology, see `multiplayer-server-spec.md` §2's
+ * "sequential, not concurrent, per-code joins": each guest gets its own
+ * `RTCPeerConnection` from its own offer/answer round, the host just runs
+ * that round more than once against the same code). */
+export interface HostGuestLink {
   peerConnection: RTCPeerConnection;
   channels: MultiplayerChannels;
 }
+
+export type MultiplayerConnection =
+  | { role: "guest"; code: string; peerConnection: RTCPeerConnection; channels: MultiplayerChannels }
+  | { role: "host"; code: string; hostToken: string; maxPlayers: number; links: Map<PlayerId, HostGuestLink> };

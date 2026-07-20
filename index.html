@@ -149,9 +149,16 @@
                 <input id="multiplayer-public-checkbox" type="checkbox" />
                 List in public lobby
               </label>
+              <label id="multiplayer-max-players-label" for="multiplayer-max-players" class="settings-label">Max players</label>
+              <select id="multiplayer-max-players">
+                <option value="2">2 (you + 1 guest)</option>
+                <option value="3">3 (you + 2 guests)</option>
+                <option value="4">4 (you + 3 guests)</option>
+              </select>
               <button id="multiplayer-host-create" class="settings-btn" type="button">Create Session</button>
               <button id="multiplayer-host-cancel" class="settings-btn" type="button" hidden>Cancel</button>
               <p id="multiplayer-host-code" class="multiplayer-code" hidden></p>
+              <p id="multiplayer-guest-count" class="muted" hidden></p>
               <button id="multiplayer-start-session" class="settings-btn" type="button" hidden>Start Session</button>
             </div>
             <div id="multiplayer-subtab-panel-join" class="tab-panel" role="tabpanel" aria-labelledby="multiplayer-subtab-join" hidden>

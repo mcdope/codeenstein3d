@@ -165,7 +165,8 @@ body {
 }
 
 #gore-select,
-#difficulty-select {
+#difficulty-select,
+#multiplayer-max-players {
   width: 100%;
   padding: 6px 8px;
   font: inherit;

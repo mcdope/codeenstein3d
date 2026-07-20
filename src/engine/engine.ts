@@ -1618,7 +1618,7 @@ export class RaycasterEngine {
 
     for (const [id, ps] of Object.entries(snapshot.players)) {
       const p = this.players.get(id);
-      if (!p) continue; // fixed 2-player roster today — a future roster change is a later step's job
+      if (!p) continue; // an id the snapshot mentions that this peer never added (shouldn't happen, roster is agreed at session setup) — skip rather than throw
       p.renderOffset = this.correctionRenderOffset({ x: p.player.posX, y: p.player.posY }, { x: ps.posX, y: ps.posY }, now);
       p.player.posX = ps.posX;
       p.player.posY = ps.posY;

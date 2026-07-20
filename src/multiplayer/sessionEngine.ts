@@ -10,6 +10,11 @@
  * `multiplayer-game-state-spec.md` §2's rule, and owns `EngineHandlers`
  * construction (including session teardown on game-over/win) so neither
  * driver file has to duplicate it.
+ *
+ * Step 10 (N-player): `result.roster` can now hold more than 2 ids (host +
+ * up to 3 guests) — every id besides this peer's own `assignedId` gets its
+ * own `NetworkInputSource`/`addPlayer()` call, keyed in a `Map` rather than a
+ * single named field.
  */
 import { DEFAULT_GORE_LEVEL } from "../engine/effects";
 import {
@@ -24,8 +29,7 @@ import { InputController } from "../engine/input";
 import type { Point } from "../map/types";
 import { LocalInputSampler } from "./localInputSampler";
 import { NetworkInputSource } from "./networkInputSource";
-import { GUEST_PLAYER_ID, HOST_PLAYER_ID, type SessionSetupResult } from "./sessionSetupTypes";
-import type { MultiplayerRole } from "./types";
+import type { SessionSetupResult } from "./sessionSetupTypes";
 
 /** Why a multiplayer session ended, threaded through to `main.ts` so it can
  * render distinct copy per path instead of one generic "session ended"
@@ -42,7 +46,6 @@ export type SessionEndReason = "team-eliminated" | "host-disconnected" | "campai
 
 export interface SessionEngineOptions {
   result: SessionSetupResult;
-  role: MultiplayerRole;
   canvas: HTMLCanvasElement;
   /** Health/ammo/weapons/score to seed each player with, keyed by roster id
    * — `undefined` (the default) for a genuinely fresh session start, a real
@@ -82,7 +85,11 @@ export interface SessionEngineOptions {
 export interface SessionEngineHandle {
   engine: RaycasterEngine;
   myInput: NetworkInputSource;
-  otherInput: NetworkInputSource;
+  /** One `NetworkInputSource` per roster id besides `myInput`'s own —
+   * every other connected player (step 10: 1-3 guests from the host's own
+   * perspective, or the host plus 0-2 other guests from a guest's), keyed by
+   * roster id. */
+  otherInputs: Map<PlayerId, NetworkInputSource>;
   localSampler: LocalInputSampler;
 }
 
@@ -99,12 +106,12 @@ function spawnFor(result: SessionSetupResult, id: PlayerId): Point | undefined {
 }
 
 export function buildSessionEngine(options: SessionEngineOptions): SessionEngineHandle {
-  const { result, role, canvas } = options;
-  const myRosterId = role === "host" ? HOST_PLAYER_ID : GUEST_PLAYER_ID;
-  const otherRosterId = role === "host" ? GUEST_PLAYER_ID : HOST_PLAYER_ID;
+  const { result, canvas } = options;
+  const myRosterId = result.assignedId;
+  const otherRosterIds = result.roster.filter((id) => id !== myRosterId);
 
   const myInput = new NetworkInputSource();
-  const otherInput = new NetworkInputSource();
+  const otherInputs = new Map<PlayerId, NetworkInputSource>();
   const localSampler = new LocalInputSampler(new InputController(canvas));
 
   let ended = false;
@@ -147,9 +154,13 @@ export function buildSessionEngine(options: SessionEngineOptions): SessionEngine
     spawnFor(result, myRosterId),
     result.roster.length,
   );
-  engine.addPlayer(otherRosterId, otherInput, options.carryovers?.[otherRosterId], spawnFor(result, otherRosterId));
+  for (const id of otherRosterIds) {
+    const input = new NetworkInputSource();
+    otherInputs.set(id, input);
+    engine.addPlayer(id, input, options.carryovers?.[id], spawnFor(result, id));
+  }
   engine.startExternallyDriven();
   localSampler.attach();
 
-  return { engine, myInput, otherInput, localSampler };
+  return { engine, myInput, otherInputs, localSampler };
 }
