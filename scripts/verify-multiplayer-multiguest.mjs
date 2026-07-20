@@ -301,19 +301,28 @@ async function runAttempt(browser, engineName, attempt) {
     // a code takes real seconds, comfortably outlasting that cycle, but this
     // script's own near-instant click can race ahead of it and land on
     // guest-1's own already-answered offer (server: `already_answered` ->
-    // "Someone else already joined that session."). Retry a few times with a
-    // short real-world-realistic delay, exactly what a real second joiner
-    // would do on seeing that message, rather than adding a new "host is
-    // ready for the next joiner" test-only hook just to avoid it.
-    // Kept modest deliberately: each retry costs 2 requests against the
-    // signaling server's own guess-sensitive rate budget (20/60s per IP,
-    // `multiplayer-server-spec.md` §4) — too many, too fast (especially
-    // compounded across this scenario's own outer team-wipe retry loop) can
-    // trip that limiter itself, which then escalates into a real, much
-    // longer cooldown lockout, an entirely self-inflicted failure mode
-    // distinct from the actual race this loop exists to absorb.
-    const GUEST2_JOIN_RETRY_DELAY_MS = 2000;
-    const GUEST2_JOIN_MAX_ATTEMPTS = 7;
+    // "Someone else already joined that session."). Retry with a short
+    // real-world-realistic delay, exactly what a real second joiner would do
+    // on seeing that message, rather than adding a new "host is ready for the
+    // next joiner" test-only hook just to avoid it.
+    //
+    // Window sized from real CI evidence, not guessed: PR #25's own CI run
+    // hit this race on *every* browser, not just a flaky one — chromium
+    // needed 6 attempts (~12s at the original 2s spacing) to clear it,
+    // webkit exhausted all 7 (~14s) and still hadn't. `MULTIPLAYER_ICE_
+    // GATHERING_TIMEOUT_MS` alone allows up to 10s before `armNextGuestSlot`
+    // even reaches `updateSession()`, so a 14s window was never comfortably
+    // above the worst case, only usually above it. Widened to a ~40s window —
+    // still bounded by the same real constraint as before, not raised
+    // carelessly: each retry costs 2 requests against the signaling server's
+    // own guess-sensitive rate budget (20/60s per IP, `multiplayer-server-
+    // spec.md` §4), so attempt count went *down* (9, not more) while spacing
+    // went up (5s), keeping total requests (18) safely under that budget
+    // instead of also risking tripping it — which would escalate into a
+    // real, much longer cooldown lockout, a worse failure mode than the race
+    // this loop already exists to absorb.
+    const GUEST2_JOIN_RETRY_DELAY_MS = 5000;
+    const GUEST2_JOIN_MAX_ATTEMPTS = 9;
     let guest2Connected = false;
     for (let attempt = 1; attempt <= GUEST2_JOIN_MAX_ATTEMPTS && !guest2Connected; attempt++) {
       await guest2Page.fill("#multiplayer-join-code-input", code);
