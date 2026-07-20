@@ -16,6 +16,7 @@ import { DEFAULT_DIFFICULTY, DIFFICULTY_MULTIPLIERS, type DifficultyLevel, type 
 import { createResumablePrng, randomSeed } from "../prng";
 import { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "./reconciliationConstants";
 import { COUNTDOWN_TICKS } from "./transitionConstants";
+import { INPUT_DELAY_TICKS } from "./lagCompensationConstants";
 import type {
   EnemySnapshot,
   LootDropSnapshot,
@@ -708,6 +709,13 @@ export class RaycasterEngine {
    * `TelemetryState` itself since a `WeakMap` can't cross the
    * `getTelemetrySnapshot()` structured-clone boundary. */
   private readonly enemyTtkIndex = new WeakMap<Enemy, EnemyTtkRecord>();
+  /** Ring buffer of past enemy positions, one frame per multiplayer tick,
+   * capped at `INPUT_DELAY_TICKS + 1` — see `rewoundEnemyPositions()`'s own
+   * doc comment for why this exists and how it's used. Single-player never
+   * pushes to this (see the capture site in `simulate()`), so it stays
+   * permanently empty there — zero cost beyond the one always-false
+   * `isMultiplayerSession()` check. */
+  private readonly enemyPositionHistory: ReadonlyMap<Enemy, { x: number; y: number }>[] = [];
   /** Bound once (not reallocated per frame) and always passed to
    * `updateEnemies()` — each closure no-ops internally when `this.telemetry`
    * is unset, same pattern as every other recording call site. */
@@ -1079,6 +1087,59 @@ export class RaycasterEngine {
    * exit countdown). */
   private isMultiplayerSession(): boolean {
     return this.localPlayerId !== LOCAL_PLAYER_ID;
+  }
+
+  /** Captures this tick's living-enemy positions into `enemyPositionHistory`,
+   * trimmed to its `INPUT_DELAY_TICKS + 1`-frame cap — called from
+   * `simulate()`, once per tick, right after `updateEnemyAi()` so the
+   * captured positions are this tick's final ones. Multiplayer-only: every
+   * player's fire input (the local player's own included, deliberately, for
+   * lockstep fairness — see `INPUT_DELAY_TICKS`'s own doc comment) is
+   * delayed `INPUT_DELAY_TICKS` before it's actually applied, so by
+   * execution time a moving enemy may no longer be where the shooter aimed.
+   * Single-player never calls this at all (see the `simulate()` call site),
+   * so `enemyPositionHistory` stays permanently empty there. */
+  private captureEnemyPositionHistory(): void {
+    const frame = new Map<Enemy, { x: number; y: number }>();
+    for (const enemy of this.enemies) {
+      if (enemy.alive) frame.set(enemy, { x: enemy.x, y: enemy.y });
+    }
+    this.enemyPositionHistory.push(frame);
+    while (this.enemyPositionHistory.length > INPUT_DELAY_TICKS + 1) this.enemyPositionHistory.shift();
+  }
+
+  /**
+   * The enemy positions a multiplayer shot should be hit-tested against —
+   * `INPUT_DELAY_TICKS` ticks in the past, not live/current — or `undefined`
+   * in single-player (every call site falls back to exactly today's live-
+   * position behavior when this returns `undefined`, byte-identical, zero
+   * regression risk).
+   *
+   * Only the *hit-test* position is rewound; `fire()`'s actual damage
+   * application still mutates the real, live `Enemy` object (found via the
+   * same reference, just projected from an earlier position) — an enemy's
+   * current hp/aggro/etc. are never rewound, only where it's projected to
+   * for targeting purposes.
+   *
+   * Given `enemyPositionHistory` is capped at exactly `INPUT_DELAY_TICKS + 1`
+   * frames, its oldest entry is always precisely `INPUT_DELAY_TICKS` ticks
+   * behind the frame just captured this tick, once the buffer is full. In a
+   * level's first few ticks (buffer not yet full) this is simply whichever
+   * frame is oldest so far — a negligible, self-correcting bootstrap window,
+   * not a case worth special-handling: real combat essentially never starts
+   * inside a level's first ~100ms.
+   *
+   * The bot/HUD-facing prediction hook (`computeMeleeAndMineHitChecks`)
+   * deliberately does *not* call this — it reads live state, which is
+   * exactly correct for a live decision: `fire()` rewinding by
+   * `INPUT_DELAY_TICKS` at *execution* time (`INPUT_DELAY_TICKS` ticks
+   * later) lands back on approximately "now" relative to when the decision
+   * was made, so the live prediction and the eventual rewound execution
+   * agree.
+   */
+  private rewoundEnemyPositions(): ReadonlyMap<Enemy, { x: number; y: number }> | undefined {
+    if (!this.isMultiplayerSession()) return undefined;
+    return this.enemyPositionHistory[0];
   }
 
   /** Multiplayer-only: closes this peer's own lore overlay, if one is open —
@@ -1998,6 +2059,7 @@ export class RaycasterEngine {
     this.openDoorAhead();
     this.checkTeleporters();
     this.updateEnemyAi(dt);
+    if (this.isMultiplayerSession()) this.captureEnemyPositionHistory();
     this.updateProjectiles(dt);
     this.advanceRockets(dt);
     this.applyHazardDamage(dt);
@@ -3262,10 +3324,20 @@ export class RaycasterEngine {
    * stale. Deliberately doesn't apply ammo cost, damage, loot, telemetry,
    * traces, or audio — those stay in `fire()`, since they need per-player
    * mutable state this function doesn't touch.
+   *
+   * `enemyPositions`, when given (multiplayer only — see `fire()`'s call
+   * site and `rewoundEnemyPositions()`'s own doc comment), hit-tests against
+   * those lag-compensated positions instead of each enemy's live `x`/`y`.
    */
-  private resolveShot(camera: Player, weapon: Weapon, rng: () => number, zBuffer: Float64Array): ShotResolution {
+  private resolveShot(
+    camera: Player,
+    weapon: Weapon,
+    rng: () => number,
+    zBuffer: Float64Array,
+    enemyPositions?: ReadonlyMap<Enemy, { x: number; y: number }>,
+  ): ShotResolution {
     castWallDistances(this.map, camera, SCENE_WIDTH, zBuffer);
-    const enemyProjections = projectLivingEnemies(camera, this.enemies, SCENE_WIDTH, SCENE_HEIGHT);
+    const enemyProjections = projectLivingEnemies(camera, this.enemies, SCENE_WIDTH, SCENE_HEIGHT, enemyPositions);
     const mineProjections = projectVisibleMines(camera, this.map.mines, SCENE_WIDTH, SCENE_HEIGHT);
     const center = SCENE_WIDTH / 2;
     const isFlame = weapon.ammoType === "gas";
@@ -3387,7 +3459,7 @@ export class RaycasterEngine {
       return;
     }
 
-    const resolution = this.resolveShot(shooter.player, w, this.rng, shooter.zBuffer);
+    const resolution = this.resolveShot(shooter.player, w, this.rng, shooter.zBuffer, this.rewoundEnemyPositions());
     const isFlame = w.ammoType === "gas";
     for (const outcome of resolution.pellets) {
       if (outcome.kind === "enemy") {

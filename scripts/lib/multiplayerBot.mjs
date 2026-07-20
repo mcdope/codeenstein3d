@@ -60,6 +60,27 @@
  *    movement can cover, not a single-player-only fixed tiling — see its
  *    own doc comment there for the fix and why it's a no-op for
  *    single-player's own shorter decision windows.
+ *  - `maybeDetourForLoot` (overridden below) is cooldown-gated
+ *    (`DETOUR_RECHECK_MS`), unlike `Bot.maybeDetourForLoot`'s unthrottled
+ *    once-per-waypoint calls. Root-caused directly: `bot.mjs`'s own
+ *    `driveLegs` calls `maybeDetourForLoot` before *every* waypoint, and
+ *    each call is a bare state read — unlike `applyAction`, it dispatches no
+ *    input at all while it awaits. At single-player's virtual-time pace this
+ *    is free (the sim doesn't advance while un-pumped); at multiplayer's
+ *    real, un-virtualized pace, a slow `page.evaluate()` round trip (proven
+ *    directly: repeatable via `Emulation.setCPUThrottlingRate` — the tick-
+ *    pacing Worker keeps posting real-time ticks regardless of how well the
+ *    main thread keeps up, so a loaded/contended real machine, CI's shared
+ *    runners included, can back that queue up until every `page.evaluate()`
+ *    — mine and the bot's own — waits multiple real seconds behind it) is a
+ *    multi-second window of zero player input, real enemies still landing
+ *    real hits the whole time. Confirmed directly: a host stood frozen at
+ *    its exact spawn tile, health draining from ~75 to 0 without a single
+ *    movement key ever issued, entirely inside back-to-back
+ *    `maybeDetourForLoot` reads before its first real decision ever ran.
+ *    Fixed here, not in `bot.mjs`: single-player has no equivalent exposure
+ *    (its virtual clock makes evaluate() latency free), so this is a real,
+ *    `MultiplayerBot`-only gap, not a shared one.
  */
 import { Bot } from "./bot.mjs";
 import { bfsPath, pathToWaypoints } from "./pathfind.mjs";
@@ -74,6 +95,16 @@ const DEFAULT_STEP_MS = 400;
  * (sprint speed × step duration), so only a real teleporter-scale warp
  * still trips it. */
 const DEFAULT_TELEPORT_JUMP_DETECT_TILES = 4;
+
+/** See this module's own doc comment's last bullet — bounds how often
+ * `maybeDetourForLoot`'s real, input-free `page.evaluate()` round trip can
+ * run, roughly "once per leg" rather than once per waypoint, so a real
+ * multi-waypoint leg can't chain several of these back to back with zero
+ * player input the whole time. Well under `DEFAULT_STEP_MS` in spirit but
+ * measured in real seconds, not ticks: loot detour is a convenience, not a
+ * combat-critical read, so a few real seconds of staleness is an acceptable
+ * trade for never leaving the player fully passive for long. */
+const DETOUR_RECHECK_MS = 3000;
 
 /** Synthesized in place of a null `getBotPlayerState(id)` result (the
  * multiplayer session has fully ended — team-eliminated, host-disconnected,
@@ -120,6 +151,10 @@ export class MultiplayerBot extends Bot {
       realtime: true,
     });
     this.playerId = playerId;
+    /** Real `Date.now()` timestamp of the last `maybeDetourForLoot` round
+     * trip — see `DETOUR_RECHECK_MS`. Starts at 0 so the very first call
+     * (leg start) always runs for real. */
+    this.lastDetourCheckAt = 0;
   }
 
   async readFull() {
@@ -138,21 +173,28 @@ export class MultiplayerBot extends Bot {
     return player ?? SESSION_ENDED_PLAYER_STATE;
   }
 
-  /** Identical to `Bot.maybeDetourForLoot`, except the dynamic drops/keys
-   * come from the multiplayer hooks — see this module's own doc comment. */
+  /** Like `Bot.maybeDetourForLoot` (dynamic drops/keys come from the
+   * multiplayer hooks), plus the real-time cooldown gate and single merged
+   * `page.evaluate()` round trip — see this module's own doc comment's last
+   * bullet for why both are needed here and not in `bot.mjs` itself. */
   async maybeDetourForLoot(openedDoors) {
-    const player = await this.readState();
-    if (player.state !== "playing") return { state: player.state };
+    const now = Date.now();
+    if (now - this.lastDetourCheckAt < DETOUR_RECHECK_MS) return { state: "playing" };
+    this.lastDetourCheckAt = now;
 
-    const staticUncollected = this.map.ammoPickups.filter((p) => !this.visitedPickups.has(`${p.x},${p.y}`));
     const id = this.playerId;
-    const { dynamicDrops, dynamicKeys } = await this.page.evaluate((id) => {
+    const { player: rawPlayer, dynamicDrops, dynamicKeys } = await this.page.evaluate((id) => {
       const hooks = window.__codeensteinMultiplayerTestHooks;
       return {
+        player: hooks.getBotPlayerState(id),
         dynamicDrops: hooks.getDropsSnapshot(),
         dynamicKeys: hooks.getKeysSnapshot().map((k) => ({ ...k, kind: "key" })),
       };
     }, id);
+    const player = rawPlayer ?? SESSION_ENDED_PLAYER_STATE;
+    if (player.state !== "playing") return { state: player.state };
+
+    const staticUncollected = this.map.ammoPickups.filter((p) => !this.visitedPickups.has(`${p.x},${p.y}`));
     const uncollected = [...staticUncollected, ...dynamicDrops, ...dynamicKeys];
     if (uncollected.length === 0) return { state: "playing" };
 
