@@ -425,8 +425,23 @@ async function scenarioHostDisconnect(browser, engineName) {
     await guestPage.keyboard.press("Enter");
 
     console.log("  Waiting for the return to the file tree...");
-    await guestPage.waitForSelector(".canvas-area[hidden]", { timeout: 10_000 });
-    check("guest: the canvas area is torn down (back to the file tree) once the comparison table is dismissed", true);
+    try {
+      // `state: "attached"`, not the default "visible" — a `.canvas-area[hidden]`
+      // match can never be "visible" (the `hidden` attribute forces
+      // `display: none`), so waiting for that combination with the default
+      // state would time out even once the attribute is really set (confirmed
+      // directly: CI's own log showed the locator repeatedly resolving to the
+      // correctly-hidden element while still failing the "visible" wait).
+      await guestPage.waitForSelector(".canvas-area[hidden]", { state: "attached", timeout: 10_000 });
+      check("guest: the canvas area is torn down (back to the file tree) once the comparison table is dismissed", true);
+    } catch (err) {
+      const hidden = await guestPage.evaluate(() => document.querySelector(".canvas-area")?.hasAttribute("hidden") ?? "<unavailable>");
+      check(
+        "guest: the canvas area is torn down (back to the file tree) once the comparison table is dismissed",
+        false,
+        `hidden=${hidden}: ${err.message}`,
+      );
+    }
   } finally {
     await guestContext.close();
   }
