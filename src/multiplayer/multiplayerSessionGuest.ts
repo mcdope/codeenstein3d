@@ -28,7 +28,7 @@
  */
 import { onJsonMessage, sendJson } from "./dataChannelMessaging";
 import { ChunkReassembler } from "./chunkedTransfer";
-import type { EngineCarryover, EngineStats, PlayerId } from "../engine/engine";
+import type { EngineCarryover, EngineStats, PlayerId, RosterSnapshotEntry } from "../engine/engine";
 import type { ConnectionStateSource, MultiplayerSessionHandle } from "./multiplayerSessionHost";
 import { DISCONNECT_GRACE_MS, FIXED_DT, INPUT_DELAY_TICKS } from "./netcodeConstants";
 import type { LevelTransitionAckMessage, LevelTransitionMessage } from "./levelTransitionTypes";
@@ -46,8 +46,12 @@ export function runMultiplayerSessionAsGuest(
   /** Fired once the shared simulation reaches game-over, or (guest-side
    * only) the host's own connection expires its grace period, after this
    * module's own teardown (listener unsubscribe) has already run —
-   * `main.ts`'s hook for updating its own UI back out of the session. */
-  onSessionEnded?: (stats: EngineStats, reason: SessionEndReason) => void,
+   * `main.ts`'s hook for updating its own UI back out of the session.
+   * `comparison` is `engine.rosterSnapshot()` at the moment of ending — see
+   * `SessionEngineOptions.onSessionEnded`'s own doc comment. For the
+   * host-disconnect path this is this peer's own local state, same
+   * provisional caveat as `stats` there. */
+  onSessionEnded?: (stats: EngineStats, reason: SessionEndReason, comparison: ReadonlyMap<PlayerId, RosterSnapshotEntry>) => void,
   /** The guest's own `RTCPeerConnection` toward the host — same injection
    * spirit as `runMultiplayerSessionAsHost`'s own `connection` param (see
    * `ConnectionStateSource`'s doc comment). Monitored here for the reverse
@@ -82,8 +86,9 @@ export function runMultiplayerSessionAsGuest(
       graceTimer = setTimeout(() => {
         graceTimer = null;
         const stats = engine!.render();
+        const comparison = engine!.rosterSnapshot();
         teardown();
-        onSessionEnded?.(stats, "host-disconnected");
+        onSessionEnded?.(stats, "host-disconnected", comparison);
       }, DISCONNECT_GRACE_MS);
     } else if (state === "connected" && graceTimer !== null) {
       clearTimeout(graceTimer);
@@ -127,9 +132,9 @@ export function runMultiplayerSessionAsGuest(
       role: "guest",
       canvas,
       carryovers,
-      onSessionEnded: (stats, reason) => {
+      onSessionEnded: (stats, reason, comparison) => {
         teardown();
-        onSessionEnded?.(stats, reason);
+        onSessionEnded?.(stats, reason, comparison);
       },
       // A local win here does nothing beyond keeping the fallback
       // "campaign-complete" auto-end from firing — only the host decides

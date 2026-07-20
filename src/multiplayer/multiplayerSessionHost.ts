@@ -32,7 +32,14 @@
  * case here), or, once genuinely out of content, ends the session with
  * reason `"campaign-complete"`.
  */
-import { REVIVE_HEALTH, type EngineCarryover, type EngineStats, type PlayerId, type PlayerStatus } from "../engine/engine";
+import {
+  REVIVE_HEALTH,
+  type EngineCarryover,
+  type EngineStats,
+  type PlayerId,
+  type PlayerStatus,
+  type RosterSnapshotEntry,
+} from "../engine/engine";
 import type { GameMap, LootDrop, Point, Tile } from "../map/types";
 import { chunkJson } from "./chunkedTransfer";
 import { sendJson, sendJsonSequence, onJsonMessage } from "./dataChannelMessaging";
@@ -179,8 +186,10 @@ export function runMultiplayerSessionAsHost(
   /** Fired once the shared simulation reaches game-over, or a win with
    * nowhere left to transition to, after this module's own teardown
    * (worker/listeners) has already run — `main.ts`'s hook for updating its
-   * own UI back out of the session. */
-  onSessionEnded?: (stats: EngineStats, reason: SessionEndReason) => void,
+   * own UI back out of the session. `comparison` is `engine.rosterSnapshot()`
+   * at the moment of ending — see `SessionEngineOptions.onSessionEnded`'s own
+   * doc comment. */
+  onSessionEnded?: (stats: EngineStats, reason: SessionEndReason, comparison: ReadonlyMap<PlayerId, RosterSnapshotEntry>) => void,
   /** The host's own `RTCPeerConnection` toward the guest — omitted by every
    * existing unit test (disconnect detection simply never triggers without
    * it), real production callers (`main.ts`) always pass one. */
@@ -317,8 +326,9 @@ export function runMultiplayerSessionAsHost(
 
     if (!next) {
       const stats = engine.render();
+      const comparison = engine.rosterSnapshot();
       teardown();
-      onSessionEnded?.(stats, "campaign-complete");
+      onSessionEnded?.(stats, "campaign-complete", comparison);
       return;
     }
 
@@ -372,9 +382,9 @@ export function runMultiplayerSessionAsHost(
       role: "host",
       canvas,
       carryovers,
-      onSessionEnded: (stats, reason) => {
+      onSessionEnded: (stats, reason, comparison) => {
         teardown();
-        onSessionEnded?.(stats, reason);
+        onSessionEnded?.(stats, reason, comparison);
       },
       onWin: () => void onWinFromEngine(),
     });

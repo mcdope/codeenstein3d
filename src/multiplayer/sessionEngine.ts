@@ -12,7 +12,14 @@
  * driver file has to duplicate it.
  */
 import { DEFAULT_GORE_LEVEL } from "../engine/effects";
-import { RaycasterEngine, type EngineCarryover, type EngineHandlers, type EngineStats, type PlayerId } from "../engine/engine";
+import {
+  RaycasterEngine,
+  type EngineCarryover,
+  type EngineHandlers,
+  type EngineStats,
+  type PlayerId,
+  type RosterSnapshotEntry,
+} from "../engine/engine";
 import { InputController } from "../engine/input";
 import type { Point } from "../map/types";
 import { LocalInputSampler } from "./localInputSampler";
@@ -49,8 +56,11 @@ export interface SessionEngineOptions {
    * This module has already torn down the local input sampler by the time
    * this fires. Also fired for a win with nowhere to transition to (see
    * `onWin`'s own doc comment) — this is the *only* case a win still reaches
-   * this callback. */
-  onSessionEnded?: (stats: EngineStats, reason: SessionEndReason) => void;
+   * this callback. `comparison` is `engine.rosterSnapshot()` taken at the
+   * same moment, for `main.ts`'s end-of-run comparison table (multiplayer
+   * step 9) — every peer's `players` map already holds every connected
+   * player's own state under lockstep, so this needs no new wire message. */
+  onSessionEnded?: (stats: EngineStats, reason: SessionEndReason, comparison: ReadonlyMap<PlayerId, RosterSnapshotEntry>) => void;
   /** Fired the instant this peer's own simulation reaches a win — NOT an
    * end-of-session event by itself (unlike `onGameOver`, which always is): a
    * multiplayer win almost always means "generate and transition to the next
@@ -102,7 +112,7 @@ export function buildSessionEngine(options: SessionEngineOptions): SessionEngine
     if (ended) return;
     ended = true;
     localSampler.detach();
-    options.onSessionEnded?.(stats, reason);
+    options.onSessionEnded?.(stats, reason, engine.rosterSnapshot());
   };
   const handlers: EngineHandlers = {
     onGameOver: (stats) => endSession(stats, "team-eliminated"),
@@ -135,6 +145,7 @@ export function buildSessionEngine(options: SessionEngineOptions): SessionEngine
     undefined,
     myRosterId,
     spawnFor(result, myRosterId),
+    result.roster.length,
   );
   engine.addPlayer(otherRosterId, otherInput, options.carryovers?.[otherRosterId], spawnFor(result, otherRosterId));
   engine.startExternallyDriven();

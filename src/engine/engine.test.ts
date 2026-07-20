@@ -253,6 +253,7 @@ function makeEngine(
     difficulty?: "easy" | "normal" | "hard";
     seed?: number;
     input?: ScriptedInput;
+    playerCount?: number;
   } = {},
 ): { engine: InstanceType<typeof RaycasterEngine>; input: ScriptedInput; handlers: ReturnType<typeof makeHandlers> } {
   const canvas = makeCanvas();
@@ -267,6 +268,9 @@ function makeEngine(
     opts.seed ?? 12345,
     input,
     undefined,
+    undefined,
+    undefined,
+    opts.playerCount,
   );
   return { engine, input, handlers };
 }
@@ -353,6 +357,25 @@ describe("RaycasterEngine — construction", () => {
     const { engine } = makeEngine(fakeMap({ enemies: [enemy] }), makeHandlers(), { difficulty: "normal" });
     engine.advance(0);
     expect(enemy.maxHp).toBe(100);
+  });
+
+  it("leaves Elite HP untouched at the default single-player playerCount (1)", () => {
+    const elite = fakeEnemy({ hp: 100, maxHp: 100, elite: true });
+    const { engine } = makeEngine(fakeMap({ enemies: [elite] }));
+    engine.advance(0);
+    expect(elite.maxHp).toBe(100);
+  });
+
+  it("scales only Elite HP by the player-count multiplier at construction, leaving non-Elites untouched", () => {
+    const elite = fakeEnemy({ hp: 100, maxHp: 100, elite: true });
+    const grunt = fakeEnemy({ hp: 100, maxHp: 100, elite: false, x: 7, y: 5 });
+    const { engine } = makeEngine(fakeMap({ enemies: [elite, grunt] }), makeHandlers(), { playerCount: 3 });
+    engine.advance(0);
+    // eliteScalingFor(3): extra = 2, hp = 1 + 2*0.5 = 2
+    expect(elite.maxHp).toBe(200);
+    expect(elite.hp).toBe(200);
+    expect(grunt.maxHp).toBe(100);
+    expect(grunt.hp).toBe(100);
   });
 
   it("falls back to a real InputController when no inputSource is given", () => {
@@ -609,6 +632,18 @@ describe("RaycasterEngine — automap toggle", () => {
     // already false by default) — the real signal that the automap didn't
     // pause anything is that onFreezeChange never reports true.
     expect(handlers.onFreezeChange).not.toHaveBeenCalledWith(true);
+  });
+
+  it("passes this session's loot drops to drawAutomap while it's open in a multiplayer session", () => {
+    // A non-default localPlayerId ("host") makes isMultiplayerSession() true
+    // — see engine.ts's own doc comment on that check — exercising the
+    // `this.isMultiplayerSession() ? this.drops : []` branch drawAutomap's
+    // call site takes, which single-player's own automap-toggle test above
+    // never reaches.
+    const input = new ScriptedInput();
+    const engine = new RaycasterEngine(makeCanvas(), fakeMap(), makeHandlers(), undefined, undefined, undefined, 1, input, undefined, "host");
+    input.mapToggle = true;
+    expect(() => engine.advance(0.016)).not.toThrow();
   });
 });
 
@@ -2515,6 +2550,10 @@ describe("RaycasterEngine — addPlayer / roster (N-player)", () => {
     const roster = engine.rosterSnapshot();
     expect([...roster.keys()].sort()).toEqual(["local", "p2"]);
     expect(roster.get("p2")).toMatchObject({ status: "alive", health: 100, killScore: 0, kills: 0, distanceTraveled: 0 });
+    // `breakdown` is the cumulative run total (multiplayer step 9) — a fresh
+    // player with no prior levels and no damage taken yet still earns the
+    // full health/ammo bonuses, so `total` is non-zero from tick one.
+    expect(roster.get("p2")!.breakdown.total).toBeGreaterThan(0);
   });
 
   it("throws when adding a player id that's already present", () => {

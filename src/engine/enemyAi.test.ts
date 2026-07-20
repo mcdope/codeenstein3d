@@ -257,6 +257,39 @@ describe("updateEnemies", () => {
     expect(damage.get("p1") ?? 0).toBe(20);
   });
 
+  it("scales an Elite's melee damage further by the multiplayer eliteDamageScale param, on top of its own double-damage base", () => {
+    const map = fakeMap(openGrid(20));
+    const player = new Player(map);
+    player.posX = 5.2;
+    player.posY = 5;
+    const e = enemy({ x: 5, y: 5, aggroed: true, attackCooldown: 0, elite: true });
+    // aimSpreadDeg defaults to 0 (this test doesn't care about it); eliteDamageScale is the 11th positional arg.
+    const damage = updateEnemies([e], targetsFor(player), map, 0.016, [], pathFieldsFor(map, player), undefined, undefined, 0, 1.5);
+    expect(damage.get("p1") ?? 0).toBe(30); // ATTACK_DAMAGE(10) * ELITE_DAMAGE_MULTIPLIER(2) * 1.5
+  });
+
+  it("leaves a non-Elite's melee damage untouched by eliteDamageScale", () => {
+    const map = fakeMap(openGrid(20));
+    const player = new Player(map);
+    player.posX = 5.2;
+    player.posY = 5;
+    const e = enemy({ x: 5, y: 5, aggroed: true, attackCooldown: 0 });
+    const damage = updateEnemies([e], targetsFor(player), map, 0.016, [], pathFieldsFor(map, player), undefined, undefined, 0, 2);
+    expect(damage.get("p1") ?? 0).toBe(10);
+  });
+
+  it("scales an Elite's ranged bolt damage by eliteDamageScale too", () => {
+    const map = fakeMap(openGrid(20));
+    const player = new Player(map);
+    player.posX = 9;
+    player.posY = 5;
+    const e = enemy({ x: 5, y: 5, aggroed: true, fireCooldown: 0, elite: true });
+    const projectiles: Projectile[] = [];
+    updateEnemies([e], targetsFor(player), map, 0.016, projectiles, pathFieldsFor(map, player), () => 0.5, undefined, 0, 1.5);
+    expect(projectiles).toHaveLength(1);
+    expect(projectiles[0].damage).toBe(24); // PROJECTILE_DAMAGE(8) * ELITE_DAMAGE_MULTIPLIER(2) * 1.5
+  });
+
   it("an Edge Case deals reduced melee damage", () => {
     const map = fakeMap(openGrid(20));
     const player = new Player(map);

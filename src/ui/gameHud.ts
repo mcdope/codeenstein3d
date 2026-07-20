@@ -134,6 +134,27 @@ export class GameHud {
     );
   }
 
+  /** End-of-run comparison table for a multiplayer session (multiplayer step
+   * 9) — one row per roster player, built by the caller (`main.ts`, which
+   * owns the `SessionEndReason`-to-`title`/`color` mapping and the roster-id-
+   * to-label formatting; this method stays as domain-agnostic as every other
+   * one here, taking only plain strings). Reuses the same `stats`
+   * label/value layout every other screen already gets — a comparison table
+   * is just N rows instead of one run's own breakdown. */
+  showMultiplayerResults(title: string, color: string, rows: [string, string][], onReturn: () => void): void {
+    this.show(
+      {
+        title,
+        color,
+        lines: [],
+        stats: rows,
+        buttonLabel: "Return to file tree",
+        wide: true,
+      },
+      onReturn,
+    );
+  }
+
   /** Replay playback ended for a reason other than a natural in-run win/death
    * (both of which already show their own Kernel Panic / Build Successful
    * overlay) — a manual stop, a seek/transport action, or a file that

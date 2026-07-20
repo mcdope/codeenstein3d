@@ -63,7 +63,7 @@ import { DEFAULT_DIFFICULTY, type DifficultyLevel } from "./difficulty";
 import { randomSeed } from "./prng";
 import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelSegment } from "./engine/replay";
 import type { ParsedFile } from "./parser/types";
-import type { EngineCarryover, EngineStats } from "./engine/engine";
+import type { EngineCarryover, EngineStats, PlayerId, RosterSnapshotEntry } from "./engine/engine";
 import { createSession, fetchSession, fetchSessionAsHost, postAnswer } from "./multiplayer/signalingClient";
 import { fetchLobbyEntries } from "./multiplayer/lobby";
 import { createGuestAnswer, createHostOffer, waitForChannelsOpen } from "./multiplayer/webrtcConnection";
@@ -1159,13 +1159,44 @@ function beginMultiplayerLevel(): void {
   canvas.focus();
 }
 
+/** Title/theme color for the end-of-run comparison screen, one per
+ * `SessionEndReason` — mirrors `GameHud.showKernelPanic`/`showBuildSuccessful`'s
+ * own red/green theming, plus a distinct amber for the guest-only provisional
+ * `"host-disconnected"` ending. */
+const MULTIPLAYER_RESULT_THEME: Record<SessionEndReason, { title: string; color: string }> = {
+  "team-eliminated": { title: "MULTIPLAYER: TEAM ELIMINATED", color: "#ff4d4d" },
+  "host-disconnected": { title: "MULTIPLAYER: HOST DISCONNECTED", color: "#f2c14e" },
+  "campaign-complete": { title: "MULTIPLAYER: CAMPAIGN COMPLETE", color: "#37d24a" },
+};
+
+/** Builds the comparison table's rows from `RaycasterEngine.rosterSnapshot()`
+ * — one row per roster player, `breakdown.total` (the cumulative *run* score,
+ * see `rosterSnapshot()`'s own doc comment) plus kills, labeled with the
+ * roster id capitalized (today always "Host"/"Guest" — see
+ * `sessionSetupTypes.ts`'s `HOST_PLAYER_ID`/`GUEST_PLAYER_ID`) and suffixed
+ * `" (disconnected)"` per `multiplayer-netcode-spec.md` §5's "score
+ * preserved, not erased, labeled disconnected" rule. */
+export function multiplayerResultRows(comparison: ReadonlyMap<PlayerId, RosterSnapshotEntry>): [string, string][] {
+  return [...comparison].map(([id, entry]) => {
+    const label = id.charAt(0).toUpperCase() + id.slice(1);
+    const disconnectedSuffix = entry.status === "disconnected" ? " (disconnected)" : "";
+    return [label, `${entry.breakdown.total} pts · ${entry.kills} kills${disconnectedSuffix}`];
+  });
+}
+
 /** Fired once the shared simulation reaches game-over/win — deterministically
  * the same tick on both peers, except for `"host-disconnected"` (guest-only,
  * fired from the guest's own local grace-timer expiry, never simultaneous
- * with the host). Deliberately minimal: no comparison table (a later step's
- * job, per `multiplayer-research.md`'s plan) — just enough to not leave the
- * player looking at a frozen canvas, with copy distinguishing *why* it ended. */
-function onMultiplayerSessionEnded(_stats: EngineStats, reason: SessionEndReason): void {
+ * with the host, and sourced from this peer's own local, provisional state —
+ * see `sessionEngine.ts`'s own doc comment). Shows the end-of-run comparison
+ * table (multiplayer step 9) built from `comparison` before returning to the
+ * file tree — `resetToFileTree()` now fires from the overlay's own dismiss,
+ * not immediately. */
+function onMultiplayerSessionEnded(
+  _stats: EngineStats,
+  reason: SessionEndReason,
+  comparison: ReadonlyMap<PlayerId, RosterSnapshotEntry>,
+): void {
   activeMultiplayerSession = null;
   const message: Record<SessionEndReason, string> = {
     "team-eliminated": "Multiplayer session ended — every player was eliminated.",
@@ -1173,7 +1204,10 @@ function onMultiplayerSessionEnded(_stats: EngineStats, reason: SessionEndReason
     "campaign-complete": "Multiplayer session ended — campaign complete!",
   };
   setMultiplayerStatus(message[reason], false);
-  resetToFileTree();
+  const { title, color } = MULTIPLAYER_RESULT_THEME[reason];
+  const hud = new GameHud(canvas);
+  activeHud = hud;
+  hud.showMultiplayerResults(title, color, multiplayerResultRows(comparison), resetToFileTree);
 }
 
 async function startMultiplayerSessionAsHost(): Promise<void> {

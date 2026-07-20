@@ -407,10 +407,26 @@ async function scenarioHostDisconnect(browser, engineName) {
       check("guest: reaches the provisional 'host-disconnected' end state", false, `status="${status}": ${err.message}`);
     }
 
+    // The end-of-run comparison table (multiplayer step 9) is drawn on the
+    // canvas itself and blocks until dismissed — `resetToFileTree()` no
+    // longer fires immediately on session end (see `onMultiplayerSessionEnded`'s
+    // own doc comment in main.ts), so the canvas area is still showing right
+    // now, with the comparison screen's title/rows painted on it. Exact row
+    // text is already asserted against a mocked canvas in main.test.ts's own
+    // jsdom suite (fillText call args) — this real-browser round trip proves
+    // the overlay genuinely blocks and genuinely dismisses, not the pixels.
     check(
-      "guest: the canvas area is torn down (back to the file tree)",
-      await guestPage.evaluate(() => document.querySelector(".canvas-area")?.hasAttribute("hidden") ?? false),
+      "guest: the canvas area is still showing (comparison table blocks the return to the file tree)",
+      await guestPage.evaluate(() => document.querySelector(".canvas-area")?.hasAttribute("hidden") === false),
     );
+
+    console.log("  Dismissing the comparison overlay (past its own real-time dismiss lock)...");
+    await guestPage.waitForTimeout(1300);
+    await guestPage.keyboard.press("Enter");
+
+    console.log("  Waiting for the return to the file tree...");
+    await guestPage.waitForSelector(".canvas-area[hidden]", { timeout: 10_000 });
+    check("guest: the canvas area is torn down (back to the file tree) once the comparison table is dismissed", true);
   } finally {
     await guestContext.close();
   }
