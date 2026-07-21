@@ -165,6 +165,17 @@ export async function bootstrapMultiplayerSession(browser, options) {
     tickingTimeoutMs = DEFAULT_TICKING_TIMEOUT_MS,
     guestJoinRetryDelayMs = DEFAULT_GUEST_JOIN_RETRY_DELAY_MS,
     guestJoinMaxAttempts = DEFAULT_GUEST_JOIN_MAX_ATTEMPTS,
+    // Host-authoritative (`main.ts`'s `currentDifficulty`, read from
+    // localStorage at module-load time — same key/mechanism
+    // `run-balancing-telemetry.mjs`'s own `installDifficulty` uses for
+    // single-player) — undefined leaves every context's difficulty at
+    // whatever it would otherwise default to (existing callers, e.g.
+    // `verify-multiplayer-multiguest.mjs`, never set this and are
+    // unaffected). Applied to every context, not just the host's: a guest's
+    // own localStorage is never actually read for a joined session (the
+    // host's `difficulty` wins, propagated via `session-init`), but setting
+    // it everywhere keeps every context's local UI state consistent too.
+    difficulty,
     log = () => {},
   } = options;
 
@@ -175,6 +186,26 @@ export async function bootstrapMultiplayerSession(browser, options) {
   const playerIds = ["host", ...Array.from({ length: guestCount }, (_, i) => `guest-${i + 1}`)];
 
   const contexts = await Promise.all(Array.from({ length: playerCount }, () => browser.newContext()));
+  if (difficulty) {
+    // Confirmed directly (real smoke-testing): a fresh context's own initial
+    // `about:blank` document — which `addInitScript` also re-runs against,
+    // before the real `page.goto` below ever happens — has an opaque origin
+    // in Chromium, so `localStorage` throws "Access is denied" there. Caught
+    // and ignored rather than left to surface as a `pageerror`: harmless
+    // (the same init script re-runs again on the real navigation, where it
+    // succeeds normally), just noisy logging otherwise.
+    await Promise.all(
+      contexts.map((ctx) =>
+        ctx.addInitScript((d) => {
+          try {
+            localStorage.setItem("codeenstein-difficulty", d);
+          } catch {
+            // See this call site's own comment above.
+          }
+        }, difficulty),
+      ),
+    );
+  }
   const pages = await Promise.all(contexts.map((ctx) => ctx.newPage()));
   const [hostPage, ...guestPages] = pages;
   pages.forEach((page, i) => {

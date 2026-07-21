@@ -19,11 +19,21 @@ each phase independently verified/committed before moving to the next.
       `verify-multiplayer-multiguest.mjs` refactored to use both new
       modules instead of its own copy of this logic — full local run (real
       chromium, 3-peer session, disconnect scenario) still passes clean.
-- [ ] Phase 1: N simultaneous `MultiplayerBot` instances (uniform profile),
+- [x] Phase 1: N simultaneous `MultiplayerBot` instances (uniform profile),
       `qualifyLoop.mjs` combo matrix, free anomaly detectors turned on,
       `scripts/run-balancing-telemetry-multiplayer.mjs` +
       `balancing:telemetry-multiplayer`/`balancing:scan-multiplayer` npm
-      scripts, top-level-keyed report shape
+      scripts, top-level-keyed report shape. `bootstrapMultiplayerSession`
+      gained a `difficulty` option (sets `localStorage` in every context
+      before load, same mechanism `run-balancing-telemetry.mjs`'s
+      `installDifficulty` uses). Real, reproducible finding from smoke
+      testing (not a script bug): a uniform-Casual 2p pair hits the same
+      `stall`/`healthDrainFrozen` anomaly sequence near-identically across
+      separate attempts around a mined corridor on `demo-campaign/main.c`
+      (~pos (37.5,49.3), mineDist ~3.0-4.0) — worth a closer look in a
+      future balancing pass, not something Phase 1 itself should fix.
+      `multiplayer_balancing_telemetry.json` added to `.gitignore` (report
+      output, mirrors single-player's own `balancing_telemetry.json`).
 - [ ] Phase 2a: `TelemetryState` → `PlayerState.telemetry`, ~10 call-site
       retags, per-frame update loop fix, bolt-hit attribution via
       `updateProjectiles()`'s return value, `getMultiplayerTelemetrySnapshot(id)`
