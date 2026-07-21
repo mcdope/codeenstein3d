@@ -23,13 +23,57 @@ export function chunkJson(payload: unknown, chunkSize: number): string[] {
   return chunks;
 }
 
+/** Hard ceiling on how many chunks a single `ChunkReassembler` may ever
+ * buffer. `isComplete()`'s own `chunks.size !== totalChunks` check already
+ * stops a bare inflated `totalChunks` claim with no matching data from
+ * spinning forever — this instead guards the real remaining risk: a peer
+ * that actually sends a sustained flood of legitimate-looking chunks, which
+ * would otherwise grow this reassembler's internal `Map` unboundedly.
+ * `netcodeConstants.ts` is where every other transfer-related constant
+ * (`MAP_CHUNK_SIZE_BYTES`, the backpressure watermarks) actually lives, but
+ * this fix's file scope is `chunkedTransfer.ts` alone, so the cap stays
+ * local here rather than there. Sized well above any realistic `GameMap`
+ * transfer — `sessionSetupHost.ts`/`multiplayerSessionHost.ts` chunk at 16
+ * KiB (`MAP_CHUNK_SIZE_BYTES`), so even a many-megabyte map needs only a few
+ * hundred chunks — while still bounding a single reassembly's worst-case
+ * memory footprint to a fixed, small multiple of that. */
+export const MAX_TOTAL_CHUNKS = 20_000;
+
+/** Hard ceiling on cumulative buffered `chunk.length` (UTF-16 code units,
+ * matching `chunkJson`'s own approximation of "bytes" — see
+ * `sessionSetupHost.ts`'s comment on that same imprecision) across every
+ * chunk a single `ChunkReassembler` has buffered so far. Belt-and-suspenders
+ * alongside `MAX_TOTAL_CHUNKS`: a peer could otherwise stay under the chunk
+ * *count* cap while still ballooning memory by sending unexpectedly large
+ * individual chunks. 64 MiB is comfortably above any real `GameMap` transfer
+ * this project produces. */
+export const MAX_TOTAL_BYTES = 64 * 1024 * 1024;
+
 /** Collects chunks (in whatever order they arrive) keyed by their original
  * index, and reassembles + parses them once every expected chunk has
  * arrived. */
 export class ChunkReassembler {
   private readonly chunks = new Map<number, string>();
+  private bufferedBytes = 0;
 
+  /** Throws once buffering `chunk` at `index` would exceed `MAX_TOTAL_CHUNKS`
+   * or `MAX_TOTAL_BYTES` — before storing it, never after, so a rejected
+   * chunk never gets counted. Re-pushing an already-seen `index` (not
+   * expected in this project's own protocol, which never retransmits, but
+   * not assumed impossible either) adjusts the byte tally by the delta
+   * rather than double-counting, so replaying the same index repeatedly
+   * can't be used to inflate the tracked total past what's actually held in
+   * `chunks`. */
   push(chunk: string, index: number): void {
+    const previous = this.chunks.get(index);
+    if (previous === undefined && this.chunks.size + 1 > MAX_TOTAL_CHUNKS) {
+      throw new Error(`ChunkReassembler: refusing to buffer more than ${MAX_TOTAL_CHUNKS} chunks.`);
+    }
+    const nextBufferedBytes = this.bufferedBytes + chunk.length - (previous?.length ?? 0);
+    if (nextBufferedBytes > MAX_TOTAL_BYTES) {
+      throw new Error(`ChunkReassembler: refusing to buffer more than ${MAX_TOTAL_BYTES} bytes across all chunks.`);
+    }
+    this.bufferedBytes = nextBufferedBytes;
     this.chunks.set(index, chunk);
   }
 
