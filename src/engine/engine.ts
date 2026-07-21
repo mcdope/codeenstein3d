@@ -2189,11 +2189,15 @@ export class RaycasterEngine {
     this.applyHazardDamage(dt);
     this.applyTrapDamage(dt);
     if (this.telemetryEnabled) {
+      // `p.telemetry` is guaranteed set here: `telemetryEnabled` is a single
+      // readonly field set once in the constructor, and `createPlayerState`
+      // (called for every player, local or added later via `addPlayer`)
+      // always derives `.telemetry` from that same field — there is no path
+      // where one player has it and another doesn't while this is true.
       for (const id of this.sortedPlayerIds()) {
         const p = this.players.get(id)!;
-        if (!p.telemetry) continue;
-        updateMinHealth(p.telemetry, p.health);
-        updateTelemetryPerFrame(p.telemetry, dt, p.health / MAX_HEALTH, p.ammo.bullets + p.ammo.smg + p.ammo.gas);
+        updateMinHealth(p.telemetry!, p.health);
+        updateTelemetryPerFrame(p.telemetry!, dt, p.health / MAX_HEALTH, p.ammo.bullets + p.ammo.smg + p.ammo.gas);
       }
     }
     this.updateLowHealthAlarm(dt);
@@ -2870,9 +2874,12 @@ export class RaycasterEngine {
       if (p.status !== "alive") continue;
       targets.push({ id, player: p.player });
     }
+    // `updateProjectiles` only ever inserts an entry when a bolt actually
+    // lands (always `p.damage` from `spawnProjectile`, always positive — see
+    // `PROJECTILE_DAMAGE`/`damageMultiplier`), so `dmg` here is always > 0;
+    // no `dmg <= 0` guard needed.
     const damageByPlayer = updateProjectiles(this.projectiles, targets, this.map, dt);
     for (const [id, dmg] of damageByPlayer) {
-      if (dmg <= 0) continue;
       const victim = this.players.get(id)!;
       // One increment per victim per frame, not per bolt — two bolts landing
       // on the same player in the same frame (rare) undercounts by one; the

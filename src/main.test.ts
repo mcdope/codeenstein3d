@@ -2896,6 +2896,7 @@ describe("main.ts — multiplayer connect flow", () => {
       getConnectionStats: (id: string) => Promise<{ rttMs: number | null } | null>;
       getMissedTickStats: () => { totalTicks: number; missedTicksByPlayer: Record<string, number> };
       getReconciliationCorrections: () => Record<string, { count: number; totalMagnitudeTiles: number }>;
+      getMultiplayerTelemetrySnapshot: (id: string) => { kills: number; score: number } | null;
     } {
       return (
         window as unknown as {
@@ -2922,6 +2923,7 @@ describe("main.ts — multiplayer connect flow", () => {
             getConnectionStats: (id: string) => Promise<{ rttMs: number | null } | null>;
             getMissedTickStats: () => { totalTicks: number; missedTicksByPlayer: Record<string, number> };
             getReconciliationCorrections: () => Record<string, { count: number; totalMagnitudeTiles: number }>;
+            getMultiplayerTelemetrySnapshot: (id: string) => { kills: number; score: number } | null;
           };
         }
       ).__codeensteinMultiplayerTestHooks;
@@ -3057,6 +3059,8 @@ describe("main.ts — multiplayer connect flow", () => {
         await expect(multiplayerHooks().getConnectionStats("host")).resolves.toBeNull();
         expect(multiplayerHooks().getMissedTickStats()).toEqual({ totalTicks: 0, missedTicksByPlayer: {} });
         expect(multiplayerHooks().getReconciliationCorrections()).toEqual({});
+        // Step 11 Phase 2a — same "no session yet" `?? null` fallback shape.
+        expect(multiplayerHooks().getMultiplayerTelemetrySnapshot("host")).toBeNull();
 
         const startButton = document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!;
         expect(startButton.hidden).toBe(false);
@@ -3121,6 +3125,12 @@ describe("main.ts — multiplayer connect flow", () => {
         // No reconciliation snapshot applied yet on the host side (it never
         // applies one to itself) — always empty.
         expect(hooks.getReconciliationCorrections()).toEqual({});
+        // Step 11 Phase 2a — a real session with `?testHooks=1` set has
+        // telemetry enabled, so this reaches the engine's own real snapshot
+        // (not the `?? null` fallback checked above) — a fresh player has 0
+        // kills (score isn't 0 — computeLevelScoreBreakdown grants baseline
+        // component(s) even before any kill).
+        expect(hooks.getMultiplayerTelemetrySnapshot("host")).toMatchObject({ kills: 0 });
       } finally {
         history.pushState(null, "", "/");
       }
