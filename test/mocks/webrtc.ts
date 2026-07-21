@@ -76,6 +76,22 @@ export class FakeRTCPeerConnection extends EventTarget {
   localDescription: RTCSessionDescriptionInit | null = null;
   remoteDescription: RTCSessionDescriptionInit | null = null;
   readonly createdDataChannels: FakeRTCDataChannel[] = [];
+  /** Test-only: how many times `close()` was called — regression coverage
+   * for "does the caller close a partially-set-up connection on failure"
+   * (see `webrtcConnection.test.ts`'s "closes the peer connection" tests)
+   * reads this rather than adding a whole `connectionState` model nothing
+   * else under test needs. */
+  closeCallCount = 0;
+
+  /** Test-only rejection-injection hooks — set any of these to an `Error`
+   * before calling the function under test to make that specific awaited
+   * method reject instead of resolving, without touching any other method.
+   * Unset (`undefined`, the default) means "resolve as normal" — existing
+   * tests that never touch these are completely unaffected. */
+  createOfferError?: Error;
+  createAnswerError?: Error;
+  setLocalDescriptionError?: Error;
+  setRemoteDescriptionError?: Error;
 
   constructor(readonly config?: RTCConfiguration) {
     super();
@@ -89,24 +105,31 @@ export class FakeRTCPeerConnection extends EventTarget {
   }
 
   async createOffer(): Promise<RTCSessionDescriptionInit> {
+    if (this.createOfferError) throw this.createOfferError;
     return { type: "offer", sdp: `offer-sdp:${this.createdDataChannels.map((c) => c.label).join(",")}` };
   }
 
   async createAnswer(): Promise<RTCSessionDescriptionInit> {
+    if (this.createAnswerError) throw this.createAnswerError;
     return { type: "answer", sdp: "answer-sdp" };
   }
 
   async setLocalDescription(description: RTCSessionDescriptionInit): Promise<void> {
+    if (this.setLocalDescriptionError) throw this.setLocalDescriptionError;
     this.localDescription = description;
   }
 
   async setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> {
+    if (this.setRemoteDescriptionError) throw this.setRemoteDescriptionError;
     this.remoteDescription = description;
   }
 
   close(): void {
-    // No-op: nothing in this fake models `connectionState`/`iceConnectionState`
-    // transitions after close, since nothing under test reads them.
+    // Nothing in this fake models `connectionState`/`iceConnectionState`
+    // transitions after close, since nothing under test reads them — but
+    // whether `close()` was ever called at all is itself load-bearing (see
+    // `closeCallCount`'s doc comment above).
+    this.closeCallCount++;
   }
 
   /** Test-only: flips `iceGatheringState` to `"complete"` and dispatches the

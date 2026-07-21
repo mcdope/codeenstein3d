@@ -67,7 +67,14 @@ import type { EngineCarryover, EngineStats, PlayerId, RosterSnapshotEntry } from
 import { createSession, fetchSession, fetchSessionAsHost, postAnswer, updateSession } from "./multiplayer/signalingClient";
 import { fetchLobbyEntries } from "./multiplayer/lobby";
 import { createGuestAnswer, createHostOffer, waitForChannelsOpen } from "./multiplayer/webrtcConnection";
-import { SignalingError, type ConnectionState, type HostGuestLink, type LobbyEntry, type MultiplayerConnection } from "./multiplayer/types";
+import {
+  SignalingError,
+  type ConnectionState,
+  type HostGuestLink,
+  type LobbyEntry,
+  type MultiplayerConnection,
+  type SessionCreateResponse,
+} from "./multiplayer/types";
 import { runMultiplayerSessionAsHost, type FindNextLevel, type MultiplayerSessionHandle } from "./multiplayer/multiplayerSessionHost";
 import { runMultiplayerSessionAsGuest } from "./multiplayer/multiplayerSessionGuest";
 import type { SessionEndReason } from "./multiplayer/sessionEngine";
@@ -888,6 +895,17 @@ function activateMultiplayerSubtab(tab: MultiplayerSubtab): void {
 const MULTIPLAYER_ICE_GATHERING_TIMEOUT_MS = 10_000;
 const MULTIPLAYER_CHANNELS_OPEN_TIMEOUT_MS = 15_000;
 const MULTIPLAYER_HOST_POLL_INTERVAL_MS = 1_500;
+/** How many times the host re-offers under the same code/hostToken (via
+ * `signalingClient.updateSession()`) after `setRemoteDescription`/
+ * `waitForChannelsOpen` fails — the shape a bad/hijacked answer takes (see
+ * `doc/dev/multiplayer-server-spec.md`'s `409 already_answered` guidance:
+ * "ask the host for a fresh code/offer rather than retry"). Any client who
+ * knows a public session's code can race the real guest with a garbage
+ * answer; without this, that permanently denies the real second player.
+ * Bounded so a fast automated racer sending garbage answers repeatedly can't
+ * wedge the host in an infinite retry loop — once exhausted, the existing
+ * error-surfacing behavior takes over exactly as before this fix. */
+const MULTIPLAYER_BAD_ANSWER_RETRY_LIMIT = 3;
 
 let multiplayerConnectionState: ConnectionState = "idle";
 /** The live connection once "connected" — later steps (netcode core) will
@@ -1028,50 +1046,71 @@ async function armNextGuestSlot(generation: number, signal: AbortSignal): Promis
 
   let guestPeerConnection: RTCPeerConnection | null = null;
   try {
-    const { peerConnection, channels, offerSdp } = await createHostOffer(MULTIPLAYER_ICE_GATHERING_TIMEOUT_MS);
-    guestPeerConnection = peerConnection;
-    if (generation !== multiplayerConnectionGeneration || signal.aborted) {
-      peerConnection.close();
+    // Loops only on a bad/hijacked answer (the inner try/catch below, around
+    // setRemoteDescription/waitForChannelsOpen) — every other failure
+    // (createHostOffer, updateSession, the poll itself) falls straight
+    // through to the outer catch, unchanged from before this fix.
+    for (let attempt = 1; ; attempt++) {
+      const { peerConnection, channels, offerSdp } = await createHostOffer(MULTIPLAYER_ICE_GATHERING_TIMEOUT_MS);
+      guestPeerConnection = peerConnection;
+      if (generation !== multiplayerConnectionGeneration || signal.aborted) {
+        peerConnection.close();
+        return;
+      }
+
+      await updateSession(
+        code,
+        hostToken,
+        {
+          offer: offerSdp,
+          public: multiplayerPublicCheckbox.checked,
+          displayName: multiplayerDisplayNameInput.value.trim() || undefined,
+          playerCount: links.size + 1,
+          /* v8 ignore next */
+          campaignName: workspaceRootName ?? "unknown",
+        },
+        signal,
+      );
+      if (generation !== multiplayerConnectionGeneration || signal.aborted) {
+        peerConnection.close();
+        return;
+      }
+
+      setMultiplayerStatus(`Waiting for another guest to join with code ${code}…`, false);
+      const answer = await pollForHostAnswer(code, hostToken, generation, signal);
+      if (generation !== multiplayerConnectionGeneration || signal.aborted || answer === null) {
+        peerConnection.close();
+        return;
+      }
+
+      try {
+        await peerConnection.setRemoteDescription({ type: "answer", sdp: answer });
+        await waitForChannelsOpen(channels, MULTIPLAYER_CHANNELS_OPEN_TIMEOUT_MS);
+      } catch (err) {
+        // A bad/hijacked answer (see `MULTIPLAYER_BAD_ANSWER_RETRY_LIMIT`'s
+        // doc comment) — re-offer under the same code/hostToken instead of
+        // abandoning this guest slot, unless the retry budget is exhausted,
+        // in which case fall through to the outer catch exactly as before.
+        peerConnection.close();
+        if (attempt >= MULTIPLAYER_BAD_ANSWER_RETRY_LIMIT) throw err;
+        console.warn(
+          `[multiplayer] bad/hijacked answer while arming the next guest slot (attempt ${attempt}/${MULTIPLAYER_BAD_ANSWER_RETRY_LIMIT}), re-offering under the same code:`,
+          err,
+        );
+        continue;
+      }
+      if (generation !== multiplayerConnectionGeneration || signal.aborted) {
+        peerConnection.close();
+        return;
+      }
+
+      links.set(guestPlayerId(links.size + 1), { peerConnection, channels });
+      updateMultiplayerGuestCountDisplay();
+      setMultiplayerStatus(`Connected — ${links.size + 1}/${maxPlayers} players.`, false);
+
+      void armNextGuestSlot(generation, signal); // arm the next slot, if any remain
       return;
     }
-
-    await updateSession(
-      code,
-      hostToken,
-      {
-        offer: offerSdp,
-        public: multiplayerPublicCheckbox.checked,
-        displayName: multiplayerDisplayNameInput.value.trim() || undefined,
-        playerCount: links.size + 1,
-        /* v8 ignore next */
-        campaignName: workspaceRootName ?? "unknown",
-      },
-      signal,
-    );
-    if (generation !== multiplayerConnectionGeneration || signal.aborted) {
-      peerConnection.close();
-      return;
-    }
-
-    setMultiplayerStatus(`Waiting for another guest to join with code ${code}…`, false);
-    const answer = await pollForHostAnswer(code, hostToken, generation, signal);
-    if (generation !== multiplayerConnectionGeneration || signal.aborted || answer === null) {
-      peerConnection.close();
-      return;
-    }
-
-    await peerConnection.setRemoteDescription({ type: "answer", sdp: answer });
-    await waitForChannelsOpen(channels, MULTIPLAYER_CHANNELS_OPEN_TIMEOUT_MS);
-    if (generation !== multiplayerConnectionGeneration || signal.aborted) {
-      peerConnection.close();
-      return;
-    }
-
-    links.set(guestPlayerId(links.size + 1), { peerConnection, channels });
-    updateMultiplayerGuestCountDisplay();
-    setMultiplayerStatus(`Connected — ${links.size + 1}/${maxPlayers} players.`, false);
-
-    void armNextGuestSlot(generation, signal); // arm the next slot, if any remain
   } catch (err) {
     guestPeerConnection?.close();
     // Non-fatal: the host can still Start Session with however many guests
@@ -1097,16 +1136,25 @@ async function createMultiplayerSession(): Promise<void> {
   // `RTCPeerConnection` sitting open with nothing left driving it forward.
   let hostPeerConnection: RTCPeerConnection | null = null;
   let connected = false;
+  const maxPlayers = Number(multiplayerMaxPlayersSelect.value);
+  const displayName = multiplayerDisplayNameInput.value.trim();
+  // Set once the very first `createSession()` call resolves — every retry
+  // after a bad/hijacked answer (see `MULTIPLAYER_BAD_ANSWER_RETRY_LIMIT`'s
+  // doc comment) republishes under this SAME code/hostToken via
+  // `updateSession()` instead of creating a brand new session.
+  let session: SessionCreateResponse | null = null;
 
   try {
-    const { peerConnection, channels, offerSdp } = await createHostOffer(MULTIPLAYER_ICE_GATHERING_TIMEOUT_MS);
-    hostPeerConnection = peerConnection;
-    if (generation !== multiplayerConnectionGeneration) return;
+    // Loops only on a bad/hijacked answer (the inner try/catch below, around
+    // setRemoteDescription/waitForChannelsOpen) — every other failure
+    // (createHostOffer, createSession/updateSession, the poll itself) falls
+    // straight through to the outer catch, unchanged from before this fix.
+    for (let attempt = 1; ; attempt++) {
+      const { peerConnection, channels, offerSdp } = await createHostOffer(MULTIPLAYER_ICE_GATHERING_TIMEOUT_MS);
+      hostPeerConnection = peerConnection;
+      if (generation !== multiplayerConnectionGeneration) return;
 
-    const maxPlayers = Number(multiplayerMaxPlayersSelect.value);
-    const displayName = multiplayerDisplayNameInput.value.trim();
-    const session = await createSession(
-      {
+      const sessionRequest = {
         offer: offerSdp,
         public: multiplayerPublicCheckbox.checked,
         displayName: displayName || undefined,
@@ -1117,37 +1165,54 @@ async function createMultiplayerSession(): Promise<void> {
         // changing, not a reachable case today.
         /* v8 ignore next */
         campaignName: workspaceRootName ?? "unknown",
-      },
-      signal,
-    );
-    if (generation !== multiplayerConnectionGeneration) return;
+      };
+      session = session
+        ? await updateSession(session.code, session.hostToken, sessionRequest, signal)
+        : await createSession(sessionRequest, signal);
+      if (generation !== multiplayerConnectionGeneration) return;
 
-    multiplayerHostCode.textContent = session.code;
-    multiplayerHostCode.hidden = false;
-    multiplayerConnectionState = "awaiting-answer";
-    setMultiplayerStatus(`Waiting for a guest to join with code ${session.code}…`, false);
+      multiplayerHostCode.textContent = session.code;
+      multiplayerHostCode.hidden = false;
+      multiplayerConnectionState = "awaiting-answer";
+      setMultiplayerStatus(`Waiting for a guest to join with code ${session.code}…`, false);
 
-    const answer = await pollForHostAnswer(session.code, session.hostToken, generation, signal);
-    if (generation !== multiplayerConnectionGeneration) return;
-    // `answer` is guaranteed non-null here — see `pollForHostAnswer`'s doc
-    // comment for why a null result always accompanies a generation change,
-    // which the check above already caught.
+      const answer = await pollForHostAnswer(session.code, session.hostToken, generation, signal);
+      if (generation !== multiplayerConnectionGeneration) return;
+      // `answer` is guaranteed non-null here — see `pollForHostAnswer`'s doc
+      // comment for why a null result always accompanies a generation change,
+      // which the check above already caught.
 
-    multiplayerConnectionState = "connecting";
-    setMultiplayerStatus("Guest found — establishing connection…", false);
-    await peerConnection.setRemoteDescription({ type: "answer", sdp: answer! });
-    await waitForChannelsOpen(channels, MULTIPLAYER_CHANNELS_OPEN_TIMEOUT_MS);
-    if (generation !== multiplayerConnectionGeneration) return;
+      multiplayerConnectionState = "connecting";
+      setMultiplayerStatus("Guest found — establishing connection…", false);
+      try {
+        await peerConnection.setRemoteDescription({ type: "answer", sdp: answer! });
+        await waitForChannelsOpen(channels, MULTIPLAYER_CHANNELS_OPEN_TIMEOUT_MS);
+      } catch (err) {
+        // A bad/hijacked answer (see `MULTIPLAYER_BAD_ANSWER_RETRY_LIMIT`'s
+        // doc comment) — re-offer under the same code/hostToken instead of
+        // abandoning the session, unless the retry budget is exhausted, in
+        // which case fall through to the outer catch exactly as before.
+        peerConnection.close();
+        if (attempt >= MULTIPLAYER_BAD_ANSWER_RETRY_LIMIT) throw err;
+        console.warn(
+          `[multiplayer] bad/hijacked answer (attempt ${attempt}/${MULTIPLAYER_BAD_ANSWER_RETRY_LIMIT}), re-offering under the same code:`,
+          err,
+        );
+        continue;
+      }
+      if (generation !== multiplayerConnectionGeneration) return;
 
-    const links: Map<PlayerId, HostGuestLink> = new Map([[guestPlayerId(1), { peerConnection, channels }]]);
-    activeMultiplayerConnection = { role: "host", code: session.code, hostToken: session.hostToken, maxPlayers, links };
-    multiplayerConnectionState = "connected";
-    setMultiplayerStatus("Connected.", false);
-    multiplayerStartSessionButton.hidden = false;
-    updateMultiplayerGuestCountDisplay();
-    connected = true;
+      const links: Map<PlayerId, HostGuestLink> = new Map([[guestPlayerId(1), { peerConnection, channels }]]);
+      activeMultiplayerConnection = { role: "host", code: session.code, hostToken: session.hostToken, maxPlayers, links };
+      multiplayerConnectionState = "connected";
+      setMultiplayerStatus("Connected.", false);
+      multiplayerStartSessionButton.hidden = false;
+      updateMultiplayerGuestCountDisplay();
+      connected = true;
 
-    void armNextGuestSlot(generation, signal); // start looking for guest 2, if maxPlayers allows it
+      void armNextGuestSlot(generation, signal); // start looking for guest 2, if maxPlayers allows it
+      return;
+    }
   } catch (err) {
     if (generation === multiplayerConnectionGeneration) {
       multiplayerConnectionState = "error";
@@ -1375,6 +1440,13 @@ async function startMultiplayerSessionAsHost(): Promise<void> {
       onMultiplayerSessionEnded,
       findNextMultiplayerLevel(initialLevelPath),
     );
+    // Only sent now that `runMultiplayerSessionAsHost` (synchronous — see its
+    // own doc comment) has already assigned `worker.onmessage`, the real
+    // tick-receiving handler — `tickClockWorker.ts` doesn't start its
+    // interval until it receives this, making the "worker message arrives
+    // before any listener is attached" race structurally impossible instead
+    // of just unlikely.
+    worker.postMessage({ type: "start" });
   } catch (err) {
     console.error("[multiplayer] Failed to start session:", err);
     setMultiplayerStatus(err instanceof Error ? err.message : "Failed to start the multiplayer session.", true);

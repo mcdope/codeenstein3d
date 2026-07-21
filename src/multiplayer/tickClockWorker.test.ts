@@ -2,11 +2,15 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 /**
- * `tickClockWorker.ts` runs its scheduling side effects at module-load time
- * (it's a Worker entry point, not a set of exported functions) — every test
- * here stubs `self`/the clock *before* dynamically importing the module,
- * and resets modules between tests so each gets its own fresh
- * `TickAccumulator` instance.
+ * `tickClockWorker.ts` is a Worker entry point, not a set of exported
+ * functions — every test here stubs `self`/the clock *before* dynamically
+ * importing the module, and resets modules between tests so each gets its
+ * own fresh module-level state. Since step 3's "no message before listener"
+ * fix, the module no longer starts its `setInterval`/`TickAccumulator` at
+ * import time: it waits for an inbound `{type: "start"}` message dispatched
+ * via `self`'s (stubbed) `addEventListener("message", ...)` — every test
+ * that expects ticks calls `sendStart()` after importing, mirroring
+ * `main.ts`'s own "send start only after onmessage is assigned" sequencing.
  *
  * `performance.now()` is mocked with a manually-driven `now` variable rather
  * than delegating to `Date.now()`: `Date.now()` truncates to whole
@@ -27,6 +31,15 @@ const FIXED_DT_MS = FIXED_DT * 1000;
 describe("tickClockWorker", () => {
   let postMessage: ReturnType<typeof vi.fn>;
   let now: number;
+  let messageListeners: Array<(event: MessageEvent) => void>;
+
+  /** Dispatches the inbound `{type: "start"}` message the same way a real
+   * `Worker`'s message event would — via whichever listener(s)
+   * `self.addEventListener("message", ...)` registered, not by calling
+   * anything module-internal directly (there's nothing exported to call). */
+  function sendStart(): void {
+    for (const listener of messageListeners) listener({ data: { type: "start" } } as MessageEvent);
+  }
 
   beforeEach(() => {
     vi.resetModules();
@@ -34,7 +47,13 @@ describe("tickClockWorker", () => {
     now = 0;
     vi.spyOn(performance, "now").mockImplementation(() => now);
     postMessage = vi.fn();
-    vi.stubGlobal("self", { postMessage });
+    messageListeners = [];
+    vi.stubGlobal("self", {
+      postMessage,
+      addEventListener: (type: string, listener: (event: MessageEvent) => void) => {
+        if (type === "message") messageListeners.push(listener);
+      },
+    });
   });
 
   afterEach(() => {
@@ -43,15 +62,24 @@ describe("tickClockWorker", () => {
     vi.restoreAllMocks();
   });
 
-  it("posts nothing before a full tick interval has elapsed", async () => {
+  it("posts nothing at all before the start message is sent", async () => {
     await import("./tickClockWorker");
+    now += FIXED_DT_MS * 5;
+    await vi.advanceTimersByTimeAsync(FIXED_DT_MS * 5);
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+
+  it("posts nothing before a full tick interval has elapsed after starting", async () => {
+    await import("./tickClockWorker");
+    sendStart();
     now += FIXED_DT_MS / 2;
     await vi.advanceTimersByTimeAsync(FIXED_DT_MS / 2);
     expect(postMessage).not.toHaveBeenCalled();
   });
 
-  it("posts one tick message per interval at the fixed tick rate, with incrementing tick indices", async () => {
+  it("posts one tick message per interval at the fixed tick rate, with incrementing tick indices, only once started", async () => {
     await import("./tickClockWorker");
+    sendStart();
     now += FIXED_DT_MS;
     await vi.advanceTimersByTimeAsync(FIXED_DT_MS);
     expect(postMessage).toHaveBeenNthCalledWith(1, { type: "tick", tick: 0 });
@@ -69,6 +97,7 @@ describe("tickClockWorker", () => {
     // further models that precisely, without depending on how many real
     // `setInterval` firings a bulk fake-timer jump happens to produce.
     await import("./tickClockWorker");
+    sendStart();
     now += FIXED_DT_MS * 3;
     await vi.advanceTimersByTimeAsync(FIXED_DT_MS);
     expect(postMessage.mock.calls.map((call) => call[0])).toEqual([
@@ -76,5 +105,13 @@ describe("tickClockWorker", () => {
       { type: "tick", tick: 1 },
       { type: "tick", tick: 2 },
     ]);
+  });
+
+  it("ignores a message with an unrecognized type instead of starting the interval", async () => {
+    await import("./tickClockWorker");
+    for (const listener of messageListeners) listener({ data: { type: "bogus" } } as MessageEvent);
+    now += FIXED_DT_MS * 5;
+    await vi.advanceTimersByTimeAsync(FIXED_DT_MS * 5);
+    expect(postMessage).not.toHaveBeenCalled();
   });
 });
