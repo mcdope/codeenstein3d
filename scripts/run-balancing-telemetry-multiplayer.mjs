@@ -2,15 +2,16 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 /**
- * Multiplayer sibling of `run-balancing-telemetry.mjs` — step 11 (Phase 1) of
- * `doc/dev/multiplayer-balancing-telemetry-spec.md`. Drives N (2-4)
- * simultaneous `MultiplayerBot` instances through one real, live multiplayer
- * session per attempt, against the spec's own dedicated isolated signaling +
- * dev server pair (`scripts/lib/multiplayerTestServers.mjs`), and writes
- * aggregated telemetry to `multiplayer_balancing_telemetry.json`.
+ * Multiplayer sibling of `run-balancing-telemetry.mjs` — step 11
+ * (`doc/dev/multiplayer-balancing-telemetry-spec.md`), Phase 1 + Phase 2b.
+ * Drives N (2-4) simultaneous `MultiplayerBot` instances through one real,
+ * live multiplayer session per attempt, against the spec's own dedicated
+ * isolated signaling + dev server pair
+ * (`scripts/lib/multiplayerTestServers.mjs`), and writes aggregated
+ * telemetry to `multiplayer_balancing_telemetry.json`.
  *
- * **Phase 1 MVP scope, deliberately narrower than the full spec** (later
- * phases fill these in — see `multiplayer-step11-state.md`):
+ * **Deliberately narrower than the full spec** (later phases fill these in
+ * — see `multiplayer-step11-state.md`):
  *  - **One bundled level per run, not the full campaign.** Multiplayer level
  *    transition (all players reaching the exit, the host-authoritative
  *    countdown, the next level generating) is already covered on its own by
@@ -29,8 +30,13 @@
  *    kill estimate — not per-player-attributable without Phase 2a), plus its
  *    own fps/tick-skew sampling (the same technique
  *    `verify-multiplayer-multiguest.mjs` already uses informationally).
- *  - **`netcodeHealth` (ping/RTT, missed ticks, reconciliation corrections)
- *    is Phase 2b** — not present in this report yet.
+ *  - **`netcodeHealth` (RTT, missed-tick fraction, reconciliation
+ *    corrections) is real, from Phase 2b's session-handle hooks** —
+ *    `getConnectionStats`/`getMissedTickStats`/`getReconciliationCorrections`
+ *    (`multiplayerSessionHost.ts`/`Guest.ts`). Reconciliation corrections are
+ *    a guest-only signal (the host is authoritative, never applies a
+ *    snapshot to itself) — a host's own `reconciliationCorrectionsByPlayer`
+ *    entries are always `{count: 0, avgMagnitudeTiles: 0}`, not missing data.
  *  - **Uniform bot-skill profiles only** (one `PROFILES` entry applied to
  *    every bot in a run) — the curated mixed-skill combos are Phase 3.
  *
@@ -125,13 +131,15 @@ async function sampleFps(page, durationMs) {
 
 /**
  * Runs a background polling loop alongside the bots' own driving, gathering
- * three real-time-only signals no virtual-clock replay could substitute for:
+ * four real-time-only signals no virtual-clock replay could substitute for:
  * real render fps per player, real simulation-tick skew between every pair
  * of peers (`verify-multiplayer-multiguest.mjs`'s own `sampleTickSkewMs`
- * technique, generalized to every pair instead of a fixed 3-peer set), and
- * the minimum `healthFraction` each bot is ever observed at (a coarse
- * "how close did this run come to a death" proxy — `minHealthReached` proper
- * is Phase 2a's `TelemetryState`, not available yet). Call `stop()` once the
+ * technique, generalized to every pair instead of a fixed 3-peer set), the
+ * minimum `healthFraction` each bot is ever observed at (a coarse "how close
+ * did this run come to a death" proxy — `minHealthReached` proper is Phase
+ * 2a's `TelemetryState`, not available yet), and — new in step 11 Phase 2b —
+ * round-trip time on every real link this session actually has (star
+ * topology: host<->each guest, never guest<->guest). Call `stop()` once the
  * bots are done driving; it resolves only after the loop's current iteration
  * finishes, so the returned samples are never read mid-append.
  */
@@ -146,6 +154,24 @@ function createHealthPerfSampler(pages, playerIds) {
       pairs.push({ key, a: i, b: j });
       tickSkewSamples[key] = [];
     }
+  }
+
+  // RTT links (Phase 2b): star topology — bootstrapMultiplayerSession()
+  // always orders playerIds ["host", ...guests], so index 0 is always the
+  // host's own page. One directional read per real link, both ways (a
+  // guest's own view of its link toward the host is a genuinely different
+  // measurement point than the host's view of that same link, not a
+  // redundant duplicate — see connectionStats.ts's own doc comment on why
+  // there's no single "true" RTT).
+  const rttMsSamples = {};
+  const rttLinks = [];
+  for (let i = 1; i < playerIds.length; i++) {
+    const hostToGuestKey = `${playerIds[0]}->${playerIds[i]}`;
+    const guestToHostKey = `${playerIds[i]}->${playerIds[0]}`;
+    rttLinks.push({ key: hostToGuestKey, readerPageIndex: 0, targetId: playerIds[i] });
+    rttLinks.push({ key: guestToHostKey, readerPageIndex: i, targetId: playerIds[0] });
+    rttMsSamples[hostToGuestKey] = [];
+    rttMsSamples[guestToHostKey] = [];
   }
 
   let stopped = false;
@@ -175,6 +201,18 @@ function createHealthPerfSampler(pages, playerIds) {
           tickSkewSamples[key].push(Math.abs(ticks[a] - ticks[b]) * (1000 / 30)); // TICK_RATE_HZ
         }
       }
+
+      const rtts = await Promise.all(
+        rttLinks.map(({ readerPageIndex, targetId }) =>
+          pages[readerPageIndex]
+            .evaluate((id) => window.__codeensteinMultiplayerTestHooks?.getConnectionStats(id), targetId)
+            .then((stats) => stats?.rttMs ?? null)
+            .catch(() => null),
+        ),
+      );
+      rtts.forEach((rttMs, i) => {
+        if (typeof rttMs === "number") rttMsSamples[rttLinks[i].key].push(rttMs);
+      });
     }
   })();
 
@@ -182,11 +220,34 @@ function createHealthPerfSampler(pages, playerIds) {
     fpsSamples,
     healthFractionMin,
     tickSkewSamples,
+    rttMsSamples,
     async stop() {
       stopped = true;
       await loopPromise;
     },
   };
+}
+
+/**
+ * Reads the two cumulative, session-lifetime netcode counters
+ * (`getMissedTickStats`/`getReconciliationCorrections` — step 11 Phase 2b)
+ * once per page, at the end of an attempt's own driving — unlike fps/RTT/
+ * tick-skew above, these are running totals, not point-in-time samples, so
+ * there's nothing gained by polling them throughout the run, only a read
+ * right before the session closes.
+ */
+async function readNetcodeCounters(pages, playerIds) {
+  const missedTickStats = await Promise.all(
+    pages.map((page) =>
+      page.evaluate(() => window.__codeensteinMultiplayerTestHooks?.getMissedTickStats() ?? { totalTicks: 0, missedTicksByPlayer: {} }).catch(
+        () => ({ totalTicks: 0, missedTicksByPlayer: {} }),
+      ),
+    ),
+  );
+  const reconciliationCorrections = await Promise.all(
+    pages.map((page) => page.evaluate(() => window.__codeensteinMultiplayerTestHooks?.getReconciliationCorrections() ?? {}).catch(() => ({}))),
+  );
+  return Object.fromEntries(playerIds.map((id, i) => [id, { missedTicks: missedTickStats[i], reconciliationCorrections: reconciliationCorrections[i] }]));
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +337,11 @@ async function runOneAttempt(browser, devServerUrl, profileName, profile, diffic
     const enemiesAfter = await pages[0].evaluate(() => window.__codeensteinMultiplayerTestHooks.getEnemiesSnapshot()).catch(() => enemiesBefore);
     const aliveAfter = enemiesAfter.filter((e) => e.alive).length;
 
+    // Read once, right before teardown — see readNetcodeCounters's own doc
+    // comment for why these two are a single end-of-run read, unlike the
+    // sampler's own point-in-time polling above.
+    const netcodeCounters = await readNetcodeCounters(pages, playerIds);
+
     const outcomes = perPlayer.map((p) => p.outcome);
     const teamOutcome = outcomes.every((o) => o === "reachedExit")
       ? "allReachedExit"
@@ -296,6 +362,8 @@ async function runOneAttempt(browser, devServerUrl, profileName, profile, diffic
       fpsSamples: sampler.fpsSamples,
       healthFractionMin: sampler.healthFractionMin,
       tickSkewSamples: sampler.tickSkewSamples,
+      rttMsSamples: sampler.rttMsSamples,
+      netcodeCounters,
     };
   } catch (err) {
     // Same discarded-non-qualifying-attempt shape as
@@ -357,6 +425,46 @@ function buildComboOutput(combo) {
     );
   }
 
+  // netcodeHealth (Phase 2b) — RTT is a point-in-time sample like fps/tick-
+  // skew above (same spread() aggregation); missed-tick fraction and
+  // reconciliation corrections are cumulative session-lifetime counters
+  // (readNetcodeCounters's own doc comment), summed across qualifying runs
+  // rather than averaged per-run, so one very short run can't dilute a real
+  // problem a longer run surfaced.
+  const rttMsByLink = {};
+  for (const key of Object.keys(qualifyingRuns[0]?.rttMsSamples ?? {})) {
+    rttMsByLink[key] = spread(
+      qualifyingRuns.flatMap((r) => r.rttMsSamples[key] ?? []),
+      "mean",
+    );
+  }
+  const missedTickFractionByPlayer = {};
+  const reconciliationCorrectionsByPlayer = {};
+  for (const id of playerIds) {
+    let missedTicks = 0;
+    let totalTicks = 0;
+    let correctionCount = 0;
+    let correctionMagnitudeTiles = 0;
+    for (const r of qualifyingRuns) {
+      const counters = r.netcodeCounters?.[id];
+      if (!counters) continue;
+      missedTicks += counters.missedTicks.missedTicksByPlayer[id] ?? 0;
+      totalTicks += counters.missedTicks.totalTicks ?? 0;
+      const corrections = counters.reconciliationCorrections[id];
+      if (corrections) {
+        correctionCount += corrections.count;
+        correctionMagnitudeTiles += corrections.totalMagnitudeTiles;
+      }
+    }
+    missedTickFractionByPlayer[id] = totalTicks > 0 ? missedTicks / totalTicks : 0;
+    reconciliationCorrectionsByPlayer[id] = {
+      count: correctionCount,
+      // Same "0 when nothing happened, not NaN from a 0/0 divide" shape
+      // spread()/missedTickFractionByPlayer above already use.
+      avgMagnitudeTiles: correctionCount > 0 ? correctionMagnitudeTiles / correctionCount : 0,
+    };
+  }
+
   return {
     attemptsUsed,
     qualifyingRunCount: qualifyingRuns.length,
@@ -376,6 +484,11 @@ function buildComboOutput(combo) {
     perf: {
       fpsByPlayer,
       tickSkewMsByPair,
+    },
+    netcodeHealth: {
+      rttMsByLink,
+      missedTickFractionByPlayer,
+      reconciliationCorrectionsByPlayer,
     },
   };
 }
@@ -403,7 +516,7 @@ async function main() {
   const output = {
     meta: {
       generatedAt: new Date().toISOString(),
-      scope: "Phase 1 MVP — one bundled demo-campaign level per run, coarse gameplay-health signals only. No full 7-category per-player telemetry (Phase 2a) or netcodeHealth (Phase 2b) yet — see doc/dev/multiplayer-balancing-telemetry-spec.md.",
+      scope: "Phase 1 + Phase 2b — one bundled demo-campaign level per run, coarse gameplay-health signals plus real netcodeHealth (RTT/missed-tick fraction/reconciliation corrections). No full 7-category per-player telemetry yet — that's Phase 2a — see doc/dev/multiplayer-balancing-telemetry-spec.md.",
       difficulties: DIFFICULTIES,
       playerCounts: PLAYER_COUNTS,
       profiles: PROFILES,

@@ -1578,6 +1578,11 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
           levelTime: number;
           distanceTraveled: number;
         } | null;
+        // Step 11 Phase 2b — real network/netcode-quality telemetry, see
+        // `MultiplayerSessionHandle`'s own doc comments on each.
+        getConnectionStats: (id: string) => Promise<{ rttMs: number | null } | null>;
+        getMissedTickStats: () => { totalTicks: number; missedTicksByPlayer: Record<string, number> };
+        getReconciliationCorrections: () => Record<string, { count: number; totalMagnitudeTiles: number }>;
       };
     }
   ).__codeensteinMultiplayerTestHooks = {
@@ -1668,6 +1673,11 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
     getDropsSnapshot: () => activeMultiplayerSession?.getDropsSnapshot() ?? [],
     getKeysSnapshot: () => activeMultiplayerSession?.getKeysSnapshot() ?? [],
     getBotPlayerState: (id) => activeMultiplayerSession?.getBotPlayerState(id) ?? null,
+    // Added in step 11 Phase 2b, for scripts/run-balancing-telemetry-multiplayer.mjs's
+    // netcodeHealth report section.
+    getConnectionStats: (id) => activeMultiplayerSession?.getConnectionStats(id) ?? Promise.resolve(null),
+    getMissedTickStats: () => activeMultiplayerSession?.getMissedTickStats() ?? { totalTicks: 0, missedTicksByPlayer: {} },
+    getReconciliationCorrections: () => activeMultiplayerSession?.getReconciliationCorrections() ?? {},
   };
 }
 

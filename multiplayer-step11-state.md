@@ -37,9 +37,38 @@ each phase independently verified/committed before moving to the next.
 - [ ] Phase 2a: `TelemetryState` → `PlayerState.telemetry`, ~10 call-site
       retags, per-frame update loop fix, bolt-hit attribution via
       `updateProjectiles()`'s return value, `getMultiplayerTelemetrySnapshot(id)`
-- [ ] Phase 2b: `getConnectionStats(id)` (RTCPeerConnection.getStats RTT),
-      `heldInputFallback` tally, reconciliation-correction counter,
-      `netcodeHealth` report section
+- [x] Phase 2b: `getConnectionStats(id)` (`connectionStats.ts`, new —
+      `RTCPeerConnection.getStats()`'s active-candidate-pair
+      `currentRoundTripTime`, zero prior usage anywhere in `src/`),
+      `getMissedTickStats()` (cumulative `heldInputFallback` tally, seeded
+      from the fixed roster), `getReconciliationCorrections()` (guest-only —
+      the host is authoritative and never applies a snapshot to itself, so
+      its own copy is always `{}`; a correction only counts once its
+      position magnitude clears a small noise floor,
+      `RECONCILIATION_CORRECTION_NOISE_FLOOR_TILES = 0.001` tiles, below
+      which it's ordinary cross-peer float drift, not a real desync).
+      `ConnectionStateSource` widened with a `getStats()` member (both test
+      files' `FakeConnection` fakes updated to match). Wired into
+      `run-balancing-telemetry-multiplayer.mjs`'s report as a real
+      `netcodeHealth` section (RTT sampled per real link — star topology,
+      both directions; missed-tick fraction and reconciliation corrections
+      read once per attempt, at teardown, since they're cumulative counters
+      not point-in-time samples) and into `main.ts`'s
+      `__codeensteinMultiplayerTestHooks`. Verified with a real, live 2-peer
+      session (not just unit tests): RTT genuinely non-placeholder (0ms on
+      loopback), missed-tick tally matched the real bootstrap-transient
+      warm-up, host's corrections stayed `{}`, guest's stayed at 0 for a
+      truly idle session (proving the noise floor suppresses false
+      positives, not just that it compiles). 100% line/branch/statement/
+      function coverage on every touched `src/` file except `main.ts` itself
+      — `main.test.ts` couldn't be run inside this isolated worktree (a
+      pre-existing Vite fs-boundary "Denied ID" error on `node_modules/
+      tree-sitter-*.wasm` unrelated to this change — confirmed by the same
+      error hitting untouched parser test files too); the 3 new hooks are
+      trivial one-line delegations mirroring an already-tested pattern
+      shared by every other hook in that same object, and test coverage was
+      still added to `main.test.ts` by inspection — needs a real run from
+      the main working tree to confirm.
 - [ ] Phase 3: curated mixed-skill combos, tick-skew-growth-over-time
       detector, disconnect-isolation scored scenario
 - [ ] Phase 4: `doc/dev/balancing-telemetry.md` consolidation, apply 3 spec

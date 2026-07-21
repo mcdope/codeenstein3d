@@ -2893,6 +2893,9 @@ describe("main.ts — multiplayer connect flow", () => {
       getDropsSnapshot: () => unknown[];
       getKeysSnapshot: () => unknown[];
       getBotPlayerState: (id: string) => { x: number; y: number; state: string } | null;
+      getConnectionStats: (id: string) => Promise<{ rttMs: number | null } | null>;
+      getMissedTickStats: () => { totalTicks: number; missedTicksByPlayer: Record<string, number> };
+      getReconciliationCorrections: () => Record<string, { count: number; totalMagnitudeTiles: number }>;
     } {
       return (
         window as unknown as {
@@ -2916,6 +2919,9 @@ describe("main.ts — multiplayer connect flow", () => {
             getDropsSnapshot: () => unknown[];
             getKeysSnapshot: () => unknown[];
             getBotPlayerState: (id: string) => { x: number; y: number; state: string } | null;
+            getConnectionStats: (id: string) => Promise<{ rttMs: number | null } | null>;
+            getMissedTickStats: () => { totalTicks: number; missedTicksByPlayer: Record<string, number> };
+            getReconciliationCorrections: () => Record<string, { count: number; totalMagnitudeTiles: number }>;
           };
         }
       ).__codeensteinMultiplayerTestHooks;
@@ -3046,6 +3052,11 @@ describe("main.ts — multiplayer connect flow", () => {
         expect(multiplayerHooks().getBotPlayerState("host")).toBeNull();
         expect(multiplayerHooks().getDropsSnapshot()).toEqual([]);
         expect(multiplayerHooks().getKeysSnapshot()).toEqual([]);
+        // Step 11 Phase 2b — same "no session yet" `?? fallback` shape as
+        // every getter above.
+        await expect(multiplayerHooks().getConnectionStats("host")).resolves.toBeNull();
+        expect(multiplayerHooks().getMissedTickStats()).toEqual({ totalTicks: 0, missedTicksByPlayer: {} });
+        expect(multiplayerHooks().getReconciliationCorrections()).toEqual({});
 
         const startButton = document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!;
         expect(startButton.hidden).toBe(false);
@@ -3096,6 +3107,20 @@ describe("main.ts — multiplayer connect flow", () => {
         expect(hooks.getBotPlayerState("host")).toMatchObject({ state: "playing" });
         expect(Array.isArray(hooks.getDropsSnapshot())).toBe(true);
         expect(Array.isArray(hooks.getKeysSnapshot())).toBe(true);
+        // Step 11 Phase 2b — a real session now exists, so these reach the
+        // session handle's own real implementation, not the `?? fallback`
+        // checked above. No real RTCPeerConnection in this test environment
+        // (FakeConnection-equivalent below), so getConnectionStats resolves
+        // null rather than a real rttMs — still proves the hook itself wires
+        // through to a live session instead of short-circuiting.
+        await expect(hooks.getConnectionStats("host")).resolves.toBeNull();
+        // Tick 0's own bootstrap transient (same phenomenon
+        // multiplayerSessionHost.test.ts's own "bootstrap transient" test
+        // documents) — both players missed their real input for this tick.
+        expect(hooks.getMissedTickStats()).toEqual({ totalTicks: 1, missedTicksByPlayer: { "guest-1": 1, host: 1 } });
+        // No reconciliation snapshot applied yet on the host side (it never
+        // applies one to itself) — always empty.
+        expect(hooks.getReconciliationCorrections()).toEqual({});
       } finally {
         history.pushState(null, "", "/");
       }
