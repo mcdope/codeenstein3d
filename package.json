@@ -53,7 +53,7 @@
     "tree-sitter-typescript": "^0.23.2",
     "typescript": "^7.0.2",
     "vite": "^6.0.0",
-    "vitest": "3.2.7"
+    "vitest": "4.1.10"
   },
   "dependencies": {
     "web-tree-sitter": "^0.26.10"
