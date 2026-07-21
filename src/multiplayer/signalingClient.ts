@@ -9,14 +9,63 @@
  * throws a typed `SignalingError` on any non-2xx response, mapping the
  * server's `{"error": "<code>"}` body rather than making callers sniff
  * status codes or strings themselves.
+ *
+ * Every 2xx response body is also runtime-shape-checked before being trusted
+ * as `T` (`requestJson`'s optional `isValid` guard) — the server is a
+ * separate deployable (`scripts/multiplayer-server.mjs`) and a malformed
+ * field (e.g. `offer`/`answer` not a string) must not flow straight into raw
+ * WebRTC calls like `peerConnection.setRemoteDescription()` elsewhere, which
+ * would throw an untyped browser-level error instead of the typed
+ * `SignalingError` the rest of the UI's error-messaging is built around. A
+ * shape mismatch reuses the `"internal_error"` code — the same bucket
+ * `parseErrorBody` already falls back to for a non-JSON error body — since
+ * `SignalingErrorCode` is a closed union of the server's own documented error
+ * codes, not a place to invent a new one for a client-side shape check.
  */
 import { SignalingError, type SignalingErrorCode } from "./types";
 import type {
+  LobbyEntry,
   LobbyResponse,
   SessionCreateRequest,
   SessionCreateResponse,
   SessionGetResponse,
 } from "./types";
+
+function isSessionCreateResponse(body: unknown): body is SessionCreateResponse {
+  if (typeof body !== "object" || body === null) return false;
+  const b = body as Record<string, unknown>;
+  return typeof b.code === "string" && typeof b.hostToken === "string" && typeof b.expiresAt === "number";
+}
+
+function isSessionGetResponse(body: unknown): body is SessionGetResponse {
+  if (typeof body !== "object" || body === null) return false;
+  const b = body as Record<string, unknown>;
+  return (
+    typeof b.code === "string" &&
+    typeof b.offer === "string" &&
+    (b.answer === null || typeof b.answer === "string") &&
+    typeof b.campaignName === "string" &&
+    (b.displayName === null || typeof b.displayName === "string") &&
+    typeof b.playerCount === "number"
+  );
+}
+
+function isLobbyEntry(entry: unknown): entry is LobbyEntry {
+  if (typeof entry !== "object" || entry === null) return false;
+  const e = entry as Record<string, unknown>;
+  return (
+    typeof e.code === "string" &&
+    (e.displayName === null || typeof e.displayName === "string") &&
+    typeof e.campaignName === "string" &&
+    typeof e.playerCount === "number"
+  );
+}
+
+function isLobbyResponse(body: unknown): body is LobbyResponse {
+  if (typeof body !== "object" || body === null) return false;
+  const b = body as Record<string, unknown>;
+  return Array.isArray(b.sessions) && b.sessions.every(isLobbyEntry);
+}
 
 /** Resolved lazily (not at module load) so importing this module never
  * throws — only actually trying to talk to the signaling server does, which
@@ -52,11 +101,16 @@ async function requestJson<T>(
   path: string,
   init: RequestInit,
   signal: AbortSignal,
+  isValid?: (body: unknown) => body is T,
 ): Promise<T> {
   const response = await fetch(`${getServerBaseUrl()}${path}`, { ...init, signal });
   if (!response.ok) throw await parseErrorBody(response);
   if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+  const body: unknown = await response.json();
+  if (isValid && !isValid(body)) {
+    throw new SignalingError("internal_error", response.status);
+  }
+  return body as T;
 }
 
 /** Creates a new session (host flow), publishing the offer under a
@@ -69,6 +123,7 @@ export function createSession(
     "/session",
     { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) },
     signal,
+    isSessionCreateResponse,
   );
 }
 
@@ -89,13 +144,14 @@ export function updateSession(
       body: JSON.stringify({ ...request, code, hostToken }),
     },
     signal,
+    isSessionCreateResponse,
   );
 }
 
 /** Guest read: fetches the offer for a code. No `hostToken` — subject to the
  * normal guess-sensitive rate budget. */
 export function fetchSession(code: string, signal: AbortSignal): Promise<SessionGetResponse> {
-  return requestJson<SessionGetResponse>(`/session/${encodeURIComponent(code)}`, {}, signal);
+  return requestJson<SessionGetResponse>(`/session/${encodeURIComponent(code)}`, {}, signal, isSessionGetResponse);
 }
 
 /** Host poll: fetches the same mailbox, but with `X-Host-Token` set — exempt
@@ -109,6 +165,7 @@ export function fetchSessionAsHost(
     `/session/${encodeURIComponent(code)}`,
     { headers: { "X-Host-Token": hostToken } },
     signal,
+    isSessionGetResponse,
   );
 }
 
@@ -123,5 +180,5 @@ export function postAnswer(code: string, answer: string, signal: AbortSignal): P
 
 /** Lists public sessions for the lobby browser dialog. */
 export function fetchLobby(signal: AbortSignal): Promise<LobbyResponse> {
-  return requestJson<LobbyResponse>("/lobby", {}, signal);
+  return requestJson<LobbyResponse>("/lobby", {}, signal, isLobbyResponse);
 }
