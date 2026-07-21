@@ -353,6 +353,12 @@ export function runMultiplayerSessionAsHost(
       links.get(guestId)?.peerConnection.removeEventListener("connectionstatechange", listener);
     }
     for (const timer of graceTimers.values()) clearTimeout(timer);
+    // Detached directly here, not left to `startLevel()`'s own `hasStarted`
+    // guard (which only ever fires on a *later* `startLevel()` call) —
+    // the "campaign-complete" ending never calls `startLevel()` again, so
+    // without this the sampler's window/document/canvas listeners would
+    // otherwise leak forever past session end.
+    localSampler?.detach();
   };
 
   // Assigned synchronously by `startLevel(currentResult)` a few lines below,

@@ -15,6 +15,7 @@ import type {
   LevelTransitionMapChunkMessage,
   LevelTransitionMapEndMessage,
 } from "./levelTransitionTypes";
+import { LocalInputSampler } from "./localInputSampler";
 import { DISCONNECT_GRACE_MS } from "./netcodeConstants";
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
 import type { PlayerSnapshot, ReconciliationSnapshotMessage } from "./reconciliationTypes";
@@ -525,6 +526,22 @@ describe("runMultiplayerSessionAsGuest", () => {
 
       expect(onSessionEnded).toHaveBeenCalledTimes(1);
       expect(onSessionEnded.mock.calls[0][1]).toBe("host-disconnected");
+    });
+
+    it("detaches the local input sampler on the 'host-disconnected' ending, which never calls startLevel() again (finding 3)", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const connection = new FakeConnection();
+      const onSessionEnded = vi.fn();
+      const detachSpy = vi.spyOn(LocalInputSampler.prototype, "detach");
+      runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult(), onSessionEnded, connection);
+
+      connection.setState("disconnected");
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS);
+
+      expect(onSessionEnded).toHaveBeenCalledTimes(1);
+      expect(detachSpy).toHaveBeenCalled();
+      detachSpy.mockRestore();
     });
 
     it("does not fire before the grace period has fully elapsed", () => {

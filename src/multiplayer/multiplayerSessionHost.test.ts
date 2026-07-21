@@ -9,6 +9,7 @@ import type { EngineCarryover, PlayerId } from "../engine/engine";
 import { COUNTDOWN_TICKS } from "../engine/transitionConstants";
 import type { GameMap, Tile } from "../map/types";
 import type { LevelTransitionAckMessage, LevelTransitionMessage } from "./levelTransitionTypes";
+import { LocalInputSampler } from "./localInputSampler";
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
 import { DISCONNECT_GRACE_MS, RECONCILE_INTERVAL_TICKS, TRANSITION_ACK_TIMEOUT_MS } from "./netcodeConstants";
 import type { ReconciliationSnapshotMessage } from "./reconciliationTypes";
@@ -631,6 +632,23 @@ describe("runMultiplayerSessionAsHost", () => {
 
       expect(onSessionEnded.mock.calls[0][1]).toBe("campaign-complete");
       expect(worker.terminate).toHaveBeenCalledTimes(1);
+    });
+
+    it("detaches the local input sampler on the 'campaign-complete' ending, not just a level transition (finding 3)", async () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const detachSpy = vi.spyOn(LocalInputSampler.prototype, "detach");
+      const onSessionEnded = vi.fn();
+      // No findNextLevel provided — the fallback path ends with
+      // "campaign-complete" directly, never calling startLevel() again, so
+      // the only place left to detach the sampler is teardown() itself.
+      runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map: winMap() }), worker, onSessionEnded);
+
+      driveToWin(worker);
+      await vi.waitFor(() => expect(onSessionEnded).toHaveBeenCalledTimes(1));
+
+      expect(detachSpy).toHaveBeenCalled();
+      detachSpy.mockRestore();
     });
 
     it("ends the session with reason 'campaign-complete' when findNextLevel resolves null (workspace exhausted)", async () => {

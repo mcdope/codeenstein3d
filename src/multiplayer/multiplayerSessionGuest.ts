@@ -141,6 +141,12 @@ export function runMultiplayerSessionAsGuest(
     unsubscribeReconciliation();
     connection?.removeEventListener("connectionstatechange", onConnectionStateChange);
     if (graceTimer !== null) clearTimeout(graceTimer);
+    // Detached directly here, not left to `startLevel()`'s own `hasStarted`
+    // guard (which only ever fires on a *later* `startLevel()` call) — the
+    // "host-disconnected" ending never calls `startLevel()` again, so
+    // without this the sampler's window/document/canvas listeners would
+    // otherwise leak forever past session end.
+    localSampler?.detach();
   };
 
   // Assigned synchronously by `startLevel(currentResult)` a few lines below,
