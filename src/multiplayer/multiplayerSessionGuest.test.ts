@@ -370,6 +370,59 @@ describe("runMultiplayerSessionAsGuest", () => {
     expect(handle.getPlayerPosition("host")).toEqual({ x: 8.5, y: 8.5 });
   });
 
+  it("discards a reconciliation snapshot stamped with a stale tick, instead of rewinding past its own already-applied tick (finding 6)", () => {
+    const channels = linkedChannels();
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map: fakeMap({ spawn: { x: 5, y: 5 } }) }));
+
+    // Drive the guest past tick 5 via normal input-bundle application —
+    // `input`/`reconciliation` are independent channels with no
+    // cross-channel ordering, so a snapshot for an earlier tick can still
+    // arrive after this.
+    for (let tick = 0; tick <= 5; tick++) {
+      const bundle: TickInputBundle = { tick, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+      channels.host.input.send(JSON.stringify(bundle));
+    }
+    expect(handle.getLastAppliedTick()).toBe(5);
+    const beforePosition = handle.getPlayerPosition("guest");
+    const beforeRngState = handle.getLastReconciliationRngState();
+
+    // A stale snapshot, stamped for tick 2 — before the guest's own
+    // already-applied tick 5. Applying it would rewind both gameplay state
+    // and the shared PRNG stream backward.
+    const staleSnapshot = fakeReconciliationSnapshot({
+      tick: 2,
+      rngState: 999999,
+      players: { host: fakePlayerSnapshot({ posX: 1.5, posY: 1.5 }), guest: fakePlayerSnapshot({ posX: 1.5, posY: 1.5 }) },
+    });
+    channels.host.reconciliation.send(JSON.stringify(staleSnapshot));
+
+    expect(handle.getPlayerPosition("guest")).toEqual(beforePosition); // unaffected — discarded, not applied
+    expect(handle.getLastReconciliationRngState()).toBe(beforeRngState); // unchanged
+  });
+
+  it("still applies an in-order (current-or-future tick) reconciliation snapshot normally — the stale-discard guard doesn't over-trigger", () => {
+    const channels = linkedChannels();
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map: fakeMap({ spawn: { x: 5, y: 5 } }) }));
+
+    for (let tick = 0; tick <= 5; tick++) {
+      const bundle: TickInputBundle = { tick, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+      channels.host.input.send(JSON.stringify(bundle));
+    }
+    expect(handle.getLastAppliedTick()).toBe(5);
+
+    // Stamped for the exact tick just applied — not stale, must still apply
+    // normally (the guard is `<`, not `<=`).
+    const currentSnapshot = fakeReconciliationSnapshot({
+      tick: 5,
+      rngState: 424242,
+      players: { host: fakePlayerSnapshot({ posX: 7.5, posY: 7.5 }), guest: fakePlayerSnapshot({ posX: 3.5, posY: 4.5 }) },
+    });
+    channels.host.reconciliation.send(JSON.stringify(currentSnapshot));
+
+    expect(handle.getPlayerPosition("guest")).toEqual({ x: 3.5, y: 4.5 });
+    expect(handle.getLastReconciliationRngState()).toBe(424242);
+  });
+
   it("stops applying reconciliation snapshots after teardown", () => {
     const channels = linkedChannels();
     const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map: fakeMap({ spawn: { x: 5, y: 5 } }) }));

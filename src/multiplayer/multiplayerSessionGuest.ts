@@ -255,6 +255,19 @@ export function runMultiplayerSessionAsGuest(
       if (!engine) return;
       switch (message.type) {
         case "reconciliation-snapshot": {
+          // `input`/`reconciliation` are two independent WebRTC data
+          // channels with no cross-channel ordering guarantee — a
+          // reconciliation snapshot delayed behind a burst of tick-input
+          // bundles can arrive stamped for a tick this peer has already
+          // advanced past. Applying it anyway would rewind both gameplay
+          // state AND the shared PRNG stream (`applyReconciliationSnapshot`'s
+          // own `rngState`) backward, causing a NEW desync one reconcile
+          // interval later — discarded outright instead, never applied and
+          // never counted as a correction (it was never actually applied).
+          if (lastAppliedTick !== null && message.tick < lastAppliedTick) {
+            console.log(`[multiplayer] discarding stale reconciliation snapshot for tick ${message.tick}, already applied through tick ${lastAppliedTick}`);
+            return;
+          }
           // Read *before* applying — `applyReconciliationSnapshot()` snaps
           // simulation state (and the render offset it derives from the
           // same before/after gap) in one pass, so this is the only chance
