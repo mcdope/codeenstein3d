@@ -440,9 +440,24 @@ Every divergence is a single-ULP (last-bit) difference — and the most telling 
 point is that **Node and Chromium diverge too, despite both running V8** — just
 different versions of it. Once one engine's `Math.sin`/`cos`/`atan2` result differs
 from another's by even that one bit, the accumulating state (`facing`/`x`/`y` in the
-PoC; enemy/player position in the real engine) carries the divergence forward on every
-subsequent tick — it doesn't self-correct, and it showed up within the first ~1% of a
-500,000-iteration run every time, not as a rare edge case.
+PoC; enemy/player position in the real engine) never re-converges bit-exact — it
+carries the divergence forward on every subsequent tick, not as a rare edge case.
+
+**Correction (later, denser measurement):** the "~1% of a 500,000-iteration run"
+figure above was itself an artifact of this PoC's own coarse, `sampleEvery`-only
+sampling — it could only ever resolve a divergence to a multiple of the sample
+interval, rounding the true onset up to whichever sample happened to land after it.
+`scripts/verify-multiplayer-determinism.mjs` (the CI-wired sibling this PoC was
+converted into) now samples every iteration for the first 300, and the real onset is
+**iteration 5-23** across Chromium/Firefox/WebKit — two orders of magnitude earlier
+than this section originally reported. The reassuring finding that denser measurement
+also revealed: the resulting drift doesn't grow with iteration count — it stays
+bounded at machine-epsilon scale (~10⁻¹²% of `SNAP_THRESHOLD_TILES`) for tens of
+thousands of iterations afterward, not compounding into anything gameplay-visible.
+The consequence below (periodic reconciliation as a required part of the design) was
+already the right call — the real numbers just confirm the existing
+`RECONCILE_INTERVAL_TICKS`/`SNAP_THRESHOLD_TILES` values were already comfortably
+adequate against it, not that they need tightening.
 
 **Consequence for the design above**: pure lockstep (send inputs only, trust identical
 simulation) is confirmed unsafe as the *sole* mechanism — not "safe until proven

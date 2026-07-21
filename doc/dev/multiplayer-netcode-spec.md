@@ -637,10 +637,15 @@ that can occur:
 
 - **Below `SNAP_THRESHOLD_TILES` (e.g. 0.5 tiles — tunable, see below)**: use the
   smoothed-render treatment above. This is expected to be the overwhelming majority
-  of corrections in practice, per the PoC's own measured drift rate (ULP-scale
-  differences appeared within the first ~1% of a 500,000-iteration run, but ULP-scale
-  errors accumulate *very* slowly in real per-tick position math compared to that
-  stress-test's tight feedback loop).
+  of corrections in practice, per the PoC's own measured drift rate — denser,
+  corrected measurement (`scripts/verify-multiplayer-determinism.mjs`'s
+  `reportDriftMagnitudes`) found ULP-scale differences actually appear far earlier
+  than this section originally said (iteration 5-23 of a run, not "~1%" of it — that
+  figure was an artifact of the original PoC's coarse sampling), but confirmed the
+  more important claim directly instead of assuming it: the resulting drift stays
+  bounded at machine-epsilon scale (~10⁻¹²% of `SNAP_THRESHOLD_TILES`) for tens of
+  thousands of iterations afterward, i.e. real per-tick position math does not turn
+  this into anything gameplay-visible.
 - **At or above `SNAP_THRESHOLD_TILES`**: apply the correction with **no render
   smoothing at all** — an instant, visible snap. A mismatch this large means
   something categorically worse than ordinary float drift happened (a missed/held

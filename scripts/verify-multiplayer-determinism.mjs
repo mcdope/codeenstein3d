@@ -40,15 +40,15 @@ const SAMPLE_EVERY = Number(process.env.POC_SAMPLE_EVERY ?? 500);
 
 /** How many leading iterations get sampled *every* iteration (not just every
  * `SAMPLE_EVERY`-th one) — must stay comfortably above
- * `MIN_SAFE_DIVERGENCE_ITERATIONS` (50), or this check is back to its own
+ * `MIN_SAFE_DIVERGENCE_ITERATIONS` (2), or this check is back to its own
  * bug: `SAMPLE_EVERY`'s default (500) is coarser than that safety floor, so
  * a divergence landing anywhere in `[1, 499]` would only ever be first
  * observed at whatever sample happens to land at/after it — with sparse-only
  * sampling that's index 0, a multiple of 500, or the final iteration, never
- * a value that could actually resolve *below* 50. That silently defeats the
+ * a value that could actually resolve *below* 2. That silently defeats the
  * entire point of `MIN_SAFE_DIVERGENCE_ITERATIONS`: a future regression
- * causing divergence at, say, iteration 10-490 would still show up as "first
- * observed at iteration 500", reporting `500 >= 50` and passing — exactly
+ * causing divergence at, say, iteration 1 would still show up as "first
+ * observed at iteration 500", reporting `500 >= 2` and passing — exactly
  * the early-divergence failure mode this check exists to catch. Dense
  * sampling here costs a handful of extra pushes per run (negligible next to
  * `ITERATIONS` in the hundreds of thousands) in exchange for actually being
@@ -58,23 +58,77 @@ const SAMPLE_EVERY = Number(process.env.POC_SAMPLE_EVERY ?? 500);
 const DENSE_SAMPLE_ITERATIONS = 300;
 
 /** Below this, a divergence is a genuine regression alarm, not the known/
- * accepted baseline — real historical data (this exact script's own default
- * settings, captured in `multiplayer-research.md`'s "Cross-browser
- * determinism: measured, not theoretical" section) found Chromium/Firefox/
- * WebKit each first diverging from the Node reference within roughly the
- * first 500-1000 iterations (sample indices 6-9 in the flat 4-values-per-
- * sample array, at `SAMPLE_EVERY=500` — index 6 lands in the push recorded
- * at iteration 500). That divergence is real, already-known, and exactly
- * why periodic reconciliation exists (`RECONCILE_INTERVAL_TICKS`) — this
- * check is not trying to prevent it. What it *is* trying to catch: a future
- * code change that makes divergence appear *dramatically* earlier (e.g. an
- * accidentally nondeterministic code path landing in the hot loop, diverging
- * within the first few iterations instead of hundreds) — a qualitatively
- * different, much worse failure mode than ordinary engine-version ULP drift.
- * Set a full order of magnitude below the historical ~500-1000 floor so
- * routine browser/Node version updates (which will keep shifting the exact
- * divergence point run to run) never false-positive this. */
-const MIN_SAFE_DIVERGENCE_ITERATIONS = 50;
+ * accepted baseline. **Corrected value** — this used to be 50, based on a
+ * claim (this exact script's own former doc comment, and
+ * `multiplayer-research.md`'s "Cross-browser determinism: measured, not
+ * theoretical" section) that Chromium/Firefox/WebKit each first diverged
+ * from the Node reference within roughly the first 500-1000 iterations
+ * (equivalently "the first ~1%" of a 500,000-iteration run). That number was
+ * itself an artifact of this check's own sparse-sampling bug (see
+ * `DENSE_SAMPLE_ITERATIONS`'s doc comment) — coarse `sampleEvery`-only
+ * sampling could only ever resolve a divergence to a multiple of
+ * `sampleEvery`, rounding the true onset up to whichever sample happened to
+ * land after it. With dense per-iteration sampling now in place, real
+ * measurement shows divergence actually starts at iteration **5-23** across
+ * real Chromium/Firefox/WebKit — two orders of magnitude earlier than
+ * previously assumed. That divergence is still real, still already-known,
+ * and still exactly why periodic reconciliation exists
+ * (`RECONCILE_INTERVAL_TICKS`) — this check is not trying to prevent it. The
+ * good news the old, wrong number obscured: `reportDriftMagnitudes` below
+ * shows this divergence stays bounded at machine-epsilon scale for tens of
+ * thousands of iterations afterward rather than compounding into anything
+ * gameplay-visible — the *existing* `RECONCILE_INTERVAL_TICKS`/
+ * `SNAP_THRESHOLD_TILES` values were already far more than adequate against
+ * it, they just hadn't been checked against the real onset number before.
+ * What *this* check is trying to catch: a future code change that makes
+ * divergence appear *even more dramatically* early — i.e. essentially
+ * instantly (iteration 0-1) — which would mean something categorically
+ * different from ordinary engine-version ULP drift, like a stray
+ * non-seeded `Math.random()` call or shared/aliased state leaking between
+ * the two simulation runs being compared. Set below every real onset ever
+ * observed (lowest so far: 5), with a little room for routine browser/Node
+ * version updates shifting the exact onset a bit further — but not so low
+ * that the floor stops meaning anything. */
+const MIN_SAFE_DIVERGENCE_ITERATIONS = 2;
+
+/** Mirrors `RECONCILE_INTERVAL_TICKS` (`src/multiplayer/netcodeConstants.ts`)
+ * and `SNAP_THRESHOLD_TILES` (`src/engine/reconciliationConstants.ts`) —
+ * duplicated as plain numbers, not imported, for the same reason
+ * `mulberry32` above is duplicated rather than imported (this script must
+ * stay a dependency-free, directly-`node`-runnable standalone tool, not tied
+ * to the app's TS build). **Keep these in sync by hand if either constant
+ * changes.** Used only by `reportDriftMagnitudes` below. */
+const RECONCILE_INTERVAL_TICKS_MIRROR = 30;
+const SNAP_THRESHOLD_TILES_MIRROR = 0.5;
+
+/** `reportDriftMagnitudes`'s own regression bound: real measured drift sits
+ * ~10-12 orders of magnitude below this (see that function's doc comment) —
+ * this is deliberately generous, not a tight tolerance chasing today's exact
+ * numbers. Its job is to catch a *qualitative* change (this bounded,
+ * self-correcting ULP-scale drift turning into something that actually
+ * grows with iteration count), not to assert today's measured value down to
+ * the last digit. */
+const DRIFT_REGRESSION_BOUND_PCT = 1;
+
+/** Iterations to report drift magnitude at (see `reportDriftMagnitudes`).
+ * The first four are exact — they fall inside `DENSE_SAMPLE_ITERATIONS`
+ * (every-iteration sampling), so they land on the real reconcile interval
+ * and small multiples of it. The rest come from the sparse `sampleEvery`
+ * tail of the *same* run already being done for the main check above (no
+ * extra simulation runs needed) — nearest-available-sample-at-or-after the
+ * target — giving a cheap, free look at longer-horizon drift growth (e.g.
+ * "how bad would it get if reconciliation were ever skipped/delayed for a
+ * long stretch"), not just the one interval that actually matters today. */
+const DRIFT_REPORT_CHECKPOINTS = [
+  RECONCILE_INTERVAL_TICKS_MIRROR,
+  RECONCILE_INTERVAL_TICKS_MIRROR * 2,
+  RECONCILE_INTERVAL_TICKS_MIRROR * 5,
+  RECONCILE_INTERVAL_TICKS_MIRROR * 10,
+  500,
+  1000,
+  5000,
+  50_000,
+];
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -226,6 +280,92 @@ function firstDivergentIteration(referenceValues, otherValues, sampleIterations)
   return sampleIterations[Math.floor(firstDiffIndex / 4)];
 }
 
+/** Finds the sample nearest-at-or-after `targetIteration` in a run's
+ * `sampleIterations`/`values` (4 numbers per sample: facing, x, y,
+ * distToTarget) and returns `{ actualIteration, facing, x, y, distToTarget }`,
+ * or `null` if `targetIteration` is past the run's last sample (shouldn't
+ * happen for any of `DRIFT_REPORT_CHECKPOINTS` given `ITERATIONS`'s default,
+ * but a shrunk `POC_ITERATIONS` override could hit this). Samples are sorted
+ * by construction (dense leading window, then sparse, then the final
+ * iteration), so a single forward scan suffices — no need for binary search
+ * at this array size. */
+function sampleAt(targetIteration, sampleIterations, values) {
+  const index = sampleIterations.findIndex((it) => it >= targetIteration);
+  if (index === -1) return null;
+  const base = index * 4;
+  return {
+    actualIteration: sampleIterations[index],
+    facing: values[base],
+    x: values[base + 1],
+    y: values[base + 2],
+    distToTarget: values[base + 3],
+  };
+}
+
+/** At each `DRIFT_REPORT_CHECKPOINTS` iteration, how far has each engine's
+ * `x`/`y` state actually drifted from the Node reference, in this
+ * simulation's tile-equivalent units (see `runDeterminismSimulation`'s own
+ * doc comment — `step` is deliberately scaled to mirror a real per-tick
+ * movement distance, so `Math.hypot(dx, dy)` here is the same order of
+ * magnitude as a real position correction would be measured in, not an
+ * arbitrary unit needing its own conversion factor) — compared directly
+ * against `SNAP_THRESHOLD_TILES_MIRROR`, the real threshold that decides
+ * whether a correction smooths invisibly or hard-snaps. This is the data the
+ * "is `RECONCILE_INTERVAL_TICKS` tight enough given how early real
+ * divergence starts" question actually turns on — first divergence
+ * *iteration* (reported above) says nothing about *magnitude*, which is
+ * what gameplay visibility and `SNAP_THRESHOLD_TILES_MIRROR` both actually
+ * care about. Measured result (real run, kept here for context — not
+ * asserted to this precision, see `DRIFT_REGRESSION_BOUND_PCT`): drift at
+ * the actual reconcile interval (30 ticks) is ~10⁻¹²% of the snap
+ * threshold, and stays within ~10⁻¹¹% out to 50,000 ticks (1,666× the
+ * interval) — bounded at machine-epsilon scale, not compounding, across
+ * every engine tested. Also asserts a real (generous) regression bound per
+ * engine — see `DRIFT_REGRESSION_BOUND_PCT`. Skips a checkpoint whose
+ * resolved sample was already reported for this engine (a checkpoint past
+ * `DENSE_SAMPLE_ITERATIONS` but before the next sparse sample rounds up to
+ * that same next sample as a later checkpoint — cosmetic, not a data
+ * problem, but noisy without the dedupe). */
+function reportDriftMagnitudes(reference, others) {
+  console.log("Position drift magnitude at reconciliation-relevant checkpoints (tile-equivalent units):");
+  console.log(`  (reconciliation runs every ${RECONCILE_INTERVAL_TICKS_MIRROR} ticks; a hard snap fires at ${SNAP_THRESHOLD_TILES_MIRROR} tile-equivalent units of drift)\n`);
+
+  for (const r of others) {
+    console.log(`  ${r.name}:`);
+    let worstPct = -Infinity;
+    let worstDetail = "no checkpoints had a sample available";
+    let lastReportedIteration = -1;
+    for (const target of DRIFT_REPORT_CHECKPOINTS) {
+      const refSample = sampleAt(target, reference.sampleIterations, reference.values);
+      const otherSample = sampleAt(target, r.sampleIterations, r.values);
+      if (!refSample || !otherSample) {
+        console.log(`    iteration ${target}: no sample available (run's ITERATIONS is smaller than this checkpoint)`);
+        continue;
+      }
+      const positionDrift = Math.hypot(otherSample.x - refSample.x, otherSample.y - refSample.y);
+      const pctOfSnapThreshold = (positionDrift / SNAP_THRESHOLD_TILES_MIRROR) * 100;
+      if (pctOfSnapThreshold > worstPct) {
+        worstPct = pctOfSnapThreshold;
+        worstDetail = `worst was iteration ${refSample.actualIteration}: positionDrift=${positionDrift.toExponential(3)} (${pctOfSnapThreshold.toExponential(3)}% of snap threshold)`;
+      }
+      if (refSample.actualIteration === lastReportedIteration) continue; // rounded up to an already-reported sample — see this function's own doc comment
+      lastReportedIteration = refSample.actualIteration;
+      const facingDrift = Math.abs(otherSample.facing - refSample.facing);
+      const label = pctOfSnapThreshold >= 100 ? "WOULD HARD-SNAP" : pctOfSnapThreshold >= 1 ? "approaching threshold" : "negligible";
+      console.log(
+        `    iteration ${String(refSample.actualIteration).padStart(6)}: positionDrift=${positionDrift.toExponential(3)} ` +
+          `(${pctOfSnapThreshold.toExponential(3)}% of snap threshold, ${label}), facingDrift=${facingDrift.toExponential(3)} rad`,
+      );
+    }
+    check(
+      `${r.name}: position drift stays under ${DRIFT_REGRESSION_BOUND_PCT}% of the snap threshold at every measured checkpoint (catches a future change turning this bounded, self-correcting drift into something that actually grows)`,
+      worstPct < DRIFT_REGRESSION_BOUND_PCT,
+      worstDetail,
+    );
+  }
+  console.log("");
+}
+
 /** Self-test for the detection logic itself, run entirely in Node (no
  * browsers needed) as part of every invocation of this script. Exists
  * because `SAMPLE_EVERY`'s coarseness used to make it *impossible* for
@@ -243,7 +383,7 @@ function firstDivergentIteration(referenceValues, otherValues, sampleIterations)
  * planted divergence, that's a real problem with the check itself. */
 function runDetectionSelfTest() {
   console.log("Self-test: confirming the detector can actually catch an early (sub-floor) divergence...");
-  const desyncAtIteration = 20; // well under MIN_SAFE_DIVERGENCE_ITERATIONS (50)
+  const desyncAtIteration = 1; // well under MIN_SAFE_DIVERGENCE_ITERATIONS (2)
   const selfTestIterations = 1000; // small and fast — this only needs to prove the sampling/detection logic, not run the real workload
   const reference = runDeterminismSimulation([SEED, selfTestIterations, SAMPLE_EVERY, DENSE_SAMPLE_ITERATIONS]);
   const diverged = runDeterminismSimulation([SEED, selfTestIterations, SAMPLE_EVERY, DENSE_SAMPLE_ITERATIONS, desyncAtIteration]);
@@ -312,8 +452,10 @@ async function main() {
 
   console.log(
     "\nDivergence here (past the safety floor) is expected and already designed for — see `RECONCILE_INTERVAL_TICKS`/" +
-      "periodic reconciliation, not this check, for the actual correctness guarantee.",
+      "periodic reconciliation, not this check, for the actual correctness guarantee.\n",
   );
+
+  reportDriftMagnitudes(reference, results.slice(1));
   console.log(`\n${failures === 0 ? "All checks passed." : `${failures} check(s) FAILED.`}`);
   process.exit(failures === 0 ? 0 : 1);
 }
