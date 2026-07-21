@@ -55,21 +55,55 @@ each phase independently verified/committed before moving to the next.
       its own per-player damage return `Map`, per the plan's correction #2.
       New `RaycasterEngine.getMultiplayerTelemetrySnapshot(id)` (via a shared
       private `buildTelemetrySnapshotFor(id)` also used by the single-player
-      hook) mirrors `getBotPlayerState(id)`'s pattern — **not yet wired into
-      `main.ts`'s `__codeensteinMultiplayerTestHooks`**: reaching it from
-      there needs a new passthrough method on both
-      `multiplayerSessionHost.ts` and `multiplayerSessionGuest.ts`, which
-      were explicitly left for Phase 2b (running concurrently in a separate
-      worktree) to avoid a two-way edit conflict on those files — a small
-      follow-up, not a design gap. Typecheck clean; `engine.ts`/
+      hook) mirrors `getBotPlayerState(id)`'s pattern. Left unwired into
+      `main.ts`'s `__codeensteinMultiplayerTestHooks` by design (to avoid a
+      two-way edit conflict with Phase 2b, running concurrently in a
+      separate worktree) — wired through after both phases merged (see
+      Phase 2b's own entry below for the follow-up commit). Typecheck clean;
+      `engine.ts`/
       `telemetry.ts`/`projectiles.ts` all 100% covered (one unrelated
       pre-existing gap, `computeMeleeAndMineHitChecks`'s `meleeWouldHit`
       line, only shows up in this sandboxed worktree because `main.test.ts`
       can't load here — tree-sitter wasm path denial, unrelated to this
       diff, confirmed via `git diff` that those lines are untouched).
-- [ ] Phase 2b: `getConnectionStats(id)` (RTCPeerConnection.getStats RTT),
-      `heldInputFallback` tally, reconciliation-correction counter,
-      `netcodeHealth` report section
+- [x] Phase 2b: `getConnectionStats(id)` (`connectionStats.ts`, new —
+      `RTCPeerConnection.getStats()`'s active-candidate-pair
+      `currentRoundTripTime`, zero prior usage anywhere in `src/`),
+      `getMissedTickStats()` (cumulative `heldInputFallback` tally, seeded
+      from the fixed roster), `getReconciliationCorrections()` (guest-only —
+      the host is authoritative and never applies a snapshot to itself, so
+      its own copy is always `{}`; a correction only counts once its
+      position magnitude clears a small noise floor,
+      `RECONCILIATION_CORRECTION_NOISE_FLOOR_TILES = 0.001` tiles, below
+      which it's ordinary cross-peer float drift, not a real desync).
+      `ConnectionStateSource` widened with a `getStats()` member (both test
+      files' `FakeConnection` fakes updated to match). Wired into
+      `run-balancing-telemetry-multiplayer.mjs`'s report as a real
+      `netcodeHealth` section (RTT sampled per real link — star topology,
+      both directions; missed-tick fraction and reconciliation corrections
+      read once per attempt, at teardown, since they're cumulative counters
+      not point-in-time samples) and into `main.ts`'s
+      `__codeensteinMultiplayerTestHooks`. Verified with a real, live 2-peer
+      session (not just unit tests): RTT genuinely non-placeholder (0ms on
+      loopback), missed-tick tally matched the real bootstrap-transient
+      warm-up, host's corrections stayed `{}`, guest's stayed at 0 for a
+      truly idle session (proving the noise floor suppresses false
+      positives, not just that it compiles). 100% line/branch/statement/
+      function coverage on every touched `src/` file except `main.ts` itself
+      — `main.test.ts` couldn't be run inside this isolated worktree (a
+      pre-existing Vite fs-boundary "Denied ID" error on `node_modules/
+      tree-sitter-*.wasm` unrelated to this change — confirmed by the same
+      error hitting untouched parser test files too); the 3 new hooks are
+      trivial one-line delegations mirroring an already-tested pattern
+      shared by every other hook in that same object, and test coverage was
+      still added to `main.test.ts` by inspection — confirmed via a real run
+      from the main working tree after merging both phases (299 files, 6094
+      tests, all green). Post-merge follow-up (done in the merge commit, not
+      by either fork): wired Phase 2a's `getMultiplayerTelemetrySnapshot(id)`
+      through `MultiplayerSessionHandle` (both host/guest implementations,
+      mirroring `getBotPlayerState`'s exact pattern) and into `main.ts`'s
+      `__codeensteinMultiplayerTestHooks` — this was the one piece neither
+      fork owned, by design, to avoid the file-overlap conflict.
 - [ ] Phase 3: curated mixed-skill combos, tick-skew-growth-over-time
       detector, disconnect-isolation scored scenario
 - [ ] Phase 4: `doc/dev/balancing-telemetry.md` consolidation, apply 3 spec

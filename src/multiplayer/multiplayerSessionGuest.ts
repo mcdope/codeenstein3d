@@ -37,15 +37,32 @@
 import { onJsonMessage, sendJson } from "./dataChannelMessaging";
 import { ChunkReassembler } from "./chunkedTransfer";
 import type { EngineCarryover, EngineStats, PlayerId, RosterSnapshotEntry } from "../engine/engine";
+import { readConnectionStats } from "./connectionStats";
 import type { ConnectionStateSource, MultiplayerSessionHandle } from "./multiplayerSessionHost";
 import { DISCONNECT_GRACE_MS, FIXED_DT, INPUT_DELAY_TICKS } from "./netcodeConstants";
 import type { LevelTransitionAckMessage, LevelTransitionMessage } from "./levelTransitionTypes";
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
 import type { ReconciliationSnapshotMessage } from "./reconciliationTypes";
 import { buildSessionEngine, type SessionEndReason, type SessionEngineHandle } from "./sessionEngine";
-import type { SessionSetupResult } from "./sessionSetupTypes";
+import { HOST_PLAYER_ID, type SessionSetupResult } from "./sessionSetupTypes";
 import type { GameMap } from "../map/types";
 import type { MultiplayerChannels } from "./types";
+
+/** Below this position-magnitude (in tiles), a reconciliation snapshot's
+ * per-player delta isn't counted as a real "correction" by
+ * `getReconciliationCorrections()` — ordinary cross-peer floating-point
+ * drift (the same inputs, `Math.sin`/`cos`/`atan2` evaluated in a different
+ * order across two engines) produces a nonzero delta on nearly every
+ * broadcast even when nothing is actually wrong; counting all of those would
+ * make the signal useless for spotting genuine desync. Deliberately much
+ * smaller than `SNAP_THRESHOLD_TILES` (`reconciliationConstants.ts`, engine
+ * layer) — that constant decides *how* a real correction is applied
+ * (smoothed vs. instant snap), a different question from *whether* one
+ * happened at all, which is all this tally needs to answer. A reasoned
+ * starting point, not a validated value — real tuning needs actual
+ * multi-peer network conditions, same caveat as every constant in
+ * `netcodeConstants.ts`. */
+const RECONCILIATION_CORRECTION_NOISE_FLOOR_TILES = 0.001;
 
 export function runMultiplayerSessionAsGuest(
   channels: MultiplayerChannels,
@@ -81,6 +98,15 @@ export function runMultiplayerSessionAsGuest(
   // peer's own last-rendered `EngineStats`, not a host-authoritative one —
   // there's no final snapshot coming from a host that's gone).
   let graceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Phase 2b tallies — both seeded once from the session's own fixed roster
+  // (unchanged across a level transition), same reasoning
+  // `multiplayerSessionHost.ts`'s own `missedTicksByPlayer` seeding gives.
+  let totalTicks = 0;
+  const missedTicksByPlayer = new Map<PlayerId, number>(result.roster.map((id) => [id, 0]));
+  const reconciliationCorrections = new Map<PlayerId, { count: number; totalMagnitudeTiles: number }>(
+    result.roster.map((id) => [id, { count: 0, totalMagnitudeTiles: 0 }]),
+  );
 
   const onConnectionStateChange = (): void => {
     // Genuinely unreachable: this listener is only ever registered when
@@ -175,6 +201,13 @@ export function runMultiplayerSessionAsGuest(
     // documents elsewhere in this codebase.
     /* v8 ignore next */
     if (!engine || !myInput || !otherInputs || !localSampler) return;
+    totalTicks++;
+    // `missedTicksByPlayer` is seeded from the full, fixed roster above, and
+    // `heldInputFallback` only ever contains roster ids (`InputDelayBuffer.
+    // finalize()`'s own `rosterIds` param) — `.get(id)` is always defined.
+    for (const id of bundle.heldInputFallback) {
+      missedTicksByPlayer.set(id, missedTicksByPlayer.get(id)! + 1);
+    }
     const futureTick = bundle.tick + INPUT_DELAY_TICKS;
     const { snapshot: sampled, localEscapePressed } = localSampler.sampleAndReset();
     const outgoing: TickInput = { tick: futureTick, playerId: myPlayerId, input: sampled };
@@ -216,6 +249,27 @@ export function runMultiplayerSessionAsGuest(
       if (!engine) return;
       switch (message.type) {
         case "reconciliation-snapshot": {
+          // Read *before* applying — `applyReconciliationSnapshot()` snaps
+          // simulation state (and the render offset it derives from the
+          // same before/after gap) in one pass, so this is the only chance
+          // to see what this peer's own simulation believed beforehand.
+          for (const [id, ps] of Object.entries(message.players)) {
+            const before = engine.getPlayerPosition(id);
+            // An id the snapshot mentions that this peer never added —
+            // shouldn't happen, roster is agreed at session setup, same
+            // "skip rather than throw" shape `applyReconciliationSnapshot`'s
+            // own identical check documents (`engine.ts`).
+            /* v8 ignore next */
+            if (!before) continue;
+            const magnitude = Math.hypot(ps.posX - before.x, ps.posY - before.y);
+            if (magnitude <= RECONCILIATION_CORRECTION_NOISE_FLOOR_TILES) continue;
+            // Seeded from the full, fixed roster above — `message.players`
+            // (which `id` is drawn from) is only ever the same roster, per
+            // the `!before` skip just above — `.get(id)` is always defined.
+            const entry = reconciliationCorrections.get(id)!;
+            entry.count += 1;
+            entry.totalMagnitudeTiles += magnitude;
+          }
           engine.applyReconciliationSnapshot(message);
           lastReconciliationRngState = message.rngState;
           return;
@@ -293,5 +347,15 @@ export function runMultiplayerSessionAsGuest(
     // needs no ignore comment.
     getBotPlayerState: (id) => engine?.getBotPlayerState(id) ?? null,
     debugInjectDesync: (injection) => engine!.debugInjectDesync(injection),
+    // Only ever has one link, toward the host — see this method's own doc
+    // comment on `MultiplayerSessionHandle`.
+    getConnectionStats: (id) => (connection && id === HOST_PLAYER_ID ? readConnectionStats(connection) : Promise.resolve(null)),
+    getMissedTickStats: () => ({
+      totalTicks,
+      missedTicksByPlayer: Object.fromEntries(missedTicksByPlayer) as Record<PlayerId, number>,
+    }),
+    getReconciliationCorrections: () => Object.fromEntries(reconciliationCorrections) as Record<PlayerId, { count: number; totalMagnitudeTiles: number }>,
+    /* v8 ignore next */
+    getMultiplayerTelemetrySnapshot: (id) => engine?.getMultiplayerTelemetrySnapshot(id) ?? null,
   };
 }

@@ -22,6 +22,11 @@ import type { HostGuestLink, MultiplayerChannels } from "./types";
 class FakeConnection {
   connectionState: RTCPeerConnectionState = "connected";
   private readonly listeners = new Set<() => void>();
+  /** `null` fakes a `getStats()` report with no succeeded/nominated
+   * candidate-pair entry yet (e.g. read right after connect) — the same
+   * "not known right now" case `readConnectionStats()` collapses a missing
+   * field or an outright `getStats()` failure into. */
+  rttSeconds: number | null = 0.042;
   addEventListener(_type: "connectionstatechange", listener: () => void): void {
     this.listeners.add(listener);
   }
@@ -31,6 +36,13 @@ class FakeConnection {
   setState(state: RTCPeerConnectionState): void {
     this.connectionState = state;
     for (const listener of this.listeners) listener();
+  }
+  getStats(): Promise<RTCStatsReport> {
+    const entries: [string, unknown][] =
+      this.rttSeconds === null
+        ? []
+        : [["candidate-pair-1", { type: "candidate-pair", state: "succeeded", nominated: true, currentRoundTripTime: this.rttSeconds }]];
+    return Promise.resolve(new Map(entries) as unknown as RTCStatsReport);
   }
 }
 
@@ -370,6 +382,56 @@ describe("runMultiplayerSessionAsHost", () => {
     handle.debugInjectDesync({ kind: "extraRngDraw" });
     expect(handle.getRngState()).not.toBe(before);
     expect(handle.hasActiveRenderOffset("host")).toBe(false);
+  });
+
+  describe("network/netcode-quality telemetry (step 11 Phase 2b)", () => {
+    it("getConnectionStats reads the active candidate pair's currentRoundTripTime off the guest's own link, null for an unknown id", async () => {
+      const channels = linkedChannels();
+      channels.connection.rttSeconds = 0.08;
+      const worker = fakeWorker();
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
+
+      await expect(handle.getConnectionStats("guest")).resolves.toEqual({ rttMs: 80 });
+      await expect(handle.getConnectionStats("nobody")).resolves.toBeNull();
+    });
+
+    it("getConnectionStats resolves {rttMs: null} once no succeeded/nominated candidate pair is reported yet", async () => {
+      const channels = linkedChannels();
+      channels.connection.rttSeconds = null;
+      const worker = fakeWorker();
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
+
+      await expect(handle.getConnectionStats("guest")).resolves.toEqual({ rttMs: null });
+    });
+
+    it("getMissedTickStats tallies heldInputFallback occurrences per player across ticks, seeded at 0 for every roster id", () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
+
+      expect(handle.getMissedTickStats()).toEqual({ totalTicks: 0, missedTicksByPlayer: { guest: 0, host: 0 } });
+
+      // Tick 0: bootstrap transient — no real input has arrived yet for
+      // *either* player (the host's own is delayed to a future tick just
+      // like a guest's, per multiplayerSessionHost.ts's own doc comment on
+      // why — see this file's "bootstrap transient" test above for the
+      // guest-only half of the same phenomenon), so both count as missed.
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+      expect(handle.getMissedTickStats()).toEqual({ totalTicks: 1, missedTicksByPlayer: { guest: 1, host: 1 } });
+
+      const guestInput: TickInput = { tick: 3, playerId: "guest", input: emptySnapshot() };
+      channels.guest.input.send(JSON.stringify(guestInput));
+      worker.onmessage?.({ data: { type: "tick", tick: 3 } } as MessageEvent);
+      expect(handle.getMissedTickStats()).toEqual({ totalTicks: 2, missedTicksByPlayer: { guest: 1, host: 1 } });
+    });
+
+    it("getReconciliationCorrections is always empty — the host is authoritative, it never applies a snapshot to itself", () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+      expect(handle.getReconciliationCorrections()).toEqual({});
+    });
   });
 
   describe("disconnect handling (step 8, host side)", () => {
