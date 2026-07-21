@@ -105,21 +105,31 @@ export interface HostOfferResult {
 /** Host side: creates the peer connection and both data channels, and
  * produces the offer SDP to publish via `signalingClient.createSession()`.
  * The returned channels are not yet open — call `waitForChannelsOpen()`
- * after the answer has been applied via `peerConnection.setRemoteDescription()`. */
+ * after the answer has been applied via `peerConnection.setRemoteDescription()`.
+ *
+ * Closes the peer connection and rethrows on any failure between
+ * construction and return — otherwise a caller never receives a handle to
+ * close (its own cleanup variable is only ever assigned from this function's
+ * *return value*), leaking the connection. */
 export async function createHostOffer(iceGatheringTimeoutMs: number): Promise<HostOfferResult> {
   const peerConnection = new RTCPeerConnection({ iceServers: resolveIceServers() });
-  const channels: MultiplayerChannels = {
-    input: peerConnection.createDataChannel("input"),
-    reconciliation: peerConnection.createDataChannel("reconciliation"),
-  };
-  const offer = await peerConnection.createOffer();
-  await peerConnection.setLocalDescription(offer);
-  await waitForIceGatheringComplete(peerConnection, iceGatheringTimeoutMs);
-  // `localDescription` is guaranteed non-null once `setLocalDescription()`
-  // has resolved (WebRTC spec) — read from it rather than `offer` directly
-  // since gathering may have appended candidates to it by now.
-  const offerSdp = peerConnection.localDescription!.sdp;
-  return { peerConnection, channels, offerSdp };
+  try {
+    const channels: MultiplayerChannels = {
+      input: peerConnection.createDataChannel("input"),
+      reconciliation: peerConnection.createDataChannel("reconciliation"),
+    };
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+    await waitForIceGatheringComplete(peerConnection, iceGatheringTimeoutMs);
+    // `localDescription` is guaranteed non-null once `setLocalDescription()`
+    // has resolved (WebRTC spec) — read from it rather than `offer` directly
+    // since gathering may have appended candidates to it by now.
+    const offerSdp = peerConnection.localDescription!.sdp;
+    return { peerConnection, channels, offerSdp };
+  } catch (err) {
+    peerConnection.close();
+    throw err;
+  }
 }
 
 export interface GuestAnswerResult {
@@ -138,7 +148,14 @@ export interface GuestAnswerResult {
 /** Guest side: applies the host's offer and produces the answer SDP to
  * submit via `signalingClient.postAnswer()`. Deliberately does **not** wait
  * for the data channels here — see `GuestAnswerResult.channelsPromise`'s doc
- * comment for why that would deadlock. */
+ * comment for why that would deadlock.
+ *
+ * Closes the peer connection and rethrows on any failure between
+ * construction and return — same leak-prevention reasoning as
+ * `createHostOffer`. `channelsPromise`'s own timer/listener is still armed at
+ * that point (nothing has settled it) — its eventual timeout rejection is
+ * explicitly swallowed here so it can't surface as an unhandled rejection
+ * with no caller left to receive the thrown error from this function. */
 export async function createGuestAnswer(
   offerSdp: string,
   iceGatheringTimeoutMs: number,
@@ -149,14 +166,24 @@ export async function createGuestAnswer(
   // can be missed — but the promise itself only settles later, once the
   // caller has sent the answer back (see `channelsPromise`'s doc comment).
   const channelsPromise = captureDataChannels(peerConnection, channelsTimeoutMs);
-  await peerConnection.setRemoteDescription({ type: "offer", sdp: offerSdp });
-  const answer = await peerConnection.createAnswer();
-  await peerConnection.setLocalDescription(answer);
-  await waitForIceGatheringComplete(peerConnection, iceGatheringTimeoutMs);
-  // Same "read back from localDescription, guaranteed non-null" reasoning as
-  // `createHostOffer`'s `offerSdp`.
-  const answerSdp = peerConnection.localDescription!.sdp;
-  return { peerConnection, channelsPromise, answerSdp };
+  try {
+    await peerConnection.setRemoteDescription({ type: "offer", sdp: offerSdp });
+    const answer = await peerConnection.createAnswer();
+    await peerConnection.setLocalDescription(answer);
+    await waitForIceGatheringComplete(peerConnection, iceGatheringTimeoutMs);
+    // Same "read back from localDescription, guaranteed non-null" reasoning as
+    // `createHostOffer`'s `offerSdp`.
+    const answerSdp = peerConnection.localDescription!.sdp;
+    return { peerConnection, channelsPromise, answerSdp };
+  } catch (err) {
+    peerConnection.close();
+    channelsPromise.catch(() => {
+      // Nothing left to hand this to — swallow so its later timeout
+      // rejection (the timer is still armed) can't become an unhandled
+      // rejection with no caller ever having received `channelsPromise`.
+    });
+    throw err;
+  }
 }
 
 /** Waits for both `ondatachannel` events (one per channel the host created,
