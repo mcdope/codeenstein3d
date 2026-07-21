@@ -43,6 +43,7 @@ import {
   closeMultiplayerSession,
   DEFAULT_TICKING_TIMEOUT_MS,
   FIREFOX_LAUNCH_OPTIONS,
+  TickSyncTimeoutError,
 } from "./lib/multiplayerSessionBootstrap.mjs";
 
 const DISCONNECT_GRACE_MS = 10_000; // netcodeConstants.ts's own value — kept in sync manually, same as every sibling script.
@@ -154,13 +155,18 @@ async function sampleTickSkewMs(pageA, pageB) {
 const MAX_SCENARIO_ATTEMPTS = 5;
 
 /** Runs one full attempt at the scenario against fresh browser contexts.
- * Returns `{ failureCount, teamWiped }` — `teamWiped` signals "retry, this
- * run's own real combat variance wiped the team before the isolation check
- * could even mean anything," distinct from every other failure mode (a
- * connect/lockstep/protocol problem), which is reported as-is, not retried. */
+ * Returns `{ failureCount, teamWiped, tickSyncTimedOut }` — `teamWiped`
+ * signals "retry, this run's own real combat variance wiped the team before
+ * the isolation check could even mean anything," and `tickSyncTimedOut`
+ * signals the one other deliberately-retried condition (a `TickSyncTimeoutError`
+ * from `bootstrapMultiplayerSession`'s own post-join tick-sync wait — see
+ * that error class's own doc comment). Distinct from every other failure
+ * mode (a connect/lockstep/protocol problem), which is reported as-is, not
+ * retried. */
 async function runAttempt(browser, engineName, attempt) {
   failures = 0;
   let teamWiped = false;
+  let tickSyncTimedOut = false;
   console.log(`\n--- Attempt ${attempt}/${MAX_SCENARIO_ATTEMPTS} ---`);
 
   let session;
@@ -372,9 +378,16 @@ async function runAttempt(browser, engineName, attempt) {
     console.error(`Attempt ${attempt} crashed:`, err);
     failures += 1;
     if (session) await closeMultiplayerSession(session);
+    // A TickSyncTimeoutError is a deliberate, narrow exception to this
+    // function's own "every non-teamWiped failure is reported as-is, not
+    // retried" rule above — real CI runs occasionally miss the tick-sync
+    // wait under resource contention with nothing actually wrong (see that
+    // error class's own doc comment for the evidence). Every other crash
+    // (a connect/lockstep/protocol problem) still isn't retried.
+    if (err instanceof TickSyncTimeoutError) tickSyncTimedOut = true;
   }
 
-  return { failureCount: failures, teamWiped };
+  return { failureCount: failures, teamWiped, tickSyncTimedOut };
 }
 
 async function main() {
@@ -382,11 +395,11 @@ async function main() {
   console.log(`Launching headless ${engineName} (three contexts per attempt: host + guest-1 + guest-2)...`);
   const browser = await engine.launch(engineName === "firefox" ? FIREFOX_LAUNCH_OPTIONS : undefined);
 
-  let result = { failureCount: 1, teamWiped: false };
+  let result = { failureCount: 1, teamWiped: false, tickSyncTimedOut: false };
   try {
     for (let attempt = 1; attempt <= MAX_SCENARIO_ATTEMPTS; attempt++) {
       result = await runAttempt(browser, engineName, attempt);
-      if (!result.teamWiped) break;
+      if (!result.teamWiped && !result.tickSyncTimedOut) break;
       if (attempt < MAX_SCENARIO_ATTEMPTS) console.log(`Retrying (attempt ${attempt + 1}/${MAX_SCENARIO_ATTEMPTS})...`);
     }
   } finally {

@@ -124,6 +124,18 @@ export async function waitForGuestCount(hostPage, count, timeoutMs = DEFAULT_CON
   }
 }
 
+/** Thrown by `waitForTargetTick` specifically — a distinct type (not a bare
+ * `Error`) so a caller can deliberately choose to retry on it, the same way
+ * `verify-multiplayer-transition.mjs`'s own `HostDiedDuringNavigation` lets
+ * that script retry one specific, real-world-timing-sensitive condition
+ * without silently retrying every other failure mode too. Real CI runs
+ * (multiple headless browser contexts, real WebRTC, real per-tick work) do
+ * occasionally miss `timeoutMs` under resource contention with nothing
+ * actually wrong — confirmed directly: reproduced with a *different* peer
+ * lagging each time, in the same CI run where an unrelated script's own
+ * combat-timing retry budget was also visibly under real pressure. */
+export class TickSyncTimeoutError extends Error {}
+
 /** Waits until `page`'s own `getSimTick()` reaches `targetTick`. */
 export async function waitForTargetTick(page, label, targetTick, timeoutMs = DEFAULT_TICKING_TIMEOUT_MS) {
   try {
@@ -133,7 +145,7 @@ export async function waitForTargetTick(page, label, targetTick, timeoutMs = DEF
       { timeout: timeoutMs },
     );
   } catch (err) {
-    throw new Error(`${label} never reached tick ${targetTick}: ${err.message}`);
+    throw new TickSyncTimeoutError(`${label} never reached tick ${targetTick}: ${err.message}`);
   }
 }
 
