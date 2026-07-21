@@ -27,19 +27,27 @@
  * against Firefox in CI" reasoning as every sibling `verify-multiplayer-*`
  * script — see `verify-multiplayer-connect.mjs`'s own doc comment for the
  * full WebRTC ICE-gathering writeup (a confirmed, Mozilla-WONTFIX,
- * CI-sandbox-only limitation, not an app bug). This script duplicates rather
- * than imports its siblings' connect/tick/disconnect boilerplate — matches
- * this project's own existing convention of each verify script owning its
- * own `check()`/`failures` bookkeeping rather than sharing it.
+ * CI-sandbox-only limitation, not an app bug). This script's own scenario
+ * logic below (evasion, fps/tick-skew sampling, the Elite-scaling check, the
+ * disconnect scenario) still owns its own `check()`/`failures` bookkeeping,
+ * matching every sibling script's convention — but the actual "get from
+ * nothing to a real running N-player session" sequence (step 10's own new
+ * contribution, not something any 2-player sibling script has) is step 11's
+ * shared `scripts/lib/multiplayerSessionBootstrap.mjs`, not copy-pasted here
+ * anymore — this is the one place that sequence already existed before it
+ * had a canonical shared home.
  */
 import { resolveBrowserEngine } from "./lib/browserEngine.mjs";
+import {
+  bootstrapMultiplayerSession,
+  closeMultiplayerSession,
+  DEFAULT_TICKING_TIMEOUT_MS,
+  FIREFOX_LAUNCH_OPTIONS,
+} from "./lib/multiplayerSessionBootstrap.mjs";
 
-const DEV_SERVER_URL = process.env.CODEENSTEIN_DEV_URL ?? "http://localhost:5173";
-const CONNECT_TIMEOUT_MS = 30_000;
-const TICKING_TIMEOUT_MS = 30_000;
-const TARGET_TICK = 60; // 2s of real ticking at TICK_RATE_HZ(30) — comfortably past session bootstrap.
 const DISCONNECT_GRACE_MS = 10_000; // netcodeConstants.ts's own value — kept in sync manually, same as every sibling script.
 const DISCONNECT_DETECT_TIMEOUT_MS = 90_000; // same generous real-ICE-detection budget as verify-multiplayer-disconnect.mjs.
+const TARGET_TICK = 60; // 2s of real ticking at TICK_RATE_HZ(30) — comfortably past session bootstrap.
 // eliteScalingFor(3): extra = 2, hp = 1 + 2*0.5 = 2 (src/engine/multiplayerScaling.ts).
 // ELITE_HP_MULTIPLIER = 4 is baked into an Elite's own maxHp at map-generation
 // time (src/map/generation/enemies.ts), independent of player count — so an
@@ -56,93 +64,6 @@ function check(label, condition, detail) {
   } else {
     failures += 1;
     console.log(`  [FAIL] ${label}${detail ? ` — ${detail}` : ""}`);
-  }
-}
-
-/** See `verify-multiplayer-connect.mjs`'s identical helper for the full "why
- * retry at all" writeup — a freshly launched headless browser's very first
- * navigation has been observed to hit connection-refused for several real
- * seconds even against an already-serving dev server. */
-async function gotoWithRetry(page, url, attempts = 6) {
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    try {
-      await page.goto(url);
-      return;
-    } catch (err) {
-      if (attempt === attempts) throw err;
-      console.log(`  [retry] page.goto(${url}) failed (attempt ${attempt}/${attempts}): ${err.message}`);
-      await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
-    }
-  }
-}
-
-/** Loads the bundled demo campaign — the cheapest way to reach an
- * `isMultiplayerEligibleWorkspace()` state (no GitHub fetch needed) *and* a
- * `currentParsedFile`/`currentLevelPath` the host needs to actually generate
- * a level from — and waits for the Multiplayer tab to enable. */
-async function makeEligible(page, engineName) {
-  await gotoWithRetry(page, `${DEV_SERVER_URL}/?testHooks=1`);
-  await grantFakeMediaForFirefox(page, engineName);
-  await page.click("#tab-demo");
-  await page.click("#launch-demo-campaign");
-  await page.waitForFunction(
-    () => {
-      const tab = document.querySelector("#tab-multiplayer");
-      return tab instanceof HTMLButtonElement && !tab.disabled;
-    },
-    undefined,
-    { timeout: 20_000 },
-  );
-  await page.waitForSelector(".canvas-area:not([hidden])", { timeout: 20_000 });
-}
-
-/** See `verify-multiplayer-connect.mjs`'s identical helper for the full
- * Firefox single-default-route-interface writeup. */
-async function grantFakeMediaForFirefox(page, engineName) {
-  if (engineName !== "firefox") return;
-  try {
-    await page.evaluate(() => navigator.mediaDevices.getUserMedia({ audio: true, video: true }));
-    console.log("[diag] getUserMedia() resolved");
-  } catch (err) {
-    console.log("[diag] getUserMedia() rejected:", err.message);
-  }
-}
-
-/** Polls `window.__codeensteinMultiplayerTestHooks.getConnectionState()`
- * until it reports `"connected"`, or throws once it reports `"error"` or
- * `CONNECT_TIMEOUT_MS` elapses — whichever comes first. */
-async function waitForConnected(page, label) {
-  try {
-    await page.waitForFunction(
-      () => {
-        const hooks = window.__codeensteinMultiplayerTestHooks;
-        const state = hooks?.getConnectionState();
-        if (state?.state === "error") throw new Error("multiplayer connect flow reported an error state");
-        return state?.state === "connected";
-      },
-      undefined,
-      { timeout: CONNECT_TIMEOUT_MS },
-    );
-  } catch (err) {
-    const status = await page.textContent("#multiplayer-status").catch(() => "<unavailable>");
-    throw new Error(`${label} never reached "connected" (status: "${status}"): ${err.message}`);
-  }
-}
-
-/** Waits until the host's own `getConnectionState()` reports at least
- * `count` connected guests — the auto-rearm loop's own observable progress
- * signal (see `main.ts`'s `armNextGuestSlot`/`getConnectionState`'s
- * `connectedGuestCount` field, new for step 10). */
-async function waitForGuestCount(hostPage, count) {
-  try {
-    await hostPage.waitForFunction(
-      (n) => (window.__codeensteinMultiplayerTestHooks?.getConnectionState()?.connectedGuestCount ?? 0) >= n,
-      count,
-      { timeout: CONNECT_TIMEOUT_MS },
-    );
-  } catch (err) {
-    const state = await hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks?.getConnectionState()).catch(() => "<unavailable>");
-    throw new Error(`host never reported connectedGuestCount >= ${count} (state: ${JSON.stringify(state)}): ${err.message}`);
   }
 }
 
@@ -172,14 +93,6 @@ async function stopEvading(page) {
   await page.keyboard.up("KeyW").catch(() => {});
   await page.keyboard.up("KeyE").catch(() => {});
 }
-
-const FIREFOX_LAUNCH_OPTIONS = {
-  firefoxUserPrefs: {
-    "media.peerconnection.ice.obfuscate_host_addresses": false,
-    "media.navigator.streams.fake": true,
-    "media.navigator.permission.disabled": true,
-  },
-};
 
 /**
  * Real render-fps sample: counts `requestAnimationFrame` callbacks over
@@ -250,98 +163,25 @@ async function runAttempt(browser, engineName, attempt) {
   let teamWiped = false;
   console.log(`\n--- Attempt ${attempt}/${MAX_SCENARIO_ATTEMPTS} ---`);
 
+  let session;
   try {
-    const hostContext = await browser.newContext();
-    const guest1Context = await browser.newContext();
-    const guest2Context = await browser.newContext();
-    const hostPage = await hostContext.newPage();
-    const guest1Page = await guest1Context.newPage();
-    const guest2Page = await guest2Context.newPage();
-    hostPage.on("pageerror", (err) => console.log("[host pageerror]", err.message));
-    guest1Page.on("pageerror", (err) => console.log("[guest-1 pageerror]", err.message));
-    guest2Page.on("pageerror", (err) => console.log("[guest-2 pageerror]", err.message));
-
-    console.log("Loading an eligible workspace (demo campaign) in all three browsers...");
-    // Sequential, not concurrent — see verify-multiplayer-connect.mjs's own
-    // comment on why: a cold dev server, hit by several contexts at the same
-    // instant right after browser launch, has been observed to reliably
-    // connection-refuse them.
-    await makeEligible(hostPage, engineName);
-    await makeEligible(guest1Page, engineName);
-    await makeEligible(guest2Page, engineName);
-    check("host: Multiplayer tab enabled", true);
-    check("guest-1: Multiplayer tab enabled", true);
-    check("guest-2: Multiplayer tab enabled", true);
-
-    console.log("Host: selecting maxPlayers=3 and creating a session...");
-    await hostPage.click("#tab-multiplayer");
-    await hostPage.selectOption("#multiplayer-max-players", "3");
-    await hostPage.click("#multiplayer-host-create");
-    await hostPage.waitForSelector("#multiplayer-host-code:not([hidden])", { timeout: 15_000 });
-    const code = (await hostPage.textContent("#multiplayer-host-code")).trim();
-    console.log(`Host code: ${code}`);
-
-    console.log("Guest-1: joining with the host's code...");
-    await guest1Page.click("#tab-multiplayer");
-    await guest1Page.click("#multiplayer-subtab-join");
-    await guest1Page.fill("#multiplayer-join-code-input", code);
-    await guest1Page.click("#multiplayer-join-connect");
-    await Promise.all([waitForConnected(hostPage, "host"), waitForConnected(guest1Page, "guest-1")]);
-    check("host: reports state \"connected\" after guest-1 joins", true);
-    check("guest-1: reports state \"connected\"", true);
-    await waitForGuestCount(hostPage, 1);
-    check("host: connectedGuestCount reaches 1", true);
-
-    console.log("Guest-2: joining with the SAME code, after guest-1 (the new auto-rearm flow)...");
-    await guest2Page.click("#tab-multiplayer");
-    await guest2Page.click("#multiplayer-subtab-join");
-    // `armNextGuestSlot` (main.ts) republishes a fresh offer under this same
-    // code asynchronously (createHostOffer -> ICE gathering -> updateSession
-    // round trip) the instant guest-1 connects — a real human sharing/typing
-    // a code takes real seconds, comfortably outlasting that cycle, but this
-    // script's own near-instant click can race ahead of it and land on
-    // guest-1's own already-answered offer (server: `already_answered` ->
-    // "Someone else already joined that session."). Retry with a short
-    // real-world-realistic delay, exactly what a real second joiner would do
-    // on seeing that message, rather than adding a new "host is ready for the
-    // next joiner" test-only hook just to avoid it.
-    //
-    // Window sized from real CI evidence, not guessed: PR #25's own CI run
-    // hit this race on *every* browser, not just a flaky one — chromium
-    // needed 6 attempts (~12s at the original 2s spacing) to clear it,
-    // webkit exhausted all 7 (~14s) and still hadn't. `MULTIPLAYER_ICE_
-    // GATHERING_TIMEOUT_MS` alone allows up to 10s before `armNextGuestSlot`
-    // even reaches `updateSession()`, so a 14s window was never comfortably
-    // above the worst case, only usually above it. Widened to a ~40s window —
-    // still bounded by the same real constraint as before, not raised
-    // carelessly: each retry costs 2 requests against the signaling server's
-    // own guess-sensitive rate budget (20/60s per IP, `multiplayer-server-
-    // spec.md` §4), so attempt count went *down* (9, not more) while spacing
-    // went up (5s), keeping total requests (18) safely under that budget
-    // instead of also risking tripping it — which would escalate into a
-    // real, much longer cooldown lockout, a worse failure mode than the race
-    // this loop already exists to absorb.
-    const GUEST2_JOIN_RETRY_DELAY_MS = 5000;
-    const GUEST2_JOIN_MAX_ATTEMPTS = 9;
-    let guest2Connected = false;
-    for (let attempt = 1; attempt <= GUEST2_JOIN_MAX_ATTEMPTS && !guest2Connected; attempt++) {
-      await guest2Page.fill("#multiplayer-join-code-input", code);
-      await guest2Page.click("#multiplayer-join-connect");
-      try {
-        await waitForConnected(guest2Page, "guest-2");
-        guest2Connected = true;
-      } catch (err) {
-        if (attempt === GUEST2_JOIN_MAX_ATTEMPTS) throw err;
-        console.log(`  [retry] guest-2 join attempt ${attempt}/${GUEST2_JOIN_MAX_ATTEMPTS} failed (${err.message}), retrying...`);
-        await guest2Page.waitForTimeout(GUEST2_JOIN_RETRY_DELAY_MS);
-      }
-    }
-    check("guest-2: reports state \"connected\" (joined the same code guest-1 used, sequentially)", true);
-    await waitForGuestCount(hostPage, 2);
-    check("host: connectedGuestCount reaches 2 (auto-rearm republished a fresh offer under the same code)", true);
-
-    console.log("Host: starting the session (finalizes a real 3-player roster)...");
-    await hostPage.click("#multiplayer-start-session");
+    // Steps 10/11's shared bootstrap: 3 contexts, load an eligible workspace
+    // in each, host picks maxPlayers=3 and creates, guest-1 joins directly,
+    // guest-2 joins the same code racing (and, via its own built-in retry
+    // budget, absorbing) armNextGuestSlot's async re-arm cycle, host clicks
+    // Start Session, all three peers ticked past TARGET_TICK — see
+    // `scripts/lib/multiplayerSessionBootstrap.mjs`'s own doc comment for
+    // the full mechanics and the real-CI-measured timing behind its retry
+    // defaults.
+    session = await bootstrapMultiplayerSession(browser, {
+      engineName,
+      playerCount: 3,
+      targetTick: TARGET_TICK,
+      log: (msg) => console.log(msg),
+    });
+    check("all three peers connected, roster finalized, ticking past target", true);
+    const { hostPage, guestPages } = session;
+    const [guest1Page, guest2Page] = guestPages;
 
     // Real combat starts ticking immediately (the bundled demo campaign is a
     // real, fully-populated 18-enemy level, no cheats — permanently disabled
@@ -355,28 +195,6 @@ async function runAttempt(browser, engineName, attempt) {
     // it (host/guest-1) in that scenario's own `finally` below; guest-2's
     // own evasion just ends when its context is closed.
     await Promise.all([startEvading(hostPage), startEvading(guest1Page), startEvading(guest2Page)]);
-
-    console.log(`Waiting for all three peers to reach tick ${TARGET_TICK}...`);
-    try {
-      await Promise.all(
-        [
-          ["host", hostPage],
-          ["guest-1", guest1Page],
-          ["guest-2", guest2Page],
-        ].map(([label, page]) =>
-          page.waitForFunction(
-            (targetTick) => (window.__codeensteinMultiplayerTestHooks?.getSimTick() ?? -1) >= targetTick,
-            TARGET_TICK,
-            { timeout: TICKING_TIMEOUT_MS },
-          ).catch((err) => {
-            throw new Error(`${label} never reached tick ${TARGET_TICK}: ${err.message}`);
-          }),
-        ),
-      );
-      check(`all three peers reached tick ${TARGET_TICK}`, true);
-    } catch (err) {
-      check(`all three peers reached tick ${TARGET_TICK}`, false, err.message);
-    }
 
     console.log("Polling for the first moment all three pages' full 3-player position views agree (real movement, from the continuous evasion above)...");
     // Each page independently reports what it believes every roster player's
@@ -400,7 +218,7 @@ async function runAttempt(browser, engineName, attempt) {
       PLAYER_IDS.every((playerId) =>
         pageLabels.every((pageA) => pageLabels.every((pageB) => samePosition(views[pageA][playerId], views[pageB][playerId]))),
       );
-    const deadline = Date.now() + TICKING_TIMEOUT_MS;
+    const deadline = Date.now() + DEFAULT_TICKING_TIMEOUT_MS;
     let lastViews;
     let converged = false;
     while (Date.now() < deadline) {
@@ -474,7 +292,7 @@ async function runAttempt(browser, engineName, attempt) {
       hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getSimTick()),
       guest1Page.evaluate(() => window.__codeensteinMultiplayerTestHooks.getSimTick()),
     ]);
-    await guest2Context.close();
+    await session.contexts[2].close();
 
     try {
       console.log("  Waiting for the host to observe guest-2 go disconnected (real ICE detection + grace period)...");
@@ -545,11 +363,15 @@ async function runAttempt(browser, engineName, attempt) {
       await Promise.all([stopEvading(hostPage), stopEvading(guest1Page)]);
     }
 
-    await hostContext.close();
-    await guest1Context.close();
+    // guest-2's own context is already closed above (the disconnect
+    // scenario itself) — closeMultiplayerSession() closes every context
+    // independently/best-effort, so re-closing it here is a harmless no-op,
+    // not a double-close error.
+    await closeMultiplayerSession(session);
   } catch (err) {
     console.error(`Attempt ${attempt} crashed:`, err);
     failures += 1;
+    if (session) await closeMultiplayerSession(session);
   }
 
   return { failureCount: failures, teamWiped };
