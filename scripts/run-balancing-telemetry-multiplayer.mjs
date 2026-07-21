@@ -12,14 +12,33 @@
  *
  * **One bundled level per run, not the full campaign** — the one deliberate
  * scope boundary that stays even with the full spec implemented. Multiplayer
- * level transition (all players reaching the exit, the host-authoritative
- * countdown, the next level generating) is already covered on its own by
- * `verify-multiplayer-transition.mjs` — re-driving that whole sequence here
- * for every combo would multiply this tool's already-real-time-only cost for
- * no new signal. A run's own "qualifying" condition is simply every bot
- * reaching the exit tile alive (`teamOutcome === "allReachedExit"`) — mirrors
- * single-player's own "reached a target level" qualifying convention, just
- * scoped to one level instead of one of several campaign milestones.
+ * level transition (the host-authoritative countdown, the next level
+ * generating) is already covered on its own by `verify-multiplayer-
+ * transition.mjs` — re-driving that whole sequence here for every combo would
+ * multiply this tool's already-real-time-only cost for no new signal. A run's
+ * own "qualifying" condition is every bot ending in `"reachedExit"` or
+ * `"levelAdvanced"` (`teamOutcome === "allReachedExit"`, see `driveOneBot`'s
+ * own doc comment) — mirrors single-player's own "reached a target level"
+ * qualifying convention, just scoped to one level instead of one of several
+ * campaign milestones.
+ *
+ * **A level transition can start mid-run even though this tool never asks
+ * for one.** `checkExit()` (`engine.ts`) starts the countdown once *any
+ * single* alive player touches the exit, not the whole team — a real,
+ * intended co-op mechanic ("exit touch is a shared simulation event"), not a
+ * bug. Whichever bot's own BFS route finishes first can trigger this while a
+ * teammate is still mid-route, silently carrying that teammate to the next
+ * level's spawn. Confirmed via live repro: this used to strand the
+ * still-driving bot in a real, reproducible ~600-tick stall (exactly
+ * `MAX_TICKS_PER_WAYPOINT`) — its own `Bot` instance kept trying to reach a
+ * waypoint planned against the *old* level's map, using that same stale map
+ * for every navigation decision, on a live position that had actually moved
+ * to a different level entirely. Fixed at the shared-code level
+ * (`bot.mjs`'s `driveLegs`/`driveTowardWithReplan`/`maybeDetourForLoot` now
+ * stop immediately on a mid-route `"teleported"` result instead of
+ * continuing) — this file's own `driveOneBot` maps that into the
+ * `"levelAdvanced"` outcome described above rather than the generic `"stuck"`
+ * it used to fall into.
  *
  * `perPlayerTelemetry` (step 11 Phase 2a/4) reuses
  * `run-balancing-telemetry.mjs`'s own `aggregateLevelRuntime()` unchanged —
@@ -332,11 +351,17 @@ async function readPerPlayerTelemetry(pages, playerIds) {
  * engine's own `spawnFor()` roster-order assignment is the source of truth)
  * to the level's exit tile. Returns `{playerId, outcome, ...}` —
  * `outcome` is one of `"reachedExit"` (this bot's own qualifying condition),
- * `"died"`, `"stuck"` (ran out of the route/approach's own tick budget),
- * `"notPlaying"` (already not playing before driving even started — e.g. an
- * immediate elimination), or `"routeFailed"` (no BFS path from this bot's
- * live spawn to the exit — a real, if rare, map-generation edge case worth
- * surfacing rather than silently skipping).
+ * `"levelAdvanced"` (a teammate reached the exit first and the whole roster
+ * got carried to the next level together — `checkExit()`'s own `.some()`
+ * semantics, "exit touch is a shared simulation event," a real, intended
+ * co-op mechanic, not a bug — see `bot.mjs`'s `driveLegs` doc comment for the
+ * full mechanism; this bot survived and the team cleared the level, exactly
+ * as real a team success as personally standing on the exit tile), `"died"`,
+ * `"stuck"` (ran out of the route/approach's own tick budget), `"notPlaying"`
+ * (already not playing before driving even started — e.g. an immediate
+ * elimination), or `"routeFailed"` (no BFS path from this bot's live spawn to
+ * the exit — a real, if rare, map-generation edge case worth surfacing
+ * rather than silently skipping).
  */
 async function driveOneBot(page, playerId, profile, map, label) {
   const bot = new MultiplayerBot(page, profile, playerId, {
@@ -356,14 +381,27 @@ async function driveOneBot(page, playerId, profile, map, label) {
   }
 
   let finalState = await bot.driveLegs(route.legs);
-  if (finalState.state === "playing") {
+  // A "teleported" result here means a teammate already reached the exit and
+  // this bot's live position just got carried to the next level's spawn —
+  // `map`/`map.exit` are now stale (a different level entirely), so don't
+  // keep driving toward them (that's exactly the bug this outcome exists to
+  // avoid: real repro showed a bot grinding ~600 ticks trying to reach a
+  // now-meaningless waypoint on the wrong level's geometry).
+  if (finalState.state === "playing" && finalState.reason !== "teleported") {
     const exitCenter = { x: map.exit.x + 0.5, y: map.exit.y + 0.5 };
     finalState = await bot.driveToward(exitCenter, bot.tuning.TIGHT_ARRIVE_EPS, FINAL_APPROACH_TICKS);
   }
   bot.reportAnomalies(label, 0); // levelIndex is always 0 here — one level per run, see this file's own doc comment.
 
   const finalPlayer = await bot.readState();
-  const outcome = finalState.state === "over" ? "died" : finalState.reason === "arrived" ? "reachedExit" : "stuck";
+  const outcome =
+    finalState.state === "over"
+      ? "died"
+      : finalState.reason === "arrived"
+        ? "reachedExit"
+        : finalState.reason === "teleported"
+          ? "levelAdvanced"
+          : "stuck";
   return {
     playerId,
     outcome,
@@ -416,7 +454,11 @@ async function runOneAttempt(browser, devServerUrl, comboLabel, profilesByPlayer
     const perPlayerTelemetry = await readPerPlayerTelemetry(pages, playerIds);
 
     const outcomes = perPlayer.map((p) => p.outcome);
-    const teamOutcome = outcomes.every((o) => o === "reachedExit")
+    // "levelAdvanced" counts the same as "reachedExit" here — both mean this
+    // player survived and the team cleared the level (see driveOneBot's own
+    // doc comment on why a teammate-triggered level advance is exactly as
+    // real a team success as personally standing on the exit tile).
+    const teamOutcome = outcomes.every((o) => o === "reachedExit" || o === "levelAdvanced")
       ? "allReachedExit"
       : outcomes.every((o) => o === "died" || o === "notPlaying")
         ? "teamWiped"

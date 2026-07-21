@@ -689,6 +689,10 @@ export class Bot {
       const result = await this.driveToward(wp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
       this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
       if (result.state !== "playing") return result;
+      // See `driveLegs`'s own doc comment on its identical check — every
+      // waypoint after a mid-route teleport was planned from a position this
+      // bot is no longer at.
+      if (result.reason === "teleported") return result;
     }
     return { state: "playing" };
   }
@@ -722,7 +726,10 @@ export class Bot {
           this.logger.wpDebug?.(`[wpdebug] replan-walk wp=(${rwp.x},${rwp.y})`);
           const result = await this.driveToward(rwp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
           this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
-          if (result.state !== "playing" || result.reason === "stuck") return result;
+          // See `driveLegs`'s own doc comment on its identical check — a
+          // mid-route teleport invalidates every remaining replanned
+          // waypoint too, same as it would the original plan.
+          if (result.state !== "playing" || result.reason === "stuck" || result.reason === "teleported") return result;
         }
         return { state: "playing", reason: "arrived" };
       }
@@ -732,13 +739,31 @@ export class Bot {
 
   /** Walks a full route-leg list (walk/openDoor legs), threading a
    * per-call `openedDoors` set so a BFS re-plan mid-run knows which doors
-   * this run has already opened. */
+   * this run has already opened.
+   *
+   * A `reason: "teleported"` result from any waypoint stops this walk
+   * immediately and propagates that result as-is, the same way `"stuck"`
+   * already does — every waypoint after a teleport was planned against
+   * wherever the bot *used to be*, not where it landed. `routePlanner.mjs`
+   * hard-blocks real map teleporters from ever being planned as a waypoint
+   * (`HARD_BLOCK_TILES`), so in practice this only ever fires from an
+   * incidental touch, or — multiplayer-only — a teammate reaching the exit
+   * mid-route: `checkExit()`'s own `.some()` semantics mean any single alive
+   * player touching the exit carries the *whole* roster to the next level
+   * once the countdown elapses ("exit touch is a shared simulation event"),
+   * repositioning a still-driving bot without warning. Confirmed directly:
+   * without this check, the leg-walk loop kept walking the old, now-
+   * meaningless waypoint list against a live position that had moved to an
+   * entirely different level, producing a real ~600-tick stall (the bot
+   * grinding against `MAX_TICKS_PER_WAYPOINT` trying to reach a target its
+   * own stale `this.map` can no longer even BFS a path to). */
   async driveLegs(legs) {
     const openedDoors = new Set();
 
     for (const leg of legs) {
       const detour = await this.maybeDetourForLoot(openedDoors);
       if (detour.state !== "playing") return detour;
+      if (detour.reason === "teleported") return detour;
 
       if (leg.kind === "walk") {
         // Re-check for loot before every waypoint, not just once per leg —
@@ -746,11 +771,13 @@ export class Bot {
         for (const wp of leg.waypoints) {
           const wpDetour = await this.maybeDetourForLoot(openedDoors);
           if (wpDetour.state !== "playing") return wpDetour;
+          if (wpDetour.reason === "teleported") return wpDetour;
           this.logger.wpDebug?.(`[wpdebug] leg-walk wp=(${wp.x},${wp.y})`);
           const result = await this.driveTowardWithReplan(wp, openedDoors);
           this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
           if (result.state !== "playing") return result;
           if (result.reason === "stuck") return { state: "stuck" };
+          if (result.reason === "teleported") return result;
         }
       } else if (leg.kind === "openDoor") {
         // `openDoorAhead()` (engine.ts) only detects the door tile within a
@@ -763,6 +790,7 @@ export class Bot {
         };
         const staged = await this.driveTowardWithReplan(stagingPoint, openedDoors, this.tuning.TIGHT_ARRIVE_EPS);
         if (staged.state !== "playing") return staged;
+        if (staged.reason === "teleported") return staged;
         const targetAngle = Math.atan2(leg.approachDir.dy, leg.approachDir.dx);
         const faced = await this.faceAngle(targetAngle, this.tuning.MAX_TICKS_PER_WAYPOINT);
         if (faced.state !== "playing") return faced;
