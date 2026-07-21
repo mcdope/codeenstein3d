@@ -18,6 +18,7 @@
 import { spawn, execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createConfiguredServer, HEADERS_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "./multiplayer-server.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_SCRIPT = path.join(__dirname, "multiplayer-server.mjs");
@@ -929,6 +930,42 @@ async function runTimingSafeComparisonSuite() {
 }
 
 // ---------------------------------------------------------------------------
+// Explicit HTTP server timeouts (headersTimeout / requestTimeout) — an
+// in-process unit-style check (imports the module directly rather than
+// spawning a child process) since a spawned child's internal `http.Server`
+// object isn't otherwise introspectable from outside. Importing the module
+// this way is safe: `multiplayer-server.mjs` only actually starts listening
+// (or runs a CLI flag's action) when it detects it's the process's own entry
+// point (`isMainModule`, see that file's own comment) — merely `import`ing
+// it, as this file does at the top, runs no server, opens no port, and
+// starts no sweep timer.
+// ---------------------------------------------------------------------------
+
+function runServerTimeoutsSuite() {
+  check(
+    "HEADERS_TIMEOUT_MS is a sane positive number, no greater than REQUEST_TIMEOUT_MS",
+    typeof HEADERS_TIMEOUT_MS === "number" && HEADERS_TIMEOUT_MS > 0 && HEADERS_TIMEOUT_MS <= REQUEST_TIMEOUT_MS,
+    `HEADERS_TIMEOUT_MS=${HEADERS_TIMEOUT_MS} REQUEST_TIMEOUT_MS=${REQUEST_TIMEOUT_MS}`,
+  );
+  check(
+    "REQUEST_TIMEOUT_MS is a sane positive number",
+    typeof REQUEST_TIMEOUT_MS === "number" && REQUEST_TIMEOUT_MS > 0,
+  );
+
+  const server = createConfiguredServer();
+  check(
+    "createConfiguredServer() applies HEADERS_TIMEOUT_MS to the real http.Server (not left at Node's default)",
+    server.headersTimeout === HEADERS_TIMEOUT_MS,
+    `server.headersTimeout=${server.headersTimeout}`,
+  );
+  check(
+    "createConfiguredServer() applies REQUEST_TIMEOUT_MS to the real http.Server (not left at Node's default)",
+    server.requestTimeout === REQUEST_TIMEOUT_MS,
+    `server.requestTimeout=${server.requestTimeout}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // --help / -?
 // ---------------------------------------------------------------------------
 
@@ -985,6 +1022,9 @@ async function main() {
 
   console.log("\nConstant-time secret comparison (hostToken / X-Stats-Token):");
   await runTimingSafeComparisonSuite();
+
+  console.log("\nExplicit HTTP server timeouts:");
+  runServerTimeoutsSuite();
 
   console.log("\n--help / -?:");
   runHelpSuite();

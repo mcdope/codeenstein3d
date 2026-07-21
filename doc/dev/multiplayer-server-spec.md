@@ -470,6 +470,18 @@ size the research doc estimated, while still refusing to let this mailbox become
 general-purpose paste bin. Exceeding the cap destroys the request stream and
 responds `413 Payload Too Large` immediately, rather than continuing to read.
 
+### HTTP server timeouts (defense against slow-connection abuse)
+
+The underlying `http.Server` sets explicit, conservative timeouts rather than
+relying on Node's own built-in defaults — `HEADERS_TIMEOUT_MS = 20_000` (how long a
+connection may take to finish sending its request headers) and
+`REQUEST_TIMEOUT_MS = 30_000` (how long the entire request — headers plus body —
+may take). Every real request here is a small, capped JSON body from a
+same-origin browser client or the trusted local proxy, so there's no legitimate
+reason either should take anywhere near this long; explicit values close off the
+mild Slowloris-style exposure of leaving both at Node's much longer defaults
+(many slow/idle connections tying up memory/file descriptors for minutes).
+
 ## Testing & verification
 
 `verify:multiplayer-server` (pure Node, no browser) spawns a real instance of

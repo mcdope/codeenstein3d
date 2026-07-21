@@ -28,6 +28,7 @@
 import { createServer } from "node:http";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { resolve as resolvePath } from "node:path";
 import { writeFileSync, rmSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
@@ -94,6 +95,20 @@ const STATS_TOKEN = process.env.CODEENSTEIN_MULTIPLAYER_STATS_TOKEN;
 const MAX_COOLDOWN_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_MAX_COOLDOWN_MS ?? 60 * 60_000);
 
 const MAX_BODY_BYTES = Number(process.env.CODEENSTEIN_MULTIPLAYER_MAX_BODY_BYTES ?? 8192);
+
+/** Explicit `http.Server` timeouts, rather than relying entirely on Node's
+ * own built-in defaults — mild Slowloris-style exposure otherwise (many
+ * slow/idle connections tying up memory/file descriptors for minutes). Both
+ * conservative for this server's actual traffic shape: every request here is
+ * a small JSON body (capped at `MAX_BODY_BYTES`) from a same-origin browser
+ * client or the trusted local proxy, never a large/streamed upload, so there
+ * is no legitimate reason for headers or a full request to take anywhere
+ * near this long. `HEADERS_TIMEOUT_MS` bounds how long a connection may take
+ * to finish sending its request headers; `REQUEST_TIMEOUT_MS` bounds the
+ * entire request (headers + body) and must be `>= HEADERS_TIMEOUT_MS`, since
+ * headers are part of the request it's timing. */
+const HEADERS_TIMEOUT_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_HEADERS_TIMEOUT_MS ?? 20_000);
+const REQUEST_TIMEOUT_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_REQUEST_TIMEOUT_MS ?? 30_000);
 
 const MAX_OFFER_ANSWER_BYTES = 4096;
 const MAX_DISPLAY_NAME_CHARS = 100;
@@ -812,6 +827,8 @@ invocation's currently-effective ones):
   CODEENSTEIN_MULTIPLAYER_BASE_COOLDOWN_MS               Backoff base (currently ${BASE_COOLDOWN_MS}).
   CODEENSTEIN_MULTIPLAYER_MAX_COOLDOWN_MS                Backoff cap (currently ${MAX_COOLDOWN_MS}).
   CODEENSTEIN_MULTIPLAYER_MAX_BODY_BYTES                 Request body cap (currently ${MAX_BODY_BYTES}).
+  CODEENSTEIN_MULTIPLAYER_HEADERS_TIMEOUT_MS              HTTP headers timeout (currently ${HEADERS_TIMEOUT_MS}).
+  CODEENSTEIN_MULTIPLAYER_REQUEST_TIMEOUT_MS              HTTP full-request timeout (currently ${REQUEST_TIMEOUT_MS}).
   CODEENSTEIN_MULTIPLAYER_STATS_TOKEN                    Enables GET /stats and --stats;
                                                           unset means the endpoint doesn't
                                                           exist (plain 404), by design.
@@ -968,6 +985,19 @@ async function runStats({ port, json }) {
 // Entry point
 // ---------------------------------------------------------------------------
 
+/** Builds the `http.Server` with `HEADERS_TIMEOUT_MS`/`REQUEST_TIMEOUT_MS`
+ * explicitly applied, but does **not** call `.listen()` — kept as its own
+ * function (rather than inlined in `main()`) specifically so an automated
+ * test can import this module, call this function directly, and assert the
+ * timeout values actually landed on the real `http.Server` object, without
+ * needing to spawn a child process or bind a real port. */
+function createConfiguredServer() {
+  const server = createServer(requestListener);
+  server.headersTimeout = HEADERS_TIMEOUT_MS;
+  server.requestTimeout = REQUEST_TIMEOUT_MS;
+  return server;
+}
+
 async function main() {
   const flags = parseCliArgs(process.argv.slice(2));
 
@@ -991,13 +1021,27 @@ async function main() {
 
   serverStartedAt = Date.now();
   startSweeping();
-  const server = createServer(requestListener);
+  const server = createConfiguredServer();
   server.listen(PORT, "127.0.0.1", () => {
     console.log(`[multiplayer-server] listening on 127.0.0.1:${PORT} (allowed origin: ${ALLOWED_ORIGIN})`);
   });
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Only actually run the server (or a CLI flag's action) when this file is
+// invoked directly (`node multiplayer-server.mjs ...`) — not when it's
+// merely `import`ed, e.g. by verify-multiplayer-server.mjs's in-process unit
+// checks (see `createConfiguredServer`'s own comment). Every real invocation
+// in this repo (spawned child processes, systemd's `ExecStart=`) already
+// passes this file's own absolute path as the entry point, so this changes
+// nothing about how the server is actually run.
+const isMainModule =
+  process.argv[1] !== undefined && resolvePath(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isMainModule) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+export { createConfiguredServer, HEADERS_TIMEOUT_MS, REQUEST_TIMEOUT_MS };
