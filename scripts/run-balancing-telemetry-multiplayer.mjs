@@ -3,40 +3,40 @@
 
 /**
  * Multiplayer sibling of `run-balancing-telemetry.mjs` — step 11
- * (`doc/dev/multiplayer-balancing-telemetry-spec.md`), Phase 1 + Phase 2b.
+ * (`doc/dev/multiplayer-balancing-telemetry-spec.md`), Phases 1, 2a, 2b, 3.
  * Drives N (2-4) simultaneous `MultiplayerBot` instances through one real,
  * live multiplayer session per attempt, against the spec's own dedicated
  * isolated signaling + dev server pair
  * (`scripts/lib/multiplayerTestServers.mjs`), and writes aggregated
  * telemetry to `multiplayer_balancing_telemetry.json`.
  *
- * **Deliberately narrower than the full spec** (later phases fill these in
- * — see `multiplayer-step11-state.md`):
- *  - **One bundled level per run, not the full campaign.** Multiplayer level
- *    transition (all players reaching the exit, the host-authoritative
- *    countdown, the next level generating) is already covered on its own by
- *    `verify-multiplayer-transition.mjs` — re-driving that whole sequence
- *    here for every combo would multiply this tool's already-real-time-only
- *    cost for no new signal. A run's own "qualifying" condition is simply
- *    every bot reaching the exit tile alive (`teamOutcome ===
- *    "allReachedExit"`) — mirrors single-player's own "reached a target
- *    level" qualifying convention, just scoped to one level instead of one
- *    of several campaign milestones.
- *  - **Coarse gameplay-health signals only, not the full 7-category
- *    per-player breakdown.** `RaycasterEngine.getMultiplayerTelemetrySnapshot(id)`
- *    doesn't exist yet — that's Phase 2a. This script instead reads what's
- *    already exposed today: `getBotPlayerState(id)` (health/ammo/position/
- *    distance), `getEnemiesSnapshot()` (a team-wide before/after alive-count
- *    kill estimate — not per-player-attributable without Phase 2a), plus its
- *    own fps/tick-skew sampling (the same technique
- *    `verify-multiplayer-multiguest.mjs` already uses informationally).
- *  - **`netcodeHealth` (RTT, missed-tick fraction, reconciliation
- *    corrections) is real, from Phase 2b's session-handle hooks** —
- *    `getConnectionStats`/`getMissedTickStats`/`getReconciliationCorrections`
- *    (`multiplayerSessionHost.ts`/`Guest.ts`). Reconciliation corrections are
- *    a guest-only signal (the host is authoritative, never applies a
- *    snapshot to itself) — a host's own `reconciliationCorrectionsByPlayer`
- *    entries are always `{count: 0, avgMagnitudeTiles: 0}`, not missing data.
+ * **One bundled level per run, not the full campaign** — the one deliberate
+ * scope boundary that stays even with the full spec implemented. Multiplayer
+ * level transition (all players reaching the exit, the host-authoritative
+ * countdown, the next level generating) is already covered on its own by
+ * `verify-multiplayer-transition.mjs` — re-driving that whole sequence here
+ * for every combo would multiply this tool's already-real-time-only cost for
+ * no new signal. A run's own "qualifying" condition is simply every bot
+ * reaching the exit tile alive (`teamOutcome === "allReachedExit"`) — mirrors
+ * single-player's own "reached a target level" qualifying convention, just
+ * scoped to one level instead of one of several campaign milestones.
+ *
+ * `perPlayerTelemetry` (step 11 Phase 2a/4) reuses
+ * `run-balancing-telemetry.mjs`'s own `aggregateLevelRuntime()` unchanged —
+ * `RaycasterEngine.getMultiplayerTelemetrySnapshot(id)`'s shape is built from
+ * the exact same `buildTelemetrySnapshotFor` field set as single-player's own
+ * `getTelemetrySnapshot()`, so the same 7-category breakdown (map density,
+ * combat pacing, AI danger, damage/healing, weapon efficiency, economy, nav)
+ * applies per-player as-is, minus `routeEfficiencyScore` (each bot spawns at
+ * a different tile, so there's no one shortest-path figure for the whole
+ * team — left for a future pass rather than shipped as a misleading zero).
+ * `netcodeHealth` (RTT, missed-tick fraction, reconciliation corrections) is
+ * real, from Phase 2b's session-handle hooks —
+ * `getConnectionStats`/`getMissedTickStats`/`getReconciliationCorrections`
+ * (`multiplayerSessionHost.ts`/`Guest.ts`). Reconciliation corrections are a
+ * guest-only signal (the host is authoritative, never applies a snapshot to
+ * itself) — a host's own `reconciliationCorrectionsByPlayer` entries are
+ * always `{count: 0, avgMagnitudeTiles: 0}`, not missing data.
  *
  * **Phase 3** (curated mixed-skill combos + two new cross-peer detectors) is
  * also folded in now: when no `CODEENSTEIN_MP_TELEMETRY_PROFILE` filter is
@@ -71,7 +71,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { planRoute } from "./lib/routePlanner.mjs";
-import { PROFILES, DIFFICULTIES } from "./run-balancing-telemetry.mjs";
+import { PROFILES, DIFFICULTIES, aggregateLevelRuntime } from "./run-balancing-telemetry.mjs";
 import { MultiplayerBot } from "./lib/multiplayerBot.mjs";
 import { runQualifyLoop } from "./lib/qualifyLoop.mjs";
 import { bootstrapMultiplayerSession, closeMultiplayerSession } from "./lib/multiplayerSessionBootstrap.mjs";
@@ -306,6 +306,22 @@ async function readNetcodeCounters(pages, playerIds) {
   return Object.fromEntries(playerIds.map((id, i) => [id, { missedTicks: missedTickStats[i], reconciliationCorrections: reconciliationCorrections[i] }]));
 }
 
+/**
+ * Reads `RaycasterEngine.getMultiplayerTelemetrySnapshot(id)` (step 11
+ * Phase 2a) for every player, once at the end of an attempt's own driving —
+ * same "cumulative session-lifetime state, one read at teardown" reasoning
+ * as `readNetcodeCounters` above, not a point-in-time sample. `null` per
+ * player is a real, reachable outcome (telemetry recording disabled this
+ * run, or the player disconnected before this read) — carried through
+ * as-is, filtered out at aggregation time in `buildPerPlayerBreakdown`.
+ */
+async function readPerPlayerTelemetry(pages, playerIds) {
+  const snapshots = await Promise.all(
+    pages.map((page, i) => page.evaluate((id) => window.__codeensteinMultiplayerTestHooks?.getMultiplayerTelemetrySnapshot(id) ?? null, playerIds[i]).catch(() => null)),
+  );
+  return Object.fromEntries(playerIds.map((id, i) => [id, snapshots[i]]));
+}
+
 // ---------------------------------------------------------------------------
 // One bot's own drive
 // ---------------------------------------------------------------------------
@@ -397,6 +413,7 @@ async function runOneAttempt(browser, devServerUrl, comboLabel, profilesByPlayer
     // comment for why these two are a single end-of-run read, unlike the
     // sampler's own point-in-time polling above.
     const netcodeCounters = await readNetcodeCounters(pages, playerIds);
+    const perPlayerTelemetry = await readPerPlayerTelemetry(pages, playerIds);
 
     const outcomes = perPlayer.map((p) => p.outcome);
     const teamOutcome = outcomes.every((o) => o === "reachedExit")
@@ -420,6 +437,7 @@ async function runOneAttempt(browser, devServerUrl, comboLabel, profilesByPlayer
       tickSkewSamples: sampler.tickSkewSamples,
       rttMsSamples: sampler.rttMsSamples,
       netcodeCounters,
+      perPlayerTelemetry,
     };
   } catch (err) {
     // Same discarded-non-qualifying-attempt shape as
@@ -662,6 +680,30 @@ function buildComboOutput(combo) {
     };
   }
 
+  // perPlayerTelemetry (step 11 Phase 2a/4) — reuses
+  // run-balancing-telemetry.mjs's own aggregateLevelRuntime() unchanged: the
+  // multiplayer per-player snapshot (RaycasterEngine.getMultiplayerTelemetrySnapshot)
+  // is built from the exact same field set as single-player's own
+  // getTelemetrySnapshot(), so the same 7-category breakdown applies as-is.
+  // shortestPathTiles is null (unlike single-player's real BFS-shortest
+  // figure) — each bot in a run spawns at a different tile, so there's no
+  // one shortest-path number shared by the whole team; per-player route
+  // efficiency is left for a future pass rather than a rough approximation.
+  const perPlayerTelemetry = {};
+  for (const id of playerIds) {
+    const samples = qualifyingRuns.map((r) => ({ snapshot: r.perPlayerTelemetry?.[id], incomplete: false })).filter((s) => s.snapshot);
+    const breakdown = aggregateLevelRuntime(samples, null);
+    // aggregateLevelRuntime's own `routeEfficiencyScore` is a real value only
+    // when single-player's caller later overwrites it from a whole-run BFS
+    // figure (`buildCampaignAggregate`) — with `shortestPathTiles: null` it's
+    // a `{mean: 0, samples: [0, 0, ...]}` placeholder, not a real "0%
+    // efficiency" result. Nothing here computes the real replacement (see
+    // this function's own comment above), so drop the misleading zeros
+    // rather than ship a number that looks real but isn't.
+    if (breakdown.navigationMapFlow) delete breakdown.navigationMapFlow.routeEfficiencyScore;
+    perPlayerTelemetry[id] = breakdown;
+  }
+
   return {
     attemptsUsed,
     qualifyingRunCount: qualifyingRuns.length,
@@ -670,6 +712,7 @@ function buildComboOutput(combo) {
     // not qualifyingRunCount, for a true qualifying-rate stat.
     trueQualifyingCount,
     failureReasons,
+    perPlayerTelemetry,
     gameplayHealth: {
       outcomeTally,
       enemiesKilledEstimate: spread(
@@ -720,7 +763,7 @@ async function main() {
   const output = {
     meta: {
       generatedAt: new Date().toISOString(),
-      scope: "Phase 1 + 2b + 3 — one bundled demo-campaign level per run, coarse gameplay-health signals, real netcodeHealth (RTT/missed-tick fraction/reconciliation corrections), curated mixed-skill combos, and tick-skew-growth detection. No full 7-category per-player telemetry yet — that's Phase 2a — see doc/dev/multiplayer-balancing-telemetry-spec.md. disconnectIsolation (if present) is a separate, single scored scenario, not part of the combo matrix.",
+      scope: "Full spec (Phases 1, 2a, 2b, 3) — one bundled demo-campaign level per run: real per-player 7-category telemetry (perPlayerTelemetry, minus routeEfficiencyScore), real netcodeHealth (RTT/missed-tick fraction/reconciliation corrections), curated mixed-skill combos, and tick-skew-growth detection. See doc/dev/multiplayer-balancing-telemetry-spec.md and doc/dev/balancing-telemetry.md. disconnectIsolation (if present) is a separate, single scored scenario, not part of the combo matrix.",
       difficulties: DIFFICULTIES,
       playerCounts: PLAYER_COUNTS,
       profiles: PROFILES,
