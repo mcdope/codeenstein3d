@@ -385,6 +385,13 @@ describe("runMultiplayerSessionAsHost", () => {
     expect(handle.hasActiveRenderOffset("host")).toBe(false);
   });
 
+  it("debugSetGodMode delegates to the underlying engine", () => {
+    const channels = linkedChannels();
+    const worker = fakeWorker();
+    const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
+    expect(() => handle.debugSetGodMode("host", true)).not.toThrow();
+  });
+
   describe("network/netcode-quality telemetry (step 11 Phase 2b)", () => {
     it("getConnectionStats reads the active candidate pair's currentRoundTripTime off the guest's own link, null for an unknown id", async () => {
       const channels = linkedChannels();

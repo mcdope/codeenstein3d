@@ -1634,6 +1634,7 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
         getPlayerFacing: (id: string) => { dirX: number; dirY: number } | null;
         getRngState: () => number | null;
         injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
+        debugSetGodMode: (id: string, enabled: boolean) => void;
         hasActiveRenderOffset: (id: string) => boolean;
         getLastReconciliationRngState: () => number | null;
         getPlayerStatus: (id: string) => string | null;
@@ -1732,6 +1733,12 @@ if (typeof window !== "undefined" && new URLSearchParams(window.location.search)
     // doc comment). Never called from real gameplay code.
     getRngState: () => activeMultiplayerSession?.getRngState() ?? null,
     injectDesync: (injection) => activeMultiplayerSession?.debugInjectDesync(injection),
+    // Test-only, mutating — see `RaycasterEngine.debugSetGodMode`'s own doc
+    // comment. For `scripts/verify-multiplayer-transition.mjs`: lets the
+    // host reach a real level's real exit without needing to survive the
+    // demo campaign's full combat gauntlet first, while leaving other
+    // players (e.g. the guest) fully vulnerable.
+    debugSetGodMode: (id, enabled) => activeMultiplayerSession?.debugSetGodMode(id, enabled),
     hasActiveRenderOffset: (id) => activeMultiplayerSession?.hasActiveRenderOffset(id) ?? false,
     // A *frozen* value, unlike getRngState() above — see
     // MultiplayerSessionHandle.getLastReconciliationRngState's own doc

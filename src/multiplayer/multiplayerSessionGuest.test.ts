@@ -447,6 +447,12 @@ describe("runMultiplayerSessionAsGuest", () => {
     expect(handle.hasActiveRenderOffset("guest")).toBe(false);
   });
 
+  it("debugSetGodMode delegates to the underlying engine", () => {
+    const channels = linkedChannels();
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+    expect(() => handle.debugSetGodMode("guest", true)).not.toThrow();
+  });
+
   it("getLastReconciliationRngState reflects the rngState of the most recently applied snapshot, null before the first one", () => {
     const channels = linkedChannels();
     const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());

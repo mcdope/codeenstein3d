@@ -3,21 +3,46 @@
 
 /**
  * End-to-end proof of step 8's level-transition deliverable — a real host
- * peer navigates and fights its way (via `MultiplayerBot`, reusing the
- * existing single-player balancing bot's decision logic — see
- * `scripts/lib/multiplayerBot.mjs`'s own doc comment) onto the real
- * generated exit tile, the multiplayer exit countdown runs to zero, and the
- * host broadcasts a real chunked `LevelTransitionMessage` sequence that both
- * peers apply, landing on a genuinely new level with carried-over state.
- * Unit tests (`multiplayerSessionHost.test.ts`/`Guest.test.ts`) already cover
- * the wire protocol and exact carryover values against hand-built fixture
- * maps; this script is the only thing that exercises the real path — actual
- * map generation, real per-tick worker pacing, real cross-peer chunk
- * delivery, and (as a nice side effect of using the real, combat-populated
- * demo campaign) a real in-combat death feeding the revival path — end to
- * end, at real network/timer speed. No cheats: those are permanently
- * disabled in multiplayer, so unlike a single-player verify script this one
- * can't fall back to god mode/noclip if navigation or combat goes wrong.
+ * peer navigates (via `MultiplayerBot`, reusing the existing single-player
+ * balancing bot's decision logic — see `scripts/lib/multiplayerBot.mjs`'s
+ * own doc comment) onto the real generated exit tile, the multiplayer exit
+ * countdown runs to zero, and the host broadcasts a real chunked
+ * `LevelTransitionMessage` sequence that both peers apply, landing on a
+ * genuinely new level with carried-over state. Unit tests
+ * (`multiplayerSessionHost.test.ts`/`Guest.test.ts`) already cover the wire
+ * protocol and exact carryover values against hand-built fixture maps; this
+ * script is the only thing that exercises the real path — actual map
+ * generation, real per-tick worker pacing, real cross-peer chunk delivery,
+ * and (as a nice side effect of using the real, combat-populated demo
+ * campaign) a real in-combat death feeding the revival path — end to end,
+ * at real network/timer speed.
+ *
+ * **The host is made invulnerable for its own walk to the exit**, via
+ * `RaycasterEngine.debugSetGodMode` (a narrow, test-only hook, gated behind
+ * `?testHooks=1`, never reachable from real gameplay — distinct from the
+ * real IDDQD cheat, which stays correctly disabled in multiplayer for real
+ * players). This script cares about proving level-transition mechanics
+ * work, not about proving a bot can solo-survive the demo campaign's full,
+ * real 18-enemy combat gauntlet — those turned out to be two different
+ * things conflated into one flaky test: real CI data showed even the
+ * best-performing bot profile needing up to 20+ retries purely from organic
+ * combat variance, unrelated to any actual bug (see this file's own git
+ * history for the investigation). The host still does real BFS-planned
+ * navigation through real walls/doors/keys/mines on the real generated
+ * level — only combat death is taken off the table, since that was the
+ * actual source of the flakiness, not navigation itself.
+ *
+ * The **guest is deliberately left vulnerable** (idle, not bot-driven,
+ * god-mode never applied to it) — the demo campaign's own real, roaming
+ * enemies reliably kill an idle player within several real seconds
+ * (confirmed directly while building `verify-multiplayer-disconnect.mjs`),
+ * which is *useful* here: it's the simplest real way to reach the "a player
+ * killed pre-transition is alive at `REVIVE_HEALTH` post-transition"
+ * scenario this script needs to cover, without needing to script combat
+ * deliberately. Making the host invulnerable does *not* touch this — if the
+ * guest happens to survive on a particular run (a sparser map, more distant
+ * enemies), the revival-specific checks below are skipped rather than
+ * failed, same as before this change.
  *
  * Same `?testHooks=1` read-only-introspection discipline, and "not run
  * against Firefox in CI" reasoning as `verify-multiplayer-connect.mjs` — see
@@ -27,18 +52,6 @@
  * scripts' connect-to-ticking boilerplate — matches this project's own
  * existing convention of each verify script owning its own `check()`/
  * `failures` bookkeeping.
- *
- * The guest is deliberately left idle throughout the host's walk, rather
- * than bot-driven too — the demo campaign's own real, roaming enemies
- * reliably kill an idle player within several real seconds (confirmed
- * directly while building `verify-multiplayer-disconnect.mjs`), which is
- * *useful* here: it's the simplest real way to reach the "a player killed
- * pre-transition is alive at `REVIVE_HEALTH` post-transition" scenario this
- * script needs to cover, without needing to script combat deliberately. If
- * the guest happens to survive on a particular run (a sparser map, more
- * distant enemies), the revival-specific checks below are skipped rather
- * than failed — this script still proves the transition itself works
- * either way.
  *
  * Numeric carryover exactness (exact health/ammo values, weapon ownership)
  * is already unit-tested against hand-built fixtures; this script checks the
@@ -60,43 +73,12 @@ const TARGET_TICK = 30; // 1s of real ticking at TICK_RATE_HZ(30) — comfortabl
 const COUNTDOWN_TIMEOUT_MS = 15_000; // COUNTDOWN_TICKS is 5s at 30Hz; well beyond that for real timer/broadcast jitter.
 const TRANSITION_TIMEOUT_MS = 30_000; // countdown (5s) + chunked broadcast + ack round-trip + real map generation.
 const FINAL_APPROACH_TICKS = 80; // mirrors run-balancing-telemetry.mjs's own FINAL_APPROACH_TICKS.
-// `Casual`, deliberately, not a "stronger" profile — tried both `Gamer` and
-// `Pro` directly against this real scenario (post-lag-compensation-fix, so
-// aim/reaction skill genuinely differentiates win rate here, unlike before
-// the fix) and both did measurably *worse*: 8/8 and 14/14 real combat losses
-// respectively in back-to-back local runs, against `Casual`'s own repeated
-// real wins across this whole investigation (CI and local). Root cause:
-// `Gamer`/`Pro`'s `weaponPriority` leads with the self-splash-capable rocket
-// launcher and their `healthDetourThreshold` is far less cautious (Pro
-// detours for health only at 25%, vs Casual's eager 75%) — a DPS-optimized
-// playstyle that's a poor fit for a long, solo, no-backup encounter where
-// surviving matters more than kill speed. "Better aim" doesn't mean "wins
-// this specific scenario more often."
+// Combat performance no longer matters for the host's own profile choice
+// (it's invulnerable — see this file's own top doc comment) — `Casual` is
+// kept simply as a reasonable, already-proven-safe default for the
+// navigation-only decisions the bot still makes (route-following pace,
+// mine-avoidance caution), not because it out-fights any other profile.
 const BOT_PROFILE = PROFILES.Casual;
-
-/** Distinguishes "the host died to the demo campaign's own real, roaming
- * combat before reaching the exit" (organic variance the bot's own combat
- * logic tries hard to avoid, but can't eliminate against a real, non-
- * scripted level) from every other failure mode, so `main()` can retry only
- * that one instead of masking a genuine bug behind a retry. */
-class HostDiedDuringNavigation extends Error {}
-
-// scripts/lib/qualifyLoop.mjs — the same retry-until-success mechanism
-// behind single-player's own "the balancing bot reliably completes this
-// campaign" claim — defaults its own attempt cap to Infinity, not a small
-// fixed number: a hard real level is expected to need more than a handful
-// of tries, even for a profile that's proven capable of finishing it.
-// Sized here to stay CI-practical (each attempt is a couple of real
-// minutes) rather than truly unbounded. Raised from 15 to 25 after real CI
-// data: `Casual` (the best-performing profile here — see `BOT_PROFILE`'s own
-// doc comment) still occasionally exhausted a 15-attempt budget purely to
-// real combat variance, no bug involved (confirmed: zero transport errors,
-// the underlying mechanism proven correct elsewhere in the same run). 25
-// meaningfully lowers that probability at the cost of a longer worst-case
-// CI runtime, accepted as the right tradeoff over papering over it with a
-// weaker/different signal (a stronger bot profile measured *worse* here —
-// see `BOT_PROFILE`'s own doc comment for why).
-const MAX_SCENARIO_ATTEMPTS = 25;
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -249,14 +231,21 @@ async function setupSession(browser, engineName) {
 }
 
 /**
- * Drives the host's real player, fighting and navigating (via
- * `MultiplayerBot`, reusing `scripts/lib/bot.mjs`'s proven single-player
- * decision logic) from wherever it currently is onto `map.exit`. Route-
- * planned Node-side from the real generated map (`planRoute` — doors/keys
- * included, unlike a plain bfs walker), seeded from the host's *actual*
- * multiplayer spawn tile rather than `map.spawn` (the single-player-only
- * spawn field `planRoute` itself reads by default — multiplayer assigns the
- * host a different tile, see `sessionEngine.ts`'s `spawnFor`).
+ * Drives the host's real player, navigating (via `MultiplayerBot`, reusing
+ * `scripts/lib/bot.mjs`'s proven single-player decision logic) from wherever
+ * it currently is onto `map.exit`. Route-planned Node-side from the real
+ * generated map (`planRoute` — doors/keys included, unlike a plain bfs
+ * walker), seeded from the host's *actual* multiplayer spawn tile rather
+ * than `map.spawn` (the single-player-only spawn field `planRoute` itself
+ * reads by default — multiplayer assigns the host a different tile, see
+ * `sessionEngine.ts`'s `spawnFor`). Assumes the caller already made the host
+ * invulnerable (this file's own top doc comment) — `state === "over"` (the
+ * host's own status went from "alive" to dead, see
+ * `RaycasterEngine.getBotPlayerState`'s doc comment) should therefore be
+ * structurally unreachable here; still checked and thrown as a real, fatal
+ * (non-retried) error rather than silently ignored, since it firing anyway
+ * would mean the god-mode call itself failed or was skipped — a genuine bug
+ * worth surfacing immediately, not a condition to retry through.
  */
 async function driveHostToExit(hostPage, map) {
   const hostSpawn = await hostPage.evaluate(() => {
@@ -270,12 +259,12 @@ async function driveHostToExit(hostPage, map) {
   bot.startLevel(map);
 
   const legOutcome = await bot.driveLegs(route.legs);
-  if (legOutcome.state === "over") throw new HostDiedDuringNavigation("host died while walking the planned route to the exit");
+  if (legOutcome.state === "over") throw new Error(`host died despite god mode — the debugSetGodMode call itself must have failed: ${JSON.stringify(legOutcome)}`);
   if (legOutcome.reason === "stuck") throw new Error(`host got stuck navigating the planned route: ${JSON.stringify(legOutcome)}`);
 
   const exitCenter = { x: map.exit.x + 0.5, y: map.exit.y + 0.5 };
   const pushed = await bot.driveToward(exitCenter, bot.tuning.TIGHT_ARRIVE_EPS, FINAL_APPROACH_TICKS);
-  if (pushed.state === "over") throw new HostDiedDuringNavigation("host died on the final approach to the exit");
+  if (pushed.state === "over") throw new Error(`host died despite god mode — the debugSetGodMode call itself must have failed: ${JSON.stringify(pushed)}`);
   if (pushed.reason === "stuck") throw new Error(`host got stuck on the final approach to the exit: ${JSON.stringify(pushed)}`);
 }
 
@@ -288,23 +277,28 @@ const FIREFOX_LAUNCH_OPTIONS = {
 };
 
 /** Runs the whole connect -> navigate -> countdown -> transition scenario
- * once, against a fresh host+guest pair. May throw `HostDiedDuringNavigation`
- * (retryable — see that class's own doc comment) or any other error
- * (treated as fatal by `main()`). Always tears down its own contexts before
- * returning or throwing. */
+ * once, against a fresh host+guest pair. Any thrown error is fatal — no
+ * retry loop above this call anymore (see this file's own top doc comment
+ * for why the host no longer needs one). Always tears down its own contexts
+ * before returning or throwing. */
 async function runScenario(browser, engineName) {
   const { hostContext, guestContext, hostPage, guestPage } = await setupSession(browser, engineName);
 
   try {
+    // Host-only, applied once right after connect/ticking, before any real
+    // navigation begins — see this file's own top doc comment for why the
+    // guest is deliberately left out of this call.
+    await hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.debugSetGodMode("host", true));
+
     const before = await hostPage.evaluate(() => {
       const hooks = window.__codeensteinMultiplayerTestHooks;
       return { map: hooks.getMap(), exit: hooks.getMapExit() };
     });
     check("host: has a real generated map to navigate", before.map !== null && before.exit !== null, JSON.stringify(before.exit));
 
-    console.log("  Guest: left idle — the demo campaign's own real enemies are the simplest way to reach a genuine pre-transition death.");
+    console.log("  Guest: left idle and vulnerable — the demo campaign's own real enemies are the simplest way to reach a genuine pre-transition death.");
 
-    console.log("  Host: navigating (and fighting, via MultiplayerBot) to the real exit...");
+    console.log("  Host: navigating (invulnerable) to the real exit...");
     try {
       await driveHostToExit(hostPage, before.map);
     } catch (err) {
@@ -428,15 +422,7 @@ async function main() {
   const browser = await engine.launch(engineName === "firefox" ? FIREFOX_LAUNCH_OPTIONS : undefined);
 
   try {
-    for (let attempt = 1; attempt <= MAX_SCENARIO_ATTEMPTS; attempt++) {
-      try {
-        await runScenario(browser, engineName);
-        break;
-      } catch (err) {
-        if (!(err instanceof HostDiedDuringNavigation) || attempt === MAX_SCENARIO_ATTEMPTS) throw err;
-        console.log(`  [retry] attempt ${attempt}/${MAX_SCENARIO_ATTEMPTS} lost to real combat variance (${err.message}) — starting a fresh attempt...`);
-      }
-    }
+    await runScenario(browser, engineName);
   } finally {
     await browser.close();
   }
