@@ -5,7 +5,11 @@ import { describe, expect, it } from "vitest";
 import { EMPTY_SNAPSHOT } from "../engine/replay";
 import type { InputSnapshot } from "../engine/input";
 import { InputDelayBuffer } from "./inputDelayBuffer";
-import { INPUT_DELAY_TICKS } from "./netcodeConstants";
+import { TICK_RATE_HZ } from "./netcodeConstants";
+
+// Mirrors inputDelayBuffer.ts's own MAX_TICK_DRIFT_TICKS exactly (not exported —
+// a DoS-prevention ceiling, not something real callers should ever need to know).
+const MAX_TICK_DRIFT_TICKS = TICK_RATE_HZ * 10;
 
 function snapshot(overrides: Partial<InputSnapshot> = {}): InputSnapshot {
   return { ...EMPTY_SNAPSHOT, ...overrides };
@@ -101,17 +105,35 @@ describe("InputDelayBuffer", () => {
       const buffer = new InputDelayBuffer();
       buffer.finalize(100, [], 1 / 30); // establishes lastFinalizedTick = 100, nothing to record
 
-      // Edges: lastFinalizedTick - INPUT_DELAY_TICKS (past), lastFinalizedTick
-      // + INPUT_DELAY_TICKS + INPUT_DELAY_TICKS (future slack) — both must
-      // still be accepted.
-      buffer.record(100 - INPUT_DELAY_TICKS, "p1", snapshot());
-      buffer.record(100 + INPUT_DELAY_TICKS + INPUT_DELAY_TICKS, "p1", snapshot());
+      // Edges: lastFinalizedTick - MAX_TICK_DRIFT_TICKS (past), lastFinalizedTick
+      // + MAX_TICK_DRIFT_TICKS (future) — both must still be accepted, since
+      // this is a DoS-prevention ceiling (see the constant's own doc
+      // comment), not a tight per-packet-jitter tolerance — it must survive
+      // a real stall/catch-up burst, not just ordinary network timing.
+      buffer.record(100 - MAX_TICK_DRIFT_TICKS, "p1", snapshot());
+      buffer.record(100 + MAX_TICK_DRIFT_TICKS, "p1", snapshot());
       expect(buffer.pendingTickCountForTest).toBe(2);
 
       // One tick further out on either side — dropped.
-      buffer.record(100 - INPUT_DELAY_TICKS - 1, "p1", snapshot());
-      buffer.record(100 + INPUT_DELAY_TICKS + INPUT_DELAY_TICKS + 1, "p1", snapshot());
+      buffer.record(100 - MAX_TICK_DRIFT_TICKS - 1, "p1", snapshot());
+      buffer.record(100 + MAX_TICK_DRIFT_TICKS + 1, "p1", snapshot());
       expect(buffer.pendingTickCountForTest).toBe(2); // unchanged
+    });
+
+    it("survives a realistic catch-up burst after a stall (finding 5 regression: this used to be tied to INPUT_DELAY_TICKS, a ~9-tick/300ms window trivially exceeded by a real GC pause or CI resource contention)", () => {
+      const buffer = new InputDelayBuffer();
+      buffer.finalize(0, [], 1 / 30); // establishes lastFinalizedTick = 0
+
+      // A real stall can make TickAccumulator.advance() post many due ticks
+      // in one burst (its own doc comment) — the other peer's genuinely
+      // still-useful, correctly-tagged input arriving for a tick well past
+      // the old ~9-tick window, but comfortably inside a real stall/network
+      // hiccup's timescale, must not be silently dropped.
+      const burstTick = 150; // 5 real seconds of ticks at TICK_RATE_HZ — comfortably survives a real stall, still far inside MAX_TICK_DRIFT_TICKS
+      buffer.record(burstTick, "p1", snapshot({ fireQueued: true }));
+      const bundle = buffer.finalize(burstTick, ["p1"], 1 / 30);
+      expect(bundle.inputs.p1).toEqual(snapshot({ fireQueued: true }));
+      expect(bundle.heldInputFallback).toEqual([]);
     });
 
     it("never drops anything before the first finalize() call — the real in-flight window isn't known yet", () => {
