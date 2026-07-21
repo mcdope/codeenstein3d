@@ -375,14 +375,35 @@ export function findDisarmableMine(mines, player, abandoned, map, navTarget) {
     .sort((a, b) => a.dist - b.dist)[0];
 }
 
-/** A visible mine close enough to be actively dangerous (inside its own
- * blast radius) rather than just a target to line up a shot on — "stop, back
- * up" comes before "shoot" (see `Bot#tick`'s mine-handling doc comment). */
-export function findDangerousMine(mines, player, abandoned) {
+/**
+ * A visible mine close enough to be actively dangerous (inside its own blast
+ * radius, plus `reactionBufferTiles`) rather than just a target to line up a
+ * shot on — "stop, back up" comes before "shoot" (see `Bot#tick`'s
+ * mine-handling doc comment).
+ *
+ * `reactionBufferTiles` (default 0, i.e. exactly `MINE_BLAST_RADIUS`) exists
+ * because a mine's own fuse (`MINE_FUSE_SECONDS`, `traps.ts`) ticks in real
+ * time regardless of how often this function gets called — a decision-window
+ * long enough to cover more real ground than the gap between "just outside
+ * blast radius" and "already caught in it" leaves the bot with no chance to
+ * react between one decision seeing "safe" and a mine detonating mid-window.
+ * Confirmed directly against `MultiplayerBot`'s much longer real decision
+ * window (`DEFAULT_STEP_MS`, 400ms vs. single-player's own realtime
+ * `WATCH_STEP_MS`, 130ms): a bot standing 3-4 tiles from its own *disarm*
+ * target (correctly beyond `MINE_BLAST_RADIUS` from that one) still took real
+ * splash damage from a *different*, closer mine in the same cluster that had
+ * already been armed and went off entirely within one held decision, with no
+ * chance to retreat from it first. Callers pass their own real
+ * `ENGINE_MOVE_SPEED * ENGINE_SPRINT_MULTIPLIER * (stepMs / 1000)` — at
+ * single-player's own short decision windows this rounds to well under a
+ * tile, a harmless no-op widening; only a caller with a long real decision
+ * window (multiplayer) gets a buffer that actually matters.
+ */
+export function findDangerousMine(mines, player, abandoned, reactionBufferTiles = 0) {
   return mines
     .filter((m) => m.alive && m.visible && !abandoned?.has(`${m.x},${m.y}`))
     .map((m) => ({ ...m, dist: Math.hypot(m.x - player.x, m.y - player.y) }))
-    .filter((m) => m.dist <= DEFAULT_TUNING.MINE_BLAST_RADIUS)
+    .filter((m) => m.dist <= DEFAULT_TUNING.MINE_BLAST_RADIUS + reactionBufferTiles)
     .sort((a, b) => a.dist - b.dist)[0];
 }
 
@@ -882,7 +903,11 @@ export class Bot {
     // continue. Backing away takes priority over shooting (below) since you
     // can't line up a safe shot from inside your own target's blast radius.
     if (!threat && this.profile.proactiveMineDisarm) {
-      const dangerMine = findDangerousMine(mines, player, this.mineMemory?.abandoned);
+      // See `findDangerousMine`'s own doc comment for why this buffer exists
+      // — a real, decision-window-scaled reaction margin, not a fixed tile
+      // count.
+      const mineReactionBufferTiles = this.tuning.ENGINE_MOVE_SPEED * this.tuning.ENGINE_SPRINT_MULTIPLIER * (this.stepMs / 1000);
+      const dangerMine = findDangerousMine(mines, player, this.mineMemory?.abandoned, mineReactionBufferTiles);
       if (dangerMine) {
         const key = `${dangerMine.x},${dangerMine.y}`;
         let gaveUp = false;
