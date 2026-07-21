@@ -1714,6 +1714,74 @@ describe("main.ts — multiplayer connect flow", () => {
       expect(pollInit.headers).toMatchObject({ "X-Host-Token": "host-tok" });
     });
 
+    it("re-offers via updateSession() under the same code/hostToken after a bad/hijacked answer, then succeeds", async () => {
+      // Regression test: a public session's code is trivially obtainable
+      // (GET /lobby, no auth) — any client who knows it can race the real
+      // guest with a garbage answer. Previously, a setRemoteDescription
+      // failure just abandoned the whole session; now the host re-offers
+      // under the SAME code/hostToken via updateSession() (already
+      // documented for exactly this in multiplayer-server-spec.md's `409
+      // already_answered` guidance) and keeps waiting for the real guest.
+      await loadEligibleWorkspace();
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201)) // PUT create
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "bad-answer-sdp", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ) // GET poll — a racer's garbage answer arrives first
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update — re-offer under the same code
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-2", answer: "good-answer-sdp", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ); // GET poll — the real guest's answer
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      const pc1 = readyHostPeerConnection();
+      pc1.setRemoteDescriptionError = new Error("setRemoteDescription failed on a garbage answer");
+
+      // The retry constructs a fresh RTCPeerConnection via createHostOffer()
+      // — wait for it the same way the N-player re-arm tests above do.
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      const pc2 = readyHostPeerConnection();
+
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+      expect(pc2.remoteDescription).toEqual({ type: "answer", sdp: "good-answer-sdp" });
+      expect(pc1.closeCallCount).toBe(1);
+
+      const [updateUrl, updateInit] = fetchMock.mock.calls[2];
+      expect(updateUrl).toBe(`${SERVER_URL}/session`);
+      expect(JSON.parse(updateInit.body)).toMatchObject({ code: "R4KJ9X", hostToken: "host-tok" });
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    it("surfaces the connection error once the bad-answer retry budget is exhausted", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await loadEligibleWorkspace();
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201)) // PUT create
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "bad-answer-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ) // GET poll — attempt 1, bad answer
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-2", answer: "bad-answer-2", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ) // GET poll — attempt 2, bad answer
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-3", answer: "bad-answer-3", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ); // GET poll — attempt 3, bad answer — retry budget (3) now exhausted
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      for (let i = 0; i < 3; i++) {
+        await waitUntil(() => FakeRTCPeerConnection.instances.length > i);
+        const pc = readyHostPeerConnection();
+        pc.setRemoteDescriptionError = new Error(`setRemoteDescription failed (attempt ${i + 1})`);
+      }
+
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.classList.contains("error"));
+      expect(warnSpy).toHaveBeenCalledTimes(2); // attempts 1 and 2 warn-and-retry; attempt 3 throws to the outer catch instead
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.disabled).toBe(false);
+      expect(fetchMock).toHaveBeenCalledTimes(6);
+    });
+
     it("N-player (step 10): with maxPlayers=3, a second guest auto-joins sequentially against the same code", async () => {
       await loadEligibleWorkspace();
       document.querySelector<HTMLSelectElement>("#multiplayer-max-players")!.value = "3";
