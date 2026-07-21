@@ -90,8 +90,14 @@ export class InputDelayBuffer {
    * grace means genuinely inert (nobody's driving that player anymore, so it
    * should stand still, not keep repeating whatever it was last doing —
    * held-last-input is for a brief real-input gap, not a peer that's gone).
+   *
+   * Returns everything but `levelEpoch` — that field is a purely local
+   * counter the session driver (not this buffer) tracks, incremented inside
+   * its own `startLevel()` call (see `TickInputBundle.levelEpoch`'s own doc
+   * comment); the caller stamps it onto the bundle this returns before
+   * broadcasting it.
    */
-  finalize(tick: number, rosterIds: readonly PlayerId[], dt: number, graceIds?: ReadonlySet<PlayerId>): TickInputBundle {
+  finalize(tick: number, rosterIds: readonly PlayerId[], dt: number, graceIds?: ReadonlySet<PlayerId>): Omit<TickInputBundle, "levelEpoch"> {
     const forTick = this.pending.get(tick);
     const inputs: Record<PlayerId, InputSnapshot> = {};
     const heldInputFallback: PlayerId[] = [];

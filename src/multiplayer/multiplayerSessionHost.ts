@@ -371,6 +371,12 @@ export function runMultiplayerSessionAsHost(
   let localSampler: SessionEngineHandle["localSampler"] | undefined;
   let hasStarted = false;
   let transitionInProgress = false;
+  // Purely local, never transmitted as its own message (see
+  // `TickInputBundle.levelEpoch`'s own doc comment) — bumped alongside
+  // `localSampler.detach()` below, on every `startLevel()` call *after* the
+  // first, so it stays in lockstep with the guest's own identical counter
+  // (both sides call `startLevel()` exactly once per transition).
+  let levelEpoch = 0;
 
   /** Fired once this peer's own simulation reaches a win (see
    * `sessionEngine.ts`'s own `onWin` doc comment for why that's not
@@ -457,7 +463,10 @@ export function runMultiplayerSessionAsHost(
   };
 
   const startLevel = (levelResult: SessionSetupResult, carryovers?: Record<PlayerId, EngineCarryover>): void => {
-    if (hasStarted) localSampler?.detach();
+    if (hasStarted) {
+      localSampler?.detach();
+      levelEpoch++;
+    }
     hasStarted = true;
     const built = buildSessionEngine({
       result: levelResult,
@@ -525,12 +534,17 @@ export function runMultiplayerSessionAsHost(
     // Finalize and broadcast the tick that's actually due now. `currentResult.roster`
     // (not the outer `result` param) so a level transition's roster — unchanged
     // today, but read fresh either way — is never silently stale.
-    const bundle: TickInputBundle = inputDelayBuffer.finalize(
+    const finalized = inputDelayBuffer.finalize(
       tick,
       currentResult.roster,
       FIXED_DT,
       neutralInputIds.size > 0 ? neutralInputIds : undefined,
     );
+    // `levelEpoch` stamped on here, not inside `InputDelayBuffer.finalize()`
+    // itself — it's a purely local, per-session-driver counter (see
+    // `TickInputBundle.levelEpoch`'s own doc comment), not something the
+    // buffer needs to know about.
+    const bundle: TickInputBundle = { ...finalized, levelEpoch };
     totalTicks++;
     // `missedTicksByPlayer` is seeded from the full, fixed roster above, and
     // `heldInputFallback` only ever contains roster ids (`InputDelayBuffer.

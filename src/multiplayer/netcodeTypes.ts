@@ -28,6 +28,19 @@ export interface TickInputBundle {
   /** Always `FIXED_DT` — included for a receiver-side sanity check, not
    * because it varies. */
   dt: number;
+  /** A purely local counter, incremented independently by the host and each
+   * guest inside their own `startLevel()` call (never transmitted/agreed as
+   * its own handshake) — host and guest advance it in lockstep, since both
+   * sides call `startLevel()` exactly once per transition. Exists because
+   * `input`/`reconciliation` are two independent WebRTC data channels with
+   * no cross-channel ordering guarantee: a guest that's already swapped to a
+   * new level (via a `reconciliation`-channel level-transition handshake)
+   * can still receive one or more already-in-flight OLD-level
+   * `TickInputBundle`s on the `input` channel afterward. A guest discards
+   * any incoming bundle whose `levelEpoch` doesn't match its own current
+   * one, rather than `engine.advance()`-ing a stale bundle against the
+   * freshly-swapped engine. */
+  levelEpoch: number;
   inputs: Record<PlayerId, InputSnapshot>;
   /** playerIds whose input for this tick used the held-last-input fallback
    * (no real, on-time packet had arrived) — diagnostic-only. */

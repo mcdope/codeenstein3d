@@ -167,8 +167,18 @@ export function runMultiplayerSessionAsGuest(
   let transitionCarryovers: Record<PlayerId, EngineCarryover> | null = null;
   let transitionGameplaySeed: number | null = null;
 
+  // Purely local, never transmitted as its own message (see
+  // `TickInputBundle.levelEpoch`'s own doc comment) — bumped alongside
+  // `localSampler.detach()` below, on every `startLevel()` call *after* the
+  // first, so it stays in lockstep with the host's own identical counter
+  // (both sides call `startLevel()` exactly once per transition).
+  let levelEpoch = 0;
+
   const startLevel = (levelResult: SessionSetupResult, carryovers?: Record<PlayerId, EngineCarryover>): void => {
-    if (hasStarted) localSampler?.detach();
+    if (hasStarted) {
+      localSampler?.detach();
+      levelEpoch++;
+    }
     hasStarted = true;
     const built = buildSessionEngine({
       result: levelResult,
@@ -207,6 +217,17 @@ export function runMultiplayerSessionAsGuest(
     // documents elsewhere in this codebase.
     /* v8 ignore next */
     if (!engine || !myInput || !otherInputs || !localSampler) return;
+    // `input`/`reconciliation` are two independent WebRTC data channels with
+    // no cross-channel ordering guarantee — this peer can finish a
+    // level-transition handshake (over `reconciliation`) and swap to a
+    // brand-new engine, then still receive one or more already-in-flight
+    // OLD-level `TickInputBundle`s on `input` afterward. Discarded outright
+    // rather than sampled/replied-to/`advance()`-d against the wrong engine
+    // (see `TickInputBundle.levelEpoch`'s own doc comment).
+    if (bundle.levelEpoch !== levelEpoch) {
+      console.log(`[multiplayer] discarding stale tick-input bundle for level epoch ${bundle.levelEpoch}, currently on epoch ${levelEpoch}`);
+      return;
+    }
     totalTicks++;
     // `missedTicksByPlayer` is seeded from the full, fixed roster above, and
     // `heldInputFallback` only ever contains roster ids (`InputDelayBuffer.

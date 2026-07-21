@@ -225,6 +225,7 @@ describe("runMultiplayerSessionAsGuest", () => {
     const bundle: TickInputBundle = {
       tick: 5,
       dt: 1 / 30,
+      levelEpoch: 0,
       inputs: { host: emptySnapshot(), guest: emptySnapshot() },
       heldInputFallback: [],
     };
@@ -242,6 +243,7 @@ describe("runMultiplayerSessionAsGuest", () => {
     const bundle: TickInputBundle = {
       tick: 0,
       dt: 1 / 30,
+      levelEpoch: 0,
       inputs: { host: emptySnapshot({ fireQueued: true }), guest: emptySnapshot() },
       heldInputFallback: [],
     };
@@ -257,6 +259,7 @@ describe("runMultiplayerSessionAsGuest", () => {
     const bundle: TickInputBundle = {
       tick: 0,
       dt: 1 / 30,
+      levelEpoch: 0,
       inputs: { host: emptySnapshot(), guest: emptySnapshot(), "guest-2": emptySnapshot({ fireQueued: true }) },
       heldInputFallback: [],
     };
@@ -283,6 +286,7 @@ describe("runMultiplayerSessionAsGuest", () => {
     const bundle: TickInputBundle = {
       tick: 0,
       dt: 1 / 30,
+      levelEpoch: 0,
       inputs: { host: emptySnapshot(), guest: emptySnapshot() },
       heldInputFallback: [],
     };
@@ -310,7 +314,7 @@ describe("runMultiplayerSessionAsGuest", () => {
     const channels = linkedChannels();
     const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map }));
     expect(handle.getExitCountdownRemaining()).toBeNull();
-    const bundle: TickInputBundle = { tick: 0, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+    const bundle: TickInputBundle = { tick: 0, dt: 1 / 30, levelEpoch: 0, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
     channels.host.input.send(JSON.stringify(bundle));
     expect(handle.getExitCountdownRemaining()).toBe(COUNTDOWN_TICKS);
   });
@@ -343,7 +347,7 @@ describe("runMultiplayerSessionAsGuest", () => {
     const onSessionEnded = vi.fn();
     runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map }), onSessionEnded);
 
-    const bundle: TickInputBundle = { tick: 0, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+    const bundle: TickInputBundle = { tick: 0, dt: 1 / 30, levelEpoch: 0, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
     // FIXED_DT-paced ticks (1/30s each) — needs many more iterations than a
     // dt=1 advance() loop would to cover the same in-sim elapsed time.
     for (let i = 0; i < 300 && onSessionEnded.mock.calls.length === 0; i++) {
@@ -379,7 +383,7 @@ describe("runMultiplayerSessionAsGuest", () => {
     // cross-channel ordering, so a snapshot for an earlier tick can still
     // arrive after this.
     for (let tick = 0; tick <= 5; tick++) {
-      const bundle: TickInputBundle = { tick, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+      const bundle: TickInputBundle = { tick, dt: 1 / 30, levelEpoch: 0, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
       channels.host.input.send(JSON.stringify(bundle));
     }
     expect(handle.getLastAppliedTick()).toBe(5);
@@ -405,7 +409,7 @@ describe("runMultiplayerSessionAsGuest", () => {
     const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map: fakeMap({ spawn: { x: 5, y: 5 } }) }));
 
     for (let tick = 0; tick <= 5; tick++) {
-      const bundle: TickInputBundle = { tick, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+      const bundle: TickInputBundle = { tick, dt: 1 / 30, levelEpoch: 0, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
       channels.host.input.send(JSON.stringify(bundle));
     }
     expect(handle.getLastAppliedTick()).toBe(5);
@@ -478,6 +482,7 @@ describe("runMultiplayerSessionAsGuest", () => {
       const bundle: TickInputBundle = {
         tick: 5,
         dt: 1 / 30,
+      levelEpoch: 0,
         inputs: { host: emptySnapshot(), guest: emptySnapshot() },
         heldInputFallback: ["host"],
       };
@@ -534,6 +539,7 @@ describe("runMultiplayerSessionAsGuest", () => {
     const bundle: TickInputBundle = {
       tick: 0,
       dt: 1 / 30,
+      levelEpoch: 0,
       inputs: { host: emptySnapshot(), guest: emptySnapshot() },
       heldInputFallback: [],
       rosterRemove: ["host"],
@@ -548,7 +554,7 @@ describe("runMultiplayerSessionAsGuest", () => {
     const channels = linkedChannels();
     const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
 
-    const bundle: TickInputBundle = { tick: 0, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+    const bundle: TickInputBundle = { tick: 0, dt: 1 / 30, levelEpoch: 0, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
     channels.host.input.send(JSON.stringify(bundle));
 
     expect(handle.getPlayerStatus("host")).toBe("alive");
@@ -666,7 +672,7 @@ describe("runMultiplayerSessionAsGuest", () => {
       runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
 
       window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" }));
-      const bundle: TickInputBundle = { tick: 0, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+      const bundle: TickInputBundle = { tick: 0, dt: 1 / 30, levelEpoch: 0, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
       channels.host.input.send(JSON.stringify(bundle));
 
       expect(dismissSpy).toHaveBeenCalledTimes(1);
@@ -677,7 +683,7 @@ describe("runMultiplayerSessionAsGuest", () => {
       const dismissSpy = vi.spyOn(RaycasterEngine.prototype, "dismissLoreOverlay");
       runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
 
-      const bundle: TickInputBundle = { tick: 0, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+      const bundle: TickInputBundle = { tick: 0, dt: 1 / 30, levelEpoch: 0, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
       channels.host.input.send(JSON.stringify(bundle));
 
       expect(dismissSpy).not.toHaveBeenCalled();
@@ -722,6 +728,59 @@ describe("runMultiplayerSessionAsGuest", () => {
       expect(handle.getPlayerPosition("guest")).toEqual({ x: 7.5, y: 7.5 });
       expect(handle.getPlayerStatus("guest")).toBe("alive");
       expect(hostSeenMessages).toContainEqual({ type: "level-transition-ack", playerId: "guest" });
+    });
+
+    it("discards a stale-epoch tick-input bundle arriving after a level transition, instead of advancing the freshly-swapped engine (finding 7)", () => {
+      const channels = linkedChannels();
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+      expect(handle.getPlayerPosition("guest")).toEqual({ x: 5.5, y: 5.5 }); // default fakeMap() spawn
+
+      const nextMap = fakeMap({ spawn: { x: 7, y: 7 } });
+      const carryovers: Record<PlayerId, EngineCarryover> = {
+        host: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 },
+        guest: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 },
+      };
+      sendLevelTransition(channels, nextMap, carryovers, 1); // bumps the guest's own levelEpoch from 0 to 1
+      expect(handle.getPlayerPosition("guest")).toEqual({ x: 7.5, y: 7.5 }); // swapped to the new level
+
+      // A pre-transition (epoch 0) TickInputBundle, still in flight on the
+      // independent `input` channel with no cross-channel ordering guarantee
+      // toward `reconciliation` (which the transition itself rode) — must be
+      // discarded, never applied against the freshly-swapped engine.
+      const staleBundle: TickInputBundle = {
+        tick: 999,
+        dt: 1 / 30,
+        levelEpoch: 0,
+        inputs: { host: emptySnapshot(), guest: emptySnapshot() },
+        heldInputFallback: [],
+      };
+      channels.host.input.send(JSON.stringify(staleBundle));
+
+      expect(handle.getLastAppliedTick()).toBeNull(); // discarded — never applied
+      expect(handle.getPlayerPosition("guest")).toEqual({ x: 7.5, y: 7.5 }); // unchanged
+    });
+
+    it("still applies a current-epoch tick-input bundle normally after a level transition", () => {
+      const channels = linkedChannels();
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+
+      const nextMap = fakeMap({ spawn: { x: 7, y: 7 } });
+      const carryovers: Record<PlayerId, EngineCarryover> = {
+        host: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 },
+        guest: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 },
+      };
+      sendLevelTransition(channels, nextMap, carryovers, 1); // bumps the guest's own levelEpoch from 0 to 1
+
+      const currentBundle: TickInputBundle = {
+        tick: 0,
+        dt: 1 / 30,
+        levelEpoch: 1,
+        inputs: { host: emptySnapshot(), guest: emptySnapshot() },
+        heldInputFallback: [],
+      };
+      channels.host.input.send(JSON.stringify(currentBundle));
+
+      expect(handle.getLastAppliedTick()).toBe(0); // applied normally — not stale
     });
 
     it("carries each player's own health from the carryover into the new level", () => {
@@ -800,7 +859,7 @@ describe("runMultiplayerSessionAsGuest", () => {
       runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map }), onSessionEnded);
 
       for (let i = 0; i < COUNTDOWN_TICKS + 1; i++) {
-        const bundle: TickInputBundle = { tick: i, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+        const bundle: TickInputBundle = { tick: i, dt: 1 / 30, levelEpoch: 0, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
         channels.host.input.send(JSON.stringify(bundle));
       }
 
