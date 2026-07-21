@@ -26,7 +26,7 @@
  */
 
 import { createServer } from "node:http";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { writeFileSync, rmSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -361,6 +361,24 @@ function byteLength(str) {
   return Buffer.byteLength(str, "utf8");
 }
 
+/** Constant-time secret comparison for `hostToken`/`X-Stats-Token` checks.
+ * Plain `!==`/`===` on strings short-circuits at the first mismatched
+ * character — the wrong pattern for comparing secrets, even though real-
+ * network jitter likely swamps the timing signal in practice here.
+ * `crypto.timingSafeEqual` requires equal-length buffers (it *throws* on a
+ * length mismatch), so a length check comes first and a mismatch there is
+ * simply treated as "not equal" without ever calling it — a length
+ * difference is not itself sensitive (both tokens are fixed-format:
+ * `hostToken` is a `randomUUID()`, `STATS_TOKEN` a fixed operator-configured
+ * value), only the *content* comparison needs to be constant-time. */
+function timingSafeStringEqual(provided, expected) {
+  if (typeof provided !== "string" || typeof expected !== "string") return false;
+  const providedBuf = Buffer.from(provided, "utf8");
+  const expectedBuf = Buffer.from(expected, "utf8");
+  if (providedBuf.length !== expectedBuf.length) return false;
+  return timingSafeEqual(providedBuf, expectedBuf);
+}
+
 // ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
@@ -420,7 +438,7 @@ async function handlePutSession(req, res) {
     if (typeof body.code !== "string") return sendError(res, 400, "invalid_code");
     const record = getLiveSession(body.code, now);
     if (!record) return sendError(res, 404, "session_not_found");
-    if (typeof body.hostToken !== "string" || body.hostToken !== record.hostToken) {
+    if (!timingSafeStringEqual(body.hostToken, record.hostToken)) {
       return sendError(res, 403, "host_token_mismatch");
     }
 
@@ -466,8 +484,7 @@ function handleGetSession(req, res, code) {
   const record = getLiveSession(code, now);
 
   const providedToken = req.headers["x-host-token"];
-  const isHostAuthenticated =
-    !!record && typeof providedToken === "string" && providedToken === record.hostToken;
+  const isHostAuthenticated = !!record && timingSafeStringEqual(providedToken, record.hostToken);
 
   const limit = isHostAuthenticated
     ? checkRateLimit(hostTokenLimits, ip, HOST_TOKEN_MAX_REQUESTS, now)
@@ -569,7 +586,7 @@ function countInCooldown(map, now) {
  * comment for why this whole endpoint is opt-in and 404s indistinguishably
  * from an unknown route unless explicitly configured and authenticated. */
 function handleGetStats(req, res) {
-  if (!STATS_TOKEN || req.headers["x-stats-token"] !== STATS_TOKEN) {
+  if (!STATS_TOKEN || !timingSafeStringEqual(req.headers["x-stats-token"], STATS_TOKEN)) {
     return sendError(res, 404, "not_found");
   }
 

@@ -692,6 +692,88 @@ async function runStatsSuite() {
 }
 
 // ---------------------------------------------------------------------------
+// Constant-time secret comparison (hostToken / X-Stats-Token) — asserts
+// accept/reject behavior is unchanged for correct, wrong-length, and
+// same-length-wrong tokens at all three comparison sites: the PUT /session
+// update branch, GET /session/<code>'s host-token-budget-bypass check, and
+// GET /stats's X-Stats-Token check.
+// ---------------------------------------------------------------------------
+
+/** Same length as `token`, guaranteed different content — a targeted
+ * "same-length-wrong" probe distinct from a plain wrong-length probe. */
+function differentSameLengthToken(token) {
+  const last = token[token.length - 1];
+  const replacement = last === "X" ? "Y" : "X";
+  return token.slice(0, -1) + replacement;
+}
+
+async function runTimingSafeComparisonSuite() {
+  const port = 8904;
+  const statsToken = "stats-timing-token";
+  const { base, child } = await spawnServer(port, {
+    CODEENSTEIN_MULTIPLAYER_STATS_TOKEN: statsToken,
+    CODEENSTEIN_MULTIPLAYER_RATE_LIMIT_MAX_REQUESTS: "5",
+    CODEENSTEIN_MULTIPLAYER_HOST_TOKEN_MAX_REQUESTS: "50",
+  });
+  try {
+    const ip = "10.4.0.1";
+    const created = await json(
+      await fetch(`${base}/session`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...xff(ip) },
+        body: JSON.stringify({ offer: "x", campaignName: "c", playerCount: 1 }),
+      }),
+    );
+    const wrongLenToken = created.hostToken.slice(0, -4);
+    const sameLenWrongToken = differentSameLengthToken(created.hostToken);
+
+    // --- Site 1: PUT /session update branch (~handlePutSession) ---
+    const correctUpdate = await fetch(`${base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff(ip) },
+      body: JSON.stringify({ code: created.code, hostToken: created.hostToken, offer: "y", campaignName: "c", playerCount: 1 }),
+    });
+    check("PUT update: correct hostToken still accepted (200)", correctUpdate.status === 200);
+
+    const wrongLenUpdate = await fetch(`${base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff(ip) },
+      body: JSON.stringify({ code: created.code, hostToken: wrongLenToken, offer: "z", campaignName: "c", playerCount: 1 }),
+    });
+    check("PUT update: wrong-length hostToken still rejected (403)", wrongLenUpdate.status === 403);
+
+    const sameLenUpdate = await fetch(`${base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff(ip) },
+      body: JSON.stringify({ code: created.code, hostToken: sameLenWrongToken, offer: "z2", campaignName: "c", playerCount: 1 }),
+    });
+    check("PUT update: same-length-wrong hostToken still rejected (403)", sameLenUpdate.status === 403);
+
+    // --- Site 2: GET /session/<code> host-token budget bypass (~handleGetSession) ---
+    const ip2 = "10.4.0.2";
+    for (let i = 0; i < 6; i++) await fetch(`${base}/session/${created.code}`, { headers: xff(ip2) });
+    const wrongLenBypass = await fetch(`${base}/session/${created.code}`, { headers: { "X-Host-Token": wrongLenToken, ...xff(ip2) } });
+    check("GET session: wrong-length token does not bypass a tripped guess budget (429)", wrongLenBypass.status === 429);
+    const sameLenBypass = await fetch(`${base}/session/${created.code}`, { headers: { "X-Host-Token": sameLenWrongToken, ...xff(ip2) } });
+    check("GET session: same-length-wrong token does not bypass a tripped guess budget (429)", sameLenBypass.status === 429);
+    const correctBypass = await fetch(`${base}/session/${created.code}`, { headers: { "X-Host-Token": created.hostToken, ...xff(ip2) } });
+    check("GET session: correct token still bypasses a tripped guess budget (200)", correctBypass.status === 200);
+
+    // --- Site 3: GET /stats X-Stats-Token check (~handleGetStats) ---
+    const correctStats = await fetch(`${base}/stats`, { headers: { "X-Stats-Token": statsToken, ...xff(ip) } });
+    check("GET /stats: correct token accepted (200)", correctStats.status === 200);
+    const wrongLenStats = await fetch(`${base}/stats`, { headers: { "X-Stats-Token": statsToken.slice(0, -3), ...xff(ip) } });
+    check("GET /stats: wrong-length token rejected (404)", wrongLenStats.status === 404);
+    const sameLenWrongStats = await fetch(`${base}/stats`, {
+      headers: { "X-Stats-Token": differentSameLengthToken(statsToken), ...xff(ip) },
+    });
+    check("GET /stats: same-length-wrong token rejected (404)", sameLenWrongStats.status === 404);
+  } finally {
+    await stopServer(child);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // --help / -?
 // ---------------------------------------------------------------------------
 
@@ -739,6 +821,9 @@ async function main() {
 
   console.log("\n--stats / GET /stats:");
   await runStatsSuite();
+
+  console.log("\nConstant-time secret comparison (hostToken / X-Stats-Token):");
+  await runTimingSafeComparisonSuite();
 
   console.log("\n--help / -?:");
   runHelpSuite();
