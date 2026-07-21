@@ -108,7 +108,10 @@ a new handshake round, and a stale answer from the *previous* round must not be
 handed to the *next* joiner.
 
 Errors: `400` (missing/oversized `offer`, invalid `playerCount`, missing
-`campaignName`), `403` (`code` present but `hostToken` doesn't match),
+`campaignName`, or a `displayName`/`campaignName` containing control
+characters or zero-width/bidi-override codepoints — both are relayed
+verbatim to other players' lobby UI via `GET /lobby`, so content is filtered
+at intake, not just type/length), `403` (`code` present but `hostToken` doesn't match),
 `404` (`code` present but no such live session — most likely already expired),
 `429` (rate-limited, §4), `503` (`MAX_CONCURRENT_SESSIONS` reached, §3 — a cheap
 backstop against unbounded session creation outrunning TTL cleanup).

@@ -765,6 +765,88 @@ async function runRateLimitMapCapSuite() {
 }
 
 // ---------------------------------------------------------------------------
+// displayName/campaignName content filtering (control / zero-width / bidi-
+// override codepoints) — built via String.fromCharCode rather than literal
+// source characters, so the invisible/formatting codepoints under test stay
+// visible as plain escapes in this file rather than disappearing into it.
+// ---------------------------------------------------------------------------
+
+const ZERO_WIDTH_SPACE = String.fromCharCode(0x200b);
+const RTL_OVERRIDE = String.fromCharCode(0x202e);
+
+async function runNameContentFilterSuite() {
+  const port = 8906;
+  const { base, child } = await spawnServer(port);
+  try {
+    const ip = "10.6.0.1";
+
+    const zwspDisplayName = await fetch(`${base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff(ip) },
+      body: JSON.stringify({ offer: "x", campaignName: "c", playerCount: 1, displayName: `Evil${ZERO_WIDTH_SPACE}Name` }),
+    });
+    const zwspBody = await json(zwspDisplayName);
+    check(
+      "displayName with a zero-width space is rejected (400)",
+      zwspDisplayName.status === 400 && zwspBody?.error === "display_name_invalid_chars",
+      `status=${zwspDisplayName.status} body=${JSON.stringify(zwspBody)}`,
+    );
+
+    const rtlDisplayName = await fetch(`${base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff(ip) },
+      body: JSON.stringify({ offer: "x", campaignName: "c", playerCount: 1, displayName: `Evil${RTL_OVERRIDE}Name` }),
+    });
+    const rtlBody = await json(rtlDisplayName);
+    check(
+      "displayName with an RTL-override character is rejected (400)",
+      rtlDisplayName.status === 400 && rtlBody?.error === "display_name_invalid_chars",
+      `status=${rtlDisplayName.status} body=${JSON.stringify(rtlBody)}`,
+    );
+
+    const zwspCampaignName = await fetch(`${base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff(ip) },
+      body: JSON.stringify({ offer: "x", campaignName: `evil${ZERO_WIDTH_SPACE}campaign`, playerCount: 1 }),
+    });
+    const zwspCampaignBody = await json(zwspCampaignName);
+    check(
+      "campaignName with a zero-width space is rejected (400)",
+      zwspCampaignName.status === 400 && zwspCampaignBody?.error === "campaign_name_invalid_chars",
+      `status=${zwspCampaignName.status} body=${JSON.stringify(zwspCampaignBody)}`,
+    );
+
+    const rtlCampaignName = await fetch(`${base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff(ip) },
+      body: JSON.stringify({ offer: "x", campaignName: `evil${RTL_OVERRIDE}campaign`, playerCount: 1 }),
+    });
+    const rtlCampaignBody = await json(rtlCampaignName);
+    check(
+      "campaignName with an RTL-override character is rejected (400)",
+      rtlCampaignName.status === 400 && rtlCampaignBody?.error === "campaign_name_invalid_chars",
+      `status=${rtlCampaignName.status} body=${JSON.stringify(rtlCampaignBody)}`,
+    );
+
+    // The filter must not be overly broad: normal printable Unicode
+    // (accented characters, emoji) is still accepted.
+    const normalUnicode = await fetch(`${base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff(ip) },
+      body: JSON.stringify({
+        offer: "x",
+        campaignName: "torvalds/linux",
+        playerCount: 1,
+        displayName: "Tobiäs Bäumer \u{1F600}",
+      }),
+    });
+    check("a normal printable-Unicode displayName (accents + emoji) still succeeds (201)", normalUnicode.status === 201);
+  } finally {
+    await stopServer(child);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Constant-time secret comparison (hostToken / X-Stats-Token) — asserts
 // accept/reject behavior is unchanged for correct, wrong-length, and
 // same-length-wrong tokens at all three comparison sites: the PUT /session
@@ -897,6 +979,9 @@ async function main() {
 
   console.log("\nRate-limit map size cap:");
   await runRateLimitMapCapSuite();
+
+  console.log("\ndisplayName/campaignName content filtering:");
+  await runNameContentFilterSuite();
 
   console.log("\nConstant-time secret comparison (hostToken / X-Stats-Token):");
   await runTimingSafeComparisonSuite();

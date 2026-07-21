@@ -422,6 +422,27 @@ function timingSafeStringEqual(provided, expected) {
   return timingSafeEqual(providedBuf, expectedBuf);
 }
 
+/** Codepoints rejected in `displayName`/`campaignName`: these two fields are
+ * relayed verbatim to *other players'* lobby UI (`GET /lobby`), so beyond
+ * the existing type/length checks they need content filtering too — `.length`
+ * is UTF-16 code units, so a "short" string can still smuggle many
+ * control/formatting codepoints past a length check alone. Rejects:
+ *  - C0 controls (below U+0020) and DEL/C1 controls (U+007F-U+009F) —
+ *    terminal/renderer-disruptive (e.g. could rewrite the visible line via
+ *    escape sequences in a naive console/log renderer).
+ *  - Zero-width and bidi-override formatting codepoints (U+200B-U+200F,
+ *    U+202A-U+202E, U+2060-U+2064, U+FEFF) — the classic "invisible
+ *    characters"/RTL-override spoofing vector for making a displayed name
+ *    read as something other than its actual content (e.g. impersonating
+ *    another player, or hiding characters from a casual read of the lobby). */
+const FORBIDDEN_NAME_CHARS_RE = new RegExp(
+  "[\\u0000-\\u001F\\u007F-\\u009F\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\uFEFF]",
+);
+
+function hasForbiddenNameChars(str) {
+  return FORBIDDEN_NAME_CHARS_RE.test(str);
+}
+
 // ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
@@ -458,6 +479,9 @@ async function handlePutSession(req, res) {
   if (body.campaignName.length > MAX_CAMPAIGN_NAME_CHARS) {
     return sendError(res, 400, "campaign_name_too_long");
   }
+  if (hasForbiddenNameChars(body.campaignName)) {
+    return sendError(res, 400, "campaign_name_invalid_chars");
+  }
   if (
     !Number.isInteger(body.playerCount) ||
     body.playerCount < 1 ||
@@ -469,6 +493,9 @@ async function handlePutSession(req, res) {
     if (typeof body.displayName !== "string") return sendError(res, 400, "invalid_display_name");
     if (body.displayName.length > MAX_DISPLAY_NAME_CHARS) {
       return sendError(res, 400, "display_name_too_long");
+    }
+    if (hasForbiddenNameChars(body.displayName)) {
+      return sendError(res, 400, "display_name_invalid_chars");
     }
   }
   if (body.public !== undefined && typeof body.public !== "boolean") {
