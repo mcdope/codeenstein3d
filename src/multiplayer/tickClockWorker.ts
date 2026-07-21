@@ -12,11 +12,20 @@
  * holds the actual scheduling logic and is unit-tested independently,
  * without needing a real Worker runtime.
  *
- * Message protocol: worker -> main thread only, one `TickDueMessage` per due
- * tick (possibly several in one turn if real time jumped, e.g. after the
- * main thread stalls). Nothing ever flows main -> worker after construction
- * — the tick rate is a fixed, bundled-in constant (`FIXED_DT`), not
- * something a caller configures per instance.
+ * Message protocol: mostly worker -> main thread, one `TickDueMessage` per
+ * due tick (possibly several in one turn if real time jumped, e.g. after the
+ * main thread stalls). The one exception is the inbound `{type: "start"}`
+ * message below — the `setInterval`/`TickAccumulator` construction that used
+ * to run at module-eval time is instead gated behind receiving it. A
+ * `Worker`'s message events are ordinary `EventTarget` dispatches: a message
+ * delivered before any handler is attached is simply lost, so starting the
+ * interval unconditionally at module load risked the very first tick(s)
+ * firing (and being silently dropped) before `main.ts` had assigned its real
+ * `worker.onmessage` handler — on a fast device with a warm module cache,
+ * this could corrupt the session's tick count from the start. Waiting for an
+ * explicit start message that `main.ts` only sends *after* `onmessage` is
+ * assigned makes that race structurally impossible instead of just unlikely
+ * — nothing can be missed before the interval itself even exists yet.
  */
 import { FIXED_DT } from "./netcodeConstants";
 import { TickAccumulator } from "./tickAccumulator";
@@ -26,12 +35,23 @@ export interface TickDueMessage {
   tick: number;
 }
 
-const FIXED_DT_MS = FIXED_DT * 1000;
-const accumulator = new TickAccumulator(FIXED_DT_MS, performance.now());
+export interface StartMessage {
+  type: "start";
+}
 
-setInterval(() => {
-  for (const tick of accumulator.advance(performance.now())) {
-    const message: TickDueMessage = { type: "tick", tick };
-    self.postMessage(message);
-  }
-}, FIXED_DT_MS);
+const FIXED_DT_MS = FIXED_DT * 1000;
+
+function start(): void {
+  const accumulator = new TickAccumulator(FIXED_DT_MS, performance.now());
+  setInterval(() => {
+    for (const tick of accumulator.advance(performance.now())) {
+      const message: TickDueMessage = { type: "tick", tick };
+      self.postMessage(message);
+    }
+  }, FIXED_DT_MS);
+}
+
+self.addEventListener("message", (event: MessageEvent) => {
+  const message = event.data as StartMessage;
+  if (message.type === "start") start();
+});

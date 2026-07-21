@@ -2867,10 +2867,18 @@ describe("main.ts — multiplayer connect flow", () => {
       static instances: FakeTickWorker[] = [];
       onmessage: ((event: MessageEvent) => void) | null = null;
       terminate = vi.fn();
+      /** Records both the message and whether `onmessage` was already
+       * assigned at call time — regression coverage for the "gate the tick
+       * worker's interval behind an explicit start message" fix: `main.ts`
+       * must only ever call this (with `{type: "start"}`) after it has
+       * already assigned the real `onmessage` handler, never before. */
+      postMessageCalls: Array<{ message: unknown; onmessageWasAssigned: boolean }> = [];
       constructor() {
         FakeTickWorker.instances.push(this);
       }
-      postMessage(): void {}
+      postMessage(message: unknown): void {
+        this.postMessageCalls.push({ message, onmessageWasAssigned: this.onmessage !== null });
+      }
     }
 
     function multiplayerHooks(): {
@@ -3074,6 +3082,11 @@ describe("main.ts — multiplayer connect flow", () => {
         await waitUntil(() => FakeTickWorker.instances.length > 0);
 
         const worker = FakeTickWorker.instances.at(-1)!;
+        // Regression coverage for the "gate the tick worker's interval
+        // behind an explicit start message" fix — main.ts must send exactly
+        // one {type: "start"} message, and only after it has already
+        // assigned the real onmessage handler (never before).
+        expect(worker.postMessageCalls).toEqual([{ message: { type: "start" }, onmessageWasAssigned: true }]);
         worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
 
         const hooks = multiplayerHooks();

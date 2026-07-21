@@ -1375,6 +1375,13 @@ async function startMultiplayerSessionAsHost(): Promise<void> {
       onMultiplayerSessionEnded,
       findNextMultiplayerLevel(initialLevelPath),
     );
+    // Only sent now that `runMultiplayerSessionAsHost` (synchronous — see its
+    // own doc comment) has already assigned `worker.onmessage`, the real
+    // tick-receiving handler — `tickClockWorker.ts` doesn't start its
+    // interval until it receives this, making the "worker message arrives
+    // before any listener is attached" race structurally impossible instead
+    // of just unlikely.
+    worker.postMessage({ type: "start" });
   } catch (err) {
     console.error("[multiplayer] Failed to start session:", err);
     setMultiplayerStatus(err instanceof Error ? err.message : "Failed to start the multiplayer session.", true);
