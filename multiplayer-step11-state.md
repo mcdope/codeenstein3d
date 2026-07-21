@@ -167,8 +167,27 @@ each phase independently verified/committed before moving to the next.
       "implemented," pointing at the new docs section. Moved `notes`'
       step 11 entry from the Open list's "spec written" line to a full
       `## Done` entry covering all 5 commits.
-- [ ] Final verification: typecheck, 100% coverage, local
-      `balancing:scan-multiplayer` run, single-player regression check
+- [x] Final verification: `npm run typecheck` clean; full `npm run coverage`
+      100/100/100/100 across all 100 test files (2037 tests) — caught and
+      fixed 2 real coverage gaps in `engine.ts` (commit `acb8fa1`, see
+      below); real `npm run balancing:scan-multiplayer` run against the
+      shipped default preset — clean exit, well-formed report, correctly
+      omits `disconnectIsolation` (gated off in this preset). Surfaced a
+      second real finding beyond Phase 1's mine-corridor stall: a far more
+      severe (~596-tick) stall at a different position with no mine/threat
+      involved, reproduced on every attempt of the default preset — logged
+      in `doc/dev/balancing-telemetry.md` and a new `notes` backlog item,
+      not investigated further (out of scope — the tool's job is to surface
+      this, not fix it).
+  - `acb8fa1`: 2 genuinely-unreachable defensive guards from Phase 2a's own
+    new code (`if (!p.telemetry) continue` in the per-frame telemetry loop,
+    `if (dmg <= 0) continue` in the bolt-hit loop — both provably always-true
+    given this codebase's actual invariants) were starving branch coverage;
+    simplified rather than contrived-tested. Also found
+    `getMultiplayerTelemetrySnapshot` was wired through in the Phase 2a/2b
+    merge but never actually called by any test — added real assertions
+    (pre-session `null` + post-session real snapshot) to
+    `main.test.ts`'s existing multiplayer connect-flow test.
 - [ ] Commit/push, PR, watch CI
 
 ## Spec corrections to apply in Phase 4 (already known, listed in the plan)
