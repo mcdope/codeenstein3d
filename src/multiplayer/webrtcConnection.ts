@@ -18,6 +18,17 @@
  * Data channels are created by the host **before** `createOffer()` — this
  * design has no renegotiation path, so a channel that doesn't exist at offer
  * time never will.
+ *
+ * That same "no renegotiation path" limitation also means there is no
+ * `restartIce()`/ICE-restart recovery for an already-connected peer: the SDP
+ * exchange above is a single non-trickle round-trip, already spent, with no
+ * channel back to the signaling server to negotiate a replacement one.
+ * `DISCONNECT_GRACE_MS` (`netcodeConstants.ts`) is a *detection* window only
+ * — it decides how long a dropped connection is tolerated before the
+ * disconnect path runs, not a mechanism that gives the underlying connection
+ * any chance to actually recover. Real reconnection would need new
+ * signaling-server endpoints plus a client renegotiation state machine — a
+ * genuine new feature, intentionally deferred rather than built here.
  */
 import type { MultiplayerChannels } from "./types";
 
