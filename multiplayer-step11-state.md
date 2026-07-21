@@ -131,8 +131,42 @@ each phase independently verified/committed before moving to the next.
       `runDisconnectIsolationScenario` exported (previously
       module-internal) so they're directly testable, same convention as
       this file's existing `PROFILES`/`DIFFICULTIES` re-export.
-- [ ] Phase 4: `doc/dev/balancing-telemetry.md` consolidation, apply 3 spec
-      corrections to the spec doc, `notes` step11 entry → implemented
+- [x] Post-Phase-3 fix (commit `73a835b`): neither Phase 2a nor 2b's fork
+      actually wired `getMultiplayerTelemetrySnapshot(id)` into the
+      *report* — the script's own doc comment still said "coarse
+      gameplayHealth ... full 7-category breakdown is Phase 2a" even
+      though Phase 2a had shipped. Found while writing Phase 4 docs.
+      Exported `aggregateLevelRuntime`/`DAMAGE_SOURCES`/`HEAL_SOURCES`/
+      `LOOT_KINDS` from `run-balancing-telemetry.mjs` (additive only) and
+      reused it as-is for a new `perPlayerTelemetry` report section — the
+      multiplayer snapshot shape matches single-player's field-for-field
+      (both built from `buildTelemetrySnapshotFor`), minus
+      `routeEfficiencyScore` (no single team-wide shortest-path figure
+      when each bot spawns at a different tile — stripped rather than
+      shipped as a misleading zero). Verified for real: a genuine 28-field
+      snapshot piped through `aggregateLevelRuntime` produces a correct
+      7-category breakdown. Could not get an actual qualifying combat run
+      through this integration directly — repeated attempts at
+      Casual/normal/2p and Pro/easy/2p both hit the same real, reproducible
+      stall near a mined corridor already flagged in the Phase 1 entry
+      above — so this was verified against a real captured snapshot fed
+      through the aggregator synthetically, not a live qualifying run.
+      Single-player's own `balancing:telemetry` re-confirmed unaffected via
+      a real run against a real dev server (0/1 qualifying at
+      `LEVEL_LIMIT=1` is expected — qualifying requires clearing level 4 —
+      not a regression).
+- [x] Phase 4: new "Multiplayer balancing telemetry (step 11)" section in
+      `doc/dev/balancing-telemetry.md` (entry points, combo-matrix shape,
+      env var reference, output shape incl. the new `perPlayerTelemetry`
+      section, the real-time-cost/no-virtual-clock caveat, the recurring
+      mined-corridor stall finding). Applied all 3 spec corrections to
+      `doc/dev/multiplayer-balancing-telemetry-spec.md` (line-drift fix,
+      `onEnemyBoltHit`/`EnemyAiEvents` correction, the `PUT /session`
+      rate-limit mis-citation + missing `LOBBY_RATE_LIMIT_MAX_REQUESTS`
+      limiter) and updated its status header from "specification only" to
+      "implemented," pointing at the new docs section. Moved `notes`'
+      step 11 entry from the Open list's "spec written" line to a full
+      `## Done` entry covering all 5 commits.
 - [ ] Final verification: typecheck, 100% coverage, local
       `balancing:scan-multiplayer` run, single-player regression check
 - [ ] Commit/push, PR, watch CI

@@ -125,3 +125,60 @@ Also, at the combo level (alongside `weaponFirstOwnedAtLevel`): `weaponFirstOwne
 ### `aiEffectivenessDanger.enemyAccuracy` now reflects a real difficulty axis (2026-07-15)
 
 Before 2026-07-15, enemy ranged bolts had zero aim deviation at all — `enemyAccuracy` (hits/shots fired) was purely a function of the player dodging (movement, walls), never anything the difficulty setting touched. `DIFFICULTY_MULTIPLIERS.enemyAimSpreadDeg` (10°/4°/0° easy/normal/hard, `src/difficulty.ts`) now rotates a bolt's aim vector by a random angle up to that cap before firing (`spawnProjectile` in `projectiles.ts`) — `enemyAccuracy` should now show a real, monotonic difficulty curve instead of the flat ~70-77% band across all three tiers that the original balance report flagged as "difficulty makes enemies tougher, not smarter". Verified directly: a Gamer-profile spot-check went 74.9%→45.6% (easy), 73.8%→58.0% (normal), 77.3%→78.0% (hard, unchanged — 0° spread is the same as the old always-perfect aim).
+
+## Multiplayer balancing telemetry (step 11)
+
+A separate tool, `scripts/run-balancing-telemetry-multiplayer.mjs`, mirrors this whole toolchain for real multiplayer sessions (2-4 simultaneous players) — step 11 of the multiplayer implementation plan. Full design rationale lives in [`doc/dev/multiplayer-balancing-telemetry-spec.md`](multiplayer-balancing-telemetry-spec.md); this section is the user-facing "how to run it" reference. **Not CI-wired, not fast** — run manually, same as `balancing:telemetry`.
+
+The two are more different than they look at first glance, for one structural reason: **multiplayer has no virtual clock.** `scripts/lib/virtualClock.mjs` cannot fast-forward a real Web-Worker-timer-paced multiplayer simulation (`scripts/lib/multiplayerBot.mjs`'s own doc comment states this outright) — every attempt costs genuine wall-clock time. A single combat-heavy level clear for a 2-bot pair has been directly measured at ~4 real minutes. Every default in this tool (sequential attempts, small qualifying targets, one bundled level per run instead of a full campaign) is sized around that cost, not copied from single-player's cheap virtual-time concurrency.
+
+### Entry points
+
+| Command | What it does |
+|---|---|
+| `npm run balancing:telemetry-multiplayer` | Full combo sweep across every profile/difficulty/player-count (plus curated mixed-skill combos, see below), 2 qualifying runs per combo by default, writes `multiplayer_balancing_telemetry.json`. Real-time cost means this can run for a long while — scope it with the env vars below before trusting the unbounded default to finish quickly. |
+| `npm run balancing:scan-multiplayer` | Fast/cheap preset: `Casual`/`normal`/2p only, attempt cap 3, qualifying target 1, `disconnectIsolation` scenario disabled. The multiplayer pre-merge regression gate — mirrors single-player's `balancing:scan` role. |
+
+Both always start their **own isolated signaling + dev server pair** (`scripts/lib/multiplayerTestServers.mjs`, ports 8788/5174 — deliberately never 8787/5173, a developer's own manual session's default ports) rather than share whatever a developer's own dev session happens to be pointed at. The signaling server's rate limits are per-IP, not per-session (`multiplayer-balancing-telemetry-spec.md` §7) — running this tool's own traffic against a shared server risks tripping a budget sized for one human's manual testing. There's no `CODEENSTEIN_DEV_URL`-equivalent override for this reason: the isolated pair is always used.
+
+### Profiles, difficulty, and the combo matrix
+
+Reuses `run-balancing-telemetry.mjs`'s own `PROFILES` (Casual/Gamer/Pro) and `DIFFICULTIES` (easy/normal/hard) unchanged. Beyond that, the combo matrix is genuinely different from single-player's:
+
+- **One bundled demo-campaign level per run, not the full campaign.** Multiplayer level transition is already covered on its own by `verify-multiplayer-transition.mjs` — re-driving that whole sequence for every combo would multiply this tool's already-real-time-only cost for no new signal. A run "qualifies" once every bot reaches the exit tile alive (`teamOutcome === "allReachedExit"`).
+- **Player count (2-4) is a real combo dimension**, not fixed — `CODEENSTEIN_MP_TELEMETRY_PLAYER_COUNTS` (comma-separated, default `2,3,4`).
+- **Uniform combos** (one skill tier for the whole team) run alongside **curated mixed-skill combos** (`curateMixedProfiles()`) when no `PROFILE` filter narrows things to one tier: 2p gets only *adjacent*-tier pairs (Casual+Gamer, Gamer+Pro — not the skip-a-tier Casual+Pro, less representative of a real pairing while costing the same real time as either neighbor); 3p/4p get one weakest+strongest+filler combo each (filler = the middle tier, repeated for 4p). Deliberately not a blind cartesian product across up to 4 slots — that multiplies cost for combos with little new signal over their neighbors. A `PROFILE` filter disables mixed combos entirely (a filter means "just this one tier").
+
+### Env var reference
+
+All `CODEENSTEIN_MP_TELEMETRY_*` — read once at module load, same "same process invocation" caveat as the single-player table above.
+
+| Var | Effect |
+|---|---|
+| `CODEENSTEIN_MP_TELEMETRY_PROFILE` | Restrict to one profile tier — also disables curated mixed-skill combos (see above). |
+| `CODEENSTEIN_MP_TELEMETRY_DIFFICULTY` | Restrict to one difficulty. |
+| `CODEENSTEIN_MP_TELEMETRY_PLAYER_COUNTS` | Comma-separated list of player counts to test, each 2-4 (default `2,3,4`). |
+| `CODEENSTEIN_MP_TELEMETRY_QUALIFYING_TARGET` | Qualifying runs needed per combo before its retry loop stops (default **2** — deliberately much smaller than single-player's default 3, given the real-time cost per attempt). |
+| `CODEENSTEIN_MP_TELEMETRY_ATTEMPT_CAP` | Cap attempts per combo (default unbounded). Use for any scoped/smoke run. |
+| `CODEENSTEIN_MP_TELEMETRY_CONCURRENCY` | Attempts run concurrently within one combo (default **1**, sequential) — several concurrent real multiplayer sessions against one dedicated signaling+dev server pair is a real resource-contention risk this tool hasn't been measured against; raise deliberately. |
+| `CODEENSTEIN_MP_TELEMETRY_VERBOSE` | Per-attempt detail logging. |
+| `CODEENSTEIN_MP_TELEMETRY_ANOMALY_SCAN` | Enables the shared `Bot` stall/`healthDrainFrozen`/rotation detectors (see [Anomaly scanning](#anomaly-scanning-npm-run-balancingscan) above — these work for `MultiplayerBot` unchanged, they just need the trace collector turned on). |
+| `CODEENSTEIN_MP_TELEMETRY_NAV_DIAG` | Extra per-decision trace bookkeeping (implies `ANOMALY_SCAN`). |
+| `CODEENSTEIN_MP_TELEMETRY_HEADED` | Real, visible browsers instead of headless. |
+| `CODEENSTEIN_MP_TELEMETRY_DISCONNECT_SCENARIO` | Set to `0` to skip the `disconnectIsolation` scenario (default on — it's what `balancing:scan-multiplayer`'s own preset disables, since the real detection wait would dominate that fast preset's own runtime budget). |
+| `CODEENSTEIN_MP_TELEMETRY_OUTPUT_FILE` | Override the output path (default `multiplayer_balancing_telemetry.json` at repo root, gitignored). |
+
+### Output shape
+
+`multiplayer_balancing_telemetry.json` (repo root, gitignored) is top-level-keyed by combo (`meta` + `combos`), each combo holding:
+
+- **`perPlayerTelemetry`** — the real per-player 7-category breakdown (map density, combat pacing, AI danger, damage/healing, weapon efficiency, economy, navigation), keyed by roster id (`host`, `guest-1`, ...). Reuses `run-balancing-telemetry.mjs`'s own `aggregateLevelRuntime()` unchanged: `RaycasterEngine.getMultiplayerTelemetrySnapshot(id)`'s shape matches single-player's own `getTelemetrySnapshot()` field-for-field (both built from the same `buildTelemetrySnapshotFor`). One category single-player has that multiplayer doesn't: `navigationMapFlow.routeEfficiencyScore` is omitted — each bot spawns at a different tile, so there's no single team-wide shortest-path figure to compare against, and shipping the aggregator's own "not computed" placeholder zeros would read as a real (and misleadingly bad) result.
+- **`gameplayHealth`** — coarser team-level signals: outcome tally (`allReachedExit`/`teamWiped`/`partial`/`crashed`), a team-wide enemies-killed estimate (a before/after alive-count delta — not per-player-attributable the way `perPlayerTelemetry`'s own kill counts are, since assist vs. finishing-blow can't be told apart from a bare count), and each player's minimum observed health fraction.
+- **`perf`** — fps per player, mean tick-skew per peer pair, and `tickSkewGrowthByPair`: a first-third-vs-last-third mean comparison per qualifying run, flagging a real desync-*widening* trend (not just a raw mean/max, which can't tell "briefly spiked then settled" apart from "steadily growing" — a "growing" call requires both a ≥5ms absolute delta and a ≥1.5x ratio, so ordinary real-clock sampling noise can't false-positive).
+- **`netcodeHealth`** — real RTT per link (`RTCPeerConnection.getStats()`'s active-candidate-pair `currentRoundTripTime` — star topology, host↔each guest, sampled both directions since each side's own view is a genuinely different measurement point), missed-tick fraction per player (`TickInputBundle.heldInputFallback` tally), and reconciliation-correction count/magnitude per player (guest-only — the host is authoritative and never applies a snapshot to itself, so its own entries are always `{count: 0, avgMagnitudeTiles: 0}`, not missing data; a correction only counts once its position magnitude clears a small noise floor, so ordinary cross-peer float drift doesn't register as a false "correction").
+
+Separately, at the report's top level (not part of the combo matrix — the scenario doesn't vary by bot skill or difficulty, so it runs once per invocation, not once per combo): **`disconnectIsolation`** — a real, scored version of `verify-multiplayer-disconnect.mjs`'s guest-disconnect scenario. A real `RTCPeerConnection` teardown (closing the guest's `BrowserContext`), then measuring how long the host takes to detect it and whether the host keeps ticking/surviving through the disconnect — `{guestFinalStatus, detectedWithinMs, hostKeptTicking, hostSurvived}`.
+
+### A real finding from this tool's own smoke testing
+
+A uniform-Casual 2-player pair reproducibly hits the same `stall`/`healthDrainFrozen` anomaly sequence, at near-identical tick counts and positions, across separate independent attempts — around a mined corridor on `demo-campaign/main.c` (~pos `(37.5, 49.3)`, mine distance ~3.0-4.0 tiles). Reproduced across both `Casual/normal` and `Pro/easy` combos, consistently enough to prevent any qualifying run in several attempts at each. This is exactly the kind of regression this tool exists to surface — flagged here for a future balancing pass, not fixed as part of shipping the tool itself.
