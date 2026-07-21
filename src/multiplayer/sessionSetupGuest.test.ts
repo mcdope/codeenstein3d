@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeRTCDataChannel } from "../../test/mocks/webrtc";
 import { MapGenerator } from "../map/mapGenerator";
 import type { CodeEntity, ParsedFile } from "../parser/types";
@@ -99,6 +99,63 @@ describe("runGuestSessionSetup — netcode-constants mismatch (finding 8)", () =
     expect(guestResult.tickRateHz).toBe(TICK_RATE_HZ);
     expect(guestResult.fixedDt).toBe(FIXED_DT);
     expect(guestResult.inputDelayTicks).toBe(INPUT_DELAY_TICKS);
+  });
+});
+
+describe("runGuestSessionSetup — overall handshake timeout (finding 9)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Matches the module's own private HANDSHAKE_TIMEOUT_MS — not exported
+  // (a purely internal implementation constant), so mirrored here directly.
+  const HANDSHAKE_TIMEOUT_MS = 10_000;
+
+  it("rejects with a handshake-timeout SessionSetupError if the host stalls mid-transfer without ever completing", async () => {
+    vi.useFakeTimers();
+    const channels = linkedChannels();
+    const guestPromise = runGuestSessionSetup(channels.guest);
+
+    // Host starts the handshake normally (real build-version, real
+    // session-init) but then stalls forever mid-transfer — never sends any
+    // map-chunk/map-end, and never closes the channel either (so no
+    // error/close event would ever fire to unblock this some other way).
+    const send = (message: SessionSetupMessage): void => channels.host.reconciliation.send(JSON.stringify(message));
+    send({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ });
+    send({
+      type: "session-init",
+      roster: ["guest", "host"],
+      assignedId: "guest",
+      tickRateHz: TICK_RATE_HZ,
+      fixedDt: FIXED_DT,
+      inputDelayTicks: INPUT_DELAY_TICKS,
+      gameplaySeed: 1,
+      difficulty: "normal",
+      playerCount: 2,
+    });
+
+    // Attached before advancing the timer — `guestPromise` only actually
+    // rejects once the fake-timer advance below fires it, so the assertion
+    // must already be listening at that moment (attaching it afterward would
+    // otherwise leave the rejection briefly "unhandled" from Node's own
+    // perspective, even though it's caught a tick later).
+    const assertion = expect(guestPromise).rejects.toMatchObject({ code: "handshake-timeout" });
+    await vi.advanceTimersByTimeAsync(HANDSHAKE_TIMEOUT_MS);
+    await assertion;
+    await expect(guestPromise).rejects.toBeInstanceOf(SessionSetupError);
+  });
+
+  it("does not fire if the handshake completes normally well before the timeout", async () => {
+    vi.useFakeTimers();
+    const channels = linkedChannels();
+    const options = { map: new MapGenerator().generate(parsedFile()), difficulty: "normal" as const, roster: ["guest", "host"], gameplaySeed: 1 };
+
+    const [guestResult] = await Promise.all([runGuestSessionSetup(channels.guest), runHostSessionSetup(channels.host, "guest", options)]);
+    // Even letting the timeout's own window fully elapse afterward must not
+    // retroactively reject an already-resolved handshake.
+    await vi.advanceTimersByTimeAsync(HANDSHAKE_TIMEOUT_MS);
+
+    expect(guestResult.roster).toEqual(["guest", "host"]);
   });
 });
 

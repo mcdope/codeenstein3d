@@ -25,6 +25,14 @@
  * checked) and the chunked `GameMap` transfer, reassembled via
  * `ChunkReassembler` and rebuilt with a freshly-constructed `visited` grid
  * (never sent over the wire).
+ *
+ * The whole handshake is also bounded by `HANDSHAKE_TIMEOUT_MS` overall — if
+ * the host stalls or stops sending mid-transfer without ever closing the
+ * channel (so no error/close event fires either), this side would otherwise
+ * hang forever waiting for a message that's never coming, unlike every other
+ * multi-step wait in this subsystem (`TRANSITION_ACK_TIMEOUT_MS`,
+ * `BUFFER_DRAIN_TIMEOUT_MS`), which already follow a "never wait forever"
+ * rule (`netcodeConstants.ts`'s own doc comments).
  */
 import type { GameMap } from "../map/types";
 import { ChunkReassembler } from "./chunkedTransfer";
@@ -37,17 +45,42 @@ import type { MultiplayerChannels } from "./types";
 
 type PendingResult = Omit<SessionSetupResult, "map">;
 
+/** How long (real wall-clock milliseconds) the guest waits for the whole
+ * session-setup handshake to complete before giving up — a reasoned
+ * starting point, not a validated value, matching the order of magnitude
+ * `netcodeConstants.ts`'s own `TRANSITION_ACK_TIMEOUT_MS`/
+ * `BUFFER_DRAIN_TIMEOUT_MS` already use for the same "never wait forever on
+ * something that might not happen" discipline elsewhere in this subsystem.
+ * Not itself in `netcodeConstants.ts`: this handshake is a guest-only
+ * concern (the host has its own, symmetric-in-spirit "never wait forever"
+ * guarantee already covered by `main.ts`'s own connection-level handling —
+ * nothing else in that shared constants file needs this value). */
+const HANDSHAKE_TIMEOUT_MS = 10_000;
+
 export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<SessionSetupResult> {
   return new Promise((resolve, reject) => {
     const channel = channels.reconciliation;
     let pending: PendingResult | null = null;
     let reassembler: ChunkReassembler | null = null;
 
+    // Cleared on every settle path below (resolve or any reject) — a timer
+    // that fires after the handshake has already settled one way or another
+    // must never re-reject an already-resolved/rejected `Promise` (a no-op
+    // in practice, `Promise`s only ever settle once, but the unsubscribe
+    // below still matters: without it, a late "message" event after the
+    // handshake completed would call a handler referencing already-stale
+    // closured state for no reason).
+    const handshakeTimeoutTimer = setTimeout(() => {
+      unsubscribe();
+      reject(new SessionSetupError("handshake-timeout", `session-setup handshake did not complete within ${HANDSHAKE_TIMEOUT_MS}ms`));
+    }, HANDSHAKE_TIMEOUT_MS);
+
     const unsubscribe = onJsonMessage<SessionSetupMessage>(channel, (message) => {
       switch (message.type) {
         case "build-version": {
           if (!checkBuildVersionMatch({ ref: __BUILD_REF__, time: __BUILD_TIME__ }, message)) {
             unsubscribe();
+            clearTimeout(handshakeTimeoutTimer);
             reject(new SessionSetupError("build-version-mismatch", "host is on a different build"));
             return;
           }
@@ -59,7 +92,10 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
           // `RTCDataChannel.send()` failure here must settle this module's
           // own `Promise` instead of escaping as an uncaught exception.
           const ownVersion: BuildVersionMessage = { type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ };
-          sendJsonWithBackpressure(channel, ownVersion).catch(reject);
+          sendJsonWithBackpressure(channel, ownVersion).catch((err) => {
+            clearTimeout(handshakeTimeoutTimer);
+            reject(err);
+          });
           return;
         }
         case "session-init": {
@@ -80,6 +116,7 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
             )
           ) {
             unsubscribe();
+            clearTimeout(handshakeTimeoutTimer);
             reject(new SessionSetupError("netcode-constants-mismatch", "host's compiled netcode constants don't match ours"));
             return;
           }
@@ -103,6 +140,7 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
         case "map-end": {
           if (!pending || !reassembler || !reassembler.isComplete(message.totalChunks)) {
             unsubscribe();
+            clearTimeout(handshakeTimeoutTimer);
             reject(new SessionSetupError("protocol-error", "map-end arrived before every chunk was received"));
             return;
           }
@@ -117,6 +155,7 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
             new Array<boolean>(mapWithoutVisited.width).fill(false),
           );
           unsubscribe();
+          clearTimeout(handshakeTimeoutTimer);
           resolve({ ...pending, map: { ...mapWithoutVisited, visited } });
           return;
         }

@@ -95,7 +95,7 @@ export interface SessionSetupResult {
   map: GameMap;
 }
 
-export type SessionSetupErrorCode = "build-version-mismatch" | "protocol-error" | "netcode-constants-mismatch";
+export type SessionSetupErrorCode = "build-version-mismatch" | "protocol-error" | "netcode-constants-mismatch" | "handshake-timeout";
 
 /** Mirrors `signalingClient.ts`'s `SignalingError` pattern: a typed `code`
  * lets calling code (a later step's connection teardown/UI messaging — not
