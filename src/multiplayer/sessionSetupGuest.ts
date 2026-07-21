@@ -19,14 +19,19 @@
  * itself, in whatever order it likes, sidestepping the race entirely). An
  * independent build-version check either way (never just trust the host's
  * own judgment, matching the netcode spec's "applies uniformly" principle
- * elsewhere), followed by the `session-init` payload and the chunked
- * `GameMap` transfer, reassembled via `ChunkReassembler` and rebuilt with a
- * freshly-constructed `visited` grid (never sent over the wire).
+ * elsewhere), followed by the `session-init` payload (which also carries the
+ * host's own compiled netcode constants — see `SessionInitMessage`'s own doc
+ * comment for why this side, not `sessionSetupHost.ts`, is where that gets
+ * checked) and the chunked `GameMap` transfer, reassembled via
+ * `ChunkReassembler` and rebuilt with a freshly-constructed `visited` grid
+ * (never sent over the wire).
  */
 import type { GameMap } from "../map/types";
 import { ChunkReassembler } from "./chunkedTransfer";
 import { checkBuildVersionMatch } from "./buildVersionCheck";
 import { onJsonMessage, sendJsonWithBackpressure } from "./dataChannelMessaging";
+import { FIXED_DT, INPUT_DELAY_TICKS, TICK_RATE_HZ } from "./netcodeConstants";
+import { checkNetcodeConstantsMatch } from "./netcodeConstantsCheck";
 import { SessionSetupError, type BuildVersionMessage, type SessionSetupMessage, type SessionSetupResult } from "./sessionSetupTypes";
 import type { MultiplayerChannels } from "./types";
 
@@ -58,6 +63,26 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
           return;
         }
         case "session-init": {
+          // The host's own compiled netcode constants, declared right here
+          // — independently checked against our own local values before
+          // trusting anything else in this message (never just assume the
+          // host agrees with us, same "applies uniformly" principle the
+          // build-version check above already follows). This is the only
+          // side of the handshake that can meaningfully perform this check:
+          // the host is the sole source of these values for the whole
+          // session, there's no reverse message carrying a guest's own
+          // compiled constants back to it to compare against (see
+          // `SessionInitMessage`'s own doc comment).
+          if (
+            !checkNetcodeConstantsMatch(
+              { tickRateHz: TICK_RATE_HZ, fixedDt: FIXED_DT, inputDelayTicks: INPUT_DELAY_TICKS },
+              { tickRateHz: message.tickRateHz, fixedDt: message.fixedDt, inputDelayTicks: message.inputDelayTicks },
+            )
+          ) {
+            unsubscribe();
+            reject(new SessionSetupError("netcode-constants-mismatch", "host's compiled netcode constants don't match ours"));
+            return;
+          }
           pending = {
             roster: message.roster,
             assignedId: message.assignedId,

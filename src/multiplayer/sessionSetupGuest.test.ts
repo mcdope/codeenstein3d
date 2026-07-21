@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { FakeRTCDataChannel } from "../../test/mocks/webrtc";
 import { MapGenerator } from "../map/mapGenerator";
 import type { CodeEntity, ParsedFile } from "../parser/types";
+import { FIXED_DT, INPUT_DELAY_TICKS, TICK_RATE_HZ } from "./netcodeConstants";
 import { runGuestSessionSetup } from "./sessionSetupGuest";
 import { runHostSessionSetup } from "./sessionSetupHost";
 import { SessionSetupError, type SessionSetupMessage } from "./sessionSetupTypes";
@@ -59,6 +60,45 @@ describe("runGuestSessionSetup — build-version mismatch", () => {
 
     await expect(guestPromise).rejects.toMatchObject({ code: "build-version-mismatch" });
     await expect(guestPromise).rejects.toBeInstanceOf(SessionSetupError);
+  });
+});
+
+describe("runGuestSessionSetup — netcode-constants mismatch (finding 8)", () => {
+  it("rejects when the host's own compiled netcode constants (declared in session-init) don't match ours, even though the build-version itself matches", async () => {
+    const channels = linkedChannels();
+    const guestPromise = runGuestSessionSetup(channels.guest);
+
+    // Manually drive a rogue host sequence: a real, matching build-version
+    // (so that check alone wouldn't catch anything), then a session-init
+    // declaring mismatched netcode constants — isolates the guest's own
+    // netcode-constants mismatch handling specifically.
+    const send = (message: SessionSetupMessage): void => channels.host.reconciliation.send(JSON.stringify(message));
+    send({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ });
+    send({
+      type: "session-init",
+      roster: ["guest", "host"],
+      assignedId: "guest",
+      tickRateHz: 60, // real is TICK_RATE_HZ(30)
+      fixedDt: 1 / 60,
+      inputDelayTicks: 3,
+      gameplaySeed: 1,
+      difficulty: "normal",
+      playerCount: 2,
+    });
+
+    await expect(guestPromise).rejects.toMatchObject({ code: "netcode-constants-mismatch" });
+    await expect(guestPromise).rejects.toBeInstanceOf(SessionSetupError);
+  });
+
+  it("succeeds normally when the host's netcode constants match ours (positive case)", async () => {
+    const channels = linkedChannels();
+    const options = { map: new MapGenerator().generate(parsedFile()), difficulty: "normal" as const, roster: ["guest", "host"], gameplaySeed: 1 };
+
+    const [guestResult] = await Promise.all([runGuestSessionSetup(channels.guest), runHostSessionSetup(channels.host, "guest", options)]);
+
+    expect(guestResult.tickRateHz).toBe(TICK_RATE_HZ);
+    expect(guestResult.fixedDt).toBe(FIXED_DT);
+    expect(guestResult.inputDelayTicks).toBe(INPUT_DELAY_TICKS);
   });
 });
 

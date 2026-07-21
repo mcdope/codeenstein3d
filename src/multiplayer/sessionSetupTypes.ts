@@ -40,6 +40,17 @@ export interface BuildVersionMessage extends BuildVersion {
   type: "build-version";
 }
 
+/** `tickRateHz`/`fixedDt`/`inputDelayTicks` are the host's own compiled
+ * `netcodeConstants.ts` values — a guest independently checks these against
+ * its own local values on arrival (`checkNetcodeConstantsMatch`, called from
+ * `runGuestSessionSetup`), hard-failing on a mismatch instead of silently
+ * using its own local constants regardless of what the host declared (which
+ * is what every downstream reader of `SessionSetupResult.fixedDt`/
+ * `inputDelayTicks` used to do — see `multiplayerSessionGuest.ts`'s own
+ * direct `netcodeConstants.ts` imports, never these fields). Only the guest
+ * can meaningfully perform this check: the host is the sole source of these
+ * values for the whole session (there's no reverse message carrying a
+ * guest's own compiled constants back to the host to compare against). */
 export interface SessionInitMessage {
   type: "session-init";
   roster: PlayerId[];
@@ -84,7 +95,7 @@ export interface SessionSetupResult {
   map: GameMap;
 }
 
-export type SessionSetupErrorCode = "build-version-mismatch" | "protocol-error";
+export type SessionSetupErrorCode = "build-version-mismatch" | "protocol-error" | "netcode-constants-mismatch";
 
 /** Mirrors `signalingClient.ts`'s `SignalingError` pattern: a typed `code`
  * lets calling code (a later step's connection teardown/UI messaging — not

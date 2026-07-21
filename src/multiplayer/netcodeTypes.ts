@@ -25,8 +25,11 @@ export interface TickInput {
  * own locally sampled input alone. */
 export interface TickInputBundle {
   tick: number;
-  /** Always `FIXED_DT` — included for a receiver-side sanity check, not
-   * because it varies. */
+  /** Always `FIXED_DT` — every peer's `dt` is structurally guaranteed to
+   * agree for the whole session by the session-setup-time
+   * `checkNetcodeConstantsMatch` hard-fail (`sessionSetupHost.ts`/
+   * `sessionSetupGuest.ts`), not by any per-bundle comparison against this
+   * field (there isn't one — a receiver just uses it directly). */
   dt: number;
   /** A purely local counter, incremented independently by the host and each
    * guest inside their own `startLevel()` call (never transmitted/agreed as
