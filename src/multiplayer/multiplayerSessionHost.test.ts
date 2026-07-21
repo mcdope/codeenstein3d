@@ -851,6 +851,68 @@ describe("runMultiplayerSessionAsHost", () => {
     });
   });
 
+  describe("identity binding — link owner, not self-declared playerId (finding 1)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("attributes a TickInput to the link it actually arrived on, even if the message claims another player's id", () => {
+      const { guest1, guest2, links } = twoGuestLinks();
+      const worker = fakeWorker();
+      const guest1Seen = collectMessages(guest1.input);
+      const result = fakeResult({ roster: ["guest-1", "guest-2", "host"].sort(), playerCount: 3 });
+      runMultiplayerSessionAsHost(links, makeCanvas(), result, worker);
+
+      // guest-2's own channel sends a TickInput spoofing playerId "guest-1".
+      const spoofed: TickInput = { tick: 3, playerId: "guest-1", input: { ...emptySnapshot(), fireQueued: true } };
+      guest2.input.send(JSON.stringify(spoofed));
+
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+      worker.onmessage?.({ data: { type: "tick", tick: 1 } } as MessageEvent);
+      worker.onmessage?.({ data: { type: "tick", tick: 2 } } as MessageEvent);
+      worker.onmessage?.({ data: { type: "tick", tick: 3 } } as MessageEvent);
+
+      const bundleAt3 = guest1Seen.find((m): m is TickInputBundle => "inputs" in m && m.tick === 3);
+      // Attributed to guest-2 (the true link owner) — guest-1 never actually
+      // sent anything for tick 3, so it's still on the held-fallback path.
+      expect(bundleAt3?.inputs["guest-2"].fireQueued).toBe(true);
+      expect(bundleAt3?.heldInputFallback).toContain("guest-1");
+    });
+
+    it("attributes a level-transition-ack to the link it actually arrived on, even if the message claims another player's id", async () => {
+      const { guest1, guest2, links } = twoGuestLinks();
+      const worker = fakeWorker();
+      const guest1Seen = collectMessages(guest1.reconciliation) as unknown as LevelTransitionMessage[];
+      const guest2Seen = collectMessages(guest2.reconciliation) as unknown as LevelTransitionMessage[];
+      const result = fakeResult({ roster: ["guest-1", "guest-2", "host"].sort(), playerCount: 3, map: fakeMap({ spawn: { x: 5, y: 5 }, exit: { x: 5, y: 5 } }) });
+      const nextMap = fakeMap({ spawn: { x: 6, y: 6 } });
+      const findNextLevel = vi.fn().mockResolvedValue({ map: nextMap, gameplaySeed: 1 });
+      const handle = runMultiplayerSessionAsHost(links, makeCanvas(), result, worker, undefined, findNextLevel);
+
+      for (let i = 0; i < COUNTDOWN_TICKS + 1; i++) worker.onmessage?.({ data: { type: "tick", tick: i } } as MessageEvent);
+      await vi.waitFor(() => {
+        expect(guest1Seen.some((m) => m.type === "level-transition-map-end")).toBe(true);
+        expect(guest2Seen.some((m) => m.type === "level-transition-map-end")).toBe(true);
+      });
+
+      // guest-2's own channel sends an ack spoofing playerId "guest-1" — must
+      // be attributed to guest-2 (the true link owner), not guest-1. If it
+      // were wrongly attributed to guest-1, the still-pending real guest-1
+      // ack below would never resolve `waitForAcks` (guest-1 would look
+      // already-acked, guest-2 never actually acked).
+      const spoofedAck: LevelTransitionAckMessage = { type: "level-transition-ack", playerId: "guest-1" };
+      guest2.reconciliation.send(JSON.stringify(spoofedAck));
+      // Still waiting — guest-1's own real ack hasn't arrived yet.
+      expect(handle.getPlayerPosition("host")).toEqual({ x: 5.5, y: 5.5 });
+
+      const realAck: LevelTransitionAckMessage = { type: "level-transition-ack", playerId: "guest-1" };
+      guest1.reconciliation.send(JSON.stringify(realAck));
+      await vi.waitFor(() => {
+        expect(handle.getPlayerPosition("host")).toEqual({ x: 6.5, y: 6.5 });
+      });
+    });
+  });
+
   describe("N-player (step 10): multiple guests", () => {
     afterEach(() => {
       vi.useRealTimers();

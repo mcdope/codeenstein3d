@@ -312,10 +312,15 @@ export function runMultiplayerSessionAsHost(
   // only ever *sends* `ReconciliationSnapshotMessage`s/transition messages).
   let onAckReceived: ((id: PlayerId) => void) | null = null;
   const unsubscribeTransitionAcks: (() => void)[] = [];
-  for (const link of links.values()) {
+  for (const [guestId, link] of links) {
     unsubscribeTransitionAcks.push(
-      onJsonMessage<LevelTransitionAckMessage>(link.channels.reconciliation, (message) => {
-        onAckReceived?.(message.playerId);
+      // Bound to the link a message actually arrived on, not the message's
+      // own self-declared `playerId` — a guest's wire payload must never be
+      // trusted to identify itself; the loop's own map key is the only
+      // trustworthy identity (see this file's doc comment / the matching
+      // fix on the tick-input listener below).
+      onJsonMessage<LevelTransitionAckMessage>(link.channels.reconciliation, () => {
+        onAckReceived?.(guestId);
       }),
     );
   }
@@ -466,10 +471,15 @@ export function runMultiplayerSessionAsHost(
   // (session setup rides `reconciliation` instead). One subscription per
   // connected guest (step 10), not one shared subscription.
   const unsubscribeInputs: (() => void)[] = [];
-  for (const link of links.values()) {
+  for (const [guestId, link] of links) {
     unsubscribeInputs.push(
+      // Bound to the link a message actually arrived on, not the message's
+      // own self-declared `playerId` — a guest could otherwise spoof another
+      // player's id (e.g. claim `playerId: "guest-1"` while connected as
+      // `"guest-2"`), corrupting that other player's own input. The loop's
+      // own map key is the only trustworthy identity.
       onJsonMessage<TickInput>(link.channels.input, (message) => {
-        inputDelayBuffer.record(message.tick, message.playerId, message.input);
+        inputDelayBuffer.record(message.tick, guestId, message.input);
       }),
     );
   }
