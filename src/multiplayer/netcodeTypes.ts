@@ -32,9 +32,12 @@ export interface TickInputBundle {
   /** playerIds whose input for this tick used the held-last-input fallback
    * (no real, on-time packet had arrived) — diagnostic-only. */
   heldInputFallback: PlayerId[];
-  /** playerIds removed from the session effective this tick. Field exists
-   * for forward-compatibility with the disconnect-handling step
-   * (`multiplayer-research.md` step 8) — never populated or read by the
-   * netcode core itself. */
+  /** playerIds removed from the session effective this tick — the live
+   * disconnect-removal signal (`multiplayer-research.md` step 8): the host
+   * populates this the same tick a guest's disconnect grace expires
+   * (`multiplayerSessionHost.ts`'s own `rosterRemovalsToApply`), and every
+   * peer (host included) applies it via `engine.applyRosterRemoval()` before
+   * that tick's `advance()`, the same synchronized-lockstep-event ordering
+   * every other bundle field already uses. */
   rosterRemove?: PlayerId[];
 }
