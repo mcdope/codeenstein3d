@@ -255,17 +255,30 @@ async function driveHostToExit(hostPage, map) {
   const route = planRoute({ ...map, spawn: hostSpawn });
   if (!route.ok) throw new Error(`planRoute() couldn't find a route to the exit: ${JSON.stringify(route)}`);
 
-  const bot = new MultiplayerBot(hostPage, BOT_PROFILE, "host");
+  // trace/navDiag on: a "stuck" outcome below dumps the same per-decision
+  // anomaly detail (position, threat/mine distance, held keys) the
+  // balancing-scan tooling uses, instead of a bare {state, reason} — this
+  // script previously had none of that, so a first real "stuck" occurrence
+  // (see git history) produced zero diagnostic detail beyond the final
+  // outcome. Real, ongoing cost is negligible (trace recording is a plain
+  // array push per decision, already proven cheap elsewhere).
+  const bot = new MultiplayerBot(hostPage, BOT_PROFILE, "host", { logger: { trace: true, navDiag: true } });
   bot.startLevel(map);
 
   const legOutcome = await bot.driveLegs(route.legs);
   if (legOutcome.state === "over") throw new Error(`host died despite god mode — the debugSetGodMode call itself must have failed: ${JSON.stringify(legOutcome)}`);
-  if (legOutcome.reason === "stuck") throw new Error(`host got stuck navigating the planned route: ${JSON.stringify(legOutcome)}`);
+  if (legOutcome.reason === "stuck") {
+    bot.reportAnomalies("host-route", 0);
+    throw new Error(`host got stuck navigating the planned route: ${JSON.stringify(legOutcome)}`);
+  }
 
   const exitCenter = { x: map.exit.x + 0.5, y: map.exit.y + 0.5 };
   const pushed = await bot.driveToward(exitCenter, bot.tuning.TIGHT_ARRIVE_EPS, FINAL_APPROACH_TICKS);
   if (pushed.state === "over") throw new Error(`host died despite god mode — the debugSetGodMode call itself must have failed: ${JSON.stringify(pushed)}`);
-  if (pushed.reason === "stuck") throw new Error(`host got stuck on the final approach to the exit: ${JSON.stringify(pushed)}`);
+  if (pushed.reason === "stuck") {
+    bot.reportAnomalies("host-final-approach", 0);
+    throw new Error(`host got stuck on the final approach to the exit: ${JSON.stringify(pushed)}`);
+  }
 }
 
 const FIREFOX_LAUNCH_OPTIONS = {
