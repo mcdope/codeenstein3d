@@ -1110,6 +1110,14 @@ async function armNextGuestSlot(generation: number, signal: AbortSignal): Promis
 
       void armNextGuestSlot(generation, signal); // arm the next slot, if any remain
       return;
+      // Every path through this loop body ends in an explicit `return`,
+      // `continue`, or `throw` above — control can never naturally fall off
+      // the end of the loop body to reach this closing brace itself, so v8
+      // sees an unreachable "try completed without one of those" branch
+      // here. Confirmed by inspection, not assumed: this loop's only exits
+      // are the four `return`s, one `continue`, and one `throw` already
+      // covered by this file's own tests above.
+      /* v8 ignore next */
     }
   } catch (err) {
     guestPeerConnection?.close();
@@ -1212,6 +1220,11 @@ async function createMultiplayerSession(): Promise<void> {
 
       void armNextGuestSlot(generation, signal); // start looking for guest 2, if maxPlayers allows it
       return;
+      // Same reasoning as armNextGuestSlot's own identically-shaped loop
+      // above: every path through this loop body ends in an explicit
+      // `return`, `continue`, or `throw` — control can never naturally fall
+      // off the end of the loop body to reach this closing brace itself.
+      /* v8 ignore next */
     }
   } catch (err) {
     if (generation === multiplayerConnectionGeneration) {

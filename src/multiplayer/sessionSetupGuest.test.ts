@@ -63,6 +63,25 @@ describe("runGuestSessionSetup — build-version mismatch", () => {
   });
 });
 
+describe("runGuestSessionSetup — send failure during the build-version reply", () => {
+  it("rejects with the underlying send error instead of hanging until the handshake timeout", async () => {
+    const channels = linkedChannels();
+    const guestPromise = runGuestSessionSetup(channels.guest);
+
+    // Force the guest's own reply send to fail exactly when it tries to
+    // answer the host's (matching) build-version message —
+    // sendJsonWithBackpressure throws if readyState isn't "open". This
+    // exercises the finding-9 timeout-cleanup path on a genuine send
+    // failure, not just the timeout itself.
+    (channels.guest.reconciliation as unknown as FakeRTCDataChannel).readyState = "closing";
+    channels.host.reconciliation.send(
+      JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ } satisfies SessionSetupMessage),
+    );
+
+    await expect(guestPromise).rejects.toThrow(/readyState is "closing"/);
+  });
+});
+
 describe("runGuestSessionSetup — netcode-constants mismatch (finding 8)", () => {
   it("rejects when the host's own compiled netcode constants (declared in session-init) don't match ours, even though the build-version itself matches", async () => {
     const channels = linkedChannels();

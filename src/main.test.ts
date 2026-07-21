@@ -1817,6 +1817,96 @@ describe("main.ts — multiplayer connect flow", () => {
       expect(fetchMock).toHaveBeenCalledTimes(4);
     });
 
+    it("N-player (step 10): armNextGuestSlot re-offers via updateSession() under the same code after a bad/hijacked answer for the second guest, then succeeds", async () => {
+      // Same regression as createMultiplayerSession's own bad-answer-retry
+      // test above, but for armNextGuestSlot's independent copy of the same
+      // retry logic (a distinct code path — guest-1 is already connected
+      // here, the race is for guest-2's slot).
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLSelectElement>("#multiplayer-max-players")!.value = "3";
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201)) // PUT create
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ) // GET poll — guest-1 answered
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update — re-arm for guest-2
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-2", answer: "bad-answer-sdp", campaignName: "demo-campaign", displayName: null, playerCount: 2 }),
+        ) // GET poll — a racer's garbage answer arrives first for guest-2's slot
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update — re-offer under the same code
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-3", answer: "good-answer-sdp", campaignName: "demo-campaign", displayName: null, playerCount: 2 }),
+        ); // GET poll — the real guest-2's answer
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection(); // guest-1's own peer connection
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      const pc2 = readyHostPeerConnection(); // guest-2's first (poisoned) peer connection
+      pc2.setRemoteDescriptionError = new Error("setRemoteDescription failed on a garbage answer");
+
+      // The retry constructs a fresh RTCPeerConnection via createHostOffer()
+      // for guest-2's slot specifically.
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 2);
+      const pc3 = readyHostPeerConnection(); // guest-2's second (real) peer connection
+
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.textContent === "3/3 players connected");
+      expect(pc3.remoteDescription).toEqual({ type: "answer", sdp: "good-answer-sdp" });
+      expect(pc2.closeCallCount).toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(6);
+    });
+
+    it("N-player (step 10): armNextGuestSlot surfaces the connection error (non-fatal to the host) once the bad-answer retry budget is exhausted for the second guest", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLSelectElement>("#multiplayer-max-players")!.value = "3";
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201)) // PUT create
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ) // GET poll — guest-1 answered
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update — re-arm for guest-2
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-2", answer: "bad-answer-1", campaignName: "demo-campaign", displayName: null, playerCount: 2 }),
+        ) // GET poll — attempt 1, bad answer
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-3", answer: "bad-answer-2", campaignName: "demo-campaign", displayName: null, playerCount: 2 }),
+        ) // GET poll — attempt 2, bad answer
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-4", answer: "bad-answer-3", campaignName: "demo-campaign", displayName: null, playerCount: 2 }),
+        ); // GET poll — attempt 3, bad answer — retry budget (3) now exhausted
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection(); // guest-1's own peer connection
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      for (let i = 0; i < 3; i++) {
+        await waitUntil(() => FakeRTCPeerConnection.instances.length > i + 1);
+        const pc = readyHostPeerConnection();
+        pc.setRemoteDescriptionError = new Error(`setRemoteDescription failed (attempt ${i + 1})`);
+      }
+
+      // Non-fatal to the host — guest-1 stays connected and can still Start
+      // Session, only the re-arm for guest-2's slot gives up (matches the
+      // existing "a failed re-arm attempt is logged and non-fatal" test
+      // below, for a network-error cause instead of an exhausted bad-answer
+      // retry budget). Unlike that test, `#multiplayer-status` itself isn't
+      // asserted here — armNextGuestSlot's own retry loop sets it to
+      // "Waiting for another guest…" on every attempt (including the last,
+      // failed one) before the outer catch ever runs, so it's left in that
+      // state rather than reverting to "Connected." — a pre-existing,
+      // unrelated cosmetic detail of the retry loop, not something this
+      // fix changes.
+      await vi.waitFor(() => expect(warnSpy).toHaveBeenCalledWith("[multiplayer] failed to arm the next guest slot:", expect.any(Error)));
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!.hidden).toBe(false);
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.classList.contains("error")).toBe(false);
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.textContent).toBe("2/3 players connected");
+      expect(fetchMock).toHaveBeenCalledTimes(8);
+    });
+
     it("N-player (step 10): a failed re-arm attempt is logged and non-fatal — the host keeps its one connected guest", async () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       await loadEligibleWorkspace();
