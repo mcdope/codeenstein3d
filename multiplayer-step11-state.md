@@ -104,8 +104,33 @@ each phase independently verified/committed before moving to the next.
       mirroring `getBotPlayerState`'s exact pattern) and into `main.ts`'s
       `__codeensteinMultiplayerTestHooks` — this was the one piece neither
       fork owned, by design, to avoid the file-overlap conflict.
-- [ ] Phase 3: curated mixed-skill combos, tick-skew-growth-over-time
-      detector, disconnect-isolation scored scenario
+- [x] Phase 3: scripts-only, no `src/` changes.
+      `curateMixedProfiles(tierNames, playerCount)` — 2p gets adjacent-tier
+      pairs (`[Casual,Gamer]`, `[Gamer,Pro]`, not the skip-a-tier
+      `Casual+Pro`); 3p/4p get one weakest+strongest+filler combo each
+      (`[Casual,Gamer,Pro]` / `[Casual,Gamer,Gamer,Pro]`, filler = middle
+      tier, not a third copy of either extreme) — additive to the existing
+      uniform combos, disabled by a `PROFILE` filter (a filter means "just
+      this one tier"). `driveOneBot`'s shared `profile` arg became
+      `profilesByPlayer[i]`, indexed per bot. `perf.tickSkewGrowthByPair` —
+      per-qualifying-run first-third-vs-last-third mean comparison (`growing`
+      requires both a >=5ms absolute delta and a >=1.5x ratio, so real-clock
+      sampling noise can't false-positive) — verified against synthetic
+      growing/flat/too-short series. New standalone `disconnectIsolation`
+      report section (`runDisconnectIsolationScenario`, gated by
+      `CODEENSTEIN_MP_TELEMETRY_DISCONNECT_SCENARIO`, default on, off in
+      `balancing:scan-multiplayer`) — a scored version of
+      `verify-multiplayer-disconnect.mjs`'s scenario 1, runs once per
+      invocation (not per combo, the disconnect path doesn't vary by bot
+      skill/difficulty). Live-verified against a real WebRTC context close:
+      guest reached `"dead"` after 7691ms (real combat pre-empting the
+      disconnect grace period, the same finding
+      `verify-multiplayer-disconnect.mjs`'s own doc comment already
+      documents — expected, not a bug), host `hostKeptTicking: true` and
+      `hostSurvived: true`. `curateMixedProfiles`/`analyzeSkewGrowthForRun`/
+      `runDisconnectIsolationScenario` exported (previously
+      module-internal) so they're directly testable, same convention as
+      this file's existing `PROFILES`/`DIFFICULTIES` re-export.
 - [ ] Phase 4: `doc/dev/balancing-telemetry.md` consolidation, apply 3 spec
       corrections to the spec doc, `notes` step11 entry → implemented
 - [ ] Final verification: typecheck, 100% coverage, local

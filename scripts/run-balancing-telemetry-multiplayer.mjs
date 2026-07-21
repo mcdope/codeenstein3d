@@ -37,8 +37,23 @@
  *    a guest-only signal (the host is authoritative, never applies a
  *    snapshot to itself) — a host's own `reconciliationCorrectionsByPlayer`
  *    entries are always `{count: 0, avgMagnitudeTiles: 0}`, not missing data.
- *  - **Uniform bot-skill profiles only** (one `PROFILES` entry applied to
- *    every bot in a run) — the curated mixed-skill combos are Phase 3.
+ *
+ * **Phase 3** (curated mixed-skill combos + two new cross-peer detectors) is
+ * also folded in now: when no `CODEENSTEIN_MP_TELEMETRY_PROFILE` filter is
+ * set, every player-count's uniform combos (one tier for the whole team) run
+ * alongside a curated set of *mixed*-tier combos (see `curateMixedProfiles`)
+ * — deliberately not a blind cartesian product across up to 4 slots, that
+ * would multiply this tool's already-real-time-only cost for combos with
+ * little new signal over their neighbors. A `PROFILE` filter still means
+ * "just this one tier," so it disables mixed combos entirely — a filter
+ * requesting one specific tier and a curated-mix generator disagreeing about
+ * team composition would just be confusing. `perf.tickSkewGrowthByPair` (is
+ * skew between a pair of peers actually widening over the run, not just its
+ * mean) and a standalone `disconnectIsolation` report section (a real,
+ * scored mid-run disconnect — see `runDisconnectIsolationScenario`) round
+ * out the report; the latter runs once per invocation, gated by
+ * `CODEENSTEIN_MP_TELEMETRY_DISCONNECT_SCENARIO` (default on, disabled in
+ * the fast `balancing:scan-multiplayer` preset).
  *
  * No virtual clock exists for multiplayer (`multiplayerBot.mjs`'s own doc
  * comment) — every attempt costs real wall-clock time, so this script's
@@ -92,6 +107,12 @@ const NAV_DIAG = process.env.CODEENSTEIN_MP_TELEMETRY_NAV_DIAG === "1";
 // for MultiplayerBot unchanged, they just need the trace collector turned on.
 const ANOMALY_SCAN = process.env.CODEENSTEIN_MP_TELEMETRY_ANOMALY_SCAN === "1" || NAV_DIAG;
 const HEADED = process.env.CODEENSTEIN_MP_TELEMETRY_HEADED === "1";
+// On by default for the full telemetry run — off in the fast
+// balancing:scan-multiplayer preset (see package.json), since a real
+// disconnect-detection wait (up to DISCONNECT_ISOLATION_DETECT_TIMEOUT_MS)
+// would dominate that preset's own runtime budget for one fixed scenario
+// that doesn't vary with the rest of the scan's dimensions.
+const DISCONNECT_SCENARIO = process.env.CODEENSTEIN_MP_TELEMETRY_DISCONNECT_SCENARIO !== "0";
 const PROGRESS_LOG_INTERVAL = 2; // attempts between "still working" heartbeats — real-time cost means far fewer attempts per combo than single-player.
 
 const TARGET_TICK = 60; // matches verify-multiplayer-multiguest.mjs's own default: 2s of ticking, comfortably past session bootstrap.
@@ -99,6 +120,41 @@ const FINAL_APPROACH_TICKS = 80; // same constant/value as run-balancing-telemet
 const SAMPLER_INTERVAL_FPS_WINDOW_MS = 300; // short fps sample window so the background health/perf sampler stays responsive rather than blocking a full 1s each iteration.
 
 const PLAYER_COUNT_LABEL = (n) => `${n}p`;
+
+// ---------------------------------------------------------------------------
+// Phase 3 — curated mixed-skill combos
+// ---------------------------------------------------------------------------
+
+/**
+ * Curated mixed-tier combos for a given player count, as arrays of profile
+ * names (index-aligned with `bootstrapMultiplayerSession`'s own roster order
+ * — `["host", "guest-1", ...]`). Deliberately NOT a blind cartesian product
+ * (`PROFILES.length ** playerCount` combos, most of them redundant with a
+ * neighbor): 2p gets only *adjacent*-tier pairs (one tier apart — a
+ * same-tier pair is already covered by the uniform combos above, and a
+ * two-tier-apart pair like Casual+Pro is less representative of a real co-op
+ * pairing than either adjacent pair, while costing the same real wall-clock
+ * time as one). 3-4p get a single weakest+strongest+filler shape per size —
+ * both tier extremes represented (the combination most likely to surface a
+ * carry-or-be-carried balance issue), with the remaining slot(s) filled by
+ * the middle tier (repeated for 4p) rather than more copies of either
+ * extreme, so the filler doesn't just restate the uniform-Casual or
+ * uniform-Pro combo already in the matrix.
+ */
+export function curateMixedProfiles(tierNames, playerCount) {
+  if (tierNames.length < 2) return [];
+  const weakest = tierNames[0];
+  const strongest = tierNames[tierNames.length - 1];
+  const middle = tierNames[Math.floor(tierNames.length / 2)];
+  if (playerCount === 2) {
+    const pairs = [];
+    for (let i = 0; i < tierNames.length - 1; i++) pairs.push([tierNames[i], tierNames[i + 1]]);
+    return pairs;
+  }
+  if (playerCount === 3) return [[weakest, middle, strongest]];
+  if (playerCount === 4) return [[weakest, middle, middle, strongest]];
+  return [];
+}
 
 // ---------------------------------------------------------------------------
 // Background per-attempt health/perf sampler
@@ -305,7 +361,7 @@ async function driveOneBot(page, playerId, profile, map, label) {
 // One full attempt: bootstrap a real session, drive every bot, tear down
 // ---------------------------------------------------------------------------
 
-async function runOneAttempt(browser, devServerUrl, profileName, profile, difficulty, playerCount) {
+async function runOneAttempt(browser, devServerUrl, comboLabel, profilesByPlayer, difficulty, playerCount) {
   let session;
   try {
     session = await bootstrapMultiplayerSession(browser, {
@@ -317,7 +373,7 @@ async function runOneAttempt(browser, devServerUrl, profileName, profile, diffic
       log: VERBOSE ? (msg) => console.log(`  [bootstrap] ${msg}`) : () => {},
     });
     const { pages, playerIds } = session;
-    const label = `${profileName}/${difficulty}/${PLAYER_COUNT_LABEL(playerCount)}`;
+    const label = `${comboLabel}/${difficulty}/${PLAYER_COUNT_LABEL(playerCount)}`;
 
     const map = await pages[0].evaluate(() => window.__codeensteinMultiplayerTestHooks.getMap());
     const enemiesBefore = await pages[0].evaluate(() => window.__codeensteinMultiplayerTestHooks.getEnemiesSnapshot());
@@ -326,7 +382,7 @@ async function runOneAttempt(browser, devServerUrl, profileName, profile, diffic
     const sampler = createHealthPerfSampler(pages, playerIds);
     let perPlayer;
     try {
-      perPlayer = await Promise.all(pages.map((page, i) => driveOneBot(page, playerIds[i], profile, map, label)));
+      perPlayer = await Promise.all(pages.map((page, i) => driveOneBot(page, playerIds[i], profilesByPlayer[i], map, label)));
     } finally {
       // Must run even if a bot's own drive throws — otherwise the sampler's
       // background polling loop never learns to stop and spins forever
@@ -376,6 +432,114 @@ async function runOneAttempt(browser, devServerUrl, profileName, profile, diffic
 }
 
 // ---------------------------------------------------------------------------
+// Phase 3 — disconnect-isolation scored scenario (runs once, not per combo)
+// ---------------------------------------------------------------------------
+
+// Grace (DISCONNECT_GRACE_MS, netcodeConstants.ts) is 10s; real ICE
+// disconnect detection on top of that is inherently variable (STUN
+// consent-freshness checks, not an instant signal — see
+// verify-multiplayer-disconnect.mjs's own doc comment, which uses a 90s
+// budget for the same reason). This scenario doesn't need that script's full
+// margin — it isn't also proving the loot-conversion/comparison-table paths,
+// just "does the remaining peer keep functioning and how long until it
+// notices" — so a smaller, still-generous 40s bound keeps this fast enough
+// to run by default without chasing a rare worst case.
+const DISCONNECT_ISOLATION_DETECT_TIMEOUT_MS = 40_000;
+
+/** Same continuous-curve evasion technique as
+ * `verify-multiplayer-disconnect.mjs`'s own `startEvading`/`stopEvading`
+ * (duplicated, not imported — that file is a script owning its own
+ * bookkeeping, this project's existing convention for this kind of small
+ * self-contained helper): a straight line reliably ends at a wall, and a
+ * bot stationary at a wall for up to `DISCONNECT_ISOLATION_DETECT_TIMEOUT_MS`
+ * is exactly as exposed to the demo campaign's real roaming enemies as never
+ * moving at all. */
+async function startEvading(page) {
+  await page.focus("canvas.scene-canvas");
+  await page.keyboard.down("KeyW");
+  await page.keyboard.down("KeyE");
+}
+async function stopEvading(page) {
+  await page.keyboard.up("KeyW").catch(() => {});
+  await page.keyboard.up("KeyE").catch(() => {});
+}
+
+/**
+ * A real, repeatable, *scored* version of
+ * `verify-multiplayer-disconnect.mjs`'s scenario 1 (guest disconnects) —
+ * that script only has ad hoc inline pass/fail assertions for one specific
+ * run; this measures real detection latency and whether the remaining peer
+ * keeps ticking, as a reusable signal in the telemetry report. Runs once per
+ * invocation (gated by `CODEENSTEIN_MP_TELEMETRY_DISCONNECT_SCENARIO`), not
+ * once per combo — the disconnect-handling path doesn't vary by bot skill
+ * profile or difficulty, so repeating it across the whole combo matrix would
+ * just multiply real wall-clock cost for no new signal, the same reasoning
+ * `runOneAttempt`'s own doc comment gives for one bundled level per run.
+ * Always a fixed 2-player session — the scenario itself (one peer gone,
+ * does the other survive) doesn't need higher player counts to be
+ * meaningful, and a 3-4p version would only add more real time per run.
+ */
+export async function runDisconnectIsolationScenario(browser, devServerUrl) {
+  console.log("\n=== disconnectIsolation scenario ===");
+  let session;
+  try {
+    session = await bootstrapMultiplayerSession(browser, {
+      engineName: "chromium",
+      devServerUrl,
+      playerCount: 2,
+      targetTick: TARGET_TICK,
+      log: VERBOSE ? (msg) => console.log(`  [disconnect-scenario bootstrap] ${msg}`) : () => {},
+    });
+    const { hostPage, contexts, playerIds } = session;
+    const guestId = playerIds[1];
+    const guestContext = contexts[1];
+
+    await startEvading(hostPage);
+    const tickBeforeDisconnect = await hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getSimTick());
+    console.log("  Closing the guest's browser context (a real transport-level teardown)...");
+    const disconnectStartedAt = Date.now();
+    await guestContext.close();
+
+    let guestFinalStatus = "undetected";
+    let detectedWithinMs = null;
+    try {
+      const handle = await hostPage.waitForFunction(
+        (id) => {
+          const s = window.__codeensteinMultiplayerTestHooks.getPlayerStatus(id);
+          return s === "disconnected" || s === "dead" ? s : false;
+        },
+        guestId,
+        { timeout: DISCONNECT_ISOLATION_DETECT_TIMEOUT_MS },
+      );
+      guestFinalStatus = await handle.jsonValue();
+      detectedWithinMs = Date.now() - disconnectStartedAt;
+      console.log(`  Guest reached "${guestFinalStatus}" after ${detectedWithinMs}ms.`);
+    } catch (err) {
+      console.log(`  [disconnect-scenario] never detected within ${DISCONNECT_ISOLATION_DETECT_TIMEOUT_MS}ms: ${err.message}`);
+    }
+
+    // Sampled after the detection window (or the timeout), not before — this
+    // reflects the sim's state *through* the disconnect, not just up to it.
+    const tickAfterWindow = await hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getSimTick());
+    const hostKeptTicking = typeof tickAfterWindow === "number" && typeof tickBeforeDisconnect === "number" && tickAfterWindow > tickBeforeDisconnect;
+    await stopEvading(hostPage);
+    const hostFinalStatus = await hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerStatus("host")).catch(() => null);
+
+    return {
+      guestFinalStatus,
+      detectedWithinMs,
+      hostKeptTicking,
+      hostSurvived: hostFinalStatus === "alive",
+    };
+  } catch (err) {
+    console.log(`  [disconnectIsolation crashed] ${err.message}`);
+    return { crashed: err.message };
+  } finally {
+    if (session) await closeMultiplayerSession(session).catch(() => {});
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Aggregation
 // ---------------------------------------------------------------------------
 
@@ -393,6 +557,31 @@ function spread(nums, kind) {
   const finite = nums.filter((n) => Number.isFinite(n));
   const value = finite.length === 0 ? 0 : kind === "max" ? Math.max(...finite) : kind === "min" ? Math.min(...finite) : mean(finite);
   return { [kind]: value, samples: nums };
+}
+
+// Phase 3 — a mean/max tick-skew number alone can't tell "briefly spiked
+// then settled" apart from "steadily widening," and only the latter is a
+// real desync-growth signal worth flagging. Sub-5ms deltas are within this
+// sampler's own real-clock noise floor (a 300ms fps-sample window plus two
+// more evaluate() round trips separate consecutive samples, not a fixed
+// tick), so a "growing" call additionally requires the last-third mean to be
+// at least 1.5x the first-third mean, not just numerically larger.
+const TICK_SKEW_GROWTH_MIN_ABS_MS = 5;
+const TICK_SKEW_GROWTH_MIN_RATIO = 1.5;
+
+/** One run's own tick-skew series (time-ordered, real polling-loop order —
+ * concatenating multiple runs' series before this analysis would corrupt
+ * that ordering, so this is deliberately called once per run, never on a
+ * flattened cross-run array). `null` when there aren't enough samples for a
+ * meaningful first/last-third split (a very short attempt, or a crashed one
+ * that never got far). */
+export function analyzeSkewGrowthForRun(samples) {
+  if (samples.length < 6) return null;
+  const third = Math.floor(samples.length / 3);
+  const firstThirdMeanMs = mean(samples.slice(0, third));
+  const lastThirdMeanMs = mean(samples.slice(-third));
+  const growing = lastThirdMeanMs - firstThirdMeanMs >= TICK_SKEW_GROWTH_MIN_ABS_MS && lastThirdMeanMs >= firstThirdMeanMs * TICK_SKEW_GROWTH_MIN_RATIO;
+  return { firstThirdMeanMs, lastThirdMeanMs, growing };
 }
 
 function buildComboOutput(combo) {
@@ -418,11 +607,19 @@ function buildComboOutput(combo) {
     );
   }
   const tickSkewMsByPair = {};
+  const tickSkewGrowthByPair = {};
   for (const key of Object.keys(qualifyingRuns[0]?.tickSkewSamples ?? {})) {
     tickSkewMsByPair[key] = spread(
       qualifyingRuns.flatMap((r) => r.tickSkewSamples[key] ?? []),
       "mean",
     );
+    const perRunGrowth = qualifyingRuns.map((r) => analyzeSkewGrowthForRun(r.tickSkewSamples[key] ?? [])).filter(Boolean);
+    tickSkewGrowthByPair[key] = {
+      runsAnalyzed: perRunGrowth.length,
+      growingRunCount: perRunGrowth.filter((g) => g.growing).length,
+      avgFirstThirdMeanMs: mean(perRunGrowth.map((g) => g.firstThirdMeanMs)),
+      avgLastThirdMeanMs: mean(perRunGrowth.map((g) => g.lastThirdMeanMs)),
+    };
   }
 
   // netcodeHealth (Phase 2b) — RTT is a point-in-time sample like fps/tick-
@@ -484,6 +681,7 @@ function buildComboOutput(combo) {
     perf: {
       fpsByPlayer,
       tickSkewMsByPair,
+      tickSkewGrowthByPair,
     },
     netcodeHealth: {
       rttMsByLink,
@@ -511,12 +709,18 @@ async function main() {
 
   const profileNames = PROFILE_FILTER ? [PROFILE_FILTER] : Object.keys(PROFILES);
   const difficulties = DIFFICULTY_FILTER ? [DIFFICULTY_FILTER] : DIFFICULTIES;
+  // Mixed combos need to know every tier, in weakest->strongest order, even
+  // when a difficulty/player-count filter narrows other dimensions — only a
+  // *profile* filter disables them (see curateMixedProfiles's own doc
+  // comment for why: a filter means "just this one tier," which a curated
+  // mix would contradict).
+  const allTierNames = Object.keys(PROFILES);
 
   const browser = await chromium.launch({ headless: !HEADED });
   const output = {
     meta: {
       generatedAt: new Date().toISOString(),
-      scope: "Phase 1 + Phase 2b — one bundled demo-campaign level per run, coarse gameplay-health signals plus real netcodeHealth (RTT/missed-tick fraction/reconciliation corrections). No full 7-category per-player telemetry yet — that's Phase 2a — see doc/dev/multiplayer-balancing-telemetry-spec.md.",
+      scope: "Phase 1 + 2b + 3 — one bundled demo-campaign level per run, coarse gameplay-health signals, real netcodeHealth (RTT/missed-tick fraction/reconciliation corrections), curated mixed-skill combos, and tick-skew-growth detection. No full 7-category per-player telemetry yet — that's Phase 2a — see doc/dev/multiplayer-balancing-telemetry-spec.md. disconnectIsolation (if present) is a separate, single scored scenario, not part of the combo matrix.",
       difficulties: DIFFICULTIES,
       playerCounts: PLAYER_COUNTS,
       profiles: PROFILES,
@@ -526,14 +730,19 @@ async function main() {
   };
 
   try {
-    for (const profileName of profileNames) {
-      const profile = PROFILES[profileName];
-      for (const difficulty of difficulties) {
-        for (const playerCount of PLAYER_COUNTS) {
-          const key = `${profileName}/${difficulty}/${PLAYER_COUNT_LABEL(playerCount)}`;
+    for (const difficulty of difficulties) {
+      for (const playerCount of PLAYER_COUNTS) {
+        const comboDefs = profileNames.map((name) => ({ label: name, profilesByPlayer: Array(playerCount).fill(PROFILES[name]) }));
+        if (!PROFILE_FILTER) {
+          for (const mix of curateMixedProfiles(allTierNames, playerCount)) {
+            comboDefs.push({ label: mix.join("+"), profilesByPlayer: mix.map((name) => PROFILES[name]) });
+          }
+        }
+        for (const { label, profilesByPlayer } of comboDefs) {
+          const key = `${label}/${difficulty}/${PLAYER_COUNT_LABEL(playerCount)}`;
           console.log(`\n=== ${key} ===`);
           const combo = await runQualifyLoop({
-            runAttempt: () => runOneAttempt(browser, servers.devServerUrl, profileName, profile, difficulty, playerCount),
+            runAttempt: () => runOneAttempt(browser, servers.devServerUrl, label, profilesByPlayer, difficulty, playerCount),
             isQualifying: (run) => run.teamOutcome === "allReachedExit",
             requiredQualifyingRuns: REQUIRED_QUALIFYING_RUNS,
             attemptCap: ATTEMPT_CAP,
@@ -553,6 +762,9 @@ async function main() {
           console.log(`  qualifying runs: ${combo.qualifyingRuns.length}/${REQUIRED_QUALIFYING_RUNS} (attempts used: ${combo.attemptsUsed})`);
         }
       }
+    }
+    if (DISCONNECT_SCENARIO) {
+      output.disconnectIsolation = await runDisconnectIsolationScenario(browser, servers.devServerUrl);
     }
   } finally {
     await browser.close();
