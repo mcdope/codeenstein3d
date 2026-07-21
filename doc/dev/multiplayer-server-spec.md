@@ -432,6 +432,17 @@ const ipLimits = new Map<string, IpLimitState>();
   has ever made a request. Swept on the same interval as session TTL (§3): remove
   any entry whose `cooldownUntil` has passed *and* whose `windowStart` is older
   than `RATE_LIMIT_WINDOW_MS` — i.e., nothing about that IP is currently live.
+- **Each of the four rate-limit maps (guess, host-token, lobby, PUT /session) also
+  has a hard size cap**, `MAX_TRACKED_IPS_PER_LIMITER` (10,000 by default) — the
+  sweep above only runs periodically, so without a cap a burst of requests from
+  many distinct IPs (real or, prior to the loopback-gating fix above, spoofed via
+  `X-Forwarded-For`) could grow a map unboundedly in between sweeps: a memory-
+  exhaustion DoS. Once a map is at this cap, a genuinely new IP simply isn't
+  allocated a tracking entry — its request is let through unmetered rather than
+  evicting some other (possibly mid-cooldown) entry to make room, or refusing the
+  request outright. This is a deliberate fail-*open* choice: a full map must never
+  itself become a denial-of-service against every new legitimate caller. `GET
+  /stats` (above) reports each map's live size under `rateLimiting.trackedIps`.
 - **Not a timing-attack concern**: checking whether a guessed code exists is a
   `Map.get()` — a hash lookup, not a sequential/prefix string comparison — so
   there's no incremental "how many characters matched" signal to leak the way a

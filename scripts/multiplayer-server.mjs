@@ -68,6 +68,19 @@ const PUT_SESSION_RATE_LIMIT_MAX_REQUESTS = Number(
 );
 const BASE_COOLDOWN_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_BASE_COOLDOWN_MS ?? 5_000);
 
+/** Caps how many distinct IPs each of the four rate-limit maps below will
+ * ever track at once — without this, an attacker (real, or via a spoofed
+ * `X-Forwarded-For` — see `getClientIp`) can grow these maps unboundedly
+ * until the next sweep (`SWEEP_INTERVAL_MS`, up to tens of seconds later), a
+ * straightforward memory-exhaustion DoS. 10,000 distinct concurrently-tracked
+ * IPs per limiter is generously above any realistic legitimate concurrency
+ * for this server while still bounding worst-case memory to a small, fixed
+ * multiple of `IpLimitState`'s size. See `checkRateLimit`'s own comment for
+ * what happens once a map is actually at this cap. */
+const MAX_TRACKED_IPS_PER_LIMITER = Number(
+  process.env.CODEENSTEIN_MULTIPLAYER_MAX_TRACKED_IPS_PER_LIMITER ?? 10_000,
+);
+
 /** `GET /stats` (and the `--stats` CLI mode that queries it) is entirely
  * opt-in: unset, the endpoint doesn't exist as far as any caller can tell —
  * an unauthenticated or unconfigured request gets the same plain 404 as any
@@ -214,21 +227,39 @@ function startSweeping() {
 // Rate limiting
 // ---------------------------------------------------------------------------
 
+/** Loopback addresses `req.socket.remoteAddress` can take when the actual
+ * TCP peer is the local reverse proxy this process is meant to sit behind
+ * (see `getClientIp`'s own comment) — plain `127.0.0.1`/`::1`, plus the
+ * IPv4-mapped-IPv6 form Node reports for some dual-stack listen
+ * configurations. */
+function isLoopbackAddress(address) {
+  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
 /** Client IP for rate-limiting: the *rightmost* entry of `X-Forwarded-For`
- * (the one the trusted local reverse proxy itself appended — safe to trust
- * specifically because this process binds `127.0.0.1` only, so nothing but
- * that proxy can ever connect directly and prepend a forged entry ahead of
- * it), falling back to the raw socket address when the header is absent
- * (local dev / direct testing only — see doc/dev/multiplayer-server-spec.md
- * §1's deployment note for why trusting the proxy's own header is safe here). */
+ * — but **only** when the request's actual TCP peer (`req.socket.
+ * remoteAddress`) is itself loopback, i.e. only when it's structurally
+ * possible for that peer to be the trusted local reverse proxy this process
+ * is meant to sit behind. This process currently binds `127.0.0.1` only (see
+ * this file's `server.listen` call), so `remoteAddress` is *always* loopback
+ * today and this check always passes — this is defense-in-depth against a
+ * future rebind to a public interface, not a currently-live exploit, where
+ * anything could connect directly and forge whatever `X-Forwarded-For` it
+ * likes. Falls back to the raw socket address whenever the header is absent
+ * *or* the peer isn't loopback (see doc/dev/multiplayer-server-spec.md §1's
+ * deployment note for why trusting the proxy's own header is safe once that
+ * precondition holds). */
 function getClientIp(req) {
+  const remoteAddress = req.socket.remoteAddress ?? "unknown";
+  if (!isLoopbackAddress(remoteAddress)) return remoteAddress;
+
   const xff = req.headers["x-forwarded-for"];
   if (typeof xff === "string" && xff.length > 0) {
     const parts = xff.split(",");
     const rightmost = parts[parts.length - 1].trim();
     if (rightmost) return rightmost;
   }
-  return req.socket.remoteAddress ?? "unknown";
+  return remoteAddress;
 }
 
 /** Returns `{ allowed, retryAfterMs }`. A request currently under
@@ -239,6 +270,18 @@ function getClientIp(req) {
 function checkRateLimit(map, ip, maxRequests, now) {
   let state = map.get(ip);
   if (!state) {
+    // Map is already at MAX_TRACKED_IPS_PER_LIMITER and this is a genuinely
+    // new IP: refuse to allocate a new tracking entry rather than growing
+    // the map further (bounding memory is the entire point of the cap) or
+    // evicting some other, possibly mid-cooldown, entry to make room for it.
+    // This IP's request is simply let through unmetered this one time — a
+    // deliberate fail-*open* choice, not fail-closed: a full map must never
+    // itself become a denial-of-service against every *new* legitimate
+    // caller. Once any of this IP's requests lands while the map has spare
+    // capacity, it gets tracked normally from then on.
+    if (map.size >= MAX_TRACKED_IPS_PER_LIMITER) {
+      return { allowed: true, retryAfterMs: 0 };
+    }
     state = { windowStart: now, windowCount: 0, violationCount: 0, cooldownUntil: 0 };
     map.set(ip, state);
   }
@@ -738,6 +781,7 @@ invocation's currently-effective ones):
   CODEENSTEIN_MULTIPLAYER_HOST_TOKEN_MAX_REQUESTS        Host-token-exempt budget (currently ${HOST_TOKEN_MAX_REQUESTS}).
   CODEENSTEIN_MULTIPLAYER_LOBBY_RATE_LIMIT_MAX_REQUESTS  GET /lobby budget (currently ${LOBBY_RATE_LIMIT_MAX_REQUESTS}).
   CODEENSTEIN_MULTIPLAYER_PUT_SESSION_RATE_LIMIT_MAX_REQUESTS  PUT /session budget (currently ${PUT_SESSION_RATE_LIMIT_MAX_REQUESTS}).
+  CODEENSTEIN_MULTIPLAYER_MAX_TRACKED_IPS_PER_LIMITER    Per-limiter distinct-IP cap (currently ${MAX_TRACKED_IPS_PER_LIMITER}).
   CODEENSTEIN_MULTIPLAYER_BASE_COOLDOWN_MS               Backoff base (currently ${BASE_COOLDOWN_MS}).
   CODEENSTEIN_MULTIPLAYER_MAX_COOLDOWN_MS                Backoff cap (currently ${MAX_COOLDOWN_MS}).
   CODEENSTEIN_MULTIPLAYER_MAX_BODY_BYTES                 Request body cap (currently ${MAX_BODY_BYTES}).

@@ -692,6 +692,79 @@ async function runStatsSuite() {
 }
 
 // ---------------------------------------------------------------------------
+// Rate-limit map size cap + loopback-gated X-Forwarded-For trust
+// ---------------------------------------------------------------------------
+
+/** Note on what's realistically testable here from outside the process: the
+ * loopback-gated trust logic in `getClientIp` (only honor `X-Forwarded-For`
+ * when `req.socket.remoteAddress` is itself loopback) can't be exercised via
+ * real HTTP at this level — this test server only ever binds `127.0.0.1`, so
+ * every real connection's `remoteAddress` *is* loopback, meaning the
+ * "distrust a non-loopback peer's XFF" branch is structurally unreachable
+ * from a plain `fetch()` against it (short of a raw-socket trick to fake a
+ * non-loopback peer address, which isn't practical against a loopback-only
+ * listener). That branch is exercised implicitly instead: every other suite
+ * in this file relies on XFF-based per-IP identity working exactly as
+ * before (see `xff()`'s use throughout), which it does — this server binds
+ * loopback only, so `remoteAddress` is always loopback and the trust check
+ * always passes, preserving prior behavior byte-for-byte. What *is*
+ * directly testable, and what actually is the real, live bug here (per the
+ * finding), is the rate-limit maps' new size cap — verified below via a
+ * lowered `MAX_TRACKED_IPS_PER_LIMITER` and many distinct spoofed IPs. */
+async function runRateLimitMapCapSuite() {
+  const port = 8905;
+  const token = "cap-stats-token";
+  const { base, child } = await spawnServer(port, {
+    CODEENSTEIN_MULTIPLAYER_MAX_TRACKED_IPS_PER_LIMITER: "10",
+    CODEENSTEIN_MULTIPLAYER_RATE_LIMIT_MAX_REQUESTS: "3",
+    CODEENSTEIN_MULTIPLAYER_STATS_TOKEN: token,
+  });
+  try {
+    // 20 distinct spoofed IPs (cap is 10) hitting a guess-sensitive endpoint,
+    // one request each — the map must stay bounded and every request must
+    // still get answered (no crash, no hang, no unbounded growth).
+    const statuses = [];
+    for (let i = 0; i < 20; i++) {
+      const res = await fetch(`${base}/session/ZZZZZZ`, { headers: xff(`10.5.0.${i}`) });
+      statuses.push(res.status);
+    }
+    check(
+      "requests from 20 distinct spoofed IPs (cap of 10) are all still answered",
+      statuses.every((s) => s === 404),
+      `statuses: ${statuses.join(",")}`,
+    );
+
+    const stats = await json(await fetch(`${base}/stats`, { headers: { "X-Stats-Token": token } }));
+    check(
+      "the guess-sensitive map never grows past MAX_TRACKED_IPS_PER_LIMITER despite 20 distinct IPs",
+      stats?.rateLimiting?.trackedIps?.guess === 10,
+      `trackedIps.guess=${stats?.rateLimiting?.trackedIps?.guess}`,
+    );
+
+    // One of the first 10 IPs is guaranteed to have gotten a real tracking
+    // slot (allocation is first-come-first-served up to the cap, no
+    // eviction) — its own budget must still be enforced normally.
+    const trackedIp = "10.5.0.0";
+    const tripStatuses = [];
+    for (let i = 0; i < 5; i++) {
+      tripStatuses.push((await fetch(`${base}/session/ZZZZZZ`, { headers: xff(trackedIp) })).status);
+    }
+    check(
+      "an IP that got a real tracking slot still has its own budget enforced normally",
+      tripStatuses.includes(429),
+      `statuses: ${tripStatuses.join(",")}`,
+    );
+
+    // A 21st distinct IP, arriving once the map is already full, must still
+    // get a normal (non-500) response — fail-open, not a crash or hang.
+    const overflowRes = await fetch(`${base}/session/ZZZZZZ`, { headers: xff("10.5.0.999") });
+    check("a brand-new IP arriving after the cap is hit still gets a normal response (fail-open)", overflowRes.status === 404);
+  } finally {
+    await stopServer(child);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Constant-time secret comparison (hostToken / X-Stats-Token) — asserts
 // accept/reject behavior is unchanged for correct, wrong-length, and
 // same-length-wrong tokens at all three comparison sites: the PUT /session
@@ -821,6 +894,9 @@ async function main() {
 
   console.log("\n--stats / GET /stats:");
   await runStatsSuite();
+
+  console.log("\nRate-limit map size cap:");
+  await runRateLimitMapCapSuite();
 
   console.log("\nConstant-time secret comparison (hostToken / X-Stats-Token):");
   await runTimingSafeComparisonSuite();
