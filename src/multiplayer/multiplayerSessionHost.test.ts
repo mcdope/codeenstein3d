@@ -1057,6 +1057,38 @@ describe("runMultiplayerSessionAsHost", () => {
           expect(handle.getPlayerPosition("host")).toEqual({ x: 6.5, y: 6.5 });
         });
       });
+
+      it("excludes a permanently-disconnected guest (grace already expired) from the ack wait (finding 2)", async () => {
+        vi.useFakeTimers();
+        const { guest1, connection2, links } = twoGuestLinks();
+        const worker = fakeWorker();
+        const guest1Seen = collectMessages(guest1.reconciliation) as unknown as LevelTransitionMessage[];
+        const result = fakeResult({ roster: ["guest-1", "guest-2", "host"].sort(), playerCount: 3, map: winMap3() });
+        const nextMap = fakeMap({ spawn: { x: 6, y: 6 } });
+        const findNextLevel = vi.fn().mockResolvedValue({ map: nextMap, gameplaySeed: 1 });
+        const handle = runMultiplayerSessionAsHost(links, makeCanvas(), result, worker, undefined, findNextLevel);
+
+        // guest-2's disconnect grace fully expires before the win happens —
+        // it's now permanently gone (neutralInputIds has it, no active
+        // graceTimers entry left).
+        connection2.setState("disconnected");
+        vi.advanceTimersByTime(DISCONNECT_GRACE_MS);
+
+        for (let i = 0; i < COUNTDOWN_TICKS + 1; i++) worker.onmessage?.({ data: { type: "tick", tick: i } } as MessageEvent);
+        await vi.waitFor(() => {
+          expect(guest1Seen.some((m) => m.type === "level-transition-map-end")).toBe(true);
+        });
+
+        // Only guest-1 (still connected) acks — no need to ever advance past
+        // TRANSITION_ACK_TIMEOUT_MS: the permanently-gone guest-2 was never
+        // part of the ack wait set at all, so the transition proceeds the
+        // instant guest-1's own ack arrives.
+        const ack1: LevelTransitionAckMessage = { type: "level-transition-ack", playerId: "guest-1" };
+        guest1.reconciliation.send(JSON.stringify(ack1));
+        await vi.waitFor(() => {
+          expect(handle.getPlayerPosition("host")).toEqual({ x: 6.5, y: 6.5 });
+        });
+      });
     });
   });
 });

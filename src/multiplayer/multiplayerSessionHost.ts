@@ -437,7 +437,12 @@ export function runMultiplayerSessionAsHost(
     // A guest that never acks in time falls into the disconnect path via the
     // same connection-state signal once it's genuinely gone — not handled
     // specially here; this just stops waiting and proceeds regardless.
-    await waitForAcks(guestIds, TRANSITION_ACK_TIMEOUT_MS);
+    // Guests whose disconnect grace has already fully expired (in
+    // `neutralInputIds` with no corresponding active `graceTimers` entry)
+    // are excluded up front — they can never ack again, so waiting on them
+    // would only ever burn the full timeout on every subsequent transition.
+    const ackWaitIds = guestIds.filter((id) => !neutralInputIds.has(id) || graceTimers.has(id));
+    await waitForAcks(ackWaitIds, TRANSITION_ACK_TIMEOUT_MS);
     if (ended) return;
 
     currentResult = { ...currentResult, map: next.map, gameplaySeed: next.gameplaySeed };
