@@ -2085,6 +2085,62 @@ describe("RaycasterEngine — captureCarryoverFor (step 8)", () => {
   });
 });
 
+describe("RaycasterEngine — getMultiplayerTelemetrySnapshot (step 11)", () => {
+  it("returns null when telemetry isn't being recorded at all (no ?testHooks=1, PLAYER_STATS_ENABLED off)", () => {
+    const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    engine.addPlayer("G", new ScriptedInput());
+    expect(engine.getMultiplayerTelemetrySnapshot("H")).toBeNull();
+    expect(engine.getMultiplayerTelemetrySnapshot("G")).toBeNull();
+  });
+
+  it("returns null for an id that isn't a connected player, even with telemetry on", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+      expect(engine.getMultiplayerTelemetrySnapshot("nope")).toBeNull();
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
+  it("reports each connected player's own per-player fields independently, while sharing identical team-wide fields", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const hostInput = new ScriptedInput();
+      const guestInput = new ScriptedInput();
+      const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, hostInput, undefined, "H");
+      engine.addPlayer("G", guestInput);
+
+      // Only the guest fires — proves weaponTallies/shotsFired is genuinely
+      // per-player now, not the pre-step-11 shared-instance bug (which would
+      // have shown the shot on *both* players' snapshots).
+      guestInput.fireQueued = true;
+      engine.advance(0.016);
+
+      const hostSnapshot = engine.getMultiplayerTelemetrySnapshot("H");
+      const guestSnapshot = engine.getMultiplayerTelemetrySnapshot("G");
+      expect(hostSnapshot).not.toBeNull();
+      expect(guestSnapshot).not.toBeNull();
+      expect(guestSnapshot!.weaponTallies[0]?.shotsFired).toBe(1);
+      expect(hostSnapshot!.weaponTallies[0]?.shotsFired).toBeUndefined();
+
+      // Team-wide fields (no single per-player owner) read identically off
+      // both snapshots — see `RaycasterEngine.teamTelemetry`'s doc comment.
+      expect(hostSnapshot!.peakAggroedCount).toBe(guestSnapshot!.peakAggroedCount);
+      expect(hostSnapshot!.combatTimeSec).toBe(guestSnapshot!.combatTimeSec);
+      expect(hostSnapshot!.enemyBoltsFired).toBe(guestSnapshot!.enemyBoltsFired);
+      expect(hostSnapshot!.enemyMeleeAttacks).toBe(guestSnapshot!.enemyMeleeAttacks);
+      expect(hostSnapshot!.minesTriggered).toBe(guestSnapshot!.minesTriggered);
+      expect(hostSnapshot!.lootRolled).toEqual(guestSnapshot!.lootRolled);
+      expect(hostSnapshot!.mapCompletionFrac).toBe(guestSnapshot!.mapCompletionFrac);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+});
+
 describe("RaycasterEngine — FPS overlay toggle", () => {
   it("Right-Ctrl equivalent (consumeFpsToggle) flips the overlay without throwing", () => {
     const { engine, input } = makeEngine(fakeMap());

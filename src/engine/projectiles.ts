@@ -91,10 +91,6 @@ export function updateProjectiles(
   targets: readonly ProjectileTarget[],
   map: GameMap,
   dt: number,
-  /** Balancing telemetry only — fired once per bolt that actually lands on a
-   * player, for the enemy-accuracy metric (fired count comes from
-   * `EnemyAiEvents.onRangedFire` instead, at spawn time). See `telemetry.ts`. */
-  onHit?: () => void,
 ): Map<string, number> {
   const damage = new Map<string, number>();
   for (let i = list.length - 1; i >= 0; i--) {
@@ -108,7 +104,6 @@ export function updateProjectiles(
       const reach = target.player.radius + PROJECTILE_RADIUS;
       if (Math.abs(p.x - target.player.posX) < reach && Math.abs(p.y - target.player.posY) < reach) {
         damage.set(target.id, (damage.get(target.id) ?? 0) + p.damage);
-        onHit?.();
         list.splice(i, 1);
         hit = true;
         break;

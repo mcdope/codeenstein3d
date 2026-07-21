@@ -127,6 +127,7 @@ import { PathField } from "./pathField";
 import { detonateMine, mineDamageAt, spikeDamage, updateMines, MINE_BLAST_RADIUS } from "./traps";
 import { FramePerfLogger } from "./perfDebug";
 import {
+  createTeamTelemetryState,
   createTelemetryState,
   recordDamage,
   recordEnemyAggro,
@@ -149,7 +150,10 @@ import {
   updatePerFrame as updateTelemetryPerFrame,
   type DamageSource,
   type EnemyTtkRecord,
+  type HealSource,
+  type TeamTelemetryState,
   type TelemetryState,
+  type WeaponTally,
 } from "./telemetry";
 import {
   DOOR_TILE,
@@ -383,6 +387,12 @@ interface PlayerState {
   loreScroll: number;
   showFps: boolean;
   readonly lootCtx: LootContext;
+  /** This player's own per-player-attributable balancing telemetry — see
+   * `RaycasterEngine.teamTelemetry`'s doc comment for the team-vs-per-player
+   * split. `undefined` under the exact same gating `teamTelemetry` uses
+   * (`RaycasterEngine.telemetryEnabled`, checked once in `createPlayerState`
+   * for every roster member, host or guest). */
+  telemetry?: TelemetryState;
 }
 
 /** One ranged pellet's resolved outcome — see `resolveShot`. */
@@ -719,12 +729,26 @@ export class RaycasterEngine {
    * with the derived stats gated to only compute at level-end, the ~20
    * individual recording call sites below measurably slow real gameplay).
    * Every recording call elsewhere in this class is a no-op guarded by
-   * `if (this.telemetry)` when it's `undefined`, so normal play with the
-   * flag off carries zero extra cost. */
-  private readonly telemetry?: TelemetryState;
+   * `if (this.telemetryEnabled)`/`if (p.telemetry)` when it's `undefined`,
+   * so normal play with the flag off carries zero extra cost. Split into two
+   * pieces: this field holds only the handful of genuinely team-wide
+   * counters (peak-aggroed-count, combat time, TTK windows, mines
+   * triggered, loot rolled — none of these has a single obvious per-player
+   * owner once more than one player can be in range/contributing, see
+   * `doc/dev/multiplayer-balancing-telemetry-spec.md`); everything
+   * per-player-attributable (damage taken, shots/hits, loot collected, …)
+   * lives on each `PlayerState.telemetry` instead — see `createPlayerState`. */
+  private readonly teamTelemetry?: TeamTelemetryState;
+  /** Whether telemetry recording is on at all this run — computed once in
+   * the constructor from the same `PLAYER_STATS_ENABLED`/`?testHooks=1` gate
+   * `this.teamTelemetry`'s doc comment describes, and reused by
+   * `createPlayerState()` (called both from the constructor for the local
+   * player and later from `addPlayer()` for every other roster member) to
+   * decide whether that player's own `telemetry` field gets created. */
+  private readonly telemetryEnabled: boolean;
   /** Links a live `Enemy` to its open time-to-kill window — see
    * `telemetry.ts`'s `recordEnemyAggro`/`recordEnemyDeath`. Kept off
-   * `TelemetryState` itself since a `WeakMap` can't cross the
+   * `TeamTelemetryState` itself since a `WeakMap` can't cross the
    * `getTelemetrySnapshot()` structured-clone boundary. */
   private readonly enemyTtkIndex = new WeakMap<Enemy, EnemyTtkRecord>();
   /** Ring buffer of past enemy positions, one frame per multiplayer tick,
@@ -735,21 +759,21 @@ export class RaycasterEngine {
    * `isMultiplayerSession()` check. */
   private readonly enemyPositionHistory: ReadonlyMap<Enemy, { x: number; y: number }>[] = [];
   /** Bound once (not reallocated per frame) and always passed to
-   * `updateEnemies()` — each closure no-ops internally when `this.telemetry`
-   * is unset, same pattern as every other recording call site. */
+   * `updateEnemies()` — each closure no-ops internally when
+   * `this.teamTelemetry` is unset, same pattern as every other recording
+   * call site. Enemy bolt-hit attribution (per-player) is handled separately
+   * at `updateProjectiles()`'s own call site instead of through here — see
+   * that method's doc comment. */
   private readonly enemyAiEvents: EnemyAiEvents = {
     onAggro: (enemy) => {
-      if (this.telemetry) recordEnemyAggro(this.telemetry, this.enemyTtkIndex, enemy, this.levelTime);
+      if (this.teamTelemetry) recordEnemyAggro(this.teamTelemetry, this.enemyTtkIndex, enemy, this.levelTime);
     },
     onMeleeAttack: () => {
-      if (this.telemetry) recordEnemyMeleeAttack(this.telemetry);
+      if (this.teamTelemetry) recordEnemyMeleeAttack(this.teamTelemetry);
     },
     onRangedFire: () => {
-      if (this.telemetry) recordEnemyBoltFired(this.telemetry);
+      if (this.teamTelemetry) recordEnemyBoltFired(this.teamTelemetry);
     },
-  };
-  private readonly onEnemyBoltHit = (): void => {
-    if (this.telemetry) recordEnemyBoltHit(this.telemetry);
   };
 
   constructor(
@@ -836,10 +860,12 @@ export class RaycasterEngine {
         enemy.maxHp = Math.round(enemy.maxHp * this.eliteScalingMultipliers.hp);
       }
     }
-    // See `this.telemetry`'s doc comment — `PLAYER_STATS_ENABLED` opts real
-    // play into the same instrumentation `?testHooks=1` always gets.
-    if (PLAYER_STATS_ENABLED || (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1")) {
-      this.telemetry = createTelemetryState();
+    // See `this.teamTelemetry`'s doc comment — `PLAYER_STATS_ENABLED` opts
+    // real play into the same instrumentation `?testHooks=1` always gets.
+    this.telemetryEnabled =
+      PLAYER_STATS_ENABLED || (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1");
+    if (this.telemetryEnabled) {
+      this.teamTelemetry = createTeamTelemetryState();
     }
 
     this.localPlayerId = localPlayerId;
@@ -870,9 +896,10 @@ export class RaycasterEngine {
     // highscore.mjs): exposes just enough read-only state to steer the
     // player toward a known exit and fight back without a pixel-scraping or
     // blind dead-reckoning hack. Inert unless the page URL carries
-    // `?testHooks=1` — never touched by normal play. `this.telemetry` is
-    // already created above whenever this param is on (it also gates that,
-    // see its doc comment) — only the window-hook exposure below (and the
+    // `?testHooks=1` — never touched by normal play. `this.teamTelemetry`
+    // (and every player's own `.telemetry`) is already created above
+    // whenever this param is on (it also gates that, see its doc comment) —
+    // only the window-hook exposure below (and the
     // bot's rotation-speed override, applied inside `createPlayerState`) is
     // exclusive to this param. Every read below resolves through
     // `this.players.get(this.localPlayerId)!` (the local peer — the only one
@@ -926,56 +953,7 @@ export class RaycasterEngine {
         // pre-planned route to a specific locked door happens to pass over
         // it. See `scripts/run-balancing-telemetry.mjs`'s `maybeDetourForLoot`.
         getKeys: () => this.map.keys.filter((k) => !k.collected).map((k) => ({ x: k.x, y: k.y })),
-        getTelemetrySnapshot: () => {
-          // Unreachable: `this.telemetry` is always created whenever
-          // `?testHooks=1` gates this whole block on (see the constructor) —
-          // whenever this hook is callable at all, it's already set.
-          /* v8 ignore next */
-          if (!this.telemetry) return null;
-          const p = this.players.get(this.localPlayerId)!;
-          const t = this.telemetry;
-          const stats = this.buildStats();
-          // Reuse the curated player-facing derivation for the fields it
-          // already computes (accuracy inputs, damage-by-source, closest
-          // call, fatal source), then splice the bot-only extras on top —
-          // see `playerStats.ts`'s doc comment for why the two stay separate
-          // types rather than one sharing every field. Derived directly from
-          // `t` (not `stats.levelPlayerStats`, which is only populated when
-          // it's cheap to — see `buildStats()`'s `atLevelEnd` gate) since
-          // this hook is always called after the level has already ended
-          // (see `pullLevelResult` in run-balancing-telemetry.mjs).
-          const player = buildPlayerFacingStats(t, this.levelTime, p.kills);
-          return {
-            ttkRecords: [...t.ttkFinished, ...t.ttkPending].map((r) => ({ ...r })),
-            peakAggroedCount: t.peakAggroedCount,
-            combatTimeSec: t.combatTimeSec,
-            levelTimeSec: this.levelTime,
-            enemyBoltsFired: t.enemyBoltsFired,
-            enemyBoltsHit: t.enemyBoltsHit,
-            enemyMeleeAttacks: t.enemyMeleeAttacks,
-            minHealthReached: player.minHealthReached === Infinity ? p.health : player.minHealthReached,
-            timeBelow25PctHealthSec: t.timeBelow25PctHealthSec,
-            damageBySource: { ...player.damageTakenBySource },
-            healingBySource: { ...t.healingBySource },
-            weaponTallies: Object.fromEntries(Object.entries(t.weaponTallies).map(([i, tally]) => [i, { ...tally }])),
-            lootRolled: { ...t.lootRolled },
-            lootCollectedDynamic: { ...t.lootCollectedDynamic },
-            lootCollectedStatic: { ...t.lootCollectedStatic },
-            timeAtZeroRangedAmmoSec: t.timeAtZeroRangedAmmoSec,
-            killsForcedByMelee: t.killsForcedByMelee,
-            minesTriggered: t.minesTriggered,
-            minesDisarmed: t.minesDisarmed,
-            regularKillLootRolls: t.regularKillLootRolls,
-            regularKillLootMisses: t.regularKillLootMisses,
-            fatalDamageSource: player.fatalDamageSource,
-            distanceTraveled: p.distanceTraveled,
-            mapCompletionFrac: this.visitedWalkableCount / this.totalWalkableTiles,
-            secretRoomsOpened: this.secretRoomsOpened.size,
-            secretRoomCount: map.secretRoomCount,
-            kills: player.kills,
-            score: stats.score,
-          };
-        },
+        getTelemetrySnapshot: () => this.buildTelemetrySnapshotFor(this.localPlayerId),
       };
     }
   }
@@ -1067,6 +1045,7 @@ export class RaycasterEngine {
       loreText: null,
       loreScroll: 0,
       showFps: carryover?.showFps ?? false,
+      telemetry: this.telemetryEnabled ? createTelemetryState() : undefined,
     });
 
     const lootCtx: LootContext = {
@@ -1090,7 +1069,7 @@ export class RaycasterEngine {
       rng: this.rng,
       campaignLevelIndex: state.campaignLevelIndex,
       recordApplied: (kind, amount, origin) => {
-        if (this.telemetry) recordLootCollected(this.telemetry, origin, kind, amount);
+        if (state.telemetry) recordLootCollected(state.telemetry, origin, kind, amount);
       },
       isMultiplayerSession: this.isMultiplayerSession(),
     };
@@ -1377,6 +1356,100 @@ export class RaycasterEngine {
       levelTime: this.levelTime,
       distanceTraveled: p.distanceTraveled,
     };
+  }
+
+  /** Shared by `__codeensteinTestHooks.getTelemetrySnapshot()` (always
+   * `this.localPlayerId`) and `getMultiplayerTelemetrySnapshot(id)`
+   * (multiplayer, arbitrary roster id) — same relationship
+   * `computeMeleeAndMineHitChecks`/`getBotPlayerState` already have. Returns
+   * `null` whenever telemetry isn't being recorded at all this run
+   * (`this.teamTelemetry` unset) or `id` isn't a connected player with its
+   * own telemetry — both real, reachable cases for the multiplayer caller
+   * (an id that disconnected mid-run, or a real multiplayer session with
+   * neither `PLAYER_STATS_ENABLED` nor `?testHooks=1` set) even though
+   * they're effectively unreachable for the single-player caller (always
+   * called from inside the same `?testHooks=1` gate that created both). */
+  private buildTelemetrySnapshotFor(id: PlayerId): {
+    ttkRecords: EnemyTtkRecord[];
+    peakAggroedCount: number;
+    combatTimeSec: number;
+    levelTimeSec: number;
+    enemyBoltsFired: number;
+    enemyBoltsHit: number;
+    enemyMeleeAttacks: number;
+    minHealthReached: number;
+    timeBelow25PctHealthSec: number;
+    damageBySource: Record<DamageSource, number>;
+    healingBySource: Record<HealSource, number>;
+    weaponTallies: Record<string, WeaponTally>;
+    lootRolled: Partial<Record<LootKind, number>>;
+    lootCollectedDynamic: Partial<Record<LootKind, number>>;
+    lootCollectedStatic: Partial<Record<LootKind, number>>;
+    timeAtZeroRangedAmmoSec: number;
+    killsForcedByMelee: number;
+    minesTriggered: number;
+    minesDisarmed: number;
+    regularKillLootRolls: number;
+    regularKillLootMisses: number;
+    fatalDamageSource: DamageSource | null;
+    distanceTraveled: number;
+    mapCompletionFrac: number;
+    secretRoomsOpened: number;
+    secretRoomCount: number;
+    kills: number;
+    score: number;
+  } | null {
+    if (!this.teamTelemetry) return null;
+    const p = this.players.get(id);
+    if (!p || !p.telemetry) return null;
+    const team = this.teamTelemetry;
+    const t = p.telemetry;
+    // Reuse the curated player-facing derivation for the fields it already
+    // computes (accuracy inputs, damage-by-source, closest call, fatal
+    // source), then splice the bot-only extras on top — see
+    // `playerStats.ts`'s doc comment for why the two stay separate types
+    // rather than one sharing every field.
+    const player = buildPlayerFacingStats(t, this.levelTime, p.kills);
+    return {
+      ttkRecords: [...team.ttkFinished, ...team.ttkPending].map((r) => ({ ...r })),
+      peakAggroedCount: team.peakAggroedCount,
+      combatTimeSec: team.combatTimeSec,
+      levelTimeSec: this.levelTime,
+      enemyBoltsFired: team.enemyBoltsFired,
+      enemyBoltsHit: t.enemyBoltsHit,
+      enemyMeleeAttacks: team.enemyMeleeAttacks,
+      minHealthReached: player.minHealthReached === Infinity ? p.health : player.minHealthReached,
+      timeBelow25PctHealthSec: t.timeBelow25PctHealthSec,
+      damageBySource: { ...player.damageTakenBySource },
+      healingBySource: { ...t.healingBySource },
+      weaponTallies: Object.fromEntries(Object.entries(t.weaponTallies).map(([i, tally]) => [i, { ...tally }])),
+      lootRolled: { ...team.lootRolled },
+      lootCollectedDynamic: { ...t.lootCollectedDynamic },
+      lootCollectedStatic: { ...t.lootCollectedStatic },
+      timeAtZeroRangedAmmoSec: t.timeAtZeroRangedAmmoSec,
+      killsForcedByMelee: t.killsForcedByMelee,
+      minesTriggered: team.minesTriggered,
+      minesDisarmed: t.minesDisarmed,
+      regularKillLootRolls: t.regularKillLootRolls,
+      regularKillLootMisses: t.regularKillLootMisses,
+      fatalDamageSource: player.fatalDamageSource,
+      distanceTraveled: p.distanceTraveled,
+      mapCompletionFrac: this.visitedWalkableCount / this.totalWalkableTiles,
+      secretRoomsOpened: this.secretRoomsOpened.size,
+      secretRoomCount: this.map.secretRoomCount,
+      kills: player.kills,
+      score: p.priorScore + this.computeLevelScoreBreakdown(p).total,
+    };
+  }
+
+  /** Multiplayer-only equivalent of `__codeensteinTestHooks.getTelemetrySnapshot()`
+   * for an arbitrary roster `id` — built for
+   * `scripts/run-balancing-telemetry-multiplayer.mjs` (step 11), the same
+   * relationship `getBotPlayerState(id)` has to single-player's
+   * `getPlayerState()`. See `buildTelemetrySnapshotFor`'s doc comment for
+   * the full field shape and null conditions. */
+  getMultiplayerTelemetrySnapshot(id: PlayerId) {
+    return this.buildTelemetrySnapshotFor(id);
   }
 
   /** Whether a quick-melee swing / the currently equipped ranged weapon
@@ -2115,9 +2188,13 @@ export class RaycasterEngine {
     this.advanceRockets(dt);
     this.applyHazardDamage(dt);
     this.applyTrapDamage(dt);
-    if (this.telemetry) {
-      updateMinHealth(this.telemetry, local.health);
-      updateTelemetryPerFrame(this.telemetry, dt, local.health / MAX_HEALTH, local.ammo.bullets + local.ammo.smg + local.ammo.gas);
+    if (this.telemetryEnabled) {
+      for (const id of this.sortedPlayerIds()) {
+        const p = this.players.get(id)!;
+        if (!p.telemetry) continue;
+        updateMinHealth(p.telemetry, p.health);
+        updateTelemetryPerFrame(p.telemetry, dt, p.health / MAX_HEALTH, p.ammo.bullets + p.ammo.smg + p.ammo.gas);
+      }
     }
     this.updateLowHealthAlarm(dt);
     this.checkExit();
@@ -2776,11 +2853,11 @@ export class RaycasterEngine {
       if (dmg > 0) this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyMelee");
     }
 
-    if (this.telemetry) {
+    if (this.teamTelemetry) {
       let aggroedNow = 0;
       for (const e of this.enemies) if (e.alive && e.aggroed) aggroedNow += 1;
-      if (aggroedNow > this.telemetry.peakAggroedCount) this.telemetry.peakAggroedCount = aggroedNow;
-      if (aggroedNow > 0) this.telemetry.combatTimeSec += dt;
+      if (aggroedNow > this.teamTelemetry.peakAggroedCount) this.teamTelemetry.peakAggroedCount = aggroedNow;
+      if (aggroedNow > 0) this.teamTelemetry.combatTimeSec += dt;
     }
   }
 
@@ -2793,9 +2870,18 @@ export class RaycasterEngine {
       if (p.status !== "alive") continue;
       targets.push({ id, player: p.player });
     }
-    const damageByPlayer = updateProjectiles(this.projectiles, targets, this.map, dt, this.onEnemyBoltHit);
+    const damageByPlayer = updateProjectiles(this.projectiles, targets, this.map, dt);
     for (const [id, dmg] of damageByPlayer) {
-      if (dmg > 0) this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyRanged");
+      if (dmg <= 0) continue;
+      const victim = this.players.get(id)!;
+      // One increment per victim per frame, not per bolt — two bolts landing
+      // on the same player in the same frame (rare) undercounts by one; the
+      // per-hit damage total (`recordDamage`, in `damage()` below) stays
+      // exact either way. See telemetry-spec correction #2: derived straight
+      // from `updateProjectiles()`'s own per-player return value instead of
+      // threading a new id through a dedicated callback.
+      if (victim.telemetry) recordEnemyBoltHit(victim.telemetry);
+      this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyRanged");
     }
   }
 
@@ -2850,7 +2936,7 @@ export class RaycasterEngine {
         if (!enemy.alive) continue;
         const dmg = rocketDamageAt(blast, enemy.x, enemy.y);
         if (dmg > 0) {
-          if (this.telemetry) recordHit(this.telemetry, GHIDRA_WEAPON_INDEX);
+          if (shooter.telemetry) recordHit(shooter.telemetry, GHIDRA_WEAPON_INDEX);
           this.damageEnemy(enemy, dmg, undefined, undefined, GHIDRA_WEAPON_INDEX, undefined, shooter);
         }
       }
@@ -2890,7 +2976,7 @@ export class RaycasterEngine {
       audio.playExplosion();
       spawnExplosion(this.explosions, detonation.x, detonation.y, MINE_BLAST_RADIUS);
       spawnExplosionParticles(this.explosionParticles, detonation.x, detonation.y);
-      if (this.telemetry) recordMineTriggered(this.telemetry);
+      if (this.teamTelemetry) recordMineTriggered(this.teamTelemetry);
       for (const id of this.sortedPlayerIds()) {
         const p = this.players.get(id)!;
         if (p.status !== "alive") continue;
@@ -2972,7 +3058,7 @@ export class RaycasterEngine {
         if (pickup.kind === "health") p.health = Math.min(MAX_HEALTH, p.health + amount);
         else if (pickup.kind === "swap") p.swap = Math.min(MAX_SWAP, p.swap + amount);
         else p.ammo[pickup.kind] += amount;
-        if (this.telemetry) recordLootCollected(this.telemetry, "static", pickup.kind, amount);
+        if (p.telemetry) recordLootCollected(p.telemetry, "static", pickup.kind, amount);
         console.log(`%c[pickup] +${amount} ${pickup.kind} found`, "color:#3fd0e0");
         break;
       }
@@ -3031,7 +3117,7 @@ export class RaycasterEngine {
     drop.id = `${enemyIndex}:${dropSeq}`;
     this.drops.push(drop);
     const amount = this.scaledLootAmount(drop.amount ?? this.defaultLootAmountFor(drop.kind));
-    if (this.telemetry) recordLootRolled(this.telemetry, drop.kind, amount);
+    if (this.teamTelemetry) recordLootRolled(this.teamTelemetry, drop.kind, amount);
   }
 
   /**
@@ -3138,7 +3224,7 @@ export class RaycasterEngine {
   private damage(playerId: PlayerId, amount: number, source: DamageSource): void {
     const p = this.players.get(playerId)!;
     if (p.godMode || amount <= 0 || p.status !== "alive") return;
-    if (this.telemetry) recordDamage(this.telemetry, source, amount);
+    if (p.telemetry) recordDamage(p.telemetry, source, amount);
     // Kick the red screen flash back to full strength on any damage taken.
     p.flashFrames = DAMAGE_FLASH_FRAMES;
     audio.playDamage();
@@ -3151,7 +3237,7 @@ export class RaycasterEngine {
     p.health -= remaining;
     if (p.health <= 0) {
       p.health = 0;
-      if (this.telemetry) recordFatalDamage(this.telemetry, source);
+      if (p.telemetry) recordFatalDamage(p.telemetry, source);
       this.killPlayer(p);
     }
   }
@@ -3502,7 +3588,7 @@ export class RaycasterEngine {
     // `killsForcedByMelee`), computed here since this is the only place that
     // still knows the ammo state *before* this shot.
     const forcedMelee = w.meleeRange !== undefined && shooter.ammo.bullets === 0 && shooter.ammo.smg === 0 && shooter.ammo.gas === 0;
-    if (this.telemetry) recordShot(this.telemetry, weaponIndex);
+    if (shooter.telemetry) recordShot(shooter.telemetry, weaponIndex);
 
     audio.playShoot(w.viewKind);
     // Kick the viewmodel: full recoil, easing back over the next frames. No
@@ -3524,7 +3610,7 @@ export class RaycasterEngine {
     const isFlame = w.ammoType === "gas";
     for (const outcome of resolution.pellets) {
       if (outcome.kind === "enemy") {
-        if (this.telemetry) recordHit(this.telemetry, weaponIndex);
+        if (shooter.telemetry) recordHit(shooter.telemetry, weaponIndex);
         this.damageEnemy(outcome.target, w.damagePerPellet, w.lifesteal, isFlame, weaponIndex, forcedMelee, shooter);
       } else if (outcome.kind === "mine") {
         this.destroyMine(outcome.target, shooter);
@@ -3553,7 +3639,7 @@ export class RaycasterEngine {
     audio.playExplosion();
     spawnExplosion(this.explosions, mine.x, mine.y, MINE_BLAST_RADIUS);
     spawnExplosionParticles(this.explosionParticles, mine.x, mine.y);
-    if (this.telemetry) recordMineDisarmed(this.telemetry);
+    if (shooter.telemetry) recordMineDisarmed(shooter.telemetry);
     const shooterDmg = mineDamageAt({ x: mine.x, y: mine.y }, shooter.player.posX, shooter.player.posY);
     console.log(
       `%c[mine] destroyed by gunfire${shooterDmg > 0 ? ` — caught ${Math.round(shooterDmg)} splash damage` : " — safely disarmed at range"}`,
@@ -3603,7 +3689,7 @@ export class RaycasterEngine {
     // Damage aggro: being shot instantly wakes the enemy, even from beyond its
     // aggro radius, so you can't safely snipe a roaming enemy from afar.
     enemy.aggroed = true;
-    if (this.telemetry) recordEnemyAggro(this.telemetry, this.enemyTtkIndex, enemy, this.levelTime);
+    if (this.teamTelemetry) recordEnemyAggro(this.teamTelemetry, this.enemyTtkIndex, enemy, this.levelTime);
     const baseBloodCount = 3 + Math.floor(Math.random() * 3);
     spawnBlood(this.blood, enemy.x, enemy.y, Math.round(baseBloodCount * this.goreMultipliers.count));
 
@@ -3624,17 +3710,15 @@ export class RaycasterEngine {
     this.enemyAssists.delete(enemyIndex);
     this.registerKillForStreak(shooter);
     if (this.target === enemy) this.target = null;
-    if (this.telemetry) {
-      recordEnemyDeath(this.telemetry, this.enemyTtkIndex, enemy, this.levelTime);
-      if (weaponIndex !== undefined) {
-        recordKill(this.telemetry, weaponIndex);
-        if (forcedMelee) recordKillForcedByMelee(this.telemetry);
-      }
+    if (this.teamTelemetry) recordEnemyDeath(this.teamTelemetry, this.enemyTtkIndex, enemy, this.levelTime);
+    if (weaponIndex !== undefined && shooter.telemetry) {
+      recordKill(shooter.telemetry, weaponIndex);
+      if (forcedMelee) recordKillForcedByMelee(shooter.telemetry);
     }
     if (lifesteal) {
-      if (this.telemetry) {
+      if (shooter.telemetry) {
         const actualHeal = Math.min(MAX_HEALTH, shooter.health + lifesteal) - shooter.health;
-        recordHeal(this.telemetry, "lifesteal", actualHeal);
+        recordHeal(shooter.telemetry, "lifesteal", actualHeal);
       }
       shooter.health = Math.min(MAX_HEALTH, shooter.health + lifesteal);
     }
@@ -3661,7 +3745,7 @@ export class RaycasterEngine {
       // pattern below (an independent roll, not folded into rollLoot itself)
       // so rollLoot's kind-weighting logic and tests stay untouched.
       const lootRollHit = this.rng() >= REGULAR_KILL_NO_DROP_CHANCE;
-      if (this.telemetry) recordRegularKillLootRoll(this.telemetry, !lootRollHit);
+      if (shooter.telemetry) recordRegularKillLootRoll(shooter.telemetry, !lootRollHit);
       if (lootRollHit) {
         this.pushLootDrop({
           x: enemy.x,
@@ -3759,18 +3843,15 @@ export class RaycasterEngine {
    * through `this.players.get(this.localPlayerId)!` instead of bare
    * `this.*` — byte-identical for N=1. */
   /** `p`'s own level-score breakdown so far, from purely per-player inputs
-   * (kills/health/ammo/distance/streaks) plus this level's team-shared
-   * completion/discovery state (map completion, lore/secrets read —
-   * genuinely shared, not a per-player approximation) and telemetry (also
-   * engine-wide, not split per player — an existing characteristic, not a
-   * new gap introduced here). Shared by `buildStats()` (always for
+   * (kills/health/ammo/distance/streaks, and `p`'s own per-player
+   * `weaponTallies`) plus this level's team-shared completion/discovery
+   * state (map completion, lore/secrets read — genuinely shared, not a
+   * per-player approximation). Shared by `buildStats()` (always for
    * `this.localPlayerId`) and `captureCarryoverFor()` (for an arbitrary
    * roster id). */
   private computeLevelScoreBreakdown(p: PlayerState): ScoreBreakdown {
-    const weaponShotsFired = this.telemetry
-      ? Object.values(this.telemetry.weaponTallies).reduce((sum, t) => sum + t.shotsFired, 0)
-      : 0;
-    const weaponHits = this.telemetry ? Object.values(this.telemetry.weaponTallies).reduce((sum, t) => sum + t.hits, 0) : 0;
+    const weaponShotsFired = p.telemetry ? Object.values(p.telemetry.weaponTallies).reduce((sum, t) => sum + t.shotsFired, 0) : 0;
+    const weaponHits = p.telemetry ? Object.values(p.telemetry.weaponTallies).reduce((sum, t) => sum + t.hits, 0) : 0;
     return computeScore({
       killPoints: p.killScore,
       finalHealth: p.health,
@@ -3814,9 +3895,9 @@ export class RaycasterEngine {
     const levelScoreBreakdown = this.computeLevelScoreBreakdown(p);
     let priorScoreBreakdown: ScoreBreakdown | undefined;
     let priorPlayerStats: PlayerFacingStats | undefined;
-    if (this.telemetry) {
+    if (p.telemetry) {
       priorScoreBreakdown = sumScoreBreakdowns(p.priorScoreBreakdown, levelScoreBreakdown);
-      const levelPlayerStats = buildPlayerFacingStats(this.telemetry, this.levelTime, p.kills);
+      const levelPlayerStats = buildPlayerFacingStats(p.telemetry, this.levelTime, p.kills);
       priorPlayerStats = mergePlayerFacingStats(p.priorPlayerStats, levelPlayerStats);
     }
     return {
@@ -3844,7 +3925,7 @@ export class RaycasterEngine {
 
     // The curated player-facing breakdown/stats are `undefined` whenever
     // telemetry isn't being recorded at all (`PLAYER_STATS_ENABLED` off and
-    // no `?testHooks=1` — see `this.telemetry`'s doc comment); `main.ts`
+    // no `?testHooks=1` — see `this.teamTelemetry`'s doc comment); `main.ts`
     // then shows the plain (stats-less) overlay variant, same as before this
     // feature existed. When telemetry IS on, they're only ever read by
     // `onGameOver`/`onWin` (see `main.ts`) — never by the live HUD or the
@@ -3856,13 +3937,13 @@ export class RaycasterEngine {
     let runScoreBreakdown: ScoreBreakdown | undefined;
     let levelPlayerStats: PlayerFacingStats | undefined;
     let runPlayerStats: PlayerFacingStats | undefined;
-    if (this.telemetry) {
+    if (local.telemetry) {
       const atLevelEnd = this.state !== "playing";
       runScoreBreakdown = atLevelEnd
         ? sumScoreBreakdowns(local.priorScoreBreakdown, levelScoreBreakdown)
         : local.priorScoreBreakdown;
       levelPlayerStats = atLevelEnd
-        ? buildPlayerFacingStats(this.telemetry, this.levelTime, local.kills)
+        ? buildPlayerFacingStats(local.telemetry, this.levelTime, local.kills)
         : local.priorPlayerStats;
       runPlayerStats = atLevelEnd ? mergePlayerFacingStats(local.priorPlayerStats, levelPlayerStats) : local.priorPlayerStats;
     }
@@ -3884,7 +3965,7 @@ export class RaycasterEngine {
       godMode: local.godMode,
       noClip: local.player.noClip,
       showFps: local.showFps,
-      levelScoreBreakdown: this.telemetry ? levelScoreBreakdown : undefined,
+      levelScoreBreakdown: local.telemetry ? levelScoreBreakdown : undefined,
       runScoreBreakdown,
       levelPlayerStats,
       runPlayerStats,

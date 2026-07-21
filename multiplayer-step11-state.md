@@ -34,9 +34,39 @@ each phase independently verified/committed before moving to the next.
       future balancing pass, not something Phase 1 itself should fix.
       `multiplayer_balancing_telemetry.json` added to `.gitignore` (report
       output, mirrors single-player's own `balancing_telemetry.json`).
-- [ ] Phase 2a: `TelemetryState` → `PlayerState.telemetry`, ~10 call-site
-      retags, per-frame update loop fix, bolt-hit attribution via
-      `updateProjectiles()`'s return value, `getMultiplayerTelemetrySnapshot(id)`
+- [x] Phase 2a: `TelemetryState` split — per-player-attributable fields
+      (damage/heal/loot/weapon tallies/mine-disarm/fatal-source/regular-
+      kill-loot-roll) moved onto each `PlayerState.telemetry`; the handful
+      with no single owner (peakAggroedCount/combatTimeSec/TTK windows/
+      minesTriggered/lootRolled/enemyBoltsFired/enemyMeleeAttacks) stay on a
+      new engine-level `teamTelemetry` (`TeamTelemetryState`, new type in
+      `telemetry.ts`) — single-player is N=1 so `getTelemetrySnapshot()`
+      still returns the exact same flat shape, just assembled from two
+      objects instead of one (all existing single-player tests pass
+      unchanged, confirming this). Per-frame health/ammo update now loops
+      every player, not just local. `killsForcedByMelee`/`recordKill`/
+      `recordHeal("lifesteal")`/`recordRegularKillLootRoll` now attribute to
+      `shooter.telemetry` (the actual killer), not whichever player happened
+      to share the old single instance — a real, previously-dormant bug
+      (`PlayerState.priorPlayerStats` mixing every player's events into one
+      bucket) fixed as part of the same change. Enemy-bolt-hit attribution
+      dropped the separate `onHit` callback entirely (`projectiles.ts`'s
+      `updateProjectiles()` lost that param) — derived instead straight from
+      its own per-player damage return `Map`, per the plan's correction #2.
+      New `RaycasterEngine.getMultiplayerTelemetrySnapshot(id)` (via a shared
+      private `buildTelemetrySnapshotFor(id)` also used by the single-player
+      hook) mirrors `getBotPlayerState(id)`'s pattern — **not yet wired into
+      `main.ts`'s `__codeensteinMultiplayerTestHooks`**: reaching it from
+      there needs a new passthrough method on both
+      `multiplayerSessionHost.ts` and `multiplayerSessionGuest.ts`, which
+      were explicitly left for Phase 2b (running concurrently in a separate
+      worktree) to avoid a two-way edit conflict on those files — a small
+      follow-up, not a design gap. Typecheck clean; `engine.ts`/
+      `telemetry.ts`/`projectiles.ts` all 100% covered (one unrelated
+      pre-existing gap, `computeMeleeAndMineHitChecks`'s `meleeWouldHit`
+      line, only shows up in this sandboxed worktree because `main.test.ts`
+      can't load here — tree-sitter wasm path denial, unrelated to this
+      diff, confirmed via `git diff` that those lines are untouched).
 - [ ] Phase 2b: `getConnectionStats(id)` (RTCPeerConnection.getStats RTT),
       `heldInputFallback` tally, reconciliation-correction counter,
       `netcodeHealth` report section
