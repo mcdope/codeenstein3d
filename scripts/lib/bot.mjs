@@ -359,13 +359,26 @@ export function isWallTile(map, x, y) {
  * to the side of or behind `navTarget`'s direction (see
  * DEFAULT_TUNING.MINE_DISARM_MAX_ANGLE_FROM_PATH) — a mine this far
  * off-path isn't a real threat to the route.
+ *
+ * `reactionBufferTiles` (default 0) shifts *both* ends of the eligible
+ * distance window outward by the same amount as `findDangerousMine`'s own
+ * buffer, rather than just raising the lower bound alone — the designed
+ * "disarm zone" width (`MINE_DISARM_RANGE - MINE_BLAST_RADIUS`) stays the
+ * same, just moved farther out. Widening only the lower bound would shrink
+ * that zone every time the buffer grows, and at a real decision window long
+ * enough (`MultiplayerBot`'s own `DEFAULT_STEP_MS`), it can collapse to
+ * nothing — confirmed directly: `findDangerousMine`'s own widened-but-
+ * unshifted-here buffer first fix made every mine reachable from a real
+ * multiplayer decision window count as "dangerous," so the bot never
+ * disarmed one again and got stuck retreating from a mine the route
+ * genuinely needed it to clear.
  */
-export function findDisarmableMine(mines, player, abandoned, map, navTarget) {
+export function findDisarmableMine(mines, player, abandoned, map, navTarget, reactionBufferTiles = 0) {
   const navAngle = navTarget ? Math.atan2(navTarget.y - player.y, navTarget.x - player.x) : null;
   return mines
     .filter((m) => m.alive && m.visible && !abandoned?.has(`${m.x},${m.y}`))
     .map((m) => ({ ...m, dist: Math.hypot(m.x - player.x, m.y - player.y) }))
-    .filter((m) => m.dist > DEFAULT_TUNING.MINE_BLAST_RADIUS && m.dist <= DEFAULT_TUNING.MINE_DISARM_RANGE)
+    .filter((m) => m.dist > DEFAULT_TUNING.MINE_BLAST_RADIUS + reactionBufferTiles && m.dist <= DEFAULT_TUNING.MINE_DISARM_RANGE + reactionBufferTiles)
     .filter((m) => hasLineOfSight(map, player.x, player.y, m.x, m.y))
     .filter((m) => {
       if (navAngle === null) return true;
@@ -899,14 +912,17 @@ export class Bot {
       return this.applyAction(moveKeys, false, null, false, turnBurst);
     }
 
+    // See `findDangerousMine`'s own doc comment for why this buffer exists —
+    // a real, decision-window-scaled reaction margin, not a fixed tile count.
+    // Shared by both mine checks below so the same shift applies to each end
+    // of `findDisarmableMine`'s own eligible-distance window too (see its own
+    // doc comment on why only widening one side of that window is wrong).
+    const mineReactionBufferTiles = this.tuning.ENGINE_MOVE_SPEED * this.tuning.ENGINE_SPRINT_MULTIPLIER * (this.stepMs / 1000);
+
     // Proper mine handling: stop, back up out of blast range, shoot it, then
     // continue. Backing away takes priority over shooting (below) since you
     // can't line up a safe shot from inside your own target's blast radius.
     if (!threat && this.profile.proactiveMineDisarm) {
-      // See `findDangerousMine`'s own doc comment for why this buffer exists
-      // — a real, decision-window-scaled reaction margin, not a fixed tile
-      // count.
-      const mineReactionBufferTiles = this.tuning.ENGINE_MOVE_SPEED * this.tuning.ENGINE_SPRINT_MULTIPLIER * (this.stepMs / 1000);
       const dangerMine = findDangerousMine(mines, player, this.mineMemory?.abandoned, mineReactionBufferTiles);
       if (dangerMine) {
         const key = `${dangerMine.x},${dangerMine.y}`;
@@ -936,7 +952,10 @@ export class Bot {
       }
     }
 
-    let mineTarget = !threat && this.profile.proactiveMineDisarm && map ? findDisarmableMine(mines, player, this.mineMemory?.abandoned, map, navTarget) : null;
+    let mineTarget =
+      !threat && this.profile.proactiveMineDisarm && map
+        ? findDisarmableMine(mines, player, this.mineMemory?.abandoned, map, navTarget, mineReactionBufferTiles)
+        : null;
     if (mineTarget && this.mineMemory) {
       const key = `${mineTarget.x},${mineTarget.y}`;
       this.mineMemory.shootTicks = this.mineMemory.shootKey === key ? this.mineMemory.shootTicks + 1 : 1;
