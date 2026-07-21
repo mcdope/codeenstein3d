@@ -3601,6 +3601,7 @@ describe("main.ts — multiplayer connect flow", () => {
           dt: 1 / 30,
           inputs: { host: emptySnapshot(), guest: emptySnapshot() },
           heldInputFallback: [],
+          levelEpoch: 0,
         };
         input.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(bundle) }));
 
@@ -3674,7 +3675,7 @@ describe("main.ts — multiplayer connect flow", () => {
       // (each 1/30s of hazard damage) until the shared simulation reaches
       // game-over and tears the session down.
       for (let i = 0; i < 300 && document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent !== "Multiplayer session ended — every player was eliminated."; i++) {
-        const bundle = { tick: i, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+        const bundle = { tick: i, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [], levelEpoch: 0 };
         input.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(bundle) }));
       }
 
