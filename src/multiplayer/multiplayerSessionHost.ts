@@ -46,10 +46,12 @@ import {
   type EngineStats,
   type PlayerId,
   type PlayerStatus,
+  type RaycasterEngine,
   type RosterSnapshotEntry,
 } from "../engine/engine";
 import type { GameMap, LootDrop, Point, Tile } from "../map/types";
 import { chunkJson } from "./chunkedTransfer";
+import { readConnectionStats, type ConnectionStats } from "./connectionStats";
 import { sendJson, sendJsonSequence, onJsonMessage } from "./dataChannelMessaging";
 import { InputDelayBuffer } from "./inputDelayBuffer";
 import {
@@ -78,8 +80,9 @@ export interface TickWorkerHandle {
   terminate(): void;
 }
 
-/** The narrow slice of `RTCPeerConnection` disconnect detection needs — typed
- * against just the two members this module actually uses (mirrors
+/** The narrow slice of `RTCPeerConnection` disconnect detection (plus, since
+ * step 11 Phase 2b, `getStats()` reads — `getConnectionStats()`) needs —
+ * typed against just the members this module actually uses (mirrors
  * `TickWorkerHandle`'s own injection style above), so a small fake keeps this
  * module unit-testable without a real `RTCPeerConnection` (this project's
  * test environment has none). A real `HostGuestLink.peerConnection` already
@@ -89,6 +92,7 @@ export interface ConnectionStateSource {
   readonly connectionState: RTCPeerConnectionState;
   addEventListener(type: "connectionstatechange", listener: () => void): void;
   removeEventListener(type: "connectionstatechange", listener: () => void): void;
+  getStats(): Promise<RTCStatsReport>;
 }
 
 export interface MultiplayerSessionHandle {
@@ -167,6 +171,45 @@ export interface MultiplayerSessionHandle {
   /** Test-only, mutating — see `RaycasterEngine.debugInjectDesync`'s doc
    * comment. */
   debugInjectDesync(injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }): void;
+  /** Real round-trip-time read via `RTCPeerConnection.getStats()` — step 11
+   * Phase 2b (`connectionStats.ts`). Every method here reflects only *this*
+   * peer's own local observation, not a network-wide or authoritative view
+   * — there is no single "true" RTT, each side of a link measures it
+   * independently. Host: `id` is any connected guest's roster id (looked up
+   * in `links`); resolves `null` for an id with no live link. Guest: only
+   * ever has one link, toward the host — resolves `null` for any `id` other
+   * than `HOST_PLAYER_ID`. Never rejects: an underlying `getStats()` failure
+   * resolves `{rttMs: null}` (see `readConnectionStats`), same "report
+   * un-knowability instead of throwing for a live peer" shape the rest of
+   * this interface already uses. */
+  getConnectionStats(id: PlayerId): Promise<ConnectionStats | null>;
+  /** Cumulative, session-lifetime tally of `TickInputBundle.heldInputFallback`
+   * occurrences this peer has observed — every peer applies the identical
+   * bundle each tick (lockstep), so host and guest tallies agree in
+   * practice; tracked independently rather than centrally, for symmetry with
+   * everything else this interface exposes (each peer reports its own local
+   * view, not a merged one). `totalTicks` is the same for every player (one
+   * bundle covers the whole roster at once) — divide a player's own tally by
+   * it for a missed-tick fraction. */
+  getMissedTickStats(): { totalTicks: number; missedTicksByPlayer: Record<PlayerId, number> };
+  /** Cumulative, session-lifetime per-player reconciliation-correction
+   * tally — a real signal only a guest can observe: the host is
+   * authoritative and never applies a snapshot to itself, so its own copy
+   * of this is always `{}` (see `runMultiplayerSessionAsHost`'s own
+   * implementation below). A "correction" is counted only once its position
+   * magnitude exceeds a small noise floor (see
+   * `RECONCILIATION_CORRECTION_NOISE_FLOOR_TILES` in
+   * `multiplayerSessionGuest.ts`) — otherwise ordinary cross-peer
+   * floating-point drift (the same inputs, computed in a different order)
+   * would count as a "correction" on nearly every broadcast, making the
+   * signal meaningless. */
+  getReconciliationCorrections(): Record<PlayerId, { count: number; totalMagnitudeTiles: number }>;
+  /** Read-only — see `RaycasterEngine.getMultiplayerTelemetrySnapshot`'s doc
+   * comment. `null` before any level has started, if telemetry isn't being
+   * recorded this run, or if `id` isn't a connected player with its own
+   * telemetry (e.g. it disconnected mid-run) — same "report un-knowability"
+   * shape `getBotPlayerState` already uses. */
+  getMultiplayerTelemetrySnapshot(id: PlayerId): ReturnType<RaycasterEngine["getMultiplayerTelemetrySnapshot"]>;
 }
 
 /** What `findNextLevel` needs to decide the next level's content — every
@@ -224,6 +267,12 @@ export function runMultiplayerSessionAsHost(
   const neutralInputIds = new Set<PlayerId>();
   const graceTimers = new Map<PlayerId, ReturnType<typeof setTimeout>>();
   let rosterRemovalsToApply: PlayerId[] = [];
+
+  // Missed-tick tally (Phase 2b) — seeded once from the session's own fixed
+  // roster (unchanged across a level transition, see this file's own doc
+  // comment on `currentResult`), not per-`startLevel()` call.
+  let totalTicks = 0;
+  const missedTicksByPlayer = new Map<PlayerId, number>(result.roster.map((id) => [id, 0]));
 
   const makeConnectionStateChangeHandler = (guestId: PlayerId, connection: ConnectionStateSource) => (): void => {
     const state = connection.connectionState;
@@ -461,6 +510,13 @@ export function runMultiplayerSessionAsHost(
       FIXED_DT,
       neutralInputIds.size > 0 ? neutralInputIds : undefined,
     );
+    totalTicks++;
+    // `missedTicksByPlayer` is seeded from the full, fixed roster above, and
+    // `heldInputFallback` only ever contains roster ids (`InputDelayBuffer.
+    // finalize()`'s own `rosterIds` param) — `.get(id)` is always defined.
+    for (const id of bundle.heldInputFallback) {
+      missedTicksByPlayer.set(id, missedTicksByPlayer.get(id)! + 1);
+    }
 
     // Every grace timer that expired since the last tick is applied on this
     // tick, synchronously with the broadcast — every peer (host included)
@@ -551,5 +607,18 @@ export function runMultiplayerSessionAsHost(
     // needed.
     getBotPlayerState: (id) => engine?.getBotPlayerState(id) ?? null,
     debugInjectDesync: (injection) => engine!.debugInjectDesync(injection),
+    getConnectionStats: (id) => {
+      const link = links.get(id);
+      return link ? readConnectionStats(link.peerConnection) : Promise.resolve(null);
+    },
+    getMissedTickStats: () => ({
+      totalTicks,
+      missedTicksByPlayer: Object.fromEntries(missedTicksByPlayer) as Record<PlayerId, number>,
+    }),
+    // Always empty — see this method's own doc comment on
+    // `MultiplayerSessionHandle` for why only a guest can ever observe this.
+    getReconciliationCorrections: () => ({}),
+    /* v8 ignore next */
+    getMultiplayerTelemetrySnapshot: (id) => engine?.getMultiplayerTelemetrySnapshot(id) ?? null,
   };
 }

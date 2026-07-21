@@ -1,8 +1,12 @@
 # Multiplayer balancing & telemetry automation specification
 
-**Status: specification only — nothing in this document is implemented.** No
-file under `src/` or `scripts/` is modified by this document or by producing
-it. It specifies a multiplayer mirror of the existing single-player bot-driven
+**Status: implemented (step 11, all phases).** Everything this document
+specifies has shipped — see [`doc/dev/balancing-telemetry.md`](balancing-telemetry.md#multiplayer-balancing-telemetry-step-11)
+for the user-facing reference (entry points, env vars, output shape) and the
+`notes` file's step 11 entry for the implementation history. This document
+stays as the original design rationale — read it for *why* each piece looks
+the way it does; read `balancing-telemetry.md` for *how to run it*. It
+specifies a multiplayer mirror of the existing single-player bot-driven
 telemetry/balancing toolchain (`scripts/run-balancing-telemetry.mjs` +
 `npm run balancing:scan`, `scripts/run-balancing-campaign.mjs`, shared libs
 `scripts/lib/bot.mjs`/`qualifyLoop.mjs`/`virtualClock.mjs`), used routinely as
@@ -73,18 +77,24 @@ just pointed at the one shared `this.telemetry` today:
 | `damage(playerId, amount, source)` (`engine.ts:3138`) | `damageBySource`, `fatalDamageSource` |
 | `fire(shooter, weapon)` (`3489`) / `damageEnemy(…, shooter)` (`3590`) | `weaponTallies` (shotsFired/hits/kills), `healingBySource: "lifesteal"`, `killsForcedByMelee`, `regularKillLootRolls`/`Misses` |
 | `destroyMine(mine, shooter)` (`3551`) | `minesDisarmed` |
-| `collectLoot()`'s per-player loop (`2933`) + the `lootCtx.recordApplied` closure built once per player inside `createPlayerState` (`990`) | `lootCollectedDynamic`/`lootCollectedStatic` (closure just needs to close over `id`) |
+| `collectLoot()`'s per-player loop (`2933`) + the `lootCtx.recordApplied` closure built once per player inside `createPlayerState` (`1092`, drifted from `990` by unrelated intervening changes) | `lootCollectedDynamic`/`lootCollectedStatic` (closure just needs to close over `id`) |
 
 ### Genuinely new tracking work — not just re-tagging
 
-- **`EnemyAiEvents`' callbacks need a target id.** `onAggro`/`onMeleeAttack`/
-  `onRangedFire`/`onEnemyBoltHit` (`src/engine/enemyAi.ts:68-74`, emitted at
-  lines 178/194/204) only ever receive `(enemy: Enemy)` — never the player
-  being targeted, even though `updateEnemy()` already has `nearest.id` at
-  every emit site. Making `enemyBoltsFired`/`enemyBoltsHit`/
-  `enemyMeleeAttacks` per-player needs the `EnemyAiEvents` type signatures and
-  both call sites changed, plus `engine.ts`'s three closures (`741-753`)
-  updated to route by id.
+- **Correction, verified against current code: `onEnemyBoltHit` is not part
+  of `EnemyAiEvents`.** That type (`src/engine/enemyAi.ts:68-74`) only has
+  `onAggro`/`onMeleeAttack`/`onRangedFire` — bolt hits are
+  `updateProjectiles()`'s own separate `onHit` param
+  (`src/engine/projectiles.ts:89-97`), wired via `engine.ts`'s own closure.
+  `updateProjectiles()` already returns a `Map<string, number>` of per-player
+  damage dealt this call — per-player bolt-hit attribution is derivable
+  straight from that existing return value, with no new id threaded through
+  any callback signature at all. `onAggro`/`onMeleeAttack`/`onRangedFire`
+  still only ever receive `(enemy: Enemy)`, even though `updateEnemy()`
+  already has `nearest.id` at every emit site — per-player
+  `enemyMeleeAttacks` still needs `EnemyAiEvents`'s type signature and both
+  call sites changed, plus `engine.ts`'s relevant closures updated to route
+  by id (just not for bolt hits, which don't need this at all).
 - **The per-frame health/ammo-desperation update is hardcoded to the local
   player.** `updateMinHealth`/`updateTelemetryPerFrame` at `engine.ts:2118-
   2121` read `this.players.get(this.localPlayerId)!` directly, not looped —
@@ -262,13 +272,18 @@ its own top-level category, mirroring single-player's 7-category shape, e.g.:
 
 ## 7. Dedicated signaling server + rate-limit safety
 
-The signaling server's rate limits are per-IP, not per-session (20
-requests/60s on guess-sensitive endpoints, 30/min on `PUT /session`,
-host-token traffic exempt but still capped at 120/min —
-`multiplayer-server-spec.md` §4). Running many concurrent multiplayer
-sessions from one test machine against one signaling server instance risks
-tripping these budgets, especially once N-guest auto-join retries are
-multiplied across concurrent sessions.
+The signaling server's rate limits are per-IP, not per-session: 20
+requests/60s on guess-sensitive endpoints, host-token traffic exempt but
+still capped at 120/min, `GET /lobby` capped at 60/min
+(`LOBBY_RATE_LIMIT_MAX_REQUESTS`), and 30/min on `PUT /session` — this last
+number, unlike the other three, is an **implementation-time decision made in
+`scripts/multiplayer-server.mjs` itself, not something transcribed from
+`multiplayer-server-spec.md`**, which leaves this particular ceiling
+unspecified (corrected here — an earlier draft of this spec miscited it as
+coming from that doc's §4). Running many concurrent multiplayer sessions
+from one test machine against one signaling server instance risks tripping
+these budgets, especially once N-guest auto-join retries are multiplied
+across concurrent sessions.
 
 This tool should spin up its **own dedicated local signaling server
 instance** (cheap — a dependency-free single script,

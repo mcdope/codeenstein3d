@@ -30,6 +30,11 @@ import type { MultiplayerChannels } from "./types";
 class FakeConnection {
   connectionState: RTCPeerConnectionState = "connected";
   private readonly listeners = new Set<() => void>();
+  /** `null` fakes a `getStats()` report with no succeeded/nominated
+   * candidate-pair entry yet (e.g. read right after connect) — the same
+   * "not known right now" case `readConnectionStats()` collapses a missing
+   * field or an outright `getStats()` failure into. */
+  rttSeconds: number | null = 0.042;
   addEventListener(_type: "connectionstatechange", listener: () => void): void {
     this.listeners.add(listener);
   }
@@ -39,6 +44,13 @@ class FakeConnection {
   setState(state: RTCPeerConnectionState): void {
     this.connectionState = state;
     for (const listener of this.listeners) listener();
+  }
+  getStats(): Promise<RTCStatsReport> {
+    const entries: [string, unknown][] =
+      this.rttSeconds === null
+        ? []
+        : [["candidate-pair-1", { type: "candidate-pair", state: "succeeded", nominated: true, currentRoundTripTime: this.rttSeconds }]];
+    return Promise.resolve(new Map(entries) as unknown as RTCStatsReport);
   }
 }
 
@@ -386,6 +398,73 @@ describe("runMultiplayerSessionAsGuest", () => {
     channels.host.reconciliation.send(JSON.stringify(snapshot));
 
     expect(handle.getLastReconciliationRngState()).toBe(424242);
+  });
+
+  describe("network/netcode-quality telemetry (step 11 Phase 2b)", () => {
+    it("getConnectionStats(HOST_PLAYER_ID) reads the active candidate pair's currentRoundTripTime off the injected connection, null otherwise", async () => {
+      const channels = linkedChannels();
+      const connection = new FakeConnection();
+      connection.rttSeconds = 0.03;
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult(), undefined, connection);
+
+      await expect(handle.getConnectionStats(HOST_PLAYER_ID)).resolves.toEqual({ rttMs: 30 });
+      // A guest only ever has one link, toward the host — any other id resolves null.
+      await expect(handle.getConnectionStats("guest")).resolves.toBeNull();
+
+      // No connection injected at all (this module's own `connection` param is optional).
+      const handleNoConnection = runMultiplayerSessionAsGuest(linkedChannels().guest, makeCanvas(), fakeResult());
+      await expect(handleNoConnection.getConnectionStats(HOST_PLAYER_ID)).resolves.toBeNull();
+    });
+
+    it("getMissedTickStats tallies heldInputFallback occurrences per player across bundles, seeded at 0 for every roster id", () => {
+      const channels = linkedChannels();
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+      expect(handle.getMissedTickStats()).toEqual({ totalTicks: 0, missedTicksByPlayer: { guest: 0, host: 0 } });
+
+      const bundle: TickInputBundle = {
+        tick: 5,
+        dt: 1 / 30,
+        inputs: { host: emptySnapshot(), guest: emptySnapshot() },
+        heldInputFallback: ["host"],
+      };
+      channels.host.input.send(JSON.stringify(bundle));
+      expect(handle.getMissedTickStats()).toEqual({ totalTicks: 1, missedTicksByPlayer: { guest: 0, host: 1 } });
+    });
+
+    it("getReconciliationCorrections counts only above-noise-floor position deltas, per player, seeded at 0 for every roster id", () => {
+      const channels = linkedChannels();
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map: fakeMap({ spawn: { x: 5, y: 5 } }) }));
+      expect(handle.getReconciliationCorrections()).toEqual({
+        guest: { count: 0, totalMagnitudeTiles: 0 },
+        host: { count: 0, totalMagnitudeTiles: 0 },
+      });
+
+      // Same position both players already have — below the noise floor, not a real correction.
+      channels.host.reconciliation.send(
+        JSON.stringify(
+          fakeReconciliationSnapshot({
+            players: { host: fakePlayerSnapshot({ posX: 5.5, posY: 5.5 }), guest: fakePlayerSnapshot({ posX: 5.5, posY: 5.5 }) },
+          }),
+        ),
+      );
+      expect(handle.getReconciliationCorrections()).toEqual({
+        guest: { count: 0, totalMagnitudeTiles: 0 },
+        host: { count: 0, totalMagnitudeTiles: 0 },
+      });
+
+      // A real correction, for guest only — host's own position is unchanged from the previous snapshot.
+      channels.host.reconciliation.send(
+        JSON.stringify(
+          fakeReconciliationSnapshot({
+            players: { host: fakePlayerSnapshot({ posX: 5.5, posY: 5.5 }), guest: fakePlayerSnapshot({ posX: 2.5, posY: 3.5 }) },
+          }),
+        ),
+      );
+      const corrections = handle.getReconciliationCorrections();
+      expect(corrections.host).toEqual({ count: 0, totalMagnitudeTiles: 0 });
+      expect(corrections.guest.count).toBe(1);
+      expect(corrections.guest.totalMagnitudeTiles).toBeCloseTo(Math.hypot(2.5 - 5.5, 3.5 - 5.5));
+    });
   });
 
   it("applies a bundle's rosterRemove before advancing that tick, same synchronized ordering the host itself uses", () => {
