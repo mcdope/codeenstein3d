@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { EMPTY_SNAPSHOT } from "../engine/replay";
 import type { InputSnapshot } from "../engine/input";
 import { InputDelayBuffer } from "./inputDelayBuffer";
+import { INPUT_DELAY_TICKS } from "./netcodeConstants";
 
 function snapshot(overrides: Partial<InputSnapshot> = {}): InputSnapshot {
   return { ...EMPTY_SNAPSHOT, ...overrides };
@@ -71,6 +72,54 @@ describe("InputDelayBuffer", () => {
     buffer.record(3, "p1", snapshot({ fireQueued: true }));
     const bundle = buffer.finalize(3, ["p1", "p2", "p3"], 1 / 30);
     expect(bundle.heldInputFallback.sort()).toEqual(["p2", "p3"]);
+  });
+
+  describe("record() bounds pending against out-of-window tick values (finding 5)", () => {
+    it("drops wildly out-of-window tick values (far-future/replayed) instead of buffering them forever", () => {
+      const buffer = new InputDelayBuffer();
+      buffer.record(0, "p1", snapshot());
+      buffer.finalize(0, ["p1"], 1 / 30); // establishes lastFinalizedTick = 0
+      expect(buffer.pendingTickCountForTest).toBe(0);
+
+      // A hostile/buggy peer sending wildly out-of-window tick numbers —
+      // neither should ever be buffered.
+      buffer.record(1_000_000, "p1", snapshot({ fireQueued: true }));
+      buffer.record(-1_000_000, "p1", snapshot({ fireQueued: true }));
+      expect(buffer.pendingTickCountForTest).toBe(0);
+
+      // Finalizing normally through the real in-flight range afterward is
+      // unaffected — pending never grew, and ordinary operation still works.
+      for (let tick = 1; tick <= 5; tick++) {
+        buffer.record(tick, "p1", snapshot({ mouseDX: tick }));
+        const bundle = buffer.finalize(tick, ["p1"], 1 / 30);
+        expect(bundle.inputs.p1).toEqual(snapshot({ mouseDX: tick }));
+      }
+      expect(buffer.pendingTickCountForTest).toBe(0);
+    });
+
+    it("accepts ticks exactly at the edges of the window, drops ones just past them", () => {
+      const buffer = new InputDelayBuffer();
+      buffer.finalize(100, [], 1 / 30); // establishes lastFinalizedTick = 100, nothing to record
+
+      // Edges: lastFinalizedTick - INPUT_DELAY_TICKS (past), lastFinalizedTick
+      // + INPUT_DELAY_TICKS + INPUT_DELAY_TICKS (future slack) — both must
+      // still be accepted.
+      buffer.record(100 - INPUT_DELAY_TICKS, "p1", snapshot());
+      buffer.record(100 + INPUT_DELAY_TICKS + INPUT_DELAY_TICKS, "p1", snapshot());
+      expect(buffer.pendingTickCountForTest).toBe(2);
+
+      // One tick further out on either side — dropped.
+      buffer.record(100 - INPUT_DELAY_TICKS - 1, "p1", snapshot());
+      buffer.record(100 + INPUT_DELAY_TICKS + INPUT_DELAY_TICKS + 1, "p1", snapshot());
+      expect(buffer.pendingTickCountForTest).toBe(2); // unchanged
+    });
+
+    it("never drops anything before the first finalize() call — the real in-flight window isn't known yet", () => {
+      const buffer = new InputDelayBuffer();
+      buffer.record(3, "p1", snapshot({ fireQueued: true })); // bootstrap: input tagged INPUT_DELAY_TICKS ahead of tick 0
+      const bundle = buffer.finalize(3, ["p1"], 1 / 30);
+      expect(bundle.inputs.p1).toEqual(snapshot({ fireQueued: true }));
+    });
   });
 
   describe("graceIds", () => {
