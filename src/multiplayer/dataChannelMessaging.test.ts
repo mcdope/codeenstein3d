@@ -42,6 +42,75 @@ describe("onJsonMessage", () => {
     sendJson(a as unknown as RTCDataChannel, { second: true });
     expect(handler).toHaveBeenCalledTimes(1);
   });
+
+  it("delivers a message with no `type` field at all — e.g. a real TickInput/TickInputBundle, which never carry one", () => {
+    // Regression guard for the inbound-validation fix below: it would be an
+    // easy mistake to require a `type` field unconditionally (every *other*
+    // wire shape in this codebase — session-setup/reconciliation/level-
+    // transition messages — does discriminate that way), but netcodeTypes.ts's
+    // TickInput/TickInputBundle (the exact per-tick traffic this helper
+    // exists for) never do, and are dispatched through this same function.
+    const a = new FakeRTCDataChannel("a");
+    const b = new FakeRTCDataChannel("b");
+    a.link(b);
+
+    const handler = vi.fn();
+    onJsonMessage(b as unknown as RTCDataChannel, handler);
+    sendJson(a as unknown as RTCDataChannel, { tick: 5, playerId: "host", input: { forward: true } });
+
+    expect(handler).toHaveBeenCalledWith({ tick: 5, playerId: "host", input: { forward: true } });
+  });
+
+  it("does not throw and never invokes the handler for a non-JSON message payload", () => {
+    const channel = new FakeRTCDataChannel("test");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const handler = vi.fn();
+    onJsonMessage(channel as unknown as RTCDataChannel, handler);
+
+    expect(() => channel.dispatchEvent(new MessageEvent("message", { data: "not json at all {" }))).not.toThrow();
+    expect(handler).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it("never invokes the handler for valid JSON that isn't a plain object (array/string/number/null)", () => {
+    const channel = new FakeRTCDataChannel("test");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const handler = vi.fn();
+    onJsonMessage(channel as unknown as RTCDataChannel, handler);
+
+    for (const payload of [JSON.stringify([1, 2, 3]), JSON.stringify("hello"), JSON.stringify(42), JSON.stringify(null)]) {
+      channel.dispatchEvent(new MessageEvent("message", { data: payload }));
+    }
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledTimes(4);
+    warnSpy.mockRestore();
+  });
+
+  it("never invokes the handler when `type` is present but not a string", () => {
+    const channel = new FakeRTCDataChannel("test");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const handler = vi.fn();
+    onJsonMessage(channel as unknown as RTCDataChannel, handler);
+
+    channel.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: 42, value: "whatever" }) }));
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it("still invokes the handler with the parsed object for a normal, validly-shaped message, unaffected by the new checks", () => {
+    const channel = new FakeRTCDataChannel("test");
+    const handler = vi.fn();
+    onJsonMessage(channel as unknown as RTCDataChannel, handler);
+
+    channel.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "example", value: 42 }) }));
+
+    expect(handler).toHaveBeenCalledWith({ type: "example", value: 42 });
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("sendJsonWithBackpressure", () => {
