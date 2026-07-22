@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeRTCDataChannel } from "../../test/mocks/webrtc";
 import type { GameMap, Tile } from "../map/types";
 import { runGuestSessionSetup } from "./sessionSetupGuest";
@@ -205,6 +205,63 @@ describe("runHostSessionSetup — multiple guests (step 10: N-player)", () => {
     expect(hostResult.assignedId).toBe(HOST_PLAYER_ID);
     expect(hostResult.roster).toEqual(["guest-1", "guest-2", "host"]);
     expect(hostResult.playerCount).toBe(3);
+  });
+});
+
+describe("runHostSessionSetup — handshake timeout (re-review finding: host-side counterpart to finding 9)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Matches the module's own private HANDSHAKE_TIMEOUT_MS — not exported (a
+  // purely internal implementation constant), so mirrored here directly.
+  const HANDSHAKE_TIMEOUT_MS = 10_000;
+
+  it("rejects with a handshake-timeout SessionSetupError if the guest never sends its own build-version", async () => {
+    vi.useFakeTimers();
+    const channels = linkedChannels();
+    const options: HostSessionSetupOptions = { map: bigFakeMap(10), difficulty: "easy", roster: ["guest", "host"], gameplaySeed: 1 };
+
+    const hostPromise = runHostSessionSetup(channels.host, "guest", options);
+
+    // Attached before advancing the timer — same reasoning as
+    // sessionSetupGuest.test.ts's identical pattern: the assertion must
+    // already be listening before the fake-timer advance below fires the
+    // rejection, or it's briefly "unhandled" from Node's own perspective.
+    const assertion = expect(hostPromise).rejects.toMatchObject({ code: "handshake-timeout" });
+    await vi.advanceTimersByTimeAsync(HANDSHAKE_TIMEOUT_MS);
+    await assertion;
+    await expect(hostPromise).rejects.toBeInstanceOf(SessionSetupError);
+  });
+
+  it("does not fire if the handshake completes normally well before the timeout", async () => {
+    vi.useFakeTimers();
+    const channels = linkedChannels();
+    const options: HostSessionSetupOptions = { map: bigFakeMap(10), difficulty: "normal", roster: ["guest", "host"], gameplaySeed: 1 };
+
+    const [guestResult] = await Promise.all([runGuestSessionSetup(channels.guest), runHostSessionSetup(channels.host, "guest", options)]);
+    // Even letting the timeout's own window fully elapse afterward must not
+    // retroactively reject an already-resolved setup.
+    await vi.advanceTimersByTimeAsync(HANDSHAKE_TIMEOUT_MS);
+
+    expect(guestResult.roster).toEqual(["guest", "host"]);
+  });
+
+  it("does not fire once a build-version mismatch has already settled the promise", async () => {
+    vi.useFakeTimers();
+    const channels = linkedChannels();
+    const options: HostSessionSetupOptions = { map: bigFakeMap(10), difficulty: "easy", roster: ["guest", "host"], gameplaySeed: 1 };
+
+    const hostPromise = runHostSessionSetup(channels.host, "guest", options);
+    const rogueVersion: SessionSetupMessage = { type: "build-version", ref: "other-build-ref", time: "other-build-time" };
+    channels.guest.reconciliation.send(JSON.stringify(rogueVersion));
+
+    await expect(hostPromise).rejects.toMatchObject({ code: "build-version-mismatch" });
+    // The already-rejected promise must not reject again (or throw) once the
+    // handshake-timeout window it never needed also elapses — a second,
+    // still-pending rejection here would surface as an unhandled rejection
+    // and fail the test run.
+    await vi.advanceTimersByTimeAsync(HANDSHAKE_TIMEOUT_MS);
   });
 });
 

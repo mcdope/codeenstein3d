@@ -27,6 +27,17 @@
  * responsibility goes — closing the connection or showing UI in response is
  * a later step's job (nothing in the spec's "Session setup" section assigns
  * it here).
+ *
+ * Bounded by `HANDSHAKE_TIMEOUT_MS`, the host-side counterpart to
+ * `sessionSetupGuest.ts`'s own timeout — without it, a guest whose tab
+ * freezes or closes right after connecting (never sending its own
+ * build-version) wedges this call, and every other guest's own setup
+ * alongside it in `main.ts`'s `Promise.all`, forever. Armed immediately at
+ * call time, unlike the guest's — this side has no "wait for the user to
+ * click Start Session" pre-phase to avoid timing out early: by the time
+ * `runHostSessionSetup` is called (once per already-connected guest, all at
+ * once), the host user has already clicked Start Session, and this
+ * function's own first send happens unconditionally right away.
  */
 import type { DifficultyLevel } from "../difficulty";
 import type { PlayerId } from "../engine/engine";
@@ -43,6 +54,15 @@ import {
 } from "./sessionSetupTypes";
 import { checkBuildVersionMatch } from "./buildVersionCheck";
 import type { MultiplayerChannels } from "./types";
+
+/** How long (real wall-clock milliseconds) the host waits for a connected
+ * guest's own build-version before giving up on that guest's setup —
+ * matches `sessionSetupGuest.ts`'s own `HANDSHAKE_TIMEOUT_MS` value (same
+ * order-of-magnitude "never wait forever" reasoning as
+ * `TRANSITION_ACK_TIMEOUT_MS`/`BUFFER_DRAIN_TIMEOUT_MS`), but armed
+ * differently — see this module's doc comment for why call-time is safe
+ * here even though it wasn't for the guest's own timer. */
+const HANDSHAKE_TIMEOUT_MS = 10_000;
 
 export interface HostSessionSetupOptions {
   map: GameMap;
@@ -91,9 +111,17 @@ export function runHostSessionSetup(
   return new Promise((resolve, reject) => {
     const channel = channels.reconciliation;
 
+    // Armed immediately (see this module's own doc comment for why that's
+    // safe on this side) and cleared on every settle path below.
+    const handshakeTimeoutTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
+      unsubscribe();
+      reject(new SessionSetupError("handshake-timeout", `guest never sent its own build-version within ${HANDSHAKE_TIMEOUT_MS}ms`));
+    }, HANDSHAKE_TIMEOUT_MS);
+
     const unsubscribe = onJsonMessage<SessionSetupMessage>(channel, (message) => {
       if (message.type !== "build-version") return; // only message a guest ever sends us during setup
       unsubscribe();
+      clearTimeout(handshakeTimeoutTimer);
 
       if (!checkBuildVersionMatch({ ref: __BUILD_REF__, time: __BUILD_TIME__ }, message)) {
         reject(new SessionSetupError("build-version-mismatch", "guest is on a different build"));
@@ -132,6 +160,10 @@ export function runHostSessionSetup(
     });
 
     const ownVersion: BuildVersionMessage = { type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ };
-    sendJsonWithBackpressure(channel, ownVersion).catch(reject);
+    sendJsonWithBackpressure(channel, ownVersion).catch((err) => {
+      unsubscribe();
+      clearTimeout(handshakeTimeoutTimer);
+      reject(err);
+    });
   });
 }
