@@ -63,7 +63,16 @@ export class InputDelayBuffer {
    * bound-and-drop only: a dropped tick is simply never recorded, never
    * promoted into `lastKnown` — the same "held-last-input for a real gap,
    * not a substitute for real data" boundary `finalize()`'s own `graceIds`
-   * handling already draws. */
+   * handling already draws.
+   *
+   * Callers must validate `tick`/`input` before calling this — this method
+   * trusts both completely and does no runtime shape-checking of its own
+   * (see `inputValidation.ts`'s `isValidWireTick`/`isValidInputSnapshot`,
+   * used at this class's one real call site in `multiplayerSessionHost.ts`).
+   * A non-numeric `tick` defeats the drift bound above via `NaN` comparisons
+   * (always `false`, so the entry is buffered under a key `finalize()` can
+   * never match and sweep — an unbounded leak); a malformed `input` gets
+   * promoted into `lastKnown` and crashes every peer's input consumer later. */
   record(tick: number, playerId: PlayerId, input: InputSnapshot): void {
     if (this.lastFinalizedTick !== null && Math.abs(tick - this.lastFinalizedTick) > MAX_TICK_DRIFT_TICKS) {
       return;
