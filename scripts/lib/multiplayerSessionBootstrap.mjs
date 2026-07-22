@@ -124,6 +124,18 @@ export async function waitForGuestCount(hostPage, count, timeoutMs = DEFAULT_CON
   }
 }
 
+/** Thrown by `waitForTargetTick` specifically — a distinct type (not a bare
+ * `Error`) so a caller can deliberately choose to retry on it, the same way
+ * `verify-multiplayer-transition.mjs`'s own `HostDiedDuringNavigation` lets
+ * that script retry one specific, real-world-timing-sensitive condition
+ * without silently retrying every other failure mode too. Real CI runs
+ * (multiple headless browser contexts, real WebRTC, real per-tick work) do
+ * occasionally miss `timeoutMs` under resource contention with nothing
+ * actually wrong — confirmed directly: reproduced with a *different* peer
+ * lagging each time, in the same CI run where an unrelated script's own
+ * combat-timing retry budget was also visibly under real pressure. */
+export class TickSyncTimeoutError extends Error {}
+
 /** Waits until `page`'s own `getSimTick()` reaches `targetTick`. */
 export async function waitForTargetTick(page, label, targetTick, timeoutMs = DEFAULT_TICKING_TIMEOUT_MS) {
   try {
@@ -133,7 +145,7 @@ export async function waitForTargetTick(page, label, targetTick, timeoutMs = DEF
       { timeout: timeoutMs },
     );
   } catch (err) {
-    throw new Error(`${label} never reached tick ${targetTick}: ${err.message}`);
+    throw new TickSyncTimeoutError(`${label} never reached tick ${targetTick}: ${err.message}`);
   }
 }
 
@@ -177,6 +189,7 @@ export async function bootstrapMultiplayerSession(browser, options) {
     // it everywhere keeps every context's local UI state consistent too.
     difficulty,
     log = () => {},
+    logBrowserConsole = false,
   } = options;
 
   if (!Number.isInteger(playerCount) || playerCount < 2 || playerCount > 4) {
@@ -210,6 +223,16 @@ export async function bootstrapMultiplayerSession(browser, options) {
   const [hostPage, ...guestPages] = pages;
   pages.forEach((page, i) => {
     page.on("pageerror", (err) => log(`[${playerIds[i]} pageerror] ${err.message}`));
+    // Opt-in (default off — every other caller stays exactly as noisy as
+    // before): forwards every real console.log/warn/error the app itself
+    // emits, not just uncaught exceptions. Added for diagnosing a real,
+    // deterministic N=3 hang (ticking never starts at all, no pageerror —
+    // see verify-multiplayer-multiguest.mjs's own use of this flag and this
+    // repo's recent git history for the investigation); a silent hang like
+    // that produces nothing on the `pageerror` channel above, so there was
+    // previously no way to see where main.ts's own host-setup sequence
+    // actually got stuck.
+    if (logBrowserConsole) page.on("console", (msg) => log(`[${playerIds[i]} console] ${msg.text()}`));
   });
 
   log(`Loading an eligible workspace (demo campaign) in all ${playerCount} browsers...`);

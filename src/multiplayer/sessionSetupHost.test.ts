@@ -147,6 +147,34 @@ describe("runHostSessionSetup — build-version mismatch", () => {
   });
 });
 
+describe("runHostSessionSetup — send failures", () => {
+  it("rejects if the host's own outbound build-version send fails (channel not open)", async () => {
+    const channels = linkedChannels();
+    (channels.host.reconciliation as unknown as FakeRTCDataChannel).readyState = "closing";
+    const options: HostSessionSetupOptions = { map: bigFakeMap(10), difficulty: "easy", roster: ["guest", "host"], gameplaySeed: 1 };
+
+    const hostPromise = runHostSessionSetup(channels.host, "guest", options);
+
+    await expect(hostPromise).rejects.toThrow(/readyState is "closing"/);
+  });
+
+  it("rejects if sendJsonSequence (session-init + map chunks) fails after a matching build-version arrives", async () => {
+    const channels = linkedChannels();
+    const options: HostSessionSetupOptions = { map: bigFakeMap(10), difficulty: "easy", roster: ["guest", "host"], gameplaySeed: 1 };
+
+    const hostPromise = runHostSessionSetup(channels.host, "guest", options);
+
+    // The host's own build-version send above already succeeded (channel
+    // was open) — close it now, before the guest's reply arrives, so the
+    // *next* send (sendJsonSequence's session-init) is what fails.
+    (channels.host.reconciliation as unknown as FakeRTCDataChannel).readyState = "closing";
+    const realVersion: SessionSetupMessage = { type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ };
+    channels.guest.reconciliation.send(JSON.stringify(realVersion));
+
+    await expect(hostPromise).rejects.toThrow(/readyState is "closing"/);
+  });
+});
+
 describe("runHostSessionSetup — multiple guests (step 10: N-player)", () => {
   it("sets up each guest independently, with the same roster/seed but its own assignedId", async () => {
     const linkA = linkedChannels(); // host <-> guest-1

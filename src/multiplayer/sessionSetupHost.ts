@@ -6,7 +6,9 @@
  * `sessionSetupTypes.ts`'s doc comment for the wire shapes and channel
  * choice). Sequence, per connected guest: send our own build-version
  * immediately, wait for that guest's; on a match, send roster/tick-constants/
- * seed/difficulty/player-count in one `session-init` message, then the
+ * seed/difficulty/player-count in one `session-init` message (which also
+ * carries our own compiled netcode constants — see `SessionInitMessage`'s own
+ * doc comment for why only the guest side checks those, not here), then the
  * `GameMap` itself (`visited` stripped) as a chunked sequence. Resolves as
  * soon as everything has been *sent* — the reliable/ordered channel is
  * trusted for delivery, no ack is required to complete setup (that's only a
@@ -126,9 +128,7 @@ export function runHostSessionSetup(
       // synchronous (`(message: T) => void`), so an `async` callback's own
       // rejection would never actually reach anything — this settles the
       // outer `Promise` explicitly instead of relying on that.
-      sendJsonSequence(channel, [sessionInitMessage, ...chunkMessages, mapEndMessage])
-        .then(() => resolve())
-        .catch(reject);
+      sendJsonSequence(channel, [sessionInitMessage, ...chunkMessages, mapEndMessage]).then(resolve, reject);
     });
 
     const ownVersion: BuildVersionMessage = { type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ };

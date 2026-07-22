@@ -43,6 +43,13 @@ Also out of scope: fixing the pre-existing, single-player-scoped
 `recordHeal("pickupHealth"/"pickupSwap", …)` gap (§1's own "out of scope"
 note) and deathmatch-specific telemetry (deathmatch itself doesn't exist yet).
 
+**Update (2026-07-22): the `balancing:campaign`-equivalent orchestrator has
+since shipped** — `npm run balancing:campaign-multiplayer`
+(`scripts/run-balancing-campaign-multiplayer.mjs`), directly motivated by a
+real 8+-hour sweep with one stuck combo and no incremental persistence, see
+`doc/dev/balancing-telemetry.md`'s "SSH-host parallelism" section and
+`notes`. `balancing:watch`'s multiplayer equivalent is still deferred.
+
 ## 1. Engine-side per-player telemetry
 
 `src/engine/telemetry.ts` is already 100% N-player-generic in itself — every
@@ -301,8 +308,9 @@ developer's own dev session happens to be pointed at.
   of the same script, mirroring `balancing:scan`'s role as a pre-merge
   regression gate ("run before declaring multiplayer bot navigation/combat
   fixed").
-- Deferred (see Goals/non-goals): `balancing:campaign-multiplayer`,
-  `balancing:watch-multiplayer`.
+- Deferred at the time (see Goals/non-goals) — `balancing:campaign-multiplayer`
+  has since shipped (2026-07-22, `scripts/run-balancing-campaign-multiplayer.mjs`);
+  `balancing:watch-multiplayer` is still deferred.
 
 ## 9. Docs
 

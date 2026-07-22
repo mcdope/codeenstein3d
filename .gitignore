@@ -13,6 +13,7 @@ balancing_runs_*/
 perf_runs/
 perf-report.html
 scripts/fixtures/perf-har/
+ssh-hosts.env
 
 # Editor
 .vscode/*

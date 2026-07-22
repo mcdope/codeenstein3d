@@ -98,9 +98,50 @@ function waitForBufferedAmountLow(channel: RTCDataChannel): Promise<void> {
  * `T` (callers own the discriminated-union narrowing from there — this
  * helper is deliberately type-blind about message shape). Returns an
  * unsubscribe function, since a session-setup handshake stops listening once
- * it completes and a later step (tick loop) takes over the channel. */
+ * it completes and a later step (tick loop) takes over the channel.
+ *
+ * Validates before dispatch, rather than blindly casting whatever
+ * `JSON.parse` produces: a malformed/non-JSON payload would otherwise throw
+ * synchronously inside this `"message"` listener — an uncaught exception the
+ * browser just swallows, with the message silently vanishing and no
+ * diagnostic. Caught here instead: logged and skipped, `handler` never
+ * invoked. A parsed-but-non-object payload (an array, string, number,
+ * `null`, ...) is rejected the same way — no real message on any channel
+ * this project uses is ever anything but a plain object.
+ *
+ * Deliberately does **not** require a `type` field, even though
+ * `reconciliationTypes.ts`/`levelTransitionTypes.ts`/`sessionSetupTypes.ts`
+ * all discriminate that way: `netcodeTypes.ts`'s `TickInput`/
+ * `TickInputBundle` — the exact per-tick traffic this helper exists for (see
+ * this module's own doc comment) — carry no `type` field at all, and both
+ * are dispatched through this same generic function (see
+ * `multiplayerSessionHost.ts`'s `onJsonMessage<TickInput>` and
+ * `multiplayerSessionGuest.ts`'s `onJsonMessage<TickInputBundle>`). A `type`
+ * field is only checked *if present*: a message that has one but where it
+ * isn't a string is still a wrong-shaped payload worth rejecting, but a
+ * message with no `type` field at all (every real `input`-channel message)
+ * is not — requiring it unconditionally would silently drop all lockstep
+ * input traffic. */
 export function onJsonMessage<T>(channel: RTCDataChannel, handler: (message: T) => void): () => void {
-  const listener = (event: MessageEvent): void => handler(JSON.parse(event.data as string) as T);
+  const listener = (event: MessageEvent): void => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(event.data as string);
+    } catch (error) {
+      console.warn(`[dataChannelMessaging] Discarding an inbound "${channel.label}" message that failed to parse as JSON:`, error);
+      return;
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      console.warn(`[dataChannelMessaging] Discarding an inbound "${channel.label}" message that isn't a JSON object:`, parsed);
+      return;
+    }
+    const type = (parsed as { type?: unknown }).type;
+    if (type !== undefined && typeof type !== "string") {
+      console.warn(`[dataChannelMessaging] Discarding an inbound "${channel.label}" message with a non-string "type" field:`, parsed);
+      return;
+    }
+    handler(parsed as T);
+  };
   channel.addEventListener("message", listener);
   return () => channel.removeEventListener("message", listener);
 }

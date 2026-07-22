@@ -14,17 +14,60 @@
 import type { PlayerId } from "../engine/engine";
 import type { InputSnapshot } from "../engine/input";
 import { EMPTY_SNAPSHOT } from "../engine/replay";
+import { TICK_RATE_HZ } from "./netcodeConstants";
 import type { TickInputBundle } from "./netcodeTypes";
+
+/** How far `lastFinalizedTick` and a `record()`'d tick may drift apart
+ * (either direction) before the tick is dropped rather than buffered —
+ * purely a DoS-prevention ceiling against a hostile/buggy peer replaying or
+ * fabricating a wildly out-of-range tick number (see `record()`'s own doc
+ * comment), *not* a per-packet network-jitter tolerance. That distinction
+ * matters: this was originally tied to `INPUT_DELAY_TICKS` (3 ticks, 100ms)
+ * on the assumption sender and finalizer stay in near-lockstep, but
+ * `TickAccumulator.advance()`'s own doc comment already documents that a
+ * real stall (a GC pause, a slow frame, real resource contention) can make
+ * the tick-processing loop post *many* due ticks in one burst to catch up —
+ * confirmed directly: a real CI run under heavy load needed 23/25 combat
+ * retries and the host's own bot went from reliably surviving to dying
+ * almost every attempt once this bound was tied to `INPUT_DELAY_TICKS`,
+ * because a catch-up burst that size trivially exceeded a ~9-tick (300ms)
+ * window, silently dropping the other peer's genuinely still-useful input
+ * for the whole burst. Sized instead like `DISCONNECT_GRACE_MS` — a real,
+ * generous "how long is an ordinary hiccup tolerated" budget (here, 10
+ * seconds of ticks) — comfortably survives any realistic stall while still
+ * being a real, bounded ceiling against actual abuse (a hostile tick number
+ * many minutes away is still rejected). */
+const MAX_TICK_DRIFT_TICKS = TICK_RATE_HZ * 10;
 
 export class InputDelayBuffer {
   private readonly pending = new Map<number, Map<PlayerId, InputSnapshot>>();
   private readonly lastKnown = new Map<PlayerId, InputSnapshot>();
+  /** The most recent tick `finalize()` has produced a bundle for, or `null`
+   * before the first call — `record()`'s own bound-and-drop window (see
+   * `MAX_TICK_DRIFT_TICKS`) is centered on this. `null` disables the bound
+   * entirely (nothing to center it on yet, and the real in-flight window
+   * genuinely can't be known before the first `finalize()` call — the very
+   * first ticks reasonably arrive well ahead, see `INPUT_DELAY_TICKS`'s own
+   * bootstrap-transient behavior). */
+  private lastFinalizedTick: number | null = null;
 
   /** Records one player's sampled input for a future tick, as it arrives —
    * over the network for a remote player, or immediately for the host's own
    * locally-sampled input (delayed the exact same way, per the spec, so the
-   * host gets no built-in input-latency advantage). */
+   * host gets no built-in input-latency advantage). A `tick` more than
+   * `MAX_TICK_DRIFT_TICKS` away from `lastFinalizedTick` (either direction)
+   * is silently dropped (no-op) rather than buffered — a hostile or buggy
+   * peer sending a far-future or replayed tick number would otherwise grow
+   * `pending` without bound, since only an actually-finalized tick's entry
+   * is ever cleaned up (see `finalize()`'s own doc comment). Deliberately
+   * bound-and-drop only: a dropped tick is simply never recorded, never
+   * promoted into `lastKnown` — the same "held-last-input for a real gap,
+   * not a substitute for real data" boundary `finalize()`'s own `graceIds`
+   * handling already draws. */
   record(tick: number, playerId: PlayerId, input: InputSnapshot): void {
+    if (this.lastFinalizedTick !== null && Math.abs(tick - this.lastFinalizedTick) > MAX_TICK_DRIFT_TICKS) {
+      return;
+    }
     let forTick = this.pending.get(tick);
     if (!forTick) {
       forTick = new Map();
@@ -49,8 +92,14 @@ export class InputDelayBuffer {
    * grace means genuinely inert (nobody's driving that player anymore, so it
    * should stand still, not keep repeating whatever it was last doing —
    * held-last-input is for a brief real-input gap, not a peer that's gone).
+   *
+   * Returns everything but `levelEpoch` — that field is a purely local
+   * counter the session driver (not this buffer) tracks, incremented inside
+   * its own `startLevel()` call (see `TickInputBundle.levelEpoch`'s own doc
+   * comment); the caller stamps it onto the bundle this returns before
+   * broadcasting it.
    */
-  finalize(tick: number, rosterIds: readonly PlayerId[], dt: number, graceIds?: ReadonlySet<PlayerId>): TickInputBundle {
+  finalize(tick: number, rosterIds: readonly PlayerId[], dt: number, graceIds?: ReadonlySet<PlayerId>): Omit<TickInputBundle, "levelEpoch"> {
     const forTick = this.pending.get(tick);
     const inputs: Record<PlayerId, InputSnapshot> = {};
     const heldInputFallback: PlayerId[] = [];
@@ -71,6 +120,21 @@ export class InputDelayBuffer {
     }
 
     this.pending.delete(tick);
+    // Recorded *after* the read above (this tick's own now-consumed entries
+    // must never be judged against a window centered on themselves) —
+    // re-centers `record()`'s own bound-and-drop window on the tick genuinely
+    // now in progress, so `pending` can never accumulate far-future/replayed
+    // tick numbers a hostile or buggy peer might send (see `record()`'s own
+    // doc comment).
+    this.lastFinalizedTick = tick;
     return { tick, dt, inputs, heldInputFallback };
+  }
+
+  /** Test-only: the number of distinct tick numbers currently buffered in
+   * `pending` — the only way to observe `record()`'s own bound-and-drop
+   * window actually keeping this bounded (see its own doc comment)
+   * without exposing `pending` itself to real callers. */
+  get pendingTickCountForTest(): number {
+    return this.pending.size;
   }
 }

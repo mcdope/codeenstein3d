@@ -26,8 +26,9 @@
  */
 
 import { createServer } from "node:http";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { resolve as resolvePath } from "node:path";
 import { writeFileSync, rmSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
@@ -68,6 +69,19 @@ const PUT_SESSION_RATE_LIMIT_MAX_REQUESTS = Number(
 );
 const BASE_COOLDOWN_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_BASE_COOLDOWN_MS ?? 5_000);
 
+/** Caps how many distinct IPs each of the four rate-limit maps below will
+ * ever track at once — without this, an attacker (real, or via a spoofed
+ * `X-Forwarded-For` — see `getClientIp`) can grow these maps unboundedly
+ * until the next sweep (`SWEEP_INTERVAL_MS`, up to tens of seconds later), a
+ * straightforward memory-exhaustion DoS. 10,000 distinct concurrently-tracked
+ * IPs per limiter is generously above any realistic legitimate concurrency
+ * for this server while still bounding worst-case memory to a small, fixed
+ * multiple of `IpLimitState`'s size. See `checkRateLimit`'s own comment for
+ * what happens once a map is actually at this cap. */
+const MAX_TRACKED_IPS_PER_LIMITER = Number(
+  process.env.CODEENSTEIN_MULTIPLAYER_MAX_TRACKED_IPS_PER_LIMITER ?? 10_000,
+);
+
 /** `GET /stats` (and the `--stats` CLI mode that queries it) is entirely
  * opt-in: unset, the endpoint doesn't exist as far as any caller can tell —
  * an unauthenticated or unconfigured request gets the same plain 404 as any
@@ -81,6 +95,20 @@ const STATS_TOKEN = process.env.CODEENSTEIN_MULTIPLAYER_STATS_TOKEN;
 const MAX_COOLDOWN_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_MAX_COOLDOWN_MS ?? 60 * 60_000);
 
 const MAX_BODY_BYTES = Number(process.env.CODEENSTEIN_MULTIPLAYER_MAX_BODY_BYTES ?? 8192);
+
+/** Explicit `http.Server` timeouts, rather than relying entirely on Node's
+ * own built-in defaults — mild Slowloris-style exposure otherwise (many
+ * slow/idle connections tying up memory/file descriptors for minutes). Both
+ * conservative for this server's actual traffic shape: every request here is
+ * a small JSON body (capped at `MAX_BODY_BYTES`) from a same-origin browser
+ * client or the trusted local proxy, never a large/streamed upload, so there
+ * is no legitimate reason for headers or a full request to take anywhere
+ * near this long. `HEADERS_TIMEOUT_MS` bounds how long a connection may take
+ * to finish sending its request headers; `REQUEST_TIMEOUT_MS` bounds the
+ * entire request (headers + body) and must be `>= HEADERS_TIMEOUT_MS`, since
+ * headers are part of the request it's timing. */
+const HEADERS_TIMEOUT_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_HEADERS_TIMEOUT_MS ?? 20_000);
+const REQUEST_TIMEOUT_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_REQUEST_TIMEOUT_MS ?? 30_000);
 
 const MAX_OFFER_ANSWER_BYTES = 4096;
 const MAX_DISPLAY_NAME_CHARS = 100;
@@ -214,21 +242,39 @@ function startSweeping() {
 // Rate limiting
 // ---------------------------------------------------------------------------
 
+/** Loopback addresses `req.socket.remoteAddress` can take when the actual
+ * TCP peer is the local reverse proxy this process is meant to sit behind
+ * (see `getClientIp`'s own comment) — plain `127.0.0.1`/`::1`, plus the
+ * IPv4-mapped-IPv6 form Node reports for some dual-stack listen
+ * configurations. */
+function isLoopbackAddress(address) {
+  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
 /** Client IP for rate-limiting: the *rightmost* entry of `X-Forwarded-For`
- * (the one the trusted local reverse proxy itself appended — safe to trust
- * specifically because this process binds `127.0.0.1` only, so nothing but
- * that proxy can ever connect directly and prepend a forged entry ahead of
- * it), falling back to the raw socket address when the header is absent
- * (local dev / direct testing only — see doc/dev/multiplayer-server-spec.md
- * §1's deployment note for why trusting the proxy's own header is safe here). */
+ * — but **only** when the request's actual TCP peer (`req.socket.
+ * remoteAddress`) is itself loopback, i.e. only when it's structurally
+ * possible for that peer to be the trusted local reverse proxy this process
+ * is meant to sit behind. This process currently binds `127.0.0.1` only (see
+ * this file's `server.listen` call), so `remoteAddress` is *always* loopback
+ * today and this check always passes — this is defense-in-depth against a
+ * future rebind to a public interface, not a currently-live exploit, where
+ * anything could connect directly and forge whatever `X-Forwarded-For` it
+ * likes. Falls back to the raw socket address whenever the header is absent
+ * *or* the peer isn't loopback (see doc/dev/multiplayer-server-spec.md §1's
+ * deployment note for why trusting the proxy's own header is safe once that
+ * precondition holds). */
 function getClientIp(req) {
+  const remoteAddress = req.socket.remoteAddress ?? "unknown";
+  if (!isLoopbackAddress(remoteAddress)) return remoteAddress;
+
   const xff = req.headers["x-forwarded-for"];
   if (typeof xff === "string" && xff.length > 0) {
     const parts = xff.split(",");
     const rightmost = parts[parts.length - 1].trim();
     if (rightmost) return rightmost;
   }
-  return req.socket.remoteAddress ?? "unknown";
+  return remoteAddress;
 }
 
 /** Returns `{ allowed, retryAfterMs }`. A request currently under
@@ -239,6 +285,18 @@ function getClientIp(req) {
 function checkRateLimit(map, ip, maxRequests, now) {
   let state = map.get(ip);
   if (!state) {
+    // Map is already at MAX_TRACKED_IPS_PER_LIMITER and this is a genuinely
+    // new IP: refuse to allocate a new tracking entry rather than growing
+    // the map further (bounding memory is the entire point of the cap) or
+    // evicting some other, possibly mid-cooldown, entry to make room for it.
+    // This IP's request is simply let through unmetered this one time — a
+    // deliberate fail-*open* choice, not fail-closed: a full map must never
+    // itself become a denial-of-service against every *new* legitimate
+    // caller. Once any of this IP's requests lands while the map has spare
+    // capacity, it gets tracked normally from then on.
+    if (map.size >= MAX_TRACKED_IPS_PER_LIMITER) {
+      return { allowed: true, retryAfterMs: 0 };
+    }
     state = { windowStart: now, windowCount: 0, violationCount: 0, cooldownUntil: 0 };
     map.set(ip, state);
   }
@@ -361,6 +419,45 @@ function byteLength(str) {
   return Buffer.byteLength(str, "utf8");
 }
 
+/** Constant-time secret comparison for `hostToken`/`X-Stats-Token` checks.
+ * Plain `!==`/`===` on strings short-circuits at the first mismatched
+ * character — the wrong pattern for comparing secrets, even though real-
+ * network jitter likely swamps the timing signal in practice here.
+ * `crypto.timingSafeEqual` requires equal-length buffers (it *throws* on a
+ * length mismatch), so a length check comes first and a mismatch there is
+ * simply treated as "not equal" without ever calling it — a length
+ * difference is not itself sensitive (both tokens are fixed-format:
+ * `hostToken` is a `randomUUID()`, `STATS_TOKEN` a fixed operator-configured
+ * value), only the *content* comparison needs to be constant-time. */
+function timingSafeStringEqual(provided, expected) {
+  if (typeof provided !== "string" || typeof expected !== "string") return false;
+  const providedBuf = Buffer.from(provided, "utf8");
+  const expectedBuf = Buffer.from(expected, "utf8");
+  if (providedBuf.length !== expectedBuf.length) return false;
+  return timingSafeEqual(providedBuf, expectedBuf);
+}
+
+/** Codepoints rejected in `displayName`/`campaignName`: these two fields are
+ * relayed verbatim to *other players'* lobby UI (`GET /lobby`), so beyond
+ * the existing type/length checks they need content filtering too — `.length`
+ * is UTF-16 code units, so a "short" string can still smuggle many
+ * control/formatting codepoints past a length check alone. Rejects:
+ *  - C0 controls (below U+0020) and DEL/C1 controls (U+007F-U+009F) —
+ *    terminal/renderer-disruptive (e.g. could rewrite the visible line via
+ *    escape sequences in a naive console/log renderer).
+ *  - Zero-width and bidi-override formatting codepoints (U+200B-U+200F,
+ *    U+202A-U+202E, U+2060-U+2064, U+FEFF) — the classic "invisible
+ *    characters"/RTL-override spoofing vector for making a displayed name
+ *    read as something other than its actual content (e.g. impersonating
+ *    another player, or hiding characters from a casual read of the lobby). */
+const FORBIDDEN_NAME_CHARS_RE = new RegExp(
+  "[\\u0000-\\u001F\\u007F-\\u009F\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\uFEFF]",
+);
+
+function hasForbiddenNameChars(str) {
+  return FORBIDDEN_NAME_CHARS_RE.test(str);
+}
+
 // ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
@@ -397,6 +494,9 @@ async function handlePutSession(req, res) {
   if (body.campaignName.length > MAX_CAMPAIGN_NAME_CHARS) {
     return sendError(res, 400, "campaign_name_too_long");
   }
+  if (hasForbiddenNameChars(body.campaignName)) {
+    return sendError(res, 400, "campaign_name_invalid_chars");
+  }
   if (
     !Number.isInteger(body.playerCount) ||
     body.playerCount < 1 ||
@@ -409,6 +509,9 @@ async function handlePutSession(req, res) {
     if (body.displayName.length > MAX_DISPLAY_NAME_CHARS) {
       return sendError(res, 400, "display_name_too_long");
     }
+    if (hasForbiddenNameChars(body.displayName)) {
+      return sendError(res, 400, "display_name_invalid_chars");
+    }
   }
   if (body.public !== undefined && typeof body.public !== "boolean") {
     return sendError(res, 400, "invalid_public");
@@ -420,7 +523,7 @@ async function handlePutSession(req, res) {
     if (typeof body.code !== "string") return sendError(res, 400, "invalid_code");
     const record = getLiveSession(body.code, now);
     if (!record) return sendError(res, 404, "session_not_found");
-    if (typeof body.hostToken !== "string" || body.hostToken !== record.hostToken) {
+    if (!timingSafeStringEqual(body.hostToken, record.hostToken)) {
       return sendError(res, 403, "host_token_mismatch");
     }
 
@@ -466,8 +569,7 @@ function handleGetSession(req, res, code) {
   const record = getLiveSession(code, now);
 
   const providedToken = req.headers["x-host-token"];
-  const isHostAuthenticated =
-    !!record && typeof providedToken === "string" && providedToken === record.hostToken;
+  const isHostAuthenticated = !!record && timingSafeStringEqual(providedToken, record.hostToken);
 
   const limit = isHostAuthenticated
     ? checkRateLimit(hostTokenLimits, ip, HOST_TOKEN_MAX_REQUESTS, now)
@@ -569,7 +671,7 @@ function countInCooldown(map, now) {
  * comment for why this whole endpoint is opt-in and 404s indistinguishably
  * from an unknown route unless explicitly configured and authenticated. */
 function handleGetStats(req, res) {
-  if (!STATS_TOKEN || req.headers["x-stats-token"] !== STATS_TOKEN) {
+  if (!STATS_TOKEN || !timingSafeStringEqual(req.headers["x-stats-token"], STATS_TOKEN)) {
     return sendError(res, 404, "not_found");
   }
 
@@ -721,9 +823,12 @@ invocation's currently-effective ones):
   CODEENSTEIN_MULTIPLAYER_HOST_TOKEN_MAX_REQUESTS        Host-token-exempt budget (currently ${HOST_TOKEN_MAX_REQUESTS}).
   CODEENSTEIN_MULTIPLAYER_LOBBY_RATE_LIMIT_MAX_REQUESTS  GET /lobby budget (currently ${LOBBY_RATE_LIMIT_MAX_REQUESTS}).
   CODEENSTEIN_MULTIPLAYER_PUT_SESSION_RATE_LIMIT_MAX_REQUESTS  PUT /session budget (currently ${PUT_SESSION_RATE_LIMIT_MAX_REQUESTS}).
+  CODEENSTEIN_MULTIPLAYER_MAX_TRACKED_IPS_PER_LIMITER    Per-limiter distinct-IP cap (currently ${MAX_TRACKED_IPS_PER_LIMITER}).
   CODEENSTEIN_MULTIPLAYER_BASE_COOLDOWN_MS               Backoff base (currently ${BASE_COOLDOWN_MS}).
   CODEENSTEIN_MULTIPLAYER_MAX_COOLDOWN_MS                Backoff cap (currently ${MAX_COOLDOWN_MS}).
   CODEENSTEIN_MULTIPLAYER_MAX_BODY_BYTES                 Request body cap (currently ${MAX_BODY_BYTES}).
+  CODEENSTEIN_MULTIPLAYER_HEADERS_TIMEOUT_MS              HTTP headers timeout (currently ${HEADERS_TIMEOUT_MS}).
+  CODEENSTEIN_MULTIPLAYER_REQUEST_TIMEOUT_MS              HTTP full-request timeout (currently ${REQUEST_TIMEOUT_MS}).
   CODEENSTEIN_MULTIPLAYER_STATS_TOKEN                    Enables GET /stats and --stats;
                                                           unset means the endpoint doesn't
                                                           exist (plain 404), by design.
@@ -880,6 +985,19 @@ async function runStats({ port, json }) {
 // Entry point
 // ---------------------------------------------------------------------------
 
+/** Builds the `http.Server` with `HEADERS_TIMEOUT_MS`/`REQUEST_TIMEOUT_MS`
+ * explicitly applied, but does **not** call `.listen()` — kept as its own
+ * function (rather than inlined in `main()`) specifically so an automated
+ * test can import this module, call this function directly, and assert the
+ * timeout values actually landed on the real `http.Server` object, without
+ * needing to spawn a child process or bind a real port. */
+function createConfiguredServer() {
+  const server = createServer(requestListener);
+  server.headersTimeout = HEADERS_TIMEOUT_MS;
+  server.requestTimeout = REQUEST_TIMEOUT_MS;
+  return server;
+}
+
 async function main() {
   const flags = parseCliArgs(process.argv.slice(2));
 
@@ -903,13 +1021,27 @@ async function main() {
 
   serverStartedAt = Date.now();
   startSweeping();
-  const server = createServer(requestListener);
+  const server = createConfiguredServer();
   server.listen(PORT, "127.0.0.1", () => {
     console.log(`[multiplayer-server] listening on 127.0.0.1:${PORT} (allowed origin: ${ALLOWED_ORIGIN})`);
   });
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Only actually run the server (or a CLI flag's action) when this file is
+// invoked directly (`node multiplayer-server.mjs ...`) — not when it's
+// merely `import`ed, e.g. by verify-multiplayer-server.mjs's in-process unit
+// checks (see `createConfiguredServer`'s own comment). Every real invocation
+// in this repo (spawned child processes, systemd's `ExecStart=`) already
+// passes this file's own absolute path as the entry point, so this changes
+// nothing about how the server is actually run.
+const isMainModule =
+  process.argv[1] !== undefined && resolvePath(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isMainModule) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+export { createConfiguredServer, HEADERS_TIMEOUT_MS, REQUEST_TIMEOUT_MS };

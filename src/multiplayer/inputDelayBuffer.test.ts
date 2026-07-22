@@ -5,6 +5,11 @@ import { describe, expect, it } from "vitest";
 import { EMPTY_SNAPSHOT } from "../engine/replay";
 import type { InputSnapshot } from "../engine/input";
 import { InputDelayBuffer } from "./inputDelayBuffer";
+import { TICK_RATE_HZ } from "./netcodeConstants";
+
+// Mirrors inputDelayBuffer.ts's own MAX_TICK_DRIFT_TICKS exactly (not exported —
+// a DoS-prevention ceiling, not something real callers should ever need to know).
+const MAX_TICK_DRIFT_TICKS = TICK_RATE_HZ * 10;
 
 function snapshot(overrides: Partial<InputSnapshot> = {}): InputSnapshot {
   return { ...EMPTY_SNAPSHOT, ...overrides };
@@ -71,6 +76,72 @@ describe("InputDelayBuffer", () => {
     buffer.record(3, "p1", snapshot({ fireQueued: true }));
     const bundle = buffer.finalize(3, ["p1", "p2", "p3"], 1 / 30);
     expect(bundle.heldInputFallback.sort()).toEqual(["p2", "p3"]);
+  });
+
+  describe("record() bounds pending against out-of-window tick values (finding 5)", () => {
+    it("drops wildly out-of-window tick values (far-future/replayed) instead of buffering them forever", () => {
+      const buffer = new InputDelayBuffer();
+      buffer.record(0, "p1", snapshot());
+      buffer.finalize(0, ["p1"], 1 / 30); // establishes lastFinalizedTick = 0
+      expect(buffer.pendingTickCountForTest).toBe(0);
+
+      // A hostile/buggy peer sending wildly out-of-window tick numbers —
+      // neither should ever be buffered.
+      buffer.record(1_000_000, "p1", snapshot({ fireQueued: true }));
+      buffer.record(-1_000_000, "p1", snapshot({ fireQueued: true }));
+      expect(buffer.pendingTickCountForTest).toBe(0);
+
+      // Finalizing normally through the real in-flight range afterward is
+      // unaffected — pending never grew, and ordinary operation still works.
+      for (let tick = 1; tick <= 5; tick++) {
+        buffer.record(tick, "p1", snapshot({ mouseDX: tick }));
+        const bundle = buffer.finalize(tick, ["p1"], 1 / 30);
+        expect(bundle.inputs.p1).toEqual(snapshot({ mouseDX: tick }));
+      }
+      expect(buffer.pendingTickCountForTest).toBe(0);
+    });
+
+    it("accepts ticks exactly at the edges of the window, drops ones just past them", () => {
+      const buffer = new InputDelayBuffer();
+      buffer.finalize(100, [], 1 / 30); // establishes lastFinalizedTick = 100, nothing to record
+
+      // Edges: lastFinalizedTick - MAX_TICK_DRIFT_TICKS (past), lastFinalizedTick
+      // + MAX_TICK_DRIFT_TICKS (future) — both must still be accepted, since
+      // this is a DoS-prevention ceiling (see the constant's own doc
+      // comment), not a tight per-packet-jitter tolerance — it must survive
+      // a real stall/catch-up burst, not just ordinary network timing.
+      buffer.record(100 - MAX_TICK_DRIFT_TICKS, "p1", snapshot());
+      buffer.record(100 + MAX_TICK_DRIFT_TICKS, "p1", snapshot());
+      expect(buffer.pendingTickCountForTest).toBe(2);
+
+      // One tick further out on either side — dropped.
+      buffer.record(100 - MAX_TICK_DRIFT_TICKS - 1, "p1", snapshot());
+      buffer.record(100 + MAX_TICK_DRIFT_TICKS + 1, "p1", snapshot());
+      expect(buffer.pendingTickCountForTest).toBe(2); // unchanged
+    });
+
+    it("survives a realistic catch-up burst after a stall (finding 5 regression: this used to be tied to INPUT_DELAY_TICKS, a ~9-tick/300ms window trivially exceeded by a real GC pause or CI resource contention)", () => {
+      const buffer = new InputDelayBuffer();
+      buffer.finalize(0, [], 1 / 30); // establishes lastFinalizedTick = 0
+
+      // A real stall can make TickAccumulator.advance() post many due ticks
+      // in one burst (its own doc comment) — the other peer's genuinely
+      // still-useful, correctly-tagged input arriving for a tick well past
+      // the old ~9-tick window, but comfortably inside a real stall/network
+      // hiccup's timescale, must not be silently dropped.
+      const burstTick = 150; // 5 real seconds of ticks at TICK_RATE_HZ — comfortably survives a real stall, still far inside MAX_TICK_DRIFT_TICKS
+      buffer.record(burstTick, "p1", snapshot({ fireQueued: true }));
+      const bundle = buffer.finalize(burstTick, ["p1"], 1 / 30);
+      expect(bundle.inputs.p1).toEqual(snapshot({ fireQueued: true }));
+      expect(bundle.heldInputFallback).toEqual([]);
+    });
+
+    it("never drops anything before the first finalize() call — the real in-flight window isn't known yet", () => {
+      const buffer = new InputDelayBuffer();
+      buffer.record(3, "p1", snapshot({ fireQueued: true })); // bootstrap: input tagged INPUT_DELAY_TICKS ahead of tick 0
+      const bundle = buffer.finalize(3, ["p1"], 1 / 30);
+      expect(bundle.inputs.p1).toEqual(snapshot({ fireQueued: true }));
+    });
   });
 
   describe("graceIds", () => {

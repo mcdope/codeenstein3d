@@ -18,6 +18,7 @@
 import { spawn, execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createConfiguredServer, HEADERS_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "./multiplayer-server.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_SCRIPT = path.join(__dirname, "multiplayer-server.mjs");
@@ -692,6 +693,279 @@ async function runStatsSuite() {
 }
 
 // ---------------------------------------------------------------------------
+// Rate-limit map size cap + loopback-gated X-Forwarded-For trust
+// ---------------------------------------------------------------------------
+
+/** Note on what's realistically testable here from outside the process: the
+ * loopback-gated trust logic in `getClientIp` (only honor `X-Forwarded-For`
+ * when `req.socket.remoteAddress` is itself loopback) can't be exercised via
+ * real HTTP at this level — this test server only ever binds `127.0.0.1`, so
+ * every real connection's `remoteAddress` *is* loopback, meaning the
+ * "distrust a non-loopback peer's XFF" branch is structurally unreachable
+ * from a plain `fetch()` against it (short of a raw-socket trick to fake a
+ * non-loopback peer address, which isn't practical against a loopback-only
+ * listener). That branch is exercised implicitly instead: every other suite
+ * in this file relies on XFF-based per-IP identity working exactly as
+ * before (see `xff()`'s use throughout), which it does — this server binds
+ * loopback only, so `remoteAddress` is always loopback and the trust check
+ * always passes, preserving prior behavior byte-for-byte. What *is*
+ * directly testable, and what actually is the real, live bug here (per the
+ * finding), is the rate-limit maps' new size cap — verified below via a
+ * lowered `MAX_TRACKED_IPS_PER_LIMITER` and many distinct spoofed IPs. */
+async function runRateLimitMapCapSuite() {
+  const port = 8905;
+  const token = "cap-stats-token";
+  const { base, child } = await spawnServer(port, {
+    CODEENSTEIN_MULTIPLAYER_MAX_TRACKED_IPS_PER_LIMITER: "10",
+    CODEENSTEIN_MULTIPLAYER_RATE_LIMIT_MAX_REQUESTS: "3",
+    CODEENSTEIN_MULTIPLAYER_STATS_TOKEN: token,
+  });
+  try {
+    // 20 distinct spoofed IPs (cap is 10) hitting a guess-sensitive endpoint,
+    // one request each — the map must stay bounded and every request must
+    // still get answered (no crash, no hang, no unbounded growth).
+    const statuses = [];
+    for (let i = 0; i < 20; i++) {
+      const res = await fetch(`${base}/session/ZZZZZZ`, { headers: xff(`10.5.0.${i}`) });
+      statuses.push(res.status);
+    }
+    check(
+      "requests from 20 distinct spoofed IPs (cap of 10) are all still answered",
+      statuses.every((s) => s === 404),
+      `statuses: ${statuses.join(",")}`,
+    );
+
+    const stats = await json(await fetch(`${base}/stats`, { headers: { "X-Stats-Token": token } }));
+    check(
+      "the guess-sensitive map never grows past MAX_TRACKED_IPS_PER_LIMITER despite 20 distinct IPs",
+      stats?.rateLimiting?.trackedIps?.guess === 10,
+      `trackedIps.guess=${stats?.rateLimiting?.trackedIps?.guess}`,
+    );
+
+    // One of the first 10 IPs is guaranteed to have gotten a real tracking
+    // slot (allocation is first-come-first-served up to the cap, no
+    // eviction) — its own budget must still be enforced normally.
+    const trackedIp = "10.5.0.0";
+    const tripStatuses = [];
+    for (let i = 0; i < 5; i++) {
+      tripStatuses.push((await fetch(`${base}/session/ZZZZZZ`, { headers: xff(trackedIp) })).status);
+    }
+    check(
+      "an IP that got a real tracking slot still has its own budget enforced normally",
+      tripStatuses.includes(429),
+      `statuses: ${tripStatuses.join(",")}`,
+    );
+
+    // A 21st distinct IP, arriving once the map is already full, must still
+    // get a normal (non-500) response — fail-open, not a crash or hang.
+    const overflowRes = await fetch(`${base}/session/ZZZZZZ`, { headers: xff("10.5.0.999") });
+    check("a brand-new IP arriving after the cap is hit still gets a normal response (fail-open)", overflowRes.status === 404);
+  } finally {
+    await stopServer(child);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// displayName/campaignName content filtering (control / zero-width / bidi-
+// override codepoints) — built via String.fromCharCode rather than literal
+// source characters, so the invisible/formatting codepoints under test stay
+// visible as plain escapes in this file rather than disappearing into it.
+// ---------------------------------------------------------------------------
+
+const ZERO_WIDTH_SPACE = String.fromCharCode(0x200b);
+const RTL_OVERRIDE = String.fromCharCode(0x202e);
+
+async function runNameContentFilterSuite() {
+  const port = 8906;
+  const { base, child } = await spawnServer(port);
+  try {
+    const ip = "10.6.0.1";
+
+    const zwspDisplayName = await fetch(`${base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff(ip) },
+      body: JSON.stringify({ offer: "x", campaignName: "c", playerCount: 1, displayName: `Evil${ZERO_WIDTH_SPACE}Name` }),
+    });
+    const zwspBody = await json(zwspDisplayName);
+    check(
+      "displayName with a zero-width space is rejected (400)",
+      zwspDisplayName.status === 400 && zwspBody?.error === "display_name_invalid_chars",
+      `status=${zwspDisplayName.status} body=${JSON.stringify(zwspBody)}`,
+    );
+
+    const rtlDisplayName = await fetch(`${base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff(ip) },
+      body: JSON.stringify({ offer: "x", campaignName: "c", playerCount: 1, displayName: `Evil${RTL_OVERRIDE}Name` }),
+    });
+    const rtlBody = await json(rtlDisplayName);
+    check(
+      "displayName with an RTL-override character is rejected (400)",
+      rtlDisplayName.status === 400 && rtlBody?.error === "display_name_invalid_chars",
+      `status=${rtlDisplayName.status} body=${JSON.stringify(rtlBody)}`,
+    );
+
+    const zwspCampaignName = await fetch(`${base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff(ip) },
+      body: JSON.stringify({ offer: "x", campaignName: `evil${ZERO_WIDTH_SPACE}campaign`, playerCount: 1 }),
+    });
+    const zwspCampaignBody = await json(zwspCampaignName);
+    check(
+      "campaignName with a zero-width space is rejected (400)",
+      zwspCampaignName.status === 400 && zwspCampaignBody?.error === "campaign_name_invalid_chars",
+      `status=${zwspCampaignName.status} body=${JSON.stringify(zwspCampaignBody)}`,
+    );
+
+    const rtlCampaignName = await fetch(`${base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff(ip) },
+      body: JSON.stringify({ offer: "x", campaignName: `evil${RTL_OVERRIDE}campaign`, playerCount: 1 }),
+    });
+    const rtlCampaignBody = await json(rtlCampaignName);
+    check(
+      "campaignName with an RTL-override character is rejected (400)",
+      rtlCampaignName.status === 400 && rtlCampaignBody?.error === "campaign_name_invalid_chars",
+      `status=${rtlCampaignName.status} body=${JSON.stringify(rtlCampaignBody)}`,
+    );
+
+    // The filter must not be overly broad: normal printable Unicode
+    // (accented characters, emoji) is still accepted.
+    const normalUnicode = await fetch(`${base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff(ip) },
+      body: JSON.stringify({
+        offer: "x",
+        campaignName: "torvalds/linux",
+        playerCount: 1,
+        displayName: "Tobiäs Bäumer \u{1F600}",
+      }),
+    });
+    check("a normal printable-Unicode displayName (accents + emoji) still succeeds (201)", normalUnicode.status === 201);
+  } finally {
+    await stopServer(child);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Constant-time secret comparison (hostToken / X-Stats-Token) — asserts
+// accept/reject behavior is unchanged for correct, wrong-length, and
+// same-length-wrong tokens at all three comparison sites: the PUT /session
+// update branch, GET /session/<code>'s host-token-budget-bypass check, and
+// GET /stats's X-Stats-Token check.
+// ---------------------------------------------------------------------------
+
+/** Same length as `token`, guaranteed different content — a targeted
+ * "same-length-wrong" probe distinct from a plain wrong-length probe. */
+function differentSameLengthToken(token) {
+  const last = token[token.length - 1];
+  const replacement = last === "X" ? "Y" : "X";
+  return token.slice(0, -1) + replacement;
+}
+
+async function runTimingSafeComparisonSuite() {
+  const port = 8904;
+  const statsToken = "stats-timing-token";
+  const { base, child } = await spawnServer(port, {
+    CODEENSTEIN_MULTIPLAYER_STATS_TOKEN: statsToken,
+    CODEENSTEIN_MULTIPLAYER_RATE_LIMIT_MAX_REQUESTS: "5",
+    CODEENSTEIN_MULTIPLAYER_HOST_TOKEN_MAX_REQUESTS: "50",
+  });
+  try {
+    const ip = "10.4.0.1";
+    const created = await json(
+      await fetch(`${base}/session`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...xff(ip) },
+        body: JSON.stringify({ offer: "x", campaignName: "c", playerCount: 1 }),
+      }),
+    );
+    const wrongLenToken = created.hostToken.slice(0, -4);
+    const sameLenWrongToken = differentSameLengthToken(created.hostToken);
+
+    // --- Site 1: PUT /session update branch (~handlePutSession) ---
+    const correctUpdate = await fetch(`${base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff(ip) },
+      body: JSON.stringify({ code: created.code, hostToken: created.hostToken, offer: "y", campaignName: "c", playerCount: 1 }),
+    });
+    check("PUT update: correct hostToken still accepted (200)", correctUpdate.status === 200);
+
+    const wrongLenUpdate = await fetch(`${base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff(ip) },
+      body: JSON.stringify({ code: created.code, hostToken: wrongLenToken, offer: "z", campaignName: "c", playerCount: 1 }),
+    });
+    check("PUT update: wrong-length hostToken still rejected (403)", wrongLenUpdate.status === 403);
+
+    const sameLenUpdate = await fetch(`${base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff(ip) },
+      body: JSON.stringify({ code: created.code, hostToken: sameLenWrongToken, offer: "z2", campaignName: "c", playerCount: 1 }),
+    });
+    check("PUT update: same-length-wrong hostToken still rejected (403)", sameLenUpdate.status === 403);
+
+    // --- Site 2: GET /session/<code> host-token budget bypass (~handleGetSession) ---
+    const ip2 = "10.4.0.2";
+    for (let i = 0; i < 6; i++) await fetch(`${base}/session/${created.code}`, { headers: xff(ip2) });
+    const wrongLenBypass = await fetch(`${base}/session/${created.code}`, { headers: { "X-Host-Token": wrongLenToken, ...xff(ip2) } });
+    check("GET session: wrong-length token does not bypass a tripped guess budget (429)", wrongLenBypass.status === 429);
+    const sameLenBypass = await fetch(`${base}/session/${created.code}`, { headers: { "X-Host-Token": sameLenWrongToken, ...xff(ip2) } });
+    check("GET session: same-length-wrong token does not bypass a tripped guess budget (429)", sameLenBypass.status === 429);
+    const correctBypass = await fetch(`${base}/session/${created.code}`, { headers: { "X-Host-Token": created.hostToken, ...xff(ip2) } });
+    check("GET session: correct token still bypasses a tripped guess budget (200)", correctBypass.status === 200);
+
+    // --- Site 3: GET /stats X-Stats-Token check (~handleGetStats) ---
+    const correctStats = await fetch(`${base}/stats`, { headers: { "X-Stats-Token": statsToken, ...xff(ip) } });
+    check("GET /stats: correct token accepted (200)", correctStats.status === 200);
+    const wrongLenStats = await fetch(`${base}/stats`, { headers: { "X-Stats-Token": statsToken.slice(0, -3), ...xff(ip) } });
+    check("GET /stats: wrong-length token rejected (404)", wrongLenStats.status === 404);
+    const sameLenWrongStats = await fetch(`${base}/stats`, {
+      headers: { "X-Stats-Token": differentSameLengthToken(statsToken), ...xff(ip) },
+    });
+    check("GET /stats: same-length-wrong token rejected (404)", sameLenWrongStats.status === 404);
+  } finally {
+    await stopServer(child);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Explicit HTTP server timeouts (headersTimeout / requestTimeout) — an
+// in-process unit-style check (imports the module directly rather than
+// spawning a child process) since a spawned child's internal `http.Server`
+// object isn't otherwise introspectable from outside. Importing the module
+// this way is safe: `multiplayer-server.mjs` only actually starts listening
+// (or runs a CLI flag's action) when it detects it's the process's own entry
+// point (`isMainModule`, see that file's own comment) — merely `import`ing
+// it, as this file does at the top, runs no server, opens no port, and
+// starts no sweep timer.
+// ---------------------------------------------------------------------------
+
+function runServerTimeoutsSuite() {
+  check(
+    "HEADERS_TIMEOUT_MS is a sane positive number, no greater than REQUEST_TIMEOUT_MS",
+    typeof HEADERS_TIMEOUT_MS === "number" && HEADERS_TIMEOUT_MS > 0 && HEADERS_TIMEOUT_MS <= REQUEST_TIMEOUT_MS,
+    `HEADERS_TIMEOUT_MS=${HEADERS_TIMEOUT_MS} REQUEST_TIMEOUT_MS=${REQUEST_TIMEOUT_MS}`,
+  );
+  check(
+    "REQUEST_TIMEOUT_MS is a sane positive number",
+    typeof REQUEST_TIMEOUT_MS === "number" && REQUEST_TIMEOUT_MS > 0,
+  );
+
+  const server = createConfiguredServer();
+  check(
+    "createConfiguredServer() applies HEADERS_TIMEOUT_MS to the real http.Server (not left at Node's default)",
+    server.headersTimeout === HEADERS_TIMEOUT_MS,
+    `server.headersTimeout=${server.headersTimeout}`,
+  );
+  check(
+    "createConfiguredServer() applies REQUEST_TIMEOUT_MS to the real http.Server (not left at Node's default)",
+    server.requestTimeout === REQUEST_TIMEOUT_MS,
+    `server.requestTimeout=${server.requestTimeout}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // --help / -?
 // ---------------------------------------------------------------------------
 
@@ -739,6 +1013,18 @@ async function main() {
 
   console.log("\n--stats / GET /stats:");
   await runStatsSuite();
+
+  console.log("\nRate-limit map size cap:");
+  await runRateLimitMapCapSuite();
+
+  console.log("\ndisplayName/campaignName content filtering:");
+  await runNameContentFilterSuite();
+
+  console.log("\nConstant-time secret comparison (hostToken / X-Stats-Token):");
+  await runTimingSafeComparisonSuite();
+
+  console.log("\nExplicit HTTP server timeouts:");
+  runServerTimeoutsSuite();
 
   console.log("\n--help / -?:");
   runHelpSuite();

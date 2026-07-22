@@ -35,4 +35,14 @@ describe("SessionSetupError", () => {
     const err = new SessionSetupError("protocol-error", "map-end arrived incomplete");
     expect(err.code).toBe("protocol-error");
   });
+
+  it("supports the netcode-constants-mismatch code too", () => {
+    const err = new SessionSetupError("netcode-constants-mismatch", "peers compiled different netcode constants");
+    expect(err.code).toBe("netcode-constants-mismatch");
+  });
+
+  it("supports the handshake-timeout code too", () => {
+    const err = new SessionSetupError("handshake-timeout", "handshake did not complete in time");
+    expect(err.code).toBe("handshake-timeout");
+  });
 });

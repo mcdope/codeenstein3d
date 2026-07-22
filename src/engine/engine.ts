@@ -1580,6 +1580,28 @@ export class RaycasterEngine {
   }
 
   /**
+   * Test-only, mutating — same category as `debugInjectDesync` above (never
+   * called from real gameplay code). Directly sets `PlayerState.godMode` for
+   * one player, bypassing the real IDDQD cheat-input pathway (`applyCheat`)
+   * entirely — that pathway itself stays correctly gated (`consumeCheat()`'s
+   * permanent no-op in multiplayer, so a real player can never toggle this),
+   * this is a separate, narrower door for a verify script's own use.
+   * `scripts/verify-multiplayer-transition.mjs` needs a bot to reach a real
+   * level's real exit to prove level-transition mechanics work, without also
+   * needing to survive the demo campaign's full combat gauntlet first
+   * (organic combat variance there is real and already documented — see
+   * that script's own former `MAX_SCENARIO_ATTEMPTS` history) — but making
+   * the host merely *invulnerable* rather than removing every enemy
+   * entirely matters: the same script also relies on the *guest* dying to
+   * real, roaming enemies (left vulnerable, untouched by this call) to
+   * exercise its own separate "revived after a pre-transition death" check —
+   * clearing every enemy outright would have silently killed that coverage
+   * instead of just the flakiness. */
+  debugSetGodMode(playerId: PlayerId, enabled: boolean): void {
+    this.players.get(playerId)!.godMode = enabled;
+  }
+
+  /**
    * Host-only: build this tick's authoritative `ReconciliationSnapshot`
    * (`multiplayer-netcode-spec.md` §3) from live engine state, for
    * `multiplayerSessionHost.ts` to broadcast once every

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeRTCDataChannel } from "../../test/mocks/webrtc";
 import { MapGenerator } from "../map/mapGenerator";
 import type { CodeEntity, ParsedFile } from "../parser/types";
+import { FIXED_DT, INPUT_DELAY_TICKS, TICK_RATE_HZ } from "./netcodeConstants";
 import { runGuestSessionSetup } from "./sessionSetupGuest";
 import { runHostSessionSetup } from "./sessionSetupHost";
 import { SessionSetupError, type SessionSetupMessage } from "./sessionSetupTypes";
@@ -59,6 +60,144 @@ describe("runGuestSessionSetup — build-version mismatch", () => {
 
     await expect(guestPromise).rejects.toMatchObject({ code: "build-version-mismatch" });
     await expect(guestPromise).rejects.toBeInstanceOf(SessionSetupError);
+  });
+});
+
+describe("runGuestSessionSetup — send failure during the build-version reply", () => {
+  it("rejects with the underlying send error instead of hanging until the handshake timeout", async () => {
+    const channels = linkedChannels();
+    const guestPromise = runGuestSessionSetup(channels.guest);
+
+    // Force the guest's own reply send to fail exactly when it tries to
+    // answer the host's (matching) build-version message —
+    // sendJsonWithBackpressure throws if readyState isn't "open". This
+    // exercises the finding-9 timeout-cleanup path on a genuine send
+    // failure, not just the timeout itself.
+    (channels.guest.reconciliation as unknown as FakeRTCDataChannel).readyState = "closing";
+    channels.host.reconciliation.send(
+      JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ } satisfies SessionSetupMessage),
+    );
+
+    await expect(guestPromise).rejects.toThrow(/readyState is "closing"/);
+  });
+});
+
+describe("runGuestSessionSetup — netcode-constants mismatch (finding 8)", () => {
+  it("rejects when the host's own compiled netcode constants (declared in session-init) don't match ours, even though the build-version itself matches", async () => {
+    const channels = linkedChannels();
+    const guestPromise = runGuestSessionSetup(channels.guest);
+
+    // Manually drive a rogue host sequence: a real, matching build-version
+    // (so that check alone wouldn't catch anything), then a session-init
+    // declaring mismatched netcode constants — isolates the guest's own
+    // netcode-constants mismatch handling specifically.
+    const send = (message: SessionSetupMessage): void => channels.host.reconciliation.send(JSON.stringify(message));
+    send({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ });
+    send({
+      type: "session-init",
+      roster: ["guest", "host"],
+      assignedId: "guest",
+      tickRateHz: 60, // real is TICK_RATE_HZ(30)
+      fixedDt: 1 / 60,
+      inputDelayTicks: 3,
+      gameplaySeed: 1,
+      difficulty: "normal",
+      playerCount: 2,
+    });
+
+    await expect(guestPromise).rejects.toMatchObject({ code: "netcode-constants-mismatch" });
+    await expect(guestPromise).rejects.toBeInstanceOf(SessionSetupError);
+  });
+
+  it("succeeds normally when the host's netcode constants match ours (positive case)", async () => {
+    const channels = linkedChannels();
+    const options = { map: new MapGenerator().generate(parsedFile()), difficulty: "normal" as const, roster: ["guest", "host"], gameplaySeed: 1 };
+
+    const [guestResult] = await Promise.all([runGuestSessionSetup(channels.guest), runHostSessionSetup(channels.host, "guest", options)]);
+
+    expect(guestResult.tickRateHz).toBe(TICK_RATE_HZ);
+    expect(guestResult.fixedDt).toBe(FIXED_DT);
+    expect(guestResult.inputDelayTicks).toBe(INPUT_DELAY_TICKS);
+  });
+});
+
+describe("runGuestSessionSetup — overall handshake timeout (finding 9)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Matches the module's own private HANDSHAKE_TIMEOUT_MS — not exported
+  // (a purely internal implementation constant), so mirrored here directly.
+  const HANDSHAKE_TIMEOUT_MS = 10_000;
+
+  it("rejects with a handshake-timeout SessionSetupError if the host stalls mid-transfer without ever completing", async () => {
+    vi.useFakeTimers();
+    const channels = linkedChannels();
+    const guestPromise = runGuestSessionSetup(channels.guest);
+
+    // Host starts the handshake normally (real build-version, real
+    // session-init) but then stalls forever mid-transfer — never sends any
+    // map-chunk/map-end, and never closes the channel either (so no
+    // error/close event would ever fire to unblock this some other way).
+    const send = (message: SessionSetupMessage): void => channels.host.reconciliation.send(JSON.stringify(message));
+    send({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ });
+    send({
+      type: "session-init",
+      roster: ["guest", "host"],
+      assignedId: "guest",
+      tickRateHz: TICK_RATE_HZ,
+      fixedDt: FIXED_DT,
+      inputDelayTicks: INPUT_DELAY_TICKS,
+      gameplaySeed: 1,
+      difficulty: "normal",
+      playerCount: 2,
+    });
+
+    // Attached before advancing the timer — `guestPromise` only actually
+    // rejects once the fake-timer advance below fires it, so the assertion
+    // must already be listening at that moment (attaching it afterward would
+    // otherwise leave the rejection briefly "unhandled" from Node's own
+    // perspective, even though it's caught a tick later).
+    const assertion = expect(guestPromise).rejects.toMatchObject({ code: "handshake-timeout" });
+    await vi.advanceTimersByTimeAsync(HANDSHAKE_TIMEOUT_MS);
+    await assertion;
+    await expect(guestPromise).rejects.toBeInstanceOf(SessionSetupError);
+  });
+
+  it("does not fire if the handshake completes normally well before the timeout", async () => {
+    vi.useFakeTimers();
+    const channels = linkedChannels();
+    const options = { map: new MapGenerator().generate(parsedFile()), difficulty: "normal" as const, roster: ["guest", "host"], gameplaySeed: 1 };
+
+    const [guestResult] = await Promise.all([runGuestSessionSetup(channels.guest), runHostSessionSetup(channels.host, "guest", options)]);
+    // Even letting the timeout's own window fully elapse afterward must not
+    // retroactively reject an already-resolved handshake.
+    await vi.advanceTimersByTimeAsync(HANDSHAKE_TIMEOUT_MS);
+
+    expect(guestResult.roster).toEqual(["guest", "host"]);
+  });
+
+  it("does not fire while waiting for the host's first message, even well past the timeout window (regression: real 3-player CI hang)", async () => {
+    vi.useFakeTimers();
+    const channels = linkedChannels();
+    const guestPromise = runGuestSessionSetup(channels.guest);
+
+    // A real early-joining guest in a multi-guest lobby: it connects long
+    // before the host clicks "Start Session" (which only happens once every
+    // other guest has also joined, itself sometimes taking several join-race
+    // retry cycles). Nothing arrives on this channel for well over the
+    // handshake-timeout window — before the fix, this alone rejected the
+    // handshake with a `handshake-timeout` error before the host ever sent a
+    // single byte (observed for real in CI: guest-1's setup failed ~1.5s
+    // before the host had even started its own session-setup sequence).
+    await vi.advanceTimersByTimeAsync(HANDSHAKE_TIMEOUT_MS * 3);
+
+    // The host finally starts — the handshake must still complete normally,
+    // proving the guest was never rejected by the earlier lobby-wait.
+    const options = { map: new MapGenerator().generate(parsedFile()), difficulty: "normal" as const, roster: ["guest", "host"], gameplaySeed: 1 };
+    const [guestResult] = await Promise.all([guestPromise, runHostSessionSetup(channels.host, "guest", options)]);
+
+    expect(guestResult.roster).toEqual(["guest", "host"]);
   });
 });
 

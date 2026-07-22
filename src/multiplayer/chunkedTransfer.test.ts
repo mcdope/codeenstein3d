@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 import { describe, expect, it } from "vitest";
-import { ChunkReassembler, chunkJson } from "./chunkedTransfer";
+import { ChunkReassembler, chunkJson, MAX_TOTAL_BYTES, MAX_TOTAL_CHUNKS } from "./chunkedTransfer";
 
 describe("chunkJson / ChunkReassembler round trip", () => {
   it("round-trips a small payload that fits in a single chunk", () => {
@@ -73,5 +73,42 @@ describe("chunkJson / ChunkReassembler round trip", () => {
     reassembler.push("abc", 0);
     reassembler.push("ghi", 2); // index 1 never arrived; size still equals totalChunks
     expect(reassembler.isComplete(2)).toBe(false);
+  });
+
+  it("stays unaffected by MAX_TOTAL_CHUNKS/MAX_TOTAL_BYTES for an ordinary transfer well under both caps", () => {
+    const payload = { grid: Array.from({ length: 50 }, (_, i) => i) };
+    const chunks = chunkJson(payload, 64);
+    const reassembler = new ChunkReassembler();
+    chunks.forEach((chunk, i) => reassembler.push(chunk, i));
+    expect(reassembler.isComplete(chunks.length)).toBe(true);
+    expect(reassembler.finish()).toEqual(payload);
+  });
+
+  it("throws once MAX_TOTAL_CHUNKS would be exceeded by a sustained flood of real (tiny) chunks", () => {
+    const reassembler = new ChunkReassembler();
+    for (let i = 0; i < MAX_TOTAL_CHUNKS; i++) reassembler.push("x", i);
+    expect(() => reassembler.push("x", MAX_TOTAL_CHUNKS)).toThrow(new RegExp(`more than ${MAX_TOTAL_CHUNKS} chunks`));
+  });
+
+  it("throws once MAX_TOTAL_BYTES would be exceeded, even while comfortably under MAX_TOTAL_CHUNKS", () => {
+    const reassembler = new ChunkReassembler();
+    const chunkSize = 1024 * 1024; // 1 MiB per chunk
+    const bigChunk = "x".repeat(chunkSize);
+    const chunksNeeded = Math.ceil(MAX_TOTAL_BYTES / chunkSize) + 1;
+    expect(chunksNeeded).toBeLessThan(MAX_TOTAL_CHUNKS); // sanity: the byte cap trips first, not the chunk-count cap
+
+    expect(() => {
+      for (let i = 0; i < chunksNeeded; i++) reassembler.push(bigChunk, i);
+    }).toThrow(new RegExp(`more than ${MAX_TOTAL_BYTES} bytes`));
+  });
+
+  it("re-pushing an already-seen index adjusts the byte tally by the delta instead of double-counting", () => {
+    const reassembler = new ChunkReassembler();
+    reassembler.push("a".repeat(1000), 0);
+    // Replacing the same index with a same-size chunk many times must never
+    // trip MAX_TOTAL_BYTES purely from repetition — only the live, current
+    // content counts.
+    for (let i = 0; i < 1000; i++) reassembler.push("b".repeat(1000), 0);
+    expect(() => reassembler.push("c".repeat(1000), 1)).not.toThrow();
   });
 });

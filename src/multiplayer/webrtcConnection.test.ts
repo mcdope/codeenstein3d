@@ -113,6 +113,23 @@ describe("createHostOffer", () => {
     await promise;
     expect(pc.config?.iceServers).toEqual([{ urls: ["stun:a.example.test:1234", "stun:b.example.test:5678"] }]);
   });
+
+  it("closes the peer connection and rethrows if setLocalDescription rejects mid-setup", async () => {
+    // Regression test: a leaked RTCPeerConnection — any awaited call between
+    // construction and return throwing meant the function threw before the
+    // caller ever received a handle to close, so main.ts's own
+    // `hostPeerConnection?.close()` cleanup was a no-op (its cleanup variable
+    // is only ever assigned from this function's *return value*). The mock's
+    // `createOffer()` runs synchronously-resolved, so the instance can only
+    // be grabbed (and its rejection flag set) after the call has already
+    // started, same "read `.instances.at(-1)` right after calling" pattern
+    // every other test in this describe block already uses.
+    const promise = createHostOffer(5000);
+    const pc = FakeRTCPeerConnection.instances.at(-1)!;
+    pc.setLocalDescriptionError = new Error("setLocalDescription failed");
+    await expect(promise).rejects.toThrow("setLocalDescription failed");
+    expect(pc.closeCallCount).toBe(1);
+  });
 });
 
 describe("createGuestAnswer", () => {
@@ -166,5 +183,37 @@ describe("createGuestAnswer", () => {
     pc.simulateIncomingDataChannel(input);
     pc.simulateIncomingDataChannel(reconciliation);
     await expect(result.channelsPromise).resolves.toEqual({ input, reconciliation });
+  });
+
+  it("closes the peer connection and rethrows if createAnswer rejects mid-setup", async () => {
+    // Regression test: same leak as `createHostOffer`'s own test above, plus
+    // the `captureDataChannels` timer/listener risk this function's doc
+    // comment calls out — its promise (`channelsPromise`) is already armed
+    // (started before `setRemoteDescription`) and, since the function throws
+    // before ever returning it to a caller, would otherwise be an abandoned
+    // promise whose own timeout rejection later becomes unhandled.
+    //
+    // Forces the rejection on `createAnswer` rather than `setRemoteDescription`
+    // itself: the mock's methods have no internal `await`, so
+    // `setRemoteDescription` — the very first awaited call, with no prior
+    // await in this function to give the test a chance to set the flag
+    // beforehand — always runs to completion synchronously before this test
+    // can reach `FakeRTCPeerConnection.instances.at(-1)` and configure it.
+    // `createAnswer` is the next awaited call, reached only after
+    // `setRemoteDescription`'s promise resolves on a later microtask, which
+    // is exactly the same "set the flag right after grabbing the instance"
+    // pattern `createHostOffer`'s own regression test above already uses —
+    // it exercises the identical try/catch/close/rethrow shape either way.
+    vi.useFakeTimers();
+    const promise = createGuestAnswer("offer-sdp", 5000, 1000);
+    const pc = FakeRTCPeerConnection.instances.at(-1)!;
+    pc.createAnswerError = new Error("createAnswer failed");
+    await expect(promise).rejects.toThrow("createAnswer failed");
+    expect(pc.closeCallCount).toBe(1);
+
+    // The abandoned `channelsPromise`'s own timer is still armed — advancing
+    // past its bound must not produce an unhandled rejection (the function
+    // already attached its own no-op `.catch()` before rethrowing).
+    await vi.advanceTimersByTimeAsync(1000);
   });
 });

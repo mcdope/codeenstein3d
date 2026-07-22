@@ -80,6 +80,36 @@ describe("createSession", () => {
       createSession({ offer: "sdp", playerCount: 1, campaignName: "demo" }, new AbortController().signal),
     ).rejects.toMatchObject({ code: "internal_error", status: 502 });
   });
+
+  it("throws a typed SignalingError instead of returning a malformed 2xx body (wrong field type)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: 12345, expiresAt: 123 }));
+    const promise = createSession(
+      { offer: "sdp", playerCount: 1, campaignName: "demo" },
+      new AbortController().signal,
+    );
+    await expect(promise).rejects.toBeInstanceOf(SignalingError);
+    await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
+  });
+
+  it("throws a typed SignalingError instead of returning a malformed 2xx body (missing field)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", expiresAt: 123 }));
+    const promise = createSession(
+      { offer: "sdp", playerCount: 1, campaignName: "demo" },
+      new AbortController().signal,
+    );
+    await expect(promise).rejects.toBeInstanceOf(SignalingError);
+    await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
+  });
+
+  it("throws a typed SignalingError instead of returning a malformed 2xx body (body isn't an object at all)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(null));
+    const promise = createSession(
+      { offer: "sdp", playerCount: 1, campaignName: "demo" },
+      new AbortController().signal,
+    );
+    await expect(promise).rejects.toBeInstanceOf(SignalingError);
+    await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
+  });
 });
 
 describe("updateSession", () => {
@@ -93,6 +123,18 @@ describe("updateSession", () => {
     );
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(body).toMatchObject({ code: "R4KJ9X", hostToken: "tok", offer: "sdp2", playerCount: 2 });
+  });
+
+  it("throws a typed SignalingError instead of returning a malformed 2xx body", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "tok", expiresAt: "not-a-number" }));
+    const promise = updateSession(
+      "R4KJ9X",
+      "tok",
+      { offer: "sdp2", playerCount: 2, campaignName: "demo-campaign" },
+      new AbortController().signal,
+    );
+    await expect(promise).rejects.toBeInstanceOf(SignalingError);
+    await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
   });
 });
 
@@ -122,6 +164,44 @@ describe("fetchSession", () => {
       status: 404,
     });
   });
+
+  it("throws a typed SignalingError instead of returning a malformed 2xx body (offer not a string)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        code: "R4KJ9X",
+        offer: 42,
+        answer: null,
+        campaignName: "demo-campaign",
+        displayName: null,
+        playerCount: 1,
+      }),
+    );
+    const promise = fetchSession("R4KJ9X", new AbortController().signal);
+    await expect(promise).rejects.toBeInstanceOf(SignalingError);
+    await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
+  });
+
+  it("throws a typed SignalingError instead of returning a malformed 2xx body (missing offer)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        code: "R4KJ9X",
+        answer: null,
+        campaignName: "demo-campaign",
+        displayName: null,
+        playerCount: 1,
+      }),
+    );
+    const promise = fetchSession("R4KJ9X", new AbortController().signal);
+    await expect(promise).rejects.toBeInstanceOf(SignalingError);
+    await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
+  });
+
+  it("throws a typed SignalingError instead of returning a malformed 2xx body (body isn't an object at all)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse("just a string"));
+    const promise = fetchSession("R4KJ9X", new AbortController().signal);
+    await expect(promise).rejects.toBeInstanceOf(SignalingError);
+    await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
+  });
 });
 
 describe("fetchSessionAsHost", () => {
@@ -140,6 +220,22 @@ describe("fetchSessionAsHost", () => {
     expect(result.answer).toBe("answer-sdp");
     const [, init] = fetchMock.mock.calls[0];
     expect(init.headers).toMatchObject({ "X-Host-Token": "the-host-token" });
+  });
+
+  it("throws a typed SignalingError instead of returning a malformed 2xx body (answer not a string)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        code: "R4KJ9X",
+        offer: "sdp",
+        answer: 12345,
+        campaignName: "demo-campaign",
+        displayName: null,
+        playerCount: 1,
+      }),
+    );
+    const promise = fetchSessionAsHost("R4KJ9X", "the-host-token", new AbortController().signal);
+    await expect(promise).rejects.toBeInstanceOf(SignalingError);
+    await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
   });
 });
 
@@ -168,6 +264,34 @@ describe("fetchLobby", () => {
     const result = await fetchLobby(new AbortController().signal);
     expect(result).toEqual({ sessions });
     expect(fetchMock).toHaveBeenCalledWith(`${SERVER_URL}/lobby`, expect.anything());
+  });
+
+  it("throws a typed SignalingError instead of returning a malformed 2xx body (sessions not an array)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ sessions: "not-an-array" }));
+    const promise = fetchLobby(new AbortController().signal);
+    await expect(promise).rejects.toBeInstanceOf(SignalingError);
+    await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
+  });
+
+  it("throws a typed SignalingError instead of returning a malformed 2xx body (a session entry missing a field)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ sessions: [{ code: "R4KJ9X", displayName: null }] }));
+    const promise = fetchLobby(new AbortController().signal);
+    await expect(promise).rejects.toBeInstanceOf(SignalingError);
+    await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
+  });
+
+  it("throws a typed SignalingError instead of returning a malformed 2xx body (a session entry isn't an object at all)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ sessions: [42] }));
+    const promise = fetchLobby(new AbortController().signal);
+    await expect(promise).rejects.toBeInstanceOf(SignalingError);
+    await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
+  });
+
+  it("throws a typed SignalingError instead of returning a malformed 2xx body (body isn't an object at all)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(null));
+    const promise = fetchLobby(new AbortController().signal);
+    await expect(promise).rejects.toBeInstanceOf(SignalingError);
+    await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
   });
 });
 

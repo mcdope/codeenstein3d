@@ -108,7 +108,10 @@ a new handshake round, and a stale answer from the *previous* round must not be
 handed to the *next* joiner.
 
 Errors: `400` (missing/oversized `offer`, invalid `playerCount`, missing
-`campaignName`), `403` (`code` present but `hostToken` doesn't match),
+`campaignName`, or a `displayName`/`campaignName` containing control
+characters or zero-width/bidi-override codepoints — both are relayed
+verbatim to other players' lobby UI via `GET /lobby`, so content is filtered
+at intake, not just type/length), `403` (`code` present but `hostToken` doesn't match),
 `404` (`code` present but no such live session — most likely already expired),
 `429` (rate-limited, §4), `503` (`MAX_CONCURRENT_SESSIONS` reached, §3 — a cheap
 backstop against unbounded session creation outrunning TTL cleanup).
@@ -432,6 +435,17 @@ const ipLimits = new Map<string, IpLimitState>();
   has ever made a request. Swept on the same interval as session TTL (§3): remove
   any entry whose `cooldownUntil` has passed *and* whose `windowStart` is older
   than `RATE_LIMIT_WINDOW_MS` — i.e., nothing about that IP is currently live.
+- **Each of the four rate-limit maps (guess, host-token, lobby, PUT /session) also
+  has a hard size cap**, `MAX_TRACKED_IPS_PER_LIMITER` (10,000 by default) — the
+  sweep above only runs periodically, so without a cap a burst of requests from
+  many distinct IPs (real or, prior to the loopback-gating fix above, spoofed via
+  `X-Forwarded-For`) could grow a map unboundedly in between sweeps: a memory-
+  exhaustion DoS. Once a map is at this cap, a genuinely new IP simply isn't
+  allocated a tracking entry — its request is let through unmetered rather than
+  evicting some other (possibly mid-cooldown) entry to make room, or refusing the
+  request outright. This is a deliberate fail-*open* choice: a full map must never
+  itself become a denial-of-service against every new legitimate caller. `GET
+  /stats` (above) reports each map's live size under `rateLimiting.trackedIps`.
 - **Not a timing-attack concern**: checking whether a guessed code exists is a
   `Map.get()` — a hash lookup, not a sequential/prefix string comparison — so
   there's no incremental "how many characters matched" signal to leak the way a
@@ -455,6 +469,18 @@ generous headroom over the "several hundred bytes to a couple KB" real-world SDP
 size the research doc estimated, while still refusing to let this mailbox become a
 general-purpose paste bin. Exceeding the cap destroys the request stream and
 responds `413 Payload Too Large` immediately, rather than continuing to read.
+
+### HTTP server timeouts (defense against slow-connection abuse)
+
+The underlying `http.Server` sets explicit, conservative timeouts rather than
+relying on Node's own built-in defaults — `HEADERS_TIMEOUT_MS = 20_000` (how long a
+connection may take to finish sending its request headers) and
+`REQUEST_TIMEOUT_MS = 30_000` (how long the entire request — headers plus body —
+may take). Every real request here is a small, capped JSON body from a
+same-origin browser client or the trusted local proxy, so there's no legitimate
+reason either should take anywhere near this long; explicit values close off the
+mild Slowloris-style exposure of leaving both at Node's much longer defaults
+(many slow/idle connections tying up memory/file descriptors for minutes).
 
 ## Testing & verification
 

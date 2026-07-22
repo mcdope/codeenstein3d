@@ -548,11 +548,28 @@ export class Bot {
    *   booleans — `trace: true` enables per-decision trace collection +
    *   `reportAnomalies`' basic findings; `navDiag: true` (implies `trace`)
    *   additionally enables the finer held-key-no-movement pass.
+   * @param {boolean} [opts.ignoreThreats=false] never engage, flee from, or
+   *   even acknowledge an enemy as a threat — `tick()` goes straight to plain
+   *   navigation regardless of what's nearby. For a bot driving a genuinely
+   *   invulnerable player (e.g. `scripts/verify-multiplayer-transition.mjs`'s
+   *   god-mode host): taking damage was never the actual risk once
+   *   invulnerable, but stopping to fight still was — a tanky enemy can pin
+   *   the bot in a long, slow melee grind (each successful hit resets the
+   *   existing `combatStallTicks` anti-stall counter, since landing a hit
+   *   counts as "progress," so that counter alone never fires) that eats
+   *   real wall-clock time without the bot ever getting closer to its actual
+   *   destination — confirmed directly via a real CI run's own anomaly trace
+   *   (a 600+-tick stall pinned at `threatDist` well inside melee range,
+   *   health never dropping). The engine's own collision only checks map
+   *   geometry (`collidesWithWall`), never other entities, so a bot that
+   *   simply never stops to fight can walk straight past/through an enemy
+   *   with no risk of getting physically blocked by it either.
    */
   constructor(page, profile, opts = {}) {
     this.page = page;
     this.profile = profile;
     this.realtime = opts.realtime ?? false;
+    this.ignoreThreats = opts.ignoreThreats ?? false;
     this.tuning = { ...DEFAULT_TUNING, ...opts.tuning };
     this.stepMs = opts.stepMs ?? (this.realtime ? this.tuning.WATCH_STEP_MS : this.tuning.VIRTUAL_STEP_MS);
     this.recordStepMs = opts.recordStepMs ?? this.stepMs;
@@ -873,7 +890,7 @@ export class Bot {
       return this.applyAction(moveKeys, false, null, false, turnBurst);
     }
 
-    const threat = pickThreat(enemies, player, this.profile, map);
+    const threat = this.ignoreThreats ? null : pickThreat(enemies, player, this.profile, map);
 
     // Critical health: break contact instead of trading hits.
     if (threat && player.healthFraction < this.tuning.CRITICAL_HEALTH_FRACTION) {

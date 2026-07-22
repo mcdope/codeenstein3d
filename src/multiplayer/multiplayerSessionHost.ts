@@ -171,6 +171,9 @@ export interface MultiplayerSessionHandle {
   /** Test-only, mutating — see `RaycasterEngine.debugInjectDesync`'s doc
    * comment. */
   debugInjectDesync(injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }): void;
+  /** Test-only, mutating — see `RaycasterEngine.debugSetGodMode`'s doc
+   * comment. */
+  debugSetGodMode(playerId: PlayerId, enabled: boolean): void;
   /** Real round-trip-time read via `RTCPeerConnection.getStats()` — step 11
    * Phase 2b (`connectionStats.ts`). Every method here reflects only *this*
    * peer's own local observation, not a network-wide or authoritative view
@@ -312,10 +315,15 @@ export function runMultiplayerSessionAsHost(
   // only ever *sends* `ReconciliationSnapshotMessage`s/transition messages).
   let onAckReceived: ((id: PlayerId) => void) | null = null;
   const unsubscribeTransitionAcks: (() => void)[] = [];
-  for (const link of links.values()) {
+  for (const [guestId, link] of links) {
     unsubscribeTransitionAcks.push(
-      onJsonMessage<LevelTransitionAckMessage>(link.channels.reconciliation, (message) => {
-        onAckReceived?.(message.playerId);
+      // Bound to the link a message actually arrived on, not the message's
+      // own self-declared `playerId` — a guest's wire payload must never be
+      // trusted to identify itself; the loop's own map key is the only
+      // trustworthy identity (see this file's doc comment / the matching
+      // fix on the tick-input listener below).
+      onJsonMessage<LevelTransitionAckMessage>(link.channels.reconciliation, () => {
+        onAckReceived?.(guestId);
       }),
     );
   }
@@ -348,6 +356,12 @@ export function runMultiplayerSessionAsHost(
       links.get(guestId)?.peerConnection.removeEventListener("connectionstatechange", listener);
     }
     for (const timer of graceTimers.values()) clearTimeout(timer);
+    // Detached directly here, not left to `startLevel()`'s own `hasStarted`
+    // guard (which only ever fires on a *later* `startLevel()` call) —
+    // the "campaign-complete" ending never calls `startLevel()` again, so
+    // without this the sampler's window/document/canvas listeners would
+    // otherwise leak forever past session end.
+    localSampler?.detach();
   };
 
   // Assigned synchronously by `startLevel(currentResult)` a few lines below,
@@ -360,6 +374,12 @@ export function runMultiplayerSessionAsHost(
   let localSampler: SessionEngineHandle["localSampler"] | undefined;
   let hasStarted = false;
   let transitionInProgress = false;
+  // Purely local, never transmitted as its own message (see
+  // `TickInputBundle.levelEpoch`'s own doc comment) — bumped alongside
+  // `localSampler.detach()` below, on every `startLevel()` call *after* the
+  // first, so it stays in lockstep with the guest's own identical counter
+  // (both sides call `startLevel()` exactly once per transition).
+  let levelEpoch = 0;
 
   /** Fired once this peer's own simulation reaches a win (see
    * `sessionEngine.ts`'s own `onWin` doc comment for why that's not
@@ -432,7 +452,12 @@ export function runMultiplayerSessionAsHost(
     // A guest that never acks in time falls into the disconnect path via the
     // same connection-state signal once it's genuinely gone — not handled
     // specially here; this just stops waiting and proceeds regardless.
-    await waitForAcks(guestIds, TRANSITION_ACK_TIMEOUT_MS);
+    // Guests whose disconnect grace has already fully expired (in
+    // `neutralInputIds` with no corresponding active `graceTimers` entry)
+    // are excluded up front — they can never ack again, so waiting on them
+    // would only ever burn the full timeout on every subsequent transition.
+    const ackWaitIds = guestIds.filter((id) => !neutralInputIds.has(id) || graceTimers.has(id));
+    await waitForAcks(ackWaitIds, TRANSITION_ACK_TIMEOUT_MS);
     if (ended) return;
 
     currentResult = { ...currentResult, map: next.map, gameplaySeed: next.gameplaySeed };
@@ -441,7 +466,10 @@ export function runMultiplayerSessionAsHost(
   };
 
   const startLevel = (levelResult: SessionSetupResult, carryovers?: Record<PlayerId, EngineCarryover>): void => {
-    if (hasStarted) localSampler?.detach();
+    if (hasStarted) {
+      localSampler?.detach();
+      levelEpoch++;
+    }
     hasStarted = true;
     const built = buildSessionEngine({
       result: levelResult,
@@ -466,10 +494,15 @@ export function runMultiplayerSessionAsHost(
   // (session setup rides `reconciliation` instead). One subscription per
   // connected guest (step 10), not one shared subscription.
   const unsubscribeInputs: (() => void)[] = [];
-  for (const link of links.values()) {
+  for (const [guestId, link] of links) {
     unsubscribeInputs.push(
+      // Bound to the link a message actually arrived on, not the message's
+      // own self-declared `playerId` — a guest could otherwise spoof another
+      // player's id (e.g. claim `playerId: "guest-1"` while connected as
+      // `"guest-2"`), corrupting that other player's own input. The loop's
+      // own map key is the only trustworthy identity.
       onJsonMessage<TickInput>(link.channels.input, (message) => {
-        inputDelayBuffer.record(message.tick, message.playerId, message.input);
+        inputDelayBuffer.record(message.tick, guestId, message.input);
       }),
     );
   }
@@ -504,12 +537,17 @@ export function runMultiplayerSessionAsHost(
     // Finalize and broadcast the tick that's actually due now. `currentResult.roster`
     // (not the outer `result` param) so a level transition's roster — unchanged
     // today, but read fresh either way — is never silently stale.
-    const bundle: TickInputBundle = inputDelayBuffer.finalize(
+    const finalized = inputDelayBuffer.finalize(
       tick,
       currentResult.roster,
       FIXED_DT,
       neutralInputIds.size > 0 ? neutralInputIds : undefined,
     );
+    // `levelEpoch` stamped on here, not inside `InputDelayBuffer.finalize()`
+    // itself — it's a purely local, per-session-driver counter (see
+    // `TickInputBundle.levelEpoch`'s own doc comment), not something the
+    // buffer needs to know about.
+    const bundle: TickInputBundle = { ...finalized, levelEpoch };
     totalTicks++;
     // `missedTicksByPlayer` is seeded from the full, fixed roster above, and
     // `heldInputFallback` only ever contains roster ids (`InputDelayBuffer.
@@ -607,6 +645,7 @@ export function runMultiplayerSessionAsHost(
     // needed.
     getBotPlayerState: (id) => engine?.getBotPlayerState(id) ?? null,
     debugInjectDesync: (injection) => engine!.debugInjectDesync(injection),
+    debugSetGodMode: (playerId, enabled) => engine!.debugSetGodMode(playerId, enabled),
     getConnectionStats: (id) => {
       const link = links.get(id);
       return link ? readConnectionStats(link.peerConnection) : Promise.resolve(null);

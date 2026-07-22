@@ -3204,6 +3204,35 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
       expect(engine.getRngState()).toBe(afterOneRealDraw);
       expect(engine.getRngState()).not.toBe(stateBefore);
     });
+
+    it("debugSetGodMode(id, true) blocks real damage the same way the real IDDQD cheat does, without going through applyCheat", () => {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][5] = 2; // HAZARD_TILE
+      const map = fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }] }, size);
+      const { engine, handlers } = makeEngine(map);
+
+      engine.debugSetGodMode("local", true);
+      engine.advance(1); // a whole second standing in acid — would deal real damage otherwise
+
+      expect(lastStats(handlers).health).toBe(100);
+      expect(lastStats(handlers).godMode).toBe(true);
+    });
+
+    it("debugSetGodMode(id, false) turns it back off", () => {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][5] = 2; // HAZARD_TILE
+      const map = fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }] }, size);
+      const { engine, handlers } = makeEngine(map);
+
+      engine.debugSetGodMode("local", true);
+      engine.debugSetGodMode("local", false);
+      engine.advance(1);
+
+      expect(lastStats(handlers).health).toBeLessThan(100);
+      expect(lastStats(handlers).godMode).toBe(false);
+    });
   });
 
   describe("applyReconciliationSnapshot", () => {

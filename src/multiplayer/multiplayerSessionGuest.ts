@@ -141,6 +141,12 @@ export function runMultiplayerSessionAsGuest(
     unsubscribeReconciliation();
     connection?.removeEventListener("connectionstatechange", onConnectionStateChange);
     if (graceTimer !== null) clearTimeout(graceTimer);
+    // Detached directly here, not left to `startLevel()`'s own `hasStarted`
+    // guard (which only ever fires on a *later* `startLevel()` call) — the
+    // "host-disconnected" ending never calls `startLevel()` again, so
+    // without this the sampler's window/document/canvas listeners would
+    // otherwise leak forever past session end.
+    localSampler?.detach();
   };
 
   // Assigned synchronously by `startLevel(currentResult)` a few lines below,
@@ -161,8 +167,18 @@ export function runMultiplayerSessionAsGuest(
   let transitionCarryovers: Record<PlayerId, EngineCarryover> | null = null;
   let transitionGameplaySeed: number | null = null;
 
+  // Purely local, never transmitted as its own message (see
+  // `TickInputBundle.levelEpoch`'s own doc comment) — bumped alongside
+  // `localSampler.detach()` below, on every `startLevel()` call *after* the
+  // first, so it stays in lockstep with the host's own identical counter
+  // (both sides call `startLevel()` exactly once per transition).
+  let levelEpoch = 0;
+
   const startLevel = (levelResult: SessionSetupResult, carryovers?: Record<PlayerId, EngineCarryover>): void => {
-    if (hasStarted) localSampler?.detach();
+    if (hasStarted) {
+      localSampler?.detach();
+      levelEpoch++;
+    }
     hasStarted = true;
     const built = buildSessionEngine({
       result: levelResult,
@@ -201,6 +217,17 @@ export function runMultiplayerSessionAsGuest(
     // documents elsewhere in this codebase.
     /* v8 ignore next */
     if (!engine || !myInput || !otherInputs || !localSampler) return;
+    // `input`/`reconciliation` are two independent WebRTC data channels with
+    // no cross-channel ordering guarantee — this peer can finish a
+    // level-transition handshake (over `reconciliation`) and swap to a
+    // brand-new engine, then still receive one or more already-in-flight
+    // OLD-level `TickInputBundle`s on `input` afterward. Discarded outright
+    // rather than sampled/replied-to/`advance()`-d against the wrong engine
+    // (see `TickInputBundle.levelEpoch`'s own doc comment).
+    if (bundle.levelEpoch !== levelEpoch) {
+      console.log(`[multiplayer] discarding stale tick-input bundle for level epoch ${bundle.levelEpoch}, currently on epoch ${levelEpoch}`);
+      return;
+    }
     totalTicks++;
     // `missedTicksByPlayer` is seeded from the full, fixed roster above, and
     // `heldInputFallback` only ever contains roster ids (`InputDelayBuffer.
@@ -249,6 +276,19 @@ export function runMultiplayerSessionAsGuest(
       if (!engine) return;
       switch (message.type) {
         case "reconciliation-snapshot": {
+          // `input`/`reconciliation` are two independent WebRTC data
+          // channels with no cross-channel ordering guarantee — a
+          // reconciliation snapshot delayed behind a burst of tick-input
+          // bundles can arrive stamped for a tick this peer has already
+          // advanced past. Applying it anyway would rewind both gameplay
+          // state AND the shared PRNG stream (`applyReconciliationSnapshot`'s
+          // own `rngState`) backward, causing a NEW desync one reconcile
+          // interval later — discarded outright instead, never applied and
+          // never counted as a correction (it was never actually applied).
+          if (lastAppliedTick !== null && message.tick < lastAppliedTick) {
+            console.log(`[multiplayer] discarding stale reconciliation snapshot for tick ${message.tick}, already applied through tick ${lastAppliedTick}`);
+            return;
+          }
           // Read *before* applying — `applyReconciliationSnapshot()` snaps
           // simulation state (and the render offset it derives from the
           // same before/after gap) in one pass, so this is the only chance
@@ -347,6 +387,7 @@ export function runMultiplayerSessionAsGuest(
     // needs no ignore comment.
     getBotPlayerState: (id) => engine?.getBotPlayerState(id) ?? null,
     debugInjectDesync: (injection) => engine!.debugInjectDesync(injection),
+    debugSetGodMode: (playerId, enabled) => engine!.debugSetGodMode(playerId, enabled),
     // Only ever has one link, toward the host — see this method's own doc
     // comment on `MultiplayerSessionHandle`.
     getConnectionStats: (id) => (connection && id === HOST_PLAYER_ID ? readConnectionStats(connection) : Promise.resolve(null)),
