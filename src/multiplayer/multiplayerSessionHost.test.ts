@@ -247,6 +247,65 @@ describe("runMultiplayerSessionAsHost", () => {
     expect(bundleAt3?.heldInputFallback).not.toContain("guest");
   });
 
+  describe("wire-shape validation on incoming TickInput (findings 1/2)", () => {
+    it("drops a TickInput with a malformed input payload instead of recording it, and keeps ticking", () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const guestSeenMessages = collectMessages(channels.guest.input);
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
+
+      // Malformed: input is an empty object, not a real InputSnapshot.
+      const malformed = { tick: 3, playerId: "guest", input: {} };
+      channels.guest.input.send(JSON.stringify(malformed));
+
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+      worker.onmessage?.({ data: { type: "tick", tick: 1 } } as MessageEvent);
+      worker.onmessage?.({ data: { type: "tick", tick: 2 } } as MessageEvent);
+      worker.onmessage?.({ data: { type: "tick", tick: 3 } } as MessageEvent);
+
+      // The tick loop kept advancing (no throw escaped worker.onmessage) —
+      // tick 3's bundle exists and still holds the neutral/held fallback for
+      // guest, never the poisoned {} input.
+      const bundleAt3 = guestSeenMessages.find((m): m is TickInputBundle => "inputs" in m && m.tick === 3);
+      expect(bundleAt3?.heldInputFallback).toContain("guest");
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("dropping malformed TickInput"));
+      logSpy.mockRestore();
+    });
+
+    it("drops a TickInput with a non-numeric tick instead of buffering it under a bogus key", () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      vi.spyOn(console, "log").mockImplementation(() => {});
+
+      runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
+
+      const malformed = { tick: "not-a-number", playerId: "guest", input: emptySnapshot() };
+      channels.guest.input.send(JSON.stringify(malformed));
+
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+
+      // No throw, session kept ticking normally.
+      expect(() => worker.onmessage?.({ data: { type: "tick", tick: 1 } } as MessageEvent)).not.toThrow();
+      vi.restoreAllMocks();
+    });
+
+    it("drops a TickInput with a fractional tick", () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      vi.spyOn(console, "log").mockImplementation(() => {});
+
+      runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
+
+      const malformed = { tick: 3.5, playerId: "guest", input: emptySnapshot() };
+      channels.guest.input.send(JSON.stringify(malformed));
+
+      expect(() => worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent)).not.toThrow();
+      vi.restoreAllMocks();
+    });
+  });
+
   it("stop() is idempotent and terminates the worker exactly once", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();

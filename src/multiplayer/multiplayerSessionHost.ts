@@ -54,6 +54,7 @@ import { chunkJson } from "./chunkedTransfer";
 import { readConnectionStats, type ConnectionStats } from "./connectionStats";
 import { sendJson, sendJsonSequence, onJsonMessage } from "./dataChannelMessaging";
 import { InputDelayBuffer } from "./inputDelayBuffer";
+import { isValidInputSnapshot, isValidWireTick } from "./inputValidation";
 import {
   DISCONNECT_GRACE_MS,
   FIXED_DT,
@@ -502,6 +503,17 @@ export function runMultiplayerSessionAsHost(
       // `"guest-2"`), corrupting that other player's own input. The loop's
       // own map key is the only trustworthy identity.
       onJsonMessage<TickInput>(link.channels.input, (message) => {
+        // A malformed `tick`/`input` from a hostile or buggy guest must never
+        // reach `record()` — see `inputValidation.ts`'s own doc comment: an
+        // unvalidated `input` gets promoted into held-fallback and later
+        // crashes every peer's `NetworkInputSource.isDown()`, and an
+        // unvalidated `tick` defeats `record()`'s own DoS bound via `NaN`
+        // comparisons. Dropped silently rather than recorded — the sender's
+        // next genuinely-valid tick recovers normally.
+        if (!isValidWireTick(message.tick) || !isValidInputSnapshot(message.input)) {
+          console.log(`[multiplayer] dropping malformed TickInput from ${guestId}`);
+          return;
+        }
         inputDelayBuffer.record(message.tick, guestId, message.input);
       }),
     );
