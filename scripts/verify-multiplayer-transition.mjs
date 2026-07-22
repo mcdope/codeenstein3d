@@ -305,10 +305,34 @@ async function runScenario(browser, engineName) {
   const { hostContext, guestContext, hostPage, guestPage } = await setupSession(browser, engineName);
 
   try {
-    // Host-only, applied once right after connect/ticking, before any real
-    // navigation begins — see this file's own top doc comment for why the
-    // guest is deliberately left out of this call.
+    // Applied to *both* pages, not just the host's — `debugSetGodMode`
+    // (`RaycasterEngine.debugSetGodMode`) is a purely local mutation
+    // (`this.players.get(playerId)!.godMode = enabled`) with no wire message
+    // broadcasting it to the other peer. Each side runs its own full
+    // simulation in lockstep from the same inputs; calling this on the host
+    // page alone made the *host*'s own local copy of itself invulnerable
+    // but left the *guest*'s own local copy of "host" exactly as vulnerable
+    // as before — a real, confirmed cross-peer divergence (not a hypothetical
+    // one): the demo campaign's real enemies could then kill "host" on the
+    // guest's own local simulation while the host's own simulation never
+    // took any damage at all, occasionally leaving the guest's own engine
+    // believing the whole team was eliminated (both its own local player and
+    // its own copy of "host" dead) and ending its session entirely — while
+    // the host's session, whose own view of itself was genuinely
+    // invulnerable, carried on completely normally. Confirmed directly via a
+    // real CI failure: the guest's own `activeMultiplayerSession` had already
+    // gone null (session ended) by the time this script checked its status
+    // right before the transition, and every guest-side check after that
+    // read stale nulls. Setting the same flag on both pages keeps both
+    // peers' own local simulations in agreement about "host" being
+    // invulnerable, exactly like a real, correctly-synced piece of game
+    // state would be — this is a test-script-only fix (the hook itself stays
+    // a narrow, non-networked debug mutation, appropriate for its own
+    // single-peer IDDQD-cheat use in real single-player gameplay; broadcasting
+    // it over the wire would be over-scoped for a hook real players never
+    // reach in multiplayer at all).
     await hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.debugSetGodMode("host", true));
+    await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.debugSetGodMode("host", true));
 
     const before = await hostPage.evaluate(() => {
       const hooks = window.__codeensteinMultiplayerTestHooks;
@@ -381,14 +405,27 @@ async function runScenario(browser, engineName) {
 
     console.log("  Waiting for both peers to land on a genuinely new level...");
     try {
+      // `grid !== null &&` guards against a false-positive pass: if a peer's
+      // whole session ends (e.g. `activeMultiplayerSession` goes null),
+      // every hook — including `getMapGrid()` — starts returning `null`,
+      // and a bare `JSON.stringify(null) !== JSON.stringify(prevGrid)` reads
+      // as "the grid changed" even though nothing actually transitioned —
+      // confirmed directly as a real failure mode (a peer's session ending
+      // for an unrelated reason read as this check spuriously passing).
       await Promise.all([
         hostPage.waitForFunction(
-          (prevGrid) => JSON.stringify(window.__codeensteinMultiplayerTestHooks.getMapGrid()) !== JSON.stringify(prevGrid),
+          (prevGrid) => {
+            const grid = window.__codeensteinMultiplayerTestHooks.getMapGrid();
+            return grid !== null && JSON.stringify(grid) !== JSON.stringify(prevGrid);
+          },
           before.map.grid,
           { timeout: TRANSITION_TIMEOUT_MS },
         ),
         guestPage.waitForFunction(
-          (prevGrid) => JSON.stringify(window.__codeensteinMultiplayerTestHooks.getMapGrid()) !== JSON.stringify(prevGrid),
+          (prevGrid) => {
+            const grid = window.__codeensteinMultiplayerTestHooks.getMapGrid();
+            return grid !== null && JSON.stringify(grid) !== JSON.stringify(prevGrid);
+          },
           before.map.grid,
           { timeout: TRANSITION_TIMEOUT_MS },
         ),
