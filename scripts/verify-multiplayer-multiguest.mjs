@@ -143,16 +143,20 @@ async function sampleTickSkewMs(pageA, pageB) {
 // (no cheats — permanently disabled in multiplayer) over the real time this
 // scenario's disconnect-detection wait can take has been observed to
 // occasionally wipe the whole team despite host/guest-1 evading continuously
-// — the same class of accepted real-combat variance
-// `verify-multiplayer-transition.mjs`'s own `MAX_SCENARIO_ATTEMPTS` retry
-// budget already exists for elsewhere in this codebase, applied here for the
-// same reason: a team wipe here says nothing about whether per-guest
-// disconnect isolation actually works, only that this run's real, randomly-
-// seeded level happened to be rough. A genuine correctness failure (a
+// — a team wipe here says nothing about whether per-guest disconnect
+// isolation actually works, only that this run's real, randomly-seeded
+// level happened to be rough. A genuine correctness failure (a
 // connect/lockstep/setup problem, or guest-1 actually going down specifically
 // because of guest-2's disconnect rather than unrelated combat) is not
-// retried — only a real team-eliminated wipe is.
-const MAX_SCENARIO_ATTEMPTS = 5;
+// retried — only a real team-eliminated wipe or a TickSyncTimeoutError is
+// (see runAttempt's own doc comment). Raised from 5 to 10 after real CI data
+// showed all 5 attempts exhausted purely by real, sustained runner
+// contention (every attempt hit the same tick-sync timeout, not a code bug —
+// see this repo's own recent git history for the investigation) — same
+// "widen the budget, don't paper over it with a weaker signal" tradeoff
+// `verify-multiplayer-transition.mjs` made for its own combat-retry budget
+// before combat was taken out of its critical path entirely.
+const MAX_SCENARIO_ATTEMPTS = 10;
 
 /** Runs one full attempt at the scenario against fresh browser contexts.
  * Returns `{ failureCount, teamWiped, tickSyncTimedOut }` — `teamWiped`
@@ -178,11 +182,16 @@ async function runAttempt(browser, engineName, attempt) {
     // Start Session, all three peers ticked past TARGET_TICK — see
     // `scripts/lib/multiplayerSessionBootstrap.mjs`'s own doc comment for
     // the full mechanics and the real-CI-measured timing behind its retry
-    // defaults.
+    // defaults. `tickingTimeoutMs` doubled from the shared default (30s):
+    // a real 3-peer bootstrap (one more real WebRTC connection/join than
+    // any 2-peer sibling script) has less margin left in 30s under real CI
+    // contention — confirmed directly: every one of 5 straight attempts hit
+    // that exact wall in the same CI run, not a one-off.
     session = await bootstrapMultiplayerSession(browser, {
       engineName,
       playerCount: 3,
       targetTick: TARGET_TICK,
+      tickingTimeoutMs: DEFAULT_TICKING_TIMEOUT_MS * 2,
       log: (msg) => console.log(msg),
     });
     check("all three peers connected, roster finalized, ticking past target", true);
