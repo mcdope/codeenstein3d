@@ -418,8 +418,8 @@ describe("runMultiplayerSessionAsHost", () => {
 
     // Due at tick 0 and tick RECONCILE_INTERVAL_TICKS — nowhere in between.
     expect(guestSeenSnapshots).toHaveLength(2);
-    expect(guestSeenSnapshots[0]).toMatchObject({ type: "reconciliation-snapshot", tick: 0 });
-    expect(guestSeenSnapshots[1]).toMatchObject({ type: "reconciliation-snapshot", tick: RECONCILE_INTERVAL_TICKS });
+    expect(guestSeenSnapshots[0]).toMatchObject({ type: "reconciliation-snapshot", tick: 0, levelEpoch: 0 });
+    expect(guestSeenSnapshots[1]).toMatchObject({ type: "reconciliation-snapshot", tick: RECONCILE_INTERVAL_TICKS, levelEpoch: 0 });
     expect(guestSeenSnapshots[0].players).toHaveProperty("host");
     expect(guestSeenSnapshots[0].players).toHaveProperty("guest");
   });
@@ -764,6 +764,48 @@ describe("runMultiplayerSessionAsHost", () => {
       await vi.waitFor(() => {
         expect(handle.getPlayerPosition("host")).toEqual({ x: 6.5, y: 6.5 });
       });
+    });
+
+    it("stamps every ReconciliationSnapshotMessage with levelEpoch, incrementing after a level transition (CRITICAL re-review finding)", async () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      // `channels.guest.reconciliation` carries both the periodic snapshots
+      // and (once driveToWin reaches the win tile) the level-transition
+      // init/chunk/map-end sequence — collected loosely typed (mirroring
+      // the sibling "broadcasts a chunked level-transition sequence..."
+      // test's own `guestSeenMessages` cast) so both can be told apart by
+      // `type`, then filtered down to just the snapshots for the epoch
+      // assertions below.
+      const guestSeenMessages = collectMessages(channels.guest.reconciliation) as unknown as (ReconciliationSnapshotMessage | LevelTransitionMessage)[];
+      const onlySnapshots = () => guestSeenMessages.filter((m): m is ReconciliationSnapshotMessage => m.type === "reconciliation-snapshot");
+      const nextMap = fakeMap({ spawn: { x: 6, y: 6 } });
+      const findNextLevel = vi.fn().mockResolvedValue({ map: nextMap, gameplaySeed: 999 });
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map: winMap() }), worker, undefined, findNextLevel);
+
+      driveToWin(worker);
+      await vi.waitFor(() => {
+        expect(guestSeenMessages.some((m) => m.type === "level-transition-map-end")).toBe(true);
+      });
+      // Every snapshot broadcast before the transition completes is epoch 0.
+      expect(onlySnapshots().every((s) => s.levelEpoch === 0)).toBe(true);
+
+      const ack: LevelTransitionAckMessage = { type: "level-transition-ack", playerId: "guest" };
+      channels.guest.reconciliation.send(JSON.stringify(ack));
+      await vi.waitFor(() => {
+        // startLevel() (which bumps levelEpoch) has run once the new
+        // level's spawn position is reflected — the same signal the sibling
+        // "broadcasts a chunked level-transition sequence..." test uses.
+        expect(handle.getPlayerPosition("host")).toEqual({ x: 6.5, y: 6.5 });
+      });
+
+      // No new snapshot is broadcast until the next due tick crosses a
+      // RECONCILE_INTERVAL_TICKS boundary — drive enough further ticks
+      // (in the new level, tick numbering is session-monotonic, never
+      // reset) to guarantee crossing one.
+      for (let i = 1; i <= RECONCILE_INTERVAL_TICKS + 1; i++) {
+        worker.onmessage?.({ data: { type: "tick", tick: COUNTDOWN_TICKS + 1 + i } } as MessageEvent);
+      }
+      expect(onlySnapshots().some((s) => s.levelEpoch === 1)).toBe(true);
     });
 
     it("logs and falls through to the ack-timeout path, instead of crashing the tick handler, when the transition send itself fails", async () => {

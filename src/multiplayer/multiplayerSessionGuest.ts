@@ -178,6 +178,12 @@ export function runMultiplayerSessionAsGuest(
     if (hasStarted) {
       localSampler?.detach();
       levelEpoch++;
+      // A tick number from the level just left behind is meaningless once
+      // the epoch changes — reset alongside it so a stale-epoch snapshot
+      // can never coincidentally also pass a tick-based comparison against
+      // this new level's own early ticks (belt-and-suspenders on top of the
+      // `levelEpoch` guard itself, below).
+      lastAppliedTick = null;
     }
     hasStarted = true;
     const built = buildSessionEngine({
@@ -276,6 +282,18 @@ export function runMultiplayerSessionAsGuest(
       if (!engine) return;
       switch (message.type) {
         case "reconciliation-snapshot": {
+          // A snapshot stamped for a level this peer has already transitioned
+          // away from must never be applied — the host's tick worker keeps
+          // ticking (and broadcasting snapshots for) the *old* level
+          // throughout a transition's ack-wait window, and the tick counter
+          // itself never resets across levels, so an old-level snapshot can
+          // easily carry a tick number this peer's new-level `lastAppliedTick`
+          // would otherwise consider "current" or even "future". See
+          // `ReconciliationSnapshotMessage.levelEpoch`'s own doc comment.
+          if (message.levelEpoch !== levelEpoch) {
+            console.log(`[multiplayer] discarding stale reconciliation snapshot for level epoch ${message.levelEpoch}, currently on epoch ${levelEpoch}`);
+            return;
+          }
           // `input`/`reconciliation` are two independent WebRTC data
           // channels with no cross-channel ordering guarantee — a
           // reconciliation snapshot delayed behind a burst of tick-input
@@ -283,10 +301,18 @@ export function runMultiplayerSessionAsGuest(
           // advanced past. Applying it anyway would rewind both gameplay
           // state AND the shared PRNG stream (`applyReconciliationSnapshot`'s
           // own `rngState`) backward, causing a NEW desync one reconcile
-          // interval later — discarded outright instead, never applied and
-          // never counted as a correction (it was never actually applied).
-          if (lastAppliedTick !== null && message.tick < lastAppliedTick) {
-            console.log(`[multiplayer] discarding stale reconciliation snapshot for tick ${message.tick}, already applied through tick ${lastAppliedTick}`);
+          // interval later. The mirror-image case — a snapshot stamped for a
+          // tick still ahead of `lastAppliedTick` — is just as unsafe to
+          // apply: it would snap this peer to host state at that tick, after
+          // which the still-in-flight `TickInputBundle`s for the ticks in
+          // between arrive and get applied on top, double-simulating (and
+          // double-advancing the shared PRNG) past the host. Both directions
+          // are discarded outright rather than applied and never counted as
+          // a correction (it was never actually applied) — safe either way,
+          // since the next `RECONCILE_INTERVAL_TICKS` snapshot corrects any
+          // real drift a discarded snapshot would have caught.
+          if (lastAppliedTick !== null && message.tick !== lastAppliedTick) {
+            console.log(`[multiplayer] discarding out-of-order reconciliation snapshot for tick ${message.tick}, already applied through tick ${lastAppliedTick}`);
             return;
           }
           // Read *before* applying — `applyReconciliationSnapshot()` snaps
