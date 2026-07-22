@@ -78,7 +78,18 @@ export async function startIsolatedMultiplayerServers(options = {}) {
     rateLimitEnvOverrides = {},
   } = options;
 
-  const devServerUrl = `http://localhost:${devServerPort}`;
+  // Explicit `127.0.0.1`, never bare "localhost" — confirmed directly as a
+  // real failure on a real SSH-lane host: Vite's own default bind (no
+  // `--host` given) came up IPv6-only (`::1`) there, while this module's own
+  // `waitForHttpReachable` uses Node's `fetch()`, which resolved "localhost"
+  // to the IPv4 address and got `ECONNREFUSED` — even though the server was
+  // genuinely up and a plain `curl` against the same "localhost" succeeded
+  // (curl's own happy-eyeballs resolution tried IPv6 first). Pinning both
+  // the dev server's own `--host` (below) and the URL used to check it to
+  // the same explicit `127.0.0.1` makes this deterministic instead of
+  // depending on whatever a given host's default resolution/bind happens to
+  // pick — matching `signalingServerUrl`, which already did this correctly.
+  const devServerUrl = `http://127.0.0.1:${devServerPort}`;
   const signalingServerUrl = `http://127.0.0.1:${signalingPort}`;
 
   const signalingProc = spawn("node", ["scripts/multiplayer-server.mjs"], {
@@ -105,7 +116,7 @@ export async function startIsolatedMultiplayerServers(options = {}) {
     // step), at the cost of `npm` sitting between this process and the real
     // `vite` listener — `killProcessGroup()` (below) is what makes that
     // extra layer harmless to tear down.
-    devProc = spawn("npm", ["run", "dev", "--", "--port", String(devServerPort), "--strictPort"], {
+    devProc = spawn("npm", ["run", "dev", "--", "--port", String(devServerPort), "--strictPort", "--host", "127.0.0.1"], {
       // CODEENSTEIN_VITE_NO_WATCH: this dev server only ever serves one
       // short-lived, headless-Playwright-driven script — nothing ever edits
       // source mid-run, so HMR/file-watching serves no purpose here, and
