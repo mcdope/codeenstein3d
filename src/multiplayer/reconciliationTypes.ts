@@ -29,4 +29,15 @@ export type {
 
 export interface ReconciliationSnapshotMessage extends ReconciliationSnapshot {
   type: "reconciliation-snapshot";
+  /** Which level this snapshot reflects — stamped by the host from its own
+   * purely-local counter (see `TickInputBundle.levelEpoch`'s own doc
+   * comment; this is the exact same counter, just also carried on this
+   * message type). The host's tick-clock worker keeps ticking and
+   * broadcasting snapshots for the *old* level throughout a level
+   * transition's ack-wait window — without this, a same-numbered-tick
+   * snapshot from the level just left behind can arrive after a guest has
+   * already swapped engines, silently overwriting the new level's grid
+   * mutations and collected-item flags with stale ones. Discarded on
+   * mismatch by the guest, the same way a stale-epoch `TickInputBundle` is. */
+  levelEpoch: number;
 }

@@ -202,6 +202,7 @@ function fakePlayerSnapshot(overrides: Partial<PlayerSnapshot> = {}): PlayerSnap
 function fakeReconciliationSnapshot(overrides: Partial<ReconciliationSnapshotMessage> = {}): ReconciliationSnapshotMessage {
   return {
     type: "reconciliation-snapshot",
+    levelEpoch: 0,
     tick: 0,
     rngState: 0,
     players: { host: fakePlayerSnapshot(), guest: fakePlayerSnapshot() },
@@ -404,7 +405,7 @@ describe("runMultiplayerSessionAsGuest", () => {
     expect(handle.getLastReconciliationRngState()).toBe(beforeRngState); // unchanged
   });
 
-  it("still applies an in-order (current-or-future tick) reconciliation snapshot normally — the stale-discard guard doesn't over-trigger", () => {
+  it("still applies a reconciliation snapshot stamped for the exact current tick normally — the discard guard doesn't over-trigger", () => {
     const channels = linkedChannels();
     const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map: fakeMap({ spawn: { x: 5, y: 5 } }) }));
 
@@ -414,10 +415,11 @@ describe("runMultiplayerSessionAsGuest", () => {
     }
     expect(handle.getLastAppliedTick()).toBe(5);
 
-    // Stamped for the exact tick just applied — not stale, must still apply
-    // normally (the guard is `<`, not `<=`).
+    // Stamped for the exact tick just applied and the current level epoch —
+    // must still apply normally.
     const currentSnapshot = fakeReconciliationSnapshot({
       tick: 5,
+      levelEpoch: 0,
       rngState: 424242,
       players: { host: fakePlayerSnapshot({ posX: 7.5, posY: 7.5 }), guest: fakePlayerSnapshot({ posX: 3.5, posY: 4.5 }) },
     });
@@ -426,6 +428,36 @@ describe("runMultiplayerSessionAsGuest", () => {
     expect(handle.getPlayerPosition("guest")).toEqual({ x: 3.5, y: 4.5 });
     expect(handle.getLastReconciliationRngState()).toBe(424242);
   });
+
+  it("discards a reconciliation snapshot stamped with a future tick, instead of double-simulating once in-flight bundles catch up (CRITICAL/HIGH re-review finding)", () => {
+    const channels = linkedChannels();
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map: fakeMap({ spawn: { x: 5, y: 5 } }) }));
+
+    for (let tick = 0; tick <= 5; tick++) {
+      const bundle: TickInputBundle = { tick, dt: 1 / 30, levelEpoch: 0, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+      channels.host.input.send(JSON.stringify(bundle));
+    }
+    expect(handle.getLastAppliedTick()).toBe(5);
+    const beforePosition = handle.getPlayerPosition("guest");
+    const beforeRngState = handle.getLastReconciliationRngState();
+
+    // Stamped for tick 8 — ahead of what this guest has actually simulated
+    // so far (its own input-channel bundles for ticks 6-8 haven't arrived
+    // yet). Snapping to this now would be immediately overwritten by those
+    // bundles applying on top once they do, double-advancing state and the
+    // shared PRNG past the host.
+    const futureSnapshot = fakeReconciliationSnapshot({
+      tick: 8,
+      levelEpoch: 0,
+      rngState: 999999,
+      players: { host: fakePlayerSnapshot({ posX: 1.5, posY: 1.5 }), guest: fakePlayerSnapshot({ posX: 1.5, posY: 1.5 }) },
+    });
+    channels.host.reconciliation.send(JSON.stringify(futureSnapshot));
+
+    expect(handle.getPlayerPosition("guest")).toEqual(beforePosition); // unaffected — discarded, not applied
+    expect(handle.getLastReconciliationRngState()).toBe(beforeRngState); // unchanged
+  });
+
 
   it("stops applying reconciliation snapshots after teardown", () => {
     const channels = linkedChannels();
@@ -764,6 +796,37 @@ describe("runMultiplayerSessionAsGuest", () => {
 
       expect(handle.getLastAppliedTick()).toBeNull(); // discarded — never applied
       expect(handle.getPlayerPosition("guest")).toEqual({ x: 7.5, y: 7.5 }); // unchanged
+    });
+
+    it("discards a reconciliation snapshot stamped with a stale level epoch after a transition, even though lastAppliedTick was just reset to null (CRITICAL re-review finding)", () => {
+      const channels = linkedChannels();
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+
+      const nextMap = fakeMap({ spawn: { x: 7, y: 7 } });
+      const carryovers: Record<PlayerId, EngineCarryover> = {
+        host: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 },
+        guest: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 },
+      };
+      sendLevelTransition(channels, nextMap, carryovers, 1); // bumps the guest's own levelEpoch from 0 to 1
+      expect(handle.getPlayerPosition("guest")).toEqual({ x: 7.5, y: 7.5 }); // swapped to the new level
+      expect(handle.getLastAppliedTick()).toBeNull(); // reset alongside the epoch bump
+
+      // A snapshot still stamped with the OLD level's epoch (0), as if
+      // broadcast by the host's tick worker before it caught up to the
+      // transition. `lastAppliedTick` being null means a tick-only guard
+      // would let this straight through — the epoch mismatch alone must
+      // discard it, or it would permanently overwrite the new level's grid/
+      // player state with the old level's.
+      const staleEpochSnapshot = fakeReconciliationSnapshot({
+        tick: 999,
+        levelEpoch: 0,
+        rngState: 555555,
+        players: { host: fakePlayerSnapshot({ posX: 9.5, posY: 9.5 }), guest: fakePlayerSnapshot({ posX: 9.5, posY: 9.5 }) },
+      });
+      channels.host.reconciliation.send(JSON.stringify(staleEpochSnapshot));
+
+      expect(handle.getPlayerPosition("guest")).toEqual({ x: 7.5, y: 7.5 }); // unaffected — discarded, not applied
+      expect(handle.getLastReconciliationRngState()).toBeNull(); // never applied
     });
 
     it("still applies a current-epoch tick-input bundle normally after a level transition", () => {

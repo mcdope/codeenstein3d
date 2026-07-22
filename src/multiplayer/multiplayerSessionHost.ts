@@ -607,7 +607,10 @@ export function runMultiplayerSessionAsHost(
     // guest (step 10), each independently guarded the same way as the tick
     // broadcast above.
     if (tick % RECONCILE_INTERVAL_TICKS === 0) {
-      const snapshot: ReconciliationSnapshotMessage = { type: "reconciliation-snapshot", ...engine.captureReconciliationSnapshot(tick) };
+      // `levelEpoch` stamped on here, same reasoning as `TickInputBundle`
+      // above — see `ReconciliationSnapshotMessage.levelEpoch`'s own doc
+      // comment for why this is required, not just decorative.
+      const snapshot: ReconciliationSnapshotMessage = { type: "reconciliation-snapshot", levelEpoch, ...engine.captureReconciliationSnapshot(tick) };
       lastReconciliationRngState = snapshot.rngState;
       for (const link of links.values()) {
         if (link.channels.reconciliation.readyState === "open") sendJson(link.channels.reconciliation, snapshot);
