@@ -3603,6 +3603,12 @@ describe("main.ts — multiplayer connect flow", () => {
           new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ }) }),
         );
         await waitUntil(() => FakeTickWorker.instances.length > 0);
+        // Both Join and Host Create must be disabled for the lifetime of a
+        // live session — left enabled, either could re-trigger mid-session
+        // (a second Join orphaning this session's worker with nothing left
+        // to stop it, a second Create abandoning it) — HIGH re-review finding.
+        expect(document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.disabled).toBe(true);
+        expect(document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.disabled).toBe(true);
         const worker = FakeTickWorker.instances.at(-1)!;
         worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
 
@@ -3622,11 +3628,62 @@ describe("main.ts — multiplayer connect flow", () => {
         expect(textsAfterWin).toContain("MULTIPLAYER: CAMPAIGN COMPLETE");
         expect(textsAfterWin).toContain("Host");
 
+        // Re-opened once the session genuinely ends, mirroring beginMultiplayerLevel's own disabling.
+        expect(document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.disabled).toBe(false);
+        expect(document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.disabled).toBe(false);
+
         vi.doUnmock("./fs/demoCampaign");
         vi.doUnmock("./map/mapGenerator");
       } finally {
         history.pushState(null, "", "/");
       }
+    });
+
+    it("host: navigating to a different file mid-session stops the live session instead of leaving it orphaned (HIGH re-review finding)", async () => {
+      await loadEligibleWorkspace();
+      await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "R4KJ9X",
+            offer: "offer-sdp",
+            answer: "answer-sdp",
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        );
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      const pc = readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!.click();
+      const reconciliation = pc.createdDataChannels.find((c) => c.label === "reconciliation")!;
+      reconciliation.dispatchEvent(
+        new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ }) }),
+      );
+      await waitUntil(() => FakeTickWorker.instances.length > 0);
+      const worker = FakeTickWorker.instances.at(-1)!;
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.disabled).toBe(true);
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.disabled).toBe(true);
+
+      // Navigate away mid-session via the file tree, into a single-player
+      // level — nothing else ever called .stop() on the live multiplayer
+      // session before this fix, leaking its worker/listeners orphaned
+      // underneath the newly-launched level.
+      document.querySelector<HTMLButtonElement>('.tree-row--file[title="demo-campaign/stage02_bootstrap.sh"]')!.click();
+      // handleFileSelected is async (reads + parses the file before calling
+      // launchLevel) — its own click listener isn't awaited by the DOM
+      // dispatch, so launchLevel's teardown runs on a later microtask.
+      await waitUntil(() => worker.terminate.mock.calls.length > 0);
+
+      expect(worker.terminate).toHaveBeenCalledTimes(1);
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.disabled).toBe(false);
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.disabled).toBe(false);
+      // The new single-player level actually launched.
+      expect(document.querySelector<HTMLParagraphElement>(".map-caption")?.textContent).toContain("stage02_bootstrap.sh");
     });
 
     it("guest: session setup starts automatically on connect, then begins ticking once the host's bundle arrives", async () => {
