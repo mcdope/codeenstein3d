@@ -65,6 +65,7 @@ import {
 } from "./netcodeConstants";
 import type {
   LevelTransitionAckMessage,
+  LevelTransitionCampaignCompleteMessage,
   LevelTransitionInitMessage,
   LevelTransitionMapChunkMessage,
   LevelTransitionMapEndMessage,
@@ -393,77 +394,109 @@ export function runMultiplayerSessionAsHost(
     if (ended || transitionInProgress || !engine) return;
     transitionInProgress = true;
 
-    const carryovers: Record<PlayerId, EngineCarryover> = {};
-    for (const id of currentResult.roster) {
-      const captured = engine.captureCarryoverFor(id);
-      // A teammate who died earlier this level revives at REVIVE_HEALTH for
-      // the next one — the same revive pattern `addPlayer`'s own carryover
-      // handling already established in step 4, just applied at a level
-      // boundary instead of a mid-level reconnect.
-      carryovers[id] = engine.getPlayerStatus(id) === "dead" ? { ...captured, health: REVIVE_HEALTH } : captured;
-    }
+    // `finally`, not an explicit reset at the end of the happy path — a
+    // rejected `findNextLevel` lookup (or any other unexpected throw in this
+    // body) used to leave `transitionInProgress` latched `true` forever,
+    // silently swallowing every subsequent `onWin` refire with no transition
+    // and no session end.
+    try {
+      const carryovers: Record<PlayerId, EngineCarryover> = {};
+      for (const id of currentResult.roster) {
+        const captured = engine.captureCarryoverFor(id);
+        // A teammate who died earlier this level revives at REVIVE_HEALTH for
+        // the next one — the same revive pattern `addPlayer`'s own carryover
+        // handling already established in step 4, just applied at a level
+        // boundary instead of a mid-level reconnect.
+        carryovers[id] = engine.getPlayerStatus(id) === "dead" ? { ...captured, health: REVIVE_HEALTH } : captured;
+      }
 
-    const next = await findNextLevel?.({ carryovers });
-    if (ended) return; // torn down while the lookup was in flight
+      const next = await findNextLevel?.({ carryovers });
+      if (ended) return; // torn down while the lookup was in flight
 
-    if (!next) {
-      const stats = engine.render();
-      const comparison = engine.rosterSnapshot();
-      teardown();
-      onSessionEnded?.(stats, "campaign-complete", comparison);
-      return;
-    }
-
-    const guestIds = currentResult.roster.filter((id) => id !== HOST_PLAYER_ID);
-    const { visited: _visited, ...mapWithoutVisited } = next.map;
-    // chunkJson splits by UTF-16 code-unit length, not true byte count —
-    // an approximation that only matters for non-ASCII map content, the
-    // same pre-existing 6b decision `sessionSetupHost.ts`'s own transfer
-    // already makes, not new here.
-    const chunks = chunkJson(mapWithoutVisited, MAP_CHUNK_SIZE_BYTES);
-    const initMessage: LevelTransitionInitMessage = { type: "level-transition-init", carryovers, gameplaySeed: next.gameplaySeed };
-    const chunkMessages: LevelTransitionMapChunkMessage[] = chunks.map((data, index) => ({ type: "level-transition-map-chunk", index, data }));
-    const endMessage: LevelTransitionMapEndMessage = { type: "level-transition-map-end", totalChunks: chunks.length };
-    const messages = [initMessage, ...chunkMessages, endMessage];
-
-    // Fanned out to every guest CONCURRENTLY, not sequentially (step 10):
-    // `sendJsonSequence` awaits backpressure per message, so a sequential
-    // loop here would multiply wall-clock time by guest count. Each guest's
-    // failure is handled independently — it falls into its own "never acked
-    // in time" disconnect path below, exactly like a merely-slow guest,
-    // rather than aborting every other guest's transfer.
-    await Promise.all(
-      guestIds.map(async (id) => {
-        const channel = links.get(id)?.channels.reconciliation;
-        if (!channel || channel.readyState !== "open") return;
-        try {
-          await sendJsonSequence(channel, messages);
-        } catch (err) {
-          // No special handling needed: a guest that never receives a
-          // complete transition also never acks it, and falls into the
-          // disconnect path below via the ordinary "never acked in time"
-          // signal — the same outcome a guest that was simply gone already
-          // produces, so a failed send here doesn't need its own separate
-          // recovery path.
-          console.log(`[multiplayer] level-transition send to ${id} failed, it will time out via the normal ack path: ${err}`);
+      if (!next) {
+        const stats = engine.render();
+        const comparison = engine.rosterSnapshot();
+        // Best-effort to every connected guest, before tearing down — a
+        // guest's own local `onWin` is a deliberate no-op (see
+        // `multiplayerSessionGuest.ts`'s own doc comment), so without this
+        // message it never learns the campaign ended and hangs on the won
+        // level forever. No ack wait, unlike a real level transition:
+        // nothing further depends on delivery once the session is ending.
+        const campaignCompleteMessage: LevelTransitionCampaignCompleteMessage = {
+          type: "campaign-complete",
+          comparison: Object.fromEntries(comparison),
+        };
+        for (const link of links.values()) {
+          if (link.channels.reconciliation.readyState === "open") sendJson(link.channels.reconciliation, campaignCompleteMessage);
         }
-      }),
-    );
+        teardown();
+        onSessionEnded?.(stats, "campaign-complete", comparison);
+        return;
+      }
 
-    // A guest that never acks in time falls into the disconnect path via the
-    // same connection-state signal once it's genuinely gone — not handled
-    // specially here; this just stops waiting and proceeds regardless.
-    // Guests whose disconnect grace has already fully expired (in
-    // `neutralInputIds` with no corresponding active `graceTimers` entry)
-    // are excluded up front — they can never ack again, so waiting on them
-    // would only ever burn the full timeout on every subsequent transition.
-    const ackWaitIds = guestIds.filter((id) => !neutralInputIds.has(id) || graceTimers.has(id));
-    await waitForAcks(ackWaitIds, TRANSITION_ACK_TIMEOUT_MS);
-    if (ended) return;
+      const guestIds = currentResult.roster.filter((id) => id !== HOST_PLAYER_ID);
+      const { visited: _visited, ...mapWithoutVisited } = next.map;
+      // chunkJson splits by UTF-16 code-unit length, not true byte count —
+      // an approximation that only matters for non-ASCII map content, the
+      // same pre-existing 6b decision `sessionSetupHost.ts`'s own transfer
+      // already makes, not new here.
+      const chunks = chunkJson(mapWithoutVisited, MAP_CHUNK_SIZE_BYTES);
+      const initMessage: LevelTransitionInitMessage = { type: "level-transition-init", carryovers, gameplaySeed: next.gameplaySeed };
+      const chunkMessages: LevelTransitionMapChunkMessage[] = chunks.map((data, index) => ({ type: "level-transition-map-chunk", index, data }));
+      const endMessage: LevelTransitionMapEndMessage = { type: "level-transition-map-end", totalChunks: chunks.length };
+      const messages = [initMessage, ...chunkMessages, endMessage];
 
-    currentResult = { ...currentResult, map: next.map, gameplaySeed: next.gameplaySeed };
-    startLevel(currentResult, carryovers);
-    transitionInProgress = false;
+      // Fanned out to every guest CONCURRENTLY, not sequentially (step 10):
+      // `sendJsonSequence` awaits backpressure per message, so a sequential
+      // loop here would multiply wall-clock time by guest count. Each guest's
+      // failure is handled independently — it falls into its own "never acked
+      // in time" disconnect path below, exactly like a merely-slow guest,
+      // rather than aborting every other guest's transfer.
+      await Promise.all(
+        guestIds.map(async (id) => {
+          const channel = links.get(id)?.channels.reconciliation;
+          if (!channel || channel.readyState !== "open") return;
+          try {
+            await sendJsonSequence(channel, messages);
+          } catch (err) {
+            // No special handling needed: a guest that never receives a
+            // complete transition also never acks it, and falls into the
+            // disconnect path below via the ordinary "never acked in time"
+            // signal — the same outcome a guest that was simply gone already
+            // produces, so a failed send here doesn't need its own separate
+            // recovery path.
+            console.log(`[multiplayer] level-transition send to ${id} failed, it will time out via the normal ack path: ${err}`);
+          }
+        }),
+      );
+
+      // A guest that never acks in time falls into the disconnect path via the
+      // same connection-state signal once it's genuinely gone — not handled
+      // specially here; this just stops waiting and proceeds regardless.
+      // Guests whose disconnect grace has already fully expired (in
+      // `neutralInputIds` with no corresponding active `graceTimers` entry)
+      // are excluded up front — they can never ack again, so waiting on them
+      // would only ever burn the full timeout on every subsequent transition.
+      const ackWaitIds = guestIds.filter((id) => !neutralInputIds.has(id) || graceTimers.has(id));
+      await waitForAcks(ackWaitIds, TRANSITION_ACK_TIMEOUT_MS);
+      if (ended) return;
+
+      currentResult = { ...currentResult, map: next.map, gameplaySeed: next.gameplaySeed };
+      startLevel(currentResult, carryovers);
+    } catch (err) {
+      // `onWin: () => void onWinFromEngine()` never attaches a `.catch` of
+      // its own (see that call site's own comment) — without one here, a
+      // rejected `findNextLevel` (or any other unexpected throw above)
+      // would surface as a real unhandled rejection instead of the same
+      // "log and let the natural retry happen" tolerance every other
+      // failure path in this function already gets. The engine's own
+      // already-won `onWin` refires on every subsequent `advance()` (see
+      // `engine.ts`'s own tests) — now that `transitionInProgress` is reset
+      // below regardless, that refire is a real retry, not a silent no-op.
+      console.log(`[multiplayer] onWinFromEngine failed, will retry on the next onWin refire: ${err}`);
+    } finally {
+      transitionInProgress = false;
+    }
   };
 
   const startLevel = (levelResult: SessionSetupResult, carryovers?: Record<PlayerId, EngineCarryover>): void => {

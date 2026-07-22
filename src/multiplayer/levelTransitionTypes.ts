@@ -13,7 +13,7 @@
  * rather than a wholly different kind of message — reusing
  * `chunkedTransfer.ts`'s `chunkJson`/`ChunkReassembler` the same way.
  */
-import type { EngineCarryover, PlayerId } from "../engine/engine";
+import type { EngineCarryover, PlayerId, RosterSnapshotEntry } from "../engine/engine";
 import type { GameMap } from "../map/types";
 
 /** Sent once, before the map chunks — small enough it never needs
@@ -43,11 +43,33 @@ export interface LevelTransitionAckMessage {
   playerId: PlayerId;
 }
 
+/** Sent host -> every connected guest instead of a `LevelTransitionInit...`
+ * sequence, once `findNextLevel` has nothing further to offer — the host's
+ * own local `onSessionEnded("campaign-complete")` previously fired with no
+ * wire counterpart at all, leaving every guest's own simulation frozen on
+ * the won level forever (its own local `onWin` is a deliberate no-op; a
+ * guest only ever progresses via a message on this channel — see
+ * `multiplayerSessionGuest.ts`'s own `onWin` doc comment). Best-effort, no
+ * ack expected: unlike an actual level transition, nothing further depends
+ * on a guest having received this before the host tears down.
+ *
+ * `comparison` is `RaycasterEngine.rosterSnapshot()`, serialized as a plain
+ * object (`ReadonlyMap` isn't JSON-safe) — the shared, host-authoritative
+ * end-of-campaign comparison table every peer's own results screen needs.
+ * Per-peer `EngineStats` deliberately doesn't travel here: it's local
+ * gameplay state (health/ammo/keys) each peer already has from its own
+ * engine, not shared session state. */
+export interface LevelTransitionCampaignCompleteMessage {
+  type: "campaign-complete";
+  comparison: Record<PlayerId, RosterSnapshotEntry>;
+}
+
 export type LevelTransitionMessage =
   | LevelTransitionInitMessage
   | LevelTransitionMapChunkMessage
   | LevelTransitionMapEndMessage
-  | LevelTransitionAckMessage;
+  | LevelTransitionAckMessage
+  | LevelTransitionCampaignCompleteMessage;
 
 /** What a completed level-transition handshake resolves the receiving guest
  * to — the same shape `SessionSetupResult` uses for its own map field,

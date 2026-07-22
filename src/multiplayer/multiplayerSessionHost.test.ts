@@ -700,6 +700,67 @@ describe("runMultiplayerSessionAsHost", () => {
       expect(worker.terminate).toHaveBeenCalledTimes(1);
     });
 
+    it("broadcasts a campaign-complete message to every connected guest before ending, so a guest's own onWin no-op doesn't leave it hanging forever (HIGH re-review finding)", async () => {
+      const channels = twoGuestLinks();
+      const worker = fakeWorker();
+      const guest1Seen = collectMessages(channels.guest1.reconciliation) as unknown as LevelTransitionMessage[];
+      const guest2Seen = collectMessages(channels.guest2.reconciliation) as unknown as LevelTransitionMessage[];
+      const onSessionEnded = vi.fn();
+      runMultiplayerSessionAsHost(
+        channels.links,
+        makeCanvas(),
+        fakeResult({ map: winMap(), roster: ["guest-1", "guest-2", HOST_PLAYER_ID].sort() }),
+        worker,
+        onSessionEnded,
+      );
+
+      driveToWin(worker);
+      await vi.waitFor(() => expect(onSessionEnded).toHaveBeenCalledTimes(1));
+
+      for (const seen of [guest1Seen, guest2Seen]) {
+        const campaignComplete = seen.find((m) => m.type === "campaign-complete");
+        expect(campaignComplete).toBeDefined();
+        expect((campaignComplete as { comparison?: unknown }).comparison).toHaveProperty("guest-1");
+        expect((campaignComplete as { comparison?: unknown }).comparison).toHaveProperty("guest-2");
+        expect((campaignComplete as { comparison?: unknown }).comparison).toHaveProperty(HOST_PLAYER_ID);
+      }
+    });
+
+    it("skips the campaign-complete send to a guest whose channel isn't open, without throwing", async () => {
+      const channels = linkedChannels();
+      (channels.guest.reconciliation as unknown as FakeRTCDataChannel).readyState = "closed";
+      const worker = fakeWorker();
+      const onSessionEnded = vi.fn();
+      runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map: winMap() }), worker, onSessionEnded);
+
+      driveToWin(worker);
+      await vi.waitFor(() => expect(onSessionEnded).toHaveBeenCalledTimes(1));
+      expect(onSessionEnded.mock.calls[0][1]).toBe("campaign-complete");
+    });
+
+    it("resets transitionInProgress even when findNextLevel itself rejects, instead of latching the session shut forever (MEDIUM re-review finding)", async () => {
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const onSessionEnded = vi.fn();
+      const findNextLevel = vi.fn().mockRejectedValue(new Error("lookup failed"));
+      runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map: winMap() }), worker, onSessionEnded, findNextLevel);
+
+      driveToWin(worker);
+      await vi.waitFor(() => {
+        expect(findNextLevel).toHaveBeenCalledTimes(1);
+      });
+      // Give the rejection's own microtask a turn to run the `finally`.
+      await Promise.resolve().then(() => Promise.resolve());
+
+      // A second win attempt (e.g. the engine's own onWin refiring) must not
+      // be silently swallowed by a still-latched transitionInProgress — it
+      // should try findNextLevel again rather than doing nothing.
+      worker.onmessage?.({ data: { type: "tick", tick: COUNTDOWN_TICKS + 100 } } as MessageEvent);
+      await vi.waitFor(() => {
+        expect(findNextLevel.mock.calls.length).toBeGreaterThanOrEqual(2);
+      });
+    });
+
     it("detaches the local input sampler on the 'campaign-complete' ending, not just a level transition (finding 3)", async () => {
       const channels = linkedChannels();
       const worker = fakeWorker();

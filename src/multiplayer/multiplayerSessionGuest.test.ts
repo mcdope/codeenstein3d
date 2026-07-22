@@ -934,5 +934,30 @@ describe("runMultiplayerSessionAsGuest", () => {
 
       expect(onSessionEnded).not.toHaveBeenCalled();
     });
+
+    it("ends the session with reason 'campaign-complete' and the host's comparison table once the wire message arrives, instead of hanging forever (HIGH re-review finding)", () => {
+      const channels = linkedChannels();
+      const onSessionEnded = vi.fn();
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult(), onSessionEnded);
+
+      const comparison: Record<string, unknown> = {
+        host: { status: "alive", health: 80, killScore: 10, kills: 2, distanceTraveled: 12.5, breakdown: { total: 10 } },
+        guest: { status: "dead", health: 0, killScore: 5, kills: 1, distanceTraveled: 8.2, breakdown: { total: 5 } },
+      };
+      const campaignCompleteMessage = { type: "campaign-complete", comparison };
+      channels.host.reconciliation.send(JSON.stringify(campaignCompleteMessage));
+
+      expect(onSessionEnded).toHaveBeenCalledTimes(1);
+      const [, reason, receivedComparison] = onSessionEnded.mock.calls[0];
+      expect(reason).toBe("campaign-complete");
+      expect(receivedComparison).toBeInstanceOf(Map);
+      expect((receivedComparison as Map<string, unknown>).get("host")).toMatchObject({ killScore: 10 });
+      expect((receivedComparison as Map<string, unknown>).get("guest")).toMatchObject({ killScore: 5 });
+
+      // Torn down — further bundles are ignored, same as any other ending.
+      const bundle: TickInputBundle = { tick: 0, dt: 1 / 30, levelEpoch: 0, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+      expect(() => channels.host.input.send(JSON.stringify(bundle))).not.toThrow();
+      expect(handle.getLastAppliedTick()).toBeNull();
+    });
   });
 });

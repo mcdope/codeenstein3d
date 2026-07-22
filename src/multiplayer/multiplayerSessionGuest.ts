@@ -373,6 +373,21 @@ export function runMultiplayerSessionAsGuest(
           startLevel(currentResult, carryovers);
           return;
         }
+        case "campaign-complete": {
+          // The host's own `stats`/`comparison` reflect its perspective —
+          // this peer's `stats` (health/ammo/keys) is genuinely local
+          // gameplay state, so it's read from this engine's own `render()`,
+          // not carried over the wire (see
+          // `LevelTransitionCampaignCompleteMessage`'s own doc comment).
+          // `comparison` IS shared, host-authoritative state, so it does
+          // travel — reconstructed here as the same `ReadonlyMap` shape
+          // `onSessionEnded` expects everywhere else.
+          const stats = engine.render();
+          const comparison = new Map(Object.entries(message.comparison));
+          teardown();
+          onSessionEnded?.(stats, "campaign-complete", comparison);
+          return;
+        }
       }
     },
   );
