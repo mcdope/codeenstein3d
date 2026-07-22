@@ -77,6 +77,16 @@ export const BACKPRESSURE_LOW_THRESHOLD_BYTES = MAP_CHUNK_SIZE_BYTES;
  * file already applies elsewhere. */
 export const BUFFER_DRAIN_TIMEOUT_MS = 10_000;
 
+/** The largest `width`/`height` a guest will trust from a host-sent map
+ * payload (initial session setup or a level transition) before allocating
+ * its own `visited` grid — real generated maps top out at 160
+ * (`mapGenerator.ts`'s own `maxSize`); this is a generous multiple of that,
+ * not a tight validated bound. Without this, a tiny, well-formed payload
+ * declaring absurd dimensions (e.g. `{"width":1e9,"height":1e9}`) passes
+ * every existing chunk-count/byte cap (those bound wire size, not declared
+ * dimensions) and triggers a multi-gigabyte `Array.from` allocation. */
+export const MAX_TRANSFERRED_MAP_DIMENSION = 2048;
+
 /** `CORRECTION_SMOOTH_MS`/`SNAP_THRESHOLD_TILES`/`COUNTDOWN_TICKS`/
  * `INPUT_DELAY_TICKS` live in `engine/reconciliationConstants.ts`/
  * `engine/transitionConstants.ts`/`engine/lagCompensationConstants.ts`, not

@@ -270,6 +270,61 @@ describe("runMultiplayerSessionAsGuest", () => {
     expect(() => handle.getPlayerPosition("guest-2")).not.toThrow();
   });
 
+  describe("wire-shape validation on incoming TickInputBundle (re-review finding: host is trusted, but a corrupted bundle must not crash the handler)", () => {
+    it("discards a bundle with a missing heldInputFallback instead of throwing on the for...of", () => {
+      const channels = linkedChannels();
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+      const before = handle.getPlayerPosition("guest");
+
+      const malformed = { tick: 0, dt: 1 / 30, levelEpoch: 0, inputs: { host: emptySnapshot(), guest: emptySnapshot() } };
+      expect(() => channels.host.input.send(JSON.stringify(malformed))).not.toThrow();
+
+      expect(handle.getLastAppliedTick()).toBeNull(); // never applied
+      expect(handle.getPlayerPosition("guest")).toEqual(before);
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("discarding malformed TickInputBundle"));
+      logSpy.mockRestore();
+    });
+
+    it("discards a bundle missing this peer's own inputs entry instead of loading undefined through loadFrame", () => {
+      const channels = linkedChannels();
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+
+      const malformed = { tick: 0, dt: 1 / 30, levelEpoch: 0, inputs: { host: emptySnapshot() }, heldInputFallback: [] };
+      expect(() => channels.host.input.send(JSON.stringify(malformed))).not.toThrow();
+
+      expect(handle.getLastAppliedTick()).toBeNull();
+      vi.restoreAllMocks();
+    });
+
+    it("discards a bundle whose inputs entry is malformed (not a real InputSnapshot)", () => {
+      const channels = linkedChannels();
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+
+      const malformed = { tick: 0, dt: 1 / 30, levelEpoch: 0, inputs: { host: emptySnapshot(), guest: {} }, heldInputFallback: [] };
+      expect(() => channels.host.input.send(JSON.stringify(malformed))).not.toThrow();
+
+      expect(handle.getLastAppliedTick()).toBeNull();
+      vi.restoreAllMocks();
+    });
+
+    it("still applies a well-formed bundle normally after a malformed one was discarded", () => {
+      const channels = linkedChannels();
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+
+      channels.host.input.send(JSON.stringify({ tick: 0, dt: 1 / 30, levelEpoch: 0, inputs: {}, heldInputFallback: [] }));
+      expect(handle.getLastAppliedTick()).toBeNull();
+
+      const bundle: TickInputBundle = { tick: 0, dt: 1 / 30, levelEpoch: 0, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+      channels.host.input.send(JSON.stringify(bundle));
+      expect(handle.getLastAppliedTick()).toBe(0);
+      vi.restoreAllMocks();
+    });
+  });
+
   it("stop() is idempotent", () => {
     const channels = linkedChannels();
     const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
@@ -901,6 +956,64 @@ describe("runMultiplayerSessionAsGuest", () => {
       channels.host.reconciliation.send(JSON.stringify(endMessage));
 
       expect(handle.getPlayerPosition("guest")).toEqual(before);
+    });
+
+    it("discards an oversized level-transition map-chunk instead of throwing (re-review finding)", () => {
+      const channels = linkedChannels();
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+      const before = handle.getPlayerPosition("guest");
+
+      const initMessage: LevelTransitionInitMessage = { type: "level-transition-init", carryovers: {}, gameplaySeed: 1 };
+      channels.host.reconciliation.send(JSON.stringify(initMessage));
+      // A single chunk whose own length already exceeds MAX_TOTAL_BYTES —
+      // ChunkReassembler.push() throws; must be caught, not crash the
+      // reconciliation-channel listener.
+      const hugeChunk: LevelTransitionMapChunkMessage = { type: "level-transition-map-chunk", index: 0, data: "x".repeat(65 * 1024 * 1024) };
+      expect(() => channels.host.reconciliation.send(JSON.stringify(hugeChunk))).not.toThrow();
+
+      expect(handle.getPlayerPosition("guest")).toEqual(before);
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("discarding oversized level-transition map-chunk"));
+      logSpy.mockRestore();
+    });
+
+    it("discards an unparsable (but count/byte-cap-compliant) level-transition map payload instead of throwing (re-review finding)", () => {
+      const channels = linkedChannels();
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+      const before = handle.getPlayerPosition("guest");
+
+      const initMessage: LevelTransitionInitMessage = { type: "level-transition-init", carryovers: {}, gameplaySeed: 1 };
+      channels.host.reconciliation.send(JSON.stringify(initMessage));
+      // A single well-sized but non-JSON chunk — passes every count/byte
+      // cap, but ChunkReassembler.finish()'s own JSON.parse() throws.
+      const chunkMessage: LevelTransitionMapChunkMessage = { type: "level-transition-map-chunk", index: 0, data: "not valid json{{{" };
+      channels.host.reconciliation.send(JSON.stringify(chunkMessage));
+      const endMessage: LevelTransitionMapEndMessage = { type: "level-transition-map-end", totalChunks: 1 };
+      expect(() => channels.host.reconciliation.send(JSON.stringify(endMessage))).not.toThrow();
+
+      expect(handle.getPlayerPosition("guest")).toEqual(before); // never swapped
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("discarding unparsable level-transition map payload"));
+      logSpy.mockRestore();
+    });
+
+    it("discards a level-transition map with invalid/oversized declared dimensions instead of attempting a multi-gigabyte allocation (re-review finding)", () => {
+      const channels = linkedChannels();
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+      const before = handle.getPlayerPosition("guest");
+
+      const initMessage: LevelTransitionInitMessage = { type: "level-transition-init", carryovers: {}, gameplaySeed: 1 };
+      channels.host.reconciliation.send(JSON.stringify(initMessage));
+      const tinyMalformedMap = JSON.stringify({ width: 1e9, height: 1e9, grid: [] });
+      const chunkMessage: LevelTransitionMapChunkMessage = { type: "level-transition-map-chunk", index: 0, data: tinyMalformedMap };
+      channels.host.reconciliation.send(JSON.stringify(chunkMessage));
+      const endMessage: LevelTransitionMapEndMessage = { type: "level-transition-map-end", totalChunks: 1 };
+      expect(() => channels.host.reconciliation.send(JSON.stringify(endMessage))).not.toThrow();
+
+      expect(handle.getPlayerPosition("guest")).toEqual(before); // never swapped
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("invalid or oversized dimensions"));
+      logSpy.mockRestore();
     });
 
     it("does not send an ack when the reconciliation channel is no longer open, but still starts the new level", () => {

@@ -7,6 +7,7 @@ import {
   FIXED_DT,
   INPUT_DELAY_TICKS,
   MAP_CHUNK_SIZE_BYTES,
+  MAX_TRANSFERRED_MAP_DIMENSION,
   RECONCILE_INTERVAL_TICKS,
   SNAP_THRESHOLD_TILES,
   TICK_RATE_HZ,
@@ -37,5 +38,10 @@ describe("netcode constants", () => {
   it("has a positive, sub-tile snap threshold", () => {
     expect(SNAP_THRESHOLD_TILES).toBeGreaterThan(0);
     expect(SNAP_THRESHOLD_TILES).toBeLessThan(1);
+  });
+
+  it("allows comfortably more than a real generated map's own max size (160), but stays a real bound", () => {
+    expect(MAX_TRANSFERRED_MAP_DIMENSION).toBeGreaterThan(160);
+    expect(MAX_TRANSFERRED_MAP_DIMENSION).toBeLessThan(1_000_000);
   });
 });

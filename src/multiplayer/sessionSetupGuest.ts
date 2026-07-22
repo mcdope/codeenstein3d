@@ -43,10 +43,10 @@
  * time out before the host ever sent a single byte.
  */
 import type { GameMap } from "../map/types";
-import { ChunkReassembler } from "./chunkedTransfer";
+import { ChunkReassembler, isValidMapDimensions } from "./chunkedTransfer";
 import { checkBuildVersionMatch } from "./buildVersionCheck";
 import { onJsonMessage, sendJsonWithBackpressure } from "./dataChannelMessaging";
-import { FIXED_DT, INPUT_DELAY_TICKS, TICK_RATE_HZ } from "./netcodeConstants";
+import { FIXED_DT, INPUT_DELAY_TICKS, MAX_TRANSFERRED_MAP_DIMENSION, TICK_RATE_HZ } from "./netcodeConstants";
 import { checkNetcodeConstantsMatch } from "./netcodeConstantsCheck";
 import { SessionSetupError, type BuildVersionMessage, type SessionSetupMessage, type SessionSetupResult } from "./sessionSetupTypes";
 import type { MultiplayerChannels } from "./types";
@@ -168,6 +168,15 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
             return;
           }
           const mapWithoutVisited = reassembler.finish<Omit<GameMap, "visited">>();
+          // Declared dimensions are never trusted before allocating from
+          // them — the byte/chunk caps above bound wire size, not this —
+          // see `isValidMapDimensions`'s own doc comment.
+          if (!isValidMapDimensions(mapWithoutVisited.width, mapWithoutVisited.height, MAX_TRANSFERRED_MAP_DIMENSION)) {
+            unsubscribe();
+            clearHandshakeTimeout();
+            reject(new SessionSetupError("protocol-error", "map-end arrived with invalid or oversized map dimensions"));
+            return;
+          }
           // Reconstructed locally rather than transferred — see
           // sessionSetupTypes.ts's SessionSetupResult doc comment. Explicit
           // height/width (not a single "size"), matching GameMap.visited's
