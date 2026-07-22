@@ -229,6 +229,33 @@ describe("runGuestSessionSetup — protocol errors", () => {
     await expect(guestPromise).rejects.toMatchObject({ code: "protocol-error" });
     await expect(guestPromise).rejects.toBeInstanceOf(SessionSetupError);
   });
+
+  it("rejects a complete-but-absurdly-dimensioned map instead of attempting a multi-gigabyte visited-grid allocation (re-review finding)", async () => {
+    const channels = linkedChannels();
+    const guestPromise = runGuestSessionSetup(channels.guest);
+
+    const send = (message: SessionSetupMessage): void => channels.host.reconciliation.send(JSON.stringify(message));
+    send({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ });
+    send({
+      type: "session-init",
+      roster: ["guest", "host"],
+      assignedId: "guest",
+      tickRateHz: 30,
+      fixedDt: 1 / 30,
+      inputDelayTicks: 3,
+      gameplaySeed: 1,
+      difficulty: "normal",
+      playerCount: 2,
+    });
+    // A tiny, well-formed payload declaring absurd dimensions — passes every
+    // chunk-count/byte cap (those bound wire size, not declared dimensions).
+    const tinyMalformedMap = JSON.stringify({ width: 1e9, height: 1e9, grid: [] });
+    send({ type: "map-chunk", index: 0, data: tinyMalformedMap });
+    send({ type: "map-end", totalChunks: 1 });
+
+    await expect(guestPromise).rejects.toMatchObject({ code: "protocol-error" });
+    await expect(guestPromise).rejects.toBeInstanceOf(SessionSetupError);
+  });
 });
 
 describe("runGuestSessionSetup — visited reconstruction", () => {

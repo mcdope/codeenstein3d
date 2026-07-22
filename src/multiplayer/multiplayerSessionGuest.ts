@@ -35,11 +35,12 @@
  * host itself uses.
  */
 import { onJsonMessage, sendJson } from "./dataChannelMessaging";
-import { ChunkReassembler } from "./chunkedTransfer";
+import { ChunkReassembler, isValidMapDimensions } from "./chunkedTransfer";
 import type { EngineCarryover, EngineStats, PlayerId, RosterSnapshotEntry } from "../engine/engine";
 import { readConnectionStats } from "./connectionStats";
+import { isValidInputSnapshot } from "./inputValidation";
 import type { ConnectionStateSource, MultiplayerSessionHandle } from "./multiplayerSessionHost";
-import { DISCONNECT_GRACE_MS, FIXED_DT, INPUT_DELAY_TICKS } from "./netcodeConstants";
+import { DISCONNECT_GRACE_MS, FIXED_DT, INPUT_DELAY_TICKS, MAX_TRANSFERRED_MAP_DIMENSION } from "./netcodeConstants";
 import type { LevelTransitionAckMessage, LevelTransitionMessage } from "./levelTransitionTypes";
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
 import type { ReconciliationSnapshotMessage } from "./reconciliationTypes";
@@ -223,6 +224,23 @@ export function runMultiplayerSessionAsGuest(
     // documents elsewhere in this codebase.
     /* v8 ignore next */
     if (!engine || !myInput || !otherInputs || !localSampler) return;
+    // The host is otherwise trusted, but a corrupted/malformed bundle must
+    // still be dropped rather than crash this handler — a missing
+    // `heldInputFallback` throws on the `for...of` below, and a missing/
+    // malformed `inputs` entry puts `undefined`/garbage through `loadFrame`/
+    // `engine.advance()`, either of which would freeze this peer's own
+    // simulation with no session-end (same "validate at the boundary"
+    // discipline as `inputValidation.ts`'s host-side counterpart).
+    if (
+      !Array.isArray(bundle.heldInputFallback) ||
+      typeof bundle.inputs !== "object" ||
+      bundle.inputs === null ||
+      !isValidInputSnapshot(bundle.inputs[myPlayerId]) ||
+      ![...otherInputs.keys()].every((id) => isValidInputSnapshot(bundle.inputs[id]))
+    ) {
+      console.log(`[multiplayer] discarding malformed TickInputBundle for tick ${bundle.tick}`);
+      return;
+    }
     // `input`/`reconciliation` are two independent WebRTC data channels with
     // no cross-channel ordering guarantee — this peer can finish a
     // level-transition handshake (over `reconciliation`) and swap to a
@@ -347,13 +365,44 @@ export function runMultiplayerSessionAsGuest(
           return;
         }
         case "level-transition-map-chunk": {
-          transitionReassembler?.push(message.data, message.index);
+          // A host-sent chunk that would exceed ChunkReassembler's own
+          // count/byte caps throws — caught and dropped rather than
+          // crashing this listener (the same "log and discard" tolerance
+          // every other malformed-payload site in this handler now has),
+          // since the transition would already stall via its own
+          // `isComplete()` check once the map-end never arrives complete.
+          try {
+            transitionReassembler?.push(message.data, message.index);
+          } catch (err) {
+            console.log(`[multiplayer] discarding oversized level-transition map-chunk: ${err}`);
+          }
           return;
         }
         case "level-transition-map-end": {
           if (!transitionReassembler || transitionCarryovers === null || transitionGameplaySeed === null) return;
           if (!transitionReassembler.isComplete(message.totalChunks)) return;
-          const mapWithoutVisited = transitionReassembler.finish<Omit<GameMap, "visited">>();
+          let mapWithoutVisited: Omit<GameMap, "visited">;
+          try {
+            // finish() JSON.parses the concatenated chunks — a corrupted
+            // (but count/byte-cap-compliant) transfer throws here rather
+            // than producing valid map data.
+            mapWithoutVisited = transitionReassembler.finish<Omit<GameMap, "visited">>();
+          } catch (err) {
+            console.log(`[multiplayer] discarding unparsable level-transition map payload: ${err}`);
+            transitionReassembler = null;
+            transitionCarryovers = null;
+            transitionGameplaySeed = null;
+            return;
+          }
+          // Declared dimensions are never trusted before allocating from
+          // them — see `isValidMapDimensions`'s own doc comment.
+          if (!isValidMapDimensions(mapWithoutVisited.width, mapWithoutVisited.height, MAX_TRANSFERRED_MAP_DIMENSION)) {
+            console.log(`[multiplayer] discarding level-transition map with invalid or oversized dimensions`);
+            transitionReassembler = null;
+            transitionCarryovers = null;
+            transitionGameplaySeed = null;
+            return;
+          }
           // Reconstructed locally rather than transferred — see
           // `sessionSetupGuest.ts`'s identical reasoning for its own initial
           // map transfer.

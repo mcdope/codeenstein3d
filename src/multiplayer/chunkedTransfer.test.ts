@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 import { describe, expect, it } from "vitest";
-import { ChunkReassembler, chunkJson, MAX_TOTAL_BYTES, MAX_TOTAL_CHUNKS } from "./chunkedTransfer";
+import { ChunkReassembler, chunkJson, isValidMapDimensions, MAX_TOTAL_BYTES, MAX_TOTAL_CHUNKS } from "./chunkedTransfer";
 
 describe("chunkJson / ChunkReassembler round trip", () => {
   it("round-trips a small payload that fits in a single chunk", () => {
@@ -110,5 +110,38 @@ describe("chunkJson / ChunkReassembler round trip", () => {
     // content counts.
     for (let i = 0; i < 1000; i++) reassembler.push("b".repeat(1000), 0);
     expect(() => reassembler.push("c".repeat(1000), 1)).not.toThrow();
+  });
+});
+
+describe("isValidMapDimensions (re-review finding: unvalidated declared width/height)", () => {
+  const MAX = 2048;
+
+  it("accepts real, in-bounds integer dimensions", () => {
+    expect(isValidMapDimensions(160, 160, MAX)).toBe(true);
+    expect(isValidMapDimensions(1, 1, MAX)).toBe(true);
+    expect(isValidMapDimensions(MAX, MAX, MAX)).toBe(true);
+  });
+
+  it("rejects a declared dimension exceeding the cap — the exact allocation-DoS vector", () => {
+    expect(isValidMapDimensions(1e9, 1e9, MAX)).toBe(false);
+    expect(isValidMapDimensions(MAX + 1, 100, MAX)).toBe(false);
+    expect(isValidMapDimensions(100, MAX + 1, MAX)).toBe(false);
+  });
+
+  it("rejects zero or negative dimensions", () => {
+    expect(isValidMapDimensions(0, 100, MAX)).toBe(false);
+    expect(isValidMapDimensions(100, 0, MAX)).toBe(false);
+    expect(isValidMapDimensions(-5, 100, MAX)).toBe(false);
+  });
+
+  it("rejects non-integer (fractional) dimensions", () => {
+    expect(isValidMapDimensions(100.5, 100, MAX)).toBe(false);
+  });
+
+  it("rejects non-numeric dimensions", () => {
+    expect(isValidMapDimensions("100", 100, MAX)).toBe(false);
+    expect(isValidMapDimensions(100, null, MAX)).toBe(false);
+    expect(isValidMapDimensions(undefined, 100, MAX)).toBe(false);
+    expect(isValidMapDimensions({}, 100, MAX)).toBe(false);
   });
 });

@@ -95,3 +95,24 @@ export class ChunkReassembler {
     return JSON.parse(json) as T;
   }
 }
+
+/** Guards a reassembled `GameMap`'s own `width`/`height` before a caller
+ * allocates a `visited` grid from them (`Array.from({length: height}, () =>
+ * new Array(width)...)`) — the byte/chunk-count caps above bound wire size,
+ * not declared dimensions, so a tiny well-formed payload like
+ * `{"width":1e9,"height":1e9}` passes both and still triggers a
+ * multi-gigabyte allocation. Shared by `sessionSetupGuest.ts` (initial
+ * handshake) and `multiplayerSessionGuest.ts` (level transitions) — the same
+ * validation applies identically to both map-transfer sites. */
+export function isValidMapDimensions(width: unknown, height: unknown, maxDimension: number): boolean {
+  return (
+    typeof width === "number" &&
+    Number.isInteger(width) &&
+    width > 0 &&
+    width <= maxDimension &&
+    typeof height === "number" &&
+    Number.isInteger(height) &&
+    height > 0 &&
+    height <= maxDimension
+  );
+}
