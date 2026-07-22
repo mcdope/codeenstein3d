@@ -193,6 +193,13 @@ async function runAttempt(browser, engineName, attempt) {
       targetTick: TARGET_TICK,
       tickingTimeoutMs: DEFAULT_TICKING_TIMEOUT_MS * 2,
       log: (msg) => console.log(msg),
+      // Temporary, for diagnosing a real, deterministic "ticking never
+      // starts at all" hang — see this file's own recent git history. Real
+      // browser console output is the only way to see where main.ts's own
+      // host-setup sequence (Promise.all(runHostSessionSetup) ->
+      // worker.postMessage) actually gets stuck, since a silent hang
+      // produces no pageerror.
+      logBrowserConsole: true,
     });
     check("all three peers connected, roster finalized, ticking past target", true);
     const { hostPage, guestPages } = session;

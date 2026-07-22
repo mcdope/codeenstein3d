@@ -189,6 +189,7 @@ export async function bootstrapMultiplayerSession(browser, options) {
     // it everywhere keeps every context's local UI state consistent too.
     difficulty,
     log = () => {},
+    logBrowserConsole = false,
   } = options;
 
   if (!Number.isInteger(playerCount) || playerCount < 2 || playerCount > 4) {
@@ -222,6 +223,16 @@ export async function bootstrapMultiplayerSession(browser, options) {
   const [hostPage, ...guestPages] = pages;
   pages.forEach((page, i) => {
     page.on("pageerror", (err) => log(`[${playerIds[i]} pageerror] ${err.message}`));
+    // Opt-in (default off — every other caller stays exactly as noisy as
+    // before): forwards every real console.log/warn/error the app itself
+    // emits, not just uncaught exceptions. Added for diagnosing a real,
+    // deterministic N=3 hang (ticking never starts at all, no pageerror —
+    // see verify-multiplayer-multiguest.mjs's own use of this flag and this
+    // repo's recent git history for the investigation); a silent hang like
+    // that produces nothing on the `pageerror` channel above, so there was
+    // previously no way to see where main.ts's own host-setup sequence
+    // actually got stuck.
+    if (logBrowserConsole) page.on("console", (msg) => log(`[${playerIds[i]} console] ${msg.text()}`));
   });
 
   log(`Loading an eligible workspace (demo campaign) in all ${playerCount} browsers...`);

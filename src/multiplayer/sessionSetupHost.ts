@@ -90,8 +90,12 @@ export function runHostSessionSetup(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const channel = channels.reconciliation;
+    // TEMPORARY diagnostic logging (to be removed once root-caused) — see
+    // `main.ts`'s own matching diagnostic comment for why.
+    console.log(`[diag] runHostSessionSetup(${assignedId}): starting, channel.readyState=${channel.readyState}`);
 
     const unsubscribe = onJsonMessage<SessionSetupMessage>(channel, (message) => {
+      console.log(`[diag] runHostSessionSetup(${assignedId}): received message type=${message.type}`);
       if (message.type !== "build-version") return; // only message a guest ever sends us during setup
       unsubscribe();
 
@@ -128,12 +132,25 @@ export function runHostSessionSetup(
       // synchronous (`(message: T) => void`), so an `async` callback's own
       // rejection would never actually reach anything — this settles the
       // outer `Promise` explicitly instead of relying on that.
+      console.log(`[diag] runHostSessionSetup(${assignedId}): sending session-init + ${chunkMessages.length} map chunks + map-end`);
       sendJsonSequence(channel, [sessionInitMessage, ...chunkMessages, mapEndMessage])
-        .then(() => resolve())
-        .catch(reject);
+        .then(() => {
+          console.log(`[diag] runHostSessionSetup(${assignedId}): sendJsonSequence resolved, resolving setup`);
+          resolve();
+        })
+        .catch((err) => {
+          console.log(`[diag] runHostSessionSetup(${assignedId}): sendJsonSequence REJECTED: ${err instanceof Error ? err.message : String(err)}`);
+          reject(err);
+        });
     });
 
     const ownVersion: BuildVersionMessage = { type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ };
-    sendJsonWithBackpressure(channel, ownVersion).catch(reject);
+    console.log(`[diag] runHostSessionSetup(${assignedId}): sending own build-version`);
+    sendJsonWithBackpressure(channel, ownVersion)
+      .then(() => console.log(`[diag] runHostSessionSetup(${assignedId}): own build-version sent successfully`))
+      .catch((err) => {
+        console.log(`[diag] runHostSessionSetup(${assignedId}): sendJsonWithBackpressure(build-version) REJECTED: ${err instanceof Error ? err.message : String(err)}`);
+        reject(err);
+      });
   });
 }
