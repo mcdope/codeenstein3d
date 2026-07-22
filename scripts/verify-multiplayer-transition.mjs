@@ -262,7 +262,14 @@ async function driveHostToExit(hostPage, map) {
   // (see git history) produced zero diagnostic detail beyond the final
   // outcome. Real, ongoing cost is negligible (trace recording is a plain
   // array push per decision, already proven cheap elsewhere).
-  const bot = new MultiplayerBot(hostPage, BOT_PROFILE, "host", { logger: { trace: true, navDiag: true } });
+  // ignoreThreats: true — see `Bot`'s own doc comment on this option for the
+  // full reasoning (root-caused directly against this exact script's own real
+  // CI failure: a tanky enemy pinned the host in a long melee grind that
+  // never counted as a "stall" internally since every landed hit reset that
+  // counter, eating real wall-clock time without navigation progress). The
+  // host is already invulnerable — fighting was never a survival need, just
+  // an unwanted side effect of `tick()`'s default combat engagement.
+  const bot = new MultiplayerBot(hostPage, BOT_PROFILE, "host", { logger: { trace: true, navDiag: true }, ignoreThreats: true });
   bot.startLevel(map);
 
   const legOutcome = await bot.driveLegs(route.legs);
