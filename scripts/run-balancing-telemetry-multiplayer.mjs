@@ -105,6 +105,19 @@ const DIFFICULTY_FILTER = process.env.CODEENSTEIN_MP_TELEMETRY_DIFFICULTY || nul
 const PLAYER_COUNTS = process.env.CODEENSTEIN_MP_TELEMETRY_PLAYER_COUNTS
   ? process.env.CODEENSTEIN_MP_TELEMETRY_PLAYER_COUNTS.split(",").map((s) => Number(s.trim()))
   : [2, 3, 4];
+// Pins one *exact* per-slot combo (e.g. "Casual,Gamer" for a specific 2p
+// mixed pair), bypassing the uniform+curated-mixed matrix entirely — used by
+// `run-balancing-campaign-multiplayer.mjs` to scope one spawned invocation to
+// one combo (the same role `CODEENSTEIN_TELEMETRY_PROFILE`/`_DIFFICULTY`
+// already play for single-player's own campaign orchestrator, just precise
+// enough to also pin a specific *mixed* combo, which a bare profile filter
+// can't express). Requires `CODEENSTEIN_MP_TELEMETRY_DIFFICULTY` to also be
+// set (there's no reasonable default difficulty to assume for one pinned
+// combo) — player count is derived from this list's own length, so
+// `CODEENSTEIN_MP_TELEMETRY_PLAYER_COUNTS` is ignored entirely in this mode.
+const COMBO_PROFILES_FILTER = process.env.CODEENSTEIN_MP_TELEMETRY_COMBO_PROFILES
+  ? process.env.CODEENSTEIN_MP_TELEMETRY_COMBO_PROFILES.split(",").map((s) => s.trim())
+  : null;
 
 // Real wall-clock cost per attempt (bootstrap + a full level's worth of BFS
 // legs at MultiplayerBot's real ~400ms/decision pace) means even a "small"
@@ -780,17 +793,31 @@ function buildComboOutput(combo) {
 // Main
 // ---------------------------------------------------------------------------
 
-async function main() {
-  for (const n of PLAYER_COUNTS) {
-    if (!Number.isInteger(n) || n < 2 || n > 4) {
-      throw new Error(`CODEENSTEIN_MP_TELEMETRY_PLAYER_COUNTS: every entry must be an integer 2-4, got "${n}"`);
+/** Flattens the whole difficulty × playerCount × profile-combo matrix into
+ * one list of `{difficulty, playerCount, label, profilesByPlayer}` runs —
+ * or, when `CODEENSTEIN_MP_TELEMETRY_COMBO_PROFILES` pins one exact combo
+ * (see that env var's own doc comment), just that single run. A uniform
+ * pinned combo (every slot the same tier) collapses its label back down to
+ * the bare tier name (matching the matrix mode's own uniform-combo
+ * labeling), rather than reading as e.g. "Casual+Casual". */
+function buildComboRuns() {
+  if (COMBO_PROFILES_FILTER) {
+    if (!DIFFICULTY_FILTER) {
+      throw new Error("CODEENSTEIN_MP_TELEMETRY_COMBO_PROFILES requires CODEENSTEIN_MP_TELEMETRY_DIFFICULTY to also be set");
     }
+    for (const name of COMBO_PROFILES_FILTER) {
+      if (!PROFILES[name]) throw new Error(`CODEENSTEIN_MP_TELEMETRY_COMBO_PROFILES: unknown profile "${name}"`);
+    }
+    const label = new Set(COMBO_PROFILES_FILTER).size === 1 ? COMBO_PROFILES_FILTER[0] : COMBO_PROFILES_FILTER.join("+");
+    return [
+      {
+        difficulty: DIFFICULTY_FILTER,
+        playerCount: COMBO_PROFILES_FILTER.length,
+        label,
+        profilesByPlayer: COMBO_PROFILES_FILTER.map((name) => PROFILES[name]),
+      },
+    ];
   }
-
-  console.log("Starting an isolated multiplayer signaling+dev server pair (not sharing any manually-run dev session)...");
-  const servers = await startIsolatedMultiplayerServers();
-  console.log(`  dev server:       ${servers.devServerUrl}`);
-  console.log(`  signaling server: ${servers.signalingServerUrl}`);
 
   const profileNames = PROFILE_FILTER ? [PROFILE_FILTER] : Object.keys(PROFILES);
   const difficulties = DIFFICULTY_FILTER ? [DIFFICULTY_FILTER] : DIFFICULTIES;
@@ -800,6 +827,34 @@ async function main() {
   // comment for why: a filter means "just this one tier," which a curated
   // mix would contradict).
   const allTierNames = Object.keys(PROFILES);
+
+  const runs = [];
+  for (const difficulty of difficulties) {
+    for (const playerCount of PLAYER_COUNTS) {
+      const comboDefs = profileNames.map((name) => ({ label: name, profilesByPlayer: Array(playerCount).fill(PROFILES[name]) }));
+      if (!PROFILE_FILTER) {
+        for (const mix of curateMixedProfiles(allTierNames, playerCount)) {
+          comboDefs.push({ label: mix.join("+"), profilesByPlayer: mix.map((name) => PROFILES[name]) });
+        }
+      }
+      for (const def of comboDefs) runs.push({ difficulty, playerCount, ...def });
+    }
+  }
+  return runs;
+}
+
+async function main() {
+  for (const n of PLAYER_COUNTS) {
+    if (!Number.isInteger(n) || n < 2 || n > 4) {
+      throw new Error(`CODEENSTEIN_MP_TELEMETRY_PLAYER_COUNTS: every entry must be an integer 2-4, got "${n}"`);
+    }
+  }
+  const comboRuns = buildComboRuns();
+
+  console.log("Starting an isolated multiplayer signaling+dev server pair (not sharing any manually-run dev session)...");
+  const servers = await startIsolatedMultiplayerServers();
+  console.log(`  dev server:       ${servers.devServerUrl}`);
+  console.log(`  signaling server: ${servers.signalingServerUrl}`);
 
   const browser = await chromium.launch({ headless: !HEADED });
   const output = {
@@ -815,38 +870,28 @@ async function main() {
   };
 
   try {
-    for (const difficulty of difficulties) {
-      for (const playerCount of PLAYER_COUNTS) {
-        const comboDefs = profileNames.map((name) => ({ label: name, profilesByPlayer: Array(playerCount).fill(PROFILES[name]) }));
-        if (!PROFILE_FILTER) {
-          for (const mix of curateMixedProfiles(allTierNames, playerCount)) {
-            comboDefs.push({ label: mix.join("+"), profilesByPlayer: mix.map((name) => PROFILES[name]) });
+    for (const { difficulty, playerCount, label, profilesByPlayer } of comboRuns) {
+      const key = `${label}/${difficulty}/${PLAYER_COUNT_LABEL(playerCount)}`;
+      console.log(`\n=== ${key} ===`);
+      const combo = await runQualifyLoop({
+        runAttempt: () => runOneAttempt(browser, servers.devServerUrl, label, profilesByPlayer, difficulty, playerCount),
+        isQualifying: (run) => run.teamOutcome === "allReachedExit",
+        requiredQualifyingRuns: REQUIRED_QUALIFYING_RUNS,
+        attemptCap: ATTEMPT_CAP,
+        concurrency: CONCURRENCY,
+        onProgress: (attempts, qualifying) => {
+          if (attempts % PROGRESS_LOG_INTERVAL === 0) {
+            console.log(`  [${key}] still working — attempt ${attempts}, qualifying ${qualifying}/${REQUIRED_QUALIFYING_RUNS}`);
           }
-        }
-        for (const { label, profilesByPlayer } of comboDefs) {
-          const key = `${label}/${difficulty}/${PLAYER_COUNT_LABEL(playerCount)}`;
-          console.log(`\n=== ${key} ===`);
-          const combo = await runQualifyLoop({
-            runAttempt: () => runOneAttempt(browser, servers.devServerUrl, label, profilesByPlayer, difficulty, playerCount),
-            isQualifying: (run) => run.teamOutcome === "allReachedExit",
-            requiredQualifyingRuns: REQUIRED_QUALIFYING_RUNS,
-            attemptCap: ATTEMPT_CAP,
-            concurrency: CONCURRENCY,
-            onProgress: (attempts, qualifying) => {
-              if (attempts % PROGRESS_LOG_INTERVAL === 0) {
-                console.log(`  [${key}] still working — attempt ${attempts}, qualifying ${qualifying}/${REQUIRED_QUALIFYING_RUNS}`);
-              }
-            },
-            onAttemptResult: (run, attempts) => {
-              if (VERBOSE || run.teamOutcome !== "allReachedExit") {
-                console.log(`  [${key}] attempt ${attempts}: ${run.teamOutcome}`);
-              }
-            },
-          });
-          output.combos[key] = buildComboOutput(combo);
-          console.log(`  qualifying runs: ${combo.qualifyingRuns.length}/${REQUIRED_QUALIFYING_RUNS} (attempts used: ${combo.attemptsUsed})`);
-        }
-      }
+        },
+        onAttemptResult: (run, attempts) => {
+          if (VERBOSE || run.teamOutcome !== "allReachedExit") {
+            console.log(`  [${key}] attempt ${attempts}: ${run.teamOutcome}`);
+          }
+        },
+      });
+      output.combos[key] = buildComboOutput(combo);
+      console.log(`  qualifying runs: ${combo.qualifyingRuns.length}/${REQUIRED_QUALIFYING_RUNS} (attempts used: ${combo.attemptsUsed})`);
     }
     if (DISCONNECT_SCENARIO) {
       output.disconnectIsolation = await runDisconnectIsolationScenario(browser, servers.devServerUrl);
