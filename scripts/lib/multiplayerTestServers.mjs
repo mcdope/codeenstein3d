@@ -106,7 +106,17 @@ export async function startIsolatedMultiplayerServers(options = {}) {
     // `vite` listener — `killProcessGroup()` (below) is what makes that
     // extra layer harmless to tear down.
     devProc = spawn("npm", ["run", "dev", "--", "--port", String(devServerPort), "--strictPort"], {
-      env: { ...process.env, VITE_MULTIPLAYER_SERVER_URL: signalingServerUrl },
+      // CODEENSTEIN_VITE_NO_WATCH: this dev server only ever serves one
+      // short-lived, headless-Playwright-driven script — nothing ever edits
+      // source mid-run, so HMR/file-watching serves no purpose here, and
+      // Vite's own watcher can hit a real ENOSPC ("system limit for number
+      // of file watchers reached") on a host where something else (Dropbox,
+      // other sync/indexing tools) already consumes a big share of the
+      // OS-wide inotify budget — confirmed directly against a real SSH-lane
+      // host. Always set here, unconditionally: this module is exclusively
+      // used by automated verify/telemetry scripts, never a developer's own
+      // interactive `npm run dev` (see this module's own top doc comment).
+      env: { ...process.env, VITE_MULTIPLAYER_SERVER_URL: signalingServerUrl, CODEENSTEIN_VITE_NO_WATCH: "1" },
       stdio: "ignore",
       detached: true,
     });
