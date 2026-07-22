@@ -1,8 +1,9 @@
 # Multiplayer netcode specification
 
-**Status: specification only — nothing in this document is implemented.** No file
-under `src/` is modified by this document or by producing it. It specifies the
-netcode layer that sits *above* the existing single-player `RaycasterEngine`, per
+**Status: implemented** (`src/multiplayer/*.ts`, engine integration in
+`src/engine/engine.ts`) and CI-verified (`scripts/verify-multiplayer-*.mjs`) —
+this document specifies the netcode layer that sits *above* the existing
+single-player `RaycasterEngine`, per
 the design direction and constraints already decided in
 [`multiplayer-research.md`](../../multiplayer-research.md) (star topology through a
 host, GitHub/Demos-only sourcing, the signaling/lobby service) and the finding from

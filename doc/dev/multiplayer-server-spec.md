@@ -1,11 +1,11 @@
 # Multiplayer signaling + lobby server specification
 
-**Status: specification only — no server script exists yet.** This document
-specifies the one piece of backend `multiplayer-research.md` concluded was
-genuinely unavoidable: a minimal WebRTC signaling mailbox, with the lobby feature
-folded in since the same always-running process already makes it nearly free. It
-does not modify anything under `src/` and does not itself contain the server
-implementation — that's deliberately a separate, later step.
+**Status: implemented** (`scripts/multiplayer-server.mjs`) and CI-verified
+(`scripts/verify-multiplayer-server.mjs`) — this document specifies the one
+piece of backend `multiplayer-research.md` concluded was genuinely
+unavoidable: a minimal WebRTC signaling mailbox, with the lobby feature
+folded in since the same always-running process already makes it nearly
+free. It does not modify anything under `src/`.
 
 Cross-references: [`multiplayer-research.md`](../../multiplayer-research.md)'s
 "Direct connect via a short code," "Lobby folds into the same service," and
