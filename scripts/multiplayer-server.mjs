@@ -445,13 +445,19 @@ function timingSafeStringEqual(provided, expected) {
  *  - C0 controls (below U+0020) and DEL/C1 controls (U+007F-U+009F) —
  *    terminal/renderer-disruptive (e.g. could rewrite the visible line via
  *    escape sequences in a naive console/log renderer).
- *  - Zero-width and bidi-override formatting codepoints (U+200B-U+200F,
- *    U+202A-U+202E, U+2060-U+2064, U+FEFF) — the classic "invisible
- *    characters"/RTL-override spoofing vector for making a displayed name
- *    read as something other than its actual content (e.g. impersonating
- *    another player, or hiding characters from a casual read of the lobby). */
+ *  - U+061C (Arabic Letter Mark) and every zero-width/bidi-override/bidi-
+ *    isolate formatting codepoint (U+200B-U+200F, U+202A-U+202E,
+ *    U+2060-U+2069, U+FEFF) — the classic "invisible characters"/RTL-
+ *    override-or-isolate spoofing vector (the exact Trojan-Source/CVE-2021-
+ *    42574 character class) for making a displayed name read as something
+ *    other than its actual content (e.g. impersonating another player, or
+ *    hiding characters from a casual read of the lobby). The isolates
+ *    (U+2066-U+2069: LRI/RLI/FSI/PDI) are a distinct, newer bidi-control
+ *    family from the override characters above — same spoofing class, easy
+ *    to omit if only the overrides are considered. U+2065 (inside that
+ *    range) is unassigned in Unicode; excluding it is harmless. */
 const FORBIDDEN_NAME_CHARS_RE = new RegExp(
-  "[\\u0000-\\u001F\\u007F-\\u009F\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\uFEFF]",
+  "[\\u0000-\\u001F\\u061C\\u007F-\\u009F\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2069\\uFEFF]",
 );
 
 function hasForbiddenNameChars(str) {
