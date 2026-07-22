@@ -1351,6 +1351,18 @@ function beginMultiplayerLevel(): void {
   viewport.append(buildControlsLegend());
   canvasArea.hidden = false;
   canvas.focus();
+  // Both connect flows' own `finally` blocks already re-enabled these once
+  // the connect/lobby phase itself settled (well before this point) — left
+  // alone, either button stayed clickable for the entire live session,
+  // letting a second Join (orphaning this session's worker/listeners with
+  // nothing left to stop them) or a second Create (abandoning this lobby)
+  // fire mid-session. Disabled here, the one call site both
+  // `startMultiplayerSessionAsHost`/`startMultiplayerSessionAsGuest` share
+  // right before a session actually starts — re-enabled by
+  // `onMultiplayerSessionEnded`, the one call site both session-end paths
+  // share.
+  multiplayerJoinConnectButton.disabled = true;
+  multiplayerHostCreateButton.disabled = true;
 }
 
 /** Title/theme color for the end-of-run comparison screen, one per
@@ -1392,6 +1404,12 @@ function onMultiplayerSessionEnded(
   comparison: ReadonlyMap<PlayerId, RosterSnapshotEntry>,
 ): void {
   activeMultiplayerSession = null;
+  // Mirrors `beginMultiplayerLevel()`'s own disabling of both — the one
+  // place every session-end path (this function) shares, so a live
+  // session's end always reopens both, regardless of which ending fired or
+  // which role this peer played.
+  multiplayerJoinConnectButton.disabled = false;
+  multiplayerHostCreateButton.disabled = false;
   const message: Record<SessionEndReason, string> = {
     "team-eliminated": "Multiplayer session ended — every player was eliminated.",
     "host-disconnected": "Multiplayer session ended — the host disconnected.",
@@ -2179,8 +2197,24 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   currentLevelPath = path;
   currentParsedFile = parsed;
 
-  // Tear down any level already running before starting the new one.
+  // Tear down any level already running before starting the new one — a
+  // live multiplayer session included: nothing else ever called .stop() on
+  // it (the file tree, "Continue Run", and the entrypoint auto-launch path
+  // all funnel through this one function with no awareness a session might
+  // still be live), so navigating away mid-session used to leave its
+  // worker/data-channel listeners/grace timers running orphaned underneath
+  // whatever level loads next. teardown() is idempotent (guarded by its own
+  // `ended` flag) regardless of what point in the session's lifecycle this
+  // lands on.
   activeEngine?.stop();
+  activeMultiplayerSession?.stop();
+  activeMultiplayerSession = null;
+  // A raw external .stop() (unlike a natural session ending) never calls
+  // onMultiplayerSessionEnded, so its own button re-enable would otherwise
+  // never run here — mirrored explicitly so navigating away doesn't leave
+  // Join/Host permanently disabled for the rest of the page's lifetime.
+  multiplayerJoinConnectButton.disabled = false;
+  multiplayerHostCreateButton.disabled = false;
 
   const hint = document.createElement("p");
   hint.className = "map-caption";
