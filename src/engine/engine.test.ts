@@ -3152,6 +3152,48 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
       expect(second.gridDelta).toEqual([]);
       expect(second.gridVersion).toBe(1);
     });
+
+    it("does not drain pendingGridDelta when drainGridDelta is false, so a guest that missed this capture still gets it next time (re-review finding)", () => {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][7] = DOOR_TILE;
+      const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+      const { engine, input } = makeEngine(map);
+      engine.advance(0.016);
+      input.keys.add("KeyW");
+      for (let i = 0; i < 20; i++) engine.advance(0.1);
+      expect(map.grid[5][7]).toBe(0);
+
+      const first = engine.captureReconciliationSnapshot(1, false);
+      expect(first.gridDelta).toEqual([{ x: 7, y: 5, value: 0 }]);
+
+      // Not drained — the very same mutation is still there next capture.
+      const second = engine.captureReconciliationSnapshot(2, false);
+      expect(second.gridDelta).toEqual([{ x: 7, y: 5, value: 0 }]);
+
+      // Draining now (the normal default) clears it for good.
+      const third = engine.captureReconciliationSnapshot(3);
+      expect(third.gridDelta).toEqual([{ x: 7, y: 5, value: 0 }]);
+      const fourth = engine.captureReconciliationSnapshot(4);
+      expect(fourth.gridDelta).toEqual([]);
+    });
+
+    it("a captured (undrained) gridDelta array is a copy, unaffected by mutations pushed after it was returned", () => {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][7] = DOOR_TILE;
+      const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+      const { engine, input } = makeEngine(map);
+      engine.advance(0.016);
+      input.keys.add("KeyW");
+      for (let i = 0; i < 20; i++) engine.advance(0.1);
+
+      const snapshot = engine.captureReconciliationSnapshot(1, false);
+      const capturedLength = snapshot.gridDelta.length;
+      // Advancing further shouldn't retroactively grow the already-returned array.
+      for (let i = 0; i < 5; i++) engine.advance(0.1);
+      expect(snapshot.gridDelta.length).toBe(capturedLength);
+    });
   });
 
   describe("hasActiveRenderOffset (test-hook surface)", () => {
