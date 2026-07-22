@@ -15,19 +15,25 @@
  * `user@host`), and authenticates however the local `ssh-agent` already
  * would for a manual `ssh` call — this module never touches credentials.
  *
- * **No pre-existing remote checkout is assumed.** `buildSshRunners()` does a
- * one-time bootstrap per configured host, all *before* any combo work
- * starts (not lazily per-invocation — the local commit under test can't
- * change mid-campaign, so there's no reason to redo this per attempt):
- * clone-or-fetch into a fixed `/tmp/codeenstein3d-ssh-lane` on the remote
- * host, force-checkout the exact local `HEAD` sha, `npm ci`, and
- * `npx playwright install --with-deps chromium` (every balancing script in
- * this family only ever launches Chromium — see `run-balancing-telemetry.mjs`'s
- * own doc comment). A host that fails any bootstrap step (unreachable, git
- * error, npm error) is logged as a warning and simply excluded from the
- * returned runner list — one bad host must never wedge the whole
- * orchestrator, the same "don't let one participant block everything"
- * lesson a real stuck combo already taught this session.
+ * **No pre-existing remote checkout — or even Node/git — is assumed.**
+ * `buildSshRunners()` does a one-time bootstrap per configured host, all
+ * *before* any combo work starts (not lazily per-invocation — the local
+ * commit under test can't change mid-campaign, so there's no reason to redo
+ * this per attempt): installs `git`/a modern-enough Node via `apt`/NodeSource
+ * if either is missing or too old, clone-or-fetch into a fixed
+ * `/tmp/codeenstein3d-ssh-lane` on the remote host, force-checkout the exact
+ * local `HEAD` sha, `npm ci`, and `npx playwright install --with-deps chromium`
+ * (every balancing script in this family only ever launches Chromium — see
+ * `run-balancing-telemetry.mjs`'s own doc comment). **Debian/Ubuntu-only by
+ * design** — the apt-based prerequisite install assumes one of those (or a
+ * derivative); a host on a different distro would fail that step and simply
+ * get excluded, same as any other bootstrap failure. Needs passwordless
+ * `sudo` on the remote host for the apt/NodeSource steps. A host that fails
+ * any bootstrap step (unreachable, apt error, git error, npm error) is
+ * logged as a warning and simply excluded from the returned runner list —
+ * one bad host must never wedge the whole orchestrator, the same "don't let
+ * one participant block everything" lesson a real stuck combo already
+ * taught this session.
  */
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
@@ -73,11 +79,31 @@ async function runSsh(userHost, remoteCommand, { timeoutMs } = {}) {
   return execFileAsync("ssh", ["-tt", "-o", "BatchMode=yes", userHost, remoteCommand], { timeout: timeoutMs, maxBuffer: 1024 * 1024 * 64 });
 }
 
-/** One remote host's own bootstrap — clone-or-fetch, force-checkout the
- * exact local commit, install deps. Throws on any failure; the caller
- * (`buildSshRunners`) is responsible for catching and excluding the host. */
+// Debian/Ubuntu-only, deliberately — see this module's own doc comment.
+// NodeSource's own setup script is used instead of the distro's default
+// `nodejs` package: Debian/Ubuntu's own repos ship wildly different, often
+// too-old Node majors depending on release (this project needs 18+ today,
+// heading toward 20+ — see `notes`' Node-version item), while NodeSource
+// still installs via `apt-get` underneath, just from a repo pinned to a
+// specific modern major instead of the distro's own stale default.
+const NODE_INSTALL_MAJOR = 20;
+const NODE_MIN_MAJOR = 18;
+
+/** One remote host's own bootstrap — installs missing prerequisites
+ * (git, a modern-enough Node/npm) via `apt`, clones-or-fetches, force-
+ * checks-out the exact local commit, installs deps. Throws on any failure;
+ * the caller (`buildSshRunners`) is responsible for catching and excluding
+ * the host. Needs passwordless `sudo` for the `apt-get`/NodeSource-script
+ * steps — a host without it fails bootstrap the same way any other missing
+ * prerequisite does (excluded with a warning, not fatal to the whole run). */
 async function bootstrapHost(userHost, originUrl, headSha) {
   const cmd = [
+    `command -v git >/dev/null 2>&1 || (sudo apt-get update -y && sudo apt-get install -y git)`,
+    // Skip the (slow) NodeSource install entirely if an adequate Node
+    // already exists — `&&`/`||` short-circuit exactly like the git check
+    // above: install only runs when node is missing *or* too old.
+    `(command -v node >/dev/null 2>&1 && [ "$(node -v | sed 's/^v//' | cut -d. -f1)" -ge ${NODE_MIN_MAJOR} ]) || ` +
+      `(curl -fsSL https://deb.nodesource.com/setup_${NODE_INSTALL_MAJOR}.x | sudo -E bash - && sudo apt-get install -y nodejs)`,
     `mkdir -p ${REMOTE_DIR}`,
     // Clone only if this is genuinely the first time; otherwise fetch —
     // avoids re-cloning the whole repo on every campaign invocation.
@@ -86,7 +112,7 @@ async function bootstrapHost(userHost, originUrl, headSha) {
     `cd ${REMOTE_DIR} && npm ci`,
     `cd ${REMOTE_DIR} && npx playwright install --with-deps chromium`,
   ].join(" && ");
-  await runSsh(userHost, cmd, { timeoutMs: 30 * 60 * 1000 }); // a first-time clone+npm ci+playwright install is genuinely slow — 30min ceiling
+  await runSsh(userHost, cmd, { timeoutMs: 30 * 60 * 1000 }); // a first-time apt install+clone+npm ci+playwright install is genuinely slow — 30min ceiling
 }
 
 /** Remote-host lane — see this module's own doc comment for the bootstrap
