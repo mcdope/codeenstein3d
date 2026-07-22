@@ -1441,23 +1441,7 @@ async function startMultiplayerSessionAsHost(): Promise<void> {
     // transfer with its own backpressure wait — fanned out concurrently, not
     // sequentially, for the same reason `multiplayerSessionHost.ts`'s own
     // level-transition broadcast is (see that module's doc comment).
-    // TEMPORARY diagnostic logging (to be removed once root-caused) — a real
-    // N=3 CI failure showed ticking never starting at all, with no
-    // pageerror, so this narrows down whether it's this Promise.all itself
-    // that never settles, and if so, for which specific guest.
-    console.log(`[diag] starting session setup for roster=${JSON.stringify(roster)}, links.size=${links.size}`);
-    await Promise.all(
-      [...links.entries()].map(([guestId, link]) =>
-        runHostSessionSetup(link.channels, guestId, setupOptions).then(
-          () => console.log(`[diag] runHostSessionSetup resolved for ${guestId}`),
-          (err) => {
-            console.log(`[diag] runHostSessionSetup REJECTED for ${guestId}: ${String(err)}`);
-            throw err;
-          },
-        ),
-      ),
-    );
-    console.log("[diag] all runHostSessionSetup calls resolved");
+    await Promise.all([...links.entries()].map(([guestId, link]) => runHostSessionSetup(link.channels, guestId, setupOptions)));
     const result = buildHostSessionSetupResult(setupOptions);
     beginMultiplayerLevel();
     const worker = new Worker(new URL("./multiplayer/tickClockWorker.ts", import.meta.url), { type: "module" });
@@ -1475,11 +1459,8 @@ async function startMultiplayerSessionAsHost(): Promise<void> {
     // interval until it receives this, making the "worker message arrives
     // before any listener is attached" race structurally impossible instead
     // of just unlikely.
-    console.log("[diag] posting start message to tick worker");
     worker.postMessage({ type: "start" });
-    console.log("[diag] start message posted");
   } catch (err) {
-    console.log(`[diag] startMultiplayerSessionAsHost threw: ${String(err)}`);
     console.error("[multiplayer] Failed to start session:", err);
     setMultiplayerStatus(err instanceof Error ? err.message : "Failed to start the multiplayer session.", true);
     multiplayerStartSessionButton.disabled = false;
