@@ -67,17 +67,35 @@ const LOBBY_RATE_LIMIT_MAX_REQUESTS = Number(
 const PUT_SESSION_RATE_LIMIT_MAX_REQUESTS = Number(
   process.env.CODEENSTEIN_MULTIPLAYER_PUT_SESSION_RATE_LIMIT_MAX_REQUESTS ?? 30,
 );
+/** `POST /session/<code>/answer`'s existing `guessLimits` budget is keyed by
+ * IP — sized to slow down one caller guessing at codes it doesn't hold. It
+ * does nothing against a *lobby-derived* code (any public session's code is
+ * handed out for free by `GET /lobby`): many distinct attacker IPs, each
+ * individually well under that per-IP budget, can still collectively flood
+ * one session's answer slot with garbage POSTs, racing the real joiner (see
+ * `already_answered`'s own doc comment). This is a second, independent
+ * budget on the same endpoint, keyed by `code` instead of IP — it caps how
+ * many answer attempts *one session* can absorb in a window, regardless of
+ * how many different IPs make them. Same `checkRateLimit` machinery, just a
+ * different key space. Lower than `RATE_LIMIT_MAX_REQUESTS`: a real joiner
+ * only ever needs to post once. */
+const ANSWER_PER_CODE_RATE_LIMIT_MAX_REQUESTS = Number(
+  process.env.CODEENSTEIN_MULTIPLAYER_ANSWER_PER_CODE_RATE_LIMIT_MAX_REQUESTS ?? 10,
+);
 const BASE_COOLDOWN_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_BASE_COOLDOWN_MS ?? 5_000);
 
-/** Caps how many distinct IPs each of the four rate-limit maps below will
- * ever track at once — without this, an attacker (real, or via a spoofed
+/** Caps how many distinct keys each of the rate-limit maps below will ever
+ * track at once — without this, an attacker (real, or via a spoofed
  * `X-Forwarded-For` — see `getClientIp`) can grow these maps unboundedly
  * until the next sweep (`SWEEP_INTERVAL_MS`, up to tens of seconds later), a
  * straightforward memory-exhaustion DoS. 10,000 distinct concurrently-tracked
- * IPs per limiter is generously above any realistic legitimate concurrency
+ * keys per limiter is generously above any realistic legitimate concurrency
  * for this server while still bounding worst-case memory to a small, fixed
- * multiple of `IpLimitState`'s size. See `checkRateLimit`'s own comment for
- * what happens once a map is actually at this cap. */
+ * multiple of `IpLimitState`'s size. Same cap applies to `answerAttemptsByCode`
+ * even though its keys are session codes, not IPs — the name predates that
+ * limiter, but the bounding logic (`checkRateLimit`) is identical either way.
+ * See `checkRateLimit`'s own comment for what happens once a map is actually
+ * at this cap. */
 const MAX_TRACKED_IPS_PER_LIMITER = Number(
   process.env.CODEENSTEIN_MULTIPLAYER_MAX_TRACKED_IPS_PER_LIMITER ?? 10_000,
 );
@@ -165,6 +183,11 @@ const hostTokenLimits = new Map();
 const lobbyLimits = new Map();
 /** @type {Map<string, IpLimitState>} */
 const putSessionLimits = new Map();
+/** Keyed by session `code`, not IP — see `ANSWER_PER_CODE_RATE_LIMIT_MAX_REQUESTS`'s
+ * own doc comment for why a per-IP budget alone can't catch many distinct
+ * IPs each individually flooding one session's answer slot. */
+/** @type {Map<string, IpLimitState>} */
+const answerAttemptsByCode = new Map();
 
 // Cumulative, process-lifetime counters for /stats — deliberately separate
 // from the live Map sizes above, which only ever show a snapshot ("how many
@@ -221,7 +244,7 @@ function sweep() {
   for (const [code, record] of sessions) {
     if (now > record.expiresAt) sessions.delete(code);
   }
-  for (const map of [guessLimits, hostTokenLimits, lobbyLimits, putSessionLimits]) {
+  for (const map of [guessLimits, hostTokenLimits, lobbyLimits, putSessionLimits, answerAttemptsByCode]) {
     for (const [ip, state] of map) {
       const windowLive = now - state.windowStart < RATE_LIMIT_WINDOW_MS;
       const cooldownLive = now < state.cooldownUntil;
@@ -535,6 +558,7 @@ async function handlePutSession(req, res) {
 
     record.offer = body.offer;
     record.answer = null; // a fresh offer starts a new handshake round
+    record.answerClaimed = false; // same reset, see handlePostAnswer's own doc comment
     record.public = body.public ?? false;
     record.displayName = body.displayName ?? null;
     record.playerCount = body.playerCount;
@@ -554,6 +578,7 @@ async function handlePutSession(req, res) {
     hostToken: randomUUID(),
     offer: body.offer,
     answer: null,
+    answerClaimed: false, // see handlePostAnswer's own doc comment
     createdAt: now,
     lastActivityAt: now,
     expiresAt: now, // set for real by touchSession below
@@ -612,23 +637,45 @@ async function handlePostAnswer(req, res, code) {
     res.setHeader("Retry-After", Math.ceil(limit.retryAfterMs / 1000));
     return sendError(res, 429, "rate_limited", { retryAfterMs: limit.retryAfterMs });
   }
+  // Independent, per-*code* budget — see `ANSWER_PER_CODE_RATE_LIMIT_MAX_REQUESTS`'s
+  // own doc comment: closes the gap the per-IP budget above leaves open when
+  // many distinct IPs each flood one lobby-derived code's answer slot.
+  const codeLimit = checkRateLimit(answerAttemptsByCode, code, ANSWER_PER_CODE_RATE_LIMIT_MAX_REQUESTS, now);
+  if (!codeLimit.allowed) {
+    res.setHeader("Retry-After", Math.ceil(codeLimit.retryAfterMs / 1000));
+    return sendError(res, 429, "rate_limited", { retryAfterMs: codeLimit.retryAfterMs });
+  }
 
   const record = getLiveSession(code, now);
   if (!record) return sendError(res, 404, "session_not_found");
 
+  // Claimed synchronously, *before* the `await` below — two concurrent
+  // requests for the same code otherwise both read `record.answer === null`
+  // and both pass, since neither actually sets it until after its own body
+  // finishes reading. Claiming here (nothing async happens between the read
+  // and the write) makes that race structurally impossible: whichever
+  // request's synchronous code runs first wins the claim, and every other
+  // concurrent request sees it immediately.
+  if (record.answer !== null || record.answerClaimed) {
+    return sendError(res, 409, "already_answered");
+  }
+  record.answerClaimed = true;
+
   const result = await readJsonBody(req);
   if (result.tooLarge) return sendError(res, 413, "payload_too_large", undefined, { closeConnection: true });
-  if (result.invalidJson) return sendError(res, 400, "invalid_json");
+  if (result.invalidJson) {
+    record.answerClaimed = false; // release — this request never actually landed a real answer
+    return sendError(res, 400, "invalid_json");
+  }
   const body = result.body;
 
   if (typeof body.answer !== "string" || body.answer.length === 0) {
+    record.answerClaimed = false;
     return sendError(res, 400, "missing_answer");
   }
   if (byteLength(body.answer) > MAX_OFFER_ANSWER_BYTES) {
+    record.answerClaimed = false;
     return sendError(res, 400, "answer_too_large");
-  }
-  if (record.answer !== null) {
-    return sendError(res, 409, "already_answered");
   }
 
   record.answer = body.answer;
@@ -710,12 +757,17 @@ function handleGetStats(req, res) {
         hostToken: hostTokenLimits.size,
         lobby: lobbyLimits.size,
         putSession: putSessionLimits.size,
+        // Tracked keys here are session codes, not IPs — named to match the
+        // sibling fields above (all part of the same `trackedIps` bucket)
+        // rather than carving out a separate top-level field for one limiter.
+        answerPerCode: answerAttemptsByCode.size,
       },
       ipsCurrentlyInCooldown: {
         guess: countInCooldown(guessLimits, now),
         hostToken: countInCooldown(hostTokenLimits, now),
         lobby: countInCooldown(lobbyLimits, now),
         putSession: countInCooldown(putSessionLimits, now),
+        answerPerCode: countInCooldown(answerAttemptsByCode, now),
       },
     },
   });
@@ -829,7 +881,8 @@ invocation's currently-effective ones):
   CODEENSTEIN_MULTIPLAYER_HOST_TOKEN_MAX_REQUESTS        Host-token-exempt budget (currently ${HOST_TOKEN_MAX_REQUESTS}).
   CODEENSTEIN_MULTIPLAYER_LOBBY_RATE_LIMIT_MAX_REQUESTS  GET /lobby budget (currently ${LOBBY_RATE_LIMIT_MAX_REQUESTS}).
   CODEENSTEIN_MULTIPLAYER_PUT_SESSION_RATE_LIMIT_MAX_REQUESTS  PUT /session budget (currently ${PUT_SESSION_RATE_LIMIT_MAX_REQUESTS}).
-  CODEENSTEIN_MULTIPLAYER_MAX_TRACKED_IPS_PER_LIMITER    Per-limiter distinct-IP cap (currently ${MAX_TRACKED_IPS_PER_LIMITER}).
+  CODEENSTEIN_MULTIPLAYER_ANSWER_PER_CODE_RATE_LIMIT_MAX_REQUESTS  Per-code answer-attempt budget (currently ${ANSWER_PER_CODE_RATE_LIMIT_MAX_REQUESTS}).
+  CODEENSTEIN_MULTIPLAYER_MAX_TRACKED_IPS_PER_LIMITER    Per-limiter distinct-key cap (currently ${MAX_TRACKED_IPS_PER_LIMITER}).
   CODEENSTEIN_MULTIPLAYER_BASE_COOLDOWN_MS               Backoff base (currently ${BASE_COOLDOWN_MS}).
   CODEENSTEIN_MULTIPLAYER_MAX_COOLDOWN_MS                Backoff cap (currently ${MAX_COOLDOWN_MS}).
   CODEENSTEIN_MULTIPLAYER_MAX_BODY_BYTES                 Request body cap (currently ${MAX_BODY_BYTES}).
