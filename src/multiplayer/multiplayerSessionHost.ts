@@ -640,10 +640,25 @@ export function runMultiplayerSessionAsHost(
     // guest (step 10), each independently guarded the same way as the tick
     // broadcast above.
     if (tick % RECONCILE_INTERVAL_TICKS === 0) {
+      // Only drain this interval's gridDelta if every guest that still
+      // matters (i.e. hasn't already been permanently removed past its own
+      // grace period — same filter `ackWaitIds` above uses) has its
+      // channel open right now — see `captureReconciliationSnapshot`'s own
+      // `drainGridDelta` doc comment: a guest whose channel isn't open this
+      // round would otherwise never receive this interval's mutations at
+      // all, since they're already gone from every OTHER guest's snapshot
+      // too by the time the per-guest send loop below even runs.
+      const canDrainGridDelta = [...links.keys()].every(
+        (id) => (neutralInputIds.has(id) && !graceTimers.has(id)) || links.get(id)!.channels.reconciliation.readyState === "open",
+      );
       // `levelEpoch` stamped on here, same reasoning as `TickInputBundle`
       // above — see `ReconciliationSnapshotMessage.levelEpoch`'s own doc
       // comment for why this is required, not just decorative.
-      const snapshot: ReconciliationSnapshotMessage = { type: "reconciliation-snapshot", levelEpoch, ...engine.captureReconciliationSnapshot(tick) };
+      const snapshot: ReconciliationSnapshotMessage = {
+        type: "reconciliation-snapshot",
+        levelEpoch,
+        ...engine.captureReconciliationSnapshot(tick, canDrainGridDelta),
+      };
       lastReconciliationRngState = snapshot.rngState;
       for (const link of links.values()) {
         if (link.channels.reconciliation.readyState === "open") sendJson(link.channels.reconciliation, snapshot);

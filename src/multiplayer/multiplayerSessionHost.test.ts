@@ -634,6 +634,46 @@ describe("runMultiplayerSessionAsHost", () => {
       expect(guestSeenSnapshots).toHaveLength(0);
       expect(handle.getLastAppliedTick()).toBe(0);
     });
+
+    it("does not drain the engine's gridDelta when a still-connected guest's channel isn't open, so it isn't lost for that guest (re-review finding)", () => {
+      const channels = twoGuestLinks();
+      const worker = fakeWorker();
+      const captureSpy = vi.spyOn(RaycasterEngine.prototype, "captureReconciliationSnapshot");
+      runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ roster: ["guest-1", "guest-2", HOST_PLAYER_ID].sort() }), worker);
+
+      // guest-2's channel isn't open at this reconcile boundary — checked
+      // via the HOST's own per-guest channel object (`links`), the one the
+      // session driver actually reads, not the guest-side mirror.
+      const hostSideGuest2Reconciliation = channels.links.get("guest-2")!.channels.reconciliation as unknown as { readyState: RTCDataChannelState };
+      hostSideGuest2Reconciliation.readyState = "closed";
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+      expect(captureSpy).toHaveBeenLastCalledWith(0, false);
+
+      // guest-2 reopens before the next boundary — safe to drain again.
+      hostSideGuest2Reconciliation.readyState = "open";
+      worker.onmessage?.({ data: { type: "tick", tick: RECONCILE_INTERVAL_TICKS } } as MessageEvent);
+      expect(captureSpy).toHaveBeenLastCalledWith(RECONCILE_INTERVAL_TICKS, true);
+
+      captureSpy.mockRestore();
+    });
+
+    it("drains normally even with a guest's channel closed, once that guest is permanently gone (grace already expired) — matches the ack-wait exclusion", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const captureSpy = vi.spyOn(RaycasterEngine.prototype, "captureReconciliationSnapshot");
+      runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
+
+      channels.connection.setState("disconnected");
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS + 1); // fully expires the grace period
+      (channels.host.reconciliation as unknown as { readyState: RTCDataChannelState }).readyState = "closed";
+
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+      expect(captureSpy).toHaveBeenLastCalledWith(0, true);
+
+      captureSpy.mockRestore();
+      vi.useRealTimers();
+    });
   });
 
   describe("local Escape → dismissLoreOverlay (step 8)", () => {

@@ -1605,12 +1605,23 @@ export class RaycasterEngine {
    * Host-only: build this tick's authoritative `ReconciliationSnapshot`
    * (`multiplayer-netcode-spec.md` §3) from live engine state, for
    * `multiplayerSessionHost.ts` to broadcast once every
-   * `RECONCILE_INTERVAL_TICKS`. Drains `pendingGridDelta` — every tile
-   * mutation since the *last* capture, not the last-ever mutation — so a
-   * guest applying every successive snapshot in order sees every change
-   * exactly once, cumulatively.
+   * `RECONCILE_INTERVAL_TICKS`.
+   *
+   * `drainGridDelta` (default `true`) controls whether `pendingGridDelta` is
+   * cleared after this call. The host passes `false` when at least one
+   * still-connected guest's channel wasn't open this round (e.g. mid-
+   * reconnect) — that guest would otherwise never receive this interval's
+   * mutations at all, and since this method always drains before the
+   * per-guest send loop even runs, they'd already be gone from
+   * `pendingGridDelta` for every OTHER guest too. Not draining means every
+   * guest (including ones that already received this exact `gridDelta` last
+   * time) gets the same still-accumulating backlog again next interval —
+   * harmless, since applying a tile mutation is an idempotent absolute
+   * overwrite (`applyReconciliationSnapshot`'s own doc comment), and bounded
+   * by `DISCONNECT_GRACE_MS`: a guest that never reopens its channel is
+   * eventually removed from the roster, at which point draining resumes.
    */
-  captureReconciliationSnapshot(tick: number): ReconciliationSnapshot {
+  captureReconciliationSnapshot(tick: number, drainGridDelta = true): ReconciliationSnapshot {
     const players: Record<PlayerId, PlayerSnapshot> = {};
     for (const [id, p] of this.players) {
       // A disconnected player is no longer a *wire-level* roster member
@@ -1673,7 +1684,11 @@ export class RaycasterEngine {
       if (key.collected) keysCollected.push(index);
     });
 
-    const gridDelta = this.pendingGridDelta.splice(0, this.pendingGridDelta.length);
+    // A copy either way — `drainGridDelta: false` must never hand back a
+    // live reference into `pendingGridDelta` that a later push could mutate
+    // out from under an already-returned (and possibly still in-flight)
+    // snapshot.
+    const gridDelta = drainGridDelta ? this.pendingGridDelta.splice(0, this.pendingGridDelta.length) : [...this.pendingGridDelta];
 
     return {
       tick,
