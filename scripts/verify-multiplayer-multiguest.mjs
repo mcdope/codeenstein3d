@@ -149,14 +149,16 @@ async function sampleTickSkewMs(pageA, pageB) {
 // connect/lockstep/setup problem, or guest-1 actually going down specifically
 // because of guest-2's disconnect rather than unrelated combat) is not
 // retried — only a real team-eliminated wipe or a TickSyncTimeoutError is
-// (see runAttempt's own doc comment). Raised from 5 to 10 after real CI data
-// showed all 5 attempts exhausted purely by real, sustained runner
-// contention (every attempt hit the same tick-sync timeout, not a code bug —
-// see this repo's own recent git history for the investigation) — same
-// "widen the budget, don't paper over it with a weaker signal" tradeoff
-// `verify-multiplayer-transition.mjs` made for its own combat-retry budget
-// before combat was taken out of its critical path entirely.
-const MAX_SCENARIO_ATTEMPTS = 10;
+// (see runAttempt's own doc comment). Was briefly raised from 5 to 10, and
+// `tickingTimeoutMs` below doubled, on the mistaken theory that every
+// attempt hitting the same tick-sync timeout meant sustained runner
+// contention — real diagnostic CI data then showed it was actually a
+// deterministic bug (a guest's own handshake timeout firing before the host
+// ever started sending, in a 3-player lobby specifically — see
+// `sessionSetupGuest.ts`'s doc comment for the fix), so both values reverted
+// back down once that root cause was fixed rather than staying artificially
+// widened for a problem that no longer exists.
+const MAX_SCENARIO_ATTEMPTS = 5;
 
 /** Runs one full attempt at the scenario against fresh browser contexts.
  * Returns `{ failureCount, teamWiped, tickSyncTimedOut }` — `teamWiped`
@@ -182,24 +184,16 @@ async function runAttempt(browser, engineName, attempt) {
     // Start Session, all three peers ticked past TARGET_TICK — see
     // `scripts/lib/multiplayerSessionBootstrap.mjs`'s own doc comment for
     // the full mechanics and the real-CI-measured timing behind its retry
-    // defaults. `tickingTimeoutMs` doubled from the shared default (30s):
-    // a real 3-peer bootstrap (one more real WebRTC connection/join than
-    // any 2-peer sibling script) has less margin left in 30s under real CI
-    // contention — confirmed directly: every one of 5 straight attempts hit
-    // that exact wall in the same CI run, not a one-off.
+    // defaults. `tickingTimeoutMs` left at the shared default (30s): a
+    // doubled value was briefly tried here on the mistaken theory that a
+    // real 3-peer bootstrap needed more margin under CI contention — the
+    // actual cause was a deterministic bug (see `MAX_SCENARIO_ATTEMPTS`'s own
+    // comment above), so the default is plenty once that's fixed.
     session = await bootstrapMultiplayerSession(browser, {
       engineName,
       playerCount: 3,
       targetTick: TARGET_TICK,
-      tickingTimeoutMs: DEFAULT_TICKING_TIMEOUT_MS * 2,
       log: (msg) => console.log(msg),
-      // Temporary, for diagnosing a real, deterministic "ticking never
-      // starts at all" hang — see this file's own recent git history. Real
-      // browser console output is the only way to see where main.ts's own
-      // host-setup sequence (Promise.all(runHostSessionSetup) ->
-      // worker.postMessage) actually gets stuck, since a silent hang
-      // produces no pageerror.
-      logBrowserConsole: true,
     });
     check("all three peers connected, roster finalized, ticking past target", true);
     const { hostPage, guestPages } = session;
