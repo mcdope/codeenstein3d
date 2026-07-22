@@ -39,14 +39,18 @@
  * arguments, every host listed in `ssh-hosts.env` is set up in turn
  * (sequentially, not concurrently: interactive sudo prompts from several
  * hosts at once would interleave confusingly on one terminal). Pass one or
- * more `user@host` arguments to scope it to specific hosts instead (e.g. to
- * try a host before adding it to `ssh-hosts.env`, or re-run setup on just
- * one after a system update wiped its Node install).
+ * more `user@host` arguments to set up a *new* host instead — once its
+ * setup succeeds, it's appended to `ssh-hosts.env` automatically
+ * (`appendHostIfMissing`, `sshRunner.mjs`), so it's immediately picked up
+ * by the next `balancing:campaign`/`balancing:campaign-multiplayer` run
+ * with no separate manual edit. Re-running against an already-listed host
+ * (e.g. after a system update wiped its Node install) is a safe no-op for
+ * this part — it's already there, nothing gets duplicated.
  */
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { REPO_ROOT } from "./lib/loadEngineModules.mjs";
-import { NODE_MIN_MAJOR, REMOTE_DIR, readHostList } from "./lib/sshRunner.mjs";
+import { NODE_MIN_MAJOR, REMOTE_DIR, appendHostIfMissing, readHostList, shellQuote, toHttpsCloneUrl } from "./lib/sshRunner.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -79,7 +83,7 @@ function buildSetupCommand(originUrl) {
     `(command -v node >/dev/null 2>&1 && [ "$(node -v | sed 's/^v//' | cut -d. -f1)" -ge ${NODE_MIN_MAJOR} ]) || ` +
       `(curl -fsSL https://deb.nodesource.com/setup_${NODE_INSTALL_MAJOR}.x | sudo -E bash - && sudo apt-get install -y nodejs)`,
     `mkdir -p ${REMOTE_DIR}`,
-    `if [ -d ${REMOTE_DIR}/.git ]; then git -C ${REMOTE_DIR} fetch origin; else git clone '${originUrl.replace(/'/g, "'\\''")}' ${REMOTE_DIR}; fi`,
+    `if [ -d ${REMOTE_DIR}/.git ]; then git -C ${REMOTE_DIR} fetch origin; else git clone ${shellQuote(originUrl)} ${REMOTE_DIR}; fi`,
     `cd ${REMOTE_DIR} && npm ci`,
     // Real system dependencies (fonts, X11/graphics libs, etc.) — the whole
     // reason this step needs its own script; see the top doc comment.
@@ -100,12 +104,21 @@ async function main() {
   }
 
   const { stdout: originUrl } = await execFileAsync("git", ["remote", "get-url", "origin"], { cwd: REPO_ROOT });
-  const setupCommand = buildSetupCommand(originUrl.trim());
+  // Never ship *this* machine's own configured access method (commonly an
+  // SSH `git@host:...` URL, the natural default for a repo owner who
+  // pushes) to an arbitrary lane host — confirmed directly as a real
+  // failure, not theoretical: a real lane host had no GitHub SSH key at all
+  // and failed to clone. `https://` needs no credentials for a public repo.
+  const setupCommand = buildSetupCommand(toHttpsCloneUrl(originUrl.trim()));
 
   for (const userHost of hosts) {
     console.log(`\n=== Setting up ${userHost} — you may be prompted for your sudo password ===`);
     await runInteractiveSsh(userHost, setupCommand);
     console.log(`=== ${userHost} ready for automated campaign runs ===`);
+    // Saved *after* setup succeeds, not before — a host that never finished
+    // provisioning has no business being in the list the campaign
+    // orchestrators actually read.
+    appendHostIfMissing(userHost);
   }
 }
 

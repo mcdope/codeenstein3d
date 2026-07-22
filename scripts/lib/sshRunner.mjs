@@ -46,7 +46,10 @@ import { REPO_ROOT } from "./loadEngineModules.mjs";
 
 const execFileAsync = promisify(execFile);
 
-const HOSTS_FILE = path.join(REPO_ROOT, "ssh-hosts.env");
+/** Exported for `scripts/setup-ssh-lane-host.mjs` — it appends a newly
+ * set-up host here directly (see `appendHostIfMissing`) rather than making
+ * the user copy it in by hand afterward. */
+export const HOSTS_FILE = path.join(REPO_ROOT, "ssh-hosts.env");
 /** Exported for `scripts/setup-ssh-lane-host.mjs` — the one-time setup
  * script and this module's own per-run bootstrap must agree on where the
  * checkout lives. */
@@ -64,10 +67,23 @@ export function readHostList() {
     .filter((line) => line.length > 0 && !line.startsWith("#"));
 }
 
+/** Appends `userHost` to `ssh-hosts.env` if it isn't already listed —
+ * creates the file if it doesn't exist yet (a host set up via an explicit
+ * CLI argument, not already in the file, is the common case this handles;
+ * a host that was already listed, e.g. every no-args "set up everything"
+ * run, is correctly left untouched — no duplicate lines pile up on repeat
+ * setup runs). Used by `scripts/setup-ssh-lane-host.mjs` right after a
+ * host's setup succeeds, so a freshly-provisioned host is immediately
+ * usable by the campaign orchestrators without a separate manual edit. */
+export function appendHostIfMissing(userHost) {
+  if (readHostList().includes(userHost)) return;
+  fs.appendFileSync(HOSTS_FILE, `${userHost}\n`);
+}
+
 /** Single-quotes a value for safe inclusion in the remote shell command —
  * every dynamic value this module ever interpolates (the origin URL, a git
  * sha, an env var's value) goes through this rather than being trusted raw. */
-function shellQuote(value) {
+export function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
@@ -76,6 +92,27 @@ function shellQuote(value) {
  * the same relative structure, only the root differs. */
 function toRemotePath(localAbsolutePath) {
   return path.posix.join(REMOTE_DIR, path.relative(REPO_ROOT, localAbsolutePath).split(path.sep).join("/"));
+}
+
+/** Normalizes a git remote URL to `https://` for the *remote* host's own
+ * clone — never trust `git remote get-url origin` as-is for that. It
+ * reflects *this* machine's own configured access method (commonly an SSH
+ * `git@host:owner/repo.git` URL, since that's the natural default for a
+ * repo owner who pushes), which says nothing about whether an arbitrary SSH
+ * lane host also has a matching SSH key/known_hosts entry for that git
+ * host — confirmed directly as a real failure, not a theoretical one: a
+ * real lane host had no GitHub SSH key at all and failed to clone. `https://`
+ * needs no credentials at all for a public repo, which every host in this
+ * project's own lane list clones. Handles the two common SSH forms
+ * (`git@host:owner/repo.git` and `ssh://git@host/owner/repo.git`); anything
+ * else (already `https://`, or some other scheme this doesn't recognize) is
+ * passed through unchanged rather than guessed at. */
+export function toHttpsCloneUrl(originUrl) {
+  const scpLike = originUrl.match(/^git@([^:]+):(.+)$/);
+  if (scpLike) return `https://${scpLike[1]}/${scpLike[2]}`;
+  const sshUrl = originUrl.match(/^ssh:\/\/git@([^/]+)\/(.+)$/);
+  if (sshUrl) return `https://${sshUrl[1]}/${sshUrl[2]}`;
+  return originUrl;
 }
 
 async function runSsh(userHost, remoteCommand, { timeoutMs } = {}) {
@@ -205,12 +242,13 @@ export async function buildSshRunners() {
 
   const { stdout: originUrl } = await execFileAsync("git", ["remote", "get-url", "origin"], { cwd: REPO_ROOT });
   const { stdout: headSha } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT });
+  const httpsOriginUrl = toHttpsCloneUrl(originUrl.trim());
 
   const results = await Promise.all(
     hosts.map(async (userHost) => {
       try {
         console.log(`[ssh] bootstrapping ${userHost}...`);
-        await bootstrapHost(userHost, originUrl.trim(), headSha.trim());
+        await bootstrapHost(userHost, httpsOriginUrl, headSha.trim());
         console.log(`[ssh] ${userHost} ready`);
         return new SshRunner(userHost);
       } catch (err) {
