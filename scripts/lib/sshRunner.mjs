@@ -99,18 +99,40 @@ const NODE_MIN_MAJOR = 18;
 async function bootstrapHost(userHost, originUrl, headSha) {
   const cmd = [
     `command -v git >/dev/null 2>&1 || (sudo apt-get update -y && sudo apt-get install -y git)`,
-    // Skip the (slow) NodeSource install entirely if an adequate Node
-    // already exists — `&&`/`||` short-circuit exactly like the git check
-    // above: install only runs when node is missing *or* too old.
+    // Skip the (slow) Node install entirely if an adequate Node already
+    // exists — `&&`/`||` short-circuit exactly like the git check above:
+    // install only runs when node is missing *or* too old. Deliberately NOT
+    // NodeSource's own `curl | sudo bash` setup script: that pipes arbitrary
+    // downloaded script content into a root shell, which can't be scoped in
+    // sudoers at all (sudo matches the executable, `bash`, not what's piped
+    // into its stdin — a NOPASSWD rule for `bash` is unrestricted root, not
+    // a scoped install step). This does the same thing NodeSource's script
+    // does, by hand, entirely with fixed, sudoers-scopable commands — see
+    // this repo's `doc/dev/balancing-telemetry.md` "SSH-host parallelism"
+    // section for the exact sudoers entries this enables.
     `(command -v node >/dev/null 2>&1 && [ "$(node -v | sed 's/^v//' | cut -d. -f1)" -ge ${NODE_MIN_MAJOR} ]) || ` +
-      `(curl -fsSL https://deb.nodesource.com/setup_${NODE_INSTALL_MAJOR}.x | sudo -E bash - && sudo apt-get install -y nodejs)`,
+      `(sudo apt-get install -y ca-certificates curl gnupg && ` +
+      `sudo mkdir -p -m 755 /etc/apt/keyrings && ` +
+      `curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && ` +
+      `echo ${shellQuote(`deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_INSTALL_MAJOR}.x nodistro main`)} | sudo tee /etc/apt/sources.list.d/nodesource.list >/dev/null && ` +
+      `sudo apt-get update -y && sudo apt-get install -y nodejs)`,
     `mkdir -p ${REMOTE_DIR}`,
     // Clone only if this is genuinely the first time; otherwise fetch —
     // avoids re-cloning the whole repo on every campaign invocation.
     `if [ -d ${REMOTE_DIR}/.git ]; then git -C ${REMOTE_DIR} fetch origin; else git clone ${shellQuote(originUrl)} ${REMOTE_DIR}; fi`,
     `git -C ${REMOTE_DIR} checkout --force ${shellQuote(headSha)}`,
     `cd ${REMOTE_DIR} && npm ci`,
-    `cd ${REMOTE_DIR} && npx playwright install --with-deps chromium`,
+    // Deliberately *not* `--with-deps`: that flag has Playwright itself
+    // decide and `apt-get install` an arbitrary, version/OS-state-dependent
+    // package list at run time — not something a sudoers rule can pin ahead
+    // of time (confirmed directly: a `--dry-run` against this exact
+    // Playwright version needed a different package set depending on what
+    // was already on the machine). A one-time `sudo npx playwright
+    // install-deps chromium`, run manually per host during setup, covers
+    // this once with full interactive sudo instead of trying to scope an
+    // open-ended package list — see this repo's `ssh-hosts.env.dist`/
+    // `doc/dev/balancing-telemetry.md` for the full setup checklist.
+    `cd ${REMOTE_DIR} && npx playwright install chromium`,
   ].join(" && ");
   await runSsh(userHost, cmd, { timeoutMs: 30 * 60 * 1000 }); // a first-time apt install+clone+npm ci+playwright install is genuinely slow — 30min ceiling
 }
