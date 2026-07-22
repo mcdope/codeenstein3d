@@ -167,7 +167,15 @@ session alive.
 Errors: `400` (missing/oversized `answer`), `404` (no such live session),
 `409` (`{"error": "already_answered"}` — this round's slot is already claimed by an
 earlier joiner; the caller should ask the host for a fresh code/offer rather than
-retry), `429` (rate-limited, §4 — the other guess-sensitive endpoint).
+retry), `429` (rate-limited, §4 — either the shared guess-sensitive budget or this
+endpoint's own additional per-code budget, see §4's "Per-code answer-attempt limit"
+subsection).
+
+The `answer !== null` check above is only half the story: the claim on a session's
+answer slot is taken *synchronously*, immediately after the session record is
+looked up and before the request body is even read — see §4 for why the naive
+"check `answer === null`, read the body, then set `answer`" ordering has a real
+same-instant race between two concurrent requests for the same code.
 
 ### `GET /lobby`
 
@@ -370,6 +378,16 @@ exist" from the response (200/204 vs. 404) — the exact signal a guessing attac
 needs. `PUT /session` and `GET /lobby` aren't guessing vectors in this sense (see
 their own endpoint sections above for their separate, lighter protections).
 
+A **second, distinct threat** the per-IP guessing budget above does *not* cover:
+griefing a code the attacker didn't have to guess at all, because `GET /lobby`
+handed it out for free. Many different IPs, each individually well under the
+per-IP guess budget, can still collectively flood one public session's answer
+slot with garbage `POST /session/<code>/answer` calls, racing the real joiner for
+that one-shot slot (see `already_answered`, above) — this is the "Per-code
+answer-attempt limit" subsection below, added after an initial review round
+correctly flagged that the original threat model here only ever considered
+guessing, never lobby-derived griefing.
+
 ### Rate limiter design
 
 A second in-memory `Map`, keyed by client IP (extracted via `X-Forwarded-For` per
@@ -435,8 +453,9 @@ const ipLimits = new Map<string, IpLimitState>();
   has ever made a request. Swept on the same interval as session TTL (§3): remove
   any entry whose `cooldownUntil` has passed *and* whose `windowStart` is older
   than `RATE_LIMIT_WINDOW_MS` — i.e., nothing about that IP is currently live.
-- **Each of the four rate-limit maps (guess, host-token, lobby, PUT /session) also
-  has a hard size cap**, `MAX_TRACKED_IPS_PER_LIMITER` (10,000 by default) — the
+- **Each of the five rate-limit maps (guess, host-token, lobby, PUT /session,
+  the per-code answer limit below) also has a hard size cap**,
+  `MAX_TRACKED_IPS_PER_LIMITER` (10,000 by default) — the
   sweep above only runs periodically, so without a cap a burst of requests from
   many distinct IPs (real or, prior to the loopback-gating fix above, spoofed via
   `X-Forwarded-For`) could grow a map unboundedly in between sweeps: a memory-
@@ -459,6 +478,41 @@ so it gets its own, more permissive budget — e.g. `LOBBY_RATE_LIMIT_MAX_REQUES
 per minute per IP, same window/backoff mechanics, just a higher ceiling, tracked
 separately from the guess-sensitive counter so a legitimate lobby-browsing UI
 polling every few seconds never competes with the much stricter join-flow budget.
+
+### Per-code answer-attempt limit
+
+A third `Map`, `answerAttemptsByCode`, using the exact same `checkRateLimit`
+machinery as every other limiter above but keyed by **session code**, not IP:
+
+```ts
+const answerAttemptsByCode = new Map<string, IpLimitState>(); // same IpLimitState shape
+```
+
+`ANSWER_PER_CODE_RATE_LIMIT_MAX_REQUESTS = 10` per minute per code (lower than the
+per-IP guess budget — a real joiner only ever needs to post once), checked on
+`POST /session/<code>/answer` in addition to (not instead of) the per-IP guess
+budget. This directly targets the griefing threat described above: many distinct
+IPs each posting once can't be caught by any per-IP counter, but they all still
+increment the *same* per-code counter, tripping it regardless of how the requests
+are distributed across source IPs. Swept and size-capped identically to the other
+four maps.
+
+This closes only the *volume* half of the griefing threat. The other half — the
+same-instant race between two concurrent requests for one code, both reading
+`answer === null` before either sets it — is closed separately, in the handler
+itself: the answer slot is claimed (`record.answerClaimed = true`) synchronously,
+immediately after the session record is looked up and strictly before the request
+body is ever read. Node's single-threaded event loop means only one concurrent
+request's synchronous handler code can be executing at any instant, so whichever
+request's claim-check runs first wins it outright — the second concurrently-racing
+request's own claim-check (whenever its turn on the event loop comes) always sees
+the first request's claim already in place. A request that claims the slot but then
+fails body validation (`missing_answer`/`answer_too_large`/malformed JSON) releases
+the claim before returning its error, so a griefer sending a malformed body can't
+itself permanently lock out a real answer — only a request that actually sets
+`record.answer` does that. The claim resets to `false` on a fresh re-offer
+(`PUT /session` with an existing `code`/`hostToken`, §2) alongside `answer` itself,
+since that starts a brand new handshake round.
 
 ### Payload size caps (defense against a different abuse shape)
 
