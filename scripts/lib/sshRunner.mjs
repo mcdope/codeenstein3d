@@ -15,25 +15,28 @@
  * `user@host`), and authenticates however the local `ssh-agent` already
  * would for a manual `ssh` call — this module never touches credentials.
  *
- * **No pre-existing remote checkout — or even Node/git — is assumed.**
- * `buildSshRunners()` does a one-time bootstrap per configured host, all
- * *before* any combo work starts (not lazily per-invocation — the local
- * commit under test can't change mid-campaign, so there's no reason to redo
- * this per attempt): installs `git`/a modern-enough Node via `apt`/NodeSource
- * if either is missing or too old, clone-or-fetch into a fixed
- * `/tmp/codeenstein3d-ssh-lane` on the remote host, force-checkout the exact
- * local `HEAD` sha, `npm ci`, and `npx playwright install --with-deps chromium`
- * (every balancing script in this family only ever launches Chromium — see
- * `run-balancing-telemetry.mjs`'s own doc comment). **Debian/Ubuntu-only by
- * design** — the apt-based prerequisite install assumes one of those (or a
- * derivative); a host on a different distro would fail that step and simply
- * get excluded, same as any other bootstrap failure. Needs passwordless
- * `sudo` on the remote host for the apt/NodeSource steps. A host that fails
- * any bootstrap step (unreachable, apt error, git error, npm error) is
- * logged as a warning and simply excluded from the returned runner list —
- * one bad host must never wedge the whole orchestrator, the same "don't let
- * one participant block everything" lesson a real stuck combo already
- * taught this session.
+ * **One-time, one-command-per-host setup, done separately from every
+ * automated run.** `scripts/setup-ssh-lane-host.mjs` (run manually — not by
+ * this module — once per host, real interactive TTY) installs whatever's
+ * missing (git, a modern-enough Node, and Playwright's Chromium system
+ * deps) with real, unscoped sudo, then clones the repo and runs `npm ci`.
+ * Doing all of that interactively, once, rather than automatically on every
+ * campaign run is deliberate, not laziness — two of those steps genuinely
+ * can't be made both automatic *and* narrowly sudo-scoped (see that
+ * script's own doc comment for exactly why), so splitting "provision this
+ * host" from "run a campaign against it" is what lets the *automated* path
+ * below need no sudo at all. `buildSshRunners()`'s own `bootstrapHost()`
+ * only ever does what's safe to redo unattended on every single invocation:
+ * checks git/an adequate Node are already there (and fails with a pointer
+ * to the setup script if not — never installs anything itself), then
+ * clone-or-fetch + force-checkout the exact local `HEAD` sha + `npm ci` +
+ * `npx playwright install chromium` (browser binary only; every balancing
+ * script in this family only ever launches Chromium — see
+ * `run-balancing-telemetry.mjs`'s own doc comment). A host that fails any
+ * step is logged as a warning and simply excluded from the returned runner
+ * list — one bad host must never wedge the whole orchestrator, the same
+ * "don't let one participant block everything" lesson a real stuck combo
+ * already taught this session.
  */
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
@@ -44,9 +47,15 @@ import { REPO_ROOT } from "./loadEngineModules.mjs";
 const execFileAsync = promisify(execFile);
 
 const HOSTS_FILE = path.join(REPO_ROOT, "ssh-hosts.env");
-const REMOTE_DIR = "/tmp/codeenstein3d-ssh-lane";
+/** Exported for `scripts/setup-ssh-lane-host.mjs` — the one-time setup
+ * script and this module's own per-run bootstrap must agree on where the
+ * checkout lives. */
+export const REMOTE_DIR = "/tmp/codeenstein3d-ssh-lane";
 
-function readHostList() {
+/** Exported for `scripts/setup-ssh-lane-host.mjs` — same host list either
+ * script reads, so "which hosts does this apply to" never needs asking
+ * twice. */
+export function readHostList() {
   if (!fs.existsSync(HOSTS_FILE)) return [];
   return fs
     .readFileSync(HOSTS_FILE, "utf8")
@@ -79,62 +88,34 @@ async function runSsh(userHost, remoteCommand, { timeoutMs } = {}) {
   return execFileAsync("ssh", ["-tt", "-o", "BatchMode=yes", userHost, remoteCommand], { timeout: timeoutMs, maxBuffer: 1024 * 1024 * 64 });
 }
 
-// Debian/Ubuntu-only, deliberately — see this module's own doc comment.
-// NodeSource's own setup script is used instead of the distro's default
-// `nodejs` package: Debian/Ubuntu's own repos ship wildly different, often
-// too-old Node majors depending on release (this project needs 18+ today,
-// heading toward 20+ — see `notes`' Node-version item), while NodeSource
-// still installs via `apt-get` underneath, just from a repo pinned to a
-// specific modern major instead of the distro's own stale default.
-const NODE_INSTALL_MAJOR = 20;
-const NODE_MIN_MAJOR = 18;
+// Kept in sync with `scripts/setup-ssh-lane-host.mjs`'s own install target —
+// this side only ever *checks* against it, never installs.
+export const NODE_MIN_MAJOR = 18;
 
-/** One remote host's own bootstrap — installs missing prerequisites
- * (git, a modern-enough Node/npm) via `apt`, clones-or-fetches, force-
- * checks-out the exact local commit, installs deps. Throws on any failure;
- * the caller (`buildSshRunners`) is responsible for catching and excluding
- * the host. Needs passwordless `sudo` for the `apt-get`/NodeSource-script
- * steps — a host without it fails bootstrap the same way any other missing
- * prerequisite does (excluded with a warning, not fatal to the whole run). */
+/** One remote host's own bootstrap for a single automated run — safe to
+ * redo unattended on every invocation, unlike the one-time
+ * `setup-ssh-lane-host.mjs` step this assumes already ran. Checks git and
+ * an adequate Node exist (never installs — see this module's own doc
+ * comment for why that's a separate, interactive, one-time script instead),
+ * clones-or-fetches, force-checks-out the exact local commit, installs
+ * deps. Throws on any failure — including the precondition check, with a
+ * message pointing at the setup script — the caller (`buildSshRunners`) is
+ * responsible for catching and excluding the host. */
 async function bootstrapHost(userHost, originUrl, headSha) {
   const cmd = [
-    `command -v git >/dev/null 2>&1 || (sudo apt-get update -y && sudo apt-get install -y git)`,
-    // Skip the (slow) Node install entirely if an adequate Node already
-    // exists — `&&`/`||` short-circuit exactly like the git check above:
-    // install only runs when node is missing *or* too old. Deliberately NOT
-    // NodeSource's own `curl | sudo bash` setup script: that pipes arbitrary
-    // downloaded script content into a root shell, which can't be scoped in
-    // sudoers at all (sudo matches the executable, `bash`, not what's piped
-    // into its stdin — a NOPASSWD rule for `bash` is unrestricted root, not
-    // a scoped install step). This does the same thing NodeSource's script
-    // does, by hand, entirely with fixed, sudoers-scopable commands — see
-    // this repo's `doc/dev/balancing-telemetry.md` "SSH-host parallelism"
-    // section for the exact sudoers entries this enables.
-    `(command -v node >/dev/null 2>&1 && [ "$(node -v | sed 's/^v//' | cut -d. -f1)" -ge ${NODE_MIN_MAJOR} ]) || ` +
-      `(sudo apt-get install -y ca-certificates curl gnupg && ` +
-      `sudo mkdir -p -m 755 /etc/apt/keyrings && ` +
-      `curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && ` +
-      `echo ${shellQuote(`deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_INSTALL_MAJOR}.x nodistro main`)} | sudo tee /etc/apt/sources.list.d/nodesource.list >/dev/null && ` +
-      `sudo apt-get update -y && sudo apt-get install -y nodejs)`,
+    `(command -v git >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && [ "$(node -v | sed 's/^v//' | cut -d. -f1)" -ge ${NODE_MIN_MAJOR} ]) || ` +
+      `{ echo "missing git/Node ${NODE_MIN_MAJOR}+ — run 'node scripts/setup-ssh-lane-host.mjs ${userHost}' from your own machine first" >&2; exit 1; }`,
     `mkdir -p ${REMOTE_DIR}`,
     // Clone only if this is genuinely the first time; otherwise fetch —
     // avoids re-cloning the whole repo on every campaign invocation.
     `if [ -d ${REMOTE_DIR}/.git ]; then git -C ${REMOTE_DIR} fetch origin; else git clone ${shellQuote(originUrl)} ${REMOTE_DIR}; fi`,
     `git -C ${REMOTE_DIR} checkout --force ${shellQuote(headSha)}`,
     `cd ${REMOTE_DIR} && npm ci`,
-    // Deliberately *not* `--with-deps`: that flag has Playwright itself
-    // decide and `apt-get install` an arbitrary, version/OS-state-dependent
-    // package list at run time — not something a sudoers rule can pin ahead
-    // of time (confirmed directly: a `--dry-run` against this exact
-    // Playwright version needed a different package set depending on what
-    // was already on the machine). A one-time `sudo npx playwright
-    // install-deps chromium`, run manually per host during setup, covers
-    // this once with full interactive sudo instead of trying to scope an
-    // open-ended package list — see this repo's `ssh-hosts.env.dist`/
-    // `doc/dev/balancing-telemetry.md` for the full setup checklist.
+    // Browser binary only, no sudo — system deps are `setup-ssh-lane-host.mjs`'s
+    // job (see this module's own doc comment for why that split exists).
     `cd ${REMOTE_DIR} && npx playwright install chromium`,
   ].join(" && ");
-  await runSsh(userHost, cmd, { timeoutMs: 30 * 60 * 1000 }); // a first-time apt install+clone+npm ci+playwright install is genuinely slow — 30min ceiling
+  await runSsh(userHost, cmd, { timeoutMs: 15 * 60 * 1000 }); // no apt/NodeSource install possible here anymore — a first-time clone+npm ci+browser download is still real but much shorter than before
 }
 
 /** Remote-host lane — see this module's own doc comment for the bootstrap

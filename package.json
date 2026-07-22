@@ -39,6 +39,7 @@
     "balancing:telemetry-multiplayer": "node scripts/run-balancing-telemetry-multiplayer.mjs",
     "balancing:scan-multiplayer": "CODEENSTEIN_MP_TELEMETRY_ANOMALY_SCAN=1 CODEENSTEIN_MP_TELEMETRY_PROFILE=Casual CODEENSTEIN_MP_TELEMETRY_DIFFICULTY=normal CODEENSTEIN_MP_TELEMETRY_PLAYER_COUNTS=2 CODEENSTEIN_MP_TELEMETRY_ATTEMPT_CAP=3 CODEENSTEIN_MP_TELEMETRY_QUALIFYING_TARGET=1 CODEENSTEIN_MP_TELEMETRY_DISCONNECT_SCENARIO=0 node scripts/run-balancing-telemetry-multiplayer.mjs",
     "balancing:campaign-multiplayer": "node scripts/run-balancing-campaign-multiplayer.mjs",
+    "setup:ssh-lane-host": "node scripts/setup-ssh-lane-host.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage"
