@@ -176,6 +176,29 @@ describe("runGuestSessionSetup — overall handshake timeout (finding 9)", () =>
 
     expect(guestResult.roster).toEqual(["guest", "host"]);
   });
+
+  it("does not fire while waiting for the host's first message, even well past the timeout window (regression: real 3-player CI hang)", async () => {
+    vi.useFakeTimers();
+    const channels = linkedChannels();
+    const guestPromise = runGuestSessionSetup(channels.guest);
+
+    // A real early-joining guest in a multi-guest lobby: it connects long
+    // before the host clicks "Start Session" (which only happens once every
+    // other guest has also joined, itself sometimes taking several join-race
+    // retry cycles). Nothing arrives on this channel for well over the
+    // handshake-timeout window — before the fix, this alone rejected the
+    // handshake with a `handshake-timeout` error before the host ever sent a
+    // single byte (observed for real in CI: guest-1's setup failed ~1.5s
+    // before the host had even started its own session-setup sequence).
+    await vi.advanceTimersByTimeAsync(HANDSHAKE_TIMEOUT_MS * 3);
+
+    // The host finally starts — the handshake must still complete normally,
+    // proving the guest was never rejected by the earlier lobby-wait.
+    const options = { map: new MapGenerator().generate(parsedFile()), difficulty: "normal" as const, roster: ["guest", "host"], gameplaySeed: 1 };
+    const [guestResult] = await Promise.all([guestPromise, runHostSessionSetup(channels.host, "guest", options)]);
+
+    expect(guestResult.roster).toEqual(["guest", "host"]);
+  });
 });
 
 describe("runGuestSessionSetup — protocol errors", () => {

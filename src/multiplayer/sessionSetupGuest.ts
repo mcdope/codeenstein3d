@@ -26,13 +26,21 @@
  * `ChunkReassembler` and rebuilt with a freshly-constructed `visited` grid
  * (never sent over the wire).
  *
- * The whole handshake is also bounded by `HANDSHAKE_TIMEOUT_MS` overall — if
- * the host stalls or stops sending mid-transfer without ever closing the
- * channel (so no error/close event fires either), this side would otherwise
- * hang forever waiting for a message that's never coming, unlike every other
- * multi-step wait in this subsystem (`TRANSITION_ACK_TIMEOUT_MS`,
- * `BUFFER_DRAIN_TIMEOUT_MS`), which already follow a "never wait forever"
- * rule (`netcodeConstants.ts`'s own doc comments).
+ * Once the host's build-version actually arrives, the rest of the handshake
+ * is bounded by `HANDSHAKE_TIMEOUT_MS` — re-armed on every incoming message,
+ * so it only ever fires on a genuine mid-transfer stall (the host stops
+ * sending without ever closing the channel, so no error/close event fires
+ * either), matching the "never wait forever" rule every other multi-step
+ * wait in this subsystem already follows (`TRANSITION_ACK_TIMEOUT_MS`,
+ * `BUFFER_DRAIN_TIMEOUT_MS`). Deliberately *not* armed before the first
+ * message arrives: the wait for the host to even start (it only does once
+ * its user clicks "Start Session") is a lobby-wait, not a protocol step, and
+ * has no reasonable fixed bound — confirmed as a real bug in an earlier
+ * version of this fix, which armed the timer at call time instead. That
+ * broke the 3-player scenario: an early-joining guest waiting for a
+ * later-joining guest's own (multi-attempt, several-second) join race to
+ * finish before the host clicks "Start Session" could have its handshake
+ * time out before the host ever sent a single byte.
  */
 import type { GameMap } from "../map/types";
 import { ChunkReassembler } from "./chunkedTransfer";
@@ -45,16 +53,19 @@ import type { MultiplayerChannels } from "./types";
 
 type PendingResult = Omit<SessionSetupResult, "map">;
 
-/** How long (real wall-clock milliseconds) the guest waits for the whole
- * session-setup handshake to complete before giving up — a reasoned
- * starting point, not a validated value, matching the order of magnitude
- * `netcodeConstants.ts`'s own `TRANSITION_ACK_TIMEOUT_MS`/
- * `BUFFER_DRAIN_TIMEOUT_MS` already use for the same "never wait forever on
- * something that might not happen" discipline elsewhere in this subsystem.
- * Not itself in `netcodeConstants.ts`: this handshake is a guest-only
- * concern (the host has its own, symmetric-in-spirit "never wait forever"
- * guarantee already covered by `main.ts`'s own connection-level handling —
- * nothing else in that shared constants file needs this value). */
+/** How long (real wall-clock milliseconds) the guest waits, after the *last*
+ * handshake message it received, for the next one before giving up — an
+ * inactivity window, not a deadline from call time (see this module's doc
+ * comment for why: the lobby-wait before the host's first message has no
+ * reasonable fixed bound). A reasoned starting point, not a validated value,
+ * matching the order of magnitude `netcodeConstants.ts`'s own
+ * `TRANSITION_ACK_TIMEOUT_MS`/`BUFFER_DRAIN_TIMEOUT_MS` already use for the
+ * same "never wait forever on something that might not happen" discipline
+ * elsewhere in this subsystem. Not itself in `netcodeConstants.ts`: this
+ * handshake is a guest-only concern (the host has its own, symmetric-in-spirit
+ * "never wait forever" guarantee already covered by `main.ts`'s own
+ * connection-level handling — nothing else in that shared constants file
+ * needs this value). */
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 
 export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<SessionSetupResult> {
@@ -62,7 +73,19 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
     const channel = channels.reconciliation;
     let pending: PendingResult | null = null;
     let reassembler: ChunkReassembler | null = null;
+    let handshakeTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
 
+    // Not armed until the first message arrives (see this module's doc
+    // comment) — re-armed on every subsequent message, so it only ever
+    // bounds a genuine stall once the handshake has actually started, never
+    // the lobby wait beforehand.
+    const armHandshakeTimeout = (): void => {
+      if (handshakeTimeoutTimer !== null) clearTimeout(handshakeTimeoutTimer);
+      handshakeTimeoutTimer = setTimeout(() => {
+        unsubscribe();
+        reject(new SessionSetupError("handshake-timeout", `session-setup handshake stalled for ${HANDSHAKE_TIMEOUT_MS}ms after its last message`));
+      }, HANDSHAKE_TIMEOUT_MS);
+    };
     // Cleared on every settle path below (resolve or any reject) — a timer
     // that fires after the handshake has already settled one way or another
     // must never re-reject an already-resolved/rejected `Promise` (a no-op
@@ -70,17 +93,17 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
     // below still matters: without it, a late "message" event after the
     // handshake completed would call a handler referencing already-stale
     // closured state for no reason).
-    const handshakeTimeoutTimer = setTimeout(() => {
-      unsubscribe();
-      reject(new SessionSetupError("handshake-timeout", `session-setup handshake did not complete within ${HANDSHAKE_TIMEOUT_MS}ms`));
-    }, HANDSHAKE_TIMEOUT_MS);
+    const clearHandshakeTimeout = (): void => {
+      if (handshakeTimeoutTimer !== null) clearTimeout(handshakeTimeoutTimer);
+    };
 
     const unsubscribe = onJsonMessage<SessionSetupMessage>(channel, (message) => {
+      armHandshakeTimeout();
       switch (message.type) {
         case "build-version": {
           if (!checkBuildVersionMatch({ ref: __BUILD_REF__, time: __BUILD_TIME__ }, message)) {
             unsubscribe();
-            clearTimeout(handshakeTimeoutTimer);
+            clearHandshakeTimeout();
             reject(new SessionSetupError("build-version-mismatch", "host is on a different build"));
             return;
           }
@@ -93,7 +116,7 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
           // own `Promise` instead of escaping as an uncaught exception.
           const ownVersion: BuildVersionMessage = { type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ };
           sendJsonWithBackpressure(channel, ownVersion).catch((err) => {
-            clearTimeout(handshakeTimeoutTimer);
+            clearHandshakeTimeout();
             reject(err);
           });
           return;
@@ -116,7 +139,7 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
             )
           ) {
             unsubscribe();
-            clearTimeout(handshakeTimeoutTimer);
+            clearHandshakeTimeout();
             reject(new SessionSetupError("netcode-constants-mismatch", "host's compiled netcode constants don't match ours"));
             return;
           }
@@ -140,7 +163,7 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
         case "map-end": {
           if (!pending || !reassembler || !reassembler.isComplete(message.totalChunks)) {
             unsubscribe();
-            clearTimeout(handshakeTimeoutTimer);
+            clearHandshakeTimeout();
             reject(new SessionSetupError("protocol-error", "map-end arrived before every chunk was received"));
             return;
           }
@@ -155,7 +178,7 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
             new Array<boolean>(mapWithoutVisited.width).fill(false),
           );
           unsubscribe();
-          clearTimeout(handshakeTimeoutTimer);
+          clearHandshakeTimeout();
           resolve({ ...pending, map: { ...mapWithoutVisited, visited } });
           return;
         }
