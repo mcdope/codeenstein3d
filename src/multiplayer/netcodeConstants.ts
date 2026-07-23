@@ -87,6 +87,55 @@ export const BUFFER_DRAIN_TIMEOUT_MS = 10_000;
  * dimensions) and triggers a multi-gigabyte `Array.from` allocation. */
 export const MAX_TRANSFERRED_MAP_DIMENSION = 2048;
 
+/** The largest number of individual keys a wire `InputSnapshot`'s `keys`
+ * array may contain before the whole snapshot is rejected as malformed (see
+ * `inputValidation.ts`). A legitimate snapshot only ever carries the handful
+ * of movement/turn keys `input.ts`'s `RECORDED_KEYS` filters down to (8
+ * today); this generous multiple leaves headroom without letting a hostile
+ * peer ship a giant `keys` array — the host re-broadcasts every guest's `keys`
+ * to every other guest each tick, and `NetworkInputSource.isDown()` scans it
+ * linearly on every key query, so an unbounded array is a per-tick CPU +
+ * bandwidth amplification vector. */
+export const MAX_INPUT_KEYS = 16;
+
+/** The largest absolute `wheelSteps` a wire `InputSnapshot` may carry before
+ * it's rejected (see `inputValidation.ts`). `wheelSteps` drives a weapon-cycle
+ * loop (`engine.ts`) that runs `abs(wheelSteps)` times, so a non-finite or
+ * absurdly large value is a direct main-thread-freeze vector on every peer the
+ * host re-broadcasts it to. Real hardware produces at most a few notches per
+ * tick, and there are only a handful of weapons to cycle, so this cap sits far
+ * above anything normal play generates. Independently mirrored by a defensive
+ * clamp in the engine layer (which never imports the multiplayer layer, per
+ * this file's own layering note below). */
+export const MAX_WHEEL_STEPS_PER_TICK = 32;
+
+/** The largest single inbound `RTCDataChannel` message (UTF-16 code units, the
+ * same "bytes" approximation `chunkJson`/`MAX_TOTAL_BYTES` use) that
+ * `onJsonMessage` will `JSON.parse` at all — anything larger is discarded
+ * before parsing. Bounds the CPU a single peer-controlled message can force,
+ * while sitting comfortably above every legitimate message this project sends:
+ * per-tick inputs/bundles are tiny, a chunked map transfer's pieces are
+ * `MAP_CHUNK_SIZE_BYTES` (16 KiB) each, and a reconciliation snapshot is a few
+ * KiB. A dropped over-cap message is always safe-degrading (a missing input
+ * becomes held-fallback, a missing snapshot is corrected next interval, a
+ * missing map chunk stalls the transfer into its existing timeout), never a
+ * determinism divergence. */
+export const MAX_INBOUND_MESSAGE_BYTES = 1024 * 1024;
+
+/** Token-bucket sizing for the per-guest `input`-channel rate limit the host
+ * applies (see `multiplayerSessionHost.ts`). A guest legitimately sends one
+ * `TickInput` per bundle it receives — `TICK_RATE_HZ` per second in steady
+ * state, plus short bursts when the host catches several stalled ticks up in
+ * one worker turn (bounded by `InputDelayBuffer`'s own `MAX_TICK_DRIFT_TICKS`,
+ * ~10s of ticks). `INPUT_MESSAGE_BURST` covers that worst-case catch-up burst;
+ * `INPUT_MESSAGE_REFILL_PER_SEC` is a generous multiple of the steady rate, so
+ * no legitimate sender is ever throttled while a hostile guest flooding
+ * thousands of messages per second (each costing a `JSON.parse` + validation)
+ * is capped hard. Reasoned starting points, same caveat as every constant in
+ * this file. */
+export const INPUT_MESSAGE_BURST = TICK_RATE_HZ * 12;
+export const INPUT_MESSAGE_REFILL_PER_SEC = TICK_RATE_HZ * 3;
+
 /** `CORRECTION_SMOOTH_MS`/`SNAP_THRESHOLD_TILES`/`COUNTDOWN_TICKS`/
  * `INPUT_DELAY_TICKS` live in `engine/reconciliationConstants.ts`/
  * `engine/transitionConstants.ts`/`engine/lagCompensationConstants.ts`, not

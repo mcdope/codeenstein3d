@@ -111,6 +111,41 @@ describe("chunkJson / ChunkReassembler round trip", () => {
     for (let i = 0; i < 1000; i++) reassembler.push("b".repeat(1000), 0);
     expect(() => reassembler.push("c".repeat(1000), 1)).not.toThrow();
   });
+
+  // --- Finding H1: a peer-controlled non-string `chunk` used to NaN-poison
+  // the byte tally, permanently disabling MAX_TOTAL_BYTES. `data`/`index`
+  // arrive straight off JSON.parse, so push() must validate them. ---
+
+  it("rejects a non-string chunk instead of NaN-poisoning the byte cap", () => {
+    const reassembler = new ChunkReassembler();
+    // The exact attack: `data: 0` makes `chunk.length` undefined → the tally
+    // would go NaN and every future `> MAX_TOTAL_BYTES` check would be false.
+    expect(() => reassembler.push(0 as unknown as string, 0)).toThrow(/non-string chunk/);
+    expect(() => reassembler.push(false as unknown as string, 0)).toThrow(/non-string chunk/);
+    expect(() => reassembler.push(undefined as unknown as string, 0)).toThrow(/non-string chunk/);
+    expect(() => reassembler.push({} as unknown as string, 0)).toThrow(/non-string chunk/);
+    // The byte cap must still be live afterward: a subsequent legitimate,
+    // over-cap chunk still trips it (it wasn't poisoned to NaN).
+    const chunkSize = 1024 * 1024;
+    const bigChunk = "x".repeat(chunkSize);
+    expect(() => {
+      for (let i = 0; i < Math.ceil(MAX_TOTAL_BYTES / chunkSize) + 1; i++) reassembler.push(bigChunk, i);
+    }).toThrow(new RegExp(`more than ${MAX_TOTAL_BYTES} bytes`));
+  });
+
+  it("rejects a non-integer or negative index", () => {
+    const reassembler = new ChunkReassembler();
+    expect(() => reassembler.push("x", -1)).toThrow(/non-integer or negative index/);
+    expect(() => reassembler.push("x", 1.5)).toThrow(/non-integer or negative index/);
+    expect(() => reassembler.push("x", NaN)).toThrow(/non-integer or negative index/);
+    expect(() => reassembler.push("x", "0" as unknown as number)).toThrow(/non-integer or negative index/);
+  });
+
+  it("rejects a single chunk larger than MAX_TOTAL_BYTES outright", () => {
+    const reassembler = new ChunkReassembler();
+    const overCap = "x".repeat(MAX_TOTAL_BYTES + 1);
+    expect(() => reassembler.push(overCap, 0)).toThrow(new RegExp(`single chunk larger than ${MAX_TOTAL_BYTES}`));
+  });
 });
 
 describe("isValidMapDimensions (re-review finding: unvalidated declared width/height)", () => {

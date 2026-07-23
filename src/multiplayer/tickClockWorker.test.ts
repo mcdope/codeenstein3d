@@ -41,6 +41,12 @@ describe("tickClockWorker", () => {
     for (const listener of messageListeners) listener({ data: { type: "start" } } as MessageEvent);
   }
 
+  /** Dispatches the inbound `{type: "stop"}` message the same way `sendStart`
+   * does — the counterpart that tears the running clock back down. */
+  function sendStop(): void {
+    for (const listener of messageListeners) listener({ data: { type: "stop" } } as MessageEvent);
+  }
+
   beforeEach(() => {
     vi.resetModules();
     vi.useFakeTimers();
@@ -112,6 +118,48 @@ describe("tickClockWorker", () => {
     for (const listener of messageListeners) listener({ data: { type: "bogus" } } as MessageEvent);
     now += FIXED_DT_MS * 5;
     await vi.advanceTimersByTimeAsync(FIXED_DT_MS * 5);
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+
+  it("ignores a second start message instead of spinning up a second concurrent clock", async () => {
+    // Two `setInterval`-driven clocks racing on one Worker is exactly the
+    // duplicated/corrupted tick stream the `started` guard exists to prevent —
+    // assert the underlying `setInterval` was invoked exactly once no matter
+    // how many `start` messages arrive.
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    await import("./tickClockWorker");
+    sendStart();
+    sendStart();
+    sendStart();
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the interval on stop and allows a fresh start afterwards", async () => {
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+    await import("./tickClockWorker");
+    sendStart();
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+    sendStop();
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(1);
+    // A legitimate restart after a stop must be able to build a fresh clock —
+    // the guard resets, so this second start really does create a new interval.
+    sendStart();
+    expect(setIntervalSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not throw or start on a null, non-object, or unknown-type message", async () => {
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    await import("./tickClockWorker");
+    for (const listener of messageListeners) {
+      expect(() => listener({ data: null } as MessageEvent)).not.toThrow();
+      expect(() => listener({ data: 42 } as unknown as MessageEvent)).not.toThrow();
+      expect(() => listener({ data: "start" } as unknown as MessageEvent)).not.toThrow();
+      expect(() => listener({ data: { type: "unknown" } } as MessageEvent)).not.toThrow();
+    }
+    now += FIXED_DT_MS * 5;
+    await vi.advanceTimersByTimeAsync(FIXED_DT_MS * 5);
+    expect(setIntervalSpy).not.toHaveBeenCalled();
     expect(postMessage).not.toHaveBeenCalled();
   });
 });
