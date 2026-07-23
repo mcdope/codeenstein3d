@@ -216,4 +216,24 @@ describe("createGuestAnswer", () => {
     // already attached its own no-op `.catch()` before rethrowing).
     await vi.advanceTimersByTimeAsync(1000);
   });
+
+  it("uses STUN only when no TURN servers are passed", async () => {
+    const promise = createGuestAnswer("offer-sdp", 5000, 5000);
+    const pc = FakeRTCPeerConnection.instances.at(-1)!;
+    pc.simulateIceGatheringComplete();
+    await promise;
+    expect(pc.config?.iceServers).toEqual([{ urls: ["stun:stun.l.google.com:19302"] }]);
+  });
+
+  it("appends fetched TURN servers after the STUN entry in the peer connection config", async () => {
+    const turn = [{ urls: ["turns:relay.test:443"], username: "u", credential: "c" }];
+    const promise = createGuestAnswer("offer-sdp", 5000, 5000, turn);
+    const pc = FakeRTCPeerConnection.instances.at(-1)!;
+    pc.simulateIceGatheringComplete();
+    await promise;
+    expect(pc.config?.iceServers).toEqual([
+      { urls: ["stun:stun.l.google.com:19302"] },
+      { urls: ["turns:relay.test:443"], username: "u", credential: "c" },
+    ]);
+  });
 });

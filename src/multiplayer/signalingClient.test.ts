@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createSession,
+  fetchIceServers,
   fetchLobby,
   fetchSession,
   fetchSessionAsHost,
@@ -291,6 +292,75 @@ describe("fetchLobby", () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(null));
     const promise = fetchLobby(new AbortController().signal);
     await expect(promise).rejects.toBeInstanceOf(SignalingError);
+    await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
+  });
+});
+
+describe("fetchIceServers", () => {
+  const ICE = {
+    iceServers: [{ urls: ["turns:relay.test:443"], username: "1700000000", credential: "abc==" }],
+    ttl: 3600,
+  };
+
+  it("GETs /session/<code>/turn-credentials and returns the parsed ICE config", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(ICE));
+    const result = await fetchIceServers("R4KJ9X", new AbortController().signal);
+    expect(result).toEqual(ICE);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${SERVER_URL}/session/R4KJ9X/turn-credentials`,
+      expect.anything(),
+    );
+  });
+
+  it("url-encodes the code and sends no X-Host-Token when none is given (guest path)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(ICE));
+    await fetchIceServers("a b", new AbortController().signal);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${SERVER_URL}/session/a%20b/turn-credentials`);
+    expect((init as RequestInit).headers ?? {}).not.toHaveProperty("X-Host-Token");
+  });
+
+  it("sends X-Host-Token when a hostToken is provided (host path)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(ICE));
+    await fetchIceServers("R4KJ9X", new AbortController().signal, "host-tok");
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init as RequestInit).headers).toMatchObject({ "X-Host-Token": "host-tok" });
+  });
+
+  it("maps a non-2xx {error} body to a typed SignalingError (404 when no relay/session)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "session_not_found" }, false, 404));
+    const promise = fetchIceServers("R4KJ9X", new AbortController().signal);
+    await expect(promise).rejects.toBeInstanceOf(SignalingError);
+    await expect(promise).rejects.toMatchObject({ code: "session_not_found", status: 404 });
+  });
+
+  it("rejects a malformed 2xx body (iceServers not an array)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ iceServers: "nope", ttl: 3600 }));
+    const promise = fetchIceServers("R4KJ9X", new AbortController().signal);
+    await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
+  });
+
+  it("rejects a malformed 2xx body (an entry missing urls)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ iceServers: [{ username: "x" }], ttl: 3600 }));
+    const promise = fetchIceServers("R4KJ9X", new AbortController().signal);
+    await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
+  });
+
+  it("rejects a malformed 2xx body (an entry isn't an object)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ iceServers: [42], ttl: 3600 }));
+    const promise = fetchIceServers("R4KJ9X", new AbortController().signal);
+    await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
+  });
+
+  it("rejects a malformed 2xx body (missing ttl)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ iceServers: [] }));
+    const promise = fetchIceServers("R4KJ9X", new AbortController().signal);
+    await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
+  });
+
+  it("rejects a malformed 2xx body (body isn't an object)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(null));
+    const promise = fetchIceServers("R4KJ9X", new AbortController().signal);
     await expect(promise).rejects.toMatchObject({ code: "internal_error", status: 200 });
   });
 });

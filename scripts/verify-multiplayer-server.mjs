@@ -16,6 +16,7 @@
  * one behind a real proxy, so nothing sets that header unless a test does.
  */
 import { spawn, execFileSync } from "node:child_process";
+import { createHmac } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createConfiguredServer, HEADERS_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "./multiplayer-server.mjs";
@@ -1001,6 +1002,138 @@ function runDryRunSuite() {
 }
 
 // ---------------------------------------------------------------------------
+// GET /session/<code>/turn-credentials — ephemeral coturn credential minting
+// ---------------------------------------------------------------------------
+
+async function runTurnCredentialsSuite() {
+  const port = 8907;
+  const secret = "verify-turn-secret";
+  const urls = "turns:relay.test:443,turn:relay.test:3478";
+  const { base, child } = await spawnServer(port, {
+    CODEENSTEIN_MULTIPLAYER_TURN_SECRET: secret,
+    CODEENSTEIN_MULTIPLAYER_TURN_URLS: urls,
+    CODEENSTEIN_MULTIPLAYER_TURN_TTL_SECONDS: "600",
+    CODEENSTEIN_MULTIPLAYER_TURN_CREDENTIALS_MAX_REQUESTS: "3",
+    CODEENSTEIN_MULTIPLAYER_TURN_CREDENTIALS_PER_CODE_MAX_REQUESTS: "6",
+    CODEENSTEIN_MULTIPLAYER_RATE_LIMIT_WINDOW_MS: "2000",
+    CODEENSTEIN_MULTIPLAYER_BASE_COOLDOWN_MS: "300",
+    CODEENSTEIN_MULTIPLAYER_MAX_COOLDOWN_MS: "1000",
+    // Keep the session-creation + lobby budgets high so this suite's own setup
+    // requests never trip them.
+    CODEENSTEIN_MULTIPLAYER_PUT_SESSION_RATE_LIMIT_MAX_REQUESTS: "200",
+    CODEENSTEIN_MULTIPLAYER_LOBBY_RATE_LIMIT_MAX_REQUESTS: "200",
+  });
+  const turnUrl = (code) => `${base}/session/${code}/turn-credentials`;
+  async function makeSession(ip = "10.7.0.254") {
+    const res = await fetch(`${base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff(ip) },
+      body: JSON.stringify({ offer: "o", public: false, campaignName: "c", playerCount: 2 }),
+    });
+    return json(res);
+  }
+  try {
+    const created = await makeSession();
+
+    // Guest path (no host token) against a live code → 200 with a well-formed cred.
+    const res = await fetch(turnUrl(created.code), { headers: xff("10.7.1.1") });
+    const body = await json(res);
+    const server0 = body?.iceServers?.[0];
+    check("GET turn-credentials for a live session returns 200", res.status === 200);
+    check(
+      "advertises exactly the configured TURN urls",
+      JSON.stringify(server0?.urls) === JSON.stringify(["turns:relay.test:443", "turn:relay.test:3478"]),
+    );
+    check(
+      "credential is base64(HMAC-SHA1(secret, username)) — recomputed independently",
+      typeof server0?.username === "string" &&
+        server0?.credential === createHmac("sha1", secret).update(server0.username).digest("base64"),
+    );
+    check(
+      "username is a unix expiry in the future",
+      Number.isInteger(Number(server0?.username)) && Number(server0.username) > Math.floor(Date.now() / 1000),
+    );
+    check("returns the configured credential ttl", body?.ttl === 600);
+    check(
+      "response leaks no hostToken or offer",
+      !JSON.stringify(body).includes("hostToken") && !JSON.stringify(body).includes('"offer"'),
+    );
+
+    // Host path: a correct token still 200s, a present-but-wrong one is rejected.
+    const hostOk = await fetch(turnUrl(created.code), {
+      headers: { "X-Host-Token": created.hostToken, ...xff("10.7.1.2") },
+    });
+    check("a valid X-Host-Token still 200s (host path)", hostOk.status === 200);
+    const hostBad = await fetch(turnUrl(created.code), {
+      headers: { "X-Host-Token": "wrong-token", ...xff("10.7.1.3") },
+    });
+    const hostBadBody = await json(hostBad);
+    check(
+      "a present-but-wrong X-Host-Token is rejected 403 (not silently downgraded to guest)",
+      hostBad.status === 403 && hostBadBody?.error === "host_token_mismatch",
+    );
+
+    // Core gate: no live session behind the code → 404 session_not_found.
+    const missing = await fetch(turnUrl("ZZZZZZZZ"), { headers: xff("10.7.1.4") });
+    const missingBody = await json(missing);
+    check(
+      "unknown code → 404 session_not_found (no credential without a live session)",
+      missing.status === 404 && missingBody?.error === "session_not_found",
+    );
+
+    // Per-IP budget (ceiling 3), on its own fresh code so nothing else counts.
+    const perIp = await makeSession();
+    const ipStatuses = [];
+    for (let i = 0; i < 5; i++) {
+      ipStatuses.push((await fetch(turnUrl(perIp.code), { headers: xff("10.7.2.1") })).status);
+    }
+    check(
+      "per-IP mint budget: first 3 succeed, the rest 429",
+      ipStatuses.slice(0, 3).every((s) => s === 200) && ipStatuses.slice(3).every((s) => s === 429),
+      JSON.stringify(ipStatuses),
+    );
+    // That exhausted turn budget is independent of the other routes.
+    const lobbyAfter = await fetch(`${base}/lobby`, { headers: xff("10.7.2.1") });
+    check("exhausting the turn budget leaves GET /lobby from the same IP working", lobbyAfter.status === 200);
+
+    // Per-code budget (ceiling 6): distinct IPs against one fresh code trip it,
+    // the case a per-IP budget alone can't catch for a public lobby code.
+    const perCode = await makeSession();
+    const codeStatuses = [];
+    for (let i = 0; i < 8; i++) {
+      codeStatuses.push((await fetch(turnUrl(perCode.code), { headers: xff(`10.7.3.${i + 1}`) })).status);
+    }
+    check(
+      "per-code mint budget: first 6 (distinct IPs) succeed, the rest 429",
+      codeStatuses.slice(0, 6).every((s) => s === 200) && codeStatuses.slice(6).every((s) => s === 429),
+      JSON.stringify(codeStatuses),
+    );
+  } finally {
+    await stopServer(child);
+  }
+
+  // Feature-off: with no TURN env, the route 404s as an unknown route even for
+  // a genuinely live session (indistinguishable from disabled, like /stats).
+  const off = await spawnServer(8908);
+  try {
+    const putRes = await fetch(`${off.base}/session`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...xff("10.7.9.1") },
+      body: JSON.stringify({ offer: "o", public: false, campaignName: "c", playerCount: 2 }),
+    });
+    const created = await json(putRes);
+    const turnRes = await fetch(`${off.base}/session/${created.code}/turn-credentials`, { headers: xff("10.7.9.1") });
+    const turnBody = await json(turnRes);
+    check(
+      "with TURN unconfigured the route 404s as not_found (feature-off, indistinguishable)",
+      turnRes.status === 404 && turnBody?.error === "not_found",
+    );
+  } finally {
+    await stopServer(off.child);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -1013,6 +1146,9 @@ async function main() {
 
   console.log("\n--stats / GET /stats:");
   await runStatsSuite();
+
+  console.log("\nGET /session/<code>/turn-credentials (TURN credential minting):");
+  await runTurnCredentialsSuite();
 
   console.log("\nRate-limit map size cap:");
   await runRateLimitMapCapSuite();

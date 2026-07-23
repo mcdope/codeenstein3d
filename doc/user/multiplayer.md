@@ -25,6 +25,17 @@ Open the **Multiplayer** tab, then the **Join** sub-tab, type in the code you we
 - **Elite enemies scale with your team size.** The more players in the session, the tougher Elite enemies get (more HP, more damage) — a solo Elite fight doesn't get any harder, but a 4-player one does.
 - **Loot is shared.** Anything an Elite or regular enemy drops is visible to the whole team on the minimap and automap, not just whoever's standing next to it.
 
+## If you can't connect
+
+Multiplayer connects your browsers directly to each other (peer-to-peer). On most
+networks that just works, but some strict setups — mobile/carrier networks,
+locked-down office or hotel Wi-Fi — block that kind of direct link, and a join can
+get stuck on "Establishing connection…". If the person running the signaling
+server has also set up a relay, the game uses it automatically to get through
+those networks — there's nothing to configure on your side. Without a relay,
+either the host or the joiner switching to a less restrictive network (e.g. off a
+corporate VPN, or a different Wi-Fi) is usually enough.
+
 ## Disconnects and level transitions
 
 If a player's connection drops, the rest of the session waits a short grace period in case it reconnects, then continues without them — their score up to that point is kept, just marked as disconnected on the end-of-run scoreboard. When any player reaches the level's exit tile, a short countdown starts for the rest of the team to catch up before everyone advances together to the next level.

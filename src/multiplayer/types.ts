@@ -87,6 +87,25 @@ export interface LobbyResponse {
   sessions: LobbyEntry[];
 }
 
+/** One ICE server entry as advertised by the signaling server's
+ * `GET /session/<code>/turn-credentials` route — the `RTCIceServer` shape
+ * (`urls` may be a single string or an array), carrying coturn's
+ * `use-auth-secret` `username`/`credential` pair. */
+export interface IceServerConfig {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
+}
+
+/** Response of `GET /session/<code>/turn-credentials`: TURN servers (with
+ * short-lived credentials) to merge into the peer connection's ICE config, plus
+ * the credential lifetime in seconds. Absent/failed (the route 404s when the
+ * operator runs no relay) → the client simply connects STUN-only. */
+export interface IceConfigResponse {
+  iceServers: IceServerConfig[];
+  ttl: number;
+}
+
 /** Local connection lifecycle, driven by `main.ts`'s Host/Join handlers and
  * surfaced (read-only) via `window.__codeensteinTestHooks` under
  * `?testHooks=1` — see `webrtcConnection.ts`'s doc comment. */
