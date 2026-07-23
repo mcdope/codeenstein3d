@@ -1806,12 +1806,44 @@ export class RaycasterEngine {
       if (key) key.collected = true;
     }
 
+    // Grid tiles and `gridVersion` are deliberately NOT applied here —
+    // `applyGridReconciliation()` handles them separately so the multiplayer
+    // guest can apply grid corrections on every snapshot (idempotent,
+    // PRNG-free), while this method's PRNG-coupled state stays behind the
+    // caller's exact-tick gate (see that method's doc comment and the guest's
+    // own reconciliation handler).
+    this.rngHandle.setState(snapshot.rngState);
+  }
+
+  /**
+   * Applies just the grid portion of a reconciliation snapshot — the tile
+   * mutations (`gridDelta`) and the `gridVersion` cache counter — split out
+   * from `applyReconciliationSnapshot()` so the multiplayer guest can call it
+   * on EVERY host snapshot it receives, regardless of the exact-tick gate that
+   * (correctly) protects the PRNG-coupled state. That is sound because a tile
+   * mutation is an idempotent, order-independent, absolute overwrite that never
+   * touches the PRNG: applying an out-of-order (stale or future) snapshot's
+   * grid can at worst re-open an already-open tile, or open a tile the host's
+   * authoritative timeline opens anyway — it can never set a tile wrong.
+   * Without this split, a snapshot discarded by the guest's exact-tick gate
+   * lost its grid corrections permanently, since the host drains its
+   * per-guest-shared `gridDelta` each interval (finding M2).
+   *
+   * LOAD-BEARING INVARIANT: every emitted `TileMutation.value` is `0` (doors
+   * `3`→`0`, secret walls `6`→`0` — the only two runtime grid mutations, both
+   * terminal). That is exactly what makes out-of-order application safe. If a
+   * future feature ever emits a non-zero or non-terminal tile mutation (a
+   * closing/toggling tile), out-of-order application could set a tile wrong and
+   * this must be moved back behind the tick gate. (Separate, pre-existing gap
+   * this does NOT address: the additive delta only ever carries the host's own
+   * opens, so it cannot re-close a tile a guest mis-predicted open — only a
+   * full authoritative grid resync would.)
+   */
+  applyGridReconciliation(snapshot: Pick<ReconciliationSnapshot, "gridDelta" | "gridVersion">): void {
     for (const mutation of snapshot.gridDelta) {
       if (this.map.grid[mutation.y]) this.map.grid[mutation.y][mutation.x] = mutation.value;
     }
     this.gridVersion = snapshot.gridVersion;
-
-    this.rngHandle.setState(snapshot.rngState);
   }
 
   /**

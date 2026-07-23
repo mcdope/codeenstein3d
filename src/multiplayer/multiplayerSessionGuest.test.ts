@@ -513,6 +513,76 @@ describe("runMultiplayerSessionAsGuest", () => {
     expect(handle.getLastReconciliationRngState()).toBe(beforeRngState); // unchanged
   });
 
+  it("applies a STALE-tick snapshot's gridDelta even though the tick gate discards its player/rng state (finding M2)", () => {
+    const channels = linkedChannels();
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map: fakeMap({ spawn: { x: 5, y: 5 } }) }));
+
+    for (let tick = 0; tick <= 5; tick++) {
+      const bundle: TickInputBundle = { tick, dt: 1 / 30, levelEpoch: 0, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+      channels.host.input.send(JSON.stringify(bundle));
+    }
+    expect(handle.getLastAppliedTick()).toBe(5);
+    const beforePosition = handle.getPlayerPosition("guest");
+    const beforeRngState = handle.getLastReconciliationRngState();
+    expect(handle.getMapGrid()![0][0]).toBe(1); // border wall, not yet opened
+
+    // Stale tick (2 < 5): its player/rng state is (correctly) discarded, but the
+    // grid correction — the host authoritatively opened tile (0,0) — MUST still
+    // apply, or it would be lost forever (the host drains gridDelta per interval).
+    const staleWithGrid = fakeReconciliationSnapshot({
+      tick: 2,
+      rngState: 999999,
+      gridVersion: 7,
+      gridDelta: [{ x: 0, y: 0, value: 0 }],
+      players: { host: fakePlayerSnapshot({ posX: 1.5, posY: 1.5 }), guest: fakePlayerSnapshot({ posX: 1.5, posY: 1.5 }) },
+    });
+    channels.host.reconciliation.send(JSON.stringify(staleWithGrid));
+
+    expect(handle.getMapGrid()![0][0]).toBe(0); // grid APPLIED despite the stale tick
+    expect(handle.getPlayerPosition("guest")).toEqual(beforePosition); // player NOT applied (still gated)
+    expect(handle.getLastReconciliationRngState()).toBe(beforeRngState); // rng NOT applied (still gated)
+  });
+
+  it("applies a FUTURE-tick snapshot's gridDelta even though the tick gate discards its player/rng state (finding M2)", () => {
+    const channels = linkedChannels();
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map: fakeMap({ spawn: { x: 5, y: 5 } }) }));
+
+    for (let tick = 0; tick <= 5; tick++) {
+      const bundle: TickInputBundle = { tick, dt: 1 / 30, levelEpoch: 0, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+      channels.host.input.send(JSON.stringify(bundle));
+    }
+    expect(handle.getLastAppliedTick()).toBe(5);
+    const beforePosition = handle.getPlayerPosition("guest");
+    const beforeRngState = handle.getLastReconciliationRngState();
+
+    const futureWithGrid = fakeReconciliationSnapshot({
+      tick: 8,
+      rngState: 999999,
+      gridVersion: 7,
+      gridDelta: [{ x: 0, y: 0, value: 0 }],
+      players: { host: fakePlayerSnapshot({ posX: 1.5, posY: 1.5 }), guest: fakePlayerSnapshot({ posX: 1.5, posY: 1.5 }) },
+    });
+    channels.host.reconciliation.send(JSON.stringify(futureWithGrid));
+
+    expect(handle.getMapGrid()![0][0]).toBe(0); // grid APPLIED despite the future tick
+    expect(handle.getPlayerPosition("guest")).toEqual(beforePosition); // player NOT applied (still gated)
+    expect(handle.getLastReconciliationRngState()).toBe(beforeRngState); // rng NOT applied (still gated)
+  });
+
+  it("does NOT apply a snapshot's gridDelta when its level epoch doesn't match — the epoch guard precedes grid application", () => {
+    const channels = linkedChannels();
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map: fakeMap({ spawn: { x: 5, y: 5 } }) }));
+    expect(handle.getMapGrid()![0][0]).toBe(1);
+
+    // Guest is on level epoch 0; a snapshot stamped for epoch 1 belongs to a
+    // level the guest hasn't reached — its grid must NOT be written into the
+    // current level's map.
+    const wrongEpoch = fakeReconciliationSnapshot({ tick: 0, levelEpoch: 1, gridVersion: 7, gridDelta: [{ x: 0, y: 0, value: 0 }] });
+    channels.host.reconciliation.send(JSON.stringify(wrongEpoch));
+
+    expect(handle.getMapGrid()![0][0]).toBe(1); // unchanged — grid NOT applied
+  });
+
 
   it("stops applying reconciliation snapshots after teardown", () => {
     const channels = linkedChannels();
