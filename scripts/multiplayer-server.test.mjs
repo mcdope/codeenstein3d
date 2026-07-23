@@ -11,7 +11,7 @@
  * excluded there), but still runs under `vitest run`.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createConfiguredServer } from "./multiplayer-server.mjs";
+import { createConfiguredServer, isTrustedProxy, parseTrustedProxies } from "./multiplayer-server.mjs";
 
 let server;
 let baseUrl;
@@ -207,5 +207,73 @@ describe("POST /session/<code>/answer — per-code rate limit and answer-race (r
       body: JSON.stringify({ answer: "fresh-answer" }),
     });
     expect(fresh.status).toBe(204);
+  });
+});
+
+describe("CODEENSTEIN_MULTIPLAYER_TRUSTED_PROXY_IPS parsing/matching", () => {
+  // The env var itself is read once at module load, so these drive the pure
+  // helpers directly. What they guard: a parser that is too permissive would
+  // silently widen who may forge X-Forwarded-For (see getClientIp).
+  it("treats an empty/whitespace-only spec as 'nothing extra is trusted'", () => {
+    expect(parseTrustedProxies("")).toEqual([]);
+    expect(parseTrustedProxies("  ,  , ")).toEqual([]);
+    expect(isTrustedProxy("172.28.5.1", parseTrustedProxies(""))).toBe(false);
+  });
+
+  it("matches an exact IPv4 entry, and nothing else", () => {
+    const entries = parseTrustedProxies("172.28.5.1");
+    expect(isTrustedProxy("172.28.5.1", entries)).toBe(true);
+    expect(isTrustedProxy("172.28.5.2", entries)).toBe(false);
+    expect(isTrustedProxy("172.28.5.10", entries)).toBe(false);
+  });
+
+  it("matches the IPv4-mapped-IPv6 form Node reports on a dual-stack listener", () => {
+    const entries = parseTrustedProxies("172.28.5.1");
+    expect(isTrustedProxy("::ffff:172.28.5.1", entries)).toBe(true);
+    expect(isTrustedProxy("::ffff:172.28.5.2", entries)).toBe(false);
+  });
+
+  it("matches IPv6 entries case-insensitively", () => {
+    const entries = parseTrustedProxies("FD00::1");
+    expect(isTrustedProxy("fd00::1", entries)).toBe(true);
+    expect(isTrustedProxy("fd00::2", entries)).toBe(false);
+  });
+
+  it("matches an IPv4 CIDR range on its boundaries", () => {
+    const entries = parseTrustedProxies("172.28.5.0/24");
+    expect(isTrustedProxy("172.28.5.0", entries)).toBe(true);
+    expect(isTrustedProxy("172.28.5.255", entries)).toBe(true);
+    expect(isTrustedProxy("172.28.4.255", entries)).toBe(false);
+    expect(isTrustedProxy("172.28.6.0", entries)).toBe(false);
+  });
+
+  it("handles the degenerate /32 and /0 prefixes", () => {
+    expect(isTrustedProxy("10.0.0.1", parseTrustedProxies("10.0.0.1/32"))).toBe(true);
+    expect(isTrustedProxy("10.0.0.2", parseTrustedProxies("10.0.0.1/32"))).toBe(false);
+    // /0 trusts every IPv4 peer — a foot-gun, but an explicitly requested one.
+    expect(isTrustedProxy("198.51.100.7", parseTrustedProxies("0.0.0.0/0"))).toBe(true);
+  });
+
+  it("normalizes a CIDR whose host bits are set, rather than mismatching everything", () => {
+    const entries = parseTrustedProxies("172.28.5.99/24");
+    expect(isTrustedProxy("172.28.5.1", entries)).toBe(true);
+  });
+
+  it("drops malformed entries instead of throwing, keeping valid ones alongside", () => {
+    const entries = parseTrustedProxies("not-an-ip/99, 999.1.1.1/24, 10.0.0.0/33, 172.28.5.1");
+    expect(isTrustedProxy("172.28.5.1", entries)).toBe(true);
+    expect(isTrustedProxy("10.0.0.5", entries)).toBe(false);
+  });
+
+  it("rejects non-canonical octets so a typo cannot widen a range", () => {
+    // "010" as octal-looking input and out-of-range octets must not parse.
+    expect(isTrustedProxy("10.0.0.8", parseTrustedProxies("10.0.0.010"))).toBe(false);
+    expect(isTrustedProxy("10.0.0.1", parseTrustedProxies("10.0.0.256/24"))).toBe(false);
+  });
+
+  it("does not treat a trusted-proxy entry as matching an arbitrary hostname string", () => {
+    const entries = parseTrustedProxies("172.28.5.0/24");
+    expect(isTrustedProxy("unknown", entries)).toBe(false);
+    expect(isTrustedProxy("proxy.internal", entries)).toBe(false);
   });
 });

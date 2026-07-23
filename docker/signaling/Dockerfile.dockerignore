@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
+
+# BuildKit reads this file for `Dockerfile` in this directory specifically, so
+# it can be an allowlist without affecting any other build in the repo.
+#
+# The build context is the repo root (docker-compose.yml sets `context: ..`),
+# which includes node_modules and the ~170 MB fetched WAD catalog under
+# public/wads. Exclude everything, then re-admit the one file the image needs —
+# the context that reaches the daemon is a few KB.
+*
+!scripts/multiplayer-server.mjs

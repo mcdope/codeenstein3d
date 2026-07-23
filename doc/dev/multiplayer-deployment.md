@@ -18,6 +18,12 @@ This guide uses placeholder hostnames: `game.example.org` (where the game is
 served), `mp.example.org` (the signaling server), `turn.example.org` (the relay).
 Substitute your own.
 
+**Two ways to run the server pieces.** Sections 1, 3 and 4 install them
+natively (systemd + `apt install coturn`).
+[Section 6](#6-alternative-run-the-server-pieces-in-docker) does the same job
+with two containers and one `.env` — pick one path, not both. Section 2 (the
+client build) and section 5 (end-to-end verification) apply either way.
+
 ## Prerequisites
 
 - A VPS you control (the signaling server is the project's first non-static
@@ -283,6 +289,94 @@ curl -o /dev/null -w '%{http_code} %{json}\n' https://mp.example.org/session/ZZZ
    only the **guest** fetches relay credentials; the guest's relay candidate
    covers a host behind strict NAT too, so a working guest relay is sufficient.
 
+---
+
+## 6. Alternative: run the server pieces in Docker
+
+Replaces §1 (systemd), §3 (apt coturn) and §4 (wiring them together) with two
+containers defined in [`docker/`](../../docker/). Everything else — §2's client
+build, §5's verification, the TLS reverse proxy, DNS and the firewall rules —
+is unchanged, because the containers deliberately present the same surface as
+the native install: a signaling server on `127.0.0.1:8787` and a relay on the
+host's network. Container-level details live in
+[`docker/README.md`](../../docker/README.md).
+
+**6.1 Prerequisites.** Docker Engine with the Compose plugin, and a clone of
+this repo on the VPS — images are built there, nothing is pulled from a
+registry:
+
+```
+sudo apt install docker.io docker-compose-v2
+git clone https://github.com/mcdope/codeenstein3d.git /opt/codeenstein
+```
+
+**6.2 Configure.** One file holds every value, including the TURN shared secret
+that §4 otherwise injects via a systemd drop-in. It is gitignored:
+
+```
+cd /opt/codeenstein/docker
+cp .env.example .env
+openssl rand -hex 32     # → TURN_SECRET (only if you want the relay)
+$EDITOR .env
+```
+
+At minimum set `ALLOWED_ORIGIN` to the exact origin the game is served from
+(`https://game.example.org`). Everything else has a working default. Each
+setting's rationale is in the file.
+
+**6.3 Start the signaling server:**
+
+```
+sudo docker compose up -d --build
+```
+
+It publishes **`127.0.0.1:8787`** only, so §1.3's reverse-proxy config and
+§1.4's `curl https://mp.example.org/lobby` check apply verbatim. Note the
+container is what needs `X-Forwarded-For` to arrive intact — see the
+`SIGNALING_SUBNET` note in `.env.example` for why, and don't publish the port
+on a public interface.
+
+**6.4 Add the TURN relay** (optional — same decision as §3). Fill in
+`TURN_SECRET`, `TURN_REALM`, `TURN_URLS` and the cert settings in `.env`, make
+sure the private key is readable by `TURN_CERT_GID` (the recipe is in
+`.env.example`), then bring both up:
+
+```
+sudo docker compose --profile turn up -d --build
+```
+
+The hardening §3.3 spells out is already applied — `docker/coturn/turnserver.conf.base`
+carries the `denied-peer-ip` isolation block and the quotas, and the entrypoint
+appends your realm/secret/ports/certs to it. §3.4's firewall rules and §3.6's
+`turnutils_uclient` check still apply; the relay uses host networking, so the
+ports behave exactly as in the native install. Without `--profile turn` no
+relay runs and, with `TURN_SECRET` empty, the credentials route stays a 404 —
+the same default-off behaviour as §4.
+
+**6.5 Verify:**
+
+```
+sudo docker compose ps                    # signaling reports (healthy); coturn just Up
+curl http://127.0.0.1:8787/lobby          # → {"sessions":[]}
+sudo docker compose logs -f coturn        # relay's effective config, secret redacted
+```
+
+Then continue with §5's end-to-end test.
+
+**6.6 Day-to-day.**
+
+```
+git pull && sudo docker compose up -d --build   # update to a new version
+sudo docker compose up -d                       # apply .env changes (recreates)
+sudo docker compose restart coturn              # reload an edited turnserver.conf.base
+sudo docker compose down                        # stop everything
+```
+
+Sessions are in-memory by design, so a restart drops any lobby in progress —
+the same as `systemctl restart` in the native install.
+
+---
+
 ## Troubleshooting
 
 - **Mixed-content / connection refused to the signaling server** — it must be
@@ -291,7 +385,22 @@ curl -o /dev/null -w '%{http_code} %{json}\n' https://mp.example.org/session/ZZZ
   origin (scheme + host, no trailing slash), matching where `dist/` is served.
 - **One IP hits rate limits for everyone** — the proxy isn't passing
   `X-Forwarded-For`; without it every request looks like it comes from the proxy's
-  loopback address. See §1.3.
+  loopback address. See §1.3. **On Docker (§6)** there's a second cause: the
+  proxy reaches the container across the bridge network, so it isn't loopback
+  and the header is ignored unless the gateway is trusted. The compose file
+  wires `SIGNALING_SUBNET` into `CODEENSTEIN_MULTIPLAYER_TRUSTED_PROXY_IPS` for
+  exactly this; if you changed one by hand, change both. The server warns at
+  startup when it binds a non-loopback address with nothing trusted —
+  `docker compose logs signaling`.
+- **(Docker) `exec /usr/bin/turnserver: operation not permitted`** — the
+  `NET_BIND_SERVICE` capability was removed from the coturn service. The binary
+  carries it as a file capability, so `execve()` refuses outright when it isn't
+  in the bounding set. Restore `cap_add: [NET_BIND_SERVICE]`.
+- **(Docker) coturn exits with "private key not readable"** — the relay runs as
+  uid 65534 and can't read a root-only Let's Encrypt key. Set `TURN_CERT_GID`
+  to a group that can (recipe in `docker/.env.example`), and mount
+  `/etc/letsencrypt` rather than `live/<domain>`, whose contents are symlinks
+  into `../../archive`.
 - **Still can't connect with a relay configured** — check
   `curl …/session/<code>/turn-credentials` returns `200` for a *live* session;
   confirm coturn is reachable on the advertised port (443/5349) and the firewall
