@@ -273,6 +273,18 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
 - [ ] sounds/bgm (local bgm would override it) from wad?
 - [ ] "dialup sfx" for edgecases when chasing/aggro'd?
 - [ ] "die screams" for enemies (and for player on death, a different sfx)?
+<<<<<<< Updated upstream
+=======
+- [ ] extend github into general git support, for gitlab etc. should support any http(s) available git repo.
+- [ ] interface contract for map generation. to make it easier for forks to make this into a totally different game
+- [ ] deploy action should place a file .restart-backend, multiplayer backend should watch via inotify or similar for that file. if it exists: restart itself and delete the file
+- [ ] UI should disable all multiplayer functionality if lobby/handshake backend isnt reachable
+- [ ] Show "Out of ammo!" toast when shooting while out of ammo
+- [ ] coop multiplayer should spawn more health loots, also after map generation / while playing
+- [ ] deathmatch multiplayer needs continous respawns of ammo, weapons and health
+- [ ] more wall and floor variations when using wads
+- [ ] ensure debughooks like clearAllEnemies are omitted from dist/prod builds
+>>>>>>> Stashed changes
 - [ ] random lore terminals with quotes like "There is no cow level", "Stay a while and listen" etc. should give 5x scorepoints compared to normal lore terminals - to encourage searching for them. maybe differentiate a bit visually?
   const RANDOM_LORE_QUOTES = [
     "There is no cow level",
