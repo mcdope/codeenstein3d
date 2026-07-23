@@ -64,7 +64,7 @@ import { randomSeed } from "./prng";
 import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelSegment } from "./engine/replay";
 import type { ParsedFile } from "./parser/types";
 import type { EngineCarryover, EngineStats, PlayerId, RosterSnapshotEntry } from "./engine/engine";
-import { createSession, fetchSession, fetchSessionAsHost, postAnswer, updateSession } from "./multiplayer/signalingClient";
+import { createSession, fetchIceServers, fetchSession, fetchSessionAsHost, postAnswer, updateSession } from "./multiplayer/signalingClient";
 import { fetchLobbyEntries } from "./multiplayer/lobby";
 import { createGuestAnswer, createHostOffer, waitForChannelsOpen } from "./multiplayer/webrtcConnection";
 import {
@@ -1263,6 +1263,21 @@ multiplayerHostCancelButton.addEventListener("click", () => {
 
 // --- Join flow -------------------------------------------------------------
 
+/** Fetches TURN relay servers for a live session, tolerating every failure —
+ * the endpoint 404s when the operator runs no relay, and a relay is only a
+ * best-effort enhancement for peers that can't connect directly, never a reason
+ * to fail the whole connection. Returns `[]` on any error so the peer
+ * connection simply proceeds STUN-only, exactly as before this feature. */
+async function fetchTurnServers(code: string, signal: AbortSignal): Promise<RTCIceServer[]> {
+  try {
+    const { iceServers } = await fetchIceServers(code, signal);
+    return iceServers.map((s) => ({ urls: s.urls, username: s.username, credential: s.credential }));
+  } catch (err) {
+    console.warn("[multiplayer] no TURN relay available, continuing STUN-only:", err);
+    return [];
+  }
+}
+
 async function joinMultiplayerSession(code: string): Promise<void> {
   const trimmed = code.trim().toUpperCase();
   if (!trimmed) return;
@@ -1289,10 +1304,19 @@ async function joinMultiplayerSession(code: string): Promise<void> {
 
     multiplayerConnectionState = "connecting";
     setMultiplayerStatus("Establishing connection…", false);
+    // Best-effort TURN relay so this guest can connect even when a direct path
+    // is impossible (strict NAT on either end). Never blocks the connect: any
+    // failure (incl. the 404 when the operator runs no relay) yields [] →
+    // STUN-only. The guest's own relay candidate is what covers the topology.
+    // No generation re-check here: a supersession landing during this fetch is
+    // caught by the existing check right after `createGuestAnswer` below (whose
+    // peer connection the `finally` still closes).
+    const turnServers = await fetchTurnServers(trimmed, signal);
     const { peerConnection, channelsPromise, answerSdp } = await createGuestAnswer(
       session.offer,
       MULTIPLAYER_ICE_GATHERING_TIMEOUT_MS,
       MULTIPLAYER_CHANNELS_OPEN_TIMEOUT_MS,
+      turnServers,
     );
     guestPeerConnection = peerConnection;
     guestChannelsPromise = channelsPromise;

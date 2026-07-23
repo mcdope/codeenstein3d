@@ -34,12 +34,17 @@ import type { MultiplayerChannels } from "./types";
 
 const DEFAULT_STUN_URLS = ["stun:stun.l.google.com:19302"];
 
-function resolveIceServers(): RTCIceServer[] {
+/** Builds the ICE server list: the configured (or default Google) STUN entry,
+ * plus any `turnServers` the caller fetched from the signaling server at
+ * connect time (`signalingClient.fetchIceServers`). STUN stays build-time
+ * configured; TURN is runtime, per-connection, and simply absent (STUN-only,
+ * as before) whenever no relay is configured or the fetch failed. */
+function resolveIceServers(turnServers: RTCIceServer[] = []): RTCIceServer[] {
   const configured = import.meta.env.VITE_MULTIPLAYER_STUN_URLS;
   const urls = configured
     ? configured.split(",").map((url) => url.trim()).filter(Boolean)
     : DEFAULT_STUN_URLS;
-  return [{ urls }];
+  return [{ urls }, ...turnServers];
 }
 
 /** Resolves once `pc`'s ICE gathering reaches `"complete"`, or after
@@ -123,6 +128,12 @@ export interface HostOfferResult {
  * close (its own cleanup variable is only ever assigned from this function's
  * *return value*), leaking the connection. */
 export async function createHostOffer(iceGatheringTimeoutMs: number): Promise<HostOfferResult> {
+  // Host stays STUN-only by design: it gathers ICE before it has a session
+  // code, so its TURN creds couldn't be session-gated without an ICE restart —
+  // and in this star topology the *guest*'s relay candidate already covers
+  // every NAT case (a host behind symmetric NAT/CGNAT still reaches the guest's
+  // single fixed relay address, which even symmetric NAT maps consistently).
+  // See `createGuestAnswer`'s `turnServers` and `signalingClient.fetchIceServers`.
   const peerConnection = new RTCPeerConnection({ iceServers: resolveIceServers() });
   try {
     const channels: MultiplayerChannels = {
@@ -171,8 +182,9 @@ export async function createGuestAnswer(
   offerSdp: string,
   iceGatheringTimeoutMs: number,
   channelsTimeoutMs: number,
+  turnServers: RTCIceServer[] = [],
 ): Promise<GuestAnswerResult> {
-  const peerConnection = new RTCPeerConnection({ iceServers: resolveIceServers() });
+  const peerConnection = new RTCPeerConnection({ iceServers: resolveIceServers(turnServers) });
   // Start listening before `setRemoteDescription` so no `datachannel` event
   // can be missed — but the promise itself only settles later, once the
   // caller has sent the answer back (see `channelsPromise`'s doc comment).

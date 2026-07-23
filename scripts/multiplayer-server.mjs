@@ -26,7 +26,7 @@
  */
 
 import { createServer } from "node:http";
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolve as resolvePath } from "node:path";
 import { writeFileSync, rmSync, existsSync } from "node:fs";
@@ -132,6 +132,46 @@ const MAX_OFFER_ANSWER_BYTES = 4096;
 const MAX_DISPLAY_NAME_CHARS = 100;
 const MAX_CAMPAIGN_NAME_CHARS = 100;
 
+// ---------------------------------------------------------------------------
+// TURN relay (optional) — server-minted ephemeral coturn credentials.
+//
+// Entirely opt-in and default-off: with TURN_SECRET or TURN_URLS unset, the
+// `GET /session/<code>/turn-credentials` route 404s indistinguishably from any
+// unknown route (same design as STATS_TOKEN above) and clients fall back to
+// STUN-only, exactly as before this feature existed.
+//
+// When enabled, this process never relays a byte — it only mints short-lived
+// credentials that a *separate* coturn daemon (configured with the same
+// `static-auth-secret`) validates itself. Scheme is coturn's `use-auth-secret`
+// / "TURN REST API": username = "<unix-expiry>", credential =
+// base64(HMAC-SHA1(secret, username)). See doc/dev/multiplayer-server-spec.md's
+// "TURN relay" section for the MANDATORY coturn hardening (denied-peer-ip for
+// loopback/RFC1918, quotas, non-root): a session `code` can be public (GET
+// /lobby), so the issuance gating below is necessary but the relay lockdown is
+// what actually protects a shared host from a leaked credential.
+// ---------------------------------------------------------------------------
+const TURN_SECRET = process.env.CODEENSTEIN_MULTIPLAYER_TURN_SECRET;
+const TURN_URLS = (process.env.CODEENSTEIN_MULTIPLAYER_TURN_URLS ?? "")
+  .split(",")
+  .map((url) => url.trim())
+  .filter(Boolean);
+const TURN_TTL_SECONDS = Number(process.env.CODEENSTEIN_MULTIPLAYER_TURN_TTL_SECONDS ?? 3600);
+/** The feature is live only when both a secret and at least one advertised URL
+ * are configured — either missing means "off" and the route 404s. */
+const TURN_ENABLED = typeof TURN_SECRET === "string" && TURN_SECRET.length > 0 && TURN_URLS.length > 0;
+/** Per-IP budget on credential minting — a browser needs only one mint per
+ * connection attempt, so this is generous but bounded. */
+const TURN_CREDENTIALS_MAX_REQUESTS = Number(
+  process.env.CODEENSTEIN_MULTIPLAYER_TURN_CREDENTIALS_MAX_REQUESTS ?? 30,
+);
+/** Independent per-*code* budget, mirroring ANSWER_PER_CODE_...: a public
+ * lobby code is handed to anyone browsing, so a per-IP budget alone can't stop
+ * many distinct IPs each minting creds against one session. One host plus a few
+ * guests need only a handful of mints per code. */
+const TURN_CREDENTIALS_PER_CODE_MAX_REQUESTS = Number(
+  process.env.CODEENSTEIN_MULTIPLAYER_TURN_CREDENTIALS_PER_CODE_MAX_REQUESTS ?? 20,
+);
+
 /**
  * Session code alphabet. **Corrects an arithmetic slip in the spec docs**:
  * they describe excluding `{0, O, 1, I, L}` from the 36-character uppercase-
@@ -188,6 +228,14 @@ const putSessionLimits = new Map();
  * IPs each individually flooding one session's answer slot. */
 /** @type {Map<string, IpLimitState>} */
 const answerAttemptsByCode = new Map();
+/** Per-IP budget for GET /session/<code>/turn-credentials — see
+ * TURN_CREDENTIALS_MAX_REQUESTS. */
+/** @type {Map<string, IpLimitState>} */
+const turnCredentialLimits = new Map();
+/** Keyed by session `code`, not IP — the per-code companion to the budget
+ * above, see TURN_CREDENTIALS_PER_CODE_MAX_REQUESTS. */
+/** @type {Map<string, IpLimitState>} */
+const turnCredentialLimitsByCode = new Map();
 
 // Cumulative, process-lifetime counters for /stats — deliberately separate
 // from the live Map sizes above, which only ever show a snapshot ("how many
@@ -244,7 +292,15 @@ function sweep() {
   for (const [code, record] of sessions) {
     if (now > record.expiresAt) sessions.delete(code);
   }
-  for (const map of [guessLimits, hostTokenLimits, lobbyLimits, putSessionLimits, answerAttemptsByCode]) {
+  for (const map of [
+    guessLimits,
+    hostTokenLimits,
+    lobbyLimits,
+    putSessionLimits,
+    answerAttemptsByCode,
+    turnCredentialLimits,
+    turnCredentialLimitsByCode,
+  ]) {
     for (const [ip, state] of map) {
       const windowLive = now - state.windowStart < RATE_LIMIT_WINDOW_MS;
       const cooldownLive = now < state.cooldownUntil;
@@ -761,6 +817,8 @@ function handleGetStats(req, res) {
         // sibling fields above (all part of the same `trackedIps` bucket)
         // rather than carving out a separate top-level field for one limiter.
         answerPerCode: answerAttemptsByCode.size,
+        turnCredentials: turnCredentialLimits.size,
+        turnCredentialsPerCode: turnCredentialLimitsByCode.size,
       },
       ipsCurrentlyInCooldown: {
         guess: countInCooldown(guessLimits, now),
@@ -768,8 +826,65 @@ function handleGetStats(req, res) {
         lobby: countInCooldown(lobbyLimits, now),
         putSession: countInCooldown(putSessionLimits, now),
         answerPerCode: countInCooldown(answerAttemptsByCode, now),
+        turnCredentials: countInCooldown(turnCredentialLimits, now),
+        turnCredentialsPerCode: countInCooldown(turnCredentialLimitsByCode, now),
       },
     },
+  });
+}
+
+/** Mints an ephemeral coturn credential for a caller who holds a *live*
+ * session code — the host additionally proving ownership via `X-Host-Token`,
+ * a guest authorized (as everywhere else in the join protocol) by knowing the
+ * code. See TURN_SECRET's config comment for the scheme and why the strong
+ * guarantees live in coturn's own config rather than here. 404s
+ * indistinguishably from an unknown route when the feature is unconfigured. */
+function handleTurnCredentials(req, res, code) {
+  // Feature off → look exactly like an unknown route (same as /stats).
+  if (!TURN_ENABLED) return sendError(res, 404, "not_found");
+
+  const now = Date.now();
+  const ip = getClientIp(req);
+
+  // Per-IP budget, then an independent per-code budget — a lobby-public code is
+  // knowable by anyone, so neither alone suffices (mirrors handlePostAnswer's
+  // two-budget structure).
+  const ipLimit = checkRateLimit(turnCredentialLimits, ip, TURN_CREDENTIALS_MAX_REQUESTS, now);
+  if (!ipLimit.allowed) {
+    res.setHeader("Retry-After", Math.ceil(ipLimit.retryAfterMs / 1000));
+    return sendError(res, 429, "rate_limited", { retryAfterMs: ipLimit.retryAfterMs });
+  }
+  const codeLimit = checkRateLimit(
+    turnCredentialLimitsByCode,
+    code,
+    TURN_CREDENTIALS_PER_CODE_MAX_REQUESTS,
+    now,
+  );
+  if (!codeLimit.allowed) {
+    res.setHeader("Retry-After", Math.ceil(codeLimit.retryAfterMs / 1000));
+    return sendError(res, 429, "rate_limited", { retryAfterMs: codeLimit.retryAfterMs });
+  }
+
+  // Core gate: no credential without a live session behind the code.
+  const record = getLiveSession(code, now);
+  if (!record) return sendError(res, 404, "session_not_found");
+
+  // A caller presenting `X-Host-Token` must present the *right* one (host
+  // path); a present-but-wrong token is rejected rather than silently
+  // downgraded to guest access, matching PUT /session's update path. A guest
+  // presents no token and is authorized by the live code alone.
+  const providedToken = req.headers["x-host-token"];
+  if (providedToken !== undefined && !timingSafeStringEqual(providedToken, record.hostToken)) {
+    return sendError(res, 403, "host_token_mismatch");
+  }
+
+  const expiry = Math.floor(now / 1000) + TURN_TTL_SECONDS;
+  const username = String(expiry);
+  const credential = createHmac("sha1", TURN_SECRET).update(username).digest("base64");
+
+  return sendJson(res, 200, {
+    iceServers: [{ urls: TURN_URLS, username, credential }],
+    ttl: TURN_TTL_SECONDS,
   });
 }
 
@@ -779,6 +894,7 @@ function handleGetStats(req, res) {
 
 const SESSION_PATH_RE = /^\/session\/([^/]+)$/;
 const ANSWER_PATH_RE = /^\/session\/([^/]+)\/answer$/;
+const TURN_PATH_RE = /^\/session\/([^/]+)\/turn-credentials$/;
 
 async function requestListener(req, res) {
   setCorsHeaders(req, res);
@@ -806,6 +922,10 @@ async function requestListener(req, res) {
     const answerMatch = pathname.match(ANSWER_PATH_RE);
     if (req.method === "POST" && answerMatch) {
       return await handlePostAnswer(req, res, decodeURIComponent(answerMatch[1]));
+    }
+    const turnMatch = pathname.match(TURN_PATH_RE);
+    if (req.method === "GET" && turnMatch) {
+      return handleTurnCredentials(req, res, decodeURIComponent(turnMatch[1]));
     }
     if (req.method === "GET" && pathname === "/lobby") {
       return handleGetLobby(req, res);
@@ -891,6 +1011,16 @@ invocation's currently-effective ones):
   CODEENSTEIN_MULTIPLAYER_STATS_TOKEN                    Enables GET /stats and --stats;
                                                           unset means the endpoint doesn't
                                                           exist (plain 404), by design.
+  CODEENSTEIN_MULTIPLAYER_TURN_SECRET                    coturn static-auth-secret. With
+                                                          TURN_URLS set, enables
+                                                          GET /session/<code>/turn-credentials;
+                                                          unset means the route 404s and clients
+                                                          use STUN only (by design).
+  CODEENSTEIN_MULTIPLAYER_TURN_URLS                     Comma-separated TURN URLs advertised to
+                                                          clients (e.g. turns:host:443,turn:host:3478).
+  CODEENSTEIN_MULTIPLAYER_TURN_TTL_SECONDS              Minted-credential lifetime (currently ${TURN_TTL_SECONDS}).
+  CODEENSTEIN_MULTIPLAYER_TURN_CREDENTIALS_MAX_REQUESTS  Per-IP mint budget (currently ${TURN_CREDENTIALS_MAX_REQUESTS}).
+  CODEENSTEIN_MULTIPLAYER_TURN_CREDENTIALS_PER_CODE_MAX_REQUESTS  Per-code mint budget (currently ${TURN_CREDENTIALS_PER_CODE_MAX_REQUESTS}).
 
 Docs: doc/dev/multiplayer-server-spec.md, multiplayer-research.md ("Self-hosting").
 `;

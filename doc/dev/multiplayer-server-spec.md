@@ -231,8 +231,8 @@ no session codes, hostTokens, IPs, offers, or answers anywhere in this payload:
   },
   "rateLimiting": {
     "totalRejectionsSinceStart": 12,
-    "trackedIps": { "guess": 3, "hostToken": 1, "lobby": 2, "putSession": 1 },
-    "ipsCurrentlyInCooldown": { "guess": 1, "hostToken": 0, "lobby": 0, "putSession": 0 }
+    "trackedIps": { "guess": 3, "hostToken": 1, "lobby": 2, "putSession": 1, "turnCredentials": 0, "turnCredentialsPerCode": 0 },
+    "ipsCurrentlyInCooldown": { "guess": 1, "hostToken": 0, "lobby": 0, "putSession": 0, "turnCredentials": 0, "turnCredentialsPerCode": 0 }
   }
 }
 ```
@@ -255,6 +255,73 @@ Companion CLI mode: `node multiplayer-server.mjs --stats` (optionally
 `/stats` the same way, reading `CODEENSTEIN_MULTIPLAYER_STATS_TOKEN` from its own
 environment — a client for this endpoint, not a separate mechanism. `--help`/`-?`
 prints full usage, including every env var and its currently-effective value.
+
+### `GET /session/<code>/turn-credentials`
+
+Mints a **short-lived TURN relay credential** so a peer behind strict NAT / CGNAT
+can still connect (see the "TURN relay (coturn)" section below for why this exists
+and how the relay itself must be locked down). **Entirely opt-in**, exactly like
+`/stats`: unless both `CODEENSTEIN_MULTIPLAYER_TURN_SECRET` and
+`CODEENSTEIN_MULTIPLAYER_TURN_URLS` are set, this route returns the same
+`404 not_found` as any unknown path, and the client falls back to STUN-only —
+byte-for-byte the behaviour from before this feature existed.
+
+This server never relays a byte; it only **mints credentials a separate coturn
+daemon validates**, using coturn's stateless `use-auth-secret` ("TURN REST API")
+scheme: `username = "<unix-expiry>"`, `credential = base64(HMAC-SHA1(secret,
+username))` where `secret` is the shared `CODEENSTEIN_MULTIPLAYER_TURN_SECRET`.
+Nothing is stored server-side.
+
+**Issuance is gated (a `code` can be public — `GET /lobby` hands it out):**
+
+- The `code` must map to a **live session**; otherwise `404 session_not_found`.
+  No credential is ever minted for a code with no session behind it.
+- If the request carries an `X-Host-Token` header it must be the session's real
+  host token (constant-time compared); a wrong one is `403 host_token_mismatch`,
+  never silently downgraded to guest access. A guest sends no token and is
+  authorized by knowing the live code — the same trust level the rest of the join
+  protocol already grants a code holder.
+- Two independent rate-limit budgets, mirroring `POST .../answer`: per-IP
+  (`CODEENSTEIN_MULTIPLAYER_TURN_CREDENTIALS_MAX_REQUESTS`, default 30) **and**
+  per-code (`..._TURN_CREDENTIALS_PER_CODE_MAX_REQUESTS`, default 20), so neither
+  one IP nor one public code can mint unbounded credentials. `429 rate_limited`
+  with `retryAfterMs` on exhaustion.
+
+Because minted credentials are inherently shareable (the REST scheme can't bind a
+credential to a specific peer pair), this gating raises the bar but is **not** the
+load-bearing control — coturn's own hardening is (see below).
+
+Response `200 OK`:
+
+```jsonc
+{
+  "iceServers": [
+    {
+      "urls": ["turns:relay.example.org:443", "turn:relay.example.org:3478"],
+      "username": "1721764800",
+      "credential": "base64-hmac-sha1-of-username"
+    }
+  ],
+  "ttl": 3600
+}
+```
+
+The client merges these `iceServers` after its own STUN entry when building the
+guest's `RTCPeerConnection` (`src/multiplayer/webrtcConnection.ts`). Only the
+**guest** fetches this (the star topology makes the guest's relay candidate cover
+every NAT combination, including a host behind CGNAT); the host, which gathers ICE
+before it even has a session code, stays STUN-only by design.
+
+Server env vars (all optional; unset ⇒ feature off):
+
+- `CODEENSTEIN_MULTIPLAYER_TURN_SECRET` — the coturn `static-auth-secret` (also
+  required to enable the route). Never logged, never echoed in `--help`.
+- `CODEENSTEIN_MULTIPLAYER_TURN_URLS` — comma-separated TURN URLs advertised to
+  clients, e.g. `turns:relay.example.org:443,turn:relay.example.org:3478`.
+- `CODEENSTEIN_MULTIPLAYER_TURN_TTL_SECONDS` — minted-credential lifetime
+  (default `3600`; lower it to shrink the reuse window of a leaked credential).
+- `CODEENSTEIN_MULTIPLAYER_TURN_CREDENTIALS_MAX_REQUESTS` /
+  `..._TURN_CREDENTIALS_PER_CODE_MAX_REQUESTS` — the two mint budgets above.
 
 ## 3. In-memory storage mechanics
 
@@ -536,7 +603,70 @@ reason either should take anywhere near this long; explicit values close off the
 mild Slowloris-style exposure of leaving both at Node's much longer defaults
 (many slow/idle connections tying up memory/file descriptors for minutes).
 
+## TURN relay (coturn): optional, for strict-NAT connectivity
+
+> For the end-to-end setup steps (install, a full `turnserver.conf`, firewall,
+> wiring it to this server), see the
+> [Multiplayer Server Deployment runbook](multiplayer-deployment.md#3-turn-relay-coturn--optional-for-strict-nat-connectivity).
+> This section is the *why* and the security requirements behind it.
+
+WebRTC is STUN-only by default, so two peers that can't form a direct path
+(symmetric NAT, CGNAT, UDP-blocking firewalls) simply fail to connect. A TURN
+**relay** fixes that by forwarding their (still end-to-end-encrypted) traffic.
+This signaling server can mint credentials for one (see
+`GET /session/<code>/turn-credentials`), but the relay itself is a **separate
+[coturn](https://github.com/coturn/coturn) daemon** — this Node process never
+relays traffic, and TURN is deliberately *not* reimplemented in it (that would
+drop the dependency-free property and couple an internet-facing, bandwidth-heavy
+relay to signaling). Leave the `CODEENSTEIN_MULTIPLAYER_TURN_*` env vars unset and
+none of this applies — clients stay STUN-only.
+
+**Security model — two layers, both required.** Because a `code` can be public
+(`GET /lobby`), the endpoint's issuance gating (live-session + optional host-token
++ dual rate limits) raises the bar but is *not* sufficient on its own: minted
+credentials are shareable. The load-bearing control is coturn's own configuration.
+If you run a relay on a host that carries anything else, treat the hardening below
+as mandatory — an unlocked relay is an open proxy and an SSRF pivot into whatever
+that box can reach.
+
+**Mandatory coturn hardening:**
+
+- **Auth:** `use-auth-secret` with `static-auth-secret=<CODEENSTEIN_MULTIPLAYER_TURN_SECRET>`
+  (the *same* secret this server signs with); set a `realm`; never `no-auth`.
+- **Isolation from the host (the part that actually protects the box):**
+  `denied-peer-ip` for loopback and every private/link-local/ULA range so a
+  leaked credential can never relay *into* internal services or the LAN —
+  `127.0.0.0-127.255.255.255`, `10.0.0.0-10.255.255.255`,
+  `172.16.0.0-172.31.255.255`, `192.168.0.0-192.168.255.255`,
+  `169.254.0.0-169.254.255.255`, plus `::1`, `fe80::/10`, `fc00::/7`; add
+  `no-multicast-peers`. Run coturn as a dedicated non-root user; prefer a
+  container / separate network namespace; bind the relay to the public interface
+  only.
+- **Quotas:** `user-quota`, `total-quota`, and `max-bps` to bound bandwidth;
+  `stale-nonce`, `fingerprint`.
+- **Ports/TLS:** listen on 3478 (UDP/TCP) and **TLS on 443** (or 5349) — the TLS
+  path is what punches through networks that block UDP entirely; use a narrow
+  `min-port`/`max-port` relay range and open *only* those in the firewall; reuse
+  your reverse-proxy TLS cert; add `no-tcp-relay` if only UDP relay is needed.
+
+**Injecting the shared secret into the systemd service.** The generated
+`codeenstein-multiplayer.service` unit deliberately does **not** template the TURN
+secret (a secret has no place in a world-readable generated unit). Add it out of
+band, e.g. a mode-`600` `EnvironmentFile=`, or:
+
+```
+systemctl edit codeenstein-multiplayer.service
+# [Service]
+# Environment=CODEENSTEIN_MULTIPLAYER_TURN_SECRET=…
+# Environment=CODEENSTEIN_MULTIPLAYER_TURN_URLS=turns:relay.example.org:443,turn:relay.example.org:3478
+```
+
 ## Configuring / deploying the multiplayer client
+
+> Prefer the imperative walkthrough? The
+> [Multiplayer Server Deployment runbook](multiplayer-deployment.md) covers the
+> whole stack (this server, the client build, and coturn) as ordered steps. The
+> below is the reference for the client-side env vars specifically.
 
 Everything above concerns the *server*. The built game **client** also needs to
 be told where this server lives, via two build-time env vars — Vite's `VITE_*`

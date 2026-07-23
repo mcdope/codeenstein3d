@@ -1614,6 +1614,14 @@ describe("main.ts — multiplayer connect flow", () => {
     return { ok, status, json: async () => body } as unknown as Response;
   }
 
+  /** The guest's `fetchTurnServers` fires a `GET .../turn-credentials` between
+   * fetchSession and postAnswer; when the operator runs no relay it 404s and
+   * the guest silently proceeds STUN-only. Join tests that don't care about the
+   * relay queue this in that slot so it doesn't perturb their own mocks. */
+  function noTurnRelayResponse(): Response {
+    return jsonResponse({ error: "not_found" }, false, 404);
+  }
+
   /** Loads the bundled demo campaign (the cheapest eligible-workspace path —
    * no fetch mocking needed) and waits only for the Multiplayer tab to
    * enable, not for the auto-launched level to finish loading — gating
@@ -2294,25 +2302,29 @@ describe("main.ts — multiplayer connect flow", () => {
         await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
 
         document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
-        fetchMock.mockResolvedValueOnce(
-          jsonResponse({
-            code: "JOINCOD",
-            offer: "offer-sdp",
-            answer: null,
-            campaignName: "demo-campaign",
-            displayName: null,
-            playerCount: 1,
-          }),
-        );
+        fetchMock
+          .mockResolvedValueOnce(
+            jsonResponse({
+              code: "JOINCOD",
+              offer: "offer-sdp",
+              answer: null,
+              campaignName: "demo-campaign",
+              displayName: null,
+              playerCount: 1,
+            }),
+          )
+          .mockResolvedValueOnce(noTurnRelayResponse());
         document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "JOINCOD";
         document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
-        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3)); // the Join's own fetchSession call
+        // The Join's own fetchSession (call 3) then its best-effort
+        // turn-credentials fetch (call 4).
+        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
 
         // Advancing well past the host's own poll interval must fire no
         // further host poll — starting the Join attempt cleared the pending
         // retry timer via `beginMultiplayerConnect()`.
         await vi.advanceTimersByTimeAsync(5000);
-        expect(fetchMock).toHaveBeenCalledTimes(3);
+        expect(fetchMock).toHaveBeenCalledTimes(4);
       } finally {
         vi.useRealTimers();
       }
@@ -2349,6 +2361,7 @@ describe("main.ts — multiplayer connect flow", () => {
             playerCount: 1,
           }),
         )
+        .mockResolvedValueOnce(noTurnRelayResponse())
         .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
       document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "JOINCOD";
       document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
@@ -2390,6 +2403,7 @@ describe("main.ts — multiplayer connect flow", () => {
             playerCount: 1,
           }),
         )
+        .mockResolvedValueOnce(noTurnRelayResponse())
         .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
       document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "JOINCOD";
       document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
@@ -2474,7 +2488,7 @@ describe("main.ts — multiplayer connect flow", () => {
   });
 
   describe("Join flow", () => {
-    it("fetches the session, submits an answer, and reaches Connected once channels open", async () => {
+    it("fetches the session, mints a TURN relay, submits an answer, and reaches Connected once channels open", async () => {
       await loadEligibleWorkspace();
       document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
       fetchMock
@@ -2488,6 +2502,15 @@ describe("main.ts — multiplayer connect flow", () => {
             playerCount: 1,
           }),
         )
+        // The guest's best-effort `fetchTurnServers` call, between fetchSession
+        // and postAnswer — here it succeeds, so the relay is merged into the
+        // guest's ICE config (asserted below).
+        .mockResolvedValueOnce(
+          jsonResponse({
+            iceServers: [{ urls: ["turns:relay.test:443"], username: "u", credential: "c" }],
+            ttl: 3600,
+          }),
+        )
         .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
 
       document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "r4kj9x";
@@ -2495,13 +2518,20 @@ describe("main.ts — multiplayer connect flow", () => {
 
       await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
       const pc = FakeRTCPeerConnection.instances.at(-1)!;
+      // The minted TURN relay was appended after the STUN entry.
+      expect(pc.config?.iceServers).toEqual([
+        { urls: ["stun:stun.l.google.com:19302"] },
+        { urls: ["turns:relay.test:443"], username: "u", credential: "c" },
+      ]);
+      expect(fetchMock.mock.calls.some(([url]) => url === `${SERVER_URL}/session/R4KJ9X/turn-credentials`)).toBe(true);
       pc.simulateIceGatheringComplete();
       await waitUntil(() => pc.remoteDescription !== null);
       expect(pc.remoteDescription).toEqual({ type: "offer", sdp: "offer-sdp" });
 
-      await waitUntil(() => fetchMock.mock.calls.length >= 2);
-      const [answerUrl, answerInit] = fetchMock.mock.calls[1];
-      expect(answerUrl).toBe(`${SERVER_URL}/session/R4KJ9X/answer`);
+      const answerUrlStr = `${SERVER_URL}/session/R4KJ9X/answer`;
+      await waitUntil(() => fetchMock.mock.calls.some(([url]) => url === answerUrlStr));
+      const [answerUrl, answerInit] = fetchMock.mock.calls.find(([url]) => url === answerUrlStr)!;
+      expect(answerUrl).toBe(answerUrlStr);
       expect(JSON.parse(answerInit.body)).toEqual({ answer: "answer-sdp" });
 
       const input = new FakeRTCDataChannel("input");
@@ -2594,16 +2624,18 @@ describe("main.ts — multiplayer connect flow", () => {
     it("a supersession landing while the ICE-gathering wait is still pending stops the join before it submits its answer", async () => {
       await loadEligibleWorkspace();
       document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
-      fetchMock.mockResolvedValueOnce(
-        jsonResponse({
-          code: "JOINCOD",
-          offer: "offer-sdp",
-          answer: null,
-          campaignName: "demo-campaign",
-          displayName: null,
-          playerCount: 1,
-        }),
-      );
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "JOINCOD",
+            offer: "offer-sdp",
+            answer: null,
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        )
+        .mockResolvedValueOnce(noTurnRelayResponse());
       document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "JOINCOD";
       document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
       await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
@@ -2634,6 +2666,7 @@ describe("main.ts — multiplayer connect flow", () => {
             playerCount: 1,
           }),
         )
+        .mockResolvedValueOnce(noTurnRelayResponse())
         .mockImplementationOnce(
           () =>
             new Promise((resolve) => {
@@ -2645,7 +2678,7 @@ describe("main.ts — multiplayer connect flow", () => {
       await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
       const pc = FakeRTCPeerConnection.instances.at(-1)!;
       pc.simulateIceGatheringComplete();
-      await waitUntil(() => fetchMock.mock.calls.length >= 2); // postAnswer in flight, still pending
+      await waitUntil(() => fetchMock.mock.calls.length >= 3); // postAnswer in flight, still pending
 
       await supersedeWithHostAttempt();
       resolvePostAnswer!();
@@ -2678,13 +2711,14 @@ describe("main.ts — multiplayer connect flow", () => {
             playerCount: 1,
           }),
         )
+        .mockResolvedValueOnce(noTurnRelayResponse())
         .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
       document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "JOINCOD";
       document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
       await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
       const pc = FakeRTCPeerConnection.instances.at(-1)!;
       pc.simulateIceGatheringComplete();
-      await waitUntil(() => fetchMock.mock.calls.length >= 2); // postAnswer sent
+      await waitUntil(() => fetchMock.mock.calls.length >= 3); // postAnswer sent
       // Deliberately not delivering the data channels yet — the join is
       // parked awaiting `channelsPromise`.
 
@@ -2717,6 +2751,7 @@ describe("main.ts — multiplayer connect flow", () => {
             playerCount: 1,
           }),
         )
+        .mockResolvedValueOnce(noTurnRelayResponse())
         .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
       document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "JOINCOD";
       document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
@@ -2727,7 +2762,7 @@ describe("main.ts — multiplayer connect flow", () => {
       const reconciliation = new FakeRTCDataChannel("reconciliation");
       pc.simulateIncomingDataChannel(input);
       pc.simulateIncomingDataChannel(reconciliation);
-      await waitUntil(() => fetchMock.mock.calls.length >= 2); // postAnswer sent
+      await waitUntil(() => fetchMock.mock.calls.length >= 3); // postAnswer sent
       // `channelsPromise` has resolved by now — one more tick lets the join's
       // own continuation actually reach and enter `waitForChannelsOpen`,
       // registering its "open" listeners on these still-unopened channels.
@@ -2758,6 +2793,7 @@ describe("main.ts — multiplayer connect flow", () => {
             playerCount: 1,
           }),
         )
+        .mockResolvedValueOnce(noTurnRelayResponse())
         .mockImplementationOnce(
           () =>
             new Promise((_resolve, reject) => {
@@ -2768,7 +2804,7 @@ describe("main.ts — multiplayer connect flow", () => {
       document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
       await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
       FakeRTCPeerConnection.instances.at(-1)!.simulateIceGatheringComplete();
-      await waitUntil(() => fetchMock.mock.calls.length >= 2); // postAnswer in flight, still pending
+      await waitUntil(() => fetchMock.mock.calls.length >= 3); // postAnswer in flight, still pending
 
       await supersedeWithHostAttempt();
       rejectAnswer!();
@@ -2801,6 +2837,7 @@ describe("main.ts — multiplayer connect flow", () => {
             playerCount: 1,
           }),
         )
+        .mockResolvedValueOnce(noTurnRelayResponse())
         .mockResolvedValueOnce(jsonResponse({ error: "already_answered" }, false, 409));
 
       document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "R4KJ9X";
@@ -2976,6 +3013,7 @@ describe("main.ts — multiplayer connect flow", () => {
               playerCount: 1,
             }),
           )
+          .mockResolvedValueOnce(noTurnRelayResponse())
           .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
 
         document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "r4kj9x";
@@ -3704,6 +3742,7 @@ describe("main.ts — multiplayer connect flow", () => {
               playerCount: 1,
             }),
           )
+          .mockResolvedValueOnce(noTurnRelayResponse())
           .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
 
         document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "r4kj9x";
@@ -3783,6 +3822,7 @@ describe("main.ts — multiplayer connect flow", () => {
             playerCount: 1,
           }),
         )
+        .mockResolvedValueOnce(noTurnRelayResponse())
         .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
 
       document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "r4kj9x";
@@ -3897,6 +3937,7 @@ describe("main.ts — multiplayer connect flow", () => {
             playerCount: 1,
           }),
         )
+        .mockResolvedValueOnce(noTurnRelayResponse())
         .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
 
       document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "r4kj9x";
@@ -4085,6 +4126,7 @@ describe("main.ts — multiplayer connect flow", () => {
             playerCount: 1,
           }),
         )
+        .mockResolvedValueOnce(noTurnRelayResponse())
         .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
 
       document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "r4kj9x";

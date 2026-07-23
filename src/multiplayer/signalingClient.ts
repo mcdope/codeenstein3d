@@ -24,6 +24,8 @@
  */
 import { SignalingError, type SignalingErrorCode } from "./types";
 import type {
+  IceConfigResponse,
+  IceServerConfig,
   LobbyEntry,
   LobbyResponse,
   SessionCreateRequest,
@@ -65,6 +67,22 @@ function isLobbyResponse(body: unknown): body is LobbyResponse {
   if (typeof body !== "object" || body === null) return false;
   const b = body as Record<string, unknown>;
   return Array.isArray(b.sessions) && b.sessions.every(isLobbyEntry);
+}
+
+function isIceServerConfig(entry: unknown): entry is IceServerConfig {
+  if (typeof entry !== "object" || entry === null) return false;
+  const e = entry as Record<string, unknown>;
+  const urlsOk =
+    typeof e.urls === "string" || (Array.isArray(e.urls) && e.urls.every((u) => typeof u === "string"));
+  const usernameOk = e.username === undefined || typeof e.username === "string";
+  const credentialOk = e.credential === undefined || typeof e.credential === "string";
+  return urlsOk && usernameOk && credentialOk;
+}
+
+function isIceConfigResponse(body: unknown): body is IceConfigResponse {
+  if (typeof body !== "object" || body === null) return false;
+  const b = body as Record<string, unknown>;
+  return Array.isArray(b.iceServers) && b.iceServers.every(isIceServerConfig) && typeof b.ttl === "number";
 }
 
 /** Resolved lazily (not at module load) so importing this module never
@@ -181,4 +199,24 @@ export function postAnswer(code: string, answer: string, signal: AbortSignal): P
 /** Lists public sessions for the lobby browser dialog. */
 export function fetchLobby(signal: AbortSignal): Promise<LobbyResponse> {
   return requestJson<LobbyResponse>("/lobby", {}, signal, isLobbyResponse);
+}
+
+/** Fetches short-lived TURN credentials for a *live* session so a peer behind
+ * strict NAT can relay. The host passes its `hostToken` (proving ownership); a
+ * guest passes none and is authorized by the live code, exactly as the rest of
+ * the join flow treats codes. `X-Host-Token` is only sent when a token is
+ * given, so a guest never sends an empty one. The endpoint 404s when the
+ * operator runs no relay (or the session is gone) — callers treat *any* failure
+ * as "STUN only" and never let it block the connection (see `main.ts`). */
+export function fetchIceServers(
+  code: string,
+  signal: AbortSignal,
+  hostToken?: string,
+): Promise<IceConfigResponse> {
+  return requestJson<IceConfigResponse>(
+    `/session/${encodeURIComponent(code)}/turn-credentials`,
+    hostToken ? { headers: { "X-Host-Token": hostToken } } : {},
+    signal,
+    isIceConfigResponse,
+  );
 }
