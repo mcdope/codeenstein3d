@@ -824,6 +824,87 @@ describe("runMultiplayerSessionAsGuest", () => {
     });
   });
 
+  describe("fell-behind-a-transition liveness bound (finding M3)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("ends the session once bundles stamped for an epoch AHEAD of ours persist past the grace period", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const onSessionEnded = vi.fn();
+      runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult(), onSessionEnded);
+
+      // The host has moved to level epoch 1; this guest never received the
+      // transition (its map was lost on the reconciliation channel), so it's
+      // stuck on epoch 0, discarding every ahead-of-us bundle. Transport stays
+      // healthy, so the disconnect path would never catch this.
+      const aheadBundle: TickInputBundle = { tick: 0, dt: 1 / 30, levelEpoch: 1, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+      channels.host.input.send(JSON.stringify(aheadBundle));
+      expect(onSessionEnded).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS);
+      expect(onSessionEnded).toHaveBeenCalledTimes(1);
+      expect(onSessionEnded.mock.calls[0][1]).toBe("host-disconnected");
+    });
+
+    it("does not fire while an ahead-of-us epoch persists for less than the grace period, and repeated ahead bundles don't restart the timer", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const onSessionEnded = vi.fn();
+      runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult(), onSessionEnded);
+
+      // The host keeps broadcasting ahead-of-us bundles every tick — each is
+      // discarded, but the second onward must NOT re-arm/restart the liveness
+      // timer (it's already tracking).
+      const ahead = (tick: number): TickInputBundle => ({ tick, dt: 1 / 30, levelEpoch: 1, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] });
+      channels.host.input.send(JSON.stringify(ahead(0)));
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS - 2);
+      channels.host.input.send(JSON.stringify(ahead(1))); // already armed — must not restart
+      vi.advanceTimersByTime(1);
+
+      expect(onSessionEnded).not.toHaveBeenCalled();
+
+      // The original arming's deadline still governs — one more ms trips it.
+      vi.advanceTimersByTime(1);
+      expect(onSessionEnded).toHaveBeenCalledTimes(1);
+    });
+
+    it("stop() while the fell-behind timer is armed cancels it (no end after teardown)", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const onSessionEnded = vi.fn();
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult(), onSessionEnded);
+
+      const aheadBundle: TickInputBundle = { tick: 0, dt: 1 / 30, levelEpoch: 1, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+      channels.host.input.send(JSON.stringify(aheadBundle)); // arms the timer
+      handle.stop(); // teardown must clear it
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS * 2);
+
+      expect(onSessionEnded).not.toHaveBeenCalled();
+    });
+
+    it("a matching-epoch bundle arriving after an ahead-of-us one cancels the pending end (caught up)", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const onSessionEnded = vi.fn();
+      runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult(), onSessionEnded);
+
+      // Ahead-of-us bundle arms the liveness timer...
+      const aheadBundle: TickInputBundle = { tick: 0, dt: 1 / 30, levelEpoch: 1, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+      channels.host.input.send(JSON.stringify(aheadBundle));
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS / 2);
+
+      // ...then a bundle for our own current epoch applies normally and clears
+      // it (the transient-race case: we were briefly behind, then resynced).
+      const matchBundle: TickInputBundle = { tick: 1, dt: 1 / 30, levelEpoch: 0, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
+      channels.host.input.send(JSON.stringify(matchBundle));
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS);
+
+      expect(onSessionEnded).not.toHaveBeenCalled();
+    });
+  });
+
   describe("local Escape → dismissLoreOverlay (step 8)", () => {
     afterEach(() => {
       vi.restoreAllMocks();
@@ -1028,7 +1109,27 @@ describe("runMultiplayerSessionAsGuest", () => {
       expect(handle.getPlayerPosition("guest")).toEqual(before);
     });
 
-    it("discards an oversized level-transition map-chunk instead of throwing (re-review finding)", () => {
+    it("discards a message exceeding MAX_INBOUND_MESSAGE_BYTES before parsing it (finding M4)", () => {
+      const channels = linkedChannels();
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+      const before = handle.getPlayerPosition("guest");
+
+      const initMessage: LevelTransitionInitMessage = { type: "level-transition-init", carryovers: {}, gameplaySeed: 1 };
+      channels.host.reconciliation.send(JSON.stringify(initMessage));
+      // A single message far past the inbound-size cap — now dropped before it
+      // is even parsed (the earliest, cheapest of the layered defenses), so it
+      // never reaches ChunkReassembler.push() at all. Must not throw, must not
+      // advance the session.
+      const hugeChunk: LevelTransitionMapChunkMessage = { type: "level-transition-map-chunk", index: 0, data: "x".repeat(65 * 1024 * 1024) };
+      expect(() => channels.host.reconciliation.send(JSON.stringify(hugeChunk))).not.toThrow();
+
+      expect(handle.getPlayerPosition("guest")).toEqual(before);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("oversized inbound"));
+      warnSpy.mockRestore();
+    });
+
+    it("catches a ChunkReassembler.push() throw on a malformed transition chunk instead of crashing the listener (finding H1/M5)", () => {
       const channels = linkedChannels();
       const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
       const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
@@ -1036,11 +1137,12 @@ describe("runMultiplayerSessionAsGuest", () => {
 
       const initMessage: LevelTransitionInitMessage = { type: "level-transition-init", carryovers: {}, gameplaySeed: 1 };
       channels.host.reconciliation.send(JSON.stringify(initMessage));
-      // A single chunk whose own length already exceeds MAX_TOTAL_BYTES —
-      // ChunkReassembler.push() throws; must be caught, not crash the
-      // reconciliation-channel listener.
-      const hugeChunk: LevelTransitionMapChunkMessage = { type: "level-transition-map-chunk", index: 0, data: "x".repeat(65 * 1024 * 1024) };
-      expect(() => channels.host.reconciliation.send(JSON.stringify(hugeChunk))).not.toThrow();
+      // A small message (well under the size cap) whose `data` is not a string
+      // — push() rejects it (the NaN-poisoning vector, finding H1). The
+      // transition listener's try/catch must swallow that throw rather than
+      // let it escape the "message" handler.
+      const badChunk = { type: "level-transition-map-chunk", index: 0, data: 0 };
+      expect(() => channels.host.reconciliation.send(JSON.stringify(badChunk))).not.toThrow();
 
       expect(handle.getPlayerPosition("guest")).toEqual(before);
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("discarding oversized level-transition map-chunk"));

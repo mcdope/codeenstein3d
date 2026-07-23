@@ -178,6 +178,14 @@ const SPRINT_MULTIPLIER = 2.0;
 const ROT_SPEED = 2.6;
 /** Mouse rotation sensitivity in radians per pixel of movement. */
 const MOUSE_SENSITIVITY = 0.0025;
+/** Defensive upper bound on how many weapon-cycle steps one tick's `wheelSteps`
+ * may drive, mirroring the multiplayer layer's own `MAX_WHEEL_STEPS_PER_TICK`
+ * (duplicated, not imported — this engine layer never depends upward on the
+ * multiplayer layer). Belt-and-suspenders: a peer's out-of-range `wheelSteps`
+ * is already rejected by `isValidInputSnapshot`, but any unvalidated path must
+ * still never spin the cycle loop below enough to hang the tick. Far above the
+ * few notches real hardware ever produces per tick. */
+const MAX_WHEEL_STEPS_PER_TICK = 32;
 /** Clamp per-frame dt so a background tab / long stall can't teleport the player. */
 const MAX_DT = 0.05;
 /** How often (seconds) the FPS overlay's averaged reading recomputes — often
@@ -2178,7 +2186,8 @@ export class RaycasterEngine {
       const wheelSteps = p.input.consumeWheelSteps();
       if (wheelSteps !== 0) {
         const direction = wheelSteps > 0 ? 1 : -1; // scroll down = next weapon
-        for (let i = 0; i < Math.abs(wheelSteps); i++) this.cycleWeapon(p, direction);
+        const steps = Math.min(Math.abs(wheelSteps), MAX_WHEEL_STEPS_PER_TICK);
+        for (let i = 0; i < steps; i++) this.cycleWeapon(p, direction);
       }
     }
 

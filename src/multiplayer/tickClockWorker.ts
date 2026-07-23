@@ -39,11 +39,30 @@ export interface StartMessage {
   type: "start";
 }
 
+export interface StopMessage {
+  type: "stop";
+}
+
 const FIXED_DT_MS = FIXED_DT * 1000;
 
+// Guards against a *second* clock ever running concurrently. A `start` message
+// is not necessarily one-shot: a reconnect or a double-init can post it again
+// on the same still-alive Worker. Without this guard each repeat would build a
+// fresh `TickAccumulator` + `setInterval` while the previous one keeps firing,
+// so two independent clocks would race and interleave `tick` messages —
+// duplicated/out-of-order ticks are precisely the deterministic-lockstep
+// corruption this module's header comment is built to avoid. `started` makes a
+// redundant `start` a no-op; `intervalId` is retained so `stop()` can actually
+// tear the running clock down (the id was previously discarded, leaving no way
+// to ever clear the interval).
+let started = false;
+let intervalId: ReturnType<typeof setInterval> | undefined;
+
 function start(): void {
+  if (started) return;
+  started = true;
   const accumulator = new TickAccumulator(FIXED_DT_MS, performance.now());
-  setInterval(() => {
+  intervalId = setInterval(() => {
     for (const tick of accumulator.advance(performance.now())) {
       const message: TickDueMessage = { type: "tick", tick };
       self.postMessage(message);
@@ -51,7 +70,21 @@ function start(): void {
   }, FIXED_DT_MS);
 }
 
+// Clears the running interval and resets `started`, so a *legitimate* later
+// restart (e.g. after a reconnect that first tears the old clock down) can
+// spin a fresh clock up again from a clean slate.
+function stop(): void {
+  if (intervalId !== undefined) clearInterval(intervalId);
+  intervalId = undefined;
+  started = false;
+}
+
 self.addEventListener("message", (event: MessageEvent) => {
-  const message = event.data as StartMessage;
+  // A message can in principle be `null` or a non-object primitive; reading
+  // `.type` off such a value would throw and take the whole Worker down, so
+  // ignore anything that isn't an object before inspecting its `type`.
+  const message = event.data as StartMessage | StopMessage | null;
+  if (typeof message !== "object" || message === null) return;
   if (message.type === "start") start();
+  else if (message.type === "stop") stop();
 });

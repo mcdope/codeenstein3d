@@ -100,6 +100,13 @@ export function runMultiplayerSessionAsGuest(
   // there's no final snapshot coming from a host that's gone).
   let graceTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // "Fell behind a level transition" liveness bound (see the input listener's
+  // own epoch-mismatch handling below). Distinct from `graceTimer`: this fires
+  // when the transport is perfectly healthy but this guest has permanently
+  // lost sync with the host's current level, which the disconnect path would
+  // never catch.
+  let fellBehindTimer: ReturnType<typeof setTimeout> | null = null;
+
   // Phase 2b tallies — both seeded once from the session's own fixed roster
   // (unchanged across a level transition), same reasoning
   // `multiplayerSessionHost.ts`'s own `missedTicksByPlayer` seeding gives.
@@ -142,6 +149,7 @@ export function runMultiplayerSessionAsGuest(
     unsubscribeReconciliation();
     connection?.removeEventListener("connectionstatechange", onConnectionStateChange);
     if (graceTimer !== null) clearTimeout(graceTimer);
+    if (fellBehindTimer !== null) clearTimeout(fellBehindTimer);
     // Detached directly here, not left to `startLevel()`'s own `hasStarted`
     // guard (which only ever fires on a *later* `startLevel()` call) — the
     // "host-disconnected" ending never calls `startLevel()` again, so
@@ -208,6 +216,35 @@ export function runMultiplayerSessionAsGuest(
   };
   startLevel(currentResult);
 
+  // Arms once this guest first observes a bundle stamped for an epoch AHEAD of
+  // its own (the host has already moved to a level this guest never reached).
+  // A brief epoch-ahead window is normal — a bundle for the next level can
+  // arrive while this guest is still reassembling that transition's map over
+  // the independent `reconciliation` channel — so this only ends the session
+  // if the gap persists past `DISCONNECT_GRACE_MS` (cleared the instant the
+  // transition lands and epochs re-match, see the input listener). Ends the
+  // same provisional-stats way a host disconnect does: a missed transition is,
+  // for this guest, a lost connection to the shared session in all but the
+  // transport's literal `connectionState`.
+  const armFellBehindTimer = (): void => {
+    if (fellBehindTimer !== null) return; // already tracked (no `ended` guard
+    // needed — the input listener that calls this is unsubscribed synchronously
+    // in teardown(), the same reasoning its own doc comment gives above).
+    fellBehindTimer = setTimeout(() => {
+      fellBehindTimer = null;
+      const stats = engine!.render();
+      const comparison = engine!.rosterSnapshot();
+      teardown();
+      onSessionEnded?.(stats, "host-disconnected", comparison);
+    }, DISCONNECT_GRACE_MS);
+  };
+  const clearFellBehindTimer = (): void => {
+    if (fellBehindTimer !== null) {
+      clearTimeout(fellBehindTimer);
+      fellBehindTimer = null;
+    }
+  };
+
   // No re-entrancy guard needed here, unlike the host's own worker.onmessage
   // handler: `teardown()` unsubscribes this exact listener synchronously, on
   // this same main thread, before any further bundle could be dispatched to
@@ -249,9 +286,22 @@ export function runMultiplayerSessionAsGuest(
     // rather than sampled/replied-to/`advance()`-d against the wrong engine
     // (see `TickInputBundle.levelEpoch`'s own doc comment).
     if (bundle.levelEpoch !== levelEpoch) {
+      // Epoch AHEAD of ours: the host has transitioned to a level this guest
+      // hasn't reached. Normal transiently (its transition map may still be
+      // in flight on `reconciliation`), catastrophic if it persists — this
+      // guest can never catch up, since nothing retransmits the transition,
+      // and would otherwise sit frozen forever with the transport still
+      // "connected". Arm the liveness bound; a landing transition clears it
+      // below. Epoch BEHIND ours is the ordinary transition window (this
+      // guest transitions first, the host catches up over its ack-wait) — no
+      // timer, existing behavior.
+      if (bundle.levelEpoch > levelEpoch) armFellBehindTimer();
       console.log(`[multiplayer] discarding stale tick-input bundle for level epoch ${bundle.levelEpoch}, currently on epoch ${levelEpoch}`);
       return;
     }
+    // Matching epoch: in lockstep with the host on the current level, so any
+    // earlier "fell behind" suspicion is now resolved.
+    clearFellBehindTimer();
     totalTicks++;
     // `missedTicksByPlayer` is seeded from the full, fixed roster above, and
     // `heldInputFallback` only ever contains roster ids (`InputDelayBuffer.

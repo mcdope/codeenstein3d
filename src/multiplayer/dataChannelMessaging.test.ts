@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeRTCDataChannel } from "../../test/mocks/webrtc";
 import { onJsonMessage, sendJson, sendJsonSequence, sendJsonWithBackpressure } from "./dataChannelMessaging";
-import { BACKPRESSURE_HIGH_WATERMARK_BYTES, BACKPRESSURE_LOW_THRESHOLD_BYTES, BUFFER_DRAIN_TIMEOUT_MS } from "./netcodeConstants";
+import { BACKPRESSURE_HIGH_WATERMARK_BYTES, BACKPRESSURE_LOW_THRESHOLD_BYTES, BUFFER_DRAIN_TIMEOUT_MS, MAX_INBOUND_MESSAGE_BYTES } from "./netcodeConstants";
 
 describe("sendJson", () => {
   it("writes JSON.stringify(message) to the channel", () => {
@@ -110,6 +110,59 @@ describe("onJsonMessage", () => {
 
     expect(handler).toHaveBeenCalledWith({ type: "example", value: 42 });
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  // --- Finding M4: bound the CPU a single peer message can force. ---
+
+  it("discards an oversized message before parsing it", () => {
+    const channel = new FakeRTCDataChannel("test");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const parseSpy = vi.spyOn(JSON, "parse");
+    const handler = vi.fn();
+    onJsonMessage(channel as unknown as RTCDataChannel, handler);
+
+    // A payload one byte over the cap — must be dropped without ever hitting
+    // JSON.parse (the whole point: no unbounded parse from one peer message).
+    const oversized = "x".repeat(MAX_INBOUND_MESSAGE_BYTES + 1);
+    channel.dispatchEvent(new MessageEvent("message", { data: oversized }));
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(parseSpy).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    parseSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  // --- Finding M4: an optional per-channel rate limiter, consulted before
+  // parsing, for flood resistance on the host's input channel. ---
+
+  it("drops messages before parsing once the rate limiter is exhausted", () => {
+    const channel = new FakeRTCDataChannel("test");
+    const parseSpy = vi.spyOn(JSON, "parse");
+    const handler = vi.fn();
+    // A limiter that allows exactly two messages, then blocks.
+    let remaining = 2;
+    const rateLimiter = { tryRemove: () => (remaining-- > 0) };
+    onJsonMessage(channel as unknown as RTCDataChannel, handler, { rateLimiter });
+
+    for (let i = 0; i < 5; i++) {
+      channel.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ tick: i }) }));
+    }
+
+    // Only the first two passed; the rest were dropped before parsing.
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(parseSpy).toHaveBeenCalledTimes(2);
+    parseSpy.mockRestore();
+  });
+
+  it("without a rate limiter, delivers every message (unchanged default behavior)", () => {
+    const channel = new FakeRTCDataChannel("test");
+    const handler = vi.fn();
+    onJsonMessage(channel as unknown as RTCDataChannel, handler);
+    for (let i = 0; i < 5; i++) {
+      channel.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ tick: i }) }));
+    }
+    expect(handler).toHaveBeenCalledTimes(5);
   });
 });
 

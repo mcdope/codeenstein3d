@@ -256,6 +256,42 @@ describe("runGuestSessionSetup — protocol errors", () => {
     await expect(guestPromise).rejects.toMatchObject({ code: "protocol-error" });
     await expect(guestPromise).rejects.toBeInstanceOf(SessionSetupError);
   });
+
+  it("catches a ChunkReassembler.push() throw on a malformed map-chunk instead of letting it escape the listener (finding H1/M5)", async () => {
+    const channels = linkedChannels();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const guestPromise = runGuestSessionSetup(channels.guest);
+
+    const send = (message: SessionSetupMessage): void => channels.host.reconciliation.send(JSON.stringify(message));
+    send({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ });
+    send({ type: "session-init", roster: ["guest", "host"], assignedId: "guest", tickRateHz: 30, fixedDt: 1 / 30, inputDelayTicks: 3, gameplaySeed: 1, difficulty: "normal", playerCount: 2 });
+    // A chunk whose `data` is not a string — push() rejects it (the H1
+    // NaN-poisoning vector). Must be caught + logged, not escape the handler.
+    send({ type: "map-chunk", index: 0, data: 0 } as unknown as SessionSetupMessage);
+    // The dropped chunk leaves the transfer incomplete → map-end rejects cleanly.
+    send({ type: "map-end", totalChunks: 1 });
+
+    await expect(guestPromise).rejects.toMatchObject({ code: "protocol-error" });
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("discarding malformed/oversized session-setup map-chunk"));
+    logSpy.mockRestore();
+  });
+
+  it("rejects with a protocol error when the reassembled map payload fails to JSON-parse (finding M5)", async () => {
+    const channels = linkedChannels();
+    const guestPromise = runGuestSessionSetup(channels.guest);
+
+    const send = (message: SessionSetupMessage): void => channels.host.reconciliation.send(JSON.stringify(message));
+    send({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ });
+    send({ type: "session-init", roster: ["guest", "host"], assignedId: "guest", tickRateHz: 30, fixedDt: 1 / 30, inputDelayTicks: 3, gameplaySeed: 1, difficulty: "normal", playerCount: 2 });
+    // A valid (string) chunk that is nonetheless not valid JSON once
+    // reassembled — finish()'s JSON.parse throws; it must become a clean
+    // protocol-error rejection rather than an uncaught throw in the listener.
+    send({ type: "map-chunk", index: 0, data: "{ not valid json" });
+    send({ type: "map-end", totalChunks: 1 });
+
+    await expect(guestPromise).rejects.toMatchObject({ code: "protocol-error" });
+    await expect(guestPromise).rejects.toBeInstanceOf(SessionSetupError);
+  });
 });
 
 describe("runGuestSessionSetup — visited reconstruction", () => {
