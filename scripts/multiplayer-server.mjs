@@ -392,8 +392,9 @@ function normalizeAddress(address) {
  * lobby down. */
 function parseTrustedProxies(spec) {
   const entries = [];
-  for (const raw of spec.split(",")) {
-    const entry = raw.trim();
+  const rawEntries = spec.split(",");
+  for (let i = 0; i < rawEntries.length; i++) {
+    const entry = rawEntries[i].trim();
     if (!entry) continue;
     const slash = entry.indexOf("/");
     if (slash === -1) {
@@ -403,9 +404,15 @@ function parseTrustedProxies(spec) {
     const base = ipv4ToInt(entry.slice(0, slash));
     const bits = Number(entry.slice(slash + 1));
     if (base === null || !Number.isInteger(bits) || bits < 0 || bits > 32) {
+      // Identifies the bad entry by *position*, never by value: echoing it
+      // back would put whatever the operator actually put in that environment
+      // variable into the logs — harmless for the IPs this is documented to
+      // hold, but a log is the wrong place to find out it was something else
+      // (CodeQL js/clear-text-logging, alert #10). The 1-based index is just
+      // as actionable against the value they set.
       console.warn(
-        `[multiplayer-server] ignoring unparseable CODEENSTEIN_MULTIPLAYER_TRUSTED_PROXY_IPS entry: ${entry}` +
-          " (expected an IP literal or an IPv4 CIDR like 172.28.5.0/24)",
+        `[multiplayer-server] ignoring entry #${i + 1} of CODEENSTEIN_MULTIPLAYER_TRUSTED_PROXY_IPS:` +
+          " not a valid IP literal or IPv4 CIDR (expected e.g. 172.28.5.0/24)",
       );
       continue;
     }
