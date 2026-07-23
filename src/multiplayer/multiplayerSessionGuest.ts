@@ -312,6 +312,15 @@ export function runMultiplayerSessionAsGuest(
             console.log(`[multiplayer] discarding stale reconciliation snapshot for level epoch ${message.levelEpoch}, currently on epoch ${levelEpoch}`);
             return;
           }
+          // Grid tiles are an idempotent, PRNG-free absolute overwrite, so —
+          // unlike the player/enemy/RNG state gated below — they are safe to
+          // apply on EVERY received same-epoch snapshot, regardless of tick
+          // ordering. Doing it here (after the epoch guard, before the exact-
+          // tick gate) is what stops a tick-gate-discarded snapshot from
+          // permanently losing its grid corrections (finding M2): the host
+          // drains its shared `gridDelta` each interval, so a dropped one is
+          // never re-sent. See `applyGridReconciliation`'s own doc comment.
+          engine.applyGridReconciliation(message);
           // `input`/`reconciliation` are two independent WebRTC data
           // channels with no cross-channel ordering guarantee — a
           // reconciliation snapshot delayed behind a burst of tick-input

@@ -3370,15 +3370,50 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
       expect(result.find((d) => d.id === "1:0")).toMatchObject({ x: 4, y: 4, kind: "weapon", weaponIndex: 2 });
     });
 
-    it("writes every gridDelta tile and updates gridVersion", () => {
+    it("applyGridReconciliation writes every gridDelta tile and updates gridVersion", () => {
       const map = fakeMap({}, 12); // walledRoom border: grid[0][0] is a wall (1)
       const { engine } = makeEngine(map);
       expect(map.grid[0][0]).toBe(1);
 
-      engine.applyReconciliationSnapshot(fakeSnapshot({ gridVersion: 9, gridDelta: [{ x: 0, y: 0, value: 0 }] }));
+      engine.applyGridReconciliation(fakeSnapshot({ gridVersion: 9, gridDelta: [{ x: 0, y: 0, value: 0 }] }));
 
       expect(map.grid[0][0]).toBe(0);
       expect(engine.captureReconciliationSnapshot(0).gridVersion).toBe(9);
+    });
+
+    it("applyGridReconciliation is idempotent — re-applying the same delta leaves the grid stable", () => {
+      const map = fakeMap({}, 12);
+      const { engine } = makeEngine(map);
+      const snapshot = fakeSnapshot({ gridVersion: 3, gridDelta: [{ x: 0, y: 0, value: 0 }] });
+
+      engine.applyGridReconciliation(snapshot);
+      engine.applyGridReconciliation(snapshot);
+
+      expect(map.grid[0][0]).toBe(0);
+      expect(engine.captureReconciliationSnapshot(0).gridVersion).toBe(3);
+    });
+
+    it("applyGridReconciliation skips an out-of-bounds tile row without throwing or writing", () => {
+      const map = fakeMap({}, 12);
+      const { engine } = makeEngine(map);
+
+      expect(() =>
+        engine.applyGridReconciliation(fakeSnapshot({ gridVersion: 2, gridDelta: [{ x: 0, y: 9999, value: 0 }] })),
+      ).not.toThrow();
+      // gridVersion still updates; the out-of-bounds mutation is silently skipped.
+      expect(engine.captureReconciliationSnapshot(0).gridVersion).toBe(2);
+    });
+
+    it("applyReconciliationSnapshot no longer touches the grid or gridVersion — those are decoupled into applyGridReconciliation (finding M2), while rng still applies", () => {
+      const map = fakeMap({}, 12); // grid[0][0] is a wall (1)
+      const { engine } = makeEngine(map);
+      expect(map.grid[0][0]).toBe(1);
+
+      engine.applyReconciliationSnapshot(fakeSnapshot({ rngState: 12345, gridVersion: 9, gridDelta: [{ x: 0, y: 0, value: 0 }] }));
+
+      expect(map.grid[0][0]).toBe(1); // grid NOT applied
+      expect(engine.captureReconciliationSnapshot(0).gridVersion).toBe(0); // gridVersion NOT applied
+      expect(engine.getRngState()).toBe(12345); // but the PRNG-coupled state still applies
     });
 
     it("marks pickups/keys collected by index", () => {
