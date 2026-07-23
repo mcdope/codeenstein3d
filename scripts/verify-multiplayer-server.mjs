@@ -17,6 +17,7 @@
  */
 import { spawn, execFileSync } from "node:child_process";
 import { createHmac } from "node:crypto";
+import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createConfiguredServer, HEADERS_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "./multiplayer-server.mjs";
@@ -51,7 +52,7 @@ async function urlAlive(url) {
  * on top of a fixed test port, and waits until it's actually accepting
  * connections before resolving — mirrors run-perf-benchmark.mjs's
  * ensureServer()/urlAlive() pair. */
-async function spawnServer(port, envOverrides = {}) {
+async function spawnServer(port, envOverrides = {}, bindHost = "127.0.0.1") {
   const child = spawn(process.execPath, [SERVER_SCRIPT], {
     cwd: path.join(__dirname, ".."),
     env: { ...process.env, CODEENSTEIN_MULTIPLAYER_PORT: String(port), ...envOverrides },
@@ -60,7 +61,7 @@ async function spawnServer(port, envOverrides = {}) {
   child.stdout.resume();
   child.stderr.on("data", (buf) => process.stderr.write(`[server:${port}] ${buf}`));
 
-  const base = `http://127.0.0.1:${port}`;
+  const base = `http://${bindHost}:${port}`;
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     if (await urlAlive(`${base}/lobby`)) return { base, child };
@@ -1134,6 +1135,127 @@ async function runTurnCredentialsSuite() {
 }
 
 // ---------------------------------------------------------------------------
+// CODEENSTEIN_MULTIPLAYER_BIND_HOST + _TRUSTED_PROXY_IPS
+//
+// The pair that makes the containerized deployment (docker/) rate-limit by
+// real client IP: bound to something other than loopback, `X-Forwarded-For` is
+// only believed when the TCP peer is explicitly trusted.
+//
+// Making this testable needs a *non-loopback peer address* without a second
+// network interface, and the obvious trick doesn't work: binding the server to
+// `127.0.0.2` isn't enough, because the kernel still picks `127.0.0.1` as the
+// source address for a local connection, so the server sees a loopback peer
+// and trusts the header anyway (measured — an earlier version of this suite
+// passed while testing nothing). What does work is pinning the *client's*
+// source address with `localAddress`, since all of `127.0.0.0/8` is locally
+// bindable: from `127.0.0.3`, requests take exactly the untrusted-peer path a
+// docker bridge gateway would, and nothing is exposed beyond loopback.
+// ---------------------------------------------------------------------------
+
+const TRUSTED_PROXY_BIND_HOST = "127.0.0.2";
+const TRUSTED_PROXY_CLIENT_SOURCE = "127.0.0.3";
+/** Small per-IP `GET /lobby` budget, generous window: every request in this
+ * suite lands in one window, so the counts below are exact. */
+const TRUSTED_PROXY_ENV = {
+  CODEENSTEIN_MULTIPLAYER_RATE_LIMIT_WINDOW_MS: "60000",
+  CODEENSTEIN_MULTIPLAYER_LOBBY_RATE_LIMIT_MAX_REQUESTS: "3",
+  CODEENSTEIN_MULTIPLAYER_BIND_HOST: TRUSTED_PROXY_BIND_HOST,
+};
+
+/** `GET /lobby` from a pinned source address — `fetch()` has no way to set
+ * one, hence raw `node:http`. Returns the status code only. */
+function lobbyStatusFrom(port, ip) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        host: TRUSTED_PROXY_BIND_HOST,
+        port,
+        path: "/lobby",
+        localAddress: TRUSTED_PROXY_CLIENT_SOURCE,
+        headers: xff(ip),
+      },
+      (res) => {
+        res.resume();
+        res.on("end", () => resolve(res.statusCode));
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+async function lobbyStatuses(port, ip, count) {
+  const statuses = [];
+  for (let i = 0; i < count; i++) statuses.push(await lobbyStatusFrom(port, ip));
+  return statuses;
+}
+
+async function runTrustedProxySuite() {
+  // Untrusted peer: the header is ignored, so both clients share one bucket
+  // keyed on the socket address and the 4th request overall is refused —
+  // regardless of which forwarded IP claims to have sent it.
+  const untrustedPort = 8909;
+  const untrusted = await spawnServer(untrustedPort, TRUSTED_PROXY_ENV, TRUSTED_PROXY_BIND_HOST);
+  try {
+    const a = await lobbyStatuses(untrustedPort, "203.0.113.10", 3);
+    const b = await lobbyStatuses(untrustedPort, "203.0.113.20", 1);
+    check(
+      "untrusted peer: X-Forwarded-For ignored, all clients share one bucket",
+      a[0] === 200 && a[1] === 200 && a[2] === 200 && b[0] === 429,
+      `A=${JSON.stringify(a)} B=${JSON.stringify(b)}`,
+    );
+  } finally {
+    await stopServer(untrusted.child);
+  }
+
+  // Trusted peer: the same requests key on the forwarded IP instead, so one
+  // client exhausting its budget leaves the other untouched. This is the
+  // property the whole setting exists for — without it a proxied deployment
+  // silently rate-limits the entire internet as a single client.
+  const trustedPort = 8910;
+  const trusted = await spawnServer(
+    trustedPort,
+    { ...TRUSTED_PROXY_ENV, CODEENSTEIN_MULTIPLAYER_TRUSTED_PROXY_IPS: "127.0.0.0/8" },
+    TRUSTED_PROXY_BIND_HOST,
+  );
+  try {
+    const a = await lobbyStatuses(trustedPort, "203.0.113.10", 4);
+    const b = await lobbyStatuses(trustedPort, "203.0.113.20", 1);
+    check(
+      "trusted peer (CIDR): per-forwarded-IP buckets, one client's 429 doesn't hit another",
+      a[0] === 200 && a[1] === 200 && a[2] === 200 && a[3] === 429 && b[0] === 200,
+      `A=${JSON.stringify(a)} B=${JSON.stringify(b)}`,
+    );
+  } finally {
+    await stopServer(trusted.child);
+  }
+
+  // A typo'd entry must fail safe (that peer simply isn't trusted) rather than
+  // taking the lobby down or, worse, widening what gets trusted — and the
+  // valid exact-IP entry beside it must still take effect.
+  const malformedPort = 8911;
+  const malformed = await spawnServer(
+    malformedPort,
+    {
+      ...TRUSTED_PROXY_ENV,
+      CODEENSTEIN_MULTIPLAYER_TRUSTED_PROXY_IPS: `not-an-ip/99, ${TRUSTED_PROXY_CLIENT_SOURCE}`,
+    },
+    TRUSTED_PROXY_BIND_HOST,
+  );
+  try {
+    const a = await lobbyStatuses(malformedPort, "203.0.113.10", 4);
+    const b = await lobbyStatuses(malformedPort, "203.0.113.20", 1);
+    check(
+      "malformed entry dropped, the valid exact IP beside it still trusts the header",
+      a[3] === 429 && b[0] === 200,
+      `A=${JSON.stringify(a)} B=${JSON.stringify(b)}`,
+    );
+  } finally {
+    await stopServer(malformed.child);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -1149,6 +1271,9 @@ async function main() {
 
   console.log("\nGET /session/<code>/turn-credentials (TURN credential minting):");
   await runTurnCredentialsSuite();
+
+  console.log("\nBIND_HOST + TRUSTED_PROXY_IPS (containerized deployment):");
+  await runTrustedProxySuite();
 
   console.log("\nRate-limit map size cap:");
   await runRateLimitMapCapSuite();

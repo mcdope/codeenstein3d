@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
+#
+# Static hardening for the TURN relay — the part of the config that must never
+# depend on deployment values, kept placeholder-free so it can be read and
+# audited exactly as it will be applied. entrypoint.sh concatenates this file
+# with the deployment-specific lines it generates from the environment (realm,
+# secret, ports, certs) into the config coturn actually loads.
+#
+# Rationale for every block below: doc/dev/multiplayer-server-spec.md →
+# "TURN relay (coturn)". Editing this file is supported — it is a bind mount,
+# so a `docker compose restart coturn` picks changes up — but do not weaken the
+# isolation block without reading that section first.
+
+# --- Isolation from this host (the load-bearing control) -------------------
+# A leaked credential must never be able to relay *into* internal services or
+# the LAN. This is what keeps the relay from being an SSRF pivot on a VPS that
+# also hosts other things — including, because coturn runs on the host network
+# namespace, anything listening on the host's own loopback and any docker
+# bridge network (all inside the RFC1918 ranges denied here).
+no-multicast-peers
+denied-peer-ip=0.0.0.0-0.255.255.255
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=100.64.0.0-100.127.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.0.0.0-192.0.0.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=198.18.0.0-198.19.255.255
+denied-peer-ip=224.0.0.0-255.255.255.255
+denied-peer-ip=::1
+denied-peer-ip=::
+denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+
+# --- Auth ------------------------------------------------------------------
+# Ephemeral credentials only: coturn validates the HMAC the signaling server
+# signs (username=<unix-expiry>, credential=base64(HMAC-SHA1(secret, username))).
+# `static-auth-secret` and `realm` are appended by entrypoint.sh from the
+# environment, so the shared secret never lands in a committed file.
+use-auth-secret
+stale-nonce
+fingerprint
+
+# --- Abuse bounds ----------------------------------------------------------
+# Quotas are appended by entrypoint.sh (TURN_USER_QUOTA / TURN_TOTAL_QUOTA /
+# TURN_MAX_BPS) so they can be tuned per host without editing this file.
+
+# --- Process hardening -----------------------------------------------------
+# No telnet/CLI listener: this relay forwards packets and does nothing else.
+# (Deliberately *not* `no-rest-api` — despite the name, that switch disables
+# exactly the timestamp+HMAC "TURN REST API" credential scheme this deployment
+# depends on. `no-software-attribute`/`no-rfc5780` are likewise absent: coturn
+# 4.7 marks both DEPRECATED because their hardened behaviour is now the
+# default, and passing a removed option aborts startup.)
+no-cli

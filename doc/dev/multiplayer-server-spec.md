@@ -36,6 +36,16 @@ which only specifies the HTTP surface and storage/security mechanics).
 dedicated subdomain and is the only thing actually exposed to the internet. Two
 things that follow directly from this and matter to the rest of this spec:
 
+> **Containerized variant.** `docker/` runs the same process with
+> `CODEENSTEIN_MULTIPLAYER_BIND_HOST=0.0.0.0` — but only inside its own network
+> namespace, with the port published host-locally, so what's exposed is
+> identical. The one thing that genuinely changes is the second bullet below:
+> the proxy is no longer on loopback from the process's point of view, so the
+> bridge gateway has to be named in `CODEENSTEIN_MULTIPLAYER_TRUSTED_PROXY_IPS`
+> before `X-Forwarded-For` is believed. That setting exists solely to restore
+> this precondition; it must never name an address reachable from off-host,
+> which is why the published port stays `127.0.0.1`-bound.
+
 - **CORS.** The game itself is served from a *different* origin
   (`https://codeenstein3d.mcdope.org`) than the signaling subdomain, so every
   browser request here is cross-origin. The server must answer `OPTIONS` preflight
@@ -641,7 +651,9 @@ that box can reach.
   `169.254.0.0-169.254.255.255`, plus `::1`, `fe80::/10`, `fc00::/7`; add
   `no-multicast-peers`. Run coturn as a dedicated non-root user; prefer a
   container / separate network namespace; bind the relay to the public interface
-  only.
+  only. (`docker/coturn/turnserver.conf.base` is this list, applied — note it
+  is doing *all* the isolation work there, since a relay container has to use
+  host networking to allocate its port range.)
 - **Quotas:** `user-quota`, `total-quota`, and `max-bps` to bound bandwidth;
   `stale-nonce`, `fingerprint`.
 - **Ports/TLS:** listen on 3478 (UDP/TCP) and **TLS on 443** (or 5349) — the TLS

@@ -44,6 +44,14 @@ import { execFileSync } from "node:child_process";
 const PORT = Number(process.env.CODEENSTEIN_MULTIPLAYER_PORT ?? 8787);
 const ALLOWED_ORIGIN =
   process.env.CODEENSTEIN_MULTIPLAYER_ALLOWED_ORIGIN ?? "https://codeenstein3d.mcdope.org";
+/** Interface to bind. Defaults to `127.0.0.1` — the topology the spec assumes
+ * (§1: loopback-only, TLS reverse proxy in front) and what the systemd install
+ * gets. Containerized deployments (`docker/`) must set `0.0.0.0`, because the
+ * proxy then reaches the process across the container's network namespace
+ * rather than over the host's loopback; that deployment pairs it with
+ * `TRUSTED_PROXY_IPS` below, which is what keeps `X-Forwarded-For` honest once
+ * the peer is no longer structurally guaranteed to be loopback. */
+const BIND_HOST = process.env.CODEENSTEIN_MULTIPLAYER_BIND_HOST ?? "127.0.0.1";
 
 const SESSION_TTL_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_SESSION_TTL_MS ?? 5 * 60 * 1000);
 const SWEEP_INTERVAL_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_SWEEP_INTERVAL_MS ?? 30_000);
@@ -98,6 +106,26 @@ const BASE_COOLDOWN_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_BASE_COOLDOW
  * at this cap. */
 const MAX_TRACKED_IPS_PER_LIMITER = Number(
   process.env.CODEENSTEIN_MULTIPLAYER_MAX_TRACKED_IPS_PER_LIMITER ?? 10_000,
+);
+
+/** Peers — beyond loopback, which is always trusted — whose `X-Forwarded-For`
+ * this server will believe (see `getClientIp`). Comma-separated IP literals
+ * and/or IPv4 CIDRs, e.g. `172.28.5.0/24`. Empty by default, so a bare
+ * `node multiplayer-server.mjs` behaves exactly as before.
+ *
+ * This exists for the containerized deployment: there the reverse proxy on the
+ * host connects through the bridge network, so the TCP peer this process sees
+ * is the docker gateway, not `127.0.0.1`. Without trusting it, `getClientIp`
+ * falls back to that one gateway address for *every* request and all clients
+ * share a single rate-limit bucket — the exact failure the spec's §1 note
+ * warns about for a proxy that doesn't forward the header. Trusting the
+ * gateway is no weaker than today's loopback trust *provided* the published
+ * port stays host-local (`127.0.0.1:8787:8787` in `docker/docker-compose.yml`),
+ * since only host-local clients can reach it either way. Widening it to a
+ * public interface would let anyone forge the header — hence the startup
+ * warning in `main()`. */
+const TRUSTED_PROXY_IPS = parseTrustedProxies(
+  process.env.CODEENSTEIN_MULTIPLAYER_TRUSTED_PROXY_IPS ?? "",
 );
 
 /** `GET /stats` (and the `--stats` CLI mode that queries it) is entirely
@@ -330,22 +358,101 @@ function isLoopbackAddress(address) {
   return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
 }
 
+/** `1.2.3.4` → its 32-bit integer, or `null` for anything that isn't a plain
+ * dotted-quad IPv4 literal (including IPv6, hostnames and malformed input). */
+function ipv4ToInt(address) {
+  const parts = address.split(".");
+  if (parts.length !== 4) return null;
+  let result = 0;
+  for (const part of parts) {
+    // Reject "01", "+1", " 1", "1e2" and friends: only canonical decimal
+    // octets, so a typo'd entry can never silently widen the trusted range.
+    if (!/^\d{1,3}$/.test(part)) return null;
+    const octet = Number(part);
+    if (octet > 255) return null;
+    result = result * 256 + octet;
+  }
+  return result;
+}
+
+/** Node reports an IPv4 peer as `::ffff:1.2.3.4` on a dual-stack listener, so
+ * both forms must compare equal against the same configured entry. */
+function normalizeAddress(address) {
+  const lowered = address.toLowerCase();
+  return lowered.startsWith("::ffff:") && ipv4ToInt(lowered.slice("::ffff:".length)) !== null
+    ? lowered.slice("::ffff:".length)
+    : lowered;
+}
+
+/** Parses `CODEENSTEIN_MULTIPLAYER_TRUSTED_PROXY_IPS` into matcher entries.
+ * Unparseable entries are warned about and dropped rather than throwing: the
+ * failure mode of dropping one is fail-safe (that peer's `X-Forwarded-For`
+ * stops being trusted, so requests get rate-limited by socket address — noisy,
+ * never permissive), whereas refusing to boot on a typo would take the whole
+ * lobby down. */
+function parseTrustedProxies(spec) {
+  const entries = [];
+  for (const raw of spec.split(",")) {
+    const entry = raw.trim();
+    if (!entry) continue;
+    const slash = entry.indexOf("/");
+    if (slash === -1) {
+      entries.push({ kind: "exact", address: normalizeAddress(entry) });
+      continue;
+    }
+    const base = ipv4ToInt(entry.slice(0, slash));
+    const bits = Number(entry.slice(slash + 1));
+    if (base === null || !Number.isInteger(bits) || bits < 0 || bits > 32) {
+      console.warn(
+        `[multiplayer-server] ignoring unparseable CODEENSTEIN_MULTIPLAYER_TRUSTED_PROXY_IPS entry: ${entry}` +
+          " (expected an IP literal or an IPv4 CIDR like 172.28.5.0/24)",
+      );
+      continue;
+    }
+    // `>>> 0` keeps the mask unsigned; a /0 shift of 32 is a no-op in JS, so
+    // that case is spelled out rather than computed.
+    const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+    entries.push({ kind: "cidr4", base: (base & mask) >>> 0, mask });
+  }
+  return entries;
+}
+
+/** Whether a TCP peer address is a configured trusted proxy. */
+function isTrustedProxy(address, entries) {
+  if (entries.length === 0) return false;
+  const normalized = normalizeAddress(address);
+  const asInt = ipv4ToInt(normalized);
+  for (const entry of entries) {
+    if (entry.kind === "exact") {
+      if (entry.address === normalized) return true;
+    } else if (asInt !== null && ((asInt & entry.mask) >>> 0) === entry.base) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Client IP for rate-limiting: the *rightmost* entry of `X-Forwarded-For`
  * — but **only** when the request's actual TCP peer (`req.socket.
  * remoteAddress`) is itself loopback, i.e. only when it's structurally
  * possible for that peer to be the trusted local reverse proxy this process
- * is meant to sit behind. This process currently binds `127.0.0.1` only (see
- * this file's `server.listen` call), so `remoteAddress` is *always* loopback
- * today and this check always passes — this is defense-in-depth against a
- * future rebind to a public interface, not a currently-live exploit, where
- * anything could connect directly and forge whatever `X-Forwarded-For` it
- * likes. Falls back to the raw socket address whenever the header is absent
- * *or* the peer isn't loopback (see doc/dev/multiplayer-server-spec.md §1's
- * deployment note for why trusting the proxy's own header is safe once that
- * precondition holds). */
+ * is meant to sit behind — *or* an address explicitly listed in
+ * `CODEENSTEIN_MULTIPLAYER_TRUSTED_PROXY_IPS`, which is how the containerized
+ * deployment names its bridge gateway (the proxy there is still host-local,
+ * it just isn't loopback from inside the container's netns). With the default
+ * `BIND_HOST` of `127.0.0.1` and no trusted proxies configured, `remoteAddress`
+ * is *always* loopback and this check always passes — that shape is
+ * defense-in-depth against a rebind to a public interface, not a currently-live
+ * exploit, where anything could connect directly and forge whatever
+ * `X-Forwarded-For` it likes. Falls back to the raw socket address whenever the
+ * header is absent *or* the peer isn't trusted (see
+ * doc/dev/multiplayer-server-spec.md §1's deployment note for why trusting the
+ * proxy's own header is safe once that precondition holds). */
 function getClientIp(req) {
   const remoteAddress = req.socket.remoteAddress ?? "unknown";
-  if (!isLoopbackAddress(remoteAddress)) return remoteAddress;
+  if (!isLoopbackAddress(remoteAddress) && !isTrustedProxy(remoteAddress, TRUSTED_PROXY_IPS)) {
+    return remoteAddress;
+  }
 
   const xff = req.headers["x-forwarded-for"];
   if (typeof xff === "string" && xff.length > 0) {
@@ -992,6 +1099,14 @@ Flags:
 Environment variables (all optional, sane defaults otherwise; values below are this
 invocation's currently-effective ones):
   CODEENSTEIN_MULTIPLAYER_PORT                          Listen port (currently ${PORT}).
+  CODEENSTEIN_MULTIPLAYER_BIND_HOST                      Interface to bind (currently ${BIND_HOST}).
+                                                          Keep 127.0.0.1 behind a same-host proxy;
+                                                          containers need 0.0.0.0 plus
+                                                          TRUSTED_PROXY_IPS below.
+  CODEENSTEIN_MULTIPLAYER_TRUSTED_PROXY_IPS              Peers besides loopback whose
+                                                          X-Forwarded-For is trusted; comma-separated
+                                                          IPs and/or IPv4 CIDRs (currently
+                                                          ${TRUSTED_PROXY_IPS.length} configured).
   CODEENSTEIN_MULTIPLAYER_ALLOWED_ORIGIN                 CORS origin (currently ${ALLOWED_ORIGIN}).
   CODEENSTEIN_MULTIPLAYER_SESSION_TTL_MS                 Session lifetime (currently ${SESSION_TTL_MS}).
   CODEENSTEIN_MULTIPLAYER_SWEEP_INTERVAL_MS              Expiry sweep interval (currently ${SWEEP_INTERVAL_MS}).
@@ -1211,8 +1326,18 @@ async function main() {
   serverStartedAt = Date.now();
   startSweeping();
   const server = createConfiguredServer();
-  server.listen(PORT, "127.0.0.1", () => {
-    console.log(`[multiplayer-server] listening on 127.0.0.1:${PORT} (allowed origin: ${ALLOWED_ORIGIN})`);
+  if (!isLoopbackAddress(BIND_HOST) && TRUSTED_PROXY_IPS.length === 0) {
+    // Non-loopback bind with nothing trusted is *safe* but usually a
+    // misconfiguration: every request then rate-limits by socket address, so a
+    // proxy in front collapses all clients into one bucket. Say so loudly
+    // instead of letting it look like the limiter is simply too strict.
+    console.warn(
+      `[multiplayer-server] bound to ${BIND_HOST} with no CODEENSTEIN_MULTIPLAYER_TRUSTED_PROXY_IPS —` +
+        " X-Forwarded-For will be ignored and every client behind a proxy shares one rate-limit bucket.",
+    );
+  }
+  server.listen(PORT, BIND_HOST, () => {
+    console.log(`[multiplayer-server] listening on ${BIND_HOST}:${PORT} (allowed origin: ${ALLOWED_ORIGIN})`);
   });
 }
 
@@ -1233,4 +1358,13 @@ if (isMainModule) {
   });
 }
 
-export { createConfiguredServer, HEADERS_TIMEOUT_MS, REQUEST_TIMEOUT_MS };
+export {
+  createConfiguredServer,
+  HEADERS_TIMEOUT_MS,
+  REQUEST_TIMEOUT_MS,
+  // Pure helpers, exported for scripts/multiplayer-server.test.mjs: the env
+  // vars they back are read once at module load, so the parsing/matching rules
+  // can only be exercised directly.
+  parseTrustedProxies,
+  isTrustedProxy,
+};

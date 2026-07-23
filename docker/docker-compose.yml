@@ -1,0 +1,135 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
+#
+# The multiplayer backend as two containers. Run from this directory:
+#
+#   cp .env.example .env && $EDITOR .env
+#   docker compose up -d --build                    # signaling only
+#   docker compose --profile turn up -d --build     # signaling + TURN relay
+#
+# Full runbook (TLS, DNS, firewall, verification):
+# doc/dev/multiplayer-deployment.md → "Option B: Docker".
+
+services:
+  # The signaling/lobby server — introduces two browsers to each other and
+  # mints TURN credentials. Bridge-networked and published host-locally: your
+  # existing reverse proxy on the host terminates TLS and forwards here, so
+  # nothing about this container is reachable from the internet directly.
+  signaling:
+    build:
+      context: ..
+      dockerfile: docker/signaling/Dockerfile
+    image: codeenstein-multiplayer-signaling:local
+    container_name: codeenstein-signaling
+    restart: unless-stopped
+    init: true
+    environment:
+      # 0.0.0.0 *inside the container's own netns* — the published port below
+      # is what keeps this host-local. Paired with TRUSTED_PROXY_IPS, without
+      # which every proxied request would rate-limit as one client (the
+      # gateway) instead of by real client IP.
+      CODEENSTEIN_MULTIPLAYER_BIND_HOST: "0.0.0.0"
+      CODEENSTEIN_MULTIPLAYER_PORT: "8787"
+      CODEENSTEIN_MULTIPLAYER_TRUSTED_PROXY_IPS: "${SIGNALING_SUBNET:-172.28.5.0/24}"
+      CODEENSTEIN_MULTIPLAYER_ALLOWED_ORIGIN: "${ALLOWED_ORIGIN:?set ALLOWED_ORIGIN in .env — the exact origin the game is served from}"
+      CODEENSTEIN_MULTIPLAYER_STATS_TOKEN: "${STATS_TOKEN:-}"
+      # Unset TURN vars ⇒ GET /session/<code>/turn-credentials stays a 404 and
+      # clients are STUN-only. That is the default, and the relay below is
+      # behind a compose profile to match.
+      CODEENSTEIN_MULTIPLAYER_TURN_SECRET: "${TURN_SECRET:-}"
+      CODEENSTEIN_MULTIPLAYER_TURN_URLS: "${TURN_URLS:-}"
+      CODEENSTEIN_MULTIPLAYER_TURN_TTL_SECONDS: "${TURN_TTL_SECONDS:-3600}"
+    ports:
+      # Host-local only. Dropping the 127.0.0.1 prefix would publish the
+      # signaling server to the internet *and* make the trusted-proxy setting
+      # above forgeable — never do it.
+      - "127.0.0.1:${SIGNALING_HOST_PORT:-8787}:8787"
+    networks:
+      signaling: {}
+    # Nothing in this image writes to disk, and it needs no privileges beyond
+    # binding its own port.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    # Sessions live in memory and expire in minutes; capped logs keep a shared
+    # VPS's disk safe from a chatty failure loop.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # The TURN relay. Off unless you pass `--profile turn`, mirroring the
+  # server-side default (no secret ⇒ no credentials ⇒ no relay).
+  coturn:
+    image: coturn/coturn:4.7-alpine
+    container_name: codeenstein-coturn
+    profiles: [turn]
+    restart: unless-stopped
+    # Host networking is deliberate. A relay allocates a wide UDP port range
+    # and must advertise addresses peers can actually reach; NATing that
+    # through docker-proxy is both slow and lossy about source addresses.
+    # Isolation here comes from turnserver.conf.base's denied-peer-ip block,
+    # not from the network namespace — read that file before changing this.
+    network_mode: host
+    # Stays unprivileged (65534 = the image's own `nobody`); the group is what
+    # lets it read your TLS private key. See TURN_CERT_GID in .env.example.
+    user: "65534:${TURN_CERT_GID:-65533}"
+    entrypoint: ["/usr/local/bin/codeenstein-entrypoint.sh"]
+    environment:
+      # Required, but *not* enforced with compose's `:?` syntax: interpolation
+      # runs over the whole file before profiles are filtered, so a `:?` here
+      # would also block a plain signaling-only `docker compose up`. The
+      # entrypoint validates them instead, with a more specific message.
+      TURN_REALM: "${TURN_REALM:-}"
+      TURN_SECRET: "${TURN_SECRET:-}"
+      TURN_LISTENING_PORT: "${TURN_LISTENING_PORT:-3478}"
+      TURN_TLS_PORT: "${TURN_TLS_PORT:-}"
+      TURN_MIN_PORT: "${TURN_MIN_PORT:-49160}"
+      TURN_MAX_PORT: "${TURN_MAX_PORT:-49200}"
+      TURN_LISTENING_IP: "${TURN_LISTENING_IP:-}"
+      TURN_EXTERNAL_IP: "${TURN_EXTERNAL_IP:-}"
+      TURN_CERT_FILE: "${TURN_CERT_FILE:-}"
+      TURN_PKEY_FILE: "${TURN_PKEY_FILE:-}"
+      TURN_USER_QUOTA: "${TURN_USER_QUOTA:-12}"
+      TURN_TOTAL_QUOTA: "${TURN_TOTAL_QUOTA:-1200}"
+      TURN_MAX_BPS: "${TURN_MAX_BPS:-}"
+      TURN_NO_TCP_RELAY: "${TURN_NO_TCP_RELAY:-0}"
+    volumes:
+      - ./coturn/entrypoint.sh:/usr/local/bin/codeenstein-entrypoint.sh:ro
+      - ./coturn/turnserver.conf.base:/etc/coturn/turnserver.conf.base:ro
+      # Certificates, read-only. Point TURN_CERT_DIR at /etc/letsencrypt (not
+      # at live/<domain>) — that directory is symlinks into ../../archive,
+      # which resolve to nothing if only the leaf is mounted.
+      - "${TURN_CERT_DIR:-/etc/letsencrypt}:/etc/coturn/certs:ro"
+    read_only: true
+    tmpfs:
+      # Where entrypoint.sh renders the config holding the shared secret:
+      # memory-only, never the host disk.
+      - /tmp:rw,noexec,nosuid,size=1m,mode=0700,uid=65534,gid=65534
+    cap_drop: [ALL]
+    # Not optional: the image's `turnserver` binary carries a
+    # `cap_net_bind_service` file capability, and execve() of a file with
+    # capabilities fails outright with EPERM when they aren't in the process's
+    # bounding set — with a bare `cap_drop: [ALL]` the container dies at
+    # "exec /usr/bin/turnserver: operation not permitted" before any config is
+    # read. It is also what allows TURNS on 443 (see TURN_TLS_PORT).
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  signaling:
+    driver: bridge
+    ipam:
+      config:
+        # Pinned so the gateway address is stable and predictable — that is
+        # what CODEENSTEIN_MULTIPLAYER_TRUSTED_PROXY_IPS above names. Both read
+        # the same SIGNALING_SUBNET so they cannot drift apart.
+        - subnet: "${SIGNALING_SUBNET:-172.28.5.0/24}"
