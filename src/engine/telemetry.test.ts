@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import type { Enemy } from "../map/types";
 import {
+  createTeamTelemetryState,
   createTelemetryState,
   enemyCategory,
   recordDamage,
@@ -49,11 +50,24 @@ function fakeEnemy(overrides: Partial<Enemy> = {}): Enemy {
 describe("createTelemetryState", () => {
   it("zero-initializes every counter and starts minHealthReached at Infinity", () => {
     const state = createTelemetryState();
-    expect(state.peakAggroedCount).toBe(0);
     expect(state.minHealthReached).toBe(Infinity);
     expect(state.fatalDamageSource).toBeNull();
     expect(state.damageBySource).toEqual({ enemyMelee: 0, enemyRanged: 0, trapSpike: 0, trapMine: 0, hazard: 0, selfRocket: 0 });
     expect(state.weaponTallies).toEqual({});
+  });
+});
+
+describe("createTeamTelemetryState", () => {
+  it("zero-initializes every team-wide counter", () => {
+    const state = createTeamTelemetryState();
+    expect(state.peakAggroedCount).toBe(0);
+    expect(state.combatTimeSec).toBe(0);
+    expect(state.enemyBoltsFired).toBe(0);
+    expect(state.enemyMeleeAttacks).toBe(0);
+    expect(state.minesTriggered).toBe(0);
+    expect(state.lootRolled).toEqual({});
+    expect(state.ttkPending).toEqual([]);
+    expect(state.ttkFinished).toEqual([]);
   });
 });
 
@@ -110,26 +124,27 @@ describe("weapon tallies", () => {
 });
 
 describe("mine counters", () => {
-  it("triggered and disarmed are independent", () => {
-    const state = createTelemetryState();
-    recordMineTriggered(state);
-    recordMineDisarmed(state);
-    recordMineDisarmed(state);
-    expect(state.minesTriggered).toBe(1);
-    expect(state.minesDisarmed).toBe(2);
+  it("triggered (team-wide) and disarmed (per-player) are independent", () => {
+    const team = createTeamTelemetryState();
+    const player = createTelemetryState();
+    recordMineTriggered(team);
+    recordMineDisarmed(player);
+    recordMineDisarmed(player);
+    expect(team.minesTriggered).toBe(1);
+    expect(player.minesDisarmed).toBe(2);
   });
 });
 
 describe("loot counters", () => {
-  it("recordLootRolled sums per kind", () => {
-    const state = createTelemetryState();
+  it("recordLootRolled (team-wide) sums per kind", () => {
+    const state = createTeamTelemetryState();
     recordLootRolled(state, "bullets", 1);
     recordLootRolled(state, "bullets", 1);
     recordLootRolled(state, "health", 50);
     expect(state.lootRolled).toEqual({ bullets: 2, health: 50 });
   });
 
-  it("recordLootCollected keeps dynamic and static buckets separate", () => {
+  it("recordLootCollected (per-player) keeps dynamic and static buckets separate", () => {
     const state = createTelemetryState();
     recordLootCollected(state, "dynamic", "bullets", 6);
     recordLootCollected(state, "static", "bullets", 11);
@@ -169,7 +184,7 @@ describe("per-frame trackers", () => {
 
 describe("TTK tracking", () => {
   it("opens a pending window on aggro and closes it (moving to ttkFinished) on death", () => {
-    const state = createTelemetryState();
+    const state = createTeamTelemetryState();
     const index = new WeakMap();
     const enemy = fakeEnemy({ elite: true });
 
@@ -185,7 +200,7 @@ describe("TTK tracking", () => {
   });
 
   it("is idempotent — a second aggro call for the same enemy doesn't open a duplicate window", () => {
-    const state = createTelemetryState();
+    const state = createTeamTelemetryState();
     const index = new WeakMap();
     const enemy = fakeEnemy();
 
@@ -196,7 +211,7 @@ describe("TTK tracking", () => {
   });
 
   it("recordEnemyDeath is a no-op for an enemy that was never recorded as aggroed", () => {
-    const state = createTelemetryState();
+    const state = createTeamTelemetryState();
     const index = new WeakMap();
     const enemy = fakeEnemy();
 

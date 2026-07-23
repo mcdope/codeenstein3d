@@ -38,9 +38,17 @@ const EDGE_CASE_HP_MAX = 15;
  * a pack (one extra enemy per 10 complexity points) rather than a single boss
  * — unless complexity crosses `ELITE_COMPLEXITY_THRESHOLD`, in which case it's
  * a single Elite instead of the biggest packs (see `Enemy.elite`). Placements
- * avoid the exit tile so the 'return' marker stays visible.
+ * avoid the exit tile so the 'return' marker stays visible, and — for a
+ * multiplayer session — every point in `multiplayerSpawns` too, since a pack's
+ * first member always anchors exactly on its room's center (see
+ * `enemyPositions`), the same point `pickMultiplayerSpawns` draws from.
  */
-export function spawnEnemies(rooms: Room[], exit: Point, rng: () => number): Enemy[] {
+export function spawnEnemies(
+  rooms: Room[],
+  exit: Point,
+  rng: () => number,
+  multiplayerSpawns: readonly Point[] = [],
+): Enemy[] {
   const enemies: Enemy[] = [];
   for (const room of rooms) {
     if (room.entity.kind !== "function" && room.entity.kind !== "method") continue;
@@ -57,7 +65,7 @@ export function spawnEnemies(rooms: Room[], exit: Point, rng: () => number): Ene
       : Math.max(HP_PER_COMPLEXITY, Math.round((complexity * HP_PER_COMPLEXITY) / count));
     const home = { x: room.x, y: room.y, w: room.w, h: room.h };
 
-    for (const pos of enemyPositions(room, count, exit, rng)) {
+    for (const pos of enemyPositions(room, count, exit, rng, multiplayerSpawns)) {
       enemies.push({
         x: pos.x,
         y: pos.y,
@@ -122,6 +130,12 @@ function nearestFloorInRect(grid: Tile[][], rect: Rect, p: Point): Point {
  * spawns in a normal AST-derived room, and normal enemies never spawn here —
  * both are guaranteed structurally, since `spawnEnemies` only ever iterates
  * `rooms: Room[]` and this only ever iterates `breakupRooms: Rect[]`.
+ *
+ * No `multiplayerSpawns` avoid-list needed here, unlike `spawnEnemies`: a
+ * breakup room is only ever injected where it doesn't overlap any real room
+ * (`roomsOverlap(..., roomMargin)` in `breakup.ts`), and a multiplayer spawn
+ * is always a real room's center — so one can never land inside a breakup
+ * room's rect in the first place.
  */
 export function spawnEdgeCaseEnemies(grid: Tile[][], breakupRooms: Rect[], exit: Point, rng: () => number): Enemy[] {
   const enemies: Enemy[] = [];
@@ -166,8 +180,10 @@ export function spawnEdgeCaseEnemies(grid: Tile[][], breakupRooms: Rect[], exit:
 
 /**
  * Fractional spawn points for a room's enemy pack: the first at the room center,
- * the rest scattered randomly inside it. Any point landing on the exit tile is
- * re-rolled (then nudged to a corner as a last resort) so nothing hides it.
+ * the rest scattered randomly inside it. Any point landing on the exit tile, or
+ * (for a multiplayer session) a point in `avoidSpawns`, is re-rolled (then
+ * nudged to a corner as a last resort) so nothing hides it or spawns a player
+ * on top of a monster.
  *
  * Every candidate is snapped to the center of whichever tile it falls in
  * before being returned — not left at its raw continuous (or, for the room
@@ -184,9 +200,20 @@ export function spawnEdgeCaseEnemies(grid: Tile[][], breakupRooms: Rect[], exit:
  * guarantee it's floor — snapping to that tile's center is what makes the
  * enemy's full collision box actually fit inside it, on every side.
  */
-function enemyPositions(room: Rect, count: number, exit: Point, rng: () => number): Point[] {
+function enemyPositions(
+  room: Rect,
+  count: number,
+  exit: Point,
+  rng: () => number,
+  avoidSpawns: readonly Point[] = [],
+): Point[] {
   const spots: Point[] = [];
-  const onExit = (p: Point): boolean => Math.floor(p.x) === exit.x && Math.floor(p.y) === exit.y;
+  const blocked = (p: Point): boolean => {
+    const tx = Math.floor(p.x);
+    const ty = Math.floor(p.y);
+    if (tx === exit.x && ty === exit.y) return true;
+    return avoidSpawns.some((s) => tx === s.x && ty === s.y);
+  };
   const randomInRoom = (): Point => ({
     x: room.x + 0.5 + rng() * (room.w - 1),
     y: room.y + 0.5 + rng() * (room.h - 1),
@@ -196,8 +223,8 @@ function enemyPositions(room: Rect, count: number, exit: Point, rng: () => numbe
   for (let i = 0; i < count; i++) {
     // First enemy anchors at the room center; the rest scatter randomly.
     let p = tileCenter(i === 0 ? { x: room.x + room.w / 2, y: room.y + room.h / 2 } : randomInRoom());
-    for (let guard = 0; onExit(p) && guard < 8; guard++) p = tileCenter(randomInRoom());
-    if (onExit(p)) p = { x: room.x + 1.5, y: room.y + 1.5 }; // last-resort corner
+    for (let guard = 0; blocked(p) && guard < 8; guard++) p = tileCenter(randomInRoom());
+    if (blocked(p)) p = { x: room.x + 1.5, y: room.y + 1.5 }; // last-resort corner
     spots.push(p);
   }
   return spots;

@@ -491,6 +491,17 @@ no real benefit over a one-line formula.
 
 ### The two injection points
 
+**Correction, caught during implementation**: this section originally implied the
+HP multiplier could read `playerCount` from the roster directly available at
+construction time (e.g. `this.players.size`) — wrong. `RaycasterEngine`'s
+constructor only ever has the *local* peer in `this.players` at that point; every
+other roster member is added afterward via `addPlayer()` (see
+`sessionEngine.ts`'s `buildSessionEngine()`). The constructor needs an explicit
+`playerCount` parameter instead, supplied by the caller (which already knows the
+full roster size upfront — `result.roster.length` — the same "known before
+per-player objects exist" reason `mapGenerator.generate()` already takes a
+`maxPlayers` param rather than inferring one from generated state).
+
 - **HP** (`engine.ts` constructor, immediately alongside the existing difficulty
   rescale loop at ~753–765): a second pass, filtered to `enemy.elite` only —
   `if (enemy.elite) { enemy.hp = Math.round(enemy.hp * eliteMultipliers.hp); enemy.maxHp
@@ -830,3 +841,46 @@ none new:
 Only once that gate passes does netcode implementation start — against an engine
 whose N-player shape now actually exists and whose N=1 behavior is proven
 unchanged.
+
+## 7. N-player support (2-4): what changed, and what stayed the same
+
+Everything in §§1-6 above was designed and built generically against an
+arbitrary-length `roster`/`playerCount` from the start (`pickMultiplayerSpawns`,
+`eliteScalingFor`, the engine's own `players: Map<PlayerId, PlayerState>`) — the
+connect/session layer was the one piece that shipped as a fixed 2-player (1
+host + 1 guest) MVP, a deliberate simplification flagged at the time for later
+revisit. That revisit is this section: real support for up to 3 guests,
+star-topology (guests only ever connect to the host, never to each other).
+
+The host chooses `maxPlayers` (2-4) before creating a session — needed anyway
+since map generation's own `pickMultiplayerSpawns` must know the spawn count up
+front. Guests join sequentially against the *same* short code (per
+`multiplayer-server-spec.md` §2's own documented mechanism — publishing a fresh
+offer under an existing code), automatically, with no manual step between
+joins. All joining happens before the host clicks "Start Session," which
+finalizes the roster at whatever's actually connected then (not the
+`maxPlayers` ceiling) and is the moment map generation/elite scaling actually
+run. Mid-session/late joining (a guest connecting after the level is already
+running) is explicitly out of scope — it would need an in-progress map/entity
+catch-up transfer, a materially larger feature than this one.
+
+## Testing & verification
+
+`verify:multiplayer-multiguest` is this section's own end-to-end proof: a real
+3-peer (host + 2 guests) session, joined sequentially against one code,
+reaching lockstep agreement across every pairwise peer combination, Elite
+scaling engaging at `playerCount=3`, and one guest's disconnect leaving the
+other guest's and the host's sessions running uninterrupted. `maxPlayers=2`
+stays a fully supported, byte-identical-shaped case (same "N=1/N=2 is just a
+case of the general shape" precedent this spec's own §6 already established
+for the engine layer) — but the existing 2-player scripts
+(`verify:multiplayer-netcode`/`-reconciliation`/`-disconnect`/`-transition`)
+*did* need one small update, caught by CI, not assumed away: the single
+guest's roster id is now `"guest-1"` (assigned in join order, same as any
+other guest), not the old fixed `"guest"` — every hardcoded
+`getPlayerPosition("guest")`/`getPlayerStatus("guest")`/
+`hasActiveRenderOffset("guest")` call in those four scripts was updated to
+`"guest-1"` accordingly. `verify:multiplayer-connect` needed no change (it
+never looks up a player by roster id, only by connection-state label). See
+`doc/dev/testing.md`'s "Cross-browser verification" section for the shared
+browser-support caveats.

@@ -1,8 +1,9 @@
 # Multiplayer netcode specification
 
-**Status: specification only — nothing in this document is implemented.** No file
-under `src/` is modified by this document or by producing it. It specifies the
-netcode layer that sits *above* the existing single-player `RaycasterEngine`, per
+**Status: implemented** (`src/multiplayer/*.ts`, engine integration in
+`src/engine/engine.ts`) and CI-verified (`scripts/verify-multiplayer-*.mjs`) —
+this document specifies the netcode layer that sits *above* the existing
+single-player `RaycasterEngine`, per
 the design direction and constraints already decided in
 [`multiplayer-research.md`](../../multiplayer-research.md) (star topology through a
 host, GitHub/Demos-only sourcing, the signaling/lobby service) and the finding from
@@ -177,14 +178,23 @@ full setup exchange, per guest, after its data channels open and before any tick
    particle counts) and never feeds the simulation.
 6. **The session's player count** for elite scaling (game-state §4), fixed per
    level per §5's no-mid-level-recompute rule.
-7. **The `GameMap` — chunked, with `visited` stripped.** An `RTCDataChannel`
-   message has a practical cross-browser size floor around 64 KiB; a 160×160
-   map's JSON crosses that on grid data alone (~50 KB before enemies/rooms/
-   terminals). Send the serialized map in fixed-size chunks (16 KiB is the
-   conventional safe size) with a final end-marker over the reliable channel —
-   routine once planned, a mid-implementation surprise otherwise. `visited` is
-   omitted from the wire entirely: it's all-`false` at generation time by
-   definition, so each peer just constructs it locally.
+7. **The `GameMap` — chunked, with `visited` stripped, and backpressure-aware.**
+   An `RTCDataChannel` message has a practical cross-browser size floor around
+   64 KiB; a 160×160 map's JSON crosses that on grid data alone (~50 KB before
+   enemies/rooms/terminals). Send the serialized map in fixed-size chunks (16
+   KiB is the conventional safe size) with a final end-marker over the
+   reliable channel — routine once planned, a mid-implementation surprise
+   otherwise. `visited` is omitted from the wire entirely: it's all-`false` at
+   generation time by definition, so each peer just constructs it locally.
+   **Firing every chunk synchronously with nothing watching
+   `bufferedAmount` is a real bug, not a theoretical one** — confirmed
+   directly as the cause of a real, reproducible CI failure (WebKit's own
+   `RTCDataChannel.send()` throwing mid-burst). `sendJsonWithBackpressure`/
+   `sendJsonSequence` (`dataChannelMessaging.ts`) pause and wait for a real
+   `"bufferedamountlow"` event once buffered data exceeds a watermark, and
+   reject cleanly (instead of throwing synchronously into a message-handler
+   callback) on a non-`"open"` channel — every chunked transfer (this one, and
+   §7's level-transition payload) must go through them, not a bare `send()`.
 
 ### Message flow per tick
 
@@ -310,6 +320,28 @@ time to deliver it before that tick actually needs to run.
     corrected outright.
 - The delay is deliberately expressed in **ticks**, not milliseconds, so it composes
   cleanly with the fixed tick rate above — no unit conversion at the point of use.
+
+### A consequence of the delay: hit resolution needs lag compensation
+
+Because a fire input's *execution* is `INPUT_DELAY_TICKS` ticks behind the
+*decision* it represents (for every player, host included — see above), naively
+hit-testing a shot against a target's live, current-tick position is wrong: a
+moving enemy has had up to `INPUT_DELAY_TICKS` ticks (~100ms) to leave the window
+the shooter actually aimed at by the time the shot resolves. This is negligible for
+a slow, wide ranged cone-of-fire but breaks melee outright (a very tight
+range/facing check) — found the hard way, via a real end-to-end bot that could
+never land a single melee hit in multiplayer despite winning single-player
+reliably with byte-identical decision logic.
+
+`RaycasterEngine` fixes this the standard way real networked shooters do (rewind
+the *target*, never the shooter — the shooter's own position, itself continuously
+informed by the same fixed delay, is already the correct reference frame the
+decision was made from): a per-tick ring buffer of past enemy positions
+(`enemyPositionHistory`, capped at `INPUT_DELAY_TICKS + 1` frames, multiplayer-only)
+feeds `resolveShot()` the enemy positions from exactly `INPUT_DELAY_TICKS` ticks
+ago instead of live ones. Only the *hit-test* projection is rewound — actual
+damage still mutates the real, live `Enemy` object. Single-player never populates
+the buffer at all, so it's byte-identical to pre-lag-compensation behavior.
 
 ## 3. State reconciliation payload
 
@@ -606,10 +638,15 @@ that can occur:
 
 - **Below `SNAP_THRESHOLD_TILES` (e.g. 0.5 tiles — tunable, see below)**: use the
   smoothed-render treatment above. This is expected to be the overwhelming majority
-  of corrections in practice, per the PoC's own measured drift rate (ULP-scale
-  differences appeared within the first ~1% of a 500,000-iteration run, but ULP-scale
-  errors accumulate *very* slowly in real per-tick position math compared to that
-  stress-test's tight feedback loop).
+  of corrections in practice, per the PoC's own measured drift rate — denser,
+  corrected measurement (`scripts/verify-multiplayer-determinism.mjs`'s
+  `reportDriftMagnitudes`) found ULP-scale differences actually appear far earlier
+  than this section originally said (iteration 5-23 of a run, not "~1%" of it — that
+  figure was an artifact of the original PoC's coarse sampling), but confirmed the
+  more important claim directly instead of assuming it: the resulting drift stays
+  bounded at machine-epsilon scale (~10⁻¹²% of `SNAP_THRESHOLD_TILES`) for tens of
+  thousands of iterations afterward, i.e. real per-tick position math does not turn
+  this into anything gameplay-visible.
 - **At or above `SNAP_THRESHOLD_TILES`**: apply the correction with **no render
   smoothing at all** — an instant, visible snap. A mismatch this large means
   something categorically worse than ordinary float drift happened (a missed/held
@@ -1089,3 +1126,21 @@ decision. `RECONCILE_INTERVAL_TICKS` specifically now has a second pressure on i
 beyond bandwidth, worth weighing together rather than separately once real data
 exists: it's also the upper bound on how long a PRNG-stream desync (§3) can persist
 before being corrected.
+
+## Testing & verification
+
+Nothing in this spec is verified by inspection alone — every mechanism above has
+a real, end-to-end Playwright check behind it, run against a live signaling
+server + dev server pair (never the developer's own dev server) and wired into
+CI: `verify:multiplayer-connect` (the connect flow itself), `verify:multiplayer-netcode`
+(§1/§2, lockstep tick agreement), `verify:multiplayer-reconciliation` (§3/§4,
+forced-divergence correction), `verify:multiplayer-disconnect` (§5),
+`verify:multiplayer-transition` (§7), and `verify:multiplayer-multiguest` (a
+3-peer — host + 2 guests — smoke test covering the same ground at N>2, including
+that one guest's disconnect never affects another's session). A separate
+`verify:multiplayer-determinism` guards this spec's own core assumption — that
+lockstep survives long enough for periodic reconciliation to actually catch a
+real cross-engine float divergence — as a regression alarm, not a claim of
+eternal bit-identical engines. See `doc/dev/testing.md`'s "Cross-browser
+verification" section for the shared cross-browser caveats (confirmed
+CI-only WebRTC/ICE limitations, timing lessons) all of these scripts inherit.

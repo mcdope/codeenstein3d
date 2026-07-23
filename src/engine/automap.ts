@@ -19,6 +19,7 @@ import {
   SPIKE_TRAP_TILE,
   TELEPORTER_TILE,
   type GameMap,
+  type LootDrop,
 } from "../map/types";
 import { activeSpikeTileKeys } from "./traps";
 import type { Player } from "./player";
@@ -62,6 +63,12 @@ const EXIT_COLOR = "#41ff6e";
 /** Player marker — the one warm, unambiguous color so it never blends into
  * either the grey terrain or the red/orange/green accents. */
 const PLAYER_COLOR = "#ffd23f";
+/** Multiplayer-only loot-drop marker color — matches `renderMinimap`'s own
+ * `LOOT_DROP_COLOR` by value, not by shared import (each renderer keeps its
+ * own independently-defined, thematically-matched constants, same as every
+ * other color here). A muted gold/amber, distinct from `PLAYER_COLOR`'s
+ * brighter gold. */
+const LOOT_DROP_COLOR = "#b8860b";
 
 /**
  * Draw the automap as a translucent viewport overlay filling the available
@@ -76,6 +83,11 @@ export function drawAutomap(
   map: GameMap,
   player: Player,
   levelTime = 0,
+  /** Multiplayer-only (`multiplayer-game-state-spec.md` §5) — always `[]` for
+   * single-player, so an always-empty array is indistinguishable from this
+   * parameter not existing at all. Gated by the caller
+   * (`engine.ts`'s `isMultiplayerSession()` check), not here. */
+  lootDrops: readonly LootDrop[] = [],
 ): void {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
@@ -166,6 +178,19 @@ export function drawAutomap(
     const mx = vx0 + (mine.x - camX) * CELL_PX - CELL_PX / 2;
     const my = vy0 + (mine.y - camY) * CELL_PX - CELL_PX / 2;
     ctx.fillRect(mx, my, Math.max(3, CELL_PX), Math.max(3, CELL_PX));
+  }
+
+  // Multiplayer-only loot drops (ammo/weapon/health/key drops on the ground
+  // — e.g. left behind by a disconnected player) — gated on `map.visited`,
+  // the same rule this renderer already applies to literally everything
+  // else. `[]` for single-player, so this loop is a no-op there.
+  ctx.fillStyle = LOOT_DROP_COLOR;
+  for (const drop of lootDrops) {
+    if (!map.visited[Math.floor(drop.y)]?.[Math.floor(drop.x)]) continue;
+    if (drop.x < tileX0 - 1 || drop.x > tileX1 || drop.y < tileY0 - 1 || drop.y > tileY1) continue;
+    const dx = vx0 + (drop.x - camX) * CELL_PX - CELL_PX / 2;
+    const dy = vy0 + (drop.y - camY) * CELL_PX - CELL_PX / 2;
+    ctx.fillRect(dx, dy, Math.max(3, CELL_PX), Math.max(3, CELL_PX));
   }
 
   // Exit tile, once discovered.

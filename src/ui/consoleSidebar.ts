@@ -75,6 +75,16 @@ export function initConsoleSidebar(
   const scheduleHint = (): void => {
     const delay = HINT_MIN_DELAY_MS + Math.random() * (HINT_MAX_DELAY_MS - HINT_MIN_DELAY_MS);
     window.setTimeout(() => {
+      // This chain has no explicit teardown (by design — a real page has
+      // exactly one `initConsoleSidebar()` call for its whole lifetime, torn
+      // down for free on navigation/reload). Under a test harness that
+      // re-imports `main.ts` fresh per test without ever "closing" the
+      // previous instance's page, though, a still-pending timer from an
+      // earlier test can fire after *that* test's own jsdom environment has
+      // already been torn down — `window` gone, nothing left to hint into.
+      // Bail out without rescheduling rather than throwing or perpetuating
+      // the chain further in that case.
+      if (typeof window === "undefined") return;
       if (hintsActive && !paused) {
         let index = Math.floor(Math.random() * HINTS.length);
         while (HINTS.length > 1 && index === lastHintIndex) {

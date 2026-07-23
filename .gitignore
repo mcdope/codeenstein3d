@@ -7,11 +7,13 @@ public/wads/
 .verify-output
 coverage
 balancing_telemetry.json
+multiplayer_balancing_telemetry.json
 balancing_runs/
 balancing_runs_*/
 perf_runs/
 perf-report.html
 scripts/fixtures/perf-har/
+ssh-hosts.env
 
 # Editor
 .vscode/*

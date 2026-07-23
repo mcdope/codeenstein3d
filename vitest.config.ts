@@ -63,9 +63,20 @@ export default defineConfig({
       // Phase 12 100% gate for a file with no logic to cover. Files with
       // *some* runtime code alongside their types (e.g. src/map/types.ts's
       // tile constants) are NOT excluded — those get real tests instead.
+      // src/multiplayer/netcodeTypes.ts is the same situation: only
+      // `interface` declarations (the per-tick lockstep wire shapes), no
+      // runtime exports. src/engine/reconciliationSnapshot.ts and
+      // src/multiplayer/reconciliationTypes.ts are the same again, for the
+      // reconciliation-snapshot payload shape and its wire wrapper (step 7).
+      // src/multiplayer/levelTransitionTypes.ts is the same again, for the
+      // level-transition wire shapes (step 8).
       exclude: [
         "src/engine/defaultHighscore.ts",
         "src/parser/types.ts",
+        "src/multiplayer/netcodeTypes.ts",
+        "src/engine/reconciliationSnapshot.ts",
+        "src/multiplayer/reconciliationTypes.ts",
+        "src/multiplayer/levelTransitionTypes.ts",
         "src/empty-node-shim.ts",
         "src/vite-env.d.ts",
         "dist/**",

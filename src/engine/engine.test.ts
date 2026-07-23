@@ -3,12 +3,18 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { createMockCanvasContext, stubCanvasGetContext } from "../../test/mocks/canvas";
+import { createMockCanvasContext, stubCanvasGetContext, type MockCanvasContext } from "../../test/mocks/canvas";
 import { installRaf, type RafController } from "../../test/mocks/raf";
-import type { AmmoPickup, Enemy, GameMap, Mine, SpikeTrap, Teleporter, Tile } from "../map/types";
-import { DOOR_TILE, LORE_TILE, SECRET_WALL_TILE, TELEPORTER_TILE } from "../map/types";
+import type { AmmoPickup, Enemy, GameMap, KeyItem, LootDrop, Mine, SpikeTrap, Teleporter, Tile } from "../map/types";
+import { DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, TELEPORTER_TILE } from "../map/types";
 import { audio } from "./audio";
 import type { InputSnapshot, InputSource } from "./input";
+import { INPUT_DELAY_TICKS } from "./lagCompensationConstants";
+import { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "./reconciliationConstants";
+import type { ReconciliationSnapshot } from "./reconciliationSnapshot";
+import { EMPTY_SNAPSHOT } from "./replay";
+import { COUNTDOWN_TICKS } from "./transitionConstants";
+import { GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX } from "./weapons";
 
 // engine.ts imports a real *value* (`textures`) from textures.ts, whose
 // module-level `TextureManager` singleton calls `document.createElement`
@@ -17,13 +23,14 @@ import type { InputSnapshot, InputSource } from "./input";
 // all other top-level code. Stub the canvas context first, then
 // dynamically import engine.ts. Same gotcha as raycaster.ts/textures.ts.
 let RaycasterEngine: typeof import("./engine").RaycasterEngine;
+let REVIVE_HEALTH: number;
 type EngineStats = import("./engine").EngineStats;
 type EngineHandlers = import("./engine").EngineHandlers;
 type EngineCarryover = import("./engine").EngineCarryover;
 
 beforeAll(async () => {
   stubCanvasGetContext(document.createElement("canvas"));
-  ({ RaycasterEngine } = await import("./engine"));
+  ({ RaycasterEngine, REVIVE_HEALTH } = await import("./engine"));
 });
 
 const WIDTH = 200;
@@ -91,27 +98,6 @@ function fakeEnemy(overrides: Partial<Enemy> = {}): Enemy {
     ...overrides,
   };
 }
-
-const EMPTY_SNAPSHOT: InputSnapshot = {
-  keys: [],
-  mouseDX: 0,
-  fireQueued: false,
-  fireHeld: false,
-  weaponRequest: null,
-  mapToggle: false,
-  interact: false,
-  melee: false,
-  meleeHeld: false,
-  wheelSteps: 0,
-  fpsToggle: false,
-  escape: false,
-  blur: false,
-  pointerUnlock: false,
-  click: false,
-  gpForward: 0,
-  gpStrafe: 0,
-  gpTurn: 0,
-};
 
 /** A hand-scripted, mutable InputSource — flip its fields between
  * `advance()` calls to drive specific player actions deterministically,
@@ -267,6 +253,7 @@ function makeEngine(
     difficulty?: "easy" | "normal" | "hard";
     seed?: number;
     input?: ScriptedInput;
+    playerCount?: number;
   } = {},
 ): { engine: InstanceType<typeof RaycasterEngine>; input: ScriptedInput; handlers: ReturnType<typeof makeHandlers> } {
   const canvas = makeCanvas();
@@ -281,6 +268,9 @@ function makeEngine(
     opts.seed ?? 12345,
     input,
     undefined,
+    undefined,
+    undefined,
+    opts.playerCount,
   );
   return { engine, input, handlers };
 }
@@ -367,6 +357,25 @@ describe("RaycasterEngine — construction", () => {
     const { engine } = makeEngine(fakeMap({ enemies: [enemy] }), makeHandlers(), { difficulty: "normal" });
     engine.advance(0);
     expect(enemy.maxHp).toBe(100);
+  });
+
+  it("leaves Elite HP untouched at the default single-player playerCount (1)", () => {
+    const elite = fakeEnemy({ hp: 100, maxHp: 100, elite: true });
+    const { engine } = makeEngine(fakeMap({ enemies: [elite] }));
+    engine.advance(0);
+    expect(elite.maxHp).toBe(100);
+  });
+
+  it("scales only Elite HP by the player-count multiplier at construction, leaving non-Elites untouched", () => {
+    const elite = fakeEnemy({ hp: 100, maxHp: 100, elite: true });
+    const grunt = fakeEnemy({ hp: 100, maxHp: 100, elite: false, x: 7, y: 5 });
+    const { engine } = makeEngine(fakeMap({ enemies: [elite, grunt] }), makeHandlers(), { playerCount: 3 });
+    engine.advance(0);
+    // eliteScalingFor(3): extra = 2, hp = 1 + 2*0.5 = 2
+    expect(elite.maxHp).toBe(200);
+    expect(elite.hp).toBe(200);
+    expect(grunt.maxHp).toBe(100);
+    expect(grunt.hp).toBe(100);
   });
 
   it("falls back to a real InputController when no inputSource is given", () => {
@@ -535,6 +544,32 @@ describe("RaycasterEngine — start()/stop() lifecycle", () => {
   });
 });
 
+describe("RaycasterEngine — startExternallyDriven() (multiplayer/headless)", () => {
+  it("attaches input and pushes initial stats, without scheduling an internal frame", () => {
+    const { engine, input, handlers } = makeEngine(fakeMap());
+    engine.startExternallyDriven();
+    expect(input.attach).toHaveBeenCalledTimes(1);
+    expect(handlers.onStats).toHaveBeenCalledTimes(1);
+    expect(raf.flush(1)).toBe(0); // nothing queued — no competing internal loop
+  });
+
+  it("is idempotent, same as start()", () => {
+    const { engine, input } = makeEngine(fakeMap());
+    engine.startExternallyDriven();
+    engine.startExternallyDriven();
+    expect(input.attach).toHaveBeenCalledTimes(1);
+  });
+
+  it("a caller can still drive simulate()/advance() directly afterward", () => {
+    const { engine, handlers } = makeEngine(fakeMap());
+    engine.startExternallyDriven();
+    const before = handlers.onStats.mock.calls.length;
+    engine.advance(1 / 30);
+    expect(handlers.onStats.mock.calls.length).toBe(before + 1); // render()'s own onStats push
+    expect(() => engine.stop()).not.toThrow(); // rafId was never assigned; cancelAnimationFrame(0) must still be safe
+  });
+});
+
 describe("RaycasterEngine — pause / blur / escape", () => {
   it("Escape toggles pause and fires onFreezeChange only on the edge", () => {
     const { engine, input, handlers } = makeEngine(fakeMap());
@@ -598,6 +633,18 @@ describe("RaycasterEngine — automap toggle", () => {
     // pause anything is that onFreezeChange never reports true.
     expect(handlers.onFreezeChange).not.toHaveBeenCalledWith(true);
   });
+
+  it("passes this session's loot drops to drawAutomap while it's open in a multiplayer session", () => {
+    // A non-default localPlayerId ("host") makes isMultiplayerSession() true
+    // — see engine.ts's own doc comment on that check — exercising the
+    // `this.isMultiplayerSession() ? this.drops : []` branch drawAutomap's
+    // call site takes, which single-player's own automap-toggle test above
+    // never reaches.
+    const input = new ScriptedInput();
+    const engine = new RaycasterEngine(makeCanvas(), fakeMap(), makeHandlers(), undefined, undefined, undefined, 1, input, undefined, "host");
+    input.mapToggle = true;
+    expect(() => engine.advance(0.016)).not.toThrow();
+  });
 });
 
 describe("RaycasterEngine — lore terminals", () => {
@@ -660,6 +707,105 @@ describe("RaycasterEngine — lore terminals", () => {
     input.interact = true;
     engine.advance(0.016);
     expect(handlers.onFreezeChange).not.toHaveBeenCalledWith(true);
+  });
+
+  // Multiplayer-only regression test (multiplayer-netcode-spec.md §6): a
+  // single-player/replay instance (localPlayerId === LOCAL_PLAYER_ID) must
+  // keep freezing exactly as every test above proves. A non-LOCAL_PLAYER_ID
+  // instance (a real multiplayer peer) must NOT — every peer runs its own
+  // independent RaycasterEngine, so a local-only freeze on just one of them
+  // would desync the shared simulation the instant either player reads a
+  // terminal.
+  it("multiplayer-only: opening a lore terminal doesn't freeze simulate() for a non-LOCAL_PLAYER_ID instance", () => {
+    const input = new ScriptedInput();
+    const engine = new RaycasterEngine(makeCanvas(), loreMap(), {}, undefined, undefined, undefined, 1, input, undefined, "H");
+    input.interact = true;
+    expect(engine.simulate(0.016)).toBe(true); // opens the overlay, but still progressed
+  });
+
+  // Step 8 (multiplayer-netcode-spec.md §6): the overlay is static and
+  // dismiss-only in multiplayer — neither a second interact nor a click
+  // closes it anymore (both carry real shared-simulation side effects
+  // unrelated to a purely local, cosmetic overlay), and W/S no longer
+  // scrolls it (those keys drive real shared movement — holding them while
+  // the overlay is open must actually move the player, not just scroll
+  // text). See `dismissLoreOverlay()`'s own doc comment for the real close
+  // mechanism.
+  describe("multiplayer-only: static, dismiss-only overlay (step 8)", () => {
+    function loreStateOf(engine: InstanceType<typeof RaycasterEngine>): Map<
+      string,
+      { loreText: string | null; loreScroll: number; player: { posX: number; posY: number } }
+    > {
+      return (
+        engine as unknown as {
+          players: Map<string, { loreText: string | null; loreScroll: number; player: { posX: number; posY: number } }>;
+        }
+      ).players;
+    }
+
+    it("stays open across a second interact and a click — neither dismisses it anymore", () => {
+      const input = new ScriptedInput();
+      const engine = new RaycasterEngine(makeCanvas(), loreMap(), {}, undefined, undefined, undefined, 1, input, undefined, "H");
+      input.interact = true;
+      engine.simulate(0.016); // opens it
+      const state = loreStateOf(engine);
+      expect(state.get("H")!.loreText).not.toBeNull();
+
+      input.interact = true;
+      engine.simulate(0.016);
+      expect(state.get("H")!.loreText).not.toBeNull();
+
+      input.interact = false;
+      input.click = true;
+      engine.simulate(0.016);
+      expect(state.get("H")!.loreText).not.toBeNull();
+    });
+
+    it("holding W/S while it's open moves the player instead of scrolling — loreScroll never changes", () => {
+      const input = new ScriptedInput();
+      const engine = new RaycasterEngine(makeCanvas(), loreMap(), {}, undefined, undefined, undefined, 1, input, undefined, "H");
+      input.interact = true;
+      engine.simulate(0.016); // opens it
+      input.interact = false;
+
+      // Spawn faces the lore terminal itself (a wall tile, directly ahead) —
+      // "S" (backward) is the direction that's actually unobstructed, so
+      // this proves real movement rather than colliding with the terminal.
+      const state = loreStateOf(engine);
+      const before = { x: state.get("H")!.player.posX, y: state.get("H")!.player.posY };
+      input.keys.add("KeyS");
+      engine.simulate(0.5);
+
+      const after = state.get("H")!.player;
+      expect(after.posX !== before.x || after.posY !== before.y).toBe(true); // the real fix: S actually moved the player
+      expect(state.get("H")!.loreScroll).toBe(0); // never touched
+    });
+
+    it("dismissLoreOverlay() closes it, and is a harmless no-op when nothing is open", () => {
+      const input = new ScriptedInput();
+      const engine = new RaycasterEngine(makeCanvas(), loreMap(), {}, undefined, undefined, undefined, 1, input, undefined, "H");
+      input.interact = true;
+      engine.simulate(0.016); // opens it
+      const state = loreStateOf(engine);
+      expect(state.get("H")!.loreText).not.toBeNull();
+
+      engine.dismissLoreOverlay();
+      expect(state.get("H")!.loreText).toBeNull();
+
+      expect(() => engine.dismissLoreOverlay()).not.toThrow();
+      expect(state.get("H")!.loreText).toBeNull();
+    });
+
+    it("dismissLoreOverlay() is a no-op for a single-player/replay instance — it uses its own interact/click dismiss path instead", () => {
+      const { engine, input } = makeEngine(loreMap());
+      input.interact = true;
+      engine.advance(0.016); // opens it
+      const state = loreStateOf(engine);
+      expect(state.get("local")!.loreText).not.toBeNull();
+
+      engine.dismissLoreOverlay();
+      expect(state.get("local")!.loreText).not.toBeNull(); // untouched
+    });
   });
 });
 
@@ -1785,6 +1931,216 @@ describe("RaycasterEngine — win and death", () => {
   });
 });
 
+describe("RaycasterEngine — multiplayer exit countdown (step 8)", () => {
+  function exitMap(size = 12) {
+    return fakeMap({ spawn: { x: size - 2, y: size - 2 }, exit: { x: size - 2, y: size - 2 } }, size);
+  }
+
+  it("touching the exit starts the countdown instead of winning immediately, and getExitCountdownRemaining() reports it", () => {
+    const handlers = makeHandlers();
+    const engine = new RaycasterEngine(makeCanvas(), exitMap(), handlers, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    expect(engine.getExitCountdownRemaining()).toBeNull();
+    engine.advance(0.016);
+    expect(handlers.onWin).not.toHaveBeenCalled();
+    expect(engine.getExitCountdownRemaining()).toBe(COUNTDOWN_TICKS);
+  });
+
+  it("counts down by exactly one tick per simulate() call, regardless of dt", () => {
+    const engine = new RaycasterEngine(makeCanvas(), exitMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    engine.simulate(0.016); // starts it
+    engine.simulate(5); // a huge dt must still only cost one tick of countdown
+    expect(engine.getExitCountdownRemaining()).toBe(COUNTDOWN_TICKS - 1);
+  });
+
+  it("does not restart or cancel when the player leaves and re-touches the exit tile", () => {
+    const input = new ScriptedInput();
+    const engine = new RaycasterEngine(makeCanvas(), exitMap(), {}, undefined, undefined, undefined, 1, input, undefined, "H");
+    engine.simulate(0.016); // starts it, at COUNTDOWN_TICKS
+    engine.simulate(0.016); // COUNTDOWN_TICKS - 1
+    engine.simulate(0.016); // COUNTDOWN_TICKS - 2 — still counting, whether or not the player moved
+    expect(engine.getExitCountdownRemaining()).toBe(COUNTDOWN_TICKS - 2);
+  });
+
+  it("keeps the sim running normally throughout — other simulate() side effects still happen", () => {
+    const input = new ScriptedInput();
+    const engine = new RaycasterEngine(makeCanvas(), exitMap(), {}, undefined, undefined, undefined, 1, input, undefined, "H");
+    engine.simulate(0.016); // starts the countdown
+    const before = engine.getPlayerPosition("H")!;
+    input.keys.add("KeyS"); // back away from the exit-adjacent wall, into open floor
+    engine.simulate(0.5);
+    const after = engine.getPlayerPosition("H")!;
+    expect(after.x !== before.x || after.y !== before.y).toBe(true);
+  });
+
+  it("fires endGame(\"won\") only once the countdown reaches zero, not before", () => {
+    // onWin/onGameOver fire from render(), not simulate() — advance() (which
+    // calls both) is the real driver every session uses, so this test uses
+    // it too rather than simulate() alone.
+    const handlers = makeHandlers();
+    const engine = new RaycasterEngine(makeCanvas(), exitMap(), handlers, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    // The first call only *starts* the countdown (no decrement that tick —
+    // see `checkExit()`'s own doc comment) — COUNTDOWN_TICKS further calls
+    // are needed to actually exhaust it.
+    for (let i = 0; i < COUNTDOWN_TICKS + 1; i++) {
+      engine.advance(0.016);
+      if (i < COUNTDOWN_TICKS) expect(handlers.onWin).not.toHaveBeenCalled();
+    }
+    expect(handlers.onWin).toHaveBeenCalledTimes(1);
+    expect(engine.getExitCountdownRemaining()).toBeNull();
+  });
+
+  it("render() draws the countdown toast once active, and not before", () => {
+    const canvas = makeCanvas();
+    const ctx = canvas.getContext("2d") as unknown as MockCanvasContext;
+    const engine = new RaycasterEngine(canvas, exitMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    engine.render();
+    expect(ctx.fillText).not.toHaveBeenCalledWith(expect.stringContaining("Build finishing"), expect.anything(), expect.anything());
+    engine.simulate(0.016); // starts the countdown
+    engine.render();
+    expect(ctx.fillText).toHaveBeenCalledWith("Build finishing in 5s…", WIDTH / 2, 40);
+  });
+
+  it("getExitCountdownRemaining() stays null for a single-player instance, which wins immediately (regression)", () => {
+    const { engine, handlers } = makeEngine(exitMap());
+    engine.advance(0.016);
+    expect(handlers.onWin).toHaveBeenCalledTimes(1);
+    expect(engine.getExitCountdownRemaining()).toBeNull();
+  });
+});
+
+describe("RaycasterEngine — captureCarryoverFor (step 8)", () => {
+  it("captures health/swap/ammo/weapon/owned-weapons/cheat-flags/campaignLevelIndex for the given roster id", () => {
+    const carryover: EngineCarryover = {
+      health: 40,
+      swap: 5,
+      bullets: 10,
+      rockets: 2,
+      smg: 3,
+      gas: 4,
+      weaponIndex: GDB_WEAPON_INDEX,
+      ownedWeapons: [0, 1, 2, GDB_WEAPON_INDEX],
+      godMode: true,
+      noClip: true,
+      showFps: true,
+      campaignLevelIndex: 3,
+    };
+    const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, carryover, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    const result = engine.captureCarryoverFor("H");
+    expect(result.health).toBe(40);
+    expect(result.swap).toBe(5);
+    expect(result.bullets).toBe(10);
+    expect(result.rockets).toBe(2);
+    expect(result.smg).toBe(3);
+    expect(result.gas).toBe(4);
+    expect(result.weaponIndex).toBe(GDB_WEAPON_INDEX);
+    expect(result.ownedWeapons?.sort()).toEqual([0, 1, 2, GDB_WEAPON_INDEX].sort());
+    expect(result.godMode).toBe(true);
+    expect(result.noClip).toBe(true);
+    expect(result.showFps).toBe(true);
+    expect(result.campaignLevelIndex).toBe(3);
+  });
+
+  it("adds this level's own score on top of any prior score already carried in", () => {
+    const carryover: EngineCarryover = { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0, priorScore: 500 };
+    const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, carryover, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    const result = engine.captureCarryoverFor("H");
+    expect(result.priorScore).toBeGreaterThan(500); // 500 baseline + this level's own (nonzero completion/health) contribution
+  });
+
+  it("leaves priorScoreBreakdown/priorPlayerStats undefined when telemetry isn't being recorded (default)", () => {
+    const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    const result = engine.captureCarryoverFor("H");
+    expect(result.priorScoreBreakdown).toBeUndefined();
+    expect(result.priorPlayerStats).toBeUndefined();
+  });
+
+  it("populates priorScoreBreakdown/priorPlayerStats under ?testHooks=1 (telemetry on)", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+      const result = engine.captureCarryoverFor("H");
+      expect(result.priorScoreBreakdown).toBeDefined();
+      expect(result.priorPlayerStats).toBeDefined();
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
+  it("captures a non-local roster player's own state, not just the local player's", () => {
+    const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    engine.addPlayer("G", new ScriptedInput(), { health: 33, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 });
+    const hostResult = engine.captureCarryoverFor("H");
+    const guestResult = engine.captureCarryoverFor("G");
+    expect(hostResult.health).toBe(100); // default full health, no carryover given
+    expect(guestResult.health).toBe(33);
+  });
+
+  it("is a pure snapshot — never mutates the captured player's own live state", () => {
+    const carryover: EngineCarryover = { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0, priorScore: 42 };
+    const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, carryover, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    const first = engine.captureCarryoverFor("H");
+    const second = engine.captureCarryoverFor("H");
+    expect(second.priorScore).toBe(first.priorScore); // unchanged by the first call — not accumulated twice
+  });
+});
+
+describe("RaycasterEngine — getMultiplayerTelemetrySnapshot (step 11)", () => {
+  it("returns null when telemetry isn't being recorded at all (no ?testHooks=1, PLAYER_STATS_ENABLED off)", () => {
+    const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    engine.addPlayer("G", new ScriptedInput());
+    expect(engine.getMultiplayerTelemetrySnapshot("H")).toBeNull();
+    expect(engine.getMultiplayerTelemetrySnapshot("G")).toBeNull();
+  });
+
+  it("returns null for an id that isn't a connected player, even with telemetry on", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+      expect(engine.getMultiplayerTelemetrySnapshot("nope")).toBeNull();
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
+  it("reports each connected player's own per-player fields independently, while sharing identical team-wide fields", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const hostInput = new ScriptedInput();
+      const guestInput = new ScriptedInput();
+      const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, hostInput, undefined, "H");
+      engine.addPlayer("G", guestInput);
+
+      // Only the guest fires — proves weaponTallies/shotsFired is genuinely
+      // per-player now, not the pre-step-11 shared-instance bug (which would
+      // have shown the shot on *both* players' snapshots).
+      guestInput.fireQueued = true;
+      engine.advance(0.016);
+
+      const hostSnapshot = engine.getMultiplayerTelemetrySnapshot("H");
+      const guestSnapshot = engine.getMultiplayerTelemetrySnapshot("G");
+      expect(hostSnapshot).not.toBeNull();
+      expect(guestSnapshot).not.toBeNull();
+      expect(guestSnapshot!.weaponTallies[0]?.shotsFired).toBe(1);
+      expect(hostSnapshot!.weaponTallies[0]?.shotsFired).toBeUndefined();
+
+      // Team-wide fields (no single per-player owner) read identically off
+      // both snapshots — see `RaycasterEngine.teamTelemetry`'s doc comment.
+      expect(hostSnapshot!.peakAggroedCount).toBe(guestSnapshot!.peakAggroedCount);
+      expect(hostSnapshot!.combatTimeSec).toBe(guestSnapshot!.combatTimeSec);
+      expect(hostSnapshot!.enemyBoltsFired).toBe(guestSnapshot!.enemyBoltsFired);
+      expect(hostSnapshot!.enemyMeleeAttacks).toBe(guestSnapshot!.enemyMeleeAttacks);
+      expect(hostSnapshot!.minesTriggered).toBe(guestSnapshot!.minesTriggered);
+      expect(hostSnapshot!.lootRolled).toEqual(guestSnapshot!.lootRolled);
+      expect(hostSnapshot!.mapCompletionFrac).toBe(guestSnapshot!.mapCompletionFrac);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+});
+
 describe("RaycasterEngine — FPS overlay toggle", () => {
   it("Right-Ctrl equivalent (consumeFpsToggle) flips the overlay without throwing", () => {
     const { engine, input } = makeEngine(fakeMap());
@@ -2121,5 +2477,1367 @@ describe("perf-frame begin on direct advance() (audit F21)", () => {
       Object.defineProperty(window, "location", { value: original, configurable: true });
       delete (window as unknown as { __codeensteinPerfStats?: unknown }).__codeensteinPerfStats;
     }
+  });
+});
+
+describe("RaycasterEngine — simulate()/render() split", () => {
+  it("render() can be called repeatedly with no intervening simulate()/advance() — each call succeeds and re-invokes onStats", () => {
+    const { engine, handlers } = makeEngine(fakeMap());
+    engine.advance(0.016); // one real tick so there's something to draw
+    handlers.onStats.mockClear();
+
+    expect(() => engine.render()).not.toThrow();
+    expect(() => engine.render()).not.toThrow();
+    expect(() => engine.render()).not.toThrow();
+
+    expect(handlers.onStats).toHaveBeenCalledTimes(3);
+    for (const call of handlers.onStats.mock.calls) {
+      expect(call[0]).toMatchObject({ health: expect.any(Number), weaponIndex: expect.any(Number) });
+    }
+  });
+
+  it("simulate(dt) x N followed by one render() reaches the same observable state as advance(dt) x N", () => {
+    // Movement + firing over identical scripted input, driven two different
+    // ways on two separate engines with the same seed/map — proves the
+    // decomposition doesn't silently change any gameplay-observable value
+    // (position, health, ammo, state), independent of the trajectory digest
+    // (which only spot-checks one particular scripted run, not this specific
+    // equivalence property).
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      type PlayerState = { x: number; y: number; health: number; state: string; ammo: Record<string, number> };
+      const getHooks = () =>
+        (window as unknown as { __codeensteinTestHooks: Record<string, () => unknown> }).__codeensteinTestHooks;
+      const dt = 1 / 30;
+
+      // Only one engine's testHooks are live on the shared window global at a
+      // time (the constructor overwrites it) — fully drive and sample engine
+      // A before ever constructing engine B, not interleaved.
+      const { engine: engineA, input: inputA } = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }, 16), undefined, { seed: 42 });
+      inputA.keys.add("KeyD");
+      for (let i = 0; i < 10; i++) engineA.advance(dt);
+      inputA.keys.delete("KeyD");
+      for (let i = 0; i < 5; i++) {
+        inputA.fireQueued = true;
+        engineA.advance(dt);
+      }
+      const stateA = getHooks().getPlayerState() as PlayerState;
+
+      const { engine: engineB, input: inputB } = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }, 16), undefined, { seed: 42 });
+      inputB.keys.add("KeyD");
+      for (let i = 0; i < 10; i++) engineB.simulate(dt);
+      inputB.keys.delete("KeyD");
+      for (let i = 0; i < 5; i++) {
+        inputB.fireQueued = true;
+        engineB.simulate(dt);
+      }
+      engineB.render();
+      const stateB = getHooks().getPlayerState() as PlayerState;
+
+      expect(stateB.x).toBeCloseTo(stateA.x, 10);
+      expect(stateB.y).toBeCloseTo(stateA.y, 10);
+      expect(stateB.health).toBe(stateA.health);
+      expect(stateB.state).toBe(stateA.state);
+      expect(stateB.ammo).toEqual(stateA.ammo);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+      delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+    }
+  });
+
+  it("render()'s three overlay branches (normal, paused, lore) each return a populated EngineStats", () => {
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][6] = LORE_TILE; // just east of spawn (5,5)
+    const map = fakeMap({ grid: g, loreTerminals: [{ x: 6, y: 5, text: "// a secret comment" }] }, size);
+    const { engine, input } = makeEngine(map);
+
+    engine.advance(0.016);
+    const normalStats = engine.render();
+    expect(normalStats.health).toBeGreaterThan(0);
+    expect(normalStats.weaponIndex).toBeDefined();
+
+    input.escape = true;
+    engine.simulate(0.016); // resolves the pause this tick
+    const pausedStats = engine.render();
+    expect(pausedStats.health).toBe(normalStats.health);
+
+    input.escape = true;
+    engine.simulate(0.016); // unpauses
+
+    input.interact = true;
+    engine.simulate(0.016); // opens the lore terminal this tick
+    const loreStats = engine.render();
+    expect(loreStats.health).toBe(normalStats.health);
+  });
+
+  it("advance() still fires onGameOver/onWin with the same EngineStats render() itself returns, on a real death/win", () => {
+    const size = 12;
+    const winMap = fakeMap({ spawn: { x: size - 2, y: size - 2 }, exit: { x: size - 2, y: size - 2 } }, size);
+    const { engine: winEngine, handlers: winHandlers } = makeEngine(winMap);
+    winEngine.advance(0.016);
+    expect(winHandlers.onWin).toHaveBeenCalledTimes(1);
+    expect(winHandlers.onWin.mock.calls[0][0]).toMatchObject({ health: expect.any(Number) });
+
+    const g = walledRoom(size);
+    g[5][5] = 2; // hazard tile at spawn
+    const deathMap = fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }] }, size);
+    const { engine: deathEngine, handlers: deathHandlers } = makeEngine(deathMap);
+    for (let i = 0; i < 10 && deathHandlers.onGameOver.mock.calls.length === 0; i++) deathEngine.advance(1);
+    expect(deathHandlers.onGameOver).toHaveBeenCalledTimes(1);
+    expect(deathHandlers.onGameOver.mock.calls[0][0]).toMatchObject({ health: 0 });
+  });
+});
+
+/** Reaches into `RaycasterEngine`'s private `players` map for the handful of
+ * N-player mechanics (per-player `zBuffer` identity, `spectateTargetId`)
+ * that have no public surface at all — by design, since neither is meant to
+ * ever be observed by a real host. Every other N-player test below drives
+ * only the public surface (`addPlayer`/`rosterSnapshot`/`advance`/testHooks). */
+function playersOf(engine: InstanceType<typeof RaycasterEngine>): Map<string, { zBuffer: Float64Array; spectateTargetId: string | null; status: string }> {
+  return (engine as unknown as { players: Map<string, { zBuffer: Float64Array; spectateTargetId: string | null; status: string }> }).players;
+}
+
+describe("RaycasterEngine — addPlayer / roster (N-player)", () => {
+  it("adds a second player, reflected in rosterSnapshot", () => {
+    const { engine } = makeEngine(fakeMap());
+    engine.addPlayer("p2", new ScriptedInput());
+    const roster = engine.rosterSnapshot();
+    expect([...roster.keys()].sort()).toEqual(["local", "p2"]);
+    expect(roster.get("p2")).toMatchObject({ status: "alive", health: 100, killScore: 0, kills: 0, distanceTraveled: 0 });
+    // `breakdown` is the cumulative run total (multiplayer step 9) — a fresh
+    // player with no prior levels and no damage taken yet still earns the
+    // full health/ammo bonuses, so `total` is non-zero from tick one.
+    expect(roster.get("p2")!.breakdown.total).toBeGreaterThan(0);
+  });
+
+  it("throws when adding a player id that's already present", () => {
+    const { engine } = makeEngine(fakeMap());
+    engine.addPlayer("p2", new ScriptedInput());
+    expect(() => engine.addPlayer("p2", new ScriptedInput())).toThrow('"p2" already present');
+  });
+
+  // Regression test for a real desync bug caught before any multiplayer
+  // netcode existed to trigger it: without the `localPlayerId` constructor
+  // param, every engine keys its own player as the literal string "local"
+  // regardless of which real, globally-shared roster id it represents. Two
+  // peers looking at "the same two physical players" would then each
+  // substitute a *different* one of the two real ids with "local" before
+  // `sortedPlayerIds()` sorts them, producing opposite relative iteration
+  // order — and since per-player simulation loops consume the shared PRNG
+  // stream in that order (e.g. fire()'s Cone-of-Fire spread), opposite order
+  // means an instant, permanent desync from tick 1. Passing each peer's own
+  // real roster id as `localPlayerId` (instead of relying on the "local"
+  // default) is what keeps `sortedPlayerIds()`'s output identical everywhere.
+  it("keys every peer's own player by its real roster id, keeping sortedPlayerIds() order identical across swapped-role constructions", () => {
+    const hostView = new RaycasterEngine(
+      makeCanvas(),
+      fakeMap(),
+      {},
+      undefined,
+      undefined,
+      undefined,
+      1,
+      new ScriptedInput(),
+      undefined,
+      "H",
+    );
+    hostView.addPlayer("G", new ScriptedInput());
+
+    const guestView = new RaycasterEngine(
+      makeCanvas(),
+      fakeMap(),
+      {},
+      undefined,
+      undefined,
+      undefined,
+      1,
+      new ScriptedInput(),
+      undefined,
+      "G",
+    );
+    guestView.addPlayer("H", new ScriptedInput());
+
+    const hostOrder = [...playersOf(hostView).keys()].sort();
+    const guestOrder = [...playersOf(guestView).keys()].sort();
+    expect(hostOrder).toEqual(["G", "H"]);
+    expect(guestOrder).toEqual(hostOrder);
+  });
+
+  it("defaults localPlayerId to LOCAL_PLAYER_ID ('local') when omitted, unchanged from single-player behavior", () => {
+    const { engine } = makeEngine(fakeMap());
+    expect([...playersOf(engine).keys()]).toEqual(["local"]);
+  });
+
+  it("getPlayerPosition reads any roster player's world position, or null if absent", () => {
+    const { engine } = makeEngine(fakeMap({ spawn: { x: 3, y: 4 } }));
+    expect(engine.getPlayerPosition("local")).toEqual({ x: 3.5, y: 4.5 });
+    expect(engine.getPlayerPosition("nope")).toBeNull();
+  });
+
+  it("getPlayerFacing reads any roster player's facing direction, or null if absent", () => {
+    const { engine } = makeEngine(fakeMap());
+    expect(engine.getPlayerFacing("local")).toEqual({ dirX: 1, dirY: 0 });
+    expect(engine.getPlayerFacing("nope")).toBeNull();
+  });
+
+  it("getPlayerStatus reads any roster player's status, or null if absent", () => {
+    const { engine } = makeEngine(fakeMap());
+    expect(engine.getPlayerStatus("local")).toBe("alive");
+    expect(engine.getPlayerStatus("nope")).toBeNull();
+  });
+
+  it("getMapExit/getMapGrid read this level's exit tile and walkable grid", () => {
+    const map = fakeMap({ exit: { x: 6, y: 7 } });
+    const { engine } = makeEngine(map);
+    expect(engine.getMapExit()).toEqual({ x: 6, y: 7 });
+    expect(engine.getMapGrid()).toBe(map.grid);
+  });
+
+  it("getMap returns the full generated GameMap this engine is running", () => {
+    const map = fakeMap({ exit: { x: 6, y: 7 } });
+    const { engine } = makeEngine(map);
+    expect(engine.getMap()).toBe(map);
+  });
+
+  it("getEnemiesSnapshot/getMinesSnapshot mirror __codeensteinTestHooks' getEnemies/getMines, roster-agnostic", () => {
+    const map = fakeMap({
+      enemies: [fakeEnemy({ x: 3, y: 3, hp: 10, maxHp: 10 })],
+      mines: [{ x: 4, y: 4, alive: true, visible: true, closeTimer: 0 }],
+    });
+    const { engine } = makeEngine(map);
+    expect(engine.getEnemiesSnapshot()).toEqual([
+      { x: 3, y: 3, alive: true, aggroed: false, elite: false, edgeCase: false, hp: 10, maxHp: 10 },
+    ]);
+    expect(engine.getMinesSnapshot()).toEqual([{ x: 4, y: 4, alive: true, visible: true }]);
+  });
+
+  it("getDropsSnapshot/getKeysSnapshot mirror __codeensteinTestHooks' getDrops/getKeys, roster-agnostic", () => {
+    const map = fakeMap({
+      spawn: { x: 5, y: 5 },
+      keys: [
+        { x: 6, y: 6, collected: false },
+        { x: 7, y: 7, collected: true },
+      ],
+    });
+    const { engine } = makeEngine(map, makeHandlers(), { input: new ScriptedInput() });
+    engine.addPlayer("p2", new ScriptedInput());
+    // A real, already-tested way to push a real LootDrop onto `this.drops` —
+    // see the "multiplayer disconnect (step 8)" describe block above.
+    engine.applyRosterRemoval(["p2"]);
+    expect(engine.getKeysSnapshot()).toEqual([{ x: 6, y: 6 }]);
+    expect(engine.getDropsSnapshot().length).toBeGreaterThan(0);
+  });
+
+  it("getBotPlayerState reads any roster player's full bot-facing state, or null if absent", () => {
+    const { engine } = makeEngine(fakeMap({ spawn: { x: 3, y: 4 } }));
+    const state = engine.getBotPlayerState("local");
+    expect(state).not.toBeNull();
+    expect(state!.x).toBe(3.5);
+    expect(state!.y).toBe(4.5);
+    expect(state!.state).toBe("playing");
+    expect(engine.getBotPlayerState("nope")).toBeNull();
+  });
+
+  it("getBotPlayerState reports state \"over\" once the player is no longer alive, \"playing\" while alive (no per-player \"won\")", () => {
+    const { engine } = makeEngine(fakeMap());
+    engine.addPlayer("p2", new ScriptedInput());
+    engine.applyRosterRemoval(["p2"]);
+    expect(engine.getBotPlayerState("p2")!.state).toBe("over");
+    expect(engine.getBotPlayerState("local")!.state).toBe("playing");
+  });
+
+  // Regression coverage for a real gap found while building multiplayer's
+  // spawn-spreading (step 5, GameMap.multiplayerSpawns): before this, every
+  // addPlayer()-added player spawned stacked on the exact same tile as the
+  // constructor's own player, regardless of any spread-out spawn candidates
+  // the map generator had already computed — contradicting the whole point
+  // of generating them. `spawn` defaulting to `map.spawn` when omitted keeps
+  // every existing single-player/N-player test's stacked-spawn assumption
+  // (see the tests above/below this one) intact.
+  it("addPlayer's spawn param overrides where a new player appears, defaulting to map.spawn when omitted", () => {
+    const { engine } = makeEngine(fakeMap({ spawn: { x: 3, y: 4 } }));
+    engine.addPlayer("p2", new ScriptedInput(), undefined, { x: 8, y: 9 });
+    engine.addPlayer("p3", new ScriptedInput());
+    expect(engine.getPlayerPosition("p2")).toEqual({ x: 8.5, y: 9.5 });
+    expect(engine.getPlayerPosition("p3")).toEqual({ x: 3.5, y: 4.5 });
+  });
+
+  it("the constructor's own localSpawn param overrides where the local player appears", () => {
+    const engine = new RaycasterEngine(
+      makeCanvas(),
+      fakeMap({ spawn: { x: 3, y: 4 } }),
+      {},
+      undefined,
+      undefined,
+      undefined,
+      1,
+      new ScriptedInput(),
+      undefined,
+      "H",
+      { x: 10, y: 11 },
+    );
+    expect(engine.getPlayerPosition("H")).toEqual({ x: 10.5, y: 11.5 });
+  });
+
+  it("each player's zBuffer is its own independent Float64Array (resolveShot for one never touches another's)", () => {
+    const { engine } = makeEngine(fakeMap());
+    engine.addPlayer("p2", new ScriptedInput());
+    const players = playersOf(engine);
+    const a = players.get("local")!.zBuffer;
+    const b = players.get("p2")!.zBuffer;
+    expect(a).not.toBe(b);
+    expect(a.length).toBe(640); // SCENE_WIDTH
+    expect(b.length).toBe(640);
+  });
+
+  it("resolves a same-tile collection tie by sorted-playerId order, not insertion order", () => {
+    const pickup: AmmoPickup = { x: 5.5, y: 5.5, kind: "health", amount: 30, collected: false };
+    const map = fakeMap({ ammoPickups: [pickup] });
+    const carryover: EngineCarryover = { health: 40, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 };
+    const { engine } = makeEngine(map, makeHandlers(), { carryover });
+    // "aaa" sorts before "local" alphabetically despite being *added* second —
+    // both spawn on the exact same tile as the pickup, a genuine tie.
+    engine.addPlayer("aaa", new ScriptedInput(), carryover);
+    engine.advance(0.016);
+    const roster = engine.rosterSnapshot();
+    expect(roster.get("aaa")!.health).toBeGreaterThan(40); // sorted-first player collects it
+    expect(roster.get("local")!.health).toBe(40); // untouched
+  });
+});
+
+describe("RaycasterEngine — multiplayer combat & friendly fire (N-player)", () => {
+  it("enemy melee damage attributes to whichever player is nearest, not fixed to the local player", () => {
+    const enemy = fakeEnemy({ x: 5.5, y: 5.5, aggroed: true, attackCooldown: 0, hp: 999, maxHp: 999 });
+    const map = fakeMap({ enemies: [enemy] }, 20);
+    const { engine, input } = makeEngine(map);
+    engine.addPlayer("p2", new ScriptedInput()); // p2 spawns right next to the enemy and never moves
+    input.keys.add("KeyS"); // local backs straight away from the enemy's position
+    for (let i = 0; i < 30; i++) engine.advance(0.1);
+    const roster = engine.rosterSnapshot();
+    expect(roster.get("p2")!.health).toBeLessThan(100); // p2 (nearest) got bitten
+    expect(roster.get("local")!.health).toBe(100); // local (farther away) untouched
+  });
+
+  it("splits killScore across both shooters via assist share, but credits kills/streak only to the final blow", () => {
+    const enemy = fakeEnemy({ x: 6.5, y: 5.5, hp: 40, maxHp: 40 }); // pistol does 22/hit — two hits needed
+    const map = fakeMap({ enemies: [enemy] });
+    const { engine, input } = makeEngine(map);
+    const p2Input = new ScriptedInput();
+    engine.addPlayer("p2", p2Input);
+
+    input.fireQueued = true; // local lands the first, non-lethal hit
+    engine.advance(0.016);
+    expect(enemy.alive).toBe(true);
+
+    p2Input.fireQueued = true; // p2 lands the killing blow
+    engine.advance(0.016);
+    expect(enemy.alive).toBe(false);
+
+    const roster = engine.rosterSnapshot();
+    expect(roster.get("p2")!.kills).toBe(1);
+    expect(roster.get("local")!.kills).toBe(0); // only the final blow gets kill/streak credit
+    expect(roster.get("local")!.killScore).toBeGreaterThan(0); // assist share
+    expect(roster.get("p2")!.killScore).toBeGreaterThan(0);
+    expect(roster.get("local")!.killScore).toBeCloseTo(roster.get("p2")!.killScore, 5); // even split, 2 assists
+  });
+
+  it("hitscan fire can't hit a teammate standing in the crosshair (players are never in the hit-test list)", () => {
+    const map = fakeMap();
+    const { engine, input } = makeEngine(map);
+    engine.addPlayer("p2", new ScriptedInput()); // spawns exactly where local is aiming
+    input.fireQueued = true;
+    engine.advance(0.016);
+    expect(engine.rosterSnapshot().get("p2")!.health).toBe(100);
+  });
+
+  it("a proximity mine's blast damages every living player, no exclusion", () => {
+    const mine: Mine = { x: 5.5, y: 5.5, alive: true, visible: false, closeTimer: 0 }; // right at spawn
+    const map = fakeMap({ mines: [mine] });
+    const { engine } = makeEngine(map);
+    engine.addPlayer("p2", new ScriptedInput());
+    for (let i = 0; i < 30 && mine.alive; i++) engine.advance(0.1);
+    expect(mine.alive).toBe(false);
+    const roster = engine.rosterSnapshot();
+    expect(roster.get("local")!.health).toBeLessThan(100);
+    expect(roster.get("p2")!.health).toBeLessThan(100);
+  });
+
+  it("a mine destroyed by gunfire fans splash damage to every living player, not just the shooter", () => {
+    const mine: Mine = { x: 6.5, y: 5.5, alive: true, visible: true, closeTimer: 0 }; // close enough to splash spawn too
+    const map = fakeMap({ mines: [mine] });
+    const { engine, input } = makeEngine(map);
+    engine.addPlayer("p2", new ScriptedInput()); // p2 stays right at spawn, within the blast
+    input.fireQueued = true; // local (the shooter) destroys the mine
+    engine.advance(0.016);
+    expect(mine.alive).toBe(false);
+    const roster = engine.rosterSnapshot();
+    expect(roster.get("local")!.health).toBeLessThan(100); // shooter's own splash
+    expect(roster.get("p2")!.health).toBeLessThan(100); // bystander teammate also caught it
+  });
+
+  it("rocket splash damages the firer but excludes a teammate standing in the blast", () => {
+    const size = 12;
+    const map = fakeMap({ spawn: { x: 10, y: 5 } }, size);
+    const carryover: EngineCarryover = { health: 100, swap: 0, bullets: 0, rockets: 5, smg: 0, gas: 0, ownedWeapons: [0, 1, 2, 4] };
+    const { engine, input } = makeEngine(map, makeHandlers(), { carryover });
+    engine.addPlayer("p2", new ScriptedInput(), { ...carryover }); // p2 stays put, right next to the blast
+    input.weaponRequest = 3; // slot 3 -> ghidra (index 4)
+    engine.advance(0.016);
+    input.fireQueued = true;
+    engine.advance(0.016);
+    for (let i = 0; i < 20; i++) engine.advance(0.05);
+    const roster = engine.rosterSnapshot();
+    expect(roster.get("local")!.health).toBeLessThan(100); // firer catches their own blast
+    expect(roster.get("p2")!.health).toBe(100); // teammate excluded, even though in range
+  });
+});
+
+describe("RaycasterEngine — death, spectate, and revive (N-player)", () => {
+  function hazardSpawnMap(size = 14): GameMap {
+    const g = walledRoom(size);
+    g[5][5] = HAZARD_TILE; // the spawn tile itself is a hazard
+    return fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }] }, size);
+  }
+
+  it("a player who dies drops their held keys at their death position; a living teammate can then collect them", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const size = 14;
+      const g = walledRoom(size);
+      g[5][5] = HAZARD_TILE;
+      const map = fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }], keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+      const { engine } = makeEngine(map);
+      const p2Input = new ScriptedInput();
+      engine.addPlayer("p2", p2Input);
+      engine.advance(0.016); // local (sorted-first) collects the key this same tick
+      expect(engine.rosterSnapshot().get("local")!.status).toBe("alive");
+
+      p2Input.keys.add("KeyW"); // p2 clears the hazard tile; local stays and cooks
+      for (let i = 0; i < 10; i++) engine.advance(0.1);
+      p2Input.keys.delete("KeyW");
+      for (let i = 0; i < 10 && engine.rosterSnapshot().get("local")!.status === "alive"; i++) engine.advance(1);
+      expect(engine.rosterSnapshot().get("local")!.status).toBe("dead");
+      expect(engine.rosterSnapshot().get("local")!.health).toBe(0);
+      // The team isn't over — p2 is still alive.
+      expect(engine.rosterSnapshot().get("p2")!.status).toBe("alive");
+
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> }).__codeensteinTestHooks;
+      let drops = hooks!.getDrops() as { x: number; y: number; kind: string }[];
+      expect(drops).toContainEqual(expect.objectContaining({ kind: "key", x: 5.5, y: 5.5 }));
+
+      p2Input.keys.add("KeyS"); // walk back to the death position
+      for (let i = 0; i < 15; i++) engine.advance(0.1);
+      p2Input.keys.delete("KeyS");
+      drops = hooks!.getDrops() as { x: number; y: number; kind: string }[];
+      expect(drops.some((d) => d.kind === "key")).toBe(false); // p2 collected it
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+      delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+    }
+  });
+
+  it("a dead player's spectateTargetId resolves to a living teammate and cycles via consumeFire (3 players)", () => {
+    const { engine, input } = makeEngine(hazardSpawnMap());
+    const p2Input = new ScriptedInput();
+    const p3Input = new ScriptedInput();
+    engine.addPlayer("p2", p2Input);
+    engine.addPlayer("p3", p3Input);
+    // p2 and p3 step off the hazard immediately; local stays and dies on it.
+    p2Input.keys.add("KeyW");
+    p3Input.keys.add("KeyW");
+    for (let i = 0; i < 10; i++) engine.advance(0.1);
+    p2Input.keys.delete("KeyW");
+    p3Input.keys.delete("KeyW");
+    for (let i = 0; i < 10 && engine.rosterSnapshot().get("local")!.status === "alive"; i++) engine.advance(1);
+    expect(engine.rosterSnapshot().get("local")!.status).toBe("dead");
+
+    const players = playersOf(engine);
+    const local = players.get("local")!;
+    expect(local.spectateTargetId).toBe("p2"); // first living teammate, sorted order
+
+    input.fireQueued = true; // repurposed while dead: cycles the spectate target
+    engine.advance(0.1);
+    expect(local.spectateTargetId).toBe("p3");
+    input.fireQueued = true;
+    engine.advance(0.1);
+    expect(local.spectateTargetId).toBe("p2"); // wraps back around — cycling past both candidates
+  });
+
+  it("state flips to 'over' only once every connected player is dead", () => {
+    const { engine, handlers } = makeEngine(hazardSpawnMap());
+    engine.addPlayer("p2", new ScriptedInput()); // p2 never moves off the hazard either
+    for (let i = 0; i < 20 && handlers.onGameOver.mock.calls.length === 0; i++) engine.advance(1);
+    expect(handlers.onGameOver).toHaveBeenCalledTimes(1);
+    expect(engine.rosterSnapshot().get("local")!.status).toBe("dead");
+    expect(engine.rosterSnapshot().get("p2")!.status).toBe("dead");
+  });
+
+  it("world-interaction per-player loops skip a dead player without throwing (keys, static loot, room discovery, gunfire-mine splash)", () => {
+    const size = 20;
+    const g = walledRoom(size);
+    g[5][5] = HAZARD_TILE;
+    const pickup: AmmoPickup = { x: 17.5, y: 17.5, kind: "bullets", amount: 5, collected: false }; // stays uncollected — unreachable by either player
+    const enemy = fakeEnemy({ x: 17, y: 17, home: { x: 16, y: 16, w: 2, h: 2 } }); // stays undiscovered
+    // Far past both where p2 ends up (~x=8.7) and MINE_FUSE_RADIUS (1.8) /
+    // MINE_SIGHT_RADIUS (4.5) from there — the proximity fuse never arms, so
+    // only gunfire (below) can destroy it; `visible` is set explicitly since
+    // it's well outside MINE_SIGHT_RADIUS too.
+    const mine: Mine = { x: 15.5, y: 5.5, alive: true, visible: true, closeTimer: 0 };
+    const map = fakeMap(
+      {
+        grid: g,
+        hazards: [{ x: 5, y: 5 }],
+        keys: [{ x: 17.5, y: 17.5, collected: false }],
+        ammoPickups: [pickup],
+        enemies: [enemy],
+        mines: [mine],
+      },
+      size,
+    );
+    const { engine } = makeEngine(map);
+    const p2Input = new ScriptedInput();
+    engine.addPlayer("p2", p2Input);
+    p2Input.keys.add("KeyW"); // p2 clears the hazard tile and lines up on the mine far ahead
+    for (let i = 0; i < 10; i++) engine.advance(0.1);
+    p2Input.keys.delete("KeyW");
+    for (let i = 0; i < 10 && engine.rosterSnapshot().get("local")!.status === "alive"; i++) engine.advance(1);
+    expect(engine.rosterSnapshot().get("local")!.status).toBe("dead");
+    expect(mine.alive).toBe(true); // still alive — the fuse never armed at this range
+
+    // Drive several more ticks with local dead, p2 alive — exercises every
+    // per-player world-interaction loop's dead-player skip branch (keys,
+    // static loot, room discovery), then p2 destroys the mine via gunfire —
+    // exercising destroyMine's own dead-player skip in its splash fan-out.
+    p2Input.fireQueued = true;
+    expect(() => {
+      for (let i = 0; i < 5; i++) engine.advance(0.1);
+    }).not.toThrow();
+    expect(mine.alive).toBe(false);
+  });
+
+  it("addPlayer with carryover.health === REVIVE_HEALTH revives a player alive at that health, with inventory/score intact", () => {
+    const enemy = fakeEnemy({ x: 6.5, y: 5.5, hp: 1, maxHp: 1 });
+    const map = fakeMap({ enemies: [enemy] });
+    const { engine } = makeEngine(map);
+    const revivedInput = new ScriptedInput();
+    engine.addPlayer("revived", revivedInput, {
+      health: REVIVE_HEALTH,
+      swap: 0,
+      bullets: 10,
+      rockets: 0,
+      smg: 0,
+      gas: 0,
+      ownedWeapons: [0, 1, 2],
+      priorScore: 250,
+    });
+    let roster = engine.rosterSnapshot();
+    expect(roster.get("revived")).toMatchObject({ status: "alive", health: REVIVE_HEALTH, killScore: 0, kills: 0 });
+
+    // Inventory carried over for real: the revived player can fire their
+    // carried-over bullets and land a kill (proving `ownedWeapons`/`ammo`
+    // round-tripped through `addPlayer`, not just `health`).
+    revivedInput.fireQueued = true;
+    engine.advance(0.016);
+    roster = engine.rosterSnapshot();
+    expect(roster.get("revived")!.kills).toBe(1);
+    expect(roster.get("revived")!.killScore).toBeGreaterThan(0);
+  });
+});
+
+describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
+  function dropsOf(engine: InstanceType<typeof RaycasterEngine>): LootDrop[] {
+    return (engine as unknown as { drops: LootDrop[] }).drops;
+  }
+
+  function rngOf(engine: InstanceType<typeof RaycasterEngine>): () => number {
+    return (engine as unknown as { rng: () => number }).rng;
+  }
+
+  function callApplyRenderOffsets(engine: InstanceType<typeof RaycasterEngine>): () => void {
+    return (engine as unknown as { applyRenderOffsets(): () => void }).applyRenderOffsets();
+  }
+
+  function fakeSnapshot(overrides: Partial<ReconciliationSnapshot> = {}): ReconciliationSnapshot {
+    return {
+      tick: 0,
+      rngState: 0,
+      players: {},
+      enemies: [],
+      mines: [],
+      lootDrops: [],
+      pickupsCollected: [],
+      keysCollected: [],
+      gridVersion: 0,
+      gridDelta: [],
+      ...overrides,
+    };
+  }
+
+  describe("captureReconciliationSnapshot", () => {
+    it("captures a player's full state — position/facing/health/ammo/weapons — sorted ascending, tagged with the given tick", () => {
+      const map = fakeMap({ spawn: { x: 3, y: 4 } });
+      const { engine } = makeEngine(map, undefined, { seed: 42 });
+      const players = playersOf(engine) as unknown as Map<string, { ownedWeapons: Set<number> }>;
+      players.get("local")!.ownedWeapons.add(4);
+      players.get("local")!.ownedWeapons.add(1);
+
+      const snapshot = engine.captureReconciliationSnapshot(17);
+      expect(snapshot.tick).toBe(17);
+      expect(snapshot.players.local).toMatchObject({
+        posX: 3.5,
+        posY: 4.5,
+        dirX: 1,
+        dirY: 0,
+        health: 100,
+        killScore: 0,
+        kills: 0,
+        alive: true,
+      });
+      expect(snapshot.players.local.ownedWeapons).toEqual([0, 1, 2, 4]); // 0/2 are the default starting weapons
+    });
+
+    it("captures every enemy/mine index-aligned with the map's own arrays", () => {
+      const enemy = fakeEnemy({ x: 6, y: 5, hp: 20, alive: true, aggroed: true });
+      const mine: Mine = { x: 4, y: 4, alive: true, visible: true, closeTimer: 0 };
+      const map = fakeMap({ enemies: [enemy], mines: [mine] });
+      const { engine } = makeEngine(map);
+      const snapshot = engine.captureReconciliationSnapshot(0);
+      expect(snapshot.enemies).toEqual([{ index: 0, x: 6, y: 5, hp: 20, alive: true, aggroed: true }]);
+      expect(snapshot.mines).toEqual([{ index: 0, alive: true, visible: true }]);
+    });
+
+    it("captures collected ammo pickups/keys by index only", () => {
+      const pickups: AmmoPickup[] = [
+        { x: 1, y: 1, kind: "bullets", amount: 5, collected: true },
+        { x: 2, y: 2, kind: "bullets", amount: 5, collected: false },
+      ];
+      const keys: KeyItem[] = [{ x: 3, y: 3, collected: true }];
+      const map = fakeMap({ ammoPickups: pickups, keys });
+      const { engine } = makeEngine(map);
+      const snapshot = engine.captureReconciliationSnapshot(0);
+      expect(snapshot.pickupsCollected).toEqual([0]);
+      expect(snapshot.keysCollected).toEqual([0]);
+    });
+
+    it("tags every dynamic loot drop with a stable id at push time", () => {
+      const enemy = fakeEnemy({ x: 6.5, y: 5.5, hp: 1, maxHp: 1 });
+      const map = fakeMap({ enemies: [enemy] });
+      const { engine, input } = makeEngine(map, undefined, { seed: 1 });
+      input.fireQueued = true;
+      engine.advance(0.016);
+      const snapshot = engine.captureReconciliationSnapshot(0);
+      expect(snapshot.lootDrops.length).toBeGreaterThan(0);
+      for (const drop of snapshot.lootDrops) expect(drop.id).toMatch(/^0:\d+$/); // enemy index 0
+    });
+
+    it("drains pendingGridDelta on every capture — a tile mutation is reported exactly once, not on a later capture too", () => {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][7] = DOOR_TILE; // directly east of spawn
+      const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+      const { engine, input } = makeEngine(map);
+      engine.advance(0.016); // collect the key first
+      input.keys.add("KeyW"); // push toward the door
+      for (let i = 0; i < 20; i++) engine.advance(0.1);
+      expect(map.grid[5][7]).toBe(0); // sanity: the door really opened
+
+      const first = engine.captureReconciliationSnapshot(1);
+      expect(first.gridDelta).toEqual([{ x: 7, y: 5, value: 0 }]);
+      expect(first.gridVersion).toBe(1);
+
+      const second = engine.captureReconciliationSnapshot(2);
+      expect(second.gridDelta).toEqual([]);
+      expect(second.gridVersion).toBe(1);
+    });
+
+    it("does not drain pendingGridDelta when drainGridDelta is false, so a guest that missed this capture still gets it next time (re-review finding)", () => {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][7] = DOOR_TILE;
+      const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+      const { engine, input } = makeEngine(map);
+      engine.advance(0.016);
+      input.keys.add("KeyW");
+      for (let i = 0; i < 20; i++) engine.advance(0.1);
+      expect(map.grid[5][7]).toBe(0);
+
+      const first = engine.captureReconciliationSnapshot(1, false);
+      expect(first.gridDelta).toEqual([{ x: 7, y: 5, value: 0 }]);
+
+      // Not drained — the very same mutation is still there next capture.
+      const second = engine.captureReconciliationSnapshot(2, false);
+      expect(second.gridDelta).toEqual([{ x: 7, y: 5, value: 0 }]);
+
+      // Draining now (the normal default) clears it for good.
+      const third = engine.captureReconciliationSnapshot(3);
+      expect(third.gridDelta).toEqual([{ x: 7, y: 5, value: 0 }]);
+      const fourth = engine.captureReconciliationSnapshot(4);
+      expect(fourth.gridDelta).toEqual([]);
+    });
+
+    it("a captured (undrained) gridDelta array is a copy, unaffected by mutations pushed after it was returned", () => {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][7] = DOOR_TILE;
+      const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+      const { engine, input } = makeEngine(map);
+      engine.advance(0.016);
+      input.keys.add("KeyW");
+      for (let i = 0; i < 20; i++) engine.advance(0.1);
+
+      const snapshot = engine.captureReconciliationSnapshot(1, false);
+      const capturedLength = snapshot.gridDelta.length;
+      // Advancing further shouldn't retroactively grow the already-returned array.
+      for (let i = 0; i < 5; i++) engine.advance(0.1);
+      expect(snapshot.gridDelta.length).toBe(capturedLength);
+    });
+  });
+
+  describe("hasActiveRenderOffset (test-hook surface)", () => {
+    it("is false with no correction applied, and false for an unknown id", () => {
+      const { engine } = makeEngine(fakeMap());
+      expect(engine.hasActiveRenderOffset("local")).toBe(false);
+      expect(engine.hasActiveRenderOffset("nope")).toBe(false);
+    });
+
+    it("is true right after a small (smoothed) correction, false after a large (instant-snap) one", () => {
+      const host = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      const smallGuest = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      const largeGuest = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      smallGuest.debugInjectDesync({ kind: "position", deltaTiles: SNAP_THRESHOLD_TILES / 2 });
+      largeGuest.debugInjectDesync({ kind: "position", deltaTiles: SNAP_THRESHOLD_TILES + 1 });
+
+      const snapshot = host.captureReconciliationSnapshot(0);
+      smallGuest.applyReconciliationSnapshot(snapshot);
+      largeGuest.applyReconciliationSnapshot(snapshot);
+
+      expect(smallGuest.hasActiveRenderOffset("local")).toBe(true);
+      expect(largeGuest.hasActiveRenderOffset("local")).toBe(false);
+    });
+  });
+
+  describe("getRngState / debugInjectDesync (test-hook surface)", () => {
+    it("getRngState reflects the same stream this.rng draws from", () => {
+      const { engine } = makeEngine(fakeMap(), undefined, { seed: 55 });
+      const stateBefore = engine.getRngState();
+      rngOf(engine)();
+      expect(engine.getRngState()).not.toBe(stateBefore);
+    });
+
+    it("debugInjectDesync({kind:'position'}) nudges the local player's own posX by the given delta", () => {
+      const { engine } = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }));
+      expect(engine.getPlayerPosition("local")).toEqual({ x: 5.5, y: 5.5 });
+      engine.debugInjectDesync({ kind: "position", deltaTiles: 0.3 });
+      expect(engine.getPlayerPosition("local")).toEqual({ x: 5.8, y: 5.5 });
+    });
+
+    it("debugInjectDesync({kind:'extraRngDraw'}) consumes exactly one rng() draw", () => {
+      const { engine } = makeEngine(fakeMap(), undefined, { seed: 55 });
+      const stateBefore = engine.getRngState();
+      engine.debugInjectDesync({ kind: "extraRngDraw" });
+      const afterOneRealDraw = (() => {
+        const reference = makeEngine(fakeMap(), undefined, { seed: 55 }).engine;
+        rngOf(reference)();
+        return reference.getRngState();
+      })();
+      expect(engine.getRngState()).toBe(afterOneRealDraw);
+      expect(engine.getRngState()).not.toBe(stateBefore);
+    });
+
+    it("debugSetGodMode(id, true) blocks real damage the same way the real IDDQD cheat does, without going through applyCheat", () => {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][5] = 2; // HAZARD_TILE
+      const map = fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }] }, size);
+      const { engine, handlers } = makeEngine(map);
+
+      engine.debugSetGodMode("local", true);
+      engine.advance(1); // a whole second standing in acid — would deal real damage otherwise
+
+      expect(lastStats(handlers).health).toBe(100);
+      expect(lastStats(handlers).godMode).toBe(true);
+    });
+
+    it("debugSetGodMode(id, false) turns it back off", () => {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][5] = 2; // HAZARD_TILE
+      const map = fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }] }, size);
+      const { engine, handlers } = makeEngine(map);
+
+      engine.debugSetGodMode("local", true);
+      engine.debugSetGodMode("local", false);
+      engine.advance(1);
+
+      expect(lastStats(handlers).health).toBeLessThan(100);
+      expect(lastStats(handlers).godMode).toBe(false);
+    });
+  });
+
+  describe("applyReconciliationSnapshot", () => {
+    it("resyncs a diverged PRNG stream *position*, not just visible fields — the spec's own most-emphasized failure mode", () => {
+      // Two identically-seeded engines start with byte-identical rng streams.
+      const host = makeEngine(fakeMap(), undefined, { seed: 777 }).engine;
+      const guest = makeEngine(fakeMap(), undefined, { seed: 777 }).engine;
+
+      // Simulate the real divergence cause the spec calls out: not the
+      // algorithm (bit-identical 32-bit int math either way), but the
+      // *count* of draws — a different code path on one peer consumed one
+      // extra rng() call.
+      rngOf(guest)();
+
+      const snapshot = host.captureReconciliationSnapshot(0);
+      guest.applyReconciliationSnapshot(snapshot);
+
+      const hostNext = [rngOf(host)(), rngOf(host)(), rngOf(host)()];
+      const guestNext = [rngOf(guest)(), rngOf(guest)(), rngOf(guest)()];
+      expect(guestNext).toEqual(hostNext);
+    });
+
+    it("a small position correction (below SNAP_THRESHOLD_TILES) snaps the simulated position and sets a smoothed render offset", () => {
+      const host = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      const guest = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      const guestPlayers = playersOf(guest) as unknown as Map<
+        string,
+        { player: { posX: number; posY: number }; renderOffset: { x: number; y: number; capturedAtMs: number } | null }
+      >;
+      const gp = guestPlayers.get("local")!;
+      const nudge = SNAP_THRESHOLD_TILES / 2;
+      gp.player.posX += nudge;
+
+      const snapshot = host.captureReconciliationSnapshot(0);
+      guest.applyReconciliationSnapshot(snapshot);
+
+      expect(guest.getPlayerPosition("local")).toEqual(host.getPlayerPosition("local"));
+      expect(gp.renderOffset).not.toBeNull();
+      expect(gp.renderOffset!.x).toBeCloseTo(nudge, 5);
+      expect(gp.renderOffset!.y).toBeCloseTo(0, 5);
+    });
+
+    it("a large position correction (at/above SNAP_THRESHOLD_TILES) snaps instantly with no render offset at all", () => {
+      const host = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      const guest = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      const guestPlayers = playersOf(guest) as unknown as Map<
+        string,
+        { player: { posX: number; posY: number }; renderOffset: { x: number; y: number; capturedAtMs: number } | null }
+      >;
+      const gp = guestPlayers.get("local")!;
+      gp.player.posX += SNAP_THRESHOLD_TILES + 1;
+
+      const snapshot = host.captureReconciliationSnapshot(0);
+      guest.applyReconciliationSnapshot(snapshot);
+
+      expect(guest.getPlayerPosition("local")).toEqual(host.getPlayerPosition("local"));
+      expect(gp.renderOffset).toBeNull();
+    });
+
+    it("an exactly-matching position sets no render offset at all (a zero-length smooth is treated as absent)", () => {
+      const host = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      const guest = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 1 }).engine;
+      const guestPlayers = playersOf(guest) as unknown as Map<
+        string,
+        { renderOffset: { x: number; y: number; capturedAtMs: number } | null }
+      >;
+
+      const snapshot = host.captureReconciliationSnapshot(0);
+      guest.applyReconciliationSnapshot(snapshot);
+
+      expect(guestPlayers.get("local")!.renderOffset).toBeNull();
+    });
+
+    it("diffs loot drops by id — adds a new one, updates a mismatched one, removes one no longer present", () => {
+      const { engine } = makeEngine(fakeMap());
+      const drops = dropsOf(engine);
+      drops.push({ x: 1, y: 1, kind: "health", id: "0:0" }); // removed: not in the incoming list
+      drops.push({ x: 2, y: 2, kind: "bullets", amount: 5, id: "0:1" }); // updated
+
+      engine.applyReconciliationSnapshot(
+        fakeSnapshot({
+          lootDrops: [
+            { id: "0:1", x: 3, y: 3, kind: "swap", amount: 9 },
+            { id: "1:0", x: 4, y: 4, kind: "weapon", weaponIndex: 2 },
+          ],
+        }),
+      );
+
+      const result = dropsOf(engine);
+      expect(result).toHaveLength(2);
+      expect(result.find((d) => d.id === "0:0")).toBeUndefined();
+      expect(result.find((d) => d.id === "0:1")).toMatchObject({ x: 3, y: 3, kind: "swap", amount: 9 });
+      expect(result.find((d) => d.id === "1:0")).toMatchObject({ x: 4, y: 4, kind: "weapon", weaponIndex: 2 });
+    });
+
+    it("writes every gridDelta tile and updates gridVersion", () => {
+      const map = fakeMap({}, 12); // walledRoom border: grid[0][0] is a wall (1)
+      const { engine } = makeEngine(map);
+      expect(map.grid[0][0]).toBe(1);
+
+      engine.applyReconciliationSnapshot(fakeSnapshot({ gridVersion: 9, gridDelta: [{ x: 0, y: 0, value: 0 }] }));
+
+      expect(map.grid[0][0]).toBe(0);
+      expect(engine.captureReconciliationSnapshot(0).gridVersion).toBe(9);
+    });
+
+    it("marks pickups/keys collected by index", () => {
+      const pickups: AmmoPickup[] = [{ x: 1, y: 1, kind: "bullets", amount: 5, collected: false }];
+      const keys: KeyItem[] = [{ x: 3, y: 3, collected: false }];
+      const map = fakeMap({ ammoPickups: pickups, keys });
+      const { engine } = makeEngine(map);
+
+      engine.applyReconciliationSnapshot(fakeSnapshot({ pickupsCollected: [0], keysCollected: [0] }));
+
+      expect(map.ammoPickups[0].collected).toBe(true);
+      expect(map.keys[0].collected).toBe(true);
+    });
+
+    it("applies every enemy/mine field, index-aligned", () => {
+      const enemy = fakeEnemy({ x: 6, y: 5, hp: 30, alive: true, aggroed: false });
+      const mine: Mine = { x: 4, y: 4, alive: true, visible: false, closeTimer: 0 };
+      const map = fakeMap({ enemies: [enemy], mines: [mine] });
+      const { engine } = makeEngine(map);
+
+      engine.applyReconciliationSnapshot(
+        fakeSnapshot({
+          enemies: [{ index: 0, x: 7, y: 8, hp: 5, alive: false, aggroed: true }],
+          mines: [{ index: 0, alive: false, visible: true }],
+        }),
+      );
+
+      expect(enemy).toMatchObject({ x: 7, y: 8, hp: 5, alive: false, aggroed: true });
+      expect(mine).toMatchObject({ alive: false, visible: true });
+    });
+
+    it("ignores an incoming player id no longer in the local roster (fixed 2-player roster today)", () => {
+      const { engine } = makeEngine(fakeMap());
+      expect(() =>
+        engine.applyReconciliationSnapshot(
+          fakeSnapshot({
+            players: {
+              ghost: {
+                posX: 1,
+                posY: 1,
+                dirX: 1,
+                dirY: 0,
+                planeX: 0,
+                planeY: 1,
+                health: 100,
+                swap: 0,
+                ammo: { bullets: 0, rockets: 0, smg: 0, gas: 0 },
+                weaponIndex: 0,
+                keysHeld: 0,
+                ownedWeapons: [],
+                alive: true,
+                killScore: 0,
+                kills: 0,
+              },
+            },
+          }),
+        ),
+      ).not.toThrow();
+      expect(engine.rosterSnapshot().has("ghost")).toBe(false);
+    });
+
+    it("applies alive:false, marking the player dead", () => {
+      const { engine } = makeEngine(fakeMap());
+      const snapshot = engine.captureReconciliationSnapshot(0);
+      snapshot.players.local.alive = false;
+      engine.applyReconciliationSnapshot(snapshot);
+      expect(engine.rosterSnapshot().get("local")?.status).toBe("dead");
+    });
+
+    it("ignores an incoming enemy index with no matching local enemy", () => {
+      const { engine } = makeEngine(fakeMap()); // no enemies
+      expect(() =>
+        engine.applyReconciliationSnapshot(fakeSnapshot({ enemies: [{ index: 5, x: 1, y: 1, hp: 10, alive: true, aggroed: false }] })),
+      ).not.toThrow();
+    });
+
+    it("clears an enemy's previous render offset once a new correction reports no divergence at all", () => {
+      const enemy = fakeEnemy({ x: 6, y: 5 });
+      const map = fakeMap({ enemies: [enemy] });
+      const { engine } = makeEngine(map);
+      const offsets = (engine as unknown as { enemyRenderOffsets: Map<number, unknown> }).enemyRenderOffsets;
+      offsets.set(0, { x: 0.4, y: 0, capturedAtMs: 0 }); // a stale offset from an earlier correction
+
+      engine.applyReconciliationSnapshot(
+        fakeSnapshot({ enemies: [{ index: 0, x: enemy.x, y: enemy.y, hp: enemy.hp, alive: true, aggroed: false }] }),
+      );
+
+      expect(offsets.has(0)).toBe(false);
+    });
+
+    it("a small enemy position correction sets a smoothed render offset, same as for a player", () => {
+      const enemy = fakeEnemy({ x: 6, y: 5, hp: 30, alive: true, aggroed: false });
+      const map = fakeMap({ enemies: [enemy] });
+      const { engine } = makeEngine(map);
+      const offsets = (engine as unknown as { enemyRenderOffsets: Map<number, { x: number; y: number }> }).enemyRenderOffsets;
+      const nudge = SNAP_THRESHOLD_TILES / 2;
+
+      engine.applyReconciliationSnapshot(
+        fakeSnapshot({ enemies: [{ index: 0, x: enemy.x + nudge, y: enemy.y, hp: enemy.hp, alive: true, aggroed: false }] }),
+      );
+
+      expect(enemy.x).toBeCloseTo(6 + nudge, 5);
+      expect(offsets.get(0)).toMatchObject({ x: -nudge });
+    });
+
+    it("ignores an incoming mine index with no matching local mine", () => {
+      const { engine } = makeEngine(fakeMap()); // no mines
+      expect(() => engine.applyReconciliationSnapshot(fakeSnapshot({ mines: [{ index: 3, alive: true, visible: true }] }))).not.toThrow();
+    });
+
+    it("a drop with no id (never a real one — every push tags one) never matches any incoming id and is removed", () => {
+      const { engine } = makeEngine(fakeMap());
+      dropsOf(engine).push({ x: 1, y: 1, kind: "health" }); // no `id` at all
+      engine.applyReconciliationSnapshot(fakeSnapshot({ lootDrops: [] }));
+      expect(dropsOf(engine)).toHaveLength(0);
+    });
+
+    it("full round-trip: a guest diverged on position, PRNG draw count, and loot fully converges on the host's authoritative state", () => {
+      const host = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 314 }).engine;
+      const guest = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }), undefined, { seed: 314 }).engine;
+      const guestPlayers = playersOf(guest) as unknown as Map<string, { player: { posX: number } }>;
+      guestPlayers.get("local")!.player.posX += SNAP_THRESHOLD_TILES / 4;
+      dropsOf(guest).push({ x: 9, y: 9, kind: "health", id: "stray" });
+      rngOf(guest)();
+
+      const snapshot = host.captureReconciliationSnapshot(5);
+      guest.applyReconciliationSnapshot(snapshot);
+
+      expect(guest.getPlayerPosition("local")).toEqual(host.getPlayerPosition("local"));
+      expect(dropsOf(guest).find((d) => d.id === "stray")).toBeUndefined();
+      expect(rngOf(guest)()).toBe(rngOf(host)());
+    });
+  });
+
+  describe("applyRenderOffsets (render-only smoothing)", () => {
+    it("nudges a player toward its pre-correction position, decaying by real elapsed time, then restores exactly", () => {
+      const { engine } = makeEngine(fakeMap());
+      const players = playersOf(engine) as unknown as Map<
+        string,
+        { player: { posX: number; posY: number }; renderOffset: { x: number; y: number; capturedAtMs: number } | null }
+      >;
+      const p = players.get("local")!;
+      const originalX = p.player.posX;
+      const originalY = p.player.posY;
+      p.renderOffset = { x: 0.2, y: -0.1, capturedAtMs: 0 };
+
+      vi.spyOn(performance, "now").mockReturnValue(CORRECTION_SMOOTH_MS / 2); // 50% decayed
+
+      const restore = callApplyRenderOffsets(engine);
+      expect(p.player.posX).toBeCloseTo(originalX + 0.1, 5);
+      expect(p.player.posY).toBeCloseTo(originalY - 0.05, 5);
+
+      restore();
+      expect(p.player.posX).toBe(originalX);
+      expect(p.player.posY).toBe(originalY);
+    });
+
+    it("clears a fully-decayed offset instead of applying it", () => {
+      const { engine } = makeEngine(fakeMap());
+      const players = playersOf(engine) as unknown as Map<
+        string,
+        { player: { posX: number }; renderOffset: { x: number; y: number; capturedAtMs: number } | null }
+      >;
+      const p = players.get("local")!;
+      const originalX = p.player.posX;
+      p.renderOffset = { x: 0.3, y: 0, capturedAtMs: 0 };
+
+      vi.spyOn(performance, "now").mockReturnValue(CORRECTION_SMOOTH_MS + 1);
+
+      const restore = callApplyRenderOffsets(engine);
+      expect(p.player.posX).toBe(originalX);
+      expect(p.renderOffset).toBeNull();
+      expect(() => restore()).not.toThrow();
+    });
+
+    it("nudges and restores an enemy's own render offset the same way", () => {
+      const enemy = fakeEnemy({ x: 6, y: 5 });
+      const map = fakeMap({ enemies: [enemy] });
+      const { engine } = makeEngine(map);
+      const offsets = (engine as unknown as { enemyRenderOffsets: Map<number, { x: number; y: number; capturedAtMs: number }> })
+        .enemyRenderOffsets;
+      offsets.set(0, { x: 0.4, y: 0, capturedAtMs: 0 });
+
+      vi.spyOn(performance, "now").mockReturnValue(0); // no decay yet
+
+      const restore = callApplyRenderOffsets(engine);
+      expect(enemy.x).toBeCloseTo(6.4, 5);
+      restore();
+      expect(enemy.x).toBe(6);
+    });
+
+    it("clears a fully-decayed enemy offset instead of applying it", () => {
+      const enemy = fakeEnemy({ x: 6, y: 5 });
+      const map = fakeMap({ enemies: [enemy] });
+      const { engine } = makeEngine(map);
+      const offsets = (engine as unknown as { enemyRenderOffsets: Map<number, { x: number; y: number; capturedAtMs: number }> })
+        .enemyRenderOffsets;
+      offsets.set(0, { x: 0.4, y: 0, capturedAtMs: 0 });
+
+      vi.spyOn(performance, "now").mockReturnValue(CORRECTION_SMOOTH_MS + 1);
+
+      const restore = callApplyRenderOffsets(engine);
+      expect(enemy.x).toBe(6);
+      expect(offsets.has(0)).toBe(false);
+      expect(() => restore()).not.toThrow();
+    });
+
+    it("render() applies and restores render offsets around a real frame without leaking a bogus position", () => {
+      const { engine } = makeEngine(fakeMap());
+      const players = playersOf(engine) as unknown as Map<
+        string,
+        { player: { posX: number }; renderOffset: { x: number; y: number; capturedAtMs: number } | null }
+      >;
+      const p = players.get("local")!;
+      const originalX = p.player.posX;
+      p.renderOffset = { x: 0.1, y: 0, capturedAtMs: 0 };
+
+      expect(() => engine.render()).not.toThrow();
+      expect(p.player.posX).toBe(originalX);
+    });
+  });
+});
+
+describe("RaycasterEngine — multiplayer disconnect (step 8)", () => {
+  function makeMpEngine(
+    map: GameMap,
+    handlers: ReturnType<typeof makeHandlers> = makeHandlers(),
+    localPlayerId = "host",
+  ): InstanceType<typeof RaycasterEngine> {
+    return new RaycasterEngine(makeCanvas(), map, handlers, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, localPlayerId);
+  }
+
+  function dropsOf(engine: InstanceType<typeof RaycasterEngine>): LootDrop[] {
+    return (engine as unknown as { drops: LootDrop[] }).drops;
+  }
+
+  type MpPlayerState = {
+    status: string;
+    health: number;
+    swap: number;
+    ammo: { bullets: number; rockets: number; smg: number; gas: number };
+    ownedWeapons: Set<number>;
+    keysHeld: number;
+  };
+  function mpPlayersOf(engine: InstanceType<typeof RaycasterEngine>): Map<string, MpPlayerState> {
+    return (engine as unknown as { players: Map<string, MpPlayerState> }).players;
+  }
+
+  describe("applyRosterRemoval", () => {
+    it("marks the player disconnected and converts inventory to loot in the spec's fixed order", () => {
+      const engine = makeMpEngine(fakeMap({ spawn: { x: 5, y: 5 } }));
+      engine.addPlayer("guest", new ScriptedInput());
+      const host = mpPlayersOf(engine).get("host")!;
+      host.ammo.bullets = 10;
+      host.ammo.rockets = 0; // zero pool — must NOT produce a drop
+      host.ammo.smg = 5;
+      host.ammo.gas = 3;
+      host.ownedWeapons.add(GDB_WEAPON_INDEX);
+      host.ownedWeapons.add(GHIDRA_WEAPON_INDEX);
+      host.keysHeld = 2;
+
+      engine.applyRosterRemoval(["host"]);
+
+      expect(engine.rosterSnapshot().get("host")?.status).toBe("disconnected");
+      const drops = dropsOf(engine).map((d) => ({ kind: d.kind, amount: d.amount, weaponIndex: d.weaponIndex, id: d.id, source: d.source }));
+      expect(drops).toEqual([
+        { kind: "bullets", amount: 10, weaponIndex: undefined, id: "disconnect:host:0", source: "disconnect" },
+        { kind: "smg", amount: 5, weaponIndex: undefined, id: "disconnect:host:1", source: "disconnect" },
+        { kind: "gas", amount: 3, weaponIndex: undefined, id: "disconnect:host:2", source: "disconnect" },
+        { kind: "weapon", amount: undefined, weaponIndex: GDB_WEAPON_INDEX, id: "disconnect:host:3", source: "disconnect" },
+        { kind: "weapon", amount: undefined, weaponIndex: GHIDRA_WEAPON_INDEX, id: "disconnect:host:4", source: "disconnect" },
+        { kind: "key", amount: 1, weaponIndex: undefined, id: "disconnect:host:5", source: "disconnect" },
+        { kind: "key", amount: 1, weaponIndex: undefined, id: "disconnect:host:6", source: "disconnect" },
+      ]);
+    });
+
+    it("never drops health or swap, and clears keysHeld", () => {
+      const engine = makeMpEngine(fakeMap());
+      engine.addPlayer("guest", new ScriptedInput());
+      const host = mpPlayersOf(engine).get("host")!;
+      host.health = 50;
+      host.swap = 20;
+      host.keysHeld = 1;
+      engine.applyRosterRemoval(["host"]);
+      expect(dropsOf(engine).some((d) => d.kind === "health" || d.kind === "swap")).toBe(false);
+      expect(mpPlayersOf(engine).get("host")!.keysHeld).toBe(0);
+    });
+
+    it("only drops owned weapons not already in STARTING_WEAPONS", () => {
+      const engine = makeMpEngine(fakeMap());
+      engine.addPlayer("guest", new ScriptedInput());
+      // host starts owning pistol/shotgun/knife (STARTING_WEAPONS) by default.
+      engine.applyRosterRemoval(["host"]);
+      expect(dropsOf(engine).some((d) => d.kind === "weapon")).toBe(false);
+    });
+
+    it("is a no-op for an unknown id, an already-dead id, or an already-disconnected id", () => {
+      const map = fakeMap({ enemies: [fakeEnemy({ x: 5.5, y: 5.5, hp: 1, maxHp: 1 })] });
+      const engine = makeMpEngine(map);
+      engine.addPlayer("guest", new ScriptedInput());
+      engine.applyRosterRemoval(["nope"]);
+      expect(dropsOf(engine)).toHaveLength(0);
+
+      // guest never picks up anything, so a repeat call after already
+      // disconnected must not push a second, duplicate batch of drops.
+      engine.applyRosterRemoval(["guest"]);
+      const afterFirst = dropsOf(engine).length;
+      engine.applyRosterRemoval(["guest"]);
+      expect(dropsOf(engine)).toHaveLength(afterFirst);
+    });
+
+    it("does nothing once the run has already ended", () => {
+      const engine = makeMpEngine(fakeMap());
+      engine.addPlayer("guest", new ScriptedInput());
+      engine.applyRosterRemoval(["guest"]); // ends nothing yet — host still alive
+      (engine as unknown as { state: string }).state = "over";
+      const before = dropsOf(engine).length;
+      engine.applyRosterRemoval(["host"]);
+      expect(dropsOf(engine)).toHaveLength(before);
+      expect(engine.rosterSnapshot().get("host")?.status).toBe("alive");
+    });
+
+    it("excludes a disconnected player from captureReconciliationSnapshot but keeps other roster members", () => {
+      const engine = makeMpEngine(fakeMap());
+      engine.addPlayer("guest", new ScriptedInput());
+      engine.applyRosterRemoval(["guest"]);
+      const snapshot = engine.captureReconciliationSnapshot(0);
+      expect(snapshot.players).not.toHaveProperty("guest");
+      expect(snapshot.players).toHaveProperty("host");
+    });
+
+    it("ends the run once every remaining player is dead or disconnected, but a lone connected survivor keeps playing", () => {
+      const map = fakeMap({ enemies: [fakeEnemy({ x: 5.5, y: 5.5, hp: 1, maxHp: 1 })] });
+      const handlers = makeHandlers();
+      const engine = makeMpEngine(map, handlers);
+      engine.addPlayer("guest", new ScriptedInput());
+
+      engine.applyRosterRemoval(["guest"]);
+      expect(handlers.onGameOver).not.toHaveBeenCalled(); // host is still alive
+
+      const host = mpPlayersOf(engine).get("host")!;
+      host.status = "dead"; // simulate host dying too, without a real damage() call
+      engine.applyRosterRemoval(["guest"]); // already disconnected — re-checks elimination anyway
+      // A third player, still connected and alive, must keep the run going
+      // even though both of these are gone.
+      engine.addPlayer("third", new ScriptedInput());
+      expect(handlers.onGameOver).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("multiplayer weapon-drop rule (grantOrTopUpWeapon)", () => {
+    // Pistol (index 0) is a STARTING_WEAPONS entry with a real ammoType
+    // (bullets) — unlike knife (index 2, melee/no ammoType), collecting a
+    // duplicate genuinely would top up ammo in single-player, so it's the
+    // one case that actually distinguishes "no effect" from "no-op anyway".
+    it("in multiplayer, collecting a weapon drop for an already-owned weapon has no effect at all (no top-up)", () => {
+      const map = fakeMap({ spawn: { x: 5, y: 5 } });
+      const engine = makeMpEngine(map);
+      const before = { ...mpPlayersOf(engine).get("host")!.ammo };
+      dropsOf(engine).push({ x: 5.5, y: 5.5, kind: "weapon", weaponIndex: 0, id: "test:0" });
+      engine.advance(0.016);
+      expect(mpPlayersOf(engine).get("host")!.ammo).toEqual(before);
+    });
+
+    it("in single-player, the same already-owned weapon drop still tops up ammo (unchanged behavior)", () => {
+      const { engine } = makeEngine(fakeMap({ spawn: { x: 5, y: 5 } }));
+      const players = playersOf(engine) as unknown as Map<string, { ammo: Record<string, number> }>;
+      const before = { ...players.get("local")!.ammo };
+      (engine as unknown as { drops: LootDrop[] }).drops.push({ x: 5.5, y: 5.5, kind: "weapon", weaponIndex: 0, id: "test:0" });
+      engine.advance(0.016);
+      expect(players.get("local")!.ammo).not.toEqual(before);
+    });
+  });
+});
+
+describe("RaycasterEngine — lag-compensated hit resolution (multiplayer only)", () => {
+  function makeMpEngineWithEnemy(enemy: Enemy): InstanceType<typeof RaycasterEngine> {
+    const map = fakeMap({ enemies: [enemy] });
+    return new RaycasterEngine(makeCanvas(), map, makeHandlers(), undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "host");
+  }
+
+  function historyOf(engine: InstanceType<typeof RaycasterEngine>): ReadonlyMap<Enemy, { x: number; y: number }>[] {
+    return (engine as unknown as { enemyPositionHistory: ReadonlyMap<Enemy, { x: number; y: number }>[] }).enemyPositionHistory;
+  }
+  function captureNow(engine: InstanceType<typeof RaycasterEngine>): void {
+    (engine as unknown as { captureEnemyPositionHistory: () => void }).captureEnemyPositionHistory();
+  }
+  function rewound(engine: InstanceType<typeof RaycasterEngine>): ReadonlyMap<Enemy, { x: number; y: number }> | undefined {
+    return (engine as unknown as { rewoundEnemyPositions: () => ReadonlyMap<Enemy, { x: number; y: number }> | undefined }).rewoundEnemyPositions();
+  }
+
+  it("stays permanently empty in single-player, and rewoundEnemyPositions returns undefined", () => {
+    const enemy = fakeEnemy({ x: 6, y: 5 });
+    const { engine } = makeEngine(fakeMap({ enemies: [enemy] }));
+    for (let i = 0; i < 10; i++) engine.advance(0.016);
+    expect(historyOf(engine)).toHaveLength(0);
+    expect(rewound(engine)).toBeUndefined();
+  });
+
+  it("fills and caps at INPUT_DELAY_TICKS + 1 frames in multiplayer", () => {
+    const enemy = fakeEnemy({ x: 6, y: 5 });
+    const engine = makeMpEngineWithEnemy(enemy);
+    for (let i = 0; i < INPUT_DELAY_TICKS + 5; i++) engine.advance(0.016);
+    expect(historyOf(engine)).toHaveLength(INPUT_DELAY_TICKS + 1);
+  });
+
+  it("rewinds to exactly the oldest frame in the capped buffer, ignoring the enemy's current live position", () => {
+    const enemy = fakeEnemy({ x: 0, y: 0 });
+    const engine = makeMpEngineWithEnemy(enemy);
+    for (let x = 1; x <= INPUT_DELAY_TICKS + 1; x++) {
+      enemy.x = x;
+      captureNow(engine);
+    }
+    enemy.x = 999; // live position moves far away — must not affect the rewound read
+    expect(rewound(engine)?.get(enemy)?.x).toBe(1); // oldest surviving frame
+  });
+
+  it("drops the oldest frame once a new capture pushes past the cap", () => {
+    const enemy = fakeEnemy({ x: 0, y: 0 });
+    const engine = makeMpEngineWithEnemy(enemy);
+    for (let x = 1; x <= INPUT_DELAY_TICKS + 2; x++) {
+      enemy.x = x;
+      captureNow(engine);
+    }
+    // INPUT_DELAY_TICKS + 2 pushes into a cap of INPUT_DELAY_TICKS + 1 -> the very first frame (x=1) is gone.
+    expect(rewound(engine)?.get(enemy)?.x).toBe(2);
+  });
+
+  it("only captures living enemies", () => {
+    const alive = fakeEnemy({ x: 1, y: 1 });
+    const dead = fakeEnemy({ x: 2, y: 2, alive: false });
+    const map = fakeMap({ enemies: [alive, dead] });
+    const engine = new RaycasterEngine(makeCanvas(), map, makeHandlers(), undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "host");
+    captureNow(engine);
+    const frame = historyOf(engine)[0];
+    expect(frame.has(alive)).toBe(true);
+    expect(frame.has(dead)).toBe(false);
+  });
+
+  it("fire() hit-tests against the rewound (stale) position instead of the enemy's current live position", () => {
+    // Point-blank in front of the host's spawn-facing direction, mirroring
+    // the existing "fires the pistol at a point-blank enemy" test's setup.
+    const enemy = fakeEnemy({ x: 6.5, y: 5.5, hp: 30, maxHp: 30, aggroed: false });
+    const map = fakeMap({ enemies: [enemy] });
+    const input = new ScriptedInput();
+    const engine = new RaycasterEngine(makeCanvas(), map, makeHandlers(), undefined, undefined, undefined, 1, input, undefined, "host");
+
+    // Fully populate the ring buffer while the enemy sits in real range —
+    // this is the "what the shooter actually saw when they decided to fire"
+    // state a real ~INPUT_DELAY_TICKS-ticks-later execution should still hit.
+    for (let i = 0; i < INPUT_DELAY_TICKS + 1; i++) captureNow(engine);
+    // Now the enemy has genuinely moved far away — a live-position hit-test
+    // (today's single-player behavior) would clearly miss this.
+    enemy.x = 60;
+    enemy.y = 60;
+
+    input.fireQueued = true;
+    engine.advance(0.016);
+
+    expect(enemy.hp).toBeLessThan(30);
   });
 });

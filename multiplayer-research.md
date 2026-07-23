@@ -187,10 +187,18 @@ both signaling and the lobby:
   expires. No accounts, no game data ever stored — the same "least infrastructure
   that solves the actual problem" instinct as the rest of this doc.
 - **Decision: as short as possible without risking uniqueness — 6 characters from a
-  32-symbol safe alphabet** (uppercase letters + digits, excluding visually-ambiguous
-  ones: `0`/`O`, `1`/`I`/`l`, and similar-looking pairs). That's ~30 bits of entropy,
-  ~1.07 billion possible codes (`R4KJ9X`-style). Worth separating the two things
-  "uniqueness" could mean here, since they have very different answers:
+  32-symbol safe alphabet.** That's ~30 bits of entropy, ~1.07 billion possible codes
+  (`R4KJ9X`-style). **Correction, caught during implementation**: this doc originally
+  described the alphabet as "uppercase letters + digits, excluding `0`/`O`, `1`/`I`/`l`,
+  and similar-looking pairs" — but that's an arithmetic slip, not a valid 32-symbol
+  set: 36 alphanumeric characters minus those 5 specific ones (`0`, `O`, `1`, `I`, `l`)
+  leaves 31, not 32. Resolved in the actual implementation
+  (`doc/dev/multiplayer-server-spec.md` §3) by adopting
+  [Crockford's Base32](https://www.crockford.com/base32.html) alphabet verbatim —
+  `0123456789ABCDEFGHJKMNPQRSTVWXYZ` (all 10 digits, plus 22 letters excluding only
+  `I`/`L`/`O`/`U`) — a real, proven standard for exactly this purpose, and genuinely
+  32 symbols. Worth separating the two things "uniqueness" could mean here, since they
+  have very different answers:
   - **Accidental collision** (two live sessions randomly getting the same code) is a
     non-issue regardless of length: the server already holds every live code in one
     in-memory map, so generation just checks for an existing entry and regenerates on
@@ -432,9 +440,24 @@ Every divergence is a single-ULP (last-bit) difference — and the most telling 
 point is that **Node and Chromium diverge too, despite both running V8** — just
 different versions of it. Once one engine's `Math.sin`/`cos`/`atan2` result differs
 from another's by even that one bit, the accumulating state (`facing`/`x`/`y` in the
-PoC; enemy/player position in the real engine) carries the divergence forward on every
-subsequent tick — it doesn't self-correct, and it showed up within the first ~1% of a
-500,000-iteration run every time, not as a rare edge case.
+PoC; enemy/player position in the real engine) never re-converges bit-exact — it
+carries the divergence forward on every subsequent tick, not as a rare edge case.
+
+**Correction (later, denser measurement):** the "~1% of a 500,000-iteration run"
+figure above was itself an artifact of this PoC's own coarse, `sampleEvery`-only
+sampling — it could only ever resolve a divergence to a multiple of the sample
+interval, rounding the true onset up to whichever sample happened to land after it.
+`scripts/verify-multiplayer-determinism.mjs` (the CI-wired sibling this PoC was
+converted into) now samples every iteration for the first 300, and the real onset is
+**iteration 5-23** across Chromium/Firefox/WebKit — two orders of magnitude earlier
+than this section originally reported. The reassuring finding that denser measurement
+also revealed: the resulting drift doesn't grow with iteration count — it stays
+bounded at machine-epsilon scale (~10⁻¹²% of `SNAP_THRESHOLD_TILES`) for tens of
+thousands of iterations afterward, not compounding into anything gameplay-visible.
+The consequence below (periodic reconciliation as a required part of the design) was
+already the right call — the real numbers just confirm the existing
+`RECONCILE_INTERVAL_TICKS`/`SNAP_THRESHOLD_TILES` values were already comfortably
+adequate against it, not that they need tightening.
 
 **Consequence for the design above**: pure lockstep (send inputs only, trust identical
 simulation) is confirmed unsafe as the *sole* mechanism — not "safe until proven
