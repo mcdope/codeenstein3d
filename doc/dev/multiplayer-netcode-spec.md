@@ -234,8 +234,18 @@ interface TickInput {
  * sampled input alone. */
 interface TickInputBundle {
   tick: number;
-  dt: number; // always FIXED_DT — included for a receiver-side sanity check,
-              // not because it varies
+  dt: number; // always FIXED_DT — used directly by the receiver, not re-checked
+              // per bundle; agreement is guaranteed once at session setup via
+              // checkNetcodeConstantsMatch, not by any per-bundle comparison
+  /** Guards level transitions: a purely-local counter incremented once per
+   * `startLevel()` on every peer (never transmitted/agreed as its own
+   * handshake). A guest discards any bundle whose `levelEpoch` doesn't match
+   * its own current one, rather than advancing a stale bundle against a
+   * freshly-swapped engine — an old-level bundle can still arrive on the
+   * `input` channel after the guest has already swapped levels (via a
+   * `reconciliation`-channel transition handshake), since the two channels have
+   * no cross-channel ordering guarantee. */
+  levelEpoch: number;
   inputs: Record<string /* playerId */, InputSnapshot>;
   /** playerIds whose input for this tick used the held-last-input fallback
    * (mechanism 2) rather than a real, on-time packet — diagnostic-only,
@@ -390,6 +400,18 @@ entry refers to, without shipping a full re-identification scheme:
 ```ts
 interface ReconciliationSnapshot {
   tick: number;
+  /** Discriminates this from the one-time setup handshake that shares the same
+   * `reconciliation` channel. On the wire, this and `levelEpoch` below are
+   * added by the `ReconciliationSnapshotMessage` wrapper
+   * (`src/multiplayer/reconciliationTypes.ts`) around the engine-layer payload,
+   * which is otherwise this interface's fields. */
+  type: "reconciliation-snapshot";
+  /** Which level this snapshot reflects — the same purely-local per-peer
+   * counter as `TickInputBundle.levelEpoch`. A guest discards a
+   * mismatched-epoch snapshot rather than overwriting the freshly-swapped
+   * level's grid mutations / collected-item flags with stale ones from the
+   * level it just left. */
+  levelEpoch: number;
   /** The shared `mulberry32` stream's raw internal 32-bit state at this tick,
    * post-`advance()` — see "The PRNG state gap" below. Not optional, and not
    * one of the fields covered by mechanism 4's magnitude-threshold logic:

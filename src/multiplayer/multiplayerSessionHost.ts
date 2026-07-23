@@ -59,10 +59,13 @@ import {
   DISCONNECT_GRACE_MS,
   FIXED_DT,
   INPUT_DELAY_TICKS,
+  INPUT_MESSAGE_BURST,
+  INPUT_MESSAGE_REFILL_PER_SEC,
   MAP_CHUNK_SIZE_BYTES,
   RECONCILE_INTERVAL_TICKS,
   TRANSITION_ACK_TIMEOUT_MS,
 } from "./netcodeConstants";
+import { TokenBucket } from "./tokenBucket";
 import type {
   LevelTransitionAckMessage,
   LevelTransitionCampaignCompleteMessage,
@@ -529,6 +532,14 @@ export function runMultiplayerSessionAsHost(
   // connected guest (step 10), not one shared subscription.
   const unsubscribeInputs: (() => void)[] = [];
   for (const [guestId, link] of links) {
+    // One token bucket per guest — bounds how many `input`-channel messages
+    // this guest can force the host to parse + validate per second. A guest
+    // legitimately sends one `TickInput` per bundle it receives; a hostile one
+    // can flood. An over-rate message is dropped before it's even parsed (see
+    // `onJsonMessage`'s own `rateLimiter` doc comment), which is safe-degrading
+    // — the un-recorded input simply becomes held-fallback in the finalized
+    // bundle, identical to a genuinely dropped packet.
+    const inputRateLimiter = new TokenBucket(INPUT_MESSAGE_BURST, INPUT_MESSAGE_REFILL_PER_SEC);
     unsubscribeInputs.push(
       // Bound to the link a message actually arrived on, not the message's
       // own self-declared `playerId` — a guest could otherwise spoof another
@@ -548,7 +559,7 @@ export function runMultiplayerSessionAsHost(
           return;
         }
         inputDelayBuffer.record(message.tick, guestId, message.input);
-      }),
+      }, { rateLimiter: inputRateLimiter }),
     );
   }
 

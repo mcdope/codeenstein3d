@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import { isValidInputSnapshot, isValidWireTick } from "./inputValidation";
+import { MAX_INPUT_KEYS, MAX_WHEEL_STEPS_PER_TICK } from "./netcodeConstants";
 import type { InputSnapshot } from "../engine/input";
 
 const VALID_SNAPSHOT: InputSnapshot = {
@@ -120,6 +121,59 @@ describe("isValidInputSnapshot", () => {
 
   it("rejects a non-number gpTurn", () => {
     expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, gpTurn: "0" })).toBe(false);
+  });
+
+  // --- Value-level checks (finding C1/C2/H2): a peer controls these, and
+  // `typeof === "number"` used to accept NaN/Infinity, the load-bearing
+  // one-packet freeze / NaN-corruption vectors. ---
+
+  it("rejects a non-finite mouseDX (NaN/Infinity)", () => {
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, mouseDX: NaN })).toBe(false);
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, mouseDX: Infinity })).toBe(false);
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, mouseDX: -Infinity })).toBe(false);
+  });
+
+  it("rejects a non-finite gpForward/gpStrafe/gpTurn", () => {
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, gpForward: NaN })).toBe(false);
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, gpStrafe: Infinity })).toBe(false);
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, gpTurn: NaN })).toBe(false);
+  });
+
+  it("accepts finite non-zero analog values", () => {
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, mouseDX: -12.5, gpForward: 0.7, gpStrafe: -1, gpTurn: 0.3 })).toBe(true);
+  });
+
+  it("rejects a non-finite or non-integer wheelSteps", () => {
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, wheelSteps: NaN })).toBe(false);
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, wheelSteps: Infinity })).toBe(false);
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, wheelSteps: 1.5 })).toBe(false);
+  });
+
+  it("rejects a wheelSteps beyond MAX_WHEEL_STEPS_PER_TICK (the freeze vector)", () => {
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, wheelSteps: 1e12 })).toBe(false);
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, wheelSteps: MAX_WHEEL_STEPS_PER_TICK + 1 })).toBe(false);
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, wheelSteps: -(MAX_WHEEL_STEPS_PER_TICK + 1) })).toBe(false);
+  });
+
+  it("accepts a wheelSteps at the cap in both directions", () => {
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, wheelSteps: MAX_WHEEL_STEPS_PER_TICK })).toBe(true);
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, wheelSteps: -MAX_WHEEL_STEPS_PER_TICK })).toBe(true);
+  });
+
+  it("rejects a non-integer weaponRequest (NaN/Infinity/fractional)", () => {
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, weaponRequest: NaN })).toBe(false);
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, weaponRequest: Infinity })).toBe(false);
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, weaponRequest: 1.5 })).toBe(false);
+  });
+
+  it("rejects a keys array longer than MAX_INPUT_KEYS (bandwidth/CPU amplification)", () => {
+    const tooMany = Array.from({ length: MAX_INPUT_KEYS + 1 }, () => "KeyW");
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, keys: tooMany })).toBe(false);
+  });
+
+  it("accepts a keys array exactly at MAX_INPUT_KEYS", () => {
+    const atCap = Array.from({ length: MAX_INPUT_KEYS }, () => "KeyW");
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, keys: atCap })).toBe(true);
   });
 });
 

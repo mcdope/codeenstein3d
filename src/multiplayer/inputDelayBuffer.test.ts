@@ -101,23 +101,23 @@ describe("InputDelayBuffer", () => {
       expect(buffer.pendingTickCountForTest).toBe(0);
     });
 
-    it("accepts ticks exactly at the edges of the window, drops ones just past them", () => {
+    it("accepts a tick exactly at the future edge of the window, drops one just past it", () => {
       const buffer = new InputDelayBuffer();
       buffer.finalize(100, [], 1 / 30); // establishes lastFinalizedTick = 100, nothing to record
 
-      // Edges: lastFinalizedTick - MAX_TICK_DRIFT_TICKS (past), lastFinalizedTick
-      // + MAX_TICK_DRIFT_TICKS (future) — both must still be accepted, since
-      // this is a DoS-prevention ceiling (see the constant's own doc
-      // comment), not a tight per-packet-jitter tolerance — it must survive
-      // a real stall/catch-up burst, not just ordinary network timing.
-      buffer.record(100 - MAX_TICK_DRIFT_TICKS, "p1", snapshot());
+      // The future edge (lastFinalizedTick + MAX_TICK_DRIFT_TICKS) must still
+      // be accepted, since this is a DoS-prevention ceiling (see the
+      // constant's own doc comment), not a tight per-packet-jitter tolerance —
+      // it must survive a real stall/catch-up burst, not just ordinary network
+      // timing. (The *past* edge is a different story: any tick <=
+      // lastFinalizedTick is dropped by record()'s already-finalized guard,
+      // regardless of drift — see the finding-M1 test below.)
       buffer.record(100 + MAX_TICK_DRIFT_TICKS, "p1", snapshot());
-      expect(buffer.pendingTickCountForTest).toBe(2);
+      expect(buffer.pendingTickCountForTest).toBe(1);
 
-      // One tick further out on either side — dropped.
-      buffer.record(100 - MAX_TICK_DRIFT_TICKS - 1, "p1", snapshot());
+      // One tick further out — past the drift ceiling — dropped.
       buffer.record(100 + MAX_TICK_DRIFT_TICKS + 1, "p1", snapshot());
-      expect(buffer.pendingTickCountForTest).toBe(2); // unchanged
+      expect(buffer.pendingTickCountForTest).toBe(1); // unchanged
     });
 
     it("survives a realistic catch-up burst after a stall (finding 5 regression: this used to be tied to INPUT_DELAY_TICKS, a ~9-tick/300ms window trivially exceeded by a real GC pause or CI resource contention)", () => {
@@ -134,6 +134,29 @@ describe("InputDelayBuffer", () => {
       const bundle = buffer.finalize(burstTick, ["p1"], 1 / 30);
       expect(bundle.inputs.p1).toEqual(snapshot({ fireQueued: true }));
       expect(bundle.heldInputFallback).toEqual([]);
+    });
+
+    it("drops a late/replayed packet for an already-finalized tick (<= lastFinalizedTick), even inside the drift window, while still buffering a genuine future tick (finding M1)", () => {
+      const buffer = new InputDelayBuffer();
+      buffer.record(20, "p1", snapshot());
+      buffer.finalize(20, ["p1"], 1 / 30); // establishes lastFinalizedTick = 20
+      expect(buffer.pendingTickCountForTest).toBe(0);
+
+      // Late delivery (one-way latency exceeded INPUT_DELAY_TICKS) or a replay
+      // of a tick just behind the current one — both at/below lastFinalizedTick
+      // and both comfortably inside the ±MAX_TICK_DRIFT_TICKS window, so the
+      // far-drift bound alone would happily buffer them under a key finalize()
+      // has already passed and will never sweep — an unbounded leak.
+      buffer.record(20, "p1", snapshot({ fireQueued: true })); // exactly lastFinalizedTick
+      buffer.record(15, "p1", snapshot({ fireQueued: true })); // 5 behind, still in-window
+      expect(buffer.pendingTickCountForTest).toBe(0); // neither buffered
+
+      // A legitimate future tick is still buffered as normal.
+      buffer.record(21, "p1", snapshot({ mouseDX: 1 }));
+      expect(buffer.pendingTickCountForTest).toBe(1);
+      const bundle = buffer.finalize(21, ["p1"], 1 / 30);
+      expect(bundle.inputs.p1).toEqual(snapshot({ mouseDX: 1 }));
+      expect(buffer.pendingTickCountForTest).toBe(0);
     });
 
     it("never drops anything before the first finalize() call — the real in-flight window isn't known yet", () => {

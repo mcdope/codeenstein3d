@@ -59,7 +59,18 @@ export class InputDelayBuffer {
    * is silently dropped (no-op) rather than buffered — a hostile or buggy
    * peer sending a far-future or replayed tick number would otherwise grow
    * `pending` without bound, since only an actually-finalized tick's entry
-   * is ever cleaned up (see `finalize()`'s own doc comment). Deliberately
+   * is ever cleaned up (see `finalize()`'s own doc comment). A tick *at or
+   * below* `lastFinalizedTick` is likewise dropped, even well inside that
+   * drift window: `finalize()` is strictly monotonic and deletes only the
+   * exact tick it finalizes, so a tick it has already passed can never be
+   * revisited — a late/replayed packet for such a tick (one-way latency
+   * exceeding `INPUT_DELAY_TICKS`, or a replay of a tick just behind the
+   * current one) would re-create a `pending[tick]` entry under an
+   * already-past key that `finalize()` will never match and sweep, leaking
+   * one entry per stale packet forever (~30/sec/guest on a lossy link). The
+   * far-drift bound above assumes records only ever land on *future* ticks
+   * and so misses this near-past case on its own; both guards apply.
+   * Deliberately
    * bound-and-drop only: a dropped tick is simply never recorded, never
    * promoted into `lastKnown` — the same "held-last-input for a real gap,
    * not a substitute for real data" boundary `finalize()`'s own `graceIds`
@@ -75,6 +86,14 @@ export class InputDelayBuffer {
    * promoted into `lastKnown` and crashes every peer's input consumer later. */
   record(tick: number, playerId: PlayerId, input: InputSnapshot): void {
     if (this.lastFinalizedTick !== null && Math.abs(tick - this.lastFinalizedTick) > MAX_TICK_DRIFT_TICKS) {
+      return;
+    }
+    // A tick `finalize()` has already produced a bundle for (or passed) can
+    // never be finalized again — it's strictly monotonic and deletes only
+    // the exact tick it finalizes. Buffering a late/replayed packet for such
+    // a tick, even one inside the drift window above, is a pure leak: nothing
+    // ever sweeps its `pending[tick]` entry. Drop it.
+    if (this.lastFinalizedTick !== null && tick <= this.lastFinalizedTick) {
       return;
     }
     let forTick = this.pending.get(tick);

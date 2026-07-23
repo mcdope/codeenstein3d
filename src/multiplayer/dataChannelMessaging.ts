@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
-import { BACKPRESSURE_HIGH_WATERMARK_BYTES, BACKPRESSURE_LOW_THRESHOLD_BYTES, BUFFER_DRAIN_TIMEOUT_MS } from "./netcodeConstants";
+import { BACKPRESSURE_HIGH_WATERMARK_BYTES, BACKPRESSURE_LOW_THRESHOLD_BYTES, BUFFER_DRAIN_TIMEOUT_MS, MAX_INBOUND_MESSAGE_BYTES } from "./netcodeConstants";
 
 /**
  * Small JSON-over-`RTCDataChannel` helper — no existing code in this project
@@ -121,9 +121,33 @@ function waitForBufferedAmountLow(channel: RTCDataChannel): Promise<void> {
  * isn't a string is still a wrong-shaped payload worth rejecting, but a
  * message with no `type` field at all (every real `input`-channel message)
  * is not — requiring it unconditionally would silently drop all lockstep
- * input traffic. */
-export function onJsonMessage<T>(channel: RTCDataChannel, handler: (message: T) => void): () => void {
+ * input traffic.
+ *
+ * `options.rateLimiter`, when supplied, is consulted *before* the message is
+ * even parsed — an over-rate message is dropped without spending a
+ * `JSON.parse`. Used host-side on each guest's `input` channel to blunt a
+ * message-flood DoS (see `multiplayerSessionHost.ts`); omitted on channels
+ * carrying trusted, bursty traffic (the reconciliation/setup channels' chunked
+ * map transfers, whose many rapid chunks are legitimate and must not be
+ * throttled). Independently, every channel enforces `MAX_INBOUND_MESSAGE_BYTES`
+ * on the raw payload before parsing, so no single peer message can force an
+ * unbounded `JSON.parse`. */
+export function onJsonMessage<T>(
+  channel: RTCDataChannel,
+  handler: (message: T) => void,
+  options?: { rateLimiter?: { tryRemove(): boolean } },
+): () => void {
   const listener = (event: MessageEvent): void => {
+    if (options?.rateLimiter && !options.rateLimiter.tryRemove()) {
+      // Rate-limited: dropped before parsing. Deliberately not logged per
+      // message — a flood would itself flood the console; the drop is the
+      // whole point.
+      return;
+    }
+    if (typeof event.data === "string" && event.data.length > MAX_INBOUND_MESSAGE_BYTES) {
+      console.warn(`[dataChannelMessaging] Discarding an oversized inbound "${channel.label}" message (${event.data.length} > ${MAX_INBOUND_MESSAGE_BYTES} bytes) before parsing.`);
+      return;
+    }
     let parsed: unknown;
     try {
       parsed = JSON.parse(event.data as string);

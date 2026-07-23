@@ -63,8 +63,28 @@ export class ChunkReassembler {
    * not assumed impossible either) adjusts the byte tally by the delta
    * rather than double-counting, so replaying the same index repeatedly
    * can't be used to inflate the tracked total past what's actually held in
-   * `chunks`. */
+   * `chunks`.
+   *
+   * `chunk`/`index` arrive straight off a peer's `JSON.parse`d message and are
+   * validated here before any arithmetic — the reason this throws on a
+   * non-string `chunk` or a non-integer/negative `index` rather than trusting
+   * the declared types. Without it, a single `chunk: 0` (or `false`, or a
+   * missing field) makes `chunk.length` `undefined`, so `bufferedBytes`
+   * becomes `NaN` — and every `NaN > MAX_TOTAL_BYTES` comparison thereafter is
+   * `false`, permanently disabling the byte cap for this reassembler's whole
+   * life. A peer could then flood arbitrarily large chunks (up to the chunk-
+   * *count* cap) and exhaust the receiver's memory. A single chunk larger than
+   * the cumulative byte cap is likewise refused outright. */
   push(chunk: string, index: number): void {
+    if (typeof chunk !== "string") {
+      throw new Error(`ChunkReassembler: refusing a non-string chunk (got ${typeof chunk}).`);
+    }
+    if (!Number.isInteger(index) || index < 0) {
+      throw new Error(`ChunkReassembler: refusing a chunk with a non-integer or negative index (${String(index)}).`);
+    }
+    if (chunk.length > MAX_TOTAL_BYTES) {
+      throw new Error(`ChunkReassembler: refusing a single chunk larger than ${MAX_TOTAL_BYTES} bytes.`);
+    }
     const previous = this.chunks.get(index);
     if (previous === undefined && this.chunks.size + 1 > MAX_TOTAL_CHUNKS) {
       throw new Error(`ChunkReassembler: refusing to buffer more than ${MAX_TOTAL_CHUNKS} chunks.`);

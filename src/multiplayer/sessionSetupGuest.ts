@@ -157,7 +157,19 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
           return;
         }
         case "map-chunk": {
-          reassembler?.push(message.data, message.index);
+          // `push()` throws on a chunk that breaks its count/byte caps or on a
+          // malformed (non-string data / non-integer index) chunk — caught and
+          // dropped here rather than allowed to escape this "message" listener
+          // uncaught (which the browser silently swallows, leaving the
+          // handshake to recover only via the stall timeout). A dropped chunk
+          // simply leaves the transfer incomplete, which the `map-end`
+          // `isComplete()` check below already rejects cleanly. Mirrors
+          // `multiplayerSessionGuest.ts`'s identical level-transition path.
+          try {
+            reassembler?.push(message.data, message.index);
+          } catch (err) {
+            console.log(`[multiplayer] discarding malformed/oversized session-setup map-chunk: ${err}`);
+          }
           return;
         }
         case "map-end": {
@@ -167,7 +179,19 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
             reject(new SessionSetupError("protocol-error", "map-end arrived before every chunk was received"));
             return;
           }
-          const mapWithoutVisited = reassembler.finish<Omit<GameMap, "visited">>();
+          // `finish()` JSON.parses the concatenated chunks — a corrupted (but
+          // count/byte-cap-compliant) transfer throws here rather than
+          // producing valid map data. Caught and turned into a clean handshake
+          // rejection instead of an uncaught throw escaping this listener.
+          let mapWithoutVisited: Omit<GameMap, "visited">;
+          try {
+            mapWithoutVisited = reassembler.finish<Omit<GameMap, "visited">>();
+          } catch (err) {
+            unsubscribe();
+            clearHandshakeTimeout();
+            reject(new SessionSetupError("protocol-error", `session-setup map payload failed to parse: ${err}`));
+            return;
+          }
           // Declared dimensions are never trusted before allocating from
           // them — the byte/chunk caps above bound wire size, not this —
           // see `isValidMapDimensions`'s own doc comment.

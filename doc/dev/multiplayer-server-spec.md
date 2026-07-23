@@ -536,6 +536,30 @@ reason either should take anywhere near this long; explicit values close off the
 mild Slowloris-style exposure of leaving both at Node's much longer defaults
 (many slow/idle connections tying up memory/file descriptors for minutes).
 
+## Configuring / deploying the multiplayer client
+
+Everything above concerns the *server*. The built game **client** also needs to
+be told where this server lives, via two build-time env vars — Vite's `VITE_*`
+convention, baked into the bundle at build time rather than read at runtime
+(declared in `src/vite-env.d.ts`). Host/Join is dead without the first:
+
+- **`VITE_MULTIPLAYER_SERVER_URL`** (**required**) — the base URL of this
+  signaling server (e.g. `https://mp.codeenstein3d.mcdope.org`) that the built
+  client points its `fetch()` calls at (`src/multiplayer/signalingClient.ts`).
+  If it's unset for a build, the moment a user clicks Host or Join the client
+  throws *"Multiplayer is not configured: VITE_MULTIPLAYER_SERVER_URL is unset
+  for this build."* and the whole multiplayer flow is non-functional. Trailing
+  slashes are trimmed automatically.
+- **`VITE_MULTIPLAYER_STUN_URLS`** (optional) — comma-separated STUN server
+  URLs for WebRTC ICE (e.g.
+  `stun:stun.l.google.com:19302,stun:stun.example.com:3478`), read by
+  `src/multiplayer/webrtcConnection.ts`. Defaults to Google's public STUN
+  (`stun:stun.l.google.com:19302`) when unset.
+
+These are the client's counterpart to the server-side config above
+(`ALLOWED_ORIGIN`, `CODEENSTEIN_MULTIPLAYER_STATS_TOKEN`): those configure the
+deployed server, these two configure the deployed client that talks to it.
+
 ## Testing & verification
 
 `verify:multiplayer-server` (pure Node, no browser) spawns a real instance of

@@ -1,7 +1,12 @@
 # Multiplayer game-state adaptation plan
 
-**Status: analysis and plan only — no file under `src/` is modified by this
-document.** Covers the four areas `multiplayer-research.md` flagged as ordinary
+**Status: implemented** — the engine model this document specifies is shipped:
+the `simulate()`/`render()`/`advance()` split and the N-player `players` model in
+`src/engine/engine.ts`, player-count elite scaling in
+`src/engine/multiplayerScaling.ts`, and coop revive at `REVIVE_HEALTH` in
+`src/multiplayer/multiplayerSessionHost.ts` — and CI-verified
+(`scripts/verify-multiplayer-*.mjs`). Covers the four areas
+`multiplayer-research.md` flagged as ordinary
 feature work with existing extension points — UI gating, multi-spawn generation,
 per-player scoring/assists, player-count elite scaling — plus loot-drop map
 visibility (§5) and, most substantially, **the N-player engine model itself (§6)**:
@@ -634,7 +639,7 @@ while this document's own §3 established the engine is internally single-player
 both couldn't be true, and neither document said how N players actually get
 simulated. This section is that design. It is a **hard prerequisite** for
 implementing anything in `multiplayer-netcode-spec.md`: the netcode drives an
-engine shape that doesn't exist until this refactor lands.
+engine shape this refactor introduced.
 
 ### State split: per-player vs shared
 
