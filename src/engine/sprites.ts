@@ -122,19 +122,28 @@ export function projectPoint(
 
 /** Project an enemy into screen space for `player` on a `width`×`height` view.
  * Elites project 1.5x the size of a regular enemy (see `ELITE_SCALE`); Edge
- * Case enemies project roughly half-size (see `EDGE_CASE_SCALE`). */
+ * Case enemies project roughly half-size (see `EDGE_CASE_SCALE`).
+ *
+ * `positionOverride`, when given, projects from that position instead of the
+ * enemy's own live `x`/`y` — used only for multiplayer's lag-compensated hit
+ * resolution (see `RaycasterEngine.rewoundEnemyPositions()`'s doc comment).
+ * Every other caller (rendering included — a billboard must always show
+ * where the enemy actually, currently is) omits it and gets exactly today's
+ * live-position behavior. */
 export function projectEnemy(
   player: Player,
   enemy: Enemy,
   width: number,
   height: number,
+  positionOverride?: { x: number; y: number },
 ): EnemyProjection {
   const sizeFactor = enemy.edgeCase
     ? ENEMY_SIZE * EDGE_CASE_SCALE
     : enemy.elite
       ? ENEMY_SIZE * ELITE_SCALE
       : ENEMY_SIZE;
-  return projectPoint(player, enemy.x, enemy.y, width, height, sizeFactor);
+  const pos = positionOverride ?? enemy;
+  return projectPoint(player, pos.x, pos.y, width, height, sizeFactor);
 }
 
 /** Collect all living enemies as billboard draw jobs, occluded by the wall
@@ -178,6 +187,52 @@ export function collectEnemyBillboards(
         const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
         if (proj.depth < zBuffer[centerCol]) {
           drawEnemyOverlay(ctx, enemy.entity, enemy.hp, enemy.maxHp, enemy.elite, enemy.edgeCase, proj);
+        }
+      },
+    }));
+}
+
+/** A living, connected teammate the local viewer can see — never the viewer
+ * themselves (they're the camera, never billboarded; enforced by the
+ * caller's list construction, not an identity check here) and never a dead
+ * teammate (they've left the world simulation — see
+ * `RaycasterEngine.killPlayer`). `color` is that player's distinct marker
+ * color, reused for their automap/minimap dot too (one color source, not
+ * two). */
+export interface OtherPlayerBillboard {
+  player: Player;
+  color: string;
+}
+
+/** Collect every other connected, living player as a billboard draw job,
+ * occluded by the wall z-buffer — the same vertical-stripe fill
+ * `collectEnemyBillboards` uses, tinted per player instead of by hit-flash/
+ * Elite state, with no HP bar/name overlay (not asked for by the spec). */
+export function collectPlayerBillboards(
+  ctx: CanvasRenderingContext2D,
+  viewer: Player,
+  others: readonly OtherPlayerBillboard[],
+  zBuffer: Float64Array,
+): BillboardJob[] {
+  const width = ctx.canvas.width;
+  const height = ctx.canvas.height;
+
+  return others
+    .map(({ player, color }) => ({ color, proj: projectPoint(viewer, player.posX, player.posY, width, height) }))
+    .filter(({ proj }) => proj.depth > SPRITE_NEAR)
+    .map(({ color, proj }) => ({
+      depth: proj.depth,
+      draw: () => {
+        const startX = Math.max(0, Math.floor(proj.left));
+        const endX = Math.min(width - 1, Math.ceil(proj.right));
+        const startY = Math.max(0, Math.floor(proj.top));
+        const endY = Math.min(height - 1, Math.ceil(proj.bottom));
+        const spriteH = endY - startY + 1;
+
+        ctx.fillStyle = color;
+        for (let x = startX; x <= endX; x++) {
+          if (proj.depth >= zBuffer[x]) continue;
+          ctx.fillRect(x, startY, 1, spriteH);
         }
       },
     }));
@@ -243,12 +298,23 @@ export interface ProjectedEnemy {
  * against the same shot (e.g. every pellet of one shotgun blast) instead of
  * recomputing each enemy's projection from scratch per pellet — see
  * `findTargetInProjections`.
+ *
+ * `positions`, when given, overrides individual enemies' projected position
+ * (looked up by object reference — see `projectEnemy`'s doc comment); an
+ * enemy missing from the map falls back to its own live position. Omitted
+ * for every caller except multiplayer's lag-compensated hit resolution.
  */
-export function projectLivingEnemies(player: Player, enemies: Enemy[], width: number, height: number): ProjectedEnemy[] {
+export function projectLivingEnemies(
+  player: Player,
+  enemies: Enemy[],
+  width: number,
+  height: number,
+  positions?: ReadonlyMap<Enemy, { x: number; y: number }>,
+): ProjectedEnemy[] {
   const result: ProjectedEnemy[] = [];
   for (const enemy of enemies) {
     if (!enemy.alive) continue;
-    const proj = projectEnemy(player, enemy, width, height);
+    const proj = projectEnemy(player, enemy, width, height, positions?.get(enemy));
     if (proj.depth <= 0) continue;
     result.push({ enemy, proj });
   }
@@ -545,6 +611,8 @@ function lootColors(kind: LootDrop["kind"]): { back: string; fill: string } {
       return { back: "#101c40", fill: "#4a7fff" }; // blue shard
     case "weapon":
       return { back: "#3a1040", fill: "#e06aff" }; // violet — a rare, special drop
+    case "key":
+      return { back: "#403610", fill: "#f2d64b" }; // gold — matches the HUD key icon
   }
 }
 

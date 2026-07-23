@@ -67,25 +67,26 @@ const noEnemiesNear = () => false;
 describe("spawnRocket", () => {
   it("launches from a small offset ahead of the muzzle, along the given direction", () => {
     const list: Rocket[] = [];
-    spawnRocket(list, 5, 5, 1, 0, 40);
+    spawnRocket(list, 5, 5, 1, 0, 40, "p1");
     expect(list).toHaveLength(1);
     expect(list[0].x).toBeCloseTo(5.4);
     expect(list[0].y).toBeCloseTo(5);
     expect(list[0].vx).toBeCloseTo(18); // ROCKET_SPEED
     expect(list[0].vy).toBe(0);
     expect(list[0].damage).toBe(40);
+    expect(list[0].firedBy).toBe("p1");
   });
 
   it("bakes in the damage at fire time", () => {
     const list: Rocket[] = [];
-    spawnRocket(list, 0, 0, 0, 1, 999);
+    spawnRocket(list, 0, 0, 0, 1, 999, "p1");
     expect(list[0].damage).toBe(999);
   });
 });
 
 describe("updateRockets", () => {
   function rocket(overrides: Partial<Rocket> = {}): Rocket {
-    return { x: 0, y: 0, vx: 0, vy: 0, damage: 40, ...overrides };
+    return { x: 0, y: 0, vx: 0, vy: 0, damage: 40, firedBy: "p1", ...overrides };
   }
 
   it("advances a surviving rocket's position with no detonation", () => {
@@ -101,7 +102,7 @@ describe("updateRockets", () => {
     const map = fakeMap();
     const list = [rocket({ x: 5, y: 5, damage: 40 })];
     const explosions = updateRockets(list, () => true, map, 0.1);
-    expect(explosions).toEqual([{ x: 5, y: 5, damage: 40 }]);
+    expect(explosions).toEqual([{ x: 5, y: 5, damage: 40, firedBy: "p1" }]);
     expect(list).toHaveLength(0);
   });
 
@@ -141,15 +142,22 @@ describe("updateRockets", () => {
       rocket({ x: 3.5, y: 3.5, vx: 0, vy: 0, damage: 20 }), // hits wall
     ];
     const explosions = updateRockets(list, noEnemiesNear, map, 0.1);
-    expect(explosions).toEqual([{ x: 3.5, y: 3.5, damage: 20 }]);
+    expect(explosions).toEqual([{ x: 3.5, y: 3.5, damage: 20, firedBy: "p1" }]);
     expect(list).toHaveLength(1);
     expect(list[0].damage).toBe(10);
+  });
+
+  it("carries firedBy through to the explosion so the engine can exclude teammates from splash", () => {
+    const map = fakeMap();
+    const list = [rocket({ x: 5, y: 5, damage: 40, firedBy: "hostPlayer" })];
+    const explosions = updateRockets(list, () => true, map, 0.1);
+    expect(explosions[0].firedBy).toBe("hostPlayer");
   });
 });
 
 describe("rocketDamageAt", () => {
   function explosion(overrides: Partial<RocketExplosion> = {}): RocketExplosion {
-    return { x: 0, y: 0, damage: 100, ...overrides };
+    return { x: 0, y: 0, damage: 100, firedBy: "p1", ...overrides };
   }
 
   it("deals max damage at ground zero", () => {
@@ -174,7 +182,7 @@ describe("collectRocketBillboards", () => {
     const jobs = collectRocketBillboards(
       asCtx(c),
       player,
-      [{ x: player.posX, y: player.posY, vx: 0, vy: 0, damage: 40 }],
+      [{ x: player.posX, y: player.posY, vx: 0, vy: 0, damage: 40, firedBy: "p1" }],
       clearZBuffer(Infinity),
     );
     expect(jobs).toHaveLength(0);
@@ -186,7 +194,7 @@ describe("collectRocketBillboards", () => {
     const jobs = collectRocketBillboards(
       asCtx(c),
       player,
-      [{ x: player.posX + 3, y: player.posY, vx: 0, vy: 0, damage: 40 }],
+      [{ x: player.posX + 3, y: player.posY, vx: 0, vy: 0, damage: 40, firedBy: "p1" }],
       clearZBuffer(Infinity),
     );
     expect(jobs).toHaveLength(1);
@@ -201,7 +209,7 @@ describe("collectRocketBillboards", () => {
     const jobs = collectRocketBillboards(
       asCtx(c),
       player,
-      [{ x: player.posX + 3, y: player.posY, vx: 0, vy: 0, damage: 40 }],
+      [{ x: player.posX + 3, y: player.posY, vx: 0, vy: 0, damage: 40, firedBy: "p1" }],
       clearZBuffer(0.5),
     );
     expect(jobs).toHaveLength(1);

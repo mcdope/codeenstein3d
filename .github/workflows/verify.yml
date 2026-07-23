@@ -42,6 +42,7 @@ jobs:
       - run: npm run verify:wad-parser
       - run: npm run verify:zip-reader
       - run: npm run verify:campaign
+      - run: npm run verify:multiplayer-server
 
   test:
     name: unit tests (Vitest, 100% coverage gate)
@@ -80,7 +81,22 @@ jobs:
         # directly, not assumed — a Playwright/Linux-WebKit build gap, not a
         # real Safari limitation), so the OPFS stub itself is unusable there;
         # `verify:campaign:playthrough` is skipped for webkit below, see
-        # doc/dev/testing.md's cross-browser section.
+        # doc/dev/testing.md's cross-browser section. Separately,
+        # `verify:multiplayer-connect`/`verify:multiplayer-netcode`/
+        # `verify:multiplayer-reconciliation`/`verify:multiplayer-disconnect`
+        # are skipped for firefox below — a real, Mozilla-acknowledged
+        # (WONTFIX) WebRTC ICE-gathering limitation specific to this
+        # sandboxed runner's network shape, not a Playwright-build gap or an
+        # app bug — see those steps' own comments and doc/dev/testing.md.
+        # `verify:multiplayer-determinism` (step 10, cross-browser float
+        # determinism) runs in its own dedicated `verify-determinism` job
+        # below, not this matrix — it needs all three engines in one job.
+        # `verify:multiplayer-transition`/`verify:multiplayer-multiguest`
+        # (the two genuinely slow, multi-minute real-session steps) also run
+        # in their own dedicated jobs below, not this matrix — chromium-only
+        # either way (same ICE-gathering/webkit-timing reasoning that used to
+        # live here), pulled out so their real wall-clock cost no longer
+        # stacks up against every other step in this job's chromium leg.
         browser: [chromium, firefox, webkit]
     steps:
       - uses: actions/checkout@v4
@@ -112,6 +128,19 @@ jobs:
         with:
           path: public/wads
           key: online-wads-${{ hashFiles('src/wad/onlineWadCatalog.ts') }}
+      # Started before the dev server, not after: Vite inlines `VITE_*` env
+      # vars at server-*start* time, not per-request, so the dev server below
+      # must already see `VITE_MULTIPLAYER_SERVER_URL` pointed at a live
+      # signaling server when it boots.
+      - name: Start multiplayer signaling server
+        run: |
+          node scripts/multiplayer-server.mjs &
+          for i in $(seq 1 30); do
+            curl -s -o /dev/null http://127.0.0.1:8787/lobby && break
+            sleep 1
+          done
+        env:
+          CODEENSTEIN_MULTIPLAYER_ALLOWED_ORIGIN: "http://localhost:5173"
       - name: Start dev server
         run: |
           npm run dev -- --port 5173 --strictPort &
@@ -119,6 +148,8 @@ jobs:
             curl -s -o /dev/null http://localhost:5173/ && break
             sleep 1
           done
+        env:
+          VITE_MULTIPLAYER_SERVER_URL: "http://127.0.0.1:8787"
       - run: npm run verify:wad-textures
         env:
           CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
@@ -128,3 +159,192 @@ jobs:
         env:
           CODEENSTEIN_DEV_URL: "http://localhost:5173"
           CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
+      # Runs on chromium/webkit, not the full matrix — unlike
+      # verify:campaign:playthrough above, it doesn't touch OPFS/
+      # `showDirectoryPicker`, so WebKit's `navigator.storage` gap doesn't
+      # apply here; but Firefox specifically has a confirmed, real WebRTC
+      # ICE-gathering limitation in this exact sandboxed-container network
+      # shape (no internet-routable default route for Firefox's own
+      # interface-discovery heuristic to find — a genuine Mozilla WONTFIX,
+      # not something app code can work around) — see
+      # scripts/verify-multiplayer-connect.mjs's own doc comment and
+      # doc/dev/testing.md's cross-browser section for the full
+      # investigation.
+      - run: npm run verify:multiplayer-connect
+        if: matrix.browser != 'firefox'
+        env:
+          CODEENSTEIN_DEV_URL: "http://localhost:5173"
+          CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
+      # Same CI-only WebRTC ICE-gathering limitation as verify:multiplayer-connect
+      # above (not a new one) — see that step's own comment.
+      - run: npm run verify:multiplayer-netcode
+        if: matrix.browser != 'firefox'
+        env:
+          CODEENSTEIN_DEV_URL: "http://localhost:5173"
+          CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
+      # Same CI-only WebRTC ICE-gathering limitation as verify:multiplayer-connect
+      # above (not a new one) — see that step's own comment.
+      - run: npm run verify:multiplayer-reconciliation
+        if: matrix.browser != 'firefox'
+        env:
+          CODEENSTEIN_DEV_URL: "http://localhost:5173"
+          CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
+      # Same CI-only WebRTC ICE-gathering limitation as verify:multiplayer-connect
+      # above (not a new one) — see that step's own comment.
+      - run: npm run verify:multiplayer-disconnect
+        if: matrix.browser != 'firefox'
+        env:
+          CODEENSTEIN_DEV_URL: "http://localhost:5173"
+          CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
+
+  # verify:multiplayer-transition is the real multi-minute step (a full real
+  # host-navigates-to-exit-and-transitions multiplayer session) — split into
+  # its own job, not a leg of verify-browser's matrix above, specifically so
+  # its wall-clock cost runs concurrently with everything else instead of
+  # stacking onto the end of a shared chromium leg. Chromium-only: firefox
+  # has a confirmed, Mozilla-acknowledged (WONTFIX) WebRTC ICE-gathering
+  # limitation specific to this sandboxed runner's network shape (see
+  # scripts/verify-multiplayer-connect.mjs's own doc comment); webkit is
+  # skipped for real, previously-confirmed combat/navigation-timing variance
+  # under webkit's own CI execution characteristics (see
+  # doc/dev/testing.md's cross-browser section) — reasoned before the host
+  # was made invulnerable/combat-avoidant, worth re-checking separately from
+  # this job-structure change, not as part of it.
+  verify-multiplayer-transition:
+    name: verify (multiplayer-transition)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browser binary
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium
+      - name: Install Playwright OS dependencies
+        run: npx playwright install-deps chromium
+      - name: Cache online WAD assets
+        uses: actions/cache@v4
+        with:
+          path: public/wads
+          key: online-wads-${{ hashFiles('src/wad/onlineWadCatalog.ts') }}
+      - name: Start multiplayer signaling server
+        run: |
+          node scripts/multiplayer-server.mjs &
+          for i in $(seq 1 30); do
+            curl -s -o /dev/null http://127.0.0.1:8787/lobby && break
+            sleep 1
+          done
+        env:
+          CODEENSTEIN_MULTIPLAYER_ALLOWED_ORIGIN: "http://localhost:5173"
+      - name: Start dev server
+        run: |
+          npm run dev -- --port 5173 --strictPort &
+          for i in $(seq 1 30); do
+            curl -s -o /dev/null http://localhost:5173/ && break
+            sleep 1
+          done
+        env:
+          VITE_MULTIPLAYER_SERVER_URL: "http://127.0.0.1:8787"
+      - run: npm run verify:multiplayer-transition
+        env:
+          CODEENSTEIN_DEV_URL: "http://localhost:5173"
+          CODEENSTEIN_VERIFY_BROWSER: chromium
+
+  # Step 10 (N-player): real 1-host/2-guest session — auto-rearm join, 3-way
+  # lockstep, Elite scaling at playerCount=3, per-guest disconnect isolation.
+  # Same rationale as verify-multiplayer-transition above for its own
+  # dedicated job (the other genuinely slow, multi-minute step) and for
+  # being chromium-only: firefox's confirmed ICE-gathering WONTFIX, plus a
+  # separately-confirmed webkit-only timing variance (guest-2's join racing
+  # the real auto-rearm cycle exhausted a 9-attempt/~40s retry budget on
+  # CI's webkit runner specifically, while passing reliably on local webkit
+  # and on CI's own chromium leg) — see doc/dev/testing.md's cross-browser
+  # section.
+  verify-multiplayer-multiguest:
+    name: verify (multiplayer-multiguest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browser binary
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium
+      - name: Install Playwright OS dependencies
+        run: npx playwright install-deps chromium
+      - name: Cache online WAD assets
+        uses: actions/cache@v4
+        with:
+          path: public/wads
+          key: online-wads-${{ hashFiles('src/wad/onlineWadCatalog.ts') }}
+      - name: Start multiplayer signaling server
+        run: |
+          node scripts/multiplayer-server.mjs &
+          for i in $(seq 1 30); do
+            curl -s -o /dev/null http://127.0.0.1:8787/lobby && break
+            sleep 1
+          done
+        env:
+          CODEENSTEIN_MULTIPLAYER_ALLOWED_ORIGIN: "http://localhost:5173"
+      - name: Start dev server
+        run: |
+          npm run dev -- --port 5173 --strictPort &
+          for i in $(seq 1 30); do
+            curl -s -o /dev/null http://localhost:5173/ && break
+            sleep 1
+          done
+        env:
+          VITE_MULTIPLAYER_SERVER_URL: "http://127.0.0.1:8787"
+      - run: npm run verify:multiplayer-multiguest
+        env:
+          CODEENSTEIN_DEV_URL: "http://localhost:5173"
+          CODEENSTEIN_VERIFY_BROWSER: chromium
+
+  # Step 10: cross-browser floating-point determinism check
+  # (scripts/verify-multiplayer-determinism.mjs). Unlike verify-browser above,
+  # this needs all three Playwright engines installed in the SAME job (it
+  # diffs their outputs against each other and a Node reference) rather than
+  # one engine per matrix leg — and it never opens WebRTC (each engine just
+  # runs an identical synthetic seeded-math loop independently), so Firefox's
+  # confirmed CI-only WebRTC ICE-gathering limitation doesn't apply here; all
+  # three run together, no skips needed.
+  verify-determinism:
+    name: verify (cross-browser determinism)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-all-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browser binaries (chromium, firefox, webkit)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium firefox webkit
+      - name: Install Playwright OS dependencies
+        run: npx playwright install-deps chromium firefox webkit
+      - run: npm run verify:multiplayer-determinism

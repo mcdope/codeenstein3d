@@ -70,54 +70,71 @@ export function spikeDamage(
 }
 
 /**
- * Detonate `mine` (marking it permanently dead) and return the distance-scaled
- * AoE damage this deals to `player` right now — 0 if they're outside the blast
- * radius entirely. Shared by the proximity fuse (`updateMines`) and gunfire
- * (a mine hit by a pellet — see `RaycasterEngine.fire()`): shooting one from
- * beyond its blast radius is a genuinely safe way to clear it, not just a
- * formality, since both paths use the same falloff.
+ * Detonate `mine`, marking it permanently dead. Shared by the proximity fuse
+ * (`updateMines`) and gunfire (a mine hit by a pellet — see
+ * `RaycasterEngine.fire()`). Damage is computed separately, per target, via
+ * `mineDamageAt` — a mine's blast is environmental (every player in range
+ * takes it, not just whoever triggered it), so detonation and damage are two
+ * different questions now that more than one player can be in range.
  */
-export function detonateMine(mine: Mine, player: Player): number {
+export function detonateMine(mine: Mine): void {
   mine.alive = false;
-  const distance = Math.hypot(mine.x - player.posX, mine.y - player.posY);
+}
+
+/**
+ * Distance-scaled AoE damage a mine detonating at `detonation` deals to a
+ * point at `(tx, ty)` right now — 0 if outside the blast radius entirely.
+ * Shooting one from beyond its blast radius is a genuinely safe way to clear
+ * it, not just a formality — both the fuse and gunfire paths use this same
+ * falloff for every player in range.
+ */
+export function mineDamageAt(detonation: { x: number; y: number }, tx: number, ty: number): number {
+  const distance = Math.hypot(detonation.x - tx, detonation.y - ty);
   if (distance >= MINE_BLAST_RADIUS) return 0;
   const falloff = Math.max(MINE_DAMAGE_FALLOFF_FLOOR, 1 - distance / MINE_BLAST_RADIUS);
   return MINE_MAX_DAMAGE * falloff;
 }
 
-/** Where and how hard a mine detonated on its own (proximity fuse), for the
- * caller to fan out matching VFX — mirrors `RocketExplosion` in `rockets.ts`. */
+/** Where a mine detonated on its own (proximity fuse), for the caller to fan
+ * out matching VFX and per-player damage — mirrors `RocketExplosion` in
+ * `rockets.ts`. */
 export interface MineDetonation {
   x: number;
   y: number;
-  damage: number;
 }
 
 /**
- * Advance every live mine's state by `dt` seconds. A mine within
- * `MINE_SIGHT_RADIUS` becomes visible — sticky, so once spotted it stays on
- * the radar even if the player backs out that far again. Only within the much
- * tighter `MINE_FUSE_RADIUS` does its fuse actually start counting; stepping
- * back out of that resets the timer (the "immediately back away" grace). One
- * that reaches the fuse threshold detonates for distance-scaled AoE damage.
- * Returns one entry per mine that went off this frame (almost always 0 or 1,
- * but never assumed to be capped at that).
+ * Advance every live mine's state by `dt` seconds, against every living
+ * player's position. A mine within `MINE_SIGHT_RADIUS` of *any* player
+ * becomes visible — sticky, so once spotted it stays on the radar even if
+ * every player backs out that far again. Only within the much tighter
+ * `MINE_FUSE_RADIUS` of any player does its fuse actually start counting;
+ * every player stepping back out of that resets the timer (the "immediately
+ * back away" grace) — driven off whichever player is currently nearest. One
+ * that reaches the fuse threshold detonates; the caller fans out damage via
+ * `mineDamageAt`. Returns one entry per mine that went off this frame
+ * (almost always 0 or 1, but never assumed to be capped at that).
  */
-export function updateMines(mines: Mine[], player: Player, dt: number): MineDetonation[] {
+export function updateMines(mines: Mine[], players: readonly Player[], dt: number): MineDetonation[] {
   const detonations: MineDetonation[] = [];
   for (const mine of mines) {
     if (!mine.alive) continue;
-    const distance = Math.hypot(mine.x - player.posX, mine.y - player.posY);
-    if (distance <= MINE_SIGHT_RADIUS) mine.visible = true;
+    let nearestDistance = Infinity;
+    for (const player of players) {
+      const distance = Math.hypot(mine.x - player.posX, mine.y - player.posY);
+      if (distance < nearestDistance) nearestDistance = distance;
+    }
+    if (nearestDistance <= MINE_SIGHT_RADIUS) mine.visible = true;
 
-    if (distance > MINE_FUSE_RADIUS) {
+    if (nearestDistance > MINE_FUSE_RADIUS) {
       mine.closeTimer = 0;
       continue;
     }
     mine.closeTimer += dt;
     if (mine.closeTimer < MINE_FUSE_SECONDS) continue;
 
-    detonations.push({ x: mine.x, y: mine.y, damage: detonateMine(mine, player) });
+    detonateMine(mine);
+    detonations.push({ x: mine.x, y: mine.y });
   }
   return detonations;
 }

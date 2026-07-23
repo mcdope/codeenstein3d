@@ -37,10 +37,11 @@
  * just one lagging combo). Not CI-wired — this is a long-running (hours to
  * days), unattended background job, not a fast smoke test by default.
  */
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { REPO_ROOT } from "./lib/loadEngineModules.mjs";
+import { LocalRunner, runLaneOrchestrator } from "./lib/laneOrchestrator.mjs";
+import { buildSshRunners } from "./lib/sshRunner.mjs";
 import { PROFILES, DIFFICULTIES } from "./run-balancing-telemetry.mjs";
 
 const TELEMETRY_SCRIPT = path.join(REPO_ROOT, "scripts/run-balancing-telemetry.mjs");
@@ -90,8 +91,8 @@ const WATCHDOG_MS = process.env.CODEENSTEIN_CAMPAIGN_WATCHDOG_MS ? Number(proces
 // before a hard kill.
 const SIGTERM_GRACE_MS = 5000;
 
-function comboKey(profile, difficulty) {
-  return `${profile}-${difficulty}`;
+function comboKey(combo) {
+  return `${combo.profile}-${combo.difficulty}`;
 }
 
 function ensureDirs() {
@@ -109,14 +110,14 @@ function ensureDirs() {
  * the scan — its qualifying runs are simply not counted, which just means
  * this combo does a bit more work than strictly necessary, not a hard
  * failure. */
-function scanExisting(profile, difficulty) {
-  const prefix = `${comboKey(profile, difficulty)}-`;
+function scanExisting(combo) {
+  const prefix = `${comboKey(combo)}-`;
   const files = fs.readdirSync(RUNS_DIR).filter((f) => f.startsWith(prefix) && f.endsWith(".json"));
   let qualifying = 0;
   for (const f of files) {
     try {
       const data = JSON.parse(fs.readFileSync(path.join(RUNS_DIR, f), "utf8"));
-      qualifying += data.profiles?.[profile]?.[difficulty]?.qualifyingRunCount ?? 0;
+      qualifying += data.profiles?.[combo.profile]?.[combo.difficulty]?.qualifyingRunCount ?? 0;
     } catch (err) {
       console.log(`  [campaign] warning: skipping unreadable ${f}: ${err.message}`);
     }
@@ -124,80 +125,30 @@ function scanExisting(profile, difficulty) {
   return { qualifying, fileCount: files.length };
 }
 
-function prefixedWrite(stream, chunk, prefix) {
-  const text = chunk.toString();
-  const lines = text.split("\n").filter((l) => l.length > 0);
-  for (const line of lines) stream.write(`${prefix}${line}\n`);
+function outputPathFor(combo, sequence) {
+  return path.join(RUNS_DIR, `${comboKey(combo)}-${String(sequence).padStart(3, "0")}.json`);
 }
 
-/** Spawns one `run-balancing-telemetry.mjs` invocation scoped to a single
- * combo, writing directly to its own unique output path (via
- * CODEENSTEIN_TELEMETRY_OUTPUT_FILE — no shared-file race with other
- * concurrently-running lanes), wrapped in the wall-clock watchdog. Resolves
- * once the child exits (killed or not) — never rejects, so one bad
- * invocation can't take down the whole campaign loop. */
-function runOneInvocation(profile, difficulty, sequence) {
-  return new Promise((resolve) => {
-    const fileBase = `${comboKey(profile, difficulty)}-${String(sequence).padStart(3, "0")}`;
-    const outputPath = path.join(RUNS_DIR, `${fileBase}.json`);
-    const logPath = path.join(LOGS_DIR, `${fileBase}.log`);
-    const logStream = fs.createWriteStream(logPath, { flags: "a" });
-    const prefix = `[${comboKey(profile, difficulty)} #${sequence}] `;
+function logPathFor(combo, sequence) {
+  return path.join(LOGS_DIR, `${comboKey(combo)}-${String(sequence).padStart(3, "0")}.log`);
+}
 
-    const env = {
-      ...process.env,
-      CODEENSTEIN_TELEMETRY_PROFILE: profile,
-      CODEENSTEIN_TELEMETRY_DIFFICULTY: difficulty,
-      CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET: String(BATCH_SIZE),
-      CODEENSTEIN_TELEMETRY_ATTEMPT_CAP: String(ATTEMPT_CAP),
-      CODEENSTEIN_TELEMETRY_CONCURRENCY: String(CONCURRENCY_PER_LANE),
-      CODEENSTEIN_TELEMETRY_OUTPUT_FILE: outputPath,
-    };
-    delete env.CODEENSTEIN_TELEMETRY_LEVEL_LIMIT; // always the full campaign for this data-collection run
-
-    const startedAt = Date.now();
-    const child = spawn(process.execPath, [TELEMETRY_SCRIPT], { cwd: REPO_ROOT, env });
-
-    let settled = false;
-    let killedForTimeout = false;
-
-    child.stdout.on("data", (chunk) => {
-      prefixedWrite(process.stdout, chunk, prefix);
-      logStream.write(chunk);
-    });
-    child.stderr.on("data", (chunk) => {
-      prefixedWrite(process.stderr, chunk, prefix);
-      logStream.write(chunk);
-    });
-
-    const watchdog = setTimeout(() => {
-      if (settled) return;
-      killedForTimeout = true;
-      console.log(`${prefix}WATCHDOG: exceeded ${WATCHDOG_MS}ms — sending SIGTERM`);
-      child.kill("SIGTERM");
-      setTimeout(() => {
-        if (!settled) {
-          console.log(`${prefix}WATCHDOG: still alive ${SIGTERM_GRACE_MS}ms after SIGTERM — sending SIGKILL`);
-          child.kill("SIGKILL");
-        }
-      }, SIGTERM_GRACE_MS);
-    }, WATCHDOG_MS);
-
-    child.on("exit", (code, signal) => {
-      settled = true;
-      clearTimeout(watchdog);
-      logStream.end();
-      resolve({ code, signal, killedForTimeout, elapsedMs: Date.now() - startedAt, outputPath });
-    });
-
-    child.on("error", (err) => {
-      settled = true;
-      clearTimeout(watchdog);
-      logStream.end();
-      console.log(`${prefix}spawn error: ${err.message}`);
-      resolve({ code: null, signal: null, killedForTimeout: false, elapsedMs: Date.now() - startedAt, outputPath, spawnError: err.message });
-    });
-  });
+/** Per-invocation env — CODEENSTEIN_TELEMETRY_OUTPUT_FILE is the caller's
+ * own local `outputPath`; a remote `SshRunner` scp/rsyncs its own result
+ * back to that exact path before `runInvocation` resolves, so this stays
+ * identical for local and remote lanes. */
+function envFor(combo, sequence, outputPath) {
+  const env = {
+    ...process.env,
+    CODEENSTEIN_TELEMETRY_PROFILE: combo.profile,
+    CODEENSTEIN_TELEMETRY_DIFFICULTY: combo.difficulty,
+    CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET: String(BATCH_SIZE),
+    CODEENSTEIN_TELEMETRY_ATTEMPT_CAP: String(ATTEMPT_CAP),
+    CODEENSTEIN_TELEMETRY_CONCURRENCY: String(CONCURRENCY_PER_LANE),
+    CODEENSTEIN_TELEMETRY_OUTPUT_FILE: outputPath,
+  };
+  delete env.CODEENSTEIN_TELEMETRY_LEVEL_LIMIT; // always the full campaign for this data-collection run
+  return env;
 }
 
 function formatElapsed(ms) {
@@ -207,50 +158,6 @@ function formatElapsed(ms) {
   return `${min}m${sec}s`;
 }
 
-/** Drives one combo's queue of invocations until it reaches
- * TARGET_QUALIFYING or is told to stop. Runs as one of LANES concurrent
- * lanes, each pulling combos off the shared queue as they free up. */
-async function driveCombo(profile, difficulty) {
-  for (;;) {
-    const { qualifying, fileCount } = scanExisting(profile, difficulty);
-    if (qualifying >= TARGET_QUALIFYING) {
-      console.log(`[${comboKey(profile, difficulty)}] done — ${qualifying}/${TARGET_QUALIFYING} qualifying across ${fileCount} files`);
-      return;
-    }
-    const sequence = fileCount + 1;
-    console.log(
-      `[${comboKey(profile, difficulty)}] starting invocation #${sequence} (${qualifying}/${TARGET_QUALIFYING} qualifying so far)`,
-    );
-    const result = await runOneInvocation(profile, difficulty, sequence);
-    if (result.killedForTimeout) {
-      console.log(`[${comboKey(profile, difficulty)}] invocation #${sequence} KILLED by watchdog after ${formatElapsed(result.elapsedMs)} — retrying`);
-      // Nothing was written (run-balancing-telemetry.mjs only writes once,
-      // at the very end) — the next loop iteration's scanExisting() will
-      // simply not see this sequence number, and the next invocation reuses
-      // it (fileCount didn't grow), so no gap is left in the sequence.
-      continue;
-    }
-    if (result.code !== 0) {
-      console.log(
-        `[${comboKey(profile, difficulty)}] invocation #${sequence} exited with code ${result.code}${result.signal ? ` (signal ${result.signal})` : ""} after ${formatElapsed(result.elapsedMs)}${result.spawnError ? ` — ${result.spawnError}` : ""} — retrying`,
-      );
-      continue;
-    }
-    const written = fs.existsSync(result.outputPath);
-    console.log(
-      `[${comboKey(profile, difficulty)}] invocation #${sequence} finished in ${formatElapsed(result.elapsedMs)}${written ? "" : " (no output file — treating as failed, retrying)"}`,
-    );
-  }
-}
-
-async function runLane(queue) {
-  for (;;) {
-    const combo = queue.shift();
-    if (!combo) return;
-    await driveCombo(combo.profile, combo.difficulty);
-  }
-}
-
 async function main() {
   ensureDirs();
 
@@ -258,8 +165,8 @@ async function main() {
   // smoke test, or for resuming just one lagging combo later without
   // re-scanning (harmlessly) every other already-finished combo too.
   // Distinct from CODEENSTEIN_TELEMETRY_PROFILE/_DIFFICULTY, which this
-  // script doesn't read directly — those are set explicitly per spawned
-  // invocation's own env in runOneInvocation() instead.
+  // script doesn't read directly — those are set explicitly per invocation's
+  // own env in envFor() instead.
   const profileFilter = process.env.CODEENSTEIN_CAMPAIGN_PROFILE || null;
   const difficultyFilter = process.env.CODEENSTEIN_CAMPAIGN_DIFFICULTY || null;
   const profileNames = profileFilter ? [profileFilter] : Object.keys(PROFILES);
@@ -272,15 +179,31 @@ async function main() {
     }
   }
 
+  const localRunners = Array.from({ length: LANES }, () => new LocalRunner({ label: "local", cwd: REPO_ROOT }));
+  const sshRunners = await buildSshRunners();
+  const runners = [...localRunners, ...sshRunners];
+
   console.log(
     `Balancing campaign: ${combos.length} combos × ${TARGET_QUALIFYING} qualifying runs, batch size ${BATCH_SIZE}, ` +
-      `${LANES} lane(s), ${CONCURRENCY_PER_LANE}-way concurrency per lane, ${ATTEMPT_CAP} attempt cap/invocation, ` +
-      `${formatElapsed(WATCHDOG_MS)} watchdog.`,
+      `${localRunners.length} local lane(s) + ${sshRunners.length} SSH lane(s), ${CONCURRENCY_PER_LANE}-way concurrency per lane, ` +
+      `${ATTEMPT_CAP} attempt cap/invocation, ${formatElapsed(WATCHDOG_MS)} watchdog.`,
   );
   console.log(`Output: ${RUNS_DIR}\n`);
 
-  const queue = [...combos];
-  await Promise.all(Array.from({ length: LANES }, () => runLane(queue)));
+  await runLaneOrchestrator({
+    combos,
+    comboKey,
+    scanExisting,
+    targetQualifying: TARGET_QUALIFYING,
+    outputPathFor,
+    logPathFor,
+    envFor,
+    scriptPath: TELEMETRY_SCRIPT,
+    runners,
+    watchdogMs: WATCHDOG_MS,
+    sigtermGraceMs: SIGTERM_GRACE_MS,
+    formatElapsed,
+  });
 
   console.log("\nCampaign complete — all combos reached their qualifying-run target.");
 }

@@ -11,6 +11,7 @@ import { installRaf, type RafController } from "../test/mocks/raf";
 import { stubCanvasGetContext, stubCanvasToBlob } from "../test/mocks/canvas";
 import { FakeFileSystemFileHandle, fakeDirectoryHandle } from "../test/mocks/fsAccess";
 import { FakeMediaRecorder, installRecordingSupport } from "../test/mocks/mediaRecorder";
+import { FakeRTCDataChannel, FakeRTCPeerConnection } from "../test/mocks/webrtc";
 import type { TreeNode } from "./fs/workspace";
 import { parseFile } from "./parser/registry";
 import { hashRun, loadHighscores, recordHighscore } from "./engine/highscores";
@@ -18,6 +19,7 @@ import type { InputSnapshot } from "./engine/input";
 import type { ReplayLevelSegment } from "./engine/replay";
 import type { EngineCarryover } from "./engine/engine";
 import { GHIDRA_WEAPON_INDEX } from "./engine/weapons";
+import { COUNTDOWN_TICKS } from "./engine/transitionConstants";
 
 /**
  * main.ts is not a class — importing it runs its whole module body
@@ -42,6 +44,7 @@ async function importMain(): Promise<typeof import("./main")> {
   stubCanvasGetContext(document.createElement("canvas"));
   resizeObserverStub = stubResizeObserver();
   stubDialogElement(document.querySelector<HTMLDialogElement>("#highscore-dialog")!);
+  stubDialogElement(document.querySelector<HTMLDialogElement>("#multiplayer-lobby-dialog")!);
   // main.ts's own `isFileSystemAccessSupported()` check runs at *import*
   // time and disables #select-workspace/#continue-run forever if
   // `window.showDirectoryPicker` isn't already a function by then — a
@@ -166,7 +169,22 @@ function gatedFileHandle(name: string, content: string, gate: { resolve?: () => 
   } as unknown as FileSystemFileHandle;
 }
 
+/** `window.location` as it is before any test in this file has ever run —
+ * captured once at module load. `enableTestHooks()` overwrites
+ * `window.location` (via `Object.defineProperty`, not `vi.stubGlobal`, so
+ * `vi.unstubAllGlobals()` doesn't touch it) and never restores it itself,
+ * since until now nothing read `?testHooks=1` at module-*import* time (only
+ * `RaycasterEngine`'s own constructor, per-instance, later). Now that
+ * `main.ts` itself also checks
+ * `?testHooks=1` at import time (see its own multiplayer test-hooks block),
+ * a leftover `?testHooks=1` from an earlier test silently changes a later
+ * test's `importMain()` behavior — restoring here in `beforeEach` guarantees
+ * every test starts from a clean URL regardless of what an earlier test in
+ * the same run left behind. */
+const ORIGINAL_WINDOW_LOCATION = window.location;
+
 beforeEach(() => {
+  Object.defineProperty(window, "location", { value: ORIGINAL_WINDOW_LOCATION, configurable: true });
   localStorage.clear();
   // jsdom's built-in `crypto` global has no SubtleCrypto implementation —
   // swap in Node's real webcrypto so highscores.ts's hashRun()/
@@ -185,6 +203,10 @@ beforeEach(() => {
   // `!!testHooks()` can only become true again once *this* test's own
   // engine has actually been constructed.
   delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+  // Same "window persists across tests, clear it explicitly" reasoning as
+  // `__codeensteinTestHooks` above — `main.ts`'s own multiplayer test hooks
+  // (see its doc comment) live on this separate global.
+  delete (window as unknown as { __codeensteinMultiplayerTestHooks?: unknown }).__codeensteinMultiplayerTestHooks;
 });
 
 afterEach(async () => {
@@ -197,6 +219,7 @@ afterEach(async () => {
   // outcome but noisy across the whole file's run.
   for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
@@ -541,6 +564,38 @@ describe("main.ts — statsScreenInfo", () => {
     const scoreBreakdown = { killPoints: 1, healthBonus: 0, ammoBonus: 0, speedBonus: 0, pathBonus: 0, mapCompletionBonus: 0, loreBonus: 0, secretRoomBonus: 0, multikillBonus: 0, accuracyBonus: 0, total: 1 };
     const playerStats = { kills: 1, shotsFired: 1, hits: 1, weaponAccuracyPct: 100, damageTakenBySource: { enemyMelee: 0, enemyRanged: 0, trapSpike: 0, trapMine: 0, hazard: 0, selfRocket: 0 }, timeSurvivedSec: 1, lootCollectedTotal: 0, minHealthReached: 100, fatalDamageSource: null };
     expect(statsScreenInfo(scoreBreakdown, playerStats)).toEqual({ scoreBreakdown, playerStats });
+  });
+});
+
+describe("main.ts — multiplayerResultRows", () => {
+  const zeroBreakdown = {
+    killPoints: 0,
+    healthBonus: 0,
+    ammoBonus: 0,
+    speedBonus: 0,
+    pathBonus: 0,
+    mapCompletionBonus: 0,
+    loreBonus: 0,
+    secretRoomBonus: 0,
+    multikillBonus: 0,
+    accuracyBonus: 0,
+    total: 0,
+  };
+
+  it("labels a live roster player with capitalized id, points, and kills", async () => {
+    const { multiplayerResultRows } = await importMain();
+    const comparison = new Map([
+      ["host", { status: "alive" as const, health: 100, killScore: 400, kills: 5, distanceTraveled: 12, breakdown: { ...zeroBreakdown, total: 1234 } }],
+    ]);
+    expect(multiplayerResultRows(comparison)).toEqual([["Host", "1234 pts · 5 kills"]]);
+  });
+
+  it("appends a disconnected suffix for a roster player whose status is 'disconnected'", async () => {
+    const { multiplayerResultRows } = await importMain();
+    const comparison = new Map([
+      ["guest", { status: "disconnected" as const, health: 0, killScore: 200, kills: 3, distanceTraveled: 4, breakdown: { ...zeroBreakdown, total: 987 } }],
+    ]);
+    expect(multiplayerResultRows(comparison)).toEqual([["Guest", "987 pts · 3 kills (disconnected)"]]);
   });
 });
 
@@ -1540,6 +1595,2590 @@ describe("main.ts — demo campaign load", () => {
       () => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "Failed to load demo campaign.",
     );
     vi.doUnmock("./fs/demoCampaign");
+  });
+});
+
+describe("main.ts — multiplayer connect flow", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  const SERVER_URL = "https://mp.example.test";
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("RTCPeerConnection", FakeRTCPeerConnection);
+    FakeRTCPeerConnection.instances.length = 0;
+    vi.stubEnv("VITE_MULTIPLAYER_SERVER_URL", SERVER_URL);
+  });
+
+  function jsonResponse(body: unknown, ok = true, status = 200): Response {
+    return { ok, status, json: async () => body } as unknown as Response;
+  }
+
+  /** The guest's `fetchTurnServers` fires a `GET .../turn-credentials` between
+   * fetchSession and postAnswer; when the operator runs no relay it 404s and
+   * the guest silently proceeds STUN-only. Join tests that don't care about the
+   * relay queue this in that slot so it doesn't perturb their own mocks. */
+  function noTurnRelayResponse(): Response {
+    return jsonResponse({ error: "not_found" }, false, 404);
+  }
+
+  /** Loads the bundled demo campaign (the cheapest eligible-workspace path —
+   * no fetch mocking needed) and waits only for the Multiplayer tab to
+   * enable, not for the auto-launched level to finish loading — gating
+   * happens synchronously with the `workspaceIsRemote`/`workspaceIsDemo`
+   * assignment, well before that. */
+  async function loadEligibleWorkspace(): Promise<void> {
+    await importMain();
+    document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+    await waitUntil(() => !document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.disabled);
+    document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.click();
+  }
+
+  /** Simulates the host side of `createHostOffer` reaching a connectable
+   * state: both data channels open, ICE gathering complete. Reads the
+   * most-recently-constructed `FakeRTCPeerConnection` — safe to call right
+   * after the click that triggers `createHostOffer`, since `new
+   * RTCPeerConnection()` runs synchronously before that function's first
+   * `await`. */
+  function readyHostPeerConnection(): FakeRTCPeerConnection {
+    const pc = FakeRTCPeerConnection.instances.at(-1)!;
+    pc.createdDataChannels.forEach((c) => c.simulateOpen());
+    pc.simulateIceGatheringComplete();
+    return pc;
+  }
+
+  describe("Multiplayer tab gating", () => {
+    it("starts disabled with an explanatory title", async () => {
+      await importMain();
+      const tab = document.querySelector<HTMLButtonElement>("#tab-multiplayer")!;
+      expect(tab.disabled).toBe(true);
+      expect(tab.title).toContain("GitHub-loaded repo or the Demos campaign");
+    });
+
+    it("enables once an eligible workspace (demo campaign) loads", async () => {
+      await importMain();
+      document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+      await waitUntil(() => !document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.disabled);
+      const tab = document.querySelector<HTMLButtonElement>("#tab-multiplayer")!;
+      expect(tab.title).toBe("");
+    });
+
+    it("disables again after a fresh local pick, bouncing back to the Local tab if Multiplayer was active", async () => {
+      await loadEligibleWorkspace();
+      expect(document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.getAttribute("aria-selected")).toBe("true");
+
+      (window as unknown as { showDirectoryPicker: () => Promise<unknown> }).showDirectoryPicker = () =>
+        Promise.resolve(fakeDirectoryHandle("local-ws", { "main.c": VALID_MAIN_C }));
+      document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+      await waitUntil(() => document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.disabled);
+      expect(document.querySelector<HTMLButtonElement>("#tab-local")!.getAttribute("aria-selected")).toBe("true");
+    });
+
+    it("switches between the Host and Join sub-tabs", async () => {
+      await loadEligibleWorkspace();
+      const hostPanel = document.querySelector<HTMLElement>("#multiplayer-subtab-panel-host")!;
+      const joinPanel = document.querySelector<HTMLElement>("#multiplayer-subtab-panel-join")!;
+      expect(hostPanel.hidden).toBe(false);
+      expect(joinPanel.hidden).toBe(true);
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      expect(hostPanel.hidden).toBe(true);
+      expect(joinPanel.hidden).toBe(false);
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.getAttribute("aria-selected")).toBe(
+        "true",
+      );
+    });
+  });
+
+  describe("Host flow", () => {
+    it("creates a session, shows the code, and reaches Connected once the guest's answer arrives", async () => {
+      await loadEligibleWorkspace();
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "R4KJ9X",
+            offer: "offer-sdp",
+            answer: "answer-sdp",
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        );
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      const pc = readyHostPeerConnection();
+
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.textContent === "R4KJ9X");
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.hidden).toBe(false);
+
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+      expect(pc.remoteDescription).toEqual({ type: "answer", sdp: "answer-sdp" });
+      const [createUrl, createInit] = fetchMock.mock.calls[0];
+      expect(createUrl).toBe(`${SERVER_URL}/session`);
+      expect(createInit.method).toBe("PUT");
+      const [pollUrl, pollInit] = fetchMock.mock.calls[1];
+      expect(pollUrl).toBe(`${SERVER_URL}/session/R4KJ9X`);
+      expect(pollInit.headers).toMatchObject({ "X-Host-Token": "host-tok" });
+    });
+
+    it("re-offers via updateSession() under the same code/hostToken after a bad/hijacked answer, then succeeds", async () => {
+      // Regression test: a public session's code is trivially obtainable
+      // (GET /lobby, no auth) — any client who knows it can race the real
+      // guest with a garbage answer. Previously, a setRemoteDescription
+      // failure just abandoned the whole session; now the host re-offers
+      // under the SAME code/hostToken via updateSession() (already
+      // documented for exactly this in multiplayer-server-spec.md's `409
+      // already_answered` guidance) and keeps waiting for the real guest.
+      await loadEligibleWorkspace();
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201)) // PUT create
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "bad-answer-sdp", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ) // GET poll — a racer's garbage answer arrives first
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update — re-offer under the same code
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-2", answer: "good-answer-sdp", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ); // GET poll — the real guest's answer
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      const pc1 = readyHostPeerConnection();
+      pc1.setRemoteDescriptionError = new Error("setRemoteDescription failed on a garbage answer");
+
+      // The retry constructs a fresh RTCPeerConnection via createHostOffer()
+      // — wait for it the same way the N-player re-arm tests above do.
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      const pc2 = readyHostPeerConnection();
+
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+      expect(pc2.remoteDescription).toEqual({ type: "answer", sdp: "good-answer-sdp" });
+      expect(pc1.closeCallCount).toBe(1);
+
+      const [updateUrl, updateInit] = fetchMock.mock.calls[2];
+      expect(updateUrl).toBe(`${SERVER_URL}/session`);
+      expect(JSON.parse(updateInit.body)).toMatchObject({ code: "R4KJ9X", hostToken: "host-tok" });
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    it("surfaces the connection error once the bad-answer retry budget is exhausted", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await loadEligibleWorkspace();
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201)) // PUT create
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "bad-answer-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ) // GET poll — attempt 1, bad answer
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-2", answer: "bad-answer-2", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ) // GET poll — attempt 2, bad answer
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-3", answer: "bad-answer-3", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ); // GET poll — attempt 3, bad answer — retry budget (3) now exhausted
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      for (let i = 0; i < 3; i++) {
+        await waitUntil(() => FakeRTCPeerConnection.instances.length > i);
+        const pc = readyHostPeerConnection();
+        pc.setRemoteDescriptionError = new Error(`setRemoteDescription failed (attempt ${i + 1})`);
+      }
+
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.classList.contains("error"));
+      expect(warnSpy).toHaveBeenCalledTimes(2); // attempts 1 and 2 warn-and-retry; attempt 3 throws to the outer catch instead
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.disabled).toBe(false);
+      expect(fetchMock).toHaveBeenCalledTimes(6);
+    });
+
+    it("N-player (step 10): with maxPlayers=3, a second guest auto-joins sequentially against the same code", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLSelectElement>("#multiplayer-max-players")!.value = "3";
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201)) // PUT create
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ) // GET poll — guest-1 answered
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update — re-armed for guest-2
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-2", answer: "answer-sdp-2", campaignName: "demo-campaign", displayName: null, playerCount: 2 }),
+        ); // GET poll — guest-2 answered
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection(); // guest-1's own peer connection
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.textContent).toBe("2/3 players connected");
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.hidden).toBe(false);
+
+      // armNextGuestSlot automatically arms a second offer/answer round
+      // against the same code — no manual "ready for next joiner" action.
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      const pc2 = readyHostPeerConnection(); // guest-2's own peer connection
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.textContent === "3/3 players connected");
+
+      expect(pc2.remoteDescription).toEqual({ type: "answer", sdp: "answer-sdp-2" });
+      const [updateUrl, updateInit] = fetchMock.mock.calls[2];
+      expect(updateUrl).toBe(`${SERVER_URL}/session`);
+      expect(JSON.parse(updateInit.body)).toMatchObject({ code: "R4KJ9X", hostToken: "host-tok" });
+
+      // Every slot is now filled (maxPlayers=3, 2 guests joined) — no third
+      // re-arm round, so no further fetch calls happen.
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    it("N-player (step 10): armNextGuestSlot re-offers via updateSession() under the same code after a bad/hijacked answer for the second guest, then succeeds", async () => {
+      // Same regression as createMultiplayerSession's own bad-answer-retry
+      // test above, but for armNextGuestSlot's independent copy of the same
+      // retry logic (a distinct code path — guest-1 is already connected
+      // here, the race is for guest-2's slot).
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLSelectElement>("#multiplayer-max-players")!.value = "3";
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201)) // PUT create
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ) // GET poll — guest-1 answered
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update — re-arm for guest-2
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-2", answer: "bad-answer-sdp", campaignName: "demo-campaign", displayName: null, playerCount: 2 }),
+        ) // GET poll — a racer's garbage answer arrives first for guest-2's slot
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update — re-offer under the same code
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-3", answer: "good-answer-sdp", campaignName: "demo-campaign", displayName: null, playerCount: 2 }),
+        ); // GET poll — the real guest-2's answer
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection(); // guest-1's own peer connection
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      const pc2 = readyHostPeerConnection(); // guest-2's first (poisoned) peer connection
+      pc2.setRemoteDescriptionError = new Error("setRemoteDescription failed on a garbage answer");
+
+      // The retry constructs a fresh RTCPeerConnection via createHostOffer()
+      // for guest-2's slot specifically.
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 2);
+      const pc3 = readyHostPeerConnection(); // guest-2's second (real) peer connection
+
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.textContent === "3/3 players connected");
+      expect(pc3.remoteDescription).toEqual({ type: "answer", sdp: "good-answer-sdp" });
+      expect(pc2.closeCallCount).toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(6);
+    });
+
+    it("N-player (step 10): armNextGuestSlot surfaces the connection error (non-fatal to the host) once the bad-answer retry budget is exhausted for the second guest", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLSelectElement>("#multiplayer-max-players")!.value = "3";
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201)) // PUT create
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ) // GET poll — guest-1 answered
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update — re-arm for guest-2
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-2", answer: "bad-answer-1", campaignName: "demo-campaign", displayName: null, playerCount: 2 }),
+        ) // GET poll — attempt 1, bad answer
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-3", answer: "bad-answer-2", campaignName: "demo-campaign", displayName: null, playerCount: 2 }),
+        ) // GET poll — attempt 2, bad answer
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200)) // PUT update
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-4", answer: "bad-answer-3", campaignName: "demo-campaign", displayName: null, playerCount: 2 }),
+        ); // GET poll — attempt 3, bad answer — retry budget (3) now exhausted
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection(); // guest-1's own peer connection
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      for (let i = 0; i < 3; i++) {
+        await waitUntil(() => FakeRTCPeerConnection.instances.length > i + 1);
+        const pc = readyHostPeerConnection();
+        pc.setRemoteDescriptionError = new Error(`setRemoteDescription failed (attempt ${i + 1})`);
+      }
+
+      // Non-fatal to the host — guest-1 stays connected and can still Start
+      // Session, only the re-arm for guest-2's slot gives up (matches the
+      // existing "a failed re-arm attempt is logged and non-fatal" test
+      // below, for a network-error cause instead of an exhausted bad-answer
+      // retry budget). Unlike that test, `#multiplayer-status` itself isn't
+      // asserted here — armNextGuestSlot's own retry loop sets it to
+      // "Waiting for another guest…" on every attempt (including the last,
+      // failed one) before the outer catch ever runs, so it's left in that
+      // state rather than reverting to "Connected." — a pre-existing,
+      // unrelated cosmetic detail of the retry loop, not something this
+      // fix changes.
+      await vi.waitFor(() => expect(warnSpy).toHaveBeenCalledWith("[multiplayer] failed to arm the next guest slot:", expect.any(Error)));
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!.hidden).toBe(false);
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.classList.contains("error")).toBe(false);
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.textContent).toBe("2/3 players connected");
+      expect(fetchMock).toHaveBeenCalledTimes(8);
+    });
+
+    it("N-player (step 10): a failed re-arm attempt is logged and non-fatal — the host keeps its one connected guest", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLSelectElement>("#multiplayer-max-players")!.value = "3";
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201)) // PUT create
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        ) // GET poll — guest-1 answered
+        .mockRejectedValueOnce(new Error("network blip")); // PUT update — re-arm for guest-2 fails
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.textContent).toBe("2/3 players connected");
+
+      // armNextGuestSlot's own createHostOffer() needs its (second) peer
+      // connection's ICE gathering completed for real, same as the first —
+      // otherwise it only resolves after the real 10s ICE-gathering timeout,
+      // far past any reasonable test wait.
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      readyHostPeerConnection();
+
+      await vi.waitFor(() => expect(warnSpy).toHaveBeenCalledWith("[multiplayer] failed to arm the next guest slot:", expect.any(Error)));
+
+      // Non-fatal: the host is still fully connected with its one guest and
+      // can Start Session right now, despite the failed re-arm.
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!.hidden).toBe(false);
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.classList.contains("error")).toBe(false);
+    });
+
+    it("N-player (step 10): a stale re-arm is dropped if cancelled while its channels are still opening", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLSelectElement>("#multiplayer-max-players")!.value = "3";
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        )
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200))
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-2", answer: "answer-sdp-2", campaignName: "demo-campaign", displayName: null, playerCount: 2 }),
+        );
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      const pc2 = FakeRTCPeerConnection.instances.at(-1)!;
+      // ICE completes, but pc2's own data channels are deliberately left
+      // un-opened — parks the in-flight re-arm attempt inside its own
+      // `waitForChannelsOpen()` await, right before the point that needs
+      // this test.
+      pc2.simulateIceGatheringComplete();
+      await waitUntil(() => pc2.remoteDescription !== null);
+
+      // Cancel bumps the generation — the exact same guard that already
+      // protects every other step of this flow.
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-cancel")!.click();
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Cancelled.");
+
+      // Now let the channels actually open — the stale re-arm's own
+      // post-await generation check must close pc2 and never add it as a
+      // guest, rather than resurrecting a cancelled connection.
+      pc2.createdDataChannels.forEach((c) => c.simulateOpen());
+      await flushAsync();
+
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.hidden).toBe(true);
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Cancelled.");
+    });
+
+    it("N-player (step 10): a stale re-arm is dropped if cancelled while the next guest's answer poll is in flight", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLSelectElement>("#multiplayer-max-players")!.value = "3";
+      let resolvePoll2: ((response: Response) => void) | null = null;
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        )
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200))
+        .mockImplementationOnce(() => new Promise((resolve) => (resolvePoll2 = resolve)));
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      readyHostPeerConnection(); // guest-2's own peer connection, ready
+      await waitUntil(() => resolvePoll2 !== null); // the poll GET for guest-2's answer is now in flight
+
+      // Cancel bumps the generation while that fetch is still pending.
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-cancel")!.click();
+      resolvePoll2!(
+        jsonResponse({ code: "R4KJ9X", offer: "offer-sdp-2", answer: "answer-sdp-2", campaignName: "demo-campaign", displayName: null, playerCount: 2 }),
+      );
+      await flushAsync();
+
+      // pollForHostAnswer's own post-await generation check resolves null;
+      // armNextGuestSlot must treat that exactly like any other stale result
+      // — close the connection, never add it as a guest.
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.hidden).toBe(true);
+    });
+
+    it("N-player (step 10): a stale re-arm is dropped if cancelled while the re-arm's own updateSession() is in flight", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLSelectElement>("#multiplayer-max-players")!.value = "3";
+      let resolveUpdate: ((response: Response) => void) | null = null;
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        )
+        .mockImplementationOnce(() => new Promise((resolve) => (resolveUpdate = resolve)));
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      readyHostPeerConnection(); // guest-2's own peer connection, ready
+      await waitUntil(() => resolveUpdate !== null); // the re-arm's own updateSession() PUT is now in flight
+
+      // Cancel bumps the generation while that fetch is still pending.
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-cancel")!.click();
+      resolveUpdate!(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 200));
+      await flushAsync();
+
+      // Never even reaches the answer poll — closed and abandoned right
+      // after updateSession() resolves, the same stale-generation guard as
+      // every other await in this function.
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.hidden).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it("N-player (step 10): a stale re-arm is dropped if cancelled while its own createHostOffer() is still gathering ICE", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLSelectElement>("#multiplayer-max-players")!.value = "3";
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp-1", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        );
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      // The re-arm's own createHostOffer() has constructed a second
+      // RTCPeerConnection synchronously (before its first `await`), but its
+      // ICE gathering is deliberately left incomplete — parks the whole
+      // re-arm attempt at its very first `await`.
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      const pc2 = FakeRTCPeerConnection.instances.at(-1)!;
+      pc2.createdDataChannels.forEach((c) => c.simulateOpen());
+
+      // Cancel bumps the generation while ICE gathering is still pending.
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-cancel")!.click();
+      pc2.simulateIceGatheringComplete();
+      await flushAsync();
+
+      // No further fetch — the generation check right after createHostOffer()
+      // catches this before updateSession() is ever called.
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.hidden).toBe(true);
+    });
+
+    it("N-player (step 10): maxPlayers=2 (the default) never re-arms for a second guest", async () => {
+      await loadEligibleWorkspace();
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: "answer-sdp", campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        );
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-guest-count")!.textContent).toBe("2/2 players connected");
+
+      // Give any stray re-arm attempt a chance to fire before asserting it didn't.
+      await flushAsync();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(FakeRTCPeerConnection.instances.length).toBe(1);
+    });
+
+    it("shows an error status when session creation fails", async () => {
+      await loadEligibleWorkspace();
+      fetchMock.mockResolvedValueOnce(jsonResponse({ error: "missing_campaign_name" }, false, 400));
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(
+        () => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Multiplayer server error: missing_campaign_name",
+      );
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.classList.contains("error")).toBe(true);
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.disabled).toBe(false);
+    });
+
+    it("polls again if the answer isn't ready yet, retries past a transient poll failure, then connects", async () => {
+      vi.useFakeTimers();
+      try {
+        await loadEligibleWorkspace();
+        fetchMock
+          .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+          .mockResolvedValueOnce(
+            jsonResponse({
+              code: "R4KJ9X",
+              offer: "offer-sdp",
+              answer: null,
+              campaignName: "demo-campaign",
+              displayName: null,
+              playerCount: 1,
+            }),
+          )
+          .mockRejectedValueOnce(new Error("network blip"))
+          .mockResolvedValueOnce(
+            jsonResponse({
+              code: "R4KJ9X",
+              offer: "offer-sdp",
+              answer: "answer-sdp",
+              campaignName: "demo-campaign",
+              displayName: null,
+              playerCount: 1,
+            }),
+          );
+
+        document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+        const pc = readyHostPeerConnection();
+        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+        await vi.advanceTimersByTimeAsync(1500);
+        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+
+        await vi.advanceTimersByTimeAsync(1500);
+        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+
+        await vi.waitFor(() =>
+          expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Connected."),
+        );
+        expect(pc.remoteDescription).toEqual({ type: "answer", sdp: "answer-sdp" });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops polling and terminates cleanly when the session expires mid-wait (session_not_found)", async () => {
+      await loadEligibleWorkspace();
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(jsonResponse({ error: "session_not_found" }, false, 404));
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(
+        () =>
+          document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent ===
+          "No session found for that code — it may have expired.",
+      );
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.disabled).toBe(false);
+    });
+
+    it("Cancel stops an in-flight poll and resets the Host panel", async () => {
+      vi.useFakeTimers();
+      try {
+        await loadEligibleWorkspace();
+        fetchMock
+          .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+          .mockResolvedValueOnce(
+            jsonResponse({
+              code: "R4KJ9X",
+              offer: "offer-sdp",
+              answer: null,
+              campaignName: "demo-campaign",
+              displayName: null,
+              playerCount: 1,
+            }),
+          );
+
+        document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+        readyHostPeerConnection();
+        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+        document.querySelector<HTMLButtonElement>("#multiplayer-host-cancel")!.click();
+        expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Cancelled.");
+        expect(document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.disabled).toBe(false);
+        expect(document.querySelector<HTMLButtonElement>("#multiplayer-host-cancel")!.hidden).toBe(true);
+        expect(document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.hidden).toBe(true);
+
+        // The pending retry timer must actually be cleared — advancing past
+        // it should fire no further fetch call.
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("Cancel settles a poll that's already mid-request instead of leaving pollForHostAnswer hanging forever", async () => {
+      await loadEligibleWorkspace();
+      let resolvePoll: (() => void) | null = null;
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolvePoll = () =>
+                resolve(
+                  jsonResponse({
+                    code: "R4KJ9X",
+                    offer: "offer-sdp",
+                    answer: null,
+                    campaignName: "demo-campaign",
+                    displayName: null,
+                    playerCount: 1,
+                  }),
+                );
+            }),
+        );
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.textContent === "R4KJ9X");
+      await waitUntil(() => fetchMock.mock.calls.length >= 2); // poll fetch in flight, still pending
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-cancel")!.click();
+      resolvePoll!(); // the stale poll fetch resolves after Cancel already bumped the generation
+      await flushAsync();
+
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Cancelled.");
+    });
+
+    it("Cancel settles a poll that's mid-rejection instead of leaving pollForHostAnswer hanging forever", async () => {
+      await loadEligibleWorkspace();
+      let rejectPoll: (() => void) | null = null;
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockImplementationOnce(
+          () =>
+            new Promise((_resolve, reject) => {
+              rejectPoll = () => reject(new Error("network blip"));
+            }),
+        );
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.textContent === "R4KJ9X");
+      await waitUntil(() => fetchMock.mock.calls.length >= 2); // poll fetch in flight, still pending
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-cancel")!.click();
+      rejectPoll!(); // the stale poll fetch rejects after Cancel already bumped the generation
+      await flushAsync();
+
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Cancelled.");
+    });
+
+    it("describeMultiplayerError falls back to a generic message for a thrown non-Error value", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock.mockRejectedValueOnce("not an Error instance");
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "R4KJ9X";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+      await waitUntil(
+        () => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Multiplayer connection failed.",
+      );
+    });
+
+    it("clears a pending answer-poll retry timer when a new connect attempt starts elsewhere", async () => {
+      vi.useFakeTimers();
+      try {
+        await loadEligibleWorkspace();
+        fetchMock
+          .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+          .mockResolvedValueOnce(
+            jsonResponse({
+              code: "R4KJ9X",
+              offer: "offer-sdp",
+              answer: null,
+              campaignName: "demo-campaign",
+              displayName: null,
+              playerCount: 1,
+            }),
+          );
+        document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+        readyHostPeerConnection();
+        // First poll returned a null answer — a retry timer is now pending.
+        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+        document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+        fetchMock
+          .mockResolvedValueOnce(
+            jsonResponse({
+              code: "JOINCOD",
+              offer: "offer-sdp",
+              answer: null,
+              campaignName: "demo-campaign",
+              displayName: null,
+              playerCount: 1,
+            }),
+          )
+          .mockResolvedValueOnce(noTurnRelayResponse());
+        document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "JOINCOD";
+        document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+        // The Join's own fetchSession (call 3) then its best-effort
+        // turn-credentials fetch (call 4).
+        await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+
+        // Advancing well past the host's own poll interval must fire no
+        // further host poll — starting the Join attempt cleared the pending
+        // retry timer via `beginMultiplayerConnect()`.
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("starting a Join while a Host attempt is still in flight supersedes it instead of racing it", async () => {
+      // The Host and Join flows share one generation counter/AbortController
+      // (`beginMultiplayerConnect`) — but "Create Session" disables itself
+      // while in flight, so the only *reachable* way to trigger this race
+      // through the real UI is switching to Join (a separate control) and
+      // connecting there before the Host attempt's own PUT resolves.
+      await loadEligibleWorkspace();
+      let releaseHostPut: (() => void) | null = null;
+      fetchMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseHostPut = () => resolve(jsonResponse({ code: "HOSTCOD", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201));
+          }),
+      );
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await flushAsync();
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.hidden).toBe(true); // still awaiting the PUT
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "JOINCOD",
+            offer: "offer-sdp",
+            answer: null,
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        )
+        .mockResolvedValueOnce(noTurnRelayResponse())
+        .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "JOINCOD";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      const guestPc = FakeRTCPeerConnection.instances.at(-1)!;
+      guestPc.simulateIceGatheringComplete();
+      await waitUntil(() => guestPc.remoteDescription !== null);
+      const input = new FakeRTCDataChannel("input");
+      const reconciliation = new FakeRTCDataChannel("reconciliation");
+      guestPc.simulateIncomingDataChannel(input);
+      guestPc.simulateIncomingDataChannel(reconciliation);
+      input.simulateOpen();
+      reconciliation.simulateOpen();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      // The stale Host PUT resolving afterward must not clobber the Join's
+      // now-connected status or reveal a stale host code.
+      releaseHostPut!();
+      await flushAsync();
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Connected.");
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.hidden).toBe(true);
+    });
+
+    /** Starts a Join (the trigger for the Host-side supersession-race tests
+     * below — clickable even mid-Host-attempt, since only Create Session
+     * disables itself) and waits for it to actually connect, proving it
+     * runs unclobbered by whatever the just-superseded Host attempt does
+     * afterward. */
+    async function supersedeWithJoinAttempt(): Promise<void> {
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "JOINCOD",
+            offer: "offer-sdp",
+            answer: null,
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        )
+        .mockResolvedValueOnce(noTurnRelayResponse())
+        .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "JOINCOD";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 1);
+      const guestPc = FakeRTCPeerConnection.instances.at(-1)!;
+      guestPc.simulateIceGatheringComplete();
+      const input = new FakeRTCDataChannel("input");
+      const reconciliation = new FakeRTCDataChannel("reconciliation");
+      guestPc.simulateIncomingDataChannel(input);
+      guestPc.simulateIncomingDataChannel(reconciliation);
+      input.simulateOpen();
+      reconciliation.simulateOpen();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+    }
+
+    it("a supersession landing while the host's ICE-gathering wait is still pending stops it before it publishes a session", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      const hostPc = FakeRTCPeerConnection.instances.at(-1)!;
+      // Deliberately not calling hostPc.simulateIceGatheringComplete() yet —
+      // createHostOffer() is parked awaiting it.
+
+      await supersedeWithJoinAttempt();
+      hostPc.simulateIceGatheringComplete();
+      await flushAsync();
+
+      expect(fetchMock.mock.calls.some(([url, init]) => url === `${SERVER_URL}/session` && init?.method === "PUT")).toBe(false);
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Connected.");
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.hidden).toBe(true);
+    });
+
+    it("a supersession landing while the host waits for its own channels to open stops it from ever reporting Connected", async () => {
+      await loadEligibleWorkspace();
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "HOSTCOD", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "HOSTCOD",
+            offer: "offer-sdp",
+            answer: "answer-sdp",
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        );
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      const hostPc = FakeRTCPeerConnection.instances.at(-1)!;
+      hostPc.simulateIceGatheringComplete(); // let createHostOffer resolve — its own channels stay unopened
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.textContent === "HOSTCOD");
+      await waitUntil(() => hostPc.remoteDescription !== null); // the answer has been applied — parked entering waitForChannelsOpen
+
+      await supersedeWithJoinAttempt();
+
+      // Delivering the stale host's own channels open late must not
+      // resurrect its "Connected." status over the Join's.
+      hostPc.createdDataChannels.forEach((c) => c.simulateOpen());
+      await flushAsync();
+
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Connected.");
+    });
+
+    it("a supersession landing right before a stale host attempt's own failure surfaces doesn't overwrite the newer attempt's status", async () => {
+      await loadEligibleWorkspace();
+      let rejectCreateSession: (() => void) | null = null;
+      fetchMock.mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectCreateSession = () => reject(new Error("network blip"));
+          }),
+      );
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await flushAsync(); // the host's own PUT is now in flight, still pending
+
+      await supersedeWithJoinAttempt();
+      rejectCreateSession!();
+      await flushAsync();
+
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Connected.");
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.classList.contains("error")).toBe(false);
+    });
+  });
+
+  describe("Join flow", () => {
+    it("fetches the session, mints a TURN relay, submits an answer, and reaches Connected once channels open", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "R4KJ9X",
+            offer: "offer-sdp",
+            answer: null,
+            campaignName: "demo-campaign",
+            displayName: "Tobi's Run",
+            playerCount: 1,
+          }),
+        )
+        // The guest's best-effort `fetchTurnServers` call, between fetchSession
+        // and postAnswer — here it succeeds, so the relay is merged into the
+        // guest's ICE config (asserted below).
+        .mockResolvedValueOnce(
+          jsonResponse({
+            iceServers: [{ urls: ["turns:relay.test:443"], username: "u", credential: "c" }],
+            ttl: 3600,
+          }),
+        )
+        .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
+
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "r4kj9x";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
+      const pc = FakeRTCPeerConnection.instances.at(-1)!;
+      // The minted TURN relay was appended after the STUN entry.
+      expect(pc.config?.iceServers).toEqual([
+        { urls: ["stun:stun.l.google.com:19302"] },
+        { urls: ["turns:relay.test:443"], username: "u", credential: "c" },
+      ]);
+      expect(fetchMock.mock.calls.some(([url]) => url === `${SERVER_URL}/session/R4KJ9X/turn-credentials`)).toBe(true);
+      pc.simulateIceGatheringComplete();
+      await waitUntil(() => pc.remoteDescription !== null);
+      expect(pc.remoteDescription).toEqual({ type: "offer", sdp: "offer-sdp" });
+
+      const answerUrlStr = `${SERVER_URL}/session/R4KJ9X/answer`;
+      await waitUntil(() => fetchMock.mock.calls.some(([url]) => url === answerUrlStr));
+      const [answerUrl, answerInit] = fetchMock.mock.calls.find(([url]) => url === answerUrlStr)!;
+      expect(answerUrl).toBe(answerUrlStr);
+      expect(JSON.parse(answerInit.body)).toEqual({ answer: "answer-sdp" });
+
+      const input = new FakeRTCDataChannel("input");
+      const reconciliation = new FakeRTCDataChannel("reconciliation");
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Establishing connection…");
+      pc.simulateIncomingDataChannel(input);
+      pc.simulateIncomingDataChannel(reconciliation);
+      input.simulateOpen();
+      reconciliation.simulateOpen();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+    });
+
+    /** Starts a Host attempt (the trigger for every supersession-race test
+     * below — the only *other* control reachable while Join's own button is
+     * disabled) and waits for its own code to appear, proving the new
+     * attempt runs unclobbered by whatever the just-superseded Join does
+     * afterward. Once the code shows, this Host attempt itself starts
+     * polling for an answer with no mock queued for that call — harmless
+     * (caught and retried) but would otherwise leave a real, uncancelled
+     * `setTimeout` retry pending past the end of the test that starts it, so
+     * every caller must pair this with `assertJoinStayedSuperseded()`, which
+     * cancels it via the Cancel button once its own assertions are done. */
+    async function supersedeWithHostAttempt(): Promise<void> {
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!.click();
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "HOSTCOD", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "HOSTCOD",
+            offer: "offer-sdp",
+            answer: null,
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        );
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.textContent === "HOSTCOD");
+    }
+
+    function assertJoinStayedSuperseded(): void {
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).not.toBe("Connected.");
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.classList.contains("error")).toBe(false);
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.textContent).toBe("HOSTCOD");
+      // Cancels the still-active Host attempt's own answer-poll timer — see
+      // `supersedeWithHostAttempt`'s doc comment.
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-cancel")!.click();
+    }
+
+    // Each of the five tests below parks a Join at a *different*, precisely
+    // controlled point in its own connect sequence (a still-pending fetch,
+    // or an event this test simply hasn't dispatched yet), triggers a Host
+    // attempt at exactly that point, then lets the join continue — so each
+    // exercises exactly one of `joinMultiplayerSession`'s `generation !==
+    // multiplayerConnectionGeneration` bail-outs, in the order they appear.
+
+    it("a supersession landing while fetchSession is still pending stops the join before it starts connecting", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      let resolveFetchSession: (() => void) | null = null;
+      fetchMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFetchSession = () =>
+              resolve(
+                jsonResponse({
+                  code: "JOINCOD",
+                  offer: "offer-sdp",
+                  answer: null,
+                  campaignName: "demo-campaign",
+                  displayName: null,
+                  playerCount: 1,
+                }),
+              );
+          }),
+      );
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "JOINCOD";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+      await flushAsync(); // fetchSession is now in flight, still unresolved
+
+      await supersedeWithHostAttempt();
+      resolveFetchSession!();
+      await flushAsync();
+
+      expect(FakeRTCPeerConnection.instances).toHaveLength(1); // the join's own createGuestAnswer never ran
+      assertJoinStayedSuperseded();
+    });
+
+    it("a supersession landing while the ICE-gathering wait is still pending stops the join before it submits its answer", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "JOINCOD",
+            offer: "offer-sdp",
+            answer: null,
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        )
+        .mockResolvedValueOnce(noTurnRelayResponse());
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "JOINCOD";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
+      const pc = FakeRTCPeerConnection.instances.at(-1)!;
+      // Deliberately not calling pc.simulateIceGatheringComplete() yet —
+      // createGuestAnswer() is parked awaiting it.
+
+      await supersedeWithHostAttempt();
+      pc.simulateIceGatheringComplete();
+      await flushAsync();
+
+      expect(fetchMock.mock.calls.some(([url]) => url === `${SERVER_URL}/session/JOINCOD/answer`)).toBe(false);
+      assertJoinStayedSuperseded();
+    });
+
+    it("a supersession landing while postAnswer is still pending stops the join before it awaits its channels", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      let resolvePostAnswer: (() => void) | null = null;
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "JOINCOD",
+            offer: "offer-sdp",
+            answer: null,
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        )
+        .mockResolvedValueOnce(noTurnRelayResponse())
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolvePostAnswer = () => resolve({ ok: true, status: 204 } as unknown as Response);
+            }),
+        );
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "JOINCOD";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
+      const pc = FakeRTCPeerConnection.instances.at(-1)!;
+      pc.simulateIceGatheringComplete();
+      await waitUntil(() => fetchMock.mock.calls.length >= 3); // postAnswer in flight, still pending
+
+      await supersedeWithHostAttempt();
+      resolvePostAnswer!();
+      await flushAsync();
+
+      // The superseded join's own `channelsPromise` never gets awaited by
+      // its own (now-abandoned) continuation — delivering channels late must
+      // not clobber the new Host attempt's UI state.
+      const input = new FakeRTCDataChannel("input");
+      const reconciliation = new FakeRTCDataChannel("reconciliation");
+      pc.simulateIncomingDataChannel(input);
+      pc.simulateIncomingDataChannel(reconciliation);
+      input.simulateOpen();
+      reconciliation.simulateOpen();
+      await flushAsync();
+      assertJoinStayedSuperseded();
+    });
+
+    it("a supersession landing right after the guest's channels resolve stops the join before it waits for them to open", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "JOINCOD",
+            offer: "offer-sdp",
+            answer: null,
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        )
+        .mockResolvedValueOnce(noTurnRelayResponse())
+        .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "JOINCOD";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
+      const pc = FakeRTCPeerConnection.instances.at(-1)!;
+      pc.simulateIceGatheringComplete();
+      await waitUntil(() => fetchMock.mock.calls.length >= 3); // postAnswer sent
+      // Deliberately not delivering the data channels yet — the join is
+      // parked awaiting `channelsPromise`.
+
+      const input = new FakeRTCDataChannel("input");
+      const reconciliation = new FakeRTCDataChannel("reconciliation");
+      // Queue `channelsPromise`'s resolution as a microtask, then supersede
+      // synchronously (no `await` in between) so the generation bump lands
+      // before the join's own `await channelsPromise` continuation resumes.
+      pc.simulateIncomingDataChannel(input);
+      pc.simulateIncomingDataChannel(reconciliation);
+      await supersedeWithHostAttempt();
+
+      input.simulateOpen();
+      reconciliation.simulateOpen();
+      await flushAsync();
+      assertJoinStayedSuperseded();
+    });
+
+    it("a supersession landing right after the guest's channels open stops the join from ever reporting Connected", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "JOINCOD",
+            offer: "offer-sdp",
+            answer: null,
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        )
+        .mockResolvedValueOnce(noTurnRelayResponse())
+        .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "JOINCOD";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
+      const pc = FakeRTCPeerConnection.instances.at(-1)!;
+      pc.simulateIceGatheringComplete();
+      const input = new FakeRTCDataChannel("input");
+      const reconciliation = new FakeRTCDataChannel("reconciliation");
+      pc.simulateIncomingDataChannel(input);
+      pc.simulateIncomingDataChannel(reconciliation);
+      await waitUntil(() => fetchMock.mock.calls.length >= 3); // postAnswer sent
+      // `channelsPromise` has resolved by now — one more tick lets the join's
+      // own continuation actually reach and enter `waitForChannelsOpen`,
+      // registering its "open" listeners on these still-unopened channels.
+      await flushAsync();
+
+      // Queue both channels' "open" resolution, then supersede synchronously
+      // before `waitForChannelsOpen`'s own continuation resumes.
+      input.simulateOpen();
+      reconciliation.simulateOpen();
+      await supersedeWithHostAttempt();
+
+      await flushAsync();
+      assertJoinStayedSuperseded();
+    });
+
+    it("a supersession landing right before a stale join's own failure surfaces doesn't overwrite the newer attempt's status", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      let rejectAnswer: (() => void) | null = null;
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "JOINCOD",
+            offer: "offer-sdp",
+            answer: null,
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        )
+        .mockResolvedValueOnce(noTurnRelayResponse())
+        .mockImplementationOnce(
+          () =>
+            new Promise((_resolve, reject) => {
+              rejectAnswer = () => reject(new Error("network blip"));
+            }),
+        );
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "JOINCOD";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
+      FakeRTCPeerConnection.instances.at(-1)!.simulateIceGatheringComplete();
+      await waitUntil(() => fetchMock.mock.calls.length >= 3); // postAnswer in flight, still pending
+
+      await supersedeWithHostAttempt();
+      rejectAnswer!();
+      await flushAsync();
+
+      assertJoinStayedSuperseded();
+    });
+
+    it("does nothing for an empty/whitespace-only code", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "   ";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+      await flushAsync();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("");
+    });
+
+    it("shows already_answered as a friendly message", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "R4KJ9X",
+            offer: "offer-sdp",
+            answer: null,
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        )
+        .mockResolvedValueOnce(noTurnRelayResponse())
+        .mockResolvedValueOnce(jsonResponse({ error: "already_answered" }, false, 409));
+
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "R4KJ9X";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
+      FakeRTCPeerConnection.instances.at(-1)!.simulateIceGatheringComplete();
+
+      await waitUntil(
+        () =>
+          document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent ===
+          "Someone else already joined that session.",
+      );
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.disabled).toBe(false);
+    });
+
+    it("shows a rate_limited error as a friendly message", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock.mockResolvedValueOnce(jsonResponse({ error: "rate_limited", retryAfterMs: 5000 }, false, 429));
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "R4KJ9X";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+      await waitUntil(
+        () =>
+          document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent ===
+          "Rate-limited by the multiplayer server — try again shortly.",
+      );
+    });
+
+    it("falls back to the raw Error message for a non-signaling failure", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock.mockRejectedValueOnce(new Error("fetch failed: DNS lookup failed"));
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "R4KJ9X";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+      await waitUntil(
+        () => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "fetch failed: DNS lookup failed",
+      );
+    });
+  });
+
+  describe("Lobby browser dialog", () => {
+    it("shows an empty-state message when no public sessions exist", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock.mockResolvedValueOnce(jsonResponse({ sessions: [] }));
+      document.querySelector<HTMLButtonElement>("#multiplayer-browse-lobby")!.click();
+      await waitUntil(() => document.querySelector<HTMLDialogElement>("#multiplayer-lobby-dialog")!.open);
+      await waitUntil(() => document.querySelector("#multiplayer-lobby-list")!.textContent === "No public sessions right now.");
+    });
+
+    it("lists sessions with singular/plural player counts and joins on click", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({
+            sessions: [
+              { code: "R4KJ9X", displayName: "Tobi's Run", campaignName: "demo-campaign", playerCount: 1 },
+              { code: "8MZQ2P", displayName: null, campaignName: "torvalds/linux", playerCount: 2 },
+            ],
+          }),
+        )
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "R4KJ9X",
+            offer: "offer-sdp",
+            answer: null,
+            campaignName: "demo-campaign",
+            displayName: "Tobi's Run",
+            playerCount: 1,
+          }),
+        );
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-browse-lobby")!.click();
+      await waitUntil(() => document.querySelectorAll(".multiplayer-lobby-entry").length === 2);
+      const entries = document.querySelectorAll<HTMLButtonElement>(".multiplayer-lobby-entry");
+      expect(entries[0].textContent).toBe("Tobi's Run — demo-campaign (1 player)");
+      expect(entries[1].textContent).toBe("(unnamed) — torvalds/linux (2 players)");
+
+      entries[0].click();
+      expect(document.querySelector<HTMLDialogElement>("#multiplayer-lobby-dialog")!.open).toBe(false);
+      await waitUntil(() => document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value === "R4KJ9X");
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
+    });
+
+    it("shows an error item when the lobby fetch fails", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock.mockRejectedValueOnce(new Error("lobby unreachable"));
+      document.querySelector<HTMLButtonElement>("#multiplayer-browse-lobby")!.click();
+      await waitUntil(() => document.querySelector(".error")?.textContent === "lobby unreachable");
+    });
+
+    it("Close closes the dialog and returns focus to the canvas once a level is running", async () => {
+      await loadEligibleWorkspace();
+      await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock.mockResolvedValueOnce(jsonResponse({ sessions: [] }));
+      document.querySelector<HTMLButtonElement>("#multiplayer-browse-lobby")!.click();
+      await waitUntil(() => document.querySelector<HTMLDialogElement>("#multiplayer-lobby-dialog")!.open);
+      document.querySelector<HTMLButtonElement>("#close-multiplayer-lobby")!.click();
+      expect(document.querySelector<HTMLDialogElement>("#multiplayer-lobby-dialog")!.open).toBe(false);
+    });
+  });
+
+  describe("?testHooks=1 introspection", () => {
+    it("exposes getConnectionState via a separate global only when ?testHooks=1 is on the URL", async () => {
+      const original = window.location;
+      Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+      try {
+        await importMain();
+        const hooks = (window as unknown as { __codeensteinMultiplayerTestHooks?: Record<string, () => unknown> })
+          .__codeensteinMultiplayerTestHooks;
+        expect(hooks).toBeDefined();
+        expect(hooks!.getConnectionState()).toEqual({ state: "idle", channels: null });
+      } finally {
+        Object.defineProperty(window, "location", { value: original, configurable: true });
+      }
+    });
+
+    it("reflects a real connected session's channel readyStates once connected", async () => {
+      const original = window.location;
+      Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+      try {
+        await loadEligibleWorkspace();
+        fetchMock
+          .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+          .mockResolvedValueOnce(
+            jsonResponse({
+              code: "R4KJ9X",
+              offer: "offer-sdp",
+              answer: "answer-sdp",
+              campaignName: "demo-campaign",
+              displayName: null,
+              playerCount: 1,
+            }),
+          );
+        document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+        readyHostPeerConnection();
+        await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+        const hooks = (window as unknown as { __codeensteinMultiplayerTestHooks?: Record<string, () => unknown> })
+          .__codeensteinMultiplayerTestHooks;
+        // Host role (step 10): `channels` still reflects guest-1's own pair
+        // for backward compatibility, plus the new per-guest `links`
+        // breakdown and `connectedGuestCount`/`maxPlayers`.
+        expect(hooks!.getConnectionState()).toEqual({
+          state: "connected",
+          channels: { input: "open", reconciliation: "open" },
+          links: [{ id: "guest-1", input: "open", reconciliation: "open" }],
+          connectedGuestCount: 1,
+          maxPlayers: 2,
+        });
+      } finally {
+        Object.defineProperty(window, "location", { value: original, configurable: true });
+      }
+    });
+
+    it("reflects a connected guest's own single channel pair (step 10: guest role is unchanged)", async () => {
+      const original = window.location;
+      Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+      try {
+        await loadEligibleWorkspace();
+        document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+        fetchMock
+          .mockResolvedValueOnce(
+            jsonResponse({
+              code: "R4KJ9X",
+              offer: "offer-sdp",
+              answer: null,
+              campaignName: "demo-campaign",
+              displayName: null,
+              playerCount: 1,
+            }),
+          )
+          .mockResolvedValueOnce(noTurnRelayResponse())
+          .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
+
+        document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "r4kj9x";
+        document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+
+        await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
+        const pc = FakeRTCPeerConnection.instances.at(-1)!;
+        pc.simulateIceGatheringComplete();
+        await waitUntil(() => pc.remoteDescription !== null);
+
+        const input = new FakeRTCDataChannel("input");
+        const reconciliation = new FakeRTCDataChannel("reconciliation");
+        await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Establishing connection…");
+        pc.simulateIncomingDataChannel(input);
+        pc.simulateIncomingDataChannel(reconciliation);
+        input.simulateOpen();
+        reconciliation.simulateOpen();
+        await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+        const hooks = (window as unknown as { __codeensteinMultiplayerTestHooks?: Record<string, () => unknown> })
+          .__codeensteinMultiplayerTestHooks;
+        // Guest role: no `links`/`connectedGuestCount`/`maxPlayers` — a guest
+        // only ever has one link, toward the host.
+        expect(hooks!.getConnectionState()).toEqual({
+          state: "connected",
+          channels: { input: "open", reconciliation: "open" },
+        });
+      } finally {
+        Object.defineProperty(window, "location", { value: original, configurable: true });
+      }
+    });
+
+    it("does not expose multiplayer testHooks when ?testHooks=1 is absent", async () => {
+      await importMain();
+      expect(
+        (window as unknown as { __codeensteinMultiplayerTestHooks?: unknown }).__codeensteinMultiplayerTestHooks,
+      ).toBeUndefined();
+    });
+  });
+
+  describe("Starting a multiplayer session (step 6c)", () => {
+    /** No real `Worker` global exists under jsdom/vitest — captures the args
+     * a real `new Worker(new URL(...), {type:"module"})` call would use and
+     * exposes `onmessage`/`terminate` for the test to drive directly, same
+     * spirit as `FakeRTCDataChannel`. */
+    class FakeTickWorker {
+      static instances: FakeTickWorker[] = [];
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      terminate = vi.fn();
+      /** Records both the message and whether `onmessage` was already
+       * assigned at call time — regression coverage for the "gate the tick
+       * worker's interval behind an explicit start message" fix: `main.ts`
+       * must only ever call this (with `{type: "start"}`) after it has
+       * already assigned the real `onmessage` handler, never before. */
+      postMessageCalls: Array<{ message: unknown; onmessageWasAssigned: boolean }> = [];
+      constructor() {
+        FakeTickWorker.instances.push(this);
+      }
+      postMessage(message: unknown): void {
+        this.postMessageCalls.push({ message, onmessageWasAssigned: this.onmessage !== null });
+      }
+    }
+
+    function multiplayerHooks(): {
+      getConnectionState: () => unknown;
+      getSimTick: () => number | null;
+      getPlayerPosition: (id: string) => { x: number; y: number } | null;
+      getPlayerFacing: (id: string) => { dirX: number; dirY: number } | null;
+      getRngState: () => number | null;
+      injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
+      debugSetGodMode: (id: string, enabled: boolean) => void;
+      hasActiveRenderOffset: (id: string) => boolean;
+      getLastReconciliationRngState: () => number | null;
+      getPlayerStatus: (id: string) => string | null;
+      getLootDrops: () => readonly unknown[];
+      getMapExit: () => { x: number; y: number } | null;
+      getMapGrid: () => readonly (readonly number[])[] | null;
+      getExitCountdownRemaining: () => number | null;
+      getMap: () => unknown | null;
+      getEnemiesSnapshot: () => unknown[];
+      getMinesSnapshot: () => unknown[];
+      getDropsSnapshot: () => unknown[];
+      getKeysSnapshot: () => unknown[];
+      getBotPlayerState: (id: string) => { x: number; y: number; state: string } | null;
+      getConnectionStats: (id: string) => Promise<{ rttMs: number | null } | null>;
+      getMissedTickStats: () => { totalTicks: number; missedTicksByPlayer: Record<string, number> };
+      getReconciliationCorrections: () => Record<string, { count: number; totalMagnitudeTiles: number }>;
+      getMultiplayerTelemetrySnapshot: (id: string) => { kills: number; score: number } | null;
+    } {
+      return (
+        window as unknown as {
+          __codeensteinMultiplayerTestHooks: {
+            getConnectionState: () => unknown;
+            getSimTick: () => number | null;
+            getPlayerPosition: (id: string) => { x: number; y: number } | null;
+            getPlayerFacing: (id: string) => { dirX: number; dirY: number } | null;
+            getRngState: () => number | null;
+            injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
+            debugSetGodMode: (id: string, enabled: boolean) => void;
+            hasActiveRenderOffset: (id: string) => boolean;
+            getLastReconciliationRngState: () => number | null;
+            getPlayerStatus: (id: string) => string | null;
+            getLootDrops: () => readonly unknown[];
+            getMapExit: () => { x: number; y: number } | null;
+            getMapGrid: () => readonly (readonly number[])[] | null;
+            getExitCountdownRemaining: () => number | null;
+            getMap: () => unknown | null;
+            getEnemiesSnapshot: () => unknown[];
+            getMinesSnapshot: () => unknown[];
+            getDropsSnapshot: () => unknown[];
+            getKeysSnapshot: () => unknown[];
+            getBotPlayerState: (id: string) => { x: number; y: number; state: string } | null;
+            getConnectionStats: (id: string) => Promise<{ rttMs: number | null } | null>;
+            getMissedTickStats: () => { totalTicks: number; missedTicksByPlayer: Record<string, number> };
+            getReconciliationCorrections: () => Record<string, { count: number; totalMagnitudeTiles: number }>;
+            getMultiplayerTelemetrySnapshot: (id: string) => { kills: number; score: number } | null;
+          };
+        }
+      ).__codeensteinMultiplayerTestHooks;
+    }
+
+    function emptySnapshot(): InputSnapshot {
+      return {
+        keys: [],
+        mouseDX: 0,
+        fireQueued: false,
+        fireHeld: false,
+        weaponRequest: null,
+        mapToggle: false,
+        interact: false,
+        melee: false,
+        meleeHeld: false,
+        wheelSteps: 0,
+        fpsToggle: false,
+        escape: false,
+        blur: false,
+        pointerUnlock: false,
+        click: false,
+        gpForward: 0,
+        gpStrafe: 0,
+        gpTurn: 0,
+      };
+    }
+
+    /** A minimal but valid `GameMap`-shaped fixture (`visited` omitted, same
+     * as what a real host sends over the wire) with two distinct
+     * `multiplayerSpawns` — enough to exercise the guest's chunked-transfer
+     * reassembly and spawn-assignment path without needing a real parsed
+     * source file. `hazardousSpawns: true` puts a hazard tile at both spawns
+     * instead, for the game-over/teardown test below. */
+    function fixtureMapWithoutVisited(hazardousSpawns = false): Record<string, unknown> {
+      const size = 12;
+      const spawns = [
+        { x: 2, y: 2 },
+        { x: 8, y: 8 },
+      ];
+      const grid = Array.from({ length: size }, (_, y) =>
+        Array.from({ length: size }, (_, x) => {
+          if (x === 0 || y === 0 || x === size - 1 || y === size - 1) return 1;
+          if (hazardousSpawns && spawns.some((s) => s.x === x && s.y === y)) return 2;
+          return 0;
+        }),
+      );
+      return {
+        width: size,
+        height: size,
+        grid,
+        rooms: [],
+        breakupRooms: [],
+        spawn: { x: 5, y: 5 },
+        multiplayerSpawns: spawns,
+        enemies: [],
+        exit: { x: size - 2, y: size - 2 },
+        shortestPathTiles: 4,
+        hazards: hazardousSpawns ? spawns : [],
+        doors: [],
+        keys: [],
+        decorations: [],
+        teleporters: [],
+        spikeTraps: [],
+        mines: [],
+        ammoPickups: [],
+        loreTerminals: [],
+        bonusLevel: false,
+        secretRoomCount: 0,
+      };
+    }
+
+    beforeEach(() => {
+      FakeTickWorker.instances.length = 0;
+      vi.stubGlobal("Worker", FakeTickWorker);
+    });
+
+    it("host: Start Session runs the setup handshake and begins ticking, spawns spread apart", async () => {
+      // Unlike the other `?testHooks=1` tests in this file, this one reaches
+      // `new URL("./multiplayer/tickClockWorker.ts", import.meta.url)` for
+      // real — a wholesale `window.location` property override (a plain
+      // object copy, losing the real `Location` prototype) breaks that
+      // resolution under jsdom. `history.pushState` changes the URL while
+      // keeping a genuine `Location` instance.
+      history.pushState(null, "", "?testHooks=1");
+      try {
+        await loadEligibleWorkspace();
+        // loadEligibleWorkspace() only waits for the Multiplayer tab to
+        // enable — the demo campaign's own auto-launched level (which sets
+        // currentParsedFile/currentLevelPath, needed to host a session)
+        // finishes loading slightly later; same wait `main.test.ts` already
+        // uses elsewhere to know a level has actually started.
+        await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+        fetchMock
+          .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+          .mockResolvedValueOnce(
+            jsonResponse({
+              code: "R4KJ9X",
+              offer: "offer-sdp",
+              answer: "answer-sdp",
+              campaignName: "demo-campaign",
+              displayName: null,
+              playerCount: 1,
+            }),
+          );
+        document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+        const pc = readyHostPeerConnection();
+        await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+        // Before any session exists, getPlayerPosition's activeMultiplayerSession?.
+        // short-circuits straight to its `?? null` fallback.
+        expect(multiplayerHooks().getPlayerPosition("host")).toBeNull();
+        expect(multiplayerHooks().getPlayerFacing("host")).toBeNull();
+        expect(multiplayerHooks().getRngState()).toBeNull();
+        expect(() => multiplayerHooks().injectDesync({ kind: "extraRngDraw" })).not.toThrow();
+        expect(() => multiplayerHooks().debugSetGodMode("host", true)).not.toThrow();
+        // No session yet — activeMultiplayerSession?. short-circuits to the
+        // `?? false` fallback, distinct from a real session's own `false`.
+        expect(multiplayerHooks().hasActiveRenderOffset("host")).toBe(false);
+        expect(multiplayerHooks().getLastReconciliationRngState()).toBeNull();
+        expect(multiplayerHooks().getPlayerStatus("host")).toBeNull();
+        expect(multiplayerHooks().getLootDrops()).toEqual([]);
+        expect(multiplayerHooks().getMapExit()).toBeNull();
+        expect(multiplayerHooks().getMapGrid()).toBeNull();
+        expect(multiplayerHooks().getExitCountdownRemaining()).toBeNull();
+        expect(multiplayerHooks().getMap()).toBeNull();
+        expect(multiplayerHooks().getEnemiesSnapshot()).toEqual([]);
+        expect(multiplayerHooks().getMinesSnapshot()).toEqual([]);
+        expect(multiplayerHooks().getBotPlayerState("host")).toBeNull();
+        expect(multiplayerHooks().getDropsSnapshot()).toEqual([]);
+        expect(multiplayerHooks().getKeysSnapshot()).toEqual([]);
+        // Step 11 Phase 2b — same "no session yet" `?? fallback` shape as
+        // every getter above.
+        await expect(multiplayerHooks().getConnectionStats("host")).resolves.toBeNull();
+        expect(multiplayerHooks().getMissedTickStats()).toEqual({ totalTicks: 0, missedTicksByPlayer: {} });
+        expect(multiplayerHooks().getReconciliationCorrections()).toEqual({});
+        // Step 11 Phase 2a — same "no session yet" `?? null` fallback shape.
+        expect(multiplayerHooks().getMultiplayerTelemetrySnapshot("host")).toBeNull();
+
+        const startButton = document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!;
+        expect(startButton.hidden).toBe(false);
+        startButton.click();
+        expect(startButton.disabled).toBe(true);
+
+        const reconciliation = pc.createdDataChannels.find((c) => c.label === "reconciliation")!;
+        reconciliation.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ }) }),
+        );
+        await waitUntil(() => FakeTickWorker.instances.length > 0);
+
+        const worker = FakeTickWorker.instances.at(-1)!;
+        // Regression coverage for the "gate the tick worker's interval
+        // behind an explicit start message" fix — main.ts must send exactly
+        // one {type: "start"} message, and only after it has already
+        // assigned the real onmessage handler (never before).
+        expect(worker.postMessageCalls).toEqual([{ message: { type: "start" }, onmessageWasAssigned: true }]);
+        worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+
+        const hooks = multiplayerHooks();
+        expect(hooks.getSimTick()).toBe(0);
+        const hostPos = hooks.getPlayerPosition("host");
+        const guestPos = hooks.getPlayerPosition("guest-1");
+        expect(hostPos).not.toBeNull();
+        expect(guestPos).not.toBeNull();
+        expect(hooks.getPlayerFacing("host")).toEqual({ dirX: 1, dirY: 0 });
+
+        const rngBefore = hooks.getRngState();
+        expect(rngBefore).not.toBeNull();
+        hooks.injectDesync({ kind: "extraRngDraw" });
+        expect(hooks.getRngState()).not.toBe(rngBefore);
+        // A real session now exists, so this reaches the engine's own real
+        // debugSetGodMode() rather than the `?.` short-circuit covered by
+        // the earlier no-session check above.
+        expect(() => hooks.debugSetGodMode("host", true)).not.toThrow();
+        // A real session now exists — activeMultiplayerSession?. resolves
+        // (unlike the earlier no-session check above), so this reaches the
+        // engine's own real `false`, not the `?? false` fallback.
+        expect(hooks.hasActiveRenderOffset("host")).toBe(false);
+        // Frozen at tick 0's own broadcast — unaffected by the injectDesync()
+        // call just above, which only touched *live* rng state.
+        expect(hooks.getLastReconciliationRngState()).toBe(rngBefore);
+        expect(hooks.getPlayerStatus("host")).toBe("alive");
+        expect(hooks.getLootDrops()).toEqual([]);
+        const exit = hooks.getMapExit();
+        expect(exit).not.toBeNull();
+        const grid = hooks.getMapGrid();
+        expect(Array.isArray(grid) && grid!.length > 0).toBe(true);
+        // Not standing on the exit — a real, if uninteresting, `null` from
+        // an actual live session (not the pre-session `?? null` short-circuit
+        // above).
+        expect(hooks.getExitCountdownRemaining()).toBeNull();
+        expect(hooks.getMap()).not.toBeNull();
+        expect(Array.isArray(hooks.getEnemiesSnapshot())).toBe(true);
+        expect(Array.isArray(hooks.getMinesSnapshot())).toBe(true);
+        expect(hooks.getBotPlayerState("host")).toMatchObject({ state: "playing" });
+        expect(Array.isArray(hooks.getDropsSnapshot())).toBe(true);
+        expect(Array.isArray(hooks.getKeysSnapshot())).toBe(true);
+        // Step 11 Phase 2b — a real session now exists, so these reach the
+        // session handle's own real implementation, not the `?? fallback`
+        // checked above. No real RTCPeerConnection in this test environment
+        // (FakeConnection-equivalent below), so getConnectionStats resolves
+        // null rather than a real rttMs — still proves the hook itself wires
+        // through to a live session instead of short-circuiting.
+        await expect(hooks.getConnectionStats("host")).resolves.toBeNull();
+        // Tick 0's own bootstrap transient (same phenomenon
+        // multiplayerSessionHost.test.ts's own "bootstrap transient" test
+        // documents) — both players missed their real input for this tick.
+        expect(hooks.getMissedTickStats()).toEqual({ totalTicks: 1, missedTicksByPlayer: { "guest-1": 1, host: 1 } });
+        // No reconciliation snapshot applied yet on the host side (it never
+        // applies one to itself) — always empty.
+        expect(hooks.getReconciliationCorrections()).toEqual({});
+        // Step 11 Phase 2a — a real session with `?testHooks=1` set has
+        // telemetry enabled, so this reaches the engine's own real snapshot
+        // (not the `?? null` fallback checked above) — a fresh player has 0
+        // kills (score isn't 0 — computeLevelScoreBreakdown grants baseline
+        // component(s) even before any kill).
+        expect(hooks.getMultiplayerTelemetrySnapshot("host")).toMatchObject({ kills: 0 });
+      } finally {
+        history.pushState(null, "", "/");
+      }
+    });
+
+    /** A minimal, fully-open 12×12 room with two multiplayer spawn points and
+     * the exit two tiles diagonally from the host's own spawn slot
+     * (`multiplayerSpawns[1]` — the sorted roster is `["guest-1", "host"]`,
+     * see `sessionEngine.ts`'s `spawnFor`) — no interior walls to navigate
+     * around, so a real host can be driven onto the exit with plain
+     * held-key movement instead of a full pathfinder. `mapGenerator.generate`
+     * is mocked to always return a fresh copy of this fixture below, so the
+     * level-transition tests don't depend on the bundled demo campaign's
+     * actual (large, combat-heavy) generated content. */
+    function fixedTransitionMap(): Record<string, unknown> {
+      const size = 12;
+      const grid = Array.from({ length: size }, (_, y) =>
+        Array.from({ length: size }, (_, x) => (x === 0 || y === 0 || x === size - 1 || y === size - 1 ? 1 : 0)),
+      );
+      return {
+        width: size,
+        height: size,
+        grid,
+        visited: Array.from({ length: size }, () => new Array<boolean>(size).fill(false)),
+        rooms: [],
+        breakupRooms: [],
+        spawn: { x: 5, y: 5 },
+        multiplayerSpawns: [
+          { x: 2, y: 2 },
+          { x: 8, y: 8 },
+        ],
+        enemies: [],
+        exit: { x: 10, y: 10 },
+        shortestPathTiles: 4,
+        hazards: [],
+        doors: [],
+        keys: [],
+        decorations: [],
+        teleporters: [],
+        spikeTraps: [],
+        mines: [],
+        ammoPickups: [],
+        loreTerminals: [],
+        bonusLevel: false,
+        secretRoomCount: 0,
+      };
+    }
+
+    /** Drives the real host session's local player from its current position
+     * straight onto `exit`, then keeps ticking through the whole
+     * multiplayer exit countdown, using real per-tick worker messages and
+     * held movement/turn keys — no pathfinding needed since
+     * `fixedTransitionMap()`'s interior is fully open. Facing starts at
+     * angle 0 (`Player.dirX`/`dirY` default to `1, 0`) and is dead-reckoned
+     * from there using the same `ROT_SPEED`/`FIXED_DT` the engine itself
+     * turns by — cheaper and just as exact as querying it back out, since
+     * nothing else ever turns the host's own player during this walk.
+     * Deliberately synchronous/tick-driven throughout, never `await`ing
+     * mid-loop: the async level-transition chain this walk ultimately
+     * triggers (`findNextMultiplayerLevel`) can't progress until the whole
+     * synchronous call stack unwinds anyway, so the caller awaits
+     * separately once this returns. */
+    function driveHostToWin(
+      canvas: HTMLCanvasElement,
+      worker: { onmessage: ((event: MessageEvent) => void) | null },
+      exit: { x: number; y: number },
+      totalTicks: number,
+    ): void {
+      const ROT_SPEED = 2.6;
+      const FIXED_DT = 1 / 30;
+      const hooks = multiplayerHooks();
+      let held = new Set<string>();
+      const setHeld = (next: Set<string>): void => {
+        for (const code of held) if (!next.has(code)) canvas.dispatchEvent(new KeyboardEvent("keyup", { code }));
+        for (const code of next) if (!held.has(code)) canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
+        held = next;
+      };
+      let angle = 0;
+      let tick = 0;
+      for (let i = 0; i < totalTicks; i++) {
+        const pos = hooks.getPlayerPosition("host");
+        if (pos) {
+          const tx = exit.x + 0.5;
+          const ty = exit.y + 0.5;
+          const dx = tx - pos.x;
+          const dy = ty - pos.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist < 0.4) {
+            setHeld(new Set());
+          } else {
+            const desired = Math.atan2(dy, dx);
+            let diff = desired - angle;
+            while (diff > Math.PI) diff -= 2 * Math.PI;
+            while (diff < -Math.PI) diff += 2 * Math.PI;
+            if (Math.abs(diff) > 0.15) {
+              const key = diff > 0 ? "KeyE" : "KeyQ";
+              setHeld(new Set([key]));
+              angle += (key === "KeyE" ? ROT_SPEED : -ROT_SPEED) * FIXED_DT;
+            } else {
+              setHeld(new Set(["KeyW"]));
+            }
+          }
+        }
+        tick += 1;
+        worker.onmessage?.({ data: { type: "tick", tick } } as MessageEvent);
+      }
+      setHeld(new Set());
+    }
+
+    it("host: a real win triggers a host-driven level transition to the next parsable file", async () => {
+      history.pushState(null, "", "?testHooks=1");
+      try {
+        vi.doMock("./fs/demoCampaign", async () => {
+          const actual = await vi.importActual<typeof import("./fs/demoCampaign")>("./fs/demoCampaign");
+          return {
+            ...actual,
+            loadDemoCampaignTree: () => ({
+              name: actual.DEMO_CAMPAIGN_NAME,
+              path: actual.DEMO_CAMPAIGN_NAME,
+              kind: "directory",
+              handle: { getFile: () => Promise.reject(new Error("not a file")) },
+              children: [
+                {
+                  name: "main.c",
+                  path: `${actual.DEMO_CAMPAIGN_NAME}/main.c`,
+                  kind: "file",
+                  handle: { getFile: () => Promise.resolve({ text: () => Promise.resolve(NAVIGABLE_FIXTURE_C) }) },
+                },
+                // Sorts between "main.c" and "zzz_next.c" — exercises
+                // `findNextMultiplayerLevel`'s catch-and-skip branch (a
+                // candidate that fails to *read*) on the way to the real
+                // next level, the same "tree order: main.c -> broken ->
+                // real" shape the single-player equivalent test uses.
+                throwingFileNode(`${actual.DEMO_CAMPAIGN_NAME}/next_broken.c`),
+                {
+                  name: "zzz_next.c",
+                  path: `${actual.DEMO_CAMPAIGN_NAME}/zzz_next.c`,
+                  kind: "file",
+                  handle: { getFile: () => Promise.resolve({ text: () => Promise.resolve(VALID_MAIN_C) }) },
+                },
+              ],
+            }),
+          };
+        });
+        vi.doMock("./map/mapGenerator", async () => {
+          const actual = await vi.importActual<typeof import("./map/mapGenerator")>("./map/mapGenerator");
+          return {
+            ...actual,
+            MapGenerator: class {
+              generate(): unknown {
+                return fixedTransitionMap();
+              }
+            },
+          };
+        });
+
+        const logSpy = vi.spyOn(console, "log");
+        const errorSpy = vi.spyOn(console, "error");
+        await loadEligibleWorkspace();
+        await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+        fetchMock
+          .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+          .mockResolvedValueOnce(
+            jsonResponse({
+              code: "R4KJ9X",
+              offer: "offer-sdp",
+              answer: "answer-sdp",
+              campaignName: "demo-campaign",
+              displayName: null,
+              playerCount: 1,
+            }),
+          );
+        document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+        const pc = readyHostPeerConnection();
+        await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+        document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!.click();
+        const reconciliation = pc.createdDataChannels.find((c) => c.label === "reconciliation")!;
+        reconciliation.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ }) }),
+        );
+        await waitUntil(() => FakeTickWorker.instances.length > 0);
+        const worker = FakeTickWorker.instances.at(-1)!;
+        worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+
+        const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+        // Walk onto the exit (~40 ticks, generous margin included) plus the
+        // full countdown (`COUNTDOWN_TICKS`) plus a little slack for the win
+        // itself to actually fire on the tick right after the countdown
+        // hits zero.
+        driveHostToWin(canvas, worker, { x: 10, y: 10 }, 80 + COUNTDOWN_TICKS);
+
+        // The tick loop above is deliberately synchronous throughout — the
+        // async `findNextMultiplayerLevel` chain it triggers (real
+        // `readFileText`/`parseFile` calls) can only progress once that
+        // whole call stack has unwound, which is here.
+        await waitUntil(
+          () => logSpy.mock.calls.some((c) => typeof c[0] === "string" && c[0].includes(`cleared — advancing to demo-campaign/zzz_next.c`)),
+          8000,
+        );
+        expect(
+          errorSpy.mock.calls.some(
+            (c) => typeof c[0] === "string" && c[0].includes(`Failed to load "demo-campaign/next_broken.c", skipping to the next file:`),
+          ),
+        ).toBe(true);
+
+        // No real guest is connected — the host's broadcast to
+        // `channels.reconciliation` silently no-ops (nothing linked on the
+        // other end), so nothing but this synthetic ack will ever let
+        // `waitForAcks` resolve before its own 10s timeout.
+        await flushAsync();
+        reconciliation.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify({ type: "level-transition-ack", playerId: "guest-1" }) }),
+        );
+        await flushAsync();
+
+        const hooks = multiplayerHooks();
+        worker.onmessage?.({ data: { type: "tick", tick: 1000 } } as MessageEvent);
+        expect(hooks.getPlayerStatus("host")).toBe("alive");
+        // Back near the new level's own host spawn (8, 8), not still
+        // sitting on the previous level's exit tile (10, 10) — confirms a
+        // genuinely new engine/level was built, not just a fresh countdown
+        // on the same one.
+        expect(hooks.getPlayerPosition("host")!.x).toBeLessThan(9);
+        expect(hooks.getPlayerPosition("host")!.y).toBeLessThan(9);
+
+        vi.doUnmock("./fs/demoCampaign");
+        vi.doUnmock("./map/mapGenerator");
+      } finally {
+        history.pushState(null, "", "/");
+      }
+    });
+
+    it("host: a real win with no further parsable files ends the session as campaign-complete", async () => {
+      history.pushState(null, "", "?testHooks=1");
+      try {
+        vi.doMock("./fs/demoCampaign", async () => {
+          const actual = await vi.importActual<typeof import("./fs/demoCampaign")>("./fs/demoCampaign");
+          return {
+            ...actual,
+            loadDemoCampaignTree: () => ({
+              name: actual.DEMO_CAMPAIGN_NAME,
+              path: actual.DEMO_CAMPAIGN_NAME,
+              kind: "directory",
+              handle: { getFile: () => Promise.reject(new Error("not a file")) },
+              children: [
+                {
+                  name: "main.c",
+                  path: `${actual.DEMO_CAMPAIGN_NAME}/main.c`,
+                  kind: "file",
+                  handle: { getFile: () => Promise.resolve({ text: () => Promise.resolve(NAVIGABLE_FIXTURE_C) }) },
+                },
+              ],
+            }),
+          };
+        });
+        vi.doMock("./map/mapGenerator", async () => {
+          const actual = await vi.importActual<typeof import("./map/mapGenerator")>("./map/mapGenerator");
+          return {
+            ...actual,
+            MapGenerator: class {
+              generate(): unknown {
+                return fixedTransitionMap();
+              }
+            },
+          };
+        });
+
+        await loadEligibleWorkspace();
+        await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+        fetchMock
+          .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+          .mockResolvedValueOnce(
+            jsonResponse({
+              code: "R4KJ9X",
+              offer: "offer-sdp",
+              answer: "answer-sdp",
+              campaignName: "demo-campaign",
+              displayName: null,
+              playerCount: 1,
+            }),
+          );
+        document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+        const pc = readyHostPeerConnection();
+        await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+        document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!.click();
+        const reconciliation = pc.createdDataChannels.find((c) => c.label === "reconciliation")!;
+        reconciliation.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ }) }),
+        );
+        await waitUntil(() => FakeTickWorker.instances.length > 0);
+        // Both Join and Host Create must be disabled for the lifetime of a
+        // live session — left enabled, either could re-trigger mid-session
+        // (a second Join orphaning this session's worker with nothing left
+        // to stop it, a second Create abandoning it) — HIGH re-review finding.
+        expect(document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.disabled).toBe(true);
+        expect(document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.disabled).toBe(true);
+        const worker = FakeTickWorker.instances.at(-1)!;
+        worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+
+        const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+        driveHostToWin(canvas, worker, { x: 10, y: 10 }, 80 + COUNTDOWN_TICKS);
+
+        await waitUntil(
+          () => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Multiplayer session ended — campaign complete!",
+          8000,
+        );
+        // The end-of-run comparison table (multiplayer step 9) shows on the
+        // canvas itself once the session truly ends — see
+        // onMultiplayerSessionEnded's own doc comment.
+        expect(document.querySelector<HTMLElement>(".canvas-area")!.hasAttribute("hidden")).toBe(false);
+        const ctxAfterWin = canvas.getContext("2d") as unknown as { fillText: { mock: { calls: unknown[][] } } };
+        const textsAfterWin = ctxAfterWin.fillText.mock.calls.map(([text]) => text as string);
+        expect(textsAfterWin).toContain("MULTIPLAYER: CAMPAIGN COMPLETE");
+        expect(textsAfterWin).toContain("Host");
+
+        // Re-opened once the session genuinely ends, mirroring beginMultiplayerLevel's own disabling.
+        expect(document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.disabled).toBe(false);
+        expect(document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.disabled).toBe(false);
+
+        vi.doUnmock("./fs/demoCampaign");
+        vi.doUnmock("./map/mapGenerator");
+      } finally {
+        history.pushState(null, "", "/");
+      }
+    });
+
+    it("host: navigating to a different file mid-session stops the live session instead of leaving it orphaned (HIGH re-review finding)", async () => {
+      await loadEligibleWorkspace();
+      await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "R4KJ9X",
+            offer: "offer-sdp",
+            answer: "answer-sdp",
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        );
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      const pc = readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!.click();
+      const reconciliation = pc.createdDataChannels.find((c) => c.label === "reconciliation")!;
+      reconciliation.dispatchEvent(
+        new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ }) }),
+      );
+      await waitUntil(() => FakeTickWorker.instances.length > 0);
+      const worker = FakeTickWorker.instances.at(-1)!;
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.disabled).toBe(true);
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.disabled).toBe(true);
+
+      // Navigate away mid-session via the file tree, into a single-player
+      // level — nothing else ever called .stop() on the live multiplayer
+      // session before this fix, leaking its worker/listeners orphaned
+      // underneath the newly-launched level.
+      document.querySelector<HTMLButtonElement>('.tree-row--file[title="demo-campaign/stage02_bootstrap.sh"]')!.click();
+      // handleFileSelected is async (reads + parses the file before calling
+      // launchLevel) — its own click listener isn't awaited by the DOM
+      // dispatch, so launchLevel's teardown runs on a later microtask.
+      await waitUntil(() => worker.terminate.mock.calls.length > 0);
+
+      expect(worker.terminate).toHaveBeenCalledTimes(1);
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.disabled).toBe(false);
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.disabled).toBe(false);
+      // The new single-player level actually launched.
+      expect(document.querySelector<HTMLParagraphElement>(".map-caption")?.textContent).toContain("stage02_bootstrap.sh");
+    });
+
+    it("guest: session setup starts automatically on connect, then begins ticking once the host's bundle arrives", async () => {
+      const original = window.location;
+      Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+      try {
+        await loadEligibleWorkspace();
+        await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+        document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+        fetchMock
+          .mockResolvedValueOnce(
+            jsonResponse({
+              code: "R4KJ9X",
+              offer: "offer-sdp",
+              answer: null,
+              campaignName: "demo-campaign",
+              displayName: null,
+              playerCount: 1,
+            }),
+          )
+          .mockResolvedValueOnce(noTurnRelayResponse())
+          .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
+
+        document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "r4kj9x";
+        document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+
+        await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
+        const pc = FakeRTCPeerConnection.instances.at(-1)!;
+        pc.simulateIceGatheringComplete();
+        await waitUntil(() => pc.remoteDescription !== null);
+        await waitUntil(() => fetchMock.mock.calls.length >= 2);
+
+        const input = new FakeRTCDataChannel("input");
+        const reconciliation = new FakeRTCDataChannel("reconciliation");
+        await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Establishing connection…");
+        pc.simulateIncomingDataChannel(input);
+        pc.simulateIncomingDataChannel(reconciliation);
+        input.simulateOpen();
+        reconciliation.simulateOpen();
+        await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+        // The guest auto-starts session setup the instant it's connected —
+        // simulate the host's full handshake sequence arriving.
+        const send = (msg: unknown): boolean =>
+          reconciliation.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(msg) }));
+        await flushAsync();
+        send({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ });
+        send({
+          type: "session-init",
+          roster: ["guest", "host"],
+          assignedId: "guest",
+          tickRateHz: 30,
+          fixedDt: 1 / 30,
+          inputDelayTicks: 3,
+          gameplaySeed: 1,
+          difficulty: "normal",
+          playerCount: 2,
+        });
+        const { chunkJson } = await import("./multiplayer/chunkedTransfer");
+        const chunks = chunkJson(fixtureMapWithoutVisited(), 16 * 1024);
+        chunks.forEach((data, index) => send({ type: "map-chunk", index, data }));
+        send({ type: "map-end", totalChunks: chunks.length });
+        await flushAsync();
+
+        const hooks = multiplayerHooks();
+        expect(hooks.getSimTick()).toBeNull(); // setup done, but no tick applied yet
+
+        const bundle = {
+          tick: 0,
+          dt: 1 / 30,
+          inputs: { host: emptySnapshot(), guest: emptySnapshot() },
+          heldInputFallback: [],
+          levelEpoch: 0,
+        };
+        input.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(bundle) }));
+
+        expect(hooks.getSimTick()).toBe(0);
+        // sorted roster is ["guest", "host"] -> guest gets spawns[0], host gets spawns[1]
+        expect(hooks.getPlayerPosition("guest")).toEqual({ x: 2.5, y: 2.5 });
+        expect(hooks.getPlayerPosition("host")).toEqual({ x: 8.5, y: 8.5 });
+      } finally {
+        Object.defineProperty(window, "location", { value: original, configurable: true });
+      }
+    });
+
+    it("guest: session ends (status + comparison table shown) once every player dies", async () => {
+      await loadEligibleWorkspace();
+      await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "R4KJ9X",
+            offer: "offer-sdp",
+            answer: null,
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        )
+        .mockResolvedValueOnce(noTurnRelayResponse())
+        .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
+
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "r4kj9x";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
+      const pc = FakeRTCPeerConnection.instances.at(-1)!;
+      pc.simulateIceGatheringComplete();
+      await waitUntil(() => pc.remoteDescription !== null);
+      await waitUntil(() => fetchMock.mock.calls.length >= 2);
+
+      const input = new FakeRTCDataChannel("input");
+      const reconciliation = new FakeRTCDataChannel("reconciliation");
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Establishing connection…");
+      pc.simulateIncomingDataChannel(input);
+      pc.simulateIncomingDataChannel(reconciliation);
+      input.simulateOpen();
+      reconciliation.simulateOpen();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      const send = (msg: unknown): boolean => reconciliation.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(msg) }));
+      await flushAsync();
+      send({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ });
+      send({
+        type: "session-init",
+        roster: ["guest", "host"],
+        assignedId: "guest",
+        tickRateHz: 30,
+        fixedDt: 1 / 30,
+        inputDelayTicks: 3,
+        gameplaySeed: 1,
+        difficulty: "normal",
+        playerCount: 2,
+      });
+      const { chunkJson } = await import("./multiplayer/chunkedTransfer");
+      const chunks = chunkJson(fixtureMapWithoutVisited(true), 16 * 1024);
+      chunks.forEach((data, index) => send({ type: "map-chunk", index, data }));
+      send({ type: "map-end", totalChunks: chunks.length });
+      await flushAsync();
+
+      expect(document.querySelector<HTMLElement>(".canvas-area")!.hasAttribute("hidden")).toBe(false);
+
+      // Both players spawn standing in a hazard — repeatedly apply bundles
+      // (each 1/30s of hazard damage) until the shared simulation reaches
+      // game-over and tears the session down.
+      for (let i = 0; i < 300 && document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent !== "Multiplayer session ended — every player was eliminated."; i++) {
+        const bundle = { tick: i, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [], levelEpoch: 0 };
+        input.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(bundle) }));
+      }
+
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Multiplayer session ended — every player was eliminated.");
+      // The end-of-run comparison table (multiplayer step 9) is drawn on the
+      // canvas itself and blocks until dismissed — resetToFileTree() no
+      // longer fires immediately (see onMultiplayerSessionEnded's own doc
+      // comment), so the canvas area is still showing right after game-over,
+      // with both roster players' rows drawn on it. Dismissing the overlay
+      // (past its own real-time dismiss lock) and confirming the eventual
+      // return to the file tree is exercised end-to-end by the Playwright
+      // verify scripts instead (real timing, no clock-stub gymnastics needed
+      // there) — see `scripts/verify-multiplayer-disconnect.mjs`.
+      expect(document.querySelector<HTMLElement>(".canvas-area")!.hasAttribute("hidden")).toBe(false);
+      const ctx = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!.getContext("2d") as unknown as {
+        fillText: { mock: { calls: unknown[][] } };
+      };
+      const texts = ctx.fillText.mock.calls.map(([text]) => text as string);
+      expect(texts).toContain("MULTIPLAYER: TEAM ELIMINATED");
+      expect(texts).toContain("Host");
+      expect(texts).toContain("Guest");
+    });
+
+    it("host: shows an error status if session setup fails (build-version mismatch)", async () => {
+      await loadEligibleWorkspace();
+      await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "R4KJ9X",
+            offer: "offer-sdp",
+            answer: "answer-sdp",
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        );
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      const pc = readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      const startButton = document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!;
+      startButton.click();
+      const reconciliation = pc.createdDataChannels.find((c) => c.label === "reconciliation")!;
+      reconciliation.dispatchEvent(
+        new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: "other-ref", time: "other-time" }) }),
+      );
+
+      await waitUntil(() => !startButton.disabled);
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.classList.contains("error")).toBe(true);
+    });
+
+    it("guest: shows an error status if its own session setup fails (build-version mismatch)", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "R4KJ9X",
+            offer: "offer-sdp",
+            answer: null,
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        )
+        .mockResolvedValueOnce(noTurnRelayResponse())
+        .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
+
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "r4kj9x";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
+      const pc = FakeRTCPeerConnection.instances.at(-1)!;
+      pc.simulateIceGatheringComplete();
+      await waitUntil(() => pc.remoteDescription !== null);
+      await waitUntil(() => fetchMock.mock.calls.length >= 2);
+
+      const input = new FakeRTCDataChannel("input");
+      const reconciliation = new FakeRTCDataChannel("reconciliation");
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Establishing connection…");
+      pc.simulateIncomingDataChannel(input);
+      pc.simulateIncomingDataChannel(reconciliation);
+      input.simulateOpen();
+      reconciliation.simulateOpen();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      // The guest auto-starts session setup on connect — a rogue/mismatched
+      // build-version reply should surface as a status error.
+      reconciliation.dispatchEvent(
+        new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: "other-ref", time: "other-time" }) }),
+      );
+
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.classList.contains("error"));
+    });
+
+    it("host: shows an error if this workspace never auto-launched a level (a GitHub repo with no recognized entrypoint)", async () => {
+      await importMain();
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+        .mockResolvedValueOnce(jsonResponse({ tree: [{ path: "README.md", type: "blob" }] }));
+      setGithubRepoInput("owner/repo");
+      document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
+      await waitUntil(() => !document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.disabled);
+      document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.click();
+
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "R4KJ9X",
+            offer: "offer-sdp",
+            answer: "answer-sdp",
+            campaignName: "owner/repo",
+            displayName: null,
+            playerCount: 1,
+          }),
+        );
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!.click();
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe(
+        "No workspace loaded to host a level from.",
+      );
+    });
+
+    it("host: clicking Start Session before any connection exists is a no-op", async () => {
+      await importMain();
+      expect(() => document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!.click()).not.toThrow();
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("host: tears down an actively-playing replay before starting a session (real stopActiveReplay teardown)", async () => {
+      await loadEligibleWorkspace();
+      await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+      // A local-sourced replay would need its own showDirectoryPicker stub
+      // (and would also flip the workspace type away from "demo", disabling
+      // the Multiplayer tab) — a demo-sourced replay, rebuilt from the same
+      // real bundled campaign content `loadEligibleWorkspace()` already
+      // launched, avoids both and keeps this test focused on the
+      // stopActiveReplay?.() teardown itself.
+      const { loadDemoCampaignTree, DEMO_CAMPAIGN_NAME } = await import("./fs/demoCampaign");
+      const demoTree = loadDemoCampaignTree();
+      const entryPath = "demo-campaign/main.c";
+      function findByPath(node: TreeNode, path: string): TreeNode | null {
+        if (node.path === path) return node;
+        for (const child of node.children ?? []) {
+          const found = findByPath(child, path);
+          if (found) return found;
+        }
+        return null;
+      }
+      const entryNode = findByPath(demoTree, entryPath)!;
+      const entryText = await (await (entryNode.handle as FileSystemFileHandle).getFile()).text();
+      const segment = await buildReplaySegmentFor(DEMO_CAMPAIGN_NAME, entryPath, entryText, 20);
+
+      await seedAndOpenReplayFor(DEMO_CAMPAIGN_NAME, "demo", [segment]);
+      await waitUntil(() => document.querySelector(".replay-controls") !== null, 8000);
+
+      history.pushState(null, "", "?testHooks=1");
+      try {
+        fetchMock
+          .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+          .mockResolvedValueOnce(
+            jsonResponse({
+              code: "R4KJ9X",
+              offer: "offer-sdp",
+              answer: "answer-sdp",
+              campaignName: "demo-campaign",
+              displayName: null,
+              playerCount: 1,
+            }),
+          );
+        document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+        const pc = readyHostPeerConnection();
+        await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+        const startButton = document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!;
+        startButton.click();
+        const reconciliation = pc.createdDataChannels.find((c) => c.label === "reconciliation")!;
+        reconciliation.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ }) }),
+        );
+        await waitUntil(() => FakeTickWorker.instances.length > 0);
+
+        // beginMultiplayerLevel's own stopActiveReplay?.() had a real,
+        // still-active teardown to call here — not the usual null case every
+        // other beginMultiplayerLevel-reaching test hits.
+        expect(document.querySelector(".replay-controls")).toBeNull();
+        expect(document.querySelector(".canvas-area")!.hasAttribute("hidden")).toBe(false);
+      } finally {
+        history.pushState(null, "", "/");
+      }
+    });
+
+    it("host: shows a generic error message when starting the session throws a non-Error value", async () => {
+      await loadEligibleWorkspace();
+      await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "R4KJ9X",
+            offer: "offer-sdp",
+            answer: "answer-sdp",
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        );
+      document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+      const pc = readyHostPeerConnection();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      // Session setup itself only ever rejects with a real Error
+      // (SessionSetupError) — force the `err instanceof Error` ternary's
+      // false branch via the one other thing the try block does:
+      // beginMultiplayerLevel's canvas.focus() call.
+      const canvasEl = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+      vi.spyOn(canvasEl, "focus").mockImplementation(() => {
+        throw "boom";
+      });
+
+      const startButton = document.querySelector<HTMLButtonElement>("#multiplayer-start-session")!;
+      startButton.click();
+      const reconciliation = pc.createdDataChannels.find((c) => c.label === "reconciliation")!;
+      reconciliation.dispatchEvent(
+        new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ }) }),
+      );
+
+      await waitUntil(() => !startButton.disabled);
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe(
+        "Failed to start the multiplayer session.",
+      );
+    });
+
+    it("guest: shows a generic error message when session setup throws a non-Error value", async () => {
+      await loadEligibleWorkspace();
+      await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "R4KJ9X",
+            offer: "offer-sdp",
+            answer: null,
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        )
+        .mockResolvedValueOnce(noTurnRelayResponse())
+        .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
+
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "r4kj9x";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
+      const pc = FakeRTCPeerConnection.instances.at(-1)!;
+      pc.simulateIceGatheringComplete();
+      await waitUntil(() => pc.remoteDescription !== null);
+      await waitUntil(() => fetchMock.mock.calls.length >= 2);
+
+      const input = new FakeRTCDataChannel("input");
+      const reconciliation = new FakeRTCDataChannel("reconciliation");
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Establishing connection…");
+      pc.simulateIncomingDataChannel(input);
+      pc.simulateIncomingDataChannel(reconciliation);
+      input.simulateOpen();
+      reconciliation.simulateOpen();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      // Same injection point as the host version above — session setup only
+      // ever rejects with a real Error, so the ternary's false branch needs
+      // a throw from beginMultiplayerLevel's canvas.focus() instead.
+      const canvasEl = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+      vi.spyOn(canvasEl, "focus").mockImplementation(() => {
+        throw "boom";
+      });
+
+      const send = (msg: unknown): boolean => reconciliation.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(msg) }));
+      await flushAsync();
+      send({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ });
+      send({
+        type: "session-init",
+        roster: ["guest", "host"],
+        assignedId: "guest",
+        tickRateHz: 30,
+        fixedDt: 1 / 30,
+        inputDelayTicks: 3,
+        gameplaySeed: 1,
+        difficulty: "normal",
+        playerCount: 2,
+      });
+      const { chunkJson } = await import("./multiplayer/chunkedTransfer");
+      const chunks = chunkJson(fixtureMapWithoutVisited(), 16 * 1024);
+      chunks.forEach((data, index) => send({ type: "map-chunk", index, data }));
+      send({ type: "map-end", totalChunks: chunks.length });
+      await flushAsync();
+
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe(
+        "Multiplayer session setup failed.",
+      );
+    });
   });
 });
 

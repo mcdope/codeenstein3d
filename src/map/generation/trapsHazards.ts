@@ -87,22 +87,29 @@ export function placeTraps(
  * Turn each global-variable room into an acid pool: fill its interior (leaving
  * a 1-tile walkable rim) with hazard tiles. The spawn room is skipped and the
  * spawn/exit tiles are always kept clear so the player never starts or wins in
- * acid. Returns every hazard tile for rendering.
+ * acid. `multiplayerSpawns` gets the same protection: unlike the single-player
+ * `spawn`, a multiplayer spawn can be any room's center (including a
+ * `"global"`-kind room's), so it needs both a room-level exclusion (skip
+ * flooding that room at all) and, belt-and-suspenders, a tile-level carve-out.
+ * Returns every hazard tile for rendering.
  */
 export function fillHazards(
   rooms: Room[],
   grid: Tile[][],
   spawn: Point,
   exit: Point,
+  multiplayerSpawns: readonly Point[] = [],
 ): Point[] {
   const hazards: Point[] = [];
   rooms.forEach((room, index) => {
     if (room.entity.kind !== "global") return;
     if (index === 0) return; // never flood the spawn room
+    if (multiplayerSpawns.some((s) => s.x === room.center.x && s.y === room.center.y)) return;
     for (let y = room.y + 1; y < room.y + room.h - 1; y++) {
       for (let x = room.x + 1; x < room.x + room.w - 1; x++) {
         if (x === spawn.x && y === spawn.y) continue;
         if (x === exit.x && y === exit.y) continue;
+        if (multiplayerSpawns.some((s) => s.x === x && s.y === y)) continue;
         grid[y][x] = HAZARD_TILE;
         hazards.push({ x, y });
       }

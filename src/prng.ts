@@ -26,13 +26,37 @@
  * diverge.
  */
 export function mulberry32(seed: number): () => number {
+  return createResumablePrng(seed).next;
+}
+
+/**
+ * A `mulberry32` stream whose raw internal state can be read and resumed —
+ * needed only by multiplayer reconciliation (`doc/dev/multiplayer-netcode-spec.md`
+ * §3, "the PRNG state gap"): the host periodically broadcasts `getState()`'s
+ * raw 32-bit counter so a guest can `setState()` its own stream back into
+ * exact alignment, resuming the sequence rather than restarting it from a
+ * fresh seed. `mulberry32()` above is defined in terms of this (`next`
+ * detached and called standalone) so the two can never drift apart — every
+ * other caller (map generation, single-player gameplay rng) keeps using the
+ * plain closure form and never needs to know this exists.
+ *
+ * `next()` is safe to detach from the returned object (as `mulberry32` does)
+ * because it closes over `a` directly, not `this`.
+ */
+export function createResumablePrng(seed: number): { next: () => number; getState: () => number; setState: (state: number) => void } {
   let a = seed >>> 0;
-  return () => {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  return {
+    next: () => {
+      a |= 0;
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    },
+    getState: () => a >>> 0,
+    setState: (state: number) => {
+      a = state >>> 0;
+    },
   };
 }
 

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mulberry32, randomSeed } from "./prng";
+import { createResumablePrng, mulberry32, randomSeed } from "./prng";
 
 describe("mulberry32", () => {
   it("is deterministic: the same seed produces the same sequence", () => {
@@ -37,6 +37,49 @@ describe("mulberry32", () => {
   it("handles a zero seed without throwing", () => {
     const rng = mulberry32(0);
     expect(() => rng()).not.toThrow();
+  });
+});
+
+describe("createResumablePrng", () => {
+  it("next() produces the exact same sequence as mulberry32() for the same seed", () => {
+    const resumable = createResumablePrng(12345);
+    const plain = mulberry32(12345);
+    const seqA = [resumable.next(), resumable.next(), resumable.next(), resumable.next()];
+    const seqB = [plain(), plain(), plain(), plain()];
+    expect(seqA).toEqual(seqB);
+  });
+
+  it("getState() immediately after construction reflects the seed, normalized to uint32", () => {
+    expect(createResumablePrng(-1).getState()).toBe(0xffffffff);
+    expect(createResumablePrng(42).getState()).toBe(42);
+  });
+
+  it("setState() resumes the sequence exactly where the captured state left off, not from a fresh seed", () => {
+    const source = createResumablePrng(999);
+    source.next();
+    source.next();
+    const capturedState = source.getState();
+    const expectedNext = [source.next(), source.next(), source.next()];
+
+    const resumed = createResumablePrng(1); // different seed entirely
+    resumed.setState(capturedState);
+    const actualNext = [resumed.next(), resumed.next(), resumed.next()];
+
+    expect(actualNext).toEqual(expectedNext);
+  });
+
+  it("setState() normalizes its argument with >>> 0, same as construction", () => {
+    const a = createResumablePrng(0);
+    a.setState(-1);
+    const b = createResumablePrng(0xffffffff);
+    expect(a.next()).toBe(b.next());
+  });
+
+  it("getState() after some draws differs from the original seed", () => {
+    const rng = createResumablePrng(7);
+    rng.next();
+    rng.next();
+    expect(rng.getState()).not.toBe(7);
   });
 });
 

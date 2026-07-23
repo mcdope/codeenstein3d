@@ -13,13 +13,25 @@
  * and leaves the DOM HUD/overlays to the caller.
  */
 import { DEFAULT_DIFFICULTY, DIFFICULTY_MULTIPLIERS, type DifficultyLevel, type DifficultyMultipliers } from "../difficulty";
-import { mulberry32, randomSeed } from "../prng";
+import { eliteScalingFor, type EliteScalingMultipliers } from "./multiplayerScaling";
+import { createResumablePrng, randomSeed } from "../prng";
+import { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "./reconciliationConstants";
+import { COUNTDOWN_TICKS } from "./transitionConstants";
+import { INPUT_DELAY_TICKS } from "./lagCompensationConstants";
+import type {
+  EnemySnapshot,
+  LootDropSnapshot,
+  MineSnapshot,
+  PlayerSnapshot,
+  ReconciliationSnapshot,
+  TileMutation,
+} from "./reconciliationSnapshot";
 import { Player, isHazard } from "./player";
-import { updateEnemies, type EnemyAiEvents } from "./enemyAi";
-import { collectProjectileBillboards, updateProjectiles, type Projectile } from "./projectiles";
+import { updateEnemies, type EnemyAiEvents, type EnemyTarget } from "./enemyAi";
+import { collectProjectileBillboards, updateProjectiles, type Projectile, type ProjectileTarget } from "./projectiles";
 import { InputController, type InputSource } from "./input";
 import type { CampaignReplayRecorder } from "./replay";
-import { FOG_FAR, renderMinimap, renderScene } from "./raycaster";
+import { castWallDistances, FOG_FAR, renderMinimap, renderScene } from "./raycaster";
 import { textures } from "./textures";
 import {
   collectDecorationBillboards,
@@ -28,6 +40,7 @@ import {
   collectKeyBillboards,
   collectLootBillboards,
   collectMineBillboards,
+  collectPlayerBillboards,
   collectTeleporterBillboards,
   findMineInProjections,
   findTargetInProjections,
@@ -35,11 +48,13 @@ import {
   projectLivingEnemies,
   projectVisibleMines,
   type BillboardJob,
+  type OtherPlayerBillboard,
 } from "./sprites";
 import {
   drawCheatToast,
   drawCompass,
   drawCrosshair,
+  drawExitCountdownToast,
   drawFpsOverlay,
   drawHud,
   drawKillStreakToast,
@@ -109,9 +124,10 @@ import { applyLootDrop, dropEliteLoot, grantOrTopUpWeapon, rollMissChanceToolcha
 import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, ROCKET_BLAST_RADIUS, type Rocket } from "./rockets";
 import { EnemySpatialGrid } from "./spatialGrid";
 import { PathField } from "./pathField";
-import { detonateMine, spikeDamage, updateMines, MINE_BLAST_RADIUS } from "./traps";
+import { detonateMine, mineDamageAt, spikeDamage, updateMines, MINE_BLAST_RADIUS } from "./traps";
 import { FramePerfLogger } from "./perfDebug";
 import {
+  createTeamTelemetryState,
   createTelemetryState,
   recordDamage,
   recordEnemyAggro,
@@ -134,7 +150,10 @@ import {
   updatePerFrame as updateTelemetryPerFrame,
   type DamageSource,
   type EnemyTtkRecord,
+  type HealSource,
+  type TeamTelemetryState,
   type TelemetryState,
+  type WeaponTally,
 } from "./telemetry";
 import {
   DOOR_TILE,
@@ -148,6 +167,7 @@ import {
   type LoreTerminal,
   type Mine,
   type Point,
+  type Tile,
 } from "../map/types";
 
 /** Movement speed in tiles per second. */
@@ -158,6 +178,14 @@ const SPRINT_MULTIPLIER = 2.0;
 const ROT_SPEED = 2.6;
 /** Mouse rotation sensitivity in radians per pixel of movement. */
 const MOUSE_SENSITIVITY = 0.0025;
+/** Defensive upper bound on how many weapon-cycle steps one tick's `wheelSteps`
+ * may drive, mirroring the multiplayer layer's own `MAX_WHEEL_STEPS_PER_TICK`
+ * (duplicated, not imported — this engine layer never depends upward on the
+ * multiplayer layer). Belt-and-suspenders: a peer's out-of-range `wheelSteps`
+ * is already rejected by `isValidInputSnapshot`, but any unvalidated path must
+ * still never spin the cycle loop below enough to hang the tick. Far above the
+ * few notches real hardware ever produces per tick. */
+const MAX_WHEEL_STEPS_PER_TICK = 32;
 /** Clamp per-frame dt so a background tab / long stall can't teleport the player. */
 const MAX_DT = 0.05;
 /** How often (seconds) the FPS overlay's averaged reading recomputes — often
@@ -243,6 +271,155 @@ const SECRET_WALL_REACH = 0.9;
  * bonus's numerator (`visitedWalkableCount`). The always-on corner minimap
  * is a separate, unrelated "radar" that ignores fog of war entirely. */
 const VISITED_REVEAL_RADIUS = 5;
+/** Internal render/shot-resolution resolution — matches `main.ts`'s own
+ * private (unexported) `SCENE_WIDTH`/`SCENE_HEIGHT` constants exactly, but
+ * defined separately here since `engine.ts` has no existing import from
+ * `main.ts` and this step doesn't introduce one (see `resolveShot`'s doc
+ * comment). Every `PlayerState.zBuffer` is sized to `SCENE_WIDTH`, and
+ * `fire()`/`resolveShot()` and the `?testHooks=1` debug closures resolve
+ * screen columns against these, not the live canvas size — `render()`'s own
+ * calls stay on `this.ctx.canvas.width/height`, untouched (see §4 of the
+ * N-player refactor plan). */
+const SCENE_WIDTH = 640;
+const SCENE_HEIGHT = 400;
+/** Health a coop player revives at, at the next level transition, after
+ * dying mid-level (see `addPlayer`'s doc comment) — a balance value to
+ * validate via telemetry like everything else here. Exported so a later
+ * session-lifecycle step (and this step's own tests) can pass
+ * `{ ...carryover, health: REVIVE_HEALTH }` to `addPlayer` without
+ * duplicating the constant. */
+export const REVIVE_HEALTH = 50;
+
+/** Opaque per-connection player identifier — a plain string so it flows
+ * through JSON (replay/network snapshots) unchanged. No netcode module
+ * exists yet to import this from, so it's declared locally here. */
+export type PlayerId = string;
+
+/** Sentinel id for the one player in an N=1 session — assigned automatically
+ * by the constructor. Real multi-peer sessions (later steps) never use this
+ * literal for anyone but this engine's own local peer. */
+export const LOCAL_PLAYER_ID: PlayerId = "local";
+
+/** `"disconnected"` is a real, distinct terminal state from `"dead"` — a
+ * transport-layer disconnect (`multiplayer-netcode-spec.md` §5), not a
+ * combat death. Both are excluded from world simulation/rendering the same
+ * way (every relevant loop already gates on `status === "alive"`, not
+ * `status !== "dead"`), but only a disconnected player is excluded from the
+ * *wire-level* roster (`captureReconciliationSnapshot()`) — a dead player
+ * stays a full roster member, spectating; a disconnected one is genuinely
+ * gone. Never single-player: nothing there ever sets this value. */
+export type PlayerStatus = "alive" | "dead" | "disconnected";
+
+/** One roster player's row in `RaycasterEngine.rosterSnapshot()` — see that
+ * method's own doc comment for what each field means and why `breakdown` is
+ * a cumulative run total, not a single level's. */
+export interface RosterSnapshotEntry {
+  status: PlayerStatus;
+  health: number;
+  killScore: number;
+  kills: number;
+  distanceTraveled: number;
+  breakdown: ScoreBreakdown;
+}
+
+/** Everything `RaycasterEngine` used to track as a single `this.*` field for
+ * "the player" now lives here, one instance per connected player — single-
+ * player is just the N=1 case of `players: Map<PlayerId, PlayerState>`
+ * (`LOCAL_PLAYER_ID` → one `PlayerState`), not a separate code path. See
+ * `createPlayerState`. */
+interface PlayerState {
+  readonly id: PlayerId;
+  readonly player: Player;
+  readonly input: InputSource;
+  status: PlayerStatus;
+  /** While dead: which living teammate's camera this player's render pass
+   * follows — cycled by `consumeFire()` (repurposed while dead, see
+   * `simulate()`). `null` only as a same-tick transient before the
+   * team-over check resolves, or once no living teammate remains. */
+  spectateTargetId: PlayerId | null;
+  health: number;
+  swap: number;
+  godMode: boolean;
+  readonly ammo: AmmoPools;
+  readonly startingAmmoRef: AmmoPools;
+  weaponIndex: number;
+  readonly ownedWeapons: Set<number>;
+  readonly campaignLevelIndex: number;
+  weaponCooldown: number;
+  meleeCooldown: number;
+  keysHeld: number;
+  kills: number;
+  killScore: number;
+  recentKillTimes: number[];
+  multiKillCount: number;
+  ultraKillCount: number;
+  killStreakText: string | null;
+  killStreakFrames: number;
+  killStreakBig: boolean;
+  readonly priorScore: number;
+  readonly priorScoreBreakdown: ScoreBreakdown;
+  readonly priorPlayerStats: PlayerFacingStats;
+  distanceTraveled: number;
+  stepDistance: number;
+  moving: boolean;
+  bobTime: number;
+  bobAmount: number;
+  recoil: number;
+  meleeRecoil: number;
+  muzzleFrames: number;
+  viewOffsets: { horizonShift: number; bobX: number; bobY: number };
+  rotSpeedMultiplier: number;
+  /** A drift correction's render-only smoothing — `null` when this player's
+   * rendered position matches its simulated one exactly (the overwhelming
+   * majority of the time). Set by `applyReconciliationSnapshot()` the moment
+   * a below-`SNAP_THRESHOLD_TILES` correction snaps the *simulated* position;
+   * `x`/`y` is the (world-units) gap the render pass still owes, decaying to
+   * zero over `CORRECTION_SMOOTH_MS` real milliseconds from `capturedAtMs` —
+   * see `render()`'s own read site. Never set for a correction at or above
+   * the threshold: that one snaps the render position too, instantly, no
+   * offset object created at all (`multiplayer-netcode-spec.md` §4). Never
+   * read or written in single-player. */
+  renderOffset: { x: number; y: number; capturedAtMs: number } | null;
+  /** Always `SCENE_WIDTH`-sized, for every player, local or remote — see
+   * `SCENE_WIDTH`'s doc comment. */
+  readonly zBuffer: Float64Array;
+  readonly pathField: PathField;
+  suppressTeleportAt: string | null;
+  alarmCountdown: number;
+  flashFrames: number;
+  cheatToastText: string | null;
+  cheatToastFrames: number;
+  isMapActive: boolean;
+  isPaused: boolean;
+  loreText: string | null;
+  loreScroll: number;
+  showFps: boolean;
+  readonly lootCtx: LootContext;
+  /** This player's own per-player-attributable balancing telemetry — see
+   * `RaycasterEngine.teamTelemetry`'s doc comment for the team-vs-per-player
+   * split. `undefined` under the exact same gating `teamTelemetry` uses
+   * (`RaycasterEngine.telemetryEnabled`, checked once in `createPlayerState`
+   * for every roster member, host or guest). */
+  telemetry?: TelemetryState;
+}
+
+/** One ranged pellet's resolved outcome — see `resolveShot`. */
+type PelletOutcome = { kind: "enemy"; target: Enemy } | { kind: "mine"; target: Mine } | { kind: "miss" };
+
+/** `resolveShot`'s full result for one trigger pull — `fire()` applies ammo
+ * cost, damage, loot, telemetry, traces, and audio on top of this. */
+interface ShotResolution {
+  /** One per `pelletOffsets(weapon)`, in order. */
+  pellets: PelletOutcome[];
+  /** Screen columns to draw a bullet trace at (empty for melee/flame weapons
+   * — see `fire()`). */
+  traceColumns: number[];
+  /** Widest flame-stream spread any pellet landed on, post-Cone-of-Fire
+   * deviation — `Infinity`/`-Infinity` (an empty range) for a non-flame
+   * weapon or a weapon whose loop never ran a pellet. */
+  flameLeft: number;
+  flameRight: number;
+}
 
 /** Live stats pushed to the host each frame. */
 export interface EngineStats {
@@ -384,45 +561,65 @@ type GameState = "playing" | "over" | "won";
 
 export class RaycasterEngine {
   private readonly ctx: CanvasRenderingContext2D;
-  private readonly player: Player;
-  /** Typed against the narrow `InputSource` shape (not the concrete
-   * `InputController`) so a `ReplayPlaybackInput` (see `./replay.ts`) can
-   * drive the engine identically during replay playback. */
-  private readonly input: InputSource;
+  /** One `PlayerState` per connected player — single-player is the N=1 case
+   * of this map (`LOCAL_PLAYER_ID` → one entry), not a separate code path.
+   * See `createPlayerState`/`addPlayer`. */
+  private readonly players: Map<PlayerId, PlayerState>;
+  /** Which `players` entry is *this* engine instance's own local peer — the
+   * one with a real canvas/render pass. Every render-facing read
+   * (`render()`, `buildStats()`, the `?testHooks=1` hooks) resolves through
+   * this id; only `players` itself and `sortedPlayerIds()`'s per-player
+   * simulation loops (§7) touch every player, local or remote. */
+  private readonly localPlayerId: PlayerId;
   /** Seeded PRNG for every simulation-relevant random draw this engine itself
    * makes (weapon spread, elite-loot coinflip) — plus what it hands down to
    * `updateEnemies`/`rollLoot`. Never `Math.random()` directly; see
-   * `src/prng.ts`'s doc comment for why. */
+   * `src/prng.ts`'s doc comment for why. Backed by `rngHandle` (see below) —
+   * `this.rng` itself stays a plain callable, unchanged from before
+   * multiplayer reconciliation existed, so none of its many call sites need
+   * to know or care that the stream is resumable underneath. */
   private readonly rng: () => number;
+  /** The same stream `this.rng` draws from, via its `next` — kept alongside
+   * it only so `captureReconciliationSnapshot()`/`applyReconciliationSnapshot()`
+   * can read/resume its raw internal state (`multiplayer-netcode-spec.md`
+   * §3, "the PRNG state gap"). Never read in single-player. */
+  private readonly rngHandle: ReturnType<typeof createResumablePrng>;
   /** Records this level's input for the replay system, if a run is actively
    * being tracked (see `main.ts`'s `launchLevel`) — `undefined` during replay
-   * playback itself, which never re-records what it's replaying. */
+   * playback itself, which never re-records what it's replaying. Only ever
+   * records the local player's own input (see `simulate()`) — replay/session
+   * recording for a real multi-peer run is a later netcode step's job. */
   private readonly replayRecorder?: CampaignReplayRecorder;
   private readonly enemies: Enemy[];
   /** Tile-bucketed index over living enemies for proximity queries — rebuilt
    * lazily on frames with rockets in flight (see `advanceRockets`). */
   private readonly enemyGrid = new EnemySpatialGrid();
-  /** Shared player-rooted BFS distance field every chasing enemy steers by —
-   * refloods only when the player changes tile or `gridVersion` bumps. */
-  private readonly pathField = new PathField();
+  /** An enemy's own drift-correction render offset, keyed by index into
+   * `this.enemies` — same shape/decay/threshold rules as
+   * `PlayerState.renderOffset`, kept as a side-map rather than a field on the
+   * shared `Enemy` map-type since `Enemy` has no other engine-instance-only
+   * (as opposed to map-data) fields today. Absence of an entry means no
+   * offset owed, same as `null` there. Never read in single-player. */
+  private readonly enemyRenderOffsets = new Map<number, { x: number; y: number; capturedAtMs: number }>();
   /** Bumped on every runtime mutation of `map.grid` (a door opening, a
-   * secret wall sliding away) — the `pathField`'s invalidation signal. */
+   * secret wall sliding away) — every player's own `pathField`'s
+   * invalidation signal. */
   private gridVersion = 0;
-  /** Per-column wall depth from the latest wall render; used for occlusion. */
-  private readonly zBuffer: Float64Array;
+  /** Every individual tile mutation since the last drained
+   * `captureReconciliationSnapshot()` call — `gridVersion` alone tells a
+   * guest *that* something changed, not *what*; multiplayer-reconciliation-
+   * only bookkeeping, drained (not just read) on capture. Never read in
+   * single-player. */
+  private readonly pendingGridDelta: TileMutation[] = [];
 
   private running = false;
   private rafId = 0;
   private lastTime = 0;
-  /** Enemy under the crosshair this frame, if any. */
+  /** Enemy under the crosshair this frame, if any — populated only by
+   * `findTargetUnderCrosshair` inside `renderNormalFrame()`, which stays
+   * strictly local-player (see `render()`). */
   private target: Enemy | null = null;
 
-  /** Whether the FPS/frame-time overlay is showing (Right-Ctrl toggles it).
-   * Default off; carried across a level transition (see
-   * `EngineCarryover.showFps`) so it doesn't need re-activating every level —
-   * not persisted beyond the current run (e.g. a fresh "Select Workspace"),
-   * a debug display, not a saved setting. */
-  private showFps: boolean;
   /** Seconds/frame-count accumulated since the last `displayFps` update. */
   private fpsAccumTime = 0;
   private fpsAccumFrames = 0;
@@ -432,120 +629,59 @@ export class RaycasterEngine {
    * useful signal the averaged FPS alone would hide. */
   private displayFrameMs = 0;
 
+  /** Team-composite game state — `"playing"` until every player is dead
+   * (`"over"`) or any one living player reaches the exit (`"won"`); see
+   * `checkExit()`/`killPlayer()`. Per-player life/death instead lives on
+   * `PlayerState.status`. */
   private state: GameState = "playing";
-  private health = MAX_HEALTH;
-  /** Swap points; absorbed 1:1 before health on any hit (see `damage()`). */
-  private swap = 0;
-  /** IDDQD cheat — while true, `damage()` is a no-op. */
-  private godMode = false;
-  /** Text of the "cheat activated" toast currently showing, if any. */
-  private cheatToastText: string | null = null;
-  /** Frames remaining for the toast above — ticked down in `tickEffects()`
-   * alongside `flashFrames`/`muzzleFrames`, same frame-counted convention. */
-  private cheatToastFrames = 0;
-  /** Live ammo reserves, keyed by pool (see `AmmoType`/`ammo.ts`). */
-  private readonly ammo: AmmoPools;
-  /** What this level would have started the player out with, regardless of
-   * `carryover` — the ammo-bonus baseline `computeScore` scores remaining
-   * ammo against (see `./scoring.ts`), so a low-ammo carryover from a
-   * previous level doesn't unfairly tank this one's ammo bonus. */
-  private readonly startingAmmoRef: AmmoPools;
-  /** The narrow slice of this engine's state loot application may touch —
-   * built once in the constructor, handed to `lootApply.ts`. */
-  private readonly lootCtx: LootContext;
-  /** Index into WEAPONS of the equipped weapon (0 = pistol). */
-  private weaponIndex = 0;
-  /** Indices into `WEAPONS` the player can currently switch to — everything
-   * beyond `STARTING_WEAPONS` has to be earned (an Elite kill's high-odds
-   * bonus weapon drop, a rare drop from any kill, a secret room, or a forced
-   * campaign-level unlock; see `dropEliteLoot`). */
-  private readonly ownedWeapons: Set<number>;
-  /** 1-based campaign level position — the only thing this is read for is
-   * gating Toolchain's Elite-kill bonus drop by `TOOLCHAIN_MIN_LEVEL` (see
-   * `dropEliteLoot`). See `EngineCarryover.campaignLevelIndex`'s doc comment. */
-  private readonly campaignLevelIndex: number;
-  /** Seconds remaining before the next shot is allowed — ticks down every
-   * frame regardless of weapon; automatic weapons (the MP) re-fire on their
-   * own while held once it reaches 0, everything else just gates a stray
-   * double-press faster than the weapon's own `fireIntervalSec` allows. */
-  private weaponCooldown = 0;
-  /** Same idea as `weaponCooldown`, but for quick-melee — kept separate so
-   * switching between a ranged weapon and melee never lets one's cooldown
-   * gate the other. Only Toolchain (an `auto` melee weapon) actually uses
-   * this; the knife fires once per press with no cooldown of its own. */
-  private meleeCooldown = 0;
-  /** Dependency keys collected but not yet spent on a door. */
-  private keysHeld = 0;
-  /** Enemies defeated this level. */
-  private kills = 0;
-  /** Sum of `killPoints()` for every enemy defeated so far this level. */
-  private killScore = 0;
-  /** `levelTime` timestamps of kills within the last `ULTRA_KILL_WINDOW_SEC`
-   * — pruned on every kill (see `damageEnemy`'s rolling-window check), never
-   * grows unbounded. */
-  private recentKillTimes: number[] = [];
-  /** How many times a "Multi Kill" (`MULTI_KILL_COUNT` kills within
-   * `MULTI_KILL_WINDOW_SEC`) has fired this level — see `./scoring.ts`. */
-  private multiKillCount = 0;
-  /** How many times an "Ultra Kill" (`ULTRA_KILL_COUNT` kills within
-   * `ULTRA_KILL_WINDOW_SEC`) has fired this level — see `./scoring.ts`. */
-  private ultraKillCount = 0;
-  /** Text of the "Multi/Ultra Kill" banner currently showing, if any — same
-   * frame-counted toast convention as `cheatToastText`, kept as its own
-   * state rather than reusing that field so a kill streak and a cheat
-   * toggle triggered in the same moment can't stomp each other. */
-  private killStreakText: string | null = null;
-  /** Frames remaining for the banner above — ticked down in `tickEffects()`
-   * alongside `cheatToastFrames`. */
-  private killStreakFrames = 0;
-  /** True for an "Ultra Kill" banner, false for "Multi Kill" — `hud.ts`'s
-   * `drawKillStreakToast` sizes/colors the bigger tier more dramatically. */
-  private killStreakBig = false;
-  /** Score banked from levels already cleared this campaign — see
-   * `EngineCarryover.priorScore`. Added on top of this level's own live score
-   * in `buildStats()` so the running total never resets at a transition. */
-  private readonly priorScore: number;
-  /** Score breakdown, by category, banked from levels already cleared this
-   * campaign — see `EngineCarryover.priorScoreBreakdown`. Purely additive
-   * alongside `priorScore` above: `priorScore` stays the single source of
-   * truth for the live per-frame total, this only feeds the run-end stats
-   * screen's cumulative breakdown (see `buildStats()`'s `runScoreBreakdown`). */
-  private readonly priorScoreBreakdown: ScoreBreakdown;
-  /** Curated player-facing stats (kills, accuracy, damage taken, loot,
-   * survival time, closest call) accumulated from levels already cleared
-   * this campaign — see `EngineCarryover.priorPlayerStats` and
-   * `playerStats.ts`'s `mergePlayerFacingStats`. */
-  private readonly priorPlayerStats: PlayerFacingStats;
-  /** Tiles of ground actually covered so far this level (blocked moves count
-   * for nothing) — never reset mid-level, unlike `stepDistance`; feeds the
-   * scoring system's path-efficiency bonus (see `./scoring.ts`). */
-  private distanceTraveled = 0;
+  /** Multiplayer-only: ticks remaining in the exit countdown, or `null` when
+   * none is active — set once, by the first living player to touch
+   * `map.exit`, never restarted by a later touch or reset by leaving the
+   * tile (see `checkExit()`). Always `null` for a single-player instance,
+   * which never starts one at all (`endGame("won")` fires immediately on
+   * touch, byte-identical to pre-step-8 behavior). */
+  private exitCountdownRemaining: number | null = null;
+  /** Tracks who has damaged which still-live enemy this "engagement" (from
+   * first hit to death), for `killScore`'s assist split — see
+   * `damageEnemy()`. Keyed by index into `this.enemies` (stable for a given
+   * enemy's whole lifetime); the entry is deleted the instant that enemy
+   * dies, so this only ever holds currently-live, currently-damaged enemies. */
+  private readonly enemyAssists = new Map<number, Set<PlayerId>>();
   /** Count of unique walkable tiles (see `isWalkableTile`) revealed by
    * `markVisited` so far — the numerator of the "100% Clear" completion
    * fraction (see `./scoring.ts`). Updated incrementally there rather than
-   * rescanned every frame, since `map.visited` only ever grows. */
+   * rescanned every frame, since `map.visited` only ever grows. Team-shared:
+   * any player's own reveal radius counts toward it. */
   private visitedWalkableCount = 0;
   /** Total walkable tiles on this level, counted once at construction — the
    * completion fraction's denominator. */
   private readonly totalWalkableTiles: number;
   /** Tile keys ("x,y") of lore terminals read at least once this level —
-   * feeds the scoring system's flat per-terminal bonus. */
+   * feeds the scoring system's flat per-terminal bonus. Team-shared. */
   private readonly loreRead = new Set<string>();
   /** Tile keys ("x,y") of the door tile of every secret room opened at least
    * once this level — feeds the scoring system's flat per-room bonus. Keyed
    * by the door tile (not any interior tile), since that's the one cell
-   * `tryOpenSecretWall` always has in hand and it's unique per room. */
+   * `tryOpenSecretWall` always has in hand and it's unique per room.
+   * Team-shared. */
   private readonly secretRoomsOpened = new Set<string>();
-  /** Loot dropped by defeated enemies, awaiting collection. */
+  /** Loot dropped by defeated enemies (and by a player dying holding keys —
+   * see `killPlayer()`), awaiting collection. Team-shared world state. */
   private readonly drops: LootDrop[] = [];
-  /** Frames left on the red "took damage" screen flash (0 = none). */
-  private flashFrames = 0;
-  /** Live weapon bullet tracers, fading over a few frames. */
+  /** Per-source drop counters feeding each `LootDrop.id`'s `dropSeq` half
+   * (`${enemyIndex}:${dropSeq}` / `player:${playerId}:${dropSeq}`) — a single
+   * kill/death can push more than one drop (a guaranteed Elite drop plus a
+   * separate bonus-weapon roll; a death's key drop is its own scope), so the
+   * source alone isn't a unique id on its own. Multiplayer-reconciliation-only
+   * bookkeeping — never read in single-player. */
+  private readonly dropSeqByEnemyIndex = new Map<number, number>();
+  private readonly dropSeqByPlayerId = new Map<PlayerId, number>();
+  /** Live weapon bullet tracers, fading over a few frames. Team-shared VFX. */
   private readonly traces: BulletTrace[] = [];
   /** Live flamethrower flame streams (Friday Hotfix's tracer replacement),
-   * fading over a few frames — see `FlameStream`. */
+   * fading over a few frames — see `FlameStream`. Team-shared VFX. */
   private readonly flameStreams: FlameStream[] = [];
-  /** Live "digital blood" particles falling to the floor. */
+  /** Live "digital blood" particles falling to the floor. Team-shared VFX. */
   private readonly blood: BloodParticle[] = [];
   /** Gore-level count/size/floor-stain-duration multipliers, read once at
    * construction (see the constructor's `gore` parameter). */
@@ -557,56 +693,22 @@ export class RaycasterEngine {
    * since `rollLoot`'s drop-kind odds (Normal only — see `./loot.ts`) need the
    * level name, not just its numeric multipliers. */
   private readonly difficultyLevel: DifficultyLevel;
-  /** In-flight enemy projectiles (ranged bolts). */
+  /** Elite HP/damage multipliers for the constructor's `playerCount`
+   * parameter (multiplayer step 9, `multiplayerScaling.ts`) — read once at
+   * construction, same lifecycle as `difficultyMultipliers`. Identity (1/1)
+   * for every single-player session. */
+  private readonly eliteScalingMultipliers: EliteScalingMultipliers;
+  /** In-flight enemy projectiles (ranged bolts). Team-shared world state. */
   private readonly projectiles: Projectile[] = [];
-  /** In-flight player-fired rockets. */
+  /** In-flight player-fired rockets. Team-shared world state. */
   private readonly rockets: Rocket[] = [];
-  /** Live rocket-blast VFX circles. */
+  /** Live rocket-blast VFX circles. Team-shared VFX. */
   private readonly explosions: Explosion[] = [];
   /** Live rocket-blast debris/spark particles (see `spawnExplosionParticles`). */
   private readonly explosionParticles: ExplosionParticle[] = [];
   /** Live flamethrower-hit burn embers, settling and lingering on the floor
-   * (see `spawnBurnParticles`). */
+   * (see `spawnBurnParticles`). Team-shared VFX. */
   private readonly burnParticles: BurnParticle[] = [];
-  /** Countdown (seconds) to the next low-health alarm beep; 0 = beep now. */
-  private alarmCountdown = 0;
-  /** Ground covered (tiles) since the last footstep sound. */
-  private stepDistance = 0;
-  /** Whether the player translated (WASD) this frame — drives head-bob. */
-  private moving = false;
-  /** Head-bob phase accumulator; only advances while moving. */
-  private bobTime = 0;
-  /** Eased bob amplitude (0 at rest → 1 at full stride) for smooth start/stop. */
-  private bobAmount = 0;
-  /** Weapon recoil, 1 just after firing, easing back to 0. */
-  private recoil = 0;
-  /** Quick-melee "thrust" progress, 1 just after a Space swing, easing
-   * back to 0 — entirely independent of `recoil` so a melee swing never
-   * makes whatever ranged weapon is equipped visually kick as if IT fired. */
-  private meleeRecoil = 0;
-  /** Frames left on the muzzle flash. */
-  private muzzleFrames = 0;
-  /** Whether the automap overlay is up. Non-blocking — the sim keeps running
-   * (movement, combat, hazards) while it's shown, Diablo-style; only a few
-   * purely-visual layers (viewmodel, corner minimap/compass) are suppressed
-   * while it's open — the crosshair stays visible since the player can still
-   * aim and fire. See `advance()`. */
-  private isMapActive = false;
-  /** Whether the game is paused (window blur or Escape) — freezes the sim and
-   * shows a "PAUSED" overlay, distinct from the Tab automap. */
-  private isPaused = false;
-  /** Text of the lore terminal currently being read (null = no overlay up).
-   * Freezes the sim the same way `isPaused` does (`isMapActive` no longer
-   * freezes — see its doc comment) — see `advance()`. */
-  private loreText: string | null = null;
-  /** Wrapped-line scroll offset into `loreText`, advanced by holding W/S
-   * while the overlay is up (see `drawLoreOverlay`'s doc comment) and reset
-   * whenever a new terminal is opened. */
-  private loreScroll = 0;
-  /** Tile key ("x,y") of a teleporter pad the player just arrived on, so they
-   * can step off before it can trigger again — otherwise the destination pad
-   * (itself a teleporter tile) would bounce them straight back. */
-  private suppressTeleportAt: string | null = null;
   /** Seconds elapsed in this level's simulation; drives timed spike traps. */
   private levelTime = 0;
   /** Last value reported via `onFreezeChange`, so that handler only fires on
@@ -635,45 +737,51 @@ export class RaycasterEngine {
    * with the derived stats gated to only compute at level-end, the ~20
    * individual recording call sites below measurably slow real gameplay).
    * Every recording call elsewhere in this class is a no-op guarded by
-   * `if (this.telemetry)` when it's `undefined`, so normal play with the
-   * flag off carries zero extra cost. */
-  private readonly telemetry?: TelemetryState;
-  /** Test-only Q/E (+ gamepad) turn-speed multiplier for
-   * `scripts/run-balancing-telemetry.mjs`'s bot — see `handleMovement`'s use
-   * of `ROT_SPEED`. Real mouse-look aiming (near-instant) isn't available to
-   * a Playwright-automated browser: `canvas.requestPointerLock()` reliably
-   * rejects with "The root document of this element is not valid for
-   * pointer lock" under automation, confirmed empirically in both headless
-   * and headed Chromium — not a fixable flakiness, a hard platform
-   * restriction. Rather than have the bot's Q/E-only aiming take far longer
-   * than a real (mouse-using) player's aim time, this lets the bot
-   * approximate a realistic *mouse* turn speed for its skill profile instead
-   * of the real keyboard rate — set only via `?testHooks=1`'s
-   * `botRotSpeedMul` query param, defaulting to 1 (real players are never
-   * affected: the param is never present in normal play). Clamped to a sane
-   * range so a bad value can't spin the player nonsensically fast. */
-  private rotSpeedMultiplier = 1;
+   * `if (this.telemetryEnabled)`/`if (p.telemetry)` when it's `undefined`,
+   * so normal play with the flag off carries zero extra cost. Split into two
+   * pieces: this field holds only the handful of genuinely team-wide
+   * counters (peak-aggroed-count, combat time, TTK windows, mines
+   * triggered, loot rolled — none of these has a single obvious per-player
+   * owner once more than one player can be in range/contributing, see
+   * `doc/dev/multiplayer-balancing-telemetry-spec.md`); everything
+   * per-player-attributable (damage taken, shots/hits, loot collected, …)
+   * lives on each `PlayerState.telemetry` instead — see `createPlayerState`. */
+  private readonly teamTelemetry?: TeamTelemetryState;
+  /** Whether telemetry recording is on at all this run — computed once in
+   * the constructor from the same `PLAYER_STATS_ENABLED`/`?testHooks=1` gate
+   * `this.teamTelemetry`'s doc comment describes, and reused by
+   * `createPlayerState()` (called both from the constructor for the local
+   * player and later from `addPlayer()` for every other roster member) to
+   * decide whether that player's own `telemetry` field gets created. */
+  private readonly telemetryEnabled: boolean;
   /** Links a live `Enemy` to its open time-to-kill window — see
    * `telemetry.ts`'s `recordEnemyAggro`/`recordEnemyDeath`. Kept off
-   * `TelemetryState` itself since a `WeakMap` can't cross the
+   * `TeamTelemetryState` itself since a `WeakMap` can't cross the
    * `getTelemetrySnapshot()` structured-clone boundary. */
   private readonly enemyTtkIndex = new WeakMap<Enemy, EnemyTtkRecord>();
+  /** Ring buffer of past enemy positions, one frame per multiplayer tick,
+   * capped at `INPUT_DELAY_TICKS + 1` — see `rewoundEnemyPositions()`'s own
+   * doc comment for why this exists and how it's used. Single-player never
+   * pushes to this (see the capture site in `simulate()`), so it stays
+   * permanently empty there — zero cost beyond the one always-false
+   * `isMultiplayerSession()` check. */
+  private readonly enemyPositionHistory: ReadonlyMap<Enemy, { x: number; y: number }>[] = [];
   /** Bound once (not reallocated per frame) and always passed to
-   * `updateEnemies()` — each closure no-ops internally when `this.telemetry`
-   * is unset, same pattern as every other recording call site. */
+   * `updateEnemies()` — each closure no-ops internally when
+   * `this.teamTelemetry` is unset, same pattern as every other recording
+   * call site. Enemy bolt-hit attribution (per-player) is handled separately
+   * at `updateProjectiles()`'s own call site instead of through here — see
+   * that method's doc comment. */
   private readonly enemyAiEvents: EnemyAiEvents = {
     onAggro: (enemy) => {
-      if (this.telemetry) recordEnemyAggro(this.telemetry, this.enemyTtkIndex, enemy, this.levelTime);
+      if (this.teamTelemetry) recordEnemyAggro(this.teamTelemetry, this.enemyTtkIndex, enemy, this.levelTime);
     },
     onMeleeAttack: () => {
-      if (this.telemetry) recordEnemyMeleeAttack(this.telemetry);
+      if (this.teamTelemetry) recordEnemyMeleeAttack(this.teamTelemetry);
     },
     onRangedFire: () => {
-      if (this.telemetry) recordEnemyBoltFired(this.telemetry);
+      if (this.teamTelemetry) recordEnemyBoltFired(this.teamTelemetry);
     },
-  };
-  private readonly onEnemyBoltHit = (): void => {
-    if (this.telemetry) recordEnemyBoltHit(this.telemetry);
   };
 
   constructor(
@@ -694,6 +802,33 @@ export class RaycasterEngine {
      * live `InputController` — see `this.input`'s doc comment. */
     inputSource?: InputSource,
     replayRecorder?: CampaignReplayRecorder,
+    /** Which `PlayerId` this instance's own player is keyed as — defaults to
+     * `LOCAL_PLAYER_ID` ("local"), today's single-player behavior. A
+     * multiplayer session must override this to the peer's real, globally-
+     * shared roster id: every peer's `players` map has to use the *same* key
+     * strings for the *same* physical players, or `sortedPlayerIds()`
+     * produces a different relative order on each peer (each one would
+     * otherwise substitute a different player's real id with the literal
+     * string "local"), desyncing the shared PRNG stream from tick 1 — see
+     * `sortedPlayerIds()`'s own doc comment. */
+    localPlayerId: PlayerId = LOCAL_PLAYER_ID,
+    /** Where this instance's own player spawns — defaults to `map.spawn`
+     * (today's single-player behavior). A multiplayer session passes one of
+     * `GameMap.multiplayerSpawns`'s spread-out points instead, matching
+     * `addPlayer`'s own `spawn` parameter for every other connected player. */
+    localSpawn?: Point,
+    /** How many players this session has, for Elite HP/damage scaling
+     * (`multiplayer-game-state-spec.md` §4, `eliteScalingFor()`) — defaults
+     * to 1 (today's single-player behavior, identity multiplier). Must be
+     * passed explicitly by a multiplayer session rather than read from
+     * `this.players.size`: at construction time this instance's own
+     * `players` map holds only the local player — every other roster member
+     * is added afterward via `addPlayer()` (see `sessionEngine.ts`'s
+     * `buildSessionEngine`), so the real count has to come from the caller,
+     * which already knows the full roster size upfront (the same reason
+     * `mapGenerator.generate()` already takes a `maxPlayers` param instead of
+     * inferring it from generated state). */
+    playerCount = 1,
   ) {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2D canvas context unavailable");
@@ -701,53 +836,10 @@ export class RaycasterEngine {
     // Nearest-neighbor scaling for wall/door texture columns — cheaper than
     // bilinear and correct for the game's existing chunky low-res look.
     this.ctx.imageSmoothingEnabled = false;
-    this.player = new Player(map);
-    this.godMode = carryover?.godMode ?? false;
-    this.player.noClip = carryover?.noClip ?? false;
-    this.showFps = carryover?.showFps ?? false;
-    this.input = inputSource ?? new InputController(canvas);
-    this.rng = mulberry32(gameplaySeed);
+    this.rngHandle = createResumablePrng(gameplaySeed);
+    this.rng = this.rngHandle.next;
     this.replayRecorder = replayRecorder;
     this.enemies = map.enemies;
-    this.zBuffer = new Float64Array(canvas.width);
-    this.startingAmmoRef = startingAmmo(map.enemies);
-    this.ammo = {
-      bullets: carryover?.bullets ?? this.startingAmmoRef.bullets,
-      rockets: carryover?.rockets ?? this.startingAmmoRef.rockets,
-      smg: carryover?.smg ?? this.startingAmmoRef.smg,
-      gas: carryover?.gas ?? this.startingAmmoRef.gas,
-    };
-    this.ownedWeapons = new Set(carryover?.ownedWeapons ?? STARTING_WEAPONS);
-    this.campaignLevelIndex = carryover?.campaignLevelIndex ?? 1;
-    this.lootCtx = {
-      ammo: this.ammo,
-      scaledAmount: (base) => this.scaledLootAmount(base),
-      heal: (amount) => {
-        this.health = Math.min(MAX_HEALTH, this.health + amount);
-      },
-      addSwap: (amount) => {
-        this.swap = Math.min(MAX_SWAP, this.swap + amount);
-      },
-      healthAtMax: () => this.health >= MAX_HEALTH,
-      ownedWeapons: this.ownedWeapons,
-      equip: (index) => {
-        this.weaponIndex = index;
-      },
-      pushDrop: (drop) => this.pushLootDrop(drop),
-      rng: this.rng,
-      campaignLevelIndex: this.campaignLevelIndex,
-      recordApplied: (kind, amount, origin) => {
-        if (this.telemetry) recordLootCollected(this.telemetry, origin, kind, amount);
-      },
-    };
-    this.priorScore = carryover?.priorScore ?? 0;
-    this.priorScoreBreakdown = carryover?.priorScoreBreakdown ?? zeroScoreBreakdown();
-    this.priorPlayerStats = carryover?.priorPlayerStats ?? emptyPlayerFacingStats();
-    // See `this.telemetry`'s doc comment — `PLAYER_STATS_ENABLED` opts real
-    // play into the same instrumentation `?testHooks=1` always gets.
-    if (PLAYER_STATS_ENABLED || (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1")) {
-      this.telemetry = createTelemetryState();
-    }
     this.totalWalkableTiles = countWalkableTiles(map);
     this.goreMultipliers = GORE_MULTIPLIERS[gore];
     this.difficultyMultipliers = DIFFICULTY_MULTIPLIERS[difficulty];
@@ -763,11 +855,31 @@ export class RaycasterEngine {
         enemy.maxHp = Math.round(enemy.maxHp * this.difficultyMultipliers.hp);
       }
     }
-    if (carryover) {
-      this.health = carryover.health;
-      this.swap = carryover.swap;
+    this.eliteScalingMultipliers = eliteScalingFor(playerCount);
+    // A second, Elite-only pass — kept visually separate from the
+    // unconditional difficulty loop above rather than folded into it, so
+    // "this only touches Elites" is obvious at the call site instead of a
+    // reader having to trace a conditional buried inside a loop meant for
+    // everyone (see `multiplayer-game-state-spec.md` §4).
+    if (this.eliteScalingMultipliers.hp !== 1) {
+      for (const enemy of this.enemies) {
+        if (!enemy.elite) continue;
+        enemy.hp = Math.round(enemy.hp * this.eliteScalingMultipliers.hp);
+        enemy.maxHp = Math.round(enemy.maxHp * this.eliteScalingMultipliers.hp);
+      }
     }
-    if (carryover?.weaponIndex !== undefined) this.weaponIndex = carryover.weaponIndex;
+    // See `this.teamTelemetry`'s doc comment — `PLAYER_STATS_ENABLED` opts
+    // real play into the same instrumentation `?testHooks=1` always gets.
+    this.telemetryEnabled =
+      PLAYER_STATS_ENABLED || (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1");
+    if (this.telemetryEnabled) {
+      this.teamTelemetry = createTeamTelemetryState();
+    }
+
+    this.localPlayerId = localPlayerId;
+    this.players = new Map([
+      [localPlayerId, this.createPlayerState(localPlayerId, inputSource ?? new InputController(canvas), carryover, localSpawn)],
+    ]);
 
     // Opt-in frame-timing/entity-count diagnostics — see `perfDebug.ts`'s doc
     // comment and `this.perf`'s. Deliberately a separate gate from
@@ -792,102 +904,37 @@ export class RaycasterEngine {
     // highscore.mjs): exposes just enough read-only state to steer the
     // player toward a known exit and fight back without a pixel-scraping or
     // blind dead-reckoning hack. Inert unless the page URL carries
-    // `?testHooks=1` — never touched by normal play. `this.telemetry` is
-    // already created above whenever this param is on (it also gates that,
-    // see its doc comment) — only the window-hook exposure below (and the
-    // bot's rotation-speed override) is exclusive to this param.
+    // `?testHooks=1` — never touched by normal play. `this.teamTelemetry`
+    // (and every player's own `.telemetry`) is already created above
+    // whenever this param is on (it also gates that, see its doc comment) —
+    // only the window-hook exposure below (and the
+    // bot's rotation-speed override, applied inside `createPlayerState`) is
+    // exclusive to this param. Every read below resolves through
+    // `this.players.get(this.localPlayerId)!` (the local peer — the only one
+    // a real bot/headless harness ever drives) rather than a bare `this.*`.
     if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1") {
-      // See `this.rotSpeedMultiplier`'s doc comment.
-      const rotMul = Number(new URLSearchParams(window.location.search).get("botRotSpeedMul"));
-      if (Number.isFinite(rotMul)) this.rotSpeedMultiplier = Math.min(10, Math.max(1, rotMul));
       (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks = {
-        getPlayerState: () => ({
-          x: this.player.posX,
-          y: this.player.posY,
-          dirX: this.player.dirX,
-          dirY: this.player.dirY,
-          health: this.health,
-          healthFraction: this.health / MAX_HEALTH,
-          swap: this.swap,
-          state: this.state,
-          ammo: { ...this.ammo },
-          weaponIndex: this.weaponIndex,
-          // Whether a quick-melee swing thrown *right now* would actually
-          // connect — mirrors `fire()`'s own crosshair-column hit test
-          // (`findTargetInProjections` against the exact center column, in
-          // front of the nearest wall) rather than a bot-side angle-only
-          // guess. A fixed angle tolerance can't work here: a melee swing
-          // only lands within the target's on-screen width, which shrinks
-          // with distance (even inside melee range) and with an Edge Case's
-          // smaller sprite scale — a bot-side static epsilon was found to
-          // let it "fire" while aimed well off the target's actual hitbox,
-          // especially against Edge Cases near the far edge of melee range
-          // (observed: hundreds of whiffed swings against one enemy before
-          // giving up). See `scripts/run-balancing-telemetry.mjs`'s `tick()`
-          // for the consumer.
-          meleeWouldHit: (() => {
-            const melee = currentMeleeWeapon(this.ownedWeapons);
-            // Unreachable: `currentMeleeWeapon` only ever returns the knife or
-            // Toolchain, both hardcoded with `meleeRange: 1.5` — there's no
-            // owned-weapons state that makes this undefined.
-            /* v8 ignore next */
-            if (melee.meleeRange === undefined) return false;
-            const { width, height } = this.ctx.canvas;
-            const projections = projectLivingEnemies(this.player, this.enemies, width, height);
-            const target = findTargetInProjections(projections, this.zBuffer, width, height, width / 2);
-            if (!target?.alive) return false;
-            const dist = Math.hypot(target.x - this.player.posX, target.y - this.player.posY);
-            return dist <= melee.meleeRange;
-          })(),
-          // Whether firing the *currently equipped ranged weapon* right now
-          // is guaranteed to destroy whatever mine is at the crosshair —
-          // mine hits go through the same screen-projection hit test as an
-          // enemy (`findMineInProjections`, mirroring `findTargetInProjections`),
-          // but for a *ranged* shot that also means the Cone-of-Fire
-          // deviation applies (unlike melee, which is exempt — see
-          // `meleeWouldHit`). A bot picking its shot purely by angle
-          // tolerance has no way to know the mine's on-screen width is
-          // narrower than that tolerance at typical disarm range, so it can
-          // "fire" many times while only occasionally actually connecting
-          // (confirmed via trace: ~30 fire attempts at one stationary,
-          // perfectly-angle-aligned mine before it finally died). Rather
-          // than expose the RNG'd deviation itself (which would let a bot
-          // "peek" at the seeded PRNG's next draw without consuming it,
-          // desyncing determinism from a real shot), this checks the
-          // *worst case* deviation magnitude deterministically: only true
-          // if the mine's projected width is wide enough that no possible
-          // random deviation could miss it. See
-          // `scripts/run-balancing-telemetry.mjs`'s `tick()` for the
-          // consumer.
-          wouldMineHit: (() => {
-            const weapon = WEAPONS[this.weaponIndex];
-            if (weapon.meleeRange !== undefined) return false; // this is the ranged-shot check; see meleeWouldHit for melee
-            const { width, height } = this.ctx.canvas;
-            const center = width / 2;
-            const mineProjections = projectVisibleMines(this.player, this.map.mines, width, height);
-            const target = findMineInProjections(mineProjections, this.zBuffer, width, height, center);
-            if (!target?.alive) return false;
-            if (weapon.maxRange !== undefined) {
-              const dist = Math.hypot(target.x - this.player.posX, target.y - this.player.posY);
-              if (dist > weapon.maxRange) return false;
-            }
-            const proj = mineProjections.find((p) => p.mine === target)?.proj;
-            // Unreachable: `target` is itself one of `mineProjections`' own
-            // `mine` references (returned by `findMineInProjections` from
-            // that exact array), so `.find` above always matches by identity.
-            /* v8 ignore next */
-            if (!proj) return false;
-            const baseCol = Math.min(width - 1, Math.max(0, Math.round(center)));
-            const range = this.zBuffer[baseCol];
-            const rangeFraction = Math.min(1, range / FOG_FAR);
-            const maxDeviation = weapon.maxConeDeviationPx ?? MAX_CONE_DEVIATION_PX;
-            const worstCaseDeviation = rangeFraction * rangeFraction * rangeFraction * maxDeviation;
-            return center - worstCaseDeviation >= proj.left && center + worstCaseDeviation <= proj.right;
-          })(),
-          ownedWeapons: [...this.ownedWeapons],
-          levelTime: this.levelTime,
-          distanceTraveled: this.distanceTraveled,
-        }),
+        getPlayerState: () => {
+          const p = this.players.get(this.localPlayerId)!;
+          const { meleeWouldHit, wouldMineHit } = this.computeMeleeAndMineHitChecks(this.localPlayerId);
+          return {
+            x: p.player.posX,
+            y: p.player.posY,
+            dirX: p.player.dirX,
+            dirY: p.player.dirY,
+            health: p.health,
+            healthFraction: p.health / MAX_HEALTH,
+            swap: p.swap,
+            state: this.state,
+            ammo: { ...p.ammo },
+            weaponIndex: p.weaponIndex,
+            meleeWouldHit,
+            wouldMineHit,
+            ownedWeapons: [...p.ownedWeapons],
+            levelTime: this.levelTime,
+            distanceTraveled: p.distanceTraveled,
+          };
+        },
         getExit: () => ({ x: map.exit.x, y: map.exit.y }),
         getEnemies: () =>
           this.enemies.map((e) => ({
@@ -914,77 +961,1011 @@ export class RaycasterEngine {
         // pre-planned route to a specific locked door happens to pass over
         // it. See `scripts/run-balancing-telemetry.mjs`'s `maybeDetourForLoot`.
         getKeys: () => this.map.keys.filter((k) => !k.collected).map((k) => ({ x: k.x, y: k.y })),
-        getTelemetrySnapshot: () => {
-          // Unreachable: `this.telemetry` is always created whenever
-          // `?testHooks=1` gates this whole block on (see the constructor) —
-          // whenever this hook is callable at all, it's already set.
-          /* v8 ignore next */
-          if (!this.telemetry) return null;
-          const t = this.telemetry;
-          const stats = this.buildStats();
-          // Reuse the curated player-facing derivation for the fields it
-          // already computes (accuracy inputs, damage-by-source, closest
-          // call, fatal source), then splice the bot-only extras on top —
-          // see `playerStats.ts`'s doc comment for why the two stay separate
-          // types rather than one sharing every field. Derived directly from
-          // `t` (not `stats.levelPlayerStats`, which is only populated when
-          // it's cheap to — see `buildStats()`'s `atLevelEnd` gate) since
-          // this hook is always called after the level has already ended
-          // (see `pullLevelResult` in run-balancing-telemetry.mjs).
-          const player = buildPlayerFacingStats(t, this.levelTime, this.kills);
-          return {
-            ttkRecords: [...t.ttkFinished, ...t.ttkPending].map((r) => ({ ...r })),
-            peakAggroedCount: t.peakAggroedCount,
-            combatTimeSec: t.combatTimeSec,
-            levelTimeSec: this.levelTime,
-            enemyBoltsFired: t.enemyBoltsFired,
-            enemyBoltsHit: t.enemyBoltsHit,
-            enemyMeleeAttacks: t.enemyMeleeAttacks,
-            minHealthReached: player.minHealthReached === Infinity ? this.health : player.minHealthReached,
-            timeBelow25PctHealthSec: t.timeBelow25PctHealthSec,
-            damageBySource: { ...player.damageTakenBySource },
-            healingBySource: { ...t.healingBySource },
-            weaponTallies: Object.fromEntries(Object.entries(t.weaponTallies).map(([i, tally]) => [i, { ...tally }])),
-            lootRolled: { ...t.lootRolled },
-            lootCollectedDynamic: { ...t.lootCollectedDynamic },
-            lootCollectedStatic: { ...t.lootCollectedStatic },
-            timeAtZeroRangedAmmoSec: t.timeAtZeroRangedAmmoSec,
-            killsForcedByMelee: t.killsForcedByMelee,
-            minesTriggered: t.minesTriggered,
-            minesDisarmed: t.minesDisarmed,
-            regularKillLootRolls: t.regularKillLootRolls,
-            regularKillLootMisses: t.regularKillLootMisses,
-            fatalDamageSource: player.fatalDamageSource,
-            distanceTraveled: this.distanceTraveled,
-            mapCompletionFrac: this.visitedWalkableCount / this.totalWalkableTiles,
-            secretRoomsOpened: this.secretRoomsOpened.size,
-            secretRoomCount: map.secretRoomCount,
-            kills: player.kills,
-            score: stats.score,
-          };
-        },
+        getTelemetrySnapshot: () => this.buildTelemetrySnapshotFor(this.localPlayerId),
       };
     }
   }
 
+  /**
+   * Build one player's full state — identical logic to what a pre-N-player
+   * constructor did inline for "the" player, just returning a `PlayerState`
+   * instead of writing to `this.*`. Everything that stays engine-shared
+   * (`map`, `enemies`, `rng`, `drops`, …) is built once in the constructor,
+   * outside this method.
+   */
+  private createPlayerState(id: PlayerId, inputSource: InputSource, carryover?: EngineCarryover, spawn?: Point): PlayerState {
+    const player = new Player(this.map, {}, spawn);
+    player.noClip = carryover?.noClip ?? false;
+    const startingAmmoRef = startingAmmo(this.map.enemies);
+    const ammo: AmmoPools = {
+      bullets: carryover?.bullets ?? startingAmmoRef.bullets,
+      rockets: carryover?.rockets ?? startingAmmoRef.rockets,
+      smg: carryover?.smg ?? startingAmmoRef.smg,
+      gas: carryover?.gas ?? startingAmmoRef.gas,
+    };
+    const ownedWeapons = new Set(carryover?.ownedWeapons ?? STARTING_WEAPONS);
+    const campaignLevelIndex = carryover?.campaignLevelIndex ?? 1;
+    let health = MAX_HEALTH;
+    let swap = 0;
+    if (carryover) {
+      health = carryover.health;
+      swap = carryover.swap;
+    }
+    let weaponIndex = 0;
+    if (carryover?.weaponIndex !== undefined) weaponIndex = carryover.weaponIndex;
+    // See `PlayerState.rotSpeedMultiplier`'s doc comment — only ever applies
+    // to the local peer (the only one a headless bot ever drives).
+    let rotSpeedMultiplier = 1;
+    if (id === this.localPlayerId && typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1") {
+      const rotMul = Number(new URLSearchParams(window.location.search).get("botRotSpeedMul"));
+      if (Number.isFinite(rotMul)) rotSpeedMultiplier = Math.min(10, Math.max(1, rotMul));
+    }
+
+    const state = {} as PlayerState;
+    Object.assign(state, {
+      id,
+      player,
+      input: inputSource,
+      status: "alive" as PlayerStatus,
+      spectateTargetId: null,
+      health,
+      swap,
+      godMode: carryover?.godMode ?? false,
+      ammo,
+      startingAmmoRef,
+      weaponIndex,
+      ownedWeapons,
+      campaignLevelIndex,
+      weaponCooldown: 0,
+      meleeCooldown: 0,
+      keysHeld: 0,
+      kills: 0,
+      killScore: 0,
+      recentKillTimes: [],
+      multiKillCount: 0,
+      ultraKillCount: 0,
+      killStreakText: null,
+      killStreakFrames: 0,
+      killStreakBig: false,
+      priorScore: carryover?.priorScore ?? 0,
+      priorScoreBreakdown: carryover?.priorScoreBreakdown ?? zeroScoreBreakdown(),
+      priorPlayerStats: carryover?.priorPlayerStats ?? emptyPlayerFacingStats(),
+      distanceTraveled: 0,
+      stepDistance: 0,
+      moving: false,
+      bobTime: 0,
+      bobAmount: 0,
+      recoil: 0,
+      meleeRecoil: 0,
+      muzzleFrames: 0,
+      viewOffsets: { horizonShift: 0, bobX: 0, bobY: 0 },
+      renderOffset: null,
+      rotSpeedMultiplier,
+      zBuffer: new Float64Array(SCENE_WIDTH),
+      pathField: new PathField(),
+      suppressTeleportAt: null,
+      alarmCountdown: 0,
+      flashFrames: 0,
+      cheatToastText: null,
+      cheatToastFrames: 0,
+      isMapActive: false,
+      isPaused: false,
+      loreText: null,
+      loreScroll: 0,
+      showFps: carryover?.showFps ?? false,
+      telemetry: this.telemetryEnabled ? createTelemetryState() : undefined,
+    });
+
+    const lootCtx: LootContext = {
+      ammo: state.ammo,
+      scaledAmount: (base) => this.scaledLootAmount(base),
+      heal: (amount) => {
+        state.health = Math.min(MAX_HEALTH, state.health + amount);
+      },
+      addSwap: (amount) => {
+        state.swap = Math.min(MAX_SWAP, state.swap + amount);
+      },
+      addKey: (amount) => {
+        state.keysHeld += amount;
+      },
+      healthAtMax: () => state.health >= MAX_HEALTH,
+      ownedWeapons: state.ownedWeapons,
+      equip: (index) => {
+        state.weaponIndex = index;
+      },
+      pushDrop: (drop, enemy) => this.pushLootDrop(drop, enemy),
+      rng: this.rng,
+      campaignLevelIndex: state.campaignLevelIndex,
+      recordApplied: (kind, amount, origin) => {
+        if (state.telemetry) recordLootCollected(state.telemetry, origin, kind, amount);
+      },
+      isMultiplayerSession: this.isMultiplayerSession(),
+    };
+    Object.assign(state, { lootCtx });
+
+    return state;
+  }
+
+  /**
+   * Add a new connected player mid-session — the real revive mechanism too:
+   * a later session-lifecycle step calls this with
+   * `{ ...carryover, health: REVIVE_HEALTH }` for a player who died the
+   * level before (see `REVIVE_HEALTH`'s doc comment). `spawn` defaults to
+   * `map.spawn` (today's exact stacked-spawn behavior) — a multiplayer
+   * session passes one of `GameMap.multiplayerSpawns`'s spread-out points
+   * instead, per `multiplayer-game-state-spec.md` §2's assignment rule.
+   */
+  addPlayer(id: PlayerId, inputSource: InputSource, carryover?: EngineCarryover, spawn?: Point): void {
+    if (this.players.has(id)) throw new Error(`RaycasterEngine.addPlayer: "${id}" already present`);
+    this.players.set(id, this.createPlayerState(id, inputSource, carryover, spawn));
+  }
+
+  /** Determinism primitive every per-player simulation loop uses — iterating
+   * `this.players` in `Map` insertion order would depend on connection
+   * order, which two peers can observe differently; sorting by id gives
+   * every player-order-dependent tie-break (first-match loot pickup,
+   * nearest-target ties, …) the same deterministic answer everywhere. */
+  private sortedPlayerIds(): PlayerId[] {
+    return [...this.players.keys()].sort();
+  }
+
+  /** True for a real multiplayer session (host or guest), false for
+   * single-player/replay — promotes the `localPlayerId !== LOCAL_PLAYER_ID`
+   * comparison already used inline for the lore-terminal freeze bypass
+   * (step 6c) into a named helper, reused by the multiplayer-only rules
+   * added in step 8 (loot-drop no-op-if-owned, lore-overlay dismiss-only,
+   * exit countdown). */
+  private isMultiplayerSession(): boolean {
+    return this.localPlayerId !== LOCAL_PLAYER_ID;
+  }
+
+  /** Captures this tick's living-enemy positions into `enemyPositionHistory`,
+   * trimmed to its `INPUT_DELAY_TICKS + 1`-frame cap — called from
+   * `simulate()`, once per tick, right after `updateEnemyAi()` so the
+   * captured positions are this tick's final ones. Multiplayer-only: every
+   * player's fire input (the local player's own included, deliberately, for
+   * lockstep fairness — see `INPUT_DELAY_TICKS`'s own doc comment) is
+   * delayed `INPUT_DELAY_TICKS` before it's actually applied, so by
+   * execution time a moving enemy may no longer be where the shooter aimed.
+   * Single-player never calls this at all (see the `simulate()` call site),
+   * so `enemyPositionHistory` stays permanently empty there. */
+  private captureEnemyPositionHistory(): void {
+    const frame = new Map<Enemy, { x: number; y: number }>();
+    for (const enemy of this.enemies) {
+      if (enemy.alive) frame.set(enemy, { x: enemy.x, y: enemy.y });
+    }
+    this.enemyPositionHistory.push(frame);
+    while (this.enemyPositionHistory.length > INPUT_DELAY_TICKS + 1) this.enemyPositionHistory.shift();
+  }
+
+  /**
+   * The enemy positions a multiplayer shot should be hit-tested against —
+   * `INPUT_DELAY_TICKS` ticks in the past, not live/current — or `undefined`
+   * in single-player (every call site falls back to exactly today's live-
+   * position behavior when this returns `undefined`, byte-identical, zero
+   * regression risk).
+   *
+   * Only the *hit-test* position is rewound; `fire()`'s actual damage
+   * application still mutates the real, live `Enemy` object (found via the
+   * same reference, just projected from an earlier position) — an enemy's
+   * current hp/aggro/etc. are never rewound, only where it's projected to
+   * for targeting purposes.
+   *
+   * Given `enemyPositionHistory` is capped at exactly `INPUT_DELAY_TICKS + 1`
+   * frames, its oldest entry is always precisely `INPUT_DELAY_TICKS` ticks
+   * behind the frame just captured this tick, once the buffer is full. In a
+   * level's first few ticks (buffer not yet full) this is simply whichever
+   * frame is oldest so far — a negligible, self-correcting bootstrap window,
+   * not a case worth special-handling: real combat essentially never starts
+   * inside a level's first ~100ms.
+   *
+   * The bot/HUD-facing prediction hook (`computeMeleeAndMineHitChecks`)
+   * deliberately does *not* call this — it reads live state, which is
+   * exactly correct for a live decision: `fire()` rewinding by
+   * `INPUT_DELAY_TICKS` at *execution* time (`INPUT_DELAY_TICKS` ticks
+   * later) lands back on approximately "now" relative to when the decision
+   * was made, so the live prediction and the eventual rewound execution
+   * agree.
+   */
+  private rewoundEnemyPositions(): ReadonlyMap<Enemy, { x: number; y: number }> | undefined {
+    if (!this.isMultiplayerSession()) return undefined;
+    return this.enemyPositionHistory[0];
+  }
+
+  /** Multiplayer-only: closes this peer's own lore overlay, if one is open —
+   * a no-op for a single-player instance (which dismisses its overlay
+   * through the ordinary `simulate()` input pipeline instead, via
+   * `interacted`/`clicked`) or if no overlay is open. Called directly by the
+   * session driver, entirely outside `simulate()`'s per-tick pipeline — a
+   * real Escape press is the one local, purely-cosmetic action with no
+   * shared-simulation channel to carry it: `LocalInputSampler.sampleAndReset()`
+   * forces `escape` to `false` before it ever reaches the shared input
+   * stream (multiplayer-netcode-spec.md §6), so `local.input.consumeEscape()`
+   * inside `simulate()` can never observe a real press for a multiplayer
+   * peer. Reusing `interacted`/`clicked` instead (as single-player does)
+   * isn't safe here: both carry real shared-simulation side effects (secret-
+   * wall discovery, `fireQueued`) unrelated to closing a purely local
+   * overlay. */
+  dismissLoreOverlay(): void {
+    if (!this.isMultiplayerSession()) return;
+    const local = this.players.get(this.localPlayerId);
+    if (local) local.loreText = null;
+  }
+
+  /** Read-only per-player snapshot for a session-lifecycle layer above this
+   * engine to build an end-of-run comparison table from (multiplayer step 9)
+   * — `breakdown` is the cumulative *run* total (every level played this
+   * session, not just the current one), mirroring `buildStats()`'s own
+   * `runScoreBreakdown` derivation (`sumScoreBreakdowns(p.priorScoreBreakdown,
+   * computeLevelScoreBreakdown(p))`) rather than a single level's total,
+   * since this is meant to be read once, at true session end. Iterates
+   * `sortedPlayerIds()` (not raw `Map` insertion order) purely so every peer
+   * builds the same row order — cosmetic, not a correctness requirement,
+   * since the caller keys off `PlayerId` either way. */
+  rosterSnapshot(): ReadonlyMap<PlayerId, RosterSnapshotEntry> {
+    const snapshot = new Map<PlayerId, RosterSnapshotEntry>();
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      const breakdown = sumScoreBreakdowns(p.priorScoreBreakdown, this.computeLevelScoreBreakdown(p));
+      snapshot.set(id, { status: p.status, health: p.health, killScore: p.killScore, kills: p.kills, distanceTraveled: p.distanceTraveled, breakdown });
+    }
+    return snapshot;
+  }
+
+  /** A specific roster player's current world position, or `null` if `id`
+   * isn't a connected player — the only public way to read a *non-local*
+   * player's position (every `?testHooks=1` position hook resolves
+   * exclusively through `this.localPlayerId`). Needed by a multiplayer
+   * session driver to verify two peers' simulations actually agree. */
+  getPlayerPosition(id: PlayerId): { x: number; y: number } | null {
+    const p = this.players.get(id);
+    return p ? { x: p.player.posX, y: p.player.posY } : null;
+  }
+
+  /** A specific roster player's current facing direction, or `null` if `id`
+   * isn't a connected player — read-only introspection, same spirit as
+   * `getPlayerPosition`. Lets a verify script compute how far to turn toward
+   * a target tile without needing to dead-reckon it from held-key duration,
+   * which real (jittery, worker-timer-paced) wall-clock ticking can't
+   * guarantee precisely, unlike the fixed-step unit-test environment. */
+  getPlayerFacing(id: PlayerId): { dirX: number; dirY: number } | null {
+    const p = this.players.get(id);
+    return p ? { dirX: p.player.dirX, dirY: p.player.dirY } : null;
+  }
+
+  /** A specific roster player's current status, or `null` if `id` isn't a
+   * connected player — read-only introspection, same spirit as
+   * `getPlayerPosition`. Lets `scripts/verify-multiplayer-disconnect.mjs`
+   * observe a peer flipping from `"alive"` to `"disconnected"`. */
+  getPlayerStatus(id: PlayerId): PlayerStatus | null {
+    return this.players.get(id)?.status ?? null;
+  }
+
+  /** Every currently-live loot drop, world-space, read-only. Lets
+   * `scripts/verify-multiplayer-disconnect.mjs` observe a disconnected
+   * player's inventory converting to loot (`source: "disconnect"`) at their
+   * last known position — the only external way to read `this.drops`, which
+   * has no other public surface (drops are collected/removed purely by
+   * `simulate()`'s own per-tick loop). */
+  getLootDrops(): readonly LootDrop[] {
+    return this.drops;
+  }
+
+  /** This level's exit tile — read-only introspection, same spirit as
+   * `getPlayerPosition`. Lets `scripts/verify-multiplayer-transition.mjs`
+   * navigate a real peer onto the exit without needing a fake/simplified
+   * map: the real, generated level's exit position, straight from the
+   * engine actually running it. */
+  getMapExit(): Point {
+    return this.map.exit;
+  }
+
+  /** This level's walkable grid (`grid[y][x]`) — read-only introspection,
+   * same spirit as `getMapExit`. Lets a verify script compute its own
+   * walls-aware route to the exit client-side, the same way
+   * `main.test.ts`'s own `bfsPath` helper does for single-player. */
+  getMapGrid(): readonly Tile[][] {
+    return this.map.grid;
+  }
+
+  /** The full generated `GameMap` this engine is running — read-only
+   * introspection, same spirit as `getMapExit`/`getMapGrid` but exposing
+   * everything real route-planning (`scripts/lib/routePlanner.mjs`'s
+   * `planRoute`, driven by `scripts/lib/multiplayerBot.mjs`) needs —
+   * doors/keys/rooms included, not just the two fields a plain bfs walker
+   * needs. */
+  getMap(): GameMap {
+    return this.map;
+  }
+
+  /** Multiplayer-only equivalent of `__codeensteinTestHooks.getEnemies()` —
+   * roster-agnostic (enemies aren't owned by any one player), identical
+   * shape. Built for `scripts/lib/multiplayerBot.mjs`, the same way the
+   * single-player hook was built for `scripts/lib/bot.mjs`. */
+  getEnemiesSnapshot(): { x: number; y: number; alive: boolean; aggroed: boolean; elite: boolean; edgeCase: boolean; hp: number; maxHp: number }[] {
+    return this.enemies.map((e) => ({
+      x: e.x,
+      y: e.y,
+      alive: e.alive,
+      aggroed: e.aggroed,
+      elite: e.elite,
+      edgeCase: e.edgeCase,
+      hp: e.hp,
+      maxHp: e.maxHp,
+    }));
+  }
+
+  /** Multiplayer-only equivalent of `__codeensteinTestHooks.getMines()` —
+   * roster-agnostic, identical shape. */
+  getMinesSnapshot(): { x: number; y: number; alive: boolean; visible: boolean }[] {
+    return this.map.mines.map((m) => ({ x: m.x, y: m.y, alive: m.alive, visible: m.visible }));
+  }
+
+  /** Multiplayer-only equivalent of `__codeensteinTestHooks.getDrops()` —
+   * roster-agnostic (dynamic kill-drop loot belongs to the shared
+   * simulation, not any one player), identical shape. Lets
+   * `scripts/lib/multiplayerBot.mjs`'s own `maybeDetourForLoot` see the same
+   * dynamic loot the single-player bot already can. */
+  getDropsSnapshot(): { x: number; y: number; kind: LootKind }[] {
+    return this.drops.map((d) => ({ x: d.x, y: d.y, kind: d.kind }));
+  }
+
+  /** Multiplayer-only equivalent of `__codeensteinTestHooks.getKeys()` —
+   * roster-agnostic, identical shape. */
+  getKeysSnapshot(): { x: number; y: number }[] {
+    return this.map.keys.filter((k) => !k.collected).map((k) => ({ x: k.x, y: k.y }));
+  }
+
+  /** Multiplayer-only equivalent of `__codeensteinTestHooks.getPlayerState()`
+   * for an arbitrary roster `id` — read-only introspection built for
+   * `scripts/lib/multiplayerBot.mjs` to drive combat and navigation the same
+   * way the single-player balancing bot already does. `state` maps this
+   * player's own `PlayerStatus` onto the same `"playing"`/`"over"`
+   * vocabulary `scripts/lib/bot.mjs`'s decision logic already expects —
+   * multiplayer has no per-player `"won"` (a win is a whole-team, countdown-
+   * gated event, see `checkExit()`), so a caller driving this bot toward the
+   * exit needs to watch for that separately (e.g. `getExitCountdownRemaining()`)
+   * once navigation itself completes. Returns `null` if `id` isn't a
+   * connected player. */
+  getBotPlayerState(id: PlayerId): {
+    x: number;
+    y: number;
+    dirX: number;
+    dirY: number;
+    health: number;
+    healthFraction: number;
+    swap: number;
+    state: "playing" | "over";
+    ammo: AmmoPools;
+    weaponIndex: number;
+    meleeWouldHit: boolean;
+    wouldMineHit: boolean;
+    ownedWeapons: number[];
+    levelTime: number;
+    distanceTraveled: number;
+  } | null {
+    const p = this.players.get(id);
+    if (!p) return null;
+    const { meleeWouldHit, wouldMineHit } = this.computeMeleeAndMineHitChecks(id);
+    return {
+      x: p.player.posX,
+      y: p.player.posY,
+      dirX: p.player.dirX,
+      dirY: p.player.dirY,
+      health: p.health,
+      healthFraction: p.health / MAX_HEALTH,
+      swap: p.swap,
+      state: p.status === "alive" ? "playing" : "over",
+      ammo: { ...p.ammo },
+      weaponIndex: p.weaponIndex,
+      meleeWouldHit,
+      wouldMineHit,
+      ownedWeapons: [...p.ownedWeapons],
+      levelTime: this.levelTime,
+      distanceTraveled: p.distanceTraveled,
+    };
+  }
+
+  /** Shared by `__codeensteinTestHooks.getTelemetrySnapshot()` (always
+   * `this.localPlayerId`) and `getMultiplayerTelemetrySnapshot(id)`
+   * (multiplayer, arbitrary roster id) — same relationship
+   * `computeMeleeAndMineHitChecks`/`getBotPlayerState` already have. Returns
+   * `null` whenever telemetry isn't being recorded at all this run
+   * (`this.teamTelemetry` unset) or `id` isn't a connected player with its
+   * own telemetry — both real, reachable cases for the multiplayer caller
+   * (an id that disconnected mid-run, or a real multiplayer session with
+   * neither `PLAYER_STATS_ENABLED` nor `?testHooks=1` set) even though
+   * they're effectively unreachable for the single-player caller (always
+   * called from inside the same `?testHooks=1` gate that created both). */
+  private buildTelemetrySnapshotFor(id: PlayerId): {
+    ttkRecords: EnemyTtkRecord[];
+    peakAggroedCount: number;
+    combatTimeSec: number;
+    levelTimeSec: number;
+    enemyBoltsFired: number;
+    enemyBoltsHit: number;
+    enemyMeleeAttacks: number;
+    minHealthReached: number;
+    timeBelow25PctHealthSec: number;
+    damageBySource: Record<DamageSource, number>;
+    healingBySource: Record<HealSource, number>;
+    weaponTallies: Record<string, WeaponTally>;
+    lootRolled: Partial<Record<LootKind, number>>;
+    lootCollectedDynamic: Partial<Record<LootKind, number>>;
+    lootCollectedStatic: Partial<Record<LootKind, number>>;
+    timeAtZeroRangedAmmoSec: number;
+    killsForcedByMelee: number;
+    minesTriggered: number;
+    minesDisarmed: number;
+    regularKillLootRolls: number;
+    regularKillLootMisses: number;
+    fatalDamageSource: DamageSource | null;
+    distanceTraveled: number;
+    mapCompletionFrac: number;
+    secretRoomsOpened: number;
+    secretRoomCount: number;
+    kills: number;
+    score: number;
+  } | null {
+    if (!this.teamTelemetry) return null;
+    const p = this.players.get(id);
+    if (!p || !p.telemetry) return null;
+    const team = this.teamTelemetry;
+    const t = p.telemetry;
+    // Reuse the curated player-facing derivation for the fields it already
+    // computes (accuracy inputs, damage-by-source, closest call, fatal
+    // source), then splice the bot-only extras on top — see
+    // `playerStats.ts`'s doc comment for why the two stay separate types
+    // rather than one sharing every field.
+    const player = buildPlayerFacingStats(t, this.levelTime, p.kills);
+    return {
+      ttkRecords: [...team.ttkFinished, ...team.ttkPending].map((r) => ({ ...r })),
+      peakAggroedCount: team.peakAggroedCount,
+      combatTimeSec: team.combatTimeSec,
+      levelTimeSec: this.levelTime,
+      enemyBoltsFired: team.enemyBoltsFired,
+      enemyBoltsHit: t.enemyBoltsHit,
+      enemyMeleeAttacks: team.enemyMeleeAttacks,
+      minHealthReached: player.minHealthReached === Infinity ? p.health : player.minHealthReached,
+      timeBelow25PctHealthSec: t.timeBelow25PctHealthSec,
+      damageBySource: { ...player.damageTakenBySource },
+      healingBySource: { ...t.healingBySource },
+      weaponTallies: Object.fromEntries(Object.entries(t.weaponTallies).map(([i, tally]) => [i, { ...tally }])),
+      lootRolled: { ...team.lootRolled },
+      lootCollectedDynamic: { ...t.lootCollectedDynamic },
+      lootCollectedStatic: { ...t.lootCollectedStatic },
+      timeAtZeroRangedAmmoSec: t.timeAtZeroRangedAmmoSec,
+      killsForcedByMelee: t.killsForcedByMelee,
+      minesTriggered: team.minesTriggered,
+      minesDisarmed: t.minesDisarmed,
+      regularKillLootRolls: t.regularKillLootRolls,
+      regularKillLootMisses: t.regularKillLootMisses,
+      fatalDamageSource: player.fatalDamageSource,
+      distanceTraveled: p.distanceTraveled,
+      mapCompletionFrac: this.visitedWalkableCount / this.totalWalkableTiles,
+      secretRoomsOpened: this.secretRoomsOpened.size,
+      secretRoomCount: this.map.secretRoomCount,
+      kills: player.kills,
+      score: p.priorScore + this.computeLevelScoreBreakdown(p).total,
+    };
+  }
+
+  /** Multiplayer-only equivalent of `__codeensteinTestHooks.getTelemetrySnapshot()`
+   * for an arbitrary roster `id` — built for
+   * `scripts/run-balancing-telemetry-multiplayer.mjs` (step 11), the same
+   * relationship `getBotPlayerState(id)` has to single-player's
+   * `getPlayerState()`. See `buildTelemetrySnapshotFor`'s doc comment for
+   * the full field shape and null conditions. */
+  getMultiplayerTelemetrySnapshot(id: PlayerId) {
+    return this.buildTelemetrySnapshotFor(id);
+  }
+
+  /** Whether a quick-melee swing / the currently equipped ranged weapon
+   * would connect right now, for `id` — shared by `__codeensteinTestHooks`'s
+   * `getPlayerState()` (always `this.localPlayerId`) and
+   * `getBotPlayerState(id)` (multiplayer, arbitrary roster id).
+   *
+   * `meleeWouldHit` mirrors `fire()`'s own crosshair-column hit test
+   * (`findTargetInProjections` against the exact center column, in front of
+   * the nearest wall) rather than a bot-side angle-only guess. A fixed
+   * angle tolerance can't work here: a melee swing only lands within the
+   * target's on-screen width, which shrinks with distance (even inside
+   * melee range) and with an Edge Case's smaller sprite scale — a bot-side
+   * static epsilon was found to let it "fire" while aimed well off the
+   * target's actual hitbox, especially against Edge Cases near the far edge
+   * of melee range (observed: hundreds of whiffed swings against one enemy
+   * before giving up). See `scripts/run-balancing-telemetry.mjs`'s `tick()`
+   * for the consumer.
+   *
+   * `wouldMineHit` is whether firing the *currently equipped ranged weapon*
+   * right now is guaranteed to destroy whatever mine is at the crosshair —
+   * mine hits go through the same screen-projection hit test as an enemy
+   * (`findMineInProjections`, mirroring `findTargetInProjections`), but for
+   * a *ranged* shot that also means the Cone-of-Fire deviation applies
+   * (unlike melee, which is exempt). A bot picking its shot purely by angle
+   * tolerance has no way to know the mine's on-screen width is narrower
+   * than that tolerance at typical disarm range, so it can "fire" many
+   * times while only occasionally actually connecting (confirmed via
+   * trace: ~30 fire attempts at one stationary, perfectly-angle-aligned
+   * mine before it finally died). Rather than expose the RNG'd deviation
+   * itself (which would let a bot "peek" at the seeded PRNG's next draw
+   * without consuming it, desyncing determinism from a real shot), this
+   * checks the *worst case* deviation magnitude deterministically: only
+   * true if the mine's projected width is wide enough that no possible
+   * random deviation could miss it.
+   */
+  private computeMeleeAndMineHitChecks(id: PlayerId): { meleeWouldHit: boolean; wouldMineHit: boolean } {
+    const p = this.players.get(id)!;
+    // Self-sufficient, like `resolveShot()` — recomputed fresh here (rather
+    // than reusing whatever `render()` last left in `p.zBuffer`, which is
+    // only ever populated up to `this.ctx.canvas.width`, not necessarily
+    // `SCENE_WIDTH`) so both checks below are correct regardless of the real
+    // canvas's size or render timing.
+    castWallDistances(this.map, p.player, SCENE_WIDTH, p.zBuffer);
+    const meleeWouldHit = (() => {
+      const melee = currentMeleeWeapon(p.ownedWeapons);
+      // Unreachable: `currentMeleeWeapon` only ever returns the knife or
+      // Toolchain, both hardcoded with `meleeRange: 1.5` — there's no
+      // owned-weapons state that makes this undefined.
+      /* v8 ignore next */
+      if (melee.meleeRange === undefined) return false;
+      const projections = projectLivingEnemies(p.player, this.enemies, SCENE_WIDTH, SCENE_HEIGHT);
+      const target = findTargetInProjections(projections, p.zBuffer, SCENE_WIDTH, SCENE_HEIGHT, SCENE_WIDTH / 2);
+      if (!target?.alive) return false;
+      const dist = Math.hypot(target.x - p.player.posX, target.y - p.player.posY);
+      return dist <= melee.meleeRange;
+    })();
+    const wouldMineHit = (() => {
+      const weapon = WEAPONS[p.weaponIndex];
+      if (weapon.meleeRange !== undefined) return false; // this is the ranged-shot check; see meleeWouldHit for melee
+      const center = SCENE_WIDTH / 2;
+      const mineProjections = projectVisibleMines(p.player, this.map.mines, SCENE_WIDTH, SCENE_HEIGHT);
+      const target = findMineInProjections(mineProjections, p.zBuffer, SCENE_WIDTH, SCENE_HEIGHT, center);
+      if (!target?.alive) return false;
+      if (weapon.maxRange !== undefined) {
+        const dist = Math.hypot(target.x - p.player.posX, target.y - p.player.posY);
+        if (dist > weapon.maxRange) return false;
+      }
+      const proj = mineProjections.find((mp) => mp.mine === target)?.proj;
+      // Unreachable: `target` is itself one of `mineProjections`' own
+      // `mine` references (returned by `findMineInProjections` from that
+      // exact array), so `.find` above always matches by identity.
+      /* v8 ignore next */
+      if (!proj) return false;
+      const baseCol = Math.min(SCENE_WIDTH - 1, Math.max(0, Math.round(center)));
+      const range = p.zBuffer[baseCol];
+      const rangeFraction = Math.min(1, range / FOG_FAR);
+      const maxDeviation = weapon.maxConeDeviationPx ?? MAX_CONE_DEVIATION_PX;
+      const worstCaseDeviation = rangeFraction * rangeFraction * rangeFraction * maxDeviation;
+      return center - worstCaseDeviation >= proj.left && center + worstCaseDeviation <= proj.right;
+    })();
+    return { meleeWouldHit, wouldMineHit };
+  }
+
+  /** Whether a player currently has a live, still-decaying drift-correction
+   * render offset (`PlayerState.renderOffset`) — read-only introspection,
+   * same spirit as `getPlayerPosition`. Lets
+   * `scripts/verify-multiplayer-reconciliation.mjs` prove a below-
+   * `SNAP_THRESHOLD_TILES` correction actually took the smoothed path, not
+   * just that the simulated position converged (which `getPlayerPosition`
+   * alone can't distinguish from an instant snap — the offset only affects
+   * what's *rendered*, never the simulation value it returns). */
+  hasActiveRenderOffset(id: PlayerId): boolean {
+    return this.players.get(id)?.renderOffset != null;
+  }
+
+  /** The shared PRNG stream's current raw internal state — read-only
+   * introspection, same spirit as `getPlayerPosition`. Needed by
+   * `scripts/verify-multiplayer-reconciliation.mjs`: position/health alone
+   * can't prove the PRNG stream itself resynced after a correction, since
+   * two peers' *visible* state can coincidentally agree while their stream
+   * *positions* have already diverged (see `applyReconciliationSnapshot`'s
+   * own doc comment). */
+  getRngState(): number {
+    return this.rngHandle.getState();
+  }
+
+  /**
+   * Test-only: deliberately perturbs local simulation state to synthesize a
+   * cross-peer divergence, for `scripts/verify-multiplayer-reconciliation.mjs`
+   * to prove the correction mechanism actually converges it back. Real
+   * cross-engine float drift (confirmed by `scripts/poc-cross-browser-determinism.mjs`)
+   * doesn't reliably appear within a short end-to-end run — it compounds
+   * from single-ULP errors, which took roughly the first 1% of a
+   * 500,000-iteration stress loop to surface there — so this stands in for
+   * it under test. Unlike every other `?testHooks=1` hook (read-only
+   * introspection, or a permanent no-op like `consumeCheat()`), this one
+   * genuinely *mutates* simulation state — never called from real gameplay
+   * code, only from a verify script working against its own `localPlayerId`.
+   */
+  debugInjectDesync(injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }): void {
+    if (injection.kind === "position") {
+      const local = this.players.get(this.localPlayerId)!;
+      local.player.posX += injection.deltaTiles;
+    } else {
+      this.rng();
+    }
+  }
+
+  /**
+   * Test-only, mutating — same category as `debugInjectDesync` above (never
+   * called from real gameplay code). Directly sets `PlayerState.godMode` for
+   * one player, bypassing the real IDDQD cheat-input pathway (`applyCheat`)
+   * entirely — that pathway itself stays correctly gated (`consumeCheat()`'s
+   * permanent no-op in multiplayer, so a real player can never toggle this),
+   * this is a separate, narrower door for a verify script's own use.
+   * `scripts/verify-multiplayer-transition.mjs` needs a bot to reach a real
+   * level's real exit to prove level-transition mechanics work, without also
+   * needing to survive the demo campaign's full combat gauntlet first
+   * (organic combat variance there is real and already documented — see
+   * that script's own former `MAX_SCENARIO_ATTEMPTS` history) — but making
+   * the host merely *invulnerable* rather than removing every enemy
+   * entirely matters: the same script also relies on the *guest* dying to
+   * real, roaming enemies (left vulnerable, untouched by this call) to
+   * exercise its own separate "revived after a pre-transition death" check —
+   * clearing every enemy outright would have silently killed that coverage
+   * instead of just the flakiness. */
+  debugSetGodMode(playerId: PlayerId, enabled: boolean): void {
+    this.players.get(playerId)!.godMode = enabled;
+  }
+
+  /**
+   * Host-only: build this tick's authoritative `ReconciliationSnapshot`
+   * (`multiplayer-netcode-spec.md` §3) from live engine state, for
+   * `multiplayerSessionHost.ts` to broadcast once every
+   * `RECONCILE_INTERVAL_TICKS`.
+   *
+   * `drainGridDelta` (default `true`) controls whether `pendingGridDelta` is
+   * cleared after this call. The host passes `false` when at least one
+   * still-connected guest's channel wasn't open this round (e.g. mid-
+   * reconnect) — that guest would otherwise never receive this interval's
+   * mutations at all, and since this method always drains before the
+   * per-guest send loop even runs, they'd already be gone from
+   * `pendingGridDelta` for every OTHER guest too. Not draining means every
+   * guest (including ones that already received this exact `gridDelta` last
+   * time) gets the same still-accumulating backlog again next interval —
+   * harmless, since applying a tile mutation is an idempotent absolute
+   * overwrite (`applyReconciliationSnapshot`'s own doc comment), and bounded
+   * by `DISCONNECT_GRACE_MS`: a guest that never reopens its channel is
+   * eventually removed from the roster, at which point draining resumes.
+   */
+  captureReconciliationSnapshot(tick: number, drainGridDelta = true): ReconciliationSnapshot {
+    const players: Record<PlayerId, PlayerSnapshot> = {};
+    for (const [id, p] of this.players) {
+      // A disconnected player is no longer a *wire-level* roster member
+      // (`multiplayer-netcode-spec.md` §5) — their `PlayerState` stays in
+      // `this.players` forever (frozen, matching a dead player's own
+      // treatment, so their final score survives for a later comparison
+      // table), but they're excluded here, from bundle-building, and from
+      // the elimination check.
+      if (p.status === "disconnected") continue;
+      players[id] = {
+        posX: p.player.posX,
+        posY: p.player.posY,
+        dirX: p.player.dirX,
+        dirY: p.player.dirY,
+        planeX: p.player.planeX,
+        planeY: p.player.planeY,
+        health: p.health,
+        swap: p.swap,
+        ammo: { ...p.ammo },
+        weaponIndex: p.weaponIndex,
+        keysHeld: p.keysHeld,
+        ownedWeapons: [...p.ownedWeapons].sort((a, b) => a - b),
+        alive: p.status === "alive",
+        killScore: p.killScore,
+        kills: p.kills,
+      };
+    }
+
+    const enemies: EnemySnapshot[] = this.enemies.map((e, index) => ({
+      index,
+      x: e.x,
+      y: e.y,
+      hp: e.hp,
+      alive: e.alive,
+      aggroed: e.aggroed,
+    }));
+
+    const mines: MineSnapshot[] = this.map.mines.map((m, index) => ({ index, alive: m.alive, visible: m.visible }));
+
+    // Every drop was id-tagged at push time (pushLootDrop / killPlayer's own
+    // key-drop path) — the `!` trusts that internal invariant rather than
+    // filtering, matching this codebase's usual stance on guarantees the
+    // engine itself upholds (see CLAUDE.md's "trust internal code" guidance).
+    const lootDrops: LootDropSnapshot[] = this.drops.map((d) => ({
+      id: d.id!,
+      x: d.x,
+      y: d.y,
+      kind: d.kind,
+      amount: d.amount,
+      weaponIndex: d.weaponIndex,
+      source: d.source,
+    }));
+
+    const pickupsCollected: number[] = [];
+    this.map.ammoPickups.forEach((pickup, index) => {
+      if (pickup.collected) pickupsCollected.push(index);
+    });
+    const keysCollected: number[] = [];
+    this.map.keys.forEach((key, index) => {
+      if (key.collected) keysCollected.push(index);
+    });
+
+    // A copy either way — `drainGridDelta: false` must never hand back a
+    // live reference into `pendingGridDelta` that a later push could mutate
+    // out from under an already-returned (and possibly still in-flight)
+    // snapshot.
+    const gridDelta = drainGridDelta ? this.pendingGridDelta.splice(0, this.pendingGridDelta.length) : [...this.pendingGridDelta];
+
+    return {
+      tick,
+      rngState: this.rngHandle.getState(),
+      players,
+      enemies,
+      mines,
+      lootDrops,
+      pickupsCollected,
+      keysCollected,
+      gridVersion: this.gridVersion,
+      gridDelta,
+    };
+  }
+
+  /**
+   * Guest-only: overwrite local simulation state with the host's
+   * authoritative `snapshot` (§4). Every field snaps immediately and in
+   * full — continuing to simulate from a known-wrong value even one more
+   * tick lets that tick's own `Math.sin`/`cos`/`atan2` calls compound *more*
+   * drift on top of what's being corrected, the opposite of the goal.
+   * Position specifically also captures a render-only offset (below
+   * `SNAP_THRESHOLD_TILES`) or snaps the render position too (at/above it,
+   * no offset at all) — see `PlayerState.renderOffset`'s doc comment.
+   *
+   * `rngState` is always overwritten unconditionally, with no magnitude
+   * threshold: a PRNG stream position is either already byte-identical (the
+   * write is a no-op) or it's completely wrong from this point forward,
+   * never "off by a little" — skipping this because the *visible* fields
+   * already matched would fix the symptom for exactly one tick and
+   * guarantee a fresh divergence on the very next `rng()`-consuming
+   * decision (how many draws a tick takes is itself state-dependent — see
+   * `reconciliationSnapshot.ts`'s own doc comment).
+   */
+  applyReconciliationSnapshot(snapshot: ReconciliationSnapshot): void {
+    const now = performance.now();
+
+    for (const [id, ps] of Object.entries(snapshot.players)) {
+      const p = this.players.get(id);
+      if (!p) continue; // an id the snapshot mentions that this peer never added (shouldn't happen, roster is agreed at session setup) — skip rather than throw
+      p.renderOffset = this.correctionRenderOffset({ x: p.player.posX, y: p.player.posY }, { x: ps.posX, y: ps.posY }, now);
+      p.player.posX = ps.posX;
+      p.player.posY = ps.posY;
+      p.player.dirX = ps.dirX;
+      p.player.dirY = ps.dirY;
+      p.player.planeX = ps.planeX;
+      p.player.planeY = ps.planeY;
+      p.health = ps.health;
+      p.swap = ps.swap;
+      Object.assign(p.ammo, ps.ammo);
+      p.weaponIndex = ps.weaponIndex;
+      p.keysHeld = ps.keysHeld;
+      p.ownedWeapons.clear();
+      for (const w of ps.ownedWeapons) p.ownedWeapons.add(w);
+      p.status = ps.alive ? "alive" : "dead";
+      p.killScore = ps.killScore;
+      p.kills = ps.kills;
+    }
+
+    for (const es of snapshot.enemies) {
+      const e = this.enemies[es.index];
+      if (!e) continue;
+      const offset = this.correctionRenderOffset({ x: e.x, y: e.y }, { x: es.x, y: es.y }, now);
+      if (offset) this.enemyRenderOffsets.set(es.index, offset);
+      else this.enemyRenderOffsets.delete(es.index);
+      e.x = es.x;
+      e.y = es.y;
+      e.hp = es.hp;
+      e.alive = es.alive;
+      e.aggroed = es.aggroed;
+    }
+
+    for (const ms of snapshot.mines) {
+      const m = this.map.mines[ms.index];
+      if (!m) continue;
+      m.alive = ms.alive;
+      m.visible = ms.visible;
+    }
+
+    const incomingIds = new Set(snapshot.lootDrops.map((d) => d.id));
+    for (let i = this.drops.length - 1; i >= 0; i--) {
+      // "" is never a real id (every drop is tagged at push time — see
+      // pushLootDrop/killPlayer) — a safe sentinel for the optional-`id`
+      // type without weakening the Set's element type to `string | undefined`.
+      if (!incomingIds.has(this.drops[i].id ?? "")) this.drops.splice(i, 1);
+    }
+    for (const ds of snapshot.lootDrops) {
+      const existing = this.drops.find((d) => d.id === ds.id);
+      if (existing) {
+        existing.x = ds.x;
+        existing.y = ds.y;
+        existing.kind = ds.kind;
+        existing.amount = ds.amount;
+        existing.weaponIndex = ds.weaponIndex;
+        existing.source = ds.source;
+      } else {
+        this.drops.push({ ...ds });
+      }
+    }
+
+    for (const index of snapshot.pickupsCollected) {
+      const pickup = this.map.ammoPickups[index];
+      if (pickup) pickup.collected = true;
+    }
+    for (const index of snapshot.keysCollected) {
+      const key = this.map.keys[index];
+      if (key) key.collected = true;
+    }
+
+    // Grid tiles and `gridVersion` are deliberately NOT applied here —
+    // `applyGridReconciliation()` handles them separately so the multiplayer
+    // guest can apply grid corrections on every snapshot (idempotent,
+    // PRNG-free), while this method's PRNG-coupled state stays behind the
+    // caller's exact-tick gate (see that method's doc comment and the guest's
+    // own reconciliation handler).
+    this.rngHandle.setState(snapshot.rngState);
+  }
+
+  /**
+   * Applies just the grid portion of a reconciliation snapshot — the tile
+   * mutations (`gridDelta`) and the `gridVersion` cache counter — split out
+   * from `applyReconciliationSnapshot()` so the multiplayer guest can call it
+   * on EVERY host snapshot it receives, regardless of the exact-tick gate that
+   * (correctly) protects the PRNG-coupled state. That is sound because a tile
+   * mutation is an idempotent, order-independent, absolute overwrite that never
+   * touches the PRNG: applying an out-of-order (stale or future) snapshot's
+   * grid can at worst re-open an already-open tile, or open a tile the host's
+   * authoritative timeline opens anyway — it can never set a tile wrong.
+   * Without this split, a snapshot discarded by the guest's exact-tick gate
+   * lost its grid corrections permanently, since the host drains its
+   * per-guest-shared `gridDelta` each interval (finding M2).
+   *
+   * LOAD-BEARING INVARIANT: every emitted `TileMutation.value` is `0` (doors
+   * `3`→`0`, secret walls `6`→`0` — the only two runtime grid mutations, both
+   * terminal). That is exactly what makes out-of-order application safe. If a
+   * future feature ever emits a non-zero or non-terminal tile mutation (a
+   * closing/toggling tile), out-of-order application could set a tile wrong and
+   * this must be moved back behind the tick gate. (Separate, pre-existing gap
+   * this does NOT address: the additive delta only ever carries the host's own
+   * opens, so it cannot re-close a tile a guest mis-predicted open — only a
+   * full authoritative grid resync would.)
+   */
+  applyGridReconciliation(snapshot: Pick<ReconciliationSnapshot, "gridDelta" | "gridVersion">): void {
+    for (const mutation of snapshot.gridDelta) {
+      if (this.map.grid[mutation.y]) this.map.grid[mutation.y][mutation.x] = mutation.value;
+    }
+    this.gridVersion = snapshot.gridVersion;
+  }
+
+  /**
+   * A synchronized lockstep event (`multiplayer-netcode-spec.md` §5):
+   * called by both session drivers for the tick a `TickInputBundle` carries
+   * `rosterRemove`, so every peer — host included — applies the exact same
+   * removal at the exact same tick. Marks each id `"disconnected"` (never
+   * deleted from `this.players` — see `PlayerStatus`'s own doc comment) and
+   * converts their inventory to ordinary `LootDrop`s at their last known
+   * position, in the spec's fixed order: one entry per non-zero ammo pool,
+   * then one `"weapon"` entry per owned-but-not-starting weapon (in
+   * `WEAPONS`-index order), then one `"key"` entry per held key. Health/swap
+   * are deliberately never dropped — no precedent elsewhere for handing
+   * health between entities. A no-op for an id that's already gone or
+   * already dead (nothing left to convert, and re-marking would be wrong).
+   */
+  applyRosterRemoval(ids: PlayerId[]): void {
+    if (this.state !== "playing") return;
+    for (const id of ids) {
+      const p = this.players.get(id);
+      if (!p || p.status !== "alive") continue;
+      p.status = "disconnected";
+
+      let dropSeq = 0;
+      for (const type of AMMO_TYPES) {
+        if (p.ammo[type] <= 0) continue;
+        this.drops.push({
+          x: p.player.posX,
+          y: p.player.posY,
+          kind: type,
+          amount: p.ammo[type],
+          id: `disconnect:${id}:${dropSeq++}`,
+          source: "disconnect",
+        });
+      }
+      for (const weaponIndex of [...p.ownedWeapons].sort((a, b) => a - b)) {
+        if (STARTING_WEAPONS.includes(weaponIndex)) continue;
+        this.drops.push({
+          x: p.player.posX,
+          y: p.player.posY,
+          kind: "weapon",
+          weaponIndex,
+          id: `disconnect:${id}:${dropSeq++}`,
+          source: "disconnect",
+        });
+      }
+      for (let i = 0; i < p.keysHeld; i++) {
+        this.drops.push({
+          x: p.player.posX,
+          y: p.player.posY,
+          kind: "key",
+          amount: 1,
+          id: `disconnect:${id}:${dropSeq++}`,
+          source: "disconnect",
+        });
+      }
+      p.keysHeld = 0;
+    }
+    if ([...this.players.values()].every((q) => q.status !== "alive")) this.endGame("over");
+  }
+
+  /** Shared position-correction decision for both players and enemies (§4):
+   * a small delta returns a smoothed render offset for the caller to store;
+   * a zero or large one returns `null` (no offset at all — not a
+   * zero-length smooth, genuinely absent) so the render pass falls straight
+   * back to reading the just-snapped simulation position. */
+  private correctionRenderOffset(
+    oldPos: { x: number; y: number },
+    newPos: { x: number; y: number },
+    nowMs: number,
+  ): { x: number; y: number; capturedAtMs: number } | null {
+    const x = oldPos.x - newPos.x;
+    const y = oldPos.y - newPos.y;
+    const distance = Math.hypot(x, y);
+    if (distance === 0 || distance >= SNAP_THRESHOLD_TILES) return null;
+    return { x, y, capturedAtMs: nowMs };
+  }
+
   start(): void {
     if (this.running) return;
+    this.primeForPlay();
+    this.lastTime = performance.now();
+    this.rafId = requestAnimationFrame(this.frame);
+  }
+
+  /**
+   * Everything `start()` does except scheduling the internal rAF loop —
+   * attaching every player's input, warming up audio, revealing the spawn
+   * tile, and the initial stats push. Split out so a multiplayer session can
+   * get these same "ready to play" side effects without ever letting the
+   * internal loop compete with (or feed a measured, non-fixed `dt` into) the
+   * tick-driven `advance(FIXED_DT)` calls it makes itself.
+   */
+  private primeForPlay(): void {
     this.running = true;
-    this.input.attach();
+    for (const p of this.players.values()) p.input.attach();
     // Warm up the audio context now, while we're still inside the user gesture
     // (the click that launched this level) so playback isn't blocked later.
     audio.resume();
     this.markVisited(); // reveal the spawn tile before the first step
-    this.lastTime = performance.now();
     this.handlers.onStats?.(this.buildStats());
-    this.rafId = requestAnimationFrame(this.frame);
+  }
+
+  /**
+   * For an externally-driven session (multiplayer, headless harnesses) that
+   * calls `simulate()`/`render()`/`advance()` itself on its own pacing —
+   * runs exactly the same "ready to play" side effects `start()` does,
+   * without touching `rafId` or scheduling a frame. `stop()` still applies
+   * afterward the same way (it's already idempotent on `running`), and
+   * `advance()`'s own end-of-run handling already calls `stop()` for real
+   * once the run ends, since `primeForPlay()` sets `running = true` here too.
+   */
+  startExternallyDriven(): void {
+    if (this.running) return;
+    this.primeForPlay();
   }
 
   stop(): void {
     if (!this.running) return;
     this.running = false;
     cancelAnimationFrame(this.rafId);
-    this.input.detach();
+    for (const p of this.players.values()) p.input.detach();
   }
 
   private readonly frame = (now: number): void => {
@@ -1030,29 +2011,26 @@ export class RaycasterEngine {
   }
 
   /**
-   * Advance the simulation and render exactly one frame over `dt` seconds.
-   * Normally called by the internal rAF loop; exposed so the game can also be
-   * driven at a fixed step (e.g. headless/deterministic runs).
+   * Advance the simulation by one fixed tick, mutating all gameplay state
+   * (position, AI, combat, effects physics) — draws nothing. Returns whether
+   * this tick reached the full simulation path: `false` if it hit the
+   * pause/lore-open early return (only input/overlay-state resolution ran),
+   * `true` otherwise. `render()` always runs after this regardless of the
+   * return value (see `advance()`) — `simulate()` resolves `isPaused`/
+   * `loreText` to their final-for-this-tick values before returning either
+   * way, and `render()` picks its own overlay variant from those, rather
+   * than relying on this return value to skip drawing.
    */
-  advance(dt: number): void {
-    // Begin the perf-debug frame here, not in `frame()` — `advance()` is
-    // public and also driven directly by the replay viewer (`main.ts`'s
-    // `step`/`burstTo`) and headless harnesses, and those callers used to
-    // skip `beginFrame` entirely, leaving `FramePerfLogger`'s phase map
-    // accumulating monotonically across the whole session (garbage
-    // `?perfDebug=1` output during replay watching — audit finding F21).
-    // `frame()` stashes the real unclamped delta in `perfRawDtMs`; a direct
-    // caller's best equivalent is its own `dt`.
-    if (this.perf) {
-      this.perf.beginFrame(this.perfRawDtMs ?? dt * 1000);
-      this.perfRawDtMs = undefined;
-    }
+  simulate(dt: number): boolean {
     // Gamepad axis/button state has no change events to listen for (unlike
-    // keyboard/mouse), so it must be actively polled once per frame — and
-    // before any of the below reads any of the one-shot queues it can feed
-    // (fire/weapon-cycle/melee), or a gamepad press made this frame would sit
-    // unconsumed until the *next* frame's reads instead.
-    this.input.pollGamepad();
+    // keyboard/mouse), so it must be actively polled once per frame, for
+    // every connected player's own input source — and before any of the
+    // below reads any of the one-shot queues it can feed (fire/weapon-cycle/
+    // melee), or a gamepad press made this frame would sit unconsumed until
+    // the *next* frame's reads instead.
+    for (const id of this.sortedPlayerIds()) this.players.get(id)!.input.pollGamepad();
+
+    const local = this.players.get(this.localPlayerId)!;
 
     // Record this frame's full input state for the replay system, before
     // anything below consumes any of its one-shot flags — a non-destructive
@@ -1061,17 +2039,20 @@ export class RaycasterEngine {
     // guard (not `?.`) matters: an argument is evaluated before optional
     // chaining can short-circuit, so `?.` would still build the ~18-field
     // snapshot + filtered key array every frame of every recorder-less run.
-    if (this.replayRecorder) this.replayRecorder.record(dt, this.input.captureSnapshot());
+    // Only ever records the local player's own input — see
+    // `replayRecorder`'s doc comment.
+    if (this.replayRecorder) this.replayRecorder.record(dt, local.input.captureSnapshot());
 
     // The FPS overlay toggles independent of pause/map/lore state, so it's
     // consumed unconditionally right here rather than gated behind any of
-    // the early-return branches below.
-    if (this.input.consumeFpsToggle()) this.showFps = !this.showFps;
+    // the early-return branches below. Local-only, same as pause/automap/
+    // lore/cheats (see `simulate()`'s N-player scope note above).
+    if (local.input.consumeFpsToggle()) local.showFps = !local.showFps;
 
     // Doom cheat codes are a debug/fun feature independent of pause/automap
     // state too, same reasoning as the FPS toggle above.
-    const cheat = this.input.consumeCheat();
-    if (cheat) this.applyCheat(cheat);
+    const cheat = local.input.consumeCheat();
+    if (cheat) this.applyCheat(local, cheat);
     this.perf?.mark("input-poll");
 
     // A blur (window losing focus entirely, or the canvas losing focus to
@@ -1092,71 +2073,97 @@ export class RaycasterEngine {
     // both as independent `isPaused` writes would let them cancel each other
     // out depending on order (one sets `true`, the other flips it back to
     // `false`) — Escape taking priority whenever it fires avoids that.
-    const clicked = this.input.consumeClick();
-    const blurred = this.input.consumeBlur();
-    const pointerUnlocked = this.input.consumePointerUnlock();
-    const escaped = this.input.consumeEscape();
+    //
+    // Pause/automap/lore stay strictly local-player, byte-identical to
+    // single-player: real coop pause semantics (should one player pausing
+    // freeze a teammate's simulation?) are a later netcode step's job — this
+    // step keeps the single early-return gate exactly as it always was, which
+    // at N=1 is trivially "the same thing" as a real per-team pause.
+    const clicked = local.input.consumeClick();
+    const blurred = local.input.consumeBlur();
+    const pointerUnlocked = local.input.consumePointerUnlock();
+    const escaped = local.input.consumeEscape();
     if (escaped) {
-      this.isPaused = !this.isPaused;
+      local.isPaused = !local.isPaused;
     } else if (blurred || pointerUnlocked) {
-      this.isPaused = true;
+      local.isPaused = true;
     }
-    if (this.isPaused && clicked) this.isPaused = false;
-    if (this.isPaused) {
+    if (local.isPaused && clicked) local.isPaused = false;
+    if (local.isPaused) {
       this.notifyFrozen(true);
-      this.renderPausedOverlay();
-      return;
+      return false;
     }
 
     // Tab toggles the automap. Non-blocking — sim keeps running (movement,
     // combat, hazards) while it's shown; only a few purely-visual layers are
-    // suppressed while it's open (see the render section below).
-    if (this.input.consumeMapToggle()) this.isMapActive = !this.isMapActive;
+    // suppressed while it's open (see `renderNormalFrame`).
+    if (local.input.consumeMapToggle()) local.isMapActive = !local.isMapActive;
 
     // Lore terminal overlay: opened/closed by "R", independent of Tab/Esc.
     // Checked before weapon switching / simulation so both freeze the sim the
     // same way the automap does. A second interact (or a click) dismisses it;
     // otherwise holding W/S scrolls the text (movement is never simulated
     // this frame, so repurposing those keys here doesn't fight `handleMovement`).
-    const interacted = this.input.consumeInteract();
-    if (this.loreText !== null) {
+    //
+    // Multiplayer-only exception (see `multiplayer-netcode-spec.md` §6): none
+    // of this — freeze, dismiss, scroll — applies to a non-`LOCAL_PLAYER_ID`
+    // instance. The tick keeps simulating underneath the overlay (never
+    // frozen), it's static (no W/S scroll: those keys drive real shared
+    // movement, so repurposing them here would actually move the player in
+    // the live simulation while the overlay is open), and it's dismissed
+    // exclusively via `dismissLoreOverlay()`, called directly by the session
+    // driver — see that method's own doc comment for why.
+    const interacted = local.input.consumeInteract();
+    if (local.loreText !== null && !this.isMultiplayerSession()) {
       if (interacted || clicked) {
-        this.loreText = null;
+        local.loreText = null;
       } else {
-        if (this.input.isDown("KeyS")) this.loreScroll += LORE_SCROLL_SPEED * dt;
-        if (this.input.isDown("KeyW")) this.loreScroll = Math.max(0, this.loreScroll - LORE_SCROLL_SPEED * dt);
+        if (local.input.isDown("KeyS")) local.loreScroll += LORE_SCROLL_SPEED * dt;
+        if (local.input.isDown("KeyW")) local.loreScroll = Math.max(0, local.loreScroll - LORE_SCROLL_SPEED * dt);
       }
       this.notifyFrozen(true);
-      this.renderLoreOverlay();
-      return;
+      return false;
     }
     this.notifyFrozen(false);
-    if (interacted && this.state === "playing") {
-      // Secret walls are checked first: that check is facing/reach-based (only
-      // the exact tile directly ahead, within `SECRET_WALL_REACH`), a far more
-      // deliberate action than the lore terminal's generous omnidirectional
-      // proximity radius — without this ordering, any lore terminal within
-      // `LORE_INTERACT_RADIUS` (which is more than double the secret-wall
-      // reach) would always win, even while squarely facing a fake wall.
-      if (!this.tryOpenSecretWall()) {
-        const terminal = findNearbyLoreTerminal(this.map.loreTerminals, this.player.posX, this.player.posY);
-        if (terminal) {
-          audio.playSecret();
-          const key = `${terminal.x},${terminal.y}`;
-          if (!this.loreRead.has(key)) {
-            this.loreRead.add(key);
-            console.log("%c[lore] terminal logged — exploration bonus earned", "color:#78c8d2");
-          }
-          this.loreText = terminal.text;
-          this.loreScroll = 0;
-          this.renderLoreOverlay();
-          return;
+    // Secret-wall/lore-terminal *discovery* runs for any living player's own
+    // interact (shared world state — see `tryOpenSecretWall`'s doc comment);
+    // only the local player's own interact can open the *overlay* (freezing
+    // this tick) — a remote player's terminal read still banks the shared
+    // score bonus but doesn't freeze/return for this peer's tick.
+    if (this.state === "playing") {
+      for (const id of this.sortedPlayerIds()) {
+        const p = this.players.get(id)!;
+        if (p.status !== "alive") continue;
+        // Secret walls are checked first: that check is facing/reach-based
+        // (only the exact tile directly ahead, within `SECRET_WALL_REACH`), a
+        // far more deliberate action than the lore terminal's generous
+        // omnidirectional proximity radius — without this ordering, any lore
+        // terminal within `LORE_INTERACT_RADIUS` (which is more than double
+        // the secret-wall reach) would always win, even while squarely facing
+        // a fake wall.
+        const pInteracted = id === this.localPlayerId ? interacted : p.input.consumeInteract();
+        if (!pInteracted) continue;
+        if (this.tryOpenSecretWall(p)) continue;
+        const terminal = findNearbyLoreTerminal(this.map.loreTerminals, p.player.posX, p.player.posY);
+        if (!terminal) continue;
+        audio.playSecret();
+        const key = `${terminal.x},${terminal.y}`;
+        if (!this.loreRead.has(key)) {
+          this.loreRead.add(key);
+          console.log("%c[lore] terminal logged — exploration bonus earned", "color:#78c8d2");
+        }
+        if (id === this.localPlayerId) {
+          local.loreText = terminal.text;
+          local.loreScroll = 0;
+          // See the multiplayer-only exception noted above this loop's own
+          // sibling branch: same bypass, same reasoning.
+          if (!this.isMultiplayerSession()) return false;
         }
       }
     }
 
     // Weapon switching (1/2/… or mousewheel) can happen even while lining up
-    // a shot — but only among ranged weapons the player actually owns (see
+    // a shot — but only among ranged weapons that player actually owns (see
     // `ownedWeapons`); an unearned slot just does nothing, rather than
     // switching to a weapon with no way to have gotten it yet. Melee is
     // structurally excluded (see `canWieldViaNumberKey`) — it's bound to
@@ -1164,54 +2171,89 @@ export class RaycasterEngine {
     // is a 0-based number-key *slot* (digit 1 -> 0), not a raw `WEAPONS`
     // index — routed through `NUMBER_KEY_WEAPONS` so the melee exclusion
     // above doesn't leave a dead key in the middle of the number row (see
-    // its doc comment).
-    const requested = this.input.consumeWeaponRequest();
-    if (requested !== null) {
-      const targetIndex = NUMBER_KEY_WEAPONS[requested];
-      if (targetIndex !== undefined && this.canWieldViaNumberKey(targetIndex)) {
-        this.weaponIndex = targetIndex;
+    // its doc comment). Every living player switches independently.
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      if (p.status !== "alive") continue;
+      const requested = p.input.consumeWeaponRequest();
+      if (requested !== null) {
+        const targetIndex = NUMBER_KEY_WEAPONS[requested];
+        if (targetIndex !== undefined && this.canWieldViaNumberKey(p, targetIndex)) {
+          p.weaponIndex = targetIndex;
+        }
       }
-    }
 
-    const wheelSteps = this.input.consumeWheelSteps();
-    if (wheelSteps !== 0) {
-      const direction = wheelSteps > 0 ? 1 : -1; // scroll down = next weapon
-      for (let i = 0; i < Math.abs(wheelSteps); i++) this.cycleWeapon(direction);
+      const wheelSteps = p.input.consumeWheelSteps();
+      if (wheelSteps !== 0) {
+        const direction = wheelSteps > 0 ? 1 : -1; // scroll down = next weapon
+        const steps = Math.min(Math.abs(wheelSteps), MAX_WHEEL_STEPS_PER_TICK);
+        for (let i = 0; i < steps; i++) this.cycleWeapon(p, direction);
+      }
     }
 
     // Quick-melee: an instant swing (or, for Toolchain, a held-down chain of
     // them) independent of whatever ranged weapon is equipped/owned/cooling
     // down — see `fire()`'s doc comment and the `meleeRecoil`-driven
-    // viewmodel overlay in the render section below. `currentMeleeWeapon`
+    // viewmodel overlay in `renderNormalFrame`. `currentMeleeWeapon`
     // resolves to the knife until Toolchain is owned, then Toolchain
-    // permanently (it replaces the knife on Space, not a second slot).
+    // permanently (it replaces the knife on Space, not a second slot). Every
+    // living player swings independently.
     if (this.state === "playing") {
-      const melee = currentMeleeWeapon(this.ownedWeapons);
-      if (this.meleeCooldown > 0) this.meleeCooldown = Math.max(0, this.meleeCooldown - dt);
-      if (melee.auto) {
-        // Drain the one-shot edge so it can't "replay" as a stray knife
-        // swing if the player somehow loses Toolchain mid-swing.
-        this.input.consumeMelee();
-        if (this.input.isMeleeHeld() && this.meleeCooldown <= 0) {
-          this.fire(melee);
-          this.meleeRecoil = 1;
-          // Not reachable via current WEAPONS data — Toolchain, the only
-          // `auto: true` melee weapon today, always defines fireIntervalSec —
-          // but a future auto melee weapon omitting it should still get a
-          // sane cooldown instead of firing every frame.
-          /* v8 ignore next */
-          this.meleeCooldown = melee.fireIntervalSec ?? 0.15;
+      for (const id of this.sortedPlayerIds()) {
+        const p = this.players.get(id)!;
+        if (p.status !== "alive") continue;
+        const melee = currentMeleeWeapon(p.ownedWeapons);
+        if (p.meleeCooldown > 0) p.meleeCooldown = Math.max(0, p.meleeCooldown - dt);
+        if (melee.auto) {
+          // Drain the one-shot edge so it can't "replay" as a stray knife
+          // swing if the player somehow loses Toolchain mid-swing.
+          p.input.consumeMelee();
+          if (p.input.isMeleeHeld() && p.meleeCooldown <= 0) {
+            this.fire(p, melee);
+            p.meleeRecoil = 1;
+            // Not reachable via current WEAPONS data — Toolchain, the only
+            // `auto: true` melee weapon today, always defines fireIntervalSec —
+            // but a future auto melee weapon omitting it should still get a
+            // sane cooldown instead of firing every frame.
+            /* v8 ignore next */
+            p.meleeCooldown = melee.fireIntervalSec ?? 0.15;
+          }
+        } else if (p.input.consumeMelee()) {
+          this.fire(p, melee);
+          p.meleeRecoil = 1;
         }
-      } else if (this.input.consumeMelee()) {
-        this.fire(melee);
-        this.meleeRecoil = 1;
       }
     }
     this.perf?.mark("input-actions");
 
     // Simulate (may end the game via damage or reaching the exit).
     this.levelTime += dt;
-    this.handleMovement(dt);
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      if (p.status === "dead") {
+        // Repurpose `consumeFire()` to cycle which living teammate's camera
+        // this dead player's render pass follows (see `cycleSpectateTarget`).
+        // Every other one-shot input flag still drains so nothing queues up
+        // and "replays" on revive; `handleMovement` is skipped entirely —
+        // position stays frozen exactly where they died (see `killPlayer`'s
+        // doc comment).
+        if (p.input.consumeFire()) this.cycleSpectateTarget(p);
+        p.input.consumeMouseDX();
+        p.input.consumeWeaponRequest();
+        p.input.consumeMapToggle();
+        p.input.consumeInteract();
+        p.input.consumeMelee();
+        p.input.consumeWheelSteps();
+        p.input.consumeFpsToggle();
+        p.input.consumeCheat();
+        p.input.consumeEscape();
+        p.input.consumeBlur();
+        p.input.consumePointerUnlock();
+        p.input.consumeClick();
+        continue;
+      }
+      this.handleMovement(p, dt);
+    }
     this.markVisited();
     this.updateRoomDiscovery();
     this.collectKeys();
@@ -1219,142 +2261,213 @@ export class RaycasterEngine {
     this.openDoorAhead();
     this.checkTeleporters();
     this.updateEnemyAi(dt);
+    if (this.isMultiplayerSession()) this.captureEnemyPositionHistory();
     this.updateProjectiles(dt);
     this.advanceRockets(dt);
     this.applyHazardDamage(dt);
     this.applyTrapDamage(dt);
-    if (this.telemetry) {
-      updateMinHealth(this.telemetry, this.health);
-      updateTelemetryPerFrame(this.telemetry, dt, this.health / MAX_HEALTH, this.ammo.bullets + this.ammo.smg + this.ammo.gas);
+    if (this.telemetryEnabled) {
+      // `p.telemetry` is guaranteed set here: `telemetryEnabled` is a single
+      // readonly field set once in the constructor, and `createPlayerState`
+      // (called for every player, local or added later via `addPlayer`)
+      // always derives `.telemetry` from that same field — there is no path
+      // where one player has it and another doesn't while this is true.
+      for (const id of this.sortedPlayerIds()) {
+        const p = this.players.get(id)!;
+        updateMinHealth(p.telemetry!, p.health);
+        updateTelemetryPerFrame(p.telemetry!, dt, p.health / MAX_HEALTH, p.ammo.bullets + p.ammo.smg + p.ammo.gas);
+      }
     }
     this.updateLowHealthAlarm(dt);
     this.checkExit();
     this.perf?.mark("sim");
 
-    // Head-bob / recoil offsets for this frame (camera + weapon).
-    const view = this.updateViewmodel(dt);
+    // Head-bob / recoil offsets for this frame (camera + weapon) — stashed
+    // on each player's own `viewOffsets` for `render()` to read, since it has
+    // no `dt` of its own to integrate against.
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      p.viewOffsets = this.updateViewmodel(p, dt);
+    }
     this.perf?.mark("viewmodel");
-
-    // Render — one final frozen frame is still drawn after the game ends.
-    const { width, height } = this.ctx.canvas;
-    renderScene(this.ctx, this.map, this.player, this.zBuffer, textures.getActiveSet(), view.horizonShift, this.levelTime, this.loreRead);
-    this.perf?.mark("raycast-walls");
-    this.renderWorldBillboards();
-
-    this.target = findTargetUnderCrosshair(
-      this.player,
-      this.enemies,
-      this.zBuffer,
-      width,
-      height,
-    );
-    this.perf?.mark("billboards+targeting");
 
     if (this.state === "playing") this.updateFiring(dt);
     this.perf?.mark("firing");
 
-    // In-world impact effects (above sprites): falling "digital blood", the
-    // muzzle→impact tracer lines from any shot fired this frame, and any live
-    // rocket-blast VFX circles.
+    // Physics integration for in-world impact particles (falling blood,
+    // rocket-blast VFX rings, burn embers) — dt-integrated, so like
+    // `updateViewmodel` above it has to run here rather than in `render()`.
+    // `renderNormalFrame()` only draws whatever this leaves behind.
     updateBlood(this.blood, dt, this.goreMultipliers.stainDuration);
-    renderBlood(this.ctx, this.player, this.blood, this.zBuffer, this.goreMultipliers.size);
-    drawBulletTraces(this.ctx, this.traces);
-    drawFlameStreams(this.ctx, width, height, this.flameStreams);
     updateExplosions(this.explosions, dt);
-    renderExplosions(this.ctx, this.player, this.explosions, this.zBuffer);
     updateExplosionParticles(this.explosionParticles, dt);
-    renderExplosionParticles(this.ctx, this.player, this.explosionParticles, this.zBuffer);
     updateBurnParticles(this.burnParticles, dt);
-    renderBurnParticles(this.ctx, this.player, this.burnParticles, this.zBuffer);
-    this.perf?.mark("particle-effects");
 
-    // Full-screen red flash when the player is taking damage.
-    drawDamageFlash(this.ctx, this.flashFrames / DAMAGE_FLASH_FRAMES);
+    return true;
+  }
 
-    // First-person weapon and corner minimap/compass: visual clutter the
-    // automap would immediately cover, so they're skipped while it's open
-    // rather than drawn and instantly painted over. A quick-melee swing
-    // briefly overlays the knife's viewmodel on top of whatever ranged
-    // weapon is actually equipped — weaponIndex, ammo, and the HUD are
-    // untouched throughout (see `meleeRecoil`'s doc comment).
-    if (!this.isMapActive) {
-      const meleeOverlayActive = this.meleeRecoil > 0.02;
-      drawWeapon(this.ctx, {
-        bobX: view.bobX,
-        bobY: view.bobY,
-        recoil: meleeOverlayActive ? this.meleeRecoil : this.recoil,
-        flash: meleeOverlayActive ? false : this.muzzleFrames > 0,
-        kind: meleeOverlayActive ? currentMeleeWeapon(this.ownedWeapons).viewKind : WEAPONS[this.weaponIndex].viewKind,
+  /**
+   * Draw exactly one frame from whatever `simulate()` last left in `this` —
+   * no `dt`, no gameplay-state mutation. Picks its own overlay variant from
+   * state rather than trusting `simulate()`'s return value, since
+   * `advance()` calls this unconditionally regardless of which path
+   * `simulate()` took this tick — see `simulate()`'s doc comment for why
+   * that still reproduces today's exact pause-beats-lore-beats-normal
+   * precedence.
+   */
+  render(): EngineStats {
+    const restoreOffsets = this.applyRenderOffsets();
+    try {
+      const local = this.players.get(this.localPlayerId)!;
+      if (local.isPaused) return this.renderPausedOverlay();
+      if (local.loreText !== null) return this.renderLoreOverlay();
+      return this.renderNormalFrame();
+    } finally {
+      restoreOffsets();
+    }
+  }
+
+  /**
+   * Temporarily nudges every player/enemy with a live drift-correction
+   * render offset (`PlayerState.renderOffset`/`enemyRenderOffsets`) toward
+   * their real simulated position, for exactly the duration of one render
+   * pass — restored immediately after via the returned closure, so the next
+   * `simulate()` tick always resumes from the true, already-snapped
+   * position (§4: the *simulation* value is never perturbed, only what's
+   * drawn). Mutating the live `Player`/`Enemy` objects directly, rather than
+   * threading an offset through every render helper (`renderScene`,
+   * `collectEnemyBillboards`, `collectPlayerBillboards`, the minimap, …),
+   * since all of those already read straight off `this.players`/
+   * `this.enemies` — this is the one seam that reaches every one of them at
+   * once, no render-path restructuring needed.
+   *
+   * Decays each offset by real elapsed wall-clock time
+   * (`performance.now() - capturedAtMs`) against `CORRECTION_SMOOTH_MS`,
+   * clearing it once fully decayed — independent of the simulation tick
+   * rate even though render itself still runs tick-paced today (see step
+   * 7's own render-cadence decision, flagged for revisit once full render
+   * decoupling has a concrete reason to exist).
+   */
+  private applyRenderOffsets(): () => void {
+    const now = performance.now();
+    const restores: Array<() => void> = [];
+
+    for (const p of this.players.values()) {
+      const offset = p.renderOffset;
+      if (!offset) continue;
+      const elapsedMs = now - offset.capturedAtMs;
+      if (elapsedMs >= CORRECTION_SMOOTH_MS) {
+        p.renderOffset = null;
+        continue;
+      }
+      const factor = 1 - elapsedMs / CORRECTION_SMOOTH_MS;
+      const dx = offset.x * factor;
+      const dy = offset.y * factor;
+      p.player.posX += dx;
+      p.player.posY += dy;
+      restores.push(() => {
+        p.player.posX -= dx;
+        p.player.posY -= dy;
       });
-
-      const minimapPanel = renderMinimap(this.ctx, this.map, this.player, this.levelTime, 70, this.loreRead, this.gridVersion);
-      drawCompass(
-        this.ctx,
-        minimapPanel.compassBadge,
-        this.player.posX,
-        this.player.posY,
-        Math.atan2(this.player.dirY, this.player.dirX),
-        this.map.exit.x + 0.5,
-        this.map.exit.y + 0.5,
-      );
     }
 
-    // Diablo-style automap overlay: drawn on top of the still-live 3D scene
-    // (sim never stops for it, unlike `isPaused`/`loreText`) — see automap.ts.
-    if (this.isMapActive) {
-      drawAutomap(this.ctx, this.map, this.player, this.levelTime);
+    for (const [index, offset] of this.enemyRenderOffsets) {
+      const enemy = this.enemies[index];
+      // Unreachable: an offset is only ever added (applyReconciliationSnapshot)
+      // for an index already checked against this.enemies, and this.enemies
+      // never shrinks at runtime (entries go alive: false, never removed) —
+      // kept as a defensive guard against a future change to either
+      // invariant, not because this can happen today.
+      /* v8 ignore next 4 */
+      if (!enemy) {
+        this.enemyRenderOffsets.delete(index);
+        continue;
+      }
+      const elapsedMs = now - offset.capturedAtMs;
+      if (elapsedMs >= CORRECTION_SMOOTH_MS) {
+        this.enemyRenderOffsets.delete(index);
+        continue;
+      }
+      const factor = 1 - elapsedMs / CORRECTION_SMOOTH_MS;
+      const dx = offset.x * factor;
+      const dy = offset.y * factor;
+      enemy.x += dx;
+      enemy.y += dy;
+      restores.push(() => {
+        enemy.x -= dx;
+        enemy.y -= dy;
+      });
     }
 
-    // Crosshair stays visible (and on top of the automap, not dimmed by its
-    // translucent panel) even with the map open — the player can still aim
-    // and fire while it's up, so the aim point should still be shown.
-    drawCrosshair(this.ctx, this.target !== null, WEAPONS[this.weaponIndex].spreadPx);
+    return () => {
+      for (const restore of restores) restore();
+    };
+  }
 
-    // Native HUD sits on top of the whole scene, automap included, so
-    // health/ammo/keys always stay visible and live.
-    const stats = this.buildStats();
-    drawHud(this.ctx, stats);
-    if (this.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
-    // Transient feedback only — not drawn in the paused/automap/lore render
-    // branches below, unlike the FPS overlay, since a 2-second confirmation
-    // toast isn't meant to persist across those states the way a standing
-    // debug readout is.
-    if (this.cheatToastText && this.cheatToastFrames > 0) {
-      drawCheatToast(this.ctx, this.cheatToastText, this.cheatToastFrames / CHEAT_TOAST_FRAMES);
+  /**
+   * Advance the simulation and render exactly one frame over `dt` seconds.
+   * Normally called by the internal rAF loop; exposed so the game can also be
+   * driven at a fixed step (e.g. headless/deterministic runs). A thin
+   * composition of `simulate()`/`render()` — kept as one public entry point
+   * so every existing caller (the internal rAF `frame()`, the replay
+   * viewer's `step`/`burstTo`, headless harnesses) needs zero changes.
+   */
+  advance(dt: number): void {
+    // Begin the perf-debug frame here, not in `frame()` — `advance()` is
+    // public and also driven directly by the replay viewer (`main.ts`'s
+    // `step`/`burstTo`) and headless harnesses, and those callers used to
+    // skip `beginFrame` entirely, leaving `FramePerfLogger`'s phase map
+    // accumulating monotonically across the whole session (garbage
+    // `?perfDebug=1` output during replay watching — audit finding F21).
+    // `frame()` stashes the real unclamped delta in `perfRawDtMs`; a direct
+    // caller's best equivalent is its own `dt`.
+    if (this.perf) {
+      this.perf.beginFrame(this.perfRawDtMs ?? dt * 1000);
+      this.perfRawDtMs = undefined;
     }
-    // Same "transient feedback only" treatment as the cheat toast above.
-    if (this.killStreakText && this.killStreakFrames > 0) {
-      drawKillStreakToast(
-        this.ctx,
-        this.killStreakText,
-        this.killStreakFrames / KILL_STREAK_TOAST_FRAMES,
-        this.killStreakBig,
-      );
-    }
-    this.handlers.onStats?.(stats);
-    this.perf?.mark("hud");
-    this.perf?.endFrame(() => ({
-      enemiesAlive: this.enemies.filter((e) => e.alive).length,
-      enemiesTotal: this.enemies.length,
-      eliteEnemies: this.enemies.filter((e) => e.elite).length,
-      edgeCaseEnemies: this.enemies.filter((e) => e.edgeCase).length,
-      mines: this.map.mines.length,
-      enemyBolts: this.projectiles.length,
-      rockets: this.rockets.length,
-      traces: this.traces.length,
-      flameStreams: this.flameStreams.length,
-      blood: this.blood.length,
-      explosions: this.explosions.length,
-      explosionParticles: this.explosionParticles.length,
-      burnParticles: this.burnParticles.length,
-      ammo: { ...this.ammo },
-      weaponName: WEAPONS[this.weaponIndex].name,
-      audioShotCount: audio.getShotCount(),
-      audioCtxState: audio.getContextState(),
-    }));
+    const progressed = this.simulate(dt);
+    const stats = this.render();
+    this.perf?.endFrame(() => {
+      const local = this.players.get(this.localPlayerId)!;
+      return {
+        enemiesAlive: this.enemies.filter((e) => e.alive).length,
+        enemiesTotal: this.enemies.length,
+        eliteEnemies: this.enemies.filter((e) => e.elite).length,
+        edgeCaseEnemies: this.enemies.filter((e) => e.edgeCase).length,
+        mines: this.map.mines.length,
+        enemyBolts: this.projectiles.length,
+        rockets: this.rockets.length,
+        traces: this.traces.length,
+        flameStreams: this.flameStreams.length,
+        blood: this.blood.length,
+        explosions: this.explosions.length,
+        explosionParticles: this.explosionParticles.length,
+        burnParticles: this.burnParticles.length,
+        ammo: { ...local.ammo },
+        weaponName: WEAPONS[local.weaponIndex].name,
+        audioShotCount: audio.getShotCount(),
+        audioCtxState: audio.getContextState(),
+      };
+    });
 
-    // Age the frame-based effect timers now that this frame is drawn.
-    this.tickEffects();
+    // Age the frame-based effect timers now that this frame is drawn — only
+    // on ticks that reached the full simulation path (`progressed`): a
+    // paused/lore-open tick already skipped this before the split too, and
+    // must keep doing so, since `tickEffects()`'s frame-counted decay
+    // (muzzle flash, cheat toast, hit flash) has to freeze while paused
+    // rather than keep ticking toward zero underneath the overlay. This
+    // can't fold into `simulate()` itself either: `cheatToastFrames` is SET
+    // (via `applyCheat`, unconditionally, before pause is even resolved)
+    // strictly before `simulate()` knows whether this tick is about to
+    // pause — a same-tick decrement there would shave the cheat toast one
+    // frame short on its first visible tick. NOTE for a future
+    // decoupled-render step: this bracketing relies on `render()` running
+    // exactly once immediately after every `simulate()` call — once
+    // rendering decouples to its own cadence, this most likely moves fully
+    // inside `simulate()` (running unconditionally once per tick), since the
+    // byte-identical "visible for exactly N frames" concern this solves
+    // stops applying once render is decoupled and smoothed by construction.
+    if (progressed) this.tickEffects();
 
     // Fire the end-of-run handler last, once this frame is fully painted —
     // see `endGame()`'s doc comment for why this can't happen any earlier.
@@ -1366,46 +2479,189 @@ export class RaycasterEngine {
   }
 
   /**
+   * The normal (not paused, not lore-open) render path — walls, billboards,
+   * particle/effect draws, weapon viewmodel, minimap/automap, HUD. One final
+   * frozen frame is still drawn after the game ends (`advance()` fires the
+   * end-of-run handlers only after `render()` returns).
+   */
+  private renderNormalFrame(): EngineStats {
+    const local = this.players.get(this.localPlayerId)!;
+    const camera = this.effectiveCameraFor(this.localPlayerId);
+    const view = local.viewOffsets;
+    const { width, height } = this.ctx.canvas;
+    renderScene(this.ctx, this.map, camera, local.zBuffer, textures.getActiveSet(), view.horizonShift, this.levelTime, this.loreRead);
+    this.perf?.mark("raycast-walls");
+    this.renderWorldBillboards(camera, local.zBuffer);
+
+    this.target = findTargetUnderCrosshair(
+      camera,
+      this.enemies,
+      local.zBuffer,
+      width,
+      height,
+    );
+    this.perf?.mark("billboards+targeting");
+
+    // In-world impact effects (above sprites): falling "digital blood", the
+    // muzzle→impact tracer lines from any shot fired this frame, and any live
+    // rocket-blast VFX circles. The physics integration for these already ran
+    // in `simulate()` (right after `updateFiring`) — this only draws
+    // whatever that left behind.
+    renderBlood(this.ctx, camera, this.blood, local.zBuffer, this.goreMultipliers.size);
+    drawBulletTraces(this.ctx, this.traces);
+    drawFlameStreams(this.ctx, width, height, this.flameStreams);
+    renderExplosions(this.ctx, camera, this.explosions, local.zBuffer);
+    renderExplosionParticles(this.ctx, camera, this.explosionParticles, local.zBuffer);
+    renderBurnParticles(this.ctx, camera, this.burnParticles, local.zBuffer);
+    this.perf?.mark("particle-effects");
+
+    // Full-screen red flash when the player is taking damage.
+    drawDamageFlash(this.ctx, local.flashFrames / DAMAGE_FLASH_FRAMES);
+
+    // First-person weapon and corner minimap/compass: visual clutter the
+    // automap would immediately cover, so they're skipped while it's open
+    // rather than drawn and instantly painted over. A quick-melee swing
+    // briefly overlays the knife's viewmodel on top of whatever ranged
+    // weapon is actually equipped — weaponIndex, ammo, and the HUD are
+    // untouched throughout (see `meleeRecoil`'s doc comment).
+    if (!local.isMapActive) {
+      const meleeOverlayActive = local.meleeRecoil > 0.02;
+      drawWeapon(this.ctx, {
+        bobX: view.bobX,
+        bobY: view.bobY,
+        recoil: meleeOverlayActive ? local.meleeRecoil : local.recoil,
+        flash: meleeOverlayActive ? false : local.muzzleFrames > 0,
+        kind: meleeOverlayActive ? currentMeleeWeapon(local.ownedWeapons).viewKind : WEAPONS[local.weaponIndex].viewKind,
+      });
+
+      const minimapPanel = renderMinimap(
+        this.ctx,
+        this.map,
+        camera,
+        this.levelTime,
+        70,
+        this.loreRead,
+        this.gridVersion,
+        this.isMultiplayerSession() ? this.drops : [],
+      );
+      drawCompass(
+        this.ctx,
+        minimapPanel.compassBadge,
+        camera.posX,
+        camera.posY,
+        Math.atan2(camera.dirY, camera.dirX),
+        this.map.exit.x + 0.5,
+        this.map.exit.y + 0.5,
+      );
+    }
+
+    // Diablo-style automap overlay: drawn on top of the still-live 3D scene
+    // (sim never stops for it, unlike `isPaused`/`loreText`) — see automap.ts.
+    if (local.isMapActive) {
+      drawAutomap(this.ctx, this.map, camera, this.levelTime, this.isMultiplayerSession() ? this.drops : []);
+    }
+
+    // Crosshair stays visible (and on top of the automap, not dimmed by its
+    // translucent panel) even with the map open — the player can still aim
+    // and fire while it's up, so the aim point should still be shown.
+    drawCrosshair(this.ctx, this.target !== null, WEAPONS[local.weaponIndex].spreadPx);
+
+    // Native HUD sits on top of the whole scene, automap included, so
+    // health/ammo/keys always stay visible and live.
+    const stats = this.buildStats();
+    drawHud(this.ctx, stats);
+    if (local.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
+    // Transient feedback only — not drawn in the paused/automap/lore render
+    // branches, unlike the FPS overlay, since a 2-second confirmation
+    // toast isn't meant to persist across those states the way a standing
+    // debug readout is.
+    if (local.cheatToastText && local.cheatToastFrames > 0) {
+      drawCheatToast(this.ctx, local.cheatToastText, local.cheatToastFrames / CHEAT_TOAST_FRAMES);
+    }
+    // Same "transient feedback only" treatment as the cheat toast above.
+    if (local.killStreakText && local.killStreakFrames > 0) {
+      drawKillStreakToast(
+        this.ctx,
+        local.killStreakText,
+        local.killStreakFrames / KILL_STREAK_TOAST_FRAMES,
+        local.killStreakBig,
+      );
+    }
+    // Multiplayer-only (see `checkExit()`) — a quiet, standing readout
+    // (unlike the transient toasts above) while any player counts down to
+    // the level ending. Only drawn on this normal-frame path, same as the
+    // toasts above — automap/lore/paused each render through their own
+    // separate branch below and skip it, matching this file's existing
+    // convention for every other transient/standing overlay.
+    if (this.exitCountdownRemaining !== null) {
+      drawExitCountdownToast(this.ctx, this.exitCountdownRemaining);
+    }
+    this.handlers.onStats?.(stats);
+    this.perf?.mark("hud");
+    return stats;
+  }
+
+  /**
    * Render one frozen frame with the "PAUSED" scrim on top — triggered by
    * window blur or Escape. Distinct from the Tab automap, which no longer
-   * freezes the sim — see `advance()`.
+   * freezes the sim — see `simulate()`.
    */
-  private renderPausedOverlay(): void {
-    renderScene(this.ctx, this.map, this.player, this.zBuffer, textures.getActiveSet(), 0, this.levelTime, this.loreRead);
-    this.renderWorldBillboards();
+  private renderPausedOverlay(): EngineStats {
+    const local = this.players.get(this.localPlayerId)!;
+    const camera = this.effectiveCameraFor(this.localPlayerId);
+    renderScene(this.ctx, this.map, camera, local.zBuffer, textures.getActiveSet(), 0, this.levelTime, this.loreRead);
+    this.renderWorldBillboards(camera, local.zBuffer);
     drawPauseOverlay(this.ctx);
-    if (this.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
-    this.handlers.onStats?.(this.buildStats());
+    if (local.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
+    const stats = this.buildStats();
+    this.handlers.onStats?.(stats);
+    return stats;
   }
 
   /**
    * Render one frozen frame with a lore terminal's comment text on top —
-   * triggered by "R" near a `LORE_TILE` (see `advance()`), dismissed by
-   * another interact or a click.
+   * triggered by "R" near a `LORE_TILE` (see `simulate()`), dismissed by
+   * another interact or a click. Only ever called by `render()`'s own
+   * `local.loreText !== null` guard, so `loreText` is always a real string
+   * here — unlike pre-split code, which also called this directly at the
+   * exact moment `simulate()`'s dismiss branch had just nulled it out
+   * (rendering one stray blank-text overlay frame before falling back to
+   * normal next tick); `render()` re-deriving its overlay choice from
+   * current state instead removes that one-frame flash rather than
+   * preserving it — a deliberate, harmless side effect of `render()` being a
+   * pure function of state (required so it can be called repeatedly with no
+   * intervening `simulate()`, once rendering decouples from the tick rate).
    */
-  private renderLoreOverlay(): void {
-    renderScene(this.ctx, this.map, this.player, this.zBuffer, textures.getActiveSet(), 0, this.levelTime, this.loreRead);
-    this.renderWorldBillboards();
-    const { maxScrollLines } = drawLoreOverlay(this.ctx, this.loreText ?? "", this.loreScroll);
-    this.loreScroll = Math.max(0, Math.min(this.loreScroll, maxScrollLines));
-    if (this.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
-    this.handlers.onStats?.(this.buildStats());
+  private renderLoreOverlay(): EngineStats {
+    const local = this.players.get(this.localPlayerId)!;
+    const camera = this.effectiveCameraFor(this.localPlayerId);
+    renderScene(this.ctx, this.map, camera, local.zBuffer, textures.getActiveSet(), 0, this.levelTime, this.loreRead);
+    this.renderWorldBillboards(camera, local.zBuffer);
+    const { maxScrollLines } = drawLoreOverlay(this.ctx, local.loreText as string, local.loreScroll);
+    local.loreScroll = Math.max(0, Math.min(local.loreScroll, maxScrollLines));
+    if (local.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
+    const stats = this.buildStats();
+    this.handlers.onStats?.(stats);
+    return stats;
   }
 
   /**
-   * Open the fake wall directly ahead of the player, if there is one — the
-   * whole secret room behind it (not just the one tile faced) is carved as
+   * Open the fake wall directly ahead of `p`, if there is one — the whole
+   * secret room behind it (not just the one tile faced) is carved as
    * `SECRET_WALL_TILE` (see `placeSecretRooms`/`trySecretRoomOffAnchor`), so
    * every 4-connected `SECRET_WALL_TILE` cell reachable from the tile opened
-   * is flood-filled to plain floor at once, revealing the room in full. Also
-   * logs the door tile into `secretRoomsOpened`, feeding the scoring
-   * system's flat per-room discovery bonus (same pattern as `loreRead`).
-   * Returns whether a wall was actually opened, so the interact handler can
-   * fall back to checking for a nearby lore terminal when it wasn't.
+   * is flood-filled to plain floor at once, revealing the room in full for
+   * the whole team. Also logs the door tile into `secretRoomsOpened`, feeding
+   * the scoring system's flat per-room discovery bonus (same pattern as
+   * `loreRead`) — any living player's own interact can trigger this (see
+   * `simulate()`), and the shared flood-fill/`secretRoomsOpened` add apply
+   * once, regardless of who triggered it. Returns whether a wall was
+   * actually opened, so the interact handler can fall back to checking for a
+   * nearby lore terminal when it wasn't.
    */
-  private tryOpenSecretWall(): boolean {
-    const px = this.player.posX + this.player.dirX * SECRET_WALL_REACH;
-    const py = this.player.posY + this.player.dirY * SECRET_WALL_REACH;
+  private tryOpenSecretWall(p: PlayerState): boolean {
+    const px = p.player.posX + p.player.dirX * SECRET_WALL_REACH;
+    const py = p.player.posY + p.player.dirY * SECRET_WALL_REACH;
     const cx = Math.floor(px);
     const cy = Math.floor(py);
     if (this.map.grid[cy]?.[cx] !== SECRET_WALL_TILE) return false;
@@ -1417,6 +2673,7 @@ export class RaycasterEngine {
       const { x, y } = stack.pop()!;
       if (grid[y]?.[x] !== SECRET_WALL_TILE) continue;
       grid[y][x] = 0;
+      this.pendingGridDelta.push({ x, y, value: 0 });
       stack.push({ x: x + 1, y }, { x: x - 1, y }, { x, y: y + 1 }, { x, y: y - 1 });
     }
     this.gridVersion += 1;
@@ -1428,33 +2685,52 @@ export class RaycasterEngine {
     return true;
   }
 
+  /** A living, connected teammate `viewerId` can see — never the viewer
+   * themselves and never a dead teammate (see `OtherPlayerBillboard`'s doc
+   * comment). Sorted-order, stable per-id color. */
+  private collectOtherPlayerBillboards(viewerId: PlayerId): OtherPlayerBillboard[] {
+    const others: OtherPlayerBillboard[] = [];
+    for (const id of this.sortedPlayerIds()) {
+      if (id === viewerId) continue;
+      const p = this.players.get(id)!;
+      if (p.status !== "alive") continue;
+      others.push({ player: p.player, color: colorForPlayer(id) });
+    }
+    return others;
+  }
+
   /**
    * Draw every world billboard category (enemies, projectiles, rockets, keys,
    * loot drops, static ammo pickups, the exit marker, teleporters,
-   * decorations, mines) in one combined pass, sorted furthest-to-nearest so
-   * nearer items always paint over farther ones — regardless of which
-   * category they belong to. Drawing category-by-category in a fixed order
-   * used to let a later category (e.g. the exit marker, always drawn last)
-   * paint over a nearer item from an earlier one (e.g. a loot drop), making it
-   * vanish even though it was actually closer to the player.
+   * decorations, mines, other players) in one combined pass, sorted
+   * furthest-to-nearest so nearer items always paint over farther ones —
+   * regardless of which category they belong to. Drawing category-by-category
+   * in a fixed order used to let a later category (e.g. the exit marker,
+   * always drawn last) paint over a nearer item from an earlier one (e.g. a
+   * loot drop), making it vanish even though it was actually closer to the
+   * player. `camera`/`zBuffer` are the local player's own effective camera
+   * (see `effectiveCameraFor`) and zBuffer — `render()` stays strictly
+   * local-player (see its doc comment), so "the viewer" for
+   * `collectOtherPlayerBillboards`'s exclusion is always `this.localPlayerId`.
    */
-  private renderWorldBillboards(): void {
+  private renderWorldBillboards(camera: Player, zBuffer: Float64Array): void {
     const jobs: BillboardJob[] = [
-      ...collectDecorationBillboards(this.ctx, this.player, this.map.decorations, this.zBuffer),
-      ...collectTeleporterBillboards(this.ctx, this.player, this.map.teleporters, this.zBuffer),
-      ...collectMineBillboards(this.ctx, this.player, this.map.mines, this.zBuffer),
-      ...collectEnemyBillboards(this.ctx, this.player, this.enemies, this.zBuffer),
-      ...collectProjectileBillboards(this.ctx, this.player, this.projectiles, this.zBuffer),
-      ...collectRocketBillboards(this.ctx, this.player, this.rockets, this.zBuffer),
-      ...collectKeyBillboards(this.ctx, this.player, this.map.keys, this.zBuffer),
-      ...collectLootBillboards(this.ctx, this.player, this.drops, this.zBuffer),
+      ...collectDecorationBillboards(this.ctx, camera, this.map.decorations, zBuffer),
+      ...collectTeleporterBillboards(this.ctx, camera, this.map.teleporters, zBuffer),
+      ...collectMineBillboards(this.ctx, camera, this.map.mines, zBuffer),
+      ...collectEnemyBillboards(this.ctx, camera, this.enemies, zBuffer),
+      ...collectProjectileBillboards(this.ctx, camera, this.projectiles, zBuffer),
+      ...collectRocketBillboards(this.ctx, camera, this.rockets, zBuffer),
+      ...collectKeyBillboards(this.ctx, camera, this.map.keys, zBuffer),
+      ...collectLootBillboards(this.ctx, camera, this.drops, zBuffer),
       ...collectLootBillboards(
         this.ctx,
-        this.player,
+        camera,
         this.map.ammoPickups.filter((p) => !p.collected),
-        this.zBuffer,
+        zBuffer,
       ),
-      ...collectExitBillboard(this.ctx, this.player, this.map.exit, this.zBuffer),
+      ...collectPlayerBillboards(this.ctx, camera, this.collectOtherPlayerBillboards(this.localPlayerId), zBuffer),
+      ...collectExitBillboard(this.ctx, camera, this.map.exit, zBuffer),
     ];
     jobs.sort((a, b) => b.depth - a.depth);
     for (const job of jobs) job.draw();
@@ -1466,8 +2742,19 @@ export class RaycasterEngine {
    * map-completion score bonus's numerator) incrementally, counting a tile
    * only the first time it's newly revealed. */
   private markVisited(): void {
-    const cx = Math.floor(this.player.posX);
-    const cy = Math.floor(this.player.posY);
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      if (p.status !== "alive") continue;
+      this.markVisitedAround(p.player.posX, p.player.posY);
+    }
+  }
+
+  /** The actual disc-reveal for one point — factored out of `markVisited` so
+   * every living player's own radius can reveal for the whole team (shared
+   * `map.visited`/`visitedWalkableCount` — see §5's fog-of-war decision). */
+  private markVisitedAround(px: number, py: number): void {
+    const cx = Math.floor(px);
+    const cy = Math.floor(py);
     const r = VISITED_REVEAL_RADIUS;
     const rSq = r * r;
     for (let y = cy - r; y <= cy + r; y++) {
@@ -1486,30 +2773,41 @@ export class RaycasterEngine {
   }
 
   /**
-   * Reveal each not-yet-discovered enemy once the player's collision box
-   * (an AABB centered on their position) intersects that enemy's room — its
-   * `home` rectangle. Sticky: a discovered enemy stays visible on the minimap
-   * even after the player leaves the room.
+   * Reveal each not-yet-discovered enemy once any living player's collision
+   * box (an AABB centered on their position) intersects that enemy's room —
+   * its `home` rectangle. Sticky: a discovered enemy stays visible on the
+   * minimap even after every player leaves the room.
    */
   private updateRoomDiscovery(): void {
-    const r = this.player.radius;
-    const px = this.player.posX;
-    const py = this.player.posY;
     for (const enemy of this.enemies) {
       if (enemy.discovered) continue;
-      const home = enemy.home;
-      const intersects =
-        px + r > home.x && px - r < home.x + home.w && py + r > home.y && py - r < home.y + home.h;
-      if (intersects) enemy.discovered = true;
+      for (const id of this.sortedPlayerIds()) {
+        const p = this.players.get(id)!;
+        if (p.status !== "alive") continue;
+        const r = p.player.radius;
+        const px = p.player.posX;
+        const py = p.player.posY;
+        const home = enemy.home;
+        const intersects =
+          px + r > home.x && px - r < home.x + home.w && py + r > home.y && py - r < home.y + home.h;
+        if (intersects) {
+          enemy.discovered = true;
+          break;
+        }
+      }
     }
   }
 
-  /** Advance the frame-based visual-effect timers by one frame. */
+  /** Advance the frame-based visual-effect timers by one frame, for every
+   * connected player (dead or alive — a residual flash/toast still fades out
+   * normally after death). */
   private tickEffects(): void {
-    if (this.flashFrames > 0) this.flashFrames -= 1;
-    if (this.muzzleFrames > 0) this.muzzleFrames -= 1;
-    if (this.cheatToastFrames > 0) this.cheatToastFrames -= 1;
-    if (this.killStreakFrames > 0) this.killStreakFrames -= 1;
+    for (const p of this.players.values()) {
+      if (p.flashFrames > 0) p.flashFrames -= 1;
+      if (p.muzzleFrames > 0) p.muzzleFrames -= 1;
+      if (p.cheatToastFrames > 0) p.cheatToastFrames -= 1;
+      if (p.killStreakFrames > 0) p.killStreakFrames -= 1;
+    }
     tickBulletTraces(this.traces);
     tickFlameStreams(this.flameStreams);
     for (const enemy of this.enemies) {
@@ -1517,17 +2815,17 @@ export class RaycasterEngine {
     }
   }
 
-  private handleMovement(dt: number): void {
-    const sprinting = this.input.isDown("ShiftLeft") || this.input.isDown("ShiftRight");
+  private handleMovement(p: PlayerState, dt: number): void {
+    const sprinting = p.input.isDown("ShiftLeft") || p.input.isDown("ShiftRight");
     const step = MOVE_SPEED * (sprinting ? SPRINT_MULTIPLIER : 1) * dt;
-    const startX = this.player.posX;
-    const startY = this.player.posY;
+    const startX = p.player.posX;
+    const startY = p.player.posY;
     let forwardSign = 0;
-    if (this.input.isDown("KeyW")) forwardSign += 1;
-    if (this.input.isDown("KeyS")) forwardSign -= 1;
+    if (p.input.isDown("KeyW")) forwardSign += 1;
+    if (p.input.isDown("KeyS")) forwardSign -= 1;
     let strafeSign = 0;
-    if (this.input.isDown("KeyD")) strafeSign += 1;
-    if (this.input.isDown("KeyA")) strafeSign -= 1;
+    if (p.input.isDown("KeyD")) strafeSign += 1;
+    if (p.input.isDown("KeyA")) strafeSign -= 1;
     // `moveForward`/`strafe` each apply their own full `step` independently,
     // so holding a forward and a strafe key together covered sqrt(2) (~41%)
     // more ground per frame than either alone — the classic unnormalized-
@@ -1537,61 +2835,62 @@ export class RaycasterEngine {
     // danger-detection radius reliable against someone closing distance
     // faster than intended).
     const diagonalScale = forwardSign !== 0 && strafeSign !== 0 ? Math.SQRT1_2 : 1;
-    if (forwardSign !== 0) this.player.moveForward(step * diagonalScale * forwardSign, this.map);
-    if (strafeSign !== 0) this.player.strafe(step * diagonalScale * strafeSign, this.map);
+    if (forwardSign !== 0) p.player.moveForward(step * diagonalScale * forwardSign, this.map);
+    if (strafeSign !== 0) p.player.strafe(step * diagonalScale * strafeSign, this.map);
 
     // Gamepad left stick: analog move/strafe, additive with keyboard (both
     // read as 0 when idle/absent, so this is a no-op without a pad plugged in).
-    const gpForward = this.input.gamepadForward();
-    const gpStrafe = this.input.gamepadStrafe();
-    if (gpForward !== 0) this.player.moveForward(step * gpForward, this.map);
-    if (gpStrafe !== 0) this.player.strafe(step * gpStrafe, this.map);
+    const gpForward = p.input.gamepadForward();
+    const gpStrafe = p.input.gamepadStrafe();
+    if (gpForward !== 0) p.player.moveForward(step * gpForward, this.map);
+    if (gpStrafe !== 0) p.player.strafe(step * gpStrafe, this.map);
 
     // Camera rotation is exclusively Q/E + mouse (+ the gamepad's right
     // stick) — A/D strafe instead, so turning stays a keyboard key away from
     // WASD rather than an arrow-key reach.
-    const rot = ROT_SPEED * this.rotSpeedMultiplier * dt;
-    if (this.input.isDown("KeyQ")) this.player.rotate(-rot);
-    if (this.input.isDown("KeyE")) this.player.rotate(rot);
+    const rot = ROT_SPEED * p.rotSpeedMultiplier * dt;
+    if (p.input.isDown("KeyQ")) p.player.rotate(-rot);
+    if (p.input.isDown("KeyE")) p.player.rotate(rot);
 
-    const gpTurn = this.input.gamepadTurn();
-    if (gpTurn !== 0) this.player.rotate(rot * gpTurn);
+    const gpTurn = p.input.gamepadTurn();
+    if (gpTurn !== 0) p.player.rotate(rot * gpTurn);
 
-    const mouseDX = this.input.consumeMouseDX();
-    if (mouseDX !== 0) this.player.rotate(mouseDX * MOUSE_SENSITIVITY);
+    const mouseDX = p.input.consumeMouseDX();
+    if (mouseDX !== 0) p.player.rotate(mouseDX * MOUSE_SENSITIVITY);
 
     // Footsteps: accumulate ground actually covered (blocked moves count for
     // nothing) and tick a quiet step once per stride.
-    const moved = Math.hypot(this.player.posX - startX, this.player.posY - startY);
-    this.moving = moved > 1e-4 && this.state === "playing";
-    if (this.moving) {
-      this.distanceTraveled += moved;
-      this.stepDistance += moved;
-      if (this.stepDistance >= STRIDE_LENGTH) {
+    const moved = Math.hypot(p.player.posX - startX, p.player.posY - startY);
+    p.moving = moved > 1e-4 && this.state === "playing";
+    if (p.moving) {
+      p.distanceTraveled += moved;
+      p.stepDistance += moved;
+      if (p.stepDistance >= STRIDE_LENGTH) {
         audio.playStep();
-        this.stepDistance -= STRIDE_LENGTH;
+        p.stepDistance -= STRIDE_LENGTH;
       }
     }
   }
 
   /**
-   * Advance the head-bob and recoil animation. The bob phase only runs while
-   * moving; its amplitude eases in/out so starting and stopping is smooth. The
-   * recoil lerps back to rest every frame. Returns the derived offsets for this
-   * frame (camera horizon shift plus weapon bob), consumed by the renderer.
+   * Advance the head-bob and recoil animation for one player. The bob phase
+   * only runs while moving; its amplitude eases in/out so starting and
+   * stopping is smooth. The recoil lerps back to rest every frame. Returns
+   * the derived offsets for this frame (camera horizon shift plus weapon
+   * bob), consumed by the renderer.
    */
-  private updateViewmodel(dt: number): { horizonShift: number; bobX: number; bobY: number } {
-    if (this.moving) this.bobTime += dt;
-    const target = this.moving ? 1 : 0;
-    this.bobAmount += (target - this.bobAmount) * Math.min(1, dt * BOB_EASE);
-    this.recoil += (0 - this.recoil) * Math.min(1, dt * RECOIL_RECOVERY);
-    this.meleeRecoil += (0 - this.meleeRecoil) * Math.min(1, dt * RECOIL_RECOVERY);
+  private updateViewmodel(p: PlayerState, dt: number): { horizonShift: number; bobX: number; bobY: number } {
+    if (p.moving) p.bobTime += dt;
+    const target = p.moving ? 1 : 0;
+    p.bobAmount += (target - p.bobAmount) * Math.min(1, dt * BOB_EASE);
+    p.recoil += (0 - p.recoil) * Math.min(1, dt * RECOIL_RECOVERY);
+    p.meleeRecoil += (0 - p.meleeRecoil) * Math.min(1, dt * RECOIL_RECOVERY);
 
-    const phase = this.bobTime * BOB_FREQUENCY;
+    const phase = p.bobTime * BOB_FREQUENCY;
     // Horizontal sway is one cycle per stride; vertical bounces twice (a dip on
     // each footfall) — the classic head-bob relationship.
-    const bobH = Math.sin(phase) * this.bobAmount;
-    const bobV = Math.sin(phase * 2) * this.bobAmount;
+    const bobH = Math.sin(phase) * p.bobAmount;
+    const bobV = Math.sin(phase * 2) * p.bobAmount;
     return {
       horizonShift: bobV * CAMERA_BOB_PX,
       bobX: bobH * WEAPON_BOB_X_PX,
@@ -1601,42 +2900,74 @@ export class RaycasterEngine {
 
   /**
    * Run the enemy chase/attack AI for this frame and apply any melee damage it
-   * dealt to the player. Enemies home in when the player is within their aggro
-   * radius and bite on a per-enemy cooldown once adjacent.
+   * dealt to living players. Enemies home in on whichever living player is
+   * nearest (strict tie-break by sorted-`id` order) and bite on a per-enemy
+   * cooldown once adjacent.
    */
   private updateEnemyAi(dt: number): void {
     if (this.state !== "playing") return;
-    this.pathField.ensure(this.map, Math.floor(this.player.posX), Math.floor(this.player.posY), this.gridVersion);
+    const targets: EnemyTarget[] = [];
+    const pathFields = new Map<PlayerId, PathField>();
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      if (p.status !== "alive") continue;
+      p.pathField.ensure(this.map, Math.floor(p.player.posX), Math.floor(p.player.posY), this.gridVersion);
+      targets.push({ id, player: p.player });
+      pathFields.set(id, p.pathField);
+    }
     const beforeShots = this.projectiles.length;
-    const dmg = updateEnemies(
+    const damageByPlayer = updateEnemies(
       this.enemies,
-      this.player,
+      targets,
       this.map,
       dt,
       this.projectiles,
-      this.pathField,
+      pathFields,
       this.rng,
       this.enemyAiEvents,
       this.difficultyMultipliers.enemyAimSpreadDeg,
+      this.eliteScalingMultipliers.damage,
     );
     if (this.projectiles.length > beforeShots) audio.playEnemyShoot();
     // Difficulty scales enemy-*dealt* damage only — melee bites and ranged
     // bolts, not trap/hazard/self-inflicted (rocket splash) damage.
-    if (dmg > 0) this.damage(dmg * this.difficultyMultipliers.damage, "enemyMelee");
+    for (const [id, dmg] of damageByPlayer) {
+      if (dmg > 0) this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyMelee");
+    }
 
-    if (this.telemetry) {
+    if (this.teamTelemetry) {
       let aggroedNow = 0;
       for (const e of this.enemies) if (e.alive && e.aggroed) aggroedNow += 1;
-      if (aggroedNow > this.telemetry.peakAggroedCount) this.telemetry.peakAggroedCount = aggroedNow;
-      if (aggroedNow > 0) this.telemetry.combatTimeSec += dt;
+      if (aggroedNow > this.teamTelemetry.peakAggroedCount) this.teamTelemetry.peakAggroedCount = aggroedNow;
+      if (aggroedNow > 0) this.teamTelemetry.combatTimeSec += dt;
     }
   }
 
-  /** Advance enemy bolts; apply any that struck the player this frame. */
+  /** Advance enemy bolts; apply any that struck a living player this frame. */
   private updateProjectiles(dt: number): void {
     if (this.state !== "playing") return;
-    const dmg = updateProjectiles(this.projectiles, this.player, this.map, dt, this.onEnemyBoltHit);
-    if (dmg > 0) this.damage(dmg * this.difficultyMultipliers.damage, "enemyRanged");
+    const targets: ProjectileTarget[] = [];
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      if (p.status !== "alive") continue;
+      targets.push({ id, player: p.player });
+    }
+    // `updateProjectiles` only ever inserts an entry when a bolt actually
+    // lands (always `p.damage` from `spawnProjectile`, always positive — see
+    // `PROJECTILE_DAMAGE`/`damageMultiplier`), so `dmg` here is always > 0;
+    // no `dmg <= 0` guard needed.
+    const damageByPlayer = updateProjectiles(this.projectiles, targets, this.map, dt);
+    for (const [id, dmg] of damageByPlayer) {
+      const victim = this.players.get(id)!;
+      // One increment per victim per frame, not per bolt — two bolts landing
+      // on the same player in the same frame (rare) undercounts by one; the
+      // per-hit damage total (`recordDamage`, in `damage()` below) stays
+      // exact either way. See telemetry-spec correction #2: derived straight
+      // from `updateProjectiles()`'s own per-player return value instead of
+      // threading a new id through a dedicated callback.
+      if (victim.telemetry) recordEnemyBoltHit(victim.telemetry);
+      this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyRanged");
+    }
   }
 
   /**
@@ -1666,8 +2997,12 @@ export class RaycasterEngine {
       spawnExplosion(this.explosions, blast.x, blast.y, ROCKET_BLAST_RADIUS);
       spawnExplosionParticles(this.explosionParticles, blast.x, blast.y);
 
-      const playerDmg = rocketDamageAt(blast, this.player.posX, this.player.posY);
-      if (playerDmg > 0) this.damage(playerDmg, "selfRocket");
+      // Rocket splash excludes teammates, not the firer — every connected
+      // player is a teammate (no FFA teams in this design), so "excludes
+      // teammates but not the firer" reduces to exactly this one condition.
+      const shooter = this.players.get(blast.firedBy)!;
+      const firerDmg = rocketDamageAt(blast, shooter.player.posX, shooter.player.posY);
+      if (firerDmg > 0) this.damage(blast.firedBy, firerDmg, "selfRocket");
 
       // Ascending candidate indices == the old full-array scan order
       // restricted to the blast's neighborhood, so kills (and the seeded
@@ -1686,60 +3021,85 @@ export class RaycasterEngine {
         if (!enemy.alive) continue;
         const dmg = rocketDamageAt(blast, enemy.x, enemy.y);
         if (dmg > 0) {
-          if (this.telemetry) recordHit(this.telemetry, GHIDRA_WEAPON_INDEX);
-          this.damageEnemy(enemy, dmg, undefined, undefined, GHIDRA_WEAPON_INDEX);
+          if (shooter.telemetry) recordHit(shooter.telemetry, GHIDRA_WEAPON_INDEX);
+          this.damageEnemy(enemy, dmg, undefined, undefined, GHIDRA_WEAPON_INDEX, undefined, shooter);
         }
       }
     }
   }
 
-  /** Drain stability while the player stands in an acid (hazard) tile. */
+  /** Drain stability while a living player stands in an acid (hazard) tile. */
   private applyHazardDamage(dt: number): void {
     if (this.state !== "playing") return;
-    const cx = Math.floor(this.player.posX);
-    const cy = Math.floor(this.player.posY);
-    if (isHazard(this.map, cx, cy)) this.damage(HAZARD_DPS * dt, "hazard");
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      if (p.status !== "alive") continue;
+      const cx = Math.floor(p.player.posX);
+      const cy = Math.floor(p.player.posY);
+      if (isHazard(this.map, cx, cy)) this.damage(id, HAZARD_DPS * dt, "hazard");
+    }
   }
 
   /**
-   * Drain stability while standing on an active spike trap, and detonate any
-   * proximity mine whose fuse the player didn't back away from in time.
+   * Drain stability while a living player stands on an active spike trap, and
+   * detonate any proximity mine whose fuse no living player backed away from
+   * in time — a mine's blast is environmental, damaging every living player
+   * in range, not just whoever triggered it (unlike a rocket's splash).
    */
   private applyTrapDamage(dt: number): void {
     if (this.state !== "playing") return;
-    const spike = spikeDamage(this.map.spikeTraps, this.player, this.levelTime, dt);
-    if (spike > 0) this.damage(spike, "trapSpike");
+    const aliveTargets: Player[] = [];
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      if (p.status !== "alive") continue;
+      aliveTargets.push(p.player);
+      const spike = spikeDamage(this.map.spikeTraps, p.player, this.levelTime, dt);
+      if (spike > 0) this.damage(id, spike, "trapSpike");
+    }
 
-    for (const detonation of updateMines(this.map.mines, this.player, dt)) {
+    for (const detonation of updateMines(this.map.mines, aliveTargets, dt)) {
       audio.playExplosion();
       spawnExplosion(this.explosions, detonation.x, detonation.y, MINE_BLAST_RADIUS);
       spawnExplosionParticles(this.explosionParticles, detonation.x, detonation.y);
-      if (this.telemetry) recordMineTriggered(this.telemetry);
-      if (detonation.damage > 0) this.damage(detonation.damage, "trapMine");
+      if (this.teamTelemetry) recordMineTriggered(this.teamTelemetry);
+      for (const id of this.sortedPlayerIds()) {
+        const p = this.players.get(id)!;
+        if (p.status !== "alive") continue;
+        const dmg = mineDamageAt(detonation, p.player.posX, p.player.posY);
+        if (dmg > 0) this.damage(id, dmg, "trapMine");
+      }
     }
   }
 
   /** Pick up any key the player has walked onto. */
+  /** Pick up any key a living player has walked onto — first living player
+   * (sorted order) in radius of a given key wins. */
   private collectKeys(): void {
     if (this.state !== "playing") return;
     for (const item of this.map.keys) {
       if (item.collected) continue;
-      const dx = item.x - this.player.posX;
-      const dy = item.y - this.player.posY;
-      if (dx * dx + dy * dy < KEY_PICKUP_RADIUS * KEY_PICKUP_RADIUS) {
-        item.collected = true;
-        this.keysHeld += 1;
-        console.log(
-          `%c[key] dependency key acquired — ${this.keysHeld} in inventory`,
-          "color:#f2d64b",
-        );
+      for (const id of this.sortedPlayerIds()) {
+        const p = this.players.get(id)!;
+        if (p.status !== "alive") continue;
+        const dx = item.x - p.player.posX;
+        const dy = item.y - p.player.posY;
+        if (dx * dx + dy * dy < KEY_PICKUP_RADIUS * KEY_PICKUP_RADIUS) {
+          item.collected = true;
+          p.keysHeld += 1;
+          console.log(
+            `%c[key] dependency key acquired — ${p.keysHeld} in inventory`,
+            "color:#f2d64b",
+          );
+          break;
+        }
       }
     }
   }
 
   /**
-   * Pick up any dynamic loot drop or statically-placed map ammo pickup the
-   * player has walked onto, applying whatever it grants.
+   * Pick up any dynamic loot drop or statically-placed map ammo pickup a
+   * living player has walked onto, applying whatever it grants — first
+   * living player (sorted order) in radius of a given item wins.
    */
   private collectLoot(): void {
     if (this.state !== "playing") return;
@@ -1747,32 +3107,46 @@ export class RaycasterEngine {
 
     for (let i = this.drops.length - 1; i >= 0; i--) {
       const drop = this.drops[i];
-      const dx = drop.x - this.player.posX;
-      const dy = drop.y - this.player.posY;
-      if (dx * dx + dy * dy >= r2) continue;
-      this.drops.splice(i, 1);
-      applyLootDrop(drop, this.lootCtx);
+      for (const id of this.sortedPlayerIds()) {
+        const p = this.players.get(id)!;
+        if (p.status !== "alive") continue;
+        const dx = drop.x - p.player.posX;
+        const dy = drop.y - p.player.posY;
+        if (dx * dx + dy * dy >= r2) continue;
+        this.drops.splice(i, 1);
+        applyLootDrop(drop, p.lootCtx);
+        break;
+      }
     }
 
     for (const pickup of this.map.ammoPickups) {
       if (pickup.collected) continue;
-      const dx = pickup.x - this.player.posX;
-      const dy = pickup.y - this.player.posY;
-      if (dx * dx + dy * dy >= r2) continue;
-      pickup.collected = true;
-      audio.playPickup();
-      if (pickup.kind === "weapon") {
-        // Own message/amount logic (unlock vs. already-owned top-up) — the
-        // generic "+N kind found" log below doesn't apply to it.
-        if (pickup.weaponIndex !== undefined) grantOrTopUpWeapon(pickup.weaponIndex, this.lootCtx, "static");
-        continue;
+      for (const id of this.sortedPlayerIds()) {
+        const p = this.players.get(id)!;
+        if (p.status !== "alive") continue;
+        const dx = pickup.x - p.player.posX;
+        const dy = pickup.y - p.player.posY;
+        if (dx * dx + dy * dy >= r2) continue;
+        pickup.collected = true;
+        audio.playPickup();
+        if (pickup.kind === "weapon") {
+          // Own message/amount logic (unlock vs. already-owned top-up) — the
+          // generic "+N kind found" log below doesn't apply to it.
+          if (pickup.weaponIndex !== undefined) grantOrTopUpWeapon(pickup.weaponIndex, p.lootCtx, "static");
+          break;
+        }
+        // Correction from review, preserved deliberately: unlike the
+        // `"weapon"` branch above, this doesn't route through `p.lootCtx` —
+        // matches the pre-N-player engine's own inconsistency exactly rather
+        // than "cleaning it up" as part of this refactor.
+        const amount = this.scaledLootAmount(pickup.amount);
+        if (pickup.kind === "health") p.health = Math.min(MAX_HEALTH, p.health + amount);
+        else if (pickup.kind === "swap") p.swap = Math.min(MAX_SWAP, p.swap + amount);
+        else p.ammo[pickup.kind] += amount;
+        if (p.telemetry) recordLootCollected(p.telemetry, "static", pickup.kind, amount);
+        console.log(`%c[pickup] +${amount} ${pickup.kind} found`, "color:#3fd0e0");
+        break;
       }
-      const amount = this.scaledLootAmount(pickup.amount);
-      if (pickup.kind === "health") this.health = Math.min(MAX_HEALTH, this.health + amount);
-      else if (pickup.kind === "swap") this.swap = Math.min(MAX_SWAP, this.swap + amount);
-      else this.ammo[pickup.kind] += amount;
-      if (this.telemetry) recordLootCollected(this.telemetry, "static", pickup.kind, amount);
-      console.log(`%c[pickup] +${amount} ${pickup.kind} found`, "color:#3fd0e0");
     }
   }
 
@@ -1791,17 +3165,27 @@ export class RaycasterEngine {
    * the weapon outright depends on ownership state at *collection* time, not
    * roll time, which can change in between (a different weapon could be
    * picked up first) — so `1` (an occurrence) is the only thing that can
-   * honestly be recorded for it, roll-time or not. */
+   * honestly be recorded for it, roll-time or not. `"key"` is never actually
+   * routed through this (see `pushLootDrop`'s doc comment) but still needs a
+   * value for `LootKind` exhaustiveness. */
   private defaultLootAmountFor(kind: LootKind): number {
     if (kind === "weapon") return 1;
     if (kind === "health") return HEALTH_DROP_AMOUNT;
     if (kind === "swap") return SWAP_DROP_AMOUNT;
+    // Unreachable: "key" drops are only ever pushed directly by killPlayer()
+    // (see pushLootDrop's doc comment), never via pushLootDrop, so this
+    // branch has no live caller — kept only for LootKind exhaustiveness.
+    /* v8 ignore next */
+    if (kind === "key") return 1;
     return AMMO_META[kind].dropAmount;
   }
 
-  /** Leave a dynamic loot drop in the world — the single place `this.drops`
-   * is ever pushed to, so telemetry's "rolled" counter (see `lootRolled`)
-   * never has to be duplicated across call sites. Records the real,
+  /** Leave a dynamic loot drop in the world — the single place enemy-kill/
+   * loot-roll drops are ever pushed to `this.drops`, so telemetry's "rolled"
+   * counter (see `lootRolled`) never has to be duplicated across call sites.
+   * (The one exception: `killPlayer`'s key-drop-on-death pushes directly —
+   * a player's own keys aren't "rolled" loot, so double-counting them here
+   * would misrepresent what `lootRolled` measures.) Records the real,
    * difficulty-scaled amount the drop is worth (via `defaultLootAmountFor`
    * for the common unset-`amount` case, matching `applyLootDrop`'s own
    * fallback, or the drop's own explicit `amount` when set — Elite drops)
@@ -1811,137 +3195,222 @@ export class RaycasterEngine {
    * total) for anything but Elite drops; confirmed via balance telemetry as
    * the reason an `ammo_starvation_*` flag built on comparing the two had to
    * be removed rather than fixed. */
-  private pushLootDrop(drop: LootDrop): void {
+  private pushLootDrop(drop: LootDrop, enemy: Enemy): void {
+    const enemyIndex = this.enemies.indexOf(enemy);
+    const dropSeq = this.dropSeqByEnemyIndex.get(enemyIndex) ?? 0;
+    this.dropSeqByEnemyIndex.set(enemyIndex, dropSeq + 1);
+    drop.id = `${enemyIndex}:${dropSeq}`;
     this.drops.push(drop);
     const amount = this.scaledLootAmount(drop.amount ?? this.defaultLootAmountFor(drop.kind));
-    if (this.telemetry) recordLootRolled(this.telemetry, drop.kind, amount);
+    if (this.teamTelemetry) recordLootRolled(this.teamTelemetry, drop.kind, amount);
   }
 
   /**
-   * If the player is walking into a locked door and holds a key, spend the key
-   * and open the door (its tile becomes plain floor).
+   * If a living player is walking into a locked door and holds a key, spend
+   * the key and open the door (its tile becomes plain floor).
    */
   private openDoorAhead(): void {
-    if (this.state !== "playing" || this.keysHeld <= 0) return;
+    if (this.state !== "playing") return;
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      if (p.status !== "alive" || p.keysHeld <= 0) continue;
 
-    // Which way is the player pushing? Forward (W) or backward (S) along dir.
-    let sign = 0;
-    if (this.input.isDown("KeyW")) sign += 1;
-    if (this.input.isDown("KeyS")) sign -= 1;
-    if (sign === 0) return;
+      // Which way is the player pushing? Forward (W) or backward (S) along dir.
+      let sign = 0;
+      if (p.input.isDown("KeyW")) sign += 1;
+      if (p.input.isDown("KeyS")) sign -= 1;
+      if (sign === 0) continue;
 
-    const reach = this.player.radius + 0.15;
-    const px = this.player.posX + this.player.dirX * sign * reach;
-    const py = this.player.posY + this.player.dirY * sign * reach;
-    const cx = Math.floor(px);
-    const cy = Math.floor(py);
+      const reach = p.player.radius + 0.15;
+      const px = p.player.posX + p.player.dirX * sign * reach;
+      const py = p.player.posY + p.player.dirY * sign * reach;
+      const cx = Math.floor(px);
+      const cy = Math.floor(py);
 
-    if (this.map.grid[cy]?.[cx] === DOOR_TILE) {
-      this.map.grid[cy][cx] = 0;
-      this.gridVersion += 1;
-      this.keysHeld -= 1;
-      console.log(
-        `%c[door] unlocked with a dependency key — ${this.keysHeld} left`,
-        "color:#568ebe;font-weight:bold",
-      );
+      if (this.map.grid[cy]?.[cx] === DOOR_TILE) {
+        this.map.grid[cy][cx] = 0;
+        this.pendingGridDelta.push({ x: cx, y: cy, value: 0 });
+        this.gridVersion += 1;
+        p.keysHeld -= 1;
+        console.log(
+          `%c[door] unlocked with a dependency key — ${p.keysHeld} left`,
+          "color:#568ebe;font-weight:bold",
+        );
+      }
     }
   }
 
   /**
-   * Warp the player when they step onto a goto/label teleporter pad. Tracked
-   * by tile rather than a cooldown timer: arriving on a pad suppresses only
-   * that exact tile until the player leaves it, so the destination pad
-   * (itself a teleporter tile) can't immediately bounce them back, however
-   * long they linger there.
+   * Warp a living player when they step onto a goto/label teleporter pad.
+   * Tracked by tile rather than a cooldown timer: arriving on a pad
+   * suppresses only that exact tile until that player leaves it, so the
+   * destination pad (itself a teleporter tile) can't immediately bounce them
+   * back, however long they linger there — inherently per-player, no
+   * cross-player coordination needed.
    */
   private checkTeleporters(): void {
     if (this.state !== "playing") return;
-    const cx = Math.floor(this.player.posX);
-    const cy = Math.floor(this.player.posY);
-    if (this.map.grid[cy]?.[cx] !== TELEPORTER_TILE) {
-      this.suppressTeleportAt = null;
-      return;
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      if (p.status !== "alive") continue;
+      const cx = Math.floor(p.player.posX);
+      const cy = Math.floor(p.player.posY);
+      if (this.map.grid[cy]?.[cx] !== TELEPORTER_TILE) {
+        p.suppressTeleportAt = null;
+        continue;
+      }
+
+      const tileKey = `${cx},${cy}`;
+      if (tileKey === p.suppressTeleportAt) continue;
+
+      const pad = this.map.teleporters.find((t) => Math.floor(t.x) === cx && Math.floor(t.y) === cy);
+      if (!pad) continue;
+
+      p.player.posX = pad.targetX;
+      p.player.posY = pad.targetY;
+      p.suppressTeleportAt = `${Math.floor(pad.targetX)},${Math.floor(pad.targetY)}`;
+      audio.playTeleport();
+      console.log(`%c[goto] warped via label "${pad.label}"`, "color:#c86dff;font-weight:bold");
     }
-
-    const tileKey = `${cx},${cy}`;
-    if (tileKey === this.suppressTeleportAt) return;
-
-    const pad = this.map.teleporters.find((t) => Math.floor(t.x) === cx && Math.floor(t.y) === cy);
-    if (!pad) return;
-
-    this.player.posX = pad.targetX;
-    this.player.posY = pad.targetY;
-    this.suppressTeleportAt = `${Math.floor(pad.targetX)},${Math.floor(pad.targetY)}`;
-    audio.playTeleport();
-    console.log(`%c[goto] warped via label "${pad.label}"`, "color:#c86dff;font-weight:bold");
   }
 
   /**
-   * Sound a pulsing warning beep once per second while stability is critically
-   * low (below 25%). Resets when health recovers or the run ends, so re-entering
-   * the low band beeps immediately.
+   * Sound a pulsing warning beep once per second while a living player's
+   * stability is critically low (below 25%), for every living player — each
+   * on their own countdown. Resets when a player's health recovers or the
+   * run ends, so re-entering the low band beeps immediately. `audio.playAlarm()`
+   * may fire more than once per tick across players — harmless, matches the
+   * "audio stays unscoped" decision (see `EngineHandlers`'s doc comment).
    */
   private updateLowHealthAlarm(dt: number): void {
-    const critical =
-      this.state === "playing" && this.health > 0 && this.health < MAX_HEALTH * LOW_HEALTH_FRACTION;
-    if (!critical) {
-      this.alarmCountdown = 0;
-      return;
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      if (p.status !== "alive") continue;
+      const critical = this.state === "playing" && p.health > 0 && p.health < MAX_HEALTH * LOW_HEALTH_FRACTION;
+      if (!critical) {
+        p.alarmCountdown = 0;
+        continue;
+      }
+      if (p.alarmCountdown <= 0) {
+        audio.playAlarm();
+        p.alarmCountdown = LOW_HEALTH_BEEP_INTERVAL;
+      }
+      p.alarmCountdown -= dt;
     }
-    if (this.alarmCountdown <= 0) {
-      audio.playAlarm();
-      this.alarmCountdown = LOW_HEALTH_BEEP_INTERVAL;
-    }
-    this.alarmCountdown -= dt;
   }
 
   /**
-   * Apply `amount` of stability loss; ends the run on reaching 0. Swap
-   * absorbs damage 1:1 before health does, so it's spent down first.
-   * `source` is telemetry-only (see `telemetry.ts`'s `DamageSource`) — every
-   * call site is a first-party literal, never derived from player input.
+   * Apply `amount` of stability loss to `playerId`; kills that player on
+   * reaching 0 (see `killPlayer`). Swap absorbs damage 1:1 before health
+   * does, so it's spent down first. `source` is telemetry-only (see
+   * `telemetry.ts`'s `DamageSource`) — every call site is a first-party
+   * literal, never derived from player input.
    */
-  private damage(amount: number, source: DamageSource): void {
-    if (this.godMode || amount <= 0) return;
-    if (this.telemetry) recordDamage(this.telemetry, source, amount);
+  private damage(playerId: PlayerId, amount: number, source: DamageSource): void {
+    const p = this.players.get(playerId)!;
+    if (p.godMode || amount <= 0 || p.status !== "alive") return;
+    if (p.telemetry) recordDamage(p.telemetry, source, amount);
     // Kick the red screen flash back to full strength on any damage taken.
-    this.flashFrames = DAMAGE_FLASH_FRAMES;
+    p.flashFrames = DAMAGE_FLASH_FRAMES;
     audio.playDamage();
     let remaining = amount;
-    if (this.swap > 0) {
-      const absorbed = Math.min(this.swap, remaining);
-      this.swap -= absorbed;
+    if (p.swap > 0) {
+      const absorbed = Math.min(p.swap, remaining);
+      p.swap -= absorbed;
       remaining -= absorbed;
     }
-    this.health -= remaining;
-    if (this.health <= 0) {
-      this.health = 0;
-      if (this.telemetry) recordFatalDamage(this.telemetry, source);
-      this.endGame("over");
+    p.health -= remaining;
+    if (p.health <= 0) {
+      p.health = 0;
+      if (p.telemetry) recordFatalDamage(p.telemetry, source);
+      this.killPlayer(p);
     }
   }
 
   /**
-   * Apply a classic Doom cheat code once its full sequence has been typed
-   * (see `InputController.onKeyDown`). IDDQD/IDCLIP toggle (re-typing turns
-   * them back off, exactly like real Doom); IDKFA is a one-time grant, not a
-   * toggle (also matching real Doom — re-typing it is a harmless no-op).
+   * Take a player out of the world simulation on reaching 0 health: drops
+   * any keys they were holding at their death position (a `"key"` `LootDrop`
+   * — see `map/types.ts`'s `LootKind`), starts them spectating a living
+   * teammate (see `cycleSpectateTarget`), and ends the run for the whole team
+   * once nobody's left alive. `p.player` itself is never touched here or
+   * afterward — stays frozen exactly where they died — see
+   * `effectiveCameraFor`'s doc comment for why that's load-bearing, not just
+   * incidental.
    */
-  private applyCheat(code: string): void {
+  private killPlayer(p: PlayerState): void {
+    p.status = "dead";
+    if (p.keysHeld > 0) {
+      const dropSeq = this.dropSeqByPlayerId.get(p.id) ?? 0;
+      this.dropSeqByPlayerId.set(p.id, dropSeq + 1);
+      this.drops.push({ x: p.player.posX, y: p.player.posY, kind: "key", amount: p.keysHeld, id: `player:${p.id}:${dropSeq}` });
+      p.keysHeld = 0;
+    }
+    this.cycleSpectateTarget(p);
+    // A strict generalization of the old `every(status === "dead")` check —
+    // identical for the no-disconnect case, but also correctly ends the run
+    // once every *remaining* player is dead even if a teammate already
+    // disconnected (a `[dead, disconnected]` team must still end the run;
+    // literal `every(=== "dead")` never would, since "disconnected" isn't
+    // "dead"). A still-connected survivor alone keeps playing regardless of
+    // how many teammates disconnected — this predicate is false as long as
+    // at least one player is genuinely `"alive"`.
+    if ([...this.players.values()].every((q) => q.status !== "alive")) this.endGame("over");
+  }
+
+  /**
+   * Which living teammate's camera a dead player's render pass follows —
+   * their own `Player` stays frozen (see `killPlayer`'s doc comment), so a
+   * spectate camera is resolved separately here instead. Cycled by
+   * `consumeFire()` while dead (see `simulate()`), and set to the first
+   * living teammate (sorted order) the instant a player dies.
+   */
+  private cycleSpectateTarget(p: PlayerState): void {
+    const living = this.sortedPlayerIds().filter((id) => this.players.get(id)!.status === "alive");
+    if (living.length === 0) {
+      p.spectateTargetId = null;
+      return;
+    }
+    const i = p.spectateTargetId ? living.indexOf(p.spectateTargetId) : -1;
+    p.spectateTargetId = living[(i + 1) % living.length];
+  }
+
+  /** The `Player` whose position/facing `id`'s own render pass (or, for the
+   * local player, `render()`) should treat as the camera this frame — that
+   * player's own `Player` while alive, or their current spectate target's
+   * while dead. See `killPlayer`'s doc comment for why a dead player's own
+   * `Player` is never overwritten to mirror this instead: every per-player
+   * world-interaction loop reads `p.player.posX/posY` directly, gated only by
+   * `status === "alive"` — mutating a dead player's own position would
+   * corrupt what should be inert death-position data, since the `status`
+   * gate alone wouldn't stop it. */
+  private effectiveCameraFor(id: PlayerId): Player {
+    const p = this.players.get(id)!;
+    if (p.status === "alive" || p.spectateTargetId === null) return p.player;
+    return this.players.get(p.spectateTargetId)!.player;
+  }
+
+  /**
+   * Apply a classic Doom cheat code once its full sequence has been typed by
+   * `p` (see `InputController.onKeyDown`). IDDQD/IDCLIP toggle (re-typing
+   * turns them back off, exactly like real Doom); IDKFA is a one-time grant,
+   * not a toggle (also matching real Doom — re-typing it is a harmless
+   * no-op). Local-player-only in practice — see `simulate()`'s doc comment.
+   */
+  private applyCheat(p: PlayerState, code: string): void {
     switch (code) {
       case "IDDQD":
-        this.godMode = !this.godMode;
-        this.showCheatToast(`IDDQD — God mode ${this.godMode ? "ON" : "OFF"}`);
+        p.godMode = !p.godMode;
+        this.showCheatToast(p, `IDDQD — God mode ${p.godMode ? "ON" : "OFF"}`);
         break;
       case "IDCLIP":
-        this.player.noClip = !this.player.noClip;
-        this.showCheatToast(`IDCLIP — No-clip ${this.player.noClip ? "ON" : "OFF"}`);
+        p.player.noClip = !p.player.noClip;
+        this.showCheatToast(p, `IDCLIP — No-clip ${p.player.noClip ? "ON" : "OFF"}`);
         break;
       case "IDKFA":
-        for (let i = 0; i < WEAPONS.length; i++) this.ownedWeapons.add(i);
-        for (const type of AMMO_TYPES) this.ammo[type] = CHEAT_MAX_AMMO;
-        this.swap = MAX_SWAP;
-        this.showCheatToast("IDKFA — Full arsenal");
+        for (let i = 0; i < WEAPONS.length; i++) p.ownedWeapons.add(i);
+        for (const type of AMMO_TYPES) p.ammo[type] = CHEAT_MAX_AMMO;
+        p.swap = MAX_SWAP;
+        this.showCheatToast(p, "IDKFA — Full arsenal");
         break;
       default:
         return;
@@ -1949,53 +3418,90 @@ export class RaycasterEngine {
     this.handlers.onCheatActivated?.(code);
   }
 
-  private showCheatToast(text: string): void {
-    this.cheatToastText = text;
-    this.cheatToastFrames = CHEAT_TOAST_FRAMES;
+  private showCheatToast(p: PlayerState, text: string): void {
+    p.cheatToastText = text;
+    p.cheatToastFrames = CHEAT_TOAST_FRAMES;
   }
 
   /** Same shape as `showCheatToast`, own state — see `killStreakText`'s
    * doc comment for why. */
-  private showKillStreakToast(text: string, big: boolean): void {
-    this.killStreakText = text;
-    this.killStreakFrames = KILL_STREAK_TOAST_FRAMES;
-    this.killStreakBig = big;
+  private showKillStreakToast(p: PlayerState, text: string, big: boolean): void {
+    p.killStreakText = text;
+    p.killStreakFrames = KILL_STREAK_TOAST_FRAMES;
+    p.killStreakBig = big;
   }
 
-  /** Win when the player stands on the exit tile (the return statement). */
+  /**
+   * Single-player: win for the whole team the instant any one living player
+   * stands on the exit tile (sorted order) — byte-identical to before step 8.
+   *
+   * Multiplayer (`multiplayer-netcode-spec.md` §7): the first living player
+   * to touch the exit starts a fixed `COUNTDOWN_TICKS` countdown instead of
+   * winning immediately — a later host-driven step (level transition) needs
+   * that window to generate and hand off the next level before the win
+   * actually lands. Once started, the countdown is unconditional: it is
+   * never cancelled or restarted by a later touch, and it decrements every
+   * tick regardless of where any player currently stands (leaving the exit
+   * tile doesn't pause or reset it) — the sim keeps running normally
+   * throughout, exactly like every other tick. `endGame("won")` fires only
+   * once it reaches zero.
+   */
   private checkExit(): void {
     if (this.state !== "playing") return;
-    if (
-      Math.floor(this.player.posX) === this.map.exit.x &&
-      Math.floor(this.player.posY) === this.map.exit.y
-    ) {
+    if (this.isMultiplayerSession() && this.exitCountdownRemaining !== null) {
+      this.exitCountdownRemaining -= 1;
+      if (this.exitCountdownRemaining <= 0) {
+        this.exitCountdownRemaining = null;
+        this.endGame("won");
+      }
+      return;
+    }
+    const touching = this.sortedPlayerIds().some((id) => {
+      const p = this.players.get(id)!;
+      return p.status === "alive" && Math.floor(p.player.posX) === this.map.exit.x && Math.floor(p.player.posY) === this.map.exit.y;
+    });
+    if (!touching) return;
+    if (this.isMultiplayerSession()) {
+      this.exitCountdownRemaining = COUNTDOWN_TICKS;
+    } else {
       this.endGame("won");
     }
   }
 
-  /**
-   * Whether `index` is a ranged weapon the player currently owns and can
-   * switch to via a number key or the mousewheel — melee weapons (anything
-   * with `meleeRange` set) are structurally excluded, since the knife is
-   * bound exclusively to Space's quick-melee action instead of a slot.
-   */
-  private canWieldViaNumberKey(index: number): boolean {
-    return index >= 0 && index < WEAPONS.length && WEAPONS[index].meleeRange === undefined && this.ownedWeapons.has(index);
+  /** Multiplayer-only: ticks remaining in the exit countdown, or `null` if
+   * none is active — read-only introspection for a "Build finishing in N…"
+   * overlay (`multiplayer-research.md` step 8's own UI, built alongside the
+   * host-driven transition itself), polled once per render frame rather
+   * than a new `EngineHandlers` callback, same spirit as
+   * `getRngState()`/`hasActiveRenderOffset()`. Always `null` for a
+   * single-player instance. */
+  getExitCountdownRemaining(): number | null {
+    return this.exitCountdownRemaining;
   }
 
   /**
-   * Switch to the next/previous number-key-reachable weapon from the
+   * Whether `index` is a ranged weapon `p` currently owns and can switch to
+   * via a number key or the mousewheel — melee weapons (anything with
+   * `meleeRange` set) are structurally excluded, since the knife is bound
+   * exclusively to Space's quick-melee action instead of a slot.
+   */
+  private canWieldViaNumberKey(p: PlayerState, index: number): boolean {
+    return index >= 0 && index < WEAPONS.length && WEAPONS[index].meleeRange === undefined && p.ownedWeapons.has(index);
+  }
+
+  /**
+   * Switch `p` to the next/previous number-key-reachable weapon from the
    * currently equipped one, wrapping around, skipping melee and unowned
    * slots (see `canWieldViaNumberKey`). Does nothing if no other reachable
    * weapon is owned.
    */
-  private cycleWeapon(direction: 1 | -1): void {
+  private cycleWeapon(p: PlayerState, direction: 1 | -1): void {
     const n = WEAPONS.length;
-    let i = this.weaponIndex;
+    let i = p.weaponIndex;
     for (let steps = 0; steps < n; steps++) {
       i = (i + direction + n) % n;
-      if (this.canWieldViaNumberKey(i)) {
-        this.weaponIndex = i;
+      if (this.canWieldViaNumberKey(p, i)) {
+        p.weaponIndex = i;
         return;
       }
     }
@@ -2012,86 +3518,63 @@ export class RaycasterEngine {
    * — it never goes through this cooldown/auto-fire gating at all.
    */
   private updateFiring(dt: number): void {
-    if (this.weaponCooldown > 0) this.weaponCooldown = Math.max(0, this.weaponCooldown - dt);
-    const weapon = WEAPONS[this.weaponIndex];
-    const pressed = this.input.consumeFire();
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      if (p.status !== "alive") continue;
+      if (p.weaponCooldown > 0) p.weaponCooldown = Math.max(0, p.weaponCooldown - dt);
+      const weapon = WEAPONS[p.weaponIndex];
+      const pressed = p.input.consumeFire();
 
-    if (weapon.auto) {
-      if (this.input.isFireHeld() && this.weaponCooldown <= 0) {
-        this.fire();
-        // Not reachable via current WEAPONS data — every `auto: true` ranged
-        // weapon today (gdb, Friday Hotfix) defines fireIntervalSec — but a
-        // future auto weapon omitting it should still get a sane cooldown
-        // instead of firing every frame.
-        /* v8 ignore next */
-        this.weaponCooldown = weapon.fireIntervalSec ?? 0.1;
+      if (weapon.auto) {
+        if (p.input.isFireHeld() && p.weaponCooldown <= 0) {
+          this.fire(p);
+          // Not reachable via current WEAPONS data — every `auto: true`
+          // ranged weapon today (gdb, Friday Hotfix) defines
+          // fireIntervalSec — but a future auto weapon omitting it should
+          // still get a sane cooldown instead of firing every frame.
+          /* v8 ignore next */
+          p.weaponCooldown = weapon.fireIntervalSec ?? 0.1;
+        }
+      } else if (pressed && p.weaponCooldown <= 0) {
+        this.fire(p);
+        if (weapon.fireIntervalSec) p.weaponCooldown = weapon.fireIntervalSec;
       }
-    } else if (pressed && this.weaponCooldown <= 0) {
-      this.fire();
-      if (weapon.fireIntervalSec) this.weaponCooldown = weapon.fireIntervalSec;
     }
   }
 
   /**
-   * Fire `weapon` — the equipped weapon by default, or an arbitrary one (the
-   * quick-melee action passes `MELEE_WEAPON` directly, bypassing `weaponIndex`
-   * entirely — see the Space handling in `advance()`). Spends its ammo
-   * cost from the right pool (a no-op for the knife, which has none), then
-   * either resolves one hitscan per pellet across its cone (the pistol is a
-   * single centered ray; the shotgun sprays several pellets that each
-   * independently hit whatever's under their offset screen column) or, for
-   * the rocket launcher, launches a real projectile instead (see `rockets.ts`).
-   * A hitscan pellet hits an enemy first, or failing that a spotted proximity
-   * mine, which a shot destroys outright (see `destroyMine`).
+   * Resolve one shot's zBuffer refresh, per-pellet Cone-of-Fire deviation,
+   * and hit-selection for an arbitrary `camera` — the camera-parameterized
+   * generalization `refreshFiringZBuffer` used to leave as a step-4 TODO,
+   * needed because a remote player's shot has no local render pass to reuse
+   * a zBuffer from at all. Recomputes `zBuffer` fresh from `camera`'s exact
+   * current position every call (self-sufficient regardless of call site —
+   * quick-melee's early call in `simulate()`, before `handleMovement` even
+   * runs that tick, or `updateFiring`'s later call, after movement), so it's
+   * never relying on whatever `render()` last drew, which may be a whole
+   * tick — or, once netcode decouples ticks from renders, many ticks —
+   * stale. Deliberately doesn't apply ammo cost, damage, loot, telemetry,
+   * traces, or audio — those stay in `fire()`, since they need per-player
+   * mutable state this function doesn't touch.
+   *
+   * `enemyPositions`, when given (multiplayer only — see `fire()`'s call
+   * site and `rewoundEnemyPositions()`'s own doc comment), hit-tests against
+   * those lag-compensated positions instead of each enemy's live `x`/`y`.
    */
-  private fire(weapon: Weapon = WEAPONS[this.weaponIndex]): void {
-    if (weapon.ammoType) {
-      if (this.ammo[weapon.ammoType] < weapon.ammoPerShot) {
-        console.log(`[${weapon.name}] out of ${weapon.ammoType} — need ${weapon.ammoPerShot}`);
-        return;
-      }
-      this.ammo[weapon.ammoType] -= weapon.ammoPerShot;
-    }
-
-    const weaponIndex = WEAPONS.indexOf(weapon);
-    // "Forced melee": true only when a melee weapon fires because every
-    // ranged pool was empty at the moment of firing — telemetry-only (see
-    // `killsForcedByMelee`), computed here since this is the only place that
-    // still knows the ammo state *before* this shot.
-    const forcedMelee = weapon.meleeRange !== undefined && this.ammo.bullets === 0 && this.ammo.smg === 0 && this.ammo.gas === 0;
-    if (this.telemetry) recordShot(this.telemetry, weaponIndex);
-
-    audio.playShoot(weapon.viewKind);
-    // Kick the viewmodel: full recoil, easing back over the next frames. No
-    // muzzle flash for the knife — a stab doesn't have one. A melee call
-    // (weapon.meleeRange !== undefined) never touches `recoil` — the caller
-    // already drives its own `meleeRecoil` overlay instead, so a quick-melee
-    // swing can't stomp whatever ranged weapon's recoil animation was
-    // actually mid-flight.
-    if (weapon.meleeRange === undefined) this.recoil = 1;
-    if (weapon.ammoType) this.muzzleFrames = MUZZLE_FLASH_FRAMES;
-
-    if (weapon.isRocket) {
-      spawnRocket(this.rockets, this.player.posX, this.player.posY, this.player.dirX, this.player.dirY, weapon.damagePerPellet);
-      console.log(`[${weapon.name}] launched`);
-      return;
-    }
-
-    const { width, height } = this.ctx.canvas;
-    const center = width / 2;
-    let pelletsHit = 0;
-    // Project every living enemy/visible mine once for the whole shot instead
-    // of per pellet — a multi-pellet or automatic weapon otherwise multiplies
-    // an O(enemies) projection pass by the pellet count on every trigger
-    // pull, which is what actually tanks frame rate on files with a large
-    // function count (many enemies), not the per-frame render/crosshair pass.
-    const enemyProjections = projectLivingEnemies(this.player, this.enemies, width, height);
-    const mineProjections = projectVisibleMines(this.player, this.map.mines, width, height);
-    // Friday Hotfix draws one fanning flame stream for the whole shot instead
-    // of a per-pellet tracer line (see `FlameStream`'s doc comment) — tracked
-    // across the loop below as the widest spread any pellet actually landed
-    // on, post-Cone-of-Fire deviation.
+  private resolveShot(
+    camera: Player,
+    weapon: Weapon,
+    rng: () => number,
+    zBuffer: Float64Array,
+    enemyPositions?: ReadonlyMap<Enemy, { x: number; y: number }>,
+  ): ShotResolution {
+    castWallDistances(this.map, camera, SCENE_WIDTH, zBuffer);
+    const enemyProjections = projectLivingEnemies(camera, this.enemies, SCENE_WIDTH, SCENE_HEIGHT, enemyPositions);
+    const mineProjections = projectVisibleMines(camera, this.map.mines, SCENE_WIDTH, SCENE_HEIGHT);
+    const center = SCENE_WIDTH / 2;
     const isFlame = weapon.ammoType === "gas";
+    const pellets: PelletOutcome[] = [];
+    const traceColumns: number[] = [];
     let flameLeft = Infinity;
     let flameRight = -Infinity;
 
@@ -2108,96 +3591,181 @@ export class RaycasterEngine {
       const baseColumn = center + offset;
       let column = baseColumn;
       if (weapon.meleeRange === undefined) {
-        const baseCol = Math.min(width - 1, Math.max(0, Math.round(baseColumn)));
-        const range = this.zBuffer[baseCol];
+        const baseCol = Math.min(SCENE_WIDTH - 1, Math.max(0, Math.round(baseColumn)));
+        const range = zBuffer[baseCol];
         const rangeFraction = Math.min(1, range / FOG_FAR);
         const maxDeviation = weapon.maxConeDeviationPx ?? MAX_CONE_DEVIATION_PX;
-        const deviation = (this.rng() * 2 - 1) * rangeFraction * rangeFraction * rangeFraction * maxDeviation;
-        column = Math.min(width - 1, Math.max(0, baseColumn + deviation));
+        const deviation = (rng() * 2 - 1) * rangeFraction ** 3 * maxDeviation;
+        column = Math.min(SCENE_WIDTH - 1, Math.max(0, baseColumn + deviation));
       }
 
       // Tracer from the muzzle (bottom center) to this pellet's aim column at
       // crosshair height, in the weapon's own tracer color — drawn whether or
       // not it connects. Friday Hotfix skips this in favor of one flame
-      // stream for the whole shot, pushed after the loop below. Melee (the
-      // knife, Toolchain) skips it entirely — a swing isn't a fired
-      // projectile, so a line drawn from the screen center to the crosshair
-      // never made sense for it visually.
+      // stream for the whole shot, pushed after the loop below (see
+      // `flameLeft`/`flameRight`). Melee (the knife, Toolchain) skips it
+      // entirely — a swing isn't a fired projectile, so a line drawn from
+      // the screen center to the crosshair never made sense for it visually.
       if (isFlame) {
         flameLeft = Math.min(flameLeft, column);
         flameRight = Math.max(flameRight, column);
       } else if (weapon.meleeRange === undefined) {
-        this.traces.push(makeBulletTrace(width, height, column, height / 2, weapon.tracerColor));
+        traceColumns.push(column);
       }
 
-      const enemy = findTargetInProjections(enemyProjections, this.zBuffer, width, height, column);
+      const enemy = findTargetInProjections(enemyProjections, zBuffer, SCENE_WIDTH, SCENE_HEIGHT, column);
       if (enemy?.alive) {
         // Melee only actually connects within its stabbing range, even if the
         // column lines up with something farther away down the same
         // sightline; Friday Hotfix's `maxRange` is the same idea for a
         // flamethrower's genuinely short reach.
         const rangeLimit = weapon.meleeRange ?? weapon.maxRange;
-        if (rangeLimit !== undefined) {
-          const dist = Math.hypot(enemy.x - this.player.posX, enemy.y - this.player.posY);
-          if (dist > rangeLimit) continue;
+        if (rangeLimit !== undefined && Math.hypot(enemy.x - camera.posX, enemy.y - camera.posY) > rangeLimit) {
+          pellets.push({ kind: "miss" });
+          continue;
         }
-        if (this.telemetry) recordHit(this.telemetry, weaponIndex);
-        this.damageEnemy(enemy, weapon.damagePerPellet, weapon.lifesteal, isFlame, weaponIndex, forcedMelee);
-        pelletsHit += 1;
+        pellets.push({ kind: "enemy", target: enemy });
         continue;
       }
 
       if (weapon.meleeRange === undefined) {
-        const mine = findMineInProjections(mineProjections, this.zBuffer, width, height, column);
+        const mine = findMineInProjections(mineProjections, zBuffer, SCENE_WIDTH, SCENE_HEIGHT, column);
         if (mine) {
-          if (weapon.maxRange !== undefined) {
-            const dist = Math.hypot(mine.x - this.player.posX, mine.y - this.player.posY);
-            if (dist > weapon.maxRange) continue;
+          if (weapon.maxRange !== undefined && Math.hypot(mine.x - camera.posX, mine.y - camera.posY) > weapon.maxRange) {
+            pellets.push({ kind: "miss" });
+            continue;
           }
-          this.destroyMine(mine);
-          pelletsHit += 1;
+          pellets.push({ kind: "mine", target: mine });
+          continue;
         }
       }
+      pellets.push({ kind: "miss" });
+    }
+    return { pellets, traceColumns, flameLeft, flameRight };
+  }
+
+  /**
+   * Fire `weapon` (defaulting to `shooter`'s own equipped weapon) on
+   * `shooter`'s behalf — the quick-melee action passes the knife/Toolchain
+   * directly, bypassing `weaponIndex` entirely (see the Space handling in
+   * `simulate()`). Spends its ammo cost from the right pool (a no-op for the
+   * knife, which has none), then either resolves one hitscan per pellet
+   * across its cone (the pistol is a single centered ray; the shotgun sprays
+   * several pellets that each independently hit whatever's under their
+   * offset screen column) via `resolveShot`, or, for the rocket launcher,
+   * launches a real projectile instead (see `rockets.ts`). A hitscan pellet
+   * hits an enemy first, or failing that a spotted proximity mine, which a
+   * shot destroys outright (see `destroyMine`).
+   */
+  private fire(shooter: PlayerState, weapon?: Weapon): void {
+    const w = weapon ?? WEAPONS[shooter.weaponIndex];
+    if (w.ammoType) {
+      if (shooter.ammo[w.ammoType] < w.ammoPerShot) {
+        console.log(`[${w.name}] out of ${w.ammoType} — need ${w.ammoPerShot}`);
+        return;
+      }
+      shooter.ammo[w.ammoType] -= w.ammoPerShot;
     }
 
-    if (isFlame && flameRight >= flameLeft) {
-      this.flameStreams.push(spawnFlameStream(height, flameLeft, flameRight, weapon.tracerColor));
+    const weaponIndex = WEAPONS.indexOf(w);
+    // "Forced melee": true only when a melee weapon fires because every
+    // ranged pool was empty at the moment of firing — telemetry-only (see
+    // `killsForcedByMelee`), computed here since this is the only place that
+    // still knows the ammo state *before* this shot.
+    const forcedMelee = w.meleeRange !== undefined && shooter.ammo.bullets === 0 && shooter.ammo.smg === 0 && shooter.ammo.gas === 0;
+    if (shooter.telemetry) recordShot(shooter.telemetry, weaponIndex);
+
+    audio.playShoot(w.viewKind);
+    // Kick the viewmodel: full recoil, easing back over the next frames. No
+    // muzzle flash for the knife — a stab doesn't have one. A melee call
+    // (w.meleeRange !== undefined) never touches `recoil` — the caller
+    // already drives its own `meleeRecoil` overlay instead, so a quick-melee
+    // swing can't stomp whatever ranged weapon's recoil animation was
+    // actually mid-flight.
+    if (w.meleeRange === undefined) shooter.recoil = 1;
+    if (w.ammoType) shooter.muzzleFrames = MUZZLE_FLASH_FRAMES;
+
+    if (w.isRocket) {
+      spawnRocket(this.rockets, shooter.player.posX, shooter.player.posY, shooter.player.dirX, shooter.player.dirY, w.damagePerPellet, shooter.id);
+      console.log(`[${w.name}] launched`);
+      return;
+    }
+
+    const resolution = this.resolveShot(shooter.player, w, this.rng, shooter.zBuffer, this.rewoundEnemyPositions());
+    const isFlame = w.ammoType === "gas";
+    for (const outcome of resolution.pellets) {
+      if (outcome.kind === "enemy") {
+        if (shooter.telemetry) recordHit(shooter.telemetry, weaponIndex);
+        this.damageEnemy(outcome.target, w.damagePerPellet, w.lifesteal, isFlame, weaponIndex, forcedMelee, shooter);
+      } else if (outcome.kind === "mine") {
+        this.destroyMine(outcome.target, shooter);
+      }
+    }
+    if (!isFlame) {
+      for (const col of resolution.traceColumns) this.traces.push(makeBulletTrace(SCENE_WIDTH, SCENE_HEIGHT, col, SCENE_HEIGHT / 2, w.tracerColor));
+    }
+    if (isFlame && resolution.flameRight >= resolution.flameLeft) {
+      this.flameStreams.push(spawnFlameStream(SCENE_HEIGHT, resolution.flameLeft, resolution.flameRight, w.tracerColor));
     }
   }
 
   /**
    * Destroy a spotted proximity mine hit by gunfire instead of letting it
-   * detonate underfoot — the same distance-scaled blast as a proximity
-   * detonation applies, so shooting one from beyond its blast radius is a
-   * genuinely safe disarm, while shooting one at point-blank still hurts.
+   * detonate underfoot — the same distance-scaled blast a proximity
+   * detonation applies fans out to every living player (environmental, like
+   * a fuse-triggered detonation — see `applyTrapDamage`'s doc comment), so
+   * shooting one from beyond its blast radius is a genuinely safe disarm for
+   * the whole team, while shooting one at point-blank still hurts whoever's
+   * close. `shooter`'s own splash is what the gunfire-destroyed log reports,
+   * matching the pre-N-player engine's single-player wording.
    */
-  private destroyMine(mine: Mine): void {
-    const dmg = detonateMine(mine, this.player);
+  private destroyMine(mine: Mine, shooter: PlayerState): void {
+    detonateMine(mine);
     audio.playExplosion();
     spawnExplosion(this.explosions, mine.x, mine.y, MINE_BLAST_RADIUS);
     spawnExplosionParticles(this.explosionParticles, mine.x, mine.y);
-    console.log(`%c[mine] destroyed by gunfire${dmg > 0 ? ` — caught ${Math.round(dmg)} splash damage` : " — safely disarmed at range"}`, "color:#ff5050");
-    if (this.telemetry) recordMineDisarmed(this.telemetry);
-    if (dmg > 0) this.damage(dmg, "trapMine");
+    if (shooter.telemetry) recordMineDisarmed(shooter.telemetry);
+    const shooterDmg = mineDamageAt({ x: mine.x, y: mine.y }, shooter.player.posX, shooter.player.posY);
+    console.log(
+      `%c[mine] destroyed by gunfire${shooterDmg > 0 ? ` — caught ${Math.round(shooterDmg)} splash damage` : " — safely disarmed at range"}`,
+      "color:#ff5050",
+    );
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      if (p.status !== "alive") continue;
+      const dmg = id === shooter.id ? shooterDmg : mineDamageAt({ x: mine.x, y: mine.y }, p.player.posX, p.player.posY);
+      if (dmg > 0) this.damage(id, dmg, "trapMine");
+    }
   }
 
   /**
-   * Apply weapon damage to one enemy, retiring it (with a log) at 0 HP. If the
-   * killing weapon has `lifesteal`, restore that much stability to the player.
-   * `burning` (Friday Hotfix hits only) layers a handful of cosmetic embers on
-   * top of the usual blood spray — purely visual, no damage-over-time follows.
-   * `weaponIndex`/`forcedMelee` are telemetry-only (see `telemetry.ts`) —
-   * every caller passes a literal weapon index (`advanceRockets` always
-   * passes `GHIDRA_WEAPON_INDEX`); `undefined` only in tests that call this
-   * directly without needing weapon-attribution telemetry.
+   * Apply weapon damage to one enemy on `shooter`'s behalf, retiring it
+   * (with a log) at 0 HP. If the killing weapon has `lifesteal`, restore
+   * that much stability to `shooter`. `burning` (Friday Hotfix hits only)
+   * layers a handful of cosmetic embers on top of the usual blood spray —
+   * purely visual, no damage-over-time follows. `weaponIndex`/`forcedMelee`
+   * are telemetry-only (see `telemetry.ts`) — every caller passes a literal
+   * weapon index (`advanceRockets` always passes `GHIDRA_WEAPON_INDEX`);
+   * `undefined` only in tests that call this directly without needing
+   * weapon-attribution telemetry.
+   *
+   * Assist tracking: every hit against a still-live enemy (not just the
+   * killing blow) records `shooter` into `enemyAssists`. On a kill,
+   * `killScore` (points) splits evenly across every distinct assisting
+   * player — but `kills`/the multi-kill-streak fields attribute ONLY to
+   * `shooter` (the final blow), never split: most coop shooters separate
+   * assist points from individual kill/streak credit, and this does the
+   * same. At N=1 `assists.size` is always 1, so `share === killPoints(enemy)`
+   * exactly — byte-identical to the pre-N-player single-player behavior.
    */
   private damageEnemy(
     enemy: Enemy,
     amount: number,
-    lifesteal?: number,
-    burning?: boolean,
-    weaponIndex?: number,
-    forcedMelee?: boolean,
+    lifesteal: number | undefined,
+    burning: boolean | undefined,
+    weaponIndex: number | undefined,
+    forcedMelee: boolean | undefined,
+    shooter: PlayerState,
   ): void {
     // Hit feedback: thud sound, tint the sprite red, spray "digital blood".
     audio.playHit();
@@ -2206,9 +3774,13 @@ export class RaycasterEngine {
     // Damage aggro: being shot instantly wakes the enemy, even from beyond its
     // aggro radius, so you can't safely snipe a roaming enemy from afar.
     enemy.aggroed = true;
-    if (this.telemetry) recordEnemyAggro(this.telemetry, this.enemyTtkIndex, enemy, this.levelTime);
+    if (this.teamTelemetry) recordEnemyAggro(this.teamTelemetry, this.enemyTtkIndex, enemy, this.levelTime);
     const baseBloodCount = 3 + Math.floor(Math.random() * 3);
     spawnBlood(this.blood, enemy.x, enemy.y, Math.round(baseBloodCount * this.goreMultipliers.count));
+
+    const enemyIndex = this.enemies.indexOf(enemy);
+    (this.enemyAssists.get(enemyIndex) ?? this.enemyAssists.set(enemyIndex, new Set()).get(enemyIndex)!).add(shooter.id);
+
     enemy.hp -= amount;
     if (enemy.hp > 0) {
       console.log(`[hit] ${enemy.entity.name}() — HP ${enemy.hp}/${enemy.maxHp}`);
@@ -2216,26 +3788,27 @@ export class RaycasterEngine {
     }
     enemy.hp = 0;
     enemy.alive = false;
-    this.kills += 1;
-    this.killScore += killPoints(enemy);
-    this.registerKillForStreak();
+    shooter.kills += 1;
+    const assists = this.enemyAssists.get(enemyIndex)!;
+    const share = killPoints(enemy) / assists.size;
+    for (const id of assists) this.players.get(id)!.killScore += share;
+    this.enemyAssists.delete(enemyIndex);
+    this.registerKillForStreak(shooter);
     if (this.target === enemy) this.target = null;
-    if (this.telemetry) {
-      recordEnemyDeath(this.telemetry, this.enemyTtkIndex, enemy, this.levelTime);
-      if (weaponIndex !== undefined) {
-        recordKill(this.telemetry, weaponIndex);
-        if (forcedMelee) recordKillForcedByMelee(this.telemetry);
-      }
+    if (this.teamTelemetry) recordEnemyDeath(this.teamTelemetry, this.enemyTtkIndex, enemy, this.levelTime);
+    if (weaponIndex !== undefined && shooter.telemetry) {
+      recordKill(shooter.telemetry, weaponIndex);
+      if (forcedMelee) recordKillForcedByMelee(shooter.telemetry);
     }
     if (lifesteal) {
-      if (this.telemetry) {
-        const actualHeal = Math.min(MAX_HEALTH, this.health + lifesteal) - this.health;
-        recordHeal(this.telemetry, "lifesteal", actualHeal);
+      if (shooter.telemetry) {
+        const actualHeal = Math.min(MAX_HEALTH, shooter.health + lifesteal) - shooter.health;
+        recordHeal(shooter.telemetry, "lifesteal", actualHeal);
       }
-      this.health = Math.min(MAX_HEALTH, this.health + lifesteal);
+      shooter.health = Math.min(MAX_HEALTH, shooter.health + lifesteal);
     }
 
-    if (enemy.elite) dropEliteLoot(enemy, this.lootCtx);
+    if (enemy.elite) dropEliteLoot(enemy, shooter.lootCtx);
     else {
       // Health is handled as its own always-on check, decoupled from
       // REGULAR_KILL_NO_DROP_CHANCE entirely — unlike ammo (still survivable
@@ -2248,8 +3821,8 @@ export class RaycasterEngine {
       // chance was still compounding with Hard's tougher combat. `rollLoot`
       // below is told to exclude "health" from its own weighted roll (via
       // `healthHandledSeparately`) so a kill can't double-drop it.
-      if (this.health < MAX_HEALTH) {
-        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "health" });
+      if (shooter.health < MAX_HEALTH) {
+        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "health" }, enemy);
       }
       // Not every regular kill drops ammo/swap anymore — see
       // REGULAR_KILL_NO_DROP_CHANCE's doc comment. A separate rng() draw
@@ -2257,7 +3830,7 @@ export class RaycasterEngine {
       // pattern below (an independent roll, not folded into rollLoot itself)
       // so rollLoot's kind-weighting logic and tests stay untouched.
       const lootRollHit = this.rng() >= REGULAR_KILL_NO_DROP_CHANCE;
-      if (this.telemetry) recordRegularKillLootRoll(this.telemetry, !lootRollHit);
+      if (shooter.telemetry) recordRegularKillLootRoll(shooter.telemetry, !lootRollHit);
       if (lootRollHit) {
         this.pushLootDrop({
           x: enemy.x,
@@ -2266,25 +3839,25 @@ export class RaycasterEngine {
             this.map.bonusLevel,
             this.difficultyLevel,
             this.rng,
-            this.ownedWeapons.has(GHIDRA_WEAPON_INDEX),
-            this.ownedWeapons.has(GDB_WEAPON_INDEX),
-            this.health >= MAX_HEALTH,
-            this.ownedWeapons.has(FRIDAY_HOTFIX_WEAPON_INDEX),
+            shooter.ownedWeapons.has(GHIDRA_WEAPON_INDEX),
+            shooter.ownedWeapons.has(GDB_WEAPON_INDEX),
+            shooter.health >= MAX_HEALTH,
+            shooter.ownedWeapons.has(FRIDAY_HOTFIX_WEAPON_INDEX),
             true, // healthHandledSeparately — see above
           ),
-        });
-      } else if (rollMissChanceToolchain(this.lootCtx)) {
+        }, enemy);
+      } else if (rollMissChanceToolchain(shooter.lootCtx)) {
         // A kill that drops nothing isn't quite a dead end — a small
         // independent chance turns the miss into a shot at the Toolchain
         // instead, a weapon whose other two acquisition paths (secret rooms,
         // an Elite's own bonus roll) are otherwise easy to never see at all.
         // See `rollMissChanceToolchain`'s doc comment.
-        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: TOOLCHAIN_WEAPON_INDEX });
+        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: TOOLCHAIN_WEAPON_INDEX }, enemy);
       }
-      const missing = UNLOCKABLE_WEAPONS.filter((i) => !this.ownedWeapons.has(i));
+      const missing = UNLOCKABLE_WEAPONS.filter((i) => !shooter.ownedWeapons.has(i));
       const bonusWeaponIndex = rollBonusWeaponDrop(missing, this.rng);
       if (bonusWeaponIndex !== undefined) {
-        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: bonusWeaponIndex });
+        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "weapon", weaponIndex: bonusWeaponIndex }, enemy);
       }
     }
     audio.playAmmoDrop();
@@ -2297,30 +3870,30 @@ export class RaycasterEngine {
   }
 
   /**
-   * Rolling-window "Multi Kill"/"Ultra Kill" streak detection — called once
-   * per kill, from `damageEnemy`, right after `this.kills`/`this.killScore`
-   * are updated. Counts how many recent kills (including the one that just
-   * happened) fall within each window; a tier only fires on the kill that
-   * *first* pushes the count to its threshold (comparing the before/after
-   * count), so a long streak doesn't re-announce every subsequent kill, and
-   * a fresh streak later can retrigger "Multi Kill" once the window
-   * naturally empties out. Ultra is checked first since 6-in-6 implies
-   * 3-in-3 already fired earlier in the same streak — this kill should only
-   * ever cross one threshold, not both.
+   * Rolling-window "Multi Kill"/"Ultra Kill" streak detection for `p` —
+   * called once per kill, from `damageEnemy`, right after `p.kills`/
+   * `p.killScore` are updated. Counts how many recent kills (including the
+   * one that just happened) fall within each window; a tier only fires on
+   * the kill that *first* pushes the count to its threshold (comparing the
+   * before/after count), so a long streak doesn't re-announce every
+   * subsequent kill, and a fresh streak later can retrigger "Multi Kill"
+   * once the window naturally empties out. Ultra is checked first since
+   * 6-in-6 implies 3-in-3 already fired earlier in the same streak — this
+   * kill should only ever cross one threshold, not both.
    */
-  private registerKillForStreak(): void {
-    const withinMulti = this.recentKillTimes.filter((t) => this.levelTime - t <= MULTI_KILL_WINDOW_SEC).length;
-    const withinUltra = this.recentKillTimes.length; // already pruned to the (larger) ultra window below
-    this.recentKillTimes.push(this.levelTime);
-    this.recentKillTimes = this.recentKillTimes.filter((t) => this.levelTime - t <= ULTRA_KILL_WINDOW_SEC);
+  private registerKillForStreak(p: PlayerState): void {
+    const withinMulti = p.recentKillTimes.filter((t) => this.levelTime - t <= MULTI_KILL_WINDOW_SEC).length;
+    const withinUltra = p.recentKillTimes.length; // already pruned to the (larger) ultra window below
+    p.recentKillTimes.push(this.levelTime);
+    p.recentKillTimes = p.recentKillTimes.filter((t) => this.levelTime - t <= ULTRA_KILL_WINDOW_SEC);
 
     if (withinUltra < ULTRA_KILL_COUNT && withinUltra + 1 >= ULTRA_KILL_COUNT) {
-      this.ultraKillCount += 1;
-      this.showKillStreakToast("ULTRA KILL!", true);
+      p.ultraKillCount += 1;
+      this.showKillStreakToast(p, "ULTRA KILL!", true);
       audio.playUltraKill();
     } else if (withinMulti < MULTI_KILL_COUNT && withinMulti + 1 >= MULTI_KILL_COUNT) {
-      this.multiKillCount += 1;
-      this.showKillStreakToast("MULTI KILL!", false);
+      p.multiKillCount += 1;
+      this.showKillStreakToast(p, "MULTI KILL!", false);
       audio.playMultiKill();
     }
   }
@@ -2336,44 +3909,108 @@ export class RaycasterEngine {
    * fully rendered.
    */
   private endGame(state: "over" | "won"): void {
+    // Not reachable via any current call site: `checkExit()` already gates
+    // itself on `this.state === "playing"` before ever calling this, and
+    // `killPlayer()` only calls this once — the instant the *last* living
+    // player's `status` flips to `"dead"` — which `damage()`'s own
+    // `p.status !== "alive"` guard (see there) prevents from ever firing
+    // twice for the same or a different player once the team is already
+    // over. Kept as defensive belt-and-suspenders documentation of the
+    // invariant, same spirit as this file's other `/* v8 ignore next */`
+    // guards on provably-unreachable defensive branches.
+    /* v8 ignore next */
     if (this.state !== "playing") return;
     this.state = state;
   }
 
-  /** Snapshot the live stats consumed by both the native HUD and the host. */
-  private buildStats(): EngineStats {
-    const weaponShotsFired = this.telemetry
-      ? Object.values(this.telemetry.weaponTallies).reduce((sum, t) => sum + t.shotsFired, 0)
-      : 0;
-    const weaponHits = this.telemetry ? Object.values(this.telemetry.weaponTallies).reduce((sum, t) => sum + t.hits, 0) : 0;
-
-    const levelScoreBreakdown = computeScore({
-      killPoints: this.killScore,
-      finalHealth: this.health,
+  /** Snapshot the live stats consumed by both the native HUD and the host —
+   * local-player-only in shape (no new fields for other players), reading
+   * through `this.players.get(this.localPlayerId)!` instead of bare
+   * `this.*` — byte-identical for N=1. */
+  /** `p`'s own level-score breakdown so far, from purely per-player inputs
+   * (kills/health/ammo/distance/streaks, and `p`'s own per-player
+   * `weaponTallies`) plus this level's team-shared completion/discovery
+   * state (map completion, lore/secrets read — genuinely shared, not a
+   * per-player approximation). Shared by `buildStats()` (always for
+   * `this.localPlayerId`) and `captureCarryoverFor()` (for an arbitrary
+   * roster id). */
+  private computeLevelScoreBreakdown(p: PlayerState): ScoreBreakdown {
+    const weaponShotsFired = p.telemetry ? Object.values(p.telemetry.weaponTallies).reduce((sum, t) => sum + t.shotsFired, 0) : 0;
+    const weaponHits = p.telemetry ? Object.values(p.telemetry.weaponTallies).reduce((sum, t) => sum + t.hits, 0) : 0;
+    return computeScore({
+      killPoints: p.killScore,
+      finalHealth: p.health,
       maxHealth: MAX_HEALTH,
-      finalBullets: this.ammo.bullets,
-      finalRockets: this.ammo.rockets,
-      finalSmg: this.ammo.smg,
-      finalGas: this.ammo.gas,
-      startingBullets: this.startingAmmoRef.bullets,
-      startingRockets: this.startingAmmoRef.rockets,
-      startingSmg: this.startingAmmoRef.smg,
-      startingGas: this.startingAmmoRef.gas,
+      finalBullets: p.ammo.bullets,
+      finalRockets: p.ammo.rockets,
+      finalSmg: p.ammo.smg,
+      finalGas: p.ammo.gas,
+      startingBullets: p.startingAmmoRef.bullets,
+      startingRockets: p.startingAmmoRef.rockets,
+      startingSmg: p.startingAmmoRef.smg,
+      startingGas: p.startingAmmoRef.gas,
       levelTimeSec: this.levelTime,
-      distanceTraveledTiles: this.distanceTraveled,
+      distanceTraveledTiles: p.distanceTraveled,
       shortestPathTiles: this.map.shortestPathTiles,
       mapCompletionFrac: this.visitedWalkableCount / this.totalWalkableTiles,
       uniqueLoreTerminalsRead: this.loreRead.size,
       uniqueSecretRoomsOpened: this.secretRoomsOpened.size,
-      multiKillCount: this.multiKillCount,
-      ultraKillCount: this.ultraKillCount,
+      multiKillCount: p.multiKillCount,
+      ultraKillCount: p.ultraKillCount,
       weaponShotsFired,
       weaponHits,
     });
+  }
+
+  /** Captures `id`'s current state as a fresh `EngineCarryover` — the same
+   * shape `buildStats()` derives for `this.localPlayerId` alone (`main.ts`'s
+   * own single-player `advanceToNextLevel` builds an identical object from
+   * `EngineStats`), generalized to any roster id. Built for step 8's
+   * host-driven level transition (`multiplayer-research.md`): the host
+   * captures every connected player's own carryover right before generating
+   * the next level, so each peer's health/ammo/weapons/score genuinely
+   * persists across the swap to a fresh `RaycasterEngine` instead of
+   * resetting. A snapshot as of the moment it's called — never mutates `p`.
+   * `priorScoreBreakdown`/`priorPlayerStats` stay `undefined` whenever
+   * telemetry isn't being recorded at all, the same gating `buildStats()`
+   * itself uses for `runScoreBreakdown`/`runPlayerStats` — `priorScore`
+   * itself is never gated, it's core carryover, not a telemetry feature. */
+  captureCarryoverFor(id: PlayerId): EngineCarryover {
+    const p = this.players.get(id)!;
+    const levelScoreBreakdown = this.computeLevelScoreBreakdown(p);
+    let priorScoreBreakdown: ScoreBreakdown | undefined;
+    let priorPlayerStats: PlayerFacingStats | undefined;
+    if (p.telemetry) {
+      priorScoreBreakdown = sumScoreBreakdowns(p.priorScoreBreakdown, levelScoreBreakdown);
+      const levelPlayerStats = buildPlayerFacingStats(p.telemetry, this.levelTime, p.kills);
+      priorPlayerStats = mergePlayerFacingStats(p.priorPlayerStats, levelPlayerStats);
+    }
+    return {
+      health: Math.ceil(p.health),
+      swap: Math.ceil(p.swap),
+      bullets: p.ammo.bullets,
+      rockets: p.ammo.rockets,
+      smg: p.ammo.smg,
+      gas: p.ammo.gas,
+      priorScore: p.priorScore + levelScoreBreakdown.total,
+      priorScoreBreakdown,
+      priorPlayerStats,
+      weaponIndex: p.weaponIndex,
+      ownedWeapons: [...p.ownedWeapons],
+      campaignLevelIndex: p.campaignLevelIndex,
+      godMode: p.godMode,
+      noClip: p.player.noClip,
+      showFps: p.showFps,
+    };
+  }
+
+  private buildStats(): EngineStats {
+    const local = this.players.get(this.localPlayerId)!;
+    const levelScoreBreakdown = this.computeLevelScoreBreakdown(local);
 
     // The curated player-facing breakdown/stats are `undefined` whenever
     // telemetry isn't being recorded at all (`PLAYER_STATS_ENABLED` off and
-    // no `?testHooks=1` — see `this.telemetry`'s doc comment); `main.ts`
+    // no `?testHooks=1` — see `this.teamTelemetry`'s doc comment); `main.ts`
     // then shows the plain (stats-less) overlay variant, same as before this
     // feature existed. When telemetry IS on, they're only ever read by
     // `onGameOver`/`onWin` (see `main.ts`) — never by the live HUD or the
@@ -2385,40 +4022,51 @@ export class RaycasterEngine {
     let runScoreBreakdown: ScoreBreakdown | undefined;
     let levelPlayerStats: PlayerFacingStats | undefined;
     let runPlayerStats: PlayerFacingStats | undefined;
-    if (this.telemetry) {
+    if (local.telemetry) {
       const atLevelEnd = this.state !== "playing";
       runScoreBreakdown = atLevelEnd
-        ? sumScoreBreakdowns(this.priorScoreBreakdown, levelScoreBreakdown)
-        : this.priorScoreBreakdown;
+        ? sumScoreBreakdowns(local.priorScoreBreakdown, levelScoreBreakdown)
+        : local.priorScoreBreakdown;
       levelPlayerStats = atLevelEnd
-        ? buildPlayerFacingStats(this.telemetry, this.levelTime, this.kills)
-        : this.priorPlayerStats;
-      runPlayerStats = atLevelEnd ? mergePlayerFacingStats(this.priorPlayerStats, levelPlayerStats) : this.priorPlayerStats;
+        ? buildPlayerFacingStats(local.telemetry, this.levelTime, local.kills)
+        : local.priorPlayerStats;
+      runPlayerStats = atLevelEnd ? mergePlayerFacingStats(local.priorPlayerStats, levelPlayerStats) : local.priorPlayerStats;
     }
 
     return {
-      health: Math.ceil(this.health),
+      health: Math.ceil(local.health),
       maxHealth: MAX_HEALTH,
-      swap: Math.ceil(this.swap),
-      bullets: this.ammo.bullets,
-      rockets: this.ammo.rockets,
-      smg: this.ammo.smg,
-      gas: this.ammo.gas,
-      keysHeld: this.keysHeld,
+      swap: Math.ceil(local.swap),
+      bullets: local.ammo.bullets,
+      rockets: local.ammo.rockets,
+      smg: local.ammo.smg,
+      gas: local.ammo.gas,
+      keysHeld: local.keysHeld,
       keysTotal: this.map.keys.length,
-      score: this.priorScore + levelScoreBreakdown.total,
-      kills: this.kills,
-      weaponIndex: this.weaponIndex,
-      ownedWeapons: [...this.ownedWeapons],
-      godMode: this.godMode,
-      noClip: this.player.noClip,
-      showFps: this.showFps,
-      levelScoreBreakdown: this.telemetry ? levelScoreBreakdown : undefined,
+      score: local.priorScore + levelScoreBreakdown.total,
+      kills: local.kills,
+      weaponIndex: local.weaponIndex,
+      ownedWeapons: [...local.ownedWeapons],
+      godMode: local.godMode,
+      noClip: local.player.noClip,
+      showFps: local.showFps,
+      levelScoreBreakdown: local.telemetry ? levelScoreBreakdown : undefined,
       runScoreBreakdown,
       levelPlayerStats,
       runPlayerStats,
     };
   }
+}
+
+/** Distinct marker colors for teammate billboards/minimap dots — cycled by a
+ * stable hash of the player's own id, so the same player always gets the
+ * same color for the whole session regardless of connection order. */
+const PLAYER_COLORS = ["#4ade80", "#60a5fa", "#f472b6", "#fbbf24", "#a78bfa", "#fb923c"];
+
+function colorForPlayer(id: PlayerId): string {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  return PLAYER_COLORS[Math.abs(hash) % PLAYER_COLORS.length];
 }
 
 /** The closest lore terminal within `LORE_INTERACT_RADIUS` of (px, py), or

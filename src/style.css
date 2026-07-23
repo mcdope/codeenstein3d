@@ -165,7 +165,8 @@ body {
 }
 
 #gore-select,
-#difficulty-select {
+#difficulty-select,
+#multiplayer-max-players {
   width: 100%;
   padding: 6px 8px;
   font: inherit;
@@ -198,7 +199,8 @@ body {
   accent-color: var(--accent);
 }
 
-#github-repo-input {
+#github-repo-input,
+.multiplayer-text-input {
   width: 100%;
   padding: 6px 8px;
   font: inherit;
@@ -207,6 +209,62 @@ body {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.checkbox-label input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.multiplayer-code {
+  margin: 10px 0 0;
+  padding: 8px;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-align: center;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+#multiplayer-status {
+  margin: 10px 0 0;
+  overflow-wrap: anywhere;
+}
+
+#multiplayer-lobby-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+
+.multiplayer-lobby-entry {
+  width: 100%;
+  padding: 8px;
+  margin-bottom: 6px;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.multiplayer-lobby-entry:hover {
+  background: var(--bg-hover);
 }
 
 #github-status {
@@ -353,7 +411,8 @@ a.settings-btn {
   margin: 6px 0 0;
 }
 
-#highscore-dialog {
+#highscore-dialog,
+#multiplayer-lobby-dialog {
   color: var(--text);
   background: var(--bg-panel);
   border: 1px solid var(--border);
@@ -362,11 +421,13 @@ a.settings-btn {
   width: min(960px, 95vw);
 }
 
-#highscore-dialog::backdrop {
+#highscore-dialog::backdrop,
+#multiplayer-lobby-dialog::backdrop {
   background: rgba(0, 0, 0, 0.7);
 }
 
-#highscore-dialog h2 {
+#highscore-dialog h2,
+#multiplayer-lobby-dialog h2 {
   margin: 0 0 12px;
   font-size: 14px;
   font-weight: 600;

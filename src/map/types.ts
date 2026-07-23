@@ -163,6 +163,16 @@ export interface GameMap {
   breakupRooms: Rect[];
   /** Player spawn, in a corner of the first room (clear of its enemy). */
   spawn: Point;
+  /**
+   * Spread spawn points for a multiplayer session, one per potential player
+   * slot — undefined for a normal single-player generation call. Never used
+   * by single-player code; `spawn` above remains the one true single-player
+   * spawn, computed exactly as before. May be shorter than the requested
+   * player count if the level doesn't have enough rooms — a session assigns
+   * players via `multiplayerSpawns[i % multiplayerSpawns.length]`. See
+   * `pickMultiplayerSpawns` (`generation/spawnExit.ts`).
+   */
+  multiplayerSpawns?: Point[];
   /** Enemies to populate the rooms (one per function/method). */
   enemies: Enemy[];
   /** Exit tile (the `return` statement) in the room furthest from spawn. */
@@ -218,8 +228,11 @@ export interface GameMap {
 /** What a defeated enemy (or a scattered map pickup) can leave behind.
  * `"smg"`/`"gas"` (gdb's/Friday Hotfix's own ammo pools) are `LootDrop`-only
  * kinds — never a statically-placed `AmmoPickup` — see `AmmoPickup.kind`'s
- * doc comment. */
-export type LootKind = "bullets" | "rockets" | "smg" | "gas" | "health" | "swap" | "weapon";
+ * doc comment. `"key"` is also `LootDrop`-only: dropped at a coop player's
+ * death position (held dependency keys are level-scoped and one-per-door, so
+ * a dead player holding one until revive would soft-lock a door — see
+ * `RaycasterEngine.killPlayer`), collectible by any living player. */
+export type LootKind = "bullets" | "rockets" | "smg" | "gas" | "health" | "swap" | "weapon" | "key";
 
 /**
  * A dynamic loot drop left at a defeated enemy's death position. Spawned at
@@ -236,6 +249,18 @@ export interface LootDrop {
   amount?: number;
   /** For a `"weapon"` drop: which `WEAPONS` index it grants. */
   weaponIndex?: number;
+  /** Stable multiplayer-reconciliation identity, assigned at push time —
+   * `undefined` in single-player, which never reconciles. Not index-stable
+   * (unlike `GameMap.enemies`/`.mines`), since drops are appended dynamically
+   * during play — see `RaycasterEngine.pushLootDrop`'s doc comment for the
+   * assignment scheme. */
+  id?: string;
+  /** Set only for a drop created by a player's inventory converting to loot
+   * on disconnect (`multiplayer-netcode-spec.md` §5) — `undefined` for
+   * every other drop source (enemy kill, death-key-drop). A tag rather than
+   * a boolean deliberately, so a future drop origin can add its own value
+   * instead of overloading this one. */
+  source?: "disconnect";
 }
 
 /**
