@@ -1688,6 +1688,19 @@ describe("main.ts — multiplayer connect flow", () => {
         "true",
       );
     });
+
+    it("stays hidden — even for an eligible workspace — when no server URL is configured for this build", async () => {
+      vi.stubEnv("VITE_MULTIPLAYER_SERVER_URL", "");
+      await importMain();
+      const tab = document.querySelector<HTMLButtonElement>("#tab-multiplayer")!;
+      expect(tab.style.display).toBe("none");
+
+      // `workspaceIsDemo`/`updateMultiplayerTabEnabled` run synchronously up
+      // to `loadDemoCampaign`'s first `await`, so the tab stays hidden
+      // without needing to wait for the level itself to finish loading.
+      document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+      expect(tab.style.display).toBe("none");
+    });
   });
 
   describe("Host flow", () => {

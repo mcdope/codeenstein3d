@@ -861,12 +861,22 @@ function isMultiplayerEligibleWorkspace(): boolean {
 }
 
 const MULTIPLAYER_TAB_DISABLED_TITLE = "Multiplayer requires a GitHub-loaded repo or the Demos campaign";
+// No signaling server means multiplayer can't work at all in this build, so
+// the tab is fully hidden rather than just disabled (unlike the
+// workspace-eligibility case below, there's no action the user can take).
+const MULTIPLAYER_SERVER_CONFIGURED = Boolean(import.meta.env.VITE_MULTIPLAYER_SERVER_URL);
 /** Called from every workspace-loading entry point right after
  * `workspaceIsRemote`/`workspaceIsDemo` are set — same "call at every
  * assignment site" discipline as `updateLoadGithubRepoButtonEnabled`. Bounces
  * back to the Local tab if Multiplayer was active and just became
  * ineligible, so the UI never leaves a disabled tab showing as selected. */
 function updateMultiplayerTabEnabled(): void {
+  if (!MULTIPLAYER_SERVER_CONFIGURED) {
+    tabMultiplayer.style.display = "none";
+    if (tabMultiplayer.getAttribute("aria-selected") === "true") activateLaunchTab("local");
+    return;
+  }
+  tabMultiplayer.style.display = "";
   const eligible = isMultiplayerEligibleWorkspace();
   tabMultiplayer.disabled = !eligible;
   tabMultiplayer.title = eligible ? "" : MULTIPLAYER_TAB_DISABLED_TITLE;
