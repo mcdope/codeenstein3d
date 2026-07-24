@@ -13,7 +13,7 @@
  * (a square of half-width `radius`) so the player slides along walls instead
  * of sticking, and can never enter a solid cell.
  */
-import { DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, type GameMap } from "../map/types";
+import { DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, type GameMap, type Point } from "../map/types";
 
 export interface PlayerConfig {
   /** Half-width of the player's collision box, in tiles. */
@@ -39,11 +39,15 @@ export class Player {
 
   private readonly config: PlayerConfig;
 
-  constructor(map: GameMap, config: Partial<PlayerConfig> = {}) {
+  /** `spawn` defaults to `map.spawn` — a multiplayer session overrides it per
+   * player with one of `GameMap.multiplayerSpawns`'s spread-out points (see
+   * `RaycasterEngine`'s own `localSpawn`/`addPlayer` spawn parameters),
+   * single-player/replay never pass it and keep today's exact behavior. */
+  constructor(map: GameMap, config: Partial<PlayerConfig> = {}, spawn: Point = map.spawn) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     // Spawn in the middle of the spawn tile.
-    this.posX = map.spawn.x + 0.5;
-    this.posY = map.spawn.y + 0.5;
+    this.posX = spawn.x + 0.5;
+    this.posY = spawn.y + 0.5;
   }
 
   /** Half-width of the collision box, in tiles. */

@@ -10,6 +10,7 @@ import {
   drawCheatToast,
   drawCompass,
   drawCrosshair,
+  drawExitCountdownToast,
   drawFpsOverlay,
   drawHud,
   drawKillStreakToast,
@@ -139,6 +140,27 @@ describe("drawKillStreakToast", () => {
     expect(c.globalAlpha).toBe(1);
     drawKillStreakToast(asCtx(c), "MULTI KILL!", -1, false);
     expect(c.globalAlpha).toBe(0);
+  });
+});
+
+describe("drawExitCountdownToast", () => {
+  it("rounds ticks up to the nearest whole second (COUNTDOWN_DISPLAY_HZ=30)", () => {
+    const c = ctx();
+    drawExitCountdownToast(asCtx(c), 150);
+    expect(c.fillText).toHaveBeenCalledWith("Build finishing in 5s…", 400, 40);
+    drawExitCountdownToast(asCtx(c), 121); // 4.03s -> rounds up to 5s, not down to 4s
+    expect(c.fillText).toHaveBeenCalledWith("Build finishing in 5s…", 400, 40);
+    expect(c.textAlign).toBe("start"); // reset before restore()
+    expect(c.save).toHaveBeenCalledTimes(2);
+    expect(c.restore).toHaveBeenCalledTimes(2);
+  });
+
+  it("floors a non-positive tick count at 0s rather than showing a negative number", () => {
+    const c = ctx();
+    drawExitCountdownToast(asCtx(c), 0);
+    expect(c.fillText).toHaveBeenCalledWith("Build finishing in 0s…", 400, 40);
+    drawExitCountdownToast(asCtx(c), -5);
+    expect(c.fillText).toHaveBeenCalledWith("Build finishing in 0s…", 400, 40);
   });
 });
 

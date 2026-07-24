@@ -248,6 +248,69 @@ describe("drawAutomap() — mines", () => {
   });
 });
 
+describe("drawAutomap() — multiplayer loot drops", () => {
+  function unvisitedMap(overrides: Partial<GameMap> = {}): GameMap {
+    return fakeMap({ visited: Array.from({ length: 10 }, () => new Array(10).fill(false) as boolean[]), ...overrides });
+  }
+
+  it("defaults to no loot drops when the param is omitted (single-player-shaped call)", () => {
+    const map = unvisitedMap();
+    map.visited[5][5] = true; // would draw a marker here if the default weren't []
+    const withoutParam = makeCtx();
+    drawAutomap(asCtx(withoutParam), map, fakePlayer());
+    const withEmptyArray = makeCtx();
+    drawAutomap(asCtx(withEmptyArray), map, fakePlayer(), 0, []);
+    expect(extraFillRectCalls(withoutParam)).toBe(1); // just the one visited floor tile
+    expect(withoutParam.fillRect.mock.calls.length).toBe(withEmptyArray.fillRect.mock.calls.length);
+  });
+
+  it("renders a loot drop on a visited tile within view", () => {
+    const ctx = makeCtx();
+    const map = unvisitedMap();
+    map.visited[5][5] = true;
+    drawAutomap(asCtx(ctx), map, fakePlayer(), 0, [{ x: 5, y: 5, kind: "bullets" }]);
+    // 1 from the tile loop rendering (5,5) as ordinary visited floor, +1 for the loot marker.
+    expect(extraFillRectCalls(ctx)).toBe(2);
+  });
+
+  it("hides a loot drop on an unvisited tile — the fog-of-war/spoiler gate this step adds", () => {
+    const ctx = makeCtx();
+    const map = unvisitedMap();
+    drawAutomap(asCtx(ctx), map, fakePlayer(), 0, [{ x: 5, y: 5, kind: "bullets" }]);
+    expect(extraFillRectCalls(ctx)).toBe(0);
+  });
+
+  it("renders more than one visible loot drop", () => {
+    const ctx = makeCtx();
+    const map = unvisitedMap();
+    map.visited[1][1] = true;
+    map.visited[8][8] = true;
+    drawAutomap(asCtx(ctx), map, fakePlayer(), 0, [
+      { x: 1, y: 1, kind: "bullets" },
+      { x: 8, y: 8, kind: "weapon", weaponIndex: 0 },
+    ]);
+    // 2 visited floor tiles + 2 loot markers.
+    expect(extraFillRectCalls(ctx)).toBe(4);
+  });
+
+  it("skips a visited loot drop that's outside the current viewport", () => {
+    const size = 200;
+    const bigVisited = Array.from({ length: size }, () => new Array(size).fill(true) as boolean[]);
+    const bigMap = fakeMap({ visited: bigVisited, width: size, height: size, grid: grid(size) });
+    const player = fakePlayer({ posX: 1, posY: 1 });
+
+    const without = makeCtx();
+    drawAutomap(asCtx(without), bigMap, player);
+
+    const withFarDrop = makeCtx();
+    drawAutomap(asCtx(withFarDrop), bigMap, player, 0, [{ x: size - 1, y: size - 1, kind: "bullets" }]);
+
+    // Same fillRect count either way — the far-away drop contributes nothing,
+    // same viewport-cull pattern the mine marker above already uses.
+    expect(withFarDrop.fillRect.mock.calls.length).toBe(without.fillRect.mock.calls.length);
+  });
+});
+
 describe("drawAutomap() — exit marker", () => {
   it("renders the exit once it's been visited", () => {
     const ctx = makeCtx();

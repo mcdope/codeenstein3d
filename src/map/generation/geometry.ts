@@ -77,17 +77,22 @@ export function carveRoom(grid: Tile[][], room: Room): void {
   }
 }
 
-/** Force the spawn, exit, and every enemy tile to open floor. */
+/** Force the spawn, exit, every enemy tile, and every multiplayer spawn tile
+ * to open floor. */
 export function clearCriticalTiles(
   grid: Tile[][],
   spawn: Point,
   exit: Point,
   enemies: Enemy[],
+  multiplayerSpawns: readonly Point[] = [],
 ): void {
   grid[spawn.y][spawn.x] = 0;
   grid[exit.y][exit.x] = 0;
   for (const enemy of enemies) {
     grid[Math.floor(enemy.y)][Math.floor(enemy.x)] = 0;
+  }
+  for (const s of multiplayerSpawns) {
+    grid[s.y][s.x] = 0;
   }
 }
 

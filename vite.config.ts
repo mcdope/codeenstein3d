@@ -42,6 +42,22 @@ export default defineConfig({
     __BUILD_TIME__: JSON.stringify(buildTimestamp()),
     __BUILD_REF__: JSON.stringify(buildRef()),
   },
+  server: {
+    // Automated headless scripts (`scripts/lib/multiplayerTestServers.mjs`)
+    // spin up their own throwaway dev server purely to serve static assets
+    // for one short-lived Playwright session — no HMR/live-reload is ever
+    // needed there, and Vite's own file watcher (chokidar/inotify) can hit
+    // a real `ENOSPC` ("system limit for number of file watchers reached")
+    // wall on a host where something else (Dropbox, other sync/indexing
+    // tools) already consumes a big share of the OS-wide inotify watch
+    // budget — confirmed directly against a real SSH-lane host, where
+    // raising the sysctl limit wouldn't have been a real fix (Dropbox's own
+    // usage there scales with however much it's syncing, not a fixed
+    // amount). `CODEENSTEIN_VITE_NO_WATCH` opts out of the watcher entirely
+    // for exactly that case; unset (the default) for a normal `npm run dev`
+    // keeps full HMR.
+    watch: process.env.CODEENSTEIN_VITE_NO_WATCH ? null : undefined,
+  },
   resolve: {
     alias: {
       // web-tree-sitter's single build (web-tree-sitter.js) statically

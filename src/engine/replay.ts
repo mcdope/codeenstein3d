@@ -175,8 +175,11 @@ export class CampaignReplayRecorder {
 }
 
 /** An `InputSnapshot` with every field at its neutral/idle value — the
- * `ReplayPlaybackInput`'s state before its first frame is loaded. */
-const EMPTY_SNAPSHOT: InputSnapshot = {
+ * `ReplayPlaybackInput`'s state before its first frame is loaded. Exported so
+ * other `InputSource` implementations driven by discrete loaded frames rather
+ * than live polling (e.g. a multiplayer `NetworkInputSource`) can reuse it
+ * as-is instead of redeclaring an identical literal. */
+export const EMPTY_SNAPSHOT: InputSnapshot = {
   keys: [],
   mouseDX: 0,
   fireQueued: false,

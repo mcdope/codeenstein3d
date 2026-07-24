@@ -13,6 +13,23 @@ declare const __BUILD_TIME__: string;
  * `define`, see `document.title`'s assignment in `main.ts`. */
 declare const __BUILD_REF__: string;
 
+interface ImportMetaEnv {
+  /** Base URL of the multiplayer signaling/lobby server (see
+   * `doc/dev/multiplayer-server-spec.md`), e.g. `https://mp.codeenstein3d.mcdope.org`.
+   * Genuinely deployment-configurable (unlike `__BUILD_TIME__`/`__BUILD_REF__`,
+   * which are computed once per build) — Vite's `VITE_*` env convention, not
+   * `define`. See `src/multiplayer/signalingClient.ts`. */
+  readonly VITE_MULTIPLAYER_SERVER_URL?: string;
+  /** Comma-separated STUN server URLs (e.g.
+   * `stun:stun.l.google.com:19302,stun:stun.example.com:3478`) — see
+   * `src/multiplayer/webrtcConnection.ts`. */
+  readonly VITE_MULTIPLAYER_STUN_URLS?: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
+
 // Minimal ambient declarations for the File System Access API.
 //
 // The core handle interfaces (FileSystemDirectoryHandle, FileSystemFileHandle,

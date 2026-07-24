@@ -155,4 +155,39 @@ describe("fillHazards", () => {
     const hazards = fillHazards([spawnRoom, roomA, roomB], g, { x: 2, y: 2 }, { x: 99, y: 99 });
     expect(hazards.length).toBeGreaterThan(0);
   });
+
+  it("skips flooding a global room entirely when its center is a multiplayer spawn", () => {
+    const g = grid(20);
+    const spawnRoom = makeRoom(1, 1, 3, 3, entity());
+    const hazardRoom = makeRoom(8, 1, 6, 6, entity({ kind: "global" }));
+    const hazards = fillHazards([spawnRoom, hazardRoom], g, { x: 2, y: 2 }, { x: 99, y: 99 }, [hazardRoom.center]);
+    expect(hazards).toEqual([]);
+    for (let y = hazardRoom.y; y < hazardRoom.y + hazardRoom.h; y++) {
+      for (let x = hazardRoom.x; x < hazardRoom.x + hazardRoom.w; x++) {
+        expect(g[y][x]).not.toBe(HAZARD_TILE);
+      }
+    }
+  });
+
+  it("carves out a multiplayer spawn tile inside an otherwise-flooded room (tile-level check)", () => {
+    const g = grid(20);
+    const spawnRoom = makeRoom(1, 1, 3, 3, entity());
+    const hazardRoom = makeRoom(8, 1, 6, 6, entity({ kind: "global" }));
+    const mpSpawn = { x: hazardRoom.x + 1, y: hazardRoom.y + 1 }; // interior, not the room center
+    const hazards = fillHazards([spawnRoom, hazardRoom], g, { x: 2, y: 2 }, { x: 99, y: 99 }, [mpSpawn]);
+    expect(hazards.length).toBeGreaterThan(0);
+    expect(hazards.some((h) => h.x === mpSpawn.x && h.y === mpSpawn.y)).toBe(false);
+    expect(g[mpSpawn.y][mpSpawn.x]).not.toBe(HAZARD_TILE);
+  });
+
+  it("omitted multiplayerSpawns behaves exactly like an empty array", () => {
+    const spawnRoom = makeRoom(1, 1, 3, 3, entity());
+    const hazardRoom = makeRoom(8, 1, 6, 6, entity({ kind: "global" }));
+    const gDefault = grid(20);
+    const gEmpty = grid(20);
+    const hazardsDefault = fillHazards([spawnRoom, hazardRoom], gDefault, { x: 2, y: 2 }, { x: 99, y: 99 });
+    const hazardsEmpty = fillHazards([spawnRoom, hazardRoom], gEmpty, { x: 2, y: 2 }, { x: 99, y: 99 }, []);
+    expect(hazardsDefault).toEqual(hazardsEmpty);
+    expect(gDefault).toEqual(gEmpty);
+  });
 });

@@ -14,6 +14,7 @@ import {
   collectLootBillboards,
   collectMineBillboards,
   collectOrbBillboards,
+  collectPlayerBillboards,
   collectTeleporterBillboards,
   EDGE_CASE_COLOR,
   enemyColor,
@@ -169,6 +170,16 @@ describe("projectEnemy", () => {
     const edgeCase = projectEnemy(player, enemy({ x: player.posX + 3, y: player.posY, edgeCase: true }), WIDTH, HEIGHT);
     expect(edgeCase.right - edgeCase.left).toBeLessThan(regular.right - regular.left);
   });
+
+  it("projects from positionOverride instead of the enemy's own live x/y when given", () => {
+    const player = facingPlayer();
+    const e = enemy({ x: player.posX + 3, y: player.posY });
+    const overridden = projectEnemy(player, e, WIDTH, HEIGHT, { x: player.posX + 6, y: player.posY });
+    const asLive = projectEnemy(player, e, WIDTH, HEIGHT);
+    const asOverrideTarget = projectPoint(player, player.posX + 6, player.posY, WIDTH, HEIGHT);
+    expect(overridden.depth).toBeCloseTo(asOverrideTarget.depth);
+    expect(overridden.depth).not.toBeCloseTo(asLive.depth);
+  });
 });
 
 describe("collectEnemyBillboards", () => {
@@ -247,6 +258,51 @@ describe("collectEnemyBillboards", () => {
   });
 });
 
+describe("collectPlayerBillboards", () => {
+  it("returns nothing for an empty roster (the N=1 shape — the viewer is never in the list)", () => {
+    const viewer = facingPlayer();
+    const jobs = collectPlayerBillboards(asCtx(ctx()), viewer, [], clearZBuffer(Infinity));
+    expect(jobs).toHaveLength(0);
+  });
+
+  it("filters out a teammate too close to the viewer", () => {
+    const viewer = facingPlayer();
+    const teammate = new Player(fakeMap());
+    teammate.posX = viewer.posX;
+    teammate.posY = viewer.posY;
+    const jobs = collectPlayerBillboards(asCtx(ctx()), viewer, [{ player: teammate, color: "#60a5fa" }], clearZBuffer(Infinity));
+    expect(jobs).toHaveLength(0);
+  });
+
+  it("draws a visible teammate's body in their own tint color", () => {
+    const viewer = facingPlayer();
+    const teammate = new Player(fakeMap());
+    teammate.posX = viewer.posX + 3;
+    teammate.posY = viewer.posY;
+    const c = ctx();
+    const log: string[] = [];
+    c.fillRect.mockImplementation(() => {
+      log.push(c.fillStyle as string);
+    });
+    const jobs = collectPlayerBillboards(asCtx(c), viewer, [{ player: teammate, color: "#60a5fa" }], clearZBuffer(Infinity));
+    expect(jobs).toHaveLength(1);
+    jobs[0].draw();
+    expect(c.fillRect).toHaveBeenCalled();
+    expect(log).toContain("#60a5fa");
+  });
+
+  it("skips wall-occluded body columns", () => {
+    const viewer = facingPlayer();
+    const teammate = new Player(fakeMap());
+    teammate.posX = viewer.posX + 3;
+    teammate.posY = viewer.posY;
+    const c = ctx();
+    const jobs = collectPlayerBillboards(asCtx(c), viewer, [{ player: teammate, color: "#60a5fa" }], clearZBuffer(0.5));
+    jobs[0].draw();
+    expect(c.fillRect.mock.calls.length).toBe(0); // fully occluded — zBuffer (0.5) < depth (3) everywhere
+  });
+});
+
 describe("projectLivingEnemies", () => {
   it("excludes dead enemies and ones behind the camera", () => {
     const player = facingPlayer();
@@ -257,6 +313,23 @@ describe("projectLivingEnemies", () => {
       HEIGHT,
     );
     expect(result).toHaveLength(1);
+  });
+
+  it("projects an enemy found in positions from its overridden position, not its live one", () => {
+    const player = facingPlayer();
+    const e = enemy({ x: player.posX + 3, y: player.posY });
+    const positions = new Map([[e, { x: player.posX + 6, y: player.posY }]]);
+    const [{ proj }] = projectLivingEnemies(player, [e], WIDTH, HEIGHT, positions);
+    const expected = projectPoint(player, player.posX + 6, player.posY, WIDTH, HEIGHT);
+    expect(proj.depth).toBeCloseTo(expected.depth);
+  });
+
+  it("falls back to an enemy's live position when positions is given but doesn't contain it", () => {
+    const player = facingPlayer();
+    const e = enemy({ x: player.posX + 3, y: player.posY });
+    const [{ proj }] = projectLivingEnemies(player, [e], WIDTH, HEIGHT, new Map());
+    const expected = projectPoint(player, player.posX + 3, player.posY, WIDTH, HEIGHT);
+    expect(proj.depth).toBeCloseTo(expected.depth);
   });
 });
 
@@ -445,7 +518,7 @@ describe("collectKeyBillboards", () => {
 });
 
 describe("collectLootBillboards", () => {
-  const kinds: LootDrop["kind"][] = ["bullets", "rockets", "smg", "gas", "health", "swap", "weapon"];
+  const kinds: LootDrop["kind"][] = ["bullets", "rockets", "smg", "gas", "health", "swap", "weapon", "key"];
 
   for (const kind of kinds) {
     it(`draws a "${kind}" drop without throwing`, () => {

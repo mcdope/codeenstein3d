@@ -231,9 +231,14 @@ export const PROFILES = {
   },
 };
 
-const DAMAGE_SOURCES = ["enemyMelee", "enemyRanged", "trapSpike", "trapMine", "hazard", "selfRocket"];
-const HEAL_SOURCES = ["pickupHealth", "pickupSwap", "lifesteal"];
-const LOOT_KINDS = ["bullets", "rockets", "smg", "gas", "health", "swap", "weapon"];
+// Exported for run-balancing-telemetry-multiplayer.mjs's own reuse of
+// aggregateLevelRuntime (below) — the multiplayer per-player snapshot shape
+// (RaycasterEngine.getMultiplayerTelemetrySnapshot) is built from the exact
+// same buildTelemetrySnapshotFor field set as single-player's own
+// getTelemetrySnapshot(), so the same category keys apply unchanged.
+export const DAMAGE_SOURCES = ["enemyMelee", "enemyRanged", "trapSpike", "trapMine", "hazard", "selfRocket"];
+export const HEAL_SOURCES = ["pickupHealth", "pickupSwap", "lifesteal"];
+export const LOOT_KINDS = ["bullets", "rockets", "smg", "gas", "health", "swap", "weapon"];
 
 // Deterministic outlier-flag thresholds — tunable, arithmetic only, no RNG.
 const DENSITY_OUTLIER_MULTIPLIER = 1.5;
@@ -606,8 +611,13 @@ function fatalDamageSourceCounts(samples) {
  * is the level's static BFS-shortest distance (`null` for the campaign-wide
  * rollup, whose route-efficiency figure is computed separately across whole
  * runs instead — see `buildCampaignAggregate`).
+ *
+ * Exported for run-balancing-telemetry-multiplayer.mjs's own reuse (step 11
+ * Phase 2a/4) — it only reads `sample.snapshot`, which the multiplayer
+ * per-player `getMultiplayerTelemetrySnapshot(id)` shape matches field-for-
+ * field, so this needs no multiplayer-specific fork.
  */
-function aggregateLevelRuntime(samples, shortestPathTiles) {
+export function aggregateLevelRuntime(samples, shortestPathTiles) {
   const sampleCount = samples.length;
   const incompleteSampleCount = samples.filter((s) => s.incomplete).length;
   if (sampleCount === 0) {

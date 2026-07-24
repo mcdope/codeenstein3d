@@ -74,10 +74,19 @@ export interface EnemyAiEvents {
   onRangedFire?: (enemy: Enemy) => void;
 }
 
+/** A living player an enemy can target — one per connected player, built by
+ * the caller (`RaycasterEngine.updateEnemyAi`) from its own roster, already
+ * in sorted-`id` order so nearest-target tie-breaking (first strictly-closer
+ * match wins) gets sorted-order determinism for free. */
+export interface EnemyTarget {
+  id: string;
+  player: Player;
+}
+
 /**
- * Advance every living enemy by `dt` seconds and return the total stability
- * damage the player should take from melee bites this frame. Call once per
- * frame, before rendering.
+ * Advance every living enemy by `dt` seconds and return per-target melee
+ * damage attribution (which player each enemy bit, and for how much) this
+ * frame. Call once per frame, before rendering.
  *
  * `rng` defaults to `Math.random` but `RaycasterEngine` always passes its own
  * seeded stream instead — roam-target picking and ranged fire-cooldown
@@ -87,99 +96,133 @@ export interface EnemyAiEvents {
  */
 export function updateEnemies(
   enemies: Enemy[],
-  player: Player,
+  targets: readonly EnemyTarget[],
   map: GameMap,
   dt: number,
   projectiles: Projectile[],
-  pathField: PathField,
+  pathFields: ReadonlyMap<string, PathField>,
   rng: () => number = Math.random,
   events?: EnemyAiEvents,
   /** See `DifficultyMultipliers.enemyAimSpreadDeg` — how far off dead-center
    * a ranged bolt can randomly deviate. 0 (default) matches every existing
    * call site/test's prior behavior (a perfectly aimed shot). */
   aimSpreadDeg = 0,
-): number {
-  let damage = 0;
+  /** See `EliteScalingMultipliers.damage` (`multiplayerScaling.ts`) — extra
+   * multiplier on top of `ELITE_DAMAGE_MULTIPLIER`'s own base for player-count
+   * scaling (multiplayer step 9). 1 (default) matches every existing call
+   * site/test's prior behavior (no extra scaling), and is single-player's
+   * permanent value. */
+  eliteDamageScale = 1,
+): Map<string, number> {
+  const damage = new Map<string, number>();
   for (const enemy of enemies) {
     if (!enemy.alive) continue;
-    damage += updateEnemy(enemy, player, map, dt, projectiles, pathField, rng, events, aimSpreadDeg);
+    const hit = updateEnemy(enemy, targets, map, dt, projectiles, pathFields, rng, events, aimSpreadDeg, eliteDamageScale);
+    if (hit) damage.set(hit.id, (damage.get(hit.id) ?? 0) + hit.amount);
   }
   return damage;
 }
 
-/** Update a single enemy; returns the melee damage it deals the player. */
+/** Update a single enemy; returns which player it bit this frame, and for how
+ * much, or `null` if it didn't land a melee hit. */
 function updateEnemy(
   enemy: Enemy,
-  player: Player,
+  targets: readonly EnemyTarget[],
   map: GameMap,
   dt: number,
   projectiles: Projectile[],
-  pathField: PathField,
+  pathFields: ReadonlyMap<string, PathField>,
   rng: () => number,
   events?: EnemyAiEvents,
   aimSpreadDeg = 0,
-): number {
+  eliteDamageScale = 1,
+): { id: string; amount: number } | null {
   // Cool down toward the next melee bite and the next ranged shot.
   if (enemy.attackCooldown > 0) enemy.attackCooldown = Math.max(0, enemy.attackCooldown - dt);
   if (enemy.fireCooldown > 0) enemy.fireCooldown = Math.max(0, enemy.fireCooldown - dt);
 
-  const dx = player.posX - enemy.x;
-  const dy = player.posY - enemy.y;
-  const dist = Math.hypot(dx, dy);
+  // Nearest living target, sorted-order ties broken by whichever comes first
+  // in `targets` (the caller's contract: already sorted by id). Bails to roam
+  // if nobody's left to target (e.g. the last player just died this tick).
+  let nearest: EnemyTarget | null = null;
+  let dist = Infinity;
+  for (const target of targets) {
+    const d = Math.hypot(target.player.posX - enemy.x, target.player.posY - enemy.y);
+    if (d < dist) {
+      dist = d;
+      nearest = target;
+    }
+  }
+  if (!nearest) {
+    roam(enemy, map, dt, rng);
+    return null;
+  }
 
   // Line of sight, lazily memoized for this frame: neither the enemy nor the
-  // player moves between the aggro check and the ranged-shot check below, so
-  // the second reachable call would just ray-march the identical answer again.
+  // target moves between the aggro check and the ranged-shot check below, so
+  // a second reachable call would just ray-march the identical answer again.
   let losMemo: boolean | undefined;
-  const los = (): boolean => (losMemo ??= hasLineOfSight(map, enemy.x, enemy.y, player.posX, player.posY));
+  const los = (): boolean => (losMemo ??= hasLineOfSight(map, enemy.x, enemy.y, nearest!.player.posX, nearest!.player.posY));
 
-  // Wake up once the player is within (enlarged) aggro range AND actually
-  // visible (no wall in between) — a roaming enemy shouldn't sense the player
-  // through solid geometry. Damage aggro is applied separately by the engine
-  // when the enemy is shot, and skips this check entirely. Sticky thereafter —
-  // which is why an already-aggroed enemy skips the ray-march entirely (the
-  // write was idempotent; re-checking was pure wasted work every frame).
-  if (!enemy.aggroed && dist < AGGRO_RADIUS && los()) {
-    enemy.aggroed = true;
-    events?.onAggro?.(enemy);
+  // Wake up once any living player is within (enlarged) aggro range AND
+  // actually visible (no wall in between) — a roaming enemy shouldn't sense a
+  // player through solid geometry. Damage aggro is applied separately by the
+  // engine when the enemy is shot, and skips this check entirely. Sticky
+  // thereafter — which is why an already-aggroed enemy skips the ray-march
+  // entirely (the write was idempotent; re-checking was pure wasted work).
+  if (!enemy.aggroed) {
+    for (const target of targets) {
+      const d = Math.hypot(target.player.posX - enemy.x, target.player.posY - enemy.y);
+      if (d < AGGRO_RADIUS && hasLineOfSight(map, enemy.x, enemy.y, target.player.posX, target.player.posY)) {
+        enemy.aggroed = true;
+        events?.onAggro?.(enemy);
+        break;
+      }
+    }
   }
 
   if (!enemy.aggroed) {
     roam(enemy, map, dt, rng);
-    return 0;
+    return null;
   }
 
-  // Chasing. In melee range: hold and bite whenever the cooldown has elapsed.
+  // Chasing its nearest target. In melee range: hold and bite whenever the
+  // cooldown has elapsed.
   if (dist <= ATTACK_RADIUS) {
     if (enemy.attackCooldown === 0) {
       enemy.attackCooldown = ATTACK_COOLDOWN;
       events?.onMeleeAttack?.(enemy);
-      return ATTACK_DAMAGE * damageMultiplier(enemy);
+      return { id: nearest.id, amount: ATTACK_DAMAGE * damageMultiplier(enemy, eliteDamageScale) };
     }
-    return 0;
+    return null;
   }
 
-  // At range: occasionally lob a bolt at the player if there's a clear shot.
+  // At range: occasionally lob a bolt at the nearest target if there's a clear shot.
   if (enemy.fireCooldown === 0 && dist <= RANGED_RANGE && los()) {
-    spawnProjectile(projectiles, enemy.x, enemy.y, player.posX, player.posY, damageMultiplier(enemy), aimSpreadDeg, rng);
+    spawnProjectile(projectiles, enemy.x, enemy.y, nearest.player.posX, nearest.player.posY, damageMultiplier(enemy, eliteDamageScale), aimSpreadDeg, rng);
     enemy.fireCooldown = FIRE_COOLDOWN_MIN + rng() * (FIRE_COOLDOWN_MAX - FIRE_COOLDOWN_MIN);
     events?.onRangedFire?.(enemy);
   }
 
-  // Home in on the player, steering toward the next cell of a wall-aware path
-  // (rounding corners) and falling back to a straight line.
+  // Home in on the nearest target, steering toward the next cell of a
+  // wall-aware path (rounding corners) and falling back to a straight line.
   if (dist > 0) {
     const step = speedFor(MOVEMENT_SPEED, enemy) * dt;
-    const waypoint = nextWaypoint(enemy, player, map, pathField);
-    chaseToward(enemy, waypoint?.x ?? player.posX, waypoint?.y ?? player.posY, step, map);
+    const pathField = pathFields.get(nearest.id);
+    const waypoint = pathField ? nextWaypoint(enemy, nearest.player, map, pathField) : null;
+    chaseToward(enemy, waypoint?.x ?? nearest.player.posX, waypoint?.y ?? nearest.player.posY, step, map);
   }
-  return 0;
+  return null;
 }
 
 /** Melee/ranged damage multiplier for `enemy` — the one elite/edgeCase ladder
- * shared by both attack paths (an Elite hits harder, an Edge Case softer). */
-function damageMultiplier(enemy: Enemy): number {
-  return enemy.elite ? ELITE_DAMAGE_MULTIPLIER : enemy.edgeCase ? EDGE_CASE_DAMAGE_MULTIPLIER : 1;
+ * shared by both attack paths (an Elite hits harder, an Edge Case softer).
+ * `eliteDamageScale` (default 1, single-player's permanent value) is the
+ * player-count Elite scaling from `multiplayerScaling.ts` — deliberately
+ * multiplied only into the Elite branch, never Edge Case's: player-count
+ * scaling is Elite-only, per `multiplayer-game-state-spec.md` §4. */
+function damageMultiplier(enemy: Enemy, eliteDamageScale = 1): number {
+  return enemy.elite ? ELITE_DAMAGE_MULTIPLIER * eliteDamageScale : enemy.edgeCase ? EDGE_CASE_DAMAGE_MULTIPLIER : 1;
 }
 
 /** `base` movement speed scaled for an Edge Case enemy's much faster darting. */

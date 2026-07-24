@@ -96,7 +96,9 @@ export const DEFAULT_TUNING = {
   CRITICAL_HEALTH_FRACTION: 0.2,
   MELEE_RANGE: 1.5,
   // Below this distance, stop trying to close the last bit of distance
-  // during an in-progress melee engagement — see `tick`'s melee branch.
+  // during an in-progress melee engagement — see `tick`'s melee branch,
+  // which actually gates on `max(this, ENGINE_MOVE_SPEED * stepMs/1000)`,
+  // not this raw value alone — see that branch's own doc comment for why.
   MELEE_CLOSE_MIN_DISTANCE: 0.4,
   // Below this distance, stop advancing while turning to line up a ranged
   // shot — see `tick`'s ranged-aim branch.
@@ -357,13 +359,26 @@ export function isWallTile(map, x, y) {
  * to the side of or behind `navTarget`'s direction (see
  * DEFAULT_TUNING.MINE_DISARM_MAX_ANGLE_FROM_PATH) — a mine this far
  * off-path isn't a real threat to the route.
+ *
+ * `reactionBufferTiles` (default 0) shifts *both* ends of the eligible
+ * distance window outward by the same amount as `findDangerousMine`'s own
+ * buffer, rather than just raising the lower bound alone — the designed
+ * "disarm zone" width (`MINE_DISARM_RANGE - MINE_BLAST_RADIUS`) stays the
+ * same, just moved farther out. Widening only the lower bound would shrink
+ * that zone every time the buffer grows, and at a real decision window long
+ * enough (`MultiplayerBot`'s own `DEFAULT_STEP_MS`), it can collapse to
+ * nothing — confirmed directly: `findDangerousMine`'s own widened-but-
+ * unshifted-here buffer first fix made every mine reachable from a real
+ * multiplayer decision window count as "dangerous," so the bot never
+ * disarmed one again and got stuck retreating from a mine the route
+ * genuinely needed it to clear.
  */
-export function findDisarmableMine(mines, player, abandoned, map, navTarget) {
+export function findDisarmableMine(mines, player, abandoned, map, navTarget, reactionBufferTiles = 0) {
   const navAngle = navTarget ? Math.atan2(navTarget.y - player.y, navTarget.x - player.x) : null;
   return mines
     .filter((m) => m.alive && m.visible && !abandoned?.has(`${m.x},${m.y}`))
     .map((m) => ({ ...m, dist: Math.hypot(m.x - player.x, m.y - player.y) }))
-    .filter((m) => m.dist > DEFAULT_TUNING.MINE_BLAST_RADIUS && m.dist <= DEFAULT_TUNING.MINE_DISARM_RANGE)
+    .filter((m) => m.dist > DEFAULT_TUNING.MINE_BLAST_RADIUS + reactionBufferTiles && m.dist <= DEFAULT_TUNING.MINE_DISARM_RANGE + reactionBufferTiles)
     .filter((m) => hasLineOfSight(map, player.x, player.y, m.x, m.y))
     .filter((m) => {
       if (navAngle === null) return true;
@@ -373,14 +388,35 @@ export function findDisarmableMine(mines, player, abandoned, map, navTarget) {
     .sort((a, b) => a.dist - b.dist)[0];
 }
 
-/** A visible mine close enough to be actively dangerous (inside its own
- * blast radius) rather than just a target to line up a shot on — "stop, back
- * up" comes before "shoot" (see `Bot#tick`'s mine-handling doc comment). */
-export function findDangerousMine(mines, player, abandoned) {
+/**
+ * A visible mine close enough to be actively dangerous (inside its own blast
+ * radius, plus `reactionBufferTiles`) rather than just a target to line up a
+ * shot on — "stop, back up" comes before "shoot" (see `Bot#tick`'s
+ * mine-handling doc comment).
+ *
+ * `reactionBufferTiles` (default 0, i.e. exactly `MINE_BLAST_RADIUS`) exists
+ * because a mine's own fuse (`MINE_FUSE_SECONDS`, `traps.ts`) ticks in real
+ * time regardless of how often this function gets called — a decision-window
+ * long enough to cover more real ground than the gap between "just outside
+ * blast radius" and "already caught in it" leaves the bot with no chance to
+ * react between one decision seeing "safe" and a mine detonating mid-window.
+ * Confirmed directly against `MultiplayerBot`'s much longer real decision
+ * window (`DEFAULT_STEP_MS`, 400ms vs. single-player's own realtime
+ * `WATCH_STEP_MS`, 130ms): a bot standing 3-4 tiles from its own *disarm*
+ * target (correctly beyond `MINE_BLAST_RADIUS` from that one) still took real
+ * splash damage from a *different*, closer mine in the same cluster that had
+ * already been armed and went off entirely within one held decision, with no
+ * chance to retreat from it first. Callers pass their own real
+ * `ENGINE_MOVE_SPEED * ENGINE_SPRINT_MULTIPLIER * (stepMs / 1000)` — at
+ * single-player's own short decision windows this rounds to well under a
+ * tile, a harmless no-op widening; only a caller with a long real decision
+ * window (multiplayer) gets a buffer that actually matters.
+ */
+export function findDangerousMine(mines, player, abandoned, reactionBufferTiles = 0) {
   return mines
     .filter((m) => m.alive && m.visible && !abandoned?.has(`${m.x},${m.y}`))
     .map((m) => ({ ...m, dist: Math.hypot(m.x - player.x, m.y - player.y) }))
-    .filter((m) => m.dist <= DEFAULT_TUNING.MINE_BLAST_RADIUS)
+    .filter((m) => m.dist <= DEFAULT_TUNING.MINE_BLAST_RADIUS + reactionBufferTiles)
     .sort((a, b) => a.dist - b.dist)[0];
 }
 
@@ -512,11 +548,28 @@ export class Bot {
    *   booleans — `trace: true` enables per-decision trace collection +
    *   `reportAnomalies`' basic findings; `navDiag: true` (implies `trace`)
    *   additionally enables the finer held-key-no-movement pass.
+   * @param {boolean} [opts.ignoreThreats=false] never engage, flee from, or
+   *   even acknowledge an enemy as a threat — `tick()` goes straight to plain
+   *   navigation regardless of what's nearby. For a bot driving a genuinely
+   *   invulnerable player (e.g. `scripts/verify-multiplayer-transition.mjs`'s
+   *   god-mode host): taking damage was never the actual risk once
+   *   invulnerable, but stopping to fight still was — a tanky enemy can pin
+   *   the bot in a long, slow melee grind (each successful hit resets the
+   *   existing `combatStallTicks` anti-stall counter, since landing a hit
+   *   counts as "progress," so that counter alone never fires) that eats
+   *   real wall-clock time without the bot ever getting closer to its actual
+   *   destination — confirmed directly via a real CI run's own anomaly trace
+   *   (a 600+-tick stall pinned at `threatDist` well inside melee range,
+   *   health never dropping). The engine's own collision only checks map
+   *   geometry (`collidesWithWall`), never other entities, so a bot that
+   *   simply never stops to fight can walk straight past/through an enemy
+   *   with no risk of getting physically blocked by it either.
    */
   constructor(page, profile, opts = {}) {
     this.page = page;
     this.profile = profile;
     this.realtime = opts.realtime ?? false;
+    this.ignoreThreats = opts.ignoreThreats ?? false;
     this.tuning = { ...DEFAULT_TUNING, ...opts.tuning };
     this.stepMs = opts.stepMs ?? (this.realtime ? this.tuning.WATCH_STEP_MS : this.tuning.VIRTUAL_STEP_MS);
     this.recordStepMs = opts.recordStepMs ?? this.stepMs;
@@ -687,6 +740,10 @@ export class Bot {
       const result = await this.driveToward(wp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
       this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
       if (result.state !== "playing") return result;
+      // See `driveLegs`'s own doc comment on its identical check — every
+      // waypoint after a mid-route teleport was planned from a position this
+      // bot is no longer at.
+      if (result.reason === "teleported") return result;
     }
     return { state: "playing" };
   }
@@ -720,7 +777,10 @@ export class Bot {
           this.logger.wpDebug?.(`[wpdebug] replan-walk wp=(${rwp.x},${rwp.y})`);
           const result = await this.driveToward(rwp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
           this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
-          if (result.state !== "playing" || result.reason === "stuck") return result;
+          // See `driveLegs`'s own doc comment on its identical check — a
+          // mid-route teleport invalidates every remaining replanned
+          // waypoint too, same as it would the original plan.
+          if (result.state !== "playing" || result.reason === "stuck" || result.reason === "teleported") return result;
         }
         return { state: "playing", reason: "arrived" };
       }
@@ -730,13 +790,31 @@ export class Bot {
 
   /** Walks a full route-leg list (walk/openDoor legs), threading a
    * per-call `openedDoors` set so a BFS re-plan mid-run knows which doors
-   * this run has already opened. */
+   * this run has already opened.
+   *
+   * A `reason: "teleported"` result from any waypoint stops this walk
+   * immediately and propagates that result as-is, the same way `"stuck"`
+   * already does — every waypoint after a teleport was planned against
+   * wherever the bot *used to be*, not where it landed. `routePlanner.mjs`
+   * hard-blocks real map teleporters from ever being planned as a waypoint
+   * (`HARD_BLOCK_TILES`), so in practice this only ever fires from an
+   * incidental touch, or — multiplayer-only — a teammate reaching the exit
+   * mid-route: `checkExit()`'s own `.some()` semantics mean any single alive
+   * player touching the exit carries the *whole* roster to the next level
+   * once the countdown elapses ("exit touch is a shared simulation event"),
+   * repositioning a still-driving bot without warning. Confirmed directly:
+   * without this check, the leg-walk loop kept walking the old, now-
+   * meaningless waypoint list against a live position that had moved to an
+   * entirely different level, producing a real ~600-tick stall (the bot
+   * grinding against `MAX_TICKS_PER_WAYPOINT` trying to reach a target its
+   * own stale `this.map` can no longer even BFS a path to). */
   async driveLegs(legs) {
     const openedDoors = new Set();
 
     for (const leg of legs) {
       const detour = await this.maybeDetourForLoot(openedDoors);
       if (detour.state !== "playing") return detour;
+      if (detour.reason === "teleported") return detour;
 
       if (leg.kind === "walk") {
         // Re-check for loot before every waypoint, not just once per leg —
@@ -744,11 +822,13 @@ export class Bot {
         for (const wp of leg.waypoints) {
           const wpDetour = await this.maybeDetourForLoot(openedDoors);
           if (wpDetour.state !== "playing") return wpDetour;
+          if (wpDetour.reason === "teleported") return wpDetour;
           this.logger.wpDebug?.(`[wpdebug] leg-walk wp=(${wp.x},${wp.y})`);
           const result = await this.driveTowardWithReplan(wp, openedDoors);
           this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
           if (result.state !== "playing") return result;
           if (result.reason === "stuck") return { state: "stuck" };
+          if (result.reason === "teleported") return result;
         }
       } else if (leg.kind === "openDoor") {
         // `openDoorAhead()` (engine.ts) only detects the door tile within a
@@ -761,6 +841,7 @@ export class Bot {
         };
         const staged = await this.driveTowardWithReplan(stagingPoint, openedDoors, this.tuning.TIGHT_ARRIVE_EPS);
         if (staged.state !== "playing") return staged;
+        if (staged.reason === "teleported") return staged;
         const targetAngle = Math.atan2(leg.approachDir.dy, leg.approachDir.dx);
         const faced = await this.faceAngle(targetAngle, this.tuning.MAX_TICKS_PER_WAYPOINT);
         if (faced.state !== "playing") return faced;
@@ -809,7 +890,7 @@ export class Bot {
       return this.applyAction(moveKeys, false, null, false, turnBurst);
     }
 
-    const threat = pickThreat(enemies, player, this.profile, map);
+    const threat = this.ignoreThreats ? null : pickThreat(enemies, player, this.profile, map);
 
     // Critical health: break contact instead of trading hits.
     if (threat && player.healthFraction < this.tuning.CRITICAL_HEALTH_FRACTION) {
@@ -848,11 +929,18 @@ export class Bot {
       return this.applyAction(moveKeys, false, null, false, turnBurst);
     }
 
+    // See `findDangerousMine`'s own doc comment for why this buffer exists —
+    // a real, decision-window-scaled reaction margin, not a fixed tile count.
+    // Shared by both mine checks below so the same shift applies to each end
+    // of `findDisarmableMine`'s own eligible-distance window too (see its own
+    // doc comment on why only widening one side of that window is wrong).
+    const mineReactionBufferTiles = this.tuning.ENGINE_MOVE_SPEED * this.tuning.ENGINE_SPRINT_MULTIPLIER * (this.stepMs / 1000);
+
     // Proper mine handling: stop, back up out of blast range, shoot it, then
     // continue. Backing away takes priority over shooting (below) since you
     // can't line up a safe shot from inside your own target's blast radius.
     if (!threat && this.profile.proactiveMineDisarm) {
-      const dangerMine = findDangerousMine(mines, player, this.mineMemory?.abandoned);
+      const dangerMine = findDangerousMine(mines, player, this.mineMemory?.abandoned, mineReactionBufferTiles);
       if (dangerMine) {
         const key = `${dangerMine.x},${dangerMine.y}`;
         let gaveUp = false;
@@ -881,7 +969,10 @@ export class Bot {
       }
     }
 
-    let mineTarget = !threat && this.profile.proactiveMineDisarm && map ? findDisarmableMine(mines, player, this.mineMemory?.abandoned, map, navTarget) : null;
+    let mineTarget =
+      !threat && this.profile.proactiveMineDisarm && map
+        ? findDisarmableMine(mines, player, this.mineMemory?.abandoned, map, navTarget, mineReactionBufferTiles)
+        : null;
     if (mineTarget && this.mineMemory) {
       const key = `${mineTarget.x},${mineTarget.y}`;
       this.mineMemory.shootTicks = this.mineMemory.shootKey === key ? this.mineMemory.shootTicks + 1 : 1;
@@ -949,8 +1040,22 @@ export class Bot {
           turnBurst = this.#turnBurstMs(delta, this.profile.rotSpeedMultiplier, player, currentAngle);
           // Also keep closing the last bit of distance, not just re-aiming
           // in place — the enemy's own chase AI is still walking between
-          // MELEE_CLOSE_MIN_DISTANCE and MELEE_RANGE.
-          if (map && threat.dist > this.tuning.MELEE_CLOSE_MIN_DISTANCE) {
+          // MELEE_CLOSE_MIN_DISTANCE and MELEE_RANGE. Never closer than one
+          // decision's own real forward-movement distance, though — holding
+          // "keep closing" *and* a turn command together for a whole decision
+          // that's long enough to cover that much ground traces a real arc
+          // around the target instead of settling on it (confirmed directly
+          // against a caller using a much longer real decision window than
+          // this project's own single-player defaults —
+          // `scripts/lib/multiplayerBot.mjs` — which spun in place
+          // indefinitely at melee range with the tuning-only default alone).
+          // `MELEE_CLOSE_MIN_DISTANCE` on its own already works out to almost
+          // exactly this same distance at single-player's own realtime
+          // `WATCH_STEP_MS` (0.4 tiles vs. 3.2 tiles/sec × 0.13s ≈ 0.42) —
+          // this is a no-op there; it only widens the gate for a caller
+          // using a longer decision window than that.
+          const closeMinDistance = Math.max(this.tuning.MELEE_CLOSE_MIN_DISTANCE, this.tuning.ENGINE_MOVE_SPEED * (this.stepMs / 1000));
+          if (map && threat.dist > closeMinDistance) {
             const aheadX = player.x + player.dirX * 0.6;
             const aheadY = player.y + player.dirY * 0.6;
             if (!isHazardAt(map, aheadX, aheadY) && !activeSpikeAt(map, aheadX, aheadY, player.levelTime)) {

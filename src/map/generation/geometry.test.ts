@@ -134,6 +134,27 @@ describe("clearCriticalTiles", () => {
     expect(g[8][8]).toBe(0);
     expect(g[6][5]).toBe(0);
   });
+
+  it("clears every multiplayer spawn tile too", () => {
+    const g = grid(10);
+    const enemy = { x: 5.5, y: 6.5 } as Enemy;
+    const multiplayerSpawns = [{ x: 2, y: 3 }, { x: 4, y: 7 }];
+    clearCriticalTiles(g, { x: 1, y: 1 }, { x: 8, y: 8 }, [enemy], multiplayerSpawns);
+    expect(g[1][1]).toBe(0);
+    expect(g[8][8]).toBe(0);
+    expect(g[6][5]).toBe(0);
+    expect(g[3][2]).toBe(0);
+    expect(g[7][4]).toBe(0);
+  });
+
+  it("omitted multiplayerSpawns behaves exactly like an empty array", () => {
+    const withDefault = grid(10);
+    const withEmpty = grid(10);
+    const enemy = { x: 5.5, y: 6.5 } as Enemy;
+    clearCriticalTiles(withDefault, { x: 1, y: 1 }, { x: 8, y: 8 }, [enemy]);
+    clearCriticalTiles(withEmpty, { x: 1, y: 1 }, { x: 8, y: 8 }, [enemy], []);
+    expect(withDefault).toEqual(withEmpty);
+  });
 });
 
 describe("findPropSpot", () => {

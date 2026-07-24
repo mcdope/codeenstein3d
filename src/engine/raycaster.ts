@@ -17,6 +17,7 @@ import {
   SPIKE_TRAP_TILE,
   TELEPORTER_TILE,
   type GameMap,
+  type LootDrop,
 } from "../map/types";
 import type { Player } from "./player";
 import { EDGE_CASE_COLOR, enemyColor } from "./sprites";
@@ -127,6 +128,100 @@ function shadedTexel(
   return `rgb(${r | 0},${g | 0},${b | 0})`;
 }
 
+/** One column's DDA wall hit — `castWallRay`'s return shape. */
+interface WallHit {
+  dist: number;
+  side: 0 | 1;
+  hitTile: number;
+  mapX: number;
+  mapY: number;
+}
+
+/**
+ * Cast a single ray from `player` in direction `(rayDirX, rayDirY)` through
+ * `map`'s tile grid via DDA, and return the perpendicular distance to the
+ * wall it hits plus which side/tile/cell it hit. The one source of truth for
+ * the DDA traversal — both `castWallDistances` (the firing zBuffer refresh,
+ * which needs only `dist`) and `renderScene`'s own per-column loop (which
+ * also needs `side`/`hitTile`/`mapX`/`mapY` for texturing) call this instead
+ * of each inlining their own copy of the walk.
+ */
+function castWallRay(map: GameMap, player: Player, rayDirX: number, rayDirY: number): WallHit {
+  let mapX = Math.floor(player.posX);
+  let mapY = Math.floor(player.posY);
+
+  // Distance the ray travels to cross one full cell in x / y.
+  const deltaDistX = rayDirX === 0 ? Infinity : Math.abs(1 / rayDirX);
+  const deltaDistY = rayDirY === 0 ? Infinity : Math.abs(1 / rayDirY);
+
+  let stepX: number;
+  let stepY: number;
+  let sideDistX: number;
+  let sideDistY: number;
+
+  if (rayDirX < 0) {
+    stepX = -1;
+    sideDistX = (player.posX - mapX) * deltaDistX;
+  } else {
+    stepX = 1;
+    sideDistX = (mapX + 1 - player.posX) * deltaDistX;
+  }
+  if (rayDirY < 0) {
+    stepY = -1;
+    sideDistY = (player.posY - mapY) * deltaDistY;
+  } else {
+    stepY = 1;
+    sideDistY = (mapY + 1 - player.posY) * deltaDistY;
+  }
+
+  // DDA: advance to the nearest cell boundary until we hit a wall.
+  let side: 0 | 1 = 0; // 0 = hit on an x-side, 1 = y-side
+  let hit = false;
+  let hitTile = 1; // wall (1) or door (DOOR_TILE)
+  for (let guard = 0; guard < 4096 && !hit; guard++) {
+    if (sideDistX < sideDistY) {
+      sideDistX += deltaDistX;
+      mapX += stepX;
+      side = 0;
+    } else {
+      sideDistY += deltaDistY;
+      mapY += stepY;
+      side = 1;
+    }
+    if (mapX < 0 || mapY < 0 || mapX >= map.width || mapY >= map.height) {
+      hit = true; // out of bounds counts as a wall
+      hitTile = 1;
+    } else {
+      const tile = map.grid[mapY][mapX];
+      if (tile === 1 || tile === DOOR_TILE || tile === SECRET_WALL_TILE || tile === LORE_TILE) {
+        hit = true;
+        hitTile = tile;
+      }
+    }
+  }
+
+  // Perpendicular distance (avoids the fisheye a Euclidean distance gives).
+  const perpDist = side === 0 ? sideDistX - deltaDistX : sideDistY - deltaDistY;
+  const dist = Math.max(perpDist, 0.0001);
+  return { dist, side, hitTile, mapX, mapY };
+}
+
+/**
+ * Recompute just the per-column wall distances into `zBuffer` (length must
+ * equal `width`), with no texture/canvas work — `RaycasterEngine.fire()`
+ * calls this to refresh the zBuffer immediately before resolving a shot,
+ * independent of whatever `renderScene` last drew. Same ray directions,
+ * same DDA walk (via `castWallRay`) as `renderScene`'s own loop below.
+ */
+export function castWallDistances(map: GameMap, player: Player, width: number, zBuffer: Float64Array): void {
+  for (let x = 0; x < width; x++) {
+    const cameraX = (2 * x) / width - 1;
+    const rayDirX = player.dirX + player.planeX * cameraX;
+    const rayDirY = player.dirY + player.planeY * cameraX;
+    zBuffer[x] = castWallRay(map, player, rayDirX, rayDirY).dist;
+  }
+}
+
 /**
  * Draw one frame of the 3D walls into the canvas, and record the perpendicular
  * wall distance for each column into `zBuffer` (length must equal the canvas
@@ -170,63 +265,7 @@ export function renderScene(
     const rayDirX = player.dirX + player.planeX * cameraX;
     const rayDirY = player.dirY + player.planeY * cameraX;
 
-    let mapX = Math.floor(player.posX);
-    let mapY = Math.floor(player.posY);
-
-    // Distance the ray travels to cross one full cell in x / y.
-    const deltaDistX = rayDirX === 0 ? Infinity : Math.abs(1 / rayDirX);
-    const deltaDistY = rayDirY === 0 ? Infinity : Math.abs(1 / rayDirY);
-
-    let stepX: number;
-    let stepY: number;
-    let sideDistX: number;
-    let sideDistY: number;
-
-    if (rayDirX < 0) {
-      stepX = -1;
-      sideDistX = (player.posX - mapX) * deltaDistX;
-    } else {
-      stepX = 1;
-      sideDistX = (mapX + 1 - player.posX) * deltaDistX;
-    }
-    if (rayDirY < 0) {
-      stepY = -1;
-      sideDistY = (player.posY - mapY) * deltaDistY;
-    } else {
-      stepY = 1;
-      sideDistY = (mapY + 1 - player.posY) * deltaDistY;
-    }
-
-    // DDA: advance to the nearest cell boundary until we hit a wall.
-    let side = 0; // 0 = hit on an x-side, 1 = y-side
-    let hit = false;
-    let hitTile = 1; // wall (1) or door (DOOR_TILE)
-    for (let guard = 0; guard < 4096 && !hit; guard++) {
-      if (sideDistX < sideDistY) {
-        sideDistX += deltaDistX;
-        mapX += stepX;
-        side = 0;
-      } else {
-        sideDistY += deltaDistY;
-        mapY += stepY;
-        side = 1;
-      }
-      if (mapX < 0 || mapY < 0 || mapX >= map.width || mapY >= map.height) {
-        hit = true; // out of bounds counts as a wall
-        hitTile = 1;
-      } else {
-        const tile = map.grid[mapY][mapX];
-        if (tile === 1 || tile === DOOR_TILE || tile === SECRET_WALL_TILE || tile === LORE_TILE) {
-          hit = true;
-          hitTile = tile;
-        }
-      }
-    }
-
-    // Perpendicular distance (avoids the fisheye a Euclidean distance gives).
-    const perpDist =
-      side === 0 ? sideDistX - deltaDistX : sideDistY - deltaDistY;
-    const dist = Math.max(perpDist, 0.0001);
+    const { dist, side, hitTile, mapX, mapY } = castWallRay(map, player, rayDirX, rayDirY);
     zBuffer[x] = dist;
 
     // Where exactly the ray hit the wall face, in [0,1) along its width — the
@@ -502,6 +541,15 @@ function minimapWallCanvas(map: GameMap, cell: number, gridVersion: number, w: n
  * in `RaycasterEngine`) — see `Enemy.discovered`. Returns the panel's outer
  * rect so the exit compass can be drawn directly on its frame afterward.
  */
+/** Multiplayer-only loot-drop marker color (`drawAutomap`'s own constant
+ * matches this by value, not by shared import — same "each renderer keeps
+ * its own independently-defined, thematically-matched constants" convention
+ * every other marker color here already follows, e.g. `EXIT_COLOR`). A muted
+ * gold/amber, distinct from every existing marker hue on this panel
+ * (lore teal, hazard/mine warm reds/orange, exit green, the player marker's
+ * near-white) — see `multiplayer-game-state-spec.md` §5. */
+const LOOT_DROP_COLOR = "#b8860b";
+
 export function renderMinimap(
   ctx: CanvasRenderingContext2D,
   map: GameMap,
@@ -510,6 +558,11 @@ export function renderMinimap(
   maxPixels = 70,
   readTerminals: ReadonlySet<string> = NO_READ_TERMINALS,
   gridVersion = 0,
+  /** Multiplayer-only (`multiplayer-game-state-spec.md` §5) — always `[]` for
+   * single-player, so an always-empty array is indistinguishable from this
+   * parameter not existing at all. Gated by the caller
+   * (`engine.ts`'s `isMultiplayerSession()` check), not here. */
+  lootDrops: readonly LootDrop[] = [],
 ): MinimapPanelRect {
   const cell = Math.max(1, Math.floor(maxPixels / Math.max(map.width, map.height)));
   const w = map.width * cell;
@@ -625,6 +678,18 @@ export function renderMinimap(
   for (const item of map.keys) {
     if (item.collected) continue;
     ctx.fillRect(pad + item.x * cell - cell / 2, pad + item.y * cell - cell / 2, Math.max(2, cell), Math.max(2, cell));
+  }
+
+  // Multiplayer-only loot drops (ammo/weapon/health/key drops on the ground
+  // — e.g. left behind by a disconnected player) — gated on `map.visited`,
+  // the same fog-of-war precedent `Enemy.discovered` already sets on this
+  // panel: an ungated drop would otherwise broadcast a disconnect's exact
+  // location the instant it happens, in a room nobody's been near yet. `[]`
+  // for single-player, so this loop is a no-op there.
+  ctx.fillStyle = LOOT_DROP_COLOR;
+  for (const drop of lootDrops) {
+    if (!map.visited[Math.floor(drop.y)]?.[Math.floor(drop.x)]) continue;
+    ctx.fillRect(pad + drop.x * cell - cell / 2, pad + drop.y * cell - cell / 2, Math.max(2, cell), Math.max(2, cell));
   }
 
   // Exit tile (the return statement): high-contrast and pulsing so it never

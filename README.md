@@ -258,6 +258,7 @@ npm run preview    # Serve production build locally
 | — | Level-end/run-end player-facing stats screen (kills, weapon accuracy, damage taken by source, loot collected, score breakdown) | ⏸️ Implemented, disabled by default (playtest feedback: measurable frame-time cost) |
 | — | FPS overlay and IDDQD/IDCLIP cheat toggles now carry across a level transition instead of silently resetting | ✅ |
 | — | A repeatable frame-time benchmark harness (`npm run perf:bench`/`perf:report`) with opt-in per-frame diagnostics (`?perfDebug=1`), used to audit and confirm wall-edge antialiasing and windowed-mode responsive canvas resizing are both cheap enough to ship on by default (see `perf-findings.json`) | ✅ |
+| — | Multiplayer — host or join a real-time coop session (2-4 players) via a short code or public lobby, WebRTC peer-to-peer with a minimal signaling/lobby server, lockstep netcode with drift reconciliation, disconnect handling, level-transition countdowns, a shared end-of-run scoreboard, and player-count-scaled Elite enemies | ✅ |
 
 ---
 

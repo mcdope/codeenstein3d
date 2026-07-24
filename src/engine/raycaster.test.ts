@@ -629,6 +629,69 @@ describe("renderScene — distance fog flag", () => {
   });
 });
 
+describe("renderMinimap — multiplayer loot drops", () => {
+  function visitedGrid(size: number): boolean[][] {
+    return Array.from({ length: size }, () => new Array(size).fill(false) as boolean[]);
+  }
+
+  function lootMap(): GameMap {
+    return fakeMap({ visited: visitedGrid(8) });
+  }
+
+  it("defaults to no loot drops when the param is omitted (single-player-shaped call)", () => {
+    const map = lootMap();
+    map.visited[4][4] = true;
+    const player = centeredPlayer(map);
+    const withoutParam = ctx();
+    renderMinimap(asCtx(withoutParam), map, player);
+    const withEmptyArray = ctx();
+    renderMinimap(asCtx(withEmptyArray), map, player, 0, 70, new Set(), 0, []);
+    expect(withoutParam.fillRect.mock.calls.length).toBe(withEmptyArray.fillRect.mock.calls.length);
+  });
+
+  it("renders a loot drop marker on a visited tile", () => {
+    const map = lootMap();
+    map.visited[4][4] = true;
+    const player = centeredPlayer(map);
+
+    const without = ctx();
+    renderMinimap(asCtx(without), map, player);
+    const withDrop = ctx();
+    renderMinimap(asCtx(withDrop), map, player, 0, 70, new Set(), 0, [{ x: 4, y: 4, kind: "bullets" }]);
+
+    expect(withDrop.fillRect.mock.calls.length).toBe(without.fillRect.mock.calls.length + 1);
+  });
+
+  it("hides a loot drop on an unvisited tile — the fog-of-war/spoiler gate this step adds", () => {
+    const map = lootMap(); // nothing visited
+    const player = centeredPlayer(map);
+
+    const without = ctx();
+    renderMinimap(asCtx(without), map, player);
+    const withDrop = ctx();
+    renderMinimap(asCtx(withDrop), map, player, 0, 70, new Set(), 0, [{ x: 4, y: 4, kind: "bullets" }]);
+
+    expect(withDrop.fillRect.mock.calls.length).toBe(without.fillRect.mock.calls.length);
+  });
+
+  it("renders more than one visible loot drop", () => {
+    const map = lootMap();
+    map.visited[1][1] = true;
+    map.visited[6][6] = true;
+    const player = centeredPlayer(map);
+
+    const without = ctx();
+    renderMinimap(asCtx(without), map, player);
+    const withDrops = ctx();
+    renderMinimap(asCtx(withDrops), map, player, 0, 70, new Set(), 0, [
+      { x: 1, y: 1, kind: "bullets" },
+      { x: 6, y: 6, kind: "weapon", weaponIndex: 0 },
+    ]);
+
+    expect(withDrops.fillRect.mock.calls.length).toBe(without.fillRect.mock.calls.length + 2);
+  });
+});
+
 describe("renderMinimap — cached wall layer", () => {
   it("builds the offscreen wall canvas once and reuses it while (map, gridVersion) are unchanged", () => {
     const map = fakeMap();

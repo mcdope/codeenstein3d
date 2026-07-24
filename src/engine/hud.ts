@@ -7,6 +7,7 @@
  * end-of-run overlays remain in the DOM (see src/ui/gameHud.ts).
  */
 import type { EngineStats } from "./engine";
+import { COUNTDOWN_DISPLAY_HZ } from "./transitionConstants";
 import { WEAPONS } from "./weapons";
 
 /**
@@ -107,6 +108,32 @@ export function drawKillStreakToast(ctx: CanvasRenderingContext2D, text: string,
   ctx.strokeText(text, w / 2, y);
   ctx.fillStyle = big ? "#ff4d4d" : "#ffcf4d";
   ctx.fillText(text, w / 2, y);
+  ctx.textAlign = "start";
+  ctx.restore();
+}
+
+/**
+ * "Build finishing in Ns…" banner shown once any player touches the exit in
+ * a multiplayer session (`RaycasterEngine.getExitCountdownRemaining`) — a
+ * quiet top-of-screen readout, not a full scrim: unlike `drawPauseOverlay`
+ * the sim keeps running underneath and stays fully visible/interactable
+ * throughout. `remainingTicks` is whatever tick count the engine reports;
+ * this function owns the ticks-to-seconds conversion (see
+ * `COUNTDOWN_DISPLAY_HZ`'s own doc comment for why that rate is hand-kept in
+ * sync with the real tick rate rather than imported).
+ */
+export function drawExitCountdownToast(ctx: CanvasRenderingContext2D, remainingTicks: number): void {
+  const w = ctx.canvas.width;
+  const seconds = Math.max(0, Math.ceil(remainingTicks / COUNTDOWN_DISPLAY_HZ));
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.font = "bold 22px ui-monospace, monospace";
+  const y = 40;
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = "#0d3d1a";
+  ctx.strokeText(`Build finishing in ${seconds}s…`, w / 2, y);
+  ctx.fillStyle = "#8effa0";
+  ctx.fillText(`Build finishing in ${seconds}s…`, w / 2, y);
   ctx.textAlign = "start";
   ctx.restore();
 }

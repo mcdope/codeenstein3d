@@ -40,7 +40,7 @@ import { placeAmmoPickups } from "./generation/pickups";
 import { DECORATIONS_ENABLED, placeDecorations, placePillars } from "./generation/props";
 import { seedFrom } from "./generation/seed";
 import { placeSecretRooms } from "./generation/secretRooms";
-import { pickExit, pickSafeSpawn } from "./generation/spawnExit";
+import { pickExit, pickMultiplayerSpawns, pickSafeSpawn } from "./generation/spawnExit";
 import { placeTeleporters } from "./generation/teleporters";
 import { fillHazards, placeTraps } from "./generation/trapsHazards";
 import { clamp } from "./generation/util";
@@ -100,8 +100,19 @@ export class MapGenerator {
    * — see that function's doc comment for why the map layer only ever
    * receives an opaque list of numbers here, never an engine-layer weapon
    * concept.
+   *
+   * `maxPlayers` requests extra, spread-out spawn points for a multiplayer
+   * session (see `GameMap.multiplayerSpawns`) — 1 (the default) preserves
+   * every existing call site's behavior exactly, `multiplayerSpawns` simply
+   * comes back `undefined`.
    */
-  generate(parsed: ParsedFile, bonusLevel = false, hasRocketLauncher = true, missingWeaponIndices: readonly number[] = []): GameMap {
+  generate(
+    parsed: ParsedFile,
+    bonusLevel = false,
+    hasRocketLauncher = true,
+    missingWeaponIndices: readonly number[] = [],
+    maxPlayers = 1,
+  ): GameMap {
     const rng = mulberry32(seedFrom(parsed));
     const size = this.mapSize(parsed);
 
@@ -128,15 +139,20 @@ export class MapGenerator {
     // Exit is chosen before enemies so their placement can steer clear of it —
     // the 'return' tile must never be hidden under a monster.
     const exit = pickExit(rooms, spawn);
-    const enemies = spawnEnemies(rooms, exit, rng);
+    // Multiplayer spawns are picked here too — before enemies — so a pack's
+    // first member (which always anchors on its room's center, the same pool
+    // this draws from) can steer clear of one, the same reasoning as the exit.
+    const multiplayerSpawns = maxPlayers > 1 ? pickMultiplayerSpawns(rooms, exit, maxPlayers) : undefined;
+    const enemies = spawnEnemies(rooms, exit, rng, multiplayerSpawns ?? []);
     // "Edge Case" enemies populate the corridor-breakup rooms exclusively —
     // never a normal room, and normal enemies never spawn in a breakup room.
     enemies.push(...spawnEdgeCaseEnemies(grid, breakupRooms, exit, rng));
-    const hazards = fillHazards(rooms, grid, spawn, exit);
+    const hazards = fillHazards(rooms, grid, spawn, exit, multiplayerSpawns ?? []);
 
     // Corridors already punch through labyrinth walls; this guarantees the
-    // spawn, exit, and every enemy stand on open floor even inside a maze.
-    clearCriticalTiles(grid, spawn, exit, enemies);
+    // spawn, exit, every enemy, and every multiplayer spawn stand on open
+    // floor even inside a maze.
+    clearCriticalTiles(grid, spawn, exit, enemies, multiplayerSpawns ?? []);
 
     // Break up large empty rooms with structural pillars, then dress them with
     // cosmetic (non-blocking) props — both steer clear of the spawn, exit, room
@@ -146,6 +162,7 @@ export class MapGenerator {
       { x: spawn.x + 0.5, y: spawn.y + 0.5 },
       { x: exit.x + 0.5, y: exit.y + 0.5 },
       ...enemies.map((e) => ({ x: e.x, y: e.y })),
+      ...(multiplayerSpawns ?? []).map((s) => ({ x: s.x + 0.5, y: s.y + 0.5 })),
     ];
     placePillars(rooms, grid, avoidPoints, rng);
     // Decorative props are disabled for now (playtest feedback: they got in
@@ -228,6 +245,7 @@ export class MapGenerator {
       rooms,
       breakupRooms,
       spawn,
+      multiplayerSpawns,
       enemies,
       exit,
       shortestPathTiles: shortestPath(grid, spawn, exit),

@@ -122,6 +122,25 @@ describe("GameHud — overlay content per method", () => {
     expect(texts).toContain("Damage taken");
   });
 
+  it("showMultiplayerResults draws the given title/color and one row per player", () => {
+    hud.showMultiplayerResults(
+      "MULTIPLAYER: CAMPAIGN COMPLETE",
+      "#37d24a",
+      [
+        ["Host", "1234 pts · 5 kills"],
+        ["Guest", "987 pts · 3 kills (disconnected)"],
+      ],
+      vi.fn(),
+    );
+    const texts = fillTextCalls();
+    expect(texts).toContain("MULTIPLAYER: CAMPAIGN COMPLETE");
+    expect(texts).toContain("Host");
+    expect(texts).toContain("1234 pts · 5 kills");
+    expect(texts).toContain("Guest");
+    expect(texts).toContain("987 pts · 3 kills (disconnected)");
+    expect(texts).toContain("Return to file tree");
+  });
+
   it("showReplayEnded draws the given reason as its body line", () => {
     hud.showReplayEnded("Recorded file could not be relocated.", vi.fn());
     const texts = fillTextCalls();

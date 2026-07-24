@@ -9,6 +9,7 @@ import {
   detonateMine,
   isSpikeActive,
   MINE_BLAST_RADIUS,
+  mineDamageAt,
   spikeDamage,
   updateMines,
 } from "./traps";
@@ -113,25 +114,24 @@ describe("spikeDamage", () => {
 describe("detonateMine", () => {
   it("always marks the mine dead", () => {
     const m = mine({ alive: true });
-    detonateMine(m, playerAt(5, 5));
+    detonateMine(m);
     expect(m.alive).toBe(false);
   });
+});
 
+describe("mineDamageAt", () => {
   it("deals max damage at ground zero", () => {
-    const m = mine({ x: 5, y: 5 });
-    const dmg = detonateMine(m, playerAt(5, 5));
+    const dmg = mineDamageAt({ x: 5, y: 5 }, 5, 5);
     expect(dmg).toBe(32); // MINE_MAX_DAMAGE * falloff(1)
   });
 
-  it("returns 0 for a player exactly at or beyond the blast radius", () => {
-    const m = mine({ x: 5, y: 5 });
-    const dmg = detonateMine(m, playerAt(5 + MINE_BLAST_RADIUS, 5));
+  it("returns 0 for a target exactly at or beyond the blast radius", () => {
+    const dmg = mineDamageAt({ x: 5, y: 5 }, 5 + MINE_BLAST_RADIUS, 5);
     expect(dmg).toBe(0);
   });
 
   it("floors falloff damage near the edge of the blast radius instead of trailing to 0", () => {
-    const m = mine({ x: 5, y: 5 });
-    const dmg = detonateMine(m, playerAt(5 + MINE_BLAST_RADIUS - 0.01, 5));
+    const dmg = mineDamageAt({ x: 5, y: 5 }, 5 + MINE_BLAST_RADIUS - 0.01, 5);
     expect(dmg).toBeCloseTo(32 * 0.35, 1); // MINE_DAMAGE_FALLOFF_FLOOR clamp
   });
 });
@@ -140,38 +140,38 @@ describe("updateMines", () => {
   it("skips dead mines entirely", () => {
     const mines = [mine({ alive: false, x: 5, y: 5 })];
     const player = playerAt(5, 5);
-    const detonations = updateMines(mines, player, 0.1);
+    const detonations = updateMines(mines, [player], 0.1);
     expect(detonations).toEqual([]);
     expect(mines[0].closeTimer).toBe(0);
   });
 
   it("marks a mine visible once the player enters sight radius", () => {
     const m = mine({ x: 5, y: 5, visible: false });
-    updateMines([m], playerAt(8, 5), 0.1); // within MINE_SIGHT_RADIUS(4.5), outside fuse radius
+    updateMines([m], [playerAt(8, 5)], 0.1); // within MINE_SIGHT_RADIUS(4.5), outside fuse radius
     expect(m.visible).toBe(true);
   });
 
   it("leaves an unseen mine invisible while the player is out of sight radius", () => {
     const m = mine({ x: 5, y: 5, visible: false });
-    updateMines([m], playerAt(20, 5), 0.1);
+    updateMines([m], [playerAt(20, 5)], 0.1);
     expect(m.visible).toBe(false);
   });
 
   it("keeps a spotted mine visible even after the player backs out of sight radius (sticky)", () => {
     const m = mine({ x: 5, y: 5, visible: true });
-    updateMines([m], playerAt(20, 5), 0.1);
+    updateMines([m], [playerAt(20, 5)], 0.1);
     expect(m.visible).toBe(true);
   });
 
   it("resets the fuse timer once the player steps back outside the fuse radius", () => {
     const m = mine({ x: 5, y: 5, closeTimer: 0.5 });
-    updateMines([m], playerAt(8, 5), 0.1); // outside MINE_FUSE_RADIUS(1.8)
+    updateMines([m], [playerAt(8, 5)], 0.1); // outside MINE_FUSE_RADIUS(1.8)
     expect(m.closeTimer).toBe(0);
   });
 
   it("accumulates the fuse timer while inside the fuse radius, without detonating early", () => {
     const m = mine({ x: 5, y: 5, closeTimer: 0 });
-    const detonations = updateMines([m], playerAt(5.5, 5), 0.3);
+    const detonations = updateMines([m], [playerAt(5.5, 5)], 0.3);
     expect(m.closeTimer).toBeCloseTo(0.3);
     expect(detonations).toEqual([]);
     expect(m.alive).toBe(true);
@@ -179,9 +179,9 @@ describe("updateMines", () => {
 
   it("detonates once the fuse timer reaches the threshold", () => {
     const m = mine({ x: 5, y: 5, closeTimer: 0.85 });
-    const detonations = updateMines([m], playerAt(5, 5), 0.1); // closeTimer -> 0.95 >= 0.9
+    const detonations = updateMines([m], [playerAt(5, 5)], 0.1); // closeTimer -> 0.95 >= 0.9
     expect(detonations).toHaveLength(1);
-    expect(detonations[0]).toEqual({ x: 5, y: 5, damage: expect.any(Number) });
+    expect(detonations[0]).toEqual({ x: 5, y: 5 });
     expect(m.alive).toBe(false);
   });
 
@@ -191,7 +191,15 @@ describe("updateMines", () => {
       mine({ x: 6, y: 6, closeTimer: 0.85 }),
     ];
     const player = playerAt(5.5, 5.5); // close enough to both fuse radii
-    const detonations = updateMines(mines, player, 0.1);
+    const detonations = updateMines(mines, [player], 0.1);
     expect(detonations).toHaveLength(2);
+  });
+
+  it("drives visibility/fuse off whichever player is nearest, when more than one is present", () => {
+    const m = mine({ x: 5, y: 5, visible: false });
+    const near = playerAt(8, 5); // within MINE_SIGHT_RADIUS(4.5)
+    const far = playerAt(50, 50);
+    updateMines([m], [far, near], 0.1);
+    expect(m.visible).toBe(true);
   });
 });
