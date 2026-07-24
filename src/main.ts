@@ -18,7 +18,7 @@ import { extensionOf, isParsable, parseFile } from "./parser/registry";
 import { MapGenerator } from "./map/mapGenerator";
 import type { GameMap } from "./map/types";
 import { renderExportMap } from "./map/exportView";
-import { RaycasterEngine } from "./engine/engine";
+import { RaycasterEngine, isTestHooksActive } from "./engine/engine";
 import { audio } from "./engine/audio";
 import { bgm } from "./engine/bgm";
 import { textures, type WadLoadSummary } from "./engine/textures";
@@ -869,11 +869,15 @@ const MULTIPLAYER_SERVER_CONFIGURED = Boolean(import.meta.env.VITE_MULTIPLAYER_S
  * `workspaceIsRemote`/`workspaceIsDemo` are set — same "call at every
  * assignment site" discipline as `updateLoadGithubRepoButtonEnabled`. Bounces
  * back to the Local tab if Multiplayer was active and just became
- * ineligible, so the UI never leaves a disabled tab showing as selected. */
+ * ineligible, so the UI never leaves a disabled tab showing as selected.
+ * `MULTIPLAYER_SERVER_CONFIGURED` is fixed for the whole page lifetime (it's
+ * a build-time env value), so unlike the eligibility check below it can
+ * never flip from true to false after this function's first (module-load)
+ * call — there's no "was selected, just became unconfigured" case to bounce
+ * back from; a hidden+disabled tab was never selectable in the first place. */
 function updateMultiplayerTabEnabled(): void {
   if (!MULTIPLAYER_SERVER_CONFIGURED) {
     tabMultiplayer.style.display = "none";
-    if (tabMultiplayer.getAttribute("aria-selected") === "true") activateLaunchTab("local");
     return;
   }
   tabMultiplayer.style.display = "";
@@ -1666,7 +1670,8 @@ multiplayerLobbyDialog.addEventListener("close", () => {
 
 // --- Test-only introspection (?testHooks=1) ---------------------------------
 // Gated the same way as `RaycasterEngine`'s own `window.__codeensteinTestHooks`
-// (`src/engine/engine.ts`) — `?testHooks=1` on the page URL — rather than a
+// (`isTestHooksActive()`, `src/engine/engine.ts`) — `?testHooks=1` on the page
+// URL, only recognized in a `vite`/`npm run dev` build — rather than a
 // visible debug UI element: `scripts/verify-multiplayer-connect.mjs` reads
 // this instead of polling the DOM. Deliberately a **separate** global,
 // `__codeensteinMultiplayerTestHooks`, not folded into
@@ -1675,8 +1680,13 @@ multiplayerLobbyDialog.addEventListener("close", () => {
 // engine has been constructed" — installed here at *module import* time,
 // this object would make that check trivially true before any engine exists,
 // racing every `waitUntil(() => !!testHooks())` in `main.test.ts` that
-// expects it to mean exactly that.
-if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1") {
+// expects it to mean exactly that. This is also the only place
+// `debugSetGodMode`/`injectDesync` are reachable at all — gating them behind
+// `import.meta.env.DEV` (via `isTestHooksActive()`) means a real production
+// build never ships the code path that lets a player fake invulnerability or
+// desync state through the console, not just a URL param it happens to
+// ignore.
+if (isTestHooksActive()) {
   (
     window as unknown as {
       __codeensteinMultiplayerTestHooks?: {
