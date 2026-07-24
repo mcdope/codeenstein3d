@@ -193,6 +193,24 @@ const MAX_DT = 0.05;
 const FPS_UPDATE_INTERVAL = 0.5;
 /** Starting / maximum System Stability (health), as a percentage. */
 const MAX_HEALTH = 100;
+/** Gate for every `?testHooks=1` automation hook (headless bot introspection,
+ * `debugSetGodMode`/`injectDesync`, the bot rotation-speed override) — unlike
+ * `?perfDebug=1` (a real diagnostic real players may be handed a URL for),
+ * these exist purely for scripts/*.mjs and are never meant to reach a
+ * production build at all. `import.meta.env.DEV` is a build-time constant
+ * Vite substitutes per mode (`vite`/`npm run dev` → `true`, `vite build` →
+ * `false`), so a `vite build` dead-code-eliminates every branch gated by
+ * this, not just leaves the query param unrecognized — the hook code itself
+ * never ships in `dist/`. All of this project's verify/balancing/perf
+ * scripts drive a real `vite`/`npm run dev` server (never a built/`vite
+ * preview` bundle), so this costs them nothing. */
+export function isTestHooksActive(): boolean {
+  return (
+    import.meta.env.DEV &&
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("testHooks") === "1"
+  );
+}
 /** IDKFA's ammo grant — a clearly-a-cheat round number; ammo otherwise has no
  * upper cap at all (only loot/pickups increment it). */
 const CHEAT_MAX_AMMO = 999;
@@ -870,8 +888,7 @@ export class RaycasterEngine {
     }
     // See `this.teamTelemetry`'s doc comment — `PLAYER_STATS_ENABLED` opts
     // real play into the same instrumentation `?testHooks=1` always gets.
-    this.telemetryEnabled =
-      PLAYER_STATS_ENABLED || (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1");
+    this.telemetryEnabled = PLAYER_STATS_ENABLED || isTestHooksActive();
     if (this.telemetryEnabled) {
       this.teamTelemetry = createTeamTelemetryState();
     }
@@ -912,7 +929,7 @@ export class RaycasterEngine {
     // exclusive to this param. Every read below resolves through
     // `this.players.get(this.localPlayerId)!` (the local peer — the only one
     // a real bot/headless harness ever drives) rather than a bare `this.*`.
-    if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1") {
+    if (isTestHooksActive()) {
       (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks = {
         getPlayerState: () => {
           const p = this.players.get(this.localPlayerId)!;
@@ -996,7 +1013,7 @@ export class RaycasterEngine {
     // See `PlayerState.rotSpeedMultiplier`'s doc comment — only ever applies
     // to the local peer (the only one a headless bot ever drives).
     let rotSpeedMultiplier = 1;
-    if (id === this.localPlayerId && typeof window !== "undefined" && new URLSearchParams(window.location.search).get("testHooks") === "1") {
+    if (id === this.localPlayerId && isTestHooksActive()) {
       const rotMul = Number(new URLSearchParams(window.location.search).get("botRotSpeedMul"));
       if (Number.isFinite(rotMul)) rotSpeedMultiplier = Math.min(10, Math.max(1, rotMul));
     }
