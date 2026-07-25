@@ -258,7 +258,7 @@ async function main() {
     console.log("Host: creating a session...");
     await hostPage.click("#tab-multiplayer");
     await hostPage.click("#multiplayer-host-create");
-    await hostPage.waitForSelector("#multiplayer-host-code:not([hidden])", { timeout: 15_000 });
+    await hostPage.waitForSelector("#multiplayer-host-code-wrap:not([hidden])", { timeout: 15_000 });
     const code = (await hostPage.textContent("#multiplayer-host-code")).trim();
     check("host: session code generated", /^[0-9A-Z]{6}$/.test(code), `got "${code}"`);
     console.log(`Host code: ${code}`);

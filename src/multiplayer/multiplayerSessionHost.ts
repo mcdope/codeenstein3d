@@ -336,9 +336,11 @@ export function runMultiplayerSessionAsHost(
   }
   /** Resolves with whichever `ids` never acked within `timeoutMs` (empty once
    * every one did) — the caller uses this to decide who still needs a retry,
-   * rather than this function discarding that information itself. */
+   * rather than this function discarding that information itself. Its one
+   * call site only ever invokes this with a non-empty `ids` (guarded by the
+   * retry loop's own `pendingIds.length > 0` condition), so there's no
+   * empty-input case to special-case here. */
   function waitForAcks(ids: readonly PlayerId[], timeoutMs: number): Promise<Set<PlayerId>> {
-    if (ids.length === 0) return Promise.resolve(new Set());
     return new Promise((resolve) => {
       const remaining = new Set(ids);
       const timer = setTimeout(() => {
@@ -474,7 +476,8 @@ export function runMultiplayerSessionAsHost(
       // are excluded up front, and re-excluded after every round — they can
       // never ack again, so retrying/waiting on them would only ever burn the
       // full timeout budget for nothing.
-      let pendingIds = guestIds.filter((id) => !neutralInputIds.has(id) || graceTimers.has(id));
+      const isStillReachable = (id: PlayerId): boolean => !neutralInputIds.has(id) || graceTimers.has(id);
+      let pendingIds = guestIds.filter(isStillReachable);
       for (let attempt = 0; attempt <= TRANSITION_RETRY_LIMIT && pendingIds.length > 0; attempt++) {
         if (attempt > 0) {
           console.log(`[multiplayer] retrying level-transition send to ${pendingIds.join(", ")} (attempt ${attempt}/${TRANSITION_RETRY_LIMIT})`);
@@ -497,10 +500,15 @@ export function runMultiplayerSessionAsHost(
             }
           }),
         );
-        if (ended) return;
+        // No separate `if (ended) return` here between the send round and
+        // `waitForAcks` below — if the session ended mid-send, the
+        // subsequent `waitForAcks` call still resolves (via its own timeout,
+        // since `teardown()` doesn't clear it) and the check right after it
+        // catches `ended` before touching any more state; not worth a second
+        // checkpoint for what's otherwise a harmless extra wait.
         const stillPending = await waitForAcks(pendingIds, TRANSITION_ACK_TIMEOUT_MS);
         if (ended) return;
-        pendingIds = pendingIds.filter((id) => stillPending.has(id) && (!neutralInputIds.has(id) || graceTimers.has(id)));
+        pendingIds = pendingIds.filter((id) => stillPending.has(id) && isStillReachable(id));
       }
 
       currentResult = { ...currentResult, map: next.map, gameplaySeed: next.gameplaySeed };

@@ -246,7 +246,7 @@ export async function bootstrapMultiplayerSession(browser, options) {
   await hostPage.click("#tab-multiplayer");
   await hostPage.selectOption("#multiplayer-max-players", String(playerCount));
   await hostPage.click("#multiplayer-host-create");
-  await hostPage.waitForSelector("#multiplayer-host-code:not([hidden])", { timeout: 15_000 });
+  await hostPage.waitForSelector("#multiplayer-host-code-wrap:not([hidden])", { timeout: 15_000 });
   const code = (await hostPage.textContent("#multiplayer-host-code")).trim();
   log(`Host code: ${code}`);
 
