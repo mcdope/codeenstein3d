@@ -2748,6 +2748,15 @@ describe("RaycasterEngine — addPlayer / roster (N-player)", () => {
     expect(engine.getBotPlayerState("local")!.state).toBe("playing");
   });
 
+  it("stays silent (no [multiplayer-desync] warning) when applyRosterRemoval's elimination check fires but this engine isn't a multiplayer session", () => {
+    const { engine } = makeEngine(fakeMap());
+    engine.addPlayer("p2", new ScriptedInput());
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    engine.applyRosterRemoval(["local", "p2"]); // removes everyone — elimination check fires
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining("[multiplayer-desync]"), expect.anything());
+    warnSpy.mockRestore();
+  });
+
   // Regression coverage for a real gap found while building multiplayer's
   // spawn-spreading (step 5, GameMap.multiplayerSpawns): before this, every
   // addPlayer()-added player spawned stacked on the exact same tile as the
@@ -3008,10 +3017,35 @@ describe("RaycasterEngine — death, spectate, and revive (N-player)", () => {
   it("state flips to 'over' only once every connected player is dead", () => {
     const { engine, handlers } = makeEngine(hazardSpawnMap());
     engine.addPlayer("p2", new ScriptedInput()); // p2 never moves off the hazard either
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     for (let i = 0; i < 20 && handlers.onGameOver.mock.calls.length === 0; i++) engine.advance(1);
     expect(handlers.onGameOver).toHaveBeenCalledTimes(1);
     expect(engine.rosterSnapshot().get("local")!.status).toBe("dead");
     expect(engine.rosterSnapshot().get("p2")!.status).toBe("dead");
+    // Single-player: the diagnostic-only [multiplayer-desync] roster dump
+    // (logTeamEliminationRosterDump) must stay silent — it's gated on
+    // isMultiplayerSession(), which this engine (default localPlayerId) is not.
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining("[multiplayer-desync]"), expect.anything());
+    warnSpy.mockRestore();
+  });
+
+  it("logs a [multiplayer-desync] roster dump via killPlayer immediately before locking in team-elimination", () => {
+    const canvas = makeCanvas();
+    const engine = new RaycasterEngine(canvas, hazardSpawnMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    engine.addPlayer("p2", new ScriptedInput());
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Neither player moves off the hazard — both cook to death.
+    for (let i = 0; i < 20 && engine.rosterSnapshot().get("H")!.status === "alive"; i++) engine.advance(1);
+    expect(engine.rosterSnapshot().get("H")!.status).toBe("dead");
+    expect(engine.rosterSnapshot().get("p2")!.status).toBe("dead");
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[multiplayer-desync] killPlayer: locking in team-elimination",
+      expect.arrayContaining([
+        expect.objectContaining({ id: "H", status: "dead", health: 0 }),
+        expect.objectContaining({ id: "p2", status: "dead", health: 0 }),
+      ]),
+    );
+    warnSpy.mockRestore();
   });
 
   it("world-interaction per-player loops skip a dead player without throwing (keys, static loot, room discovery, gunfire-mine splash)", () => {
@@ -3083,6 +3117,90 @@ describe("RaycasterEngine — death, spectate, and revive (N-player)", () => {
     roster = engine.rosterSnapshot();
     expect(roster.get("revived")!.kills).toBe(1);
     expect(roster.get("revived")!.killScore).toBeGreaterThan(0);
+  });
+});
+
+describe("RaycasterEngine — damage SFX scoped to the currently-watched player", () => {
+  // Three well-separated hazard tiles so each player can be damaged
+  // independently by teleporting them onto their own tile — real hazard
+  // damage (`applyHazardDamage`), not a synthetic direct call, matching this
+  // file's established convention for triggering `damage()`.
+  function threeHazardMap(size = 20): GameMap {
+    const g = walledRoom(size);
+    g[5][5] = HAZARD_TILE;
+    g[10][10] = HAZARD_TILE;
+    g[15][15] = HAZARD_TILE;
+    return fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }, { x: 10, y: 10 }, { x: 15, y: 15 }], spawn: { x: 5, y: 5 } }, size);
+  }
+
+  type PosPlayers = Map<string, { player: { posX: number; posY: number }; status: string }>;
+
+  it("plays the SFX when the local (alive) player takes damage", () => {
+    const engine = new RaycasterEngine(makeCanvas(), threeHazardMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    const spy = vi.spyOn(audio, "playDamage").mockImplementation(() => {});
+    engine.advance(0.1); // H spawns directly on the hazard tile
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("does not play the SFX when a teammate (not being watched) takes damage while the local player is alive", () => {
+    const map = threeHazardMap();
+    map.spawn = { x: 2, y: 2 }; // H spawns off any hazard tile
+    const engine = new RaycasterEngine(makeCanvas(), map, {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    engine.addPlayer("p2", new ScriptedInput(), undefined, { x: 10, y: 10 }); // straight onto a hazard tile
+    const spy = vi.spyOn(audio, "playDamage").mockImplementation(() => {});
+    engine.advance(0.1);
+    expect(engine.rosterSnapshot().get("H")!.status).toBe("alive");
+    expect(engine.rosterSnapshot().get("p2")!.health).toBeLessThan(100); // p2 really did take damage
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("plays the SFX when a dead local player's spectate target (a living teammate) takes damage", () => {
+    const map = threeHazardMap();
+    const engine = new RaycasterEngine(makeCanvas(), map, {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    // p2 spawns safely off any hazard — survives H, becomes the spectate target.
+    engine.addPlayer("p2", new ScriptedInput(), undefined, { x: 2, y: 2 });
+    for (let i = 0; i < 20 && engine.rosterSnapshot().get("H")!.status === "alive"; i++) engine.advance(1);
+    expect(engine.rosterSnapshot().get("H")!.status).toBe("dead");
+    const players = (engine as unknown as { players: PosPlayers }).players;
+    const spy = vi.spyOn(audio, "playDamage").mockImplementation(() => {});
+    // Teleport the (still-alive, currently-spectated) p2 onto a fresh hazard tile.
+    players.get("p2")!.player.posX = 10.5;
+    players.get("p2")!.player.posY = 10.5;
+    engine.advance(0.1);
+    expect(engine.rosterSnapshot().get("p2")!.health).toBeLessThan(100);
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("does not play the SFX when a non-watched third player takes damage while a dead local player spectates someone else", () => {
+    const map = threeHazardMap();
+    const engine = new RaycasterEngine(makeCanvas(), map, {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    // p2 spawns safely — survives H, becomes the (sorted-first) spectate target.
+    engine.addPlayer("p2", new ScriptedInput(), undefined, { x: 2, y: 2 });
+    // p3 spawns safely too, so it doesn't die alongside H before the assertion.
+    engine.addPlayer("p3", new ScriptedInput(), undefined, { x: 3, y: 2 });
+    for (let i = 0; i < 20 && engine.rosterSnapshot().get("H")!.status === "alive"; i++) engine.advance(1);
+    expect(engine.rosterSnapshot().get("H")!.status).toBe("dead");
+
+    const players = (engine as unknown as { players: PosPlayers }).players;
+    const spy = vi.spyOn(audio, "playDamage").mockImplementation(() => {});
+    // Teleport p3 (NOT the spectate target — p2 is) onto a fresh hazard tile.
+    players.get("p3")!.player.posX = 15.5;
+    players.get("p3")!.player.posY = 15.5;
+    engine.advance(0.1);
+    expect(engine.rosterSnapshot().get("p3")!.health).toBeLessThan(100);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("single-player: still plays the SFX on the (only) local player's own damage — regression guard", () => {
+    const { engine } = makeEngine(threeHazardMap());
+    const spy = vi.spyOn(audio, "playDamage").mockImplementation(() => {});
+    engine.advance(0.1); // default localPlayerId spawns directly on the hazard tile
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
   });
 });
 
@@ -3516,10 +3634,56 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
 
     it("applies alive:false, marking the player dead", () => {
       const { engine } = makeEngine(fakeMap());
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       const snapshot = engine.captureReconciliationSnapshot(0);
       snapshot.players.local.alive = false;
       engine.applyReconciliationSnapshot(snapshot);
       expect(engine.rosterSnapshot().get("local")?.status).toBe("dead");
+      // Single-player (isMultiplayerSession() false): the diagnostic-only
+      // [multiplayer-desync] disagreement warning must stay silent, even
+      // though local status ("alive") and the snapshot ("dead") disagree here.
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining("[multiplayer-desync]"));
+      warnSpy.mockRestore();
+    });
+
+    it("logs a [multiplayer-desync] warning when a reconciliation snapshot's alive field disagrees with local status, in a real multiplayer session", () => {
+      const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const snapshot = engine.captureReconciliationSnapshot(0);
+      snapshot.players.H.alive = false; // host's own snapshot claims "H" died; local status is still "alive"
+      engine.applyReconciliationSnapshot(snapshot);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[multiplayer-desync] reconciliation snapshot disagrees with local status for "H"'));
+      expect(engine.rosterSnapshot().get("H")?.status).toBe("dead"); // still applies the correction regardless
+      warnSpy.mockRestore();
+    });
+
+    it("logs a [multiplayer-desync] warning when a reconciliation snapshot claims alive while local status is already dead", () => {
+      const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+      // Captured while H is still alive, so the snapshot's own `alive` field
+      // is true — then H is marked dead locally (without a real damage()
+      // call) before this now-stale snapshot is applied, so the two disagree
+      // in the opposite direction from the sibling test above.
+      const snapshot = engine.captureReconciliationSnapshot(0);
+      playersOf(engine).get("H")!.status = "dead";
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      engine.applyReconciliationSnapshot(snapshot);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[multiplayer-desync] reconciliation snapshot disagrees with local status for "H"'),
+      );
+      expect(warnSpy.mock.calls.find((c) => typeof c[0] === "string" && c[0].includes("[multiplayer-desync]"))?.[0]).toContain(
+        "host snapshot says alive",
+      );
+      expect(engine.rosterSnapshot().get("H")?.status).toBe("alive"); // still applies the correction regardless
+      warnSpy.mockRestore();
+    });
+
+    it("does not log when a reconciliation snapshot's alive field agrees with local status, in a real multiplayer session", () => {
+      const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const snapshot = engine.captureReconciliationSnapshot(0); // alive stays true, matching local status
+      engine.applyReconciliationSnapshot(snapshot);
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining("[multiplayer-desync]"));
+      warnSpy.mockRestore();
     });
 
     it("ignores an incoming enemy index with no matching local enemy", () => {
@@ -3795,7 +3959,16 @@ describe("RaycasterEngine — multiplayer disconnect (step 8)", () => {
 
       const host = mpPlayersOf(engine).get("host")!;
       host.status = "dead"; // simulate host dying too, without a real damage() call
-      engine.applyRosterRemoval(["guest"]); // already disconnected — re-checks elimination anyway
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      engine.applyRosterRemoval(["guest"]); // already disconnected — re-checks elimination anyway, locks in this time
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[multiplayer-desync] applyRosterRemoval: locking in team-elimination",
+        expect.arrayContaining([
+          expect.objectContaining({ id: "host", status: "dead" }),
+          expect.objectContaining({ id: "guest", status: "disconnected" }),
+        ]),
+      );
+      warnSpy.mockRestore();
       // A third player, still connected and alive, must keep the run going
       // even though both of these are gone.
       engine.addPlayer("third", new ScriptedInput());

@@ -1777,6 +1777,21 @@ export class RaycasterEngine {
       p.keysHeld = ps.keysHeld;
       p.ownedWeapons.clear();
       for (const w of ps.ownedWeapons) p.ownedWeapons.add(w);
+      // Diagnostic-only (never behavior-changing): an early-warning signal
+      // for a brewing desync, logged BEFORE the authoritative overwrite
+      // below — if this peer's own local belief about `id`'s status already
+      // disagreed with the host's snapshot, that's worth knowing about
+      // before it potentially becomes a fatal team-elimination mismatch.
+      // See `logTeamEliminationRosterDump`'s own doc comment / the "known
+      // open issue" note in doc/dev/multiplayer-netcode-spec.md.
+      if (this.isMultiplayerSession()) {
+        const wasAlive = p.status === "alive";
+        if (wasAlive !== ps.alive) {
+          console.warn(
+            `[multiplayer-desync] reconciliation snapshot disagrees with local status for "${id}" — local was "${p.status}" (health ${p.health}), host snapshot says ${ps.alive ? "alive" : "dead"} (health ${ps.health})`,
+          );
+        }
+      }
       p.status = ps.alive ? "alive" : "dead";
       p.killScore = ps.killScore;
       p.kills = ps.kills;
@@ -1928,7 +1943,10 @@ export class RaycasterEngine {
       }
       p.keysHeld = 0;
     }
-    if ([...this.players.values()].every((q) => q.status !== "alive")) this.endGame("over");
+    if ([...this.players.values()].every((q) => q.status !== "alive")) {
+      this.logTeamEliminationRosterDump("applyRosterRemoval");
+      this.endGame("over");
+    }
   }
 
   /** Shared position-correction decision for both players and enemies (§4):
@@ -3339,7 +3357,13 @@ export class RaycasterEngine {
    * reaching 0 (see `killPlayer`). Swap absorbs damage 1:1 before health
    * does, so it's spent down first. `source` is telemetry-only (see
    * `telemetry.ts`'s `DamageSource`) — every call site is a first-party
-   * literal, never derived from player input.
+   * literal, never derived from player input. Unlike `updateLowHealthAlarm`'s
+   * `playAlarm()` (deliberately unscoped — see that method's own doc
+   * comment), `playDamage()` here IS scoped to whoever the local peer is
+   * currently watching (`currentlyWatchedPlayerId`) — self while alive, or
+   * their spectate target while dead — so a dead player spectating a
+   * teammate hears a hit exactly when that teammate is actually hit, not for
+   * every roster player's damage indiscriminately.
    */
   private damage(playerId: PlayerId, amount: number, source: DamageSource): void {
     const p = this.players.get(playerId)!;
@@ -3347,7 +3371,7 @@ export class RaycasterEngine {
     if (p.telemetry) recordDamage(p.telemetry, source, amount);
     // Kick the red screen flash back to full strength on any damage taken.
     p.flashFrames = DAMAGE_FLASH_FRAMES;
-    audio.playDamage();
+    if (playerId === this.currentlyWatchedPlayerId(this.localPlayerId)) audio.playDamage();
     let remaining = amount;
     if (p.swap > 0) {
       const absorbed = Math.min(p.swap, remaining);
@@ -3360,6 +3384,25 @@ export class RaycasterEngine {
       if (p.telemetry) recordFatalDamage(p.telemetry, source);
       this.killPlayer(p);
     }
+  }
+
+  /** Diagnostic-only (never behavior-changing): dumps every roster player's
+   * `{id, status, health}` the instant a peer is about to lock in team-
+   * elimination — a "smoking gun" for a future desync incident (a guest
+   * concluding elimination while another peer's own view disagrees). A
+   * player showing `status: "dead"` with `health > 0` would prove a
+   * status/health desync distinct from a legitimate death; `health: 0`
+   * means the bug is elsewhere (damage/hazard application). Gated to
+   * multiplayer only — single-player never has more than one roster entry
+   * and this adds no value there. See doc/dev/multiplayer-netcode-spec.md's
+   * "known open issue" note. */
+  private logTeamEliminationRosterDump(source: string): void {
+    if (!this.isMultiplayerSession()) return;
+    const roster = this.sortedPlayerIds().map((id) => {
+      const p = this.players.get(id)!;
+      return { id, status: p.status, health: p.health };
+    });
+    console.warn(`[multiplayer-desync] ${source}: locking in team-elimination`, roster);
   }
 
   /**
@@ -3389,7 +3432,10 @@ export class RaycasterEngine {
     // "dead"). A still-connected survivor alone keeps playing regardless of
     // how many teammates disconnected — this predicate is false as long as
     // at least one player is genuinely `"alive"`.
-    if ([...this.players.values()].every((q) => q.status !== "alive")) this.endGame("over");
+    if ([...this.players.values()].every((q) => q.status !== "alive")) {
+      this.logTeamEliminationRosterDump("killPlayer");
+      this.endGame("over");
+    }
   }
 
   /**
@@ -3409,6 +3455,18 @@ export class RaycasterEngine {
     p.spectateTargetId = living[(i + 1) % living.length];
   }
 
+  /** The roster id whose life/state `id` is currently watching — their own
+   * id while alive, or their current spectate target's id while dead (or
+   * `id` itself if nobody's left alive to spectate — see
+   * `cycleSpectateTarget`). Single source of truth for "who am I watching
+   * right now", shared by `effectiveCameraFor()` (camera) and `damage()`
+   * (SFX scoping — see that call site's own doc comment). */
+  private currentlyWatchedPlayerId(id: PlayerId): PlayerId {
+    const p = this.players.get(id)!;
+    if (p.status === "alive" || p.spectateTargetId === null) return id;
+    return p.spectateTargetId;
+  }
+
   /** The `Player` whose position/facing `id`'s own render pass (or, for the
    * local player, `render()`) should treat as the camera this frame — that
    * player's own `Player` while alive, or their current spectate target's
@@ -3419,9 +3477,7 @@ export class RaycasterEngine {
    * corrupt what should be inert death-position data, since the `status`
    * gate alone wouldn't stop it. */
   private effectiveCameraFor(id: PlayerId): Player {
-    const p = this.players.get(id)!;
-    if (p.status === "alive" || p.spectateTargetId === null) return p.player;
-    return this.players.get(p.spectateTargetId)!.player;
+    return this.players.get(this.currentlyWatchedPlayerId(id))!.player;
   }
 
   /**

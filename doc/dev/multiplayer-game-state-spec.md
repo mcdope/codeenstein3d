@@ -790,6 +790,12 @@ automap/minimap player *marker* are strictly local-player; teammates appear on
 minimap/automap as distinct-colored markers (team-shared knowledge, same spirit
 as §5). Audio stays local-perspective; remote players' shots may play sounds
 (cosmetic, `Math.random` pitch variance stays fine — it never feeds the sim).
+`damage()`'s own hit SFX is the one deliberate exception to "local-perspective
+means everyone hears everything": it's scoped to whoever the local peer is
+currently watching (self while alive, their spectate target while dead — see
+`currentlyWatchedPlayerId()`), not to every roster player's damage
+indiscriminately, so a dead player spectating a teammate hears a hit exactly
+when that teammate is actually hit.
 
 ### Death in coop
 
