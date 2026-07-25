@@ -913,17 +913,22 @@ function activateMultiplayerSubtab(tab: MultiplayerSubtab): void {
 
 /** Gates only the Host sub-tab on workspace eligibility — Join has no such
  * requirement (a guest receives the map from the host, see
- * `isMultiplayerEligibleWorkspace`'s doc comment). Bounces to Join if Host
- * was selected and just became ineligible, so the UI never leaves a disabled
- * sub-tab showing as selected — as an emergent side effect, a fresh page
- * load with no workspace yet (Host starts `aria-selected="true"` in the
- * markup) auto-bounces to Join on this function's first call below, landing
- * a first-time visitor on the actually-usable sub-tab. */
+ * `isMultiplayerEligibleWorkspace`'s doc comment). Bidirectional: bounces to
+ * Join the instant Host becomes ineligible while selected (so the UI never
+ * leaves a disabled sub-tab showing as selected — a fresh page load with no
+ * workspace yet, Host starting `aria-selected="true"` in the markup, lands
+ * here on this function's first call below), and bounces back to Host the
+ * instant it becomes eligible again while Join is selected — otherwise a
+ * workspace that loads AFTER that initial bounce (or after picking a local,
+ * ineligible one and then a remote one) would permanently strand the user on
+ * Join instead of landing them on Host, its own default view, once hosting
+ * is actually possible again. */
 function updateMultiplayerHostSubtabEnabled(): void {
   const eligible = isMultiplayerEligibleWorkspace();
   multiplayerSubtabHost.disabled = !eligible;
   multiplayerSubtabHost.title = eligible ? "" : MULTIPLAYER_TAB_DISABLED_TITLE;
   if (!eligible && multiplayerSubtabHost.getAttribute("aria-selected") === "true") activateMultiplayerSubtab("join");
+  else if (eligible && multiplayerSubtabJoin.getAttribute("aria-selected") === "true") activateMultiplayerSubtab("host");
 }
 updateMultiplayerTabEnabled();
 
@@ -1072,11 +1077,13 @@ function resetMultiplayerLobbyUi(): void {
   multiplayerJoinConnectButton.disabled = false;
   multiplayerHostCancelButton.hidden = true;
   multiplayerHostCodeWrap.hidden = true;
-  multiplayerGuestCount.hidden = true;
   multiplayerStartSessionButton.hidden = true;
   multiplayerStartSessionButton.disabled = false;
-  multiplayerStartSessionButton.classList.remove("settings-btn-primary");
   multiplayerGuestLiveCount.hidden = true;
+  // Also hides the guest count and clears Start Session's primary styling —
+  // both already conditioned on `activeMultiplayerConnection`'s role, so
+  // reusing it here instead of duplicating that logic keeps the two in sync.
+  updateMultiplayerGuestCountDisplay();
 }
 
 /** Arms the next open guest slot (if any) by publishing a fresh offer under
@@ -1345,7 +1352,7 @@ multiplayerHostCodeCopyButton.addEventListener("click", () => {
     return;
   }
   void navigator.clipboard
-    .writeText(multiplayerHostCode.textContent ?? "")
+    .writeText(multiplayerHostCode.textContent) // a <p>'s .textContent is always a string, never null
     .then(() => {
       const original = multiplayerHostCodeCopyButton.textContent;
       multiplayerHostCodeCopyButton.textContent = "Copied!";

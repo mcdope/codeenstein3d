@@ -713,6 +713,26 @@ describe("runMultiplayerSessionAsGuest", () => {
     expect(handle.getLootDrops().some((d) => d.id?.startsWith("disconnect:host:"))).toBe(true);
   });
 
+  it("fires onRosterChange with the post-removal connected count when a bundle's rosterRemove lands", () => {
+    const channels = linkedChannels();
+    const map = fakeMap({ multiplayerSpawns: [{ x: 2, y: 2 }, { x: 9, y: 9 }] });
+    const onRosterChange = vi.fn();
+    runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map }), undefined, undefined, undefined, onRosterChange);
+
+    const bundle: TickInputBundle = {
+      tick: 0,
+      dt: 1 / 30,
+      levelEpoch: 0,
+      inputs: { host: emptySnapshot(), guest: emptySnapshot() },
+      heldInputFallback: [],
+      rosterRemove: ["host"],
+    };
+    channels.host.input.send(JSON.stringify(bundle));
+
+    expect(onRosterChange).toHaveBeenCalledTimes(1);
+    expect(onRosterChange).toHaveBeenCalledWith(1); // "guest" is the only one left connected
+  });
+
   it("a bundle with no rosterRemove field leaves every roster player's status untouched", () => {
     const channels = linkedChannels();
     const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
@@ -1203,6 +1223,44 @@ describe("runMultiplayerSessionAsGuest", () => {
       const endMessage: LevelTransitionMapEndMessage = { type: "level-transition-map-end", totalChunks: 1 };
       channels.host.reconciliation.send(JSON.stringify(endMessage));
 
+      expect(onTransitionStatus).toHaveBeenCalledTimes(1);
+      expect(onTransitionStatus.mock.calls[0][0]).toEqual(expect.any(String));
+      expect(onTransitionStatus.mock.calls[0][0].length).toBeGreaterThan(0);
+      logSpy.mockRestore();
+    });
+
+    it("surfaces onTransitionStatus when a chunk fails ChunkReassembler.push (negative index)", () => {
+      const channels = linkedChannels();
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const onTransitionStatus = vi.fn();
+      runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult(), undefined, undefined, onTransitionStatus);
+
+      const initMessage: LevelTransitionInitMessage = { type: "level-transition-init", carryovers: {}, gameplaySeed: 1 };
+      channels.host.reconciliation.send(JSON.stringify(initMessage));
+      const chunkMessage: LevelTransitionMapChunkMessage = { type: "level-transition-map-chunk", index: -1, data: "{}" };
+      expect(() => channels.host.reconciliation.send(JSON.stringify(chunkMessage))).not.toThrow();
+
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("oversized level-transition map-chunk"));
+      expect(onTransitionStatus).toHaveBeenCalledTimes(1);
+      expect(onTransitionStatus.mock.calls[0][0]).toEqual(expect.any(String));
+      expect(onTransitionStatus.mock.calls[0][0].length).toBeGreaterThan(0);
+      logSpy.mockRestore();
+    });
+
+    it("surfaces onTransitionStatus when the reassembled transition payload fails JSON.parse", () => {
+      const channels = linkedChannels();
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const onTransitionStatus = vi.fn();
+      runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult(), undefined, undefined, onTransitionStatus);
+
+      const initMessage: LevelTransitionInitMessage = { type: "level-transition-init", carryovers: {}, gameplaySeed: 1 };
+      channels.host.reconciliation.send(JSON.stringify(initMessage));
+      const chunkMessage: LevelTransitionMapChunkMessage = { type: "level-transition-map-chunk", index: 0, data: "not valid json{" };
+      channels.host.reconciliation.send(JSON.stringify(chunkMessage));
+      const endMessage: LevelTransitionMapEndMessage = { type: "level-transition-map-end", totalChunks: 1 };
+      expect(() => channels.host.reconciliation.send(JSON.stringify(endMessage))).not.toThrow();
+
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("unparsable level-transition map payload"));
       expect(onTransitionStatus).toHaveBeenCalledTimes(1);
       expect(onTransitionStatus.mock.calls[0][0]).toEqual(expect.any(String));
       expect(onTransitionStatus.mock.calls[0][0].length).toBeGreaterThan(0);

@@ -1680,12 +1680,25 @@ describe("main.ts — multiplayer connect flow", () => {
       );
     });
 
-    it("enables the Host sub-tab once an eligible workspace (demo campaign) loads", async () => {
+    it("enables the Host sub-tab once an eligible workspace (demo campaign) loads, and bounces back to it from the initial no-workspace Join bounce", async () => {
       await importMain();
+      // No workspace yet — the very first `updateMultiplayerHostSubtabEnabled()`
+      // call already bounced the default `aria-selected="true"` Host view to
+      // Join (see the "starts with..." test above).
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.getAttribute("aria-selected")).toBe(
+        "true",
+      );
+
       document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
       await waitUntil(() => !document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!.disabled);
       const hostSubtab = document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!;
       expect(hostSubtab.title).toBe("");
+      // Real-browser regression: a script/user that loads a workspace then
+      // goes straight for Host-panel controls (e.g. #multiplayer-max-players)
+      // must find Host actually selected, not still stranded on the earlier
+      // no-workspace bounce.
+      expect(hostSubtab.getAttribute("aria-selected")).toBe("true");
+      expect(document.querySelector<HTMLElement>("#multiplayer-subtab-panel-host")!.hidden).toBe(false);
     });
 
     it("disables the Host sub-tab again after a fresh local pick, bouncing to Join if Host was active", async () => {
@@ -1766,6 +1779,65 @@ describe("main.ts — multiplayer connect flow", () => {
       const [pollUrl, pollInit] = fetchMock.mock.calls[1];
       expect(pollUrl).toBe(`${SERVER_URL}/session/R4KJ9X`);
       expect(pollInit.headers).toMatchObject({ "X-Host-Token": "host-tok" });
+    });
+
+    describe("copy session code button", () => {
+      async function createSessionAndShowCode(): Promise<void> {
+        await loadEligibleWorkspace();
+        fetchMock.mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: "host-tok", expiresAt: 9999999999999 }, true, 201));
+        document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
+        readyHostPeerConnection(); // unblocks createHostOffer's ICE-gathering wait
+        await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.textContent === "R4KJ9X");
+      }
+
+      // None of these tests mock a poll response, so `pollForHostAnswer`'s
+      // own real-`setTimeout` retry loop is still in flight when the test
+      // ends — Cancel stops it (bumps the generation/aborts the signal), so
+      // a leftover retry doesn't call the *next* test's fresh `fetchMock`
+      // once its `setTimeout` eventually fires for real.
+      afterEach(() => {
+        const cancelBtn = document.querySelector<HTMLButtonElement>("#multiplayer-host-cancel")!;
+        if (!cancelBtn.hidden) cancelBtn.click();
+      });
+
+      it("copies the displayed code to the clipboard and shows a temporary confirmation", async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        try {
+          await createSessionAndShowCode();
+          const writeText = vi.fn().mockResolvedValue(undefined);
+          Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+
+          const copyBtn = document.querySelector<HTMLButtonElement>("#multiplayer-host-code-copy")!;
+          copyBtn.click();
+          await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("R4KJ9X"));
+          await vi.waitFor(() => expect(copyBtn.textContent).toBe("Copied!"));
+
+          await vi.advanceTimersByTimeAsync(1500);
+          expect(copyBtn.textContent).toBe("Copy");
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it("shows a status error when the clipboard write itself rejects", async () => {
+        await createSessionAndShowCode();
+        const writeText = vi.fn().mockRejectedValue(new Error("denied"));
+        Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+
+        document.querySelector<HTMLButtonElement>("#multiplayer-host-code-copy")!.click();
+        await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Couldn't copy the code — copy it manually.");
+        expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.classList.contains("error")).toBe(true);
+      });
+
+      it("shows a status error instead of throwing when the Clipboard API isn't available at all", async () => {
+        await createSessionAndShowCode();
+        Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+
+        document.querySelector<HTMLButtonElement>("#multiplayer-host-code-copy")!.click();
+        expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe(
+          "Clipboard access isn't available — copy the code manually.",
+        );
+      });
     });
 
     it("re-offers via updateSession() under the same code/hostToken after a bad/hijacked answer, then succeeds", async () => {

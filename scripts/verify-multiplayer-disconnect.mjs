@@ -200,7 +200,7 @@ async function setupSession(browser, engineName) {
   console.log("  Host: creating a session...");
   await hostPage.click("#tab-multiplayer");
   await hostPage.click("#multiplayer-host-create");
-  await hostPage.waitForSelector("#multiplayer-host-code:not([hidden])", { timeout: 15_000 });
+  await hostPage.waitForSelector("#multiplayer-host-code-wrap:not([hidden])", { timeout: 15_000 });
   const code = (await hostPage.textContent("#multiplayer-host-code")).trim();
 
   console.log("  Guest: joining with the host's code...");

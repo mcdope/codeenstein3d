@@ -1216,8 +1216,9 @@ describe("runMultiplayerSessionAsHost", () => {
 
       for (let i = 0; i < COUNTDOWN_TICKS + 1; i++) worker.onmessage?.({ data: { type: "tick", tick: i } } as MessageEvent);
 
-      // No guest to broadcast to or wait an ack from — `waitForAcks([], ...)`
-      // resolves immediately, so the transition completes without needing a
+      // No guest to broadcast to or wait an ack from — the retry loop's own
+      // `pendingIds.length > 0` guard means it never even calls
+      // `waitForAcks`, so the transition completes without needing a
       // timeout or any message traffic at all.
       await vi.waitFor(() => {
         expect(handle.getPlayerPosition("host")).toEqual({ x: 6.5, y: 6.5 });
