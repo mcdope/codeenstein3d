@@ -1864,6 +1864,7 @@ if (isTestHooksActive()) {
         getRngState: () => number | null;
         injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
         debugSetGodMode: (id: string, enabled: boolean) => void;
+        debugClearExitRoomEnemies: () => void;
         hasActiveRenderOffset: (id: string) => boolean;
         getLastReconciliationRngState: () => number | null;
         getPlayerStatus: (id: string) => string | null;
@@ -1968,6 +1969,9 @@ if (isTestHooksActive()) {
     // demo campaign's full combat gauntlet first, while leaving other
     // players (e.g. the guest) fully vulnerable.
     debugSetGodMode: (id, enabled) => activeMultiplayerSession?.debugSetGodMode(id, enabled),
+    // Test-only, mutating — see `RaycasterEngine.debugClearExitRoomEnemies`'s
+    // own doc comment.
+    debugClearExitRoomEnemies: () => activeMultiplayerSession?.debugClearExitRoomEnemies(),
     hasActiveRenderOffset: (id) => activeMultiplayerSession?.hasActiveRenderOffset(id) ?? false,
     // A *frozen* value, unlike getRngState() above — see
     // MultiplayerSessionHandle.getLastReconciliationRngState's own doc

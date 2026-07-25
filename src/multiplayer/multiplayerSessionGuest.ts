@@ -565,6 +565,7 @@ export function runMultiplayerSessionAsGuest(
     getBotPlayerState: (id) => engine?.getBotPlayerState(id) ?? null,
     debugInjectDesync: (injection) => engine!.debugInjectDesync(injection),
     debugSetGodMode: (playerId, enabled) => engine!.debugSetGodMode(playerId, enabled),
+    debugClearExitRoomEnemies: () => engine!.debugClearExitRoomEnemies(),
     // Only ever has one link, toward the host — see this method's own doc
     // comment on `MultiplayerSessionHandle`.
     getConnectionStats: (id) => (connection && id === HOST_PLAYER_ID ? readConnectionStats(connection) : Promise.resolve(null)),

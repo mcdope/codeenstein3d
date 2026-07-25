@@ -610,6 +610,12 @@ describe("runMultiplayerSessionAsGuest", () => {
     expect(() => handle.debugSetGodMode("guest", true)).not.toThrow();
   });
 
+  it("debugClearExitRoomEnemies delegates to the underlying engine", () => {
+    const channels = linkedChannels();
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+    expect(() => handle.debugClearExitRoomEnemies()).not.toThrow();
+  });
+
   it("getLastReconciliationRngState reflects the rngState of the most recently applied snapshot, null before the first one", () => {
     const channels = linkedChannels();
     const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());

@@ -451,6 +451,13 @@ describe("runMultiplayerSessionAsHost", () => {
     expect(() => handle.debugSetGodMode("host", true)).not.toThrow();
   });
 
+  it("debugClearExitRoomEnemies delegates to the underlying engine", () => {
+    const channels = linkedChannels();
+    const worker = fakeWorker();
+    const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
+    expect(() => handle.debugClearExitRoomEnemies()).not.toThrow();
+  });
+
   describe("network/netcode-quality telemetry (step 11 Phase 2b)", () => {
     it("getConnectionStats reads the active candidate pair's currentRoundTripTime off the guest's own link, null for an unknown id", async () => {
       const channels = linkedChannels();
