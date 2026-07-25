@@ -707,9 +707,20 @@ refactor. The split:
   `step`/`burstTo`, headless harnesses) is untouched, and `advance()`'s composed
   behavior stays part of the N=1 compatibility surface below: same call, same
   simulated state, same rendered frame.
-- In multiplayer, ticks call `simulate(FIXED_DT)` alone; a separate local rAF
-  loop calls `render()`. A 144Hz player renders at 144Hz off 30Hz sim state
-  (with mechanism 4's render-offset smoothing layered on the same seam).
+- **Designed** for multiplayer: ticks call `simulate(FIXED_DT)` alone, and a
+  separate local rAF loop calls `render()`, so a 144Hz player renders at 144Hz
+  off 30Hz sim state (with mechanism 4's render-offset smoothing layered on the
+  same seam). **Not what's actually wired up, verified directly**: both
+  `multiplayerSessionHost.ts` and `multiplayerSessionGuest.ts` call the
+  composed `engine.advance(FIXED_DT)` from their own tick handler, and neither
+  (nor anything downstream) ever calls `requestAnimationFrame` — so every
+  peer's rendering is still tick-locked to `TICK_RATE_HZ` today, same as
+  before this split existed. The `simulate(dt)`/`render()` split above is real
+  and shipped (it's what let the multiplayer-only FPS-overlay fix measure real
+  wall-clock time per `advance()` call at all), just not yet composed into a
+  genuinely decoupled render loop — see
+  [`multiplayer-netcode-spec.md`'s own correction on this](multiplayer-netcode-spec.md#dt-unification-fixed-tick-rate-not-measured-wall-clock-time)
+  for the fuller writeup.
 
 ### Shot resolution becomes camera-parameterized
 

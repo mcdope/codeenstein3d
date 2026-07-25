@@ -34,6 +34,7 @@ From there you explore, fight, loot, and make your way to the level's exit tile.
 ## Ending a level
 
 - **Reach the exit** → a **Commit Summary** overlay shows stats ("Lines refactored", "Bugs squashed") and a **Continue** button loads the next level, carrying your health, ammo, and weapons forward. An **Export Map as PNG** button also appears below the canvas — it downloads a top-down image of the level you just cleared, textured the same as what you actually saw in-game, for sharing. It's only ever available for a level you've already finished.
+  - **The exit only works once its own room is clear.** Standing on the exit tile does nothing at all while any enemy that spawned in that same room is still alive — no message, it just doesn't trigger. Clear the room first.
 - **Run out of levels** (you've cleared the whole tree) → **Build Successful**.
 - **Die** → **Kernel Panic**, and you're returned to the file tree.
 

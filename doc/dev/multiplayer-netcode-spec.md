@@ -125,15 +125,26 @@ session start, not a measured per-frame `dt`.**
   source of drift, handled by mechanisms 3/4. Fixed `dt` only removes a *second,
   otherwise-compounding* source of disagreement that would make diagnosing the first
   one harder.)
-- Rendering is **decoupled from the simulation tick rate**: each peer's own
-  `requestAnimationFrame` loop still runs at its native rate and redraws from
-  whatever the most recently completed tick's state is (optionally interpolated —
-  see mechanism 4). A 144Hz-monitor player's *rendering* isn't throttled to 30Hz;
-  only the *simulation* is tick-rate-locked. **This requires an engine-side seam
-  that doesn't exist yet**: today `advance()` simulates *and renders* in one call
-  — the split into `simulate(dt)` + `render()` is specified in
-  [`multiplayer-game-state-spec.md` §6](multiplayer-game-state-spec.md#6-the-n-player-engine-model)
-  (an earlier revision of this bullet silently assumed the split was free).
+- Rendering is **designed to be decoupled from the simulation tick rate**: each
+  peer's own `requestAnimationFrame` loop would run at its native rate and redraw
+  from whatever the most recently completed tick's state is (optionally
+  interpolated — see mechanism 4). A 144Hz-monitor player's *rendering* wouldn't
+  be throttled to 30Hz; only the *simulation* would stay tick-rate-locked. The
+  engine-side seam this needs — splitting `advance()` into `simulate(dt)` +
+  `render()` — **was built** (specified in
+  [`multiplayer-game-state-spec.md` §6](multiplayer-game-state-spec.md#6-the-n-player-engine-model),
+  an earlier revision of this bullet silently assumed the split was free), but
+  **the decoupled rAF render loop itself was never actually wired up for
+  multiplayer**: verified directly against the real driver code —
+  `multiplayerSessionHost.ts`/`multiplayerSessionGuest.ts` both call the
+  composed `engine.advance(FIXED_DT)` from their own tick handler, and neither
+  file (nor anything downstream of them) ever calls `requestAnimationFrame` at
+  all. So today, in practice, every peer's rendering is still tick-locked to
+  `TICK_RATE_HZ` (30Hz) — a 144Hz-monitor player does not currently render
+  multiplayer any smoother than 30fps. This is a real, open gap against the
+  design above, not a design change; closing it (a genuine local rAF loop that
+  calls `render()` independently of the tick handler's `simulate()` calls) is
+  still open work, not scheduled here.
 - `levelTime` (`this.levelTime += dt` each `advance()` call, `engine.ts`) needs no
   special handling under this design: since every peer accumulates the exact same
   sequence of the exact same constant, and IEEE-754 addition (unlike `Math.sin`/
@@ -1132,7 +1143,14 @@ section closes that gap.
    ("Build finishing in N…") rendered locally by each peer. The simulation keeps
    running normally during the countdown — players can keep fighting/looting;
    re-touching or leaving the exit tile doesn't cancel or restart it (simplest
-   rule; a cancelable countdown is a design refinement, not a v1 need).
+   rule; a cancelable countdown is a design refinement, not a v1 need). **Gated
+   on the exit's own room being clear**: touching the exit tile does nothing at
+   all (no countdown starts) while any enemy that spawned in the exit's own room
+   is still alive — same shared-simulation-event semantics, just an added
+   precondition (`RaycasterEngine.checkExit()`'s own `exitRoomHasAliveEnemy()`,
+   which reuses each `Enemy.home` rectangle rather than needing a separate room
+   id). Silent, same as a locked door with no key — no on-screen hint. Applies
+   identically in single-player.
 2. **At countdown expiry, the host drives the transition; guests wait for it.**
    The host: stops ticking level N, computes every player's `EngineCarryover`
    (per-player — each player carries *their own* health/ammo/weapons forward,
@@ -1240,3 +1258,14 @@ real cross-engine float divergence — as a regression alarm, not a claim of
 eternal bit-identical engines. See `doc/dev/testing.md`'s "Cross-browser
 verification" section for the shared cross-browser caveats (confirmed
 CI-only WebRTC/ICE limitations, timing lessons) all of these scripts inherit.
+
+`verify:multiplayer-transition` above only proves §7's mechanism across a
+*single* level boundary (and makes the host invulnerable to keep combat
+variance out of the result). `verify:multiplayer-campaign`
+(`scripts/verify-multiplayer-campaign.mjs`) closes the remaining gap: a real
+2-player/easy/Casual session, both peers bot-driven with real combat (no god
+mode), chaining as many consecutive level transitions as the team can survive
+— deliberately not stopped at any fixed level, all the way to a real
+`"campaign-complete"` if it can get there. Chromium-only, starts its own
+isolated dev+signaling server pair, and **not wired into CI** — its runtime
+has no fixed upper bound, unlike every script above — so it's run manually.
