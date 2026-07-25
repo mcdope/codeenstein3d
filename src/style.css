@@ -225,8 +225,16 @@ body {
   accent-color: var(--accent);
 }
 
-.multiplayer-code {
+.multiplayer-code-wrap {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
   margin: 10px 0 0;
+}
+
+.multiplayer-code {
+  flex: 1;
+  margin: 0;
   padding: 8px;
   font-size: 20px;
   font-weight: 700;
@@ -236,6 +244,22 @@ body {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
+}
+
+.multiplayer-code-copy-btn {
+  flex: none;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.multiplayer-code-copy-btn:hover {
+  background: var(--bg-hover);
 }
 
 #multiplayer-status {
@@ -313,6 +337,22 @@ body {
 
 .settings-btn:hover {
   background: var(--bg-hover);
+}
+
+/* Marks the Start Session button as the primary next action once at least
+ * one guest has connected — same accent treatment as #select-workspace et
+ * al., layered on top of .settings-btn instead of duplicating its layout, so
+ * it doesn't blend into the sidebar's ambient Cancel/Create buttons anymore
+ * (see updateMultiplayerGuestCountDisplay in main.ts). */
+.settings-btn.settings-btn-primary {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 700;
+}
+
+.settings-btn.settings-btn-primary:hover {
+  filter: brightness(1.12);
 }
 
 /* The "Export Map as PNG" button shown below the canvas right after

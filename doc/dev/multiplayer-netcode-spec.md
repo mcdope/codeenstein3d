@@ -1099,9 +1099,31 @@ section closes that gap.
    (`ReplayLevelSegment`: one seed, one frame sequence, per level). No cross-level
    PRNG or tick state to keep aligned.
 4. **Guests acknowledge; the host starts ticking level N+1 when every connected
-   guest has acked or `TRANSITION_ACK_TIMEOUT_MS` elapses** — a guest that never
-   acks in time is handled by the existing disconnect path (§5), not a special
-   case. Because both channels are reliable/ordered, a slow guest still applying
+   guest has acked, or after retrying and still not hearing back.** The host
+   waits `TRANSITION_ACK_TIMEOUT_MS` per attempt, and resends the transition
+   sequence — only to guests still pending — up to `TRANSITION_RETRY_LIMIT`
+   extra times before giving up on whichever guests never acked and proceeding
+   anyway. This closes a real gap a v1 "just wait once" design left open: a
+   guest's own chunk-reassembly/parse/dimension-validation failure (§7 below
+   references the same three checks §6's map-transfer validation already
+   applies) can silently abandon its half of the handshake while the transport
+   itself stays healthy — that guest has already reset its own local
+   transition state and is ready to accept a fresh `level-transition-init` on
+   the very next attempt, so a bounded resend recovers it without a full
+   retry/nack protocol. A guest still pending once retries are exhausted falls
+   into the existing disconnect path (§5) via the ordinary connection-state
+   signal if it's genuinely gone — not a special case here — but if the
+   transport itself stayed healthy the whole time (the guest is just stuck on
+   a stale `levelEpoch`, still failing to reassemble a retried payload, or the
+   host itself never got a healthy connection to retry over), the guest's own
+   `armFellBehindTimer` (`multiplayerSessionGuest.ts`) ends its session with
+   reason `"level-transition-failed"` once the gap persists past
+   `DISCONNECT_GRACE_MS` — deliberately distinct from `"host-disconnected"`,
+   since reporting a transport disconnect that never actually happened would
+   be misleading. Guest-side validation failures also call an optional
+   `onTransitionStatus` callback so `main.ts` can surface the wait to the
+   player instead of leaving it silent (previously only `console.log`ed).
+   Because both channels are reliable/ordered, a slow guest still applying
    level-N bundles when the transition payload arrives simply processes it in
    order after them — no interleaving hazard.
 5. **Dead players revive at the transition** — per the coop death rule in

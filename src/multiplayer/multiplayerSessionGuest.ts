@@ -83,6 +83,23 @@ export function runMultiplayerSessionAsGuest(
    * `ConnectionStateSource`'s doc comment). Monitored here for the reverse
    * direction: the host going away, not a guest. */
   connection?: ConnectionStateSource,
+  /** Fired whenever an in-flight level-transition payload fails validation on
+   * this guest (chunk reassembly, JSON parse, or dimension check — see the
+   * three catch blocks below). These failures otherwise only ever
+   * `console.log`, despite genuinely stalling this guest on the old level
+   * until the host's own bounded retry (`TRANSITION_RETRY_LIMIT`) lands a
+   * fresh attempt, or `armFellBehindTimer` below gives up — this is
+   * `main.ts`'s hook for surfacing that wait to the player instead of
+   * leaving it silent. */
+  onTransitionStatus?: (message: string) => void,
+  /** Fired whenever the roster shrinks (a guest disconnects and its removal
+   * grace period expires — see `applyRosterRemoval` below), with the number
+   * of still-connected players. `main.ts`'s hook for a guest-side "N/total
+   * players connected" readout, mirroring what the host already shows itself
+   * via `updateMultiplayerGuestCountDisplay` — a guest has no equivalent
+   * live view otherwise, since `currentResult.roster` is fixed at Start
+   * Session and never updated in place. */
+  onRosterChange?: (connectedCount: number) => void,
 ): MultiplayerSessionHandle {
   let lastAppliedTick: number | null = null;
   let lastReconciliationRngState: number | null = null;
@@ -222,10 +239,12 @@ export function runMultiplayerSessionAsGuest(
   // arrive while this guest is still reassembling that transition's map over
   // the independent `reconciliation` channel — so this only ends the session
   // if the gap persists past `DISCONNECT_GRACE_MS` (cleared the instant the
-  // transition lands and epochs re-match, see the input listener). Ends the
-  // same provisional-stats way a host disconnect does: a missed transition is,
-  // for this guest, a lost connection to the shared session in all but the
-  // transport's literal `connectionState`.
+  // transition lands and epochs re-match, see the input listener). Ends with
+  // the same provisional-stats shape a host disconnect does, but a distinct
+  // `"level-transition-failed"` reason — the transport here is (as far as
+  // this guest can tell) perfectly healthy the whole time, so labeling this
+  // "host disconnected" would be actively misleading (see
+  // `sessionEngine.ts`'s `SessionEndReason` doc comment).
   const armFellBehindTimer = (): void => {
     if (fellBehindTimer !== null) return; // already tracked (no `ended` guard
     // needed — the input listener that calls this is unsubscribed synchronously
@@ -235,7 +254,7 @@ export function runMultiplayerSessionAsGuest(
       const stats = engine!.render();
       const comparison = engine!.rosterSnapshot();
       teardown();
-      onSessionEnded?.(stats, "host-disconnected", comparison);
+      onSessionEnded?.(stats, "level-transition-failed", comparison);
     }, DISCONNECT_GRACE_MS);
   };
   const clearFellBehindTimer = (): void => {
@@ -330,7 +349,13 @@ export function runMultiplayerSessionAsGuest(
     // ordering the host itself uses (see its own worker.onmessage handler),
     // so every peer reaches the exact same tick's elimination check/loot-drop
     // state identically.
-    if (bundle.rosterRemove) engine.applyRosterRemoval(bundle.rosterRemove);
+    if (bundle.rosterRemove) {
+      engine.applyRosterRemoval(bundle.rosterRemove);
+      // Narrowing doesn't cross into the `.filter()` closure below (`engine`
+      // is a `let`), hence the local const.
+      const activeEngine = engine;
+      onRosterChange?.(currentResult.roster.filter((id) => activeEngine.getPlayerStatus(id) !== "disconnected").length);
+    }
     engine.advance(FIXED_DT);
     lastAppliedTick = bundle.tick;
   });
@@ -434,6 +459,7 @@ export function runMultiplayerSessionAsGuest(
             transitionReassembler?.push(message.data, message.index);
           } catch (err) {
             console.log(`[multiplayer] discarding oversized level-transition map-chunk: ${err}`);
+            onTransitionStatus?.("Level transition data invalid — waiting for the host to resend…");
           }
           return;
         }
@@ -448,6 +474,7 @@ export function runMultiplayerSessionAsGuest(
             mapWithoutVisited = transitionReassembler.finish<Omit<GameMap, "visited">>();
           } catch (err) {
             console.log(`[multiplayer] discarding unparsable level-transition map payload: ${err}`);
+            onTransitionStatus?.("Level transition data invalid — waiting for the host to resend…");
             transitionReassembler = null;
             transitionCarryovers = null;
             transitionGameplaySeed = null;
@@ -457,6 +484,7 @@ export function runMultiplayerSessionAsGuest(
           // them — see `isValidMapDimensions`'s own doc comment.
           if (!isValidMapDimensions(mapWithoutVisited.width, mapWithoutVisited.height, MAX_TRANSFERRED_MAP_DIMENSION)) {
             console.log(`[multiplayer] discarding level-transition map with invalid or oversized dimensions`);
+            onTransitionStatus?.("Level transition data invalid — waiting for the host to resend…");
             transitionReassembler = null;
             transitionCarryovers = null;
             transitionGameplaySeed = null;

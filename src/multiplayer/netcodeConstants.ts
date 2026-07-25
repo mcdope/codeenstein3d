@@ -43,14 +43,27 @@ export const RECONCILE_INTERVAL_TICKS = 30;
  * every other constant in this file. */
 export const DISCONNECT_GRACE_MS = 10_000;
 
-/** How long (real wall-clock milliseconds) the host waits for every
- * connected guest's `level-transition-ack` before proceeding to
- * `startLevel()` on the new payload anyway — a guest that never acks in
- * time is presumed gone and falls into the existing disconnect path via the
- * same connection-state signal, not a special case here. A reasoned
+/** How long (real wall-clock milliseconds) the host waits for a connected
+ * guest's `level-transition-ack` before retrying the send, up to
+ * `TRANSITION_RETRY_LIMIT` extra times — a guest that still hasn't acked
+ * once retries are exhausted is presumed gone and falls into the existing
+ * disconnect path via the same connection-state signal, not a special case
+ * here. A reasoned starting point, not a validated value, same caveat as
+ * every other constant in this file. */
+export const TRANSITION_ACK_TIMEOUT_MS = 10_000;
+
+/** How many times the host resends a level-transition sequence to a guest
+ * that hasn't acked within `TRANSITION_ACK_TIMEOUT_MS`, before giving up on
+ * that guest and proceeding to the next level anyway. Closes a real gap: a
+ * guest's chunk-reassembly/parse/dimension-validation failure (see
+ * `multiplayerSessionGuest.ts`) can silently abandon its half of the
+ * handshake while the transport itself stays healthy — that guest has
+ * already reset its own local transition state and is ready to accept a
+ * fresh `level-transition-init` on the very next attempt, so a bounded
+ * resend recovers it without needing a full retry/nack protocol. A reasoned
  * starting point, not a validated value, same caveat as every other
  * constant in this file. */
-export const TRANSITION_ACK_TIMEOUT_MS = 10_000;
+export const TRANSITION_RETRY_LIMIT = 1;
 
 /** Above this much buffered-but-not-yet-transmitted data on a chunked
  * `RTCDataChannel` transfer (session setup's/a level transition's `GameMap`

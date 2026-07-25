@@ -26,11 +26,12 @@
  * comment) — it captures every connected player's own carryover, asks the
  * injected `findNextLevel` for the next level's content, and either
  * broadcasts a chunked `LevelTransitionMessage` sequence and calls
- * `startLevel()` again once every guest has acked (or
- * `TRANSITION_ACK_TIMEOUT_MS` elapses — a guest that never acks falls into
- * the disconnect path via the same connection-state signal, not a special
- * case here), or, once genuinely out of content, ends the session with
- * reason `"campaign-complete"`.
+ * `startLevel()` again once every guest has acked (retrying up to
+ * `TRANSITION_RETRY_LIMIT` times for whichever guests haven't, waiting
+ * `TRANSITION_ACK_TIMEOUT_MS` per attempt — a guest that still hasn't acked
+ * once retries are exhausted falls into the disconnect path via the same
+ * connection-state signal, not a special case here), or, once genuinely out
+ * of content, ends the session with reason `"campaign-complete"`.
  *
  * Step 10 (N-player): `channels`/a single `connection` became `links: Map<
  * PlayerId, HostGuestLink>` — one entry per connected guest (host + up to 3
@@ -64,6 +65,7 @@ import {
   MAP_CHUNK_SIZE_BYTES,
   RECONCILE_INTERVAL_TICKS,
   TRANSITION_ACK_TIMEOUT_MS,
+  TRANSITION_RETRY_LIMIT,
 } from "./netcodeConstants";
 import { TokenBucket } from "./tokenBucket";
 import type {
@@ -332,20 +334,23 @@ export function runMultiplayerSessionAsHost(
       }),
     );
   }
-  function waitForAcks(ids: readonly PlayerId[], timeoutMs: number): Promise<void> {
-    if (ids.length === 0) return Promise.resolve();
+  /** Resolves with whichever `ids` never acked within `timeoutMs` (empty once
+   * every one did) — the caller uses this to decide who still needs a retry,
+   * rather than this function discarding that information itself. */
+  function waitForAcks(ids: readonly PlayerId[], timeoutMs: number): Promise<Set<PlayerId>> {
+    if (ids.length === 0) return Promise.resolve(new Set());
     return new Promise((resolve) => {
       const remaining = new Set(ids);
       const timer = setTimeout(() => {
         onAckReceived = null;
-        resolve();
+        resolve(remaining);
       }, timeoutMs);
       onAckReceived = (id) => {
         remaining.delete(id);
         if (remaining.size === 0) {
           clearTimeout(timer);
           onAckReceived = null;
-          resolve();
+          resolve(remaining);
         }
       };
     });
@@ -451,38 +456,52 @@ export function runMultiplayerSessionAsHost(
 
       // Fanned out to every guest CONCURRENTLY, not sequentially (step 10):
       // `sendJsonSequence` awaits backpressure per message, so a sequential
-      // loop here would multiply wall-clock time by guest count. Each guest's
-      // failure is handled independently — it falls into its own "never acked
-      // in time" disconnect path below, exactly like a merely-slow guest,
-      // rather than aborting every other guest's transfer.
-      await Promise.all(
-        guestIds.map(async (id) => {
-          const channel = links.get(id)?.channels.reconciliation;
-          if (!channel || channel.readyState !== "open") return;
-          try {
-            await sendJsonSequence(channel, messages);
-          } catch (err) {
-            // No special handling needed: a guest that never receives a
-            // complete transition also never acks it, and falls into the
-            // disconnect path below via the ordinary "never acked in time"
-            // signal — the same outcome a guest that was simply gone already
-            // produces, so a failed send here doesn't need its own separate
-            // recovery path.
-            console.log(`[multiplayer] level-transition send to ${id} failed, it will time out via the normal ack path: ${err}`);
-          }
-        }),
-      );
-
-      // A guest that never acks in time falls into the disconnect path via the
-      // same connection-state signal once it's genuinely gone — not handled
-      // specially here; this just stops waiting and proceeds regardless.
+      // loop here would multiply wall-clock time by guest count.
+      //
+      // Retried up to `TRANSITION_RETRY_LIMIT` times for whichever guests
+      // still haven't acked after a round — closes a real gap where a
+      // guest's own chunk-reassembly/parse/dimension-validation failure (see
+      // `multiplayerSessionGuest.ts`) silently abandons its half of the
+      // handshake while the transport stays healthy: that guest has already
+      // reset its own local transition state and is ready to accept a fresh
+      // attempt. A guest still pending once retries are exhausted falls into
+      // the disconnect path below via the ordinary connection-state signal,
+      // exactly like a merely-slow or genuinely-gone guest — not handled
+      // specially here.
+      //
       // Guests whose disconnect grace has already fully expired (in
       // `neutralInputIds` with no corresponding active `graceTimers` entry)
-      // are excluded up front — they can never ack again, so waiting on them
-      // would only ever burn the full timeout on every subsequent transition.
-      const ackWaitIds = guestIds.filter((id) => !neutralInputIds.has(id) || graceTimers.has(id));
-      await waitForAcks(ackWaitIds, TRANSITION_ACK_TIMEOUT_MS);
-      if (ended) return;
+      // are excluded up front, and re-excluded after every round — they can
+      // never ack again, so retrying/waiting on them would only ever burn the
+      // full timeout budget for nothing.
+      let pendingIds = guestIds.filter((id) => !neutralInputIds.has(id) || graceTimers.has(id));
+      for (let attempt = 0; attempt <= TRANSITION_RETRY_LIMIT && pendingIds.length > 0; attempt++) {
+        if (attempt > 0) {
+          console.log(`[multiplayer] retrying level-transition send to ${pendingIds.join(", ")} (attempt ${attempt}/${TRANSITION_RETRY_LIMIT})`);
+        }
+        await Promise.all(
+          pendingIds.map(async (id) => {
+            const channel = links.get(id)?.channels.reconciliation;
+            if (!channel || channel.readyState !== "open") return;
+            try {
+              await sendJsonSequence(channel, messages);
+            } catch (err) {
+              // No special handling needed: a guest that never receives a
+              // complete transition also never acks it, and falls into the
+              // next retry round (or the disconnect path once retries are
+              // exhausted) via the ordinary "never acked in time" signal —
+              // the same outcome a guest that was simply gone already
+              // produces, so a failed send here doesn't need its own
+              // separate recovery path.
+              console.log(`[multiplayer] level-transition send to ${id} failed, it will retry/time out via the normal ack path: ${err}`);
+            }
+          }),
+        );
+        if (ended) return;
+        const stillPending = await waitForAcks(pendingIds, TRANSITION_ACK_TIMEOUT_MS);
+        if (ended) return;
+        pendingIds = pendingIds.filter((id) => stillPending.has(id) && (!neutralInputIds.has(id) || graceTimers.has(id)));
+      }
 
       currentResult = { ...currentResult, map: next.map, gameplaySeed: next.gameplaySeed };
       startLevel(currentResult, carryovers);

@@ -60,6 +60,7 @@ import {
   drawKillStreakToast,
   drawLoreOverlay,
   drawPauseOverlay,
+  drawSpectatingBanner,
 } from "./hud";
 import { drawWeapon } from "./viewmodel";
 import { drawAutomap } from "./automap";
@@ -499,6 +500,14 @@ export interface EngineStats {
    * campaign (see `EngineCarryover.priorPlayerStats`) — the run-end stats
    * screen's cumulative totals. */
   runPlayerStats?: PlayerFacingStats;
+  /** The local player's own life state. `"dead"` while the run keeps going
+   * (a multiplayer teammate still alive) means the local view has switched
+   * to spectating — see `spectateTargetId` and `killPlayer()`. */
+  status: PlayerStatus;
+  /** Which living teammate's camera a dead local player is currently
+   * following (see `cycleSpectateTarget()`), or `null` if nobody's left
+   * alive to spectate. Always `null` while `status` is `"alive"`. */
+  spectateTargetId: PlayerId | null;
 }
 
 /** Host callbacks. All optional. */
@@ -2587,6 +2596,15 @@ export class RaycasterEngine {
     // health/ammo/keys always stay visible and live.
     const stats = this.buildStats();
     drawHud(this.ctx, stats);
+    // Multiplayer-only: in single-player, `killPlayer()`/`endGame("over")`
+    // fire on this same terminal frame (see `endGame()`'s doc comment for
+    // why the state flip and the game-over handoff are split), so `stats`
+    // briefly reports `status: "dead"` right before the end-of-run overlay
+    // takes over — without this guard, a single-player death would flash
+    // this banner for exactly one frame.
+    if (this.isMultiplayerSession() && stats.status === "dead") {
+      drawSpectatingBanner(this.ctx, stats.spectateTargetId);
+    }
     if (local.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
     // Transient feedback only — not drawn in the paused/automap/lore render
     // branches, unlike the FPS overlay, since a 2-second confirmation
@@ -4071,6 +4089,8 @@ export class RaycasterEngine {
       runScoreBreakdown,
       levelPlayerStats,
       runPlayerStats,
+      status: local.status,
+      spectateTargetId: local.spectateTargetId,
     };
   }
 }
