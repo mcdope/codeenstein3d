@@ -168,6 +168,16 @@ export function buildSessionEngine(options: SessionEngineOptions): SessionEngine
   }
   engine.startExternallyDriven();
   localSampler.attach();
+  // Same reasoning as `main.ts`'s own per-level `canvas.focus()` call
+  // (`launchLevel()`): this function rebinds a fresh `InputController` on
+  // every level transition too (`startLevel()` in
+  // `multiplayerSessionHost.ts`/`Guest.ts` re-invokes it), and the *old*
+  // controller's own `detach()` already released pointer lock — without
+  // this, the very first keypress after a transition is silently swallowed
+  // until the player clicks the canvas themselves. Harmless/idempotent at
+  // the initial session start too, where the canvas is already focused via
+  // `main.ts`'s `beginMultiplayerLevel()`.
+  canvas.focus();
 
   return { engine, myInput, otherInputs, localSampler };
 }
