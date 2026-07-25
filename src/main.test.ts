@@ -1674,7 +1674,7 @@ describe("main.ts — multiplayer connect flow", () => {
       // showing as selected.
       const hostSubtab = document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!;
       expect(hostSubtab.disabled).toBe(true);
-      expect(hostSubtab.title).toContain("GitHub-loaded repo or the Demos campaign");
+      expect(hostSubtab.title).toContain("Hosting requires a GitHub-loaded repo or the Demos campaign");
       expect(document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.getAttribute("aria-selected")).toBe(
         "true",
       );
@@ -3925,7 +3925,8 @@ describe("main.ts — multiplayer connect flow", () => {
       }
     });
 
-    it("guest: session ends (status + comparison table shown) once every player dies", async () => {
+    it("guest: session ends (status + comparison table shown) once every player dies, and dismissing it restores the origin launch tab", async () => {
+      const raf = installRaf({ stubClock: true });
       await loadEligibleWorkspace();
       await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
       document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
@@ -3993,14 +3994,10 @@ describe("main.ts — multiplayer connect flow", () => {
 
       expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Multiplayer session ended — every player was eliminated.");
       // The end-of-run comparison table (multiplayer step 9) is drawn on the
-      // canvas itself and blocks until dismissed — resetToFileTree() no
-      // longer fires immediately (see onMultiplayerSessionEnded's own doc
+      // canvas itself and blocks until dismissed — resetToFileTreeAfterMultiplayerSession()
+      // no longer fires immediately (see onMultiplayerSessionEnded's own doc
       // comment), so the canvas area is still showing right after game-over,
-      // with both roster players' rows drawn on it. Dismissing the overlay
-      // (past its own real-time dismiss lock) and confirming the eventual
-      // return to the file tree is exercised end-to-end by the Playwright
-      // verify scripts instead (real timing, no clock-stub gymnastics needed
-      // there) — see `scripts/verify-multiplayer-disconnect.mjs`.
+      // with both roster players' rows drawn on it.
       expect(document.querySelector<HTMLElement>(".canvas-area")!.hasAttribute("hidden")).toBe(false);
       const ctx = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!.getContext("2d") as unknown as {
         fillText: { mock: { calls: unknown[][] } };
@@ -4009,6 +4006,88 @@ describe("main.ts — multiplayer connect flow", () => {
       expect(texts).toContain("MULTIPLAYER: TEAM ELIMINATED");
       expect(texts).toContain("Host");
       expect(texts).toContain("Guest");
+
+      // Dismiss the overlay (past its own real-time DISMISS_LOCK_MS, same
+      // pattern as dismissBriefing() elsewhere in this file) and confirm the
+      // sidebar returns to the "demo" tab this workspace was actually loaded
+      // from, not left stranded on the idle Multiplayer tab.
+      raf.flush(1, 1300);
+      window.dispatchEvent(new KeyboardEvent("keydown", { code: "Enter" }));
+      expect(document.querySelector<HTMLButtonElement>("#tab-demo")!.getAttribute("aria-selected")).toBe("true");
+      expect(document.querySelector<HTMLElement>("#tab-panel-demo")!.hidden).toBe(false);
+      expect(document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.getAttribute("aria-selected")).toBe("false");
+      expect(document.querySelector<HTMLElement>("#tab-panel-multiplayer")!.hidden).toBe(true);
+      raf.restore();
+    });
+
+    it("guest: dismissing the end-of-session overlay falls back to the Local tab when no workspace was ever loaded", async () => {
+      const raf = installRaf({ stubClock: true });
+      await importMain();
+      // Join has no workspace dependency — reachable (and, per the initial
+      // no-workspace bounce, already selected) without ever loading one.
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({
+            code: "R4KJ9X",
+            offer: "offer-sdp",
+            answer: null,
+            campaignName: "demo-campaign",
+            displayName: null,
+            playerCount: 1,
+          }),
+        )
+        .mockResolvedValueOnce(noTurnRelayResponse())
+        .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
+
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "r4kj9x";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
+      const pc = FakeRTCPeerConnection.instances.at(-1)!;
+      pc.simulateIceGatheringComplete();
+      await waitUntil(() => pc.remoteDescription !== null);
+      await waitUntil(() => fetchMock.mock.calls.length >= 2);
+
+      const input = new FakeRTCDataChannel("input");
+      const reconciliation = new FakeRTCDataChannel("reconciliation");
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Establishing connection…");
+      pc.simulateIncomingDataChannel(input);
+      pc.simulateIncomingDataChannel(reconciliation);
+      input.simulateOpen();
+      reconciliation.simulateOpen();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      const send = (msg: unknown): boolean => reconciliation.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(msg) }));
+      await flushAsync();
+      send({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ });
+      send({
+        type: "session-init",
+        roster: ["guest", "host"],
+        assignedId: "guest",
+        tickRateHz: 30,
+        fixedDt: 1 / 30,
+        inputDelayTicks: 3,
+        gameplaySeed: 1,
+        difficulty: "normal",
+        playerCount: 2,
+      });
+      const { chunkJson } = await import("./multiplayer/chunkedTransfer");
+      const chunks = chunkJson(fixtureMapWithoutVisited(true), 16 * 1024);
+      chunks.forEach((data, index) => send({ type: "map-chunk", index, data }));
+      send({ type: "map-end", totalChunks: chunks.length });
+      await flushAsync();
+
+      for (let i = 0; i < 300 && document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent !== "Multiplayer session ended — every player was eliminated."; i++) {
+        const bundle = { tick: i, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [], levelEpoch: 0 };
+        input.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(bundle) }));
+      }
+      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Multiplayer session ended — every player was eliminated.");
+
+      raf.flush(1, 1300);
+      window.dispatchEvent(new KeyboardEvent("keydown", { code: "Enter" }));
+      expect(document.querySelector<HTMLButtonElement>("#tab-local")!.getAttribute("aria-selected")).toBe("true");
+      expect(document.querySelector<HTMLElement>("#tab-panel-local")!.hidden).toBe(false);
+      raf.restore();
     });
 
     it("host: shows an error status if session setup fails (build-version mismatch)", async () => {

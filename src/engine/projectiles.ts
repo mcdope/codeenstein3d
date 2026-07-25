@@ -18,17 +18,22 @@ const PROJECTILE_DAMAGE = 8;
 /** Bolt collision half-size, in tiles. */
 const PROJECTILE_RADIUS = 0.15;
 
-/** One in-flight enemy bolt, in world (tile) space. */
+/** One in-flight enemy bolt, in world (tile) space. `targetId` locks the bolt
+ * to whichever player it was fired at — see `updateProjectiles`' own doc
+ * comment for why this matters (a bolt must never redirect onto a different
+ * player just because it geometrically passes through them). */
 export interface Projectile {
   x: number;
   y: number;
   vx: number;
   vy: number;
   damage: number;
+  targetId: string;
 }
 
-/** Spawn a bolt at (x,y) heading toward (tx,ty), optionally rotated off dead-
- * center by a random angle up to `aimSpreadDeg` in either direction —
+/** Spawn a bolt at (x,y) heading toward (tx,ty) — the position of the player
+ * identified by `targetId` at the moment of firing — optionally rotated off
+ * dead-center by a random angle up to `aimSpreadDeg` in either direction —
  * `DifficultyMultipliers.enemyAimSpreadDeg`'s actual effect (0 = perfectly
  * aimed, same as before that difficulty axis existed). `damageMultiplier`
  * scales the base damage (Elite enemies hit harder — see `enemyAi.ts`).
@@ -42,6 +47,7 @@ export function spawnProjectile(
   y: number,
   tx: number,
   ty: number,
+  targetId: string,
   damageMultiplier = 1,
   aimSpreadDeg = 0,
   rng: () => number = Math.random,
@@ -66,6 +72,7 @@ export function spawnProjectile(
     vx: dirX * PROJECTILE_SPEED,
     vy: dirY * PROJECTILE_SPEED,
     damage: PROJECTILE_DAMAGE * damageMultiplier,
+    targetId,
   });
 }
 
@@ -78,13 +85,18 @@ export interface ProjectileTarget {
 }
 
 /**
- * Advance every bolt by `dt`, removing any that struck a living player (whose
- * AABB is a box of half-width `player.radius`) or hit a wall / left the map.
- * `targets` must already be in sorted-`id` order (the caller's contract, same
- * as `enemyAi.ts`'s `updateEnemies`) — a bolt tests every target in that
- * order and stops at the first hit, so two players standing close enough to
- * both be in reach resolve deterministically. Returns per-player damage
- * attribution for whoever a bolt actually landed on.
+ * Advance every bolt by `dt`, removing any that struck their locked target
+ * (whose AABB is a box of half-width `player.radius`) or hit a wall / left
+ * the map. A bolt can only ever hit the single player it was fired at
+ * (`targetId`, set once at `spawnProjectile()` time) — never a different
+ * player it happens to fly past. This matters specifically when the original
+ * target dies mid-flight: without this lock, an in-flight bolt aimed at a
+ * now-dead player would keep traveling its old straight line and could land
+ * on a completely unrelated player who was never actually threatened by the
+ * enemy that fired it. If the locked target isn't in `targets` anymore
+ * (dead/disconnected), the bolt simply can't hit anyone this frame — it
+ * keeps flying harmlessly until it hits a wall or leaves the map. Returns
+ * per-player damage attribution for whoever a bolt actually landed on.
  */
 export function updateProjectiles(
   list: Projectile[],
@@ -93,23 +105,22 @@ export function updateProjectiles(
   dt: number,
 ): Map<string, number> {
   const damage = new Map<string, number>();
+  const targetsById = new Map(targets.map((t) => [t.id, t]));
   for (let i = list.length - 1; i >= 0; i--) {
     const p = list[i];
     p.x += p.vx * dt;
     p.y += p.vy * dt;
 
     // Player AABB hit takes precedence (you can get shot with your back to a wall).
-    let hit = false;
-    for (const target of targets) {
+    const target = targetsById.get(p.targetId);
+    if (target) {
       const reach = target.player.radius + PROJECTILE_RADIUS;
       if (Math.abs(p.x - target.player.posX) < reach && Math.abs(p.y - target.player.posY) < reach) {
         damage.set(target.id, (damage.get(target.id) ?? 0) + p.damage);
         list.splice(i, 1);
-        hit = true;
-        break;
+        continue;
       }
     }
-    if (hit) continue;
     // Wall (or out-of-bounds, which isWall reports as solid) destroys the bolt.
     if (isWall(map, Math.floor(p.x), Math.floor(p.y))) {
       list.splice(i, 1);

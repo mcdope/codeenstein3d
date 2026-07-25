@@ -62,23 +62,24 @@ function clearZBuffer(value: number): Float64Array {
 describe("spawnProjectile", () => {
   it("aims a bolt's velocity at the target, scaled to the fixed travel speed", () => {
     const list: Projectile[] = [];
-    spawnProjectile(list, 0, 0, 3, 4); // 3-4-5 triangle
+    spawnProjectile(list, 0, 0, 3, 4, "p1"); // 3-4-5 triangle
     expect(list).toHaveLength(1);
     // Unit vector (0.6,0.8) * PROJECTILE_SPEED(5) = (3,4).
     expect(list[0].vx).toBeCloseTo(3);
     expect(list[0].vy).toBeCloseTo(4);
     expect(list[0].damage).toBe(8);
+    expect(list[0].targetId).toBe("p1");
   });
 
   it("scales damage by the given multiplier", () => {
     const list: Projectile[] = [];
-    spawnProjectile(list, 0, 0, 1, 0, 2);
+    spawnProjectile(list, 0, 0, 1, 0, "p1", 2);
     expect(list[0].damage).toBe(16);
   });
 
   it("falls back to a zero-length direction without dividing by zero", () => {
     const list: Projectile[] = [];
-    expect(() => spawnProjectile(list, 5, 5, 5, 5)).not.toThrow();
+    expect(() => spawnProjectile(list, 5, 5, 5, 5, "p1")).not.toThrow();
     expect(list[0].vx).toBe(0);
     expect(list[0].vy).toBe(0);
   });
@@ -86,7 +87,7 @@ describe("spawnProjectile", () => {
 
 describe("updateProjectiles", () => {
   function bolt(overrides: Partial<Projectile> = {}): Projectile {
-    return { x: 0, y: 0, vx: 0, vy: 0, damage: 8, ...overrides };
+    return { x: 0, y: 0, vx: 0, vy: 0, damage: 8, targetId: "p1", ...overrides };
   }
 
   /** One-target roster, the N=1 shape every existing test exercises. */
@@ -172,14 +173,27 @@ describe("updateProjectiles", () => {
     expect(list[0].x).toBeCloseTo(8);
   });
 
-  it("resolves a bolt against the first target in sorted order when two players are both in reach", () => {
+  it("only ever hits its own locked target, even when another player is equally in reach", () => {
     const playerA = facingPlayer();
-    const playerB = facingPlayer();
+    const playerB = facingPlayer(); // same spawn -> same position as playerA
     const map = fakeMap();
-    const list = [bolt({ x: playerA.posX, y: playerA.posY, damage: 8 })];
+    const list = [bolt({ x: playerA.posX, y: playerA.posY, damage: 8, targetId: "a" })];
     const damage = updateProjectiles(list, [{ id: "a", player: playerA }, { id: "b", player: playerB }], map, 0.1);
     expect(damage.get("a")).toBe(8);
     expect(damage.has("b")).toBe(false);
+  });
+
+  it("does not redirect onto a different player when its original target is no longer in the targets list (e.g. dead)", () => {
+    // The bolt was aimed at "a", but "a" has since died and dropped out of
+    // the roster — only "b" is passed in, standing exactly where the bolt
+    // now is. Regression test for the cross-player-hit bug: a bolt must
+    // never land on a player it wasn't actually fired at.
+    const playerB = facingPlayer();
+    const map = fakeMap();
+    const list = [bolt({ x: playerB.posX, y: playerB.posY, damage: 8, targetId: "a" })];
+    const damage = updateProjectiles(list, [{ id: "b", player: playerB }], map, 0.1);
+    expect(damage.size).toBe(0);
+    expect(list).toHaveLength(1); // survives, still flying, just can't hit anyone
   });
 });
 
@@ -190,7 +204,7 @@ describe("collectProjectileBillboards", () => {
     const jobs = collectProjectileBillboards(
       asCtx(c),
       player,
-      [{ x: player.posX, y: player.posY, vx: 0, vy: 0, damage: 8 }],
+      [{ x: player.posX, y: player.posY, vx: 0, vy: 0, damage: 8, targetId: "p1" }],
       clearZBuffer(Infinity),
     );
     expect(jobs).toHaveLength(0);
@@ -202,7 +216,7 @@ describe("collectProjectileBillboards", () => {
     const jobs = collectProjectileBillboards(
       asCtx(c),
       player,
-      [{ x: player.posX + 3, y: player.posY, vx: 0, vy: 0, damage: 8 }],
+      [{ x: player.posX + 3, y: player.posY, vx: 0, vy: 0, damage: 8, targetId: "p1" }],
       clearZBuffer(Infinity),
     );
     expect(jobs).toHaveLength(1);
@@ -217,7 +231,7 @@ describe("collectProjectileBillboards", () => {
     const jobs = collectProjectileBillboards(
       asCtx(c),
       player,
-      [{ x: player.posX + 3, y: player.posY, vx: 0, vy: 0, damage: 8 }],
+      [{ x: player.posX + 3, y: player.posY, vx: 0, vy: 0, damage: 8, targetId: "p1" }],
       clearZBuffer(0.5),
     );
     expect(jobs).toHaveLength(1); // still a job — occlusion is checked lazily inside draw()

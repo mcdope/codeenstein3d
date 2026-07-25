@@ -511,6 +511,13 @@ let workspaceIsRemote = false;
  * `source: "demo"` rather than being misattributed to GitHub — see
  * `recordRunHighscore` and `startReplay`. */
 let workspaceIsDemo = false;
+/** Which launch tab the active workspace was loaded from — set alongside
+ * `workspaceIsRemote`/`workspaceIsDemo` at each of the same 4 loading entry
+ * points. Exists solely so the multiplayer session-end path can restore the
+ * correct tab once a session ends (`resetToFileTreeAfterMultiplayerSession`);
+ * single-player never needs this, since it never navigates away from its own
+ * origin tab in the first place. */
+let workspaceLaunchTab: LaunchTab | null = null;
 /** True once any Doom-style cheat code (IDDQD/IDKFA/IDCLIP) has been entered
  * during the active campaign — set by the engine's `onCheatActivated`
  * handler, cleared only at the same reset points `workspaceIsRemote` resets
@@ -611,6 +618,7 @@ selectButton.addEventListener("click", async () => {
     workspaceRootName = handle.name;
     workspaceIsRemote = false;
     workspaceIsDemo = false;
+    workspaceLaunchTab = "local";
     cheatsUsed = false;
     workspaceName.textContent = handle.name;
     campaignLevelIndex = 1; // a fresh pick always starts a new campaign
@@ -664,6 +672,7 @@ async function loadGithubRepoFromInput(): Promise<void> {
     workspaceRootName = `${ref.owner}/${ref.repo}`;
     workspaceIsRemote = true;
     workspaceIsDemo = false;
+    workspaceLaunchTab = "github";
     cheatsUsed = false;
     workspaceName.textContent = workspaceRootName;
     campaignLevelIndex = 1; // a fresh load always starts a new campaign
@@ -740,6 +749,7 @@ async function loadDemoCampaign(): Promise<void> {
     workspaceRootName = DEMO_CAMPAIGN_NAME;
     workspaceIsRemote = true;
     workspaceIsDemo = true;
+    workspaceLaunchTab = "demo";
     cheatsUsed = false;
     workspaceName.textContent = workspaceRootName;
     campaignLevelIndex = 1; // a fresh load always starts a new campaign
@@ -797,6 +807,7 @@ continueButton.addEventListener("click", async () => {
     workspaceRootName = handle.name;
     workspaceIsRemote = false;
     workspaceIsDemo = false;
+    workspaceLaunchTab = "continue";
     cheatsUsed = false;
     workspaceName.textContent = handle.name;
     updateMultiplayerTabEnabled();
@@ -866,7 +877,7 @@ function isMultiplayerEligibleWorkspace(): boolean {
   return workspaceIsRemote || workspaceIsDemo;
 }
 
-const MULTIPLAYER_TAB_DISABLED_TITLE = "Multiplayer requires a GitHub-loaded repo or the Demos campaign";
+const MULTIPLAYER_HOST_SUBTAB_DISABLED_TITLE = "Hosting requires a GitHub-loaded repo or the Demos campaign";
 // No signaling server means multiplayer can't work at all in this build, so
 // the tab is fully hidden rather than just disabled (unlike the
 // workspace-eligibility case below, there's no action the user can take).
@@ -926,7 +937,7 @@ function activateMultiplayerSubtab(tab: MultiplayerSubtab): void {
 function updateMultiplayerHostSubtabEnabled(): void {
   const eligible = isMultiplayerEligibleWorkspace();
   multiplayerSubtabHost.disabled = !eligible;
-  multiplayerSubtabHost.title = eligible ? "" : MULTIPLAYER_TAB_DISABLED_TITLE;
+  multiplayerSubtabHost.title = eligible ? "" : MULTIPLAYER_HOST_SUBTAB_DISABLED_TITLE;
   if (!eligible && multiplayerSubtabHost.getAttribute("aria-selected") === "true") activateMultiplayerSubtab("join");
   else if (eligible && multiplayerSubtabJoin.getAttribute("aria-selected") === "true") activateMultiplayerSubtab("host");
 }
@@ -1530,14 +1541,27 @@ export function multiplayerResultRows(comparison: ReadonlyMap<PlayerId, RosterSn
   });
 }
 
+/** Multiplayer-session-end-only: `resetToFileTree()` plus restoring whichever
+ * launch tab the workspace was actually loaded from (see
+ * `workspaceLaunchTab`) — single-player never leaves its own tab, so this
+ * wrapper (not `resetToFileTree()` itself, which single-player's game-over/
+ * win/replay-teardown paths also call) is the only place this restoration is
+ * needed. Falls back to `"local"` if no workspace was ever loaded (a guest
+ * can join with nothing loaded — Join has no workspace dependency, see
+ * `isMultiplayerEligibleWorkspace`'s doc comment). */
+function resetToFileTreeAfterMultiplayerSession(): void {
+  resetToFileTree();
+  activateLaunchTab(workspaceLaunchTab ?? "local");
+}
+
 /** Fired once the shared simulation reaches game-over/win — deterministically
  * the same tick on both peers, except for `"host-disconnected"` (guest-only,
  * fired from the guest's own local grace-timer expiry, never simultaneous
  * with the host, and sourced from this peer's own local, provisional state —
  * see `sessionEngine.ts`'s own doc comment). Shows the end-of-run comparison
  * table (multiplayer step 9) built from `comparison` before returning to the
- * file tree — `resetToFileTree()` now fires from the overlay's own dismiss,
- * not immediately. */
+ * file tree — `resetToFileTreeAfterMultiplayerSession()` now fires from the
+ * overlay's own dismiss, not immediately. */
 function onMultiplayerSessionEnded(
   _stats: EngineStats,
   reason: SessionEndReason,
@@ -1560,7 +1584,7 @@ function onMultiplayerSessionEnded(
   const { title, color } = MULTIPLAYER_RESULT_THEME[reason];
   const hud = new GameHud(canvas);
   activeHud = hud;
-  hud.showMultiplayerResults(title, color, multiplayerResultRows(comparison), resetToFileTree);
+  hud.showMultiplayerResults(title, color, multiplayerResultRows(comparison), resetToFileTreeAfterMultiplayerSession);
 }
 
 async function startMultiplayerSessionAsHost(): Promise<void> {

@@ -199,7 +199,7 @@ function updateEnemy(
 
   // At range: occasionally lob a bolt at the nearest target if there's a clear shot.
   if (enemy.fireCooldown === 0 && dist <= RANGED_RANGE && los()) {
-    spawnProjectile(projectiles, enemy.x, enemy.y, nearest.player.posX, nearest.player.posY, damageMultiplier(enemy, eliteDamageScale), aimSpreadDeg, rng);
+    spawnProjectile(projectiles, enemy.x, enemy.y, nearest.player.posX, nearest.player.posY, nearest.id, damageMultiplier(enemy, eliteDamageScale), aimSpreadDeg, rng);
     enemy.fireCooldown = FIRE_COOLDOWN_MIN + rng() * (FIRE_COOLDOWN_MAX - FIRE_COOLDOWN_MIN);
     events?.onRangedFire?.(enemy);
   }
