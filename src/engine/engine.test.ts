@@ -2106,14 +2106,15 @@ describe("RaycasterEngine — captureCarryoverFor (step 8)", () => {
     expect(result.priorScore).toBeGreaterThan(500); // 500 baseline + this level's own (nonzero completion/health) contribution
   });
 
-  it("leaves priorScoreBreakdown/priorPlayerStats undefined when telemetry isn't being recorded (default)", () => {
+  it("populates priorScoreBreakdown (never telemetry-gated — same core-carryover status as priorScore) but leaves priorPlayerStats undefined by default", () => {
     const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
     const result = engine.captureCarryoverFor("H");
-    expect(result.priorScoreBreakdown).toBeUndefined();
+    expect(result.priorScoreBreakdown).toBeDefined();
+    expect(result.priorScoreBreakdown?.total).toBe(result.priorScore); // both derived from the same computeLevelScoreBreakdown(p) call
     expect(result.priorPlayerStats).toBeUndefined();
   });
 
-  it("populates priorScoreBreakdown/priorPlayerStats under ?testHooks=1 (telemetry on)", () => {
+  it("populates priorPlayerStats too under ?testHooks=1 (telemetry on)", () => {
     const original = window.location;
     Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
     try {
@@ -2124,6 +2125,18 @@ describe("RaycasterEngine — captureCarryoverFor (step 8)", () => {
     } finally {
       Object.defineProperty(window, "location", { value: original, configurable: true });
     }
+  });
+
+  it("adds this level's own kills on top of any priorKills already carried in, without needing telemetry", () => {
+    const enemy = fakeEnemy({ x: 6.5, y: 5.5, hp: 1, maxHp: 1 }); // same point-blank placement as the telemetry kill test above
+    const carryover: EngineCarryover = { health: 100, swap: 0, bullets: 999, rockets: 0, smg: 0, gas: 0, priorKills: 3 };
+    const input = new ScriptedInput();
+    const engine = new RaycasterEngine(makeCanvas(), fakeMap({ enemies: [enemy] }), {}, carryover, undefined, undefined, 1, input, undefined, "H");
+    input.fireQueued = true;
+    engine.advance(0.016); // fires the pistol, kills the enemy
+    expect(enemy.alive).toBe(false);
+    const result = engine.captureCarryoverFor("H");
+    expect(result.priorKills).toBe(4); // 3 carried in + 1 this level
   });
 
   it("captures a non-local roster player's own state, not just the local player's", () => {
@@ -2941,6 +2954,17 @@ describe("RaycasterEngine — multiplayer combat & friendly fire (N-player)", ()
     expect(roster.get("local")!.killScore).toBeGreaterThan(0); // assist share
     expect(roster.get("p2")!.killScore).toBeGreaterThan(0);
     expect(roster.get("local")!.killScore).toBeCloseTo(roster.get("p2")!.killScore, 5); // even split, 2 assists
+  });
+
+  it("rosterSnapshot().kills is cumulative (priorKills + this level's own) — mirrors the real level-transition carryover path, no telemetry needed", () => {
+    const enemy = fakeEnemy({ x: 6.5, y: 5.5, hp: 1, maxHp: 1 });
+    const map = fakeMap({ enemies: [enemy] });
+    const carryover: EngineCarryover = { health: 100, swap: 0, bullets: 999, rockets: 0, smg: 0, gas: 0, priorKills: 7 };
+    const { engine, input } = makeEngine(map, makeHandlers(), { carryover });
+    input.fireQueued = true;
+    engine.advance(0.016);
+    expect(enemy.alive).toBe(false);
+    expect(engine.rosterSnapshot().get("local")!.kills).toBe(8); // 7 carried in + 1 this level
   });
 
   it("hitscan fire can't hit a teammate standing in the crosshair (players are never in the hit-test list)", () => {

@@ -378,6 +378,11 @@ interface PlayerState {
   readonly priorScore: number;
   readonly priorScoreBreakdown: ScoreBreakdown;
   readonly priorPlayerStats: PlayerFacingStats;
+  /** Enemies defeated in every level already cleared this run — see
+   * `EngineCarryover.priorKills`. Kept separate from `kills` (this level's
+   * own raw count) the same way `priorScore` stays separate from a level's
+   * own score contribution. */
+  readonly priorKills: number;
   distanceTraveled: number;
   stepDistance: number;
   moving: boolean;
@@ -544,6 +549,13 @@ export interface EngineCarryover {
    * so the running total never resets at a level transition. Defaults to 0
    * for a genuinely fresh run. */
   priorScore?: number;
+  /** Enemies defeated in every level already cleared this campaign —
+   * `RaycasterEngine.rosterSnapshot()`'s own `kills` field adds this level's
+   * own raw `kills` on top, the same "prior + current" split `priorScore`
+   * uses. Never telemetry-gated, unlike `priorPlayerStats.kills` below (a
+   * curated, opt-in stat) — this is core carryover. Defaults to 0 for a
+   * genuinely fresh run. */
+  priorKills?: number;
   /** Score breakdown, by category, summed across every level already
    * cleared this campaign — the run-end stats screen's cumulative breakdown
    * adds this level's own on top of. `priorScore` above stays the single
@@ -1070,6 +1082,7 @@ export class RaycasterEngine {
       priorScore: carryover?.priorScore ?? 0,
       priorScoreBreakdown: carryover?.priorScoreBreakdown ?? zeroScoreBreakdown(),
       priorPlayerStats: carryover?.priorPlayerStats ?? emptyPlayerFacingStats(),
+      priorKills: carryover?.priorKills ?? 0,
       distanceTraveled: 0,
       stepDistance: 0,
       moving: false,
@@ -1234,20 +1247,31 @@ export class RaycasterEngine {
 
   /** Read-only per-player snapshot for a session-lifecycle layer above this
    * engine to build an end-of-run comparison table from (multiplayer step 9)
-   * — `breakdown` is the cumulative *run* total (every level played this
-   * session, not just the current one), mirroring `buildStats()`'s own
-   * `runScoreBreakdown` derivation (`sumScoreBreakdowns(p.priorScoreBreakdown,
-   * computeLevelScoreBreakdown(p))`) rather than a single level's total,
-   * since this is meant to be read once, at true session end. Iterates
-   * `sortedPlayerIds()` (not raw `Map` insertion order) purely so every peer
-   * builds the same row order — cosmetic, not a correctness requirement,
-   * since the caller keys off `PlayerId` either way. */
+   * — `breakdown`/`kills` are cumulative *run* totals (every level played
+   * this session, not just the current one): `breakdown` mirrors
+   * `buildStats()`'s own `runScoreBreakdown` derivation
+   * (`sumScoreBreakdowns(p.priorScoreBreakdown, computeLevelScoreBreakdown(p))`),
+   * and `kills` is `p.priorKills + p.kills` the same "prior + current" way
+   * `priorScore` itself already worked — neither is telemetry-gated (see
+   * `captureCarryoverFor()`'s own doc comment). `killScore` stays this
+   * *level's* own raw value, unlike the two above — nothing currently reads
+   * it across a transition. Iterates `sortedPlayerIds()` (not raw `Map`
+   * insertion order) purely so every peer builds the same row order —
+   * cosmetic, not a correctness requirement, since the caller keys off
+   * `PlayerId` either way. */
   rosterSnapshot(): ReadonlyMap<PlayerId, RosterSnapshotEntry> {
     const snapshot = new Map<PlayerId, RosterSnapshotEntry>();
     for (const id of this.sortedPlayerIds()) {
       const p = this.players.get(id)!;
       const breakdown = sumScoreBreakdowns(p.priorScoreBreakdown, this.computeLevelScoreBreakdown(p));
-      snapshot.set(id, { status: p.status, health: p.health, killScore: p.killScore, kills: p.kills, distanceTraveled: p.distanceTraveled, breakdown });
+      snapshot.set(id, {
+        status: p.status,
+        health: p.health,
+        killScore: p.killScore,
+        kills: p.priorKills + p.kills,
+        distanceTraveled: p.distanceTraveled,
+        breakdown,
+      });
     }
     return snapshot;
   }
@@ -4123,17 +4147,21 @@ export class RaycasterEngine {
    * the next level, so each peer's health/ammo/weapons/score genuinely
    * persists across the swap to a fresh `RaycasterEngine` instead of
    * resetting. A snapshot as of the moment it's called — never mutates `p`.
-   * `priorScoreBreakdown`/`priorPlayerStats` stay `undefined` whenever
-   * telemetry isn't being recorded at all, the same gating `buildStats()`
-   * itself uses for `runScoreBreakdown`/`runPlayerStats` — `priorScore`
-   * itself is never gated, it's core carryover, not a telemetry feature. */
+   * `priorPlayerStats` stays `undefined` whenever telemetry isn't being
+   * recorded at all, the same gating `buildStats()` itself uses for
+   * `runPlayerStats` (its curated categories need the heavier opt-in trace
+   * data `computeLevelScoreBreakdown` doesn't). `priorScore`/`priorKills`/
+   * `priorScoreBreakdown` are never gated — like `priorScore`, they're core
+   * carryover, not a telemetry feature: `computeLevelScoreBreakdown` is
+   * always safe to call (its accuracy-bonus sub-component alone degrades to
+   * 0 without telemetry, same as `levelScoreBreakdown`'s live per-frame use
+   * in `buildStats()`), so accumulating it costs nothing extra. */
   captureCarryoverFor(id: PlayerId): EngineCarryover {
     const p = this.players.get(id)!;
     const levelScoreBreakdown = this.computeLevelScoreBreakdown(p);
-    let priorScoreBreakdown: ScoreBreakdown | undefined;
+    const priorScoreBreakdown = sumScoreBreakdowns(p.priorScoreBreakdown, levelScoreBreakdown);
     let priorPlayerStats: PlayerFacingStats | undefined;
     if (p.telemetry) {
-      priorScoreBreakdown = sumScoreBreakdowns(p.priorScoreBreakdown, levelScoreBreakdown);
       const levelPlayerStats = buildPlayerFacingStats(p.telemetry, this.levelTime, p.kills);
       priorPlayerStats = mergePlayerFacingStats(p.priorPlayerStats, levelPlayerStats);
     }
@@ -4147,6 +4175,7 @@ export class RaycasterEngine {
       priorScore: p.priorScore + levelScoreBreakdown.total,
       priorScoreBreakdown,
       priorPlayerStats,
+      priorKills: p.priorKills + p.kills,
       weaponIndex: p.weaponIndex,
       ownedWeapons: [...p.ownedWeapons],
       campaignLevelIndex: p.campaignLevelIndex,
