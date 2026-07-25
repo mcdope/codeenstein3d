@@ -132,6 +132,13 @@ describe("buildSessionEngine", () => {
     expect(attachSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("focuses the canvas — both on initial session start and every level-transition rebind (`startLevel()` re-invokes this same function), so the first keypress isn't silently swallowed until the player clicks", () => {
+    const canvas = makeCanvas();
+    const focusSpy = vi.spyOn(canvas, "focus");
+    buildSessionEngine({ result: fakeResult(), canvas });
+    expect(focusSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("creates one NetworkInputSource per other roster member for a 3-player roster (step 10: N-player)", () => {
     const result = fakeResult({ roster: ["guest-1", "guest-2", "host"], assignedId: "host" });
     const { engine, otherInputs } = buildSessionEngine({ result, canvas: makeCanvas() });
