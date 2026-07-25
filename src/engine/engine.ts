@@ -656,6 +656,20 @@ export class RaycasterEngine {
    * useful signal the averaged FPS alone would hide. */
   private displayFrameMs = 0;
 
+  /** Set by `startExternallyDriven()` — an externally-driven session (real
+   * multiplayer, headless harnesses) never runs `frame()`'s own rAF loop, so
+   * `advance()` measures real wall-clock time between its own calls instead,
+   * feeding the same `updateFpsCounter()` every other path uses. The replay
+   * viewer's own `advance()` calls are deliberately excluded from this: it
+   * never calls `startExternallyDriven()` at all, and its fast-forward
+   * `burstTo()` bursts (many synchronous `advance()` calls with no real time
+   * between them) would otherwise report a meaningless, huge FPS number. */
+  private externallyDriven = false;
+  /** Real (`performance.now()`) timestamp of the previous externally-driven
+   * `advance()` call, or `null` before the first one — see
+   * `externallyDriven`'s own doc comment. */
+  private lastExternalAdvanceMs: number | null = null;
+
   /** Team-composite game state — `"playing"` until every player is dead
    * (`"over"`) or any one living player reaches the exit (`"won"`); see
    * `checkExit()`/`killPlayer()`. Per-player life/death instead lives on
@@ -2002,6 +2016,7 @@ export class RaycasterEngine {
    */
   startExternallyDriven(): void {
     if (this.running) return;
+    this.externallyDriven = true;
     this.primeForPlay();
   }
 
@@ -2457,6 +2472,19 @@ export class RaycasterEngine {
    * viewer's `step`/`burstTo`, headless harnesses) needs zero changes.
    */
   advance(dt: number): void {
+    // Real per-call wall-clock FPS for a driver that never runs `frame()`'s
+    // own rAF loop (see `externallyDriven`'s own doc comment) — a genuinely
+    // useful diagnostic here, not just a stand-in number: a real multiplayer
+    // session's ticks arrive at the tick-clock worker's own real pacing, so a
+    // stall or missed-tick backlog shows up as a real dip instead of always
+    // reading a fixed ~TICK_RATE_HZ.
+    if (this.externallyDriven) {
+      const now = performance.now();
+      if (this.lastExternalAdvanceMs !== null) {
+        this.updateFpsCounter((now - this.lastExternalAdvanceMs) / 1000);
+      }
+      this.lastExternalAdvanceMs = now;
+    }
     // Begin the perf-debug frame here, not in `frame()` — `advance()` is
     // public and also driven directly by the replay viewer (`main.ts`'s
     // `step`/`burstTo`) and headless harnesses, and those callers used to
@@ -2620,7 +2648,15 @@ export class RaycasterEngine {
     // briefly reports `status: "dead"` right before the end-of-run overlay
     // takes over — without this guard, a single-player death would flash
     // this banner for exactly one frame.
-    if (this.isMultiplayerSession() && stats.status === "dead") {
+    //
+    // `this.exitCountdownRemaining === null` additionally suppresses it once
+    // the exit countdown starts (below) — both banners draw at the exact
+    // same top-of-screen position, so a dead/spectating player watching the
+    // countdown run out would otherwise see the two texts drawn on top of
+    // each other. The countdown wins: it's the more urgent, time-bounded
+    // signal, and a dead player already knows they're dead by the time it
+    // appears.
+    if (this.isMultiplayerSession() && stats.status === "dead" && this.exitCountdownRemaining === null) {
       drawSpectatingBanner(this.ctx, stats.spectateTargetId);
     }
     if (local.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
@@ -3536,6 +3572,12 @@ export class RaycasterEngine {
    * tile doesn't pause or reset it) — the sim keeps running normally
    * throughout, exactly like every other tick. `endGame("won")` fires only
    * once it reaches zero.
+   *
+   * Gated by `exitRoomHasAliveEnemy()` in both modes: touching the exit tile
+   * does nothing at all while an enemy from its own room is still alive —
+   * same silent "not yet" as a locked door with no key (`openDoorAhead()`),
+   * not a special-cased hint. Only gates the *start* of a win/countdown; an
+   * already-running countdown is untouched by this (no enemy can revive).
    */
   private checkExit(): void {
     if (this.state !== "playing") return;
@@ -3551,12 +3593,22 @@ export class RaycasterEngine {
       const p = this.players.get(id)!;
       return p.status === "alive" && Math.floor(p.player.posX) === this.map.exit.x && Math.floor(p.player.posY) === this.map.exit.y;
     });
-    if (!touching) return;
+    if (!touching || this.exitRoomHasAliveEnemy()) return;
     if (this.isMultiplayerSession()) {
       this.exitCountdownRemaining = COUNTDOWN_TICKS;
     } else {
       this.endGame("won");
     }
+  }
+
+  /** Whether any living enemy still calls the exit's own room `home` — see
+   * `Enemy.home`'s doc comment: a room's spawned enemies never roam outside
+   * its rectangle while idle, so `map.exit` falling inside an enemy's `home`
+   * is exactly "this enemy belongs to the exit's room," with no separate
+   * room-lookup/id needed. */
+  private exitRoomHasAliveEnemy(): boolean {
+    const { x: ex, y: ey } = this.map.exit;
+    return this.enemies.some((e) => e.alive && ex >= e.home.x && ex < e.home.x + e.home.w && ey >= e.home.y && ey < e.home.y + e.home.h);
   }
 
   /** Multiplayer-only: ticks remaining in the exit countdown, or `null` if
@@ -3568,6 +3620,15 @@ export class RaycasterEngine {
    * single-player instance. */
   getExitCountdownRemaining(): number | null {
     return this.exitCountdownRemaining;
+  }
+
+  /** Read-only introspection for the rolling-averaged FPS `drawFpsOverlay`
+   * renders — same spirit as `getExitCountdownRemaining()`, added so a test
+   * (or a future test hook) can observe it without reaching into private
+   * state. See `externallyDriven`'s own doc comment for why this is nonzero
+   * in multiplayer now, not just the internal rAF path. */
+  getDisplayFps(): number {
+    return this.displayFps;
   }
 
   /**
