@@ -1488,7 +1488,29 @@ multiplayerJoinConnectButton.addEventListener("click", () => void joinMultiplaye
  * scope for this step (see `multiplayer-netcode-spec.md` §8). */
 function beginMultiplayerLevel(): void {
   stopActiveReplay?.();
+  // `= null` (not just `.stop()`) matters: if a workspace auto-launched a
+  // local preview level whose own `showLevelStart()` briefing was never
+  // dismissed (the player switched straight to Multiplayer/Host instead of
+  // clicking "Start"), that overlay's dismiss listeners
+  // (`window`'s keydown, the canvas's mousedown — see `GameHud`'s `show()`)
+  // are still armed; they're self-removing only once they actually fire.
+  // The first real Enter/Space/Escape/canvas-mousedown during the
+  // multiplayer session itself (e.g. the melee key, or clicking to fire/
+  // pointer-lock) then fires that stale callback, which calls
+  // `activeEngine?.start()` — with `activeEngine` still pointing at the
+  // already-`.stop()`'d preview engine, `.start()` on it revives a second,
+  // fully-live `RaycasterEngine` (its own real `InputController`, its own
+  // render/simulate loop) sharing the same canvas as the real multiplayer
+  // session, invisibly. That zombie engine can independently receive a real
+  // `blur`/`pointerlockchange` event and set its own `isPaused = true`,
+  // producing a stuck "PAUSED" overlay with no connection to the actual
+  // multiplayer session underneath — confirmed via `[ENGINE-LIFECYCLE]`
+  // diagnostic logging (see doc/dev/multiplayer-netcode-spec.md's "known
+  // open issue"). Nulling it here makes that stale `activeEngine?.start()`
+  // a guaranteed no-op whenever it eventually fires, the same pattern
+  // `resetToFileTree()` already uses for its own single-player teardown.
   activeEngine?.stop();
+  activeEngine = null;
   for (const child of [...viewport.children]) {
     if (child !== canvasArea) child.remove();
   }
