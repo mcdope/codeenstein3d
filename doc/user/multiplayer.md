@@ -38,4 +38,6 @@ corporate VPN, or a different Wi-Fi) is usually enough.
 
 ## Disconnects and level transitions
 
-If a player's connection drops, the rest of the session waits a short grace period in case it reconnects, then continues without them — their score up to that point is kept, just marked as disconnected on the end-of-run scoreboard. When any player reaches the level's exit tile, a short countdown starts for the rest of the team to catch up before everyone advances together to the next level.
+If a player's connection drops, the rest of the session waits a short grace period in case it reconnects, then continues without them — their score up to that point is kept, just marked as disconnected on the end-of-run scoreboard. When any player reaches the level's exit tile, a short countdown starts for the rest of the team to catch up before everyone advances together to the next level — but only once every enemy in the exit's own room is dead; standing on the tile does nothing at all before that.
+
+The end-of-run scoreboard's score and kill counts are cumulative for the whole session, not just the last level — they keep adding up across every level transition, the same way your live in-run score already does.

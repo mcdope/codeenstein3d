@@ -6,6 +6,12 @@
 - Everyone in a session stays in perfect lockstep — the exact same simulation, ticking in sync — even across different browsers or devices, with automatic correction if anything ever drifts
 - If a player's connection drops, the rest of the session keeps going without them after a short grace period; when the group reaches a level's exit together, a countdown gives everyone a moment to catch up before advancing
 - A shared end-of-run scoreboard shows everyone's score and kills side by side. Elite enemies get tougher (more HP and damage) the more players join, and any loot dropped is visible to the whole team on the minimap/automap. Multiplayer runs don't use cheat codes, highscores, or replays — those stay single-player features
+- Fix: the level exit didn't check whether any enemies were still alive nearby — you could walk onto it and win (or, in multiplayer, start the level-transition countdown) with a room full of live enemies behind you. The exit now stays inert until every enemy in its own room is dead, in both single-player and multiplayer
+- Fix: multiplayer's FPS overlay (Right-Ctrl) always showed 0 — it now reports real numbers
+- Fix: a dead multiplayer player's "YOU DIED — spectating" banner overlapped the level-transition countdown, both drawn in the same spot — the countdown now takes over cleanly
+- Fix: the game canvas lost keyboard focus after every multiplayer level transition, needing a click back into the game to keep playing — the first level of a session already worked fine, only later transitions were affected
+- Fix: the multiplayer end-of-run comparison table's kills and score silently reset at every level transition instead of tracking the whole run — a long, successful session could end showing 0 kills and a tiny score despite the live scoreboard climbing normally the whole time. Both now correctly reflect the full run
+- Fix: disabled buttons in the multiplayer sidebar (Create/Join/Start Session) still looked fully clickable — they're now visibly greyed out with a "not allowed" cursor
 
 ## beta-4
 

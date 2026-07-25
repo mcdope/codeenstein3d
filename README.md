@@ -36,6 +36,7 @@ See [How It Works](#how-it-works) below for the full detail behind each of these
 - ✅ **Procedural maps** — rooms, corridors with jogs, pillars, secret rooms, traps, teleporters
 - ✅ **Advanced enemy AI** — roaming, chasing, melee, ranged attacks (packed or elite bosses)
 - ✅ **Multi-level campaigns** — chain together all parsable files; save & continue progress
+- ✅ **Multiplayer co-op** — host or join a real-time session (2-4 players) via a short code or public lobby; WebRTC peer-to-peer, lockstep netcode with drift reconciliation; see [`doc/user/multiplayer.md`](doc/user/multiplayer.md)
 
 ### Game Systems
 - ✅ **Retro raycaster engine** — DDA algorithm, distance fog, collision detection
@@ -259,6 +260,7 @@ npm run preview    # Serve production build locally
 | — | FPS overlay and IDDQD/IDCLIP cheat toggles now carry across a level transition instead of silently resetting | ✅ |
 | — | A repeatable frame-time benchmark harness (`npm run perf:bench`/`perf:report`) with opt-in per-frame diagnostics (`?perfDebug=1`), used to audit and confirm wall-edge antialiasing and windowed-mode responsive canvas resizing are both cheap enough to ship on by default (see `perf-findings.json`) | ✅ |
 | — | Multiplayer — host or join a real-time coop session (2-4 players) via a short code or public lobby, WebRTC peer-to-peer with a minimal signaling/lobby server, lockstep netcode with drift reconciliation, disconnect handling, level-transition countdowns, a shared end-of-run scoreboard, and player-count-scaled Elite enemies | ✅ |
+| — | Multiplayer playtesting fixes: FPS overlay (was stuck at 0 all session), exit gated by the room's own alive enemies (single- and multiplayer), disabled sidebar buttons now visibly look disabled, canvas keyboard focus restored after a level transition, the "spectating" banner no longer overlaps the exit countdown, and the end-of-run comparison table's kills/score are now genuinely cumulative across the whole run instead of resetting every level | ✅ |
 
 ---
 
@@ -295,6 +297,7 @@ npm run preview    # Serve production build locally
 
 ```
 demo-campaign/                # Bundled "Demos" showcase campaign (one level per parser language)
+docker/                       # Optional self-hosted multiplayer backend (signaling + TURN relay) — see docker/README.md
 scripts/                      # Node/Playwright verification + balancing-bot scripts; lib/bot.mjs holds the shared Bot class both generate-default-highscore.mjs and run-balancing-telemetry.mjs drive
 src/
 ├── main.ts                  # App entry: wires sidebar, parser, map, engine, HUD
@@ -308,6 +311,7 @@ src/
 │   └── generic/             # 12-language data-driven adapter + vocabulary + refinements
 ├── map/                     # Procedural map generator (grid, enemies, hazards)
 ├── wad/                     # DOOM WAD parser (PLAYPAL/PNAMES/TEXTUREx/patches/flats) — feeds engine/textures.ts only
+├── multiplayer/             # WebRTC session host/guest drivers, lockstep tick pacing, signaling client, netcode wire types
 └── engine/                  # 2.5D raycaster + gameplay
     ├── engine.ts            # Game loop (sim, combat, stats)
     ├── raycaster.ts         # DDA wall renderer + fog
@@ -353,7 +357,7 @@ The app detects unsupported browsers and disables the picker with a message.
 
 ## Documentation
 
-Full player-facing docs live in [`doc/user`](doc/user/README.md) — getting started, controls, HUD/UI, game mechanics, and tips.
+Full player-facing docs live in [`doc/user`](doc/user/README.md) — getting started, controls, HUD/UI, game mechanics, multiplayer, and tips.
 
 🔒 If you're wondering what happens to the workspace you point this at, or what gets stored on your machine, see [`doc/user/privacy.md`](doc/user/privacy.md).
 
