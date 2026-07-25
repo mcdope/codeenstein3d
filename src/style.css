@@ -178,6 +178,11 @@ body {
   cursor: pointer;
 }
 
+#multiplayer-max-players:disabled {
+  color: var(--border);
+  cursor: not-allowed;
+}
+
 #difficulty-label {
   display: block;
   margin: 12px 0 4px;
@@ -335,8 +340,13 @@ body {
   cursor: pointer;
 }
 
-.settings-btn:hover {
+.settings-btn:hover:not(:disabled) {
   background: var(--bg-hover);
+}
+
+.settings-btn:disabled {
+  color: var(--border);
+  cursor: not-allowed;
 }
 
 /* Marks the Start Session button as the primary next action once at least
@@ -351,8 +361,20 @@ body {
   font-weight: 700;
 }
 
-.settings-btn.settings-btn-primary:hover {
+.settings-btn.settings-btn-primary:hover:not(:disabled) {
   filter: brightness(1.12);
+}
+
+/* Same specificity as .settings-btn.settings-btn-primary above (two classes
+ * each) — without this, source order alone would let the accent styling win
+ * over the plain .settings-btn:disabled rule whenever both classes are
+ * present, e.g. Start Session disabled mid-setup while still "primary"
+ * (at least one guest connected). */
+.settings-btn.settings-btn-primary:disabled {
+  color: var(--border);
+  background: var(--bg);
+  border-color: var(--border);
+  font-weight: 600;
 }
 
 /* The "Export Map as PNG" button shown below the canvas right after
