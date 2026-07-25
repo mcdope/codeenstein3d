@@ -1623,15 +1623,31 @@ describe("main.ts — multiplayer connect flow", () => {
   }
 
   /** Loads the bundled demo campaign (the cheapest eligible-workspace path —
-   * no fetch mocking needed) and waits only for the Multiplayer tab to
-   * enable, not for the auto-launched level to finish loading — gating
-   * happens synchronously with the `workspaceIsRemote`/`workspaceIsDemo`
-   * assignment, well before that. */
+   * no fetch mocking needed) and waits only for the Host sub-tab to enable,
+   * not for the auto-launched level to finish loading — gating happens
+   * synchronously with the `workspaceIsRemote`/`workspaceIsDemo` assignment,
+   * well before that. Waits on the Host sub-tab specifically (not the outer
+   * Multiplayer tab, which is never workspace-gated — see
+   * `isMultiplayerEligibleWorkspace`'s doc comment): that's the one signal
+   * that still flips synchronously with workspace eligibility. */
   async function loadEligibleWorkspace(): Promise<void> {
     await importMain();
     document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
-    await waitUntil(() => !document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.disabled);
+    await waitUntil(() => !document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!.disabled);
+    // Also wait for the demo campaign's own auto-launched level to fully
+    // settle (same signal as "main.ts — demo campaign load"'s own test) —
+    // otherwise that still-in-flight `launchLevel()` call's multiplayer-
+    // session teardown (it unconditionally resets multiplayer lobby UI/state
+    // in case one was live) can land *after* this helper's caller has
+    // already created a session, wiping it out from under the test.
+    // `vi.waitFor` (not the plain `waitUntil`/`flushAsync` above) — several
+    // callers of this helper enable fake timers *before* calling it, and
+    // `flushAsync`'s real `setTimeout(…, 0)` never fires once real timers
+    // are frozen; `vi.waitFor` advances fake timers itself when they're
+    // active, so it works either way.
+    await vi.waitFor(() => expect(document.querySelector(".canvas-area")!.hasAttribute("hidden")).toBe(false), 8000);
     document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.click();
+    document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!.click();
   }
 
   /** Simulates the host side of `createHostOffer` reaching a connectable
@@ -1648,30 +1664,47 @@ describe("main.ts — multiplayer connect flow", () => {
   }
 
   describe("Multiplayer tab gating", () => {
-    it("starts disabled with an explanatory title", async () => {
+    it("starts with the outer tab enabled but the Host sub-tab disabled (bounced to Join)", async () => {
       await importMain();
       const tab = document.querySelector<HTMLButtonElement>("#tab-multiplayer")!;
-      expect(tab.disabled).toBe(true);
-      expect(tab.title).toContain("GitHub-loaded repo or the Demos campaign");
+      expect(tab.disabled).toBe(false);
+      // Join has no workspace dependency (a guest receives the map from the
+      // host) — only Host is gated, and with no workspace loaded yet, the
+      // Host sub-tab bounces to Join rather than leaving a disabled sub-tab
+      // showing as selected.
+      const hostSubtab = document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!;
+      expect(hostSubtab.disabled).toBe(true);
+      expect(hostSubtab.title).toContain("GitHub-loaded repo or the Demos campaign");
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.getAttribute("aria-selected")).toBe(
+        "true",
+      );
     });
 
-    it("enables once an eligible workspace (demo campaign) loads", async () => {
+    it("enables the Host sub-tab once an eligible workspace (demo campaign) loads", async () => {
       await importMain();
       document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
-      await waitUntil(() => !document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.disabled);
-      const tab = document.querySelector<HTMLButtonElement>("#tab-multiplayer")!;
-      expect(tab.title).toBe("");
+      await waitUntil(() => !document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!.disabled);
+      const hostSubtab = document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!;
+      expect(hostSubtab.title).toBe("");
     });
 
-    it("disables again after a fresh local pick, bouncing back to the Local tab if Multiplayer was active", async () => {
+    it("disables the Host sub-tab again after a fresh local pick, bouncing to Join if Host was active", async () => {
       await loadEligibleWorkspace();
       expect(document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.getAttribute("aria-selected")).toBe("true");
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!.getAttribute("aria-selected")).toBe(
+        "true",
+      );
 
       (window as unknown as { showDirectoryPicker: () => Promise<unknown> }).showDirectoryPicker = () =>
         Promise.resolve(fakeDirectoryHandle("local-ws", { "main.c": VALID_MAIN_C }));
       document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
-      await waitUntil(() => document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.disabled);
-      expect(document.querySelector<HTMLButtonElement>("#tab-local")!.getAttribute("aria-selected")).toBe("true");
+      await waitUntil(() => document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!.disabled);
+      // The outer Multiplayer tab itself stays reachable/selected — Join has
+      // no workspace dependency — only the Host sub-tab bounces to Join.
+      expect(document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.getAttribute("aria-selected")).toBe("true");
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.getAttribute("aria-selected")).toBe(
+        "true",
+      );
     });
 
     it("switches between the Host and Join sub-tabs", async () => {
@@ -1723,7 +1756,7 @@ describe("main.ts — multiplayer connect flow", () => {
       const pc = readyHostPeerConnection();
 
       await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.textContent === "R4KJ9X");
-      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.hidden).toBe(false);
+      expect(document.querySelector<HTMLDivElement>("#multiplayer-host-code-wrap")!.hidden).toBe(false);
 
       await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
       expect(pc.remoteDescription).toEqual({ type: "answer", sdp: "answer-sdp" });
@@ -2215,7 +2248,7 @@ describe("main.ts — multiplayer connect flow", () => {
         expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Cancelled.");
         expect(document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.disabled).toBe(false);
         expect(document.querySelector<HTMLButtonElement>("#multiplayer-host-cancel")!.hidden).toBe(true);
-        expect(document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.hidden).toBe(true);
+        expect(document.querySelector<HTMLDivElement>("#multiplayer-host-code-wrap")!.hidden).toBe(true);
 
         // The pending retry timer must actually be cleared — advancing past
         // it should fire no further fetch call.
@@ -2360,7 +2393,7 @@ describe("main.ts — multiplayer connect flow", () => {
       document.querySelector<HTMLButtonElement>("#multiplayer-host-create")!.click();
       readyHostPeerConnection();
       await flushAsync();
-      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.hidden).toBe(true); // still awaiting the PUT
+      expect(document.querySelector<HTMLDivElement>("#multiplayer-host-code-wrap")!.hidden).toBe(true); // still awaiting the PUT
 
       document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
       fetchMock
@@ -2395,7 +2428,7 @@ describe("main.ts — multiplayer connect flow", () => {
       releaseHostPut!();
       await flushAsync();
       expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Connected.");
-      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.hidden).toBe(true);
+      expect(document.querySelector<HTMLDivElement>("#multiplayer-host-code-wrap")!.hidden).toBe(true);
     });
 
     /** Starts a Join (the trigger for the Host-side supersession-race tests
@@ -2445,7 +2478,7 @@ describe("main.ts — multiplayer connect flow", () => {
 
       expect(fetchMock.mock.calls.some(([url, init]) => url === `${SERVER_URL}/session` && init?.method === "PUT")).toBe(false);
       expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe("Connected.");
-      expect(document.querySelector<HTMLParagraphElement>("#multiplayer-host-code")!.hidden).toBe(true);
+      expect(document.querySelector<HTMLDivElement>("#multiplayer-host-code-wrap")!.hidden).toBe(true);
     });
 
     it("a supersession landing while the host waits for its own channels to open stops it from ever reporting Connected", async () => {

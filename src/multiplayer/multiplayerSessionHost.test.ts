@@ -11,7 +11,7 @@ import type { GameMap, Tile } from "../map/types";
 import type { LevelTransitionAckMessage, LevelTransitionMessage } from "./levelTransitionTypes";
 import { LocalInputSampler } from "./localInputSampler";
 import type { TickInput, TickInputBundle } from "./netcodeTypes";
-import { DISCONNECT_GRACE_MS, RECONCILE_INTERVAL_TICKS, TRANSITION_ACK_TIMEOUT_MS } from "./netcodeConstants";
+import { DISCONNECT_GRACE_MS, RECONCILE_INTERVAL_TICKS, TRANSITION_ACK_TIMEOUT_MS, TRANSITION_RETRY_LIMIT } from "./netcodeConstants";
 import type { ReconciliationSnapshotMessage } from "./reconciliationTypes";
 import { HOST_PLAYER_ID } from "./sessionSetupTypes";
 import type { SessionSetupResult } from "./sessionSetupTypes";
@@ -939,7 +939,9 @@ describe("runMultiplayerSessionAsHost", () => {
       driveToWin(worker);
       await vi.waitFor(() => expect(sendSpy).toHaveBeenCalled());
 
-      await vi.advanceTimersByTimeAsync(TRANSITION_ACK_TIMEOUT_MS);
+      // Every attempt (initial + every retry) fails identically, so this
+      // must ride out the full retry budget before giving up.
+      await vi.advanceTimersByTimeAsync(TRANSITION_ACK_TIMEOUT_MS * (TRANSITION_RETRY_LIMIT + 1));
 
       // Proceeded to the new level anyway, despite every send having failed.
       expect(handle.getPlayerPosition("host")).toEqual({ x: 9.5, y: 9.5 });
@@ -984,8 +986,9 @@ describe("runMultiplayerSessionAsHost", () => {
       expect(request.carryovers.host.health).toBeGreaterThan(0); // never touched — still alive
     });
 
-    it("proceeds without waiting forever once TRANSITION_ACK_TIMEOUT_MS elapses with no ack", () => {
+    it("proceeds without waiting forever once retries are exhausted with no ack", () => {
       vi.useFakeTimers();
+      const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
       const channels = linkedChannels();
       const worker = fakeWorker();
       const nextMap = fakeMap({ spawn: { x: 6, y: 6 } });
@@ -994,8 +997,12 @@ describe("runMultiplayerSessionAsHost", () => {
 
       driveToWin(worker);
       return vi.waitFor(() => expect(findNextLevel).toHaveBeenCalledTimes(1)).then(async () => {
-        await vi.advanceTimersByTimeAsync(TRANSITION_ACK_TIMEOUT_MS);
+        // A never-acking guest is retried up to TRANSITION_RETRY_LIMIT times
+        // before the host gives up and proceeds anyway.
+        await vi.advanceTimersByTimeAsync(TRANSITION_ACK_TIMEOUT_MS * (TRANSITION_RETRY_LIMIT + 1));
         expect(handle.getPlayerPosition("host")).toEqual({ x: 6.5, y: 6.5 });
+        expect(consoleLogSpy.mock.calls.some(([msg]) => typeof msg === "string" && msg.includes("retrying level-transition send"))).toBe(true);
+        consoleLogSpy.mockRestore();
       });
     });
 
@@ -1240,7 +1247,9 @@ describe("runMultiplayerSessionAsHost", () => {
       // whole flow.
       const ack2: LevelTransitionAckMessage = { type: "level-transition-ack", playerId: "guest-2" };
       guest2.reconciliation.send(JSON.stringify(ack2));
-      await vi.advanceTimersByTimeAsync(TRANSITION_ACK_TIMEOUT_MS);
+      // guest-1 never acks (its channel stayed closed through every retry
+      // attempt too), so this rides out the full retry budget.
+      await vi.advanceTimersByTimeAsync(TRANSITION_ACK_TIMEOUT_MS * (TRANSITION_RETRY_LIMIT + 1));
       expect(handle.getPlayerPosition("host")).toEqual({ x: 6.5, y: 6.5 });
     });
 
@@ -1310,6 +1319,43 @@ describe("runMultiplayerSessionAsHost", () => {
         // TRANSITION_ACK_TIMEOUT_MS: the permanently-gone guest-2 was never
         // part of the ack wait set at all, so the transition proceeds the
         // instant guest-1's own ack arrives.
+        const ack1: LevelTransitionAckMessage = { type: "level-transition-ack", playerId: "guest-1" };
+        guest1.reconciliation.send(JSON.stringify(ack1));
+        await vi.waitFor(() => {
+          expect(handle.getPlayerPosition("host")).toEqual({ x: 6.5, y: 6.5 });
+        });
+      });
+
+      it("retries the send to a guest that hasn't acked after one round, without re-sending to a guest that already has", async () => {
+        vi.useFakeTimers();
+        const { guest1, guest2, links } = twoGuestLinks();
+        const worker = fakeWorker();
+        const guest1Seen = collectMessages(guest1.reconciliation) as unknown as LevelTransitionMessage[];
+        const guest2Seen = collectMessages(guest2.reconciliation) as unknown as LevelTransitionMessage[];
+        const result = fakeResult({ roster: ["guest-1", "guest-2", "host"].sort(), playerCount: 3, map: winMap3() });
+        const nextMap = fakeMap({ spawn: { x: 6, y: 6 } });
+        const findNextLevel = vi.fn().mockResolvedValue({ map: nextMap, gameplaySeed: 1 });
+        const handle = runMultiplayerSessionAsHost(links, makeCanvas(), result, worker, undefined, findNextLevel);
+
+        for (let i = 0; i < COUNTDOWN_TICKS + 1; i++) worker.onmessage?.({ data: { type: "tick", tick: i } } as MessageEvent);
+        await vi.waitFor(() => {
+          expect(guest1Seen.some((m) => m.type === "level-transition-map-end")).toBe(true);
+          expect(guest2Seen.some((m) => m.type === "level-transition-map-end")).toBe(true);
+        });
+
+        // guest-2 acks the very first attempt; guest-1 never does.
+        const ack2: LevelTransitionAckMessage = { type: "level-transition-ack", playerId: "guest-2" };
+        guest2.reconciliation.send(JSON.stringify(ack2));
+
+        // The first round's own ack-wait times out with only guest-1 still
+        // pending — the host must retry the send to guest-1 alone.
+        await vi.advanceTimersByTimeAsync(TRANSITION_ACK_TIMEOUT_MS);
+        expect(guest1Seen.filter((m) => m.type === "level-transition-init")).toHaveLength(2); // initial + one retry
+        expect(guest2Seen.filter((m) => m.type === "level-transition-init")).toHaveLength(1); // never re-sent — already acked
+        // Still on the old level — guest-1's retry hasn't been acked yet.
+        expect(handle.getPlayerPosition("host")).toEqual({ x: 5.5, y: 5.5 });
+
+        // guest-1 finally acks on the retry.
         const ack1: LevelTransitionAckMessage = { type: "level-transition-ack", playerId: "guest-1" };
         guest1.reconciliation.send(JSON.stringify(ack1));
         await vi.waitFor(() => {

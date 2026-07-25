@@ -66,7 +66,10 @@ export function buildIndexDom(): void {
               </select>
               <button id="multiplayer-host-create" class="settings-btn" type="button">Create Session</button>
               <button id="multiplayer-host-cancel" class="settings-btn" type="button" hidden>Cancel</button>
-              <p id="multiplayer-host-code" class="multiplayer-code" hidden></p>
+              <div id="multiplayer-host-code-wrap" class="multiplayer-code-wrap" hidden>
+                <p id="multiplayer-host-code" class="multiplayer-code"></p>
+                <button id="multiplayer-host-code-copy" class="multiplayer-code-copy-btn" type="button">Copy</button>
+              </div>
               <p id="multiplayer-guest-count" class="muted" hidden></p>
               <button id="multiplayer-start-session" class="settings-btn" type="button" hidden>Start Session</button>
             </div>
@@ -76,6 +79,7 @@ export function buildIndexDom(): void {
               <button id="multiplayer-browse-lobby" class="settings-btn" type="button">Browse Lobby</button>
             </div>
             <p id="multiplayer-status" class="muted"></p>
+            <p id="multiplayer-guest-live-count" class="muted" hidden></p>
           </div>
           <p id="workspace-name" class="muted">No workspace selected</p>
           <label id="gore-label" for="gore-select">Gore</label>

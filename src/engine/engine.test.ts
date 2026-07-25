@@ -2966,6 +2966,45 @@ describe("RaycasterEngine — death, spectate, and revive (N-player)", () => {
     expect(local.spectateTargetId).toBe("p2"); // wraps back around — cycling past both candidates
   });
 
+  it("a dead player's own render() stats report status/spectateTargetId, and a multiplayer session draws the spectate banner", () => {
+    const canvas = makeCanvas();
+    const ctx = canvas.getContext("2d") as unknown as MockCanvasContext;
+    // localPlayerId "H" (not the default LOCAL_PLAYER_ID) makes this a real
+    // multiplayer session per `isMultiplayerSession()` — same pattern the
+    // exit-countdown tests above use.
+    const engine = new RaycasterEngine(canvas, hazardSpawnMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    const p2Input = new ScriptedInput();
+    engine.addPlayer("p2", p2Input);
+    // p2 steps off the hazard immediately; H (local) stays and cooks — same
+    // movement pattern the spectateTargetId-cycling test above uses.
+    p2Input.keys.add("KeyW");
+    for (let i = 0; i < 10; i++) engine.advance(0.1);
+    p2Input.keys.delete("KeyW");
+    for (let i = 0; i < 10 && engine.rosterSnapshot().get("H")!.status === "alive"; i++) engine.advance(1);
+    expect(engine.rosterSnapshot().get("H")!.status).toBe("dead");
+    expect(engine.rosterSnapshot().get("p2")!.status).toBe("alive"); // team isn't over
+
+    const stats = engine.render();
+    expect(stats.status).toBe("dead");
+    expect(stats.spectateTargetId).toBe("p2");
+    expect(ctx.fillText).toHaveBeenCalledWith("YOU DIED — spectating P2", WIDTH / 2, 40);
+  });
+
+  it("never draws the spectate banner in single-player, even on the terminal frame where status briefly reads 'dead'", () => {
+    const canvas = makeCanvas();
+    const ctx = canvas.getContext("2d") as unknown as MockCanvasContext;
+    // No localPlayerId override — defaults to LOCAL_PLAYER_ID, single-player.
+    const engine = new RaycasterEngine(canvas, hazardSpawnMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput());
+    for (let i = 0; i < 10 && engine.rosterSnapshot().get("local")!.status === "alive"; i++) engine.advance(1);
+    expect(engine.rosterSnapshot().get("local")!.status).toBe("dead");
+
+    const stats = engine.render();
+    // The stats field itself correctly reports the terminal-frame state...
+    expect(stats.status).toBe("dead");
+    // ...but nothing draws the multiplayer-only spectate banner over it.
+    expect(ctx.fillText).not.toHaveBeenCalledWith(expect.stringContaining("YOU DIED"), expect.anything(), expect.anything());
+  });
+
   it("state flips to 'over' only once every connected player is dead", () => {
     const { engine, handlers } = makeEngine(hazardSpawnMap());
     engine.addPlayer("p2", new ScriptedInput()); // p2 never moves off the hazard either

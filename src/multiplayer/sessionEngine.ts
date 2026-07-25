@@ -41,8 +41,15 @@ import type { SessionSetupResult } from "./sessionSetupTypes";
  * `"campaign-complete"`: a win with no next level to transition to (the
  * workspace is out of parsable files) — see `SessionEngineOptions.onWin`'s
  * own doc comment for how a win reaches this instead of the more common
- * level-transition path. */
-export type SessionEndReason = "team-eliminated" | "host-disconnected" | "campaign-complete";
+ * level-transition path.
+ * `"level-transition-failed"`: guest-only — this peer fell behind the host's
+ * `levelEpoch` (a level transition's wire payload never landed, e.g. a
+ * chunk-reassembly/parse/dimension failure on this peer's side) and the gap
+ * persisted past the host's own bounded retry plus `DISCONNECT_GRACE_MS`
+ * (`multiplayerSessionGuest.ts`'s `armFellBehindTimer`). Deliberately
+ * distinct from `"host-disconnected"`: the transport itself stayed healthy
+ * throughout, so reporting a disconnect would be misleading. */
+export type SessionEndReason = "team-eliminated" | "host-disconnected" | "campaign-complete" | "level-transition-failed";
 
 export interface SessionEngineOptions {
   result: SessionSetupResult;

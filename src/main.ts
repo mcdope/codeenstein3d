@@ -170,13 +170,16 @@ const multiplayerPublicCheckbox = requireElement<HTMLInputElement>("#multiplayer
 const multiplayerMaxPlayersSelect = requireElement<HTMLSelectElement>("#multiplayer-max-players");
 const multiplayerHostCreateButton = requireElement<HTMLButtonElement>("#multiplayer-host-create");
 const multiplayerHostCancelButton = requireElement<HTMLButtonElement>("#multiplayer-host-cancel");
+const multiplayerHostCodeWrap = requireElement<HTMLDivElement>("#multiplayer-host-code-wrap");
 const multiplayerHostCode = requireElement<HTMLParagraphElement>("#multiplayer-host-code");
+const multiplayerHostCodeCopyButton = requireElement<HTMLButtonElement>("#multiplayer-host-code-copy");
 const multiplayerGuestCount = requireElement<HTMLParagraphElement>("#multiplayer-guest-count");
 const multiplayerStartSessionButton = requireElement<HTMLButtonElement>("#multiplayer-start-session");
 const multiplayerJoinCodeInput = requireElement<HTMLInputElement>("#multiplayer-join-code-input");
 const multiplayerJoinConnectButton = requireElement<HTMLButtonElement>("#multiplayer-join-connect");
 const multiplayerBrowseLobbyButton = requireElement<HTMLButtonElement>("#multiplayer-browse-lobby");
 const multiplayerStatus = requireElement<HTMLParagraphElement>("#multiplayer-status");
+const multiplayerGuestLiveCount = requireElement<HTMLParagraphElement>("#multiplayer-guest-live-count");
 const multiplayerLobbyDialog = requireElement<HTMLDialogElement>("#multiplayer-lobby-dialog");
 const multiplayerLobbyList = requireElement<HTMLUListElement>("#multiplayer-lobby-list");
 const closeMultiplayerLobbyButton = requireElement<HTMLButtonElement>("#close-multiplayer-lobby");
@@ -850,12 +853,15 @@ continueButton.addEventListener("click", async () => {
 // doc/dev/multiplayer-netcode-spec.md and doc/dev/multiplayer-server-spec.md
 // for what later steps build on top of this.
 
-/** Multiplayer hosting/joining is only available for a GitHub-loaded repo or
- * the Demos campaign — never a locally-picked workspace (see
+/** Only the HOST path genuinely needs a loaded workspace/campaign to serve a
+ * map from — never a locally-picked workspace, though (see
  * multiplayer-research.md's "Privacy: resolved"). `workspaceIsDemo` always
  * implies `workspaceIsRemote` in every load path today, but this checks both
  * explicitly rather than depending on that implication silently holding
- * forever (see multiplayer-game-state-spec.md §1). */
+ * forever (see multiplayer-game-state-spec.md §1). Joining has no such
+ * dependency — a guest receives the map from the host — so this only gates
+ * the Host sub-tab, not the outer Multiplayer tab; see
+ * `updateMultiplayerHostSubtabEnabled()`. */
 function isMultiplayerEligibleWorkspace(): boolean {
   return workspaceIsRemote || workspaceIsDemo;
 }
@@ -867,26 +873,25 @@ const MULTIPLAYER_TAB_DISABLED_TITLE = "Multiplayer requires a GitHub-loaded rep
 const MULTIPLAYER_SERVER_CONFIGURED = Boolean(import.meta.env.VITE_MULTIPLAYER_SERVER_URL);
 /** Called from every workspace-loading entry point right after
  * `workspaceIsRemote`/`workspaceIsDemo` are set — same "call at every
- * assignment site" discipline as `updateLoadGithubRepoButtonEnabled`. Bounces
- * back to the Local tab if Multiplayer was active and just became
- * ineligible, so the UI never leaves a disabled tab showing as selected.
- * `MULTIPLAYER_SERVER_CONFIGURED` is fixed for the whole page lifetime (it's
- * a build-time env value), so unlike the eligibility check below it can
- * never flip from true to false after this function's first (module-load)
- * call — there's no "was selected, just became unconfigured" case to bounce
- * back from; a hidden+disabled tab was never selectable in the first place. */
+ * assignment site" discipline as `updateLoadGithubRepoButtonEnabled`. The
+ * outer tab itself is enabled whenever a signaling server is configured,
+ * full stop — Join works with no workspace loaded at all, so only the Host
+ * sub-tab is workspace-gated (`updateMultiplayerHostSubtabEnabled`, called at
+ * the end of this function). `MULTIPLAYER_SERVER_CONFIGURED` is fixed for the
+ * whole page lifetime (it's a build-time env value), so it can never flip
+ * from true to false after this function's first (module-load) call —
+ * there's no "was selected, just became unconfigured" case to bounce back
+ * from; a hidden tab was never selectable in the first place. */
 function updateMultiplayerTabEnabled(): void {
   if (!MULTIPLAYER_SERVER_CONFIGURED) {
     tabMultiplayer.style.display = "none";
     return;
   }
   tabMultiplayer.style.display = "";
-  const eligible = isMultiplayerEligibleWorkspace();
-  tabMultiplayer.disabled = !eligible;
-  tabMultiplayer.title = eligible ? "" : MULTIPLAYER_TAB_DISABLED_TITLE;
-  if (!eligible && tabMultiplayer.getAttribute("aria-selected") === "true") activateLaunchTab("local");
+  tabMultiplayer.disabled = false;
+  tabMultiplayer.title = "";
+  updateMultiplayerHostSubtabEnabled();
 }
-updateMultiplayerTabEnabled();
 
 // Host/Join sub-tabs — same nested-tab pattern as the WAD source sub-tabs
 // (`activateWadTab` above).
@@ -905,6 +910,22 @@ function activateMultiplayerSubtab(tab: MultiplayerSubtab): void {
 (Object.keys(multiplayerSubtabs) as MultiplayerSubtab[]).forEach((tab) =>
   multiplayerSubtabs[tab].button.addEventListener("click", () => activateMultiplayerSubtab(tab)),
 );
+
+/** Gates only the Host sub-tab on workspace eligibility — Join has no such
+ * requirement (a guest receives the map from the host, see
+ * `isMultiplayerEligibleWorkspace`'s doc comment). Bounces to Join if Host
+ * was selected and just became ineligible, so the UI never leaves a disabled
+ * sub-tab showing as selected — as an emergent side effect, a fresh page
+ * load with no workspace yet (Host starts `aria-selected="true"` in the
+ * markup) auto-bounces to Join on this function's first call below, landing
+ * a first-time visitor on the actually-usable sub-tab. */
+function updateMultiplayerHostSubtabEnabled(): void {
+  const eligible = isMultiplayerEligibleWorkspace();
+  multiplayerSubtabHost.disabled = !eligible;
+  multiplayerSubtabHost.title = eligible ? "" : MULTIPLAYER_TAB_DISABLED_TITLE;
+  if (!eligible && multiplayerSubtabHost.getAttribute("aria-selected") === "true") activateMultiplayerSubtab("join");
+}
+updateMultiplayerTabEnabled();
 
 const MULTIPLAYER_ICE_GATHERING_TIMEOUT_MS = 10_000;
 const MULTIPLAYER_CHANNELS_OPEN_TIMEOUT_MS = 15_000;
@@ -1018,11 +1039,44 @@ function pollForHostAnswer(
 function updateMultiplayerGuestCountDisplay(): void {
   if (!activeMultiplayerConnection || activeMultiplayerConnection.role !== "host") {
     multiplayerGuestCount.hidden = true;
+    multiplayerStartSessionButton.classList.remove("settings-btn-primary");
     return;
   }
   const { links, maxPlayers } = activeMultiplayerConnection;
   multiplayerGuestCount.hidden = false;
   multiplayerGuestCount.textContent = `${links.size + 1}/${maxPlayers} players connected`;
+  // Once at least one guest has joined, Start Session becomes the obvious
+  // next action — make it stand out instead of blending into Create/Cancel.
+  multiplayerStartSessionButton.classList.toggle("settings-btn-primary", links.size >= 1);
+}
+
+/** Guest-side analog of `updateMultiplayerGuestCountDisplay` — the host has
+ * `activeMultiplayerConnection.links` as a live source of truth, but a guest
+ * only ever learns the roster from the locked `SessionSetupResult.roster`
+ * (set once, at Start Session) plus roster-shrink notifications over the
+ * session's own reconciliation channel, so this is pushed in rather than
+ * read live off shared state. */
+function updateMultiplayerGuestLiveCountDisplay(connected: number, total: number): void {
+  multiplayerGuestLiveCount.hidden = false;
+  multiplayerGuestLiveCount.textContent = `${connected}/${total} players connected`;
+}
+
+/** Returns every multiplayer session-lifecycle element to its idle,
+ * nothing-happening state. The one place all three "a session just stopped
+ * being live" exits — `onMultiplayerSessionEnded`, the Cancel handler, and
+ * `launchLevel`'s raw external stop — funnel through, so none of them can
+ * drift out of sync with what the others reset. */
+function resetMultiplayerLobbyUi(): void {
+  multiplayerHostCreateButton.disabled = false;
+  multiplayerMaxPlayersSelect.disabled = false;
+  multiplayerJoinConnectButton.disabled = false;
+  multiplayerHostCancelButton.hidden = true;
+  multiplayerHostCodeWrap.hidden = true;
+  multiplayerGuestCount.hidden = true;
+  multiplayerStartSessionButton.hidden = true;
+  multiplayerStartSessionButton.disabled = false;
+  multiplayerStartSessionButton.classList.remove("settings-btn-primary");
+  multiplayerGuestLiveCount.hidden = true;
 }
 
 /** Arms the next open guest slot (if any) by publishing a fresh offer under
@@ -1148,7 +1202,7 @@ async function createMultiplayerSession(): Promise<void> {
   multiplayerHostCreateButton.disabled = true;
   multiplayerMaxPlayersSelect.disabled = true;
   multiplayerHostCancelButton.hidden = false;
-  multiplayerHostCode.hidden = true;
+  multiplayerHostCodeWrap.hidden = true;
   setMultiplayerStatus("Creating session…", false);
 
   // Hoisted so `finally` below can close a peer connection that was
@@ -1194,7 +1248,7 @@ async function createMultiplayerSession(): Promise<void> {
       if (generation !== multiplayerConnectionGeneration) return;
 
       multiplayerHostCode.textContent = session.code;
-      multiplayerHostCode.hidden = false;
+      multiplayerHostCodeWrap.hidden = false;
       multiplayerConnectionState = "awaiting-answer";
       setMultiplayerStatus(`Waiting for a guest to join with code ${session.code}…`, false);
 
@@ -1247,7 +1301,12 @@ async function createMultiplayerSession(): Promise<void> {
     }
   } finally {
     if (!connected) hostPeerConnection?.close();
-    if (generation === multiplayerConnectionGeneration) {
+    // Only reset back to the idle "nothing happening" state on failure/
+    // cancel — on success the host is now waiting in a live lobby for
+    // guests, and Create/Cancel must reflect that (not silently reopen
+    // Create, letting a second click abandon this lobby) until the session
+    // actually ends via `resetMultiplayerLobbyUi()`.
+    if (!connected && generation === multiplayerConnectionGeneration) {
       multiplayerHostCreateButton.disabled = false;
       multiplayerMaxPlayersSelect.disabled = false;
       multiplayerHostCancelButton.hidden = true;
@@ -1264,15 +1323,40 @@ multiplayerHostCancelButton.addEventListener("click", () => {
     clearTimeout(hostAnswerPollTimer);
     hostAnswerPollTimer = null;
   }
+  // Now reachable while already `connected` (waiting in the lobby for more
+  // guests/Start Session) — not just mid-connect — since Create/Cancel no
+  // longer reset the instant the first connect succeeds (see
+  // `createMultiplayerSession`'s `finally`). Any already-joined guests' peer
+  // connections must be closed explicitly here, or they're orphaned with
+  // nothing left driving them.
+  if (activeMultiplayerConnection?.role === "host") {
+    for (const link of activeMultiplayerConnection.links.values()) link.peerConnection.close();
+  }
   activeMultiplayerConnection = null;
   multiplayerConnectionState = "idle";
-  multiplayerHostCreateButton.disabled = false;
-  multiplayerMaxPlayersSelect.disabled = false;
-  multiplayerHostCancelButton.hidden = true;
-  multiplayerHostCode.hidden = true;
-  multiplayerStartSessionButton.hidden = true;
-  updateMultiplayerGuestCountDisplay();
+  resetMultiplayerLobbyUi();
   setMultiplayerStatus("Cancelled.", false);
+});
+
+const MULTIPLAYER_COPY_CONFIRM_MS = 1500;
+multiplayerHostCodeCopyButton.addEventListener("click", () => {
+  if (!navigator.clipboard) {
+    setMultiplayerStatus("Clipboard access isn't available — copy the code manually.", true);
+    return;
+  }
+  void navigator.clipboard
+    .writeText(multiplayerHostCode.textContent ?? "")
+    .then(() => {
+      const original = multiplayerHostCodeCopyButton.textContent;
+      multiplayerHostCodeCopyButton.textContent = "Copied!";
+      setTimeout(() => {
+        multiplayerHostCodeCopyButton.textContent = original;
+      }, MULTIPLAYER_COPY_CONFIRM_MS);
+    })
+    .catch((err) => {
+      console.warn("[multiplayer] clipboard write failed:", err);
+      setMultiplayerStatus("Couldn't copy the code — copy it manually.", true);
+    });
 });
 
 // --- Join flow -------------------------------------------------------------
@@ -1362,8 +1446,12 @@ async function joinMultiplayerSession(code: string): Promise<void> {
     if (!connected) {
       guestPeerConnection?.close();
       guestChannelsPromise?.catch(() => {});
+      // Only re-enable on failure/cancel — on success this guest is now
+      // waiting in the host's lobby for Start Session, and Join must stay
+      // disabled (not let a second click orphan this connection) until the
+      // session actually ends via `resetMultiplayerLobbyUi()`.
+      if (generation === multiplayerConnectionGeneration) multiplayerJoinConnectButton.disabled = false;
     }
-    if (generation === multiplayerConnectionGeneration) multiplayerJoinConnectButton.disabled = false;
   }
 }
 
@@ -1389,28 +1477,35 @@ function beginMultiplayerLevel(): void {
   viewport.append(buildControlsLegend());
   canvasArea.hidden = false;
   canvas.focus();
-  // Both connect flows' own `finally` blocks already re-enabled these once
-  // the connect/lobby phase itself settled (well before this point) — left
-  // alone, either button stayed clickable for the entire live session,
-  // letting a second Join (orphaning this session's worker/listeners with
-  // nothing left to stop them) or a second Create (abandoning this lobby)
-  // fire mid-session. Disabled here, the one call site both
-  // `startMultiplayerSessionAsHost`/`startMultiplayerSessionAsGuest` share
-  // right before a session actually starts — re-enabled by
-  // `onMultiplayerSessionEnded`, the one call site both session-end paths
-  // share.
+  // Both connect flows' own `finally` blocks now stay disabled all the way
+  // through the lobby-wait on success (see `createMultiplayerSession`'s/
+  // `joinMultiplayerSession`'s `finally`) — re-asserted here defensively,
+  // since this is the one call site both `startMultiplayerSessionAsHost`/
+  // `startMultiplayerSessionAsGuest` share right before a session actually
+  // starts. Re-enabled by `resetMultiplayerLobbyUi()`, which every
+  // session-end path shares. The host-only lobby affordances (Cancel, the
+  // session code, Start Session) are meaningless once gameplay has actually
+  // begun, so they're hidden here too rather than lingering until the
+  // session ends.
   multiplayerJoinConnectButton.disabled = true;
   multiplayerHostCreateButton.disabled = true;
+  multiplayerHostCancelButton.hidden = true;
+  multiplayerHostCodeWrap.hidden = true;
+  multiplayerStartSessionButton.hidden = true;
 }
 
 /** Title/theme color for the end-of-run comparison screen, one per
  * `SessionEndReason` — mirrors `GameHud.showKernelPanic`/`showBuildSuccessful`'s
  * own red/green theming, plus a distinct amber for the guest-only provisional
- * `"host-disconnected"` ending. */
+ * `"host-disconnected"` ending and a distinct orange-red for
+ * `"level-transition-failed"` (also guest-only/provisional, but a different
+ * failure than a genuine transport disconnect — see `sessionEngine.ts`'s own
+ * doc comment on `SessionEndReason`). */
 const MULTIPLAYER_RESULT_THEME: Record<SessionEndReason, { title: string; color: string }> = {
   "team-eliminated": { title: "MULTIPLAYER: TEAM ELIMINATED", color: "#ff4d4d" },
   "host-disconnected": { title: "MULTIPLAYER: HOST DISCONNECTED", color: "#f2c14e" },
   "campaign-complete": { title: "MULTIPLAYER: CAMPAIGN COMPLETE", color: "#37d24a" },
+  "level-transition-failed": { title: "LEVEL TRANSITION FAILED", color: "#ff8a3d" },
 };
 
 /** Builds the comparison table's rows from `RaycasterEngine.rosterSnapshot()`
@@ -1442,16 +1537,17 @@ function onMultiplayerSessionEnded(
   comparison: ReadonlyMap<PlayerId, RosterSnapshotEntry>,
 ): void {
   activeMultiplayerSession = null;
-  // Mirrors `beginMultiplayerLevel()`'s own disabling of both — the one
-  // place every session-end path (this function) shares, so a live
-  // session's end always reopens both, regardless of which ending fired or
-  // which role this peer played.
-  multiplayerJoinConnectButton.disabled = false;
-  multiplayerHostCreateButton.disabled = false;
+  activeMultiplayerConnection = null;
+  multiplayerConnectionState = "idle";
+  // The one place every session-end path shares, so a live session's end
+  // always reopens Create/Join and hides every lobby-only affordance,
+  // regardless of which ending fired or which role this peer played.
+  resetMultiplayerLobbyUi();
   const message: Record<SessionEndReason, string> = {
     "team-eliminated": "Multiplayer session ended — every player was eliminated.",
     "host-disconnected": "Multiplayer session ended — the host disconnected.",
     "campaign-complete": "Multiplayer session ended — campaign complete!",
+    "level-transition-failed": "Multiplayer session ended — the level transition failed to complete.",
   };
   setMultiplayerStatus(message[reason], false);
   const { title, color } = MULTIPLAYER_RESULT_THEME[reason];
@@ -1606,10 +1702,28 @@ async function startMultiplayerSessionAsGuest(): Promise<void> {
   try {
     const result = await runGuestSessionSetup(channels);
     beginMultiplayerLevel();
-    activeMultiplayerSession = runMultiplayerSessionAsGuest(channels, canvas, result, onMultiplayerSessionEnded, peerConnection);
+    const totalPlayers = result.roster.length;
+    updateMultiplayerGuestLiveCountDisplay(totalPlayers, totalPlayers);
+    activeMultiplayerSession = runMultiplayerSessionAsGuest(
+      channels,
+      canvas,
+      result,
+      onMultiplayerSessionEnded,
+      peerConnection,
+      (msg) => setMultiplayerStatus(msg, true),
+      (connected) => updateMultiplayerGuestLiveCountDisplay(connected, totalPlayers),
+    );
   } catch (err) {
     console.error("[multiplayer] Session setup failed:", err);
     setMultiplayerStatus(err instanceof Error ? err.message : "Multiplayer session setup failed.", true);
+    // Join no longer resets on mere "connected" (see `joinMultiplayerSession`'s
+    // `finally`), so a setup failure here — unlike before — would otherwise
+    // leave Join permanently disabled and this peer connection orphaned with
+    // nothing left driving it.
+    peerConnection.close();
+    activeMultiplayerConnection = null;
+    multiplayerConnectionState = "idle";
+    multiplayerJoinConnectButton.disabled = false;
   }
 }
 
@@ -2254,11 +2368,19 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   activeMultiplayerSession?.stop();
   activeMultiplayerSession = null;
   // A raw external .stop() (unlike a natural session ending) never calls
-  // onMultiplayerSessionEnded, so its own button re-enable would otherwise
-  // never run here — mirrored explicitly so navigating away doesn't leave
-  // Join/Host permanently disabled for the rest of the page's lifetime.
-  multiplayerJoinConnectButton.disabled = false;
-  multiplayerHostCreateButton.disabled = false;
+  // onMultiplayerSessionEnded, so its own UI reset would otherwise never run
+  // here — mirrored explicitly so navigating away doesn't leave Join/Host
+  // permanently disabled, or lobby-only affordances lingering, for the rest
+  // of the page's lifetime. Deliberately does NOT touch
+  // `activeMultiplayerConnection` itself (unlike the Cancel button, an
+  // explicit synchronous user action on the connection it's cancelling) —
+  // this function is also reachable from the entrypoint auto-launch's own
+  // async scan (`autoLaunchInitialLevel`), which can land well after this
+  // call was originally queued; forcibly closing "whatever
+  // `activeMultiplayerConnection` happens to hold right now" here would risk
+  // tearing down a connection established in the meantime that has nothing
+  // to do with this navigation.
+  resetMultiplayerLobbyUi();
 
   const hint = document.createElement("p");
   hint.className = "map-caption";

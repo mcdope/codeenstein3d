@@ -49,6 +49,8 @@ function fakeStats(overrides: Partial<EngineStats> = {}): EngineStats {
     runScoreBreakdown: zeroScoreBreakdown(),
     levelPlayerStats: emptyPlayerFacingStats(),
     runPlayerStats: emptyPlayerFacingStats(),
+    status: "alive",
+    spectateTargetId: null,
     ...overrides,
   };
 }

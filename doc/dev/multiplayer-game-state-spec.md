@@ -798,7 +798,11 @@ leaves the world simulation (no corpse collision, enemies drop them as a target)
 they keep their score and inventory, and their view becomes a spectator camera
 following a living teammate (cycle targets with fire; local-only, not
 sim-relevant — their `InputSnapshot` still rides the bundle unchanged so the
-roster and bundle shape stay stable, it just applies to nothing). They **revive at
+roster and bundle shape stay stable, it just applies to nothing). A standing
+"YOU DIED — spectating &lt;teammate&gt;" HUD banner (`hud.ts`'s
+`drawSpectatingBanner`, driven by `EngineStats.status`/`spectateTargetId`)
+marks this on screen the whole time, so a still-alive team doesn't read as a
+silent camera swap or a false team-wipe. They **revive at
 the next level transition** (`multiplayer-netcode-spec.md` §7) with inventory
 intact and health at `REVIVE_HEALTH` (e.g. 50 — a balance value to validate via
 the telemetry process like everything else here). Death deliberately drops

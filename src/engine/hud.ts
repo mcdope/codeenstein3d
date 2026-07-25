@@ -6,9 +6,16 @@
  * Both are drawn natively onto the 2D context after the 3D scene; only the
  * end-of-run overlays remain in the DOM (see src/ui/gameHud.ts).
  */
-import type { EngineStats } from "./engine";
+import type { EngineStats, PlayerId } from "./engine";
 import { COUNTDOWN_DISPLAY_HZ } from "./transitionConstants";
 import { WEAPONS } from "./weapons";
+
+/** Same one-line capitalization `main.ts`'s `multiplayerResultRows` uses for
+ * a `PlayerId` — duplicated here rather than imported, since `main.ts`
+ * itself depends on the engine, not the other way around. */
+function playerIdLabel(id: PlayerId): string {
+  return id.charAt(0).toUpperCase() + id.slice(1);
+}
 
 /**
  * Center crosshair; turns red when an enemy is targeted. When `spreadPx` > 0
@@ -134,6 +141,36 @@ export function drawExitCountdownToast(ctx: CanvasRenderingContext2D, remainingT
   ctx.strokeText(`Build finishing in ${seconds}s…`, w / 2, y);
   ctx.fillStyle = "#8effa0";
   ctx.fillText(`Build finishing in ${seconds}s…`, w / 2, y);
+  ctx.textAlign = "start";
+  ctx.restore();
+}
+
+/**
+ * "YOU DIED — spectating <teammate>" banner — a quiet, standing readout (same
+ * shape as `drawExitCountdownToast`, but red-tinted rather than green) shown
+ * whenever the local player is dead but the run keeps going, so a coop death
+ * doesn't silently swap the camera to a teammate's POV with zero on-screen
+ * explanation (see `RaycasterEngine.killPlayer`/`cycleSpectateTarget`).
+ * `spectateTargetId` is `null` only when every teammate is also dead, which
+ * is a one-frame state on the way to the run actually ending — still worth
+ * a distinct message rather than a blank/incorrect name. Only ever called
+ * for a multiplayer session — see `renderNormalFrame`'s call site.
+ */
+export function drawSpectatingBanner(ctx: CanvasRenderingContext2D, spectateTargetId: PlayerId | null): void {
+  const w = ctx.canvas.width;
+  const text =
+    spectateTargetId === null
+      ? "YOU DIED — no living teammates to spectate"
+      : `YOU DIED — spectating ${playerIdLabel(spectateTargetId)}`;
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.font = "bold 22px ui-monospace, monospace";
+  const y = 40;
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = "#5a0d0d";
+  ctx.strokeText(text, w / 2, y);
+  ctx.fillStyle = "#ff8a8a";
+  ctx.fillText(text, w / 2, y);
   ctx.textAlign = "start";
   ctx.restore();
 }

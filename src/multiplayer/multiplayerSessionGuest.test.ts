@@ -829,7 +829,7 @@ describe("runMultiplayerSessionAsGuest", () => {
       vi.useRealTimers();
     });
 
-    it("ends the session once bundles stamped for an epoch AHEAD of ours persist past the grace period", () => {
+    it("ends the session once bundles stamped for an epoch AHEAD of ours persist past the grace period, with an honest reason distinct from a transport disconnect", () => {
       vi.useFakeTimers();
       const channels = linkedChannels();
       const onSessionEnded = vi.fn();
@@ -838,14 +838,15 @@ describe("runMultiplayerSessionAsGuest", () => {
       // The host has moved to level epoch 1; this guest never received the
       // transition (its map was lost on the reconciliation channel), so it's
       // stuck on epoch 0, discarding every ahead-of-us bundle. Transport stays
-      // healthy, so the disconnect path would never catch this.
+      // healthy, so the disconnect path would never catch this — the reason
+      // reported must say so, not "host-disconnected".
       const aheadBundle: TickInputBundle = { tick: 0, dt: 1 / 30, levelEpoch: 1, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [] };
       channels.host.input.send(JSON.stringify(aheadBundle));
       expect(onSessionEnded).not.toHaveBeenCalled();
 
       vi.advanceTimersByTime(DISCONNECT_GRACE_MS);
       expect(onSessionEnded).toHaveBeenCalledTimes(1);
-      expect(onSessionEnded.mock.calls[0][1]).toBe("host-disconnected");
+      expect(onSessionEnded.mock.calls[0][1]).toBe("level-transition-failed");
     });
 
     it("does not fire while an ahead-of-us epoch persists for less than the grace period, and repeated ahead bundles don't restart the timer", () => {
@@ -1185,6 +1186,26 @@ describe("runMultiplayerSessionAsGuest", () => {
 
       expect(handle.getPlayerPosition("guest")).toEqual(before); // never swapped
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("invalid or oversized dimensions"));
+      logSpy.mockRestore();
+    });
+
+    it("surfaces a player-facing status via onTransitionStatus when a transition payload fails validation, instead of only logging silently", () => {
+      const channels = linkedChannels();
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const onTransitionStatus = vi.fn();
+      runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult(), undefined, undefined, onTransitionStatus);
+
+      const initMessage: LevelTransitionInitMessage = { type: "level-transition-init", carryovers: {}, gameplaySeed: 1 };
+      channels.host.reconciliation.send(JSON.stringify(initMessage));
+      const tinyMalformedMap = JSON.stringify({ width: 1e9, height: 1e9, grid: [] });
+      const chunkMessage: LevelTransitionMapChunkMessage = { type: "level-transition-map-chunk", index: 0, data: tinyMalformedMap };
+      channels.host.reconciliation.send(JSON.stringify(chunkMessage));
+      const endMessage: LevelTransitionMapEndMessage = { type: "level-transition-map-end", totalChunks: 1 };
+      channels.host.reconciliation.send(JSON.stringify(endMessage));
+
+      expect(onTransitionStatus).toHaveBeenCalledTimes(1);
+      expect(onTransitionStatus.mock.calls[0][0]).toEqual(expect.any(String));
+      expect(onTransitionStatus.mock.calls[0][0].length).toBeGreaterThan(0);
       logSpy.mockRestore();
     });
 
