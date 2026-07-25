@@ -3578,6 +3578,25 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
       expect(lastStats(handlers).health).toBeLessThan(100);
       expect(lastStats(handlers).godMode).toBe(false);
     });
+
+    it("debugClearExitRoomEnemies() kills only the exit room's own enemies, letting a blocked exit fire", () => {
+      const size = 12;
+      const exitTile = { x: size - 2, y: size - 2 };
+      const inRoom = fakeEnemy({ home: { x: 8, y: 8, w: 4, h: 4 }, alive: true }); // covers the exit tile
+      const elsewhere = fakeEnemy({ home: { x: 0, y: 0, w: 2, h: 2 }, alive: true }); // a different room entirely
+      const map = fakeMap({ spawn: exitTile, exit: exitTile, enemies: [inRoom, elsewhere] }, size);
+      const { engine, handlers } = makeEngine(map);
+
+      engine.advance(0.016);
+      expect(handlers.onWin).not.toHaveBeenCalled(); // blocked — inRoom is still alive
+
+      engine.debugClearExitRoomEnemies();
+      expect(inRoom.alive).toBe(false);
+      expect(elsewhere.alive).toBe(true); // untouched — a different room's own enemy
+
+      engine.advance(0.016);
+      expect(handlers.onWin).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("applyReconciliationSnapshot", () => {

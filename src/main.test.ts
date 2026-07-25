@@ -3203,6 +3203,7 @@ describe("main.ts — multiplayer connect flow", () => {
       getRngState: () => number | null;
       injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
       debugSetGodMode: (id: string, enabled: boolean) => void;
+      debugClearExitRoomEnemies: () => void;
       hasActiveRenderOffset: (id: string) => boolean;
       getLastReconciliationRngState: () => number | null;
       getPlayerStatus: (id: string) => string | null;
@@ -3231,6 +3232,7 @@ describe("main.ts — multiplayer connect flow", () => {
             getRngState: () => number | null;
             injectDesync: (injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }) => void;
             debugSetGodMode: (id: string, enabled: boolean) => void;
+            debugClearExitRoomEnemies: () => void;
             hasActiveRenderOffset: (id: string) => boolean;
             getLastReconciliationRngState: () => number | null;
             getPlayerStatus: (id: string) => string | null;
@@ -3364,6 +3366,7 @@ describe("main.ts — multiplayer connect flow", () => {
         expect(multiplayerHooks().getRngState()).toBeNull();
         expect(() => multiplayerHooks().injectDesync({ kind: "extraRngDraw" })).not.toThrow();
         expect(() => multiplayerHooks().debugSetGodMode("host", true)).not.toThrow();
+        expect(() => multiplayerHooks().debugClearExitRoomEnemies()).not.toThrow();
         // No session yet — activeMultiplayerSession?. short-circuits to the
         // `?? false` fallback, distinct from a real session's own `false`.
         expect(multiplayerHooks().hasActiveRenderOffset("host")).toBe(false);
@@ -3422,6 +3425,7 @@ describe("main.ts — multiplayer connect flow", () => {
         // debugSetGodMode() rather than the `?.` short-circuit covered by
         // the earlier no-session check above.
         expect(() => hooks.debugSetGodMode("host", true)).not.toThrow();
+        expect(() => hooks.debugClearExitRoomEnemies()).not.toThrow();
         // A real session now exists — activeMultiplayerSession?. resolves
         // (unlike the earlier no-session check above), so this reaches the
         // engine's own real `false`, not the `?? false` fallback.

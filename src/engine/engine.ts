@@ -3625,14 +3625,42 @@ export class RaycasterEngine {
     }
   }
 
-  /** Whether any living enemy still calls the exit's own room `home` — see
-   * `Enemy.home`'s doc comment: a room's spawned enemies never roam outside
-   * its rectangle while idle, so `map.exit` falling inside an enemy's `home`
-   * is exactly "this enemy belongs to the exit's room," with no separate
-   * room-lookup/id needed. */
-  private exitRoomHasAliveEnemy(): boolean {
+  /** Whether `e` belongs to the exit's own room — see `Enemy.home`'s doc
+   * comment: a room's spawned enemies never roam outside its rectangle while
+   * idle, so `map.exit` falling inside an enemy's `home` is exactly "this
+   * enemy belongs to the exit's room," with no separate room-lookup/id
+   * needed. Shared by `exitRoomHasAliveEnemy()` and the test-only
+   * `debugClearExitRoomEnemies()` below. */
+  private enemyBelongsToExitRoom(e: Enemy): boolean {
     const { x: ex, y: ey } = this.map.exit;
-    return this.enemies.some((e) => e.alive && ex >= e.home.x && ex < e.home.x + e.home.w && ey >= e.home.y && ey < e.home.y + e.home.h);
+    return ex >= e.home.x && ex < e.home.x + e.home.w && ey >= e.home.y && ey < e.home.y + e.home.h;
+  }
+
+  /** Whether any living enemy still calls the exit's own room `home`. */
+  private exitRoomHasAliveEnemy(): boolean {
+    return this.enemies.some((e) => e.alive && this.enemyBelongsToExitRoom(e));
+  }
+
+  /**
+   * Test-only, mutating — same category as `debugSetGodMode` above (never
+   * called from real gameplay code). Kills only the enemies belonging to the
+   * exit's own room (`enemyBelongsToExitRoom`), not every enemy on the level:
+   * `scripts/verify-multiplayer-transition.mjs` drives an invulnerable,
+   * combat-avoidant host (`ignoreThreats: true`, see `debugSetGodMode`'s own
+   * doc comment) straight to the exit, which now never activates on its own
+   * since that host never kills anything — but that same script's *guest* is
+   * deliberately left vulnerable to real, roaming enemies *elsewhere* on the
+   * level, to exercise its own separate "revived after a pre-transition
+   * death" coverage. Clearing every enemy outright (the way `debugSetGodMode`
+   * itself explicitly avoids) would silently kill that guest-death coverage
+   * too — scoping this to just the exit's own room keeps both intact. Same
+   * lockstep caveat as `debugSetGodMode`: a purely local mutation with no
+   * wire message, so a caller must apply it identically on every peer or
+   * their simulations diverge on which enemies are still alive. */
+  debugClearExitRoomEnemies(): void {
+    for (const e of this.enemies) {
+      if (this.enemyBelongsToExitRoom(e)) e.alive = false;
+    }
   }
 
   /** Multiplayer-only: ticks remaining in the exit countdown, or `null` if

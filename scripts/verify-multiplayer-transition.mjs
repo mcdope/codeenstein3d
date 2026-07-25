@@ -334,6 +334,19 @@ async function runScenario(browser, engineName) {
     await hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.debugSetGodMode("host", true));
     await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.debugSetGodMode("host", true));
 
+    // Same both-pages requirement as debugSetGodMode above, and same
+    // "narrow, scoped mutation" spirit — RaycasterEngine.checkExit() now
+    // gates a win/countdown on the exit's own room having no living enemies
+    // (see exitRoomHasAliveEnemy()'s own doc comment), which this
+    // invulnerable-but-never-fighting host (ignoreThreats: true, below)
+    // would otherwise never satisfy on its own. debugClearExitRoomEnemies()
+    // only kills the exit room's own enemies, not every enemy on the level —
+    // the guest below is still left vulnerable to real, roaming enemies
+    // *elsewhere*, which it needs to reach its own "revived after a
+    // pre-transition death" coverage.
+    await hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.debugClearExitRoomEnemies());
+    await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.debugClearExitRoomEnemies());
+
     const before = await hostPage.evaluate(() => {
       const hooks = window.__codeensteinMultiplayerTestHooks;
       return { map: hooks.getMap(), exit: hooks.getMapExit() };

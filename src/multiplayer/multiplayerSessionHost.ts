@@ -181,6 +181,9 @@ export interface MultiplayerSessionHandle {
   /** Test-only, mutating — see `RaycasterEngine.debugSetGodMode`'s doc
    * comment. */
   debugSetGodMode(playerId: PlayerId, enabled: boolean): void;
+  /** Test-only, mutating — see `RaycasterEngine.debugClearExitRoomEnemies`'s
+   * doc comment. */
+  debugClearExitRoomEnemies(): void;
   /** Real round-trip-time read via `RTCPeerConnection.getStats()` — step 11
    * Phase 2b (`connectionStats.ts`). Every method here reflects only *this*
    * peer's own local observation, not a network-wide or authoritative view
@@ -747,6 +750,7 @@ export function runMultiplayerSessionAsHost(
     getBotPlayerState: (id) => engine?.getBotPlayerState(id) ?? null,
     debugInjectDesync: (injection) => engine!.debugInjectDesync(injection),
     debugSetGodMode: (playerId, enabled) => engine!.debugSetGodMode(playerId, enabled),
+    debugClearExitRoomEnemies: () => engine!.debugClearExitRoomEnemies(),
     getConnectionStats: (id) => {
       const link = links.get(id);
       return link ? readConnectionStats(link.peerConnection) : Promise.resolve(null);
