@@ -1866,6 +1866,56 @@ describe("RaycasterEngine — win and death", () => {
     expect(lastStats(handlers)).toBeDefined();
   });
 
+  describe("exit gating by the exit room's own alive enemies", () => {
+    const size = 12;
+    // The exit tile itself, at (size-2, size-2) = (10, 10) — every enemy
+    // fixture below is positioned relative to this.
+    const exitTile = { x: size - 2, y: size - 2 };
+
+    it("does not win while an alive enemy from the exit's own room remains", () => {
+      const enemy = fakeEnemy({ home: { x: 8, y: 8, w: 4, h: 4 }, alive: true }); // covers [8,12)x[8,12) — includes (10,10)
+      const map = fakeMap({ spawn: exitTile, exit: exitTile, enemies: [enemy] }, size);
+      const { engine, handlers } = makeEngine(map);
+      engine.advance(0.016);
+      expect(handlers.onWin).not.toHaveBeenCalled();
+    });
+
+    it("wins normally once that enemy is dead", () => {
+      const enemy = fakeEnemy({ home: { x: 8, y: 8, w: 4, h: 4 }, alive: false });
+      const map = fakeMap({ spawn: exitTile, exit: exitTile, enemies: [enemy] }, size);
+      const { engine, handlers } = makeEngine(map);
+      engine.advance(0.016);
+      expect(handlers.onWin).toHaveBeenCalledTimes(1);
+    });
+
+    it("an alive enemy from a different room (exit outside its home rectangle on every axis) doesn't block the exit", () => {
+      const belowAndLeft = fakeEnemy({ home: { x: 0, y: 0, w: 2, h: 2 }, alive: true }); // exit is beyond both x+w and y+h
+      const aboveAndRight = fakeEnemy({ home: { x: 11, y: 11, w: 1, h: 1 }, alive: true }); // exit is below both x and y
+      const map = fakeMap({ spawn: exitTile, exit: exitTile, enemies: [belowAndLeft, aboveAndRight] }, size);
+      const { engine, handlers } = makeEngine(map);
+      engine.advance(0.016);
+      expect(handlers.onWin).toHaveBeenCalledTimes(1);
+    });
+
+    it("an alive enemy whose room shares the exit's row but not its column doesn't block the exit", () => {
+      // Same y-range as the exit's room would be, but x-range entirely to the left of it.
+      const enemy = fakeEnemy({ home: { x: 0, y: 8, w: 4, h: 4 }, alive: true });
+      const map = fakeMap({ spawn: exitTile, exit: exitTile, enemies: [enemy] }, size);
+      const { engine, handlers } = makeEngine(map);
+      engine.advance(0.016);
+      expect(handlers.onWin).toHaveBeenCalledTimes(1);
+    });
+
+    it("an alive enemy whose room shares the exit's column but not its row doesn't block the exit", () => {
+      // Same x-range as the exit's room would be, but y-range entirely above it.
+      const enemy = fakeEnemy({ home: { x: 8, y: 0, w: 4, h: 4 }, alive: true });
+      const map = fakeMap({ spawn: exitTile, exit: exitTile, enemies: [enemy] }, size);
+      const { engine, handlers } = makeEngine(map);
+      engine.advance(0.016);
+      expect(handlers.onWin).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("no-ops every per-frame simulation step once the run has ended", () => {
     // Once state flips away from "playing" (here: a win), a second advance()
     // call should hit every simulation method's own `if (this.state !==
@@ -1943,6 +1993,15 @@ describe("RaycasterEngine — multiplayer exit countdown (step 8)", () => {
     engine.advance(0.016);
     expect(handlers.onWin).not.toHaveBeenCalled();
     expect(engine.getExitCountdownRemaining()).toBe(COUNTDOWN_TICKS);
+  });
+
+  it("does not start the countdown while an alive enemy from the exit's own room remains", () => {
+    const size = 12;
+    const enemy = fakeEnemy({ home: { x: size - 4, y: size - 4, w: 4, h: 4 }, alive: true });
+    const map = fakeMap({ spawn: { x: size - 2, y: size - 2 }, exit: { x: size - 2, y: size - 2 }, enemies: [enemy] }, size);
+    const engine = new RaycasterEngine(makeCanvas(), map, {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    engine.advance(0.016);
+    expect(engine.getExitCountdownRemaining()).toBeNull();
   });
 
   it("counts down by exactly one tick per simulate() call, regardless of dt", () => {
@@ -2082,6 +2141,38 @@ describe("RaycasterEngine — captureCarryoverFor (step 8)", () => {
     const first = engine.captureCarryoverFor("H");
     const second = engine.captureCarryoverFor("H");
     expect(second.priorScore).toBe(first.priorScore); // unchanged by the first call — not accumulated twice
+  });
+});
+
+describe("RaycasterEngine — externally-driven FPS (multiplayer)", () => {
+  it("getDisplayFps() stays 0 for a normal (internal rAF) instance that's never externally driven", () => {
+    const { engine } = makeEngine(fakeMap());
+    engine.advance(0.016);
+    engine.advance(0.016);
+    expect(engine.getDisplayFps()).toBe(0);
+  });
+
+  it("stays 0 after just one externally-driven advance() call — nothing to measure an interval against yet", () => {
+    const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    engine.startExternallyDriven();
+    vi.spyOn(performance, "now").mockReturnValue(1000);
+    engine.advance(0.016);
+    expect(engine.getDisplayFps()).toBe(0);
+  });
+
+  it("reports a real FPS from real wall-clock time between externally-driven advance() calls", () => {
+    const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    engine.startExternallyDriven();
+    const now = vi.spyOn(performance, "now");
+    now.mockReturnValueOnce(0);
+    engine.advance(0.016);
+    // Ten ticks, 100ms apart in real wall-clock time — comfortably past
+    // FPS_UPDATE_INTERVAL (0.5s) so displayFps recomputes at least once.
+    for (let i = 1; i <= 10; i++) {
+      now.mockReturnValueOnce(i * 100);
+      engine.advance(0.016);
+    }
+    expect(engine.getDisplayFps()).toBe(10); // 1000ms real / 100ms per tick = 10 ticks/sec
   });
 });
 
@@ -2997,6 +3088,37 @@ describe("RaycasterEngine — death, spectate, and revive (N-player)", () => {
     expect(stats.status).toBe("dead");
     expect(stats.spectateTargetId).toBe("p2");
     expect(ctx.fillText).toHaveBeenCalledWith("YOU DIED — spectating P2", WIDTH / 2, 40);
+  });
+
+  it("suppresses the spectate banner while the exit countdown is active — the two banners draw at the same position and would otherwise overlap", () => {
+    const canvas = makeCanvas();
+    const ctx = canvas.getContext("2d") as unknown as MockCanvasContext;
+    const size = 14;
+    const g = walledRoom(size);
+    const exitTile = { x: size - 2, y: size - 2 };
+    g[exitTile.y][exitTile.x] = HAZARD_TILE; // every player spawns standing on the exit, which is also a hazard
+    const map = fakeMap({ grid: g, spawn: exitTile, exit: exitTile, hazards: [exitTile] }, size);
+    const engine = new RaycasterEngine(canvas, map, {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+    const p2Input = new ScriptedInput();
+    engine.addPlayer("p2", p2Input);
+
+    // Both players start on the exit tile, so the countdown starts on the very first tick.
+    engine.advance(0.1);
+    expect(engine.getExitCountdownRemaining()).not.toBeNull();
+
+    // p2 steps off the hazard (same movement pattern as the test above); H stays and cooks to death.
+    p2Input.keys.add("KeyW");
+    for (let i = 0; i < 10; i++) engine.advance(0.1);
+    p2Input.keys.delete("KeyW");
+    for (let i = 0; i < 10 && engine.rosterSnapshot().get("H")!.status === "alive"; i++) engine.advance(1);
+    expect(engine.rosterSnapshot().get("H")!.status).toBe("dead");
+    expect(engine.getExitCountdownRemaining()).not.toBeNull(); // still counting down, well short of COUNTDOWN_TICKS
+
+    ctx.fillText.mockClear();
+    const stats = engine.render();
+    expect(stats.status).toBe("dead");
+    expect(ctx.fillText).toHaveBeenCalledWith(expect.stringContaining("Build finishing"), WIDTH / 2, 40);
+    expect(ctx.fillText).not.toHaveBeenCalledWith(expect.stringContaining("YOU DIED"), expect.anything(), expect.anything());
   });
 
   it("never draws the spectate banner in single-player, even on the terminal frame where status briefly reads 'dead'", () => {
