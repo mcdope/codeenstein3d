@@ -950,24 +950,54 @@ sneak in. Concretely, on each guest:
   simply expires via its own TTL (§ `multiplayer-server-spec.md`), since the host
   is no longer around to refresh it.
 
-### Known open issue: a peer can lock in "team-eliminated" with no cross-peer consensus
+### Resolved: a host's game could show a stuck "PAUSED" overlay right around team-elimination
 
 A field report described a guest's screen showing "TEAM ELIMINATED" while the
-host reportedly still had plenty of health. **Root cause unresolved.** Pause/
-blur was investigated and ruled out as the cause — those input fields are
-zeroed before ever reaching the shared simulation (§6 below) — but the
-underlying architectural gap remains: `killPlayer()`/`applyRosterRemoval()`
-(`engine.ts`) each decide "every roster player is dead" **unilaterally from
-their own local state** and call `endGame("over")` immediately, with no
-handshake confirming the other peer(s) agree before that's locked in. Any
-undetected desync (not necessarily pause-related) could in principle produce
-exactly this symptom. As a diagnostic aid pending a real reproduction — not a
-fix — `engine.ts` logs `console.warn` messages prefixed `[multiplayer-desync]`
-at the moment either check is about to lock in team-elimination (a full
-roster `{id, status, health}` dump), and whenever a guest's
-`applyReconciliationSnapshot()` finds the host's snapshot disagreeing with its
-own prior local status for a player. Both are gated to multiplayer sessions
-only and change no behavior.
+host reportedly still had plenty of health, and — in a later recurrence — a
+literal "PAUSED" overlay stuck on the host's screen after that, with no
+canvas/workspace reachable afterward. `killPlayer()`/`applyRosterRemoval()`
+(`engine.ts`) each deciding "every roster player is dead" unilaterally from
+their own local state (no cross-peer consensus) was investigated as a
+possible cause and ruled out — real console evidence from both peers'
+DevTools showed both independently and correctly agreeing the team really
+was eliminated; there was no desync in the death itself.
+
+**Root cause:** unrelated to the multiplayer engine's own pause handling
+entirely. Loading a workspace auto-launches a local single-player preview
+(`launchLevel()`) and shows the "Start" level-briefing overlay
+(`GameHud.showLevelStart`); that overlay's dismiss listeners
+(`window`'s keydown for Enter/Space/Escape, the canvas's mousedown — see
+`GameHud`'s `show()`) are armed the moment it appears and are
+self-removing *only once they actually fire*. Switching straight to
+Multiplayer/Host instead of clicking "Start" left that preview engine
+`.stop()`'d but never nulled out (`main.ts`'s `beginMultiplayerLevel()`), and
+its dismiss listeners still live. The first real Enter/Space (e.g. the melee
+key)/Escape/canvas-mousedown during the real multiplayer session then fired
+that stale callback, calling `activeEngine?.start()` — reviving the old,
+already-stopped preview `RaycasterEngine` for real (its own live
+`InputController`, its own render/simulate loop) sharing the same canvas as
+the actual multiplayer session, invisibly. That zombie engine could
+independently receive a genuine `blur`/`pointerlockchange` event and set its
+own `isPaused = true`, rendering a "PAUSED" overlay with no connection to the
+real session underneath — and since nothing in the multiplayer teardown flow
+was even aware this second engine existed, it never cleared. Only ever
+reachable by whichever peer actually loaded a workspace locally (hosting),
+never a joining guest, and required genuine browser-dispatched input
+(bubbling to `window`) — no automated, synthetic-event-driven repro attempt
+ever reproduced it, which is why a real screen recording + real hardware was
+needed to trace it down.
+
+**Fix:** `beginMultiplayerLevel()` now sets `activeEngine = null` right after
+`.stop()`-ing it, the same pattern `resetToFileTree()` already used for its
+own single-player teardown — the stale `activeEngine?.start()` callback
+becomes a guaranteed no-op whenever it eventually fires.
+
+The `[multiplayer-desync]` diagnostic logging added while this was still
+unresolved (a `console.warn` roster dump right before either check locks in
+team-elimination, and whenever a guest's `applyReconciliationSnapshot()`
+finds the host's snapshot disagreeing with its own prior local status) stays
+in place — cheap, multiplayer-only, and still useful for catching any future,
+genuinely unrelated desync.
 
 ## 6. What the shared simulation's input source must never allow through
 
