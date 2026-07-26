@@ -19,8 +19,8 @@ jobs:
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -30,7 +30,7 @@ jobs:
       # the same way the Playwright browser binary below is, so a normal run
       # restores from cache instead of re-downloading from 3 external hosts.
       - name: Cache online WAD assets
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: public/wads
           key: online-wads-${{ hashFiles('src/wad/onlineWadCatalog.ts') }}
@@ -52,8 +52,8 @@ jobs:
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -99,15 +99,15 @@ jobs:
         # stacks up against every other step in this job's chromium leg.
         browser: [chromium, firefox, webkit]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
       - run: npm ci
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ matrix.browser }}-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
@@ -124,7 +124,7 @@ jobs:
       # across this matrix's legs by key (not by job), so at most one leg
       # actually re-downloads on a cache miss.
       - name: Cache online WAD assets
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: public/wads
           key: online-wads-${{ hashFiles('src/wad/onlineWadCatalog.ts') }}
@@ -214,15 +214,15 @@ jobs:
     name: verify (multiplayer-transition)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
       - run: npm ci
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
@@ -232,7 +232,7 @@ jobs:
       - name: Install Playwright OS dependencies
         run: npx playwright install-deps chromium
       - name: Cache online WAD assets
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: public/wads
           key: online-wads-${{ hashFiles('src/wad/onlineWadCatalog.ts') }}
@@ -273,15 +273,15 @@ jobs:
     name: verify (multiplayer-multiguest)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
       - run: npm ci
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
@@ -291,7 +291,7 @@ jobs:
       - name: Install Playwright OS dependencies
         run: npx playwright install-deps chromium
       - name: Cache online WAD assets
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: public/wads
           key: online-wads-${{ hashFiles('src/wad/onlineWadCatalog.ts') }}
@@ -330,15 +330,15 @@ jobs:
     name: verify (cross-browser determinism)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
       - run: npm ci
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-all-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
