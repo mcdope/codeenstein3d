@@ -624,6 +624,24 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
       live-state comparison), not WebKit defects or app bugs, and real sessions self-correct
       within about a second regardless of which peer's browser diverges first, invisible to an
       actual player.
+    - [ ] player display names — deferred 2026-07-26. No per-player identity concept exists
+      anywhere today, only a per-*session* "Display name (optional)" field (Host tab only, public
+      lobby listing name — `SessionCreateRequest.displayName`/`LobbyEntry.displayName`), unrelated
+      to in-game player identity. Ask: let each player (host and guest) choose their own in-game
+      name, falling back to the capitalized roster id ("host" → "Host", "guest-1" → "Guest-1" —
+      `main.ts`'s existing `multiplayerResultRows()` convention) when unset, and render it above
+      their billboard in the 3D view. Surfaced while confirming the "players don't see each other"
+      fix above (video showed the other player's billboard rendering fine, just with no name tag).
+      Real design snag found before deferring: `sessionSetupGuest.ts` documents a genuine,
+      already-fixed race — a guest can never send anything eagerly on connect (the host doesn't
+      start listening until "Start Session" is clicked, and `RTCDataChannel` doesn't replay missed
+      messages) — so a naive "guest sends its name on connect" design silently loses the message.
+      Since every guest's `session-init` needs a *complete* name map but setup is fanned out
+      concurrently per guest, the real fix is a two-phase host handshake (phase A: concurrent
+      build-version+name exchange per guest, host waits for *all* of them; phase B: send the now-
+      complete `session-init`+map) — still guest-reply-only, no race reintroduced. Full plan
+      (files to touch, wire-protocol shape, verification) written to `player-names-state.md` at
+      the repo root before deferring — read that first when picked back up, don't re-derive it.
 - [ ] enemy textures from wad? if yes: what about hitbox? — investigated (2026-07-16, no code changed yet).
   - **Today: enemies are 100% procedural, zero WAD sprite loading exists.** `src/wad/loadWad.ts`'s `WadLoadResult` only ever loads wall/door/floor-style textures (`wallTexture`/`doorTexture`/`floorTexture`/etc.) — no sprite lump is read at all. Enemies are drawn in `src/engine/sprites.ts` as solid-color rectangular billboards (`enemyColor`/`enemyBodyColor`), sized by a single `sizeFactor` in `projectEnemy` (`ENEMY_SIZE`, scaled by `EDGE_CASE_SCALE`=0.55 or `ELITE_SCALE`).
   - **Loading real sprite art is feasible, same binary format already parsed**: Doom sprite lumps use the exact same "patch" pixel format as wall patches (`src/wad/patch.ts`'s `parsePatch` is already format-generic, not wall-specific) — no new binary parser needed. But the pipeline differs from walls: sprites are used as single patches per frame directly (no `compositeTexture.ts`-style multi-patch tiling/`TEXTURE1` step), and use Doom's frame+rotation lump-naming convention (e.g. `TROOA1`, `TROOA2A8` mirrored) that nothing in this codebase currently parses. This project's WAD-texture system also has a real security/curation stance worth respecting here, not shortcutting: `src/wad/textureAllowlist.ts` is a hand-curated, individually-IWAD-verified name list per slot (not "trust any name present") — real monster sprites (imp/zombieman/demon/etc.) would need the same treatment: a new, separately-verified allowlist, not a generic passthrough.
@@ -650,7 +668,7 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
 - [ ] extend github into general git support, for gitlab etc. should support any http(s) available git repo.
 - [ ] interface contract for map generation. to make it easier for forks to make this into a totally different game
 - [ ] deploy action should place a file .restart-backend, multiplayer backend should watch via inotify or similar for that file. if it exists: restart itself and delete the file
-- [ ] Show "Out of ammo!" toast when shooting while out of ammo
+- [ ] Show "Out of ammo!" toast when shooting while out of ammo, should fade out quickly but each shot without ammo resets the fadeout timer
 - [ ] coop multiplayer should spawn more health loots, also after map generation / while playing
 - [ ] deathmatch multiplayer needs continous respawns of ammo, weapons, armor and health. also health and armor should only be collected till full, else it should remain on the ground for other players
 - [ ] more wall and floor variations when using wads
@@ -658,6 +676,7 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
 - [ ] add dedicated deathmatch demo campaign
 - [ ] multikill can be triggered by firing the shotgun at a single empty, next enemy then triggers ultrakill if fast enough
 - [ ] gamer skill level of the bot shouldnt favor the RPG as much. we need to define a proper weapon priority for bot - then skilllevels will only modify their weights
+- [ ] coop multiplayer should spawn additional random enemies, like the edge case - but called "Hacker", having a distinct color, roaming the whole map (not limitted to their room), movement speed like normal enemies
 - [ ] random lore terminals with quotes like "There is no cow level", "Stay a while and listen" etc. should give 5x scorepoints compared to normal lore terminals - to encourage searching for them. maybe differentiate a bit visually?
   const RANDOM_LORE_QUOTES = [
     "There is no cow level",
