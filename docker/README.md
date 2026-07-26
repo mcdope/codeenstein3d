@@ -14,7 +14,9 @@ docker compose --profile turn up -d --build   # + TURN relay
 
 Everything is built from this repo on the host — no registry, no published
 image. `docker compose logs -f` for what happened; `docker compose down` to
-stop.
+stop. To update an already-running install, run `./update.sh` instead of
+composing the day-to-day commands by hand — see
+[the deployment runbook §6.6](../doc/dev/multiplayer-deployment.md).
 
 ## What's here
 
@@ -25,6 +27,7 @@ stop.
 | `signaling/Dockerfile` | Node runtime + the one server script. No `npm install`: the server is built-ins only. |
 | `coturn/turnserver.conf.base` | The static, placeholder-free coturn hardening — read this before changing relay behaviour. |
 | `coturn/entrypoint.sh` | Appends deployment values (realm, secret, ports, certs) to the base config and execs `turnserver`. |
+| `update.sh` | Updates an existing install: `git pull`, rebuild/recreate, preserving whether `--profile turn` is in use. |
 
 ## Three things that are easy to get wrong
 

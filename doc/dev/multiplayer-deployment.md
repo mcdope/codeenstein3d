@@ -366,11 +366,21 @@ Then continue with §5's end-to-end test.
 **6.6 Day-to-day.**
 
 ```
-git pull && sudo docker compose up -d --build   # update to a new version
+./update.sh                                     # update to a new version (see below)
 sudo docker compose up -d                       # apply .env changes (recreates)
 sudo docker compose restart coturn              # reload an edited turnserver.conf.base
 sudo docker compose down                        # stop everything
 ```
+
+`docker/update.sh` wraps the "update to a new version" line: it aborts on a
+dirty working tree instead of touching your changes, detects whether the
+TURN relay is deployed on this host (so it doesn't have to be told via a
+flag), pulls the new `coturn` image only when relevant — a bare `docker
+compose pull` would fail trying to pull the locally-built `signaling` image
+from a registry that doesn't have it — then rebuilds/recreates. It flags it
+if `docker/.env.example` changed so you know to reconcile your `.env`. Run
+it unprivileged from `/opt/codeenstein/docker`; it calls `sudo docker
+compose` itself only for the container-affecting steps.
 
 Sessions are in-memory by design, so a restart drops any lobby in progress —
 the same as `systemctl restart` in the native install.
