@@ -158,15 +158,17 @@ describe("isWall", () => {
     expect(isWall(fakeMap(grid), 2, 2)).toBe(true);
   });
 
-  it("treats a door, secret wall, and lore terminal as solid", () => {
+  it("treats a door, secret wall, lore terminal, and branch door as solid", () => {
     const grid = openGrid(5);
     grid[1][1] = 3; // DOOR_TILE
     grid[1][2] = 6; // SECRET_WALL_TILE
     grid[1][3] = 7; // LORE_TILE
+    grid[2][1] = 8; // BRANCH_DOOR_TILE — keyless, but still has to be pushed
     const map = fakeMap(grid);
     expect(isWall(map, 1, 1)).toBe(true);
     expect(isWall(map, 2, 1)).toBe(true);
     expect(isWall(map, 3, 1)).toBe(true);
+    expect(isWall(map, 1, 2)).toBe(true);
   });
 
   it("treats floor and hazard tiles as non-solid", () => {

@@ -12,6 +12,7 @@
  * square) grid inside the landscape canvas.
  */
 import {
+  BRANCH_DOOR_TILE,
   DOOR_TILE,
   HAZARD_TILE,
   LORE_TILE,
@@ -40,6 +41,10 @@ const WALL_COLOR = "#c8c8ce";
 /** Explored, still-locked doors — a cooler mid-grey, distinguishable from
  * plain wall by tone alone. */
 const DOOR_COLOR = "#9aa0ab";
+/** Explored, unopened Switchboard branch doors — a warm tone against the
+ * key-locked door's cool one, so "needs a key" and "just push it" read apart
+ * at a glance even on the desaturated automap. */
+const BRANCH_DOOR_COLOR = "#b39a72";
 /** Explored goto/label teleporter pads — brightest of the structural tones so
  * they still stand out for navigation despite being desaturated. */
 const TELEPORTER_COLOR = "#e8eaf0";
@@ -153,6 +158,12 @@ export function drawAutomap(
         ctx.fillRect(px, py, CELL_PX, CELL_PX);
       } else if (tile === DOOR_TILE) {
         ctx.fillStyle = DOOR_COLOR;
+        ctx.fillRect(px, py, CELL_PX, CELL_PX);
+      } else if (tile === BRANCH_DOOR_TILE) {
+        // Its own colour, not the key-locked door's: the whole point of the
+        // second door type is that a player can tell at a glance which one
+        // needs a key they may not have yet.
+        ctx.fillStyle = BRANCH_DOOR_COLOR;
         ctx.fillRect(px, py, CELL_PX, CELL_PX);
       } else if (tile === TELEPORTER_TILE) {
         ctx.fillStyle = TELEPORTER_COLOR;

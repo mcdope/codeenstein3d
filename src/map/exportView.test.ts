@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stubCanvasGetContext } from "../../test/mocks/canvas";
 import type { GameMap, Tile } from "./types";
-import { DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, SPIKE_TRAP_TILE, TELEPORTER_TILE } from "./types";
+import { BRANCH_DOOR_TILE, DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, SPIKE_TRAP_TILE, TELEPORTER_TILE } from "./types";
 import type { TextureBitmap, TextureSet } from "../engine/textures";
 import { renderExportMap } from "./exportView";
 
@@ -110,8 +110,8 @@ describe("renderExportMap", () => {
   });
 
   it("stamps the correct texture for every tile kind, including bonus-level variants", () => {
-    const grid: Tile[][] = [[1, 0, HAZARD_TILE, DOOR_TILE, TELEPORTER_TILE, SPIKE_TRAP_TILE, SECRET_WALL_TILE, LORE_TILE]];
-    const map = fakeMap({ width: 8, height: 1, grid, spawn: { x: 1, y: 0 }, exit: { x: 1, y: 0 } });
+    const grid: Tile[][] = [[1, 0, HAZARD_TILE, DOOR_TILE, TELEPORTER_TILE, SPIKE_TRAP_TILE, SECRET_WALL_TILE, LORE_TILE, BRANCH_DOOR_TILE]];
+    const map = fakeMap({ width: 9, height: 1, grid, spawn: { x: 1, y: 0 }, exit: { x: 1, y: 0 } });
     const textureSet = fakeTextureSet();
     const canvas = document.createElement("canvas");
     const { ctx, restore } = stubCanvasGetContext(canvas);
@@ -127,6 +127,7 @@ describe("renderExportMap", () => {
         textureSet.spikeSafeFloor.canvas,
         textureSet.wall.canvas, // unopened secret wall == plain wall
         textureSet.loreWall.canvas,
+        textureSet.door.canvas, // branch door shares the door texture
       ]);
     } finally {
       restore();

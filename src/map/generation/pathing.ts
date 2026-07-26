@@ -16,6 +16,10 @@ export function reachableTiles(grid: Tile[][], spawn: Point, opened: Set<string>
     const tile = grid[p.y]?.[p.x];
     if (tile === undefined || tile === 1) continue; // wall / out of bounds
     if (tile === DOOR_TILE && !opened.has(k)) continue; // still-locked door
+    // A branch door (8) is deliberately NOT gated here: it costs no key, so
+    // anything behind one is reachable the moment the player walks into it.
+    // Treating it as blocking would make `assertAllRoomsReachable` report a
+    // false isolation for a Switchboard hub whose only mouth is a spoke.
     seen.add(k);
     for (const n of neighbors(p)) stack.push(n);
   }

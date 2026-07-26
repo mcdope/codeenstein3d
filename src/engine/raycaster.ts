@@ -13,6 +13,7 @@ import {
   DOOR_TILE,
   HAZARD_TILE,
   LORE_TILE,
+  BRANCH_DOOR_TILE,
   SECRET_WALL_TILE,
   SPIKE_TRAP_TILE,
   TELEPORTER_TILE,
@@ -44,6 +45,14 @@ function sceneCeiling(map: GameMap): [number, number, number] {
  * spotting it before ever pressing "R" against it.
  */
 const SECRET_WALL_OVERLAY = "rgba(20,40,90,0.12)";
+/** Switchboard branch doors reuse the plain door texture plus this warm amber
+ * wash, rather than getting a `TextureSet` slot of their own — the same
+ * "shared texture + identifying tint" split secret walls already use, and it
+ * keeps a WAD-sourced door correct for free. Opaque enough to be unmistakable
+ * (a player has to be able to tell "just push it" from "needs a key you may
+ * not have" on sight), but not animated: unlike a lore terminal, a door needs
+ * no "come interact with me" pulse. */
+const BRANCH_DOOR_OVERLAY = "rgba(190,146,66,0.42)";
 /** Shared empty default for `renderScene`/`renderMinimap`'s `readTerminals`
  * param — one instance reused across calls rather than a fresh `Set` every
  * frame a caller omits it. */
@@ -193,7 +202,7 @@ function castWallRay(map: GameMap, player: Player, rayDirX: number, rayDirY: num
       hitTile = 1;
     } else {
       const tile = map.grid[mapY][mapX];
-      if (tile === 1 || tile === DOOR_TILE || tile === SECRET_WALL_TILE || tile === LORE_TILE) {
+      if (tile === 1 || tile === DOOR_TILE || tile === SECRET_WALL_TILE || tile === LORE_TILE || tile === BRANCH_DOOR_TILE) {
         hit = true;
         hitTile = tile;
       }
@@ -289,7 +298,7 @@ export function renderScene(
     // own composite texture (see `loreOverlay` above for how they stay
     // distinguishable from a plain wall) instead of a flat fill.
     const tex: TextureBitmap =
-      hitTile === DOOR_TILE
+      hitTile === DOOR_TILE || hitTile === BRANCH_DOOR_TILE
         ? textureSet.door
         : hitTile === LORE_TILE
           ? textureSet.loreWall
@@ -324,6 +333,10 @@ export function renderScene(
       if (hitTile === SECRET_WALL_TILE) {
         ctx.globalAlpha = 1;
         ctx.fillStyle = SECRET_WALL_OVERLAY;
+        ctx.fillRect(x, solidStart, 1, solidEnd - solidStart);
+      } else if (hitTile === BRANCH_DOOR_TILE) {
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = BRANCH_DOOR_OVERLAY;
         ctx.fillRect(x, solidStart, 1, solidEnd - solidStart);
       } else if (hitTile === LORE_TILE && !readTerminals.has(`${mapX},${mapY}`)) {
         // Once read, the terminal keeps its distinct wall texture (still
@@ -534,6 +547,19 @@ function minimapWallCanvas(map: GameMap, cell: number, gridVersion: number, w: n
       }
     }
   }
+  // Branch doors are solid, so they'd read as a hole in the wall if they were
+  // left out — and they get their own amber here rather than the key-locked
+  // door's blue, so a glance tells "just push it" from "needs a key". Drawn
+  // into the cached layer rather than live like `map.doors`: this layer is
+  // already rebuilt whenever `gridVersion` changes, which is exactly when a
+  // door opens, so it costs nothing per frame and needs no separate list.
+  wallCtx.fillStyle = MINIMAP_BRANCH_DOOR_COLOR;
+  for (let y = 0; y < map.height; y++) {
+    const row = map.grid[y];
+    for (let x = 0; x < map.width; x++) {
+      if (row[x] === BRANCH_DOOR_TILE) wallCtx.fillRect(x * cell, y * cell, cell, cell);
+    }
+  }
   minimapWallLayer = { source: map, gridVersion, cell, canvas };
   return canvas;
 }
@@ -554,6 +580,12 @@ function minimapWallCanvas(map: GameMap, cell: number, gridVersion: number, w: n
  * (lore teal, hazard/mine warm reds/orange, exit green, the player marker's
  * near-white) — see `multiplayer-game-state-spec.md` §5. */
 const LOOT_DROP_COLOR = "#b8860b";
+
+/** Unopened Switchboard branch doors on the corner minimap — warm, against the
+ * key-locked door's cool `#568ebe`. Matches `drawAutomap`'s own branch-door
+ * tone by value, not by shared import, following the same "each renderer keeps
+ * its own thematically-matched constants" convention as every colour here. */
+const MINIMAP_BRANCH_DOOR_COLOR = "#b39a72";
 
 export function renderMinimap(
   ctx: CanvasRenderingContext2D,
@@ -622,7 +654,7 @@ export function renderMinimap(
     for (let y = 0; y < map.height; y++) {
       const row = map.grid[y];
       for (let x = 0; x < map.width; x++) {
-        if (row[x] === 1 || row[x] === LORE_TILE || row[x] === SECRET_WALL_TILE) {
+        if (row[x] === 1 || row[x] === LORE_TILE || row[x] === SECRET_WALL_TILE || row[x] === BRANCH_DOOR_TILE) {
           ctx.fillRect(pad + x * cell, pad + y * cell, cell, cell);
         }
       }

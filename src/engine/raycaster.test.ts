@@ -5,6 +5,7 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createMockCanvasContext, stubCanvasGetContext, type MockCanvasContext } from "../../test/mocks/canvas";
 import {
+  BRANCH_DOOR_TILE,
   DOOR_TILE,
   HAZARD_TILE,
   LORE_TILE,
@@ -228,6 +229,35 @@ describe("renderScene — wall-face texture dispatch", () => {
     const textures = fakeTextureSet();
     renderScene(asCtx(c), map, player, new Float64Array(WIDTH), textures);
     expect(c.drawImage.mock.calls[midCol][0]).toBe(textures.wall.canvas);
+  });
+
+  it("hits a branch door directly ahead, shares the door texture, and overlays its own tint", () => {
+    const size = 8;
+    const cy = Math.floor(size / 2);
+    const render = (tile: typeof DOOR_TILE | typeof BRANCH_DOOR_TILE) => {
+      const g = walledRoom(size);
+      g[cy][size - 1] = tile;
+      const map = fakeMap({ grid: g }, size);
+      const c = ctx();
+      const textures = fakeTextureSet();
+      const styles: string[] = [];
+      c.fillRect.mockImplementation(() => {
+        styles.push(String(c.fillStyle));
+      });
+      renderScene(asCtx(c), map, centeredPlayer(map), new Float64Array(WIDTH), textures);
+      return { sampled: c.drawImage.mock.calls[midCol][0], styles, textures };
+    };
+
+    const branch = render(BRANCH_DOOR_TILE);
+    const locked = render(DOOR_TILE);
+    // Same base texture — a branch door is still recognisably a door, and
+    // sharing the slot keeps a WAD-sourced door correct for free.
+    expect(branch.sampled).toBe(branch.textures.door.canvas);
+    expect(locked.sampled).toBe(locked.textures.door.canvas);
+    // ...but only the branch door gets an identifying wash on top, so the two
+    // never read the same in first person.
+    const extra = branch.styles.filter((c) => !locked.styles.includes(c));
+    expect(extra.length).toBeGreaterThan(0);
   });
 
   it("hits a plain wall directly ahead and samples the ordinary wall texture", () => {

@@ -20,7 +20,7 @@
  * empty rectangle of repeated wall texture around a small maze.
  */
 import type { GameMap, Tile } from "./types";
-import { DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, SPIKE_TRAP_TILE, TELEPORTER_TILE } from "./types";
+import { BRANCH_DOOR_TILE, DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, SPIKE_TRAP_TILE, TELEPORTER_TILE } from "./types";
 import type { TextureBitmap, TextureSet } from "../engine/textures";
 
 export interface ExportViewOptions {
@@ -85,6 +85,12 @@ function shouldDraw(map: GameMap, x: number, y: number): boolean {
 function textureFor(tile: Tile, bonusLevel: boolean, textureSet: TextureSet): TextureBitmap {
   switch (tile) {
     case DOOR_TILE:
+      return textureSet.door;
+    case BRANCH_DOOR_TILE:
+      // Shares the door texture, same as in first person — the amber
+      // identifying wash `renderScene` puts on top is a live-render overlay
+      // this static export has no equivalent for, and a branch door is still
+      // recognisably a door without it.
       return textureSet.door;
     case LORE_TILE:
       return textureSet.loreWall;

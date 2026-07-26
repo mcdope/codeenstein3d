@@ -6,7 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { createMockCanvasContext, stubCanvasGetContext, type MockCanvasContext } from "../../test/mocks/canvas";
 import { installRaf, type RafController } from "../../test/mocks/raf";
 import type { AmmoPickup, Enemy, GameMap, KeyItem, LootDrop, Mine, SpikeTrap, Teleporter, Tile } from "../map/types";
-import { DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, TELEPORTER_TILE } from "../map/types";
+import { BRANCH_DOOR_TILE, DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, TELEPORTER_TILE } from "../map/types";
 import { audio } from "./audio";
 import type { InputSnapshot, InputSource } from "./input";
 import { INPUT_DELAY_TICKS } from "./lagCompensationConstants";
@@ -1067,6 +1067,58 @@ describe("RaycasterEngine — keys and doors", () => {
       Object.defineProperty(window, "location", { value: original, configurable: true });
       delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
     }
+  });
+
+  it("opens a branch door with no key held at all", () => {
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][7] = BRANCH_DOOR_TILE; // directly east of spawn
+    const map = fakeMap({ grid: g }, size); // deliberately no keys anywhere
+    const { engine, input, handlers } = makeEngine(map);
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(map.grid[5][7]).toBe(0);
+    expect(lastStats(handlers).keysHeld).toBe(0);
+  });
+
+  it("doesn't spend a key when opening a branch door", () => {
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][7] = BRANCH_DOOR_TILE;
+    const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+    const { engine, input, handlers } = makeEngine(map);
+    engine.advance(0.016); // collect the key
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(map.grid[5][7]).toBe(0);
+    expect(lastStats(handlers).keysHeld).toBe(1);
+  });
+
+  it("blocks movement through a branch door until it's pushed open", () => {
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][7] = BRANCH_DOOR_TILE;
+    const map = fakeMap({ grid: g }, size);
+    const { engine } = makeEngine(map);
+    // Not pushing W/S, so `openDoorAhead` never fires — the tile stays solid
+    // and the player can't cross it.
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(map.grid[5][7]).toBe(BRANCH_DOOR_TILE);
+    expect(engine.getPlayerPosition("local")!.x).toBeLessThan(7);
+  });
+
+  it("emits a terminal value:0 grid mutation when a branch door opens", () => {
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][7] = BRANCH_DOOR_TILE;
+    const map = fakeMap({ grid: g }, size);
+    const { engine, input } = makeEngine(map);
+    const before = engine.captureReconciliationSnapshot(0, true).gridVersion;
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    const snapshot = engine.captureReconciliationSnapshot(1, true);
+    expect(snapshot.gridDelta).toContainEqual({ x: 7, y: 5, value: 0 });
+    expect(snapshot.gridVersion).toBeGreaterThan(before);
   });
 
   it("opens a door behind the player when backing into it with S", () => {

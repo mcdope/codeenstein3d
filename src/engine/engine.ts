@@ -158,6 +158,7 @@ import {
   type WeaponTally,
 } from "./telemetry";
 import {
+  BRANCH_DOOR_TILE,
   DOOR_TILE,
   LORE_TILE,
   SECRET_WALL_TILE,
@@ -3351,14 +3352,17 @@ export class RaycasterEngine {
   }
 
   /**
-   * If a living player is walking into a locked door and holds a key, spend
-   * the key and open the door (its tile becomes plain floor).
+   * If a living player is walking into a door, open it (its tile becomes plain
+   * floor). A key-locked `DOOR_TILE` spends one of the player's dependency
+   * keys; a Switchboard `BRANCH_DOOR_TILE` costs nothing — a switch's internal
+   * branching is control flow, not encapsulation — so the key check is made
+   * per-tile rather than as an early-out on the whole player.
    */
   private openDoorAhead(): void {
     if (this.state !== "playing") return;
     for (const id of this.sortedPlayerIds()) {
       const p = this.players.get(id)!;
-      if (p.status !== "alive" || p.keysHeld <= 0) continue;
+      if (p.status !== "alive") continue;
 
       // Which way is the player pushing? Forward (W) or backward (S) along dir.
       let sign = 0;
@@ -3371,16 +3375,25 @@ export class RaycasterEngine {
       const py = p.player.posY + p.player.dirY * sign * reach;
       const cx = Math.floor(px);
       const cy = Math.floor(py);
+      const tile = this.map.grid[cy]?.[cx];
 
-      if (this.map.grid[cy]?.[cx] === DOOR_TILE) {
-        this.map.grid[cy][cx] = 0;
-        this.pendingGridDelta.push({ x: cx, y: cy, value: 0 });
-        this.gridVersion += 1;
+      const locked = tile === DOOR_TILE;
+      if (locked && p.keysHeld <= 0) continue;
+      if (!locked && tile !== BRANCH_DOOR_TILE) continue;
+
+      this.map.grid[cy][cx] = 0;
+      // Still a terminal, `0`-valued mutation, so the out-of-order-safety
+      // invariant on `applyGridReconciliation` holds unchanged.
+      this.pendingGridDelta.push({ x: cx, y: cy, value: 0 });
+      this.gridVersion += 1;
+      if (locked) {
         p.keysHeld -= 1;
         console.log(
           `%c[door] unlocked with a dependency key — ${p.keysHeld} left`,
           "color:#568ebe;font-weight:bold",
         );
+      } else {
+        console.log("%c[branch] pushed a case door open", "color:#b39a72;font-weight:bold");
       }
     }
   }
