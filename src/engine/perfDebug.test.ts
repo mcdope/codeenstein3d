@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { FramePerfLogger, type PerfContext, type PerfStatsSnapshot } from "./perfDebug";
 
 /** The benchmark side-channel the logger installs on `window` — see
@@ -52,7 +52,7 @@ function fakeContext(overrides: Partial<PerfContext> = {}): PerfContext {
   };
 }
 
-let logSpy: ReturnType<typeof vi.spyOn>;
+let logSpy: Mock<typeof console.log>;
 
 beforeEach(() => {
   logSpy = vi.spyOn(console, "log").mockImplementation(() => {});

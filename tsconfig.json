@@ -13,6 +13,12 @@
     "moduleDetection": "force",
     "noEmit": true,
 
+    // TypeScript 7's native port doesn't auto-discover @types/node's ambient
+    // declarations under "bundler" moduleResolution the way tsc(JS) did —
+    // without this, any `node:`-prefixed import (e.g. `node:crypto`) fails
+    // to resolve even though @types/node declares it.
+    "types": ["node"],
+
     /* Linting */
     "strict": true,
     "noUnusedLocals": true,

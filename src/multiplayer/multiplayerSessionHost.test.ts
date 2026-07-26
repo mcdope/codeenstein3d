@@ -172,8 +172,8 @@ function fakeResult(overrides: Partial<SessionSetupResult> = {}): SessionSetupRe
   };
 }
 
-function fakeWorker(): { onmessage: ((event: MessageEvent) => void) | null; terminate: ReturnType<typeof vi.fn> } {
-  return { onmessage: null, terminate: vi.fn() };
+function fakeWorker(): { onmessage: ((event: MessageEvent) => void) | null; terminate: ReturnType<typeof vi.fn<() => void>> } {
+  return { onmessage: null, terminate: vi.fn<() => void>() };
 }
 
 /** Collects every JSON message sent on a channel (a guest's own view of what
