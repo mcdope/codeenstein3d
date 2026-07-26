@@ -36,6 +36,21 @@ describe("waitForIceGatheringComplete", () => {
     await expect(promise).resolves.toBeUndefined();
   });
 
+  it("ignores an intermediate icegatheringstatechange event that isn't complete yet", async () => {
+    const pc = new FakeRTCPeerConnection();
+    const promise = waitForIceGatheringComplete(pc as unknown as RTCPeerConnection, 5000);
+    let resolved = false;
+    void promise.then(() => (resolved = true));
+
+    pc.iceGatheringState = "gathering";
+    pc.dispatchEvent(new Event("icegatheringstatechange"));
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+
+    pc.simulateIceGatheringComplete();
+    await expect(promise).resolves.toBeUndefined();
+  });
+
   it("resolves after the bound even if gathering never completes (not treated as failure)", async () => {
     vi.useFakeTimers();
     const pc = new FakeRTCPeerConnection();

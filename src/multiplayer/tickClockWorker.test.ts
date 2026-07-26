@@ -148,6 +148,19 @@ describe("tickClockWorker", () => {
     expect(setIntervalSpy).toHaveBeenCalledTimes(2);
   });
 
+  it("a stop with no interval running (before any start, or a redundant second stop) is a harmless no-op", async () => {
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+    await import("./tickClockWorker");
+    expect(() => sendStop()).not.toThrow();
+    expect(clearIntervalSpy).not.toHaveBeenCalled();
+
+    sendStart();
+    sendStop();
+    clearIntervalSpy.mockClear();
+    expect(() => sendStop()).not.toThrow(); // redundant stop after the first already cleared it
+    expect(clearIntervalSpy).not.toHaveBeenCalled();
+  });
+
   it("does not throw or start on a null, non-object, or unknown-type message", async () => {
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
     await import("./tickClockWorker");

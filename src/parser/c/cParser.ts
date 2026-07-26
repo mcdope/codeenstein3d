@@ -156,13 +156,21 @@ export class CParserAdapter implements CodeParserAdapter {
       entities.sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
 
       // `goto label;` / `label:` pairs become teleporter pads in the map.
+      // tree-sitter-c's grammar marks `label` as a required field on both
+      // node types (src/node-types.json), and error recovery on malformed
+      // gotos/labels falls back to generic ERROR nodes rather than emitting
+      // a mistyped goto_statement/labeled_statement — confirmed empirically:
+      // neither `goto;` nor a bare `: ;` yields a node of either type, so
+      // `?.text` can never actually see `undefined` here.
       const rawGotos: RawGotoRef[] = [];
       for (const node of tree.rootNode.descendantsOfType("goto_statement")) {
+        /* v8 ignore next -- @preserve */
         const label = node.childForFieldName("label")?.text;
         if (label) rawGotos.push({ label, line: node.startPosition.row + 1 });
       }
       const rawLabels: RawGotoRef[] = [];
       for (const node of tree.rootNode.descendantsOfType("labeled_statement")) {
+        /* v8 ignore next -- @preserve */
         const label = node.childForFieldName("label")?.text;
         if (label) rawLabels.push({ label, line: node.startPosition.row + 1 });
       }

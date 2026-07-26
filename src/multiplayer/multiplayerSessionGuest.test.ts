@@ -237,6 +237,25 @@ describe("runMultiplayerSessionAsGuest", () => {
     expect(hostSeenMessages[0]).toMatchObject({ tick: 8, playerId: "guest" }); // 5 + INPUT_DELAY_TICKS(3)
   });
 
+  it("still applies the received bundle, but skips sending its own input, when the input channel is no longer open", () => {
+    const channels = linkedChannels();
+    const hostSeenMessages = collectMessages(channels.host.input);
+    const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+
+    (channels.guest.input as unknown as { readyState: RTCDataChannelState }).readyState = "closed";
+    const bundle: TickInputBundle = {
+      tick: 5,
+      dt: 1 / 30,
+      levelEpoch: 0,
+      inputs: { host: emptySnapshot(), guest: emptySnapshot() },
+      heldInputFallback: [],
+    };
+    expect(() => channels.host.input.send(JSON.stringify(bundle))).not.toThrow();
+
+    expect(handle.getLastAppliedTick()).toBe(5);
+    expect(hostSeenMessages).toHaveLength(0);
+  });
+
   it("applies every roster player's input from the bundle, not just its own", () => {
     const channels = linkedChannels();
     const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
@@ -831,6 +850,21 @@ describe("runMultiplayerSessionAsGuest", () => {
       vi.advanceTimersByTime(DISCONNECT_GRACE_MS / 2);
       connection.setState("connected");
       vi.advanceTimersByTime(DISCONNECT_GRACE_MS);
+
+      expect(onSessionEnded).not.toHaveBeenCalled();
+    });
+
+    it("a spurious 'connected' event with no pending grace timer is a harmless no-op", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const connection = new FakeConnection();
+      const onSessionEnded = vi.fn();
+      runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult(), onSessionEnded, connection);
+
+      // Never disconnected, so there's no grace timer running — a real
+      // WebRTC implementation can still redundantly re-fire "connected".
+      connection.setState("connected");
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS * 2);
 
       expect(onSessionEnded).not.toHaveBeenCalled();
     });

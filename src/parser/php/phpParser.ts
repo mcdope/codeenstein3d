@@ -160,14 +160,22 @@ export class PhpParserAdapter implements CodeParserAdapter {
 
       // `goto label;` / `label:` pairs become teleporter pads in the map.
       // Neither node type exposes a "label" field in this grammar — the name
-      // is just an unnamed-field child of type `name`.
+      // is just an unnamed-field child of type `name`. That child is a
+      // required (non-optional) single child per tree-sitter-php's
+      // node-types.json, and error recovery on malformed gotos/labels falls
+      // back to generic ERROR nodes rather than emitting a mistyped
+      // goto_statement/named_label_statement — confirmed empirically:
+      // neither `goto;` nor a bare `: ;` yields a node of either type, so
+      // `.find(...)?.text` can never actually see `undefined` here.
       const rawGotos: RawGotoRef[] = [];
       for (const node of tree.rootNode.descendantsOfType("goto_statement")) {
+        /* v8 ignore next -- @preserve */
         const label = node.namedChildren.find((c) => c.type === "name")?.text;
         if (label) rawGotos.push({ label, line: node.startPosition.row + 1 });
       }
       const rawLabels: RawGotoRef[] = [];
       for (const node of tree.rootNode.descendantsOfType("named_label_statement")) {
+        /* v8 ignore next -- @preserve */
         const label = node.namedChildren.find((c) => c.type === "name")?.text;
         if (label) rawLabels.push({ label, line: node.startPosition.row + 1 });
       }

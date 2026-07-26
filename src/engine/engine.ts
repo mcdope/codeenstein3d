@@ -1250,6 +1250,13 @@ export class RaycasterEngine {
   dismissLoreOverlay(): void {
     if (!this.isMultiplayerSession()) return;
     const local = this.players.get(this.localPlayerId);
+    // `this.players` only ever grows (`applyRosterRemoval` marks an entry
+    // "disconnected", it never deletes the map entry — same invariant as
+    // `this.enemies` elsewhere in this file), so the local peer's own entry
+    // is always present once the engine is constructed; kept as a defensive
+    // guard against a future change to that invariant, not because this can
+    // happen today.
+    /* v8 ignore next -- @preserve */
     if (local) local.loreText = null;
   }
 
@@ -3058,6 +3065,12 @@ export class RaycasterEngine {
     // Difficulty scales enemy-*dealt* damage only — melee bites and ranged
     // bolts, not trap/hazard/self-inflicted (rocket splash) damage.
     for (const [id, dmg] of damageByPlayer) {
+      // `updateEnemies` only ever adds `hit.amount` entries to this map
+      // (`ATTACK_DAMAGE` is a positive constant, `damageMultiplier` is always
+      // >= 1 — see enemyAi.ts), so an accumulated `dmg` here can never be
+      // <= 0 today; kept as a defensive guard against a future change to
+      // either invariant.
+      /* v8 ignore next -- @preserve */
       if (dmg > 0) this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyMelee");
     }
 
@@ -3258,6 +3271,12 @@ export class RaycasterEngine {
         if (pickup.kind === "weapon") {
           // Own message/amount logic (unlock vs. already-owned top-up) — the
           // generic "+N kind found" log below doesn't apply to it.
+          // `weaponIndex` is optional on `AmmoPickup` generically (most kinds
+          // never set it), but `secretRooms.ts` — the only site that ever
+          // constructs a `kind: "weapon"` static pickup — always sets it;
+          // kept as a defensive guard against a future generator that
+          // doesn't, not because this can happen today.
+          /* v8 ignore next -- @preserve */
           if (pickup.weaponIndex !== undefined) grantOrTopUpWeapon(pickup.weaponIndex, p.lootCtx, "static");
           break;
         }

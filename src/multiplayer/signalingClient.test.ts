@@ -82,6 +82,13 @@ describe("createSession", () => {
     ).rejects.toMatchObject({ code: "internal_error", status: 502 });
   });
 
+  it("falls back to internal_error for a valid JSON error body with no error field", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ message: "something went wrong" }, false, 500));
+    await expect(
+      createSession({ offer: "sdp", playerCount: 1, campaignName: "demo" }, new AbortController().signal),
+    ).rejects.toMatchObject({ code: "internal_error", status: 500 });
+  });
+
   it("throws a typed SignalingError instead of returning a malformed 2xx body (wrong field type)", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ code: "R4KJ9X", hostToken: 12345, expiresAt: 123 }));
     const promise = createSession(

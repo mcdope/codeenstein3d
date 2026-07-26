@@ -246,9 +246,16 @@ export function recordEnemyDeath(
   levelTime: number,
 ): void {
   const record = index.get(enemy);
+  /* v8 ignore next -- @preserve */
   if (!record) return;
   record.deathAtLevelTime = levelTime;
   const pendingAt = state.ttkPending.indexOf(record);
+  // `recordEnemyAggro` always pairs `index.set(enemy, record)` with the same
+  // record's push onto `ttkPending`, and `engine.ts`'s `damageEnemy` guards
+  // `!enemy.alive` before ever reaching a death — so a `record` found via
+  // `index` above is always still sitting in `ttkPending` too; `indexOf` can
+  // never actually return -1 here. Kept as a defensive guard regardless.
+  /* v8 ignore next -- @preserve */
   if (pendingAt !== -1) state.ttkPending.splice(pendingAt, 1);
   state.ttkFinished.push(record);
 }

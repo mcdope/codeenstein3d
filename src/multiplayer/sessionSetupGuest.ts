@@ -94,6 +94,11 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
     // handshake completed would call a handler referencing already-stale
     // closured state for no reason).
     const clearHandshakeTimeout = (): void => {
+      // Every call site below sits inside `onJsonMessage`'s handler, which
+      // unconditionally calls `armHandshakeTimeout()` (arming the timer)
+      // before ever reaching a `clearHandshakeTimeout()` call — so by the
+      // time this runs, `handshakeTimeoutTimer` is always already set.
+      /* v8 ignore next -- @preserve */
       if (handshakeTimeoutTimer !== null) clearTimeout(handshakeTimeoutTimer);
     };
 
