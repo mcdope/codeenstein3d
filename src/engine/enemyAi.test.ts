@@ -35,6 +35,10 @@ function fakeMap(grid: Tile[][], spawn = { x: 1, y: 1 }): GameMap {
     loreTerminals: [],
     bonusLevel: false,
     secretRoomCount: 0,
+    switchboardRooms: [],
+    exceptionZones: [],
+    vendorDepots: [],
+    acidOverflows: [],
   };
 }
 

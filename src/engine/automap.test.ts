@@ -77,6 +77,10 @@ function fakeMap(overrides: Partial<GameMap> = {}, size = 10): GameMap {
     loreTerminals: [],
     bonusLevel: false,
     secretRoomCount: 0,
+    switchboardRooms: [],
+    exceptionZones: [],
+    vendorDepots: [],
+    acidOverflows: [],
     ...overrides,
   };
 }

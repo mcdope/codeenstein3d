@@ -3378,6 +3378,10 @@ describe("main.ts — multiplayer connect flow", () => {
         loreTerminals: [],
         bonusLevel: false,
         secretRoomCount: 0,
+        switchboardRooms: [],
+        exceptionZones: [],
+        vendorDepots: [],
+        acidOverflows: [],
       };
     }
 
@@ -3573,6 +3577,10 @@ describe("main.ts — multiplayer connect flow", () => {
         loreTerminals: [],
         bonusLevel: false,
         secretRoomCount: 0,
+        switchboardRooms: [],
+        exceptionZones: [],
+        vendorDepots: [],
+        acidOverflows: [],
       };
     }
 

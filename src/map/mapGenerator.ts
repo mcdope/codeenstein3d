@@ -105,6 +105,7 @@ export class MapGenerator {
    * session (see `GameMap.multiplayerSpawns`) — 1 (the default) preserves
    * every existing call site's behavior exactly, `multiplayerSpawns` simply
    * comes back `undefined`.
+   *
    */
   generate(
     parsed: ParsedFile,
@@ -260,6 +261,10 @@ export class MapGenerator {
       loreTerminals,
       bonusLevel,
       secretRoomCount: secretLoot.length,
+      switchboardRooms: [],
+      exceptionZones: [],
+      vendorDepots: [],
+      acidOverflows: [],
     };
   }
 

@@ -7,7 +7,7 @@ once the work lands.** Plan: `~/.claude/plans/task-implement-4-lazy-dream.md`.
 ## Milestones
 
 - [x] **M0** parser contract + detectors + tables (all three adapters)
-- [ ] **M1** `GameMap` fields, `AmmoPickup` smg/gas, `generate()` params
+- [x] **M1** `GameMap` fields, `AmmoPickup` smg/gas, `generate()` params
 - [ ] **M2** Vendor Depots
 - [ ] **M3a** `BRANCH_DOOR_TILE`
 - [ ] **M3b** Switchboards
@@ -47,7 +47,15 @@ with a `catch_clause` ancestor.
 
 **Gotcha:** Bash's `case_statement` is the *container*, but C/C++/ObjC/PHP's
 `case_statement` is a *branch*. Resolved by not scanning containers at all — the
-detector only counts branch nodes and returns `undefined` when there are none.
+detector only counts branch nodes and returns `undefined` when there are none —
+*plus* skipping any match that holds another matched branch as a **direct named
+child**, which is what tells bash's container apart from a real branch. Only
+direct children count: a whole switch nested inside a branch body sits deeper
+(under the inner switch's own body node) and must not disqualify its parent.
+
+**Gotcha:** Rust's `match_arm` uses the `value` field for the arm's *body*, so
+`childForFieldName("value")` on `_ => 0` returns `0`, not `_`. `isDefaultBranch`
+therefore checks `pattern` **before** `value`.
 
 ### try / catch / finally
 
@@ -69,12 +77,15 @@ Finally: `finally_clause`, `ensure` (Ruby), `seh_finally_clause`.
 `require_expression`/`require_once_expression` (PHP). Call-shaped: Ruby `require`/
 `require_relative`/`load` and Bash `source`/`.` are plain `call`/`command` nodes.
 
-Go nests: `import_declaration > import_spec` (depth 2) for a single import,
-`import_declaration > import_spec_list > import_spec` (depth 3) when grouped. Handled
-by counting only **leaf-most** matches (a match containing another match is skipped),
-with a **depth ≤ 3** cap for top-level-ness — deep enough for a grouped Go spec and a
-PHP `require` inside its `expression_statement` wrapper, shallow enough to exclude a
-`require` inside a function body (depth ≥ 4).
+Go nests: `import_declaration > import_spec` for a single import,
+`import_declaration > import_spec_list > import_spec` when grouped. Handled by
+counting only **leaf-most** matches (a match containing another match is skipped), so
+ten grouped imports read as ten rather than as one.
+
+"Top-level" is **not** a depth cap — a first attempt used depth ≤ 3 and wrongly counted
+a C `#include` sitting inside a function body (also depth 3). It's defined instead as
+"no ancestor is a function/class body block", reusing the same `BLOCK_NODE_TYPES` set
+`findDeadCodeAfterReturn` already takes.
 
 ### allocations
 
