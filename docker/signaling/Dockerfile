@@ -5,7 +5,7 @@
 # only — see doc/dev/multiplayer-server-spec.md §1), so this image is just a
 # Node runtime plus that one script: no npm install, no node_modules, no build
 # stage, nothing to go stale between the repo and the image.
-FROM node:24-alpine
+FROM node:26-alpine
 
 WORKDIR /app
 COPY scripts/multiplayer-server.mjs ./multiplayer-server.mjs
