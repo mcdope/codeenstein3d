@@ -217,18 +217,18 @@ class ScriptedInput implements InputSource {
 }
 
 function makeHandlers(): {
-  onStats: ReturnType<typeof vi.fn>;
-  onGameOver: ReturnType<typeof vi.fn>;
-  onWin: ReturnType<typeof vi.fn>;
-  onCheatActivated: ReturnType<typeof vi.fn>;
-  onFreezeChange: ReturnType<typeof vi.fn>;
+  onStats: ReturnType<typeof vi.fn<(stats: EngineStats) => void>>;
+  onGameOver: ReturnType<typeof vi.fn<(stats: EngineStats) => void>>;
+  onWin: ReturnType<typeof vi.fn<(stats: EngineStats) => void>>;
+  onCheatActivated: ReturnType<typeof vi.fn<(code: string) => void>>;
+  onFreezeChange: ReturnType<typeof vi.fn<(frozen: boolean) => void>>;
 } & EngineHandlers {
   return {
-    onStats: vi.fn(),
-    onGameOver: vi.fn(),
-    onWin: vi.fn(),
-    onCheatActivated: vi.fn(),
-    onFreezeChange: vi.fn(),
+    onStats: vi.fn<(stats: EngineStats) => void>(),
+    onGameOver: vi.fn<(stats: EngineStats) => void>(),
+    onWin: vi.fn<(stats: EngineStats) => void>(),
+    onCheatActivated: vi.fn<(code: string) => void>(),
+    onFreezeChange: vi.fn<(frozen: boolean) => void>(),
   };
 }
 
