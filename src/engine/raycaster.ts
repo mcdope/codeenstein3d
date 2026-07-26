@@ -344,6 +344,11 @@ export function renderScene(
       if (wallTop > 0 && wallTop < height) {
         const edgeRow = Math.floor(wallTop);
         const coverage = Math.min(1, edgeRow + 1 - wallTop, wallBottom - wallTop);
+        // Unreachable false branch: `edgeRow + 1 - wallTop` is a fractional
+        // part in (0, 1] (edgeRow = floor(wallTop)), and `wallBottom - wallTop`
+        // is `lineHeight` (= height / dist with dist always > 0), so both
+        // terms — and their min with 1 — are always positive.
+        /* v8 ignore next -- @preserve */
         if (coverage > 0) {
           ctx.fillStyle = shadedTexel(tex, texX, edgeRow, wallTop, wallBottom, shade, hitTile === SECRET_WALL_TILE);
           ctx.globalAlpha = coverage;

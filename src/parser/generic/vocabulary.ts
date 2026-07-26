@@ -331,6 +331,12 @@ export function extractGotos(root: Node): GotoLink[] {
   }
   const labels: RawGotoRef[] = [];
   for (const node of root.descendantsOfType(LABEL_NODE_TYPE)) {
+    // Every grammar checked here (C, PHP, Go, JS/TS) marks `labeled_statement`'s
+    // label as a required field/child, and malformed/incomplete labels fall
+    // back to generic ERROR nodes in error recovery rather than a mistyped
+    // labeled_statement — `labelRef` can't actually return null for a real
+    // LABEL_NODE_TYPE match.
+    /* v8 ignore next -- @preserve */
     const label = labelRef(node);
     if (label) labels.push({ label, line: node.startPosition.row + 1 });
   }
@@ -377,7 +383,9 @@ export function genericGlobals(
     if (child === root) continue;
     let target = child;
     if (child.type === "expression_statement" && child.namedChildCount === 1) {
+      // namedChildCount === 1 guarantees namedChild(0) is non-null here.
       const inner = child.namedChild(0);
+      /* v8 ignore next -- @preserve */
       if (inner) target = inner;
     }
     if (ENTITY_NODE_TYPES[target.type] || ENTITY_NODE_TYPES[child.type]) continue;

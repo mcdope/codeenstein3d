@@ -232,6 +232,15 @@ describe("roomForLine", () => {
     expect(found).toBe(methodRoom);
   });
 
+  it("keeps the already-found most-specific room when a later, less-specific room also contains the line", () => {
+    const classRoom = makeRoom(0, 0, 4, 4, entity({ name: "C", kind: "class", startLine: 1, endLine: 100 }));
+    const methodRoom = makeRoom(10, 10, 4, 4, entity({ name: "m", kind: "method", startLine: 40, endLine: 50 }));
+    // Reverse order from the test above: the smaller-span room arrives first,
+    // so picking it must survive a later, larger-span room still containing the line.
+    const found = roomForLine([methodRoom, classRoom], 45);
+    expect(found).toBe(methodRoom);
+  });
+
   it("returns undefined for an empty room list", () => {
     expect(roomForLine([], 5)).toBeUndefined();
   });

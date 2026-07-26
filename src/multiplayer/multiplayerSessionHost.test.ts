@@ -576,6 +576,21 @@ describe("runMultiplayerSessionAsHost", () => {
       expect(bundle.heldInputFallback).toContain("guest");
     });
 
+    it("a spurious 'connected' event with no pending grace timer is a harmless no-op", () => {
+      vi.useFakeTimers();
+      const channels = linkedChannels();
+      const worker = fakeWorker();
+      const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
+
+      // Never disconnected, so there's no grace timer for this guest — a
+      // real WebRTC implementation can still redundantly re-fire "connected".
+      channels.connection.setState("connected");
+      vi.advanceTimersByTime(DISCONNECT_GRACE_MS * 2);
+      worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
+
+      expect(handle.getPlayerStatus("guest")).toBe("alive");
+    });
+
     it("stop() before grace expires clears the timer, so it never fires after teardown", () => {
       vi.useFakeTimers();
       const channels = linkedChannels();
@@ -775,7 +790,10 @@ describe("runMultiplayerSessionAsHost", () => {
 
     it("skips the campaign-complete send to a guest whose channel isn't open, without throwing", async () => {
       const channels = linkedChannels();
-      (channels.guest.reconciliation as unknown as FakeRTCDataChannel).readyState = "closed";
+      // The host's own send loop reads `link.channels.reconciliation`, which
+      // is the *host*-side channel object (see `linkedChannels()`) — closing
+      // the guest's own copy has no effect on it.
+      (channels.host.reconciliation as unknown as FakeRTCDataChannel).readyState = "closed";
       const worker = fakeWorker();
       const onSessionEnded = vi.fn();
       runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map: winMap() }), worker, onSessionEnded);

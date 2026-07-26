@@ -183,6 +183,16 @@ describe("loadWadTextures", () => {
     expect(result.bonusWallTexture).not.toBeNull();
   });
 
+  it("resolves textures from TEXTURE2 when the TEXTURE1 lump itself is absent (not just non-matching)", () => {
+    // A WAD can legally ship only TEXTURE2 (no TEXTURE1 lump at all) — distinct
+    // from the "TEXTURE1 present but no matching name" case above.
+    const bytes = renameLump(buildTestWad({ texture2Name: "COMPBLUE" }), "TEXTURE1", "TEXTURE9");
+    const result = loadWadTextures(bytes);
+    expect(result.ok).toBe(true);
+    expect(result.bonusWallName).toBe("COMPBLUE");
+    expect(result.bonusWallTexture).not.toBeNull();
+  });
+
   it("leaves wall/door/loreWall null when PNAMES exists but no TEXTURE1/TEXTURE2 lump does", () => {
     const bytes = renameLump(buildTestWad(), "TEXTURE1", "TEXTURE9");
     const result = loadWadTextures(bytes);

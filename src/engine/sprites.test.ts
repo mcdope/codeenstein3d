@@ -416,6 +416,11 @@ describe("projectVisibleMines / findMineInProjections / findMineAtColumn", () =>
     expect(findMineInProjections(projected, clearZBuffer(Infinity), WIDTH, HEIGHT, 0)).toBeNull();
     expect(findMineInProjections(projected, clearZBuffer(0.5), WIDTH, HEIGHT, WIDTH / 2)).toBeNull();
 
+    // Reversed iteration order: the nearest mine is seen first (sets best),
+    // then a farther one arrives and must NOT replace it.
+    const reordered = projectVisibleMines(player, [near, far], WIDTH, HEIGHT);
+    expect(findMineInProjections(reordered, clearZBuffer(Infinity), WIDTH, HEIGHT, WIDTH / 2)).toBe(near);
+
     near.alive = false;
     expect(findMineInProjections(projected, clearZBuffer(Infinity), WIDTH, HEIGHT, WIDTH / 2)).toBe(far);
   });

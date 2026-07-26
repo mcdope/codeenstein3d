@@ -1170,6 +1170,21 @@ describe("main.ts — local workspace pick", () => {
     expect(document.querySelector("#viewport > p.muted")?.textContent).toContain("Select a file from the tree");
   });
 
+  it("reports periodic scan progress (not just the final count) when the fallback scan crosses FILE_TREE_SCAN_PROGRESS_INTERVAL files", async () => {
+    await importMain();
+    // 30 non-parsable, non-entrypoint-named files — findEntrypoint's cascade
+    // returns null just like the single-file case above, but with enough
+    // files that the fallback scan's own `checked % FILE_TREE_SCAN_PROGRESS_
+    // INTERVAL === 0` progress readout (distinct from the final "checked ===
+    // totalFiles" readout) actually fires mid-scan.
+    const files = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`note${i}.md`, "just some notes, not source"]));
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", files));
+    const statusSpy = vi.spyOn(document.querySelector<HTMLParagraphElement>("#loading-status")!, "textContent", "set");
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector("#viewport > p.muted") !== null, 8000);
+    expect(statusSpy.mock.calls.some((c) => c[0] === "Scanning file tree… (25/30)")).toBe(true);
+  });
+
   it("reads and renders the picked workspace, then auto-launches a level", async () => {
     await importMain();
     stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
@@ -1716,6 +1731,36 @@ describe("main.ts — multiplayer connect flow", () => {
       // no workspace dependency — only the Host sub-tab bounces to Join.
       expect(document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.getAttribute("aria-selected")).toBe("true");
       expect(document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.getAttribute("aria-selected")).toBe(
+        "true",
+      );
+    });
+
+    it("stays on Join, without re-bouncing, when a second ineligible local workspace is picked", async () => {
+      await importMain();
+      // The very first call already bounced the default Host-selected markup
+      // to Join (no workspace yet) — Join is already selected here, so this
+      // pick's own re-check has nothing to bounce.
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.getAttribute("aria-selected")).toBe(
+        "true",
+      );
+      (window as unknown as { showDirectoryPicker: () => Promise<unknown> }).showDirectoryPicker = () =>
+        Promise.resolve(fakeDirectoryHandle("local-ws", { "main.c": VALID_MAIN_C }));
+      document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+      await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false);
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!.disabled).toBe(true);
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.getAttribute("aria-selected")).toBe(
+        "true",
+      );
+    });
+
+    it("stays on Host, without bouncing to Join, when a second eligible workspace loads while Host is already active", async () => {
+      await loadEligibleWorkspace();
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!.getAttribute("aria-selected")).toBe(
+        "true",
+      );
+      document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+      await waitUntil(() => !document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!.disabled);
+      expect(document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!.getAttribute("aria-selected")).toBe(
         "true",
       );
     });
@@ -3058,6 +3103,20 @@ describe("main.ts — multiplayer connect flow", () => {
       await waitUntil(() => document.querySelector<HTMLDialogElement>("#multiplayer-lobby-dialog")!.open);
       document.querySelector<HTMLButtonElement>("#close-multiplayer-lobby")!.click();
       expect(document.querySelector<HTMLDialogElement>("#multiplayer-lobby-dialog")!.open).toBe(false);
+    });
+
+    it("Close closes the dialog without touching canvas focus when no level is running yet", async () => {
+      await importMain();
+      document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.click();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock.mockResolvedValueOnce(jsonResponse({ sessions: [] }));
+      document.querySelector<HTMLButtonElement>("#multiplayer-browse-lobby")!.click();
+      await waitUntil(() => document.querySelector<HTMLDialogElement>("#multiplayer-lobby-dialog")!.open);
+      const canvasEl = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+      const focusSpy = vi.spyOn(canvasEl, "focus");
+      document.querySelector<HTMLButtonElement>("#close-multiplayer-lobby")!.click();
+      expect(document.querySelector<HTMLDialogElement>("#multiplayer-lobby-dialog")!.open).toBe(false);
+      expect(focusSpy).not.toHaveBeenCalled();
     });
   });
 
@@ -4568,6 +4627,26 @@ describe("main.ts — file tree selection", () => {
     document.querySelector<HTMLButtonElement>('.tree-row--file[title="ws/readme.md"]')!.click();
     await flushAsync();
     // Selecting a non-parsable file never touches the canvas/level state.
+    expect(document.querySelector(".canvas-area")!.hasAttribute("hidden")).toBe(canvasAreaHiddenBefore);
+  });
+
+  it("logs the parse attempt (does not launch a level) for a file that looks parsable but fails to parse", async () => {
+    await importMain();
+    stubShowDirectoryPicker(
+      fakeDirectoryHandle("ws", {
+        "main.c": VALID_MAIN_C,
+        // A NUL byte makes isSafeToParse's binary sniff reject it — `.c` still
+        // passes isParsable's extension check, but parseFile deterministically
+        // returns null.
+        "broken.c": "int main() {\0garbage}",
+      }),
+    );
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector('.tree-row--file[title="ws/broken.c"]') !== null);
+
+    const canvasAreaHiddenBefore = document.querySelector(".canvas-area")!.hasAttribute("hidden");
+    document.querySelector<HTMLButtonElement>('.tree-row--file[title="ws/broken.c"]')!.click();
+    await flushAsync();
     expect(document.querySelector(".canvas-area")!.hasAttribute("hidden")).toBe(canvasAreaHiddenBefore);
   });
 

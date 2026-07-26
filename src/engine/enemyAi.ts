@@ -206,6 +206,9 @@ function updateEnemy(
 
   // Home in on the nearest target, steering toward the next cell of a
   // wall-aware path (rounding corners) and falling back to a straight line.
+  // Unreachable false branch: the melee-range check above already returned
+  // whenever dist <= ATTACK_RADIUS (0.5), so dist > 0 always holds here.
+  /* v8 ignore next -- @preserve */
   if (dist > 0) {
     const step = speedFor(MOVEMENT_SPEED, enemy) * dt;
     const pathField = pathFields.get(nearest.id);

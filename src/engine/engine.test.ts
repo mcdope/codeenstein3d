@@ -435,6 +435,30 @@ describe("RaycasterEngine — construction", () => {
     }
   });
 
+  it("ignores a non-numeric ?botRotSpeedMul, turning at the same rate as no override at all", () => {
+    const original = window.location;
+    const input = new ScriptedInput();
+    input.keys.add("KeyE");
+
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    const baseline = makeEngine(fakeMap(), makeHandlers(), { input });
+    baseline.engine.advance(0.1);
+    const baselineFacing = baseline.engine.getPlayerFacing("local");
+
+    Object.defineProperty(window, "location", {
+      value: { ...original, search: "?testHooks=1&botRotSpeedMul=notanumber" },
+      configurable: true,
+    });
+    try {
+      const malformed = makeEngine(fakeMap(), makeHandlers(), { input: new ScriptedInput() });
+      malformed.input.keys.add("KeyE");
+      malformed.engine.advance(0.1);
+      expect(malformed.engine.getPlayerFacing("local")).toEqual(baselineFacing);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
   it("getTelemetrySnapshot() reports the real minHealthReached (not this.health) once damage was taken and the level has ended", () => {
     // `pullLevelResult` (the bot's only caller of `getTelemetrySnapshot()`,
     // see run-balancing-telemetry.mjs) always calls it after the engine's
@@ -805,6 +829,31 @@ describe("RaycasterEngine — lore terminals", () => {
 
       engine.dismissLoreOverlay();
       expect(state.get("local")!.loreText).not.toBeNull(); // untouched
+    });
+
+    it("a remote player's own interact banks the shared exploration-bonus log without opening this (host) peer's overlay", () => {
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const hostInput = new ScriptedInput();
+      const guestInput = new ScriptedInput();
+      const engine = new RaycasterEngine(makeCanvas(), loreMap(), {}, undefined, undefined, undefined, 1, hostInput, undefined, "H");
+      engine.addPlayer("G", guestInput);
+      guestInput.interact = true;
+      engine.simulate(0.016);
+
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("exploration bonus earned"), expect.any(String));
+      const state = loreStateOf(engine);
+      expect(state.get("H")!.loreText).toBeNull(); // only the guest interacted, not the host
+    });
+
+    it("ignores a lore terminal beyond LORE_INTERACT_RADIUS on interact", () => {
+      const size = 20;
+      const g = walledRoom(size);
+      g[10][10] = LORE_TILE; // far corner, well beyond LORE_INTERACT_RADIUS (1.8) of spawn
+      const map = fakeMap({ grid: g, spawn: { x: 2, y: 2 }, loreTerminals: [{ x: 10, y: 10, text: "// unreachable" }] }, size);
+      const { engine, input } = makeEngine(map);
+      input.interact = true;
+      engine.advance(0.016);
+      expect(loreStateOf(engine).get("local")!.loreText).toBeNull();
     });
   });
 });
@@ -1418,6 +1467,29 @@ describe("RaycasterEngine — firing", () => {
     expect(lastStats(handlers).health).toBe(100); // no splash damage at this range
   });
 
+  it("a proximity-fused mine detonation spares a second player standing beyond MINE_BLAST_RADIUS", () => {
+    // Distinct from the gunfire-detonation test above: this exercises
+    // `updateMines`' own proximity fuse (MINE_FUSE_RADIUS/MINE_FUSE_SECONDS)
+    // fanning damage out across every connected player in
+    // `RaycasterEngine`'s own tick, not `detonateMine`'s single-shooter path.
+    const mine: Mine = { x: 5.5, y: 5.5, alive: true, visible: true, closeTimer: 0 };
+    const hostInput = new ScriptedInput();
+    const guestInput = new ScriptedInput();
+    const map = fakeMap({ spawn: { x: 5, y: 5 }, mines: [mine] }, 20);
+    const { engine, handlers } = makeEngine(map, makeHandlers(), { input: hostInput });
+    engine.addPlayer("G", guestInput, { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 });
+    const players = (engine as unknown as { players: Map<string, { player: { posX: number; posY: number }; health: number }> })
+      .players;
+    players.get("G")!.player.posX = 15; // well beyond MINE_BLAST_RADIUS (2.4)
+    players.get("G")!.player.posY = 15;
+
+    for (let i = 0; i < 15 && mine.alive; i++) engine.advance(0.1); // MINE_FUSE_SECONDS (0.9s) at zero distance
+
+    expect(mine.alive).toBe(false);
+    expect(lastStats(handlers).health).toBeLessThan(100); // the host, spawned on top of it, took splash damage
+    expect(players.get("G")!.health).toBe(100); // the guest, far away, took none
+  });
+
   it("destroys a mine with Friday Hotfix within its maxRange", () => {
     const mine: Mine = { x: 7.5, y: 5.5, alive: true, visible: true, closeTimer: 0 }; // 2 tiles out, inside maxRange (3.5)
     const map = fakeMap({ mines: [mine] });
@@ -1555,6 +1627,28 @@ describe("RaycasterEngine — firing", () => {
     for (let i = 0; i < 20; i++) engine.advance(0.05);
     expect(lastStats(handlers).health).toBeLessThan(100); // player caught their own blast
     expect(alive.hp).toBeLessThan(300); // the living neighbor took splash damage
+  });
+
+  it("spares a living enemy inside the blast's AABB but outside its true circular radius", () => {
+    // The enemy spatial grid's queryIndices is a deliberate *superset* — every
+    // enemy whose tile intersects the blast radius' bounding box, not just
+    // those truly within ROCKET_BLAST_RADIUS (2.6) — see EnemySpatialGrid's
+    // own doc comment. A diagonal corner (dx=dy=2.5, distance ≈3.54) sits
+    // inside that box but outside the real circle: `rocketDamageAt` must
+    // return 0 for it rather than the engine trusting the grid's candidate
+    // list at face value.
+    const trigger = fakeEnemy({ x: 10, y: 10, hp: 300, maxHp: 300 });
+    const bystander = fakeEnemy({ x: 12.5, y: 12.5, hp: 300, maxHp: 300 });
+    const map = fakeMap({ spawn: { x: 2, y: 2 }, enemies: [trigger, bystander] }, 20);
+    const { engine } = makeEngine(map);
+
+    const rockets = (engine as unknown as { rockets: { x: number; y: number; vx: number; vy: number; damage: number; firedBy: string }[] })
+      .rockets;
+    rockets.push({ x: 10, y: 10, vx: 0, vy: 0, damage: 100, firedBy: "local" });
+    engine.advance(0.016);
+
+    expect(trigger.hp).toBeLessThan(300); // at the blast center, took splash damage
+    expect(bystander.hp).toBe(300); // outside the true radius despite sharing the AABB
   });
 
   it("records a rocket-splash hit in telemetry when testHooks is on", () => {
@@ -3452,7 +3546,10 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
         { x: 1, y: 1, kind: "bullets", amount: 5, collected: true },
         { x: 2, y: 2, kind: "bullets", amount: 5, collected: false },
       ];
-      const keys: KeyItem[] = [{ x: 3, y: 3, collected: true }];
+      const keys: KeyItem[] = [
+        { x: 3, y: 3, collected: true },
+        { x: 4, y: 3, collected: false },
+      ];
       const map = fakeMap({ ammoPickups: pickups, keys });
       const { engine } = makeEngine(map);
       const snapshot = engine.captureReconciliationSnapshot(0);
@@ -3725,6 +3822,21 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
       expect(result.find((d) => d.id === "0:0")).toBeUndefined();
       expect(result.find((d) => d.id === "0:1")).toMatchObject({ x: 3, y: 3, kind: "swap", amount: 9 });
       expect(result.find((d) => d.id === "1:0")).toMatchObject({ x: 4, y: 4, kind: "weapon", weaponIndex: 2 });
+    });
+
+    it("ignores an out-of-range pickupsCollected/keysCollected index instead of throwing (a mismatched/malicious host payload)", () => {
+      const map = fakeMap({
+        ammoPickups: [{ x: 1, y: 1, kind: "bullets", amount: 5, collected: false }],
+        keys: [{ x: 2, y: 2, collected: false }],
+      });
+      const { engine } = makeEngine(map);
+
+      expect(() =>
+        engine.applyReconciliationSnapshot(fakeSnapshot({ pickupsCollected: [0, 5], keysCollected: [0, 5] })),
+      ).not.toThrow();
+
+      expect(map.ammoPickups[0].collected).toBe(true);
+      expect(map.keys[0].collected).toBe(true);
     });
 
     it("applyGridReconciliation writes every gridDelta tile and updates gridVersion", () => {
