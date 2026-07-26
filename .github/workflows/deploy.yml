@@ -47,7 +47,16 @@ jobs:
           path: public/wads
           key: online-wads-${{ hashFiles('src/wad/onlineWadCatalog.ts') }}
 
+      # VITE_MULTIPLAYER_SERVER_URL is baked in at build time (see
+      # doc/dev/multiplayer-deployment.md#2-client-build-pointed-at-the-signaling-server).
+      # Local production builds pick it up from the gitignored
+      # .env.production.local; CI has no such file, so it's hardcoded here
+      # instead — it's not a secret, it ends up in the public JS bundle
+      # either way. Without it the deployed build ships with multiplayer
+      # unconfigured (the Multiplayer tab silently hides itself).
       - run: npm run build
+        env:
+          VITE_MULTIPLAYER_SERVER_URL: "https://mp.codeenstein3d.mcdope.org"
 
       - name: Deploy to FTP
         uses: SamKirkland/FTP-Deploy-Action@v4.4.0
