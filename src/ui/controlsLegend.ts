@@ -34,7 +34,7 @@ function chipEl(chip: Chip): HTMLSpanElement {
     // so this multi-key separator never actually renders yet — kept ready
     // for whenever a control gains an alternate binding (e.g. "R / F" for
     // interact), rather than reworking Chip's shape then.
-    /* v8 ignore next 6 */
+    /* v8 ignore next 6 -- @preserve */
     if (i > 0) {
       const sep = document.createElement("span");
       sep.className = "controls-sep";

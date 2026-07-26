@@ -67,14 +67,14 @@ function shebangExtension(sourceText: string): string | null {
   // `?? ""` below is unreachable defensive code, not a real fallback:
   // `String.prototype.split()` always returns at least one element, even for
   // an empty string, so `tokens[0]` can never actually be `undefined`.
-  /* v8 ignore next */
+  /* v8 ignore next -- @preserve */
   const interpreterPath = /(^|\/)env$/.test(tokens[0] ?? "") ? tokens[1] : tokens[0];
   if (!interpreterPath) return null;
 
   // Same reasoning as above: `interpreterPath` is already known non-empty
   // (guarded above), so `.split("/")` always yields >=1 element and `.pop()`
   // can never be `undefined` — `?? ""` is unreachable.
-  /* v8 ignore next */
+  /* v8 ignore next -- @preserve */
   const basename = interpreterPath.split("/").pop() ?? "";
   // Strip a trailing version suffix so "python3.11" / "bash5" still match.
   const name = basename.toLowerCase().replace(/[\d.]+$/, "");
@@ -97,7 +97,7 @@ export function getParserForFilename(filename: string, sourceText?: string): Cod
   // Every `SHEBANG_INTERPRETERS` value names an extension some adapter above
   // already registers (see the object's own doc comment) — `?? null` is
   // unreachable defensive code guarding that invariant, not a real fallback.
-  /* v8 ignore next */
+  /* v8 ignore next -- @preserve */
   return BY_EXTENSION.get(shebangExt) ?? null;
 }
 

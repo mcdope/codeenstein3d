@@ -137,13 +137,13 @@ export function buildSessionEngine(options: SessionEngineOptions): SessionEngine
     // consumeCheat() is a permanent no-op — this instance's own `local.input`
     // is always one, so `simulate()`'s `local.input.consumeCheat()` can never
     // return non-null here) — genuinely unreachable, not just unused.
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     onCheatActivated: () => {},
     // Pause/blur are suppressed upstream, before they ever reach the shared
     // simulation — see `LocalInputSampler.sampleAndReset()`'s own doc
     // comment. This handler exists purely to satisfy `EngineHandlers`; it
     // cannot fire for a real multiplayer peer.
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     onFreezeChange: () => {},
   };
 

@@ -1579,7 +1579,7 @@ export class RaycasterEngine {
       // Unreachable: `currentMeleeWeapon` only ever returns the knife or
       // Toolchain, both hardcoded with `meleeRange: 1.5` — there's no
       // owned-weapons state that makes this undefined.
-      /* v8 ignore next */
+      /* v8 ignore next -- @preserve */
       if (melee.meleeRange === undefined) return false;
       const projections = projectLivingEnemies(p.player, this.enemies, SCENE_WIDTH, SCENE_HEIGHT);
       const target = findTargetInProjections(projections, p.zBuffer, SCENE_WIDTH, SCENE_HEIGHT, SCENE_WIDTH / 2);
@@ -1602,7 +1602,7 @@ export class RaycasterEngine {
       // Unreachable: `target` is itself one of `mineProjections`' own
       // `mine` references (returned by `findMineInProjections` from that
       // exact array), so `.find` above always matches by identity.
-      /* v8 ignore next */
+      /* v8 ignore next -- @preserve */
       if (!proj) return false;
       const baseCol = Math.min(SCENE_WIDTH - 1, Math.max(0, Math.round(center)));
       const range = p.zBuffer[baseCol];
@@ -2306,7 +2306,7 @@ export class RaycasterEngine {
             // `auto: true` melee weapon today, always defines fireIntervalSec —
             // but a future auto melee weapon omitting it should still get a
             // sane cooldown instead of firing every frame.
-            /* v8 ignore next */
+            /* v8 ignore next -- @preserve */
             p.meleeCooldown = melee.fireIntervalSec ?? 0.15;
           }
         } else if (p.input.consumeMelee()) {
@@ -2469,7 +2469,7 @@ export class RaycasterEngine {
       // never shrinks at runtime (entries go alive: false, never removed) —
       // kept as a defensive guard against a future change to either
       // invariant, not because this can happen today.
-      /* v8 ignore next 4 */
+      /* v8 ignore next 4 -- @preserve */
       if (!enemy) {
         this.enemyRenderOffsets.delete(index);
         continue;
@@ -3143,7 +3143,7 @@ export class RaycasterEngine {
         // times ROCKET_SPEED (18 tiles/s) forces consecutive player rockets
         // at least ~19.8 tiles apart, well outside 2x the blast radius —
         // but a faster rocket or shorter cooldown could close that gap.
-        /* v8 ignore next */
+        /* v8 ignore next -- @preserve */
         if (!enemy.alive) continue;
         const dmg = rocketDamageAt(blast, enemy.x, enemy.y);
         if (dmg > 0) {
@@ -3301,7 +3301,7 @@ export class RaycasterEngine {
     // Unreachable: "key" drops are only ever pushed directly by killPlayer()
     // (see pushLootDrop's doc comment), never via pushLootDrop, so this
     // branch has no live caller — kept only for LootKind exhaustiveness.
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     if (kind === "key") return 1;
     return AMMO_META[kind].dropAmount;
   }
@@ -3758,7 +3758,7 @@ export class RaycasterEngine {
           // ranged weapon today (gdb, Friday Hotfix) defines
           // fireIntervalSec — but a future auto weapon omitting it should
           // still get a sane cooldown instead of firing every frame.
-          /* v8 ignore next */
+          /* v8 ignore next -- @preserve */
           p.weaponCooldown = weapon.fireIntervalSec ?? 0.1;
         }
       } else if (pressed && p.weaponCooldown <= 0) {
@@ -4148,9 +4148,9 @@ export class RaycasterEngine {
     // `p.status !== "alive"` guard (see there) prevents from ever firing
     // twice for the same or a different player once the team is already
     // over. Kept as defensive belt-and-suspenders documentation of the
-    // invariant, same spirit as this file's other `/* v8 ignore next */`
+    // invariant, same spirit as this file's other `/* v8 ignore next -- @preserve */`
     // guards on provably-unreachable defensive branches.
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     if (this.state !== "playing") return;
     this.state = state;
   }
