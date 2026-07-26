@@ -6,10 +6,14 @@ import { mulberry32 } from "../../prng";
 import type { CodeEntity } from "../../parser/types";
 import type { Enemy, Room, Tile } from "../types";
 import {
+  carveRect,
   carveRoom,
   centeredRoom,
   clearCriticalTiles,
+  connectorTiles,
   findPropSpot,
+  sideCandidateFits,
+  sideCandidates,
   makeRoom,
   roomDimensions,
   roomForLine,
@@ -243,5 +247,127 @@ describe("roomForLine", () => {
 
   it("returns undefined for an empty room list", () => {
     expect(roomForLine([], 5)).toBeUndefined();
+  });
+});
+
+describe("sideCandidates", () => {
+  const anchor = { x: 10, y: 10, w: 4, h: 4 };
+
+  it("offers one candidate per perimeter tile on each of the four sides", () => {
+    const candidates = sideCandidates(anchor, 2, 2, 0);
+    // 4 tiles along the top + 4 along the bottom + 4 left + 4 right.
+    expect(candidates).toHaveLength(16);
+    expect(new Set(candidates.map((c) => c.side))).toEqual(new Set(["top", "bottom", "left", "right"]));
+  });
+
+  it("puts the doorway on the anchor's own wall ring, never inside the room", () => {
+    for (const c of sideCandidates(anchor, 2, 2, 0)) {
+      const insideX = c.wall.x >= anchor.x && c.wall.x < anchor.x + anchor.w;
+      const insideY = c.wall.y >= anchor.y && c.wall.y < anchor.y + anchor.h;
+      expect(insideX && insideY).toBe(false);
+    }
+  });
+
+  it("starts the footprint one tile past the doorway, never overlapping it", () => {
+    for (const c of sideCandidates(anchor, 2, 2, 0)) {
+      const overlapsDoor =
+        c.wall.x >= c.x0 && c.wall.x <= c.x1 && c.wall.y >= c.y0 && c.wall.y <= c.y1;
+      expect(overlapsDoor).toBe(false);
+    }
+  });
+
+  it("pushes the footprint further out as offset grows", () => {
+    const near = sideCandidates(anchor, 2, 2, 0).find((c) => c.side === "top")!;
+    const far = sideCandidates(anchor, 2, 2, 3).find((c) => c.side === "top")!;
+    expect(far.y1).toBe(near.y1 - 3);
+  });
+
+  it("sizes the footprint to the requested width and height on every side", () => {
+    for (const c of sideCandidates(anchor, 3, 5, 1)) {
+      expect(c.x1 - c.x0 + 1).toBe(3);
+      expect(c.y1 - c.y0 + 1).toBe(5);
+    }
+  });
+});
+
+describe("sideCandidateFits", () => {
+  const anchor = { x: 10, y: 10, w: 4, h: 4 };
+
+  function rockGrid(size: number): Tile[][] {
+    return Array.from({ length: size }, () => Array.from({ length: size }, () => 1 as Tile));
+  }
+
+  it("accepts a candidate surrounded entirely by untouched rock", () => {
+    const g = rockGrid(32);
+    const c = sideCandidates(anchor, 2, 2, 0).find((x) => x.side === "top")!;
+    expect(sideCandidateFits(c, g, 32)).toBe(true);
+  });
+
+  it("rejects a candidate whose doorway tile is already claimed", () => {
+    const g = rockGrid(32);
+    const c = sideCandidates(anchor, 2, 2, 0).find((x) => x.side === "top")!;
+    g[c.wall.y][c.wall.x] = 0;
+    expect(sideCandidateFits(c, g, 32)).toBe(false);
+  });
+
+  it("rejects a candidate whose footprint would leave the map border", () => {
+    const g = rockGrid(32);
+    const edgeAnchor = { x: 1, y: 1, w: 4, h: 4 };
+    const c = sideCandidates(edgeAnchor, 3, 3, 0).find((x) => x.side === "top")!;
+    expect(sideCandidateFits(c, g, 32)).toBe(false);
+  });
+
+  it("rejects a candidate whose one-tile margin touches something already carved", () => {
+    const g = rockGrid(32);
+    const c = sideCandidates(anchor, 2, 2, 0).find((x) => x.side === "top")!;
+    // Just outside the footprint, inside the margin ring.
+    g[c.y0 - 1][c.x0] = 0;
+    expect(sideCandidateFits(c, g, 32)).toBe(false);
+  });
+
+  it("rejects a candidate whose connector would cut through carved space", () => {
+    const g = rockGrid(32);
+    const c = sideCandidates(anchor, 2, 2, 2).find((x) => x.side === "top")!;
+    const corridor = connectorTiles(c, 2);
+    g[corridor[2].y][corridor[2].x] = 0;
+    expect(sideCandidateFits(c, g, 32, corridor)).toBe(false);
+  });
+
+  it("accepts a connector made entirely of untouched rock", () => {
+    const g = rockGrid(32);
+    const c = sideCandidates(anchor, 2, 2, 2).find((x) => x.side === "top")!;
+    expect(sideCandidateFits(c, g, 32, connectorTiles(c, 2))).toBe(true);
+  });
+});
+
+describe("connectorTiles", () => {
+  const anchor = { x: 10, y: 10, w: 4, h: 4 };
+
+  it("returns just the doorway tile at offset 0", () => {
+    const c = sideCandidates(anchor, 2, 2, 0).find((x) => x.side === "top")!;
+    expect(connectorTiles(c, 0)).toEqual([{ x: c.wall.x, y: c.wall.y }]);
+  });
+
+  it("steps outward one tile per offset, away from the anchor", () => {
+    const c = sideCandidates(anchor, 2, 2, 3).find((x) => x.side === "left")!;
+    expect(connectorTiles(c, 3)).toEqual([
+      { x: c.wall.x, y: c.wall.y },
+      { x: c.wall.x - 1, y: c.wall.y },
+      { x: c.wall.x - 2, y: c.wall.y },
+      { x: c.wall.x - 3, y: c.wall.y },
+    ]);
+  });
+});
+
+describe("carveRect", () => {
+  it("carves inclusive bounds to floor and reports them as an x/y/w/h rect", () => {
+    const g: Tile[][] = Array.from({ length: 10 }, () => Array.from({ length: 10 }, () => 1 as Tile));
+    const rect = carveRect(g, 2, 3, 4, 6);
+    expect(rect).toEqual({ x: 2, y: 3, w: 3, h: 4 });
+    for (let y = 3; y <= 6; y++) {
+      for (let x = 2; x <= 4; x++) expect(g[y][x]).toBe(0);
+    }
+    expect(g[2][2]).toBe(1);
+    expect(g[7][4]).toBe(1);
   });
 });

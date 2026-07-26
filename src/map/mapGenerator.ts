@@ -42,6 +42,7 @@ import { seedFrom } from "./generation/seed";
 import { placeSecretRooms } from "./generation/secretRooms";
 import { pickExit, pickMultiplayerSpawns, pickSafeSpawn } from "./generation/spawnExit";
 import { placeTeleporters } from "./generation/teleporters";
+import { VENDOR_DEPOTS_ENABLED, placeVendorDepots } from "./generation/vendorDepots";
 import { fillHazards, placeTraps } from "./generation/trapsHazards";
 import { clamp } from "./generation/util";
 
@@ -106,6 +107,11 @@ export class MapGenerator {
    * every existing call site's behavior exactly, `multiplayerSpawns` simply
    * comes back `undefined`.
    *
+   * `hasSmg`/`hasGas` are the gdb / Friday Hotfix equivalents of
+   * `hasRocketLauncher`, and gate whether a "Vendor Depot" may stock those two
+   * ammo pools — a magazine for a gun the player hasn't unlocked is dead loot.
+   * Same shape deliberately: the map layer never learns what a weapon is, only
+   * whether a pool is worth stocking.
    */
   generate(
     parsed: ParsedFile,
@@ -113,6 +119,8 @@ export class MapGenerator {
     hasRocketLauncher = true,
     missingWeaponIndices: readonly number[] = [],
     maxPlayers = 1,
+    hasSmg = true,
+    hasGas = true,
   ): GameMap {
     const rng = mulberry32(seedFrom(parsed));
     const size = this.mapSize(parsed);
@@ -129,6 +137,19 @@ export class MapGenerator {
     // (or, failing that, a forced jog) right after the grid is fully carved,
     // since run length is a property of the whole grid, not any single leg.
     const breakupRooms = breakUpLongCorridors(grid, rooms, size, this.opts.roomMargin, rng);
+
+    // AST-driven carving passes run here, last among everything that cuts new
+    // space out of the map: each one only ever claims *untouched rock* (plus a
+    // one-tile margin — see `sideCandidateFits`), which is a sufficient
+    // overlap test against rooms, labyrinth interiors, corridors and breakup
+    // rooms precisely because all of those have already been carved. They also
+    // have to land before `placeTraps`, whose choke-point scan only considers
+    // plain floor, so an exception zone's own hazard/spike tiles are excluded
+    // from trap candidacy automatically. They all only ever turn rock into
+    // floor, so they can never sever an existing route.
+    const vendor = VENDOR_DEPOTS_ENABLED
+      ? placeVendorDepots(rooms[0], grid, size, parsed.importCount, rng, hasRocketLauncher, hasSmg, hasGas)
+      : { depots: [], pickups: [] };
 
     // Spawn in whichever corner of the first room sits farthest from every
     // enemy-bearing room's center — not just a fixed corner — so the player
@@ -164,6 +185,11 @@ export class MapGenerator {
       { x: exit.x + 0.5, y: exit.y + 0.5 },
       ...enemies.map((e) => ({ x: e.x, y: e.y })),
       ...(multiplayerSpawns ?? []).map((s) => ({ x: s.x + 0.5, y: s.y + 0.5 })),
+      // A depot's mouth is a one-tile choke right next to spawn — exactly what
+      // `placeTraps` looks for. Feeding the stock positions in here keeps
+      // TRAP_SPACING between a trap and the alcove a player walks into in the
+      // first seconds of a level (`decisions.md#hazard-placement-spawn-safety`).
+      ...vendor.pickups.map((p) => ({ x: p.x, y: p.y })),
     ];
     placePillars(rooms, grid, avoidPoints, rng);
     // Decorative props are disabled for now (playtest feedback: they got in
@@ -225,6 +251,7 @@ export class MapGenerator {
     const ammoPickups = [
       ...placeAmmoPickups(rooms, grid, ammoAvoid, rng, bonusLevel, hasRocketLauncher),
       ...secretLoot,
+      ...vendor.pickups,
     ];
 
     // Fog-of-war overlay grid, all unexplored until the player moves through.
@@ -263,7 +290,7 @@ export class MapGenerator {
       secretRoomCount: secretLoot.length,
       switchboardRooms: [],
       exceptionZones: [],
-      vendorDepots: [],
+      vendorDepots: vendor.depots,
       acidOverflows: [],
     };
   }

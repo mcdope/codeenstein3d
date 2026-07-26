@@ -221,7 +221,7 @@ describe("MapGenerator.generate", () => {
       ],
     });
     const omitted = gen.generate(parsed);
-    const explicit = gen.generate(parsed, false, true, [], 1);
+    const explicit = gen.generate(parsed, false, true, [], 1, true, true);
     expect(omitted).toEqual(explicit);
   });
 
@@ -277,5 +277,66 @@ describe("MapGenerator.generate", () => {
       gen.generate(parsed, extensionOf(child.name) === "h");
     }
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("MapGenerator.generate — Vendor Depots", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("carves depots off the spawn room for a file with a real import block", () => {
+    const gen = new MapGenerator();
+    const map = gen.generate(parsedFile({
+      importCount: 12,
+      entities: [entity(), entity({ name: "b", startLine: 6, endLine: 10 })],
+    }));
+    expect(map.vendorDepots.length).toBeGreaterThan(0);
+    // Every depot's stock lands in `ammoPickups` alongside the scattered ones.
+    expect(map.ammoPickups.length).toBeGreaterThanOrEqual(map.vendorDepots.length);
+  });
+
+  it("carves no depots for a file with no imports", () => {
+    const gen = new MapGenerator();
+    const map = gen.generate(parsedFile({ importCount: 0, entities: [entity()] }));
+    expect(map.vendorDepots).toEqual([]);
+  });
+
+  it("only stocks smg/gas once the player owns the weapon each pool feeds", () => {
+    const gen = new MapGenerator();
+    const parsed = parsedFile({ importCount: 400, entities: [entity(), entity({ name: "b", startLine: 6, endLine: 10 })] });
+    const unowned = gen.generate(parsed, false, false, [], 1, false, false);
+    expect(unowned.ammoPickups.some((p) => p.kind === "smg" || p.kind === "gas")).toBe(false);
+  });
+
+  it("places no depots at all when VENDOR_DEPOTS_ENABLED is flipped off", async () => {
+    vi.resetModules();
+    vi.doMock("./generation/vendorDepots", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("./generation/vendorDepots")>();
+      return { ...actual, VENDOR_DEPOTS_ENABLED: false };
+    });
+    const { MapGenerator: MockedMapGenerator } = await import("./mapGenerator");
+    const gen = new MockedMapGenerator();
+    const map = gen.generate(parsedFile({ importCount: 400, entities: [entity()] }));
+    expect(map.vendorDepots).toEqual([]);
+    vi.doUnmock("./generation/vendorDepots");
+    vi.resetModules();
+  });
+
+  it("leaves the rest of the map byte-identical when there are no imports to spend", async () => {
+    // The disabled path and the zero-import path must both draw zero rng, or
+    // every downstream placement shifts.
+    vi.resetModules();
+    vi.doMock("./generation/vendorDepots", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("./generation/vendorDepots")>();
+      return { ...actual, VENDOR_DEPOTS_ENABLED: false };
+    });
+    const { MapGenerator: MockedMapGenerator } = await import("./mapGenerator");
+    const parsed = parsedFile({ importCount: 0, entities: [entity(), entity({ name: "b", startLine: 6, endLine: 10 })] });
+    const disabled = new MockedMapGenerator().generate(parsed);
+    vi.doUnmock("./generation/vendorDepots");
+    vi.resetModules();
+    const { MapGenerator: RealMapGenerator } = await import("./mapGenerator");
+    expect(new RealMapGenerator().generate(parsed)).toEqual(disabled);
   });
 });

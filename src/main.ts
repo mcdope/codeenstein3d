@@ -1641,7 +1641,7 @@ async function startMultiplayerSessionAsHost(): Promise<void> {
     // "no owned weapons yet, level 1" shape `launchLevel` uses for a genuinely
     // new run.
     const missingWeaponIndices = computeMissingWeaponIndices([], 1);
-    const map = mapGenerator.generate(currentParsedFile, bonusLevel, false, missingWeaponIndices, roster.length);
+    const map = mapGenerator.generate(currentParsedFile, bonusLevel, false, missingWeaponIndices, roster.length, false, false);
     const setupOptions: HostSessionSetupOptions = { map, difficulty: currentDifficulty, roster, gameplaySeed: randomSeed() };
     // Every guest's own handshake+map-transfer is an independent chunked
     // transfer with its own backpressure wait — fanned out concurrently, not
@@ -1733,7 +1733,15 @@ function findNextMultiplayerLevel(initialLevelPath: string): FindNextLevel {
           const ownedByEveryone = perPlayerOwned.length === 0 ? [] : perPlayerOwned.reduce((acc, owned) => acc.filter((w) => owned.includes(w)));
           const missingWeaponIndices = computeMissingWeaponIndices(ownedByEveryone, campaignLevelIndex);
           const bonusLevel = BONUS_LEVEL_EXTENSIONS.has(extensionOf(next.path));
-          const nextMap = mapGenerator.generate(parsed, bonusLevel, false, missingWeaponIndices, rosterIds.length);
+          const nextMap = mapGenerator.generate(
+            parsed,
+            bonusLevel,
+            false,
+            missingWeaponIndices,
+            rosterIds.length,
+            ownedByEveryone.includes(GDB_WEAPON_INDEX),
+            ownedByEveryone.includes(FRIDAY_HOTFIX_WEAPON_INDEX),
+          );
           afterPath = next.path;
           currentLevelPath = next.path;
           currentParsedFile = parsed;
@@ -2398,7 +2406,17 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   const hasRocketLauncher = carryover?.ownedWeapons?.includes(GHIDRA_WEAPON_INDEX) ?? false;
   const ownedWeapons = carryover?.ownedWeapons ?? [];
   const missingWeaponIndices = computeMissingWeaponIndices(ownedWeapons, campaignLevelIndex);
-  const map = mapGenerator.generate(parsed, bonusLevel, hasRocketLauncher, missingWeaponIndices);
+  // Same gate as `hasRocketLauncher`, for the two ammo pools a Vendor Depot
+  // may also stock — see `MapGenerator.generate`.
+  const map = mapGenerator.generate(
+    parsed,
+    bonusLevel,
+    hasRocketLauncher,
+    missingWeaponIndices,
+    1,
+    ownedWeapons.includes(GDB_WEAPON_INDEX),
+    ownedWeapons.includes(FRIDAY_HOTFIX_WEAPON_INDEX),
+  );
   // Deliberately spoiler-free: no exit/secret-room/lore-terminal coordinates
   // in the printed text, since that string is also what the console sidebar
   // mirrors verbatim (see `src/ui/consoleSidebar.ts`) — a glance at it
@@ -3575,7 +3593,15 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
       const hasRocketLauncher = segment.carryover?.ownedWeapons?.includes(GHIDRA_WEAPON_INDEX) ?? false;
       const segmentOwnedWeapons = segment.carryover?.ownedWeapons ?? [];
       const missingWeaponIndices = computeMissingWeaponIndices(segmentOwnedWeapons, segment.carryover?.campaignLevelIndex ?? 1);
-      const map = mapGenerator.generate(parsed, segment.bonusLevel, hasRocketLauncher, missingWeaponIndices);
+      const map = mapGenerator.generate(
+        parsed,
+        segment.bonusLevel,
+        hasRocketLauncher,
+        missingWeaponIndices,
+        1,
+        segmentOwnedWeapons.includes(GDB_WEAPON_INDEX),
+        segmentOwnedWeapons.includes(FRIDAY_HOTFIX_WEAPON_INDEX),
+      );
       currentParsed = parsed;
       currentSegment = segment;
       replayInput = new ReplayPlaybackInput();

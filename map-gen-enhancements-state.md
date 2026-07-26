@@ -8,7 +8,7 @@ once the work lands.** Plan: `~/.claude/plans/task-implement-4-lazy-dream.md`.
 
 - [x] **M0** parser contract + detectors + tables (all three adapters)
 - [x] **M1** `GameMap` fields, `AmmoPickup` smg/gas, `generate()` params
-- [ ] **M2** Vendor Depots
+- [x] **M2** Vendor Depots
 - [ ] **M3a** `BRANCH_DOOR_TILE`
 - [ ] **M3b** Switchboards
 - [ ] **M4** Exception Handling Zones
