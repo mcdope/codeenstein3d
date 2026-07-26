@@ -196,3 +196,60 @@ describe("CParserAdapter", () => {
     await expect(new CParserAdapter().parse("int a;")).rejects.toThrow("C parser returned no syntax tree");
   });
 });
+
+describe("CParserAdapter — switch/exception/import/allocation extraction", () => {
+  it("summarizes a function's switch branches, spotting `default:` by keyword", async () => {
+    const result = await new CParserAdapter().parse(`int dispatch(int op) {
+  switch (op) {
+    case 1: return 1;
+    case 2: return 2;
+    case 3: return 3;
+    default: return 0;
+  }
+}
+`);
+    expect(result.entities.find((e) => e.name === "dispatch")?.switchBranches).toEqual({
+      caseCount: 3,
+      hasDefault: true,
+    });
+  });
+
+  it("leaves switchBranches absent for a function with no switch", async () => {
+    const result = await new CParserAdapter().parse(`int add(int a, int b) { return a + b; }\n`);
+    expect(result.entities.find((e) => e.name === "add")?.switchBranches).toBeUndefined();
+  });
+
+  it("counts #include directives as top-level imports", async () => {
+    const result = await new CParserAdapter().parse(`#include <stdio.h>
+#include <stdlib.h>
+#include "local.h"
+int main(void) { return 0; }
+`);
+    expect(result.importCount).toBe(3);
+  });
+
+  it("counts allocator calls and large fixed-size arrays, but not small ones", async () => {
+    const result = await new CParserAdapter().parse(`#include <stdlib.h>
+void leaky(void) {
+  char *a = malloc(64);
+  char *b = calloc(2, 8);
+  char *c = strdup("x");
+  char big[4096];
+  char small[16];
+}
+`);
+    // malloc + calloc + strdup + the 4096-element array = 4; `small[16]` is
+    // below LARGE_ARRAY_MIN_SIZE and doesn't count.
+    expect(result.entities.find((e) => e.name === "leaky")?.allocations).toBe(4);
+  });
+
+  it("leaves allocations absent for a function that allocates nothing", async () => {
+    const result = await new CParserAdapter().parse(`int add(int a, int b) { return a + b; }\n`);
+    expect(result.entities.find((e) => e.name === "add")?.allocations).toBeUndefined();
+  });
+
+  it("reports no exception zones — standard C has no try construct", async () => {
+    const result = await new CParserAdapter().parse(`int f(void) { return 0; }\n`);
+    expect(result.exceptionZones).toEqual([]);
+  });
+});

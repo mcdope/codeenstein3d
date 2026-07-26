@@ -666,6 +666,7 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
   - **Bot-side gap**: `scripts/run-balancing-telemetry.mjs`'s fire decision has zero concept of "weapon is currently reloading, don't hold fire / don't switch to it expecting an instant shot" — without new bot logic, the balancing bot would look broken (holding a dead trigger, or switching to a still-reloading weapon) the same class of issue the auto-fire bug this session already showed up as. Needs a `getPlayerState()` exposure of reload state (mirroring how `ammo`/`weaponIndex` are already exposed) before the bot can react to it sensibly, and would materially change weapon-choice timing (e.g. don't switch to gdb mid-fight if it just emptied a mag) — this alone is enough new bot-side work to warrant its own verification pass once implemented, not just "wire it and rerun `balancing:scan`."
 - [ ] threaded / forked tests to speed them up?
 - [ ] sounds/bgm (local bgm would override it) from wad?
+- [ ] shotgun needs firing interval, can be fired into semi-auto-mode :D
 - [ ] "dialup sfx" for edgecases when chasing/aggro'd?
 - [ ] "die screams" for enemies (and for player on death, a different sfx)?
 - [ ] extend github into general git support, for gitlab etc. should support any http(s) available git repo.

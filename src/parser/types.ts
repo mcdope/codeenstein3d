@@ -54,6 +54,67 @@ export interface CodeEntity {
    * key-locked rooms. Undefined for non-methods (treated as public).
    */
   visibility?: Visibility;
+  /**
+   * Summary of every `switch`/`match` construct in this entity's body, or
+   * `undefined` when it contains none. Source for "Switchboard" junction rooms
+   * (`placeSwitchboards`): the entity's own room becomes the hub, with one
+   * small dead-end room carved off its sides per case branch.
+   */
+  switchBranches?: SwitchBranchSummary;
+  /**
+   * Number of explicit allocation expressions in this entity's body
+   * (`malloc`/`calloc`/`new`/`make`/large fixed-size array declarators — see
+   * `countAllocations` in `astUtils.ts`). Absent when zero, and for entity
+   * kinds with no body.
+   *
+   * Deliberately a raw *count*, not a "density" or an "is leaky" flag: the
+   * threshold that decides whether this becomes an "Acid Overflow" room is a
+   * gameplay-balance number, and lives next to `ELITE_COMPLEXITY_THRESHOLD` in
+   * the map layer (`map/generation/acidOverflow.ts`) rather than here. This
+   * layer stays purely descriptive.
+   */
+  allocations?: number;
+}
+
+/**
+ * Aggregate summary of every `switch`/`match`/`case` construct found inside one
+ * entity's body — see `CodeEntity.switchBranches`.
+ *
+ * Aggregated rather than one entry per switch statement on purpose: a function
+ * with three small switches reads, structurally, as just as much of a branching
+ * junction as one function with one big switch, and one hub per entity is the
+ * only shape the map layer can place anyway — the hub *is* the entity's single
+ * already-carved room.
+ *
+ * Note this counts the whole subtree, so a `class` entity's summary also covers
+ * its methods' switches. Harmless: `placeSwitchboards` only ever considers
+ * `function`/`method` rooms, exactly like `spawnEnemies`.
+ */
+export interface SwitchBranchSummary {
+  /** Number of non-default case branches (`case`/`when`/`match_arm`/…). */
+  caseCount: number;
+  /** Whether any of the aggregated switches has a `default`/`else`/`_`/`*`
+   * catch-all branch. */
+  hasDefault: boolean;
+}
+
+/**
+ * One `try`/`catch`/`finally` construct (or `begin`/`rescue`/`ensure`, or
+ * `try`/`except`/`finally`) found in a source file. The map generator turns
+ * each into a sequential 3-part "Exception Handling Zone" hanging off whichever
+ * room contains `startLine`: a hazard-heavy `try` gauntlet, a `catch` alcove
+ * with guaranteed restoration, then a safe `finally` room with guaranteed loot
+ * (see `placeExceptionZones`).
+ */
+export interface ExceptionZoneTrigger {
+  /** 1-based, inclusive line where the `try` starts. */
+  startLine: number;
+  /** 1-based, inclusive line where the whole construct ends. */
+  endLine: number;
+  /** How many catch/except/rescue clauses are attached; 0 for try/finally. */
+  catchCount: number;
+  /** Whether a `finally`/`ensure` clause is present. */
+  hasFinally: boolean;
 }
 
 /**
@@ -121,6 +182,20 @@ export interface ParsedFile {
   /** Code smells/patterns (dead code, empty catches, deprecation markers,
    * commented-out code, magic-number/blob literals), source for secret rooms. */
   secretTriggers: SecretTrigger[];
+  /** `try`/`catch`/`finally` constructs, source for Exception Handling Zones.
+   * Empty for languages whose grammar has no exception construct at all (Go,
+   * Bash, Rust, and plain C — see `findExceptionZones`). */
+  exceptionZones: ExceptionZoneTrigger[];
+  /**
+   * Number of top-level `import`/`#include`/`require`/`use` declarations — how
+   * much third-party code this file leans on. Source for the "Vendor Depot"
+   * supply alcoves carved off the spawn room.
+   *
+   * A plain scalar rather than a list: the depots attach to the spawn room,
+   * which has nothing to do with *where* in the file an import sits, so line
+   * numbers would be dead data.
+   */
+  importCount: number;
 }
 
 /**

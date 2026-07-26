@@ -16,6 +16,8 @@ function parsedFile(overrides: Partial<ParsedFile> = {}): ParsedFile {
     gotos: [],
     comments: [],
     secretTriggers: [],
+    exceptionZones: [],
+    importCount: 0,
     ...overrides,
   };
 }

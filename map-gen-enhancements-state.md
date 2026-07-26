@@ -1,0 +1,95 @@
+# map-gen enhancements — progress state
+
+Disposable working file for the 4 new AST-driven level-generation features
+(Switchboards, Exception Zones, Vendor Depots, Acid Overflow). **Delete this file
+once the work lands.** Plan: `~/.claude/plans/task-implement-4-lazy-dream.md`.
+
+## Milestones
+
+- [x] **M0** parser contract + detectors + tables (all three adapters)
+- [ ] **M1** `GameMap` fields, `AmmoPickup` smg/gas, `generate()` params
+- [ ] **M2** Vendor Depots
+- [ ] **M3a** `BRANCH_DOOR_TILE`
+- [ ] **M3b** Switchboards
+- [ ] **M4** Exception Handling Zones
+- [ ] **M5** Acid Overflow — map half
+- [ ] **M6** Acid Overflow — engine half
+- [ ] **M7** demo-campaign content + `verify:campaign` checklist
+- [ ] **M8** docs + `npm run generate:default-highscore`
+
+## Node types — empirically confirmed
+
+Dumped from the real grammars (throwaway `__dump.test.ts` files, since deleted);
+raw output kept at `<scratchpad>/php-ast.txt` and `<scratchpad>/generic-ast.txt`.
+
+### switch / case branches
+
+| Language | branch node | default detection |
+|---|---|---|
+| C, C++, ObjC | `case_statement` | text `/^default\b/` (no `value` field) |
+| PHP | `case_statement` | `default_statement` (own node type) |
+| PHP `match` | `match_conditional_expression` | `match_default_expression` |
+| JS, TS | `switch_case` | `switch_default` |
+| Java (legacy) | `switch_block_statement_group` | text `/^default\b/` (`switch_label "default"`) |
+| Java 14+ | `switch_rule` | text `/^default\b/` |
+| C# stmt | `switch_section` | text `/^default\b/` |
+| C# expr | `switch_expression_arm` | pattern text `_` (`discard`) |
+| Go | `expression_case`, `type_case`, `communication_case` | `default_case` |
+| Rust | `match_arm` | pattern text `_` |
+| Python | `case_clause` | `case_pattern` text `_` |
+| Scala | `case_clause` | `wildcard` text `_` |
+| Ruby | `when` | sibling `else` node under `case` |
+| Bash | `case_item` | pattern text `*` (`extglob_pattern`) |
+
+**Gotcha:** Scala's `catch_clause` contains a `case_block` of `case_clause`s — a
+`try`/`catch` would otherwise inflate `caseCount`. Handled by excluding any branch
+with a `catch_clause` ancestor.
+
+**Gotcha:** Bash's `case_statement` is the *container*, but C/C++/ObjC/PHP's
+`case_statement` is a *branch*. Resolved by not scanning containers at all — the
+detector only counts branch nodes and returns `undefined` when there are none.
+
+### try / catch / finally
+
+`try_statement` (JS, TS, Python, Java, C#, C++, ObjC) · `try_expression` (Scala) ·
+`try_with_resources_statement` (Java) · `begin` (Ruby) · `seh_try_statement` (C, MSVC
+`__try` only — plain C produces zero zones, mirroring how `cParser.ts` already skips
+`findEmptyCatchBlocks`). Go, Bash and Rust have no exception construct at all.
+
+Catch: `catch_clause`, `except_clause` (Python), `rescue` (Ruby), `seh_except_clause`.
+Finally: `finally_clause`, `ensure` (Ruby), `seh_finally_clause`.
+
+### imports
+
+`import_statement`/`import_from_statement` (Python, JS, TS) · `import_declaration`
+(Java, Scala, Go) · `import_spec` (Go, nested) · `using_directive` (C#) ·
+`using_declaration` (C++) · `use_declaration`/`extern_crate_declaration` (Rust) ·
+`preproc_include` (C, C++, ObjC — ObjC's `#import` parses as this too) ·
+`namespace_use_declaration` + `include_expression`/`include_once_expression`/
+`require_expression`/`require_once_expression` (PHP). Call-shaped: Ruby `require`/
+`require_relative`/`load` and Bash `source`/`.` are plain `call`/`command` nodes.
+
+Go nests: `import_declaration > import_spec` (depth 2) for a single import,
+`import_declaration > import_spec_list > import_spec` (depth 3) when grouped. Handled
+by counting only **leaf-most** matches (a match containing another match is skipped),
+with a **depth ≤ 3** cap for top-level-ness — deep enough for a grouped Go spec and a
+PHP `require` inside its `expression_statement` wrapper, shallow enough to exclude a
+`require` inside a function body (depth ≥ 4).
+
+### allocations
+
+Node types: `new_expression` (C++, JS, TS) · `object_creation_expression` /
+`array_creation_expression` (Java, C#) · `instance_expression` (Scala) ·
+`stackalloc_expression` (C#). Call-shaped, matched on **callee name**:
+`malloc`/`calloc`/`realloc`/`make`/`new`/`alloc`/`strdup`/… — reaches C `malloc(64)`,
+Go `make(...)`/`new(...)`, Rust `Box::new`/`Vec::with_capacity`, Ruby `Array.new`, and
+ObjC's `[[NSObject alloc] init]` (inner `message_expression`, last identifier child
+`alloc`). Rust `vec![...]` is a `macro_invocation`. Large static arrays:
+`array_declarator` with a literal size ≥ 1024.
+
+Python has no explicit allocation construct, so Python entities never get an Acid
+Overflow room — same shape as `goto`/teleporters being C/C++/PHP/Go only.
+
+## Retuned constants
+
+_(nothing yet)_

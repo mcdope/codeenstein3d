@@ -9,7 +9,14 @@
  */
 import { describe, expect, it } from "vitest";
 import "./types";
-import type { CodeEntity, EntityKind, ParsedFile, SecretTriggerKind } from "./types";
+import type {
+  CodeEntity,
+  EntityKind,
+  ExceptionZoneTrigger,
+  ParsedFile,
+  SecretTriggerKind,
+  SwitchBranchSummary,
+} from "./types";
 
 describe("types.ts", () => {
   it("loads with no runtime exports (type-only module)", async () => {
@@ -43,7 +50,31 @@ describe("types.ts", () => {
       gotos: [],
       comments: [],
       secretTriggers: [],
+      exceptionZones: [],
+      importCount: 0,
     };
     expect(parsed.entities[0].name).toBe("foo");
+  });
+
+  it("a CodeEntity carries the optional switch/allocation fields", () => {
+    const switchBranches: SwitchBranchSummary = { caseCount: 3, hasDefault: true };
+    const entity: CodeEntity = {
+      name: "dispatch",
+      kind: "function",
+      startLine: 1,
+      endLine: 20,
+      complexityScore: 5,
+      nestingDepth: 1,
+      switchBranches,
+      allocations: 4,
+    };
+    expect(entity.switchBranches?.caseCount).toBe(3);
+    expect(entity.allocations).toBe(4);
+  });
+
+  it("an ExceptionZoneTrigger literal satisfies the contract shape", () => {
+    const zone: ExceptionZoneTrigger = { startLine: 4, endLine: 12, catchCount: 2, hasFinally: true };
+    expect(zone.catchCount).toBe(2);
+    expect(zone.hasFinally).toBe(true);
   });
 });
