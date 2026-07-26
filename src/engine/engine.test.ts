@@ -1268,11 +1268,16 @@ describe("RaycasterEngine — firing", () => {
   it("fires the shotgun's multiple pellets in one trigger pull", () => {
     const enemy = fakeEnemy({ x: 6.2, y: 5.5, hp: 1, maxHp: 1 });
     const map = fakeMap({ enemies: [enemy] });
-    const { engine, input } = makeEngine(map);
+    const { engine, input, handlers } = makeEngine(map);
     input.weaponRequest = 1; // shotgun
     engine.advance(0.016);
     input.fireQueued = true;
     expect(() => engine.advance(0.016)).not.toThrow();
+    expect(enemy.alive).toBe(false);
+    // At this range several of the shotgun's 7 pellets land on the same
+    // point-blank enemy in one blast; only the first one to connect may
+    // register as a kill, or this regresses into a phantom multi-kill.
+    expect(lastStats(handlers).kills).toBe(1);
   });
 
   it("swings the knife via quick-melee (Space) independent of the equipped ranged weapon", () => {

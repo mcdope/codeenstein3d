@@ -3971,6 +3971,11 @@ export class RaycasterEngine {
     forcedMelee: boolean | undefined,
     shooter: PlayerState,
   ): void {
+    // A shotgun/flamethrower blast resolves all of its pellets against a
+    // single pre-shot snapshot, so several pellets can target the same
+    // enemy; once an earlier pellet in this same volley has killed it,
+    // later pellets must no-op instead of re-running the kill/streak logic.
+    if (!enemy.alive) return;
     // Hit feedback: thud sound, tint the sprite red, spray "digital blood".
     audio.playHit();
     enemy.hitFlash = HIT_FLASH_FRAMES;
