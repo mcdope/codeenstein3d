@@ -6185,7 +6185,10 @@ describe("main.ts — replay playback (startReplay)", () => {
     expect(testHooks()!.getPlayerState().state).toBe("won");
   });
 
-  it("winning a non-final level during replay advances to the next recorded level instead of ending the viewing", { timeout: 20000 }, async () => {
+  // Does three sequential real-time state transitions (~3x the work of the
+  // single-transition onWin/onGameOver tests below), so it needs a taller
+  // timeout ceiling than those to keep the same margin on a loaded runner.
+  it("winning a non-final level during replay advances to the next recorded level instead of ending the viewing", { timeout: 45000 }, async () => {
     // The single-level win test above always has levelIndex >= payload
     // .levels.length once loadLevel's own pre-increment runs, taking
     // onWin's `hud.showBuildSuccessful` branch — this needs a *second*
