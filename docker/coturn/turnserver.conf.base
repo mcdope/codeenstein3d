@@ -49,9 +49,9 @@ fingerprint
 
 # --- Process hardening -----------------------------------------------------
 # No telnet/CLI listener: this relay forwards packets and does nothing else.
-# (Deliberately *not* `no-rest-api` — despite the name, that switch disables
-# exactly the timestamp+HMAC "TURN REST API" credential scheme this deployment
-# depends on. `no-software-attribute`/`no-rfc5780` are likewise absent: coturn
-# 4.7 marks both DEPRECATED because their hardened behaviour is now the
-# default, and passing a removed option aborts startup.)
-no-cli
+# CLI is OFF by default (opt-in via `--cli`), so no directive is needed here
+# at all. (Deliberately *not* `no-rest-api` — despite the name, that switch
+# disables exactly the timestamp+HMAC "TURN REST API" credential scheme this
+# deployment depends on. `no-software-attribute`/`no-rfc5780`/`no-cli` are all
+# likewise absent: coturn marks each DEPRECATED once its hardened behaviour
+# becomes the default, and passing a removed option aborts startup.)

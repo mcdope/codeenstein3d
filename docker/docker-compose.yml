@@ -63,7 +63,7 @@ services:
   # The TURN relay. Off unless you pass `--profile turn`, mirroring the
   # server-side default (no secret ⇒ no credentials ⇒ no relay).
   coturn:
-    image: coturn/coturn:4.7-alpine
+    image: coturn/coturn:4.15.0-alpine
     container_name: codeenstein-coturn
     profiles: [turn]
     restart: unless-stopped
