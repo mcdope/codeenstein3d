@@ -722,26 +722,26 @@ export function runMultiplayerSessionAsHost(
     // "TypeScript's conservative optional typing vs. what production code
     // actually guarantees" shape `doc/dev/testing.md`'s own coverage-caveats
     // section documents elsewhere in this codebase.
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getLootDrops: () => engine?.getLootDrops() ?? [],
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getMapExit: () => engine?.getMapExit() ?? null,
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getMapGrid: () => engine?.getMapGrid() ?? null,
     // Unlike the getters above, `engine`'s own `getExitCountdownRemaining()`
     // legitimately returns `null` on its own (no countdown running yet) even
     // once `engine` is defined — so both outcomes of this fallback are
     // genuinely reachable through a real call, no ignore needed.
     getExitCountdownRemaining: () => engine?.getExitCountdownRemaining() ?? null,
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getMap: () => engine?.getMap() ?? null,
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getEnemiesSnapshot: () => engine?.getEnemiesSnapshot() ?? [],
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getMinesSnapshot: () => engine?.getMinesSnapshot() ?? [],
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getDropsSnapshot: () => engine?.getDropsSnapshot() ?? [],
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getKeysSnapshot: () => engine?.getKeysSnapshot() ?? [],
     // Same reasoning as `getPlayerPosition`/`getPlayerFacing` above — the
     // inner call itself already returns `null` for an unrecognized id, so
@@ -762,7 +762,7 @@ export function runMultiplayerSessionAsHost(
     // Always empty — see this method's own doc comment on
     // `MultiplayerSessionHandle` for why only a guest can ever observe this.
     getReconciliationCorrections: () => ({}),
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getMultiplayerTelemetrySnapshot: (id) => engine?.getMultiplayerTelemetrySnapshot(id) ?? null,
   };
 }

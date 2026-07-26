@@ -140,7 +140,7 @@ export function runMultiplayerSessionAsGuest(
     // the same breath it sets `ended` — there's no async gap for a stray
     // event to slip through afterward (same reasoning `unsubscribeInput`'s
     // own doc comment gives for why *it* needs no re-entrancy guard).
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     if (!connection || ended || !engine) return;
     const state = connection.connectionState;
     if (state === "disconnected" || state === "failed") {
@@ -278,7 +278,7 @@ export function runMultiplayerSessionAsGuest(
     // conservative optional typing vs. what production code actually
     // guarantees" shape `doc/dev/testing.md`'s own coverage-caveats section
     // documents elsewhere in this codebase.
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     if (!engine || !myInput || !otherInputs || !localSampler) return;
     // The host is otherwise trusted, but a corrupted/malformed bundle must
     // still be dropped rather than crash this handler — a missing
@@ -371,7 +371,7 @@ export function runMultiplayerSessionAsGuest(
     channels.reconciliation,
     (message) => {
       // Same reasoning as `unsubscribeInput`'s own doc comment above.
-      /* v8 ignore next */
+      /* v8 ignore next -- @preserve */
       if (!engine) return;
       switch (message.type) {
         case "reconciliation-snapshot": {
@@ -427,7 +427,7 @@ export function runMultiplayerSessionAsGuest(
             // shouldn't happen, roster is agreed at session setup, same
             // "skip rather than throw" shape `applyReconciliationSnapshot`'s
             // own identical check documents (`engine.ts`).
-            /* v8 ignore next */
+            /* v8 ignore next -- @preserve */
             if (!before) continue;
             const magnitude = Math.hypot(ps.posX - before.x, ps.posY - before.y);
             if (magnitude <= RECONCILIATION_CORRECTION_NOISE_FLOOR_TILES) continue;
@@ -539,26 +539,26 @@ export function runMultiplayerSessionAsGuest(
     // `engine` is always defined by the time any of these handle methods
     // can be called — same reasoning as `unsubscribeInput`'s own doc comment
     // above; the `?? null`/`?? []` fallbacks are defensive-only.
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getPlayerStatus: (id) => engine?.getPlayerStatus(id) ?? null,
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getLootDrops: () => engine?.getLootDrops() ?? [],
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getMapExit: () => engine?.getMapExit() ?? null,
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getMapGrid: () => engine?.getMapGrid() ?? null,
     // See `multiplayerSessionHost.ts`'s identical getter for why this one
     // needs no ignore comment, unlike the getters above it.
     getExitCountdownRemaining: () => engine?.getExitCountdownRemaining() ?? null,
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getMap: () => engine?.getMap() ?? null,
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getEnemiesSnapshot: () => engine?.getEnemiesSnapshot() ?? [],
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getMinesSnapshot: () => engine?.getMinesSnapshot() ?? [],
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getDropsSnapshot: () => engine?.getDropsSnapshot() ?? [],
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getKeysSnapshot: () => engine?.getKeysSnapshot() ?? [],
     // See `multiplayerSessionHost.ts`'s identical getter for why this one
     // needs no ignore comment.
@@ -574,7 +574,7 @@ export function runMultiplayerSessionAsGuest(
       missedTicksByPlayer: Object.fromEntries(missedTicksByPlayer) as Record<PlayerId, number>,
     }),
     getReconciliationCorrections: () => Object.fromEntries(reconciliationCorrections) as Record<PlayerId, { count: number; totalMagnitudeTiles: number }>,
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     getMultiplayerTelemetrySnapshot: (id) => engine?.getMultiplayerTelemetrySnapshot(id) ?? null,
   };
 }

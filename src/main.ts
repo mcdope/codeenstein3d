@@ -43,7 +43,7 @@ export function statsScreenInfo(
   // `buildStats()`'s doc comment, both fields are set or omitted as a
   // matched pair — so this is unreachable in practice, just satisfying the
   // type checker for two independently-optional parameters.
-  /* v8 ignore next */
+  /* v8 ignore next -- @preserve */
   if (!playerStats) return undefined;
   return { scoreBreakdown, playerStats };
 }
@@ -771,7 +771,7 @@ async function loadDemoCampaign(): Promise<void> {
     // tick, before any await has run and thus before `gen` could possibly
     // have changed. Kept for symmetry with the other three loaders and as
     // a safety net if that internal error-swallowing ever changes.
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     if (gen !== workspaceLoadGeneration) return;
     console.error("[demo] Failed to load demo campaign:", err);
     const message = err instanceof Error ? err.message : "Failed to load demo campaign.";
@@ -1030,7 +1030,7 @@ function pollForHostAnswer(
       // function's own capture of `generation` and its first (non-retry)
       // call either. Kept as a guard against a future call site changing
       // that, not because it's reachable today.
-      /* v8 ignore next */
+      /* v8 ignore next -- @preserve */
       if (generation !== multiplayerConnectionGeneration || signal.aborted) return resolve(null);
       try {
         const result = await fetchSessionAsHost(code, hostToken, signal);
@@ -1124,8 +1124,9 @@ async function armNextGuestSlot(generation: number, signal: AbortSignal): Promis
   // mid-channel-open cancellation). Kept as a defensive entry guard, not
   // dead code: a future call site added here without the same invariant
   // would still be safe.
-  /* v8 ignore next 2 */
+  /* v8 ignore next -- @preserve */
   if (generation !== multiplayerConnectionGeneration || signal.aborted) return;
+  /* v8 ignore next -- @preserve */
   if (!activeMultiplayerConnection || activeMultiplayerConnection.role !== "host") return;
   const { code, hostToken, maxPlayers, links } = activeMultiplayerConnection;
   if (links.size + 1 >= maxPlayers) return; // every slot already filled
@@ -1152,7 +1153,7 @@ async function armNextGuestSlot(generation: number, signal: AbortSignal): Promis
           public: multiplayerPublicCheckbox.checked,
           displayName: multiplayerDisplayNameInput.value.trim() || undefined,
           playerCount: links.size + 1,
-          /* v8 ignore next */
+          /* v8 ignore next -- @preserve */
           campaignName: workspaceRootName ?? "unknown",
         },
         signal,
@@ -1203,7 +1204,7 @@ async function armNextGuestSlot(generation: number, signal: AbortSignal): Promis
       // here. Confirmed by inspection, not assumed: this loop's only exits
       // are the four `return`s, one `continue`, and one `throw` already
       // covered by this file's own tests above.
-      /* v8 ignore next */
+      /* v8 ignore next -- @preserve */
     }
   } catch (err) {
     guestPeerConnection?.close();
@@ -1257,7 +1258,7 @@ async function createMultiplayerSession(): Promise<void> {
         // is already a real string (see `isMultiplayerEligibleWorkspace`'s
         // doc comment) — the fallback is defensive against that gating ever
         // changing, not a reachable case today.
-        /* v8 ignore next */
+        /* v8 ignore next -- @preserve */
         campaignName: workspaceRootName ?? "unknown",
       };
       session = session
@@ -1310,7 +1311,7 @@ async function createMultiplayerSession(): Promise<void> {
       // above: every path through this loop body ends in an explicit
       // `return`, `continue`, or `throw` — control can never naturally fall
       // off the end of the loop body to reach this closing brace itself.
-      /* v8 ignore next */
+      /* v8 ignore next -- @preserve */
     }
   } catch (err) {
     if (generation === multiplayerConnectionGeneration) {
@@ -1695,7 +1696,7 @@ function findNextMultiplayerLevel(initialLevelPath: string): FindNextLevel {
     // via a win inside a session `startMultiplayerSessionAsHost` already
     // required a loaded workspace (and therefore a non-null `workspaceTree`)
     // to start, so the null case can't actually happen here.
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     if (!workspaceTree) return null;
     while (true) {
       const next = await findNextParsableFile(workspaceTree, afterPath);
@@ -1722,7 +1723,7 @@ function findNextMultiplayerLevel(initialLevelPath: string): FindNextLevel {
           // `?.`/`?? []` fallback and the empty-roster branch below only
           // satisfy the index signature's and `Array.prototype.reduce`'s own
           // conservative typing, neither is reachable in practice.
-          /* v8 ignore next 2 */
+          /* v8 ignore next 2 -- @preserve */
           const perPlayerOwned: number[][] = rosterIds.map((id) => carryovers[id]?.ownedWeapons ?? []);
           const ownedByEveryone = perPlayerOwned.length === 0 ? [] : perPlayerOwned.reduce((acc, owned) => acc.filter((w) => owned.includes(w)));
           const missingWeaponIndices = computeMissingWeaponIndices(ownedByEveryone, campaignLevelIndex);
@@ -1749,7 +1750,7 @@ async function startMultiplayerSessionAsGuest(): Promise<void> {
   // `role` check below exists purely to narrow the discriminated
   // `MultiplayerConnection` union for the compiler, not because the
   // `"host"` branch is actually reachable here.
-  /* v8 ignore next */
+  /* v8 ignore next -- @preserve */
   if (!activeMultiplayerConnection || activeMultiplayerConnection.role !== "guest") return;
   const { channels, peerConnection } = activeMultiplayerConnection;
   try {
@@ -1930,7 +1931,7 @@ if (isTestHooksActive()) {
         // (connect/netcode/reconciliation/disconnect/transition): reflects
         // guest-1's own channel pair specifically, same shape they've always
         // read here — none of them needed to change for step 10.
-        /* v8 ignore next 3 */
+        /* v8 ignore next 3 -- @preserve */
         channels: firstLink
           ? { input: firstLink.channels.input.readyState, reconciliation: firstLink.channels.reconciliation.readyState }
           : null,
@@ -2023,7 +2024,7 @@ window.addEventListener("beforeunload", () => {
 async function handleFileSelected(node: TreeNode): Promise<void> {
   // Unreachable given the single call site: renderFileTree/fileTree.ts only
   // ever wires onSelectFile to file rows, never directory rows.
-  /* v8 ignore next */
+  /* v8 ignore next -- @preserve */
   if (node.kind !== "file") return;
   try {
     const text = await readFileText(node.handle as FileSystemFileHandle);
@@ -2477,7 +2478,7 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
         // `?? []` is unreachable: every real call site that builds a
         // carryover (Continue Run's saved ownedWeapons, an advancing
         // level's stats.ownedWeapons) always populates a real array.
-        /* v8 ignore next */
+        /* v8 ignore next -- @preserve */
         ownedWeapons: applyForcedUnlocks(carryover.ownedWeapons ?? [], campaignLevelIndex),
         campaignLevelIndex,
       }
@@ -2564,7 +2565,7 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   // `?? path` is unreachable defensive code: String.prototype.split() never
   // returns an empty array, so `.pop()` can never actually be undefined —
   // same reasoning as demoCampaign.ts's identical pattern.
-  /* v8 ignore next */
+  /* v8 ignore next -- @preserve */
   const levelName = path.split("/").pop() ?? path;
   hud.showLevelStart(
     {
@@ -2638,7 +2639,7 @@ function campaignName(): string {
   // reached via launchLevel/kickOffCodebaseStats, both only invoked after a
   // workspace load has already set workspaceRootName (which is never reset
   // to null afterward).
-  /* v8 ignore next */
+  /* v8 ignore next -- @preserve */
   return workspaceRootName ?? "Untitled Workspace";
 }
 
@@ -2687,7 +2688,7 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
         saveCampaign({
           // `?? ""` is unreachable here too — reached only after a level
           // already launched, which requires workspaceRootName to be set.
-          /* v8 ignore next */
+          /* v8 ignore next -- @preserve */
           workspaceName: workspaceRootName ?? "",
           filePath: next.path,
           health: carryover.health,
@@ -2797,7 +2798,7 @@ function countTreeFiles(node: TreeNode): number {
   // `?? []` is unreachable: every production TreeNode builder (workspace.ts,
   // github.ts, demoCampaign.ts) always sets `children` on a directory node,
   // even to an empty array — never omits it.
-  /* v8 ignore next */
+  /* v8 ignore next -- @preserve */
   return (node.children ?? []).reduce((sum, child) => sum + countTreeFiles(child), 0);
 }
 
@@ -3214,7 +3215,7 @@ async function recordRunHighscore(
     // `?? path` is unreachable defensive code: String.prototype.split() never
     // returns an empty array, so `.pop()` can never actually be undefined —
     // same reasoning as demoCampaign.ts's identical pattern.
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     const levelName = path.split("/").pop() ?? path;
     const codebaseStats = await withTimeout(codebaseStatsPromise, CODEBASE_STATS_WAIT_MS);
     // Prefer the whole-workspace hash so two runs over identical, unedited
@@ -3235,7 +3236,7 @@ async function recordRunHighscore(
       // undefined` covers finish() resolving null (no level produced a
       // savable segment — zero recorded frames), also unreachable given
       // every real win/death test drives at least one frame first.
-      /* v8 ignore next */
+      /* v8 ignore next -- @preserve */
       replay: (await recorder?.finish()) ?? undefined,
       source: workspaceIsDemo ? "demo" : workspaceIsRemote ? "github" : undefined,
       codebaseLinesOfCode: codebaseStats?.linesOfCode,
@@ -3343,7 +3344,7 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
   // `entry.replay?.version === 2 && entry.replay.levels?.length > 0` gate
   // before either button even renders) — kept as defense-in-depth against
   // a future third call site or a hand-edited localStorage entry.
-  /* v8 ignore next */
+  /* v8 ignore next -- @preserve */
   if (!payload || payload.version !== 2 || !payload.levels?.length) return;
 
   // End any replay already playing before starting this one — otherwise its
@@ -3471,7 +3472,7 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
       // both already guarantee a recording isn't already active before
       // calling this — kept as defense-in-depth against a future third
       // call site double-starting (and leaking) a `MediaRecorder`.
-      /* v8 ignore next */
+      /* v8 ignore next -- @preserve */
       if (mediaRecorder) return;
       controls.setControlsEnabled(false);
       speedIndex = REPLAY_SPEEDS.indexOf(1);
@@ -3652,7 +3653,7 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
       // this — activeEngine/replayInput/currentSegment are always set
       // together in buildEngineFor, and nothing clears just one of them
       // while isReplaying stays true.
-      /* v8 ignore next */
+      /* v8 ignore next -- @preserve */
       if (!activeEngine || !replayInput || !segment) return;
       while (frameIndex < targetFrameIndex && frameIndex < segment.frames.length && !levelEnded) {
         const frame = segment.frames[frameIndex++];
@@ -3669,7 +3670,7 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
       // Unreachable given the single call site (seekBy), which already
       // requires currentSegment non-null — currentParsed/currentSegment are
       // always set together in buildEngineFor.
-      /* v8 ignore next */
+      /* v8 ignore next -- @preserve */
       if (!currentParsed || !currentSegment) return;
       buildEngineFor(currentSegment, currentParsed);
     };
@@ -3689,7 +3690,7 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
       // specific id via cancelAnimationFrame before isReplaying flips false.
       // Kept as a safety net against a future change loosening that
       // invariant, not because this fires today.
-      /* v8 ignore next */
+      /* v8 ignore next -- @preserve */
       if (!isReplaying) return;
       if (transitioning || paused || levelEnded || !activeEngine || !replayInput || !currentSegment) {
         rafId = requestAnimationFrame(step); // keep polling so unpausing (or a transition finishing) resumes on its own

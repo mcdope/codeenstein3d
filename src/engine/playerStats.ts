@@ -56,7 +56,7 @@ function sumLootRecord(record: Partial<Record<string, number>>): number {
   // only ever assigns a real number to a key, never `undefined` — but
   // `Partial<Record<...>>`'s type still allows it, and `Object.values` types
   // accordingly.
-  /* v8 ignore next */
+  /* v8 ignore next -- @preserve */
   return Object.values(record).reduce<number>((sum, amount) => sum + (amount ?? 0), 0);
 }
 

@@ -231,7 +231,7 @@ function breakUpRoomSightline(
   // never hold, and with >= 3 rows/columns there's always at least one
   // candidate left after excluding the single row/column equal to `fixed`.
   if (axis === "h") {
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     if (rect.w < 3) return;
     const preferredBx = rect.x + 1 + Math.floor(rng() * (rect.w - 2));
     for (let d = 0; d < rect.w - 2; d++) {
@@ -249,7 +249,7 @@ function breakUpRoomSightline(
       return;
     }
   } else {
-    /* v8 ignore next */
+    /* v8 ignore next -- @preserve */
     if (rect.h < 3) return;
     const preferredBy = rect.y + 1 + Math.floor(rng() * (rect.h - 2));
     for (let d = 0; d < rect.h - 2; d++) {
@@ -355,7 +355,7 @@ function breakUpAtTarget(
   // findStraightRuns(..., MAX_CORRIDOR_STRAIGHT_LENGTH), which only ever
   // reports a run longer than that threshold (>= 10 tiles) — loBound can
   // never exceed hiBound for a run that long.
-  /* v8 ignore next */
+  /* v8 ignore next -- @preserve */
   if (loBound > hiBound) return false;
 
   for (let attempt = 0; attempt < BREAKUP_ATTEMPTS_PER_POINT; attempt++) {
@@ -419,7 +419,7 @@ function breakUpRunWide(
   // Unreachable: same reasoning as breakUpAtTarget's identical guard — every
   // `run` reaching this function is already known longer than
   // MAX_CORRIDOR_STRAIGHT_LENGTH (>= 10 tiles).
-  /* v8 ignore next */
+  /* v8 ignore next -- @preserve */
   if (loBound > hiBound) return false;
 
   for (let attempt = 0; attempt < BREAKUP_WIDE_ATTEMPTS; attempt++) {
