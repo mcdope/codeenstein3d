@@ -48,6 +48,12 @@ export default defineConfig({
   },
   plugins: [wasmUrlAsPathPlugin()],
   test: {
+    // Vitest 4 stopped auto-restoring vi.spyOn mocks between tests in the
+    // same file (Vitest 3's default behavior) — without this, a spy created
+    // in one test keeps accumulating call history into the next test that
+    // spies on the same method, breaking call-count assertions in
+    // raycaster.test.ts's cached-wall-layer tests.
+    restoreMocks: true,
     environment: "node",
     coverage: {
       provider: "v8",
