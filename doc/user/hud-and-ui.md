@@ -12,7 +12,7 @@ The bottom status bar shows:
 - **Keys** — how many of the level's keys you're holding, out of the total
 - **Score** — your running total, updated live
 
-The crosshair turns red over a valid target, and shows tick marks for weapons that fire in a spread cone.
+The crosshair turns red over a valid target, and shows tick marks for weapons that fire in a spread cone. Pulling the trigger on an empty weapon shows a fading "Out of ammo!" toast instead of just doing nothing.
 
 ## Minimap & Compass
 

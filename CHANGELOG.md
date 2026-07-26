@@ -1,17 +1,21 @@
 # Changelog
 
-## Unreleased
+## beta-5
 
 - New: Multiplayer — host or join a real-time coop session (2-4 players) with a friend, no account or setup needed. Pick a campaign/workspace as usual, choose how many players you want, then share the short code your browser gives you; anyone who joins with that code connects directly to you (peer-to-peer), and more players can join the same code one at a time with nothing extra to share. A public lobby list is also available if you'd rather browse for an open session than trade a code
 - Everyone in a session stays in perfect lockstep — the exact same simulation, ticking in sync — even across different browsers or devices, with automatic correction if anything ever drifts
 - If a player's connection drops, the rest of the session keeps going without them after a short grace period; when the group reaches a level's exit together, a countdown gives everyone a moment to catch up before advancing
 - A shared end-of-run scoreboard shows everyone's score and kills side by side. Elite enemies get tougher (more HP and damage) the more players join, and any loot dropped is visible to the whole team on the minimap/automap. Multiplayer runs don't use cheat codes, highscores, or replays — those stay single-player features
+- If a strict NAT, corporate firewall, or mobile network blocks a direct connection between players, the game now falls back to a relay automatically whenever whoever's hosting the signaling server has set one up — nothing to configure on your side, and a join that used to hang on "Establishing connection…" now has a real shot at getting through
+- Dev: a Docker Compose stack (`docker/`) for self-hosting the multiplayer signaling server and optional TURN relay, plus `docker/update.sh` to script routine updates — see `doc/dev/multiplayer-deployment.md`
+- New: a fading "Out of ammo!" toast appears when you pull the trigger on an empty weapon, instead of nothing happening with no feedback
 - Fix: the level exit didn't check whether any enemies were still alive nearby — you could walk onto it and win (or, in multiplayer, start the level-transition countdown) with a room full of live enemies behind you. The exit now stays inert until every enemy in its own room is dead, in both single-player and multiplayer
 - Fix: multiplayer's FPS overlay (Right-Ctrl) always showed 0 — it now reports real numbers
 - Fix: a dead multiplayer player's "YOU DIED — spectating" banner overlapped the level-transition countdown, both drawn in the same spot — the countdown now takes over cleanly
 - Fix: the game canvas lost keyboard focus after every multiplayer level transition, needing a click back into the game to keep playing — the first level of a session already worked fine, only later transitions were affected
 - Fix: the multiplayer end-of-run comparison table's kills and score silently reset at every level transition instead of tracking the whole run — a long, successful session could end showing 0 kills and a tiny score despite the live scoreboard climbing normally the whole time. Both now correctly reflect the full run
 - Fix: disabled buttons in the multiplayer sidebar (Create/Join/Start Session) still looked fully clickable — they're now visibly greyed out with a "not allowed" cursor
+- Fix: the shotgun's pellets could each individually re-trigger the kill logic for an enemy an earlier pellet in the same blast had already killed, inflating kill/score counts and occasionally triggering a false Multi Kill or Ultra Kill from a single shot
 
 ## beta-4
 
