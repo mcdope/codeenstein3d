@@ -1263,6 +1263,36 @@ describe("RaycasterEngine — firing", () => {
     input.fireQueued = true;
     engine.advance(0.016);
     expect(lastStats(handlers).bullets).toBe(0); // never went negative / nothing consumed
+    const local = (engine as unknown as { players: Map<string, { outOfAmmoToastFrames: number }> }).players.get(
+      "local",
+    )!;
+    expect(local.outOfAmmoToastFrames).toBeGreaterThan(0);
+  });
+
+  it("re-firing while the out-of-ammo toast is still fading resets it back to full, not stacked/continuing to decay", () => {
+    const map = fakeMap({}, 12);
+    const { engine, input } = makeEngine(map, makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0 },
+    });
+    const players = (engine as unknown as { players: Map<string, { outOfAmmoToastFrames: number }> }).players;
+    const local = players.get("local")!;
+
+    input.fireQueued = true;
+    engine.advance(0.016);
+    const framesAfterFirstDryFire = local.outOfAmmoToastFrames;
+    expect(framesAfterFirstDryFire).toBeGreaterThan(0);
+
+    // Let it decay partway (well under its full duration) before firing again.
+    input.fireQueued = false;
+    for (let i = 0; i < 10; i++) engine.advance(0.016);
+    const decayed = local.outOfAmmoToastFrames;
+    expect(decayed).toBeLessThan(framesAfterFirstDryFire);
+    expect(decayed).toBeGreaterThan(0); // still fading, not yet expired — the retrigger case this test targets
+
+    // Fire again before it fully fades: must snap back to full, not stack.
+    input.fireQueued = true;
+    engine.advance(0.016);
+    expect(local.outOfAmmoToastFrames).toBe(framesAfterFirstDryFire);
   });
 
   it("fires the shotgun's multiple pellets in one trigger pull", () => {

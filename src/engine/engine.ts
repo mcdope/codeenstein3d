@@ -59,6 +59,7 @@ import {
   drawHud,
   drawKillStreakToast,
   drawLoreOverlay,
+  drawOutOfAmmoToast,
   drawPauseOverlay,
   drawSpectatingBanner,
 } from "./hud";
@@ -222,6 +223,11 @@ const CHEAT_TOAST_FRAMES = 120;
 /** Same frame-counted convention as `CHEAT_TOAST_FRAMES`, for the "Multi/
  * Ultra Kill" banner. */
 const KILL_STREAK_TOAST_FRAMES = 120;
+/** How long the "Out of ammo!" warning toast stays visible for — shorter
+ * than CHEAT_TOAST_FRAMES/KILL_STREAK_TOAST_FRAMES on purpose: a quick,
+ * non-blocking warning, not a standing confirmation. Same frame-counted,
+ * not-dt-scaled convention as those. ~0.75s at 60fps. */
+const OUT_OF_AMMO_TOAST_FRAMES = 45;
 /** Kills within this many real seconds of each other trigger a "Multi
  * Kill" (see `damageEnemy`'s rolling-window check) — not Unreal
  * Tournament's own continuously-extending streak/tier algorithm, just this
@@ -413,6 +419,7 @@ interface PlayerState {
   flashFrames: number;
   cheatToastText: string | null;
   cheatToastFrames: number;
+  outOfAmmoToastFrames: number;
   isMapActive: boolean;
   isPaused: boolean;
   loreText: string | null;
@@ -1101,6 +1108,7 @@ export class RaycasterEngine {
       flashFrames: 0,
       cheatToastText: null,
       cheatToastFrames: 0,
+      outOfAmmoToastFrames: 0,
       isMapActive: false,
       isPaused: false,
       loreText: null,
@@ -2700,6 +2708,10 @@ export class RaycasterEngine {
         local.killStreakBig,
       );
     }
+    // Same "transient feedback only" treatment as the other toasts above.
+    if (local.outOfAmmoToastFrames > 0) {
+      drawOutOfAmmoToast(this.ctx, local.outOfAmmoToastFrames / OUT_OF_AMMO_TOAST_FRAMES);
+    }
     // Multiplayer-only (see `checkExit()`) — a quiet, standing readout
     // (unlike the transient toasts above) while any player counts down to
     // the level ending. Only drawn on this normal-frame path, same as the
@@ -2920,6 +2932,7 @@ export class RaycasterEngine {
       if (p.muzzleFrames > 0) p.muzzleFrames -= 1;
       if (p.cheatToastFrames > 0) p.cheatToastFrames -= 1;
       if (p.killStreakFrames > 0) p.killStreakFrames -= 1;
+      if (p.outOfAmmoToastFrames > 0) p.outOfAmmoToastFrames -= 1;
     }
     tickBulletTraces(this.traces);
     tickFlameStreams(this.flameStreams);
@@ -3582,6 +3595,15 @@ export class RaycasterEngine {
     p.killStreakBig = big;
   }
 
+  /** Unconditional reassignment every call — same idiom as
+   * `showCheatToast`/`damage()`'s `flashFrames`, which is what makes a
+   * repeated dry-fire snap the fade back to full strength instead of
+   * stacking or letting it flicker out mid-warning. No text field: this
+   * toast's message never varies (see `PlayerState.outOfAmmoToastFrames`). */
+  private showOutOfAmmoToast(p: PlayerState): void {
+    p.outOfAmmoToastFrames = OUT_OF_AMMO_TOAST_FRAMES;
+  }
+
   /**
    * Single-player: win for the whole team the instant any one living player
    * stands on the exit tile (sorted order) — byte-identical to before step 8.
@@ -3866,6 +3888,7 @@ export class RaycasterEngine {
     if (w.ammoType) {
       if (shooter.ammo[w.ammoType] < w.ammoPerShot) {
         console.log(`[${w.name}] out of ${w.ammoType} — need ${w.ammoPerShot}`);
+        this.showOutOfAmmoToast(shooter);
         return;
       }
       shooter.ammo[w.ammoType] -= w.ammoPerShot;

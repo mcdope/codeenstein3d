@@ -90,6 +90,37 @@ export function drawCheatToast(ctx: CanvasRenderingContext2D, text: string, alph
 }
 
 /**
+ * Small top-center pill warning that the equipped weapon just dry-fired
+ * (see `RaycasterEngine.fire`'s out-of-ammo branch) — same small-pill
+ * geometry as `drawCheatToast` (so it doesn't compete with the big
+ * mid-screen `drawKillStreakToast` banner) but with an urgent red palette
+ * instead of the green confirmation one, since this is a warning, not a
+ * success confirmation. Fades out quickly relative to the other toasts —
+ * see `OUT_OF_AMMO_TOAST_FRAMES`'s doc comment for why. Message is fixed
+ * (unlike the cheat/kill-streak toasts), so this function owns its own
+ * string rather than taking one in.
+ */
+export function drawOutOfAmmoToast(ctx: CanvasRenderingContext2D, alpha: number): void {
+  const w = ctx.canvas.width;
+  const text = "Out of ammo!";
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+  ctx.textAlign = "center";
+  ctx.font = "bold 14px ui-monospace, monospace";
+  const boxW = ctx.measureText(text).width + 24;
+  const boxX = w / 2 - boxW / 2;
+  ctx.fillStyle = "rgba(4,8,10,0.7)";
+  ctx.fillRect(boxX, 26, boxW, 24);
+  ctx.strokeStyle = "rgba(255,77,77,0.6)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(boxX + 0.5, 26.5, boxW - 1, 23);
+  ctx.fillStyle = "#ff4d4d";
+  ctx.fillText(text, w / 2, 42);
+  ctx.textAlign = "start";
+  ctx.restore();
+}
+
+/**
  * "Multi Kill"/"Ultra Kill" banner (see
  * `RaycasterEngine.registerKillForStreak`) — a big, bold, Unreal-
  * Tournament-style announcement, deliberately not `drawCheatToast`'s small
