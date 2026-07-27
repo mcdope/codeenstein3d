@@ -131,8 +131,32 @@ function tileOf(pos) {
 }
 
 /** First door tile of `tileValue` adjacent to `reachable`, plus the reachable
- * tile it's approached from (so the caller can BFS a walk leg right up to it). */
-function findReachableDoor(grid, reachable, tileValue) {
+ * tile it's approached from (so the caller can BFS a walk leg right up to it).
+ *
+ * `preferredOrder` (the map's own `doors` array, when there is one) decides
+ * which frontier door wins when several are reachable at once. That ordering
+ * is load-bearing, not cosmetic: `assertAllRoomsReachable` in
+ * `src/map/generation/pathing.ts` runs this exact greedy key-then-frontier-door
+ * simulation over `doors` in array order, and it is the *only* order the map
+ * generator actually guarantees is solvable — `placeKeys` scatters each key
+ * into the region reachable before its own door under that same walk. Scanning
+ * the `reachable` set instead visits doors in tile order, which is a different
+ * greedy and can burn the last key on a door that opens no new key, deadlocking
+ * on a level a player can finish. (Observed on `stage13_batch_job.scala`: 3
+ * keys spent, 3 doors opened, no fourth key reachable, while the generator's
+ * own order completes.) */
+function findReachableDoor(grid, reachable, tileValue, preferredOrder = null) {
+  if (preferredOrder) {
+    for (const door of preferredOrder) {
+      if (grid[door.y]?.[door.x] !== tileValue) continue; // already opened
+      for (const [dx, dy] of DIRS) {
+        const fx = door.x + dx;
+        const fy = door.y + dy;
+        if (reachable.has(`${fx},${fy}`)) return { door: { x: door.x, y: door.y }, from: { x: fx, y: fy } };
+      }
+    }
+    return null;
+  }
   for (const key of reachable) {
     const [x, y] = key.split(",").map(Number);
     for (const [dx, dy] of DIRS) {
@@ -145,13 +169,13 @@ function findReachableDoor(grid, reachable, tileValue) {
   return null;
 }
 
-function planRouteWithAvoidSet(map) {
+function planRouteWithAvoidSet(map, from) {
   const grid = map.grid.map((row) => [...row]);
   const workingMap = { width: map.width, height: map.height, grid };
   const collectedKeyIndices = new Set();
   let openedDoorCount = 0;
   const legs = [];
-  let pos = { x: map.spawn.x, y: map.spawn.y };
+  let pos = { x: from?.x ?? map.spawn.x, y: from?.y ?? map.spawn.y };
   let crossesHazard = false;
 
   // Reachability just needs "structurally reachable at all" (hazard/spike
@@ -205,7 +229,7 @@ function planRouteWithAvoidSet(map) {
 
     const heldKeys = collectedKeyIndices.size - openedDoorCount;
     if (heldKeys > 0) {
-      const found = findReachableDoor(grid, reachable, DOOR_TILE);
+      const found = findReachableDoor(grid, reachable, DOOR_TILE, map.doors);
       if (found) {
         const path = findPath(start, found.from);
         if (!path) return { ok: false, reason: "door-approach-reachable-but-no-bfs-path (inconsistent)", legs };
@@ -249,8 +273,15 @@ function pathCrossesHazard(map, path) {
  * `KeyW` for one tick (see `openDoorAhead()` in `src/engine/engine.ts`,
  * which reads facing + held W/S, not an explicit interact key).
  */
-export function planRoute(map) {
-  return planRouteWithAvoidSet(map);
+/**
+ * `from` overrides the start tile, defaulting to `map.spawn`. Needed to resume
+ * a route after a teleporter pad has warped the bot mid-run: every waypoint
+ * already planned was computed against a position it is no longer at, so the
+ * caller re-plans from wherever it actually landed rather than treating the
+ * warp as "route finished" (see `run-balancing-telemetry.mjs`'s replan loop).
+ */
+export function planRoute(map, from) {
+  return planRouteWithAvoidSet(map, from);
 }
 
 /**

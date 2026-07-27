@@ -49,6 +49,7 @@ import path from "node:path";
 import { loadEngineModules, REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { Bot } from "./lib/bot.mjs";
 import { runQualifyLoop } from "./lib/qualifyLoop.mjs";
+import { planRoute } from "./lib/routePlanner.mjs";
 import { installVirtualClock } from "./lib/virtualClock.mjs";
 import { DEV_SERVER_URL, PROFILES, planLevels, waitForTestHooks, dismissOverlay, installDifficulty } from "./run-balancing-telemetry.mjs";
 
@@ -77,6 +78,8 @@ const ATTEMPT_CONCURRENCY = process.env.CODEENSTEIN_HIGHSCORE_CONCURRENCY ? Numb
 const VIRTUAL_STEP_MS = 50;
 const RECORD_STEP_MS = 1000 / 60; // see module doc comment
 const FINAL_APPROACH_TICKS = 80; // extra push onto the exit tile's exact center
+/** Mirrors `run-balancing-telemetry.mjs`'s own limit — see its doc comment. */
+const TELEPORT_REPLAN_LIMIT = 4;
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -128,7 +131,19 @@ async function driveFullCampaign(bot, page, levelPlans) {
     }
     const prevExit = await page.evaluate(() => window.__codeensteinTestHooks.getExit());
 
-    const legOutcome = route.ok ? await bot.driveLegs(route.legs) : { state: "stuck" };
+    // Same mid-route-teleport handling as `run-balancing-telemetry.mjs` — see
+    // the longer note there. `driveLegs` reporting `reason: "teleported"` is
+    // not "the route finished": every remaining waypoint was planned against a
+    // position the bot is no longer at, so re-plan from where the pad actually
+    // dropped it rather than blind-walking at the exit from an arbitrary
+    // corner of the map.
+    let legOutcome = route.ok ? await bot.driveLegs(route.legs) : { state: "stuck" };
+    for (let replan = 0; replan < TELEPORT_REPLAN_LIMIT && legOutcome.state === "playing" && legOutcome.reason === "teleported"; replan++) {
+      const here = await bot.readState();
+      const resumed = planRoute(map, { x: Math.floor(here.x), y: Math.floor(here.y) });
+      if (!resumed.ok) break;
+      legOutcome = await bot.driveLegs(resumed.legs);
+    }
 
     if (legOutcome.state === "over") return { reachedExitForLevel, diedAtLevelIndex: i, reason: "died" };
     if (legOutcome.state === "stuck") return { reachedExitForLevel, diedAtLevelIndex: i, reason: "stuck" };

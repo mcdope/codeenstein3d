@@ -111,6 +111,11 @@ const QUALIFY_LEVEL_INDEX = 3; // 0-based — "level 4" in 1-based campaign numb
 // How many ticks the final push toward the exit tile gets, once the route's
 // own legs are exhausted — see `playRun`'s final `driveToward` call.
 const FINAL_APPROACH_TICKS = 80;
+/** How many times one level may re-plan after a mid-route teleport before the
+ * run is reported as stuck. A `goto`/label pad pair is bidirectional, so a
+ * route that crosses one can legitimately be warped more than once; a small
+ * bound distinguishes that from a pathological ping-pong. */
+const TELEPORT_REPLAN_LIMIT = 4;
 
 // Mirrors src/engine/enemyAi.ts — plain literal rather than importing that TS
 // module (this is a plain Node script, not bundled like the map/parser layer
@@ -435,7 +440,23 @@ export async function playRun(page, profile, levelPlans, label = "") {
     }
     const prevExit = await page.evaluate(() => window.__codeensteinTestHooks.getExit());
 
-    const legOutcome = route.ok ? await bot.driveLegs(route.legs) : { state: "stuck" };
+    // `driveLegs` deliberately bails the moment a teleporter warps the bot
+    // mid-route — every remaining waypoint was planned against a position it
+    // is no longer at (see that method's own doc comment). It reports that as
+    // `{state:"playing", reason:"teleported"}`, which is NOT "the route is
+    // finished": re-plan from wherever the pad dropped the bot and keep
+    // driving, or the fall-through below would try to walk to the exit in a
+    // straight line from an arbitrary corner of the map and call the failure
+    // "stuck". Bounded, so a pad pair the route keeps re-crossing can't spin
+    // here forever — after the last replan it falls through and is reported
+    // honestly.
+    let legOutcome = route.ok ? await bot.driveLegs(route.legs) : { state: "stuck" };
+    for (let replan = 0; replan < TELEPORT_REPLAN_LIMIT && legOutcome.state === "playing" && legOutcome.reason === "teleported"; replan++) {
+      const here = await bot.readState();
+      const resumed = planRoute(map, { x: Math.floor(here.x), y: Math.floor(here.y) });
+      if (!resumed.ok) break;
+      legOutcome = await bot.driveLegs(resumed.legs);
+    }
 
     if (legOutcome.state === "over") {
       const deathResult = await pullLevelResult(page);

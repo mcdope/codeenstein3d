@@ -1,3 +1,8 @@
+import scala.collection.mutable
+import scala.util.control.NonFatal
+import java.time.Instant
+import java.io.File
+
 class BatchJob {
 
   def run(records: List[Int], strict: Boolean): Int = {
@@ -53,5 +58,25 @@ class BatchJob {
   // DEPRECATED: legacyReconcile is unused since reconcile() replaced it, but ops keeps a shell script that still calls into it during audits.
   protected def legacyReconcile(x: Int): Int = {
     x * 2
+  }
+}
+
+object JobClassifier {
+  def label(code: Int): String = code match {
+    case 0 => "queued"
+    case 1 => "running"
+    case 2 => "succeeded"
+    case 3 => "failed"
+    case _ => "unknown"
+  }
+
+  def runGuarded(body: () => Int): Int = {
+    try {
+      body()
+    } catch {
+      case NonFatal(e) => -1
+    } finally {
+      Instant.now()
+    }
   }
 }

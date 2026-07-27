@@ -123,11 +123,16 @@ describe("placeSwitchboards", () => {
     for (const spoke of spokes) expect(seen.has(`${spoke.x},${spoke.y}`)).toBe(true);
   });
 
-  it("never turns the spawn room into a hub", () => {
+  it("does build a hub on the spawn room — unlike the hazard-carving features", () => {
+    // Deliberately allowed: a spur carves no unavoidable damage (its worst
+    // content is one weak enemy behind a closed door), so
+    // `decisions.md#hazard-placement-spawn-safety` doesn't apply the way it
+    // does to exception zones and acid overflows. Excluding it silently cost
+    // any level whose first entity holds the switch.
     const g = grid(40);
     const spawnRoom = makeRoom(16, 16, 6, 6, switchEntity({ caseCount: 4, hasDefault: true }, { name: "spawn" }));
     carve(g, spawnRoom);
-    expect(placeSwitchboards([spawnRoom], g, 40, mulberry32(7))).toEqual([]);
+    expect(placeSwitchboards([spawnRoom], g, 40, mulberry32(7)).length).toBeGreaterThan(0);
   });
 
   it("ignores a class room, even though its summary aggregates its methods' switches", () => {

@@ -39,6 +39,17 @@ export const STARTING_WEAPONS = [PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, KNIF
 // exactly once per keydown — see `profile.fireCooldownMs`'s doc comment.
 export const AUTO_RANGED_WEAPON_INDICES = new Set([GDB_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX]);
 export const HAZARD_TILE = 2; // src/map/types.ts's Tile enum
+export const SPIKE_TRAP_TILE = 5; // src/map/types.ts's Tile enum
+
+/**
+ * Tiles a *loot detour* refuses to route through. Mirrors `routePlanner.mjs`'s
+ * own `SOFT_AVOID_TILES`, but applied as a hard avoid rather than a cost:
+ * the main route sometimes genuinely has to cross a hazard to reach the exit,
+ * whereas a pickup is by definition optional, so taking damage for one is
+ * never the right trade. `bfsPath` still allows the *target* tile itself to be
+ * a hazard, so a pickup sitting on acid stays collectable — it just won't be
+ * approached through more of it. */
+const LOOT_DETOUR_AVOID_TILES = new Set([HAZARD_TILE, SPIKE_TRAP_TILE]);
 
 /**
  * Movement/combat tuning defaults — mirrors of various src/engine/*.ts
@@ -719,7 +730,7 @@ export class Bot {
         this.map,
         { x: Math.floor(player.x), y: Math.floor(player.y) },
         { x: Math.floor(p.x), y: Math.floor(p.y) },
-        new Set(),
+        LOOT_DETOUR_AVOID_TILES,
         openedDoors,
       );
       if (!path || path.length - 1 > this.tuning.MAX_LOOT_DETOUR_TILES) continue;

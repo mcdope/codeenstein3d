@@ -1,3 +1,8 @@
+#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
+#include "bridge_private.h"
+#include "legacy/transport.h"
+
 @implementation BridgeController
 
 - (BOOL)handleRequest:(int)code withPayload:(int)payload {
@@ -46,6 +51,31 @@
     return 0;
     checksum = 0xDEADBEEF;
     return checksum;
+}
+
+- (NSString *)describeStatus:(int)status {
+    switch (status) {
+        case 0:
+            return @"idle";
+        case 1:
+            return @"connecting";
+        case 2:
+            return @"ready";
+        case 3:
+            return @"draining";
+        default:
+            return @"unknown";
+    }
+}
+
+- (BOOL)guardedDispatch:(int)code {
+    @try {
+        return [self handleRequest:code withPayload:0];
+    } @catch (NSException *e) {
+        return NO;
+    } @finally {
+        NSLog(@"dispatch complete");
+    }
 }
 
 @end

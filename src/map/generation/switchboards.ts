@@ -74,8 +74,9 @@ export interface SwitchboardEncounters {
  *
  * Only `function`/`method` rooms are considered — the same gate `spawnEnemies`
  * uses, and the reason a `class` entity's aggregated method switches (see
- * `SwitchBranchSummary`) can't produce a spurious hub. Room index 0 is skipped
- * so the spawn room never becomes a junction.
+ * `SwitchBranchSummary`) can't produce a spurious hub. The spawn room *is*
+ * eligible, unlike in the two hazard-carving features — see the note in the
+ * body for why that's safe here.
  *
  * Writing `BRANCH_DOOR_TILE` on the hub-side mouth is also what keeps
  * `placeDoors` out of this: `roomMouths` only considers a mouth whose outward
@@ -94,8 +95,17 @@ export function placeSwitchboards(
 ): Rect[] {
   const caseRooms: Rect[] = [];
 
-  rooms.forEach((room, index) => {
-    if (index === 0) return; // never turn the spawn room into a junction
+  rooms.forEach((room) => {
+    // The spawn room is deliberately NOT excluded here, unlike in
+    // `placeExceptionZones` and `planAcidOverflows`. Those two carve
+    // unavoidable damage (an acid gauntlet, a flooding floor) and so fall
+    // under `decisions.md#hazard-placement-spawn-safety`; a Switchboard spur
+    // carves neither. Its worst content is one weak Edge Case enemy sitting
+    // behind a *closed* door the player has to push open, so it can't ambush
+    // anyone, and the trap/mine outcome is already spacing-checked against
+    // spawn in `placeSwitchboardEncounters`. Excluding it only cost levels
+    // whose very first entity holds the switch — which is exactly where a
+    // player is most likely to actually see the feature.
     const kind = room.entity.kind;
     if (kind !== "function" && kind !== "method") return;
     const branches = room.entity.switchBranches;

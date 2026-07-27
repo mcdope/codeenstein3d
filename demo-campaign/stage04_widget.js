@@ -1,3 +1,8 @@
+import { renderTemplate } from "./templating.js";
+import { debounce, throttle } from "../vendor/lodash-lite.js";
+import { trackEvent } from "../analytics/client.js";
+import { WidgetStore } from "./store.js";
+
 // TODO: this should reject NaN too, but nothing has hit that case in production yet.
 function normalizeInput(raw, fallback) {
     if (raw === null || raw === undefined) {
@@ -36,6 +41,25 @@ function processQueue(items, limit, options) {
         }
     }
     return processed;
+}
+
+function dispatchWidgetEvent(kind, payload, widget) {
+    switch (kind) {
+        case "mount":
+            widget.mounted = true;
+            return renderTemplate(widget, payload);
+        case "update":
+            return renderTemplate(widget, payload);
+        case "destroy":
+            widget.mounted = false;
+            return null;
+        case "focus":
+            widget.focused = true;
+            return null;
+        default:
+            trackEvent("widget:unknown-event", { kind });
+            return null;
+    }
 }
 
 // oldFlushQueue predates processQueue and is kept around because someone was
