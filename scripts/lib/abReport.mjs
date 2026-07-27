@@ -190,6 +190,39 @@ function relDelta(base, cand) {
 }
 
 /**
+ * Absolute floors below which a *relative* change on a metric is meaningless.
+ *
+ * Learned the hard way on Stage 1: `dmg.trapSpike` read "+66.3%" and looked
+ * like a real regression, but the underlying move was 0.363 -> 0.605 damage
+ * per level visit on a 100 HP bar — about half a percent of one health bar,
+ * and it reversed to -2.7% at a larger sample. A percentage on a near-zero
+ * base is pure noise amplification, and a threshold expressed only in percent
+ * will fire on it forever.
+ *
+ * Keyed by metric; anything absent has no floor (its magnitudes are large
+ * enough that the ratio means something on its own).
+ */
+export const RELATIVE_CHANGE_FLOORS = {
+  "dmg.trapSpike": 5,
+  "dmg.hazard": 5,
+  "dmg.enemyMelee": 5,
+  timeBelow25PctHp: 1,
+};
+
+/**
+ * Whether a metric's relative change is large enough in *absolute* terms to be
+ * worth reading at all. Returns false when both sides sit under the floor —
+ * the ratio is then reported but explicitly marked as noise rather than
+ * silently presented next to metrics that do carry signal.
+ */
+export function relChangeIsMeaningful(key, base, cand) {
+  const floor = RELATIVE_CHANGE_FLOORS[key];
+  if (floor === undefined) return true;
+  if (base === null || cand === null || base === undefined || cand === undefined) return true;
+  return Math.max(Math.abs(base), Math.abs(cand)) >= floor;
+}
+
+/**
  * Compare one combo across two telemetry files.
  *
  * Returns guards and metrics separately because they carry different weight:
@@ -208,6 +241,7 @@ export function diffCombo(baseCombo, candCombo) {
     base: baseMetrics[m.key],
     cand: candMetrics[m.key],
     relDelta: relDelta(baseMetrics[m.key], candMetrics[m.key]),
+    meaningful: relChangeIsMeaningful(m.key, baseMetrics[m.key], candMetrics[m.key]),
   }));
 
   const levelCount = Math.max(baseCurve.levels.length, candCurve.levels.length);
@@ -337,7 +371,11 @@ export function formatComboDiff(label, diff, thresholds = ROLLBACK_THRESHOLDS) {
   }
   lines.push("  metric                  base       cand     change   want");
   for (const m of diff.metrics) {
-    lines.push(`  ${m.key.padEnd(22)} ${fmt(m.base, 3).padStart(8)} ${fmt(m.cand, 3).padStart(10)} ${pct(m.relDelta).padStart(9)}   ${m.better}`);
+    // A relative change on a metric whose absolute magnitude is tiny is noise
+    // amplification, not signal — say so inline rather than letting it sit
+    // unqualified next to changes that mean something.
+    const note = m.meaningful ? m.better : `${m.better} (too small to read)`;
+    lines.push(`  ${m.key.padEnd(22)} ${fmt(m.base, 3).padStart(8)} ${fmt(m.cand, 3).padStart(10)} ${pct(m.relDelta).padStart(9)}   ${note}`);
   }
   const breaches = checkRollback(diff, thresholds);
   if (breaches.length === 0) {

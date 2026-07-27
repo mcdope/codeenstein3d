@@ -13,7 +13,7 @@
  * `scripts/multiplayer-server.test.mjs`.
  */
 import { describe, expect, it } from "vitest";
-import { checkRollback, collectMetrics, computeSurvivalCurve, diffCombo, diffTelemetry, formatComboDiff, spreadValue } from "./abReport.mjs";
+import { checkRollback, collectMetrics, computeSurvivalCurve, diffCombo, diffTelemetry, formatComboDiff, relChangeIsMeaningful, spreadValue } from "./abReport.mjs";
 
 /** Minimal `spread()`-shaped object — `{ [kind]: value, samples }`. */
 const sp = (kind, value) => ({ [kind]: value, samples: [value] });
@@ -225,6 +225,29 @@ describe("diffCombo", () => {
   });
 });
 
+describe("relChangeIsMeaningful", () => {
+  it("marks a big percentage on a near-zero base as unreadable", () => {
+    // The real Stage 1 case: trapSpike 0.363 -> 0.605 rendered as "+66.3%",
+    // which is half a percent of a 100 HP bar and reversed to -2.7% at a
+    // larger sample.
+    expect(relChangeIsMeaningful("dmg.trapSpike", 0.363, 0.605)).toBe(false);
+  });
+
+  it("reads a change once either side clears the floor", () => {
+    expect(relChangeIsMeaningful("dmg.trapSpike", 4, 12)).toBe(true);
+    expect(relChangeIsMeaningful("dmg.trapSpike", 12, 4)).toBe(true);
+  });
+
+  it("imposes no floor on metrics whose magnitudes are inherently large", () => {
+    expect(relChangeIsMeaningful("enemyAccuracy", 0.001, 0.002)).toBe(true);
+    expect(relChangeIsMeaningful("levelTimeSec", 0.1, 0.2)).toBe(true);
+  });
+
+  it("treats a missing value as readable, leaving the null relDelta to speak", () => {
+    expect(relChangeIsMeaningful("dmg.trapSpike", null, 0.5)).toBe(true);
+  });
+});
+
 describe("checkRollback", () => {
   const flat = () => combo({ attemptsUsed: 20, trueQualifyingCount: 10, levelSampleCounts: [10, 10] });
 
@@ -343,6 +366,14 @@ describe("formatComboDiff", () => {
     expect(formatComboDiff("x", diffCombo(clean, clean))).not.toContain("unattributed");
     const dirty = combo({ failureReasons: [{ attempt: 1, reason: "stuck", diedAtLevelIndex: null }] });
     expect(formatComboDiff("x", diffCombo(clean, dirty))).toContain("unattributed failures  0 -> 1");
+  });
+
+  it("flags a percentage on a near-zero base as too small to read", () => {
+    const dmg = (trapSpike) => combo({ aggregate: { damageHealingBreakdown: { damageBySource: { trapSpike } } } });
+    const out = formatComboDiff("x", diffCombo(dmg(0.363), dmg(0.605)));
+    expect(out).toContain("too small to read");
+    const big = formatComboDiff("x", diffCombo(dmg(20), dmg(33)));
+    expect(big).not.toContain("too small to read");
   });
 
   it("renders em-dashes for metrics that aren't comparable instead of NaN", () => {
