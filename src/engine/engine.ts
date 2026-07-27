@@ -26,7 +26,7 @@ import type {
   ReconciliationSnapshot,
   TileMutation,
 } from "./reconciliationSnapshot";
-import { acidTiles, createAcidOverflowStates, updateAcidOverflows, type AcidOverflowState } from "./acidOverflow";
+import { acidTiles, createAcidOverflowStates, intersectsRoom, updateAcidOverflows, type AcidOverflowState } from "./acidOverflow";
 import { Player, isHazard } from "./player";
 import { updateEnemies, type EnemyAiEvents, type EnemyTarget } from "./enemyAi";
 import { collectProjectileBillboards, updateProjectiles, type Projectile, type ProjectileTarget } from "./projectiles";
@@ -60,6 +60,7 @@ import {
   drawHud,
   drawKillStreakToast,
   drawLoreOverlay,
+  drawAcidOverflowToast,
   drawOutOfAmmoToast,
   drawPauseOverlay,
   drawSpectatingBanner,
@@ -230,6 +231,12 @@ const KILL_STREAK_TOAST_FRAMES = 120;
  * non-blocking warning, not a standing confirmation. Same frame-counted,
  * not-dt-scaled convention as those. ~0.75s at 60fps. */
 const OUT_OF_AMMO_TOAST_FRAMES = 45;
+/** How long the "Memory leak — acid rising!" warning stays visible for.
+ * Longer than the out-of-ammo toast because it's the only warning here the
+ * player didn't *do* anything to trigger except walk through a door, so it has
+ * to survive a look in the wrong direction. ~1.5s at 60fps. Same frame-counted
+ * convention. */
+const ACID_OVERFLOW_TOAST_FRAMES = 90;
 /** Kills within this many real seconds of each other trigger a "Multi
  * Kill" (see `damageEnemy`'s rolling-window check) — not Unreal
  * Tournament's own continuously-extending streak/tier algorithm, just this
@@ -422,6 +429,7 @@ interface PlayerState {
   cheatToastText: string | null;
   cheatToastFrames: number;
   outOfAmmoToastFrames: number;
+  acidOverflowToastFrames: number;
   isMapActive: boolean;
   isPaused: boolean;
   loreText: string | null;
@@ -1116,6 +1124,7 @@ export class RaycasterEngine {
       cheatToastText: null,
       cheatToastFrames: 0,
       outOfAmmoToastFrames: 0,
+      acidOverflowToastFrames: 0,
       isMapActive: false,
       isPaused: false,
       loreText: null,
@@ -2409,7 +2418,7 @@ export class RaycasterEngine {
     // `checkTeleporters`' placement gives a warp that lands on a hazard.
     // Deliberately does NOT push to `pendingGridDelta` or bump `gridVersion`:
     // see `src/engine/acidOverflow.ts`'s doc comment for the whole reason.
-    updateAcidOverflows(
+    const floodsStarted = updateAcidOverflows(
       this.map.acidOverflows,
       this.acidStates,
       this.enemies,
@@ -2417,6 +2426,12 @@ export class RaycasterEngine {
       this.map.grid,
       this.levelTime,
     );
+    // Purely cosmetic, and deliberately local-only: a flood is started by ANY
+    // living player, but in a coop session a teammate walking into a room on
+    // the far side of the level shouldn't put a warning on your screen. No
+    // simulation state is touched here, so peers that cue differently stay in
+    // lockstep regardless.
+    if (floodsStarted.length > 0) this.cueLocalAcidOverflow(floodsStarted);
     this.applyTrapDamage(dt);
     if (this.telemetryEnabled) {
       // `p.telemetry` is guaranteed set here: `telemetryEnabled` is a single
@@ -2774,6 +2789,9 @@ export class RaycasterEngine {
     if (local.outOfAmmoToastFrames > 0) {
       drawOutOfAmmoToast(this.ctx, local.outOfAmmoToastFrames / OUT_OF_AMMO_TOAST_FRAMES);
     }
+    if (local.acidOverflowToastFrames > 0) {
+      drawAcidOverflowToast(this.ctx, local.acidOverflowToastFrames / ACID_OVERFLOW_TOAST_FRAMES);
+    }
     // Multiplayer-only (see `checkExit()`) — a quiet, standing readout
     // (unlike the transient toasts above) while any player counts down to
     // the level ending. Only drawn on this normal-frame path, same as the
@@ -2995,6 +3013,7 @@ export class RaycasterEngine {
       if (p.cheatToastFrames > 0) p.cheatToastFrames -= 1;
       if (p.killStreakFrames > 0) p.killStreakFrames -= 1;
       if (p.outOfAmmoToastFrames > 0) p.outOfAmmoToastFrames -= 1;
+      if (p.acidOverflowToastFrames > 0) p.acidOverflowToastFrames -= 1;
     }
     tickBulletTraces(this.traces);
     tickFlameStreams(this.flameStreams);
@@ -3688,6 +3707,25 @@ export class RaycasterEngine {
    * toast's message never varies (see `PlayerState.outOfAmmoToastFrames`). */
   private showOutOfAmmoToast(p: PlayerState): void {
     p.outOfAmmoToastFrames = OUT_OF_AMMO_TOAST_FRAMES;
+  }
+
+  /**
+   * Sound + toast for an Acid Overflow room that just started flooding, shown
+   * only if the *local* player is actually standing in one of `startedIndices`
+   * — see `intersectsRoom`'s doc comment.
+   *
+   * Exists because the flood's only other signal is the tiles themselves
+   * changing colour underfoot: a player who walks in looking the wrong way
+   * finds out by taking damage, which reads as an unfair hit rather than as a
+   * mechanic (`notes`).
+   */
+  private cueLocalAcidOverflow(startedIndices: readonly number[]): void {
+    const local = this.players.get(this.localPlayerId);
+    if (!local || local.status !== "alive") return;
+    const inside = startedIndices.some((i) => intersectsRoom(local.player, this.map.acidOverflows[i]));
+    if (!inside) return;
+    local.acidOverflowToastFrames = ACID_OVERFLOW_TOAST_FRAMES;
+    audio.playAcidOverflow();
   }
 
   /**

@@ -1070,6 +1070,52 @@ describe("RaycasterEngine — Acid Overflow rooms", () => {
     expect(map.grid[9][9]).toBe(0);
   });
 
+  it("plays a cue and shows a toast when the flood starts under the local player", () => {
+    // The only other signal is the tiles changing colour underfoot, so a
+    // player looking the wrong way finds out by taking damage (`notes`).
+    const cue = vi.spyOn(audio, "playAcidOverflow");
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    engine.advance(0.1);
+    expect(cue).toHaveBeenCalledTimes(1);
+  });
+
+  it("cues once, not on every tick the player stays in the room", () => {
+    const cue = vi.spyOn(audio, "playAcidOverflow");
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    for (let i = 0; i < 30; i++) engine.advance(0.1);
+    expect(cue).toHaveBeenCalledTimes(1);
+  });
+
+  it("doesn't cue for a room the local player never walks into", () => {
+    const cue = vi.spyOn(audio, "playAcidOverflow");
+    const size = 12;
+    const g = walledRoom(size);
+    const map = fakeMap({
+      grid: g,
+      enemies: [fakeEnemy({ x: 2.5, y: 2.5 })],
+      acidOverflows: [{ room: { x: 9, y: 9, w: 2, h: 2 }, enemyIndex: 0, tiles: [{ x: 9, y: 9 }], intervalSeconds: 0.2 }],
+    }, size);
+    const { engine } = makeEngine(map);
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(cue).not.toHaveBeenCalled();
+  });
+
+  it("doesn't cue a dead local player whose teammate started the flood", () => {
+    // A flood is started by any *living* player, so in coop a teammate can
+    // trigger the room you're lying dead in — no sound, no toast for you.
+    const cue = vi.spyOn(audio, "playAcidOverflow");
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    // Reaching into private state deliberately: there's no public way to kill
+    // the local player without also ending the run, which would stop
+    // `simulate()` before the flood ever ran.
+    (engine as unknown as { players: Map<string, { status: string }> }).players.get("local")!.status = "dead";
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(cue).not.toHaveBeenCalled();
+  });
+
   it("never pushes a flooded tile onto the reconciliation grid delta", () => {
     // LOAD-BEARING: `applyGridReconciliation`'s out-of-order safety rests on
     // every `gridDelta` entry being a terminal `value: 0`. Acid is

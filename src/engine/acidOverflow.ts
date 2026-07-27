@@ -84,6 +84,12 @@ export function acidFillTarget(overflow: AcidOverflow, state: AcidOverflowState,
  * The room-entry test reuses `updateRoomDiscovery`'s exact AABB shape (the
  * player's collision box against the room rect), so "you're in the room"
  * means the same thing here as it does for discovering an enemy.
+ *
+ * Returns the indices of any overflows that started flooding on *this* tick,
+ * for the caller to hang purely cosmetic feedback off (a sound, a toast — see
+ * `RaycasterEngine.simulate`). Returned rather than fired from in here so this
+ * module stays free of audio/HUD concerns, the same way `enemyAi.ts` reports
+ * through `EnemyAiEvents` instead of playing its own sounds.
  */
 export function updateAcidOverflows(
   overflows: readonly AcidOverflow[],
@@ -92,13 +98,15 @@ export function updateAcidOverflows(
   players: readonly AcidOverflowActor[],
   grid: Tile[][],
   levelTime: number,
-): void {
+): number[] {
+  const startedNow: number[] = [];
   for (let i = 0; i < overflows.length; i++) {
     const overflow = overflows[i];
     const state = states[i];
 
     if (state.startedAt === null && players.some((p) => intersectsRoom(p, overflow))) {
       state.startedAt = levelTime;
+      startedNow.push(i);
     }
 
     // Polled rather than hooked into `damageEnemy`'s kill branch on purpose:
@@ -121,6 +129,7 @@ export function updateAcidOverflows(
     }
     state.applied = target;
   }
+  return startedNow;
 }
 
 /** Shared empty result, so the overwhelmingly common cases — a level with no
@@ -156,8 +165,13 @@ export function acidTiles(
 }
 
 /** The player's collision box against the room rect — `updateRoomDiscovery`'s
- * test, kept identical so "inside the room" means one thing engine-wide. */
-function intersectsRoom(player: AcidOverflowActor, overflow: AcidOverflow): boolean {
+ * test, kept identical so "inside the room" means one thing engine-wide.
+ *
+ * Exported because a flood is started by *any* living player, but its cue is
+ * only worth showing to one who can actually see it: in a coop session a
+ * teammate walking into a room on the far side of the level shouldn't put a
+ * warning on your screen. */
+export function intersectsRoom(player: AcidOverflowActor, overflow: AcidOverflow): boolean {
   const r = player.radius;
   const { x, y, w, h } = overflow.room;
   return player.posX + r > x && player.posX - r < x + w && player.posY + r > y && player.posY - r < y + h;

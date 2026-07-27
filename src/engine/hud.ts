@@ -121,6 +121,36 @@ export function drawOutOfAmmoToast(ctx: CanvasRenderingContext2D, alpha: number)
 }
 
 /**
+ * "Acid Overflow room started flooding" warning (see
+ * `src/engine/acidOverflow.ts`). Same shape and fade convention as
+ * `drawOutOfAmmoToast`, in the hazard tiles' own warm orange rather than the
+ * out-of-ammo red, so the colour itself points at what changed underfoot.
+ *
+ * Sits one row below `drawOutOfAmmoToast`'s box rather than on top of it: both
+ * are triggered by things the player did (walking in, pulling an empty
+ * trigger) and can genuinely land in the same second.
+ */
+export function drawAcidOverflowToast(ctx: CanvasRenderingContext2D, alpha: number): void {
+  const w = ctx.canvas.width;
+  const text = "Memory leak — acid rising!";
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+  ctx.textAlign = "center";
+  ctx.font = "bold 14px ui-monospace, monospace";
+  const boxW = ctx.measureText(text).width + 24;
+  const boxX = w / 2 - boxW / 2;
+  ctx.fillStyle = "rgba(4,8,10,0.7)";
+  ctx.fillRect(boxX, 56, boxW, 24);
+  ctx.strokeStyle = "rgba(255,157,31,0.6)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(boxX + 0.5, 56.5, boxW - 1, 23);
+  ctx.fillStyle = "#ff9d1f";
+  ctx.fillText(text, w / 2, 72);
+  ctx.textAlign = "start";
+  ctx.restore();
+}
+
+/**
  * "Multi Kill"/"Ultra Kill" banner (see
  * `RaycasterEngine.registerKillForStreak`) — a big, bold, Unreal-
  * Tournament-style announcement, deliberately not `drawCheatToast`'s small

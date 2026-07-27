@@ -579,6 +579,48 @@ class AudioManager {
     return buffer;
   }
 
+  /**
+   * An "Acid Overflow" room starting to flood under the player (see
+   * `src/engine/acidOverflow.ts`): a low, sinking drone with a wet
+   * bandpass-filtered hiss over it — deliberately the darkest cue in here.
+   *
+   * Everything else in this file is an *event* the player caused (a shot, a
+   * pickup, a kill), so they're short, bright and high. This one is something
+   * happening *to* them that they may not have looked at yet, so it goes the
+   * other way: low, slow, and long enough to register as "that's bad" rather
+   * than as a confirmation blip.
+   */
+  playAcidOverflow(): void {
+    const ctx = this.resume();
+    if (!ctx || !this.sfx) return;
+    const t = ctx.currentTime;
+    const sfx = this.sfx;
+
+    // Sinking drone — the "something just gave way" half.
+    const drone = ctx.createOscillator();
+    drone.type = "triangle";
+    drone.frequency.setValueAtTime(150, t);
+    drone.frequency.exponentialRampToValueAtTime(70, t + 0.55);
+    const droneGain = envelope(ctx, 0.3, 0.03, 0.55);
+    drone.connect(droneGain).connect(sfx);
+    drone.start(t);
+    drone.stop(t + 0.6);
+
+    // Wet hiss — the "and it's spreading" half. Bandpassed low and swept
+    // downward so it reads as bubbling rather than as a steam/air whoosh.
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer(ctx, 0.6);
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = "bandpass";
+    noiseFilter.frequency.setValueAtTime(620, t);
+    noiseFilter.frequency.exponentialRampToValueAtTime(240, t + 0.5);
+    noiseFilter.Q.value = 1.4;
+    const noiseGain = envelope(ctx, 0.16, 0.05, 0.5);
+    noise.connect(noiseFilter).connect(noiseGain).connect(sfx);
+    noise.start(t);
+    noise.stop(t + 0.6);
+  }
+
   /** Secret wall opened, or a lore terminal read: a bright, mysterious rising
    * chime — distinct from the level-complete arpeggio and the pickup blip. */
   playSecret(): void {

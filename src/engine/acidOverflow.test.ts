@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import type { CodeEntity } from "../parser/types";
 import { HAZARD_TILE, type AcidOverflow, type Enemy, type Tile } from "../map/types";
-import { acidFillTarget, acidTiles, createAcidOverflowStates, updateAcidOverflows, type AcidOverflowActor } from "./acidOverflow";
+import { acidFillTarget, acidTiles, createAcidOverflowStates, intersectsRoom, updateAcidOverflows, type AcidOverflowActor } from "./acidOverflow";
 
 /** A 4-tile overflow claiming one tile per second, in a 2x2 room at (2,2). */
 function overflow(overrides: Partial<AcidOverflow> = {}): AcidOverflow {
@@ -203,6 +203,36 @@ describe("updateAcidOverflows", () => {
     expect(states[0].applied).toBe(2);
   });
 
+  it("reports the index of an overflow that started flooding this tick", () => {
+    const g = grid();
+    const states = createAcidOverflowStates(1);
+    expect(updateAcidOverflows([overflow()], states, [enemy()], [INSIDE()], g, 5)).toEqual([0]);
+  });
+
+  it("reports a start exactly once, not on every subsequent tick", () => {
+    // The cue hangs off this — reporting it repeatedly would re-trigger the
+    // sound and toast every frame the player stayed in the room.
+    const g = grid();
+    const o = overflow();
+    const states = createAcidOverflowStates(1);
+    expect(updateAcidOverflows([o], states, [enemy()], [INSIDE()], g, 0)).toEqual([0]);
+    expect(updateAcidOverflows([o], states, [enemy()], [INSIDE()], g, 1)).toEqual([]);
+    expect(updateAcidOverflows([o], states, [enemy()], [INSIDE()], g, 2)).toEqual([]);
+  });
+
+  it("reports nothing while no player has entered", () => {
+    const g = grid();
+    expect(updateAcidOverflows([overflow()], createAcidOverflowStates(1), [enemy()], [OUTSIDE()], g, 5)).toEqual([]);
+  });
+
+  it("reports every room that started on the same tick", () => {
+    const g = grid(12);
+    const a = overflow();
+    const b = overflow({ room: { x: 8, y: 8, w: 2, h: 2 }, enemyIndex: 1, tiles: [{ x: 8, y: 8 }] });
+    const started = updateAcidOverflows([a, b], createAcidOverflowStates(2), [enemy(), enemy()], [INSIDE(), playerAt(8.5, 8.5)], g, 0);
+    expect(started).toEqual([0, 1]);
+  });
+
   it("handles a level with no overflow rooms at all", () => {
     const g = grid();
     expect(() => updateAcidOverflows([], [], [enemy()], [INSIDE()], g, 10)).not.toThrow();
@@ -255,5 +285,21 @@ describe("acidTiles — allocation behaviour", () => {
     updateAcidOverflows([o], states, [enemy()], [INSIDE()], g, 0);
     updateAcidOverflows([o], states, [enemy()], [INSIDE()], g, 1.5);
     expect(acidTiles([o], states)[0]).toBe(o.tiles[0]);
+  });
+});
+
+describe("intersectsRoom", () => {
+  it("is true for a player standing inside the room", () => {
+    expect(intersectsRoom(playerAt(2.5, 2.5), overflow())).toBe(true);
+  });
+
+  it("is false for a player elsewhere on the level", () => {
+    expect(intersectsRoom(playerAt(6.5, 6.5), overflow())).toBe(false);
+  });
+
+  it("counts a player whose collision box merely overlaps the edge", () => {
+    // Same AABB shape as `updateRoomDiscovery`, so "inside the room" means one
+    // thing engine-wide — a player clipping the doorway counts as in.
+    expect(intersectsRoom(playerAt(1.9, 2.5), overflow())).toBe(true);
   });
 });
