@@ -10,7 +10,7 @@ once the work lands.** Plan: `~/.claude/plans/task-implement-4-lazy-dream.md`.
 - [x] **M1** `GameMap` fields, `AmmoPickup` smg/gas, `generate()` params
 - [x] **M2** Vendor Depots
 - [x] **M3a** `BRANCH_DOOR_TILE`
-- [ ] **M3b** Switchboards
+- [x] **M3b** Switchboards
 - [ ] **M4** Exception Handling Zones
 - [ ] **M5** Acid Overflow — map half
 - [ ] **M6** Acid Overflow — engine half

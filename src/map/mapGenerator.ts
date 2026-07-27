@@ -41,6 +41,7 @@ import { DECORATIONS_ENABLED, placeDecorations, placePillars } from "./generatio
 import { seedFrom } from "./generation/seed";
 import { placeSecretRooms } from "./generation/secretRooms";
 import { pickExit, pickMultiplayerSpawns, pickSafeSpawn } from "./generation/spawnExit";
+import { SWITCHBOARDS_ENABLED, placeSwitchboardEncounters, placeSwitchboards } from "./generation/switchboards";
 import { placeTeleporters } from "./generation/teleporters";
 import { VENDOR_DEPOTS_ENABLED, placeVendorDepots } from "./generation/vendorDepots";
 import { fillHazards, placeTraps } from "./generation/trapsHazards";
@@ -147,6 +148,7 @@ export class MapGenerator {
     // plain floor, so an exception zone's own hazard/spike tiles are excluded
     // from trap candidacy automatically. They all only ever turn rock into
     // floor, so they can never sever an existing route.
+    const switchboardRooms = SWITCHBOARDS_ENABLED ? placeSwitchboards(rooms, grid, size, rng) : [];
     const vendor = VENDOR_DEPOTS_ENABLED
       ? placeVendorDepots(rooms[0], grid, size, parsed.importCount, rng, hasRocketLauncher, hasSmg, hasGas)
       : { depots: [], pickups: [] };
@@ -169,6 +171,15 @@ export class MapGenerator {
     // "Edge Case" enemies populate the corridor-breakup rooms exclusively —
     // never a normal room, and normal enemies never spawn in a breakup room.
     enemies.push(...spawnEdgeCaseEnemies(grid, breakupRooms, exit, rng));
+    // Switchboard spokes get their minor encounter here, for the same reason
+    // Edge Cases do: `spawn`/`exit` are final, `clearCriticalTiles` hasn't run
+    // yet so any enemy tile still gets force-cleared, and everything produced
+    // flows into `avoidPoints` below so every later floor-claiming system
+    // steers around it.
+    const switchboards = SWITCHBOARDS_ENABLED
+      ? placeSwitchboardEncounters(switchboardRooms, grid, spawn, exit, rng)
+      : { enemies: [], spikeTraps: [], mines: [], pickups: [] };
+    enemies.push(...switchboards.enemies);
     const hazards = fillHazards(rooms, grid, spawn, exit, multiplayerSpawns ?? []);
 
     // Corridors already punch through labyrinth walls; this guarantees the
@@ -226,6 +237,9 @@ export class MapGenerator {
       ...loreResult.todoTraps.map((t) => ({ x: t.x, y: t.y })),
       ...loreResult.todoMines.map((m) => ({ x: m.x, y: m.y })),
       ...loreResult.todoEnemies.map((e) => ({ x: e.x, y: e.y })),
+      ...switchboards.spikeTraps.map((t) => ({ x: t.x, y: t.y })),
+      ...switchboards.mines.map((m) => ({ x: m.x, y: m.y })),
+      ...switchboards.pickups.map((p) => ({ x: p.x, y: p.y })),
     ];
     const teleporters = placeTeleporters(rooms, grid, teleporterAvoid, parsed.gotos, rng);
 
@@ -237,8 +251,8 @@ export class MapGenerator {
       ...teleporters.map((t) => ({ x: t.x, y: t.y })),
     ];
     const { spikeTraps: generatedSpikeTraps, mines: generatedMines } = placeTraps(rooms, grid, trapAvoid, rng, breakupRooms);
-    const spikeTraps = [...generatedSpikeTraps, ...loreResult.todoTraps];
-    const mines = [...generatedMines, ...loreResult.todoMines];
+    const spikeTraps = [...generatedSpikeTraps, ...loreResult.todoTraps, ...switchboards.spikeTraps];
+    const mines = [...generatedMines, ...loreResult.todoMines, ...switchboards.mines];
 
     // Sparse ammo pickups go dead last, once every other floor-claiming
     // system (pillars/decor/doors/keys/teleporters/traps) has placed its
@@ -252,6 +266,7 @@ export class MapGenerator {
       ...placeAmmoPickups(rooms, grid, ammoAvoid, rng, bonusLevel, hasRocketLauncher),
       ...secretLoot,
       ...vendor.pickups,
+      ...switchboards.pickups,
     ];
 
     // Fog-of-war overlay grid, all unexplored until the player moves through.
@@ -288,7 +303,7 @@ export class MapGenerator {
       loreTerminals,
       bonusLevel,
       secretRoomCount: secretLoot.length,
-      switchboardRooms: [],
+      switchboardRooms,
       exceptionZones: [],
       vendorDepots: vendor.depots,
       acidOverflows: [],

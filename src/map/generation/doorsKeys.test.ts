@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { mulberry32 } from "../../prng";
 import type { CodeEntity } from "../../parser/types";
-import { DOOR_TILE, type Enemy, type Room, type Tile } from "../types";
+import { BRANCH_DOOR_TILE, DOOR_TILE, type Enemy, type Room, type Tile } from "../types";
 import { carveRoom, makeRoom } from "./geometry";
 import { carveHLine } from "./corridors";
 import { placeDoors, placeKeys } from "./doorsKeys";
@@ -231,5 +231,31 @@ describe("placeKeys", () => {
 
     const keys = placeKeys(g, { x: 1, y: 1 }, { x: 9, y: 9 }, [enemy], doors, [], mulberry32(1));
     expect(keys).toHaveLength(2);
+  });
+});
+
+describe("placeDoors — Switchboard branch doors", () => {
+  it("never locks a spoke mouth, because a branch door isn't plain floor", () => {
+    // `roomMouths` only considers a mouth whose outward tile is plain floor,
+    // so a `BRANCH_DOOR_TILE` mouth is skipped with no explicit guard — which
+    // is what keeps a private method with a five-case switch from turning into
+    // six locked doors and six keys.
+    const size = 16;
+    const g: Tile[][] = Array.from({ length: size }, () => Array.from({ length: size }, () => 1 as Tile));
+    const spawnRoom = makeRoom(1, 1, 3, 3, entity({ name: "spawn" }));
+    const room = makeRoom(6, 6, 4, 4, entity({ name: "m", kind: "method", visibility: "private" }));
+    for (const r of [spawnRoom, room]) {
+      for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) g[y][x] = 0;
+    }
+    // One real corridor mouth (plain floor) and one spoke mouth (branch door).
+    g[5][7] = 0;
+    g[4][7] = 0;
+    g[10][7] = BRANCH_DOOR_TILE;
+    g[11][7] = 0;
+
+    const doors = placeDoors([spawnRoom, room], g);
+    expect(doors).toContainEqual({ x: 7, y: 5 });
+    expect(doors).not.toContainEqual({ x: 7, y: 10 });
+    expect(g[10][7]).toBe(BRANCH_DOOR_TILE);
   });
 });

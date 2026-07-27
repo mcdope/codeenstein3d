@@ -6,6 +6,7 @@ import { loadDemoCampaignTree } from "../fs/demoCampaign";
 import { readFileText } from "../fs/workspace";
 import type { CodeEntity, ParsedFile } from "../parser/types";
 import { extensionOf, parseFile } from "../parser/registry";
+import { BRANCH_DOOR_TILE, DOOR_TILE } from "./types";
 import { MapGenerator } from "./mapGenerator";
 
 function parsedFile(overrides: Partial<ParsedFile> = {}): ParsedFile {
@@ -338,5 +339,89 @@ describe("MapGenerator.generate — Vendor Depots", () => {
     vi.resetModules();
     const { MapGenerator: RealMapGenerator } = await import("./mapGenerator");
     expect(new RealMapGenerator().generate(parsed)).toEqual(disabled);
+  });
+});
+
+describe("MapGenerator.generate — Switchboards", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** A file whose one non-spawn function contains a switch. */
+  function switchParsed(caseCount: number, overrides: Partial<CodeEntity> = {}) {
+    return parsedFile({
+      linesOfCode: 60,
+      entities: [
+        entity({ name: "main", startLine: 1, endLine: 10 }),
+        entity({
+          name: "dispatch",
+          startLine: 11,
+          endLine: 40,
+          complexityScore: 6,
+          switchBranches: { caseCount, hasDefault: true },
+          ...overrides,
+        }),
+      ],
+    });
+  }
+
+  it("carves case dead-ends and doors them with the keyless branch tile", () => {
+    const map = new MapGenerator().generate(switchParsed(3));
+    expect(map.switchboardRooms.length).toBeGreaterThan(0);
+    let branchDoors = 0;
+    for (const row of map.grid) for (const tile of row) if (tile === BRANCH_DOOR_TILE) branchDoors += 1;
+    expect(branchDoors).toBe(map.switchboardRooms.length);
+  });
+
+  it("never places a key-locked door on a spoke mouth, even for a private method", () => {
+    // `placeDoors` locks every corridor mouth of a private method's room, and
+    // `placeKeys` adds one key per door — a five-case switch inside one would
+    // otherwise mean six doors and six keys. The branch-door tile is what
+    // keeps `roomMouths` from ever seeing a spoke mouth as a mouth at all.
+    const map = new MapGenerator().generate(switchParsed(5, { kind: "method", visibility: "private" }));
+    expect(map.switchboardRooms.length).toBeGreaterThan(0);
+    expect(map.doors.length).toBeLessThanOrEqual(4);
+    for (const door of map.doors) {
+      expect(map.grid[door.y][door.x]).toBe(DOOR_TILE);
+    }
+  });
+
+  it("carves nothing for a file with no switch anywhere", () => {
+    const map = new MapGenerator().generate(parsedFile({ entities: [entity(), entity({ name: "b", startLine: 6, endLine: 10 })] }));
+    expect(map.switchboardRooms).toEqual([]);
+  });
+
+  it("places no spokes at all when SWITCHBOARDS_ENABLED is flipped off", async () => {
+    vi.resetModules();
+    vi.doMock("./generation/switchboards", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("./generation/switchboards")>();
+      return { ...actual, SWITCHBOARDS_ENABLED: false };
+    });
+    const { MapGenerator: MockedMapGenerator } = await import("./mapGenerator");
+    const map = new MockedMapGenerator().generate(switchParsed(4));
+    expect(map.switchboardRooms).toEqual([]);
+    vi.doUnmock("./generation/switchboards");
+    vi.resetModules();
+  });
+
+  it("leaves the rest of the map byte-identical when no file has a switch", async () => {
+    vi.resetModules();
+    vi.doMock("./generation/switchboards", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("./generation/switchboards")>();
+      return { ...actual, SWITCHBOARDS_ENABLED: false };
+    });
+    const { MapGenerator: MockedMapGenerator } = await import("./mapGenerator");
+    const parsed = parsedFile({ entities: [entity(), entity({ name: "b", startLine: 6, endLine: 10 })] });
+    const disabled = new MockedMapGenerator().generate(parsed);
+    vi.doUnmock("./generation/switchboards");
+    vi.resetModules();
+    const { MapGenerator: RealMapGenerator } = await import("./mapGenerator");
+    expect(new RealMapGenerator().generate(parsed)).toEqual(disabled);
+  });
+
+  it("keeps every spoke reachable — the connectivity safety net never fires", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    new MapGenerator().generate(switchParsed(5));
+    expect(errorSpy).not.toHaveBeenCalled();
   });
 });
