@@ -699,6 +699,16 @@ export function aggregateLevelRuntime(samples, shortestPathTiles) {
         snaps.map((s) => (s.levelTimeSec > 0 ? s.combatTimeSec / s.levelTimeSec : 0)),
         "mean",
       ),
+      // How long the level actually took. Previously `levelTimeSec` was read
+      // only as `combatVsExplorationRatio`'s denominator and never emitted,
+      // which left the bot's single loudest failure mode — being far slower
+      // over a route than a human would be — with no output field to measure
+      // against at all. A ratio can't substitute: a bot that is uniformly 2x
+      // slow reports an unchanged ratio.
+      levelTimeSec: spread(
+        snaps.map((s) => s.levelTimeSec),
+        "mean",
+      ),
       peakSimultaneousAggroed: spread(
         snaps.map((s) => s.peakAggroedCount),
         "max",
@@ -762,6 +772,16 @@ export function aggregateLevelRuntime(samples, shortestPathTiles) {
     },
     navigationMapFlow: {
       routeEfficiencyScore,
+      // `routeEfficiencyScore`'s raw numerator-free counterpart. The score is
+      // a ratio against the static BFS optimum and is `0` whenever
+      // `shortestPathTiles` is null, so it can't distinguish "walked a tight
+      // route" from "the optimum was unknown". Emitting the raw distance lets
+      // an A/B separate "the bot got faster" (levelTimeSec down, distance
+      // flat) from "the bot took a shorter route" (both down).
+      distanceTraveled: spread(
+        snaps.map((s) => s.distanceTraveled),
+        "mean",
+      ),
       mapCoveragePct: spread(
         snaps.map((s) => s.mapCompletionFrac),
         "mean",
