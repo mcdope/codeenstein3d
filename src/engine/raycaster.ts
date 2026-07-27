@@ -10,15 +10,16 @@
  * Pure native Canvas 2D — no WebGL, no 3D libraries.
  */
 import {
+  BRANCH_DOOR_TILE,
   DOOR_TILE,
   HAZARD_TILE,
   LORE_TILE,
-  BRANCH_DOOR_TILE,
   SECRET_WALL_TILE,
   SPIKE_TRAP_TILE,
   TELEPORTER_TILE,
   type GameMap,
   type LootDrop,
+  type Point,
 } from "../map/types";
 import type { Player } from "./player";
 import { EDGE_CASE_COLOR, enemyColor } from "./sprites";
@@ -600,6 +601,12 @@ export function renderMinimap(
    * parameter not existing at all. Gated by the caller
    * (`engine.ts`'s `isMultiplayerSession()` check), not here. */
   lootDrops: readonly LootDrop[] = [],
+  /** Tiles flooded at runtime by an Acid Overflow room. Kept out of
+   * `GameMap.hazards` on purpose — that array is painted unconditionally, with
+   * no grid re-check, and runtime acid has to be retractable (see
+   * `src/engine/acidOverflow.ts`), so it's recomputed per frame instead, the
+   * same shape as `activeSpikeTileKeys`. */
+  runtimeAcidTiles: readonly Point[] = [],
 ): MinimapPanelRect {
   const cell = Math.max(1, Math.floor(maxPixels / Math.max(map.width, map.height)));
   const w = map.width * cell;
@@ -676,6 +683,9 @@ export function renderMinimap(
   // them with the green pulsing exit marker drawn below.
   ctx.fillStyle = "#ff9d1f";
   for (const hz of map.hazards) {
+    ctx.fillRect(pad + hz.x * cell, pad + hz.y * cell, cell, cell);
+  }
+  for (const hz of runtimeAcidTiles) {
     ctx.fillRect(pad + hz.x * cell, pad + hz.y * cell, cell, cell);
   }
 

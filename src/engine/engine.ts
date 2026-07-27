@@ -26,6 +26,7 @@ import type {
   ReconciliationSnapshot,
   TileMutation,
 } from "./reconciliationSnapshot";
+import { acidTiles, createAcidOverflowStates, updateAcidOverflows, type AcidOverflowState } from "./acidOverflow";
 import { Player, isHazard } from "./player";
 import { updateEnemies, type EnemyAiEvents, type EnemyTarget } from "./enemyAi";
 import { collectProjectileBillboards, updateProjectiles, type Projectile, type ProjectileTarget } from "./projectiles";
@@ -638,6 +639,10 @@ export class RaycasterEngine {
    * recording for a real multi-peer run is a later netcode step's job. */
   private readonly replayRecorder?: CampaignReplayRecorder;
   private readonly enemies: Enemy[];
+  /** Per-`GameMap.acidOverflows` runtime state, index-aligned. Plain data the
+   * `acidOverflow.ts` free functions mutate — the same split enemies and traps
+   * already use. */
+  private readonly acidStates: AcidOverflowState[];
   /** Tile-bucketed index over living enemies for proximity queries — rebuilt
    * lazily on frames with rockets in flight (see `advanceRockets`). */
   private readonly enemyGrid = new EnemySpatialGrid();
@@ -901,6 +906,7 @@ export class RaycasterEngine {
     this.rng = this.rngHandle.next;
     this.replayRecorder = replayRecorder;
     this.enemies = map.enemies;
+    this.acidStates = createAcidOverflowStates(map.acidOverflows.length);
     this.totalWalkableTiles = countWalkableTiles(map);
     this.goreMultipliers = GORE_MULTIPLIERS[gore];
     this.difficultyMultipliers = DIFFICULTY_MULTIPLIERS[difficulty];
@@ -1169,6 +1175,17 @@ export class RaycasterEngine {
    * nearest-target ties, …) the same deterministic answer everywhere. */
   private sortedPlayerIds(): PlayerId[] {
     return [...this.players.keys()].sort();
+  }
+
+  /** Every currently-alive player's camera, in `sortedPlayerIds()` order so
+   * any consumer that iterates them stays deterministic across peers. */
+  private livingPlayers(): Player[] {
+    const out: Player[] = [];
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      if (p.status === "alive") out.push(p.player);
+    }
+    return out;
   }
 
   /** True for a real multiplayer session (host or guest), false for
@@ -1784,6 +1801,9 @@ export class RaycasterEngine {
       players,
       enemies,
       mines,
+      // `applied` stays local — see `AcidOverflowSnapshot`'s doc comment for
+      // why the derived tile count is deliberately not on the wire.
+      acidOverflows: this.acidStates.map((s, index) => ({ index, startedAt: s.startedAt, frozenTarget: s.frozenTarget })),
       lootDrops,
       pickupsCollected,
       keysCollected,
@@ -1871,6 +1891,17 @@ export class RaycasterEngine {
       m.visible = ms.visible;
     }
 
+    // `applied` is left alone on purpose: the next `updateAcidOverflows()`
+    // reconciles the grid to whatever these two fields now imply, in both
+    // directions, which is how a guest un-floods tiles it had speculatively
+    // claimed.
+    for (const as of snapshot.acidOverflows) {
+      const state = this.acidStates[as.index];
+      if (!state) continue;
+      state.startedAt = as.startedAt;
+      state.frozenTarget = as.frozenTarget;
+    }
+
     const incomingIds = new Set(snapshot.lootDrops.map((d) => d.id));
     for (let i = this.drops.length - 1; i >= 0; i--) {
       // "" is never a real id (every drop is tagged at push time — see
@@ -1925,14 +1956,23 @@ export class RaycasterEngine {
    * per-guest-shared `gridDelta` each interval (finding M2).
    *
    * LOAD-BEARING INVARIANT: every emitted `TileMutation.value` is `0` (doors
-   * `3`→`0`, secret walls `6`→`0` — the only two runtime grid mutations, both
-   * terminal). That is exactly what makes out-of-order application safe. If a
-   * future feature ever emits a non-zero or non-terminal tile mutation (a
-   * closing/toggling tile), out-of-order application could set a tile wrong and
-   * this must be moved back behind the tick gate. (Separate, pre-existing gap
-   * this does NOT address: the additive delta only ever carries the host's own
-   * opens, so it cannot re-close a tile a guest mis-predicted open — only a
-   * full authoritative grid resync would.)
+   * `3`→`0`, secret walls `6`→`0`, branch doors `8`→`0` — every runtime grid
+   * mutation that rides this delta, all terminal). That is exactly what makes
+   * out-of-order application safe. If a future feature ever emits a non-zero or
+   * non-terminal tile mutation (a closing/toggling tile), out-of-order
+   * application could set a tile wrong and this must be moved back behind the
+   * tick gate. (Separate, pre-existing gap this does NOT address: the additive
+   * delta only ever carries the host's own opens, so it cannot re-close a tile
+   * a guest mis-predicted open — only a full authoritative grid resync would.)
+   *
+   * Acid Overflow rooms (`src/engine/acidOverflow.ts`) are the one runtime
+   * grid mutation that deliberately does NOT ride this delta, precisely
+   * because of the two sentences above: their mutation is `0`→`HAZARD_TILE`
+   * (non-zero) and a guest that mis-predicts room entry has to be able to take
+   * a flooded tile *back*, which an additive delta can't express. They're
+   * reconciled through `ReconciliationSnapshot.acidOverflows` instead —
+   * two scalars behind the tick gate, from which each peer re-derives its own
+   * tiles in both directions. Don't "unify" them into `gridDelta`.
    */
   applyGridReconciliation(snapshot: Pick<ReconciliationSnapshot, "gridDelta" | "gridVersion">): void {
     for (const mutation of snapshot.gridDelta) {
@@ -2364,6 +2404,19 @@ export class RaycasterEngine {
     this.updateProjectiles(dt);
     this.advanceRockets(dt);
     this.applyHazardDamage(dt);
+    // After `applyHazardDamage`, so a tile appearing under a player doesn't
+    // damage them on the very frame it appears — the same one-tick grace
+    // `checkTeleporters`' placement gives a warp that lands on a hazard.
+    // Deliberately does NOT push to `pendingGridDelta` or bump `gridVersion`:
+    // see `src/engine/acidOverflow.ts`'s doc comment for the whole reason.
+    updateAcidOverflows(
+      this.map.acidOverflows,
+      this.acidStates,
+      this.enemies,
+      this.livingPlayers(),
+      this.map.grid,
+      this.levelTime,
+    );
     this.applyTrapDamage(dt);
     if (this.telemetryEnabled) {
       // `p.telemetry` is guaranteed set here: `telemetryEnabled` is a single
@@ -2655,6 +2708,7 @@ export class RaycasterEngine {
         this.loreRead,
         this.gridVersion,
         this.isMultiplayerSession() ? this.drops : [],
+        acidTiles(this.map.acidOverflows, this.acidStates),
       );
       drawCompass(
         this.ctx,

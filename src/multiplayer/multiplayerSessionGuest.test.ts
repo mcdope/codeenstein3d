@@ -209,6 +209,7 @@ function fakeReconciliationSnapshot(overrides: Partial<ReconciliationSnapshotMes
     levelEpoch: 0,
     tick: 0,
     rngState: 0,
+    acidOverflows: [],
     players: { host: fakePlayerSnapshot(), guest: fakePlayerSnapshot() },
     enemies: [],
     mines: [],

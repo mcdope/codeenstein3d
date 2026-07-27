@@ -1017,6 +1017,111 @@ describe("RaycasterEngine — movement", () => {
   });
 });
 
+describe("RaycasterEngine — Acid Overflow rooms", () => {
+  /** A 12x12 walled room with the player spawning inside a 3x3 overflow room
+   * that starts flooding under their feet. */
+  function overflowMap(tiles = [{ x: 5, y: 5 }, { x: 6, y: 5 }, { x: 5, y: 6 }]) {
+    const size = 12;
+    const g = walledRoom(size);
+    const enemy = fakeEnemy({ x: 8.5, y: 8.5, hp: 30, maxHp: 30 });
+    return fakeMap({
+      grid: g,
+      enemies: [enemy],
+      acidOverflows: [{ room: { x: 4, y: 4, w: 4, h: 4 }, enemyIndex: 0, tiles, intervalSeconds: 0.5 }],
+    }, size);
+  }
+
+  it("floods the room once the player is standing in it", () => {
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(map.grid[5][5]).toBe(HAZARD_TILE);
+  });
+
+  it("drains health through the ordinary hazard path once a tile floods", () => {
+    // `applyHazardDamage` reads the grid, not `map.hazards`, so runtime acid
+    // hurts with no extra wiring — and `"hazard"` is already a DamageSource.
+    const map = overflowMap();
+    const { engine, handlers } = makeEngine(map);
+    for (let i = 0; i < 40; i++) engine.advance(0.1);
+    expect(lastStats(handlers).health).toBeLessThan(100);
+  });
+
+  it("stops spreading once the assigned enemy is dead", () => {
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    engine.advance(0.1);
+    map.enemies[0].alive = false;
+    for (let i = 0; i < 60; i++) engine.advance(0.1);
+    // The last planned tile was never reached, because the leak was stopped.
+    expect(map.grid[6][5]).toBe(0);
+  });
+
+  it("doesn't flood a room the player never walks into", () => {
+    const size = 12;
+    const g = walledRoom(size);
+    const map = fakeMap({
+      grid: g,
+      enemies: [fakeEnemy({ x: 2.5, y: 2.5 })],
+      acidOverflows: [{ room: { x: 9, y: 9, w: 2, h: 2 }, enemyIndex: 0, tiles: [{ x: 9, y: 9 }], intervalSeconds: 0.2 }],
+    }, size);
+    const { engine } = makeEngine(map);
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(map.grid[9][9]).toBe(0);
+  });
+
+  it("never pushes a flooded tile onto the reconciliation grid delta", () => {
+    // LOAD-BEARING: `applyGridReconciliation`'s out-of-order safety rests on
+    // every `gridDelta` entry being a terminal `value: 0`. Acid is
+    // `0 -> HAZARD_TILE` and must stay off that channel entirely.
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    const snapshot = engine.captureReconciliationSnapshot(1, true);
+    expect(snapshot.gridDelta).toEqual([]);
+    expect(snapshot.gridVersion).toBe(0);
+  });
+
+  it("carries the flood state on the reconciliation snapshot instead", () => {
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    const snapshot = engine.captureReconciliationSnapshot(1, true);
+    expect(snapshot.acidOverflows).toHaveLength(1);
+    expect(snapshot.acidOverflows[0].index).toBe(0);
+    expect(snapshot.acidOverflows[0].startedAt).not.toBeNull();
+  });
+
+  it("retracts a speculatively-flooded tile when the host says otherwise", () => {
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(map.grid[5][5]).toBe(HAZARD_TILE);
+
+    // The host's authoritative view: this room never started flooding at all.
+    const snapshot = engine.captureReconciliationSnapshot(2, true);
+    engine.applyReconciliationSnapshot({
+      ...snapshot,
+      acidOverflows: [{ index: 0, startedAt: null, frozenTarget: null }],
+    });
+    engine.advance(0.1);
+    expect(map.grid[5][5]).toBe(0);
+  });
+
+  it("ignores a snapshot entry for an overflow index this peer doesn't have", () => {
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    engine.advance(0.1);
+    const snapshot = engine.captureReconciliationSnapshot(2, true);
+    expect(() =>
+      engine.applyReconciliationSnapshot({
+        ...snapshot,
+        acidOverflows: [{ index: 99, startedAt: 0, frozenTarget: null }],
+      }),
+    ).not.toThrow();
+  });
+});
+
 describe("RaycasterEngine — keys and doors", () => {
   function doorMap(): GameMap {
     const size = 12;
@@ -3554,6 +3659,7 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
       rngState: 0,
       players: {},
       enemies: [],
+      acidOverflows: [],
       mines: [],
       lootDrops: [],
       pickupsCollected: [],
