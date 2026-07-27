@@ -123,20 +123,34 @@ export function updateAcidOverflows(
   }
 }
 
+/** Shared empty result, so the overwhelmingly common cases — a level with no
+ * overflow rooms at all, or none entered yet — cost no allocation per frame.
+ * Same reasoning as `raycaster.ts`'s own `NO_READ_TERMINALS`. */
+const NO_ACID_TILES: readonly Point[] = [];
+
 /**
  * Every tile currently flooded, for the corner minimap's hazard marker pass.
  * `GameMap.hazards` deliberately doesn't grow at runtime (it's painted
  * unconditionally, with no grid re-check, and would need to be retractable),
  * so this is computed per frame instead — the same shape as
  * `activeSpikeTileKeys`.
+ *
+ * The returned points are the *same objects* held in `overflow.tiles`, not
+ * copies: they're read-only tile coordinates that live for the whole level, so
+ * copying them once per frame would be pure garbage for no safety gained.
  */
 export function acidTiles(
   overflows: readonly AcidOverflow[],
   states: readonly AcidOverflowState[],
-): Point[] {
+): readonly Point[] {
+  let total = 0;
+  for (let i = 0; i < overflows.length; i++) total += states[i].applied;
+  if (total === 0) return NO_ACID_TILES;
+
   const tiles: Point[] = [];
   for (let i = 0; i < overflows.length; i++) {
-    tiles.push(...overflows[i].tiles.slice(0, states[i].applied));
+    const planned = overflows[i].tiles;
+    for (let t = 0; t < states[i].applied; t++) tiles.push(planned[t]);
   }
   return tiles;
 }

@@ -14,8 +14,8 @@ once the work lands.** Plan: `~/.claude/plans/task-implement-4-lazy-dream.md`.
 - [x] **M4** Exception Handling Zones
 - [x] **M5** Acid Overflow — map half
 - [x] **M6** Acid Overflow — engine half
-- [ ] **M7** demo-campaign content + `verify:campaign` checklist
-- [ ] **M8** docs + `npm run generate:default-highscore`
+- [x] **M7** demo-campaign content + `verify:campaign` checklist
+- [x] **M8** docs + `npm run generate:default-highscore`
 
 ## Node types — empirically confirmed
 

@@ -237,3 +237,23 @@ describe("acidTiles", () => {
     expect(acidTiles([overflow()], createAcidOverflowStates(1))).toEqual([]);
   });
 });
+
+describe("acidTiles — allocation behaviour", () => {
+  it("returns one shared empty array while nothing has flooded", () => {
+    // Called every frame, and most levels have no overflow rooms at all —
+    // the common case must not allocate.
+    const a = acidTiles([overflow()], createAcidOverflowStates(1));
+    const b = acidTiles([], []);
+    expect(a).toHaveLength(0);
+    expect(a).toBe(b);
+  });
+
+  it("hands back the planned tile objects themselves, not copies", () => {
+    const g = grid();
+    const o = overflow();
+    const states = createAcidOverflowStates(1);
+    updateAcidOverflows([o], states, [enemy()], [INSIDE()], g, 0);
+    updateAcidOverflows([o], states, [enemy()], [INSIDE()], g, 1.5);
+    expect(acidTiles([o], states)[0]).toBe(o.tiles[0]);
+  });
+});
