@@ -269,7 +269,7 @@ export async function planLevels() {
       continue;
     }
     const bonusLevel = extensionOf(filename) === "h";
-    const map = generator.generate(parsed, bonusLevel, false, [3, 4, 5]);
+    const map = generator.generate(parsed, { bonusLevel, hasRocketLauncher: false, missingWeaponIndices: [3, 4, 5] });
     const routePlain = planRoute(map);
     const routeCoverage = planCoverageRoute(map);
     const staticAnalysis = analyzeStaticLevel(map, routePlain);

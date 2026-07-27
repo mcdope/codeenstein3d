@@ -5757,7 +5757,7 @@ async function recordNavigatedSegment(options: {
   const { CampaignReplayRecorder } = await import("./engine/replay");
 
   const parsed = (await parseFile("main.c", options.sourceContent))!;
-  const map = new MapGenerator().generate(parsed, false, true, []);
+  const map = new MapGenerator().generate(parsed);
   const canvas = document.createElement("canvas");
   canvas.width = 640;
   canvas.height = 400;

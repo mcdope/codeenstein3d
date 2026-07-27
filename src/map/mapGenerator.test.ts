@@ -101,7 +101,7 @@ describe("MapGenerator.generate", () => {
   it("passes bonusLevel through to the returned map and boosts pickup generation", () => {
     const gen = new MapGenerator();
     const parsed = parsedFile({ entities: [entity(), entity({ name: "b", startLine: 6, endLine: 10 })] });
-    const bonus = gen.generate(parsed, true);
+    const bonus = gen.generate(parsed, { bonusLevel: true });
     expect(bonus.bonusLevel).toBe(true);
   });
 
@@ -111,7 +111,7 @@ describe("MapGenerator.generate", () => {
       entities: [entity()],
       secretTriggers: [{ kind: "deadCode", startLine: 2, endLine: 3 }],
     });
-    expect(() => gen.generate(parsed, false, false, [7])).not.toThrow();
+    expect(() => gen.generate(parsed, { hasRocketLauncher: false, missingWeaponIndices: [7] })).not.toThrow();
   });
 
   it("scales map size with lines of code and entity count, floored at minSize", () => {
@@ -222,7 +222,7 @@ describe("MapGenerator.generate", () => {
       ],
     });
     const omitted = gen.generate(parsed);
-    const explicit = gen.generate(parsed, false, true, [], 1, true, true);
+    const explicit = gen.generate(parsed, { bonusLevel: false, hasRocketLauncher: true, missingWeaponIndices: [], maxPlayers: 1, hasSmg: true, hasGas: true });
     expect(omitted).toEqual(explicit);
   });
 
@@ -230,14 +230,14 @@ describe("MapGenerator.generate", () => {
     const gen = new MapGenerator();
     const parsed = parsedFile({ entities: [entity(), entity({ name: "b", startLine: 6, endLine: 10 })] });
     expect(gen.generate(parsed).multiplayerSpawns).toBeUndefined();
-    expect(gen.generate(parsed, false, true, [], 1).multiplayerSpawns).toBeUndefined();
+    expect(gen.generate(parsed, { maxPlayers: 1 }).multiplayerSpawns).toBeUndefined();
   });
 
   it("produces maxPlayers spread, open-floor spawns clear of the exit and each other", () => {
     const gen = new MapGenerator();
     const many = Array.from({ length: 6 }, (_, i) => entity({ name: `f${i}`, startLine: i * 10 + 1, endLine: i * 10 + 5, complexityScore: 5 }));
     const parsed = parsedFile({ linesOfCode: 200, entities: many });
-    const map = gen.generate(parsed, false, true, [], 3);
+    const map = gen.generate(parsed, { maxPlayers: 3 });
     expect(map.multiplayerSpawns).toHaveLength(3);
     const seen = new Set<string>();
     for (const s of map.multiplayerSpawns ?? []) {
@@ -252,7 +252,7 @@ describe("MapGenerator.generate", () => {
   it("returns fewer than maxPlayers spawns without padding when the level has too few rooms", () => {
     const gen = new MapGenerator({ minSize: 40, maxSize: 40 });
     const parsed = parsedFile({ entities: [entity()] }); // tops up to exactly 2 rooms
-    const map = gen.generate(parsed, false, true, [], 16);
+    const map = gen.generate(parsed, { maxPlayers: 16 });
     expect(map.multiplayerSpawns).toBeDefined();
     expect((map.multiplayerSpawns ?? []).length).toBeLessThan(16);
   });
@@ -261,8 +261,8 @@ describe("MapGenerator.generate", () => {
     const gen = new MapGenerator();
     const many = Array.from({ length: 6 }, (_, i) => entity({ name: `f${i}`, startLine: i * 10 + 1, endLine: i * 10 + 5, complexityScore: 5 }));
     const parsed = parsedFile({ linesOfCode: 200, entities: many });
-    const a = gen.generate(parsed, false, true, [], 4);
-    const b = gen.generate(parsed, false, true, [], 4);
+    const a = gen.generate(parsed, { maxPlayers: 4 });
+    const b = gen.generate(parsed, { maxPlayers: 4 });
     expect(a).toEqual(b);
   });
 
@@ -275,7 +275,7 @@ describe("MapGenerator.generate", () => {
       const text = await readFileText(child.handle as FileSystemFileHandle);
       const parsed = await parseFile(child.name, text);
       if (!parsed) continue; // unparsable fixture content, not this test's concern
-      gen.generate(parsed, extensionOf(child.name) === "h");
+      gen.generate(parsed, { bonusLevel: extensionOf(child.name) === "h" });
     }
     expect(errorSpy).not.toHaveBeenCalled();
   });
@@ -306,7 +306,7 @@ describe("MapGenerator.generate — Vendor Depots", () => {
   it("only stocks smg/gas once the player owns the weapon each pool feeds", () => {
     const gen = new MapGenerator();
     const parsed = parsedFile({ importCount: 400, entities: [entity(), entity({ name: "b", startLine: 6, endLine: 10 })] });
-    const unowned = gen.generate(parsed, false, false, [], 1, false, false);
+    const unowned = gen.generate(parsed, { hasRocketLauncher: false, hasSmg: false, hasGas: false });
     expect(unowned.ammoPickups.some((p) => p.kind === "smg" || p.kind === "gas")).toBe(false);
   });
 

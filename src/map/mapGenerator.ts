@@ -60,6 +60,69 @@ export interface MapGeneratorOptions {
   placementAttempts?: number;
 }
 
+/**
+ * Per-level inputs to `generate()` — everything about *this* level and *this*
+ * player's progress, as opposed to `MapGeneratorOptions`' generator-wide
+ * tuning. Every field is optional and its default is the "plain single-player
+ * level, nothing unlocked yet" case, so `generate(parsed)` stays meaningful on
+ * its own.
+ *
+ * An options object rather than positional parameters: these grew one at a
+ * time as features landed, and seven positional arguments — four of them
+ * booleans — made every call site unreadable and trivially easy to
+ * mis-order. Nothing about the *values* changed in that conversion, so no
+ * generated map moved.
+ */
+export interface GenerateOptions {
+  /**
+   * Marks this as a "restock arena" (see `main.ts`, which sets it for
+   * header/equivalent files): a distinct visual theme (handled by the
+   * raycaster from the returned `GameMap.bonusLevel` flag) and a boosted
+   * static-pickup rate, treating the level as a loot stop rather than a fight.
+   */
+  bonusLevel?: boolean;
+  /**
+   * Whether the player owns the rocket launcher. Mirrors the same gate applied
+   * to enemy-kill drops (see `rollLoot` in `engine/loot.ts`): until they own
+   * it, static rocket pickups would just be dead loot, so they're generated as
+   * bullets/health instead.
+   */
+  hasRocketLauncher?: boolean;
+  /**
+   * `WEAPONS` indices the player doesn't own yet, feeding `placeSecretRooms`'
+   * weapon-unlock loot slot — see that function's doc comment for why the map
+   * layer only ever receives an opaque list of numbers here, never an
+   * engine-layer weapon concept.
+   */
+  missingWeaponIndices?: readonly number[];
+  /**
+   * Requests extra, spread-out spawn points for a multiplayer session (see
+   * `GameMap.multiplayerSpawns`). 1 (the default) preserves single-player
+   * behavior exactly — `multiplayerSpawns` simply comes back `undefined`.
+   */
+  maxPlayers?: number;
+  /** Whether the player owns gdb — gates whether a "Vendor Depot" may stock
+   * its ammo pool, since a magazine for a gun they haven't unlocked is dead
+   * loot. Same shape as `hasRocketLauncher` deliberately: the map layer never
+   * learns what a weapon is, only whether a pool is worth stocking. */
+  hasSmg?: boolean;
+  /** Whether the player owns Friday Hotfix — see `hasSmg`. */
+  hasGas?: boolean;
+}
+
+/** Defaults for one `generate()` call: a plain single-player level with
+ * nothing unlocked. Spelled out as a `Required<>` record for the same reason
+ * `DEFAULTS` below is — so a newly added option can't silently default to
+ * `undefined` somewhere in the body. */
+const GENERATE_DEFAULTS: Required<GenerateOptions> = {
+  bonusLevel: false,
+  hasRocketLauncher: true,
+  missingWeaponIndices: [],
+  maxPlayers: 1,
+  hasSmg: true,
+  hasGas: true,
+};
+
 const DEFAULTS: Required<MapGeneratorOptions> = {
   minSize: 64,
   maxSize: 160,
@@ -90,41 +153,15 @@ export class MapGenerator {
   }
 
   /**
-   * `bonusLevel` marks this as a "restock arena" (see `main.ts`, which sets it
-   * for header/equivalent files): a distinct visual theme (handled by the
-   * raycaster from the returned `GameMap.bonusLevel` flag) and a boosted
-   * static-pickup rate, treating the level as a loot stop rather than a fight.
-   *
-   * `hasRocketLauncher` mirrors the same gate applied to enemy-kill drops (see
-   * `rollLoot` in `engine/loot.ts`): until the player owns the launcher,
-   * static rocket pickups would just be dead loot, so they're generated as
-   * bullets/health instead.
-   *
-   * `missingWeaponIndices` feeds `placeSecretRooms`' weapon-unlock loot slot
-   * — see that function's doc comment for why the map layer only ever
-   * receives an opaque list of numbers here, never an engine-layer weapon
-   * concept.
-   *
-   * `maxPlayers` requests extra, spread-out spawn points for a multiplayer
-   * session (see `GameMap.multiplayerSpawns`) — 1 (the default) preserves
-   * every existing call site's behavior exactly, `multiplayerSpawns` simply
-   * comes back `undefined`.
-   *
-   * `hasSmg`/`hasGas` are the gdb / Friday Hotfix equivalents of
-   * `hasRocketLauncher`, and gate whether a "Vendor Depot" may stock those two
-   * ammo pools — a magazine for a gun the player hasn't unlocked is dead loot.
-   * Same shape deliberately: the map layer never learns what a weapon is, only
-   * whether a pool is worth stocking.
+   * Turn one `ParsedFile` into a playable `GameMap`. See `GenerateOptions` for
+   * what each per-level input means; omitting the argument entirely gives a
+   * plain single-player level with nothing unlocked.
    */
-  generate(
-    parsed: ParsedFile,
-    bonusLevel = false,
-    hasRocketLauncher = true,
-    missingWeaponIndices: readonly number[] = [],
-    maxPlayers = 1,
-    hasSmg = true,
-    hasGas = true,
-  ): GameMap {
+  generate(parsed: ParsedFile, options: GenerateOptions = {}): GameMap {
+    const { bonusLevel, hasRocketLauncher, missingWeaponIndices, maxPlayers, hasSmg, hasGas } = {
+      ...GENERATE_DEFAULTS,
+      ...options,
+    };
     const rng = mulberry32(seedFrom(parsed));
     const size = this.mapSize(parsed);
 
