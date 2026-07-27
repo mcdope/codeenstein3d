@@ -1,3 +1,14 @@
+#include <vector>
+#include <memory>
+#include <cstdint>
+#include <algorithm>
+#include <unordered_map>
+#include "scene/graph.h"
+#include "scene/culling.h"
+#include "gpu/allocator.h"
+#include "gpu/command_buffer.h"
+#include "platform/profiler.h"
+
 struct Vector3 {
     float x;
     float y;
@@ -24,6 +35,19 @@ public:
             return false;
         }
         return computeVisibility(width, height, quality, lodBias, shadowRes, msaaSamples, true, 2, false);
+    }
+
+    // every frame re-allocates its whole scratch set — the pooled allocator
+    // landed in the new pipeline and never got backported to this path
+    Vector3 *allocateFrameScratch(int drawCalls) {
+        Vector3 *positions = new Vector3[drawCalls];
+        Vector3 *normals = new Vector3[drawCalls];
+        Vector3 *tangents = new Vector3[drawCalls];
+        Vector3 *bitangents = new Vector3[drawCalls];
+        if (drawCalls > 0) {
+            return positions;
+        }
+        return normals;
     }
 
 private:

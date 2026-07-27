@@ -1,5 +1,14 @@
 # Changelog
 
+## beta-6
+
+- New: a `switch` (or `match`) statement now builds a **Switchboard** — the room for that function becomes a junction, with a short dead-end spur for every `case`, each behind an amber push-open door. Every spur has something small in it: a weak enemy, a trap, or a bit of ammo. The `default` branch doesn't get a spur, because it's the way onward
+- New: a `try`/`catch`/`finally` becomes a three-part detour: a narrow acid corridor with spike traps and a mine to get through, an alcove of guaranteed health *and* armor waiting at the far end, and a safe room with guaranteed loot past that
+- New: the imports (or `#include`s, or `require`s) at the top of a file now become small **Vendor Depot** alcoves built into the wall of the room you start in — roughly one per four imports, stocked with ammo for the weapons you already have. Handy on a level you're walking into low
+- New: a function that allocates memory heavily gets a room that **leaks**. Walk in and the floor starts filling with acid, tile by tile, until you kill the enemy that function spawned — then it stops right where it is
+- New: there are now two kinds of door. The blue one still needs a dependency key; the new amber one is a Switchboard's branch door and just needs a push. Both have their own colour on the minimap and automap, so you can tell from across the room which is which
+- SMG and gas ammo can now turn up as pickups you find lying around (in Vendor Depots), not only as drops from enemies
+
 ## beta-5
 
 - New: Multiplayer — host or join a real-time coop session (2-4 players) with a friend, no account or setup needed. Pick a campaign/workspace as usual, choose how many players you want, then share the short code your browser gives you; anyone who joins with that code connects directly to you (peer-to-peer), and more players can join the same code one at a time with nothing extra to share. A public lobby list is also available if you'd rather browse for an open session than trade a code

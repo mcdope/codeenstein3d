@@ -20,6 +20,8 @@ Want a level dense with hidden rooms? Steer the agent toward **dead/unreachable 
 
 One thing to tell the agent up front: **it can't know exactly what its file will produce just by reading it.** Map layout, secret-room contents, and even which of three outcomes a TODO comment triggers are all drawn from a seeded RNG — deterministic per file, but not something anyone can compute by eye. The only way to know what a file actually generates is to load it and look. That's exactly how `demo-campaign/` was tuned during development: every file was run through the real map generator repeatedly and adjusted based on what actually came out, not what seemed like it should.
 
+One more thing worth knowing before you start tuning a file: **the first level of a campaign is the most sensitive one to edit.** Layout is seeded from the file's own entity list, so adding or removing a function reshuffles that level's entire map — and level 1 is the one every run has to get through. If you change your opener and the level suddenly feels unnavigable, that's why; try putting the new construct in a later file instead.
+
 Large open rooms also get a scattering of solid pillars (1-3 per room) to break up sightlines — this isn't tied to any specific source construct, it's an always-on structural pass over whatever rooms the generator already placed, so there's nothing to write in your source to trigger it either way.
 
 ## Manual authoring cheat sheet
@@ -37,6 +39,10 @@ If you'd rather write the file yourself, here's what each construct controls. Se
 - **Want a secret room?** Any of: dead/unreachable code after a `return`, an empty (swallowed-exception) `catch` block, a `@deprecated`/`[Obsolete]`-style marker, a commented-out block of code, or a magic-number/blob literal (a long Base64-ish string, or a hex constant like `0xDEADBEEF`).
 - **Want a bonus level?** Use a `.h` header file — its own distinct teal-themed level with better loot odds.
 - **Want a bigger, more chaotic level** with extra corridor-breakup fights and Edge Case swarm enemies? Write more functions. Maps cap at 160 tiles; a big/dense file is more likely to hit that and get long corridors interrupted with extra encounter rooms.
+- **Want a hub-and-spoke junction?** A `switch`/`match` with a few `case` branches inside one function. Each case becomes a short dead-end spur off that function's room, behind a keyless amber door. The `default` branch is the way onward, so it gets no spur — and the whole thing caps at 5 spurs, so a giant enum switch won't carpet the map.
+- **Want a risk-then-reward gauntlet?** A `try`/`catch`/`finally`. You get an acid corridor with traps, an alcove of health and armor at the end of it, and a safe loot room past that. Worth knowing: **Go, Rust, Bash and plain C have no exception construct at all**, so this one does nothing in those languages — same caveat as `goto` teleporters, just the other way round.
+- **Want extra supplies right at spawn?** More top-level imports/`#include`s — roughly one alcove per four, capped at four. They stock ammo for weapons you already own, so early levels lean toward bullets.
+- **Want a room that floods with acid?** A function that allocates heavily — several `malloc`/`calloc`/`new` calls, or a big fixed-size array, packed into a reasonably short function. Walk in and the floor starts going; kill that function's enemy and it stops. Python and Bash have no explicit allocation construct, so they never produce one.
 - **Want a multi-level campaign?** Chain multiple files together in one folder — the file tree order (directories first, then alphabetical) becomes the level order.
 
 ## Try it yourself

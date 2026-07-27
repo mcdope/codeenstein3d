@@ -48,6 +48,8 @@ const HAZARD_TILE = 2;
 const DOOR_TILE = 3;
 const TELEPORTER_TILE = 4;
 const SPIKE_TRAP_TILE = 5;
+/** Keyless Switchboard spoke door — solid until pushed, but costs no key. */
+const BRANCH_DOOR_TILE = 8;
 /** Preferred-avoid set for `planCoverageRoute`'s own (still binary
  * avoid-or-cross) hazard handling — kept separate from `planRoute`'s
  * `weightedPath` since this function is currently unused by any live
@@ -55,12 +57,12 @@ const SPIKE_TRAP_TILE = 5;
  * until it's actually back in use. */
 const SOFT_AVOID_TILES = new Set([HAZARD_TILE, SPIKE_TRAP_TILE]);
 
-/** Mirrors `pathfind.mjs`'s `bfsPath` blocked set (wall/locked-door/unopened-
- * secret/lore-terminal) plus the teleporter — a mid-route warp would
- * invalidate the rest of the planned waypoint sequence, which this plain
- * tile-graph model has no way to account for, so it's always a hard block
- * here (never a target either). */
-const HARD_BLOCK_TILES = new Set([1, 3, 6, 7, TELEPORTER_TILE]);
+/** Mirrors `pathfind.mjs`'s `bfsPath` blocked set (wall / locked door /
+ * unopened secret wall / lore terminal / unopened branch door) plus the
+ * teleporter — a mid-route warp would invalidate the rest of the planned
+ * waypoint sequence, which this plain tile-graph model has no way to account
+ * for, so it's always a hard block here (never a target either). */
+const HARD_BLOCK_TILES = new Set([1, 3, 6, 7, BRANCH_DOOR_TILE, TELEPORTER_TILE]);
 /** How many "free" floor tiles' worth of detour `weightedPath` will accept
  * to avoid stepping on one hazard/spike-trap tile — high enough to prefer a
  * reasonably short detour, not so high that a genuinely-needed crossing on
@@ -128,16 +130,16 @@ function tileOf(pos) {
   return { x: Math.floor(pos.x), y: Math.floor(pos.y) };
 }
 
-/** First locked-door tile adjacent to `reachable`, plus the reachable tile
- * it's approached from (so the caller can BFS a walk leg right up to it). */
-function findReachableDoor(grid, reachable) {
+/** First door tile of `tileValue` adjacent to `reachable`, plus the reachable
+ * tile it's approached from (so the caller can BFS a walk leg right up to it). */
+function findReachableDoor(grid, reachable, tileValue) {
   for (const key of reachable) {
     const [x, y] = key.split(",").map(Number);
     for (const [dx, dy] of DIRS) {
       const nx = x + dx;
       const ny = y + dy;
       if (ny < 0 || ny >= grid.length || nx < 0 || nx >= grid[0].length) continue;
-      if (grid[ny][nx] === DOOR_TILE) return { door: { x: nx, y: ny }, from: { x, y } };
+      if (grid[ny][nx] === tileValue) return { door: { x: nx, y: ny }, from: { x, y } };
     }
   }
   return null;
@@ -173,6 +175,22 @@ function planRouteWithAvoidSet(map) {
     }
 
     const reachable = reach(start);
+
+    // A Switchboard branch door costs no key — push and it's open. Tried
+    // before the key/locked-door detour precisely because it's free: there's
+    // never a reason to go fetch a key when a branch door would already have
+    // opened the region up.
+    const branch = findReachableDoor(grid, reachable, BRANCH_DOOR_TILE);
+    if (branch) {
+      const path = findPath(start, branch.from);
+      if (!path) return { ok: false, reason: "branch-door-approach-reachable-but-no-bfs-path (inconsistent)", legs };
+      legs.push({ kind: "walk", waypoints: pathToWaypoints(path) });
+      legs.push({ kind: "openDoor", doorTile: branch.door, approachDir: { dx: branch.door.x - branch.from.x, dy: branch.door.y - branch.from.y } });
+      grid[branch.door.y][branch.door.x] = 0; // mirror openDoorAhead()
+      pos = { x: branch.door.x + 0.5, y: branch.door.y + 0.5 };
+      continue;
+    }
+
     const keyIndex = map.keys.findIndex((k, idx) => !collectedKeyIndices.has(idx) && reachable.has(`${Math.floor(k.x)},${Math.floor(k.y)}`));
     if (keyIndex !== -1) {
       const key = map.keys[keyIndex];
@@ -187,7 +205,7 @@ function planRouteWithAvoidSet(map) {
 
     const heldKeys = collectedKeyIndices.size - openedDoorCount;
     if (heldKeys > 0) {
-      const found = findReachableDoor(grid, reachable);
+      const found = findReachableDoor(grid, reachable, DOOR_TILE);
       if (found) {
         const path = findPath(start, found.from);
         if (!path) return { ok: false, reason: "door-approach-reachable-but-no-bfs-path (inconsistent)", legs };

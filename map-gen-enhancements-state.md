@@ -103,4 +103,28 @@ Overflow room — same shape as `goto`/teleporters being C/C++/PHP/Go only.
 
 ## Retuned constants
 
-_(nothing yet)_
+_(none — every threshold shipped at its first value)_
+
+## Balancing-scan findings (M7)
+
+**Don't add new constructs to `main.c`.** The first attempt at demo-campaign
+coverage added `#include`s and a `malloc`-dense function to `main.c`. That changed
+its entity list, which changed `seedFrom`, which reseeded level 1's entire layout —
+and `npm run balancing:scan` went from a healthy baseline to **0/3 qualifying on all
+three profiles, every attempt `stuck` on level 1**. Reverting only the `main.c` edit
+(keeping all feature code) restored normal progression, proving the feature code was
+never the cause. All the new constructs now live in `stage12_render_engine.cpp`
+instead, which is enough for every checklist item.
+
+**`stuck@L1` is pre-existing.** Once main.c was restored, both branch and baseline
+show `stuck@L1` as the dominant failure at this scan's 5-attempt cap (baseline: 3/4/5
+attempts across Casual/Gamer/Pro). It is not a regression from this work.
+
+**The bot's pathfinding needed teaching about `BRANCH_DOOR_TILE`.** Neither
+`pathfind.mjs`'s `BLOCKED_TILES` nor `routePlanner.mjs`'s `HARD_BLOCK_TILES` knew
+about tile 8, so the planner routed straight *through* doors the engine treats as
+solid — a model that happened to work only because the bot holds a movement key and
+`openDoorAhead` fired by accident. Both sets now include it, and `planRoute` emits a
+keyless `openDoor` leg for a branch door, tried *before* the key/locked-door detour
+since it's free. (`pathfind.mjs`'s own doc comment says its blocked set mirrors
+`isWall()`; that had silently stopped being true.)
