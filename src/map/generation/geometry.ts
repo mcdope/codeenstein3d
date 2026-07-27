@@ -3,7 +3,7 @@
 
 /** Room geometry: footprints, overlap tests, carving, and shared spot-finding. */
 import type { CodeEntity } from "../../parser/types";
-import type { Enemy, Point, Rect, Room, Tile } from "../types";
+import { DOOR_TILE, type Enemy, type Point, type Rect, type Room, type Tile } from "../types";
 import { clamp, dist } from "./util";
 
 /** Tiles kept clear around a room's center, the exit, spawn, and enemies when
@@ -126,6 +126,40 @@ export function findPropSpot(
     return { x, y };
   }
   return null;
+}
+
+/**
+ * Every tile of the *doorway* containing `start`: the 4-connected run of
+ * `DOOR_TILE`s it belongs to. Returns an empty array if `start` isn't a door.
+ *
+ * A doorway is one gate, however many tiles wide. `placeDoors` locks every
+ * corridor mouth of a private/protected room, which is what makes the gate
+ * airtight — but when a corridor happens to run flush alongside a room's wall,
+ * *every* tile of that shared boundary is a mouth, and the room ends up with a
+ * five-tile-tall column of separate doors. Billing that as five doors (and so
+ * five keys, via `placeKeys`) is the bug: to a player it is visibly one
+ * doorway. Observed on `demo-campaign/stage03_legacy_api.php`, where one room
+ * owned 7 of the level's 8 doors and the route to the exit needed 8 separate
+ * key-fetch-and-open sequences.
+ *
+ * Every consumer of this — key placement, the reachability assertion, the
+ * engine's own `openDoorAhead`, and the bot's route planner — has to agree on
+ * it, or the level's key economy stops adding up.
+ */
+export function doorwayTiles(grid: readonly Tile[][], start: Point): Point[] {
+  if (grid[start.y]?.[start.x] !== DOOR_TILE) return [];
+  const seen = new Set<string>();
+  const run: Point[] = [];
+  const stack: Point[] = [start];
+  while (stack.length > 0) {
+    const p = stack.pop()!;
+    const k = `${p.x},${p.y}`;
+    if (seen.has(k) || grid[p.y]?.[p.x] !== DOOR_TILE) continue;
+    seen.add(k);
+    run.push(p);
+    stack.push({ x: p.x + 1, y: p.y }, { x: p.x - 1, y: p.y }, { x: p.x, y: p.y + 1 }, { x: p.x, y: p.y - 1 });
+  }
+  return run;
 }
 
 /** Which side of an anchor rect a `SideCandidate` hangs off. */

@@ -4,9 +4,10 @@
 import { describe, expect, it } from "vitest";
 import { mulberry32 } from "../../prng";
 import type { CodeEntity } from "../../parser/types";
-import type { Enemy, Room, Tile } from "../types";
+import { DOOR_TILE, type Enemy, type Room, type Tile } from "../types";
 import {
   carveRect,
+  doorwayTiles,
   carveRoom,
   centeredRoom,
   clearCriticalTiles,
@@ -369,5 +370,55 @@ describe("carveRect", () => {
     }
     expect(g[2][2]).toBe(1);
     expect(g[7][4]).toBe(1);
+  });
+});
+
+describe("doorwayTiles", () => {
+  function gridWith(doors: Array<[number, number]>, size = 10): Tile[][] {
+    const g: Tile[][] = Array.from({ length: size }, () => Array.from({ length: size }, () => 0 as Tile));
+    for (const [x, y] of doors) g[y][x] = DOOR_TILE;
+    return g;
+  }
+
+  it("returns the whole 4-connected run a door belongs to", () => {
+    // The stage03 shape: a corridor flush along a room wall turns the entire
+    // shared boundary into separate door tiles. It is one gate.
+    const g = gridWith([[4, 3], [4, 4], [4, 5], [4, 6], [4, 7]]);
+    const run = doorwayTiles(g, { x: 4, y: 5 });
+    expect(run).toHaveLength(5);
+    expect(new Set(run.map((p) => `${p.x},${p.y}`))).toEqual(
+      new Set(["4,3", "4,4", "4,5", "4,6", "4,7"]),
+    );
+  });
+
+  it("finds the same run from any tile in it", () => {
+    const g = gridWith([[4, 3], [4, 4], [4, 5]]);
+    const fromTop = doorwayTiles(g, { x: 4, y: 3 }).map((p) => `${p.x},${p.y}`).sort();
+    const fromBottom = doorwayTiles(g, { x: 4, y: 5 }).map((p) => `${p.x},${p.y}`).sort();
+    expect(fromTop).toEqual(fromBottom);
+  });
+
+  it("keeps two separate doorways separate", () => {
+    // A gap of one floor tile means two distinct gates, and two keys.
+    const g = gridWith([[4, 3], [4, 4], [4, 6], [4, 7]]);
+    expect(doorwayTiles(g, { x: 4, y: 3 })).toHaveLength(2);
+    expect(doorwayTiles(g, { x: 4, y: 6 })).toHaveLength(2);
+  });
+
+  it("returns a single tile for a lone door", () => {
+    expect(doorwayTiles(gridWith([[4, 4]]), { x: 4, y: 4 })).toEqual([{ x: 4, y: 4 }]);
+  });
+
+  it("returns nothing for a tile that isn't a door", () => {
+    expect(doorwayTiles(gridWith([[4, 4]]), { x: 1, y: 1 })).toEqual([]);
+  });
+
+  it("returns nothing for an out-of-bounds start", () => {
+    expect(doorwayTiles(gridWith([[4, 4]]), { x: -1, y: 99 })).toEqual([]);
+  });
+
+  it("doesn't connect diagonally — a diagonal pair is two doorways", () => {
+    const g = gridWith([[4, 4], [5, 5]]);
+    expect(doorwayTiles(g, { x: 4, y: 4 })).toHaveLength(1);
   });
 });

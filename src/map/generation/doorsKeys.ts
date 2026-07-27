@@ -5,6 +5,7 @@
  * solvable-in-key-order key scatter. */
 import { DOOR_TILE, type Enemy, type KeyItem, type Point, type Rect, type Room, type Tile } from "../types";
 import { breakupTileKeys } from "./breakup";
+import { doorwayTiles } from "./geometry";
 import { reachableTiles } from "./pathing";
 import { key, neighbors } from "./util";
 
@@ -78,6 +79,8 @@ export function placeKeys(
   let previousReachable = new Set<string>();
 
   while (opened.size < doors.length) {
+    // `opened` grows by a whole doorway at a time, so this still terminates —
+    // it just stops sooner than one iteration per door tile.
     const reachable = reachableTiles(grid, spawn, opened);
     const frontier = doors.find(
       (d) => !opened.has(key(d)) && neighbors(d).some((n) => reachable.has(key(n))),
@@ -93,7 +96,11 @@ export function placeKeys(
       used.add(key(spot));
       keys.push({ x: spot.x + 0.5, y: spot.y + 0.5, collected: false });
     }
-    opened.add(key(frontier));
+    // One key opens the whole doorway, not one tile of it — see
+    // `doorwayTiles`. Marking every tile of the run as opened here is what
+    // keeps the key count equal to the number of *gates* a player actually
+    // has to get through, rather than to the width of the widest one.
+    for (const tile of doorwayTiles(grid, frontier)) opened.add(key(tile));
     previousReachable = reachable;
   }
   return keys;

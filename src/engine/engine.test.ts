@@ -1220,6 +1220,56 @@ describe("RaycasterEngine — keys and doors", () => {
     }
   });
 
+  it("opens a whole multi-tile doorway for one key", () => {
+    // A corridor flush along a room's wall makes every tile of that boundary
+    // its own door tile. It's visibly one gate, so it costs one key — see
+    // `doorwayTiles`.
+    const size = 12;
+    const g = walledRoom(size);
+    for (let y = 3; y <= 7; y++) g[y][7] = DOOR_TILE;
+    const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+    const { engine, input, handlers } = makeEngine(map);
+    engine.advance(0.016); // collect the one key
+    expect(lastStats(handlers).keysHeld).toBe(1);
+    input.keys.add("KeyW"); // push into the doorway at (7,5)
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    for (let y = 3; y <= 7; y++) expect(map.grid[y][7]).toBe(0);
+    expect(lastStats(handlers).keysHeld).toBe(0);
+  });
+
+  it("emits a grid delta for every tile of an opened doorway", () => {
+    // The guest has to see the whole run open, not just the pushed tile —
+    // and every entry stays a terminal value:0, so the out-of-order-safety
+    // invariant is untouched.
+    const size = 12;
+    const g = walledRoom(size);
+    for (let y = 3; y <= 7; y++) g[y][7] = DOOR_TILE;
+    const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+    const { engine, input } = makeEngine(map);
+    engine.advance(0.016);
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    const snapshot = engine.captureReconciliationSnapshot(1, true);
+    for (let y = 3; y <= 7; y++) expect(snapshot.gridDelta).toContainEqual({ x: 7, y, value: 0 });
+    expect(snapshot.gridDelta.every((m) => m.value === 0)).toBe(true);
+  });
+
+  it("leaves a separate doorway shut when one is opened", () => {
+    // Two runs separated by a wall tile are two gates and two keys.
+    const size = 12;
+    const g = walledRoom(size);
+    g[4][7] = DOOR_TILE;
+    g[5][7] = DOOR_TILE;
+    g[7][7] = DOOR_TILE; // separated from the pair above by plain wall at y=6
+    const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+    const { engine, input } = makeEngine(map);
+    engine.advance(0.016);
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(map.grid[5][7]).toBe(0);
+    expect(map.grid[7][7]).toBe(DOOR_TILE);
+  });
+
   it("opens a branch door with no key held at all", () => {
     const size = 12;
     const g = walledRoom(size);

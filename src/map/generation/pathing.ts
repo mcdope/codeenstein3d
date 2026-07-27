@@ -3,6 +3,7 @@
 
 /** Grid reachability / shortest-path helpers over the finished tile grid. */
 import { DOOR_TILE, LORE_TILE, SECRET_WALL_TILE, type Point, type Room, type Tile } from "../types";
+import { doorwayTiles } from "./geometry";
 import { key, neighbors } from "./util";
 
 /** BFS of tiles reachable from spawn; walls and unopened doors block. */
@@ -91,7 +92,10 @@ export function assertAllRoomsReachable(grid: Tile[][], spawn: Point, rooms: Roo
     }
     const frontierDoor = doors.find((d) => !opened.has(key(d)) && neighbors(d).some((n) => reachable.has(key(n))));
     if (!frontierDoor || keysHeld <= 0) break;
-    opened.add(key(frontierDoor));
+    // One key opens the whole doorway (see `doorwayTiles`) — this simulation
+    // has to spend keys exactly the way `openDoorAhead` does, or it would
+    // declare a level unsolvable that the engine can actually finish.
+    for (const tile of doorwayTiles(grid, frontierDoor)) opened.add(key(tile));
     keysHeld--;
   }
   const reachable = reachableTiles(grid, spawn, opened);

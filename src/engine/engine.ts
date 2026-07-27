@@ -27,6 +27,7 @@ import type {
   TileMutation,
 } from "./reconciliationSnapshot";
 import { acidTiles, createAcidOverflowStates, intersectsRoom, updateAcidOverflows, type AcidOverflowState } from "./acidOverflow";
+import { doorwayTiles } from "../map/generation/geometry";
 import { Player, isHazard } from "./player";
 import { updateEnemies, type EnemyAiEvents, type EnemyTarget } from "./enemyAi";
 import { collectProjectileBillboards, updateProjectiles, type Projectile, type ProjectileTarget } from "./projectiles";
@@ -3454,10 +3455,19 @@ export class RaycasterEngine {
       if (locked && p.keysHeld <= 0) continue;
       if (!locked && tile !== BRANCH_DOOR_TILE) continue;
 
-      this.map.grid[cy][cx] = 0;
-      // Still a terminal, `0`-valued mutation, so the out-of-order-safety
-      // invariant on `applyGridReconciliation` holds unchanged.
-      this.pendingGridDelta.push({ x: cx, y: cy, value: 0 });
+      // A key-locked doorway opens as a whole, not one tile at a time: when a
+      // corridor runs flush along a room's wall every tile of that boundary is
+      // its own door tile, and charging a key per tile made a visibly single
+      // doorway cost five keys (see `doorwayTiles`). Flood-filling the run
+      // mirrors `tryOpenSecretWall` exactly. A branch door is always a single
+      // tile, so its run is just itself.
+      const opened = locked ? doorwayTiles(this.map.grid, { x: cx, y: cy }) : [{ x: cx, y: cy }];
+      for (const tile of opened) {
+        this.map.grid[tile.y][tile.x] = 0;
+        // Still terminal, `0`-valued mutations, so the out-of-order-safety
+        // invariant on `applyGridReconciliation` holds unchanged.
+        this.pendingGridDelta.push({ x: tile.x, y: tile.y, value: 0 });
+      }
       this.gridVersion += 1;
       if (locked) {
         p.keysHeld -= 1;

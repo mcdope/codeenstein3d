@@ -169,6 +169,27 @@ function findReachableDoor(grid, reachable, tileValue, preferredOrder = null) {
   return null;
 }
 
+/** Every tile of the 4-connected `DOOR_TILE` run containing `start` — the
+ * script-side twin of `doorwayTiles` in `src/map/generation/geometry.ts`
+ * (this is a plain Node script and can't import the bundled TS module). Keep
+ * the two in step: the engine opens a whole doorway per key, so a planner that
+ * disagreed would mis-count how many keys a route actually needs. */
+function doorwayTiles(grid, start) {
+  if (grid[start.y]?.[start.x] !== DOOR_TILE) return [];
+  const seen = new Set();
+  const run = [];
+  const stack = [start];
+  while (stack.length > 0) {
+    const p = stack.pop();
+    const k = `${p.x},${p.y}`;
+    if (seen.has(k) || grid[p.y]?.[p.x] !== DOOR_TILE) continue;
+    seen.add(k);
+    run.push(p);
+    stack.push({ x: p.x + 1, y: p.y }, { x: p.x - 1, y: p.y }, { x: p.x, y: p.y + 1 }, { x: p.x, y: p.y - 1 });
+  }
+  return run;
+}
+
 function planRouteWithAvoidSet(map, from) {
   const grid = map.grid.map((row) => [...row]);
   const workingMap = { width: map.width, height: map.height, grid };
@@ -236,7 +257,12 @@ function planRouteWithAvoidSet(map, from) {
         legs.push({ kind: "walk", waypoints: pathToWaypoints(path) });
         const approachDir = { dx: found.door.x - found.from.x, dy: found.door.y - found.from.y };
         legs.push({ kind: "openDoor", doorTile: found.door, approachDir });
-        grid[found.door.y][found.door.x] = 0; // mirror openDoorAhead(): door tile becomes floor
+        // Mirror `openDoorAhead()`: one key opens the whole doorway, i.e. the
+        // 4-connected run of door tiles, not just the one pushed. Keeping this
+        // in step with the engine is what makes `openedDoorCount` a real key
+        // count — bill per tile and the planner thinks it needs five keys for
+        // a gate the player opens with one.
+        for (const tile of doorwayTiles(grid, found.door)) grid[tile.y][tile.x] = 0;
         openedDoorCount += 1;
         pos = { x: found.door.x + 0.5, y: found.door.y + 0.5 };
         continue;

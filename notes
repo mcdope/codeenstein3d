@@ -292,6 +292,12 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
 ## Open
 
 - [ ] clean this mess up, done should be moved somewhere else - most of it in decisions anyway i guess. some open entries should also go, manual task
+- [ ] if user set a online-wad, store it in prefs and restore automatically (add a button to clear wad textures / resetting the pref)
+- [ ] Add three multiplayer coop demo campaigns
+    - [ ] 1x finishable in 10-20min
+    - [ ] 1x finishable in 20-30min
+    - [ ] 1x finishable in 30-45min
+    - [ ] should be visually different, each one should have its own set of levels
 - [ ] **The playtest bot doesn't play like an opponent, and can't be made to without a rewrite of its decision layer.** User feedback after watching it (2026-07-27): "nowhere near a proper AI like we need for deathmatch multiplayer" — correct, and worth writing down *why*, since it's not one flaw but a set of design choices that are all right for its actual job (deterministic, reproducible playtest coverage) and all wrong for an opponent:
     - **It's a waypoint follower, not a navigator.** `driveToward` aims at BFS tile *centers* one tile apart and holds a movement key for a computed burst per decision. It structurally cannot take a smooth diagonal or cut a corner — the stuttering, grid-locked gait comes straight from this.
     - **Turning and moving are near-exclusive.** `#turnBurstMs` vs `#moveBurstMs` means a decision is mostly *either* a turn *or* a step (it only walks-while-turning under `MAX_WALK_WHILE_TURNING_RAD`). Hence "turn, walk, turn, walk" instead of running and aiming at once.
