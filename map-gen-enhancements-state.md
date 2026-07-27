@@ -11,7 +11,7 @@ once the work lands.** Plan: `~/.claude/plans/task-implement-4-lazy-dream.md`.
 - [x] **M2** Vendor Depots
 - [x] **M3a** `BRANCH_DOOR_TILE`
 - [x] **M3b** Switchboards
-- [ ] **M4** Exception Handling Zones
+- [x] **M4** Exception Handling Zones
 - [ ] **M5** Acid Overflow — map half
 - [ ] **M6** Acid Overflow — engine half
 - [ ] **M7** demo-campaign content + `verify:campaign` checklist

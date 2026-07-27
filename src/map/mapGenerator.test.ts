@@ -425,3 +425,70 @@ describe("MapGenerator.generate — Switchboards", () => {
     expect(errorSpy).not.toHaveBeenCalled();
   });
 });
+
+describe("MapGenerator.generate — Exception Handling Zones", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** A file with a try/catch inside its second (non-spawn) function. */
+  function tryParsed() {
+    return parsedFile({
+      linesOfCode: 80,
+      entities: [
+        entity({ name: "main", startLine: 1, endLine: 10 }),
+        entity({ name: "risky", startLine: 11, endLine: 40, complexityScore: 5 }),
+      ],
+      exceptionZones: [{ startLine: 12, endLine: 30, catchCount: 1, hasFinally: true }],
+    });
+  }
+
+  it("carves a zone and folds its hazards, traps, mines and loot into the map", () => {
+    const map = new MapGenerator().generate(tryParsed());
+    expect(map.exceptionZones).toHaveLength(1);
+    expect(map.hazards.length).toBeGreaterThan(0);
+    expect(map.spikeTraps.length).toBeGreaterThan(0);
+    expect(map.mines.length).toBeGreaterThan(0);
+    expect(map.ammoPickups.some((p) => p.kind === "health")).toBe(true);
+    expect(map.ammoPickups.some((p) => p.kind === "swap")).toBe(true);
+  });
+
+  it("carves nothing for a file with no try/catch", () => {
+    const map = new MapGenerator().generate(parsedFile({ entities: [entity(), entity({ name: "b", startLine: 6, endLine: 10 })] }));
+    expect(map.exceptionZones).toEqual([]);
+  });
+
+  it("places no zones at all when EXCEPTION_ZONES_ENABLED is flipped off", async () => {
+    vi.resetModules();
+    vi.doMock("./generation/exceptionZones", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("./generation/exceptionZones")>();
+      return { ...actual, EXCEPTION_ZONES_ENABLED: false };
+    });
+    const { MapGenerator: MockedMapGenerator } = await import("./mapGenerator");
+    const map = new MockedMapGenerator().generate(tryParsed());
+    expect(map.exceptionZones).toEqual([]);
+    vi.doUnmock("./generation/exceptionZones");
+    vi.resetModules();
+  });
+
+  it("leaves the rest of the map byte-identical when no file has a try/catch", async () => {
+    vi.resetModules();
+    vi.doMock("./generation/exceptionZones", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("./generation/exceptionZones")>();
+      return { ...actual, EXCEPTION_ZONES_ENABLED: false };
+    });
+    const { MapGenerator: MockedMapGenerator } = await import("./mapGenerator");
+    const parsed = parsedFile({ entities: [entity(), entity({ name: "b", startLine: 6, endLine: 10 })] });
+    const disabled = new MockedMapGenerator().generate(parsed);
+    vi.doUnmock("./generation/exceptionZones");
+    vi.resetModules();
+    const { MapGenerator: RealMapGenerator } = await import("./mapGenerator");
+    expect(new RealMapGenerator().generate(parsed)).toEqual(disabled);
+  });
+
+  it("keeps the whole level reachable — the connectivity safety net never fires", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    new MapGenerator().generate(tryParsed());
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+});
