@@ -169,6 +169,15 @@ export function diagonalStrafeKey(delta) {
   return delta > 0 ? "KeyD" : "KeyA";
 }
 
+// Floor for `#forwardScanTiles` — the fixed look-ahead the forward hazard/
+// spike checks used before sprinting made one decision's travel variable.
+// Kept as the minimum so short decision windows behave exactly as before.
+const FORWARD_SCAN_MIN_TILES = 0.6;
+// Spacing for `#segmentBlocked`'s samples along a movement segment. Comfortably
+// under one tile, so no single-tile acid strip or spike can fall between two
+// samples.
+const SEGMENT_SAMPLE_TILES = 0.25;
+
 // Position-unchanged-for-this-many-consecutive-ticks threshold before
 // `detectAnomalies` calls it a "stall".
 const STALL_TICKS_THRESHOLD = 20;
@@ -638,6 +647,64 @@ export class Bot {
       this.mineMemory.pendingTurnCheck = { beforeDir: currentAngle, turnBurstMs: Math.min(standardStepMs, neededMs), rotSpeedMultiplier };
     }
     return Math.max(1, Math.min(standardStepMs, neededMs));
+  }
+
+  /**
+   * How far ahead a forward-safety check has to look, in tiles: one whole
+   * decision's worth of real travel, floored at the historical fixed 0.6.
+   *
+   * The fixed value was safe only while the bot walked. Sprinting doubles the
+   * distance a single decision covers, and the decision window itself varies
+   * by an order of magnitude — ~0.32 tiles of sprint at `VIRTUAL_STEP_MS`
+   * (50ms, so the floor still governs), 0.83 headed at `WATCH_STEP_MS`, and
+   * 2.56 at `MultiplayerBot`'s 400ms window. Past the floor, a fixed 0.6-tile
+   * probe would clear a spike the bot then sprints straight onto within the
+   * same decision.
+   *
+   * Same decision-window-scaled idiom as `MELEE_CLOSE_MIN_DISTANCE`'s gate in
+   * the melee branch and `findDangerousMine`'s `reactionBufferTiles` — both
+   * added for exactly this class of bug, both at `MultiplayerBot`'s window.
+   */
+  #forwardScanTiles(sprinting) {
+    const speed = this.tuning.ENGINE_MOVE_SPEED * (sprinting ? this.tuning.ENGINE_SPRINT_MULTIPLIER : 1);
+    return Math.max(FORWARD_SCAN_MIN_TILES, speed * (this.stepMs / 1000));
+  }
+
+  /**
+   * Whether the straight segment from `from` along unit vector `dir` for
+   * `dist` tiles crosses anything the bot must not walk into.
+   *
+   * Samples the whole segment rather than only its endpoint. A 1-tile acid
+   * strip or a single spike tile is narrower than one sprint step, so an
+   * endpoint-only check happily steps *through* it and takes the damage
+   * anyway — the check would only ever catch a hazard the bot was about to
+   * stop on.
+   *
+   * Spikes are tested at both `levelTime` and the time the bot would arrive:
+   * a trap's damaging half is a timed cycle, so "safe right now" and "safe
+   * when I get there" are different questions and only the second one matters.
+   *
+   * `hazard` is opt-out because acid is not categorically a thing to avoid.
+   * `planRoute` already prices a hazard tile at 25x a floor tile, so a route
+   * that crosses acid crosses it because every alternative was worse — and
+   * once you are committed to crossing, moving *faster* is strictly better,
+   * which is exactly why the hazard-crossing branch sprints. Callers making
+   * an optional move (a dodge, a loot detour) pass the default and treat acid
+   * as blocking; callers following a committed route pass `hazard: false`.
+   */
+  #segmentBlocked(map, from, dir, dist, levelTime, { hazard = true } = {}) {
+    if (!map || dist <= 0) return false;
+    const arriveSec = dist / (this.tuning.ENGINE_MOVE_SPEED * this.tuning.ENGINE_SPRINT_MULTIPLIER);
+    const steps = Math.max(1, Math.ceil(dist / SEGMENT_SAMPLE_TILES));
+    for (let i = 1; i <= steps; i++) {
+      const t = (dist * i) / steps;
+      const sx = from.x + dir.x * t;
+      const sy = from.y + dir.y * t;
+      if (hazard && isHazardAt(map, sx, sy)) return true;
+      if (activeSpikeAt(map, sx, sy, levelTime)) return true;
+      if (activeSpikeAt(map, sx, sy, levelTime + arriveSec)) return true;
+    }
+    return false;
   }
 
   /** Straight-line-movement counterpart to `#turnBurstMs` — caps how long a
@@ -1157,7 +1224,38 @@ export class Bot {
       } else if (!blockedAhead) {
         // Don't step onto an active spike trap — wait out its cycle instead.
         moveKeys.add("KeyW");
-        turnBurst = this.#moveBurstMs(Math.hypot(navTarget.x - player.x, navTarget.y - player.y), false);
+        // Sprint the straight legs. The engine's SPRINT_MULTIPLIER (2.0) is
+        // free and unconditional, and the bot had simply never used it
+        // outside the two emergency branches — it walked whole campaigns at
+        // half speed, which inflates time-on-level, exposure, damage taken
+        // and ammo spent, and is what pushed one demo-campaign level past
+        // MAX_REPLAY_FRAMES_PER_LEVEL.
+        //
+        // Scoped to this sub-branch on purpose: here the heading is already
+        // converged (|delta| <= TURN_MOVE_EPS), so there is no turn key and
+        // therefore no interaction with the turn/move burst coupling — the
+        // single variable being changed is speed. The turn-and-walk branch
+        // above is deliberately left alone; sprinting *while* still
+        // correcting heading is a different change with a different risk and
+        // belongs to its own A/B.
+        //
+        // The burst must flip to `sprinting = true` in the same breath: it is
+        // what caps the hold so the bot stops at the waypoint, and leaving it
+        // at the walking speed would overshoot by exactly 2x.
+        const dist = Math.hypot(navTarget.x - player.x, navTarget.y - player.y);
+        const sprintDist = this.#forwardScanTiles(true);
+        // Gate the sprint, not the movement. Stopping dead for a spike two
+        // and a half tiles away would cost more level time than the damage it
+        // avoids; walking simply shortens the look-ahead until the existing
+        // `blockedAhead` check can make the call at close range.
+        // `hazard: false` — this is a committed route leg, and sprinting
+        // across acid the planner already decided was worth crossing spends
+        // less time in it, not more. Spikes still block, because a spike's
+        // damaging half passes on its own and is genuinely worth not
+        // sprinting into.
+        const sprinting = !this.#segmentBlocked(map, player, { x: player.dirX, y: player.dirY }, sprintDist, player.levelTime, { hazard: false });
+        if (sprinting) moveKeys.add("ShiftLeft");
+        turnBurst = this.#moveBurstMs(dist, sprinting);
       }
     }
 
