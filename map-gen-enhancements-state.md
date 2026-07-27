@@ -116,6 +116,12 @@ three profiles, every attempt `stuck` on level 1**. Reverting only the `main.c` 
 never the cause. All the new constructs now live in `stage12_render_engine.cpp`
 instead, which is enough for every checklist item.
 
+**Matched A/B, 14-attempt cap, `normal`:** branch **8/9** qualifying runs
+(Casual 2/3, Gamer 3/3, Pro 3/3) vs baseline **7/9** (Casual 3/3, Gamer 2/3,
+Pro 2/3). Statistically indistinguishable — no balance regression. (The
+5-attempt default is far too noisy to read anything from; both sides swung
+between 0/3 and 2/3 on the same profile across runs.)
+
 **`stuck@L1` is pre-existing.** Once main.c was restored, both branch and baseline
 show `stuck@L1` as the dominant failure at this scan's 5-attempt cap (baseline: 3/4/5
 attempts across Casual/Gamer/Pro). It is not a regression from this work.
