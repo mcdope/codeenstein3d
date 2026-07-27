@@ -557,6 +557,8 @@ export function runMultiplayerSessionAsGuest(
     /* v8 ignore next -- @preserve */
     getMinesSnapshot: () => engine?.getMinesSnapshot() ?? [],
     /* v8 ignore next -- @preserve */
+    getProjectilesSnapshot: () => engine?.getProjectilesSnapshot() ?? [],
+    /* v8 ignore next -- @preserve */
     getDropsSnapshot: () => engine?.getDropsSnapshot() ?? [],
     /* v8 ignore next -- @preserve */
     getKeysSnapshot: () => engine?.getKeysSnapshot() ?? [],

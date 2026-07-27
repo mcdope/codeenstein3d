@@ -1895,6 +1895,7 @@ if (isTestHooksActive()) {
         getMap: () => unknown | null;
         getEnemiesSnapshot: () => { x: number; y: number; alive: boolean; aggroed: boolean; elite: boolean; edgeCase: boolean; hp: number; maxHp: number }[];
         getMinesSnapshot: () => { x: number; y: number; alive: boolean; visible: boolean }[];
+        getProjectilesSnapshot: () => { x: number; y: number; vx: number; vy: number; damage: number; targetId: string }[];
         getDropsSnapshot: () => { x: number; y: number; kind: string }[];
         getKeysSnapshot: () => { x: number; y: number }[];
         getBotPlayerState: (id: string) => {
@@ -2018,6 +2019,7 @@ if (isTestHooksActive()) {
     getMap: () => activeMultiplayerSession?.getMap() ?? null,
     getEnemiesSnapshot: () => activeMultiplayerSession?.getEnemiesSnapshot() ?? [],
     getMinesSnapshot: () => activeMultiplayerSession?.getMinesSnapshot() ?? [],
+    getProjectilesSnapshot: () => activeMultiplayerSession?.getProjectilesSnapshot() ?? [],
     getDropsSnapshot: () => activeMultiplayerSession?.getDropsSnapshot() ?? [],
     getKeysSnapshot: () => activeMultiplayerSession?.getKeysSnapshot() ?? [],
     getBotPlayerState: (id) => activeMultiplayerSession?.getBotPlayerState(id) ?? null,

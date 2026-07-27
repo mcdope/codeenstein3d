@@ -418,6 +418,9 @@ describe("RaycasterEngine — construction", () => {
         expect.objectContaining({ x: enemy.x, y: enemy.y, alive: true, edgeCase: expect.any(Boolean) }),
       ]);
       expect(hooks!.getMines()).toEqual([]);
+      // Nothing has fired yet — the shape is asserted by the dedicated
+      // getProjectilesSnapshot tests further down.
+      expect(hooks!.getProjectiles()).toEqual([]);
       expect(hooks!.getDrops()).toEqual([]);
       expect(hooks!.getKeys()).toEqual([]);
       expect(hooks!.getTelemetrySnapshot()).toMatchObject({
@@ -3201,6 +3204,46 @@ describe("RaycasterEngine — addPlayer / roster (N-player)", () => {
       { x: 3, y: 3, alive: true, aggroed: false, elite: false, edgeCase: false, hp: 10, maxHp: 10 },
     ]);
     expect(engine.getMinesSnapshot()).toEqual([{ x: 4, y: 4, alive: true, visible: true }]);
+  });
+
+  it("getProjectilesSnapshot exposes real in-flight enemy bolts, travelling at PROJECTILE_SPEED", () => {
+    // An already-aggroed enemy with no fire cooldown left, standing well
+    // inside RANGED_RANGE (8) of the spawn with nothing but open floor
+    // between them: exactly the situation enemyAi.ts fires a bolt in, on the
+    // very first frame.
+    const map = fakeMap({ spawn: { x: 5, y: 5 }, enemies: [fakeEnemy({ x: 6, y: 5, aggroed: true, fireCooldown: 0 })] });
+    const { engine } = makeEngine(map);
+    expect(engine.getProjectilesSnapshot()).toEqual([]);
+    engine.advance(0.016);
+    const bolts = engine.getProjectilesSnapshot();
+    expect(bolts).toHaveLength(1);
+    expect(bolts[0]).toEqual({
+      x: expect.any(Number),
+      y: expect.any(Number),
+      vx: expect.any(Number),
+      vy: expect.any(Number),
+      damage: expect.any(Number),
+      targetId: "local",
+    });
+    // Whatever aim spread the difficulty applies only rotates the heading —
+    // the speed itself is fixed, which is what makes flight time (and so
+    // dodgeability) predictable for a bot reading this.
+    expect(Math.hypot(bolts[0].vx, bolts[0].vy)).toBeCloseTo(5, 5);
+  });
+
+  it("getProjectilesSnapshot returns copies, so a caller can't steer live bolts", () => {
+    const map = fakeMap({ spawn: { x: 5, y: 5 }, enemies: [fakeEnemy({ x: 6, y: 5, aggroed: true, fireCooldown: 0 })] });
+    const { engine } = makeEngine(map);
+    engine.advance(0.016);
+    const before = engine.getProjectilesSnapshot();
+    expect(before).toHaveLength(1);
+    before[0].x = 999;
+    before[0].vx = 999;
+    before[0].targetId = "someone-else";
+    const after = engine.getProjectilesSnapshot();
+    expect(after[0].x).not.toBe(999);
+    expect(after[0].vx).not.toBe(999);
+    expect(after[0].targetId).toBe("local");
   });
 
   it("getDropsSnapshot/getKeysSnapshot mirror __codeensteinTestHooks' getDrops/getKeys, roster-agnostic", () => {

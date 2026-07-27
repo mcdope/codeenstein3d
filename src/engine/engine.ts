@@ -1023,6 +1023,13 @@ export class RaycasterEngine {
             maxHp: e.maxHp,
           })),
         getMines: () => this.map.mines.map((m) => ({ x: m.x, y: m.y, alive: m.alive, visible: m.visible })),
+        // In-flight enemy bolts. Without this, a bot can see the enemy that
+        // shot at it but not the shot itself — bolts have real flight time
+        // and never re-aim, so they're dodgeable, yet a bot blind to them can
+        // only ever react after the damage has already landed. Shares one
+        // implementation with the multiplayer getter, see
+        // `getProjectilesSnapshot`'s own doc comment.
+        getProjectiles: () => this.getProjectilesSnapshot(),
         // Dynamic kill-drop loot — distinct from the map's static
         // `AmmoPickup`s (which `scripts/lib/staticLevelAnalysis.mjs` already
         // knows about from Node-side map generation, before any enemy has
@@ -1406,6 +1413,29 @@ export class RaycasterEngine {
    * roster-agnostic, identical shape. */
   getMinesSnapshot(): { x: number; y: number; alive: boolean; visible: boolean }[] {
     return this.map.mines.map((m) => ({ x: m.x, y: m.y, alive: m.alive, visible: m.visible }));
+  }
+
+  /** In-flight enemy bolts, as plain copies. Unlike melee, a ranged attack is
+   * not instantaneous: a bolt leaves the enemy at `PROJECTILE_SPEED` (5
+   * tiles/sec, see `projectiles.ts`) aimed at wherever its target *stood at
+   * the moment of firing*, and never re-aims afterwards — which is precisely
+   * what makes it dodgeable by stepping sideways. A bot that can't see bolts
+   * has no way to exercise that: it only ever learns a shot existed by
+   * noticing its own health dropped, one full flight-time too late to do
+   * anything about it. `targetId` is part of the shape because a bolt is
+   * locked to the single player it was fired at (`updateProjectiles`' doc
+   * comment in `projectiles.ts` explains why it must never redirect), so a
+   * multiplayer bot has to ignore every bolt addressed to someone else
+   * instead of dodging shots that were never going to touch it. */
+  getProjectilesSnapshot(): { x: number; y: number; vx: number; vy: number; damage: number; targetId: string }[] {
+    return this.projectiles.map((p) => ({
+      x: p.x,
+      y: p.y,
+      vx: p.vx,
+      vy: p.vy,
+      damage: p.damage,
+      targetId: p.targetId,
+    }));
   }
 
   /** Multiplayer-only equivalent of `__codeensteinTestHooks.getDrops()` —

@@ -3273,6 +3273,7 @@ describe("main.ts — multiplayer connect flow", () => {
       getMap: () => unknown | null;
       getEnemiesSnapshot: () => unknown[];
       getMinesSnapshot: () => unknown[];
+      getProjectilesSnapshot: () => unknown[];
       getDropsSnapshot: () => unknown[];
       getKeysSnapshot: () => unknown[];
       getBotPlayerState: (id: string) => { x: number; y: number; state: string } | null;
@@ -3302,6 +3303,7 @@ describe("main.ts — multiplayer connect flow", () => {
             getMap: () => unknown | null;
             getEnemiesSnapshot: () => unknown[];
             getMinesSnapshot: () => unknown[];
+            getProjectilesSnapshot: () => unknown[];
             getDropsSnapshot: () => unknown[];
             getKeysSnapshot: () => unknown[];
             getBotPlayerState: (id: string) => { x: number; y: number; state: string } | null;
@@ -3442,6 +3444,7 @@ describe("main.ts — multiplayer connect flow", () => {
         expect(multiplayerHooks().getMap()).toBeNull();
         expect(multiplayerHooks().getEnemiesSnapshot()).toEqual([]);
         expect(multiplayerHooks().getMinesSnapshot()).toEqual([]);
+        expect(multiplayerHooks().getProjectilesSnapshot()).toEqual([]);
         expect(multiplayerHooks().getBotPlayerState("host")).toBeNull();
         expect(multiplayerHooks().getDropsSnapshot()).toEqual([]);
         expect(multiplayerHooks().getKeysSnapshot()).toEqual([]);
@@ -3509,6 +3512,7 @@ describe("main.ts — multiplayer connect flow", () => {
         expect(hooks.getMap()).not.toBeNull();
         expect(Array.isArray(hooks.getEnemiesSnapshot())).toBe(true);
         expect(Array.isArray(hooks.getMinesSnapshot())).toBe(true);
+        expect(Array.isArray(hooks.getProjectilesSnapshot())).toBe(true);
         expect(hooks.getBotPlayerState("host")).toMatchObject({ state: "playing" });
         expect(Array.isArray(hooks.getDropsSnapshot())).toBe(true);
         expect(Array.isArray(hooks.getKeysSnapshot())).toBe(true);
