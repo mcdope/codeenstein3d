@@ -6,7 +6,7 @@ import { loadDemoCampaignTree } from "../fs/demoCampaign";
 import { readFileText } from "../fs/workspace";
 import type { CodeEntity, ParsedFile } from "../parser/types";
 import { extensionOf, parseFile } from "../parser/registry";
-import { BRANCH_DOOR_TILE, DOOR_TILE } from "./types";
+import { BRANCH_DOOR_TILE, DOOR_TILE, HAZARD_TILE } from "./types";
 import { MapGenerator } from "./mapGenerator";
 
 function parsedFile(overrides: Partial<ParsedFile> = {}): ParsedFile {
@@ -490,5 +490,110 @@ describe("MapGenerator.generate — Exception Handling Zones", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     new MapGenerator().generate(tryParsed());
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("MapGenerator.generate — Acid Overflow", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** A file whose second function allocates densely enough to leak. */
+  function leakyParsed() {
+    return parsedFile({
+      linesOfCode: 80,
+      entities: [
+        entity({ name: "main", startLine: 1, endLine: 10 }),
+        entity({ name: "leaky", startLine: 11, endLine: 50, complexityScore: 6, allocations: 12 }),
+      ],
+    });
+  }
+
+  it("plans an overflow for the leaky function's room", () => {
+    const map = new MapGenerator().generate(leakyParsed());
+    expect(map.acidOverflows).toHaveLength(1);
+    expect(map.acidOverflows[0].tiles.length).toBeGreaterThan(0);
+  });
+
+  it("points its enemyIndex at a real, live enemy for that same entity", () => {
+    const map = new MapGenerator().generate(leakyParsed());
+    const overflow = map.acidOverflows[0];
+    const enemy = map.enemies[overflow.enemyIndex];
+    expect(enemy).toBeDefined();
+    expect(enemy.alive).toBe(true);
+    expect(enemy.entity.name).toBe("leaky");
+  });
+
+  it("only ever lists tiles that are plain floor on the finished grid", () => {
+    // The whole safety argument for skipping `pendingGridDelta` at runtime
+    // rests on this: nothing in the list can be a door, pad, spike, secret
+    // wall, lore terminal or pre-existing acid tile.
+    const map = new MapGenerator().generate(leakyParsed());
+    for (const tile of map.acidOverflows[0].tiles) {
+      expect(map.grid[tile.y][tile.x]).toBe(0);
+    }
+  });
+
+  it("never lists the spawn or exit tile", () => {
+    const map = new MapGenerator().generate(leakyParsed());
+    for (const tile of map.acidOverflows[0].tiles) {
+      expect(tile).not.toEqual(map.spawn);
+      expect(tile).not.toEqual(map.exit);
+    }
+  });
+
+  it("never lists a tile a mine or key is standing on", () => {
+    // Both sit on plain floor, so the grid check alone can't exclude them.
+    const map = new MapGenerator().generate(leakyParsed());
+    const listed = new Set(map.acidOverflows[0].tiles.map((t) => `${t.x},${t.y}`));
+    for (const mine of map.mines) expect(listed.has(`${Math.floor(mine.x)},${Math.floor(mine.y)}`)).toBe(false);
+    for (const k of map.keys) expect(listed.has(`${Math.floor(k.x)},${Math.floor(k.y)}`)).toBe(false);
+  });
+
+  it("plans nothing for a file with no allocation-dense function", () => {
+    const map = new MapGenerator().generate(parsedFile({ entities: [entity(), entity({ name: "b", startLine: 6, endLine: 10 })] }));
+    expect(map.acidOverflows).toEqual([]);
+  });
+
+  it("writes no acid into the grid at generation time", () => {
+    // Everything the overflow does happens at runtime; a freshly generated
+    // level has exactly the hazards its globals and exception zones put there.
+    const map = new MapGenerator().generate(leakyParsed());
+    const acidTiles: string[] = [];
+    map.grid.forEach((row, y) => row.forEach((tile, x) => {
+      if (tile === HAZARD_TILE) acidTiles.push(`${x},${y}`);
+    }));
+    expect(acidTiles.sort()).toEqual(map.hazards.map((h) => `${h.x},${h.y}`).sort());
+  });
+
+  it("plans nothing at all when ACID_OVERFLOW_ENABLED is flipped off", async () => {
+    vi.resetModules();
+    vi.doMock("./generation/acidOverflow", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("./generation/acidOverflow")>();
+      return { ...actual, ACID_OVERFLOW_ENABLED: false };
+    });
+    const { MapGenerator: MockedMapGenerator } = await import("./mapGenerator");
+    expect(new MockedMapGenerator().generate(leakyParsed()).acidOverflows).toEqual([]);
+    vi.doUnmock("./generation/acidOverflow");
+    vi.resetModules();
+  });
+
+  it("leaves the rest of the map byte-identical either way — it draws no rng", () => {
+    // The planning pass is appended at the very end of `generate()` precisely
+    // because it consumes nothing from the shared stream.
+    vi.resetModules();
+    const parsed = leakyParsed();
+    const enabled = new MapGenerator().generate(parsed);
+    return (async () => {
+      vi.doMock("./generation/acidOverflow", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("./generation/acidOverflow")>();
+        return { ...actual, ACID_OVERFLOW_ENABLED: false };
+      });
+      const { MapGenerator: MockedMapGenerator } = await import("./mapGenerator");
+      const disabled = new MockedMapGenerator().generate(parsed);
+      vi.doUnmock("./generation/acidOverflow");
+      vi.resetModules();
+      expect({ ...enabled, acidOverflows: [] }).toEqual(disabled);
+    })();
   });
 });

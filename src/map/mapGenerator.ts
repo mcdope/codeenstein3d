@@ -21,6 +21,7 @@
 import type { CodeEntity, ParsedFile } from "../parser/types";
 import { mulberry32 } from "../prng";
 import type { GameMap, Point, Room, Tile } from "./types";
+import { ACID_OVERFLOW_ENABLED, planAcidOverflows } from "./generation/acidOverflow";
 import { breakUpLongCorridors } from "./generation/breakup";
 import { connectRooms } from "./generation/corridors";
 import { placeDoors, placeKeys } from "./generation/doorsKeys";
@@ -279,6 +280,24 @@ export class MapGenerator {
       ...exception.pickups,
     ];
 
+    // Acid Overflow planning goes dead last, for two reasons. It must see the
+    // FINAL grid, so its candidate tiles are guaranteed to be plain floor that
+    // nothing else claimed — that guarantee is what lets the runtime pass skip
+    // `pendingGridDelta` entirely (see `AcidOverflow`'s doc comment). And it
+    // draws zero rng, so appending it here perturbs nothing: a file with no
+    // allocation-dense function generates a byte-identical map either way.
+    //
+    // `reserved` is the accumulated avoid-list plus every tile a system claimed
+    // *without* marking the grid — mines and keys both sit on plain floor, so
+    // the `grid[y][x] === 0` test alone genuinely isn't enough.
+    const reserved = new Set<string>([
+      ...ammoAvoid.map((p) => `${Math.floor(p.x)},${Math.floor(p.y)}`),
+      ...ammoPickups.map((p) => `${Math.floor(p.x)},${Math.floor(p.y)}`),
+      `${spawn.x},${spawn.y}`,
+      `${exit.x},${exit.y}`,
+    ]);
+    const acidOverflows = ACID_OVERFLOW_ENABLED ? planAcidOverflows(rooms, grid, enemies, reserved) : [];
+
     // Fog-of-war overlay grid, all unexplored until the player moves through.
     const visited: boolean[][] = Array.from({ length: size }, () =>
       new Array<boolean>(size).fill(false),
@@ -316,7 +335,7 @@ export class MapGenerator {
       switchboardRooms,
       exceptionZones: exception.zones,
       vendorDepots: vendor.depots,
-      acidOverflows: [],
+      acidOverflows,
     };
   }
 
