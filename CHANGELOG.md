@@ -1,6 +1,6 @@
 # Changelog
 
-## beta-6
+## Unreleased
 
 - New: a `switch` (or `match`) statement now builds a **Switchboard** — the room for that function becomes a junction, with a short dead-end spur for every `case`, each behind an amber push-open door. Every spur has something small in it: a weak enemy, a trap, or a bit of ammo. The `default` branch doesn't get a spur, because it's the way onward
 - New: a `try`/`catch`/`finally` becomes a three-part detour: a narrow acid corridor with spike traps and a mine to get through, an alcove of guaranteed health *and* armor waiting at the far end, and a safe room with guaranteed loot past that
