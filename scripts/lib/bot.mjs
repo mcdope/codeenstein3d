@@ -671,6 +671,32 @@ export class Bot {
   }
 
   /**
+   * Shortest decision this bot may issue, in ms. Zero here: under the virtual
+   * clock there is no transport between deciding and the engine seeing it, so
+   * a 5ms burst lands exactly as 5ms of movement, and short bursts are the
+   * whole anti-overshoot mechanism.
+   *
+   * `MultiplayerBot` overrides it, and the reason is load-bearing rather than
+   * defensive — see its own doc comment. Every input there is delayed
+   * `INPUT_DELAY_TICKS` (~100ms) before it reaches the shared simulation, and
+   * a bot whose decision window is not comfortably longer than that delay
+   * re-issues a fresh command before the previous one has finished arriving.
+   * That was confirmed directly, twice, and is why `DEFAULT_STEP_MS` is 400
+   * rather than `WATCH_STEP_MS`'s 130.
+   *
+   * The trap this guards is that a *speed* change silently becomes a *timing*
+   * change: `#moveBurstMs` caps the hold at however long the move needs, so
+   * doubling the speed halves the decision window for the same distance. That
+   * turned a single-player-only sprint into a multiplayer navigation failure
+   * (`verify:multiplayer-transition`, the one CI-wired bot script, went from
+   * pass to "host got stuck on the final approach") with no multiplayer code
+   * changed at all.
+   */
+  get minDecisionMs() {
+    return 0;
+  }
+
+  /**
    * Whether the straight segment from `from` along unit vector `dir` for
    * `dist` tiles crosses anything the bot must not walk into.
    *
@@ -1243,6 +1269,13 @@ export class Bot {
         // what caps the hold so the bot stops at the waypoint, and leaving it
         // at the walking speed would overshoot by exactly 2x.
         const dist = Math.hypot(navTarget.x - player.x, navTarget.y - player.y);
+        // Sprinting halves how long the hold needs to be, and the hold *is*
+        // the decision window — so on a short leg, sprinting can shrink the
+        // window below what the transport can carry. Walking the same leg
+        // gives twice the window, so falling back to a walk is what keeps the
+        // window safe, not stopping. Always true under the virtual clock
+        // (`minDecisionMs` 0), so single-player behaviour is unaffected.
+        const windowSafe = this.#moveBurstMs(dist, true) >= this.minDecisionMs;
         const sprintDist = this.#forwardScanTiles(true);
         // Gate the sprint, not the movement. Stopping dead for a spike two
         // and a half tiles away would cost more level time than the damage it
@@ -1253,7 +1286,8 @@ export class Bot {
         // less time in it, not more. Spikes still block, because a spike's
         // damaging half passes on its own and is genuinely worth not
         // sprinting into.
-        const sprinting = !this.#segmentBlocked(map, player, { x: player.dirX, y: player.dirY }, sprintDist, player.levelTime, { hazard: false });
+        const sprinting =
+          windowSafe && !this.#segmentBlocked(map, player, { x: player.dirX, y: player.dirY }, sprintDist, player.levelTime, { hazard: false });
         if (sprinting) moveKeys.add("ShiftLeft");
         turnBurst = this.#moveBurstMs(dist, sprinting);
       }

@@ -90,6 +90,22 @@ import { bfsPath, pathToWaypoints } from "./pathfind.mjs";
  * the window, not the majority of it. */
 const DEFAULT_STEP_MS = 400;
 
+/** Floor for `Bot#minDecisionMs` here — a decision shorter than this puts
+ * `INPUT_DELAY_TICKS`' fixed ~100ms back into majority of the window, which is
+ * the failure this module's `DEFAULT_STEP_MS` exists to avoid. Set to 3x that
+ * delay, the same "delay is a minority" rule `DEFAULT_STEP_MS` is derived from.
+ *
+ * This matters because a decision window is not only chosen by `stepMs` — the
+ * burst helpers shorten it, so any *speed* increase silently shortens it too.
+ * Sprinting on straight navigation legs halved the window for a given leg
+ * length and reintroduced the spin-in-place failure verbatim, breaking
+ * `verify:multiplayer-transition` while single-player telemetry improved
+ * ~30%. The bot now walks a leg whose sprint window would fall under this
+ * floor; at a 1-tile waypoint spacing that is most legs here, which is the
+ * intended conservative outcome — sprinting is a single-player win until the
+ * decision loop is restructured to hold each key for its own duration. */
+const MIN_DECISION_MS = 300;
+
 /** See this module's own doc comment for the full reasoning — comfortably
  * above the max realistic per-decision travel distance at `DEFAULT_STEP_MS`
  * (sprint speed × step duration), so only a real teleporter-scale warp
@@ -155,6 +171,13 @@ export class MultiplayerBot extends Bot {
      * trip — see `DETOUR_RECHECK_MS`. Starts at 0 so the very first call
      * (leg start) always runs for real. */
     this.lastDetourCheckAt = 0;
+  }
+
+  /** See `MIN_DECISION_MS`. Unlike single-player's virtual clock, a decision
+   * here has to survive a real ~100ms transport delay before the simulation
+   * sees it, so the window can't be allowed to shrink to the delay's scale. */
+  get minDecisionMs() {
+    return MIN_DECISION_MS;
   }
 
   async readFull() {
