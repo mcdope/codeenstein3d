@@ -558,10 +558,10 @@ export class Bot {
    * from the original script's call site rather than folded into `this.map`
    * implicitly.
    */
-  async tick(player, enemies, mines, navTarget, map) {
+  async tick(player, enemies, mines, navTarget, map, projectiles = []) {
     this.#checkRotationAnomaly(player, Math.atan2(player.dirY, player.dirX));
     const intent = decide(
-      { player, enemies, mines, navTarget, map },
+      { player, enemies, mines, navTarget, map, projectiles },
       this.mineMemory,
       {
         profile: this.profile,
@@ -572,6 +572,10 @@ export class Bot {
         lastFireSimTimeMs: this.lastFireSimTimeMs,
         minDecisionMs: this.minDecisionMs,
         logger: this.logger,
+        // Only `MultiplayerBot` has a roster id. A bolt is locked to one
+        // target for its whole life, so multiplayer must ignore shots aimed at
+        // a team-mate; single-player has one player and passes null.
+        selfId: this.playerId ?? null,
       },
     );
     // The semi-auto fire clock is per-`Bot`, not per-decision, so the policy
@@ -585,7 +589,7 @@ export class Bot {
   }
 
   async driveToward(point, eps, maxTicks) {
-    let { player, enemies, mines } = await this.readFull();
+    let { player, enemies, mines, projectiles } = await this.readFull();
     for (let t = 0; t < maxTicks; t++) {
       if (player.state !== "playing") {
         await this.applyAction(this.#releaseIntent());
@@ -601,7 +605,7 @@ export class Bot {
       }
       const prevX = player.x;
       const prevY = player.y;
-      ({ player, enemies, mines } = await this.tick(player, enemies, mines, point, this.map));
+      ({ player, enemies, mines, projectiles } = await this.tick(player, enemies, mines, point, this.map, projectiles));
       // A BFS-derived waypoint can end up targeting a teleporter pad's exact
       // tile-center; stepping onto it always warps the player away before
       // this loop's own arrival check is satisfied. Detect a jump far
@@ -617,7 +621,7 @@ export class Bot {
   }
 
   async faceAngle(targetAngle, maxTicks) {
-    let { player, enemies, mines } = await this.readFull();
+    let { player, enemies, mines, projectiles } = await this.readFull();
     for (let t = 0; t < maxTicks; t++) {
       if (player.state !== "playing") return { state: player.state };
       const threat = pickThreat(enemies, player, this.profile, this.map);
@@ -650,7 +654,7 @@ export class Bot {
         continue;
       }
       // `map` explicitly omitted here — see `tick`'s doc comment.
-      ({ player, enemies, mines } = await this.tick(player, enemies, mines, null, undefined));
+      ({ player, enemies, mines, projectiles } = await this.tick(player, enemies, mines, null, undefined, projectiles));
     }
     await this.applyAction(this.#releaseIntent());
     return { state: "playing" };
@@ -679,7 +683,7 @@ export class Bot {
   async readFull() {
     return this.page.evaluate(() => {
       const hooks = window.__codeensteinTestHooks;
-      return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines() };
+      return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines(), projectiles: hooks.getProjectiles?.() ?? [] };
     });
   }
 
@@ -795,7 +799,7 @@ export class Bot {
         if (headed) return { fireCode: isLast ? fireCode : null };
         window.__pumpVirtualTime(stepMs, subStepMs);
         if (fireCode && isLast) canvas.dispatchEvent(new KeyboardEvent("keyup", { code: fireCode }));
-        return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines() };
+        return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines(), projectiles: hooks.getProjectiles?.() ?? [] };
       },
       { desiredKeys: [...keys], fire, weaponSwitchIndex, useMelee, stepMs: ms, subStepMs, headed, isFirst, isLast },
     );
@@ -805,7 +809,7 @@ export class Bot {
       const canvas = document.querySelector("canvas");
       if (fireCode) canvas.dispatchEvent(new KeyboardEvent("keyup", { code: fireCode }));
       const hooks = window.__codeensteinTestHooks;
-      return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines() };
+      return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines(), projectiles: hooks.getProjectiles?.() ?? [] };
     }, dispatched.fireCode);
   }
 }

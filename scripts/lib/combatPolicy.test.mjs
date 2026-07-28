@@ -24,13 +24,16 @@ import {
   DEFAULT_TUNING,
   findDangerousMine,
   forwardScanTiles,
+  boltThreat,
   combatStrafeKey,
+  dodgeStrafeKey,
   hasLineOfSight,
   isHazardAt,
   moveBurstMs,
   pickRangedWeapon,
   pickThreat,
   segmentBlocked,
+  pickIncomingBolt,
   segmentsFor,
   strafeIsSafe,
   turnBurstMs,
@@ -683,5 +686,169 @@ describe("decide — diagnostics", () => {
   it("works with no map, the shape faceAngle uses", () => {
     const intent = decide({ player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: null, map: undefined }, freshMemory(), makeConfig());
     expect(intent.branch).toBe("main");
+  });
+});
+
+/** A bolt heading in +x at PROJECTILE_SPEED, `perp` tiles off the player's line. */
+function boltAt(x, y, vx = 5, vy = 0, over = {}) {
+  return { x, y, vx, vy, damage: 8, targetId: "local", ...over };
+}
+
+const LOOKAHEAD = Math.max(DEFAULT_TUNING.DODGE_MIN_LOOKAHEAD_SEC, DEFAULT_TUNING.DODGE_LOOKAHEAD_DECISIONS * 0.05);
+
+describe("boltThreat", () => {
+  const player = makePlayer(); // (10.5, 10.5) facing +x
+
+  it("sees a bolt closing head-on and reports time to impact", () => {
+    // 2 tiles away at 5 tiles/sec.
+    const t = boltThreat(boltAt(8.5, 10.5), player, LOOKAHEAD, DEFAULT_TUNING);
+    expect(t).not.toBeNull();
+    expect(t.tti).toBeCloseTo(0.4);
+    expect(Math.abs(t.perp)).toBeLessThan(1e-9);
+  });
+
+  it("ignores a bolt already past the player", () => {
+    // Same heading, but now beyond the player — receding.
+    expect(boltThreat(boltAt(12.5, 10.5), player, LOOKAHEAD, DEFAULT_TUNING)).toBeNull();
+  });
+
+  it("ignores a bolt that is already going to miss", () => {
+    // Offset well beyond DODGE_MISS_MARGIN from the flight line.
+    expect(boltThreat(boltAt(8.5, 13.5), player, LOOKAHEAD, DEFAULT_TUNING)).toBeNull();
+  });
+
+  it("ignores a bolt still further out than the lookahead", () => {
+    // 20 tiles at 5 t/s is 4s, far past the ~0.35s window.
+    expect(boltThreat(boltAt(-9.5, 10.5), player, LOOKAHEAD, DEFAULT_TUNING)).toBeNull();
+  });
+
+  it("reports which side a near-miss passes on", () => {
+    const above = boltThreat(boltAt(8.5, 10.2), player, LOOKAHEAD, DEFAULT_TUNING);
+    const below = boltThreat(boltAt(8.5, 10.8), player, LOOKAHEAD, DEFAULT_TUNING);
+    expect(Math.sign(above.perp)).toBe(-Math.sign(below.perp));
+  });
+
+  it("ignores a zero-velocity bolt rather than dividing by zero", () => {
+    expect(boltThreat(boltAt(8.5, 10.5, 0, 0), player, LOOKAHEAD, DEFAULT_TUNING)).toBeNull();
+  });
+});
+
+describe("pickIncomingBolt", () => {
+  const player = makePlayer();
+
+  it("picks the most urgent of several inbound bolts", () => {
+    const bolts = [boltAt(9.0, 10.5), boltAt(9.8, 10.5)];
+    expect(pickIncomingBolt(bolts, player, LOOKAHEAD, DEFAULT_TUNING).i).toBe(1);
+  });
+
+  it("ignores bolts aimed at somebody else", () => {
+    // A bolt locked to a team-mate can never hit this player, so dodging it
+    // would be pure cost.
+    const bolts = [boltAt(9.0, 10.5, 5, 0, { targetId: "guest" })];
+    expect(pickIncomingBolt(bolts, player, LOOKAHEAD, DEFAULT_TUNING, "local")).toBeNull();
+    expect(pickIncomingBolt(bolts, player, LOOKAHEAD, DEFAULT_TUNING, "guest")).not.toBeNull();
+  });
+
+  it("returns null for an empty or missing list", () => {
+    expect(pickIncomingBolt([], player, LOOKAHEAD, DEFAULT_TUNING)).toBeNull();
+    expect(pickIncomingBolt(undefined, player, LOOKAHEAD, DEFAULT_TUNING)).toBeNull();
+  });
+});
+
+describe("dodgeStrafeKey", () => {
+  const player = makePlayer(); // facing +x, so right is +y
+
+  it("steps toward the side the bolt is already passing", () => {
+    // Bolt passes slightly on the +y side; widening that gap means moving +y,
+    // which is KeyD for a player facing +x.
+    const bolt = boltAt(8.5, 10.8);
+    const t = boltThreat(bolt, player, LOOKAHEAD, DEFAULT_TUNING);
+    const key = dodgeStrafeKey(bolt, t, player);
+    const otherBolt = boltAt(8.5, 10.2);
+    const otherT = boltThreat(otherBolt, player, LOOKAHEAD, DEFAULT_TUNING);
+    expect(dodgeStrafeKey(otherBolt, otherT, player)).not.toBe(key);
+  });
+
+  it("breaks toward KeyD for a dead-on bolt", () => {
+    // Every bolt on Hard is dead-on: enemyAimSpreadDeg is 0 there, so this is
+    // the common case, not an edge case.
+    const bolt = boltAt(8.5, 10.5);
+    const t = boltThreat(bolt, player, LOOKAHEAD, DEFAULT_TUNING);
+    expect(dodgeStrafeKey(bolt, t, player)).toBe("KeyD");
+  });
+});
+
+describe("decide — bolt dodging", () => {
+  const engaged = (over = {}) => ({
+    player: makePlayer(),
+    enemies: [makeEnemy()],
+    mines: [],
+    navTarget: null,
+    map: makeMap(),
+    ...over,
+  });
+
+  it("steps off the flight line of an inbound bolt", () => {
+    // The bolt flies along y=10.2 and the player sits at y=10.5, i.e. already
+    // clear on the +y side — so widening the gap means continuing +y, which is
+    // KeyD for a player facing +x. A bolt on the other side must pick KeyA.
+    const above = decide(engaged({ projectiles: [boltAt(8.5, 10.2)] }), freshMemory(), makeConfig());
+    expect(above.trace.dodgedBolt).toBe(true);
+    expect(keysOf(above)).toContain("KeyD");
+
+    const below = decide(engaged({ projectiles: [boltAt(8.5, 10.8)] }), freshMemory(), makeConfig());
+    expect(below.trace.dodgedBolt).toBe(true);
+    expect(keysOf(below)).toContain("KeyA");
+  });
+
+  it("sprints the dodge, but never the blind oscillation", () => {
+    // The one moment the bot knows it is about to be hit is worth spending
+    // sprint on; a standing dance is not, or it would drift.
+    const dodging = decide(engaged({ projectiles: [boltAt(8.5, 10.5)] }), freshMemory(), makeConfig());
+    expect(dodging.trace.dodgedBolt).toBe(true);
+    expect(keysOf(dodging)).toContain("ShiftLeft");
+
+    const idle = decide(engaged({ projectiles: [] }), freshMemory(), makeConfig());
+    expect(keysOf(idle)).not.toContain("ShiftLeft");
+  });
+
+  it("never holds forward alongside the dodge, so diagonalScale never applies", () => {
+    const intent = decide(engaged({ projectiles: [boltAt(8.5, 10.5)] }), freshMemory(), makeConfig());
+    expect(keysOf(intent)).not.toContain("KeyW");
+  });
+
+  it("falls back to the blind oscillation when nothing is inbound", () => {
+    const intent = decide(engaged({ projectiles: [] }), freshMemory(), makeConfig());
+    expect(intent.trace.dodgedBolt).toBe(false);
+    expect(keysOf(intent).some((k) => k === "KeyA" || k === "KeyD")).toBe(true);
+  });
+
+  it("does not react to a bolt that will already miss", () => {
+    const intent = decide(engaged({ projectiles: [boltAt(8.5, 13.5)] }), freshMemory(), makeConfig());
+    expect(intent.trace.dodgedBolt).toBe(false);
+  });
+
+  it("takes the other side when the dodge direction is blocked", () => {
+    // Dead-on bolt wants KeyD (+y); wall at +y forces KeyA.
+    const map = makeMap({ tiles: [[10, 11, 1]] });
+    const intent = decide(engaged({ map, projectiles: [boltAt(8.5, 10.5)] }), freshMemory(), makeConfig());
+    expect(intent.trace.dodgedBolt).toBe(true);
+    expect(keysOf(intent)).toContain("KeyA");
+  });
+
+  it("reports no dodge when both sides are blocked, and still fires", () => {
+    const map = makeMap({ tiles: [[10, 11, 1], [10, 9, 1]] });
+    const intent = decide(engaged({ map, projectiles: [boltAt(8.5, 10.5)] }), freshMemory(), makeConfig());
+    expect(intent.trace.dodgedBolt).toBe(false);
+    expect(keysOf(intent)).toEqual([]);
+    expect(intent.fire).toBe(true);
+  });
+
+  it("works when the engine predates the projectile hook", () => {
+    // `readFull` defaults to [] against an older build, so the bot degrades to
+    // blind strafing rather than throwing.
+    const w = engaged();
+    delete w.projectiles;
+    expect(() => decide(w, freshMemory(), makeConfig())).not.toThrow();
   });
 });

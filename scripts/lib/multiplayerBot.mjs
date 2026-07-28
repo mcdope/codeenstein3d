@@ -192,7 +192,12 @@ export class MultiplayerBot extends Bot {
     const r = await this.page.evaluate(
       (id) => {
         const hooks = window.__codeensteinMultiplayerTestHooks;
-        return { player: hooks.getBotPlayerState(id), enemies: hooks.getEnemiesSnapshot(), mines: hooks.getMinesSnapshot() };
+        return {
+          player: hooks.getBotPlayerState(id),
+          enemies: hooks.getEnemiesSnapshot(),
+          mines: hooks.getMinesSnapshot(),
+          projectiles: hooks.getProjectilesSnapshot?.() ?? [],
+        };
       },
       this.playerId,
     );
@@ -309,7 +314,12 @@ export class MultiplayerBot extends Bot {
         const canvas = document.querySelector("canvas.scene-canvas");
         if (fireCode) canvas.dispatchEvent(new KeyboardEvent("keyup", { code: fireCode }));
         const hooks = window.__codeensteinMultiplayerTestHooks;
-        return { player: hooks.getBotPlayerState(id), enemies: hooks.getEnemiesSnapshot(), mines: hooks.getMinesSnapshot() };
+        return {
+          player: hooks.getBotPlayerState(id),
+          enemies: hooks.getEnemiesSnapshot(),
+          mines: hooks.getMinesSnapshot(),
+          projectiles: hooks.getProjectilesSnapshot?.() ?? [],
+        };
       },
       { fireCode: isLast ? fireCode : null, id },
     );

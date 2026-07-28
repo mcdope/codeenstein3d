@@ -206,6 +206,31 @@ export const DEFAULT_TUNING = {
   // a strafe into geometry is rejected wholesale by collision, so it buys no
   // dodge and shows up as a `heldKeyNoMovement` anomaly for free.
   COMBAT_STRAFE_LOOKAHEAD_TILES: 0.6,
+  // Mirrors src/engine/projectiles.ts's PROJECTILE_SPEED (tiles/sec).
+  PROJECTILE_SPEED: 5,
+  // Player radius (0.2) + PROJECTILE_RADIUS (0.15). `updateProjectiles` hit-
+  // tests an axis-aligned box of this half-width, so clearing it by any margin
+  // is a clean miss.
+  PROJECTILE_HIT_HALF_WIDTH: 0.35,
+  // Perpendicular distance from a bolt's flight line beyond which it is already
+  // going to miss and is not worth reacting to. Circumscribes the square hit
+  // box (0.35 * sqrt2 ~ 0.495) so a diagonal near-miss still counts as safe.
+  DODGE_MISS_MARGIN: 0.5,
+  // How many decisions ahead a bolt has to be arriving before the bot reacts.
+  // Too short and there is no time left to move; too long and the bot dodges
+  // shots that will be blocked by a wall or aimed at where it no longer is.
+  DODGE_LOOKAHEAD_DECISIONS: 3,
+  // Floor for that lookahead in seconds, so a very short decision window still
+  // reacts far enough out to matter.
+  //
+  // Sized against how the bot actually moves, not the theoretical best case.
+  // Clearing the 0.35-tile hit box takes ~110ms of *walking* (the strafe never
+  // sprints), and only the fire branch strafes — roughly 43% of combat
+  // decisions — so the usable reaction time is well under half the window.
+  // 0.6s is ~12 decisions, of which ~5 actually move: about 0.8 tiles of
+  // displacement, comfortably clear. A 0.35s window looked sufficient on
+  // sprint-speed arithmetic and was not.
+  DODGE_MIN_LOOKAHEAD_SEC: 0.6,
 };
 
 /** Tiles a lateral step must never cross. Mirrors `pathfind.mjs`'s own
@@ -390,6 +415,77 @@ export function strafeIsSafe(map, player, key, travelDist, levelTime, { tuning }
     if (tile === undefined || STRAFE_BLOCKED_TILES.has(tile)) return false;
   }
   return true;
+}
+
+/**
+ * Whether an in-flight bolt is actually going to hit, and if so how long there
+ * is to react.
+ *
+ * Bolts fly a fixed straight line from wherever they were fired and never
+ * re-aim (`projectiles.ts`), which makes a static-player model *exact* here
+ * rather than an approximation — the only unknown is what the player does next,
+ * which is the thing being decided.
+ *
+ * Returns `null` for a bolt that is receding, already going to miss, or still
+ * too far out to be worth reacting to.
+ */
+export function boltThreat(bolt, player, lookaheadSec, tuning) {
+  const rx = player.x - bolt.x;
+  const ry = player.y - bolt.y;
+  const s2 = bolt.vx * bolt.vx + bolt.vy * bolt.vy;
+  if (s2 <= 0) return null;
+  // Positive only while the bolt is still closing on the player.
+  const closing = bolt.vx * rx + bolt.vy * ry;
+  if (closing <= 0) return null;
+  const tti = closing / s2;
+  if (tti > lookaheadSec) return null;
+  // Signed perpendicular offset of the player from the bolt's flight line —
+  // magnitude says whether it connects, sign says which side it passes.
+  const perp = (rx * bolt.vy - ry * bolt.vx) / Math.sqrt(s2);
+  if (Math.abs(perp) > tuning.DODGE_MISS_MARGIN) return null;
+  return { tti, perp };
+}
+
+/**
+ * The most urgent bolt worth dodging, or `null`.
+ *
+ * `selfId` filters to bolts actually aimed at this player: a bolt is locked to
+ * one target for its whole life (`projectiles.ts`), so in multiplayer the bot
+ * must ignore shots addressed to a team-mate rather than dodging things that
+ * were never going to touch it. Single-player has one player and passes
+ * nothing.
+ *
+ * Ties break on `tti` then on the array order the engine hands back, so the
+ * choice stays deterministic with no reliance on sort stability.
+ */
+export function pickIncomingBolt(projectiles, player, lookaheadSec, tuning, selfId = null) {
+  let best = null;
+  for (let i = 0; i < (projectiles?.length ?? 0); i++) {
+    const bolt = projectiles[i];
+    if (selfId !== null && bolt.targetId !== undefined && bolt.targetId !== selfId) continue;
+    const threat = boltThreat(bolt, player, lookaheadSec, tuning);
+    if (!threat) continue;
+    if (!best || threat.tti < best.tti) best = { ...threat, i };
+  }
+  return best;
+}
+
+/**
+ * Which way to step to make an incoming bolt miss.
+ *
+ * Moving sideways changes the player's perpendicular offset from the bolt's
+ * flight line at a rate of `(m x v) / |v|`; the useful direction is whichever
+ * pushes that offset *away* from zero. A dead-on bolt (`perp` ~ 0) has no
+ * better side — and that is every bolt on Hard, where `enemyAimSpreadDeg` is 0
+ * — so it breaks toward `KeyD` and lets the safety gate pick the other if that
+ * one is blocked.
+ */
+export function dodgeStrafeKey(bolt, threat, player) {
+  const rightX = -player.dirY;
+  const rightY = player.dirX;
+  const rate = rightX * bolt.vy - rightY * bolt.vx;
+  if (Math.abs(threat.perp) < 1e-3 || rate === 0) return "KeyD";
+  return threat.perp * rate > 0 ? "KeyD" : "KeyA";
 }
 
 /**
@@ -707,8 +803,8 @@ export function segmentsFor(holds, durationMs, minPhaseMs = 0) {
  * `turnBurstMs`'s rotation-anomaly handoff all live there.
  */
 export function decide(world, memory, config) {
-  const { player, enemies, mines, navTarget, map } = world;
-  const { profile, tuning, stepMs, ignoreThreats, simTimeMs, lastFireSimTimeMs, minDecisionMs = 0, logger } = config;
+  const { player, enemies, mines, navTarget, map, projectiles = [] } = world;
+  const { profile, tuning, stepMs, ignoreThreats, simTimeMs, lastFireSimTimeMs, minDecisionMs = 0, logger, selfId = null } = config;
   const burstCtx = { tuning, stepMs, memory };
   const moveCtx = { tuning, stepMs };
 
@@ -878,6 +974,10 @@ export function decide(world, memory, config) {
   );
   let useMelee = false;
   let waitingOnSpike = false;
+  // Whether this decision's strafe was aimed at a specific inbound bolt rather
+  // than the blind oscillation — the number that says whether the projectile
+  // hook is earning its keep.
+  let dodgedBolt = false;
 
   if (aimTarget) {
     const targetAngle = Math.atan2(aimTarget.y - player.y, aimTarget.x - player.x);
@@ -995,7 +1095,40 @@ export function decide(world, memory, config) {
         // per-key-duration attempt fail.
         if (threat && threat.dist > tuning.COMBAT_STRAFE_MIN_DISTANCE && map) {
           const strafeDist = Math.max(tuning.ENGINE_MOVE_SPEED * (stepMs / 1000), tuning.COMBAT_STRAFE_LOOKAHEAD_TILES);
-          const strafeKey = combatStrafeKey(combatStrafeTicks, map, player, strafeDist, player.levelTime, { tuning });
+          // Prefer a *directed* dodge when a bolt is genuinely inbound: step
+          // away from its flight line rather than continuing the blind
+          // oscillation, which is right only on average. Falls back to the
+          // oscillation when nothing is incoming, so the bot is never a
+          // stationary target either way.
+          const lookaheadSec = Math.max(tuning.DODGE_MIN_LOOKAHEAD_SEC, tuning.DODGE_LOOKAHEAD_DECISIONS * (stepMs / 1000));
+          const inbound = pickIncomingBolt(projectiles, player, lookaheadSec, tuning, selfId);
+          let strafeKey = null;
+          if (inbound) {
+            // Sprint the dodge. This is the one moment the bot *knows* it is
+            // about to be hit, and doubling lateral speed halves the time
+            // needed to clear the 0.35-tile hit box — which matters because
+            // only the fire branch strafes, so the usable reaction window is a
+            // fraction of the bolt's flight. It stays off for the blind
+            // oscillation, so it can't turn a standing dance into drift.
+            //
+            // Safe to combine with a strafe key specifically because no forward
+            // key is held here: `engine.ts`'s `diagonalScale` only applies when
+            // both a forward and a strafe axis are active, so this is pure
+            // lateral speed rather than the 29%-forward-penalty case.
+            const dodgeDist = Math.max(
+              tuning.ENGINE_MOVE_SPEED * tuning.ENGINE_SPRINT_MULTIPLIER * (stepMs / 1000),
+              tuning.COMBAT_STRAFE_LOOKAHEAD_TILES,
+            );
+            const wanted = dodgeStrafeKey(projectiles[inbound.i], inbound, player);
+            const other = wanted === "KeyD" ? "KeyA" : "KeyD";
+            if (strafeIsSafe(map, player, wanted, dodgeDist, player.levelTime, { tuning })) strafeKey = wanted;
+            else if (strafeIsSafe(map, player, other, dodgeDist, player.levelTime, { tuning })) strafeKey = other;
+            if (strafeKey) {
+              dodgedBolt = true;
+              moveKeys.add("ShiftLeft");
+            }
+          }
+          if (!strafeKey) strafeKey = combatStrafeKey(combatStrafeTicks, map, player, strafeDist, player.levelTime, { tuning });
           if (strafeKey) moveKeys.add(strafeKey);
         }
       }
@@ -1059,7 +1192,8 @@ export function decide(world, memory, config) {
   }
 
   logger?.debugNav?.(
-    `      -> moveKeys=[${[...moveKeys].join(",")}] fire=${fire} useMelee=${useMelee} weaponSwitch=${weaponSwitch} turnBurst=${turnBurst?.toFixed(0)}`,
+    `      -> moveKeys=[${[...moveKeys].join(",")}] fire=${fire} useMelee=${useMelee} weaponSwitch=${weaponSwitch} ` +
+      `turnBurst=${turnBurst?.toFixed(0)} dodge=${dodgedBolt}`,
   );
 
   // A real attack attempt counts as progress even if position doesn't
@@ -1101,6 +1235,7 @@ export function decide(world, memory, config) {
       turnBurst,
       fire: fire || useMelee,
       fireOnCooldown,
+      dodgedBolt,
     },
   });
 }
