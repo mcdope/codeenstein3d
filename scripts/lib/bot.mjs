@@ -20,26 +20,59 @@
  * `mineMemory`, `visitedPickups`) resets via `startLevel(map)`.
  */
 import { bfsPath, pathToWaypoints } from "./pathfind.mjs";
+import {
+  angleDelta,
+  decide,
+  DEFAULT_TUNING,
+  hasLineOfSight,
+  HAZARD_TILE,
+  pickThreat,
+  segmentsFor,
+  SPIKE_TRAP_TILE,
+  turnBurstMs,
+  uniformIntent,
+} from "./combatPolicy.mjs";
 
-// Mirrors src/engine/weapons.ts's WEAPONS array indices — plain literals
-// rather than importing that TS module (this is a plain Node script, not
-// bundled like the map/parser layer in loadEngineModules.mjs).
-export const PISTOL_WEAPON_INDEX = 0;
-export const SHOTGUN_WEAPON_INDEX = 1;
-export const KNIFE_WEAPON_INDEX = 2;
-export const GDB_WEAPON_INDEX = 3;
-export const GHIDRA_WEAPON_INDEX = 4;
-export const FRIDAY_HOTFIX_WEAPON_INDEX = 5;
-export const TOOLCHAIN_WEAPON_INDEX = 6;
-export const STARTING_WEAPONS = [PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, KNIFE_WEAPON_INDEX];
-// The two ranged weapons WEAPONS.auto=true (mirrors weapons.ts) — fired via
-// isFireHeld() and engine-side rate-limited by their own fireIntervalSec
-// regardless of how the key is dispatched, unlike the semi-auto ranged
-// weapons (pistol/shotgun/ghidra), which have no such cooldown and fire
-// exactly once per keydown — see `profile.fireCooldownMs`'s doc comment.
-export const AUTO_RANGED_WEAPON_INDICES = new Set([GDB_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX]);
-export const HAZARD_TILE = 2; // src/map/types.ts's Tile enum
-export const SPIKE_TRAP_TILE = 5; // src/map/types.ts's Tile enum
+// The decision core moved to `combatPolicy.mjs` (see its doc comment for why:
+// testability, and a shape that can be lifted into `src/engine/` for a real
+// deathmatch opponent). Everything it owns is re-exported from here so no
+// consumer had to change an import — `run-balancing-telemetry.mjs` takes the
+// weapon indices, and the rest is surface that tests and future callers reach
+// for. New code should prefer importing from `combatPolicy.mjs` directly.
+export {
+  activeSpikeAt,
+  angleDelta,
+  AUTO_RANGED_WEAPON_INDICES,
+  decide,
+  DEFAULT_TUNING,
+  diagonalStrafeKey,
+  findDangerousMine,
+  findDisarmableMine,
+  forwardScanTiles,
+  FRIDAY_HOTFIX_WEAPON_INDEX,
+  GDB_WEAPON_INDEX,
+  GHIDRA_WEAPON_INDEX,
+  hasAmmoFor,
+  hasLineOfSight,
+  HAZARD_TILE,
+  isHazardAt,
+  isWallTile,
+  KNIFE_WEAPON_INDEX,
+  moveBurstMs,
+  nearestRocketDetonationDistance,
+  pickRangedWeapon,
+  pickThreat,
+  PISTOL_WEAPON_INDEX,
+  rocketAimUnsafe,
+  segmentBlocked,
+  segmentsFor,
+  SHOTGUN_WEAPON_INDEX,
+  SPIKE_TRAP_TILE,
+  STARTING_WEAPONS,
+  TOOLCHAIN_WEAPON_INDEX,
+  turnBurstMs,
+  uniformIntent,
+} from "./combatPolicy.mjs";
 
 /**
  * Tiles a *loot detour* refuses to route through. Mirrors `routePlanner.mjs`'s
@@ -50,133 +83,6 @@ export const SPIKE_TRAP_TILE = 5; // src/map/types.ts's Tile enum
  * a hazard, so a pickup sitting on acid stays collectable — it just won't be
  * approached through more of it. */
 const LOOT_DETOUR_AVOID_TILES = new Set([HAZARD_TILE, SPIKE_TRAP_TILE]);
-
-/**
- * Movement/combat tuning defaults — mirrors of various src/engine/*.ts
- * constants (this is a plain Node script, can't import the bundled TS
- * modules for these particular runtime values) plus a large set of
- * empirically-tuned thresholds, each with its own hard-won bug-fix history
- * (see the functions that read them below). Overridable per-`Bot` instance
- * via the constructor's `opts.tuning` (deep-merged over this object) — a
- * future consumer (e.g. a different harness or a multiplayer bot) can tune
- * without forking this file.
- */
-export const DEFAULT_TUNING = {
-  VIRTUAL_STEP_MS: 50,
-  WATCH_STEP_MS: 130,
-  MAX_TICKS_PER_WAYPOINT: 600,
-  TURN_MOVE_EPS: 0.2,
-  ARRIVE_EPS: 0.15,
-  TIGHT_ARRIVE_EPS: 0.05,
-  // Any single-tick position jump larger than this is physically impossible
-  // via normal movement (max sprint is ~0.32 tiles/tick at VIRTUAL_STEP_MS)
-  // and can only mean a teleporter pad fired — see `driveToward`'s doc
-  // comment on the jump-detection check that uses this.
-  TELEPORT_JUMP_DETECT_TILES: 1.0,
-  // See `maybeDetourForLoot`'s doc comment — caps how far (straight-line)
-  // the bot will detour for a single uncollected pickup.
-  MAX_LOOT_DETOUR_TILES: 20,
-  // How far (in tiles) the bot's actual position may be from an upcoming
-  // waypoint before it's considered "displaced" and worth a fresh BFS
-  // re-plan — see `driveTowardWithReplan`'s doc comment.
-  LEG_REPLAN_DRIFT_TILES: 2.5,
-  // Mirrors src/engine/engine.ts's ROT_SPEED (rad/sec).
-  ENGINE_ROT_SPEED: 2.6,
-  // Mirrors src/engine/engine.ts's MOVE_SPEED/SPRINT_MULTIPLIER.
-  ENGINE_MOVE_SPEED: 3.2,
-  ENGINE_SPRINT_MULTIPLIER: 2.0,
-  // How much more rotation than `#turnBurstMs`'s own math predicts still
-  // counts as "plausible" before `#checkRotationAnomaly` flags it — see that
-  // method's doc comment.
-  ROTATION_ANOMALY_SLACK: 4,
-  DOOR_OPEN_TICKS: 10,
-  // Same total push duration as DOOR_OPEN_TICKS * VIRTUAL_STEP_MS (500ms),
-  // just in much finer steps — see `holdForwardFine`'s doc comment.
-  DOOR_OPEN_FINE_STEP_MS: 5,
-  MINE_BLAST_RADIUS: 2.4,
-  // Proactive-disarm search radius — see `findDisarmableMine`'s doc comment.
-  MINE_DISARM_RANGE: 4.2,
-  // Give up on a proactive mine-disarm shot after this many consecutive
-  // ticks targeting the *same* mine with no hit — see `tick`'s mine-handling
-  // doc comment.
-  MINE_TARGET_GIVEUP_TICKS: 40,
-  // Once stuck realigning on the same mine this many ticks, force a shot at
-  // the current best-effort alignment instead of freezing until the much
-  // later full give-up — see `tick`'s mine-realignment comment.
-  MINE_REALIGN_STALL_TICKS: 15,
-  CRITICAL_HEALTH_FRACTION: 0.2,
-  MELEE_RANGE: 1.5,
-  // Below this distance, stop trying to close the last bit of distance
-  // during an in-progress melee engagement — see `tick`'s melee branch,
-  // which actually gates on `max(this, ENGINE_MOVE_SPEED * stepMs/1000)`,
-  // not this raw value alone — see that branch's own doc comment for why.
-  MELEE_CLOSE_MIN_DISTANCE: 0.4,
-  // Below this distance, stop advancing while turning to line up a ranged
-  // shot — see `tick`'s ranged-aim branch.
-  MIN_RANGED_APPROACH_DISTANCE: 3,
-  // Above this angular error, walking forward while still turning toward a
-  // route waypoint would move the bot away from where it actually needs to
-  // go — see `tick`'s plain-navigation branch.
-  MAX_WALK_WHILE_TURNING_RAD: 0.35,
-  // Combat can deadlock against wall geometry — once a threat engagement has
-  // produced no actual attack for this many consecutive ticks with position
-  // frozen, nudge sideways instead of just re-aiming in place.
-  COMBAT_STALL_TICKS_THRESHOLD: 40,
-  COMBAT_STALL_STRAFE_FLIP_TICKS: 20,
-  CRITICAL_STALL_TICKS_THRESHOLD: 15,
-  CRITICAL_STALL_STRAFE_FLIP_TICKS: 10,
-  // How close two aggroed enemies have to be to each other to count as
-  // "clustered" — see `pickRangedWeapon`.
-  CLUSTER_RADIUS: 3,
-  // Rockets splash the shooter too — never select ghidra within this
-  // distance regardless of profile. See `rocketAimUnsafe`.
-  ROCKET_SAFE_DISTANCE: 4,
-  // Mirrors src/engine/rockets.ts's ROCKET_ENEMY_TRIGGER_RADIUS.
-  ROCKET_ENEMY_TRIGGER_RADIUS: 0.4,
-  // Matches Friday Hotfix's real maxRange (weapons.ts).
-  FRIDAY_HOTFIX_MAX_RANGE: 3.5,
-  // How far a clustered threat needs to be before rocket splash is worth
-  // preferring — see `pickRangedWeapon`.
-  ROCKET_CLUSTER_MIN_DIST: 5, // ROCKET_SAFE_DISTANCE + 1
-  // MINE_REALIGN_EPS assumes precise per-tick rotation, only exact under a
-  // virtual clock — see `tick`'s mine-realignment comment for why this
-  // matters more in headless mode.
-  MINE_REALIGN_EPS: 0.01,
-  // A mine has to be somewhere in the forward hemisphere (90° either side of
-  // the intended heading) to be worth a proactive detour — see
-  // `findDisarmableMine`.
-  MINE_DISARM_MAX_ANGLE_FROM_PATH: Math.PI / 2,
-};
-
-export function angleDelta(current, target) {
-  const d = target - current;
-  return Math.atan2(Math.sin(d), Math.cos(d));
-}
-
-/**
- * The strafe key ("KeyD"/right or "KeyA"/left) that moves the player toward
- * a target requiring `delta` radians of turn to face — lets the bot move
- * diagonally instead of straight-ahead-only while turning.
- *
- * CONFIRMED REGRESSION, only used in the plain-navigation branch: an A/B
- * test found Casual/normal's level-2 death rate jumped from 0% to 72% once
- * diagonal movement was added to every turn-and-move branch. Reverted from
- * every other branch (hazard/critical-health/mine-retreat/ranged-aim); kept
- * only in plain navigation, where the same methodology found no comparable
- * survival cost.
- */
-export function diagonalStrafeKey(delta) {
-  return delta > 0 ? "KeyD" : "KeyA";
-}
-
-// Floor for `#forwardScanTiles` — the fixed look-ahead the forward hazard/
-// spike checks used before sprinting made one decision's travel variable.
-// Kept as the minimum so short decision windows behave exactly as before.
-const FORWARD_SCAN_MIN_TILES = 0.6;
-// Spacing for `#segmentBlocked`'s samples along a movement segment. Comfortably
-// under one tile, so no single-tile acid strip or spike can fall between two
-// samples.
-const SEGMENT_SAMPLE_TILES = 0.25;
 
 // Position-unchanged-for-this-many-consecutive-ticks threshold before
 // `detectAnomalies` calls it a "stall".
@@ -301,238 +207,6 @@ export function detectHeldKeyNoMovement(trace) {
   return findings;
 }
 
-export function isHazardAt(map, x, y) {
-  return map.grid[Math.floor(y)]?.[Math.floor(x)] === HAZARD_TILE;
-}
-
-/** Mirrors src/engine/traps.ts's isSpikeActive — whether the spike trap (if
- * any) at (x,y) is in its damaging half of the cycle at `levelTime`. */
-export function activeSpikeAt(map, x, y, levelTime) {
-  const cx = Math.floor(x);
-  const cy = Math.floor(y);
-  const trap = map.spikeTraps.find((t) => t.x === cx && t.y === cy);
-  if (!trap) return false;
-  const cyclePos = (levelTime + trap.phase) % trap.period;
-  return cyclePos >= trap.period / 2;
-}
-
-/**
- * Aggressive targeting: prioritize whichever aggroed enemy can be finished
- * off fastest (already in melee range, or an Edge Case) over strictly
- * whoever's nearest — thins numerous, individually weak attackers first
- * rather than spending 3-6s locked onto one tankier enemy while a swarm
- * lands free chip damage. Falls back to nearest-first among equally "quick"
- * (or equally "not quick") candidates, with a visible-enemy tiebreak
- * (occluded ones can't be engaged immediately regardless of distance).
- *
- * `map` is optional (some callers don't have one on hand) — when omitted,
- * every candidate is treated as visible, i.e. the original distance/quick-
- * kill-only ranking, unchanged.
- */
-export function pickThreat(enemies, player, profile, map) {
-  // `i` is the enemy's index in the engine's own `this.enemies` array
-  // (stable for a whole level) — used by `Bot#tick` to recognize "same
-  // enemy as last tick" for the last-visible-position freeze.
-  const candidates = enemies
-    .map((e, i) => ({ ...e, i }))
-    .filter((e) => e.alive && e.aggroed)
-    .map((e) => ({
-      ...e,
-      dist: Math.hypot(e.x - player.x, e.y - player.y),
-      visible: !map || hasLineOfSight(map, player.x, player.y, e.x, e.y),
-    }))
-    .filter((e) => e.dist < profile.engageRadius);
-  candidates.sort((a, b) => {
-    const aQuick = a.dist <= DEFAULT_TUNING.MELEE_RANGE || a.edgeCase;
-    const bQuick = b.dist <= DEFAULT_TUNING.MELEE_RANGE || b.edgeCase;
-    if (aQuick !== bQuick) return aQuick ? -1 : 1;
-    if (a.visible !== b.visible) return a.visible ? -1 : 1;
-    return a.dist - b.dist;
-  });
-  return candidates[0];
-}
-
-/** Mirrors the engine's own hasLineOfSight (src/engine/enemyAi.ts): samples
- * every ~0.1 tiles along the line and fails if any sample lands on a
- * wall/unopened-secret/lore tile. */
-export function hasLineOfSight(map, x0, y0, x1, y1) {
-  const dx = x1 - x0;
-  const dy = y1 - y0;
-  const dist = Math.hypot(dx, dy);
-  const steps = Math.ceil(dist / 0.1);
-  for (let i = 1; i < steps; i++) {
-    const t = i / steps;
-    if (isWallTile(map, x0 + dx * t, y0 + dy * t)) return false;
-  }
-  return true;
-}
-
-export function isWallTile(map, x, y) {
-  const tile = map.grid[Math.floor(y)]?.[Math.floor(x)];
-  return tile === undefined || tile === 1 || tile === 6 || tile === 7;
-}
-
-/**
- * A mine only counts as "disarmable from here" if there's a clear shot —
- * `visible` only means the mine has been spotted, not that it's actually
- * hittable from the player's current position. Also excludes mines well off
- * to the side of or behind `navTarget`'s direction (see
- * DEFAULT_TUNING.MINE_DISARM_MAX_ANGLE_FROM_PATH) — a mine this far
- * off-path isn't a real threat to the route.
- *
- * `reactionBufferTiles` (default 0) shifts *both* ends of the eligible
- * distance window outward by the same amount as `findDangerousMine`'s own
- * buffer, rather than just raising the lower bound alone — the designed
- * "disarm zone" width (`MINE_DISARM_RANGE - MINE_BLAST_RADIUS`) stays the
- * same, just moved farther out. Widening only the lower bound would shrink
- * that zone every time the buffer grows, and at a real decision window long
- * enough (`MultiplayerBot`'s own `DEFAULT_STEP_MS`), it can collapse to
- * nothing — confirmed directly: `findDangerousMine`'s own widened-but-
- * unshifted-here buffer first fix made every mine reachable from a real
- * multiplayer decision window count as "dangerous," so the bot never
- * disarmed one again and got stuck retreating from a mine the route
- * genuinely needed it to clear.
- */
-export function findDisarmableMine(mines, player, abandoned, map, navTarget, reactionBufferTiles = 0) {
-  const navAngle = navTarget ? Math.atan2(navTarget.y - player.y, navTarget.x - player.x) : null;
-  return mines
-    .filter((m) => m.alive && m.visible && !abandoned?.has(`${m.x},${m.y}`))
-    .map((m) => ({ ...m, dist: Math.hypot(m.x - player.x, m.y - player.y) }))
-    .filter((m) => m.dist > DEFAULT_TUNING.MINE_BLAST_RADIUS + reactionBufferTiles && m.dist <= DEFAULT_TUNING.MINE_DISARM_RANGE + reactionBufferTiles)
-    .filter((m) => hasLineOfSight(map, player.x, player.y, m.x, m.y))
-    .filter((m) => {
-      if (navAngle === null) return true;
-      const mineAngle = Math.atan2(m.y - player.y, m.x - player.x);
-      return Math.abs(angleDelta(navAngle, mineAngle)) <= DEFAULT_TUNING.MINE_DISARM_MAX_ANGLE_FROM_PATH;
-    })
-    .sort((a, b) => a.dist - b.dist)[0];
-}
-
-/**
- * A visible mine close enough to be actively dangerous (inside its own blast
- * radius, plus `reactionBufferTiles`) rather than just a target to line up a
- * shot on — "stop, back up" comes before "shoot" (see `Bot#tick`'s
- * mine-handling doc comment).
- *
- * `reactionBufferTiles` (default 0, i.e. exactly `MINE_BLAST_RADIUS`) exists
- * because a mine's own fuse (`MINE_FUSE_SECONDS`, `traps.ts`) ticks in real
- * time regardless of how often this function gets called — a decision-window
- * long enough to cover more real ground than the gap between "just outside
- * blast radius" and "already caught in it" leaves the bot with no chance to
- * react between one decision seeing "safe" and a mine detonating mid-window.
- * Confirmed directly against `MultiplayerBot`'s much longer real decision
- * window (`DEFAULT_STEP_MS`, 400ms vs. single-player's own realtime
- * `WATCH_STEP_MS`, 130ms): a bot standing 3-4 tiles from its own *disarm*
- * target (correctly beyond `MINE_BLAST_RADIUS` from that one) still took real
- * splash damage from a *different*, closer mine in the same cluster that had
- * already been armed and went off entirely within one held decision, with no
- * chance to retreat from it first. Callers pass their own real
- * `ENGINE_MOVE_SPEED * ENGINE_SPRINT_MULTIPLIER * (stepMs / 1000)` — at
- * single-player's own short decision windows this rounds to well under a
- * tile, a harmless no-op widening; only a caller with a long real decision
- * window (multiplayer) gets a buffer that actually matters.
- */
-export function findDangerousMine(mines, player, abandoned, reactionBufferTiles = 0) {
-  return mines
-    .filter((m) => m.alive && m.visible && !abandoned?.has(`${m.x},${m.y}`))
-    .map((m) => ({ ...m, dist: Math.hypot(m.x - player.x, m.y - player.y) }))
-    .filter((m) => m.dist <= DEFAULT_TUNING.MINE_BLAST_RADIUS + reactionBufferTiles)
-    .sort((a, b) => a.dist - b.dist)[0];
-}
-
-export function hasAmmoFor(player, weaponIndex) {
-  if (weaponIndex === 0 || weaponIndex === 1) return player.ammo.bullets > 0;
-  if (weaponIndex === GDB_WEAPON_INDEX) return player.ammo.smg > 0;
-  if (weaponIndex === GHIDRA_WEAPON_INDEX) return player.ammo.rockets > 0;
-  if (weaponIndex === FRIDAY_HOTFIX_WEAPON_INDEX) return player.ammo.gas > 0;
-  return true;
-}
-
-/**
- * Distance along the player's current firing ray to the nearest point where
- * an in-flight rocket would actually detonate against a living enemy — not
- * just the intended target's own distance (a rocket explodes on the FIRST
- * living enemy it comes within ROCKET_ENEMY_TRIGGER_RADIUS of, tracked or
- * not). Deliberately doesn't account for walls between the player and an
- * in-path enemy — a rare enough edge case not worth the added complexity.
- */
-export function nearestRocketDetonationDistance(player, enemies) {
-  let nearest = Infinity;
-  const dirX = player.dirX;
-  const dirY = player.dirY;
-  const triggerSq = DEFAULT_TUNING.ROCKET_ENEMY_TRIGGER_RADIUS * DEFAULT_TUNING.ROCKET_ENEMY_TRIGGER_RADIUS;
-  for (const e of enemies) {
-    if (!e.alive) continue;
-    const ex = e.x - player.x;
-    const ey = e.y - player.y;
-    const t = ex * dirX + ey * dirY; // distance along the firing ray to closest approach
-    if (t < 0 || t >= nearest) continue; // behind the player, or already not the closest
-    const perpSq = ex * ex + ey * ey - t * t;
-    if (perpSq <= triggerSq) nearest = t;
-  }
-  return nearest;
-}
-
-/**
- * True if firing a rocket right now is unsafe: (1) a rocket has zero
- * interaction with mines — never fire one at a mine target, at any
- * distance; (2) the intended target or some other untracked living enemy
- * sits close enough to the flight path to trigger an earlier, closer
- * detonation than expected.
- */
-export function rocketAimUnsafe(player, enemies, aimDist, isMineTarget) {
-  if (isMineTarget) return true;
-  if (aimDist !== null && aimDist < DEFAULT_TUNING.ROCKET_SAFE_DISTANCE) return true;
-  return nearestRocketDetonationDistance(player, enemies) < DEFAULT_TUNING.ROCKET_SAFE_DISTANCE;
-}
-
-/**
- * Best ranged weapon for the current situation, not just a fixed
- * per-profile preference order. Once 2+ aggroed enemies are clustered near
- * the current threat, picks a weapon suited to the cluster's distance:
- * close → Friday Hotfix (falling back to shotgun), distant (and only for
- * profiles confident enough to use rockets this way) → Ghidra, everything
- * else → shotgun. Falls back to `profile.weaponPriority` otherwise. Never
- * selects ghidra within ROCKET_SAFE_DISTANCE regardless of source. Never
- * returns a melee index.
- */
-export function pickRangedWeapon(player, profile, enemies, threat, mineTarget) {
-  if (threat) {
-    const clusterCount = enemies.filter(
-      (e) => e.alive && e.aggroed && Math.hypot(e.x - threat.x, e.y - threat.y) <= DEFAULT_TUNING.CLUSTER_RADIUS,
-    ).length;
-    if (clusterCount >= 2) {
-      if (threat.dist <= DEFAULT_TUNING.FRIDAY_HOTFIX_MAX_RANGE) {
-        if (player.ownedWeapons.includes(FRIDAY_HOTFIX_WEAPON_INDEX) && hasAmmoFor(player, FRIDAY_HOTFIX_WEAPON_INDEX)) {
-          return player.weaponIndex === FRIDAY_HOTFIX_WEAPON_INDEX ? null : FRIDAY_HOTFIX_WEAPON_INDEX;
-        }
-      } else if (
-        threat.dist >= DEFAULT_TUNING.ROCKET_CLUSTER_MIN_DIST &&
-        profile.rocketForDistantClusters &&
-        player.ownedWeapons.includes(GHIDRA_WEAPON_INDEX) &&
-        hasAmmoFor(player, GHIDRA_WEAPON_INDEX) &&
-        !rocketAimUnsafe(player, enemies, threat.dist, false)
-      ) {
-        return player.weaponIndex === GHIDRA_WEAPON_INDEX ? null : GHIDRA_WEAPON_INDEX;
-      }
-      if (player.ownedWeapons.includes(1) && hasAmmoFor(player, 1)) {
-        return player.weaponIndex === 1 ? null : 1; // Regex Shotgun
-      }
-    }
-  }
-  // Ghidra is excluded outright whenever the aim source is a mine, not just
-  // when it's judged "too close" (a rocket flies straight through a mine to
-  // an unaccounted-for wall — see `rocketAimUnsafe`'s doc comment).
-  const aimDist = threat ? threat.dist : mineTarget ? mineTarget.dist : null;
-  for (const idx of profile.weaponPriority) {
-    if (idx === GHIDRA_WEAPON_INDEX && rocketAimUnsafe(player, enemies, aimDist, Boolean(mineTarget))) continue;
-    if (!player.ownedWeapons.includes(idx)) continue;
-    if (!hasAmmoFor(player, idx)) continue;
-    return player.weaponIndex === idx ? null : idx;
-  }
-  return null;
-}
-
 /**
  * One automated-playtest bot instance, bound to a single Playwright `page`
  * and skill `profile` for its whole lifetime — construct a fresh `Bot` per
@@ -633,44 +307,6 @@ export class Bot {
   }
 
   /**
-   * How long to hold a turn key for a *pure* turn so it lands as close as
-   * possible to `deltaAngle` without overshooting past it — see the
-   * original module's doc comment for the oscillation bug this fixes.
-   * Records `pendingTurnCheck` for `#checkRotationAnomaly` to compare
-   * against on the next call.
-   */
-  #turnBurstMs(deltaAngle, rotSpeedMultiplier, player, currentAngle) {
-    const standardStepMs = this.stepMs;
-    const rate = this.tuning.ENGINE_ROT_SPEED * rotSpeedMultiplier; // rad/sec
-    const neededMs = (Math.abs(deltaAngle) / rate) * 1000;
-    if (this.mineMemory) {
-      this.mineMemory.pendingTurnCheck = { beforeDir: currentAngle, turnBurstMs: Math.min(standardStepMs, neededMs), rotSpeedMultiplier };
-    }
-    return Math.max(1, Math.min(standardStepMs, neededMs));
-  }
-
-  /**
-   * How far ahead a forward-safety check has to look, in tiles: one whole
-   * decision's worth of real travel, floored at the historical fixed 0.6.
-   *
-   * The fixed value was safe only while the bot walked. Sprinting doubles the
-   * distance a single decision covers, and the decision window itself varies
-   * by an order of magnitude — ~0.32 tiles of sprint at `VIRTUAL_STEP_MS`
-   * (50ms, so the floor still governs), 0.83 headed at `WATCH_STEP_MS`, and
-   * 2.56 at `MultiplayerBot`'s 400ms window. Past the floor, a fixed 0.6-tile
-   * probe would clear a spike the bot then sprints straight onto within the
-   * same decision.
-   *
-   * Same decision-window-scaled idiom as `MELEE_CLOSE_MIN_DISTANCE`'s gate in
-   * the melee branch and `findDangerousMine`'s `reactionBufferTiles` — both
-   * added for exactly this class of bug, both at `MultiplayerBot`'s window.
-   */
-  #forwardScanTiles(sprinting) {
-    const speed = this.tuning.ENGINE_MOVE_SPEED * (sprinting ? this.tuning.ENGINE_SPRINT_MULTIPLIER : 1);
-    return Math.max(FORWARD_SCAN_MIN_TILES, speed * (this.stepMs / 1000));
-  }
-
-  /**
    * Shortest decision this bot may issue, in ms. Zero here: under the virtual
    * clock there is no transport between deciding and the engine seeing it, so
    * a 5ms burst lands exactly as 5ms of movement, and short bursts are the
@@ -694,54 +330,6 @@ export class Bot {
    */
   get minDecisionMs() {
     return 0;
-  }
-
-  /**
-   * Whether the straight segment from `from` along unit vector `dir` for
-   * `dist` tiles crosses anything the bot must not walk into.
-   *
-   * Samples the whole segment rather than only its endpoint. A 1-tile acid
-   * strip or a single spike tile is narrower than one sprint step, so an
-   * endpoint-only check happily steps *through* it and takes the damage
-   * anyway — the check would only ever catch a hazard the bot was about to
-   * stop on.
-   *
-   * Spikes are tested at both `levelTime` and the time the bot would arrive:
-   * a trap's damaging half is a timed cycle, so "safe right now" and "safe
-   * when I get there" are different questions and only the second one matters.
-   *
-   * `hazard` is opt-out because acid is not categorically a thing to avoid.
-   * `planRoute` already prices a hazard tile at 25x a floor tile, so a route
-   * that crosses acid crosses it because every alternative was worse — and
-   * once you are committed to crossing, moving *faster* is strictly better,
-   * which is exactly why the hazard-crossing branch sprints. Callers making
-   * an optional move (a dodge, a loot detour) pass the default and treat acid
-   * as blocking; callers following a committed route pass `hazard: false`.
-   */
-  #segmentBlocked(map, from, dir, dist, levelTime, { hazard = true } = {}) {
-    if (!map || dist <= 0) return false;
-    const arriveSec = dist / (this.tuning.ENGINE_MOVE_SPEED * this.tuning.ENGINE_SPRINT_MULTIPLIER);
-    const steps = Math.max(1, Math.ceil(dist / SEGMENT_SAMPLE_TILES));
-    for (let i = 1; i <= steps; i++) {
-      const t = (dist * i) / steps;
-      const sx = from.x + dir.x * t;
-      const sy = from.y + dir.y * t;
-      if (hazard && isHazardAt(map, sx, sy)) return true;
-      if (activeSpikeAt(map, sx, sy, levelTime)) return true;
-      if (activeSpikeAt(map, sx, sy, levelTime + arriveSec)) return true;
-    }
-    return false;
-  }
-
-  /** Straight-line-movement counterpart to `#turnBurstMs` — caps how long a
-   * movement key is held so it doesn't overshoot past a small arrival
-   * tolerance (see the original module's doc comment for the hazard-tile
-   * oscillation bug this fixes). */
-  #moveBurstMs(dist, sprinting) {
-    const standardStepMs = this.stepMs;
-    const speed = this.tuning.ENGINE_MOVE_SPEED * (sprinting ? this.tuning.ENGINE_SPRINT_MULTIPLIER : 1); // tiles/sec
-    const neededMs = (dist / speed) * 1000;
-    return Math.max(1, Math.min(standardStepMs, neededMs));
   }
 
   /**
@@ -958,10 +546,10 @@ export class Bot {
   }
 
   /**
-   * One tick: combat (or proactive mine-disarm) always preempts navigation.
-   * Hazard-crossing suppresses combat entirely rather than detouring to a
-   * "safe tile" (the nearest safe edge tile is often not on the way to the
-   * real destination).
+   * One decision, dispatched. The decision itself lives in
+   * `combatPolicy.mjs`'s `decide()` — this method is the I/O half: read the
+   * rotation-anomaly check, hand the world to the policy, record the trace it
+   * produces, and dispatch the intent it returns.
    *
    * `map` is an explicit parameter, not always `this.map`: `faceAngle`
    * deliberately calls `tick(..., undefined)` when a threat is present, so
@@ -972,365 +560,35 @@ export class Bot {
    */
   async tick(player, enemies, mines, navTarget, map) {
     this.#checkRotationAnomaly(player, Math.atan2(player.dirY, player.dirX));
-    // Currently standing on a damaging ground tile: don't stop to fight —
-    // just keep marching toward wherever the bot was already headed.
-    if (map && navTarget && (isHazardAt(map, player.x, player.y) || activeSpikeAt(map, player.x, player.y, player.levelTime))) {
-      const currentAngle = Math.atan2(player.dirY, player.dirX);
-      const targetAngle = Math.atan2(navTarget.y - player.y, navTarget.x - player.x);
-      const delta = angleDelta(currentAngle, targetAngle);
-      const dist = Math.hypot(navTarget.x - player.x, navTarget.y - player.y);
-      const moveKeys = new Set(["KeyW", "ShiftLeft"]);
-      let turnBurst;
-      if (Math.abs(delta) > this.tuning.TURN_MOVE_EPS) {
-        moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
-        // Deliberately no `diagonalStrafeKey` here — see its doc comment's
-        // "confirmed regression" note. Reverted from every branch except
-        // plain navigation.
-        turnBurst = this.#turnBurstMs(delta, this.profile.rotSpeedMultiplier, player, currentAngle);
-      } else {
-        turnBurst = this.#moveBurstMs(dist, true);
-      }
-      this.#recordTrace({ branch: "hazard", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: null, mineDist: null, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false });
-      return this.applyAction(moveKeys, false, null, false, turnBurst);
-    }
-
-    const threat = this.ignoreThreats ? null : pickThreat(enemies, player, this.profile, map);
-
-    // Critical health: break contact instead of trading hits.
-    if (threat && player.healthFraction < this.tuning.CRITICAL_HEALTH_FRACTION) {
-      const currentAngle = Math.atan2(player.dirY, player.dirX);
-      const awayAngle = Math.atan2(player.y - threat.y, player.x - threat.x);
-      const delta = angleDelta(currentAngle, awayAngle);
-      const moveKeys = new Set(["KeyW", "ShiftLeft"]);
-      if (Math.abs(delta) > this.tuning.TURN_MOVE_EPS) {
-        moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
-      }
-      // A blocked "away" vector (cornered retreat) still won't move the
-      // player — this branch returns before the shared end-of-tick
-      // combatStallTicks bookkeeping ever runs, so it needs its own
-      // same-position tracking.
-      if (this.mineMemory) {
-        const posKey = `${player.x.toFixed(2)},${player.y.toFixed(2)}`;
-        if (this.mineMemory.criticalStallPos === posKey) {
-          this.mineMemory.criticalStallTicks = (this.mineMemory.criticalStallTicks ?? 0) + 1;
-        } else {
-          this.mineMemory.criticalStallPos = posKey;
-          this.mineMemory.criticalStallTicks = 0;
-        }
-        if (this.mineMemory.criticalStallTicks >= this.tuning.CRITICAL_STALL_TICKS_THRESHOLD) {
-          moveKeys.delete("KeyD");
-          moveKeys.delete("KeyA");
-          moveKeys.add(
-            Math.floor(this.mineMemory.criticalStallTicks / this.tuning.CRITICAL_STALL_STRAFE_FLIP_TICKS) % 2 === 0 ? "KeyD" : "KeyA",
-          );
-        }
-      }
-      // Deliberately not `#turnBurstMs` here — fleeing has no narrow
-      // hit-window to protect against overshoot; a full sprint step every
-      // tick converges toward genuinely-away without stalling.
-      const turnBurst = this.#moveBurstMs(10, true);
-      this.#recordTrace({ branch: "criticalHealth", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: threat.dist, mineDist: null, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false });
-      return this.applyAction(moveKeys, false, null, false, turnBurst);
-    }
-
-    // See `findDangerousMine`'s own doc comment for why this buffer exists —
-    // a real, decision-window-scaled reaction margin, not a fixed tile count.
-    // Shared by both mine checks below so the same shift applies to each end
-    // of `findDisarmableMine`'s own eligible-distance window too (see its own
-    // doc comment on why only widening one side of that window is wrong).
-    const mineReactionBufferTiles = this.tuning.ENGINE_MOVE_SPEED * this.tuning.ENGINE_SPRINT_MULTIPLIER * (this.stepMs / 1000);
-
-    // Proper mine handling: stop, back up out of blast range, shoot it, then
-    // continue. Backing away takes priority over shooting (below) since you
-    // can't line up a safe shot from inside your own target's blast radius.
-    if (!threat && this.profile.proactiveMineDisarm) {
-      const dangerMine = findDangerousMine(mines, player, this.mineMemory?.abandoned, mineReactionBufferTiles);
-      if (dangerMine) {
-        const key = `${dangerMine.x},${dangerMine.y}`;
-        let gaveUp = false;
-        if (this.mineMemory) {
-          this.mineMemory.retreatTicks = this.mineMemory.retreatKey === key ? this.mineMemory.retreatTicks + 1 : 1;
-          this.mineMemory.retreatKey = key;
-          gaveUp = this.mineMemory.retreatTicks > this.tuning.MINE_TARGET_GIVEUP_TICKS;
-          if (gaveUp) this.mineMemory.abandoned.add(key); // e.g. wedged against a wall — stop trying, in either mode, for the rest of the level
-        }
-        if (!gaveUp) {
-          const currentAngle = Math.atan2(player.dirY, player.dirX);
-          const awayAngle = Math.atan2(player.y - dangerMine.y, player.x - dangerMine.x);
-          const delta = angleDelta(currentAngle, awayAngle);
-          const moveKeys = new Set(["KeyW"]);
-          let turnBurst;
-          if (Math.abs(delta) > this.tuning.TURN_MOVE_EPS) {
-            moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
-            turnBurst = this.#turnBurstMs(delta, this.profile.rotSpeedMultiplier, player, currentAngle);
-          } else {
-            turnBurst = this.#moveBurstMs(10, false);
-          }
-          this.#recordTrace({ branch: "mineRetreat", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: null, mineDist: dangerMine.dist, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false });
-          return this.applyAction(moveKeys, false, null, false, turnBurst);
-        }
-        // else: gave up retreating — fall through to normal navigation below.
-      }
-    }
-
-    let mineTarget =
-      !threat && this.profile.proactiveMineDisarm && map
-        ? findDisarmableMine(mines, player, this.mineMemory?.abandoned, map, navTarget, mineReactionBufferTiles)
-        : null;
-    if (mineTarget && this.mineMemory) {
-      const key = `${mineTarget.x},${mineTarget.y}`;
-      this.mineMemory.shootTicks = this.mineMemory.shootKey === key ? this.mineMemory.shootTicks + 1 : 1;
-      this.mineMemory.shootKey = key;
-      if (this.mineMemory.shootTicks > this.tuning.MINE_TARGET_GIVEUP_TICKS) {
-        this.mineMemory.abandoned.add(key); // e.g. a wall blocks line of fire — stop trying, in either mode, for the rest of the level
-        mineTarget = null;
-      }
-    }
-    // A threat's aggro is sticky, but `threat.x/y` is live even while
-    // occluded — freeze the aim at wherever the threat was last actually
-    // seen while occluded, only resuming live tracking once visible again.
-    let threatAim = threat;
-    if (threat && this.mineMemory) {
-      if (threat.visible) {
-        this.mineMemory.lastVisibleThreat = { i: threat.i, x: threat.x, y: threat.y };
-      } else if (this.mineMemory.lastVisibleThreat?.i === threat.i) {
-        threatAim = this.mineMemory.lastVisibleThreat;
-      }
-      // else: aggroed without this specific enemy ever having been seen yet
-      // — no memory to fall back on, aim at the live position.
-    }
-    const aimTarget = threatAim ?? mineTarget;
-    // Read the stall counter as last tick left it (updated at the bottom of
-    // this function, after `fire` is known).
-    const stallStrafeKey =
-      threat && this.mineMemory && (this.mineMemory.combatStallTicks ?? 0) >= this.tuning.COMBAT_STALL_TICKS_THRESHOLD
-        ? Math.floor(this.mineMemory.combatStallTicks / this.tuning.COMBAT_STALL_STRAFE_FLIP_TICKS) % 2 === 0
-          ? "KeyD"
-          : "KeyA"
-        : null;
-
-    const currentAngle = Math.atan2(player.dirY, player.dirX);
-    const moveKeys = new Set();
-    let turnBurst;
-    let fire = false;
-    // True when the bot was aimed, aligned, and otherwise ready to fire, but
-    // held back purely by `profile.fireCooldownMs` — a legitimate reason to
-    // sit still, distinct from being stuck (see `detectAnomalies`'s
-    // `mostlyFiring`/`mostlyEngaged` exclusion, which needs this since a
-    // human-paced fire rate now means most ticks in a real firefight don't
-    // actually pull the trigger).
-    let fireOnCooldown = false;
-    let weaponSwitch = null;
-    this.logger.debugNav?.(
-      `[nav] pos=(${player.x.toFixed(2)},${player.y.toFixed(2)}) dir=${currentAngle.toFixed(2)} hpFrac=${player.healthFraction.toFixed(2)} ` +
-        `threat=${threat ? `(${threat.x.toFixed(1)},${threat.y.toFixed(1)},dist=${threat.dist.toFixed(1)})` : "none"} ` +
-        `mineTarget=${mineTarget ? `(${mineTarget.x},${mineTarget.y})` : "none"} navTarget=${navTarget ? `(${navTarget.x.toFixed(2)},${navTarget.y.toFixed(2)})` : "none"} ` +
-        `weaponIndex=${player.weaponIndex} ammo=${JSON.stringify(player.ammo)} owned=${JSON.stringify(player.ownedWeapons)}`,
+    const intent = decide(
+      { player, enemies, mines, navTarget, map },
+      this.mineMemory,
+      {
+        profile: this.profile,
+        tuning: this.tuning,
+        stepMs: this.stepMs,
+        ignoreThreats: this.ignoreThreats,
+        simTimeMs: this.simTimeMs,
+        lastFireSimTimeMs: this.lastFireSimTimeMs,
+        minDecisionMs: this.minDecisionMs,
+        logger: this.logger,
+      },
     );
-    let useMelee = false;
-    let waitingOnSpike = false;
-
-    if (aimTarget) {
-      const targetAngle = Math.atan2(aimTarget.y - player.y, aimTarget.x - player.x);
-      const delta = angleDelta(currentAngle, targetAngle);
-      // Melee-in-range is a universal tactical choice for every profile:
-      // free, and lifesteal is the single biggest survivability lever there
-      // is. Gated on `player.meleeWouldHit` (the engine's own hit test)
-      // rather than a fixed angle tolerance, since a melee swing's on-screen
-      // hit window shrinks with distance/enemy size.
-      if (threat && threat.dist <= this.tuning.MELEE_RANGE) {
-        if (!player.meleeWouldHit) {
-          moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
-          turnBurst = this.#turnBurstMs(delta, this.profile.rotSpeedMultiplier, player, currentAngle);
-          // Also keep closing the last bit of distance, not just re-aiming
-          // in place — the enemy's own chase AI is still walking between
-          // MELEE_CLOSE_MIN_DISTANCE and MELEE_RANGE. Never closer than one
-          // decision's own real forward-movement distance, though — holding
-          // "keep closing" *and* a turn command together for a whole decision
-          // that's long enough to cover that much ground traces a real arc
-          // around the target instead of settling on it (confirmed directly
-          // against a caller using a much longer real decision window than
-          // this project's own single-player defaults —
-          // `scripts/lib/multiplayerBot.mjs` — which spun in place
-          // indefinitely at melee range with the tuning-only default alone).
-          // `MELEE_CLOSE_MIN_DISTANCE` on its own already works out to almost
-          // exactly this same distance at single-player's own realtime
-          // `WATCH_STEP_MS` (0.4 tiles vs. 3.2 tiles/sec × 0.13s ≈ 0.42) —
-          // this is a no-op there; it only widens the gate for a caller
-          // using a longer decision window than that.
-          const closeMinDistance = Math.max(this.tuning.MELEE_CLOSE_MIN_DISTANCE, this.tuning.ENGINE_MOVE_SPEED * (this.stepMs / 1000));
-          if (map && threat.dist > closeMinDistance) {
-            const aheadX = player.x + player.dirX * 0.6;
-            const aheadY = player.y + player.dirY * 0.6;
-            if (!isHazardAt(map, aheadX, aheadY) && !activeSpikeAt(map, aheadX, aheadY, player.levelTime)) {
-              moveKeys.add("KeyW");
-            }
-          }
-          if (stallStrafeKey) {
-            moveKeys.add(stallStrafeKey);
-            turnBurst = Math.max(turnBurst ?? 0, this.#moveBurstMs(10, false));
-          }
-        } else {
-          fire = true;
-          useMelee = true;
-        }
-      } else {
-        // Don't fire at an aggroed-but-currently-occluded threat — aggro is
-        // sticky, so an aligned angle doesn't guarantee a clear shot.
-        const hasLos = !threat || !map || hasLineOfSight(map, player.x, player.y, threat.x, threat.y);
-        // A stationary mine's on-screen width at typical disarm range is
-        // narrower than any fixed fireAngleEps tolerance — gate on the
-        // engine's own conservative `player.wouldMineHit` test instead,
-        // unless realignment has stalled long enough to just take the shot.
-        const mineRealignStalled = Boolean(this.mineMemory) && this.mineMemory.shootTicks > this.tuning.MINE_REALIGN_STALL_TICKS;
-        const mineNotReady = !threat && !player.wouldMineHit && !mineRealignStalled;
-        if (Math.abs(delta) > this.profile.fireAngleEps || !hasLos || mineNotReady) {
-          if (Math.abs(delta) > (mineNotReady ? this.tuning.MINE_REALIGN_EPS : this.profile.fireAngleEps)) {
-            moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
-            turnBurst = this.#turnBurstMs(delta, this.profile.rotSpeedMultiplier, player, currentAngle);
-          }
-          // Keep closing distance while lining up a ranged shot (threat-only,
-          // not while aiming at a mine, and only outside melee range).
-          if (threat && (threat.dist > this.tuning.MIN_RANGED_APPROACH_DISTANCE || !hasLos) && map) {
-            const aheadX = player.x + player.dirX * 0.6;
-            const aheadY = player.y + player.dirY * 0.6;
-            if (!isHazardAt(map, aheadX, aheadY) && !activeSpikeAt(map, aheadX, aheadY, player.levelTime)) {
-              moveKeys.add("KeyW");
-            }
-          }
-          if (stallStrafeKey) {
-            moveKeys.delete("KeyD");
-            moveKeys.delete("KeyA");
-            moveKeys.add(stallStrafeKey);
-            turnBurst = Math.max(turnBurst ?? 0, this.#moveBurstMs(10, false));
-          }
-        } else {
-          weaponSwitch = pickRangedWeapon(player, this.profile, enemies, threat, mineTarget);
-          // Re-check the *effective* weapon (the switch target, or whatever's
-          // already equipped) against the same rocket-safety check right
-          // before actually firing, not just at selection time — an already-
-          // equipped Ghidra with nothing better in inventory would otherwise
-          // still fire unsafely.
-          const effectiveWeapon = weaponSwitch ?? player.weaponIndex;
-          const aimDist = threat ? threat.dist : mineTarget ? mineTarget.dist : null;
-          const rocketUnsafe = effectiveWeapon === GHIDRA_WEAPON_INDEX && rocketAimUnsafe(player, enemies, aimDist, Boolean(mineTarget));
-          // Semi-auto ranged weapons (pistol/shotgun/ghidra) have no engine-
-          // side fire-rate cap — see `profile.fireCooldownMs`'s doc comment —
-          // so a fresh Backquote keydown dispatched every single decision
-          // tick fired as fast as the tick loop allowed (~20/sec headless),
-          // far beyond any human trigger-pull rate. Auto weapons (gdb/Friday
-          // Hotfix) are exempt: their realistic sustained rate is already
-          // enforced by the engine's own `weaponCooldown`/`fireIntervalSec`
-          // while the key is held, so throttling the bot's dispatch here
-          // would only starve them of frames to actually hold the key down.
-          const isAutoRanged = AUTO_RANGED_WEAPON_INDICES.has(effectiveWeapon);
-          const fireReady = isAutoRanged || this.simTimeMs - this.lastFireSimTimeMs >= this.profile.fireCooldownMs;
-          fire = !rocketUnsafe && fireReady;
-          fireOnCooldown = !rocketUnsafe && !fireReady;
-          if (fire && !isAutoRanged) this.lastFireSimTimeMs = this.simTimeMs;
-        }
-      }
-    } else if (navTarget) {
-      const targetAngle = Math.atan2(navTarget.y - player.y, navTarget.x - player.x);
-      const delta = angleDelta(currentAngle, targetAngle);
-      const aheadX = player.x + player.dirX * 0.6;
-      const aheadY = player.y + player.dirY * 0.6;
-      const blockedAhead = map && activeSpikeAt(map, aheadX, aheadY, player.levelTime);
-      waitingOnSpike = Boolean(blockedAhead);
-      if (Math.abs(delta) > this.tuning.TURN_MOVE_EPS) {
-        moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
-        turnBurst = this.#turnBurstMs(delta, this.profile.rotSpeedMultiplier, player, currentAngle);
-        // Walk while still correcting heading, capped to angular errors
-        // under MAX_WALK_WHILE_TURNING_RAD so a sharp corridor doubling-back
-        // doesn't send the bot walking the wrong way while it turns around.
-        if (Math.abs(delta) < this.tuning.MAX_WALK_WHILE_TURNING_RAD && !blockedAhead) {
-          moveKeys.add("KeyW");
-          moveKeys.add(diagonalStrafeKey(delta));
-        }
-      } else if (!blockedAhead) {
-        // Don't step onto an active spike trap — wait out its cycle instead.
-        moveKeys.add("KeyW");
-        // Sprint the straight legs. The engine's SPRINT_MULTIPLIER (2.0) is
-        // free and unconditional, and the bot had simply never used it
-        // outside the two emergency branches — it walked whole campaigns at
-        // half speed, which inflates time-on-level, exposure, damage taken
-        // and ammo spent, and is what pushed one demo-campaign level past
-        // MAX_REPLAY_FRAMES_PER_LEVEL.
-        //
-        // Scoped to this sub-branch on purpose: here the heading is already
-        // converged (|delta| <= TURN_MOVE_EPS), so there is no turn key and
-        // therefore no interaction with the turn/move burst coupling — the
-        // single variable being changed is speed. The turn-and-walk branch
-        // above is deliberately left alone; sprinting *while* still
-        // correcting heading is a different change with a different risk and
-        // belongs to its own A/B.
-        //
-        // The burst must flip to `sprinting = true` in the same breath: it is
-        // what caps the hold so the bot stops at the waypoint, and leaving it
-        // at the walking speed would overshoot by exactly 2x.
-        const dist = Math.hypot(navTarget.x - player.x, navTarget.y - player.y);
-        // Sprinting halves how long the hold needs to be, and the hold *is*
-        // the decision window — so on a short leg, sprinting can shrink the
-        // window below what the transport can carry. Walking the same leg
-        // gives twice the window, so falling back to a walk is what keeps the
-        // window safe, not stopping. Always true under the virtual clock
-        // (`minDecisionMs` 0), so single-player behaviour is unaffected.
-        const windowSafe = this.#moveBurstMs(dist, true) >= this.minDecisionMs;
-        const sprintDist = this.#forwardScanTiles(true);
-        // Gate the sprint, not the movement. Stopping dead for a spike two
-        // and a half tiles away would cost more level time than the damage it
-        // avoids; walking simply shortens the look-ahead until the existing
-        // `blockedAhead` check can make the call at close range.
-        // `hazard: false` — this is a committed route leg, and sprinting
-        // across acid the planner already decided was worth crossing spends
-        // less time in it, not more. Spikes still block, because a spike's
-        // damaging half passes on its own and is genuinely worth not
-        // sprinting into.
-        const sprinting =
-          windowSafe && !this.#segmentBlocked(map, player, { x: player.dirX, y: player.dirY }, sprintDist, player.levelTime, { hazard: false });
-        if (sprinting) moveKeys.add("ShiftLeft");
-        turnBurst = this.#moveBurstMs(dist, sprinting);
-      }
-    }
-
-    this.logger.debugNav?.(`      -> moveKeys=[${[...moveKeys].join(",")}] fire=${fire} useMelee=${useMelee} weaponSwitch=${weaponSwitch} turnBurst=${turnBurst?.toFixed(0)}`);
-
-    // A real attack attempt counts as progress even if position doesn't
-    // change, so only an unchanging position with no attack counts toward
-    // the stall.
-    if (threat && this.mineMemory) {
-      const posKey = `${player.x.toFixed(2)},${player.y.toFixed(2)}`;
-      if (!fire && this.mineMemory.combatStallPos === posKey) {
-        this.mineMemory.combatStallTicks = (this.mineMemory.combatStallTicks ?? 0) + 1;
-      } else {
-        this.mineMemory.combatStallPos = posKey;
-        this.mineMemory.combatStallTicks = 0;
-      }
-    } else if (this.mineMemory) {
-      this.mineMemory.combatStallTicks = 0;
-      this.mineMemory.combatStallPos = null;
-    }
-    this.#recordTrace({
-      branch: "main",
-      x: player.x,
-      y: player.y,
-      hpFrac: player.healthFraction,
-      threatDist: threat?.dist ?? null,
-      mineDist: mineTarget?.dist ?? null,
-      waitingOnSpike,
-      moveKeys: [...moveKeys],
-      turnBurst,
-      fire: fire || useMelee,
-      fireOnCooldown,
-    });
-    return this.applyAction(moveKeys, fire, weaponSwitch, useMelee, turnBurst);
+    // The semi-auto fire clock is per-`Bot`, not per-decision, so the policy
+    // reports that it pulled the trigger and the bot owns the timestamp — see
+    // `profile.fireCooldownMs`. It must be stamped before `applyAction`
+    // advances `simTimeMs`, so the cooldown measures from the decision that
+    // fired, exactly as it did when this was all one method.
+    if (intent.firedSemiAuto) this.lastFireSimTimeMs = this.simTimeMs;
+    this.#recordTrace(intent.trace);
+    return this.applyAction(intent);
   }
 
   async driveToward(point, eps, maxTicks) {
     let { player, enemies, mines } = await this.readFull();
     for (let t = 0; t < maxTicks; t++) {
       if (player.state !== "playing") {
-        await this.applyAction(new Set(), false, null, false);
+        await this.applyAction(this.#releaseIntent());
         return { state: player.state, reason: player.state };
       }
       if (Math.hypot(point.x - player.x, point.y - player.y) < eps) {
@@ -1350,11 +608,11 @@ export class Bot {
       // larger than any legitimate single tick of movement and treat it the
       // same as arriving.
       if (Math.hypot(player.x - prevX, player.y - prevY) > this.tuning.TELEPORT_JUMP_DETECT_TILES) {
-        await this.applyAction(new Set(), false, null, false);
+        await this.applyAction(this.#releaseIntent());
         return { state: "playing", reason: "teleported" };
       }
     }
-    await this.applyAction(new Set(), false, null, false);
+    await this.applyAction(this.#releaseIntent());
     return { state: "playing", reason: "stuck" };
   }
 
@@ -1367,7 +625,7 @@ export class Bot {
         const currentAngle = Math.atan2(player.dirY, player.dirX);
         const delta = angleDelta(currentAngle, targetAngle);
         if (Math.abs(delta) < this.tuning.TURN_MOVE_EPS) {
-          await this.applyAction(new Set(), false, null, false);
+          await this.applyAction(this.#releaseIntent());
           return { state: "playing" };
         }
         // `tick()` only ever turns the player toward a threat, a mine, or
@@ -1383,14 +641,18 @@ export class Bot {
         const NEAR_PI_TURN_EPS = 0.05;
         const turnPositive = Math.abs(Math.abs(delta) - Math.PI) < NEAR_PI_TURN_EPS ? true : delta > 0;
         const moveKeys = new Set([turnPositive ? "KeyE" : "KeyQ"]);
-        const turnBurst = this.#turnBurstMs(delta, this.profile.rotSpeedMultiplier, player, currentAngle);
-        ({ player, enemies, mines } = await this.applyAction(moveKeys, false, null, false, turnBurst));
+        const turnBurst = turnBurstMs(delta, this.profile.rotSpeedMultiplier, currentAngle, {
+          tuning: this.tuning,
+          stepMs: this.stepMs,
+          memory: this.mineMemory,
+        });
+        ({ player, enemies, mines } = await this.applyAction(uniformIntent(moveKeys, turnBurst, this.stepMs, {})));
         continue;
       }
       // `map` explicitly omitted here — see `tick`'s doc comment.
       ({ player, enemies, mines } = await this.tick(player, enemies, mines, null, undefined));
     }
-    await this.applyAction(new Set(), false, null, false);
+    await this.applyAction(this.#releaseIntent());
     return { state: "playing" };
   }
 
@@ -1407,10 +669,10 @@ export class Bot {
   async holdForwardFine(totalMs, stepMs) {
     const steps = Math.ceil(totalMs / stepMs);
     for (let t = 0; t < steps; t++) {
-      const { player } = await this.applyAction(new Set(["KeyW"]), false, null, false, stepMs);
+      const { player } = await this.applyAction(uniformIntent(["KeyW"], stepMs, this.stepMs, {}));
       if (player.state !== "playing") return { state: player.state };
     }
-    await this.applyAction(new Set(), false, null, false);
+    await this.applyAction(this.#releaseIntent());
     return { state: "playing" };
   }
 
@@ -1424,6 +686,61 @@ export class Bot {
   async readState() {
     return this.page.evaluate(() => window.__codeensteinTestHooks.getPlayerState());
   }
+  /**
+   * Dispatch one decision's intent.
+   *
+   * Split in two on purpose. This half is pure bookkeeping — resolve the
+   * decision's duration, advance the simulated clock, and turn the intent's
+   * per-key holds into the sequence of dispatch phases that realises them.
+   * `dispatchSegment` below is the only part that touches the page, and it is
+   * the single method `MultiplayerBot` overrides: keeping the segmentation
+   * here rather than duplicating it is what stops the two bots' timing from
+   * drifting apart again.
+   *
+   * `intent.durationMs` of `undefined` means "the caller's whole step", which
+   * is distinct from any particular number — several branches hold keys without
+   * setting a burst at all, and those run for the full window.
+   *
+   * Today `segmentsFor` always yields exactly one phase, because every branch
+   * gives all of its keys the same hold. The plumbing is here so that stops
+   * being true without another change to this method.
+   */
+  async applyAction(intent, { maxDurationMs = this.stepMs } = {}) {
+    const durationMs = intent.durationMs ?? maxDurationMs;
+    this.simTimeMs += durationMs;
+    const phases = segmentsFor(intent.holds, durationMs, this.minPhaseMs);
+    let result;
+    for (let i = 0; i < phases.length; i++) {
+      result = await this.dispatchSegment(phases[i].keys, phases[i].ms, {
+        fire: intent.fire,
+        useMelee: intent.useMelee,
+        weaponSwitchIndex: intent.weaponSwitchIndex,
+        isFirst: i === 0,
+        isLast: i === phases.length - 1,
+      });
+    }
+    return result;
+  }
+
+  /**
+   * "Let go of everything and stand still for one full step." An empty holds
+   * map releases every key through `dispatchSegment`'s diff, which is how the
+   * drive loops stop cleanly at a waypoint or on level end.
+   */
+  #releaseIntent() {
+    return uniformIntent([], undefined, this.stepMs, {});
+  }
+
+  /**
+   * Shortest phase this bot will dispatch as its own step. Zero here: under the
+   * virtual clock a phase boundary costs nothing and lands exactly.
+   * `MultiplayerBot` raises it, for the same reason it raises
+   * `minDecisionMs` — a phase shorter than the lockstep input delay never
+   * arrives before the next one is issued.
+   */
+  get minPhaseMs() {
+    return 0;
+  }
 
   /**
    * The sole Node↔browser control boundary: dispatches real synthetic
@@ -1432,14 +749,21 @@ export class Bot {
    * with an edge-triggered weapon-switch (`Digit{n+1}`) and a melee-vs-
    * ranged fire key choice (`Space` for quick-melee, `Backquote`
    * otherwise). In realtime mode, skips the virtual-clock pump and instead
-   * waits `stepMs` of *real* time so a human watching a visible browser
+   * waits `ms` of *real* time so a human watching a visible browser
    * window can actually follow the action.
+   *
+   * Movement keys are a *diff* against `window.__botHeldKeys`, so a key that
+   * appears in consecutive phases is never released and re-pressed — the
+   * engine sees one continuous hold. That is what makes a key simply dropping
+   * out of a later phase the correct way to end its hold.
+   *
+   * The weapon switch fires on the first phase and the fire key is held from
+   * the first phase to the last, so a multi-phase decision still reads as one
+   * trigger pull rather than several.
    */
-  async applyAction(desiredMoveKeys, fire, weaponSwitchIndex, useMelee, stepMsOverride) {
-    const stepMs = stepMsOverride ?? this.stepMs;
-    this.simTimeMs += stepMs;
+  async dispatchSegment(keys, ms, { fire, useMelee, weaponSwitchIndex, isFirst, isLast }) {
     const headed = this.realtime;
-    // Capped at `stepMs` itself: a short precision burst (e.g. `#turnBurstMs`
+    // Capped at `ms` itself: a short precision burst (e.g. `turnBurstMs`
     // rounding a near-complete turn down to a few ms to avoid overshoot)
     // must still land in exactly one sub-step of its own requested size, not
     // get rounded up to a full `recordStepMs` — `__pumpVirtualTime` always
@@ -1447,9 +771,9 @@ export class Bot {
     // requested burst would overshoot the very precision these bursts exist
     // to protect. Only a full-length decision (the common case) actually
     // gets subdivided into multiple `recordStepMs`-sized replay frames.
-    const subStepMs = Math.min(this.recordStepMs, stepMs);
+    const subStepMs = Math.min(this.recordStepMs, ms);
     const dispatched = await this.page.evaluate(
-      ({ desiredKeys, fire, weaponSwitchIndex, useMelee, stepMs, subStepMs, headed }) => {
+      ({ desiredKeys, fire, weaponSwitchIndex, useMelee, stepMs, subStepMs, headed, isFirst, isLast }) => {
         const canvas = document.querySelector("canvas");
         const hooks = window.__codeensteinTestHooks;
         const desired = new Set(desiredKeys);
@@ -1457,7 +781,7 @@ export class Bot {
         for (const code of held) if (!desired.has(code)) canvas.dispatchEvent(new KeyboardEvent("keyup", { code }));
         for (const code of desired) if (!held.has(code)) canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
         window.__botHeldKeys = desired;
-        if (weaponSwitchIndex !== null && weaponSwitchIndex !== undefined) {
+        if (isFirst && weaponSwitchIndex !== null && weaponSwitchIndex !== undefined) {
           const code = `Digit${weaponSwitchIndex + 1}`;
           canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
           canvas.dispatchEvent(new KeyboardEvent("keyup", { code }));
@@ -1467,16 +791,16 @@ export class Bot {
         // frame, so releasing before the pump even starts meant it never
         // fired at all. Fixed by moving the keyup to the end of the tick.
         const fireCode = fire ? (useMelee ? "Space" : "Backquote") : null;
-        if (fireCode) canvas.dispatchEvent(new KeyboardEvent("keydown", { code: fireCode }));
-        if (headed) return { fireCode };
+        if (fireCode && isFirst) canvas.dispatchEvent(new KeyboardEvent("keydown", { code: fireCode }));
+        if (headed) return { fireCode: isLast ? fireCode : null };
         window.__pumpVirtualTime(stepMs, subStepMs);
-        if (fireCode) canvas.dispatchEvent(new KeyboardEvent("keyup", { code: fireCode }));
+        if (fireCode && isLast) canvas.dispatchEvent(new KeyboardEvent("keyup", { code: fireCode }));
         return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines() };
       },
-      { desiredKeys: [...desiredMoveKeys], fire, weaponSwitchIndex, useMelee, stepMs, subStepMs, headed },
+      { desiredKeys: [...keys], fire, weaponSwitchIndex, useMelee, stepMs: ms, subStepMs, headed, isFirst, isLast },
     );
     if (!headed) return dispatched;
-    await this.page.waitForTimeout(stepMs);
+    await this.page.waitForTimeout(ms);
     return this.page.evaluate((fireCode) => {
       const canvas = document.querySelector("canvas");
       if (fireCode) canvas.dispatchEvent(new KeyboardEvent("keyup", { code: fireCode }));

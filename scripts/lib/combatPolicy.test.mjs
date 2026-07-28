@@ -1,0 +1,609 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
+
+/**
+ * Unit tests for the bot's decision core.
+ *
+ * These are the first direct assertions on this behaviour that have ever
+ * existed: before the extraction, the only net under ~1400 lines of movement
+ * and combat logic was `npm run balancing:scan`, which is headless-only, not
+ * CI-wired, and can only observe the bot's decisions through a whole
+ * playthrough. `scripts/**` is excluded from the `src/` coverage denominator but
+ * is still executed by `vitest run`, so these do run in CI.
+ *
+ * The emphasis is deliberately on the four structural problems the wider bot
+ * rework is about — standing still while shooting, never sprinting, conceding
+ * the first shot, and not dodging — so that each becomes a regression test the
+ * moment it is fixed, rather than something only a full campaign would reveal.
+ */
+import { describe, expect, it, vi } from "vitest";
+import {
+  activeSpikeAt,
+  angleDelta,
+  decide,
+  DEFAULT_TUNING,
+  findDangerousMine,
+  forwardScanTiles,
+  hasLineOfSight,
+  isHazardAt,
+  moveBurstMs,
+  pickRangedWeapon,
+  pickThreat,
+  segmentBlocked,
+  segmentsFor,
+  turnBurstMs,
+  uniformIntent,
+} from "./combatPolicy.mjs";
+
+const SIZE = 20;
+
+/** An all-floor room with a solid border, plus whatever tiles the caller pokes in. */
+function makeMap({ tiles = [], spikeTraps = [] } = {}) {
+  const grid = Array.from({ length: SIZE }, (_, y) =>
+    Array.from({ length: SIZE }, (_, x) => (x === 0 || y === 0 || x === SIZE - 1 || y === SIZE - 1 ? 1 : 0)),
+  );
+  for (const [x, y, v] of tiles) grid[y][x] = v;
+  return { grid, spikeTraps, mines: [], ammoPickups: [] };
+}
+
+function makePlayer(over = {}) {
+  return {
+    x: 10.5,
+    y: 10.5,
+    dirX: 1,
+    dirY: 0,
+    health: 100,
+    healthFraction: 1,
+    swap: 0,
+    state: "playing",
+    ammo: { bullets: 50, smg: 50, rockets: 5, gas: 50 },
+    weaponIndex: 0,
+    meleeWouldHit: false,
+    wouldMineHit: false,
+    ownedWeapons: [0, 1, 2],
+    levelTime: 0,
+    distanceTraveled: 0,
+    ...over,
+  };
+}
+
+function makeEnemy(over = {}) {
+  return { x: 14.5, y: 10.5, alive: true, aggroed: true, elite: false, edgeCase: false, hp: 30, maxHp: 30, ...over };
+}
+
+const PROFILE = {
+  engageRadius: 9.5,
+  fireAngleEps: 0.05,
+  fireCooldownMs: 160,
+  rotSpeedMultiplier: 3.5,
+  proactiveMineDisarm: true,
+  rocketForDistantClusters: true,
+  weaponPriority: [4, 5, 3, 1, 0],
+};
+
+function freshMemory() {
+  return { retreatKey: null, retreatTicks: 0, shootKey: null, shootTicks: 0, abandoned: new Set(), trace: undefined };
+}
+
+function makeConfig(over = {}) {
+  return {
+    profile: PROFILE,
+    tuning: DEFAULT_TUNING,
+    stepMs: 50,
+    ignoreThreats: false,
+    simTimeMs: 100000,
+    lastFireSimTimeMs: -Infinity,
+    minDecisionMs: 0,
+    logger: undefined,
+    ...over,
+  };
+}
+
+/** Convenience: the key set an intent would dispatch. */
+const keysOf = (intent) => [...intent.holds.keys()].sort();
+
+describe("geometry", () => {
+  it("angleDelta wraps to the shortest signed turn", () => {
+    expect(angleDelta(0, Math.PI / 2)).toBeCloseTo(Math.PI / 2);
+    expect(angleDelta(0, -Math.PI / 2)).toBeCloseTo(-Math.PI / 2);
+    // 350° -> 10° is a +20° turn, not -340°.
+    expect(angleDelta((350 * Math.PI) / 180, (10 * Math.PI) / 180)).toBeCloseTo((20 * Math.PI) / 180);
+  });
+
+  it("isHazardAt reads the tile the point falls in, not the nearest corner", () => {
+    const map = makeMap({ tiles: [[5, 5, 2]] });
+    expect(isHazardAt(map, 5.9, 5.9)).toBe(true);
+    expect(isHazardAt(map, 6.0, 5.5)).toBe(false);
+  });
+
+  it("activeSpikeAt is true only in the damaging half of the cycle", () => {
+    const map = makeMap({ tiles: [[5, 5, 5]], spikeTraps: [{ x: 5, y: 5, period: 4, phase: 0 }] });
+    expect(activeSpikeAt(map, 5.5, 5.5, 0)).toBe(false);
+    expect(activeSpikeAt(map, 5.5, 5.5, 1.9)).toBe(false);
+    expect(activeSpikeAt(map, 5.5, 5.5, 2.1)).toBe(true);
+    expect(activeSpikeAt(map, 5.5, 5.5, 3.9)).toBe(true);
+  });
+
+  it("hasLineOfSight is blocked by walls but not by acid", () => {
+    expect(hasLineOfSight(makeMap({ tiles: [[12, 10, 1]] }), 10.5, 10.5, 15.5, 10.5)).toBe(false);
+    expect(hasLineOfSight(makeMap({ tiles: [[12, 10, 2]] }), 10.5, 10.5, 15.5, 10.5)).toBe(true);
+  });
+});
+
+describe("burst timing", () => {
+  const ctx = { tuning: DEFAULT_TUNING, stepMs: 50 };
+
+  it("moveBurstMs caps the hold at the time the move actually needs", () => {
+    // 0.1 tiles at 3.2 tiles/sec = 31.25ms, under the 50ms step.
+    expect(moveBurstMs(0.1, false, ctx)).toBeCloseTo(31.25);
+    // Sprinting halves it — which is exactly why a speed change is also a
+    // timing change, the thing `minDecisionMs` exists to guard.
+    expect(moveBurstMs(0.1, true, ctx)).toBeCloseTo(15.625);
+    // Long moves clamp to the step.
+    expect(moveBurstMs(99, false, ctx)).toBe(50);
+    // Never zero, or the decision would dispatch nothing at all.
+    expect(moveBurstMs(0, false, ctx)).toBe(1);
+  });
+
+  it("turnBurstMs records the rotation-anomaly handoff on memory", () => {
+    // The side effect has to survive the move out of the Bot class — without
+    // it `#checkRotationAnomaly` silently never fires again.
+    const memory = freshMemory();
+    turnBurstMs(0.5, 2, 1.23, { tuning: DEFAULT_TUNING, stepMs: 50, memory });
+    expect(memory.pendingTurnCheck).toMatchObject({ beforeDir: 1.23, rotSpeedMultiplier: 2 });
+  });
+
+  it("turnBurstMs tolerates a missing memory", () => {
+    expect(() => turnBurstMs(0.5, 2, 0, { tuning: DEFAULT_TUNING, stepMs: 50, memory: null })).not.toThrow();
+  });
+
+  it("forwardScanTiles floors at the historical fixed probe but scales past it", () => {
+    expect(forwardScanTiles(true, { tuning: DEFAULT_TUNING, stepMs: 50 })).toBeCloseTo(0.6);
+    expect(forwardScanTiles(true, { tuning: DEFAULT_TUNING, stepMs: 130 })).toBeCloseTo(0.832);
+    // MultiplayerBot's window — where a fixed 0.6 probe would clear a spike
+    // the bot then sprints straight onto in the same decision.
+    expect(forwardScanTiles(true, { tuning: DEFAULT_TUNING, stepMs: 400 })).toBeCloseTo(2.56);
+  });
+});
+
+describe("segmentBlocked", () => {
+  const ctx = { tuning: DEFAULT_TUNING };
+
+  it("catches a hazard strip the segment passes through, not just its endpoint", () => {
+    // Acid at x=12 only; the segment starts at 10.5 and ends at 13.5, so an
+    // endpoint-only check would walk straight through it.
+    const map = makeMap({ tiles: [[12, 10, 2]] });
+    expect(segmentBlocked(map, { x: 10.5, y: 10.5 }, { x: 1, y: 0 }, 3, 0, ctx)).toBe(true);
+  });
+
+  it("ignores hazards when the caller is on a committed route", () => {
+    const map = makeMap({ tiles: [[12, 10, 2]] });
+    expect(segmentBlocked(map, { x: 10.5, y: 10.5 }, { x: 1, y: 0 }, 3, 0, { ...ctx, hazard: false })).toBe(false);
+  });
+
+  it("blocks a spike that will be up by the time the bot arrives", () => {
+    const map = makeMap({ tiles: [[12, 10, 5]], spikeTraps: [{ x: 12, y: 10, period: 4, phase: 0 }] });
+    // Down right now...
+    expect(activeSpikeAt(map, 12.5, 10.5, 0)).toBe(false);
+    // ...and still blocked, because the arrival-time sample sees it up.
+    expect(segmentBlocked(map, { x: 10.5, y: 10.5 }, { x: 1, y: 0 }, 3, 1.9, { ...ctx, hazard: false })).toBe(true);
+  });
+
+  it("is false with no map or a zero-length segment", () => {
+    expect(segmentBlocked(null, { x: 0, y: 0 }, { x: 1, y: 0 }, 3, 0, ctx)).toBe(false);
+    expect(segmentBlocked(makeMap(), { x: 1, y: 1 }, { x: 1, y: 0 }, 0, 0, ctx)).toBe(false);
+  });
+});
+
+describe("pickThreat", () => {
+  it("prefers a quick kill over a merely nearer enemy", () => {
+    const player = makePlayer();
+    const enemies = [makeEnemy({ x: 12.5, hp: 200 }), makeEnemy({ x: 16.5, edgeCase: true })];
+    expect(pickThreat(enemies, player, PROFILE, undefined).i).toBe(1);
+  });
+
+  it("ignores enemies that are dead, un-aggroed, or out of engage radius", () => {
+    const player = makePlayer();
+    expect(pickThreat([makeEnemy({ alive: false })], player, PROFILE, undefined)).toBeUndefined();
+    // The bot conceding the first shot: an enemy in plain view but not yet
+    // aggroed is not a candidate at all. Stage 6 changes this; until then
+    // this test pins the current behaviour so the change is visible.
+    expect(pickThreat([makeEnemy({ aggroed: false })], player, PROFILE, undefined)).toBeUndefined();
+    // 7,7 away is ~9.9 tiles, just outside the 9.5 engage radius.
+    expect(pickThreat([makeEnemy({ x: 17.5, y: 17.5 })], player, PROFILE, undefined)).toBeUndefined();
+  });
+
+  it("breaks exact ties by enemy index, so ordering never depends on sort stability", () => {
+    const player = makePlayer();
+    const enemies = [makeEnemy({ x: 14.5, y: 10.5 }), makeEnemy({ x: 6.5, y: 10.5 })];
+    // Both are exactly 4 tiles away and equally (non-)quick.
+    expect(pickThreat(enemies, player, PROFILE, undefined).i).toBe(0);
+  });
+
+  it("takes MELEE_RANGE from injected tuning rather than the module default", () => {
+    // The latent bug the extraction fixes: these helpers used to read
+    // DEFAULT_TUNING directly, so a Bot's own `opts.tuning` never reached them.
+    const player = makePlayer();
+    const enemies = [makeEnemy({ x: 14.5, hp: 200 }), makeEnemy({ x: 12.5, hp: 200 })];
+    // With a huge MELEE_RANGE both count as "quick", so it falls through to
+    // nearest-first and picks the closer one.
+    expect(pickThreat(enemies, player, PROFILE, undefined, { ...DEFAULT_TUNING, MELEE_RANGE: 99 }).i).toBe(1);
+  });
+});
+
+describe("pickRangedWeapon", () => {
+  it("respects injected tuning for the cluster radius", () => {
+    const player = makePlayer({ ownedWeapons: [0, 1, 2, 5], ammo: { bullets: 10, smg: 0, rockets: 0, gas: 10 } });
+    const threat = { ...makeEnemy({ x: 12.5 }), dist: 2 };
+    const enemies = [makeEnemy({ x: 12.5 }), makeEnemy({ x: 12.9 })];
+    // A priority order that would *not* reach Friday Hotfix on its own, so the
+    // only way to select it is via the cluster rule.
+    const shotgunFirst = { ...PROFILE, weaponPriority: [1, 0] };
+    // Clustered and close -> Friday Hotfix.
+    expect(pickRangedWeapon(player, shotgunFirst, enemies, threat, null, DEFAULT_TUNING)).toBe(5);
+    // Same geometry, but a cluster radius too small to group them: falls
+    // through to the priority order instead.
+    expect(pickRangedWeapon(player, shotgunFirst, enemies, threat, null, { ...DEFAULT_TUNING, CLUSTER_RADIUS: 0.01 })).toBe(1);
+  });
+
+  it("never selects a rocket at a mine target", () => {
+    const player = makePlayer({ ownedWeapons: [0, 1, 2, 4], weaponIndex: 0 });
+    expect(pickRangedWeapon(player, PROFILE, [], null, { dist: 9 }, DEFAULT_TUNING)).not.toBe(4);
+  });
+
+  it("returns null when the best choice is already equipped", () => {
+    const player = makePlayer({ ownedWeapons: [0, 1, 2], weaponIndex: 1 });
+    expect(pickRangedWeapon(player, PROFILE, [], null, null, DEFAULT_TUNING)).toBeNull();
+  });
+});
+
+describe("findDangerousMine", () => {
+  it("widens with the caller's reaction buffer", () => {
+    const player = makePlayer();
+    const mines = [{ x: 13.5, y: 10.5, alive: true, visible: true }]; // 3 tiles away
+    expect(findDangerousMine(mines, player, new Set(), 0, DEFAULT_TUNING)).toBeUndefined();
+    expect(findDangerousMine(mines, player, new Set(), 1, DEFAULT_TUNING)).toBeDefined();
+  });
+
+  it("skips mines the bot has given up on", () => {
+    const player = makePlayer();
+    const mines = [{ x: 11.5, y: 10.5, alive: true, visible: true }];
+    expect(findDangerousMine(mines, player, new Set(["11.5,10.5"]), 0, DEFAULT_TUNING)).toBeUndefined();
+  });
+});
+
+describe("segmentsFor", () => {
+  it("yields exactly one phase when every key shares a duration", () => {
+    // The identity property the extraction depends on: today's uniform intents
+    // must dispatch exactly as the single pre-refactor call did.
+    const holds = new Map([
+      ["KeyW", 50],
+      ["KeyE", 50],
+    ]);
+    expect(segmentsFor(holds, 50)).toEqual([{ keys: ["KeyW", "KeyE"], ms: 50 }]);
+  });
+
+  it("splits at each distinct hold, dropping keys whose hold has elapsed", () => {
+    // What makes "turn briefly, keep walking" expressible at all.
+    const holds = new Map([
+      ["KeyE", 20],
+      ["KeyW", 50],
+    ]);
+    expect(segmentsFor(holds, 50)).toEqual([
+      { keys: ["KeyE", "KeyW"], ms: 20 },
+      { keys: ["KeyW"], ms: 30 },
+    ]);
+  });
+
+  it("returns a single empty phase for an empty holds map", () => {
+    expect(segmentsFor(new Map(), 50)).toEqual([{ keys: [], ms: 50 }]);
+    expect(segmentsFor(undefined, 50)).toEqual([{ keys: [], ms: 50 }]);
+  });
+
+  it("collapses to one phase when any phase would fall under the floor", () => {
+    // Multiplayer's guard: a phase shorter than the lockstep input delay never
+    // lands, so the decision reverts to the single-phase behaviour that has
+    // always worked there rather than risking the spin-in-place failure.
+    const holds = new Map([
+      ["KeyE", 20],
+      ["KeyW", 400],
+    ]);
+    expect(segmentsFor(holds, 400, 300)).toEqual([{ keys: ["KeyE", "KeyW"], ms: 20 }]);
+  });
+
+  it("still splits under a floor when every phase clears it", () => {
+    const holds = new Map([
+      ["KeyE", 350],
+      ["KeyW", 700],
+    ]);
+    expect(segmentsFor(holds, 700, 300)).toEqual([
+      { keys: ["KeyE", "KeyW"], ms: 350 },
+      { keys: ["KeyW"], ms: 350 },
+    ]);
+  });
+
+  it("ignores holds at or beyond the decision duration as cut points", () => {
+    const holds = new Map([
+      ["KeyW", 50],
+      ["KeyA", 80],
+    ]);
+    expect(segmentsFor(holds, 50)).toEqual([{ keys: ["KeyW", "KeyA"], ms: 50 }]);
+  });
+});
+
+describe("uniformIntent", () => {
+  it("gives every key the resolved duration, and undefined means the whole step", () => {
+    const i = uniformIntent(["KeyW", "KeyE"], undefined, 50, {});
+    expect(i.durationMs).toBeUndefined();
+    expect([...i.holds.values()]).toEqual([50, 50]);
+  });
+
+  it("defaults the action fields so a caller can't accidentally fire", () => {
+    const i = uniformIntent([], 10, 50, {});
+    expect(i).toMatchObject({ fire: false, useMelee: false, weaponSwitchIndex: null, firedSemiAuto: false });
+  });
+});
+
+describe("decide — branch selection", () => {
+  it("keeps marching and sprints when standing in acid, without stopping to fight", () => {
+    const map = makeMap({ tiles: [[10, 10, 2]] });
+    const intent = decide(
+      { player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: { x: 15.5, y: 10.5 }, map },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(intent.branch).toBe("hazard");
+    expect(keysOf(intent)).toContain("ShiftLeft");
+    expect(intent.fire).toBe(false);
+  });
+
+  it("never adds a strafe key in the hazard branch", () => {
+    // The 72%-regression rule: a lateral key next to KeyW costs 29% of the
+    // forward component (engine.ts's diagonalScale), and here forward *is* the
+    // survival axis.
+    const map = makeMap({ tiles: [[10, 10, 2]] });
+    const intent = decide(
+      { player: makePlayer({ dirX: 0, dirY: 1 }), enemies: [], mines: [], navTarget: { x: 15.5, y: 10.5 }, map },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(keysOf(intent)).not.toContain("KeyA");
+    expect(keysOf(intent)).not.toContain("KeyD");
+  });
+
+  it("breaks contact at critical health instead of trading hits", () => {
+    const intent = decide(
+      { player: makePlayer({ healthFraction: 0.1 }), enemies: [makeEnemy()], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(intent.branch).toBe("criticalHealth");
+    expect(keysOf(intent)).toContain("ShiftLeft");
+    expect(intent.fire).toBe(false);
+  });
+
+  it("retreats from a mine it is standing too close to", () => {
+    const intent = decide(
+      { player: makePlayer(), enemies: [], mines: [{ x: 11.5, y: 10.5, alive: true, visible: true }], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(intent.branch).toBe("mineRetreat");
+    // Walks away rather than sprinting — unchanged, and pinned here because
+    // it is one of the branches the diagonal-strafe regression came from.
+    expect(keysOf(intent)).not.toContain("ShiftLeft");
+  });
+
+  it("gives up on a mine after enough consecutive retreat ticks", () => {
+    const memory = freshMemory();
+    const world = { player: makePlayer(), enemies: [], mines: [{ x: 11.5, y: 10.5, alive: true, visible: true }], navTarget: null, map: makeMap() };
+    let intent;
+    for (let i = 0; i <= DEFAULT_TUNING.MINE_TARGET_GIVEUP_TICKS + 1; i++) intent = decide(world, memory, makeConfig());
+    expect(memory.abandoned.has("11.5,10.5")).toBe(true);
+    expect(intent.branch).not.toBe("mineRetreat");
+  });
+
+  it("ignoreThreats suppresses combat entirely", () => {
+    const intent = decide(
+      { player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: { x: 15.5, y: 10.5 }, map: makeMap() },
+      freshMemory(),
+      makeConfig({ ignoreThreats: true }),
+    );
+    expect(intent.branch).toBe("main");
+    expect(intent.fire).toBe(false);
+    expect(keysOf(intent)).toContain("KeyW");
+  });
+});
+
+describe("decide — navigation", () => {
+  it("sprints a clear straight leg", () => {
+    const intent = decide(
+      { player: makePlayer(), enemies: [], mines: [], navTarget: { x: 16.5, y: 10.5 }, map: makeMap() },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(keysOf(intent)).toEqual(["KeyW", "ShiftLeft"]);
+  });
+
+  it("walks instead of sprinting when a spike lies within sprint reach", () => {
+    const map = makeMap({ tiles: [[12, 10, 5]], spikeTraps: [{ x: 12, y: 10, period: 4, phase: 2 }] });
+    const intent = decide({ player: makePlayer(), enemies: [], mines: [], navTarget: { x: 16.5, y: 10.5 }, map }, freshMemory(), makeConfig({ stepMs: 400 }));
+    expect(keysOf(intent)).toEqual(["KeyW"]);
+  });
+
+  it("still sprints across acid the route already committed to", () => {
+    // planRoute prices hazard at 25x a floor tile, so a route that crosses it
+    // crossed it deliberately — and crossing faster spends less time in it.
+    const map = makeMap({ tiles: [[12, 10, 2]] });
+    const intent = decide({ player: makePlayer(), enemies: [], mines: [], navTarget: { x: 16.5, y: 10.5 }, map }, freshMemory(), makeConfig({ stepMs: 400 }));
+    expect(keysOf(intent)).toContain("ShiftLeft");
+  });
+
+  it("refuses to sprint when the resulting window would fall under the floor", () => {
+    // Multiplayer: sprinting a short leg shrinks the decision below the
+    // lockstep input delay. Walking gives twice the window for the same leg.
+    const world = { player: makePlayer(), enemies: [], mines: [], navTarget: { x: 11.5, y: 10.5 }, map: makeMap() };
+    expect(keysOf(decide(world, freshMemory(), makeConfig({ stepMs: 400, minDecisionMs: 0 })))).toContain("ShiftLeft");
+    expect(keysOf(decide(world, freshMemory(), makeConfig({ stepMs: 400, minDecisionMs: 300 })))).not.toContain("ShiftLeft");
+  });
+
+  it("waits rather than stepping onto an active spike directly ahead", () => {
+    const map = makeMap({ tiles: [[11, 10, 5]], spikeTraps: [{ x: 11, y: 10, period: 4, phase: 2 }] });
+    const intent = decide({ player: makePlayer(), enemies: [], mines: [], navTarget: { x: 16.5, y: 10.5 }, map }, freshMemory(), makeConfig());
+    expect(keysOf(intent)).toEqual([]);
+    expect(intent.trace.waitingOnSpike).toBe(true);
+  });
+
+  it("walks diagonally while correcting a small heading error", () => {
+    // Heading error must land between TURN_MOVE_EPS (0.2) and
+    // MAX_WALK_WHILE_TURNING_RAD (0.35): atan2(2, 6) ≈ 0.32 rad.
+    const intent = decide(
+      { player: makePlayer(), enemies: [], mines: [], navTarget: { x: 16.5, y: 12.5 }, map: makeMap() },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(keysOf(intent)).toContain("KeyW");
+    expect(keysOf(intent).some((k) => k === "KeyA" || k === "KeyD")).toBe(true);
+  });
+
+  it("turns without walking when the heading error is large", () => {
+    const intent = decide(
+      { player: makePlayer({ dirX: -1, dirY: 0 }), enemies: [], mines: [], navTarget: { x: 16.5, y: 10.5 }, map: makeMap() },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(keysOf(intent)).not.toContain("KeyW");
+    expect(keysOf(intent).some((k) => k === "KeyQ" || k === "KeyE")).toBe(true);
+  });
+});
+
+describe("decide — combat", () => {
+  it("swings when the engine says a melee hit would land", () => {
+    const intent = decide(
+      { player: makePlayer({ meleeWouldHit: true }), enemies: [makeEnemy({ x: 11.4 })], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(intent.fire).toBe(true);
+    expect(intent.useMelee).toBe(true);
+  });
+
+  it("stands perfectly still while firing a ranged shot", () => {
+    // This is the bug, pinned. `aiEffectivenessDanger.enemyAccuracy` measures
+    // how easy a target the bot is, and an empty holds map here is exactly why
+    // it reads ~0.6. Stage 4 makes this assertion flip.
+    const intent = decide(
+      { player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(intent.fire).toBe(true);
+    expect(intent.useMelee).toBe(false);
+    expect(keysOf(intent)).toEqual([]);
+  });
+
+  it("holds fire at an occluded threat even when perfectly aligned", () => {
+    const map = makeMap({ tiles: [[12, 10, 1]] });
+    const intent = decide({ player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: null, map }, freshMemory(), makeConfig());
+    expect(intent.fire).toBe(false);
+  });
+
+  it("respects the semi-auto fire cooldown and reports the pull to the caller", () => {
+    const world = { player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: null, map: makeMap() };
+    const ready = decide(world, freshMemory(), makeConfig({ simTimeMs: 10000, lastFireSimTimeMs: 0 }));
+    expect(ready.fire).toBe(true);
+    expect(ready.firedSemiAuto).toBe(true);
+    const tooSoon = decide(world, freshMemory(), makeConfig({ simTimeMs: 10000, lastFireSimTimeMs: 9950 }));
+    expect(tooSoon.fire).toBe(false);
+    expect(tooSoon.trace.fireOnCooldown).toBe(true);
+  });
+
+  it("does not report a semi-auto pull for an auto weapon", () => {
+    // gdb/Friday Hotfix are engine-rate-limited while held, so the userland
+    // cooldown must not apply — otherwise they get starved of frames.
+    const player = makePlayer({ ownedWeapons: [0, 1, 2, 3], weaponIndex: 3 });
+    const intent = decide(
+      { player, enemies: [makeEnemy()], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig({ profile: { ...PROFILE, weaponPriority: [3] }, simTimeMs: 0, lastFireSimTimeMs: 0 }),
+    );
+    expect(intent.fire).toBe(true);
+    expect(intent.firedSemiAuto).toBe(false);
+  });
+
+  it("freezes aim at the last seen position while a threat is occluded", () => {
+    const memory = freshMemory();
+    // One wall at x=15: the enemy is visible in front of it, occluded behind.
+    const map = makeMap({ tiles: [[15, 10, 1]] });
+    decide({ player: makePlayer(), enemies: [makeEnemy({ x: 14.5 })], mines: [], navTarget: null, map }, memory, makeConfig());
+    expect(memory.lastVisibleThreat).toMatchObject({ i: 0, x: 14.5, y: 10.5 });
+    // Same enemy walks past the wall — aggro is sticky, so it stays the
+    // threat, but the aim must stay where it was last actually seen.
+    decide({ player: makePlayer(), enemies: [makeEnemy({ x: 16.5 })], mines: [], navTarget: null, map }, memory, makeConfig());
+    expect(memory.lastVisibleThreat).toMatchObject({ x: 14.5, y: 10.5 });
+  });
+
+  it("nudges sideways once a combat engagement has stalled long enough", () => {
+    const memory = freshMemory();
+    memory.combatStallTicks = DEFAULT_TUNING.COMBAT_STALL_TICKS_THRESHOLD;
+    memory.combatStallPos = "x";
+    const intent = decide(
+      // Misaligned so it takes the re-aim path, where the stall strafe applies.
+      { player: makePlayer({ dirX: 0, dirY: 1 }), enemies: [makeEnemy()], mines: [], navTarget: null, map: makeMap() },
+      memory,
+      makeConfig(),
+    );
+    expect(keysOf(intent).some((k) => k === "KeyA" || k === "KeyD")).toBe(true);
+  });
+
+  it("counts a frozen, non-firing engagement toward the stall counter", () => {
+    const memory = freshMemory();
+    const map = makeMap({ tiles: [[12, 10, 1]] }); // occluded -> never fires
+    const world = { player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: null, map };
+    decide(world, memory, makeConfig());
+    const first = memory.combatStallTicks;
+    decide(world, memory, makeConfig());
+    expect(memory.combatStallTicks).toBe(first + 1);
+  });
+
+  it("resets the stall counter when there is no threat", () => {
+    const memory = freshMemory();
+    memory.combatStallTicks = 12;
+    memory.combatStallPos = "x";
+    decide({ player: makePlayer(), enemies: [], mines: [], navTarget: null, map: makeMap() }, memory, makeConfig());
+    expect(memory.combatStallTicks).toBe(0);
+    expect(memory.combatStallPos).toBeNull();
+  });
+});
+
+describe("decide — diagnostics", () => {
+  it("emits a trace whose shape the anomaly detectors depend on", () => {
+    const intent = decide(
+      { player: makePlayer(), enemies: [], mines: [], navTarget: { x: 16.5, y: 10.5 }, map: makeMap() },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(intent.trace).toMatchObject({ branch: "main", x: 10.5, y: 10.5, hpFrac: 1, waitingOnSpike: false });
+    expect(Array.isArray(intent.trace.moveKeys)).toBe(true);
+  });
+
+  it("calls the nav logger when one is supplied, and tolerates none", () => {
+    const debugNav = vi.fn();
+    const world = { player: makePlayer(), enemies: [], mines: [], navTarget: { x: 16.5, y: 10.5 }, map: makeMap() };
+    decide(world, freshMemory(), makeConfig({ logger: { debugNav } }));
+    expect(debugNav).toHaveBeenCalled();
+    expect(() => decide(world, freshMemory(), makeConfig({ logger: undefined }))).not.toThrow();
+  });
+
+  it("works with no memory at all", () => {
+    // `faceAngle` decides before `startLevel` has necessarily run.
+    expect(() =>
+      decide({ player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: null, map: makeMap() }, null, makeConfig()),
+    ).not.toThrow();
+  });
+
+  it("works with no map, the shape faceAngle uses", () => {
+    const intent = decide({ player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: null, map: undefined }, freshMemory(), makeConfig());
+    expect(intent.branch).toBe("main");
+  });
+});
