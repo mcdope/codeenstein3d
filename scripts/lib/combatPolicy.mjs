@@ -187,7 +187,32 @@ export const DEFAULT_TUNING = {
   // the intended heading) to be worth a proactive detour — see
   // `findDisarmableMine`.
   MINE_DISARM_MAX_ANGLE_FROM_PATH: Math.PI / 2,
+  // How many consecutive engaged decisions the combat strafe runs before
+  // reversing. This is also what bounds the manoeuvre: at walking speed a
+  // half-period covers `ENGINE_MOVE_SPEED * FLIP_TICKS * stepMs/1000` tiles
+  // (~1.3 at the headless step), so the bot oscillates around its position
+  // instead of drifting off the route — no separate displacement cap needed.
+  COMBAT_STRAFE_FLIP_TICKS: 8,
+  // Don't dance inside melee range: at knife distance the useful move is to
+  // close and swing, and sidestepping there just walks circles around a target
+  // the bot is trying to hit.
+  COMBAT_STRAFE_MIN_DISTANCE: 1.5,
+  // How far ahead the strafe safety check looks, regardless of how little
+  // ground one decision actually covers. A single lateral step is only
+  // ~0.16 tiles at the headless window — far less than the half-tile to the
+  // near edge of the neighbouring tile — so a check scoped to the step alone
+  // would never see acid until the bot was already standing in it, and would
+  // never see a wall at all. Blocking on a wall this early is deliberate too:
+  // a strafe into geometry is rejected wholesale by collision, so it buys no
+  // dodge and shows up as a `heldKeyNoMovement` anomaly for free.
+  COMBAT_STRAFE_LOOKAHEAD_TILES: 0.6,
 };
+
+/** Tiles a lateral step must never cross. Mirrors `pathfind.mjs`'s own
+ * `BLOCKED_TILES` (wall / locked door / unopened secret / lore / branch door) —
+ * deliberately wider than `isWallTile`'s `{1,6,7}`, since a closed door is not
+ * something to strafe into even though a bullet ignores it. */
+const STRAFE_BLOCKED_TILES = new Set([1, 3, 6, 7, 8]);
 
 // ---------------------------------------------------------------------------
 // Geometry
@@ -332,6 +357,63 @@ export function segmentBlocked(map, from, dir, dist, levelTime, { tuning, hazard
     if (activeSpikeAt(map, sx, sy, levelTime + arriveSec)) return true;
   }
   return false;
+}
+
+/**
+ * Whether a lateral step of `travelDist` tiles in `key`'s direction is safe to
+ * take.
+ *
+ * A strafe is optional movement — unlike a committed route leg, there is never
+ * a reason to accept damage for one — so this treats acid as blocking, the
+ * opposite of the sprint gate's `hazard: false`.
+ *
+ * Checks the whole segment rather than the endpoint (a one-tile acid strip is
+ * narrower than a step), and spikes at both now and arrival time, exactly as
+ * `segmentBlocked` does. Walls are checked separately against
+ * `STRAFE_BLOCKED_TILES`, which `segmentBlocked` doesn't cover because the
+ * callers it was written for could never walk into one.
+ *
+ * With no map (the shape `faceAngle` decides with) there is nothing to test
+ * against, so this reports unsafe rather than guessing — an unchecked strafe is
+ * exactly the kind of thing that walks into acid.
+ */
+export function strafeIsSafe(map, player, key, travelDist, levelTime, { tuning }) {
+  if (!map || travelDist <= 0) return false;
+  // Right vector, mirroring `Player.strafe`: KeyD is +right, KeyA is -right.
+  const sign = key === "KeyD" ? 1 : -1;
+  const dir = { x: -player.dirY * sign, y: player.dirX * sign };
+  if (segmentBlocked(map, player, dir, travelDist, levelTime, { tuning })) return false;
+  const steps = Math.max(1, Math.ceil(travelDist / SEGMENT_SAMPLE_TILES));
+  for (let i = 1; i <= steps; i++) {
+    const t = (travelDist * i) / steps;
+    const tile = map.grid[Math.floor(player.y + dir.y * t)]?.[Math.floor(player.x + dir.x * t)];
+    if (tile === undefined || STRAFE_BLOCKED_TILES.has(tile)) return false;
+  }
+  return true;
+}
+
+/**
+ * Which way to sidestep while shooting, or `null` to stand still.
+ *
+ * Enemy bolts are aimed at wherever the target stood when the trigger was
+ * pulled and never re-aim (`projectiles.ts`), so *any* sustained lateral motion
+ * converts a hit into a miss — the bot doesn't need to see the bolt to benefit,
+ * which is why this is worth doing before real projectile-aware dodging.
+ *
+ * The direction comes from a tick counter rather than a random draw, both
+ * because this module must stay deterministic and because a coin flip would
+ * average out to standing still. Flipping on a fixed period also bounds the
+ * excursion by construction — see `COMBAT_STRAFE_FLIP_TICKS`.
+ *
+ * Tries the preferred side, then the other, then gives up: a bot pressed
+ * against a wall should shoot rather than grind into it.
+ */
+export function combatStrafeKey(ticks, map, player, travelDist, levelTime, { tuning }) {
+  const preferred = Math.floor(ticks / tuning.COMBAT_STRAFE_FLIP_TICKS) % 2 === 0 ? "KeyD" : "KeyA";
+  const other = preferred === "KeyD" ? "KeyA" : "KeyD";
+  if (strafeIsSafe(map, player, preferred, travelDist, levelTime, { tuning })) return preferred;
+  if (strafeIsSafe(map, player, other, travelDist, levelTime, { tuning })) return other;
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -771,6 +853,10 @@ export function decide(world, memory, config) {
         : "KeyA"
       : null;
 
+  // Read as last decision left it, same as `stallStrafeKey` above — the
+  // counter is advanced at the bottom of this function.
+  const combatStrafeTicks = memory?.combatStrafeTicks ?? 0;
+
   const currentAngle = Math.atan2(player.dirY, player.dirX);
   const moveKeys = new Set();
   let turnBurst;
@@ -891,6 +977,27 @@ export function decide(world, memory, config) {
         fire = !rocketUnsafe && fireReady;
         fireOnCooldown = !rocketUnsafe && !fireReady;
         firedSemiAuto = fire && !isAutoRanged;
+        // Keep moving while shooting. This branch used to hold no keys at all
+        // for a whole decision, which is why `enemyAccuracy` — nominally an
+        // "are enemies too dangerous" stat — was really measuring how easy it
+        // is to hit a target that stands perfectly still while returning fire.
+        //
+        // Lateral only, deliberately: adding `KeyW` here would engage
+        // `engine.ts`'s `diagonalScale` and cut the forward component by 29%,
+        // which is the mechanism behind the recorded 0%->72% diagonal-strafe
+        // regression. No sprint either — one variable at a time, and a walking
+        // step already displaces far more than a bolt's 0.35-tile hit box over
+        // a bolt's flight time.
+        //
+        // Note this changes *which* keys are held, not how long the decision
+        // runs: the branch already ran a full-length step. That matters
+        // because committing to longer decisions is exactly what made the
+        // per-key-duration attempt fail.
+        if (threat && threat.dist > tuning.COMBAT_STRAFE_MIN_DISTANCE && map) {
+          const strafeDist = Math.max(tuning.ENGINE_MOVE_SPEED * (stepMs / 1000), tuning.COMBAT_STRAFE_LOOKAHEAD_TILES);
+          const strafeKey = combatStrafeKey(combatStrafeTicks, map, player, strafeDist, player.levelTime, { tuning });
+          if (strafeKey) moveKeys.add(strafeKey);
+        }
       }
     }
   } else if (navTarget) {
@@ -966,9 +1073,14 @@ export function decide(world, memory, config) {
       memory.combatStallPos = posKey;
       memory.combatStallTicks = 0;
     }
+    // Advances whenever a threat is engaged, so the flip period is measured in
+    // decisions spent in combat rather than wall-clock — a slower profile
+    // dances at the same spatial amplitude, not a wider one.
+    memory.combatStrafeTicks = (memory.combatStrafeTicks ?? 0) + 1;
   } else if (memory) {
     memory.combatStallTicks = 0;
     memory.combatStallPos = null;
+    memory.combatStrafeTicks = 0;
   }
 
   return uniformIntent(moveKeys, turnBurst, stepMs, {

@@ -24,6 +24,7 @@ import {
   DEFAULT_TUNING,
   findDangerousMine,
   forwardScanTiles,
+  combatStrafeKey,
   hasLineOfSight,
   isHazardAt,
   moveBurstMs,
@@ -31,6 +32,7 @@ import {
   pickThreat,
   segmentBlocked,
   segmentsFor,
+  strafeIsSafe,
   turnBurstMs,
   uniformIntent,
 } from "./combatPolicy.mjs";
@@ -488,10 +490,10 @@ describe("decide — combat", () => {
     expect(intent.useMelee).toBe(true);
   });
 
-  it("stands perfectly still while firing a ranged shot", () => {
-    // This is the bug, pinned. `aiEffectivenessDanger.enemyAccuracy` measures
-    // how easy a target the bot is, and an empty holds map here is exactly why
-    // it reads ~0.6. Stage 4 makes this assertion flip.
+  it("keeps moving while firing a ranged shot", () => {
+    // This assertion used to be `toEqual([])` — the bot stood perfectly still
+    // to shoot, which is why `enemyAccuracy` (nominally "are enemies too
+    // dangerous") really measured how easy a stationary target is to hit.
     const intent = decide(
       { player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: null, map: makeMap() },
       freshMemory(),
@@ -499,6 +501,82 @@ describe("decide — combat", () => {
     );
     expect(intent.fire).toBe(true);
     expect(intent.useMelee).toBe(false);
+    expect(keysOf(intent).some((k) => k === "KeyA" || k === "KeyD")).toBe(true);
+  });
+
+  it("strafes laterally only — never forward, never sprinting", () => {
+    // Adding KeyW would engage engine.ts's diagonalScale and cut the forward
+    // component 29%, the mechanism behind the recorded 0%->72% regression.
+    const intent = decide(
+      { player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(keysOf(intent)).not.toContain("KeyW");
+    expect(keysOf(intent)).not.toContain("ShiftLeft");
+  });
+
+  it("does not lengthen the decision — only changes which keys are held", () => {
+    // The property that makes this safe where per-key durations were not:
+    // the fire branch already ran a full-length step holding nothing.
+    const intent = decide(
+      { player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(intent.durationMs).toBeUndefined();
+  });
+
+  it("holds still inside melee range rather than circling the target", () => {
+    const intent = decide(
+      { player: makePlayer(), enemies: [makeEnemy({ x: 11.6 })], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(keysOf(intent).some((k) => k === "KeyA" || k === "KeyD")).toBe(false);
+  });
+
+  it("reverses direction on a fixed period, which is what bounds the excursion", () => {
+    const world = { player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: null, map: makeMap() };
+    const at = (ticks) => {
+      const m = freshMemory();
+      m.combatStrafeTicks = ticks;
+      return keysOf(decide(world, m, makeConfig())).find((k) => k === "KeyA" || k === "KeyD");
+    };
+    expect(at(0)).toBe("KeyD");
+    expect(at(DEFAULT_TUNING.COMBAT_STRAFE_FLIP_TICKS - 1)).toBe("KeyD");
+    expect(at(DEFAULT_TUNING.COMBAT_STRAFE_FLIP_TICKS)).toBe("KeyA");
+    expect(at(DEFAULT_TUNING.COMBAT_STRAFE_FLIP_TICKS * 2)).toBe("KeyD");
+  });
+
+  it("advances the strafe counter while engaged and clears it when not", () => {
+    const memory = freshMemory();
+    const engaged = { player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: null, map: makeMap() };
+    decide(engaged, memory, makeConfig());
+    decide(engaged, memory, makeConfig());
+    expect(memory.combatStrafeTicks).toBe(2);
+    decide({ ...engaged, enemies: [] }, memory, makeConfig());
+    expect(memory.combatStrafeTicks).toBe(0);
+  });
+
+  it("takes the other side when the preferred one is blocked", () => {
+    // Wall immediately to the player's right (facing +x, so right is +y).
+    const map = makeMap({ tiles: [[10, 11, 1]] });
+    const intent = decide({ player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: null, map }, freshMemory(), makeConfig());
+    expect(keysOf(intent)).toContain("KeyA");
+    expect(keysOf(intent)).not.toContain("KeyD");
+  });
+
+  it("stands still when both sides are blocked, and still shoots", () => {
+    const map = makeMap({ tiles: [[10, 11, 1], [10, 9, 1]] });
+    const intent = decide({ player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: null, map }, freshMemory(), makeConfig());
+    expect(keysOf(intent)).toEqual([]);
+    expect(intent.fire).toBe(true);
+  });
+
+  it("refuses to strafe into acid — an optional move is never worth damage", () => {
+    const map = makeMap({ tiles: [[10, 11, 2], [10, 9, 2]] });
+    const intent = decide({ player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: null, map }, freshMemory(), makeConfig());
     expect(keysOf(intent)).toEqual([]);
   });
 
