@@ -297,6 +297,21 @@ async function main() {
       levelCount: levelPlans.length,
       difficulties: DIFFICULTIES,
       profiles: PROFILES,
+      // Every setting that changes what the run measures rather than what it
+      // measures it on. Recorded so a baseline-vs-candidate comparison can
+      // *prove* both sides were scoped identically instead of assuming it —
+      // `NAV_DIAG` on one side only once made a whole detector class look
+      // newly-introduced when it had simply never been switched on before,
+      // which came within one step of reverting a good change.
+      flags: {
+        levelLimit: Number.isFinite(LEVEL_LIMIT) ? LEVEL_LIMIT : null,
+        attemptCap: Number.isFinite(ATTEMPT_CAP) ? ATTEMPT_CAP : null,
+        concurrency: ATTEMPT_CONCURRENCY,
+        qualifyingTarget: REQUIRED_QUALIFYING_RUNS,
+        anomalyScan: ANOMALY_SCAN,
+        navDiag: NAV_DIAG,
+        headed: HEADED,
+      },
     },
     profiles: {},
   };

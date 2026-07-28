@@ -410,6 +410,26 @@ export function formatComboDiff(label, diff, thresholds = ROLLBACK_THRESHOLDS) {
  * rather than skipped silently — an A/B that quietly compared four combos when
  * the operator thought it compared six is worse than one that errors.
  */
+/**
+ * Settings that must match across an A/B, and why: each changes *what gets
+ * measured*, so a difference silently makes the two sides incomparable.
+ *
+ * `navDiag` is the one that actually bit — it gates an entire detector, so
+ * running it on the candidate only made that detector's findings look brand
+ * new. Reported rather than thrown on, because an older telemetry file has no
+ * `flags` block at all and "can't check" is not the same as "mismatched".
+ */
+export function compareRunFlags(baseJson, candJson) {
+  const a = baseJson?.meta?.flags;
+  const b = candJson?.meta?.flags;
+  if (!a || !b) return { comparable: false, mismatches: [] };
+  const mismatches = [];
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) mismatches.push(`${k}: base=${JSON.stringify(a[k])} cand=${JSON.stringify(b[k])}`);
+  }
+  return { comparable: true, mismatches };
+}
+
 export function diffTelemetry(baseJson, candJson) {
   const combos = [];
   const missing = [];
@@ -429,5 +449,5 @@ export function diffTelemetry(baseJson, candJson) {
       combos.push({ label, diff: diffCombo(baseProfile[difficulty], candProfile[difficulty]) });
     }
   }
-  return { combos, missing };
+  return { combos, missing, flags: compareRunFlags(baseJson, candJson) };
 }

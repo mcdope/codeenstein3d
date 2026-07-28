@@ -99,6 +99,31 @@ const HELD_KEY_NO_MOVEMENT_TICKS_THRESHOLD = 10;
 // Movement keys that actually translate the player — KeyQ/KeyE only rotate.
 const TRANSLATING_KEYS = new Set(["KeyW", "KeyA", "KeyD"]);
 
+// --- Oscillation (`detectOscillation`) -------------------------------------
+// A bot that is genuinely wedged does not necessarily stop. It can pace,
+// circle, or ping-pong between two waypoints indefinitely, covering real
+// ground while getting nowhere — and `detectAnomalies`/`detectHeldKeyNoMovement`
+// are both blind to that, because both are ultimately "did the position stay
+// the same". `stage10_kernel_module.rs` wedges roughly 70% of full-campaign
+// attempts and produced *zero* findings from either.
+//
+// The signature is a large travelled path with a small net displacement,
+// sustained. Each threshold below exists to separate that from something the
+// bot is supposed to do.
+const OSCILLATION_TICKS_THRESHOLD = 30;
+// Positions must stay inside this radius of the run's anchor. Wider than a
+// combat sidestep's amplitude (~1.3 tiles at the flip period) so a firefight
+// isn't the dominant finding, but far under a corridor's length.
+const OSCILLATION_RADIUS_TILES = 2.0;
+// Ground actually covered. Below this the bot is loitering, not thrashing —
+// `stall` already owns "not moving", and double-reporting it would just make
+// both findings noise.
+const OSCILLATION_MIN_PATH_TILES = 2.0;
+// How much less net progress than path length counts as "getting nowhere". A
+// bot walking a corridor and back once has a ratio near 2; sustained
+// ping-ponging climbs well past this.
+const OSCILLATION_MIN_PATH_RATIO = 4;
+
 /**
  * Scans one level's worth of per-decision trace records (see `Bot#tick`'s
  * `#recordTrace` calls) for two "erratic-looking" patterns:
@@ -166,6 +191,81 @@ export function detectAnomalies(trace) {
 }
 
 /**
+ * Scans a level's trace for *oscillation*: the bot moving continuously while
+ * making no net progress.
+ *
+ * This is the gap the other two detectors leave. `detectAnomalies` flags a
+ * frozen position and `detectHeldKeyNoMovement` flags a held key that produced
+ * no displacement — both answer "did it stop?". A bot ping-ponging between two
+ * waypoints, or circling a target it can never quite reach, never stops, so
+ * neither fires. That failure mode is real and currently invisible: the demo
+ * campaign has a level that wedges most full-campaign attempts and yields no
+ * finding at all from the existing passes.
+ *
+ * A run qualifies when, over at least `OSCILLATION_TICKS_THRESHOLD` decisions,
+ * every position stays within `OSCILLATION_RADIUS_TILES` of the run's anchor,
+ * the bot covered at least `OSCILLATION_MIN_PATH_TILES` of ground, and the
+ * path was at least `OSCILLATION_MIN_PATH_RATIO`x its net displacement.
+ *
+ * Engaged combat is excluded rather than filtered afterwards. Circling and
+ * sidestepping while fighting is deliberate behaviour (see the combat strafe
+ * and bolt dodging in `combatPolicy.mjs`), so counting it here would bury the
+ * real findings under the bot doing its job — the same reasoning behind
+ * `detectAnomalies`' own `mostlyFiring` exclusion.
+ *
+ * Returns `{type, startTick, endTick, ticks, detail}[]`, the same shape the
+ * other detectors use so `reportAnomalies` can print them uniformly.
+ */
+export function detectOscillation(trace) {
+  const findings = [];
+  if (!trace || trace.length < OSCILLATION_TICKS_THRESHOLD) return findings;
+
+  let runStart = 0;
+  let anchor = trace[0];
+  for (let i = 1; i <= trace.length; i++) {
+    const cur = i < trace.length ? trace[i] : null;
+    // Anchored to the run's own start, like `detectAnomalies` — a genuine
+    // traverse eventually leaves the radius and closes the run, while a bot
+    // thrashing in place keeps extending it.
+    if (cur && Math.hypot(cur.x - anchor.x, cur.y - anchor.y) <= OSCILLATION_RADIUS_TILES) continue;
+
+    const runEnd = i; // exclusive
+    const runLen = runEnd - runStart;
+    if (runLen >= OSCILLATION_TICKS_THRESHOLD) {
+      const slice = trace.slice(runStart, runEnd);
+      const engagedTicks = slice.filter((r) => r.threatDist !== null && r.threatDist !== undefined).length;
+      const mostlyEngaged = engagedTicks / runLen > 0.5;
+      const allWaitingOnSpike = slice.every((r) => r.waitingOnSpike);
+
+      let pathLength = 0;
+      for (let j = 1; j < slice.length; j++) pathLength += Math.hypot(slice[j].x - slice[j - 1].x, slice[j].y - slice[j - 1].y);
+      const first = slice[0];
+      const last = slice[slice.length - 1];
+      const netDisplacement = Math.hypot(last.x - first.x, last.y - first.y);
+      // Guard the divide: a run with no net displacement at all is maximally
+      // oscillatory, not undefined.
+      const ratio = netDisplacement > 0.01 ? pathLength / netDisplacement : Infinity;
+
+      if (!mostlyEngaged && !allWaitingOnSpike && pathLength >= OSCILLATION_MIN_PATH_TILES && ratio >= OSCILLATION_MIN_PATH_RATIO) {
+        findings.push({
+          type: "oscillation",
+          startTick: runStart,
+          endTick: runEnd - 1,
+          ticks: runLen,
+          detail:
+            `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} ` +
+            `travelled=${pathLength.toFixed(1)}t net=${netDisplacement.toFixed(2)}t ratio=${ratio === Infinity ? "inf" : ratio.toFixed(1)}x ` +
+            `hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)}`,
+        });
+      }
+    }
+    runStart = i;
+    anchor = cur;
+  }
+  return findings;
+}
+
+/**
  * A tick-by-tick pass over the same trace `detectAnomalies` uses, but
  * checking each tick against the *immediately preceding* one and
  * correlating it directly with which keys were actually held. Flags a run
@@ -198,7 +298,7 @@ export function detectHeldKeyNoMovement(trace) {
           startTick: runStart,
           endTick: runEnd - 1,
           ticks: runLen,
-          detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} heldKeys=[${[...heldKeys].join(",")}] threatDist=${first.threatDist ?? "none"} mineDist=${first.mineDist ?? "none"} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)}`,
+          detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} keysDuringRun=[${[...heldKeys].join(",")}] threatDist=${first.threatDist ?? "none"} mineDist=${first.mineDist ?? "none"} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)}`,
         });
       }
       runStart = null;
@@ -240,8 +340,9 @@ export class Bot {
    * @param {object} [opts.logger] {debugNav, wpDebug, driftDebug}: optional
    *   `(msg: string) => void` sinks, no-ops by default. {trace, navDiag}:
    *   booleans — `trace: true` enables per-decision trace collection +
-   *   `reportAnomalies`' basic findings; `navDiag: true` (implies `trace`)
-   *   additionally enables the finer held-key-no-movement pass.
+   *   `reportAnomalies`' basic findings (stall, health-drain-frozen, and
+   *   oscillation); `navDiag: true` (implies `trace`) additionally enables the
+   *   finer held-key-no-movement pass.
    * @param {boolean} [opts.ignoreThreats=false] never engage, flee from, or
    *   even acknowledge an enemy as a threat — `tick()` goes straight to plain
    *   navigation regardless of what's nearby. For a bot driving a genuinely
@@ -372,6 +473,12 @@ export class Bot {
       }
     }
     for (const f of detectAnomalies(this.mineMemory.trace)) {
+      console.log(`  [anomaly] ${label} level ${levelIndex + 1}: ${f.type} (${f.ticks} ticks, decisions ${f.startTick}-${f.endTick}) ${f.detail}`);
+    }
+    // Deliberately not `navDiag`-gated: a bot that paces instead of freezing is
+    // exactly the case `balancing:scan` used to miss entirely, so it has to fire
+    // on the default scan rather than only when someone already suspects it.
+    for (const f of detectOscillation(this.mineMemory.trace)) {
       console.log(`  [anomaly] ${label} level ${levelIndex + 1}: ${f.type} (${f.ticks} ticks, decisions ${f.startTick}-${f.endTick}) ${f.detail}`);
     }
   }

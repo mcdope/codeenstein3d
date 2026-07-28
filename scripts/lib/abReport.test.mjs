@@ -13,7 +13,7 @@
  * `scripts/multiplayer-server.test.mjs`.
  */
 import { describe, expect, it } from "vitest";
-import { checkRollback, collectMetrics, computeSurvivalCurve, diffCombo, diffTelemetry, formatComboDiff, relChangeIsMeaningful, spreadValue } from "./abReport.mjs";
+import { checkRollback, compareRunFlags, collectMetrics, computeSurvivalCurve, diffCombo, diffTelemetry, formatComboDiff, relChangeIsMeaningful, spreadValue } from "./abReport.mjs";
 
 /** Minimal `spread()`-shaped object — `{ [kind]: value, samples }`. */
 const sp = (kind, value) => ({ [kind]: value, samples: [value] });
@@ -381,5 +381,32 @@ describe("formatComboDiff", () => {
     const out = formatComboDiff("x", diffCombo(bare, bare));
     expect(out).not.toContain("NaN");
     expect(out).toContain("—");
+  });
+});
+
+describe("compareRunFlags", () => {
+  const withFlags = (flags) => ({ meta: { flags }, profiles: {} });
+
+  it("passes when both sides were scoped identically", () => {
+    const f = { levelLimit: 8, navDiag: true, anomalyScan: true };
+    expect(compareRunFlags(withFlags(f), withFlags({ ...f }))).toEqual({ comparable: true, mismatches: [] });
+  });
+
+  it("catches the navDiag asymmetry that made a detector look newly-introduced", () => {
+    // The real incident: the candidate ran with navDiag on and the baseline
+    // without, so an entire detector class appeared to be a new regression when
+    // it had simply never been enabled before.
+    const r = compareRunFlags(withFlags({ navDiag: false }), withFlags({ navDiag: true }));
+    expect(r.comparable).toBe(true);
+    expect(r.mismatches).toHaveLength(1);
+    expect(r.mismatches[0]).toContain("navDiag");
+  });
+
+  it("catches a differing sample size", () => {
+    expect(compareRunFlags(withFlags({ attemptCap: 20 }), withFlags({ attemptCap: 60 })).mismatches).toHaveLength(1);
+  });
+
+  it("reports not-comparable rather than mismatched when a side predates flag recording", () => {
+    expect(compareRunFlags({ meta: {} }, withFlags({ navDiag: true }))).toEqual({ comparable: false, mismatches: [] });
   });
 });

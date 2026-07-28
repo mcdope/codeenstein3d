@@ -66,7 +66,20 @@ function main(argv) {
 
   const base = loadSide(basePath);
   const cand = loadSide(candPath);
-  const { combos, missing } = diffTelemetry(base, cand);
+  const { combos, missing, flags } = diffTelemetry(base, cand);
+
+  // Surfaced before any numbers, because a scoping mismatch doesn't skew the
+  // comparison — it invalidates it, and reading the table first anchors you to
+  // a conclusion you then have to un-learn.
+  if (flags.comparable && flags.mismatches.length > 0) {
+    console.error("REFUSING TO COMPARE — the two runs were not scoped the same way:");
+    for (const m of flags.mismatches) console.error(`  ${m}`);
+    console.error("Re-run one side with matching settings. A difference here changes what was measured, not just how much of it.");
+    return 2;
+  }
+  if (!flags.comparable) {
+    console.log("note: one side predates run-flag recording, so identical scoping could not be verified.\n");
+  }
 
   if (combos.length === 0) {
     console.error("no profile/difficulty combos present in both sides — nothing to compare");
