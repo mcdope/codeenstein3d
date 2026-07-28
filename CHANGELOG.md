@@ -8,6 +8,8 @@
 - New: a function that allocates memory heavily gets a room that **leaks**. Walk in and the floor starts filling with acid, tile by tile, until you kill the enemy that function spawned — then it stops right where it is. A low warning tone and a "Memory leak — acid rising!" banner fire the moment it starts, so it can't catch you out just because you happened to be looking the other way
 - New: there are now two kinds of door. The blue one still needs a dependency key; the new amber one is a Switchboard's branch door and just needs a push. Both have their own colour on the minimap and automap, so you can tell from across the room which is which
 - SMG and gas ammo can now turn up as pickups you find lying around (in Vendor Depots), not only as drops from enemies
+- Dev: the automated playtest bot behind the balancing telemetry now sprints down straight stretches, getting through a level 27-41% faster. That matters because the numbers that tool reports — how often enemies hit you, how long a fight lasts, how much damage a level costs — were partly measuring the bot's own limitations rather than the game's balance. Past difficulty conclusions drawn from it are worth re-checking
+- Dev: the bot's decision-making moved into its own module (`scripts/lib/combatPolicy.mjs`) with real unit tests — the first automated coverage that code has ever had — and is shaped so it can later become a proper in-game opponent for deathmatch. `scripts/report-balancing-ab.mjs` compares two telemetry runs and fails on a survival regression, so a change to how the bot plays can be checked instead of eyeballed
 
 ## beta-5
 
