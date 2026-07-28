@@ -58,12 +58,21 @@ const CAMPAIGN_NAME = "demo-campaign";
 const OUTPUT_FILE = path.join(REPO_ROOT, "src/engine/defaultHighscore.ts");
 
 const REQUIRED_QUALIFYING_RUNS = 3;
-// Unbounded, matching run-balancing-telemetry.mjs's own default philosophy
-// — this is a manual, hand-reviewed tool, not CI-gated, so "keep retrying
-// until 3 qualifying runs land, however long that takes" is fine. The only
-// safety net against a truly dead browser is runQualifyLoop's own
-// consecutive-fully-crashed-batch circuit breaker (see runOneAttempt).
-const ATTEMPT_CAP = Infinity;
+// Bounded, deliberately. This was `Infinity` on the reasoning that a manual,
+// hand-reviewed tool can afford to "keep retrying until 3 qualifying runs
+// land, however long that takes" — but an unbounded retry loop cannot fail,
+// it can only hang, and the distinction matters when the campaign itself has
+// become unwinnable. A level the bot reliably wedges on makes every attempt
+// non-qualifying, and this script then spins forever with no error and no
+// output: 2h40m was lost to exactly that once, and more again later.
+//
+// A cap converts that silent hang into a real failure with a diagnosis (see
+// the per-profile summary below). Generous enough that a merely unlucky run
+// still succeeds — the historical worst case needed well under half of it —
+// and overridable for the rare case where someone genuinely wants to grind.
+const ATTEMPT_CAP = process.env.CODEENSTEIN_HIGHSCORE_ATTEMPT_CAP
+  ? Number(process.env.CODEENSTEIN_HIGHSCORE_ATTEMPT_CAP)
+  : 40;
 // 0-based — "level 4/5/6" in 1-based campaign numbering. Casual only needs
 // to prove it survives the unarmed early game (the same threshold
 // run-balancing-telemetry.mjs uses for every profile); Gamer/Pro raise the
@@ -239,7 +248,7 @@ async function main() {
     const qualifyLevelIndex = QUALIFY_LEVEL_INDEX_BY_PROFILE[profileName];
     console.log(`${"=".repeat(72)}\n${profileName} — qualifying = reach level ${qualifyLevelIndex + 1}\n${"=".repeat(72)}`);
 
-    const { qualifyingRuns, attemptsUsed } = await runQualifyLoop({
+    const { qualifyingRuns, attemptsUsed, failureReasons } = await runQualifyLoop({
       runAttempt: () => runOneAttempt(browser, profileName, profile, levelPlans),
       isQualifying: (run) => Boolean(run.reachedExitForLevel[qualifyLevelIndex] && run.entry),
       requiredQualifyingRuns: REQUIRED_QUALIFYING_RUNS,
@@ -254,6 +263,24 @@ async function main() {
       },
     });
 
+    // A capped loop can now come back empty, which `reduce` with no initial
+    // value would turn into an opaque "Reduce of empty array" — report what
+    // actually went wrong instead, since the failure is nearly always "the bot
+    // cannot get through level N", and that is the one fact worth surfacing.
+    if (qualifyingRuns.length === 0) {
+      const byReason = new Map();
+      for (const f of failureReasons) {
+        const where = typeof f.diedAtLevelIndex === "number" ? ` at level ${f.diedAtLevelIndex + 1}` : "";
+        const label = `${f.reason}${where}`;
+        byReason.set(label, (byReason.get(label) ?? 0) + 1);
+      }
+      const summary = [...byReason.entries()].sort((a, b) => b[1] - a[1]).map(([label, n]) => `${n}x ${label}`);
+      console.error(`  ${profileName}: NO qualifying run in ${attemptsUsed} attempts (cap ${ATTEMPT_CAP}).`);
+      console.error(`    failures: ${summary.join(", ") || "(none recorded)"}`);
+      console.error(`    A single level dominating that list is the campaign blocking the bot, not bad luck.\n`);
+      continue;
+    }
+
     const best = qualifyingRuns.reduce((a, b) => (b.entry.score > a.entry.score ? b : a));
     console.log(
       `  ${profileName}: kept score=${best.entry.score} levelsCleared=${best.entry.levelsCleared} levelName=${best.entry.levelName} ` +
@@ -264,8 +291,16 @@ async function main() {
 
   await browser.close();
 
-  if (keptEntries.length === 0) {
-    console.error("\nNo profile produced a qualifying run — nothing to ship. Bailing out.");
+  // Every profile must land, not just one. The shipped file is the three
+  // example runs the Highscores dialog shows before a player has any of their
+  // own, so a partial write silently degrades that from three skill tiers to
+  // whatever happened to survive — and, uncapped, this could never happen, so
+  // nothing downstream is written to expect it. Bail instead.
+  const profileCount = Object.keys(PROFILES).length;
+  if (keptEntries.length < profileCount) {
+    console.error(`\nOnly ${keptEntries.length} of ${profileCount} profiles produced a qualifying run — refusing to ship a partial set.`);
+    console.error("Check the per-profile failure summaries above: if one level dominates, that level is unplayable for the bot");
+    console.error("and needs fixing before this can regenerate. Raise CODEENSTEIN_HIGHSCORE_ATTEMPT_CAP only if the failures look genuinely scattered.");
     process.exit(1);
   }
 
