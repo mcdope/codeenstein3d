@@ -164,6 +164,9 @@ export const WIN_METRICS = [
  */
 export const DAMAGE_METRICS = [
   { key: "dmg.enemyRanged", source: "enemyRanged", better: "down" },
+  // Derived in `collectMetrics`, not read from `damageBySource` — listed here
+  // so it appears in the report and diff alongside the raw figure.
+  { key: "dmg.enemyRangedPerSec", source: null, better: "down" },
   { key: "dmg.enemyMelee", source: "enemyMelee", better: "down" },
   { key: "dmg.hazard", source: "hazard", better: "down" },
   { key: "dmg.trapSpike", source: "trapSpike", better: "down" },
@@ -176,9 +179,23 @@ export function collectMetrics(combo) {
   for (const m of WIN_METRICS) out[m.key] = spreadValue(at(agg, m.path));
   const dmg = at(agg, "damageHealingBreakdown.damageBySource");
   for (const m of DAMAGE_METRICS) {
+    if (m.source === null) continue; // derived below
     const v = dmg?.[m.source];
     out[m.key] = typeof v === "number" ? v : null;
   }
+  // Ranged damage per second of level time.
+  //
+  // Raw `dmg.enemyRanged` is the most reliably-moving stat for a change that
+  // makes the bot a harder target — but it also falls simply because a faster
+  // bot spends less time being shot at, which is a different achievement.
+  // Dividing by level time separates "harder to hit" from "exposed for less
+  // time"; only the first is evidence that an evasion change worked.
+  //
+  // It is also the better instrument than `enemyAccuracy` for this, because
+  // accuracy's denominator (bolts *fired*) shifts with exposure too, so both
+  // its numerator and denominator move together and it under-reports.
+  const lt = out.levelTimeSec;
+  out["dmg.enemyRangedPerSec"] = lt && out["dmg.enemyRanged"] !== null ? out["dmg.enemyRanged"] / lt : null;
   return out;
 }
 
