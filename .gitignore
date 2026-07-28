@@ -26,3 +26,6 @@ docker/.env
 campaign-launch-*.log
 campaign-ratecheck-*.log
 watch_trace.log
+
+# One-shot bot-wedge diagnostic artifacts (scripts/diagnose-level-wedge.mjs)
+wedge-diagnosis/
