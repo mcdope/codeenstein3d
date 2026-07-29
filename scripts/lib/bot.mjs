@@ -1277,6 +1277,26 @@ export class Bot {
           }
           if (stallStrafeKey) {
             moveKeys.add(stallStrafeKey);
+            // NOTE: this also widens the *turn* key's hold, because
+            // `applyAction` applies one scalar to every key. When a turn key is
+            // present that means a small correction executes as a full
+            // decision's rotation — measured at 8.3x (0.055rad needed, 0.455rad
+            // performed), and it is the origin of the "[nav-warn] implausible
+            // rotation" log line: 0.45rad is exactly one 50ms decision at
+            // Gamer's 9.1rad/s, 0.65rad likewise at Pro's 13rad/s. Casual's
+            // 0.26rad falls under the detector's 0.3 floor, which is why it
+            // never warns.
+            //
+            // Gating the widening on "no turn key held" was tried and
+            // **reverted** (2026-07-29) after a matched-scale A/B: it removed
+            // the overshoot completely (8.3x -> 1.0x, nav-warns 15 -> 0) but
+            // `enemyAccuracy` rose on all three combos (+1.6/+0.6/+4.9%) and
+            // Gamer/normal `qualifyRate` fell 15pp, breaching the pre-registered
+            // guard. The widening is load-bearing for a different reason than
+            // aiming: without it the stall-strafe key is held for a turn-sized
+            // burst and moves the bot ~0.02 tiles, so it stops dodging. Trading
+            // aim precision for lateral movement is apparently the right trade
+            // here. Don't "fix" this without re-running that A/B.
             turnBurst = Math.max(turnBurst ?? 0, this.#moveBurstMs(10, false));
           }
         } else {
@@ -1311,6 +1331,26 @@ export class Bot {
             moveKeys.delete("KeyD");
             moveKeys.delete("KeyA");
             moveKeys.add(stallStrafeKey);
+            // NOTE: this also widens the *turn* key's hold, because
+            // `applyAction` applies one scalar to every key. When a turn key is
+            // present that means a small correction executes as a full
+            // decision's rotation — measured at 8.3x (0.055rad needed, 0.455rad
+            // performed), and it is the origin of the "[nav-warn] implausible
+            // rotation" log line: 0.45rad is exactly one 50ms decision at
+            // Gamer's 9.1rad/s, 0.65rad likewise at Pro's 13rad/s. Casual's
+            // 0.26rad falls under the detector's 0.3 floor, which is why it
+            // never warns.
+            //
+            // Gating the widening on "no turn key held" was tried and
+            // **reverted** (2026-07-29) after a matched-scale A/B: it removed
+            // the overshoot completely (8.3x -> 1.0x, nav-warns 15 -> 0) but
+            // `enemyAccuracy` rose on all three combos (+1.6/+0.6/+4.9%) and
+            // Gamer/normal `qualifyRate` fell 15pp, breaching the pre-registered
+            // guard. The widening is load-bearing for a different reason than
+            // aiming: without it the stall-strafe key is held for a turn-sized
+            // burst and moves the bot ~0.02 tiles, so it stops dodging. Trading
+            // aim precision for lateral movement is apparently the right trade
+            // here. Don't "fix" this without re-running that A/B.
             turnBurst = Math.max(turnBurst ?? 0, this.#moveBurstMs(10, false));
           }
         } else {
