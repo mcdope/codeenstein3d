@@ -9,6 +9,7 @@
 - New: there are now two kinds of door. The blue one still needs a dependency key; the new amber one is a Switchboard's branch door and just needs a push. Both have their own colour on the minimap and automap, so you can tell from across the room which is which
 - SMG and gas ammo can now turn up as pickups you find lying around (in Vendor Depots), not only as drops from enemies
 - Dev: the playtest bot now clears the enemies guarding a level's exit instead of standing on an exit that will never open — `checkExit()` keeps the exit inert while any enemy homed to its room is alive, which silently failed ~58% of demo-campaign level-10 runs and blocked `generate:default-highscore` entirely
+- Dev: the playtest bot no longer treats a door it already walked through as a wall — its copy of the map never saw the engine open it, which could strand it against a doorway it had just used and cost a whole campaign attempt
 
 ## beta-5
 
