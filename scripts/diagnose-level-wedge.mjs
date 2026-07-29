@@ -41,7 +41,14 @@ const arg = (name, dflt) => {
   const i = process.argv.indexOf(`--${name}`);
   return i === -1 ? dflt : process.argv[i + 1];
 };
-const TARGET_LEVEL = Number(arg("level", 10)); // 1-based
+// `--level any` (the default) captures whichever level wedges — there turned out
+// to be several distinct wedge sites, and pinning one target meant an attempt
+// that wedged elsewhere reported "did not wedge" and threw its evidence away.
+const TARGET_ARG = arg("level", "any");
+const TARGET_LEVEL = TARGET_ARG === "any" ? null : Number(TARGET_ARG); // 1-based
+// Per-decision nav spam is only worth it for a known target; waypoint/drift
+// tracing is cheap enough to leave on for every level.
+const isTarget = (n) => TARGET_LEVEL === null || n === TARGET_LEVEL;
 const MAX_ATTEMPTS = Number(arg("attempts", 4));
 const HEADED = process.argv.includes("--headed");
 const PROFILE_NAME = arg("profile", "Casual");
@@ -77,20 +84,23 @@ function dumpGrid(map, cx, cy, r = 9) {
 
 async function main() {
   const levelPlans = await planLevels();
-  if (levelPlans.length < TARGET_LEVEL) { say(`only ${levelPlans.length} levels planned`); flush(); return; }
+  if (TARGET_LEVEL !== null && levelPlans.length < TARGET_LEVEL) { say(`only ${levelPlans.length} levels planned`); flush(); return; }
 
   const browser = await chromium.launch({ headless: !HEADED });
   const profile = PROFILES[PROFILE_NAME];
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    say(`\n${"=".repeat(70)}\nATTEMPT ${attempt} — ${PROFILE_NAME}, watching for a wedge on level ${TARGET_LEVEL}\n${"=".repeat(70)}`);
+    say(`\n${"=".repeat(70)}\nATTEMPT ${attempt} — ${PROFILE_NAME}, watching for a wedge on ${TARGET_LEVEL === null ? "any level" : "level " + TARGET_LEVEL}\n${"=".repeat(70)}`);
     let levelNo = 0;
     let decisions = 0;
     let shots = 0;
+    // Ring-ish buffer of this level's trace, reset per level and only flushed
+    // into the report if the level actually wedges.
+    let perLevel = [];
 
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     const page = await context.newPage();
-    page.on("console", (m) => { if (levelNo === TARGET_LEVEL) lines.push(`[engine-console] ${m.text()}`); });
+    page.on("console", (m) => { if (isTarget(levelNo)) perLevel.push(`[engine-console] ${m.text()}`); });
     page.on("pageerror", (e) => lines.push(`[page-error] ${e.message}`));
     await installVirtualClock(page);
     await installDifficulty(page, "normal");
@@ -109,9 +119,9 @@ async function main() {
       logger: {
         trace: true,
         navDiag: true,
-        debugNav: (msg) => { if (levelNo === TARGET_LEVEL) lines.push(msg); },
-        wpDebug: (msg) => { if (levelNo === TARGET_LEVEL) lines.push(msg); },
-        driftDebug: (msg) => { if (levelNo === TARGET_LEVEL) lines.push(msg); },
+        debugNav: (msg) => { if (TARGET_LEVEL !== null && levelNo === TARGET_LEVEL) perLevel.push(msg); },
+        wpDebug: (msg) => perLevel.push(msg),
+        driftDebug: (msg) => perLevel.push(msg),
       },
     });
 
@@ -131,13 +141,13 @@ async function main() {
         endDist: +Math.hypot(point.x - after.x, point.y - after.y).toFixed(3),
         reason: res.reason, state: res.state, ticks: decisions - t0,
       };
-      if (levelNo === TARGET_LEVEL) {
+      {
         calls.push(rec);
         if (res.reason === "stuck") {
-          lines.push(`[STUCK] ${JSON.stringify(rec)}`);
-          await page.screenshot({ path: path.join(OUT, `stuck-${attempt}-${calls.length}.png`) });
-          lines.push(dumpGrid(levelPlans[TARGET_LEVEL - 1].map, after.x, after.y));
-          lines.push(`[player-at-stuck] ${JSON.stringify(after)}`);
+          perLevel.push(`[STUCK] ${JSON.stringify(rec)}`);
+          await page.screenshot({ path: path.join(OUT, `stuck-L${levelNo}-a${attempt}-${calls.length}.png`) });
+          perLevel.push(dumpGrid(levelPlans[levelNo - 1].map, after.x, after.y));
+          perLevel.push(`[player-at-stuck] ${JSON.stringify(after)}`);
         }
       }
       return res;
@@ -147,9 +157,9 @@ async function main() {
     const origTick = bot.tick.bind(bot);
     bot.tick = async (...a) => {
       decisions++;
-      if (levelNo === TARGET_LEVEL && decisions % 400 === 0 && shots < 25) {
+      if (isTarget(levelNo) && decisions % 400 === 0 && shots < 25) {
         shots++;
-        await page.screenshot({ path: path.join(OUT, `lvl${TARGET_LEVEL}-a${attempt}-${String(decisions).padStart(6, "0")}.png`) });
+        await page.screenshot({ path: path.join(OUT, `lvl${levelNo}-a${attempt}-${String(decisions).padStart(6, "0")}.png`) });
       }
       return origTick(...a);
     };
@@ -158,7 +168,9 @@ async function main() {
     for (let i = 0; i < levelPlans.length; i++) {
       levelNo = i + 1;
       const { map, routePlain, routeCoverage, filename } = levelPlans[i];
-      if (levelNo === TARGET_LEVEL) say(`  --- level ${levelNo} is ${filename} (${map.grid[0].length}x${map.grid.length}), legs=${(profile.coverageMode ? routeCoverage : routePlain).legs?.length} ---`);
+      perLevel = [];
+      calls.length = 0;
+      say(`  --- level ${levelNo} is ${filename} (${map.grid[0].length}x${map.grid.length}), legs=${(profile.coverageMode ? routeCoverage : routePlain).legs?.length} ---`);
       bot.startLevel(map);
       const route = profile.coverageMode ? routeCoverage : routePlain;
       const p0 = await bot.readState();
@@ -180,10 +192,11 @@ async function main() {
       if (outcome.state === "over") { say(`  level ${levelNo}: DIED`); break; }
       if (outcome.state === "stuck") {
         say(`  level ${levelNo}: STUCK`);
-        if (levelNo === TARGET_LEVEL) {
+        {
           wedged = true;
+          lines.push(...perLevel);
           const s = await bot.readState();
-          say(`\n--- driveToward calls on level ${TARGET_LEVEL} (last 25) ---`);
+          say(`\n--- driveToward calls on level ${levelNo} (last 25) ---`);
           for (const c of calls.slice(-25)) say(`  ${JSON.stringify(c)}`);
           say(`\n--- stuck/near-miss summary ---`);
           const stuckCalls = calls.filter((c) => c.reason === "stuck");
@@ -211,7 +224,7 @@ async function main() {
           say(`  other alive enemies: ${aliveNotInRoom.map((e) => `#${e.i}@(${e.x.toFixed(0)},${e.y.toFixed(0)})`).join(" ") || "(none)"}`);
           say(`  => exitRoomHasAliveEnemy (per planned map) = ${gate.some((g) => live[g.i]?.alive)}`);
           say(`\n${dumpGrid(map, s.x, s.y)}`);
-          await page.screenshot({ path: path.join(OUT, `wedge-final-${attempt}.png`) });
+          await page.screenshot({ path: path.join(OUT, `wedge-final-L${levelNo}-a${attempt}.png`) });
         }
         break;
       }
@@ -237,8 +250,8 @@ async function main() {
 
     await context.close();
     flush();
-    if (wedged) { say(`\nCaptured a level-${TARGET_LEVEL} wedge on attempt ${attempt}. Artifacts in wedge-diagnosis/`); break; }
-    say(`  (attempt ${attempt} did not wedge on level ${TARGET_LEVEL})`);
+    if (wedged) { say(`\nCaptured a level-${levelNo} wedge on attempt ${attempt}. Artifacts in wedge-diagnosis/`); break; }
+    say(`  (attempt ${attempt} ended without a wedge)`);
   }
 
   await browser.close();

@@ -74,6 +74,16 @@ export const DEFAULT_TUNING = {
   VIRTUAL_STEP_MS: 50,
   WATCH_STEP_MS: 130,
   MAX_TICKS_PER_WAYPOINT: 600,
+  // How far past `MAX_TICKS_PER_WAYPOINT` a waypoint drive may run when the
+  // extra decisions are being spent in combat rather than on navigation — see
+  // `driveToward`. Bounds the relaxation so an unwinnable fight still ends the
+  // attempt instead of looping forever.
+  COMBAT_TICK_BUDGET_MULTIPLIER: 4,
+  // How many times `driveTowardWithReplan` will re-plan after a straight-line
+  // drive reports `stuck`. Each retry re-reads the bot's real position, so a
+  // bot shoved around geometry mid-drive gets a fresh BFS from where it
+  // actually is rather than grinding into a wall.
+  WAYPOINT_REPLAN_ATTEMPTS: 3,
   TURN_MOVE_EPS: 0.2,
   ARRIVE_EPS: 0.15,
   TIGHT_ARRIVE_EPS: 0.05,
@@ -784,60 +794,77 @@ export class Bot {
    * a corner).
    */
   async driveTowardWithReplan(wp, openedDoors, eps = this.tuning.ARRIVE_EPS) {
-    const player = await this.readState();
-    const displaced =
-      Math.hypot(player.x - wp.x, player.y - wp.y) > this.tuning.LEG_REPLAN_DRIFT_TILES ||
-      (this.map && !hasLineOfSight(this.map, player.x, player.y, wp.x, wp.y));
-    if (displaced) {
-      const path = bfsPath(
-        this.map,
-        { x: Math.floor(player.x), y: Math.floor(player.y) },
-        { x: Math.floor(wp.x), y: Math.floor(wp.y) },
-        new Set(),
-        openedDoors,
-      );
-      this.logger.driftDebug?.(
-        `[driftdebug] drift from (${player.x.toFixed(2)},${player.y.toFixed(2)}) wp=(${wp.x},${wp.y}) openedDoors=${JSON.stringify([...openedDoors])} path=${path ? `${path.length} tiles` : "NULL"}`,
-      );
-      if (path) {
-        for (const rwp of pathToWaypoints(path)) {
-          this.logger.wpDebug?.(`[wpdebug] replan-walk wp=(${rwp.x},${rwp.y})`);
-          const result = await this.driveToward(rwp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
-          this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
-          // See `driveLegs`'s own doc comment on its identical check — a
-          // mid-route teleport invalidates every remaining replanned
-          // waypoint too, same as it would the original plan.
-          if (result.state !== "playing" || result.reason === "stuck" || result.reason === "teleported") return result;
+    // Re-plan whenever a drive reports `stuck`, not only on entry.
+    //
+    // The displacement check below used to run once and then hand off to
+    // `driveToward`, which steers in a straight line for its whole budget with
+    // no further path checks. Anything that moves the bot mid-drive — combat is
+    // the usual culprit, since `tick()` lets a threat preempt navigation
+    // entirely — can carry it around a wall, after which the straight line aims
+    // into that wall for the rest of the budget and the attempt is discarded.
+    //
+    // Captured on `stage06_pipeline.py`, reproducibly and at identical
+    // coordinates across runs: the bot stood at (40.5,57.5) with its waypoint
+    // one tile north at (40.5,56.5), got pushed west during a firefight, and
+    // ended at (38.8,56.3) — the far side of the wall at (39,56), where "east"
+    // is that wall. Re-planning from where it actually ended up routes around.
+    //
+    // The retry has to cover the re-planned walk too, not just the direct
+    // drive: that captured failure was a `replan-walk` waypoint going stuck,
+    // which an entry-only check by definition cannot catch.
+    outer: for (let replan = 0; ; replan++) {
+      const lastTry = replan >= this.tuning.WAYPOINT_REPLAN_ATTEMPTS;
+      const player = await this.readState();
+      if (player.state !== "playing") return { state: player.state };
+      const displaced =
+        Math.hypot(player.x - wp.x, player.y - wp.y) > this.tuning.LEG_REPLAN_DRIFT_TILES ||
+        (this.map && !hasLineOfSight(this.map, player.x, player.y, wp.x, wp.y));
+
+      if (displaced) {
+        const from = { x: Math.floor(player.x), y: Math.floor(player.y) };
+        const to = { x: Math.floor(wp.x), y: Math.floor(wp.y) };
+        // Strict first; then, if that fails, assume every door can be gotten
+        // through. `this.map` is a static copy the engine never mutates, so a
+        // door opened outside `#noteDoorUnderFoot`'s view still reads as a wall.
+        let path = bfsPath(this.map, from, to, new Set(), openedDoors);
+        this.logger.driftDebug?.(
+          `[driftdebug] drift from (${player.x.toFixed(2)},${player.y.toFixed(2)}) wp=(${wp.x},${wp.y}) openedDoors=${JSON.stringify([...openedDoors])} path=${path ? `${path.length} tiles` : "NULL"}`,
+        );
+        if (!path) {
+          path = bfsPath(this.map, from, to, new Set(), this.#allDoorTiles());
+          if (path) this.logger.driftDebug?.(`[driftdebug]   strict BFS failed, routing through doors (${path.length} tiles)`);
         }
-        return { state: "playing", reason: "arrived" };
-      }
-      // BFS found nothing. Retry once treating every door as passable: the
-      // model can still be stale (a door opened out of view of
-      // `#noteDoorUnderFoot`), and the bot opens doors by walking into them
-      // anyway — a branch door costs nothing and a locked one costs a key.
-      const viaDoors = bfsPath(
-        this.map,
-        { x: Math.floor(player.x), y: Math.floor(player.y) },
-        { x: Math.floor(wp.x), y: Math.floor(wp.y) },
-        new Set(),
-        this.#allDoorTiles(),
-      );
-      if (viaDoors) {
-        this.logger.driftDebug?.(`[driftdebug]   strict BFS failed, routing through doors (${viaDoors.length} tiles)`);
-        for (const rwp of pathToWaypoints(viaDoors)) {
-          const result = await this.driveToward(rwp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
-          if (result.state !== "playing" || result.reason === "stuck" || result.reason === "teleported") return result;
+        if (path) {
+          for (const rwp of pathToWaypoints(path)) {
+            this.logger.wpDebug?.(`[wpdebug] replan-walk wp=(${rwp.x},${rwp.y})`);
+            const result = await this.driveToward(rwp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
+            this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
+            // See `driveLegs`'s own doc comment on its identical check — a
+            // mid-route teleport invalidates every remaining replanned
+            // waypoint too, same as it would the original plan.
+            if (result.state !== "playing" || result.reason === "teleported") return result;
+            if (result.reason === "stuck") {
+              if (lastTry) return result;
+              this.logger.driftDebug?.(`[driftdebug] replan-walk stuck — re-planning (attempt ${replan + 1})`);
+              continue outer;
+            }
+          }
+          return { state: "playing", reason: "arrived" };
         }
-        return { state: "playing", reason: "arrived" };
+        // Genuinely unreachable in the model. A straight line to a target BFS
+        // can't reach is almost always a wall, and at the full per-waypoint
+        // budget that costs the whole budget before reporting the failure it
+        // already knew about — cap it so a hopeless case is cheap.
+        this.logger.driftDebug?.(`[driftdebug]   no path even through doors — bounded straight-line attempt`);
+        const bounded = await this.driveToward(wp, eps, Math.ceil(this.tuning.MAX_TICKS_PER_WAYPOINT / 6));
+        if (bounded.state !== "playing" || bounded.reason !== "stuck" || lastTry) return bounded;
+        continue outer;
       }
-      // Genuinely unreachable in the model. A straight line to a target BFS
-      // can't reach is almost always a wall, and at the full per-waypoint
-      // budget that costs 600 ticks before reporting the failure it already
-      // knew about — cap it so a hopeless case is cheap.
-      this.logger.driftDebug?.(`[driftdebug]   no path even through doors — bounded straight-line attempt`);
-      return this.driveToward(wp, eps, Math.ceil(this.tuning.MAX_TICKS_PER_WAYPOINT / 6));
+
+      const direct = await this.driveToward(wp, eps, this.tuning.MAX_TICKS_PER_WAYPOINT);
+      if (direct.state !== "playing" || direct.reason !== "stuck" || lastTry) return direct;
+      this.logger.driftDebug?.(`[driftdebug] straight-line stuck — re-planning (attempt ${replan + 1})`);
     }
-    return this.driveToward(wp, eps, this.tuning.MAX_TICKS_PER_WAYPOINT);
   }
 
   /** Walks a full route-leg list (walk/openDoor legs), threading a
@@ -1428,7 +1455,26 @@ export class Bot {
 
   async driveToward(point, eps, maxTicks) {
     let { player, enemies, mines } = await this.readFull();
-    for (let t = 0; t < maxTicks; t++) {
+    // `maxTicks` is a budget for *navigation*, not for wall-clock. A decision
+    // spent fighting isn't a decision spent failing to walk somewhere: combat
+    // preempts navigation entirely in `tick()`, so a long firefight beside a
+    // waypoint would otherwise burn the whole budget and report `stuck`.
+    //
+    // Observed on `stage06_pipeline.py`: the bot stood near one waypoint for
+    // all 600 ticks (30 simulated seconds) killing **12 enemies** — 34 down to
+    // 22 remaining, at 100% health with 291 bullets — and the attempt was
+    // discarded as stuck. It had walked onto that exact tile moments earlier,
+    // so nothing was unreachable.
+    //
+    // Same principle `detectAnomalies` already applies when it refuses to call
+    // a mostly-firing run a stall. `HARD` bounds it so a genuinely endless
+    // fight still terminates, and because the relaxation only applies while a
+    // threat is actually engaged, a true navigation wedge (no threat — e.g.
+    // the door-model and exit-gate wedges) still fails on the original budget.
+    let combatTicks = 0;
+    const hardCap = maxTicks * this.tuning.COMBAT_TICK_BUDGET_MULTIPLIER;
+    for (let t = 0; t < hardCap; t++) {
+      if (t - combatTicks >= maxTicks) break;
       if (player.state !== "playing") {
         await this.applyAction(new Set(), false, null, false);
         return { state: player.state, reason: player.state };
@@ -1442,6 +1488,9 @@ export class Bot {
         return { state: "playing", reason: "arrived" };
       }
       this.#noteDoorUnderFoot(player);
+      // Engaged means `tick()` will fight rather than navigate this decision —
+      // exactly `pickThreat`'s own gate, so the two can't disagree.
+      if (!this.ignoreThreats && pickThreat(enemies, player, this.profile, this.map)) combatTicks++;
       const prevX = player.x;
       const prevY = player.y;
       ({ player, enemies, mines } = await this.tick(player, enemies, mines, point, this.map));
