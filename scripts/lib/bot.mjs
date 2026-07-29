@@ -74,6 +74,11 @@ export {
   uniformIntent,
 } from "./combatPolicy.mjs";
 
+// Door tile values, needed locally by the opened-door bookkeeping in
+// `#noteDoorUnderFoot`/`#allDoorTiles` (the decision core has no use for them).
+export const LOCKED_DOOR_TILE = 3; // src/map/types.ts's Tile enum
+export const BRANCH_DOOR_TILE = 8; // src/map/types.ts's Tile enum
+
 /**
  * Tiles a *loot detour* refuses to route through. Mirrors `routePlanner.mjs`'s
  * own `SOFT_AVOID_TILES`, but applied as a hard avoid rather than a cost:
@@ -415,6 +420,9 @@ export class Bot {
     // instance rather than inside `driveLegs` because `driveToExit` runs
     // *after* the legs are done and still has to path back through them.
     this.openedDoors = new Set();
+    // Lazily built by `#allDoorTiles()` — every door tile on this level, for
+    // the "route through doors" re-plan fallback.
+    this.allDoorTilesCache = null;
   }
 
   /**
@@ -593,6 +601,31 @@ export class Bot {
         }
         return { state: "playing", reason: "arrived" };
       }
+      // BFS found nothing. Retry once treating every door as passable: the
+      // model can still be stale (a door opened out of view of
+      // `#noteDoorUnderFoot`), and the bot opens doors by walking into them
+      // anyway — a branch door costs nothing and a locked one costs a key.
+      const viaDoors = bfsPath(
+        this.map,
+        { x: Math.floor(player.x), y: Math.floor(player.y) },
+        { x: Math.floor(wp.x), y: Math.floor(wp.y) },
+        new Set(),
+        this.#allDoorTiles(),
+      );
+      if (viaDoors) {
+        this.logger.driftDebug?.(`[driftdebug]   strict BFS failed, routing through doors (${viaDoors.length} tiles)`);
+        for (const rwp of pathToWaypoints(viaDoors)) {
+          const result = await this.driveToward(rwp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
+          if (result.state !== "playing" || result.reason === "stuck" || result.reason === "teleported") return result;
+        }
+        return { state: "playing", reason: "arrived" };
+      }
+      // Genuinely unreachable in the model. A straight line to a target BFS
+      // can't reach is almost always a wall, and at the full per-waypoint
+      // budget that costs 600 ticks before reporting the failure it already
+      // knew about — cap it so a hopeless case is cheap.
+      this.logger.driftDebug?.(`[driftdebug]   no path even through doors — bounded straight-line attempt`);
+      return this.driveToward(wp, eps, Math.ceil(this.tuning.MAX_TICKS_PER_WAYPOINT / 6));
     }
     return this.driveToward(wp, eps, this.tuning.MAX_TICKS_PER_WAYPOINT);
   }
@@ -839,6 +872,63 @@ export class Bot {
     return this.applyAction(intent);
   }
 
+  /**
+   * Every door tile on the level, as `bfsPath`-style `"x,y"` keys — i.e. the
+   * `openDoors` set meaning "assume every door can be gotten through". Built
+   * once per level; the planned grid is static so it never changes.
+   */
+  #allDoorTiles() {
+    if (this.allDoorTilesCache) return this.allDoorTilesCache;
+    const keys = new Set();
+    const grid = this.map?.grid ?? [];
+    for (let y = 0; y < grid.length; y++) {
+      for (let x = 0; x < grid[y].length; x++) {
+        const t = grid[y][x];
+        if (t === LOCKED_DOOR_TILE || t === BRANCH_DOOR_TILE) keys.add(`${x},${y}`);
+      }
+    }
+    this.allDoorTilesCache = keys;
+    return keys;
+  }
+
+  /**
+   * Record any door the player is *standing on* as open.
+   *
+   * `this.map` is a Node-side copy generated before the run; the engine opens
+   * a door by mutating its *own* grid to floor (`this.map.grid[y][x] = 0`), so
+   * the bot's copy calls that tile a door forever and every later `bfsPath`
+   * treats it as a wall. `openedDoors` is the documented compensation for that
+   * (see `bfsPath`'s doc comment), but `driveLegs` only ever added doors it
+   * opened via an explicit `openDoor` leg — never one the bot simply pushed
+   * through while walking a leg or a loot detour.
+   *
+   * Occupancy is a sound test: `isWall()` rejects a step into a closed door, so
+   * standing on a tile the planned map calls a door means that door is open.
+   *
+   * A key-locked doorway (3) opens as a whole contiguous run — the engine
+   * flood-fills it via `doorwayTiles` because a corridor flush along a room
+   * wall makes every boundary tile its own door — so mirror that by flooding
+   * same-valued neighbours. A branch door (8) is always a single tile.
+   */
+  #noteDoorUnderFoot(player) {
+    const x = Math.floor(player.x);
+    const y = Math.floor(player.y);
+    const tile = this.map?.grid?.[y]?.[x];
+    if (tile !== LOCKED_DOOR_TILE && tile !== BRANCH_DOOR_TILE) return;
+    if (this.openedDoors.has(`${x},${y}`)) return;
+    const stack = [{ x, y }];
+    while (stack.length > 0) {
+      const c = stack.pop();
+      const k = `${c.x},${c.y}`;
+      if (this.openedDoors.has(k)) continue;
+      if (this.map.grid[c.y]?.[c.x] !== tile) continue;
+      this.openedDoors.add(k);
+      if (tile !== LOCKED_DOOR_TILE) continue; // branch doors are single-tile
+      stack.push({ x: c.x + 1, y: c.y }, { x: c.x - 1, y: c.y }, { x: c.x, y: c.y + 1 }, { x: c.x, y: c.y - 1 });
+    }
+    this.logger.wpDebug?.(`[wpdebug] learned open door run at (${x},${y}) tile=${tile}`);
+  }
+
   async driveToward(point, eps, maxTicks) {
     let { player, enemies, mines, projectiles } = await this.readFull();
     for (let t = 0; t < maxTicks; t++) {
@@ -854,6 +944,7 @@ export class Bot {
         // key set regardless.
         return { state: "playing", reason: "arrived" };
       }
+      this.#noteDoorUnderFoot(player);
       const prevX = player.x;
       const prevY = player.y;
       ({ player, enemies, mines, projectiles } = await this.tick(player, enemies, mines, point, this.map, projectiles));
