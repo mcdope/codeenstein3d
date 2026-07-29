@@ -106,6 +106,15 @@ export const DEFAULT_TUNING = {
   VIRTUAL_STEP_MS: 50,
   WATCH_STEP_MS: 130,
   MAX_TICKS_PER_WAYPOINT: 600,
+  // How far past `MAX_TICKS_PER_WAYPOINT` a waypoint drive may run when the
+  // extra decisions are spent in combat rather than on navigation — see
+  // `Bot#driveToward`. Bounds the relaxation so an unwinnable fight still ends
+  // the attempt instead of looping forever.
+  COMBAT_TICK_BUDGET_MULTIPLIER: 4,
+  // How many times `Bot#driveTowardWithReplan` re-plans after a drive reports
+  // `stuck`. Each retry re-reads the bot's real position, so a bot shoved
+  // around geometry mid-drive gets a fresh BFS from where it actually is.
+  WAYPOINT_REPLAN_ATTEMPTS: 3,
   TURN_MOVE_EPS: 0.2,
   ARRIVE_EPS: 0.15,
   TIGHT_ARRIVE_EPS: 0.05,
@@ -1017,6 +1026,24 @@ export function decide(world, memory, config) {
         }
         if (stallStrafeKey) {
           moveKeys.add(stallStrafeKey);
+          // NOTE: this also widens the *turn* key's hold, because
+          // `uniformIntent` applies one scalar to every key. When a turn key is
+          // present a small correction executes as a full decision's rotation —
+          // measured at 8.3x (0.055rad needed, 0.455rad performed), and it is
+          // the origin of the "[nav-warn] implausible rotation" log line:
+          // 0.45rad is exactly one 50ms decision at Gamer's 9.1rad/s, 0.65rad
+          // likewise at Pro's 13rad/s. Casual's 0.26rad falls under the
+          // detector's 0.3 floor, which is why Casual never warns.
+          //
+          // Gating this on "no turn key held" was tried and **reverted**
+          // (2026-07-29) after a matched-scale A/B: it removed the overshoot
+          // completely (8.3x -> 1.0x, nav-warns 15 -> 0) but `enemyAccuracy`
+          // rose on all three combos (+1.6/+0.6/+4.9%) and Gamer/normal
+          // `qualifyRate` fell 15pp, breaching the pre-registered guard. The
+          // widening is load-bearing for *dodging*, not aiming: without it the
+          // stall-strafe key is held for a turn-sized burst and moves the bot
+          // ~0.02 tiles, so it stops strafing and gets hit more. Don't "fix"
+          // this without re-running that A/B.
           turnBurst = Math.max(turnBurst ?? 0, moveBurstMs(10, false, moveCtx));
         }
       } else {
@@ -1051,6 +1078,24 @@ export function decide(world, memory, config) {
           moveKeys.delete("KeyD");
           moveKeys.delete("KeyA");
           moveKeys.add(stallStrafeKey);
+          // NOTE: this also widens the *turn* key's hold, because
+          // `uniformIntent` applies one scalar to every key. When a turn key is
+          // present a small correction executes as a full decision's rotation —
+          // measured at 8.3x (0.055rad needed, 0.455rad performed), and it is
+          // the origin of the "[nav-warn] implausible rotation" log line:
+          // 0.45rad is exactly one 50ms decision at Gamer's 9.1rad/s, 0.65rad
+          // likewise at Pro's 13rad/s. Casual's 0.26rad falls under the
+          // detector's 0.3 floor, which is why Casual never warns.
+          //
+          // Gating this on "no turn key held" was tried and **reverted**
+          // (2026-07-29) after a matched-scale A/B: it removed the overshoot
+          // completely (8.3x -> 1.0x, nav-warns 15 -> 0) but `enemyAccuracy`
+          // rose on all three combos (+1.6/+0.6/+4.9%) and Gamer/normal
+          // `qualifyRate` fell 15pp, breaching the pre-registered guard. The
+          // widening is load-bearing for *dodging*, not aiming: without it the
+          // stall-strafe key is held for a turn-sized burst and moves the bot
+          // ~0.02 tiles, so it stops strafing and gets hit more. Don't "fix"
+          // this without re-running that A/B.
           turnBurst = Math.max(turnBurst ?? 0, moveBurstMs(10, false, moveCtx));
         }
       } else {

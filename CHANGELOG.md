@@ -12,6 +12,7 @@
 - Dev: the bot's decision-making moved into its own module (`scripts/lib/combatPolicy.mjs`) with real unit tests — the first automated coverage that code has ever had — and is shaped so it can later become a proper in-game opponent for deathmatch. `scripts/report-balancing-ab.mjs` compares two telemetry runs and fails on a survival regression, so a change to how the bot plays can be checked instead of eyeballed
 - Dev: the playtest bot now clears the enemies guarding a level's exit instead of standing on an exit that will never open — `checkExit()` keeps the exit inert while any enemy homed to its room is alive, which silently failed ~58% of demo-campaign level-10 runs and blocked `generate:default-highscore` entirely
 - Dev: the playtest bot no longer treats a door it already walked through as a wall — its copy of the map never saw the engine open it, which could strand it against a doorway it had just used and cost a whole campaign attempt
+- Dev: the playtest bot is no longer given up on mid-firefight, and re-plans its route if a fight shoves it around a corner — it now consistently reaches level 12 of the demo campaign on every difficulty profile instead of stalling out earlier
 
 ## beta-5
 
