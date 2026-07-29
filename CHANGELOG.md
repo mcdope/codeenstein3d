@@ -10,6 +10,7 @@
 - SMG and gas ammo can now turn up as pickups you find lying around (in Vendor Depots), not only as drops from enemies
 - Dev: the automated playtest bot behind the balancing telemetry now sprints down straight stretches, getting through a level 27-41% faster. That matters because the numbers that tool reports — how often enemies hit you, how long a fight lasts, how much damage a level costs — were partly measuring the bot's own limitations rather than the game's balance. Past difficulty conclusions drawn from it are worth re-checking
 - Dev: the bot's decision-making moved into its own module (`scripts/lib/combatPolicy.mjs`) with real unit tests — the first automated coverage that code has ever had — and is shaped so it can later become a proper in-game opponent for deathmatch. `scripts/report-balancing-ab.mjs` compares two telemetry runs and fails on a survival regression, so a change to how the bot plays can be checked instead of eyeballed
+- Dev: the playtest bot now clears the enemies guarding a level's exit instead of standing on an exit that will never open — `checkExit()` keeps the exit inert while any enemy homed to its room is alive, which silently failed ~58% of demo-campaign level-10 runs and blocked `generate:default-highscore` entirely
 
 ## beta-5
 

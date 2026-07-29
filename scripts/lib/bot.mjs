@@ -84,6 +84,12 @@ export {
  * approached through more of it. */
 const LOOT_DETOUR_AVOID_TILES = new Set([HAZARD_TILE, SPIKE_TRAP_TILE]);
 
+/** How many "stand on the exit, then go kill whatever is keeping it inert"
+ * rounds `driveToExit` will run before giving up. More than one because
+ * `exitRoomHasAliveEnemy()` is satisfied by *any* living exit-room enemy and
+ * a room can hold several; bounded because an unreachable blocker must still
+ * terminate. */
+const EXIT_CLEAR_ROUNDS = 6;
 // Position-unchanged-for-this-many-consecutive-ticks threshold before
 // `detectAnomalies` calls it a "stall".
 const STALL_TICKS_THRESHOLD = 20;
@@ -405,6 +411,10 @@ export class Bot {
       trace: this.logger.trace ? [] : undefined,
     };
     this.visitedPickups = new Set();
+    // Doors this run has pushed open, as "x,y" tile keys. Lives on the
+    // instance rather than inside `driveLegs` because `driveToExit` runs
+    // *after* the legs are done and still has to path back through them.
+    this.openedDoors = new Set();
   }
 
   /**
@@ -608,7 +618,7 @@ export class Bot {
    * grinding against `MAX_TICKS_PER_WAYPOINT` trying to reach a target its
    * own stale `this.map` can no longer even BFS a path to). */
   async driveLegs(legs) {
-    const openedDoors = new Set();
+    const openedDoors = this.openedDoors;
 
     for (const leg of legs) {
       const detour = await this.maybeDetourForLoot(openedDoors);
@@ -650,6 +660,140 @@ export class Bot {
       }
     }
     return { state: "playing" };
+  }
+
+  /**
+   * Walk onto the exit tile and, if the level refuses to end, clear whatever
+   * the exit is waiting on.
+   *
+   * `checkExit()` (`engine.ts`) ends the level only when a living player
+   * stands on `map.exit` **and** `exitRoomHasAliveEnemy()` is false — an
+   * enemy whose `home` rectangle contains the exit keeps the exit inert no
+   * matter how precisely the player is standing on it.
+   *
+   * `pickThreat` only ever considers `aggroed` enemies, so an exit-room enemy
+   * that the route never provoked is invisible to the bot forever. The bot
+   * would then stand on the exit until its caller gave up and recorded the
+   * attempt as "stuck" — which is what made `generate:default-highscore` fail
+   * ~58% of Casual attempts on demo-campaign level 10
+   * (`stage10_kernel_module.rs`) while every waypoint on the way there
+   * arrived cleanly in <=15 ticks against a 600-tick cap. It reproduced only
+   * under the highscore generator because the A/B protocol runs telemetry
+   * with `LEVEL_LIMIT=8` and so never reaches level 10 at all — not because
+   * the two harnesses drive the bot differently.
+   *
+   * Walking at the blocker is all the "combat" this needs: closing to within
+   * `AGGRO_RADIUS` with line of sight aggros it, at which point `pickThreat`
+   * starts seeing it and the normal combat branches fight it. So this is a
+   * navigation fix, and deliberately not a new combat policy.
+   */
+  async driveToExit(exitCenter, finalApproachTicks, openedDoors = this.openedDoors) {
+    let last = { state: "playing", reason: "stuck" };
+    for (let round = 0; round < EXIT_CLEAR_ROUNDS; round++) {
+      // BFS back to the exit tile before the tight final nudge. `driveToward`
+      // walks a straight line with no pathfinding, and after a hunt the bot
+      // can be most of a room away with walls in between — an earlier version
+      // of this method cleared the exit room correctly and then failed anyway,
+      // burning all `finalApproachTicks` straight-lining into a wall. Round 0
+      // is normally a no-op (the caller's legs just ended at the exit).
+      if (round > 0) {
+        const back = await this.#walkPathTo({ x: this.map.exit.x, y: this.map.exit.y }, openedDoors);
+        if (back.state !== "playing") return back;
+        if (back.reason === "teleported") return back;
+      }
+      last = await this.driveToward(exitCenter, this.tuning.TIGHT_ARRIVE_EPS, finalApproachTicks);
+      // "won" (exit accepted) or "over" (died on the way) — either way, done.
+      if (last.state !== "playing") return last;
+
+      const { player, enemies } = await this.readFull();
+      // Exactly `exitRoomHasAliveEnemy()`'s predicate, not a proxy for it.
+      // `Enemy.home` is not in the enemy snapshot, but it doesn't need to be:
+      // the engine takes its roster straight from the generated map
+      // (`this.enemies = map.enemies`, engine.ts), so `this.map.enemies[i]`
+      // *is* the same record and indices line up exactly.
+      //
+      // Proximity to the exit was tried first and is not a usable stand-in —
+      // it sent the bot after enemies 23 tiles away that could not possibly
+      // be homed to the exit's room, burning every round without touching the
+      // actual blocker.
+      const blockers = enemies
+        .map((e, i) => ({ ...e, i }))
+        .filter((e) => e.alive && this.#homesOnExitRoom(e.i))
+        .sort((a, b) => {
+          const da = Math.hypot(a.x - player.x, a.y - player.y);
+          const db = Math.hypot(b.x - player.x, b.y - player.y);
+          return da - db || a.i - b.i; // total order — no reliance on sort stability
+        });
+      // Exit inert with nothing homed to its room left alive means the gate is
+      // something this method doesn't model — report stuck rather than loop.
+      if (blockers.length === 0) return { state: "playing", reason: "stuck" };
+      this.logger.wpDebug?.(`[wpdebug] exit inert — ${blockers.length} exit-room blocker(s) alive; hunting #${blockers[0].i} at (${blockers[0].x.toFixed(1)},${blockers[0].y.toFixed(1)})`);
+      const hunted = await this.#huntEnemy(blockers[0], openedDoors);
+      if (hunted.state !== "playing") return hunted;
+      if (hunted.reason === "teleported") return hunted;
+    }
+    return { state: "playing", reason: "stuck" };
+  }
+
+  /**
+   * Whether enemy `i` is one the exit is waiting on — the bot-side mirror of
+   * `Engine#enemyBelongsToExitRoom`, evaluated against the same `Enemy`
+   * records the engine itself runs on (see `driveToExit`).
+   */
+  #homesOnExitRoom(i) {
+    const home = this.map?.enemies?.[i]?.home;
+    if (!home) return false;
+    const { x: ex, y: ey } = this.map.exit;
+    return ex >= home.x && ex < home.x + home.w && ey >= home.y && ey < home.y + home.h;
+  }
+
+  /**
+   * Path to `target`'s tile and walk it until the enemy dies. Returns as soon
+   * as it does — the kill itself is done by the ordinary combat branches once
+   * proximity aggros it, not here.
+   *
+   * The enemy's index is stable for a whole level (the same guarantee
+   * `pickThreat` relies on to recognise "same enemy as last tick"), so it is
+   * safe to re-check liveness by index against a fresh snapshot.
+   */
+  async #huntEnemy(target, openedDoors) {
+    return this.#walkPathTo({ x: Math.floor(target.x), y: Math.floor(target.y) }, openedDoors, async () => {
+      const { enemies } = await this.readFull();
+      return !enemies[target.i]?.alive;
+    });
+  }
+
+  /**
+   * BFS a walkable path to `tile` and walk it waypoint by waypoint, stopping
+   * early when `stopWhen` (if given) reports the errand is already done.
+   *
+   * This is the piece `driveToward` is not: `driveToward` steers in a straight
+   * line and gives up when a wall is in the way, which is correct for a single
+   * BFS waypoint one tile away but useless for "get from here to somewhere
+   * across the room".
+   */
+  async #walkPathTo(tile, openedDoors, stopWhen = null) {
+    const player = await this.readState();
+    if (player.state !== "playing") return { state: player.state };
+    const path = bfsPath(
+      this.map,
+      { x: Math.floor(player.x), y: Math.floor(player.y) },
+      tile,
+      LOOT_DETOUR_AVOID_TILES,
+      openedDoors,
+    );
+    // Unreachable (e.g. behind a door this run never found the key for) — no
+    // worse than the previous give-up, and the caller still reports "stuck".
+    if (!path) return { state: "playing", reason: "stuck" };
+    for (const wp of pathToWaypoints(path)) {
+      const result = await this.driveToward(wp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
+      if (result.state !== "playing") return result;
+      // See `driveLegs`'s doc comment — waypoints after a teleport were
+      // planned against a position this bot is no longer at.
+      if (result.reason === "teleported") return result;
+      if (stopWhen && (await stopWhen())) return { state: "playing", reason: "arrived" };
+    }
+    return { state: "playing", reason: "arrived" };
   }
 
   /**

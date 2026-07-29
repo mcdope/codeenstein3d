@@ -158,7 +158,10 @@ async function driveFullCampaign(bot, page, levelPlans) {
     if (legOutcome.state === "stuck") return { reachedExitForLevel, diedAtLevelIndex: i, reason: "stuck" };
     if (legOutcome.state === "playing") {
       const exitCenter = { x: map.exit.x + 0.5, y: map.exit.y + 0.5 };
-      const pushed = await bot.driveToward(exitCenter, bot.tuning.TIGHT_ARRIVE_EPS, FINAL_APPROACH_TICKS);
+      // `driveToExit`, not `driveToward`: the exit stays inert while any enemy
+      // homed to its own room is alive (`checkExit()`), so reaching the tile is
+      // not the same as finishing the level. See `Bot#driveToExit`.
+      const pushed = await bot.driveToExit(exitCenter, FINAL_APPROACH_TICKS);
       if (pushed.state === "over") return { reachedExitForLevel, diedAtLevelIndex: i, reason: "died" };
       if (pushed.state !== "won") return { reachedExitForLevel, diedAtLevelIndex: i, reason: "stuck" };
     }
