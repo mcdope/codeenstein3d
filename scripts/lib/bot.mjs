@@ -29,6 +29,7 @@ import {
   pickThreat,
   segmentsFor,
   SPIKE_TRAP_TILE,
+  numberKeyCodeFor,
   turnBurstMs,
   uniformIntent,
 } from "./combatPolicy.mjs";
@@ -1196,7 +1197,7 @@ export class Bot {
     // gets subdivided into multiple `recordStepMs`-sized replay frames.
     const subStepMs = Math.min(this.recordStepMs, ms);
     const dispatched = await this.page.evaluate(
-      ({ desiredKeys, fire, weaponSwitchIndex, useMelee, stepMs, subStepMs, headed, isFirst, isLast }) => {
+      ({ desiredKeys, fire, weaponSwitchCode, useMelee, stepMs, subStepMs, headed, isFirst, isLast }) => {
         const canvas = document.querySelector("canvas");
         const hooks = window.__codeensteinTestHooks;
         const desired = new Set(desiredKeys);
@@ -1204,10 +1205,9 @@ export class Bot {
         for (const code of held) if (!desired.has(code)) canvas.dispatchEvent(new KeyboardEvent("keyup", { code }));
         for (const code of desired) if (!held.has(code)) canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
         window.__botHeldKeys = desired;
-        if (isFirst && weaponSwitchIndex !== null && weaponSwitchIndex !== undefined) {
-          const code = `Digit${weaponSwitchIndex + 1}`;
-          canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
-          canvas.dispatchEvent(new KeyboardEvent("keyup", { code }));
+        if (isFirst && weaponSwitchCode) {
+          canvas.dispatchEvent(new KeyboardEvent("keydown", { code: weaponSwitchCode }));
+          canvas.dispatchEvent(new KeyboardEvent("keyup", { code: weaponSwitchCode }));
         }
         // Fire is held for the *whole* tick, not pressed-and-released before
         // any frame runs — an `auto: true` weapon checks isFireHeld() every
@@ -1220,7 +1220,9 @@ export class Bot {
         if (fireCode && isLast) canvas.dispatchEvent(new KeyboardEvent("keyup", { code: fireCode }));
         return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines(), projectiles: hooks.getProjectiles?.() ?? [] };
       },
-      { desiredKeys: [...keys], fire, weaponSwitchIndex, useMelee, stepMs: ms, subStepMs, headed, isFirst, isLast },
+      // Resolved here in Node: a digit indexes `NUMBER_KEY_WEAPONS`, not
+      // `WEAPONS` — see `numberKeyCodeFor`.
+      { desiredKeys: [...keys], fire, weaponSwitchCode: weaponSwitchIndex == null ? null : numberKeyCodeFor(weaponSwitchIndex), useMelee, stepMs: ms, subStepMs, headed, isFirst, isLast },
     );
     if (!headed) return dispatched;
     await this.page.waitForTimeout(ms);

@@ -38,6 +38,15 @@ import {
   strafeIsSafe,
   turnBurstMs,
   uniformIntent,
+  numberKeyCodeFor,
+  NUMBER_KEY_WEAPONS,
+  KNIFE_WEAPON_INDEX,
+  TOOLCHAIN_WEAPON_INDEX,
+  GDB_WEAPON_INDEX,
+  GHIDRA_WEAPON_INDEX,
+  PISTOL_WEAPON_INDEX,
+  SHOTGUN_WEAPON_INDEX,
+  FRIDAY_HOTFIX_WEAPON_INDEX,
 } from "./combatPolicy.mjs";
 
 const SIZE = 20;
@@ -850,5 +859,30 @@ describe("decide — bolt dodging", () => {
     const w = engaged();
     delete w.projectiles;
     expect(() => decide(w, freshMemory(), makeConfig())).not.toThrow();
+  });
+});
+
+describe("number-key weapon mapping", () => {
+  it("maps each ranged weapon to the slot the engine actually reads", () => {
+    // The engine treats a digit as an index into NUMBER_KEY_WEAPONS (melee
+    // excluded), not into WEAPONS, so `Digit${index + 1}` was wrong for every
+    // weapon past the knife.
+    expect(numberKeyCodeFor(PISTOL_WEAPON_INDEX)).toBe("Digit1");
+    expect(numberKeyCodeFor(SHOTGUN_WEAPON_INDEX)).toBe("Digit2");
+    expect(numberKeyCodeFor(GDB_WEAPON_INDEX)).toBe("Digit3");
+    expect(numberKeyCodeFor(GHIDRA_WEAPON_INDEX)).toBe("Digit4");
+    expect(numberKeyCodeFor(FRIDAY_HOTFIX_WEAPON_INDEX)).toBe("Digit5");
+  });
+
+  it("has no slot for a melee weapon", () => {
+    expect(numberKeyCodeFor(KNIFE_WEAPON_INDEX)).toBeNull();
+    expect(numberKeyCodeFor(TOOLCHAIN_WEAPON_INDEX)).toBeNull();
+  });
+
+  it("regression: asking for gdb must not equip the rocket launcher", () => {
+    // The old `Digit${index + 1}` produced Digit4, which is ghidra — so the
+    // bot fired rockets at point-blank range and took up to 99 self-damage.
+    expect(numberKeyCodeFor(GDB_WEAPON_INDEX)).not.toBe(numberKeyCodeFor(GHIDRA_WEAPON_INDEX));
+    expect(NUMBER_KEY_WEAPONS.indexOf(GDB_WEAPON_INDEX) + 1).not.toBe(GDB_WEAPON_INDEX + 1);
   });
 });

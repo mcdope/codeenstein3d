@@ -91,6 +91,7 @@
  *    `MultiplayerBot`-only gap, not a shared one.
  */
 import { Bot } from "./bot.mjs";
+import { numberKeyCodeFor } from "./combatPolicy.mjs";
 import { bfsPath, pathToWaypoints } from "./pathfind.mjs";
 
 /** See this module's own doc comment's last bullet for the full reasoning —
@@ -290,23 +291,23 @@ export class MultiplayerBot extends Bot {
   async dispatchSegment(keys, ms, { fire, useMelee, weaponSwitchIndex, isFirst, isLast }) {
     const id = this.playerId;
     const fireCode = await this.page.evaluate(
-      ({ desiredKeys, fire, weaponSwitchIndex, useMelee, isFirst }) => {
+      ({ desiredKeys, fire, weaponSwitchCode, useMelee, isFirst }) => {
         const canvas = document.querySelector("canvas.scene-canvas");
         const desired = new Set(desiredKeys);
         const held = (window.__botHeldKeys ??= new Set());
         for (const code of held) if (!desired.has(code)) canvas.dispatchEvent(new KeyboardEvent("keyup", { code }));
         for (const code of desired) if (!held.has(code)) canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
         window.__botHeldKeys = desired;
-        if (isFirst && weaponSwitchIndex !== null && weaponSwitchIndex !== undefined) {
-          const code = `Digit${weaponSwitchIndex + 1}`;
-          canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
-          canvas.dispatchEvent(new KeyboardEvent("keyup", { code }));
+        if (isFirst && weaponSwitchCode) {
+          canvas.dispatchEvent(new KeyboardEvent("keydown", { code: weaponSwitchCode }));
+          canvas.dispatchEvent(new KeyboardEvent("keyup", { code: weaponSwitchCode }));
         }
         const fc = fire ? (useMelee ? "Space" : "Backquote") : null;
         if (fc && isFirst) canvas.dispatchEvent(new KeyboardEvent("keydown", { code: fc }));
         return fc;
       },
-      { desiredKeys: [...keys], fire, weaponSwitchIndex, useMelee, isFirst },
+      // See `numberKeyCodeFor` — a digit indexes `NUMBER_KEY_WEAPONS`, not `WEAPONS`.
+      { desiredKeys: [...keys], fire, weaponSwitchCode: weaponSwitchIndex == null ? null : numberKeyCodeFor(weaponSwitchIndex), useMelee, isFirst },
     );
     await this.page.waitForTimeout(ms);
     const r = await this.page.evaluate(

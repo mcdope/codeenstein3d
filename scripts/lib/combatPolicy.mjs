@@ -74,6 +74,23 @@ export const GHIDRA_WEAPON_INDEX = 4;
 export const FRIDAY_HOTFIX_WEAPON_INDEX = 5;
 export const TOOLCHAIN_WEAPON_INDEX = 6;
 export const STARTING_WEAPONS = [PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, KNIFE_WEAPON_INDEX];
+
+/**
+ * Weapon indices reachable by number key, in slot order — mirrors
+ * `NUMBER_KEY_WEAPONS` in `src/engine/weapons.ts`, which is `WEAPONS` filtered
+ * to entries with no `meleeRange` (both the knife and the Toolchain are melee
+ * and are reached by other means).
+ *
+ * The engine reads a digit as an index *into this list*, not into `WEAPONS`.
+ */
+export const NUMBER_KEY_WEAPONS = [PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX];
+
+/** The `Digit<n>` code that actually equips `weaponIndex`, or `null` if that
+ * weapon has no number-key slot (i.e. it is melee). */
+export function numberKeyCodeFor(weaponIndex) {
+  const slot = NUMBER_KEY_WEAPONS.indexOf(weaponIndex);
+  return slot === -1 ? null : `Digit${slot + 1}`;
+}
 // The two ranged weapons WEAPONS.auto=true (mirrors weapons.ts) — fired via
 // isFireHeld() and engine-side rate-limited by their own fireIntervalSec
 // regardless of how the key is dispatched, unlike the semi-auto ranged
