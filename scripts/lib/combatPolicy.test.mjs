@@ -38,15 +38,23 @@ import {
   strafeIsSafe,
   turnBurstMs,
   uniformIntent,
+  scoreRangedWeapon,
+  expectedDamagePerShot,
+  shouldCloseToMelee,
+  hasAnyRangedAmmo,
+  meleeDamage,
+  WEAPON_STATS,
+  SHOTGUN_WEAPON_INDEX,
+  PISTOL_WEAPON_INDEX,
+  GHIDRA_WEAPON_INDEX,
+  FRIDAY_HOTFIX_WEAPON_INDEX,
+  rocketDetonationDistanceAfterClosing,
+  rocketAimUnsafe,
   numberKeyCodeFor,
   NUMBER_KEY_WEAPONS,
   KNIFE_WEAPON_INDEX,
   TOOLCHAIN_WEAPON_INDEX,
   GDB_WEAPON_INDEX,
-  GHIDRA_WEAPON_INDEX,
-  PISTOL_WEAPON_INDEX,
-  SHOTGUN_WEAPON_INDEX,
-  FRIDAY_HOTFIX_WEAPON_INDEX,
 } from "./combatPolicy.mjs";
 
 const SIZE = 20;
@@ -255,9 +263,16 @@ describe("pickRangedWeapon", () => {
     const shotgunFirst = { ...PROFILE, weaponPriority: [1, 0] };
     // Clustered and close -> Friday Hotfix.
     expect(pickRangedWeapon(player, shotgunFirst, enemies, threat, null, DEFAULT_TUNING)).toBe(5);
-    // Same geometry, but a cluster radius too small to group them: falls
-    // through to the priority order instead.
-    expect(pickRangedWeapon(player, shotgunFirst, enemies, threat, null, { ...DEFAULT_TUNING, CLUSTER_RADIUS: 0.01 })).toBe(1);
+    // Same geometry, but a cluster radius too small to group them: the cluster
+    // rule doesn't fire, so Friday Hotfix is no longer selected.
+    //
+    // Deliberately asserts "not the cluster weapon" rather than a specific
+    // fallthrough pick: since `pickRangedWeapon` scores on economics rather
+    // than walking the priority list, the fallthrough here is the *pistol*
+    // (2 bullets to kill a 30 HP threat, against the shotgun's 4, for 0.16s
+    // more) — and it returns null because the pistol is already equipped.
+    const noCluster = pickRangedWeapon(player, shotgunFirst, enemies, threat, null, { ...DEFAULT_TUNING, CLUSTER_RADIUS: 0.01 });
+    expect(noCluster).not.toBe(FRIDAY_HOTFIX_WEAPON_INDEX);
   });
 
   it("never selects a rocket at a mine target", () => {
@@ -862,11 +877,123 @@ describe("decide — bolt dodging", () => {
   });
 });
 
+
+describe("ranged weapon economics", () => {
+  const owner = (over = {}) => makePlayer({ ownedWeapons: [0, 1, 2, 3, 4, 5, 6], ammo: { bullets: 200, smg: 700, rockets: 19, gas: 600 }, ...over });
+  const target = (over = {}) => ({ ...makeEnemy(), dist: 5, i: 0, ...over });
+
+  it("prefers the fastest reachable killer against a damage sponge, not the priority list's first entry", () => {
+    // Casual's weaponPriority starts with the pistol, which needs ~44s on
+    // 4400 HP. Inside Friday Hotfix's 3.5-tile reach that is the right answer;
+    // the point is simply that it is not the pistol.
+    const close = pickRangedWeapon(owner(), PROFILE, [], target({ dist: 2.5, hp: 4400, maxHp: 4400, elite: true }), null);
+    expect(close).toBe(FRIDAY_HOTFIX_WEAPON_INDEX);
+    // Beyond that reach the flamethrower is not a candidate at all, so the
+    // answer becomes the best weapon that actually arrives — still not the pistol.
+    const far = pickRangedWeapon(owner(), PROFILE, [], target({ dist: 7, hp: 4400, maxHp: 4400, elite: true }), null);
+    expect(far).not.toBe(FRIDAY_HOTFIX_WEAPON_INDEX);
+    expect(far).not.toBe(PISTOL_WEAPON_INDEX);
+  });
+
+  it("scores a scarce reserve as more expensive than a plentiful one", () => {
+    const opts = { targetHp: 600, dist: 5, profile: PROFILE, tuning: DEFAULT_TUNING };
+    const scarce = scoreRangedWeapon(GHIDRA_WEAPON_INDEX, { ...opts, player: owner({ ammo: { bullets: 200, smg: 700, rockets: 2, gas: 600 } }) });
+    const plentiful = scoreRangedWeapon(GHIDRA_WEAPON_INDEX, { ...opts, player: owner({ ammo: { bullets: 200, smg: 700, rockets: 400, gas: 600 } }) });
+    expect(scarce).toBeGreaterThan(plentiful);
+  });
+
+  it("a thriftier profile pays more for the same burn", () => {
+    // Inside Friday Hotfix's reach, so the score is finite and comparable.
+    const opts = { targetHp: 4400, dist: 2.5, player: owner(), tuning: DEFAULT_TUNING };
+    const thrifty = scoreRangedWeapon(FRIDAY_HOTFIX_WEAPON_INDEX, { ...opts, profile: { ...PROFILE, ammoThrift: 2 } });
+    const spender = scoreRangedWeapon(FRIDAY_HOTFIX_WEAPON_INDEX, { ...opts, profile: { ...PROFILE, ammoThrift: 0 } });
+    expect(thrifty).toBeGreaterThan(spender);
+  });
+
+  it("multi-pellet damage falls off far sooner than single-pellet", () => {
+    // The engine's Cone of Fire applies to every ranged weapon, so nothing is
+    // truly flat — but it is cubic in range, so a single-pellet weapon holds
+    // full damage through medium range while a wide spread does not.
+    const shotNear = expectedDamagePerShot(SHOTGUN_WEAPON_INDEX, 0.5);
+    const shotMid = expectedDamagePerShot(SHOTGUN_WEAPON_INDEX, 8);
+    expect(shotNear).toBeGreaterThan(shotMid);
+    // Pistol: unchanged at medium range, degraded only near the fog line.
+    expect(expectedDamagePerShot(PISTOL_WEAPON_INDEX, 8)).toBe(expectedDamagePerShot(PISTOL_WEAPON_INDEX, 0.5));
+    expect(expectedDamagePerShot(PISTOL_WEAPON_INDEX, 13)).toBeLessThan(expectedDamagePerShot(PISTOL_WEAPON_INDEX, 8));
+  });
+
+  it("gdb keeps its accuracy at range where the pistol loses it", () => {
+    // gdb overrides maxConeDeviationPx (20 vs the shared 38) precisely so it
+    // stays usable far out despite low per-shot damage.
+    const gdbRetention = expectedDamagePerShot(GDB_WEAPON_INDEX, 13) / expectedDamagePerShot(GDB_WEAPON_INDEX, 2);
+    const pistolRetention = expectedDamagePerShot(PISTOL_WEAPON_INDEX, 13) / expectedDamagePerShot(PISTOL_WEAPON_INDEX, 2);
+    expect(gdbRetention).toBeGreaterThan(pistolRetention);
+  });
+
+  it("never returns a weapon the player doesn't own or has no ammo for", () => {
+    const dry = owner({ ownedWeapons: [0, 2], ammo: { bullets: 0, smg: 700, rockets: 19, gas: 600 } });
+    expect(pickRangedWeapon(dry, PROFILE, [], target(), null)).toBeNull();
+  });
+});
+
+describe("melee as last resort / for trivial targets", () => {
+  const owner = (over = {}) => makePlayer({ ownedWeapons: [0, 1, 2, 3, 4, 5, 6], ammo: { bullets: 200, smg: 700, rockets: 19, gas: 600 }, ...over });
+  const at = (dist, over = {}) => ({ ...makeEnemy(), dist, i: 0, ...over });
+
+  it("closes on an Edge Case within reach rather than spending bullets", () => {
+    expect(shouldCloseToMelee(at(3, { hp: 12, edgeCase: true }), owner(), PROFILE, DEFAULT_TUNING)).toBe(true);
+  });
+
+  it("won't cross the map for one", () => {
+    expect(shouldCloseToMelee(at(6, { hp: 12, edgeCase: true }), owner(), PROFILE, DEFAULT_TUNING)).toBe(false);
+  });
+
+  it("closes on anything once every ranged weapon is dry", () => {
+    const dry = owner({ ammo: { bullets: 0, smg: 0, rockets: 0, gas: 0 } });
+    expect(hasAnyRangedAmmo(dry)).toBe(false);
+    expect(shouldCloseToMelee(at(6, { hp: 900 }), dry, PROFILE, DEFAULT_TUNING)).toBe(true);
+  });
+
+  it("keeps its distance from a sponge it cannot one-shot while it still has ammo", () => {
+    expect(shouldCloseToMelee(at(3, { hp: 4400, elite: true }), owner(), PROFILE, DEFAULT_TUNING)).toBe(false);
+  });
+
+  it("swings harder once the Toolchain replaces the knife", () => {
+    expect(meleeDamage(makePlayer({ ownedWeapons: [0, 1, 2] }))).toBe(40);
+    expect(meleeDamage(makePlayer({ ownedWeapons: [0, 1, 2, 6] }))).toBe(80);
+  });
+});
+
+describe("rocket discipline", () => {
+  const owner = (over = {}) => makePlayer({ ownedWeapons: [0, 1, 2, 3, 4, 5, 6], ammo: { bullets: 200, smg: 700, rockets: 19, gas: 600 }, ...over });
+  const at = (dist, over = {}) => ({ ...makeEnemy(), dist, i: 0, ...over });
+
+  it("never rockets an Edge Case, however far away", () => {
+    const pick = pickRangedWeapon(owner(), PROFILE, [], at(9, { hp: 12, maxHp: 15, edgeCase: true }), null);
+    expect(pick).not.toBe(GHIDRA_WEAPON_INDEX);
+  });
+
+  it("accounts for how far a chaser closes during the rocket's flight", () => {
+    // 5 tiles looks safe against ROCKET_SAFE_DISTANCE=4, but an Edge Case at
+    // 3.74 t/s covers most of it while the rocket is in the air.
+    const closed = rocketDetonationDistanceAfterClosing(5, { edgeCase: true, aggroed: true }, DEFAULT_TUNING);
+    expect(closed).toBeLessThan(DEFAULT_TUNING.ROCKET_SAFE_DISTANCE);
+    expect(rocketAimUnsafe(makePlayer(), [], 5, false, DEFAULT_TUNING, { edgeCase: true, aggroed: true })).toBe(true);
+  });
+
+  it("charges self-harm risk to the score, and a wary profile more so", () => {
+    const opts = { targetHp: 600, dist: 4.5, player: owner(), threat: { edgeCase: false, aggroed: true }, tuning: DEFAULT_TUNING };
+    const wary = scoreRangedWeapon(GHIDRA_WEAPON_INDEX, { ...opts, profile: { ...PROFILE, selfHarmAversion: 3 } });
+    const bold = scoreRangedWeapon(GHIDRA_WEAPON_INDEX, { ...opts, profile: { ...PROFILE, selfHarmAversion: 0 } });
+    expect(wary).toBeGreaterThan(bold);
+  });
+});
+
 describe("number-key weapon mapping", () => {
   it("maps each ranged weapon to the slot the engine actually reads", () => {
     // The engine treats a digit as an index into NUMBER_KEY_WEAPONS (melee
-    // excluded), not into WEAPONS, so `Digit${index + 1}` was wrong for every
-    // weapon past the knife.
+    // excluded), not into WEAPONS. `Digit${index + 1}` was wrong for
+    // everything past the knife.
     expect(numberKeyCodeFor(PISTOL_WEAPON_INDEX)).toBe("Digit1");
     expect(numberKeyCodeFor(SHOTGUN_WEAPON_INDEX)).toBe("Digit2");
     expect(numberKeyCodeFor(GDB_WEAPON_INDEX)).toBe("Digit3");
@@ -880,9 +1007,22 @@ describe("number-key weapon mapping", () => {
   });
 
   it("regression: asking for gdb must not equip the rocket launcher", () => {
-    // The old `Digit${index + 1}` produced Digit4, which is ghidra — so the
-    // bot fired rockets at point-blank range and took up to 99 self-damage.
+    // The old `Digit${index+1}` gave Digit4, which is ghidra — the bot fired
+    // rockets at point-blank range and took up to 99 self-damage.
     expect(numberKeyCodeFor(GDB_WEAPON_INDEX)).not.toBe(numberKeyCodeFor(GHIDRA_WEAPON_INDEX));
     expect(NUMBER_KEY_WEAPONS.indexOf(GDB_WEAPON_INDEX) + 1).not.toBe(GDB_WEAPON_INDEX + 1);
+  });
+});
+
+describe("hard weapon range limits", () => {
+  const owner = () => makePlayer({ ownedWeapons: [0, 1, 2, 3, 4, 5, 6], ammo: { bullets: 200, smg: 700, rockets: 19, gas: 600 } });
+  it("never picks Friday Hotfix beyond its maxRange, however good its DPS looks", () => {
+    const far = { ...makeEnemy(), dist: 6, hp: 4400, maxHp: 4400, i: 0 };
+    expect(pickRangedWeapon(owner(), PROFILE, [], far, null)).not.toBe(FRIDAY_HOTFIX_WEAPON_INDEX);
+    expect(scoreRangedWeapon(FRIDAY_HOTFIX_WEAPON_INDEX, { targetHp: 4400, dist: 6, player: owner(), profile: PROFILE, tuning: DEFAULT_TUNING })).toBe(Infinity);
+  });
+  it("still picks it inside that range against a sponge", () => {
+    const close = { ...makeEnemy(), dist: 2.5, hp: 4400, maxHp: 4400, i: 0 };
+    expect(pickRangedWeapon(owner(), PROFILE, [], close, null)).toBe(FRIDAY_HOTFIX_WEAPON_INDEX);
   });
 });

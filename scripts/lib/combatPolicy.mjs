@@ -79,9 +79,14 @@ export const STARTING_WEAPONS = [PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, KNIF
  * Weapon indices reachable by number key, in slot order — mirrors
  * `NUMBER_KEY_WEAPONS` in `src/engine/weapons.ts`, which is `WEAPONS` filtered
  * to entries with no `meleeRange` (both the knife and the Toolchain are melee
- * and are reached by other means).
+ * and are switched to by other means).
  *
  * The engine reads a digit as an index *into this list*, not into `WEAPONS`.
+ * Dispatching `Digit${weaponIndex + 1}` — which is what the bot did until
+ * 2026-07-29 — therefore asked for the wrong gun for every index past the
+ * knife: gdb(3) equipped ghidra, ghidra(4) equipped Friday Hotfix, and
+ * Friday(5) pressed a digit with no weapon behind it at all, silently leaving
+ * whatever was already in hand.
  */
 export const NUMBER_KEY_WEAPONS = [PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX];
 
@@ -156,6 +161,29 @@ export const DEFAULT_TUNING = {
   // counts as "plausible" before `#checkRotationAnomaly` flags it — see that
   // method's doc comment.
   ROTATION_ANOMALY_SLACK: 4,
+  // --- ranged weapon selection (see `scoreRangedWeapon`) ---------------------
+  // Distance at which a `SPREAD_REFERENCE_PX`-wide cone is assumed to put only
+  // one pellet on a single target; wider cones reach that point sooner.
+  // Mirrors src/engine: SCENE_HEIGHT 400, sprites.ts ENEMY_SIZE 0.7 /
+  // ELITE_SCALE 1.5 / EDGE_CASE_SCALE 0.55, raycaster.ts FOG_FAR 14, and
+  // engine.ts MAX_CONE_DEVIATION_PX 38. Together these are what let the bot
+  // judge whether a shot can actually reach and connect.
+  SCENE_HEIGHT_PX: 400,
+  ENEMY_SPRITE_SIZE: 0.7,
+  ELITE_SPRITE_SCALE: 1.5,
+  EDGE_CASE_SPRITE_SCALE: 0.55,
+  FOG_FAR_TILES: 14,
+  MAX_CONE_DEVIATION_PX: 38,
+  // Seconds-equivalent of burning an entire ammo reserve on one target, before
+  // the profile's own `ammoThrift` multiplier. Sets the exchange rate between
+  // "kill it faster" and "still have ammo later".
+  AMMO_BURN_PENALTY_SEC: 12,
+  // Used when the target's HP is unknown (e.g. aiming at a mine).
+  ASSUMED_TARGET_HP: 60,
+  DEFAULT_AMMO_THRIFT: 1,
+  // Two weapons scoring within this many seconds of each other are treated as
+  // equivalent, so `weaponPriority` (profile personality) breaks the tie.
+  WEAPON_SCORE_TIEBREAK_EPS: 0.15,
   DOOR_OPEN_TICKS: 10,
   // Same total push duration as DOOR_OPEN_TICKS * VIRTUAL_STEP_MS (500ms),
   // just in much finer steps — see `holdForwardFine`'s doc comment.
@@ -178,6 +206,10 @@ export const DEFAULT_TUNING = {
   // which actually gates on `max(this, ENGINE_MOVE_SPEED * stepMs/1000)`,
   // not this raw value alone — see that branch's own doc comment for why.
   MELEE_CLOSE_MIN_DISTANCE: 0.4,
+  // How far the bot will walk to trade a swing for a bullet against a target a
+  // single swing kills (Edge Cases are 10-15 HP). Short on purpose: closing is
+  // only free when the target dies on arrival.
+  MELEE_APPROACH_RADIUS: 3.5,
   // Below this distance, stop advancing while turning to line up a ranged
   // shot — see `decide`'s ranged-aim branch.
   MIN_RANGED_APPROACH_DISTANCE: 3,
@@ -205,6 +237,18 @@ export const DEFAULT_TUNING = {
   // How far a clustered threat needs to be before rocket splash is worth
   // preferring — see `pickRangedWeapon`.
   ROCKET_CLUSTER_MIN_DIST: 5, // ROCKET_SAFE_DISTANCE + 1
+  // Enemy chase speeds, mirroring `src/engine/enemyAi.ts` (MOVEMENT_SPEED 1.7,
+  // EDGE_CASE_SPEED_MULTIPLIER 2.2). Needed to work out how much of a rocket's
+  // flight time a target spends closing the gap.
+  ENEMY_CHASE_SPEED: 1.7,
+  EDGE_CASE_CHASE_SPEED: 3.74,
+  // Mirrors `src/engine/projectiles.ts`'s PROJECTILE_SPEED — a rocket is not
+  // instantaneous, and everything below turns on that.
+  ROCKET_TRAVEL_SPEED: 5,
+  // Seconds-equivalent of firing a rocket with no safety margin at all, before
+  // the profile's `selfHarmAversion` multiplier.
+  SELF_HARM_PENALTY_SEC: 25,
+  DEFAULT_SELF_HARM_AVERSION: 1,
   // MINE_REALIGN_EPS assumes precise per-tick rotation, only exact under a
   // virtual clock — see `decide`'s mine-realignment comment for why this
   // matters more in headless mode.
@@ -657,6 +701,180 @@ export function findDangerousMine(mines, player, abandoned, reactionBufferTiles 
 // Weapon selection
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-weapon economics, mirroring `src/engine/weapons.ts`'s `WEAPONS` entries —
+ * plain literals rather than importing that TS module, the same convention the
+ * tile/speed constants above use (this is a plain Node script, not bundled).
+ *
+ * `fireIntervalSec: null` means semi-auto: the engine imposes no rate cap, so
+ * the bot's own `profile.fireCooldownMs` is what paces it (see that field's
+ * doc comment). Melee weapons (knife, Toolchain) are deliberately absent —
+ * `pickRangedWeapon` only ever chooses among ranged ones.
+ */
+export const WEAPON_STATS = {
+  [PISTOL_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 22, ammoPerShot: 1, ammoType: "bullets", spreadPx: 0, fireIntervalSec: null },
+  [SHOTGUN_WEAPON_INDEX]: { pellets: 7, damagePerPellet: 18, ammoPerShot: 4, ammoType: "bullets", spreadPx: 70, fireIntervalSec: null },
+  // gdb tightens the shared cone deliberately, so it stays usable at range
+  // despite low per-shot damage (`maxConeDeviationPx` in weapons.ts).
+  [GDB_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 12, ammoPerShot: 1, ammoType: "smg", spreadPx: 0, fireIntervalSec: 0.09, maxConeDeviationPx: 20 },
+  [GHIDRA_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 150, ammoPerShot: 1, ammoType: "rockets", spreadPx: 0, fireIntervalSec: 1.1 },
+  // `maxRange` mirrors `src/engine/weapons.ts` — Friday Hotfix is the only
+  // weapon with a hard cutoff (a flame jet, not a falloff curve). Past it the
+  // shot simply does not reach, so it must not be scored as a candidate.
+  [FRIDAY_HOTFIX_WEAPON_INDEX]: { pellets: 6, damagePerPellet: 8, ammoPerShot: 2.5, ammoType: "gas", spreadPx: 45, fireIntervalSec: 0.1, maxRange: 3.5 },
+};
+
+/**
+ * Melee weapons, same shape as `WEAPON_STATS` but kept separate because
+ * `pickRangedWeapon` must never return one. `Space` swings whatever melee
+ * weapon is owned (the Toolchain *replaces* the knife on pickup rather than
+ * occupying its own slot), so there is nothing to switch to — this table
+ * exists to reason about whether closing to melee is worth it.
+ */
+export const MELEE_WEAPON_STATS = {
+  [KNIFE_WEAPON_INDEX]: { damagePerPellet: 40, fireIntervalSec: null },
+  [TOOLCHAIN_WEAPON_INDEX]: { damagePerPellet: 80, fireIntervalSec: 0.35 },
+};
+
+/** Damage one melee swing lands, given whichever melee weapon is owned. */
+export function meleeDamage(player) {
+  return player.ownedWeapons?.includes(TOOLCHAIN_WEAPON_INDEX)
+    ? MELEE_WEAPON_STATS[TOOLCHAIN_WEAPON_INDEX].damagePerPellet
+    : MELEE_WEAPON_STATS[KNIFE_WEAPON_INDEX].damagePerPellet;
+}
+
+/** Whether any ranged weapon the player owns still has ammo. */
+export function hasAnyRangedAmmo(player) {
+  return Object.keys(WEAPON_STATS).some((i) => player.ownedWeapons?.includes(Number(i)) && hasAmmoFor(player, Number(i)));
+}
+
+/**
+ * Whether to close the remaining distance and swing instead of shooting.
+ *
+ * Two cases, both about ammo economy rather than damage:
+ *
+ * - **Last resort.** Every ranged weapon is dry. Firing an empty gun does
+ *   nothing at all, so without this the bot stands in front of a threat
+ *   pulling a trigger that no longer works.
+ * - **Edge cases.** An Edge Case enemy has 10-15 HP and dies to a single swing
+ *   (knife 40, Toolchain 80). Spending bullets on one is pure waste, and melee
+ *   also returns lifesteal, which is the biggest survivability lever the bot
+ *   has. Only worth crossing a short gap for, hence the radius.
+ *
+ * Deliberately not "melee whenever it out-scores the gun": closing on a
+ * healthy ranged enemy trades a safe distance for damage taken, which is the
+ * trade `MELEE_RANGE` already declines everywhere else.
+ */
+export function shouldCloseToMelee(threat, player, profile, tuning = DEFAULT_TUNING) {
+  if (!threat) return false;
+  if (threat.dist <= tuning.MELEE_RANGE) return true;
+  if (!hasAnyRangedAmmo(player)) return threat.dist <= profile.engageRadius;
+  const oneSwingKills = (threat.hp ?? Infinity) <= meleeDamage(player);
+  return (threat.edgeCase || oneSwingKills) && threat.dist <= tuning.MELEE_APPROACH_RADIUS;
+}
+
+/** Ammo currently held for `weaponIndex`, or `Infinity` for a weapon that
+ * costs none. */
+export function ammoHeldFor(player, weaponIndex) {
+  const type = WEAPON_STATS[weaponIndex]?.ammoType;
+  return type ? (player.ammo?.[type] ?? 0) : Infinity;
+}
+
+/**
+ * Damage one trigger pull of `weaponIndex` is expected to land on a single
+ * target at `dist` tiles.
+ *
+ * Multi-pellet weapons only put their whole spread on one target up close;
+ * past that the cone is wider than the target and the extra pellets are spent
+ * on air. Modelled as a linear falloff from all pellets at point blank to one
+ * pellet at `SPREAD_FALLOFF_TILES`, scaled by how wide the weapon's cone is.
+ * This is an approximation of the engine's real per-pellet raycast, not a
+ * derivation of it — its job is to rank weapons against each other, and the
+ * A/B is what validates the ranking.
+ */
+export function expectedDamagePerShot(weaponIndex, dist, tuning = DEFAULT_TUNING, target = null) {
+  const w = WEAPON_STATS[weaponIndex];
+  if (!w) return 0;
+  if (w.maxRange !== undefined && (dist ?? 0) > w.maxRange) return 0;
+  const d = Math.max(0.1, dist ?? 0);
+
+  // How wide the target actually is on screen, from `projectEnemy`:
+  // `size = |SCENE_HEIGHT / depth| * ENEMY_SIZE * scale`, so half-width in
+  // pixels is that over two. Elites project larger and Edge Cases smaller,
+  // which is a real part of how hard each is to hit.
+  const scale = target?.elite ? tuning.ELITE_SPRITE_SCALE : target?.edgeCase ? tuning.EDGE_CASE_SPRITE_SCALE : 1;
+  const halfWidthPx = (tuning.SCENE_HEIGHT_PX * tuning.ENEMY_SPRITE_SIZE * scale) / (2 * d);
+
+  // Cone of Fire, exactly as the engine computes it: deviation grows with
+  // `(range / FOG_FAR)³` up to the weapon's own maximum. Cubic, so medium
+  // range stays reliable and only the last stretch before the fog line
+  // really opens up.
+  const rangeFraction = Math.min(1, d / tuning.FOG_FAR_TILES);
+  const coneDeviationPx = rangeFraction ** 3 * (w.maxConeDeviationPx ?? tuning.MAX_CONE_DEVIATION_PX);
+
+  // Multi-pellet weapons additionally scatter across their own spread.
+  const spreadHalfPx = (w.spreadPx ?? 0) / 2;
+  const scatterPx = spreadHalfPx + coneDeviationPx;
+
+  // Fraction of pellets expected to land: the target's angular width against
+  // the total scatter. An approximation of the engine's per-pellet raycast,
+  // not a derivation of it — its job is to rank weapons against each other.
+  const hitFraction = scatterPx <= 0 ? 1 : Math.max(0, Math.min(1, halfWidthPx / scatterPx));
+  return w.pellets * w.damagePerPellet * hitFraction;
+}
+
+/**
+ * Rank a ranged weapon for killing a specific target: how long it takes, and
+ * how much of a finite reserve it burns doing so.
+ *
+ * Returns seconds — a *cost*, lower is better — where the ammo term is
+ * converted into seconds-equivalent so the two axes are comparable. A profile
+ * dials the exchange rate via `ammoThrift`: a thrifty profile pays real time to
+ * conserve, a spendthrift one burns the reserve to end the fight sooner.
+ *
+ * The two axes genuinely conflict, which is why a fixed priority list cannot
+ * express this: the shotgun is both faster *and* more damage-per-bullet than
+ * the pistol up close, while ghidra is the most ammo-efficient weapon in the
+ * game (150/rocket) but slow, and Friday Hotfix is the fastest killer and the
+ * most wasteful.
+ */
+export function scoreRangedWeapon(weaponIndex, { targetHp, dist, player, profile, threat = null, tuning = DEFAULT_TUNING }) {
+  const w = WEAPON_STATS[weaponIndex];
+  if (!w) return Infinity;
+  // A hard `maxRange` is not a falloff — the shot doesn't arrive at all.
+  // Without this the flamethrower's huge close-range DPS made it the top pick
+  // at any distance: measured on demo-campaign level 12 as 74 shots, 16 hits
+  // and *zero* kills, burning gas on a target it could not reach.
+  if (w.maxRange !== undefined && (dist ?? 0) > w.maxRange) return Infinity;
+  const dmg = expectedDamagePerShot(weaponIndex, dist, tuning, threat);
+  if (dmg <= 0) return Infinity;
+  const shots = Math.max(1, Math.ceil((targetHp ?? tuning.ASSUMED_TARGET_HP) / dmg));
+  const secPerShot = w.fireIntervalSec ?? (profile.fireCooldownMs ?? tuning.VIRTUAL_STEP_MS) / 1000;
+  const killSec = shots * secPerShot;
+
+  // Self-inflicted damage is a cost like any other: a weapon that takes 84 HP
+  // off you is not "efficient", however few rockets it spends. Graded rather
+  // than a hard gate, so a thin safety margin makes ghidra unattractive
+  // *before* it becomes outright unsafe.
+  let selfHarmSec = 0;
+  if (weaponIndex === GHIDRA_WEAPON_INDEX) {
+    const effective = rocketDetonationDistanceAfterClosing(dist ?? 0, threat, tuning);
+    const margin = (effective - tuning.ROCKET_SAFE_DISTANCE) / Math.max(1e-6, tuning.ROCKET_SAFE_DISTANCE);
+    const risk = Math.max(0, Math.min(1, 1 - margin));
+    selfHarmSec = (profile.selfHarmAversion ?? tuning.DEFAULT_SELF_HARM_AVERSION) * risk * tuning.SELF_HARM_PENALTY_SEC;
+  }
+
+  const held = ammoHeldFor(player, weaponIndex);
+  if (!Number.isFinite(held)) return killSec + selfHarmSec; // free to fire
+  const cost = shots * w.ammoPerShot;
+  // Fraction of what's actually in reserve, so "expensive" is relative to
+  // supply rather than an absolute number — 19 rockets is scarce, 700 smg is
+  // not, and the same shot count means very different things against each.
+  const burn = cost / Math.max(1, held);
+  const thrift = profile.ammoThrift ?? tuning.DEFAULT_AMMO_THRIFT;
+  return killSec + thrift * burn * tuning.AMMO_BURN_PENALTY_SEC + selfHarmSec;
+}
+
 export function hasAmmoFor(player, weaponIndex) {
   if (weaponIndex === 0 || weaponIndex === 1) return player.ammo.bullets > 0;
   if (weaponIndex === GDB_WEAPON_INDEX) return player.ammo.smg > 0;
@@ -697,9 +915,31 @@ export function nearestRocketDetonationDistance(player, enemies, tuning = DEFAUL
  * sits close enough to the flight path to trigger an earlier, closer
  * detonation than expected.
  */
-export function rocketAimUnsafe(player, enemies, aimDist, isMineTarget, tuning = DEFAULT_TUNING) {
+/**
+ * How close the rocket's own target will have got by the time it lands.
+ *
+ * A rocket is not instantaneous: it covers `aimDist` at
+ * `ROCKET_TRAVEL_SPEED`, and a chasing enemy spends that whole flight walking
+ * *toward* the shooter. An Edge Case closes 3.74 tiles/sec, so a shot taken at
+ * a "safe" 5 tiles detonates barely a tile away.
+ *
+ * This is why a single static `ROCKET_SAFE_DISTANCE` was not enough once
+ * `pickRangedWeapon` started choosing ghidra on its merits: measured directly,
+ * `selfRocket` damage went from 0 across an entire campaign to 84 and 99 in
+ * consecutive runs, one of them the fatal blow.
+ */
+export function rocketDetonationDistanceAfterClosing(aimDist, threat, tuning = DEFAULT_TUNING) {
+  if (aimDist === null || aimDist === undefined) return aimDist;
+  const flightSec = aimDist / tuning.ROCKET_TRAVEL_SPEED;
+  const closingSpeed = threat?.aggroed === false ? 0 : threat?.edgeCase ? tuning.EDGE_CASE_CHASE_SPEED : tuning.ENEMY_CHASE_SPEED;
+  return aimDist - closingSpeed * flightSec;
+}
+
+export function rocketAimUnsafe(player, enemies, aimDist, isMineTarget, tuning = DEFAULT_TUNING, threat = null) {
   if (isMineTarget) return true;
   if (aimDist !== null && aimDist < tuning.ROCKET_SAFE_DISTANCE) return true;
+  // The target is not where it will be when the rocket arrives.
+  if (aimDist !== null && rocketDetonationDistanceAfterClosing(aimDist, threat, tuning) < tuning.ROCKET_SAFE_DISTANCE) return true;
   return nearestRocketDetonationDistance(player, enemies, tuning) < tuning.ROCKET_SAFE_DISTANCE;
 }
 
@@ -724,9 +964,10 @@ export function pickRangedWeapon(player, profile, enemies, threat, mineTarget, t
       } else if (
         threat.dist >= tuning.ROCKET_CLUSTER_MIN_DIST &&
         profile.rocketForDistantClusters &&
+        !threat.edgeCase && // see the Edge Case note in the scoring loop below
         player.ownedWeapons.includes(GHIDRA_WEAPON_INDEX) &&
         hasAmmoFor(player, GHIDRA_WEAPON_INDEX) &&
-        !rocketAimUnsafe(player, enemies, threat.dist, false, tuning)
+        !rocketAimUnsafe(player, enemies, threat.dist, false, tuning, threat)
       ) {
         return player.weaponIndex === GHIDRA_WEAPON_INDEX ? null : GHIDRA_WEAPON_INDEX;
       }
@@ -739,13 +980,41 @@ export function pickRangedWeapon(player, profile, enemies, threat, mineTarget, t
   // when it's judged "too close" (a rocket flies straight through a mine to
   // an unaccounted-for wall — see `rocketAimUnsafe`'s doc comment).
   const aimDist = threat ? threat.dist : mineTarget ? mineTarget.dist : null;
+  // Rank by what the shot actually costs to make, not by a fixed list.
+  //
+  // A static `weaponPriority` cannot express the real trade: the shotgun is
+  // both faster and more damage-per-bullet than the pistol up close, ghidra is
+  // the most ammo-efficient weapon in the game but slow, and Friday Hotfix is
+  // the fastest killer and the most wasteful. Which of those is *right*
+  // depends on the target's HP and on how much of the relevant reserve the
+  // kill would burn — measured directly on demo-campaign level 12, where the
+  // bot spent 44s of pistol on a 4400 HP Elite while holding 609 gas that
+  // would have ended it in 9s.
+  //
+  // `weaponPriority` is kept as the tiebreak, so a profile's personality still
+  // decides between options the economics rate as equivalent.
+  const targetHp = threat?.hp ?? (mineTarget ? tuning.ASSUMED_TARGET_HP : tuning.ASSUMED_TARGET_HP);
+  let best = null;
+  let bestScore = Infinity;
   for (const idx of profile.weaponPriority) {
-    if (idx === GHIDRA_WEAPON_INDEX && rocketAimUnsafe(player, enemies, aimDist, Boolean(mineTarget), tuning)) continue;
+    // An Edge Case never warrants a rocket: they are 10-15 HP "tiny
+    // annoyances" by design, so a 150-damage round is pure waste — it spends
+    // the scarcest ammo in the game and buys splash risk for a target a single
+    // melee swing already kills.
+    if (idx === GHIDRA_WEAPON_INDEX && threat?.edgeCase) continue;
+    if (idx === GHIDRA_WEAPON_INDEX && rocketAimUnsafe(player, enemies, aimDist, Boolean(mineTarget), tuning, threat)) continue;
     if (!player.ownedWeapons.includes(idx)) continue;
     if (!hasAmmoFor(player, idx)) continue;
-    return player.weaponIndex === idx ? null : idx;
+    const score = scoreRangedWeapon(idx, { targetHp, dist: aimDist ?? 0, player, profile, threat, tuning });
+    // Strictly-less keeps `weaponPriority` order as the tiebreak, since the
+    // list is walked in order.
+    if (score < bestScore - tuning.WEAPON_SCORE_TIEBREAK_EPS) {
+      bestScore = score;
+      best = idx;
+    }
   }
-  return null;
+  if (best === null) return null;
+  return player.weaponIndex === best ? null : best;
 }
 
 // ---------------------------------------------------------------------------
@@ -1013,7 +1282,7 @@ export function decide(world, memory, config) {
     // is. Gated on `player.meleeWouldHit` (the engine's own hit test)
     // rather than a fixed angle tolerance, since a melee swing's on-screen
     // hit window shrinks with distance/enemy size.
-    if (threat && threat.dist <= tuning.MELEE_RANGE) {
+    if (shouldCloseToMelee(threat, player, profile, tuning)) {
       if (!player.meleeWouldHit) {
         moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
         turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, currentAngle, burstCtx);

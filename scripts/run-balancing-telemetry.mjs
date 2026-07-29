@@ -195,6 +195,14 @@ export const PROFILES = {
     // targeting too (see `pickRangedWeapon` in bot.mjs) — sticks to the
     // shotgun for a distant cluster instead of reaching for rockets.
     rocketForDistantClusters: false,
+    // Exchange rate between "kill it faster" and "still have ammo later", used
+    // by `scoreRangedWeapon`. Casual is thrifty: it accepts a slower kill
+    // rather than burn down a scarce reserve, matching the same conservative
+    // streak as its 0.75 healthDetourThreshold.
+    ammoThrift: 1.6,
+    // Restores the hesitancy the old ghidra-last `weaponPriority` used to
+    // encode: a casual player is wary of a self-splash-capable launcher.
+    selfHarmAversion: 2.2,
     // See `botRotSpeedMul`'s doc comment (engine.ts's `rotSpeedMultiplier`)
     // — approximates a realistic *mouse* turn speed for this skill tier
     // rather than the real Q/E keyboard rate, since mouse-look itself isn't
@@ -213,6 +221,10 @@ export const PROFILES = {
     healthDetourThreshold: 0.5,
     proactiveMineDisarm: true,
     rocketForDistantClusters: true,
+    // Aggressive: spends the reserve to end fights sooner — the same streak
+    // as its 160ms trigger and 0.5 healthDetourThreshold.
+    ammoThrift: 0.4,
+    selfHarmAversion: 0.9,
     // ~3.5x keyboard (~9.1 rad/sec, ~520°/sec) — a comfortable, practiced
     // enthusiast's mouse turn speed.
     rotSpeedMultiplier: 3.5,
@@ -230,6 +242,11 @@ export const PROFILES = {
     healthDetourThreshold: 0.25,
     proactiveMineDisarm: true,
     rocketForDistantClusters: true,
+    // Exchange rate between "kill it faster" and "still have ammo later", used
+    // by `scoreRangedWeapon`. Pro sits between the other two: it optimises the
+    // trade rather than favouring either side of it.
+    ammoThrift: 0.9,
+    selfHarmAversion: 1.3,
     // ~5x keyboard (~13 rad/sec, ~745°/sec) — a fast, high-sensitivity
     // competitive flick-turn, still within real human mouse-aim territory.
     rotSpeedMultiplier: 5,
