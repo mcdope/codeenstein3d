@@ -457,6 +457,23 @@ export class Bot {
    * should ever produce. Doesn't try to prevent the underlying cause
    * (unknown) — only makes any recurrence immediately visible in the log.
    */
+  /**
+   * Stamp provenance onto the `pendingTurnCheck` that `turnBurstMs` just
+   * recorded, so a later `#checkRotationAnomaly` can say *where* the turn came
+   * from and how long the key was really held — not just the burst that was
+   * computed for it. Pure diagnostics; never read back by decision logic.
+   */
+  #attributeTurnCheck({ origin, branch, turnKey, holds, durationMs }) {
+    const pending = this.mineMemory?.pendingTurnCheck;
+    if (!pending) return;
+    pending.origin = origin;
+    pending.branch = branch;
+    pending.turnKey = turnKey;
+    pending.actualHoldMs = turnKey && holds ? (holds.get(turnKey) ?? null) : (durationMs ?? null);
+    pending.durationMs = durationMs;
+    pending.setAtSimTimeMs = this.simTimeMs;
+  }
+
   #checkRotationAnomaly(player, currentAngle) {
     const pending = this.mineMemory?.pendingTurnCheck;
     if (!pending) return;
@@ -466,7 +483,11 @@ export class Bot {
     if (actual > Math.max(expectedMax, 0.3)) {
       console.log(
         `[nav-warn] implausible rotation: turned ${actual.toFixed(2)}rad in one decision ` +
-          `(requested turnBurst=${pending.turnBurstMs.toFixed(0)}ms, expected <=${expectedMax.toFixed(2)}rad) ` +
+          `(computed turn ${pending.turnBurstMs.toFixed(1)}ms, key actually held ${pending.actualHoldMs == null ? "?" : pending.actualHoldMs.toFixed(1) + "ms"}, ` +
+          `expected <=${expectedMax.toFixed(2)}rad) ` +
+          `[origin=${pending.origin ?? "?"} branch=${pending.branch ?? "?"} turnKey=${pending.turnKey ?? "-"} ` +
+          `decision=${pending.durationMs == null ? "?" : pending.durationMs.toFixed(0) + "ms"} ` +
+          `elapsedSim=${(this.simTimeMs - (pending.setAtSimTimeMs ?? this.simTimeMs)).toFixed(0)}ms] ` +
           `at (${player.x.toFixed(2)},${player.y.toFixed(2)}) — not a stuck state, self-corrects next tick, logged for diagnosis.`,
       );
     }
@@ -884,6 +905,19 @@ export class Bot {
     // `profile.fireCooldownMs`. It must be stamped before `applyAction`
     // advances `simTimeMs`, so the cooldown measures from the decision that
     // fired, exactly as it did when this was all one method.
+    // Attribute the rotation check to the decision that produced it. Without
+    // this the "[nav-warn] implausible rotation" line reports only the burst
+    // `turnBurstMs` *recorded*, which is not the hold actually dispatched —
+    // several branches widen `turnBurst` afterwards (see the stall-strafe note
+    // in `combatPolicy.mjs`), so the message read as physically impossible
+    // ("turned 0.45rad, requested 0ms") and cost real time to explain twice.
+    this.#attributeTurnCheck({
+      origin: "tick",
+      branch: intent.branch ?? intent.trace?.branch ?? "?",
+      turnKey: intent.holds?.has("KeyE") ? "KeyE" : intent.holds?.has("KeyQ") ? "KeyQ" : null,
+      holds: intent.holds,
+      durationMs: intent.durationMs ?? null,
+    });
     if (intent.firedSemiAuto) this.lastFireSimTimeMs = this.simTimeMs;
     this.#recordTrace(intent.trace);
     return this.applyAction(intent);
@@ -1031,6 +1065,10 @@ export class Bot {
           stepMs: this.stepMs,
           memory: this.mineMemory,
         });
+        // `faceAngle` drives `applyAction` directly in a loop and never calls
+        // `#checkRotationAnomaly`, so a check it records survives until some
+        // later `tick()` — which is why an elapsed-time field matters here.
+        this.#attributeTurnCheck({ origin: "faceAngle", branch: "faceAngle", turnKey: [...moveKeys][0] ?? null, holds: null, durationMs: turnBurst });
         ({ player, enemies, mines } = await this.applyAction(uniformIntent(moveKeys, turnBurst, this.stepMs, {})));
         continue;
       }
