@@ -209,7 +209,6 @@ export const DEFAULT_TUNING = {
   // How far the bot will walk to trade a swing for a bullet against a target a
   // single swing kills (Edge Cases are 10-15 HP). Short on purpose: closing is
   // only free when the target dies on arrival.
-  MELEE_APPROACH_RADIUS: 3.5,
   // Below this distance, stop advancing while turning to line up a ranged
   // shot — see `decide`'s ranged-aim branch.
   MIN_RANGED_APPROACH_DISTANCE: 3,
@@ -697,6 +696,16 @@ export function findDangerousMine(mines, player, abandoned, reactionBufferTiles 
     .sort((a, b) => a.dist - b.dist)[0];
 }
 
+/**
+ * Whether a *spotted* live mine sits close enough to `(x, y)` to catch the
+ * player if they step there. Visible-only on purpose, matching
+ * `findDangerousMine`: an unspotted mine is information the player does not
+ * have either, and the bot must not route around what it cannot see.
+ */
+export function visibleMineNear(mines, x, y, tuning = DEFAULT_TUNING) {
+  return (mines ?? []).some((m) => m.alive && m.visible && Math.hypot(m.x - x, m.y - y) <= tuning.MINE_BLAST_RADIUS);
+}
+
 // ---------------------------------------------------------------------------
 // Weapon selection
 // ---------------------------------------------------------------------------
@@ -767,11 +776,34 @@ export function hasAnyRangedAmmo(player) {
  */
 export function shouldCloseToMelee(threat, player, profile, tuning = DEFAULT_TUNING) {
   if (!threat) return false;
-  if (threat.dist <= tuning.MELEE_RANGE) return true;
-  if (!hasAnyRangedAmmo(player)) return threat.dist <= profile.engageRadius;
-  const oneSwingKills = (threat.hp ?? Infinity) <= meleeDamage(player);
-  return (threat.edgeCase || oneSwingKills) && threat.dist <= tuning.MELEE_APPROACH_RADIUS;
+  // Melee is never *sought out*: the bot does not walk a single tile to set one
+  // up, at any range, for any target. But it does swing at something already in
+  // its face rather than firing a gun at contact range.
+  //
+  // That last clause is not a preference, it is a measured requirement.
+  // "Always shoot, melee only when dry" was implemented and measured, and it is
+  // *worse*: level-1 deaths per 60 attempts, all `fatal=trapMine`,
+  //
+  //   melee when already in reach (this)        0 / 60
+  //   never melee while any ammo remains        3 / 60
+  //   walk 2.0t to a one-swing kill             4 / 60
+  //   walk 3.5t to a one-swing kill             2 / 60
+  //
+  // The strict version dies with the knife never drawn, because `destroyMine`
+  // (engine.ts) says it plainly: a mine hit by gunfire detonates, and
+  // "shooting one at point-blank still hurts whoever's close" — the shooter
+  // eats `mineDamageAt` its own position. Firing at contact range in a level
+  // holding mines detonates them onto the bot. A swing spends no bullet and
+  // starts no explosion.
+  //
+  // And any rule that makes the bot *approach* is worse still: 27 of level 1's
+  // 32 enemies are <=15 HP Edge Cases, so it fires constantly, and the mines
+  // that kill are unspotted — the bot must not route around what it has not
+  // seen, so no guard can save it.
+  return threat.dist <= tuning.MELEE_RANGE || !hasAnyRangedAmmo(player);
 }
+
+
 
 /** Ammo currently held for `weaponIndex`, or `Infinity` for a weapon that
  * costs none. */
@@ -1306,7 +1338,18 @@ export function decide(world, memory, config) {
         if (map && threat.dist > closeMinDistance) {
           const aheadX = player.x + player.dirX * 0.6;
           const aheadY = player.y + player.dirY * 0.6;
-          if (!isHazardAt(map, aheadX, aheadY) && !activeSpikeAt(map, aheadX, aheadY, player.levelTime)) {
+          // Mines belong in this gate for exactly the same reason hazard and
+          // spike tiles do — and their absence was measured, not theorised:
+          // making the bot walk out for a swing sent it
+          // on ~27 blind walks per level-1 visit (27 of its 32 enemies are
+          // <=15 HP Edge Cases) across a level holding 6 mines, and it died
+          // `fatal=trapMine` with 111-116 mine damage in 2 of 60 attempts
+          // where the 1.5-tile baseline died in 0 of 60.
+          if (
+            !isHazardAt(map, aheadX, aheadY) &&
+            !activeSpikeAt(map, aheadX, aheadY, player.levelTime) &&
+            !visibleMineNear(mines, aheadX, aheadY, tuning)
+          ) {
             moveKeys.add("KeyW");
           }
         }

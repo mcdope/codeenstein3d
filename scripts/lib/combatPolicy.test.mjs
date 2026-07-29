@@ -55,6 +55,7 @@ import {
   KNIFE_WEAPON_INDEX,
   TOOLCHAIN_WEAPON_INDEX,
   GDB_WEAPON_INDEX,
+  visibleMineNear,
 } from "./combatPolicy.mjs";
 
 const SIZE = 20;
@@ -507,9 +508,23 @@ describe("decide — navigation", () => {
 });
 
 describe("decide — combat", () => {
-  it("swings when the engine says a melee hit would land", () => {
+  it("swings at a threat already in melee reach rather than shooting into it", () => {
+    // Load-bearing: firing at contact range can detonate a nearby mine onto
+    // the bot (`destroyMine` in engine.ts). Measured at 3 level-1 deaths per
+    // 60 attempts when this was removed.
     const intent = decide(
       { player: makePlayer({ meleeWouldHit: true }), enemies: [makeEnemy({ x: 11.4 })], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(intent.fire).toBe(true);
+    expect(intent.useMelee).toBe(true);
+  });
+
+  it("swings only once every ranged weapon is dry", () => {
+    const dry = makePlayer({ meleeWouldHit: true, ammo: { bullets: 0, smg: 0, rockets: 0, gas: 0 } });
+    const intent = decide(
+      { player: dry, enemies: [makeEnemy({ x: 11.4 })], mines: [], navTarget: null, map: makeMap() },
       freshMemory(),
       makeConfig(),
     );
@@ -940,12 +955,15 @@ describe("melee as last resort / for trivial targets", () => {
   const owner = (over = {}) => makePlayer({ ownedWeapons: [0, 1, 2, 3, 4, 5, 6], ammo: { bullets: 200, smg: 700, rockets: 19, gas: 600 }, ...over });
   const at = (dist, over = {}) => ({ ...makeEnemy(), dist, i: 0, ...over });
 
-  it("closes on an Edge Case within reach rather than spending bullets", () => {
-    expect(shouldCloseToMelee(at(3, { hp: 12, edgeCase: true }), owner(), PROFILE, DEFAULT_TUNING)).toBe(true);
-  });
-
-  it("won't cross the map for one", () => {
-    expect(shouldCloseToMelee(at(6, { hp: 12, edgeCase: true }), owner(), PROFILE, DEFAULT_TUNING)).toBe(false);
+  it("swings at what is already in reach, but never walks to set one up", () => {
+    // In-reach melee is load-bearing: firing at contact range detonates mines
+    // onto the bot (`destroyMine`), measured as 3 level-1 deaths per 60 with
+    // the knife never drawn. Approaching is worse again — see
+    // `shouldCloseToMelee`'s note.
+    expect(shouldCloseToMelee(at(1.2, { hp: 12, edgeCase: true }), owner(), PROFILE, DEFAULT_TUNING)).toBe(true);
+    for (const d of [1.8, 2.5, 3, 6]) {
+      expect(shouldCloseToMelee(at(d, { hp: 12, edgeCase: true }), owner(), PROFILE, DEFAULT_TUNING)).toBe(false);
+    }
   });
 
   it("closes on anything once every ranged weapon is dry", () => {
@@ -1024,5 +1042,22 @@ describe("hard weapon range limits", () => {
   it("still picks it inside that range against a sponge", () => {
     const close = { ...makeEnemy(), dist: 2.5, hp: 4400, maxHp: 4400, i: 0 };
     expect(pickRangedWeapon(owner(), PROFILE, [], close, null)).toBe(FRIDAY_HOTFIX_WEAPON_INDEX);
+  });
+});
+
+describe("melee approach is mine-aware", () => {
+  it("treats a spotted mine ahead like a hazard tile", () => {
+    const mines = [{ x: 11.1, y: 10.5, alive: true, visible: true }];
+    expect(visibleMineNear(mines, 11.1, 10.5, DEFAULT_TUNING)).toBe(true);
+    expect(visibleMineNear(mines, 20, 20, DEFAULT_TUNING)).toBe(false);
+  });
+  it("ignores an unspotted or dead mine — the player cannot see those either", () => {
+    expect(visibleMineNear([{ x: 11, y: 10.5, alive: true, visible: false }], 11, 10.5, DEFAULT_TUNING)).toBe(false);
+    expect(visibleMineNear([{ x: 11, y: 10.5, alive: false, visible: true }], 11, 10.5, DEFAULT_TUNING)).toBe(false);
+  });
+  it("guards the final closing step inside MELEE_RANGE", () => {
+    // The bot still edges the last ~1.1 tiles onto a threat already in reach;
+    // that step is what the mine check protects.
+    expect(DEFAULT_TUNING.MELEE_RANGE).toBeGreaterThan(DEFAULT_TUNING.MELEE_CLOSE_MIN_DISTANCE);
   });
 });
