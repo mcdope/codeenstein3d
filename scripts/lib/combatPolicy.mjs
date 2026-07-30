@@ -1570,6 +1570,15 @@ export function decide(world, memory, config) {
       `turnBurst=${turnBurst?.toFixed(0)} dodge=${dodgedBolt}`,
   );
 
+  // Recorded on every decision, not just the navigating ones: the question
+  // these answer is why `|delta|` fails to shrink across an oscillation run,
+  // and a combat interruption mid-run is part of that story. Always measured
+  // against `navTarget` (never the threat), so the series stays comparable
+  // tick to tick regardless of which sub-branch actually ran. `null` when
+  // there is no nav target — `faceAngle` passes none.
+  const navDelta = navTarget ? angleDelta(currentAngle, Math.atan2(navTarget.y - player.y, navTarget.x - player.x)) : null;
+  const navDist = navTarget ? Math.hypot(navTarget.x - player.x, navTarget.y - player.y) : null;
+
   // A real attack attempt counts as progress even if position doesn't
   // change, so only an unchanging position with no attack counts toward
   // the stall.
@@ -1610,6 +1619,8 @@ export function decide(world, memory, config) {
       fire: fire || useMelee,
       fireOnCooldown,
       dodgedBolt,
+      delta: navDelta,
+      navDist,
     },
   });
 }

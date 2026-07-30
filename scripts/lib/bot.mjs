@@ -148,6 +148,13 @@ const OSCILLATION_MIN_PATH_TILES = 2.0;
 // bot walking a corridor and back once has a ratio near 2; sustained
 // ping-ponging climbs well past this.
 const OSCILLATION_MIN_PATH_RATIO = 4;
+// How close to its nav target the bot has to get for that target to count as
+// *reached*. A hair above `ARRIVE_EPS` (0.15) and `TIGHT_ARRIVE_EPS` (0.05),
+// so a genuine arrival registers while merely passing nearby does not.
+const OSCILLATION_ARRIVAL_DIST = 0.35;
+// Reaching this many nav targets inside one run means the bot was working
+// through its route, not thrashing — see `reachedTargets`.
+const OSCILLATION_ARRIVALS_EXEMPT = 2;
 
 /**
  * Attribute one level's travelled distance to what the bot was *trying to do*
@@ -279,6 +286,79 @@ export function detectAnomalies(trace) {
 }
 
 /**
+ * Heading-error summary for one oscillation run, for the trace's `delta`
+ * (bearing error to `navTarget`) and `navDist` fields.
+ *
+ * Exists to separate two very different failure shapes that look identical in
+ * the position data alone:
+ * - `|delta|` shrinking while the sign alternates — the bot *is* converging,
+ *   just noisily, and the wobble is the cost of convergence rather than a
+ *   defect. Both attempted fixes so far assumed the opposite.
+ * - `|delta|` flat or growing across the run — genuinely not converging, which
+ *   is the only case where damping the sign could help.
+ *
+ * `navDist` comes along because the bearing to a waypoint swings faster the
+ * closer you stand to it, so a run spent hovering near its target explains a
+ * large `|delta|` without anything being wrong with the turn itself.
+ */
+function describeHeadingError(trace, runStart, runEnd) {
+  const deltas = [];
+  const dists = [];
+  for (let i = runStart; i < runEnd; i++) {
+    if (typeof trace[i].delta === "number") deltas.push(trace[i].delta);
+    if (typeof trace[i].navDist === "number") dists.push(trace[i].navDist);
+  }
+  if (deltas.length === 0) return "delta=n/a";
+  const abs = deltas.map(Math.abs);
+  const flips = deltas.slice(1).filter((d, i) => Math.sign(d) !== Math.sign(deltas[i])).length;
+  const firstHalf = abs.slice(0, Math.ceil(abs.length / 2));
+  const secondHalf = abs.slice(Math.ceil(abs.length / 2));
+  const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  const meanDist = dists.length > 0 ? mean(dists) : null;
+  return (
+    `|delta| ${mean(firstHalf).toFixed(3)}->${mean(secondHalf).toFixed(3)} ` +
+    `(min ${Math.min(...abs).toFixed(3)} max ${Math.max(...abs).toFixed(3)}) ` +
+    `signFlips=${flips}/${deltas.length - 1} ` +
+    `navDist=${meanDist === null ? "n/a" : meanDist.toFixed(2)}t`
+  );
+}
+
+/**
+ * How many distinct nav targets the bot actually *reached* during a run.
+ *
+ * This is what separates a wedge from the bot's ordinary gait, and getting it
+ * wrong is why this detector produced ~700 findings that were mostly nothing.
+ * `planRoute` emits one waypoint per tile, so a winding corridor gives a new
+ * target — often 1.5-2.7 rad off the current heading — every single tile.
+ * Above `MAX_WALK_WHILE_TURNING_RAD` the bot may not hold `KeyW`, so it stops,
+ * turns in place for 3-6 decisions, sprints one tile, and repeats. Measured on
+ * a real dump: 28% of ticks inside flagged runs were frozen mid-turn, and the
+ * turns themselves were textbook (-0.455 rad per decision, dead on target, no
+ * overshoot and no sign flip). Spatially that gait never leaves a 2-tile
+ * radius and its path/net ratio is 4-6x — it trips every other test here while
+ * being exactly what the bot is supposed to do.
+ *
+ * Counting arrivals fixes it without blinding the detector: a bot working
+ * through a route ticks targets off, while one circling something it cannot
+ * reach never closes on anything. Counted as falling *edges* past the
+ * threshold, so hovering around a single target can't inflate the count.
+ */
+function reachedTargets(slice) {
+  let reached = 0;
+  let inside = false;
+  for (const row of slice) {
+    if (typeof row.navDist !== "number") continue;
+    if (!inside && row.navDist <= OSCILLATION_ARRIVAL_DIST) {
+      reached += 1;
+      inside = true;
+    } else if (inside && row.navDist > OSCILLATION_ARRIVAL_DIST) {
+      inside = false;
+    }
+  }
+  return reached;
+}
+
+/**
  * Scans a level's trace for *oscillation*: the bot moving continuously while
  * making no net progress.
  *
@@ -294,6 +374,11 @@ export function detectAnomalies(trace) {
  * every position stays within `OSCILLATION_RADIUS_TILES` of the run's anchor,
  * the bot covered at least `OSCILLATION_MIN_PATH_TILES` of ground, and the
  * path was at least `OSCILLATION_MIN_PATH_RATIO`x its net displacement.
+ *
+ * A run in which the bot *reached* `OSCILLATION_ARRIVALS_EXEMPT` or more nav
+ * targets is excluded as route progress rather than thrashing — without that,
+ * the bot's normal stop-turn-sprint gait through a winding corridor dominates
+ * the findings (see `reachedTargets`).
  *
  * Engaged combat is excluded rather than filtered afterwards. Circling and
  * sidestepping while fighting is deliberate behaviour (see the combat strafe
@@ -324,6 +409,8 @@ export function detectOscillation(trace) {
       const engagedTicks = slice.filter((r) => r.threatDist !== null && r.threatDist !== undefined).length;
       const mostlyEngaged = engagedTicks / runLen > 0.5;
       const allWaitingOnSpike = slice.every((r) => r.waitingOnSpike);
+      // Working through the route, not stuck on it — see `reachedTargets`.
+      const makingRouteProgress = reachedTargets(slice) >= OSCILLATION_ARRIVALS_EXEMPT;
 
       let pathLength = 0;
       for (let j = 1; j < slice.length; j++) pathLength += Math.hypot(slice[j].x - slice[j - 1].x, slice[j].y - slice[j - 1].y);
@@ -334,7 +421,7 @@ export function detectOscillation(trace) {
       // oscillatory, not undefined.
       const ratio = netDisplacement > 0.01 ? pathLength / netDisplacement : Infinity;
 
-      if (!mostlyEngaged && !allWaitingOnSpike && pathLength >= OSCILLATION_MIN_PATH_TILES && ratio >= OSCILLATION_MIN_PATH_RATIO) {
+      if (!mostlyEngaged && !allWaitingOnSpike && !makingRouteProgress && pathLength >= OSCILLATION_MIN_PATH_TILES && ratio >= OSCILLATION_MIN_PATH_RATIO) {
         findings.push({
           type: "oscillation",
           startTick: runStart,
@@ -343,7 +430,8 @@ export function detectOscillation(trace) {
           detail:
             `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} ` +
             `travelled=${pathLength.toFixed(1)}t net=${netDisplacement.toFixed(2)}t ratio=${ratio === Infinity ? "inf" : ratio.toFixed(1)}x ` +
-            `hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)}`,
+            `hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)} ` +
+            describeHeadingError(trace, runStart, runEnd),
         });
       }
     }
@@ -462,6 +550,7 @@ export class Bot {
       driftDebug: opts.logger?.driftDebug,
       trace: opts.logger?.trace ?? false,
       navDiag: opts.logger?.navDiag ?? false,
+      traceDump: opts.logger?.traceDump ?? false,
     };
     this.map = null;
     this.mineMemory = null;
@@ -649,9 +738,32 @@ export class Bot {
     // Deliberately not `navDiag`-gated: a bot that paces instead of freezing is
     // exactly the case `balancing:scan` used to miss entirely, so it has to fire
     // on the default scan rather than only when someone already suspects it.
-    for (const f of detectOscillation(this.mineMemory.trace)) {
+    const oscillations = detectOscillation(this.mineMemory.trace);
+    for (const f of oscillations) {
       this.#tallyAnomaly(f);
       console.log(`  [anomaly] ${label} level ${levelIndex + 1}: ${f.type} (${f.ticks} ticks, decisions ${f.startTick}-${f.endTick}) ${f.detail}`);
+    }
+    // Raw per-decision rows for the level's *longest* oscillation run.
+    // Aggregates over these runs have now produced two wrong diagnoses in a
+    // row — the documented "the sign flips every decision" came from a
+    // hand-picked five-line excerpt and measures 14% across whole runs — so
+    // the next attempt should read one run end to end before naming a
+    // mechanism. One run per level keeps that readable; run with
+    // CONCURRENCY=1 or concurrent attempts interleave into nonsense.
+    if (this.logger.traceDump && oscillations.length > 0) {
+      const longest = oscillations.reduce((a, b) => (b.ticks > a.ticks ? b : a));
+      console.log(`  [trace] ${label} level ${levelIndex + 1}: longest oscillation, decisions ${longest.startTick}-${longest.endTick} (${longest.ticks} ticks)`);
+      for (let i = longest.startTick; i <= longest.endTick; i++) {
+        const t = this.mineMemory.trace[i];
+        console.log(
+          `    #${String(i).padStart(4)} pos=(${t.x.toFixed(2)},${t.y.toFixed(2)}) ` +
+            `delta=${t.delta === null || t.delta === undefined ? "  n/a" : (t.delta >= 0 ? "+" : "") + t.delta.toFixed(3)} ` +
+            `navDist=${t.navDist === null || t.navDist === undefined ? "n/a" : t.navDist.toFixed(2)} ` +
+            `burst=${t.turnBurst === undefined || t.turnBurst === null ? "  -" : t.turnBurst.toFixed(0).padStart(3)} ` +
+            `keys=[${t.moveKeys.join(",")}]`.padEnd(34) +
+            ` threat=${t.threatDist === null ? "  -" : t.threatDist.toFixed(1)} fire=${t.fire ? 1 : 0} spike=${t.waitingOnSpike ? 1 : 0} hp=${t.hpFrac.toFixed(2)}`,
+        );
+      }
     }
     // Not an anomaly — a standing breakdown of where the level's walking went,
     // so `routeEfficiencyScore` regressions can be attributed instead of only

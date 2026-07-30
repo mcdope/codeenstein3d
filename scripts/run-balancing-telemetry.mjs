@@ -93,6 +93,10 @@ const ANOMALY_SCAN = process.env.CODEENSTEIN_TELEMETRY_ANOMALY_SCAN === "1";
 // specifically for "a movement key (W/A/D) was held this tick, but position
 // didn't actually change since the last one".
 const NAV_DIAG = process.env.CODEENSTEIN_TELEMETRY_NAV_DIAG === "1";
+// Dumps the raw per-decision rows of each level's longest oscillation run.
+// Implies the trace. Run with CONCURRENCY=1 — concurrent attempts interleave
+// their rows into a misleadingly coherent-looking mess.
+const TRACE_DUMP = process.env.CODEENSTEIN_TELEMETRY_TRACE_DUMP === "1";
 // Opens a real, visible browser window and runs at a watchable real-time
 // pace instead of the virtual-clock fast-forward, so a human can actually
 // see what the bot is doing tick-by-tick. Combine with
@@ -486,8 +490,9 @@ export async function playRun(page, profile, levelPlans, label = "") {
       debugNav: DEBUG_NAV ? (msg) => console.log(msg) : undefined,
       wpDebug: process.env.CODEENSTEIN_WPDEBUG ? (msg) => console.log(msg) : undefined,
       driftDebug: process.env.CODEENSTEIN_DRIFTDEBUG ? (msg) => console.log(msg) : undefined,
-      trace: ANOMALY_SCAN || NAV_DIAG,
+      trace: ANOMALY_SCAN || NAV_DIAG || TRACE_DUMP,
       navDiag: NAV_DIAG,
+      traceDump: TRACE_DUMP,
     },
   });
 

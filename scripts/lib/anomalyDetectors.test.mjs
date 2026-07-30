@@ -112,6 +112,47 @@ describe("detectOscillation", () => {
   });
 });
 
+describe("detectOscillation — route progress vs thrashing", () => {
+  /** A run of `n` records ping-ponging in place, with a `navDist` series. */
+  const withNavDist = (dists) =>
+    dists.map((navDist, i) => rec({ x: i % 2 === 0 ? 10 : 11, y: 10, moveKeys: ["KeyW"], navDist, delta: 0.1 }));
+
+  it("exempts a run where the bot reached several nav targets", () => {
+    // The bot's ordinary gait: approach a waypoint, arrive, get the next one
+    // a tile away, turn, approach, arrive. Spatially confined and high
+    // path/net ratio, so every other test here fires — but it is exactly what
+    // the bot is supposed to do, and it was drowning the real findings.
+    const sawtooth = [];
+    for (let cycle = 0; cycle < 10; cycle++) sawtooth.push(1.0, 0.7, 0.4, 0.2, 1.05, 0.8);
+    expect(detectOscillation(withNavDist(sawtooth))).toEqual([]);
+  });
+
+  it("still flags a bot circling a target it never reaches", () => {
+    // navDist hovers around a tile out and never closes — the wedge this
+    // detector exists for.
+    const hovering = Array.from({ length: 60 }, (_, i) => 0.9 + (i % 2) * 0.15);
+    expect(detectOscillation(withNavDist(hovering)).length).toBeGreaterThan(0);
+  });
+
+  it("counts arrivals as falling edges, so hovering at one target can't exempt a run", () => {
+    // Sitting just inside the arrival radius for many ticks is one arrival,
+    // not many — otherwise a bot stuck *on* its target would exempt itself.
+    const parked = Array.from({ length: 60 }, () => 0.2);
+    expect(detectOscillation(withNavDist(parked)).length).toBeGreaterThan(0);
+  });
+
+  it("needs more than a single arrival to count as progress", () => {
+    const oneArrival = [...Array.from({ length: 30 }, () => 0.9), ...Array.from({ length: 30 }, () => 0.2)];
+    expect(detectOscillation(withNavDist(oneArrival)).length).toBeGreaterThan(0);
+  });
+
+  it("is unchanged for traces recorded before navDist existed", () => {
+    // Older traces have no navDist at all; they must behave exactly as before
+    // rather than silently becoming exempt.
+    expect(detectOscillation(pingPong(60)).length).toBeGreaterThan(0);
+  });
+});
+
 describe("the three detectors cover distinct failures", () => {
   const paced = pingPong(60);
   const frozen = Array.from({ length: 60 }, () => rec({ x: 10, y: 10, moveKeys: ["KeyW"] }));
