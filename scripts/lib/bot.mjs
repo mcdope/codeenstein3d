@@ -474,6 +474,16 @@ export class Bot {
     // level transition), reset only by constructing a fresh `Bot`.
     this.simTimeMs = 0;
     this.lastFireSimTimeMs = -Infinity;
+    // Anomaly findings accumulated across every level this Bot plays, as
+    // `{ [type]: { findings, ticks } }`. Exists because `detectOscillation`
+    // counts *events*, and an A/B judged on event count is unreadable: a
+    // change that makes the bot cover less ground can produce *more*
+    // qualifying windows while behaving better. `ticks` is the time-weighted
+    // figure to judge on. Console output alone couldn't answer that, which is
+    // how the first oscillation fix got graded on the wrong number.
+    this.anomalyTally = {};
+    // Denominator for `anomalyTally` — see `#tallyDecisions`.
+    this.anomalyDecisions = 0;
     // What errand the bot is currently on, stamped onto every trace record so
     // travelled distance can be attributed to intent rather than only to a
     // combat branch — see `summarizeActivityDistance` and `#withActivity`.
@@ -599,24 +609,48 @@ export class Bot {
     this.mineMemory.trace.push(entry);
   }
 
+  /** Adds one finding to `anomalyTally`, keeping both the event count and the
+   * time-weighted tick total — see the field's own comment for why the tick
+   * total is the one to grade a behaviour change on. */
+  #tallyAnomaly(finding) {
+    const row = (this.anomalyTally[finding.type] ??= { findings: 0, ticks: 0 });
+    row.findings += 1;
+    row.ticks += finding.ticks ?? 0;
+  }
+
+  /** Total decisions this Bot has recorded, accumulated per level so the
+   * anomaly tallies can be expressed as a *share of decisions*. Neither raw
+   * findings nor raw ticks are exposure-independent: a change that makes the
+   * bot finish levels faster lowers both without the behaviour improving at
+   * all. Measured on a real comparison — oscillation ticks/run fell 11.7%
+   * while level time fell 7.7%, so most of the apparent win was simply less
+   * time on the level. */
+  #tallyDecisions() {
+    this.anomalyDecisions = (this.anomalyDecisions ?? 0) + (this.mineMemory?.trace?.length ?? 0);
+  }
+
   /** No-op unless trace collection is enabled. Runs `detectAnomalies` (and,
    * if `this.logger.navDiag` is also on, `detectHeldKeyNoMovement`) against
    * this level's accumulated trace and logs any findings, tagged with
    * `label` and the 1-based level number. */
   reportAnomalies(label, levelIndex) {
     if (!this.mineMemory?.trace) return;
+    this.#tallyDecisions();
     if (this.logger.navDiag) {
       for (const f of detectHeldKeyNoMovement(this.mineMemory.trace)) {
+        this.#tallyAnomaly(f);
         console.log(`  [anomaly] ${label} level ${levelIndex + 1}: ${f.type} (${f.ticks} ticks, decisions ${f.startTick}-${f.endTick}) ${f.detail}`);
       }
     }
     for (const f of detectAnomalies(this.mineMemory.trace)) {
+      this.#tallyAnomaly(f);
       console.log(`  [anomaly] ${label} level ${levelIndex + 1}: ${f.type} (${f.ticks} ticks, decisions ${f.startTick}-${f.endTick}) ${f.detail}`);
     }
     // Deliberately not `navDiag`-gated: a bot that paces instead of freezing is
     // exactly the case `balancing:scan` used to miss entirely, so it has to fire
     // on the default scan rather than only when someone already suspects it.
     for (const f of detectOscillation(this.mineMemory.trace)) {
+      this.#tallyAnomaly(f);
       console.log(`  [anomaly] ${label} level ${levelIndex + 1}: ${f.type} (${f.ticks} ticks, decisions ${f.startTick}-${f.endTick}) ${f.detail}`);
     }
     // Not an anomaly — a standing breakdown of where the level's walking went,

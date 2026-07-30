@@ -138,6 +138,20 @@ export const DEFAULT_TUNING = {
   // around geometry mid-drive gets a fresh BFS from where it actually is.
   WAYPOINT_REPLAN_ATTEMPTS: 3,
   TURN_MOVE_EPS: 0.2,
+  // How close the *heading* has to be to ±π to count as sitting on atan2's
+  // branch cut, where `angleDelta`'s sign is unstable decision to decision.
+  // See `plainNavTurnSign`. Wider than `faceAngle`'s own 0.05 near-π pin
+  // because that one guards a different quantity (a turn of almost exactly
+  // 180°, where the noise really is floating-point sized); here the observed
+  // flip amplitude was 0.2-0.35 rad of genuine over/undershoot around a
+  // target that happens to lie on the cut.
+  NEAR_PI_HEADING_EPS: 0.4,
+  // Upper bound on how long a pinned turn direction survives. A pin that
+  // outlives the wobble it exists to damp would spin the bot the long way
+  // round if the route genuinely doubles back while the heading is still on
+  // the cut, so it expires rather than relying solely on the heading leaving
+  // the cut. Six decisions is ~2x the observed flip run length (4-5).
+  NAV_TURN_PIN_MAX_TICKS: 6,
   ARRIVE_EPS: 0.15,
   TIGHT_ARRIVE_EPS: 0.05,
   // Any single-tick position jump larger than this is physically impossible
@@ -333,6 +347,68 @@ export function angleDelta(current, target) {
  */
 export function diagonalStrafeKey(delta) {
   return delta > 0 ? "KeyD" : "KeyA";
+}
+
+/**
+ * Which way plain navigation should turn: `+1` for `KeyE`, `-1` for `KeyQ`.
+ *
+ * Normally just `sign(delta)`. The exception is when the *heading* sits on
+ * atan2's ±π branch cut, where the sign is unstable: travelling due west put
+ * `dir` through 3.06 -> -2.87 -> -3.10 -> -2.89 on a real trace, alternating
+ * the turn key `KeyE`/`KeyQ` **and** — since `diagonalStrafeKey` shares the
+ * sign — the strafe `KeyD`/`KeyA`, so the bot wobbled laterally while creeping
+ * ~0.08 tiles per decision until `|delta|` finally fell under
+ * `TURN_MOVE_EPS`. That pattern produced 692 `detectOscillation` findings
+ * across two A/B runs (median travelled/net ratio 4.6x, p90 7.5x).
+ *
+ * `faceAngle` already guards this bug class with its own near-π pin; the
+ * plain-navigation branch had no equivalent. So: pin the first direction
+ * chosen while on the cut and hold it, rather than re-deriving a sign that
+ * keeps flipping. The pin is released as soon as the heading leaves the cut,
+ * when the turn converges, or after `NAV_TURN_PIN_MAX_TICKS` decisions —
+ * whichever comes first — so it can never spin the bot the long way round
+ * indefinitely.
+ *
+ * **Deliberately returns one sign for both the turn key and the strafe key.**
+ * The previous attempt at this bug removed the diagonal strafe instead, and
+ * the A/B showed that made things *worse* (findings +9.6% net): the strafe is
+ * partly compensating for the flip by sliding the bot onto the target line, so
+ * removing it lengthens convergence. Keeping turn and strafe in agreement
+ * preserves that compensation while damping what actually flips.
+ *
+ * Pure apart from the pin it stores on `memory` (the same per-level scratch
+ * object `combatStrafeTicks` uses); safe to call with `memory` omitted, in
+ * which case it degrades to plain `sign(delta)`.
+ */
+export function plainNavTurnSign(delta, currentAngle, memory, tuning = DEFAULT_TUNING) {
+  const raw = delta > 0 ? 1 : -1;
+  const onBranchCut = Math.PI - Math.abs(currentAngle) < tuning.NEAR_PI_HEADING_EPS;
+  // Only damp inside the wobble regime. `turnBurstMs` still sizes the burst
+  // from the raw `|delta|`, so a pin that disagrees with `delta` turns *away*
+  // by that much — harmless at the 0.2-0.35 rad errors the flip actually
+  // occurs at, but not something to let loose on a genuine large turn. Above
+  // `MAX_WALK_WHILE_TURNING_RAD` the bot stops walking while it turns anyway,
+  // which is exactly the "this is a real course change, not noise" boundary.
+  const smallError = Math.abs(delta) < tuning.MAX_WALK_WHILE_TURNING_RAD;
+  if (!memory) return raw;
+  if (!onBranchCut || !smallError) {
+    memory.navTurnPin = null;
+    return raw;
+  }
+  const pin = memory.navTurnPin;
+  if (pin && pin.ticks < tuning.NAV_TURN_PIN_MAX_TICKS) {
+    pin.ticks += 1;
+    return pin.sign;
+  }
+  memory.navTurnPin = { sign: raw, ticks: 1 };
+  return raw;
+}
+
+/** Drops any pinned plain-navigation turn direction — call once the heading
+ * has converged, so the next time the bot needs to turn it picks a fresh
+ * direction rather than inheriting one from an unrelated earlier wobble. */
+export function clearNavTurnPin(memory) {
+  if (memory) memory.navTurnPin = null;
 }
 
 export function isHazardAt(map, x, y) {
@@ -1515,16 +1591,20 @@ export function decide(world, memory, config) {
     const blockedAhead = map && activeSpikeAt(map, aheadX, aheadY, player.levelTime);
     waitingOnSpike = Boolean(blockedAhead);
     if (Math.abs(delta) > tuning.TURN_MOVE_EPS) {
-      moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
+      // One sign drives both keys — see `plainNavTurnSign` for why the pin
+      // exists and why turn and strafe must not be allowed to disagree.
+      const turnSign = plainNavTurnSign(delta, currentAngle, memory, tuning);
+      moveKeys.add(turnSign > 0 ? "KeyE" : "KeyQ");
       turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, currentAngle, burstCtx);
       // Walk while still correcting heading, capped to angular errors
       // under MAX_WALK_WHILE_TURNING_RAD so a sharp corridor doubling-back
       // doesn't send the bot walking the wrong way while it turns around.
       if (Math.abs(delta) < tuning.MAX_WALK_WHILE_TURNING_RAD && !blockedAhead) {
         moveKeys.add("KeyW");
-        moveKeys.add(diagonalStrafeKey(delta));
+        moveKeys.add(diagonalStrafeKey(turnSign));
       }
     } else if (!blockedAhead) {
+      clearNavTurnPin(memory);
       // Don't step onto an active spike trap — wait out its cycle instead.
       moveKeys.add("KeyW");
       // Sprint the straight legs. The engine's SPRINT_MULTIPLIER (2.0) is

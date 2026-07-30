@@ -253,6 +253,38 @@ export function relChangeIsMeaningful(key, base, cand) {
  * a guard breach means revert the change, a metric move means the change did or
  * didn't do its job. Never collapse the two into one score.
  */
+/**
+ * Per-anomaly-type diff, from each combo's `anomalySummary`.
+ *
+ * Reported **per qualifying run and time-weighted** (`ticksPerRun`), not as a
+ * raw finding count. `detectOscillation` counts *events*: a change that makes
+ * the bot cover less ground can trip more qualifying windows while genuinely
+ * behaving better, so finding count can move opposite to the truth. The first
+ * attempt at the atan2 branch-cut wobble was graded on finding count and read
+ * as a +9.6% regression on exactly that basis.
+ *
+ * Empty unless both sides ran with trace collection on (`ANOMALY_SCAN`).
+ */
+export function diffAnomalies(baseCombo, candCombo) {
+  const base = baseCombo?.anomalySummary ?? {};
+  const cand = candCombo?.anomalySummary ?? {};
+  const types = [...new Set([...Object.keys(base), ...Object.keys(cand)])].sort();
+  return types.map((type) => {
+    // Normalized by decisions, not by run: a change that shortens levels
+    // lowers ticks-per-run without improving behaviour at all.
+    const b = base[type]?.ticksPerKiloDecision ?? 0;
+    const c = cand[type]?.ticksPerKiloDecision ?? 0;
+    return {
+      type,
+      baseTicksPerRun: b,
+      candTicksPerRun: c,
+      relDelta: relDelta(b, c),
+      baseFindingsPerRun: base[type]?.findingsPerRun ?? 0,
+      candFindingsPerRun: cand[type]?.findingsPerRun ?? 0,
+    };
+  });
+}
+
 export function diffCombo(baseCombo, candCombo) {
   const baseCurve = computeSurvivalCurve(baseCombo);
   const candCurve = computeSurvivalCurve(candCombo);
@@ -309,6 +341,7 @@ export function diffCombo(baseCombo, candCombo) {
     },
     levels,
     metrics,
+    anomalies: diffAnomalies(baseCombo, candCombo),
   };
 }
 
@@ -400,6 +433,18 @@ export function formatComboDiff(label, diff, thresholds = ROLLBACK_THRESHOLDS) {
     // unqualified next to changes that mean something.
     const note = m.meaningful ? m.better : `${m.better} (too small to read)`;
     lines.push(`  ${m.key.padEnd(22)} ${fmt(m.base, 3).padStart(8)} ${fmt(m.cand, 3).padStart(10)} ${pct(m.relDelta).padStart(9)}   ${note}`);
+  }
+  if (diff.anomalies && diff.anomalies.length > 0) {
+    // Ticks first, deliberately: it is the number to judge on. The finding
+    // count rides alongside only so a divergence between the two is visible
+    // rather than hidden.
+    lines.push("  anomaly (ticks/1k dec)  base       cand     change   findings/run");
+    for (const a of diff.anomalies) {
+      lines.push(
+        `  ${a.type.padEnd(22)} ${fmt(a.baseTicksPerRun, 1).padStart(8)} ${fmt(a.candTicksPerRun, 1).padStart(10)} ${pct(a.relDelta).padStart(9)}   ` +
+          `${fmt(a.baseFindingsPerRun, 1)} -> ${fmt(a.candFindingsPerRun, 1)}`,
+      );
+    }
   }
   const breaches = checkRollback(diff, thresholds);
   if (breaches.length === 0) {

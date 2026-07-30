@@ -171,6 +171,25 @@ Passing guards means "not obviously worse", never "the change worked" — always
 
 One A/B side is roughly 4x `balancing:scan`'s wall clock, and a full gate is two of them — **confirm before launching one.**
 
+### Flip one constant, not one commit (`CODEENSTEIN_TELEMETRY_TUNING`)
+
+A JSON object deep-merged over `DEFAULT_TUNING` for every bot the run builds:
+
+```sh
+CODEENSTEIN_TELEMETRY_TUNING='{"NEAR_PI_HEADING_EPS":0}' node scripts/run-balancing-telemetry.mjs
+```
+
+This is how a behaviour A/B should be run whenever the change is gated by a constant. The alternative — a worktree at an older commit — makes the whole diff the thing under test rather than the one value, and worse, **a worktree predating the metric you want to read cannot emit it at all**. That is not hypothetical: the first attempt to grade the atan2 branch-cut fix stalled on exactly that, because the baseline commit had no anomaly tally in its output. With the override, both sides run the same binary and differ only by the value. Invalid JSON is a hard exit rather than a warning, since silently falling back to defaults would produce a baseline-vs-baseline comparison that looks like a real result.
+
+### Judging a bot-behaviour change: use `anomaly (ticks/1k dec)`
+
+With `CODEENSTEIN_TELEMETRY_ANOMALY_SCAN=1`, each combo's output carries an `anomalySummary` — per anomaly type, `findings`/`ticks` totals plus `findingsPerRun`, `ticksPerRun` and `ticksPerKiloDecision`. `report-balancing-ab.mjs` diffs the last of those.
+
+Two normalizations, both learned the hard way:
+
+- **Ticks, not findings.** `detectOscillation` counts *events*. A change that makes the bot cover less ground can trip *more* qualifying windows while behaving better — which is how the first oscillation fix got graded as a +9.6% regression and reverted on a number that didn't mean what it looked like.
+- **Per decision, not per run.** Even ticks-per-run is not exposure-independent. Measured on a real comparison: oscillation ticks/run fell 11.7% while `levelTimeSec` fell 7.7%, so most of the apparent win was simply less time on the level. `ticksPerKiloDecision` divides that out.
+
 ## Output shape
 
 `balancing_telemetry.json` (repo root, gitignored) holds a meta block (profile definitions), then per-level and campaign-wide aggregates across 7 categories (map density/demographics, combat pacing, AI effectiveness/danger, damage/healing breakdown, weapon efficiency, economy/loot starvation, navigation/map flow), plus deterministic outlier `flags` and per-profile `crossDifficultyFlags`. Judgment-call metrics carry a `{mean, max, min, samples}` spread rather than a bare mean, so a consumer (human or LLM) can see the actual distribution, not just a single number that might hide a bimodal split.

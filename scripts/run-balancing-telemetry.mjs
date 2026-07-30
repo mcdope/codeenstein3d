@@ -99,6 +99,37 @@ const NAV_DIAG = process.env.CODEENSTEIN_TELEMETRY_NAV_DIAG === "1";
 // CODEENSTEIN_TELEMETRY_PROFILE/_DIFFICULTY/_LEVEL_LIMIT/_ATTEMPT_CAP to
 // focus on one specific combo instead of watching the whole campaign.
 const HEADED = process.env.CODEENSTEIN_TELEMETRY_HEADED === "1";
+// A JSON object deep-merged over `DEFAULT_TUNING` for every Bot this run
+// builds — the single-variable toggle the A/B protocol needs. Flipping one
+// constant used to mean either editing the file between the two sides (which
+// makes the diff the thing under test rather than the constant) or standing up
+// a worktree at an older commit — and a worktree predating the metric you want
+// to read cannot emit it at all, which is exactly how the first attempt at
+// this got stuck. With this, both sides run the *same* binary and differ only
+// by the value.
+//
+//   CODEENSTEIN_TELEMETRY_TUNING='{"NEAR_PI_HEADING_EPS":0}'
+//
+// Invalid JSON is a hard exit, not a warning: silently falling back to default
+// tuning would produce a baseline-vs-baseline comparison that looks like a
+// real result.
+const TUNING_OVERRIDE = (() => {
+  const raw = process.env.CODEENSTEIN_TELEMETRY_TUNING;
+  if (!raw) return undefined;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    console.error(`CODEENSTEIN_TELEMETRY_TUNING is not valid JSON: ${err.message}`);
+    process.exit(1);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    console.error("CODEENSTEIN_TELEMETRY_TUNING must be a JSON object, e.g. '{\"NEAR_PI_HEADING_EPS\":0}'");
+    process.exit(1);
+  }
+  console.log(`Tuning override active: ${JSON.stringify(parsed)}`);
+  return parsed;
+})();
 
 // Overridable so a large-scale data-collection campaign can raise the target
 // (e.g. 50) per invocation without touching this default — every existing
@@ -450,6 +481,7 @@ export async function playRun(page, profile, levelPlans, label = "") {
 
   const bot = new Bot(page, profile, {
     realtime: HEADED,
+    tuning: TUNING_OVERRIDE,
     logger: {
       debugNav: DEBUG_NAV ? (msg) => console.log(msg) : undefined,
       wpDebug: process.env.CODEENSTEIN_WPDEBUG ? (msg) => console.log(msg) : undefined,
@@ -468,7 +500,7 @@ export async function playRun(page, profile, levelPlans, label = "") {
 
     const player0 = await bot.readState();
     if (player0.state !== "playing") {
-      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: i, reason: player0.state === "over" ? "died" : "stuck" };
+      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: player0.state === "over" ? "died" : "stuck" };
     }
     const prevExit = await page.evaluate(() => window.__codeensteinTestHooks.getExit());
 
@@ -495,11 +527,11 @@ export async function playRun(page, profile, levelPlans, label = "") {
       levelSnapshots.push({ levelIndex: i, ...deathResult, incomplete: true });
       if (VERBOSE) logDeathDetail(i, deathResult);
       bot.reportAnomalies(label, i);
-      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: i, reason: "died" };
+      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "died" };
     }
     if (legOutcome.state === "stuck") {
       bot.reportAnomalies(label, i);
-      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: i, reason: "stuck" };
+      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "stuck" };
     }
     if (legOutcome.state === "playing") {
       const exitCenter = { x: map.exit.x + 0.5, y: map.exit.y + 0.5 };
@@ -512,11 +544,11 @@ export async function playRun(page, profile, levelPlans, label = "") {
         levelSnapshots.push({ levelIndex: i, ...deathResult, incomplete: true });
         if (VERBOSE) logDeathDetail(i, deathResult);
         bot.reportAnomalies(label, i);
-        return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: i, reason: "died" };
+        return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "died" };
       }
       if (pushed.state !== "won") {
         bot.reportAnomalies(label, i);
-        return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: i, reason: "stuck" };
+        return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "stuck" };
       }
     }
     // else legOutcome.state === "won" already — fall through.
@@ -550,14 +582,14 @@ export async function playRun(page, profile, levelPlans, label = "") {
       .catch(() => "timeout");
 
     if (advance === "campaign-complete") {
-      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: null, reason: "campaign-complete" };
+      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: null, reason: "campaign-complete" };
     }
     if (advance !== "advanced") {
-      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: null, reason: "stuck" };
+      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: null, reason: "stuck" };
     }
     await dismissOverlay(page); // next level's briefing
   }
-  return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: null, reason: "campaign-complete" };
+  return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: null, reason: "campaign-complete" };
 }
 
 async function pullLevelResult(page) {
@@ -930,6 +962,7 @@ function buildComboOutput(levelPlans, combo) {
   const weaponFirstOwnedAtLevel = mergeWeaponFirstOwned(qualifyingRuns);
   const weaponAcquisitionRate = computeWeaponAcquisitionRate(qualifyingRuns);
   const finalScoreReached = computeFinalScoreReached(qualifyingRuns);
+  const anomalySummary = summarizeAnomalies(qualifyingRuns);
 
   return {
     attemptsUsed,
@@ -942,9 +975,41 @@ function buildComboOutput(levelPlans, combo) {
     weaponFirstOwnedAtLevel,
     weaponAcquisitionRate,
     finalScoreReached,
+    anomalySummary,
     levels,
     campaignAggregate,
   };
+}
+
+/**
+ * Sums each qualifying run's `anomalyTally` into one per-combo figure, plus a
+ * per-run rate so two runs with different qualifying counts stay comparable.
+ *
+ * `ticksPerRun` is the number to grade a bot-behaviour change on.
+ * `detectOscillation` counts *events*, and a change that makes the bot cover
+ * less ground can trip more qualifying windows while genuinely behaving
+ * better — which is exactly how the first attempt at the atan2 branch-cut
+ * wobble got graded on the wrong number and read as a regression. Empty
+ * (`{}`) unless the run had trace collection on (`ANOMALY_SCAN`/`NAV_DIAG`).
+ */
+function summarizeAnomalies(qualifyingRuns) {
+  const totals = {};
+  for (const run of qualifyingRuns) {
+    for (const [type, row] of Object.entries(run.anomalyTally ?? {})) {
+      const acc = (totals[type] ??= { findings: 0, ticks: 0, findingsPerRun: 0, ticksPerRun: 0 });
+      acc.findings += row.findings;
+      acc.ticks += row.ticks;
+    }
+  }
+  const runs = qualifyingRuns.length;
+  const decisions = qualifyingRuns.reduce((a, r) => a + (r.anomalyDecisions ?? 0), 0);
+  for (const acc of Object.values(totals)) {
+    acc.findingsPerRun = runs > 0 ? acc.findings / runs : 0;
+    acc.ticksPerRun = runs > 0 ? acc.ticks / runs : 0;
+    // The exposure-independent one — see `#tallyDecisions` in `bot.mjs`.
+    acc.ticksPerKiloDecision = decisions > 0 ? (acc.ticks / decisions) * 1000 : 0;
+  }
+  return totals;
 }
 
 /** Earliest level each weapon index was first owned, across qualifying runs

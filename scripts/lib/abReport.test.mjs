@@ -13,7 +13,7 @@
  * `scripts/multiplayer-server.test.mjs`.
  */
 import { describe, expect, it } from "vitest";
-import { checkRollback, compareRunFlags, collectMetrics, computeSurvivalCurve, diffCombo, diffTelemetry, formatComboDiff, relChangeIsMeaningful, spreadValue } from "./abReport.mjs";
+import { checkRollback, compareRunFlags, collectMetrics, computeSurvivalCurve, diffCombo, diffTelemetry, diffAnomalies, formatComboDiff, relChangeIsMeaningful, spreadValue } from "./abReport.mjs";
 
 /** Minimal `spread()`-shaped object — `{ [kind]: value, samples }`. */
 const sp = (kind, value) => ({ [kind]: value, samples: [value] });
@@ -408,5 +408,41 @@ describe("compareRunFlags", () => {
 
   it("reports not-comparable rather than mismatched when a side predates flag recording", () => {
     expect(compareRunFlags({ meta: {} }, withFlags({ navDiag: true }))).toEqual({ comparable: false, mismatches: [] });
+  });
+});
+
+describe("diffAnomalies", () => {
+  const combo = (summary) => ({ anomalySummary: summary, failureReasons: [], levels: [] });
+
+  it("compares the decision-normalized figure, not ticks per run", () => {
+    // Same ticks/run on both sides, but the candidate spent far fewer
+    // decisions getting there — that is a real improvement and must show.
+    const base = combo({ oscillation: { ticksPerRun: 500, ticksPerKiloDecision: 100, findingsPerRun: 10 } });
+    const cand = combo({ oscillation: { ticksPerRun: 500, ticksPerKiloDecision: 50, findingsPerRun: 10 } });
+    const [row] = diffAnomalies(base, cand);
+    expect(row.type).toBe("oscillation");
+    expect(row.relDelta).toBeCloseTo(-0.5);
+  });
+
+  it("keeps findings/run alongside so a divergence from ticks stays visible", () => {
+    // The exact trap from the reverted first attempt: fewer ticks but more
+    // findings. Reporting only one of the two hides it.
+    const base = combo({ oscillation: { ticksPerKiloDecision: 100, findingsPerRun: 8 } });
+    const cand = combo({ oscillation: { ticksPerKiloDecision: 80, findingsPerRun: 12 } });
+    const [row] = diffAnomalies(base, cand);
+    expect(row.relDelta).toBeCloseTo(-0.2);
+    expect(row.baseFindingsPerRun).toBe(8);
+    expect(row.candFindingsPerRun).toBe(12);
+  });
+
+  it("covers a type present on only one side", () => {
+    const rows = diffAnomalies(combo({ stall: { ticksPerKiloDecision: 10 } }), combo({ oscillation: { ticksPerKiloDecision: 5 } }));
+    expect(rows.map((r) => r.type)).toEqual(["oscillation", "stall"]);
+    expect(rows.find((r) => r.type === "stall").candTicksPerRun).toBe(0);
+  });
+
+  it("returns nothing when neither side ran the anomaly scan", () => {
+    expect(diffAnomalies({}, {})).toEqual([]);
+    expect(diffAnomalies(undefined, undefined)).toEqual([]);
   });
 });
