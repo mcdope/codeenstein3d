@@ -109,6 +109,14 @@ export class LocalRunner {
 async function driveCombo(combo, opts) {
   const { comboKey, scanExisting, targetQualifying, outputPathFor, logPathFor, envFor, scriptPath, runner, watchdogMs, sigtermGraceMs, formatElapsed, log, maxInvocations } = opts;
   const key = comboKey(combo);
+  // Invocations this call has actually spawned. Deliberately NOT `fileCount`:
+  // a *crashing* invocation writes no output file, so `fileCount` never
+  // advances and a file-based cap would never fire — the loop would retry the
+  // same failing invocation forever, which is the exact wedge observed on
+  // 2026-07-30 (a Gamer/hard/4p probe whose browser died on every attempt
+  // re-ran invocation #1 indefinitely, appending to one log). Counting spawns
+  // bounds broken invocations and unclearable combos alike.
+  let spawned = 0;
   for (;;) {
     const { qualifying, fileCount } = scanExisting(combo);
     const target = typeof targetQualifying === "function" ? targetQualifying(combo) : targetQualifying;
@@ -123,8 +131,8 @@ async function driveCombo(combo, opts) {
     // 6 invocations) and had to be rescued by hand-lowering the target
     // mid-run. Giving up loudly and moving on leaves the partial data intact
     // and resumable; the combo just reports short of target.
-    if (maxInvocations != null && fileCount >= maxInvocations) {
-      log(`[${key}] giving up — ${qualifying}/${target} qualifying after ${fileCount} invocation(s), at the ${maxInvocations}-invocation cap`);
+    if (maxInvocations != null && spawned >= maxInvocations) {
+      log(`[${key}] giving up — ${qualifying}/${target} qualifying after ${spawned} invocation(s) this run (${fileCount} file(s) on disk), at the ${maxInvocations}-invocation cap`);
       return;
     }
     const sequence = fileCount + 1;
@@ -134,6 +142,7 @@ async function driveCombo(combo, opts) {
     const prefix = `[${key} #${sequence}] `;
     log(`[${key}] starting invocation #${sequence} (${qualifying}/${target} qualifying so far) via ${runner.label}`);
 
+    spawned += 1;
     const result = await runner.runInvocation({ scriptPath, env, logPath, prefix, watchdogMs, sigtermGraceMs, outputPath });
 
     if (result.killedForTimeout) {
