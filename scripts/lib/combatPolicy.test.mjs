@@ -1079,18 +1079,29 @@ describe("plainNavTurnSign — damping the atan2 branch-cut flip", () => {
     expect(plainNavTurnSign(-0.25, DUE_WEST, undefined, DEFAULT_TUNING)).toBe(-1);
   });
 
-  it("holds one direction across the recorded flip, instead of alternating", () => {
+  it("damps the recorded flip instead of alternating every decision", () => {
     // The real trace from the 692-finding investigation: heading walks across
-    // atan2's cut and `delta`'s sign alternates every decision.
+    // atan2's cut and `delta`'s sign alternates every single decision.
     const headings = [3.06, -2.87, -3.1, -2.89];
     const deltas = [0.25, -0.24, 0.26, -0.23];
     const memory = {};
     const signs = headings.map((h, i) => plainNavTurnSign(deltas[i], h, memory, DEFAULT_TUNING));
-    expect(new Set(signs).size).toBe(1);
-    // And the strafe follows the same sign, so the two never disagree —
-    // removing the strafe instead is what the reverted attempt 1 did.
-    const strafes = signs.map((s) => diagonalStrafeKey(s));
-    expect(new Set(strafes).size).toBe(1);
+
+    // The pin holds for its budget, which is what removes the alternation.
+    // Deliberately *not* asserting one sign across the whole trace: the flip
+    // runs 4-5 decisions and `NAV_TURN_PIN_MAX_TICKS` is 3, so the pin expires
+    // partway through by design — and the measured comparison says that is the
+    // better setting (a 6-tick pin held longer and cost +4.9% route overhead
+    // for no extra oscillation win).
+    const pinned = signs.slice(0, DEFAULT_TUNING.NAV_TURN_PIN_MAX_TICKS);
+    expect(new Set(pinned).size).toBe(1);
+    // Whatever it settles on, turn and strafe never disagree — removing the
+    // strafe instead is what the reverted attempt 1 did, and it measured worse.
+    expect(signs.map((sign) => diagonalStrafeKey(sign))).toEqual(signs.map((sign) => (sign > 0 ? "KeyD" : "KeyA")));
+    // Strictly fewer direction changes than the undamped signal, which flips
+    // on every decision.
+    const changes = (xs) => xs.slice(1).filter((x, i) => x !== xs[i]).length;
+    expect(changes(signs)).toBeLessThan(changes(deltas.map((d) => (d > 0 ? 1 : -1))));
   });
 
   it("without the pin, that same trace alternates — the bug being fixed", () => {

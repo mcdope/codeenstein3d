@@ -150,8 +150,25 @@ export const DEFAULT_TUNING = {
   // outlives the wobble it exists to damp would spin the bot the long way
   // round if the route genuinely doubles back while the heading is still on
   // the cut, so it expires rather than relying solely on the heading leaving
-  // the cut. Six decisions is ~2x the observed flip run length (4-5).
-  NAV_TURN_PIN_MAX_TICKS: 6,
+  // the cut.
+  //
+  // **3, measured — not the 6 this was first written with.** Both were run
+  // against the same baseline (Gamer/normal, n=8, single-variable via
+  // `CODEENSTEIN_TELEMETRY_TUNING`). 6 bought the oscillation win but charged
+  // for it; 3 buys the same win for free:
+  //
+  //                              pin=6     pin=3
+  //   oscillation ticks/1k dec   -36.7%    -37.4%
+  //   routeFollowOverhead         +4.9%     +0.7%
+  //   levelTimeSec                +2.4%     -1.4%
+  //   avgTtk (normal)             +0.6%     -7.2%
+  //   healthDrainFrozen          +52.6%     -4.8%
+  //
+  // The pattern says 6 was over-committing: long enough that a pin pointing
+  // away from `delta` did real damage (`turnBurstMs` still sizes the burst
+  // from the raw error, so a disagreeing pin turns *away* by that much). 3 is
+  // still comfortably longer than the 1-decision alternation it damps.
+  NAV_TURN_PIN_MAX_TICKS: 3,
   ARRIVE_EPS: 0.15,
   TIGHT_ARRIVE_EPS: 0.05,
   // Any single-tick position jump larger than this is physically impossible
