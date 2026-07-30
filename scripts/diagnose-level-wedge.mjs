@@ -229,6 +229,15 @@ async function main() {
         break;
       }
 
+      // Persist the target level's per-decision trace whether or not it
+      // wedged. The wedge report below only runs on failure, but an
+      // *inefficiency* investigation (e.g. `detectOscillation` findings) needs
+      // the trace of a level the bot successfully completed.
+      if (TARGET_LEVEL !== null && levelNo === TARGET_LEVEL && perLevel.length > 0) {
+        const tracePath = path.join(OUT, `level${levelNo}-a${attempt}-trace.log`);
+        fs.writeFileSync(tracePath, perLevel.join("\n"));
+        say(`  --- wrote ${perLevel.length} trace lines to ${path.basename(tracePath)} ---`);
+      }
       await dismissOverlay(page); // Commit Summary overlay
       // `polling: 100` is load-bearing: the virtual clock replaces
       // requestAnimationFrame, so Playwright's default rAF polling never runs.
