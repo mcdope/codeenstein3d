@@ -252,6 +252,35 @@ const ULTRA_KILL_WINDOW_SEC = 6;
 const ULTRA_KILL_COUNT = 6;
 /** Health lost per second while standing in an acid (hazard) tile. */
 const HAZARD_DPS = 18;
+
+/**
+ * Engine-side simulation constants folded into a replay's balance fingerprint
+ * (`balanceHash.ts`) so a change to any of them invalidates existing replays
+ * loudly instead of letting them play back silently diverged.
+ *
+ * **Deliberately partial, and that is not an oversight.** The generated
+ * `GameMap` is hashed wholesale alongside this, which covers every
+ * *generation-time* balance constant automatically — enemy HP, counts, kinds,
+ * placement, loot, traps, layout — with no list to keep in sync. Nothing
+ * equivalent exists for constants that live in the engine and never reach the
+ * map, so those need naming, and this holds the ones `engine.ts` itself owns.
+ *
+ * Values that matter but live in sibling modules (`ELITE_DAMAGE_MULTIPLIER`
+ * and `EDGE_CASE_SPEED_MULTIPLIER` in `enemyAi.ts`, `SPIKE_DPS` and
+ * `MINE_DAMAGE_FALLOFF_FLOOR` in `traps.ts`, `PROJECTILE_SPEED` in
+ * `projectiles.ts`, the `WEAPONS` table) are **not** covered — adding them
+ * means exporting each and extending this object. Worth doing if one of them
+ * is ever tuned; not worth pre-emptively exporting five constants to guard
+ * against edits nobody has made.
+ */
+export const SIMULATION_BALANCE: Readonly<Record<string, number>> = {
+  MOVE_SPEED,
+  SPRINT_MULTIPLIER,
+  ROT_SPEED,
+  MAX_HEALTH,
+  MAX_SWAP,
+  HAZARD_DPS,
+};
 /**
  * Cone-of-Fire: maximum screen-px of random aim deviation, reached only at
  * `FOG_FAR` (the same distance the world fades to black at — "maximum visual

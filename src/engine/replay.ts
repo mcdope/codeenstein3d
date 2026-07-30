@@ -50,6 +50,20 @@ export interface ReplayLevelSegment {
    * spans a different source file, and potentially a since-edited one, at
    * every step. */
   astHash: string;
+  /**
+   * Fingerprint of the balance this run was recorded under — the generated
+   * map plus the engine-side simulation constants (see `balanceHash.ts`).
+   *
+   * `astHash` above answers "is this still the same source file"; this answers
+   * "is this still the same *game*". They are genuinely different questions:
+   * enemy HP is generated from the AST rather than being part of it, so
+   * halving `ELITE_HP_MULTIPLIER` left every `astHash` matching while making
+   * every affected replay diverge silently.
+   *
+   * Optional because runs recorded before this guard existed have none; those
+   * are accepted rather than refused (see `balanceHashMatches`).
+   */
+  balanceHash?: string;
   /** Whichever difficulty/gore preference was active while *this* level was
    * played — either can be changed mid-campaign (they take effect "on the
    * next level load"), so a single run can genuinely span more than one of
@@ -92,10 +106,11 @@ const MAX_REPLAY_FRAMES_PER_LEVEL = 21600;
 const MAX_REPLAY_LEVELS = 100;
 
 /** Static metadata a `LevelRecorder` needs, known up front at level launch —
- * everything in `ReplayLevelSegment` except `astHash` and `frames`. `astHash`
- * is deliberately excluded: it's only known once `hashRun` resolves, so the
- * recorder takes a `Promise<string>` instead of blocking level launch on it. */
-export type ReplayLevelMeta = Omit<ReplayLevelSegment, "astHash" | "frames">;
+ * everything in `ReplayLevelSegment` except `astHash`, `balanceHash` and
+ * `frames`. Both hashes are deliberately excluded: neither is known until its
+ * SHA-256 resolves, so the recorder takes a `Promise<string>` for each instead
+ * of blocking level launch on them. */
+export type ReplayLevelMeta = Omit<ReplayLevelSegment, "astHash" | "balanceHash" | "frames">;
 
 /** Records one level's input, one frame at a time. Internal to
  * `CampaignReplayRecorder` — see that class for the public recording API. */
@@ -106,6 +121,7 @@ class LevelRecorder {
   constructor(
     private readonly meta: ReplayLevelMeta,
     private readonly astHashPromise: Promise<string>,
+    private readonly balanceHashPromise: Promise<string>,
   ) {}
 
   record(dt: number, input: InputSnapshot): void {
@@ -125,8 +141,8 @@ class LevelRecorder {
    * frame or overflowed the cap above. */
   async finish(): Promise<ReplayLevelSegment | null> {
     if (this.overflowed || this.frames.length === 0) return null;
-    const astHash = await this.astHashPromise;
-    return { ...this.meta, astHash, frames: this.frames };
+    const [astHash, balanceHash] = await Promise.all([this.astHashPromise, this.balanceHashPromise]);
+    return { ...this.meta, astHash, balanceHash, frames: this.frames };
   }
 }
 
@@ -136,7 +152,7 @@ class LevelRecorder {
  * carrying over from the previous level/a resumed save); `RaycasterEngine`
  * calls `record()` once per `advance()` step, always against whichever level
  * is currently active. `finish()` (called once the run actually ends) resolves
- * every level's AST hash and assembles the final payload.
+ * every level's AST and balance hashes and assembles the final payload.
  */
 export class CampaignReplayRecorder {
   private readonly levels: LevelRecorder[] = [];
@@ -148,12 +164,12 @@ export class CampaignReplayRecorder {
    * `record()` call until the next `startLevel()`. Silently stops recording
    * further levels once `MAX_REPLAY_LEVELS` is reached — whatever was
    * captured before that point is still saved. */
-  startLevel(meta: ReplayLevelMeta, astHashPromise: Promise<string>): void {
+  startLevel(meta: ReplayLevelMeta, astHashPromise: Promise<string>, balanceHashPromise: Promise<string>): void {
     if (this.levels.length >= MAX_REPLAY_LEVELS) {
       this.current = null;
       return;
     }
-    this.current = new LevelRecorder(meta, astHashPromise);
+    this.current = new LevelRecorder(meta, astHashPromise, balanceHashPromise);
     this.levels.push(this.current);
   }
 

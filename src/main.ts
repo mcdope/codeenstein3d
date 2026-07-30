@@ -18,7 +18,7 @@ import { extensionOf, isParsable, parseFile } from "./parser/registry";
 import { MapGenerator } from "./map/mapGenerator";
 import type { GameMap } from "./map/types";
 import { renderExportMap } from "./map/exportView";
-import { RaycasterEngine, isTestHooksActive } from "./engine/engine";
+import { RaycasterEngine, SIMULATION_BALANCE, isTestHooksActive } from "./engine/engine";
 import { audio } from "./engine/audio";
 import { bgm } from "./engine/bgm";
 import { textures, type WadLoadSummary } from "./engine/textures";
@@ -62,6 +62,7 @@ import {
 import { DEFAULT_DIFFICULTY, type DifficultyLevel } from "./difficulty";
 import { randomSeed } from "./prng";
 import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelSegment } from "./engine/replay";
+import { balanceHashMatches, computeBalanceHash } from "./engine/balanceHash";
 import type { ParsedFile } from "./parser/types";
 import type { EngineCarryover, EngineStats, PlayerId, RosterSnapshotEntry } from "./engine/engine";
 import { createSession, fetchIceServers, fetchSession, fetchSessionAsHost, postAnswer, updateSession } from "./multiplayer/signalingClient";
@@ -2537,6 +2538,10 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
       carryover: effectiveCarryover,
     },
     hashRun(JSON.stringify(parsed), campaignName()),
+    // `map` is the freshly generated one for this level, which is what
+    // `computeBalanceHash` requires — see its module comment on why a
+    // mid-run map would fold live state into the fingerprint.
+    computeBalanceHash(map, SIMULATION_BALANCE),
   );
 
   activeEngine = new RaycasterEngine(
@@ -3595,7 +3600,7 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
 
     /** Builds a fresh engine for `segment`/`parsed`, wired the same way for
      * both a normal level load and an in-place restart (seeking backward). */
-    const buildEngineFor = (segment: ReplayLevelSegment, parsed: ParsedFile): void => {
+    const buildEngineFor = (segment: ReplayLevelSegment, parsed: ParsedFile): GameMap => {
       const hasRocketLauncher = segment.carryover?.ownedWeapons?.includes(GHIDRA_WEAPON_INDEX) ?? false;
       const segmentOwnedWeapons = segment.carryover?.ownedWeapons ?? [];
       const missingWeaponIndices = computeMissingWeaponIndices(segmentOwnedWeapons, segment.carryover?.campaignLevelIndex ?? 1);
@@ -3636,6 +3641,7 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
         replayInput,
         undefined, // never record a replay of a replay
       );
+      return map;
     };
 
     // Loads `payload.levels[levelIndex]`, advances `levelIndex` past it, and
@@ -3674,7 +3680,18 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
         return;
       }
 
-      buildEngineFor(segment, parsed);
+      const builtMap = buildEngineFor(segment, parsed);
+      // Balance drift, checked after the map exists. Distinct from the
+      // `astHash` check above: the source file can be byte-identical while
+      // the world it generates is not (enemy HP is generated *from* the AST,
+      // not part of it), which would otherwise replay the recorded inputs
+      // against a differently balanced game and silently show a run that no
+      // longer matches its own score.
+      const currentBalance = await computeBalanceHash(builtMap, SIMULATION_BALANCE);
+      if (!balanceHashMatches(segment.balanceHash, currentBalance)) {
+        endReplay(`"${segment.filePath}" was recorded under different game balance — this replay can't be trusted to match its score anymore.`);
+        return;
+      }
       if (isReplaying) rafId = requestAnimationFrame(step);
     };
 
