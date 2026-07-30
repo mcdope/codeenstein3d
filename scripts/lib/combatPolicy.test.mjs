@@ -1061,32 +1061,3 @@ describe("melee approach is mine-aware", () => {
     expect(DEFAULT_TUNING.MELEE_RANGE).toBeGreaterThan(DEFAULT_TUNING.MELEE_CLOSE_MIN_DISTANCE);
   });
 });
-
-describe("diagonal strafe while turning is gated on open ground", () => {
-  // A 1-tile east-west corridor: walls above and below, floor along y=10.
-  const corridor = () => {
-    const m = makeMap();
-    for (let x = 0; x < SIZE; x++) { m.grid[9][x] = 1; m.grid[11][x] = 1; }
-    return m;
-  };
-  const walkingWest = (map) => decide(
-    // heading ~west, waypoint further west and slightly off-axis so |delta| is
-    // inside MAX_WALK_WHILE_TURNING_RAD but above TURN_MOVE_EPS
-    { player: makePlayer({ x: 10.5, y: 10.5, dirX: Math.cos(2.9), dirY: Math.sin(2.9) }),
-      enemies: [], mines: [], navTarget: { x: 7.5, y: 10.5 }, map },
-    freshMemory(), makeConfig(),
-  );
-
-  it("omits the strafe in a 1-tile corridor, where it can only scrape the wall", () => {
-    const keys = keysOf(walkingWest(corridor()));
-    expect(keys).toContain("KeyW");
-    expect(keys).not.toContain("KeyA");
-    expect(keys).not.toContain("KeyD");
-  });
-
-  it("still takes it in open ground, where it usefully cuts the corner", () => {
-    const keys = keysOf(walkingWest(makeMap()));
-    expect(keys).toContain("KeyW");
-    expect(keys.some((k) => k === "KeyA" || k === "KeyD")).toBe(true);
-  });
-});

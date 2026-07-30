@@ -1522,24 +1522,7 @@ export function decide(world, memory, config) {
       // doesn't send the bot walking the wrong way while it turns around.
       if (Math.abs(delta) < tuning.MAX_WALK_WHILE_TURNING_RAD && !blockedAhead) {
         moveKeys.add("KeyW");
-        // Only slide sideways into the turn if that side is actually open.
-        //
-        // `diagonalStrafeKey` follows `delta`'s sign, and while converging on a
-        // heading `delta` alternates sign decision to decision — so the strafe
-        // alternates with it. In open ground that is a harmless corner-cut; in a
-        // 1-tile corridor the lateral component is rejected against the wall
-        // while still changing the bearing, which feeds the flip and produces
-        // the travelled-far/went-nowhere signature `detectOscillation` reports
-        // (692 findings, median travelled/net 4.6x, and 66% of them inside
-        // 1-tile corridors against 48% of route waypoints).
-        //
-        // Traced directly on `stage03_legacy_api.php`'s y=68 corridor:
-        //   dir= 3.06 -> [KeyE,KeyW,KeyD]   dir=-2.87 -> [KeyQ,KeyW,KeyA]
-        //   dir=-3.10 -> [KeyE,KeyW,KeyD]   dir=-2.89 -> [KeyQ,KeyW,KeyA]
-        // then `|delta|` drops under TURN_MOVE_EPS and it sprints off clean.
-        const strafe = diagonalStrafeKey(delta);
-        const lateralDist = forwardScanTiles(false, moveCtx);
-        if (strafeIsSafe(map, player, strafe, lateralDist, player.levelTime, { tuning })) moveKeys.add(strafe);
+        moveKeys.add(diagonalStrafeKey(delta));
       }
     } else if (!blockedAhead) {
       // Don't step onto an active spike trap — wait out its cycle instead.
