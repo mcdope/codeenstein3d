@@ -59,7 +59,7 @@ describe("spawnEnemies", () => {
     const enemies = spawnEnemies([room], { x: 99, y: 99 }, mulberry32(1));
     expect(enemies).toHaveLength(1);
     expect(enemies[0].elite).toBe(true);
-    expect(enemies[0].hp).toBe(40 * 25 * 4);
+    expect(enemies[0].hp).toBe(40 * 25 * 2); // ELITE_HP_MULTIPLIER, lowered 4 -> 2 (see its doc comment)
   });
 
   it("aggregates enemies across multiple rooms", () => {
