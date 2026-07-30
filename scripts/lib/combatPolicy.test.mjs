@@ -56,6 +56,8 @@ import {
   TOOLCHAIN_WEAPON_INDEX,
   GDB_WEAPON_INDEX,
   visibleMineNear,
+  movementKeysFor,
+  movementVectorFor,
 } from "./combatPolicy.mjs";
 
 const SIZE = 20;
@@ -1118,5 +1120,96 @@ describe("melee approach is mine-aware", () => {
     // The bot still edges the last ~1.1 tiles onto a threat already in reach;
     // that step is what the mine check protects.
     expect(DEFAULT_TUNING.MELEE_RANGE).toBeGreaterThan(DEFAULT_TUNING.MELEE_CLOSE_MIN_DISTANCE);
+  });
+});
+
+describe("NAV_FULL_WASD switch", () => {
+  it("stands still to turn when disabled, and keeps moving when enabled", () => {
+    // Player faces +x with the target behind-left, so |delta| is well past
+    // MAX_WALK_WHILE_TURNING_RAD and the old code froze here.
+    const world = { player: makePlayer(), enemies: [], mines: [], navTarget: { x: 8, y: 6 }, map: makeMap() };
+    const frozen = decide(world, freshMemory(), makeConfig({ tuning: { ...DEFAULT_TUNING, NAV_FULL_WASD: false } }));
+    expect(keysOf(frozen).every((k) => k === "KeyQ" || k === "KeyE")).toBe(true);
+
+    const moving = decide(world, freshMemory(), makeConfig());
+    expect(keysOf(moving).some((k) => ["KeyW", "KeyA", "KeyS", "KeyD"].includes(k))).toBe(true);
+  });
+});
+
+describe("movementKeysFor — full WASD instead of stopping to turn", () => {
+  const P = Math.PI;
+
+  it("maps each octant to the keys that point there", () => {
+    expect(movementKeysFor(0)).toEqual(["KeyW"]);
+    expect(movementKeysFor(P / 4)).toEqual(["KeyW", "KeyD"]);
+    expect(movementKeysFor(P / 2)).toEqual(["KeyD"]);
+    expect(movementKeysFor((3 * P) / 4)).toEqual(["KeyS", "KeyD"]);
+    expect(movementKeysFor(P)).toEqual(["KeyS"]);
+    expect(movementKeysFor(-P / 2)).toEqual(["KeyA"]);
+    expect(movementKeysFor(-P / 4)).toEqual(["KeyW", "KeyA"]);
+    expect(movementKeysFor((-3 * P) / 4)).toEqual(["KeyS", "KeyA"]);
+  });
+
+  it("wraps at ±π rather than falling off the end", () => {
+    expect(movementKeysFor(-P)).toEqual(["KeyS"]);
+    expect(movementKeysFor(2 * P)).toEqual(["KeyW"]);
+  });
+
+  it("never errs by more than half an octant", () => {
+    // The guarantee that makes this worth doing: at worst 22.5 degrees off,
+    // so cos(22.5) = 92% of the step still lands on the wanted direction —
+    // versus 0% while standing still to turn.
+    const dirOf = { KeyW: 0, KeyD: P / 2, KeyS: P, KeyA: -P / 2 };
+    for (let d = -P; d <= P; d += 0.05) {
+      const keys = movementKeysFor(d);
+      // Reconstruct the octant's own angle from its keys.
+      let x = 0;
+      let y = 0;
+      for (const k of keys) {
+        x += Math.cos(dirOf[k]);
+        y += Math.sin(dirOf[k]);
+      }
+      const got = Math.atan2(y, x);
+      let err = Math.abs(angleDelta(got, d));
+      expect(err).toBeLessThanOrEqual(P / 8 + 1e-9);
+    }
+  });
+});
+
+describe("movementVectorFor", () => {
+  const facingEast = { dirX: 1, dirY: 0 };
+
+  it("returns the world direction each key set actually moves", () => {
+    // `toBeCloseTo` rather than `toEqual`: these are computed, so a component
+    // can legitimately come out as -0, which deep equality distinguishes.
+    const expectVec = (keys, x, y) => {
+      const v = movementVectorFor(keys, facingEast);
+      expect(v.x).toBeCloseTo(x);
+      expect(v.y).toBeCloseTo(y);
+    };
+    expectVec(["KeyW"], 1, 0);
+    expectVec(["KeyS"], -1, 0);
+    // strafe right is the facing vector rotated +90 degrees (player.ts)
+    expectVec(["KeyD"], 0, 1);
+    expectVec(["KeyA"], 0, -1);
+  });
+
+  it("normalizes a diagonal", () => {
+    const v = movementVectorFor(["KeyW", "KeyD"], facingEast);
+    expect(Math.hypot(v.x, v.y)).toBeCloseTo(1);
+    expect(v.x).toBeCloseTo(Math.SQRT1_2);
+    expect(v.y).toBeCloseTo(Math.SQRT1_2);
+  });
+
+  it("returns null when the keys cancel out or there are none", () => {
+    expect(movementVectorFor([], facingEast)).toBeNull();
+    expect(movementVectorFor(["KeyW", "KeyS"], facingEast)).toBeNull();
+  });
+
+  it("rotates with the player's facing", () => {
+    const facingNorth = { dirX: 0, dirY: 1 };
+    const v = movementVectorFor(["KeyD"], facingNorth);
+    expect(v.x).toBeCloseTo(-1);
+    expect(v.y).toBeCloseTo(0);
   });
 });

@@ -201,6 +201,13 @@ export const DEFAULT_TUNING = {
   // half the step; nearer to abeam it recovers almost nothing, so the bot
   // turns instead. See the `mineRetreat` branch.
   MINE_BACKPEDAL_MIN_COS: 0.5,
+  // Whether plain navigation keeps moving (strafing/reversing toward the
+  // target) while a large heading correction is under way, instead of
+  // standing still until the turn finishes. Exists as a switch so the change
+  // is A/B-able as a single variable against the same binary:
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"NAV_FULL_WASD":false}'
+  // restores the stop-to-turn behaviour exactly.
+  NAV_FULL_WASD: true,
   // Once stuck realigning on the same mine this many ticks, force a shot at
   // the current best-effort alignment instead of freezing until the much
   // later full give-up — see `decide`'s mine-realignment comment.
@@ -396,6 +403,77 @@ export function turnBurstMs(deltaAngle, rotSpeedMultiplier, currentAngle, { tuni
     memory.pendingTurnCheck = { beforeDir: currentAngle, turnBurstMs: Math.min(stepMs, neededMs), rotSpeedMultiplier };
   }
   return Math.max(1, Math.min(stepMs, neededMs));
+}
+
+/**
+ * The 8-way key combination that moves closest to `delta` radians off the
+ * facing direction — `KeyW` straight ahead, `KeyD` hard right, `KeyS` straight
+ * back, and the diagonals between.
+ *
+ * The bot can move in any of these eight directions **at full speed without
+ * turning at all**. `moveForward` translates along `(dirX, dirY)` and `strafe`
+ * along `(-dirY, dirX)` (player.ts), both scaled by the same `step`, and
+ * `diagonalScale` (1/sqrt(2)) is applied to each axis when both are held — two
+ * perpendicular components of `step/sqrt(2)` have magnitude exactly `step`. So
+ * a diagonal is the same speed as a straight, and sprint applies to both.
+ *
+ * Worst-case direction error is half an octant, 22.5 degrees, i.e. `cos(22.5)`
+ * = 92% of the step lands along the direction actually wanted. Compare
+ * standing still to turn first, which lands 0%.
+ */
+export function movementKeysFor(delta) {
+  const octant = ((Math.round(delta / (Math.PI / 4)) % 8) + 8) % 8;
+  switch (octant) {
+    case 0:
+      return ["KeyW"];
+    case 1:
+      return ["KeyW", "KeyD"];
+    case 2:
+      return ["KeyD"];
+    case 3:
+      return ["KeyS", "KeyD"];
+    case 4:
+      return ["KeyS"];
+    case 5:
+      return ["KeyS", "KeyA"];
+    case 6:
+      return ["KeyA"];
+    /* v8 ignore next -- @preserve the modulo above admits only 0..7 */
+    default:
+      return ["KeyW", "KeyA"];
+  }
+}
+
+/**
+ * World-space unit vector a set of movement keys produces for `player`.
+ *
+ * Needed because every safety check in the navigation branch scanned along
+ * `(dirX, dirY)` — correct only while the bot exclusively walked forwards.
+ * Once it can strafe or reverse, "ahead" and "where I am going" are different
+ * directions, and scanning the wrong one is how a bot walks sideways into acid
+ * it never looked at.
+ */
+export function movementVectorFor(keys, player) {
+  let x = 0;
+  let y = 0;
+  if (keys.includes("KeyW")) {
+    x += player.dirX;
+    y += player.dirY;
+  }
+  if (keys.includes("KeyS")) {
+    x -= player.dirX;
+    y -= player.dirY;
+  }
+  if (keys.includes("KeyD")) {
+    x += -player.dirY;
+    y += player.dirX;
+  }
+  if (keys.includes("KeyA")) {
+    x -= -player.dirY;
+    y -= player.dirX;
+  }
+  const len = Math.hypot(x, y);
+  return len > 0 ? { x: x / len, y: y / len } : null;
 }
 
 /** Straight-line-movement counterpart to `turnBurstMs` — caps how long a
@@ -1582,6 +1660,35 @@ export function decide(world, memory, config) {
       if (Math.abs(delta) < tuning.MAX_WALK_WHILE_TURNING_RAD && !blockedAhead) {
         moveKeys.add("KeyW");
         moveKeys.add(diagonalStrafeKey(delta));
+      } else if (!blockedAhead && tuning.NAV_FULL_WASD) {
+        // Big heading error: keep moving *sideways or backwards* toward the
+        // target instead of standing still until the turn finishes.
+        //
+        // The bot has full WASD and had never used it. Measured cost of
+        // standing still: 385 route corners across the eight demo levels
+        // exceed `MAX_WALK_WHILE_TURNING_RAD`, costing 1585 frozen decisions
+        // = 79.3s, about 13.4% of total level time — `planRoute` emits one
+        // waypoint per tile, so a winding corridor presents a 1.5-2.7 rad
+        // bearing change every single tile.
+        //
+        // This is not the `diagonalStrafeKey` corner-cut behind the 72%
+        // level-2 death regression. That added a *lateral* component to a
+        // forward move in survival branches, where `diagonalScale` cut the
+        // escape axis by 29%. Here the eight-way combination is chosen to
+        // point at the target, total speed is unchanged (see
+        // `movementKeysFor`), and this is plain navigation with no threat.
+        const stepKeys = movementKeysFor(delta);
+        const moveVec = movementVectorFor(stepKeys, player);
+        const scan = forwardScanTiles(false, moveCtx);
+        // Scanned along the *movement* vector, not the facing one — see
+        // `movementVectorFor`. `hazard: false` for the same reason the
+        // straight-leg sprint uses it: this heads along a committed route leg.
+        const laterallyBlocked =
+          !moveVec ||
+          (map &&
+            (segmentBlocked(map, player, moveVec, scan, player.levelTime, { tuning, hazard: false }) ||
+              activeSpikeAt(map, player.x + moveVec.x * 0.6, player.y + moveVec.y * 0.6, player.levelTime)));
+        if (!laterallyBlocked) for (const key of stepKeys) moveKeys.add(key);
       }
     } else if (!blockedAhead) {
       // Don't step onto an active spike trap — wait out its cycle instead.
