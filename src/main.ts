@@ -15,7 +15,7 @@ import { DEMO_CAMPAIGN_NAME, loadDemoCampaignTree } from "./fs/demoCampaign";
 import { renderFileTree } from "./ui/fileTree";
 import { initConsoleSidebar } from "./ui/consoleSidebar";
 import { extensionOf, isParsable, parseFile } from "./parser/registry";
-import { MapGenerator } from "./map/mapGenerator";
+import { MapGenerator, type GenerateOptions } from "./map/mapGenerator";
 import type { GameMap } from "./map/types";
 import { renderExportMap } from "./map/exportView";
 import { RaycasterEngine, SIMULATION_BALANCE, isTestHooksActive } from "./engine/engine";
@@ -2412,18 +2412,38 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   // a distinct visual theme and a boosted loot rate, treating them as restock
   // arenas rather than normal combat levels (see `MapGenerator.generate`).
   const bonusLevel = BONUS_LEVEL_EXTENSIONS.has(extensionOf(path));
-  const hasRocketLauncher = carryover?.ownedWeapons?.includes(GHIDRA_WEAPON_INDEX) ?? false;
-  const ownedWeapons = carryover?.ownedWeapons ?? [];
-  const missingWeaponIndices = computeMissingWeaponIndices(ownedWeapons, campaignLevelIndex);
-  const map = mapGenerator.generate(parsed, {
-    bonusLevel,
-    hasRocketLauncher,
-    missingWeaponIndices,
-    // Same ownership gate as `hasRocketLauncher`, for the two ammo pools a
-    // Vendor Depot may also stock.
-    hasSmg: ownedWeapons.includes(GDB_WEAPON_INDEX),
-    hasGas: ownedWeapons.includes(FRIDAY_HOTFIX_WEAPON_INDEX),
-  });
+
+  // Campaign-progression safety net: gdb/ghidra/Friday Hotfix are
+  // force-added to ownedWeapons once the player reaches level 4/8/12,
+  // regardless of whether an Elite ever dropped them — never removes
+  // anything, so a weapon already earned by looting is unaffected.
+  //
+  // Computed *before* the map is generated, and the map is generated from it,
+  // because this is the carryover the segment records and therefore the one
+  // `buildEngineFor` regenerates from at playback. Deriving the generation
+  // options from the raw `carryover` here instead meant record and playback
+  // built different maps whenever this safety net fired: measured, the
+  // weapon-ownership options leave the enemy roster byte-identical but do
+  // change `ammoPickups` and the grid, since Vendor Depots stock ammo for
+  // what you already own. A replay crossing level 4/8/12 then walked a map
+  // with different pickups than the run that was recorded.
+  //
+  // It also removes a live-play inconsistency in its own right: the engine is
+  // constructed with these forced weapons, so a depot that stocked no ammo
+  // for them was already contradicting the weapon the player was just handed.
+  const effectiveCarryover: EngineCarryover | undefined = carryover
+    ? {
+        ...carryover,
+        // `?? []` is unreachable: every real call site that builds a
+        // carryover (Continue Run's saved ownedWeapons, an advancing
+        // level's stats.ownedWeapons) always populates a real array.
+        /* v8 ignore next -- @preserve */
+        ownedWeapons: applyForcedUnlocks(carryover.ownedWeapons ?? [], campaignLevelIndex),
+        campaignLevelIndex,
+      }
+    : undefined;
+
+  const map = mapGenerator.generate(parsed, mapGenerationOptionsFor(effectiveCarryover, campaignLevelIndex, bonusLevel));
   // Deliberately spoiler-free: no exit/secret-room/lore-terminal coordinates
   // in the printed text, since that string is also what the console sidebar
   // mirrors verbatim (see `src/ui/consoleSidebar.ts`) — a glance at it
@@ -2497,22 +2517,6 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   // canvas themselves, which reads as "controls don't work" on every level
   // change (multi-level advance, retry after death, or a fresh manual pick).
   canvas.focus();
-
-  // Campaign-progression safety net: gdb/ghidra/Friday Hotfix are
-  // force-added to ownedWeapons once the player reaches level 4/8/12,
-  // regardless of whether an Elite ever dropped them — never removes
-  // anything, so a weapon already earned by looting is unaffected.
-  const effectiveCarryover: EngineCarryover | undefined = carryover
-    ? {
-        ...carryover,
-        // `?? []` is unreachable: every real call site that builds a
-        // carryover (Continue Run's saved ownedWeapons, an advancing
-        // level's stats.ownedWeapons) always populates a real array.
-        /* v8 ignore next -- @preserve */
-        ownedWeapons: applyForcedUnlocks(carryover.ownedWeapons ?? [], campaignLevelIndex),
-        campaignLevelIndex,
-      }
-    : undefined;
 
   // A fresh, non-deterministic seed for this level's own randomness (enemy AI
   // timing/roam targets, loot rolls, weapon spread) — recorded (alongside
@@ -2635,6 +2639,36 @@ const FORCED_UNLOCK_LEVELS: { level: number; weaponIndex: number; name: string }
  * has reached — never removes anything, so a weapon already earned by
  * looting is unaffected. Logs only the first time an entry actually adds
  * something (i.e. wasn't already owned), not on every subsequent level. */
+/**
+ * The `generate()` options for a level, derived from the carryover that will
+ * be *recorded* for it.
+ *
+ * Shared by `launchLevel` and the replay's own `buildEngineFor` on purpose.
+ * These options used to be derived independently at each site, from two
+ * different objects: `launchLevel` used the raw `carryover`, while the segment
+ * it recorded stored `effectiveCarryover` — which force-adds gdb/ghidra/Friday
+ * Hotfix at campaign levels 4/8/12 — and playback regenerated from that. So a
+ * replay crossing one of those boundaries rebuilt a *different map* than the
+ * run it was replaying. Measured: the weapon-ownership options leave the enemy
+ * roster byte-identical but do change `ammoPickups` and the grid, since Vendor
+ * Depots stock ammo for what you already own.
+ *
+ * One function, called with the same carryover at both ends, makes that class
+ * of drift unrepresentable rather than merely fixed.
+ */
+export function mapGenerationOptionsFor(carryover: EngineCarryover | undefined, campaignLevelIndex: number, bonusLevel: boolean): GenerateOptions {
+  const ownedWeapons = carryover?.ownedWeapons ?? [];
+  return {
+    bonusLevel,
+    hasRocketLauncher: ownedWeapons.includes(GHIDRA_WEAPON_INDEX),
+    missingWeaponIndices: computeMissingWeaponIndices(ownedWeapons, campaignLevelIndex),
+    // Same ownership gate as `hasRocketLauncher`, for the two ammo pools a
+    // Vendor Depot may also stock.
+    hasSmg: ownedWeapons.includes(GDB_WEAPON_INDEX),
+    hasGas: ownedWeapons.includes(FRIDAY_HOTFIX_WEAPON_INDEX),
+  };
+}
+
 export function applyForcedUnlocks(owned: number[], levelIndex: number): number[] {
   const unlocked = new Set(owned);
   for (const { level, weaponIndex, name } of FORCED_UNLOCK_LEVELS) {
@@ -3601,16 +3635,9 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
     /** Builds a fresh engine for `segment`/`parsed`, wired the same way for
      * both a normal level load and an in-place restart (seeking backward). */
     const buildEngineFor = (segment: ReplayLevelSegment, parsed: ParsedFile): GameMap => {
-      const hasRocketLauncher = segment.carryover?.ownedWeapons?.includes(GHIDRA_WEAPON_INDEX) ?? false;
-      const segmentOwnedWeapons = segment.carryover?.ownedWeapons ?? [];
-      const missingWeaponIndices = computeMissingWeaponIndices(segmentOwnedWeapons, segment.carryover?.campaignLevelIndex ?? 1);
-      const map = mapGenerator.generate(parsed, {
-        bonusLevel: segment.bonusLevel,
-        hasRocketLauncher,
-        missingWeaponIndices,
-        hasSmg: segmentOwnedWeapons.includes(GDB_WEAPON_INDEX),
-        hasGas: segmentOwnedWeapons.includes(FRIDAY_HOTFIX_WEAPON_INDEX),
-      });
+      // Same derivation as `launchLevel`'s, from the same carryover it
+      // recorded — see `mapGenerationOptionsFor`.
+      const map = mapGenerator.generate(parsed, mapGenerationOptionsFor(segment.carryover, segment.carryover?.campaignLevelIndex ?? 1, segment.bonusLevel));
       currentParsed = parsed;
       currentSegment = segment;
       replayInput = new ReplayPlaybackInput();

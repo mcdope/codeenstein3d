@@ -599,6 +599,59 @@ describe("main.ts — multiplayerResultRows", () => {
   });
 });
 
+describe("main.ts — mapGenerationOptionsFor", () => {
+  /** The carryover `launchLevel` records for a level: the raw one with the
+   * campaign-progression safety net applied, which is what the replay segment
+   * stores and therefore what playback regenerates from. */
+  const recordedCarryover = async (owned: number[], levelIndex: number) => {
+    const { applyForcedUnlocks } = await importMain();
+    return { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0, ownedWeapons: applyForcedUnlocks(owned, levelIndex), campaignLevelIndex: levelIndex };
+  };
+
+  it("derives identical options at record time and at playback, across a forced-unlock boundary", async () => {
+    // The regression this exists for: `launchLevel` used to derive these from
+    // the *raw* carryover while the recorded segment stored the safety-net one,
+    // so a replay crossing level 4/8/12 rebuilt a different map than the run it
+    // was replaying — different Vendor Depot stock, same enemies.
+    const { mapGenerationOptionsFor } = await importMain();
+    for (const levelIndex of [4, 8, 12]) {
+      const carryover = await recordedCarryover([0, 1, 2], levelIndex);
+      const atRecordTime = mapGenerationOptionsFor(carryover, levelIndex, false);
+      // Exactly what `buildEngineFor` has to work from: the stored segment.
+      const atPlayback = mapGenerationOptionsFor(carryover, carryover.campaignLevelIndex, false);
+      expect(atPlayback).toEqual(atRecordTime);
+    }
+  });
+
+  it("reflects the force-unlocked weapon rather than the raw ownership", async () => {
+    const { mapGenerationOptionsFor } = await importMain();
+    // Level 4 force-adds gdb, so the depots must stock its ammo — the engine
+    // hands the player that weapon either way.
+    const withSafetyNet = await recordedCarryover([0, 1, 2], 4);
+    expect(mapGenerationOptionsFor(withSafetyNet, 4, false).hasSmg).toBe(true);
+    // Below the boundary nothing is added, so nothing is stocked.
+    const below = await recordedCarryover([0, 1, 2], 3);
+    expect(mapGenerationOptionsFor(below, 3, false).hasSmg).toBe(false);
+  });
+
+  it("treats a fresh run with no carryover the same way playback's fallback does", async () => {
+    // `buildEngineFor` falls back to `?? 1` / `?? []` when a segment has no
+    // carryover, which is the level-1 case — the two must still agree.
+    const { mapGenerationOptionsFor } = await importMain();
+    expect(mapGenerationOptionsFor(undefined, 1, false)).toEqual(mapGenerationOptionsFor(undefined, 1, false));
+    const fresh = mapGenerationOptionsFor(undefined, 1, false);
+    expect(fresh.hasRocketLauncher).toBe(false);
+    expect(fresh.hasSmg).toBe(false);
+    expect(fresh.hasGas).toBe(false);
+  });
+
+  it("passes bonusLevel straight through", async () => {
+    const { mapGenerationOptionsFor } = await importMain();
+    expect(mapGenerationOptionsFor(undefined, 1, true).bonusLevel).toBe(true);
+    expect(mapGenerationOptionsFor(undefined, 1, false).bonusLevel).toBe(false);
+  });
+});
+
 describe("main.ts — applyForcedUnlocks", () => {
   it("adds nothing below level 4", async () => {
     const { applyForcedUnlocks } = await importMain();
