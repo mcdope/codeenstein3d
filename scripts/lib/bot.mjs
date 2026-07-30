@@ -761,7 +761,9 @@ export class Bot {
             `navDist=${t.navDist === null || t.navDist === undefined ? "n/a" : t.navDist.toFixed(2)} ` +
             `burst=${t.turnBurst === undefined || t.turnBurst === null ? "  -" : t.turnBurst.toFixed(0).padStart(3)} ` +
             `keys=[${t.moveKeys.join(",")}]`.padEnd(34) +
-            ` threat=${t.threatDist === null ? "  -" : t.threatDist.toFixed(1)} fire=${t.fire ? 1 : 0} spike=${t.waitingOnSpike ? 1 : 0} hp=${t.hpFrac.toFixed(2)}`,
+            ` threat=${t.threatDist === null ? "  -" : t.threatDist.toFixed(1)}` +
+            ` mine=${t.mineDist === null || t.mineDist === undefined ? "  -" : t.mineDist.toFixed(1)}` +
+            ` br=${(t.branch ?? "?").padEnd(9)} fire=${t.fire ? 1 : 0} spike=${t.waitingOnSpike ? 1 : 0} hp=${t.hpFrac.toFixed(2)}`,
         );
       }
     }

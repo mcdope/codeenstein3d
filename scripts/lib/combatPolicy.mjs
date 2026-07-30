@@ -1131,6 +1131,15 @@ export function segmentsFor(holds, durationMs, minPhaseMs = 0) {
  */
 export function decide(world, memory, config) {
   const { player, enemies, mines, navTarget, map, projectiles = [] } = world;
+
+  // Bearing error and distance to `navTarget`, computed *before* the early
+  // returns below so the hazard/criticalHealth/mineRetreat branches record
+  // them too. They did not at first, and the resulting `n/a` was actively
+  // misleading — it reads as "no nav target" when it actually meant "this
+  // branch returned before the fields were filled in", which sent one
+  // diagnosis chasing the wrong call path entirely.
+  const navDelta = navTarget ? angleDelta(Math.atan2(player.dirY, player.dirX), Math.atan2(navTarget.y - player.y, navTarget.x - player.x)) : null;
+  const navDist = navTarget ? Math.hypot(navTarget.x - player.x, navTarget.y - player.y) : null;
   const { profile, tuning, stepMs, ignoreThreats, simTimeMs, lastFireSimTimeMs, minDecisionMs = 0, logger, selfId = null } = config;
   const burstCtx = { tuning, stepMs, memory };
   const moveCtx = { tuning, stepMs };
@@ -1155,7 +1164,7 @@ export function decide(world, memory, config) {
     }
     return uniformIntent(moveKeys, turnBurst, stepMs, {
       branch: "hazard",
-      trace: { branch: "hazard", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: null, mineDist: null, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false },
+      trace: { branch: "hazard", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: null, mineDist: null, delta: navDelta, navDist, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false },
     });
   }
 
@@ -1194,7 +1203,7 @@ export function decide(world, memory, config) {
     const turnBurst = moveBurstMs(10, true, moveCtx);
     return uniformIntent(moveKeys, turnBurst, stepMs, {
       branch: "criticalHealth",
-      trace: { branch: "criticalHealth", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: threat.dist, mineDist: null, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false },
+      trace: { branch: "criticalHealth", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: threat.dist, mineDist: null, delta: navDelta, navDist, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false },
     });
   }
 
@@ -1233,7 +1242,7 @@ export function decide(world, memory, config) {
         }
         return uniformIntent(moveKeys, turnBurst, stepMs, {
           branch: "mineRetreat",
-          trace: { branch: "mineRetreat", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: null, mineDist: dangerMine.dist, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false },
+          trace: { branch: "mineRetreat", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: null, mineDist: dangerMine.dist, delta: navDelta, navDist, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false },
         });
       }
       // else: gave up retreating — fall through to normal navigation below.
@@ -1570,14 +1579,6 @@ export function decide(world, memory, config) {
       `turnBurst=${turnBurst?.toFixed(0)} dodge=${dodgedBolt}`,
   );
 
-  // Recorded on every decision, not just the navigating ones: the question
-  // these answer is why `|delta|` fails to shrink across an oscillation run,
-  // and a combat interruption mid-run is part of that story. Always measured
-  // against `navTarget` (never the threat), so the series stays comparable
-  // tick to tick regardless of which sub-branch actually ran. `null` when
-  // there is no nav target — `faceAngle` passes none.
-  const navDelta = navTarget ? angleDelta(currentAngle, Math.atan2(navTarget.y - player.y, navTarget.x - player.x)) : null;
-  const navDist = navTarget ? Math.hypot(navTarget.x - player.x, navTarget.y - player.y) : null;
 
   // A real attack attempt counts as progress even if position doesn't
   // change, so only an unchanging position with no attack counts toward
