@@ -56,9 +56,6 @@ import {
   TOOLCHAIN_WEAPON_INDEX,
   GDB_WEAPON_INDEX,
   visibleMineNear,
-  plainNavTurnSign,
-  clearNavTurnPin,
-  diagonalStrafeKey,
 } from "./combatPolicy.mjs";
 
 const SIZE = 20;
@@ -1062,98 +1059,5 @@ describe("melee approach is mine-aware", () => {
     // The bot still edges the last ~1.1 tiles onto a threat already in reach;
     // that step is what the mine check protects.
     expect(DEFAULT_TUNING.MELEE_RANGE).toBeGreaterThan(DEFAULT_TUNING.MELEE_CLOSE_MIN_DISTANCE);
-  });
-});
-
-describe("plainNavTurnSign — damping the atan2 branch-cut flip", () => {
-  const DUE_WEST = Math.PI;
-
-  it("is plain sign(delta) when the heading is nowhere near the branch cut", () => {
-    const memory = {};
-    expect(plainNavTurnSign(0.3, 0, memory, DEFAULT_TUNING)).toBe(1);
-    expect(plainNavTurnSign(-0.3, 0, memory, DEFAULT_TUNING)).toBe(-1);
-  });
-
-  it("degrades to sign(delta) with no memory to pin onto", () => {
-    expect(plainNavTurnSign(0.25, DUE_WEST, undefined, DEFAULT_TUNING)).toBe(1);
-    expect(plainNavTurnSign(-0.25, DUE_WEST, undefined, DEFAULT_TUNING)).toBe(-1);
-  });
-
-  it("damps the recorded flip instead of alternating every decision", () => {
-    // The real trace from the 692-finding investigation: heading walks across
-    // atan2's cut and `delta`'s sign alternates every single decision.
-    const headings = [3.06, -2.87, -3.1, -2.89];
-    const deltas = [0.25, -0.24, 0.26, -0.23];
-    const memory = {};
-    const signs = headings.map((h, i) => plainNavTurnSign(deltas[i], h, memory, DEFAULT_TUNING));
-
-    // The pin holds for its budget, which is what removes the alternation.
-    // Deliberately *not* asserting one sign across the whole trace: the flip
-    // runs 4-5 decisions and `NAV_TURN_PIN_MAX_TICKS` is 3, so the pin expires
-    // partway through by design — and the measured comparison says that is the
-    // better setting (a 6-tick pin held longer and cost +4.9% route overhead
-    // for no extra oscillation win).
-    const pinned = signs.slice(0, DEFAULT_TUNING.NAV_TURN_PIN_MAX_TICKS);
-    expect(new Set(pinned).size).toBe(1);
-    // Whatever it settles on, turn and strafe never disagree — removing the
-    // strafe instead is what the reverted attempt 1 did, and it measured worse.
-    expect(signs.map((sign) => diagonalStrafeKey(sign))).toEqual(signs.map((sign) => (sign > 0 ? "KeyD" : "KeyA")));
-    // Strictly fewer direction changes than the undamped signal, which flips
-    // on every decision.
-    const changes = (xs) => xs.slice(1).filter((x, i) => x !== xs[i]).length;
-    expect(changes(signs)).toBeLessThan(changes(deltas.map((d) => (d > 0 ? 1 : -1))));
-  });
-
-  it("without the pin, that same trace alternates — the bug being fixed", () => {
-    const deltas = [0.25, -0.24, 0.26, -0.23];
-    const raw = deltas.map((d) => (d > 0 ? 1 : -1));
-    expect(new Set(raw).size).toBe(2);
-  });
-
-  it("releases the pin once the heading leaves the branch cut", () => {
-    const memory = {};
-    expect(plainNavTurnSign(0.25, DUE_WEST, memory, DEFAULT_TUNING)).toBe(1);
-    // Heading now points due north — nothing unstable about the sign here.
-    expect(plainNavTurnSign(-0.25, Math.PI / 2, memory, DEFAULT_TUNING)).toBe(-1);
-    expect(memory.navTurnPin).toBeNull();
-  });
-
-  it("releases the pin for a genuine large course change", () => {
-    // Above MAX_WALK_WHILE_TURNING_RAD the bot stops walking while it turns:
-    // that is a real course change, not the wobble, so it must not be damped.
-    const memory = {};
-    expect(plainNavTurnSign(0.25, DUE_WEST, memory, DEFAULT_TUNING)).toBe(1);
-    const big = -(DEFAULT_TUNING.MAX_WALK_WHILE_TURNING_RAD + 0.1);
-    expect(plainNavTurnSign(big, DUE_WEST, memory, DEFAULT_TUNING)).toBe(-1);
-    expect(memory.navTurnPin).toBeNull();
-  });
-
-  it("expires the pin after NAV_TURN_PIN_MAX_TICKS so it cannot spin the bot", () => {
-    const memory = {};
-    const held = [];
-    for (let i = 0; i < DEFAULT_TUNING.NAV_TURN_PIN_MAX_TICKS + 2; i++) {
-      // Every call asks for the opposite of the pinned direction.
-      held.push(plainNavTurnSign(-0.25, DUE_WEST, memory, DEFAULT_TUNING));
-    }
-    expect(held[0]).toBe(-1); // first call sets the pin from the raw sign
-    // A pin that never expired would return the same sign forever; this one
-    // re-derives once the tick budget runs out.
-    expect(held.filter((s) => s === -1).length).toBeGreaterThan(1);
-    expect(memory.navTurnPin.ticks).toBeLessThanOrEqual(DEFAULT_TUNING.NAV_TURN_PIN_MAX_TICKS);
-  });
-
-  it("clearNavTurnPin drops the pin and tolerates a missing memory", () => {
-    const memory = { navTurnPin: { sign: 1, ticks: 2 } };
-    clearNavTurnPin(memory);
-    expect(memory.navTurnPin).toBeNull();
-    expect(() => clearNavTurnPin(undefined)).not.toThrow();
-  });
-
-  it("pins on the negative side of the cut too, not just the positive one", () => {
-    const memory = {};
-    const a = plainNavTurnSign(-0.25, -3.05, memory, DEFAULT_TUNING);
-    const b = plainNavTurnSign(0.25, -3.05, memory, DEFAULT_TUNING);
-    expect(a).toBe(-1);
-    expect(b).toBe(-1);
   });
 });

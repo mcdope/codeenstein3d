@@ -108,7 +108,7 @@ const HEADED = process.env.CODEENSTEIN_TELEMETRY_HEADED === "1";
 // this got stuck. With this, both sides run the *same* binary and differ only
 // by the value.
 //
-//   CODEENSTEIN_TELEMETRY_TUNING='{"NEAR_PI_HEADING_EPS":0}'
+//   CODEENSTEIN_TELEMETRY_TUNING='{"TURN_MOVE_EPS":0.3}'
 //
 // Invalid JSON is a hard exit, not a warning: silently falling back to default
 // tuning would produce a baseline-vs-baseline comparison that looks like a
