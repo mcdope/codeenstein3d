@@ -666,14 +666,16 @@ function fatalDamageSourceCounts(samples) {
  * samples (`{levelIndex, snapshot, player, incomplete}[]`). `shortestPathTiles`
  * is the level's static BFS-shortest distance (`null` for the campaign-wide
  * rollup, whose route-efficiency figure is computed separately across whole
- * runs instead — see `buildCampaignAggregate`).
+ * runs instead — see `buildCampaignAggregate`). `plannedRouteTiles` is the
+ * length of the route the bot actually set out to walk (also `null` for the
+ * rollup, and whenever the route failed to plan).
  *
  * Exported for run-balancing-telemetry-multiplayer.mjs's own reuse (step 11
  * Phase 2a/4) — it only reads `sample.snapshot`, which the multiplayer
  * per-player `getMultiplayerTelemetrySnapshot(id)` shape matches field-for-
  * field, so this needs no multiplayer-specific fork.
  */
-export function aggregateLevelRuntime(samples, shortestPathTiles) {
+export function aggregateLevelRuntime(samples, shortestPathTiles, plannedRouteTiles = null) {
   const sampleCount = samples.length;
   const incompleteSampleCount = samples.filter((s) => s.incomplete).length;
   if (sampleCount === 0) {
@@ -712,6 +714,23 @@ export function aggregateLevelRuntime(samples, shortestPathTiles) {
         ) // overwritten by buildCampaignAggregate
       : spread(
           snaps.map((s) => (s.distanceTraveled > 0 ? Math.min(1, shortestPathTiles / s.distanceTraveled) : 0)),
+          "mean",
+        );
+
+  // How much further the bot walked than the route it planned for itself — the
+  // part of route inefficiency the bot is actually responsible for. Not capped
+  // at 1 and not inverted: it reads as a multiplier, where 1.0 is a perfect
+  // walk of the plan. Measured **1.71** on the demo campaign (Gamer/normal)
+  // distance-weighted across levels — the campaign rollup's per-run mean reads
+  // ~1.64 — which splits into 1.32x loot detours and 1.30x slop. Loot is
+  // deliberately *inside* this figure: detouring is the bot's own decision, so
+  // a loot-policy change should move this metric. See `routeEfficiencyScore`'s
+  // note below for why that score is the wrong thing to judge navigation on.
+  const routeFollowingOverhead =
+    plannedRouteTiles === null || plannedRouteTiles <= 0
+      ? null
+      : spread(
+          snaps.map((s) => s.distanceTraveled / plannedRouteTiles),
           "mean",
         );
 
@@ -806,7 +825,36 @@ export function aggregateLevelRuntime(samples, shortestPathTiles) {
       },
     },
     navigationMapFlow: {
+      // Measured 0.345 on the demo campaign (Gamer/normal). **Do not read that
+      // as a bot defect, and do not use this as an A/B win metric for
+      // navigation changes** — it was, and the conclusion was wrong. Decomposed
+      // against the planned route and a per-decision activity attribution
+      // (`summarizeActivityDistance` in `bot.mjs`), the measured 2.9x total is
+      // three near-independent factors that multiply out to 2.97x:
+      //   1.68x  the planned route vs the bare spawn->exit BFS — *entirely* the
+      //          two key/locked-door levels; the other six plan within 5% of
+      //          optimal. Level design, not the bot.
+      //   1.32x  loot detours, 24% of all distance walked. Deliberate and
+      //          almost all justified: 63% of those tiles are ammo, 19% are
+      //          mandatory keys, and only 3.3% (0.8% of total distance) is
+      //          provably wasted — a health pack grabbed at hp=1.00, where
+      //          `MAX_HEALTH` caps the gain at nothing.
+      //   1.30x  actually following the plan. The only part the bot owns
+      //          outright, and the only part worth optimising as navigation. Of
+      //          it, 4.2% of distance is covered while engaged with a threat
+      //          and ~1.2% of simulated time is the known atan2-branch-cut
+      //          oscillation. Replan retries and the exit-gate fallback
+      //          contribute ~0% on these eight levels.
+      // Because factors 1 and 2 dominate and neither is a navigation quality
+      // signal, this score moves mostly with level layout and loot policy.
+      // `routeFollowingOverhead` below is the metric to judge navigation on.
       routeEfficiencyScore,
+      // Distance vs the route the bot planned for itself, as a multiplier
+      // (1.0 = walked the plan exactly; measured 1.71). `null` when the route
+      // failed to plan or for the campaign-wide rollup. This is factors 2 and 3
+      // above with factor 1 — level design — divided out, so a navigation or
+      // loot-policy change moves it and a differently-laid-out level does not.
+      routeFollowingOverhead,
       // `routeEfficiencyScore`'s raw numerator-free counterpart. The score is
       // a ratio against the static BFS optimum and is `0` whenever
       // `shortestPathTiles` is null, so it can't distinguish "walked a tight
@@ -867,7 +915,7 @@ function buildComboOutput(levelPlans, combo) {
 
   const levels = levelPlans.map((lp, i) => {
     const samples = qualifyingRuns.map((run) => run.levelSnapshots.find((s) => s.levelIndex === i)).filter(Boolean);
-    const runtime = aggregateLevelRuntime(samples, lp.staticAnalysis.shortestPathTiles);
+    const runtime = aggregateLevelRuntime(samples, lp.staticAnalysis.shortestPathTiles, lp.staticAnalysis.plannedRouteTiles);
     return { levelIndex: i, filename: lp.filename, static: lp.staticAnalysis, runtime };
   });
 
@@ -970,7 +1018,28 @@ function buildCampaignAggregate(levelPlans, qualifyingRuns) {
     }
     return dist > 0 ? Math.min(1, shortest / dist) : 0;
   });
-  if (runtime.navigationMapFlow) runtime.navigationMapFlow.routeEfficiencyScore = spread(perRunRouteEff, "mean");
+  // Same per-run treatment for `routeFollowingOverhead`, and for the same
+  // reason: one level's planned-route length says nothing campaign-wide. Runs
+  // that reached a level whose route failed to plan are skipped rather than
+  // charged a zero denominator — without this the A/B report showed a bare
+  // dash here, since the flattened rollup passes `plannedRouteTiles = null`.
+  const perRunFollowOverhead = qualifyingRuns
+    .map((run) => {
+      let dist = 0;
+      let planned = 0;
+      for (const s of run.levelSnapshots) {
+        const p = levelPlans[s.levelIndex].staticAnalysis.plannedRouteTiles;
+        if (p === null) return null;
+        dist += s.snapshot.distanceTraveled;
+        planned += p;
+      }
+      return planned > 0 ? dist / planned : null;
+    })
+    .filter((v) => v !== null);
+  if (runtime.navigationMapFlow) {
+    runtime.navigationMapFlow.routeEfficiencyScore = spread(perRunRouteEff, "mean");
+    runtime.navigationMapFlow.routeFollowingOverhead = perRunFollowOverhead.length > 0 ? spread(perRunFollowOverhead, "mean") : null;
+  }
   return runtime;
 }
 

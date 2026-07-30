@@ -16,7 +16,7 @@
  * instead of freezing.
  */
 import { describe, expect, it } from "vitest";
-import { detectAnomalies, detectHeldKeyNoMovement, detectOscillation } from "./bot.mjs";
+import { detectAnomalies, detectHeldKeyNoMovement, detectOscillation, summarizeActivityDistance } from "./bot.mjs";
 
 /** One trace record, with the fields the detectors actually read. */
 function rec(over = {}) {
@@ -174,5 +174,94 @@ describe("detectHeldKeyNoMovement", () => {
     expect(f.detail).toContain("keysDuringRun=");
     expect(f.detail).toContain("KeyE");
     expect(f.detail).toContain("KeyQ");
+  });
+});
+
+describe("summarizeActivityDistance", () => {
+  /** `n` records at 1-tile spacing in +x under one activity label. */
+  const leg = (n, activity, over = {}) =>
+    Array.from({ length: n }, (_, i) => rec({ x: i, y: 0, activity, moveKeys: ["KeyW"], ...over }));
+
+  it("returns nothing for an empty or missing trace", () => {
+    expect(summarizeActivityDistance([])).toEqual({ rows: [], total: 0 });
+    expect(summarizeActivityDistance(undefined)).toEqual({ rows: [], total: 0 });
+  });
+
+  it("charges each gap to the earlier record's activity", () => {
+    // Positions 0,1,2 under "route" then 3,4 under "loot": the 2->3 gap is the
+    // last "route" record's motion, so route gets 3 tiles and loot gets 1.
+    const trace = [
+      rec({ x: 0, activity: "route" }),
+      rec({ x: 1, activity: "route" }),
+      rec({ x: 2, activity: "route" }),
+      rec({ x: 3, activity: "loot" }),
+      rec({ x: 4, activity: "loot" }),
+    ];
+    const { rows, total } = summarizeActivityDistance(trace);
+    expect(total).toBeCloseTo(4);
+    expect(rows.map((r) => [r.activity, r.tiles])).toEqual([
+      ["route", 3],
+      ["loot", 1],
+    ]);
+  });
+
+  it("counts the final record's ticks but not its unobservable motion", () => {
+    const [row] = summarizeActivityDistance(leg(4, "route")).rows;
+    expect(row.ticks).toBe(4);
+    expect(row.tiles).toBeCloseTo(3);
+  });
+
+  it("computes each activity's share of the total", () => {
+    const trace = [...leg(4, "route"), ...leg(2, "exit").map((r) => ({ ...r, x: r.x + 100 }))];
+    const { rows } = summarizeActivityDistance(trace);
+    expect(rows.find((r) => r.activity === "route").share).toBeCloseTo(0.75);
+    expect(rows.reduce((a, r) => a + r.share, 0)).toBeCloseTo(1);
+  });
+
+  it("drops a teleport jump instead of charging it to an activity", () => {
+    // A cross-map hop must not swamp every real figure — see the constant's
+    // own comment for why the bar sits above the widest legitimate step.
+    const trace = [rec({ x: 0, activity: "route" }), rec({ x: 60, activity: "route" }), rec({ x: 61, activity: "route" })];
+    const { total, rows } = summarizeActivityDistance(trace);
+    expect(total).toBeCloseTo(1);
+    expect(rows[0].tiles).toBeCloseTo(1);
+  });
+
+  it("labels records with no activity rather than dropping them", () => {
+    const { rows, total } = summarizeActivityDistance([rec({ x: 0 }), rec({ x: 1 })]);
+    expect(rows.map((r) => r.activity)).toEqual(["unlabelled"]);
+    expect(total).toBeCloseTo(1);
+  });
+
+  it("splits out distance covered while a threat was present", () => {
+    const trace = [
+      rec({ x: 0, activity: "route" }),
+      rec({ x: 1, activity: "route", threatDist: 5 }),
+      rec({ x: 2, activity: "route", threatDist: 4 }),
+      rec({ x: 3, activity: "route" }),
+    ];
+    const [row] = summarizeActivityDistance(trace).rows;
+    expect(row.tiles).toBeCloseTo(3);
+    // Records 1 and 2 each cover one tile with a threat up; record 0 does not.
+    expect(row.engagedTiles).toBeCloseTo(2);
+  });
+
+  it("treats the threat-driven escape branches as engaged without a threatDist", () => {
+    // `mineRetreat` reports `threatDist: null` (its danger is a mine), so
+    // keying only off `threatDist` would mis-file it as free navigation.
+    const trace = [
+      rec({ x: 0, activity: "route", branch: "mineRetreat", mineDist: 2 }),
+      rec({ x: 1, activity: "route", branch: "criticalHealth" }),
+      rec({ x: 2, activity: "route" }),
+    ];
+    const [row] = summarizeActivityDistance(trace).rows;
+    expect(row.engagedTiles).toBeCloseTo(2);
+  });
+
+  it("keeps hazard and plain navigation out of the engaged split", () => {
+    // Acid is terrain, not a threat — counting it as combat would inflate
+    // exactly the number this breakdown exists to attribute.
+    const trace = [rec({ x: 0, activity: "route", branch: "hazard" }), rec({ x: 1, activity: "route" })];
+    expect(summarizeActivityDistance(trace).rows[0].engagedTiles).toBe(0);
   });
 });

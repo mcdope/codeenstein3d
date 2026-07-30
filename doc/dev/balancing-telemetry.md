@@ -163,7 +163,7 @@ The three combos are not arbitrary: **Casual/normal** is the combo the 72% regre
 `report-balancing-ab.mjs` splits the comparison in two on purpose, and the split is the point:
 
 - **Guard metrics** — `qualifyRate` (from `trueQualifyingCount`, never the floored `qualifyingRunCount`) and a per-level **conditional** death rate, `died[i] / reached[i]`. Raw death counts don't compare across two runs with different reach: a level nobody got to has no deaths. These are attempt-level, so n=20 detects a 0%→72% swing instantly and nothing near 10pp — small guard movements are not readable at this sample size and must not be reported as if they were. Pre-registered rollback thresholds (in `abReport.mjs`, deliberately fixed in code rather than chosen after seeing the numbers): qualifyRate down >15pp, any level's conditional death rate up >20pp, or **any** increase in stuck count. A breach means revert, not tune. The CLI exits non-zero on a breach.
-- **Win metrics** — `enemyAccuracy`, `levelTimeSec`, `distanceTraveled`, `routeEfficiencyScore`, TTK, health, damage-by-source. Per-level-visit aggregates over hundreds of samples, so these do have real resolution at the same n.
+- **Win metrics** — `enemyAccuracy`, `levelTimeSec`, `distanceTraveled`, `routeFollowingOverhead`, TTK, health, damage-by-source. Per-level-visit aggregates over hundreds of samples, so these do have real resolution at the same n. Note `routeEfficiencyScore` is marked `"flat"`, not `"up"`: see *Route efficiency is mostly not a bot metric* below.
 
 Passing guards means "not obviously worse", never "the change worked" — always read the win metrics against whatever the change was actually supposed to do. If a guard lands ambiguously (5–20pp worse), escalate that one combo to `ATTEMPT_CAP=60` before deciding; never ship on the ambiguous reading.
 
@@ -174,6 +174,23 @@ One A/B side is roughly 4x `balancing:scan`'s wall clock, and a full gate is two
 `balancing_telemetry.json` (repo root, gitignored) holds a meta block (profile definitions), then per-level and campaign-wide aggregates across 7 categories (map density/demographics, combat pacing, AI effectiveness/danger, damage/healing breakdown, weapon efficiency, economy/loot starvation, navigation/map flow), plus deterministic outlier `flags` and per-profile `crossDifficultyFlags`. Judgment-call metrics carry a `{mean, max, min, samples}` spread rather than a bare mean, so a consumer (human or LLM) can see the actual distribution, not just a single number that might hide a bimodal split.
 
 Two raw fields were added 2026-07-27 because the derived ratios they already fed couldn't answer an A/B on their own. `combatPacing.levelTimeSec` — previously read only as `combatVsExplorationRatio`'s denominator and never emitted, which left the playtest bot's loudest failure mode (being far slower over a route than a human) with no output field at all; a ratio can't substitute, since a bot that is uniformly 2x slow reports an unchanged ratio. And `navigationMapFlow.distanceTraveled` — the raw counterpart to `routeEfficiencyScore`, which is `0` whenever `shortestPathTiles` is null and so can't distinguish "walked a tight route" from "the optimum was unknown". Together they separate "the bot got faster" (time down, distance flat) from "the bot took a shorter route" (both down).
+
+### Route efficiency is mostly not a bot metric (measured 2026-07-30)
+
+`navigationMapFlow.routeEfficiencyScore` sat at **0.345** on the demo campaign (Gamer/normal) and was being read as "the bot walks 3x further than it needs to". It does walk 2.9x the theoretical minimum, but only a minority of that is the bot's doing. Decomposed against the planned route and a new per-decision activity attribution (`summarizeActivityDistance` in `bot.mjs`, which charges every tile walked to the errand the bot was on at the time), the 2.9x is three near-independent factors multiplying to 2.97x:
+
+| factor | size | whose fault |
+|---|---|---|
+| planned route vs bare spawn→exit BFS | **1.68x** | level design — and *entirely* the two key/locked-door levels (demo 3 and 7, 3.7x and 3.5x). The other six plan within 5% of optimal. |
+| loot detours (24% of all distance walked) | **1.32x** | bot policy, and mostly justified — 63% of those tiles are ammo, 19% mandatory keys, and only 3.3% of them (0.8% of total distance) is provably wasted: a health pack grabbed at `hp=1.00`, where `MAX_HEALTH` caps the gain at nothing. |
+| actually following the plan | **1.30x** | the bot outright. 4.2% of distance is covered while engaged with a threat; ~1.2% of simulated time is the known atan2-branch-cut oscillation. Replan retries and the exit-gate fallback contribute **~0%** on these eight levels. |
+
+Two consequences, both now encoded in the code and in `WIN_METRICS`:
+
+- **`routeEfficiencyScore` is a poor A/B win metric for navigation changes** — it moves mostly with level layout and loot policy. It is marked `"flat"` in `abReport.mjs` rather than `"up"`.
+- **`navigationMapFlow.routeFollowingOverhead` is the metric to judge navigation on.** Distance ÷ the route the bot planned for *itself* (`staticAnalysis.plannedRouteTiles`), as a multiplier where 1.0 is a perfect walk; measured **1.71** distance-weighted across levels (the campaign rollup's per-run mean reads ~1.64). Level design divides out; loot stays in, deliberately, because detouring is the bot's own decision. `null` when the route failed to plan and for the campaign-wide rollup.
+
+`plannedRouteTiles` sums straight-line waypoint-to-waypoint distance, which is exact here rather than an approximation: `planRoute` emits one waypoint per tile, and a BFS re-measurement of the true walkable path agreed to the tile on all eight demo levels.
 
 Also, at the combo level (alongside `weaponFirstOwnedAtLevel`): `weaponFirstOwnedAtLevel` is a *min* across qualifying runs — it answers "how soon could this profile realistically get it", not "how often did any run get it at all". `weaponAcquisitionRate` (`{ [weaponIndex]: { count, rate } }`) answers the second question directly, for every unlockable weapon (gdb/ghidra/Friday Hotfix/Toolchain) uniformly — added 2026-07-15 specifically to verify Toolchain's new miss-chance acquisition path (see below) actually moves the needle, since the min-level metric alone can't distinguish "3% of runs get it, always around level 9" from "60% of runs get it, always around level 9".
 

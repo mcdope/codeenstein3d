@@ -148,7 +148,14 @@ export const WIN_METRICS = [
   { key: "enemyAccuracy", path: "aiEffectivenessDanger.enemyAccuracy", better: "down" },
   { key: "levelTimeSec", path: "combatPacing.levelTimeSec", better: "down" },
   { key: "distanceTraveled", path: "navigationMapFlow.distanceTraveled", better: "flat" },
-  { key: "routeEfficiency", path: "navigationMapFlow.routeEfficiencyScore", better: "up" },
+  // The one to judge a navigation change on: distance vs the bot's *own*
+  // planned route, so level layout and loot policy cancel out. See its emit
+  // site in `run-balancing-telemetry.mjs` for the measured decomposition.
+  { key: "routeFollowOverhead", path: "navigationMapFlow.routeFollowingOverhead", better: "down" },
+  // Kept for continuity, marked `"flat"` deliberately: it is dominated by
+  // level design (the key/locked-door levels) and loot policy rather than by
+  // navigation quality, so "up" was the wrong instruction to give a reader.
+  { key: "routeEfficiency", path: "navigationMapFlow.routeEfficiencyScore", better: "flat" },
   { key: "ttkNormal", path: "combatPacing.avgTtkByCategory.normal", better: "down" },
   { key: "minHealthReached", path: "aiEffectivenessDanger.minHealthReached", better: "up" },
   { key: "timeBelow25PctHp", path: "aiEffectivenessDanger.timeBelow25PctHealthSec", better: "down" },

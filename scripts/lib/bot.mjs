@@ -122,6 +122,19 @@ const TRANSLATING_KEYS = new Set(["KeyW", "KeyA", "KeyD"]);
 // The signature is a large travelled path with a small net displacement,
 // sustained. Each threshold below exists to separate that from something the
 // bot is supposed to do.
+// A position jump larger than any decision could physically produce, so
+// `summarizeActivityDistance` can drop teleports instead of charging them to
+// an activity. Worst legitimate case is the multiplayer bot: `stepMs = 400` at
+// the 6.4 t/s sprint speed = 2.56 tiles; this leaves comfortable headroom
+// while staying far under a teleporter's cross-map hop.
+const TELEPORT_JUMP_TILES = 4;
+
+// Branches that only ever run because something is threatening the bot, so
+// motion under them is combat cost no matter what errand it interrupted.
+// `main` is deliberately absent — it covers both plain navigation and an
+// active firefight, and `threatDist` is what tells those apart.
+const ENGAGED_BRANCHES = new Set(["criticalHealth", "mineRetreat"]);
+
 const OSCILLATION_TICKS_THRESHOLD = 30;
 // Positions must stay inside this radius of the run's anchor. Wider than a
 // combat sidestep's amplitude (~1.3 tiles at the flip period) so a firefight
@@ -135,6 +148,69 @@ const OSCILLATION_MIN_PATH_TILES = 2.0;
 // bot walking a corridor and back once has a ratio near 2; sustained
 // ping-ponging climbs well past this.
 const OSCILLATION_MIN_PATH_RATIO = 4;
+
+/**
+ * Attribute one level's travelled distance to what the bot was *trying to do*
+ * while it covered it — the `activity` label `Bot#tick` stamps onto every
+ * trace record (see `Bot#withActivity`).
+ *
+ * Why this exists: `routeEfficiencyScore` compares distance travelled against
+ * `map.shortestPathTiles` (a bare spawn->exit BFS) and sat at **0.34** on the
+ * demo campaign, i.e. ~3x the theoretical minimum. Splitting that measured
+ * 3.0x showed it is two roughly equal factors, and only one of them is a bot
+ * defect:
+ * - **1.68x route design** — the planned route itself. Concentrated *entirely*
+ *   in the two key/locked-door levels (demo levels 3 and 7, 3.7x and 3.5x,
+ *   13 and 15 legs); on the other six the plan is within 5% of the shortest
+ *   path. Not a defect: a player who must fetch a key walks further too.
+ * - **1.72x execution** — the bot walking further than *its own* plan, on
+ *   every level (worst 3.3x). That is the part worth attacking, and a single
+ *   aggregate number cannot say which errand spends it.
+ *
+ * Distance between consecutive records is charged to the *earlier* record's
+ * activity: position is sampled before the action, so a record's motion is
+ * what the decision it describes caused. Motion outside `tick` (door pushes
+ * via `holdForwardFine`, teleports) records nothing and lands in the caller's
+ * residual — compare `total` against the engine's own `distanceTraveled`.
+ *
+ * Each row also splits its distance by whether the bot was *engaged* at the
+ * time — a threat present, or one of the threat/mine-driven escape branches.
+ * Navigation and combat overlap rather than alternate (`tick()` lets a threat
+ * preempt the route mid-waypoint), so "distance walked while fighting during
+ * the route leg" is a distinct cost from "distance walked to reach the exit",
+ * and the errand label alone cannot separate them.
+ *
+ * Returns `{ activity, tiles, engagedTiles, ticks, share }[]`, descending by
+ * `tiles`, plus a `total`. Pure — takes a trace, returns numbers, no I/O.
+ */
+export function summarizeActivityDistance(trace) {
+  const byActivity = new Map();
+  let total = 0;
+  if (!trace || trace.length === 0) return { rows: [], total: 0 };
+  for (let i = 0; i < trace.length; i++) {
+    const label = trace[i].activity ?? "unlabelled";
+    let row = byActivity.get(label);
+    if (!row) byActivity.set(label, (row = { activity: label, tiles: 0, engagedTiles: 0, ticks: 0 }));
+    row.ticks += 1;
+    // The last record has no successor to measure against; its own motion is
+    // unobservable here rather than zero, so it contributes ticks only.
+    const next = trace[i + 1];
+    if (!next) continue;
+    const d = Math.hypot(next.x - trace[i].x, next.y - trace[i].y);
+    // A teleport is not travel. `driveLegs`/`#walkPathTo` abandon their route
+    // on `reason === "teleported"` precisely because the bot is no longer
+    // where the plan assumed, and charging that jump to an activity would
+    // swamp every real figure.
+    if (d > TELEPORT_JUMP_TILES) continue;
+    row.tiles += d;
+    if (ENGAGED_BRANCHES.has(trace[i].branch) || trace[i].threatDist != null) row.engagedTiles += d;
+    total += d;
+  }
+  const rows = [...byActivity.values()]
+    .map((r) => ({ ...r, share: total > 0 ? r.tiles / total : 0 }))
+    .sort((a, b) => b.tiles - a.tiles || a.activity.localeCompare(b.activity));
+  return { rows, total };
+}
 
 /**
  * Scans one level's worth of per-decision trace records (see `Bot#tick`'s
@@ -398,6 +474,28 @@ export class Bot {
     // level transition), reset only by constructing a fresh `Bot`.
     this.simTimeMs = 0;
     this.lastFireSimTimeMs = -Infinity;
+    // What errand the bot is currently on, stamped onto every trace record so
+    // travelled distance can be attributed to intent rather than only to a
+    // combat branch — see `summarizeActivityDistance` and `#withActivity`.
+    // Purely observational: nothing reads it to make a decision.
+    this.activity = "route";
+  }
+
+  /**
+   * Run `fn` with `this.activity` set to `label`, restoring the previous label
+   * afterwards. Save/restore rather than plain assignment because these
+   * errands nest (`driveToExit` -> `#huntEnemy` -> `#walkPathTo` ->
+   * `driveToward`) and an inner errand finishing must not silently relabel the
+   * outer one's remaining decisions.
+   */
+  async #withActivity(label, fn) {
+    const previous = this.activity;
+    this.activity = label;
+    try {
+      return await fn();
+    } finally {
+      this.activity = previous;
+    }
   }
 
   /**
@@ -521,6 +619,15 @@ export class Bot {
     for (const f of detectOscillation(this.mineMemory.trace)) {
       console.log(`  [anomaly] ${label} level ${levelIndex + 1}: ${f.type} (${f.ticks} ticks, decisions ${f.startTick}-${f.endTick}) ${f.detail}`);
     }
+    // Not an anomaly — a standing breakdown of where the level's walking went,
+    // so `routeEfficiencyScore` regressions can be attributed instead of only
+    // observed. `navDiag`-gated because it prints unconditionally (every level
+    // has one) and would otherwise bury the actual findings above.
+    if (this.logger.navDiag) {
+      const { rows, total } = summarizeActivityDistance(this.mineMemory.trace);
+      const parts = rows.map((r) => `${r.activity} ${r.tiles.toFixed(1)}t (${(r.share * 100).toFixed(0)}%, ${(r.engagedTiles / (r.tiles || 1) * 100).toFixed(0)}% engaged)`);
+      console.log(`  [activity] ${label} level ${levelIndex + 1}: ${total.toFixed(1)} tiles attributed — ${parts.join(", ")}`);
+    }
   }
 
   /**
@@ -573,18 +680,27 @@ export class Bot {
     if (staticUncollected.includes(best)) this.visitedPickups.add(`${best.x},${best.y}`);
 
     const path = bestPath;
-    this.logger.wpDebug?.(`[wpdebug] loot-detour from (${player.x.toFixed(1)},${player.y.toFixed(1)}) to best=(${best.x},${best.y}) kind=${best.kind} pathLen=${path.length}`);
-    for (const wp of pathToWaypoints(path)) {
-      this.logger.wpDebug?.(`[wpdebug]   loot wp=(${wp.x},${wp.y})`);
-      const result = await this.driveToward(wp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
-      this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
-      if (result.state !== "playing") return result;
-      // See `driveLegs`'s own doc comment on its identical check — every
-      // waypoint after a mid-route teleport was planned from a position this
-      // bot is no longer at.
-      if (result.reason === "teleported") return result;
-    }
-    return { state: "playing" };
+    // `hp` and `urgent` are logged because loot detours turned out to be 24% of
+    // all distance walked (see `summarizeActivityDistance`), and whether a given
+    // detour was *worth* walking depends on the resource level at the time —
+    // health caps at `MAX_HEALTH`, so a health detour at `hp=1.00` is walking
+    // for nothing.
+    this.logger.wpDebug?.(
+      `[wpdebug] loot-detour from (${player.x.toFixed(1)},${player.y.toFixed(1)}) to best=(${best.x},${best.y}) kind=${best.kind} pathLen=${path.length} hp=${player.healthFraction.toFixed(2)} urgent=${urgent}`,
+    );
+    return this.#withActivity("loot", async () => {
+      for (const wp of pathToWaypoints(path)) {
+        this.logger.wpDebug?.(`[wpdebug]   loot wp=(${wp.x},${wp.y})`);
+        const result = await this.driveToward(wp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
+        this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
+        if (result.state !== "playing") return result;
+        // See `driveLegs`'s own doc comment on its identical check — every
+        // waypoint after a mid-route teleport was planned from a position this
+        // bot is no longer at.
+        if (result.reason === "teleported") return result;
+      }
+      return { state: "playing" };
+    });
   }
 
   /**
@@ -616,6 +732,12 @@ export class Bot {
     // which an entry-only check by definition cannot catch.
     outer: for (let replan = 0; ; replan++) {
       const lastTry = replan >= this.tuning.WAYPOINT_REPLAN_ATTEMPTS;
+      // Ground covered on a *retry* was already covered by the attempt that
+      // went stuck, so it is charged to a distinct `<errand>+replan` activity
+      // (see `summarizeActivityDistance`). Iteration 0 keeps the caller's own
+      // label even when `displaced` fires: routing around a corner the moment
+      // line of sight is lost is the plan working, not a retry.
+      const activity = replan > 0 ? `${this.activity}+replan` : this.activity;
       const player = await this.readState();
       if (player.state !== "playing") return { state: player.state };
       const displaced =
@@ -639,7 +761,7 @@ export class Bot {
         if (path) {
           for (const rwp of pathToWaypoints(path)) {
             this.logger.wpDebug?.(`[wpdebug] replan-walk wp=(${rwp.x},${rwp.y})`);
-            const result = await this.driveToward(rwp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
+            const result = await this.#withActivity(activity, () => this.driveToward(rwp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT));
             this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
             // See `driveLegs`'s own doc comment on its identical check — a
             // mid-route teleport invalidates every remaining replanned
@@ -658,12 +780,12 @@ export class Bot {
         // budget that costs the whole budget before reporting the failure it
         // already knew about — cap it so a hopeless case is cheap.
         this.logger.driftDebug?.(`[driftdebug]   no path even through doors — bounded straight-line attempt`);
-        const bounded = await this.driveToward(wp, eps, Math.ceil(this.tuning.MAX_TICKS_PER_WAYPOINT / 6));
+        const bounded = await this.#withActivity(activity, () => this.driveToward(wp, eps, Math.ceil(this.tuning.MAX_TICKS_PER_WAYPOINT / 6)));
         if (bounded.state !== "playing" || bounded.reason !== "stuck" || lastTry) return bounded;
         continue outer;
       }
 
-      const direct = await this.driveToward(wp, eps, this.tuning.MAX_TICKS_PER_WAYPOINT);
+      const direct = await this.#withActivity(activity, () => this.driveToward(wp, eps, this.tuning.MAX_TICKS_PER_WAYPOINT));
       if (direct.state !== "playing" || direct.reason !== "stuck" || lastTry) return direct;
       this.logger.driftDebug?.(`[driftdebug] straight-line stuck — re-planning (attempt ${replan + 1})`);
     }
@@ -705,7 +827,7 @@ export class Bot {
           if (wpDetour.state !== "playing") return wpDetour;
           if (wpDetour.reason === "teleported") return wpDetour;
           this.logger.wpDebug?.(`[wpdebug] leg-walk wp=(${wp.x},${wp.y})`);
-          const result = await this.driveTowardWithReplan(wp, openedDoors);
+          const result = await this.#withActivity("route", () => this.driveTowardWithReplan(wp, openedDoors));
           this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
           if (result.state !== "playing") return result;
           if (result.reason === "stuck") return { state: "stuck" };
@@ -720,11 +842,11 @@ export class Bot {
           x: leg.doorTile.x + 0.5 - leg.approachDir.dx,
           y: leg.doorTile.y + 0.5 - leg.approachDir.dy,
         };
-        const staged = await this.driveTowardWithReplan(stagingPoint, openedDoors, this.tuning.TIGHT_ARRIVE_EPS);
+        const staged = await this.#withActivity("door", () => this.driveTowardWithReplan(stagingPoint, openedDoors, this.tuning.TIGHT_ARRIVE_EPS));
         if (staged.state !== "playing") return staged;
         if (staged.reason === "teleported") return staged;
         const targetAngle = Math.atan2(leg.approachDir.dy, leg.approachDir.dx);
-        const faced = await this.faceAngle(targetAngle, this.tuning.MAX_TICKS_PER_WAYPOINT);
+        const faced = await this.#withActivity("door", () => this.faceAngle(targetAngle, this.tuning.MAX_TICKS_PER_WAYPOINT));
         if (faced.state !== "playing") return faced;
         const held = await this.holdForwardFine(this.tuning.DOOR_OPEN_TICKS * this.tuning.VIRTUAL_STEP_MS, this.tuning.DOOR_OPEN_FINE_STEP_MS);
         if (held.state !== "playing") return held;
@@ -769,11 +891,11 @@ export class Bot {
       // burning all `finalApproachTicks` straight-lining into a wall. Round 0
       // is normally a no-op (the caller's legs just ended at the exit).
       if (round > 0) {
-        const back = await this.#walkPathTo({ x: this.map.exit.x, y: this.map.exit.y }, openedDoors);
+        const back = await this.#withActivity("exitBacktrack", () => this.#walkPathTo({ x: this.map.exit.x, y: this.map.exit.y }, openedDoors));
         if (back.state !== "playing") return back;
         if (back.reason === "teleported") return back;
       }
-      last = await this.driveToward(exitCenter, this.tuning.TIGHT_ARRIVE_EPS, finalApproachTicks);
+      last = await this.#withActivity("exit", () => this.driveToward(exitCenter, this.tuning.TIGHT_ARRIVE_EPS, finalApproachTicks));
       // "won" (exit accepted) or "over" (died on the way) — either way, done.
       if (last.state !== "playing") return last;
 
@@ -800,7 +922,7 @@ export class Bot {
       // something this method doesn't model — report stuck rather than loop.
       if (blockers.length === 0) return { state: "playing", reason: "stuck" };
       this.logger.wpDebug?.(`[wpdebug] exit inert — ${blockers.length} exit-room blocker(s) alive; hunting #${blockers[0].i} at (${blockers[0].x.toFixed(1)},${blockers[0].y.toFixed(1)})`);
-      const hunted = await this.#huntEnemy(blockers[0], openedDoors);
+      const hunted = await this.#withActivity("exitHunt", () => this.#huntEnemy(blockers[0], openedDoors));
       if (hunted.state !== "playing") return hunted;
       if (hunted.reason === "teleported") return hunted;
     }
@@ -920,6 +1042,10 @@ export class Bot {
       durationMs: intent.durationMs ?? null,
     });
     if (intent.firedSemiAuto) this.lastFireSimTimeMs = this.simTimeMs;
+    // Stamped here rather than inside `decide()` on purpose: the errand is the
+    // *caller's* context, and `combatPolicy.mjs` must stay free of bot-driving
+    // state (see its module doc comment's purity rules).
+    if (intent.trace) intent.trace.activity = this.activity;
     this.#recordTrace(intent.trace);
     return this.applyAction(intent);
   }
