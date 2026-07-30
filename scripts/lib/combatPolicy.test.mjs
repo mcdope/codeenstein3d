@@ -424,6 +424,65 @@ describe("decide — branch selection", () => {
     expect(keysOf(intent)).not.toContain("ShiftLeft");
   });
 
+  it("backs straight away from a mine ahead instead of turning around", () => {
+    // The captured stage03 wedge: the retreat used to spin 180 degrees while
+    // holding `KeyW`, so it advanced *on* the mine for five decisions (0.45
+    // tiles closer) and ran out its give-up budget before ever clearing the
+    // blast radius. Reversing is the same speed as advancing (`forwardSign`
+    // is signed, engine.ts), so the turn bought nothing.
+    const intent = decide(
+      { player: makePlayer(), enemies: [], mines: [{ x: 11.5, y: 10.5, alive: true, visible: true }], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(intent.branch).toBe("mineRetreat");
+    expect(keysOf(intent)).toContain("KeyS");
+    expect(keysOf(intent)).not.toContain("KeyW");
+    // No turn at all — staying aimed is the point, so the disarm shot is
+    // available the moment it clears the blast radius.
+    expect(keysOf(intent).some((k) => k === "KeyE" || k === "KeyQ")).toBe(false);
+  });
+
+  it("walks forward when the mine is already behind it", () => {
+    const intent = decide(
+      { player: makePlayer(), enemies: [], mines: [{ x: 8.5, y: 10.5, alive: true, visible: true }], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(intent.branch).toBe("mineRetreat");
+    expect(keysOf(intent)).toContain("KeyW");
+    expect(keysOf(intent)).not.toContain("KeyS");
+  });
+
+  it("falls back to turning when the mine is nearly abeam", () => {
+    // Straight back-up recovers |cos| of each step, which is ~0 at 90 degrees,
+    // so there the bot does have to turn — and must not walk while doing it.
+    const intent = decide(
+      { player: makePlayer(), enemies: [], mines: [{ x: 10.5, y: 12.4, alive: true, visible: true }], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(intent.branch).toBe("mineRetreat");
+    expect(keysOf(intent).some((k) => k === "KeyE" || k === "KeyQ")).toBe(true);
+    expect(keysOf(intent)).not.toContain("KeyW");
+  });
+
+  it("still never strafes while retreating from a mine", () => {
+    // `diagonalScale` (1/sqrt(2)) would cut the escape axis by 29% — this is
+    // the branch the 72% level-2 death regression came from, so the retreat
+    // stays strictly turn-then-run in both the turning and running cases.
+    for (const mine of [{ x: 11.5, y: 10.5 }, { x: 8.5, y: 10.5 }]) {
+      const intent = decide(
+        { player: makePlayer(), enemies: [], mines: [{ ...mine, alive: true, visible: true }], navTarget: null, map: makeMap() },
+        freshMemory(),
+        makeConfig(),
+      );
+      expect(keysOf(intent)).not.toContain("KeyA");
+      expect(keysOf(intent)).not.toContain("KeyD");
+      expect(keysOf(intent)).not.toContain("ShiftLeft");
+    }
+  });
+
   it("gives up on a mine after enough consecutive retreat ticks", () => {
     const memory = freshMemory();
     const world = { player: makePlayer(), enemies: [], mines: [{ x: 11.5, y: 10.5, alive: true, visible: true }], navTarget: null, map: makeMap() };

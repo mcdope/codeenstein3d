@@ -195,6 +195,12 @@ export const DEFAULT_TUNING = {
   // ticks targeting the *same* mine with no hit — see `decide`'s mine-handling
   // doc comment.
   MINE_TARGET_GIVEUP_TICKS: 40,
+  // How much of a straight back-up actually increases distance from a mine,
+  // as |cos(angle to the mine)|. At 0.5 the mine is within 60 degrees of dead
+  // ahead (or dead behind) and reversing along the view axis recovers at least
+  // half the step; nearer to abeam it recovers almost nothing, so the bot
+  // turns instead. See the `mineRetreat` branch.
+  MINE_BACKPEDAL_MIN_COS: 0.5,
   // Once stuck realigning on the same mine this many ticks, force a shot at
   // the current best-effort alignment instead of freezing until the much
   // later full give-up — see `decide`'s mine-realignment comment.
@@ -1232,12 +1238,56 @@ export function decide(world, memory, config) {
         const currentAngle = Math.atan2(player.dirY, player.dirX);
         const awayAngle = Math.atan2(player.y - dangerMine.y, player.x - dangerMine.x);
         const delta = angleDelta(currentAngle, awayAngle);
-        const moveKeys = new Set(["KeyW"]);
+        const moveKeys = new Set();
         let turnBurst;
-        if (Math.abs(delta) > tuning.TURN_MOVE_EPS) {
+        // Where the mine sits relative to where the bot is looking. Reversing
+        // straight back recovers `|cos|` of each step's distance from it.
+        const towardMine = angleDelta(currentAngle, Math.atan2(dangerMine.y - player.y, dangerMine.x - player.x));
+        const axialGain = Math.cos(towardMine);
+        if (Math.abs(axialGain) >= tuning.MINE_BACKPEDAL_MIN_COS) {
+          // Back off along the view axis without turning at all — `KeyS` if the
+          // mine is ahead, `KeyW` if it is already behind.
+          //
+          // Turning was never necessary here, and it was actively harmful:
+          // `moveForward` takes a signed step (`forwardSign -= 1` for `KeyS`,
+          // engine.ts) so reversing is the same speed as advancing, sprint
+          // included. Spinning 180 degrees first bought nothing and cost the
+          // 3-6 decisions that let a retreat run out its
+          // `MINE_TARGET_GIVEUP_TICKS` budget before ever clearing the blast
+          // radius — the stage03 wedge.
+          //
+          // It is also what makes the disarm reachable at all: the bot stays
+          // *facing* the mine, so the instant it crosses out of
+          // `MINE_BLAST_RADIUS + reactionBuffer` it is already aimed and
+          // `findDisarmableMine` can take the shot, instead of having to turn
+          // back around to do it.
+          moveKeys.add(axialGain > 0 ? "KeyS" : "KeyW");
+          turnBurst = moveBurstMs(10, false, moveCtx);
+        } else if (Math.abs(delta) > tuning.TURN_MOVE_EPS) {
           moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
           turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, currentAngle, burstCtx);
+          // Only walk once roughly facing away, the same gate plain navigation
+          // uses. `KeyW` used to be held unconditionally here, so a retreat
+          // that began facing the mine — the normal case, since you walk into
+          // one before noticing it — spent its turn *advancing on the mine*.
+          //
+          // Captured on `stage03_legacy_api.php`: the bot moved 7.86 -> 7.41
+          // (0.45 tiles closer, mine 2.5 -> 2.2) over five decisions while
+          // turning around. That cost is what makes the retreat unable to
+          // finish: `findDangerousMine` fires at `MINE_BLAST_RADIUS +
+          // reactionBuffer` (2.72) and `findDisarmableMine` only starts
+          // *above* it, but the bot never got past 2.6 before burning all
+          // `MINE_TARGET_GIVEUP_TICKS` (40, exactly the count observed) and
+          // abandoning the mine — so it could neither pass nor shoot it, and
+          // stalled ~3.6s at a corridor whose only route runs past that mine.
+          //
+          // Deliberately *removing* forward motion rather than adding a
+          // lateral key: `diagonalScale` (1/sqrt(2)) makes any strafe here cut
+          // the escape axis by 29%, which is the documented 72% level-2 death
+          // regression. This branch stays strictly turn-then-run.
+          if (Math.abs(delta) < tuning.MAX_WALK_WHILE_TURNING_RAD) moveKeys.add("KeyW");
         } else {
+          moveKeys.add("KeyW");
           turnBurst = moveBurstMs(10, false, moveCtx);
         }
         return uniformIntent(moveKeys, turnBurst, stepMs, {

@@ -109,7 +109,10 @@ const TRACE_POS_EPS = 0.05;
 // confident it's a real freeze rather than incidental noise.
 const HELD_KEY_NO_MOVEMENT_TICKS_THRESHOLD = 10;
 // Movement keys that actually translate the player — KeyQ/KeyE only rotate.
-const TRANSLATING_KEYS = new Set(["KeyW", "KeyA", "KeyD"]);
+// `KeyS` included so a wedged *backpedal* is visible to
+// `detectHeldKeyNoMovement` — the mine retreat reverses without turning, and a
+// backpedal jammed against geometry would otherwise be silently undetectable.
+const TRANSLATING_KEYS = new Set(["KeyW", "KeyS", "KeyA", "KeyD"]);
 
 // --- Oscillation (`detectOscillation`) -------------------------------------
 // A bot that is genuinely wedged does not necessarily stop. It can pace,
