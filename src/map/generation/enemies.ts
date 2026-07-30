@@ -19,9 +19,23 @@ const COMPLEXITY_PER_EXTRA_ENEMY = 10;
  * biggest kind of pack, so make it one boss-tier threat instead."
  */
 const ELITE_COMPLEXITY_THRESHOLD = 40;
-/** An Elite's HP is this multiple of what a *single* (non-pack) enemy would
- * have at the same complexity — not the pack's already-split-down HP. */
-const ELITE_HP_MULTIPLIER = 4;
+/**
+ * An Elite's HP is this multiple of what a *single* (non-pack) enemy would have
+ * at the same complexity — not the pack's already-split-down HP.
+ *
+ * Lowered 4 -> 2 after playtesting (2026-07-30) confirmed the level-12 Elite was
+ * badly overpowered. Because the multiplier stacks on *un-split* HP, crossing
+ * the threshold was a cliff rather than a ramp: one point of complexity turned a
+ * 4-enemy, 976 HP pack into a single 4000 HP enemy that also deals
+ * `ELITE_DAMAGE_MULTIPLIER` (2x) damage — quadrupling a room's total HP and
+ * concentrating it. `stage12_render_engine.cpp`'s `computeVisibility`
+ * (complexity 44) produced 4400 HP against the 1100 its pack would have had, and
+ * the automated playtest bot died there on 12 of 12 full-campaign attempts.
+ *
+ * At 2x an Elite is still clearly tougher than the pack it replaces (2x its
+ * total HP, in one target, hitting twice as hard) without the 4x cliff.
+ */
+const ELITE_HP_MULTIPLIER = 2;
 
 /** Enemies spawned per breakup room, range [min, max]. */
 const EDGE_CASE_MIN_PER_ROOM = 1;
