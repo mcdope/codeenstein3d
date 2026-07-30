@@ -107,13 +107,24 @@ export class LocalRunner {
  * `driveCombo`. Every lane calls this same function, so local and remote
  * lanes are interchangeable from the shared queue's point of view. */
 async function driveCombo(combo, opts) {
-  const { comboKey, scanExisting, targetQualifying, outputPathFor, logPathFor, envFor, scriptPath, runner, watchdogMs, sigtermGraceMs, formatElapsed, log } = opts;
+  const { comboKey, scanExisting, targetQualifying, outputPathFor, logPathFor, envFor, scriptPath, runner, watchdogMs, sigtermGraceMs, formatElapsed, log, maxInvocations } = opts;
   const key = comboKey(combo);
   for (;;) {
     const { qualifying, fileCount } = scanExisting(combo);
     const target = typeof targetQualifying === "function" ? targetQualifying(combo) : targetQualifying;
     if (qualifying >= target) {
       log(`[${key}] done — ${qualifying}/${target} qualifying across ${fileCount} files`);
+      return;
+    }
+    // Cost bound. Without this the loop is unbounded: a combo the bot simply
+    // cannot clear never reaches `target`, so the lane respawns invocations
+    // forever. That is not hypothetical — the 2026-07-24 multiplayer campaign
+    // hit it on the Hard cells (Gamer/hard/2p banked 1 qualifying run across
+    // 6 invocations) and had to be rescued by hand-lowering the target
+    // mid-run. Giving up loudly and moving on leaves the partial data intact
+    // and resumable; the combo just reports short of target.
+    if (maxInvocations != null && fileCount >= maxInvocations) {
+      log(`[${key}] giving up — ${qualifying}/${target} qualifying after ${fileCount} invocation(s), at the ${maxInvocations}-invocation cap`);
       return;
     }
     const sequence = fileCount + 1;
@@ -200,13 +211,17 @@ export async function runLaneOrchestrator(params) {
     sigtermGraceMs = 5000,
     log = (msg) => console.log(msg),
     formatElapsed = defaultFormatElapsed,
+    // Per-combo invocation ceiling. `null`/omitted keeps the historical
+    // unbounded behaviour; see `driveCombo` for why every campaign should
+    // set it.
+    maxInvocations = null,
   } = params;
 
   const queue = [...combos];
   await Promise.all(
     runners.map((runner) =>
       runLane(queue, (combo) =>
-        driveCombo(combo, { comboKey, scanExisting, targetQualifying, outputPathFor, logPathFor, envFor, scriptPath, runner, watchdogMs, sigtermGraceMs, formatElapsed, log }),
+        driveCombo(combo, { comboKey, scanExisting, targetQualifying, outputPathFor, logPathFor, envFor, scriptPath, runner, watchdogMs, sigtermGraceMs, formatElapsed, log, maxInvocations }),
       ),
     ),
   );
