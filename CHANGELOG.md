@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Dev: the playtest bot stopped criss-crossing levels to pick up keys. It gathers every key it can reach before opening the next locked door, but it was taking them in the order the level generator happened to create them rather than the order they are standing in front of it — on one level that meant walking the full width of the map, back again for a key seven tiles from where it started, then across a third time to reach the first door. Planned routes are 25% shorter campaign-wide, and 24-37% shorter on the three key-heavy levels that were distorting the balance numbers
 - New: a `switch` (or `match`) statement now builds a **Switchboard** — the room for that function becomes a junction, with a short dead-end spur for every `case`, each behind an amber push-open door. Every spur has something small in it: a weak enemy, a trap, or a bit of ammo. The `default` branch doesn't get a spur, because it's the way onward
 - New: a `try`/`catch`/`finally` becomes a three-part detour: a narrow acid corridor with spike traps and a mine to get through, an alcove of guaranteed health *and* armor waiting at the far end, and a safe room with guaranteed loot past that
 - New: the imports (or `#include`s, or `require`s) at the top of a file now become small **Vendor Depot** alcoves built into the wall of the room you start in — roughly one per four imports, stocked with ammo for the weapons you already have. Handy on a level you're walking into low

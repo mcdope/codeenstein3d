@@ -236,15 +236,35 @@ function planRouteWithAvoidSet(map, from) {
       continue;
     }
 
-    const keyIndex = map.keys.findIndex((k, idx) => !collectedKeyIndices.has(idx) && reachable.has(`${Math.floor(k.x)},${Math.floor(k.y)}`));
-    if (keyIndex !== -1) {
-      const key = map.keys[keyIndex];
-      const target = { x: Math.floor(key.x), y: Math.floor(key.y) };
-      const path = findPath(start, target);
-      if (!path) return { ok: false, reason: "key-reachable-but-no-bfs-path (inconsistent)", legs };
-      legs.push({ kind: "walk", waypoints: pathToWaypoints(path) });
-      collectedKeyIndices.add(keyIndex);
-      pos = { x: target.x + 0.5, y: target.y + 0.5 };
+    // Nearest reachable key, not the first in `map.keys` order. Since this
+    // branch runs until *no* reachable key is left, the set collected before
+    // the next door opens is the same either way — only the walking order
+    // changes, so this cannot affect solvability the way the door order can
+    // (see `findReachableDoor`). Array order is `placeKeys`' push order, which
+    // is gate-opening order and says nothing about where the player is
+    // standing: on `demo-campaign/stage03_legacy_api.php` it walked 94 tiles
+    // west to one key, 85 back east to a key sitting 7 tiles from spawn, then
+    // 114 west again to the first gate — 293 tiles to do about 130 tiles of
+    // work, on the campaign's slowest level.
+    const reachableKeys = map.keys
+      .map((k, idx) => ({ idx, target: { x: Math.floor(k.x), y: Math.floor(k.y) } }))
+      .filter(({ idx, target }) => !collectedKeyIndices.has(idx) && reachable.has(`${target.x},${target.y}`));
+    if (reachableKeys.length > 0) {
+      let best = null;
+      for (const candidate of reachableKeys) {
+        // Probed with `weightedPath` rather than `findPath` so that routes we
+        // consider and reject don't latch `crossesHazard` — only the leg
+        // actually walked gets to set it, below.
+        const path = weightedPath(workingMap, start, candidate.target);
+        // Strictly shorter, so equal-distance ties keep the lowest index and
+        // the planner stays deterministic.
+        if (path && (best === null || path.length < best.path.length)) best = { ...candidate, path };
+      }
+      if (!best) return { ok: false, reason: "key-reachable-but-no-bfs-path (inconsistent)", legs };
+      if (pathCrossesHazard(workingMap, best.path)) crossesHazard = true;
+      legs.push({ kind: "walk", waypoints: pathToWaypoints(best.path) });
+      collectedKeyIndices.add(best.idx);
+      pos = { x: best.target.x + 0.5, y: best.target.y + 0.5 };
       continue;
     }
 
