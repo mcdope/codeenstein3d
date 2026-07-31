@@ -79,6 +79,33 @@ describe("CampaignReplayRecorder", () => {
     expect(payload!.levels[0].filePath).toBe("a.c");
   });
 
+  it("truncates at a gap in the middle instead of silently closing it up", async () => {
+    // The shipped `defaultHighscore.ts` carried exactly this: a Casual entry
+    // whose replay ran level 9 -> level 11 because level 10 overflowed the
+    // frame cap. Filtering made the payload look like a complete run.
+    const rec = new CampaignReplayRecorder("demo");
+    rec.startLevel(meta({ filePath: "a.c" }), Promise.resolve("hashA"), Promise.resolve("balance-hash"));
+    rec.record(0.016, snapshot());
+    rec.startLevel(meta({ filePath: "b.c" }), Promise.resolve("hashB"), Promise.resolve("balance-hash")); // never recorded into
+    rec.startLevel(meta({ filePath: "c.c" }), Promise.resolve("hashC"), Promise.resolve("balance-hash"));
+    rec.record(0.016, snapshot());
+    const payload = await rec.finish();
+    expect(payload!.levels.map((l) => l.filePath)).toEqual(["a.c"]);
+  });
+
+  it("truncates at an overflowed middle level, not just an empty one", async () => {
+    const rec = new CampaignReplayRecorder("demo");
+    rec.startLevel(meta({ filePath: "a.c" }), Promise.resolve("hashA"), Promise.resolve("balance-hash"));
+    rec.record(0.016, snapshot());
+    rec.startLevel(meta({ filePath: "b.c" }), Promise.resolve("hashB"), Promise.resolve("balance-hash"));
+    // Overflow it the way a genuinely long level does.
+    for (let i = 0; i < 21601; i++) rec.record(0.016, snapshot());
+    rec.startLevel(meta({ filePath: "c.c" }), Promise.resolve("hashC"), Promise.resolve("balance-hash"));
+    rec.record(0.016, snapshot());
+    const payload = await rec.finish();
+    expect(payload!.levels.map((l) => l.filePath)).toEqual(["a.c"]);
+  });
+
   it("returns null overall when every level ends up empty", async () => {
     const rec = new CampaignReplayRecorder("demo");
     rec.startLevel(meta(), Promise.resolve("hash1"), Promise.resolve("balance-hash"));

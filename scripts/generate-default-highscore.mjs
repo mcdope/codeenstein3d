@@ -220,6 +220,16 @@ async function runOneAttempt(browser, profileName, profile, levelPlans) {
   try {
     context = await browser.newContext(); // fresh, isolated localStorage per attempt
     const page = await context.newPage();
+    // Same opt-in shape as `run-balancing-telemetry.mjs`'s own forwarder. Worth
+    // having here specifically because `advanceToNextLevel` (`src/main.ts`)
+    // skips a level whose `parseFile` returns null and says nothing about it in
+    // Node — the only trace is a `[parser] Skipping "<file>"` warning inside the
+    // page, and a skipped level is otherwise invisible until someone counts the
+    // replay segments.
+    if (process.env.CODEENSTEIN_CONSOLE_FORWARD) {
+      page.on("console", (msg) => console.log(`  [console] ${msg.text()}`));
+      page.on("pageerror", (err) => console.log(`  [pageerror] ${err.message}`));
+    }
     page.on("pageerror", (err) => console.log(`  [${profileName}] [pageerror] ${err.message}`));
 
     await installVirtualClock(page);
@@ -323,6 +333,20 @@ async function main() {
     check(`${entry.levelName}: entry.source === "demo"`, entry.source === "demo");
     check(`${entry.levelName}: replay.version === 2`, entry.replay?.version === 2);
     check(`${entry.levelName}: replay has >=1 level segment`, (entry.replay?.levels?.length ?? 0) >= 1);
+    // The segments must be a *prefix* of the campaign, in order. Nothing else
+    // downstream can notice a hole: every individual segment stays valid, so
+    // the astHash/frames checks below all pass while the payload quietly
+    // skips a level. A shipped `defaultHighscore.ts` carried exactly that —
+    // the Casual entry ran level 9 -> level 11 because
+    // `stage10_kernel_module.rs` overflowed the replay frame cap and the old
+    // `CampaignReplayRecorder.finish()` filtered the gap out of the middle.
+    const played = (entry.replay?.levels ?? []).map((seg) => seg.filePath.split("/").pop());
+    const expectedPrefix = levelPlans.slice(0, played.length).map((plan) => plan.filename);
+    check(
+      `${entry.levelName}: replay levels are a contiguous campaign prefix`,
+      played.length > 0 && played.every((name, i) => name === expectedPrefix[i]),
+      `got [${played.join(", ")}] — expected [${expectedPrefix.join(", ")}]`,
+    );
     for (const seg of entry.replay?.levels ?? []) {
       const filename = seg.filePath.split("/").pop();
       const text = fs.readFileSync(path.join(CAMPAIGN_DIR, filename), "utf8");

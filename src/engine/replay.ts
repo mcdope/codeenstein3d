@@ -184,8 +184,34 @@ export class CampaignReplayRecorder {
    * entry. */
   async finish(): Promise<ReplayPayload | null> {
     const resolved = await Promise.all(this.levels.map((level) => level.finish()));
-    const levels = resolved.filter((level): level is ReplayLevelSegment => level !== null);
+    // Truncate at the first unsavable level rather than filtering every null
+    // out of the sequence.
+    //
+    // Filtering looks equivalent — and is, for the case it was written for, a
+    // trailing level that was started and never recorded into. But when the
+    // gap is in the *middle* it silently closes up, and the payload then
+    // claims to be a complete run while skipping a level: `startReplay`
+    // (`src/main.ts`) walks these segments in order, so playback jumps
+    // straight from one level to the one after next with nothing to indicate
+    // it happened. Observed on a shipped `defaultHighscore.ts`, where the
+    // Casual entry's replay went from level 9 to level 11 because
+    // `stage10_kernel_module.rs` overflowed `MAX_REPLAY_FRAMES_PER_LEVEL`
+    // (that profile is the slowest, and the cap is six minutes of one level).
+    // Every remaining segment was individually valid, so nothing downstream
+    // could tell.
+    //
+    // A prefix is the honest shape: the replay covers the run up to the point
+    // it stopped being recordable, and stops there.
+    const firstGap = resolved.findIndex((level) => level === null);
+    const kept = firstGap === -1 ? resolved : resolved.slice(0, firstGap);
+    const levels = kept as ReplayLevelSegment[];
     if (levels.length === 0) return null;
+    if (firstGap !== -1 && firstGap < this.levels.length - 1) {
+      console.warn(
+        `%c[replay] level ${firstGap + 1} of ${this.levels.length} wasn't recordable — replay truncated to the first ${levels.length}`,
+        "color:#e0a04a",
+      );
+    }
     return { version: 2, campaignName: this.campaignName, levels };
   }
 }
