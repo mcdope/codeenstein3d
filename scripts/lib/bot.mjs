@@ -103,6 +103,38 @@ const STALL_TICKS_THRESHOLD = 20;
 // dropping is worth flagging immediately, regardless of the stall
 // threshold above.
 const HP_DRAIN_FROZEN_TICKS_THRESHOLD = 2;
+/**
+ * Fraction of a run's ticks that must be spike-blocked before the run counts
+ * as "waiting for a trap" rather than a defect.
+ *
+ * This used to be `.every()`, and that one word produced the single largest
+ * class of false findings in the scan: **68 of 175 stalls** — every "idle"
+ * stall, i.e. every stall with no threat in range. `waitingOnSpike` is
+ * computed from a probe 0.6 tiles ahead *along the bot's current facing*
+ * (`combatPolicy.mjs`), so it drops out for a tick or two whenever the bot
+ * adjusts heading while it waits. One such tick was enough to bill an
+ * entirely correct 34-tick wait as a freeze.
+ *
+ * Measured 2026-07-31: 13 of the 14 repeat stall clusters sat on a tile
+ * directly adjacent to a spike trap; 9 of 9 traced runs were 88-98%
+ * spike-blocked with ~95% of ticks holding no movement key at all; and the
+ * durations (median 34, p90 47, max 55 ticks) land exactly inside the
+ * blocked-phase range of the campaign's traps (36-55 ticks — a trap is up for
+ * half of a 3.6-5.5s period). The bot waits one phase and never longer.
+ *
+ * 0.8 rather than the 0.5 used by the `mostlyFiring`/`mostlyEngaged` guards
+ * beside it, and that gap is deliberate: a bot genuinely *wedged* next to a
+ * trap would measure ~50%, because the trap keeps cycling underneath it while
+ * it fails to move. A real one-phase wait ends the moment the spikes drop, so
+ * it never dilutes below ~0.88. Keeping the bar high is what preserves the
+ * detector's ability to catch a wedge that happens to be next to a spike.
+ */
+const SPIKE_WAIT_DOMINANCE = 0.8;
+/** Share of a run's ticks that were blocked by an active spike trap. */
+function spikeFraction(slice) {
+  if (slice.length === 0) return 0;
+  return slice.filter((r) => r.waitingOnSpike).length / slice.length;
+}
 const TRACE_POS_EPS = 0.05;
 // Lower than STALL_TICKS_THRESHOLD (20) on purpose — `detectHeldKeyNoMovement`
 // is a much more precise signal, so it doesn't need as long a run to be
@@ -315,10 +347,10 @@ export function detectAnomalies(trace) {
         const first = trace[runStart];
         const last = trace[runEnd - 1];
         const runSlice = trace.slice(runStart, runEnd);
-        const allWaitingOnSpike = runSlice.every((r) => r.waitingOnSpike);
+        const mostlyWaitingOnSpike = spikeFraction(runSlice) >= SPIKE_WAIT_DOMINANCE;
         const engagedTicks = runSlice.filter((r) => r.fire || r.fireOnCooldown).length;
         const mostlyFiring = engagedTicks / runLen > 0.5;
-        if (runLen >= STALL_TICKS_THRESHOLD && !allWaitingOnSpike && !mostlyFiring) {
+        if (runLen >= STALL_TICKS_THRESHOLD && !mostlyWaitingOnSpike && !mostlyFiring) {
           findings.push({
             type: "stall",
             startTick: runStart,
@@ -467,7 +499,7 @@ export function detectOscillation(trace) {
       const slice = trace.slice(runStart, runEnd);
       const engagedTicks = slice.filter((r) => r.threatDist !== null && r.threatDist !== undefined).length;
       const mostlyEngaged = engagedTicks / runLen > 0.5;
-      const allWaitingOnSpike = slice.every((r) => r.waitingOnSpike);
+      const allWaitingOnSpike = spikeFraction(slice) >= SPIKE_WAIT_DOMINANCE;
       // Working through the route, not stuck on it — see `reachedTargets`.
       const makingRouteProgress = reachedTargets(slice) >= OSCILLATION_ARRIVALS_EXEMPT;
 
@@ -815,9 +847,19 @@ export class Bot {
     // Every detector's findings, not just oscillation — the longest run on a
     // level is as often a `stall` (the Pro/normal level-1 wedge is a 440-tick
     // stall, which an oscillation-only dump captured nothing of).
+    // The longest run of *each* type, not the longest overall: one dump per
+    // level meant a level whose worst run was an oscillation never showed a
+    // single stall row, and vice versa. Classifying the scan's idle stalls
+    // needed exactly those rows — 14 clusters of them sat next to spike traps
+    // and only one happened to overlap an oscillation window that got dumped.
     const dumpable = [...detectAnomalies(this.mineMemory.trace), ...oscillations];
-    if (this.logger.traceDump && dumpable.length > 0) {
-      const longest = dumpable.reduce((a, b) => (b.ticks > a.ticks ? b : a));
+    const longestByType = new Map();
+    for (const f of dumpable) {
+      const cur = longestByType.get(f.type);
+      if (!cur || f.ticks > cur.ticks) longestByType.set(f.type, f);
+    }
+    for (const longest of longestByType.values()) {
+      if (!this.logger.traceDump) break;
       console.log(`  [trace] ${label} level ${levelIndex + 1}: longest ${longest.type}, decisions ${longest.startTick}-${longest.endTick} (${longest.ticks} ticks)`);
       for (let i = longest.startTick; i <= longest.endTick; i++) {
         const t = this.mineMemory.trace[i];

@@ -191,6 +191,23 @@ describe("detectAnomalies", () => {
     const trace = Array.from({ length: 40 }, () => rec({ x: 5, y: 5, waitingOnSpike: true }));
     expect(detectAnomalies(trace).some((f) => f.type === "stall")).toBe(false);
   });
+
+  it("still excuses a spike wait when a tick or two drops the flag", () => {
+    // `waitingOnSpike` probes 0.6 tiles along the bot's *facing*, so it blinks
+    // off whenever the bot adjusts heading mid-wait. Requiring every tick to
+    // carry the flag was billing whole correct waits as freezes — this was 68
+    // of the scan's 175 stall findings, i.e. every "idle" one.
+    const trace = Array.from({ length: 40 }, (_, i) => rec({ x: 5, y: 5, waitingOnSpike: i !== 17 }));
+    expect(detectAnomalies(trace).some((f) => f.type === "stall")).toBe(false);
+  });
+
+  it("still reports a bot wedged beside a spike, where the trap cycles under it", () => {
+    // The discriminator: a real one-phase wait ends when the spikes drop, so
+    // it stays ~90%+ blocked. A bot that cannot move sits there across whole
+    // cycles and measures ~50% — which must remain a finding.
+    const trace = Array.from({ length: 80 }, (_, i) => rec({ x: 5, y: 5, waitingOnSpike: i % 2 === 0 }));
+    expect(detectAnomalies(trace).some((f) => f.type === "stall")).toBe(true);
+  });
 });
 
 describe("detectHeldKeyNoMovement", () => {
