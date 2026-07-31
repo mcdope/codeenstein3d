@@ -222,6 +222,10 @@ export const DEFAULT_TUNING = {
   // than straight-line. Single-variable switch, as above:
   //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_WALKING_DISTANCE_BLOCKERS":false}'
   BOT_WALKING_DISTANCE_BLOCKERS: true,
+  // Whether `#walkPathTo` retries without the spike/acid avoid-set when no
+  // hazard-free route exists. Single-variable switch, as above:
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_HAZARD_ROUTE_FALLBACK":false}'
+  BOT_HAZARD_ROUTE_FALLBACK: true,
   // Once stuck realigning on the same mine this many ticks, force a shot at
   // the current best-effort alignment instead of freezing until the much
   // later full give-up — see `decide`'s mine-realignment comment.

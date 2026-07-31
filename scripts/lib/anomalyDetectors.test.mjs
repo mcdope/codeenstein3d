@@ -16,7 +16,7 @@
  * instead of freezing.
  */
 import { describe, expect, it } from "vitest";
-import { detectAnomalies, detectHeldKeyNoMovement, detectOscillation, rankExitBlockers, summarizeActivityDistance } from "./bot.mjs";
+import { detectAnomalies, detectHeldKeyNoMovement, detectOscillation, pathAvoidingHazardsIfPossible, rankExitBlockers, summarizeActivityDistance } from "./bot.mjs";
 
 /** One trace record, with the fields the detectors actually read. */
 function rec(over = {}) {
@@ -363,5 +363,51 @@ describe("rankExitBlockers", () => {
     const map = splitMap();
     const ranked = rankExitBlockers([{ i: 0, x: 3.5, y: 3.5, alive: true, elite: true }], { x: 3.5, y: 2.5 }, map, new Set());
     expect(ranked[0]).toMatchObject({ i: 0, alive: true, elite: true });
+  });
+});
+
+describe("pathAvoidingHazardsIfPossible", () => {
+  const SPIKE = 5;
+  /** Corridor from (1,1) to (5,1); the only way through is a spike at (3,1). */
+  const gauntlet = () => {
+    const grid = Array.from({ length: 5 }, () => Array.from({ length: 7 }, () => 1));
+    for (let x = 1; x <= 5; x++) grid[1][x] = 0;
+    grid[1][3] = SPIKE;
+    return { width: 7, height: 5, grid };
+  };
+  const AVOID = new Set([SPIKE]);
+  const A = { x: 1, y: 1 }, B = { x: 5, y: 1 };
+
+  it("prefers the hazard-free route when one exists", () => {
+    const map = gauntlet();
+    map.grid[2][3] = 0; // a clean detour around the spike
+    map.grid[2][2] = 0;
+    map.grid[2][4] = 0;
+    const r = pathAvoidingHazardsIfPossible(map, A, B, AVOID, new Set());
+    expect(r.path).not.toBeNull();
+    expect(r.viaHazard).toBe(false);
+  });
+
+  it("routes through the hazard rather than declaring the target unreachable", () => {
+    // The captured main.c case: the exit is reachable, but every route to it
+    // crosses a spike. Refusing to plan left driveToExit straight-lining into
+    // a wall for ~22 seconds.
+    const r = pathAvoidingHazardsIfPossible(gauntlet(), A, B, AVOID, new Set());
+    expect(r.path).not.toBeNull();
+    expect(r.viaHazard).toBe(true);
+  });
+
+  it("still reports genuinely unreachable targets as unreachable", () => {
+    const map = gauntlet();
+    map.grid[1][3] = 1; // solid wall, not a spike — no route at all
+    const r = pathAvoidingHazardsIfPossible(map, A, B, AVOID, new Set());
+    expect(r.path).toBeNull();
+    expect(r.viaHazard).toBe(false);
+  });
+
+  it("keeps the old strict behaviour when the fallback is switched off", () => {
+    const r = pathAvoidingHazardsIfPossible(gauntlet(), A, B, AVOID, new Set(), false);
+    expect(r.path).toBeNull();
+    expect(r.viaHazard).toBe(false);
   });
 });

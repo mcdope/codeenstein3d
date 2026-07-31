@@ -160,6 +160,35 @@ const OSCILLATION_ARRIVAL_DIST = 0.35;
 const OSCILLATION_ARRIVALS_EXEMPT = 2;
 
 /**
+ * BFS to `tile`, preferring a hazard-free route but accepting one through
+ * spikes/acid rather than reporting the target unreachable.
+ *
+ * Refusing to plan is only correct when a *better* plan exists. The strict
+ * avoid-set is right for an optional loot detour — "the only way there crosses
+ * a spike" genuinely means "don't bother". It is wrong for reaching the exit,
+ * which is not optional, and the difference is not hypothetical: on `main.c`
+ * the exit is 95 tiles from (60,57) by plain BFS but **unreachable** once
+ * spikes and acid are excluded, because every route crosses one.
+ *
+ * `driveToExit` does not treat that failure as fatal (a `reason: "stuck"` still
+ * carries `state: "playing"`), so it fell through to `driveToward` — which
+ * steers a straight line with no pathfinding — and sprinted into a wall for the
+ * whole 80-tick budget, six rounds running. Measured at n=16 Pro/normal
+ * attempts: 4 stalls of ~440 decisions (~22s each) without this fallback, 0
+ * with it, longest stall 441 -> 61 ticks.
+ *
+ * Returns `{ path, viaHazard }` — `viaHazard` is what the caller logs, and is
+ * the trigger that proves this path ran at all.
+ */
+export function pathAvoidingHazardsIfPossible(map, from, to, avoidTiles, openDoors, allowHazardFallback = true) {
+  const strict = bfsPath(map, from, to, avoidTiles, openDoors);
+  if (strict) return { path: strict, viaHazard: false };
+  if (!allowHazardFallback) return { path: null, viaHazard: false };
+  const loose = bfsPath(map, from, to, new Set(), openDoors);
+  return { path: loose, viaHazard: Boolean(loose) };
+}
+
+/**
  * Exit-room blockers, nearest *by walking distance* first.
  *
  * `driveToExit` hunts the first of these, and used to pick by straight-line
@@ -783,9 +812,13 @@ export class Bot {
     // the next attempt should read one run end to end before naming a
     // mechanism. One run per level keeps that readable; run with
     // CONCURRENCY=1 or concurrent attempts interleave into nonsense.
-    if (this.logger.traceDump && oscillations.length > 0) {
-      const longest = oscillations.reduce((a, b) => (b.ticks > a.ticks ? b : a));
-      console.log(`  [trace] ${label} level ${levelIndex + 1}: longest oscillation, decisions ${longest.startTick}-${longest.endTick} (${longest.ticks} ticks)`);
+    // Every detector's findings, not just oscillation — the longest run on a
+    // level is as often a `stall` (the Pro/normal level-1 wedge is a 440-tick
+    // stall, which an oscillation-only dump captured nothing of).
+    const dumpable = [...detectAnomalies(this.mineMemory.trace), ...oscillations];
+    if (this.logger.traceDump && dumpable.length > 0) {
+      const longest = dumpable.reduce((a, b) => (b.ticks > a.ticks ? b : a));
+      console.log(`  [trace] ${label} level ${levelIndex + 1}: longest ${longest.type}, decisions ${longest.startTick}-${longest.endTick} (${longest.ticks} ticks)`);
       for (let i = longest.startTick; i <= longest.endTick; i++) {
         const t = this.mineMemory.trace[i];
         console.log(
@@ -1157,15 +1190,30 @@ export class Bot {
   async #walkPathTo(tile, openedDoors, stopWhen = null) {
     const player = await this.readState();
     if (player.state !== "playing") return { state: player.state };
-    const path = bfsPath(
-      this.map,
-      { x: Math.floor(player.x), y: Math.floor(player.y) },
-      tile,
-      LOOT_DETOUR_AVOID_TILES,
-      openedDoors,
+    const from = { x: Math.floor(player.x), y: Math.floor(player.y) };
+    // Strict first, then again allowing hazard terrain — the same two-tier
+    // shape `driveTowardWithReplan` uses for doors, and for the same reason:
+    // refusing to plan a route is only correct when a *better* route exists.
+    //
+    // `LOOT_DETOUR_AVOID_TILES` (spikes + acid) is right for an optional loot
+    // detour, where the answer to "the only way there crosses a spike" is
+    // "then don't bother". It is wrong for getting to the exit, which is not
+    // optional. Captured on `main.c`: from (60,57) the exit is 95 tiles away
+    // by plain BFS but **NULL** once spikes and acid are excluded — every
+    // route crosses one. `driveToExit` does not treat that null as fatal
+    // (a `reason: "stuck"` still has `state: "playing"`), so it fell through
+    // to `driveToward`, which steers a straight line with no pathfinding, and
+    // sprinted into a wall for the whole 80-tick budget — six rounds, ~22
+    // seconds frozen, in roughly 2 of 5 Pro/normal attempts.
+    //
+    // Crossing a spike costs a few HP; the drive loop still waits out an
+    // *active* spike cycle via `activeSpikeAt`. Standing still for 22 seconds
+    // costs the level.
+    const { path, viaHazard } = pathAvoidingHazardsIfPossible(
+      this.map, from, tile, LOOT_DETOUR_AVOID_TILES, openedDoors, this.tuning.BOT_HAZARD_ROUTE_FALLBACK,
     );
-    // Unreachable (e.g. behind a door this run never found the key for) — no
-    // worse than the previous give-up, and the caller still reports "stuck".
+    if (viaHazard) this.logger.wpDebug?.(`[wpdebug] walkPathTo: no hazard-free route to (${tile.x},${tile.y}), routing through hazard terrain instead (${path.length} tiles)`);
+    // Genuinely unreachable even through hazards — the caller reports "stuck".
     if (!path) return { state: "playing", reason: "stuck" };
     for (const wp of pathToWaypoints(path)) {
       const result = await this.driveToward(wp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
