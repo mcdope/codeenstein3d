@@ -218,6 +218,10 @@ export const DEFAULT_TUNING = {
   // single-variable switch shape as the two above:
   //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_LIVE_GRID":false}'
   BOT_LIVE_GRID: true,
+  // Whether `driveToExit` ranks exit-room blockers by walking distance rather
+  // than straight-line. Single-variable switch, as above:
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_WALKING_DISTANCE_BLOCKERS":false}'
+  BOT_WALKING_DISTANCE_BLOCKERS: true,
   // Once stuck realigning on the same mine this many ticks, force a shot at
   // the current best-effort alignment instead of freezing until the much
   // later full give-up — see `decide`'s mine-realignment comment.

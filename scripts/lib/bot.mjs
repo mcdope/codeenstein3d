@@ -160,6 +160,33 @@ const OSCILLATION_ARRIVAL_DIST = 0.35;
 const OSCILLATION_ARRIVALS_EXEMPT = 2;
 
 /**
+ * Exit-room blockers, nearest *by walking distance* first.
+ *
+ * `driveToExit` hunts the first of these, and used to pick by straight-line
+ * `Math.hypot`. That measure is wrong for the decision being made: an enemy 5
+ * tiles away through a wall can be 20 tiles by corridor, so the bot would
+ * commit its bounded per-round budget to the one that merely *looks* closest
+ * and could report `stuck` having never reached it. What matters here is "how
+ * far must I actually walk", which is what a BFS over the live grid answers.
+ *
+ * Uses the same avoid-set `#walkPathTo` walks with, so the ranking matches the
+ * route the bot will really take rather than an idealised one. Unreachable
+ * candidates sort last instead of being dropped: the exit stays inert while
+ * any of them lives, so discarding one would just turn a hunt into a silent
+ * `stuck`. Sorted by index as a final tiebreak, so the order is total and
+ * never depends on sort stability.
+ */
+export function rankExitBlockers(candidates, player, map, openedDoors) {
+  const from = { x: Math.floor(player.x), y: Math.floor(player.y) };
+  return candidates
+    .map((e) => {
+      const path = bfsPath(map, from, { x: Math.floor(e.x), y: Math.floor(e.y) }, LOOT_DETOUR_AVOID_TILES, openedDoors);
+      return { ...e, walkTiles: path ? path.length : Infinity };
+    })
+    .sort((a, b) => a.walkTiles - b.walkTiles || a.i - b.i);
+}
+
+/**
  * Attribute one level's travelled distance to what the bot was *trying to do*
  * while it covered it — the `activity` label `Bot#tick` stamps onto every
  * trace record (see `Bot#withActivity`).
@@ -1064,14 +1091,21 @@ export class Bot {
       // it sent the bot after enemies 23 tiles away that could not possibly
       // be homed to the exit's room, burning every round without touching the
       // actual blocker.
-      const blockers = enemies
-        .map((e, i) => ({ ...e, i }))
-        .filter((e) => e.alive && this.#homesOnExitRoom(e.i))
-        .sort((a, b) => {
-          const da = Math.hypot(a.x - player.x, a.y - player.y);
-          const db = Math.hypot(b.x - player.x, b.y - player.y);
-          return da - db || a.i - b.i; // total order — no reliance on sort stability
-        });
+      const blockers = this.tuning.BOT_WALKING_DISTANCE_BLOCKERS
+        ? rankExitBlockers(
+            enemies.map((e, i) => ({ ...e, i })).filter((e) => e.alive && this.#homesOnExitRoom(e.i)),
+            player,
+            this.map,
+            openedDoors,
+          )
+        : enemies
+            .map((e, i) => ({ ...e, i }))
+            .filter((e) => e.alive && this.#homesOnExitRoom(e.i))
+            .sort((a, b) => {
+              const da = Math.hypot(a.x - player.x, a.y - player.y);
+              const db = Math.hypot(b.x - player.x, b.y - player.y);
+              return da - db || a.i - b.i; // total order — no reliance on sort stability
+            });
       // Exit inert with nothing homed to its room left alive means the gate is
       // something this method doesn't model — report stuck rather than loop.
       if (blockers.length === 0) return { state: "playing", reason: "stuck" };

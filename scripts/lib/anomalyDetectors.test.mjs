@@ -16,7 +16,7 @@
  * instead of freezing.
  */
 import { describe, expect, it } from "vitest";
-import { detectAnomalies, detectHeldKeyNoMovement, detectOscillation, summarizeActivityDistance } from "./bot.mjs";
+import { detectAnomalies, detectHeldKeyNoMovement, detectOscillation, rankExitBlockers, summarizeActivityDistance } from "./bot.mjs";
 
 /** One trace record, with the fields the detectors actually read. */
 function rec(over = {}) {
@@ -304,5 +304,64 @@ describe("summarizeActivityDistance", () => {
     // exactly the number this breakdown exists to attribute.
     const trace = [rec({ x: 0, activity: "route", branch: "hazard" }), rec({ x: 1, activity: "route" })];
     expect(summarizeActivityDistance(trace).rows[0].engagedTiles).toBe(0);
+  });
+});
+
+describe("rankExitBlockers", () => {
+  /** A map with a wall down the middle: (5,y) is solid for y=0..8, so the two
+   * halves only connect around the bottom. */
+  const splitMap = () => {
+    const grid = Array.from({ length: 12 }, () => Array.from({ length: 12 }, () => 0));
+    for (let x = 0; x < 12; x++) {
+      grid[0][x] = 1;
+      grid[11][x] = 1;
+    }
+    for (let y = 0; y < 12; y++) {
+      grid[y][0] = 1;
+      grid[y][11] = 1;
+    }
+    for (let y = 1; y <= 8; y++) grid[y][5] = 1;
+    return { width: 12, height: 12, grid };
+  };
+
+  it("prefers the enemy that is genuinely nearer to walk to, not the nearer-looking one", () => {
+    // Player at (3,2), west of the wall. `far` is on the same side and a short
+    // walk; `nearLooking` is just across the wall — closer as the crow flies,
+    // but reachable only by going all the way around the bottom.
+    const map = splitMap();
+    const player = { x: 3.5, y: 2.5 };
+    const nearLooking = { i: 0, x: 6.5, y: 2.5 };
+    const far = { i: 1, x: 3.5, y: 6.5 };
+    expect(Math.hypot(nearLooking.x - player.x, nearLooking.y - player.y)).toBeLessThan(
+      Math.hypot(far.x - player.x, far.y - player.y),
+    );
+    const ranked = rankExitBlockers([nearLooking, far], player, map, new Set());
+    expect(ranked[0].i).toBe(1);
+    expect(ranked[0].walkTiles).toBeLessThan(ranked[1].walkTiles);
+  });
+
+  it("sorts an unreachable blocker last rather than dropping it", () => {
+    // The exit stays inert while any homed enemy lives, so discarding one
+    // would turn a hunt into a silent "stuck".
+    const map = splitMap();
+    map.grid[5][3] = 1;
+    const sealed = { i: 0, x: 10.5, y: 10.5 };
+    const reachable = { i: 1, x: 3.5, y: 3.5 };
+    const ranked = rankExitBlockers([sealed, reachable], { x: 3.5, y: 2.5 }, map, new Set());
+    expect(ranked).toHaveLength(2);
+    expect(ranked[0].i).toBe(1);
+  });
+
+  it("breaks ties by index, so the order is total", () => {
+    const map = splitMap();
+    const a = { i: 7, x: 3.5, y: 3.5 };
+    const b = { i: 2, x: 3.5, y: 3.5 };
+    expect(rankExitBlockers([a, b], { x: 3.5, y: 2.5 }, map, new Set()).map((e) => e.i)).toEqual([2, 7]);
+  });
+
+  it("keeps every candidate's own fields intact", () => {
+    const map = splitMap();
+    const ranked = rankExitBlockers([{ i: 0, x: 3.5, y: 3.5, alive: true, elite: true }], { x: 3.5, y: 2.5 }, map, new Set());
+    expect(ranked[0]).toMatchObject({ i: 0, alive: true, elite: true });
   });
 });
