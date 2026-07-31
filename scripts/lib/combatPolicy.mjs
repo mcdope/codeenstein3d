@@ -208,6 +208,11 @@ export const DEFAULT_TUNING = {
   //   CODEENSTEIN_TELEMETRY_TUNING='{"NAV_FULL_WASD":false}'
   // restores the stop-to-turn behaviour exactly.
   NAV_FULL_WASD: true,
+  // Whether a critical-health retreat backs away along the escape vector
+  // without turning, instead of spinning to face away first. Same
+  // single-variable switch shape as `NAV_FULL_WASD`:
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"NAV_BACKPEDAL_RETREAT":false}'
+  NAV_BACKPEDAL_RETREAT: true,
   // Once stuck realigning on the same mine this many ticks, force a shot at
   // the current best-effort alignment instead of freezing until the much
   // later full give-up — see `decide`'s mine-realignment comment.
@@ -1259,9 +1264,36 @@ export function decide(world, memory, config) {
     const currentAngle = Math.atan2(player.dirY, player.dirX);
     const awayAngle = Math.atan2(player.y - threat.y, player.x - threat.x);
     const delta = angleDelta(currentAngle, awayAngle);
-    const moveKeys = new Set(["KeyW", "ShiftLeft"]);
-    if (Math.abs(delta) > tuning.TURN_MOVE_EPS) {
-      moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
+    const moveKeys = new Set(["ShiftLeft"]);
+    if (tuning.NAV_BACKPEDAL_RETREAT) {
+      // Run along the escape vector immediately, without turning to face it.
+      //
+      // Turning first is backwards in both senses: the bot spends decisions
+      // rotating while something is closing on it, and — because `KeyW` was
+      // held throughout — it *ran toward the threat* for the first half of a
+      // large turn, exactly the defect measured in the mine retreat.
+      // Reversing and strafing are the same speed as running forward
+      // (`forwardSign` is signed and `diagonalScale` splits a diagonal across
+      // two perpendicular axes for magnitude `step`, engine.ts), so there is
+      // nothing to gain by facing the way you flee.
+      //
+      // Keeping the threat in view is the second half of the point: the bot
+      // stays aimed at what it is escaping, which is what makes shooting
+      // while retreating possible at all. (Firing here is deliberately *not*
+      // part of this change — one variable at a time.)
+      //
+      // On `diagonalScale`: the recorded 72% level-2 death regression came
+      // from bolting a lateral key onto a forward move, so the resultant sat
+      // 45 degrees off the escape line and only 71% of the step went the
+      // right way. Here the octant is *chosen* to point along the escape
+      // vector, so the worst case is half an octant — 22.5 degrees, 92% —
+      // and the total speed is unchanged either way.
+      for (const key of movementKeysFor(delta)) moveKeys.add(key);
+    } else {
+      moveKeys.add("KeyW");
+      if (Math.abs(delta) > tuning.TURN_MOVE_EPS) {
+        moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
+      }
     }
     // A blocked "away" vector (cornered retreat) still won't move the
     // player — this branch returns before the shared end-of-decision

@@ -1123,6 +1123,56 @@ describe("melee approach is mine-aware", () => {
   });
 });
 
+describe("critical-health retreat backpedals instead of turning (Stage 7)", () => {
+  const fleeing = (threatAt) => ({
+    player: makePlayer({ healthFraction: 0.1 }),
+    enemies: [makeEnemy(threatAt)],
+    mines: [],
+    navTarget: null,
+    map: makeMap(),
+  });
+
+  it("backs away from a threat dead ahead without turning at all", () => {
+    // Facing +x with the threat at +x: the escape vector is a full 180
+    // degrees away, which is exactly where the old code spun — running
+    // *toward* the threat while it did, since KeyW was held throughout.
+    const intent = decide(fleeing({ x: 13, y: 10 }), freshMemory(), makeConfig());
+    expect(intent.branch).toBe("criticalHealth");
+    expect(keysOf(intent)).toContain("KeyS");
+    expect(keysOf(intent)).toContain("ShiftLeft");
+    // No turn: staying aimed at what you are escaping is half the point.
+    expect(keysOf(intent).some((k) => k === "KeyE" || k === "KeyQ")).toBe(false);
+  });
+
+  it("still sprints, whichever way the escape runs", () => {
+    for (const at of [{ x: 13, y: 10 }, { x: 7, y: 10 }, { x: 10, y: 13 }]) {
+      expect(keysOf(decide(fleeing(at), freshMemory(), makeConfig()))).toContain("ShiftLeft");
+    }
+  });
+
+  it("strafes directly away from a threat abeam rather than reversing", () => {
+    // Threat off to one side: pure lateral is the escape line here, and pure
+    // lateral has no `diagonalScale` penalty at all.
+    const intent = decide(fleeing({ x: 10, y: 13 }), freshMemory(), makeConfig());
+    expect(keysOf(intent).some((k) => k === "KeyA" || k === "KeyD")).toBe(true);
+    expect(keysOf(intent).some((k) => k === "KeyE" || k === "KeyQ")).toBe(false);
+  });
+
+  it("restores the old turn-then-run behaviour when the switch is off", () => {
+    const intent = decide(
+      fleeing({ x: 13, y: 10 }),
+      freshMemory(),
+      makeConfig({ tuning: { ...DEFAULT_TUNING, NAV_BACKPEDAL_RETREAT: false } }),
+    );
+    expect(keysOf(intent)).toContain("KeyW");
+    expect(keysOf(intent).some((k) => k === "KeyE" || k === "KeyQ")).toBe(true);
+  });
+
+  it("does not start shooting while retreating — that is a separate change", () => {
+    expect(decide(fleeing({ x: 13, y: 10 }), freshMemory(), makeConfig()).fire).toBe(false);
+  });
+});
+
 describe("NAV_FULL_WASD switch", () => {
   it("stands still to turn when disabled, and keeps moving when enabled", () => {
     // Player faces +x with the target behind-left, so |delta| is well past
