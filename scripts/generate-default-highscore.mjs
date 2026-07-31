@@ -57,7 +57,17 @@ const CAMPAIGN_DIR = path.join(REPO_ROOT, "demo-campaign");
 const CAMPAIGN_NAME = "demo-campaign";
 const OUTPUT_FILE = path.join(REPO_ROOT, "src/engine/defaultHighscore.ts");
 
-const REQUIRED_QUALIFYING_RUNS = 3;
+// The loop stops the moment this many runs qualify, so it doubles as the
+// sample the kept entry is the maximum *of* — at the default 3 a profile
+// typically uses only 4 of its 40 permitted attempts, and the board is a
+// best-of-3 rather than a best-of-many. Raising it is the way to get a
+// stronger and more representative board (the score spread across whole
+// regenerations is wide: Gamer measured 48774-63089 across two runs), at
+// roughly proportional cost. Env var rather than a bumped default because
+// the default is what keeps a routine regeneration cheap.
+const REQUIRED_QUALIFYING_RUNS = process.env.CODEENSTEIN_HIGHSCORE_QUALIFYING_RUNS
+  ? Number(process.env.CODEENSTEIN_HIGHSCORE_QUALIFYING_RUNS)
+  : 3;
 // Bounded, deliberately. This was `Infinity` on the reasoning that a manual,
 // hand-reviewed tool can afford to "keep retrying until 3 qualifying runs
 // land, however long that takes" — but an unbounded retry loop cannot fail,
