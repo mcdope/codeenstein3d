@@ -213,6 +213,11 @@ export const DEFAULT_TUNING = {
   // single-variable switch shape as `NAV_FULL_WASD`:
   //   CODEENSTEIN_TELEMETRY_TUNING='{"NAV_BACKPEDAL_RETREAT":false}'
   NAV_BACKPEDAL_RETREAT: true,
+  // Whether the bot re-reads the engine's wall grid when `gridVersion` moves,
+  // instead of planning forever against the copy taken at level start. Same
+  // single-variable switch shape as the two above:
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_LIVE_GRID":false}'
+  BOT_LIVE_GRID: true,
   // Once stuck realigning on the same mine this many ticks, force a shot at
   // the current best-effort alignment instead of freezing until the much
   // later full give-up — see `decide`'s mine-realignment comment.

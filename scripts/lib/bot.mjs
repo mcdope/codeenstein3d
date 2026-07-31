@@ -617,6 +617,9 @@ export class Bot {
       trace: this.logger.trace ? [] : undefined,
     };
     this.visitedPickups = new Set();
+    // Last `gridVersion` seen from the engine — see `#refreshGridIfChanged`.
+    // Reset per level, because the engine's counter is per level too.
+    this.lastGridVersion = null;
     // Doors this run has pushed open, as "x,y" tile keys. Lives on the
     // instance rather than inside `driveLegs` because `driveToExit` runs
     // *after* the legs are done and still has to path back through them.
@@ -1378,10 +1381,55 @@ export class Bot {
   }
 
   async readFull() {
-    return this.page.evaluate(() => {
+    const read = await this.page.evaluate(() => {
       const hooks = window.__codeensteinTestHooks;
-      return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines(), projectiles: hooks.getProjectiles?.() ?? [] };
+      return {
+        player: hooks.getPlayerState(),
+        enemies: hooks.getEnemies(),
+        mines: hooks.getMines(),
+        projectiles: hooks.getProjectiles?.() ?? [],
+        // One integer, folded into the read the bot already makes — see
+        // `#refreshGridIfChanged`. Optional so an older engine build degrades
+        // to the previous behaviour instead of throwing.
+        gridVersion: hooks.getGridVersion?.() ?? null,
+      };
     });
+    await this.#refreshGridIfChanged(read.gridVersion);
+    return read;
+  }
+
+  /**
+   * Re-read the engine's wall grid when it has actually changed.
+   *
+   * The engine mutates its own grid mid-level — a door opens, a secret wall
+   * floods away — and bumps `gridVersion` each time. The bot plans against a
+   * *copy* taken at level start, so without this an opened door stays a wall
+   * in every BFS it runs, forever. That is a recorded wedge: the bot walked
+   * through a door and then refused to path back through it
+   * (`stage03_legacy_api.php`), and `#noteDoorUnderFoot` exists as a partial
+   * workaround — it can only learn about a door the player is personally
+   * standing on, never one a *teammate* opened or one that opened as a
+   * side effect.
+   *
+   * Cheap by construction: the version is one integer on a read the bot
+   * already performs, and the full grid is refetched only on the handful of
+   * decisions where it actually changed.
+   */
+  async #refreshGridIfChanged(gridVersion) {
+    if (!this.tuning.BOT_LIVE_GRID) return;
+    if (gridVersion === null || gridVersion === undefined) return;
+    if (this.lastGridVersion === gridVersion) return;
+    // First observation just records the baseline — the map copy is already
+    // correct at level start, so there is nothing to refetch yet.
+    const isFirst = this.lastGridVersion === null;
+    this.lastGridVersion = gridVersion;
+    if (isFirst || !this.map) return;
+    const grid = await this.page.evaluate(() => window.__codeensteinTestHooks.getGrid?.() ?? null);
+    if (grid) {
+      this.map.grid = grid;
+      this.gridRefreshes = (this.gridRefreshes ?? 0) + 1;
+      this.logger.wpDebug?.(`[wpdebug] grid refreshed (version ${gridVersion}, refresh #${this.gridRefreshes})`);
+    }
   }
 
   async readState() {

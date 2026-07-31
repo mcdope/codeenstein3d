@@ -418,6 +418,12 @@ describe("RaycasterEngine — construction", () => {
         expect.objectContaining({ x: enemy.x, y: enemy.y, alive: true, edgeCase: expect.any(Boolean) }),
       ]);
       expect(hooks!.getMines()).toEqual([]);
+      expect(hooks!.getGridVersion()).toEqual(expect.any(Number));
+      expect(hooks!.getGrid()).toEqual(map.grid);
+      // A copy, never the live array — a caller must not be able to mutate
+      // engine state, and `PathField` floods over this exact grid.
+      expect(hooks!.getGrid()).not.toBe(map.grid);
+      expect((hooks!.getGrid() as unknown[])[0]).not.toBe(map.grid[0]);
       // Nothing has fired yet — the shape is asserted by the dedicated
       // getProjectilesSnapshot tests further down.
       expect(hooks!.getProjectiles()).toEqual([]);
@@ -1323,6 +1329,34 @@ describe("RaycasterEngine — keys and doors", () => {
     const snapshot = engine.captureReconciliationSnapshot(1, true);
     expect(snapshot.gridDelta).toContainEqual({ x: 7, y: 5, value: 0 });
     expect(snapshot.gridVersion).toBeGreaterThan(before);
+  });
+
+  it("reports the grid mutation through the test hooks, so a bot can see a door open", () => {
+    // The whole point of `getGridVersion`/`getGrid`: the engine mutates its
+    // own grid mid-level, and anything planning against the map it was handed
+    // at level start (the playtest bot's Node-side copy) otherwise treats an
+    // opened door as a permanent wall — a recorded wedge on
+    // `stage03_legacy_api.php`.
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][7] = BRANCH_DOOR_TILE;
+      const map = fakeMap({ grid: g }, size);
+      const { engine, input } = makeEngine(map);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> }).__codeensteinTestHooks;
+      const versionBefore = hooks!.getGridVersion() as number;
+      expect((hooks!.getGrid() as number[][])[5][7]).toBe(BRANCH_DOOR_TILE);
+
+      input.keys.add("KeyW");
+      for (let i = 0; i < 20; i++) engine.advance(0.1);
+
+      expect(hooks!.getGridVersion() as number).toBeGreaterThan(versionBefore);
+      expect((hooks!.getGrid() as number[][])[5][7]).toBe(0);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
   });
 
   it("opens a door behind the player when backing into it with S", () => {

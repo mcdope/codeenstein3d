@@ -1052,6 +1052,24 @@ export class RaycasterEngine {
             maxHp: e.maxHp,
           })),
         getMines: () => this.map.mines.map((m) => ({ x: m.x, y: m.y, alive: m.alive, visible: m.visible })),
+        // The live wall grid's revision counter, and the grid itself.
+        //
+        // The engine *mutates its own grid* while a level runs — a door opens
+        // (`0`-valued `pendingGridDelta` entries) or a secret wall floods away
+        // — and bumps `gridVersion` each time. A bot that planned against the
+        // map it was handed at level start has no way to learn that, so an
+        // opened door stays a wall in its pathfinding forever; that is a real,
+        // recorded wedge (`stage03_legacy_api.php`) and the reason
+        // `scripts/lib/bot.mjs` carries a `#noteDoorUnderFoot` flood-fill that
+        // guesses at door state from the tile the player is standing on.
+        //
+        // `getGridVersion` is the cheap poll — one integer per decision — and
+        // `getGrid` the expensive refetch, taken only when the version moves.
+        // The grid is copied row by row rather than handed out live, same rule
+        // as every other snapshot here: a caller must never be able to mutate
+        // engine state, and `PathField`'s own flood reads this array directly.
+        getGridVersion: () => this.gridVersion,
+        getGrid: () => this.map.grid.map((row) => [...row]),
         // In-flight enemy bolts. Without this, a bot can see the enemy that
         // shot at it but not the shot itself — bolts have real flight time
         // and never re-aim, so they're dodgeable, yet a bot blind to them can
