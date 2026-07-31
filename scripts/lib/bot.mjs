@@ -356,7 +356,7 @@ export function detectAnomalies(trace) {
             startTick: runStart,
             endTick: runEnd - 1,
             ticks: runLen,
-            detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)} threatDist=${first.threatDist ?? "none"} mineDist=${first.mineDist ?? "none"}`,
+            detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} activity=${first.activity ?? "?"} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)} threatDist=${first.threatDist ?? "none"} mineDist=${first.mineDist ?? "none"}`,
           });
         }
         if (runLen >= HP_DRAIN_FROZEN_TICKS_THRESHOLD && last.hpFrac < first.hpFrac - 0.001 && !mostlyFiring) {
@@ -365,7 +365,7 @@ export function detectAnomalies(trace) {
             startTick: runStart,
             endTick: runEnd - 1,
             ticks: runLen,
-            detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)}`,
+            detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} activity=${first.activity ?? "?"} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)}`,
           });
         }
       }
@@ -947,7 +947,22 @@ export class Bot {
     return this.#withActivity("loot", async () => {
       for (const wp of pathToWaypoints(path)) {
         this.logger.wpDebug?.(`[wpdebug]   loot wp=(${wp.x},${wp.y})`);
-        const result = await this.driveToward(wp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
+        // Re-planning, the same as a route leg — see `driveTowardWithReplan`.
+        // This call site kept the bare straight-line `driveToward` after the
+        // route legs moved off it, and inherited the exact failure that change
+        // was made to fix: shoved off the line mid-detour, the bot aims into a
+        // wall for the whole budget instead of routing around.
+        //
+        // It is the *dominant* wedge the anomaly scan sees. Tagging findings
+        // with the errand they occurred on showed 9 of 13 idle stalls are
+        // `activity=loot`, including both clusters previously mistaken for a
+        // door-opening bug: on `stage03_legacy_api.php` the bot sits in the
+        // throat of the doorway at y=70.5 with the door at y=71 — not opening
+        // it, just walking past it toward a pickup — and a heading up to
+        // `TURN_MOVE_EPS` (0.2 rad) off-axis clips the frame. The engine
+        // rejects the blocked axis and slides the free one, so y stays pinned
+        // while x crawls 23.53 -> 23.69 across 254 decisions.
+        const result = await this.driveTowardWithReplan(wp, openedDoors, this.tuning.ARRIVE_EPS);
         this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
         if (result.state !== "playing") return result;
         // See `driveLegs`'s own doc comment on its identical check — every
