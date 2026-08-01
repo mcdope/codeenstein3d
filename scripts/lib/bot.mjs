@@ -632,7 +632,22 @@ export class Bot {
     this.profile = profile;
     this.realtime = opts.realtime ?? false;
     this.ignoreThreats = opts.ignoreThreats ?? false;
-    this.tuning = { ...DEFAULT_TUNING, ...opts.tuning };
+    // A profile may own tuning constants that would otherwise be global, which
+    // is how a skill tier expresses *competence* (how well it avoids damage)
+    // rather than only *pace* (how fast it moves and shoots) — see
+    // `scripts/lib/profiles.mjs`.
+    //
+    // Merged here rather than at the call sites deliberately: there are six
+    // `Bot` constructions and five pass no `tuning` at all, including
+    // `generate-default-highscore.mjs`'s — so per-call-site plumbing would
+    // silently have generated the shipped highscore from profiles whose own
+    // tuning never applied. One line here makes that class of bug impossible,
+    // and `MultiplayerBot` inherits it through `super()`.
+    //
+    // `opts.tuning` stays last so `CODEENSTEIN_TELEMETRY_TUNING` still wins —
+    // it is the single-variable switch every A/B in `doc/dev/balancing-telemetry.md`
+    // depends on.
+    this.tuning = { ...DEFAULT_TUNING, ...(profile?.tuning ?? {}), ...opts.tuning };
     this.stepMs = opts.stepMs ?? (this.realtime ? this.tuning.WATCH_STEP_MS : this.tuning.VIRTUAL_STEP_MS);
     this.recordStepMs = opts.recordStepMs ?? this.stepMs;
     this.logger = {

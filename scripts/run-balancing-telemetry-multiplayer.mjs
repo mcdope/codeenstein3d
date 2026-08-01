@@ -436,6 +436,13 @@ async function runOneAttempt(browser, devServerUrl, comboLabel, profilesByPlayer
       devServerUrl,
       playerCount,
       difficulty,
+      // Index-aligned with the bootstrap's own ["host", ...guests] ordering,
+      // which is the same order `profilesByPlayer` is built in. Without this
+      // the engine turned every multiplayer bot at the bare 2.6 rad/s while
+      // its `turnBurstMs` sized every hold for 2-5x that, so each bot
+      // systematically under-rotated and the one turn-speed knob that
+      // differentiates the skill tiers did nothing here.
+      botRotSpeedMuls: profilesByPlayer.map((p) => p.rotSpeedMultiplier),
       targetTick: TARGET_TICK,
       log: VERBOSE ? (msg) => console.log(`  [bootstrap] ${msg}`) : () => {},
     });

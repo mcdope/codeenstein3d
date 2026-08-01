@@ -17,6 +17,7 @@
  * moment it is fixed, rather than something only a full campaign would reveal.
  */
 import { describe, expect, it, vi } from "vitest";
+import { PROFILES } from "./profiles.mjs";
 import {
   activeSpikeAt,
   angleDelta,
@@ -96,15 +97,10 @@ function makeEnemy(over = {}) {
   return { x: 14.5, y: 10.5, alive: true, aggroed: true, elite: false, edgeCase: false, hp: 30, maxHp: 30, ...over };
 }
 
-const PROFILE = {
-  engageRadius: 9.5,
-  fireAngleEps: 0.05,
-  fireCooldownMs: 160,
-  rotSpeedMultiplier: 3.5,
-  proactiveMineDisarm: true,
-  rocketForDistantClusters: true,
-  weaponPriority: [4, 5, 3, 1, 0],
-};
+// The real shipped Gamer profile, not a copy of it. The previous local
+// clone silently drifted out of sync with `PROFILES` — nothing imported
+// the real values, so no test could ever fail on a mismatch.
+const PROFILE = PROFILES.Gamer;
 
 function freshMemory() {
   return { retreatKey: null, retreatTicks: 0, shootKey: null, shootTicks: 0, abandoned: new Set(), trace: undefined };
@@ -963,7 +959,15 @@ describe("ranged weapon economics", () => {
     // 4400 HP. Inside Friday Hotfix's 3.5-tile reach that is the right answer;
     // the point is simply that it is not the pistol.
     const close = pickRangedWeapon(owner(), PROFILE, [], target({ dist: 2.5, hp: 4400, maxHp: 4400, elite: true }), null);
-    expect(close).toBe(FRIDAY_HOTFIX_WEAPON_INDEX);
+    // Asserted as "beats the head of the priority list", not as one specific
+    // index. Which weapon wins here depends on the profile's `ammoThrift`, and
+    // this test previously pinned Friday Hotfix only because its local fixture
+    // omitted that field and silently scored against the default of 1. Under
+    // the real Gamer profile (0.4) the shotgun wins outright, 8.96s vs 11.04s
+    // — not a tiebreak. The invariant worth testing is the mechanism, not the
+    // winner.
+    expect(close).not.toBe(PROFILE.weaponPriority[0]);
+    expect(close).not.toBe(PISTOL_WEAPON_INDEX);
     // Beyond that reach the flamethrower is not a candidate at all, so the
     // answer becomes the best weapon that actually arrives — still not the pistol.
     const far = pickRangedWeapon(owner(), PROFILE, [], target({ dist: 7, hp: 4400, maxHp: 4400, elite: true }), null);
@@ -1100,9 +1104,14 @@ describe("hard weapon range limits", () => {
     expect(pickRangedWeapon(owner(), PROFILE, [], far, null)).not.toBe(FRIDAY_HOTFIX_WEAPON_INDEX);
     expect(scoreRangedWeapon(FRIDAY_HOTFIX_WEAPON_INDEX, { targetHp: 4400, dist: 6, player: owner(), profile: PROFILE, tuning: DEFAULT_TUNING })).toBe(Infinity);
   });
-  it("still picks it inside that range against a sponge", () => {
-    const close = { ...makeEnemy(), dist: 2.5, hp: 4400, maxHp: 4400, i: 0 };
-    expect(pickRangedWeapon(owner(), PROFILE, [], close, null)).toBe(FRIDAY_HOTFIX_WEAPON_INDEX);
+  it("is a candidate again inside that range, rather than scoring Infinity", () => {
+    // The pair with the test above: out of reach it is not a candidate at all
+    // (Infinity), inside reach it is scored on its merits. Whether it then
+    // *wins* depends on the profile's ammo economics — see the note in
+    // "prefers the fastest reachable killer" above — so this asserts
+    // candidacy, which is what `maxRange` actually governs.
+    const score = scoreRangedWeapon(FRIDAY_HOTFIX_WEAPON_INDEX, { targetHp: 4400, dist: 2.5, player: owner(), profile: PROFILE, tuning: DEFAULT_TUNING });
+    expect(Number.isFinite(score)).toBe(true);
   });
 });
 
