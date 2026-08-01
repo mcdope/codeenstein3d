@@ -7,6 +7,7 @@
  * end-of-run overlays remain in the DOM (see src/ui/gameHud.ts).
  */
 import type { EngineStats, PlayerId } from "./engine";
+import { drawRotatedGlyph, outlineRect, type Glyph } from "./pathSprites";
 import { COUNTDOWN_DISPLAY_HZ } from "./transitionConstants";
 import { WEAPONS } from "./weapons";
 
@@ -366,6 +367,28 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
  * `MinimapPanelRect.compassBadge`) with a little margin on every side. */
 const COMPASS_NEEDLE_SIZE = 7;
 
+/** The needle itself, at bearing zero — pre-rendered per rotation step rather
+ * than path-filled live every frame; see `pathSprites.ts` for why. The
+ * geometry is unchanged: tip on local -Y ("up"/12 o'clock), which is what
+ * makes "dead ahead" read as "up" (see this function's doc comment). */
+const COMPASS_NEEDLE_GLYPH: Glyph = {
+  width: COMPASS_NEEDLE_SIZE * 2 + 4,
+  height: COMPASS_NEEDLE_SIZE * 2 + 4,
+  anchorX: COMPASS_NEEDLE_SIZE + 2,
+  anchorY: COMPASS_NEEDLE_SIZE + 2,
+  draw: (g, ox, oy) => {
+    const size = COMPASS_NEEDLE_SIZE;
+    g.fillStyle = "#8effa0";
+    g.beginPath();
+    g.moveTo(ox, oy - size); // tip — bearing 0 ("dead ahead") points straight up
+    g.lineTo(ox + size * 0.55, oy + size * 0.6);
+    g.lineTo(ox, oy + size * 0.25);
+    g.lineTo(ox - size * 0.55, oy + size * 0.6);
+    g.closePath();
+    g.fill();
+  },
+};
+
 /**
  * Exit compass: a small needle drawn centered in the minimap's own compass
  * badge (`compassBadge`, part of the `MinimapPanelRect` `renderMinimap`
@@ -398,26 +421,10 @@ export function drawCompass(
   exitX: number,
   exitY: number,
 ): void {
-  const size = COMPASS_NEEDLE_SIZE;
-  const cx = badge.cx;
-  const cy = badge.cy;
-
   const angleToExit = Math.atan2(exitY - playerY, exitX - playerX);
   const bearing = angleToExit - playerAngle;
 
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate(bearing);
-  ctx.fillStyle = "#8effa0";
-  ctx.beginPath();
-  ctx.moveTo(0, -size); // tip — bearing 0 ("dead ahead") points straight up
-  ctx.lineTo(size * 0.55, size * 0.6);
-  ctx.lineTo(0, size * 0.25);
-  ctx.lineTo(-size * 0.55, size * 0.6);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.restore();
+  drawRotatedGlyph(ctx, COMPASS_NEEDLE_GLYPH, bearing, badge.cx, badge.cy);
 }
 
 /** Height, in canvas pixels, of the native status bar at the bottom. */
@@ -460,7 +467,7 @@ export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void
   ctx.fillRect(barX, barY, (barW * pct) / 100, barH);
   ctx.strokeStyle = "#2f7a38";
   ctx.lineWidth = 1;
-  ctx.strokeRect(barX + 0.5, barY + 0.5, barW - 1, barH - 1);
+  outlineRect(ctx, barX + 0.5, barY + 0.5, barW - 1, barH - 1);
   drawValue(ctx, `${stats.health}%`, barX + barW + 8, valueY, low ? "#ff6a5a" : "#4cff6a", 13);
 
   // --- Swap ---
