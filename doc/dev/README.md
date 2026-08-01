@@ -20,6 +20,7 @@ The middle one matters more than it looks: a reverted approach leaves no trace i
 - [Game Design](game-design.md) — why source code maps to a dungeon the way it does, and the intent behind enemies, weapons, and scoring
 - [Design Decisions](decisions.md) — a themed reference of notable tradeoffs and reversals, citing `notes` task numbers for full detail
 - [Development History](history.md) — the chronological record of completed work, and the approaches that were measured and reverted; moved out of `notes` so that file stays a working backlog
+- [WAD Texture Packs](wad-texture-packs.md) — which lump names the game looks for in a DOOM WAD, per styleset and per gameplay-signal slot; what a WAD must contain to work as a texture pack; the fallback chain, the format limits that silently drop a slot, and how to check a pack with `report:wad-stylesets`
 - [Testing](testing.md) — the Vitest unit-test suite: setup, shared mocks, mocking philosophy, reusable techniques, how to run the verify scripts locally, and what the suite structurally cannot catch
 - [Adding a Weapon](adding-a-weapon.md) — the touchpoint checklist for a new weapon; most of them are hardcoded enumerations, and the ones that fail silently (the playtest bot's mirrored weapon table especially) are called out per step
 - [Multiplayer Server Deployment](multiplayer-deployment.md) — step-by-step runbook for standing up the signaling server, the client build, and the optional coturn TURN relay, natively or via the [`docker/`](../../docker/README.md) stack

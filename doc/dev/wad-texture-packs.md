@@ -1,0 +1,142 @@
+# WAD Texture Packs
+
+How this game sources textures from a DOOM WAD, exactly which lump names it looks for, and what a WAD has to contain to work as a texture pack for it.
+
+The game ships with no external asset files: every texture is procedurally generated at startup (`src/engine/textures.ts`). Loading a WAD is purely an override — it swaps real composited wall/door textures and floor flats into the same slots. Nothing about gameplay, level layout, or replay determinism changes; texture choice is cosmetic and session-only (see [Architecture § Rendering](architecture.md#rendering)).
+
+**This game reads textures out of a WAD. It does not read levels out of one.** There is no `LINEDEFS`/`SECTORS`/`THINGS`/`NODES` parsing anywhere in the codebase — levels are always generated from your source code. A WAD here is a skin, not a mapset.
+
+> `src/wad/textureAllowlist.ts` is the source of truth for every name below. If this table and that file disagree, the file is right — and `npm run report:wad-stylesets` will tell you which.
+
+## The slots
+
+The game renders per-level **stylesets** (see [Design Decisions § Per-Level Stylesets](decisions.md#per-level-stylesets)). There are 20 slots in total:
+
+- **15 structural slots** — `wall`, `floor`, `door` for each of the five stylesets. These are what make one level look different from the next.
+- **5 gameplay-signal slots** — shared by every styleset, because their colour *is* their meaning. A pack that recolours these to taste will make the game harder to read, not prettier.
+
+Each slot has an ordered candidate list. **The first name present and decodable wins**; the rest are fallbacks for WADs that don't have the first choice.
+
+### Structural slots (per styleset)
+
+Wall and door names are composite textures (`TEXTURE1`/`TEXTURE2` entries). Floor names are flats.
+
+| styleset | look | wall candidates | floor candidates | door candidates |
+|---|---|---|---|---|
+| `stone` | warm tan brick | `STONE2`, `STONE3`, `BROWN1`, `STONE`, `BROWNGRN` | `FLAT5_4`, `FLOOR7_2`, `FLOOR0_3`, `FLAT10` | `DOOR3`, `DOOR1`, `BIGDOOR4` |
+| `rust` | oxide red, industrial | `METAL`, `BROWN96`, `BROWNPIP`, `SUPPORT3`, `METAL1` | `FLOOR0_1`, `FLAT5_2`, `FLOOR3_3`, `FLAT5_5` | `BIGDOOR1`, `BIGDOOR2`, `DOOR1` |
+| `tech` | grey steel panelling | `STARTAN3`, `TEKWALL4`, `SUPPORT2`, `STARTAN1`, `TEKWALL1` | `FLOOR4_8`, `FLOOR0_6`, `FLAT14`, `FLOOR5_1` | `SPCDOOR1`, `BIGDOOR2`, `DOOR3` |
+| `marble` | pale blue-grey stone | `MARBLE1`, `MARBLE2`, `GRAY4`, `GRAYTALL`, `GRAY1`, `GRAYBIG`, `MARBFACE` | `FLAT1`, `FLOOR1_1`, `CEIL3_5`, `FLAT18` | `BIGDOOR5`, `BIGDOOR6`, `DOOR3` |
+| `techCool` | teal computer bank | `COMPBLUE`, `COMPTALL`, `SHAWN2`, `TEKGREN2`, `STARTAN2` | `CEIL5_1`, `FLOOR1_1`, `FLAT1`, `CEIL3_5` | `BIGDOOR2`, `DOOR3`, `DOOR1` |
+
+`techCool` is reserved for bonus (`.h` header-file) levels and never appears on a normal one — its look is the "this is a restock arena, not a fight" signal.
+
+### Gameplay-signal slots (shared by all stylesets)
+
+| slot | what it marks | kind | candidates |
+|---|---|---|---|
+| `loreWall` | lore terminal you can interact with | composite | `COMPUTE2`, `COMPUTE1`, `COMPSTA2`, `COMPSTA1`, `SKINMET1` |
+| `hazardFloor` | acid — damages you while you stand in it | flat | `NUKAGE3`, `NUKAGE2`, `NUKAGE1`, `FWATER1` |
+| `teleporterFloor` | goto/label teleporter pad | flat | `GATE1`, `GATE2`, `GATE3`, `GATE4` |
+| `spikeSafeFloor` | spike trap, currently retracted | flat | `FLOOR7_1`, `FLAT5_2`, `CEIL5_2` |
+| `spikeActiveFloor` | spike trap, currently lethal | flat | `BLOOD1`, `BLOOD2`, `LAVA1` |
+
+Two tile kinds deliberately have **no slot of their own** and cannot be re-skinned separately:
+
+- **Secret walls** reuse the styleset's plain `wall` plus a very subtle tint. They are meant to be *findable*, not obvious — giving them their own texture would give every secret away on sight.
+- **Switchboard branch doors** reuse `door` plus an amber wash, so "just push it" stays distinguishable from "needs a key you may not have".
+
+## What the loader actually needs
+
+Everything below is enforced by `src/wad/` and is where a hand-built pack most often fails.
+
+### Required lumps
+
+| lump | required for | notes |
+|---|---|---|
+| `PLAYPAL` | **everything** | Without it, nothing decodes at all. Only palette 0 (the first 768 bytes) is read — no damage-flash or radsuit palettes, and `COLORMAP` is never read. |
+| `PNAMES` | wall/door slots | `int32` count, then `char[8]` names. |
+| `TEXTURE1` and/or `TEXTURE2` | wall/door slots | Either alone is fine. On a name collision **`TEXTURE2` wins** — it's merged in second. |
+| patch lumps | wall/door slots | Looked up by name **anywhere in the directory** — `P_START`/`P_END` markers are *not* required, unlike flats. The first lump matching the name wins. |
+| `F_START` … `F_END` | floor + flat signal slots | `F1_START`/`F1_END` is also accepted. A flat outside these markers is invisible to the loader. |
+
+A texture-only resource pack with no `PLAYPAL` of its own cannot work standalone here — there's no "ride alongside an IWAD" mode. That's why OTEX was rejected from the online catalog.
+
+### Format constraints
+
+- **Magic must be `IWAD` or `PWAD`.** Anything else is a hard, reported failure.
+- **Flats must be exactly 4096 bytes** (64×64, raw palette indices). A lump inside the flat markers with any other size is silently skipped as an unsupported variant — this is the single most common reason a floor slot doesn't fill.
+- **Wall/door textures may be any size.** They are *not* resampled to 64×64; the renderer reads each bitmap's real dimensions at sample time, so a 128×128 `BIGDOOR2` works as-is.
+- **Tall patches are not supported.** The cumulative-topdelta encoding used by patches taller than 254px isn't implemented. No stock Doom/Doom2 IWAD wall patch needs it; an unusual custom PWAD might.
+- **Transparent pixels get filled, not preserved.** Areas of a composite texture no patch covers are opaque-filled with that styleset's flat base colour. The renderer's hot path is alpha-free by design — there are no see-through walls.
+- **Names are compared uppercased**, NUL-padded to 8 chars, as in the WAD spec.
+
+### Failure behaviour
+
+Nothing about a bad or partial WAD breaks the game:
+
+- A fatal parse error (bad magic, an out-of-range lump offset) leaves the previously active textures untouched and reports the error in the sidebar status line.
+- A single corrupt candidate is skipped and the **next name on that slot's list** gets a try — one bad patch never costs you the whole slot.
+- A slot with no match anywhere falls back silently.
+
+### The fallback chain (structural slots only)
+
+For a styleset's `wall`/`floor`/`door`, in order:
+
+1. that styleset's own candidate list;
+2. **every other styleset's list for the same slot**, in `stone → rust → tech → marble → techCool` order;
+3. that styleset's procedural default.
+
+Step 2 is deliberate. Resolving each styleset in isolation would let a sparse WAD leave one styleset fully WAD-textured and the next fully procedural, so the campaign visibly flips between real textures and programmer art from level to level — which reads as a bug. Borrowing degrades instead to "two stylesets look alike", which is merely less variety. The rationale is recorded in [Design Decisions § Per-Level Stylesets](decisions.md#per-level-stylesets).
+
+The five signal slots have no cross-slot fallback — they either resolve from their own list or use the procedural default.
+
+## Checking your pack
+
+```bash
+npm run report:wad-stylesets -- /path/to/your.wad
+```
+
+Every WAD in `public/wads/` (the online catalog, populated by `npm run fetch:online-wads`) is always reported on; paths you pass are *added* to that set rather than replacing it, which is usually what you want — it puts your pack side by side with known-good references. `CODEENSTEIN_EXTRA_WADS` takes a colon-separated list for the same purpose, handy for a local IWAD you always want folded in.
+
+It drives the game's own parser — not a name-presence check — and prints:
+
+- **the resolution matrix**: which name each styleset's wall/floor/door actually won, per WAD;
+- **`distinct across stylesets: n/5 walls, n/5 floors`** — the number that matters. `5/5` means every level look is genuinely different. Lower means the fallback chain had to borrow, so some stylesets will look alike;
+- **`styleset variety`**: how often each styleset resolved a wall it actually owns rather than a borrowed one;
+- **a per-candidate decode probe**: for every allowlisted name independently, in how many WADs it decodes. A name that never *wins* a slot is fine (it may sit behind a first choice that's always present); a name that never *decodes anywhere* is dead weight in the allowlist.
+
+Two more checks worth running when changing `textureAllowlist.ts`:
+
+```bash
+npm run verify:wad-parser     # pure Node, synthetic fixtures, every fallback path
+npm run verify:wad-textures   # Playwright; needs a dev server (see testing.md)
+```
+
+`verify:wad-textures` asserts on rendered pixels that campaign levels show distinct palettes and that relaunching the same level is pixel-identical — the part a unit test structurally cannot see, since the canvas mock draws nothing.
+
+## Adding or changing a candidate name
+
+1. Add it to the right list in `src/wad/textureAllowlist.ts`, positioned by preference — first entry is the one you actually want.
+2. Run `npm run report:wad-stylesets` against every catalog WAD plus a real IWAD if you have one. **Presence of the name is not the bar; it must decode to real, fully-opaque pixels.**
+3. Watch `distinct across stylesets` — a new name that makes two stylesets resolve the same texture is a regression in variety, even if every slot still fills.
+4. `src/wad/textureAllowlist.test.ts` pins name shape (uppercase, ≤8 chars, no duplicates) and that each styleset keeps a distinct first-choice wall and floor.
+
+Worked example: `marble` originally listed only `MARBLE*`/`GRAY1`/`GRAYBIG`/`MARBFACE`, and the report showed it resolving its own wall in just 4 of 6 WADs — the DOOM shareware IWAD and HACX ship no `MARBLE*` at all, so on those it borrowed `stone`'s `STONE2` and the two stylesets rendered identically. Adding `GRAY4`/`GRAYTALL` (present and decodable in all six) took it to 6/6 and `5/5` distinct walls everywhere.
+
+## Adding a whole new slot
+
+Adding a new textured tile kind is mostly mechanical, and the WAD side is the small part:
+
+1. `src/map/types.ts` — a new `Tile` value, if the tile kind is new.
+2. `src/engine/textures.ts` — a new field on `StyleTextures` (varies per styleset) or `SignalTextures` (shared), a procedural default generator, and its base colour.
+3. `src/wad/textureAllowlist.ts` — the candidate list; `src/wad/loadWad.ts` — resolve it into `styles` or `signals`.
+4. `src/engine/raycaster.ts` — the wall-hit or floor-cast dispatch; `src/map/exportView.ts` — the matching branch, so the PNG map export stays honest.
+5. `scripts/lib/wadSlotSummary.mjs` — add the slot to `STRUCTURAL_SLOTS`/`SIGNAL_SLOTS`. It mirrors those lists rather than importing them, and only the *styleset ids* are drift-guarded, so a forgotten slot here silently under-counts in the reports instead of failing.
+6. `scripts/fixtures/buildTestWad.mjs` — a fixture lump, so `verify:wad-parser` covers it.
+
+Consider first whether it needs a slot at all: secret walls and branch doors both get by on "shared texture + identifying tint overlay", which costs nothing and keeps a WAD-sourced pack correct for free.
+
+## Licensing
+
+If you're packaging a WAD for distribution with a fork, note that the online catalog's entries were each license-checked individually and one (HACX) is non-commercial-use-only — see the [Credits & Third-Party Licenses](../../README.md#credits--third-party-licenses) section of the main README, and `src/wad/onlineWadCatalog.ts`'s own doc comment for the admission bar and two rejected candidates.

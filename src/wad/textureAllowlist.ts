@@ -25,6 +25,11 @@
  * enough. `scripts/report-wad-styleset-coverage.mjs` prints the full
  * styleset x slot resolution matrix across every catalog WAD and is how that
  * bar is checked when this list changes.
+ *
+ * `doc/dev/wad-texture-packs.md` is the contributor-facing version of this
+ * file: the same table, plus what a WAD must actually contain to work as a
+ * texture pack (required lumps, the 4096-byte flat rule, the unsupported
+ * tall-patch encoding) and the checklist for adding a candidate here.
  */
 import type { StyleSetId } from "../map/types";
 
