@@ -18,6 +18,7 @@
  * missing input packet's held-last-input fallback (`InputDelayBuffer`) is a
  * second, independent drift source.
  */
+import type { AmmoPools } from "./ammo";
 import type { PlayerId } from "./engine";
 import type { LootKind, Tile } from "../map/types";
 
@@ -38,7 +39,12 @@ export interface PlayerSnapshot {
   planeY: number;
   health: number;
   swap: number;
-  ammo: { bullets: number; rockets: number; smg: number; gas: number };
+  /** Every pool, via `AmmoPools` rather than a spelled-out shape: both ends
+   * are already pool-agnostic at runtime (produced with `{ ...p.ammo }`,
+   * applied with `Object.assign`), so a hand-written four-field literal here
+   * would silently stop describing the wire the moment a fifth pool is
+   * added — see `doc/dev/adding-a-weapon.md`. */
+  ammo: AmmoPools;
   weaponIndex: number;
   keysHeld: number;
   ownedWeapons: number[];

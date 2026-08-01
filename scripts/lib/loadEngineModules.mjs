@@ -53,15 +53,29 @@ function urlImportAsPathPlugin() {
 
 /**
  * Bundles the real parser registry + map generator for plain Node and
- * imports the result. Returns `{ parseFile, extensionOf, MapGenerator }`.
+ * imports the result. Returns
+ * `{ parseFile, extensionOf, MapGenerator, UNLOCKABLE_WEAPONS }`.
+ *
+ * `UNLOCKABLE_WEAPONS` comes from the real `src/engine/weapons.ts` rather
+ * than being mirrored as a literal the way `scripts/lib/combatPolicy.mjs`
+ * has to mirror the weapon *stats*: three verification/telemetry scripts
+ * need it only to build a `missingWeaponIndices` list for the map generator,
+ * and all three used to hardcode `[3, 4, 5]`. That silently stopped being
+ * the right answer the moment a fourth unlockable weapon was added — the new
+ * weapon would simply never appear in a secret room in any of them. The
+ * mirror in `combatPolicy.mjs` exists because that module is deliberately
+ * kept liftable into `src/engine/`; this one had no such excuse, and
+ * `weapons.ts` is pure data with no imports, so bundling it costs nothing.
  */
 export async function loadEngineModules() {
   const registryPath = path.join(REPO_ROOT, "src/parser/registry.ts");
   const mapGeneratorPath = path.join(REPO_ROOT, "src/map/mapGenerator.ts");
+  const weaponsPath = path.join(REPO_ROOT, "src/engine/weapons.ts");
 
   const entryContents = [
     `export { parseFile, extensionOf } from ${JSON.stringify(registryPath)};`,
     `export { MapGenerator } from ${JSON.stringify(mapGeneratorPath)};`,
+    `export { UNLOCKABLE_WEAPONS } from ${JSON.stringify(weaponsPath)};`,
   ].join("\n");
 
   const result = await build({
