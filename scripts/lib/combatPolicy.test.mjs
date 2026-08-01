@@ -19,6 +19,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   activeSpikeAt,
+  walkingStepsWithin,
   angleDelta,
   decide,
   DEFAULT_TUNING,
@@ -220,6 +221,82 @@ describe("segmentBlocked", () => {
   });
 });
 
+describe("pickThreat, pre-emptive engagement", () => {
+  const KEEN = { ...PROFILE, preemptiveEngage: true };
+  const sleeping = (over = {}) => makeEnemy({ aggroed: false, ...over });
+
+  it("engages an enemy the engine would have aggroed on its own", () => {
+    // 3 tiles ahead, clear sight, inside ENGINE_AGGRO_RADIUS — `enemyAi.ts`
+    // would have aggroed it unprompted, so this only decides who shoots first.
+    expect(pickThreat([sleeping()], makePlayer(), KEEN, makeMap())?.i).toBe(0);
+  });
+
+  it("leaves it alone for a profile that hasn't opted in", () => {
+    expect(pickThreat([sleeping()], makePlayer(), PROFILE, makeMap())).toBeUndefined();
+  });
+
+  it("leaves it alone when the whole behaviour is switched off", () => {
+    const off = { ...DEFAULT_TUNING, PREEMPTIVE_ENGAGE: false };
+    expect(pickThreat([sleeping()], makePlayer(), KEEN, makeMap(), off)).toBeUndefined();
+  });
+
+  it("ignores one behind the player rather than turning around for it", () => {
+    // Player faces +x; this sits at -3x. Turning around abandons the route.
+    expect(pickThreat([sleeping({ x: 7.5 })], makePlayer(), KEEN, makeMap())).toBeUndefined();
+  });
+
+  it("ignores one it cannot actually see", () => {
+    const map = makeMap({ tiles: [[12, 10, 1]] });
+    expect(pickThreat([sleeping()], makePlayer(), KEEN, map)).toBeUndefined();
+  });
+
+  it("ignores one outside the engine's aggro radius, even in plain view", () => {
+    // 8 tiles: inside engageRadius (9.5) but outside ENGINE_AGGRO_RADIUS
+    // (7.5), so it would not have noticed the player by itself.
+    expect(pickThreat([sleeping({ x: 18.5 })], makePlayer(), KEEN, makeMap())).toBeUndefined();
+  });
+
+  it("ignores one that is near in a straight line but unreachable on foot", () => {
+    // The constraint this stage was required to honour: never run a corridor
+    // for an enemy that had no chance of reaching the player. A full-height
+    // wall with a single closed door in it is 3 tiles away with clear sight —
+    // `hasLineOfSight` blocks on wall/secret/lore only, not on a door — while
+    // the walking BFS treats the door as solid, so the enemy is not reachable
+    // at all. A straight-line gate admits this; a walking-distance gate does
+    // not.
+    const wall = [];
+    for (let y = 1; y <= 18; y++) wall.push([12, y, y === 10 ? 3 : 1]);
+    const map = makeMap({ tiles: wall });
+    expect(hasLineOfSight(map, 10.5, 10.5, 13.5, 10.5)).toBe(true);
+    expect(pickThreat([sleeping({ x: 13.5 })], makePlayer(), KEEN, map)).toBeUndefined();
+  });
+
+  it("keeps an enemy already fighting ahead of any opportunity", () => {
+    // The one way this stage could make an ongoing fight worse: a quick-kill
+    // opportunity outranking the enemy currently doing damage.
+    const engaged = makeEnemy({ x: 16.5, hp: 200 });
+    const opportunity = sleeping({ x: 13.5, edgeCase: true });
+    expect(pickThreat([engaged, opportunity], makePlayer(), KEEN, makeMap())?.i).toBe(0);
+  });
+});
+
+describe("walkingStepsWithin", () => {
+  it("measures steps around a wall, not through it", () => {
+    // Wall at x=12 spanning y=9..11 with the way round at y=8.
+    const map = makeMap({ tiles: [[12, 9, 1], [12, 10, 1], [12, 11, 1]] });
+    const field = walkingStepsWithin(map, { x: 10.5, y: 10.5 }, 12);
+    expect(field.get("11,10")).toBe(1);
+    // (13,10) is behind the wall: around via y=8 is 2 up, 3 across, 2 back.
+    expect(field.get("13,10")).toBe(7);
+  });
+
+  it("stops at the step bound instead of flooding the level", () => {
+    const field = walkingStepsWithin(makeMap(), { x: 10.5, y: 10.5 }, 2);
+    expect(field.get("12,10")).toBe(2);
+    expect(field.get("13,10")).toBeUndefined();
+  });
+});
+
 describe("pickThreat", () => {
   it("prefers a quick kill over a merely nearer enemy", () => {
     const player = makePlayer();
@@ -230,9 +307,10 @@ describe("pickThreat", () => {
   it("ignores enemies that are dead, un-aggroed, or out of engage radius", () => {
     const player = makePlayer();
     expect(pickThreat([makeEnemy({ alive: false })], player, PROFILE, undefined)).toBeUndefined();
-    // The bot conceding the first shot: an enemy in plain view but not yet
-    // aggroed is not a candidate at all. Stage 6 changes this; until then
-    // this test pins the current behaviour so the change is visible.
+    // The bot conceding the first shot. Still the behaviour for a profile
+    // that hasn't opted into pre-emptive engagement — `PROFILE` has no
+    // `preemptiveEngage`, so this pins the opt-out path (see the
+    // "pre-emptive engagement" block below for the opted-in one).
     expect(pickThreat([makeEnemy({ aggroed: false })], player, PROFILE, undefined)).toBeUndefined();
     // 7,7 away is ~9.9 tiles, just outside the 9.5 engage radius.
     expect(pickThreat([makeEnemy({ x: 17.5, y: 17.5 })], player, PROFILE, undefined)).toBeUndefined();
