@@ -26,7 +26,7 @@ Every Playwright-driven script here (`scripts/verify-*.mjs`, the two determinism
 | `verify-campaign-playthrough.mjs` | `http://localhost:5183` | `CODEENSTEIN_DEV_URL` — same variable, **different default**, not a hardcoded port |
 | `run-balancing-telemetry-multiplayer.mjs`, `run-balancing-campaign-multiplayer.mjs`, `verify-multiplayer-campaign.mjs` | starts its own, `5174` + signaling `8788` | `scripts/lib/multiplayerTestServers.mjs` — deliberately never 5173/8787, see its own doc comment |
 | `run-perf-benchmark.mjs` | starts its own vite on `5199` | `CODEENSTEIN_PERF_PORT` |
-| `verify-wad-parser.mjs`, `verify-zip-reader.mjs`, `verify-demo-campaign.mjs`, `verify-multiplayer-server.mjs`, both determinism scripts | none needed | pure Node, or a browser that never navigates to the app |
+| `verify-wad-parser.mjs`, `report-wad-styleset-coverage.mjs`, `verify-zip-reader.mjs`, `verify-demo-campaign.mjs`, `verify-multiplayer-server.mjs`, both determinism scripts | none needed | pure Node, or a browser that never navigates to the app |
 
 `verify:campaign:playthrough`'s 5183 default exists so it doesn't collide with a manual dev session; CI overrides it (`CODEENSTEIN_DEV_URL: "http://localhost:5173"`) precisely to reuse the one server it already started rather than booting a second.
 

@@ -2,43 +2,84 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 /**
- * Hardcoded texture/flat names, one list per slot, tried in order — the
- * first name present in a loaded WAD wins; if none are, that slot falls
- * back to its procedural default (see `loadWad.ts`). No texture-picker UI:
- * this is the entire selection mechanism.
+ * Hardcoded texture/flat names, tried in order — the first name present in a
+ * loaded WAD wins. There is no texture-picker UI: this is the entire
+ * selection mechanism.
  *
- * Every candidate below has been verified end-to-end against a real Doom
- * IWAD by driving this repo's own parser (`pnames.ts`/`textureLump.ts`/
- * `compositeTexture.ts`/`flatLump.ts`) directly, not just checked for name
- * presence — each one decodes to real, fully-opaque pixels.
+ * Two shapes, because only some surfaces vary by styleset:
+ *
+ * - `STYLE_WAD_ALLOWLISTS` — the *structural* slots (wall, floor, door), one
+ *   list per slot **per styleset**, so a WAD-textured session gets the same
+ *   per-level visual variety the procedural defaults do. Each styleset's names
+ *   were grouped to match that styleset's procedural palette (see
+ *   `STYLE_PALETTES` in `src/engine/textures.ts`), so swapping a WAD in
+ *   doesn't make a "marble" level suddenly read as rust.
+ * - The `*_TEXTURE_ALLOWLIST` constants below — the *gameplay-signal* slots
+ *   (lore terminal, hazard, teleporter, spike safe/active), which are
+ *   deliberately identical in every styleset so their meaning never shifts
+ *   from level to level.
+ *
+ * Every candidate here must decode to real, fully-opaque pixels through this
+ * repo's own parser (`pnames.ts`/`textureLump.ts`/`compositeTexture.ts`/
+ * `flatLump.ts`) against a real WAD — presence of the name alone is not
+ * enough. `scripts/report-wad-styleset-coverage.mjs` prints the full
+ * styleset x slot resolution matrix across every catalog WAD and is how that
+ * bar is checked when this list changes.
  */
+import type { StyleSetId } from "../map/types";
 
-export const WALL_TEXTURE_ALLOWLIST: readonly string[] = [
-  "STARTAN3",
-  "STONE2",
-  "BROWN1",
-  "TEKWALL4",
-  "SUPPORT2",
-  "METAL",
-];
+/** The three structural slots a styleset varies. */
+export interface WadStyleAllowlist {
+  readonly wall: readonly string[];
+  readonly floor: readonly string[];
+  readonly door: readonly string[];
+}
 
-export const BONUS_WALL_TEXTURE_ALLOWLIST: readonly string[] = [
-  "COMPBLUE",
-  "COMPTALL",
-  "SHAWN2",
-  "TEKGREN2",
-  "STARTAN2",
-];
-
-export const DOOR_TEXTURE_ALLOWLIST: readonly string[] = ["BIGDOOR2", "DOOR3", "DOOR1", "SPCDOOR1"];
-
-export const FLOOR_TEXTURE_ALLOWLIST: readonly string[] = ["FLOOR4_8", "FLAT5_4", "FLOOR7_2", "FLOOR0_3"];
-
-export const BONUS_FLOOR_TEXTURE_ALLOWLIST: readonly string[] = ["CEIL5_1", "FLOOR1_1", "FLAT1", "CEIL3_5"];
+/**
+ * Per-styleset candidates for the structural slots. A slot with no match in a
+ * given WAD does *not* immediately fall back to programmer art — see
+ * `loadWad.ts`'s cross-styleset fallback, which first tries the other
+ * stylesets' candidates for the same slot so a sparse WAD degrades to "some
+ * stylesets look alike" rather than "some levels are WAD-textured and others
+ * aren't".
+ */
+export const STYLE_WAD_ALLOWLISTS: Readonly<Record<StyleSetId, WadStyleAllowlist>> = {
+  stone: {
+    wall: ["STONE2", "STONE3", "BROWN1", "STONE", "BROWNGRN"],
+    floor: ["FLAT5_4", "FLOOR7_2", "FLOOR0_3", "FLAT10"],
+    door: ["DOOR3", "DOOR1", "BIGDOOR4"],
+  },
+  rust: {
+    wall: ["METAL", "BROWN96", "BROWNPIP", "SUPPORT3", "METAL1"],
+    floor: ["FLOOR0_1", "FLAT5_2", "FLOOR3_3", "FLAT5_5"],
+    door: ["BIGDOOR1", "BIGDOOR2", "DOOR1"],
+  },
+  tech: {
+    wall: ["STARTAN3", "TEKWALL4", "SUPPORT2", "STARTAN1", "TEKWALL1"],
+    floor: ["FLOOR4_8", "FLOOR0_6", "FLAT14", "FLOOR5_1"],
+    door: ["SPCDOOR1", "BIGDOOR2", "DOOR3"],
+  },
+  marble: {
+    // GRAY4/GRAYTALL sit third and fourth on purpose: MARBLE* is the better
+    // match for this palette but is absent from the DOOM shareware IWAD and
+    // from HACX, where without a pale fallback of its own `marble` would
+    // borrow `stone`'s STONE2 and the two stylesets would look identical.
+    // Both greys were confirmed present and decodable in every catalog WAD by
+    // `scripts/report-wad-styleset-coverage.mjs`.
+    wall: ["MARBLE1", "MARBLE2", "GRAY4", "GRAYTALL", "GRAY1", "GRAYBIG", "MARBFACE"],
+    floor: ["FLAT1", "FLOOR1_1", "CEIL3_5", "FLAT18"],
+    door: ["BIGDOOR5", "BIGDOOR6", "DOOR3"],
+  },
+  techCool: {
+    wall: ["COMPBLUE", "COMPTALL", "SHAWN2", "TEKGREN2", "STARTAN2"],
+    floor: ["CEIL5_1", "FLOOR1_1", "FLAT1", "CEIL3_5"],
+    door: ["BIGDOOR2", "DOOR3", "DOOR1"],
+  },
+};
 
 /** Wall-style composite texture for lore-terminal tiles — a computer-bank/
- * computer-station look, thematically fitting a terminal. Verified against a
- * real Doom IWAD (all five candidates decode). */
+ * computer-station look, thematically fitting a terminal. Shared by every
+ * styleset: a lore terminal has to stay recognisable as one. */
 export const LORE_WALL_TEXTURE_ALLOWLIST: readonly string[] = [
   "COMPUTE2",
   "COMPUTE1",

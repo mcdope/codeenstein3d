@@ -85,6 +85,7 @@ async function main() {
     teleporterPairLevels: [],
     secretKindsSeen: new Set(),
     bonusLevelCount: 0,
+    styleSetsSeen: new Set(),
     languagesSeen: new Set(),
     parseFailures: [],
     switchboardRoomCount: 0,
@@ -118,6 +119,7 @@ async function main() {
 
     coverage.languagesSeen.add(parsed.language);
     if (bonusLevel) coverage.bonusLevelCount += 1;
+    coverage.styleSetsSeen.add(map.styleSet);
 
     const elites = map.enemies.filter((e) => e.elite);
     const edgeCases = map.enemies.filter((e) => e.edgeCase);
@@ -209,6 +211,14 @@ async function main() {
     ],
     ["Acid Overflow room observed", coverage.acidOverflowCount > 0, `(${coverage.acidOverflowCount} total)`],
     ["Bonus level present exactly once", coverage.bonusLevelCount === 1, `(count=${coverage.bonusLevelCount})`],
+    // A styleset is picked per file from that file's own content hash. If that
+    // mapping ever clusters, the whole campaign renders as one repeated look
+    // and the feature is silently gone — which no other check here would see.
+    [
+      "Campaign spreads across >=4 stylesets",
+      coverage.styleSetsSeen.size >= 4,
+      `(${[...coverage.styleSetsSeen].sort().join(", ")})`,
+    ],
     ["All 15 languages parsed", coverage.languagesSeen.size === 15, `(${coverage.languagesSeen.size}/15: ${[...coverage.languagesSeen].sort().join(", ")})`],
     ["No parse failures", coverage.parseFailures.length === 0, coverage.parseFailures.join(", ")],
   ];

@@ -29,6 +29,10 @@ export async function loadWadModule() {
     `export * from ${JSON.stringify(path.join(wadDir, "patch.ts"))};`,
     `export * from ${JSON.stringify(path.join(wadDir, "compositeTexture.ts"))};`,
     `export * from ${JSON.stringify(path.join(wadDir, "flatLump.ts"))};`,
+    // Needed by `report-wad-styleset-coverage.mjs` to tell an allowlist entry
+    // a styleset actually owns from one it borrowed via the fallback chain.
+    // Its only `src/map/` dependency is a `import type`, which esbuild erases.
+    `export * from ${JSON.stringify(path.join(wadDir, "textureAllowlist.ts"))};`,
   ].join("\n");
 
   const result = await build({

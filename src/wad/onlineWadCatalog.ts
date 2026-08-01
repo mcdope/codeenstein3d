@@ -14,8 +14,9 @@
  * already points at the raw `.wad` file directly (no archive to extract from).
  *
  * Every entry here has been round-tripped through this project's own
- * `loadWadTextures` and must resolve most/all of the 10 texture slots in
- * `textureAllowlist.ts` — a WAD from a different game engine (Heretic/Hexen)
+ * `loadWadTextures` and must resolve most/all of the 20 texture slots in
+ * `textureAllowlist.ts` (3 structural slots x 5 stylesets, plus the 5 shared
+ * gameplay-signal slots; `npm run report:wad-stylesets` prints the matrix) — a WAD from a different game engine (Heretic/Hexen)
  * or a texture-only resource patch with its own non-classic lump names
  * doesn't belong here even if its license is fine, since it wouldn't
  * actually change anything a player sees. See git history for two rejected

@@ -16,7 +16,7 @@ import { renderFileTree } from "./ui/fileTree";
 import { initConsoleSidebar } from "./ui/consoleSidebar";
 import { extensionOf, isParsable, parseFile } from "./parser/registry";
 import { MapGenerator, type GenerateOptions } from "./map/mapGenerator";
-import type { GameMap } from "./map/types";
+import { STYLE_SET_IDS, type GameMap } from "./map/types";
 import { renderExportMap } from "./map/exportView";
 import { RaycasterEngine, SIMULATION_BALANCE, isTestHooksActive } from "./engine/engine";
 import { audio } from "./engine/audio";
@@ -258,25 +258,36 @@ selectBgmFolderButton.addEventListener("click", async () => {
 // picker the other launch/BGM flows use — simpler, and works in every
 // Canvas2D-capable browser, not just Chromium.
 
+/** Human-readable labels for the shared gameplay-signal slots, in the order
+ * they're reported. Keyed off `WadLoadSummary["signals"]` so a slot added
+ * there fails to typecheck until it's given a label here. */
+const WAD_SIGNAL_LABELS: Record<keyof WadLoadSummary["signals"], string> = {
+  loreWall: "lore terminals",
+  hazardFloor: "hazard floors",
+  teleporterFloor: "teleporter floors",
+  spikeSafeFloor: "spike traps, safe",
+  spikeActiveFloor: "spike traps, active",
+};
+
+/** Enumerating all 20 slots by name would run to several lines of status text,
+ * so each styleset is condensed to its own `wall/floor/door` triple and the
+ * shared signal slots are listed once — the same information, at a length that
+ * still fits the sidebar. A `·` marks a slot left on its procedural default. */
 function describeWadStatus(result: WadLoadSummary, fileName: string): string {
   if (!result.ok) return `Failed to load ${fileName}: ${result.error}`;
+  if (result.matchedSlots === 0) return `No matching textures found in ${fileName} — using built-in defaults`;
 
-  const matched: string[] = [];
-  if (result.wallName) matched.push(`walls (${result.wallName})`);
-  if (result.bonusWallName) matched.push(`bonus walls (${result.bonusWallName})`);
-  if (result.doorName) matched.push(`doors (${result.doorName})`);
-  if (result.floorName) matched.push(`floors (${result.floorName})`);
-  if (result.bonusFloorName) matched.push(`bonus floors (${result.bonusFloorName})`);
-  if (result.loreWallName) matched.push(`lore terminals (${result.loreWallName})`);
-  if (result.hazardFloorName) matched.push(`hazard floors (${result.hazardFloorName})`);
-  if (result.teleporterFloorName) matched.push(`teleporter floors (${result.teleporterFloorName})`);
-  if (result.spikeSafeFloorName) matched.push(`spike traps, safe (${result.spikeSafeFloorName})`);
-  if (result.spikeActiveFloorName) matched.push(`spike traps, active (${result.spikeActiveFloorName})`);
+  const styles = STYLE_SET_IDS.map((id) => {
+    const s = result.styles[id];
+    return `${id} (${s.wall ?? "·"}/${s.floor ?? "·"}/${s.door ?? "·"})`;
+  });
+  const signals = (Object.keys(WAD_SIGNAL_LABELS) as (keyof WadLoadSummary["signals"])[])
+    .filter((key) => result.signals[key])
+    .map((key) => `${WAD_SIGNAL_LABELS[key]} (${result.signals[key]})`);
 
-  const TOTAL_SLOTS = 10;
-  if (matched.length === 0) return `No matching textures found in ${fileName} — using built-in defaults`;
-  const missing = matched.length < TOTAL_SLOTS ? " — remaining slots using defaults" : "";
-  return `Using WAD textures: ${matched.join(", ")}${missing}`;
+  const parts = [...styles, ...signals].join(", ");
+  const missing = result.matchedSlots < result.totalSlots ? " — remaining slots using defaults" : "";
+  return `Using WAD textures: ${result.matchedSlots}/${result.totalSlots} slots — ${parts}${missing}`;
 }
 
 loadWadTexturesButton.addEventListener("click", () => wadFileInput.click());
@@ -3372,7 +3383,7 @@ function buildExportMapButton(map: GameMap, campaign: string, levelName: string)
   button.className = "export-map-btn";
   button.textContent = "🖼️ Export Map as PNG";
   button.addEventListener("click", () => {
-    const mapCanvas = renderExportMap(map, textures.getActiveSet());
+    const mapCanvas = renderExportMap(map, textures.getStyle(map.styleSet));
     mapCanvas.toBlob((blob) => {
       if (blob) {
         downloadBlob(blob, `codeenstein-${sanitizeFilenamePart(campaign)}-${sanitizeFilenamePart(levelName)}-map.png`);

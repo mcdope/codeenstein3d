@@ -2759,7 +2759,7 @@ export class RaycasterEngine {
     const camera = this.effectiveCameraFor(this.localPlayerId);
     const view = local.viewOffsets;
     const { width, height } = this.ctx.canvas;
-    renderScene(this.ctx, this.map, camera, local.zBuffer, textures.getActiveSet(), view.horizonShift, this.levelTime, this.loreRead);
+    renderScene(this.ctx, this.map, camera, local.zBuffer, textures.getStyle(this.map.styleSet), view.horizonShift, this.levelTime, this.loreRead);
     this.perf?.mark("raycast-walls");
     this.renderWorldBillboards(camera, local.zBuffer);
 
@@ -2814,6 +2814,7 @@ export class RaycasterEngine {
         this.gridVersion,
         this.isMultiplayerSession() ? this.drops : [],
         acidTiles(this.map.acidOverflows, this.acidStates),
+        textures.getStyle(this.map.styleSet).automapWall,
       );
       drawCompass(
         this.ctx,
@@ -2904,7 +2905,7 @@ export class RaycasterEngine {
   private renderPausedOverlay(): EngineStats {
     const local = this.players.get(this.localPlayerId)!;
     const camera = this.effectiveCameraFor(this.localPlayerId);
-    renderScene(this.ctx, this.map, camera, local.zBuffer, textures.getActiveSet(), 0, this.levelTime, this.loreRead);
+    renderScene(this.ctx, this.map, camera, local.zBuffer, textures.getStyle(this.map.styleSet), 0, this.levelTime, this.loreRead);
     this.renderWorldBillboards(camera, local.zBuffer);
     drawPauseOverlay(this.ctx);
     if (local.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
@@ -2930,7 +2931,7 @@ export class RaycasterEngine {
   private renderLoreOverlay(): EngineStats {
     const local = this.players.get(this.localPlayerId)!;
     const camera = this.effectiveCameraFor(this.localPlayerId);
-    renderScene(this.ctx, this.map, camera, local.zBuffer, textures.getActiveSet(), 0, this.levelTime, this.loreRead);
+    renderScene(this.ctx, this.map, camera, local.zBuffer, textures.getStyle(this.map.styleSet), 0, this.levelTime, this.loreRead);
     this.renderWorldBillboards(camera, local.zBuffer);
     const { maxScrollLines } = drawLoreOverlay(this.ctx, local.loreText as string, local.loreScroll);
     local.loreScroll = Math.max(0, Math.min(local.loreScroll, maxScrollLines));

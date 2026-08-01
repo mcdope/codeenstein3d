@@ -19,19 +19,7 @@ import path from "node:path";
 import { loadOnlineWadCatalogModule, REPO_ROOT } from "./lib/loadOnlineWadCatalogModule.mjs";
 import { loadWadModule } from "./lib/loadWadModule.mjs";
 import { extractFileFromZip } from "./lib/zipReader.mjs";
-
-const TEXTURE_SLOTS = [
-  "wallName",
-  "bonusWallName",
-  "doorName",
-  "floorName",
-  "bonusFloorName",
-  "loreWallName",
-  "hazardFloorName",
-  "teleporterFloorName",
-  "spikeSafeFloorName",
-  "spikeActiveFloorName",
-];
+import { summarizeWadSlots } from "./lib/wadSlotSummary.mjs";
 
 async function downloadFile(url) {
   console.log(`  Downloading ${url} ...`);
@@ -94,8 +82,10 @@ async function main() {
       console.log(`  [FAIL] loadWadTextures reported an error: ${result.error}`);
       continue;
     }
-    const matched = TEXTURE_SLOTS.filter((slot) => result[slot] !== null);
-    console.log(`  [OK] ${matched.length}/${TEXTURE_SLOTS.length} texture slots matched: ${matched.join(", ") || "(none)"}`);
+    // Per-styleset detail lives in `report-wad-styleset-coverage.mjs`; this
+    // step only needs the headline "does this entry actually skin the game".
+    const summary = summarizeWadSlots(result);
+    console.log(`  [OK] ${summary.matched}/${summary.total} texture slots matched`);
   }
 
   console.log(`\n${failures === 0 ? "All entries fetched and verified." : `${failures} entrie(s) FAILED.`}`);

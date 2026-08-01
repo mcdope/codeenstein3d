@@ -152,6 +152,28 @@ export interface Enemy {
   edgeCase: boolean;
 }
 
+/**
+ * The one visual styleset a level keeps for its whole duration — an opaque
+ * identifier as far as this layer is concerned. The map layer never learns
+ * what a wall looks like; `src/engine/textures.ts` owns the id-to-pixels
+ * table (wall/floor/door bitmaps, ceiling colour, automap wall colour), and
+ * `generation/styleSet.ts` owns which id a given level gets.
+ *
+ * Only the *structural* surfaces vary between these. The gameplay-signal
+ * textures — lore terminal, hazard/acid, teleporter pad, spike trap — are
+ * identical in every styleset on purpose: "this tile will hurt me" must never
+ * depend on which level you happen to be on.
+ */
+export type StyleSetId = "stone" | "rust" | "tech" | "marble" | "techCool";
+
+/** Every `StyleSetId`, in a stable order — the iteration order for anything
+ * that has to build one entry per styleset (`STYLE_PALETTES` in
+ * `src/engine/textures.ts`, the WAD resolver's cross-styleset fallback in
+ * `src/wad/loadWad.ts`). Kept beside the union so the two can't drift: a
+ * `Record<StyleSetId, ...>` built from this fails to typecheck if a member is
+ * added to one and not the other. */
+export const STYLE_SET_IDS: readonly StyleSetId[] = ["stone", "rust", "tech", "marble", "techCool"];
+
 /** The full generated level. */
 export interface GameMap {
   width: number;
@@ -235,6 +257,14 @@ export interface GameMap {
    * `rollLoot`).
    */
   bonusLevel: boolean;
+  /**
+   * Which visual styleset this level keeps throughout (see `StyleSetId`).
+   * Derived purely from the parsed source's own content hash — see
+   * `generation/styleSet.ts` for why it deliberately draws nothing from the
+   * generator's shared `rng`. Being plain JSON it rides the multiplayer
+   * `GameMap` transfer unchanged, so every peer renders the same level alike.
+   */
+  styleSet: StyleSetId;
   /** Number of secret rooms actually carved by `placeSecretRooms` — shown on
    * the level-start briefing so the player knows to watch the walls. */
   secretRoomCount: number;

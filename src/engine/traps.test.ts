@@ -37,6 +37,7 @@ function fakeMap(spawn = { x: 5, y: 5 }): GameMap {
     ammoPickups: [],
     loreTerminals: [],
     bonusLevel: false,
+    styleSet: "stone",
     secretRoomCount: 0,
     switchboardRooms: [],
     exceptionZones: [],
