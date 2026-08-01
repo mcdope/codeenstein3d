@@ -1,27 +1,38 @@
 # Multiplayer support — feasibility research
 
+> **Status: implemented.** Written 2026-07-18 as findings-only research; the
+> implementation plan at the bottom shipped in full as steps 1–11 between 2026-07-18
+> and 2026-07-22. **This document is the historical decision record — it says why
+> multiplayer is shaped the way it is, not how it currently behaves.** For current
+> behaviour the four specs below are authoritative, and where this document and a
+> spec disagree, the spec wins — some decisions here were refined during
+> implementation (see e.g. `multiplayer-server-spec.md` §3 on the code alphabet, and
+> [`history.md`](history.md) on step 10's scope). Everything written in the future
+> tense below describes the plan as of 2026-07-18, not outstanding work.
+
 Investigation of the `notes` "Open" checklist item (multiplayer support), against the
-current codebase as of 2026-07-18. Nothing implemented — this is findings only.
+codebase as of 2026-07-18.
 
 ## Follow-up specifications
 
 This document is the entry point; four follow-on artifacts turned its decisions into
-detailed, code-grounded plans (none of them modify anything under `src/` either):
+detailed, code-grounded plans (all four written, like this one, before any `src/`
+change — each is now marked implemented):
 
-- [`scripts/poc-cross-browser-determinism.mjs`](scripts/poc-cross-browser-determinism.mjs) —
+- [`scripts/poc-cross-browser-determinism.mjs`](../../scripts/poc-cross-browser-determinism.mjs) —
   standalone Playwright PoC that measured (not just flagged) the cross-browser
   floating-point risk called out below — see
   [Cross-browser determinism: measured, not theoretical](#cross-browser-determinism-measured-not-theoretical).
-- [`doc/dev/multiplayer-netcode-spec.md`](doc/dev/multiplayer-netcode-spec.md) —
+- [`multiplayer-netcode-spec.md`](multiplayer-netcode-spec.md) —
   the lockstep-plus-reconciliation netcode design the PoC's result made necessary:
   star-topology `dt` unification, the input delay buffer, the exact state
   reconciliation payload, and hard-snap-vs-interpolation drift correction.
-- [`doc/dev/multiplayer-server-spec.md`](doc/dev/multiplayer-server-spec.md) —
+- [`multiplayer-server-spec.md`](multiplayer-server-spec.md) —
   the signaling + lobby server this doc's "Direct connect via a short code" and
   "Lobby folds into the same service" decisions require: endpoint/JSON schemas, the
   in-memory `Map`/TTL-sweep mechanics, and the IP rate-limiting/backoff design
   protecting the 6-character codes.
-- [`doc/dev/multiplayer-game-state-spec.md`](doc/dev/multiplayer-game-state-spec.md) —
+- [`multiplayer-game-state-spec.md`](multiplayer-game-state-spec.md) —
   the engine/UI-layer adaptation plan: gating the Host/Join UI to GitHub/Demos
   workspaces, a deterministic `pickMultiplayerSpawns` that never touches the
   existing single-player `pickSafeSpawn`, per-player scoring with kill-assist
@@ -60,6 +71,13 @@ decisions above locked in, the privacy question is closed and the backend questi
 a clear minimal-infra answer (below) rather than an open design space. The remaining
 work is ordinary feature work with clean extension points already in the code, plus
 the netcode itself.
+
+> **Outcome:** the feasibility call held, the schedule estimate did not — steps 1–11
+> shipped in four days (2026-07-18 → 2026-07-22), not months. The "clean extension
+> points already in the code" claim is what made the difference; the two steps that
+> ran well over their own sizing were 6 (netcode core) and 10, which turned out to
+> need real N-player support rather than the planned verification-only pass. See
+> [`history.md`](history.md) for the per-step record.
 
 ## What already works in multiplayer's favor
 
@@ -193,7 +211,7 @@ both signaling and the lobby:
   and similar-looking pairs" — but that's an arithmetic slip, not a valid 32-symbol
   set: 36 alphanumeric characters minus those 5 specific ones (`0`, `O`, `1`, `I`, `l`)
   leaves 31, not 32. Resolved in the actual implementation
-  (`doc/dev/multiplayer-server-spec.md` §3) by adopting
+  (`multiplayer-server-spec.md` §3) by adopting
   [Crockford's Base32](https://www.crockford.com/base32.html) alphabet verbatim —
   `0123456789ABCDEFGHJKMNPQRSTVWXYZ` (all 10 digits, plus 22 letters excluding only
   `I`/`L`/`O`/`U`) — a real, proven standard for exactly this purpose, and genuinely
@@ -415,7 +433,7 @@ that it has its own section directly below:
 This was flagged above as an open risk ("JS floats are IEEE-754 everywhere, but
 transcendental functions aren't guaranteed bit-identical across engines by spec") —
 it's no longer a guess. A standalone PoC
-([`scripts/poc-cross-browser-determinism.mjs`](scripts/poc-cross-browser-determinism.mjs),
+([`scripts/poc-cross-browser-determinism.mjs`](../../scripts/poc-cross-browser-determinism.mjs),
 doesn't import or modify any real game code) reproduced `mulberry32` verbatim and ran
 500,000 iterations of a synthetic loop shaped like this engine's real hot paths
 (`player.ts`'s turn math, `enemyAi.ts`'s `Math.atan2`/`Math.cos`/`Math.sin`/
@@ -470,36 +488,36 @@ work of keeping bandwidth tiny tick-to-tick (only input packets, not full state)
 periodic reconciliation layer on top is what keeps small, guaranteed-to-happen float
 drift from silently compounding into a real desync over a whole level. The full
 design for both halves of that hybrid is worked out in
-[`doc/dev/multiplayer-netcode-spec.md`](doc/dev/multiplayer-netcode-spec.md).
+[`multiplayer-netcode-spec.md`](multiplayer-netcode-spec.md).
 
 ## Sizing
 
 This is a major initiative, not an incremental feature:
 
 - Map-gen changes (multi-spawn) — small. Plan:
-  [`doc/dev/multiplayer-game-state-spec.md`](doc/dev/multiplayer-game-state-spec.md#2-multi-spawn-generation).
+  [`multiplayer-game-state-spec.md`](multiplayer-game-state-spec.md#2-multi-spawn-generation).
 - Scoring (per-player breakdown + comparison table, assist tracking) — small/medium,
   contingent on the engine's own single-player-only internals becoming per-player
   first (a real, larger prerequisite — see the plan). Plan:
-  [`doc/dev/multiplayer-game-state-spec.md`](doc/dev/multiplayer-game-state-spec.md#3-scoring--assists).
+  [`multiplayer-game-state-spec.md`](multiplayer-game-state-spec.md#3-scoring--assists).
 - Elite scaling by player count — small. Plan:
-  [`doc/dev/multiplayer-game-state-spec.md`](doc/dev/multiplayer-game-state-spec.md#4-elite-scaling-by-player-count).
+  [`multiplayer-game-state-spec.md`](multiplayer-game-state-spec.md#4-elite-scaling-by-player-count).
 - Gating multiplayer to GitHub/Demos sources only — small (flags already exist). Plan:
-  [`doc/dev/multiplayer-game-state-spec.md`](doc/dev/multiplayer-game-state-spec.md#1-ui-gating).
+  [`multiplayer-game-state-spec.md`](multiplayer-game-state-spec.md#1-ui-gating).
 - Signaling + lobby service (new, minimal backend piece) — small/medium: a single
   dependency-free Node script (in-memory session map, a handful of HTTP endpoints,
   TTL sweep), plus its own `--install`/`--uninstall` systemd-unit management. Folding
   the lobby in adds very little on top of the mailbox itself, but this is still a new,
   separate deployment target (a machine that runs it) and ongoing hosting/maintenance
   surface the project doesn't have today. Full spec:
-  [`doc/dev/multiplayer-server-spec.md`](doc/dev/multiplayer-server-spec.md).
+  [`multiplayer-server-spec.md`](multiplayer-server-spec.md).
 - Host/Join code UI + lobby browser screen — small/medium.
 - Netcode itself (input sync, `dt` unification, connection lifecycle, reconnect/
   disconnect handling, the countdown/advance-sync event, **and periodic authoritative
   state reconciliation — now confirmed required, not contingent, see the PoC above**)
   — large; this is the bulk of the work, and measurably larger than a pure-lockstep
   design would have been. Full spec:
-  [`doc/dev/multiplayer-netcode-spec.md`](doc/dev/multiplayer-netcode-spec.md).
+  [`multiplayer-netcode-spec.md`](multiplayer-netcode-spec.md).
 - Deathmatch bot AI — large, and should be scoped as its own follow-on effort, not
   bundled into "ship multiplayer."
 

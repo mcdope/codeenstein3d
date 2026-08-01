@@ -7,7 +7,7 @@ unavoidable: a minimal WebRTC signaling mailbox, with the lobby feature
 folded in since the same always-running process already makes it nearly
 free. It does not modify anything under `src/`.
 
-Cross-references: [`multiplayer-research.md`](../../multiplayer-research.md)'s
+Cross-references: [`multiplayer-research.md`](multiplayer-research.md)'s
 "Direct connect via a short code," "Lobby folds into the same service," and
 "Self-hosting" sections made the governing decisions this spec implements exactly:
 single dependency-free Node script, in-memory only, 6-character codes from a

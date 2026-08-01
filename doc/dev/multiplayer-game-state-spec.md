@@ -13,7 +13,7 @@ visibility (§5) and, most substantially, **the N-player engine model itself (§
 the design for how one `RaycasterEngine` instance simulates every connected
 player, which review identified as the largest unspecified prerequisite for the
 whole initiative. Cross-references:
-[`multiplayer-research.md`](../../multiplayer-research.md) (the governing decisions)
+[`multiplayer-research.md`](multiplayer-research.md) (the governing decisions)
 and [`multiplayer-netcode-spec.md`](multiplayer-netcode-spec.md) (the per-peer,
 full-engine-instance lockstep model this plan assumes — §6 here is what makes that
 model actually implementable).

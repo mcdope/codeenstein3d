@@ -5,7 +5,7 @@
 this document specifies the netcode layer that sits *above* the existing
 single-player `RaycasterEngine`, per
 the design direction and constraints already decided in
-[`multiplayer-research.md`](../../multiplayer-research.md) (star topology through a
+[`multiplayer-research.md`](multiplayer-research.md) (star topology through a
 host, GitHub/Demos-only sourcing, the signaling/lobby service) and the finding from
 `scripts/poc-cross-browser-determinism.mjs`: cross-engine (and even cross-*version*,
 same-engine) transcendental math (`Math.sin`/`cos`/`atan2`/`sqrt`/`hypot`) is not

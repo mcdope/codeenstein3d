@@ -27,7 +27,7 @@ client build) and section 5 (end-to-end verification) apply either way.
 ## Prerequisites
 
 - A VPS you control (the signaling server is the project's first non-static
-  piece of infrastructure — see [`multiplayer-research.md`](../../multiplayer-research.md)'s
+  piece of infrastructure — see [`multiplayer-research.md`](multiplayer-research.md)'s
   "Self-hosting" section for why).
 - **Node 20+** on the VPS for the signaling server.
 - A reverse proxy that terminates TLS (nginx or Caddy). The game is served over

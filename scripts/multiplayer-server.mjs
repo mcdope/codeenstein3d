@@ -1144,7 +1144,7 @@ invocation's currently-effective ones):
   CODEENSTEIN_MULTIPLAYER_TURN_CREDENTIALS_MAX_REQUESTS  Per-IP mint budget (currently ${TURN_CREDENTIALS_MAX_REQUESTS}).
   CODEENSTEIN_MULTIPLAYER_TURN_CREDENTIALS_PER_CODE_MAX_REQUESTS  Per-code mint budget (currently ${TURN_CREDENTIALS_PER_CODE_MAX_REQUESTS}).
 
-Docs: doc/dev/multiplayer-server-spec.md, multiplayer-research.md ("Self-hosting").
+Docs: doc/dev/multiplayer-server-spec.md, doc/dev/multiplayer-research.md ("Self-hosting").
 `;
 
 /** Pure function — the one piece of the install flow that's safe to exercise
