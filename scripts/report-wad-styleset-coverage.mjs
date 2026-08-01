@@ -53,7 +53,14 @@ function collectWadPaths() {
     if (extra) paths.push(extra);
   }
   paths.push(...process.argv.slice(2));
-  return paths.filter((p, i) => paths.indexOf(p) === i).filter((p) => fs.existsSync(p));
+
+  const deduped = paths.filter((p, i) => paths.indexOf(p) === i);
+  // Warn rather than silently drop: a mistyped path would otherwise leave the
+  // report showing only the catalog, looking exactly like a successful run of
+  // the pack you thought you were checking.
+  const missing = deduped.filter((p) => !fs.existsSync(p));
+  for (const p of missing) console.log(`  [SKIP] no such file: ${p}`);
+  return deduped.filter((p) => fs.existsSync(p));
 }
 
 function pad(text, width) {
@@ -63,13 +70,17 @@ function pad(text, width) {
 /**
  * Tries to decode one allowlisted name from `wadPath`'s already-parsed lumps,
  * the same way `loadWad.ts`'s own `resolveCompositeSlot`/`resolveFlatSlot`
- * would — a composite texture for wall/door, a flat for floor. Returns true
- * only if real pixels came back, which is the bar `textureAllowlist.ts` sets.
+ * would. `kind` decides which, and must be passed explicitly rather than
+ * inferred from the slot name: the four flat-backed *signal* slots are called
+ * `hazardFloor`/`teleporterFloor`/`spikeSafeFloor`/`spikeActiveFloor`, none of
+ * which is the string `"floor"`, so a name-based guess would silently probe
+ * every one of them as a composite and report them all dead. Returns true only
+ * if real pixels came back, which is the bar `textureAllowlist.ts` sets.
  */
-function probeName(wad, parsed, slot, name) {
+function probeName(wad, parsed, kind, name) {
   const { view, lumps, palette, defs, pnames } = parsed;
   try {
-    if (slot === "floor") {
+    if (kind === "flat") {
       const lump = wad.findFlat(lumps, name);
       return lump ? wad.parseFlat(view, lump, palette).rgba.length > 0 : false;
     }
@@ -107,6 +118,39 @@ function parseForProbing(wad, bytes) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Every allowlisted candidate in the codebase, as `[group, slot, name]` —
+ * the 15 structural lists (grouped by styleset) followed by the 5 shared
+ * gameplay-signal lists (grouped as `signal`). The signal lists are included
+ * deliberately: they are exactly as capable of accumulating a name that
+ * decodes nowhere as the structural ones, and leaving them out made the
+ * "dead weight" report structurally unable to ever flag one.
+ */
+function* everyCandidate(wad) {
+  for (const id of STYLE_SET_IDS) {
+    for (const slot of STRUCTURAL_SLOTS) {
+      const kind = slot === "floor" ? "flat" : "composite";
+      for (const name of wad.STYLE_WAD_ALLOWLISTS[id][slot]) yield [id, slot, name, kind];
+    }
+  }
+  for (const [slot, list] of signalAllowlists(wad)) {
+    // `loreWall` is a composite wall texture; the other four are flats.
+    const kind = slot === "loreWall" ? "composite" : "flat";
+    for (const name of list) yield ["signal", slot, name, kind];
+  }
+}
+
+/** The five shared signal allowlists, keyed by their `WadSignalSlots` name. */
+function signalAllowlists(wad) {
+  return [
+    ["loreWall", wad.LORE_WALL_TEXTURE_ALLOWLIST],
+    ["hazardFloor", wad.HAZARD_FLOOR_TEXTURE_ALLOWLIST],
+    ["teleporterFloor", wad.TELEPORTER_FLOOR_TEXTURE_ALLOWLIST],
+    ["spikeSafeFloor", wad.SPIKE_SAFE_FLOOR_TEXTURE_ALLOWLIST],
+    ["spikeActiveFloor", wad.SPIKE_ACTIVE_FLOOR_TEXTURE_ALLOWLIST],
+  ];
 }
 
 async function main() {
@@ -154,14 +198,10 @@ async function main() {
 
     const parsed = parseForProbing(wad, bytes);
     if (!parsed) continue;
-    for (const id of STYLE_SET_IDS) {
-      for (const slot of STRUCTURAL_SLOTS) {
-        for (const name of allowlists[id][slot]) {
-          if (probeName(wad, parsed, slot, name)) {
-            const key = `${id}.${slot}:${name}`;
-            decodeHits.set(key, (decodeHits.get(key) ?? 0) + 1);
-          }
-        }
+    for (const [group, slot, name, kind] of everyCandidate(wad)) {
+      if (probeName(wad, parsed, kind, name)) {
+        const key = `${group}.${slot}:${name}`;
+        decodeHits.set(key, (decodeHits.get(key) ?? 0) + 1);
       }
     }
   }
@@ -173,15 +213,23 @@ async function main() {
 
   console.log("\n=== per-candidate decode probe (does this name decode at all?) ===");
   const never = [];
-  for (const id of STYLE_SET_IDS) {
-    for (const slot of STRUCTURAL_SLOTS) {
-      const cells = allowlists[id][slot].map((name) => `${name}:${decodeHits.get(`${id}.${slot}:${name}`) ?? 0}`);
-      console.log(`  ${pad(`${id}.${slot}`, 16)} ${cells.join("  ")}`);
-      for (const name of allowlists[id][slot]) {
-        if (!decodeHits.has(`${id}.${slot}:${name}`)) never.push(`${id}.${slot}:${name}`);
-      }
+  let currentList = null;
+  let cells = [];
+  const flushList = () => {
+    if (currentList) console.log(`  ${pad(currentList, 24)} ${cells.join("  ")}`);
+    cells = [];
+  };
+  for (const [group, slot, name] of everyCandidate(wad)) {
+    const listKey = `${group}.${slot}`;
+    if (listKey !== currentList) {
+      flushList();
+      currentList = listKey;
     }
+    const key = `${listKey}:${name}`;
+    cells.push(`${name}:${decodeHits.get(key) ?? 0}`);
+    if (!decodeHits.has(key)) never.push(key);
   }
+  flushList();
   console.log(`\n  Names decoding in ZERO of the ${wadPaths.length} WAD(s) — real dead weight:`);
   console.log(never.length === 0 ? "    (none)" : never.map((d) => `    ${d}`).join("\n"));
 }
