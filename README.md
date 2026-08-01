@@ -322,7 +322,7 @@ npm run preview    # Serve production build locally
 ```
 demo-campaign/                # Bundled "Demos" showcase campaign (one level per parser language)
 docker/                       # Optional self-hosted multiplayer backend (signaling + TURN relay) — see docker/README.md
-scripts/                      # Node/Playwright verification + balancing-bot scripts; lib/bot.mjs holds the shared Bot class both generate-default-highscore.mjs and run-balancing-telemetry.mjs drive
+scripts/                      # Node/Playwright verification + balancing-bot scripts; lib/bot.mjs holds the shared Bot class both generate-default-highscore.mjs and run-balancing-telemetry.mjs drive, lib/combatPolicy.mjs its pure decision core, lib/profiles.mjs the skill tiers
 src/
 ├── main.ts                  # App entry: wires sidebar, parser, map, engine, HUD
 ├── difficulty.ts            # Difficulty multiplier tables (Easy/Normal/Hard)

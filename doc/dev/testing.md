@@ -59,6 +59,8 @@ WebKit is worth testing despite most historically-WebKit browsers (old Opera, ol
 | `scripts/lib/routePlanner.test.mjs` | pickup ordering, and that gate ordering deliberately stays array-order |
 | `scripts/lib/abReport.test.mjs` | the A/B guard thresholds and the survival-curve maths |
 | `scripts/lib/laneOrchestrator.test.mjs` | the per-combo invocation cap that bounds campaign cost |
+| `scripts/lib/profiles.test.mjs` | the skill ladder itself — key order, per-knob monotonicity, a complete ranged fallback per tier, and the `PROFILES_HASH` staleness guard on `defaultHighscore.ts` |
+| `scripts/lib/profileSeparation.test.mjs` | the ladder grader, including that it fails on an inverted axis and on a readable-ends/unreadable-middle ladder |
 
 Two things make these worth writing rather than relying on the bot harness itself. The decision core is **pure** (see [Balancing Telemetry Bot](balancing-telemetry.md)), so a branch can be asserted directly without a browser, in milliseconds rather than the tens of minutes a telemetry run costs. And a detector that silently stops firing is worse than no detector, because the scan keeps reporting clean — `anomalyDetectors.test.mjs` exists specifically to pin the negative cases.
 

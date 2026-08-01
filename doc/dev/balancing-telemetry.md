@@ -17,7 +17,42 @@ A run only "counts" for `balancing:telemetry`'s aggregate once it clears level 4
 
 ## Profiles and difficulty
 
-`PROFILES` (`Casual`/`Gamer`/`Pro`) in `run-balancing-telemetry.mjs` differ by `fireAngleEps` (aim tolerance — Pro tightest at 0.03 rad, Casual loosest at 0.08), `fireCooldownMs` (minimum time between semi-auto ranged shots — Pro fastest at 120ms/~8.3 per sec, Casual slowest at 220ms/~4.5 per sec; see its own doc comment above `PROFILES` for why this exists — semi-auto weapons have no engine-side fire-rate cap, so an untuned bot fires as fast as its decision loop allows, far beyond any human trigger-pull rate), `weaponPriority`, `healthDetourThreshold`, and `rotSpeedMultiplier` (a bot-only turn-speed override, `engine.ts`'s `rotSpeedMultiplier`, approximating a realistic *mouse* turn speed per skill tier — real `requestPointerLock()`-based mouse-look was investigated and rejected: it rejects outright under Playwright automation, headed or headless). Difficulty (`easy`/`normal`/`hard`) is wired through `localStorage["codeenstein-difficulty"]`, same as a real player's setting.
+`PROFILES` (`Casual`/`Gamer`/`Pro`) lives in **`scripts/lib/profiles.mjs`** and is re-exported from `run-balancing-telemetry.mjs`, so every existing importer is unchanged. It was moved there so unit tests can import the real profiles without pulling in Playwright — `combatPolicy.test.mjs` previously hand-copied Gamer's values into a local fixture, which silently drifted out of sync and no test could detect.
+
+**Read the ladder as an ordering, not a list of numbers.** `profiles.test.mjs` pins what several consumers silently depend on: the exact key order (`curateMixedProfiles` reads `tierNames[0]` as the weakest tier), strict monotonicity per knob, and a complete ranged fallback chain per tier — the historical Pro-missing-shotgun bug made Pro *slower to qualify than Casual*, which is what a broken ladder looks like from the outside.
+
+| knob | Casual → Pro | what it controls |
+|---|---|---|
+| `fireAngleEps` | 0.08 → 0.03 rad | aim tolerance before the bot will pull the trigger |
+| `fireCooldownMs` | 220 → 120 ms | minimum gap between *semi-auto* shots. Dual-role and worth knowing: it also feeds `secPerShot` in `scoreRangedWeapon`, so a slow trigger also makes the bot *judge* semi-autos as worse. Don't draw per-tier weapon-balance conclusions without accounting for that |
+| `rotSpeedMultiplier` | 2 → 5 | bot-only turn-speed override (`engine.ts`), approximating mouse turn speed per tier — real pointer-lock mouse-look rejects outright under Playwright |
+| `healthDetourThreshold` | 0.75 → 0.25 | how early the bot breaks off to find health |
+| `ammoThrift` | 1.6 → 0.2 | willingness to burn a finite reserve to shorten a fight |
+| `selfHarmAversion` | 2.2 → 0.5 | caution with self-splash weapons; only reachable in the ghidra branch |
+| `weaponPriority` | — | **membership is a hard filter, order is only a tiebreak.** The scoring loop iterates this list, so an absent weapon is never considered at all — which is why Casual omitting ghidra is a real behavioural tier rather than a preference |
+| `engageRadius` | 9.5, identical | deliberately not a tier: "low aggression" must never mean skipping a fight |
+
+A profile may also carry a **`tuning` object**, deep-merged over `DEFAULT_TUNING` in the `Bot` constructor and *under* any explicit `opts.tuning` — so `CODEENSTEIN_TELEMETRY_TUNING` still wins and single-variable A/Bs keep working. That is how a tier can own what would otherwise be a global constant, i.e. express *competence* rather than only *pace*.
+
+Difficulty (`easy`/`normal`/`hard`) is wired through `localStorage["codeenstein-difficulty"]`, same as a real player's setting. Keep the two axes distinct: **difficulty changes the world** (enemy HP, damage, ammo drop rate, enemy aim spread — `src/difficulty.ts`), **a profile changes the player**.
+
+### Grading the ladder — `report-profile-separation.mjs`
+
+```sh
+node scripts/report-profile-separation.mjs <dir-or-file> [difficulty]
+```
+
+Takes one telemetry JSON containing all three profiles, or a directory of per-profile captures, and **exits non-zero when the tiers aren't cleanly ordered**. `abReport.mjs` compares two *sides* of one change; this compares the three *profiles* within one capture, which is the question that decides whether per-tier balance conclusions mean anything.
+
+It bounds the **smallest adjacent step**, not the ladder's ends, and that distinction is the point: Casual is cleanly separated from both other tiers, so an ends-based ratio looks healthy while **Gamer↔Pro** — the step that actually flipped run-to-run across four n=5 scans — is unreadable. Bars are calibrated against a measured n=40 baseline so the axes that already work cannot be quietly traded away.
+
+Measured 2026-08-01, before any retune: `ttkNormal` and `levelTimeSec` were correctly ordered, but **both damage-avoidance axes were inverted** (`enemyAccuracy` 0.499/0.556/0.531 and ranged damage per second of exposure 0.354/0.430/0.439 — Pro the *most* hittable). The tiers differed in pace, not competence.
+
+### `PROFILES_HASH` — why `defaultHighscore.ts` must be regenerated after a retune
+
+`src/engine/defaultHighscore.ts` is generated by playing the campaign *with these profiles*, so any retune leaves it describing a bot that no longer exists — and nothing used to detect that. A segment's `astHash` covers the parsed source and `balanceHash` covers the enemy roster; neither knows anything about bot tuning, so every replay stays valid while the shipped board silently misrepresents the bot.
+
+The generator now bakes `profilesHash()` into the file as `PROFILES_HASH`, and `profiles.test.mjs` recomputes and compares — so this is a failing `vitest run` rather than an invisible drift. Field order inside a profile is ignored (it changes no behaviour); profile *order* is not (several consumers read it positionally).
 
 ## Shared bot library (`scripts/lib/`)
 
