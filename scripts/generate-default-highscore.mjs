@@ -43,7 +43,7 @@
  */
 import { chromium } from "playwright";
 import { createHash } from "node:crypto";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { gunzipSync } from "node:zlib";
 import fs from "node:fs";
 import path from "node:path";
 import { loadEngineModules, REPO_ROOT } from "./lib/loadEngineModules.mjs";
@@ -111,10 +111,16 @@ function check(label, condition, detail) {
   }
 }
 
-/** Node-side port of `decompressFromStorage` (`src/engine/storageCompression.ts`)
- * — no browser API needed, `localStorage`'s raw string is read via
- * `page.evaluate` and decompressed here in plain Node. */
-function decompressHighscoreBlob(raw) {
+/** Decodes the raw `localStorage` string the browser wrote, in whichever
+ * format it used. Deliberately delegates to the *real* `replayCodec.ts` /
+ * `storageCompression.ts` semantics (bundled via `loadEngineModules`) rather
+ * than re-implementing them here — a second copy of a binary frame codec is
+ * exactly the kind of silently-drifting mirror `doc/dev/balancing-telemetry.md`
+ * warns about. Only the legacy `gz1:`/plain paths stay inline, since those are
+ * two lines and frozen. */
+async function decompressHighscoreBlob(raw) {
+  const { isBinaryBoard, unpackBoardFromStorage } = await loadEngineModules();
+  if (isBinaryBoard(raw)) return unpackBoardFromStorage(raw);
   const COMPRESSED_PREFIX = "gz1:";
   if (!raw.startsWith(COMPRESSED_PREFIX)) return JSON.parse(raw);
   const bytes = Buffer.from(raw.slice(COMPRESSED_PREFIX.length), "base64");
@@ -248,7 +254,7 @@ async function runOneAttempt(browser, profileName, profile, levelPlans) {
       .waitForFunction(() => localStorage.getItem("codeenstein-highscores"), undefined, { timeout: 15000, polling: 100 })
       .then((handle) => handle.jsonValue())
       .catch(() => null);
-    const entry = highscoreRaw ? decompressHighscoreBlob(highscoreRaw)[0] : null;
+    const entry = highscoreRaw ? (await decompressHighscoreBlob(highscoreRaw))[0] : null;
 
     await context.close();
     return { ...run, entry };
@@ -363,7 +369,7 @@ async function main() {
     process.exit(1);
   }
 
-  writeDefaultHighscoreFile(keptEntries);
+  await writeDefaultHighscoreFile(keptEntries);
   console.log(`\nWrote ${OUTPUT_FILE} — review with \`git diff\` before committing.`);
 }
 
@@ -380,8 +386,9 @@ async function main() {
 // repetitive JSON (mostly-identical per-frame objects), so it compresses
 // ~100x smaller, and the shipped module becomes a single string literal
 // (trivial to parse) instead of a giant nested array (expensive to parse).
-function writeDefaultHighscoreFile(entries) {
-  const compressed = gzipSync(Buffer.from(JSON.stringify(entries)), { level: 9 }).toString("base64");
+async function writeDefaultHighscoreFile(entries) {
+  const { packBoardForStorage } = await loadEngineModules();
+  const packed = await packBoardForStorage(entries);
   const header = `// SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
@@ -415,9 +422,8 @@ function writeDefaultHighscoreFile(entries) {
  * The entries are stored gzip+base64-encoded (\`gz1:\` prefix, same scheme as
  * \`storageCompression.ts\`'s \`compressForStorage\`) rather than as a plain
  * array literal — see \`writeDefaultHighscoreFile\` in the generator script
- * for why (~100x smaller, and far cheaper for a bundler to parse).
- * \`loadHighscoresForDisplay\` (\`./highscores.ts\`) decompresses it with
- * \`decompressFromStorage\` at read time.
+ * for why (~350x smaller, and far cheaper for a bundler to parse).
+ * \`loadHighscoresForDisplay\` (\`./highscores.ts\`) decodes it at read time.
  */
 
 /** Fingerprint of the bot profiles these runs were played by, at generation
@@ -425,9 +431,10 @@ function writeDefaultHighscoreFile(entries) {
  * this file is stale and \`npm run generate:default-highscore\` should be re-run. */
 export const PROFILES_HASH = "${profilesHash()}";
 
-/** \`HighscoreEntry[]\`, gzip+base64-encoded — decompress with
- * \`decompressFromStorage\` from \`./storageCompression\`. */
-export const DEFAULT_HIGHSCORE_ENTRIES_COMPRESSED = "gz1:${compressed}";
+/** \`HighscoreEntry[]\`, binary-frame-packed + gzip + base64 — decode with
+ * \`unpackBoardFromStorage\` from \`./replayCodec\` (which is what
+ * \`loadHighscoresForDisplay\`'s \`readBoard\` already does). */
+export const DEFAULT_HIGHSCORE_ENTRIES_COMPRESSED = "${packed}";
 `;
   fs.writeFileSync(OUTPUT_FILE, header);
 }

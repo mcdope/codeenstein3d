@@ -106,7 +106,7 @@ export interface InputSnapshot {
 
 /** The only codes `RaycasterEngine` ever calls `isDown()` with — the complete
  * key vocabulary `captureSnapshot()` needs to record. */
-const RECORDED_KEYS = ["KeyW", "KeyS", "KeyA", "KeyD", "KeyQ", "KeyE", "ShiftLeft", "ShiftRight"];
+export const RECORDED_KEYS = ["KeyW", "KeyS", "KeyA", "KeyD", "KeyQ", "KeyE", "ShiftLeft", "ShiftRight"];
 
 export class InputController implements InputSource {
   private readonly keys = new Set<string>();

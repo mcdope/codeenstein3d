@@ -23,7 +23,9 @@ const COMPRESSED_PREFIX = "gz1:";
  * in bounded pieces instead. */
 const BASE64_CHUNK_SIZE = 0x8000;
 
-function bytesToBase64(bytes: Uint8Array): string {
+/** Binary -> base64. Exported for `replayCodec.ts`, which shares this
+ * module's gzip+base64 envelope but packs its own binary payload first. */
+export function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
   for (let i = 0; i < bytes.length; i += BASE64_CHUNK_SIZE) {
     const chunk = bytes.subarray(i, i + BASE64_CHUNK_SIZE);
@@ -32,7 +34,8 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
+/** Inverse of `bytesToBase64`. */
+export function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
@@ -59,12 +62,14 @@ function singleChunkStream(bytes: Uint8Array<ArrayBuffer>): ReadableStream<Uint8
   });
 }
 
-async function gzip(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
+/** gzip via the native `CompressionStream`. Exported for `replayCodec.ts`. */
+export async function gzip(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
   const stream = singleChunkStream(bytes).pipeThrough(new CompressionStream("gzip"));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-async function gunzip(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
+/** Inverse of `gzip`. */
+export async function gunzip(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
   const stream = singleChunkStream(bytes).pipeThrough(new DecompressionStream("gzip"));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
