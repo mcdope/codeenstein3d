@@ -4,7 +4,7 @@ The unit-test suite (Vitest, `src/**/*.test.ts`, co-located next to what they te
 
 For the separate Playwright-driven scripts (`scripts/verify-*.mjs`) that exercise the real built app end-to-end, see [Architecture](architecture.md#build).
 
-For the automated balancing-bot harness (`scripts/run-balancing-telemetry.mjs`, `npm run balancing:scan`/`balancing:watch`/`balancing:telemetry`) — a separate, not-CI-wired dev tool, not part of this test suite — see [Balancing Telemetry Bot](balancing-telemetry.md). Worth knowing even if you never touch it directly: it demonstrated a real, generalizable gotcha about **headed vs. headless browser automation timing** — a headless Playwright session driven by a virtual clock can achieve arbitrarily fine-grained timing control (hold a key for exactly N ms, advance the engine by exactly N ms), but a *headed* (real, visible) session is bound by real per-frame rendering — a wait shorter than roughly one real display frame doesn't reliably produce a proportionally small effect. A convergence check tight enough to work perfectly headless can be structurally unreachable headed, with the failure invisible to any headless-only verification. See [Headed vs. headless](balancing-telemetry.md#headed-vs-headless-read-this-before-touching-turnburstms-math) for the concrete bug this caused and the repro recipe for this class of issue.
+For the automated balancing-bot harness (`scripts/run-balancing-telemetry.mjs`, `npm run balancing:scan`/`balancing:watch`/`balancing:telemetry`) — a separate, not-CI-wired dev tool — see [Balancing Telemetry Bot](balancing-telemetry.md). Worth knowing even if you never touch it directly: it demonstrated a real, generalizable gotcha about **headed vs. headless browser automation timing** — a headless Playwright session driven by a virtual clock can achieve arbitrarily fine-grained timing control (hold a key for exactly N ms, advance the engine by exactly N ms), but a *headed* (real, visible) session is bound by real per-frame rendering — a wait shorter than roughly one real display frame doesn't reliably produce a proportionally small effect. A convergence check tight enough to work perfectly headless can be structurally unreachable headed, with the failure invisible to any headless-only verification. See [Headed vs. headless](balancing-telemetry.md#headed-vs-headless-read-this-before-touching-turnburstms-math) for the concrete bug this caused and the repro recipe for this class of issue.
 
 ## Cross-browser verification
 
@@ -44,6 +44,23 @@ WebKit is worth testing despite most historically-WebKit browsers (old Opera, ol
 ## Setup
 
 **Versions moved together with the Node floor.** `vitest`/`@vitest/coverage-v8`/`jsdom` sat pinned at `3.2.7`/`3.2.7`/`26.1.0` for a while specifically because `vitest@4`/`jsdom@29`+ require Node 20+, one major ahead of this project's Node 18.19.1 floor at the time. Once the floor moved to Node 20.19+/22.12+ (forced by the Vite 8 bump — see [Architecture](architecture.md#build) — and matched by bumping CI to Node 24), all three were bumped too: `vitest@4.1.10`, `@vitest/coverage-v8@4.1.10`, `jsdom@29.1.1`. That bump is also *why* the coverage gate below isn't a flat 100% anymore — see the thresholds comment in `vitest.config.ts` for the measurement-bug story.
+
+## Unit tests under `scripts/` — outside the coverage gate, still run by CI
+
+`scripts/` code is not in the coverage denominator: `vitest.config.ts` sets `coverage.include: ["src/**/*.ts"]`, so nothing under `scripts/` faces the 99.9%/99.5% thresholds. It is easy to read that as "script code cannot be unit-tested here". It can, and several files are — Vitest's *test* discovery is separate from its *coverage* scope, so a `scripts/**/*.test.mjs` file is picked up by `npm test` and by CI's Vitest job like any other, it simply contributes no coverage obligation.
+
+`scripts/multiplayer-server.test.mjs` established the pattern; the bot work leaned on it heavily, because `scripts/lib/` had ~1400 lines of movement and combat logic with no automated check of any kind. Currently:
+
+| file | what it pins |
+|---|---|
+| `scripts/multiplayer-server.test.mjs` | the signaling/lobby server's routes and mailbox semantics |
+| `scripts/lib/combatPolicy.test.mjs` | `decide()` per branch, the pure geometry helpers, and the tuning-injection contract |
+| `scripts/lib/anomalyDetectors.test.mjs` | that the stall/oscillation/health-drain detectors fire when they should **and stay quiet when they shouldn't** |
+| `scripts/lib/routePlanner.test.mjs` | pickup ordering, and that gate ordering deliberately stays array-order |
+| `scripts/lib/abReport.test.mjs` | the A/B guard thresholds and the survival-curve maths |
+| `scripts/lib/laneOrchestrator.test.mjs` | the per-combo invocation cap that bounds campaign cost |
+
+Two things make these worth writing rather than relying on the bot harness itself. The decision core is **pure** (see [Balancing Telemetry Bot](balancing-telemetry.md)), so a branch can be asserted directly without a browser, in milliseconds rather than the tens of minutes a telemetry run costs. And a detector that silently stops firing is worse than no detector, because the scan keeps reporting clean — `anomalyDetectors.test.mjs` exists specifically to pin the negative cases.
 
 **`vitest.config.ts`'s `?url`-as-path plugin** exists for one reason: `src/parser/runtime.ts`'s `Parser.init({ locateFile })` and the grammar loads in `src/parser/generic/languages.ts`/`cParser.ts`/`phpParser.ts` all import their `.wasm` file via Vite's `?url` suffix, which normally resolves to a browser-shaped dev-server URL — meaningless under plain Node. The plugin (modeled on `scripts/lib/loadEngineModules.mjs`'s `urlImportAsPathPlugin`, the esbuild equivalent used by the Playwright verify scripts) rewrites a `?url` import into a real absolute filesystem path instead, registered with `enforce: "pre"` so it wins the resolution race against Vite's own built-in `vite:asset` plugin. If wasm loading ever starts throwing under Vitest, this is the first place to look.
 

@@ -23,4 +23,9 @@ The middle one matters more than it looks: a reverted approach leaves no trace i
 - [Testing](testing.md) — the Vitest unit-test suite: setup, shared mocks, mocking philosophy, and reusable techniques
 - [Multiplayer Server Deployment](multiplayer-deployment.md) — step-by-step runbook for standing up the signaling server, the client build, and the optional coturn TURN relay, natively or via the [`docker/`](../../docker/README.md) stack
 - [Balancing Telemetry Bot](balancing-telemetry.md) — the automated bot-driven balance-review/regression tool: entry points, profiles, env vars, and the headed-vs-headless timing gotcha
+- [Multiplayer Specs](multiplayer-netcode-spec.md) — the four documents behind the multiplayer implementation, all marked **implemented** and CI-verified. They are specifications rather than guides, and are the place to look when changing netcode behaviour rather than using it:
+  - [Signaling + lobby server](multiplayer-server-spec.md) — the one piece of backend that turned out to be unavoidable: a minimal WebRTC signaling mailbox plus the lobby feature
+  - [Netcode](multiplayer-netcode-spec.md) — the lockstep layer sitting above the single-player `RaycasterEngine`
+  - [Game-state adaptation](multiplayer-game-state-spec.md) — the `simulate()`/`render()`/`advance()` split, the N-player model, player-count elite scaling, and coop revive
+  - [Balancing & telemetry automation](multiplayer-balancing-telemetry-spec.md) — the multiplayer arm of the telemetry bot (see [balancing-telemetry.md](balancing-telemetry.md) for the day-to-day reference)
 - [Performance Tooling](performance.md) — the `?perfDebug=1` frame diagnostics, the `perf:bench`/`perf:report` benchmark harness, and the measurement gotchas from the 2026-07 audit
