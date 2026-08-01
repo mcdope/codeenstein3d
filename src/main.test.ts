@@ -949,48 +949,61 @@ describe("main.ts — WAD texture loading", () => {
     expect(document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent).toBe("disk read failed");
   });
 
-  it("lists every matched texture role for a WAD that resolves most slots", async () => {
+  it("lists every styleset's resolved triple plus the shared signal slots", async () => {
     await importMain();
     const fileInput = document.querySelector<HTMLInputElement>("#wad-file-input")!;
-    // buildTestWad()'s default fixture resolves wall/door/loreWall (composite)
-    // plus floor/hazardFloor/teleporterFloor/spikeSafeFloor/spikeActiveFloor
-    // (flats) — 8 of the 10 slots (everything but bonusWall/bonusFloor, which
-    // no fixture lump is named for) — enough to exercise every `matched.push`
-    // branch plus the "remaining slots using defaults" partial-match branch.
+    // buildTestWad()'s default fixture ships STARTAN3/BIGDOOR2/FLOOR4_8 plus
+    // the five signal lumps. Every styleset resolves all three structural
+    // slots (borrowing across stylesets where it has none of its own), so all
+    // 20 slots match — enough to exercise the per-styleset triple, the signal
+    // list, and the fully-resolved (no caveat) branch at once.
     const bytes = buildTestWad();
     const file = { name: "test.wad", arrayBuffer: () => Promise.resolve(bytes) } as unknown as File;
     setInputFiles(fileInput, [file]);
     fileInput.dispatchEvent(new Event("change"));
     await flushAsync();
     const status = document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent!;
-    expect(status).toContain("Using WAD textures:");
-    expect(status).toContain("walls (STARTAN3)");
-    expect(status).toContain("doors (BIGDOOR2)");
-    expect(status).toContain("floors (FLOOR4_8)");
+    expect(status).toContain("Using WAD textures: 20/20 slots");
+    expect(status).toContain("stone (STARTAN3/FLOOR4_8/BIGDOOR2)");
+    expect(status).toContain("tech (STARTAN3/FLOOR4_8/BIGDOOR2)");
     expect(status).toContain("lore terminals (COMPUTE2)");
     expect(status).toContain("hazard floors (NUKAGE3)");
     expect(status).toContain("teleporter floors (GATE1)");
     expect(status).toContain("spike traps, safe (FLOOR7_1)");
     expect(status).toContain("spike traps, active (BLOOD1)");
+    expect(status).not.toContain("remaining slots using defaults");
+  });
+
+  it("marks slots left on the procedural default and keeps the defaults caveat", async () => {
+    await importMain();
+    const fileInput = document.querySelector<HTMLInputElement>("#wad-file-input")!;
+    // No flats at all: every styleset's floor slot stays procedural, and the
+    // four flat-backed signal slots go with it — 5 of 20 slots missing.
+    const bytes = buildTestWad({ includeFlats: false });
+    const file = { name: "walls-only.wad", arrayBuffer: () => Promise.resolve(bytes) } as unknown as File;
+    setInputFiles(fileInput, [file]);
+    fileInput.dispatchEvent(new Event("change"));
+    await flushAsync();
+    const status = document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent!;
+    expect(status).toContain("Using WAD textures: 11/20 slots");
+    expect(status).toContain("stone (STARTAN3/·/BIGDOOR2)");
     expect(status).toContain("remaining slots using defaults");
   });
 
-  it("lists the bonus wall/floor roles too and drops the defaults caveat when every slot resolves", async () => {
+  it("prefers a styleset's own candidate over a borrowed one when the WAD has both", async () => {
     await importMain();
     const fileInput = document.querySelector<HTMLInputElement>("#wad-file-input")!;
-    // texture2Name adds a second composited texture (a real
-    // BONUS_WALL_TEXTURE_ALLOWLIST entry) via a TEXTURE2 lump; bonusFloorName
-    // adds a real BONUS_FLOOR_TEXTURE_ALLOWLIST-named flat — together with
-    // buildTestWad()'s other 8 defaults, all 10 slots resolve.
-    const bytes = buildTestWad({ texture2Name: "COMPBLUE", bonusFloorName: "CEIL5_1" });
+    // COMPBLUE is `techCool`'s own first-choice wall, STARTAN3 is `tech`'s —
+    // the status line is where a player can actually see that a WAD produced
+    // per-level variety rather than one texture everywhere.
+    const bytes = buildTestWad({ texture2Name: "COMPBLUE" });
     const file = { name: "full.wad", arrayBuffer: () => Promise.resolve(bytes) } as unknown as File;
     setInputFiles(fileInput, [file]);
     fileInput.dispatchEvent(new Event("change"));
     await flushAsync();
     const status = document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent!;
-    expect(status).toContain("bonus walls (COMPBLUE)");
-    expect(status).toContain("bonus floors (CEIL5_1)");
-    expect(status).not.toContain("remaining slots using defaults");
+    expect(status).toContain("techCool (COMPBLUE/");
+    expect(status).toContain("tech (STARTAN3/");
   });
 
   it("reports the built-in-defaults fallback message when nothing in the WAD matches any allowlisted name", async () => {
@@ -1072,7 +1085,7 @@ describe("main.ts — Online WAD catalog", () => {
     expect(fetchMock).toHaveBeenCalledWith("/wads/freedoom1.wad");
     const status = document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent!;
     expect(status).toContain("Using WAD textures:");
-    expect(status).toContain("walls (STARTAN3)");
+    expect(status).toContain("stone (STARTAN3/");
   });
 
   it("reports an HTTP failure status when the fetch itself doesn't 404 but returns non-ok", async () => {
@@ -3432,6 +3445,7 @@ describe("main.ts — multiplayer connect flow", () => {
         ammoPickups: [],
         loreTerminals: [],
         bonusLevel: false,
+        styleSet: "stone",
         secretRoomCount: 0,
         switchboardRooms: [],
         exceptionZones: [],
@@ -3633,6 +3647,7 @@ describe("main.ts — multiplayer connect flow", () => {
         ammoPickups: [],
         loreTerminals: [],
         bonusLevel: false,
+        styleSet: "stone",
         secretRoomCount: 0,
         switchboardRooms: [],
         exceptionZones: [],

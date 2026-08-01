@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { stubCanvasGetContext } from "../../test/mocks/canvas";
 import type { GameMap, Tile } from "./types";
 import { BRANCH_DOOR_TILE, DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, SPIKE_TRAP_TILE, TELEPORTER_TILE } from "./types";
-import type { TextureBitmap, TextureSet } from "../engine/textures";
+import type { LevelStyle, TextureBitmap, TextureSet } from "../engine/textures";
 import { renderExportMap } from "./exportView";
 
 // Each fake texture's `canvas` carries a unique `label` so tests can tell
@@ -21,16 +21,19 @@ function fakeTexture(label: string): TextureBitmap {
 function fakeTextureSet(): TextureSet {
   return {
     wall: fakeTexture("wall"),
-    bonusWall: fakeTexture("bonusWall"),
     door: fakeTexture("door"),
     floor: fakeTexture("floor"),
-    bonusFloor: fakeTexture("bonusFloor"),
     loreWall: fakeTexture("loreWall"),
     hazardFloor: fakeTexture("hazardFloor"),
     teleporterFloor: fakeTexture("teleporterFloor"),
     spikeSafeFloor: fakeTexture("spikeSafeFloor"),
     spikeActiveFloor: fakeTexture("spikeActiveFloor"),
   };
+}
+
+/** Wraps a `TextureSet` into the `LevelStyle` `renderExportMap` now takes. */
+function fakeStyle(textures: TextureSet = fakeTextureSet(), id: LevelStyle["id"] = "stone"): LevelStyle {
+  return { id, textures, ceiling: [11, 13, 22], automapWall: "#4a4a55" };
 }
 
 function fakeMap(overrides: Partial<GameMap> = {}): GameMap {
@@ -56,6 +59,7 @@ function fakeMap(overrides: Partial<GameMap> = {}): GameMap {
     ammoPickups: [],
     loreTerminals: [],
     bonusLevel: false,
+    styleSet: "stone",
     secretRoomCount: 0,
     switchboardRooms: [],
     exceptionZones: [],
@@ -74,7 +78,7 @@ describe("renderExportMap", () => {
     const canvas = document.createElement("canvas");
     const { restore } = stubCanvasGetContext(canvas);
     try {
-      const result = renderExportMap(fakeMap(), fakeTextureSet());
+      const result = renderExportMap(fakeMap(), fakeStyle());
       // targetPixels 1200 / max(4,4) = 300, clamped to maxCell 48.
       expect(result.width).toBe(4 * 48);
       expect(result.height).toBe(4 * 48);
@@ -89,7 +93,7 @@ describe("renderExportMap", () => {
     const canvas = document.createElement("canvas");
     const { restore } = stubCanvasGetContext(canvas);
     try {
-      const result = renderExportMap(map, fakeTextureSet());
+      const result = renderExportMap(map, fakeStyle());
       expect(result.width).toBe(500 * 16); // minCell
     } finally {
       restore();
@@ -101,7 +105,7 @@ describe("renderExportMap", () => {
     const canvas = document.createElement("canvas");
     const { restore } = stubCanvasGetContext(canvas);
     try {
-      const result = renderExportMap(map, fakeTextureSet(), { targetPixels: 100, minCell: 1, maxCell: 20 });
+      const result = renderExportMap(map, fakeStyle(), { targetPixels: 100, minCell: 1, maxCell: 20 });
       // 100 / 10 = 10, within [1,20].
       expect(result.width).toBe(10 * 10);
     } finally {
@@ -109,14 +113,14 @@ describe("renderExportMap", () => {
     }
   });
 
-  it("stamps the correct texture for every tile kind, including bonus-level variants", () => {
+  it("stamps the correct texture for every tile kind", () => {
     const grid: Tile[][] = [[1, 0, HAZARD_TILE, DOOR_TILE, TELEPORTER_TILE, SPIKE_TRAP_TILE, SECRET_WALL_TILE, LORE_TILE, BRANCH_DOOR_TILE]];
     const map = fakeMap({ width: 9, height: 1, grid, spawn: { x: 1, y: 0 }, exit: { x: 1, y: 0 } });
     const textureSet = fakeTextureSet();
     const canvas = document.createElement("canvas");
     const { ctx, restore } = stubCanvasGetContext(canvas);
     try {
-      renderExportMap(map, textureSet);
+      renderExportMap(map, fakeStyle(textureSet));
       const drawn = ctx.drawImage.mock.calls.map((call) => call[0]);
       expect(drawn).toEqual([
         textureSet.wall.canvas,
@@ -134,16 +138,16 @@ describe("renderExportMap", () => {
     }
   });
 
-  it("uses bonusWall/bonusFloor instead of wall/floor on a bonus level", () => {
+  it("stamps whichever styleset it was handed, so the export matches the level that was played", () => {
     const grid: Tile[][] = [[1, 0, SECRET_WALL_TILE]];
-    const map = fakeMap({ width: 3, height: 1, grid, bonusLevel: true, spawn: { x: 1, y: 0 }, exit: { x: 1, y: 0 } });
+    const map = fakeMap({ width: 3, height: 1, grid, styleSet: "techCool", spawn: { x: 1, y: 0 }, exit: { x: 1, y: 0 } });
     const textureSet = fakeTextureSet();
     const canvas = document.createElement("canvas");
     const { ctx, restore } = stubCanvasGetContext(canvas);
     try {
-      renderExportMap(map, textureSet);
+      renderExportMap(map, fakeStyle(textureSet, "techCool"));
       const drawn = ctx.drawImage.mock.calls.map((call) => call[0]);
-      expect(drawn).toEqual([textureSet.bonusWall.canvas, textureSet.bonusFloor.canvas, textureSet.bonusWall.canvas]);
+      expect(drawn).toEqual([textureSet.wall.canvas, textureSet.floor.canvas, textureSet.wall.canvas]);
     } finally {
       restore();
     }
@@ -159,7 +163,7 @@ describe("renderExportMap", () => {
     const canvas = document.createElement("canvas");
     const { ctx, restore } = stubCanvasGetContext(canvas);
     try {
-      renderExportMap(map, textureSet);
+      renderExportMap(map, fakeStyle(textureSet));
       expect(ctx.drawImage).toHaveBeenCalledWith(textureSet.floor.canvas, 0, 0, expect.any(Number), expect.any(Number));
     } finally {
       restore();
@@ -171,7 +175,7 @@ describe("renderExportMap", () => {
     const canvas = document.createElement("canvas");
     const { ctx, restore } = stubCanvasGetContext(canvas);
     try {
-      renderExportMap(map, fakeTextureSet());
+      renderExportMap(map, fakeStyle());
       expect(ctx.arc).toHaveBeenCalledTimes(2);
       expect(ctx.fill).toHaveBeenCalledTimes(2);
     } finally {
@@ -196,7 +200,7 @@ describe("renderExportMap", () => {
     const canvas = document.createElement("canvas");
     const { restore } = stubCanvasGetContext(canvas);
     try {
-      const result = renderExportMap(map, fakeTextureSet());
+      const result = renderExportMap(map, fakeStyle());
       // Content spans x:[4,5] y:[2,3]; its 1-tile wall border ring extends
       // that to x:[3,6] y:[1,4] => a 4x4 box, clamped cell =
       // clamp(floor(1200/4), 16, 48) = 48.
@@ -222,7 +226,7 @@ describe("renderExportMap", () => {
     const canvas = document.createElement("canvas");
     const { ctx, restore } = stubCanvasGetContext(canvas);
     try {
-      renderExportMap(map, textureSet);
+      renderExportMap(map, fakeStyle(textureSet));
       // 2 content tiles + up to 8 wall neighbors each (no overlap) = 18 draws,
       // out of the cropped box's full 12*3 = 36 cells — the untouched gap
       // tiles in between are genuinely skipped, not just cropped away.
@@ -237,7 +241,7 @@ describe("renderExportMap", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (HTMLCanvasElement.prototype as any).getContext = vi.fn(() => null);
     try {
-      expect(() => renderExportMap(fakeMap(), fakeTextureSet())).toThrow("2D canvas context unavailable");
+      expect(() => renderExportMap(fakeMap(), fakeStyle())).toThrow("2D canvas context unavailable");
     } finally {
       HTMLCanvasElement.prototype.getContext = original;
     }

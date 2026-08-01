@@ -16,13 +16,18 @@
  *       per-pixel variance, not a flat fill;
  *   (b) loading a synthetic WAD (via `buildTestWad`, in-memory — no real
  *       IWAD bundled, copyright) actually reaches the live renderer: status
- *       text reports all 10 matched slots (wall/bonus wall/door/floor/bonus
- *       floor/lore terminal/hazard/teleporter/spike-safe/spike-active), and
- *       the rendered frame changes;
+ *       text reports the matched slots, and the rendered frame changes;
  *   (c) an invalid file produces a graceful status message and never leaves
  *       the game in a broken state;
  *   (e) the ceiling (never textured) stays a single flat color regardless
  *       of which texture pack is active;
+ *   (g) per-level stylesets actually reach the screen: different campaign
+ *       files render visibly different walls, and the *same* file renders
+ *       identically every time. Asserted on rendered pixels rather than on
+ *       an exposed styleset id on purpose — `GameMap.styleSet` being right
+ *       while the renderer ignores it is exactly the failure a unit test
+ *       can't see (`doc/dev/testing.md`, "what the test suite structurally
+ *       cannot catch": the canvas mock draws nothing).
  *   (f) a real online-catalog entry (Freedoom: Phase 2, fetched at build
  *       time by `scripts/fetch-online-wads.mjs` into `public/wads/`) loads
  *       via the sidebar's online-picker click path, not just a synthetic
@@ -72,6 +77,47 @@ function regionVariance(data, width, yStart, yEnd, xStart = 0, xEnd = width, ste
     }
   }
   return colors.size;
+}
+
+/** Mean RGB of the mid-height band, rounded — a stable fingerprint of "what
+ * palette is this level's walls/floor drawn in". Skips the left fifth of the
+ * frame, which is where the minimap overlay lives (its own fixed colors would
+ * otherwise drag every level's mean toward each other). */
+function bandMeanColor(data, width, height) {
+  const yStart = Math.floor(height * 0.35);
+  const yEnd = Math.floor(height * 0.75);
+  const xStart = Math.floor(width * 0.2);
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let n = 0;
+  for (let y = yStart; y < yEnd; y += 2) {
+    for (let x = xStart; x < width; x += 2) {
+      const i = (y * width + x) * 4;
+      r += data[i];
+      g += data[i + 1];
+      b += data[i + 2];
+      n++;
+    }
+  }
+  return `${Math.round(r / n)},${Math.round(g / n)},${Math.round(b / n)}`;
+}
+
+/** Launches the `index`-th file in the sidebar tree (rows carry their path as
+ * `title`, see `src/ui/fileTree.ts`), then dismisses the pre-level briefing.
+ * Returns the file's path so failures name the level that produced them. */
+async function launchCampaignFile(page, index) {
+  const filePath = await page.evaluate((i) => {
+    const rows = document.querySelectorAll("button.tree-row--file");
+    if (i >= rows.length) return null;
+    rows[i].click();
+    return rows[i].title;
+  }, index);
+  if (filePath === null) return null;
+  await page.waitForTimeout(1400); // GameHud's DISMISS_LOCK_MS, real wall-clock
+  await page.evaluate(() => window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space" })));
+  await page.waitForTimeout(600);
+  return filePath;
 }
 
 async function sampleCanvas(page) {
@@ -139,6 +185,44 @@ async function main() {
   // --- (d) secret walls: not hard-asserted, see file doc comment — save a screenshot for manual spot-check ---
   await page.screenshot({ path: path.join(SCREENSHOT_DIR, "default-textures.png") });
 
+  // --- (g) per-level stylesets reach the screen ---
+  console.log("\nPer-level stylesets (procedural defaults):");
+  const LEVELS_TO_SAMPLE = 8;
+  const levelColors = new Map(); // path -> mean band color
+  for (let i = 0; i < LEVELS_TO_SAMPLE; i++) {
+    const filePath = await launchCampaignFile(page, i);
+    if (filePath === null) break;
+    const frame = await sampleCanvas(page);
+    levelColors.set(filePath, bandMeanColor(frame.data, frame.width, frame.height));
+  }
+  const sampled = [...levelColors.entries()];
+  const distinctColors = new Set(levelColors.values());
+  console.log(`  sampled ${sampled.length} level(s): ${sampled.map(([p, c]) => `${p.split("/").pop()}=${c}`).join(", ")}`);
+  check(`sampled at least 4 campaign levels`, sampled.length >= 4, `got ${sampled.length}`);
+  check(
+    "campaign levels do not all render the same palette",
+    distinctColors.size >= 3,
+    `only ${distinctColors.size} distinct mean color(s) across ${sampled.length} levels`,
+  );
+
+  // Stability: the same file must look the same every time it's launched.
+  // This is the half of the feature a "just randomise it" implementation
+  // would fail — and it's what makes a map export or a replay match the run.
+  const [firstPath, firstColor] = sampled[0];
+  await launchCampaignFile(page, 0);
+  const relaunched = await sampleCanvas(page);
+  const relaunchedColor = bandMeanColor(relaunched.data, relaunched.width, relaunched.height);
+  check(
+    `relaunching ${firstPath.split("/").pop()} renders an identical palette`,
+    relaunchedColor === firstColor,
+    `first ${firstColor}, again ${relaunchedColor}`,
+  );
+  await page.screenshot({ path: path.join(SCREENSHOT_DIR, "styleset-sample.png") });
+
+  // Back to the campaign entrypoint so the WAD checks below compare against
+  // the same level `before` was sampled from.
+  await launchDemoCampaign(page);
+
   // --- (b) loading a synthetic WAD reaches the live renderer ---
   console.log("\nSynthetic WAD load:");
   const wadBytes = Buffer.from(buildTestWad());
@@ -195,8 +279,12 @@ async function main() {
   );
   const onlineStatusText = await page.textContent("#wad-status");
   check("status reports matched slots, not a fetch/parse failure", onlineStatusText.includes("Using WAD textures"), onlineStatusText);
-  check("status reports the matched wall slot", onlineStatusText.includes("walls ("), onlineStatusText);
-  check("status reports the matched floor slot", onlineStatusText.includes("floors ("), onlineStatusText);
+  // A real IWAD must resolve a distinct wall/floor/door triple for every
+  // styleset — if a styleset were listed with a `·` placeholder here, its
+  // levels would drop back to programmer art while others stayed WAD-textured.
+  for (const styleSet of ["stone", "rust", "tech", "marble", "techCool"]) {
+    check(`status reports a full triple for the ${styleSet} styleset`, new RegExp(`${styleSet} \\([^·)]+\\)`).test(onlineStatusText), onlineStatusText);
+  }
 
   check("no console/page errors across the whole run", pageErrors.length === 0, pageErrors.join("; "));
 

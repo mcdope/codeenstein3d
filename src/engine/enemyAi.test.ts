@@ -34,6 +34,7 @@ function fakeMap(grid: Tile[][], spawn = { x: 1, y: 1 }): GameMap {
     ammoPickups: [],
     loreTerminals: [],
     bonusLevel: false,
+    styleSet: "stone",
     secretRoomCount: 0,
     switchboardRooms: [],
     exceptionZones: [],

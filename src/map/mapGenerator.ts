@@ -43,6 +43,7 @@ import { DECORATIONS_ENABLED, placeDecorations, placePillars } from "./generatio
 import { seedFrom } from "./generation/seed";
 import { placeSecretRooms } from "./generation/secretRooms";
 import { pickExit, pickMultiplayerSpawns, pickSafeSpawn } from "./generation/spawnExit";
+import { styleSetFor } from "./generation/styleSet";
 import { SWITCHBOARDS_ENABLED, placeSwitchboardEncounters, placeSwitchboards } from "./generation/switchboards";
 import { placeTeleporters } from "./generation/teleporters";
 import { VENDOR_DEPOTS_ENABLED, placeVendorDepots } from "./generation/vendorDepots";
@@ -368,6 +369,7 @@ export class MapGenerator {
       ammoPickups,
       loreTerminals,
       bonusLevel,
+      styleSet: styleSetFor(parsed, bonusLevel),
       secretRoomCount: secretLoot.length,
       switchboardRooms,
       exceptionZones: exception.zones,

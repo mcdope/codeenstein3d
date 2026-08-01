@@ -3,91 +3,95 @@
 
 /**
  * Sole public entry point for `src/wad/` — parses a DOOM WAD `ArrayBuffer`
- * and pulls out real textures/flats for the 10 slots this game uses (wall,
- * bonus wall, door, floor, bonus floor, lore-terminal wall, hazard floor,
- * teleporter floor, spike-trap safe floor, spike-trap active floor),
- * auto-selecting from a hardcoded name allowlist per slot (see
- * `textureAllowlist.ts`). Never throws: any fatal parse failure (bad magic,
- * an out-of-range lump offset that trips a `DataView` `RangeError`) is
- * caught and reported via `ok`/`error`. A slot with no matching name in the
- * WAD, or whose composite data turned out corrupt, simply comes back
- * `null` — every other slot still resolves independently (see
- * `resolveCompositeSlot`/`resolveFlatSlot`'s per-candidate try/catch).
+ * and pulls out real textures/flats for the slots this game uses:
+ * three *structural* slots (wall, floor, door) resolved separately **for each
+ * styleset**, plus five *gameplay-signal* slots (lore-terminal wall, hazard
+ * floor, teleporter floor, spike-trap safe/active floor) resolved once and
+ * shared by every styleset. Selection is a hardcoded name allowlist per slot
+ * (see `textureAllowlist.ts`).
+ *
+ * Never throws: any fatal parse failure (bad magic, an out-of-range lump
+ * offset that trips a `DataView` `RangeError`) is caught and reported via
+ * `ok`/`error`. A slot with no match anywhere, or whose composite data turned
+ * out corrupt, simply comes back `null` — every other slot still resolves
+ * independently (see `resolveCompositeSlot`/`resolveFlatSlot`'s per-candidate
+ * try/catch) and `src/engine/textures.ts` fills it with that styleset's
+ * procedural default.
  */
+import { STYLE_SET_IDS, type StyleSetId } from "../map/types";
 import { compositeTexture, type WadTexturePixels } from "./compositeTexture";
 import { findFlat, parseFlat } from "./flatLump";
 import { parsePlaypal, type Palette } from "./playpal";
 import { parsePnames } from "./pnames";
 import {
-  BONUS_FLOOR_TEXTURE_ALLOWLIST,
-  BONUS_WALL_TEXTURE_ALLOWLIST,
-  DOOR_TEXTURE_ALLOWLIST,
-  FLOOR_TEXTURE_ALLOWLIST,
   HAZARD_FLOOR_TEXTURE_ALLOWLIST,
   LORE_WALL_TEXTURE_ALLOWLIST,
   SPIKE_ACTIVE_FLOOR_TEXTURE_ALLOWLIST,
   SPIKE_SAFE_FLOOR_TEXTURE_ALLOWLIST,
+  STYLE_WAD_ALLOWLISTS,
   TELEPORTER_FLOOR_TEXTURE_ALLOWLIST,
-  WALL_TEXTURE_ALLOWLIST,
 } from "./textureAllowlist";
 import { parseTextureLump, type TextureDef } from "./textureLump";
 import { findLump, parseLumpDirectory, parseWadHeader, type LumpEntry } from "./wadFile";
 
+/** One resolved slot: which allowlisted name matched (`null` if none did) and
+ * its decoded pixels. The two are always both set or both `null`. */
+export interface WadSlot {
+  name: string | null;
+  texture: WadTexturePixels | null;
+}
+
+/** The structural slots, resolved for one styleset. */
+export interface WadStyleSlots {
+  wall: WadSlot;
+  floor: WadSlot;
+  door: WadSlot;
+}
+
+/** The gameplay-signal slots — one set, shared by every styleset. */
+export interface WadSignalSlots {
+  loreWall: WadSlot;
+  hazardFloor: WadSlot;
+  teleporterFloor: WadSlot;
+  spikeSafeFloor: WadSlot;
+  spikeActiveFloor: WadSlot;
+}
+
 export interface WadLoadResult {
   ok: boolean;
   error: string | null;
-  wallName: string | null;
-  bonusWallName: string | null;
-  doorName: string | null;
-  floorName: string | null;
-  bonusFloorName: string | null;
-  loreWallName: string | null;
-  hazardFloorName: string | null;
-  teleporterFloorName: string | null;
-  spikeSafeFloorName: string | null;
-  spikeActiveFloorName: string | null;
-  wallTexture: WadTexturePixels | null;
-  bonusWallTexture: WadTexturePixels | null;
-  doorTexture: WadTexturePixels | null;
-  floorTexture: WadTexturePixels | null;
-  bonusFloorTexture: WadTexturePixels | null;
-  loreWallTexture: WadTexturePixels | null;
-  hazardFloorTexture: WadTexturePixels | null;
-  teleporterFloorTexture: WadTexturePixels | null;
-  spikeSafeFloorTexture: WadTexturePixels | null;
-  spikeActiveFloorTexture: WadTexturePixels | null;
+  styles: Record<StyleSetId, WadStyleSlots>;
+  signals: WadSignalSlots;
+}
+
+/** Which structural slot is being resolved — the key into a
+ * `WadStyleAllowlist`, used to walk the *other* stylesets' lists for the same
+ * slot during cross-styleset fallback. */
+type StructuralSlot = keyof WadStyleSlots;
+
+const EMPTY_SLOT: WadSlot = { name: null, texture: null };
+
+function emptySlot(): WadSlot {
+  return { ...EMPTY_SLOT };
 }
 
 function emptyResult(error: string | null): WadLoadResult {
+  const styles = {} as Record<StyleSetId, WadStyleSlots>;
+  for (const id of STYLE_SET_IDS) {
+    styles[id] = { wall: emptySlot(), floor: emptySlot(), door: emptySlot() };
+  }
   return {
     ok: error === null,
     error,
-    wallName: null,
-    bonusWallName: null,
-    doorName: null,
-    floorName: null,
-    bonusFloorName: null,
-    loreWallName: null,
-    hazardFloorName: null,
-    teleporterFloorName: null,
-    spikeSafeFloorName: null,
-    spikeActiveFloorName: null,
-    wallTexture: null,
-    bonusWallTexture: null,
-    doorTexture: null,
-    floorTexture: null,
-    bonusFloorTexture: null,
-    loreWallTexture: null,
-    hazardFloorTexture: null,
-    teleporterFloorTexture: null,
-    spikeSafeFloorTexture: null,
-    spikeActiveFloorTexture: null,
+    styles,
+    signals: {
+      loreWall: emptySlot(),
+      hazardFloor: emptySlot(),
+      teleporterFloor: emptySlot(),
+      spikeSafeFloor: emptySlot(),
+      spikeActiveFloor: emptySlot(),
+    },
   };
-}
-
-interface SlotResult {
-  name: string | null;
-  texture: WadTexturePixels | null;
 }
 
 /** Tries each allowlisted name against `defs` in order; the first one
@@ -101,7 +105,7 @@ function resolveCompositeSlot(
   lumps: LumpEntry[],
   view: DataView,
   palette: Palette,
-): SlotResult {
+): WadSlot {
   for (const name of allowlist) {
     const def = defs.get(name);
     if (!def) continue;
@@ -111,15 +115,10 @@ function resolveCompositeSlot(
       continue;
     }
   }
-  return { name: null, texture: null };
+  return emptySlot();
 }
 
-function resolveFlatSlot(
-  allowlist: readonly string[],
-  lumps: LumpEntry[],
-  view: DataView,
-  palette: Palette,
-): SlotResult {
+function resolveFlatSlot(allowlist: readonly string[], lumps: LumpEntry[], view: DataView, palette: Palette): WadSlot {
   for (const name of allowlist) {
     const lump = findFlat(lumps, name);
     if (!lump) continue;
@@ -129,7 +128,32 @@ function resolveFlatSlot(
       continue;
     }
   }
-  return { name: null, texture: null };
+  return emptySlot();
+}
+
+/**
+ * Candidate names for one styleset's structural slot, in fallback order: that
+ * styleset's own list first, then every *other* styleset's list for the same
+ * slot, in `STYLE_SET_IDS` order.
+ *
+ * The tail matters. Resolving each styleset strictly in isolation would mean a
+ * sparse WAD (the DOOM shareware IWAD, a small texture pack) leaves one
+ * styleset fully WAD-textured and the next fully on programmer art — the
+ * player would see the campaign flip between "real textures" and "defaults"
+ * from level to level, which reads as a bug rather than as variety. Falling
+ * through to a sibling styleset's candidates keeps a WAD session coherently
+ * all-WAD; the price is that on a sparse WAD two stylesets may land on the
+ * same texture, which is a much gentler failure. Only when no styleset has
+ * anything for that slot does it drop to the procedural default (handled by
+ * `src/engine/textures.ts`).
+ *
+ * Duplicates across the concatenated lists are harmless — a name that already
+ * failed simply fails the same way again, at the cost of one `Map` lookup.
+ */
+function candidatesFor(style: StyleSetId, slot: StructuralSlot): readonly string[] {
+  const own = STYLE_WAD_ALLOWLISTS[style][slot];
+  const siblings = STYLE_SET_IDS.filter((id) => id !== style).flatMap((id) => STYLE_WAD_ALLOWLISTS[id][slot]);
+  return [...own, ...siblings];
 }
 
 export function loadWadTextures(bytes: ArrayBuffer): WadLoadResult {
@@ -153,46 +177,48 @@ export function loadWadTextures(bytes: ArrayBuffer): WadLoadResult {
       if (texture1Lump) for (const [name, def] of parseTextureLump(view, texture1Lump)) defs.set(name, def);
       if (texture2Lump) for (const [name, def] of parseTextureLump(view, texture2Lump)) defs.set(name, def);
 
-      const wall = resolveCompositeSlot(WALL_TEXTURE_ALLOWLIST, defs, pnames, lumps, view, palette);
-      result.wallName = wall.name;
-      result.wallTexture = wall.texture;
+      for (const style of STYLE_SET_IDS) {
+        // Deliberately re-composited per styleset even when two of them land
+        // on the same name: `bitmapFromWadPixels` (textures.ts) mutates the
+        // returned buffer in place with that slot's own hole-fill colour, so
+        // sharing one buffer between two stylesets would corrupt whichever
+        // got filled second.
+        result.styles[style].wall = resolveCompositeSlot(
+          candidatesFor(style, "wall"),
+          defs,
+          pnames,
+          lumps,
+          view,
+          palette,
+        );
+        result.styles[style].door = resolveCompositeSlot(
+          candidatesFor(style, "door"),
+          defs,
+          pnames,
+          lumps,
+          view,
+          palette,
+        );
+      }
 
-      const bonusWall = resolveCompositeSlot(BONUS_WALL_TEXTURE_ALLOWLIST, defs, pnames, lumps, view, palette);
-      result.bonusWallName = bonusWall.name;
-      result.bonusWallTexture = bonusWall.texture;
-
-      const door = resolveCompositeSlot(DOOR_TEXTURE_ALLOWLIST, defs, pnames, lumps, view, palette);
-      result.doorName = door.name;
-      result.doorTexture = door.texture;
-
-      const loreWall = resolveCompositeSlot(LORE_WALL_TEXTURE_ALLOWLIST, defs, pnames, lumps, view, palette);
-      result.loreWallName = loreWall.name;
-      result.loreWallTexture = loreWall.texture;
+      result.signals.loreWall = resolveCompositeSlot(
+        LORE_WALL_TEXTURE_ALLOWLIST,
+        defs,
+        pnames,
+        lumps,
+        view,
+        palette,
+      );
     }
 
-    const floor = resolveFlatSlot(FLOOR_TEXTURE_ALLOWLIST, lumps, view, palette);
-    result.floorName = floor.name;
-    result.floorTexture = floor.texture;
+    for (const style of STYLE_SET_IDS) {
+      result.styles[style].floor = resolveFlatSlot(candidatesFor(style, "floor"), lumps, view, palette);
+    }
 
-    const bonusFloor = resolveFlatSlot(BONUS_FLOOR_TEXTURE_ALLOWLIST, lumps, view, palette);
-    result.bonusFloorName = bonusFloor.name;
-    result.bonusFloorTexture = bonusFloor.texture;
-
-    const hazardFloor = resolveFlatSlot(HAZARD_FLOOR_TEXTURE_ALLOWLIST, lumps, view, palette);
-    result.hazardFloorName = hazardFloor.name;
-    result.hazardFloorTexture = hazardFloor.texture;
-
-    const teleporterFloor = resolveFlatSlot(TELEPORTER_FLOOR_TEXTURE_ALLOWLIST, lumps, view, palette);
-    result.teleporterFloorName = teleporterFloor.name;
-    result.teleporterFloorTexture = teleporterFloor.texture;
-
-    const spikeSafeFloor = resolveFlatSlot(SPIKE_SAFE_FLOOR_TEXTURE_ALLOWLIST, lumps, view, palette);
-    result.spikeSafeFloorName = spikeSafeFloor.name;
-    result.spikeSafeFloorTexture = spikeSafeFloor.texture;
-
-    const spikeActiveFloor = resolveFlatSlot(SPIKE_ACTIVE_FLOOR_TEXTURE_ALLOWLIST, lumps, view, palette);
-    result.spikeActiveFloorName = spikeActiveFloor.name;
-    result.spikeActiveFloorTexture = spikeActiveFloor.texture;
+    result.signals.hazardFloor = resolveFlatSlot(HAZARD_FLOOR_TEXTURE_ALLOWLIST, lumps, view, palette);
+    result.signals.teleporterFloor = resolveFlatSlot(TELEPORTER_FLOOR_TEXTURE_ALLOWLIST, lumps, view, palette);
+    result.signals.spikeSafeFloor = resolveFlatSlot(SPIKE_SAFE_FLOOR_TEXTURE_ALLOWLIST, lumps, view, palette);
+    result.signals.spikeActiveFloor = resolveFlatSlot(SPIKE_ACTIVE_FLOOR_TEXTURE_ALLOWLIST, lumps, view, palette);
 
     return result;
   } catch (err) {

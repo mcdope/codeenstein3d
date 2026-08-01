@@ -21,7 +21,7 @@
  */
 import type { GameMap, Tile } from "./types";
 import { BRANCH_DOOR_TILE, DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, SPIKE_TRAP_TILE, TELEPORTER_TILE } from "./types";
-import type { TextureBitmap, TextureSet } from "../engine/textures";
+import type { LevelStyle, TextureBitmap } from "../engine/textures";
 
 export interface ExportViewOptions {
   /** Target on-screen size (px) for the longest map dimension. */
@@ -82,7 +82,7 @@ function shouldDraw(map: GameMap, x: number, y: number): boolean {
  * through to the floor case automatically, no special-casing needed.
  * Spike traps always render their resting-state texture — there's no
  * "currently mid-blink" state worth freezing in a static export. */
-function textureFor(tile: Tile, bonusLevel: boolean, textureSet: TextureSet): TextureBitmap {
+function textureFor(tile: Tile, textureSet: LevelStyle["textures"]): TextureBitmap {
   switch (tile) {
     case DOOR_TILE:
       return textureSet.door;
@@ -102,9 +102,9 @@ function textureFor(tile: Tile, bonusLevel: boolean, textureSet: TextureSet): Te
       return textureSet.spikeSafeFloor;
     case 1:
     case SECRET_WALL_TILE:
-      return bonusLevel ? textureSet.bonusWall : textureSet.wall;
+      return textureSet.wall;
     default:
-      return bonusLevel ? textureSet.bonusFloor : textureSet.floor;
+      return textureSet.floor;
   }
 }
 
@@ -134,10 +134,11 @@ function computeBoundingBox(map: GameMap): BoundingBox {
   return box;
 }
 
-/** Render `map` into a new canvas element, textured with `textureSet`
- * (pass `textures.getActiveSet()` for "what the player was actually
+/** Render `map` into a new canvas element, textured with `style`
+ * (pass `textures.getStyle(map.styleSet)` for "what the player was actually
  * seeing"), cropped to the level's actual content, and return it. */
-export function renderExportMap(map: GameMap, textureSet: TextureSet, options: ExportViewOptions = {}): HTMLCanvasElement {
+export function renderExportMap(map: GameMap, style: LevelStyle, options: ExportViewOptions = {}): HTMLCanvasElement {
+  const textureSet = style.textures;
   const opts = { ...DEFAULTS, ...options };
   const box = computeBoundingBox(map);
   const boxWidth = box.maxX - box.minX + 1;
@@ -156,7 +157,7 @@ export function renderExportMap(map: GameMap, textureSet: TextureSet, options: E
     const row = map.grid[y];
     for (let x = box.minX; x <= box.maxX; x++) {
       if (!shouldDraw(map, x, y)) continue;
-      const bitmap = textureFor(row[x], map.bonusLevel, textureSet);
+      const bitmap = textureFor(row[x], textureSet);
       ctx.drawImage(bitmap.canvas, (x - box.minX) * cell, (y - box.minY) * cell, cell, cell);
     }
   }

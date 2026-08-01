@@ -266,6 +266,42 @@ describe("MapGenerator.generate", () => {
     expect(a).toEqual(b);
   });
 
+  it("assigns a styleset without consuming any of the layout rng", async () => {
+    // THE exactness gate for stylesets. `mapGenerator.ts`'s header warns that
+    // the order of its `generation/*` calls *is* the rng draw sequence — take
+    // even one value from that stream to pick a wall colour and every existing
+    // map layout moves, invalidating every recorded replay and the shipped
+    // `defaultHighscore.ts` board. Proven here by stubbing `styleSetFor` to a
+    // fixed value: if it drew from `rng`, removing its draw would shift every
+    // downstream placement and the two maps would differ everywhere. They must
+    // differ in exactly one field.
+    vi.resetModules();
+    vi.doMock("./generation/styleSet", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("./generation/styleSet")>();
+      return { ...actual, styleSetFor: () => "marble" as const };
+    });
+    const { MapGenerator: MockedMapGenerator } = await import("./mapGenerator");
+    const parsed = parsedFile({
+      entities: [entity({ name: "a", complexityScore: 8 }), entity({ name: "b", startLine: 6, endLine: 12 })],
+      comments: [{ text: "z".repeat(70), startLine: 3, endLine: 3 }],
+    });
+    const stubbed = new MockedMapGenerator().generate(parsed);
+    vi.doUnmock("./generation/styleSet");
+    vi.resetModules();
+    const { MapGenerator: RealMapGenerator } = await import("./mapGenerator");
+    const real = new RealMapGenerator().generate(parsed);
+
+    expect(stubbed.styleSet).toBe("marble");
+    expect({ ...stubbed, styleSet: null }).toEqual({ ...real, styleSet: null });
+  });
+
+  it("gives a bonus level the bonus styleset and a normal level a normal one", () => {
+    const gen = new MapGenerator();
+    const parsed = parsedFile({ entities: [entity({ name: "a" })] });
+    expect(gen.generate(parsed, { bonusLevel: true }).styleSet).toBe("techCool");
+    expect(gen.generate(parsed, { bonusLevel: false }).styleSet).not.toBe("techCool");
+  });
+
   it("never logs an unreachable-room warning for any bundled demo-campaign file", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const tree = loadDemoCampaignTree();

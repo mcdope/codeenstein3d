@@ -23,20 +23,8 @@ import {
 } from "../map/types";
 import type { Player } from "./player";
 import { EDGE_CASE_COLOR, enemyColor } from "./sprites";
-import { LORE_BASE, type TextureBitmap, type TextureSet } from "./textures";
+import { LORE_BASE, type LevelStyle, type TextureBitmap } from "./textures";
 import { activeSpikeTileKeys } from "./traps";
-
-/** A bonus (restock-arena) level's ceiling stays a distinct cool tone,
- * matching its steel/teal wall and floor textures — see `GameMap.bonusLevel`. */
-const BONUS_CEILING_RGB: [number, number, number] = [8, 16, 24];
-/** Ceiling base color — the one thing that stays flat-colored/untextured. */
-const CEILING_RGB: [number, number, number] = [11, 13, 22];
-
-/** Ceiling base color for `map`'s theme — bonus (restock arena) levels get a
- * distinct cool ceiling to match their steel/teal wall and floor textures. */
-function sceneCeiling(map: GameMap): [number, number, number] {
-  return map.bonusLevel ? BONUS_CEILING_RGB : CEILING_RGB;
-}
 
 /**
  * A fake secret wall is meant to be findable, not literally invisible: a very
@@ -242,13 +230,14 @@ export function renderScene(
   map: GameMap,
   player: Player,
   zBuffer: Float64Array,
-  textureSet: TextureSet,
+  style: LevelStyle,
   horizonShift = 0,
   levelTime = 0,
   readTerminals: ReadonlySet<string> = NO_READ_TERMINALS,
   antialiasing = WALL_EDGE_ANTIALIASING_ENABLED,
   fog = DISTANCE_FOG_ENABLED,
 ): void {
+  const textureSet = style.textures;
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
   // Screen row of the horizon, nudged by the head-bob so walls, ceiling, and
@@ -259,7 +248,7 @@ export function renderScene(
   // to be skipped in favor of two flat `fillRect`s on maps with no hazards/
   // teleporters/traps, but that fast path can't show floor texture
   // variation, so it's retired (see renderBackground's doc comment).
-  renderBackground(ctx, map, player, width, height, horizon, levelTime, textureSet, fog);
+  renderBackground(ctx, map, player, width, height, horizon, levelTime, style, fog);
 
   // Lore terminal walls sample a real texture (see `tex` below) plus a thin
   // pulsing tint overlay on top, so the "this is interactive, walk up to it"
@@ -303,9 +292,7 @@ export function renderScene(
         ? textureSet.door
         : hitTile === LORE_TILE
           ? textureSet.loreWall
-          : map.bonusLevel
-            ? textureSet.bonusWall
-            : textureSet.wall;
+          : textureSet.wall;
 
     const solidStart = Math.max(0, Math.ceil(wallTop));
     const solidEnd = Math.min(height, Math.floor(wallBottom));
@@ -407,16 +394,17 @@ function renderBackground(
   height: number,
   horizon: number,
   levelTime: number,
-  textureSet: TextureSet,
+  style: LevelStyle,
   fog: boolean,
 ): void {
   if (!floorImage || floorImage.width !== width || floorImage.height !== height) {
     floorImage = ctx.createImageData(width, height);
   }
+  const textureSet = style.textures;
   const data = floorImage.data;
   const halfH = horizon;
-  const ceiling = sceneCeiling(map);
-  const floorTex = map.bonusLevel ? textureSet.bonusFloor : textureSet.floor;
+  const ceiling = style.ceiling;
+  const floorTex = textureSet.floor;
 
   // Which spike traps are in their damaging half of the cycle this frame —
   // resolved once here, not per pixel — decides whether a spike-trap tile
@@ -525,7 +513,14 @@ let minimapWallLayer: {
 /** Returns the cached walls-only offscreen canvas for `map`, rebuilding on
  * any (map, gridVersion, cell) change — or `null` when a 2D context isn't
  * available (defensive; callers then fall back to direct per-tile fills). */
-function minimapWallCanvas(map: GameMap, cell: number, gridVersion: number, w: number, h: number): HTMLCanvasElement | null {
+function minimapWallCanvas(
+  map: GameMap,
+  cell: number,
+  gridVersion: number,
+  w: number,
+  h: number,
+  wallColor: string,
+): HTMLCanvasElement | null {
   if (
     minimapWallLayer &&
     minimapWallLayer.source === map &&
@@ -539,7 +534,12 @@ function minimapWallCanvas(map: GameMap, cell: number, gridVersion: number, w: n
   canvas.height = h;
   const wallCtx = canvas.getContext("2d");
   if (!wallCtx) return null;
-  wallCtx.fillStyle = map.bonusLevel ? "#3f7fae" : "#4a4a55";
+  // `wallColor` is deliberately NOT part of the cache key above: it's a pure
+  // function of `map.styleSet`, which is fixed for the lifetime of a map, and
+  // `source` (map identity) is already keyed on. A WAD load swaps texture
+  // bitmaps but never a styleset's automap color, so this layer cannot go
+  // stale on one.
+  wallCtx.fillStyle = wallColor;
   for (let y = 0; y < map.height; y++) {
     const row = map.grid[y];
     for (let x = 0; x < map.width; x++) {
@@ -582,6 +582,12 @@ function minimapWallCanvas(map: GameMap, cell: number, gridVersion: number, w: n
  * near-white) — see `multiplayer-game-state-spec.md` §5. */
 const LOOT_DROP_COLOR = "#b8860b";
 
+/** Minimap wall fill used when a caller passes no styleset color. Matches the
+ * `stone` styleset — i.e. exactly what every level's minimap looked like
+ * before stylesets existed — so an omitted argument degrades to the historical
+ * appearance rather than to something arbitrary. */
+const MINIMAP_WALL_FALLBACK = "#4a4a55";
+
 /** Unopened Switchboard branch doors on the corner minimap — warm, against the
  * key-locked door's cool `#568ebe`. Matches `drawAutomap`'s own branch-door
  * tone by value, not by shared import, following the same "each renderer keeps
@@ -607,6 +613,12 @@ export function renderMinimap(
    * `src/engine/acidOverflow.ts`), so it's recomputed per frame instead, the
    * same shape as `activeSpikeTileKeys`. */
   runtimeAcidTiles: readonly Point[] = [],
+  /** This level's styleset wall fill (`LevelStyle.automapWall`), so the
+   * minimap moves with the palette instead of staying cold grey on a rust
+   * level. Optional purely so the many callers that don't care about theming
+   * (tests, anything with no `LevelStyle` to hand) stay unchanged — see
+   * `MINIMAP_WALL_FALLBACK`. */
+  automapWall: string = MINIMAP_WALL_FALLBACK,
 ): MinimapPanelRect {
   const cell = Math.max(1, Math.floor(maxPixels / Math.max(map.width, map.height)));
   const w = map.width * cell;
@@ -651,13 +663,13 @@ export function renderMinimap(
   // (`SECRET_WALL_OVERLAY`, used by `renderScene`); once opened, the tile
   // becomes plain floor (0) and stops being drawn here at all, like any
   // other explored room.
-  const wallLayer = minimapWallCanvas(map, cell, gridVersion, w, h);
+  const wallLayer = minimapWallCanvas(map, cell, gridVersion, w, h, automapWall);
   if (wallLayer) {
     ctx.drawImage(wallLayer, pad, pad);
   } else {
     // No offscreen 2D context available — draw the tiles directly, exactly
     // as the pre-cache implementation always did.
-    ctx.fillStyle = map.bonusLevel ? "#3f7fae" : "#4a4a55";
+    ctx.fillStyle = automapWall;
     for (let y = 0; y < map.height; y++) {
       const row = map.grid[y];
       for (let x = 0; x < map.width; x++) {

@@ -77,6 +77,7 @@ function fakeMap(overrides: Partial<GameMap> = {}, size = 10): GameMap {
     ammoPickups: [],
     loreTerminals: [],
     bonusLevel: false,
+    styleSet: "stone",
     secretRoomCount: 0,
     switchboardRooms: [],
     exceptionZones: [],

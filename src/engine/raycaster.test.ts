@@ -14,10 +14,11 @@ import {
   TELEPORTER_TILE,
   type GameMap,
   type SpikeTrap,
+  type StyleSetId,
   type Tile,
 } from "../map/types";
 import { Player } from "./player";
-import type { TextureBitmap, TextureSet } from "./textures";
+import type { LevelStyle, TextureBitmap, TextureSet } from "./textures";
 
 // raycaster.ts imports a real *value* (LORE_BASE) from textures.ts, whose
 // module-level `TextureManager` singleton calls `document.createElement`
@@ -51,16 +52,26 @@ function fakeTexture(w = 4, h = 4, rgb: [number, number, number] = [120, 130, 14
 function fakeTextureSet(): TextureSet {
   return {
     wall: fakeTexture(4, 4, [120, 120, 130]),
-    bonusWall: fakeTexture(4, 4, [40, 90, 110]),
     door: fakeTexture(4, 4, [90, 70, 40]),
     floor: fakeTexture(4, 4, [60, 60, 70]),
-    bonusFloor: fakeTexture(4, 4, [30, 60, 70]),
     loreWall: fakeTexture(4, 4, [120, 200, 210]),
     hazardFloor: fakeTexture(4, 4, [64, 196, 72]),
     teleporterFloor: fakeTexture(4, 4, [130, 70, 220]),
     spikeSafeFloor: fakeTexture(4, 4, [90, 90, 96]),
     spikeActiveFloor: fakeTexture(4, 4, [220, 40, 30]),
   };
+}
+
+/** Wraps a `TextureSet` into the `LevelStyle` the renderers now take. Most
+ * call sites don't care which styleset they're nominally rendering, so the
+ * defaults keep them a one-liner; the tests that *do* care pass their own. */
+function fakeStyle(
+  textures: TextureSet = fakeTextureSet(),
+  id: StyleSetId = "stone",
+  ceiling: [number, number, number] = [11, 13, 22],
+  automapWall = "#4a4a55",
+): LevelStyle {
+  return { id, textures, ceiling, automapWall };
 }
 
 function grid(size: number, fill: Tile = 0): Tile[][] {
@@ -100,6 +111,7 @@ function fakeMap(overrides: Partial<GameMap> = {}, size = 8): GameMap {
     ammoPickups: [],
     loreTerminals: [],
     bonusLevel: false,
+    styleSet: "stone",
     secretRoomCount: 0,
     switchboardRooms: [],
     exceptionZones: [],
@@ -133,7 +145,7 @@ describe("renderScene — basic sanity", () => {
     const map = fakeMap();
     const player = centeredPlayer(map);
     const zBuffer = new Float64Array(WIDTH);
-    renderScene(asCtx(c), map, player, zBuffer, fakeTextureSet());
+    renderScene(asCtx(c), map, player, zBuffer, fakeStyle());
     expect(zBuffer.every((d) => d > 0)).toBe(true);
   });
 
@@ -141,7 +153,7 @@ describe("renderScene — basic sanity", () => {
     const c = ctx();
     const map = fakeMap();
     const player = centeredPlayer(map);
-    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeTextureSet());
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle());
     expect(c.drawImage).toHaveBeenCalledTimes(WIDTH);
   });
 
@@ -149,7 +161,7 @@ describe("renderScene — basic sanity", () => {
     const c = ctx();
     const map = fakeMap();
     const player = centeredPlayer(map);
-    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeTextureSet());
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle());
     expect(c.putImageData).toHaveBeenCalledTimes(1);
   });
 
@@ -158,9 +170,9 @@ describe("renderScene — basic sanity", () => {
     const map = fakeMap();
     const player = centeredPlayer(map);
     const textures = fakeTextureSet();
-    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), textures);
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(textures));
     const firstCreateCalls = c.createImageData.mock.calls.length;
-    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), textures);
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(textures));
     // Same width/height as the previous call -> no new ImageData allocated.
     expect(c.createImageData.mock.calls.length).toBe(firstCreateCalls);
   });
@@ -176,7 +188,7 @@ describe("renderScene — wall-face texture dispatch", () => {
     const player = centeredPlayer(map);
     const c = ctx();
     const textures = fakeTextureSet();
-    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), textures);
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(textures));
     const midCall = c.drawImage.mock.calls[midCol];
     expect(midCall[0]).toBe(textures.door.canvas);
   });
@@ -190,7 +202,7 @@ describe("renderScene — wall-face texture dispatch", () => {
     const player = centeredPlayer(map);
     const c = ctx();
     const textures = fakeTextureSet();
-    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), textures);
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(textures));
     expect(c.drawImage.mock.calls[midCol][0]).toBe(textures.loreWall.canvas);
     expect(c.fillRect.mock.calls.length).toBeGreaterThan(0);
   });
@@ -212,7 +224,7 @@ describe("renderScene — wall-face texture dispatch", () => {
     const fillStyles: string[] = [];
     c.fillRect.mockImplementation(() => fillStyles.push(String(c.fillStyle)));
 
-    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), textures, 0, 0, new Set([`${terminalX},${cy}`]));
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(textures), 0, 0, new Set([`${terminalX},${cy}`]));
 
     expect(c.drawImage.mock.calls[midCol][0]).toBe(textures.loreWall.canvas);
     expect(fillStyles.some((s) => s.startsWith("rgba(120,200,210,"))).toBe(false);
@@ -227,7 +239,7 @@ describe("renderScene — wall-face texture dispatch", () => {
     const player = centeredPlayer(map);
     const c = ctx();
     const textures = fakeTextureSet();
-    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), textures);
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(textures));
     expect(c.drawImage.mock.calls[midCol][0]).toBe(textures.wall.canvas);
   });
 
@@ -244,7 +256,7 @@ describe("renderScene — wall-face texture dispatch", () => {
       c.fillRect.mockImplementation(() => {
         styles.push(String(c.fillStyle));
       });
-      renderScene(asCtx(c), map, centeredPlayer(map), new Float64Array(WIDTH), textures);
+      renderScene(asCtx(c), map, centeredPlayer(map), new Float64Array(WIDTH), fakeStyle(textures));
       return { sampled: c.drawImage.mock.calls[midCol][0], styles, textures };
     };
 
@@ -265,17 +277,27 @@ describe("renderScene — wall-face texture dispatch", () => {
     const player = centeredPlayer(map);
     const c = ctx();
     const textures = fakeTextureSet();
-    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), textures);
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(textures));
     expect(c.drawImage.mock.calls[midCol][0]).toBe(textures.wall.canvas);
   });
 
-  it("uses the bonus-level wall texture on a bonus level", () => {
-    const map = fakeMap({ bonusLevel: true });
+  it("samples whichever styleset's wall it was handed, not one baked into the map", () => {
+    // Wall selection now comes purely from the passed `LevelStyle`; the same
+    // map rendered under two stylesets must sample two different bitmaps.
+    const map = fakeMap();
     const player = centeredPlayer(map);
-    const c = ctx();
-    const textures = fakeTextureSet();
-    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), textures);
-    expect(c.drawImage.mock.calls[midCol][0]).toBe(textures.bonusWall.canvas);
+
+    const stoneTex = fakeTextureSet();
+    const cStone = ctx();
+    renderScene(asCtx(cStone), map, player, new Float64Array(WIDTH), fakeStyle(stoneTex, "stone"));
+
+    const techTex = fakeTextureSet();
+    const cTech = ctx();
+    renderScene(asCtx(cTech), map, player, new Float64Array(WIDTH), fakeStyle(techTex, "tech"));
+
+    expect(cStone.drawImage.mock.calls[midCol][0]).toBe(stoneTex.wall.canvas);
+    expect(cTech.drawImage.mock.calls[midCol][0]).toBe(techTex.wall.canvas);
+    expect(cStone.drawImage.mock.calls[midCol][0]).not.toBe(techTex.wall.canvas);
   });
 });
 
@@ -287,7 +309,7 @@ describe("renderScene — ray geometry edge cases", () => {
     const player = centeredPlayer(map);
     const c = ctx();
     const zBuffer = new Float64Array(WIDTH);
-    expect(() => renderScene(asCtx(c), map, player, zBuffer, fakeTextureSet())).not.toThrow();
+    expect(() => renderScene(asCtx(c), map, player, zBuffer, fakeStyle())).not.toThrow();
     expect(zBuffer.every((d) => Number.isFinite(d))).toBe(true);
   });
 
@@ -299,7 +321,7 @@ describe("renderScene — ray geometry edge cases", () => {
     player.planeX = -0.66;
     player.planeY = 0;
     const c = ctx();
-    expect(() => renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeTextureSet())).not.toThrow();
+    expect(() => renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle())).not.toThrow();
   });
 
   it("handles a ray whose x-direction is exactly 0 (facing purely along the y-plane)", () => {
@@ -311,7 +333,7 @@ describe("renderScene — ray geometry edge cases", () => {
     player.planeY = 0;
     const c = ctx();
     const zBuffer = new Float64Array(WIDTH);
-    renderScene(asCtx(c), map, player, zBuffer, fakeTextureSet());
+    renderScene(asCtx(c), map, player, zBuffer, fakeStyle());
     // The center column's ray direction is exactly (dirX,dirY) = (0,1) here.
     expect(Number.isFinite(zBuffer[midCol])).toBe(true);
   });
@@ -328,7 +350,7 @@ describe("renderScene — distance fog and FOG_FAR", () => {
     const map = fakeMap({ grid: g }, size);
     const player = new Player({ ...map, spawn: { x: 1, y: Math.floor(size / 2) } });
     const c = ctx();
-    expect(() => renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeTextureSet())).not.toThrow();
+    expect(() => renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle())).not.toThrow();
   });
 
   it("skips the redundant bottom-edge antialiasing pass for a wall so thin its top and bottom land in the same screen row", () => {
@@ -344,7 +366,7 @@ describe("renderScene — distance fog and FOG_FAR", () => {
     const player = new Player({ ...map, spawn: { x: 1, y: Math.floor(size / 2) } });
     const c = ctx();
     expect(() =>
-      renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeTextureSet(), 0.37, undefined, undefined, true),
+      renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(), 0.37, undefined, undefined, true),
     ).not.toThrow();
   });
 });
@@ -356,9 +378,9 @@ describe("renderScene — wall-edge antialiasing (WALL_EDGE_ANTIALIASING_ENABLED
     const map = fakeMap();
     const player = centeredPlayer(map);
     const cDefault = ctx();
-    renderScene(asCtx(cDefault), map, player, new Float64Array(WIDTH), fakeTextureSet());
+    renderScene(asCtx(cDefault), map, player, new Float64Array(WIDTH), fakeStyle());
     const cOff = ctx();
-    renderScene(asCtx(cOff), map, player, new Float64Array(WIDTH), fakeTextureSet(), undefined, undefined, undefined, false);
+    renderScene(asCtx(cOff), map, player, new Float64Array(WIDTH), fakeStyle(), undefined, undefined, undefined, false);
     // Every hit column gets exactly one base shading fillRect either way;
     // the default (antialiasing on) additionally draws up to two 1px edge
     // rows per column, so it must strictly exceed the explicit-off count.
@@ -377,7 +399,7 @@ describe("renderScene — wall-edge antialiasing (WALL_EDGE_ANTIALIASING_ENABLED
     const c = ctx();
     const fillStyles: string[] = [];
     c.fillRect.mockImplementation(() => fillStyles.push(String(c.fillStyle)));
-    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeTextureSet(), 0.5, undefined, undefined, true);
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(), 0.5, undefined, undefined, true);
     // shadedTexel() always returns a plain "rgb(...)" string, distinct from
     // the base shading fill's "#000" and any overlay's "rgba(...)".
     const edgeBlendCalls = fillStyles.filter((s) => s.startsWith("rgb("));
@@ -393,7 +415,7 @@ describe("renderScene — wall-edge antialiasing (WALL_EDGE_ANTIALIASING_ENABLED
     const player = centeredPlayer(map);
     const c = ctx();
     expect(() =>
-      renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeTextureSet(), undefined, undefined, undefined, true),
+      renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(), undefined, undefined, undefined, true),
     ).not.toThrow();
   });
 });
@@ -422,7 +444,7 @@ describe("renderScene — floor tile texture dispatch", () => {
     const player = new Player({ ...map, spawn: { x: 10, y: 10 } });
     const c = ctx();
     const textures = fakeTextureSet();
-    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), textures);
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(textures));
     const data = c.putImageData.mock.calls[0][0].data as Uint8ClampedArray;
     expect(containsColor(data, [130, 70, 220])).toBe(true); // teleporterFloor's fill color
   });
@@ -432,7 +454,7 @@ describe("renderScene — floor tile texture dispatch", () => {
     const player = new Player({ ...map, spawn: { x: 10, y: 10 } });
     const c = ctx();
     const textures = fakeTextureSet();
-    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), textures);
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(textures));
     const data = c.putImageData.mock.calls[0][0].data as Uint8ClampedArray;
     expect(containsColor(data, [64, 196, 72])).toBe(true); // hazardFloor's fill color
   });
@@ -448,7 +470,7 @@ describe("renderScene — floor tile texture dispatch", () => {
     const player = new Player({ ...map, spawn: { x: 10, y: 10 } });
     const c = ctx();
     const textures = fakeTextureSet();
-    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), textures, 0, 2); // levelTime=2 -> active half
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(textures), 0, 2); // levelTime=2 -> active half
     const data = c.putImageData.mock.calls[0][0].data as Uint8ClampedArray;
     expect(containsColor(data, [220, 40, 30])).toBe(true); // spikeActiveFloor's fill color
   });
@@ -458,16 +480,29 @@ describe("renderScene — floor tile texture dispatch", () => {
     const player = new Player({ ...map, spawn: { x: 10, y: 10 } });
     const c = ctx();
     const textures = fakeTextureSet();
-    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), textures);
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(textures));
     const data = c.putImageData.mock.calls[0][0].data as Uint8ClampedArray;
     expect(containsColor(data, [90, 90, 96])).toBe(true); // spikeSafeFloor's fill color
   });
 
-  it("uses the bonus-level floor texture on a bonus level", () => {
-    const map = fakeMap({ bonusLevel: true });
+  it("floor-casts with the styleset's own floor texture", () => {
+    const map = fakeMap();
+    const player = centeredPlayer(map);
+    const textures = fakeTextureSet();
+    textures.floor = fakeTexture(4, 4, [7, 9, 11]); // a tone nothing else uses
+    const c = ctx();
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(textures, "tech"));
+    const data = c.putImageData.mock.calls[0][0].data as Uint8ClampedArray;
+    expect(containsColor(data, [7, 9, 11])).toBe(true);
+  });
+
+  it("paints the ceiling with the styleset's ceiling tone", () => {
+    const map = fakeMap();
     const player = centeredPlayer(map);
     const c = ctx();
-    expect(() => renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeTextureSet())).not.toThrow();
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(fakeTextureSet(), "rust", [22, 14, 11]));
+    const data = c.putImageData.mock.calls[0][0].data as Uint8ClampedArray;
+    expect(containsColor(data, [22, 14, 11])).toBe(true);
   });
 });
 
@@ -594,11 +629,13 @@ describe("renderMinimap", () => {
     expect(() => renderMinimap(asCtx(c), map, player)).not.toThrow();
   });
 
-  it("uses the bonus-level wall color on a bonus level", () => {
+  it("fills walls with the styleset's automap color when one is passed", () => {
     const c = ctx();
-    const map = fakeMap({ bonusLevel: true });
+    const map = fakeMap({ styleSet: "rust" });
     const player = centeredPlayer(map);
-    renderMinimap(asCtx(c), map, player);
+    // No offscreen context in this mock environment path is guaranteed, so
+    // assert on the color reaching the renderer rather than on pixels.
+    renderMinimap(asCtx(c), map, player, 0, 70, new Set(), 0, [], [], "#6b4436");
     expect(c.fillStyle).toBeDefined();
   });
 
@@ -616,7 +653,7 @@ describe("renderMinimap", () => {
 describe("renderScene — distance fog flag", () => {
   /** Positional call with everything defaulted except `fog`. */
   function render(c: MockCanvasContext, map: GameMap, player: Player, fog: boolean): void {
-    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeTextureSet(), 0, 0, new Set(), false, fog);
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(), 0, 0, new Set(), false, fog);
   }
 
   it("fog off: a fully-lit x-side column skips the base shading fill that fog on always draws", () => {
@@ -743,8 +780,8 @@ describe("renderMinimap — cached wall layer", () => {
     expect(c2.drawImage).toHaveBeenCalled();
   });
 
-  it("rebuilds when gridVersion bumps (door/secret wall opened) and uses the bonus wall color on bonus levels", () => {
-    const map = fakeMap({ bonusLevel: true });
+  it("rebuilds when gridVersion bumps (door/secret wall opened)", () => {
+    const map = fakeMap({ styleSet: "techCool" });
     const player = new Player({ ...map, spawn: { x: 1, y: 1 } });
     renderMinimap(asCtx(ctx()), map, player, 0, 70, new Set(), 1);
     const createSpy = vi.spyOn(document, "createElement");
@@ -763,11 +800,23 @@ describe("renderMinimap — cached wall layer", () => {
       expect(c.drawImage).not.toHaveBeenCalled();
       // The 8x8 walled room has 28 border wall tiles — all drawn directly.
       expect(c.fillRect.mock.calls.length).toBeGreaterThan(28);
-      // Bonus levels pick the alternate wall color in the same fallback.
-      const bonus = fakeMap({ bonusLevel: true });
+      // The styleset's own wall color reaches the same direct-fill fallback.
+      const bonus = fakeMap({ styleSet: "techCool" });
       const cBonus = ctx();
-      renderMinimap(asCtx(cBonus), bonus, new Player({ ...bonus, spawn: { x: 1, y: 1 } }), 0, 70, new Set(), 99);
+      renderMinimap(
+        asCtx(cBonus),
+        bonus,
+        new Player({ ...bonus, spawn: { x: 1, y: 1 } }),
+        0,
+        70,
+        new Set(),
+        99,
+        [],
+        [],
+        "#3f7fae",
+      );
       expect(cBonus.drawImage).not.toHaveBeenCalled();
+      expect(cBonus.fillStyle).toBeDefined();
     } finally {
       HTMLCanvasElement.prototype.getContext = original;
     }

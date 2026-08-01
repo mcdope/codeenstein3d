@@ -10,6 +10,7 @@
  */
 import { loadWadModule } from "./lib/loadWadModule.mjs";
 import { buildTestWad, PALETTE_ENTRIES } from "./fixtures/buildTestWad.mjs";
+import { STRUCTURAL_SLOTS, STYLE_SET_IDS, summarizeWadSlots } from "./lib/wadSlotSummary.mjs";
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -92,24 +93,30 @@ async function main() {
   {
     const result = wad.loadWadTextures(buildTestWad());
     check("ok", result.ok === true);
-    check("wallName resolved", result.wallName === "STARTAN3");
-    check("wallTexture non-null", result.wallTexture !== null);
-    check("floorName resolved", result.floorName === "FLOOR4_8");
-    check("floorTexture non-null", result.floorTexture !== null);
-    check("bonusWallName not matched (not in fixture)", result.bonusWallName === null);
-    check("doorName resolved", result.doorName === "BIGDOOR2");
-    check("doorTexture non-null", result.doorTexture !== null);
-    check("bonusFloorName not matched (not in fixture)", result.bonusFloorName === null);
-    check("loreWallName resolved", result.loreWallName === "COMPUTE2");
-    check("loreWallTexture non-null", result.loreWallTexture !== null);
-    check("hazardFloorName resolved", result.hazardFloorName === "NUKAGE3");
-    check("hazardFloorTexture non-null", result.hazardFloorTexture !== null);
-    check("teleporterFloorName resolved", result.teleporterFloorName === "GATE1");
-    check("teleporterFloorTexture non-null", result.teleporterFloorTexture !== null);
-    check("spikeSafeFloorName resolved", result.spikeSafeFloorName === "FLOOR7_1");
-    check("spikeSafeFloorTexture non-null", result.spikeSafeFloorTexture !== null);
-    check("spikeActiveFloorName resolved", result.spikeActiveFloorName === "BLOOD1");
-    check("spikeActiveFloorTexture non-null", result.spikeActiveFloorTexture !== null);
+    // The fixture ships `tech`'s own first-choice wall/floor and `techCool`'s
+    // door; every other styleset reaches them through the cross-styleset
+    // fallback, which is the behaviour being pinned here — no styleset may be
+    // left on a procedural default while another is WAD-textured.
+    check("tech wall resolved", result.styles.tech.wall.name === "STARTAN3");
+    check("tech wall texture non-null", result.styles.tech.wall.texture !== null);
+    check("tech floor resolved", result.styles.tech.floor.name === "FLOOR4_8");
+    check("tech floor texture non-null", result.styles.tech.floor.texture !== null);
+    check("techCool door resolved", result.styles.techCool.door.name === "BIGDOOR2");
+    for (const id of STYLE_SET_IDS) {
+      check(`${id}: all three structural slots resolved`, STRUCTURAL_SLOTS.every((slot) => result.styles[id][slot].texture !== null));
+    }
+    check("every styleset got its own wall pixel buffer", new Set(STYLE_SET_IDS.map((id) => result.styles[id].wall.texture.rgba)).size === STYLE_SET_IDS.length);
+    check("loreWall resolved", result.signals.loreWall.name === "COMPUTE2");
+    check("loreWall texture non-null", result.signals.loreWall.texture !== null);
+    check("hazardFloor resolved", result.signals.hazardFloor.name === "NUKAGE3");
+    check("hazardFloor texture non-null", result.signals.hazardFloor.texture !== null);
+    check("teleporterFloor resolved", result.signals.teleporterFloor.name === "GATE1");
+    check("teleporterFloor texture non-null", result.signals.teleporterFloor.texture !== null);
+    check("spikeSafeFloor resolved", result.signals.spikeSafeFloor.name === "FLOOR7_1");
+    check("spikeSafeFloor texture non-null", result.signals.spikeSafeFloor.texture !== null);
+    check("spikeActiveFloor resolved", result.signals.spikeActiveFloor.name === "BLOOD1");
+    check("spikeActiveFloor texture non-null", result.signals.spikeActiveFloor.texture !== null);
+    check("summary counts every slot as matched", summarizeWadSlots(result).matched === summarizeWadSlots(result).total);
   }
 
   // --- loadWadTextures: allowlist miss ---
@@ -119,12 +126,14 @@ async function main() {
       buildTestWad({ textureName: "RANDOMTEX", doorTextureName: "RANDOMDOOR", flatName: "RANDOMFLAT" }),
     );
     check("ok (clean fallback, not an error)", result.ok === true);
-    check("wallName null", result.wallName === null);
-    check("wallTexture null", result.wallTexture === null);
-    check("doorName null", result.doorName === null);
-    check("doorTexture null", result.doorTexture === null);
-    check("floorName null", result.floorName === null);
-    check("floorTexture null", result.floorTexture === null);
+    // Nothing in ANY styleset's list is present, so the cross-styleset
+    // fallback has nothing to borrow either — every structural slot is null.
+    for (const id of STYLE_SET_IDS) {
+      check(`${id}: every structural slot null`, STRUCTURAL_SLOTS.every((slot) => result.styles[id][slot].name === null && result.styles[id][slot].texture === null));
+    }
+    // The 5 shared signal slots are unaffected — this fixture only renamed the
+    // wall/door/flat the structural lists look for.
+    check("only the 5 signal slots remain matched", summarizeWadSlots(result).matched === 5);
   }
 
   // --- loadWadTextures: no PLAYPAL ---
@@ -132,7 +141,7 @@ async function main() {
   {
     const result = wad.loadWadTextures(buildTestWad({ includePlaypal: false }));
     check("ok (clean fallback)", result.ok === true);
-    check("every slot null", [result.wallTexture, result.doorTexture, result.floorTexture].every((t) => t === null));
+    check("every slot null", summarizeWadSlots(result).matched === 0);
   }
 
   // --- loadWadTextures: no flat block, textures still resolve ---
@@ -140,8 +149,8 @@ async function main() {
   {
     const result = wad.loadWadTextures(buildTestWad({ includeFlats: false }));
     check("ok", result.ok === true);
-    check("wallTexture still resolves", result.wallTexture !== null);
-    check("floorTexture null (no F_START/F_END)", result.floorTexture === null);
+    check("wall textures still resolve", STYLE_SET_IDS.every((id) => result.styles[id].wall.texture !== null));
+    check("floor slots null (no F_START/F_END)", STYLE_SET_IDS.every((id) => result.styles[id].floor.texture === null));
   }
 
   // --- loadWadTextures: malformed input never throws ---
