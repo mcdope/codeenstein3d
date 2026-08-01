@@ -52,6 +52,7 @@ import { runQualifyLoop } from "./lib/qualifyLoop.mjs";
 import { planRoute } from "./lib/routePlanner.mjs";
 import { installVirtualClock } from "./lib/virtualClock.mjs";
 import { DEV_SERVER_URL, PROFILES, planLevels, waitForTestHooks, dismissOverlay, installDifficulty } from "./run-balancing-telemetry.mjs";
+import { profilesHash } from "./lib/profiles.mjs";
 
 const CAMPAIGN_DIR = path.join(REPO_ROOT, "demo-campaign");
 const CAMPAIGN_NAME = "demo-campaign";
@@ -404,6 +405,13 @@ function writeDefaultHighscoreFile(entries) {
  * file silently breaks these entries' "Watch Replay" buttons until this file
  * is regenerated.
  *
+ * Regenerate it just as surely if the **bot's skill profiles** change. These
+ * runs were played by those profiles, so a retune leaves this board describing
+ * a bot that no longer exists — and unlike an edited campaign file, nothing
+ * about the replays themselves goes wrong, so no existing check notices.
+ * \`PROFILES_HASH\` below is what closes that: \`scripts/lib/profiles.test.mjs\`
+ * recomputes it from the live profiles and fails when the two diverge.
+ *
  * The entries are stored gzip+base64-encoded (\`gz1:\` prefix, same scheme as
  * \`storageCompression.ts\`'s \`compressForStorage\`) rather than as a plain
  * array literal — see \`writeDefaultHighscoreFile\` in the generator script
@@ -411,6 +419,11 @@ function writeDefaultHighscoreFile(entries) {
  * \`loadHighscoresForDisplay\` (\`./highscores.ts\`) decompresses it with
  * \`decompressFromStorage\` at read time.
  */
+
+/** Fingerprint of the bot profiles these runs were played by, at generation
+ * time — see \`profilesHash\` in \`scripts/lib/profiles.mjs\`. A mismatch means
+ * this file is stale and \`npm run generate:default-highscore\` should be re-run. */
+export const PROFILES_HASH = "${profilesHash()}";
 
 /** \`HighscoreEntry[]\`, gzip+base64-encoded — decompress with
  * \`decompressFromStorage\` from \`./storageCompression\`. */
