@@ -16,7 +16,7 @@
 
 | Input | Action |
 |---|---|
-| Mouse click | Fire the active weapon (mouse/gamepad only — keyboard-only play was never a supported control scheme) |
+| Mouse click | Fire the active weapon (mouse/gamepad only — keyboard-only play was never a supported control scheme). Every weapon has its own fire rate, so clicking faster than it cycles doesn't shoot faster — the Regex Shotgun's 0.85s pump is the one you'll notice |
 | `1`–`9` | Switch directly to a weapon slot |
 | Mousewheel | Cycle through owned weapons |
 | `Space` | Quick-melee — swings the SIGKILL Knife instantly regardless of what's equipped; once you find the Toolchain chainsaw it permanently takes over this key instead, revving continuously while held |
@@ -42,7 +42,7 @@ Standard Xbox-style layout:
 |---|---|
 | Left stick | Move / strafe |
 | Right stick | Turn |
-| RT | Fire (held for automatic weapons) |
+| RT | Fire (held for automatic weapons; semi-auto ones still need a fresh pull per shot, and every weapon is capped at its own fire rate) |
 | LB / RB | Previous / next weapon |
 | R3 (stick click) or B | Quick-melee |
 | Any button | Dismiss level-start/commit-summary/end overlays (after the 1.2s lock) |

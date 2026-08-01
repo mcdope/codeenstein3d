@@ -71,10 +71,16 @@ export interface Weapon {
   /** Fully-automatic: fires repeatedly while the trigger is held, at
    * `fireIntervalSec` between shots, instead of once per press. */
   auto?: boolean;
-  /** Minimum seconds between shots — required for `auto` weapons, and used to
-   * throttle the rocket launcher (a real click-rate limit, not just letting
-   * whatever the player can physically click through fire instantly). Weapons
-   * that omit this have no cooldown beyond the trigger's own press rate. */
+  /** Minimum seconds between shots. **Every ranged weapon defines this** — a
+   * real rate limit, rather than letting whatever the player can physically
+   * click (or an autoclicker, or a bot dispatching a keydown per tick) fire
+   * instantly. For `auto` weapons it's the sustained rate while the trigger
+   * is held; for semi-auto ones it's a floor on top of "once per press", so
+   * click-spam can't turn a shotgun into an automatic weapon.
+   *
+   * Only *melee* weapons may omit it — the knife, which swings once per
+   * press through `meleeCooldown`'s separate path. It stays optional for
+   * that reason alone. */
   fireIntervalSec?: number;
   /** Overrides `RaycasterEngine`'s shared `MAX_CONE_DEVIATION_PX` (see its doc
    * comment) for this weapon specifically — a smaller value means this
@@ -99,9 +105,12 @@ export interface Weapon {
  * kill's high-odds bonus weapon drop, a rare drop from any kill, or are
  * force-unlocked at campaign levels 4/8/12 as a progression safety net (see
  * `RaycasterEngine`'s `ownedWeapons`, `main.ts`'s `applyForcedUnlocks`).
- * - **echo pistol**: precise single hitscan, cheap.
+ * - **echo pistol**: precise single hitscan, cheap, and the fastest-cycling
+ *   thing in the arsenal that isn't fully automatic (~6.6 shots/sec).
  * - **Regex Shotgun**: 7 pellets in a cone — devastating up close, useless at
- *   range as the spread misses; costs more heap.
+ *   range as the spread misses; costs more heap. Pump-action: one blast per
+ *   0.85s, which is the trade for that burst damage. Its per-pellet damage is
+ *   tuned *against* that cadence (see its entry), so the two move together.
  * - **SIGKILL Knife**: infinite-ammo melee fallback, bound to Space as an
  *   instant "quick-melee" overlay rather than an equippable slot — point-blank
  *   only, but a kill heals a sliver of stability, rewarding aggressive play
@@ -150,6 +159,11 @@ export const WEAPONS: readonly Weapon[] = [
     damagePerPellet: 22,
     ammoPerShot: 1,
     ammoType: "bullets",
+    // ~6.6 shots/sec: a fast but genuinely human semi-auto trigger-pull rate.
+    // Before this existed, the pistol's rate was whatever the player's mouse
+    // hand (or an autoclicker, or a bot dispatching one keydown per decision
+    // tick) could produce — see `updateFiring`'s doc comment in `engine.ts`.
+    fireIntervalSec: 0.15,
     tracerColor: "#fff05a",
     viewKind: "pistol",
   },
@@ -157,11 +171,29 @@ export const WEAPONS: readonly Weapon[] = [
     name: "Regex Shotgun",
     pellets: 7,
     spreadPx: 70,
-    // Up from 12 by twice the pistol's 3-point reduction above — see its
-    // comment for why.
-    damagePerPellet: 18,
+    // 18 -> 25, together with the `fireIntervalSec` below and *because* of it.
+    // The pump cap alone would have left the shotgun at 7x18/0.85s = 148 DPS
+    // point-blank against the pistol's 147 — identical output for 4x the
+    // ammo, out of the same shared "bullets" pool, and only at contact range
+    // where the whole cone connects. That erases the reason to ever pick it.
+    // At 25 it lands 7x25/0.85s = 206 DPS, ~1.4x the pistol, so "devastating
+    // up close, useless at range" survives the cadence cap.
+    //
+    // (The previous 18 was itself "up from 12 by twice the pistol's 3-point
+    // reduction", from an earlier playtest pass with the same complaint: the
+    // shotgun felt weaker than the pistol despite firing 7 pellets, since its
+    // wide cone means only a fraction connect outside point-blank range.)
+    damagePerPellet: 25,
     ammoPerShot: 4,
     ammoType: "bullets",
+    // A pump-action cycle: ~1.2 shots/sec. The one weapon this whole cap
+    // existed to fix — 7 pellets and 175 damage a blast turned into an
+    // automatic weapon by nothing more than clicking fast. Paired with
+    // `playShotgunPump` in `audio.ts`, which racks audibly inside this
+    // window so the delay reads as the gun cycling rather than a dropped
+    // click; the two numbers are related but not derived from each other, so
+    // retuning this one means re-checking that cue still lands inside it.
+    fireIntervalSec: 0.85,
     tracerColor: "#ff9d3f",
     viewKind: "shotgun",
   },

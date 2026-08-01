@@ -268,8 +268,9 @@ describe("pickRangedWeapon", () => {
     // Deliberately asserts "not the cluster weapon" rather than a specific
     // fallthrough pick: since `pickRangedWeapon` scores on economics rather
     // than walking the priority list, the fallthrough here is the *pistol*
-    // (2 bullets to kill a 30 HP threat, against the shotgun's 4, for 0.16s
-    // more) — and it returns null because the pistol is already equipped.
+    // (2 bullets and 0.32s to kill a 30 HP threat, against the shotgun's 4
+    // bullets and one 0.85s pump cycle — score 1.28 vs 2.77) — and it
+    // returns null because the pistol is already equipped.
     const noCluster = pickRangedWeapon(player, shotgunFirst, enemies, threat, null, { ...DEFAULT_TUNING, CLUSTER_RADIUS: 0.01 });
     expect(noCluster).not.toBe(FRIDAY_HOTFIX_WEAPON_INDEX);
   });
@@ -280,7 +281,12 @@ describe("pickRangedWeapon", () => {
   });
 
   it("returns null when the best choice is already equipped", () => {
-    const player = makePlayer({ ownedWeapons: [0, 1, 2], weaponIndex: 1 });
+    // The fixture must equip whatever the *scorer* actually prefers here, or
+    // this silently stops testing the early return and just asserts "nothing
+    // to switch to". It equipped the shotgun until the 0.85s pump cap landed;
+    // against a no-threat ASSUMED_TARGET_HP of 60 the pistol now wins (0.768
+    // vs 1.234), so the fixture follows the scorer.
+    const player = makePlayer({ ownedWeapons: [0, 1, 2], weaponIndex: 0 });
     expect(pickRangedWeapon(player, PROFILE, [], null, null, DEFAULT_TUNING)).toBeNull();
   });
 });
@@ -695,6 +701,26 @@ describe("decide — combat", () => {
     expect(tooSoon.trace.fireOnCooldown).toBe(true);
   });
 
+  it("waits out the weapon's own engine interval when it outlasts the profile cooldown", () => {
+    // The gate is `max(fireCooldownMs, fireIntervalSec)`, not either alone.
+    // 500ms clears Gamer's 160ms trigger but is well inside the shotgun's
+    // 850ms pump — dispatching Backquote here would queue a `fireQueued`
+    // replay frame that the engine discards, ~5 of every 6 shotgun decisions.
+    // `weaponPriority: [1]` keeps the scorer on the equipped shotgun so the
+    // effective weapon is unambiguous.
+    const world = { player: makePlayer({ weaponIndex: 1 }), enemies: [makeEnemy()], mines: [], navTarget: null, map: makeMap() };
+    const config = { profile: { ...PROFILE, weaponPriority: [SHOTGUN_WEAPON_INDEX] }, simTimeMs: 10000 };
+    const midPump = decide(world, freshMemory(), makeConfig({ ...config, lastFireSimTimeMs: 9500 }));
+    expect(midPump.fire).toBe(false);
+    // Still "aimed and willing, held back only by cadence" — `detectAnomalies`
+    // needs that distinction to not report a pumping bot as stuck.
+    expect(midPump.trace.fireOnCooldown).toBe(true);
+    // Past the pump, the same fixture fires.
+    const pumped = decide(world, freshMemory(), makeConfig({ ...config, lastFireSimTimeMs: 9100 }));
+    expect(pumped.fire).toBe(true);
+    expect(pumped.trace.fireOnCooldown).toBe(false);
+  });
+
   it("does not report a semi-auto pull for an auto weapon", () => {
     // gdb/Friday Hotfix are engine-rate-limited while held, so the userland
     // cooldown must not apply — otherwise they get starved of frames.
@@ -998,14 +1024,23 @@ describe("ranged weapon economics", () => {
     // index. Which weapon wins here depends on the profile's `ammoThrift`, and
     // this test previously pinned Friday Hotfix only because its local fixture
     // omitted that field and silently scored against the default of 1. Under
-    // the real Gamer profile (0.4) the shotgun wins outright, 8.96s vs 11.04s
-    // — not a tiebreak. The invariant worth testing is the mechanism, not the
-    // winner.
+    // the real Gamer profile (0.4) Friday Hotfix wins outright, 11.04s against
+    // the shotgun's 24.60s — not a tiebreak. (The shotgun used to take this at
+    // 8.96s. Its 18 -> 25 damage bump cut the blasts needed from 35 to 26, but
+    // the 0.85s pump cap turned 35 x 0.16s = 5.6s of shooting into 26 x 0.85s
+    // = 22.1s, so the cadence more than undoes the damage on a sponge this
+    // big.) The invariant worth testing is the mechanism, not the winner.
     expect(close).not.toBe(PROFILE.weaponPriority[0]);
     expect(close).not.toBe(PISTOL_WEAPON_INDEX);
     // Beyond that reach the flamethrower is not a candidate at all, so the
-    // answer becomes the best weapon that actually arrives — still not the pistol.
-    const far = pickRangedWeapon(owner(), PROFILE, [], target({ dist: 7, hp: 4400, maxHp: 4400, elite: true }), null);
+    // answer becomes the best weapon that actually arrives — still not the
+    // pistol. `weaponIndex: 3` deliberately equips something that cannot be
+    // the answer here (gdb needs 367 smg bursts on 4400 HP), so a returned
+    // `null` would mean "nothing was picked" rather than the early
+    // already-equipped return — and the two `not.toBe`s would pass vacuously
+    // against it. The `not.toBeNull` pins that down.
+    const far = pickRangedWeapon(owner({ weaponIndex: 3 }), PROFILE, [], target({ dist: 7, hp: 4400, maxHp: 4400, elite: true }), null);
+    expect(far).not.toBeNull();
     expect(far).not.toBe(FRIDAY_HOTFIX_WEAPON_INDEX);
     expect(far).not.toBe(PISTOL_WEAPON_INDEX);
   });
@@ -1023,6 +1058,36 @@ describe("ranged weapon economics", () => {
     const thrifty = scoreRangedWeapon(FRIDAY_HOTFIX_WEAPON_INDEX, { ...opts, profile: { ...PROFILE, ammoThrift: 2 } });
     const spender = scoreRangedWeapon(FRIDAY_HOTFIX_WEAPON_INDEX, { ...opts, profile: { ...PROFILE, ammoThrift: 0 } });
     expect(thrifty).toBeGreaterThan(spender);
+  });
+
+  it("paces a semi-auto by whichever of the engine interval and the trigger is slower", () => {
+    // Both limits are real and independent: `fireIntervalSec` is the gun,
+    // `fireCooldownMs` is the hand. One 22 HP kill, so the score is exactly
+    // one shot's cadence plus a fixed 0.024s of ammo burn.
+    const opts = { targetHp: 22, dist: 1, player: owner(), tuning: DEFAULT_TUNING };
+    const at = (fireCooldownMs) => scoreRangedWeapon(PISTOL_WEAPON_INDEX, { ...opts, profile: { ...PROFILE, fireCooldownMs } });
+    // The pistol's engine interval is 0.15s. Casual's 220ms and Gamer's 160ms
+    // trigger are slower, so they bind and still separate the tiers.
+    expect(at(220)).toBeCloseTo(0.244, 6);
+    expect(at(160)).toBeCloseTo(0.184, 6);
+    // Pro's 120ms is now the looser of the two, so the engine binds — and an
+    // absurdly fast trigger buys nothing beyond that floor.
+    expect(at(120)).toBeCloseTo(0.174, 6);
+    expect(at(10)).toBeCloseTo(at(120), 6);
+    // The shotgun's 0.85s pump dwarfs every profile's trigger, so no tier
+    // out-shoots another with it at all.
+    const pump = (fireCooldownMs) => scoreRangedWeapon(SHOTGUN_WEAPON_INDEX, { ...opts, profile: { ...PROFILE, fireCooldownMs } });
+    expect(pump(220)).toBeCloseTo(pump(10), 6);
+  });
+
+  it("ignores the dispatch cooldown entirely for a held auto weapon", () => {
+    // gdb is fired by holding the key, so there is no per-shot dispatch for
+    // `fireCooldownMs` to throttle — only the engine's 0.09s interval counts.
+    const opts = { targetHp: 22, dist: 1, player: owner(), tuning: DEFAULT_TUNING };
+    const at = (fireCooldownMs) => scoreRangedWeapon(GDB_WEAPON_INDEX, { ...opts, profile: { ...PROFILE, fireCooldownMs } });
+    expect(at(500)).toBeCloseTo(at(10), 6);
+    // 2 bursts at 0.09s, plus 2 of 700 smg burned at Gamer's 0.4 thrift.
+    expect(at(500)).toBeCloseTo(0.18 + 0.4 * (2 / 700) * DEFAULT_TUNING.AMMO_BURN_PENALTY_SEC, 6);
   });
 
   it("multi-pellet damage falls off far sooner than single-pellet", () => {

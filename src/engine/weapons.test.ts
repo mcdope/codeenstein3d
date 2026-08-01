@@ -10,6 +10,8 @@ import {
   MELEE_WEAPON,
   NUMBER_KEY_WEAPONS,
   pelletOffsets,
+  PISTOL_WEAPON_INDEX,
+  SHOTGUN_WEAPON_INDEX,
   STARTING_WEAPONS,
   TOOLCHAIN_MIN_LEVEL,
   TOOLCHAIN_WEAPON_INDEX,
@@ -34,6 +36,31 @@ describe("WEAPONS data", () => {
   it("STARTING_WEAPONS covers pistol/shotgun/knife and nothing unlockable", () => {
     expect(STARTING_WEAPONS).toEqual([0, 1, 2]);
     for (const i of STARTING_WEAPONS) expect(UNLOCKABLE_WEAPONS).not.toContain(i);
+  });
+
+  it("rate-caps every ranged weapon, leaving only melee uncapped", () => {
+    // The invariant `updateFiring` now leans on: a ranged weapon without an
+    // interval fires as fast as the trigger can be pressed, which is what
+    // turned the shotgun into an automatic weapon. Melee is exempt because
+    // quick-melee runs through `meleeCooldown`'s separate path instead.
+    for (const w of WEAPONS) {
+      if (w.meleeRange !== undefined) continue;
+      expect(w.fireIntervalSec, `${w.name} has no fire interval`).toBeGreaterThan(0);
+    }
+    expect(MELEE_WEAPON.fireIntervalSec).toBeUndefined();
+  });
+
+  it("makes the shotgun's pump cycle far slower than the pistol's trigger", () => {
+    const pistol = WEAPONS[PISTOL_WEAPON_INDEX];
+    const shotgun = WEAPONS[SHOTGUN_WEAPON_INDEX];
+    expect(shotgun.fireIntervalSec!).toBeGreaterThan(pistol.fireIntervalSec! * 4);
+    // ...but the slower cadence must not make it a worse pistol: the whole
+    // point of the shotgun is burst damage up close, so its damage-per-second
+    // ceiling (every pellet connecting) has to stay clearly ahead. Parity
+    // here would mean identical output for 4x the ammo, out of the same
+    // shared pool — see its `damagePerPellet` comment in weapons.ts.
+    const dps = (w: (typeof WEAPONS)[number]) => (w.pellets * w.damagePerPellet) / w.fireIntervalSec!;
+    expect(dps(shotgun)).toBeGreaterThan(dps(pistol) * 1.25);
   });
 
   it("UNLOCKABLE_WEAPONS is exactly gdb/ghidra/Friday Hotfix, never Toolchain", () => {

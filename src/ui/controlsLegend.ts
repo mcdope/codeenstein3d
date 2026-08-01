@@ -64,8 +64,8 @@ function rowEl(chips: Chip[]): HTMLDivElement {
  * grouped together here). */
 const ROWS: Chip[][] = [
   [
-    { keys: ["1"], label: "pistol" },
-    { keys: ["2"], label: "shotgun" },
+    { keys: ["1"], label: "echo pistol" },
+    { keys: ["2"], label: "Regex Shotgun" },
     { keys: ["3"], label: "gdb (auto, unlockable)" },
     { keys: ["4"], label: "ghidra (rocket, unlockable)" },
     { keys: ["5"], label: "Friday Hotfix (flame, unlockable)" },

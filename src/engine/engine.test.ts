@@ -1653,6 +1653,69 @@ describe("RaycasterEngine — firing", () => {
     expect(lastStats(handlers).kills).toBe(1);
   });
 
+  it("refuses a second shotgun blast inside its pump cycle, then fires again once it's over", () => {
+    const map = fakeMap({}, 12);
+    const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 40, rockets: 0, smg: 0, gas: 0 },
+    });
+    input.weaponRequest = 1; // shotgun
+    engine.advance(0.016);
+
+    input.fireQueued = true;
+    engine.advance(0.016);
+    const afterFirst = lastStats(handlers).bullets;
+    expect(afterFirst).toBe(36); // one blast, 4 bullets
+
+    // Spam the trigger for the rest of the pump cycle: every one of these
+    // pulls is swallowed, so not a single extra bullet leaves the tube.
+    for (let i = 0; i < 20; i++) {
+      input.fireQueued = true;
+      engine.advance(0.016); // 20 frames = 0.32s, well inside the 0.85s cycle
+    }
+    expect(lastStats(handlers).bullets).toBe(afterFirst);
+
+    engine.advance(0.85); // cycle complete
+    input.fireQueued = true;
+    engine.advance(0.016);
+    expect(lastStats(handlers).bullets).toBe(32); // a second blast, finally
+  });
+
+  it("caps pistol click-spam at its own fire interval", () => {
+    const map = fakeMap({}, 12);
+    const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 40, rockets: 0, smg: 0, gas: 0 },
+    });
+    // Ten pulls on ten consecutive frames — 0.16s of wall time, which the
+    // pistol's 0.15s interval permits exactly one shot in. Before the
+    // interval existed this spent ten bullets.
+    for (let i = 0; i < 10; i++) {
+      input.fireQueued = true;
+      engine.advance(0.016);
+    }
+    expect(lastStats(handlers).bullets).toBe(39);
+  });
+
+  it("shares the fire cooldown across a weapon switch, so the shotgun's pump can't be switch-cancelled", () => {
+    const map = fakeMap({}, 12);
+    const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 40, rockets: 0, smg: 0, gas: 0 },
+    });
+    input.weaponRequest = 1; // shotgun
+    engine.advance(0.016);
+    input.fireQueued = true;
+    engine.advance(0.016);
+    expect(lastStats(handlers).bullets).toBe(36);
+
+    // Switch to the pistol mid-pump and pull. `weaponCooldown` lives on the
+    // player, not the weapon, so this buys nothing — deliberately (see
+    // `updateFiring`'s doc comment).
+    input.weaponRequest = 0;
+    engine.advance(0.016);
+    input.fireQueued = true;
+    engine.advance(0.016);
+    expect(lastStats(handlers).bullets).toBe(36); // still nothing spent
+  });
+
   it("swings the knife via quick-melee (Space) independent of the equipped ranged weapon", () => {
     const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 1 });
     const map = fakeMap({ enemies: [enemy] });
@@ -1753,9 +1816,12 @@ describe("RaycasterEngine — firing", () => {
     const mine: Mine = { x: 8.5, y: 10.5, alive: true, visible: true, closeTimer: 0 }; // 3 tiles out, beyond MINE_BLAST_RADIUS
     const map = fakeMap({ spawn: { x: 5, y: 10 }, mines: [mine] }, size);
     const { engine, input, handlers } = makeEngine(map);
+    // 0.16s per attempt, not one frame: the pistol's `fireIntervalSec` (0.15s)
+    // would otherwise swallow 19 of these 20 pulls, leaving the loop's retry
+    // budget nominal rather than real.
     for (let i = 0; i < 20 && mine.alive; i++) {
       input.fireQueued = true;
-      engine.advance(0.016);
+      engine.advance(0.16);
     }
     expect(mine.alive).toBe(false);
     expect(lastStats(handlers).health).toBe(100); // no splash damage at this range
@@ -2858,12 +2924,29 @@ describe("RaycasterEngine — player-facing stats / run accumulation", () => {
 
 describe("RaycasterEngine — Multi Kill / Ultra Kill streaks", () => {
   // All point-blank, one-hit kills at the same spot the "firing" describe
-  // block already uses — each dies in a single pistol shot, so consecutive
-  // fireQueued frames each consume exactly one of them (projectLivingEnemies
+  // block already uses — each dies in a single pistol shot (projectLivingEnemies
   // only ever considers the still-alive ones, so which one dies on a given
   // frame doesn't matter, only that exactly one does).
   function oneHitEnemies(count: number): Enemy[] {
     return Array.from({ length: count }, () => fakeEnemy({ x: 6.5, y: 5.5, hp: 1, maxHp: 1 }));
+  }
+
+  /**
+   * One trigger-pull, spaced far enough apart to actually land.
+   *
+   * The spacing is load-bearing and must stay above the pistol's
+   * `fireIntervalSec` (0.15s, see `weapons.ts`): `updateFiring` swallows a
+   * pull that arrives inside the cooldown, and `ScriptedInput.consumeFire()`
+   * clears the flag whether or not the shot lands — so a too-fast pull is
+   * silently *eaten*, not deferred, and every kill count in this block
+   * quietly halves. These tests are about kill *streaks*, not fire rate, so
+   * the exact dt doesn't matter beyond clearing that floor; 0.16 clears it
+   * without leaving a float residue. All the streak windows here (3s Multi,
+   * 6s Ultra) have room to spare at this spacing.
+   */
+  function killShot(engine: ReturnType<typeof makeEngine>["engine"], input: ScriptedInput, dt = 0.16): void {
+    input.fireQueued = true;
+    engine.advance(dt);
   }
 
   // Point-blank enemies aggro (and start meleeing back) the instant they're
@@ -2889,18 +2972,14 @@ describe("RaycasterEngine — Multi Kill / Ultra Kill streaks", () => {
     const { engine, input, handlers } = makeGodModeEngine(map);
     const multiSpy = vi.spyOn(audio, "playMultiKill");
 
-    input.fireQueued = true;
-    engine.advance(0.1); // kill 1 @ t=0.1
-    input.fireQueued = true;
-    engine.advance(0.1); // kill 2 @ t=0.2
+    killShot(engine, input); // kill 1 @ t=0.16
+    killShot(engine, input); // kill 2 @ t=0.32
     expect(multiSpy).not.toHaveBeenCalled();
-    input.fireQueued = true;
-    engine.advance(0.1); // kill 3 @ t=0.3 -> Multi Kill
+    killShot(engine, input); // kill 3 @ t=0.48 -> Multi Kill
     expect(multiSpy).toHaveBeenCalledTimes(1);
     expect(lastStats(handlers).kills).toBe(3);
 
-    input.fireQueued = true;
-    engine.advance(0.1); // kill 4 @ t=0.4 -> still within the 3s window, no re-fire
+    killShot(engine, input); // kill 4 @ t=0.64 -> still within the 3s window, no re-fire
     expect(multiSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -2910,10 +2989,7 @@ describe("RaycasterEngine — Multi Kill / Ultra Kill streaks", () => {
     const multiSpy = vi.spyOn(audio, "playMultiKill");
     const ultraSpy = vi.spyOn(audio, "playUltraKill");
 
-    for (let i = 0; i < 6; i++) {
-      input.fireQueued = true;
-      engine.advance(0.1); // 6 kills, 0.1s apart -> all within both windows
-    }
+    for (let i = 0; i < 6; i++) killShot(engine, input); // 6 kills spanning 0.96s -> inside both windows
     expect(multiSpy).toHaveBeenCalledTimes(1); // only the 3rd kill's Multi Kill
     expect(ultraSpy).toHaveBeenCalledTimes(1); // the 6th kill's Ultra Kill, not a 2nd Multi Kill
   });
@@ -2924,22 +3000,16 @@ describe("RaycasterEngine — Multi Kill / Ultra Kill streaks", () => {
     const multiSpy = vi.spyOn(audio, "playMultiKill");
     const ultraSpy = vi.spyOn(audio, "playUltraKill");
 
-    for (let i = 0; i < 6; i++) {
-      input.fireQueued = true;
-      engine.advance(0.1); // kills 1-6 @ t=0.1..0.6 -> Multi Kill then Ultra Kill
-    }
+    for (let i = 0; i < 6; i++) killShot(engine, input); // kills 1-6 @ t=0.16..0.96 -> Multi Kill then Ultra Kill
     expect(multiSpy).toHaveBeenCalledTimes(1);
     expect(ultraSpy).toHaveBeenCalledTimes(1);
 
-    input.fireQueued = true;
-    engine.advance(10.1); // kill 7 @ t=10.7 -> well past the Ultra window, no trigger
+    killShot(engine, input, 10.1); // kill 7 @ t=11.06 -> well past the Ultra window, no trigger
     expect(multiSpy).toHaveBeenCalledTimes(1);
     expect(ultraSpy).toHaveBeenCalledTimes(1);
 
-    input.fireQueued = true;
-    engine.advance(0.1); // kill 8 @ t=10.8
-    input.fireQueued = true;
-    engine.advance(0.1); // kill 9 @ t=10.9 -> a fresh 3-in-3s streak -> Multi Kill again
+    killShot(engine, input); // kill 8 @ t=11.22
+    killShot(engine, input); // kill 9 @ t=11.38 -> a fresh 3-in-3s streak -> Multi Kill again
     expect(multiSpy).toHaveBeenCalledTimes(2);
     expect(ultraSpy).toHaveBeenCalledTimes(1); // unchanged
   });
@@ -2950,12 +3020,9 @@ describe("RaycasterEngine — Multi Kill / Ultra Kill streaks", () => {
     const multiSpy = vi.spyOn(audio, "playMultiKill");
     const ultraSpy = vi.spyOn(audio, "playUltraKill");
 
-    input.fireQueued = true;
-    engine.advance(0.1); // kill 1 @ t=0.1
-    input.fireQueued = true;
-    engine.advance(4); // kill 2 @ t=4.1 -> 4s since kill 1, past the 3s window
-    input.fireQueued = true;
-    engine.advance(4); // kill 3 @ t=8.1 -> 4s since kill 2, past the 3s window
+    killShot(engine, input); // kill 1 @ t=0.16
+    killShot(engine, input, 4); // kill 2 @ t=4.16 -> 4s since kill 1, past the 3s window
+    killShot(engine, input, 4); // kill 3 @ t=8.16 -> 4s since kill 2, past the 3s window
     expect(multiSpy).not.toHaveBeenCalled();
     expect(ultraSpy).not.toHaveBeenCalled();
   });
@@ -2963,18 +3030,12 @@ describe("RaycasterEngine — Multi Kill / Ultra Kill streaks", () => {
   it("scores Ultra Kill's bigger bonus on top of Multi Kill's, via computeScore()'s multikillBonus", () => {
     const map = fakeMap({ enemies: oneHitEnemies(6) });
     const { engine, input, handlers } = makeGodModeEngine(map);
-    for (let i = 0; i < 3; i++) {
-      input.fireQueued = true;
-      engine.advance(0.1); // kills 1-3 -> Multi Kill
-    }
+    for (let i = 0; i < 3; i++) killShot(engine, input); // kills 1-3 -> Multi Kill
     // The toast itself is drawn straight to canvas (see hud.test.ts's
     // drawKillStreakToast coverage) — here just confirm the score already
     // reflects the Multi Kill bonus flowing through computeScore().
     const afterMulti = lastStats(handlers).score;
-    for (let i = 0; i < 3; i++) {
-      input.fireQueued = true;
-      engine.advance(0.1); // kills 4-6 -> Ultra Kill
-    }
+    for (let i = 0; i < 3; i++) killShot(engine, input); // kills 4-6 -> Ultra Kill
     const afterUltra = lastStats(handlers).score;
     expect(afterUltra).toBeGreaterThan(afterMulti); // Ultra's bigger bonus landed
   });
@@ -3045,9 +3106,14 @@ describe("RaycasterEngine — simulate()/render() split", () => {
       inputA.keys.add("KeyD");
       for (let i = 0; i < 10; i++) engineA.advance(dt);
       inputA.keys.delete("KeyD");
+      // 6 frames per pull (0.2s at this dt), not one: the pistol's
+      // `fireIntervalSec` is 0.15s, so back-to-back pulls at 1/30s would let
+      // exactly *one* shot through and the `ammo` assertion below would
+      // compare two engines that each fired once — trivially equal, and no
+      // longer evidence that advance() and simulate() agree on firing.
       for (let i = 0; i < 5; i++) {
         inputA.fireQueued = true;
-        engineA.advance(dt);
+        for (let f = 0; f < 6; f++) engineA.advance(dt);
       }
       const stateA = getHooks().getPlayerState() as PlayerState;
 
@@ -3057,7 +3123,7 @@ describe("RaycasterEngine — simulate()/render() split", () => {
       inputB.keys.delete("KeyD");
       for (let i = 0; i < 5; i++) {
         inputB.fireQueued = true;
-        engineB.simulate(dt);
+        for (let f = 0; f < 6; f++) engineB.simulate(dt);
       }
       engineB.render();
       const stateB = getHooks().getPlayerState() as PlayerState;

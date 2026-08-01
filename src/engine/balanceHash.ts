@@ -101,10 +101,19 @@ export interface BalanceRelevantEnemy {
  * `map` must be freshly generated (see the module comment). `simulation` is
  * `SIMULATION_BALANCE` from `engine.ts`, passed in rather than imported so
  * this module stays free of any engine dependency and is trivially testable.
+ *
+ * Its values are `unknown`, not `number`: they started out as bare scalars,
+ * but the `WEAPONS` table is now folded in wholesale (see `SIMULATION_BALANCE`
+ * itself) rather than as a hand-picked list of the two or three weapon
+ * constants someone happened to tune — the same "hash the output, not a
+ * maintained list of inputs" reasoning the enemy roster already gets.
+ * `stableStringify` recurses through arrays and nested objects and drops
+ * `undefined` members, so a `readonly Weapon[]` with optional fields
+ * serializes deterministically with no help from here.
  */
 export async function computeBalanceHash(
   map: { enemies: readonly BalanceRelevantEnemy[] },
-  simulation: Readonly<Record<string, number>>,
+  simulation: Readonly<Record<string, unknown>>,
 ): Promise<string> {
   const roster = map.enemies.map((e) => [e.x, e.y, e.maxHp, e.elite ? 1 : 0]);
   return sha256Hex(stableStringify({ roster, simulation }));

@@ -25,7 +25,8 @@
  * `playShoot(kind)` dispatches on a weapon's `WeaponViewKind` (the same tag
  * that already picks its viewmodel silhouette — see `weapons.ts`) to give
  * every weapon its own fire sound instead of one shared blip: a snappy tone
- * for the pistol, a noise-layered boom for the shotgun, a cheap flyweight
+ * for the pistol, a noise-layered boom for the shotgun (with its pump-action
+ * rack cycling in behind it), a cheap flyweight
  * tick for gdb's full-auto burst, a rising launch whoosh for ghidra (distinct
  * from `playRocketExplosion`'s impact boom), a continuously-blended hiss for
  * Friday Hotfix's jet, an airy whoosh for the knife, and a revving buzz for
@@ -234,7 +235,8 @@ class AudioManager {
 
   /** Regex Shotgun: a heavier, distorted low thump plus a short filtered
    * noise burst layered on top, so it reads as a broadband blast rather than
-   * the pistol's clean tone. */
+   * the pistol's clean tone — followed by the pump cycling (see
+   * `playShotgunPump`). */
   private playShotgunBlast(ctx: AudioContext, sfx: GainNode): void {
     const t = ctx.currentTime;
 
@@ -257,6 +259,65 @@ class AudioManager {
     noise.connect(noiseFilter).connect(noiseGain).connect(sfx);
     noise.start(t);
     noise.stop(t + 0.11);
+
+    // Just as the noise tail (t+0.11) and the body (t+0.2) die away.
+    this.playShotgunPump(ctx, sfx, t + 0.18);
+  }
+
+  /**
+   * Regex Shotgun, the pump: a two-part "cha-CHUNK" — the rack hauled back,
+   * then slammed forward again — filling the gap the weapon's 0.85s
+   * pump-action `fireIntervalSec` (see `weapons.ts`) leaves after the blast.
+   * Without it that cooldown reads as a dropped click; with it, as the gun
+   * cycling. Everything is silent by ~0.42s after the shot, leaving ~0.43s of
+   * "loaded and waiting" before the next one.
+   *
+   * It's scheduled from in here rather than exposed as its own `playShoot`
+   * kind or triggered from `engine.ts`, for three reasons. This file's design
+   * is "`viewKind` IS the sound identity" (see the header comment), and the
+   * pump is part of the shotgun's voice, not a separate game event. Scheduling
+   * off `ctx.currentTime` is sample-accurate, where an engine-driven trigger
+   * would land on a frame boundary and audibly jitter at low FPS. And it
+   * inherits `fire()`'s existing local/remote shooter gating for free.
+   *
+   * `triangle` bodies, since a square reads as a tone and a triangle as a
+   * struck object, under a narrow bandpassed noise clack — a lowpass leaves
+   * hiss, while 260-340Hz at Q 7 is a dry mechanical knock. Peaks stay at
+   * 0.20-0.24 against the blast's 0.7 so it reads as mechanism, not as a
+   * second shot.
+   */
+  private playShotgunPump(ctx: AudioContext, sfx: GainNode, at: number): void {
+    // Rack back, then slam forward — the slam is the heavier, lower of the two.
+    const clacks = [
+      { offset: 0, from: 110, to: 60, peak: 0.2, noiseHz: 340, noisePeak: 0.11 },
+      { offset: 0.16, from: 85, to: 48, peak: 0.24, noiseHz: 260, noisePeak: 0.13 },
+    ];
+
+    for (const clack of clacks) {
+      const start = at + clack.offset;
+
+      const body = ctx.createOscillator();
+      body.type = "triangle";
+      body.frequency.setValueAtTime(clack.from, start);
+      body.frequency.exponentialRampToValueAtTime(clack.to, start + 0.04);
+      const bodyGain = envelope(ctx, clack.peak, 0.001, 0.05, start);
+      body.connect(bodyGain).connect(sfx);
+      body.start(start);
+      body.stop(start + 0.08);
+
+      // The same cached 0.12s buffer the blast above already allocated,
+      // windowed down to a click by the envelope and the early `stop`.
+      const noise = ctx.createBufferSource();
+      noise.buffer = this.noiseBuffer(ctx, 0.12);
+      const noiseFilter = ctx.createBiquadFilter();
+      noiseFilter.type = "bandpass";
+      noiseFilter.frequency.setValueAtTime(clack.noiseHz, start);
+      noiseFilter.Q.value = 7;
+      const noiseGain = envelope(ctx, clack.noisePeak, 0.001, 0.03, start);
+      noise.connect(noiseFilter).connect(noiseGain).connect(sfx);
+      noise.start(start);
+      noise.stop(start + 0.05);
+    }
   }
 
   /** gdb: a short, cheap, low-pitched tick — fires up to ~11x/sec, so this
@@ -722,13 +783,22 @@ class AudioManager {
  * A gain node with a quick attack-then-decay envelope: ramps up to `peak` over
  * `attack` seconds, then exponentially back to silence by `attack + decay`.
  * Exponential ramps need a non-zero floor, hence the tiny 0.0001 anchors.
+ *
+ * Both ramps anchor to `startAt`, which defaults to "now" but can be pushed
+ * into the future so a delayed transient (see `playShotgunPump`) still gets
+ * its full attack rather than opening mid-decay.
  */
-function envelope(ctx: AudioContext, peak: number, attack: number, decay: number): GainNode {
-  const t = ctx.currentTime;
+function envelope(
+  ctx: AudioContext,
+  peak: number,
+  attack: number,
+  decay: number,
+  startAt = ctx.currentTime,
+): GainNode {
   const gain = ctx.createGain();
-  gain.gain.setValueAtTime(0.0001, t);
-  gain.gain.exponentialRampToValueAtTime(peak, t + attack);
-  gain.gain.exponentialRampToValueAtTime(0.0001, t + attack + decay);
+  gain.gain.setValueAtTime(0.0001, startAt);
+  gain.gain.exponentialRampToValueAtTime(peak, startAt + attack);
+  gain.gain.exponentialRampToValueAtTime(0.0001, startAt + attack + decay);
   return gain;
 }
 

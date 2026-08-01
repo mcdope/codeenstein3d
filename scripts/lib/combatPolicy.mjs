@@ -97,10 +97,15 @@ export function numberKeyCodeFor(weaponIndex) {
   return slot === -1 ? null : `Digit${slot + 1}`;
 }
 // The two ranged weapons WEAPONS.auto=true (mirrors weapons.ts) — fired via
-// isFireHeld() and engine-side rate-limited by their own fireIntervalSec
-// regardless of how the key is dispatched, unlike the semi-auto ranged
-// weapons (pistol/shotgun/ghidra), which have no such cooldown and fire
-// exactly once per keydown — see `profile.fireCooldownMs`'s doc comment.
+// isFireHeld(), so one *held* key produces shot after shot at their own
+// fireIntervalSec no matter how the key is dispatched. That held-vs-pressed
+// distinction is the whole membership rule, and it is not about *having* a
+// cooldown: every ranged weapon has a fireIntervalSec now. The shotgun in
+// particular has the longest interval of any bullet weapon (0.85s) and still
+// does not belong here — it is semi-auto, needing a fresh keydown per shot,
+// so the bot must keep dispatching, just far less often (see the fire gate in
+// `decide`, which takes the max of that interval and the profile's own
+// dispatch cooldown). See `profile.fireCooldownMs`'s doc comment.
 export const AUTO_RANGED_WEAPON_INDICES = new Set([GDB_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX]);
 export const HAZARD_TILE = 2; // src/map/types.ts's Tile enum
 export const SPIKE_TRAP_TILE = 5; // src/map/types.ts's Tile enum
@@ -822,14 +827,24 @@ export function visibleMineNear(mines, x, y, tuning = DEFAULT_TUNING) {
  * plain literals rather than importing that TS module, the same convention the
  * tile/speed constants above use (this is a plain Node script, not bundled).
  *
- * `fireIntervalSec: null` means semi-auto: the engine imposes no rate cap, so
- * the bot's own `profile.fireCooldownMs` is what paces it (see that field's
- * doc comment). Melee weapons (knife, Toolchain) are deliberately absent —
- * `pickRangedWeapon` only ever chooses among ranged ones.
+ * `fireIntervalSec` is now melee-only in its `null` form: **every ranged weapon
+ * carries an engine-side rate cap**, semi-auto ones included (the pistol at
+ * 0.15s and the shotgun at 0.85s were the last two without one, and gained
+ * theirs together with the shotgun's 18 -> 25 damage bump — see `weapons.ts`).
+ * `profile.fireCooldownMs` did not become redundant: it is an *additional*
+ * human-hand dispatch limit stacked on top, and the two compose via `max` —
+ * whichever is slower is what actually paces the bot (see `scoreRangedWeapon`
+ * and the fire gate in `decide`). Melee weapons (knife, Toolchain) are
+ * deliberately absent — `pickRangedWeapon` only ever chooses among ranged ones.
  */
 export const WEAPON_STATS = {
-  [PISTOL_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 22, ammoPerShot: 1, ammoType: "bullets", spreadPx: 0, fireIntervalSec: null },
-  [SHOTGUN_WEAPON_INDEX]: { pellets: 7, damagePerPellet: 18, ammoPerShot: 4, ammoType: "bullets", spreadPx: 70, fireIntervalSec: null },
+  [PISTOL_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 22, ammoPerShot: 1, ammoType: "bullets", spreadPx: 0, fireIntervalSec: 0.15 },
+  // 25, not 18: the pump cap below would otherwise have left the shotgun at
+  // 7x18/0.85s = 148 DPS against the pistol's 22/0.15s = 147, i.e. identical
+  // output for 4x the ammo out of the same "bullets" pool. At 25 it lands
+  // 7x25/0.85s = 206 DPS. Mirrors weapons.ts, where the two numbers are
+  // explicitly tuned against each other.
+  [SHOTGUN_WEAPON_INDEX]: { pellets: 7, damagePerPellet: 25, ammoPerShot: 4, ammoType: "bullets", spreadPx: 70, fireIntervalSec: 0.85 },
   // gdb tightens the shared cone deliberately, so it stays usable at range
   // despite low per-shot damage (`maxConeDeviationPx` in weapons.ts).
   [GDB_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 12, ammoPerShot: 1, ammoType: "smg", spreadPx: 0, fireIntervalSec: 0.09, maxConeDeviationPx: 20 },
@@ -988,7 +1003,22 @@ export function scoreRangedWeapon(weaponIndex, { targetHp, dist, player, profile
   const dmg = expectedDamagePerShot(weaponIndex, dist, tuning, threat);
   if (dmg <= 0) return Infinity;
   const shots = Math.max(1, Math.ceil((targetHp ?? tuning.ASSUMED_TARGET_HP) / dmg));
-  const secPerShot = w.fireIntervalSec ?? (profile.fireCooldownMs ?? tuning.VIRTUAL_STEP_MS) / 1000;
+  // A shot's real cadence is whichever of the two limits binds. The engine's
+  // own `fireIntervalSec` caps every ranged weapon now (it used to cap only
+  // the autos and ghidra, which is why this was a `??` — "engine cap, else the
+  // bot's trigger finger"). On top of that sits `profile.fireCooldownMs`, the
+  // bot's dispatch rate, which only applies to semi-autos: an auto weapon is
+  // fired by *holding* the key, so there is no per-shot dispatch to throttle
+  // and the engine rate is the whole story. The old `??` reached that same
+  // answer for autos by accident; this states it.
+  //
+  // Concretely, per shot: pistol 0.220s Casual / 0.160s Gamer (their trigger
+  // is slower than the engine's 0.15s), 0.150s Pro (the engine now binds,
+  // where 0.120s used to). Shotgun 0.850s for every profile. Ghidra 1.1s,
+  // unchanged — it was always slower than any cooldown.
+  const engineSec = w.fireIntervalSec ?? 0;
+  const dispatchSec = AUTO_RANGED_WEAPON_INDICES.has(weaponIndex) ? 0 : (profile.fireCooldownMs ?? tuning.VIRTUAL_STEP_MS) / 1000;
+  const secPerShot = Math.max(engineSec, dispatchSec);
   const killSec = shots * secPerShot;
 
   // Self-inflicted damage is a cost like any other: a weapon that takes 84 HP
@@ -1472,11 +1502,12 @@ export function decide(world, memory, config) {
   let turnBurst;
   let fire = false;
   // True when the bot was aimed, aligned, and otherwise ready to fire, but
-  // held back purely by `profile.fireCooldownMs` — a legitimate reason to
-  // sit still, distinct from being stuck (see `detectAnomalies`'s
-  // `mostlyFiring`/`mostlyEngaged` exclusion, which needs this since a
-  // human-paced fire rate now means most ticks in a real firefight don't
-  // actually pull the trigger).
+  // held back purely by cadence — either `profile.fireCooldownMs` or the
+  // weapon's own engine-side `fireIntervalSec`, whichever binds — a
+  // legitimate reason to sit still, distinct from being stuck (see
+  // `detectAnomalies`'s `mostlyFiring`/`mostlyEngaged` exclusion, which needs
+  // this since a human-paced fire rate now means most ticks in a real
+  // firefight don't actually pull the trigger).
   let fireOnCooldown = false;
   let weaponSwitch = null;
   let firedSemiAuto = false;
@@ -1674,17 +1705,34 @@ export function decide(world, memory, config) {
         const effectiveWeapon = weaponSwitch ?? player.weaponIndex;
         const aimDist = threat ? threat.dist : mineTarget ? mineTarget.dist : null;
         const rocketUnsafe = effectiveWeapon === GHIDRA_WEAPON_INDEX && rocketAimUnsafe(player, enemies, aimDist, Boolean(mineTarget), tuning);
-        // Semi-auto ranged weapons (pistol/shotgun/ghidra) have no engine-
-        // side fire-rate cap — see `profile.fireCooldownMs`'s doc comment —
-        // so a fresh Backquote keydown dispatched every single decision
-        // tick fired as fast as the tick loop allowed (~20/sec headless),
-        // far beyond any human trigger-pull rate. Auto weapons (gdb/Friday
-        // Hotfix) are exempt: their realistic sustained rate is already
-        // enforced by the engine's own `weaponCooldown`/`fireIntervalSec`
-        // while the key is held, so throttling the bot's dispatch here
-        // would only starve them of frames to actually hold the key down.
+        // Semi-auto ranged weapons (pistol/shotgun/ghidra) fire exactly once
+        // per `Backquote` keydown, so a fresh keydown dispatched every single
+        // decision tick used to fire as fast as the tick loop allowed
+        // (~20/sec headless), far beyond any human trigger-pull rate — that
+        // is what `profile.fireCooldownMs` exists to stop. Auto weapons
+        // (gdb/Friday Hotfix) are exempt: they are fired by *holding* the
+        // key, so throttling the bot's dispatch here would only starve them
+        // of frames to hold it down.
+        //
+        // The engine's own `fireIntervalSec` is the second limit, and since
+        // it now covers every ranged weapon it can be the *slower* of the
+        // two. The gap the bot has to respect is therefore the max: firing
+        // into a live engine cooldown does nothing at all, but every such
+        // decision is still recorded into the replay input stream as a
+        // `fireQueued` frame. Without this the bot burned ~5 of every 6
+        // shotgun decisions that way (0.85s pump vs a 0.12-0.22s trigger).
+        //
+        // This deliberately *widens* `fireOnCooldown`. That counter means
+        // "aimed, willing, held back only by cadence", and it feeds
+        // `detectAnomalies`' `mostlyFiring` stall exclusion so a bot that is
+        // legitimately waiting out a cooldown isn't reported as stuck — a
+        // bot standing still through an 0.85s pump is the textbook case.
+        // Narrowing this counter once cost a 473-anomaly regression (see
+        // `doc/dev/history.md`); widening it is the safe direction.
         const isAutoRanged = AUTO_RANGED_WEAPON_INDICES.has(effectiveWeapon);
-        const fireReady = isAutoRanged || simTimeMs - lastFireSimTimeMs >= profile.fireCooldownMs;
+        const engineIntervalMs = (WEAPON_STATS[effectiveWeapon]?.fireIntervalSec ?? 0) * 1000;
+        const requiredGapMs = Math.max(profile.fireCooldownMs, engineIntervalMs);
+        const fireReady = isAutoRanged || simTimeMs - lastFireSimTimeMs >= requiredGapMs;
         fire = !rocketUnsafe && fireReady;
         fireOnCooldown = !rocketUnsafe && !fireReady;
         firedSemiAuto = fire && !isAutoRanged;

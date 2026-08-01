@@ -66,6 +66,19 @@ Health was cut identically at first, then had to be pulled back out into its own
 
 Toolchain gained a third acquisition path the same day: a regular kill's ammo/swap roll coming up empty now carries its own small independent chance (`MISS_CHANCE_TOOLCHAIN_DROP_CHANCE`, 5%) to grant Toolchain instead of nothing, on top of (not instead of) the pre-existing secret-room/Elite paths — added after the same campaign found those two paths close to unreachable in practice (a shortest-path bot never explores for secret rooms — see [Balancing telemetry](balancing-telemetry.md) — and an early clean Elite kill is rare), a finding that plausibly generalizes to any player who beelines rather than explores.
 
+## Weapon Fire Cadence
+
+Every ranged weapon is rate-capped by its own `fireIntervalSec`. The mechanism already existed — `updateFiring` honoured it for automatic weapons and for ghidra — but the pistol and shotgun simply defined no interval, so their fire rate was whatever the input device could produce and a shotgun could be click-spammed into an automatic weapon. This was a *data* gap, not a missing feature; the fix added two numbers and no engine logic.
+
+Four decisions worth not rediscovering:
+
+- **The cooldown is per-player, not per-weapon.** `weaponCooldown` lives on `PlayerState` and survives a weapon switch, so the shotgun's pump can't be switch-cancelled by tapping `1` and back. Quick-melee (`Space`) bypasses the whole path, which is the intended escape hatch — a player mid-cycle is never left with nothing to do.
+- **A dry fire still starts the cooldown.** `fire()` early-returns without ammo but `updateFiring` sets the timer either way, which also rate-limits the out-of-ammo toast instead of re-triggering it every frame.
+- **The audio cue lives in `audio.ts`'s `playShotgunBlast`, not the engine.** `viewKind` is a weapon's sound identity in that module, and the pump is part of the shotgun's voice rather than a separate game event; WebAudio scheduling off `ctx.currentTime` is also sample-accurate, whereas an engine-driven trigger would land on frame boundaries and jitter at low FPS.
+- **`WEAPONS` joined `SIMULATION_BALANCE`**, widening `computeBalanceHash`'s values from `number` to `unknown`. Tuning a weapon changes how a recorded run plays back while leaving `astHash` intact — precisely the silent-divergence class that guard exists for. Folding the whole table in (rather than naming the two constants that moved) means future weapon edits are covered with no list to maintain. The cost is that it invalidates every replay recorded before it, including the bundled highscore board, which had to be regenerated.
+
+The cadence cap and per-pellet damage are coupled and must be tuned together — see [Game Design](game-design.md#weapon-and-economy-intent) for the DPS arithmetic that forced the shotgun's 18 → 25 damage bump in the same change.
+
 ## Difficulty Axes
 
 Easy/Normal/Hard originally scaled three axes in lockstep: enemy HP, enemy-dealt damage, and `ammoDropRate` (Hard tougher/scarcer, Easy the reverse). A 450-run balance-telemetry campaign (2026-07-15) found this produced two real problems, both fixed the same day:
