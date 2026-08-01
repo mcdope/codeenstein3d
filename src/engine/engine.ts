@@ -26,6 +26,8 @@ import type {
   ReconciliationSnapshot,
   TileMutation,
 } from "./reconciliationSnapshot";
+import { acidTiles, createAcidOverflowStates, intersectsRoom, updateAcidOverflows, type AcidOverflowState } from "./acidOverflow";
+import { doorwayTiles } from "../map/generation/geometry";
 import { Player, isHazard } from "./player";
 import { updateEnemies, type EnemyAiEvents, type EnemyTarget } from "./enemyAi";
 import { collectProjectileBillboards, updateProjectiles, type Projectile, type ProjectileTarget } from "./projectiles";
@@ -59,6 +61,7 @@ import {
   drawHud,
   drawKillStreakToast,
   drawLoreOverlay,
+  drawAcidOverflowToast,
   drawOutOfAmmoToast,
   drawPauseOverlay,
   drawSpectatingBanner,
@@ -158,6 +161,7 @@ import {
   type WeaponTally,
 } from "./telemetry";
 import {
+  BRANCH_DOOR_TILE,
   DOOR_TILE,
   LORE_TILE,
   SECRET_WALL_TILE,
@@ -228,6 +232,12 @@ const KILL_STREAK_TOAST_FRAMES = 120;
  * non-blocking warning, not a standing confirmation. Same frame-counted,
  * not-dt-scaled convention as those. ~0.75s at 60fps. */
 const OUT_OF_AMMO_TOAST_FRAMES = 45;
+/** How long the "Memory leak — acid rising!" warning stays visible for.
+ * Longer than the out-of-ammo toast because it's the only warning here the
+ * player didn't *do* anything to trigger except walk through a door, so it has
+ * to survive a look in the wrong direction. ~1.5s at 60fps. Same frame-counted
+ * convention. */
+const ACID_OVERFLOW_TOAST_FRAMES = 90;
 /** Kills within this many real seconds of each other trigger a "Multi
  * Kill" (see `damageEnemy`'s rolling-window check) — not Unreal
  * Tournament's own continuously-extending streak/tier algorithm, just this
@@ -242,6 +252,35 @@ const ULTRA_KILL_WINDOW_SEC = 6;
 const ULTRA_KILL_COUNT = 6;
 /** Health lost per second while standing in an acid (hazard) tile. */
 const HAZARD_DPS = 18;
+
+/**
+ * Engine-side simulation constants folded into a replay's balance fingerprint
+ * (`balanceHash.ts`) so a change to any of them invalidates existing replays
+ * loudly instead of letting them play back silently diverged.
+ *
+ * **Deliberately partial, and that is not an oversight.** The generated
+ * `GameMap` is hashed wholesale alongside this, which covers every
+ * *generation-time* balance constant automatically — enemy HP, counts, kinds,
+ * placement, loot, traps, layout — with no list to keep in sync. Nothing
+ * equivalent exists for constants that live in the engine and never reach the
+ * map, so those need naming, and this holds the ones `engine.ts` itself owns.
+ *
+ * Values that matter but live in sibling modules (`ELITE_DAMAGE_MULTIPLIER`
+ * and `EDGE_CASE_SPEED_MULTIPLIER` in `enemyAi.ts`, `SPIKE_DPS` and
+ * `MINE_DAMAGE_FALLOFF_FLOOR` in `traps.ts`, `PROJECTILE_SPEED` in
+ * `projectiles.ts`, the `WEAPONS` table) are **not** covered — adding them
+ * means exporting each and extending this object. Worth doing if one of them
+ * is ever tuned; not worth pre-emptively exporting five constants to guard
+ * against edits nobody has made.
+ */
+export const SIMULATION_BALANCE: Readonly<Record<string, number>> = {
+  MOVE_SPEED,
+  SPRINT_MULTIPLIER,
+  ROT_SPEED,
+  MAX_HEALTH,
+  MAX_SWAP,
+  HAZARD_DPS,
+};
 /**
  * Cone-of-Fire: maximum screen-px of random aim deviation, reached only at
  * `FOG_FAR` (the same distance the world fades to black at — "maximum visual
@@ -420,6 +459,7 @@ interface PlayerState {
   cheatToastText: string | null;
   cheatToastFrames: number;
   outOfAmmoToastFrames: number;
+  acidOverflowToastFrames: number;
   isMapActive: boolean;
   isPaused: boolean;
   loreText: string | null;
@@ -637,6 +677,10 @@ export class RaycasterEngine {
    * recording for a real multi-peer run is a later netcode step's job. */
   private readonly replayRecorder?: CampaignReplayRecorder;
   private readonly enemies: Enemy[];
+  /** Per-`GameMap.acidOverflows` runtime state, index-aligned. Plain data the
+   * `acidOverflow.ts` free functions mutate — the same split enemies and traps
+   * already use. */
+  private readonly acidStates: AcidOverflowState[];
   /** Tile-bucketed index over living enemies for proximity queries — rebuilt
    * lazily on frames with rockets in flight (see `advanceRockets`). */
   private readonly enemyGrid = new EnemySpatialGrid();
@@ -900,6 +944,7 @@ export class RaycasterEngine {
     this.rng = this.rngHandle.next;
     this.replayRecorder = replayRecorder;
     this.enemies = map.enemies;
+    this.acidStates = createAcidOverflowStates(map.acidOverflows.length);
     this.totalWalkableTiles = countWalkableTiles(map);
     this.goreMultipliers = GORE_MULTIPLIERS[gore];
     this.difficultyMultipliers = DIFFICULTY_MULTIPLIERS[difficulty];
@@ -1007,6 +1052,31 @@ export class RaycasterEngine {
             maxHp: e.maxHp,
           })),
         getMines: () => this.map.mines.map((m) => ({ x: m.x, y: m.y, alive: m.alive, visible: m.visible })),
+        // The live wall grid's revision counter, and the grid itself.
+        //
+        // The engine *mutates its own grid* while a level runs — a door opens
+        // (`0`-valued `pendingGridDelta` entries) or a secret wall floods away
+        // — and bumps `gridVersion` each time. A bot that planned against the
+        // map it was handed at level start has no way to learn that, so an
+        // opened door stays a wall in its pathfinding forever; that is a real,
+        // recorded wedge (`stage03_legacy_api.php`) and the reason
+        // `scripts/lib/bot.mjs` carries a `#noteDoorUnderFoot` flood-fill that
+        // guesses at door state from the tile the player is standing on.
+        //
+        // `getGridVersion` is the cheap poll — one integer per decision — and
+        // `getGrid` the expensive refetch, taken only when the version moves.
+        // The grid is copied row by row rather than handed out live, same rule
+        // as every other snapshot here: a caller must never be able to mutate
+        // engine state, and `PathField`'s own flood reads this array directly.
+        getGridVersion: () => this.gridVersion,
+        getGrid: () => this.map.grid.map((row) => [...row]),
+        // In-flight enemy bolts. Without this, a bot can see the enemy that
+        // shot at it but not the shot itself — bolts have real flight time
+        // and never re-aim, so they're dodgeable, yet a bot blind to them can
+        // only ever react after the damage has already landed. Shares one
+        // implementation with the multiplayer getter, see
+        // `getProjectilesSnapshot`'s own doc comment.
+        getProjectiles: () => this.getProjectilesSnapshot(),
         // Dynamic kill-drop loot — distinct from the map's static
         // `AmmoPickup`s (which `scripts/lib/staticLevelAnalysis.mjs` already
         // knows about from Node-side map generation, before any enemy has
@@ -1109,6 +1179,7 @@ export class RaycasterEngine {
       cheatToastText: null,
       cheatToastFrames: 0,
       outOfAmmoToastFrames: 0,
+      acidOverflowToastFrames: 0,
       isMapActive: false,
       isPaused: false,
       loreText: null,
@@ -1168,6 +1239,17 @@ export class RaycasterEngine {
    * nearest-target ties, …) the same deterministic answer everywhere. */
   private sortedPlayerIds(): PlayerId[] {
     return [...this.players.keys()].sort();
+  }
+
+  /** Every currently-alive player's camera, in `sortedPlayerIds()` order so
+   * any consumer that iterates them stays deterministic across peers. */
+  private livingPlayers(): Player[] {
+    const out: Player[] = [];
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      if (p.status === "alive") out.push(p.player);
+    }
+    return out;
   }
 
   /** True for a real multiplayer session (host or guest), false for
@@ -1378,6 +1460,29 @@ export class RaycasterEngine {
    * roster-agnostic, identical shape. */
   getMinesSnapshot(): { x: number; y: number; alive: boolean; visible: boolean }[] {
     return this.map.mines.map((m) => ({ x: m.x, y: m.y, alive: m.alive, visible: m.visible }));
+  }
+
+  /** In-flight enemy bolts, as plain copies. Unlike melee, a ranged attack is
+   * not instantaneous: a bolt leaves the enemy at `PROJECTILE_SPEED` (5
+   * tiles/sec, see `projectiles.ts`) aimed at wherever its target *stood at
+   * the moment of firing*, and never re-aims afterwards — which is precisely
+   * what makes it dodgeable by stepping sideways. A bot that can't see bolts
+   * has no way to exercise that: it only ever learns a shot existed by
+   * noticing its own health dropped, one full flight-time too late to do
+   * anything about it. `targetId` is part of the shape because a bolt is
+   * locked to the single player it was fired at (`updateProjectiles`' doc
+   * comment in `projectiles.ts` explains why it must never redirect), so a
+   * multiplayer bot has to ignore every bolt addressed to someone else
+   * instead of dodging shots that were never going to touch it. */
+  getProjectilesSnapshot(): { x: number; y: number; vx: number; vy: number; damage: number; targetId: string }[] {
+    return this.projectiles.map((p) => ({
+      x: p.x,
+      y: p.y,
+      vx: p.vx,
+      vy: p.vy,
+      damage: p.damage,
+      targetId: p.targetId,
+    }));
   }
 
   /** Multiplayer-only equivalent of `__codeensteinTestHooks.getDrops()` —
@@ -1783,6 +1888,9 @@ export class RaycasterEngine {
       players,
       enemies,
       mines,
+      // `applied` stays local — see `AcidOverflowSnapshot`'s doc comment for
+      // why the derived tile count is deliberately not on the wire.
+      acidOverflows: this.acidStates.map((s, index) => ({ index, startedAt: s.startedAt, frozenTarget: s.frozenTarget })),
       lootDrops,
       pickupsCollected,
       keysCollected,
@@ -1870,6 +1978,17 @@ export class RaycasterEngine {
       m.visible = ms.visible;
     }
 
+    // `applied` is left alone on purpose: the next `updateAcidOverflows()`
+    // reconciles the grid to whatever these two fields now imply, in both
+    // directions, which is how a guest un-floods tiles it had speculatively
+    // claimed.
+    for (const as of snapshot.acidOverflows) {
+      const state = this.acidStates[as.index];
+      if (!state) continue;
+      state.startedAt = as.startedAt;
+      state.frozenTarget = as.frozenTarget;
+    }
+
     const incomingIds = new Set(snapshot.lootDrops.map((d) => d.id));
     for (let i = this.drops.length - 1; i >= 0; i--) {
       // "" is never a real id (every drop is tagged at push time — see
@@ -1924,14 +2043,23 @@ export class RaycasterEngine {
    * per-guest-shared `gridDelta` each interval (finding M2).
    *
    * LOAD-BEARING INVARIANT: every emitted `TileMutation.value` is `0` (doors
-   * `3`→`0`, secret walls `6`→`0` — the only two runtime grid mutations, both
-   * terminal). That is exactly what makes out-of-order application safe. If a
-   * future feature ever emits a non-zero or non-terminal tile mutation (a
-   * closing/toggling tile), out-of-order application could set a tile wrong and
-   * this must be moved back behind the tick gate. (Separate, pre-existing gap
-   * this does NOT address: the additive delta only ever carries the host's own
-   * opens, so it cannot re-close a tile a guest mis-predicted open — only a
-   * full authoritative grid resync would.)
+   * `3`→`0`, secret walls `6`→`0`, branch doors `8`→`0` — every runtime grid
+   * mutation that rides this delta, all terminal). That is exactly what makes
+   * out-of-order application safe. If a future feature ever emits a non-zero or
+   * non-terminal tile mutation (a closing/toggling tile), out-of-order
+   * application could set a tile wrong and this must be moved back behind the
+   * tick gate. (Separate, pre-existing gap this does NOT address: the additive
+   * delta only ever carries the host's own opens, so it cannot re-close a tile
+   * a guest mis-predicted open — only a full authoritative grid resync would.)
+   *
+   * Acid Overflow rooms (`src/engine/acidOverflow.ts`) are the one runtime
+   * grid mutation that deliberately does NOT ride this delta, precisely
+   * because of the two sentences above: their mutation is `0`→`HAZARD_TILE`
+   * (non-zero) and a guest that mis-predicts room entry has to be able to take
+   * a flooded tile *back*, which an additive delta can't express. They're
+   * reconciled through `ReconciliationSnapshot.acidOverflows` instead —
+   * two scalars behind the tick gate, from which each peer re-derives its own
+   * tiles in both directions. Don't "unify" them into `gridDelta`.
    */
   applyGridReconciliation(snapshot: Pick<ReconciliationSnapshot, "gridDelta" | "gridVersion">): void {
     for (const mutation of snapshot.gridDelta) {
@@ -2363,6 +2491,25 @@ export class RaycasterEngine {
     this.updateProjectiles(dt);
     this.advanceRockets(dt);
     this.applyHazardDamage(dt);
+    // After `applyHazardDamage`, so a tile appearing under a player doesn't
+    // damage them on the very frame it appears — the same one-tick grace
+    // `checkTeleporters`' placement gives a warp that lands on a hazard.
+    // Deliberately does NOT push to `pendingGridDelta` or bump `gridVersion`:
+    // see `src/engine/acidOverflow.ts`'s doc comment for the whole reason.
+    const floodsStarted = updateAcidOverflows(
+      this.map.acidOverflows,
+      this.acidStates,
+      this.enemies,
+      this.livingPlayers(),
+      this.map.grid,
+      this.levelTime,
+    );
+    // Purely cosmetic, and deliberately local-only: a flood is started by ANY
+    // living player, but in a coop session a teammate walking into a room on
+    // the far side of the level shouldn't put a warning on your screen. No
+    // simulation state is touched here, so peers that cue differently stay in
+    // lockstep regardless.
+    if (floodsStarted.length > 0) this.cueLocalAcidOverflow(floodsStarted);
     this.applyTrapDamage(dt);
     if (this.telemetryEnabled) {
       // `p.telemetry` is guaranteed set here: `telemetryEnabled` is a single
@@ -2654,6 +2801,7 @@ export class RaycasterEngine {
         this.loreRead,
         this.gridVersion,
         this.isMultiplayerSession() ? this.drops : [],
+        acidTiles(this.map.acidOverflows, this.acidStates),
       );
       drawCompass(
         this.ctx,
@@ -2718,6 +2866,9 @@ export class RaycasterEngine {
     // Same "transient feedback only" treatment as the other toasts above.
     if (local.outOfAmmoToastFrames > 0) {
       drawOutOfAmmoToast(this.ctx, local.outOfAmmoToastFrames / OUT_OF_AMMO_TOAST_FRAMES);
+    }
+    if (local.acidOverflowToastFrames > 0) {
+      drawAcidOverflowToast(this.ctx, local.acidOverflowToastFrames / ACID_OVERFLOW_TOAST_FRAMES);
     }
     // Multiplayer-only (see `checkExit()`) — a quiet, standing readout
     // (unlike the transient toasts above) while any player counts down to
@@ -2940,6 +3091,7 @@ export class RaycasterEngine {
       if (p.cheatToastFrames > 0) p.cheatToastFrames -= 1;
       if (p.killStreakFrames > 0) p.killStreakFrames -= 1;
       if (p.outOfAmmoToastFrames > 0) p.outOfAmmoToastFrames -= 1;
+      if (p.acidOverflowToastFrames > 0) p.acidOverflowToastFrames -= 1;
     }
     tickBulletTraces(this.traces);
     tickFlameStreams(this.flameStreams);
@@ -3351,14 +3503,17 @@ export class RaycasterEngine {
   }
 
   /**
-   * If a living player is walking into a locked door and holds a key, spend
-   * the key and open the door (its tile becomes plain floor).
+   * If a living player is walking into a door, open it (its tile becomes plain
+   * floor). A key-locked `DOOR_TILE` spends one of the player's dependency
+   * keys; a Switchboard `BRANCH_DOOR_TILE` costs nothing — a switch's internal
+   * branching is control flow, not encapsulation — so the key check is made
+   * per-tile rather than as an early-out on the whole player.
    */
   private openDoorAhead(): void {
     if (this.state !== "playing") return;
     for (const id of this.sortedPlayerIds()) {
       const p = this.players.get(id)!;
-      if (p.status !== "alive" || p.keysHeld <= 0) continue;
+      if (p.status !== "alive") continue;
 
       // Which way is the player pushing? Forward (W) or backward (S) along dir.
       let sign = 0;
@@ -3371,16 +3526,34 @@ export class RaycasterEngine {
       const py = p.player.posY + p.player.dirY * sign * reach;
       const cx = Math.floor(px);
       const cy = Math.floor(py);
+      const tile = this.map.grid[cy]?.[cx];
 
-      if (this.map.grid[cy]?.[cx] === DOOR_TILE) {
-        this.map.grid[cy][cx] = 0;
-        this.pendingGridDelta.push({ x: cx, y: cy, value: 0 });
-        this.gridVersion += 1;
+      const locked = tile === DOOR_TILE;
+      if (locked && p.keysHeld <= 0) continue;
+      if (!locked && tile !== BRANCH_DOOR_TILE) continue;
+
+      // A key-locked doorway opens as a whole, not one tile at a time: when a
+      // corridor runs flush along a room's wall every tile of that boundary is
+      // its own door tile, and charging a key per tile made a visibly single
+      // doorway cost five keys (see `doorwayTiles`). Flood-filling the run
+      // mirrors `tryOpenSecretWall` exactly. A branch door is always a single
+      // tile, so its run is just itself.
+      const opened = locked ? doorwayTiles(this.map.grid, { x: cx, y: cy }) : [{ x: cx, y: cy }];
+      for (const tile of opened) {
+        this.map.grid[tile.y][tile.x] = 0;
+        // Still terminal, `0`-valued mutations, so the out-of-order-safety
+        // invariant on `applyGridReconciliation` holds unchanged.
+        this.pendingGridDelta.push({ x: tile.x, y: tile.y, value: 0 });
+      }
+      this.gridVersion += 1;
+      if (locked) {
         p.keysHeld -= 1;
         console.log(
           `%c[door] unlocked with a dependency key — ${p.keysHeld} left`,
           "color:#568ebe;font-weight:bold",
         );
+      } else {
+        console.log("%c[branch] pushed a case door open", "color:#b39a72;font-weight:bold");
       }
     }
   }
@@ -3621,6 +3794,25 @@ export class RaycasterEngine {
    * toast's message never varies (see `PlayerState.outOfAmmoToastFrames`). */
   private showOutOfAmmoToast(p: PlayerState): void {
     p.outOfAmmoToastFrames = OUT_OF_AMMO_TOAST_FRAMES;
+  }
+
+  /**
+   * Sound + toast for an Acid Overflow room that just started flooding, shown
+   * only if the *local* player is actually standing in one of `startedIndices`
+   * — see `intersectsRoom`'s doc comment.
+   *
+   * Exists because the flood's only other signal is the tiles themselves
+   * changing colour underfoot: a player who walks in looking the wrong way
+   * finds out by taking damage, which reads as an unfair hit rather than as a
+   * mechanic (`notes`).
+   */
+  private cueLocalAcidOverflow(startedIndices: readonly number[]): void {
+    const local = this.players.get(this.localPlayerId);
+    if (!local || local.status !== "alive") return;
+    const inside = startedIndices.some((i) => intersectsRoom(local.player, this.map.acidOverflows[i]));
+    if (!inside) return;
+    local.acidOverflowToastFrames = ACID_OVERFLOW_TOAST_FRAMES;
+    audio.playAcidOverflow();
   }
 
   /**

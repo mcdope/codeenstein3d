@@ -16,9 +16,11 @@ import type { CodeEntity } from "../parser/types";
  * 6 = fake wall hiding a secret room (solid and indistinguishable from a
  * normal wall until interacted with, then becomes 0 permanently),
  * 7 = lore terminal (solid; renders as a distinct glowing wall texture,
- * readable from an adjacent tile).
+ * readable from an adjacent tile),
+ * 8 = keyless "branch door" on a Switchboard spoke (solid until pushed open
+ * like a door, but costs no key, and renders with its own texture).
  */
-export type Tile = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+export type Tile = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
 /** Tile value for a walkable hazard (acid pool) cell. */
 export const HAZARD_TILE = 2;
@@ -32,6 +34,16 @@ export const SPIKE_TRAP_TILE = 5;
 export const SECRET_WALL_TILE = 6;
 /** Tile value for a lore terminal wall (solid; see `Tile`). */
 export const LORE_TILE = 7;
+/**
+ * Tile value for a keyless "branch door" — the mouth of a Switchboard spoke
+ * (see `placeSwitchboards`). Blocks like `DOOR_TILE` and opens the same way (a
+ * push turns it into plain floor `0`, permanently), but costs no dependency
+ * key: a `switch`'s internal branching is control flow, not encapsulation, so
+ * gating it behind a key would be wrong in-fiction *and* would bury a
+ * private-method level in doors and keys. Rendered with its own texture so it
+ * never reads as a key-locked door.
+ */
+export const BRANCH_DOOR_TILE = 8;
 
 /** Tile coordinate (integer grid position). */
 export interface Point {
@@ -182,7 +194,10 @@ export interface GameMap {
    * anyway). The scoring system's path-efficiency bonus compares this against
    * how much ground the player actually covered (see `src/engine/scoring.ts`). */
   shortestPathTiles: number;
-  /** Hazard (acid) tiles — one pool per global-variable room. */
+  /** Generation-time hazard (acid) tiles: one pool per global-variable room,
+   * plus each Exception Handling Zone's `try` gauntlet. Runtime-expanded Acid
+   * Overflow tiles are deliberately NOT listed here — they live only in the
+   * grid, see `acidOverflows` and `src/engine/acidOverflow.ts`. */
   hazards: Point[];
   /** Locked-door tiles guarding private/protected-method rooms. */
   doors: Point[];
@@ -223,12 +238,79 @@ export interface GameMap {
   /** Number of secret rooms actually carved by `placeSecretRooms` — shown on
    * the level-start briefing so the player knows to watch the walls. */
   secretRoomCount: number;
+  /**
+   * "Switchboard" case dead-end rooms, one per `case` branch of a
+   * switch-containing function, carved off that function's own room and
+   * reached through a `BRANCH_DOOR_TILE` (see `placeSwitchboards`).
+   * Deliberately not part of `rooms` — the same reasoning as `breakupRooms`:
+   * they have no backing `CodeEntity`, so kind-gated systems (enemies, doors,
+   * hazards, ...) never see them by construction rather than by guard clause.
+   */
+  switchboardRooms: Rect[];
+  /** Sequential `try`/`catch`/`finally` gauntlets hung off a room that
+   * contains one (see `placeExceptionZones`). */
+  exceptionZones: ExceptionZone[];
+  /** Third-party supply alcoves carved directly into the spawn room's wall,
+   * one per few top-level imports (see `placeVendorDepots`). */
+  vendorDepots: Rect[];
+  /** Rooms whose floor floods with acid at runtime once a player walks in,
+   * until the function's own enemy is killed (see `planAcidOverflows` and
+   * `src/engine/acidOverflow.ts`). */
+  acidOverflows: AcidOverflow[];
+}
+
+/**
+ * A 3-part "Exception Handling Zone" generated from one `try`/`catch`/`finally`
+ * construct: a hazard-heavy gauntlet, a restoration alcove at its end, then a
+ * safe loot room past it. The three rects are laid out in a straight line away
+ * from the anchor room and are always carved together or not at all.
+ */
+export interface ExceptionZone {
+  /** The hazard-heavy `try` gauntlet — acid floor, spike traps, one mine. */
+  tryRect: Rect;
+  /** The `catch` alcove at its end, holding guaranteed restoration. */
+  catchRect: Rect;
+  /** The safe `finally` room past it, holding guaranteed standard loot. */
+  finallyRect: Rect;
+}
+
+/**
+ * A room that leaks. Once any living player enters `room`, `tiles` are turned
+ * into `HAZARD_TILE` one at a time, `intervalSeconds` apart, until either the
+ * list runs out or `enemies[enemyIndex].alive` goes false — kill the function
+ * that's leaking and the leak stops.
+ *
+ * `tiles` is precomputed at generation time from the FINAL grid, breadth-first
+ * outward from the room center, and every tile in it was plain floor (`0`) and
+ * claimed by nothing else at that moment. That is what makes the runtime
+ * expansion (a) fully deterministic with zero engine-side rng, (b) structurally
+ * unable to overwrite a door/teleporter/spike/secret/lore/pre-existing-hazard
+ * tile, and (c) confined to a tile set disjoint from every other runtime grid
+ * mutation — which is what lets the acid stay off `pendingGridDelta` entirely
+ * and leaves `RaycasterEngine.applyGridReconciliation`'s LOAD-BEARING
+ * INVARIANT intact. See `src/engine/acidOverflow.ts`.
+ */
+export interface AcidOverflow {
+  /** The flooding room's walkable rectangle (tile units). */
+  room: Rect;
+  /**
+   * Index into `GameMap.enemies` of the enemy representing the leaking
+   * function — killing it freezes the flood. Stable: `enemies` is fixed at
+   * generation time and only ever appended to, never reordered.
+   */
+  enemyIndex: number;
+  /** Ordered candidate tiles, claimed front to back. */
+  tiles: Point[];
+  /** Seconds between two consecutive tiles being claimed. Computed at
+   * generation time and shipped here rather than recomputed per peer, so a
+   * multiplayer guest can't drift on it. */
+  intervalSeconds: number;
 }
 
 /** What a defeated enemy (or a scattered map pickup) can leave behind.
- * `"smg"`/`"gas"` (gdb's/Friday Hotfix's own ammo pools) are `LootDrop`-only
- * kinds — never a statically-placed `AmmoPickup` — see `AmmoPickup.kind`'s
- * doc comment. `"key"` is also `LootDrop`-only: dropped at a coop player's
+ * `"smg"`/`"gas"` (gdb's/Friday Hotfix's own ammo pools) used to be
+ * `LootDrop`-only, but "Vendor Depot" alcoves stock them statically too — see
+ * `AmmoPickup.kind`. `"key"` is still `LootDrop`-only: dropped at a coop player's
  * death position (held dependency keys are level-scoped and one-per-door, so
  * a dead player holding one until revive would soft-lock a door — see
  * `RaycasterEngine.killPlayer`), collectible by any living player. */
@@ -270,13 +352,15 @@ export interface LootDrop {
  * one guaranteed pickup (a bigger amount, see
  * `SECRET_LOOT_HEALTH_AMOUNT`/`SECRET_LOOT_ROCKETS_AMOUNT`/`SECRET_LOOT_SWAP_AMOUNT`,
  * or a still-unowned weapon unlock) inside each secret room it carves, which
- * is why the type covers more than just ammo.
+ * is why the type covers more than just ammo; `placeVendorDepots` adds the
+ * `"smg"`/`"gas"` pools on top, gated on the player already owning the weapon
+ * each one feeds (see `placeVendorDepots`).
  */
 export interface AmmoPickup {
   /** World position in fractional tile units (tile center). */
   x: number;
   y: number;
-  kind: "bullets" | "rockets" | "health" | "swap" | "weapon";
+  kind: "bullets" | "rockets" | "smg" | "gas" | "health" | "swap" | "weapon";
   /** Unused (0) for a `"weapon"` pickup — see `weaponIndex` instead. */
   amount: number;
   /** Only set for a `"weapon"` pickup: which `WEAPONS` index it grants (or,

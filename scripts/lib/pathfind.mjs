@@ -8,10 +8,11 @@
  * logic living in the browser itself.
  *
  * Blocked tiles mirror `isWall()` in src/engine/player.ts: wall (1), locked
- * door (3), unopened secret wall (6), lore terminal (7). Hazard (2), floor
- * (0), teleporter (4), and spike trap (5) are all walkable.
+ * door (3), unopened secret wall (6), lore terminal (7), unopened Switchboard
+ * branch door (8). Hazard (2), floor (0), teleporter (4), and spike trap (5)
+ * are all walkable.
  */
-const BLOCKED_TILES = new Set([1, 3, 6, 7]);
+const BLOCKED_TILES = new Set([1, 3, 6, 7, 8]);
 
 /** Shortest tile path from `start` to `target` (inclusive of both ends), or
  * `null` if unreachable. Each returned point is an integer tile coordinate.
@@ -24,12 +25,12 @@ const BLOCKED_TILES = new Set([1, 3, 6, 7]);
  * its destination (see `stage02`'s hazard-seeking path in
  * scripts/verify-campaign-playthrough.mjs).
  *
- * `openDoors` (default none, `"x,y"` tile-coordinate strings) treats the
- * given locked-door(3) tiles as passable — `map.grid` is static and never
- * reflects a door's *live* opened/closed state, so a caller re-planning a
- * path mid-run (e.g. after the bot has drifted off its route) must tell
- * this function which doors its own run has already opened, or BFS will
- * treat every door as permanently blocked even ones already crossed. */
+ * `openDoors` (default none, `"x,y"` tile-coordinate strings) treats the given
+ * door tiles — locked (3) or keyless branch (8) — as passable; `map.grid` is
+ * static and never reflects a door's *live* opened/closed state, so a caller
+ * re-planning a path mid-run (e.g. after the bot has drifted off its route)
+ * must tell this function which doors its own run has already opened, or BFS
+ * will treat every door as permanently blocked even ones already crossed. */
 export function bfsPath(map, start, target, avoidTiles = new Set(), openDoors = new Set()) {
   const { width, height, grid } = map;
   const key = (x, y) => y * width + x;
@@ -61,7 +62,7 @@ export function bfsPath(map, start, target, avoidTiles = new Set(), openDoors = 
       if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
       const tile = grid[ny][nx];
       const isTarget = nx === target.x && ny === target.y;
-      const isOpenedDoor = tile === 3 && openDoors.has(`${nx},${ny}`);
+      const isOpenedDoor = (tile === 3 || tile === 8) && openDoors.has(`${nx},${ny}`);
       if (!isOpenedDoor && BLOCKED_TILES.has(tile)) continue;
       if (!isTarget && avoidTiles.has(tile)) continue;
       const nk = key(nx, ny);

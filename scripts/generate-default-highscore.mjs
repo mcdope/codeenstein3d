@@ -49,20 +49,41 @@ import path from "node:path";
 import { loadEngineModules, REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { Bot } from "./lib/bot.mjs";
 import { runQualifyLoop } from "./lib/qualifyLoop.mjs";
+import { planRoute } from "./lib/routePlanner.mjs";
 import { installVirtualClock } from "./lib/virtualClock.mjs";
 import { DEV_SERVER_URL, PROFILES, planLevels, waitForTestHooks, dismissOverlay, installDifficulty } from "./run-balancing-telemetry.mjs";
+import { profilesHash } from "./lib/profiles.mjs";
 
 const CAMPAIGN_DIR = path.join(REPO_ROOT, "demo-campaign");
 const CAMPAIGN_NAME = "demo-campaign";
 const OUTPUT_FILE = path.join(REPO_ROOT, "src/engine/defaultHighscore.ts");
 
-const REQUIRED_QUALIFYING_RUNS = 3;
-// Unbounded, matching run-balancing-telemetry.mjs's own default philosophy
-// — this is a manual, hand-reviewed tool, not CI-gated, so "keep retrying
-// until 3 qualifying runs land, however long that takes" is fine. The only
-// safety net against a truly dead browser is runQualifyLoop's own
-// consecutive-fully-crashed-batch circuit breaker (see runOneAttempt).
-const ATTEMPT_CAP = Infinity;
+// The loop stops the moment this many runs qualify, so it doubles as the
+// sample the kept entry is the maximum *of* — at the default 3 a profile
+// typically uses only 4 of its 40 permitted attempts, and the board is a
+// best-of-3 rather than a best-of-many. Raising it is the way to get a
+// stronger and more representative board (the score spread across whole
+// regenerations is wide: Gamer measured 48774-63089 across two runs), at
+// roughly proportional cost. Env var rather than a bumped default because
+// the default is what keeps a routine regeneration cheap.
+const REQUIRED_QUALIFYING_RUNS = process.env.CODEENSTEIN_HIGHSCORE_QUALIFYING_RUNS
+  ? Number(process.env.CODEENSTEIN_HIGHSCORE_QUALIFYING_RUNS)
+  : 3;
+// Bounded, deliberately. This was `Infinity` on the reasoning that a manual,
+// hand-reviewed tool can afford to "keep retrying until 3 qualifying runs
+// land, however long that takes" — but an unbounded retry loop cannot fail,
+// it can only hang, and the distinction matters when the campaign itself has
+// become unwinnable. A level the bot reliably wedges on makes every attempt
+// non-qualifying, and this script then spins forever with no error and no
+// output: 2h40m was lost to exactly that once, and more again later.
+//
+// A cap converts that silent hang into a real failure with a diagnosis (see
+// the per-profile summary below). Generous enough that a merely unlucky run
+// still succeeds — the historical worst case needed well under half of it —
+// and overridable for the rare case where someone genuinely wants to grind.
+const ATTEMPT_CAP = process.env.CODEENSTEIN_HIGHSCORE_ATTEMPT_CAP
+  ? Number(process.env.CODEENSTEIN_HIGHSCORE_ATTEMPT_CAP)
+  : 40;
 // 0-based — "level 4/5/6" in 1-based campaign numbering. Casual only needs
 // to prove it survives the unarmed early game (the same threshold
 // run-balancing-telemetry.mjs uses for every profile); Gamer/Pro raise the
@@ -77,6 +98,8 @@ const ATTEMPT_CONCURRENCY = process.env.CODEENSTEIN_HIGHSCORE_CONCURRENCY ? Numb
 const VIRTUAL_STEP_MS = 50;
 const RECORD_STEP_MS = 1000 / 60; // see module doc comment
 const FINAL_APPROACH_TICKS = 80; // extra push onto the exit tile's exact center
+/** Mirrors `run-balancing-telemetry.mjs`'s own limit — see its doc comment. */
+const TELEPORT_REPLAN_LIMIT = 4;
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -118,9 +141,9 @@ function computeAstHash(parsed, campaignName) {
 async function driveFullCampaign(bot, page, levelPlans) {
   const reachedExitForLevel = new Array(levelPlans.length).fill(false);
   for (let i = 0; i < levelPlans.length; i++) {
-    const { map, routePlain, routeCoverage } = levelPlans[i];
+    const { map, routePlain } = levelPlans[i];
     bot.startLevel(map);
-    const route = bot.profile.coverageMode ? routeCoverage : routePlain;
+    const route = routePlain;
 
     const player0 = await bot.readState();
     if (player0.state !== "playing") {
@@ -128,13 +151,28 @@ async function driveFullCampaign(bot, page, levelPlans) {
     }
     const prevExit = await page.evaluate(() => window.__codeensteinTestHooks.getExit());
 
-    const legOutcome = route.ok ? await bot.driveLegs(route.legs) : { state: "stuck" };
+    // Same mid-route-teleport handling as `run-balancing-telemetry.mjs` — see
+    // the longer note there. `driveLegs` reporting `reason: "teleported"` is
+    // not "the route finished": every remaining waypoint was planned against a
+    // position the bot is no longer at, so re-plan from where the pad actually
+    // dropped it rather than blind-walking at the exit from an arbitrary
+    // corner of the map.
+    let legOutcome = route.ok ? await bot.driveLegs(route.legs) : { state: "stuck" };
+    for (let replan = 0; replan < TELEPORT_REPLAN_LIMIT && legOutcome.state === "playing" && legOutcome.reason === "teleported"; replan++) {
+      const here = await bot.readState();
+      const resumed = planRoute(map, { x: Math.floor(here.x), y: Math.floor(here.y) });
+      if (!resumed.ok) break;
+      legOutcome = await bot.driveLegs(resumed.legs);
+    }
 
     if (legOutcome.state === "over") return { reachedExitForLevel, diedAtLevelIndex: i, reason: "died" };
     if (legOutcome.state === "stuck") return { reachedExitForLevel, diedAtLevelIndex: i, reason: "stuck" };
     if (legOutcome.state === "playing") {
       const exitCenter = { x: map.exit.x + 0.5, y: map.exit.y + 0.5 };
-      const pushed = await bot.driveToward(exitCenter, bot.tuning.TIGHT_ARRIVE_EPS, FINAL_APPROACH_TICKS);
+      // `driveToExit`, not `driveToward`: the exit stays inert while any enemy
+      // homed to its own room is alive (`checkExit()`), so reaching the tile is
+      // not the same as finishing the level. See `Bot#driveToExit`.
+      const pushed = await bot.driveToExit(exitCenter, FINAL_APPROACH_TICKS);
       if (pushed.state === "over") return { reachedExitForLevel, diedAtLevelIndex: i, reason: "died" };
       if (pushed.state !== "won") return { reachedExitForLevel, diedAtLevelIndex: i, reason: "stuck" };
     }
@@ -183,6 +221,16 @@ async function runOneAttempt(browser, profileName, profile, levelPlans) {
   try {
     context = await browser.newContext(); // fresh, isolated localStorage per attempt
     const page = await context.newPage();
+    // Same opt-in shape as `run-balancing-telemetry.mjs`'s own forwarder. Worth
+    // having here specifically because `advanceToNextLevel` (`src/main.ts`)
+    // skips a level whose `parseFile` returns null and says nothing about it in
+    // Node — the only trace is a `[parser] Skipping "<file>"` warning inside the
+    // page, and a skipped level is otherwise invisible until someone counts the
+    // replay segments.
+    if (process.env.CODEENSTEIN_CONSOLE_FORWARD) {
+      page.on("console", (msg) => console.log(`  [console] ${msg.text()}`));
+      page.on("pageerror", (err) => console.log(`  [pageerror] ${err.message}`));
+    }
     page.on("pageerror", (err) => console.log(`  [${profileName}] [pageerror] ${err.message}`));
 
     await installVirtualClock(page);
@@ -224,7 +272,7 @@ async function main() {
     const qualifyLevelIndex = QUALIFY_LEVEL_INDEX_BY_PROFILE[profileName];
     console.log(`${"=".repeat(72)}\n${profileName} — qualifying = reach level ${qualifyLevelIndex + 1}\n${"=".repeat(72)}`);
 
-    const { qualifyingRuns, attemptsUsed } = await runQualifyLoop({
+    const { qualifyingRuns, attemptsUsed, failureReasons } = await runQualifyLoop({
       runAttempt: () => runOneAttempt(browser, profileName, profile, levelPlans),
       isQualifying: (run) => Boolean(run.reachedExitForLevel[qualifyLevelIndex] && run.entry),
       requiredQualifyingRuns: REQUIRED_QUALIFYING_RUNS,
@@ -239,6 +287,24 @@ async function main() {
       },
     });
 
+    // A capped loop can now come back empty, which `reduce` with no initial
+    // value would turn into an opaque "Reduce of empty array" — report what
+    // actually went wrong instead, since the failure is nearly always "the bot
+    // cannot get through level N", and that is the one fact worth surfacing.
+    if (qualifyingRuns.length === 0) {
+      const byReason = new Map();
+      for (const f of failureReasons) {
+        const where = typeof f.diedAtLevelIndex === "number" ? ` at level ${f.diedAtLevelIndex + 1}` : "";
+        const label = `${f.reason}${where}`;
+        byReason.set(label, (byReason.get(label) ?? 0) + 1);
+      }
+      const summary = [...byReason.entries()].sort((a, b) => b[1] - a[1]).map(([label, n]) => `${n}x ${label}`);
+      console.error(`  ${profileName}: NO qualifying run in ${attemptsUsed} attempts (cap ${ATTEMPT_CAP}).`);
+      console.error(`    failures: ${summary.join(", ") || "(none recorded)"}`);
+      console.error(`    A single level dominating that list is the campaign blocking the bot, not bad luck.\n`);
+      continue;
+    }
+
     const best = qualifyingRuns.reduce((a, b) => (b.entry.score > a.entry.score ? b : a));
     console.log(
       `  ${profileName}: kept score=${best.entry.score} levelsCleared=${best.entry.levelsCleared} levelName=${best.entry.levelName} ` +
@@ -249,8 +315,16 @@ async function main() {
 
   await browser.close();
 
-  if (keptEntries.length === 0) {
-    console.error("\nNo profile produced a qualifying run — nothing to ship. Bailing out.");
+  // Every profile must land, not just one. The shipped file is the three
+  // example runs the Highscores dialog shows before a player has any of their
+  // own, so a partial write silently degrades that from three skill tiers to
+  // whatever happened to survive — and, uncapped, this could never happen, so
+  // nothing downstream is written to expect it. Bail instead.
+  const profileCount = Object.keys(PROFILES).length;
+  if (keptEntries.length < profileCount) {
+    console.error(`\nOnly ${keptEntries.length} of ${profileCount} profiles produced a qualifying run — refusing to ship a partial set.`);
+    console.error("Check the per-profile failure summaries above: if one level dominates, that level is unplayable for the bot");
+    console.error("and needs fixing before this can regenerate. Raise CODEENSTEIN_HIGHSCORE_ATTEMPT_CAP only if the failures look genuinely scattered.");
     process.exit(1);
   }
 
@@ -260,6 +334,20 @@ async function main() {
     check(`${entry.levelName}: entry.source === "demo"`, entry.source === "demo");
     check(`${entry.levelName}: replay.version === 2`, entry.replay?.version === 2);
     check(`${entry.levelName}: replay has >=1 level segment`, (entry.replay?.levels?.length ?? 0) >= 1);
+    // The segments must be a *prefix* of the campaign, in order. Nothing else
+    // downstream can notice a hole: every individual segment stays valid, so
+    // the astHash/frames checks below all pass while the payload quietly
+    // skips a level. A shipped `defaultHighscore.ts` carried exactly that —
+    // the Casual entry ran level 9 -> level 11 because
+    // `stage10_kernel_module.rs` overflowed the replay frame cap and the old
+    // `CampaignReplayRecorder.finish()` filtered the gap out of the middle.
+    const played = (entry.replay?.levels ?? []).map((seg) => seg.filePath.split("/").pop());
+    const expectedPrefix = levelPlans.slice(0, played.length).map((plan) => plan.filename);
+    check(
+      `${entry.levelName}: replay levels are a contiguous campaign prefix`,
+      played.length > 0 && played.every((name, i) => name === expectedPrefix[i]),
+      `got [${played.join(", ")}] — expected [${expectedPrefix.join(", ")}]`,
+    );
     for (const seg of entry.replay?.levels ?? []) {
       const filename = seg.filePath.split("/").pop();
       const text = fs.readFileSync(path.join(CAMPAIGN_DIR, filename), "utf8");
@@ -317,6 +405,13 @@ function writeDefaultHighscoreFile(entries) {
  * file silently breaks these entries' "Watch Replay" buttons until this file
  * is regenerated.
  *
+ * Regenerate it just as surely if the **bot's skill profiles** change. These
+ * runs were played by those profiles, so a retune leaves this board describing
+ * a bot that no longer exists — and unlike an edited campaign file, nothing
+ * about the replays themselves goes wrong, so no existing check notices.
+ * \`PROFILES_HASH\` below is what closes that: \`scripts/lib/profiles.test.mjs\`
+ * recomputes it from the live profiles and fails when the two diverge.
+ *
  * The entries are stored gzip+base64-encoded (\`gz1:\` prefix, same scheme as
  * \`storageCompression.ts\`'s \`compressForStorage\`) rather than as a plain
  * array literal — see \`writeDefaultHighscoreFile\` in the generator script
@@ -324,6 +419,11 @@ function writeDefaultHighscoreFile(entries) {
  * \`loadHighscoresForDisplay\` (\`./highscores.ts\`) decompresses it with
  * \`decompressFromStorage\` at read time.
  */
+
+/** Fingerprint of the bot profiles these runs were played by, at generation
+ * time — see \`profilesHash\` in \`scripts/lib/profiles.mjs\`. A mismatch means
+ * this file is stale and \`npm run generate:default-highscore\` should be re-run. */
+export const PROFILES_HASH = "${profilesHash()}";
 
 /** \`HighscoreEntry[]\`, gzip+base64-encoded — decompress with
  * \`decompressFromStorage\` from \`./storageCompression\`. */

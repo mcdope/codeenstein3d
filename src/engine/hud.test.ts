@@ -7,6 +7,7 @@ import type { EngineStats } from "./engine";
 import { emptyPlayerFacingStats } from "./playerStats";
 import { zeroScoreBreakdown } from "./scoring";
 import {
+  drawAcidOverflowToast,
   drawCheatToast,
   drawCompass,
   drawCrosshair,
@@ -15,6 +16,7 @@ import {
   drawHud,
   drawKillStreakToast,
   drawLoreOverlay,
+  drawOutOfAmmoToast,
   drawPauseOverlay,
   HUD_HEIGHT,
 } from "./hud";
@@ -111,6 +113,57 @@ describe("drawCheatToast", () => {
     const c = ctx();
     drawCheatToast(asCtx(c), "IDCLIP", -1);
     expect(c.globalAlpha).toBe(0);
+  });
+});
+
+describe("drawAcidOverflowToast", () => {
+  it("clamps alpha into [0,1] and resets textAlign before restoring", () => {
+    const c = ctx();
+    drawAcidOverflowToast(asCtx(c), 5);
+    expect(c.globalAlpha).toBe(1);
+    expect(c.textAlign).toBe("start");
+    expect(c.save).toHaveBeenCalledTimes(1);
+    expect(c.restore).toHaveBeenCalledTimes(1);
+
+    const c2 = ctx();
+    drawAcidOverflowToast(asCtx(c2), -1);
+    expect(c2.globalAlpha).toBe(0);
+  });
+
+  it("sits below the out-of-ammo toast without overlapping it", () => {
+    // Both are triggered by things the player did (walking in, pulling an
+    // empty trigger) and can genuinely land in the same second, so the two
+    // rows have to stay clear of each other. Verified against real canvas
+    // metrics in a browser too — the message is ~243px wide in a 640px
+    // frame — but the row geometry is what's worth pinning here.
+    const ammo = ctx();
+    drawOutOfAmmoToast(asCtx(ammo), 1);
+    const acid = ctx();
+    drawAcidOverflowToast(asCtx(acid), 1);
+
+    const boxOf = (c: ReturnType<typeof ctx>) => {
+      const [, y, , h] = c.fillRect.mock.calls[0] as [number, number, number, number];
+      return { top: y, bottom: y + h };
+    };
+    const ammoBox = boxOf(ammo);
+    const acidBox = boxOf(acid);
+    expect(acidBox.top).toBeGreaterThanOrEqual(ammoBox.bottom);
+  });
+
+  it("uses the hazard tiles' own orange, not the out-of-ammo red", () => {
+    // The colour is the cue: it points at what changed underfoot.
+    const c = ctx();
+    let textColor = "";
+    let borderColor = "";
+    c.fillText.mockImplementation(() => {
+      textColor = String(c.fillStyle);
+    });
+    c.strokeRect.mockImplementation(() => {
+      borderColor = String(c.strokeStyle);
+    });
+    drawAcidOverflowToast(asCtx(c), 1);
+    expect(textColor.toLowerCase()).toBe("#ff9d1f");
+    expect(borderColor).toContain("255,157,31");
   });
 });
 

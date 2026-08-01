@@ -16,9 +16,13 @@ import jsWasmUrl from "tree-sitter-javascript/tree-sitter-javascript.wasm?url";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   codeSmellBonus,
+  countAllocations,
   countDecisionPoints,
   countLines,
   countParameters,
+  countTopLevelImports,
+  findExceptionZones,
+  summarizeSwitchBranches,
   extractLargeComments,
   extractLargeCommentsFromNodes,
   findCommentedOutCodeBlocks,
@@ -81,6 +85,33 @@ const C_NUMBER_NODE_TYPES = ["number_literal"];
 const JS_CATCH_NODE_TYPES = ["catch_clause"];
 const JS_BLOCK_NODE_TYPES = new Set(["statement_block"]);
 const JS_COMMENT_NODE_TYPES = new Set(["comment"]);
+
+// C spells `default:` as another `case_statement`, so it exercises the
+// leading-keyword rule; JS gives the catch-all its own `switch_default` node
+// type, so it exercises the by-node-type rule. The `_`/`*` wildcard rule and
+// Ruby's sibling-`else` rule need grammars that aren't loaded here — those are
+// covered per-language in `generic/languages.test.ts`.
+const C_CASE_BRANCH_NODE_TYPES = ["case_statement"];
+const C_DEFAULT_BRANCH_NODE_TYPES = new Set<string>();
+const JS_CASE_BRANCH_NODE_TYPES = ["switch_case", "switch_default"];
+const JS_DEFAULT_BRANCH_NODE_TYPES = new Set(["switch_default"]);
+const NO_EXCLUDED_ANCESTORS = new Set<string>();
+
+const JS_TRY_NODE_TYPES = ["try_statement"];
+const JS_CATCH_NODE_TYPE_SET = new Set(["catch_clause"]);
+const JS_FINALLY_NODE_TYPES = new Set(["finally_clause"]);
+
+const C_IMPORT_NODE_TYPES = ["preproc_include"];
+const JS_IMPORT_NODE_TYPES = ["import_statement"];
+const NO_CALL_SHAPED_IMPORTS: string[] = [];
+const NEVER_MATCHES = /^$/;
+const JS_BLOCK_NODE_TYPE_SET = new Set(["statement_block"]);
+
+const C_ALLOCATION_NODE_TYPES: string[] = [];
+const C_CALL_NODE_TYPES = ["call_expression"];
+const C_ALLOCATOR_NAME_PATTERN = /^((m|c|re)?alloc)$/;
+const C_ARRAY_DECLARATOR_NODE_TYPES = ["array_declarator"];
+const JS_ALLOCATION_NODE_TYPES = ["new_expression"];
 
 describe("countLines", () => {
   it("returns 0 for an empty string", () => {
@@ -465,5 +496,389 @@ describe("findMagicNumberBlobs", () => {
       descendantsOfType: () => [{ isNamed: false, type: "string_literal", text: "x".repeat(200) }],
     } as unknown as Node;
     expect(findMagicNumberBlobs(fakeRoot, C_STRING_NODE_TYPES, C_NUMBER_NODE_TYPES)).toEqual([]);
+  });
+});
+
+describe("summarizeSwitchBranches", () => {
+  it("counts C's case branches and spots `default:` by its leading keyword", () => {
+    const root = parseC(`int f(int v) {
+  switch (v) {
+    case 1: return 1;
+    case 2: return 2;
+    default: return 0;
+  }
+}`);
+    expect(summarizeSwitchBranches(root, C_CASE_BRANCH_NODE_TYPES, C_DEFAULT_BRANCH_NODE_TYPES, NO_EXCLUDED_ANCESTORS))
+      .toEqual({ caseCount: 2, hasDefault: true });
+  });
+
+  it("reports hasDefault false for a C switch with no default arm", () => {
+    const root = parseC(`int f(int v) { switch (v) { case 1: return 1; } }`);
+    expect(summarizeSwitchBranches(root, C_CASE_BRANCH_NODE_TYPES, C_DEFAULT_BRANCH_NODE_TYPES, NO_EXCLUDED_ANCESTORS))
+      .toEqual({ caseCount: 1, hasDefault: false });
+  });
+
+  it("doesn't mistake an if/else's `else_clause` for a switch catch-all", () => {
+    // The Ruby-style sibling-`else` scan only runs when no default was found,
+    // and C's if/else produces a real `else_clause` node — `isIfElse` is what
+    // keeps this from reporting hasDefault true.
+    const root = parseC(`int f(int v) {
+  if (v > 0) { return 1; } else { return 2; }
+  switch (v) { case 1: return 1; }
+}`);
+    expect(summarizeSwitchBranches(root, C_CASE_BRANCH_NODE_TYPES, C_DEFAULT_BRANCH_NODE_TYPES, NO_EXCLUDED_ANCESTORS))
+      .toEqual({ caseCount: 1, hasDefault: false });
+  });
+
+  it("spots JS's catch-all by node type rather than by text", () => {
+    const root = parseJs(`function f(v) {
+  switch (v) { case 1: return 1; case 2: return 2; default: return 0; }
+}`);
+    expect(summarizeSwitchBranches(root, JS_CASE_BRANCH_NODE_TYPES, JS_DEFAULT_BRANCH_NODE_TYPES, NO_EXCLUDED_ANCESTORS))
+      .toEqual({ caseCount: 2, hasDefault: true });
+  });
+
+  it("aggregates every switch in the subtree into one summary", () => {
+    const root = parseC(`int f(int v) {
+  switch (v) { case 1: return 1; }
+  switch (v) { case 2: return 2; default: return 0; }
+}`);
+    expect(summarizeSwitchBranches(root, C_CASE_BRANCH_NODE_TYPES, C_DEFAULT_BRANCH_NODE_TYPES, NO_EXCLUDED_ANCESTORS))
+      .toEqual({ caseCount: 2, hasDefault: true });
+  });
+
+  it("returns undefined when there is no switch at all", () => {
+    const root = parseC(`int f(int v) { return v; }`);
+    expect(summarizeSwitchBranches(root, C_CASE_BRANCH_NODE_TYPES, C_DEFAULT_BRANCH_NODE_TYPES, NO_EXCLUDED_ANCESTORS))
+      .toBeUndefined();
+  });
+
+  it("returns undefined for a switch with no branches at all", () => {
+    const root = parseC(`int f(int v) { switch (v) { } return 0; }`);
+    expect(summarizeSwitchBranches(root, C_CASE_BRANCH_NODE_TYPES, C_DEFAULT_BRANCH_NODE_TYPES, NO_EXCLUDED_ANCESTORS))
+      .toBeUndefined();
+  });
+
+  it("drops branches nested inside an excluded ancestor", () => {
+    // Stands in for Scala's `catch { case e: Exception => … }`, which reuses
+    // the same branch node type for something that isn't a switch.
+    const root = parseJs(`function f(v) {
+  try { g(); } catch (e) { switch (v) { case 1: return 1; } }
+  switch (v) { case 2: return 2; }
+}`);
+    expect(summarizeSwitchBranches(root, JS_CASE_BRANCH_NODE_TYPES, JS_DEFAULT_BRANCH_NODE_TYPES, new Set(["catch_clause"])))
+      .toEqual({ caseCount: 1, hasDefault: false });
+  });
+
+  it("skips anonymous nodes that collide with a branch type name", () => {
+    const fakeRoot = {
+      id: 0,
+      descendantsOfType: () => [{ isNamed: false, type: "case_statement", text: "case 1:" }],
+    } as unknown as Node;
+    expect(summarizeSwitchBranches(fakeRoot, C_CASE_BRANCH_NODE_TYPES, C_DEFAULT_BRANCH_NODE_TYPES, NO_EXCLUDED_ANCESTORS))
+      .toBeUndefined();
+  });
+});
+
+describe("findExceptionZones", () => {
+  it("records a try/catch/finally with its clause counts and line span", () => {
+    const root = parseJs(`function f() {
+  try {
+    g();
+  } catch (e) {
+    h(e);
+  } finally {
+    k();
+  }
+}`);
+    expect(findExceptionZones(root, JS_TRY_NODE_TYPES, JS_CATCH_NODE_TYPE_SET, JS_FINALLY_NODE_TYPES))
+      .toEqual([{ startLine: 2, endLine: 8, catchCount: 1, hasFinally: true }]);
+  });
+
+  it("reports hasFinally false for a plain try/catch", () => {
+    const root = parseJs(`function f() { try { g(); } catch (e) { h(e); } }`);
+    const zones = findExceptionZones(root, JS_TRY_NODE_TYPES, JS_CATCH_NODE_TYPE_SET, JS_FINALLY_NODE_TYPES);
+    expect(zones).toHaveLength(1);
+    expect(zones[0].catchCount).toBe(1);
+    expect(zones[0].hasFinally).toBe(false);
+  });
+
+  it("reports catchCount 0 for a try/finally with no catch", () => {
+    const root = parseJs(`function f() { try { g(); } finally { k(); } }`);
+    const zones = findExceptionZones(root, JS_TRY_NODE_TYPES, JS_CATCH_NODE_TYPE_SET, JS_FINALLY_NODE_TYPES);
+    expect(zones).toHaveLength(1);
+    expect(zones[0].catchCount).toBe(0);
+    expect(zones[0].hasFinally).toBe(true);
+  });
+
+  it("finds every try in the file, including nested ones", () => {
+    const root = parseJs(`function f() {
+  try { try { g(); } catch (e) { h(); } } catch (e) { h(); }
+}`);
+    expect(findExceptionZones(root, JS_TRY_NODE_TYPES, JS_CATCH_NODE_TYPE_SET, JS_FINALLY_NODE_TYPES)).toHaveLength(2);
+  });
+
+  it("returns nothing for a grammar with no exception construct", () => {
+    const root = parseC(`int f(void) { return 0; }`);
+    expect(findExceptionZones(root, ["seh_try_statement"], new Set(["seh_except_clause"]), new Set(["seh_finally_clause"])))
+      .toEqual([]);
+  });
+
+  it("skips a try with neither a catch nor a finally clause", () => {
+    const fakeRoot = {
+      descendantsOfType: () => [
+        { isNamed: true, type: "try_statement", namedChildren: [{ type: "statement_block" }, null], startPosition: { row: 0 }, endPosition: { row: 2 } },
+      ],
+    } as unknown as Node;
+    expect(findExceptionZones(fakeRoot, JS_TRY_NODE_TYPES, JS_CATCH_NODE_TYPE_SET, JS_FINALLY_NODE_TYPES)).toEqual([]);
+  });
+
+  it("skips anonymous nodes that collide with a try type name", () => {
+    const fakeRoot = {
+      descendantsOfType: () => [{ isNamed: false, type: "try_statement" }],
+    } as unknown as Node;
+    expect(findExceptionZones(fakeRoot, JS_TRY_NODE_TYPES, JS_CATCH_NODE_TYPE_SET, JS_FINALLY_NODE_TYPES)).toEqual([]);
+  });
+});
+
+describe("countTopLevelImports", () => {
+  it("counts C's #include directives", () => {
+    const root = parseC(`#include <stdio.h>
+#include "local.h"
+int f(void) { return 0; }`);
+    expect(countTopLevelImports(root, C_IMPORT_NODE_TYPES, NO_CALL_SHAPED_IMPORTS, NEVER_MATCHES, C_BLOCK_NODE_TYPES)).toBe(2);
+  });
+
+  it("returns 0 for a file with no imports", () => {
+    const root = parseC(`int f(void) { return 0; }`);
+    expect(countTopLevelImports(root, C_IMPORT_NODE_TYPES, NO_CALL_SHAPED_IMPORTS, NEVER_MATCHES, C_BLOCK_NODE_TYPES)).toBe(0);
+  });
+
+  it("counts JS import statements", () => {
+    const root = parseJs(`import a from "a";\nimport b from "b";\nimport c from "c";`);
+    expect(countTopLevelImports(root, JS_IMPORT_NODE_TYPES, NO_CALL_SHAPED_IMPORTS, NEVER_MATCHES, JS_BLOCK_NODE_TYPE_SET)).toBe(3);
+  });
+
+  it("counts call-shaped imports by their text", () => {
+    const root = parseJs(`const a = require("a");\nconst b = require("b");`);
+    expect(countTopLevelImports(root, [], ["call_expression"], /^require\(/, JS_BLOCK_NODE_TYPE_SET)).toBe(2);
+  });
+
+  it("ignores a call-shaped import buried inside a function body", () => {
+    // Depth 4+ (program > function > body > statement > call) is past the
+    // top-level allowance — a lazily-required module isn't a file dependency.
+    const root = parseJs(`function f() { const a = require("a"); }`);
+    expect(countTopLevelImports(root, [], ["call_expression"], /^require\(/, JS_BLOCK_NODE_TYPE_SET)).toBe(0);
+  });
+
+  it("ignores an #include buried inside a function body", () => {
+    const root = parseC(`int f(void) {\n#include "nested.h"\n  return 0;\n}`);
+    expect(countTopLevelImports(root, C_IMPORT_NODE_TYPES, NO_CALL_SHAPED_IMPORTS, NEVER_MATCHES, C_BLOCK_NODE_TYPES)).toBe(0);
+  });
+
+  it("skips anonymous nodes that collide with an import type name", () => {
+    const fakeRoot = {
+      id: 0,
+      descendantsOfType: () => [{ isNamed: false, type: "preproc_include" }],
+    } as unknown as Node;
+    expect(countTopLevelImports(fakeRoot, C_IMPORT_NODE_TYPES, NO_CALL_SHAPED_IMPORTS, NEVER_MATCHES, C_BLOCK_NODE_TYPES)).toBe(0);
+  });
+
+  it("skips an anonymous call-shaped node whose text would otherwise match", () => {
+    const fakeRoot = {
+      id: 0,
+      descendantsOfType: (types: string[]) => (types.includes("call_expression") ? [{ isNamed: false, type: "call_expression", text: "require(\"a\")" }] : []),
+    } as unknown as Node;
+    expect(countTopLevelImports(fakeRoot, [], ["call_expression"], /^require\(/, C_BLOCK_NODE_TYPES)).toBe(0);
+  });
+});
+
+describe("countAllocations", () => {
+  it("counts C allocator calls by callee name", () => {
+    const root = parseC(`int f(void) {
+  char *a = malloc(64);
+  char *b = calloc(2, 8);
+  char *c = realloc(a, 128);
+  return 0;
+}`);
+    expect(countAllocations(root, C_ALLOCATION_NODE_TYPES, C_CALL_NODE_TYPES, C_ALLOCATOR_NAME_PATTERN, C_ARRAY_DECLARATOR_NODE_TYPES, 1024)).toBe(3);
+  });
+
+  it("doesn't count an ordinary call", () => {
+    const root = parseC(`int f(void) { printf("hi"); return 0; }`);
+    expect(countAllocations(root, C_ALLOCATION_NODE_TYPES, C_CALL_NODE_TYPES, C_ALLOCATOR_NAME_PATTERN, C_ARRAY_DECLARATOR_NODE_TYPES, 1024)).toBe(0);
+  });
+
+  it("counts a large fixed-size array but not a small one", () => {
+    const root = parseC(`int f(void) {
+  char big[4096];
+  char small[8];
+  return 0;
+}`);
+    expect(countAllocations(root, C_ALLOCATION_NODE_TYPES, C_CALL_NODE_TYPES, C_ALLOCATOR_NAME_PATTERN, C_ARRAY_DECLARATOR_NODE_TYPES, 1024)).toBe(1);
+  });
+
+  it("ignores an array declarator with no literal size", () => {
+    const root = parseC(`int f(int n) { char flexible[n]; return 0; }`);
+    expect(countAllocations(root, C_ALLOCATION_NODE_TYPES, C_CALL_NODE_TYPES, C_ALLOCATOR_NAME_PATTERN, C_ARRAY_DECLARATOR_NODE_TYPES, 1024)).toBe(0);
+  });
+
+  it("counts JS `new` expressions by node type", () => {
+    const root = parseJs(`function f() { const a = new Foo(); const b = new Bar(1); }`);
+    expect(countAllocations(root, JS_ALLOCATION_NODE_TYPES, [], NEVER_MATCHES, [], 1024)).toBe(2);
+  });
+
+  it("falls back to the last identifier child when there is no callee field", () => {
+    // Stands in for ObjC's `[[NSObject alloc] init]`, whose selector isn't
+    // exposed as a `function`/`name`/`macro` field.
+    const fakeRoot = {
+      descendantsOfType: (types: string[]) =>
+        types.includes("message_expression")
+          ? [{
+              isNamed: true,
+              type: "message_expression",
+              childForFieldName: () => null,
+              namedChildren: [
+                { type: "identifier", text: "NSObject" },
+                { type: "identifier", text: "alloc" },
+              ],
+            }]
+          : [],
+    } as unknown as Node;
+    expect(countAllocations(fakeRoot, [], ["message_expression"], /^alloc$/, [], 1024)).toBe(1);
+  });
+
+  it("returns null callee (and counts nothing) for a call with no identifier child", () => {
+    const fakeRoot = {
+      descendantsOfType: (types: string[]) =>
+        types.includes("call_expression")
+          ? [{ isNamed: true, type: "call_expression", childForFieldName: () => null, namedChildren: [{ type: "parenthesized_expression", text: "(fp)" }] }]
+          : [],
+    } as unknown as Node;
+    expect(countAllocations(fakeRoot, [], ["call_expression"], /^alloc$/, [], 1024)).toBe(0);
+  });
+
+  it("skips anonymous nodes that collide with a call or declarator type name", () => {
+    const fakeRoot = {
+      descendantsOfType: (types: string[]) => [
+        { isNamed: false, type: types[0] ?? "call_expression" },
+      ],
+    } as unknown as Node;
+    expect(countAllocations(fakeRoot, [], ["call_expression"], /.*/, ["array_declarator"], 1024)).toBe(0);
+  });
+});
+
+describe("astUtils — synthetic-tree edge cases", () => {
+  // These branches guard against grammar shapes none of the 15 bundled
+  // grammars actually produce, so they need hand-built nodes to reach at all
+  // — same approach the adapter suites already use for their own unreachable
+  // cases.
+
+  it("treats a parentless `else` node as a switch catch-all, not an if/else", () => {
+    const elseNode = { isNamed: true, type: "else", parent: null };
+    const fakeRoot = {
+      id: 0,
+      descendantsOfType: (types: string[]) =>
+        types.includes("when")
+          ? [{ isNamed: true, type: "when", id: 1, parent: null, namedChildren: [], text: "when 1 then 1", childForFieldName: () => null }]
+          : [elseNode],
+    } as unknown as Node;
+    expect(summarizeSwitchBranches(fakeRoot, ["when"], new Set<string>(), NO_EXCLUDED_ANCESTORS))
+      .toEqual({ caseCount: 1, hasDefault: true });
+  });
+
+  it("ignores a null direct child when testing whether a branch is a container", () => {
+    const fakeRoot = {
+      id: 0,
+      descendantsOfType: (types: string[]) =>
+        types.includes("case_item")
+          ? [{ isNamed: true, type: "case_item", id: 1, parent: null, namedChildren: [null], text: "a) echo 1 ;;", childForFieldName: () => null }]
+          : [],
+    } as unknown as Node;
+    expect(summarizeSwitchBranches(fakeRoot, ["case_item"], new Set<string>(), NO_EXCLUDED_ANCESTORS))
+      .toEqual({ caseCount: 1, hasDefault: false });
+  });
+
+  it("treats a branch with no pattern child at all as a non-default case", () => {
+    const fakeRoot = {
+      id: 0,
+      descendantsOfType: (types: string[]) =>
+        types.includes("case_item")
+          ? [{ isNamed: true, type: "case_item", id: 1, parent: null, namedChildren: [], text: "opaque", childForFieldName: () => null }]
+          : [],
+    } as unknown as Node;
+    expect(summarizeSwitchBranches(fakeRoot, ["case_item"], new Set<string>(), NO_EXCLUDED_ANCESTORS))
+      .toEqual({ caseCount: 1, hasDefault: false });
+  });
+
+  it("ignores a null clause child when counting a try's catch/finally clauses", () => {
+    const fakeRoot = {
+      descendantsOfType: () => [
+        {
+          isNamed: true,
+          type: "try_statement",
+          namedChildren: [null, { type: "catch_clause" }],
+          startPosition: { row: 0 },
+          endPosition: { row: 3 },
+        },
+      ],
+    } as unknown as Node;
+    expect(findExceptionZones(fakeRoot, JS_TRY_NODE_TYPES, JS_CATCH_NODE_TYPE_SET, JS_FINALLY_NODE_TYPES))
+      .toEqual([{ startLine: 1, endLine: 4, catchCount: 1, hasFinally: false }]);
+  });
+
+  it("reads a callee from a `name` field when there is no `function` field", () => {
+    const fakeRoot = {
+      descendantsOfType: (types: string[]) =>
+        types.includes("method_invocation")
+          ? [{
+              isNamed: true,
+              type: "method_invocation",
+              childForFieldName: (field: string) => (field === "name" ? { text: "alloc" } : null),
+              namedChildren: [],
+            }]
+          : [],
+    } as unknown as Node;
+    expect(countAllocations(fakeRoot, [], ["method_invocation"], /^alloc$/, [], 1024)).toBe(1);
+  });
+
+  it("reads a callee from a `macro` field when there is no `function`/`name` field", () => {
+    const fakeRoot = {
+      descendantsOfType: (types: string[]) =>
+        types.includes("macro_invocation")
+          ? [{
+              isNamed: true,
+              type: "macro_invocation",
+              childForFieldName: (field: string) => (field === "macro" ? { text: "vec" } : null),
+              namedChildren: [],
+            }]
+          : [],
+    } as unknown as Node;
+    expect(countAllocations(fakeRoot, [], ["macro_invocation"], /^vec$/, [], 1024)).toBe(1);
+  });
+
+  it("ignores a null child when scanning a call for its trailing identifier", () => {
+    const fakeRoot = {
+      descendantsOfType: (types: string[]) =>
+        types.includes("message_expression")
+          ? [{
+              isNamed: true,
+              type: "message_expression",
+              childForFieldName: () => null,
+              namedChildren: [null, { type: "identifier", text: "alloc" }],
+            }]
+          : [],
+    } as unknown as Node;
+    expect(countAllocations(fakeRoot, [], ["message_expression"], /^alloc$/, [], 1024)).toBe(1);
+  });
+
+  it("ignores an array declarator with no size child at all", () => {
+    const fakeRoot = {
+      descendantsOfType: (types: string[]) =>
+        types.includes("array_declarator")
+          ? [{ isNamed: true, type: "array_declarator", childForFieldName: () => null, namedChildren: [null] }]
+          : [],
+    } as unknown as Node;
+    expect(countAllocations(fakeRoot, [], [], NEVER_MATCHES, ["array_declarator"], 1024)).toBe(0);
   });
 });

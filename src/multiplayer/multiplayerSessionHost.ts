@@ -149,6 +149,9 @@ export interface MultiplayerSessionHandle {
   /** Read-only — see `RaycasterEngine.getMinesSnapshot`'s doc comment. `[]`
    * before any level has started. */
   getMinesSnapshot(): { x: number; y: number; alive: boolean; visible: boolean }[];
+  /** Read-only — see `RaycasterEngine.getProjectilesSnapshot`'s doc comment.
+   * `[]` before any level has started. */
+  getProjectilesSnapshot(): { x: number; y: number; vx: number; vy: number; damage: number; targetId: string }[];
   /** Read-only — see `RaycasterEngine.getDropsSnapshot`'s doc comment. `[]`
    * before any level has started. */
   getDropsSnapshot(): { x: number; y: number; kind: LootDrop["kind"] }[];
@@ -739,6 +742,8 @@ export function runMultiplayerSessionAsHost(
     getEnemiesSnapshot: () => engine?.getEnemiesSnapshot() ?? [],
     /* v8 ignore next -- @preserve */
     getMinesSnapshot: () => engine?.getMinesSnapshot() ?? [],
+    /* v8 ignore next -- @preserve */
+    getProjectilesSnapshot: () => engine?.getProjectilesSnapshot() ?? [],
     /* v8 ignore next -- @preserve */
     getDropsSnapshot: () => engine?.getDropsSnapshot() ?? [],
     /* v8 ignore next -- @preserve */

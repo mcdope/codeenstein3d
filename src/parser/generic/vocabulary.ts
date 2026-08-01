@@ -271,6 +271,124 @@ export const NUMBER_LITERAL_NODE_TYPES: readonly string[] = [
 ];
 
 /**
+ * One case/when/arm branch of a switch-like construct, merged across every
+ * bundled grammar — used by `summarizeSwitchBranches` (`astUtils.ts`) for
+ * "Switchboard" junction rooms. Every name here was confirmed against the real
+ * grammar rather than read off documentation.
+ *
+ * Deliberately lists *branches only*, never switch containers: Bash's
+ * `case_statement` is a container while C++/ObjC's is a branch, so one shared
+ * table can't describe both roles — see `summarizeSwitchBranches`' own doc
+ * comment for why counting branches alone is sufficient anyway.
+ */
+export const CASE_BRANCH_NODE_TYPES: readonly string[] = [
+  "switch_case", // JS, TS
+  "switch_default", // JS, TS (default-shaped)
+  "switch_section", // C# statement switch
+  "switch_expression_arm", // C# expression switch
+  "switch_block_statement_group", // Java, legacy `case X:`
+  "switch_rule", // Java 14+, `case X ->`
+  "case_statement", // C++, ObjC (C and PHP declare their own copies)
+  "case_item", // Bash
+  "case_clause", // Python match, Scala
+  "expression_case", // Go
+  "type_case", // Go type switch
+  "communication_case", // Go select
+  "default_case", // Go (default-shaped)
+  "match_arm", // Rust
+  "when", // Ruby
+];
+
+/** Case-branch node types that are *inherently* the catch-all branch, rather
+ * than needing the `default`-keyword/`_`-wildcard text check. */
+export const DEFAULT_BRANCH_NODE_TYPES = new Set(["switch_default", "default_case"]);
+
+/** Constructs that reuse a case-branch node type for something that isn't a
+ * switch at all: Scala spells `catch { case e: Exception => … }` with real
+ * `case_clause` nodes, which would otherwise make every Scala try/catch a
+ * Switchboard. See `summarizeSwitchBranches`' `excludeAncestorNodeTypes`. */
+export const NON_SWITCH_BRANCH_ANCESTOR_NODE_TYPES = new Set(["catch_clause"]);
+
+/**
+ * `try`/`begin` container node types across every bundled grammar — used by
+ * `findExceptionZones` (`astUtils.ts`) for Exception Handling Zones. Go, Bash
+ * and Rust have no exception construct at all, so they match nothing here;
+ * that's the whole premise of one shared table (see the module doc comment).
+ */
+export const TRY_NODE_TYPES: readonly string[] = [
+  "try_statement", // JS, TS, Python, Java, C#, C++, ObjC
+  "try_with_resources_statement", // Java
+  "try_expression", // Scala
+  "begin", // Ruby (`begin … rescue … ensure … end`)
+];
+
+/** `finally`/`ensure` clause node types across every bundled grammar — the
+ * sibling table to the existing `CATCH_NODE_TYPES`. */
+export const FINALLY_NODE_TYPES = new Set(["finally_clause", "ensure"]);
+
+/**
+ * Top-level import/include/require declaration node types across every bundled
+ * grammar — used by `countTopLevelImports` (`astUtils.ts`) for "Vendor Depot"
+ * alcoves. ObjC's `#import` parses as `preproc_include` too, so it needs no
+ * entry of its own.
+ */
+export const IMPORT_NODE_TYPES: readonly string[] = [
+  "import_statement", // JS, TS, Python
+  "import_from_statement", // Python
+  "future_import_statement", // Python
+  "import_declaration", // Java, Scala, Go
+  "import_spec", // Go, one per path inside a grouped import
+  "using_directive", // C#
+  "using_declaration", // C++
+  "use_declaration", // Rust
+  "extern_crate_declaration", // Rust
+  "preproc_include", // C, C++, ObjC
+];
+
+/** Grammars with no import *node* express it as an ordinary call or command —
+ * Ruby's `require`/`require_relative`/`load` and Bash's `source`/`.`. Matched
+ * on text instead; see `countTopLevelImports`. */
+export const CALL_SHAPED_IMPORT_NODE_TYPES: readonly string[] = ["call", "command"];
+export const CALL_IMPORT_PATTERN = /^(require_relative|require|load|autoload|source|\.)[\s(]/;
+
+/** Explicit allocation expression node types across every bundled grammar —
+ * used by `countAllocations` (`astUtils.ts`) for "Acid Overflow" rooms. */
+export const ALLOCATION_NODE_TYPES: readonly string[] = [
+  "new_expression", // C++, JS, TS
+  "object_creation_expression", // Java, C#
+  "array_creation_expression", // Java, C#
+  "implicit_array_creation_expression", // C#
+  "stackalloc_expression", // C#
+  "implicit_stackalloc_expression", // C#
+  "instance_expression", // Scala (`new Array[Int](4096)`)
+];
+
+/** Call-shaped node types across every bundled grammar, matched on their callee
+ * name against `ALLOCATOR_NAME_PATTERN` — see `countAllocations`. */
+export const CALL_NODE_TYPES: readonly string[] = [
+  "call_expression", // C++, ObjC, Rust, Go, JS, TS
+  "call", // Python, Ruby
+  "invocation_expression", // C#
+  "method_invocation", // Java
+  "message_expression", // ObjC (`[[NSObject alloc] init]`)
+  "macro_invocation", // Rust (`vec![…]`)
+];
+
+/** Callee names that allocate. Anchored at a word boundary on the right so
+ * `Box::new`/`Array.new`/`Vec::with_capacity` match through their qualifier,
+ * while an unrelated `renew`/`allocator_traits` does not. */
+export const ALLOCATOR_NAME_PATTERN =
+  /(^|[.:>\s[])((m|c|re|z|v|x)?alloc\w*|new|make|vec|strn?dup|memalign|aligned_alloc|reallocarray|with_capacity|g_(new|malloc)\d?)$/;
+
+/** Fixed-size array declarator node types (C-family only) — a declarator whose
+ * literal size reaches `LARGE_ARRAY_MIN_SIZE` counts as an allocation. */
+export const ARRAY_DECLARATOR_NODE_TYPES: readonly string[] = ["array_declarator"];
+
+/** Element count at which a fixed-size array stops reading as an incidental
+ * local buffer and starts reading as a real allocation. */
+export const LARGE_ARRAY_MIN_SIZE = 1024;
+
+/**
  * Parameter-list node types, merged across every bundled grammar — used by
  * `countParameters` (`astUtils.ts`) for the "too many parameters" code smell.
  * Only meaningful for function/method-kind entities (see `genericParser.ts`).

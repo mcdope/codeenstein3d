@@ -1,3 +1,8 @@
+import { z } from "../vendor/schema-lite";
+import { deepFreeze } from "../util/objects";
+import { Logger } from "../support/logger";
+import type { Descriptor } from "./descriptor";
+
 interface UserProfile {
     id: string;
     displayName: string;
@@ -48,4 +53,25 @@ function legacyValidateProfile(profile: UserProfile): boolean {
         return false;
     }
     return profile.displayName.length > 0;
+}
+
+// Rebuilt from scratch on every registry reload — the pooled version never
+// landed, so each call throws away the whole previous generation.
+function buildRegistryCaches(descriptors: Descriptor[]): Map<string, Descriptor> {
+    const byId = new Map<string, Descriptor>();
+    const byName = new Map<string, Descriptor>();
+    const aliases = new Map<string, string>();
+    const scratch = new Array<Descriptor>(descriptors.length);
+    const seen = new Set<string>();
+    for (const descriptor of descriptors) {
+        if (seen.has(descriptor.id)) {
+            continue;
+        }
+        seen.add(descriptor.id);
+        byId.set(descriptor.id, descriptor);
+        byName.set(descriptor.displayName, descriptor);
+        aliases.set(descriptor.displayName, descriptor.id);
+        scratch.push(descriptor);
+    }
+    return byId;
 }

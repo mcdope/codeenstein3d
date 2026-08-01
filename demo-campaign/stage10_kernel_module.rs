@@ -1,3 +1,8 @@
+use core::fmt;
+use core::ptr::NonNull;
+use alloc::vec::Vec;
+use crate::sync::SpinLock;
+
 struct KernelModule {
     name: String,
     version: u32,
@@ -62,5 +67,15 @@ impl KernelModule {
             return false;
         }
         true
+    }
+}
+
+fn describe_state(state: u32) -> &'static str {
+    match state {
+        0 => "unloaded",
+        1 => "loading",
+        2 => "active",
+        3 => "quiescing",
+        _ => "unknown",
     }
 }

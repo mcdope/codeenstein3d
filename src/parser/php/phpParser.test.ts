@@ -157,3 +157,78 @@ describe("PhpParserAdapter", () => {
     await expect(new PhpParserAdapter().parse(`${PHP_OPEN}$a = 1;`)).rejects.toThrow("PHP parser returned no syntax tree");
   });
 });
+
+describe("PhpParserAdapter — switch/exception/import/allocation extraction", () => {
+  it("summarizes switch branches, with `default_statement` as the catch-all", async () => {
+    const result = await new PhpParserAdapter().parse(`${PHP_OPEN}function dispatch($op) {
+  switch ($op) {
+    case 1: return 1;
+    case 2: return 2;
+    default: return 0;
+  }
+}
+`);
+    expect(result.entities.find((e) => e.name === "dispatch")?.switchBranches).toEqual({
+      caseCount: 2,
+      hasDefault: true,
+    });
+  });
+
+  it("summarizes a `match` expression's arms too", async () => {
+    const result = await new PhpParserAdapter().parse(`${PHP_OPEN}function pick($op) {
+  return match($op) { 1 => "a", 2 => "b", 3 => "c", default => "z" };
+}
+`);
+    expect(result.entities.find((e) => e.name === "pick")?.switchBranches).toEqual({
+      caseCount: 3,
+      hasDefault: true,
+    });
+  });
+
+  it("records a try/catch/finally with its clause counts", async () => {
+    const result = await new PhpParserAdapter().parse(`${PHP_OPEN}function risky() {
+  try {
+    go();
+  } catch (FooException $e) {
+    log($e);
+  } catch (BarException $e) {
+    log($e);
+  } finally {
+    cleanup();
+  }
+}
+`);
+    expect(result.exceptionZones).toHaveLength(1);
+    expect(result.exceptionZones[0].catchCount).toBe(2);
+    expect(result.exceptionZones[0].hasFinally).toBe(true);
+  });
+
+  it("counts `use` declarations and include/require expressions as imports", async () => {
+    const result = await new PhpParserAdapter().parse(`${PHP_OPEN}namespace App;
+use App\\Foo;
+use App\\Bar as Baz;
+require_once __DIR__ . "/a.php";
+include "b.php";
+`);
+    expect(result.importCount).toBe(4);
+  });
+
+  it("doesn't count a require buried inside a function body", async () => {
+    const result = await new PhpParserAdapter().parse(`${PHP_OPEN}use App\\Foo;
+function lazy() {
+  require "late.php";
+}
+`);
+    expect(result.importCount).toBe(1);
+  });
+
+  it("counts `new` expressions as allocations", async () => {
+    const result = await new PhpParserAdapter().parse(`${PHP_OPEN}function build() {
+  $a = new Thing();
+  $b = new \\Other\\Thing(1);
+  return [$a, $b];
+}
+`);
+    expect(result.entities.find((e) => e.name === "build")?.allocations).toBe(2);
+  });
+});

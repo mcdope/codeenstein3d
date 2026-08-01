@@ -436,6 +436,13 @@ async function runOneAttempt(browser, devServerUrl, comboLabel, profilesByPlayer
       devServerUrl,
       playerCount,
       difficulty,
+      // Index-aligned with the bootstrap's own ["host", ...guests] ordering,
+      // which is the same order `profilesByPlayer` is built in. Without this
+      // the engine turned every multiplayer bot at the bare 2.6 rad/s while
+      // its `turnBurstMs` sized every hold for 2-5x that, so each bot
+      // systematically under-rotated and the one turn-speed knob that
+      // differentiates the skill tiers did nothing here.
+      botRotSpeedMuls: profilesByPlayer.map((p) => p.rotSpeedMultiplier),
       targetTick: TARGET_TICK,
       log: VERBOSE ? (msg) => console.log(`  [bootstrap] ${msg}`) : () => {},
     });
@@ -755,7 +762,16 @@ function buildComboOutput(combo) {
     // efficiency" result. Nothing here computes the real replacement (see
     // this function's own comment above), so drop the misleading zeros
     // rather than ship a number that looks real but isn't.
-    if (breakdown.navigationMapFlow) delete breakdown.navigationMapFlow.routeEfficiencyScore;
+    // `routeFollowingOverhead` goes with it, for the same reason one level up:
+    // it needs `plannedRouteTiles`, which this caller has no per-player
+    // equivalent of either. It arrives as an explicit `null` rather than a
+    // fake zero, so it is not actively misleading — but shipping one
+    // route-efficiency field as absent and its sibling as `null` would just
+    // invite the question, so both are dropped together.
+    if (breakdown.navigationMapFlow) {
+      delete breakdown.navigationMapFlow.routeEfficiencyScore;
+      delete breakdown.navigationMapFlow.routeFollowingOverhead;
+    }
     perPlayerTelemetry[id] = breakdown;
   }
 

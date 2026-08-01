@@ -15,10 +15,10 @@ import { DEMO_CAMPAIGN_NAME, loadDemoCampaignTree } from "./fs/demoCampaign";
 import { renderFileTree } from "./ui/fileTree";
 import { initConsoleSidebar } from "./ui/consoleSidebar";
 import { extensionOf, isParsable, parseFile } from "./parser/registry";
-import { MapGenerator } from "./map/mapGenerator";
+import { MapGenerator, type GenerateOptions } from "./map/mapGenerator";
 import type { GameMap } from "./map/types";
 import { renderExportMap } from "./map/exportView";
-import { RaycasterEngine, isTestHooksActive } from "./engine/engine";
+import { RaycasterEngine, SIMULATION_BALANCE, isTestHooksActive } from "./engine/engine";
 import { audio } from "./engine/audio";
 import { bgm } from "./engine/bgm";
 import { textures, type WadLoadSummary } from "./engine/textures";
@@ -62,6 +62,7 @@ import {
 import { DEFAULT_DIFFICULTY, type DifficultyLevel } from "./difficulty";
 import { randomSeed } from "./prng";
 import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelSegment } from "./engine/replay";
+import { balanceHashMatches, computeBalanceHash } from "./engine/balanceHash";
 import type { ParsedFile } from "./parser/types";
 import type { EngineCarryover, EngineStats, PlayerId, RosterSnapshotEntry } from "./engine/engine";
 import { createSession, fetchIceServers, fetchSession, fetchSessionAsHost, postAnswer, updateSession } from "./multiplayer/signalingClient";
@@ -1641,7 +1642,14 @@ async function startMultiplayerSessionAsHost(): Promise<void> {
     // "no owned weapons yet, level 1" shape `launchLevel` uses for a genuinely
     // new run.
     const missingWeaponIndices = computeMissingWeaponIndices([], 1);
-    const map = mapGenerator.generate(currentParsedFile, bonusLevel, false, missingWeaponIndices, roster.length);
+    const map = mapGenerator.generate(currentParsedFile, {
+      bonusLevel,
+      hasRocketLauncher: false,
+      missingWeaponIndices,
+      maxPlayers: roster.length,
+      hasSmg: false,
+      hasGas: false,
+    });
     const setupOptions: HostSessionSetupOptions = { map, difficulty: currentDifficulty, roster, gameplaySeed: randomSeed() };
     // Every guest's own handshake+map-transfer is an independent chunked
     // transfer with its own backpressure wait — fanned out concurrently, not
@@ -1733,7 +1741,14 @@ function findNextMultiplayerLevel(initialLevelPath: string): FindNextLevel {
           const ownedByEveryone = perPlayerOwned.length === 0 ? [] : perPlayerOwned.reduce((acc, owned) => acc.filter((w) => owned.includes(w)));
           const missingWeaponIndices = computeMissingWeaponIndices(ownedByEveryone, campaignLevelIndex);
           const bonusLevel = BONUS_LEVEL_EXTENSIONS.has(extensionOf(next.path));
-          const nextMap = mapGenerator.generate(parsed, bonusLevel, false, missingWeaponIndices, rosterIds.length);
+          const nextMap = mapGenerator.generate(parsed, {
+            bonusLevel,
+            hasRocketLauncher: false,
+            missingWeaponIndices,
+            maxPlayers: rosterIds.length,
+            hasSmg: ownedByEveryone.includes(GDB_WEAPON_INDEX),
+            hasGas: ownedByEveryone.includes(FRIDAY_HOTFIX_WEAPON_INDEX),
+          });
           afterPath = next.path;
           currentLevelPath = next.path;
           currentParsedFile = parsed;
@@ -1881,6 +1896,7 @@ if (isTestHooksActive()) {
         getMap: () => unknown | null;
         getEnemiesSnapshot: () => { x: number; y: number; alive: boolean; aggroed: boolean; elite: boolean; edgeCase: boolean; hp: number; maxHp: number }[];
         getMinesSnapshot: () => { x: number; y: number; alive: boolean; visible: boolean }[];
+        getProjectilesSnapshot: () => { x: number; y: number; vx: number; vy: number; damage: number; targetId: string }[];
         getDropsSnapshot: () => { x: number; y: number; kind: string }[];
         getKeysSnapshot: () => { x: number; y: number }[];
         getBotPlayerState: (id: string) => {
@@ -2004,6 +2020,7 @@ if (isTestHooksActive()) {
     getMap: () => activeMultiplayerSession?.getMap() ?? null,
     getEnemiesSnapshot: () => activeMultiplayerSession?.getEnemiesSnapshot() ?? [],
     getMinesSnapshot: () => activeMultiplayerSession?.getMinesSnapshot() ?? [],
+    getProjectilesSnapshot: () => activeMultiplayerSession?.getProjectilesSnapshot() ?? [],
     getDropsSnapshot: () => activeMultiplayerSession?.getDropsSnapshot() ?? [],
     getKeysSnapshot: () => activeMultiplayerSession?.getKeysSnapshot() ?? [],
     getBotPlayerState: (id) => activeMultiplayerSession?.getBotPlayerState(id) ?? null,
@@ -2395,10 +2412,38 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   // a distinct visual theme and a boosted loot rate, treating them as restock
   // arenas rather than normal combat levels (see `MapGenerator.generate`).
   const bonusLevel = BONUS_LEVEL_EXTENSIONS.has(extensionOf(path));
-  const hasRocketLauncher = carryover?.ownedWeapons?.includes(GHIDRA_WEAPON_INDEX) ?? false;
-  const ownedWeapons = carryover?.ownedWeapons ?? [];
-  const missingWeaponIndices = computeMissingWeaponIndices(ownedWeapons, campaignLevelIndex);
-  const map = mapGenerator.generate(parsed, bonusLevel, hasRocketLauncher, missingWeaponIndices);
+
+  // Campaign-progression safety net: gdb/ghidra/Friday Hotfix are
+  // force-added to ownedWeapons once the player reaches level 4/8/12,
+  // regardless of whether an Elite ever dropped them — never removes
+  // anything, so a weapon already earned by looting is unaffected.
+  //
+  // Computed *before* the map is generated, and the map is generated from it,
+  // because this is the carryover the segment records and therefore the one
+  // `buildEngineFor` regenerates from at playback. Deriving the generation
+  // options from the raw `carryover` here instead meant record and playback
+  // built different maps whenever this safety net fired: measured, the
+  // weapon-ownership options leave the enemy roster byte-identical but do
+  // change `ammoPickups` and the grid, since Vendor Depots stock ammo for
+  // what you already own. A replay crossing level 4/8/12 then walked a map
+  // with different pickups than the run that was recorded.
+  //
+  // It also removes a live-play inconsistency in its own right: the engine is
+  // constructed with these forced weapons, so a depot that stocked no ammo
+  // for them was already contradicting the weapon the player was just handed.
+  const effectiveCarryover: EngineCarryover | undefined = carryover
+    ? {
+        ...carryover,
+        // `?? []` is unreachable: every real call site that builds a
+        // carryover (Continue Run's saved ownedWeapons, an advancing
+        // level's stats.ownedWeapons) always populates a real array.
+        /* v8 ignore next -- @preserve */
+        ownedWeapons: applyForcedUnlocks(carryover.ownedWeapons ?? [], campaignLevelIndex),
+        campaignLevelIndex,
+      }
+    : undefined;
+
+  const map = mapGenerator.generate(parsed, mapGenerationOptionsFor(effectiveCarryover, campaignLevelIndex, bonusLevel));
   // Deliberately spoiler-free: no exit/secret-room/lore-terminal coordinates
   // in the printed text, since that string is also what the console sidebar
   // mirrors verbatim (see `src/ui/consoleSidebar.ts`) — a glance at it
@@ -2473,22 +2518,6 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
   // change (multi-level advance, retry after death, or a fresh manual pick).
   canvas.focus();
 
-  // Campaign-progression safety net: gdb/ghidra/Friday Hotfix are
-  // force-added to ownedWeapons once the player reaches level 4/8/12,
-  // regardless of whether an Elite ever dropped them — never removes
-  // anything, so a weapon already earned by looting is unaffected.
-  const effectiveCarryover: EngineCarryover | undefined = carryover
-    ? {
-        ...carryover,
-        // `?? []` is unreachable: every real call site that builds a
-        // carryover (Continue Run's saved ownedWeapons, an advancing
-        // level's stats.ownedWeapons) always populates a real array.
-        /* v8 ignore next -- @preserve */
-        ownedWeapons: applyForcedUnlocks(carryover.ownedWeapons ?? [], campaignLevelIndex),
-        campaignLevelIndex,
-      }
-    : undefined;
-
   // A fresh, non-deterministic seed for this level's own randomness (enemy AI
   // timing/roam targets, loot rolls, weapon spread) — recorded (alongside
   // every frame's input) so this exact run can be reproduced later. See
@@ -2513,6 +2542,10 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
       carryover: effectiveCarryover,
     },
     hashRun(JSON.stringify(parsed), campaignName()),
+    // `map` is the freshly generated one for this level, which is what
+    // `computeBalanceHash` requires — see its module comment on why a
+    // mid-run map would fold live state into the fingerprint.
+    computeBalanceHash(map, SIMULATION_BALANCE),
   );
 
   activeEngine = new RaycasterEngine(
@@ -2606,6 +2639,36 @@ const FORCED_UNLOCK_LEVELS: { level: number; weaponIndex: number; name: string }
  * has reached — never removes anything, so a weapon already earned by
  * looting is unaffected. Logs only the first time an entry actually adds
  * something (i.e. wasn't already owned), not on every subsequent level. */
+/**
+ * The `generate()` options for a level, derived from the carryover that will
+ * be *recorded* for it.
+ *
+ * Shared by `launchLevel` and the replay's own `buildEngineFor` on purpose.
+ * These options used to be derived independently at each site, from two
+ * different objects: `launchLevel` used the raw `carryover`, while the segment
+ * it recorded stored `effectiveCarryover` — which force-adds gdb/ghidra/Friday
+ * Hotfix at campaign levels 4/8/12 — and playback regenerated from that. So a
+ * replay crossing one of those boundaries rebuilt a *different map* than the
+ * run it was replaying. Measured: the weapon-ownership options leave the enemy
+ * roster byte-identical but do change `ammoPickups` and the grid, since Vendor
+ * Depots stock ammo for what you already own.
+ *
+ * One function, called with the same carryover at both ends, makes that class
+ * of drift unrepresentable rather than merely fixed.
+ */
+export function mapGenerationOptionsFor(carryover: EngineCarryover | undefined, campaignLevelIndex: number, bonusLevel: boolean): GenerateOptions {
+  const ownedWeapons = carryover?.ownedWeapons ?? [];
+  return {
+    bonusLevel,
+    hasRocketLauncher: ownedWeapons.includes(GHIDRA_WEAPON_INDEX),
+    missingWeaponIndices: computeMissingWeaponIndices(ownedWeapons, campaignLevelIndex),
+    // Same ownership gate as `hasRocketLauncher`, for the two ammo pools a
+    // Vendor Depot may also stock.
+    hasSmg: ownedWeapons.includes(GDB_WEAPON_INDEX),
+    hasGas: ownedWeapons.includes(FRIDAY_HOTFIX_WEAPON_INDEX),
+  };
+}
+
 export function applyForcedUnlocks(owned: number[], levelIndex: number): number[] {
   const unlocked = new Set(owned);
   for (const { level, weaponIndex, name } of FORCED_UNLOCK_LEVELS) {
@@ -3571,11 +3634,10 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
 
     /** Builds a fresh engine for `segment`/`parsed`, wired the same way for
      * both a normal level load and an in-place restart (seeking backward). */
-    const buildEngineFor = (segment: ReplayLevelSegment, parsed: ParsedFile): void => {
-      const hasRocketLauncher = segment.carryover?.ownedWeapons?.includes(GHIDRA_WEAPON_INDEX) ?? false;
-      const segmentOwnedWeapons = segment.carryover?.ownedWeapons ?? [];
-      const missingWeaponIndices = computeMissingWeaponIndices(segmentOwnedWeapons, segment.carryover?.campaignLevelIndex ?? 1);
-      const map = mapGenerator.generate(parsed, segment.bonusLevel, hasRocketLauncher, missingWeaponIndices);
+    const buildEngineFor = (segment: ReplayLevelSegment, parsed: ParsedFile): GameMap => {
+      // Same derivation as `launchLevel`'s, from the same carryover it
+      // recorded — see `mapGenerationOptionsFor`.
+      const map = mapGenerator.generate(parsed, mapGenerationOptionsFor(segment.carryover, segment.carryover?.campaignLevelIndex ?? 1, segment.bonusLevel));
       currentParsed = parsed;
       currentSegment = segment;
       replayInput = new ReplayPlaybackInput();
@@ -3606,6 +3668,7 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
         replayInput,
         undefined, // never record a replay of a replay
       );
+      return map;
     };
 
     // Loads `payload.levels[levelIndex]`, advances `levelIndex` past it, and
@@ -3644,7 +3707,18 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
         return;
       }
 
-      buildEngineFor(segment, parsed);
+      const builtMap = buildEngineFor(segment, parsed);
+      // Balance drift, checked after the map exists. Distinct from the
+      // `astHash` check above: the source file can be byte-identical while
+      // the world it generates is not (enemy HP is generated *from* the AST,
+      // not part of it), which would otherwise replay the recorded inputs
+      // against a differently balanced game and silently show a run that no
+      // longer matches its own score.
+      const currentBalance = await computeBalanceHash(builtMap, SIMULATION_BALANCE);
+      if (!balanceHashMatches(segment.balanceHash, currentBalance)) {
+        endReplay(`"${segment.filePath}" was recorded under different game balance — this replay can't be trusted to match its score anymore.`);
+        return;
+      }
       if (isReplaying) rafId = requestAnimationFrame(step);
     };
 

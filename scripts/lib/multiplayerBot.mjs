@@ -2,23 +2,31 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 /**
- * A multiplayer-driving `Bot` — reuses every bit of `bot.mjs`'s decision
- * logic (`tick`/`driveLegs`/`driveToward`/`driveTowardWithReplan`/
- * `faceAngle`/`holdForwardFine`) unchanged, overriding only the three
- * methods `bot.mjs`'s own doc comment already calls out as the intended
- * swap point for "a future non-Playwright control surface (e.g. a
- * multiplayer bot)": `readFull`/`readState`/`applyAction`. Those three (plus
- * `maybeDetourForLoot`, overridden separately below) are the *only* places
- * `Bot` touches `window.__codeensteinTestHooks` directly — everything else
- * operates on the plain `{x,y,...}` data those three hand it, so it works
+ * A multiplayer-driving `Bot` — reuses every bit of the decision logic
+ * (`combatPolicy.mjs`'s `decide()`, plus `bot.mjs`'s
+ * `tick`/`driveLegs`/`driveToward`/`driveTowardWithReplan`/`faceAngle`/
+ * `holdForwardFine`) unchanged, overriding only the narrow methods that
+ * actually touch the browser: `readFull`/`readState`/`dispatchSegment` (plus
+ * `maybeDetourForLoot`, overridden separately below). Those are the *only*
+ * places `Bot` reaches `window.__codeensteinTestHooks` directly — everything
+ * else operates on the plain `{x,y,...}` data they hand it, so it works
  * identically here against `window.__codeensteinMultiplayerTestHooks`
  * instead, for an explicit roster `playerId` instead of an implicit local
  * player.
  *
+ * `dispatchSegment` rather than `applyAction` is deliberate and recent. This
+ * class used to reimplement the whole of `applyAction`, and the timing bugs
+ * catalogued below all trace to the two copies drifting apart. `applyAction`
+ * now owns only the parts that must not diverge — resolving a decision's
+ * duration, advancing the simulated clock, and splitting per-key holds into
+ * dispatch phases — and is inherited; this class overrides just the page-
+ * touching half. Narrowing the override surface is what makes that class of
+ * bug structurally harder rather than merely documented.
+ *
  * Two real differences from single-player, both load-bearing:
  *  - No virtual clock exists in multiplayer (the sim is paced by a real Web
  *    Worker on a real timer, not `window.__pumpVirtualTime`) — this class's
- *    `applyAction` always behaves like `Bot`'s own realtime/headed branch
+ *    `dispatchSegment` always behaves like `Bot`'s own realtime/headed branch
  *    (real `page.waitForTimeout`), regardless of `opts.realtime`.
  *  - `maybeDetourForLoot` is overridden below to read the multiplayer-
  *    specific `getDropsSnapshot`/`getKeysSnapshot` hooks instead of
@@ -83,12 +91,29 @@
  *    `MultiplayerBot`-only gap, not a shared one.
  */
 import { Bot } from "./bot.mjs";
+import { numberKeyCodeFor } from "./combatPolicy.mjs";
 import { bfsPath, pathToWaypoints } from "./pathfind.mjs";
 
 /** See this module's own doc comment's last bullet for the full reasoning —
  * long enough that `INPUT_DELAY_TICKS`' fixed ~100ms delay is a minority of
  * the window, not the majority of it. */
 const DEFAULT_STEP_MS = 400;
+
+/** Floor for `Bot#minDecisionMs` here — a decision shorter than this puts
+ * `INPUT_DELAY_TICKS`' fixed ~100ms back into majority of the window, which is
+ * the failure this module's `DEFAULT_STEP_MS` exists to avoid. Set to 3x that
+ * delay, the same "delay is a minority" rule `DEFAULT_STEP_MS` is derived from.
+ *
+ * This matters because a decision window is not only chosen by `stepMs` — the
+ * burst helpers shorten it, so any *speed* increase silently shortens it too.
+ * Sprinting on straight navigation legs halved the window for a given leg
+ * length and reintroduced the spin-in-place failure verbatim, breaking
+ * `verify:multiplayer-transition` while single-player telemetry improved
+ * ~30%. The bot now walks a leg whose sprint window would fall under this
+ * floor; at a 1-tile waypoint spacing that is most legs here, which is the
+ * intended conservative outcome — sprinting is a single-player win until the
+ * decision loop is restructured to hold each key for its own duration. */
+const MIN_DECISION_MS = 300;
 
 /** See this module's own doc comment for the full reasoning — comfortably
  * above the max realistic per-decision travel distance at `DEFAULT_STEP_MS`
@@ -157,11 +182,23 @@ export class MultiplayerBot extends Bot {
     this.lastDetourCheckAt = 0;
   }
 
+  /** See `MIN_DECISION_MS`. Unlike single-player's virtual clock, a decision
+   * here has to survive a real ~100ms transport delay before the simulation
+   * sees it, so the window can't be allowed to shrink to the delay's scale. */
+  get minDecisionMs() {
+    return MIN_DECISION_MS;
+  }
+
   async readFull() {
     const r = await this.page.evaluate(
       (id) => {
         const hooks = window.__codeensteinMultiplayerTestHooks;
-        return { player: hooks.getBotPlayerState(id), enemies: hooks.getEnemiesSnapshot(), mines: hooks.getMinesSnapshot() };
+        return {
+          player: hooks.getBotPlayerState(id),
+          enemies: hooks.getEnemiesSnapshot(),
+          mines: hooks.getMinesSnapshot(),
+          projectiles: hooks.getProjectilesSnapshot?.() ?? [],
+        };
       },
       this.playerId,
     );
@@ -238,45 +275,63 @@ export class MultiplayerBot extends Bot {
   }
 
   /**
-   * Same real Node<->browser control boundary as `Bot.applyAction` (real
-   * synthetic `KeyboardEvent`s on the canvas, an edge-triggered weapon-
-   * switch, melee-vs-ranged fire key choice) but always the realtime/headed
-   * shape — see this module's own doc comment for why multiplayer can never
-   * use the virtual-clock branch.
+   * Same real Node<->browser control boundary as `Bot.dispatchSegment` (real
+   * synthetic `KeyboardEvent`s on the canvas, an edge-triggered weapon-switch,
+   * melee-vs-ranged fire key choice) but always the realtime shape — see this
+   * module's own doc comment for why multiplayer can never use the
+   * virtual-clock branch.
+   *
+   * This is the *only* dispatch method overridden here. `applyAction`'s
+   * segmentation and clock bookkeeping are deliberately inherited rather than
+   * duplicated: this class previously reimplemented the whole of `applyAction`,
+   * and every timing bug this module documents came from the two copies
+   * drifting apart. Overriding the narrow page-touching half makes that class
+   * of bug structurally harder.
    */
-  async applyAction(desiredMoveKeys, fire, weaponSwitchIndex, useMelee, stepMsOverride) {
-    const stepMs = stepMsOverride ?? this.stepMs;
-    this.simTimeMs += stepMs;
+  async dispatchSegment(keys, ms, { fire, useMelee, weaponSwitchIndex, isFirst, isLast }) {
     const id = this.playerId;
     const fireCode = await this.page.evaluate(
-      ({ desiredKeys, fire, weaponSwitchIndex, useMelee }) => {
+      ({ desiredKeys, fire, weaponSwitchCode, useMelee, isFirst }) => {
         const canvas = document.querySelector("canvas.scene-canvas");
         const desired = new Set(desiredKeys);
         const held = (window.__botHeldKeys ??= new Set());
         for (const code of held) if (!desired.has(code)) canvas.dispatchEvent(new KeyboardEvent("keyup", { code }));
         for (const code of desired) if (!held.has(code)) canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
         window.__botHeldKeys = desired;
-        if (weaponSwitchIndex !== null && weaponSwitchIndex !== undefined) {
-          const code = `Digit${weaponSwitchIndex + 1}`;
-          canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
-          canvas.dispatchEvent(new KeyboardEvent("keyup", { code }));
+        if (isFirst && weaponSwitchCode) {
+          canvas.dispatchEvent(new KeyboardEvent("keydown", { code: weaponSwitchCode }));
+          canvas.dispatchEvent(new KeyboardEvent("keyup", { code: weaponSwitchCode }));
         }
         const fc = fire ? (useMelee ? "Space" : "Backquote") : null;
-        if (fc) canvas.dispatchEvent(new KeyboardEvent("keydown", { code: fc }));
+        if (fc && isFirst) canvas.dispatchEvent(new KeyboardEvent("keydown", { code: fc }));
         return fc;
       },
-      { desiredKeys: [...desiredMoveKeys], fire, weaponSwitchIndex, useMelee },
+      // See `numberKeyCodeFor` — a digit indexes `NUMBER_KEY_WEAPONS`, not `WEAPONS`.
+      { desiredKeys: [...keys], fire, weaponSwitchCode: weaponSwitchIndex == null ? null : numberKeyCodeFor(weaponSwitchIndex), useMelee, isFirst },
     );
-    await this.page.waitForTimeout(stepMs);
+    await this.page.waitForTimeout(ms);
     const r = await this.page.evaluate(
       ({ fireCode, id }) => {
         const canvas = document.querySelector("canvas.scene-canvas");
         if (fireCode) canvas.dispatchEvent(new KeyboardEvent("keyup", { code: fireCode }));
         const hooks = window.__codeensteinMultiplayerTestHooks;
-        return { player: hooks.getBotPlayerState(id), enemies: hooks.getEnemiesSnapshot(), mines: hooks.getMinesSnapshot() };
+        return {
+          player: hooks.getBotPlayerState(id),
+          enemies: hooks.getEnemiesSnapshot(),
+          mines: hooks.getMinesSnapshot(),
+          projectiles: hooks.getProjectilesSnapshot?.() ?? [],
+        };
       },
-      { fireCode, id },
+      { fireCode: isLast ? fireCode : null, id },
     );
     return { ...r, player: r.player ?? SESSION_ENDED_PLAYER_STATE };
+  }
+
+  /** See `MIN_DECISION_MS`. A dispatch phase shorter than the lockstep input
+   * delay never lands before the next one is issued, so multiplayer refuses to
+   * subdivide a decision at all — `segmentsFor` collapses back to the
+   * single-phase behaviour this class has always had. */
+  get minPhaseMs() {
+    return MIN_DECISION_MS;
   }
 }

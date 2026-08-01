@@ -211,6 +211,7 @@ describe("AudioManager simple one-shot effects", () => {
     ["playExplosion", () => audio.playExplosion()],
     ["playRocketExplosion", () => audio.playRocketExplosion()],
     ["playSecret", () => audio.playSecret()],
+    ["playAcidOverflow", () => audio.playAcidOverflow()],
     ["playMultiKill", () => audio.playMultiKill()],
     ["playUltraKill", () => audio.playUltraKill()],
   ];
@@ -237,6 +238,24 @@ describe("AudioManager simple one-shot effects", () => {
     ctx.createOscillator.mockClear();
     audio.playSecret();
     expect(ctx.createOscillator).toHaveBeenCalledTimes(3);
+  });
+
+  it("plays a sinking drone plus a filtered hiss for playAcidOverflow", () => {
+    // Deliberately the darkest cue in here: everything else is a short bright
+    // blip confirming something the player did, this one warns about something
+    // happening to them (see the method's own doc comment).
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const ctx = audio.resume() as unknown as MockAudioContext;
+    audio.playAcidOverflow();
+    expect(ctx.createOscillator).toHaveBeenCalledTimes(1);
+    expect(ctx.createBufferSource).toHaveBeenCalledTimes(1);
+    const osc = ctx.createOscillator.mock.results.at(-1)?.value;
+    expect(osc.type).toBe("triangle");
+    // Sinks rather than rises — the opposite shape to `playPickup`'s blip.
+    const [startFreq] = osc.frequency.setValueAtTime.mock.calls.at(-1) ?? [];
+    const [endFreq] = osc.frequency.exponentialRampToValueAtTime.mock.calls.at(-1) ?? [];
+    expect(endFreq).toBeLessThan(startFreq);
+    expect(ctx.createBiquadFilter.mock.results.at(-1)?.value.type).toBe("bandpass");
   });
 
   it("plays a bigger arpeggio plus a noise burst for playUltraKill than playMultiKill", () => {

@@ -599,6 +599,59 @@ describe("main.ts — multiplayerResultRows", () => {
   });
 });
 
+describe("main.ts — mapGenerationOptionsFor", () => {
+  /** The carryover `launchLevel` records for a level: the raw one with the
+   * campaign-progression safety net applied, which is what the replay segment
+   * stores and therefore what playback regenerates from. */
+  const recordedCarryover = async (owned: number[], levelIndex: number) => {
+    const { applyForcedUnlocks } = await importMain();
+    return { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0, ownedWeapons: applyForcedUnlocks(owned, levelIndex), campaignLevelIndex: levelIndex };
+  };
+
+  it("derives identical options at record time and at playback, across a forced-unlock boundary", async () => {
+    // The regression this exists for: `launchLevel` used to derive these from
+    // the *raw* carryover while the recorded segment stored the safety-net one,
+    // so a replay crossing level 4/8/12 rebuilt a different map than the run it
+    // was replaying — different Vendor Depot stock, same enemies.
+    const { mapGenerationOptionsFor } = await importMain();
+    for (const levelIndex of [4, 8, 12]) {
+      const carryover = await recordedCarryover([0, 1, 2], levelIndex);
+      const atRecordTime = mapGenerationOptionsFor(carryover, levelIndex, false);
+      // Exactly what `buildEngineFor` has to work from: the stored segment.
+      const atPlayback = mapGenerationOptionsFor(carryover, carryover.campaignLevelIndex, false);
+      expect(atPlayback).toEqual(atRecordTime);
+    }
+  });
+
+  it("reflects the force-unlocked weapon rather than the raw ownership", async () => {
+    const { mapGenerationOptionsFor } = await importMain();
+    // Level 4 force-adds gdb, so the depots must stock its ammo — the engine
+    // hands the player that weapon either way.
+    const withSafetyNet = await recordedCarryover([0, 1, 2], 4);
+    expect(mapGenerationOptionsFor(withSafetyNet, 4, false).hasSmg).toBe(true);
+    // Below the boundary nothing is added, so nothing is stocked.
+    const below = await recordedCarryover([0, 1, 2], 3);
+    expect(mapGenerationOptionsFor(below, 3, false).hasSmg).toBe(false);
+  });
+
+  it("treats a fresh run with no carryover the same way playback's fallback does", async () => {
+    // `buildEngineFor` falls back to `?? 1` / `?? []` when a segment has no
+    // carryover, which is the level-1 case — the two must still agree.
+    const { mapGenerationOptionsFor } = await importMain();
+    expect(mapGenerationOptionsFor(undefined, 1, false)).toEqual(mapGenerationOptionsFor(undefined, 1, false));
+    const fresh = mapGenerationOptionsFor(undefined, 1, false);
+    expect(fresh.hasRocketLauncher).toBe(false);
+    expect(fresh.hasSmg).toBe(false);
+    expect(fresh.hasGas).toBe(false);
+  });
+
+  it("passes bonusLevel straight through", async () => {
+    const { mapGenerationOptionsFor } = await importMain();
+    expect(mapGenerationOptionsFor(undefined, 1, true).bonusLevel).toBe(true);
+    expect(mapGenerationOptionsFor(undefined, 1, false).bonusLevel).toBe(false);
+  });
+});
+
 describe("main.ts — applyForcedUnlocks", () => {
   it("adds nothing below level 4", async () => {
     const { applyForcedUnlocks } = await importMain();
@@ -3273,6 +3326,7 @@ describe("main.ts — multiplayer connect flow", () => {
       getMap: () => unknown | null;
       getEnemiesSnapshot: () => unknown[];
       getMinesSnapshot: () => unknown[];
+      getProjectilesSnapshot: () => unknown[];
       getDropsSnapshot: () => unknown[];
       getKeysSnapshot: () => unknown[];
       getBotPlayerState: (id: string) => { x: number; y: number; state: string } | null;
@@ -3302,6 +3356,7 @@ describe("main.ts — multiplayer connect flow", () => {
             getMap: () => unknown | null;
             getEnemiesSnapshot: () => unknown[];
             getMinesSnapshot: () => unknown[];
+            getProjectilesSnapshot: () => unknown[];
             getDropsSnapshot: () => unknown[];
             getKeysSnapshot: () => unknown[];
             getBotPlayerState: (id: string) => { x: number; y: number; state: string } | null;
@@ -3378,6 +3433,10 @@ describe("main.ts — multiplayer connect flow", () => {
         loreTerminals: [],
         bonusLevel: false,
         secretRoomCount: 0,
+        switchboardRooms: [],
+        exceptionZones: [],
+        vendorDepots: [],
+        acidOverflows: [],
       };
     }
 
@@ -3438,6 +3497,7 @@ describe("main.ts — multiplayer connect flow", () => {
         expect(multiplayerHooks().getMap()).toBeNull();
         expect(multiplayerHooks().getEnemiesSnapshot()).toEqual([]);
         expect(multiplayerHooks().getMinesSnapshot()).toEqual([]);
+        expect(multiplayerHooks().getProjectilesSnapshot()).toEqual([]);
         expect(multiplayerHooks().getBotPlayerState("host")).toBeNull();
         expect(multiplayerHooks().getDropsSnapshot()).toEqual([]);
         expect(multiplayerHooks().getKeysSnapshot()).toEqual([]);
@@ -3505,6 +3565,7 @@ describe("main.ts — multiplayer connect flow", () => {
         expect(hooks.getMap()).not.toBeNull();
         expect(Array.isArray(hooks.getEnemiesSnapshot())).toBe(true);
         expect(Array.isArray(hooks.getMinesSnapshot())).toBe(true);
+        expect(Array.isArray(hooks.getProjectilesSnapshot())).toBe(true);
         expect(hooks.getBotPlayerState("host")).toMatchObject({ state: "playing" });
         expect(Array.isArray(hooks.getDropsSnapshot())).toBe(true);
         expect(Array.isArray(hooks.getKeysSnapshot())).toBe(true);
@@ -3573,6 +3634,10 @@ describe("main.ts — multiplayer connect flow", () => {
         loreTerminals: [],
         bonusLevel: false,
         secretRoomCount: 0,
+        switchboardRooms: [],
+        exceptionZones: [],
+        vendorDepots: [],
+        acidOverflows: [],
       };
     }
 
@@ -5745,11 +5810,12 @@ async function recordNavigatedSegment(options: {
   // pattern engine.test.ts established in Phase 10.
   stubCanvasGetContext(document.createElement("canvas"));
   const { MapGenerator } = await import("./map/mapGenerator");
-  const { RaycasterEngine } = await import("./engine/engine");
+  const { RaycasterEngine, SIMULATION_BALANCE } = await import("./engine/engine");
+  const { computeBalanceHash } = await import("./engine/balanceHash");
   const { CampaignReplayRecorder } = await import("./engine/replay");
 
   const parsed = (await parseFile("main.c", options.sourceContent))!;
-  const map = new MapGenerator().generate(parsed, false, true, []);
+  const map = new MapGenerator().generate(parsed);
   const canvas = document.createElement("canvas");
   canvas.width = 640;
   canvas.height = 400;
@@ -5775,6 +5841,10 @@ async function recordNavigatedSegment(options: {
   recorder.startLevel(
     { filePath: "recorded.c", bonusLevel: false, gameplaySeed, difficulty: "normal", gore: "normal", carryover },
     Promise.resolve("placeholder-hash"),
+    // The *real* balance hash, not a placeholder: playback recomputes it from
+    // the map it regenerates and refuses the replay on a mismatch, which is
+    // the whole point of the guard.
+    computeBalanceHash(map, SIMULATION_BALANCE),
   );
 
   const engine = new RaycasterEngine(
@@ -6024,6 +6094,31 @@ describe("main.ts — replay playback (startReplay)", () => {
     // directly) — reaching this point without throwing, with the canvas
     // area shown (the "Replay Ended" overlay renders inside it), is the
     // signal the hash-mismatch path was taken instead of a live level.
+    dismissBriefingHelper(raf);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden"), 8000);
+  });
+
+  it("refuses a replay recorded under different game balance", async () => {
+    // The `astHash` here is deliberately *valid* — the source file is
+    // unchanged, which is exactly the case that check cannot catch. Enemy HP
+    // is generated from the AST rather than being part of it, so halving
+    // ELITE_HP_MULTIPLIER left every astHash matching while making the
+    // recorded inputs play out against a differently balanced world.
+    await importMain();
+    const segment = await buildReplaySegment(5);
+    segment.balanceHash = "stale-balance-hash-from-before-a-rebalance";
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": REPLAY_FIXTURE_C }));
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    // Same async-chain caveat as the astHash-mismatch test above: the check
+    // runs after buildEngineFor and its own SHA-256 await, so it needs real
+    // event-loop yields between rAF rounds rather than one synchronous flush.
+    let flushed = 0;
+    await waitUntil(() => {
+      flushed += raf.flush(1, 16);
+      return flushed > 5;
+    }, 8000);
     dismissBriefingHelper(raf);
     await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden"), 8000);
   });

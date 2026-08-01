@@ -8,6 +8,8 @@ public/wads/
 coverage
 balancing_telemetry.json
 multiplayer_balancing_telemetry.json
+# Pre-change snapshots of the above, same convention as balancing_runs_*/
+multiplayer_balancing_telemetry_pre-*.json
 balancing_runs/
 balancing_runs_*/
 perf_runs/
@@ -26,3 +28,6 @@ docker/.env
 campaign-launch-*.log
 campaign-ratecheck-*.log
 watch_trace.log
+
+# One-shot bot-wedge diagnostic artifacts (scripts/diagnose-level-wedge.mjs)
+wedge-diagnosis/

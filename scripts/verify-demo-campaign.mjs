@@ -87,6 +87,11 @@ async function main() {
     bonusLevelCount: 0,
     languagesSeen: new Set(),
     parseFailures: [],
+    switchboardRoomCount: 0,
+    exceptionZoneCount: 0,
+    vendorDepotCount: 0,
+    vendorAmmoKinds: new Set(),
+    acidOverflowCount: 0,
   };
 
   let anyFailure = false;
@@ -104,7 +109,12 @@ async function main() {
     }
 
     const bonusLevel = extensionOf(filename) === "h";
-    const map = generator.generate(parsed, bonusLevel, false, [3, 4, 5]);
+    // `hasSmg`/`hasGas` are passed true so Vendor Depot smg/gas stock is
+    // reachable for the checklist below — this script is a coverage sweep over
+    // what the generator *can* produce, not a simulation of one real run's
+    // weapon ownership (which is also why `missingWeaponIndices` lists the
+    // same weapons).
+    const map = generator.generate(parsed, { bonusLevel, hasRocketLauncher: false, missingWeaponIndices: [3, 4, 5], hasSmg: true, hasGas: true });
 
     coverage.languagesSeen.add(parsed.language);
     if (bonusLevel) coverage.bonusLevelCount += 1;
@@ -118,6 +128,20 @@ async function main() {
     if (map.doors.length > 0) coverage.lockedDoorSeen = true;
     if (map.hazards.length > 0) coverage.hazardSeen = true;
     if (map.teleporters.length > 0) coverage.teleporterPairLevels.push(filename);
+    coverage.switchboardRoomCount += map.switchboardRooms.length;
+    coverage.exceptionZoneCount += map.exceptionZones.length;
+    coverage.vendorDepotCount += map.vendorDepots.length;
+    coverage.acidOverflowCount += map.acidOverflows.length;
+    const depotTiles = new Set(
+      map.vendorDepots.flatMap((d) => {
+        const keys = [];
+        for (let y = d.y; y < d.y + d.h; y++) for (let x = d.x; x < d.x + d.w; x++) keys.push(`${x},${y}`);
+        return keys;
+      }),
+    );
+    for (const pickup of map.ammoPickups) {
+      if (depotTiles.has(`${Math.floor(pickup.x)},${Math.floor(pickup.y)}`)) coverage.vendorAmmoKinds.add(pickup.kind);
+    }
 
     const secretKindsInSource = new Set(parsed.secretTriggers.map((t) => t.kind));
     if (map.secretRoomCount > 0) {
@@ -142,6 +166,12 @@ async function main() {
     console.log(`  secretRoomCount=${map.secretRoomCount}, secretTriggerKindsInSource=${[...secretKindsInSource].join(", ") || "none"}`);
     console.log(
       `  loreTerminals=${map.loreTerminals.length}, todoTerminals=${todoTerminals.length}, todoOutcomes(best-effort)=${JSON.stringify(todoOutcomes)}`,
+    );
+    console.log(
+      `  switchboardRooms=${map.switchboardRooms.length} exceptionZones=${map.exceptionZones.length} vendorDepots=${map.vendorDepots.length} acidOverflows=${map.acidOverflows.length}`,
+    );
+    console.log(
+      `  importCount=${parsed.importCount}, switchEntities=${parsed.entities.filter((e) => e.switchBranches).length}, allocEntities=${parsed.entities.filter((e) => e.allocations).length}, tryCatches=${parsed.exceptionZones.length}`,
     );
     console.log(`  bonusLevel=${map.bonusLevel}`);
   }
@@ -169,6 +199,15 @@ async function main() {
     ["Secret trigger: deprecated", coverage.secretKindsSeen.has("deprecated")],
     ["Secret trigger: commentedCode", coverage.secretKindsSeen.has("commentedCode")],
     ["Secret trigger: magicBlob", coverage.secretKindsSeen.has("magicBlob")],
+    ["Switchboard case room observed", coverage.switchboardRoomCount > 0, `(${coverage.switchboardRoomCount} total)`],
+    ["Exception Handling Zone observed", coverage.exceptionZoneCount > 0, `(${coverage.exceptionZoneCount} total)`],
+    ["Vendor Depot observed", coverage.vendorDepotCount > 0, `(${coverage.vendorDepotCount} total)`],
+    [
+      "Vendor Depot stocked smg or gas",
+      coverage.vendorAmmoKinds.has("smg") || coverage.vendorAmmoKinds.has("gas"),
+      `(kinds seen: ${[...coverage.vendorAmmoKinds].join(", ") || "none"})`,
+    ],
+    ["Acid Overflow room observed", coverage.acidOverflowCount > 0, `(${coverage.acidOverflowCount} total)`],
     ["Bonus level present exactly once", coverage.bonusLevelCount === 1, `(count=${coverage.bonusLevelCount})`],
     ["All 15 languages parsed", coverage.languagesSeen.size === 15, `(${coverage.languagesSeen.size}/15: ${[...coverage.languagesSeen].sort().join(", ")})`],
     ["No parse failures", coverage.parseFailures.length === 0, coverage.parseFailures.join(", ")],

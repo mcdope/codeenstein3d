@@ -6,7 +6,13 @@
  * adapter only has to declare its own node-type vocabulary.
  */
 import type { Node } from "web-tree-sitter";
-import type { CodeComment, GotoLink, SecretTrigger } from "./types";
+import type {
+  CodeComment,
+  ExceptionZoneTrigger,
+  GotoLink,
+  SecretTrigger,
+  SwitchBranchSummary,
+} from "./types";
 
 /** Total line count; a single trailing newline is not counted as a new line. */
 export function countLines(text: string): number {
@@ -409,4 +415,241 @@ export function findMagicNumberBlobs(
     regions.push({ kind: "magicBlob", startLine: node.startPosition.row + 1, endLine: node.endPosition.row + 1 });
   }
   return regions;
+}
+
+/** How a catch-all branch is spelled when it isn't its own node type: a leading
+ * `default` keyword (C/C++/ObjC/Java/C#), a `_` wildcard pattern (Rust, Scala,
+ * Python, C#'s `discard`), or Bash's `*)` glob. Checked against the branch's own
+ * text, trimmed — see `summarizeSwitchBranches`. */
+const DEFAULT_BRANCH_TEXT = /^default\b/;
+const WILDCARD_PATTERN_TEXT = /^[_*]$/;
+/** Node types whose presence as a *sibling* of the case branches marks the
+ * catch-all: Ruby writes `case … when … else … end`, putting the fallback in an
+ * `else` node hanging off the `case` container rather than in a branch of its
+ * own. */
+const ELSE_BRANCH_NODE_TYPES = new Set(["else", "else_clause"]);
+
+/**
+ * Aggregate every `switch`/`match`/`case` branch under `root` into one summary,
+ * or `undefined` when there are none.
+ *
+ * Deliberately counts *branches only* and never scans for switch containers.
+ * That's not a shortcut — it's what makes one shared, cross-language node-type
+ * table possible at all: Bash's `case_statement` is the switch *container*,
+ * while C/C++/ObjC/PHP's `case_statement` is a single *branch*, so a table
+ * listing containers would double-count in one grammar or miss the other. A
+ * switch with no branches at all (`switch (x) {}`) correctly yields `undefined`
+ * — there'd be nothing for `placeSwitchboards` to build spokes from anyway.
+ *
+ * `excludeAncestorNodeTypes` drops branches nested inside an unrelated
+ * construct that happens to reuse the same branch node type — Scala spells
+ * `catch { case e: Exception => … }` with real `case_clause` nodes, which would
+ * otherwise turn every Scala try/catch into a Switchboard.
+ */
+export function summarizeSwitchBranches(
+  root: Node,
+  caseBranchNodeTypes: readonly string[],
+  defaultBranchNodeTypes: ReadonlySet<string>,
+  excludeAncestorNodeTypes: ReadonlySet<string>,
+): SwitchBranchSummary | undefined {
+  let caseCount = 0;
+  let hasDefault = false;
+  let sawBranch = false;
+
+  const branchTypes = new Set(caseBranchNodeTypes);
+  for (const branch of root.descendantsOfType([...caseBranchNodeTypes])) {
+    if (!branch.isNamed) continue;
+    if (hasAncestorOfType(branch, root, excludeAncestorNodeTypes)) continue;
+    // Bash's `case_statement` is the switch *container* whose direct children
+    // are the `case_item` branches, while C++/ObjC's `case_statement` is a
+    // branch — one shared table has to carry both, so a match holding another
+    // matched branch as a direct child is the container and is skipped. Only
+    // *direct* children count: a whole switch nested inside a branch body sits
+    // further down (under the inner switch's own body node) and must not
+    // disqualify the branch containing it.
+    if (branch.namedChildren.some((child) => child !== null && branchTypes.has(child.type))) continue;
+    sawBranch = true;
+    if (isDefaultBranch(branch, defaultBranchNodeTypes)) hasDefault = true;
+    else caseCount += 1;
+  }
+
+  if (!sawBranch) return undefined;
+  // Ruby's `else` fallback isn't a branch node, so it can't be found by the
+  // walk above — look for it as a sibling only once we know a switch exists.
+  if (!hasDefault) {
+    hasDefault = root
+      .descendantsOfType([...ELSE_BRANCH_NODE_TYPES])
+      .some((node) => node.isNamed && !isIfElse(node));
+  }
+  return { caseCount, hasDefault };
+}
+
+/** True if `node` is the `else` of an `if`, not of a `case`/`switch` — the same
+ * node type serves both in several grammars. */
+function isIfElse(node: Node): boolean {
+  const parentType = node.parent?.type ?? "";
+  return parentType.includes("if") || parentType.includes("conditional");
+}
+
+/** True if any ancestor strictly between `node` and `stopAt` (exclusive on both
+ * ends) has one of `types`. */
+function hasAncestorOfType(node: Node, stopAt: Node, types: ReadonlySet<string>): boolean {
+  if (types.size === 0) return false;
+  for (let cur = node.parent; cur !== null && cur.id !== stopAt.id; cur = cur.parent) {
+    if (types.has(cur.type)) return true;
+  }
+  return false;
+}
+
+/** Whether one case branch is the catch-all: by node type (JS `switch_default`,
+ * Go `default_case`, PHP `default_statement`), by a leading `default` keyword,
+ * or by a bare `_`/`*` wildcard pattern. */
+function isDefaultBranch(branch: Node, defaultBranchNodeTypes: ReadonlySet<string>): boolean {
+  if (defaultBranchNodeTypes.has(branch.type)) return true;
+  if (DEFAULT_BRANCH_TEXT.test(branch.text.trimStart())) return true;
+  // `pattern` before `value`: Rust's `match_arm` uses `value` for the arm's
+  // *body*, so checking `value` first would test `0` in `_ => 0` instead of the
+  // `_` that actually makes it the catch-all. `value` still comes ahead of the
+  // positional fallback for the grammars (C, PHP) that label the matched
+  // constant that way.
+  const pattern = branch.childForFieldName("pattern") ?? branch.childForFieldName("value") ?? branch.namedChildren[0];
+  return pattern !== null && pattern !== undefined && WILDCARD_PATTERN_TEXT.test(pattern.text.trim());
+}
+
+/**
+ * Every `try`/`catch`/`finally` construct under `root` (also `begin`/`rescue`/
+ * `ensure` and `try`/`except`/`finally`), source for Exception Handling Zones.
+ *
+ * A construct with neither a catch nor a finally clause is skipped: a bare
+ * `try` block is grammatically impossible in most languages, and the 3-part
+ * zone it would map to has no second or third part to build.
+ */
+export function findExceptionZones(
+  root: Node,
+  tryNodeTypes: readonly string[],
+  catchNodeTypes: ReadonlySet<string>,
+  finallyNodeTypes: ReadonlySet<string>,
+): ExceptionZoneTrigger[] {
+  const zones: ExceptionZoneTrigger[] = [];
+  for (const node of root.descendantsOfType([...tryNodeTypes])) {
+    if (!node.isNamed) continue;
+    let catchCount = 0;
+    let hasFinally = false;
+    for (const child of node.namedChildren) {
+      if (!child) continue;
+      if (catchNodeTypes.has(child.type)) catchCount += 1;
+      else if (finallyNodeTypes.has(child.type)) hasFinally = true;
+    }
+    if (catchCount === 0 && !hasFinally) continue;
+    zones.push({
+      startLine: node.startPosition.row + 1,
+      endLine: node.endPosition.row + 1,
+      catchCount,
+      hasFinally,
+    });
+  }
+  return zones;
+}
+
+/**
+ * Number of top-level `import`/`#include`/`require`/`use` declarations under
+ * `root`. Source for the "Vendor Depot" supply alcoves.
+ *
+ * "Top-level" is defined as *not inside any function/class body block* rather
+ * than by nesting depth: a lazily-`require`d module inside a function isn't a
+ * file-level dependency, while Go nests a grouped `import ( … )` three levels
+ * down (`import_declaration > import_spec_list > import_spec`) and PHP wraps
+ * `require` in an `expression_statement`, so any depth cap loose enough for
+ * those would also let a C `#include` inside a function body through.
+ * `bodyNodeTypes` is the same flat-statement-list set `findDeadCodeAfterReturn`
+ * already takes.
+ *
+ * Only *leaf-most* matches count — a matched node containing another matched
+ * node is skipped. That's what makes Go's two import spellings agree: a single
+ * `import "fmt"` nests one `import_spec` inside its `import_declaration` and
+ * counts once, while a grouped `import ( "os" \n "io" )` counts each spec, so
+ * ten grouped imports read as ten rather than as one.
+ *
+ * `callShapedImportNodeTypes` + `callImportPattern` cover the grammars with no
+ * import node at all: Ruby's `require`/`require_relative` and Bash's
+ * `source`/`.` are ordinary calls/commands, matched on their text instead.
+ */
+export function countTopLevelImports(
+  root: Node,
+  importNodeTypes: readonly string[],
+  callShapedImportNodeTypes: readonly string[],
+  callImportPattern: RegExp,
+  bodyNodeTypes: ReadonlySet<string>,
+): number {
+  const matchedTypes = new Set(importNodeTypes);
+  let count = 0;
+  for (const node of root.descendantsOfType([...importNodeTypes])) {
+    if (!node.isNamed || hasAncestorOfType(node, root, bodyNodeTypes)) continue;
+    const nested = node
+      .descendantsOfType([...importNodeTypes])
+      .some((inner) => inner.isNamed && inner.id !== node.id && matchedTypes.has(inner.type));
+    if (!nested) count += 1;
+  }
+
+  for (const node of root.descendantsOfType([...callShapedImportNodeTypes])) {
+    if (!node.isNamed || hasAncestorOfType(node, root, bodyNodeTypes)) continue;
+    if (callImportPattern.test(node.text.trimStart())) count += 1;
+  }
+  return count;
+}
+
+/**
+ * Number of explicit allocation expressions under `root` — source for the
+ * "Acid Overflow" room event. Three shapes are counted, all as +1 each:
+ *
+ * - an allocation *node type* (`new_expression`, `object_creation_expression`,
+ *   `stackalloc_expression`, …);
+ * - a call whose *callee name* matches `allocatorNamePattern` — this is what
+ *   reaches C's `malloc(64)`, Go's `make(...)`/`new(...)`, Rust's `Box::new`,
+ *   Ruby's `Array.new`, and ObjC's `[[NSObject alloc] init]`;
+ * - a fixed-size array declarator whose literal size reaches
+ *   `largeArrayMinSize` — the "large static arrays" half. A small `char[8]` is
+ *   deliberately not an allocation.
+ *
+ * Returns a raw count. The density threshold that turns a function into an
+ * acid room lives in the map layer — see `CodeEntity.allocations`.
+ */
+export function countAllocations(
+  root: Node,
+  allocationNodeTypes: readonly string[],
+  callNodeTypes: readonly string[],
+  allocatorNamePattern: RegExp,
+  arrayDeclaratorNodeTypes: readonly string[],
+  largeArrayMinSize: number,
+): number {
+  let count = root.descendantsOfType([...allocationNodeTypes]).filter((n) => n.isNamed).length;
+
+  for (const call of root.descendantsOfType([...callNodeTypes])) {
+    if (!call.isNamed) continue;
+    const callee = calleeName(call);
+    if (callee !== null && allocatorNamePattern.test(callee)) count += 1;
+  }
+
+  for (const declarator of root.descendantsOfType([...arrayDeclaratorNodeTypes])) {
+    if (!declarator.isNamed) continue;
+    const size = declarator.childForFieldName("size") ?? declarator.namedChildren.find((c) => c?.type.endsWith("number_literal"));
+    const parsed = size ? Number.parseInt(size.text, 10) : Number.NaN;
+    if (Number.isFinite(parsed) && parsed >= largeArrayMinSize) count += 1;
+  }
+
+  return count;
+}
+
+/** The name of whatever a call-shaped node is calling: the `function`/`name`
+ * field where the grammar has one, else the last identifier-ish direct child —
+ * which is exactly the selector of an ObjC `message_expression` (`[obj alloc]`)
+ * and the macro name of a Rust `macro_invocation` (`vec![…]`). */
+function calleeName(call: Node): string | null {
+  const viaField = call.childForFieldName("function") ?? call.childForFieldName("name") ?? call.childForFieldName("macro");
+  if (viaField) return viaField.text;
+  let last: string | null = null;
+  for (const child of call.namedChildren) {
+    if (child && /(^|_)(identifier|name)$/.test(child.type)) last = child.text;
+  }
+  return last;
 }

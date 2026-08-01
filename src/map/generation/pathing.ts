@@ -3,6 +3,7 @@
 
 /** Grid reachability / shortest-path helpers over the finished tile grid. */
 import { DOOR_TILE, LORE_TILE, SECRET_WALL_TILE, type Point, type Room, type Tile } from "../types";
+import { doorwayTiles } from "./geometry";
 import { key, neighbors } from "./util";
 
 /** BFS of tiles reachable from spawn; walls and unopened doors block. */
@@ -16,6 +17,10 @@ export function reachableTiles(grid: Tile[][], spawn: Point, opened: Set<string>
     const tile = grid[p.y]?.[p.x];
     if (tile === undefined || tile === 1) continue; // wall / out of bounds
     if (tile === DOOR_TILE && !opened.has(k)) continue; // still-locked door
+    // A branch door (8) is deliberately NOT gated here: it costs no key, so
+    // anything behind one is reachable the moment the player walks into it.
+    // Treating it as blocking would make `assertAllRoomsReachable` report a
+    // false isolation for a Switchboard hub whose only mouth is a spoke.
     seen.add(k);
     for (const n of neighbors(p)) stack.push(n);
   }
@@ -87,7 +92,10 @@ export function assertAllRoomsReachable(grid: Tile[][], spawn: Point, rooms: Roo
     }
     const frontierDoor = doors.find((d) => !opened.has(key(d)) && neighbors(d).some((n) => reachable.has(key(n))));
     if (!frontierDoor || keysHeld <= 0) break;
-    opened.add(key(frontierDoor));
+    // One key opens the whole doorway (see `doorwayTiles`) — this simulation
+    // has to spend keys exactly the way `openDoorAhead` does, or it would
+    // declare a level unsolvable that the engine can actually finish.
+    for (const tile of doorwayTiles(grid, frontierDoor)) opened.add(key(tile));
     keysHeld--;
   }
   const reachable = reachableTiles(grid, spawn, opened);

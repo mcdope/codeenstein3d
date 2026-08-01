@@ -1,5 +1,14 @@
 <?php
 
+namespace App\Billing;
+
+use App\Billing\Gateway\SoapClient;
+use App\Billing\Gateway\RetryPolicy;
+use App\Support\Logger;
+
+require_once __DIR__ . '/../vendor/soap-billing-sdk/bootstrap.php';
+require_once __DIR__ . '/../vendor/legacy-currency/autoload.php';
+
 /**
  * Talks to the old SOAP billing gateway that's supposedly going away next
  * quarter — that quarter has been "next quarter" for three years running.

@@ -13,30 +13,47 @@ import { Language, Parser } from "web-tree-sitter";
 import { initTreeSitter } from "../runtime";
 import {
   codeSmellBonus,
+  countAllocations,
   countDecisionPoints,
   countLines,
   countParameters,
+  countTopLevelImports,
   extractLargeCommentsFromNodes,
   findCommentedOutCodeBlocksFromNodes,
   findDeadCodeAfterReturn,
   findDeprecationMarkers,
   findEmptyCatchBlocks,
+  findExceptionZones,
   findMagicNumberBlobs,
   maxNestingDepth,
+  summarizeSwitchBranches,
 } from "../astUtils";
 import {
+  ALLOCATION_NODE_TYPES,
+  ALLOCATOR_NAME_PATTERN,
   ANNOTATION_NODE_TYPES,
+  ARRAY_DECLARATOR_NODE_TYPES,
   BLOCK_NODE_TYPES,
+  CALL_IMPORT_PATTERN,
+  CALL_NODE_TYPES,
+  CALL_SHAPED_IMPORT_NODE_TYPES,
+  CASE_BRANCH_NODE_TYPES,
   CATCH_NODE_TYPES,
   COMMENT_NODE_TYPES,
   DECISION_NODE_TYPES,
+  DEFAULT_BRANCH_NODE_TYPES,
   ENTITY_NODE_TYPES,
+  FINALLY_NODE_TYPES,
+  IMPORT_NODE_TYPES,
+  LARGE_ARRAY_MIN_SIZE,
   LOGICAL_OPERATORS,
   NESTING_NODE_TYPES,
+  NON_SWITCH_BRANCH_ANCESTOR_NODE_TYPES,
   NUMBER_LITERAL_NODE_TYPES,
   PARAMETER_LIST_NODE_TYPES,
   RETURN_NODE_TYPES,
   STRING_LITERAL_NODE_TYPES,
+  TRY_NODE_TYPES,
   entityName,
   extractGotos,
   genericGlobals,
@@ -59,6 +76,10 @@ const DEPRECATION_MARKER_NODE_TYPES: readonly string[] = [
  * that language's idiomatic form of a swallowed exception. Harmless for
  * every other bundled grammar, where this type name never occurs. */
 const EMPTY_CATCH_IGNORABLE_NODE_TYPES = new Set([...COMMENT_NODE_TYPES, "pass_statement"]);
+
+/** Set form of the shared `CATCH_NODE_TYPES` list, for `findExceptionZones`'
+ * per-child membership test (`findEmptyCatchBlocks` wants the list form). */
+const CATCH_NODE_TYPE_SET = new Set(CATCH_NODE_TYPES);
 
 /**
  * Static description of one generically-parsed language, plus the hooks a
@@ -143,6 +164,9 @@ export class GenericParserAdapter implements CodeParserAdapter {
         const isCallable = kind === "function" || kind === "method";
         const smellBonus = isCallable ? codeSmellBonus(countParameters(node, PARAMETER_LIST_NODE_TYPES), nestingDepth) : 0;
 
+        const switchBranches = summarizeSwitchBranches(node, CASE_BRANCH_NODE_TYPES, DEFAULT_BRANCH_NODE_TYPES, NON_SWITCH_BRANCH_ANCESTOR_NODE_TYPES);
+        const allocations = countAllocations(node, ALLOCATION_NODE_TYPES, CALL_NODE_TYPES, ALLOCATOR_NAME_PATTERN, ARRAY_DECLARATOR_NODE_TYPES, LARGE_ARRAY_MIN_SIZE);
+
         let entity: CodeEntity = {
           name: entityName(node),
           kind,
@@ -150,6 +174,11 @@ export class GenericParserAdapter implements CodeParserAdapter {
           endLine: node.endPosition.row + 1,
           complexityScore: 1 + countDecisionPoints(node, DECISION_NODE_TYPES, LOGICAL_OPERATORS) + smellBonus,
           nestingDepth,
+          // Both stay absent rather than present-and-zero when there's nothing
+          // to report, matching `visibility`'s "undefined means the default"
+          // convention and keeping the serialized `ParsedFile` free of noise.
+          ...(switchBranches ? { switchBranches } : {}),
+          ...(allocations > 0 ? { allocations } : {}),
         };
         if (this.config.refine) entity = this.config.refine(node, entity);
         entities.push(entity);
@@ -177,6 +206,8 @@ export class GenericParserAdapter implements CodeParserAdapter {
           ...findCommentedOutCodeBlocksFromNodes(commentNodes),
           ...findMagicNumberBlobs(root, STRING_LITERAL_NODE_TYPES, NUMBER_LITERAL_NODE_TYPES),
         ],
+        exceptionZones: findExceptionZones(root, TRY_NODE_TYPES, CATCH_NODE_TYPE_SET, FINALLY_NODE_TYPES),
+        importCount: countTopLevelImports(root, IMPORT_NODE_TYPES, CALL_SHAPED_IMPORT_NODE_TYPES, CALL_IMPORT_PATTERN, BLOCK_NODE_TYPES),
       };
     } finally {
       tree.delete();

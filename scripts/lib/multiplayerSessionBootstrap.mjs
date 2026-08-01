@@ -70,8 +70,21 @@ export async function grantFakeMediaForFirefox(page, engineName) {
  * `isMultiplayerEligibleWorkspace()` state (no GitHub fetch needed) *and* a
  * `currentParsedFile`/`currentLevelPath` the host needs to actually generate
  * a level from — and waits for the Multiplayer tab to enable. */
-export async function makeEligible(page, engineName, devServerUrl) {
-  await gotoWithRetry(page, `${devServerUrl}/?testHooks=1`);
+export async function makeEligible(page, engineName, devServerUrl, botRotSpeedMul) {
+  // `botRotSpeedMul` mirrors `run-balancing-telemetry.mjs`'s single-player use
+  // of the same URL param, and its absence here was a real measurement bug:
+  // the bot sizes every turn-key hold with `turnBurstMs`, which scales by the
+  // profile's `rotSpeedMultiplier` (2/3.5/5), while the engine — never told
+  // about it — turned at the bare `ROT_SPEED` of 2.6 rad/s. Every multiplayer
+  // telemetry run therefore under-rotated by 2-5x, and `rotSpeedMultiplier`,
+  // one of the few knobs that genuinely differentiates the skill tiers, was
+  // inert on the multiplayer axis entirely.
+  //
+  // Optional on purpose: callers that pass nothing (the verify scripts) get
+  // the byte-identical URL they had before, so no CI job changes behaviour.
+  // The engine clamps the value to [1, 10] (`engine.ts`).
+  const query = botRotSpeedMul ? `?testHooks=1&botRotSpeedMul=${botRotSpeedMul}` : "?testHooks=1";
+  await gotoWithRetry(page, `${devServerUrl}/${query}`);
   await grantFakeMediaForFirefox(page, engineName);
   await page.click("#tab-demo");
   await page.click("#launch-demo-campaign");
@@ -177,6 +190,12 @@ export async function bootstrapMultiplayerSession(browser, options) {
     tickingTimeoutMs = DEFAULT_TICKING_TIMEOUT_MS,
     guestJoinRetryDelayMs = DEFAULT_GUEST_JOIN_RETRY_DELAY_MS,
     guestJoinMaxAttempts = DEFAULT_GUEST_JOIN_MAX_ATTEMPTS,
+    // Per-player engine turn rate, index-aligned with `playerIds` — see
+    // `makeEligible`. Undefined (every verify script) keeps the engine at its
+    // default 1x, byte-identical to before this existed; the telemetry runner
+    // passes each bot's own profile multiplier so the engine turns as fast as
+    // the bot's `turnBurstMs` already assumes it does.
+    botRotSpeedMuls = [],
     // Host-authoritative (`main.ts`'s `currentDifficulty`, read from
     // localStorage at module-load time — same key/mechanism
     // `run-balancing-telemetry.mjs`'s own `installDifficulty` uses for
@@ -240,7 +259,7 @@ export async function bootstrapMultiplayerSession(browser, options) {
   // at the same instant right after browser launch has been observed to
   // reliably connection-refuse them (see verify-multiplayer-connect.mjs's
   // own comment for the original finding).
-  for (const page of pages) await makeEligible(page, engineName, devServerUrl);
+  for (const [i, page] of pages.entries()) await makeEligible(page, engineName, devServerUrl, botRotSpeedMuls[i]);
 
   log(`Host: selecting maxPlayers=${playerCount} and creating a session...`);
   await hostPage.click("#tab-multiplayer");

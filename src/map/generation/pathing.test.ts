@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CodeEntity } from "../../parser/types";
-import { DOOR_TILE, LORE_TILE, SECRET_WALL_TILE, type Room, type Tile } from "../types";
+import { BRANCH_DOOR_TILE, DOOR_TILE, LORE_TILE, SECRET_WALL_TILE, type Room, type Tile } from "../types";
 import { assertAllRoomsReachable, reachableTiles, shortestPath } from "./pathing";
 import { makeRoom } from "./geometry";
 
@@ -169,5 +169,27 @@ describe("assertAllRoomsReachable", () => {
     // key B, not just check "is there a key somewhere in the whole level."
     assertAllRoomsReachable(g, { x: 1, y: 1 }, [roomB], [{ x: 2, y: 1 }, { x: 4, y: 1 }], [{ x: 1, y: 1 }, { x: 3, y: 1 }]);
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("reachableTiles — branch doors", () => {
+  it("walks straight through an unopened branch door", () => {
+    // A branch door costs no key, so anything behind one is reachable the
+    // moment the player walks into it — treating it as blocking would make
+    // `assertAllRoomsReachable` report a false isolation for a Switchboard
+    // hub whose only mouth is a spoke.
+    const g: Tile[][] = Array.from({ length: 7 }, () => Array.from({ length: 7 }, () => 1 as Tile));
+    for (let x = 1; x <= 5; x++) g[3][x] = 0;
+    g[3][3] = BRANCH_DOOR_TILE;
+    const seen = reachableTiles(g, { x: 1, y: 3 }, new Set());
+    expect(seen.has("5,3")).toBe(true);
+  });
+
+  it("still stops at an unopened key-locked door on the same row", () => {
+    const g: Tile[][] = Array.from({ length: 7 }, () => Array.from({ length: 7 }, () => 1 as Tile));
+    for (let x = 1; x <= 5; x++) g[3][x] = 0;
+    g[3][3] = DOOR_TILE;
+    const seen = reachableTiles(g, { x: 1, y: 3 }, new Set());
+    expect(seen.has("5,3")).toBe(false);
   });
 });

@@ -1,3 +1,8 @@
+import React, { useState, useCallback } from "react";
+import { useTheme } from "../theme/context";
+import { Icon } from "./Icon";
+import { track } from "../analytics/client";
+
 interface ButtonProps {
     label: string;
     onClick: () => void;
@@ -48,4 +53,20 @@ function LegacyBadge(count: number) {
         return <span>99+</span>;
     }
     return <span>{count}</span>;
+}
+
+function variantClassName(variant: string, disabled: boolean): string {
+    switch (variant) {
+        case "primary":
+            return disabled ? "btn btn-primary is-disabled" : "btn btn-primary";
+        case "secondary":
+            return "btn btn-secondary";
+        case "danger":
+            return "btn btn-danger";
+        case "ghost":
+            return "btn btn-ghost";
+        default:
+            track("button:unknown-variant", { variant });
+            return "btn";
+    }
 }

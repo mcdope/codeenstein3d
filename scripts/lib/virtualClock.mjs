@@ -27,10 +27,30 @@ export async function installVirtualClock(page) {
     window.cancelAnimationFrame = (id) => {
       pending = pending.filter((p) => p.id !== id);
     };
+    // Advances exactly `totalMs`, in frames of at most `stepMs`, with the final
+    // frame carrying whatever remainder is left.
+    //
+    // This used to be `ceil(totalMs / stepMs)` whole frames, which *rounds up*:
+    // a 20ms request against a 16.67ms frame advanced 33.3ms, and a 17ms
+    // request advanced 33.3ms — nearly double. That silently defeated the
+    // bot's burst helpers, whose entire job is to hold a key for exactly long
+    // enough to turn by a computed angle or travel a computed distance without
+    // overshooting. A turn asking for 17ms of rotation got twice as much.
+    //
+    // It only bit callers that pass a `recordStepMs` smaller than their
+    // decision step — i.e. `generate-default-highscore.mjs`, which records
+    // replay frames at 60Hz while deciding at 50ms. `run-balancing-telemetry.mjs`
+    // leaves them equal, so `ceil` was always exact there and the bug was
+    // invisible to every balancing run. That asymmetry is why the same bot
+    // wedged on a level under one harness and not the other, and is very likely
+    // the "occasionally spinning far more than one decision's worth of turning"
+    // that `Bot#checkRotationAnomaly` was added to watch for and never explained.
     window.__pumpVirtualTime = (totalMs, stepMs) => {
-      const steps = Math.ceil(totalMs / stepMs);
-      for (let i = 0; i < steps; i++) {
-        vNow += stepMs;
+      let remaining = totalMs;
+      while (remaining > 1e-9) {
+        const dt = Math.min(stepMs, remaining);
+        remaining -= dt;
+        vNow += dt;
         const due = pending;
         pending = [];
         for (const { cb } of due) cb(vNow);

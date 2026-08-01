@@ -127,6 +127,10 @@ function fakeMap(overrides: Partial<GameMap> = {}, size = 12): GameMap {
     loreTerminals: [],
     bonusLevel: false,
     secretRoomCount: 0,
+    switchboardRooms: [],
+    exceptionZones: [],
+    vendorDepots: [],
+    acidOverflows: [],
     ...overrides,
   };
 }
@@ -205,6 +209,7 @@ function fakeReconciliationSnapshot(overrides: Partial<ReconciliationSnapshotMes
     levelEpoch: 0,
     tick: 0,
     rngState: 0,
+    acidOverflows: [],
     players: { host: fakePlayerSnapshot(), guest: fakePlayerSnapshot() },
     enemies: [],
     mines: [],
@@ -394,13 +399,14 @@ describe("runMultiplayerSessionAsGuest", () => {
     expect(handle.getExitCountdownRemaining()).toBe(COUNTDOWN_TICKS);
   });
 
-  it("getMap/getEnemiesSnapshot/getMinesSnapshot/getBotPlayerState delegate to the underlying engine", () => {
+  it("getMap/getEnemiesSnapshot/getMinesSnapshot/getProjectilesSnapshot/getBotPlayerState delegate to the underlying engine", () => {
     const map = fakeMap({ spawn: { x: 6, y: 7 } });
     const channels = linkedChannels();
     const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map }));
     expect(handle.getMap()).toBe(map);
     expect(handle.getEnemiesSnapshot()).toEqual([]);
     expect(handle.getMinesSnapshot()).toEqual([]);
+    expect(handle.getProjectilesSnapshot()).toEqual([]);
     expect(handle.getBotPlayerState("guest")).toMatchObject({ x: 6.5, y: 7.5, state: "playing" });
     expect(handle.getBotPlayerState("nope")).toBeNull();
   });

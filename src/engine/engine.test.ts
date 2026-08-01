@@ -6,7 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { createMockCanvasContext, stubCanvasGetContext, type MockCanvasContext } from "../../test/mocks/canvas";
 import { installRaf, type RafController } from "../../test/mocks/raf";
 import type { AmmoPickup, Enemy, GameMap, KeyItem, LootDrop, Mine, SpikeTrap, Teleporter, Tile } from "../map/types";
-import { DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, TELEPORTER_TILE } from "../map/types";
+import { BRANCH_DOOR_TILE, DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, TELEPORTER_TILE } from "../map/types";
 import { audio } from "./audio";
 import type { InputSnapshot, InputSource } from "./input";
 import { INPUT_DELAY_TICKS } from "./lagCompensationConstants";
@@ -73,6 +73,10 @@ function fakeMap(overrides: Partial<GameMap> = {}, size = 12): GameMap {
     loreTerminals: [],
     bonusLevel: false,
     secretRoomCount: 0,
+    switchboardRooms: [],
+    exceptionZones: [],
+    vendorDepots: [],
+    acidOverflows: [],
     ...overrides,
   };
 }
@@ -414,6 +418,15 @@ describe("RaycasterEngine — construction", () => {
         expect.objectContaining({ x: enemy.x, y: enemy.y, alive: true, edgeCase: expect.any(Boolean) }),
       ]);
       expect(hooks!.getMines()).toEqual([]);
+      expect(hooks!.getGridVersion()).toEqual(expect.any(Number));
+      expect(hooks!.getGrid()).toEqual(map.grid);
+      // A copy, never the live array — a caller must not be able to mutate
+      // engine state, and `PathField` floods over this exact grid.
+      expect(hooks!.getGrid()).not.toBe(map.grid);
+      expect((hooks!.getGrid() as unknown[])[0]).not.toBe(map.grid[0]);
+      // Nothing has fired yet — the shape is asserted by the dedicated
+      // getProjectilesSnapshot tests further down.
+      expect(hooks!.getProjectiles()).toEqual([]);
       expect(hooks!.getDrops()).toEqual([]);
       expect(hooks!.getKeys()).toEqual([]);
       expect(hooks!.getTelemetrySnapshot()).toMatchObject({
@@ -1013,6 +1026,157 @@ describe("RaycasterEngine — movement", () => {
   });
 });
 
+describe("RaycasterEngine — Acid Overflow rooms", () => {
+  /** A 12x12 walled room with the player spawning inside a 3x3 overflow room
+   * that starts flooding under their feet. */
+  function overflowMap(tiles = [{ x: 5, y: 5 }, { x: 6, y: 5 }, { x: 5, y: 6 }]) {
+    const size = 12;
+    const g = walledRoom(size);
+    const enemy = fakeEnemy({ x: 8.5, y: 8.5, hp: 30, maxHp: 30 });
+    return fakeMap({
+      grid: g,
+      enemies: [enemy],
+      acidOverflows: [{ room: { x: 4, y: 4, w: 4, h: 4 }, enemyIndex: 0, tiles, intervalSeconds: 0.5 }],
+    }, size);
+  }
+
+  it("floods the room once the player is standing in it", () => {
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(map.grid[5][5]).toBe(HAZARD_TILE);
+  });
+
+  it("drains health through the ordinary hazard path once a tile floods", () => {
+    // `applyHazardDamage` reads the grid, not `map.hazards`, so runtime acid
+    // hurts with no extra wiring — and `"hazard"` is already a DamageSource.
+    const map = overflowMap();
+    const { engine, handlers } = makeEngine(map);
+    for (let i = 0; i < 40; i++) engine.advance(0.1);
+    expect(lastStats(handlers).health).toBeLessThan(100);
+  });
+
+  it("stops spreading once the assigned enemy is dead", () => {
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    engine.advance(0.1);
+    map.enemies[0].alive = false;
+    for (let i = 0; i < 60; i++) engine.advance(0.1);
+    // The last planned tile was never reached, because the leak was stopped.
+    expect(map.grid[6][5]).toBe(0);
+  });
+
+  it("doesn't flood a room the player never walks into", () => {
+    const size = 12;
+    const g = walledRoom(size);
+    const map = fakeMap({
+      grid: g,
+      enemies: [fakeEnemy({ x: 2.5, y: 2.5 })],
+      acidOverflows: [{ room: { x: 9, y: 9, w: 2, h: 2 }, enemyIndex: 0, tiles: [{ x: 9, y: 9 }], intervalSeconds: 0.2 }],
+    }, size);
+    const { engine } = makeEngine(map);
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(map.grid[9][9]).toBe(0);
+  });
+
+  it("plays a cue and shows a toast when the flood starts under the local player", () => {
+    // The only other signal is the tiles changing colour underfoot, so a
+    // player looking the wrong way finds out by taking damage (`notes`).
+    const cue = vi.spyOn(audio, "playAcidOverflow");
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    engine.advance(0.1);
+    expect(cue).toHaveBeenCalledTimes(1);
+  });
+
+  it("cues once, not on every tick the player stays in the room", () => {
+    const cue = vi.spyOn(audio, "playAcidOverflow");
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    for (let i = 0; i < 30; i++) engine.advance(0.1);
+    expect(cue).toHaveBeenCalledTimes(1);
+  });
+
+  it("doesn't cue for a room the local player never walks into", () => {
+    const cue = vi.spyOn(audio, "playAcidOverflow");
+    const size = 12;
+    const g = walledRoom(size);
+    const map = fakeMap({
+      grid: g,
+      enemies: [fakeEnemy({ x: 2.5, y: 2.5 })],
+      acidOverflows: [{ room: { x: 9, y: 9, w: 2, h: 2 }, enemyIndex: 0, tiles: [{ x: 9, y: 9 }], intervalSeconds: 0.2 }],
+    }, size);
+    const { engine } = makeEngine(map);
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(cue).not.toHaveBeenCalled();
+  });
+
+  it("doesn't cue a dead local player whose teammate started the flood", () => {
+    // A flood is started by any *living* player, so in coop a teammate can
+    // trigger the room you're lying dead in — no sound, no toast for you.
+    const cue = vi.spyOn(audio, "playAcidOverflow");
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    // Reaching into private state deliberately: there's no public way to kill
+    // the local player without also ending the run, which would stop
+    // `simulate()` before the flood ever ran.
+    (engine as unknown as { players: Map<string, { status: string }> }).players.get("local")!.status = "dead";
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(cue).not.toHaveBeenCalled();
+  });
+
+  it("never pushes a flooded tile onto the reconciliation grid delta", () => {
+    // LOAD-BEARING: `applyGridReconciliation`'s out-of-order safety rests on
+    // every `gridDelta` entry being a terminal `value: 0`. Acid is
+    // `0 -> HAZARD_TILE` and must stay off that channel entirely.
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    const snapshot = engine.captureReconciliationSnapshot(1, true);
+    expect(snapshot.gridDelta).toEqual([]);
+    expect(snapshot.gridVersion).toBe(0);
+  });
+
+  it("carries the flood state on the reconciliation snapshot instead", () => {
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    const snapshot = engine.captureReconciliationSnapshot(1, true);
+    expect(snapshot.acidOverflows).toHaveLength(1);
+    expect(snapshot.acidOverflows[0].index).toBe(0);
+    expect(snapshot.acidOverflows[0].startedAt).not.toBeNull();
+  });
+
+  it("retracts a speculatively-flooded tile when the host says otherwise", () => {
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(map.grid[5][5]).toBe(HAZARD_TILE);
+
+    // The host's authoritative view: this room never started flooding at all.
+    const snapshot = engine.captureReconciliationSnapshot(2, true);
+    engine.applyReconciliationSnapshot({
+      ...snapshot,
+      acidOverflows: [{ index: 0, startedAt: null, frozenTarget: null }],
+    });
+    engine.advance(0.1);
+    expect(map.grid[5][5]).toBe(0);
+  });
+
+  it("ignores a snapshot entry for an overflow index this peer doesn't have", () => {
+    const map = overflowMap();
+    const { engine } = makeEngine(map);
+    engine.advance(0.1);
+    const snapshot = engine.captureReconciliationSnapshot(2, true);
+    expect(() =>
+      engine.applyReconciliationSnapshot({
+        ...snapshot,
+        acidOverflows: [{ index: 99, startedAt: 0, frozenTarget: null }],
+      }),
+    ).not.toThrow();
+  });
+});
+
 describe("RaycasterEngine — keys and doors", () => {
   function doorMap(): GameMap {
     const size = 12;
@@ -1062,6 +1226,136 @@ describe("RaycasterEngine — keys and doors", () => {
     } finally {
       Object.defineProperty(window, "location", { value: original, configurable: true });
       delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+    }
+  });
+
+  it("opens a whole multi-tile doorway for one key", () => {
+    // A corridor flush along a room's wall makes every tile of that boundary
+    // its own door tile. It's visibly one gate, so it costs one key — see
+    // `doorwayTiles`.
+    const size = 12;
+    const g = walledRoom(size);
+    for (let y = 3; y <= 7; y++) g[y][7] = DOOR_TILE;
+    const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+    const { engine, input, handlers } = makeEngine(map);
+    engine.advance(0.016); // collect the one key
+    expect(lastStats(handlers).keysHeld).toBe(1);
+    input.keys.add("KeyW"); // push into the doorway at (7,5)
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    for (let y = 3; y <= 7; y++) expect(map.grid[y][7]).toBe(0);
+    expect(lastStats(handlers).keysHeld).toBe(0);
+  });
+
+  it("emits a grid delta for every tile of an opened doorway", () => {
+    // The guest has to see the whole run open, not just the pushed tile —
+    // and every entry stays a terminal value:0, so the out-of-order-safety
+    // invariant is untouched.
+    const size = 12;
+    const g = walledRoom(size);
+    for (let y = 3; y <= 7; y++) g[y][7] = DOOR_TILE;
+    const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+    const { engine, input } = makeEngine(map);
+    engine.advance(0.016);
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    const snapshot = engine.captureReconciliationSnapshot(1, true);
+    for (let y = 3; y <= 7; y++) expect(snapshot.gridDelta).toContainEqual({ x: 7, y, value: 0 });
+    expect(snapshot.gridDelta.every((m) => m.value === 0)).toBe(true);
+  });
+
+  it("leaves a separate doorway shut when one is opened", () => {
+    // Two runs separated by a wall tile are two gates and two keys.
+    const size = 12;
+    const g = walledRoom(size);
+    g[4][7] = DOOR_TILE;
+    g[5][7] = DOOR_TILE;
+    g[7][7] = DOOR_TILE; // separated from the pair above by plain wall at y=6
+    const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+    const { engine, input } = makeEngine(map);
+    engine.advance(0.016);
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(map.grid[5][7]).toBe(0);
+    expect(map.grid[7][7]).toBe(DOOR_TILE);
+  });
+
+  it("opens a branch door with no key held at all", () => {
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][7] = BRANCH_DOOR_TILE; // directly east of spawn
+    const map = fakeMap({ grid: g }, size); // deliberately no keys anywhere
+    const { engine, input, handlers } = makeEngine(map);
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(map.grid[5][7]).toBe(0);
+    expect(lastStats(handlers).keysHeld).toBe(0);
+  });
+
+  it("doesn't spend a key when opening a branch door", () => {
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][7] = BRANCH_DOOR_TILE;
+    const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+    const { engine, input, handlers } = makeEngine(map);
+    engine.advance(0.016); // collect the key
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(map.grid[5][7]).toBe(0);
+    expect(lastStats(handlers).keysHeld).toBe(1);
+  });
+
+  it("blocks movement through a branch door until it's pushed open", () => {
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][7] = BRANCH_DOOR_TILE;
+    const map = fakeMap({ grid: g }, size);
+    const { engine } = makeEngine(map);
+    // Not pushing W/S, so `openDoorAhead` never fires — the tile stays solid
+    // and the player can't cross it.
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(map.grid[5][7]).toBe(BRANCH_DOOR_TILE);
+    expect(engine.getPlayerPosition("local")!.x).toBeLessThan(7);
+  });
+
+  it("emits a terminal value:0 grid mutation when a branch door opens", () => {
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][7] = BRANCH_DOOR_TILE;
+    const map = fakeMap({ grid: g }, size);
+    const { engine, input } = makeEngine(map);
+    const before = engine.captureReconciliationSnapshot(0, true).gridVersion;
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    const snapshot = engine.captureReconciliationSnapshot(1, true);
+    expect(snapshot.gridDelta).toContainEqual({ x: 7, y: 5, value: 0 });
+    expect(snapshot.gridVersion).toBeGreaterThan(before);
+  });
+
+  it("reports the grid mutation through the test hooks, so a bot can see a door open", () => {
+    // The whole point of `getGridVersion`/`getGrid`: the engine mutates its
+    // own grid mid-level, and anything planning against the map it was handed
+    // at level start (the playtest bot's Node-side copy) otherwise treats an
+    // opened door as a permanent wall — a recorded wedge on
+    // `stage03_legacy_api.php`.
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][7] = BRANCH_DOOR_TILE;
+      const map = fakeMap({ grid: g }, size);
+      const { engine, input } = makeEngine(map);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> }).__codeensteinTestHooks;
+      const versionBefore = hooks!.getGridVersion() as number;
+      expect((hooks!.getGrid() as number[][])[5][7]).toBe(BRANCH_DOOR_TILE);
+
+      input.keys.add("KeyW");
+      for (let i = 0; i < 20; i++) engine.advance(0.1);
+
+      expect(hooks!.getGridVersion() as number).toBeGreaterThan(versionBefore);
+      expect((hooks!.getGrid() as number[][])[5][7]).toBe(0);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
     }
   });
 
@@ -2946,6 +3240,46 @@ describe("RaycasterEngine — addPlayer / roster (N-player)", () => {
     expect(engine.getMinesSnapshot()).toEqual([{ x: 4, y: 4, alive: true, visible: true }]);
   });
 
+  it("getProjectilesSnapshot exposes real in-flight enemy bolts, travelling at PROJECTILE_SPEED", () => {
+    // An already-aggroed enemy with no fire cooldown left, standing well
+    // inside RANGED_RANGE (8) of the spawn with nothing but open floor
+    // between them: exactly the situation enemyAi.ts fires a bolt in, on the
+    // very first frame.
+    const map = fakeMap({ spawn: { x: 5, y: 5 }, enemies: [fakeEnemy({ x: 6, y: 5, aggroed: true, fireCooldown: 0 })] });
+    const { engine } = makeEngine(map);
+    expect(engine.getProjectilesSnapshot()).toEqual([]);
+    engine.advance(0.016);
+    const bolts = engine.getProjectilesSnapshot();
+    expect(bolts).toHaveLength(1);
+    expect(bolts[0]).toEqual({
+      x: expect.any(Number),
+      y: expect.any(Number),
+      vx: expect.any(Number),
+      vy: expect.any(Number),
+      damage: expect.any(Number),
+      targetId: "local",
+    });
+    // Whatever aim spread the difficulty applies only rotates the heading —
+    // the speed itself is fixed, which is what makes flight time (and so
+    // dodgeability) predictable for a bot reading this.
+    expect(Math.hypot(bolts[0].vx, bolts[0].vy)).toBeCloseTo(5, 5);
+  });
+
+  it("getProjectilesSnapshot returns copies, so a caller can't steer live bolts", () => {
+    const map = fakeMap({ spawn: { x: 5, y: 5 }, enemies: [fakeEnemy({ x: 6, y: 5, aggroed: true, fireCooldown: 0 })] });
+    const { engine } = makeEngine(map);
+    engine.advance(0.016);
+    const before = engine.getProjectilesSnapshot();
+    expect(before).toHaveLength(1);
+    before[0].x = 999;
+    before[0].vx = 999;
+    before[0].targetId = "someone-else";
+    const after = engine.getProjectilesSnapshot();
+    expect(after[0].x).not.toBe(999);
+    expect(after[0].vx).not.toBe(999);
+    expect(after[0].targetId).toBe("local");
+  });
+
   it("getDropsSnapshot/getKeysSnapshot mirror __codeensteinTestHooks' getDrops/getKeys, roster-agnostic", () => {
     const map = fakeMap({
       spawn: { x: 5, y: 5 },
@@ -3498,6 +3832,7 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
       rngState: 0,
       players: {},
       enemies: [],
+      acidOverflows: [],
       mines: [],
       lootDrops: [],
       pickupsCollected: [],

@@ -12,17 +12,21 @@ import phpWasmUrl from "tree-sitter-php/tree-sitter-php.wasm?url";
 import { initTreeSitter } from "../runtime";
 import {
   codeSmellBonus,
+  countAllocations,
   countDecisionPoints,
   countLines,
   countParameters,
+  countTopLevelImports,
   extractLargeCommentsFromNodes,
   findCommentedOutCodeBlocksFromNodes,
   findDeadCodeAfterReturn,
   findDeprecationMarkers,
   findEmptyCatchBlocks,
+  findExceptionZones,
   findMagicNumberBlobs,
   maxNestingDepth,
   resolveGotos,
+  summarizeSwitchBranches,
   type RawGotoRef,
 } from "../astUtils";
 import type {
@@ -96,6 +100,39 @@ const NESTING_NODE_TYPES = new Set([
  * closures. */
 const PARAMETER_LIST_NODE_TYPES = ["formal_parameters"];
 
+/** Switch and `match` branches. Unlike C, PHP's grammar gives the catch-all its
+ * own node type in both forms, so no keyword/wildcard text check is needed. */
+const CASE_BRANCH_NODE_TYPES = ["case_statement", "default_statement", "match_conditional_expression", "match_default_expression"];
+const DEFAULT_BRANCH_NODE_TYPES = new Set(["default_statement", "match_default_expression"]);
+const NON_SWITCH_BRANCH_ANCESTOR_NODE_TYPES = new Set<string>();
+
+/** `try`/`catch`/`finally` — source for Exception Handling Zones. */
+const TRY_NODE_TYPES = ["try_statement"];
+const CATCH_NODE_TYPE_SET = new Set(CATCH_NODE_TYPES);
+const FINALLY_NODE_TYPES = new Set(["finally_clause"]);
+
+/** `use Foo\Bar;` is a declaration; `include`/`require` (and their `_once`
+ * variants) are expressions wrapped in an `expression_statement` — which is
+ * exactly why `countTopLevelImports` defines "top-level" as "not inside a body
+ * block" rather than by nesting depth. */
+const IMPORT_NODE_TYPES = [
+  "namespace_use_declaration",
+  "include_expression",
+  "include_once_expression",
+  "require_expression",
+  "require_once_expression",
+];
+const CALL_SHAPED_IMPORT_NODE_TYPES: string[] = [];
+const CALL_IMPORT_PATTERN = /^$/;
+
+/** `new Foo()` is PHP's only allocation construct — no `malloc`, no fixed-size
+ * array declarators. */
+const ALLOCATION_NODE_TYPES = ["object_creation_expression"];
+const CALL_NODE_TYPES: string[] = [];
+const ALLOCATOR_NAME_PATTERN = /^$/;
+const ARRAY_DECLARATOR_NODE_TYPES: string[] = [];
+const LARGE_ARRAY_MIN_SIZE = 1024;
+
 export class PhpParserAdapter implements CodeParserAdapter {
   readonly language = "php";
   readonly extensions = ["php", "php3", "php4", "php5", "phtml"] as const;
@@ -128,6 +165,9 @@ export class PhpParserAdapter implements CodeParserAdapter {
         const isCallable = kind === "function" || kind === "method";
         const smellBonus = isCallable ? codeSmellBonus(countParameters(node, PARAMETER_LIST_NODE_TYPES), nestingDepth) : 0;
 
+        const switchBranches = summarizeSwitchBranches(node, CASE_BRANCH_NODE_TYPES, DEFAULT_BRANCH_NODE_TYPES, NON_SWITCH_BRANCH_ANCESTOR_NODE_TYPES);
+        const allocations = countAllocations(node, ALLOCATION_NODE_TYPES, CALL_NODE_TYPES, ALLOCATOR_NAME_PATTERN, ARRAY_DECLARATOR_NODE_TYPES, LARGE_ARRAY_MIN_SIZE);
+
         entities.push({
           name: node.childForFieldName("name")?.text ?? "<anonymous>",
           kind,
@@ -136,6 +176,10 @@ export class PhpParserAdapter implements CodeParserAdapter {
           complexityScore: 1 + countDecisionPoints(node, DECISION_NODE_TYPES, LOGICAL_OPERATORS) + smellBonus,
           nestingDepth,
           ...(kind === "method" ? { visibility: methodVisibility(node) } : {}),
+          // Absent rather than present-and-zero when there's nothing to report
+          // — see the same convention in `genericParser.ts`.
+          ...(switchBranches ? { switchBranches } : {}),
+          ...(allocations > 0 ? { allocations } : {}),
         });
       }
 
@@ -198,6 +242,8 @@ export class PhpParserAdapter implements CodeParserAdapter {
           ...findCommentedOutCodeBlocksFromNodes(commentNodes),
           ...findMagicNumberBlobs(tree.rootNode, STRING_LITERAL_NODE_TYPES, NUMBER_LITERAL_NODE_TYPES),
         ],
+        exceptionZones: findExceptionZones(tree.rootNode, TRY_NODE_TYPES, CATCH_NODE_TYPE_SET, FINALLY_NODE_TYPES),
+        importCount: countTopLevelImports(tree.rootNode, IMPORT_NODE_TYPES, CALL_SHAPED_IMPORT_NODE_TYPES, CALL_IMPORT_PATTERN, BLOCK_NODE_TYPES),
       };
     } finally {
       // Free the WASM-side syntax tree; the Parser itself is kept for reuse.

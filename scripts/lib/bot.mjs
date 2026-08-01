@@ -20,144 +20,82 @@
  * `mineMemory`, `visitedPickups`) resets via `startLevel(map)`.
  */
 import { bfsPath, pathToWaypoints } from "./pathfind.mjs";
+import {
+  angleDelta,
+  decide,
+  DEFAULT_TUNING,
+  hasLineOfSight,
+  HAZARD_TILE,
+  pickThreat,
+  segmentsFor,
+  SPIKE_TRAP_TILE,
+  numberKeyCodeFor,
+  turnBurstMs,
+  uniformIntent,
+} from "./combatPolicy.mjs";
 
-// Mirrors src/engine/weapons.ts's WEAPONS array indices — plain literals
-// rather than importing that TS module (this is a plain Node script, not
-// bundled like the map/parser layer in loadEngineModules.mjs).
-export const PISTOL_WEAPON_INDEX = 0;
-export const SHOTGUN_WEAPON_INDEX = 1;
-export const KNIFE_WEAPON_INDEX = 2;
-export const GDB_WEAPON_INDEX = 3;
-export const GHIDRA_WEAPON_INDEX = 4;
-export const FRIDAY_HOTFIX_WEAPON_INDEX = 5;
-export const TOOLCHAIN_WEAPON_INDEX = 6;
-export const STARTING_WEAPONS = [PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, KNIFE_WEAPON_INDEX];
-// The two ranged weapons WEAPONS.auto=true (mirrors weapons.ts) — fired via
-// isFireHeld() and engine-side rate-limited by their own fireIntervalSec
-// regardless of how the key is dispatched, unlike the semi-auto ranged
-// weapons (pistol/shotgun/ghidra), which have no such cooldown and fire
-// exactly once per keydown — see `profile.fireCooldownMs`'s doc comment.
-export const AUTO_RANGED_WEAPON_INDICES = new Set([GDB_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX]);
-export const HAZARD_TILE = 2; // src/map/types.ts's Tile enum
+// The decision core moved to `combatPolicy.mjs` (see its doc comment for why:
+// testability, and a shape that can be lifted into `src/engine/` for a real
+// deathmatch opponent). Everything it owns is re-exported from here so no
+// consumer had to change an import — `run-balancing-telemetry.mjs` takes the
+// weapon indices, and the rest is surface that tests and future callers reach
+// for. New code should prefer importing from `combatPolicy.mjs` directly.
+export {
+  activeSpikeAt,
+  angleDelta,
+  AUTO_RANGED_WEAPON_INDICES,
+  decide,
+  DEFAULT_TUNING,
+  diagonalStrafeKey,
+  findDangerousMine,
+  findDisarmableMine,
+  forwardScanTiles,
+  FRIDAY_HOTFIX_WEAPON_INDEX,
+  GDB_WEAPON_INDEX,
+  GHIDRA_WEAPON_INDEX,
+  hasAmmoFor,
+  hasLineOfSight,
+  HAZARD_TILE,
+  isHazardAt,
+  isWallTile,
+  KNIFE_WEAPON_INDEX,
+  moveBurstMs,
+  nearestRocketDetonationDistance,
+  pickRangedWeapon,
+  pickThreat,
+  PISTOL_WEAPON_INDEX,
+  rocketAimUnsafe,
+  segmentBlocked,
+  segmentsFor,
+  SHOTGUN_WEAPON_INDEX,
+  SPIKE_TRAP_TILE,
+  STARTING_WEAPONS,
+  TOOLCHAIN_WEAPON_INDEX,
+  turnBurstMs,
+  uniformIntent,
+} from "./combatPolicy.mjs";
 
-/**
- * Movement/combat tuning defaults — mirrors of various src/engine/*.ts
- * constants (this is a plain Node script, can't import the bundled TS
- * modules for these particular runtime values) plus a large set of
- * empirically-tuned thresholds, each with its own hard-won bug-fix history
- * (see the functions that read them below). Overridable per-`Bot` instance
- * via the constructor's `opts.tuning` (deep-merged over this object) — a
- * future consumer (e.g. a different harness or a multiplayer bot) can tune
- * without forking this file.
- */
-export const DEFAULT_TUNING = {
-  VIRTUAL_STEP_MS: 50,
-  WATCH_STEP_MS: 130,
-  MAX_TICKS_PER_WAYPOINT: 600,
-  TURN_MOVE_EPS: 0.2,
-  ARRIVE_EPS: 0.15,
-  TIGHT_ARRIVE_EPS: 0.05,
-  // Any single-tick position jump larger than this is physically impossible
-  // via normal movement (max sprint is ~0.32 tiles/tick at VIRTUAL_STEP_MS)
-  // and can only mean a teleporter pad fired — see `driveToward`'s doc
-  // comment on the jump-detection check that uses this.
-  TELEPORT_JUMP_DETECT_TILES: 1.0,
-  // See `maybeDetourForLoot`'s doc comment — caps how far (straight-line)
-  // the bot will detour for a single uncollected pickup.
-  MAX_LOOT_DETOUR_TILES: 20,
-  // How far (in tiles) the bot's actual position may be from an upcoming
-  // waypoint before it's considered "displaced" and worth a fresh BFS
-  // re-plan — see `driveTowardWithReplan`'s doc comment.
-  LEG_REPLAN_DRIFT_TILES: 2.5,
-  // Mirrors src/engine/engine.ts's ROT_SPEED (rad/sec).
-  ENGINE_ROT_SPEED: 2.6,
-  // Mirrors src/engine/engine.ts's MOVE_SPEED/SPRINT_MULTIPLIER.
-  ENGINE_MOVE_SPEED: 3.2,
-  ENGINE_SPRINT_MULTIPLIER: 2.0,
-  // How much more rotation than `#turnBurstMs`'s own math predicts still
-  // counts as "plausible" before `#checkRotationAnomaly` flags it — see that
-  // method's doc comment.
-  ROTATION_ANOMALY_SLACK: 4,
-  DOOR_OPEN_TICKS: 10,
-  // Same total push duration as DOOR_OPEN_TICKS * VIRTUAL_STEP_MS (500ms),
-  // just in much finer steps — see `holdForwardFine`'s doc comment.
-  DOOR_OPEN_FINE_STEP_MS: 5,
-  MINE_BLAST_RADIUS: 2.4,
-  // Proactive-disarm search radius — see `findDisarmableMine`'s doc comment.
-  MINE_DISARM_RANGE: 4.2,
-  // Give up on a proactive mine-disarm shot after this many consecutive
-  // ticks targeting the *same* mine with no hit — see `tick`'s mine-handling
-  // doc comment.
-  MINE_TARGET_GIVEUP_TICKS: 40,
-  // Once stuck realigning on the same mine this many ticks, force a shot at
-  // the current best-effort alignment instead of freezing until the much
-  // later full give-up — see `tick`'s mine-realignment comment.
-  MINE_REALIGN_STALL_TICKS: 15,
-  CRITICAL_HEALTH_FRACTION: 0.2,
-  MELEE_RANGE: 1.5,
-  // Below this distance, stop trying to close the last bit of distance
-  // during an in-progress melee engagement — see `tick`'s melee branch,
-  // which actually gates on `max(this, ENGINE_MOVE_SPEED * stepMs/1000)`,
-  // not this raw value alone — see that branch's own doc comment for why.
-  MELEE_CLOSE_MIN_DISTANCE: 0.4,
-  // Below this distance, stop advancing while turning to line up a ranged
-  // shot — see `tick`'s ranged-aim branch.
-  MIN_RANGED_APPROACH_DISTANCE: 3,
-  // Above this angular error, walking forward while still turning toward a
-  // route waypoint would move the bot away from where it actually needs to
-  // go — see `tick`'s plain-navigation branch.
-  MAX_WALK_WHILE_TURNING_RAD: 0.35,
-  // Combat can deadlock against wall geometry — once a threat engagement has
-  // produced no actual attack for this many consecutive ticks with position
-  // frozen, nudge sideways instead of just re-aiming in place.
-  COMBAT_STALL_TICKS_THRESHOLD: 40,
-  COMBAT_STALL_STRAFE_FLIP_TICKS: 20,
-  CRITICAL_STALL_TICKS_THRESHOLD: 15,
-  CRITICAL_STALL_STRAFE_FLIP_TICKS: 10,
-  // How close two aggroed enemies have to be to each other to count as
-  // "clustered" — see `pickRangedWeapon`.
-  CLUSTER_RADIUS: 3,
-  // Rockets splash the shooter too — never select ghidra within this
-  // distance regardless of profile. See `rocketAimUnsafe`.
-  ROCKET_SAFE_DISTANCE: 4,
-  // Mirrors src/engine/rockets.ts's ROCKET_ENEMY_TRIGGER_RADIUS.
-  ROCKET_ENEMY_TRIGGER_RADIUS: 0.4,
-  // Matches Friday Hotfix's real maxRange (weapons.ts).
-  FRIDAY_HOTFIX_MAX_RANGE: 3.5,
-  // How far a clustered threat needs to be before rocket splash is worth
-  // preferring — see `pickRangedWeapon`.
-  ROCKET_CLUSTER_MIN_DIST: 5, // ROCKET_SAFE_DISTANCE + 1
-  // MINE_REALIGN_EPS assumes precise per-tick rotation, only exact under a
-  // virtual clock — see `tick`'s mine-realignment comment for why this
-  // matters more in headless mode.
-  MINE_REALIGN_EPS: 0.01,
-  // A mine has to be somewhere in the forward hemisphere (90° either side of
-  // the intended heading) to be worth a proactive detour — see
-  // `findDisarmableMine`.
-  MINE_DISARM_MAX_ANGLE_FROM_PATH: Math.PI / 2,
-};
-
-export function angleDelta(current, target) {
-  const d = target - current;
-  return Math.atan2(Math.sin(d), Math.cos(d));
-}
+// Door tile values, needed locally by the opened-door bookkeeping in
+// `#noteDoorUnderFoot`/`#allDoorTiles` (the decision core has no use for them).
+export const LOCKED_DOOR_TILE = 3; // src/map/types.ts's Tile enum
+export const BRANCH_DOOR_TILE = 8; // src/map/types.ts's Tile enum
 
 /**
- * The strafe key ("KeyD"/right or "KeyA"/left) that moves the player toward
- * a target requiring `delta` radians of turn to face — lets the bot move
- * diagonally instead of straight-ahead-only while turning.
- *
- * CONFIRMED REGRESSION, only used in the plain-navigation branch: an A/B
- * test found Casual/normal's level-2 death rate jumped from 0% to 72% once
- * diagonal movement was added to every turn-and-move branch. Reverted from
- * every other branch (hazard/critical-health/mine-retreat/ranged-aim); kept
- * only in plain navigation, where the same methodology found no comparable
- * survival cost.
- */
-export function diagonalStrafeKey(delta) {
-  return delta > 0 ? "KeyD" : "KeyA";
-}
+ * Tiles a *loot detour* refuses to route through. Mirrors `routePlanner.mjs`'s
+ * own `SOFT_AVOID_TILES`, but applied as a hard avoid rather than a cost:
+ * the main route sometimes genuinely has to cross a hazard to reach the exit,
+ * whereas a pickup is by definition optional, so taking damage for one is
+ * never the right trade. `bfsPath` still allows the *target* tile itself to be
+ * a hazard, so a pickup sitting on acid stays collectable — it just won't be
+ * approached through more of it. */
+const LOOT_DETOUR_AVOID_TILES = new Set([HAZARD_TILE, SPIKE_TRAP_TILE]);
 
+/** How many "stand on the exit, then go kill whatever is keeping it inert"
+ * rounds `driveToExit` will run before giving up. More than one because
+ * `exitRoomHasAliveEnemy()` is satisfied by *any* living exit-room enemy and
+ * a room can hold several; bounded because an unreachable blocker must still
+ * terminate. */
+const EXIT_CLEAR_ROUNDS = 6;
 // Position-unchanged-for-this-many-consecutive-ticks threshold before
 // `detectAnomalies` calls it a "stall".
 const STALL_TICKS_THRESHOLD = 20;
@@ -165,13 +103,212 @@ const STALL_TICKS_THRESHOLD = 20;
 // dropping is worth flagging immediately, regardless of the stall
 // threshold above.
 const HP_DRAIN_FROZEN_TICKS_THRESHOLD = 2;
+/**
+ * Fraction of a run's ticks that must be spike-blocked before the run counts
+ * as "waiting for a trap" rather than a defect.
+ *
+ * This used to be `.every()`, and that one word produced the single largest
+ * class of false findings in the scan: **68 of 175 stalls** — every "idle"
+ * stall, i.e. every stall with no threat in range. `waitingOnSpike` is
+ * computed from a probe 0.6 tiles ahead *along the bot's current facing*
+ * (`combatPolicy.mjs`), so it drops out for a tick or two whenever the bot
+ * adjusts heading while it waits. One such tick was enough to bill an
+ * entirely correct 34-tick wait as a freeze.
+ *
+ * Measured 2026-07-31: 13 of the 14 repeat stall clusters sat on a tile
+ * directly adjacent to a spike trap; 9 of 9 traced runs were 88-98%
+ * spike-blocked with ~95% of ticks holding no movement key at all; and the
+ * durations (median 34, p90 47, max 55 ticks) land exactly inside the
+ * blocked-phase range of the campaign's traps (36-55 ticks — a trap is up for
+ * half of a 3.6-5.5s period). The bot waits one phase and never longer.
+ *
+ * 0.8 rather than the 0.5 used by the `mostlyFiring`/`mostlyEngaged` guards
+ * beside it, and that gap is deliberate: a bot genuinely *wedged* next to a
+ * trap would measure ~50%, because the trap keeps cycling underneath it while
+ * it fails to move. A real one-phase wait ends the moment the spikes drop, so
+ * it never dilutes below ~0.88. Keeping the bar high is what preserves the
+ * detector's ability to catch a wedge that happens to be next to a spike.
+ */
+const SPIKE_WAIT_DOMINANCE = 0.8;
+/** Share of a run's ticks that were blocked by an active spike trap. */
+function spikeFraction(slice) {
+  if (slice.length === 0) return 0;
+  return slice.filter((r) => r.waitingOnSpike).length / slice.length;
+}
 const TRACE_POS_EPS = 0.05;
 // Lower than STALL_TICKS_THRESHOLD (20) on purpose — `detectHeldKeyNoMovement`
 // is a much more precise signal, so it doesn't need as long a run to be
 // confident it's a real freeze rather than incidental noise.
 const HELD_KEY_NO_MOVEMENT_TICKS_THRESHOLD = 10;
 // Movement keys that actually translate the player — KeyQ/KeyE only rotate.
-const TRANSLATING_KEYS = new Set(["KeyW", "KeyA", "KeyD"]);
+// `KeyS` included so a wedged *backpedal* is visible to
+// `detectHeldKeyNoMovement` — the mine retreat reverses without turning, and a
+// backpedal jammed against geometry would otherwise be silently undetectable.
+const TRANSLATING_KEYS = new Set(["KeyW", "KeyS", "KeyA", "KeyD"]);
+
+// --- Oscillation (`detectOscillation`) -------------------------------------
+// A bot that is genuinely wedged does not necessarily stop. It can pace,
+// circle, or ping-pong between two waypoints indefinitely, covering real
+// ground while getting nowhere — and `detectAnomalies`/`detectHeldKeyNoMovement`
+// are both blind to that, because both are ultimately "did the position stay
+// the same". `stage10_kernel_module.rs` wedges roughly 70% of full-campaign
+// attempts and produced *zero* findings from either.
+//
+// The signature is a large travelled path with a small net displacement,
+// sustained. Each threshold below exists to separate that from something the
+// bot is supposed to do.
+// A position jump larger than any decision could physically produce, so
+// `summarizeActivityDistance` can drop teleports instead of charging them to
+// an activity. Worst legitimate case is the multiplayer bot: `stepMs = 400` at
+// the 6.4 t/s sprint speed = 2.56 tiles; this leaves comfortable headroom
+// while staying far under a teleporter's cross-map hop.
+const TELEPORT_JUMP_TILES = 4;
+
+// Branches that only ever run because something is threatening the bot, so
+// motion under them is combat cost no matter what errand it interrupted.
+// `main` is deliberately absent — it covers both plain navigation and an
+// active firefight, and `threatDist` is what tells those apart.
+const ENGAGED_BRANCHES = new Set(["criticalHealth", "mineRetreat"]);
+
+const OSCILLATION_TICKS_THRESHOLD = 30;
+// Positions must stay inside this radius of the run's anchor. Wider than a
+// combat sidestep's amplitude (~1.3 tiles at the flip period) so a firefight
+// isn't the dominant finding, but far under a corridor's length.
+const OSCILLATION_RADIUS_TILES = 2.0;
+// Ground actually covered. Below this the bot is loitering, not thrashing —
+// `stall` already owns "not moving", and double-reporting it would just make
+// both findings noise.
+const OSCILLATION_MIN_PATH_TILES = 2.0;
+// How much less net progress than path length counts as "getting nowhere". A
+// bot walking a corridor and back once has a ratio near 2; sustained
+// ping-ponging climbs well past this.
+const OSCILLATION_MIN_PATH_RATIO = 4;
+// How close to its nav target the bot has to get for that target to count as
+// *reached*. A hair above `ARRIVE_EPS` (0.15) and `TIGHT_ARRIVE_EPS` (0.05),
+// so a genuine arrival registers while merely passing nearby does not.
+const OSCILLATION_ARRIVAL_DIST = 0.35;
+// Reaching this many nav targets inside one run means the bot was working
+// through its route, not thrashing — see `reachedTargets`.
+const OSCILLATION_ARRIVALS_EXEMPT = 2;
+
+/**
+ * BFS to `tile`, preferring a hazard-free route but accepting one through
+ * spikes/acid rather than reporting the target unreachable.
+ *
+ * Refusing to plan is only correct when a *better* plan exists. The strict
+ * avoid-set is right for an optional loot detour — "the only way there crosses
+ * a spike" genuinely means "don't bother". It is wrong for reaching the exit,
+ * which is not optional, and the difference is not hypothetical: on `main.c`
+ * the exit is 95 tiles from (60,57) by plain BFS but **unreachable** once
+ * spikes and acid are excluded, because every route crosses one.
+ *
+ * `driveToExit` does not treat that failure as fatal (a `reason: "stuck"` still
+ * carries `state: "playing"`), so it fell through to `driveToward` — which
+ * steers a straight line with no pathfinding — and sprinted into a wall for the
+ * whole 80-tick budget, six rounds running. Measured at n=16 Pro/normal
+ * attempts: 4 stalls of ~440 decisions (~22s each) without this fallback, 0
+ * with it, longest stall 441 -> 61 ticks.
+ *
+ * Returns `{ path, viaHazard }` — `viaHazard` is what the caller logs, and is
+ * the trigger that proves this path ran at all.
+ */
+export function pathAvoidingHazardsIfPossible(map, from, to, avoidTiles, openDoors, allowHazardFallback = true) {
+  const strict = bfsPath(map, from, to, avoidTiles, openDoors);
+  if (strict) return { path: strict, viaHazard: false };
+  if (!allowHazardFallback) return { path: null, viaHazard: false };
+  const loose = bfsPath(map, from, to, new Set(), openDoors);
+  return { path: loose, viaHazard: Boolean(loose) };
+}
+
+/**
+ * Exit-room blockers, nearest *by walking distance* first.
+ *
+ * `driveToExit` hunts the first of these, and used to pick by straight-line
+ * `Math.hypot`. That measure is wrong for the decision being made: an enemy 5
+ * tiles away through a wall can be 20 tiles by corridor, so the bot would
+ * commit its bounded per-round budget to the one that merely *looks* closest
+ * and could report `stuck` having never reached it. What matters here is "how
+ * far must I actually walk", which is what a BFS over the live grid answers.
+ *
+ * Uses the same avoid-set `#walkPathTo` walks with, so the ranking matches the
+ * route the bot will really take rather than an idealised one. Unreachable
+ * candidates sort last instead of being dropped: the exit stays inert while
+ * any of them lives, so discarding one would just turn a hunt into a silent
+ * `stuck`. Sorted by index as a final tiebreak, so the order is total and
+ * never depends on sort stability.
+ */
+export function rankExitBlockers(candidates, player, map, openedDoors) {
+  const from = { x: Math.floor(player.x), y: Math.floor(player.y) };
+  return candidates
+    .map((e) => {
+      const path = bfsPath(map, from, { x: Math.floor(e.x), y: Math.floor(e.y) }, LOOT_DETOUR_AVOID_TILES, openedDoors);
+      return { ...e, walkTiles: path ? path.length : Infinity };
+    })
+    .sort((a, b) => a.walkTiles - b.walkTiles || a.i - b.i);
+}
+
+/**
+ * Attribute one level's travelled distance to what the bot was *trying to do*
+ * while it covered it — the `activity` label `Bot#tick` stamps onto every
+ * trace record (see `Bot#withActivity`).
+ *
+ * Why this exists: `routeEfficiencyScore` compares distance travelled against
+ * `map.shortestPathTiles` (a bare spawn->exit BFS) and sat at **0.34** on the
+ * demo campaign, i.e. ~3x the theoretical minimum. Splitting that measured
+ * 3.0x showed it is two roughly equal factors, and only one of them is a bot
+ * defect:
+ * - **1.68x route design** — the planned route itself. Concentrated *entirely*
+ *   in the two key/locked-door levels (demo levels 3 and 7, 3.7x and 3.5x,
+ *   13 and 15 legs); on the other six the plan is within 5% of the shortest
+ *   path. Not a defect: a player who must fetch a key walks further too.
+ * - **1.72x execution** — the bot walking further than *its own* plan, on
+ *   every level (worst 3.3x). That is the part worth attacking, and a single
+ *   aggregate number cannot say which errand spends it.
+ *
+ * Distance between consecutive records is charged to the *earlier* record's
+ * activity: position is sampled before the action, so a record's motion is
+ * what the decision it describes caused. Motion outside `tick` (door pushes
+ * via `holdForwardFine`, teleports) records nothing and lands in the caller's
+ * residual — compare `total` against the engine's own `distanceTraveled`.
+ *
+ * Each row also splits its distance by whether the bot was *engaged* at the
+ * time — a threat present, or one of the threat/mine-driven escape branches.
+ * Navigation and combat overlap rather than alternate (`tick()` lets a threat
+ * preempt the route mid-waypoint), so "distance walked while fighting during
+ * the route leg" is a distinct cost from "distance walked to reach the exit",
+ * and the errand label alone cannot separate them.
+ *
+ * Returns `{ activity, tiles, engagedTiles, ticks, share }[]`, descending by
+ * `tiles`, plus a `total`. Pure — takes a trace, returns numbers, no I/O.
+ */
+export function summarizeActivityDistance(trace) {
+  const byActivity = new Map();
+  let total = 0;
+  if (!trace || trace.length === 0) return { rows: [], total: 0 };
+  for (let i = 0; i < trace.length; i++) {
+    const label = trace[i].activity ?? "unlabelled";
+    let row = byActivity.get(label);
+    if (!row) byActivity.set(label, (row = { activity: label, tiles: 0, engagedTiles: 0, ticks: 0 }));
+    row.ticks += 1;
+    // The last record has no successor to measure against; its own motion is
+    // unobservable here rather than zero, so it contributes ticks only.
+    const next = trace[i + 1];
+    if (!next) continue;
+    const d = Math.hypot(next.x - trace[i].x, next.y - trace[i].y);
+    // A teleport is not travel. `driveLegs`/`#walkPathTo` abandon their route
+    // on `reason === "teleported"` precisely because the bot is no longer
+    // where the plan assumed, and charging that jump to an activity would
+    // swamp every real figure.
+    if (d > TELEPORT_JUMP_TILES) continue;
+    row.tiles += d;
+    if (ENGAGED_BRANCHES.has(trace[i].branch) || trace[i].threatDist != null) row.engagedTiles += d;
+    total += d;
+  }
+  const rows = [...byActivity.values()]
+    .map((r) => ({ ...r, share: total > 0 ? r.tiles / total : 0 }))
+    .sort((a, b) => b.tiles - a.tiles || a.activity.localeCompare(b.activity));
+  return { rows, total };
+}
 
 /**
  * Scans one level's worth of per-decision trace records (see `Bot#tick`'s
@@ -210,16 +347,16 @@ export function detectAnomalies(trace) {
         const first = trace[runStart];
         const last = trace[runEnd - 1];
         const runSlice = trace.slice(runStart, runEnd);
-        const allWaitingOnSpike = runSlice.every((r) => r.waitingOnSpike);
+        const mostlyWaitingOnSpike = spikeFraction(runSlice) >= SPIKE_WAIT_DOMINANCE;
         const engagedTicks = runSlice.filter((r) => r.fire || r.fireOnCooldown).length;
         const mostlyFiring = engagedTicks / runLen > 0.5;
-        if (runLen >= STALL_TICKS_THRESHOLD && !allWaitingOnSpike && !mostlyFiring) {
+        if (runLen >= STALL_TICKS_THRESHOLD && !mostlyWaitingOnSpike && !mostlyFiring) {
           findings.push({
             type: "stall",
             startTick: runStart,
             endTick: runEnd - 1,
             ticks: runLen,
-            detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)} threatDist=${first.threatDist ?? "none"} mineDist=${first.mineDist ?? "none"}`,
+            detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} activity=${first.activity ?? "?"} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)} threatDist=${first.threatDist ?? "none"} mineDist=${first.mineDist ?? "none"}`,
           });
         }
         if (runLen >= HP_DRAIN_FROZEN_TICKS_THRESHOLD && last.hpFrac < first.hpFrac - 0.001 && !mostlyFiring) {
@@ -228,13 +365,169 @@ export function detectAnomalies(trace) {
             startTick: runStart,
             endTick: runEnd - 1,
             ticks: runLen,
-            detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)}`,
+            detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} activity=${first.activity ?? "?"} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)}`,
           });
         }
       }
       runStart = i;
       anchor = cur;
     }
+  }
+  return findings;
+}
+
+/**
+ * Heading-error summary for one oscillation run, for the trace's `delta`
+ * (bearing error to `navTarget`) and `navDist` fields.
+ *
+ * Exists to separate two very different failure shapes that look identical in
+ * the position data alone:
+ * - `|delta|` shrinking while the sign alternates — the bot *is* converging,
+ *   just noisily, and the wobble is the cost of convergence rather than a
+ *   defect. Both attempted fixes so far assumed the opposite.
+ * - `|delta|` flat or growing across the run — genuinely not converging, which
+ *   is the only case where damping the sign could help.
+ *
+ * `navDist` comes along because the bearing to a waypoint swings faster the
+ * closer you stand to it, so a run spent hovering near its target explains a
+ * large `|delta|` without anything being wrong with the turn itself.
+ */
+function describeHeadingError(trace, runStart, runEnd) {
+  const deltas = [];
+  const dists = [];
+  for (let i = runStart; i < runEnd; i++) {
+    if (typeof trace[i].delta === "number") deltas.push(trace[i].delta);
+    if (typeof trace[i].navDist === "number") dists.push(trace[i].navDist);
+  }
+  if (deltas.length === 0) return "delta=n/a";
+  const abs = deltas.map(Math.abs);
+  const flips = deltas.slice(1).filter((d, i) => Math.sign(d) !== Math.sign(deltas[i])).length;
+  const firstHalf = abs.slice(0, Math.ceil(abs.length / 2));
+  const secondHalf = abs.slice(Math.ceil(abs.length / 2));
+  const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  const meanDist = dists.length > 0 ? mean(dists) : null;
+  return (
+    `|delta| ${mean(firstHalf).toFixed(3)}->${mean(secondHalf).toFixed(3)} ` +
+    `(min ${Math.min(...abs).toFixed(3)} max ${Math.max(...abs).toFixed(3)}) ` +
+    `signFlips=${flips}/${deltas.length - 1} ` +
+    `navDist=${meanDist === null ? "n/a" : meanDist.toFixed(2)}t`
+  );
+}
+
+/**
+ * How many distinct nav targets the bot actually *reached* during a run.
+ *
+ * This is what separates a wedge from the bot's ordinary gait, and getting it
+ * wrong is why this detector produced ~700 findings that were mostly nothing.
+ * `planRoute` emits one waypoint per tile, so a winding corridor gives a new
+ * target — often 1.5-2.7 rad off the current heading — every single tile.
+ * Above `MAX_WALK_WHILE_TURNING_RAD` the bot may not hold `KeyW`, so it stops,
+ * turns in place for 3-6 decisions, sprints one tile, and repeats. Measured on
+ * a real dump: 28% of ticks inside flagged runs were frozen mid-turn, and the
+ * turns themselves were textbook (-0.455 rad per decision, dead on target, no
+ * overshoot and no sign flip). Spatially that gait never leaves a 2-tile
+ * radius and its path/net ratio is 4-6x — it trips every other test here while
+ * being exactly what the bot is supposed to do.
+ *
+ * Counting arrivals fixes it without blinding the detector: a bot working
+ * through a route ticks targets off, while one circling something it cannot
+ * reach never closes on anything. Counted as falling *edges* past the
+ * threshold, so hovering around a single target can't inflate the count.
+ */
+function reachedTargets(slice) {
+  let reached = 0;
+  let inside = false;
+  for (const row of slice) {
+    if (typeof row.navDist !== "number") continue;
+    if (!inside && row.navDist <= OSCILLATION_ARRIVAL_DIST) {
+      reached += 1;
+      inside = true;
+    } else if (inside && row.navDist > OSCILLATION_ARRIVAL_DIST) {
+      inside = false;
+    }
+  }
+  return reached;
+}
+
+/**
+ * Scans a level's trace for *oscillation*: the bot moving continuously while
+ * making no net progress.
+ *
+ * This is the gap the other two detectors leave. `detectAnomalies` flags a
+ * frozen position and `detectHeldKeyNoMovement` flags a held key that produced
+ * no displacement — both answer "did it stop?". A bot ping-ponging between two
+ * waypoints, or circling a target it can never quite reach, never stops, so
+ * neither fires. That failure mode is real and currently invisible: the demo
+ * campaign has a level that wedges most full-campaign attempts and yields no
+ * finding at all from the existing passes.
+ *
+ * A run qualifies when, over at least `OSCILLATION_TICKS_THRESHOLD` decisions,
+ * every position stays within `OSCILLATION_RADIUS_TILES` of the run's anchor,
+ * the bot covered at least `OSCILLATION_MIN_PATH_TILES` of ground, and the
+ * path was at least `OSCILLATION_MIN_PATH_RATIO`x its net displacement.
+ *
+ * A run in which the bot *reached* `OSCILLATION_ARRIVALS_EXEMPT` or more nav
+ * targets is excluded as route progress rather than thrashing — without that,
+ * the bot's normal stop-turn-sprint gait through a winding corridor dominates
+ * the findings (see `reachedTargets`).
+ *
+ * Engaged combat is excluded rather than filtered afterwards. Circling and
+ * sidestepping while fighting is deliberate behaviour (see the combat strafe
+ * and bolt dodging in `combatPolicy.mjs`), so counting it here would bury the
+ * real findings under the bot doing its job — the same reasoning behind
+ * `detectAnomalies`' own `mostlyFiring` exclusion.
+ *
+ * Returns `{type, startTick, endTick, ticks, detail}[]`, the same shape the
+ * other detectors use so `reportAnomalies` can print them uniformly.
+ */
+export function detectOscillation(trace) {
+  const findings = [];
+  if (!trace || trace.length < OSCILLATION_TICKS_THRESHOLD) return findings;
+
+  let runStart = 0;
+  let anchor = trace[0];
+  for (let i = 1; i <= trace.length; i++) {
+    const cur = i < trace.length ? trace[i] : null;
+    // Anchored to the run's own start, like `detectAnomalies` — a genuine
+    // traverse eventually leaves the radius and closes the run, while a bot
+    // thrashing in place keeps extending it.
+    if (cur && Math.hypot(cur.x - anchor.x, cur.y - anchor.y) <= OSCILLATION_RADIUS_TILES) continue;
+
+    const runEnd = i; // exclusive
+    const runLen = runEnd - runStart;
+    if (runLen >= OSCILLATION_TICKS_THRESHOLD) {
+      const slice = trace.slice(runStart, runEnd);
+      const engagedTicks = slice.filter((r) => r.threatDist !== null && r.threatDist !== undefined).length;
+      const mostlyEngaged = engagedTicks / runLen > 0.5;
+      const allWaitingOnSpike = spikeFraction(slice) >= SPIKE_WAIT_DOMINANCE;
+      // Working through the route, not stuck on it — see `reachedTargets`.
+      const makingRouteProgress = reachedTargets(slice) >= OSCILLATION_ARRIVALS_EXEMPT;
+
+      let pathLength = 0;
+      for (let j = 1; j < slice.length; j++) pathLength += Math.hypot(slice[j].x - slice[j - 1].x, slice[j].y - slice[j - 1].y);
+      const first = slice[0];
+      const last = slice[slice.length - 1];
+      const netDisplacement = Math.hypot(last.x - first.x, last.y - first.y);
+      // Guard the divide: a run with no net displacement at all is maximally
+      // oscillatory, not undefined.
+      const ratio = netDisplacement > 0.01 ? pathLength / netDisplacement : Infinity;
+
+      if (!mostlyEngaged && !allWaitingOnSpike && !makingRouteProgress && pathLength >= OSCILLATION_MIN_PATH_TILES && ratio >= OSCILLATION_MIN_PATH_RATIO) {
+        findings.push({
+          type: "oscillation",
+          startTick: runStart,
+          endTick: runEnd - 1,
+          ticks: runLen,
+          detail:
+            `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} ` +
+            `travelled=${pathLength.toFixed(1)}t net=${netDisplacement.toFixed(2)}t ratio=${ratio === Infinity ? "inf" : ratio.toFixed(1)}x ` +
+            `hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)} ` +
+            describeHeadingError(trace, runStart, runEnd),
+        });
+      }
+    }
+    runStart = i;
+    anchor = cur;
   }
   return findings;
 }
@@ -272,245 +565,13 @@ export function detectHeldKeyNoMovement(trace) {
           startTick: runStart,
           endTick: runEnd - 1,
           ticks: runLen,
-          detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} heldKeys=[${[...heldKeys].join(",")}] threatDist=${first.threatDist ?? "none"} mineDist=${first.mineDist ?? "none"} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)}`,
+          detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} keysDuringRun=[${[...heldKeys].join(",")}] threatDist=${first.threatDist ?? "none"} mineDist=${first.mineDist ?? "none"} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)}`,
         });
       }
       runStart = null;
     }
   }
   return findings;
-}
-
-export function isHazardAt(map, x, y) {
-  return map.grid[Math.floor(y)]?.[Math.floor(x)] === HAZARD_TILE;
-}
-
-/** Mirrors src/engine/traps.ts's isSpikeActive — whether the spike trap (if
- * any) at (x,y) is in its damaging half of the cycle at `levelTime`. */
-export function activeSpikeAt(map, x, y, levelTime) {
-  const cx = Math.floor(x);
-  const cy = Math.floor(y);
-  const trap = map.spikeTraps.find((t) => t.x === cx && t.y === cy);
-  if (!trap) return false;
-  const cyclePos = (levelTime + trap.phase) % trap.period;
-  return cyclePos >= trap.period / 2;
-}
-
-/**
- * Aggressive targeting: prioritize whichever aggroed enemy can be finished
- * off fastest (already in melee range, or an Edge Case) over strictly
- * whoever's nearest — thins numerous, individually weak attackers first
- * rather than spending 3-6s locked onto one tankier enemy while a swarm
- * lands free chip damage. Falls back to nearest-first among equally "quick"
- * (or equally "not quick") candidates, with a visible-enemy tiebreak
- * (occluded ones can't be engaged immediately regardless of distance).
- *
- * `map` is optional (some callers don't have one on hand) — when omitted,
- * every candidate is treated as visible, i.e. the original distance/quick-
- * kill-only ranking, unchanged.
- */
-export function pickThreat(enemies, player, profile, map) {
-  // `i` is the enemy's index in the engine's own `this.enemies` array
-  // (stable for a whole level) — used by `Bot#tick` to recognize "same
-  // enemy as last tick" for the last-visible-position freeze.
-  const candidates = enemies
-    .map((e, i) => ({ ...e, i }))
-    .filter((e) => e.alive && e.aggroed)
-    .map((e) => ({
-      ...e,
-      dist: Math.hypot(e.x - player.x, e.y - player.y),
-      visible: !map || hasLineOfSight(map, player.x, player.y, e.x, e.y),
-    }))
-    .filter((e) => e.dist < profile.engageRadius);
-  candidates.sort((a, b) => {
-    const aQuick = a.dist <= DEFAULT_TUNING.MELEE_RANGE || a.edgeCase;
-    const bQuick = b.dist <= DEFAULT_TUNING.MELEE_RANGE || b.edgeCase;
-    if (aQuick !== bQuick) return aQuick ? -1 : 1;
-    if (a.visible !== b.visible) return a.visible ? -1 : 1;
-    return a.dist - b.dist;
-  });
-  return candidates[0];
-}
-
-/** Mirrors the engine's own hasLineOfSight (src/engine/enemyAi.ts): samples
- * every ~0.1 tiles along the line and fails if any sample lands on a
- * wall/unopened-secret/lore tile. */
-export function hasLineOfSight(map, x0, y0, x1, y1) {
-  const dx = x1 - x0;
-  const dy = y1 - y0;
-  const dist = Math.hypot(dx, dy);
-  const steps = Math.ceil(dist / 0.1);
-  for (let i = 1; i < steps; i++) {
-    const t = i / steps;
-    if (isWallTile(map, x0 + dx * t, y0 + dy * t)) return false;
-  }
-  return true;
-}
-
-export function isWallTile(map, x, y) {
-  const tile = map.grid[Math.floor(y)]?.[Math.floor(x)];
-  return tile === undefined || tile === 1 || tile === 6 || tile === 7;
-}
-
-/**
- * A mine only counts as "disarmable from here" if there's a clear shot —
- * `visible` only means the mine has been spotted, not that it's actually
- * hittable from the player's current position. Also excludes mines well off
- * to the side of or behind `navTarget`'s direction (see
- * DEFAULT_TUNING.MINE_DISARM_MAX_ANGLE_FROM_PATH) — a mine this far
- * off-path isn't a real threat to the route.
- *
- * `reactionBufferTiles` (default 0) shifts *both* ends of the eligible
- * distance window outward by the same amount as `findDangerousMine`'s own
- * buffer, rather than just raising the lower bound alone — the designed
- * "disarm zone" width (`MINE_DISARM_RANGE - MINE_BLAST_RADIUS`) stays the
- * same, just moved farther out. Widening only the lower bound would shrink
- * that zone every time the buffer grows, and at a real decision window long
- * enough (`MultiplayerBot`'s own `DEFAULT_STEP_MS`), it can collapse to
- * nothing — confirmed directly: `findDangerousMine`'s own widened-but-
- * unshifted-here buffer first fix made every mine reachable from a real
- * multiplayer decision window count as "dangerous," so the bot never
- * disarmed one again and got stuck retreating from a mine the route
- * genuinely needed it to clear.
- */
-export function findDisarmableMine(mines, player, abandoned, map, navTarget, reactionBufferTiles = 0) {
-  const navAngle = navTarget ? Math.atan2(navTarget.y - player.y, navTarget.x - player.x) : null;
-  return mines
-    .filter((m) => m.alive && m.visible && !abandoned?.has(`${m.x},${m.y}`))
-    .map((m) => ({ ...m, dist: Math.hypot(m.x - player.x, m.y - player.y) }))
-    .filter((m) => m.dist > DEFAULT_TUNING.MINE_BLAST_RADIUS + reactionBufferTiles && m.dist <= DEFAULT_TUNING.MINE_DISARM_RANGE + reactionBufferTiles)
-    .filter((m) => hasLineOfSight(map, player.x, player.y, m.x, m.y))
-    .filter((m) => {
-      if (navAngle === null) return true;
-      const mineAngle = Math.atan2(m.y - player.y, m.x - player.x);
-      return Math.abs(angleDelta(navAngle, mineAngle)) <= DEFAULT_TUNING.MINE_DISARM_MAX_ANGLE_FROM_PATH;
-    })
-    .sort((a, b) => a.dist - b.dist)[0];
-}
-
-/**
- * A visible mine close enough to be actively dangerous (inside its own blast
- * radius, plus `reactionBufferTiles`) rather than just a target to line up a
- * shot on — "stop, back up" comes before "shoot" (see `Bot#tick`'s
- * mine-handling doc comment).
- *
- * `reactionBufferTiles` (default 0, i.e. exactly `MINE_BLAST_RADIUS`) exists
- * because a mine's own fuse (`MINE_FUSE_SECONDS`, `traps.ts`) ticks in real
- * time regardless of how often this function gets called — a decision-window
- * long enough to cover more real ground than the gap between "just outside
- * blast radius" and "already caught in it" leaves the bot with no chance to
- * react between one decision seeing "safe" and a mine detonating mid-window.
- * Confirmed directly against `MultiplayerBot`'s much longer real decision
- * window (`DEFAULT_STEP_MS`, 400ms vs. single-player's own realtime
- * `WATCH_STEP_MS`, 130ms): a bot standing 3-4 tiles from its own *disarm*
- * target (correctly beyond `MINE_BLAST_RADIUS` from that one) still took real
- * splash damage from a *different*, closer mine in the same cluster that had
- * already been armed and went off entirely within one held decision, with no
- * chance to retreat from it first. Callers pass their own real
- * `ENGINE_MOVE_SPEED * ENGINE_SPRINT_MULTIPLIER * (stepMs / 1000)` — at
- * single-player's own short decision windows this rounds to well under a
- * tile, a harmless no-op widening; only a caller with a long real decision
- * window (multiplayer) gets a buffer that actually matters.
- */
-export function findDangerousMine(mines, player, abandoned, reactionBufferTiles = 0) {
-  return mines
-    .filter((m) => m.alive && m.visible && !abandoned?.has(`${m.x},${m.y}`))
-    .map((m) => ({ ...m, dist: Math.hypot(m.x - player.x, m.y - player.y) }))
-    .filter((m) => m.dist <= DEFAULT_TUNING.MINE_BLAST_RADIUS + reactionBufferTiles)
-    .sort((a, b) => a.dist - b.dist)[0];
-}
-
-export function hasAmmoFor(player, weaponIndex) {
-  if (weaponIndex === 0 || weaponIndex === 1) return player.ammo.bullets > 0;
-  if (weaponIndex === GDB_WEAPON_INDEX) return player.ammo.smg > 0;
-  if (weaponIndex === GHIDRA_WEAPON_INDEX) return player.ammo.rockets > 0;
-  if (weaponIndex === FRIDAY_HOTFIX_WEAPON_INDEX) return player.ammo.gas > 0;
-  return true;
-}
-
-/**
- * Distance along the player's current firing ray to the nearest point where
- * an in-flight rocket would actually detonate against a living enemy — not
- * just the intended target's own distance (a rocket explodes on the FIRST
- * living enemy it comes within ROCKET_ENEMY_TRIGGER_RADIUS of, tracked or
- * not). Deliberately doesn't account for walls between the player and an
- * in-path enemy — a rare enough edge case not worth the added complexity.
- */
-export function nearestRocketDetonationDistance(player, enemies) {
-  let nearest = Infinity;
-  const dirX = player.dirX;
-  const dirY = player.dirY;
-  const triggerSq = DEFAULT_TUNING.ROCKET_ENEMY_TRIGGER_RADIUS * DEFAULT_TUNING.ROCKET_ENEMY_TRIGGER_RADIUS;
-  for (const e of enemies) {
-    if (!e.alive) continue;
-    const ex = e.x - player.x;
-    const ey = e.y - player.y;
-    const t = ex * dirX + ey * dirY; // distance along the firing ray to closest approach
-    if (t < 0 || t >= nearest) continue; // behind the player, or already not the closest
-    const perpSq = ex * ex + ey * ey - t * t;
-    if (perpSq <= triggerSq) nearest = t;
-  }
-  return nearest;
-}
-
-/**
- * True if firing a rocket right now is unsafe: (1) a rocket has zero
- * interaction with mines — never fire one at a mine target, at any
- * distance; (2) the intended target or some other untracked living enemy
- * sits close enough to the flight path to trigger an earlier, closer
- * detonation than expected.
- */
-export function rocketAimUnsafe(player, enemies, aimDist, isMineTarget) {
-  if (isMineTarget) return true;
-  if (aimDist !== null && aimDist < DEFAULT_TUNING.ROCKET_SAFE_DISTANCE) return true;
-  return nearestRocketDetonationDistance(player, enemies) < DEFAULT_TUNING.ROCKET_SAFE_DISTANCE;
-}
-
-/**
- * Best ranged weapon for the current situation, not just a fixed
- * per-profile preference order. Once 2+ aggroed enemies are clustered near
- * the current threat, picks a weapon suited to the cluster's distance:
- * close → Friday Hotfix (falling back to shotgun), distant (and only for
- * profiles confident enough to use rockets this way) → Ghidra, everything
- * else → shotgun. Falls back to `profile.weaponPriority` otherwise. Never
- * selects ghidra within ROCKET_SAFE_DISTANCE regardless of source. Never
- * returns a melee index.
- */
-export function pickRangedWeapon(player, profile, enemies, threat, mineTarget) {
-  if (threat) {
-    const clusterCount = enemies.filter(
-      (e) => e.alive && e.aggroed && Math.hypot(e.x - threat.x, e.y - threat.y) <= DEFAULT_TUNING.CLUSTER_RADIUS,
-    ).length;
-    if (clusterCount >= 2) {
-      if (threat.dist <= DEFAULT_TUNING.FRIDAY_HOTFIX_MAX_RANGE) {
-        if (player.ownedWeapons.includes(FRIDAY_HOTFIX_WEAPON_INDEX) && hasAmmoFor(player, FRIDAY_HOTFIX_WEAPON_INDEX)) {
-          return player.weaponIndex === FRIDAY_HOTFIX_WEAPON_INDEX ? null : FRIDAY_HOTFIX_WEAPON_INDEX;
-        }
-      } else if (
-        threat.dist >= DEFAULT_TUNING.ROCKET_CLUSTER_MIN_DIST &&
-        profile.rocketForDistantClusters &&
-        player.ownedWeapons.includes(GHIDRA_WEAPON_INDEX) &&
-        hasAmmoFor(player, GHIDRA_WEAPON_INDEX) &&
-        !rocketAimUnsafe(player, enemies, threat.dist, false)
-      ) {
-        return player.weaponIndex === GHIDRA_WEAPON_INDEX ? null : GHIDRA_WEAPON_INDEX;
-      }
-      if (player.ownedWeapons.includes(1) && hasAmmoFor(player, 1)) {
-        return player.weaponIndex === 1 ? null : 1; // Regex Shotgun
-      }
-    }
-  }
-  // Ghidra is excluded outright whenever the aim source is a mine, not just
-  // when it's judged "too close" (a rocket flies straight through a mine to
-  // an unaccounted-for wall — see `rocketAimUnsafe`'s doc comment).
-  const aimDist = threat ? threat.dist : mineTarget ? mineTarget.dist : null;
-  for (const idx of profile.weaponPriority) {
-    if (idx === GHIDRA_WEAPON_INDEX && rocketAimUnsafe(player, enemies, aimDist, Boolean(mineTarget))) continue;
-    if (!player.ownedWeapons.includes(idx)) continue;
-    if (!hasAmmoFor(player, idx)) continue;
-    return player.weaponIndex === idx ? null : idx;
-  }
-  return null;
 }
 
 /**
@@ -524,7 +585,7 @@ export class Bot {
   /**
    * @param {import("playwright").Page} page
    * @param {object} profile one of PROFILES's shape (fireAngleEps,
-   *   engageRadius, coverageMode, weaponPriority, healthDetourThreshold,
+   *   engageRadius, weaponPriority, healthDetourThreshold,
    *   proactiveMineDisarm, rocketForDistantClusters, rotSpeedMultiplier)
    * @param {object} [opts]
    * @param {boolean} [opts.realtime=false] false = virtual-clock pump
@@ -546,8 +607,9 @@ export class Bot {
    * @param {object} [opts.logger] {debugNav, wpDebug, driftDebug}: optional
    *   `(msg: string) => void` sinks, no-ops by default. {trace, navDiag}:
    *   booleans — `trace: true` enables per-decision trace collection +
-   *   `reportAnomalies`' basic findings; `navDiag: true` (implies `trace`)
-   *   additionally enables the finer held-key-no-movement pass.
+   *   `reportAnomalies`' basic findings (stall, health-drain-frozen, and
+   *   oscillation); `navDiag: true` (implies `trace`) additionally enables the
+   *   finer held-key-no-movement pass.
    * @param {boolean} [opts.ignoreThreats=false] never engage, flee from, or
    *   even acknowledge an enemy as a threat — `tick()` goes straight to plain
    *   navigation regardless of what's nearby. For a bot driving a genuinely
@@ -570,7 +632,22 @@ export class Bot {
     this.profile = profile;
     this.realtime = opts.realtime ?? false;
     this.ignoreThreats = opts.ignoreThreats ?? false;
-    this.tuning = { ...DEFAULT_TUNING, ...opts.tuning };
+    // A profile may own tuning constants that would otherwise be global, which
+    // is how a skill tier expresses *competence* (how well it avoids damage)
+    // rather than only *pace* (how fast it moves and shoots) — see
+    // `scripts/lib/profiles.mjs`.
+    //
+    // Merged here rather than at the call sites deliberately: there are six
+    // `Bot` constructions and five pass no `tuning` at all, including
+    // `generate-default-highscore.mjs`'s — so per-call-site plumbing would
+    // silently have generated the shipped highscore from profiles whose own
+    // tuning never applied. One line here makes that class of bug impossible,
+    // and `MultiplayerBot` inherits it through `super()`.
+    //
+    // `opts.tuning` stays last so `CODEENSTEIN_TELEMETRY_TUNING` still wins —
+    // it is the single-variable switch every A/B in `doc/dev/balancing-telemetry.md`
+    // depends on.
+    this.tuning = { ...DEFAULT_TUNING, ...(profile?.tuning ?? {}), ...opts.tuning };
     this.stepMs = opts.stepMs ?? (this.realtime ? this.tuning.WATCH_STEP_MS : this.tuning.VIRTUAL_STEP_MS);
     this.recordStepMs = opts.recordStepMs ?? this.stepMs;
     this.logger = {
@@ -579,6 +656,7 @@ export class Bot {
       driftDebug: opts.logger?.driftDebug,
       trace: opts.logger?.trace ?? false,
       navDiag: opts.logger?.navDiag ?? false,
+      traceDump: opts.logger?.traceDump ?? false,
     };
     this.map = null;
     this.mineMemory = null;
@@ -591,6 +669,38 @@ export class Bot {
     // level transition), reset only by constructing a fresh `Bot`.
     this.simTimeMs = 0;
     this.lastFireSimTimeMs = -Infinity;
+    // Anomaly findings accumulated across every level this Bot plays, as
+    // `{ [type]: { findings, ticks } }`. Exists because `detectOscillation`
+    // counts *events*, and an A/B judged on event count is unreadable: a
+    // change that makes the bot cover less ground can produce *more*
+    // qualifying windows while behaving better. `ticks` is the time-weighted
+    // figure to judge on. Console output alone couldn't answer that, which is
+    // how the first oscillation fix got graded on the wrong number.
+    this.anomalyTally = {};
+    // Denominator for `anomalyTally` — see `#tallyDecisions`.
+    this.anomalyDecisions = 0;
+    // What errand the bot is currently on, stamped onto every trace record so
+    // travelled distance can be attributed to intent rather than only to a
+    // combat branch — see `summarizeActivityDistance` and `#withActivity`.
+    // Purely observational: nothing reads it to make a decision.
+    this.activity = "route";
+  }
+
+  /**
+   * Run `fn` with `this.activity` set to `label`, restoring the previous label
+   * afterwards. Save/restore rather than plain assignment because these
+   * errands nest (`driveToExit` -> `#huntEnemy` -> `#walkPathTo` ->
+   * `driveToward`) and an inner errand finishing must not silently relabel the
+   * outer one's remaining decisions.
+   */
+  async #withActivity(label, fn) {
+    const previous = this.activity;
+    this.activity = label;
+    try {
+      return await fn();
+    } finally {
+      this.activity = previous;
+    }
   }
 
   /**
@@ -610,34 +720,42 @@ export class Bot {
       trace: this.logger.trace ? [] : undefined,
     };
     this.visitedPickups = new Set();
+    // Last `gridVersion` seen from the engine — see `#refreshGridIfChanged`.
+    // Reset per level, because the engine's counter is per level too.
+    this.lastGridVersion = null;
+    // Doors this run has pushed open, as "x,y" tile keys. Lives on the
+    // instance rather than inside `driveLegs` because `driveToExit` runs
+    // *after* the legs are done and still has to path back through them.
+    this.openedDoors = new Set();
+    // Lazily built by `#allDoorTiles()` — every door tile on this level, for
+    // the "route through doors" re-plan fallback.
+    this.allDoorTilesCache = null;
   }
 
   /**
-   * How long to hold a turn key for a *pure* turn so it lands as close as
-   * possible to `deltaAngle` without overshooting past it — see the
-   * original module's doc comment for the oscillation bug this fixes.
-   * Records `pendingTurnCheck` for `#checkRotationAnomaly` to compare
-   * against on the next call.
+   * Shortest decision this bot may issue, in ms. Zero here: under the virtual
+   * clock there is no transport between deciding and the engine seeing it, so
+   * a 5ms burst lands exactly as 5ms of movement, and short bursts are the
+   * whole anti-overshoot mechanism.
+   *
+   * `MultiplayerBot` overrides it, and the reason is load-bearing rather than
+   * defensive — see its own doc comment. Every input there is delayed
+   * `INPUT_DELAY_TICKS` (~100ms) before it reaches the shared simulation, and
+   * a bot whose decision window is not comfortably longer than that delay
+   * re-issues a fresh command before the previous one has finished arriving.
+   * That was confirmed directly, twice, and is why `DEFAULT_STEP_MS` is 400
+   * rather than `WATCH_STEP_MS`'s 130.
+   *
+   * The trap this guards is that a *speed* change silently becomes a *timing*
+   * change: `#moveBurstMs` caps the hold at however long the move needs, so
+   * doubling the speed halves the decision window for the same distance. That
+   * turned a single-player-only sprint into a multiplayer navigation failure
+   * (`verify:multiplayer-transition`, the one CI-wired bot script, went from
+   * pass to "host got stuck on the final approach") with no multiplayer code
+   * changed at all.
    */
-  #turnBurstMs(deltaAngle, rotSpeedMultiplier, player, currentAngle) {
-    const standardStepMs = this.stepMs;
-    const rate = this.tuning.ENGINE_ROT_SPEED * rotSpeedMultiplier; // rad/sec
-    const neededMs = (Math.abs(deltaAngle) / rate) * 1000;
-    if (this.mineMemory) {
-      this.mineMemory.pendingTurnCheck = { beforeDir: currentAngle, turnBurstMs: Math.min(standardStepMs, neededMs), rotSpeedMultiplier };
-    }
-    return Math.max(1, Math.min(standardStepMs, neededMs));
-  }
-
-  /** Straight-line-movement counterpart to `#turnBurstMs` — caps how long a
-   * movement key is held so it doesn't overshoot past a small arrival
-   * tolerance (see the original module's doc comment for the hazard-tile
-   * oscillation bug this fixes). */
-  #moveBurstMs(dist, sprinting) {
-    const standardStepMs = this.stepMs;
-    const speed = this.tuning.ENGINE_MOVE_SPEED * (sprinting ? this.tuning.ENGINE_SPRINT_MULTIPLIER : 1); // tiles/sec
-    const neededMs = (dist / speed) * 1000;
-    return Math.max(1, Math.min(standardStepMs, neededMs));
+  get minDecisionMs() {
+    return 0;
   }
 
   /**
@@ -646,6 +764,23 @@ export class Bot {
    * should ever produce. Doesn't try to prevent the underlying cause
    * (unknown) — only makes any recurrence immediately visible in the log.
    */
+  /**
+   * Stamp provenance onto the `pendingTurnCheck` that `turnBurstMs` just
+   * recorded, so a later `#checkRotationAnomaly` can say *where* the turn came
+   * from and how long the key was really held — not just the burst that was
+   * computed for it. Pure diagnostics; never read back by decision logic.
+   */
+  #attributeTurnCheck({ origin, branch, turnKey, holds, durationMs }) {
+    const pending = this.mineMemory?.pendingTurnCheck;
+    if (!pending) return;
+    pending.origin = origin;
+    pending.branch = branch;
+    pending.turnKey = turnKey;
+    pending.actualHoldMs = turnKey && holds ? (holds.get(turnKey) ?? null) : (durationMs ?? null);
+    pending.durationMs = durationMs;
+    pending.setAtSimTimeMs = this.simTimeMs;
+  }
+
   #checkRotationAnomaly(player, currentAngle) {
     const pending = this.mineMemory?.pendingTurnCheck;
     if (!pending) return;
@@ -655,7 +790,11 @@ export class Bot {
     if (actual > Math.max(expectedMax, 0.3)) {
       console.log(
         `[nav-warn] implausible rotation: turned ${actual.toFixed(2)}rad in one decision ` +
-          `(requested turnBurst=${pending.turnBurstMs.toFixed(0)}ms, expected <=${expectedMax.toFixed(2)}rad) ` +
+          `(computed turn ${pending.turnBurstMs.toFixed(1)}ms, key actually held ${pending.actualHoldMs == null ? "?" : pending.actualHoldMs.toFixed(1) + "ms"}, ` +
+          `expected <=${expectedMax.toFixed(2)}rad) ` +
+          `[origin=${pending.origin ?? "?"} branch=${pending.branch ?? "?"} turnKey=${pending.turnKey ?? "-"} ` +
+          `decision=${pending.durationMs == null ? "?" : pending.durationMs.toFixed(0) + "ms"} ` +
+          `elapsedSim=${(this.simTimeMs - (pending.setAtSimTimeMs ?? this.simTimeMs)).toFixed(0)}ms] ` +
           `at (${player.x.toFixed(2)},${player.y.toFixed(2)}) — not a stuck state, self-corrects next tick, logged for diagnosis.`,
       );
     }
@@ -668,19 +807,97 @@ export class Bot {
     this.mineMemory.trace.push(entry);
   }
 
+  /** Adds one finding to `anomalyTally`, keeping both the event count and the
+   * time-weighted tick total — see the field's own comment for why the tick
+   * total is the one to grade a behaviour change on. */
+  #tallyAnomaly(finding) {
+    const row = (this.anomalyTally[finding.type] ??= { findings: 0, ticks: 0 });
+    row.findings += 1;
+    row.ticks += finding.ticks ?? 0;
+  }
+
+  /** Total decisions this Bot has recorded, accumulated per level so the
+   * anomaly tallies can be expressed as a *share of decisions*. Neither raw
+   * findings nor raw ticks are exposure-independent: a change that makes the
+   * bot finish levels faster lowers both without the behaviour improving at
+   * all. Measured on a real comparison — oscillation ticks/run fell 11.7%
+   * while level time fell 7.7%, so most of the apparent win was simply less
+   * time on the level. */
+  #tallyDecisions() {
+    this.anomalyDecisions = (this.anomalyDecisions ?? 0) + (this.mineMemory?.trace?.length ?? 0);
+  }
+
   /** No-op unless trace collection is enabled. Runs `detectAnomalies` (and,
    * if `this.logger.navDiag` is also on, `detectHeldKeyNoMovement`) against
    * this level's accumulated trace and logs any findings, tagged with
    * `label` and the 1-based level number. */
   reportAnomalies(label, levelIndex) {
     if (!this.mineMemory?.trace) return;
+    this.#tallyDecisions();
     if (this.logger.navDiag) {
       for (const f of detectHeldKeyNoMovement(this.mineMemory.trace)) {
+        this.#tallyAnomaly(f);
         console.log(`  [anomaly] ${label} level ${levelIndex + 1}: ${f.type} (${f.ticks} ticks, decisions ${f.startTick}-${f.endTick}) ${f.detail}`);
       }
     }
     for (const f of detectAnomalies(this.mineMemory.trace)) {
+      this.#tallyAnomaly(f);
       console.log(`  [anomaly] ${label} level ${levelIndex + 1}: ${f.type} (${f.ticks} ticks, decisions ${f.startTick}-${f.endTick}) ${f.detail}`);
+    }
+    // Deliberately not `navDiag`-gated: a bot that paces instead of freezing is
+    // exactly the case `balancing:scan` used to miss entirely, so it has to fire
+    // on the default scan rather than only when someone already suspects it.
+    const oscillations = detectOscillation(this.mineMemory.trace);
+    for (const f of oscillations) {
+      this.#tallyAnomaly(f);
+      console.log(`  [anomaly] ${label} level ${levelIndex + 1}: ${f.type} (${f.ticks} ticks, decisions ${f.startTick}-${f.endTick}) ${f.detail}`);
+    }
+    // Raw per-decision rows for the level's *longest* oscillation run.
+    // Aggregates over these runs have now produced two wrong diagnoses in a
+    // row — the documented "the sign flips every decision" came from a
+    // hand-picked five-line excerpt and measures 14% across whole runs — so
+    // the next attempt should read one run end to end before naming a
+    // mechanism. One run per level keeps that readable; run with
+    // CONCURRENCY=1 or concurrent attempts interleave into nonsense.
+    // Every detector's findings, not just oscillation — the longest run on a
+    // level is as often a `stall` (the Pro/normal level-1 wedge is a 440-tick
+    // stall, which an oscillation-only dump captured nothing of).
+    // The longest run of *each* type, not the longest overall: one dump per
+    // level meant a level whose worst run was an oscillation never showed a
+    // single stall row, and vice versa. Classifying the scan's idle stalls
+    // needed exactly those rows — 14 clusters of them sat next to spike traps
+    // and only one happened to overlap an oscillation window that got dumped.
+    const dumpable = [...detectAnomalies(this.mineMemory.trace), ...oscillations];
+    const longestByType = new Map();
+    for (const f of dumpable) {
+      const cur = longestByType.get(f.type);
+      if (!cur || f.ticks > cur.ticks) longestByType.set(f.type, f);
+    }
+    for (const longest of longestByType.values()) {
+      if (!this.logger.traceDump) break;
+      console.log(`  [trace] ${label} level ${levelIndex + 1}: longest ${longest.type}, decisions ${longest.startTick}-${longest.endTick} (${longest.ticks} ticks)`);
+      for (let i = longest.startTick; i <= longest.endTick; i++) {
+        const t = this.mineMemory.trace[i];
+        console.log(
+          `    #${String(i).padStart(4)} pos=(${t.x.toFixed(2)},${t.y.toFixed(2)}) ` +
+            `delta=${t.delta === null || t.delta === undefined ? "  n/a" : (t.delta >= 0 ? "+" : "") + t.delta.toFixed(3)} ` +
+            `navDist=${t.navDist === null || t.navDist === undefined ? "n/a" : t.navDist.toFixed(2)} ` +
+            `burst=${t.turnBurst === undefined || t.turnBurst === null ? "  -" : t.turnBurst.toFixed(0).padStart(3)} ` +
+            `keys=[${t.moveKeys.join(",")}]`.padEnd(34) +
+            ` threat=${t.threatDist === null ? "  -" : t.threatDist.toFixed(1)}` +
+            ` mine=${t.mineDist === null || t.mineDist === undefined ? "  -" : t.mineDist.toFixed(1)}` +
+            ` br=${(t.branch ?? "?").padEnd(9)} fire=${t.fire ? 1 : 0} spike=${t.waitingOnSpike ? 1 : 0} hp=${t.hpFrac.toFixed(2)}`,
+        );
+      }
+    }
+    // Not an anomaly — a standing breakdown of where the level's walking went,
+    // so `routeEfficiencyScore` regressions can be attributed instead of only
+    // observed. `navDiag`-gated because it prints unconditionally (every level
+    // has one) and would otherwise bury the actual findings above.
+    if (this.logger.navDiag) {
+      const { rows, total } = summarizeActivityDistance(this.mineMemory.trace);
+      const parts = rows.map((r) => `${r.activity} ${r.tiles.toFixed(1)}t (${(r.share * 100).toFixed(0)}%, ${(r.engagedTiles / (r.tiles || 1) * 100).toFixed(0)}% engaged)`);
+      console.log(`  [activity] ${label} level ${levelIndex + 1}: ${total.toFixed(1)} tiles attributed — ${parts.join(", ")}`);
     }
   }
 
@@ -719,7 +936,7 @@ export class Bot {
         this.map,
         { x: Math.floor(player.x), y: Math.floor(player.y) },
         { x: Math.floor(p.x), y: Math.floor(p.y) },
-        new Set(),
+        LOOT_DETOUR_AVOID_TILES,
         openedDoors,
       );
       if (!path || path.length - 1 > this.tuning.MAX_LOOT_DETOUR_TILES) continue;
@@ -734,18 +951,42 @@ export class Bot {
     if (staticUncollected.includes(best)) this.visitedPickups.add(`${best.x},${best.y}`);
 
     const path = bestPath;
-    this.logger.wpDebug?.(`[wpdebug] loot-detour from (${player.x.toFixed(1)},${player.y.toFixed(1)}) to best=(${best.x},${best.y}) kind=${best.kind} pathLen=${path.length}`);
-    for (const wp of pathToWaypoints(path)) {
-      this.logger.wpDebug?.(`[wpdebug]   loot wp=(${wp.x},${wp.y})`);
-      const result = await this.driveToward(wp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
-      this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
-      if (result.state !== "playing") return result;
-      // See `driveLegs`'s own doc comment on its identical check — every
-      // waypoint after a mid-route teleport was planned from a position this
-      // bot is no longer at.
-      if (result.reason === "teleported") return result;
-    }
-    return { state: "playing" };
+    // `hp` and `urgent` are logged because loot detours turned out to be 24% of
+    // all distance walked (see `summarizeActivityDistance`), and whether a given
+    // detour was *worth* walking depends on the resource level at the time —
+    // health caps at `MAX_HEALTH`, so a health detour at `hp=1.00` is walking
+    // for nothing.
+    this.logger.wpDebug?.(
+      `[wpdebug] loot-detour from (${player.x.toFixed(1)},${player.y.toFixed(1)}) to best=(${best.x},${best.y}) kind=${best.kind} pathLen=${path.length} hp=${player.healthFraction.toFixed(2)} urgent=${urgent}`,
+    );
+    return this.#withActivity("loot", async () => {
+      for (const wp of pathToWaypoints(path)) {
+        this.logger.wpDebug?.(`[wpdebug]   loot wp=(${wp.x},${wp.y})`);
+        // Re-planning, the same as a route leg — see `driveTowardWithReplan`.
+        // This call site kept the bare straight-line `driveToward` after the
+        // route legs moved off it, and inherited the exact failure that change
+        // was made to fix: shoved off the line mid-detour, the bot aims into a
+        // wall for the whole budget instead of routing around.
+        //
+        // It is the *dominant* wedge the anomaly scan sees. Tagging findings
+        // with the errand they occurred on showed 9 of 13 idle stalls are
+        // `activity=loot`, including both clusters previously mistaken for a
+        // door-opening bug: on `stage03_legacy_api.php` the bot sits in the
+        // throat of the doorway at y=70.5 with the door at y=71 — not opening
+        // it, just walking past it toward a pickup — and a heading up to
+        // `TURN_MOVE_EPS` (0.2 rad) off-axis clips the frame. The engine
+        // rejects the blocked axis and slides the free one, so y stays pinned
+        // while x crawls 23.53 -> 23.69 across 254 decisions.
+        const result = await this.driveTowardWithReplan(wp, openedDoors, this.tuning.ARRIVE_EPS);
+        this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
+        if (result.state !== "playing") return result;
+        // See `driveLegs`'s own doc comment on its identical check — every
+        // waypoint after a mid-route teleport was planned from a position this
+        // bot is no longer at.
+        if (result.reason === "teleported") return result;
+      }
+      return { state: "playing" };
+    });
   }
 
   /**
@@ -757,35 +998,83 @@ export class Bot {
    * a corner).
    */
   async driveTowardWithReplan(wp, openedDoors, eps = this.tuning.ARRIVE_EPS) {
-    const player = await this.readState();
-    const displaced =
-      Math.hypot(player.x - wp.x, player.y - wp.y) > this.tuning.LEG_REPLAN_DRIFT_TILES ||
-      (this.map && !hasLineOfSight(this.map, player.x, player.y, wp.x, wp.y));
-    if (displaced) {
-      const path = bfsPath(
-        this.map,
-        { x: Math.floor(player.x), y: Math.floor(player.y) },
-        { x: Math.floor(wp.x), y: Math.floor(wp.y) },
-        new Set(),
-        openedDoors,
-      );
-      this.logger.driftDebug?.(
-        `[driftdebug] drift from (${player.x.toFixed(2)},${player.y.toFixed(2)}) wp=(${wp.x},${wp.y}) openedDoors=${JSON.stringify([...openedDoors])} path=${path ? `${path.length} tiles` : "NULL"}`,
-      );
-      if (path) {
-        for (const rwp of pathToWaypoints(path)) {
-          this.logger.wpDebug?.(`[wpdebug] replan-walk wp=(${rwp.x},${rwp.y})`);
-          const result = await this.driveToward(rwp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
-          this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
-          // See `driveLegs`'s own doc comment on its identical check — a
-          // mid-route teleport invalidates every remaining replanned
-          // waypoint too, same as it would the original plan.
-          if (result.state !== "playing" || result.reason === "stuck" || result.reason === "teleported") return result;
+    // Re-plan whenever a drive reports `stuck`, not only on entry.
+    //
+    // The displacement check below used to run once and then hand off to
+    // `driveToward`, which steers in a straight line for its whole budget with
+    // no further path checks. Anything that moves the bot mid-drive — combat is
+    // the usual culprit, since `tick()` lets a threat preempt navigation
+    // entirely — can carry it around a wall, after which the straight line aims
+    // into that wall for the rest of the budget and the attempt is discarded.
+    //
+    // Captured on `stage06_pipeline.py`, reproducibly and at identical
+    // coordinates across runs: the bot stood at (40.5,57.5) with its waypoint
+    // one tile north at (40.5,56.5), got pushed west during a firefight, and
+    // ended at (38.8,56.3) — the far side of the wall at (39,56), where "east"
+    // is that wall. Re-planning from where it actually ended up routes around.
+    //
+    // The retry has to cover the re-planned walk too, not just the direct
+    // drive: that captured failure was a `replan-walk` waypoint going stuck,
+    // which an entry-only check by definition cannot catch.
+    outer: for (let replan = 0; ; replan++) {
+      const lastTry = replan >= this.tuning.WAYPOINT_REPLAN_ATTEMPTS;
+      // Ground covered on a *retry* was already covered by the attempt that
+      // went stuck, so it is charged to a distinct `<errand>+replan` activity
+      // (see `summarizeActivityDistance`). Iteration 0 keeps the caller's own
+      // label even when `displaced` fires: routing around a corner the moment
+      // line of sight is lost is the plan working, not a retry.
+      const activity = replan > 0 ? `${this.activity}+replan` : this.activity;
+      const player = await this.readState();
+      if (player.state !== "playing") return { state: player.state };
+      const displaced =
+        Math.hypot(player.x - wp.x, player.y - wp.y) > this.tuning.LEG_REPLAN_DRIFT_TILES ||
+        (this.map && !hasLineOfSight(this.map, player.x, player.y, wp.x, wp.y));
+
+      if (displaced) {
+        const from = { x: Math.floor(player.x), y: Math.floor(player.y) };
+        const to = { x: Math.floor(wp.x), y: Math.floor(wp.y) };
+        // Strict first; then, if that fails, assume every door can be gotten
+        // through. `this.map` is a static copy the engine never mutates, so a
+        // door opened outside `#noteDoorUnderFoot`'s view still reads as a wall.
+        let path = bfsPath(this.map, from, to, new Set(), openedDoors);
+        this.logger.driftDebug?.(
+          `[driftdebug] drift from (${player.x.toFixed(2)},${player.y.toFixed(2)}) wp=(${wp.x},${wp.y}) openedDoors=${JSON.stringify([...openedDoors])} path=${path ? `${path.length} tiles` : "NULL"}`,
+        );
+        if (!path) {
+          path = bfsPath(this.map, from, to, new Set(), this.#allDoorTiles());
+          if (path) this.logger.driftDebug?.(`[driftdebug]   strict BFS failed, routing through doors (${path.length} tiles)`);
         }
-        return { state: "playing", reason: "arrived" };
+        if (path) {
+          for (const rwp of pathToWaypoints(path)) {
+            this.logger.wpDebug?.(`[wpdebug] replan-walk wp=(${rwp.x},${rwp.y})`);
+            const result = await this.#withActivity(activity, () => this.driveToward(rwp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT));
+            this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
+            // See `driveLegs`'s own doc comment on its identical check — a
+            // mid-route teleport invalidates every remaining replanned
+            // waypoint too, same as it would the original plan.
+            if (result.state !== "playing" || result.reason === "teleported") return result;
+            if (result.reason === "stuck") {
+              if (lastTry) return result;
+              this.logger.driftDebug?.(`[driftdebug] replan-walk stuck — re-planning (attempt ${replan + 1})`);
+              continue outer;
+            }
+          }
+          return { state: "playing", reason: "arrived" };
+        }
+        // Genuinely unreachable in the model. A straight line to a target BFS
+        // can't reach is almost always a wall, and at the full per-waypoint
+        // budget that costs the whole budget before reporting the failure it
+        // already knew about — cap it so a hopeless case is cheap.
+        this.logger.driftDebug?.(`[driftdebug]   no path even through doors — bounded straight-line attempt`);
+        const bounded = await this.#withActivity(activity, () => this.driveToward(wp, eps, Math.ceil(this.tuning.MAX_TICKS_PER_WAYPOINT / 6)));
+        if (bounded.state !== "playing" || bounded.reason !== "stuck" || lastTry) return bounded;
+        continue outer;
       }
+
+      const direct = await this.#withActivity(activity, () => this.driveToward(wp, eps, this.tuning.MAX_TICKS_PER_WAYPOINT));
+      if (direct.state !== "playing" || direct.reason !== "stuck" || lastTry) return direct;
+      this.logger.driftDebug?.(`[driftdebug] straight-line stuck — re-planning (attempt ${replan + 1})`);
     }
-    return this.driveToward(wp, eps, this.tuning.MAX_TICKS_PER_WAYPOINT);
   }
 
   /** Walks a full route-leg list (walk/openDoor legs), threading a
@@ -809,7 +1098,7 @@ export class Bot {
    * grinding against `MAX_TICKS_PER_WAYPOINT` trying to reach a target its
    * own stale `this.map` can no longer even BFS a path to). */
   async driveLegs(legs) {
-    const openedDoors = new Set();
+    const openedDoors = this.openedDoors;
 
     for (const leg of legs) {
       const detour = await this.maybeDetourForLoot(openedDoors);
@@ -824,7 +1113,7 @@ export class Bot {
           if (wpDetour.state !== "playing") return wpDetour;
           if (wpDetour.reason === "teleported") return wpDetour;
           this.logger.wpDebug?.(`[wpdebug] leg-walk wp=(${wp.x},${wp.y})`);
-          const result = await this.driveTowardWithReplan(wp, openedDoors);
+          const result = await this.#withActivity("route", () => this.driveTowardWithReplan(wp, openedDoors));
           this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
           if (result.state !== "playing") return result;
           if (result.reason === "stuck") return { state: "stuck" };
@@ -839,11 +1128,11 @@ export class Bot {
           x: leg.doorTile.x + 0.5 - leg.approachDir.dx,
           y: leg.doorTile.y + 0.5 - leg.approachDir.dy,
         };
-        const staged = await this.driveTowardWithReplan(stagingPoint, openedDoors, this.tuning.TIGHT_ARRIVE_EPS);
+        const staged = await this.#withActivity("door", () => this.driveTowardWithReplan(stagingPoint, openedDoors, this.tuning.TIGHT_ARRIVE_EPS));
         if (staged.state !== "playing") return staged;
         if (staged.reason === "teleported") return staged;
         const targetAngle = Math.atan2(leg.approachDir.dy, leg.approachDir.dx);
-        const faced = await this.faceAngle(targetAngle, this.tuning.MAX_TICKS_PER_WAYPOINT);
+        const faced = await this.#withActivity("door", () => this.faceAngle(targetAngle, this.tuning.MAX_TICKS_PER_WAYPOINT));
         if (faced.state !== "playing") return faced;
         const held = await this.holdForwardFine(this.tuning.DOOR_OPEN_TICKS * this.tuning.VIRTUAL_STEP_MS, this.tuning.DOOR_OPEN_FINE_STEP_MS);
         if (held.state !== "playing") return held;
@@ -854,10 +1143,166 @@ export class Bot {
   }
 
   /**
-   * One tick: combat (or proactive mine-disarm) always preempts navigation.
-   * Hazard-crossing suppresses combat entirely rather than detouring to a
-   * "safe tile" (the nearest safe edge tile is often not on the way to the
-   * real destination).
+   * Walk onto the exit tile and, if the level refuses to end, clear whatever
+   * the exit is waiting on.
+   *
+   * `checkExit()` (`engine.ts`) ends the level only when a living player
+   * stands on `map.exit` **and** `exitRoomHasAliveEnemy()` is false — an
+   * enemy whose `home` rectangle contains the exit keeps the exit inert no
+   * matter how precisely the player is standing on it.
+   *
+   * `pickThreat` only ever considers `aggroed` enemies, so an exit-room enemy
+   * that the route never provoked is invisible to the bot forever. The bot
+   * would then stand on the exit until its caller gave up and recorded the
+   * attempt as "stuck" — which is what made `generate:default-highscore` fail
+   * ~58% of Casual attempts on demo-campaign level 10
+   * (`stage10_kernel_module.rs`) while every waypoint on the way there
+   * arrived cleanly in <=15 ticks against a 600-tick cap. It reproduced only
+   * under the highscore generator because the A/B protocol runs telemetry
+   * with `LEVEL_LIMIT=8` and so never reaches level 10 at all — not because
+   * the two harnesses drive the bot differently.
+   *
+   * Walking at the blocker is all the "combat" this needs: closing to within
+   * `AGGRO_RADIUS` with line of sight aggros it, at which point `pickThreat`
+   * starts seeing it and the normal combat branches fight it. So this is a
+   * navigation fix, and deliberately not a new combat policy.
+   */
+  async driveToExit(exitCenter, finalApproachTicks, openedDoors = this.openedDoors) {
+    let last = { state: "playing", reason: "stuck" };
+    for (let round = 0; round < EXIT_CLEAR_ROUNDS; round++) {
+      // BFS back to the exit tile before the tight final nudge. `driveToward`
+      // walks a straight line with no pathfinding, and after a hunt the bot
+      // can be most of a room away with walls in between — an earlier version
+      // of this method cleared the exit room correctly and then failed anyway,
+      // burning all `finalApproachTicks` straight-lining into a wall. Round 0
+      // is normally a no-op (the caller's legs just ended at the exit).
+      if (round > 0) {
+        const back = await this.#withActivity("exitBacktrack", () => this.#walkPathTo({ x: this.map.exit.x, y: this.map.exit.y }, openedDoors));
+        if (back.state !== "playing") return back;
+        if (back.reason === "teleported") return back;
+      }
+      last = await this.#withActivity("exit", () => this.driveToward(exitCenter, this.tuning.TIGHT_ARRIVE_EPS, finalApproachTicks));
+      // "won" (exit accepted) or "over" (died on the way) — either way, done.
+      if (last.state !== "playing") return last;
+
+      const { player, enemies } = await this.readFull();
+      // Exactly `exitRoomHasAliveEnemy()`'s predicate, not a proxy for it.
+      // `Enemy.home` is not in the enemy snapshot, but it doesn't need to be:
+      // the engine takes its roster straight from the generated map
+      // (`this.enemies = map.enemies`, engine.ts), so `this.map.enemies[i]`
+      // *is* the same record and indices line up exactly.
+      //
+      // Proximity to the exit was tried first and is not a usable stand-in —
+      // it sent the bot after enemies 23 tiles away that could not possibly
+      // be homed to the exit's room, burning every round without touching the
+      // actual blocker.
+      const blockers = this.tuning.BOT_WALKING_DISTANCE_BLOCKERS
+        ? rankExitBlockers(
+            enemies.map((e, i) => ({ ...e, i })).filter((e) => e.alive && this.#homesOnExitRoom(e.i)),
+            player,
+            this.map,
+            openedDoors,
+          )
+        : enemies
+            .map((e, i) => ({ ...e, i }))
+            .filter((e) => e.alive && this.#homesOnExitRoom(e.i))
+            .sort((a, b) => {
+              const da = Math.hypot(a.x - player.x, a.y - player.y);
+              const db = Math.hypot(b.x - player.x, b.y - player.y);
+              return da - db || a.i - b.i; // total order — no reliance on sort stability
+            });
+      // Exit inert with nothing homed to its room left alive means the gate is
+      // something this method doesn't model — report stuck rather than loop.
+      if (blockers.length === 0) return { state: "playing", reason: "stuck" };
+      this.logger.wpDebug?.(`[wpdebug] exit inert — ${blockers.length} exit-room blocker(s) alive; hunting #${blockers[0].i} at (${blockers[0].x.toFixed(1)},${blockers[0].y.toFixed(1)})`);
+      const hunted = await this.#withActivity("exitHunt", () => this.#huntEnemy(blockers[0], openedDoors));
+      if (hunted.state !== "playing") return hunted;
+      if (hunted.reason === "teleported") return hunted;
+    }
+    return { state: "playing", reason: "stuck" };
+  }
+
+  /**
+   * Whether enemy `i` is one the exit is waiting on — the bot-side mirror of
+   * `Engine#enemyBelongsToExitRoom`, evaluated against the same `Enemy`
+   * records the engine itself runs on (see `driveToExit`).
+   */
+  #homesOnExitRoom(i) {
+    const home = this.map?.enemies?.[i]?.home;
+    if (!home) return false;
+    const { x: ex, y: ey } = this.map.exit;
+    return ex >= home.x && ex < home.x + home.w && ey >= home.y && ey < home.y + home.h;
+  }
+
+  /**
+   * Path to `target`'s tile and walk it until the enemy dies. Returns as soon
+   * as it does — the kill itself is done by the ordinary combat branches once
+   * proximity aggros it, not here.
+   *
+   * The enemy's index is stable for a whole level (the same guarantee
+   * `pickThreat` relies on to recognise "same enemy as last tick"), so it is
+   * safe to re-check liveness by index against a fresh snapshot.
+   */
+  async #huntEnemy(target, openedDoors) {
+    return this.#walkPathTo({ x: Math.floor(target.x), y: Math.floor(target.y) }, openedDoors, async () => {
+      const { enemies } = await this.readFull();
+      return !enemies[target.i]?.alive;
+    });
+  }
+
+  /**
+   * BFS a walkable path to `tile` and walk it waypoint by waypoint, stopping
+   * early when `stopWhen` (if given) reports the errand is already done.
+   *
+   * This is the piece `driveToward` is not: `driveToward` steers in a straight
+   * line and gives up when a wall is in the way, which is correct for a single
+   * BFS waypoint one tile away but useless for "get from here to somewhere
+   * across the room".
+   */
+  async #walkPathTo(tile, openedDoors, stopWhen = null) {
+    const player = await this.readState();
+    if (player.state !== "playing") return { state: player.state };
+    const from = { x: Math.floor(player.x), y: Math.floor(player.y) };
+    // Strict first, then again allowing hazard terrain — the same two-tier
+    // shape `driveTowardWithReplan` uses for doors, and for the same reason:
+    // refusing to plan a route is only correct when a *better* route exists.
+    //
+    // `LOOT_DETOUR_AVOID_TILES` (spikes + acid) is right for an optional loot
+    // detour, where the answer to "the only way there crosses a spike" is
+    // "then don't bother". It is wrong for getting to the exit, which is not
+    // optional. Captured on `main.c`: from (60,57) the exit is 95 tiles away
+    // by plain BFS but **NULL** once spikes and acid are excluded — every
+    // route crosses one. `driveToExit` does not treat that null as fatal
+    // (a `reason: "stuck"` still has `state: "playing"`), so it fell through
+    // to `driveToward`, which steers a straight line with no pathfinding, and
+    // sprinted into a wall for the whole 80-tick budget — six rounds, ~22
+    // seconds frozen, in roughly 2 of 5 Pro/normal attempts.
+    //
+    // Crossing a spike costs a few HP; the drive loop still waits out an
+    // *active* spike cycle via `activeSpikeAt`. Standing still for 22 seconds
+    // costs the level.
+    const { path, viaHazard } = pathAvoidingHazardsIfPossible(
+      this.map, from, tile, LOOT_DETOUR_AVOID_TILES, openedDoors, this.tuning.BOT_HAZARD_ROUTE_FALLBACK,
+    );
+    if (viaHazard) this.logger.wpDebug?.(`[wpdebug] walkPathTo: no hazard-free route to (${tile.x},${tile.y}), routing through hazard terrain instead (${path.length} tiles)`);
+    // Genuinely unreachable even through hazards — the caller reports "stuck".
+    if (!path) return { state: "playing", reason: "stuck" };
+    for (const wp of pathToWaypoints(path)) {
+      const result = await this.driveToward(wp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
+      if (result.state !== "playing") return result;
+      // See `driveLegs`'s doc comment — waypoints after a teleport were
+      // planned against a position this bot is no longer at.
+      if (result.reason === "teleported") return result;
+      if (stopWhen && (await stopWhen())) return { state: "playing", reason: "arrived" };
+    }
+    return { state: "playing", reason: "arrived" };
+  }
+
+  /**
+   * One decision, dispatched. The decision itself lives in
+   * `combatPolicy.mjs`'s `decide()` — this method is the I/O half: read the
+   * rotation-anomaly check, hand the world to the policy, record the trace it
+   * produces, and dispatch the intent it returns.
    *
    * `map` is an explicit parameter, not always `this.map`: `faceAngle`
    * deliberately calls `tick(..., undefined)` when a threat is present, so
@@ -866,328 +1311,141 @@ export class Bot {
    * from the original script's call site rather than folded into `this.map`
    * implicitly.
    */
-  async tick(player, enemies, mines, navTarget, map) {
+  async tick(player, enemies, mines, navTarget, map, projectiles = []) {
     this.#checkRotationAnomaly(player, Math.atan2(player.dirY, player.dirX));
-    // Currently standing on a damaging ground tile: don't stop to fight —
-    // just keep marching toward wherever the bot was already headed.
-    if (map && navTarget && (isHazardAt(map, player.x, player.y) || activeSpikeAt(map, player.x, player.y, player.levelTime))) {
-      const currentAngle = Math.atan2(player.dirY, player.dirX);
-      const targetAngle = Math.atan2(navTarget.y - player.y, navTarget.x - player.x);
-      const delta = angleDelta(currentAngle, targetAngle);
-      const dist = Math.hypot(navTarget.x - player.x, navTarget.y - player.y);
-      const moveKeys = new Set(["KeyW", "ShiftLeft"]);
-      let turnBurst;
-      if (Math.abs(delta) > this.tuning.TURN_MOVE_EPS) {
-        moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
-        // Deliberately no `diagonalStrafeKey` here — see its doc comment's
-        // "confirmed regression" note. Reverted from every branch except
-        // plain navigation.
-        turnBurst = this.#turnBurstMs(delta, this.profile.rotSpeedMultiplier, player, currentAngle);
-      } else {
-        turnBurst = this.#moveBurstMs(dist, true);
-      }
-      this.#recordTrace({ branch: "hazard", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: null, mineDist: null, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false });
-      return this.applyAction(moveKeys, false, null, false, turnBurst);
-    }
-
-    const threat = this.ignoreThreats ? null : pickThreat(enemies, player, this.profile, map);
-
-    // Critical health: break contact instead of trading hits.
-    if (threat && player.healthFraction < this.tuning.CRITICAL_HEALTH_FRACTION) {
-      const currentAngle = Math.atan2(player.dirY, player.dirX);
-      const awayAngle = Math.atan2(player.y - threat.y, player.x - threat.x);
-      const delta = angleDelta(currentAngle, awayAngle);
-      const moveKeys = new Set(["KeyW", "ShiftLeft"]);
-      if (Math.abs(delta) > this.tuning.TURN_MOVE_EPS) {
-        moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
-      }
-      // A blocked "away" vector (cornered retreat) still won't move the
-      // player — this branch returns before the shared end-of-tick
-      // combatStallTicks bookkeeping ever runs, so it needs its own
-      // same-position tracking.
-      if (this.mineMemory) {
-        const posKey = `${player.x.toFixed(2)},${player.y.toFixed(2)}`;
-        if (this.mineMemory.criticalStallPos === posKey) {
-          this.mineMemory.criticalStallTicks = (this.mineMemory.criticalStallTicks ?? 0) + 1;
-        } else {
-          this.mineMemory.criticalStallPos = posKey;
-          this.mineMemory.criticalStallTicks = 0;
-        }
-        if (this.mineMemory.criticalStallTicks >= this.tuning.CRITICAL_STALL_TICKS_THRESHOLD) {
-          moveKeys.delete("KeyD");
-          moveKeys.delete("KeyA");
-          moveKeys.add(
-            Math.floor(this.mineMemory.criticalStallTicks / this.tuning.CRITICAL_STALL_STRAFE_FLIP_TICKS) % 2 === 0 ? "KeyD" : "KeyA",
-          );
-        }
-      }
-      // Deliberately not `#turnBurstMs` here — fleeing has no narrow
-      // hit-window to protect against overshoot; a full sprint step every
-      // tick converges toward genuinely-away without stalling.
-      const turnBurst = this.#moveBurstMs(10, true);
-      this.#recordTrace({ branch: "criticalHealth", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: threat.dist, mineDist: null, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false });
-      return this.applyAction(moveKeys, false, null, false, turnBurst);
-    }
-
-    // See `findDangerousMine`'s own doc comment for why this buffer exists —
-    // a real, decision-window-scaled reaction margin, not a fixed tile count.
-    // Shared by both mine checks below so the same shift applies to each end
-    // of `findDisarmableMine`'s own eligible-distance window too (see its own
-    // doc comment on why only widening one side of that window is wrong).
-    const mineReactionBufferTiles = this.tuning.ENGINE_MOVE_SPEED * this.tuning.ENGINE_SPRINT_MULTIPLIER * (this.stepMs / 1000);
-
-    // Proper mine handling: stop, back up out of blast range, shoot it, then
-    // continue. Backing away takes priority over shooting (below) since you
-    // can't line up a safe shot from inside your own target's blast radius.
-    if (!threat && this.profile.proactiveMineDisarm) {
-      const dangerMine = findDangerousMine(mines, player, this.mineMemory?.abandoned, mineReactionBufferTiles);
-      if (dangerMine) {
-        const key = `${dangerMine.x},${dangerMine.y}`;
-        let gaveUp = false;
-        if (this.mineMemory) {
-          this.mineMemory.retreatTicks = this.mineMemory.retreatKey === key ? this.mineMemory.retreatTicks + 1 : 1;
-          this.mineMemory.retreatKey = key;
-          gaveUp = this.mineMemory.retreatTicks > this.tuning.MINE_TARGET_GIVEUP_TICKS;
-          if (gaveUp) this.mineMemory.abandoned.add(key); // e.g. wedged against a wall — stop trying, in either mode, for the rest of the level
-        }
-        if (!gaveUp) {
-          const currentAngle = Math.atan2(player.dirY, player.dirX);
-          const awayAngle = Math.atan2(player.y - dangerMine.y, player.x - dangerMine.x);
-          const delta = angleDelta(currentAngle, awayAngle);
-          const moveKeys = new Set(["KeyW"]);
-          let turnBurst;
-          if (Math.abs(delta) > this.tuning.TURN_MOVE_EPS) {
-            moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
-            turnBurst = this.#turnBurstMs(delta, this.profile.rotSpeedMultiplier, player, currentAngle);
-          } else {
-            turnBurst = this.#moveBurstMs(10, false);
-          }
-          this.#recordTrace({ branch: "mineRetreat", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: null, mineDist: dangerMine.dist, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false });
-          return this.applyAction(moveKeys, false, null, false, turnBurst);
-        }
-        // else: gave up retreating — fall through to normal navigation below.
-      }
-    }
-
-    let mineTarget =
-      !threat && this.profile.proactiveMineDisarm && map
-        ? findDisarmableMine(mines, player, this.mineMemory?.abandoned, map, navTarget, mineReactionBufferTiles)
-        : null;
-    if (mineTarget && this.mineMemory) {
-      const key = `${mineTarget.x},${mineTarget.y}`;
-      this.mineMemory.shootTicks = this.mineMemory.shootKey === key ? this.mineMemory.shootTicks + 1 : 1;
-      this.mineMemory.shootKey = key;
-      if (this.mineMemory.shootTicks > this.tuning.MINE_TARGET_GIVEUP_TICKS) {
-        this.mineMemory.abandoned.add(key); // e.g. a wall blocks line of fire — stop trying, in either mode, for the rest of the level
-        mineTarget = null;
-      }
-    }
-    // A threat's aggro is sticky, but `threat.x/y` is live even while
-    // occluded — freeze the aim at wherever the threat was last actually
-    // seen while occluded, only resuming live tracking once visible again.
-    let threatAim = threat;
-    if (threat && this.mineMemory) {
-      if (threat.visible) {
-        this.mineMemory.lastVisibleThreat = { i: threat.i, x: threat.x, y: threat.y };
-      } else if (this.mineMemory.lastVisibleThreat?.i === threat.i) {
-        threatAim = this.mineMemory.lastVisibleThreat;
-      }
-      // else: aggroed without this specific enemy ever having been seen yet
-      // — no memory to fall back on, aim at the live position.
-    }
-    const aimTarget = threatAim ?? mineTarget;
-    // Read the stall counter as last tick left it (updated at the bottom of
-    // this function, after `fire` is known).
-    const stallStrafeKey =
-      threat && this.mineMemory && (this.mineMemory.combatStallTicks ?? 0) >= this.tuning.COMBAT_STALL_TICKS_THRESHOLD
-        ? Math.floor(this.mineMemory.combatStallTicks / this.tuning.COMBAT_STALL_STRAFE_FLIP_TICKS) % 2 === 0
-          ? "KeyD"
-          : "KeyA"
-        : null;
-
-    const currentAngle = Math.atan2(player.dirY, player.dirX);
-    const moveKeys = new Set();
-    let turnBurst;
-    let fire = false;
-    // True when the bot was aimed, aligned, and otherwise ready to fire, but
-    // held back purely by `profile.fireCooldownMs` — a legitimate reason to
-    // sit still, distinct from being stuck (see `detectAnomalies`'s
-    // `mostlyFiring`/`mostlyEngaged` exclusion, which needs this since a
-    // human-paced fire rate now means most ticks in a real firefight don't
-    // actually pull the trigger).
-    let fireOnCooldown = false;
-    let weaponSwitch = null;
-    this.logger.debugNav?.(
-      `[nav] pos=(${player.x.toFixed(2)},${player.y.toFixed(2)}) dir=${currentAngle.toFixed(2)} hpFrac=${player.healthFraction.toFixed(2)} ` +
-        `threat=${threat ? `(${threat.x.toFixed(1)},${threat.y.toFixed(1)},dist=${threat.dist.toFixed(1)})` : "none"} ` +
-        `mineTarget=${mineTarget ? `(${mineTarget.x},${mineTarget.y})` : "none"} navTarget=${navTarget ? `(${navTarget.x.toFixed(2)},${navTarget.y.toFixed(2)})` : "none"} ` +
-        `weaponIndex=${player.weaponIndex} ammo=${JSON.stringify(player.ammo)} owned=${JSON.stringify(player.ownedWeapons)}`,
+    const intent = decide(
+      { player, enemies, mines, navTarget, map, projectiles },
+      this.mineMemory,
+      {
+        profile: this.profile,
+        tuning: this.tuning,
+        stepMs: this.stepMs,
+        ignoreThreats: this.ignoreThreats,
+        simTimeMs: this.simTimeMs,
+        lastFireSimTimeMs: this.lastFireSimTimeMs,
+        minDecisionMs: this.minDecisionMs,
+        logger: this.logger,
+        // Only `MultiplayerBot` has a roster id. A bolt is locked to one
+        // target for its whole life, so multiplayer must ignore shots aimed at
+        // a team-mate; single-player has one player and passes null.
+        selfId: this.playerId ?? null,
+      },
     );
-    let useMelee = false;
-    let waitingOnSpike = false;
-
-    if (aimTarget) {
-      const targetAngle = Math.atan2(aimTarget.y - player.y, aimTarget.x - player.x);
-      const delta = angleDelta(currentAngle, targetAngle);
-      // Melee-in-range is a universal tactical choice for every profile:
-      // free, and lifesteal is the single biggest survivability lever there
-      // is. Gated on `player.meleeWouldHit` (the engine's own hit test)
-      // rather than a fixed angle tolerance, since a melee swing's on-screen
-      // hit window shrinks with distance/enemy size.
-      if (threat && threat.dist <= this.tuning.MELEE_RANGE) {
-        if (!player.meleeWouldHit) {
-          moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
-          turnBurst = this.#turnBurstMs(delta, this.profile.rotSpeedMultiplier, player, currentAngle);
-          // Also keep closing the last bit of distance, not just re-aiming
-          // in place — the enemy's own chase AI is still walking between
-          // MELEE_CLOSE_MIN_DISTANCE and MELEE_RANGE. Never closer than one
-          // decision's own real forward-movement distance, though — holding
-          // "keep closing" *and* a turn command together for a whole decision
-          // that's long enough to cover that much ground traces a real arc
-          // around the target instead of settling on it (confirmed directly
-          // against a caller using a much longer real decision window than
-          // this project's own single-player defaults —
-          // `scripts/lib/multiplayerBot.mjs` — which spun in place
-          // indefinitely at melee range with the tuning-only default alone).
-          // `MELEE_CLOSE_MIN_DISTANCE` on its own already works out to almost
-          // exactly this same distance at single-player's own realtime
-          // `WATCH_STEP_MS` (0.4 tiles vs. 3.2 tiles/sec × 0.13s ≈ 0.42) —
-          // this is a no-op there; it only widens the gate for a caller
-          // using a longer decision window than that.
-          const closeMinDistance = Math.max(this.tuning.MELEE_CLOSE_MIN_DISTANCE, this.tuning.ENGINE_MOVE_SPEED * (this.stepMs / 1000));
-          if (map && threat.dist > closeMinDistance) {
-            const aheadX = player.x + player.dirX * 0.6;
-            const aheadY = player.y + player.dirY * 0.6;
-            if (!isHazardAt(map, aheadX, aheadY) && !activeSpikeAt(map, aheadX, aheadY, player.levelTime)) {
-              moveKeys.add("KeyW");
-            }
-          }
-          if (stallStrafeKey) {
-            moveKeys.add(stallStrafeKey);
-            turnBurst = Math.max(turnBurst ?? 0, this.#moveBurstMs(10, false));
-          }
-        } else {
-          fire = true;
-          useMelee = true;
-        }
-      } else {
-        // Don't fire at an aggroed-but-currently-occluded threat — aggro is
-        // sticky, so an aligned angle doesn't guarantee a clear shot.
-        const hasLos = !threat || !map || hasLineOfSight(map, player.x, player.y, threat.x, threat.y);
-        // A stationary mine's on-screen width at typical disarm range is
-        // narrower than any fixed fireAngleEps tolerance — gate on the
-        // engine's own conservative `player.wouldMineHit` test instead,
-        // unless realignment has stalled long enough to just take the shot.
-        const mineRealignStalled = Boolean(this.mineMemory) && this.mineMemory.shootTicks > this.tuning.MINE_REALIGN_STALL_TICKS;
-        const mineNotReady = !threat && !player.wouldMineHit && !mineRealignStalled;
-        if (Math.abs(delta) > this.profile.fireAngleEps || !hasLos || mineNotReady) {
-          if (Math.abs(delta) > (mineNotReady ? this.tuning.MINE_REALIGN_EPS : this.profile.fireAngleEps)) {
-            moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
-            turnBurst = this.#turnBurstMs(delta, this.profile.rotSpeedMultiplier, player, currentAngle);
-          }
-          // Keep closing distance while lining up a ranged shot (threat-only,
-          // not while aiming at a mine, and only outside melee range).
-          if (threat && (threat.dist > this.tuning.MIN_RANGED_APPROACH_DISTANCE || !hasLos) && map) {
-            const aheadX = player.x + player.dirX * 0.6;
-            const aheadY = player.y + player.dirY * 0.6;
-            if (!isHazardAt(map, aheadX, aheadY) && !activeSpikeAt(map, aheadX, aheadY, player.levelTime)) {
-              moveKeys.add("KeyW");
-            }
-          }
-          if (stallStrafeKey) {
-            moveKeys.delete("KeyD");
-            moveKeys.delete("KeyA");
-            moveKeys.add(stallStrafeKey);
-            turnBurst = Math.max(turnBurst ?? 0, this.#moveBurstMs(10, false));
-          }
-        } else {
-          weaponSwitch = pickRangedWeapon(player, this.profile, enemies, threat, mineTarget);
-          // Re-check the *effective* weapon (the switch target, or whatever's
-          // already equipped) against the same rocket-safety check right
-          // before actually firing, not just at selection time — an already-
-          // equipped Ghidra with nothing better in inventory would otherwise
-          // still fire unsafely.
-          const effectiveWeapon = weaponSwitch ?? player.weaponIndex;
-          const aimDist = threat ? threat.dist : mineTarget ? mineTarget.dist : null;
-          const rocketUnsafe = effectiveWeapon === GHIDRA_WEAPON_INDEX && rocketAimUnsafe(player, enemies, aimDist, Boolean(mineTarget));
-          // Semi-auto ranged weapons (pistol/shotgun/ghidra) have no engine-
-          // side fire-rate cap — see `profile.fireCooldownMs`'s doc comment —
-          // so a fresh Backquote keydown dispatched every single decision
-          // tick fired as fast as the tick loop allowed (~20/sec headless),
-          // far beyond any human trigger-pull rate. Auto weapons (gdb/Friday
-          // Hotfix) are exempt: their realistic sustained rate is already
-          // enforced by the engine's own `weaponCooldown`/`fireIntervalSec`
-          // while the key is held, so throttling the bot's dispatch here
-          // would only starve them of frames to actually hold the key down.
-          const isAutoRanged = AUTO_RANGED_WEAPON_INDICES.has(effectiveWeapon);
-          const fireReady = isAutoRanged || this.simTimeMs - this.lastFireSimTimeMs >= this.profile.fireCooldownMs;
-          fire = !rocketUnsafe && fireReady;
-          fireOnCooldown = !rocketUnsafe && !fireReady;
-          if (fire && !isAutoRanged) this.lastFireSimTimeMs = this.simTimeMs;
-        }
-      }
-    } else if (navTarget) {
-      const targetAngle = Math.atan2(navTarget.y - player.y, navTarget.x - player.x);
-      const delta = angleDelta(currentAngle, targetAngle);
-      const aheadX = player.x + player.dirX * 0.6;
-      const aheadY = player.y + player.dirY * 0.6;
-      const blockedAhead = map && activeSpikeAt(map, aheadX, aheadY, player.levelTime);
-      waitingOnSpike = Boolean(blockedAhead);
-      if (Math.abs(delta) > this.tuning.TURN_MOVE_EPS) {
-        moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
-        turnBurst = this.#turnBurstMs(delta, this.profile.rotSpeedMultiplier, player, currentAngle);
-        // Walk while still correcting heading, capped to angular errors
-        // under MAX_WALK_WHILE_TURNING_RAD so a sharp corridor doubling-back
-        // doesn't send the bot walking the wrong way while it turns around.
-        if (Math.abs(delta) < this.tuning.MAX_WALK_WHILE_TURNING_RAD && !blockedAhead) {
-          moveKeys.add("KeyW");
-          moveKeys.add(diagonalStrafeKey(delta));
-        }
-      } else if (!blockedAhead) {
-        // Don't step onto an active spike trap — wait out its cycle instead.
-        moveKeys.add("KeyW");
-        turnBurst = this.#moveBurstMs(Math.hypot(navTarget.x - player.x, navTarget.y - player.y), false);
-      }
-    }
-
-    this.logger.debugNav?.(`      -> moveKeys=[${[...moveKeys].join(",")}] fire=${fire} useMelee=${useMelee} weaponSwitch=${weaponSwitch} turnBurst=${turnBurst?.toFixed(0)}`);
-
-    // A real attack attempt counts as progress even if position doesn't
-    // change, so only an unchanging position with no attack counts toward
-    // the stall.
-    if (threat && this.mineMemory) {
-      const posKey = `${player.x.toFixed(2)},${player.y.toFixed(2)}`;
-      if (!fire && this.mineMemory.combatStallPos === posKey) {
-        this.mineMemory.combatStallTicks = (this.mineMemory.combatStallTicks ?? 0) + 1;
-      } else {
-        this.mineMemory.combatStallPos = posKey;
-        this.mineMemory.combatStallTicks = 0;
-      }
-    } else if (this.mineMemory) {
-      this.mineMemory.combatStallTicks = 0;
-      this.mineMemory.combatStallPos = null;
-    }
-    this.#recordTrace({
-      branch: "main",
-      x: player.x,
-      y: player.y,
-      hpFrac: player.healthFraction,
-      threatDist: threat?.dist ?? null,
-      mineDist: mineTarget?.dist ?? null,
-      waitingOnSpike,
-      moveKeys: [...moveKeys],
-      turnBurst,
-      fire: fire || useMelee,
-      fireOnCooldown,
+    // The semi-auto fire clock is per-`Bot`, not per-decision, so the policy
+    // reports that it pulled the trigger and the bot owns the timestamp — see
+    // `profile.fireCooldownMs`. It must be stamped before `applyAction`
+    // advances `simTimeMs`, so the cooldown measures from the decision that
+    // fired, exactly as it did when this was all one method.
+    // Attribute the rotation check to the decision that produced it. Without
+    // this the "[nav-warn] implausible rotation" line reports only the burst
+    // `turnBurstMs` *recorded*, which is not the hold actually dispatched —
+    // several branches widen `turnBurst` afterwards (see the stall-strafe note
+    // in `combatPolicy.mjs`), so the message read as physically impossible
+    // ("turned 0.45rad, requested 0ms") and cost real time to explain twice.
+    this.#attributeTurnCheck({
+      origin: "tick",
+      branch: intent.branch ?? intent.trace?.branch ?? "?",
+      turnKey: intent.holds?.has("KeyE") ? "KeyE" : intent.holds?.has("KeyQ") ? "KeyQ" : null,
+      holds: intent.holds,
+      durationMs: intent.durationMs ?? null,
     });
-    return this.applyAction(moveKeys, fire, weaponSwitch, useMelee, turnBurst);
+    if (intent.firedSemiAuto) this.lastFireSimTimeMs = this.simTimeMs;
+    // Stamped here rather than inside `decide()` on purpose: the errand is the
+    // *caller's* context, and `combatPolicy.mjs` must stay free of bot-driving
+    // state (see its module doc comment's purity rules).
+    if (intent.trace) intent.trace.activity = this.activity;
+    this.#recordTrace(intent.trace);
+    return this.applyAction(intent);
   }
 
+  /**
+   * Every door tile on the level, as `bfsPath`-style `"x,y"` keys — i.e. the
+   * `openDoors` set meaning "assume every door can be gotten through". Built
+   * once per level; the planned grid is static so it never changes.
+   */
+  #allDoorTiles() {
+    if (this.allDoorTilesCache) return this.allDoorTilesCache;
+    const keys = new Set();
+    const grid = this.map?.grid ?? [];
+    for (let y = 0; y < grid.length; y++) {
+      for (let x = 0; x < grid[y].length; x++) {
+        const t = grid[y][x];
+        if (t === LOCKED_DOOR_TILE || t === BRANCH_DOOR_TILE) keys.add(`${x},${y}`);
+      }
+    }
+    this.allDoorTilesCache = keys;
+    return keys;
+  }
+
+  /**
+   * Record any door the player is *standing on* as open.
+   *
+   * `this.map` is a Node-side copy generated before the run; the engine opens
+   * a door by mutating its *own* grid to floor (`this.map.grid[y][x] = 0`), so
+   * the bot's copy calls that tile a door forever and every later `bfsPath`
+   * treats it as a wall. `openedDoors` is the documented compensation for that
+   * (see `bfsPath`'s doc comment), but `driveLegs` only ever added doors it
+   * opened via an explicit `openDoor` leg — never one the bot simply pushed
+   * through while walking a leg or a loot detour.
+   *
+   * Occupancy is a sound test: `isWall()` rejects a step into a closed door, so
+   * standing on a tile the planned map calls a door means that door is open.
+   *
+   * A key-locked doorway (3) opens as a whole contiguous run — the engine
+   * flood-fills it via `doorwayTiles` because a corridor flush along a room
+   * wall makes every boundary tile its own door — so mirror that by flooding
+   * same-valued neighbours. A branch door (8) is always a single tile.
+   */
+  #noteDoorUnderFoot(player) {
+    const x = Math.floor(player.x);
+    const y = Math.floor(player.y);
+    const tile = this.map?.grid?.[y]?.[x];
+    if (tile !== LOCKED_DOOR_TILE && tile !== BRANCH_DOOR_TILE) return;
+    if (this.openedDoors.has(`${x},${y}`)) return;
+    const stack = [{ x, y }];
+    while (stack.length > 0) {
+      const c = stack.pop();
+      const k = `${c.x},${c.y}`;
+      if (this.openedDoors.has(k)) continue;
+      if (this.map.grid[c.y]?.[c.x] !== tile) continue;
+      this.openedDoors.add(k);
+      if (tile !== LOCKED_DOOR_TILE) continue; // branch doors are single-tile
+      stack.push({ x: c.x + 1, y: c.y }, { x: c.x - 1, y: c.y }, { x: c.x, y: c.y + 1 }, { x: c.x, y: c.y - 1 });
+    }
+    this.logger.wpDebug?.(`[wpdebug] learned open door run at (${x},${y}) tile=${tile}`);
+  }
+
+  // `this.tuning` is passed explicitly to every `combatPolicy` helper, including
+  // where the default would have been fine. `this.tuning` is a *new* object
+  // (`{ ...DEFAULT_TUNING, ...opts.tuning }`), so an omitted argument silently
+  // falls back to the unmodified defaults — which is invisible until an A/B
+  // overrides the one key that call site reads, at which point the baseline
+  // quietly runs candidate behaviour and the comparison is worthless. Caught
+  // exactly there, on Stage 6's `PREEMPTIVE_ENGAGE` switch.
   async driveToward(point, eps, maxTicks) {
-    let { player, enemies, mines } = await this.readFull();
-    for (let t = 0; t < maxTicks; t++) {
+    let { player, enemies, mines, projectiles } = await this.readFull();
+    // `maxTicks` is a budget for *navigation*, not for wall-clock. A decision
+    // spent fighting isn't a decision spent failing to walk somewhere: combat
+    // preempts navigation entirely in `tick()`, so a long firefight beside a
+    // waypoint would otherwise burn the whole budget and report `stuck`.
+    //
+    // Observed on `stage06_pipeline.py`: the bot stood near one waypoint for
+    // all 600 ticks (30 simulated seconds) killing **12 enemies** — 34 down to
+    // 22 remaining, at 100% health with 291 bullets — and the attempt was
+    // discarded as stuck. It had walked onto that exact tile moments earlier,
+    // so nothing was unreachable.
+    //
+    // Same principle `detectAnomalies` already applies when it refuses to call
+    // a mostly-firing run a stall. `HARD` bounds it so a genuinely endless
+    // fight still terminates, and because the relaxation only applies while a
+    // threat is actually engaged, a true navigation wedge (no threat — e.g.
+    // the door-model and exit-gate wedges) still fails on the original budget.
+    let combatTicks = 0;
+    const hardCap = maxTicks * this.tuning.COMBAT_TICK_BUDGET_MULTIPLIER;
+    for (let t = 0; t < hardCap; t++) {
+      if (t - combatTicks >= maxTicks) break;
       if (player.state !== "playing") {
-        await this.applyAction(new Set(), false, null, false);
+        await this.applyAction(this.#releaseIntent());
         return { state: player.state, reason: player.state };
       }
       if (Math.hypot(point.x - player.x, point.y - player.y) < eps) {
@@ -1198,33 +1456,37 @@ export class Bot {
         // key set regardless.
         return { state: "playing", reason: "arrived" };
       }
+      this.#noteDoorUnderFoot(player);
+      // Engaged means `tick()` will fight rather than navigate this decision —
+      // exactly `pickThreat`'s own gate, so the two can't disagree.
+      if (!this.ignoreThreats && pickThreat(enemies, player, this.profile, this.map, this.tuning)) combatTicks++;
       const prevX = player.x;
       const prevY = player.y;
-      ({ player, enemies, mines } = await this.tick(player, enemies, mines, point, this.map));
+      ({ player, enemies, mines, projectiles } = await this.tick(player, enemies, mines, point, this.map, projectiles));
       // A BFS-derived waypoint can end up targeting a teleporter pad's exact
       // tile-center; stepping onto it always warps the player away before
       // this loop's own arrival check is satisfied. Detect a jump far
       // larger than any legitimate single tick of movement and treat it the
       // same as arriving.
       if (Math.hypot(player.x - prevX, player.y - prevY) > this.tuning.TELEPORT_JUMP_DETECT_TILES) {
-        await this.applyAction(new Set(), false, null, false);
+        await this.applyAction(this.#releaseIntent());
         return { state: "playing", reason: "teleported" };
       }
     }
-    await this.applyAction(new Set(), false, null, false);
+    await this.applyAction(this.#releaseIntent());
     return { state: "playing", reason: "stuck" };
   }
 
   async faceAngle(targetAngle, maxTicks) {
-    let { player, enemies, mines } = await this.readFull();
+    let { player, enemies, mines, projectiles } = await this.readFull();
     for (let t = 0; t < maxTicks; t++) {
       if (player.state !== "playing") return { state: player.state };
-      const threat = pickThreat(enemies, player, this.profile, this.map);
+      const threat = pickThreat(enemies, player, this.profile, this.map, this.tuning);
       if (!threat) {
         const currentAngle = Math.atan2(player.dirY, player.dirX);
         const delta = angleDelta(currentAngle, targetAngle);
         if (Math.abs(delta) < this.tuning.TURN_MOVE_EPS) {
-          await this.applyAction(new Set(), false, null, false);
+          await this.applyAction(this.#releaseIntent());
           return { state: "playing" };
         }
         // `tick()` only ever turns the player toward a threat, a mine, or
@@ -1240,14 +1502,22 @@ export class Bot {
         const NEAR_PI_TURN_EPS = 0.05;
         const turnPositive = Math.abs(Math.abs(delta) - Math.PI) < NEAR_PI_TURN_EPS ? true : delta > 0;
         const moveKeys = new Set([turnPositive ? "KeyE" : "KeyQ"]);
-        const turnBurst = this.#turnBurstMs(delta, this.profile.rotSpeedMultiplier, player, currentAngle);
-        ({ player, enemies, mines } = await this.applyAction(moveKeys, false, null, false, turnBurst));
+        const turnBurst = turnBurstMs(delta, this.profile.rotSpeedMultiplier, currentAngle, {
+          tuning: this.tuning,
+          stepMs: this.stepMs,
+          memory: this.mineMemory,
+        });
+        // `faceAngle` drives `applyAction` directly in a loop and never calls
+        // `#checkRotationAnomaly`, so a check it records survives until some
+        // later `tick()` — which is why an elapsed-time field matters here.
+        this.#attributeTurnCheck({ origin: "faceAngle", branch: "faceAngle", turnKey: [...moveKeys][0] ?? null, holds: null, durationMs: turnBurst });
+        ({ player, enemies, mines } = await this.applyAction(uniformIntent(moveKeys, turnBurst, this.stepMs, {})));
         continue;
       }
       // `map` explicitly omitted here — see `tick`'s doc comment.
-      ({ player, enemies, mines } = await this.tick(player, enemies, mines, null, undefined));
+      ({ player, enemies, mines, projectiles } = await this.tick(player, enemies, mines, null, undefined, projectiles));
     }
-    await this.applyAction(new Set(), false, null, false);
+    await this.applyAction(this.#releaseIntent());
     return { state: "playing" };
   }
 
@@ -1264,22 +1534,122 @@ export class Bot {
   async holdForwardFine(totalMs, stepMs) {
     const steps = Math.ceil(totalMs / stepMs);
     for (let t = 0; t < steps; t++) {
-      const { player } = await this.applyAction(new Set(["KeyW"]), false, null, false, stepMs);
+      const { player } = await this.applyAction(uniformIntent(["KeyW"], stepMs, this.stepMs, {}));
       if (player.state !== "playing") return { state: player.state };
     }
-    await this.applyAction(new Set(), false, null, false);
+    await this.applyAction(this.#releaseIntent());
     return { state: "playing" };
   }
 
   async readFull() {
-    return this.page.evaluate(() => {
+    const read = await this.page.evaluate(() => {
       const hooks = window.__codeensteinTestHooks;
-      return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines() };
+      return {
+        player: hooks.getPlayerState(),
+        enemies: hooks.getEnemies(),
+        mines: hooks.getMines(),
+        projectiles: hooks.getProjectiles?.() ?? [],
+        // One integer, folded into the read the bot already makes — see
+        // `#refreshGridIfChanged`. Optional so an older engine build degrades
+        // to the previous behaviour instead of throwing.
+        gridVersion: hooks.getGridVersion?.() ?? null,
+      };
     });
+    await this.#refreshGridIfChanged(read.gridVersion);
+    return read;
+  }
+
+  /**
+   * Re-read the engine's wall grid when it has actually changed.
+   *
+   * The engine mutates its own grid mid-level — a door opens, a secret wall
+   * floods away — and bumps `gridVersion` each time. The bot plans against a
+   * *copy* taken at level start, so without this an opened door stays a wall
+   * in every BFS it runs, forever. That is a recorded wedge: the bot walked
+   * through a door and then refused to path back through it
+   * (`stage03_legacy_api.php`), and `#noteDoorUnderFoot` exists as a partial
+   * workaround — it can only learn about a door the player is personally
+   * standing on, never one a *teammate* opened or one that opened as a
+   * side effect.
+   *
+   * Cheap by construction: the version is one integer on a read the bot
+   * already performs, and the full grid is refetched only on the handful of
+   * decisions where it actually changed.
+   */
+  async #refreshGridIfChanged(gridVersion) {
+    if (!this.tuning.BOT_LIVE_GRID) return;
+    if (gridVersion === null || gridVersion === undefined) return;
+    if (this.lastGridVersion === gridVersion) return;
+    // First observation just records the baseline — the map copy is already
+    // correct at level start, so there is nothing to refetch yet.
+    const isFirst = this.lastGridVersion === null;
+    this.lastGridVersion = gridVersion;
+    if (isFirst || !this.map) return;
+    const grid = await this.page.evaluate(() => window.__codeensteinTestHooks.getGrid?.() ?? null);
+    if (grid) {
+      this.map.grid = grid;
+      this.gridRefreshes = (this.gridRefreshes ?? 0) + 1;
+      this.logger.wpDebug?.(`[wpdebug] grid refreshed (version ${gridVersion}, refresh #${this.gridRefreshes})`);
+    }
   }
 
   async readState() {
     return this.page.evaluate(() => window.__codeensteinTestHooks.getPlayerState());
+  }
+  /**
+   * Dispatch one decision's intent.
+   *
+   * Split in two on purpose. This half is pure bookkeeping — resolve the
+   * decision's duration, advance the simulated clock, and turn the intent's
+   * per-key holds into the sequence of dispatch phases that realises them.
+   * `dispatchSegment` below is the only part that touches the page, and it is
+   * the single method `MultiplayerBot` overrides: keeping the segmentation
+   * here rather than duplicating it is what stops the two bots' timing from
+   * drifting apart again.
+   *
+   * `intent.durationMs` of `undefined` means "the caller's whole step", which
+   * is distinct from any particular number — several branches hold keys without
+   * setting a burst at all, and those run for the full window.
+   *
+   * Today `segmentsFor` always yields exactly one phase, because every branch
+   * gives all of its keys the same hold. The plumbing is here so that stops
+   * being true without another change to this method.
+   */
+  async applyAction(intent, { maxDurationMs = this.stepMs } = {}) {
+    const durationMs = intent.durationMs ?? maxDurationMs;
+    this.simTimeMs += durationMs;
+    const phases = segmentsFor(intent.holds, durationMs, this.minPhaseMs);
+    let result;
+    for (let i = 0; i < phases.length; i++) {
+      result = await this.dispatchSegment(phases[i].keys, phases[i].ms, {
+        fire: intent.fire,
+        useMelee: intent.useMelee,
+        weaponSwitchIndex: intent.weaponSwitchIndex,
+        isFirst: i === 0,
+        isLast: i === phases.length - 1,
+      });
+    }
+    return result;
+  }
+
+  /**
+   * "Let go of everything and stand still for one full step." An empty holds
+   * map releases every key through `dispatchSegment`'s diff, which is how the
+   * drive loops stop cleanly at a waypoint or on level end.
+   */
+  #releaseIntent() {
+    return uniformIntent([], undefined, this.stepMs, {});
+  }
+
+  /**
+   * Shortest phase this bot will dispatch as its own step. Zero here: under the
+   * virtual clock a phase boundary costs nothing and lands exactly.
+   * `MultiplayerBot` raises it, for the same reason it raises
+   * `minDecisionMs` — a phase shorter than the lockstep input delay never
+   * arrives before the next one is issued.
+   */
+  get minPhaseMs() {
+    return 0;
   }
 
   /**
@@ -1289,14 +1659,21 @@ export class Bot {
    * with an edge-triggered weapon-switch (`Digit{n+1}`) and a melee-vs-
    * ranged fire key choice (`Space` for quick-melee, `Backquote`
    * otherwise). In realtime mode, skips the virtual-clock pump and instead
-   * waits `stepMs` of *real* time so a human watching a visible browser
+   * waits `ms` of *real* time so a human watching a visible browser
    * window can actually follow the action.
+   *
+   * Movement keys are a *diff* against `window.__botHeldKeys`, so a key that
+   * appears in consecutive phases is never released and re-pressed — the
+   * engine sees one continuous hold. That is what makes a key simply dropping
+   * out of a later phase the correct way to end its hold.
+   *
+   * The weapon switch fires on the first phase and the fire key is held from
+   * the first phase to the last, so a multi-phase decision still reads as one
+   * trigger pull rather than several.
    */
-  async applyAction(desiredMoveKeys, fire, weaponSwitchIndex, useMelee, stepMsOverride) {
-    const stepMs = stepMsOverride ?? this.stepMs;
-    this.simTimeMs += stepMs;
+  async dispatchSegment(keys, ms, { fire, useMelee, weaponSwitchIndex, isFirst, isLast }) {
     const headed = this.realtime;
-    // Capped at `stepMs` itself: a short precision burst (e.g. `#turnBurstMs`
+    // Capped at `ms` itself: a short precision burst (e.g. `turnBurstMs`
     // rounding a near-complete turn down to a few ms to avoid overshoot)
     // must still land in exactly one sub-step of its own requested size, not
     // get rounded up to a full `recordStepMs` — `__pumpVirtualTime` always
@@ -1304,9 +1681,9 @@ export class Bot {
     // requested burst would overshoot the very precision these bursts exist
     // to protect. Only a full-length decision (the common case) actually
     // gets subdivided into multiple `recordStepMs`-sized replay frames.
-    const subStepMs = Math.min(this.recordStepMs, stepMs);
+    const subStepMs = Math.min(this.recordStepMs, ms);
     const dispatched = await this.page.evaluate(
-      ({ desiredKeys, fire, weaponSwitchIndex, useMelee, stepMs, subStepMs, headed }) => {
+      ({ desiredKeys, fire, weaponSwitchCode, useMelee, stepMs, subStepMs, headed, isFirst, isLast }) => {
         const canvas = document.querySelector("canvas");
         const hooks = window.__codeensteinTestHooks;
         const desired = new Set(desiredKeys);
@@ -1314,31 +1691,32 @@ export class Bot {
         for (const code of held) if (!desired.has(code)) canvas.dispatchEvent(new KeyboardEvent("keyup", { code }));
         for (const code of desired) if (!held.has(code)) canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
         window.__botHeldKeys = desired;
-        if (weaponSwitchIndex !== null && weaponSwitchIndex !== undefined) {
-          const code = `Digit${weaponSwitchIndex + 1}`;
-          canvas.dispatchEvent(new KeyboardEvent("keydown", { code }));
-          canvas.dispatchEvent(new KeyboardEvent("keyup", { code }));
+        if (isFirst && weaponSwitchCode) {
+          canvas.dispatchEvent(new KeyboardEvent("keydown", { code: weaponSwitchCode }));
+          canvas.dispatchEvent(new KeyboardEvent("keyup", { code: weaponSwitchCode }));
         }
         // Fire is held for the *whole* tick, not pressed-and-released before
         // any frame runs — an `auto: true` weapon checks isFireHeld() every
         // frame, so releasing before the pump even starts meant it never
         // fired at all. Fixed by moving the keyup to the end of the tick.
         const fireCode = fire ? (useMelee ? "Space" : "Backquote") : null;
-        if (fireCode) canvas.dispatchEvent(new KeyboardEvent("keydown", { code: fireCode }));
-        if (headed) return { fireCode };
+        if (fireCode && isFirst) canvas.dispatchEvent(new KeyboardEvent("keydown", { code: fireCode }));
+        if (headed) return { fireCode: isLast ? fireCode : null };
         window.__pumpVirtualTime(stepMs, subStepMs);
-        if (fireCode) canvas.dispatchEvent(new KeyboardEvent("keyup", { code: fireCode }));
-        return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines() };
+        if (fireCode && isLast) canvas.dispatchEvent(new KeyboardEvent("keyup", { code: fireCode }));
+        return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines(), projectiles: hooks.getProjectiles?.() ?? [] };
       },
-      { desiredKeys: [...desiredMoveKeys], fire, weaponSwitchIndex, useMelee, stepMs, subStepMs, headed },
+      // Resolved here in Node: a digit indexes `NUMBER_KEY_WEAPONS`, not
+      // `WEAPONS` — see `numberKeyCodeFor`.
+      { desiredKeys: [...keys], fire, weaponSwitchCode: weaponSwitchIndex == null ? null : numberKeyCodeFor(weaponSwitchIndex), useMelee, stepMs: ms, subStepMs, headed, isFirst, isLast },
     );
     if (!headed) return dispatched;
-    await this.page.waitForTimeout(stepMs);
+    await this.page.waitForTimeout(ms);
     return this.page.evaluate((fireCode) => {
       const canvas = document.querySelector("canvas");
       if (fireCode) canvas.dispatchEvent(new KeyboardEvent("keyup", { code: fireCode }));
       const hooks = window.__codeensteinTestHooks;
-      return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines() };
+      return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines(), projectiles: hooks.getProjectiles?.() ?? [] };
     }, dispatched.fireCode);
   }
 }

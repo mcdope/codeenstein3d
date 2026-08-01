@@ -31,7 +31,7 @@ import { chromium } from "playwright";
 import fs from "node:fs";
 import path from "node:path";
 import { loadEngineModules, REPO_ROOT } from "./lib/loadEngineModules.mjs";
-import { planRoute, planCoverageRoute } from "./lib/routePlanner.mjs";
+import { planRoute } from "./lib/routePlanner.mjs";
 import { analyzeStaticLevel } from "./lib/staticLevelAnalysis.mjs";
 import {
   Bot,
@@ -93,12 +93,47 @@ const ANOMALY_SCAN = process.env.CODEENSTEIN_TELEMETRY_ANOMALY_SCAN === "1";
 // specifically for "a movement key (W/A/D) was held this tick, but position
 // didn't actually change since the last one".
 const NAV_DIAG = process.env.CODEENSTEIN_TELEMETRY_NAV_DIAG === "1";
+// Dumps the raw per-decision rows of each level's longest oscillation run.
+// Implies the trace. Run with CONCURRENCY=1 — concurrent attempts interleave
+// their rows into a misleadingly coherent-looking mess.
+const TRACE_DUMP = process.env.CODEENSTEIN_TELEMETRY_TRACE_DUMP === "1";
 // Opens a real, visible browser window and runs at a watchable real-time
 // pace instead of the virtual-clock fast-forward, so a human can actually
 // see what the bot is doing tick-by-tick. Combine with
 // CODEENSTEIN_TELEMETRY_PROFILE/_DIFFICULTY/_LEVEL_LIMIT/_ATTEMPT_CAP to
 // focus on one specific combo instead of watching the whole campaign.
 const HEADED = process.env.CODEENSTEIN_TELEMETRY_HEADED === "1";
+// A JSON object deep-merged over `DEFAULT_TUNING` for every Bot this run
+// builds — the single-variable toggle the A/B protocol needs. Flipping one
+// constant used to mean either editing the file between the two sides (which
+// makes the diff the thing under test rather than the constant) or standing up
+// a worktree at an older commit — and a worktree predating the metric you want
+// to read cannot emit it at all, which is exactly how the first attempt at
+// this got stuck. With this, both sides run the *same* binary and differ only
+// by the value.
+//
+//   CODEENSTEIN_TELEMETRY_TUNING='{"TURN_MOVE_EPS":0.3}'
+//
+// Invalid JSON is a hard exit, not a warning: silently falling back to default
+// tuning would produce a baseline-vs-baseline comparison that looks like a
+// real result.
+const TUNING_OVERRIDE = (() => {
+  const raw = process.env.CODEENSTEIN_TELEMETRY_TUNING;
+  if (!raw) return undefined;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    console.error(`CODEENSTEIN_TELEMETRY_TUNING is not valid JSON: ${err.message}`);
+    process.exit(1);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    console.error("CODEENSTEIN_TELEMETRY_TUNING must be a JSON object, e.g. '{\"NEAR_PI_HEADING_EPS\":0}'");
+    process.exit(1);
+  }
+  console.log(`Tuning override active: ${JSON.stringify(parsed)}`);
+  return parsed;
+})();
 
 // Overridable so a large-scale data-collection campaign can raise the target
 // (e.g. 50) per invocation without touching this default — every existing
@@ -111,125 +146,24 @@ const QUALIFY_LEVEL_INDEX = 3; // 0-based — "level 4" in 1-based campaign numb
 // How many ticks the final push toward the exit tile gets, once the route's
 // own legs are exhausted — see `playRun`'s final `driveToward` call.
 const FINAL_APPROACH_TICKS = 80;
+/** How many times one level may re-plan after a mid-route teleport before the
+ * run is reported as stuck. A `goto`/label pad pair is bidirectional, so a
+ * route that crosses one can legitimately be warped more than once; a small
+ * bound distinguishes that from a pathological ping-pong. */
+const TELEPORT_REPLAN_LIMIT = 4;
 
-// Mirrors src/engine/enemyAi.ts — plain literal rather than importing that TS
-// module (this is a plain Node script, not bundled like the map/parser layer
-// in loadEngineModules.mjs). Only referenced here (via `ENGAGE_RADIUS`) for
-// `PROFILES.*.engageRadius` — every other movement/combat tuning constant
-// lives in `scripts/lib/bot.mjs`'s `DEFAULT_TUNING`.
-const AGGRO_RADIUS = 7.5;
-const ENGAGE_RADIUS = AGGRO_RADIUS + 2; // combat always preempts navigation within this — same for every profile, non-negotiable, see PROFILES's doc comment
+// `PROFILES`, `AGGRO_RADIUS` and `ENGAGE_RADIUS` now live in
+// `scripts/lib/profiles.mjs` so unit tests can import the real values without
+// pulling in Playwright — re-exported here so every existing importer of this
+// module is unchanged.
+// Imported *and* re-exported: a bare `export { X } from "..."` re-exports
+// without creating a local binding, so this module could no longer see
+// `PROFILES` itself even though every importer of it still could.
+import { AGGRO_RADIUS, ENGAGE_RADIUS, NAVIGATION_PROFILE, PROFILES } from "./lib/profiles.mjs";
+export { AGGRO_RADIUS, ENGAGE_RADIUS, NAVIGATION_PROFILE, PROFILES };
 
 export const DIFFICULTIES = ["easy", "normal", "hard"];
 
-/**
- * Bot behavior profiles. `engageRadius` is deliberately identical across all
- * three (see `ENGAGE_RADIUS`) — "low aggression" (Casual) never means
- * skipping a fight, only a looser `fireAngleEps` (worse aim) and a lower
- * `healthDetourThreshold` urgency inversion (higher = detours for health
- * sooner). `weaponPriority` lists ranged `WEAPONS` indices in preference
- * order (melee indices are excluded — melee-in-range is handled separately,
- * universally, for every profile: see the `MELEE_RANGE` check in
- * `Bot#tick`). Every profile's list ends in a complete fallback chain
- * (pistol, shotgun, Friday Hotfix) so a profile never ends up with *no*
- * valid ranged option just because its preferred unlockable weapon isn't
- * owned yet or is out of ammo — Pro's list originally omitted the
- * shotgun/Friday Hotfix entirely, meaning it had nothing to fall back on
- * beyond the bare pistol whenever ghidra/gdb weren't available, found while
- * investigating why Pro/normal was taking dramatically longer to qualify
- * than the "less skilled" Casual and Gamer profiles despite Pro's much
- * tighter aim.
- *
- * `proactiveMineDisarm` is `true` for every profile — mines were the #1
- * killer in early testing even for profiles that didn't proactively shoot
- * them, kept as a per-profile field only so it still shows up explicitly in
- * the output's `meta.profiles` dump.
- *
- * `coverageMode` is `false` for every profile — navigation is always
- * shortest-route-to-exit (`planRoute`, not `planCoverageRoute`), regardless
- * of skill level. This was originally Casual-only "maximize map coverage"
- * (visit every room), which turned out to be the single biggest driver of
- * Casual's implausibly low survival rate — see the git history for the full
- * rationale. Skill differences now come entirely from combat/aim/tactics,
- * not from how much of the map gets walked.
- *
- * `fireAngleEps` calibration note: earlier values (Casual 0.17-0.22, Gamer
- * 0.15, Pro 0.08) were all *far* too loose — see git history for the
- * controlled-experiment writeup. Retuned to a much tighter ladder that still
- * preserves real skill differentiation (Pro tightest, Casual loosest)
- * without any tier being catastrophically bad.
- *
- * `fireCooldownMs`: the minimum simulated time (`Bot#simTimeMs`, see
- * `bot.mjs`) between two dispatched shots of a *semi-auto* ranged weapon
- * (pistol/shotgun/ghidra) — those have no engine-side fire-rate cap (see
- * `updateFiring`'s doc comment in `engine.ts`) and fire exactly once per
- * `Backquote` keydown, so a bot re-dispatching that key every single
- * decision tick fired far faster than any human trigger-pull (~20/sec at
- * the headless 50ms tick rate — "the pistol becomes an smg"). Auto weapons
- * (gdb/Friday Hotfix) are unaffected by this field, since their own
- * `fireIntervalSec` cooldown already caps them realistically while held.
- * Values are plausible real semi-auto trigger-pull rates, tightest→loosest
- * matching the `fireAngleEps`/`rotSpeedMultiplier` skill ladder: Pro 120ms
- * (~8.3/sec, a fast competitive rate), Gamer 160ms (~6.25/sec), Casual
- * 220ms (~4.5/sec, an unhurried rate).
- */
-export const PROFILES = {
-  Casual: {
-    fireAngleEps: 0.08,
-    fireCooldownMs: 220,
-    engageRadius: ENGAGE_RADIUS,
-    coverageMode: false,
-    // Simple/reliable weapons first; ghidra last (a "casual" player is more
-    // hesitant with a self-splash-capable rocket launcher) — but still in
-    // the list, since every profile should be able to use whatever it has.
-    weaponPriority: [PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, GDB_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX, GHIDRA_WEAPON_INDEX],
-    healthDetourThreshold: 0.75,
-    proactiveMineDisarm: true,
-    // Same "more hesitant with a self-splash launcher" reasoning as the
-    // weaponPriority ordering above, applied to situational cluster-
-    // targeting too (see `pickRangedWeapon` in bot.mjs) — sticks to the
-    // shotgun for a distant cluster instead of reaching for rockets.
-    rocketForDistantClusters: false,
-    // See `botRotSpeedMul`'s doc comment (engine.ts's `rotSpeedMultiplier`)
-    // — approximates a realistic *mouse* turn speed for this skill tier
-    // rather than the real Q/E keyboard rate, since mouse-look itself isn't
-    // available to a Playwright-automated browser. ~2x keyboard (~5.2
-    // rad/sec, ~300°/sec) — an unhurried, average mouse sensitivity.
-    rotSpeedMultiplier: 2,
-  },
-  Gamer: {
-    fireAngleEps: 0.05,
-    fireCooldownMs: 160,
-    engageRadius: ENGAGE_RADIUS,
-    coverageMode: false,
-    // Ammo-efficient auto weapon first, heavy hitter last, everything else
-    // in between.
-    weaponPriority: [GDB_WEAPON_INDEX, PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX, GHIDRA_WEAPON_INDEX],
-    healthDetourThreshold: 0.5,
-    proactiveMineDisarm: true,
-    rocketForDistantClusters: true,
-    // ~3.5x keyboard (~9.1 rad/sec, ~520°/sec) — a comfortable, practiced
-    // enthusiast's mouse turn speed.
-    rotSpeedMultiplier: 3.5,
-  },
-  Pro: {
-    fireAngleEps: 0.03,
-    fireCooldownMs: 120,
-    engageRadius: ENGAGE_RADIUS,
-    coverageMode: false,
-    // Heavy hitters first, complete fallback chain through everything else —
-    // was missing 1/FRIDAY_HOTFIX_WEAPON_INDEX entirely before, the direct
-    // cause of Pro/normal needing far more attempts to qualify than the
-    // "less skilled" profiles.
-    weaponPriority: [GHIDRA_WEAPON_INDEX, GDB_WEAPON_INDEX, PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX],
-    healthDetourThreshold: 0.25,
-    proactiveMineDisarm: true,
-    rocketForDistantClusters: true,
-    // ~5x keyboard (~13 rad/sec, ~745°/sec) — a fast, high-sensitivity
-    // competitive flick-turn, still within real human mouse-aim territory.
-    rotSpeedMultiplier: 5,
-  },
-};
 
 // Exported for run-balancing-telemetry-multiplayer.mjs's own reuse of
 // aggregateLevelRuntime (below) — the multiplayer per-player snapshot shape
@@ -269,11 +203,10 @@ export async function planLevels() {
       continue;
     }
     const bonusLevel = extensionOf(filename) === "h";
-    const map = generator.generate(parsed, bonusLevel, false, [3, 4, 5]);
+    const map = generator.generate(parsed, { bonusLevel, hasRocketLauncher: false, missingWeaponIndices: [3, 4, 5] });
     const routePlain = planRoute(map);
-    const routeCoverage = planCoverageRoute(map);
     const staticAnalysis = analyzeStaticLevel(map, routePlain);
-    levelPlans.push({ filename, filePath: `${CAMPAIGN_NAME}/${filename}`, map, routePlain, routeCoverage, staticAnalysis });
+    levelPlans.push({ filename, filePath: `${CAMPAIGN_NAME}/${filename}`, map, routePlain, staticAnalysis });
   }
   console.log(`${levelPlans.length} levels planned.\n`);
   return levelPlans;
@@ -292,6 +225,21 @@ async function main() {
       levelCount: levelPlans.length,
       difficulties: DIFFICULTIES,
       profiles: PROFILES,
+      // Every setting that changes what the run measures rather than what it
+      // measures it on. Recorded so a baseline-vs-candidate comparison can
+      // *prove* both sides were scoped identically instead of assuming it —
+      // `NAV_DIAG` on one side only once made a whole detector class look
+      // newly-introduced when it had simply never been switched on before,
+      // which came within one step of reverting a good change.
+      flags: {
+        levelLimit: Number.isFinite(LEVEL_LIMIT) ? LEVEL_LIMIT : null,
+        attemptCap: Number.isFinite(ATTEMPT_CAP) ? ATTEMPT_CAP : null,
+        concurrency: ATTEMPT_CONCURRENCY,
+        qualifyingTarget: REQUIRED_QUALIFYING_RUNS,
+        anomalyScan: ANOMALY_SCAN,
+        navDiag: NAV_DIAG,
+        headed: HEADED,
+      },
     },
     profiles: {},
   };
@@ -413,54 +361,75 @@ export async function playRun(page, profile, levelPlans, label = "") {
 
   const bot = new Bot(page, profile, {
     realtime: HEADED,
+    tuning: TUNING_OVERRIDE,
     logger: {
       debugNav: DEBUG_NAV ? (msg) => console.log(msg) : undefined,
       wpDebug: process.env.CODEENSTEIN_WPDEBUG ? (msg) => console.log(msg) : undefined,
       driftDebug: process.env.CODEENSTEIN_DRIFTDEBUG ? (msg) => console.log(msg) : undefined,
-      trace: ANOMALY_SCAN || NAV_DIAG,
+      trace: ANOMALY_SCAN || NAV_DIAG || TRACE_DUMP,
       navDiag: NAV_DIAG,
+      traceDump: TRACE_DUMP,
     },
   });
 
   for (let i = 0; i < levelPlans.length; i++) {
-    const { map, routePlain, routeCoverage } = levelPlans[i];
+    const { map, routePlain } = levelPlans[i];
     // static AmmoPickup positions are per-map; a fresh engine per level makes
     // prior "visited" state meaningless here — `startLevel` resets it.
     bot.startLevel(map);
-    const route = profile.coverageMode ? routeCoverage : routePlain;
+    const route = routePlain;
 
     const player0 = await bot.readState();
     if (player0.state !== "playing") {
-      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: i, reason: player0.state === "over" ? "died" : "stuck" };
+      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: player0.state === "over" ? "died" : "stuck" };
     }
     const prevExit = await page.evaluate(() => window.__codeensteinTestHooks.getExit());
 
-    const legOutcome = route.ok ? await bot.driveLegs(route.legs) : { state: "stuck" };
+    // `driveLegs` deliberately bails the moment a teleporter warps the bot
+    // mid-route — every remaining waypoint was planned against a position it
+    // is no longer at (see that method's own doc comment). It reports that as
+    // `{state:"playing", reason:"teleported"}`, which is NOT "the route is
+    // finished": re-plan from wherever the pad dropped the bot and keep
+    // driving, or the fall-through below would try to walk to the exit in a
+    // straight line from an arbitrary corner of the map and call the failure
+    // "stuck". Bounded, so a pad pair the route keeps re-crossing can't spin
+    // here forever — after the last replan it falls through and is reported
+    // honestly.
+    let legOutcome = route.ok ? await bot.driveLegs(route.legs) : { state: "stuck" };
+    for (let replan = 0; replan < TELEPORT_REPLAN_LIMIT && legOutcome.state === "playing" && legOutcome.reason === "teleported"; replan++) {
+      const here = await bot.readState();
+      const resumed = planRoute(map, { x: Math.floor(here.x), y: Math.floor(here.y) });
+      if (!resumed.ok) break;
+      legOutcome = await bot.driveLegs(resumed.legs);
+    }
 
     if (legOutcome.state === "over") {
       const deathResult = await pullLevelResult(page);
       levelSnapshots.push({ levelIndex: i, ...deathResult, incomplete: true });
       if (VERBOSE) logDeathDetail(i, deathResult);
       bot.reportAnomalies(label, i);
-      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: i, reason: "died" };
+      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "died" };
     }
     if (legOutcome.state === "stuck") {
       bot.reportAnomalies(label, i);
-      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: i, reason: "stuck" };
+      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "stuck" };
     }
     if (legOutcome.state === "playing") {
       const exitCenter = { x: map.exit.x + 0.5, y: map.exit.y + 0.5 };
-      const pushed = await bot.driveToward(exitCenter, bot.tuning.TIGHT_ARRIVE_EPS, FINAL_APPROACH_TICKS);
+      // `driveToExit`, not `driveToward`: the exit stays inert while any enemy
+      // homed to its own room is alive (`checkExit()`), so reaching the tile is
+      // not the same as finishing the level. See `Bot#driveToExit`.
+      const pushed = await bot.driveToExit(exitCenter, FINAL_APPROACH_TICKS);
       if (pushed.state === "over") {
         const deathResult = await pullLevelResult(page);
         levelSnapshots.push({ levelIndex: i, ...deathResult, incomplete: true });
         if (VERBOSE) logDeathDetail(i, deathResult);
         bot.reportAnomalies(label, i);
-        return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: i, reason: "died" };
+        return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "died" };
       }
       if (pushed.state !== "won") {
         bot.reportAnomalies(label, i);
-        return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: i, reason: "stuck" };
+        return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "stuck" };
       }
     }
     // else legOutcome.state === "won" already — fall through.
@@ -494,14 +463,14 @@ export async function playRun(page, profile, levelPlans, label = "") {
       .catch(() => "timeout");
 
     if (advance === "campaign-complete") {
-      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: null, reason: "campaign-complete" };
+      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: null, reason: "campaign-complete" };
     }
     if (advance !== "advanced") {
-      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: null, reason: "stuck" };
+      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: null, reason: "stuck" };
     }
     await dismissOverlay(page); // next level's briefing
   }
-  return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, diedAtLevelIndex: null, reason: "campaign-complete" };
+  return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: null, reason: "campaign-complete" };
 }
 
 async function pullLevelResult(page) {
@@ -610,14 +579,16 @@ function fatalDamageSourceCounts(samples) {
  * samples (`{levelIndex, snapshot, player, incomplete}[]`). `shortestPathTiles`
  * is the level's static BFS-shortest distance (`null` for the campaign-wide
  * rollup, whose route-efficiency figure is computed separately across whole
- * runs instead — see `buildCampaignAggregate`).
+ * runs instead — see `buildCampaignAggregate`). `plannedRouteTiles` is the
+ * length of the route the bot actually set out to walk (also `null` for the
+ * rollup, and whenever the route failed to plan).
  *
  * Exported for run-balancing-telemetry-multiplayer.mjs's own reuse (step 11
  * Phase 2a/4) — it only reads `sample.snapshot`, which the multiplayer
  * per-player `getMultiplayerTelemetrySnapshot(id)` shape matches field-for-
  * field, so this needs no multiplayer-specific fork.
  */
-export function aggregateLevelRuntime(samples, shortestPathTiles) {
+export function aggregateLevelRuntime(samples, shortestPathTiles, plannedRouteTiles = null) {
   const sampleCount = samples.length;
   const incompleteSampleCount = samples.filter((s) => s.incomplete).length;
   if (sampleCount === 0) {
@@ -659,6 +630,23 @@ export function aggregateLevelRuntime(samples, shortestPathTiles) {
           "mean",
         );
 
+  // How much further the bot walked than the route it planned for itself — the
+  // part of route inefficiency the bot is actually responsible for. Not capped
+  // at 1 and not inverted: it reads as a multiplier, where 1.0 is a perfect
+  // walk of the plan. Measured **1.71** on the demo campaign (Gamer/normal)
+  // distance-weighted across levels — the campaign rollup's per-run mean reads
+  // ~1.64 — which splits into 1.32x loot detours and 1.30x slop. Loot is
+  // deliberately *inside* this figure: detouring is the bot's own decision, so
+  // a loot-policy change should move this metric. See `routeEfficiencyScore`'s
+  // note below for why that score is the wrong thing to judge navigation on.
+  const routeFollowingOverhead =
+    plannedRouteTiles === null || plannedRouteTiles <= 0
+      ? null
+      : spread(
+          snaps.map((s) => s.distanceTraveled / plannedRouteTiles),
+          "mean",
+        );
+
   return {
     sampleCount,
     incompleteSampleCount,
@@ -676,6 +664,16 @@ export function aggregateLevelRuntime(samples, shortestPathTiles) {
       },
       combatVsExplorationRatio: spread(
         snaps.map((s) => (s.levelTimeSec > 0 ? s.combatTimeSec / s.levelTimeSec : 0)),
+        "mean",
+      ),
+      // How long the level actually took. Previously `levelTimeSec` was read
+      // only as `combatVsExplorationRatio`'s denominator and never emitted,
+      // which left the bot's single loudest failure mode — being far slower
+      // over a route than a human would be — with no output field to measure
+      // against at all. A ratio can't substitute: a bot that is uniformly 2x
+      // slow reports an unchanged ratio.
+      levelTimeSec: spread(
+        snaps.map((s) => s.levelTimeSec),
         "mean",
       ),
       peakSimultaneousAggroed: spread(
@@ -740,7 +738,46 @@ export function aggregateLevelRuntime(samples, shortestPathTiles) {
       },
     },
     navigationMapFlow: {
+      // Measured 0.345 on the demo campaign (Gamer/normal). **Do not read that
+      // as a bot defect, and do not use this as an A/B win metric for
+      // navigation changes** — it was, and the conclusion was wrong. Decomposed
+      // against the planned route and a per-decision activity attribution
+      // (`summarizeActivityDistance` in `bot.mjs`), the measured 2.9x total is
+      // three near-independent factors that multiply out to 2.97x:
+      //   1.68x  the planned route vs the bare spawn->exit BFS — *entirely* the
+      //          two key/locked-door levels; the other six plan within 5% of
+      //          optimal. Level design, not the bot.
+      //   1.32x  loot detours, 24% of all distance walked. Deliberate and
+      //          almost all justified: 63% of those tiles are ammo, 19% are
+      //          mandatory keys, and only 3.3% (0.8% of total distance) is
+      //          provably wasted — a health pack grabbed at hp=1.00, where
+      //          `MAX_HEALTH` caps the gain at nothing.
+      //   1.30x  actually following the plan. The only part the bot owns
+      //          outright, and the only part worth optimising as navigation. Of
+      //          it, 4.2% of distance is covered while engaged with a threat
+      //          and ~1.2% of simulated time is the known atan2-branch-cut
+      //          oscillation. Replan retries and the exit-gate fallback
+      //          contribute ~0% on these eight levels.
+      // Because factors 1 and 2 dominate and neither is a navigation quality
+      // signal, this score moves mostly with level layout and loot policy.
+      // `routeFollowingOverhead` below is the metric to judge navigation on.
       routeEfficiencyScore,
+      // Distance vs the route the bot planned for itself, as a multiplier
+      // (1.0 = walked the plan exactly; measured 1.71). `null` when the route
+      // failed to plan or for the campaign-wide rollup. This is factors 2 and 3
+      // above with factor 1 — level design — divided out, so a navigation or
+      // loot-policy change moves it and a differently-laid-out level does not.
+      routeFollowingOverhead,
+      // `routeEfficiencyScore`'s raw numerator-free counterpart. The score is
+      // a ratio against the static BFS optimum and is `0` whenever
+      // `shortestPathTiles` is null, so it can't distinguish "walked a tight
+      // route" from "the optimum was unknown". Emitting the raw distance lets
+      // an A/B separate "the bot got faster" (levelTimeSec down, distance
+      // flat) from "the bot took a shorter route" (both down).
+      distanceTraveled: spread(
+        snaps.map((s) => s.distanceTraveled),
+        "mean",
+      ),
       mapCoveragePct: spread(
         snaps.map((s) => s.mapCompletionFrac),
         "mean",
@@ -791,7 +828,7 @@ function buildComboOutput(levelPlans, combo) {
 
   const levels = levelPlans.map((lp, i) => {
     const samples = qualifyingRuns.map((run) => run.levelSnapshots.find((s) => s.levelIndex === i)).filter(Boolean);
-    const runtime = aggregateLevelRuntime(samples, lp.staticAnalysis.shortestPathTiles);
+    const runtime = aggregateLevelRuntime(samples, lp.staticAnalysis.shortestPathTiles, lp.staticAnalysis.plannedRouteTiles);
     return { levelIndex: i, filename: lp.filename, static: lp.staticAnalysis, runtime };
   });
 
@@ -806,6 +843,7 @@ function buildComboOutput(levelPlans, combo) {
   const weaponFirstOwnedAtLevel = mergeWeaponFirstOwned(qualifyingRuns);
   const weaponAcquisitionRate = computeWeaponAcquisitionRate(qualifyingRuns);
   const finalScoreReached = computeFinalScoreReached(qualifyingRuns);
+  const anomalySummary = summarizeAnomalies(qualifyingRuns);
 
   return {
     attemptsUsed,
@@ -818,9 +856,41 @@ function buildComboOutput(levelPlans, combo) {
     weaponFirstOwnedAtLevel,
     weaponAcquisitionRate,
     finalScoreReached,
+    anomalySummary,
     levels,
     campaignAggregate,
   };
+}
+
+/**
+ * Sums each qualifying run's `anomalyTally` into one per-combo figure, plus a
+ * per-run rate so two runs with different qualifying counts stay comparable.
+ *
+ * `ticksPerRun` is the number to grade a bot-behaviour change on.
+ * `detectOscillation` counts *events*, and a change that makes the bot cover
+ * less ground can trip more qualifying windows while genuinely behaving
+ * better — which is exactly how the first attempt at the atan2 branch-cut
+ * wobble got graded on the wrong number and read as a regression. Empty
+ * (`{}`) unless the run had trace collection on (`ANOMALY_SCAN`/`NAV_DIAG`).
+ */
+function summarizeAnomalies(qualifyingRuns) {
+  const totals = {};
+  for (const run of qualifyingRuns) {
+    for (const [type, row] of Object.entries(run.anomalyTally ?? {})) {
+      const acc = (totals[type] ??= { findings: 0, ticks: 0, findingsPerRun: 0, ticksPerRun: 0 });
+      acc.findings += row.findings;
+      acc.ticks += row.ticks;
+    }
+  }
+  const runs = qualifyingRuns.length;
+  const decisions = qualifyingRuns.reduce((a, r) => a + (r.anomalyDecisions ?? 0), 0);
+  for (const acc of Object.values(totals)) {
+    acc.findingsPerRun = runs > 0 ? acc.findings / runs : 0;
+    acc.ticksPerRun = runs > 0 ? acc.ticks / runs : 0;
+    // The exposure-independent one — see `#tallyDecisions` in `bot.mjs`.
+    acc.ticksPerKiloDecision = decisions > 0 ? (acc.ticks / decisions) * 1000 : 0;
+  }
+  return totals;
 }
 
 /** Earliest level each weapon index was first owned, across qualifying runs
@@ -894,7 +964,28 @@ function buildCampaignAggregate(levelPlans, qualifyingRuns) {
     }
     return dist > 0 ? Math.min(1, shortest / dist) : 0;
   });
-  if (runtime.navigationMapFlow) runtime.navigationMapFlow.routeEfficiencyScore = spread(perRunRouteEff, "mean");
+  // Same per-run treatment for `routeFollowingOverhead`, and for the same
+  // reason: one level's planned-route length says nothing campaign-wide. Runs
+  // that reached a level whose route failed to plan are skipped rather than
+  // charged a zero denominator — without this the A/B report showed a bare
+  // dash here, since the flattened rollup passes `plannedRouteTiles = null`.
+  const perRunFollowOverhead = qualifyingRuns
+    .map((run) => {
+      let dist = 0;
+      let planned = 0;
+      for (const s of run.levelSnapshots) {
+        const p = levelPlans[s.levelIndex].staticAnalysis.plannedRouteTiles;
+        if (p === null) return null;
+        dist += s.snapshot.distanceTraveled;
+        planned += p;
+      }
+      return planned > 0 ? dist / planned : null;
+    })
+    .filter((v) => v !== null);
+  if (runtime.navigationMapFlow) {
+    runtime.navigationMapFlow.routeEfficiencyScore = spread(perRunRouteEff, "mean");
+    runtime.navigationMapFlow.routeFollowingOverhead = perRunFollowOverhead.length > 0 ? spread(perRunFollowOverhead, "mean") : null;
+  }
   return runtime;
 }
 

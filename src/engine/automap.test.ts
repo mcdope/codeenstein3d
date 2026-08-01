@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { createMockCanvasContext, type MockCanvasContext } from "../../test/mocks/canvas";
 import {
+  BRANCH_DOOR_TILE,
   DOOR_TILE,
   HAZARD_TILE,
   LORE_TILE,
@@ -77,6 +78,10 @@ function fakeMap(overrides: Partial<GameMap> = {}, size = 10): GameMap {
     loreTerminals: [],
     bonusLevel: false,
     secretRoomCount: 0,
+    switchboardRooms: [],
+    exceptionZones: [],
+    vendorDepots: [],
+    acidOverflows: [],
     ...overrides,
   };
 }
@@ -164,6 +169,30 @@ describe("drawAutomap() — tile rendering", () => {
     g[2][2] = DOOR_TILE;
     drawAutomap(asCtx(ctx), fakeMap({ grid: g }), fakePlayer());
     expect(ctx.fillRect).toHaveBeenCalled();
+  });
+
+  it("renders a branch door tile in its own colour, not the locked door's", () => {
+    // Whatever the exact tones are, "needs a key" and "just push it" must not
+    // paint the same colour — telling them apart is the whole point of having
+    // a second door tile.
+    const colorsFor = (tile: Tile): Set<string> => {
+      const ctx = makeCtx();
+      const g = grid(10);
+      g[2][2] = tile;
+      const seen = new Set<string>();
+      ctx.fillRect.mockImplementation(() => {
+        seen.add(String(ctx.fillStyle));
+      });
+      drawAutomap(asCtx(ctx), fakeMap({ grid: g }), fakePlayer());
+      return seen;
+    };
+    // Two otherwise-identical maps differing only in that one tile, so the
+    // colour each door type paints is exactly the set difference.
+    const locked = colorsFor(DOOR_TILE);
+    const branch = colorsFor(BRANCH_DOOR_TILE);
+    const onlyBranch = [...branch].filter((c) => !locked.has(c));
+    expect(onlyBranch).toHaveLength(1);
+    expect([...locked].filter((c) => !branch.has(c))).toHaveLength(1);
   });
 
   it("renders a teleporter tile", () => {

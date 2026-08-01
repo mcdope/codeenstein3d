@@ -86,6 +86,10 @@ const LANES = process.env.CODEENSTEIN_CAMPAIGN_LANES ? Number(process.env.CODEEN
 // real headroom above that estimate while still being a meaningful ceiling.
 // Re-calibrate (a single-combo run, no LEVEL_LIMIT) if hardware changes.
 const WATCHDOG_MS = process.env.CODEENSTEIN_CAMPAIGN_WATCHDOG_MS ? Number(process.env.CODEENSTEIN_CAMPAIGN_WATCHDOG_MS) : 90 * 60 * 1000;
+// Per-combo invocation ceiling — see `driveCombo` in lib/laneOrchestrator.mjs.
+// Without it a combo that never reaches its qualifying target respawns
+// invocations forever. Set to `0` for the old unbounded behaviour.
+const MAX_INVOCATIONS = process.env.CODEENSTEIN_CAMPAIGN_MAX_INVOCATIONS ? Number(process.env.CODEENSTEIN_CAMPAIGN_MAX_INVOCATIONS) : 6;
 // Grace period between SIGTERM and SIGKILL when the watchdog fires, so
 // Playwright gets a chance to close its Chromium subprocesses cleanly
 // before a hard kill.
@@ -186,7 +190,7 @@ async function main() {
   console.log(
     `Balancing campaign: ${combos.length} combos × ${TARGET_QUALIFYING} qualifying runs, batch size ${BATCH_SIZE}, ` +
       `${localRunners.length} local lane(s) + ${sshRunners.length} SSH lane(s), ${CONCURRENCY_PER_LANE}-way concurrency per lane, ` +
-      `${ATTEMPT_CAP} attempt cap/invocation, ${formatElapsed(WATCHDOG_MS)} watchdog.`,
+      `${ATTEMPT_CAP} attempt cap/invocation, ${MAX_INVOCATIONS > 0 ? `${MAX_INVOCATIONS}-invocation cap/combo` : "NO invocation cap (unbounded)"}, ${formatElapsed(WATCHDOG_MS)} watchdog.`,
   );
   console.log(`Output: ${RUNS_DIR}\n`);
 
@@ -201,6 +205,7 @@ async function main() {
     scriptPath: TELEMETRY_SCRIPT,
     runners,
     watchdogMs: WATCHDOG_MS,
+    maxInvocations: MAX_INVOCATIONS > 0 ? MAX_INVOCATIONS : null,
     sigtermGraceMs: SIGTERM_GRACE_MS,
     formatElapsed,
   });

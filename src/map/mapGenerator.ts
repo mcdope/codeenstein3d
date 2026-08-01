@@ -21,10 +21,12 @@
 import type { CodeEntity, ParsedFile } from "../parser/types";
 import { mulberry32 } from "../prng";
 import type { GameMap, Point, Room, Tile } from "./types";
+import { ACID_OVERFLOW_ENABLED, planAcidOverflows } from "./generation/acidOverflow";
 import { breakUpLongCorridors } from "./generation/breakup";
 import { connectRooms } from "./generation/corridors";
 import { placeDoors, placeKeys } from "./generation/doorsKeys";
 import { spawnEdgeCaseEnemies, spawnEnemies } from "./generation/enemies";
+import { EXCEPTION_ZONES_ENABLED, placeExceptionZones } from "./generation/exceptionZones";
 import {
   carveRoom,
   centeredRoom,
@@ -41,7 +43,9 @@ import { DECORATIONS_ENABLED, placeDecorations, placePillars } from "./generatio
 import { seedFrom } from "./generation/seed";
 import { placeSecretRooms } from "./generation/secretRooms";
 import { pickExit, pickMultiplayerSpawns, pickSafeSpawn } from "./generation/spawnExit";
+import { SWITCHBOARDS_ENABLED, placeSwitchboardEncounters, placeSwitchboards } from "./generation/switchboards";
 import { placeTeleporters } from "./generation/teleporters";
+import { VENDOR_DEPOTS_ENABLED, placeVendorDepots } from "./generation/vendorDepots";
 import { fillHazards, placeTraps } from "./generation/trapsHazards";
 import { clamp } from "./generation/util";
 
@@ -55,6 +59,69 @@ export interface MapGeneratorOptions {
   /** Attempts to place each room before giving up on it. */
   placementAttempts?: number;
 }
+
+/**
+ * Per-level inputs to `generate()` — everything about *this* level and *this*
+ * player's progress, as opposed to `MapGeneratorOptions`' generator-wide
+ * tuning. Every field is optional and its default is the "plain single-player
+ * level, nothing unlocked yet" case, so `generate(parsed)` stays meaningful on
+ * its own.
+ *
+ * An options object rather than positional parameters: these grew one at a
+ * time as features landed, and seven positional arguments — four of them
+ * booleans — made every call site unreadable and trivially easy to
+ * mis-order. Nothing about the *values* changed in that conversion, so no
+ * generated map moved.
+ */
+export interface GenerateOptions {
+  /**
+   * Marks this as a "restock arena" (see `main.ts`, which sets it for
+   * header/equivalent files): a distinct visual theme (handled by the
+   * raycaster from the returned `GameMap.bonusLevel` flag) and a boosted
+   * static-pickup rate, treating the level as a loot stop rather than a fight.
+   */
+  bonusLevel?: boolean;
+  /**
+   * Whether the player owns the rocket launcher. Mirrors the same gate applied
+   * to enemy-kill drops (see `rollLoot` in `engine/loot.ts`): until they own
+   * it, static rocket pickups would just be dead loot, so they're generated as
+   * bullets/health instead.
+   */
+  hasRocketLauncher?: boolean;
+  /**
+   * `WEAPONS` indices the player doesn't own yet, feeding `placeSecretRooms`'
+   * weapon-unlock loot slot — see that function's doc comment for why the map
+   * layer only ever receives an opaque list of numbers here, never an
+   * engine-layer weapon concept.
+   */
+  missingWeaponIndices?: readonly number[];
+  /**
+   * Requests extra, spread-out spawn points for a multiplayer session (see
+   * `GameMap.multiplayerSpawns`). 1 (the default) preserves single-player
+   * behavior exactly — `multiplayerSpawns` simply comes back `undefined`.
+   */
+  maxPlayers?: number;
+  /** Whether the player owns gdb — gates whether a "Vendor Depot" may stock
+   * its ammo pool, since a magazine for a gun they haven't unlocked is dead
+   * loot. Same shape as `hasRocketLauncher` deliberately: the map layer never
+   * learns what a weapon is, only whether a pool is worth stocking. */
+  hasSmg?: boolean;
+  /** Whether the player owns Friday Hotfix — see `hasSmg`. */
+  hasGas?: boolean;
+}
+
+/** Defaults for one `generate()` call: a plain single-player level with
+ * nothing unlocked. Spelled out as a `Required<>` record for the same reason
+ * `DEFAULTS` below is — so a newly added option can't silently default to
+ * `undefined` somewhere in the body. */
+const GENERATE_DEFAULTS: Required<GenerateOptions> = {
+  bonusLevel: false,
+  hasRocketLauncher: true,
+  missingWeaponIndices: [],
+  maxPlayers: 1,
+  hasSmg: true,
+  hasGas: true,
+};
 
 const DEFAULTS: Required<MapGeneratorOptions> = {
   minSize: 64,
@@ -86,33 +153,15 @@ export class MapGenerator {
   }
 
   /**
-   * `bonusLevel` marks this as a "restock arena" (see `main.ts`, which sets it
-   * for header/equivalent files): a distinct visual theme (handled by the
-   * raycaster from the returned `GameMap.bonusLevel` flag) and a boosted
-   * static-pickup rate, treating the level as a loot stop rather than a fight.
-   *
-   * `hasRocketLauncher` mirrors the same gate applied to enemy-kill drops (see
-   * `rollLoot` in `engine/loot.ts`): until the player owns the launcher,
-   * static rocket pickups would just be dead loot, so they're generated as
-   * bullets/health instead.
-   *
-   * `missingWeaponIndices` feeds `placeSecretRooms`' weapon-unlock loot slot
-   * — see that function's doc comment for why the map layer only ever
-   * receives an opaque list of numbers here, never an engine-layer weapon
-   * concept.
-   *
-   * `maxPlayers` requests extra, spread-out spawn points for a multiplayer
-   * session (see `GameMap.multiplayerSpawns`) — 1 (the default) preserves
-   * every existing call site's behavior exactly, `multiplayerSpawns` simply
-   * comes back `undefined`.
+   * Turn one `ParsedFile` into a playable `GameMap`. See `GenerateOptions` for
+   * what each per-level input means; omitting the argument entirely gives a
+   * plain single-player level with nothing unlocked.
    */
-  generate(
-    parsed: ParsedFile,
-    bonusLevel = false,
-    hasRocketLauncher = true,
-    missingWeaponIndices: readonly number[] = [],
-    maxPlayers = 1,
-  ): GameMap {
+  generate(parsed: ParsedFile, options: GenerateOptions = {}): GameMap {
+    const { bonusLevel, hasRocketLauncher, missingWeaponIndices, maxPlayers, hasSmg, hasGas } = {
+      ...GENERATE_DEFAULTS,
+      ...options,
+    };
     const rng = mulberry32(seedFrom(parsed));
     const size = this.mapSize(parsed);
 
@@ -128,6 +177,23 @@ export class MapGenerator {
     // (or, failing that, a forced jog) right after the grid is fully carved,
     // since run length is a property of the whole grid, not any single leg.
     const breakupRooms = breakUpLongCorridors(grid, rooms, size, this.opts.roomMargin, rng);
+
+    // AST-driven carving passes run here, last among everything that cuts new
+    // space out of the map: each one only ever claims *untouched rock* (plus a
+    // one-tile margin — see `sideCandidateFits`), which is a sufficient
+    // overlap test against rooms, labyrinth interiors, corridors and breakup
+    // rooms precisely because all of those have already been carved. They also
+    // have to land before `placeTraps`, whose choke-point scan only considers
+    // plain floor, so an exception zone's own hazard/spike tiles are excluded
+    // from trap candidacy automatically. They all only ever turn rock into
+    // floor, so they can never sever an existing route.
+    const switchboardRooms = SWITCHBOARDS_ENABLED ? placeSwitchboards(rooms, grid, size, rng) : [];
+    const exception = EXCEPTION_ZONES_ENABLED
+      ? placeExceptionZones(rooms, grid, size, parsed.exceptionZones, rng, hasRocketLauncher)
+      : { zones: [], hazards: [], spikeTraps: [], mines: [], pickups: [] };
+    const vendor = VENDOR_DEPOTS_ENABLED
+      ? placeVendorDepots(rooms[0], grid, size, parsed.importCount, rng, hasRocketLauncher, hasSmg, hasGas)
+      : { depots: [], pickups: [] };
 
     // Spawn in whichever corner of the first room sits farthest from every
     // enemy-bearing room's center — not just a fixed corner — so the player
@@ -147,7 +213,18 @@ export class MapGenerator {
     // "Edge Case" enemies populate the corridor-breakup rooms exclusively —
     // never a normal room, and normal enemies never spawn in a breakup room.
     enemies.push(...spawnEdgeCaseEnemies(grid, breakupRooms, exit, rng));
-    const hazards = fillHazards(rooms, grid, spawn, exit, multiplayerSpawns ?? []);
+    // Switchboard spokes get their minor encounter here, for the same reason
+    // Edge Cases do: `spawn`/`exit` are final, `clearCriticalTiles` hasn't run
+    // yet so any enemy tile still gets force-cleared, and everything produced
+    // flows into `avoidPoints` below so every later floor-claiming system
+    // steers around it.
+    const switchboards = SWITCHBOARDS_ENABLED
+      ? placeSwitchboardEncounters(switchboardRooms, grid, spawn, exit, rng)
+      : { enemies: [], spikeTraps: [], mines: [], pickups: [] };
+    enemies.push(...switchboards.enemies);
+    // The exception zones' acid is already carved into the grid; it joins the
+    // generation-time hazard list here so the corner minimap marks it too.
+    const hazards = [...exception.hazards, ...fillHazards(rooms, grid, spawn, exit, multiplayerSpawns ?? [])];
 
     // Corridors already punch through labyrinth walls; this guarantees the
     // spawn, exit, every enemy, and every multiplayer spawn stand on open
@@ -163,6 +240,11 @@ export class MapGenerator {
       { x: exit.x + 0.5, y: exit.y + 0.5 },
       ...enemies.map((e) => ({ x: e.x, y: e.y })),
       ...(multiplayerSpawns ?? []).map((s) => ({ x: s.x + 0.5, y: s.y + 0.5 })),
+      // A depot's mouth is a one-tile choke right next to spawn — exactly what
+      // `placeTraps` looks for. Feeding the stock positions in here keeps
+      // TRAP_SPACING between a trap and the alcove a player walks into in the
+      // first seconds of a level (`decisions.md#hazard-placement-spawn-safety`).
+      ...vendor.pickups.map((p) => ({ x: p.x, y: p.y })),
     ];
     placePillars(rooms, grid, avoidPoints, rng);
     // Decorative props are disabled for now (playtest feedback: they got in
@@ -199,6 +281,12 @@ export class MapGenerator {
       ...loreResult.todoTraps.map((t) => ({ x: t.x, y: t.y })),
       ...loreResult.todoMines.map((m) => ({ x: m.x, y: m.y })),
       ...loreResult.todoEnemies.map((e) => ({ x: e.x, y: e.y })),
+      ...switchboards.spikeTraps.map((t) => ({ x: t.x, y: t.y })),
+      ...switchboards.mines.map((m) => ({ x: m.x, y: m.y })),
+      ...switchboards.pickups.map((p) => ({ x: p.x, y: p.y })),
+      ...exception.spikeTraps.map((t) => ({ x: t.x, y: t.y })),
+      ...exception.mines.map((m) => ({ x: m.x, y: m.y })),
+      ...exception.pickups.map((p) => ({ x: p.x, y: p.y })),
     ];
     const teleporters = placeTeleporters(rooms, grid, teleporterAvoid, parsed.gotos, rng);
 
@@ -210,8 +298,8 @@ export class MapGenerator {
       ...teleporters.map((t) => ({ x: t.x, y: t.y })),
     ];
     const { spikeTraps: generatedSpikeTraps, mines: generatedMines } = placeTraps(rooms, grid, trapAvoid, rng, breakupRooms);
-    const spikeTraps = [...generatedSpikeTraps, ...loreResult.todoTraps];
-    const mines = [...generatedMines, ...loreResult.todoMines];
+    const spikeTraps = [...generatedSpikeTraps, ...loreResult.todoTraps, ...switchboards.spikeTraps, ...exception.spikeTraps];
+    const mines = [...generatedMines, ...loreResult.todoMines, ...switchboards.mines, ...exception.mines];
 
     // Sparse ammo pickups go dead last, once every other floor-claiming
     // system (pillars/decor/doors/keys/teleporters/traps) has placed its
@@ -224,7 +312,28 @@ export class MapGenerator {
     const ammoPickups = [
       ...placeAmmoPickups(rooms, grid, ammoAvoid, rng, bonusLevel, hasRocketLauncher),
       ...secretLoot,
+      ...vendor.pickups,
+      ...switchboards.pickups,
+      ...exception.pickups,
     ];
+
+    // Acid Overflow planning goes dead last, for two reasons. It must see the
+    // FINAL grid, so its candidate tiles are guaranteed to be plain floor that
+    // nothing else claimed — that guarantee is what lets the runtime pass skip
+    // `pendingGridDelta` entirely (see `AcidOverflow`'s doc comment). And it
+    // draws zero rng, so appending it here perturbs nothing: a file with no
+    // allocation-dense function generates a byte-identical map either way.
+    //
+    // `reserved` is the accumulated avoid-list plus every tile a system claimed
+    // *without* marking the grid — mines and keys both sit on plain floor, so
+    // the `grid[y][x] === 0` test alone genuinely isn't enough.
+    const reserved = new Set<string>([
+      ...ammoAvoid.map((p) => `${Math.floor(p.x)},${Math.floor(p.y)}`),
+      ...ammoPickups.map((p) => `${Math.floor(p.x)},${Math.floor(p.y)}`),
+      `${spawn.x},${spawn.y}`,
+      `${exit.x},${exit.y}`,
+    ]);
+    const acidOverflows = ACID_OVERFLOW_ENABLED ? planAcidOverflows(rooms, grid, enemies, reserved) : [];
 
     // Fog-of-war overlay grid, all unexplored until the player moves through.
     const visited: boolean[][] = Array.from({ length: size }, () =>
@@ -260,6 +369,10 @@ export class MapGenerator {
       loreTerminals,
       bonusLevel,
       secretRoomCount: secretLoot.length,
+      switchboardRooms,
+      exceptionZones: exception.zones,
+      vendorDepots: vendor.depots,
+      acidOverflows,
     };
   }
 

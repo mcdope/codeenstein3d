@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  BRANCH_DOOR_TILE,
   DOOR_TILE,
   HAZARD_TILE,
   LORE_TILE,
@@ -19,10 +20,15 @@ describe("tile value constants", () => {
     expect(SPIKE_TRAP_TILE).toBe(5);
     expect(SECRET_WALL_TILE).toBe(6);
     expect(LORE_TILE).toBe(7);
+    expect(BRANCH_DOOR_TILE).toBe(8);
   });
 
   it("are all mutually distinct", () => {
-    const values = [HAZARD_TILE, DOOR_TILE, TELEPORTER_TILE, SPIKE_TRAP_TILE, SECRET_WALL_TILE, LORE_TILE];
+    const values = [HAZARD_TILE, DOOR_TILE, TELEPORTER_TILE, SPIKE_TRAP_TILE, SECRET_WALL_TILE, LORE_TILE, BRANCH_DOOR_TILE];
     expect(new Set(values).size).toBe(values.length);
+  });
+
+  it("keeps the two door types distinct — a branch door is never key-locked", () => {
+    expect(BRANCH_DOOR_TILE).not.toBe(DOOR_TILE);
   });
 });

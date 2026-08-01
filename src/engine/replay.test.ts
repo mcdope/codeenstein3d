@@ -52,7 +52,7 @@ describe("CampaignReplayRecorder", () => {
 
   it("records frames for a level and produces a valid payload", async () => {
     const rec = new CampaignReplayRecorder("demo");
-    rec.startLevel(meta(), Promise.resolve("hash1"));
+    rec.startLevel(meta(), Promise.resolve("hash1"), Promise.resolve("balance-hash"));
     rec.record(0.016, snapshot());
     rec.record(0.016, snapshot({ fireQueued: true }));
     const payload = await rec.finish();
@@ -71,24 +71,51 @@ describe("CampaignReplayRecorder", () => {
 
   it("drops a level that captured zero frames from the final payload", async () => {
     const rec = new CampaignReplayRecorder("demo");
-    rec.startLevel(meta({ filePath: "a.c" }), Promise.resolve("hashA"));
+    rec.startLevel(meta({ filePath: "a.c" }), Promise.resolve("hashA"), Promise.resolve("balance-hash"));
     rec.record(0.016, snapshot());
-    rec.startLevel(meta({ filePath: "b.c" }), Promise.resolve("hashB")); // never recorded into
+    rec.startLevel(meta({ filePath: "b.c" }), Promise.resolve("hashB"), Promise.resolve("balance-hash")); // never recorded into
     const payload = await rec.finish();
     expect(payload!.levels).toHaveLength(1);
     expect(payload!.levels[0].filePath).toBe("a.c");
   });
 
+  it("truncates at a gap in the middle instead of silently closing it up", async () => {
+    // The shipped `defaultHighscore.ts` carried exactly this: a Casual entry
+    // whose replay ran level 9 -> level 11 because level 10 overflowed the
+    // frame cap. Filtering made the payload look like a complete run.
+    const rec = new CampaignReplayRecorder("demo");
+    rec.startLevel(meta({ filePath: "a.c" }), Promise.resolve("hashA"), Promise.resolve("balance-hash"));
+    rec.record(0.016, snapshot());
+    rec.startLevel(meta({ filePath: "b.c" }), Promise.resolve("hashB"), Promise.resolve("balance-hash")); // never recorded into
+    rec.startLevel(meta({ filePath: "c.c" }), Promise.resolve("hashC"), Promise.resolve("balance-hash"));
+    rec.record(0.016, snapshot());
+    const payload = await rec.finish();
+    expect(payload!.levels.map((l) => l.filePath)).toEqual(["a.c"]);
+  });
+
+  it("truncates at an overflowed middle level, not just an empty one", async () => {
+    const rec = new CampaignReplayRecorder("demo");
+    rec.startLevel(meta({ filePath: "a.c" }), Promise.resolve("hashA"), Promise.resolve("balance-hash"));
+    rec.record(0.016, snapshot());
+    rec.startLevel(meta({ filePath: "b.c" }), Promise.resolve("hashB"), Promise.resolve("balance-hash"));
+    // Overflow it the way a genuinely long level does.
+    for (let i = 0; i < 21601; i++) rec.record(0.016, snapshot());
+    rec.startLevel(meta({ filePath: "c.c" }), Promise.resolve("hashC"), Promise.resolve("balance-hash"));
+    rec.record(0.016, snapshot());
+    const payload = await rec.finish();
+    expect(payload!.levels.map((l) => l.filePath)).toEqual(["a.c"]);
+  });
+
   it("returns null overall when every level ends up empty", async () => {
     const rec = new CampaignReplayRecorder("demo");
-    rec.startLevel(meta(), Promise.resolve("hash1"));
+    rec.startLevel(meta(), Promise.resolve("hash1"), Promise.resolve("balance-hash"));
     expect(await rec.finish()).toBeNull();
   });
 
   it("stops recording further levels once MAX_REPLAY_LEVELS is reached", async () => {
     const rec = new CampaignReplayRecorder("demo");
     for (let i = 0; i < 101; i++) {
-      rec.startLevel(meta({ filePath: `level${i}.c` }), Promise.resolve(`hash${i}`));
+      rec.startLevel(meta({ filePath: `level${i}.c` }), Promise.resolve(`hash${i}`), Promise.resolve("balance-hash"));
       rec.record(0.016, snapshot());
     }
     const payload = await rec.finish();
@@ -100,7 +127,7 @@ describe("CampaignReplayRecorder", () => {
   it("stops recording a level's frames past MAX_REPLAY_FRAMES_PER_LEVEL and drops that level's replay", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const rec = new CampaignReplayRecorder("demo");
-    rec.startLevel(meta(), Promise.resolve("hash1"));
+    rec.startLevel(meta(), Promise.resolve("hash1"), Promise.resolve("balance-hash"));
     for (let i = 0; i < 21601; i++) rec.record(0.016, snapshot());
     expect(warnSpy).toHaveBeenCalledOnce();
     const payload = await rec.finish();
@@ -110,16 +137,16 @@ describe("CampaignReplayRecorder", () => {
   it("only warns once even if record() keeps being called after overflow", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const rec = new CampaignReplayRecorder("demo");
-    rec.startLevel(meta(), Promise.resolve("hash1"));
+    rec.startLevel(meta(), Promise.resolve("hash1"), Promise.resolve("balance-hash"));
     for (let i = 0; i < 21605; i++) rec.record(0.016, snapshot());
     expect(warnSpy).toHaveBeenCalledOnce();
   });
 
   it("preserves multi-level order in the final payload", async () => {
     const rec = new CampaignReplayRecorder("demo");
-    rec.startLevel(meta({ filePath: "first.c" }), Promise.resolve("h1"));
+    rec.startLevel(meta({ filePath: "first.c" }), Promise.resolve("h1"), Promise.resolve("balance-hash"));
     rec.record(0.016, snapshot());
-    rec.startLevel(meta({ filePath: "second.c" }), Promise.resolve("h2"));
+    rec.startLevel(meta({ filePath: "second.c" }), Promise.resolve("h2"), Promise.resolve("balance-hash"));
     rec.record(0.016, snapshot());
     const payload = await rec.finish();
     expect(payload!.levels.map((l) => l.filePath)).toEqual(["first.c", "second.c"]);

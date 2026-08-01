@@ -17,7 +17,42 @@ A run only "counts" for `balancing:telemetry`'s aggregate once it clears level 4
 
 ## Profiles and difficulty
 
-`PROFILES` (`Casual`/`Gamer`/`Pro`) in `run-balancing-telemetry.mjs` differ by `fireAngleEps` (aim tolerance — Pro tightest at 0.03 rad, Casual loosest at 0.08), `fireCooldownMs` (minimum time between semi-auto ranged shots — Pro fastest at 120ms/~8.3 per sec, Casual slowest at 220ms/~4.5 per sec; see its own doc comment above `PROFILES` for why this exists — semi-auto weapons have no engine-side fire-rate cap, so an untuned bot fires as fast as its decision loop allows, far beyond any human trigger-pull rate), `weaponPriority`, `healthDetourThreshold`, and `rotSpeedMultiplier` (a bot-only turn-speed override, `engine.ts`'s `rotSpeedMultiplier`, approximating a realistic *mouse* turn speed per skill tier — real `requestPointerLock()`-based mouse-look was investigated and rejected: it rejects outright under Playwright automation, headed or headless). Difficulty (`easy`/`normal`/`hard`) is wired through `localStorage["codeenstein-difficulty"]`, same as a real player's setting.
+`PROFILES` (`Casual`/`Gamer`/`Pro`) lives in **`scripts/lib/profiles.mjs`** and is re-exported from `run-balancing-telemetry.mjs`, so every existing importer is unchanged. It was moved there so unit tests can import the real profiles without pulling in Playwright — `combatPolicy.test.mjs` previously hand-copied Gamer's values into a local fixture, which silently drifted out of sync and no test could detect.
+
+**Read the ladder as an ordering, not a list of numbers.** `profiles.test.mjs` pins what several consumers silently depend on: the exact key order (`curateMixedProfiles` reads `tierNames[0]` as the weakest tier), strict monotonicity per knob, and a complete ranged fallback chain per tier — the historical Pro-missing-shotgun bug made Pro *slower to qualify than Casual*, which is what a broken ladder looks like from the outside.
+
+| knob | Casual → Pro | what it controls |
+|---|---|---|
+| `fireAngleEps` | 0.08 → 0.03 rad | aim tolerance before the bot will pull the trigger |
+| `fireCooldownMs` | 220 → 120 ms | minimum gap between *semi-auto* shots. Dual-role and worth knowing: it also feeds `secPerShot` in `scoreRangedWeapon`, so a slow trigger also makes the bot *judge* semi-autos as worse. Don't draw per-tier weapon-balance conclusions without accounting for that |
+| `rotSpeedMultiplier` | 2 → 5 | bot-only turn-speed override (`engine.ts`), approximating mouse turn speed per tier — real pointer-lock mouse-look rejects outright under Playwright |
+| `healthDetourThreshold` | 0.75 → 0.25 | how early the bot breaks off to find health |
+| `ammoThrift` | 1.6 → 0.2 | willingness to burn a finite reserve to shorten a fight |
+| `selfHarmAversion` | 2.2 → 0.5 | caution with self-splash weapons; only reachable in the ghidra branch |
+| `weaponPriority` | — | **membership is a hard filter, order is only a tiebreak.** The scoring loop iterates this list, so an absent weapon is never considered at all — which is why Casual omitting ghidra is a real behavioural tier rather than a preference |
+| `engageRadius` | 9.5, identical | deliberately not a tier: "low aggression" must never mean skipping a fight |
+
+A profile may also carry a **`tuning` object**, deep-merged over `DEFAULT_TUNING` in the `Bot` constructor and *under* any explicit `opts.tuning` — so `CODEENSTEIN_TELEMETRY_TUNING` still wins and single-variable A/Bs keep working. That is how a tier can own what would otherwise be a global constant, i.e. express *competence* rather than only *pace*.
+
+Difficulty (`easy`/`normal`/`hard`) is wired through `localStorage["codeenstein-difficulty"]`, same as a real player's setting. Keep the two axes distinct: **difficulty changes the world** (enemy HP, damage, ammo drop rate, enemy aim spread — `src/difficulty.ts`), **a profile changes the player**.
+
+### Grading the ladder — `report-profile-separation.mjs`
+
+```sh
+node scripts/report-profile-separation.mjs <dir-or-file> [difficulty]
+```
+
+Takes one telemetry JSON containing all three profiles, or a directory of per-profile captures, and **exits non-zero when the tiers aren't cleanly ordered**. `abReport.mjs` compares two *sides* of one change; this compares the three *profiles* within one capture, which is the question that decides whether per-tier balance conclusions mean anything.
+
+It bounds the **smallest adjacent step**, not the ladder's ends, and that distinction is the point: Casual is cleanly separated from both other tiers, so an ends-based ratio looks healthy while **Gamer↔Pro** — the step that actually flipped run-to-run across four n=5 scans — is unreadable. Bars are calibrated against a measured n=40 baseline so the axes that already work cannot be quietly traded away.
+
+Measured 2026-08-01, before any retune: `ttkNormal` and `levelTimeSec` were correctly ordered, but **both damage-avoidance axes were inverted** (`enemyAccuracy` 0.499/0.556/0.531 and ranged damage per second of exposure 0.354/0.430/0.439 — Pro the *most* hittable). The tiers differed in pace, not competence.
+
+### `PROFILES_HASH` — why `defaultHighscore.ts` must be regenerated after a retune
+
+`src/engine/defaultHighscore.ts` is generated by playing the campaign *with these profiles*, so any retune leaves it describing a bot that no longer exists — and nothing used to detect that. A segment's `astHash` covers the parsed source and `balanceHash` covers the enemy roster; neither knows anything about bot tuning, so every replay stays valid while the shipped board silently misrepresents the bot.
+
+The generator now bakes `profilesHash()` into the file as `PROFILES_HASH`, and `profiles.test.mjs` recomputes and compares — so this is a failing `vitest run` rather than an invisible drift. Field order inside a profile is ignored (it changes no behaviour); profile *order* is not (several consumers read it positionally).
 
 ## Shared bot library (`scripts/lib/`)
 
@@ -26,8 +61,18 @@ The bot-behavior logic (navigation, combat, hazard/mine handling, loot detours �
 - **Config is explicit constructor `opts`, not ambient module state.** `opts.realtime`/`opts.stepMs` (headed-vs-headless timing), `opts.recordStepMs` (only the highscore generator sets this — see its own module doc comment for why replay recording needs a finer step granularity than bot decision-making), `opts.logger` (a `{debugNav, wpDebug, driftDebug, trace}` bag of no-op-by-default callbacks, replacing scattered `process.env.CODEENSTEIN_WPDEBUG`-style checks), and `opts.tuning` (deep-merged over `DEFAULT_TUNING`, the ~40 movement/combat constants both scripts used to duplicate). `run-balancing-telemetry.mjs` still resolves its own module-level `HEADED`/`DEBUG_NAV`/etc. consts from `process.env` once at import (this is what preserves `watch-bot-sessions.mjs`'s "set `process.env.CODEENSTEIN_TELEMETRY_HEADED` before dynamically importing" trick) and forwards them into the `Bot` constructor per attempt.
 - **`scripts/lib/qualifyLoop.mjs`'s `runQualifyLoop()`** is the generic "retry attempts in concurrent batches until N qualify (or a cap is hit)" loop both `run-balancing-telemetry.mjs`'s `runCombo` and `generate-default-highscore.mjs`'s per-profile driver are thin wrappers around — the qualifying predicate, attempt function, and concurrency are all caller-supplied.
 - **`scripts/lib/virtualClock.mjs`'s `installVirtualClock()`** is the one virtual-clock installer both scripts import, instead of each keeping its own byte-for-byte-identical copy.
-- **Free (non-`Bot`-state) helper functions** — `angleDelta`, `diagonalStrafeKey`, `isHazardAt`/`activeSpikeAt`, `pickThreat`, `hasLineOfSight`/`isWallTile`, `findDisarmableMine`/`findDangerousMine`, `pickRangedWeapon`, `detectAnomalies`/`detectHeldKeyNoMovement` — also live in `bot.mjs`, exported alongside the class, since they don't need any per-run state.
+- **`scripts/lib/combatPolicy.mjs` holds the decision core.** `decide(world, memory, config)` returns an *intent* — which keys to hold and for how long, whether to fire, which weapon to switch to — and `bot.mjs` is the I/O half that dispatches it. Everything it owns (`DEFAULT_TUNING`, `angleDelta`, `pickThreat`, `pickRangedWeapon`, `findDisarmableMine`/`findDangerousMine`, the burst helpers, the weapon indices) is re-exported from `bot.mjs`, so no consumer had to change an import; new code should import from `combatPolicy.mjs` directly. `detectAnomalies`/`detectHeldKeyNoMovement` stay in `bot.mjs` — they analyse recorded traces rather than making decisions.
+  - Two reasons for the split. It makes the decision logic **testable** (`combatPolicy.test.mjs`, 100+ assertions — before this, nothing in `scripts/lib/` had any). And it is shaped so it can later be lifted into `src/engine/combatPolicy.ts` as the basis of a real in-game deathmatch opponent: `src/` cannot import from `scripts/`, so the move has to be a copy, and a copy is only mechanical if the file never acquires a dependency `src/engine/` couldn't satisfy. The module doc comment lists the rules that keep that true (no page, no async, no Node builtins, all tuning injected, no `Math.random`/`Date.now`, total sorts).
+  - Injecting tuning also fixed a latent bug: `pickThreat`, `pickRangedWeapon`, `rocketAimUnsafe`, `findDisarmableMine` and `findDangerousMine` used to read `DEFAULT_TUNING` directly, so a `Bot`'s own `opts.tuning` override silently never reached them.
+- **The bot has full WASD, and all eight directions are full speed.** `moveForward` translates along `(dirX, dirY)` and `strafe` along `(-dirY, dirX)` (`player.ts`), both scaled by the same `step`; `diagonalScale` (1/√2) is applied per axis when both are held, so two perpendicular components have magnitude *exactly* `step`. Reversing is the same speed as advancing (`forwardSign` is signed) and sprint applies throughout. **So turning is never required in order to move somewhere** — worst-case direction error picking the nearest octant is 22.5°, i.e. 92% of the step lands where wanted, against 0% while standing still to turn. This was not written down anywhere and the bot went a long time without using it: it never emitted `KeyS` at all, and stood still at every route corner (23.5% of all decisions were turn-only). `movementKeysFor`/`movementVectorFor` in `combatPolicy.mjs` encode it. Note that any safety check must then scan along the **movement** vector, not the facing one.
+- **Evasion: the bot does not stand still to shoot.** The ranged-fire branch used to hold no keys at all for a whole decision, which made `aiEffectivenessDanger.enemyAccuracy` a measure of how easy it is to hit a stationary target rather than of how dangerous enemies are. It now sidesteps while firing, and when `getProjectiles` reports a bolt actually inbound it steps off that bolt's flight line specifically and *sprints* while doing so. Measured marginal effect of the directed dodge over blind sidestepping: `dmg.enemyRangedPerSec` -25.4/-18.5/-7.9%, `enemyAccuracy` -0.115/-0.095/-0.085, qualifyRate +0/+55/+25pp.
+  - Three constraints, each load-bearing. **Lateral only, never alongside `KeyW`** — `engine.ts`'s `diagonalScale` cuts the forward component 29% when both axes are active, which is the mechanism behind the recorded 0%→72% regression. **Sprint only while genuinely dodging**, never for the blind sidestep, or the dance becomes drift. **Acid, spikes and walls all block**, with the other side tried first — a strafe is optional movement, so unlike a committed route leg it is never worth damage.
+  - **Only the fire branch strafes, and that is deliberate.** Extending it to the re-aim branch was measured and reverted: it cost Gamer 30pp of qualify rate and doubled its stuck count for no accuracy gain, because that branch exists to converge on a firing angle and lateral movement perturbs the very quantity it is nulling out. Roughly 43% of combat decisions reach the fire branch; that ceiling is the price of not fighting the aim loop.
+- **Per-key hold durations and `dispatchSegment`.** An intent's `holds` is a `Map` of key → ms, and `applyAction` turns it into the sequence of dispatch phases that realises it: a key whose hold ends early simply stops appearing in later phases, and the held-key diff releases it for free. Today every branch gives all its keys the same duration, so `segmentsFor` always yields exactly one phase and dispatch is byte-identical to the pre-split single-`turnBurst` call — verified by a differential harness over 21,600 dispatches (3 profiles × 3 step sizes × 400 seeds × 6 consecutive decisions), comparing keys, fire/melee/weapon, duration, mutated memory, trace, and the semi-auto fire clock. Letting keys carry *different* durations is what will fix the bot standing still while it shoots.
+  - `minPhaseMs` is a floor, and it is the reason multiplayer can't be hurt by this mechanism: a phase shorter than the lockstep input delay never lands before the next is issued, so `MultiplayerBot` sets it to `MIN_DECISION_MS` and any decision that would split below it collapses back to a single phase — exactly the behaviour it already had.
+  - `dispatchSegment` (not `applyAction`) is now the override point for a non-Playwright control surface. `MultiplayerBot` used to reimplement all of `applyAction`; the timing bugs its doc comment catalogues all trace to those two copies drifting apart.
 - `scripts/lib/pathfind.mjs` and `scripts/lib/routePlanner.mjs` are unaffected by any of this — they were already clean, reusable, stateless modules `bot.mjs` imports.
+- **`scripts/lib/abReport.mjs`** holds the pure baseline-vs-candidate comparison helpers behind `scripts/report-balancing-ab.mjs` — see [Matched-scale verification](#matched-scale-verification). It has a colocated `abReport.test.mjs`: `scripts/**` is excluded from the `src/` coverage *denominator* but is still executed by `vitest run`, so a test placed here does run in CI, exactly like `scripts/multiplayer-server.test.mjs`. That is the only automated coverage anything in `scripts/lib/` has, and it's worth extending as more of this library becomes pure functions.
 
 ## Env var reference
 
@@ -44,12 +89,13 @@ All scoping/debug flags are read once at module load, so they must be set in the
 | `CODEENSTEIN_TELEMETRY_DEBUG_NAV` | Permanent tick-by-tick nav/combat trace (`[nav] pos=... dir=... threat=... -> moveKeys=...`). Not a temporary debug flag — kept on purpose for whatever "why is the bot doing that" question comes up next. |
 | `CODEENSTEIN_TELEMETRY_ANOMALY_SCAN` | Enables the stall/health-drain-frozen detector — see below. |
 | `CODEENSTEIN_TELEMETRY_NAV_DIAG` | Extra per-decision trace bookkeeping (superset used alongside anomaly scan trace recording). |
+| `CODEENSTEIN_TELEMETRY_TRACE_DUMP` | Prints the raw per-decision rows of each level's *longest* oscillation run — position, bearing error and distance to the nav target, keys held, burst, threat/mine distance, branch. Implies the trace. **Run with `CONCURRENCY=1`**: concurrent attempts interleave their rows into a misleadingly coherent-looking mess. Added because aggregates over this detector's own findings produced two wrong diagnoses in a row; reading one run end to end settled it in minutes. |
 | `CODEENSTEIN_TELEMETRY_HEADED` | Real, visible browser + real wall-clock timing instead of the virtual clock. See [Headed vs. headless](#headed-vs-headless-read-this-before-touching-turnburstms-math). |
 | `CODEENSTEIN_CONSOLE_FORWARD` | Forwards the browser's own `console` output to Node (`[console] ...` lines) — the engine already logs key pickups/door unlocks; often more reliable ground truth than bot-side telemetry when a freeze's cause is ambiguous. |
 | `CODEENSTEIN_WPDEBUG` | Per-waypoint drive-loop trace (`[wpdebug] leg-walk wp=... -> result=...`). |
 | `CODEENSTEIN_DRIFTDEBUG` | Traces `driveTowardWithReplan`'s off-route drift/re-plan decisions. |
 | `CODEENSTEIN_DEV_URL` | Override the dev server URL (default `http://localhost:5173`). |
-| `CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET` | Override `REQUIRED_QUALIFYING_RUNS` (default 3) — how many qualifying runs a combo needs before its retry loop stops. Used by `balancing:campaign` to set a small per-invocation batch size. |
+| `CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET` | Override `REQUIRED_QUALIFYING_RUNS` (default 3) — how many qualifying runs a combo needs before its retry loop stops. Used by `balancing:campaign` to set a small per-invocation batch size. **Set it to `999` for any A/B**, so the loop runs to `ATTEMPT_CAP` instead of exiting the moment enough runs qualify — that early exit, not concurrency, is what controls the failure-sample denominator. See [Matched-scale verification](#matched-scale-verification). |
 | `CODEENSTEIN_TELEMETRY_OUTPUT_FILE` | Override the output path (default `balancing_telemetry.json` at repo root). Used by `balancing:campaign` so concurrent invocations each write to their own file instead of racing to overwrite the same one. |
 
 ## Anomaly scanning (`npm run balancing:scan`)
@@ -100,6 +146,8 @@ Concretely: a fine-alignment epsilon like `MINE_REALIGN_EPS` (0.01 rad) converge
 - **Every batch is its own file**, kept forever (not overwritten) — each spawned `run-balancing-telemetry.mjs` invocation is scoped to one combo, collects a small batch (`CODEENSTEIN_CAMPAIGN_BATCH_SIZE`, default 5) via `CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET`, and writes directly to its own path via `CODEENSTEIN_TELEMETRY_OUTPUT_FILE` (`balancing_runs/<profile>-<difficulty>-<NNN>.json`) — no shared-file race between concurrently-running combos.
 - **Runs combos as separate OS processes** (`child_process.spawn`, `CODEENSTEIN_CAMPAIGN_LANES` at a time, default 2), each wrapped in a wall-clock watchdog (`CODEENSTEIN_CAMPAIGN_WATCHDOG_MS`, SIGTERM then SIGKILL after a grace period). This is deliberate, not incidental: `run-balancing-telemetry.mjs` has no internal safety net for a genuinely wedged `page.evaluate()`/virtual-clock pump — every internal "stuck" resolution (tick-count give-up counters, `page.waitForFunction` timeouts) is bounded and resolves into a normal, non-throwing result, but a true hang would leave a `Promise.all` inside `runCombo` waiting forever with nothing to catch it. Only an external, OS-level kill can actually stop that.
 - **Calibrate the watchdog before a real run on new hardware** — the default (90 minutes) was derived 2026-07-15 on a Ryzen 5800X from one real production-representative invocation (full 17-level campaign, `CONCURRENCY=8`, `QUALIFYING_TARGET=5`): 5m13s for 8 attempts to reach 5 qualifying (level-4+) runs, extrapolated to a ~50-minute worst case at `ATTEMPT_CAP=80` with headroom on top. Re-run a similar single-combo calibration invocation (no `LEVEL_LIMIT`) if running on meaningfully different hardware before trusting `CODEENSTEIN_CAMPAIGN_WATCHDOG_MS`'s default.
+- **Cost is bounded per combo, not just per invocation** (added 2026-07-30). The retry loop keeps asking for another invocation until the combo reaches its qualifying target, so a combo the bot simply *cannot* clear would respawn invocations forever — the watchdog bounds one invocation, never the loop around it. This bit the 2026-07-24 multiplayer campaign for real: the Hard cells never converged (Gamer/hard/2p banked 1 qualifying run across 6 invocations) and the run had to be rescued by hand-lowering the target mid-flight. `CODEENSTEIN_CAMPAIGN_MAX_INVOCATIONS` (default 6) / `CODEENSTEIN_MP_CAMPAIGN_MAX_INVOCATIONS` (default 3) cap it: at the cap the combo gives up loudly, the lane moves on, and the partial data stays intact and resumable — the combo just reports short of target. Set either to `0` for the old unbounded behaviour. Both orchestrators print the active bound in their startup banner, so a running campaign states its own worst case rather than leaving it to be inferred.
+  - Corollary for **clear-rate** questions (as opposed to per-combo aggregates): a qualifying target is the wrong knob, because it stops early on easy combos and never terminates on impossible ones. For a fixed denominator, invoke the underlying telemetry script directly per combo with a high qualifying target and `ATTEMPT_CAP` set to the sample size you want — the same trick single-player uses with `CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET=999`.
 - **Known risk**: a SIGKILL (only reached if SIGTERM doesn't land within the grace period) can leave orphaned Chromium subprocesses behind, since it doesn't give Playwright's own shutdown handlers a chance to run. Kills should be rare (the watchdog is a safety net, not the normal exit path) but worth an occasional `ps aux | grep chromium` spot-check on a long unattended run.
 - Tune `CODEENSTEIN_CAMPAIGN_LANES`/`_CONCURRENCY` to the machine — each lane's invocation gets its own `CODEENSTEIN_TELEMETRY_CONCURRENCY`-way internal browser-context concurrency (default 8, lower than `balancing:telemetry`'s own default of 12, since `LANES` of these run at once), so total concurrent browser contexts is roughly `LANES × CONCURRENCY_PER_LANE`.
 - **The queue/resumability/watchdog engine itself lives in `scripts/lib/laneOrchestrator.mjs`**, shared with `run-balancing-campaign-multiplayer.mjs` (see [SSH-host parallelism](#ssh-host-parallelism) below) — `run-balancing-campaign.mjs` itself only supplies the combo list, env vars, and how to read an existing output file's qualifying count; a `Runner` (local `child_process`, or a remote SSH host) is what actually executes an invocation.
@@ -122,12 +170,96 @@ Concretely: a fine-alignment epsilon like `MINE_REALIGN_EPS` (0.01 rad) converge
 
 Any change to navigation/combat/movement logic in `run-balancing-telemetry.mjs` needs more than "the scan came back clean" before it's trustworthy:
 
-- **A/B against `git show HEAD:scripts/run-balancing-telemetry.mjs`** at the *same* `CODEENSTEIN_TELEMETRY_CONCURRENCY`/`_ATTEMPT_CAP`/`_LEVEL_LIMIT` that will ultimately be trusted. A small or low-concurrency sample has previously masked a real ~4x survival-rate regression (Casual/normal level-2 death rate looked fine at `CONCURRENCY=1`, but was 72% — vs. the true baseline's 0% — at `CONCURRENCY=6`/`ATTEMPT_CAP=20`).
+- **A/B against a baseline worktree** (`git worktree add /tmp/bot-ab-base <last-good-sha>` — not `git stash`, which can't serve both sides against one dev server) at the *same* `CODEENSTEIN_TELEMETRY_CONCURRENCY`/`_ATTEMPT_CAP`/`_LEVEL_LIMIT` that will ultimately be trusted. A small or low-concurrency sample has previously masked a real ~4x survival-rate regression (Casual/normal level-2 death rate looked fine at `CONCURRENCY=1`, but was 72% — vs. the true baseline's 0% — at `CONCURRENCY=6`/`ATTEMPT_CAP=20`).
 - **`diagonalStrafeKey`** (the bot's diagonal-movement helper, plain-navigation branch only) is the sharpest cautionary example: an earlier change to its usage caused exactly that 72%-vs-0% regression, only caught via the matched-scale A/B above — not by `balancing:scan`. It's scoped to plain-nav only for this reason; don't re-add it to `hazard`/`criticalHealth`/`mineRetreat`/ranged-aim branches, and treat even refinements *within* its current safe usage as needing the same verification bar, not just a scan.
+
+### Concurrency was never the mechanism — the qualify loop's early exit is
+
+The "low concurrency masked it" story above is real but was misattributed, which matters because it made the fix look like a knob rather than a rule. `runQualifyLoop` (`scripts/lib/qualifyLoop.mjs`) is `while (qualifyingRuns.length < requiredQualifyingRuns && attempts < attemptCap)`, running `concurrency` attempts per batch — and `failureReasons` only accumulates from attempts actually run. At `CONCURRENCY=1` a bot that qualifies 3-of-3 runs **exactly three attempts and records zero failures**, whatever its true death rate; at `CONCURRENCY=6` the first batch always runs six, so failures get recorded. Concurrency was changing the *sample size*, not the simulation.
+
+So don't rely on concurrency to produce a denominator. Set **`CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET=999`** for any A/B, which makes the loop always run to `ATTEMPT_CAP` — a guaranteed denominator instead of an incidental one. Keep `CONCURRENCY=6`/`ATTEMPT_CAP=20` as well, to honour the bar the regression above established.
+
+### The A/B recipe
+
+Run once per side, then diff:
+
+```sh
+for combo in "Casual normal" "Gamer normal" "Pro hard" "Pro normal"; do
+  set -- $combo
+  CODEENSTEIN_TELEMETRY_PROFILE=$1 CODEENSTEIN_TELEMETRY_DIFFICULTY=$2 \
+  CODEENSTEIN_TELEMETRY_LEVEL_LIMIT=8 CODEENSTEIN_TELEMETRY_ATTEMPT_CAP=20 \
+  CODEENSTEIN_TELEMETRY_CONCURRENCY=6 CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET=999 \
+  CODEENSTEIN_TELEMETRY_ANOMALY_SCAN=1 \
+  CODEENSTEIN_TELEMETRY_OUTPUT_FILE=ab/<side>-$1-$2.json \
+  node scripts/run-balancing-telemetry.mjs
+done
+
+node scripts/report-balancing-ab.mjs ab/base ab/cand   # dirs or single files
+```
+
+The four combos are not arbitrary: **Casual/normal** is the combo the 72% regression showed up on, **Gamer/normal** is where most quoted telemetry numbers come from, and **Pro/hard** is where `enemyAimSpreadDeg = 0` (perfect enemy aim) makes any dodging/movement change matter most.
+
+**Pro/normal** is the fourth for a reason worth stating, because it is the kind of gap that stays invisible until it costs a day. A profile and a difficulty are independent axes, and running Pro *only* on hard leaves every Pro-specific behaviour untested at normal's enemy aim and damage. That is exactly what happened on 2026-07-31: a reproducible ~22s freeze at a fixed tile on level 1, hitting roughly 40% of Pro/normal attempts, survived a full day of A/Bs because no side of any A/B ran that cell — it only surfaced in the wider `balancing:scan`, which does sweep every profile. Two of the three combos above are `normal` and the third changes *both* axes at once, so `Pro` and `hard` were confounded: any Pro-only regression was indistinguishable from a hard-only one. Adding this cell makes the profile axis separable at fixed difficulty, and it is the cheapest possible insurance against re-learning that lesson.
+
+The cost is real — a fourth combo is a third more wall clock per side — so if you must drop one for a change that plainly cannot interact with difficulty (a pure navigation or routing change, say), drop `Pro/hard` and keep this one, not the other way round.
+
+`report-balancing-ab.mjs` splits the comparison in two on purpose, and the split is the point:
+
+- **Guard metrics** — `qualifyRate` (from `trueQualifyingCount`, never the floored `qualifyingRunCount`) and a per-level **conditional** death rate, `died[i] / reached[i]`. Raw death counts don't compare across two runs with different reach: a level nobody got to has no deaths. These are attempt-level, so n=20 detects a 0%→72% swing instantly and nothing near 10pp — small guard movements are not readable at this sample size and must not be reported as if they were. Pre-registered rollback thresholds (in `abReport.mjs`, deliberately fixed in code rather than chosen after seeing the numbers): qualifyRate down >15pp, any level's conditional death rate up >20pp, or **any** increase in stuck count. A breach means revert, not tune. The CLI exits non-zero on a breach.
+- **Win metrics** — `enemyAccuracy`, `levelTimeSec`, `distanceTraveled`, `routeFollowingOverhead`, TTK, health, damage-by-source. Per-level-visit aggregates over hundreds of samples, so these do have real resolution at the same n. Note `routeEfficiencyScore` is marked `"flat"`, not `"up"`: see *Route efficiency is mostly not a bot metric* below.
+
+Passing guards means "not obviously worse", never "the change worked" — always read the win metrics against whatever the change was actually supposed to do. If a guard lands ambiguously (5–20pp worse), escalate that one combo to `ATTEMPT_CAP=60` before deciding; never ship on the ambiguous reading.
+
+One A/B side is roughly 4x `balancing:scan`'s wall clock, and a full gate is two of them — **confirm before launching one.**
+
+### Flip one constant, not one commit (`CODEENSTEIN_TELEMETRY_TUNING`)
+
+A JSON object deep-merged over `DEFAULT_TUNING` for every bot the run builds:
+
+```sh
+CODEENSTEIN_TELEMETRY_TUNING='{"NEAR_PI_HEADING_EPS":0}' node scripts/run-balancing-telemetry.mjs
+```
+
+This is how a behaviour A/B should be run whenever the change is gated by a constant. The alternative — a worktree at an older commit — makes the whole diff the thing under test rather than the one value, and worse, **a worktree predating the metric you want to read cannot emit it at all**. That is not hypothetical: the first attempt to grade the atan2 branch-cut fix stalled on exactly that, because the baseline commit had no anomaly tally in its output. With the override, both sides run the same binary and differ only by the value. Invalid JSON is a hard exit rather than a warning, since silently falling back to defaults would produce a baseline-vs-baseline comparison that looks like a real result.
+
+Behaviour changes that are gated on a constant expose one deliberately, so they stay A/B-able against the same binary rather than needing a worktree:
+
+| switch | `false` restores |
+|---|---|
+| `NAV_FULL_WASD` | standing still to turn whenever the heading error exceeds `MAX_WALK_WHILE_TURNING_RAD` |
+| `NAV_BACKPEDAL_RETREAT` | spinning to face away before fleeing at critical health |
+
+### Judging a bot-behaviour change: use `anomaly (ticks/1k dec)`
+
+With `CODEENSTEIN_TELEMETRY_ANOMALY_SCAN=1`, each combo's output carries an `anomalySummary` — per anomaly type, `findings`/`ticks` totals plus `findingsPerRun`, `ticksPerRun` and `ticksPerKiloDecision`. `report-balancing-ab.mjs` diffs the last of those.
+
+Two normalizations, both learned the hard way:
+
+- **Ticks, not findings.** `detectOscillation` counts *events*. A change that makes the bot cover less ground can trip *more* qualifying windows while behaving better — which is how the first oscillation fix got graded as a +9.6% regression and reverted on a number that didn't mean what it looked like.
+- **Per decision, not per run.** Even ticks-per-run is not exposure-independent. Measured on a real comparison: oscillation ticks/run fell 11.7% while `levelTimeSec` fell 7.7%, so most of the apparent win was simply less time on the level. `ticksPerKiloDecision` divides that out.
 
 ## Output shape
 
 `balancing_telemetry.json` (repo root, gitignored) holds a meta block (profile definitions), then per-level and campaign-wide aggregates across 7 categories (map density/demographics, combat pacing, AI effectiveness/danger, damage/healing breakdown, weapon efficiency, economy/loot starvation, navigation/map flow), plus deterministic outlier `flags` and per-profile `crossDifficultyFlags`. Judgment-call metrics carry a `{mean, max, min, samples}` spread rather than a bare mean, so a consumer (human or LLM) can see the actual distribution, not just a single number that might hide a bimodal split.
+
+Two raw fields were added 2026-07-27 because the derived ratios they already fed couldn't answer an A/B on their own. `combatPacing.levelTimeSec` — previously read only as `combatVsExplorationRatio`'s denominator and never emitted, which left the playtest bot's loudest failure mode (being far slower over a route than a human) with no output field at all; a ratio can't substitute, since a bot that is uniformly 2x slow reports an unchanged ratio. And `navigationMapFlow.distanceTraveled` — the raw counterpart to `routeEfficiencyScore`, which is `0` whenever `shortestPathTiles` is null and so can't distinguish "walked a tight route" from "the optimum was unknown". Together they separate "the bot got faster" (time down, distance flat) from "the bot took a shorter route" (both down).
+
+### Route efficiency is mostly not a bot metric (measured 2026-07-30)
+
+`navigationMapFlow.routeEfficiencyScore` sat at **0.345** on the demo campaign (Gamer/normal) and was being read as "the bot walks 3x further than it needs to". It does walk 2.9x the theoretical minimum, but only a minority of that is the bot's doing. Decomposed against the planned route and a new per-decision activity attribution (`summarizeActivityDistance` in `bot.mjs`, which charges every tile walked to the errand the bot was on at the time), the 2.9x is three near-independent factors multiplying to 2.97x:
+
+| factor | size | whose fault |
+|---|---|---|
+| planned route vs bare spawn→exit BFS | **1.68x** | level design — and *entirely* the two key/locked-door levels (demo 3 and 7, 3.7x and 3.5x). The other six plan within 5% of optimal. |
+| loot detours (24% of all distance walked) | **1.32x** | bot policy, and mostly justified — 63% of those tiles are ammo, 19% mandatory keys, and only 3.3% of them (0.8% of total distance) is provably wasted: a health pack grabbed at `hp=1.00`, where `MAX_HEALTH` caps the gain at nothing. |
+| actually following the plan | **1.30x** | the bot outright. 4.2% of distance is covered while engaged with a threat; ~1.2% of simulated time is the known atan2-branch-cut oscillation. Replan retries and the exit-gate fallback contribute **~0%** on these eight levels. |
+
+Two consequences, both now encoded in the code and in `WIN_METRICS`:
+
+- **`routeEfficiencyScore` is a poor A/B win metric for navigation changes** — it moves mostly with level layout and loot policy. It is marked `"flat"` in `abReport.mjs` rather than `"up"`.
+- **`navigationMapFlow.routeFollowingOverhead` is the metric to judge navigation on.** Distance ÷ the route the bot planned for *itself* (`staticAnalysis.plannedRouteTiles`), as a multiplier where 1.0 is a perfect walk; measured **1.71** distance-weighted across levels (the campaign rollup's per-run mean reads ~1.64). Level design divides out; loot stays in, deliberately, because detouring is the bot's own decision. `null` when the route failed to plan and for the campaign-wide rollup.
+
+`plannedRouteTiles` sums straight-line waypoint-to-waypoint distance, which is exact here rather than an approximation: `planRoute` emits one waypoint per tile, and a BFS re-measurement of the true walkable path agreed to the tile on all eight demo levels.
 
 Also, at the combo level (alongside `weaponFirstOwnedAtLevel`): `weaponFirstOwnedAtLevel` is a *min* across qualifying runs — it answers "how soon could this profile realistically get it", not "how often did any run get it at all". `weaponAcquisitionRate` (`{ [weaponIndex]: { count, rate } }`) answers the second question directly, for every unlockable weapon (gdb/ghidra/Friday Hotfix/Toolchain) uniformly — added 2026-07-15 specifically to verify Toolchain's new miss-chance acquisition path (see below) actually moves the needle, since the min-level metric alone can't distinguish "3% of runs get it, always around level 9" from "60% of runs get it, always around level 9".
 
@@ -153,7 +285,7 @@ The two are more different than they look at first glance, for one structural re
 |---|---|
 | `npm run balancing:telemetry-multiplayer` | Full combo sweep across every profile/difficulty/player-count (plus curated mixed-skill combos, see below), 2 qualifying runs per combo by default, writes `multiplayer_balancing_telemetry.json`. Real-time cost means this can run for a long while — scope it with the env vars below before trusting the unbounded default to finish quickly. One monolithic process: no incremental persistence, so a kill loses everything collected so far — see `balancing:campaign-multiplayer` below if that matters. |
 | `npm run balancing:scan-multiplayer` | Fast/cheap preset: `Casual`/`normal`/2p only, attempt cap 3, qualifying target 1, `disconnectIsolation` scenario disabled. The multiplayer pre-merge regression gate — mirrors single-player's `balancing:scan` role. |
-| `npm run balancing:campaign-multiplayer` | Resumable orchestrator (`scripts/run-balancing-campaign-multiplayer.mjs`) — spawns one OS process per combo (via the new `CODEENSTEIN_MP_TELEMETRY_COMBO_PROFILES` pin, see below), each writing its own file under `balancing_runs_multiplayer/`, shares `scripts/lib/laneOrchestrator.mjs` with `balancing:campaign`. See [Large-scale campaigns](#large-scale-campaigns-npm-run-balancingcampaign)/[SSH-host parallelism](#ssh-host-parallelism) above — same design, `CODEENSTEIN_MP_CAMPAIGN_*` env vars instead of `CODEENSTEIN_CAMPAIGN_*`, smaller defaults throughout (`_TARGET` 10, `_BATCH_SIZE` 2, `_ATTEMPT_CAP` 30, `_LANES` 1) given the much higher real-time cost per attempt. |
+| `npm run balancing:campaign-multiplayer` | Resumable orchestrator (`scripts/run-balancing-campaign-multiplayer.mjs`) — spawns one OS process per combo (via the new `CODEENSTEIN_MP_TELEMETRY_COMBO_PROFILES` pin, see below), each writing its own file under `balancing_runs_multiplayer/`, shares `scripts/lib/laneOrchestrator.mjs` with `balancing:campaign`. See [Large-scale campaigns](#large-scale-campaigns-npm-run-balancingcampaign)/[SSH-host parallelism](#ssh-host-parallelism) above — same design, `CODEENSTEIN_MP_CAMPAIGN_*` env vars instead of `CODEENSTEIN_CAMPAIGN_*`, smaller defaults throughout (`_TARGET` 10, `_BATCH_SIZE` 2, `_ATTEMPT_CAP` 30, `_LANES` 1, `_MAX_INVOCATIONS` 3) given the much higher real-time cost per attempt. |
 
 Both always start their **own isolated signaling + dev server pair** (`scripts/lib/multiplayerTestServers.mjs`, ports 8788/5174 — deliberately never 8787/5173, a developer's own manual session's default ports) rather than share whatever a developer's own dev session happens to be pointed at. The signaling server's rate limits are per-IP, not per-session (`multiplayer-balancing-telemetry-spec.md` §7) — running this tool's own traffic against a shared server risks tripping a budget sized for one human's manual testing. There's no `CODEENSTEIN_DEV_URL`-equivalent override for this reason: the isolated pair is always used.
 

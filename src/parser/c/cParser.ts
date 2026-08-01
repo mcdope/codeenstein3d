@@ -16,16 +16,20 @@ import cWasmUrl from "tree-sitter-c/tree-sitter-c.wasm?url";
 import { initTreeSitter } from "../runtime";
 import {
   codeSmellBonus,
+  countAllocations,
   countDecisionPoints,
   countLines,
   countParameters,
+  countTopLevelImports,
   extractLargeCommentsFromNodes,
   findCommentedOutCodeBlocksFromNodes,
   findDeadCodeAfterReturn,
   findDeprecationMarkers,
+  findExceptionZones,
   findMagicNumberBlobs,
   maxNestingDepth,
   resolveGotos,
+  summarizeSwitchBranches,
   type RawGotoRef,
 } from "../astUtils";
 import type { CodeEntity, CodeParserAdapter, EntityKind, ParsedFile } from "../types";
@@ -86,6 +90,40 @@ const NESTING_NODE_TYPES = new Set([
  * wins" heuristic for why this doesn't need to worry about nested closures. */
 const PARAMETER_LIST_NODE_TYPES = ["parameter_list"];
 
+/** C spells every switch branch — `default:` included — as `case_statement`,
+ * so the catch-all is told apart by its leading keyword rather than by node
+ * type (see `isDefaultBranch` in `astUtils.ts`). */
+const CASE_BRANCH_NODE_TYPES = ["case_statement"];
+const DEFAULT_BRANCH_NODE_TYPES = new Set<string>();
+const NON_SWITCH_BRANCH_ANCESTOR_NODE_TYPES = new Set<string>();
+
+/**
+ * Standard C has no exception construct at all — `seh_try_statement` and its
+ * clauses exist in this grammar only for MSVC's `__try`/`__except`/`__finally`
+ * extension, so in practice a C file yields zero Exception Handling Zones.
+ * Listed rather than omitted so the one file that does use SEH still works,
+ * and for the same reason `findEmptyCatchBlocks` is skipped above: the absence
+ * is a property of the language, not an oversight.
+ */
+const TRY_NODE_TYPES = ["seh_try_statement"];
+const CATCH_NODE_TYPES = new Set(["seh_except_clause"]);
+const FINALLY_NODE_TYPES = new Set(["seh_finally_clause"]);
+
+/** `#include` is C's only import construct. */
+const IMPORT_NODE_TYPES = ["preproc_include"];
+const CALL_SHAPED_IMPORT_NODE_TYPES: string[] = [];
+const CALL_IMPORT_PATTERN = /^$/;
+
+/** C has no `new`; every allocation is a call (`malloc`/`calloc`/…) or a large
+ * fixed-size array declarator. */
+const ALLOCATION_NODE_TYPES: string[] = [];
+const CALL_NODE_TYPES = ["call_expression"];
+const ALLOCATOR_NAME_PATTERN = /^((m|c|re|z|v|x)?alloc\w*|strn?dup|memalign|aligned_alloc|reallocarray)$/;
+const ARRAY_DECLARATOR_NODE_TYPES = ["array_declarator"];
+/** Element count at which a fixed-size array reads as a real allocation rather
+ * than an incidental local buffer — mirrors the generic vocabulary's value. */
+const LARGE_ARRAY_MIN_SIZE = 1024;
+
 export class CParserAdapter implements CodeParserAdapter {
   readonly language = "c";
   readonly extensions = ["c", "h"] as const;
@@ -126,6 +164,9 @@ export class CParserAdapter implements CodeParserAdapter {
         const smellBonus =
           kind === "function" ? codeSmellBonus(countParameters(node, PARAMETER_LIST_NODE_TYPES), nestingDepth) : 0;
 
+        const switchBranches = summarizeSwitchBranches(node, CASE_BRANCH_NODE_TYPES, DEFAULT_BRANCH_NODE_TYPES, NON_SWITCH_BRANCH_ANCESTOR_NODE_TYPES);
+        const allocations = countAllocations(node, ALLOCATION_NODE_TYPES, CALL_NODE_TYPES, ALLOCATOR_NAME_PATTERN, ARRAY_DECLARATOR_NODE_TYPES, LARGE_ARRAY_MIN_SIZE);
+
         entities.push({
           name,
           kind,
@@ -133,6 +174,10 @@ export class CParserAdapter implements CodeParserAdapter {
           endLine: node.endPosition.row + 1,
           complexityScore: 1 + countDecisionPoints(node, DECISION_NODE_TYPES, LOGICAL_OPERATORS) + smellBonus,
           nestingDepth,
+          // Absent rather than present-and-zero when there's nothing to report
+          // — see the same convention in `genericParser.ts`.
+          ...(switchBranches ? { switchBranches } : {}),
+          ...(allocations > 0 ? { allocations } : {}),
         });
       }
 
@@ -192,6 +237,8 @@ export class CParserAdapter implements CodeParserAdapter {
           ...findCommentedOutCodeBlocksFromNodes(commentNodes),
           ...findMagicNumberBlobs(tree.rootNode, STRING_LITERAL_NODE_TYPES, NUMBER_LITERAL_NODE_TYPES),
         ],
+        exceptionZones: findExceptionZones(tree.rootNode, TRY_NODE_TYPES, CATCH_NODE_TYPES, FINALLY_NODE_TYPES),
+        importCount: countTopLevelImports(tree.rootNode, IMPORT_NODE_TYPES, CALL_SHAPED_IMPORT_NODE_TYPES, CALL_IMPORT_PATTERN, BLOCK_NODE_TYPES),
       };
     } finally {
       tree.delete();

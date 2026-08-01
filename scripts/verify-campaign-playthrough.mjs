@@ -122,14 +122,14 @@ async function main() {
 
   const mainCSource = fs.readFileSync(path.join(CAMPAIGN_DIR, "main.c"), "utf8");
   const mainCParsed = await parseFile("main.c", mainCSource);
-  const mainCMap = generator.generate(mainCParsed, false, false, [3, 4, 5]);
+  const mainCMap = generator.generate(mainCParsed, { hasRocketLauncher: false, missingWeaponIndices: [3, 4, 5] });
   const pathToExit = bfsPath(mainCMap, mainCMap.spawn, mainCMap.exit);
   if (!pathToExit) throw new Error("main.c: no BFS path from spawn to exit — map generation may have changed");
   const waypointsToExit = pathToWaypoints(pathToExit);
 
   const stage02Source = fs.readFileSync(path.join(CAMPAIGN_DIR, "stage02_hazard.c"), "utf8");
   const stage02Parsed = await parseFile("stage02_hazard.c", stage02Source);
-  const stage02Map = generator.generate(stage02Parsed, false, false, [3, 4, 5]);
+  const stage02Map = generator.generate(stage02Parsed, { hasRocketLauncher: false, missingWeaponIndices: [3, 4, 5] });
   if (stage02Map.hazards.length === 0) throw new Error("stage02_hazard.c: no hazard tile to route the death test to");
   const hazardTarget = stage02Map.hazards[0];
   const pathToHazard = bfsPath(stage02Map, stage02Map.spawn, hazardTarget);

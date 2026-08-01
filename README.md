@@ -8,6 +8,18 @@ What if you could physically walk through your software architecture? **Codeenst
 
 Load anything from a massive Symfony enterprise project to low-level C code like `pam_usb` — then grab a shotgun and refactor your way through it.
 
+### Play it right now
+
+A hosted build runs at **[codeenstein3d.mcdope.org](https://codeenstein3d.mcdope.org)** — nothing to clone, install, or
+build. The **Demos** tab launches a bundled multi-language campaign that ships inside the app (no local files and no
+network needed), and the **GitHub** tab turns any public `owner/repo` into a dungeon over the network. Both work in any
+modern browser.
+
+Pointing the game at your *own* code is the one thing the hosted build can't do everywhere: reading a local folder uses
+the [File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/Window/showDirectoryPicker), which only
+Chromium-based browsers (Chrome, Edge, Brave) implement. Your source never leaves the machine either way — the parsing
+and level generation happen entirely in the browser, and nothing is uploaded anywhere.
+
 ### What in your code becomes what in the game
 
 | In your source code... | ...becomes this in-game |
@@ -21,6 +33,10 @@ Load anything from a massive Symfony enterprise project to low-level C code like
 | A `goto`/label pair | A pair of linked teleporter pads |
 | A large comment block | A lore terminal (press R to read) |
 | Dead code, empty catch blocks, deprecated tags, commented-out code, magic-number/blob literals | A secret room hidden behind a fake wall |
+| A `switch`/`match` with several cases | A **Switchboard** junction — one short dead-end spur per `case`, each behind a keyless amber door |
+| A `try`/`catch`/`finally` | An **Exception Handling Zone** — an acid gauntlet, a guaranteed health-and-armor alcove, then a safe loot room |
+| The `import`s at the top of a file (~1 per 4) | A **Vendor Depot** alcove in the spawn room's wall, stocked for the weapons you already carry |
+| A function that allocates heavily (`malloc`/`new`) | An **Acid Overflow** room that floods while you're inside it, until you kill the enemy that function spawned |
 | A header file (`.h`) | A bonus level (distinct teal theme, boosted loot) |
 
 See [How It Works](#how-it-works) below for the full detail behind each of these mappings.
@@ -92,7 +108,7 @@ Each stage only consumes the data structure from the previous stage — language
 
 ### Level Generation
 - **Functions → Enemies** whose HP equals `cyclomatic_complexity × 25`
-  - High complexity = more health, pack spawns, or a single elite boss (4× HP, gold tint, 2× damage)
+  - High complexity = more health, pack spawns, or a single elite boss (2× HP, gold tint, 2× damage)
   - Functions with code smells (more than 5 params, more than 3 nesting levels) get scaled bonus complexity
   
 - **Global variables → Acid pools** (hazard terrain)
@@ -105,6 +121,14 @@ Each stage only consumes the data structure from the previous stage — language
   
 - **Dead code, empty catches, deprecated tags, commented-out code, magic blobs → Secret rooms** (hidden behind near-invisible fake walls)
   
+- **`switch`/`match` → Switchboards** (a junction hub with one dead-end spur per `case`, each behind a keyless amber branch door — the second of the game's two door types)
+
+- **`try`/`catch`/`finally` → Exception Handling Zones** (acid gauntlet with traps, then guaranteed health *and* armor, then a safe loot room)
+
+- **Imports → Vendor Depots** (supply alcoves in the spawn room's wall, roughly one per four top-level imports)
+
+- **Allocation-heavy functions → Acid Overflow rooms** (the floor floods tile by tile, with an audible warning, until you kill that function's enemy)
+
 - **Headers (`.h` files) → Bonus levels** (distinct cool-teal theme, boosted loot)
 
 ### Enemy Behavior
@@ -298,7 +322,7 @@ npm run preview    # Serve production build locally
 ```
 demo-campaign/                # Bundled "Demos" showcase campaign (one level per parser language)
 docker/                       # Optional self-hosted multiplayer backend (signaling + TURN relay) — see docker/README.md
-scripts/                      # Node/Playwright verification + balancing-bot scripts; lib/bot.mjs holds the shared Bot class both generate-default-highscore.mjs and run-balancing-telemetry.mjs drive
+scripts/                      # Node/Playwright verification + balancing-bot scripts; lib/bot.mjs holds the shared Bot class both generate-default-highscore.mjs and run-balancing-telemetry.mjs drive, lib/combatPolicy.mjs its pure decision core, lib/profiles.mjs the skill tiers
 src/
 ├── main.ts                  # App entry: wires sidebar, parser, map, engine, HUD
 ├── difficulty.ts            # Difficulty multiplier tables (Easy/Normal/Hard)

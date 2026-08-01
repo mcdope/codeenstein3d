@@ -120,12 +120,30 @@ export interface TileMutation {
  * second either way — the outcome that matters (damage dealt) is already
  * captured by `players`/`enemies`.
  */
+/**
+ * Index-aligned with `GameMap.acidOverflows`, same stable-index reasoning as
+ * `EnemySnapshot`.
+ *
+ * `AcidOverflowState.applied` is deliberately excluded: it's a pure local
+ * derivation of these two fields plus `levelTime`, re-reconciled against the
+ * grid on the very next `updateAcidOverflows()` call — including *retracting*
+ * a tile a guest speculatively flooded. That's precisely why acid never rides
+ * `gridDelta`, which is additive-only and could never take a tile back. See
+ * `src/engine/acidOverflow.ts`.
+ */
+export interface AcidOverflowSnapshot {
+  index: number;
+  startedAt: number | null;
+  frozenTarget: number | null;
+}
+
 export interface ReconciliationSnapshot {
   tick: number;
   rngState: number;
   players: Record<PlayerId, PlayerSnapshot>;
   enemies: EnemySnapshot[];
   mines: MineSnapshot[];
+  acidOverflows: AcidOverflowSnapshot[];
   lootDrops: LootDropSnapshot[];
   /** Indices into `GameMap.ammoPickups` now collected. */
   pickupsCollected: number[];

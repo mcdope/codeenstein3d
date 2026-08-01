@@ -1,3 +1,8 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
 int initSubsystem(int flag) {
     if (!flag) {
         goto cleanup;
@@ -21,6 +26,19 @@ unsigned int computeChecksum(int a, int b) {
         }
     }
     return checksum;
+}
+
+int dispatchBootMode(int mode) {
+    switch (mode) {
+        case 0:
+            return initSubsystem(1);
+        case 1:
+            return initSubsystem(10);
+        case 2:
+            return initSubsystem(100);
+        default:
+            return 0;
+    }
 }
 
 int shutdownSubsystem(int code) {
