@@ -41,6 +41,7 @@
  * genuinely per-guest (`graceTimers`/`rosterRemovalsToApply`), not just
  * per-session, so one guest disconnecting can never affect another's.
  */
+import type { AmmoPools } from "../engine/ammo";
 import {
   REVIVE_HEALTH,
   type EngineCarryover,
@@ -170,7 +171,11 @@ export interface MultiplayerSessionHandle {
     healthFraction: number;
     swap: number;
     state: "playing" | "over";
-    ammo: { bullets: number; rockets: number; smg: number; gas: number };
+    // `AmmoPools`, not a spelled-out four-field literal: the producer is
+    // pool-agnostic (`{ ...local.ammo }`), so a hand-written shape here
+    // silently stops matching reality when a fifth pool is added — see
+    // `doc/dev/adding-a-weapon.md`.
+    ammo: AmmoPools;
     weaponIndex: number;
     meleeWouldHit: boolean;
     wouldMineHit: boolean;

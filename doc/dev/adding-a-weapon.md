@@ -63,7 +63,7 @@ Same file. Add `<NAME>_WEAPON_INDEX`, then decide membership:
 - `src/engine/lootApply.ts` — `grantOrTopUpWeapon` (grant, or top up ammo if already owned — note it only equips non-melee weapons), and `dropEliteLoot`/`rollMissChanceToolchain`, which is where Toolchain's non-`UNLOCKABLE_WEAPONS` paths live. A bespoke acquisition rule goes here.
 - `src/main.ts` — `FORCED_UNLOCK_LEVELS` (the level-4/8/12 safety net; add a row only if the weapon should be guaranteed) and `computeMissingWeaponIndices`, which is what feeds secret-room weapon slots.
 - `src/map/generation/secretRooms.ts` consumes that as `missingWeaponIndices`, an **opaque list of numbers**. This is deliberate and load-bearing: the map layer must never import engine weapon concepts (see [Architecture](architecture.md#why-difficultyts-and-prngts-live-at-src-root)). Keep it opaque — resist the urge to pass a `Weapon` or an index constant down there.
-- Three scripts hardcode that list as `missingWeaponIndices: [3, 4, 5]` — `scripts/verify-campaign-playthrough.mjs`, `scripts/verify-demo-campaign.mjs`, `scripts/run-balancing-telemetry.mjs`. They stop exercising a new unlockable weapon until updated.
+- Three scripts feed the generator that same list — `scripts/verify-campaign-playthrough.mjs`, `scripts/verify-demo-campaign.mjs`, `scripts/run-balancing-telemetry.mjs`. All three used to hardcode `[3, 4, 5]` and silently stopped exercising any weapon added after that; they now destructure the real `UNLOCKABLE_WEAPONS` out of `loadEngineModules()`, which bundles `src/engine/weapons.ts` for Node. **Nothing to update here** — but don't reintroduce a literal.
 
 **What breaks if skipped:** the weapon never appears in a real run, and the verify/telemetry scripts keep reporting green about an arsenal that no longer matches the game.
 
@@ -83,9 +83,11 @@ Same file. Add `<NAME>_WEAPON_INDEX`, then decide membership:
 | `src/engine/engine.ts` | `EngineStats`' per-pool fields (hand-written, not `AmmoPools`) |
 | `src/main.ts` | the campaign save shape, carryover, and the stats plumbing between them |
 | `src/map/mapGenerator.ts` | a `has<Pool>` generation option, defaulted, threaded to `vendorDepots.ts` (and `pickups.ts`/`secretRooms.ts`/`exceptionZones.ts` if the pool should appear there) |
-| `src/engine/reconciliationSnapshot.ts`, `src/multiplayer/multiplayerSessionHost.ts` | the wire ammo shapes, both spelled out field by field as `{ bullets; rockets; smg; gas }` rather than reusing `AmmoPools` |
+| `src/engine/reconciliationSnapshot.ts`, `src/multiplayer/multiplayerSessionHost.ts` | **nothing** — both now declare `ammo: AmmoPools` |
 
-Those last two are worth a warning: they are populated by spreading a real `AmmoPools` (`ammo: { ...p.ammo }`), and a spread inside an object literal is **not** subject to TypeScript's excess-property check — verified directly, not assumed. So a fifth pool compiles clean and is simply dropped on the wire, desyncing that pool between peers.
+Those last two used to spell the shape out field by field as `{ bullets; rockets; smg; gas }`, and are worth understanding rather than just noting as fixed. They are populated by spreading a real `AmmoPools` (`ammo: { ...p.ammo }`), and a spread inside an object literal is **not** subject to TypeScript's excess-property check — verified directly, not assumed — so a fifth pool compiled clean against the old four-field type.
+
+It would *not*, however, have been dropped on the wire: the producer spreads every property and the consumer applies them with `Object.assign(p.ammo, ps.ammo)`, with no field-by-field sanitizer in between, so the extra pool travelled fine at runtime. The defect was purely that the declared type stopped describing the value — every *typed* reader would have been blind to the new pool while the data was sitting right there. Both now say `AmmoPools`, so the type follows the pools automatically.
 
 **What breaks if skipped:** partially — a pool that exists but never drops, or drops and never displays, or displays and is silently worth zero score. The compiler catches the `sprites.ts` case and nothing else here.
 
@@ -172,4 +174,4 @@ Worth internalising, because it predicts which mistakes you'll actually make:
 
 **Tests catch** — the `fireIntervalSec` invariant, `UNLOCKABLE_WEAPONS`' exact membership, `NUMBER_KEY_WEAPONS`' completeness, and (indirectly, via `PROFILES_HASH`) a bot-profile change without a highscore regeneration.
 
-**Nothing catches** — `audio.ts`'s `playShoot` (a `void` switch with no `default`), `viewmodel.ts`'s `drawWeapon` default case, `loot.ts`'s weight tables, `hud.ts`'s ammo chain, `scoring.ts`'s `/ 4`, the spread-populated wire ammo shapes, every hardcoded `[3, 4, 5]` in `scripts/`, and the entire `combatPolicy.mjs`/`profiles.mjs` bot mirror. That last group is the whole reason this document exists.
+**Nothing catches** — `audio.ts`'s `playShoot` (a `void` switch with no `default`), `viewmodel.ts`'s `drawWeapon` default case, `loot.ts`'s weight tables, `hud.ts`'s ammo chain, `scoring.ts`'s `/ 4`, and the entire `combatPolicy.mjs`/`profiles.mjs` bot mirror. That last one is the whole reason this document exists. (The wire ammo shapes and the `[3, 4, 5]` literals in `scripts/` used to be in this list; both were fixed rather than documented, by reusing `AmmoPools` and the real `UNLOCKABLE_WEAPONS` respectively.)

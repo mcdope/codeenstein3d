@@ -70,7 +70,7 @@ function packSizeHistogram(enemies) {
 }
 
 async function main() {
-  const { parseFile, extensionOf, MapGenerator } = await loadEngineModules();
+  const { parseFile, extensionOf, MapGenerator, UNLOCKABLE_WEAPONS } = await loadEngineModules();
   const generator = new MapGenerator();
 
   const filenames = campaignOrder(fs.readdirSync(CAMPAIGN_DIR).filter((f) => fs.statSync(path.join(CAMPAIGN_DIR, f)).isFile()));
@@ -114,7 +114,7 @@ async function main() {
     // what the generator *can* produce, not a simulation of one real run's
     // weapon ownership (which is also why `missingWeaponIndices` lists the
     // same weapons).
-    const map = generator.generate(parsed, { bonusLevel, hasRocketLauncher: false, missingWeaponIndices: [3, 4, 5], hasSmg: true, hasGas: true });
+    const map = generator.generate(parsed, { bonusLevel, hasRocketLauncher: false, missingWeaponIndices: UNLOCKABLE_WEAPONS, hasSmg: true, hasGas: true });
 
     coverage.languagesSeen.add(parsed.language);
     if (bonusLevel) coverage.bonusLevelCount += 1;

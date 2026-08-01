@@ -185,7 +185,7 @@ const CROSS_DIFFICULTY_FLAT_THRESHOLD = 0.15; // relative change below this = "b
  * duplicating this. */
 export async function planLevels() {
   console.log("Loading engine modules + planning routes in Node...");
-  const { parseFile, extensionOf, MapGenerator } = await loadEngineModules();
+  const { parseFile, extensionOf, MapGenerator, UNLOCKABLE_WEAPONS } = await loadEngineModules();
   const generator = new MapGenerator();
 
   const filenames = fs
@@ -203,7 +203,7 @@ export async function planLevels() {
       continue;
     }
     const bonusLevel = extensionOf(filename) === "h";
-    const map = generator.generate(parsed, { bonusLevel, hasRocketLauncher: false, missingWeaponIndices: [3, 4, 5] });
+    const map = generator.generate(parsed, { bonusLevel, hasRocketLauncher: false, missingWeaponIndices: UNLOCKABLE_WEAPONS });
     const routePlain = planRoute(map);
     const staticAnalysis = analyzeStaticLevel(map, routePlain);
     levelPlans.push({ filename, filePath: `${CAMPAIGN_NAME}/${filename}`, map, routePlain, staticAnalysis });
