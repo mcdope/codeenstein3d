@@ -149,7 +149,7 @@ So don't rely on concurrency to produce a denominator. Set **`CODEENSTEIN_TELEME
 Run once per side, then diff:
 
 ```sh
-for combo in "Casual normal" "Gamer normal" "Pro hard"; do
+for combo in "Casual normal" "Gamer normal" "Pro hard" "Pro normal"; do
   set -- $combo
   CODEENSTEIN_TELEMETRY_PROFILE=$1 CODEENSTEIN_TELEMETRY_DIFFICULTY=$2 \
   CODEENSTEIN_TELEMETRY_LEVEL_LIMIT=8 CODEENSTEIN_TELEMETRY_ATTEMPT_CAP=20 \
@@ -162,7 +162,11 @@ done
 node scripts/report-balancing-ab.mjs ab/base ab/cand   # dirs or single files
 ```
 
-The three combos are not arbitrary: **Casual/normal** is the combo the 72% regression showed up on, **Gamer/normal** is where most quoted telemetry numbers come from, and **Pro/hard** is where `enemyAimSpreadDeg = 0` (perfect enemy aim) makes any dodging/movement change matter most.
+The four combos are not arbitrary: **Casual/normal** is the combo the 72% regression showed up on, **Gamer/normal** is where most quoted telemetry numbers come from, and **Pro/hard** is where `enemyAimSpreadDeg = 0` (perfect enemy aim) makes any dodging/movement change matter most.
+
+**Pro/normal** is the fourth for a reason worth stating, because it is the kind of gap that stays invisible until it costs a day. A profile and a difficulty are independent axes, and running Pro *only* on hard leaves every Pro-specific behaviour untested at normal's enemy aim and damage. That is exactly what happened on 2026-07-31: a reproducible ~22s freeze at a fixed tile on level 1, hitting roughly 40% of Pro/normal attempts, survived a full day of A/Bs because no side of any A/B ran that cell — it only surfaced in the wider `balancing:scan`, which does sweep every profile. Two of the three combos above are `normal` and the third changes *both* axes at once, so `Pro` and `hard` were confounded: any Pro-only regression was indistinguishable from a hard-only one. Adding this cell makes the profile axis separable at fixed difficulty, and it is the cheapest possible insurance against re-learning that lesson.
+
+The cost is real — a fourth combo is a third more wall clock per side — so if you must drop one for a change that plainly cannot interact with difficulty (a pure navigation or routing change, say), drop `Pro/hard` and keep this one, not the other way round.
 
 `report-balancing-ab.mjs` splits the comparison in two on purpose, and the split is the point:
 
