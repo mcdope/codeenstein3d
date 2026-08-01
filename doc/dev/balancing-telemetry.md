@@ -72,6 +72,17 @@ The bot-behavior logic (navigation, combat, hazard/mine handling, loot detours �
   - `minPhaseMs` is a floor, and it is the reason multiplayer can't be hurt by this mechanism: a phase shorter than the lockstep input delay never lands before the next is issued, so `MultiplayerBot` sets it to `MIN_DECISION_MS` and any decision that would split below it collapses back to a single phase — exactly the behaviour it already had.
   - `dispatchSegment` (not `applyAction`) is now the override point for a non-Playwright control surface. `MultiplayerBot` used to reimplement all of `applyAction`; the timing bugs its doc comment catalogues all trace to those two copies drifting apart.
 - `scripts/lib/pathfind.mjs` and `scripts/lib/routePlanner.mjs` are unaffected by any of this — they were already clean, reusable, stateless modules `bot.mjs` imports.
+- **⚠️ The bot keeps three hand-maintained copies of `isWall()`, and adding a `Tile` value silently breaks all three.** `player.ts`'s `isWall()` is the engine's single source of truth for solidity, but `scripts/lib/` is plain `.mjs` that cannot import it, so the tile sets are duplicated as literals:
+
+  | Module | Constant | Contents |
+  |---|---|---|
+  | `pathfind.mjs` | `BLOCKED_TILES` | `{1, 3, 6, 7, 8}` |
+  | `routePlanner.mjs` | `HARD_BLOCK_TILES` | `{1, 3, 6, 7, BRANCH_DOOR_TILE, TELEPORTER_TILE}` |
+  | `combatPolicy.mjs` | `STRAFE_BLOCKED_TILES` | `{1, 3, 6, 7, 8}` |
+
+  Note they are **not identical** — `routePlanner`'s also blocks teleporters, deliberately — so this cannot be collapsed to one constant without thought. The failure mode is what makes it dangerous: a `Set` lookup for an unknown tile value returns `false`, so a newly added solid tile is treated as **ordinary walkable floor** by every bot script. No error, no crash — the bot simply plans routes through it and wedges against a wall it believes is open. Nothing catches this: `scripts/**` is excluded from the coverage denominator, the files are not type-checked, and `balancing:scan` only reports the *symptom* (a stall) with no hint at the cause. This shipped once already, on `BRANCH_DOOR_TILE = 8`.
+
+  **When adding a `Tile` value to `src/map/types.ts`, grep `scripts/lib/` for the neighbouring tile numbers and decide each set explicitly.** The engine-side touchpoints (`isWall`, the renderer, the automap/minimap colouring) are at least type-adjacent; these three are not.
 - **`scripts/lib/abReport.mjs`** holds the pure baseline-vs-candidate comparison helpers behind `scripts/report-balancing-ab.mjs` — see [Matched-scale verification](#matched-scale-verification). It has a colocated `abReport.test.mjs`: `scripts/**` is excluded from the `src/` coverage *denominator* but is still executed by `vitest run`, so a test placed here does run in CI, exactly like `scripts/multiplayer-server.test.mjs`. That is the only automated coverage anything in `scripts/lib/` has, and it's worth extending as more of this library becomes pure functions.
 
 ## Env var reference
