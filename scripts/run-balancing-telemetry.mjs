@@ -225,11 +225,6 @@ export const PROFILES = {
     weaponPriority: [PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, GDB_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX, GHIDRA_WEAPON_INDEX],
     healthDetourThreshold: 0.75,
     proactiveMineDisarm: true,
-    // Never starts a fight it wasn't already in. A casual player reacts to
-    // what shoots at them rather than clearing rooms deliberately, and this
-    // is the profile the 72%% level-2 death regression showed up on — the
-    // one whose survival margin is thinnest and least worth spending.
-    preemptiveEngage: false,
     // Same "more hesitant with a self-splash launcher" reasoning as the
     // weaponPriority ordering above, applied to situational cluster-
     // targeting too (see `pickRangedWeapon` in bot.mjs) — sticks to the
@@ -260,10 +255,6 @@ export const PROFILES = {
     weaponPriority: [GDB_WEAPON_INDEX, PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX, GHIDRA_WEAPON_INDEX],
     healthDetourThreshold: 0.5,
     proactiveMineDisarm: true,
-    // Opportunistic but not systematic: engages what it is already walking
-    // toward and can see, which is what an experienced player does without
-    // deliberately sweeping.
-    preemptiveEngage: true,
     rocketForDistantClusters: true,
     // Aggressive: spends the reserve to end fights sooner — the same streak
     // as its 160ms trigger and 0.5 healthDetourThreshold.
@@ -285,11 +276,6 @@ export const PROFILES = {
     weaponPriority: [GHIDRA_WEAPON_INDEX, GDB_WEAPON_INDEX, PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX],
     healthDetourThreshold: 0.25,
     proactiveMineDisarm: true,
-    // Shoots first. Inside the engine's own aggro radius with line of sight
-    // the fight is happening either way (see `ENGINE_AGGRO_RADIUS`), and
-    // taking the opening shot is the single clearest thing separating a
-    // skilled player from a reactive one.
-    preemptiveEngage: true,
     rocketForDistantClusters: true,
     // Exchange rate between "kill it faster" and "still have ammo later", used
     // by `scoreRangedWeapon`. Pro sits between the other two: it optimises the

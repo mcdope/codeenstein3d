@@ -226,20 +226,6 @@ export const DEFAULT_TUNING = {
   // hazard-free route exists. Single-variable switch, as above:
   //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_HAZARD_ROUTE_FALLBACK":false}'
   BOT_HAZARD_ROUTE_FALLBACK: true,
-  // Whether `pickThreat` may engage an enemy that has not aggroed yet. Same
-  // single-variable switch shape:
-  //   CODEENSTEIN_TELEMETRY_TUNING='{"PREEMPTIVE_ENGAGE":false}'
-  // Also gated per profile (`preemptiveEngage`), so this only turns the whole
-  // behaviour off for an A/B baseline.
-  PREEMPTIVE_ENGAGE: true,
-  // Mirrors `AGGRO_RADIUS` in `src/engine/enemyAi.ts`, where the engine's own
-  // rule is `d < AGGRO_RADIUS && hasLineOfSight(enemy -> player)`. It is the
-  // radius at which an enemy notices the player *by itself*, which is the
-  // whole justification for pre-emptive engagement: inside it, with line of
-  // sight, the fight was going to happen anyway and the only question is who
-  // shoots first. Deliberately not `profile.engageRadius` (9.5) — that answers
-  // "can I reach it", a much weaker claim.
-  ENGINE_AGGRO_RADIUS: 7.5,
   // Once stuck realigning on the same mine this many ticks, force a shot at
   // the current best-effort alignment instead of freezing until the much
   // later full give-up — see `decide`'s mine-realignment comment.
@@ -720,107 +706,13 @@ export function combatStrafeKey(ticks, map, player, travelDist, levelTime, { tun
  * implementation's stability guarantee for it is the kind of thing that
  * silently stops being true.
  */
-/**
- * Tiles within `maxSteps` of `from`, as a `"x,y"` -> step-count map.
- *
- * A 4-connected BFS across the *current* grid, so a wall, a closed door or an
- * unopened secret costs what walking around it really costs. Bounded by
- * `maxSteps` rather than flooding the level: the callers only ever ask "is
- * this within N tiles", and at `ENGINE_AGGRO_RADIUS` the flood is under ~200
- * tiles, which is why this can run inside a decision.
- *
- * `STRAFE_BLOCKED_TILES` is the right set here even though the bot can open
- * doors: a closed door also blocks line of sight, so an enemy behind one
- * cannot aggro through it either, and treating it as solid keeps this
- * measuring "how far away is it *now*".
- */
-/** 4-connected neighbour offsets, matching `pathfind.mjs`'s own BFS. */
-const ORTHOGONAL_STEPS = [
-  [1, 0],
-  [-1, 0],
-  [0, 1],
-  [0, -1],
-];
-
-export function walkingStepsWithin(map, from, maxSteps) {
-  const start = { x: Math.floor(from.x), y: Math.floor(from.y) };
-  const field = new Map([[`${start.x},${start.y}`, 0]]);
-  let frontier = [start];
-  for (let step = 1; step <= maxSteps && frontier.length > 0; step++) {
-    const next = [];
-    for (const p of frontier) {
-      for (const [dx, dy] of ORTHOGONAL_STEPS) {
-        const nx = p.x + dx;
-        const ny = p.y + dy;
-        const key = `${nx},${ny}`;
-        if (field.has(key)) continue;
-        const tile = map.grid[ny]?.[nx];
-        if (tile === undefined || STRAFE_BLOCKED_TILES.has(tile)) continue;
-        field.set(key, step);
-        next.push({ x: nx, y: ny });
-      }
-    }
-    frontier = next;
-  }
-  return field;
-}
-
-/**
- * Enemies that have not aggroed yet but are worth starting a fight with.
- *
- * The rule mirrors the engine's own (`AGGRO_RADIUS` + line of sight,
- * `enemyAi.ts`): inside that, the enemy notices the player unprompted, so
- * engaging first only decides who gets the opening shot rather than adding a
- * fight that wasn't going to happen. That is the entire justification, and it
- * is why the radius is the engine's 7.5 and not `profile.engageRadius` (9.5),
- * which merely means "reachable".
- *
- * Two gates on top of it, both load-bearing:
- *
- * - **Forward hemisphere.** Turning around to shoot something behind you
- *   abandons the route and hands the initiative away for the duration of the
- *   turn.
- * - **Walking distance, not straight-line.** This is the crux of the stage.
- *   Line of sight plus a short straight line still admits an enemy across a
- *   gap you would have to walk 25 tiles around — a balcony, a pit, the far
- *   side of an acid channel. Engaging that is exactly the "runs a long
- *   corridor for an enemy that had no chance of reaching me" failure this was
- *   required not to do. The straight-line check stays as a *prefilter* only,
- *   which is safe because straight-line distance is never greater than
- *   walking distance, so it can only admit candidates the BFS then rejects —
- *   never reject one it should have kept.
- *
- * The BFS runs at most once per call, and only when something survives the
- * cheap gates.
- */
-function preemptiveTargets(enemies, player, map, tuning) {
-  const radius = tuning.ENGINE_AGGRO_RADIUS;
-  const shortlist = enemies.filter((e) => {
-    if (!e.alive || e.aggroed) return false;
-    const dx = e.x - player.x;
-    const dy = e.y - player.y;
-    if (Math.hypot(dx, dy) > radius) return false;
-    if (dx * player.dirX + dy * player.dirY <= 0) return false;
-    return hasLineOfSight(map, player.x, player.y, e.x, e.y);
-  });
-  if (shortlist.length === 0) return [];
-  const field = walkingStepsWithin(map, player, Math.ceil(radius));
-  return shortlist.filter((e) => {
-    const steps = field.get(`${Math.floor(e.x)},${Math.floor(e.y)}`);
-    return steps !== undefined && steps <= radius;
-  });
-}
-
 export function pickThreat(enemies, player, profile, map, tuning = DEFAULT_TUNING) {
   // `i` is the enemy's index in the engine's own `this.enemies` array
   // (stable for a whole level) — used by `decide` to recognize "same
   // enemy as last tick" for the last-visible-position freeze.
-  const indexed = enemies.map((e, i) => ({ ...e, i }));
-  const engageable =
-    tuning.PREEMPTIVE_ENGAGE && profile.preemptiveEngage && map
-      ? [...indexed.filter((e) => e.alive && e.aggroed), ...preemptiveTargets(indexed, player, map, tuning)]
-      : indexed.filter((e) => e.alive && e.aggroed);
-  const candidates = engageable
+  const candidates = enemies
+    .map((e, i) => ({ ...e, i }))
+    .filter((e) => e.alive && e.aggroed)
     .map((e) => ({
       ...e,
       dist: Math.hypot(e.x - player.x, e.y - player.y),
@@ -828,13 +720,6 @@ export function pickThreat(enemies, player, profile, map, tuning = DEFAULT_TUNIN
     }))
     .filter((e) => e.dist < profile.engageRadius);
   candidates.sort((a, b) => {
-    // An enemy already shooting at you outranks any opportunity, whatever the
-    // opportunity's distance or how quickly it would die. Without this, a
-    // passing Edge Case that hasn't noticed the player could pull the bot off
-    // the enemy currently doing it damage — the one way pre-emptive
-    // engagement could make an ongoing fight worse rather than just adding
-    // one.
-    if (a.aggroed !== b.aggroed) return a.aggroed ? -1 : 1;
     const aQuick = a.dist <= tuning.MELEE_RANGE || a.edgeCase;
     const bQuick = b.dist <= tuning.MELEE_RANGE || b.edgeCase;
     if (aQuick !== bQuick) return aQuick ? -1 : 1;
