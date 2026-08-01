@@ -419,11 +419,12 @@ async function writeDefaultHighscoreFile(entries) {
  * \`PROFILES_HASH\` below is what closes that: \`scripts/lib/profiles.test.mjs\`
  * recomputes it from the live profiles and fails when the two diverge.
  *
- * The entries are stored gzip+base64-encoded (\`gz1:\` prefix, same scheme as
- * \`storageCompression.ts\`'s \`compressForStorage\`) rather than as a plain
- * array literal — see \`writeDefaultHighscoreFile\` in the generator script
- * for why (~350x smaller, and far cheaper for a bundler to parse).
- * \`loadHighscoresForDisplay\` (\`./highscores.ts\`) decodes it at read time.
+ * The entries are stored binary-frame-packed, then gzipped and base64'd
+ * (\`bin1:\` prefix — see \`replayCodec.ts\`) rather than as a plain array
+ * literal — see \`writeDefaultHighscoreFile\` in the generator script for why
+ * (~350x smaller, and far cheaper for a bundler to parse).
+ * \`loadHighscoresForDisplay\` (\`./highscores.ts\`) decodes it at read time via
+ * \`readBoard\`, which also still accepts the older \`gz1:\` and bare-JSON forms.
  */
 
 /** Fingerprint of the bot profiles these runs were played by, at generation
@@ -432,8 +433,7 @@ async function writeDefaultHighscoreFile(entries) {
 export const PROFILES_HASH = "${profilesHash()}";
 
 /** \`HighscoreEntry[]\`, binary-frame-packed + gzip + base64 — decode with
- * \`unpackBoardFromStorage\` from \`./replayCodec\` (which is what
- * \`loadHighscoresForDisplay\`'s \`readBoard\` already does). */
+ * \`unpackBoardFromStorage\` from \`./replayCodec\`. */
 export const DEFAULT_HIGHSCORE_ENTRIES_COMPRESSED = "${packed}";
 `;
   fs.writeFileSync(OUTPUT_FILE, header);
