@@ -15,7 +15,8 @@
  */
 
 import type { ReplayPayload } from "./replay";
-import { compressForStorage, decompressFromStorage } from "./storageCompression";
+import { isBinaryBoard, packBoardForStorage, unpackBoardFromStorage } from "./replayCodec";
+import { decompressFromStorage } from "./storageCompression";
 
 const HIGHSCORE_KEY = "codeenstein-highscores";
 /** Only the best `MAX_ENTRIES` runs are kept — a top-10 board, not a full log. */
@@ -89,6 +90,19 @@ export function truncateHash(hash: string): string {
   return hash.slice(0, DISPLAY_HASH_LENGTH);
 }
 
+/**
+ * Decode a stored board, whichever of the three forms it's in: the current
+ * `bin1:` binary frame packing (`replayCodec.ts`), the older `gz1:`
+ * gzip+base64 JSON, or bare JSON from before either existed. Read-side
+ * compatibility is the whole point — a player who opens a new build must not
+ * lose the board they already had, and nothing rewrites it until their next
+ * qualifying run saves in the newer form.
+ */
+async function readBoard(raw: string): Promise<unknown[]> {
+  if (isBinaryBoard(raw)) return unpackBoardFromStorage(raw);
+  return decompressFromStorage<unknown[]>(raw);
+}
+
 /** The current top-10 board, best score first; `[]` on any missing/corrupt
  * storage or if it's unavailable (e.g. private browsing) — a broken/absent
  * board should never crash the app, same philosophy as the campaign save. */
@@ -96,7 +110,7 @@ export async function loadHighscores(): Promise<HighscoreEntry[]> {
   try {
     const raw = localStorage.getItem(HIGHSCORE_KEY);
     if (!raw) return [];
-    const parsed = await decompressFromStorage<unknown[]>(raw);
+    const parsed = await readBoard(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed.filter(isHighscoreEntry);
   } catch {
@@ -115,19 +129,19 @@ export async function loadHighscores(): Promise<HighscoreEntry[]> {
  * it permanently "sticky"). Imported dynamically, not statically, since the
  * shipped entries embed full replay frame data that only ever needs to be
  * fetched once someone actually opens this dialog with an empty board — not
- * on every page load. The module itself is a single `gz1:`-prefixed
- * gzip+base64 string (same scheme `compressForStorage` uses), not a plain
- * array literal — a qualifying bot run's replay is highly repetitive JSON
- * that gzips ~100x smaller, and just as importantly, parsing one big string
- * literal is trivial compared to parsing tens of thousands of array-literal
- * objects (the latter measurably slowed dev-server/build transforms and
- * blew up test-runner memory once bot runs started surviving deep into the
+ * on every page load. The module itself is a single prefixed, compressed
+ * string (`bin1:`, decoded by the same `readBoard` a stored board goes
+ * through), not a plain array literal — a qualifying bot run's replay
+ * compresses ~350x, and just as importantly, parsing one big string literal
+ * is trivial compared to parsing tens of thousands of array-literal objects
+ * (the latter measurably slowed dev-server/build transforms and blew up
+ * test-runner memory once bot runs started surviving deep into the
  * campaign). */
 export async function loadHighscoresForDisplay(): Promise<HighscoreEntry[]> {
   const real = await loadHighscores();
   if (real.length > 0) return real;
   const { DEFAULT_HIGHSCORE_ENTRIES_COMPRESSED } = await import("./defaultHighscore");
-  return decompressFromStorage<HighscoreEntry[]>(DEFAULT_HIGHSCORE_ENTRIES_COMPRESSED);
+  return (await readBoard(DEFAULT_HIGHSCORE_ENTRIES_COMPRESSED)) as HighscoreEntry[];
 }
 
 /** Insert `entry` into the board, keep it sorted best-first, truncate to the
@@ -162,7 +176,7 @@ export async function recordHighscore(entry: HighscoreEntry): Promise<HighscoreE
 
 async function trySave(board: HighscoreEntry[]): Promise<boolean> {
   try {
-    localStorage.setItem(HIGHSCORE_KEY, await compressForStorage(board));
+    localStorage.setItem(HIGHSCORE_KEY, await packBoardForStorage(board));
     return true;
   } catch {
     return false;

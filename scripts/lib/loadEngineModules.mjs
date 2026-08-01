@@ -53,8 +53,19 @@ function urlImportAsPathPlugin() {
 
 /**
  * Bundles the real parser registry + map generator for plain Node and
- * imports the result. Returns
- * `{ parseFile, extensionOf, MapGenerator, UNLOCKABLE_WEAPONS }`.
+ * imports the result. Returns `{ parseFile, extensionOf, MapGenerator,
+ * UNLOCKABLE_WEAPONS, packBoardForStorage, unpackBoardFromStorage,
+ * isBinaryBoard }`.
+ *
+ * The replay codec is bundled here for the same reason as
+ * `UNLOCKABLE_WEAPONS`: `generate-default-highscore.mjs` has to read the
+ * board the browser just wrote to `localStorage` and write the shipped
+ * `defaultHighscore.ts` in the same format the game reads back. Hand-porting
+ * a binary frame codec into plain `.mjs` would be a second implementation
+ * that silently disagrees with the first the moment either changes — the
+ * exact failure mode documented for the bot's weapon/tile mirrors in
+ * `doc/dev/balancing-telemetry.md`. `CompressionStream` is available in Node
+ * 18+, so the real module runs unmodified here.
  *
  * `UNLOCKABLE_WEAPONS` comes from the real `src/engine/weapons.ts` rather
  * than being mirrored as a literal the way `scripts/lib/combatPolicy.mjs`
@@ -71,11 +82,13 @@ export async function loadEngineModules() {
   const registryPath = path.join(REPO_ROOT, "src/parser/registry.ts");
   const mapGeneratorPath = path.join(REPO_ROOT, "src/map/mapGenerator.ts");
   const weaponsPath = path.join(REPO_ROOT, "src/engine/weapons.ts");
+  const replayCodecPath = path.join(REPO_ROOT, "src/engine/replayCodec.ts");
 
   const entryContents = [
     `export { parseFile, extensionOf } from ${JSON.stringify(registryPath)};`,
     `export { MapGenerator } from ${JSON.stringify(mapGeneratorPath)};`,
     `export { UNLOCKABLE_WEAPONS } from ${JSON.stringify(weaponsPath)};`,
+    `export { packBoardForStorage, unpackBoardFromStorage, isBinaryBoard } from ${JSON.stringify(replayCodecPath)};`,
   ].join("\n");
 
   const result = await build({
