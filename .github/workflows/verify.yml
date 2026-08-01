@@ -210,9 +210,30 @@ jobs:
   # doc/dev/testing.md's cross-browser section) — reasoned before the host
   # was made invulnerable/combat-avoidant, worth re-checking separately from
   # this job-structure change, not as part of it.
+  #
+  # NON-BLOCKING (2026-08-01, user decision). This job drives a real bot
+  # through a real generated level for multiple minutes, and its own success
+  # depends on that bot completing a navigation it is not guaranteed to
+  # complete: the gameplay seed is `randomSeed()`, so enemy AI timing, loot
+  # rolls and weapon spread differ every run, and level 1's final approach is
+  # not reproducible run to run. It fails intermittently *on master* with a
+  # stable signature — `host got stuck on the final approach to the exit:
+  # {"state":"playing","reason":"stuck"}` plus `host-final-approach level 1`
+  # stall anomalies — e.g. master 32cad86a failed while 3ae97a8d and f801983e
+  # either side of it passed, with no relevant change between them.
+  #
+  # It stays in CI rather than being deleted: when it *does* pass it exercises
+  # a full real host-navigates-and-transitions session end to end, which
+  # nothing else covers. But it no longer gates a run, because a red mark that
+  # is as often the bot's luck as a real regression trains everyone to ignore
+  # the whole check list. The behaviour it nominally guards is covered by unit
+  # tests and has been playtested. Treat a failure here as "worth a look",
+  # never as "this branch is broken" — and confirm against master before
+  # attributing one to a change.
   verify-multiplayer-transition:
     name: verify (multiplayer-transition)
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
