@@ -156,7 +156,11 @@ const TELEPORT_REPLAN_LIMIT = 4;
 // `scripts/lib/profiles.mjs` so unit tests can import the real values without
 // pulling in Playwright — re-exported here so every existing importer of this
 // module is unchanged.
-export { AGGRO_RADIUS, ENGAGE_RADIUS, PROFILES, NAVIGATION_PROFILE } from "./lib/profiles.mjs";
+// Imported *and* re-exported: a bare `export { X } from "..."` re-exports
+// without creating a local binding, so this module could no longer see
+// `PROFILES` itself even though every importer of it still could.
+import { AGGRO_RADIUS, ENGAGE_RADIUS, NAVIGATION_PROFILE, PROFILES } from "./lib/profiles.mjs";
+export { AGGRO_RADIUS, ENGAGE_RADIUS, NAVIGATION_PROFILE, PROFILES };
 
 export const DIFFICULTIES = ["easy", "normal", "hard"];
 

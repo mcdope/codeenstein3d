@@ -114,7 +114,12 @@ export const PROFILES = {
     // Simple/reliable weapons first; ghidra last (a "casual" player is more
     // hesitant with a self-splash-capable rocket launcher) — but still in
     // the list, since every profile should be able to use whatever it has.
-    weaponPriority: [PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, GDB_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX, GHIDRA_WEAPON_INDEX],
+    // No ghidra at all — membership, not order, is what this list
+    // controls (see the block comment), so leaving it out means a
+    // casual player never reaches for the rocket launcher rather than
+    // merely preferring it last. Pistol/shotgun/gdb/Friday Hotfix still
+    // make a complete fallback chain.
+    weaponPriority: [PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, GDB_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX],
     healthDetourThreshold: 0.75,
     proactiveMineDisarm: true,
     // Same "more hesitant with a self-splash launcher" reasoning as the
@@ -170,8 +175,8 @@ export const PROFILES = {
     // Exchange rate between "kill it faster" and "still have ammo later", used
     // by `scoreRangedWeapon`. Pro sits between the other two: it optimises the
     // trade rather than favouring either side of it.
-    ammoThrift: 0.9,
-    selfHarmAversion: 1.3,
+    ammoThrift: 0.2,
+    selfHarmAversion: 0.5,
     // ~5x keyboard (~13 rad/sec, ~745°/sec) — a fast, high-sensitivity
     // competitive flick-turn, still within real human mouse-aim territory.
     rotSpeedMultiplier: 5,

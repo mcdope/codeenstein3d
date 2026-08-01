@@ -34,6 +34,12 @@ describe("PROFILES ladder", () => {
     ["fireCooldownMs", "down"],
     ["rotSpeedMultiplier", "up"],
     ["healthDetourThreshold", "down"],
+    // Both of these were non-monotonic until 2026-08-01 — ammoThrift ran
+    // 1.6/0.4/0.9 and selfHarmAversion 2.2/0.9/1.3, i.e. Gamer was the most
+    // spendthrift and Pro the more self-harm-averse of the two. Neither was
+    // detectable without a bot run before this test existed.
+    ["ammoThrift", "down"],
+    ["selfHarmAversion", "down"],
   ])("is monotonic on %s (%s the ladder)", (knob, direction) => {
     const values = LADDER.map((name) => PROFILES[name][knob]);
     const ordered = direction === "down" ? [...values].sort((a, b) => b - a) : [...values].sort((a, b) => a - b);
@@ -50,6 +56,16 @@ describe("PROFILES ladder", () => {
       expect(PROFILES[name].weaponPriority).toContain(0); // pistol, always owned
       expect(PROFILES[name].weaponPriority.length).toBeGreaterThanOrEqual(3);
     }
+  });
+
+  it("gives only the tiers that should reach for a rocket launcher access to one", () => {
+    // `weaponPriority` membership is a hard filter — the scoring loop iterates
+    // this list, so an absent weapon is never considered at all. Casual
+    // omitting ghidra is therefore a real behavioural tier, not a preference.
+    const GHIDRA = 4;
+    expect(PROFILES.Casual.weaponPriority).not.toContain(GHIDRA);
+    expect(PROFILES.Gamer.weaponPriority).toContain(GHIDRA);
+    expect(PROFILES.Pro.weaponPriority).toContain(GHIDRA);
   });
 
   it("keeps engageRadius identical across tiers", () => {
