@@ -48,6 +48,8 @@ Same file. Add `<NAME>_WEAPON_INDEX`, then decide membership:
 
 **What breaks if skipped:** the two classic silent gaps — a weapon with no sound, or one wearing the pistol's model.
 
+**How the silhouette must be drawn.** Rectangles go straight onto the context; **polygons, curves and outlines do not**. Every non-rectangular shape is a pre-rendered `Glyph` (`src/engine/pathSprites.ts`) blitted with `drawGlyph`, and every rect outline goes through `outlineRect` instead of `ctx.strokeRect`. This is not style: a *single* `fill()` of a path, or a second `strokeRect`, anywhere in a frame costs ~10ms of frame budget on a GPU-accelerated canvas, because it drops the rasteriser out of its batched-quad path (measured — `doc/dev/perf-review-2026-08-02.md`, finding P1). A new weapon that reaches for `beginPath`/`strokeRect` directly will quietly cost a quarter of the frame budget and nothing will flag it. Shapes rigid relative to the gun's anchor (grips, blades, magazines) bake whole; anything whose *geometry* moves with recoil needs one glyph per quantised recoil step, as `flameNozzleGlyph` does.
+
 ### 4. Firing behaviour in `engine.ts`
 
 `fire()` and `updateFiring()` are written against `Weapon` fields, so an ordinary hitscan weapon needs **no engine edit at all**. Three places branch on something other than a plain field, and are worth checking against your weapon:
