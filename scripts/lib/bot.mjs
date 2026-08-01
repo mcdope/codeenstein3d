@@ -585,7 +585,7 @@ export class Bot {
   /**
    * @param {import("playwright").Page} page
    * @param {object} profile one of PROFILES's shape (fireAngleEps,
-   *   engageRadius, coverageMode, weaponPriority, healthDetourThreshold,
+   *   engageRadius, weaponPriority, healthDetourThreshold,
    *   proactiveMineDisarm, rocketForDistantClusters, rotSpeedMultiplier)
    * @param {object} [opts]
    * @param {boolean} [opts.realtime=false] false = virtual-clock pump

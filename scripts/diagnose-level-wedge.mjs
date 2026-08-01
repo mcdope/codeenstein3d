@@ -167,12 +167,12 @@ async function main() {
     let wedged = false;
     for (let i = 0; i < levelPlans.length; i++) {
       levelNo = i + 1;
-      const { map, routePlain, routeCoverage, filename } = levelPlans[i];
+      const { map, routePlain, filename } = levelPlans[i];
       perLevel = [];
       calls.length = 0;
-      say(`  --- level ${levelNo} is ${filename} (${map.grid[0].length}x${map.grid.length}), legs=${(profile.coverageMode ? routeCoverage : routePlain).legs?.length} ---`);
+      say(`  --- level ${levelNo} is ${filename} (${map.grid[0].length}x${map.grid.length}), legs=${routePlain.legs?.length} ---`);
       bot.startLevel(map);
-      const route = profile.coverageMode ? routeCoverage : routePlain;
+      const route = routePlain;
       const p0 = await bot.readState();
       if (p0.state !== "playing") { say(`  level ${levelNo}: run ended (${p0.state})`); break; }
       const prevExit = await page.evaluate(() => window.__codeensteinTestHooks.getExit());

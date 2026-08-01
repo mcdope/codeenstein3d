@@ -31,7 +31,7 @@ import { chromium } from "playwright";
 import fs from "node:fs";
 import path from "node:path";
 import { loadEngineModules, REPO_ROOT } from "./lib/loadEngineModules.mjs";
-import { planRoute, planCoverageRoute } from "./lib/routePlanner.mjs";
+import { planRoute } from "./lib/routePlanner.mjs";
 import { analyzeStaticLevel } from "./lib/staticLevelAnalysis.mjs";
 import {
   Bot,
@@ -201,9 +201,8 @@ export async function planLevels() {
     const bonusLevel = extensionOf(filename) === "h";
     const map = generator.generate(parsed, { bonusLevel, hasRocketLauncher: false, missingWeaponIndices: [3, 4, 5] });
     const routePlain = planRoute(map);
-    const routeCoverage = planCoverageRoute(map);
     const staticAnalysis = analyzeStaticLevel(map, routePlain);
-    levelPlans.push({ filename, filePath: `${CAMPAIGN_NAME}/${filename}`, map, routePlain, routeCoverage, staticAnalysis });
+    levelPlans.push({ filename, filePath: `${CAMPAIGN_NAME}/${filename}`, map, routePlain, staticAnalysis });
   }
   console.log(`${levelPlans.length} levels planned.\n`);
   return levelPlans;
@@ -370,11 +369,11 @@ export async function playRun(page, profile, levelPlans, label = "") {
   });
 
   for (let i = 0; i < levelPlans.length; i++) {
-    const { map, routePlain, routeCoverage } = levelPlans[i];
+    const { map, routePlain } = levelPlans[i];
     // static AmmoPickup positions are per-map; a fresh engine per level makes
     // prior "visited" state meaningless here — `startLevel` resets it.
     bot.startLevel(map);
-    const route = profile.coverageMode ? routeCoverage : routePlain;
+    const route = routePlain;
 
     const player0 = await bot.readState();
     if (player0.state !== "playing") {

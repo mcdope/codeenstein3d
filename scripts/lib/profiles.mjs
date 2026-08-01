@@ -48,10 +48,20 @@ export const ENGAGE_RADIUS = AGGRO_RADIUS + 2; // combat always preempts navigat
  * three (see `ENGAGE_RADIUS`) — "low aggression" (Casual) never means
  * skipping a fight, only a looser `fireAngleEps` (worse aim) and a lower
  * `healthDetourThreshold` urgency inversion (higher = detours for health
- * sooner). `weaponPriority` lists ranged `WEAPONS` indices in preference
- * order (melee indices are excluded — melee-in-range is handled separately,
- * universally, for every profile: see the `MELEE_RANGE` check in
- * `Bot#tick`). Every profile's list ends in a complete fallback chain
+ * sooner). `weaponPriority` lists ranged `WEAPONS` indices (melee indices are
+ * excluded — melee-in-range is handled separately and universally: see the
+ * `MELEE_RANGE` check in `Bot#tick`).
+ *
+ * **Membership is load-bearing; the order is only a tiebreak.** Since weapons
+ * became score-selected (`scoreRangedWeapon`), `pickRangedWeapon` ranks by
+ * cost-in-seconds and consults this order only to separate candidates within
+ * `WEAPON_SCORE_TIEBREAK_EPS` of each other. But the scoring loop iterates
+ * *this list*, so a weapon absent from it is never considered at all. Read
+ * "which weapons this tier will reach for", not "in what order it prefers
+ * them" — a mistake worth avoiding, since it makes reordering look more
+ * meaningful than it is and omission look less dangerous than it is.
+ *
+ * Every profile's list ends in a complete fallback chain
  * (pistol, shotgun, Friday Hotfix) so a profile never ends up with *no*
  * valid ranged option just because its preferred unlockable weapon isn't
  * owned yet or is out of ammo — Pro's list originally omitted the
@@ -66,13 +76,15 @@ export const ENGAGE_RADIUS = AGGRO_RADIUS + 2; // combat always preempts navigat
  * them, kept as a per-profile field only so it still shows up explicitly in
  * the output's `meta.profiles` dump.
  *
- * `coverageMode` is `false` for every profile — navigation is always
- * shortest-route-to-exit (`planRoute`, not `planCoverageRoute`), regardless
- * of skill level. This was originally Casual-only "maximize map coverage"
- * (visit every room), which turned out to be the single biggest driver of
- * Casual's implausibly low survival rate — see the git history for the full
- * rationale. Skill differences now come entirely from combat/aim/tactics,
- * not from how much of the map gets walked.
+ * Navigation is always shortest-route-to-exit (`planRoute`), regardless of
+ * skill level. This was once a Casual-only `coverageMode` that visited every
+ * room, and it turned out to be the single biggest driver of Casual's
+ * implausibly low survival rate — skill differences come from combat, aim and
+ * tactics, not from how much of the map gets walked. The flag was `false` for
+ * every profile and never read by the policy layer at all, so it has been
+ * removed along with the `planCoverageRoute` call it kept alive per level;
+ * `planCoverageRoute` itself remains in `routePlanner.mjs` as a tested,
+ * currently-unused capability.
  *
  * `fireAngleEps` calibration note: earlier values (Casual 0.17-0.22, Gamer
  * 0.15, Pro 0.08) were all *far* too loose — see git history for the
@@ -99,7 +111,6 @@ export const PROFILES = {
     fireAngleEps: 0.08,
     fireCooldownMs: 220,
     engageRadius: ENGAGE_RADIUS,
-    coverageMode: false,
     // Simple/reliable weapons first; ghidra last (a "casual" player is more
     // hesitant with a self-splash-capable rocket launcher) — but still in
     // the list, since every profile should be able to use whatever it has.
@@ -130,7 +141,6 @@ export const PROFILES = {
     fireAngleEps: 0.05,
     fireCooldownMs: 160,
     engageRadius: ENGAGE_RADIUS,
-    coverageMode: false,
     // Ammo-efficient auto weapon first, heavy hitter last, everything else
     // in between.
     weaponPriority: [GDB_WEAPON_INDEX, PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX, GHIDRA_WEAPON_INDEX],
@@ -149,7 +159,6 @@ export const PROFILES = {
     fireAngleEps: 0.03,
     fireCooldownMs: 120,
     engageRadius: ENGAGE_RADIUS,
-    coverageMode: false,
     // Heavy hitters first, complete fallback chain through everything else —
     // was missing 1/FRIDAY_HOTFIX_WEAPON_INDEX entirely before, the direct
     // cause of Pro/normal needing far more attempts to qualify than the

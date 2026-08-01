@@ -52,9 +52,12 @@ const SPIKE_TRAP_TILE = 5;
 const BRANCH_DOOR_TILE = 8;
 /** Preferred-avoid set for `planCoverageRoute`'s own (still binary
  * avoid-or-cross) hazard handling — kept separate from `planRoute`'s
- * `weightedPath` since this function is currently unused by any live
- * profile (`coverageMode` is `false` everywhere) and not worth migrating
- * until it's actually back in use. */
+ * `weightedPath` since this function has no live caller and is not worth
+ * migrating until it's actually back in use. `planCoverageRoute` is kept
+ * deliberately — it is tested and is a real capability — but the
+ * `coverageMode` profile flag that used to select it was `false` for every
+ * profile and never read by the policy layer, so it was removed along with
+ * the per-level `planCoverageRoute` call it kept alive. */
 const SOFT_AVOID_TILES = new Set([HAZARD_TILE, SPIKE_TRAP_TILE]);
 
 /** Mirrors `pathfind.mjs`'s `bfsPath` blocked set (wall / locked door /

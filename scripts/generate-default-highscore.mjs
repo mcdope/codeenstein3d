@@ -140,9 +140,9 @@ function computeAstHash(parsed, campaignName) {
 async function driveFullCampaign(bot, page, levelPlans) {
   const reachedExitForLevel = new Array(levelPlans.length).fill(false);
   for (let i = 0; i < levelPlans.length; i++) {
-    const { map, routePlain, routeCoverage } = levelPlans[i];
+    const { map, routePlain } = levelPlans[i];
     bot.startLevel(map);
-    const route = bot.profile.coverageMode ? routeCoverage : routePlain;
+    const route = routePlain;
 
     const player0 = await bot.readState();
     if (player0.state !== "playing") {
