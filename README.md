@@ -356,7 +356,8 @@ src/
     ├── lootApply.ts         # Drop/pickup application (grant, top-up, elite bonus)
     ├── scoring.ts           # Score calculation
     ├── highscores.ts        # Leaderboard (hashing, compression)
-    ├── defaultHighscore.ts  # Bundled example leaderboard entries (bot-generated per skill profile, gzip-compressed, shown when the real board is empty)
+    ├── defaultHighscore.ts  # Bundled example leaderboard entries (bot-generated per skill profile, binary-packed + gzipped, lazily imported when the real board is empty)
+    ├── replayCodec.ts       # Binary packing for replay frames (3.5x less localStorage than JSON+gzip)
     ├── storageCompression.ts # gzip helpers for localStorage payloads
     ├── replay.ts            # Recording & playback
     ├── audio.ts             # Web Audio synthesis + buses
