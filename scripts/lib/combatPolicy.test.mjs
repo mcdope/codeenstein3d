@@ -897,6 +897,41 @@ describe("decide — bolt dodging", () => {
     expect(keysOf(below)).toContain("KeyA");
   });
 
+  it("dodges while still re-aiming, not only once it has a firing solution", () => {
+    // The gap this closes: dodging used to live only in the fire branch, so a
+    // bolt was evadable only when the bot was already aimed — the other ~57%
+    // of combat decisions had no evasion at all. An enemy far off the bot's
+    // heading puts it in the re-aim branch; a bolt inbound at the same moment
+    // must still produce a dodge.
+    const offAxis = makeEnemy({ x: 10.5, y: 6.5 }); // ~90 degrees off a +x facing
+    const intent = decide(
+      engaged({ enemies: [offAxis], projectiles: [boltAt(8.5, 10.2)] }),
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(intent.trace.dodgedBolt).toBe(true);
+    // Forward must be released: KeyW plus a lateral key engages the engine's
+    // diagonalScale and cuts the forward axis 29% — the 0%->72% mechanism.
+    expect(keysOf(intent)).not.toContain("KeyW");
+    expect(keysOf(intent).some((k) => k === "KeyA" || k === "KeyD")).toBe(true);
+  });
+
+  it("leaves re-aiming alone when nothing is actually inbound", () => {
+    // The distinction from the reverted "strafe while re-aiming" experiment:
+    // that added blind oscillation on every decision and fought aim
+    // convergence. With no bolt in flight this branch must not strafe at all.
+    const offAxis = makeEnemy({ x: 10.5, y: 6.5 });
+    const intent = decide(engaged({ enemies: [offAxis], projectiles: [] }), freshMemory(), makeConfig());
+    expect(intent.trace.dodgedBolt).toBe(false);
+  });
+
+  it("can be switched off as one constant for an A/B", () => {
+    const offAxis = makeEnemy({ x: 10.5, y: 6.5 });
+    const world = engaged({ enemies: [offAxis], projectiles: [boltAt(8.5, 10.2)] });
+    const off = decide(world, freshMemory(), makeConfig({ tuning: { ...DEFAULT_TUNING, DODGE_WHILE_REAIMING: false } }));
+    expect(off.trace.dodgedBolt).toBe(false);
+  });
+
   it("sprints the dodge, but never the blind oscillation", () => {
     // The one moment the bot knows it is about to be hit is worth spending
     // sprint on; a standing dance is not, or it would drift.

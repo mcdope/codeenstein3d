@@ -331,6 +331,11 @@ export const DEFAULT_TUNING = {
   // displacement, comfortably clear. A 0.35s window looked sufficient on
   // sprint-speed arithmetic and was not.
   DODGE_MIN_LOOKAHEAD_SEC: 0.6,
+  // Whether a directed dodge is also available while the bot is still
+  // re-aiming, rather than only once it has a firing solution. Single-variable
+  // switch, as elsewhere:
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"DODGE_WHILE_REAIMING":false}'
+  DODGE_WHILE_REAIMING: true,
 };
 
 /** Tiles a lateral step must never cross. Mirrors `pathfind.mjs`'s own
@@ -1608,6 +1613,56 @@ export function decide(world, memory, config) {
           // ~0.02 tiles, so it stops strafing and gets hit more. Don't "fix"
           // this without re-running that A/B.
           turnBurst = Math.max(turnBurst ?? 0, moveBurstMs(10, false, moveCtx));
+        }
+        // Step off an incoming bolt even while still lining the shot up.
+        //
+        // Dodging used to live *only* in the fire branch below, which meant
+        // the bot could evade a bolt only once it already had a firing
+        // solution — `|delta| <= fireAngleEps` and line of sight. This branch
+        // is the other ~57% of combat decisions (the module's own note puts
+        // the fire branch at "roughly 43%"), and for all of it the bot was a
+        // stationary target with no evasion available at all. Tuning dodge
+        // *quality* per skill tier therefore had almost nothing to act on: a
+        // 2026-08-01 sweep of the dodge constants moved the damage axes
+        // barely, and the reason was availability, not quality.
+        //
+        // This is NOT the reverted "strafe while re-aiming" experiment. That
+        // one added *blind* `combatStrafeKey` oscillation here, perturbing the
+        // very heading it was trying to converge on every single decision, and
+        // cost Gamer 30pp of qualify rate. A directed dodge fires only when a
+        // bolt is genuinely inbound and on course — rare, and precisely when
+        // being hit is otherwise certain.
+        //
+        // `KeyW` is dropped for the duration: holding forward *and* a lateral
+        // key engages `engine.ts`'s `diagonalScale` (1/sqrt2), cutting the
+        // forward axis 29% — the mechanism behind the 0%->72% level-2 death
+        // regression. A human sidestepping a shot stops advancing too.
+        if (tuning.DODGE_WHILE_REAIMING && threat && map && projectiles.length > 0) {
+          const lookaheadSec = Math.max(tuning.DODGE_MIN_LOOKAHEAD_SEC, tuning.DODGE_LOOKAHEAD_DECISIONS * (stepMs / 1000));
+          const inbound = pickIncomingBolt(projectiles, player, lookaheadSec, tuning, selfId);
+          if (inbound) {
+            const dodgeDist = Math.max(
+              tuning.ENGINE_MOVE_SPEED * tuning.ENGINE_SPRINT_MULTIPLIER * (stepMs / 1000),
+              tuning.COMBAT_STRAFE_LOOKAHEAD_TILES,
+            );
+            const wanted = dodgeStrafeKey(projectiles[inbound.i], inbound, player);
+            const other = wanted === "KeyD" ? "KeyA" : "KeyD";
+            let key = null;
+            if (strafeIsSafe(map, player, wanted, dodgeDist, player.levelTime, { tuning })) key = wanted;
+            else if (strafeIsSafe(map, player, other, dodgeDist, player.levelTime, { tuning })) key = other;
+            if (key) {
+              moveKeys.delete("KeyW");
+              moveKeys.delete("KeyA");
+              moveKeys.delete("KeyD");
+              moveKeys.add(key);
+              moveKeys.add("ShiftLeft");
+              dodgedBolt = true;
+              // Same widening the stall-strafe needs, and for the same reason:
+              // one scalar covers every key, so without it a turn-sized burst
+              // moves the bot ~0.02 tiles and the dodge does nothing.
+              turnBurst = Math.max(turnBurst ?? 0, moveBurstMs(10, false, moveCtx));
+            }
+          }
         }
       } else {
         weaponSwitch = pickRangedWeapon(player, profile, enemies, threat, mineTarget, tuning);
