@@ -252,16 +252,16 @@ async function main() {
   check("Campaign save was cleared on death", saveAfterDeath === null);
 
   if (highscoreRaw) {
-    const board = await page.evaluate(async (raw) => {
-      const COMPRESSED_PREFIX = "gz1:";
-      if (!raw.startsWith(COMPRESSED_PREFIX)) return JSON.parse(raw);
-      const binary = atob(raw.slice(COMPRESSED_PREFIX.length));
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-      const decompressed = new Uint8Array(await new Response(stream).arrayBuffer());
-      return JSON.parse(new TextDecoder().decode(decompressed));
-    }, highscoreRaw);
+    // Decode through the app's *own* read path rather than a copy of it.
+    // This block used to inline a `gz1:`-only decoder, which broke the day
+    // the board moved to `bin1:` binary frame packing (`replayCodec.ts`) —
+    // it fell through to `JSON.parse` on a prefixed string and threw. A
+    // verifier reimplementing the thing it verifies is a mirror that drifts
+    // silently; importing the real module cannot.
+    const board = await page.evaluate(async () => {
+      const { loadHighscores } = await import("/src/engine/highscores.ts");
+      return loadHighscores();
+    });
 
     const entry = [...board].sort((a, b) => b.achievedAt - a.achievedAt)[0];
     check("Highscore entry has campaignName matching the workspace", entry?.campaignName === CAMPAIGN_NAME, entry?.campaignName);

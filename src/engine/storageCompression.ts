@@ -77,7 +77,17 @@ export async function gunzip(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array
 /** Serialize `value` for `localStorage`, gzip-compressing it when that's
  * supported (`CompressionStream` exists) and actually smaller than the plain
  * JSON — otherwise falls back to plain `JSON.stringify`, so this never makes
- * a value bigger and works unchanged in a browser without the API. */
+ * a value bigger and works unchanged in a browser without the API.
+ *
+ * **Currently unused by production code.** The highscore board — the only
+ * payload here that ever got large — now writes through `replayCodec.ts`'s
+ * `bin1:` binary packing instead, which beats generic gzip by 3.5x because
+ * it can exploit the shape of a replay frame (see that module's header).
+ * Kept as the general-purpose writer for any *other* oversized
+ * `localStorage` payload, and because its inverse `decompressFromStorage`
+ * is still very much live: it is what reads a `gz1:` board written by an
+ * older build. Deleting this half alone would leave a decoder for a format
+ * nothing can produce. */
 export async function compressForStorage(value: unknown): Promise<string> {
   const plain = JSON.stringify(value);
   if (typeof CompressionStream === "undefined") return plain;
