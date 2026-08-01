@@ -17,6 +17,10 @@
  * independently (see `resolveCompositeSlot`/`resolveFlatSlot`'s per-candidate
  * try/catch) and `src/engine/textures.ts` fills it with that styleset's
  * procedural default.
+ *
+ * See `doc/dev/wad-texture-packs.md` for the pack-author view of all of this:
+ * the required lumps, the format limits that silently drop a slot, and the
+ * fallback chain `candidatesFor` implements below.
  */
 import { STYLE_SET_IDS, type StyleSetId } from "../map/types";
 import { compositeTexture, type WadTexturePixels } from "./compositeTexture";
