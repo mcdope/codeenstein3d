@@ -56,12 +56,12 @@ function entryWith(levels: { frames: ReplayFrame[] }[]): HighscoreEntry {
         bonusLevel: false,
         gameplaySeed: 42 + i,
         difficulty: "normal",
-        gore: true,
+        gore: "normal",
         astHash: `ast${i}`,
         balanceHash: `bal${i}`,
         frames: l.frames,
       })),
-    } as HighscoreEntry["replay"],
+    },
   };
 }
 
