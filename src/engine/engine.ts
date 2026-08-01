@@ -265,21 +265,33 @@ const HAZARD_DPS = 18;
  * equivalent exists for constants that live in the engine and never reach the
  * map, so those need naming, and this holds the ones `engine.ts` itself owns.
  *
- * Values that matter but live in sibling modules (`ELITE_DAMAGE_MULTIPLIER`
- * and `EDGE_CASE_SPEED_MULTIPLIER` in `enemyAi.ts`, `SPIKE_DPS` and
- * `MINE_DAMAGE_FALLOFF_FLOOR` in `traps.ts`, `PROJECTILE_SPEED` in
- * `projectiles.ts`, the `WEAPONS` table) are **not** covered — adding them
+ * The `WEAPONS` table **is** covered, and wholesale rather than as a list of
+ * individually-named constants — the same "hash the output, not a maintained
+ * list of inputs" reasoning the enemy roster gets, so per-pellet damage,
+ * pellet counts, ammo cost, and fire intervals are all in scope automatically
+ * and a future weapon addition needs no update here. It was added the first
+ * time one of its numbers was actually tuned (the shotgun's pump-action
+ * `fireIntervalSec`, alongside a per-pellet damage bump), which is exactly
+ * the "worth doing if one of them is ever tuned" this comment used to defer
+ * to. That is what widened `computeBalanceHash`'s parameter from `number` to
+ * `unknown` values.
+ *
+ * Values that matter but still live in sibling modules
+ * (`ELITE_DAMAGE_MULTIPLIER` and `EDGE_CASE_SPEED_MULTIPLIER` in
+ * `enemyAi.ts`, `SPIKE_DPS` and `MINE_DAMAGE_FALLOFF_FLOOR` in `traps.ts`,
+ * `PROJECTILE_SPEED` in `projectiles.ts`) are **not** covered — adding them
  * means exporting each and extending this object. Worth doing if one of them
- * is ever tuned; not worth pre-emptively exporting five constants to guard
+ * is ever tuned; not worth pre-emptively exporting four constants to guard
  * against edits nobody has made.
  */
-export const SIMULATION_BALANCE: Readonly<Record<string, number>> = {
+export const SIMULATION_BALANCE: Readonly<Record<string, unknown>> = {
   MOVE_SPEED,
   SPRINT_MULTIPLIER,
   ROT_SPEED,
   MAX_HEALTH,
   MAX_SWAP,
   HAZARD_DPS,
+  WEAPONS,
 };
 /**
  * Cone-of-Fire: maximum screen-px of random aim deviation, reached only at
@@ -3945,14 +3957,31 @@ export class RaycasterEngine {
   }
 
   /**
-   * Resolve firing for this frame: automatic weapons (the MP) re-fire on
-   * their own every `fireIntervalSec` while the trigger is held; everything
-   * else fires once per press, gated by the same cooldown (mainly there to
-   * stop the rocket launcher being click-spammed faster than its own
-   * `fireIntervalSec` — the pistol/shotgun have none, so they're unaffected
-   * and fire exactly as fast as the player can press/click). Quick-melee
-   * (Space) is a separate, always-available action handled in `advance()`
-   * — it never goes through this cooldown/auto-fire gating at all.
+   * Resolve firing for this frame. **Every ranged weapon is rate-capped by
+   * its own `fireIntervalSec`**: automatic ones (gdb, Friday Hotfix) re-fire
+   * on their own at that interval while the trigger is held; semi-auto ones
+   * fire once per press *and* no faster than the interval, so click-spam
+   * can't exceed the weapon's own cadence. Quick-melee (Space) is a
+   * separate, always-available action handled in `advance()` — it never goes
+   * through this gating at all, so a player waiting out a cooldown always has
+   * something to swing.
+   *
+   * The pistol/shotgun used to be exempt (they simply defined no interval),
+   * which meant their real fire rate was whatever a mouse hand — or an
+   * autoclicker, or a bot dispatching one keydown per decision tick — could
+   * produce, and a 7-pellet shotgun became an automatic weapon for free. See
+   * `weapons.ts`.
+   *
+   * Two consequences worth stating rather than leaving to be rediscovered:
+   *
+   * - **The cooldown is per-player, not per-weapon.** `weaponCooldown` lives
+   *   on `PlayerState` and isn't reset by a weapon switch, so you can't
+   *   switch-cancel the shotgun's pump by tapping `1` and back. That's
+   *   deliberate — you're working the pump, not the gun.
+   * - **A dry fire still starts it.** `fire()` early-returns when there isn't
+   *   ammo for the shot, but the cooldown below is set either way, so an
+   *   empty trigger-pull also rate-limits the out-of-ammo toast instead of
+   *   re-triggering it every frame.
    */
   private updateFiring(dt: number): void {
     for (const id of this.sortedPlayerIds()) {
@@ -3974,7 +4003,13 @@ export class RaycasterEngine {
         }
       } else if (pressed && p.weaponCooldown <= 0) {
         this.fire(p);
-        if (weapon.fireIntervalSec) p.weaponCooldown = weapon.fireIntervalSec;
+        // Mirror of the `auto` branch above, and unreachable for the same
+        // reason: no ranged weapon omits fireIntervalSec any more, so the
+        // fallback only covers a *melee* weapon reaching this branch via a
+        // persisted `carryover.weaponIndex` — which the number-key path
+        // itself can't produce (see `canWieldViaNumberKey`).
+        /* v8 ignore next -- @preserve */
+        p.weaponCooldown = weapon.fireIntervalSec ?? 0;
       }
     }
   }

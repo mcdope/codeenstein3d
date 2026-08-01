@@ -95,13 +95,26 @@ export const ENGAGE_RADIUS = AGGRO_RADIUS + 2; // combat always preempts navigat
  *
  * `fireCooldownMs`: the minimum simulated time (`Bot#simTimeMs`, see
  * `bot.mjs`) between two dispatched shots of a *semi-auto* ranged weapon
- * (pistol/shotgun/ghidra) — those have no engine-side fire-rate cap (see
- * `updateFiring`'s doc comment in `engine.ts`) and fire exactly once per
- * `Backquote` keydown, so a bot re-dispatching that key every single
- * decision tick fired far faster than any human trigger-pull (~20/sec at
- * the headless 50ms tick rate — "the pistol becomes an smg"). Auto weapons
- * (gdb/Friday Hotfix) are unaffected by this field, since their own
- * `fireIntervalSec` cooldown already caps them realistically while held.
+ * (pistol/shotgun/ghidra) — those fire exactly once per `Backquote` keydown,
+ * so a bot re-dispatching that key every single decision tick pulled the
+ * trigger far faster than any human could (~20/sec at the headless 50ms tick
+ * rate — "the pistol becomes an smg"). Auto weapons (gdb/Friday Hotfix) are
+ * unaffected by this field: they are fired by *holding* the key, so there is
+ * no per-shot dispatch to throttle.
+ *
+ * This field is no longer the only thing pacing a semi-auto. `weapons.ts` now
+ * gives **every** ranged weapon a `fireIntervalSec` (pistol 0.15s, shotgun
+ * 0.85s), an engine-side rate limit that applies to any input source at all,
+ * bot or human or autoclicker. The two are separate limits — one models the
+ * gun, one models the hand — and they compose via `max`: a shot happens only
+ * once both have elapsed (see `scoreRangedWeapon` and the fire gate in
+ * `combatPolicy.mjs`'s `decide`). So for the pistol, Casual's 220ms and
+ * Gamer's 160ms are still the binding limit, while Pro's 120ms is now the
+ * looser of the two and the engine's 150ms binds instead — Pro's pistol
+ * cadence is the one number here that stopped being profile-controlled. For
+ * the shotgun the 850ms pump dwarfs all three, so no profile out-shoots
+ * another with it.
+ *
  * Values are plausible real semi-auto trigger-pull rates, tightest→loosest
  * matching the `fireAngleEps`/`rotSpeedMultiplier` skill ladder: Pro 120ms
  * (~8.3/sec, a fast competitive rate), Gamer 160ms (~6.25/sec), Casual

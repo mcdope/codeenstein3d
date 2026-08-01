@@ -35,15 +35,17 @@ A long, straight corridor gets broken up rather than left as one uninterrupted s
 
 | Weapon | Slot | Type | Notes |
 |---|---|---|---|
-| echo pistol | 1 | Hitscan | Starting weapon |
-| Regex Shotgun | 2 | 7-pellet cone | Starting weapon |
+| echo pistol | 1 | Hitscan, ~6.6 shots/sec | Starting weapon |
+| Regex Shotgun | 2 | 7-pellet cone, pump-action (one blast per 0.85s) | Starting weapon |
 | SIGKILL Knife | `Space` only | Melee | Starting weapon, infinite ammo, heals 1 HP per kill, not on the number row |
 | gdb | 3 | Full-auto hitscan | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 4 |
 | ghidra | 4 | Rocket / splash damage | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 8 |
 | Friday Hotfix | 5 | Full-auto 6-pellet cone, 3.5-tile max range | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 12 |
 | Toolchain | `Space` only | Full-auto melee | Infinite ammo, 2× the knife's damage, a bigger lifesteal heal, fires as long as you hold the key — permanently replaces the knife on Space once picked up. Found in a secret room, dropped by an Elite kill, or a small chance on any regular kill whose loot roll comes up empty — all gated to campaign level 4 on; **no forced unlock** — a loot-unlucky run can still finish without ever finding it |
 
-Ranged weapons draw from four separate ammo pools: **Bullets** (pistol/shotgun), **SMG Ammo** (gdb only), **Rockets** (ghidra only), and **Gas** (Friday Hotfix only). SMG/rocket/gas ammo won't drop or spawn on the map at all until you actually own the matching weapon. Hitscan pellets deviate more the further away the target is, so point-blank shots are reliable and very long-range ones can miss. Friday Hotfix additionally enforces a hard 3.5-tile max range on top of that — a genuine flamethrower's reach, not just a wide cone that happens to scatter — and fires a fanning flame stream instead of the thin tracer line every other gun draws.
+Ranged weapons draw from four separate ammo pools: **Bullets** (echo pistol/Regex Shotgun), **SMG Ammo** (gdb only), **Rockets** (ghidra only), and **Gas** (Friday Hotfix only). SMG/rocket/gas ammo won't drop or spawn on the map at all until you actually own the matching weapon. Hitscan pellets deviate more the further away the target is, so point-blank shots are reliable and very long-range ones can miss. Friday Hotfix additionally enforces a hard 3.5-tile max range on top of that — a genuine flamethrower's reach, not just a wide cone that happens to scatter — and fires a fanning flame stream instead of the thin tracer line every other gun draws.
+
+Every gun also has its own **cadence**, and clicking faster can't beat it. The Regex Shotgun is the one you'll feel: it's pump-action, so it cycles for 0.85s after each blast — you'll hear it rack — and that pause is exactly what buys its huge burst damage up close. The echo pistol cycles far quicker (~6.6 shots/sec) but still has a floor. The cadence is tracked per *player*, not per weapon, so switching guns mid-cycle won't let you shoot any sooner; quick-melee on `Space` is always available though, which is your out while a pump finishes.
 
 ## Loot & Difficulty
 

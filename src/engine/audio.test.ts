@@ -152,25 +152,54 @@ describe("AudioManager.playShoot() dispatch", () => {
     expect(() => audio.playShoot("pistol")).not.toThrow();
   });
 
-  const cases: Array<{ kind: WeaponViewKind; expectNoise: boolean; oscType: OscillatorType }> = [
-    { kind: "pistol", expectNoise: false, oscType: "square" },
-    { kind: "shotgun", expectNoise: true, oscType: "sawtooth" },
-    { kind: "mp", expectNoise: false, oscType: "square" },
-    { kind: "rocket", expectNoise: true, oscType: "sawtooth" },
-    { kind: "flamethrower", expectNoise: true, oscType: "sawtooth" },
-    { kind: "chainsaw", expectNoise: false, oscType: "sawtooth" },
+  // `oscType` is the *first* oscillator's — the weapon's own body — so the
+  // shotgun's two trailing pump clacks (see below) don't disturb it.
+  const cases: Array<{ kind: WeaponViewKind; noiseSources: number; oscType: OscillatorType }> = [
+    { kind: "pistol", noiseSources: 0, oscType: "square" },
+    { kind: "shotgun", noiseSources: 3, oscType: "sawtooth" }, // blast + two pump clacks
+    { kind: "mp", noiseSources: 0, oscType: "square" },
+    { kind: "rocket", noiseSources: 1, oscType: "sawtooth" },
+    { kind: "flamethrower", noiseSources: 1, oscType: "sawtooth" },
+    { kind: "chainsaw", noiseSources: 0, oscType: "sawtooth" },
   ];
 
-  for (const { kind, expectNoise, oscType } of cases) {
+  for (const { kind, noiseSources, oscType } of cases) {
     it(`plays a distinct voice for "${kind}"`, () => {
       vi.stubGlobal("AudioContext", MockAudioContext);
       const ctx = audio.resume() as unknown as MockAudioContext;
       audio.playShoot(kind);
       expect(ctx.createOscillator).toHaveBeenCalled();
       expect(ctx.createOscillator.mock.results[0].value.type).toBe(oscType);
-      expect(ctx.createBufferSource).toHaveBeenCalledTimes(expectNoise ? 1 : 0);
+      expect(ctx.createBufferSource).toHaveBeenCalledTimes(noiseSources);
     });
   }
+
+  it("the shotgun's blast is followed by two low pump clacks", () => {
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const ctx = audio.resume() as unknown as MockAudioContext;
+    audio.playShoot("shotgun");
+
+    // The blast body first, then the rack-back and the slam-forward.
+    expect(ctx.createOscillator).toHaveBeenCalledTimes(3);
+    const [blast, rack, slam] = ctx.createOscillator.mock.results.map((r) => r.value);
+    expect(blast.type).toBe("sawtooth");
+    expect(rack.type).toBe("triangle"); // a struck object, not a tone
+    expect(slam.type).toBe("triangle");
+
+    // Scheduled into the gap the 0.85s pump-action cooldown leaves behind,
+    // starting once the blast's own tail has died away.
+    expect(rack.start.mock.calls[0][0]).toBeCloseTo(0.18);
+    expect(slam.start.mock.calls[0][0]).toBeCloseTo(0.34);
+
+    // Mechanism, not a second shot: both sit below the blast's 150Hz body.
+    const blastHz = blast.frequency.setValueAtTime.mock.calls[0][0];
+    expect(rack.frequency.setValueAtTime.mock.calls[0][0]).toBeLessThan(blastHz);
+    expect(slam.frequency.setValueAtTime.mock.calls[0][0]).toBeLessThan(blastHz);
+
+    // Dry bandpassed clacks, unlike the blast's hissier lowpassed tail.
+    const filters = ctx.createBiquadFilter.mock.results.map((r) => r.value.type);
+    expect(filters).toEqual(["lowpass", "bandpass", "bandpass"]);
+  });
 
   it('plays a noise-only "knife" whoosh, with no oscillator at all', () => {
     vi.stubGlobal("AudioContext", MockAudioContext);

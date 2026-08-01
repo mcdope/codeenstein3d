@@ -89,6 +89,22 @@ describe("computeBalanceHash", () => {
     expect(a).not.toBe(b);
   });
 
+  it("changes when a nested weapon's tuning changes, not just a top-level scalar", async () => {
+    // `SIMULATION_BALANCE` folds the whole `WEAPONS` table in as one nested
+    // value rather than a hand-picked list of the constants someone happened
+    // to tune, so the guard has to see *through* an array of objects. Without
+    // this, retuning a weapon's fire rate or damage would leave the
+    // fingerprint identical and every recorded replay would play back
+    // silently diverged — the exact failure this module exists to prevent.
+    const weapons = (fireIntervalSec: number) => [{ name: "Regex Shotgun", damagePerPellet: 25, fireIntervalSec }];
+    const a = await computeBalanceHash({ enemies: [enemy()] }, { ...SIM, WEAPONS: weapons(0.85) });
+    const b = await computeBalanceHash({ enemies: [enemy()] }, { ...SIM, WEAPONS: weapons(0.6) });
+    expect(a).not.toBe(b);
+    // ...and is stable when nothing moved, so it refuses drift rather than
+    // refusing everything.
+    expect(await computeBalanceHash({ enemies: [enemy()] }, { ...SIM, WEAPONS: weapons(0.85) })).toBe(a);
+  });
+
   it("ignores fields that mutate during play", async () => {
     // Only the static roster fields are read. Were `hp`/`alive`/`aggroed`
     // folded in, the fingerprint would depend on *when* it was taken and a

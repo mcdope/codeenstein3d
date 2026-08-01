@@ -31,7 +31,7 @@ describe("buildControlsLegend", () => {
     const chips = legend.querySelectorAll(".vkeyboard .controls-chip");
     const pistolChip = Array.from(chips).find((c) => c.textContent?.includes("pistol"))!;
     expect(pistolChip.querySelector(".key")!.textContent).toBe("1");
-    expect(pistolChip.querySelector(".controls-chip-label")!.textContent).toBe("pistol");
+    expect(pistolChip.querySelector(".controls-chip-label")!.textContent).toBe("echo pistol");
   });
 
   it("applies the gap-before modifier only to chips that request it", () => {
