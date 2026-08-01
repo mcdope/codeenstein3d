@@ -20,7 +20,8 @@ The middle one matters more than it looks: a reverted approach leaves no trace i
 - [Game Design](game-design.md) — why source code maps to a dungeon the way it does, and the intent behind enemies, weapons, and scoring
 - [Design Decisions](decisions.md) — a themed reference of notable tradeoffs and reversals, citing `notes` task numbers for full detail
 - [Development History](history.md) — the chronological record of completed work, and the approaches that were measured and reverted; moved out of `notes` so that file stays a working backlog
-- [Testing](testing.md) — the Vitest unit-test suite: setup, shared mocks, mocking philosophy, and reusable techniques
+- [Testing](testing.md) — the Vitest unit-test suite: setup, shared mocks, mocking philosophy, reusable techniques, how to run the verify scripts locally, and what the suite structurally cannot catch
+- [Adding a Weapon](adding-a-weapon.md) — the touchpoint checklist for a new weapon; most of them are hardcoded enumerations, and the ones that fail silently (the playtest bot's mirrored weapon table especially) are called out per step
 - [Multiplayer Server Deployment](multiplayer-deployment.md) — step-by-step runbook for standing up the signaling server, the client build, and the optional coturn TURN relay, natively or via the [`docker/`](../../docker/README.md) stack
 - [Balancing Telemetry Bot](balancing-telemetry.md) — the automated bot-driven balance-review/regression tool: entry points, profiles, env vars, and the headed-vs-headless timing gotcha
 - [Multiplayer Specs](multiplayer-netcode-spec.md) — the four documents behind the multiplayer implementation, all marked **implemented** and CI-verified. They are specifications rather than guides, and are the place to look when changing netcode behaviour rather than using it:

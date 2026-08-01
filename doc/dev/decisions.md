@@ -116,6 +116,19 @@ The balancing bot's movement and combat logic is unusually easy to "obviously im
 
 The recurring lesson across all of these: **a bot-behaviour change is not validated by the metric it was designed to move**, because that metric is itself measured through the bot. Guard metrics (`qualifyRate`, per-level conditional death rate) are pre-registered in `abReport.mjs` for exactly this reason — see [Balancing Telemetry](balancing-telemetry.md).
 
+## UI/DOM Gotchas
+
+**A CSS class that sets `display` silently defeats the `hidden` attribute.** Show/hide in this app is done by toggling the `hidden` attribute, which works because the UA stylesheet carries `[hidden] { display: none }`. But that is a *user-agent origin* rule, and any author-origin declaration beats it — so the moment a class on the same element sets `display` (`flex`, `grid`, `block`, anything), the element stays visible with `hidden` set, with no error and nothing in the console to hint at it. The fix is an explicit override per class:
+
+```css
+.loading-screen[hidden] { display: none; }
+.canvas-area[hidden]    { display: none; }
+```
+
+Both of those exist in `src/style.css` because this shipped twice — first `.loading-screen` (a loading overlay drawn on top of the intro screen while carrying `hidden`), then `.canvas-area` later, in exactly the same way. **Any new `.hidden`-toggled element whose class sets `display` needs the same one-line override**, and it will not be caught by the test suite: jsdom applies no UA stylesheet, so a unit test asserting `el.hidden === true` passes while the real browser still paints the element. `.tab-panel[hidden]` is the third instance of the same pattern. (`multiplayer-game-state-spec.md` refers to this as "a documented past bug class in this project" — this is that documentation.)
+
+**No canvas overlay hosts an interactive control.** Every settings-shaped control in this codebase is DOM in `#sidebar-header` backed by `localStorage`; the canvas overlays are strictly transient, non-interactive feedback (toasts, briefings, the pause and end screens). That is an architectural convention rather than a style preference — a control painted into the canvas would need its own hit-testing, focus handling and accessibility story, none of which exist here. Put new settings in the sidebar.
+
 ## Rendering Performance
 
 A 2026-07 perf audit built a repeatable measurement harness (`npm run perf:bench`/`npm run perf:report`, real-clock Playwright runs with per-frame phase timing via `?perfDebug=1`) rather than tuning off intuition, specifically to answer whether `WALL_EDGE_ANTIALIASING_ENABLED` and `RESPONSIVE_CANVAS_SCALING_ENABLED` were worth shipping on by default — both had shipped disabled ("perf impact under measurement") until this audit ran. Interleaved A/B across a benchmark scenario matrix (idle, replay-combat, particle stress, a huge GitHub-repo map, bot play) found antialiasing under the harness's 0.2ms/frame detection floor on demo-scale maps and only ~+0.4ms/frame on a 160×160 monster map, and canvas scaling completely free both headless and in an attended on-screen A/B (the compositor upscale costs nothing measurable) — both flags were flipped to `true`. See [Feature Flags](architecture.md#feature-flags) for the current defaults and `perf-findings.json` (repo root) for the full per-finding writeup.
