@@ -1400,6 +1400,13 @@ export class Bot {
     this.logger.wpDebug?.(`[wpdebug] learned open door run at (${x},${y}) tile=${tile}`);
   }
 
+  // `this.tuning` is passed explicitly to every `combatPolicy` helper, including
+  // where the default would have been fine. `this.tuning` is a *new* object
+  // (`{ ...DEFAULT_TUNING, ...opts.tuning }`), so an omitted argument silently
+  // falls back to the unmodified defaults — which is invisible until an A/B
+  // overrides the one key that call site reads, at which point the baseline
+  // quietly runs candidate behaviour and the comparison is worthless. Caught
+  // exactly there, on Stage 6's `PREEMPTIVE_ENGAGE` switch.
   async driveToward(point, eps, maxTicks) {
     let { player, enemies, mines, projectiles } = await this.readFull();
     // `maxTicks` is a budget for *navigation*, not for wall-clock. A decision
@@ -1437,7 +1444,7 @@ export class Bot {
       this.#noteDoorUnderFoot(player);
       // Engaged means `tick()` will fight rather than navigate this decision —
       // exactly `pickThreat`'s own gate, so the two can't disagree.
-      if (!this.ignoreThreats && pickThreat(enemies, player, this.profile, this.map)) combatTicks++;
+      if (!this.ignoreThreats && pickThreat(enemies, player, this.profile, this.map, this.tuning)) combatTicks++;
       const prevX = player.x;
       const prevY = player.y;
       ({ player, enemies, mines, projectiles } = await this.tick(player, enemies, mines, point, this.map, projectiles));
@@ -1459,7 +1466,7 @@ export class Bot {
     let { player, enemies, mines, projectiles } = await this.readFull();
     for (let t = 0; t < maxTicks; t++) {
       if (player.state !== "playing") return { state: player.state };
-      const threat = pickThreat(enemies, player, this.profile, this.map);
+      const threat = pickThreat(enemies, player, this.profile, this.map, this.tuning);
       if (!threat) {
         const currentAngle = Math.atan2(player.dirY, player.dirX);
         const delta = angleDelta(currentAngle, targetAngle);
