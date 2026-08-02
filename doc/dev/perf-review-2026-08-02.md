@@ -4,7 +4,9 @@ Audit of the "does not hold 60fps" report on the reference machine (Ryzen 7 5800
 
 **Result: reproduced on the first attempt, root-caused, and the cause is a single mechanism.**
 
-Every per-frame **stroked or non-rectangular canvas draw** — `beginPath`/`moveTo`/`lineTo`/`arc` followed by `fill()`/`stroke()`, **and `strokeRect()`** — forces Chrome's GPU-process canvas rasteriser out of its batched quad path and into a coverage/stencil pass. On an accelerated 2D canvas that already carries the raycaster's ~2,600 quads plus a full-canvas `putImageData`, that pass misses the vsync deadline. The penalty is **fixed per frame and effectively all-or-nothing**: one path fill costs the same as sixty-four, and the frame affords exactly one `strokeRect`.
+Any per-frame canvas draw that **Skia cannot emit as axis-aligned quads** forces Chrome's GPU-process rasteriser out of its batched quad path and into a coverage pass. On an accelerated 2D canvas already carrying the raycaster's ~2,600 quads plus a full-canvas `putImageData`, that pass misses the vsync deadline. The penalty is **fixed per frame and all-or-nothing**: one such call costs the same as sixty-four, and it does not matter where in the frame it lands.
+
+In the class: `fill()` and `stroke()` of a path, and `strokeRect()` **while `lineJoin` is `"round"`**. Not in the class, all verified by controlled injection: `strokeRect()` under the default miter join, `strokeText()`, `fillRect()` by the thousand, `drawImage()` scaled or not, and an axis-aligned rect `clip()`. Getting that membership right took three rounds and two retractions — see the correction immediately below, and §6.
 
 > **Correction (2026-08-02, during Phase 3) — and a correction to the correction.** This document originally scoped the mechanism to *non-rectangular* geometry and listed `strokeRect` under "examined and found fine". Implementing the fix showed that was wrong: converting all 26 path ops to pre-rendered sprites moved idle from 51.3 to 51.8fps — nothing — and only converting the six `strokeRect`s as well got it to 58.9.
 >
@@ -292,17 +294,30 @@ Final measurement, all four scenarios, after everything:
 
 **Is `outlineRect` still earning its place, now that plain `strokeRect` is known to be free?** Yes, and it was checked rather than assumed: temporarily stubbing `outlineRect` back to `ctx.strokeRect` and re-measuring gave idle 48.8, combat 48.1, automap-closed 45.5 — a ~10fps regression, far above the 3% revert bar. Keeping it also makes every call site immune to the `lineJoin` trap rather than dependent on a context flag set somewhere else, which is the more valuable property: the bug was *never visible at the call site*.
 
-### P2 — The benchmark harness cannot see this class of bug
+### P2 — The benchmark harness cannot see this class of bug — **DONE 2026-08-02**
 **Measured cost:** not a frame cost — a tooling gap that cost this project one wrong "environmental" conclusion (finding T241, 2026-07-18) and however long the symptom has been live since.
 **Mechanism:** two independent blind spots. (a) `busy` measures display-list *recording*; rasterisation happens in the GPU process afterwards and is invisible to it. (b) `scripts/run-perf-benchmark.mjs` defaults to and recommends headless (`performance.md`: "Headed and headless busy medians match; prefer headless for unattended collection") — and headless uses software canvas raster, where the penalty does not exist at all. Both statements in that doc are true and both conclusions drawn from them were wrong.
 **Proposed fix:** add a **presented-frame** metric alongside busy — dropped-frame count and the interval p95/p99 from the injected rAF sampler, which `scripts/lib/perfSampler.mjs` already collects but which the report treats as secondary to busy. Add a headed cell that is not optional. Update `doc/dev/performance.md`'s "prefer headless" guidance to "headless for JS-cost A/B only; headed is mandatory for anything touching draw-call shape."
 **Effort:** M. **Risk:** none (scripts only).
 
-### P3 — Add a regression guard for per-frame path calls
+**Outcome.** Presented-frame stats (dropped count/pct; frame period derived from the run's own median rather than assuming 60Hz; dropped = interval ≥ 1.5 periods) now ride alongside busy through the run JSON, the per-run console line — which leads with them — the calibration metrics, and the HTML report. Runs captured before the field existed render `n/a` instead of crashing, matching the harness's existing newer-schema fallback convention. Headless prints a startup warning and tags the number `[HEADLESS — cannot see raster cost]`, so it cannot be quoted without the caveat. `performance.md` now documents both metrics and this demonstration, same build and scenario 30 seconds apart:
+
+| | presented | busy (median) |
+|---|---|---|
+| headed | 59.4fps, 7/713 dropped (1.0%) | 6.60ms |
+| headless | 60.0fps, 0/600 dropped (0.0%) | 6.60ms |
+
+Identical busy time; the headless run cannot distinguish a healthy build from a broken one.
+
+### P3 — Add a regression guard for per-frame path calls — **DONE 2026-08-02**
 **Measured cost:** preventative.
 **Mechanism:** this bug is invisible in code review, invisible in unit tests, invisible in the headless harness, and costs 25 % of the frame budget. It will come back the next time someone draws a circle.
 **Proposed fix:** a dev-mode (`import.meta.env.DEV`) counter on the scene context that tallies `fill`/`stroke`/`arc`/`clip` calls per frame and warns above zero, plus a Vitest case that renders one frame against a mock context and asserts the count. Same shape as the existing `?perfDebug=1` gating, so it never ships in `dist/`.
 **Effort:** S. **Risk:** none.
+
+**Outcome.** `src/engine/renderCost.test.ts` — 9 cases covering all seven weapon viewmodels × flash × recoil, the minimap, compass, automap, HUD, crosshair, every toast and banner, all combat effects, and every world-billboard collector. It asserts zero `fill()`/`stroke()`/`strokeRect()` on the scene canvas; path *building* is allowed, since it costs nothing until something rasterises it and the automap's viewport `clip()` legitimately builds a rect path. Implemented as a CI test rather than the runtime counter originally sketched: it catches the regression at commit time instead of at bench time, and adds no shipped code.
+
+Two things make it non-vacuous, both learned the hard way in this audit. It stubs an offscreen context that actually paints so `pathSprites`' capability probe passes and the renderers take their **fast** path — otherwise it would exercise the direct-draw fallback, which is *supposed* to use paths, and pass while testing nothing; that condition is the file's first assertion. And it was **verified red**: injecting a raw `ctx.strokeRect` into `drawHud` fails with the call count, the call site and the suggested replacement.
 
 ### P4 — Automap issues one `fillRect` per visible tile per frame
 **Measured cost:** **not reproduced at scale — flagged, not proven.** On the demo level 1 the automap adds only ~140 fillRects over the idle scene (2,102 vs 1,961) because `map.visited` gates it and the player had explored little; at that size it is free (§6 shows 3,000 extra fillRects cost nothing). But `automap.ts:33` sets `CELL_PX = 3` and the loop at `automap.ts:138-182` is bounded by the viewport, not the map: a fully-explored map fills 205 × 106 ≈ **21,700 fillRects per frame**.

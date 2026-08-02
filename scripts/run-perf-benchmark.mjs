@@ -7,9 +7,21 @@
  * Measures REAL frame timings (unlike the balancing bot's virtual clock):
  * frame intervals via an injected rAF sampler (`scripts/lib/perfSampler.mjs`,
  * zero game-source changes) and per-phase busy time by scraping the
- * `?perfDebug=1` console output (`scripts/lib/perfConsoleParse.mjs`). Busy
- * time is the primary A/B metric — rAF pins intervals to vsync, so a cost
- * delta smaller than the frame budget is invisible in intervals alone.
+ * `?perfDebug=1` console output (`scripts/lib/perfConsoleParse.mjs`).
+ *
+ * TWO metrics, and they catch different bugs:
+ *
+ * - **Busy time** — the A/B metric for anything that costs CPU inside the
+ *   frame callback. rAF pins intervals to vsync, so a sub-frame cost delta is
+ *   invisible in intervals alone.
+ * - **Presented frames** (dropped-frame count/percentage) — the metric for
+ *   anything that costs time OUTSIDE the frame callback. Busy measures the
+ *   time to *record* canvas draw calls; rasterising that display list happens
+ *   afterwards in the GPU process, and busy cannot see it at all. A change
+ *   that leaves busy at 6.1ms and drops a third of the frames is exactly what
+ *   the 2026-08 audit found. Only meaningful HEADED (see below).
+ *
+ * Neither is a substitute for the other. Report both.
  *
  * Server: honors CODEENSTEIN_PERF_URL if a server is already running,
  * otherwise spawns its own `vite --port 5199 --strictPort`. It deliberately
@@ -27,6 +39,12 @@
  * Options: --runs N (default 5), --duration SECS (default 30; s2 uses 60),
  *   --browser chromium|firefox|webkit, --headless (or CODEENSTEIN_PERF_HEADLESS=1),
  *   --warmup SECS (default 5).
+ *
+ * HEADLESS IS NOT A FREE CHOICE. It is correct for busy-time A/Bs and wrong
+ * for anything touching draw-call shape: headless Chromium rasterises the
+ * canvas in software, where the GPU-process coverage-pass penalty that costs
+ * ~10ms/frame simply does not exist. Every scenario reads a flat 60fps with
+ * zero dropped frames there. The harness warns when you use it.
  * A/B: --flag aa|scaling temporarily flips the corresponding compile-time
  *   const in-place (working tree for that file must be clean), interleaving
  *   baseline/flagged runs A,B,A,B,... against thermal drift, and ALWAYS
@@ -487,9 +505,47 @@ function summarizeIntervals(deltas) {
   };
 }
 
+/**
+ * Presented-frame health: how many frames the compositor actually missed.
+ *
+ * This is a SEPARATE metric from busy time and it exists because busy time is
+ * structurally blind to a whole class of bug. `busy` measures the time to
+ * *record* canvas draw calls; the rasterisation of that display list happens
+ * afterwards, in the GPU process. A change that leaves busy at 6.1ms and
+ * still drops a third of the frames is not hypothetical — it is exactly what
+ * the 2026-08 audit found, and what the 2026-07 audit misfiled as
+ * "environmental" because it only ever looked at busy (see
+ * `doc/dev/perf-review-2026-08-02.md`).
+ *
+ * The display's frame period is derived from the run's own median rather than
+ * assumed to be 60Hz, so this stays meaningful on a 120Hz panel. A "dropped"
+ * frame is an interval at or beyond 1.5 periods — i.e. one that missed a
+ * vsync — which is the shape the failure actually takes: a clean bimodal
+ * split between 1x and 2x the period, never a gentle slide.
+ */
+function summarizePresented(deltas, { headless }) {
+  const stats = numberStats(deltas);
+  if (!stats) return null;
+  const framePeriodMs = stats.median;
+  const dropped = deltas.filter((d) => d >= framePeriodMs * 1.5).length;
+  return {
+    framePeriodMs,
+    fps: deltas.length ? 1000 / (deltas.reduce((a, b) => a + b, 0) / deltas.length) : 0,
+    droppedCount: dropped,
+    droppedPct: deltas.length ? (100 * dropped) / deltas.length : 0,
+    frames: deltas.length,
+    // Headless Chromium rasterises the canvas in software, on a path where
+    // the GPU-process coverage-pass penalty simply does not exist — every
+    // scenario reads a flat 60fps with zero drops there regardless of what
+    // the renderer does. The number below is real, it just cannot see the
+    // class of regression it exists to catch.
+    meaningful: !headless,
+  };
+}
+
 /** One measured run: fresh context/page → scenario setup → warmup (discarded)
  * → capture window → read sampler + perf-log collector. */
-async function measureRun(browser, scenarioId, baseUrl, { warmupSec, durationSec }) {
+async function measureRun(browser, scenarioId, baseUrl, { warmupSec, durationSec, headless }) {
   const scenario = SCENARIOS[scenarioId];
   if (!scenario) throw new Error(`unknown scenario "${scenarioId}" (have: ${Object.keys(SCENARIOS).join(", ")})`);
 
@@ -517,6 +573,7 @@ async function measureRun(browser, scenarioId, baseUrl, { warmupSec, durationSec
     // it pool silently into the medians (a locked screen once contaminated
     // three whole batches this way).
     const intervalCheck = summarizeIntervals(frames.deltas);
+    const presented = summarizePresented(frames.deltas, { headless: Boolean(headless) });
     const throttled = Boolean(intervalCheck && intervalCheck.median > 100);
     if (throttled) console.log(`[perf:bench]   WARNING: median interval ${intervalCheck.median.toFixed(0)}ms — window throttled/occluded, run INVALID`);
     // Per-frame busy time from the ?perfDebug=1 stats hook — every frame, not
@@ -541,6 +598,7 @@ async function measureRun(browser, scenarioId, baseUrl, { warmupSec, durationSec
       throttled,
       meta,
       intervals: intervalCheck,
+      presented,
       frameCount: frames.total,
       rawDeltas: frames.deltas, // kept raw for the report's histograms/CDFs
       heapSamples,
@@ -593,11 +651,18 @@ async function runCell(browser, cell, baseUrl, outDir, manifest) {
       const outFile = path.join(outDir, `${cell.id}.run${i + 1}.json`);
       fs.writeFileSync(outFile, `${JSON.stringify({ cell, runIndex: i + 1, ...run }, null, 2)}\n`);
       const iv = run.intervals;
+      const pr = run.presented;
       const busy = run.busyPerFrame ?? run.perfLog.busyMs;
+      // Presented-frame health first, busy time second: a regression that
+      // leaves busy flat and drops a third of the frames is a real and
+      // already-observed failure mode, so the metric that can see it leads.
       console.log(
-        `[perf:bench]   median=${iv.median.toFixed(2)}ms p95=${iv.p95.toFixed(2)}ms ` +
-          `>16.7ms=${iv.pctOver16_7.toFixed(1)}% busy(med)=${busy ? busy.median.toFixed(2) : "n/a"}ms ` +
-          `busyN=${busy ? busy.n : 0} slow=${run.perfLog.slowCount}`,
+        `[perf:bench]   presented: ${pr.fps.toFixed(1)}fps dropped=${pr.droppedCount}/${pr.frames} ` +
+          `(${pr.droppedPct.toFixed(1)}%)${pr.meaningful ? "" : " [HEADLESS — cannot see raster cost]"}`,
+      );
+      console.log(
+        `[perf:bench]   busy(med)=${busy ? busy.median.toFixed(2) : "n/a"}ms busyN=${busy ? busy.n : 0} ` +
+          `interval med=${iv.median.toFixed(2)}ms p95=${iv.p95.toFixed(2)}ms slow=${run.perfLog.slowCount}`,
       );
     } finally {
       if (flagDef) restoreFlag(flagDef);
@@ -615,7 +680,7 @@ function buildCells(opts) {
   const cells = [];
   for (const scenario of opts.scenarios) {
     const durationSec = opts.durationSec ?? SCENARIOS[scenario]?.defaultDurationSec ?? 30;
-    const base = { scenario, browser: opts.browser, runs: opts.runs, durationSec, warmupSec: opts.warmupSec };
+    const base = { scenario, browser: opts.browser, runs: opts.runs, durationSec, warmupSec: opts.warmupSec, headless: opts.headless };
     if (opts.flag) {
       const flaggedLabel = `${opts.flag}-${FLAG_DEFS[opts.flag].invert ? "off" : "on"}`;
       cells.push({ ...base, id: `${scenario}.${opts.browser}.baseline`, flag: opts.flag, variant: "baseline" });
@@ -662,6 +727,7 @@ function writeCalibration(outDir) {
   const metrics = {
     intervalMedianMs: runs.map((r) => r.intervals.median),
     intervalP95Ms: runs.map((r) => r.intervals.p95),
+    presentedDroppedPct: runs.map((r) => r.presented?.droppedPct).filter((v) => v !== undefined),
     busyMedianMs: runs.map((r) => (r.busyPerFrame ?? r.perfLog.busyMs)?.median).filter((v) => v !== undefined),
   };
   const calibration = {};
@@ -726,6 +792,17 @@ async function main() {
   if (opts.flag) assertFlagFileClean(FLAG_DEFS[opts.flag]);
 
   const server = await ensureServer();
+  if (opts.headless) {
+    console.log(
+      "[perf:bench] HEADLESS: busy-time A/B only. Headless rasterises the canvas in software, on a\n" +
+        "[perf:bench]           path where the GPU-process coverage-pass penalty does not exist — every\n" +
+        "[perf:bench]           scenario reads a flat 60fps with zero dropped frames there no matter what\n" +
+        "[perf:bench]           the renderer does. Anything touching draw-call SHAPE (paths, strokes,\n" +
+        "[perf:bench]           joins) MUST be measured headed, or it will look free. This blind spot\n" +
+        "[perf:bench]           produced one wrong 'environmental' conclusion already — see\n" +
+        "[perf:bench]           doc/dev/perf-review-2026-08-02.md.",
+    );
+  }
   const browser = await BROWSERS[opts.browser].launch({
     headless: opts.headless,
     args:
