@@ -22,7 +22,7 @@ import type { CodeEntity, ParsedFile } from "../parser/types";
 import { mulberry32 } from "../prng";
 import type { GameMap, Point, Room, Tile } from "./types";
 import { ACID_OVERFLOW_ENABLED, planAcidOverflows } from "./generation/acidOverflow";
-import { breakUpLongCorridors } from "./generation/breakup";
+import { dressCorridors } from "./generation/breakup";
 import { connectLoops, connectRooms } from "./generation/corridors";
 import { placeDoors, placeKeys } from "./generation/doorsKeys";
 import { spawnEdgeCaseEnemies, spawnEnemies } from "./generation/enemies";
@@ -226,7 +226,7 @@ export class MapGenerator {
     // interrupt any run past MAX_CORRIDOR_STRAIGHT_LENGTH with a small room
     // (or, failing that, a forced jog) right after the grid is fully carved,
     // since run length is a property of the whole grid, not any single leg.
-    const breakupRooms = breakUpLongCorridors(grid, rooms, size, this.opts.roomMargin, rng);
+    const breakupRooms = dressCorridors(grid, rooms, size, this.opts.roomMargin, rng);
 
     // AST-driven carving passes run here, last among everything that cuts new
     // space out of the map: each one only ever claims *untouched rock* (plus a

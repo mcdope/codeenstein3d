@@ -102,45 +102,116 @@ export function connectLoops(rooms: Room[], grid: Tile[][], rng: () => number): 
 }
 
 /**
+ * Cumulative weights for a corridor's width in tiles: 60% stay a 1-tile
+ * squeeze, 30% open to 2, 10% to 3. Width is rolled per corridor rather than
+ * fixed at 1 because a level where *every* connection is the same
+ * single-file passage reads as one undifferentiated warren — with a spread
+ * there are main halls and there are service crawls, and the difference is
+ * legible from inside the level rather than only on the map.
+ *
+ * The knock-on effects are wanted, not tolerated. `isChokePoint` reports
+ * false in anything wider than a tile, so `placeTraps` concentrates its
+ * hazards in the narrow passages; and a wide corridor's mouth is a wide
+ * doorway, which `doorwayTiles` has counted as a single gate since the
+ * one-key-per-doorway fix.
+ */
+const CORRIDOR_WIDTH_WEIGHTS = [0.6, 0.9];
+
+/** Roll a corridor width from `CORRIDOR_WIDTH_WEIGHTS`. */
+function rollCorridorWidth(rng: () => number): number {
+  const roll = rng();
+  for (let i = 0; i < CORRIDOR_WIDTH_WEIGHTS.length; i++) {
+    if (roll < CORRIDOR_WIDTH_WEIGHTS[i]) return i + 1;
+  }
+  return CORRIDOR_WIDTH_WEIGHTS.length + 1;
+}
+
+/**
  * Carve a corridor between two points. Short hops stay a single L-turn; long
- * ones (see `corridorWaypoints`) pick up 1-2 jittered intermediate waypoints so
+ * ones (see `corridorWaypoints`) pick up jittered intermediate waypoints so
  * the path bends instead of offering one long straight sightline. Each leg
  * alternates which axis goes first, so consecutive jogs don't all bend the
- * same way.
+ * same way. The whole corridor shares one rolled width.
  */
 function carveCorridor(grid: Tile[][], from: Point, to: Point, rng: () => number, carved?: Point[]): void {
   const waypoints = corridorWaypoints(from, to, grid.length, rng);
+  const width = rollCorridorWidth(rng);
   for (let i = 1; i < waypoints.length; i++) {
     const a = waypoints[i - 1];
     const b = waypoints[i];
     if (i % 2 === 1) {
-      carveHLine(grid, a.x, b.x, a.y, carved);
-      carveVLine(grid, a.y, b.y, b.x, carved);
+      carveHBand(grid, a.x, b.x, a.y, width, carved);
+      carveVBand(grid, a.y, b.y, b.x, width, carved);
     } else {
-      carveVLine(grid, a.y, b.y, a.x, carved);
-      carveHLine(grid, a.x, b.x, b.y, carved);
+      carveVBand(grid, a.y, b.y, a.x, width, carved);
+      carveHBand(grid, a.x, b.x, b.y, width, carved);
     }
   }
 }
 
+/** Offsets of a `width`-tile band's rows/columns relative to its centre line,
+ * kept inside the map border. Biased so the extra tiles of an even width sit
+ * on the low side, which keeps a 2-wide corridor's centre line walkable. */
+function bandOffsets(centre: number, width: number, size: number): number[] {
+  const offsets: number[] = [];
+  const first = -Math.floor((width - 1) / 2);
+  for (let i = 0; i < width; i++) {
+    const line = centre + first + i;
+    if (line >= 1 && line <= size - 2) offsets.push(line);
+  }
+  return offsets;
+}
+
+function carveHBand(grid: Tile[][], x1: number, x2: number, y: number, width: number, carved?: Point[]): void {
+  for (const line of bandOffsets(y, width, grid.length)) carveHLine(grid, x1, x2, line, carved);
+}
+
+function carveVBand(grid: Tile[][], y1: number, y2: number, x: number, width: number, carved?: Point[]): void {
+  for (const line of bandOffsets(x, width, grid.length)) carveVLine(grid, y1, y2, line, carved);
+}
+
+/** Odds that a corridor long enough to bend takes the staircase shape rather
+ * than the wide 1-2 jog. */
+const CORRIDOR_STAIRCASE_CHANCE = 0.4;
+/** Waypoints in a staircase run — enough steps that the path reads as walking
+ * diagonally through the rock rather than as a hallway with a kink in it. */
+const STAIRCASE_MIN_STEPS = 3;
+const STAIRCASE_MAX_STEPS = 4;
+/** Perpendicular jitter per staircase waypoint. Deliberately small: the shape
+ * comes from the number of turns, and a large jitter would just reproduce the
+ * jog shape with extra corners. */
+const STAIRCASE_JITTER = 1;
+
 /**
  * Intermediate turn points between two room centers. Distances at/under
- * `CORRIDOR_JOG_THRESHOLD` stay a plain two-point (single L-turn) path; longer
- * ones get 1-2 waypoints placed along the line and jittered perpendicular to
- * it, clamped inside the map border.
+ * `CORRIDOR_JOG_THRESHOLD` stay a plain two-point (single L-turn) path.
+ * Longer ones take one of two shapes, rolled per corridor:
+ *
+ * - **jog** — 1-2 waypoints placed along the line and jittered up to
+ *   `CORRIDOR_JOG_JITTER` perpendicular to it. Reads as a hallway that bends.
+ * - **staircase** — 3-4 waypoints with only a tile of jitter, so the
+ *   alternating axis-first legs step the path diagonally across the map.
+ *
+ * Two shapes rather than one because the jog alone gave every long corridor
+ * in the game the same silhouette. Both are clamped inside the map border.
  */
 function corridorWaypoints(from: Point, to: Point, size: number, rng: () => number): Point[] {
   const manhattan = Math.abs(to.x - from.x) + Math.abs(to.y - from.y);
   if (manhattan <= CORRIDOR_JOG_THRESHOLD) return [from, to];
 
-  const jogs = Math.min(2, Math.floor(manhattan / CORRIDOR_JOG_THRESHOLD));
+  const staircase = rng() < CORRIDOR_STAIRCASE_CHANCE;
+  const jitter = staircase ? STAIRCASE_JITTER : CORRIDOR_JOG_JITTER;
+  const steps = staircase
+    ? STAIRCASE_MIN_STEPS + Math.floor(rng() * (STAIRCASE_MAX_STEPS - STAIRCASE_MIN_STEPS + 1))
+    : Math.min(2, Math.floor(manhattan / CORRIDOR_JOG_THRESHOLD));
+
   const points: Point[] = [from];
-  for (let i = 1; i <= jogs; i++) {
-    const t = i / (jogs + 1);
+  for (let i = 1; i <= steps; i++) {
+    const t = i / (steps + 1);
     const bx = from.x + (to.x - from.x) * t;
     const by = from.y + (to.y - from.y) * t;
-    const jx = clamp(Math.round(bx + (rng() * 2 - 1) * CORRIDOR_JOG_JITTER), 1, size - 2);
-    const jy = clamp(Math.round(by + (rng() * 2 - 1) * CORRIDOR_JOG_JITTER), 1, size - 2);
+    const jx = clamp(Math.round(bx + (rng() * 2 - 1) * jitter), 1, size - 2);
+    const jy = clamp(Math.round(by + (rng() * 2 - 1) * jitter), 1, size - 2);
     points.push({ x: jx, y: jy });
   }
   points.push(to);

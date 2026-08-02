@@ -7,7 +7,7 @@ import type { CodeEntity } from "../../parser/types";
 import type { Rect, Room, Tile } from "../types";
 import { carveHLine, carveVLine, isCorridorFloor } from "./corridors";
 import { makeRoom, roomsOverlap } from "./geometry";
-import { breakUpLongCorridors, breakupTileKeys } from "./breakup";
+import { dressCorridors, breakupTileKeys } from "./breakup";
 
 function entity(overrides: Partial<CodeEntity> = {}): CodeEntity {
   return { name: "f", kind: "function", startLine: 1, endLine: 5, complexityScore: 3, nestingDepth: 0, ...overrides };
@@ -68,12 +68,12 @@ describe("breakupTileKeys", () => {
   });
 });
 
-describe("breakUpLongCorridors", () => {
+describe("dressCorridors", () => {
   it("leaves a short corridor (<= MAX_CORRIDOR_STRAIGHT_LENGTH) untouched", () => {
     const g = grid(20);
     carveHLine(g, 1, 8, 5); // length 8, at/under the 9-tile threshold
     const before = g.map((row) => [...row]);
-    const breakupRooms = breakUpLongCorridors(g, [], 20, 1, mulberry32(1));
+    const breakupRooms = dressCorridors(g, [], 20, 1, mulberry32(1));
     expect(g).toEqual(before);
     expect(breakupRooms).toEqual([]);
   });
@@ -81,7 +81,7 @@ describe("breakUpLongCorridors", () => {
   it("interrupts a long straight corridor so no unbroken run exceeds the threshold", () => {
     const g = grid(40);
     carveHLine(g, 1, 35, 5);
-    const breakupRooms = breakUpLongCorridors(g, [], 40, 1, mulberry32(1));
+    const breakupRooms = dressCorridors(g, [], 40, 1, mulberry32(1));
     const longest = longestHorizontalCorridorRun(g, 5, 1, 35, [], breakupRooms);
     expect(longest).toBeLessThanOrEqual(9);
   });
@@ -89,7 +89,7 @@ describe("breakUpLongCorridors", () => {
   it("keeps the corridor's two endpoints connected after breaking it up", () => {
     const g = grid(40);
     carveHLine(g, 1, 35, 5);
-    breakUpLongCorridors(g, [], 40, 1, mulberry32(1));
+    dressCorridors(g, [], 40, 1, mulberry32(1));
     expect(reachable(g, { x: 1, y: 5 }, { x: 35, y: 5 })).toBe(true);
   });
 
@@ -98,8 +98,8 @@ describe("breakUpLongCorridors", () => {
     const g2 = grid(40);
     carveHLine(g1, 1, 35, 5);
     carveHLine(g2, 1, 35, 5);
-    const r1 = breakUpLongCorridors(g1, [], 40, 1, mulberry32(42));
-    const r2 = breakUpLongCorridors(g2, [], 40, 1, mulberry32(42));
+    const r1 = dressCorridors(g1, [], 40, 1, mulberry32(42));
+    const r2 = dressCorridors(g2, [], 40, 1, mulberry32(42));
     expect(g1).toEqual(g2);
     expect(r1).toEqual(r2);
   });
@@ -107,7 +107,7 @@ describe("breakUpLongCorridors", () => {
   it("breaks up a long vertical corridor too", () => {
     const g = grid(40);
     carveVLine(g, 1, 35, 5);
-    const breakupRooms = breakUpLongCorridors(g, [], 40, 1, mulberry32(2));
+    const breakupRooms = dressCorridors(g, [], 40, 1, mulberry32(2));
     expect(reachable(g, { x: 5, y: 1 }, { x: 5, y: 35 })).toBe(true);
     expect(breakupRooms.length + 1).toBeGreaterThan(0); // ran without throwing regardless of outcome
   });
@@ -120,36 +120,36 @@ describe("breakUpLongCorridors", () => {
     }
     carveHLine(g, 1, 14, 5);
     carveHLine(g, 20, 38, 5);
-    const breakupRooms = breakUpLongCorridors(g, [room], 40, 1, mulberry32(3));
+    const breakupRooms = dressCorridors(g, [room], 40, 1, mulberry32(3));
     for (const br of breakupRooms) {
       expect(roomsOverlap(br, room, 0)).toBe(false);
     }
   });
 
   it("handles an empty grid without throwing", () => {
-    expect(() => breakUpLongCorridors([], [], 0, 1, mulberry32(1))).not.toThrow();
+    expect(() => dressCorridors([], [], 0, 1, mulberry32(1))).not.toThrow();
   });
 
   it("returns [] and leaves the grid connected when there are no corridors at all", () => {
     const g = grid(10);
-    const breakupRooms = breakUpLongCorridors(g, [], 10, 1, mulberry32(1));
+    const breakupRooms = dressCorridors(g, [], 10, 1, mulberry32(1));
     expect(breakupRooms).toEqual([]);
   });
 
   it("handles a corridor running the full width of a small map (tight bounds)", () => {
     const g = grid(12);
     carveHLine(g, 1, 10, 5);
-    expect(() => breakUpLongCorridors(g, [], 12, 1, mulberry32(9))).not.toThrow();
+    expect(() => dressCorridors(g, [], 12, 1, mulberry32(9))).not.toThrow();
     expect(reachable(g, { x: 1, y: 5 }, { x: 10, y: 5 })).toBe(true);
   });
 
   it("falls through to the wide safety-net search when the primary pass's targets are all blocked", () => {
     // A 3-tall corridor means isChokePoint never holds anywhere along it, so
-    // tryForceJog can never succeed — only room injection can break up the
+    // placeChicane can never succeed — only room injection can break up the
     // run. Real rooms crowd every one of the primary pass's evenly-spaced
     // target zones (±3 tiles of jitter each), forcing every primary attempt
     // to fail via overlap; open gaps between/around them are only reachable
-    // by breakUpRunWide's full-span random search on the safety-net rescan.
+    // by splitRunWide's full-span random search on the safety-net rescan.
     const g = grid(60);
     for (let y = 4; y <= 6; y++) for (let x = 1; x <= 58; x++) g[y][x] = 0;
     const blockers: Room[] = [8, 17, 27, 37, 46].map((cx) =>
@@ -160,7 +160,7 @@ describe("breakUpLongCorridors", () => {
         for (let x = b.x; x < b.x + b.w; x++) g[y][x] = 0;
       }
     }
-    const breakupRooms = breakUpLongCorridors(g, blockers, 60, 1, mulberry32(17));
+    const breakupRooms = dressCorridors(g, blockers, 60, 1, mulberry32(17));
     const longest = longestHorizontalCorridorRun(g, 5, 1, 58, blockers, breakupRooms);
     expect(longest).toBeLessThanOrEqual(9);
   });
@@ -169,11 +169,11 @@ describe("breakUpLongCorridors", () => {
     // A corridor on row y=1 (the minimum interior row) can never fit an
     // injected room "above" it — the room's footprint would go out of
     // bounds (rect.y < 1) on every attempt — so this run can only be broken
-    // up via tryForceJog, exercising its success path (a real 1-wide
+    // up via placeChicane, exercising its success path (a real 1-wide
     // chokepoint, with room to jog downward).
     const g = grid(20);
     carveHLine(g, 1, 15, 1);
-    const breakupRooms = breakUpLongCorridors(g, [], 20, 1, mulberry32(6));
+    const breakupRooms = dressCorridors(g, [], 20, 1, mulberry32(6));
     expect(breakupRooms).toEqual([]); // only jogs happened, no rooms injected
     const longest = longestHorizontalCorridorRun(g, 1, 1, 15, [], []);
     expect(longest).toBeLessThanOrEqual(9);
@@ -188,7 +188,7 @@ describe("breakUpLongCorridors", () => {
     // design (best-effort placement, never a hard failure).
     const g: Tile[][] = Array.from({ length: 4 }, () => Array.from({ length: 20 }, () => 1 as Tile));
     for (let x = 1; x <= 15; x++) g[1][x] = 0;
-    expect(() => breakUpLongCorridors(g, [], 4, 1, mulberry32(1))).not.toThrow();
+    expect(() => dressCorridors(g, [], 4, 1, mulberry32(1))).not.toThrow();
   });
 
   it("rejects a forced jog whose detour would overlap a real room", () => {
@@ -205,25 +205,25 @@ describe("breakUpLongCorridors", () => {
     for (let y = blocker.y; y < blocker.y + blocker.h; y++) {
       for (let x = blocker.x; x < blocker.x + blocker.w; x++) g[y][x] = 0;
     }
-    expect(() => breakUpLongCorridors(g, [blocker], 20, 1, mulberry32(1))).not.toThrow();
+    expect(() => dressCorridors(g, [blocker], 20, 1, mulberry32(1))).not.toThrow();
   });
 
   it("breaks up a vertical corridor via room injection (exercises the axis='v' sightline branch)", () => {
     const g = grid(30);
     carveVLine(g, 1, 25, 5);
-    const breakupRooms = breakUpLongCorridors(g, [], 30, 1, mulberry32(2));
+    const breakupRooms = dressCorridors(g, [], 30, 1, mulberry32(2));
     expect(breakupRooms.length).toBeGreaterThan(0);
   });
 
   it("goes straight to the wide safety-net pass for a run just over the threshold (segments=1 skips the primary pass entirely)", () => {
-    // length 10 -> segments = ceil(10/10) = 1 -> breakUpRunAtPoints' loop
+    // length 10 -> segments = ceil(10/10) = 1 -> splitRun' loop
     // (`for (s=1; s<segments; s++)`) never runs at all, so this run is
     // untouched until the first safety-net rescan finds it and calls
-    // breakUpRunWide directly — exercising its own forced-jog success path
+    // splitRunWide directly — exercising its own forced-jog success path
     // (row 1 makes injection impossible, so only jog can resolve it).
     const g = grid(20);
     carveHLine(g, 1, 10, 1);
-    const breakupRooms = breakUpLongCorridors(g, [], 20, 1, mulberry32(1));
+    const breakupRooms = dressCorridors(g, [], 20, 1, mulberry32(1));
     expect(breakupRooms).toEqual([]);
     const longest = longestHorizontalCorridorRun(g, 1, 1, 10, [], []);
     expect(longest).toBeLessThanOrEqual(9);
@@ -236,6 +236,61 @@ describe("breakUpLongCorridors", () => {
     carveHLine(g, 1, 55, 35);
     carveVLine(g, 1, 55, 10);
     carveVLine(g, 1, 55, 30);
-    expect(() => breakUpLongCorridors(g, [], 60, 1, mulberry32(11))).not.toThrow();
+    expect(() => dressCorridors(g, [], 60, 1, mulberry32(11))).not.toThrow();
+  });
+
+  it("draws on more than one kind of feature rather than repeating a single motif", () => {
+    // The whole reason this module was generalised: the old vocabulary had
+    // two entries and put 277 instances of one of them across the campaign.
+    // Feature *shape* is the observable proxy for kind here — a 6-9 x 3
+    // colonnade, a 5-7 square plaza and a 2-wide alcove can't be confused.
+    const shapes = new Set<string>();
+    for (let seed = 0; seed < 40; seed++) {
+      const g = grid(60);
+      carveHLine(g, 1, 55, 30);
+      for (const rect of dressCorridors(g, [], 60, 1, mulberry32(seed))) {
+        shapes.add(`${rect.w}x${rect.h}`);
+      }
+    }
+    expect(shapes.size).toBeGreaterThan(6);
+  });
+
+  it("never severs the corridor it decorates, across many seeds and layouts", () => {
+    // Every widening treatment turns some cells back into wall — a baffle, a
+    // colonnade, a gateway neck, a plaza's corners. Each is only safe because
+    // it refuses to seal a cell that was already floor and always leaves one
+    // way through. This is the property that guarantees it, checked over
+    // enough seeds to catch a treatment that only occasionally traps itself.
+    for (let seed = 0; seed < 60; seed++) {
+      const g = grid(60);
+      carveHLine(g, 2, 56, 20);
+      carveVLine(g, 2, 56, 30); // crossing leg: gives the treatments pre-existing floor to route around
+      dressCorridors(g, [], 60, 1, mulberry32(seed));
+      expect(reachable(g, { x: 2, y: 20 }, { x: 56, y: 20 })).toBe(true);
+      expect(reachable(g, { x: 30, y: 2 }, { x: 30, y: 56 })).toBe(true);
+    }
+  });
+
+  it("decorates a corridor that is already short enough, budgeted by room count", () => {
+    // The ornament pass. Without it, packing rooms close together left the
+    // campaign with 6 corridor features in total and spawnEdgeCaseEnemies —
+    // which populates these rooms exclusively — with nowhere to work.
+    const rooms = Array.from({ length: 5 }, (_, i) => makeRoom(2 + i * 11, 2, 6, 6, entity()));
+    const g = grid(60);
+    for (const r of rooms) {
+      for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) g[y][x] = 0;
+    }
+    carveHLine(g, 4, 52, 20); // one run, under no obligation to be broken up
+
+    const withRooms = dressCorridors(g, rooms, 60, 1, mulberry32(4));
+    expect(withRooms.length).toBeGreaterThan(0);
+  });
+
+  it("places no ornaments when there are no rooms to budget against", () => {
+    const g = grid(30);
+    carveHLine(g, 2, 9, 15); // 8 tiles: over MIN_ORNAMENT_RUN_LENGTH, under the break threshold
+    const before = g.map((row) => [...row]);
+    expect(dressCorridors(g, [], 30, 1, mulberry32(5))).toEqual([]);
+    expect(g).toEqual(before);
   });
 });
