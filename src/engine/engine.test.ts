@@ -442,6 +442,9 @@ describe("RaycasterEngine — construction", () => {
       ]);
       expect(hooks!.getMines()).toEqual([]);
       expect(hooks!.getGridVersion()).toEqual(expect.any(Number));
+      // The level's own styleset, not a re-derivation — verify-wad-textures
+      // asserts stability by comparing this across two launches.
+      expect(hooks!.getStyleSet()).toBe(map.styleSet);
       expect(hooks!.getGrid()).toEqual(map.grid);
       // A copy, never the live array — a caller must not be able to mutate
       // engine state, and `PathField` floods over this exact grid.

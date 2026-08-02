@@ -1094,6 +1094,16 @@ export class RaycasterEngine {
         // as every other snapshot here: a caller must never be able to mutate
         // engine state, and `PathField`'s own flood reads this array directly.
         getGridVersion: () => this.gridVersion,
+        /** The level's styleset id. Exposed because "the same file always
+         * renders the same palette" is otherwise only checkable by sampling
+         * pixels, and a sampled frame is not a sound proxy for it: the grab
+         * happens with the world running, so a roaming enemy in the sampled
+         * band shifts the mean by several units between two launches of a
+         * byte-identical level (measured at 6-8 per channel on chromium, 4-5
+         * on webkit, ~0 on firefox — it scales with how far the engine gets
+         * in the settle window). The styleset is the thing actually under
+         * test, and comparing it is exact. */
+        getStyleSet: () => this.map.styleSet,
         getGrid: () => this.map.grid.map((row) => [...row]),
         // In-flight enemy bolts. Without this, a bot can see the enemy that
         // shot at it but not the shot itself — bolts have real flight time
