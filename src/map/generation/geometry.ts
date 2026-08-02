@@ -69,6 +69,49 @@ export function roomsOverlap(a: Rect, b: Rect, margin: number): boolean {
   );
 }
 
+/**
+ * One candidate footprint for a `w`x`h` room grown off `anchor`: a random side,
+ * a random `gapMin`..`gapMax` tiles of rock between the two, and a random
+ * offset along that side. Returns `null` when the roll lands outside the map
+ * border — the caller simply tries again, which is cheaper than clamping
+ * (clamping would bias every rejected roll onto the border itself).
+ *
+ * The offset range deliberately guarantees at least 2 tiles of *span overlap*
+ * between the anchor and the new room. That's what makes the connecting
+ * corridor mostly a single straight run with a short jog, instead of a long
+ * two-legged L reaching around a room that only touches at a corner — and
+ * short, mostly-straight legs are the entire reason growth placement exists.
+ * Overlap is impossible when the new room is narrower than 4 tiles across the
+ * relevant axis, in which case the range collapses to whatever still fits.
+ */
+export function growRoomCandidate(
+  anchor: Rect,
+  w: number,
+  h: number,
+  size: number,
+  gapMin: number,
+  gapMax: number,
+  rng: () => number,
+): Rect | null {
+  const side = Math.floor(rng() * 4);
+  const gap = gapMin + Math.floor(rng() * (gapMax - gapMin + 1));
+  const vertical = side < 2;
+
+  const span = vertical ? anchor.w : anchor.h;
+  const extent = vertical ? w : h;
+  const anchorStart = vertical ? anchor.x : anchor.y;
+  const lo = anchorStart - Math.max(0, extent - 2);
+  const hi = anchorStart + Math.max(0, span - 2);
+  const along = lo + Math.floor(rng() * (hi - lo + 1));
+
+  const rect: Rect = vertical
+    ? { x: along, y: side === 0 ? anchor.y - gap - h : anchor.y + anchor.h + gap, w, h }
+    : { x: side === 2 ? anchor.x - gap - w : anchor.x + anchor.w + gap, y: along, w, h };
+
+  if (rect.x < 1 || rect.y < 1 || rect.x + rect.w > size - 1 || rect.y + rect.h > size - 1) return null;
+  return rect;
+}
+
 export function carveRoom(grid: Tile[][], room: Room): void {
   for (let y = room.y; y < room.y + room.h; y++) {
     for (let x = room.x; x < room.x + room.w; x++) {

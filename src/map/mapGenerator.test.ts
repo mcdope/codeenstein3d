@@ -140,6 +140,54 @@ describe("MapGenerator.generate", () => {
     expect(() => gen.generate(parsed)).not.toThrow();
   });
 
+  it("grows every room beside an already-placed one instead of scattering it across the map", () => {
+    // The property that bounds corridor length: connectRooms carves between
+    // consecutive room centers, so what matters is that a room is never far
+    // from the ones already placed. With uniform-random placement the demo
+    // campaign averaged 59 tiles between consecutive centers and peaked at
+    // 191 — see tryGrowRoom's doc comment.
+    const gen = new MapGenerator();
+    const entities = Array.from({ length: 8 }, (_, i) =>
+      entity({ name: `f${i}`, startLine: i * 6 + 1, endLine: i * 6 + 6 }),
+    );
+    const map = gen.generate(parsedFile({ linesOfCode: 200, entities }));
+    expect(map.rooms).toHaveLength(8);
+
+    for (let i = 1; i < map.rooms.length; i++) {
+      const room = map.rooms[i];
+      const separations = map.rooms.slice(0, i).map((other) => {
+        const dx = Math.max(0, room.x - (other.x + other.w), other.x - (room.x + room.w));
+        const dy = Math.max(0, room.y - (other.y + other.h), other.y - (room.y + room.h));
+        return Math.max(dx, dy);
+      });
+      // ROOM_GAP_MAX. A room placed by the random-scatter fallback could sit
+      // further out, but on a map this empty growth never needs it.
+      expect(Math.min(...separations)).toBeLessThanOrEqual(9);
+    }
+  });
+
+  it("keeps rock between grown rooms, so the side-feature carvers still have somewhere to go", () => {
+    // placeSecretRooms/placeVendorDepots/placeSwitchboards/placeExceptionZones
+    // all demand untouched rock plus a one-tile margin (sideCandidateFits).
+    // Growth placement packs rooms far tighter than random placement did, so
+    // ROOM_PACK_MARGIN is what stops it from starving all four at once.
+    const gen = new MapGenerator();
+    const entities = Array.from({ length: 8 }, (_, i) =>
+      entity({ name: `f${i}`, startLine: i * 6 + 1, endLine: i * 6 + 6 }),
+    );
+    const map = gen.generate(parsedFile({ linesOfCode: 200, entities }));
+
+    for (let i = 0; i < map.rooms.length; i++) {
+      for (let j = i + 1; j < map.rooms.length; j++) {
+        const a = map.rooms[i];
+        const b = map.rooms[j];
+        const touching =
+          a.x - 3 < b.x + b.w && a.x + a.w + 3 > b.x && a.y - 3 < b.y + b.h && a.y + a.h + 3 > b.y;
+        expect(touching).toBe(false);
+      }
+    }
+  });
+
   it("skips an entity whose room repeatedly overlaps existing rooms until attempts run out", () => {
     const gen = new MapGenerator({ minSize: 16, maxSize: 16, placementAttempts: 3 });
     const many = Array.from({ length: 20 }, (_, i) => entity({ name: `f${i}`, startLine: i + 1, endLine: i + 1, complexityScore: 10 }));

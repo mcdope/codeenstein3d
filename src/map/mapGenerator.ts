@@ -31,6 +31,7 @@ import {
   carveRoom,
   centeredRoom,
   clearCriticalTiles,
+  growRoomCandidate,
   makeRoom,
   roomDimensions,
   roomsOverlap,
@@ -130,6 +131,36 @@ const DEFAULTS: Required<MapGeneratorOptions> = {
   roomMargin: 1,
   placementAttempts: 200,
 };
+
+/**
+ * Min/max rock left between a newly grown room and the anchor it hangs off
+ * (see `tryGrowRoom`). This gap *is* the corridor between them, so it sets
+ * corridor length directly — the whole point of growth placement is that the
+ * distance between two consecutive rooms becomes a chosen number instead of
+ * a side effect of where two uniform-random draws landed.
+ *
+ * The lower bound isn't cosmetic either. Every AST-driven carver
+ * (`placeSecretRooms`, `placeVendorDepots`, `placeSwitchboards`,
+ * `placeExceptionZones`) claims *untouched rock plus a one-tile margin* via
+ * `sideCandidateFits`, so packing rooms flush against each other would starve
+ * all four of them at once. `npm run report:level-maps` plus
+ * `npm run verify:campaign` (which fails if a feature stops appearing
+ * anywhere) are what confirm the budget is actually enough.
+ */
+const ROOM_GAP_MIN = 4;
+const ROOM_GAP_MAX = 9;
+/** Wall thickness kept between a grown room and *every* already-placed room —
+ * deliberately larger than `roomMargin` (1), which only has to stop two rooms
+ * from merging. Growth placement packs rooms far tighter than random
+ * placement ever did, so without this the side-feature carvers above would
+ * find no rock even where the anchor gap itself was generous. */
+const ROOM_PACK_MARGIN = 3;
+/** Side/gap combinations tried against one anchor room before falling back to
+ * the next anchor. */
+const GROW_ATTEMPTS_PER_ANCHOR = 24;
+/** Jitter applied to the first room's position around the map center, so a
+ * level doesn't always grow outward from the exact same tile. */
+const FIRST_ROOM_JITTER = 6;
 
 /** Synthetic `CodeEntity` for a filler room — see `placeFillerRoom`.
  * `kind: "class"` is deliberate: it fails every "real code" eligibility
@@ -395,7 +426,9 @@ export class MapGenerator {
     const rooms: Room[] = [];
 
     for (const entity of entities) {
-      const room = this.tryPlaceRoom(entity, size, rooms, rng);
+      // Grow beside an already-placed room first; only fall back to the
+      // original scatter-anywhere scan when nothing fits next to anything.
+      const room = this.tryGrowRoom(entity, size, rooms, rng) ?? this.tryPlaceRoom(entity, size, rooms, rng);
       if (room) {
         carveRoom(grid, room);
         // Deeply nested code becomes a labyrinth of internal walls instead of
@@ -426,6 +459,56 @@ export class MapGenerator {
     }
 
     return rooms;
+  }
+
+  /**
+   * Place one entity's room *beside an already-placed room*, or `null` if no
+   * side of any existing room has space for it.
+   *
+   * This is what bounds corridor length. `connectRooms` carves between the
+   * centers of rooms `i-1` and `i`, so with the original uniform-random
+   * placement the corridor between two consecutive entities was however far
+   * apart two independent draws happened to land — measured across the demo
+   * campaign that averaged 59 tiles and peaked at 191, against rooms only
+   * 4-18 tiles wide, which is what made every level read as a few rooms
+   * strung along enormous hallways. Growing room `i` off room `i-1` makes
+   * that distance `ROOM_GAP_MIN..ROOM_GAP_MAX` plus the two half-widths, by
+   * construction rather than by chance.
+   *
+   * Anchors are tried newest-first for exactly that reason: room `i-1` is the
+   * one `connectRooms` will carve to. Older anchors are only reached when the
+   * growing tip has boxed itself in, and the original random scan remains
+   * behind that as a last resort, so a dense map degrades to the old
+   * behaviour for the odd room rather than dropping it.
+   */
+  private tryGrowRoom(
+    entity: CodeEntity,
+    size: number,
+    placed: Room[],
+    rng: () => number,
+  ): Room | null {
+    const { w, h } = roomDimensions(entity, size);
+    if (size - w - 1 < 1 || size - h - 1 < 1) return null;
+
+    // The seed room anchors the whole level, so it starts near the middle and
+    // everything else grows outward from it — a level that started from a
+    // random corner would sprawl against the border instead of spreading.
+    if (placed.length === 0) {
+      const jitter = (): number => Math.round((rng() * 2 - 1) * FIRST_ROOM_JITTER);
+      const x = clamp(Math.floor((size - w) / 2) + jitter(), 1, size - w - 1);
+      const y = clamp(Math.floor((size - h) / 2) + jitter(), 1, size - h - 1);
+      return makeRoom(x, y, w, h, entity);
+    }
+
+    for (let i = placed.length - 1; i >= 0; i--) {
+      for (let attempt = 0; attempt < GROW_ATTEMPTS_PER_ANCHOR; attempt++) {
+        const candidate = growRoomCandidate(placed[i], w, h, size, ROOM_GAP_MIN, ROOM_GAP_MAX, rng);
+        if (!candidate) continue;
+        if (placed.some((r) => roomsOverlap(candidate, r, ROOM_PACK_MARGIN))) continue;
+        return makeRoom(candidate.x, candidate.y, w, h, entity);
+      }
+    }
+    return null;
   }
 
   /** Find a non-overlapping spot for one entity's room, or `null`. */
