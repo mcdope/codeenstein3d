@@ -162,7 +162,7 @@ Each stage only consumes the data structure from the previous stage — language
 ## Quick Start
 
 ### Requirements
-- **Node.js** 20.19+ (or 22.12+) — required by Vite 8
+- **Node.js** 22.22.2+, 24.15+, or 26+ — required by jsdom 30 (Vite 8 alone would accept 20.19+/22.12+). Note the gaps: Node 23 and 25 are odd-numbered, never-LTS lines and are excluded; Node 20 reached end-of-life on 2026-04-30
 - **Chromium-based browser** (Chrome, Edge, Brave) — File System Access API required, HTTPS or localhost
 
 ### Setup
@@ -266,7 +266,7 @@ npm run preview    # Serve production build locally
 | 87 | Full CI pipeline — browser (Playwright) + no-browser GitHub Actions jobs running every `verify:*` script on push/PR | ✅ |
 | 88 | WAD/procedural texturing extended to lore-terminal walls, hazard/teleporter floors, and spike traps | ✅ |
 | 89–91 | GitHub-repo workspace loading: stale-load cancellation, and entrypoint-scan/codebase-stats request reduction (a ~100-file repo went from 99 to 13 requests) | ✅ |
-| 92 | ~99.9%-coverage Vitest unit test suite (2288 tests), wired as a blocking CI gate | ✅ |
+| 92 | ~99.9%-coverage Vitest unit test suite (2937 tests), wired as a blocking CI gate | ✅ |
 | — | `tsc --noEmit && vite build` added as its own CI gate, after a TypeScript bump broke a build the existing test jobs didn't catch | ✅ |
 | — | Room decorations | ⏸️ Implemented, disabled (playtest feedback) |
 | — | Automated headless-bot balancing/telemetry system, plus 2 real engine bugs it surfaced (diagonal movement ~41% too fast, a corridor-breakup room silently severing unrelated crossing corridors) and an ammo/loot/difficulty rebalance | ✅ |
