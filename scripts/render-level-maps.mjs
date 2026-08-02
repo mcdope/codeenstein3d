@@ -26,8 +26,8 @@
  *   and how much they repeat.
  * - `floor/bbox` — how densely the level fills the space it spans, as opposed
  *   to `floor/grid`, which mostly measures leftover border rock.
- * - `loopIdx` — grouped room doorways / 2 - (rooms - 1). Zero for a pure tree;
- *   positive once rooms have more than one way in.
+ * - `loops` — independent cycles in the room-connection graph. Zero for a pure
+ *   tree of dead ends; positive once the level offers a way round.
  *
  * PNG is written by hand (zlib + CRC32, ~40 lines below) rather than through a
  * canvas shim or an image dependency: the output is a flat palette of solid
@@ -203,31 +203,55 @@ function maxStraightRun(map, roomKeys, featureKeys) {
 }
 
 /**
- * Distinct doorways on a room's perimeter: contiguous runs of open floor just
- * outside the room that lead into it, each run counted once however many tiles
- * wide it is. Same "a doorway is one gate, however many tiles wide" rule
- * `doorwayTiles` (`geometry.ts`) applies to keys — without it a 3-wide
- * corridor mouth would read as three separate ways in and the loop index would
- * be nonsense.
+ * Independent cycles in the level's room-connection graph — 0 for a pure tree,
+ * 1 for a single loop, and so on. This is the number that says whether a level
+ * offers a way round or only dead ends.
+ *
+ * Computed on the *room graph*, not the tile grid: a tile-level cycle count
+ * would be dominated by the trivial 4-cycles inside every open room. Each
+ * connected blob of non-room floor is flood-filled and asked which rooms it
+ * touches; a blob touching `k` rooms links them into one component and so
+ * accounts for `k - 1` tree edges. Summing that against `rooms - 1` leaves
+ * exactly the surplus, which is the cycle count (the graph's first Betti
+ * number), assuming the level is connected — which
+ * `assertAllRoomsReachable` guarantees.
  */
-function roomDoorways(room, map) {
-  const open = (x, y) => map.grid[y]?.[x] !== undefined && map.grid[y][x] !== 1;
-  let doorways = 0;
-  const scanSide = (length, outsideAt, insideAt) => {
-    let inRun = false;
-    for (let i = 0; i < length; i++) {
-      const [ox, oy] = outsideAt(i);
-      const [ix, iy] = insideAt(i);
-      const isMouth = open(ox, oy) && open(ix, iy);
-      if (isMouth && !inRun) doorways++;
-      inRun = isMouth;
+function roomGraphCycles(map, roomKeys) {
+  const roomAt = new Map();
+  map.rooms.forEach((room, index) => {
+    for (let y = room.y; y < room.y + room.h; y++) {
+      for (let x = room.x; x < room.x + room.w; x++) roomAt.set(`${x},${y}`, index);
     }
-  };
-  scanSide(room.w, (i) => [room.x + i, room.y - 1], (i) => [room.x + i, room.y]);
-  scanSide(room.w, (i) => [room.x + i, room.y + room.h], (i) => [room.x + i, room.y + room.h - 1]);
-  scanSide(room.h, (i) => [room.x - 1, room.y + i], (i) => [room.x, room.y + i]);
-  scanSide(room.h, (i) => [room.x + room.w, room.y + i], (i) => [room.x + room.w - 1, room.y + i]);
-  return doorways;
+  });
+
+  const seen = new Set();
+  let treeEdges = 0;
+  for (let sy = 0; sy < map.height; sy++) {
+    for (let sx = 0; sx < map.width; sx++) {
+      const start = `${sx},${sy}`;
+      if (map.grid[sy][sx] === 1 || roomKeys.has(start) || seen.has(start)) continue;
+
+      const touched = new Set();
+      const stack = [[sx, sy]];
+      seen.add(start);
+      while (stack.length > 0) {
+        const [x, y] = stack.pop();
+        for (const [nx, ny] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]]) {
+          if (map.grid[ny]?.[nx] === undefined || map.grid[ny][nx] === 1) continue;
+          const k = `${nx},${ny}`;
+          if (roomAt.has(k)) {
+            touched.add(roomAt.get(k));
+            continue;
+          }
+          if (seen.has(k)) continue;
+          seen.add(k);
+          stack.push([nx, ny]);
+        }
+      }
+      if (touched.size > 1) treeEdges += touched.size - 1;
+    }
+  }
+  return Math.max(0, treeEdges - Math.max(0, map.rooms.length - 1));
 }
 
 function levelMetrics(map, roomKeys, featureKeys) {
@@ -255,7 +279,6 @@ function levelMetrics(map, roomKeys, featureKeys) {
     }
   }
   const bbox = floor > 0 ? (x1 - x0 + 1) * (y1 - y0 + 1) : 0;
-  const doorways = map.rooms.reduce((sum, room) => sum + roomDoorways(room, map), 0);
 
   return {
     size: map.width,
@@ -267,9 +290,7 @@ function levelMetrics(map, roomKeys, featureKeys) {
     maxRun: maxStraightRun(map, roomKeys, featureKeys),
     floorPctGrid: Math.round((floor / (map.width * map.height)) * 100),
     floorPctBbox: bbox > 0 ? Math.round((floor / bbox) * 100) : 0,
-    // A pure tree over N rooms has N-1 edges, so 2(N-1) doorways. Anything
-    // above that is a second way into some room: a loop or a junction.
-    loopIdx: Math.round(doorways / 2 - Math.max(0, map.rooms.length - 1)),
+    loops: roomGraphCycles(map, roomKeys),
     doors: map.doors.length,
     keys: map.keys.length,
   };
@@ -327,7 +348,7 @@ const COLUMNS = [
   ["maxRun", 7, (r) => r.maxRun],
   ["fl/grid", 8, (r) => `${r.floorPctGrid}%`],
   ["fl/bbox", 8, (r) => `${r.floorPctBbox}%`],
-  ["loopIdx", 8, (r) => r.loopIdx],
+  ["loops", 6, (r) => r.loops],
   ["doors", 6, (r) => r.doors],
   ["keys", 5, (r) => r.keys],
 ];
@@ -344,7 +365,7 @@ console.log(
     `maxRun=${Math.max(...rows.map((r) => r.maxRun))}  ` +
     `features=${rows.reduce((s, r) => s + r.features, 0)}  ` +
     `floor/bbox=${mean((r) => r.floorPctBbox)}%  ` +
-    `loopIdx=${mean((r) => r.loopIdx)}`,
+    `loops=${rows.reduce((s, r) => s + r.loops, 0)}`,
 );
 
 const sortedFootprints = [...footprints.entries()].sort((a, b) => b[1] - a[1]);

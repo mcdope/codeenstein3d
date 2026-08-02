@@ -5,7 +5,7 @@
  * solvable-in-key-order key scatter. */
 import { DOOR_TILE, type Enemy, type KeyItem, type Point, type Rect, type Room, type Tile } from "../types";
 import { breakupTileKeys } from "./breakup";
-import { doorwayTiles } from "./geometry";
+import { doorwayTiles, isLockableRoom } from "./geometry";
 import { reachableTiles } from "./pathing";
 import { key, neighbors } from "./util";
 
@@ -17,11 +17,7 @@ import { key, neighbors } from "./util";
 export function placeDoors(rooms: Room[], grid: Tile[][]): Point[] {
   const doors: Point[] = [];
   rooms.forEach((room, index) => {
-    if (index === 0) return; // never lock the spawn room
-    const vis = room.entity.visibility;
-    if (room.entity.kind !== "method" || (vis !== "private" && vis !== "protected")) {
-      return;
-    }
+    if (!isLockableRoom(room, index)) return; // spawn room and public rooms stay open
     for (const mouth of roomMouths(room, grid)) {
       grid[mouth.y][mouth.x] = DOOR_TILE;
       doors.push(mouth);

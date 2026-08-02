@@ -6,7 +6,7 @@ import { mulberry32 } from "../../prng";
 import type { CodeEntity } from "../../parser/types";
 import type { Rect, Room, Tile } from "../types";
 import { carveRoom, makeRoom } from "./geometry";
-import { carveHLine, carveVLine, connectRooms, isChokePoint, isCorridorFloor } from "./corridors";
+import { carveHLine, carveVLine, connectLoops, connectRooms, isChokePoint, isCorridorFloor } from "./corridors";
 
 function entity(overrides: Partial<CodeEntity> = {}): CodeEntity {
   return { name: "f", kind: "function", startLine: 1, endLine: 5, complexityScore: 3, nestingDepth: 0, ...overrides };
@@ -90,6 +90,95 @@ describe("connectRooms", () => {
     expect(() => connectRooms(rooms, g, mulberry32(3))).not.toThrow();
     expect(reachable(g, rooms[0].center, rooms[1].center)).toBe(true);
     expect(reachable(g, rooms[1].center, rooms[2].center)).toBe(true);
+  });
+});
+
+describe("connectLoops", () => {
+  const privateMethod = (): CodeEntity => entity({ kind: "method", visibility: "private" });
+
+  /** Four public rooms round a square, so rooms 0 and 3 — three apart along
+   * the chain — end up physically adjacent. */
+  function squareOfRooms(entities: CodeEntity[]): Room[] {
+    return [
+      makeRoom(2, 2, 6, 6, entities[0]),
+      makeRoom(20, 2, 6, 6, entities[1]),
+      makeRoom(20, 20, 6, 6, entities[2]),
+      makeRoom(2, 20, 6, 6, entities[3]),
+    ];
+  }
+
+  it("joins rooms that are close in space but far apart along the chain", () => {
+    const g = grid(40);
+    const rooms = squareOfRooms([entity(), entity(), entity(), entity()]);
+    for (const r of rooms) carveRoom(g, r);
+    connectRooms(rooms, g, mulberry32(5));
+
+    const joined = connectLoops(rooms, g, mulberry32(5));
+    expect(joined).toHaveLength(1);
+    const [i, j] = joined[0];
+    expect(Math.abs(i - j)).toBeGreaterThanOrEqual(2);
+    expect(reachable(g, rooms[i].center, rooms[j].center)).toBe(true);
+  });
+
+  it("never uses a locked room as a shortcut endpoint", () => {
+    // Only room 0 is unlockable (the spawn room never locks), so no candidate
+    // pair has two open ends and nothing can be carved.
+    const g = grid(40);
+    const rooms = squareOfRooms([entity(), privateMethod(), privateMethod(), privateMethod()]);
+    for (const r of rooms) carveRoom(g, r);
+    connectRooms(rooms, g, mulberry32(6));
+
+    const before = g.map((row) => [...row]);
+    expect(connectLoops(rooms, g, mulberry32(6))).toEqual([]);
+    expect(g).toEqual(before);
+  });
+
+  it("undoes a shortcut that would open a new doorway into a locked room", () => {
+    // Rooms 0 and 3 are 28 tiles apart on the same row with locked room 2
+    // sitting between them, so the only candidate shortcut runs straight
+    // through it — which would turn its two side walls into doorways, and
+    // therefore cost the player another key rather than saving them a walk.
+    const g = grid(40);
+    const rooms: Room[] = [
+      makeRoom(2, 2, 6, 6, entity()),
+      makeRoom(2, 30, 6, 6, entity()),
+      makeRoom(18, 2, 6, 6, privateMethod()),
+      makeRoom(30, 2, 6, 6, entity()),
+    ];
+    for (const r of rooms) carveRoom(g, r);
+    connectRooms(rooms, g, mulberry32(7));
+
+    const before = g.map((row) => [...row]);
+    expect(connectLoops(rooms, g, mulberry32(7))).toEqual([]);
+    // Reverted tile for tile, not merely "no pair returned".
+    expect(g).toEqual(before);
+  });
+
+  it("does nothing when there are too few rooms to earn a shortcut", () => {
+    const g = grid(40);
+    const rooms = [makeRoom(2, 2, 6, 6, entity()), makeRoom(20, 2, 6, 6, entity())];
+    for (const r of rooms) carveRoom(g, r);
+    connectRooms(rooms, g, mulberry32(8));
+
+    const before = g.map((row) => [...row]);
+    expect(connectLoops(rooms, g, mulberry32(8))).toEqual([]);
+    expect(g).toEqual(before);
+  });
+
+  it("leaves rooms too far apart alone rather than carving a long 'shortcut'", () => {
+    const g = grid(80);
+    const rooms: Room[] = [
+      makeRoom(2, 2, 6, 6, entity()),
+      makeRoom(40, 2, 6, 6, entity()),
+      makeRoom(40, 40, 6, 6, entity()),
+      makeRoom(2, 70, 6, 6, entity()),
+    ];
+    for (const r of rooms) carveRoom(g, r);
+    connectRooms(rooms, g, mulberry32(9));
+
+    const before = g.map((row) => [...row]);
+    expect(connectLoops(rooms, g, mulberry32(9))).toEqual([]);
+    expect(g).toEqual(before);
   });
 });
 

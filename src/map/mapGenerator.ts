@@ -23,7 +23,7 @@ import { mulberry32 } from "../prng";
 import type { GameMap, Point, Room, Tile } from "./types";
 import { ACID_OVERFLOW_ENABLED, planAcidOverflows } from "./generation/acidOverflow";
 import { breakUpLongCorridors } from "./generation/breakup";
-import { connectRooms } from "./generation/corridors";
+import { connectLoops, connectRooms } from "./generation/corridors";
 import { placeDoors, placeKeys } from "./generation/doorsKeys";
 import { spawnEdgeCaseEnemies, spawnEnemies } from "./generation/enemies";
 import { EXCEPTION_ZONES_ENABLED, placeExceptionZones } from "./generation/exceptionZones";
@@ -216,6 +216,12 @@ export class MapGenerator {
 
     const rooms = this.placeRooms(parsed.entities, size, grid, rng);
     connectRooms(rooms, grid, rng);
+    // The chain above is the spine and the reachability guarantee; this adds a
+    // few shortcuts between rooms that ended up neighbours in space but not in
+    // parse order, so the level has junctions and a way round instead of being
+    // a pure dead-end tree. It only ever adds connectivity, so it runs before
+    // everything that reads the finished grid.
+    connectLoops(rooms, grid, rng);
     // Long, empty straight corridors read as boring "endless walk" filler —
     // interrupt any run past MAX_CORRIDOR_STRAIGHT_LENGTH with a small room
     // (or, failing that, a forced jog) right after the grid is fully carved,

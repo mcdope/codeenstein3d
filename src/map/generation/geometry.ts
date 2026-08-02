@@ -59,6 +59,58 @@ export function centeredRoom(entity: CodeEntity | undefined, size: number): Room
   return makeRoom(x, y, w, h, placeholder);
 }
 
+/**
+ * Whether `placeDoors` will lock this room — a private or protected method's
+ * room, never the spawn room at index 0.
+ *
+ * Shared rather than re-spelled at each site because the two callers have to
+ * agree exactly. `placeDoors` turns *every* corridor mouth of such a room into
+ * a door and `placeKeys` scatters one key per doorway, so any pass that carves
+ * an additional corridor into one silently adds a key-fetch to the level's
+ * critical path. `connectLoops` uses this to leave locked rooms strictly
+ * alone: a shortcut into a vault isn't a shortcut, it's another key.
+ */
+export function isLockableRoom(room: Room, index: number): boolean {
+  if (index === 0) return false;
+  const visibility = room.entity.visibility;
+  return room.entity.kind === "method" && (visibility === "private" || visibility === "protected");
+}
+
+/**
+ * How many distinct doorways `room` currently has: contiguous runs of open
+ * floor just outside it that lead in, each run counted once however many tiles
+ * wide it is.
+ *
+ * The run grouping matters and isn't a detail. `placeDoors` turns every mouth
+ * *tile* into a `DOOR_TILE`, but `placeKeys` bills one key per *doorway* (see
+ * `doorwayTiles`) — so a corridor running flush alongside a room's wall widens
+ * one gate rather than adding several. Counting runs is therefore the measure
+ * of what a new corridor actually costs the player: another key, or nothing.
+ */
+export function doorwayRunCount(room: Rect, grid: readonly Tile[][]): number {
+  const open = (x: number, y: number): boolean => grid[y]?.[x] !== undefined && grid[y][x] !== 1;
+  let runs = 0;
+  const scanSide = (
+    length: number,
+    outside: (i: number) => Point,
+    inside: (i: number) => Point,
+  ): void => {
+    let inRun = false;
+    for (let i = 0; i < length; i++) {
+      const o = outside(i);
+      const n = inside(i);
+      const isMouth = open(o.x, o.y) && open(n.x, n.y);
+      if (isMouth && !inRun) runs++;
+      inRun = isMouth;
+    }
+  };
+  scanSide(room.w, (i) => ({ x: room.x + i, y: room.y - 1 }), (i) => ({ x: room.x + i, y: room.y }));
+  scanSide(room.w, (i) => ({ x: room.x + i, y: room.y + room.h }), (i) => ({ x: room.x + i, y: room.y + room.h - 1 }));
+  scanSide(room.h, (i) => ({ x: room.x - 1, y: room.y + i }), (i) => ({ x: room.x, y: room.y + i }));
+  scanSide(room.h, (i) => ({ x: room.x + room.w, y: room.y + i }), (i) => ({ x: room.x + room.w - 1, y: room.y + i }));
+  return runs;
+}
+
 /** True if two rects overlap once each is grown by `margin` on all sides. */
 export function roomsOverlap(a: Rect, b: Rect, margin: number): boolean {
   return (
