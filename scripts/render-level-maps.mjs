@@ -21,7 +21,7 @@
  *   This is the *cause* of long corridors, since `connectRooms` carves between
  *   those two points and nothing bounds their separation.
  * - `maxRun` — longest unbroken straight corridor run, the thing
- *   `breakUpLongCorridors` exists to keep under `MAX_CORRIDOR_STRAIGHT_LENGTH`.
+ *   `dressCorridors` exists to keep under `MAX_CORRIDOR_STRAIGHT_LENGTH`.
  * - `feat` + the footprint histogram — how many corridor features got injected
  *   and how much they repeat.
  * - `floor/bbox` — how densely the level fills the space it spans, as opposed
