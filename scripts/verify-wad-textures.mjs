@@ -22,12 +22,27 @@
  *   (e) the ceiling (never textured) stays a single flat color regardless
  *       of which texture pack is active;
  *   (g) per-level stylesets actually reach the screen: different campaign
- *       files render visibly different walls, and the *same* file renders
- *       identically every time. Asserted on rendered pixels rather than on
- *       an exposed styleset id on purpose — `GameMap.styleSet` being right
- *       while the renderer ignores it is exactly the failure a unit test
- *       can't see (`doc/dev/testing.md`, "what the test suite structurally
- *       cannot catch": the canvas mock draws nothing).
+ *       files render visibly different walls, and the *same* file picks the
+ *       same styleset and geometry every time.
+ *
+ *       The *difference* half stays asserted on rendered pixels on purpose —
+ *       `GameMap.styleSet` being right while the renderer ignores it is
+ *       exactly the failure a unit test can't see (`doc/dev/testing.md`,
+ *       "what the test suite structurally cannot catch": the canvas mock
+ *       draws nothing), and it is precisely this check that would catch it,
+ *       since a renderer ignoring the styleset makes every level's mean
+ *       collapse together.
+ *
+ *       The *stability* half moved off pixels, because a sampled frame
+ *       cannot express it. The grab happens with the world running, so a
+ *       roaming enemy in the sampled band shifts the mean between two
+ *       launches of a byte-identical level — measured at 6-8 per channel on
+ *       chromium, 4-5 on webkit, ~0 on firefox, scaling with how far each
+ *       engine gets in the settle window rather than with anything about the
+ *       palette. A tolerance was tried and rejected: it needs re-guessing per
+ *       engine, and any value loose enough for the fastest engine no longer
+ *       asserts much. Stability is now checked on the styleset id and a grid
+ *       fingerprint, both exact and both immune to anything animated.
  *   (f) a real online-catalog entry (Freedoom: Phase 2, fetched at build
  *       time by `scripts/fetch-online-wads.mjs` into `public/wads/`) loads
  *       via the sidebar's online-picker click path, not just a synthetic
@@ -79,21 +94,11 @@ function regionVariance(data, width, yStart, yEnd, xStart = 0, xEnd = width, ste
   return colors.size;
 }
 
-/** Mean RGB of the mid-height band, rounded — a stable fingerprint of "what
- * palette is this level's walls/floor drawn in". Skips the left fifth of the
- * frame, which is where the minimap overlay lives (its own fixed colors would
- * otherwise drag every level's mean toward each other). */
-/** Per-channel slack allowed when comparing two launches of the same level.
- * Sized against what it must still catch: distinct campaign stylesets differ
- * by 50-100+ per channel, so this is an order of magnitude below a real
- * palette change while absorbing a sprite that moved between two grabs. */
-const PALETTE_TOLERANCE = 4;
-
-/** Whether two `"r,g,b"` means agree within `tolerance` on every channel. */
-function channelsWithin(a, b, tolerance) {
-  const pa = a.split(",").map(Number);
-  const pb = b.split(",").map(Number);
-  return pa.every((v, i) => Math.abs(v - pb[i]) <= tolerance);
+/** The live level's styleset id, via the engine's test-hooks surface — the
+ * exact form of "which palette did this file pick", with no rendering in the
+ * loop. */
+async function styleSetOf(page) {
+  return page.evaluate(() => window.__codeensteinTestHooks.getStyleSet());
 }
 
 /** FNV-1a over the live wall grid — an exact, animation-proof fingerprint of
@@ -113,6 +118,10 @@ async function gridDigest(page) {
   });
 }
 
+/** Mean RGB of the mid-height band, rounded — a stable fingerprint of "what
+ * palette is this level's walls/floor drawn in". Skips the left fifth of the
+ * frame, which is where the minimap overlay lives (its own fixed colors would
+ * otherwise drag every level's mean toward each other). */
 function bandMeanColor(data, width, height) {
   const yStart = Math.floor(height * 0.35);
   const yEnd = Math.floor(height * 0.75);
@@ -222,12 +231,16 @@ async function main() {
   // Taken inside the loop, while the first level is actually on screen — the
   // relaunch comparison below happens after seven other levels have loaded.
   let firstGrid = null;
+  let firstStyleSet = null;
   for (let i = 0; i < LEVELS_TO_SAMPLE; i++) {
     const filePath = await launchCampaignFile(page, i);
     if (filePath === null) break;
     const frame = await sampleCanvas(page);
     levelColors.set(filePath, bandMeanColor(frame.data, frame.width, frame.height));
-    if (i === 0) firstGrid = await gridDigest(page);
+    if (i === 0) {
+      firstGrid = await gridDigest(page);
+      firstStyleSet = await styleSetOf(page);
+    }
   }
   const sampled = [...levelColors.entries()];
   const distinctColors = new Set(levelColors.values());
@@ -243,33 +256,34 @@ async function main() {
   // This is the half of the feature a "just randomise it" implementation
   // would fail — and it's what makes a map export or a replay match the run.
   //
-  // Checked two ways, because the pixel sample alone is not a sound proxy for
-  // it. The frame is grabbed with the game *running*, so anything animated in
-  // shot moves the mean: a roaming enemy standing in the sampled band shifts
-  // it by a unit or two between two launches of a byte-identical level. That
-  // is a fact about sprites, not about palettes, and it started firing when
-  // room placement changed and put an enemy in view of main.c's spawn.
+  // Asserted on state, never on pixels. A sampled frame is not a sound proxy
+  // for "the same file looks the same": the grab happens with the world
+  // running, so a roaming enemy in the sampled band moves the mean between
+  // two launches of a byte-identical level — measured at 6-8 per channel on
+  // chromium, 4-5 on webkit, ~0 on firefox, i.e. it scales with how far each
+  // engine gets in the settle window rather than with anything about the
+  // palette. A tolerance was tried and is the wrong shape: it has to be
+  // re-guessed per engine, and any value large enough to absorb the fastest
+  // engine is a value that no longer means much.
   //
-  // So the exact assertion is on the *grid*, which is what determinism
-  // actually means here and is unaffected by anything animated, and the
-  // colour keeps a tolerance wide enough to absorb a moving sprite while
-  // staying far below the gap between two real stylesets (levels sampled
-  // above differ by 50-100+ per channel, so a randomised palette still fails
-  // this loudly).
-  const [firstPath, firstColor] = sampled[0];
+  // The two things this actually wants to know are both exactly readable —
+  // the styleset the level picked, and the geometry it generated — and
+  // neither can be perturbed by a sprite walking through frame. The pixel
+  // sample keeps its other job above (levels don't all render the same),
+  // which is about textures reaching the screen at all.
+  const [firstPath] = sampled[0];
   await launchCampaignFile(page, 0);
-  const relaunched = await sampleCanvas(page);
-  const relaunchedColor = bandMeanColor(relaunched.data, relaunched.width, relaunched.height);
   const relaunchedGrid = await gridDigest(page);
+  const relaunchedStyleSet = await styleSetOf(page);
   check(
     `relaunching ${firstPath.split("/").pop()} regenerates a byte-identical map`,
     relaunchedGrid === firstGrid,
     `first ${firstGrid}, again ${relaunchedGrid}`,
   );
   check(
-    `relaunching ${firstPath.split("/").pop()} renders the same palette`,
-    channelsWithin(firstColor, relaunchedColor, PALETTE_TOLERANCE),
-    `first ${firstColor}, again ${relaunchedColor} (tolerance ±${PALETTE_TOLERANCE}/channel)`,
+    `relaunching ${firstPath.split("/").pop()} picks the same styleset`,
+    relaunchedStyleSet === firstStyleSet,
+    `first ${firstStyleSet}, again ${relaunchedStyleSet}`,
   );
   await page.screenshot({ path: path.join(SCREENSHOT_DIR, "styleset-sample.png") });
 
