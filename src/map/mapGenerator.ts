@@ -126,7 +126,12 @@ const GENERATE_DEFAULTS: Required<GenerateOptions> = {
 };
 
 const DEFAULTS: Required<MapGeneratorOptions> = {
-  minSize: 64,
+  // Lowered from 64 alongside `mapSize`'s move to footprint-based sizing: a
+  // short file's rooms now pack into one small cluster, and a 64-tile floor
+  // left the smallest levels 94% solid rock — visible to the player on the
+  // automap and in the exported map PNG, even though the raycaster never
+  // renders it.
+  minSize: 48,
   maxSize: 160,
   roomMargin: 1,
   placementAttempts: 200,
@@ -161,6 +166,13 @@ const GROW_ATTEMPTS_PER_ANCHOR = 24;
 /** Jitter applied to the first room's position around the map center, so a
  * level doesn't always grow outward from the exact same tile. */
 const FIRST_ROOM_JITTER = 6;
+
+/** How far a packed room cluster spreads, as a multiple of the square root of
+ * its summed room area — see `mapSize`, which calibrates it. */
+const ROOM_SPREAD = 2.0;
+/** Border of untouched rock kept beyond the room cluster, for the carvers
+ * that can only claim rock (`sideCandidateFits`) — see `mapSize`. */
+const ROCK_RESERVE = 10;
 
 /** Synthetic `CodeEntity` for a filler room — see `placeFillerRoom`.
  * `kind: "class"` is deliberate: it fails every "real code" eligibility
@@ -411,9 +423,26 @@ export class MapGenerator {
 
   /** Square map size, floored at `minSize` and growing with LOC and entities. */
   private mapSize(parsed: ParsedFile): number {
-    const fromLoc = Math.floor(parsed.linesOfCode / 8);
-    const fromEntities = parsed.entities.length * 4;
-    const raw = this.opts.minSize + Math.max(fromLoc, fromEntities);
+    // Sized from the space the rooms will actually occupy, not from lines of
+    // code. LOC was a reasonable proxy while rooms scattered across the whole
+    // grid — the map had to be big enough that 200 random draws found gaps —
+    // but once `tryGrowRoom` packs them into one connected cluster the level
+    // only ever spans its own footprint, and keeping the old formula left
+    // every level a small island in a mostly-empty square (measured: 3-14% of
+    // the grid was floor, and the automap/export view showed it).
+    //
+    // `ROOM_SPREAD` is calibrated, not derived: across the demo campaign the
+    // packed cluster's bounding side came out 1.56-2.72x the square root of
+    // the summed room area, so 2.6 covers all but the loosest packings, and
+    // `ROCK_RESERVE` is the border the `sideCandidates` carvers need on top —
+    // they only ever claim untouched rock, so a level squeezed to exactly its
+    // own footprint would have nowhere to put a secret room or a depot.
+    const cap = Math.min(18, this.opts.maxSize - 2);
+    const roomArea = parsed.entities.reduce((sum, entity) => {
+      const { w, h } = roomDimensions(entity, cap + 2);
+      return sum + w * h;
+    }, 0);
+    const raw = Math.round(ROOM_SPREAD * Math.sqrt(roomArea)) + ROCK_RESERVE;
     return clamp(raw, this.opts.minSize, this.opts.maxSize);
   }
 
@@ -426,9 +455,12 @@ export class MapGenerator {
     const rooms: Room[] = [];
 
     for (const entity of entities) {
-      // Grow beside an already-placed room first; only fall back to the
-      // original scatter-anywhere scan when nothing fits next to anything.
-      const room = this.tryGrowRoom(entity, size, rooms, rng) ?? this.tryPlaceRoom(entity, size, rooms, rng);
+      // Grow beside an already-placed room first; only fall back to the random
+      // scan when nothing fits next to anything, and even then keep the result
+      // as close to the previous room as the scan can manage.
+      const room =
+        this.tryGrowRoom(entity, size, rooms, rng) ??
+        this.tryPlaceRoom(entity, size, rooms, rng, rooms.at(-1)?.center);
       if (room) {
         carveRoom(grid, room);
         // Deeply nested code becomes a labyrinth of internal walls instead of
@@ -475,11 +507,10 @@ export class MapGenerator {
    * that distance `ROOM_GAP_MIN..ROOM_GAP_MAX` plus the two half-widths, by
    * construction rather than by chance.
    *
-   * Anchors are tried newest-first for exactly that reason: room `i-1` is the
-   * one `connectRooms` will carve to. Older anchors are only reached when the
-   * growing tip has boxed itself in, and the original random scan remains
-   * behind that as a last resort, so a dense map degrades to the old
-   * behaviour for the odd room rather than dropping it.
+   * Anchors are tried nearest-to-the-predecessor first for exactly that
+   * reason: room `i-1` is the one `connectRooms` will carve to. The random
+   * scan remains behind all of them as a last resort, so a dense map degrades
+   * to the old behaviour for the odd room rather than dropping it.
    */
   private tryGrowRoom(
     entity: CodeEntity,
@@ -500,9 +531,22 @@ export class MapGenerator {
       return makeRoom(x, y, w, h, entity);
     }
 
-    for (let i = placed.length - 1; i >= 0; i--) {
+    // Anchors ordered by how close they sit to the room this one will be
+    // connected to. The predecessor itself is always first (distance 0), and
+    // when it's boxed in the next-best anchor is its nearest neighbour rather
+    // than merely the next-most-recent room — which could be anywhere on the
+    // map, and would put a map-spanning leg back into the chain for exactly
+    // the rooms that needed the fallback most.
+    const target = placed[placed.length - 1].center;
+    const anchors = [...placed].sort(
+      (a, b) =>
+        Math.abs(a.center.x - target.x) + Math.abs(a.center.y - target.y) -
+        (Math.abs(b.center.x - target.x) + Math.abs(b.center.y - target.y)),
+    );
+
+    for (const anchor of anchors) {
       for (let attempt = 0; attempt < GROW_ATTEMPTS_PER_ANCHOR; attempt++) {
-        const candidate = growRoomCandidate(placed[i], w, h, size, ROOM_GAP_MIN, ROOM_GAP_MAX, rng);
+        const candidate = growRoomCandidate(anchor, w, h, size, ROOM_GAP_MIN, ROOM_GAP_MAX, rng);
         if (!candidate) continue;
         if (placed.some((r) => roomsOverlap(candidate, r, ROOM_PACK_MARGIN))) continue;
         return makeRoom(candidate.x, candidate.y, w, h, entity);
@@ -511,12 +555,26 @@ export class MapGenerator {
     return null;
   }
 
-  /** Find a non-overlapping spot for one entity's room, or `null`. */
+  /**
+   * Find a non-overlapping spot for one entity's room by scanning random
+   * positions, or `null`.
+   *
+   * With `nearestTo` set, every attempt in the budget is evaluated and the
+   * fitting candidate closest to that point wins, instead of the first fit
+   * returning immediately. That's the difference between a fallback and a
+   * regression: this runs when `tryGrowRoom` found no side of any existing
+   * room free, and taking the first random fit puts the room wherever the
+   * draw landed — reintroducing exactly the map-spanning corridor leg growth
+   * placement exists to prevent, for the one room that needed the fallback.
+   * `placeFillerRoom` omits it and keeps the original first-fit behaviour,
+   * since a filler room has no predecessor to stay near.
+   */
   private tryPlaceRoom(
     entity: CodeEntity,
     size: number,
     placed: Room[],
     rng: () => number,
+    nearestTo?: Point,
   ): Room | null {
     const { w, h } = roomDimensions(entity, size);
     // Keep rooms off the outer border so walls always enclose the level.
@@ -524,15 +582,22 @@ export class MapGenerator {
     const maxY = size - h - 1;
     if (maxX < 1 || maxY < 1) return null;
 
+    let best: Room | null = null;
+    let bestDistance = Infinity;
     for (let attempt = 0; attempt < this.opts.placementAttempts; attempt++) {
       const x = 1 + Math.floor(rng() * maxX);
       const y = 1 + Math.floor(rng() * maxY);
       const candidate = makeRoom(x, y, w, h, entity);
-      if (!placed.some((r) => roomsOverlap(candidate, r, this.opts.roomMargin))) {
-        return candidate;
+      if (placed.some((r) => roomsOverlap(candidate, r, this.opts.roomMargin))) continue;
+      if (!nearestTo) return candidate;
+
+      const distance = Math.abs(candidate.center.x - nearestTo.x) + Math.abs(candidate.center.y - nearestTo.y);
+      if (distance < bestDistance) {
+        best = candidate;
+        bestDistance = distance;
       }
     }
-    return null;
+    return best;
   }
 
   /**

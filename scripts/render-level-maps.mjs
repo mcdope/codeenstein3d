@@ -310,13 +310,16 @@ for (const filename of filenames) {
     const shape = `${r.w}x${r.h}`;
     footprints.set(shape, (footprints.get(shape) ?? 0) + 1);
   }
-  rows.push({ file: filename, ...levelMetrics(map, roomKeys, featureKeys) });
+  // `entities` next to `rooms` is the regression signal for anything that
+  // tightens placement: an entity whose room never fits is silently dropped,
+  // taking its enemies, doors and lore anchor with it.
+  rows.push({ file: filename, entities: parsed.entities.length, ...levelMetrics(map, roomKeys, featureKeys) });
 }
 
 const COLUMNS = [
   ["file", 28, (r) => r.file],
   ["size", 5, (r) => r.size],
-  ["rooms", 6, (r) => r.rooms],
+  ["rooms", 6, (r) => `${r.rooms}/${r.entities}`],
   ["feat", 5, (r) => r.features],
   ["legMean", 8, (r) => r.legMean],
   ["legMax", 7, (r) => r.legMax],
