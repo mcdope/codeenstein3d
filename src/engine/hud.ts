@@ -83,7 +83,7 @@ export function drawCheatToast(ctx: CanvasRenderingContext2D, text: string, alph
   ctx.fillRect(boxX, 26, boxW, 24);
   ctx.strokeStyle = "rgba(140,255,170,0.5)";
   ctx.lineWidth = 1;
-  ctx.strokeRect(boxX + 0.5, 26.5, boxW - 1, 23);
+  outlineRect(ctx, boxX + 0.5, 26.5, boxW - 1, 23);
   ctx.fillStyle = "#8effa0";
   ctx.fillText(text, w / 2, 42);
   ctx.textAlign = "start";
@@ -114,7 +114,7 @@ export function drawOutOfAmmoToast(ctx: CanvasRenderingContext2D, alpha: number)
   ctx.fillRect(boxX, 26, boxW, 24);
   ctx.strokeStyle = "rgba(255,77,77,0.6)";
   ctx.lineWidth = 1;
-  ctx.strokeRect(boxX + 0.5, 26.5, boxW - 1, 23);
+  outlineRect(ctx, boxX + 0.5, 26.5, boxW - 1, 23);
   ctx.fillStyle = "#ff4d4d";
   ctx.fillText(text, w / 2, 42);
   ctx.textAlign = "start";
@@ -144,7 +144,7 @@ export function drawAcidOverflowToast(ctx: CanvasRenderingContext2D, alpha: numb
   ctx.fillRect(boxX, 56, boxW, 24);
   ctx.strokeStyle = "rgba(255,157,31,0.6)";
   ctx.lineWidth = 1;
-  ctx.strokeRect(boxX + 0.5, 56.5, boxW - 1, 23);
+  outlineRect(ctx, boxX + 0.5, 56.5, boxW - 1, 23);
   ctx.fillStyle = "#ff9d1f";
   ctx.fillText(text, w / 2, 72);
   ctx.textAlign = "start";
@@ -297,7 +297,7 @@ export function drawLoreOverlay(
   ctx.fillRect(boxX, boxY, boxW, boxH);
   ctx.strokeStyle = "#3fd0e0";
   ctx.lineWidth = 2;
-  ctx.strokeRect(boxX + 1, boxY + 1, boxW - 2, boxH - 2);
+  outlineRect(ctx, boxX + 1, boxY + 1, boxW - 2, boxH - 2);
 
   ctx.textAlign = "center";
   ctx.fillStyle = "#3fd0e0";

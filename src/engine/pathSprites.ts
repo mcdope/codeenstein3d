@@ -217,18 +217,24 @@ export function drawRotatedGlyph(ctx: CanvasRenderingContext2D, glyph: Glyph, an
  * centred-stroke geometry, same `strokeStyle` and `lineWidth`, drop-in at the
  * call site.
  *
- * A rect *outline* is not a rect, and the rasteriser treats it like any other
- * path: measured on the reference machine, the six `strokeRect`s a normal
- * frame issued cost ~10ms of frame budget, while the ~2,000 `fillRect`s
- * alongside them cost nothing, and swapping those six for their fillRect
- * equivalent took the live game from 47.0 to 59.2fps. The budget is brutally
- * small — one `strokeRect` per frame measured fine (58.5fps), two did not
- * (47.3fps) — so this is not a "hot path only" optimisation: anything drawn
- * every frame has to come through here.
+ * **`strokeRect` on its own is fine** — injected on a clean frame at up to 24
+ * per frame, any size, any alignment, any line width, it measures free. What
+ * is not fine is a `strokeRect` drawn while **`lineJoin` is `"round"`**: one
+ * per frame costs 48.0fps against 59.0 with the default miter join, the same
+ * fixed count-independent penalty a path fill carries, because a round-joined
+ * outline stops being four axis-aligned quads. `viewmodel.ts`'s `drawWeapon`
+ * sets exactly that join for every weapon it draws, which is where the ~10ms
+ * came from; reverting this helper to `ctx.strokeRect` measured a 10fps
+ * regression on the live game.
  *
- * Sub-pixel placement is *not* the trigger, which is worth recording because
- * it is the obvious suspect: rounding every coordinate and the line width to
- * whole pixels in situ changed nothing (47.5fps against a 49.0 baseline).
+ * Using this everywhere rather than only under a round join is deliberate:
+ * the expensive case is invisible at the call site — it depends on a context
+ * flag set by whatever drew before you — so "always four fills" is the only
+ * version of this rule that cannot be got wrong later.
+ *
+ * Sub-pixel placement is *not* a trigger, which is worth recording because it
+ * is the obvious suspect: rounding every coordinate and the line width to
+ * whole pixels in situ changed nothing.
  */
 export function outlineRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void {
   const lineWidth = ctx.lineWidth;

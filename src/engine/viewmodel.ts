@@ -229,6 +229,7 @@ const KNIFE_GLYPH: Glyph = {
     g.lineTo(bx - 16, by - 46);
     g.closePath();
     g.fill();
+    g.lineJoin = "round"; // drawWeapon's own join; the offscreen context does not inherit it
     g.strokeStyle = OUTLINE_COLOR;
     g.lineWidth = OUTLINE_WIDTH;
     g.stroke();
@@ -298,6 +299,7 @@ const CHAINSAW_GLYPH: Glyph = {
     g.lineTo(bx - 14, by - 40);
     g.closePath();
     g.fill();
+    g.lineJoin = "round"; // drawWeapon's own join; the offscreen context does not inherit it
     g.strokeStyle = OUTLINE_COLOR;
     g.lineWidth = OUTLINE_WIDTH;
     g.stroke();
@@ -386,6 +388,7 @@ const MP_UNDERSIDE_GLYPH: Glyph = {
   draw: (g, cx, baseY) => {
     // Stick magazine, angled down.
     g.fillStyle = "#151719";
+    g.lineJoin = "round"; // drawWeapon's own join; the offscreen context does not inherit it
     g.strokeStyle = OUTLINE_COLOR;
     g.lineWidth = OUTLINE_WIDTH;
     g.beginPath();
@@ -520,6 +523,7 @@ function flameNozzleGlyph(recoilStep: number): Glyph {
       g.lineTo(cx - 20, baseY + top);
       g.closePath();
       g.fill();
+      g.lineJoin = "round"; // drawWeapon's own join; the offscreen context does not inherit it
       g.strokeStyle = OUTLINE_COLOR;
       g.lineWidth = OUTLINE_WIDTH;
       g.stroke();
@@ -597,6 +601,7 @@ const GRIP_GLYPH: Glyph = {
     g.lineTo(cx - 26, baseY + 40);
     g.closePath();
     g.fill();
+    g.lineJoin = "round"; // drawWeapon's own join; the offscreen context does not inherit it
     g.strokeStyle = OUTLINE_COLOR;
     g.lineWidth = OUTLINE_WIDTH;
     g.stroke();
