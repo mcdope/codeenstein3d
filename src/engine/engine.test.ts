@@ -393,6 +393,28 @@ describe("RaycasterEngine — construction", () => {
     expect(() => new RaycasterEngine(canvas, fakeMap(), {}, undefined, undefined, undefined, 1)).not.toThrow();
   });
 
+  it("reports meleeWouldHit once a rendered frame has a live enemy in the crosshair", () => {
+    // The distance test in `meleeWouldHit` only runs when
+    // `findTargetInProjections` actually finds something, and that reads the
+    // player's zBuffer — which is empty until a frame has been rendered. A
+    // hooks call before the first `advance()` therefore short-circuits and
+    // never exercises the range comparison at all.
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      // Directly ahead of the spawn (5,5), facing +x, inside the 1.5 melee range.
+      const map = fakeMap({ enemies: [fakeEnemy({ x: 6.5, y: 5.5 })] });
+      const { engine } = makeEngine(map);
+      engine.advance(0.016);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      expect((hooks!.getPlayerState() as { meleeWouldHit: boolean }).meleeWouldHit).toBe(true);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+      delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+    }
+  });
+
   it("exposes window.__codeensteinTestHooks only when ?testHooks=1 is on the URL", () => {
     const original = window.location;
     Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });

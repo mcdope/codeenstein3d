@@ -83,6 +83,36 @@ function regionVariance(data, width, yStart, yEnd, xStart = 0, xEnd = width, ste
  * palette is this level's walls/floor drawn in". Skips the left fifth of the
  * frame, which is where the minimap overlay lives (its own fixed colors would
  * otherwise drag every level's mean toward each other). */
+/** Per-channel slack allowed when comparing two launches of the same level.
+ * Sized against what it must still catch: distinct campaign stylesets differ
+ * by 50-100+ per channel, so this is an order of magnitude below a real
+ * palette change while absorbing a sprite that moved between two grabs. */
+const PALETTE_TOLERANCE = 4;
+
+/** Whether two `"r,g,b"` means agree within `tolerance` on every channel. */
+function channelsWithin(a, b, tolerance) {
+  const pa = a.split(",").map(Number);
+  const pb = b.split(",").map(Number);
+  return pa.every((v, i) => Math.abs(v - pb[i]) <= tolerance);
+}
+
+/** FNV-1a over the live wall grid — an exact, animation-proof fingerprint of
+ * the level's geometry, for asserting that relaunching a file regenerates the
+ * same map rather than inferring it from pixels. */
+async function gridDigest(page) {
+  return page.evaluate(() => {
+    const grid = window.__codeensteinTestHooks.getGrid();
+    let h = 2166136261;
+    for (const row of grid) {
+      for (const tile of row) {
+        h ^= tile;
+        h = Math.imul(h, 16777619);
+      }
+    }
+    return (h >>> 0).toString(16);
+  });
+}
+
 function bandMeanColor(data, width, height) {
   const yStart = Math.floor(height * 0.35);
   const yEnd = Math.floor(height * 0.75);
@@ -189,11 +219,15 @@ async function main() {
   console.log("\nPer-level stylesets (procedural defaults):");
   const LEVELS_TO_SAMPLE = 8;
   const levelColors = new Map(); // path -> mean band color
+  // Taken inside the loop, while the first level is actually on screen — the
+  // relaunch comparison below happens after seven other levels have loaded.
+  let firstGrid = null;
   for (let i = 0; i < LEVELS_TO_SAMPLE; i++) {
     const filePath = await launchCampaignFile(page, i);
     if (filePath === null) break;
     const frame = await sampleCanvas(page);
     levelColors.set(filePath, bandMeanColor(frame.data, frame.width, frame.height));
+    if (i === 0) firstGrid = await gridDigest(page);
   }
   const sampled = [...levelColors.entries()];
   const distinctColors = new Set(levelColors.values());
@@ -208,14 +242,34 @@ async function main() {
   // Stability: the same file must look the same every time it's launched.
   // This is the half of the feature a "just randomise it" implementation
   // would fail — and it's what makes a map export or a replay match the run.
+  //
+  // Checked two ways, because the pixel sample alone is not a sound proxy for
+  // it. The frame is grabbed with the game *running*, so anything animated in
+  // shot moves the mean: a roaming enemy standing in the sampled band shifts
+  // it by a unit or two between two launches of a byte-identical level. That
+  // is a fact about sprites, not about palettes, and it started firing when
+  // room placement changed and put an enemy in view of main.c's spawn.
+  //
+  // So the exact assertion is on the *grid*, which is what determinism
+  // actually means here and is unaffected by anything animated, and the
+  // colour keeps a tolerance wide enough to absorb a moving sprite while
+  // staying far below the gap between two real stylesets (levels sampled
+  // above differ by 50-100+ per channel, so a randomised palette still fails
+  // this loudly).
   const [firstPath, firstColor] = sampled[0];
   await launchCampaignFile(page, 0);
   const relaunched = await sampleCanvas(page);
   const relaunchedColor = bandMeanColor(relaunched.data, relaunched.width, relaunched.height);
+  const relaunchedGrid = await gridDigest(page);
   check(
-    `relaunching ${firstPath.split("/").pop()} renders an identical palette`,
-    relaunchedColor === firstColor,
-    `first ${firstColor}, again ${relaunchedColor}`,
+    `relaunching ${firstPath.split("/").pop()} regenerates a byte-identical map`,
+    relaunchedGrid === firstGrid,
+    `first ${firstGrid}, again ${relaunchedGrid}`,
+  );
+  check(
+    `relaunching ${firstPath.split("/").pop()} renders the same palette`,
+    channelsWithin(firstColor, relaunchedColor, PALETTE_TOLERANCE),
+    `first ${firstColor}, again ${relaunchedColor} (tolerance ±${PALETTE_TOLERANCE}/channel)`,
   );
   await page.screenshot({ path: path.join(SCREENSHOT_DIR, "styleset-sample.png") });
 

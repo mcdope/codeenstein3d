@@ -239,6 +239,10 @@ function widenRun(site: FeatureSite, along: number, across: number, offset: numb
  * not a cell some other corridor was already using. */
 function sealable(widening: Widening, x: number, y: number): boolean {
   const { rect, preExisting } = widening;
+  // Unreachable: every treatment iterates within its own widening's bounds.
+  // Kept as a guard because `preExisting` is indexed relative to the rect, so
+  // an out-of-bounds coordinate would read `undefined` and silently seal.
+  /* v8 ignore next -- @preserve */
   if (x < rect.x || x >= rect.x + rect.w || y < rect.y || y >= rect.y + rect.h) return false;
   return !preExisting[y - rect.y][x - rect.x];
 }
@@ -278,6 +282,9 @@ function carveBaffle(grid: Tile[][], widening: Widening, axis: "h" | "v", fixed:
   const acrossLen = horizontal ? rect.h : rect.w;
   const alongFrom = horizontal ? rect.x : rect.y;
   const alongLen = horizontal ? rect.w : rect.h;
+  // Unreachable: every kind that calls this rolls its along-run dimension at
+  // 3 or more, so there is always an interior column to put the baffle on.
+  /* v8 ignore next -- @preserve */
   if (alongLen < 3) return;
 
   const preferred = alongFrom + 1 + Math.floor(rng() * (alongLen - 2));
@@ -339,6 +346,9 @@ function carveGateway(grid: Tile[][], widening: Widening, axis: "h" | "v", fixed
   const alongLen = horizontal ? rect.w : rect.h;
   const acrossFrom = horizontal ? rect.y : rect.x;
   const acrossLen = horizontal ? rect.h : rect.w;
+  // Unreachable: `gateway` rolls its along-run at 5-7, so there is always room
+  // for the two-column neck plus an interior tile either side of it.
+  /* v8 ignore next -- @preserve */
   if (alongLen < 4) return;
 
   const neck = alongFrom + 1 + Math.floor(rng() * (alongLen - 3));
@@ -463,7 +473,6 @@ function placeAlcovePair(site: FeatureSite): Rect[] | null {
     if (rect.x < 1 || rect.y < 1 || rect.x + rect.w > size - 1 || rect.y + rect.h > size - 1) continue;
     if (rooms.some((r) => roomsOverlap(rect, r, roomMargin))) continue;
     if (features.some((r) => roomsOverlap(rect, r, roomMargin))) continue;
-    if ([...rects].some((r) => roomsOverlap(rect, r, roomMargin))) continue;
     // Only ever cut into solid rock: an alcove has one mouth by definition,
     // and carving one over an existing passage would just widen that passage.
     let solid = true;
@@ -625,6 +634,11 @@ function placeAtTarget(
 ): boolean {
   const loBound = run.lo + 2;
   const hiBound = run.hi - 2;
+  // Unreachable: every run reaching here came from `findStraightRuns` with a
+  // minimum length of `MIN_ORNAMENT_RUN_LENGTH` (5), and it only reports runs
+  // *longer* than the minimum — so a run is >= 6 tiles and `lo + 2` can never
+  // pass `hi - 2`.
+  /* v8 ignore next -- @preserve */
   if (loBound > hiBound) return false;
 
   for (let attempt = 0; attempt < BREAKUP_ATTEMPTS_PER_POINT; attempt++) {
@@ -687,6 +701,11 @@ function splitRunWide(
 ): boolean {
   const loBound = run.lo + 2;
   const hiBound = run.hi - 2;
+  // Unreachable: every run reaching here came from `findStraightRuns` with a
+  // minimum length of `MIN_ORNAMENT_RUN_LENGTH` (5), and it only reports runs
+  // *longer* than the minimum — so a run is >= 6 tiles and `lo + 2` can never
+  // pass `hi - 2`.
+  /* v8 ignore next -- @preserve */
   if (loBound > hiBound) return false;
 
   for (let attempt = 0; attempt < BREAKUP_WIDE_ATTEMPTS; attempt++) {

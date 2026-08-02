@@ -87,18 +87,32 @@ describe("spawnEnemies", () => {
     expect(enemies[0]).toMatchObject(expectedCenterTile);
   });
 
-  it("rerolls (and eventually resolves) when a spawn point would land on the exit tile", () => {
-    const room = makeRoom(1, 1, 5, 5, entity({ complexityScore: 5 }));
-    // room center tile is (3,3) — put the exit exactly there so i=0's first
-    // pick is rejected; the scripted sequence's first reroll also lands on
-    // (3,3) (still rejected), the second lands on (1,1) (accepted).
-    const sequence = [0.5, 0.5, 0, 0];
+  it("rerolls (and eventually resolves) when a spawn point would land inside the exit's clearance", () => {
+    // A 9x9 room so there is somewhere to reroll *to*: the exit at (3,3)
+    // keeps a 5x5 box (EXIT_CLEARANCE_TILES = 2) clear, and the room's own
+    // centre tile (5,5) sits exactly on its corner, so the first pick is
+    // rejected. The scripted rerolls land at (8,8), well outside it.
+    const room = makeRoom(1, 1, 9, 9, entity({ complexityScore: 5 }));
+    const sequence = [0.9, 0.9];
     let i = 0;
     const scripted = () => sequence[i++ % sequence.length];
     const enemies = spawnEnemies([room], { x: 3, y: 3 }, scripted);
     expect(enemies).toHaveLength(1);
-    expect(enemies[0].x).toBe(1.5);
-    expect(enemies[0].y).toBe(1.5);
+    expect(enemies[0].x).toBe(8.5);
+    expect(enemies[0].y).toBe(8.5);
+  });
+
+  it("keeps enemies off the tiles immediately around the exit, not just the exit itself", () => {
+    // An enemy is a solid body, so one parked against the exit makes walking
+    // onto it impossible until it's killed.
+    const room = makeRoom(1, 1, 12, 12, entity({ complexityScore: 30 }));
+    const exit = { x: 6, y: 6 };
+    const enemies = spawnEnemies([room], exit, mulberry32(7));
+    expect(enemies.length).toBeGreaterThan(1);
+    for (const e of enemies) {
+      const chebyshev = Math.max(Math.abs(Math.floor(e.x) - exit.x), Math.abs(Math.floor(e.y) - exit.y));
+      expect(chebyshev).toBeGreaterThan(2);
+    }
   });
 
   it("falls back to the room's corner when every reroll attempt still lands on the exit", () => {

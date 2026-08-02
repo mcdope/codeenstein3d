@@ -182,6 +182,35 @@ describe("connectLoops", () => {
   });
 });
 
+describe("corridor width", () => {
+  it("clips a wide corridor at the map border instead of carving through it", () => {
+    // A corridor rolled 2 or 3 tiles wide next to the outer wall would spill
+    // its extra rows onto the border and open the level to the void. The band
+    // drops the out-of-bounds lines rather than shifting inward, so the walk
+    // stays where the route planned it.
+    // Single-row rooms on row 1 put both centres at y=1, so the corridor
+    // between them runs along the innermost legal row — any width above 1
+    // wants a line at y=0, which is the border itself.
+    const rooms: Room[] = [makeRoom(2, 1, 4, 1, entity()), makeRoom(14, 1, 4, 1, entity())];
+    let sawWideCorridor = false;
+    for (let seed = 0; seed < 40; seed++) {
+      const g = grid(20);
+      for (const r of rooms) carveRoom(g, r);
+      connectRooms(rooms, g, mulberry32(seed));
+      for (let i = 0; i < 20; i++) {
+        expect(g[0][i]).toBe(1);
+        expect(g[19][i]).toBe(1);
+        expect(g[i][0]).toBe(1);
+        expect(g[i][19]).toBe(1);
+      }
+      if (g[2].some((t, x) => t === 0 && x > 5 && x < 14)) sawWideCorridor = true;
+    }
+    // Guards the guard: if no seed ever rolled a corridor wider than one tile,
+    // the border assertions above proved nothing about clipping.
+    expect(sawWideCorridor).toBe(true);
+  });
+});
+
 describe("carveHLine / carveVLine", () => {
   it("carves a horizontal line regardless of endpoint order", () => {
     const g = grid(10);
