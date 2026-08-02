@@ -108,10 +108,41 @@ describe("spawnEnemies", () => {
     const room = makeRoom(1, 1, 12, 12, entity({ complexityScore: 30 }));
     const exit = { x: 6, y: 6 };
     const enemies = spawnEnemies([room], exit, mulberry32(7));
-    expect(enemies.length).toBeGreaterThan(1);
+    // Exact, not "more than one": the clearance must relocate enemies, never
+    // cost the room any. complexity 30 => 1 + floor(30/10) = 4.
+    expect(enemies).toHaveLength(4);
     for (const e of enemies) {
       const chebyshev = Math.max(Math.abs(Math.floor(e.x) - exit.x), Math.abs(Math.floor(e.y) - exit.y));
       expect(chebyshev).toBeGreaterThan(2);
+    }
+  });
+
+  it("still populates an exit room too small to hold the clearance at all", () => {
+    // The exit room is the one a player is guaranteed to reach, so it losing
+    // its garrison would be a real gameplay change smuggled in by a placement
+    // constraint. A 5x4 room with the exit at its centre is entirely inside
+    // the 5x5 clearance box — every candidate is rejected — and the bounded
+    // retry then falls back to the room corner rather than dropping anyone.
+    // This is `stage06_pipeline.py`'s exact shape.
+    const room = makeRoom(7, 55, 5, 4, entity({ complexityScore: 25 }));
+    const enemies = spawnEnemies([room], { x: 9, y: 57 }, mulberry32(3));
+    expect(enemies).toHaveLength(3); // 1 + floor(25/10)
+    for (const e of enemies) {
+      expect(e.x).toBeGreaterThanOrEqual(room.x);
+      expect(e.x).toBeLessThan(room.x + room.w);
+      expect(e.y).toBeGreaterThanOrEqual(room.y);
+      expect(e.y).toBeLessThan(room.y + room.h);
+    }
+  });
+
+  it("gives every function/method room its enemies regardless of where the exit lands", () => {
+    // Guards the invariant directly: the exit room is not a special case that
+    // ends up empty. Sweeps the exit across a room and checks the count holds.
+    const room = makeRoom(1, 1, 8, 8, entity({ complexityScore: 20 }));
+    for (let x = room.x; x < room.x + room.w; x++) {
+      for (let y = room.y; y < room.y + room.h; y++) {
+        expect(spawnEnemies([room], { x, y }, mulberry32(x * 31 + y))).toHaveLength(3);
+      }
     }
   });
 
