@@ -95,16 +95,21 @@ describe("pathSprites — no usable offscreen surface", () => {
     expect(c.translate).not.toHaveBeenCalled();
   });
 
-  it("rotates via the transform, matching the pre-glyph translate/rotate drawing", async () => {
+  it("rotates via the transform, and undoes it without touching the state stack", async () => {
     const { drawRotatedGlyph } = await loadModule();
     const c = target();
     drawRotatedGlyph(asCtx(c), triangleGlyph(), Math.PI / 2, 30, 40);
 
-    expect(c.save).toHaveBeenCalledTimes(1);
-    expect(c.translate).toHaveBeenCalledWith(30, 40);
-    expect(c.rotate).toHaveBeenCalledWith(Math.PI / 2);
+    expect(c.translate).toHaveBeenNthCalledWith(1, 30, 40);
+    expect(c.rotate).toHaveBeenNthCalledWith(1, Math.PI / 2);
     expect(c.fill).toHaveBeenCalledTimes(1);
-    expect(c.restore).toHaveBeenCalledTimes(1);
+    // Exactly inverted afterwards, so the caller's transform is where it was.
+    expect(c.rotate).toHaveBeenNthCalledWith(2, -Math.PI / 2);
+    expect(c.translate).toHaveBeenNthCalledWith(2, -30, -40);
+    // Callers pair their own save/restore and assert the count; the fallback
+    // must not appear in it.
+    expect(c.save).not.toHaveBeenCalled();
+    expect(c.restore).not.toHaveBeenCalled();
     expect(c.drawImage).not.toHaveBeenCalled();
   });
 
@@ -160,6 +165,121 @@ describe("outlineRect", () => {
     c.lineWidth = 4;
     outlineRect(asCtx(c), 0, 0, 20, 3); // 3px tall, 4px stroke — top and bottom already meet
     expect(c.fillRect).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("fillLine", () => {
+  it("steps one rect per column for a shallow line, covering both endpoints once", async () => {
+    const { fillLine } = await loadModule();
+    const c = target();
+    fillLine(asCtx(c), 10, 5, 20, 8, 2); // dx 10 > dy 3 -> column-stepped
+    const columns = c.fillRect.mock.calls.map((call) => call[0] as number);
+    expect(columns[0]).toBe(10);
+    expect(columns.at(-1)).toBe(20);
+    expect(new Set(columns).size).toBe(columns.length);
+    // Each rect is 1px wide and `width` tall, centred on the line.
+    expect(c.fillRect.mock.calls[0].slice(2)).toEqual([1, 2]);
+  });
+
+  it("steps one rect per row for a steep line, and runs backwards when it descends", async () => {
+    const { fillLine } = await loadModule();
+    const c = target();
+    fillLine(asCtx(c), 4, 30, 6, 10, 3); // dy 20 > dx 2, and y decreases
+    const rows = c.fillRect.mock.calls.map((call) => call[1] as number);
+    expect(rows[0]).toBe(30);
+    expect(rows.at(-1)).toBe(10);
+    expect(rows).toHaveLength(21);
+    expect(c.fillRect.mock.calls[0].slice(2)).toEqual([3, 1]);
+  });
+
+  it("runs backwards for a shallow line that goes right-to-left", async () => {
+    const { fillLine } = await loadModule();
+    const c = target();
+    fillLine(asCtx(c), 20, 8, 10, 5, 2);
+    const columns = c.fillRect.mock.calls.map((call) => call[0] as number);
+    expect(columns[0]).toBe(20);
+    expect(columns.at(-1)).toBe(10);
+  });
+
+  it("keeps a perfectly vertical line one column wide", async () => {
+    const { fillLine } = await loadModule();
+    const c = target();
+    fillLine(asCtx(c), 15, 0, 15, 6, 2); // dx === 0 — no slope to divide by
+    const xs = new Set(c.fillRect.mock.calls.map((call) => call[0] as number));
+    expect([...xs]).toEqual([14]); // 15 - width/2
+  });
+
+  it("still marks a single pixel for a zero-length line", async () => {
+    const { fillLine } = await loadModule();
+    const c = target();
+    fillLine(asCtx(c), 7, 7, 7, 7, 2);
+    expect(c.fillRect).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("drawDisc", () => {
+  it("falls back to an arc fill when no offscreen surface is usable", async () => {
+    stub?.restore();
+    stub = stubOffscreen(false);
+    const { drawDisc } = await loadModule();
+    const c = target();
+    drawDisc(asCtx(c), "255,150,40", 0.5, 100, 60, 12);
+    expect(c.fillStyle).toBe("rgba(255,150,40,0.5)");
+    expect(c.arc).toHaveBeenCalledWith(100, 60, 12, 0, Math.PI * 2);
+    expect(c.fill).toHaveBeenCalledTimes(1);
+    expect(c.drawImage).not.toHaveBeenCalled();
+  });
+
+  it("blits a scaled sprite under globalAlpha, restoring alpha and smoothing", async () => {
+    stub?.restore();
+    stub = stubOffscreen(true);
+    const { drawDisc } = await loadModule();
+    const c = target();
+    c.globalAlpha = 0.5;
+    c.imageSmoothingEnabled = false;
+    drawDisc(asCtx(c), "255,150,40", 0.4, 100, 60, 12);
+
+    expect(c.arc).not.toHaveBeenCalled();
+    expect(c.fill).not.toHaveBeenCalled();
+    // Destination box is the circle's bounding square.
+    expect(c.drawImage.mock.calls[0].slice(1)).toEqual([88, 48, 24, 24]);
+    // Composed with whatever alpha the caller already had, then put back.
+    expect(c.globalAlpha).toBe(0.5);
+    expect(c.imageSmoothingEnabled).toBe(false);
+  });
+
+  it("pre-renders one sprite per colour and reuses it", async () => {
+    stub?.restore();
+    stub = stubOffscreen(true);
+    const { drawDisc } = await loadModule();
+    const createSpy = vi.spyOn(document, "createElement");
+    drawDisc(asCtx(target()), "1,2,3", 1, 0, 0, 5);
+    drawDisc(asCtx(target()), "1,2,3", 1, 0, 0, 9);
+    expect(createSpy.mock.calls.filter((a) => a[0] === "canvas")).toHaveLength(1);
+    drawDisc(asCtx(target()), "4,5,6", 1, 0, 0, 5); // different colour -> its own sprite
+    expect(createSpy.mock.calls.filter((a) => a[0] === "canvas")).toHaveLength(2);
+    createSpy.mockRestore();
+  });
+
+  it("falls back per colour when that sprite cannot be built", async () => {
+    stub?.restore();
+    stub = stubOffscreen(true);
+    const { drawDisc } = await loadModule();
+    const createSpy = vi.spyOn(document, "createElement").mockImplementation(() => {
+      throw new Error("out of memory");
+    });
+    try {
+      const c1 = target();
+      drawDisc(asCtx(c1), "9,9,9", 1, 0, 0, 5);
+      expect(c1.fill).toHaveBeenCalledTimes(1);
+      const after = createSpy.mock.calls.length;
+      const c2 = target();
+      drawDisc(asCtx(c2), "9,9,9", 1, 0, 0, 5);
+      expect(c2.fill).toHaveBeenCalledTimes(1);
+      expect(createSpy.mock.calls).toHaveLength(after); // failure cached
+    } finally {
+      createSpy.mockRestore();
+    }
   });
 });
 

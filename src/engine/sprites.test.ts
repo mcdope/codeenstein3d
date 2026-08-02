@@ -540,12 +540,21 @@ describe("collectLootBillboards", () => {
     });
   }
 
+  // The ring is drawn via `outlineRect` (four `fillRect`s) rather than
+  // `strokeRect` — see `pathSprites.ts`; a second `strokeRect` in a frame
+  // costs ~10ms of frame budget, and a visible weapon drop is per-frame.
   it("adds a pulsing ring specifically for a weapon drop", () => {
     const player = facingPlayer();
     const c = ctx();
+    const styles: string[] = [];
+    c.fillRect.mockImplementation(() => {
+      styles.push(c.fillStyle as string);
+    });
     const jobs = collectLootBillboards(asCtx(c), player, [{ x: player.posX + 3, y: player.posY, kind: "weapon" }], clearZBuffer(Infinity));
     jobs[0].draw();
-    expect(c.strokeRect).toHaveBeenCalledTimes(1);
+    expect(c.strokeRect).not.toHaveBeenCalled();
+    // Four edge rects in the pulsing violet, on top of the drop's own two.
+    expect(styles.filter((s) => s.startsWith("rgba(224,106,255,"))).toHaveLength(4);
   });
 
   it("draws no ring for a non-weapon drop", () => {
@@ -595,10 +604,24 @@ describe("collectTeleporterBillboards", () => {
   it("draws a visible, unoccluded teleporter pad", () => {
     const player = facingPlayer();
     const c = ctx();
+    const styles: string[] = [];
+    c.fillRect.mockImplementation(() => {
+      styles.push(c.fillStyle as string);
+    });
     const jobs = collectTeleporterBillboards(asCtx(c), player, [teleporter({ x: player.posX + 3, y: player.posY })], clearZBuffer(Infinity));
     expect(jobs).toHaveLength(1);
     jobs[0].draw();
-    expect(c.strokeRect).toHaveBeenCalledTimes(1);
+    // The pulsing outline is four `outlineRect` edge fills, not a strokeRect
+    // (see `pathSprites.ts`) — a visible pad draws this every frame.
+    expect(c.strokeRect).not.toHaveBeenCalled();
+    // The pad's translucent body and its outline share the portal violet and
+    // differ only in alpha (body 0.18-0.30, outline 0.60-1.00), so count by
+    // alpha rather than by colour prefix.
+    const outlineFills = styles.filter((s) => {
+      const match = /^rgba\(168,85,247,([\d.]+)\)$/.exec(s);
+      return match !== null && Number(match[1]) >= 0.6;
+    });
+    expect(outlineFills).toHaveLength(4);
   });
 
   it("draws nothing for an occluded teleporter", () => {

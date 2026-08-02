@@ -11,6 +11,7 @@
  * drawing. Timers are frame-based (damage flash, tracers) where the brief is
  * specified in frames, and time-based for the blood physics.
  */
+import { drawDisc, fillLine } from "./pathSprites";
 import { projectPoint } from "./sprites";
 import type { Player } from "./player";
 
@@ -219,19 +220,19 @@ export function makeBulletTrace(
   return { x1: width / 2, y1: height, x2: toX, y2: toY, frames: BULLET_TRACE_FRAMES, color };
 }
 
-/** Draw all live tracers in their own color, fading with remaining frames. */
+/** Width, in canvas pixels, of a tracer line. */
+const TRACE_WIDTH = 2;
+
+/** Draw all live tracers in their own color, fading with remaining frames.
+ * Rasterised via `fillLine` rather than stroked: a single `stroke()` anywhere
+ * in a frame costs ~10ms of frame budget on a GPU-accelerated canvas (see
+ * `pathSprites.ts`), and a shotgun blast puts seven of them on screen at once. */
 export function drawBulletTraces(ctx: CanvasRenderingContext2D, traces: BulletTrace[]): void {
-  ctx.lineCap = "round";
-  ctx.lineWidth = 2;
   for (const t of traces) {
     const alpha = 0.9 * Math.max(0, t.frames / BULLET_TRACE_FRAMES);
-    ctx.strokeStyle = withAlpha(t.color, alpha);
-    ctx.beginPath();
-    ctx.moveTo(t.x1, t.y1);
-    ctx.lineTo(t.x2, t.y2);
-    ctx.stroke();
+    ctx.fillStyle = withAlpha(t.color, alpha);
+    fillLine(ctx, t.x1, t.y1, t.x2, t.y2, TRACE_WIDTH);
   }
-  ctx.lineWidth = 1;
 }
 
 /** Create a flame stream spanning `leftX`..`rightX` (the widest and narrowest
@@ -288,19 +289,26 @@ function flameJet(
   y2: number,
   power: number,
 ): void {
-  const steps = 10;
-  ctx.beginPath();
-  ctx.moveTo(x1, y1);
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    ctx.lineTo(x1 + (leftX - x1) * t ** power, y1 + (y2 - y1) * t);
+  // Scanline-filled rather than path-filled: the jet's silhouette is exactly
+  // one horizontal span per row (its two edges are both functions of `t`), so
+  // a row of `fillRect`s reproduces the same shape with no path involved —
+  // and a path fill anywhere in a frame costs ~10ms (see `pathSprites.ts`).
+  // Sampling every row instead of the old 10 straight segments per edge also
+  // makes the taper smoother than it was.
+  const from = Math.round(Math.min(y1, y2));
+  const to = Math.round(Math.max(y1, y2));
+  const span = y2 - y1;
+  if (span === 0) return;
+  for (let y = from; y <= to; y++) {
+    const t = (y - y1) / span;
+    if (t < 0 || t > 1) continue;
+    const shape = t ** power;
+    const left = x1 + (leftX - x1) * shape;
+    const right = x1 + (rightX - x1) * shape;
+    const x = Math.min(left, right);
+    const width = Math.abs(right - left);
+    if (width > 0) ctx.fillRect(x, y, width, 1);
   }
-  for (let i = steps; i >= 0; i--) {
-    const t = i / steps;
-    ctx.lineTo(x1 + (rightX - x1) * t ** power, y1 + (y2 - y1) * t);
-  }
-  ctx.closePath();
-  ctx.fill();
 }
 
 /** Apply `alpha` to a `#rrggbb` color string, for effects whose color is data
@@ -349,14 +357,8 @@ export function renderExplosions(
     const alpha = (1 - t) * 0.8;
     const cy = height / 2;
 
-    ctx.fillStyle = `rgba(255,150,40,${alpha.toFixed(3)})`;
-    ctx.beginPath();
-    ctx.arc(proj.screenX, cy, r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = `rgba(255,230,150,${(alpha * 0.7).toFixed(3)})`;
-    ctx.beginPath();
-    ctx.arc(proj.screenX, cy, r * 0.5, 0, Math.PI * 2);
-    ctx.fill();
+    drawDisc(ctx, "255,150,40", alpha, proj.screenX, cy, r);
+    drawDisc(ctx, "255,230,150", alpha * 0.7, proj.screenX, cy, r * 0.5);
   }
 }
 

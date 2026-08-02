@@ -193,11 +193,15 @@ export function drawGlyph(ctx: CanvasRenderingContext2D, glyph: Glyph, x: number
 export function drawRotatedGlyph(ctx: CanvasRenderingContext2D, glyph: Glyph, angle: number, x: number, y: number): void {
   const atlas = OFFSCREEN_AVAILABLE ? atlasFor(glyph) : null;
   if (!atlas) {
-    ctx.save();
+    // Undone with inverse transforms rather than save/restore, so the
+    // fallback borrows nothing from the caller's state stack — several
+    // callers assert their own save/restore pairing, and a fallback has no
+    // business showing up in that count.
     ctx.translate(x, y);
     ctx.rotate(angle);
     glyph.draw(ctx, 0, 0);
-    ctx.restore();
+    ctx.rotate(-angle);
+    ctx.translate(-x, -y);
     return;
   }
   const turns = angle / (Math.PI * 2);
@@ -241,6 +245,95 @@ export function outlineRect(ctx: CanvasRenderingContext2D, x: number, y: number,
     ctx.fillRect(x + w - half, y + half, lineWidth, sideHeight);
   }
   ctx.fillStyle = previousFill;
+}
+
+/**
+ * A straight line of `width` px from (`x1`,`y1`) to (`x2`,`y2`), rasterised as
+ * one `fillRect` per pixel along its major axis — the batchable replacement
+ * for `beginPath`/`moveTo`/`lineTo`/`stroke` (bullet tracers).
+ *
+ * Steps whole pixels along the major axis so the rects tile edge-to-edge
+ * rather than overlapping: tracers are drawn at partial alpha, and overlapping
+ * translucent squares would band the line into visibly darker blotches where
+ * they double-blend.
+ */
+export function fillLine(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number, width: number): void {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const half = width / 2;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    const from = Math.round(x1);
+    const to = Math.round(x2);
+    const step = to >= from ? 1 : -1;
+    const slope = dx === 0 ? 0 : dy / dx;
+    for (let x = from; step > 0 ? x <= to : x >= to; x += step) {
+      ctx.fillRect(x, y1 + (x - x1) * slope - half, 1, width);
+    }
+    return;
+  }
+  const from = Math.round(y1);
+  const to = Math.round(y2);
+  const step = to >= from ? 1 : -1;
+  const slope = dx / dy;
+  for (let y = from; step > 0 ? y <= to : y >= to; y += step) {
+    ctx.fillRect(x1 + (y - y1) * slope - half, y, width, 1);
+  }
+}
+
+/** Radius the disc sprites below are rendered at. Large enough that scaling
+ * one up to a point-blank explosion still reads as a circle, small enough to
+ * stay a trivial allocation. */
+const DISC_SPRITE_RADIUS = 64;
+
+/** Opaque disc sprites by `"r,g,b"` — one per colour the game blends. */
+const discSprites = new Map<string, HTMLCanvasElement | null>();
+
+function discSprite(rgb: string): HTMLCanvasElement | null {
+  const cached = discSprites.get(rgb);
+  if (cached !== undefined) return cached;
+  let sprite: HTMLCanvasElement | null = null;
+  const size = DISC_SPRITE_RADIUS * 2;
+  const surface = makeSurface(size, size);
+  if (surface) {
+    surface.ctx.fillStyle = `rgb(${rgb})`;
+    surface.ctx.beginPath();
+    surface.ctx.arc(DISC_SPRITE_RADIUS, DISC_SPRITE_RADIUS, DISC_SPRITE_RADIUS, 0, Math.PI * 2);
+    surface.ctx.fill();
+    sprite = surface.canvas;
+  }
+  discSprites.set(rgb, sprite);
+  return sprite;
+}
+
+/**
+ * A filled circle of radius `r` at (`cx`,`cy`) in `rgb` (an `"r,g,b"` triple)
+ * at `alpha` — the batchable replacement for `beginPath`/`arc`/`fill`
+ * (explosion blast rings).
+ *
+ * Blitting an opaque disc under `globalAlpha` is exactly equivalent to filling
+ * a path with `rgba(rgb, alpha)`, since a solid fill composites the same way
+ * whether the alpha rides on the source pixels or on the global multiplier.
+ * Smoothing is enabled for the blit specifically — the sprite is a smooth
+ * shape being scaled to an arbitrary radius, so nearest-neighbour sampling
+ * would give it a visibly stepped edge, and the scene canvas otherwise runs
+ * with smoothing off for the chunky wall-texture look.
+ */
+export function drawDisc(ctx: CanvasRenderingContext2D, rgb: string, alpha: number, cx: number, cy: number, r: number): void {
+  const sprite = OFFSCREEN_AVAILABLE ? discSprite(rgb) : null;
+  if (!sprite) {
+    ctx.fillStyle = `rgba(${rgb},${alpha})`;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    return;
+  }
+  const previousAlpha = ctx.globalAlpha;
+  const previousSmoothing = ctx.imageSmoothingEnabled;
+  ctx.globalAlpha = previousAlpha * alpha;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(sprite, cx - r, cy - r, r * 2, r * 2);
+  ctx.imageSmoothingEnabled = previousSmoothing;
+  ctx.globalAlpha = previousAlpha;
 }
 
 /** Test seam: whether the pre-rendered fast path is active in this

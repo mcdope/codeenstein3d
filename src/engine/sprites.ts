@@ -16,6 +16,7 @@
 import type { Decoration, DecorKind, Enemy, KeyItem, LootDrop, Mine, Point, Teleporter } from "../map/types";
 import type { CodeEntity, EntityKind } from "../parser/types";
 import type { Player } from "./player";
+import { outlineRect } from "./pathSprites";
 
 /**
  * One item's draw call, tagged with the camera-space depth it should sort by.
@@ -650,7 +651,7 @@ export function collectLootBillboards(
         if (kind === "weapon") {
           ctx.strokeStyle = `rgba(224,106,255,${0.5 + 0.5 * pulse})`;
           ctx.lineWidth = 2;
-          ctx.strokeRect(cx - size * 0.75, cy - size * 0.75, size * 1.5, size * 1.5);
+          outlineRect(ctx, cx - size * 0.75, cy - size * 0.75, size * 1.5, size * 1.5);
           ctx.lineWidth = 1;
         }
         ctx.fillStyle = back;
@@ -812,7 +813,7 @@ export function collectTeleporterBillboards(
         ctx.fillRect(cx - w / 2, top, w, ringH);
         ctx.strokeStyle = `rgba(${PORTAL_RGB},${0.6 + 0.4 * pulse})`;
         ctx.lineWidth = Math.max(1, w * 0.08);
-        ctx.strokeRect(cx - w / 2, top, w, ringH);
+        outlineRect(ctx, cx - w / 2, top, w, ringH);
         ctx.fillStyle = `rgba(230,210,255,${0.35 + 0.35 * pulse})`;
         ctx.fillRect(cx - w * 0.22, top + ringH * 0.15, w * 0.44, ringH * 0.7);
       },

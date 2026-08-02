@@ -10,7 +10,20 @@
     "effort": "Med",
     "refactor": "Pre-render every per-frame path glyph once into a detached offscreen canvas (rotating ones into a 128-step rotation atlas, so no live rotate() either) and blit it; replace every per-frame strokeRect with four fillRects. Partial fixes buy nothing — the penalty is per frame, so every such call on a normal frame has to go.",
     "evidence": "In-situ attribution by suppressing canvas method classes at the CanvasRenderingContext2D prototype on the live game; CDP devtools.timeline trace; before/after with the same probe, 8s per cell",
-    "outcomeNote": "FIXED 2026-08-02 for the four always-on sites (commit adds src/engine/pathSprites.ts). Measured: idle 51.3 -> 58.9fps (dropped 70/411 -> 9/472), automap-closed 47.9 -> 58.6 (96/384 -> 11/470), combat 48.8 -> 56.3 (90/391 -> 29/451), automap-open 44.3 -> 47.3 (126/354 -> 102/379). Internal control: the 'suppress path/stroke' cell is now indistinguishable from as-shipped on both always-on scenarios, i.e. nothing left in the class. The two scenarios short of 60 are short by exactly the deferred sites (bullet-tracer stroke; automap clip + triangle). NOTE: this finding's own report originally listed strokeRect under 'examined and found fine' on synthetic evidence — retracted, see doc/dev/perf-review-2026-08-02.md §6."
+    "outcomeNote": "FIXED 2026-08-02, in two commits. First the four always-on sites (adds src/engine/pathSprites.ts: pre-rendered Glyphs + a 128-step rotation atlas + outlineRect), then the combat effects, the automap marker and the two conditional rings (adds fillLine for tracers, drawDisc for blast rings, and a scanline fill for flame jets). Measured before -> after: idle 51.3 -> 58.6fps (dropped 70/411 -> 9/470), combat 48.8 -> 59.1 (90/391 -> 7/474), automap-open 44.3 -> 59.0 (126/354 -> 8/473), automap-closed 47.9 -> 59.0 (96/384 -> 8/472). Every 'suppress all path/stroke' control cell is now within noise of as-shipped, i.e. nothing of this class is left in the render path. Correctness of the three rewritten primitives checked by diffing the real implementation against the code it replaced on identical canvases: differences confined to shape outlines (tracer 1.08% of pixels, disc 0.75%, jet 0.39%), interiors identical. NOTE: this finding's own report originally listed strokeRect under 'examined and found fine' on synthetic evidence — retracted, see doc/dev/perf-review-2026-08-02.md §6. Six tests that pinned the replaced primitives were rewritten to assert the same intent against the new ones."
+  },
+  {
+    "id": "P1-CLIP",
+    "title": "An axis-aligned rect clip() is free — unlike every other path call",
+    "file": "src/engine/automap.ts",
+    "line": 121,
+    "symptom": "drawAutomap's beginPath/rect/clip was on P1's fix list as site 8, on the assumption that every path call carries the per-frame coverage-pass penalty.",
+    "culprit": "None. Skia takes a rectangular clip as a scissor rectangle, not a coverage mask, so it never leaves the batched-quad path.",
+    "impact": "Low",
+    "effort": "Low",
+    "refactor": "No action. Measured after the automap's player-marker triangle was converted: 59.0fps with the clip still in place vs 58.6 with it suppressed — within noise, and the automap's whole deficit turned out to be the triangle. Non-rectangular clips were NOT tested and must not be assumed to share this.",
+    "evidence": "scenarios probe, automap-open cell, as-shipped vs path/stroke-suppressed after the P1 round-2 fix",
+    "outcomeNote": "CLOSED 2026-08-02: rect clip kept as-is by measurement."
   },
   {
     "id": "F23",

@@ -116,22 +116,31 @@ describe("makeBulletTrace / drawBulletTraces", () => {
     expect(trace).toEqual({ x1: WIDTH / 2, y1: HEIGHT, x2: 50, y2: 20, frames: BULLET_TRACE_FRAMES, color: "#ff0000" });
   });
 
+  // Tracers are rasterised as `fillRect` runs rather than stroked (see
+  // `pathSprites.ts` — a single `stroke()` per frame costs ~10ms of frame
+  // budget), so these assert the fill colour and the span the run covers
+  // rather than a `moveTo`/`lineTo`/`stroke` triple.
   it("draws a full-life trace at full alpha, in its own color", () => {
     const c = ctx();
     const trace = makeBulletTrace(WIDTH, HEIGHT, 50, 20, "#ff0000");
     drawBulletTraces(asCtx(c), [trace]);
-    expect(c.strokeStyle).toBe("rgba(255,0,0,0.900)");
-    expect(c.moveTo).toHaveBeenCalledWith(trace.x1, trace.y1);
-    expect(c.lineTo).toHaveBeenCalledWith(trace.x2, trace.y2);
-    expect(c.stroke).toHaveBeenCalledTimes(1);
-    expect(c.lineWidth).toBe(1); // reset after drawing
+    expect(c.fillStyle).toBe("rgba(255,0,0,0.900)");
+    expect(c.stroke).not.toHaveBeenCalled();
+
+    // The run spans muzzle to impact: this trace is steeper than it is wide
+    // (dy 100 vs dx 30), so it steps per row and every row between the two
+    // endpoints is covered exactly once.
+    const rows = c.fillRect.mock.calls.map((call) => call[1] as number);
+    expect(Math.min(...rows)).toBe(Math.min(trace.y1, trace.y2));
+    expect(Math.max(...rows)).toBe(Math.max(trace.y1, trace.y2));
+    expect(new Set(rows).size).toBe(rows.length); // no overlap — see `fillLine`
   });
 
   it("fades a near-expired trace toward transparent", () => {
     const c = ctx();
     const trace: BulletTrace = { x1: 0, y1: 0, x2: 1, y2: 1, frames: 1, color: "#00ff00" };
     drawBulletTraces(asCtx(c), [trace]);
-    expect(c.strokeStyle).toBe(`rgba(0,255,0,${(0.9 * (1 / BULLET_TRACE_FRAMES)).toFixed(3)})`);
+    expect(c.fillStyle).toBe(`rgba(0,255,0,${(0.9 * (1 / BULLET_TRACE_FRAMES)).toFixed(3)})`);
   });
 });
 
@@ -153,16 +162,47 @@ describe("spawnFlameStream / tickFlameStreams / drawFlameStreams", () => {
     expect(list[0].frames).toBe(2);
   });
 
+  // Jets are scanline-filled rather than path-filled (see `pathSprites.ts`),
+  // so "two layered jets" is now asserted by the two colours reaching the
+  // canvas rather than by two `fill()` calls.
   it("draws two layered jets (outer flame + inner core) per stream", () => {
     const c = ctx();
+    const stylesUsed: string[] = [];
+    c.fillRect.mockImplementation(() => {
+      stylesUsed.push(c.fillStyle as string);
+    });
     const stream = spawnFlameStream(HEIGHT, 10, 90, "#ffaa00");
     drawFlameStreams(asCtx(c), WIDTH, HEIGHT, [stream]);
-    expect(c.beginPath).toHaveBeenCalledTimes(2);
-    expect(c.closePath).toHaveBeenCalledTimes(2);
-    expect(c.fill).toHaveBeenCalledTimes(2);
-    expect(c.moveTo).toHaveBeenCalledTimes(2);
-    // 10 steps forward + 11 steps backward (inclusive of 0) per jet call.
-    expect(c.lineTo).toHaveBeenCalledTimes((10 + 11) * 2);
+
+    expect(c.fill).not.toHaveBeenCalled();
+    const distinct = [...new Set(stylesUsed)];
+    expect(distinct).toHaveLength(2);
+    // The weapon's own tracer colour for the outer flame, the shared
+    // yellow-orange for the hotter inner core.
+    expect(distinct[0]).toMatch(/^rgba\(255,170,0,/);
+    expect(distinct[1]).toMatch(/^rgba\(255,220,120,/);
+    // One span per scanline, over the jet's full vertical reach.
+    expect(stylesUsed.length).toBeGreaterThan(HEIGHT / 2);
+  });
+
+  it("draws nothing for a jet with no vertical reach", () => {
+    // A zero-height canvas puts the muzzle and the cone's tip on the same
+    // row; the span guard keeps that from dividing by zero.
+    const c = ctx();
+    drawFlameStreams(asCtx(c), WIDTH, 0, [spawnFlameStream(0, 10, 90, "#ffaa00")]);
+    expect(c.fillRect).not.toHaveBeenCalled();
+  });
+
+  it("skips a scanline that rounding pushes outside the jet", () => {
+    // `y2` on a half-pixel rounds the first row to just past the cone's tip,
+    // which would otherwise extrapolate the taper beyond t=1.
+    const c = ctx();
+    const stream = spawnFlameStream(400, 10, 90, "#ffaa00");
+    stream.y2 = 200.4;
+    drawFlameStreams(asCtx(c), WIDTH, 400, [stream]);
+    const rows = c.fillRect.mock.calls.map((call) => call[1] as number);
+    expect(rows).not.toContain(200); // outside the jet, skipped
+    expect(rows).toContain(201);
   });
 });
 

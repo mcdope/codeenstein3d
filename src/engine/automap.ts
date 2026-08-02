@@ -24,6 +24,7 @@ import {
 } from "../map/types";
 import { activeSpikeTileKeys } from "./traps";
 import type { Player } from "./player";
+import { drawRotatedGlyph, type Glyph } from "./pathSprites";
 import { HUD_HEIGHT } from "./hud";
 
 /** Fixed tile size in canvas pixels — independent of map size, so large maps
@@ -233,13 +234,33 @@ function drawPlayerMarker(
   const px = vx0 + (player.posX - camX) * cell;
   const py = vy0 + (player.posY - camY) * cell;
   const angle = Math.atan2(player.dirY, player.dirX);
-  const size = Math.max(6, cell * 1.6);
+  drawRotatedGlyph(ctx, playerMarkerGlyph(Math.max(6, cell * 1.6)), angle, px, py);
+}
 
-  ctx.fillStyle = PLAYER_COLOR;
-  ctx.beginPath();
-  ctx.moveTo(px + Math.cos(angle) * size, py + Math.sin(angle) * size);
-  ctx.lineTo(px + Math.cos(angle + 2.5) * size * 0.7, py + Math.sin(angle + 2.5) * size * 0.7);
-  ctx.lineTo(px + Math.cos(angle - 2.5) * size * 0.7, py + Math.sin(angle - 2.5) * size * 0.7);
-  ctx.closePath();
-  ctx.fill();
+/** Player-marker glyphs by rendered size — see `raycaster.ts`'s own
+ * `minimapMarkerGlyph` for the shared reasoning; `CELL_PX` is fixed here, so
+ * in practice this memo holds exactly one entry. */
+const playerMarkerGlyphs = new Map<number, Glyph>();
+
+function playerMarkerGlyph(size: number): Glyph {
+  const cached = playerMarkerGlyphs.get(size);
+  if (cached) return cached;
+  const back = size * 0.7;
+  const glyph: Glyph = {
+    width: size * 2 + 4,
+    height: size * 2 + 4,
+    anchorX: size + 2,
+    anchorY: size + 2,
+    draw: (g, ox, oy) => {
+      g.fillStyle = PLAYER_COLOR;
+      g.beginPath();
+      g.moveTo(ox + size, oy);
+      g.lineTo(ox + Math.cos(2.5) * back, oy + Math.sin(2.5) * back);
+      g.lineTo(ox + Math.cos(-2.5) * back, oy + Math.sin(-2.5) * back);
+      g.closePath();
+      g.fill();
+    },
+  };
+  playerMarkerGlyphs.set(size, glyph);
+  return glyph;
 }
