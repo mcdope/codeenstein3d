@@ -21,13 +21,23 @@ Phase begin lives in `advance()` itself (not the rAF `frame()` wrapper), so dire
 
 `scripts/run-perf-benchmark.mjs` + `scripts/lib/perfSampler.mjs` (injected rAF interval sampler, zero game-source changes) + `scripts/lib/perfConsoleParse.mjs` (parser for the `[perf]` grammar). Reference for the full CLI is the script's own header comment; the load-bearing design points:
 
-- **Busy time is the A/B metric, not frame intervals.** rAF pins intervals to vsync — a cost delta smaller than the frame budget is invisible in intervals. Busy time (sum of measured phases per frame, from the stats hook) is refresh-rate-independent.
+- **Two metrics, and neither substitutes for the other.** Report both.
+  - **Busy time** — the A/B metric for cost *inside* the frame callback. rAF pins intervals to vsync, so a cost delta smaller than the frame budget is invisible in intervals. Busy time (sum of measured phases per frame, from the stats hook) is refresh-rate-independent.
+  - **Presented frames** — dropped-frame count and percentage, for cost *outside* the frame callback. **Busy measures the time to _record_ canvas draw calls; rasterising that display list happens afterwards, in the GPU process, and busy cannot see it at all.** A change that leaves busy flat at 6.1ms and drops a third of the frames is not hypothetical — see [`perf-review-2026-08-02.md`](perf-review-2026-08-02.md), where exactly that ran for months and was misfiled as environmental by an audit that only looked at busy. The harness derives the display's frame period from the run's own median rather than assuming 60Hz, and counts an interval at or beyond 1.5 periods as dropped.
 - **Calibrate before comparing**: `--calibrate` runs 10 identical idle cells and reports the coefficient of variation; a delta below ~2× that spread is "no measurable difference" (≈0.1–0.2ms on the reference machine). Never claim an A/B result without stating this floor.
 - **Flag A/B** (`--flag aa|scaling|fog`): interleaves baseline/flagged runs A,B,A,B (defeats thermal drift), temporarily flipping the compile-time const in-source with a guarded git-restore. `fog` is inverted (its default is on; the flagged variant measures turning it *off*).
 - **Scenarios** (`--scenario`): `s1-idle` (calibration workload), `s2-replay` (deterministic combat — the bundled default-highscore replay), `s3-stress` (IDKFA/IDDQD rocket+flame particle ceiling, extreme gore), `s4-magento*` (Task-241 shape: the magento2 GitHub repo's `…/Pdo/Mysql.php`, a 160×160 map with 280 enemies, network HAR-replayed offline — re-record with `CODEENSTEIN_PERF_HAR_RECORD=1`; sub-cells: idle/fire/dryfire/mouseflood/move/fire-quiet), `s5-bot-demo` (the balancing bot plays; needs `?testHooks=1` — see caveat below).
 - **Output**: one JSON per run under gitignored `perf_runs/<timestamp>/`, `manifest.json` for per-cell crash resume, `sceneStates` fingerprint per run (a cell whose driver silently degrades to an idle scene is visible in the data — that failure happened during the audit).
 - **Throttle guard**: any run whose median frame interval exceeds 100ms self-marks `throttled: true` and warns — an occluded/locked-screen window gets rAF-throttled to ~1Hz and would otherwise silently poison the medians (that also happened).
 - The harness runs its own vite on **:5199** (or `CODEENSTEIN_PERF_URL`); it never touches the regular dev server on 5173.
+
+## The regression guard
+
+`src/engine/renderCost.test.ts` runs in the normal Vitest suite and asserts that **no per-frame renderer issues `fill()`, `stroke()` or `strokeRect()` on the scene canvas**. Those three are the calls measured to actually rasterise; path *building* (`beginPath`/`moveTo`/`lineTo`/`arc`/`rect`) is free until something fills it, and the automap's viewport `clip()` legitimately builds a rect path.
+
+It exists because this bug class is invisible in code review: `ctx.strokeRect(…)` is free or costs a quarter of the frame budget depending on a `lineJoin` set by whatever drew before it, and `drawWeapon` sets exactly that. The test forces the pre-rendered fast path (it stubs an offscreen context that actually paints, so `pathSprites`' capability probe passes) — without that it would exercise the direct-draw fallback, which is *supposed* to use paths, and pass vacuously. That vacuity check is itself the first assertion in the file.
+
+Verified to fail: injecting a raw `ctx.strokeRect` into `drawHud` turns it red with the call count, the call site and the suggested replacement.
 
 `npm run perf:report` (`scripts/build-perf-report.mjs`) renders one or more run directories plus `perf-findings.json` into the self-contained `perf-report.html` — interval CDFs, busy box-plots with per-run dots, phase stacks, A/B dumbbells annotated with the calibration floor, heap timelines, and the ranked findings with their outcomes.
 
@@ -36,4 +46,15 @@ Phase begin lives in `advance()` itself (not the rAF `frame()` wrapper), so dire
 - **Never pass `?testHooks=1` to a cell that should measure normal play** — it switches real telemetry recording on (`engine.ts`, `PLAYER_STATS_ENABLED ‖ testHooks`). Level readiness is detected from the `[perf] level:` console line instead. The bot cell (`s5`) can't avoid it; its numbers are labeled accordingly.
 - **Synthetic input targets**: gameplay keys must be dispatched on the **canvas element** (the engine's listeners live there; synthetic `KeyboardEvent`s don't bubble), overlay-dismiss Space on **window**; input within ~1s of the briefing dismissal lands before `engine.start()` attaches listeners and silently disappears; `cheatQueued` holds one cheat per engine frame. Verify effects via state (`sceneStates`, test hooks), never assume delivery.
 - **Stationary players die**: roaming melee enemies kill an idle player at ~t+10s — idle cells run under IDDQD, or the capture measures the Kernel Panic screen.
-- **Headed mode measures the desktop too**: slow frames in headed runs were universally missed vsyncs with the time in `unacct` (compositor/ambient load), reproducing at zero rate headless. Headed and headless busy medians match; prefer headless for unattended collection.
+- **Headless is not a free choice — it is correct for busy time and blind for draw-call shape.** Headless Chromium rasterises the canvas in software, on a path where the GPU-process coverage-pass penalty does not exist: every scenario reads a flat 60fps with zero dropped frames there *no matter what the renderer does*. The harness prints a warning when you use it, and tags the presented-frame number `[HEADLESS — cannot see raster cost]` so it can never be quoted without the caveat. Anything touching paths, strokes, joins or clips **must** be measured headed.
+
+  Demonstration, same build and same scenario, taken 30 seconds apart:
+
+  | | presented | busy (median) |
+  |---|---|---|
+  | headed | 59.4fps, 7/713 dropped (1.0%) | 6.60ms |
+  | headless | 60.0fps, 0/600 dropped (0.0%) | 6.60ms |
+
+  Identical busy; the headless run cannot distinguish a healthy build from a broken one.
+
+- **Headed mode measures the desktop too**: some slow frames in headed runs are genuinely missed vsyncs with the time in `unacct` (compositor/ambient load) rather than anything the game did. That is real, and it is *also* what a GPU-rasterisation cost looks like from inside the frame callback — the 2026-07 audit read the first as an explanation for the second and closed a real bug as environmental. Distinguishing them takes a headed A/B against a changed build, not a single capture: if suppressing a class of draw call moves the dropped-frame count, it was never ambient load.

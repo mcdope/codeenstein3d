@@ -13,6 +13,32 @@
     "outcomeNote": "FIXED 2026-08-02 across three commits: the four always-on sites, then the combat effects/automap/rings, then the toasts and lore overlay. Final measurement, original -> final: idle 51.3 -> 59.1fps (dropped 70/411 -> 7/473), combat 48.8 -> 58.0 (90/391 -> 15/464), automap-open 44.3 -> 58.6 (126/354 -> 11/469), automap-closed 47.9 -> 59.6 (96/384 -> 3/477). Every 'suppress all path/stroke' control cell is within noise of as-shipped. outlineRect re-justified by stubbing it back to ctx.strokeRect: idle 48.8 / combat 48.1 / automap-closed 45.5, a ~10fps regression, so it stays. THREE ROUNDS OF WRONG MECHANISM before this landed: the report first cleared strokeRect on synthetic evidence, then indicted it wholesale on an in-situ revert, and only the third round found lineJoin='round' as the actual trigger — see doc/dev/perf-review-2026-08-02.md for the full retraction."
   },
   {
+    "id": "P2",
+    "title": "The benchmark harness could not see this class of bug — twice over",
+    "file": "scripts/run-perf-benchmark.mjs",
+    "line": 1,
+    "symptom": "A regression costing ~10ms/frame and 30% of frames ran undetected, and the 2026-07 audit closed it as 'environmental'. Both of the harness's defaults were the reason.",
+    "culprit": "(a) `busy` measures the time to RECORD canvas draw calls; rasterising that display list happens afterwards in the GPU process, and busy cannot see it — busy was 6.1ms p50 both broken and fixed. (b) The harness prefers headless, and headless Chromium rasterises the canvas in software where the coverage-pass penalty does not exist: every scenario reads a flat 60fps with zero dropped frames there regardless of what the renderer does.",
+    "impact": "High",
+    "effort": "Med",
+    "refactor": "Add a presented-frame metric (dropped-frame count/pct, frame period derived from the run's own median rather than assuming 60Hz, dropped = interval >= 1.5 periods) alongside busy; lead the per-run console line with it; tag it `[HEADLESS — cannot see raster cost]` and print a startup warning when headless so the number can never be quoted without the caveat; surface it in the HTML report; rewrite performance.md's 'prefer headless' guidance.",
+    "evidence": "Same build, same scenario, 30s apart: headed 59.4fps 7/713 dropped, headless 60.0fps 0/600 dropped, busy 6.60ms in both",
+    "outcomeNote": "DONE 2026-08-02. Presented-frame metric threaded through run JSON, per-run console output, calibration and the HTML report (older runs lacking the field render 'n/a' rather than crashing, matching the existing newer-schema fallback convention). Headless startup warning added. performance.md now documents both metrics, the headless blind spot with the demonstration table above, and reframes the 'headed measures the desktop too' gotcha that produced the wrong 2026-07 conclusion."
+  },
+  {
+    "id": "P3",
+    "title": "No guard against reintroducing expensive canvas geometry",
+    "file": "src/engine/renderCost.test.ts",
+    "line": 1,
+    "symptom": "The expensive case is invisible at the call site: `ctx.strokeRect(...)` is free or costs a quarter of the frame budget depending on a `lineJoin` set by whatever drew before it, and `drawWeapon` sets exactly that. Nothing about a regression would look wrong in review, in a unit test, or in the headless harness.",
+    "culprit": "N/A — preventative.",
+    "impact": "Med",
+    "effort": "Low",
+    "refactor": "A Vitest case asserting no per-frame renderer issues fill()/stroke()/strokeRect() on the scene canvas, exercised on the pre-rendered fast path (stub an offscreen context that actually paints so pathSprites' probe passes) — otherwise it tests the direct-draw fallback, which is supposed to use paths, and passes vacuously.",
+    "evidence": "Verified red: injecting a raw ctx.strokeRect into drawHud fails with the call count, call site and suggested replacement",
+    "outcomeNote": "DONE 2026-08-02: src/engine/renderCost.test.ts, 9 cases covering all 7 weapon viewmodels x flash x recoil, minimap, compass, automap, HUD, crosshair, every toast and banner, all combat effects, and every world-billboard collector. First assertion checks the fast path is actually engaged, so the guard cannot pass vacuously."
+  },
+  {
     "id": "P1-CLIP",
     "title": "An axis-aligned rect clip() is free — unlike every other path call",
     "file": "src/engine/automap.ts",
