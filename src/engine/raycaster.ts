@@ -753,6 +753,12 @@ export function renderMinimap(
   // them with the green pulsing exit marker drawn below.
   ctx.fillStyle = "#ff9d1f";
   for (const hz of map.hazards) {
+    // Grid re-checked rather than trusted: `GameMap.hazards` is the list of
+    // tiles acid was generated on, not the list it currently occupies. An
+    // Exception Handling Zone's gauntlet burns out under the player
+    // (`acidDecay.ts`), and a burned-out tile that kept its marker would send
+    // them the long way round a hazard that isn't there any more.
+    if (map.grid[hz.y]?.[hz.x] !== HAZARD_TILE) continue;
     ctx.fillRect(pad + hz.x * cell, pad + hz.y * cell, cell, cell);
   }
   for (const hz of runtimeAcidTiles) {

@@ -1178,6 +1178,63 @@ describe("RaycasterEngine — Acid Overflow rooms", () => {
   });
 });
 
+describe("RaycasterEngine — Exception Zone acid decay", () => {
+  /** Spawn standing in a one-tile-wide `try` gauntlet, the shape
+   * `placeExceptionZones` produces, plus an unrelated acid pool elsewhere. */
+  function gauntletMap(): GameMap {
+    const size = 12;
+    const g = walledRoom(size);
+    for (let y = 4; y <= 6; y++) g[y][5] = HAZARD_TILE; // the gauntlet
+    g[9][2] = HAZARD_TILE; // a fillHazards room pool — permanent terrain
+    return fakeMap(
+      {
+        grid: g,
+        spawn: { x: 5, y: 5 },
+        hazards: [
+          { x: 5, y: 4 },
+          { x: 5, y: 5 },
+          { x: 5, y: 6 },
+          { x: 2, y: 9 },
+        ],
+        exceptionZones: [
+          {
+            tryRect: { x: 5, y: 4, w: 1, h: 3 },
+            catchRect: { x: 4, y: 2, w: 2, h: 2 },
+            finallyRect: { x: 2, y: 2, w: 2, h: 2 },
+          },
+        ],
+      },
+      size,
+    );
+  }
+
+  it("burns out the tile the player is standing in, and stops damaging them", () => {
+    const map = gauntletMap();
+    const { engine, handlers } = makeEngine(map);
+
+    // Under the decay window: still acid, still hurting.
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    const hurt = lastStats(handlers).health;
+    expect(hurt).toBeLessThan(100);
+    expect(map.grid[5][5]).toBe(HAZARD_TILE);
+
+    // Past it: the tile is gone and health stops falling.
+    for (let i = 0; i < 10; i++) engine.advance(0.1);
+    expect(map.grid[5][5]).toBe(0);
+    const settled = lastStats(handlers).health;
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(lastStats(handlers).health).toBe(settled);
+  });
+
+  it("leaves gauntlet tiles the player never stepped in, and unrelated acid, alone", () => {
+    const map = gauntletMap();
+    const { engine } = makeEngine(map);
+    for (let i = 0; i < 60; i++) engine.advance(0.1);
+    expect(map.grid[4][5]).toBe(HAZARD_TILE); // same shaft, never touched
+    expect(map.grid[9][2]).toBe(HAZARD_TILE); // room pool, not a try gauntlet
+  });
+});
+
 describe("RaycasterEngine — keys and doors", () => {
   function doorMap(): GameMap {
     const size = 12;
