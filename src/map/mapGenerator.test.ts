@@ -114,20 +114,29 @@ describe("MapGenerator.generate", () => {
     expect(() => gen.generate(parsed, { hasRocketLauncher: false, missingWeaponIndices: [7] })).not.toThrow();
   });
 
-  it("scales map size with lines of code and entity count, floored at minSize", () => {
+  it("scales map size with the room footprint, not with lines of code", () => {
+    // Sizing keys off the space the rooms will occupy — see mapSize. A file
+    // can be enormous and still describe very little structure, and once
+    // rooms pack into one cluster it's the cluster that decides how much grid
+    // the level needs.
     const gen = new MapGenerator({ minSize: 64, maxSize: 160 });
     const tiny = gen.generate(parsedFile({ linesOfCode: 1, entities: [] }));
     expect(tiny.width).toBe(64);
 
-    const gen2 = new MapGenerator({ minSize: 64, maxSize: 160 });
+    const sprawling = gen.generate(parsedFile({ linesOfCode: 100_000, entities: [] }));
+    expect(sprawling.width).toBe(64);
+
     const many = Array.from({ length: 30 }, (_, i) => entity({ name: `f${i}`, startLine: i + 1, endLine: i + 1 }));
-    const big = gen2.generate(parsedFile({ linesOfCode: 5000, entities: many }));
+    const big = gen.generate(parsedFile({ linesOfCode: 5000, entities: many }));
     expect(big.width).toBeGreaterThan(tiny.width);
   });
 
-  it("caps map size at maxSize even for an enormous file", () => {
+  it("caps map size at maxSize even for a file with a huge room footprint", () => {
     const gen = new MapGenerator({ minSize: 64, maxSize: 100 });
-    const map = gen.generate(parsedFile({ linesOfCode: 1_000_000, entities: [] }));
+    const many = Array.from({ length: 400 }, (_, i) =>
+      entity({ name: `f${i}`, startLine: i * 60 + 1, endLine: i * 60 + 60, complexityScore: 20 }),
+    );
+    const map = gen.generate(parsedFile({ linesOfCode: 24_000, entities: many }));
     expect(map.width).toBe(100);
   });
 
