@@ -22,12 +22,27 @@
  *   (e) the ceiling (never textured) stays a single flat color regardless
  *       of which texture pack is active;
  *   (g) per-level stylesets actually reach the screen: different campaign
- *       files render visibly different walls, and the *same* file renders
- *       identically every time. Asserted on rendered pixels rather than on
- *       an exposed styleset id on purpose — `GameMap.styleSet` being right
- *       while the renderer ignores it is exactly the failure a unit test
- *       can't see (`doc/dev/testing.md`, "what the test suite structurally
- *       cannot catch": the canvas mock draws nothing).
+ *       files render visibly different walls, and the *same* file picks the
+ *       same styleset and geometry every time.
+ *
+ *       The *difference* half stays asserted on rendered pixels on purpose —
+ *       `GameMap.styleSet` being right while the renderer ignores it is
+ *       exactly the failure a unit test can't see (`doc/dev/testing.md`,
+ *       "what the test suite structurally cannot catch": the canvas mock
+ *       draws nothing), and it is precisely this check that would catch it,
+ *       since a renderer ignoring the styleset makes every level's mean
+ *       collapse together.
+ *
+ *       The *stability* half moved off pixels, because a sampled frame
+ *       cannot express it. The grab happens with the world running, so a
+ *       roaming enemy in the sampled band shifts the mean between two
+ *       launches of a byte-identical level — measured at 6-8 per channel on
+ *       chromium, 4-5 on webkit, ~0 on firefox, scaling with how far each
+ *       engine gets in the settle window rather than with anything about the
+ *       palette. A tolerance was tried and rejected: it needs re-guessing per
+ *       engine, and any value loose enough for the fastest engine no longer
+ *       asserts much. Stability is now checked on the styleset id and a grid
+ *       fingerprint, both exact and both immune to anything animated.
  *   (f) a real online-catalog entry (Freedoom: Phase 2, fetched at build
  *       time by `scripts/fetch-online-wads.mjs` into `public/wads/`) loads
  *       via the sidebar's online-picker click path, not just a synthetic
@@ -77,6 +92,30 @@ function regionVariance(data, width, yStart, yEnd, xStart = 0, xEnd = width, ste
     }
   }
   return colors.size;
+}
+
+/** The live level's styleset id, via the engine's test-hooks surface — the
+ * exact form of "which palette did this file pick", with no rendering in the
+ * loop. */
+async function styleSetOf(page) {
+  return page.evaluate(() => window.__codeensteinTestHooks.getStyleSet());
+}
+
+/** FNV-1a over the live wall grid — an exact, animation-proof fingerprint of
+ * the level's geometry, for asserting that relaunching a file regenerates the
+ * same map rather than inferring it from pixels. */
+async function gridDigest(page) {
+  return page.evaluate(() => {
+    const grid = window.__codeensteinTestHooks.getGrid();
+    let h = 2166136261;
+    for (const row of grid) {
+      for (const tile of row) {
+        h ^= tile;
+        h = Math.imul(h, 16777619);
+      }
+    }
+    return (h >>> 0).toString(16);
+  });
 }
 
 /** Mean RGB of the mid-height band, rounded — a stable fingerprint of "what
@@ -189,11 +228,19 @@ async function main() {
   console.log("\nPer-level stylesets (procedural defaults):");
   const LEVELS_TO_SAMPLE = 8;
   const levelColors = new Map(); // path -> mean band color
+  // Taken inside the loop, while the first level is actually on screen — the
+  // relaunch comparison below happens after seven other levels have loaded.
+  let firstGrid = null;
+  let firstStyleSet = null;
   for (let i = 0; i < LEVELS_TO_SAMPLE; i++) {
     const filePath = await launchCampaignFile(page, i);
     if (filePath === null) break;
     const frame = await sampleCanvas(page);
     levelColors.set(filePath, bandMeanColor(frame.data, frame.width, frame.height));
+    if (i === 0) {
+      firstGrid = await gridDigest(page);
+      firstStyleSet = await styleSetOf(page);
+    }
   }
   const sampled = [...levelColors.entries()];
   const distinctColors = new Set(levelColors.values());
@@ -208,14 +255,35 @@ async function main() {
   // Stability: the same file must look the same every time it's launched.
   // This is the half of the feature a "just randomise it" implementation
   // would fail — and it's what makes a map export or a replay match the run.
-  const [firstPath, firstColor] = sampled[0];
+  //
+  // Asserted on state, never on pixels. A sampled frame is not a sound proxy
+  // for "the same file looks the same": the grab happens with the world
+  // running, so a roaming enemy in the sampled band moves the mean between
+  // two launches of a byte-identical level — measured at 6-8 per channel on
+  // chromium, 4-5 on webkit, ~0 on firefox, i.e. it scales with how far each
+  // engine gets in the settle window rather than with anything about the
+  // palette. A tolerance was tried and is the wrong shape: it has to be
+  // re-guessed per engine, and any value large enough to absorb the fastest
+  // engine is a value that no longer means much.
+  //
+  // The two things this actually wants to know are both exactly readable —
+  // the styleset the level picked, and the geometry it generated — and
+  // neither can be perturbed by a sprite walking through frame. The pixel
+  // sample keeps its other job above (levels don't all render the same),
+  // which is about textures reaching the screen at all.
+  const [firstPath] = sampled[0];
   await launchCampaignFile(page, 0);
-  const relaunched = await sampleCanvas(page);
-  const relaunchedColor = bandMeanColor(relaunched.data, relaunched.width, relaunched.height);
+  const relaunchedGrid = await gridDigest(page);
+  const relaunchedStyleSet = await styleSetOf(page);
   check(
-    `relaunching ${firstPath.split("/").pop()} renders an identical palette`,
-    relaunchedColor === firstColor,
-    `first ${firstColor}, again ${relaunchedColor}`,
+    `relaunching ${firstPath.split("/").pop()} regenerates a byte-identical map`,
+    relaunchedGrid === firstGrid,
+    `first ${firstGrid}, again ${relaunchedGrid}`,
+  );
+  check(
+    `relaunching ${firstPath.split("/").pop()} picks the same styleset`,
+    relaunchedStyleSet === firstStyleSet,
+    `first ${firstStyleSet}, again ${relaunchedStyleSet}`,
   );
   await page.screenshot({ path: path.join(SCREENSHOT_DIR, "styleset-sample.png") });
 

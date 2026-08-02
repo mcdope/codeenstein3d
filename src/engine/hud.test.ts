@@ -158,12 +158,17 @@ describe("drawAcidOverflowToast", () => {
     c.fillText.mockImplementation(() => {
       textColor = String(c.fillStyle);
     });
-    c.strokeRect.mockImplementation(() => {
-      borderColor = String(c.strokeStyle);
+    // The border is four `outlineRect` edge fills rather than a `strokeRect`
+    // (see `pathSprites.ts`), so the colour it actually paints with is the
+    // fillStyle at those calls — `outlineRect` sources it from `strokeStyle`.
+    c.fillRect.mockImplementation(() => {
+      const style = String(c.fillStyle);
+      if (style.includes("255,157,31")) borderColor = style;
     });
     drawAcidOverflowToast(asCtx(c), 1);
     expect(textColor.toLowerCase()).toBe("#ff9d1f");
     expect(borderColor).toContain("255,157,31");
+    expect(c.strokeRect).not.toHaveBeenCalled();
   });
 });
 

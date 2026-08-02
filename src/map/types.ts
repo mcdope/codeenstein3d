@@ -55,7 +55,7 @@ export interface Point {
  * A plain axis-aligned tile rectangle: `[x, x+w)` × `[y, y+h)`. Used wherever
  * geometry needs to be checked/reused without carrying a `Room`'s `CodeEntity`
  * back-reference — e.g. a corridor-breakup room injected by
- * `breakUpLongCorridors`, which has no parsed entity behind it. `Room`
+ * `dressCorridors`, which has no parsed entity behind it. `Room`
  * structurally satisfies this shape, so helpers that only need `x/y/w/h` can
  * take a `Rect` and work for both.
  */
@@ -142,7 +142,7 @@ export interface Enemy {
   elite: boolean;
   /**
    * A weak, small, jarringly-tinted "bug in the system" enemy spawned only in
-   * a corridor-breakup room injected by `breakUpLongCorridors` in
+   * a corridor feature injected by `dressCorridors` in
    * `mapGenerator.ts` (never in a normal AST-derived room). Very low HP, very
    * fast, erratic idle roaming, low melee/ranged damage (see `enemyAi.ts`);
    * still uses the ordinary aggro/LOS/chase state machine, just with
@@ -188,7 +188,7 @@ export interface GameMap {
   visited: boolean[][];
   rooms: Room[];
   /**
-   * Small rooms injected mid-corridor by `breakUpLongCorridors`
+   * Enclosed spaces injected mid-corridor by `dressCorridors`
    * (`mapGenerator.ts`) to break up otherwise-too-long straight sightlines.
    * Deliberately not part of `rooms` — they have no backing `CodeEntity`, so
    * kind-gated systems (enemies, doors, hazards, ...) never see them. Home to

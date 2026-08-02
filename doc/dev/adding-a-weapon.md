@@ -48,6 +48,15 @@ Same file. Add `<NAME>_WEAPON_INDEX`, then decide membership:
 
 **What breaks if skipped:** the two classic silent gaps — a weapon with no sound, or one wearing the pistol's model.
 
+**How the silhouette must be drawn.** Rectangles go straight onto the context; **polygons, curves and outlines do not**. Every non-rectangular shape is a pre-rendered `Glyph` (`src/engine/pathSprites.ts`) blitted with `drawGlyph`, and every rect outline goes through `outlineRect` instead of `ctx.strokeRect`.
+
+This is not style. A *single* `fill()` of a path anywhere in a frame costs ~10ms of frame budget on a GPU-accelerated canvas, because it drops the rasteriser out of its batched-quad path — and `drawWeapon` sets `ctx.lineJoin = "round"`, which puts plain `ctx.strokeRect` in the same class (one round-joined outline: 48fps; the same call under the default miter join: 59fps). Measured — `doc/dev/perf-review-2026-08-02.md`, finding P1. The trap is that **none of this is visible at the call site**: `ctx.strokeRect(…)` looks identical whether or not something upstream set the join, and nothing will flag a new weapon that costs a quarter of the frame budget.
+
+Two further rules that follow from it:
+
+- Shapes rigid relative to the gun's anchor (grips, blades, magazines) bake whole; anything whose *geometry* moves with recoil needs one glyph per quantised recoil step, as `flameNozzleGlyph` does.
+- **A glyph pre-renders on a detached context that inherits nothing** — not `lineJoin`, not `lineCap`, not `imageSmoothingEnabled`. Any state your shape relies on has to be set inside the glyph's own `draw`. Getting this wrong is silent: the shape still draws, just with the wrong joins.
+
 ### 4. Firing behaviour in `engine.ts`
 
 `fire()` and `updateFiring()` are written against `Weapon` fields, so an ordinary hitscan weapon needs **no engine edit at all**. Three places branch on something other than a plain field, and are worth checking against your weapon:

@@ -13,6 +13,7 @@ import {
   clearCriticalTiles,
   connectorTiles,
   findPropSpot,
+  growRoomCandidate,
   sideCandidateFits,
   sideCandidates,
   makeRoom,
@@ -248,6 +249,64 @@ describe("roomForLine", () => {
 
   it("returns undefined for an empty room list", () => {
     expect(roomForLine([], 5)).toBeUndefined();
+  });
+});
+
+describe("growRoomCandidate", () => {
+  const anchor = { x: 30, y: 30, w: 8, h: 6 };
+
+  /** Edge-to-edge separation on the axis the candidate was grown along.
+   * Equals the rolled gap for any in-bounds candidate, since the offset range
+   * guarantees the two rects still overlap on the *other* axis. */
+  function separation(a: { x: number; y: number; w: number; h: number }, b: typeof anchor): number {
+    const dx = Math.max(0, a.x - (b.x + b.w), b.x - (a.x + a.w));
+    const dy = Math.max(0, a.y - (b.y + b.h), b.y - (a.y + a.h));
+    return Math.max(dx, dy);
+  }
+
+  it("always lands the requested gap away from the anchor, overlapping it on the other axis", () => {
+    const rng = mulberry32(7);
+    let produced = 0;
+    for (let i = 0; i < 400; i++) {
+      const candidate = growRoomCandidate(anchor, 5, 5, 80, 4, 9, rng);
+      if (!candidate) continue;
+      produced++;
+      expect(separation(candidate, anchor)).toBeGreaterThanOrEqual(4);
+      expect(separation(candidate, anchor)).toBeLessThanOrEqual(9);
+      // Overlap on the perpendicular axis is what keeps the connecting
+      // corridor a mostly-straight run rather than a long reaching L.
+      const overlapX = Math.min(candidate.x + candidate.w, anchor.x + anchor.w) - Math.max(candidate.x, anchor.x);
+      const overlapY = Math.min(candidate.y + candidate.h, anchor.y + anchor.h) - Math.max(candidate.y, anchor.y);
+      expect(Math.max(overlapX, overlapY)).toBeGreaterThanOrEqual(2);
+    }
+    expect(produced).toBeGreaterThan(0);
+  });
+
+  it("reaches every one of the four sides", () => {
+    const rng = mulberry32(11);
+    const sides = new Set<string>();
+    for (let i = 0; i < 400; i++) {
+      const candidate = growRoomCandidate(anchor, 5, 5, 80, 4, 9, rng);
+      if (!candidate) continue;
+      if (candidate.y + candidate.h <= anchor.y) sides.add("top");
+      else if (candidate.y >= anchor.y + anchor.h) sides.add("bottom");
+      else if (candidate.x + candidate.w <= anchor.x) sides.add("left");
+      else sides.add("right");
+    }
+    expect(sides).toEqual(new Set(["top", "bottom", "left", "right"]));
+  });
+
+  it("returns null rather than clamping when the roll falls outside the map border", () => {
+    // Anchor pinned against the top-left corner of a tiny map: every side but
+    // one puts the footprint out of bounds, so nulls are guaranteed. Clamping
+    // instead would pile every rejected roll onto the border itself.
+    const rng = mulberry32(3);
+    const cornered = { x: 1, y: 1, w: 4, h: 4 };
+    let nulls = 0;
+    for (let i = 0; i < 200; i++) {
+      if (growRoomCandidate(cornered, 4, 4, 16, 4, 9, rng) === null) nulls++;
+    }
+    expect(nulls).toBeGreaterThan(0);
   });
 });
 

@@ -37,6 +37,19 @@ const ELITE_COMPLEXITY_THRESHOLD = 40;
  */
 const ELITE_HP_MULTIPLIER = 2;
 
+/**
+ * Chebyshev tiles kept clear of enemies around the exit. 2 leaves a 5x5 box,
+ * which is the smallest radius that stops an enemy's collision box reaching
+ * the exit tile from any direction — the point is that walking onto the exit
+ * is never gated on winning a fight you happened to spawn next to it.
+ *
+ * Deliberately a *soft* rule, like every other placement constraint here: the
+ * loop below retries a bounded number of times and then accepts whatever it
+ * has, so a room small enough that the clearance swallows it still gets its
+ * enemies rather than silently losing them.
+ */
+const EXIT_CLEARANCE_TILES = 2;
+
 /** Enemies spawned per breakup room, range [min, max]. */
 const EDGE_CASE_MIN_PER_ROOM = 1;
 const EDGE_CASE_MAX_PER_ROOM = 3;
@@ -136,7 +149,7 @@ function nearestFloorInRect(grid: Tile[][], rect: Rect, p: Point): Point {
 }
 
 /**
- * Populate every corridor-breakup room (see `breakUpLongCorridors`) with 1-3
+ * Populate every corridor feature (see `dressCorridors`) with 1-3
  * "Edge Case" enemies — small, fast, low-HP nuisances that break up the
  * "endless walk" feeling of a long corridor stretch. Modeled directly on
  * `placeTodoEncounter`'s enemy branch: a synthetic `CodeEntity` stands in for
@@ -225,7 +238,13 @@ function enemyPositions(
   const blocked = (p: Point): boolean => {
     const tx = Math.floor(p.x);
     const ty = Math.floor(p.y);
-    if (tx === exit.x && ty === exit.y) return true;
+    // Clearance, not just the tile itself. "The 'return' marker must never be
+    // hidden under a monster" was only ever enforced on the exact exit tile,
+    // which leaves an enemy free to stand against it — and an enemy is a solid
+    // body, so parking one there means the exit can't be walked onto at all
+    // until it's killed. On `main.c` the nearest enemy sits 2 tiles from the
+    // exit, close enough that its collision box overlaps the final step.
+    if (Math.max(Math.abs(tx - exit.x), Math.abs(ty - exit.y)) <= EXIT_CLEARANCE_TILES) return true;
     return avoidSpawns.some((s) => tx === s.x && ty === s.y);
   };
   const randomInRoom = (): Point => ({

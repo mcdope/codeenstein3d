@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { InputSnapshot } from "./input";
-import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelMeta } from "./replay";
+import { CampaignReplayRecorder, MAX_REPLAY_FRAMES_PER_LEVEL, ReplayPlaybackInput, type ReplayLevelMeta } from "./replay";
 
 function meta(overrides: Partial<ReplayLevelMeta> = {}): ReplayLevelMeta {
   return {
@@ -99,11 +99,48 @@ describe("CampaignReplayRecorder", () => {
     rec.record(0.016, snapshot());
     rec.startLevel(meta({ filePath: "b.c" }), Promise.resolve("hashB"), Promise.resolve("balance-hash"));
     // Overflow it the way a genuinely long level does.
-    for (let i = 0; i < 21601; i++) rec.record(0.016, snapshot());
+    for (let i = 0; i < MAX_REPLAY_FRAMES_PER_LEVEL + 1; i++) rec.record(0.016, snapshot());
     rec.startLevel(meta({ filePath: "c.c" }), Promise.resolve("hashC"), Promise.resolve("balance-hash"));
     rec.record(0.016, snapshot());
     const payload = await rec.finish();
     expect(payload!.levels.map((l) => l.filePath)).toEqual(["a.c"]);
+  });
+
+  it("reports how far past the cap the offending level ran, so the next cap change is measured", async () => {
+    // Without this figure the warning only ever says "over the cap", which is
+    // exactly what made the previous cap raise a guess: recording stops at the
+    // limit, so nothing knew the true length.
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rec = new CampaignReplayRecorder("demo");
+    rec.startLevel(meta({ filePath: "a.c" }), Promise.resolve("hashA"), Promise.resolve("balance-hash"));
+    rec.record(0.016, snapshot());
+    rec.startLevel(meta({ filePath: "b.c" }), Promise.resolve("hashB"), Promise.resolve("balance-hash"));
+    const over = 250;
+    for (let i = 0; i < MAX_REPLAY_FRAMES_PER_LEVEL + over; i++) rec.record(0.016, snapshot());
+    rec.startLevel(meta({ filePath: "c.c" }), Promise.resolve("hashC"), Promise.resolve("balance-hash"));
+    rec.record(0.016, snapshot());
+    await rec.finish();
+
+    const truncation = warnSpy.mock.calls.map(([msg]) => String(msg)).find((m) => m.includes("truncated"));
+    expect(truncation).toContain(`${MAX_REPLAY_FRAMES_PER_LEVEL + over - 1} frames`);
+    expect(truncation).toContain(`${over - 1} past the cap`);
+  });
+
+  it("says nothing about the cap when a level went unrecordable without overflowing", async () => {
+    // The other way `finish()` returns null: a level started and never
+    // recorded a frame. Reporting "0 past the cap" there would be misleading.
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rec = new CampaignReplayRecorder("demo");
+    rec.startLevel(meta({ filePath: "a.c" }), Promise.resolve("hashA"), Promise.resolve("balance-hash"));
+    rec.record(0.016, snapshot());
+    rec.startLevel(meta({ filePath: "b.c" }), Promise.resolve("hashB"), Promise.resolve("balance-hash"));
+    rec.startLevel(meta({ filePath: "c.c" }), Promise.resolve("hashC"), Promise.resolve("balance-hash"));
+    rec.record(0.016, snapshot());
+    await rec.finish();
+
+    const truncation = warnSpy.mock.calls.map(([msg]) => String(msg)).find((m) => m.includes("truncated"));
+    expect(truncation).toBeDefined();
+    expect(truncation).not.toContain("past the cap");
   });
 
   it("returns null overall when every level ends up empty", async () => {
@@ -128,7 +165,7 @@ describe("CampaignReplayRecorder", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const rec = new CampaignReplayRecorder("demo");
     rec.startLevel(meta(), Promise.resolve("hash1"), Promise.resolve("balance-hash"));
-    for (let i = 0; i < 21601; i++) rec.record(0.016, snapshot());
+    for (let i = 0; i < MAX_REPLAY_FRAMES_PER_LEVEL + 1; i++) rec.record(0.016, snapshot());
     expect(warnSpy).toHaveBeenCalledOnce();
     const payload = await rec.finish();
     expect(payload).toBeNull(); // the only level overflowed -> dropped -> no payload at all
@@ -138,7 +175,7 @@ describe("CampaignReplayRecorder", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const rec = new CampaignReplayRecorder("demo");
     rec.startLevel(meta(), Promise.resolve("hash1"), Promise.resolve("balance-hash"));
-    for (let i = 0; i < 21605; i++) rec.record(0.016, snapshot());
+    for (let i = 0; i < MAX_REPLAY_FRAMES_PER_LEVEL + 5; i++) rec.record(0.016, snapshot());
     expect(warnSpy).toHaveBeenCalledOnce();
   });
 

@@ -59,6 +59,58 @@ export function centeredRoom(entity: CodeEntity | undefined, size: number): Room
   return makeRoom(x, y, w, h, placeholder);
 }
 
+/**
+ * Whether `placeDoors` will lock this room — a private or protected method's
+ * room, never the spawn room at index 0.
+ *
+ * Shared rather than re-spelled at each site because the two callers have to
+ * agree exactly. `placeDoors` turns *every* corridor mouth of such a room into
+ * a door and `placeKeys` scatters one key per doorway, so any pass that carves
+ * an additional corridor into one silently adds a key-fetch to the level's
+ * critical path. `connectLoops` uses this to leave locked rooms strictly
+ * alone: a shortcut into a vault isn't a shortcut, it's another key.
+ */
+export function isLockableRoom(room: Room, index: number): boolean {
+  if (index === 0) return false;
+  const visibility = room.entity.visibility;
+  return room.entity.kind === "method" && (visibility === "private" || visibility === "protected");
+}
+
+/**
+ * How many distinct doorways `room` currently has: contiguous runs of open
+ * floor just outside it that lead in, each run counted once however many tiles
+ * wide it is.
+ *
+ * The run grouping matters and isn't a detail. `placeDoors` turns every mouth
+ * *tile* into a `DOOR_TILE`, but `placeKeys` bills one key per *doorway* (see
+ * `doorwayTiles`) — so a corridor running flush alongside a room's wall widens
+ * one gate rather than adding several. Counting runs is therefore the measure
+ * of what a new corridor actually costs the player: another key, or nothing.
+ */
+export function doorwayRunCount(room: Rect, grid: readonly Tile[][]): number {
+  const open = (x: number, y: number): boolean => grid[y]?.[x] !== undefined && grid[y][x] !== 1;
+  let runs = 0;
+  const scanSide = (
+    length: number,
+    outside: (i: number) => Point,
+    inside: (i: number) => Point,
+  ): void => {
+    let inRun = false;
+    for (let i = 0; i < length; i++) {
+      const o = outside(i);
+      const n = inside(i);
+      const isMouth = open(o.x, o.y) && open(n.x, n.y);
+      if (isMouth && !inRun) runs++;
+      inRun = isMouth;
+    }
+  };
+  scanSide(room.w, (i) => ({ x: room.x + i, y: room.y - 1 }), (i) => ({ x: room.x + i, y: room.y }));
+  scanSide(room.w, (i) => ({ x: room.x + i, y: room.y + room.h }), (i) => ({ x: room.x + i, y: room.y + room.h - 1 }));
+  scanSide(room.h, (i) => ({ x: room.x - 1, y: room.y + i }), (i) => ({ x: room.x, y: room.y + i }));
+  scanSide(room.h, (i) => ({ x: room.x + room.w, y: room.y + i }), (i) => ({ x: room.x + room.w - 1, y: room.y + i }));
+  return runs;
+}
+
 /** True if two rects overlap once each is grown by `margin` on all sides. */
 export function roomsOverlap(a: Rect, b: Rect, margin: number): boolean {
   return (
@@ -67,6 +119,49 @@ export function roomsOverlap(a: Rect, b: Rect, margin: number): boolean {
     a.y - margin < b.y + b.h &&
     a.y + a.h + margin > b.y
   );
+}
+
+/**
+ * One candidate footprint for a `w`x`h` room grown off `anchor`: a random side,
+ * a random `gapMin`..`gapMax` tiles of rock between the two, and a random
+ * offset along that side. Returns `null` when the roll lands outside the map
+ * border — the caller simply tries again, which is cheaper than clamping
+ * (clamping would bias every rejected roll onto the border itself).
+ *
+ * The offset range deliberately guarantees at least 2 tiles of *span overlap*
+ * between the anchor and the new room. That's what makes the connecting
+ * corridor mostly a single straight run with a short jog, instead of a long
+ * two-legged L reaching around a room that only touches at a corner — and
+ * short, mostly-straight legs are the entire reason growth placement exists.
+ * Overlap is impossible when the new room is narrower than 4 tiles across the
+ * relevant axis, in which case the range collapses to whatever still fits.
+ */
+export function growRoomCandidate(
+  anchor: Rect,
+  w: number,
+  h: number,
+  size: number,
+  gapMin: number,
+  gapMax: number,
+  rng: () => number,
+): Rect | null {
+  const side = Math.floor(rng() * 4);
+  const gap = gapMin + Math.floor(rng() * (gapMax - gapMin + 1));
+  const vertical = side < 2;
+
+  const span = vertical ? anchor.w : anchor.h;
+  const extent = vertical ? w : h;
+  const anchorStart = vertical ? anchor.x : anchor.y;
+  const lo = anchorStart - Math.max(0, extent - 2);
+  const hi = anchorStart + Math.max(0, span - 2);
+  const along = lo + Math.floor(rng() * (hi - lo + 1));
+
+  const rect: Rect = vertical
+    ? { x: along, y: side === 0 ? anchor.y - gap - h : anchor.y + anchor.h + gap, w, h }
+    : { x: side === 2 ? anchor.x - gap - w : anchor.x + anchor.w + gap, y: along, w, h };
+
+  if (rect.x < 1 || rect.y < 1 || rect.x + rect.w > size - 1 || rect.y + rect.h > size - 1) return null;
+  return rect;
 }
 
 export function carveRoom(grid: Tile[][], room: Room): void {

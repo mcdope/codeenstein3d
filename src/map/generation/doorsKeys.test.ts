@@ -117,6 +117,64 @@ describe("placeKeys", () => {
     for (const k of keys) expect(k.collected).toBe(false);
   });
 
+  it("never places a key inside an Exception Handling Zone", () => {
+    // The `try` gauntlet is unavoidable acid, spikes and a mine, and that is
+    // only defensible while entering it is a *choice*. A key past it makes
+    // the toll mandatory — measured on the real campaign at 4 of the 7
+    // levels that have a zone, and worth 36 recorded health-drain events on
+    // stage06_pipeline.py alone.
+    const g = grid(24);
+    const spawnRoom = makeRoom(1, 1, 3, 3, entity());
+    const lockedRoom = makeRoom(18, 1, 3, 3, entity({ kind: "method", visibility: "private" }));
+    carveRoom(g, spawnRoom);
+    carveRoom(g, lockedRoom);
+    carveHLine(g, 3, 18, 2);
+    // A zone hanging off the corridor: a 1-wide shaft up to a catch alcove
+    // and a finally room, all reachable, all only through the shaft.
+    const zone = {
+      tryRect: { x: 8, y: 4, w: 1, h: 4 },
+      catchRect: { x: 8, y: 9, w: 2, h: 2 },
+      finallyRect: { x: 7, y: 12, w: 3, h: 3 },
+    };
+    for (const r of [zone.tryRect, zone.catchRect, zone.finallyRect]) {
+      for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) g[y][x] = 0;
+    }
+    g[3][8] = 0; // mouth joining the shaft to the corridor
+    g[8][8] = 0; // shaft -> catch
+    g[11][8] = 0; // catch -> finally
+
+    const doors = placeDoors([spawnRoom, lockedRoom], g);
+    expect(doors.length).toBeGreaterThan(0);
+    const keys = placeKeys(g, spawnRoom.center, lockedRoom.center, [], doors, [], mulberry32(5), [zone]);
+
+    expect(keys.length).toBeGreaterThan(0);
+    const inside = (x: number, y: number, r: { x: number; y: number; w: number; h: number }): boolean =>
+      x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+    for (const k of keys) {
+      for (const r of [zone.tryRect, zone.catchRect, zone.finallyRect]) {
+        expect(inside(Math.floor(k.x), Math.floor(k.y), r)).toBe(false);
+      }
+    }
+  });
+
+  it("still places every key when zones are excluded — they move, they aren't dropped", () => {
+    const g = grid(24);
+    const spawnRoom = makeRoom(1, 1, 3, 3, entity());
+    const lockedRoom = makeRoom(18, 1, 3, 3, entity({ kind: "method", visibility: "private" }));
+    carveRoom(g, spawnRoom);
+    carveRoom(g, lockedRoom);
+    carveHLine(g, 3, 18, 2);
+    const zone = {
+      tryRect: { x: 8, y: 4, w: 1, h: 4 },
+      catchRect: { x: 8, y: 9, w: 2, h: 2 },
+      finallyRect: { x: 7, y: 12, w: 3, h: 3 },
+    };
+    const doors = placeDoors([spawnRoom, lockedRoom], g);
+    const without = placeKeys(g, spawnRoom.center, lockedRoom.center, [], doors, [], mulberry32(5));
+    const with_ = placeKeys(g, spawnRoom.center, lockedRoom.center, [], doors, [], mulberry32(5), [zone]);
+    expect(with_).toHaveLength(without.length);
+  });
+
   it("never places a key on spawn, exit, an enemy tile, or a breakup room tile", () => {
     const g = grid(20);
     const spawnRoom = makeRoom(1, 1, 3, 3, entity());

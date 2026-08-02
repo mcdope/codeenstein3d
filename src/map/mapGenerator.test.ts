@@ -27,6 +27,27 @@ function entity(overrides: Partial<CodeEntity> = {}): CodeEntity {
   return { name: "f", kind: "function", startLine: 1, endLine: 5, complexityScore: 3, nestingDepth: 0, ...overrides };
 }
 
+/** Distinct gates among a level's door tiles: 4-connected runs, counted once
+ * each however many tiles wide they are — the same grouping `doorwayTiles`
+ * applies, and the unit `placeKeys` bills a key against. */
+function countDoorways(doors: readonly { x: number; y: number }[]): number {
+  const remaining = new Set(doors.map((d) => `${d.x},${d.y}`));
+  let gates = 0;
+  while (remaining.size > 0) {
+    const [first] = remaining;
+    const stack = [first];
+    remaining.delete(first);
+    while (stack.length > 0) {
+      const [x, y] = stack.pop()!.split(",").map(Number);
+      for (const k of [`${x + 1},${y}`, `${x - 1},${y}`, `${x},${y + 1}`, `${x},${y - 1}`]) {
+        if (remaining.delete(k)) stack.push(k);
+      }
+    }
+    gates++;
+  }
+  return gates;
+}
+
 describe("MapGenerator.generate", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -64,7 +85,9 @@ describe("MapGenerator.generate", () => {
     expect(map.rooms.length).toBeGreaterThanOrEqual(2); // top-up guarantee
     expect(map.enemies.length).toBeGreaterThan(0);
     expect(map.doors.length).toBeGreaterThan(0);
-    expect(map.keys.length).toBe(map.doors.length);
+    // One key per *doorway*, not per door tile — a corridor wider than one
+    // tile makes a wider gate, not more gates (see `doorwayTiles`).
+    expect(map.keys.length).toBe(countDoorways(map.doors));
     expect(map.hazards.length).toBeGreaterThan(0);
     expect(map.bonusLevel).toBe(false);
   });
@@ -114,20 +137,29 @@ describe("MapGenerator.generate", () => {
     expect(() => gen.generate(parsed, { hasRocketLauncher: false, missingWeaponIndices: [7] })).not.toThrow();
   });
 
-  it("scales map size with lines of code and entity count, floored at minSize", () => {
+  it("scales map size with the room footprint, not with lines of code", () => {
+    // Sizing keys off the space the rooms will occupy — see mapSize. A file
+    // can be enormous and still describe very little structure, and once
+    // rooms pack into one cluster it's the cluster that decides how much grid
+    // the level needs.
     const gen = new MapGenerator({ minSize: 64, maxSize: 160 });
     const tiny = gen.generate(parsedFile({ linesOfCode: 1, entities: [] }));
     expect(tiny.width).toBe(64);
 
-    const gen2 = new MapGenerator({ minSize: 64, maxSize: 160 });
+    const sprawling = gen.generate(parsedFile({ linesOfCode: 100_000, entities: [] }));
+    expect(sprawling.width).toBe(64);
+
     const many = Array.from({ length: 30 }, (_, i) => entity({ name: `f${i}`, startLine: i + 1, endLine: i + 1 }));
-    const big = gen2.generate(parsedFile({ linesOfCode: 5000, entities: many }));
+    const big = gen.generate(parsedFile({ linesOfCode: 5000, entities: many }));
     expect(big.width).toBeGreaterThan(tiny.width);
   });
 
-  it("caps map size at maxSize even for an enormous file", () => {
+  it("caps map size at maxSize even for a file with a huge room footprint", () => {
     const gen = new MapGenerator({ minSize: 64, maxSize: 100 });
-    const map = gen.generate(parsedFile({ linesOfCode: 1_000_000, entities: [] }));
+    const many = Array.from({ length: 400 }, (_, i) =>
+      entity({ name: `f${i}`, startLine: i * 60 + 1, endLine: i * 60 + 60, complexityScore: 20 }),
+    );
+    const map = gen.generate(parsedFile({ linesOfCode: 24_000, entities: many }));
     expect(map.width).toBe(100);
   });
 
@@ -138,6 +170,54 @@ describe("MapGenerator.generate", () => {
       entities: [entity({ complexityScore: 1000, nestingDepth: 0 })], // huge room, tiny map
     });
     expect(() => gen.generate(parsed)).not.toThrow();
+  });
+
+  it("grows every room beside an already-placed one instead of scattering it across the map", () => {
+    // The property that bounds corridor length: connectRooms carves between
+    // consecutive room centers, so what matters is that a room is never far
+    // from the ones already placed. With uniform-random placement the demo
+    // campaign averaged 59 tiles between consecutive centers and peaked at
+    // 191 — see tryGrowRoom's doc comment.
+    const gen = new MapGenerator();
+    const entities = Array.from({ length: 8 }, (_, i) =>
+      entity({ name: `f${i}`, startLine: i * 6 + 1, endLine: i * 6 + 6 }),
+    );
+    const map = gen.generate(parsedFile({ linesOfCode: 200, entities }));
+    expect(map.rooms).toHaveLength(8);
+
+    for (let i = 1; i < map.rooms.length; i++) {
+      const room = map.rooms[i];
+      const separations = map.rooms.slice(0, i).map((other) => {
+        const dx = Math.max(0, room.x - (other.x + other.w), other.x - (room.x + room.w));
+        const dy = Math.max(0, room.y - (other.y + other.h), other.y - (room.y + room.h));
+        return Math.max(dx, dy);
+      });
+      // ROOM_GAP_MAX. A room placed by the random-scatter fallback could sit
+      // further out, but on a map this empty growth never needs it.
+      expect(Math.min(...separations)).toBeLessThanOrEqual(9);
+    }
+  });
+
+  it("keeps rock between grown rooms, so the side-feature carvers still have somewhere to go", () => {
+    // placeSecretRooms/placeVendorDepots/placeSwitchboards/placeExceptionZones
+    // all demand untouched rock plus a one-tile margin (sideCandidateFits).
+    // Growth placement packs rooms far tighter than random placement did, so
+    // ROOM_PACK_MARGIN is what stops it from starving all four at once.
+    const gen = new MapGenerator();
+    const entities = Array.from({ length: 8 }, (_, i) =>
+      entity({ name: `f${i}`, startLine: i * 6 + 1, endLine: i * 6 + 6 }),
+    );
+    const map = gen.generate(parsedFile({ linesOfCode: 200, entities }));
+
+    for (let i = 0; i < map.rooms.length; i++) {
+      for (let j = i + 1; j < map.rooms.length; j++) {
+        const a = map.rooms[i];
+        const b = map.rooms[j];
+        const touching =
+          a.x - 3 < b.x + b.w && a.x + a.w + 3 > b.x && a.y - 3 < b.y + b.h && a.y + a.h + 3 > b.y;
+        expect(touching).toBe(false);
+      }
+    }
   });
 
   it("skips an entity whose room repeatedly overlaps existing rooms until attempts run out", () => {

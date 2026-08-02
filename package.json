@@ -20,6 +20,7 @@
     "verify:wad-parser": "node scripts/verify-wad-parser.mjs",
     "verify:wad-textures": "node scripts/verify-wad-textures.mjs",
     "report:wad-stylesets": "node scripts/report-wad-styleset-coverage.mjs",
+    "report:level-maps": "node scripts/render-level-maps.mjs",
     "verify:zip-reader": "node scripts/verify-zip-reader.mjs",
     "fetch:online-wads": "node scripts/fetch-online-wads.mjs",
     "verify:campaign": "node scripts/verify-demo-campaign.mjs",
@@ -50,7 +51,7 @@
     "coverage": "vitest run --coverage"
   },
   "devDependencies": {
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.1.2",
     "@vitest/coverage-v8": "4.1.10",
     "esbuild": "^0.28.1",
     "jsdom": "^30.0.1",

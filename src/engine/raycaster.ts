@@ -22,6 +22,7 @@ import {
   type Point,
 } from "../map/types";
 import type { Player } from "./player";
+import { drawGlyph, drawRotatedGlyph, outlineRect, type Glyph } from "./pathSprites";
 import { EDGE_CASE_COLOR, enemyColor } from "./sprites";
 import { LORE_BASE, type LevelStyle, type TextureBitmap } from "./textures";
 import { activeSpikeTileKeys } from "./traps";
@@ -496,6 +497,63 @@ export interface MinimapPanelRect {
 /** Outer radius, in canvas pixels, of the compass badge circle. */
 const COMPASS_BADGE_RADIUS = 13;
 
+/** The player marker's fill — bright enough to be unmistakably distinct from
+ * every other marker colour on the panel. */
+const MINIMAP_PLAYER_COLOR = "#f5ffef";
+
+/** The compass badge's backing disc and rim: fixed geometry that never
+ * changes over a session, so it pre-renders once and every frame after is one
+ * blit (see `pathSprites.ts` for why a live `arc`+`fill`+`stroke` here cost
+ * ~10ms of frame budget). */
+const COMPASS_BADGE_GLYPH: Glyph = {
+  width: COMPASS_BADGE_RADIUS * 2 + 4,
+  height: COMPASS_BADGE_RADIUS * 2 + 4,
+  anchorX: COMPASS_BADGE_RADIUS + 2,
+  anchorY: COMPASS_BADGE_RADIUS + 2,
+  draw: (g, ox, oy) => {
+    g.beginPath();
+    g.arc(ox, oy, COMPASS_BADGE_RADIUS, 0, Math.PI * 2);
+    g.fillStyle = "rgba(2,5,6,0.55)";
+    g.fill();
+    g.strokeStyle = "rgba(140,255,170,0.45)";
+    g.lineWidth = 1;
+    g.stroke();
+  },
+};
+
+/** Player-marker glyphs by rendered size. `size` is derived from the panel's
+ * `cell`, which is fixed per (map, panel size) — in practice one or two
+ * distinct values for a whole session, so this memo never grows meaningfully.
+ * Keyed rather than scaled at blit time so the triangle keeps the exact
+ * geometry the direct-draw fallback produces. */
+const markerGlyphs = new Map<number, Glyph>();
+
+function minimapMarkerGlyph(size: number): Glyph {
+  const cached = markerGlyphs.get(size);
+  if (cached) return cached;
+  // Same triangle the pre-glyph code built inline, expressed once at bearing
+  // zero: tip along +x at `size`, two trailing corners at ±2.5rad and 0.6×
+  // the radius. `drawRotatedGlyph` supplies the facing rotation.
+  const back = size * 0.6;
+  const glyph: Glyph = {
+    width: size * 2 + 4,
+    height: size * 2 + 4,
+    anchorX: size + 2,
+    anchorY: size + 2,
+    draw: (g, ox, oy) => {
+      g.fillStyle = MINIMAP_PLAYER_COLOR;
+      g.beginPath();
+      g.moveTo(ox + size, oy);
+      g.lineTo(ox + Math.cos(2.5) * back, oy + Math.sin(2.5) * back);
+      g.lineTo(ox + Math.cos(-2.5) * back, oy + Math.sin(-2.5) * back);
+      g.closePath();
+      g.fill();
+    },
+  };
+  markerGlyphs.set(size, glyph);
+  return glyph;
+}
+
 /** Cached static wall layer for the corner minimap (perf audit finding F1):
  * the walls pass used to issue one `fillRect` per wall tile over the ENTIRE
  * grid every frame — O(map area) draw calls (~1ms/frame on a 160×160
@@ -650,7 +708,7 @@ export function renderMinimap(
   // Subtle frame around the whole panel.
   ctx.strokeStyle = "rgba(140,255,170,0.35)";
   ctx.lineWidth = 1;
-  ctx.strokeRect(panel.x + 0.5, panel.y + 0.5, panel.w - 1, panel.h - 1);
+  outlineRect(ctx, panel.x + 0.5, panel.y + 0.5, panel.w - 1, panel.h - 1);
 
   ctx.globalAlpha = 0.9;
 
@@ -695,6 +753,12 @@ export function renderMinimap(
   // them with the green pulsing exit marker drawn below.
   ctx.fillStyle = "#ff9d1f";
   for (const hz of map.hazards) {
+    // Grid re-checked rather than trusted: `GameMap.hazards` is the list of
+    // tiles acid was generated on, not the list it currently occupies. An
+    // Exception Handling Zone's gauntlet burns out under the player
+    // (`acidDecay.ts`), and a burned-out tile that kept its marker would send
+    // them the long way round a hazard that isn't there any more.
+    if (map.grid[hz.y]?.[hz.x] !== HAZARD_TILE) continue;
     ctx.fillRect(pad + hz.x * cell, pad + hz.y * cell, cell, cell);
   }
   for (const hz of runtimeAcidTiles) {
@@ -779,25 +843,13 @@ export function renderMinimap(
   const py = pad + player.posY * cell;
   const angle = Math.atan2(player.dirY, player.dirX);
   const size = Math.max(4, cell * 1.4);
-  ctx.fillStyle = "#f5ffef";
-  ctx.beginPath();
-  ctx.moveTo(px + Math.cos(angle) * size, py + Math.sin(angle) * size);
-  ctx.lineTo(px + Math.cos(angle + 2.5) * size * 0.6, py + Math.sin(angle + 2.5) * size * 0.6);
-  ctx.lineTo(px + Math.cos(angle - 2.5) * size * 0.6, py + Math.sin(angle - 2.5) * size * 0.6);
-  ctx.closePath();
-  ctx.fill();
+  drawRotatedGlyph(ctx, minimapMarkerGlyph(size), angle, px, py);
 
   // Compass badge: drawn last, straddling the panel's bottom-right corner —
   // see `drawCompass` in `hud.ts` for the needle drawn into it. Painting this
   // after every grid marker above is what makes it read as attached on top
   // of the corner rather than sitting underneath the grid content.
-  ctx.beginPath();
-  ctx.arc(compassBadge.cx, compassBadge.cy, compassBadge.r, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(2,5,6,0.55)";
-  ctx.fill();
-  ctx.strokeStyle = "rgba(140,255,170,0.45)";
-  ctx.lineWidth = 1;
-  ctx.stroke();
+  drawGlyph(ctx, COMPASS_BADGE_GLYPH, compassBadge.cx, compassBadge.cy);
 
   ctx.restore();
 

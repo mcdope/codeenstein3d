@@ -31,3 +31,6 @@ watch_trace.log
 
 # One-shot bot-wedge diagnostic artifacts (scripts/diagnose-level-wedge.mjs)
 wedge-diagnosis/
+
+# Rendered level floor plans + metrics (scripts/render-level-maps.mjs)
+level_maps/

@@ -393,6 +393,28 @@ describe("RaycasterEngine — construction", () => {
     expect(() => new RaycasterEngine(canvas, fakeMap(), {}, undefined, undefined, undefined, 1)).not.toThrow();
   });
 
+  it("reports meleeWouldHit once a rendered frame has a live enemy in the crosshair", () => {
+    // The distance test in `meleeWouldHit` only runs when
+    // `findTargetInProjections` actually finds something, and that reads the
+    // player's zBuffer — which is empty until a frame has been rendered. A
+    // hooks call before the first `advance()` therefore short-circuits and
+    // never exercises the range comparison at all.
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      // Directly ahead of the spawn (5,5), facing +x, inside the 1.5 melee range.
+      const map = fakeMap({ enemies: [fakeEnemy({ x: 6.5, y: 5.5 })] });
+      const { engine } = makeEngine(map);
+      engine.advance(0.016);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> })
+        .__codeensteinTestHooks;
+      expect((hooks!.getPlayerState() as { meleeWouldHit: boolean }).meleeWouldHit).toBe(true);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+      delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+    }
+  });
+
   it("exposes window.__codeensteinTestHooks only when ?testHooks=1 is on the URL", () => {
     const original = window.location;
     Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
@@ -420,6 +442,9 @@ describe("RaycasterEngine — construction", () => {
       ]);
       expect(hooks!.getMines()).toEqual([]);
       expect(hooks!.getGridVersion()).toEqual(expect.any(Number));
+      // The level's own styleset, not a re-derivation — verify-wad-textures
+      // asserts stability by comparing this across two launches.
+      expect(hooks!.getStyleSet()).toBe(map.styleSet);
       expect(hooks!.getGrid()).toEqual(map.grid);
       // A copy, never the live array — a caller must not be able to mutate
       // engine state, and `PathField` floods over this exact grid.
@@ -1175,6 +1200,63 @@ describe("RaycasterEngine — Acid Overflow rooms", () => {
         acidOverflows: [{ index: 99, startedAt: 0, frozenTarget: null }],
       }),
     ).not.toThrow();
+  });
+});
+
+describe("RaycasterEngine — Exception Zone acid decay", () => {
+  /** Spawn standing in a one-tile-wide `try` gauntlet, the shape
+   * `placeExceptionZones` produces, plus an unrelated acid pool elsewhere. */
+  function gauntletMap(): GameMap {
+    const size = 12;
+    const g = walledRoom(size);
+    for (let y = 4; y <= 6; y++) g[y][5] = HAZARD_TILE; // the gauntlet
+    g[9][2] = HAZARD_TILE; // a fillHazards room pool — permanent terrain
+    return fakeMap(
+      {
+        grid: g,
+        spawn: { x: 5, y: 5 },
+        hazards: [
+          { x: 5, y: 4 },
+          { x: 5, y: 5 },
+          { x: 5, y: 6 },
+          { x: 2, y: 9 },
+        ],
+        exceptionZones: [
+          {
+            tryRect: { x: 5, y: 4, w: 1, h: 3 },
+            catchRect: { x: 4, y: 2, w: 2, h: 2 },
+            finallyRect: { x: 2, y: 2, w: 2, h: 2 },
+          },
+        ],
+      },
+      size,
+    );
+  }
+
+  it("burns out the tile the player is standing in, and stops damaging them", () => {
+    const map = gauntletMap();
+    const { engine, handlers } = makeEngine(map);
+
+    // Under the decay window: still acid, still hurting.
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    const hurt = lastStats(handlers).health;
+    expect(hurt).toBeLessThan(100);
+    expect(map.grid[5][5]).toBe(HAZARD_TILE);
+
+    // Past it: the tile is gone and health stops falling.
+    for (let i = 0; i < 10; i++) engine.advance(0.1);
+    expect(map.grid[5][5]).toBe(0);
+    const settled = lastStats(handlers).health;
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(lastStats(handlers).health).toBe(settled);
+  });
+
+  it("leaves gauntlet tiles the player never stepped in, and unrelated acid, alone", () => {
+    const map = gauntletMap();
+    const { engine } = makeEngine(map);
+    for (let i = 0; i < 60; i++) engine.advance(0.1);
+    expect(map.grid[4][5]).toBe(HAZARD_TILE); // same shaft, never touched
+    expect(map.grid[9][2]).toBe(HAZARD_TILE); // room pool, not a try gauntlet
   });
 });
 

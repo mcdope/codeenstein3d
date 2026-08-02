@@ -336,6 +336,12 @@ function aggregateCell(entry, colorIndex) {
     runCount: runs.length,
     rawDeltas,
     intervalQuantiles: quantiles(rawDeltas),
+    // Presented-frame health, pooled across the cell's runs. Separate from
+    // busy time on purpose: busy measures the time to RECORD canvas draw
+    // calls, and rasterising them happens afterwards in the GPU process where
+    // busy cannot see it. Runs captured before this field existed report
+    // `null` rather than crashing, like every other newer-schema field here.
+    presented: pooledPresented(runs),
     busy: {
       pooledQuantiles: pooledBusyRaw.length ? quantiles(pooledBusyRaw) : quantiles(perRunBusyMedian),
       usingPooledRaw: pooledBusyRaw.length > 0,
@@ -487,12 +493,38 @@ function cssIdx(agg) {
   return idx === -1 ? "other" : idx + 1;
 }
 
+/** Pool `presented` across a cell's runs — dropped frames summed, fps and
+ * frame period averaged. `meaningful: false` if ANY run was headless, since a
+ * headless run cannot see the raster cost this metric exists to catch. */
+/** Table cell for the pooled presented-frame health — the headless caveat
+ * rides along with the number so it can never be read without it. */
+function presentedCell(p) {
+  if (!p) return '<span class="muted">n/a</span>';
+  const body = `${p.fps.toFixed(1)}fps · ${p.droppedCount}/${p.frames} dropped (${p.droppedPct.toFixed(1)}%)`;
+  return p.meaningful ? body : `${body} <span class="muted">[headless — cannot see raster cost]</span>`;
+}
+
+function pooledPresented(runs) {
+  const present = runs.map((r) => r.presented).filter(Boolean);
+  if (!present.length) return null;
+  const frames = present.reduce((a, p) => a + p.frames, 0);
+  const dropped = present.reduce((a, p) => a + p.droppedCount, 0);
+  return {
+    frames,
+    droppedCount: dropped,
+    droppedPct: frames ? (100 * dropped) / frames : 0,
+    fps: present.reduce((a, p) => a + p.fps, 0) / present.length,
+    framePeriodMs: present.reduce((a, p) => a + p.framePeriodMs, 0) / present.length,
+    meaningful: present.every((p) => p.meaningful),
+  };
+}
+
 function buildIntervalSection(cellAggs) {
   const cards = cellAggs.map(buildIntervalCdfCard).join("\n");
   const tableRows = cellAggs
     .map(
       (a) =>
-        `<tr><td>${esc(a.id)}</td><td>${fmtMs(a.intervalQuantiles?.median)}</td><td>${fmtMs(a.intervalQuantiles?.p95)}</td><td>${fmtMs(a.intervalQuantiles?.p99)}</td><td>${fmtMs(a.intervalQuantiles?.max)}</td></tr>`,
+        `<tr><td>${esc(a.id)}</td><td>${fmtMs(a.intervalQuantiles?.median)}</td><td>${fmtMs(a.intervalQuantiles?.p95)}</td><td>${fmtMs(a.intervalQuantiles?.p99)}</td><td>${fmtMs(a.intervalQuantiles?.max)}</td><td>${presentedCell(a.presented)}</td></tr>`,
     )
     .join("");
   return `
@@ -502,7 +534,7 @@ function buildIntervalSection(cellAggs) {
     <div class="card-grid">${cards}</div>
     <details class="table-view"><summary>Table view</summary>
       <div class="table-wrap"><table class="data-table">
-        <thead><tr><th>Cell</th><th>Median</th><th>p95</th><th>p99</th><th>Max</th></tr></thead>
+        <thead><tr><th>Cell</th><th>Median</th><th>p95</th><th>p99</th><th>Max</th><th>Presented frames</th></tr></thead>
         <tbody>${tableRows}</tbody>
       </table></div>
     </details>

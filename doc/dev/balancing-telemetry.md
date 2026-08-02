@@ -54,6 +54,10 @@ Measured 2026-08-01, before any retune: `ttkNormal` and `levelTimeSec` were corr
 
 The generator now bakes `profilesHash()` into the file as `PROFILES_HASH`, and `profiles.test.mjs` recomputes and compares — so this is a failing `vitest run` rather than an invisible drift. Field order inside a profile is ignored (it changes no behaviour); profile *order* is not (several consumers read it positionally).
 
+**Regenerate the board last.** A retune is only one of several things that invalidates it — anything in `SIMULATION_BALANCE` does too, and that record now includes `ACID_DECAY_SECONDS`. The 2026-08-02 layout rework learned this the expensive way: the board was regenerated mid-branch, a gameplay constant then joined `SIMULATION_BALANCE`, and the whole two-hour run had to be repeated. Land every simulation change first, then generate once.
+
+**The board is a poor instrument for judging a code change, and always has been.** Each entry is a *maximum over qualifying runs*, so its level count swings on luck: Gamer has come out 14/11/14/11/11/17 levels across six regenerations with no cause in the code. Read `balancing:scan`'s anomaly A/B for that question instead — it compares two builds over many attempts, which is what the 3-combo protocol above exists to make honest.
+
 ## Shared bot library (`scripts/lib/`)
 
 The bot-behavior logic (navigation, combat, hazard/mine handling, loot detours — ~1450 lines) lives in `scripts/lib/bot.mjs`'s `Bot` class, not duplicated per script. Both `run-balancing-telemetry.mjs` and `generate-default-highscore.mjs` construct one `Bot` per attempt (`new Bot(page, profile, opts)`), call `bot.startLevel(map)` per level, then drive it via `bot.tick()`/`bot.driveLegs()`/`bot.driveToward()`/etc.

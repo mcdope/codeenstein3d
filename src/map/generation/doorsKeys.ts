@@ -3,9 +3,9 @@
 
 /** Door placement on private/protected method rooms, and the matching
  * solvable-in-key-order key scatter. */
-import { DOOR_TILE, type Enemy, type KeyItem, type Point, type Rect, type Room, type Tile } from "../types";
+import { DOOR_TILE, type Enemy, type ExceptionZone, type KeyItem, type Point, type Rect, type Room, type Tile } from "../types";
 import { breakupTileKeys } from "./breakup";
-import { doorwayTiles } from "./geometry";
+import { doorwayTiles, isLockableRoom } from "./geometry";
 import { reachableTiles } from "./pathing";
 import { key, neighbors } from "./util";
 
@@ -17,11 +17,7 @@ import { key, neighbors } from "./util";
 export function placeDoors(rooms: Room[], grid: Tile[][]): Point[] {
   const doors: Point[] = [];
   rooms.forEach((room, index) => {
-    if (index === 0) return; // never lock the spawn room
-    const vis = room.entity.visibility;
-    if (room.entity.kind !== "method" || (vis !== "private" && vis !== "protected")) {
-      return;
-    }
+    if (!isLockableRoom(room, index)) return; // spawn room and public rooms stay open
     for (const mouth of roomMouths(room, grid)) {
       grid[mouth.y][mouth.x] = DOOR_TILE;
       doors.push(mouth);
@@ -61,6 +57,7 @@ export function placeKeys(
   doors: Point[],
   breakupRooms: Rect[],
   rng: () => number,
+  exceptionZones: readonly ExceptionZone[] = [],
 ): KeyItem[] {
   if (doors.length === 0) return [];
 
@@ -71,6 +68,22 @@ export function placeKeys(
     key(exit),
     ...enemies.map((e) => key({ x: Math.floor(e.x), y: Math.floor(e.y) })),
     ...breakupTileKeys(breakupRooms),
+    // An Exception Handling Zone is opt-in, and a key inside one takes that
+    // away. Its `try` gauntlet is deliberately unavoidable acid plus spikes
+    // and a mine — a toll that is only defensible because *choosing* to pay
+    // it is what buys the `catch`/`finally` loot. Put a door key past it and
+    // the gauntlet stops being a risk/reward detour and becomes a mandatory
+    // damage tax on the critical path, which no other locked door in the
+    // game charges.
+    //
+    // Not hypothetical: measured across the demo campaign this landed a key
+    // inside a zone on 4 of the 7 levels that have one, and on
+    // `stage06_pipeline.py` it produced 36 recorded `healthDrainFrozen`
+    // events in a single 8-level telemetry scan — the bot crossing acid it
+    // had no way to decline. All three rects are excluded, not just `try`:
+    // `catch` and `finally` are only reachable *through* the gauntlet, so a
+    // key in either is exactly as mandatory as one in the acid itself.
+    ...breakupTileKeys(exceptionZones.flatMap((z) => [z.tryRect, z.catchRect, z.finallyRect])),
   ]);
   // Reachable set from the previous iteration, so each key can be confined
   // to the room its own door just unlocked (see `newlyReachable` below)
