@@ -42,16 +42,27 @@
  * exact same real code paths — `pickWorkspace`, `readDirectoryTree`,
  * `parseFile`, `MapGenerator`, `RaycasterEngine`, save/highscore/replay — with
  * content chosen for this script's own limits rather than the campaign's.
- * `scripts/fixtures/main.c` in particular is deliberately a single trivial
- * function: `MapGenerator`'s seed is hashed from a file's exact content
- * (name/LOC/entities), and every function-bearing room spawns its enemy at
- * the room's own center — exactly where a corridor to the next room starts
- * — so the walk to the exit unavoidably passes close by it. Editing this
- * fixture (even just its function's name) reseeds generation and can easily
- * regenerate a longer/closer path this script's non-fighting walker doesn't
- * survive; re-run this script after any change to it, and if it starts
- * failing here, retry with a different trivial name/body rather than adding
- * combat capability to `walkWaypoints`.
+ * `scripts/fixtures/main.c` in particular declares a **struct and no
+ * function**, which is what makes the walk survivable at all. `spawnEnemies`
+ * gives every function- or method-bearing room an enemy standing on the
+ * room's own center — exactly where the corridor to the next room starts —
+ * so a one-function fixture puts a monster a tile and a half from the spawn
+ * corner and directly on the route out. That was survivable only for as long
+ * as generation happened to place the two rooms almost on top of each other:
+ * once room placement became deliberate rather than random, the same fixture
+ * gave a 17-tile walk under fire and the non-fighting walker died every time,
+ * on every trivial function name tried. A struct parses to `kind: "class"`,
+ * which `spawnEnemies` skips, so the level is a room, a corridor and an exit
+ * — nothing that can shoot back.
+ *
+ * `MapGenerator`'s seed is hashed from the file's exact content
+ * (name/LOC/entities), so editing this fixture *at all* — including its
+ * comments, which change the line count — reseeds generation and can produce
+ * a level with hazards, corridor-feature encounters, or a route the walker
+ * can't hold. Re-run this script after any change to it. If it starts failing
+ * here, retry with a different trivial struct name/field list rather than
+ * adding combat capability to `walkWaypoints`; enemy-type coverage is
+ * `verify-demo-campaign.mjs`'s job, not this script's.
  * `demo-campaign/`'s structural correctness (every map feature/enemy type
  * present) is already covered exhaustively by `verify-demo-campaign.mjs`.
  *
@@ -386,17 +397,26 @@ async function installTestStubs(page, fileContents) {
  *
  * Holds Shift (sprint, `SPRINT_MULTIPLIER=2` in `src/engine/engine.ts`) the
  * whole way — this script never fights back (no aiming, since facing never
- * turns), and main.c's deterministic layout routes past at least one real
- * enemy encounter before the exit; halving time-in-danger is enough to
- * survive it without adding an aim/fire capability this script doesn't
- * otherwise need. */
+ * turns), so the less time it spends in the open the better. stage02's walk
+ * ends in a hazard on purpose; main.c's fixture has nothing in it that can
+ * shoot (see the module doc comment). */
 async function walkWaypoints(page, waypoints) {
   return page.evaluate(
     async ({ waypoints, stepMs, maxTicks }) => {
       const canvas = document.querySelector("canvas");
       const hooks = window.__codeensteinTestHooks;
       const AXIS_EPS = 0.1;
-      const ARRIVE_EPS = 0.15;
+      // Must be at least half of one tick's travel, or the walker can orbit a
+      // waypoint forever: sprinting at this step size it covers ~0.325 tiles
+      // per tick (measured), so an approach that leaves it 0.16 short
+      // overshoots to 0.16 past, reverses, and lands 0.16 short again — both
+      // ends outside a 0.15 tolerance, neither ever inside it. That is a
+      // 30-second "stuck" timeout with the player visibly moving the whole
+      // way, and it was latent until a layout change happened to put a
+      // waypoint approach in that window. 0.25 leaves margin for a faster
+      // step while staying well under the half-tile that would let the walker
+      // claim arrival at a neighbouring tile.
+      const ARRIVE_EPS = 0.25;
       let held = new Set();
 
       canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "ShiftLeft" }));
