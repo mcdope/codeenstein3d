@@ -305,7 +305,7 @@ export class MapGenerator {
     // Lock private/protected-method rooms behind doors, then scatter one key
     // per door in areas reachable before that door (keeps every level solvable).
     const doors = placeDoors(rooms, grid);
-    const keys = placeKeys(grid, spawn, exit, enemies, doors, breakupRooms, rng);
+    const keys = placeKeys(grid, spawn, exit, enemies, doors, breakupRooms, rng, exception.zones);
 
     // Glowing "lore terminals" from large source comments, and hidden secret
     // rooms carved behind fake walls from unreachable ("dead") code — both
