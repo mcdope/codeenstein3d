@@ -239,6 +239,41 @@ The two scenarios still short of 60 are short by exactly the sites deferred out 
 - `hud.ts:300` — lore overlay, modal.
 - `sprites.ts:653` — weapon-drop pulsing ring; `sprites.ts:815` — teleporter pad ring. **These two are per-frame whenever such an entity is in view**, and are the `stroke: 1` still visible in the after-measurement's idle counters. Two visible teleporters would cost a frame. Converting them is a 2-line change plus updating the two `sprites.test.ts` cases that assert `strokeRect` was called once.
 
+#### Outcome — sites 5–9 and the two rings, 2026-08-02
+
+Everything above is now converted. `pathSprites.ts` gained two more primitives:
+
+- `fillLine` — a straight line rasterised as one `fillRect` per pixel along its major axis, replacing `moveTo`/`lineTo`/`stroke` for bullet tracers. Steps whole pixels so the rects tile rather than overlap: tracers draw at partial alpha, and overlapping translucent squares band the line into darker blotches.
+- `drawDisc` — an opaque disc sprite per colour, blitted scaled under `globalAlpha`, replacing `arc`+`fill` for explosion blast rings. Equivalent by construction for a solid fill; smoothing is enabled for that blit specifically, since the sprite is a smooth shape being scaled to an arbitrary radius.
+- Flame jets became a scanline fill (one `fillRect` per row). The jet's silhouette is exactly one horizontal span per row — both edges are functions of the same `t` — so the shape is reproduced without a path at all, and sampling every row makes the taper *smoother* than the old 10-segments-per-edge polygon.
+- The automap player marker joined the rotation-atlas glyphs; the two rings went to `outlineRect`.
+
+| scenario | original | after sites 1–4 | after 5–9 | dropped now |
+|---|---|---|---|---|
+| idle | 51.3 fps | 58.9 | **58.6** | 9 / 470 |
+| combat (sustained fire) | 48.8 fps | 56.3 | **59.1** | **7 / 474** |
+| automap open | 44.3 fps | 47.3 | **59.0** | **8 / 473** |
+| automap closed | 47.9 fps | 58.6 | **59.0** | 8 / 472 |
+
+Every control cell ("suppress all path and stroke") is now within noise of as-shipped — 58.3 / 58.5 / 58.6 / 59.0 against 58.6 / 59.1 / 59.0 / 59.0 — i.e. there is nothing of this class left anywhere in the render path.
+
+**New negative result: an axis-aligned rect `clip()` is free.** The automap keeps `beginPath`/`rect`/`clip` (2 ops in the `path` class) and measures 59.0 fps with it against 58.6 without. Skia takes a rectangular clip as a scissor, not a coverage mask. It was on the fix list as site 8 and does not need to be — the automap's whole deficit was its player-marker triangle. Non-rect clips were not tested and should not be assumed to share this.
+
+**Correctness of the three rewritten primitives**, checked by rendering the real (dev-server-imported) implementation and the code it replaced onto identical canvases and diffing:
+
+| primitive | differing pixels | max channel delta | mean |
+|---|---|---|---|
+| tracer line | 2,756 / 256,000 (1.08%) | 176 | 40.2 |
+| explosion disc | 1,925 (0.75%) | 96 | 20.4 |
+| flame jet | 989 (0.39%) | 137 | 15.8 |
+
+In all three the differences sit on the shape's outline and the interiors match — these are aliased edges where the originals were anti-aliased, the same trade the glyph work already makes. The tracer is the most affected because a 2px line is nearly all edge.
+
+**Tests changed, and why** (the audit's rule is "report, don't silently fix", so: six existing cases pinned the replaced primitive and were rewritten to assert the same intent against the new one, none weakened):
+- `effects.test.ts` ×3 — tracer colour now asserted on `fillStyle` instead of `strokeStyle`, plus that the rasterised run covers both endpoints exactly once; the flame jet's "two layered jets" now asserted by the two colours reaching the canvas instead of two `fill()` calls.
+- `sprites.test.ts` ×2 — the weapon-drop and teleporter rings now assert four `outlineRect` edge fills in the ring's own colour instead of one `strokeRect`.
+- `automap.test.ts` ×1 — the player marker's facing now asserted on the rotation it is drawn at (across all four cardinal directions, which is stricter than the old two-comparison check) plus the glyph's tip lying on +X, instead of on hand-rotated vertex coordinates.
+
 ### P2 — The benchmark harness cannot see this class of bug
 **Measured cost:** not a frame cost — a tooling gap that cost this project one wrong "environmental" conclusion (finding T241, 2026-07-18) and however long the symptom has been live since.
 **Mechanism:** two independent blind spots. (a) `busy` measures display-list *recording*; rasterisation happens in the GPU process afterwards and is invisible to it. (b) `scripts/run-perf-benchmark.mjs` defaults to and recommends headless (`performance.md`: "Headed and headless busy medians match; prefer headless for unattended collection") — and headless uses software canvas raster, where the penalty does not exist at all. Both statements in that doc are true and both conclusions drawn from them were wrong.

@@ -387,25 +387,30 @@ describe("drawAutomap() — player marker", () => {
     expect(ctx.fill).toHaveBeenCalled();
   });
 
+  // The marker is a pre-rotated glyph now (see `pathSprites.ts`), so its
+  // facing rides on the rotation it is drawn at rather than on hand-rotated
+  // vertex coordinates — the tip is baked pointing along +X at bearing zero.
   it("points the marker's tip in the direction the player faces", () => {
-    const ctxRight = makeCtx();
-    drawAutomap(asCtx(ctxRight), fakeMap(), fakePlayer({ dirX: 1, dirY: 0 }));
-    const [tipXRight, tipYRight] = ctxRight.moveTo.mock.calls[0] as [number, number];
+    const facings: [number, number, number][] = [
+      [1, 0, 0], // east
+      [-1, 0, Math.PI], // west
+      [0, 1, Math.PI / 2], // south (canvas +Y is down)
+      [0, -1, -Math.PI / 2], // north
+    ];
+    for (const [dirX, dirY, expected] of facings) {
+      const c = makeCtx();
+      drawAutomap(asCtx(c), fakeMap(), fakePlayer({ dirX, dirY }));
+      // First rotate() is the marker's own; the second undoes it.
+      expect(c.rotate).toHaveBeenNthCalledWith(1, expected);
+    }
 
-    const ctxLeft = makeCtx();
-    drawAutomap(asCtx(ctxLeft), fakeMap(), fakePlayer({ dirX: -1, dirY: 0 }));
-    const [tipXLeft] = ctxLeft.moveTo.mock.calls[0] as [number, number];
-
-    // Same player position and camera in both calls, only facing differs —
-    // facing right's tip must land further right than facing left's.
-    expect(tipXRight).toBeGreaterThan(tipXLeft);
-
-    const ctxDown = makeCtx();
-    drawAutomap(asCtx(ctxDown), fakeMap(), fakePlayer({ dirX: 0, dirY: 1 }));
-    const [, tipYDown] = ctxDown.moveTo.mock.calls[0] as [number, number];
-    // Facing right has ~0 vertical tip offset; facing down should be
-    // noticeably lower.
-    expect(tipYDown).toBeGreaterThan(tipYRight + 1);
+    // And the glyph itself puts the tip on +X, so "rotated by the facing"
+    // really does mean "tip points where the player looks".
+    const c = makeCtx();
+    drawAutomap(asCtx(c), fakeMap(), fakePlayer({ dirX: 1, dirY: 0 }));
+    const [tipX, tipY] = c.moveTo.mock.calls[0] as [number, number];
+    expect(tipX).toBeGreaterThan(0);
+    expect(tipY).toBe(0);
   });
 });
 
