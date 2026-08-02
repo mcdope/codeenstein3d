@@ -27,6 +27,7 @@ import type {
   TileMutation,
 } from "./reconciliationSnapshot";
 import { acidTiles, createAcidOverflowStates, intersectsRoom, updateAcidOverflows, type AcidOverflowState } from "./acidOverflow";
+import { ACID_DECAY_SECONDS, createAcidDecayState, decayableTiles, updateAcidDecay, type AcidDecayState } from "./acidDecay";
 import { doorwayTiles } from "../map/generation/geometry";
 import { Player, isHazard } from "./player";
 import { updateEnemies, type EnemyAiEvents, type EnemyTarget } from "./enemyAi";
@@ -291,6 +292,12 @@ export const SIMULATION_BALANCE: Readonly<Record<string, unknown>> = {
   MAX_HEALTH,
   MAX_SWAP,
   HAZARD_DPS,
+  // How long an Exception Zone's gauntlet keeps hurting decides how much
+  // damage a recorded input stream takes crossing one — same inputs, less
+  // health — while leaving every AST byte and the whole enemy roster
+  // untouched. That is exactly the silent divergence this record guards, so
+  // the constant belongs in it even though nothing about the map moved.
+  ACID_DECAY_SECONDS,
   WEAPONS,
 };
 /**
@@ -693,6 +700,10 @@ export class RaycasterEngine {
    * `acidOverflow.ts` free functions mutate — the same split enemies and traps
    * already use. */
   private readonly acidStates: AcidOverflowState[];
+  /** Exception-zone gauntlet tiles that can burn out, resolved once at level
+   * start, plus when each was first stepped in. See `acidDecay.ts`. */
+  private readonly decayableAcid: Point[];
+  private readonly acidDecayState: AcidDecayState;
   /** Tile-bucketed index over living enemies for proximity queries — rebuilt
    * lazily on frames with rockets in flight (see `advanceRockets`). */
   private readonly enemyGrid = new EnemySpatialGrid();
@@ -957,6 +968,8 @@ export class RaycasterEngine {
     this.replayRecorder = replayRecorder;
     this.enemies = map.enemies;
     this.acidStates = createAcidOverflowStates(map.acidOverflows.length);
+    this.decayableAcid = decayableTiles(map.exceptionZones, map.grid);
+    this.acidDecayState = createAcidDecayState();
     this.totalWalkableTiles = countWalkableTiles(map);
     this.goreMultipliers = GORE_MULTIPLIERS[gore];
     this.difficultyMultipliers = DIFFICULTY_MULTIPLIERS[difficulty];
@@ -2522,6 +2535,19 @@ export class RaycasterEngine {
     // simulation state is touched here, so peers that cue differently stay in
     // lockstep regardless.
     if (floodsStarted.length > 0) this.cueLocalAcidOverflow(floodsStarted);
+    // An Exception Handling Zone's `try` gauntlet burns out under whoever
+    // walks it, so the dead-end's forced return trip isn't charged the same
+    // toll twice. Runs after `applyHazardDamage` for the same reason the
+    // flood above does — a tile changing under a player never changes what
+    // they were standing in for the damage this frame. Derives the grid
+    // rather than emitting a mutation; see `acidDecay.ts`'s doc comment.
+    updateAcidDecay(
+      this.decayableAcid,
+      this.acidDecayState,
+      this.livingPlayers(),
+      this.map.grid,
+      this.levelTime,
+    );
     this.applyTrapDamage(dt);
     if (this.telemetryEnabled) {
       // `p.telemetry` is guaranteed set here: `telemetryEnabled` is a single
