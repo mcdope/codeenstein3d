@@ -27,6 +27,27 @@ function entity(overrides: Partial<CodeEntity> = {}): CodeEntity {
   return { name: "f", kind: "function", startLine: 1, endLine: 5, complexityScore: 3, nestingDepth: 0, ...overrides };
 }
 
+/** Distinct gates among a level's door tiles: 4-connected runs, counted once
+ * each however many tiles wide they are — the same grouping `doorwayTiles`
+ * applies, and the unit `placeKeys` bills a key against. */
+function countDoorways(doors: readonly { x: number; y: number }[]): number {
+  const remaining = new Set(doors.map((d) => `${d.x},${d.y}`));
+  let gates = 0;
+  while (remaining.size > 0) {
+    const [first] = remaining;
+    const stack = [first];
+    remaining.delete(first);
+    while (stack.length > 0) {
+      const [x, y] = stack.pop()!.split(",").map(Number);
+      for (const k of [`${x + 1},${y}`, `${x - 1},${y}`, `${x},${y + 1}`, `${x},${y - 1}`]) {
+        if (remaining.delete(k)) stack.push(k);
+      }
+    }
+    gates++;
+  }
+  return gates;
+}
+
 describe("MapGenerator.generate", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -64,7 +85,9 @@ describe("MapGenerator.generate", () => {
     expect(map.rooms.length).toBeGreaterThanOrEqual(2); // top-up guarantee
     expect(map.enemies.length).toBeGreaterThan(0);
     expect(map.doors.length).toBeGreaterThan(0);
-    expect(map.keys.length).toBe(map.doors.length);
+    // One key per *doorway*, not per door tile — a corridor wider than one
+    // tile makes a wider gate, not more gates (see `doorwayTiles`).
+    expect(map.keys.length).toBe(countDoorways(map.doors));
     expect(map.hazards.length).toBeGreaterThan(0);
     expect(map.bonusLevel).toBe(false);
   });
