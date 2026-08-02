@@ -34,7 +34,7 @@ and level generation happen entirely in the browser, and nothing is uploaded any
 | A large comment block | A lore terminal (press R to read) |
 | Dead code, empty catch blocks, deprecated tags, commented-out code, magic-number/blob literals | A secret room hidden behind a fake wall |
 | A `switch`/`match` with several cases | A **Switchboard** junction — one short dead-end spur per `case`, each behind a keyless amber door |
-| A `try`/`catch`/`finally` | An **Exception Handling Zone** — an acid gauntlet, a guaranteed health-and-armor alcove, then a safe loot room |
+| A `try`/`catch`/`finally` | An **Exception Handling Zone** — an acid gauntlet that corrodes away behind you, a guaranteed health-and-armor alcove, then a safe loot room |
 | The `import`s at the top of a file (~1 per 4) | A **Vendor Depot** alcove in the spawn room's wall, stocked for the weapons you already carry |
 | A function that allocates heavily (`malloc`/`new`) | An **Acid Overflow** room that floods while you're inside it, until you kill the enemy that function spawned |
 | A header file (`.h`) | A bonus level (distinct teal theme, boosted loot) |
@@ -49,7 +49,7 @@ See [How It Works](#how-it-works) below for the full detail behind each of these
 - ✅ **Multi-language support** — PHP, C/C++, JavaScript/TypeScript, Python, Java, Go, Rust, Ruby, C#, Bash, Scala, Objective-C
 - ✅ **Smart entrypoint detection** — finds `main`, highest complexity, or any parsable file
 - ✅ **Full arsenal** — echo pistol, Regex Shotgun, gdb (machine gun), ghidra (rocket launcher), Friday Hotfix (flamethrower), and two melee weapons (the SIGKILL Knife, later replaced by the unlockable Toolchain chainsaw)
-- ✅ **Procedural maps** — rooms, corridors with jogs, pillars, secret rooms, traps, teleporters
+- ✅ **Procedural maps** — rooms packed into a connected complex, corridors that vary in width and shape, loops and junctions rather than only dead ends, pillars, secret rooms, traps, teleporters
 - ✅ **Advanced enemy AI** — roaming, chasing, melee, ranged attacks (packed or elite bosses)
 - ✅ **Multi-level campaigns** — chain together all parsable files; save & continue progress
 - ✅ **Multiplayer co-op** — host or join a real-time session (2-4 players) via a short code or public lobby; WebRTC peer-to-peer, lockstep netcode with drift reconciliation; see [`doc/user/multiplayer.md`](doc/user/multiplayer.md)

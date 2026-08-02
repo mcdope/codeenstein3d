@@ -12,7 +12,7 @@
  * the level by `connectRooms` — so "the default path continues the level"
  * holds by construction, and the spokes are exactly the branches that dead-end.
  *
- * Split in two like `breakUpLongCorridors`/`spawnEdgeCaseEnemies`: the carving
+ * Split in two like `dressCorridors`/`spawnEdgeCaseEnemies`: the carving
  * half runs with the other geometry passes, the population half has to wait
  * until `spawn`/`exit` exist.
  */
@@ -146,7 +146,7 @@ export function placeSwitchboards(
  *
  * Separate from `placeSwitchboards` because it needs `spawn` and `exit`, which
  * don't exist until after the geometry is final — exactly why
- * `spawnEdgeCaseEnemies` is separate from `breakUpLongCorridors`.
+ * `spawnEdgeCaseEnemies` is separate from `dressCorridors`.
  */
 export function placeSwitchboardEncounters(
   caseRooms: readonly Rect[],

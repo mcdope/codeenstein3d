@@ -149,7 +149,7 @@ function nearestFloorInRect(grid: Tile[][], rect: Rect, p: Point): Point {
 }
 
 /**
- * Populate every corridor-breakup room (see `breakUpLongCorridors`) with 1-3
+ * Populate every corridor feature (see `dressCorridors`) with 1-3
  * "Edge Case" enemies — small, fast, low-HP nuisances that break up the
  * "endless walk" feeling of a long corridor stretch. Modeled directly on
  * `placeTodoEncounter`'s enemy branch: a synthetic `CodeEntity` stands in for

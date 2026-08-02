@@ -260,8 +260,8 @@ export class MapGenerator {
     // this draws from) can steer clear of one, the same reasoning as the exit.
     const multiplayerSpawns = maxPlayers > 1 ? pickMultiplayerSpawns(rooms, exit, maxPlayers) : undefined;
     const enemies = spawnEnemies(rooms, exit, rng, multiplayerSpawns ?? []);
-    // "Edge Case" enemies populate the corridor-breakup rooms exclusively —
-    // never a normal room, and normal enemies never spawn in a breakup room.
+    // "Edge Case" enemies populate the corridor features exclusively — never
+    // a normal room, and normal enemies never spawn in one.
     enemies.push(...spawnEdgeCaseEnemies(grid, breakupRooms, exit, rng));
     // Switchboard spokes get their minor encounter here, for the same reason
     // Edge Cases do: `spawn`/`exit` are final, `clearCriticalTiles` hasn't run
