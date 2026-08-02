@@ -90,14 +90,33 @@ export interface ReplayPayload {
   levels: ReplayLevelSegment[];
 }
 
-/** Hard cap on recorded frames *per level* — bounds a replay's worst-case
- * size in `localStorage` (each frame is a small JSON object; a very long,
- * slow-played level could otherwise grow unbounded). ~6 minutes at 60fps,
- * generous for a normal level. A level that exceeds it simply doesn't get a
- * segment recorded for it — see `LevelRecorder.finish` — which in turn means
- * the whole run's replay is dropped (a replay with a hole in the middle of
- * its campaign isn't watchable), same as if recording had never started. */
-const MAX_REPLAY_FRAMES_PER_LEVEL = 21600;
+/**
+ * Hard cap on recorded frames *per level* — bounds a replay's worst-case size
+ * in `localStorage`, since a very long, slow-played (or idle) level could
+ * otherwise grow unbounded. 12 minutes at 60fps.
+ *
+ * Overflowing is expensive out of proportion to the level it happens on:
+ * that level gets no segment (`LevelRecorder.finish`), and `finish()` then
+ * truncates the whole payload to the *prefix* before it, because a replay
+ * that silently skips a level is worse than a short one. A single overflow
+ * early in a campaign therefore throws away everything after it — observed
+ * repeatedly on real generator runs that *completed all 17 levels* and
+ * shipped a 2-level replay, because `stage03_legacy_api.php` ran long.
+ *
+ * **Raised from 21600 (6 minutes).** That number was chosen when "each frame
+ * is a small JSON object" — about 334 bytes — and `replayCodec.ts` has since
+ * cut the common frame to 10 bytes pre-gzip, a 33x drop, measured end to end
+ * as 1.48 MB of quota falling to 0.42 MB. Sized against real data rather than
+ * the old assumption: across the shipped board's 36 recorded segments the
+ * longest is 13,787 frames (3.8 minutes) and the median 2,678, so 6 minutes
+ * sat only 1.6x above the observed maximum — thin enough that ordinary slow
+ * play crossed it. 12 minutes is ~3x that maximum, still cuts off a wedged or
+ * idle level, and costs roughly 1.3 bytes per frame of the stored board.
+ *
+ * If truncation warnings persist, size the next change off the figure the
+ * warning now reports rather than guessing again.
+ */
+export const MAX_REPLAY_FRAMES_PER_LEVEL = 43200;
 
 /** Hard cap on how many levels a single replay can span — bounds worst-case
  * total size for an extremely long multi-level campaign run. A run beyond
@@ -117,6 +136,11 @@ export type ReplayLevelMeta = Omit<ReplayLevelSegment, "astHash" | "balanceHash"
 class LevelRecorder {
   private readonly frames: ReplayFrame[] = [];
   private overflowed = false;
+  /** Frames seen past the cap. Counted but not stored, so an overflow can
+   * report how long the level *actually* ran — without it the warning only
+   * ever says "over the cap", which is exactly the missing number that made
+   * the last cap change a guess. One integer, no retained memory. */
+  private overflowFrames = 0;
 
   constructor(
     private readonly meta: ReplayLevelMeta,
@@ -125,7 +149,10 @@ class LevelRecorder {
   ) {}
 
   record(dt: number, input: InputSnapshot): void {
-    if (this.overflowed) return;
+    if (this.overflowed) {
+      this.overflowFrames += 1;
+      return;
+    }
     if (this.frames.length >= MAX_REPLAY_FRAMES_PER_LEVEL) {
       this.overflowed = true;
       console.warn(
@@ -135,6 +162,13 @@ class LevelRecorder {
       return;
     }
     this.frames.push({ dt, input });
+  }
+
+  /** How far past the cap this level ran, in frames — 0 unless it overflowed.
+   * Read by `CampaignReplayRecorder.finish` so the truncation warning can name
+   * the length that would have been needed. */
+  get framesOverCap(): number {
+    return this.overflowFrames;
   }
 
   /** This level's finished segment, or `null` if it never captured a single
@@ -207,8 +241,14 @@ export class CampaignReplayRecorder {
     const levels = kept as ReplayLevelSegment[];
     if (levels.length === 0) return null;
     if (firstGap !== -1 && firstGap < this.levels.length - 1) {
+      // Name the length that would have been needed, so raising the cap is a
+      // measurement next time rather than another estimate. `framesOverCap`
+      // is 0 for the other way a level goes unrecordable (never recorded a
+      // frame at all), which reads correctly as "no cap involved".
+      const over = this.levels[firstGap].framesOverCap;
+      const needed = over > 0 ? ` — that level ran ${MAX_REPLAY_FRAMES_PER_LEVEL + over} frames, ${over} past the cap` : "";
       console.warn(
-        `%c[replay] level ${firstGap + 1} of ${this.levels.length} wasn't recordable — replay truncated to the first ${levels.length}`,
+        `%c[replay] level ${firstGap + 1} of ${this.levels.length} wasn't recordable — replay truncated to the first ${levels.length}${needed}`,
         "color:#e0a04a",
       );
     }
