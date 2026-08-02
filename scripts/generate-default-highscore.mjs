@@ -101,6 +101,22 @@ const FINAL_APPROACH_TICKS = 80; // extra push onto the exit tile's exact center
 /** Mirrors `run-balancing-telemetry.mjs`'s own limit — see its doc comment. */
 const TELEPORT_REPLAN_LIMIT = 4;
 
+/**
+ * Wall-clock helpers for the progress lines.
+ *
+ * Attempts run `ATTEMPT_CONCURRENCY` at a time, so a run's cost is really
+ * "how many batches did each profile need", and a batch's duration is set by
+ * its slowest attempt. None of that was recoverable afterwards: the lines
+ * below carried no time at all, so answering "is this run slower than the
+ * last one?" meant reconstructing batch boundaries from dev-server console
+ * timestamps and inferring the rest. These make it a measurement.
+ */
+const clock = () => new Date().toTimeString().slice(0, 8);
+const since = (startMs) => {
+  const total = Math.round((Date.now() - startMs) / 1000);
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}m${String(total % 60).padStart(2, "0")}s`;
+};
+
 let failures = 0;
 function check(label, condition, detail) {
   if (condition) {
@@ -276,7 +292,8 @@ async function main() {
 
   for (const [profileName, profile] of Object.entries(PROFILES)) {
     const qualifyLevelIndex = QUALIFY_LEVEL_INDEX_BY_PROFILE[profileName];
-    console.log(`${"=".repeat(72)}\n${profileName} — qualifying = reach level ${qualifyLevelIndex + 1}\n${"=".repeat(72)}`);
+    const profileStart = Date.now();
+    console.log(`${"=".repeat(72)}\n${profileName} — qualifying = reach level ${qualifyLevelIndex + 1} — started ${clock()}\n${"=".repeat(72)}`);
 
     const { qualifyingRuns, attemptsUsed, failureReasons } = await runQualifyLoop({
       runAttempt: () => runOneAttempt(browser, profileName, profile, levelPlans),
@@ -284,11 +301,12 @@ async function main() {
       requiredQualifyingRuns: REQUIRED_QUALIFYING_RUNS,
       attemptCap: ATTEMPT_CAP,
       concurrency: ATTEMPT_CONCURRENCY,
-      onProgress: (attempts, qualifying) => console.log(`  [${profileName}] attempt ${attempts}, qualifying ${qualifying}/${REQUIRED_QUALIFYING_RUNS}`),
+      onProgress: (attempts, qualifying) =>
+        console.log(`  ${clock()} [${profileName}] attempt ${attempts}, qualifying ${qualifying}/${REQUIRED_QUALIFYING_RUNS} (${since(profileStart)} into this profile)`),
       onAttemptResult: (run, attempt) => {
         if (!(run.reachedExitForLevel[qualifyLevelIndex] && run.entry)) {
           const where = run.diedAtLevelIndex !== null ? ` at level ${run.diedAtLevelIndex + 1}` : "";
-          console.log(`  [${profileName}] attempt ${attempt} did not qualify: ${run.reason}${where}`);
+          console.log(`  ${clock()} [${profileName}] attempt ${attempt} did not qualify: ${run.reason}${where}`);
         }
       },
     });
@@ -314,7 +332,7 @@ async function main() {
     const best = qualifyingRuns.reduce((a, b) => (b.entry.score > a.entry.score ? b : a));
     console.log(
       `  ${profileName}: kept score=${best.entry.score} levelsCleared=${best.entry.levelsCleared} levelName=${best.entry.levelName} ` +
-        `(best of ${qualifyingRuns.length} qualifying runs, ${attemptsUsed} attempts)\n`,
+        `(best of ${qualifyingRuns.length} qualifying runs, ${attemptsUsed} attempts, ${since(profileStart)})\n`,
     );
     keptEntries.push(best.entry);
   }
