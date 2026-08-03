@@ -311,6 +311,30 @@ describe("runMultiplayerSessionAsGuest", () => {
       logSpy.mockRestore();
     });
 
+    it("discards a bundle naming a non-roster id in heldInputFallback instead of tallying NaN", () => {
+      const channels = linkedChannels();
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
+
+      // `missedTicksByPlayer` is seeded from the fixed roster, so an unknown id
+      // would make the tally's `.get(id)!` undefined and `undefined + 1` NaN —
+      // permanently poisoning that counter for the rest of the session.
+      const malformed = {
+        tick: 0,
+        dt: 1 / 30,
+        levelEpoch: 0,
+        inputs: { host: emptySnapshot(), guest: emptySnapshot() },
+        heldInputFallback: ["not-a-roster-id"],
+      };
+      expect(() => channels.host.input.send(JSON.stringify(malformed))).not.toThrow();
+
+      expect(handle.getLastAppliedTick()).toBeNull(); // never applied
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("discarding malformed TickInputBundle"));
+      // The tally is untouched — no NaN, no phantom key.
+      expect(handle.getMissedTickStats()).toEqual({ totalTicks: 0, missedTicksByPlayer: { guest: 0, host: 0 } });
+      logSpy.mockRestore();
+    });
+
     it("discards a bundle missing this peer's own inputs entry instead of loading undefined through loadFrame", () => {
       const channels = linkedChannels();
       vi.spyOn(console, "log").mockImplementation(() => {});
