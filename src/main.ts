@@ -29,24 +29,6 @@ import { GameHud, type StatsScreenInfo } from "./ui/gameHud";
 import type { ScoreBreakdown } from "./engine/scoring";
 import type { PlayerFacingStats } from "./engine/playerStats";
 
-/** Builds a `StatsScreenInfo` from an `EngineStats` pair, or `undefined` if
- * telemetry wasn't recorded this run (`PLAYER_STATS_ENABLED` off and no
- * `?testHooks=1` — see `playerStats.ts`'s doc comment) — `GameHud`'s
- * overlays already know how to show themselves with no stats rows at all in
- * that case. */
-export function statsScreenInfo(
-  scoreBreakdown: ScoreBreakdown | undefined,
-  playerStats: PlayerFacingStats | undefined,
-): StatsScreenInfo | undefined {
-  if (!scoreBreakdown) return undefined;
-  // `playerStats` is always populated together with `scoreBreakdown` — see
-  // `buildStats()`'s doc comment, both fields are set or omitted as a
-  // matched pair — so this is unreachable in practice, just satisfying the
-  // type checker for two independently-optional parameters.
-  /* v8 ignore next -- @preserve */
-  if (!playerStats) return undefined;
-  return { scoreBreakdown, playerStats };
-}
 import { buildControlsLegend } from "./ui/controlsLegend";
 import { downloadBlob } from "./ui/download";
 import { RESPONSIVE_CANVAS_SCALING_ENABLED, watchCanvasSizing } from "./ui/canvasFit";
@@ -91,6 +73,25 @@ import { guestPlayerId, HOST_PLAYER_ID } from "./multiplayer/sessionSetupTypes";
 // from — the latter is HEAD's tag if it's exactly tagged, otherwise its
 // short commit hash.
 document.title = `🔫 Codeenstein 3D (Build: ${__BUILD_TIME__} @ ${__BUILD_REF__})`;
+
+/** Builds a `StatsScreenInfo` from an `EngineStats` pair, or `undefined` if
+ * telemetry wasn't recorded this run (`PLAYER_STATS_ENABLED` off and no
+ * `?testHooks=1` — see `playerStats.ts`'s doc comment) — `GameHud`'s
+ * overlays already know how to show themselves with no stats rows at all in
+ * that case. */
+export function statsScreenInfo(
+  scoreBreakdown: ScoreBreakdown | undefined,
+  playerStats: PlayerFacingStats | undefined,
+): StatsScreenInfo | undefined {
+  if (!scoreBreakdown) return undefined;
+  // `playerStats` is always populated together with `scoreBreakdown` — see
+  // `buildStats()`'s doc comment, both fields are set or omitted as a
+  // matched pair — so this is unreachable in practice, just satisfying the
+  // type checker for two independently-optional parameters.
+  /* v8 ignore next -- @preserve */
+  if (!playerStats) return undefined;
+  return { scoreBreakdown, playerStats };
+}
 
 /** Internal render resolution; CSS scales it up for a chunky retro look. */
 const SCENE_WIDTH = 640;
@@ -1842,6 +1843,11 @@ function renderMultiplayerLobbyList(entries: LobbyEntry[]): void {
   }
 }
 
+/** Aborts whichever lobby fetch is still in flight, if any — so closing the
+ * dialog actually cancels the request instead of leaving it to resolve into a
+ * dialog nobody is looking at. */
+let activeLobbyFetchAbort: AbortController | null = null;
+
 async function openMultiplayerLobbyDialog(): Promise<void> {
   multiplayerLobbyList.innerHTML = "";
   const loading = document.createElement("li");
@@ -1849,21 +1855,36 @@ async function openMultiplayerLobbyDialog(): Promise<void> {
   loading.textContent = "Loading…";
   multiplayerLobbyList.appendChild(loading);
   multiplayerLobbyDialog.showModal();
+  // Supersede a previous still-open fetch (reopening the dialog before the
+  // last one resolved) the same way `beginWorkspaceLoad`/`beginMultiplayerConnect`
+  // do for their own in-flight work.
+  activeLobbyFetchAbort?.abort();
+  const controller = new AbortController();
+  activeLobbyFetchAbort = controller;
   try {
-    const entries = await fetchLobbyEntries(new AbortController().signal);
+    // No post-await abort re-check: an aborted `fetch` rejects, so a
+    // cancellation always lands in the `catch` below rather than here.
+    const entries = await fetchLobbyEntries(controller.signal);
     renderMultiplayerLobbyList(entries);
   } catch (err) {
+    // An abort is this code cancelling itself, not a failure worth showing —
+    // and the dialog it would render into is closed by then anyway.
+    if (controller.signal.aborted) return;
     multiplayerLobbyList.innerHTML = "";
     const errorItem = document.createElement("li");
     errorItem.className = "error";
     errorItem.textContent = describeMultiplayerError(err);
     multiplayerLobbyList.appendChild(errorItem);
+  } finally {
+    if (activeLobbyFetchAbort === controller) activeLobbyFetchAbort = null;
   }
 }
 
 multiplayerBrowseLobbyButton.addEventListener("click", () => void openMultiplayerLobbyDialog());
 closeMultiplayerLobbyButton.addEventListener("click", () => multiplayerLobbyDialog.close());
 multiplayerLobbyDialog.addEventListener("close", () => {
+  activeLobbyFetchAbort?.abort();
+  activeLobbyFetchAbort = null;
   if (activeEngine) canvas.focus();
 });
 
@@ -2510,6 +2531,18 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
     `step on a glowing pad to warp (goto) · avoid the acid and timed spikes · ` +
     `shoot spotted mines to disarm them from range`;
 
+  // Declared here, above the engine construction below, because `onWin`'s
+  // closure reads it. It used to sit *after* that call: legal, since the engine
+  // only starts from `showLevelStart`'s callback and by then the binding is
+  // initialized — but a `const` read by a closure created 20 lines before its
+  // own declaration is one refactor away from a `ReferenceError`, and this file
+  // documents that exact temporal-dead-zone trap for `GORE_KEY`/`SAVE_KEY` at
+  // the top. `?? path` is unreachable defensive code: String.prototype.split()
+  // never returns an empty array, so `.pop()` can never actually be undefined —
+  // same reasoning as demoCampaign.ts's identical pattern.
+  /* v8 ignore next -- @preserve */
+  const levelName = path.split("/").pop() ?? path;
+
   const hud = new GameHud(canvas);
   activeHud = hud;
 
@@ -2611,11 +2644,6 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
     currentReplayRecorder,
   );
 
-  // `?? path` is unreachable defensive code: String.prototype.split() never
-  // returns an empty array, so `.pop()` can never actually be undefined —
-  // same reasoning as demoCampaign.ts's identical pattern.
-  /* v8 ignore next -- @preserve */
-  const levelName = path.split("/").pop() ?? path;
   hud.showLevelStart(
     {
       campaign: campaignName(),
