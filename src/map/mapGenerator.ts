@@ -439,10 +439,15 @@ export class MapGenerator {
     //
     // `ROOM_SPREAD` is calibrated, not derived: across the demo campaign the
     // packed cluster's bounding side came out 1.56-2.72x the square root of
-    // the summed room area, so 2.6 covers all but the loosest packings, and
-    // `ROCK_RESERVE` is the border the `sideCandidates` carvers need on top —
-    // they only ever claim untouched rock, so a level squeezed to exactly its
-    // own footprint would have nowhere to put a secret room or a depot.
+    // the summed room area, and the constant sits at 2.0, inside that band.
+    // (This comment used to argue for 2.6; the constant has been 2.0 for long
+    // enough that the campaign's current floor-density figures are measured
+    // against it, so the prose was what went stale — but why it was retuned
+    // isn't recorded anywhere, so this no longer claims a rationale it can't
+    // support.) `ROCK_RESERVE` is the border the `sideCandidates` carvers need
+    // on top — they only ever claim untouched rock, so a level squeezed to
+    // exactly its own footprint would have nowhere to put a secret room or a
+    // depot.
     const cap = Math.min(18, this.opts.maxSize - 2);
     const roomArea = parsed.entities.reduce((sum, entity) => {
       const { w, h } = roomDimensions(entity, cap + 2);
@@ -608,9 +613,9 @@ export class MapGenerator {
 
   /**
    * A non-overlapping filler room, guaranteed to succeed — see `placeRooms`.
-   * Tries normal random placement first (`tryPlaceRoom`); on the minimum
-   * 64-tile map with only 1-2 rooms placed so far, that all but always
-   * succeeds immediately. Falls back to whichever map corner doesn't
+   * Tries normal random placement first (`tryPlaceRoom`); on the minimum-size
+   * map (`DEFAULTS.minSize`, 48 tiles) with only 1-2 rooms placed so far, that
+   * all but always succeeds immediately. Falls back to whichever map corner doesn't
    * overlap an existing room (corners are always clear of interior rooms,
    * which stay off the outer border margin) so this can never itself fail
    * to produce a room.

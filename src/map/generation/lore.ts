@@ -10,10 +10,11 @@ import { roomForLine } from "./geometry";
 import { SPIKE_PERIOD_MAX, SPIKE_PERIOD_MIN, TRAP_SPACING } from "./trapsHazards";
 import { dist, key, neighbors, shuffle } from "./util";
 
-/** Comments must reach this length (or already span multiple lines — see
- * `extractLargeComments`) to be worth a lore terminal; kept in step with a cap
- * on how many any single file spawns, so a huge file doesn't wallpaper every
- * room in glowing text. */
+/** How many lore terminals any single file may spawn, so a huge file doesn't
+ * wallpaper every room in glowing text. Which comments are even eligible is a
+ * separate gate that lives in the parser — `LORE_COMMENT_MIN_LENGTH` in
+ * `astUtils.ts`, plus the multi-line and TODO/FIXME bypass rules in
+ * `extractLargeComments`. */
 const MAX_LORE_TERMINALS = 6;
 
 /** Flat HP for a TODO/FIXME "Bug" enemy — well under `HP_PER_COMPLEXITY`

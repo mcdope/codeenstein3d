@@ -129,7 +129,7 @@ export function spawnEnemies(
  * `p`, snapped to the nearest actual floor tile within `rect` (BFS outward
  * from `p`'s own tile, never leaving `rect`'s bounds). Unlike a normal
  * rectangular room, a breakup room's interior isn't fully open floor — it
- * has an internal baffle wall (see `breakUpRoomSightline`) — so `enemyPositions`'
+ * has an internal baffle wall (see `carveBaffle` in `breakup.ts`) — so `enemyPositions`'
  * raw geometric picks (in particular, its first-enemy-at-room-center pick,
  * which for a small odd-dimensioned room often lands exactly on the baffle)
  * can land on a wall tile. Returning `p` unsnapped there and letting

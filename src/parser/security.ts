@@ -17,8 +17,14 @@
 
 /** Reject anything larger than this before it reaches a parser. Real source
  * files are essentially never this big; a match is almost certainly a
- * mis-extensioned binary or a pathological input. */
-export const MAX_PARSE_BYTES = 4 * 1024 * 1024; // 4 MiB
+ * mis-extensioned binary or a pathological input.
+ *
+ * Compared against `String.length`, i.e. **UTF-16 code units, not bytes** — a
+ * source file full of non-ASCII text therefore gets a limit somewhat looser
+ * than the name suggests. Harmless at this magnitude (the point is to reject
+ * something pathological, not to bill precisely), but worth knowing before
+ * anyone tightens the number and expects byte semantics from it. */
+export const MAX_PARSE_BYTES = 4 * 1024 * 1024; // 4 MiB, measured in UTF-16 code units
 
 /** How many leading characters to sample when sniffing for binary content. */
 const SNIFF_WINDOW = 8192;
