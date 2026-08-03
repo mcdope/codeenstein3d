@@ -104,21 +104,23 @@ async function stopEvading(page) {
  * own doc comment), not to be scraped programmatically here.
  */
 async function sampleFps(page, durationMs = 1000) {
-  return page.evaluate(
-    (durationMs) =>
-      new Promise((resolve) => {
-        let frames = 0;
-        const start = performance.now();
-        function tick() {
-          frames++;
-          const elapsed = performance.now() - start;
-          if (elapsed < durationMs) requestAnimationFrame(tick);
-          else resolve(Math.round((frames * 1000) / elapsed));
-        }
-        requestAnimationFrame(tick);
-      }),
-    durationMs,
-  );
+  return page
+    .evaluate(
+      (durationMs) =>
+        new Promise((resolve) => {
+          let frames = 0;
+          const start = performance.now();
+          function tick() {
+            frames++;
+            const elapsed = performance.now() - start;
+            if (elapsed < durationMs) requestAnimationFrame(tick);
+            else resolve(Math.round((frames * 1000) / elapsed));
+          }
+          requestAnimationFrame(tick);
+        }),
+      durationMs,
+    )
+    .catch(() => null); // a page that's gone mid-sample (context closed by another concurrent path) shouldn't crash the whole sampler.
 }
 
 /** Lightweight network-lag proxy: how many simulation ticks apart two peers'
