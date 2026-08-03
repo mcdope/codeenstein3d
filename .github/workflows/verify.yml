@@ -211,28 +211,40 @@ jobs:
   # was made invulnerable/combat-avoidant, worth re-checking separately from
   # this job-structure change, not as part of it.
   #
-  # STILL NON-BLOCKING (2026-08-03) — but no longer because the failure is
-  # thought to be luck. The 2026-08-01 rationale said the bot's navigation was
-  # simply not reproducible run to run, since the gameplay seed is
-  # `randomSeed()`. That was wrong: the stall coordinates repeat across runs
-  # with *different* seeds, because demo-campaign level 1's layout is
-  # deterministic. Three real defects were found and fixed (a swallowed
-  # route-stuck `reason` that misreported every route failure as a
-  # final-approach one, a final approach that could not clear the exit-room
-  # enemy `checkExit()` gates on, and a `MultiplayerBot` loot detour that had
-  # drifted from the single-player one it was forked from) — see
-  # doc/dev/history.md.
+  # BLOCKING again (2026-08-03), after 10 consecutive green runs on this job.
   #
-  # It stays non-blocking only until it has actually been green here, which at
-  # the time of writing it has not: the first run after those fixes still
-  # failed, with `driveToExit` reporting no exit-room blocker at all. That is a
-  # different failure from the original one and it is what the `[diag] exit
-  # gate` dump in the script exists to identify. Flip this off once the job is
-  # green — a permanently-red advisory check is worth nothing.
+  # It was made non-blocking on 2026-08-01 on the theory that its `host got
+  # stuck on the final approach to the exit` failure was the bot's luck, since
+  # the gameplay seed is `randomSeed()`. That was wrong, and the disproof was
+  # already in every log: the stall coordinates repeat across runs with
+  # *different* seeds, because demo-campaign level 1's layout is deterministic.
+  #
+  # It was six separate bugs, none of them variance — full write-up in
+  # doc/dev/history.md. Briefly: `driveLegs` dropped `reason` on a stuck route
+  # so every route failure was misreported as a final-approach one; the final
+  # approach was a straight line that could not clear the enemy `checkExit()
+  # gates the exit on; `MultiplayerBot`'s loot detour had drifted from the
+  # single-player one it was forked from; a *completed* level transition read
+  # as a teleporter and was reported as a failure; the blocker hunt could pass
+  # all six rounds without executing a single decision when the blocker was
+  # already adjacent; and a wedged route was treated as terminal when
+  # `driveToExit` can re-path from wherever the legs died.
+  #
+  # Measured, not assumed, at each step: 4 consecutive master failures ->
+  # 1/5 -> 4/5 -> 6/6 -> 10/10.
+  #
+  # If it fails again, treat it as a real signal. Anomalies now name the errand
+  # they happened on, failures dump the exit gate (host position, live vs
+  # planned roster, which enemies are exit-room and whether they are alive),
+  # and CODEENSTEIN_TRANSITION_CLEAR_EXIT_ROOM=1 rules the exit gate in or out
+  # in a single run. `scripts/diagnose-level-wedge.mjs --mp-shape` reproduces
+  # the navigation locally without needing WebRTC — but note it runs on the
+  # virtual clock, so it cannot see anything that depends on the real transport
+  # delay or on the transition itself. Three of the six bugs above were
+  # invisible to it.
   verify-multiplayer-transition:
     name: verify (multiplayer-transition)
     runs-on: ubuntu-latest
-    continue-on-error: true
     # A wedge used to be able to outlast the job it ran in (one waypoint could
     # burn 240 real seconds, times four re-plans). The budgets are bounded now,
     # so anything past this is a new failure mode and should fail fast rather
