@@ -52,6 +52,25 @@ export const EDGE_CASE_COLOR = "#00FFFF";
  * just grows huge and is clamped to the screen) instead of popping out of view.
  */
 const SPRITE_NEAR = 0.05;
+/**
+ * The other three near-clip depths, one per billboard family. They were inline
+ * literals until now, which made "at what distance does this kind pop out of
+ * view" answerable only by reading eight call sites.
+ *
+ * **The values are preserved exactly as they were** — this names them, it does
+ * not unify them. Whether the four tiers are a deliberate per-kind tuning or
+ * just accreted isn't recorded anywhere, and no test pins any of them (the two
+ * that exercise a near clip place the entity at the player's exact position or
+ * behind the camera, so any value in this range satisfies them). Naming them is
+ * the prerequisite for someone deciding that later; guessing at a single shared
+ * value now would be a behaviour change dressed up as a cleanup.
+ */
+const ORB_NEAR = 0.1;
+/** Exit marker, keys, loot drops, decorations. */
+const MARKER_NEAR = 0.2;
+/** Teleporter pads and mines — floor-level markers, so they stay visible a
+ * little closer in than the upright markers above. */
+const PAD_NEAR = 0.15;
 
 /** Per-kind body color. Only functions/methods become enemies today. */
 export function enemyColor(kind: EntityKind): string {
@@ -492,7 +511,7 @@ export function collectOrbBillboards(
 
   return points
     .map((p) => ({ proj: projectPoint(player, p.x, p.y, width, height, 0.3) }))
-    .filter(({ proj }) => proj.depth > 0.1)
+    .filter(({ proj }) => proj.depth > ORB_NEAR)
     .map(({ proj }) => ({
       depth: proj.depth,
       draw: () => {
@@ -527,7 +546,7 @@ export function collectExitBillboard(
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
   const proj = projectPoint(player, exit.x + 0.5, exit.y + 0.5, width, height, 0.9);
-  if (proj.depth <= 0.2) return [];
+  if (proj.depth <= MARKER_NEAR) return [];
 
   return [
     {
@@ -575,7 +594,7 @@ export function collectKeyBillboards(
   return keys
     .filter((k) => !k.collected)
     .map((item) => ({ proj: projectPoint(player, item.x, item.y, width, height, 0.28) }))
-    .filter(({ proj }) => proj.depth > 0.2)
+    .filter(({ proj }) => proj.depth > MARKER_NEAR)
     .map(({ proj }) => ({
       depth: proj.depth,
       draw: () => {
@@ -636,7 +655,7 @@ export function collectLootBillboards(
 
   return drops
     .map((drop) => ({ kind: drop.kind, proj: projectPoint(player, drop.x, drop.y, width, height, 0.26) }))
-    .filter(({ proj }) => proj.depth > 0.2)
+    .filter(({ proj }) => proj.depth > MARKER_NEAR)
     .map(({ kind, proj }) => ({
       depth: proj.depth,
       draw: () => {
@@ -692,7 +711,7 @@ export function collectDecorationBillboards(
 
   return decorations
     .map((d) => ({ kind: d.kind, proj: projectPoint(player, d.x, d.y, width, height, decorSizeFactor(d.kind)) }))
-    .filter(({ proj }) => proj.depth > 0.2)
+    .filter(({ proj }) => proj.depth > MARKER_NEAR)
     .map(({ kind, proj }) => ({
       depth: proj.depth,
       draw: () => {
@@ -793,7 +812,7 @@ export function collectTeleporterBillboards(
 
   return teleporters
     .map((t) => ({ proj: projectPoint(player, t.x, t.y, width, height, PORTAL_SIZE) }))
-    .filter(({ proj }) => proj.depth > 0.15)
+    .filter(({ proj }) => proj.depth > PAD_NEAR)
     .map(({ proj }) => ({
       depth: proj.depth,
       draw: () => {
@@ -845,7 +864,7 @@ export function collectMineBillboards(
   return mines
     .filter((m) => m.alive && m.visible)
     .map((m) => ({ proj: projectPoint(player, m.x, m.y, width, height, MINE_SIZE) }))
-    .filter(({ proj }) => proj.depth > 0.15)
+    .filter(({ proj }) => proj.depth > PAD_NEAR)
     .map(({ proj }) => ({
       depth: proj.depth,
       draw: () => {
