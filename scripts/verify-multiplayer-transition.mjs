@@ -378,7 +378,29 @@ async function driveHostToExit(hostPage, map) {
   // `arrived` is the multiplayer signal (`MultiplayerBot.exitAccepted`); the
   // single-player `"won"` can't happen here but is accepted rather than
   // reported as a failure, since it would mean the exit was taken.
-  if (pushed.reason !== "arrived" && pushed.state !== "won") {
+  //
+  // `teleported` is accepted too, and only *this* script may do that. A
+  // completed level transition is indistinguishable from a teleporter down in
+  // the drive loop — both move the player further in one decision than any
+  // legal step, which is exactly what `TELEPORT_JUMP_DETECT_TILES` detects —
+  // so the winning run (exit touched, countdown elapsed, next level loaded,
+  // player respawned elsewhere) surfaces as `teleported`. That was thrown as
+  // a stuck final approach in two of three CI runs where the host had in fact
+  // already won, with the live exit tile already being the next level's.
+  //
+  // `driveToExit` deliberately does *not* make that call itself: it cannot
+  // tell "I took the exit" from "a teammate did", and
+  // `run-balancing-telemetry-multiplayer.mjs` depends on that distinction for
+  // its `levelAdvanced` outcome. Here there is exactly one driven player, so a
+  // team transition *is* the host's own — and nothing is assumed either way,
+  // because the countdown and new-level checks below have to pass regardless.
+  // A host teleported by a real teleporter pad without reaching the exit
+  // simply fails those instead, with a message about the thing that actually
+  // didn't happen.
+  if (pushed.reason === "teleported") {
+    console.log("  [warn] host's final approach ended in a teleport — treating as a possible completed transition; the countdown/new-level checks below decide");
+  }
+  if (pushed.reason !== "arrived" && pushed.reason !== "teleported" && pushed.state !== "won") {
     bot.reportAnomalies("host-final-approach", 0);
     await dumpExitGate(hostPage, bot, map);
     throw new Error(`host got stuck on the final approach to the exit: ${JSON.stringify(pushed)}`);

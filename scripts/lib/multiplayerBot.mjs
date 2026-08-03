@@ -198,6 +198,24 @@ const SESSION_ENDED_PLAYER_STATE = {
   distanceTraveled: 0,
 };
 
+/**
+ * Every `DEFAULT_TUNING` key this module overrides, as one object.
+ *
+ * Exported rather than inlined into the constructor so a telemetry run can
+ * *record* the configuration it actually ran under. `compareRunFlags`
+ * (`abReport.mjs`) exists to refuse an A/B whose two sides were produced by
+ * different bot behaviour, and it can only do that for values that reach
+ * `meta.flags` — a value that lives only in this file is exactly the silent
+ * confound it is meant to catch.
+ */
+export const MULTIPLAYER_TUNING_DEFAULTS = {
+  TELEPORT_JUMP_DETECT_TILES: DEFAULT_TELEPORT_JUMP_DETECT_TILES,
+  MAX_TICKS_PER_WAYPOINT: MAX_TICKS_PER_WAYPOINT_HERE,
+  BOT_LOOT_ABANDON_ON_STUCK: true,
+  BOT_NAV_STALL_BAIL_TICKS: NAV_STALL_BAIL_TICKS,
+  BOT_EXIT_BACKTRACK_TILES: EXIT_BACKTRACK_TILES,
+};
+
 export class MultiplayerBot extends Bot {
   /**
    * @param {import("playwright").Page} page
@@ -211,14 +229,7 @@ export class MultiplayerBot extends Bot {
     super(page, profile, {
       stepMs: DEFAULT_STEP_MS,
       ...opts,
-      tuning: {
-        TELEPORT_JUMP_DETECT_TILES: DEFAULT_TELEPORT_JUMP_DETECT_TILES,
-        MAX_TICKS_PER_WAYPOINT: MAX_TICKS_PER_WAYPOINT_HERE,
-        BOT_LOOT_ABANDON_ON_STUCK: true,
-        BOT_NAV_STALL_BAIL_TICKS: NAV_STALL_BAIL_TICKS,
-        BOT_EXIT_BACKTRACK_TILES: EXIT_BACKTRACK_TILES,
-        ...opts.tuning,
-      },
+      tuning: { ...MULTIPLAYER_TUNING_DEFAULTS, ...opts.tuning },
       realtime: true,
     });
     this.playerId = playerId;
