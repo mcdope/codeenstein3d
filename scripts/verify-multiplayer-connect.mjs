@@ -116,6 +116,10 @@ async function makeEligible(page, engineName) {
     undefined,
     { timeout: 20_000 },
   );
+  // The demo campaign's own level finishes auto-launching slightly after the
+  // Multiplayer tab enables — the host's own `startMultiplayerSessionAsHost`
+  // guard needs `currentParsedFile`/`currentLevelPath` to already be set.
+  await page.waitForSelector(".canvas-area:not([hidden])", { timeout: 20_000 });
 }
 
 /** Without a granted media (camera/mic) permission, Firefox restricts host
