@@ -4,7 +4,7 @@
 /** Hidden secret rooms carved behind fake walls from code-smell triggers. */
 import type { SecretTrigger } from "../../parser/types";
 import { SECRET_WALL_TILE, type AmmoPickup, type Point, type Room, type Tile } from "../types";
-import { roomForLine } from "./geometry";
+import { roomForLine, sideCandidateFits, sideCandidates } from "./geometry";
 import { shuffle } from "./util";
 
 /** Interior footprint (both dimensions) of a carved secret room. */
@@ -107,8 +107,20 @@ export function placeSecretRooms(
 /**
  * Try each of `anchor`'s four sides (in random order) for a still-untouched
  * wall tile behind which a `SECRET_ROOM_SIZE`² patch of unclaimed solid rock
- * exists, fully inside the map border. Carves that patch to floor and turns
- * the connecting tile into `SECRET_WALL_TILE` on the first fit found.
+ * exists, fully inside the map border. Carves that patch and turns the
+ * connecting tile into `SECRET_WALL_TILE` on the first fit found.
+ *
+ * Uses `sideCandidates`/`sideCandidateFits` — the helpers that were *extracted
+ * from this function* for `placeSwitchboards`/`placeExceptionZones`/
+ * `placeVendorDepots`, while this one kept its own inline copy. `geometry.ts`
+ * called this the reference for what "fits" means, so the rule that four
+ * carvers depend on was written down twice, and the copy the doc pointed at
+ * was the one nobody shared.
+ *
+ * The margin `sideCandidateFits` enforces is not incidental here — it is the
+ * reason it exists. Opening a secret wall flood-fills every 4-connected
+ * `SECRET_WALL_TILE` reachable from the door (see `tryOpenSecretWall`), so two
+ * secret rooms whose footprints touched would reveal each other.
  */
 function trySecretRoomOffAnchor(
   anchor: Room,
@@ -117,82 +129,26 @@ function trySecretRoomOffAnchor(
   rng: () => number,
 ): { center: Point } | null {
   const size = SECRET_ROOM_SIZE;
-  const half = Math.floor(size / 2);
-  const candidates: { wall: Point; x0: number; y0: number; x1: number; y1: number }[] = [];
-
-  for (let x = anchor.x; x < anchor.x + anchor.w; x++) {
-    const nx0 = x - half;
-    candidates.push({
-      wall: { x, y: anchor.y - 1 },
-      x0: nx0,
-      y0: anchor.y - 1 - size,
-      x1: nx0 + size - 1,
-      y1: anchor.y - 2,
-    });
-    candidates.push({
-      wall: { x, y: anchor.y + anchor.h },
-      x0: nx0,
-      y0: anchor.y + anchor.h + 1,
-      x1: nx0 + size - 1,
-      y1: anchor.y + anchor.h + size,
-    });
-  }
-  for (let y = anchor.y; y < anchor.y + anchor.h; y++) {
-    const ny0 = y - half;
-    candidates.push({
-      wall: { x: anchor.x - 1, y },
-      x0: anchor.x - 1 - size,
-      y0: ny0,
-      x1: anchor.x - 2,
-      y1: ny0 + size - 1,
-    });
-    candidates.push({
-      wall: { x: anchor.x + anchor.w, y },
-      x0: anchor.x + anchor.w + 1,
-      y0: ny0,
-      x1: anchor.x + anchor.w + size,
-      y1: ny0 + size - 1,
-    });
-  }
+  const candidates = sideCandidates(anchor, size, size, 0);
   shuffle(candidates, rng);
 
-  for (const c of candidates) {
-    if (grid[c.wall.y]?.[c.wall.x] !== 1) continue;
-    if (c.x0 < 1 || c.y0 < 1 || c.x1 > mapSize - 2 || c.y1 > mapSize - 2) continue;
+  const fit = candidates.find((c) => sideCandidateFits(c, grid, mapSize));
+  if (!fit) return null;
 
-    // Checked with a 1-tile margin beyond the room's own footprint, not just
-    // the footprint itself: opening this room now flood-fills every
-    // 4-connected `SECRET_WALL_TILE` cell reachable from the door (see
-    // `tryOpenSecretWall`), so if another secret room's carved footprint
-    // ended up directly touching this one, opening either would leak into
-    // revealing both. A 1-tile buffer of untouched rock on every side rules
-    // that out entirely.
-    let clear = true;
-    for (let y = c.y0 - 1; y <= c.y1 + 1 && clear; y++) {
-      for (let x = c.x0 - 1; x <= c.x1 + 1; x++) {
-        if (grid[y]?.[x] !== 1) {
-          clear = false;
-          break;
-        }
-      }
-    }
-    if (!clear) continue;
-
-    // The whole room — interior *and* the one connecting tile — is carved as
-    // `SECRET_WALL_TILE`, not floor. Rendering already treats every
-    // `SECRET_WALL_TILE` cell as an ordinary wall (3D view, corner minimap,
-    // automap), so a room made entirely of it is genuinely indistinguishable
-    // from solid rock until opened — a room carved as floor here would show
-    // up as a room-shaped hole in the surrounding walls (no fog-of-war on the
-    // corner minimap) or leak through the automap's `visited` radius (which
-    // has no wall-awareness and reaches past the one doorway tile) well
-    // before the player ever interacts with it. Opening flood-fills this
-    // whole connected patch to floor at once — see `tryOpenSecretWall`.
-    for (let y = c.y0; y <= c.y1; y++) {
-      for (let x = c.x0; x <= c.x1; x++) grid[y][x] = SECRET_WALL_TILE;
-    }
-    grid[c.wall.y][c.wall.x] = SECRET_WALL_TILE;
-    return { center: { x: Math.floor((c.x0 + c.x1) / 2), y: Math.floor((c.y0 + c.y1) / 2) } };
+  // The whole room — interior *and* the one connecting tile — is carved as
+  // `SECRET_WALL_TILE`, not floor (so this deliberately does *not* use
+  // `carveRect`, which carves to plain floor). Rendering already treats every
+  // `SECRET_WALL_TILE` cell as an ordinary wall (3D view, corner minimap,
+  // automap), so a room made entirely of it is genuinely indistinguishable
+  // from solid rock until opened — a room carved as floor here would show
+  // up as a room-shaped hole in the surrounding walls (no fog-of-war on the
+  // corner minimap) or leak through the automap's `visited` radius (which
+  // has no wall-awareness and reaches past the one doorway tile) well
+  // before the player ever interacts with it. Opening flood-fills this
+  // whole connected patch to floor at once — see `tryOpenSecretWall`.
+  for (let y = fit.y0; y <= fit.y1; y++) {
+    for (let x = fit.x0; x <= fit.x1; x++) grid[y][x] = SECRET_WALL_TILE;
   }
-  return null;
+  grid[fit.wall.y][fit.wall.x] = SECRET_WALL_TILE;
+  return { center: { x: Math.floor((fit.x0 + fit.x1) / 2), y: Math.floor((fit.y0 + fit.y1) / 2) } };
 }
