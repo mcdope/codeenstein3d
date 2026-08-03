@@ -113,6 +113,16 @@ All scoping/debug flags are read once at module load, so they must be set in the
 | `CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET` | Override `REQUIRED_QUALIFYING_RUNS` (default 3) — how many qualifying runs a combo needs before its retry loop stops. Used by `balancing:campaign` to set a small per-invocation batch size. **Set it to `999` for any A/B**, so the loop runs to `ATTEMPT_CAP` instead of exiting the moment enough runs qualify — that early exit, not concurrency, is what controls the failure-sample denominator. See [Matched-scale verification](#matched-scale-verification). |
 | `CODEENSTEIN_TELEMETRY_OUTPUT_FILE` | Override the output path (default `balancing_telemetry.json` at repo root). Used by `balancing:campaign` so concurrent invocations each write to their own file instead of racing to overwrite the same one. |
 
+### `generate-default-highscore.mjs`
+
+Not a telemetry tool, but it drives the same `Bot` against the same dev server and is the other job that can run unattended for a long time — so its three knobs belong next to the ones above rather than nowhere.
+
+| Var | Effect |
+|---|---|
+| `CODEENSTEIN_HIGHSCORE_QUALIFYING_RUNS` | Qualifying runs collected per profile before the highest-scoring one is baked in (default 3). |
+| `CODEENSTEIN_HIGHSCORE_ATTEMPT_CAP` | Cap attempts per profile (default unbounded) — the only way to bound an otherwise open-ended run. |
+| `CODEENSTEIN_HIGHSCORE_CONCURRENCY` | Attempts run concurrently per profile (default 4). |
+
 ## Anomaly scanning (`npm run balancing:scan`)
 
 `CODEENSTEIN_TELEMETRY_ANOMALY_SCAN=1` makes `tick()` record a per-decision trace (position, health, threat/mine distance, branch, `waitingOnSpike`) and scan it after every level for two patterns:

@@ -8,9 +8,10 @@ Codeenstein 3D parses your source into an AST and turns its structure into a pla
 
 | Code element | Becomes |
 |---|---|
-| Folder | A level |
-| File | A room (or set of rooms) |
-| Function | An enemy — HP scales with its cyclomatic complexity |
+| File | A level |
+| Folder | Nothing of its own — the tree order (directories first, then alphabetical) is the order levels are played in |
+| Function, method, class or global | A room of that level |
+| Function | An enemy in its room — HP scales with its cyclomatic complexity |
 | Function with more than 5 params or more than 3 nesting levels | A tougher enemy (a "code smell" bonus on top of complexity) |
 | Function at extreme complexity (≥40) | A single **Elite** enemy instead of a pack — 2× HP, 2× damage, gold-tinted, 60% chance of an extra weapon drop |
 | Global variable | An acid pool (hazard terrain) |
@@ -18,14 +19,16 @@ Codeenstein 3D parses your source into an AST and turns its structure into a pla
 | `goto`/label pair | A linked teleporter pad pair |
 | Large comment | A glowing lore terminal — press `R` to read it |
 | Comment flagged `TODO`/`FIXME` | Also a lore terminal, plus a small "technical debt" encounter nearby: a spike trap, a proximity mine, or a weak enemy (equally likely) |
-| Dead/unreachable code, an empty (swallowed-exception) catch block, a `@deprecated`/`[Obsolete]` marker, a commented-out code block, or a magic-number/blob literal (long Base64-ish string, `0xDEADBEEF`-style hex constant) | A secret room hidden behind a fake wall (very slightly tinted if you look closely), holding one guaranteed pickup — mega-health, a fat rockets stash, a big armor top-up, or (if you haven't unlocked it yet) gdb/ghidra/Friday Hotfix outright, or, from campaign level 4 on, the Toolchain chainsaw |
+| Dead/unreachable code, an empty (swallowed-exception) catch block, a `@deprecated`/`[Obsolete]` marker, a commented-out code block, or a magic-number/blob literal (long Base64-ish string, `0xDEADBEEF`-style hex constant) | A secret room hidden behind a fake wall (very slightly tinted if you look closely), holding one guaranteed pickup — mega-health, a fat rockets stash, a big Swap top-up, or (if you haven't unlocked it yet) gdb/ghidra/Friday Hotfix outright, or, from campaign level 4 on, the Toolchain chainsaw |
 | `switch`/`match` with several cases | A **Switchboard**: that function's room becomes a junction hub with one short dead-end spur per `case`, each behind an amber branch door. Every spur holds a small encounter — an Edge Case enemy, a trap or mine, or a little ammo. The `default` branch gets no spur; it's the corridor you were already on |
-| `try`/`catch`/`finally` | An **Exception Handling Zone** hanging off that room: a narrow acid gauntlet with spike traps and a mine (`try`), an alcove with guaranteed health *and* armor at the far end (`catch`), then a safe room with guaranteed loot (`finally`). The acid **corrodes away under you** — step in a tile and it's gone a couple of seconds later, so the walk back out with the loot is clear. The spikes and the mine don't, and you still pay full price going in |
+| `try`/`catch`/`finally` | An **Exception Handling Zone** hanging off that room: a narrow acid gauntlet with spike traps and a mine (`try`), an alcove with guaranteed health *and* Swap at the far end (`catch`), then a safe room with guaranteed loot (`finally`). The acid **corrodes away under you** — step in a tile and it's gone a couple of seconds later, so the walk back out with the loot is clear. The spikes and the mine don't, and you still pay full price going in |
 | `import`/`require`/`#include` (about one per four) | A small **Vendor Depot** alcove built into the spawn room's wall, stocked with third-party supplies — bullets, and rockets/SMG/gas ammo for whichever of those weapons you already own |
 | A function that allocates heavily (`malloc`/`new`/big fixed arrays) | An **Acid Overflow** room: walk in and the floor starts flooding with acid, tile by tile. A low warning tone and a "Memory leak — acid rising!" banner tell you the moment it starts, so you're not relying on noticing the floor. Kill the enemy that function spawned and the leak stops where it is |
 | Header file (`.h`) | A distinct bonus level — cool teal theme, better loot odds, meant as a restock stop |
 
-The level-start briefing shows how many secret rooms a level actually has ("Secrets") alongside its room/enemy counts — worth keeping an eye on the walls.
+The level-start briefing shows how many secret rooms a level actually has ("Secrets") alongside its room/enemy counts — worth keeping an eye on the walls. A single level tops out at 5 of them, however many triggers the file contains.
+
+**What doesn't become a level.** Before anything is parsed, the loader drops directories that are tooling rather than authored code — `.git`, `node_modules`, `vendor`, `dist`, `build`, `.cache`, `.idea`, `.vscode`, `__pycache__` — and test directories (`test`, `tests`, `__tests__`) along with colocated test files (`foo_test.go`, `FooTests.cs`, `bar.spec.ts`). Test code is someone else's map of your code, not your code; letting it in roughly doubles a well-tested repo's campaign with levels that read as duplicates of the ones beside them. The same list applies to a local folder and a GitHub repo alike. See [Troubleshooting](troubleshooting.md) for the rest of what gets skipped silently, and why.
 
 There are two kinds of door, and they're easy to tell apart. A **blue** door is key-locked: you need a dependency key, and the generator always places a reachable one first. An **amber** door is a Switchboard branch door — no key, just walk into it and it opens. Both show in their own colour on the minimap and automap too, so you can tell at a glance whether a door is worth walking to.
 

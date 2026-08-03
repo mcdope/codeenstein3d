@@ -4,6 +4,8 @@
 
 Play a campaign as a coop team, 2-4 players, in real time. There's no deathmatch or PvP mode yet — everyone on a session is on the same side, fighting the same enemies.
 
+**On the hosted build at [codeenstein3d.mcdope.org](https://codeenstein3d.mcdope.org) this is already set up.** If you're running your own local copy, the **Multiplayer** tab won't appear at all until the build is pointed at a signaling server — that address is baked in when the dev server starts, not read at runtime, so there's no in-app setting for it. See [Multiplayer Server Deployment](../dev/multiplayer-deployment.md) for standing one up.
+
 ## Hosting a session
 
 1. Load a workspace the same way you would for single-player — a GitHub repo or the Demos campaign (a locally-picked folder can't be hosted, see [Privacy](privacy.md)).

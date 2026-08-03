@@ -501,9 +501,15 @@ const ipLimits = new Map<string, IpLimitState>();
   or non-matching token counts against the normal budget like any other request
   (a wrong token is itself guessing behavior, never a free pass), and
   token-bearing requests still fall under a separate, generous DoS backstop
-  ceiling (e.g. 120/min per IP — far above any sane poll rate, purely so
-  "valid token" can never mean "unlimited requests" to a buggy or hostile client
-  that happens to hold one).
+  ceiling (`HOST_TOKEN_MAX_REQUESTS = 120` per window per IP — far above any sane
+  poll rate, purely so "valid token" can never mean "unlimited requests" to a
+  buggy or hostile client that happens to hold one).
+- `PUT_SESSION_RATE_LIMIT_MAX_REQUESTS = 30` per window per IP, for session
+  create/update specifically. This is the write path, and it is the one that
+  allocates against `MAX_CONCURRENT_SESSIONS` (§3), so it gets bounded separately
+  from reads rather than sharing the guess-sensitive budget — a host legitimately
+  re-`PUT`s to re-arm its code for each new guest, which is not guessing behaviour
+  and shouldn't draw on a budget sized for it.
 - **On exceeding the window's cap**: don't just reset next window — increment
   `violationCount` and set `cooldownUntil = now + BASE_COOLDOWN_MS * 2 ** violationCount`
   (`BASE_COOLDOWN_MS = 5_000`, capped at `MAX_COOLDOWN_MS = 60 * 60_000` — 1 hour).

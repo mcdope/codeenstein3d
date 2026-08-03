@@ -17,7 +17,7 @@
 | Input | Action |
 |---|---|
 | Mouse click | Fire the active weapon (mouse/gamepad only — keyboard-only play was never a supported control scheme). Every weapon has its own fire rate, so clicking faster than it cycles doesn't shoot faster — the Regex Shotgun's 0.85s pump is the one you'll notice |
-| `1`–`9` | Switch directly to a weapon slot |
+| `1`–`5` | Switch directly to a weapon slot — pistol, shotgun, gdb, ghidra, Friday Hotfix. The melee weapon isn't on the number row (it's always `Space`), so there's no hole in the run and no key above `5` does anything |
 | Mousewheel | Cycle through owned weapons |
 | `Space` | Quick-melee — swings the SIGKILL Knife instantly regardless of what's equipped; once you find the Toolchain chainsaw it permanently takes over this key instead, revving continuously while held |
 

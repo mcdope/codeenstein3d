@@ -24,8 +24,9 @@ and level generation happen entirely in the browser, and nothing is uploaded any
 
 | In your source code... | ...becomes this in-game |
 |---|---|
-| A folder | A level |
-| A file | The rooms/corridors of that level |
+| A file | A level |
+| A folder | Nothing of its own — the tree order (directories first, then alphabetical) is the order you play the levels in |
+| A function, method, class or global inside that file | A room of that level |
 | A function/method (HP = `cyclomatic_complexity × 25`) | An enemy — higher complexity means more health, pack spawns, or a gold-tinted elite boss |
 | A function with code smells (>5 params, >3 nesting levels) | A tougher enemy (scaled bonus complexity) |
 | A global variable | An acid pool (hazard terrain) |
@@ -34,7 +35,7 @@ and level generation happen entirely in the browser, and nothing is uploaded any
 | A large comment block | A lore terminal (press R to read) |
 | Dead code, empty catch blocks, deprecated tags, commented-out code, magic-number/blob literals | A secret room hidden behind a fake wall |
 | A `switch`/`match` with several cases | A **Switchboard** junction — one short dead-end spur per `case`, each behind a keyless amber door |
-| A `try`/`catch`/`finally` | An **Exception Handling Zone** — an acid gauntlet that corrodes away behind you, a guaranteed health-and-armor alcove, then a safe loot room |
+| A `try`/`catch`/`finally` | An **Exception Handling Zone** — an acid gauntlet that corrodes away behind you, a guaranteed health-and-Swap alcove, then a safe loot room |
 | The `import`s at the top of a file (~1 per 4) | A **Vendor Depot** alcove in the spawn room's wall, stocked for the weapons you already carry |
 | A function that allocates heavily (`malloc`/`new`) | An **Acid Overflow** room that floods while you're inside it, until you kill the enemy that function spawned |
 | A header file (`.h`) | A bonus level (distinct teal theme, boosted loot) |
@@ -107,7 +108,7 @@ Procedural Map Generator (grid, enemies, hazards, teleporters)
 Each stage only consumes the data structure from the previous stage — languages, map styles, and renderers can evolve independently.
 
 ### Level Generation
-- **Functions → Enemies** whose HP equals `cyclomatic_complexity × 25`
+- **Functions → Enemies** carrying `cyclomatic_complexity × 25` HP *between them* — one enemy below complexity 10, then one more per 10 on top, splitting that pool rather than inflating a single body
   - High complexity = more health, pack spawns, or a single elite boss (2× HP, gold tint, 2× damage)
   - Functions with code smells (more than 5 params, more than 3 nesting levels) get scaled bonus complexity
   
@@ -123,7 +124,7 @@ Each stage only consumes the data structure from the previous stage — language
   
 - **`switch`/`match` → Switchboards** (a junction hub with one dead-end spur per `case`, each behind a keyless amber branch door — the second of the game's two door types)
 
-- **`try`/`catch`/`finally` → Exception Handling Zones** (acid gauntlet with traps, then guaranteed health *and* armor, then a safe loot room)
+- **`try`/`catch`/`finally` → Exception Handling Zones** (acid gauntlet with traps, then guaranteed health *and* Swap, then a safe loot room)
 
 - **Imports → Vendor Depots** (supply alcoves in the spawn room's wall, roughly one per four top-level imports)
 
@@ -175,13 +176,23 @@ npm run dev
 
 Open the printed `localhost` URL, click **Select Workspace**, pick a folder with source code, and click a supported file to drop into its level.
 
+The first `npm run dev` (or `npm run build`) also fetches the online WAD/texture-pack catalog — about 170 MB from three external hosts, into the gitignored `public/wads/`. It's idempotent, so it only happens once per checkout, but it does mean **the first run needs network access**. Everything the catalog feeds is optional: the game ships procedural textures and plays fine without it.
+
+Multiplayer is the one feature a plain local build can't show you — its tab stays hidden until the build is pointed at a signaling server. See [Multiplayer Server Deployment](doc/dev/multiplayer-deployment.md) if you want it locally, or just use the [hosted build](https://codeenstein3d.mcdope.org).
+
 ### Development Scripts
 ```bash
 npm run dev        # Vite dev server with HMR
-npm run typecheck  # Type-check only
+npm run typecheck  # Type-check only (its own blocking CI gate)
+npm test           # Vitest unit suite — blocking CI gate
+npm run coverage   # Same, with the 99.9/99.5 coverage gate — blocking CI gate
 npm run build      # Production build to dist/
 npm run preview    # Serve production build locally
 ```
+
+There are 14 further `npm run verify:*` scripts driving the real app through Playwright, plus the balancing-bot harness. They need a dev server you started yourself and, for the multiplayer ones, a signaling server started *before* it — see [Testing](doc/dev/testing.md#running-the-verify-scripts-locally), which is the file to read before running any of them.
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/) with a scope — `fix(multiplayer):`, `refactor(map):`, `docs:`. Player-visible changes get a line under `## Unreleased` in [`CHANGELOG.md`](CHANGELOG.md), in player-facing voice.
 
 ---
 
@@ -233,58 +244,23 @@ npm run preview    # Serve production build locally
 
 ---
 
-## Completion Status
+## Status
 
-| # | Feature | Status |
-|---|---------|--------|
-| 1–2 | File access, AST parsing | ✅ |
-| 3–6 | Map generation, raycaster, enemies, HUD | ✅ |
-| 7–8 | C-language support, hazards & weapons | ✅ |
-| 9–10 | Nested-scope mazes, locked doors & keys | ✅ |
-| 11–13 | Canvas HUD, enemy AI, visual feedback | ✅ |
-| 14–16 | Procedural audio, weapon viewmodel, fog | ✅ |
-| 17–19 | Automap, AI overhaul, ranged combat | ✅ |
-| 20–21 | Sprint/strafe/turning, corridor geometry | ✅ |
-| 22–23 | Teleporters, multi-level, parser security | ✅ |
-| 24–26 | Minimap, entrypoints, save & continue | ✅ |
-| 27–30 | Line-of-sight aggro, knife, scoring, sidebar | ✅ |
-| 31–33 | Weapon tuning, gamepad, canvas scaling | ✅ |
-| 34–35 | Compass redesign, seeded PRNG, replay | ✅ |
-| 36–39 | Multi-level replay, GitHub repos, TODO/FIXME | ✅ |
-| 40–42 | Test-audio silencing, shebang/no-extension files, license-header lore exclusion | ✅ |
-| 43–48 | Highscore/scoring fixes, codebase-stats hash, Armor→Swap rename | ✅ |
-| 49–54 | Continue-run fix, full-health drop gating, mine spawn safety, intro screen, control panel redesign | ✅ |
-| 55–59 | Loading indicator, weapon hotkey reorder, gdb's own ammo pool, build timestamp, canvas fill | ✅ |
-| 60–66 | ghidra damage buff, rocket impact VFX, minimap shrink, sidebar license footer, highscore hash fix, broader/bonus-scoring secret rooms | ✅ |
-| 67–70 | Friday Hotfix flamethrower, canvas-blur pause fix, cheat-sequence input guard | ✅ |
-| 71–73 | Wall-edge antialiasing, corridor Edge Case enemies, compass flag removal | ✅ |
-| 74–78 | Bonus/Elite weapon drops, bundled Demo Campaign + Demos tab, Toolchain chainsaw | ✅ |
-| 79–80 | Engine frame-cap investigation (reverted), headless-bot-generated default highscores + replays for the Demo Campaign | ✅ |
-| 81 | GitHub Action for the demo-campaign structural verify script | ✅ |
-| 82–85 | Perf pass: per-shot enemy/mine projection reuse, ammo/loot/AI dedup, LOS memoization + rocket spatial hash, shared BFS enemy path field | ✅ |
-| 86 | Texture-mapped walls/doors/floors (procedural default, or sourced from a loaded DOOM WAD file) | ✅ |
-| 87 | Full CI pipeline — browser (Playwright) + no-browser GitHub Actions jobs running every `verify:*` script on push/PR | ✅ |
-| 88 | WAD/procedural texturing extended to lore-terminal walls, hazard/teleporter floors, and spike traps | ✅ |
-| 89–91 | GitHub-repo workspace loading: stale-load cancellation, and entrypoint-scan/codebase-stats request reduction (a ~100-file repo went from 99 to 13 requests) | ✅ |
-| 92 | ~99.9%-coverage Vitest unit test suite (3013 tests), wired as a blocking CI gate | ✅ |
-| — | `tsc --noEmit && vite build` added as its own CI gate, after a TypeScript bump broke a build the existing test jobs didn't catch | ✅ |
-| — | Room decorations | ⏸️ Implemented, disabled (playtest feedback) |
-| — | Automated headless-bot balancing/telemetry system, plus 2 real engine bugs it surfaced (diagonal movement ~41% too fast, a corridor-breakup room silently severing unrelated crossing corridors) and an ammo/loot/difficulty rebalance | ✅ |
-| — | Keys no longer cluster in the largest reachable region; default highscore replays now play back at the correct real-time pace instead of ~3x too fast | ✅ |
-| — | Watching a replay now returns to the Highscores dialog it was launched from, instead of the plain file-tree placeholder, once it ends | ✅ |
-| — | Export "Watch Replay" playback as a downloadable webm video — a Record button on the transport bar, plus a one-click "Export" shortcut in the Highscores dialog | ✅ |
-| — | Startpage leads with a plain-English "New to coding?" card, before the more technical code→dungeon mapping | ✅ |
-| — | Export a cleared level as a top-down PNG — actual wall/door/floor/hazard/teleporter/spike/lore textures stamped from above, not a flat-color diagram; only available once that level is won | ✅ |
-| — | Multi Kill / Ultra Kill score bonus, on-screen banner, and stinger SFX for chaining kills (3-in-3s / 6-in-6s) | ✅ |
-| — | Full favicon/icon set (all platforms) + sidebar header rebrand, both generated from the CODE logo | ✅ |
-| — | SEO: meta description, Open Graph/Twitter Card tags, JSON-LD, robots.txt, sitemap.xml | ✅ |
-| — | Curated online WAD catalog (fetched at build time, not committed), sidebar redesign into labeled sections/tabs, GitHub-load button disabled until a valid repo is entered | ✅ |
-| — | Build tag in the title bar shows the exact git tag (a real release) or short commit hash instead of just a timestamp, so a stale cached build is obvious | ✅ |
-| — | Level-end/run-end player-facing stats screen (kills, weapon accuracy, damage taken by source, loot collected, score breakdown) | ⏸️ Implemented, disabled by default (playtest feedback: measurable frame-time cost) |
-| — | FPS overlay and IDDQD/IDCLIP cheat toggles now carry across a level transition instead of silently resetting | ✅ |
-| — | A repeatable frame-time benchmark harness (`npm run perf:bench`/`perf:report`) with opt-in per-frame diagnostics (`?perfDebug=1`), used to audit and confirm wall-edge antialiasing and windowed-mode responsive canvas resizing are both cheap enough to ship on by default (see `perf-findings.json`) | ✅ |
-| — | Multiplayer — host or join a real-time coop session (2-4 players) via a short code or public lobby, WebRTC peer-to-peer with a minimal signaling/lobby server, lockstep netcode with drift reconciliation, disconnect handling, level-transition countdowns, a shared end-of-run scoreboard, and player-count-scaled Elite enemies | ✅ |
-| — | Multiplayer playtesting fixes: FPS overlay (was stuck at 0 all session), exit gated by the room's own alive enemies (single- and multiplayer), disabled sidebar buttons now visibly look disabled, canvas keyboard focus restored after a level transition, the "spectating" banner no longer overlaps the exit countdown, and the end-of-run comparison table's kills/score are now genuinely cumulative across the whole run instead of resetting every level | ✅ |
+Feature-complete and playable end to end: parsing for 14 languages, procedural map generation,
+the full arsenal, multi-level campaigns, deterministic replays, highscores, WAD texturing, and
+2-4 player coop — all covered by a ~99.9%-coverage unit suite plus 14 Playwright verify scripts
+in CI.
+
+Two features are implemented but shipped **off** behind source flags, both after playtest
+feedback: room decorations (billboarding reads as visibly wrong on boxy shapes) and the
+level-end player stats screen (a measurable frame-time cost). See
+[Feature Flags](doc/dev/architecture.md#feature-flags) for the current defaults and the
+reasoning behind each.
+
+- **[`CHANGELOG.md`](CHANGELOG.md)** — what's new, release by release.
+- **[`doc/dev/history.md`](doc/dev/history.md)** — the full record, including the approaches
+  that were measured and reverted. Worth more than it sounds: a reverted approach leaves no
+  trace in the code, so without that file the next person re-attempts it.
 
 ---
 
@@ -387,6 +363,8 @@ Full player-facing docs live in [`doc/user`](doc/user/README.md) — getting sta
 🔒 If you're wondering what happens to the workspace you point this at, or what gets stored on your machine, see [`doc/user/privacy.md`](doc/user/privacy.md).
 
 Developer-facing docs — architecture, game design rationale, and notable design decisions — live in [`doc/dev`](doc/dev/README.md).
+
+Running the tests, the `verify:*` scripts, or the balancing bot locally: start with [`doc/dev/testing.md`](doc/dev/testing.md). What changed and when: [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
