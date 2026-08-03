@@ -237,6 +237,20 @@ body {
   margin: 10px 0 0;
 }
 
+/* Fourth instance of the same trap `.tab-panel`/`.loading-screen`/`.canvas-area`
+ * already carry an override for (see `decisions.md`'s UI/DOM Gotchas): the
+ * `display: flex` above is an author-stylesheet rule, so it beats the browser's
+ * own `[hidden] { display: none }` UA rule outright. Without this,
+ * `#multiplayer-host-code-wrap` — which ships with `hidden` in index.html and is
+ * toggled four times in main.ts — stayed painted the whole time the
+ * Multiplayer/Host sub-tab was open: an empty session-code box and a Copy button
+ * before any session existed, and a stale code left on screen after cancelling.
+ * No test could catch it; jsdom applies no UA stylesheet, so `el.hidden === true`
+ * passes while a real browser still paints the element. */
+.multiplayer-code-wrap[hidden] {
+  display: none;
+}
+
 .multiplayer-code {
   flex: 1;
   margin: 0;
