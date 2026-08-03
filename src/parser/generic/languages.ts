@@ -6,10 +6,11 @@
  * need a bespoke adapter (see `registry.ts` for why C and PHP stay separate).
  *
  * Each grammar wasm is ABI-verified against our pinned `web-tree-sitter`
- * runtime before being added here (see [[tree-sitter-wasm-setup]] memory) —
- * several otherwise-obvious choices (a bulk `tree-sitter-wasms` package,
- * `tree-sitter-kotlin`, `tree-sitter-lua`) were rejected because they either
- * ship an incompatible ABI or no prebuilt wasm at all.
+ * runtime before being added here — several otherwise-obvious choices (a bulk
+ * `tree-sitter-wasms` package, `tree-sitter-kotlin`, `tree-sitter-lua`) were
+ * rejected because they either ship an incompatible ABI or no prebuilt wasm at
+ * all. Vetting a new grammar is therefore mandatory, not optional: add it here
+ * only after confirming its wasm loads against the pinned runtime.
  */
 import jsWasmUrl from "tree-sitter-javascript/tree-sitter-javascript.wasm?url";
 import tsWasmUrl from "tree-sitter-typescript/tree-sitter-typescript.wasm?url";
