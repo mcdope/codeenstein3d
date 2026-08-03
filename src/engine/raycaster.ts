@@ -623,14 +623,6 @@ function minimapWallCanvas(
   return canvas;
 }
 
-/**
- * Small top-left minimap: walls, discovered enemies, traps, and the player's
- * exact position and facing. Useful for confirming movement, collision, and
- * combat while playing. Enemies only appear once the player has physically
- * entered their room (an AABB check against `Enemy.home`, done once per frame
- * in `RaycasterEngine`) — see `Enemy.discovered`. Returns the panel's outer
- * rect so the exit compass can be drawn directly on its frame afterward.
- */
 /** Multiplayer-only loot-drop marker color (`drawAutomap`'s own constant
  * matches this by value, not by shared import — same "each renderer keeps
  * its own independently-defined, thematically-matched constants" convention
@@ -666,6 +658,14 @@ const PING_SWEEP_MS = 900;
  * busiest. */
 const PING_RING_GROWTH_PX = 10;
 
+/**
+ * Small top-left minimap: walls, discovered enemies, traps, and the player's
+ * exact position and facing. Useful for confirming movement, collision, and
+ * combat while playing. Enemies only appear once the player has physically
+ * entered their room (an AABB check against `Enemy.home`, done once per frame
+ * in `RaycasterEngine`) — see `Enemy.discovered`. Returns the panel's outer
+ * rect so the exit compass can be drawn directly on its frame afterward.
+ */
 export function renderMinimap(
   ctx: CanvasRenderingContext2D,
   map: GameMap,
