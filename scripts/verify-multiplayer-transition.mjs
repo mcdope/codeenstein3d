@@ -274,7 +274,14 @@ async function driveHostToExit(hostPage, map) {
 
   const legOutcome = await bot.driveLegs(route.legs);
   if (legOutcome.state === "over") throw new Error(`host died despite god mode — the debugSetGodMode call itself must have failed: ${JSON.stringify(legOutcome)}`);
-  if (legOutcome.reason === "stuck") {
+  // `state`, not `reason` — `driveLegs` reports a stuck route as
+  // `state: "stuck"`, which is what every other caller branches on. Checking
+  // only `reason` here meant this branch never fired: a stuck route fell
+  // silently through into the final approach below, which then straight-lined
+  // at the exit from wherever the route died and reported *itself* as the
+  // failure. Every "host got stuck on the final approach" in this job's CI
+  // history is really this branch.
+  if (legOutcome.state === "stuck") {
     bot.reportAnomalies("host-route", 0);
     throw new Error(`host got stuck navigating the planned route: ${JSON.stringify(legOutcome)}`);
   }

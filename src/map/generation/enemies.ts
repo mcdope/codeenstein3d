@@ -38,10 +38,19 @@ const ELITE_COMPLEXITY_THRESHOLD = 40;
 const ELITE_HP_MULTIPLIER = 2;
 
 /**
- * Chebyshev tiles kept clear of enemies around the exit. 2 leaves a 5x5 box,
- * which is the smallest radius that stops an enemy's collision box reaching
- * the exit tile from any direction — the point is that walking onto the exit
- * is never gated on winning a fight you happened to spawn next to it.
+ * Chebyshev tiles kept clear of enemies around the exit. 2 leaves a 5x5 box.
+ *
+ * This is a *readability* rule, not a mechanical one, and an earlier version of
+ * this comment claimed otherwise. Enemies are never solid to the player:
+ * `Player.move` resolves each axis against `collidesWithWall`, which tests map
+ * tiles only, and no entity-vs-entity collision exists anywhere in the engine.
+ * An enemy standing on the exit tile cannot stop anyone walking onto it.
+ *
+ * What actually gates the exit is `RaycasterEngine.exitRoomHasAliveEnemy()`,
+ * and that is a `home`-rectangle test — *any* living enemy whose home contains
+ * the exit keeps it inert, however far away it has roamed. So this clearance
+ * does not weaken that gate either. It exists so the exit reads as a room you
+ * arrive at rather than one you spawn nose-to-nose with a monster in.
  *
  * Deliberately a *soft* rule, like every other placement constraint here: the
  * loop below retries a bounded number of times and then accepts whatever it
@@ -238,12 +247,11 @@ function enemyPositions(
   const blocked = (p: Point): boolean => {
     const tx = Math.floor(p.x);
     const ty = Math.floor(p.y);
-    // Clearance, not just the tile itself. "The 'return' marker must never be
-    // hidden under a monster" was only ever enforced on the exact exit tile,
-    // which leaves an enemy free to stand against it — and an enemy is a solid
-    // body, so parking one there means the exit can't be walked onto at all
-    // until it's killed. On `main.c` the nearest enemy sits 2 tiles from the
-    // exit, close enough that its collision box overlaps the final step.
+    // Clearance, not just the tile itself — "the 'return' marker must never be
+    // hidden under a monster" reads better with a little room around it. See
+    // `EXIT_CLEARANCE_TILES` for why this is presentation and not mechanics:
+    // enemies are not solid to the player, and the real exit gate keys off
+    // `Enemy.home`, not proximity.
     if (Math.max(Math.abs(tx - exit.x), Math.abs(ty - exit.y)) <= EXIT_CLEARANCE_TILES) return true;
     return avoidSpawns.some((s) => tx === s.x && ty === s.y);
   };
