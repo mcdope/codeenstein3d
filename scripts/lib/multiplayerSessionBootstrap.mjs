@@ -8,14 +8,27 @@
  * and generalized here (step 11) so both that script and the new bot-driven
  * telemetry tooling can share it instead of each duplicating it.
  *
- * Mirrors this project's own "each verify script owns its own bookkeeping"
- * convention only where that made sense (connect/tick-wait helpers are still
- * copied, not imported, by sibling 2-player scripts like
- * `verify-multiplayer-connect.mjs`) — but the *N-player* bootstrap sequence
- * itself is genuinely new, shared machinery step 10 never needed (every
- * pre-step-10 script is hardcoded to exactly 2 peers), so it belongs in one
- * place from the start rather than being copy-pasted into every future
- * N-player script.
+ * This module used to say the connect/tick-wait helpers were deliberately
+ * "still copied, not imported" by the sibling 2-player scripts, mirroring an
+ * "each verify script owns its own bookkeeping" convention. **That convention
+ * is retired, because it cost more than it bought.** The five copies were
+ * byte-identical to each other — same `DEV_SERVER_URL` expression, same
+ * `CONNECT_TIMEOUT_MS = 30_000`, same `FIREFOX_LAUNCH_OPTIONS` — so the
+ * independence it promised was fictional, while the drift was real: a
+ * `waitForSelector(".canvas-area:not([hidden])")` fix landed in five of the six
+ * copies of `makeEligible` and was never back-ported to
+ * `verify-multiplayer-connect.mjs`, leaving a blocking CI job racing a level
+ * load for however long nobody noticed.
+ *
+ * Every 2-player script now imports these from here. Note the extraction that
+ * created this module was *lossy* — it dropped `gotoWithRetry`'s retry line and
+ * `grantFakeMediaForFirefox`'s `[diag]` lines — so those were restored here
+ * before the migration, making this a strict superset of what each script had.
+ *
+ * The *N-player* bootstrap sequence below is separate: genuinely new machinery
+ * step 10 needed (every pre-step-10 script is hardcoded to exactly 2 peers),
+ * shared from the start rather than copy-pasted into every future N-player
+ * script.
  *
  * All the real timing/retry decisions here (the guest-join race against
  * `armNextGuestSlot`'s own async re-arm, its 9-attempt/5s-spacing budget,
@@ -25,6 +38,19 @@
  * evidence (both chromium and webkit) that sized these defaults.
  */
 
+/** Two independent Firefox-only WebRTC quirks, both only reachable via
+ * `firefoxUserPrefs` (Chromium/WebKit need neither):
+ *  - `media.peerconnection.ice.obfuscate_host_addresses: false` — Firefox
+ *    delays starting its mDNS responder for local ICE candidates until
+ *    `setRemoteDescription()` actually runs (Mozilla bug 1691189), which
+ *    this app's non-trickle ICE design (see `webrtcConnection.ts`'s doc
+ *    comment) blocks on, and a sandboxed CI runner has no mDNS/avahi
+ *    service to resolve it at all.
+ *  - `media.navigator.streams.fake` / `media.navigator.permission.disabled`
+ *    — paired with `grantFakeMediaForFirefox()`'s actual `getUserMedia()`
+ *    call, lets that call resolve instantly against a synthetic stream
+ *    instead of hanging on (or being denied) a real camera/mic prompt.
+ */
 export const FIREFOX_LAUNCH_OPTIONS = {
   firefoxUserPrefs: {
     "media.peerconnection.ice.obfuscate_host_addresses": false,
@@ -49,20 +75,31 @@ export async function gotoWithRetry(page, url, attempts = 6) {
       return;
     } catch (err) {
       if (attempt === attempts) throw err;
+      // Only ever printed when a navigation actually failed, so this is
+      // silent on a healthy run — but a cold-start retry is exactly the kind
+      // of thing you want in a CI log when a multiplayer job goes red for
+      // reasons that look like the app and aren't.
+      console.log(`  [retry] page.goto(${url}) failed (attempt ${attempt}/${attempts}): ${err.message}`);
       await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
     }
   }
 }
 
-/** See `verify-multiplayer-connect.mjs`'s identical helper for the full
- * Firefox single-default-route-interface writeup. */
+/** See `verify-multiplayer-connect.mjs`'s top doc comment for the full Firefox
+ * single-default-route-interface writeup.
+ *
+ * Both outcomes are logged rather than swallowed: whether the fake grant
+ * actually landed decides whether Firefox gathers ICE candidates from more
+ * than one interface, so "did getUserMedia resolve" is the first thing worth
+ * knowing when a Firefox run gathers nothing. Fires once per page, on Firefox
+ * only — every chromium/webkit caller sees nothing at all. */
 export async function grantFakeMediaForFirefox(page, engineName) {
   if (engineName !== "firefox") return;
   try {
     await page.evaluate(() => navigator.mediaDevices.getUserMedia({ audio: true, video: true }));
-  } catch {
-    // Best-effort — see the sibling scripts' identical helper for why a
-    // rejection here still leaves the rest of the Firefox workaround intact.
+    console.log("[diag] getUserMedia() resolved");
+  } catch (err) {
+    console.log("[diag] getUserMedia() rejected:", err.message);
   }
 }
 

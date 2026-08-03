@@ -23,9 +23,9 @@
  * `verify-campaign-playthrough.mjs` and `verify-wad-textures.mjs`).
  */
 import { resolveBrowserEngine } from "./lib/browserEngine.mjs";
+import { FIREFOX_LAUNCH_OPTIONS, makeEligible, waitForConnected } from "./lib/multiplayerSessionBootstrap.mjs";
 
 const DEV_SERVER_URL = process.env.CODEENSTEIN_DEV_URL ?? "http://localhost:5173";
-const CONNECT_TIMEOUT_MS = 30_000;
 const TICKING_TIMEOUT_MS = 30_000;
 const TARGET_TICK = 60; // 2s of real ticking at TICK_RATE_HZ(30) — comfortably past session bootstrap.
 
@@ -36,79 +36,6 @@ function check(label, condition, detail) {
   } else {
     failures += 1;
     console.log(`  [FAIL] ${label}${detail ? ` — ${detail}` : ""}`);
-  }
-}
-
-/** See `verify-multiplayer-connect.mjs`'s identical helper for the full
- * "why retry at all" writeup — a freshly launched headless browser's very
- * first navigation has been observed to hit connection-refused for several
- * real seconds even against an already-serving dev server. */
-async function gotoWithRetry(page, url, attempts = 6) {
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    try {
-      await page.goto(url);
-      return;
-    } catch (err) {
-      if (attempt === attempts) throw err;
-      console.log(`  [retry] page.goto(${url}) failed (attempt ${attempt}/${attempts}): ${err.message}`);
-      await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
-    }
-  }
-}
-
-/** Loads the bundled demo campaign — the cheapest way to reach an
- * `isMultiplayerEligibleWorkspace()` state (no GitHub fetch needed) *and* a
- * `currentParsedFile`/`currentLevelPath` the host needs to actually
- * generate a level from — and waits for the Multiplayer tab to enable. */
-async function makeEligible(page, engineName) {
-  await gotoWithRetry(page, `${DEV_SERVER_URL}/?testHooks=1`);
-  await grantFakeMediaForFirefox(page, engineName);
-  await page.click("#tab-demo");
-  await page.click("#launch-demo-campaign");
-  await page.waitForFunction(
-    () => {
-      const tab = document.querySelector("#tab-multiplayer");
-      return tab instanceof HTMLButtonElement && !tab.disabled;
-    },
-    undefined,
-    { timeout: 20_000 },
-  );
-  // The demo campaign's own level finishes auto-launching slightly after the
-  // Multiplayer tab enables — the host's own `startMultiplayerSessionAsHost`
-  // guard needs `currentParsedFile`/`currentLevelPath` to already be set.
-  await page.waitForSelector(".canvas-area:not([hidden])", { timeout: 20_000 });
-}
-
-/** See `verify-multiplayer-connect.mjs`'s identical helper for the full
- * Firefox single-default-route-interface writeup. */
-async function grantFakeMediaForFirefox(page, engineName) {
-  if (engineName !== "firefox") return;
-  try {
-    await page.evaluate(() => navigator.mediaDevices.getUserMedia({ audio: true, video: true }));
-    console.log("[diag] getUserMedia() resolved");
-  } catch (err) {
-    console.log("[diag] getUserMedia() rejected:", err.message);
-  }
-}
-
-/** Polls `window.__codeensteinMultiplayerTestHooks.getConnectionState()`
- * until it reports `"connected"`, or throws once it reports `"error"` or
- * `CONNECT_TIMEOUT_MS` elapses — whichever comes first. */
-async function waitForConnected(page, label) {
-  try {
-    await page.waitForFunction(
-      () => {
-        const hooks = window.__codeensteinMultiplayerTestHooks;
-        const state = hooks?.getConnectionState();
-        if (state?.state === "error") throw new Error("multiplayer connect flow reported an error state");
-        return state?.state === "connected";
-      },
-      undefined,
-      { timeout: CONNECT_TIMEOUT_MS },
-    );
-  } catch (err) {
-    const status = await page.textContent("#multiplayer-status").catch(() => "<unavailable>");
-    throw new Error(`${label} never reached "connected" (status: "${status}"): ${err.message}`);
   }
 }
 
@@ -193,14 +120,6 @@ async function pollUntilConverged(readHost, readGuest, matches, timeoutMs = TICK
   return { converged: false, host: lastHost, guest: lastGuest };
 }
 
-const FIREFOX_LAUNCH_OPTIONS = {
-  firefoxUserPrefs: {
-    "media.peerconnection.ice.obfuscate_host_addresses": false,
-    "media.navigator.streams.fake": true,
-    "media.navigator.permission.disabled": true,
-  },
-};
-
 async function main() {
   const { name: engineName, engine } = resolveBrowserEngine();
   console.log(`Launching headless ${engineName} (two contexts: host + guest)...`);
@@ -219,8 +138,8 @@ async function main() {
     // comment on why: a cold dev server, hit by two contexts at the same
     // instant right after browser launch, has been observed to reliably
     // connection-refuse both.
-    await makeEligible(hostPage, engineName);
-    await makeEligible(guestPage, engineName);
+    await makeEligible(hostPage, engineName, DEV_SERVER_URL);
+    await makeEligible(guestPage, engineName, DEV_SERVER_URL);
     check("host: Multiplayer tab enabled", true);
     check("guest: Multiplayer tab enabled", true);
 

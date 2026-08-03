@@ -59,9 +59,16 @@
  * for the full writeup.
  */
 import { resolveBrowserEngine } from "./lib/browserEngine.mjs";
+import { FIREFOX_LAUNCH_OPTIONS, makeEligible, waitForConnected } from "./lib/multiplayerSessionBootstrap.mjs";
 
 const DEV_SERVER_URL = process.env.CODEENSTEIN_DEV_URL ?? "http://localhost:5173";
-const CONNECT_TIMEOUT_MS = 30_000;
+
+/** Reads this page's live connection state. `waitForConnected` only resolves
+ * once the state *is* `"connected"`; this is the follow-up read for the
+ * per-channel assertions below. */
+function readConnectionState(page) {
+  return page.evaluate(() => window.__codeensteinMultiplayerTestHooks.getConnectionState());
+}
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -70,80 +77,6 @@ function check(label, condition, detail) {
   } else {
     failures += 1;
     console.log(`  [FAIL] ${label}${detail ? ` — ${detail}` : ""}`);
-  }
-}
-
-/** `page.goto()`, retried on a connection-level failure (as opposed to a
- * real 4xx/5xx from the dev server, which retrying can't fix). A freshly
- * `engine.launch()`ed headless browser's very first navigation — even a
- * single page, no concurrency involved — has been observed in CI to hit
- * `NS_ERROR_CONNECTION_REFUSED` for several seconds straight, even though
- * the dev server itself is already confirmed up and had just served a
- * different verify script's request moments earlier: the freshly-spawned
- * browser process's own network stack isn't fully ready yet, not a
- * dev-server problem. Generous attempt count/backoff since the whole
- * point is absorbing a real multi-second cold-start window, not a
- * sub-second blip. */
-async function gotoWithRetry(page, url, attempts = 6) {
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    try {
-      await page.goto(url);
-      return;
-    } catch (err) {
-      if (attempt === attempts) throw err;
-      console.log(`  [retry] page.goto(${url}) failed (attempt ${attempt}/${attempts}): ${err.message}`);
-      await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
-    }
-  }
-}
-
-/** Loads the bundled demo campaign — the cheapest way to reach an
- * `isMultiplayerEligibleWorkspace()` state (no GitHub fetch needed) — and
- * waits for the Multiplayer tab to actually enable before returning.
- * `grantFakeMediaForFirefox` runs first (before any UI interaction), so it's
- * in place well before the Host/Join buttons ever construct a real
- * `RTCPeerConnection`. */
-async function makeEligible(page, engineName) {
-  await gotoWithRetry(page, `${DEV_SERVER_URL}/?testHooks=1`);
-  await grantFakeMediaForFirefox(page, engineName);
-  await page.click("#tab-demo");
-  await page.click("#launch-demo-campaign");
-  await page.waitForFunction(
-    () => {
-      const tab = document.querySelector("#tab-multiplayer");
-      return tab instanceof HTMLButtonElement && !tab.disabled;
-    },
-    undefined,
-    { timeout: 20_000 },
-  );
-  // The demo campaign's own level finishes auto-launching slightly after the
-  // Multiplayer tab enables — the host's own `startMultiplayerSessionAsHost`
-  // guard needs `currentParsedFile`/`currentLevelPath` to already be set.
-  await page.waitForSelector(".canvas-area:not([hidden])", { timeout: 20_000 });
-}
-
-/** Without a granted media (camera/mic) permission, Firefox restricts host
- * ICE candidate gathering to a *single* "default route" interface — a real,
- * separate quirk from the "no default route interface exists at all" CI
- * limitation this script's own top doc comment documents (that one has no
- * app-side fix; this one does). Granting a fake `getUserMedia()` stream
- * switches Firefox out of the single-interface restriction;
- * `media.navigator.streams.fake`/`media.navigator.permission.disabled` (set
- * at launch, see `FIREFOX_LAUNCH_OPTIONS`) make the grant instant, no real
- * camera/mic needed. Kept even though CI itself skips Firefox for this
- * script (see the top doc comment) — this still matters for anyone running
- * `CODEENSTEIN_VERIFY_BROWSER=firefox` locally, which works correctly (a
- * real machine has a real default route). This workaround stays entirely
- * inside this verify script — the real app never requests media
- * permissions, which would be a genuine, unjustified UX intrusion for a
- * game with no media features. */
-async function grantFakeMediaForFirefox(page, engineName) {
-  if (engineName !== "firefox") return;
-  try {
-    await page.evaluate(() => navigator.mediaDevices.getUserMedia({ audio: true, video: true }));
-    console.log("[diag] getUserMedia() resolved");
-  } catch (err) {
-    console.log("[diag] getUserMedia() rejected:", err.message);
   }
 }
 
@@ -181,49 +114,6 @@ async function installIceDiagnostics(page, label) {
   }, label);
 }
 
-/** Polls `window.__codeensteinMultiplayerTestHooks.getConnectionState()`
- * until it reports `"connected"`, or throws once it reports `"error"` or
- * `CONNECT_TIMEOUT_MS` elapses — whichever comes first. */
-async function waitForConnected(page, label) {
-  try {
-    await page.waitForFunction(
-      () => {
-        const hooks = window.__codeensteinMultiplayerTestHooks;
-        const state = hooks?.getConnectionState();
-        if (state?.state === "error") throw new Error("multiplayer connect flow reported an error state");
-        return state?.state === "connected";
-      },
-      undefined,
-      { timeout: CONNECT_TIMEOUT_MS },
-    );
-  } catch (err) {
-    const status = await page.textContent("#multiplayer-status").catch(() => "<unavailable>");
-    throw new Error(`${label} never reached "connected" (status: "${status}"): ${err.message}`);
-  }
-  return page.evaluate(() => window.__codeensteinMultiplayerTestHooks.getConnectionState());
-}
-
-/** Two independent Firefox-only WebRTC quirks, both only reachable via
- * `firefoxUserPrefs` (Chromium/WebKit need neither):
- *  - `media.peerconnection.ice.obfuscate_host_addresses: false` — Firefox
- *    delays starting its mDNS responder for local ICE candidates until
- *    `setRemoteDescription()` actually runs (Mozilla bug 1691189), which
- *    this app's non-trickle ICE design (see `webrtcConnection.ts`'s doc
- *    comment) blocks on, and a sandboxed CI runner has no mDNS/avahi
- *    service to resolve it at all.
- *  - `media.navigator.streams.fake` / `media.navigator.permission.disabled`
- *    — paired with `grantFakeMediaForFirefox()`'s actual `getUserMedia()`
- *    call, lets that call resolve instantly against a synthetic stream
- *    instead of hanging on (or being denied) a real camera/mic prompt.
- */
-const FIREFOX_LAUNCH_OPTIONS = {
-  firefoxUserPrefs: {
-    "media.peerconnection.ice.obfuscate_host_addresses": false,
-    "media.navigator.streams.fake": true,
-    "media.navigator.permission.disabled": true,
-  },
-};
-
 async function main() {
   const { name: engineName, engine } = resolveBrowserEngine();
   console.log(`Launching headless ${engineName} (two contexts: host + guest)...`);
@@ -254,8 +144,8 @@ async function main() {
     // navigation moments earlier. Setting up one browser fully before
     // starting the other removes that concurrent-cold-start pattern
     // entirely, at the cost of a few extra seconds of total runtime.
-    await makeEligible(hostPage, engineName);
-    await makeEligible(guestPage, engineName);
+    await makeEligible(hostPage, engineName, DEV_SERVER_URL);
+    await makeEligible(guestPage, engineName, DEV_SERVER_URL);
     check("host: Multiplayer tab enabled", true);
     check("guest: Multiplayer tab enabled", true);
 
@@ -274,10 +164,8 @@ async function main() {
     await guestPage.click("#multiplayer-join-connect");
 
     console.log("Waiting for both peers to report a connected data channel...");
-    const [hostState, guestState] = await Promise.all([
-      waitForConnected(hostPage, "host"),
-      waitForConnected(guestPage, "guest"),
-    ]);
+    await Promise.all([waitForConnected(hostPage, "host"), waitForConnected(guestPage, "guest")]);
+    const [hostState, guestState] = await Promise.all([readConnectionState(hostPage), readConnectionState(guestPage)]);
 
     check("host: reports state \"connected\"", hostState.state === "connected");
     check("host: \"input\" channel open", hostState.channels?.input === "open", JSON.stringify(hostState.channels));
