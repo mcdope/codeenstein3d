@@ -99,6 +99,11 @@ const LOOT_DETOUR_AVOID_TILES = new Set([HAZARD_TILE, SPIKE_TRAP_TILE]);
  * a room can hold several; bounded because an unreachable blocker must still
  * terminate. */
 const EXIT_CLEAR_ROUNDS = 6;
+
+/** Decisions `#fightUntilDead` spends per roster re-read. Small enough that a
+ * kill is noticed promptly (and the drive re-aims at an enemy that has moved),
+ * large enough that the round trip isn't most of the cost. */
+const EXIT_FIGHT_CHUNK_TICKS = 10;
 // Position-unchanged-for-this-many-consecutive-ticks threshold before
 // `detectAnomalies` calls it a "stall".
 const STALL_TICKS_THRESHOLD = 20;
@@ -1256,16 +1261,22 @@ export class Bot {
    * with `LEVEL_LIMIT=8` and so never reaches level 10 at all — not because
    * the two harnesses drive the bot differently.
    *
-   * Walking at the blocker is all the "combat" this needs: closing to within
-   * `AGGRO_RADIUS` with line of sight aggros it, at which point `pickThreat`
-   * starts seeing it and the normal combat branches fight it. So this is a
-   * navigation fix, and deliberately not a new combat policy.
+   * Walking at the blocker was originally all the "combat" this did: closing
+   * to within `AGGRO_RADIUS` with line of sight aggros it, at which point
+   * `pickThreat` starts seeing it and the normal combat branches fight it.
    *
-   * That last step is why the hunt runs under `#withCombat`: a caller driving
-   * with `ignoreThreats` suppresses `pickThreat` entirely, so "the normal
-   * combat branches fight it" never happens and the hunt walks circles around
-   * a blocker it will not shoot. Only the hunt is scoped that way — see
-   * `#withCombat`.
+   * That turned out to have a hole, and it is the reason `#fightUntilDead`
+   * exists. Walking at the blocker only helps while there is somewhere to
+   * walk. Captured in CI with the host standing dead centre on the exit tile
+   * (0.02 tiles off) and the blocker **aggroed and adjacent at 100/100 hp**:
+   * the enemy's tile *was* the bot's own tile, so `#walkPathTo` had a
+   * zero-length path, returned immediately, and all six rounds passed without
+   * a single decision ever being executed. Enabling combat achieves nothing if
+   * nothing is decided while it is enabled.
+   *
+   * Enabling it at all is `#withCombat`'s job: a caller driving with
+   * `ignoreThreats` suppresses `pickThreat` entirely, so "the normal combat
+   * branches fight it" never happens. Only the hunt is scoped that way.
    */
   async driveToExit(exitCenter, finalApproachTicks, openedDoors = this.openedDoors) {
     let last = { state: "playing", reason: "stuck" };
@@ -1279,7 +1290,7 @@ export class Bot {
       if (round > 0) {
         const back = await this.#withActivity("exitBacktrack", () => this.#walkPathTo({ x: this.map.exit.x, y: this.map.exit.y }, openedDoors));
         if (back.state !== "playing") return back;
-        if (back.reason === "teleported") return back;
+        if (back.reason === "teleported") return this.#acceptedOr(back);
       }
       last = await this.#withActivity("exit", () => this.driveToward(exitCenter, this.tuning.TIGHT_ARRIVE_EPS, finalApproachTicks));
       // "won" (exit accepted) or "over" (died on the way) — either way, done.
@@ -1316,13 +1327,32 @@ export class Bot {
             });
       // Exit inert with nothing homed to its room left alive means the gate is
       // something this method doesn't model — report stuck rather than loop.
-      if (blockers.length === 0) return { state: "playing", reason: "stuck" };
+      if (blockers.length === 0) return this.#acceptedOr({ state: "playing", reason: "stuck" });
       this.logger.wpDebug?.(`[wpdebug] exit inert — ${blockers.length} exit-room blocker(s) alive; hunting #${blockers[0].i} at (${blockers[0].x.toFixed(1)},${blockers[0].y.toFixed(1)})`);
       const hunted = await this.#withCombat(() => this.#withActivity("exitHunt", () => this.#huntEnemy(blockers[0], openedDoors)));
       if (hunted.state !== "playing") return hunted;
-      if (hunted.reason === "teleported") return hunted;
+      if (hunted.reason === "teleported") return this.#acceptedOr(hunted);
     }
-    return { state: "playing", reason: "stuck" };
+    return this.#acceptedOr({ state: "playing", reason: "stuck" });
+  }
+
+  /**
+   * Report `arrived` instead of `failure` when the level has, in fact, already
+   * accepted the exit.
+   *
+   * A completed level transition is indistinguishable from a teleporter at the
+   * drive-loop level: both move the player further in one decision than any
+   * legitimate step, which is precisely what `TELEPORT_JUMP_DETECT_TILES`
+   * detects. So the winning run — exit touched, countdown elapsed, new level
+   * loaded, player respawned somewhere else entirely — surfaced as
+   * `reason: "teleported"` and got reported as a failure. Seen twice in three
+   * CI runs, each time with the live exit tile already being the *next*
+   * level's and the enemy roster a different length.
+   *
+   * Cheap to ask and only asked on a path that was about to fail anyway.
+   */
+  async #acceptedOr(result) {
+    return (await this.exitAccepted()) ? { state: "playing", reason: "arrived" } : result;
   }
 
   /**
@@ -1338,19 +1368,62 @@ export class Bot {
   }
 
   /**
-   * Path to `target`'s tile and walk it until the enemy dies. Returns as soon
-   * as it does — the kill itself is done by the ordinary combat branches once
-   * proximity aggros it, not here.
+   * Path to `target`'s tile and walk it until the enemy dies, then — if it is
+   * still alive — stand and fight it.
+   *
+   * The walk alone was the whole implementation, on the reasoning that closing
+   * to aggro range hands the kill to the ordinary combat branches. It does,
+   * but only when there is a path to walk. When the blocker is already on or
+   * beside the bot's own tile the BFS path is zero-length, `#walkPathTo`
+   * returns instantly, and the hunt burns a round without executing a single
+   * decision — so nothing ever shoots. That is not a corner case here: the
+   * bot arrives by standing on the exit, and the blocker is by definition
+   * homed to the exit's own room, so "already adjacent" is the *normal*
+   * geometry for this method.
    *
    * The enemy's index is stable for a whole level (the same guarantee
    * `pickThreat` relies on to recognise "same enemy as last tick"), so it is
    * safe to re-check liveness by index against a fresh snapshot.
    */
   async #huntEnemy(target, openedDoors) {
-    return this.#walkPathTo({ x: Math.floor(target.x), y: Math.floor(target.y) }, openedDoors, async () => {
+    const isDead = async () => {
       const { enemies } = await this.readFull();
       return !enemies[target.i]?.alive;
-    });
+    };
+    const walked = await this.#walkPathTo({ x: Math.floor(target.x), y: Math.floor(target.y) }, openedDoors, isDead);
+    if (walked.state !== "playing" || walked.reason === "teleported") return walked;
+    if (await isDead()) return { state: "playing", reason: "arrived" };
+    return this.#fightUntilDead(target);
+  }
+
+  /**
+   * Spend decisions next to a live blocker until it dies.
+   *
+   * Deliberately not a new combat policy — it decides nothing about fighting.
+   * It drives at the enemy's live position with an arrival epsilon of zero, so
+   * the drive can never satisfy itself and terminate early, and every decision
+   * it spends goes through the ordinary `tick()` path where a threat preempts
+   * navigation. All this adds is *decisions in which combat is possible*,
+   * which is the one thing the walk could not guarantee.
+   *
+   * Re-reading the roster between chunks both stops the moment the kill lands
+   * and keeps the drive aimed at an enemy that moves. `driveToward` reporting
+   * `stuck` at the end of a chunk is expected and ignored: with eps 0 that is
+   * simply "the budget ran out", not a navigation failure. Standing still to
+   * shoot does not trip `BOT_NAV_STALL_BAIL_TICKS` either — its engaged-in-
+   * combat exclusion exists for exactly this.
+   */
+  async #fightUntilDead(target) {
+    const budget = this.tuning.MAX_TICKS_PER_WAYPOINT;
+    for (let spent = 0; spent < budget; spent += EXIT_FIGHT_CHUNK_TICKS) {
+      const { enemies } = await this.readFull();
+      const live = enemies[target.i];
+      if (!live?.alive) return { state: "playing", reason: "arrived" };
+      const chunk = await this.driveToward({ x: live.x, y: live.y }, 0, Math.min(EXIT_FIGHT_CHUNK_TICKS, budget - spent));
+      if (chunk.state !== "playing") return chunk;
+      if (chunk.reason === "teleported") return chunk;
+    }
+    return { state: "playing", reason: "stuck" };
   }
 
   /**
