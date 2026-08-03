@@ -256,6 +256,47 @@ async function setupSession(browser, engineName) {
  * would mean the god-mode call itself failed or was skipped — a genuine bug
  * worth surfacing immediately, not a condition to retry through.
  */
+/**
+ * Everything needed to decide *why* `driveToExit` gave up, printed on failure.
+ *
+ * This job cannot be reproduced locally — WebRTC needs outbound UDP, which the
+ * dev box does not have — so a failure here has to arrive already diagnosed or
+ * it costs another full CI round trip to learn one fact. `driveToExit` has
+ * exactly three ways to end in `stuck`, and they need completely different
+ * fixes: it never reached the exit tile (navigation), it reached it but the
+ * gate stayed shut with no blocker it could identify (the `home`-rect mirror
+ * disagreeing with the engine), or it identified one and failed to kill it
+ * (combat scoping). The activity split alone cannot separate them.
+ *
+ * Mirrors `scripts/diagnose-level-wedge.mjs`'s own exit-gate dump, which is
+ * what made the single-player version of this wedge legible.
+ */
+async function dumpExitGate(hostPage, bot, map) {
+  const { x: ex, y: ey } = map.exit;
+  const inExitRoom = (h) => !!h && ex >= h.x && ex < h.x + h.w && ey >= h.y && ey < h.y + h.h;
+  const live = await hostPage.evaluate(() => ({
+    enemies: window.__codeensteinMultiplayerTestHooks.getEnemiesSnapshot(),
+    pos: window.__codeensteinMultiplayerTestHooks.getPlayerPosition("host"),
+    countdown: window.__codeensteinMultiplayerTestHooks.getExitCountdownRemaining(),
+    exit: window.__codeensteinMultiplayerTestHooks.getMapExit(),
+  }));
+  const planned = map.enemies ?? [];
+  const gate = planned.map((e, i) => ({ i, home: e.home, exitRoom: inExitRoom(e.home) })).filter((e) => e.exitRoom);
+
+  console.log(`  [diag] exit gate at (${ex},${ey}); live exit tile ${JSON.stringify(live.exit)}, countdown ${live.countdown}`);
+  console.log(`  [diag] host at (${live.pos.x.toFixed(2)},${live.pos.y.toFixed(2)}), ${Math.hypot(live.pos.x - (ex + 0.5), live.pos.y - (ey + 0.5)).toFixed(2)} tiles from the exit centre, on tile (${Math.floor(live.pos.x)},${Math.floor(live.pos.y)})`);
+  // A length mismatch means the bot's `map.enemies[i]` and the engine's roster
+  // are not the same records, which silently breaks the whole blocker mirror.
+  console.log(`  [diag] roster: live ${live.enemies.length} (${live.enemies.filter((e) => e.alive).length} alive) vs planned ${planned.length}${live.enemies.length === planned.length ? "" : "  *** LENGTH MISMATCH ***"}`);
+  console.log(`  [diag] planned enemies carrying a home rect: ${planned.filter((e) => !!e.home).length}/${planned.length}`);
+  console.log(`  [diag] exit-room indices: ${gate.map((g) => g.i).join(", ") || "(none)"}`);
+  for (const g of gate) {
+    const l = live.enemies[g.i];
+    console.log(`  [diag]   #${g.i}: ${l ? `alive=${l.alive} at (${l.x.toFixed(1)},${l.y.toFixed(1)}) aggroed=${l.aggroed} hp=${l.hp}/${l.maxHp}` : "MISSING FROM LIVE ROSTER"}`);
+  }
+  console.log(`  [diag] => exitRoomHasAliveEnemy = ${gate.some((g) => live.enemies[g.i]?.alive)}`);
+}
+
 async function driveHostToExit(hostPage, map) {
   const hostSpawn = await hostPage.evaluate(() => {
     const pos = window.__codeensteinMultiplayerTestHooks.getPlayerPosition("host");
@@ -296,6 +337,7 @@ async function driveHostToExit(hostPage, map) {
   // history is really this branch.
   if (legOutcome.state === "stuck") {
     bot.reportAnomalies("host-route", 0);
+    await dumpExitGate(hostPage, bot, map);
     throw new Error(`host got stuck navigating the planned route: ${JSON.stringify(legOutcome)}`);
   }
 
@@ -328,6 +370,7 @@ async function driveHostToExit(hostPage, map) {
   // reported as a failure, since it would mean the exit was taken.
   if (pushed.reason !== "arrived" && pushed.state !== "won") {
     bot.reportAnomalies("host-final-approach", 0);
+    await dumpExitGate(hostPage, bot, map);
     throw new Error(`host got stuck on the final approach to the exit: ${JSON.stringify(pushed)}`);
   }
 }
