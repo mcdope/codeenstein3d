@@ -890,6 +890,31 @@ describe("renderMinimap — cached wall layer", () => {
       HTMLCanvasElement.prototype.getContext = original;
     }
   });
+
+  it("gives branch doors their own colour in the fallback, like the cached layer does", () => {
+    // The cached wall layer draws `BRANCH_DOOR_TILE` in a warm amber, distinct
+    // from the key-locked door's cool blue, so a glance tells "just push it"
+    // from "needs a key you may not have". The fallback used to lump branch
+    // doors in with the plain wall fill and lose that signal entirely.
+    const grid = walledRoom(8);
+    grid[4][0] = BRANCH_DOOR_TILE; // on the wall ring, so it replaces a wall tile
+    const map = fakeMap({ grid });
+    const player = new Player({ ...map, spawn: { x: 1, y: 1 } });
+    const original = HTMLCanvasElement.prototype.getContext;
+    (HTMLCanvasElement.prototype as unknown as { getContext: () => null }).getContext = () => null;
+    try {
+      const c = ctx();
+      // fillRect doesn't otherwise capture the fillStyle active at call time —
+      // same idiom the lore-terminal test above uses.
+      const fillStyles: string[] = [];
+      c.fillRect.mockImplementation(() => fillStyles.push(String(c.fillStyle)));
+      renderMinimap(asCtx(c), map, player, 0, 70, new Set(), 99);
+      expect(c.drawImage).not.toHaveBeenCalled();
+      expect(fillStyles).toContain("#b39a72");
+    } finally {
+      HTMLCanvasElement.prototype.getContext = original;
+    }
+  });
 });
 
 describe("renderMinimap — wall-layer cache keying", () => {
