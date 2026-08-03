@@ -118,8 +118,6 @@ export type ConnectionState =
   | "connected"
   | "error";
 
-export type MultiplayerRole = "host" | "guest";
-
 /** The two data channels this step opens, per `multiplayer-netcode-spec.md`'s
  * "Roles and terminology" section — both left at WebRTC's default
  * reliable/ordered config. Not used for anything but proving they're open
