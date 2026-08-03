@@ -32,7 +32,8 @@ export function countLines(text: string): number {
  * is itself typed `"if"`), which would otherwise silently double-count in any
  * grammar whose keyword token happens to share a name with a real named node
  * type from a different grammar in a shared, cross-language type list (see
- * [[codeenstein-project]]'s generic parser).
+ * `doc/dev/architecture.md`'s parser section, and `generic/vocabulary.ts` for
+ * the shared table itself).
  */
 export function countDecisionPoints(
   root: Node,

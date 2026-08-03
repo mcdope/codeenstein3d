@@ -5,7 +5,7 @@
  * Difficulty setting — scales enemy HP, enemy-dealt damage, and ammo/loot
  * drop amounts. Lives at the `src/` root, not under `map/` or `engine/`,
  * since both layers need it and the map layer must never import the engine
- * layer (see [[codeenstein-project]]'s layering rule) — a small, dependency-
+ * layer (see `doc/dev/architecture.md`'s layering rule) — a small, dependency-
  * free shared module is the cleanest way for both to read the same table
  * without creating a cross-layer import. In practice only `engine.ts`
  * currently reads it (enemy HP is rescaled in-place on the map's `Enemy`
