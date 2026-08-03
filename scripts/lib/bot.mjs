@@ -21,6 +21,9 @@
  */
 import { bfsPath, pathToWaypoints } from "./pathfind.mjs";
 import {
+  // Imported, not merely re-exported below: `export … from` creates no local
+  // binding, so anything this module *uses* has to appear here too.
+  activeSpikeAt,
   angleDelta,
   decide,
   DEFAULT_TUNING,
