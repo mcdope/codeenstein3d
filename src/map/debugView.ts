@@ -9,6 +9,7 @@
  * view for the map generator — the real game is rendered by the raycaster.
  */
 import type { GameMap } from "./types";
+import { clamp } from "../mathUtil";
 
 export interface DebugViewOptions {
   /** Target on-screen size (px) for the longest map dimension. */
@@ -67,6 +68,3 @@ export function renderDebugMap(map: GameMap, options: DebugViewOptions = {}): HT
   return canvas;
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}

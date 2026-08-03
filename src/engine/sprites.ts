@@ -17,6 +17,7 @@ import type { Decoration, DecorKind, Enemy, KeyItem, LootDrop, Mine, Point, Tele
 import type { CodeEntity, EntityKind } from "../parser/types";
 import type { Player } from "./player";
 import { outlineRect } from "./pathSprites";
+import { clamp } from "../mathUtil";
 
 /**
  * One item's draw call, tagged with the camera-space depth it should sort by.
@@ -884,6 +885,3 @@ export function collectMineBillboards(
     }));
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}

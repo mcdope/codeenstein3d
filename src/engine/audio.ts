@@ -38,6 +38,7 @@
  */
 
 import type { WeaponViewKind } from "./weapons";
+import { clamp01 } from "../mathUtil";
 
 /** Grab whatever AudioContext constructor the environment exposes, if any. */
 type AudioContextCtor = new () => AudioContext;
@@ -869,10 +870,6 @@ function envelope(
   gain.gain.exponentialRampToValueAtTime(peak, startAt + attack);
   gain.gain.exponentialRampToValueAtTime(0.0001, startAt + attack + decay);
   return gain;
-}
-
-function clamp01(n: number): number {
-  return Math.max(0, Math.min(1, n));
 }
 
 /** Classic waveshaper distortion curve; higher `amount` = harsher clipping. */

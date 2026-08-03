@@ -22,6 +22,7 @@
 import type { GameMap, Tile } from "./types";
 import { BRANCH_DOOR_TILE, DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, SPIKE_TRAP_TILE, TELEPORTER_TILE } from "./types";
 import type { LevelStyle, TextureBitmap } from "../engine/textures";
+import { clamp } from "../mathUtil";
 
 export interface ExportViewOptions {
   /** Target on-screen size (px) for the longest map dimension. */
@@ -179,6 +180,3 @@ function drawMarker(ctx: CanvasRenderingContext2D, tileX: number, tileY: number,
   ctx.fill();
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}

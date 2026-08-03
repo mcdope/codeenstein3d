@@ -14,6 +14,7 @@
 import { drawDisc, fillLine } from "./pathSprites";
 import { projectPoint } from "./sprites";
 import type { Player } from "./player";
+import { clamp } from "../mathUtil";
 
 /** Frames a full-strength player damage flash lasts before fading to 0. */
 export const DAMAGE_FLASH_FRAMES = 12;
@@ -602,6 +603,3 @@ export function renderBlood(
   }
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
