@@ -195,6 +195,72 @@ describe("driveToExit", () => {
     expect(await new FakeBot().exitAccepted()).toBe(false);
   });
 
+  it("reports a completed level transition as arrival, not as a teleport failure", async () => {
+    // A finished transition is indistinguishable from a teleporter down here:
+    // both move the player further in one decision than any legal step. Twice
+    // in three CI runs the host had *won* — exit touched, countdown elapsed,
+    // next level loaded — and the run was reported as a stuck final approach.
+    const bot = new FakeBot();
+    bot.startLevel(openMap());
+    bot.driveToward = async () => ({ state: "playing", reason: "teleported" });
+    bot.exitAccepted = async () => true;
+    expect(await bot.driveToExit({ x: 5.5, y: 5.5 }, 80)).toEqual({ state: "playing", reason: "arrived" });
+  });
+
+  it("still reports a teleport as a failure when the exit was not accepted", async () => {
+    const bot = new FakeBot();
+    bot.startLevel(openMap());
+    bot.driveToward = async () => ({ state: "playing", reason: "teleported" });
+    bot.exitAccepted = async () => false;
+    const result = await bot.driveToExit({ x: 5.5, y: 5.5 }, 80);
+    expect(result.reason).not.toBe("arrived");
+  });
+
+  it("fights a blocker that is already adjacent, where there is no path to walk", async () => {
+    // The failure this exists for: the host standing dead centre on the exit
+    // with the blocker aggroed on the same tile at full health. `#walkPathTo`
+    // had a zero-length path and returned instantly, so all six rounds passed
+    // without executing a single decision and nothing ever shot.
+    const map = openMap();
+    map.enemies = [{ home: { x: 0, y: 0, w: 10, h: 10 } }];
+    const bot = new FakeBot({ ignoreThreats: true, enemies: [{ alive: true, x: 5.5, y: 5.5, aggroed: true }] });
+    bot.startLevel(map);
+    bot.exitAccepted = async () => false;
+    // Standing on the exit already, and the blocker is on that same tile.
+    bot.player = { ...bot.player, x: 5.5, y: 5.5 };
+
+    let decisionsUnderCombat = 0;
+    bot.driveToward = async (point, eps, maxTicks) => {
+      if (bot.activity === "exitHunt" && !bot.ignoreThreats) decisionsUnderCombat += maxTicks;
+      return { state: "playing", reason: "stuck" };
+    };
+
+    await bot.driveToExit({ x: 5.5, y: 5.5 }, 80);
+    expect(decisionsUnderCombat).toBeGreaterThan(0);
+  });
+
+  it("stops fighting the moment the blocker dies", async () => {
+    const map = openMap();
+    map.enemies = [{ home: { x: 0, y: 0, w: 10, h: 10 } }];
+    const bot = new FakeBot({ ignoreThreats: true, enemies: [{ alive: true, x: 5.5, y: 5.5, aggroed: true }] });
+    bot.startLevel(map);
+    bot.player = { ...bot.player, x: 5.5, y: 5.5 };
+    let accepted = false;
+    bot.exitAccepted = async () => accepted;
+    let chunks = 0;
+    bot.driveToward = async () => {
+      if (bot.activity === "exitHunt") {
+        chunks += 1;
+        // The kill lands on the first chunk; the gate opens with it.
+        bot.enemies = [{ alive: false, x: 5.5, y: 5.5, aggroed: true }];
+        accepted = true;
+      }
+      return { state: "playing", reason: "stuck" };
+    };
+    expect(await bot.driveToExit({ x: 5.5, y: 5.5 }, 80)).toEqual({ state: "playing", reason: "arrived" });
+    expect(chunks).toBe(1);
+  });
+
   it("hunts the exit-room blocker with combat on, and restores ignoreThreats after", async () => {
     // The hunt kills nothing without this: it walks at the blocker and waits
     // for the ordinary combat branches, which `ignoreThreats` suppresses.
