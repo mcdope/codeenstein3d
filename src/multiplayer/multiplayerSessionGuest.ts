@@ -289,6 +289,13 @@ export function runMultiplayerSessionAsGuest(
     // discipline as `inputValidation.ts`'s host-side counterpart).
     if (
       !Array.isArray(bundle.heldInputFallback) ||
+      // Contents, not just the array-ness: the tally below does
+      // `missedTicksByPlayer.get(id)!`, justified by "`heldInputFallback` only
+      // ever contains roster ids" — an invariant this check has to actually
+      // establish, since the value arrives off the wire. An unknown id would
+      // otherwise make that `undefined! + 1` and poison the counter with `NaN`
+      // for the rest of the session.
+      !bundle.heldInputFallback.every((id) => missedTicksByPlayer.has(id)) ||
       typeof bundle.inputs !== "object" ||
       bundle.inputs === null ||
       !isValidInputSnapshot(bundle.inputs[myPlayerId]) ||
@@ -323,8 +330,9 @@ export function runMultiplayerSessionAsGuest(
     clearFellBehindTimer();
     totalTicks++;
     // `missedTicksByPlayer` is seeded from the full, fixed roster above, and
-    // `heldInputFallback` only ever contains roster ids (`InputDelayBuffer.
-    // finalize()`'s own `rosterIds` param) — `.get(id)` is always defined.
+    // the wire-shape guard above has already rejected any bundle naming an id
+    // outside it — so `.get(id)` is defined by construction here, not by trust
+    // in the sender.
     for (const id of bundle.heldInputFallback) {
       missedTicksByPlayer.set(id, missedTicksByPlayer.get(id)! + 1);
     }
