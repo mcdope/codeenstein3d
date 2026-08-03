@@ -235,6 +235,8 @@ describe("AudioManager simple one-shot effects", () => {
     ["playPickup", () => audio.playPickup()],
     ["playStep", () => audio.playStep()],
     ["playAlarm", () => audio.playAlarm()],
+    ["playLockedDoor", () => audio.playLockedDoor()],
+    ["playKeyPing", () => audio.playKeyPing()],
     ["playTeleport", () => audio.playTeleport()],
     ["playLevelComplete", () => audio.playLevelComplete()],
     ["playExplosion", () => audio.playExplosion()],
@@ -285,6 +287,50 @@ describe("AudioManager simple one-shot effects", () => {
     const [endFreq] = osc.frequency.exponentialRampToValueAtTime.mock.calls.at(-1) ?? [];
     expect(endFreq).toBeLessThan(startFreq);
     expect(ctx.createBiquadFilter.mock.results.at(-1)?.value.type).toBe("bandpass");
+  });
+
+  it("plays a low sinking thunk plus a bandpassed latch tick for playLockedDoor", () => {
+    // A door refusing to move is a mechanical sound, not a UI buzzer: a
+    // `triangle` body that sinks, well below `playAlarm`'s 1245Hz pip, with a
+    // narrow-bandpassed noise click for the latch.
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const ctx = audio.resume() as unknown as MockAudioContext;
+    audio.playLockedDoor();
+    expect(ctx.createOscillator).toHaveBeenCalledTimes(1);
+    expect(ctx.createBufferSource).toHaveBeenCalledTimes(1);
+    const osc = ctx.createOscillator.mock.results.at(-1)?.value;
+    expect(osc.type).toBe("triangle");
+    const [startFreq] = osc.frequency.setValueAtTime.mock.calls.at(-1) ?? [];
+    const [endFreq] = osc.frequency.exponentialRampToValueAtTime.mock.calls.at(-1) ?? [];
+    expect(startFreq).toBeLessThan(350); // the "pitch it low" register, not a beep
+    expect(endFreq).toBeLessThan(startFreq);
+    expect(ctx.createBiquadFilter.mock.results.at(-1)?.value.type).toBe("bandpass");
+  });
+
+  it("schedules playLockedDoor's latch tick after its body, off ctx.currentTime", () => {
+    // Both layers are scheduled in one call precisely so the tick stays
+    // sample-accurate against the thunk instead of landing on a frame
+    // boundary — same argument `playShotgunPump` makes for its clacks.
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const ctx = audio.resume() as unknown as MockAudioContext;
+    audio.playLockedDoor();
+    const bodyStart = ctx.createOscillator.mock.results.at(-1)?.value.start.mock.calls.at(-1)?.[0];
+    const latchStart = ctx.createBufferSource.mock.results.at(-1)?.value.start.mock.calls.at(-1)?.[0];
+    expect(latchStart).toBeGreaterThan(bodyStart);
+  });
+
+  it("plays a rising two-note sine ping for playKeyPing, clear of the denial's register", () => {
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const ctx = audio.resume() as unknown as MockAudioContext;
+    audio.playKeyPing();
+    expect(ctx.createOscillator).toHaveBeenCalledTimes(2);
+    const notes = ctx.createOscillator.mock.results.map((r) => r.value);
+    expect(notes.every((o: { type: string }) => o.type === "sine")).toBe(true);
+    const freqs = notes.map((o: { frequency: { setValueAtTime: { mock: { calls: number[][] } } } }) =>
+      o.frequency.setValueAtTime.mock.calls.at(-1)![0],
+    );
+    expect(freqs[1]).toBeGreaterThan(freqs[0]); // rises, unlike the denial
+    expect(freqs[0]).toBeGreaterThan(350); // and sits well above it
   });
 
   it("plays a bigger arpeggio plus a noise burst for playUltraKill than playMultiKill", () => {

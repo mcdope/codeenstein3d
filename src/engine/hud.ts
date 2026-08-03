@@ -152,6 +152,38 @@ export function drawAcidOverflowToast(ctx: CanvasRenderingContext2D, alpha: numb
 }
 
 /**
+ * "You need a key!" — walked into a key-locked door holding no dependency key
+ * (see `RaycasterEngine.cueLockedDoorHint`). Same pill shape and fade
+ * convention as the two toasts above, in the locked door's own `#568ebe` —
+ * the exact colour that door is already painted on the minimap and automap,
+ * so the toast's colour points straight at what's blocking.
+ *
+ * Third row (y=86), below the acid warning rather than sharing either of the
+ * rows above it. Dry-firing while shoving a door is an entirely ordinary
+ * thing to do, so this and `drawOutOfAmmoToast` genuinely land in the same
+ * second — the same collision `drawAcidOverflowToast` was moved down to avoid.
+ */
+export function drawLockedDoorToast(ctx: CanvasRenderingContext2D, alpha: number): void {
+  const w = ctx.canvas.width;
+  const text = "You need a key!";
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+  ctx.textAlign = "center";
+  ctx.font = "bold 14px ui-monospace, monospace";
+  const boxW = ctx.measureText(text).width + 24;
+  const boxX = w / 2 - boxW / 2;
+  ctx.fillStyle = "rgba(4,8,10,0.7)";
+  ctx.fillRect(boxX, 86, boxW, 24);
+  ctx.strokeStyle = "rgba(86,142,190,0.6)";
+  ctx.lineWidth = 1;
+  outlineRect(ctx, boxX + 0.5, 86.5, boxW - 1, 23);
+  ctx.fillStyle = "#568ebe";
+  ctx.fillText(text, w / 2, 102);
+  ctx.textAlign = "start";
+  ctx.restore();
+}
+
+/**
  * "Multi Kill"/"Ultra Kill" banner (see
  * `RaycasterEngine.registerKillForStreak`) — a big, bold, Unreal-
  * Tournament-style announcement, deliberately not `drawCheatToast`'s small

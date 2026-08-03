@@ -13,6 +13,7 @@ import {
   SPIKE_TRAP_TILE,
   TELEPORTER_TILE,
   type GameMap,
+  type Point,
   type SpikeTrap,
   type StyleSetId,
   type Tile,
@@ -647,6 +648,74 @@ describe("renderMinimap", () => {
     const player = new Player({ ...map, spawn: { x: 1, y: 1 } });
     const panel = renderMinimap(asCtx(c), map, player, 0, 70);
     expect(panel.w).toBeGreaterThan(0);
+  });
+
+  describe("key ping", () => {
+    /** Everything defaulted except the trailing `pingedKey`. */
+    function render(c: MockCanvasContext, map: GameMap, player: Player, ping: Point | null): void {
+      renderMinimap(asCtx(c), map, player, 0, 70, new Set(), 0, [], [], undefined, ping);
+    }
+
+    it("draws nothing extra when no ping is running", () => {
+      // The regression guard: an omitted argument has to be byte-identical to
+      // the panel as it was before this parameter existed.
+      const map = fullMap();
+      const player = centeredPlayer(map);
+
+      const cNone = ctx();
+      render(cNone, map, player, null);
+      const cOmitted = ctx();
+      renderMinimap(asCtx(cOmitted), map, player);
+
+      expect(cNone.fillRect.mock.calls.length).toBe(cOmitted.fillRect.mock.calls.length);
+      expect(cNone.clip).not.toHaveBeenCalled();
+    });
+
+    it("adds a bright re-fill and a four-sided sonar ring at the pinged key", () => {
+      const map = fullMap();
+      const player = centeredPlayer(map);
+
+      const cNone = ctx();
+      render(cNone, map, player, null);
+      const cPing = ctx();
+      render(cPing, map, player, { x: 6, y: 5 }); // fullMap()'s one key
+
+      // One re-fill of the marker + `outlineRect`'s four edge bars.
+      expect(cPing.fillRect.mock.calls.length).toBe(cNone.fillRect.mock.calls.length + 5);
+      expect(cPing.strokeRect).not.toHaveBeenCalled();
+    });
+
+    it("clips the ring to the panel so a key near an edge can't sweep over the scene", () => {
+      const map = fullMap();
+      const player = centeredPlayer(map);
+      const c = ctx();
+      render(c, map, player, { x: 6, y: 5 });
+      expect(c.clip).toHaveBeenCalledTimes(1);
+      expect(c.rect).toHaveBeenCalledTimes(1);
+    });
+
+    it("animates: the ring's geometry moves with the wall clock", () => {
+      const map = fullMap();
+      const player = centeredPlayer(map);
+      // Markers keep drawing after the ping block, so locate its fills by
+      // diffing against the same panel with no ping running: everything before
+      // the first difference is identical, and the ring's four edge bars are
+      // the four fills after the marker re-fill.
+      const ringWidthAt = (ms: number) => {
+        vi.spyOn(performance, "now").mockReturnValue(ms);
+        const cNone = ctx();
+        render(cNone, map, player, null);
+        const cPing = ctx();
+        render(cPing, map, player, { x: 6, y: 5 });
+        const none = cNone.fillRect.mock.calls;
+        const ping = cPing.fillRect.mock.calls as [number, number, number, number][];
+        const firstDiff = ping.findIndex((call, i) => JSON.stringify(call) !== JSON.stringify(none[i]));
+        expect(firstDiff).toBeGreaterThan(-1);
+        return ping[firstDiff + 1][2]; // top edge bar spans the full ring width
+      };
+      expect(ringWidthAt(0)).not.toBeCloseTo(ringWidthAt(450), 3);
+      vi.restoreAllMocks();
+    });
   });
 });
 

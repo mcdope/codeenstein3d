@@ -63,6 +63,7 @@ import {
   drawKillStreakToast,
   drawLoreOverlay,
   drawAcidOverflowToast,
+  drawLockedDoorToast,
   drawOutOfAmmoToast,
   drawPauseOverlay,
   drawSpectatingBanner,
@@ -239,6 +240,25 @@ const OUT_OF_AMMO_TOAST_FRAMES = 45;
  * to survive a look in the wrong direction. ~1.5s at 60fps. Same frame-counted
  * convention. */
 const ACID_OVERFLOW_TOAST_FRAMES = 90;
+/** How long the "You need a key!" warning stays visible for. Matches the acid
+ * warning rather than the shorter out-of-ammo one: it comes with an
+ * instruction (go find that key), not just a fact. Same frame-counted
+ * convention. ~1.5s at 60fps. */
+const LOCKED_DOOR_TOAST_FRAMES = 90;
+/** How long the nearest reachable key stays pinged on the minimap after
+ * bumping a locked door — the "for some seconds" of the request. Outlives the
+ * toast on purpose: the toast says what happened, the ping says where to go,
+ * and the second is only useful once the player has looked down at the map.
+ * Doubles as the hint's re-arm gate (see `cueLockedDoorHint`). ~4s at 60fps. */
+const KEY_PING_FRAMES = 240;
+/** Gap between audible sonar pings while `keyPingFrames` runs. ~0.7s at 60fps
+ * — slow enough not to nag across the full 4 seconds, quick enough that the
+ * player connects it to the pulsing marker. */
+const KEY_PING_BEAT_FRAMES = 42;
+/** Delay before the *first* sonar ping, so it lands after `playLockedDoor`'s
+ * denial thunk has finished rather than on top of it. The two are a sequence,
+ * not a chord: the denial names what happened, the ping answers it. ~0.3s. */
+const KEY_PING_LEAD_FRAMES = 18;
 /** Kills within this many real seconds of each other trigger a "Multi
  * Kill" (see `damageEnemy`'s rolling-window check) — not Unreal
  * Tournament's own continuously-extending streak/tier algorithm, just this
@@ -479,6 +499,20 @@ interface PlayerState {
   cheatToastFrames: number;
   outOfAmmoToastFrames: number;
   acidOverflowToastFrames: number;
+  lockedDoorToastFrames: number;
+  /** Frames left on the minimap key ping, and the key it points at. Also the
+   * whole hint's rate limit: `cueLockedDoorHint` fires only while this is 0,
+   * so shoving a door for a solid second produces one hint, not sixty.
+   *
+   * Deliberately absent from `reconciliationSnapshot.ts` and `rosterSnapshot`,
+   * like every other toast counter here — this is local presentation, and a
+   * peer that pings differently stays in lockstep regardless. */
+  keyPingFrames: number;
+  keyPingTarget: Point | null;
+  /** Countdown to the next audible sonar ping while `keyPingFrames` runs —
+   * same shape as `alarmCountdown`, but frame-counted like its neighbours
+   * here rather than `dt`-scaled. */
+  keyPingBeatFrames: number;
   isMapActive: boolean;
   isPaused: boolean;
   loreText: string | null;
@@ -1215,6 +1249,10 @@ export class RaycasterEngine {
       cheatToastFrames: 0,
       outOfAmmoToastFrames: 0,
       acidOverflowToastFrames: 0,
+      lockedDoorToastFrames: 0,
+      keyPingFrames: 0,
+      keyPingTarget: null,
+      keyPingBeatFrames: 0,
       isMapActive: false,
       isPaused: false,
       loreText: null,
@@ -2851,6 +2889,7 @@ export class RaycasterEngine {
         this.isMultiplayerSession() ? this.drops : [],
         acidTiles(this.map.acidOverflows, this.acidStates),
         textures.getStyle(this.map.styleSet).automapWall,
+        local.keyPingFrames > 0 ? local.keyPingTarget : null,
       );
       drawCompass(
         this.ctx,
@@ -2918,6 +2957,12 @@ export class RaycasterEngine {
     }
     if (local.acidOverflowToastFrames > 0) {
       drawAcidOverflowToast(this.ctx, local.acidOverflowToastFrames / ACID_OVERFLOW_TOAST_FRAMES);
+    }
+    // Same "transient feedback only" treatment again — and it sits a row
+    // lower still, since dry-firing while shoving a locked door puts this and
+    // the out-of-ammo toast on screen in the same second.
+    if (local.lockedDoorToastFrames > 0) {
+      drawLockedDoorToast(this.ctx, local.lockedDoorToastFrames / LOCKED_DOOR_TOAST_FRAMES);
     }
     // Multiplayer-only (see `checkExit()`) — a quiet, standing readout
     // (unlike the transient toasts above) while any player counts down to
@@ -3141,6 +3186,8 @@ export class RaycasterEngine {
       if (p.killStreakFrames > 0) p.killStreakFrames -= 1;
       if (p.outOfAmmoToastFrames > 0) p.outOfAmmoToastFrames -= 1;
       if (p.acidOverflowToastFrames > 0) p.acidOverflowToastFrames -= 1;
+      if (p.lockedDoorToastFrames > 0) p.lockedDoorToastFrames -= 1;
+      this.tickKeyPing(p);
     }
     tickBulletTraces(this.traces);
     tickFlameStreams(this.flameStreams);
@@ -3578,7 +3625,10 @@ export class RaycasterEngine {
       const tile = this.map.grid[cy]?.[cx];
 
       const locked = tile === DOOR_TILE;
-      if (locked && p.keysHeld <= 0) continue;
+      if (locked && p.keysHeld <= 0) {
+        this.cueLockedDoorHint(p);
+        continue;
+      }
       if (!locked && tile !== BRANCH_DOOR_TILE) continue;
 
       // A key-locked doorway opens as a whole, not one tile at a time: when a
@@ -3862,6 +3912,119 @@ export class RaycasterEngine {
     if (!inside) return;
     local.acidOverflowToastFrames = ACID_OVERFLOW_TOAST_FRAMES;
     audio.playAcidOverflow();
+  }
+
+  /**
+   * Walked into a key-locked door holding no dependency key. Until this, that
+   * was completely silent — the same non-response as walking into a wall,
+   * with nothing saying why the door didn't open or what to do about it.
+   *
+   * Signals, in order: a denial thunk and a toast on contact, a console line,
+   * then a few seconds of sonar-pinging the nearest key the player can
+   * actually reach on the minimap. `KEY_PING_LEAD_FRAMES` keeps the first
+   * ping off the denial's tail, so the two read as a sequence — the thunk
+   * names what happened, the ping answers it — rather than as one muddle.
+   *
+   * Local player only, exactly like `cueLocalAcidOverflow`: `openDoorAhead`
+   * loops every player, and a teammate shoving a door on the far side of a
+   * coop level must not toast, log or ping *your* screen. Every peer
+   * simulates every player and cues its own local one, so nobody loses their
+   * own hint.
+   *
+   * Rate-limited by `keyPingFrames` itself — one hint per ping window, not
+   * one per tick, which is what a player leaning on `W` against a door would
+   * otherwise get. That matters off-screen too: the playtest bot pushes into
+   * doors, and `run-balancing-telemetry.mjs` forwards page console.
+   *
+   * Purely presentational — no grid mutation, no PRNG draw, nothing reaching
+   * `simulate()` — so peers that cue differently stay in lockstep and no
+   * recorded replay is affected (see `balanceHash.ts`'s rendering exemption).
+   */
+  private cueLockedDoorHint(p: PlayerState): void {
+    if (p.id !== this.localPlayerId) return;
+    if (p.keyPingFrames > 0) return;
+
+    p.lockedDoorToastFrames = LOCKED_DOOR_TOAST_FRAMES;
+    p.keyPingFrames = KEY_PING_FRAMES;
+    p.keyPingTarget = this.nearestReachableKey(p);
+    p.keyPingBeatFrames = KEY_PING_LEAD_FRAMES;
+    audio.playLockedDoor();
+    // No coordinates, deliberately: `consoleSidebar.ts` mirrors these strings
+    // straight onto the screen, and key/exit/secret locations never go into
+    // one. The minimap is where "where" gets answered.
+    console.log("%c[door] locked — you need a dependency key", "color:#568ebe;font-weight:bold");
+  }
+
+  /**
+   * The uncollected key with the shortest *walking* distance from `p` — not
+   * the shortest straight line. Reuses the player-rooted BFS field the chase
+   * AI already maintains (`PathField`), whose `isWall` counts a still-locked
+   * `DOOR_TILE` as solid, so a key sitting behind another locked door is
+   * skipped instead of pointed at. Pointing the player at the key behind the
+   * very door they just failed to open is the exact failure this avoids, and
+   * a `Math.hypot` scan would do it routinely.
+   *
+   * `ensure` is idempotent and re-floods only when the player crossed a tile
+   * or the grid mutated — and `updateEnemyAi` calls it with these very
+   * arguments later in this same tick, so this costs nothing amortised.
+   *
+   * Multiplayer key *loot drops* are deliberately not candidates: their
+   * minimap markers are fog-gated on `map.visited` precisely so a disconnect
+   * doesn't broadcast its own location, and pinging one would undo that.
+   *
+   * `null` when every remaining key is walled off, or none is left — the
+   * denial and the toast still fire, there is simply nothing to point at.
+   */
+  private nearestReachableKey(p: PlayerState): Point | null {
+    p.pathField.ensure(
+      this.map,
+      Math.floor(p.player.posX),
+      Math.floor(p.player.posY),
+      this.gridVersion,
+    );
+    let best: Point | null = null;
+    let bestDist = Infinity;
+    for (const key of this.map.keys) {
+      if (key.collected) continue;
+      const dist = p.pathField.distAt(Math.floor(key.x), Math.floor(key.y));
+      // `-1` is `PathField`'s "unreached". Ties break on `map.keys` order,
+      // which is `placeKeys`' push order — stable across runs, so which key
+      // gets pinged is deterministic.
+      if (dist < 0 || dist >= bestDist) continue;
+      bestDist = dist;
+      best = { x: key.x, y: key.y };
+    }
+    return best;
+  }
+
+  /**
+   * One frame of the minimap key ping: run the window down, sound a sonar
+   * ping on each beat, and clear the target when it expires.
+   *
+   * Split out of `tickEffects`'s one-line-per-timer list because it is the
+   * only timer there that does more than decrement. Needs no local-player
+   * check of its own — `cueLockedDoorHint` only ever arms this on the local
+   * player, so it is a no-op for everyone else.
+   *
+   * A hint that found no reachable key still holds the window open (that is
+   * what rate-limits the next one) but has nothing to ping, hence the
+   * separate `keyPingTarget` guard rather than one combined condition.
+   */
+  private tickKeyPing(p: PlayerState): void {
+    if (p.keyPingFrames <= 0) return;
+    p.keyPingFrames -= 1;
+    if (p.keyPingFrames <= 0) {
+      p.keyPingTarget = null;
+      p.keyPingBeatFrames = 0;
+      return;
+    }
+    if (p.keyPingTarget === null) return;
+    if (p.keyPingBeatFrames > 0) {
+      p.keyPingBeatFrames -= 1;
+      return;
+    }
+    audio.playKeyPing();
+    p.keyPingBeatFrames = KEY_PING_BEAT_FRAMES;
   }
 
   /**

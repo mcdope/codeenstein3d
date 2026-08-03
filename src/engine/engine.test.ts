@@ -1455,6 +1455,259 @@ describe("RaycasterEngine — keys and doors", () => {
   });
 });
 
+describe("RaycasterEngine — locked-door hint", () => {
+  type HintState = {
+    lockedDoorToastFrames: number;
+    keyPingFrames: number;
+    keyPingTarget: { x: number; y: number } | null;
+    keyPingBeatFrames: number;
+  };
+
+  function hintPlayers(engine: InstanceType<typeof RaycasterEngine>): Map<string, HintState> {
+    return (engine as unknown as { players: Map<string, HintState> }).players;
+  }
+
+  function hintState(engine: InstanceType<typeof RaycasterEngine>, id = "local"): HintState {
+    return hintPlayers(engine).get(id)!;
+  }
+
+  /** A locked door directly east of spawn, so plain `KeyW` walks into it. */
+  function lockedDoorMap(overrides: Partial<GameMap> = {}): GameMap {
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][7] = DOOR_TILE;
+    return fakeMap({ grid: g, ...overrides }, size);
+  }
+
+  /** Far enough from spawn that `collectKeys` never picks it up mid-test. */
+  const FAR_KEY: KeyItem = { x: 2.5, y: 2.5, collected: false };
+
+  function doorLogs(log: { mock: { calls: unknown[][] } }): unknown[][] {
+    return log.mock.calls.filter((c: unknown[]) => typeof c[0] === "string" && c[0].includes("[door] locked"));
+  }
+
+  function silenceAudio() {
+    return {
+      denial: vi.spyOn(audio, "playLockedDoor").mockImplementation(() => {}),
+      ping: vi.spyOn(audio, "playKeyPing").mockImplementation(() => {}),
+    };
+  }
+
+  it("toasts, logs, thunks and pings the nearest key when pushing into a locked door with no key", () => {
+    const map = lockedDoorMap({ keys: [{ ...FAR_KEY }] });
+    const { engine, input } = makeEngine(map);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const { denial } = silenceAudio();
+
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+
+    const local = hintState(engine);
+    expect(map.grid[5][7]).toBe(DOOR_TILE); // still shut — this is feedback, not a free pass
+    expect(local.lockedDoorToastFrames).toBeGreaterThan(0);
+    expect(local.keyPingFrames).toBeGreaterThan(0);
+    expect(local.keyPingTarget).toEqual({ x: 2.5, y: 2.5 });
+    expect(denial).toHaveBeenCalledTimes(1);
+    expect(doorLogs(log)).toHaveLength(1);
+  });
+
+  it("never names the key's location in the log — the console sidebar mirrors these strings", () => {
+    const map = lockedDoorMap({ keys: [{ ...FAR_KEY }] });
+    const { engine, input } = makeEngine(map);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    silenceAudio();
+
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+
+    const line = String(doorLogs(log)[0][0]);
+    expect(line).not.toMatch(/\d/); // no coordinates, no counts — nothing positional
+  });
+
+  it("does not cue the hint when the player actually holds a key", () => {
+    const map = lockedDoorMap({ keys: [{ x: 5.5, y: 5.5, collected: false }] });
+    const { engine, input } = makeEngine(map);
+    const { denial } = silenceAudio();
+
+    engine.advance(0.016); // collect the key first
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+
+    expect(map.grid[5][7]).toBe(0); // the door opened, so nothing was refused
+    expect(hintState(engine).keyPingFrames).toBe(0);
+    expect(denial).not.toHaveBeenCalled();
+  });
+
+  it("does not cue the hint for a keyless branch door", () => {
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][7] = BRANCH_DOOR_TILE;
+    const map = fakeMap({ grid: g, keys: [{ ...FAR_KEY }] }, size);
+    const { engine, input } = makeEngine(map);
+    const { denial } = silenceAudio();
+
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+
+    expect(map.grid[5][7]).toBe(0);
+    expect(hintState(engine).keyPingFrames).toBe(0);
+    expect(denial).not.toHaveBeenCalled();
+  });
+
+  it("fires once per ping window, not once per tick, while the player leans on the door", () => {
+    const map = lockedDoorMap({ keys: [{ ...FAR_KEY }] });
+    const { engine, input } = makeEngine(map);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const { denial } = silenceAudio();
+
+    input.keys.add("KeyW");
+    for (let i = 0; i < 60; i++) engine.advance(0.1); // 60 ticks of shoving
+
+    expect(denial).toHaveBeenCalledTimes(1);
+    expect(doorLogs(log)).toHaveLength(1);
+  });
+
+  it("re-arms once the ping window expires", () => {
+    const map = lockedDoorMap({ keys: [{ ...FAR_KEY }] });
+    const { engine, input } = makeEngine(map);
+    const { denial } = silenceAudio();
+
+    input.keys.add("KeyW");
+    // Long enough for the first window (240 frames) to run out and a second
+    // hint to fire, but not a third.
+    for (let i = 0; i < 300; i++) engine.advance(0.05);
+
+    expect(denial).toHaveBeenCalledTimes(2);
+  });
+
+  it("pings the walking-nearest key, not the straight-line-nearest one", () => {
+    // The whole point of routing this through `PathField`: a key sealed in a
+    // pocket two tiles away must lose to one five tiles away down open floor.
+    // A `Math.hypot` scan picks the pocket every time.
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][7] = DOOR_TILE;
+    for (let x = 4; x <= 6; x++) {
+      g[2][x] = 1;
+      g[4][x] = 1;
+    }
+    g[3][4] = 1;
+    g[3][6] = 1; // (5,3) is now a sealed one-tile pocket
+    const sealed: KeyItem = { x: 5.5, y: 3.5, collected: false }; // euclidean 2.0
+    const reachable: KeyItem = { x: 2.5, y: 7.5, collected: false }; // euclidean ~3.6, BFS 5
+    const map = fakeMap({ grid: g, keys: [sealed, reachable] }, size);
+    const { engine, input } = makeEngine(map);
+    silenceAudio();
+
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+
+    expect(hintState(engine).keyPingTarget).toEqual({ x: 2.5, y: 7.5 });
+  });
+
+  it("skips an already-collected key when choosing what to ping", () => {
+    // A teammate can have taken the closest one; it still sits in `map.keys`,
+    // just flagged, and pinging it would send the player to bare floor.
+    const map = lockedDoorMap({
+      keys: [
+        { x: 4.5, y: 5.5, collected: true }, // one tile away, already taken
+        { x: 2.5, y: 2.5, collected: false },
+      ],
+    });
+    const { engine, input } = makeEngine(map);
+    silenceAudio();
+
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+
+    expect(hintState(engine).keyPingTarget).toEqual({ x: 2.5, y: 2.5 });
+  });
+
+  it("still denies and toasts when no key is reachable at all, with nothing to ping", () => {
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][7] = DOOR_TILE;
+    for (let x = 4; x <= 6; x++) {
+      g[2][x] = 1;
+      g[4][x] = 1;
+    }
+    g[3][4] = 1;
+    g[3][6] = 1;
+    const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 3.5, collected: false }] }, size);
+    const { engine, input } = makeEngine(map);
+    const { denial, ping } = silenceAudio();
+
+    input.keys.add("KeyW");
+    for (let i = 0; i < 60; i++) engine.advance(0.1);
+
+    const local = hintState(engine);
+    expect(local.lockedDoorToastFrames).toBeGreaterThan(0);
+    expect(local.keyPingFrames).toBeGreaterThan(0); // window still open, so it still rate-limits
+    expect(local.keyPingTarget).toBeNull();
+    expect(denial).toHaveBeenCalledTimes(1);
+    expect(ping).not.toHaveBeenCalled();
+  });
+
+  it("sounds the denial immediately and the first sonar ping only after it", () => {
+    const map = lockedDoorMap({ keys: [{ ...FAR_KEY }] });
+    const { engine, input } = makeEngine(map);
+    const { denial, ping } = silenceAudio();
+
+    input.keys.add("KeyW");
+    let ticksToFire = 0;
+    while (hintState(engine).keyPingFrames === 0 && ticksToFire < 40) {
+      engine.advance(0.1);
+      ticksToFire += 1;
+    }
+    expect(denial).toHaveBeenCalledTimes(1);
+    expect(ping).not.toHaveBeenCalled(); // the thunk gets the floor to itself
+
+    for (let i = 0; i < 10; i++) engine.advance(0.016);
+    expect(ping).not.toHaveBeenCalled(); // still inside KEY_PING_LEAD_FRAMES
+
+    for (let i = 0; i < 15; i++) engine.advance(0.016);
+    expect(ping).toHaveBeenCalled();
+  });
+
+  it("clears the ping target when the window expires", () => {
+    const map = lockedDoorMap({ keys: [{ ...FAR_KEY }] });
+    const { engine, input } = makeEngine(map);
+    silenceAudio();
+
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+    expect(hintState(engine).keyPingTarget).not.toBeNull();
+
+    input.keys.delete("KeyW");
+    for (let i = 0; i < 260; i++) engine.advance(0.016);
+
+    const local = hintState(engine);
+    expect(local.keyPingFrames).toBe(0);
+    expect(local.keyPingTarget).toBeNull();
+    expect(local.keyPingBeatFrames).toBe(0);
+  });
+
+  it("does not cue the local player when a teammate walks into a locked door", () => {
+    // `openDoorAhead` loops every player; only the local one may be cued, or a
+    // teammate across a coop level would toast and ping your screen.
+    const map = lockedDoorMap({ keys: [{ ...FAR_KEY }] });
+    const { engine } = makeEngine(map); // local player holds no keys down at all
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const { denial } = silenceAudio();
+
+    const mateInput = new ScriptedInput();
+    engine.addPlayer("guest", mateInput);
+    mateInput.keys.add("KeyW"); // the teammate, and only the teammate, shoves the door
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+
+    expect(map.grid[5][7]).toBe(DOOR_TILE); // the teammate really was refused
+    expect(hintState(engine, "guest").keyPingFrames).toBe(0);
+    expect(hintState(engine).keyPingFrames).toBe(0);
+    expect(denial).not.toHaveBeenCalled();
+    expect(doorLogs(log)).toHaveLength(0);
+  });
+});
+
 describe("RaycasterEngine — loot and ammo pickups", () => {
   it("collects a static bullets pickup and adds it to the ammo pool", () => {
     const pickup: AmmoPickup = { x: 5.5, y: 5.5, kind: "bullets", amount: 15, collected: false };

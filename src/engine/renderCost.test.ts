@@ -56,6 +56,7 @@ type Renderers = {
   drawCheatToast: typeof import("./hud").drawCheatToast;
   drawOutOfAmmoToast: typeof import("./hud").drawOutOfAmmoToast;
   drawAcidOverflowToast: typeof import("./hud").drawAcidOverflowToast;
+  drawLockedDoorToast: typeof import("./hud").drawLockedDoorToast;
   drawKillStreakToast: typeof import("./hud").drawKillStreakToast;
   drawExitCountdownToast: typeof import("./hud").drawExitCountdownToast;
   drawSpectatingBanner: typeof import("./hud").drawSpectatingBanner;
@@ -186,6 +187,27 @@ describe("per-frame renderers issue no rasterising path geometry", () => {
     expectNoRasterisingCalls(c, "renderMinimap");
   });
 
+  it("renderMinimap — the key ping's sonar ring", () => {
+    // The ring is the one marker on this panel big enough that `strokeRect`
+    // would be the obvious way to draw it. It has to go through `outlineRect`.
+    const c = sceneCtx();
+    const map = fakeMap();
+    R.renderMinimap(
+      asCtx(c),
+      map,
+      new R.PlayerCtor(map),
+      0,
+      70,
+      undefined,
+      0,
+      [],
+      [],
+      undefined,
+      { x: 4.5, y: 4.5 },
+    );
+    expectNoRasterisingCalls(c, "renderMinimap(pingedKey)");
+  });
+
   it("drawCompass — the rotating needle", () => {
     for (const bearing of [0, 1.2, -2.7, Math.PI]) {
       const c = sceneCtx();
@@ -216,6 +238,7 @@ describe("per-frame renderers issue no rasterising path geometry", () => {
     R.drawCheatToast(asCtx(c), "IDKFA — Full arsenal", 1);
     R.drawOutOfAmmoToast(asCtx(c), 1);
     R.drawAcidOverflowToast(asCtx(c), 1);
+    R.drawLockedDoorToast(asCtx(c), 1);
     R.drawKillStreakToast(asCtx(c), "ULTRA KILL!", 1, true);
     R.drawExitCountdownToast(asCtx(c), 90);
     R.drawSpectatingBanner(asCtx(c), "guest-1");
