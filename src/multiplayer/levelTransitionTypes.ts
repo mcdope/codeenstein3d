@@ -14,7 +14,6 @@
  * `chunkedTransfer.ts`'s `chunkJson`/`ChunkReassembler` the same way.
  */
 import type { EngineCarryover, PlayerId, RosterSnapshotEntry } from "../engine/engine";
-import type { GameMap } from "../map/types";
 
 /** Sent once, before the map chunks — small enough it never needs
  * chunking itself (a handful of players' worth of health/ammo/weapons). */
@@ -71,12 +70,3 @@ export type LevelTransitionMessage =
   | LevelTransitionAckMessage
   | LevelTransitionCampaignCompleteMessage;
 
-/** What a completed level-transition handshake resolves the receiving guest
- * to — the same shape `SessionSetupResult` uses for its own map field,
- * `visited` reconstructed locally rather than sent over the wire (see that
- * interface's own doc comment for why). */
-export interface LevelTransitionResult {
-  carryovers: Record<PlayerId, EngineCarryover>;
-  gameplaySeed: number;
-  map: GameMap;
-}
