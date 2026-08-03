@@ -4,9 +4,11 @@
 /** Small shared helpers used across the generation modules. */
 import type { Point } from "../types";
 
-export function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
+/** Re-exported so the thirteen `generation/*` modules that already import
+ * `clamp` from here keep working unchanged — the implementation itself is
+ * layer-neutral and lives at `src/mathUtil.ts` (see that module's own doc
+ * comment for why). */
+export { clamp } from "../../mathUtil";
 
 export function dist(x1: number, y1: number, x2: number, y2: number): number {
   return Math.hypot(x1 - x2, y1 - y2);

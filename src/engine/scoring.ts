@@ -8,6 +8,7 @@
  * simply whatever the running readout last showed.
  */
 import type { Enemy } from "../map/types";
+import { clamp01 } from "../mathUtil";
 
 /** Flat points every kill is worth, before the complexity/elite scaling. */
 const BASE_KILL_POINTS = 50;
@@ -215,6 +216,3 @@ export function sumScoreBreakdowns(a: ScoreBreakdown, b: ScoreBreakdown): ScoreB
   };
 }
 
-function clamp01(n: number): number {
-  return Math.max(0, Math.min(1, n));
-}
