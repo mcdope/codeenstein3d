@@ -135,9 +135,12 @@ export interface Enemy {
   entity: CodeEntity;
   /**
    * An "extreme complexity" function spawned as a single boss-tier enemy
-   * instead of a multi-member pack: 4x HP, higher melee/ranged damage (see
-   * `enemyAi.ts`), a larger sprite and a distinct tint (see `sprites.ts`), and
-   * a guaranteed high-value drop on death instead of the normal loot roll.
+   * instead of a multi-member pack: `ELITE_HP_MULTIPLIER` times the HP a single
+   * enemy would have at the same complexity (2x — see that constant in
+   * `generation/enemies.ts` for why it was lowered from 4x), higher
+   * melee/ranged damage (see `enemyAi.ts`), a larger sprite and a distinct tint
+   * (see `sprites.ts`), and a guaranteed high-value drop on death instead of
+   * the normal loot roll.
    */
   elite: boolean;
   /**
