@@ -71,12 +71,12 @@
  * player who died before the transition is alive again after it.
  */
 import { resolveBrowserEngine } from "./lib/browserEngine.mjs";
+import { FIREFOX_LAUNCH_OPTIONS, makeEligible, waitForConnected } from "./lib/multiplayerSessionBootstrap.mjs";
 import { MultiplayerBot } from "./lib/multiplayerBot.mjs";
 import { planRoute } from "./lib/routePlanner.mjs";
 import { PROFILES } from "./run-balancing-telemetry.mjs";
 
 const DEV_SERVER_URL = process.env.CODEENSTEIN_DEV_URL ?? "http://localhost:5173";
-const CONNECT_TIMEOUT_MS = 30_000;
 const TICKING_TIMEOUT_MS = 30_000;
 const TARGET_TICK = 30; // 1s of real ticking at TICK_RATE_HZ(30) — comfortably past session bootstrap.
 const COUNTDOWN_TIMEOUT_MS = 15_000; // COUNTDOWN_TICKS is 5s at 30Hz; well beyond that for real timer/broadcast jitter.
@@ -96,84 +96,6 @@ function check(label, condition, detail) {
   } else {
     failures += 1;
     console.log(`  [FAIL] ${label}${detail ? ` — ${detail}` : ""}`);
-  }
-}
-
-/** See `verify-multiplayer-connect.mjs`'s identical helper for the full "why
- * retry at all" writeup — a freshly launched headless browser's very first
- * navigation has been observed to hit connection-refused for several real
- * seconds even against an already-serving dev server. */
-async function gotoWithRetry(page, url, attempts = 6) {
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    try {
-      await page.goto(url);
-      return;
-    } catch (err) {
-      if (attempt === attempts) throw err;
-      console.log(`  [retry] page.goto(${url}) failed (attempt ${attempt}/${attempts}): ${err.message}`);
-      await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
-    }
-  }
-}
-
-/** Loads the bundled demo campaign — the cheapest way to reach an
- * `isMultiplayerEligibleWorkspace()` state (no GitHub fetch needed) *and* a
- * `currentParsedFile`/`currentLevelPath` the host needs to actually
- * generate a level from — and waits for the Multiplayer tab to enable.
- * `botRotSpeedMul`, when given, mirrors `run-balancing-telemetry.mjs`'s own
- * use of the same URL param — see `PlayerState.rotSpeedMultiplier`'s doc
- * comment (`engine.ts`) — approximating a realistic mouse-look turn speed
- * for whichever peer is actually bot-driven (the host, never the guest). */
-async function makeEligible(page, engineName, botRotSpeedMul) {
-  const query = botRotSpeedMul ? `?testHooks=1&botRotSpeedMul=${botRotSpeedMul}` : "?testHooks=1";
-  await gotoWithRetry(page, `${DEV_SERVER_URL}/${query}`);
-  await grantFakeMediaForFirefox(page, engineName);
-  await page.click("#tab-demo");
-  await page.click("#launch-demo-campaign");
-  await page.waitForFunction(
-    () => {
-      const tab = document.querySelector("#tab-multiplayer");
-      return tab instanceof HTMLButtonElement && !tab.disabled;
-    },
-    undefined,
-    { timeout: 20_000 },
-  );
-  // The demo campaign's own level finishes auto-launching slightly after the
-  // Multiplayer tab enables — the host's own `startMultiplayerSessionAsHost`
-  // guard needs `currentParsedFile`/`currentLevelPath` to already be set.
-  await page.waitForSelector(".canvas-area:not([hidden])", { timeout: 20_000 });
-}
-
-/** See `verify-multiplayer-connect.mjs`'s identical helper for the full
- * Firefox single-default-route-interface writeup. */
-async function grantFakeMediaForFirefox(page, engineName) {
-  if (engineName !== "firefox") return;
-  try {
-    await page.evaluate(() => navigator.mediaDevices.getUserMedia({ audio: true, video: true }));
-    console.log("[diag] getUserMedia() resolved");
-  } catch (err) {
-    console.log("[diag] getUserMedia() rejected:", err.message);
-  }
-}
-
-/** Polls `window.__codeensteinMultiplayerTestHooks.getConnectionState()`
- * until it reports `"connected"`, or throws once it reports `"error"` or
- * `CONNECT_TIMEOUT_MS` elapses — whichever comes first. */
-async function waitForConnected(page, label) {
-  try {
-    await page.waitForFunction(
-      () => {
-        const hooks = window.__codeensteinMultiplayerTestHooks;
-        const state = hooks?.getConnectionState();
-        if (state?.state === "error") throw new Error("multiplayer connect flow reported an error state");
-        return state?.state === "connected";
-      },
-      undefined,
-      { timeout: CONNECT_TIMEOUT_MS },
-    );
-  } catch (err) {
-    const status = await page.textContent("#multiplayer-status").catch(() => "<unavailable>");
-    throw new Error(`${label} never reached "connected" (status: "${status}"): ${err.message}`);
   }
 }
 
@@ -212,8 +134,8 @@ async function setupSession(browser, engineName) {
   // comment on why: a cold dev server, hit by two contexts at the same
   // instant right after browser launch, has been observed to reliably
   // connection-refuse both.
-  await makeEligible(hostPage, engineName, BOT_PROFILE.rotSpeedMultiplier);
-  await makeEligible(guestPage, engineName);
+  await makeEligible(hostPage, engineName, DEV_SERVER_URL, BOT_PROFILE.rotSpeedMultiplier);
+  await makeEligible(guestPage, engineName, DEV_SERVER_URL);
 
   console.log("  Host: creating a session...");
   await hostPage.click("#tab-multiplayer");
@@ -406,14 +328,6 @@ async function driveHostToExit(hostPage, map) {
     throw new Error(`host got stuck on the final approach to the exit: ${JSON.stringify(pushed)}`);
   }
 }
-
-const FIREFOX_LAUNCH_OPTIONS = {
-  firefoxUserPrefs: {
-    "media.peerconnection.ice.obfuscate_host_addresses": false,
-    "media.navigator.streams.fake": true,
-    "media.navigator.permission.disabled": true,
-  },
-};
 
 /** Runs the whole connect -> navigate -> countdown -> transition scenario
  * once, against a fresh host+guest pair. Any thrown error is fatal — no
