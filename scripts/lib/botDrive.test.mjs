@@ -227,16 +227,19 @@ describe("driveToExit", () => {
     expect(seen).toContain("exitBacktrack");
   });
 
-  it("reports a completed level transition as arrival, not as a teleport failure", async () => {
-    // A finished transition is indistinguishable from a teleporter down here:
-    // both move the player further in one decision than any legal step. Twice
-    // in three CI runs the host had *won* — exit touched, countdown elapsed,
-    // next level loaded — and the run was reported as a stuck final approach.
+  it("does not claim arrival from an accepted exit this bot did not stand on", async () => {
+    // `exitAccepted()` reports that the exit was *taken*, not who took it. In
+    // a session where every player is bot-driven, a teammate's exit touch
+    // satisfies it too. Reporting that as this bot's own arrival would fold
+    // `run-balancing-telemetry-multiplayer.mjs`'s `levelAdvanced` outcome into
+    // `reachedExit` and inflate the qualifying count that balancing decisions
+    // are made from — a corrupted metric, not just a wrong test result.
     const bot = new FakeBot();
     bot.startLevel(openMap());
     bot.driveToward = async () => ({ state: "playing", reason: "teleported" });
     bot.exitAccepted = async () => true;
-    expect(await bot.driveToExit({ x: 5.5, y: 5.5 }, 80)).toEqual({ state: "playing", reason: "arrived" });
+    const result = await bot.driveToExit({ x: 5.5, y: 5.5 }, 80);
+    expect(result.reason).toBe("teleported");
   });
 
   it("still reports a teleport as a failure when the exit was not accepted", async () => {
@@ -286,8 +289,10 @@ describe("driveToExit", () => {
         // The kill lands on the first chunk; the gate opens with it.
         bot.enemies = [{ alive: false, x: 5.5, y: 5.5, aggroed: true }];
         accepted = true;
+        return { state: "playing", reason: "stuck" };
       }
-      return { state: "playing", reason: "stuck" };
+      // The exit push itself always lands — the bot is standing on the tile.
+      return { state: "playing", reason: "arrived" };
     };
     expect(await bot.driveToExit({ x: 5.5, y: 5.5 }, 80)).toEqual({ state: "playing", reason: "arrived" });
     expect(chunks).toBe(1);

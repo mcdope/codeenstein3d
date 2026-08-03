@@ -1304,14 +1304,31 @@ export class Bot {
       if (round > 0 || far) {
         const back = await this.#withActivity("exitBacktrack", () => this.#walkPathTo({ x: this.map.exit.x, y: this.map.exit.y }, openedDoors));
         if (back.state !== "playing") return back;
-        if (back.reason === "teleported") return this.#acceptedOr(back);
+        if (back.reason === "teleported") return back;
       }
       last = await this.#withActivity("exit", () => this.driveToward(exitCenter, this.tuning.TIGHT_ARRIVE_EPS, finalApproachTicks));
       // "won" (exit accepted) or "over" (died on the way) — either way, done.
       if (last.state !== "playing") return last;
       // Multiplayer never produces that signal: the exit starts a countdown
       // and leaves everyone alive. See `exitAccepted`'s own doc comment.
-      if (await this.exitAccepted()) return { state: "playing", reason: "arrived" };
+      //
+      // Gated on *this bot* having arrived, which is what makes the answer
+      // unambiguous. `exitAccepted()` reports that the exit was taken, not who
+      // took it — in a session where every player is bot-driven, a teammate
+      // touching the exit satisfies it just as well. Standing on the exit tile
+      // (which `TIGHT_ARRIVE_EPS` guarantees) *and* seeing it accepted is the
+      // bot's own success; anything else stays whatever it was, so callers
+      // that distinguish "I reached the exit" from "a teammate did and I got
+      // carried along" keep that distinction. See
+      // `run-balancing-telemetry-multiplayer.mjs`'s `levelAdvanced` outcome.
+      if (last.reason === "arrived" && (await this.exitAccepted())) return { state: "playing", reason: "arrived" };
+      // A teleport during the final push is the caller's to interpret, not
+      // something to fall through into the blocker check — that would report
+      // it as `stuck` and lose the distinction entirely. It means either a
+      // teleporter pad, or the level transitioning underneath this bot because
+      // someone reached the exit; `driveToExit` cannot tell which, and the
+      // two callers that care classify it differently.
+      if (last.reason === "teleported") return last;
 
       const { player, enemies } = await this.readFull();
       // Exactly `exitRoomHasAliveEnemy()`'s predicate, not a proxy for it.
@@ -1341,32 +1358,13 @@ export class Bot {
             });
       // Exit inert with nothing homed to its room left alive means the gate is
       // something this method doesn't model — report stuck rather than loop.
-      if (blockers.length === 0) return this.#acceptedOr({ state: "playing", reason: "stuck" });
+      if (blockers.length === 0) return { state: "playing", reason: "stuck" };
       this.logger.wpDebug?.(`[wpdebug] exit inert — ${blockers.length} exit-room blocker(s) alive; hunting #${blockers[0].i} at (${blockers[0].x.toFixed(1)},${blockers[0].y.toFixed(1)})`);
       const hunted = await this.#withCombat(() => this.#withActivity("exitHunt", () => this.#huntEnemy(blockers[0], openedDoors)));
       if (hunted.state !== "playing") return hunted;
-      if (hunted.reason === "teleported") return this.#acceptedOr(hunted);
+      if (hunted.reason === "teleported") return hunted;
     }
-    return this.#acceptedOr({ state: "playing", reason: "stuck" });
-  }
-
-  /**
-   * Report `arrived` instead of `failure` when the level has, in fact, already
-   * accepted the exit.
-   *
-   * A completed level transition is indistinguishable from a teleporter at the
-   * drive-loop level: both move the player further in one decision than any
-   * legitimate step, which is precisely what `TELEPORT_JUMP_DETECT_TILES`
-   * detects. So the winning run — exit touched, countdown elapsed, new level
-   * loaded, player respawned somewhere else entirely — surfaced as
-   * `reason: "teleported"` and got reported as a failure. Seen twice in three
-   * CI runs, each time with the live exit tile already being the *next*
-   * level's and the enemy roster a different length.
-   *
-   * Cheap to ask and only asked on a path that was about to fail anyway.
-   */
-  async #acceptedOr(result) {
-    return (await this.exitAccepted()) ? { state: "playing", reason: "arrived" } : result;
+    return { state: "playing", reason: "stuck" };
   }
 
   /**

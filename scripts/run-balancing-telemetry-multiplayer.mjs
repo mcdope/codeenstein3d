@@ -91,7 +91,7 @@ import path from "node:path";
 import { REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { planRoute } from "./lib/routePlanner.mjs";
 import { PROFILES, DIFFICULTIES, aggregateLevelRuntime } from "./run-balancing-telemetry.mjs";
-import { MultiplayerBot } from "./lib/multiplayerBot.mjs";
+import { MultiplayerBot, MULTIPLAYER_TUNING_DEFAULTS } from "./lib/multiplayerBot.mjs";
 import { runQualifyLoop } from "./lib/qualifyLoop.mjs";
 import { bootstrapMultiplayerSession, closeMultiplayerSession } from "./lib/multiplayerSessionBootstrap.mjs";
 import { startIsolatedMultiplayerServers } from "./lib/multiplayerTestServers.mjs";
@@ -400,9 +400,24 @@ async function driveOneBot(page, playerId, profile, map, label) {
   // keep driving toward them (that's exactly the bug this outcome exists to
   // avoid: real repro showed a bot grinding ~600 ticks trying to reach a
   // now-meaningless waypoint on the wrong level's geometry).
+  // `driveToExit`, not a bare `driveToward` — the same fix as
+  // `verify-multiplayer-transition.mjs`, and it matters more here because a
+  // false `stuck` is a *metric*, not just a red check. `checkExit()` keeps the
+  // exit inert while any enemy homed to its own room is alive and gives no
+  // feedback when it refuses, so a straight-line push can stand dead centre on
+  // the exit tile with nothing happening and be recorded as a navigation
+  // failure. Every such attempt was scored against the bot's route-following
+  // when the route had in fact worked perfectly.
+  //
+  // **The outcome vocabulary below is deliberately unchanged.** `driveToExit`
+  // reports `arrived` only when *this* bot stood on the exit tile and saw it
+  // accepted; a teammate's exit touch still arrives here as `teleported` and
+  // is still classified `levelAdvanced`. That distinction is what
+  // `trueQualifyingCount` rests on, so it must not quietly widen into
+  // `reachedExit`.
   if (finalState.state === "playing" && finalState.reason !== "teleported") {
     const exitCenter = { x: map.exit.x + 0.5, y: map.exit.y + 0.5 };
-    finalState = await bot.driveToward(exitCenter, bot.tuning.TIGHT_ARRIVE_EPS, FINAL_APPROACH_TICKS);
+    finalState = await bot.driveToExit(exitCenter, FINAL_APPROACH_TICKS);
   }
   bot.reportAnomalies(label, 0); // levelIndex is always 0 here — one level per run, see this file's own doc comment.
 
@@ -881,6 +896,20 @@ async function main() {
       playerCounts: PLAYER_COUNTS,
       profiles: PROFILES,
       requiredQualifyingRuns: REQUIRED_QUALIFYING_RUNS,
+      // Read by `compareRunFlags` (`abReport.mjs`) to refuse an A/B whose two
+      // sides were produced by different bot behaviour. This block was absent
+      // entirely until 2026-08-03, which meant `compareRunFlags` reported
+      // `comparable: false` and every cross-run comparison silently lost its
+      // one guard against exactly that — while the bot's multiplayer tuning
+      // and its final-approach strategy were both being changed.
+      flags: {
+        botTuning: MULTIPLAYER_TUNING_DEFAULTS,
+        // `driveToExit` (hunts whatever is holding the exit shut, BFS-walks
+        // back to it) vs. the bare straight-line `driveToward` used before.
+        // Directly moves `stuck` vs `reachedExit`, so a run either side of the
+        // change is not comparable.
+        finalApproach: "driveToExit",
+      },
     },
     combos: {},
   };

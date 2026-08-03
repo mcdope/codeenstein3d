@@ -252,7 +252,13 @@ Three more were added 2026-08-03 for the `verify (multiplayer-transition)` fix. 
 | `BOT_LOOT_ABANDON_ON_STUCK` | `false` | `true` — abandon a loot detour whose waypoint has exhausted its re-plans, instead of driving the rest of a path planned from a tile the bot never reached. |
 | `MAX_TICKS_PER_WAYPOINT` | `600` | `40` — 600 was sized against `VIRTUAL_STEP_MS` (50), i.e. 30 *simulated* seconds; at `MultiplayerBot`'s 400ms decisions the same number is 240 **real** seconds for a one-tile waypoint. |
 
-Note the A/B for these has to be run *into* single-player (turning them on) rather than out of it, since the multiplayer campaign has no baseline corpus. Turning them on there changes multiplayer telemetry semantics, so `compareRunFlags` must see them in the run's `meta`.
+Note the A/B for these has to be run *into* single-player (turning them on) rather than out of it, since the multiplayer campaign has no baseline corpus.
+
+**Multiplayer telemetry semantics changed on 2026-08-03, and stored runs from before it are not comparable.** Two things moved: `MultiplayerBot` now carries the tuning above, and `driveOneBot`'s final approach uses `Bot#driveToExit` instead of a bare `driveToward`. The second one moves outcomes directly — an exit held shut by a living exit-room enemy used to record as `stuck` however perfectly the bot was standing on it, and that was scored against the bot's *navigation* when the route had worked exactly as planned.
+
+`meta.flags` did not exist in `multiplayer_balancing_telemetry.json` until the same date, which meant `compareRunFlags` returned `comparable: false` and every cross-run multiplayer comparison silently lost its one guard against this. It now records `botTuning` (from `MULTIPLAYER_TUNING_DEFAULTS`, exported so the recorded value cannot drift from the value used) and `finalApproach`. A comparison spanning the change will now say so instead of quietly reporting a behaviour delta as a balance delta.
+
+What did **not** change is the outcome vocabulary. `driveToExit` reports `arrived` only when *this* bot stood on the exit tile and saw the exit accepted; a teammate's exit touch still arrives as `teleported` and is still classified `levelAdvanced`. That distinction is what `trueQualifyingCount` rests on, and widening it into `reachedExit` would have inflated exactly the number the campaign is judged by.
 
 ### Judging a bot-behaviour change: use `anomaly (ticks/1k dec)`
 

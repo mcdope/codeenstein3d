@@ -115,9 +115,23 @@ async function driveOnePlayerToExit(page, playerId, map, label) {
   // a teammate already reached the exit and this bot's live position just
   // got carried to the next level's spawn — map/map.exit are stale here, so
   // don't keep driving toward them.
+  // `driveToExit`, not a bare `driveToward`. `checkExit()` keeps the exit
+  // inert while any enemy homed to the exit's own room is alive, and says
+  // nothing when it refuses — a straight-line push can therefore land dead
+  // centre on the exit tile and simply have nothing happen, which reports as
+  // `stuck`. `driveToExit` identifies that enemy and kills it, and BFS-walks
+  // back to the exit between attempts instead of straight-lining into a wall.
+  // This bot fights for real (no god mode, no `ignoreThreats`), so the hunt
+  // needs no special scoping here.
+  //
+  // The outcome vocabulary below is unchanged, and deliberately so:
+  // `driveToExit` only reports `arrived` when *this* bot stood on the exit and
+  // saw it accepted, so a teammate's exit touch still surfaces as
+  // `teleported` -> `levelAdvanced` rather than being miscounted as this
+  // bot's own success.
   if (finalState.state === "playing" && finalState.reason !== "teleported") {
     const exitCenter = { x: map.exit.x + 0.5, y: map.exit.y + 0.5 };
-    finalState = await bot.driveToward(exitCenter, bot.tuning.TIGHT_ARRIVE_EPS, FINAL_APPROACH_TICKS);
+    finalState = await bot.driveToExit(exitCenter, FINAL_APPROACH_TICKS);
   }
   bot.reportAnomalies(`${label}/${playerId}`, 0);
 
