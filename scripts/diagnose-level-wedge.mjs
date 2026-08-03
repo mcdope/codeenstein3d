@@ -23,10 +23,11 @@
  *  - screenshots through the wedge, plus one at the moment of failure
  *  - player state and the surrounding grid dumped where it wedged
  *
- * It doubles as the local stand-in for `verify:multiplayer-transition`, which
- * cannot run from a machine with outbound UDP blocked. `--mp-shape` gives the
- * bot `MultiplayerBot`'s decision-window shape on the same deterministic map;
- * see that flag's own comment for exactly what it does and does not reproduce.
+ * `--mp-shape` gives the bot `MultiplayerBot`'s decision-window shape on the
+ * same deterministic map, which makes this a cheap first look at a
+ * `verify:multiplayer-transition` failure — seconds per attempt, no session
+ * setup, and a deterministic decision sequence. It is *not* a substitute for
+ * running that script: see the flag's own comment for what it cannot see.
  *
  * Usage:
  *   node scripts/diagnose-level-wedge.mjs [--level 10] [--attempts 4] [--headed]
@@ -68,13 +69,21 @@ const PROFILE_NAME = arg("profile", "Casual");
 
 // --- multiplayer-shaped mode ------------------------------------------------
 //
-// `verify:multiplayer-transition` cannot run from this machine at all: outbound
-// UDP is blocked, so WebRTC never gets past STUN and no session is ever
-// established. Its failure, though, is pure navigation, and navigation is
-// shared code — `MultiplayerBot` overrides only `readFull`/`readState`/
-// `dispatchSegment`/`maybeDetourForLoot`/`minDecisionMs`/`minPhaseMs` and four
-// tuning values. Everything from `planRoute` down through `driveLegs` /
-// `driveTowardWithReplan` / `driveToward` / `decide` is identical.
+// `verify:multiplayer-transition`'s failure is pure navigation, and navigation
+// is shared code — `MultiplayerBot` overrides only `readFull`/`readState`/
+// `dispatchSegment`/`readLootSources`/`minDecisionMs`/`minPhaseMs`/
+// `exitAccepted` and a handful of tuning values. Everything from `planRoute`
+// down through `driveLegs` / `driveTowardWithReplan` / `driveToward` /
+// `decide` is identical, and runs here in seconds against that script's
+// minutes, deterministically.
+//
+// Historical note worth keeping, because it shaped this file: this mode was
+// built on the belief that the real script could not be run locally at all
+// (`notes` carried a 2026-07-30 entry claiming outbound UDP was blocked, so
+// STUN never completed). That was re-tested on 2026-08-03 and is false — UDP
+// egress works, all three default STUN servers answer, and both
+// `verify:multiplayer-connect` and `verify:multiplayer-transition` pass from
+// this machine. **Run the real script when a real answer is needed.**
 //
 // Verified rather than assumed: demo-campaign level 1's generated map is
 // byte-identical with and without `maxPlayers: 2` (grid, exit, spawn, every

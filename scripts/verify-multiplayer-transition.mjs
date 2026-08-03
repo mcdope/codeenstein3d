@@ -259,9 +259,9 @@ async function setupSession(browser, engineName) {
 /**
  * Everything needed to decide *why* `driveToExit` gave up, printed on failure.
  *
- * This job cannot be reproduced locally — WebRTC needs outbound UDP, which the
- * dev box does not have — so a failure here has to arrive already diagnosed or
- * it costs another full CI round trip to learn one fact. `driveToExit` has
+ * A failure here is worth arriving already diagnosed: this script takes
+ * minutes per run wherever it runs, and in CI each undiagnosed failure costs a
+ * full round trip to learn one fact. `driveToExit` has
  * exactly three ways to end in `stuck`, and they need completely different
  * fixes: it never reached the exit tile (navigation), it reached it but the
  * gate stayed shut with no blocker it could identify (the `home`-rect mirror
