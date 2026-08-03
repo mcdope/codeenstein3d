@@ -335,10 +335,20 @@ async function driveHostToExit(hostPage, map) {
   // at the exit from wherever the route died and reported *itself* as the
   // failure. Every "host got stuck on the final approach" in this job's CI
   // history is really this branch.
+  // A stuck route is not fatal, and treating it as fatal was its own bug.
+  //
+  // `planRoute`'s legs are a plan made once, from the spawn tile, before
+  // anything moved. `driveToExit` below does its own BFS from wherever the bot
+  // actually is — including the hazard-tolerant fallback `#walkPathTo` uses
+  // when every clean route is blocked — and it gets `EXIT_CLEAR_ROUNDS` tries
+  // at it. Throwing here threw that away: observed in CI with the host wedged
+  // 22.5 tiles out on a level whose exit was perfectly reachable, after
+  // `driveTowardWithReplan` had merely exhausted its three re-plans on one
+  // waypoint. The anomalies are still reported, so a route that wedges is
+  // still visible rather than silently tolerated.
   if (legOutcome.state === "stuck") {
     bot.reportAnomalies("host-route", 0);
-    await dumpExitGate(hostPage, bot, map);
-    throw new Error(`host got stuck navigating the planned route: ${JSON.stringify(legOutcome)}`);
+    console.log(`  [warn] host's planned route went stuck (${JSON.stringify(legOutcome)}) — handing off to driveToExit's own pathfinding`);
   }
 
   // `driveToExit`, not a bare `driveToward`. The difference is the whole

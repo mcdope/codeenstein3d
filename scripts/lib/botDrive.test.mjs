@@ -195,6 +195,38 @@ describe("driveToExit", () => {
     expect(await new FakeBot().exitAccepted()).toBe(false);
   });
 
+  it("does not backtrack on round 0 by default, however far away it is", async () => {
+    // Single-player's caller always ends its legs on the exit, so round 0 has
+    // nothing to path around and this must stay exactly as it was.
+    const bot = new FakeBot();
+    bot.startLevel(openMap());
+    bot.player = { ...bot.player, x: 1.5, y: 1.5 }; // nowhere near the exit
+    const seen = [];
+    bot.driveToward = async () => {
+      seen.push(bot.activity);
+      return { state: "playing", reason: "arrived" };
+    };
+    bot.exitAccepted = async () => true;
+    await bot.driveToExit({ x: 5.5, y: 5.5 }, 80);
+    expect(seen).not.toContain("exitBacktrack");
+  });
+
+  it("backtracks on round 0 when far from the exit and BOT_EXIT_BACKTRACK_TILES is set", async () => {
+    // The multiplayer case: a wedged route hands off from 22 tiles out, and
+    // straight-lining from there is a whole budget spent walking into a wall.
+    const bot = new FakeBot({ tuning: { BOT_EXIT_BACKTRACK_TILES: 1.5 } });
+    bot.startLevel(openMap());
+    bot.player = { ...bot.player, x: 1.5, y: 1.5 };
+    const seen = [];
+    bot.driveToward = async () => {
+      seen.push(bot.activity);
+      return { state: "playing", reason: "arrived" };
+    };
+    bot.exitAccepted = async () => true;
+    await bot.driveToExit({ x: 5.5, y: 5.5 }, 80);
+    expect(seen).toContain("exitBacktrack");
+  });
+
   it("reports a completed level transition as arrival, not as a teleport failure", async () => {
     // A finished transition is indistinguishable from a teleporter down here:
     // both move the player further in one decision than any legal step. Twice
