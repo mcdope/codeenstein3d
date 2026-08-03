@@ -3160,6 +3160,31 @@ describe("main.ts — multiplayer connect flow", () => {
       await waitUntil(() => document.querySelector(".error")?.textContent === "lobby unreachable");
     });
 
+    it("closing the dialog aborts an in-flight lobby fetch and renders no error for it", async () => {
+      await loadEligibleWorkspace();
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      // A fetch that only settles once its own signal aborts — i.e. the real
+      // shape of a request still in flight when the user closes the dialog.
+      let rejectFetch: (err: Error) => void = () => {};
+      fetchMock.mockImplementationOnce(
+        (_url: string, init?: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            rejectFetch = reject;
+            init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+          }),
+      );
+      document.querySelector<HTMLButtonElement>("#multiplayer-browse-lobby")!.click();
+      await waitUntil(() => document.querySelector<HTMLDialogElement>("#multiplayer-lobby-dialog")!.open);
+
+      document.querySelector<HTMLButtonElement>("#close-multiplayer-lobby")!.click();
+      await flushAsync();
+      // The abort is this code cancelling itself, so it must not surface as a
+      // lobby error — before the signal was threaded through, the fetch simply
+      // kept running and could render into a dialog the user had closed.
+      expect(document.querySelector("#multiplayer-lobby-list .error")).toBeNull();
+      rejectFetch(new Error("unused"));
+    });
+
     it("Close closes the dialog and returns focus to the canvas once a level is running", async () => {
       await loadEligibleWorkspace();
       await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
