@@ -961,16 +961,39 @@ export class Bot {
    * uncollected for a later check to pick up once the route naturally
    * passes closer.
    */
-  async maybeDetourForLoot(openedDoors) {
+  /**
+   * The live inputs a loot decision needs: the player state to rank from, plus
+   * the two loot sources that only exist at runtime (kill drops and dropped
+   * keys). Returning `null` skips the check entirely.
+   *
+   * This is the *only* thing that genuinely differs between single-player and
+   * multiplayer loot detours, which is why it is the seam. `MultiplayerBot`
+   * used to override the whole of `maybeDetourForLoot`, and that copy had
+   * silently drifted: no hazard avoid-set, no re-plan, no activity label, no
+   * teleport bail and no stuck handling — five behaviours the single-player
+   * version had each been given for a measured reason.
+   */
+  async readLootSources() {
     const player = await this.readState();
+    // Bail before the loot queries, not after: the caller discards everything
+    // else the moment the player isn't playing, and this keeps the sequence of
+    // page round trips byte-identical to what this method was extracted from.
+    if (player.state !== "playing") return { player, dynamicDrops: [], dynamicKeys: [] };
+    const dynamicDrops = await this.page.evaluate(() => window.__codeensteinTestHooks.getDrops());
+    const dynamicKeys = (await this.page.evaluate(() => window.__codeensteinTestHooks.getKeys())).map((k) => ({ ...k, kind: "key" }));
+    return { player, dynamicDrops, dynamicKeys };
+  }
+
+  async maybeDetourForLoot(openedDoors) {
+    const sources = await this.readLootSources();
+    if (!sources) return { state: "playing" };
+    const { player, dynamicDrops, dynamicKeys } = sources;
     if (player.state !== "playing") return { state: player.state };
 
     // Static, pre-placed pickups need our own "already visited" bookkeeping
     // — `map.ammoPickups` never shrinks. Dynamic kill-drop loot and keys
-    // need a live query — neither exists in the static map data.
+    // come from `readLootSources`, since neither exists in the static data.
     const staticUncollected = this.map.ammoPickups.filter((p) => !this.visitedPickups.has(`${p.x},${p.y}`));
-    const dynamicDrops = await this.page.evaluate(() => window.__codeensteinTestHooks.getDrops());
-    const dynamicKeys = (await this.page.evaluate(() => window.__codeensteinTestHooks.getKeys())).map((k) => ({ ...k, kind: "key" }));
     const uncollected = [...staticUncollected, ...dynamicDrops, ...dynamicKeys];
     if (uncollected.length === 0) return { state: "playing" };
 
@@ -1034,6 +1057,17 @@ export class Bot {
         // waypoint after a mid-route teleport was planned from a position this
         // bot is no longer at.
         if (result.reason === "teleported") return result;
+        // Same argument as the teleport bail, for the same reason: once a
+        // waypoint has exhausted its re-plans, every *later* waypoint on this
+        // path was planned from a tile the bot never reached, so driving at
+        // them is walking at somewhere it has no route to. Abandoning the
+        // detour costs one pickup; continuing costs the rest of the budget.
+        //
+        // Off by default so single-player telemetry keeps its measured
+        // behaviour until an A/B says otherwise; `MultiplayerBot` turns it on,
+        // where a wasted waypoint is 600 real-time decisions rather than 600
+        // virtual-clock ones.
+        if (result.reason === "stuck" && this.tuning.BOT_LOOT_ABANDON_ON_STUCK) return { state: "playing" };
       }
       return { state: "playing" };
     });
@@ -1506,7 +1540,29 @@ export class Bot {
     // fight still terminates, and because the relaxation only applies while a
     // threat is actually engaged, a true navigation wedge (no threat — e.g.
     // the door-model and exit-gate wedges) still fails on the original budget.
+    //
+    // The bail below is the other half of the same argument. `maxTicks` is a
+    // ceiling, not a diagnosis: a drive that has genuinely stopped moving
+    // spends the entire remaining budget proving it, and only *then* does
+    // `driveTowardWithReplan` get to route around. At `MultiplayerBot`'s real
+    // 400ms decisions that is minutes per waypoint. Giving up early is
+    // strictly better, because "stuck" is not the end of the road — it is the
+    // signal that triggers a fresh BFS from where the bot actually is.
+    //
+    // Anchored on a radius rather than exact equality, deliberately: an
+    // unwedging wiggle *does* move the bot, and an equality test would let it
+    // reset the counter forever without making progress.
+    //
+    // Both exclusions mirror an existing offline detector, so the bail can
+    // never fire on something the anomaly scan itself calls legitimate:
+    // engaged-in-combat mirrors `detectAnomalies`' `mostlyFiring`, and
+    // waiting-on-spike mirrors its `SPIKE_WAIT_DOMINANCE` — a spike trap is
+    // *supposed* to be waited out, for up to 55 decisions.
     let combatTicks = 0;
+    let noProgressTicks = 0;
+    let anchorX = player.x;
+    let anchorY = player.y;
+    const bailAfter = this.tuning.BOT_NAV_STALL_BAIL_TICKS;
     const hardCap = maxTicks * this.tuning.COMBAT_TICK_BUDGET_MULTIPLIER;
     for (let t = 0; t < hardCap; t++) {
       if (t - combatTicks >= maxTicks) break;
@@ -1525,7 +1581,29 @@ export class Bot {
       this.#noteDoorUnderFoot(player);
       // Engaged means `tick()` will fight rather than navigate this decision —
       // exactly `pickThreat`'s own gate, so the two can't disagree.
-      if (!this.ignoreThreats && pickThreat(enemies, player, this.profile, this.map, this.tuning)) combatTicks++;
+      const engaged = !this.ignoreThreats && !!pickThreat(enemies, player, this.profile, this.map, this.tuning);
+      if (engaged) combatTicks++;
+      if (bailAfter > 0) {
+        // Same probe `decide()`'s own hazard branch uses, so the two agree on
+        // what "waiting for a spike to retract" looks like.
+        const waitingOnSpike =
+          !!this.map && !!activeSpikeAt(this.map, player.x + player.dirX * 0.6, player.y + player.dirY * 0.6, player.levelTime);
+        if (engaged || waitingOnSpike) {
+          noProgressTicks = 0;
+          anchorX = player.x;
+          anchorY = player.y;
+        } else if (Math.hypot(player.x - anchorX, player.y - anchorY) > this.tuning.BOT_NAV_STALL_RADIUS_TILES) {
+          noProgressTicks = 0;
+          anchorX = player.x;
+          anchorY = player.y;
+        } else if (++noProgressTicks >= bailAfter) {
+          this.logger.driftDebug?.(
+            `[driftdebug] no progress for ${noProgressTicks} decisions at (${player.x.toFixed(2)},${player.y.toFixed(2)}) target=(${point.x.toFixed(2)},${point.y.toFixed(2)}) — bailing to re-plan`,
+          );
+          await this.applyAction(this.#releaseIntent());
+          return { state: "playing", reason: "stuck" };
+        }
+      }
       const prevX = player.x;
       const prevY = player.y;
       ({ player, enemies, mines, projectiles } = await this.tick(player, enemies, mines, point, this.map, projectiles));
