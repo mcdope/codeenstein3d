@@ -745,15 +745,25 @@ export function renderMinimap(
   if (wallLayer) {
     ctx.drawImage(wallLayer, pad, pad);
   } else {
-    // No offscreen 2D context available — draw the tiles directly, exactly
-    // as the pre-cache implementation always did.
+    // No offscreen 2D context available — draw the tiles directly. Mirrors the
+    // cached layer above pass for pass, including its separate branch-door
+    // colour: lumping `BRANCH_DOOR_TILE` in with the wall fill (as this
+    // fallback used to) loses the "just push it" vs. "needs a key you may not
+    // have" distinction the cached path deliberately draws.
     ctx.fillStyle = automapWall;
     for (let y = 0; y < map.height; y++) {
       const row = map.grid[y];
       for (let x = 0; x < map.width; x++) {
-        if (row[x] === 1 || row[x] === LORE_TILE || row[x] === SECRET_WALL_TILE || row[x] === BRANCH_DOOR_TILE) {
+        if (row[x] === 1 || row[x] === LORE_TILE || row[x] === SECRET_WALL_TILE) {
           ctx.fillRect(pad + x * cell, pad + y * cell, cell, cell);
         }
+      }
+    }
+    ctx.fillStyle = MINIMAP_BRANCH_DOOR_COLOR;
+    for (let y = 0; y < map.height; y++) {
+      const row = map.grid[y];
+      for (let x = 0; x < map.width; x++) {
+        if (row[x] === BRANCH_DOOR_TILE) ctx.fillRect(pad + x * cell, pad + y * cell, cell, cell);
       }
     }
   }
