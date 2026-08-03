@@ -131,6 +131,31 @@ const DEFAULT_TELEPORT_JUMP_DETECT_TILES = 4;
  * trade for never leaving the player fully passive for long. */
 const DETOUR_RECHECK_MS = 3000;
 
+/**
+ * `DEFAULT_TUNING.MAX_TICKS_PER_WAYPOINT` is 600, and it was sized against
+ * `VIRTUAL_STEP_MS` (50) — 30 *simulated* seconds for a one-tile BFS waypoint.
+ * At `DEFAULT_STEP_MS` the same number is 240 **real** seconds, and
+ * `WAYPOINT_REPLAN_ATTEMPTS` multiplies it by four. One waypoint could
+ * therefore outlast the entire CI job it runs in, which is how a single snag
+ * turns into a job-length wedge rather than a re-plan.
+ *
+ * 40 keeps ~30x headroom over the real cost of a one-tile waypoint (a walking
+ * decision covers roughly 1.28 tiles here), caps a waypoint at ~16s and a
+ * fully re-planned one at ~64s, and — with `COMBAT_TICK_BUDGET_MULTIPLIER` —
+ * bounds `driveToExit`'s blocker hunt at 160 decisions instead of 2400.
+ */
+const MAX_TICKS_PER_WAYPOINT_HERE = 40;
+
+/**
+ * Give up on a drive that has not left `BOT_NAV_STALL_RADIUS_TILES` for this
+ * many consecutive decisions, so `driveTowardWithReplan` can route around
+ * while there is still budget left to route with. Just above
+ * `STALL_TICKS_THRESHOLD` (20), the threshold the offline anomaly detectors
+ * already use, which keeps the invariant "the bail only ever fires on
+ * something the balancing scan would have reported as a stall anyway".
+ */
+const NAV_STALL_BAIL_TICKS = 24;
+
 /** Synthesized in place of a null `getBotPlayerState(id)` result (the
  * multiplayer session has fully ended — team-eliminated, host-disconnected,
  * etc. — see this module's own doc comment's last bullet is about a
@@ -172,7 +197,13 @@ export class MultiplayerBot extends Bot {
     super(page, profile, {
       stepMs: DEFAULT_STEP_MS,
       ...opts,
-      tuning: { TELEPORT_JUMP_DETECT_TILES: DEFAULT_TELEPORT_JUMP_DETECT_TILES, ...opts.tuning },
+      tuning: {
+        TELEPORT_JUMP_DETECT_TILES: DEFAULT_TELEPORT_JUMP_DETECT_TILES,
+        MAX_TICKS_PER_WAYPOINT: MAX_TICKS_PER_WAYPOINT_HERE,
+        BOT_LOOT_ABANDON_ON_STUCK: true,
+        BOT_NAV_STALL_BAIL_TICKS: NAV_STALL_BAIL_TICKS,
+        ...opts.tuning,
+      },
       realtime: true,
     });
     this.playerId = playerId;
@@ -232,68 +263,37 @@ export class MultiplayerBot extends Bot {
     }, this.map.exit);
   }
 
-  /** Like `Bot.maybeDetourForLoot` (dynamic drops/keys come from the
-   * multiplayer hooks), plus the real-time cooldown gate and single merged
-   * `page.evaluate()` round trip — see this module's own doc comment's last
-   * bullet for why both are needed here and not in `bot.mjs` itself. */
-  async maybeDetourForLoot(openedDoors) {
+  /**
+   * See `Bot.readLootSources`. Only the *inputs* differ here — the multiplayer
+   * hooks, in a single merged round trip, behind the real-time cooldown gate
+   * (see this module's own doc comment's last bullet for why both are needed
+   * here and not in `bot.mjs`). The decision itself is inherited.
+   *
+   * This used to override the whole of `maybeDetourForLoot`, and the copy had
+   * drifted badly: it planned loot paths with an empty avoid-set (routing
+   * detours straight through acid and spikes), drove each waypoint with a bare
+   * `driveToward` instead of `driveTowardWithReplan`, never wrapped the errand
+   * in `#withActivity("loot")` — so every tile a detour walked was billed to
+   * `route` in the anomaly scan's activity breakdown, which is exactly why
+   * `verify (multiplayer-transition)` reported "route 595.1t (100%)" for a
+   * ~40-tile route — and neither bailed on a teleport nor did anything at all
+   * when a waypoint went stuck, so it would keep driving the remaining
+   * waypoints of a path planned from a tile it never reached.
+   */
+  async readLootSources() {
     const now = Date.now();
-    if (now - this.lastDetourCheckAt < DETOUR_RECHECK_MS) return { state: "playing" };
+    if (now - this.lastDetourCheckAt < DETOUR_RECHECK_MS) return null;
     this.lastDetourCheckAt = now;
 
-    const id = this.playerId;
-    const { player: rawPlayer, dynamicDrops, dynamicKeys } = await this.page.evaluate((id) => {
+    const { player, dynamicDrops, dynamicKeys } = await this.page.evaluate((id) => {
       const hooks = window.__codeensteinMultiplayerTestHooks;
       return {
         player: hooks.getBotPlayerState(id),
         dynamicDrops: hooks.getDropsSnapshot(),
         dynamicKeys: hooks.getKeysSnapshot().map((k) => ({ ...k, kind: "key" })),
       };
-    }, id);
-    const player = rawPlayer ?? SESSION_ENDED_PLAYER_STATE;
-    if (player.state !== "playing") return { state: player.state };
-
-    const staticUncollected = this.map.ammoPickups.filter((p) => !this.visitedPickups.has(`${p.x},${p.y}`));
-    const uncollected = [...staticUncollected, ...dynamicDrops, ...dynamicKeys];
-    if (uncollected.length === 0) return { state: "playing" };
-
-    const urgent = player.healthFraction < this.profile.healthDetourThreshold;
-    const healthOnly = uncollected.filter((p) => p.kind === "health");
-    const pool = urgent && healthOnly.length > 0 ? healthOnly : uncollected;
-
-    let best = null;
-    let bestPath = null;
-    for (const p of pool) {
-      if (Math.hypot(p.x - player.x, p.y - player.y) > this.tuning.MAX_LOOT_DETOUR_TILES) continue;
-      const path = bfsPath(
-        this.map,
-        { x: Math.floor(player.x), y: Math.floor(player.y) },
-        { x: Math.floor(p.x), y: Math.floor(p.y) },
-        new Set(),
-        openedDoors,
-      );
-      if (!path || path.length - 1 > this.tuning.MAX_LOOT_DETOUR_TILES) continue;
-      if (!bestPath || path.length < bestPath.length) {
-        best = p;
-        bestPath = path;
-      }
-    }
-    // Leave it uncollected rather than mark it visited — a later check, once
-    // the route naturally passes closer, can still pick it up.
-    if (!best) return { state: "playing" };
-    if (staticUncollected.includes(best)) this.visitedPickups.add(`${best.x},${best.y}`);
-
-    const path = bestPath;
-    this.logger.wpDebug?.(
-      `[wpdebug] loot-detour from (${player.x.toFixed(1)},${player.y.toFixed(1)}) to best=(${best.x},${best.y}) kind=${best.kind} pathLen=${path.length}`,
-    );
-    for (const wp of pathToWaypoints(path)) {
-      this.logger.wpDebug?.(`[wpdebug]   loot wp=(${wp.x},${wp.y})`);
-      const result = await this.driveToward(wp, this.tuning.ARRIVE_EPS, this.tuning.MAX_TICKS_PER_WAYPOINT);
-      this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
-      if (result.state !== "playing") return result;
-    }
-    return { state: "playing" };
+    }, this.playerId);
+    return { player: player ?? SESSION_ENDED_PLAYER_STATE, dynamicDrops, dynamicKeys };
   }
 
   /**

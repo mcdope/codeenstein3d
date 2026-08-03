@@ -142,6 +142,19 @@ export const DEFAULT_TUNING = {
   // `stuck`. Each retry re-reads the bot's real position, so a bot shoved
   // around geometry mid-drive gets a fresh BFS from where it actually is.
   WAYPOINT_REPLAN_ATTEMPTS: 3,
+  // Abandon a loot detour whose waypoint exhausted its re-plans, instead of
+  // driving the rest of a path planned from a tile the bot never reached. Off
+  // here so single-player keeps its measured behaviour; `MultiplayerBot` turns
+  // it on, where each wasted waypoint costs real seconds rather than virtual
+  // ones. See `Bot#maybeDetourForLoot`.
+  BOT_LOOT_ABANDON_ON_STUCK: false,
+  // Consecutive decisions a `driveToward` may spend inside
+  // `BOT_NAV_STALL_RADIUS_TILES` of where the run started before it gives up
+  // early and lets `driveTowardWithReplan` route around. 0 disables it
+  // entirely, which is the single-player default: the balancing corpus was
+  // measured without it. See `Bot#driveToward`.
+  BOT_NAV_STALL_BAIL_TICKS: 0,
+  BOT_NAV_STALL_RADIUS_TILES: 0.5,
   TURN_MOVE_EPS: 0.2,
   ARRIVE_EPS: 0.15,
   TIGHT_ARRIVE_EPS: 0.05,
