@@ -519,7 +519,7 @@ export function detectOscillation(trace) {
           endTick: runEnd - 1,
           ticks: runLen,
           detail:
-            `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} ` +
+            `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} activity=${first.activity ?? "?"} ` +
             `travelled=${pathLength.toFixed(1)}t net=${netDisplacement.toFixed(2)}t ratio=${ratio === Infinity ? "inf" : ratio.toFixed(1)}x ` +
             `hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)} ` +
             describeHeadingError(trace, runStart, runEnd),
@@ -565,7 +565,7 @@ export function detectHeldKeyNoMovement(trace) {
           startTick: runStart,
           endTick: runEnd - 1,
           ticks: runLen,
-          detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} keysDuringRun=[${[...heldKeys].join(",")}] threatDist=${first.threatDist ?? "none"} mineDist=${first.mineDist ?? "none"} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)}`,
+          detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} activity=${first.activity ?? "?"} keysDuringRun=[${[...heldKeys].join(",")}] threatDist=${first.threatDist ?? "none"} mineDist=${first.mineDist ?? "none"} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)}`,
         });
       }
       runStart = null;
@@ -1116,7 +1116,14 @@ export class Bot {
           const result = await this.#withActivity("route", () => this.driveTowardWithReplan(wp, openedDoors));
           this.logger.wpDebug?.(`[wpdebug]   -> result=${JSON.stringify(result)}`);
           if (result.state !== "playing") return result;
-          if (result.reason === "stuck") return { state: "stuck" };
+          // `state: "stuck"` is what every caller branches on
+          // (`run-balancing-telemetry.mjs`, `generate-default-highscore.mjs`,
+          // `diagnose-level-wedge.mjs`); `reason` is carried alongside it so a
+          // caller that checks the *reason* — as
+          // `verify-multiplayer-transition.mjs` did — isn't silently told the
+          // route succeeded. That mismatch is why every route-phase failure in
+          // that script was misreported as a final-approach failure.
+          if (result.reason === "stuck") return { state: "stuck", reason: "stuck" };
           if (result.reason === "teleported") return result;
         }
       } else if (leg.kind === "openDoor") {
