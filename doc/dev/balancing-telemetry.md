@@ -244,6 +244,16 @@ Behaviour changes that are gated on a constant expose one deliberately, so they 
 | `NAV_FULL_WASD` | standing still to turn whenever the heading error exceeds `MAX_WALK_WHILE_TURNING_RAD` |
 | `NAV_BACKPEDAL_RETREAT` | spinning to face away before fleeing at critical health |
 
+Three more were added 2026-08-03 for the `verify (multiplayer-transition)` fix. All three are **off in `DEFAULT_TUNING` and on in `MultiplayerBot`**, so single-player telemetry is unchanged by construction rather than by measurement — and so they can be A/B'd into single-player later without a worktree:
+
+| key | default | on |
+|---|---|---|
+| `BOT_NAV_STALL_BAIL_TICKS` | `0` (off) | `24` — give up on a drive that has not left `BOT_NAV_STALL_RADIUS_TILES` (0.5) for this many consecutive decisions, so `driveTowardWithReplan` re-plans while it still has budget. Sits just above the detectors' own `STALL_TICKS_THRESHOLD` (20), which keeps the invariant *"the bail only fires on something the anomaly scan would have reported as a stall anyway"*. Suppressed while engaged in combat or waiting out a spike trap, mirroring `detectAnomalies`' `mostlyFiring` and `SPIKE_WAIT_DOMINANCE` exemptions. |
+| `BOT_LOOT_ABANDON_ON_STUCK` | `false` | `true` — abandon a loot detour whose waypoint has exhausted its re-plans, instead of driving the rest of a path planned from a tile the bot never reached. |
+| `MAX_TICKS_PER_WAYPOINT` | `600` | `40` — 600 was sized against `VIRTUAL_STEP_MS` (50), i.e. 30 *simulated* seconds; at `MultiplayerBot`'s 400ms decisions the same number is 240 **real** seconds for a one-tile waypoint. |
+
+Note the A/B for these has to be run *into* single-player (turning them on) rather than out of it, since the multiplayer campaign has no baseline corpus. Turning them on there changes multiplayer telemetry semantics, so `compareRunFlags` must see them in the run's `meta`.
+
 ### Judging a bot-behaviour change: use `anomaly (ticks/1k dec)`
 
 With `CODEENSTEIN_TELEMETRY_ANOMALY_SCAN=1`, each combo's output carries an `anomalySummary` — per anomaly type, `findings`/`ticks` totals plus `findingsPerRun`, `ticksPerRun` and `ticksPerKiloDecision`. `report-balancing-ab.mjs` diffs the last of those.
