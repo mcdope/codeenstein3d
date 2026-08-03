@@ -110,6 +110,12 @@ const TELEPORT_REPLAN_LIMIT = 4;
 const MP_STEP_MS = 400;
 const MP_MIN_DECISION_MS = 300;
 const MP_TELEPORT_JUMP_DETECT_TILES = 4;
+// The rest of `MultiplayerBot`'s tuning defaults. These have to be here too:
+// they are the behaviour under test, and a `--mp-shape` run that left them at
+// `DEFAULT_TUNING` would be measuring single-player behaviour while reporting
+// it as multiplayer's.
+const MP_MAX_TICKS_PER_WAYPOINT = 40;
+const MP_NAV_STALL_BAIL_TICKS = 24;
 
 /** `Bot` with `MultiplayerBot`'s decision-window shape and nothing else. */
 class MpShapedBot extends Bot {
@@ -222,7 +228,16 @@ async function main() {
       stepMs: MP_SHAPE ? MP_STEP_MS : VIRTUAL_STEP_MS,
       recordStepMs: RECORD_STEP_MS,
       ignoreThreats: IGNORE_THREATS,
-      ...(MP_SHAPE ? { tuning: { TELEPORT_JUMP_DETECT_TILES: MP_TELEPORT_JUMP_DETECT_TILES } } : {}),
+      ...(MP_SHAPE
+        ? {
+            tuning: {
+              TELEPORT_JUMP_DETECT_TILES: MP_TELEPORT_JUMP_DETECT_TILES,
+              MAX_TICKS_PER_WAYPOINT: MP_MAX_TICKS_PER_WAYPOINT,
+              BOT_LOOT_ABANDON_ON_STUCK: true,
+              BOT_NAV_STALL_BAIL_TICKS: MP_NAV_STALL_BAIL_TICKS,
+            },
+          }
+        : {}),
       logger: {
         trace: true,
         navDiag: true,
