@@ -210,6 +210,28 @@ export class MultiplayerBot extends Bot {
     return player ?? SESSION_ENDED_PLAYER_STATE;
   }
 
+  /**
+   * See `Bot.exitAccepted`. Multiplayer's win signal is not a player-state
+   * change, so it has to be read from the session itself.
+   *
+   * Two clauses, both needed. A running countdown is the direct signal. But
+   * the countdown is `COUNTDOWN_TICKS` (5s at 30Hz) and a final approach at
+   * this bot's pace can comfortably outlive it, so a run that already
+   * transitioned would read `null` and look like a failure — hence also
+   * treating "the level's exit tile is no longer the one we were driving at"
+   * as acceptance. `verify-multiplayer-transition.mjs`'s own countdown check
+   * accepts already-transitioned for exactly the same reason.
+   */
+  async exitAccepted() {
+    if (!this.map?.exit) return false;
+    return this.page.evaluate((expected) => {
+      const hooks = window.__codeensteinMultiplayerTestHooks;
+      if (hooks.getExitCountdownRemaining() !== null) return true;
+      const live = hooks.getMapExit();
+      return live !== null && (live.x !== expected.x || live.y !== expected.y);
+    }, this.map.exit);
+  }
+
   /** Like `Bot.maybeDetourForLoot` (dynamic drops/keys come from the
    * multiplayer hooks), plus the real-time cooldown gate and single merged
    * `page.evaluate()` round trip — see this module's own doc comment's last

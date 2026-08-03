@@ -704,6 +704,56 @@ export class Bot {
   }
 
   /**
+   * Run `fn` with combat re-enabled, restoring the caller's setting afterwards
+   * — the same save/restore shape as `#withActivity`, and for the same reason:
+   * these scopes nest.
+   *
+   * A no-op for any bot that was already fighting, which is every
+   * single-player caller (`ignoreThreats` defaults to `false`). It exists for
+   * `driveToExit`'s blocker hunt, which is otherwise dead code under
+   * `ignoreThreats: true`: `#huntEnemy` walks at the enemy expecting the
+   * ordinary combat branches to kill it once proximity aggros it, and those
+   * branches never run when `pickThreat` is suppressed. Measured directly —
+   * `driveToExit` with `ignoreThreats` spends its whole `exitHunt` errand
+   * (79.6 tiles across all six `EXIT_CLEAR_ROUNDS`) walking at a blocker it
+   * never shoots, and still reports `stuck`; the same run with combat enabled
+   * clears the level.
+   *
+   * Scoped to the hunt alone rather than the whole drive on purpose. The route
+   * stays threat-free, so the melee-grind this option was added for (see the
+   * `ignoreThreats` doc comment above) cannot come back where it happened.
+   * Fighting starts only once the exit has been *proven* inert and a specific
+   * living enemy has been identified as the thing gating it.
+   */
+  async #withCombat(fn) {
+    const previous = this.ignoreThreats;
+    this.ignoreThreats = false;
+    try {
+      return await fn();
+    } finally {
+      this.ignoreThreats = previous;
+    }
+  }
+
+  /**
+   * Whether the level has already accepted a player standing on the exit.
+   *
+   * Single-player needs no such test, so this is `false` here and
+   * `driveToExit` behaves exactly as it always has: `checkExit()` calls
+   * `endGame("won")` the moment the exit is touched, which `driveToward`
+   * already reports as `state !== "playing"`.
+   *
+   * Multiplayer cannot use that signal. Touching the exit there starts a
+   * `COUNTDOWN_TICKS` countdown and leaves every player `"alive"`, so
+   * `getBotPlayerState` keeps reporting `"playing"` — without an explicit
+   * predicate `driveToExit` walks onto the exit, finds no live blocker, and
+   * returns `stuck` on a run that actually succeeded.
+   */
+  async exitAccepted() {
+    return false;
+  }
+
+  /**
    * Resets all per-level state — call once at the start of each campaign
    * level. `mineMemory` mirrors the original script's per-level object
    * exactly (see its doc comment there for why retreat/shoot tracking are
@@ -1173,6 +1223,12 @@ export class Bot {
    * `AGGRO_RADIUS` with line of sight aggros it, at which point `pickThreat`
    * starts seeing it and the normal combat branches fight it. So this is a
    * navigation fix, and deliberately not a new combat policy.
+   *
+   * That last step is why the hunt runs under `#withCombat`: a caller driving
+   * with `ignoreThreats` suppresses `pickThreat` entirely, so "the normal
+   * combat branches fight it" never happens and the hunt walks circles around
+   * a blocker it will not shoot. Only the hunt is scoped that way — see
+   * `#withCombat`.
    */
   async driveToExit(exitCenter, finalApproachTicks, openedDoors = this.openedDoors) {
     let last = { state: "playing", reason: "stuck" };
@@ -1191,6 +1247,9 @@ export class Bot {
       last = await this.#withActivity("exit", () => this.driveToward(exitCenter, this.tuning.TIGHT_ARRIVE_EPS, finalApproachTicks));
       // "won" (exit accepted) or "over" (died on the way) — either way, done.
       if (last.state !== "playing") return last;
+      // Multiplayer never produces that signal: the exit starts a countdown
+      // and leaves everyone alive. See `exitAccepted`'s own doc comment.
+      if (await this.exitAccepted()) return { state: "playing", reason: "arrived" };
 
       const { player, enemies } = await this.readFull();
       // Exactly `exitRoomHasAliveEnemy()`'s predicate, not a proxy for it.
@@ -1222,7 +1281,7 @@ export class Bot {
       // something this method doesn't model — report stuck rather than loop.
       if (blockers.length === 0) return { state: "playing", reason: "stuck" };
       this.logger.wpDebug?.(`[wpdebug] exit inert — ${blockers.length} exit-room blocker(s) alive; hunting #${blockers[0].i} at (${blockers[0].x.toFixed(1)},${blockers[0].y.toFixed(1)})`);
-      const hunted = await this.#withActivity("exitHunt", () => this.#huntEnemy(blockers[0], openedDoors));
+      const hunted = await this.#withCombat(() => this.#withActivity("exitHunt", () => this.#huntEnemy(blockers[0], openedDoors)));
       if (hunted.state !== "playing") return hunted;
       if (hunted.reason === "teleported") return hunted;
     }

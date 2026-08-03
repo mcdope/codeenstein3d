@@ -32,6 +32,15 @@
  * level — only combat death is taken off the table, since that was the
  * actual source of the flakiness, not navigation itself.
  *
+ * It does still **fight when the level requires it**. `checkExit()` keeps the
+ * exit inert while any enemy homed to the exit's own room is alive, so a host
+ * that refuses to engage can walk onto the exit tile perfectly and have
+ * nothing happen. That used to be papered over with
+ * `debugClearExitRoomEnemies()`; the host now drives its final approach with
+ * `Bot#driveToExit`, which identifies the specific enemy gating the exit and
+ * kills it with combat re-enabled for that hunt alone. The route itself stays
+ * `ignoreThreats: true` — see `driveHostToExit`.
+ *
  * The **guest is deliberately left vulnerable** (idle, not bot-driven,
  * god-mode never applied to it) — the demo campaign's own real, roaming
  * enemies reliably kill an idle player within several real seconds
@@ -269,6 +278,10 @@ async function driveHostToExit(hostPage, map) {
   // counter, eating real wall-clock time without navigation progress). The
   // host is already invulnerable — fighting was never a survival need, just
   // an unwanted side effect of `tick()`'s default combat engagement.
+  //
+  // It applies to the *route*, which is where that grind happened. The exit
+  // phase below re-enables combat for its blocker hunt alone (`#withCombat`),
+  // because there fighting is the only thing that makes the exit work at all.
   const bot = new MultiplayerBot(hostPage, BOT_PROFILE, "host", { logger: { trace: true, navDiag: true }, ignoreThreats: true });
   bot.startLevel(map);
 
@@ -286,10 +299,34 @@ async function driveHostToExit(hostPage, map) {
     throw new Error(`host got stuck navigating the planned route: ${JSON.stringify(legOutcome)}`);
   }
 
+  // `driveToExit`, not a bare `driveToward`. The difference is the whole
+  // reason this job used to fail:
+  //
+  //  - `driveToward` is a straight line with no pathfinding. `checkExit()`
+  //    gates the exit on `exitRoomHasAliveEnemy()`, so an enemy homed to the
+  //    exit's own room keeps the exit inert no matter how precisely the host
+  //    stands on it — and a host that never fights never clears it. The drive
+  //    then burns its whole budget a fraction of a tile from the exit and
+  //    reports `stuck`.
+  //  - `driveToExit` BFS-walks back to the exit tile between rounds and hunts
+  //    whatever is gating it, under `#withCombat` so the hunt can actually
+  //    finish. `openedDoors` is deliberately not passed: the default is the
+  //    same Set `driveLegs` just populated from doors this run pushed open,
+  //    and a fresh one would read every one of them as a wall.
+  //
+  // Measured on demo-campaign level 1 via `diagnose-level-wedge.mjs
+  // --mp-shape --ignore-threats --god-mode`, which reproduces this navigation
+  // without needing a multiplayer session: `driveToward` -> stuck 0.593 tiles
+  // from the exit; `driveToExit` still stuck while `ignoreThreats` suppressed
+  // the hunt's combat (79.6 tiles of `exitHunt` across all six rounds, no
+  // kill); `driveToExit` with the hunt able to fight -> cleared.
   const exitCenter = { x: map.exit.x + 0.5, y: map.exit.y + 0.5 };
-  const pushed = await bot.driveToward(exitCenter, bot.tuning.TIGHT_ARRIVE_EPS, FINAL_APPROACH_TICKS);
+  const pushed = await bot.driveToExit(exitCenter, FINAL_APPROACH_TICKS);
   if (pushed.state === "over") throw new Error(`host died despite god mode — the debugSetGodMode call itself must have failed: ${JSON.stringify(pushed)}`);
-  if (pushed.reason === "stuck") {
+  // `arrived` is the multiplayer signal (`MultiplayerBot.exitAccepted`); the
+  // single-player `"won"` can't happen here but is accepted rather than
+  // reported as a failure, since it would mean the exit was taken.
+  if (pushed.reason !== "arrived" && pushed.state !== "won") {
     bot.reportAnomalies("host-final-approach", 0);
     throw new Error(`host got stuck on the final approach to the exit: ${JSON.stringify(pushed)}`);
   }
@@ -341,18 +378,27 @@ async function runScenario(browser, engineName) {
     await hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.debugSetGodMode("host", true));
     await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.debugSetGodMode("host", true));
 
-    // Same both-pages requirement as debugSetGodMode above, and same
-    // "narrow, scoped mutation" spirit — RaycasterEngine.checkExit() now
-    // gates a win/countdown on the exit's own room having no living enemies
-    // (see exitRoomHasAliveEnemy()'s own doc comment), which this
-    // invulnerable-but-never-fighting host (ignoreThreats: true, below)
-    // would otherwise never satisfy on its own. debugClearExitRoomEnemies()
-    // only kills the exit room's own enemies, not every enemy on the level —
-    // the guest below is still left vulnerable to real, roaming enemies
-    // *elsewhere*, which it needs to reach its own "revived after a
-    // pre-transition death" coverage.
-    await hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.debugClearExitRoomEnemies());
-    await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.debugClearExitRoomEnemies());
+    // The host now clears the exit room by *fighting* whatever gates it, so
+    // this no longer runs by default.
+    //
+    // RaycasterEngine.checkExit() gates a win/countdown on the exit's own room
+    // having no living enemies (see exitRoomHasAliveEnemy()'s own doc
+    // comment). An invulnerable-but-never-fighting host could never satisfy
+    // that, so this hook used to be applied unconditionally — which meant the
+    // one path that satisfies it for real was never exercised here at all.
+    // `driveToExit` (see driveHostToExit below) hunts the blocker under
+    // `#withCombat` instead, which is bounded three ways: EXIT_CLEAR_ROUNDS,
+    // the waypoint tick budget, and a host that cannot lose the fight.
+    //
+    // Kept behind an env flag rather than deleted: if this job ever regresses,
+    // setting it is a one-command way to establish whether the exit gate is
+    // involved at all. Same both-pages requirement as debugSetGodMode above —
+    // a purely local mutation has to be applied identically on every peer or
+    // the two simulations diverge.
+    if (process.env.CODEENSTEIN_TRANSITION_CLEAR_EXIT_ROOM === "1") {
+      await hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.debugClearExitRoomEnemies());
+      await guestPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.debugClearExitRoomEnemies());
+    }
 
     const before = await hostPage.evaluate(() => {
       const hooks = window.__codeensteinMultiplayerTestHooks;
