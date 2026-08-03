@@ -8,6 +8,7 @@ import { emptyPlayerFacingStats } from "./playerStats";
 import { zeroScoreBreakdown } from "./scoring";
 import {
   drawAcidOverflowToast,
+  drawLockedDoorToast,
   drawCheatToast,
   drawCompass,
   drawCrosshair,
@@ -168,6 +169,60 @@ describe("drawAcidOverflowToast", () => {
     drawAcidOverflowToast(asCtx(c), 1);
     expect(textColor.toLowerCase()).toBe("#ff9d1f");
     expect(borderColor).toContain("255,157,31");
+    expect(c.strokeRect).not.toHaveBeenCalled();
+  });
+});
+
+describe("drawLockedDoorToast", () => {
+  it("draws the fixed message and clamps alpha into [0,1]", () => {
+    const c = ctx();
+    drawLockedDoorToast(asCtx(c), 5);
+    expect(c.fillText).toHaveBeenCalledWith("You need a key!", expect.any(Number), expect.any(Number));
+    expect(c.globalAlpha).toBe(1);
+    expect(c.textAlign).toBe("start");
+    expect(c.save).toHaveBeenCalledTimes(1);
+    expect(c.restore).toHaveBeenCalledTimes(1);
+
+    const c2 = ctx();
+    drawLockedDoorToast(asCtx(c2), -1);
+    expect(c2.globalAlpha).toBe(0);
+  });
+
+  it("sits below the acid warning, which already sits below the out-of-ammo one", () => {
+    // Dry-firing while shoving a locked door is an ordinary thing to do, so
+    // this and the out-of-ammo toast genuinely land in the same second — the
+    // same collision the acid row was moved down to avoid. Three rows, no
+    // overlap, in a fixed order.
+    const boxOf = (draw: (c: CanvasRenderingContext2D) => void) => {
+      const c = ctx();
+      draw(asCtx(c));
+      const [, y, , h] = c.fillRect.mock.calls[0] as [number, number, number, number];
+      return { top: y, bottom: y + h };
+    };
+    const ammo = boxOf((c) => drawOutOfAmmoToast(c, 1));
+    const acid = boxOf((c) => drawAcidOverflowToast(c, 1));
+    const door = boxOf((c) => drawLockedDoorToast(c, 1));
+
+    expect(acid.top).toBeGreaterThanOrEqual(ammo.bottom);
+    expect(door.top).toBeGreaterThanOrEqual(acid.bottom);
+  });
+
+  it("uses the locked door's own minimap blue, not the acid orange or the ammo red", () => {
+    // The colour is the cue: it matches the door the player just bounced off,
+    // as it's painted on the minimap and automap.
+    const c = ctx();
+    let textColor = "";
+    let borderColor = "";
+    c.fillText.mockImplementation(() => {
+      textColor = String(c.fillStyle);
+    });
+    c.fillRect.mockImplementation(() => {
+      const style = String(c.fillStyle);
+      if (style.includes("86,142,190")) borderColor = style;
+    });
+    drawLockedDoorToast(asCtx(c), 1);
+    expect(textColor.toLowerCase()).toBe("#568ebe");
+    expect(borderColor).toContain("86,142,190");
     expect(c.strokeRect).not.toHaveBeenCalled();
   });
 });

@@ -539,6 +539,75 @@ class AudioManager {
     osc.stop(t + 0.14);
   }
 
+  /**
+   * Walked into a key-locked door with no key: a blunt, low "denied" thunk —
+   * the door refusing to move. Deliberately mechanical rather than a UI
+   * buzzer, and pitched right down in the 110->62Hz register so it can't be
+   * confused with `playAlarm`'s 1245Hz pip or with `playKeyPing` immediately
+   * after it. `triangle` body for the same reason `playShotgunPump` uses one:
+   * a square reads as a tone, a triangle as a struck object.
+   *
+   * Both layers are scheduled here, in one call, rather than triggered
+   * separately — the latch tick then stays sample-accurate against the body
+   * instead of landing on a frame boundary, exactly as `playShotgunPump`
+   * argues for its own clacks. This is the first half of the denial-then-ping
+   * pair; see `RaycasterEngine.cueLockedDoorHint` for the ordering.
+   */
+  playLockedDoor(): void {
+    const ctx = this.resume();
+    if (!ctx || !this.sfx) return;
+    const t = ctx.currentTime;
+
+    const body = ctx.createOscillator();
+    body.type = "triangle";
+    body.frequency.setValueAtTime(110, t);
+    body.frequency.exponentialRampToValueAtTime(62, t + 0.06);
+    const bodyGain = envelope(ctx, 0.3, 0.002, 0.16, t);
+    body.connect(bodyGain).connect(this.sfx);
+    body.start(t);
+    body.stop(t + 0.2);
+
+    // The latch failing to throw, a hair after the door stops dead. Narrow
+    // bandpass rather than a lowpass, same as the pump's clacks: 300Hz at Q 7
+    // is a dry mechanical knock, where a lowpass leaves audible hiss.
+    const latch = ctx.createBufferSource();
+    latch.buffer = this.noiseBuffer(ctx, 0.12);
+    const latchFilter = ctx.createBiquadFilter();
+    latchFilter.type = "bandpass";
+    latchFilter.frequency.setValueAtTime(300, t + 0.02);
+    latchFilter.Q.value = 7;
+    const latchGain = envelope(ctx, 0.12, 0.001, 0.04, t + 0.02);
+    latch.connect(latchFilter).connect(latchGain).connect(this.sfx);
+    latch.start(t + 0.02);
+    latch.stop(t + 0.08);
+  }
+
+  /**
+   * The key-locator sonar that follows `playLockedDoor` — a soft two-note
+   * rising sine figure marking the nearest reachable key on the minimap.
+   * Deliberately the opposite register to the denial below it, so the pair
+   * reads as question and answer rather than as one muddled event. Quieter
+   * than `playAlarm`'s pip (0.16 against 0.28) because it repeats every
+   * ~0.7s for several seconds and must not nag.
+   */
+  playKeyPing(): void {
+    const ctx = this.resume();
+    if (!ctx || !this.sfx) return;
+    const t = ctx.currentTime;
+    const sfx = this.sfx;
+    const notes = [659.25, 880]; // E5, A5
+    notes.forEach((freq, i) => {
+      const start = t + i * 0.06;
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, start);
+      const gain = envelope(ctx, 0.16, 0.004, 0.1, start);
+      osc.connect(gain).connect(sfx);
+      osc.start(start);
+      osc.stop(start + 0.12);
+    });
+  }
+
   /** Goto teleporter warp: a quick sci-fi sweep, up then settling back down. */
   playTeleport(): void {
     const ctx = this.resume();

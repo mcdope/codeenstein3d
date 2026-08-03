@@ -652,6 +652,20 @@ const MINIMAP_WALL_FALLBACK = "#4a4a55";
  * its own thematically-matched constants" convention as every colour here. */
 const MINIMAP_BRANCH_DOOR_COLOR = "#b39a72";
 
+/** One outward sweep of the key ping's sonar ring, in milliseconds. Wall
+ * clock, like every other pulse on this panel (`exitPulse`, `spikePulse`,
+ * `lorePulse`) — a marker's animation is presentation, not simulation, so it
+ * deliberately doesn't ride `levelTime`. Roughly 1.4 sweeps per audible ping
+ * (`KEY_PING_BEAT_FRAMES`), close enough to read as one system without the
+ * two visibly beating against each other. */
+const PING_SWEEP_MS = 900;
+
+/** How far the sonar ring grows past the marker over one sweep. Fixed pixels
+ * rather than a multiple of `cell`, which is 1px on the biggest campaign maps
+ * — scaling this would make the ping vanish exactly where the minimap is
+ * busiest. */
+const PING_RING_GROWTH_PX = 10;
+
 export function renderMinimap(
   ctx: CanvasRenderingContext2D,
   map: GameMap,
@@ -677,6 +691,12 @@ export function renderMinimap(
    * (tests, anything with no `LevelStyle` to hand) stay unchanged — see
    * `MINIMAP_WALL_FALLBACK`. */
   automapWall: string = MINIMAP_WALL_FALLBACK,
+  /** Tile-space position of the key currently being "pinged" — the nearest
+   * key the player can actually reach, after they walked into a locked door
+   * with none in hand (see `RaycasterEngine.cueLockedDoorHint`). `null` for
+   * the overwhelming majority of frames, and for every caller that doesn't
+   * care, so an omitted argument is indistinguishable from no ping running. */
+  pingedKey: Point | null = null,
 ): MinimapPanelRect {
   const cell = Math.max(1, Math.floor(maxPixels / Math.max(map.width, map.height)));
   const w = map.width * cell;
@@ -801,6 +821,40 @@ export function renderMinimap(
   for (const item of map.keys) {
     if (item.collected) continue;
     ctx.fillRect(pad + item.x * cell - cell / 2, pad + item.y * cell - cell / 2, Math.max(2, cell), Math.max(2, cell));
+  }
+
+  // The key the player was just pointed at by walking into a locked door
+  // empty-handed: the same marker the loop above already drew, re-filled
+  // bright and wrapped in an outward-sweeping sonar ring. Drawn on top rather
+  // than instead, so the other uncollected keys keep their normal colour and
+  // only the answer to "which one" changes.
+  if (pingedKey) {
+    const now = performance.now();
+    // Brightness on a sine like every other pulse on this panel; the ring on a
+    // sawtooth instead, so it reads as repeated outward sweeps rather than
+    // breathing in and out.
+    const pingPulse = 0.5 + 0.5 * Math.sin(now / 150);
+    const sweep = (now % PING_SWEEP_MS) / PING_SWEEP_MS;
+    const base = Math.max(2, cell);
+    const cx = pad + pingedKey.x * cell;
+    const cy = pad + pingedKey.y * cell;
+    // Clipped to the panel: the ring is much larger than any other marker
+    // here, and a pinged key near an edge would otherwise sweep out over the
+    // 3D scene. (The compass badge straddles the corner deliberately; this
+    // would just look like a bug.)
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(panel.x, panel.y, panel.w, panel.h);
+    ctx.clip();
+    ctx.fillStyle = `rgba(255,247,196,${0.7 + 0.3 * pingPulse})`;
+    ctx.fillRect(cx - base / 2, cy - base / 2, base, base);
+    const ring = base + 2 + sweep * PING_RING_GROWTH_PX;
+    // `outlineRect` is four `fillRect`s — `strokeRect` is banned on every
+    // normal-frame renderer, see `renderCost.test.ts`.
+    ctx.strokeStyle = `rgba(242,214,75,${0.6 * (1 - sweep)})`;
+    ctx.lineWidth = 1;
+    outlineRect(ctx, cx - ring / 2, cy - ring / 2, ring, ring);
+    ctx.restore();
   }
 
   // Multiplayer-only loot drops (ammo/weapon/health/key drops on the ground

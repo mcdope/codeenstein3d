@@ -14,9 +14,13 @@ The bottom status bar shows:
 
 The crosshair turns red over a valid target, and shows tick marks for weapons that fire in a spread cone. Pulling the trigger on an empty weapon shows a fading "Out of ammo!" toast instead of just doing nothing.
 
+Three warning toasts share the top of the screen, each on its own row so they never cover each other when more than one fires at once: "Out of ammo!" on the first, "Memory leak — acid rising!" on the second, and "You need a key!" — walking into a key-locked door empty-handed — on the third, in that door's own blue.
+
 ## Minimap & Compass
 
 An always-on minimap sits in the corner, showing the full layout of the current level — walls, doors, hazard tiles, spike traps (color-coded active/safe), teleporters, uncollected keys, lore terminals, and the exit — from the moment the level loads, with **no fog-of-war**: unlike the Tab automap below, nothing here is gated on where you've actually walked. Your own position and facing are shown as a bright triangle, mines and enemies only appear once you've actually spotted them, and the exit marker is always visible, not revealed later. A small circular compass badge is attached to its bottom-right corner — its needle points toward the exit relative to whichever way you're currently facing (dead ahead reads as "up").
+
+Walking into a key-locked door with no key **pings** a key here for a few seconds: its marker brightens and a sonar ring sweeps outward from it, with a soft ping per beat, so you can tell which of several uncollected keys the game is pointing you at. It picks the nearest one by walking distance, not by straight line — a key behind another locked door isn't a suggestion — and the ring is clipped to the panel, so a key near an edge doesn't sweep out over the view.
 
 ## Automap
 
