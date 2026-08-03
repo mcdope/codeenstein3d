@@ -23,8 +23,21 @@
  *  - screenshots through the wedge, plus one at the moment of failure
  *  - player state and the surrounding grid dumped where it wedged
  *
+ * It doubles as the local stand-in for `verify:multiplayer-transition`, which
+ * cannot run from a machine with outbound UDP blocked. `--mp-shape` gives the
+ * bot `MultiplayerBot`'s decision-window shape on the same deterministic map;
+ * see that flag's own comment for exactly what it does and does not reproduce.
+ *
  * Usage:
  *   node scripts/diagnose-level-wedge.mjs [--level 10] [--attempts 4] [--headed]
+ *
+ *   --mp-shape          MultiplayerBot's stepMs/minDecisionMs/teleport tuning
+ *   --ignore-threats    never engage (the transition script's host)
+ *   --god-mode          IDDQD, so a run ends on navigation and not on combat
+ *   --all-attempts      run every attempt instead of stopping at the first
+ *                       wedge, and stop each attempt once --level clears
+ *   --window-histogram  bucket the dispatched decision windows
+ *   --exit-drive driveToExit|driveToward   which final approach to use
  *
  * Everything lands in `wedge-diagnosis/` (gitignored scratch).
  */
@@ -32,7 +45,7 @@ import { chromium } from "playwright";
 import fs from "node:fs";
 import path from "node:path";
 import { REPO_ROOT } from "./lib/loadEngineModules.mjs";
-import { Bot } from "./lib/bot.mjs";
+import { Bot, detectAnomalies, detectHeldKeyNoMovement, detectOscillation, summarizeActivityDistance } from "./lib/bot.mjs";
 import { planRoute } from "./lib/routePlanner.mjs";
 import { installVirtualClock } from "./lib/virtualClock.mjs";
 import { DEV_SERVER_URL, PROFILES, planLevels, waitForTestHooks, dismissOverlay, installDifficulty } from "./run-balancing-telemetry.mjs";
@@ -53,11 +66,60 @@ const MAX_ATTEMPTS = Number(arg("attempts", 4));
 const HEADED = process.argv.includes("--headed");
 const PROFILE_NAME = arg("profile", "Casual");
 
+// --- multiplayer-shaped mode ------------------------------------------------
+//
+// `verify:multiplayer-transition` cannot run from this machine at all: outbound
+// UDP is blocked, so WebRTC never gets past STUN and no session is ever
+// established. Its failure, though, is pure navigation, and navigation is
+// shared code — `MultiplayerBot` overrides only `readFull`/`readState`/
+// `dispatchSegment`/`maybeDetourForLoot`/`minDecisionMs`/`minPhaseMs` and four
+// tuning values. Everything from `planRoute` down through `driveLegs` /
+// `driveTowardWithReplan` / `driveToward` / `decide` is identical.
+//
+// Verified rather than assumed: demo-campaign level 1's generated map is
+// byte-identical with and without `maxPlayers: 2` (grid, exit, spawn, every
+// enemy incl. hp and home, every pickup, every mine), and the host's live
+// multiplayer spawn tile *is* `map.spawn`, so a single-player run starts from
+// the same tile and plans the same route.
+//
+// What this deliberately does **not** reproduce is the ~100ms lockstep input
+// delay (`INPUT_DELAY_TICKS`) or real `page.evaluate` latency — the virtual
+// clock is kept precisely so the decision *sequence* stays deterministic. So
+// `--mp-shape` reproduces the decision shape, not the transport; a stale-input
+// hypothesis can be *measured* here (see `--window-histogram`) but not proven.
+const MP_SHAPE = process.argv.includes("--mp-shape");
+const IGNORE_THREATS = process.argv.includes("--ignore-threats");
+const GOD_MODE = process.argv.includes("--god-mode");
+// Don't stop at the first wedge: a stuck *rate* needs every attempt to run.
+const ALL_ATTEMPTS = process.argv.includes("--all-attempts");
+const WINDOW_HISTOGRAM = process.argv.includes("--window-histogram");
+// `driveToExit` is what single-player callers use; `driveToward` mirrors what
+// `verify-multiplayer-transition.mjs` does, so the two can be A/B'd on one map.
+const EXIT_DRIVE = arg("exit-drive", "driveToExit");
+
 // Mirrors generate-default-highscore.mjs exactly — this is the whole point.
 const VIRTUAL_STEP_MS = 50;
 const RECORD_STEP_MS = 1000 / 60;
 const FINAL_APPROACH_TICKS = 80;
 const TELEPORT_REPLAN_LIMIT = 4;
+
+// `multiplayerBot.mjs`'s own DEFAULT_STEP_MS / MIN_DECISION_MS /
+// DEFAULT_TELEPORT_JUMP_DETECT_TILES, mirrored rather than imported: importing
+// `MultiplayerBot` would drag in its page-hook overrides, which is exactly what
+// must *not* change here.
+const MP_STEP_MS = 400;
+const MP_MIN_DECISION_MS = 300;
+const MP_TELEPORT_JUMP_DETECT_TILES = 4;
+
+/** `Bot` with `MultiplayerBot`'s decision-window shape and nothing else. */
+class MpShapedBot extends Bot {
+  get minDecisionMs() {
+    return MP_MIN_DECISION_MS;
+  }
+  get minPhaseMs() {
+    return MP_MIN_DECISION_MS;
+  }
+}
 
 const OUT = path.join(REPO_ROOT, "wedge-diagnosis");
 fs.rmSync(OUT, { recursive: true, force: true });
@@ -82,12 +144,29 @@ function dumpGrid(map, cx, cy, r = 9) {
   return out.join("\n");
 }
 
+/** Per-level trace digest: where the distance actually went, and every anomaly
+ * the balancing scan's own detectors would report. This is what turns the
+ * script from "capture one wedge" into "measure a stuck rate". */
+function levelDigest(bot) {
+  const trace = bot.mineMemory?.trace ?? [];
+  const { rows, total } = summarizeActivityDistance(trace);
+  const findings = [...detectHeldKeyNoMovement(trace), ...detectAnomalies(trace), ...detectOscillation(trace)];
+  return {
+    decisions: trace.length,
+    tiles: total,
+    minHpFrac: trace.length > 0 ? Math.min(...trace.map((r) => r.hpFrac)) : 1,
+    activity: rows.map((r) => `${r.activity} ${r.tiles.toFixed(1)}t (${(r.share * 100).toFixed(0)}%)`).join(", ") || "(none)",
+    findings,
+  };
+}
+
 async function main() {
   const levelPlans = await planLevels();
   if (TARGET_LEVEL !== null && levelPlans.length < TARGET_LEVEL) { say(`only ${levelPlans.length} levels planned`); flush(); return; }
 
   const browser = await chromium.launch({ headless: !HEADED });
   const profile = PROFILES[PROFILE_NAME];
+  const attempts = [];
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     say(`\n${"=".repeat(70)}\nATTEMPT ${attempt} — ${PROFILE_NAME}, watching for a wedge on ${TARGET_LEVEL === null ? "any level" : "level " + TARGET_LEVEL}\n${"=".repeat(70)}`);
@@ -111,11 +190,39 @@ async function main() {
     await waitForTestHooks(page);
     await dismissOverlay(page);
 
+    // IDDQD, typed letter by letter on the canvas exactly as a player would
+    // (`InputController.onKeyDown`) — single-player has no `debugSetGodMode`
+    // hook, that one is multiplayer-only. Matches the transition script's
+    // invulnerable host so a run ends on navigation, never on combat.
+    // `consumeCheat` matches on `e.key.toUpperCase()`, not `e.code`, so the
+    // event needs both: `code` is what every other synthetic key in this
+    // harness carries, `key` is what the cheat buffer actually reads.
+    //
+    // There is no hook that reports god-mode state, so it is asserted
+    // indirectly but positively: without it this exact run dies on level 1
+    // within ~34 decisions, so `minHpFrac` staying at 1.00 across a full level
+    // is the observation that the cheat landed. The summary prints it, and a
+    // `died` outcome makes a silent failure impossible to miss.
+    if (GOD_MODE) {
+      await page.evaluate(() => {
+        const canvas = document.querySelector("canvas");
+        for (const letter of "IDDQD") {
+          const ev = { code: `Key${letter}`, key: letter.toLowerCase() };
+          canvas.dispatchEvent(new KeyboardEvent("keydown", ev));
+          canvas.dispatchEvent(new KeyboardEvent("keyup", ev));
+        }
+      });
+      await page.evaluate(() => window.__pumpVirtualTime(100, 1000 / 60));
+    }
+
     // Generator's exact Bot config, plus the logging it never had.
-    const bot = new Bot(page, profile, {
+    const BotClass = MP_SHAPE ? MpShapedBot : Bot;
+    const bot = new BotClass(page, profile, {
       realtime: false,
-      stepMs: VIRTUAL_STEP_MS,
+      stepMs: MP_SHAPE ? MP_STEP_MS : VIRTUAL_STEP_MS,
       recordStepMs: RECORD_STEP_MS,
+      ignoreThreats: IGNORE_THREATS,
+      ...(MP_SHAPE ? { tuning: { TELEPORT_JUMP_DETECT_TILES: MP_TELEPORT_JUMP_DETECT_TILES } } : {}),
       logger: {
         trace: true,
         navDiag: true,
@@ -153,6 +260,25 @@ async function main() {
       return res;
     };
 
+    // Decision-window histogram. In multiplayer the lockstep input delay is
+    // INPUT_DELAY_TICKS(3) at TICK_RATE_HZ(30) = ~100ms, so a decision window
+    // shorter than that reads the world back before its own input has landed.
+    // `applyAction` dispatches `intent.durationMs` as-is and `minDecisionMs` is
+    // only consulted for the sprint-safety gate, so short turn/move bursts
+    // become short windows. This measures how often that actually happens
+    // before anyone changes it — `segmentsFor`'s doc comment argues the current
+    // collapse is deliberate, and `doc/dev/decisions.md` records per-key holds
+    // measuring *worse* in single-player, so the burden of proof is on a fix.
+    const windowBuckets = { "<50": 0, "50-100": 0, "100-300": 0, "300+": 0 };
+    if (WINDOW_HISTOGRAM) {
+      const origApply = bot.applyAction.bind(bot);
+      bot.applyAction = async (intent, opts = {}) => {
+        const ms = intent.durationMs ?? opts.maxDurationMs ?? bot.stepMs;
+        windowBuckets[ms < 50 ? "<50" : ms < 100 ? "50-100" : ms < 300 ? "100-300" : "300+"]++;
+        return origApply(intent, opts);
+      };
+    }
+
     // Count decisions and snapshot periodically once on the target level.
     const origTick = bot.tick.bind(bot);
     bot.tick = async (...a) => {
@@ -185,13 +311,21 @@ async function main() {
         outcome = await bot.driveLegs(resumed.legs);
       }
       if (outcome.state === "playing") {
-        const pushed = await bot.driveToExit({ x: map.exit.x + 0.5, y: map.exit.y + 0.5 }, FINAL_APPROACH_TICKS);
+        const exitCenter = { x: map.exit.x + 0.5, y: map.exit.y + 0.5 };
+        // `driveToward` is the transition script's shape: a straight line at
+        // the exit with no pathfinding, so it is the arm that shows what that
+        // costs when the route did not end on the exit tile.
+        const pushed =
+          EXIT_DRIVE === "driveToward"
+            ? await bot.driveToward(exitCenter, bot.tuning.TIGHT_ARRIVE_EPS, FINAL_APPROACH_TICKS)
+            : await bot.driveToExit(exitCenter, FINAL_APPROACH_TICKS);
         if (pushed.state !== "won") outcome = { state: pushed.state === "over" ? "over" : "stuck" };
       }
 
-      if (outcome.state === "over") { say(`  level ${levelNo}: DIED`); break; }
+      if (outcome.state === "over") { say(`  level ${levelNo}: DIED`); attempts.push({ attempt, levelNo, outcome: "died", ...levelDigest(bot) }); break; }
       if (outcome.state === "stuck") {
         say(`  level ${levelNo}: STUCK`);
+        attempts.push({ attempt, levelNo, outcome: "stuck", ...levelDigest(bot) });
         {
           wedged = true;
           lines.push(...perLevel);
@@ -238,6 +372,12 @@ async function main() {
         fs.writeFileSync(tracePath, perLevel.join("\n"));
         say(`  --- wrote ${perLevel.length} trace lines to ${path.basename(tracePath)} ---`);
       }
+      if (TARGET_LEVEL !== null && levelNo === TARGET_LEVEL) {
+        attempts.push({ attempt, levelNo, outcome: "cleared", ...levelDigest(bot) });
+        // A stuck *rate* for one level doesn't need the rest of the campaign,
+        // and playing it out is most of the wall clock across 20 attempts.
+        if (ALL_ATTEMPTS) { say(`  level ${levelNo}: cleared — stopping this attempt (target level only)`); break; }
+      }
       await dismissOverlay(page); // Commit Summary overlay
       // `polling: 100` is load-bearing: the virtual clock replaces
       // requestAnimationFrame, so Playwright's default rAF polling never runs.
@@ -258,12 +398,29 @@ async function main() {
     }
 
     await context.close();
+    if (WINDOW_HISTOGRAM) say(`  [window] decision windows: ${Object.entries(windowBuckets).map(([k, v]) => `${k}ms:${v}`).join("  ")}`);
     flush();
-    if (wedged) { say(`\nCaptured a level-${levelNo} wedge on attempt ${attempt}. Artifacts in wedge-diagnosis/`); break; }
-    say(`  (attempt ${attempt} ended without a wedge)`);
+    if (wedged && !ALL_ATTEMPTS) { say(`\nCaptured a level-${levelNo} wedge on attempt ${attempt}. Artifacts in wedge-diagnosis/`); break; }
+    if (!wedged) say(`  (attempt ${attempt} ended without a wedge)`);
   }
 
   await browser.close();
+
+  if (attempts.length > 0) {
+    say(`\n${"=".repeat(70)}\nSUMMARY — ${PROFILE_NAME}${MP_SHAPE ? ", mp-shape" : ""}${IGNORE_THREATS ? ", ignoreThreats" : ""}${GOD_MODE ? ", godMode" : ""}, exit-drive=${EXIT_DRIVE}\n${"=".repeat(70)}`);
+    say("  att lvl outcome   decisions   tiles  minHp  activity");
+    for (const a of attempts) {
+      say(`  ${String(a.attempt).padStart(3)} ${String(a.levelNo).padStart(3)} ${a.outcome.padEnd(9)} ${String(a.decisions).padStart(9)} ${a.tiles.toFixed(1).padStart(7)}  ${a.minHpFrac.toFixed(2)}   ${a.activity}`);
+      for (const f of a.findings) say(`        [${f.type}] ${f.ticks} ticks, decisions ${f.startTick}-${f.endTick} ${f.detail}`);
+    }
+    const stuck = attempts.filter((a) => a.outcome === "stuck").length;
+    const died = attempts.filter((a) => a.outcome === "died").length;
+    say(`\n  stuck ${stuck}/${attempts.length}, died ${died}/${attempts.length}, cleared ${attempts.length - stuck - died}/${attempts.length}`);
+    const worst = attempts.flatMap((a) => a.findings).sort((x, y) => y.ticks - x.ticks)[0];
+    say(`  longest anomaly run: ${worst ? `${worst.type} ${worst.ticks} ticks` : "(none)"}`);
+    fs.writeFileSync(path.join(OUT, "summary.json"), JSON.stringify(attempts, null, 2));
+  }
+
   flush();
   say(`\nscreenshots: ${fs.readdirSync(OUT).filter((f) => f.endsWith(".png")).length}, trace: wedge-diagnosis/trace.log`);
   flush();
