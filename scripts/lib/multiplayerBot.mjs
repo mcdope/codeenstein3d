@@ -156,6 +156,20 @@ const MAX_TICKS_PER_WAYPOINT_HERE = 40;
  */
 const NAV_STALL_BAIL_TICKS = 24;
 
+/**
+ * Distance from the exit past which `driveToExit` BFS-walks back to it before
+ * its first straight-line nudge, instead of only between rounds.
+ *
+ * Round 0 skips the backtrack on the assumption that the caller's legs just
+ * ended on the exit. In multiplayer that assumption is not safe: a route that
+ * wedges hands off to `driveToExit` from wherever it died — observed 22.5
+ * tiles out — and straight-lining from there is 80 decisions spent walking
+ * into a wall before any pathfinding happens. 1.5 tiles is comfortably past
+ * `TIGHT_ARRIVE_EPS` and any legitimate final nudge, so the normal
+ * legs-ended-on-the-exit case still skips it.
+ */
+const EXIT_BACKTRACK_TILES = 1.5;
+
 /** Synthesized in place of a null `getBotPlayerState(id)` result (the
  * multiplayer session has fully ended — team-eliminated, host-disconnected,
  * etc. — see this module's own doc comment's last bullet is about a
@@ -202,6 +216,7 @@ export class MultiplayerBot extends Bot {
         MAX_TICKS_PER_WAYPOINT: MAX_TICKS_PER_WAYPOINT_HERE,
         BOT_LOOT_ABANDON_ON_STUCK: true,
         BOT_NAV_STALL_BAIL_TICKS: NAV_STALL_BAIL_TICKS,
+        BOT_EXIT_BACKTRACK_TILES: EXIT_BACKTRACK_TILES,
         ...opts.tuning,
       },
       realtime: true,

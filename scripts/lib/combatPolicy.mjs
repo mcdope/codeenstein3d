@@ -155,6 +155,11 @@ export const DEFAULT_TUNING = {
   // measured without it. See `Bot#driveToward`.
   BOT_NAV_STALL_BAIL_TICKS: 0,
   BOT_NAV_STALL_RADIUS_TILES: 0.5,
+  // How far from the exit `Bot#driveToExit` will BFS back to it before its
+  // *first* straight-line nudge, rather than only between rounds. 0 disables
+  // it, which is the single-player default — there the caller's legs have
+  // always just ended on the exit, so round 0 has nothing to path around.
+  BOT_EXIT_BACKTRACK_TILES: 0,
   TURN_MOVE_EPS: 0.2,
   ARRIVE_EPS: 0.15,
   TIGHT_ARRIVE_EPS: 0.05,

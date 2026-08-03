@@ -1287,7 +1287,21 @@ export class Bot {
       // of this method cleared the exit room correctly and then failed anyway,
       // burning all `finalApproachTicks` straight-lining into a wall. Round 0
       // is normally a no-op (the caller's legs just ended at the exit).
-      if (round > 0) {
+      // Round 0 normally skips this because the caller's legs just ended on
+      // the exit, so a straight-line nudge is all that is left. That
+      // assumption fails whenever the legs *didn't* get there — a route that
+      // wedged, or a caller that hands off after one — and then round 0 spends
+      // its whole budget straight-lining into a wall from across the level
+      // before any pathfinding happens. `BOT_EXIT_BACKTRACK_TILES` (0 = off,
+      // which keeps single-player exactly as it was) makes that distance-based
+      // instead of round-based.
+      const backtrackFrom = this.tuning.BOT_EXIT_BACKTRACK_TILES;
+      let far = false;
+      if (round === 0 && backtrackFrom > 0) {
+        const here = await this.readState();
+        far = Math.hypot(here.x - exitCenter.x, here.y - exitCenter.y) > backtrackFrom;
+      }
+      if (round > 0 || far) {
         const back = await this.#withActivity("exitBacktrack", () => this.#walkPathTo({ x: this.map.exit.x, y: this.map.exit.y }, openedDoors));
         if (back.state !== "playing") return back;
         if (back.reason === "teleported") return this.#acceptedOr(back);
