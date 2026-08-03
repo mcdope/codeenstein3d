@@ -2769,23 +2769,32 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
         // Persist immediately at the transition (not just the throttled
         // in-play autosave) so a tab closed right after advancing still
         // resumes at the new file rather than the one just cleared.
-        saveCampaign({
-          // `?? ""` is unreachable here too — reached only after a level
-          // already launched, which requires workspaceRootName to be set.
-          /* v8 ignore next -- @preserve */
-          workspaceName: workspaceRootName ?? "",
-          filePath: next.path,
-          health: carryover.health,
-          swap: carryover.swap,
-          bullets: carryover.bullets,
-          rockets: carryover.rockets,
-          smg: carryover.smg,
-          gas: carryover.gas,
-          score: stats.score,
-          weaponIndex: stats.weaponIndex,
-          ownedWeapons: stats.ownedWeapons,
-          levelIndex: campaignLevelIndex,
-        });
+        //
+        // Guarded on `workspaceIsRemote` for the same reason `persistProgress`
+        // is, and stated there: a save is only ever resumable via "Continue
+        // Run", which re-picks a *local* folder and has no way to re-fetch a
+        // GitHub repo or rebuild the bundled demo tree. Writing one here anyway
+        // is what put a live "Continue Run" button in front of a path no local
+        // pick can match — the exact dead button that guard exists to prevent.
+        if (!workspaceIsRemote) {
+          saveCampaign({
+            // `?? ""` is unreachable here too — reached only after a level
+            // already launched, which requires workspaceRootName to be set.
+            /* v8 ignore next -- @preserve */
+            workspaceName: workspaceRootName ?? "",
+            filePath: next.path,
+            health: carryover.health,
+            swap: carryover.swap,
+            bullets: carryover.bullets,
+            rockets: carryover.rockets,
+            smg: carryover.smg,
+            gas: carryover.gas,
+            score: stats.score,
+            weaponIndex: stats.weaponIndex,
+            ownedWeapons: stats.ownedWeapons,
+            levelIndex: campaignLevelIndex,
+          });
+        }
         launchLevel(next.path, parsed, carryover);
         return;
       }
