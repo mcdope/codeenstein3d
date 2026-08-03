@@ -5535,6 +5535,64 @@ describe("main.ts — reaching a natural win/death via real navigation", () => {
     expect(document.querySelector(".canvas-area")!.hasAttribute("hidden")).toBe(false);
   });
 
+  it(
+    "advancing a level on a remote (GitHub) workspace writes no campaign save",
+    // Same uncheated-navigation flakiness as the other navigate-to-the-exit
+    // tests in this describe.
+    { retry: 10, timeout: 15000 },
+    async () => {
+      // The mirror of the local advance test above: a remote workspace with a
+      // *second* parsable file, so `advanceToNextLevel` genuinely enters its
+      // loop body and reaches the `saveCampaign` call — unlike the remote win
+      // tests elsewhere in this file, which mock single-file trees and fall
+      // straight through to the campaign-complete branch instead.
+      //
+      // A remote save is unresumable by construction ("Continue Run" re-picks a
+      // *local* folder), so writing one only ever surfaces a dead Continue tab
+      // pointing at a path no local pick can match.
+      const { loadCampaignSave } = await importMain();
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      fetchMock
+        .mockResolvedValueOnce({ ok: true, status: 200, statusText: "OK", json: async () => ({ default_branch: "main" }), body: null } as unknown as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          json: async () => ({ tree: [{ path: "main.c", type: "blob" }, { path: "zzz_next.c", type: "blob" }] }),
+          body: null,
+        } as unknown as Response)
+        .mockResolvedValue({ ok: true, status: 200, statusText: "OK", text: async () => NAVIGABLE_FIXTURE_C } as unknown as Response);
+      const logSpy = vi.spyOn(console, "log");
+      enableTestHooks();
+      setGithubRepoInput("owner/repo");
+      document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
+      await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+      const mapLogCall = logSpy.mock.calls.find(
+        (c) => c[1] !== null && typeof c[1] === "object" && "grid" in (c[1] as object),
+      );
+      const map = mapLogCall![1] as { grid: number[][]; spawn: { x: number; y: number }; exit: { x: number; y: number } };
+      const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+      dismissBriefingHelper(raf);
+      for (const key of "IDDQD") canvas.dispatchEvent(new KeyboardEvent("keydown", { key }));
+      raf.flush(1, 16);
+
+      const path = bfsPath(map.grid, map.spawn, map.exit);
+      expect(path.length).toBeGreaterThan(0);
+      walkPath(canvas, raf, path, () => testHooks()?.getPlayerState().state !== "playing", 500);
+      expect(testHooks()?.getPlayerState().state).toBe("won");
+
+      dismissBriefingHelper(raf); // -> advanceToNextLevel -> finds zzz_next.c and launches it
+      await waitUntil(
+        () => logSpy.mock.calls.some((c) => typeof c[0] === "string" && c[0].includes("cleared — advancing to repo/zzz_next.c")),
+        8000,
+      );
+      // The transition happened; no save rode along with it.
+      expect(loadCampaignSave()).toBeNull();
+    },
+  );
+
   it("skips a next-in-order file that fails to read, advancing to the one after it instead", async () => {
     const { loadCampaignSave } = await importMain();
     const logSpy = vi.spyOn(console, "log");
