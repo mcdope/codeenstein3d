@@ -60,8 +60,16 @@ export function shortestPath(grid: Tile[][], spawn: Point, exit: Point): number 
 }
 
 /**
- * Dev-time safety net: every room's center should be reachable from spawn
- * under the *real* key-gated unlock model — collect any reachable key, spend
+ * Runs on every `generate()` call, in production builds too — deliberately,
+ * and not gated behind `import.meta.env.DEV`. This is the map layer's one hard
+ * invariant (see `decisions.md`'s "Room Connectivity Is a Hard Guarantee,
+ * Corridor Length Isn't"), and a shipped build is exactly where nothing else
+ * would catch a violation: an unreachable room is unwinnable, and silently so.
+ * The cost is one BFS per door on top of a generation pass that already does
+ * far more work than that, paid once per level load rather than per frame.
+ *
+ * Every room's center should be reachable from spawn under the *real*
+ * key-gated unlock model — collect any reachable key, spend
  * one to open a reachable still-locked door, repeat — not "if every door
  * were already open." That looser check used to be this function's whole
  * strategy (doors counted as opened regardless of key state), on the
