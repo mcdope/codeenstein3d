@@ -5,30 +5,33 @@
 import type { Point, Room } from "../types";
 import { dist } from "./util";
 
+/** The centers of every room that will actually spawn enemies — the points a
+ * spawn corner wants to be far from. Known before any enemy is placed, since a
+ * pack's first member always spawns dead center (see `enemyPositions`). */
+function enemyRoomCentersOf(rooms: Room[]): Point[] {
+  return rooms.filter((r) => r.entity.kind === "function" || r.entity.kind === "method").map((r) => r.center);
+}
+
 /**
- * Pick a spawn point in the first room: whichever of its four corners (1 tile
- * inset from the room edge) has the greatest minimum distance to any
- * enemy-bearing room's center. Room centers are known before any enemy is
- * actually placed (an enemy pack's first member always spawns dead center —
- * see `enemyPositions`), so this needs no reordering of the generation
- * pipeline. Best-effort, not a guarantee: a corner can still end up within
- * another enemy's aggro radius if the level is small or densely packed —
- * there just isn't a better option to pick instead.
+ * Whichever of `room`'s four corners (1 tile inset from the room edge) has the
+ * greatest minimum distance to any point in `enemyRoomCenters` — falling back
+ * to the first corner when there are none to be far from.
+ *
+ * Shared by `pickSafeSpawn` (room 0 only) and `pickMultiplayerSpawns` (every
+ * room). Those two carried separate, identical copies of this loop while
+ * `pickMultiplayerSpawns`' doc comment already described it as reusing
+ * `pickSafeSpawn`'s logic — so this makes the claim true rather than aspirational.
+ *
+ * Pure geometry: draws nothing from `rng`, so nothing here can perturb the
+ * generator's draw sequence.
  */
-export function pickSafeSpawn(rooms: Room[]): Point {
-  if (rooms.length === 0) return { x: 1, y: 1 };
-  const room0 = rooms[0];
-
+function farthestCorner(room: Room, enemyRoomCenters: readonly Point[]): Point {
   const candidates: Point[] = [
-    { x: room0.x + 1, y: room0.y + 1 },
-    { x: room0.x + room0.w - 2, y: room0.y + 1 },
-    { x: room0.x + 1, y: room0.y + room0.h - 2 },
-    { x: room0.x + room0.w - 2, y: room0.y + room0.h - 2 },
+    { x: room.x + 1, y: room.y + 1 },
+    { x: room.x + room.w - 2, y: room.y + 1 },
+    { x: room.x + 1, y: room.y + room.h - 2 },
+    { x: room.x + room.w - 2, y: room.y + room.h - 2 },
   ];
-
-  const enemyRoomCenters = rooms
-    .filter((r) => r.entity.kind === "function" || r.entity.kind === "method")
-    .map((r) => r.center);
   if (enemyRoomCenters.length === 0) return candidates[0];
 
   let best = candidates[0];
@@ -41,6 +44,21 @@ export function pickSafeSpawn(rooms: Room[]): Point {
     }
   }
   return best;
+}
+
+/**
+ * Pick a spawn point in the first room: whichever of its four corners (1 tile
+ * inset from the room edge) has the greatest minimum distance to any
+ * enemy-bearing room's center. Room centers are known before any enemy is
+ * actually placed (an enemy pack's first member always spawns dead center —
+ * see `enemyPositions`), so this needs no reordering of the generation
+ * pipeline. Best-effort, not a guarantee: a corner can still end up within
+ * another enemy's aggro radius if the level is small or densely packed —
+ * there just isn't a better option to pick instead.
+ */
+export function pickSafeSpawn(rooms: Room[]): Point {
+  if (rooms.length === 0) return { x: 1, y: 1 };
+  return farthestCorner(rooms[0], enemyRoomCentersOf(rooms));
 }
 
 /** Pick the exit tile: the center of the room whose center is furthest (by
@@ -84,27 +102,8 @@ export function pickExit(rooms: Room[], spawn: Point): Point {
  */
 export function pickMultiplayerSpawns(rooms: Room[], exit: Point, count: number): Point[] {
   if (rooms.length === 0) return [{ x: exit.x, y: exit.y }];
-  const enemyRoomCenters = rooms.filter((r) => r.entity.kind === "function" || r.entity.kind === "method").map((r) => r.center);
-  const safePointFor = (room: Room): Point => {
-    const candidates: Point[] = [
-      { x: room.x + 1, y: room.y + 1 },
-      { x: room.x + room.w - 2, y: room.y + 1 },
-      { x: room.x + 1, y: room.y + room.h - 2 },
-      { x: room.x + room.w - 2, y: room.y + room.h - 2 },
-    ];
-    if (enemyRoomCenters.length === 0) return candidates[0];
-    let best = candidates[0];
-    let bestMinDist = -1;
-    for (const c of candidates) {
-      const minDist = Math.min(...enemyRoomCenters.map((e) => dist(c.x + 0.5, c.y + 0.5, e.x + 0.5, e.y + 0.5)));
-      if (minDist > bestMinDist) {
-        bestMinDist = minDist;
-        best = c;
-      }
-    }
-    return best;
-  };
-  const pool = rooms.map(safePointFor).filter((c) => !(c.x === exit.x && c.y === exit.y));
+  const enemyRoomCenters = enemyRoomCentersOf(rooms);
+  const pool = rooms.map((room) => farthestCorner(room, enemyRoomCenters)).filter((c) => !(c.x === exit.x && c.y === exit.y));
   const chosen: Point[] = [];
   for (let i = 0; i < count && pool.length > 0; i++) {
     let bestIdx = 0;
