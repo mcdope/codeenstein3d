@@ -82,11 +82,56 @@ or HTTPS. The app detects this and says so in place of the workspace name.
 Everything else works anywhere: the **GitHub** tab and the bundled **Demos** campaign don't
 touch the local filesystem at all.
 
-## "The Multiplayer tab isn't there"
+## Multiplayer
+
+### "The Multiplayer tab isn't there"
 
 You're on a local build that wasn't pointed at a signaling server. The address is baked in
 when the dev server starts, so there's no in-app setting to flip — see
 [Multiplayer](multiplayer.md), or just use the hosted build.
+
+### "The Host sub-tab is greyed out"
+
+Hovering it says *"Hosting requires a GitHub-loaded repo or the Demos campaign"*, and that's
+the whole rule: **a locally-picked folder can't be hosted.** Your guests need the same source
+to build the same level from, and shipping your local files to them is exactly what this
+project doesn't do — so hosting is limited to sources they can obtain themselves. Load the
+repo through the **GitHub** tab instead, or host the **Demos** campaign.
+
+Joining has no such restriction. A guest receives the map from the host and needs no
+workspace of its own.
+
+### What the error messages mean
+
+| Message | What actually happened |
+|---|---|
+| "No session found for that code — it may have expired." | Either a typo, or the session is genuinely gone. Codes live **5 minutes from the last time anything touched them**, not from when they were created — so a code sitting unused while you paste it into a chat can lapse. The host can just create a new one. |
+| "Someone else already joined that session." | That code's current slot is taken. This is normal in a 3-4 player session: the host re-arms a fresh slot under the same code the moment each guest connects, so wait a couple of seconds and click Join again rather than asking for a new code. |
+| "Rate-limited by the multiplayer server — try again shortly." | Too many requests from your address in a short window — usually repeated Join attempts on a wrong code. It clears on its own, but the backoff lengthens each time you trip it, so wait rather than retrying hard. |
+| "Multiplayer is not configured…" | The build has no signaling server — see the first entry above. |
+| "Multiplayer connection failed." / "Multiplayer session setup failed." | The handshake didn't complete. Almost always the network case below. |
+
+### A join that hangs on "Establishing connection…"
+
+This is the network case, not a bug — some networks block direct browser-to-browser links.
+[Multiplayer § If you can't connect](multiplayer.md#if-you-cant-connect) has the detail and
+what to do about it.
+
+### The session ended on its own
+
+Four things end a session, and the on-screen message says which: every player was eliminated,
+the host disconnected, the campaign was completed, or a level transition failed to complete.
+Only the last is a fault — the other three are the session finishing normally.
+
+A *guest* dropping doesn't end anything: the rest of the team waits out a short grace period
+in case they reconnect, then continues without them, keeping their score on the final
+scoreboard marked as disconnected.
+
+### "My highscore from that run is missing"
+
+Multiplayer runs are deliberately never recorded to the Highscores board and can't be watched
+back — you get the shared end-of-run scoreboard instead. Cheat codes are disabled for the
+same reason. See [Multiplayer § What's different](multiplayer.md#whats-different-in-multiplayer).
 
 ## "The level briefing won't dismiss"
 

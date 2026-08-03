@@ -38,6 +38,10 @@ those networks — there's nothing to configure on your side. Without a relay,
 either the host or the joiner switching to a less restrictive network (e.g. off a
 corporate VPN, or a different Wi-Fi) is usually enough.
 
+For everything else that can go wrong — an expired code, "someone else already
+joined", a greyed-out Host tab — see
+[Troubleshooting § Multiplayer](troubleshooting.md#multiplayer).
+
 ## Disconnects and level transitions
 
 If a player's connection drops, the rest of the session waits a short grace period in case it reconnects, then continues without them — their score up to that point is kept, just marked as disconnected on the end-of-run scoreboard. When any player reaches the level's exit tile, a short countdown starts for the rest of the team to catch up before everyone advances together to the next level — but only once every enemy in the exit's own room is dead; standing on the tile does nothing at all before that.
