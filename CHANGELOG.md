@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## beta-6
 
 - Changed: **levels are laid out completely differently.** Rooms are placed next to each other instead of scattered and joined up in source order, so a level is a connected complex rather than rooms strung along enormous hallways. The walk from one room to the next fell from 59 tiles on average (191 at worst) to 22 (48 at worst), and a level fills over a third of its own footprint instead of a fifth
 - Changed: corridors don't all look the same any more. A corridor now has a width — most a single-file squeeze, some two- or three-tile halls — long ones can step diagonally, and the shapes that interrupt them went from two to six, never the same twice in a row: 84 across the campaign instead of 277 all-but-identical ones
