@@ -229,14 +229,74 @@ export function scaleRosterForDifficulty(enemies, difficulty, DIFFICULTY_MULTIPL
   }));
 }
 
-/** Enemy budget: counts, HP and incoming DPS by archetype.
+/**
+ * Damage per second one enemy of an archetype puts out, split by attack.
  *
- * `dps` is left `null` until the enemy combat constants in `enemyAi.ts` are
- * exported — they are all module-private today, so incoming DPS, the survival
- * window and the threat score are the one group of catalog metrics this solver
- * genuinely cannot compute yet. Reporting `null` is the honest placeholder; a
- * plausible-looking guessed number would be worse than none. */
-export function enemyBudget(roster) {
+ * Melee is `ATTACK_DAMAGE / ATTACK_COOLDOWN` at contact; ranged is
+ * `PROJECTILE_DAMAGE` over the *mean* of the randomised
+ * `FIRE_COOLDOWN_MIN..MAX` window. Both go through the archetype's damage
+ * multiplier and then the difficulty's, matching `enemyAi.ts`'s
+ * `damageMultiplier` and the `damage` multiplier the engine applies to
+ * enemy-dealt damage only (traps and self-splash are excluded there, and so
+ * are excluded here).
+ *
+ * `sustained` is melee + ranged, which is the correct read for an enemy in
+ * contact: nothing in `enemyAi.ts` stops a melee-range enemy from also taking
+ * ranged shots, and the two cooldowns are independent.
+ */
+export function incomingDps(archetype, constants, difficulty) {
+  const C = constants.COMBAT;
+  const damageMultiplier =
+    archetype === "elite" ? C.ELITE_DAMAGE_MULTIPLIER : archetype === "edgeCase" ? C.EDGE_CASE_DAMAGE_MULTIPLIER : 1;
+  const difficultyMultiplier = constants.DIFFICULTY_MULTIPLIERS[difficulty].damage;
+  const scale = damageMultiplier * difficultyMultiplier;
+  const melee = (C.ATTACK_DAMAGE / C.ATTACK_COOLDOWN) * scale;
+  const meanFireInterval = (C.FIRE_COOLDOWN_MIN + C.FIRE_COOLDOWN_MAX) / 2;
+  const ranged = (C.PROJECTILE_DAMAGE / meanFireInterval) * scale;
+  return { melee, ranged, sustained: melee + ranged };
+}
+
+/**
+ * How long the player survives N of an archetype at once, in seconds.
+ *
+ * Effective HP is `MAX_HEALTH + swap`, because swap absorbs 1:1 before health
+ * with no reduction curve — there is no other mitigation in the game, so this
+ * is exact rather than a model.
+ */
+export function survivalWindow(archetype, attackerCount, constants, difficulty, swap = 0) {
+  const dps = incomingDps(archetype, constants, difficulty).sustained * attackerCount;
+  const effectiveHp = constants.COMBAT.MAX_HEALTH + swap;
+  return dps > 0 ? effectiveHp / dps : Infinity;
+}
+
+/**
+ * A single comparable number per archetype, normalised so a regular enemy is
+ * 1.0.
+ *
+ * `dps × √hp × rangeFactor × speedFactor`. The square root on HP is
+ * deliberate: HP and DPS are not interchangeable — doubling an enemy's HP
+ * doubles how long it threatens you, but doubling its DPS doubles how much it
+ * takes off you per second *and* shortens your window, so a linear HP term
+ * would let a damage sponge outrank a genuinely lethal enemy. Range and speed
+ * enter linearly against the regular enemy's own values, so they are 1.0 for
+ * anything that has not changed them.
+ *
+ * `hp` is the archetype's mean on the level being scored, so this ranks the
+ * enemies actually present rather than the archetype in the abstract.
+ */
+export function threatScore(archetype, meanHp, constants, difficulty) {
+  const C = constants.COMBAT;
+  const dps = incomingDps(archetype, constants, difficulty).sustained;
+  const speedFactor = archetype === "edgeCase" ? C.EDGE_CASE_SPEED_MULTIPLIER : 1;
+  // Nothing varies ranged reach by archetype today, so this is 1.0 across the
+  // board -- kept as an explicit term so adding a longer-reaching archetype
+  // shows up in the score instead of silently not counting.
+  const rangeFactor = C.RANGED_RANGE / C.RANGED_RANGE;
+  return dps * Math.sqrt(Math.max(1, meanHp)) * rangeFactor * speedFactor;
+}
+
+/** Enemy budget: counts, HP and incoming DPS by archetype. */
+export function enemyBudget(roster, constants = null, difficulty = "normal") {
   const byArchetype = {
     normal: { count: 0, hp: 0 },
     elite: { count: 0, hp: 0 },
@@ -247,11 +307,22 @@ export function enemyBudget(roster) {
     byArchetype[a].count += 1;
     byArchetype[a].hp += e.maxHp;
   }
+  let totalDps = null;
+  if (constants?.COMBAT) {
+    totalDps = 0;
+    for (const [archetype, stats] of Object.entries(byArchetype)) {
+      const dps = incomingDps(archetype, constants, difficulty).sustained;
+      stats.dps = stats.count * dps;
+      stats.meanHp = stats.count > 0 ? stats.hp / stats.count : 0;
+      stats.threat = stats.count > 0 ? threatScore(archetype, stats.meanHp, constants, difficulty) : null;
+      totalDps += stats.dps;
+    }
+  }
   return {
     totalCount: roster.length,
     totalHp: roster.reduce((sum, e) => sum + e.maxHp, 0),
     byArchetype,
-    totalDps: null,
+    totalDps,
   };
 }
 
@@ -374,7 +445,7 @@ export function solveLevel({ map, constants, difficulty, ownedWeapons, carriedAm
   const startAmmo = carriedAmmo ?? constants.startingAmmo(roster);
   const carriedDamage = AMMO_KINDS.reduce((sum, kind) => sum + (startAmmo[kind] ?? 0) * (poolValue[kind] ?? 0), 0);
 
-  const enemies = enemyBudget(roster);
+  const enemies = enemyBudget(roster, constants, difficulty);
   const prePlaced = prePlacedBudget({ ammoPickups: map.ammoPickups, constants, ownedWeapons, difficulty });
   const drops = dropBudget({ roster, constants, ownedWeapons, bonusLevel, difficulty });
 
@@ -405,6 +476,16 @@ export function solveLevel({ map, constants, difficulty, ownedWeapons, carriedAm
     outliers: hpOutliers(roster, obtainable),
     health: { prePlaced: prePlaced.health, drops: drops.health },
     ttk: ttkTable(constants.profiles, roster, ownedWeapons),
+    // Against the level's own worst case: everything that can aggro at once is
+    // bounded above by the roster, so this is the pessimistic end of the
+    // survival window rather than an observed peak.
+    survival: constants.COMBAT
+      ? {
+          vsOneNormal: survivalWindow("normal", 1, constants, difficulty),
+          vsThreeNormal: survivalWindow("normal", 3, constants, difficulty),
+          vsOneElite: survivalWindow("elite", 1, constants, difficulty),
+        }
+      : null,
   };
 }
 

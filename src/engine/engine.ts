@@ -127,6 +127,7 @@ import {
 } from "./weapons";
 import { HEALTH_DROP_AMOUNT, MAX_SWAP, REGULAR_KILL_NO_DROP_CHANCE, SWAP_DROP_AMOUNT, rollBonusWeaponDrop, rollLoot } from "./loot";
 import { AMMO_META, AMMO_TYPES, startingAmmo, type AmmoPools } from "./ammo";
+import { MAX_HEALTH } from "./combatConstants";
 import { applyLootDrop, dropEliteLoot, grantOrTopUpWeapon, rollMissChanceToolchain, type LootContext } from "./lootApply";
 import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, ROCKET_BLAST_RADIUS, type Rocket } from "./rockets";
 import { EnemySpatialGrid } from "./spatialGrid";
@@ -199,8 +200,6 @@ const MAX_DT = 0.05;
 /** How often (seconds) the FPS overlay's averaged reading recomputes — often
  * enough to feel live, slow enough not to jitter every frame. */
 const FPS_UPDATE_INTERVAL = 0.5;
-/** Starting / maximum System Stability (health), as a percentage. */
-const MAX_HEALTH = 100;
 /** Gate for every `?testHooks=1` automation hook (headless bot introspection,
  * `debugSetGodMode`/`injectDesync`, the bot rotation-speed override) — unlike
  * `?perfDebug=1` (a real diagnostic real players may be handed a URL for),

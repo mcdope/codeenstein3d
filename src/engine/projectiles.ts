@@ -10,13 +10,8 @@
 import { isWall, type Player } from "./player";
 import { collectOrbBillboards, type BillboardJob } from "./sprites";
 import type { GameMap } from "../map/types";
+import { PROJECTILE_DAMAGE, PROJECTILE_RADIUS, PROJECTILE_SPEED } from "./combatConstants";
 
-/** Bolt travel speed, in tiles per second (dodgeable, but faster than a chase). */
-const PROJECTILE_SPEED = 5;
-/** Stability the player loses when a bolt connects. */
-const PROJECTILE_DAMAGE = 8;
-/** Bolt collision half-size, in tiles. */
-const PROJECTILE_RADIUS = 0.15;
 
 /** One in-flight enemy bolt, in world (tile) space. `targetId` locks the bolt
  * to whichever player it was fired at — see `updateProjectiles`' own doc

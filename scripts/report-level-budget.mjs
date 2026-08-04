@@ -161,6 +161,31 @@ function printOutliers(results) {
   }
 }
 
+function printThreat(results) {
+  console.log("\n## Threat and survival\n");
+  // Survival depends only on archetype and difficulty, never on the level, so
+  // it is stated once rather than repeated identically down a column.
+  const s = results[0]?.survival;
+  if (s) {
+    console.log(
+      `  Survival at full health, no armour: ${fmt(s.vsOneNormal, 1)}s vs one regular enemy, ` +
+        `${fmt(s.vsThreeNormal, 1)}s vs three, ${fmt(s.vsOneElite, 1)}s vs one Elite.`,
+    );
+  }
+  console.log("  Per level, n/dps/threat -- threat is normalised so a regular enemy scores by its own mean HP.\n");
+  console.log("level  enemy DPS   normal(n/dps/threat)     elite(n/dps/threat)      edgeCase(n/dps/threat)");
+  for (const r of results) {
+    const cell = (a) => {
+      const stats = r.enemies.byArchetype[a];
+      if (!stats || stats.count === 0) return "--".padEnd(25);
+      return `${stats.count}/${fmt(stats.dps, 1)}/${fmt(stats.threat, 0)}`.padEnd(25);
+    };
+    console.log(
+      `${String(r.campaignLevelIndex).padStart(5)}  ${fmt(r.enemies.totalDps, 1).padStart(9)}   ${cell("normal")}${cell("elite")}${cell("edgeCase")}`,
+    );
+  }
+}
+
 function printSelfSustain(results) {
   console.log("\n## Self-sustain by archetype (expected drop damage / damage to kill)\n");
   console.log("  Above 1.0 means fighting it is free ammo and the economy has no floor.\n");
@@ -238,6 +263,7 @@ async function main() {
     byDifficulty.set(difficulty, results);
     console.log(`\n\n===== difficulty: ${difficulty} =====\n`);
     printBudgetTable(results);
+    printThreat(results);
     printSelfSustain(results);
     printOutliers(results);
   }

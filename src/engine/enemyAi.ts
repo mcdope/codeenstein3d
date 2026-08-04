@@ -21,45 +21,24 @@ import { collidesWithWall, isWall, type Player } from "./player";
 import type { PathField } from "./pathField";
 import { spawnProjectile, type Projectile } from "./projectiles";
 import type { Enemy, GameMap } from "../map/types";
-
-/** Distance (tiles) within which an enemy notices and chases the player. */
-const AGGRO_RADIUS = 7.5;
-/** Enemy chase speed in tiles per second (slower than the player's 3.2). */
-const MOVEMENT_SPEED = 1.7;
-/** Max distance (tiles) at which a chasing enemy will take a ranged shot. */
-const RANGED_RANGE = 8;
-/** Min / max seconds between an enemy's ranged shots (randomized each time). */
-const FIRE_COOLDOWN_MIN = 1.2;
-const FIRE_COOLDOWN_MAX = 2.6;
-/** Enemy roam (idle wander) speed — a relaxed stroll. */
-const ROAM_SPEED = 0.8;
-/** Distance (tiles) from a roam target at which the enemy picks a new one. */
-const ROAM_ARRIVE = 0.25;
-/** Distance (tiles) at which an enemy stops chasing and melees instead. */
-const ATTACK_RADIUS = 0.5;
-/** Seconds between successive melee bites from a single enemy. */
-const ATTACK_COOLDOWN = 0.8;
-/** Stability (health) the player loses per melee bite. */
-const ATTACK_DAMAGE = 10;
-/** Half-width of an enemy's collision box, in tiles. */
-const ENEMY_RADIUS = 0.3;
-/** Melee/ranged damage multiplier for an Elite (boss-tier) enemy — see
- * `Enemy.elite`. Its HP scaling already lives in `mapGenerator.ts`; this is
- * the "high damage" half of the spec. */
-const ELITE_DAMAGE_MULTIPLIER = 2;
-/** Chase/roam speed multiplier for an Edge Case enemy — see `Enemy.edgeCase`.
- * "Very high movement speed": noticeably faster than the player can react to. */
-const EDGE_CASE_SPEED_MULTIPLIER = 2.2;
-/** Melee/ranged damage multiplier for an Edge Case enemy — "low melee
- * damage": a nuisance, not a threat. */
-const EDGE_CASE_DAMAGE_MULTIPLIER = 0.4;
-/** Average per-second chance an Edge Case enemy abandons its current roam
- * target early (before arriving) — the core of its erratic roaming. */
-const EDGE_CASE_RETARGET_RATE = 2.0;
-/** Random heading wobble (radians) applied to an Edge Case enemy's roam step,
- * on top of its retargeting — reads as visibly twitchy/darting rather than a
- * smooth glide even between retargets. */
-const EDGE_CASE_ROAM_JITTER_RAD = 0.9;
+import {
+  AGGRO_RADIUS,
+  ATTACK_COOLDOWN,
+  ATTACK_DAMAGE,
+  ATTACK_RADIUS,
+  EDGE_CASE_DAMAGE_MULTIPLIER,
+  EDGE_CASE_RETARGET_RATE,
+  EDGE_CASE_ROAM_JITTER_RAD,
+  EDGE_CASE_SPEED_MULTIPLIER,
+  ELITE_DAMAGE_MULTIPLIER,
+  ENEMY_RADIUS,
+  FIRE_COOLDOWN_MAX,
+  FIRE_COOLDOWN_MIN,
+  MOVEMENT_SPEED,
+  RANGED_RANGE,
+  ROAM_ARRIVE,
+  ROAM_SPEED,
+} from "./combatConstants";
 
 /** Optional balancing-telemetry observation hooks — see `telemetry.ts`. Every
  * call site (including every existing test) that omits this trailing

@@ -25,6 +25,7 @@ import {
   expectedRegularDrop,
   guaranteedLoadout,
   hpOutliers,
+  incomingDps,
   poolDamageValues,
   prePlacedBudget,
   scaleRosterForDifficulty,
@@ -32,6 +33,8 @@ import {
   selfSustainByArchetype,
   solveCampaign,
   solveLevel,
+  survivalWindow,
+  threatScore,
   timeToKill,
   weaponProfile,
   weaponProfiles,
@@ -62,8 +65,22 @@ const WEIGHTS = [
 
 const profiles = weaponProfiles(WEAPONS);
 
+const COMBAT = {
+  MAX_HEALTH: 100,
+  ATTACK_DAMAGE: 10,
+  ATTACK_COOLDOWN: 0.8,
+  PROJECTILE_DAMAGE: 8,
+  FIRE_COOLDOWN_MIN: 1,
+  FIRE_COOLDOWN_MAX: 3,
+  RANGED_RANGE: 8,
+  ELITE_DAMAGE_MULTIPLIER: 2,
+  EDGE_CASE_DAMAGE_MULTIPLIER: 0.4,
+  EDGE_CASE_SPEED_MULTIPLIER: 2.2,
+};
+
 const constants = {
   profiles,
+  COMBAT,
   DIFFICULTY_MULTIPLIERS,
   lootWeightsFor: () => WEIGHTS,
   REGULAR_KILL_NO_DROP_CHANCE: 0.2,
@@ -234,8 +251,52 @@ describe("archetypeOf / enemyBudget", () => {
     expect(budget.byArchetype.edgeCase).toEqual({ count: 1, hp: 50 });
   });
 
-  it("reports enemy DPS as null rather than guessing, since enemyAi's constants are private", () => {
+  it("reports enemy DPS as null when no combat constants were supplied", () => {
     expect(enemyBudget([enemy(10)]).totalDps).toBeNull();
+  });
+});
+
+describe("incomingDps / survivalWindow / threatScore", () => {
+  it("sums melee and ranged, since the two cooldowns are independent", () => {
+    const dps = incomingDps("normal", constants, "normal");
+    expect(dps.melee).toBeCloseTo(10 / 0.8, 10);
+    expect(dps.ranged).toBeCloseTo(8 / 2, 10);
+    expect(dps.sustained).toBeCloseTo(dps.melee + dps.ranged, 10);
+  });
+
+  it("applies the archetype multiplier to both attacks", () => {
+    const normal = incomingDps("normal", constants, "normal").sustained;
+    expect(incomingDps("elite", constants, "normal").sustained).toBeCloseTo(normal * 2, 10);
+    expect(incomingDps("edgeCase", constants, "normal").sustained).toBeCloseTo(normal * 0.4, 10);
+  });
+
+  it("compounds the difficulty damage multiplier on top", () => {
+    const scaled = { ...constants, DIFFICULTY_MULTIPLIERS: { ...DIFFICULTY_MULTIPLIERS, hard: { ...DIFFICULTY_MULTIPLIERS.hard, damage: 1.5 } } };
+    expect(incomingDps("normal", scaled, "hard").sustained).toBeCloseTo(incomingDps("normal", scaled, "normal").sustained * 1.5, 10);
+  });
+
+  it("halves the survival window when the attacker count doubles", () => {
+    const one = survivalWindow("normal", 1, constants, "normal");
+    expect(survivalWindow("normal", 2, constants, "normal")).toBeCloseTo(one / 2, 10);
+  });
+
+  it("counts armour as effective health, since swap absorbs 1:1", () => {
+    expect(survivalWindow("normal", 1, constants, "normal", 100)).toBeCloseTo(survivalWindow("normal", 1, constants, "normal") * 2, 10);
+  });
+
+  it("ranks a fast weak archetype against a slow strong one via speed and hp terms", () => {
+    // The Edge Case deals 0.4x damage but moves 2.2x as fast, so at equal HP
+    // it out-threatens a regular enemy -- which is the comparison a bare DPS
+    // number cannot make.
+    const edge = threatScore("edgeCase", 100, constants, "normal");
+    const normal = threatScore("normal", 100, constants, "normal");
+    expect(edge / normal).toBeCloseTo(0.4 * 2.2, 10);
+  });
+
+  it("grows with HP sublinearly, so a damage sponge cannot outrank a lethal enemy", () => {
+    const small = threatScore("normal", 100, constants, "normal");
+    const big = threatScore("normal", 400, constants, "normal");
+    expect(big / small).toBeCloseTo(2, 10);
   });
 });
 
