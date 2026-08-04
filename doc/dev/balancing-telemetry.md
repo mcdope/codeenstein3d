@@ -379,10 +379,22 @@ Separately, at the report's top level (not part of the combo matrix — the scen
 
 ## The balance model: offline solver and event log
 
-**Status: design only. Nothing in this part is implemented yet.** Everything above
-this line describes tooling that exists and runs; everything below describes what
-is proposed and why. The two halves are deliberately separated so nobody reads a
-plan as a feature.
+**Status: implemented.** This part was written as a design first and then built;
+the ordering and the reasoning below are kept as-written because they explain
+*why* each piece is shaped the way it is, and §6 records which step shipped what.
+Where a measurement later corrected the design's own assumption, the correction is
+recorded inline rather than the original quietly edited away — §7.1 is the clearest
+example.
+
+What runs today:
+
+| Command | What it does |
+|---|---|
+| `npm run balancing:budget` | Solve a campaign's budget offline — no browser, no bot. `--dir` any repo, `--all-difficulties`, `--json`. Exits non-zero on an enemy that outlasts every round on its level. |
+| `npm run balancing:corpus` | Fetch the pinned corpus of real repositories to solve against. |
+| `npm run balancing:events` | Turn a raw event log into a markdown report. |
+| `CODEENSTEIN_TELEMETRY_EVENT_LOG=<dir>` | Turn on raw event recording for a telemetry run. Off by default. |
+| `CODEENSTEIN_TELEMETRY_SEED=<n>` / `?seed=` | Pin the gameplay seed so loot rolls are reproducible. |
 
 The problem this part exists to solve: levels are generated from *arbitrary
 repositories*, so no amount of playtesting the bundled `demo-campaign/` produces
@@ -1131,12 +1143,11 @@ The pathological entry should be a **committed fixture** under `scripts/fixtures
 not a fetched repo — it is a regression test for the outlier check, and it must not
 depend on some upstream project keeping its worst function.
 
-## 5. What the report would look like
+## 5. What the reports look like
 
-Two halves. The **worked examples** below are computed from the real constant
-tables in §1 and are therefore already true — they are what the solver would print
-on day one. The **per-level table** uses mocked numbers, because it needs a real
-generated map; its purpose is to let you judge the format before it is built.
+Every number below is real. §5.1 and §5.2 are computed from the constant tables in
+§1 alone, so they held before anything was built; §5.3 and §5.4 are abridged output
+from the shipped tools.
 
 ### 5.1 Worked example — self-sustain (real numbers, normal difficulty)
 
@@ -1198,109 +1209,112 @@ defines no `fireIntervalSec` and is semi-auto, so its figure additionally assume
 mashing at the engine's 0.15 s default floor, while Toolchain genuinely fires
 continuously while held.*
 
-### 5.3 Mocked — per-level budget report
+### 5.3 Real output — per-level budget, demo campaign at normal
+
+`npm run balancing:budget`, abridged to the budget table:
 
 ```
-# Balance budget — demo-campaign @ 4a9f1c2, normal, campaign carryover on
-# solver v1 · 8 levels · perfect-accuracy lower bound
+level  file                                 enemies   HP tot   ammo dmg (carry/pre/drop)      ratio (nofarm/comb)
+    1  main.c                                   11      550      3894 /   2363 /   1243      11.38 /  13.63
+    2  stage02_bootstrap.sh                     13      640      5706 /    481 /   1469       9.67 /  11.96
+    7  stage07_service.rb                       13      448      9668 /      0 /   1768      21.58 /  25.53
+   12  stage12_render_engine.cpp                18     2659     11597 /   1966 /   2864       5.10 /   6.18
+   15  stage15_god_object.java                  13     4803     11542 /   1050 /   1853       2.62 /   3.01
+   16  stage16_hardware.h                       11      228      7789 /   1344 /   1787      40.06 /  47.89
+   17  stage17_the_monolith.php                 77     8883      8905 /   3994 /  12467       1.45 /   2.86
 
-level  file             enemies  HP tot  DPS tot  ammo dmg (pre/drop/comb)  ratio (pre/comb)  health (pre/drop)
-    1  main.c                14    1806     37.5     4290 /  1512 /  5802     2.38 / 3.21       0 /  240
-    2  parser.c              21    3140     58.1      968 /  2268 /  3236     0.31 / 1.03  ⚠    60 /  360
-    3  tokenizer.c           17    2455     44.9     1892 /  1836 /  3728     0.77 / 1.52       0 /  300
-    4  emit.c                26    4020     70.2     2464 /  2808 /  5272     0.61 / 1.31      45 /  420
-    5  optimise.c            19    6890     52.6     1584 /  2052 /  3636     0.23 / 0.53  ✗   105 /  340
-    6  vm.c                  31    5117     83.4     3212 /  3348 /  6560     0.63 / 1.28       0 /  520
-    7  gc.c                  22    3702     59.8     1276 /  2376 /  3652     0.34 / 0.99  ⚠    60 /  380
-    8  main.h (bonus)        12     980     31.2     6435 /  1296 /  7731     6.57 / 7.89       0 /  200
-
-⚠  combined clear ratio below 1.2 — no margin for a missed shot
-✗  combined clear ratio below 1.0 — NOT CLEARABLE without carryover
-
-## Enemy HP outliers (complexity -> HP)
-
-level  entity                   complexity  archetype   HP   vs level ammo
-    5  optimise_peephole()             112   elite     5600   1.54x  ✗ exceeds all obtainable damage
-    5  fold_constants()                 47   elite     2350   0.65x
-    6  vm_dispatch()                    58   elite     2900   0.44x
-    4  emit_switch()                    39   pack(4)     244  0.05x   <- one point below the Elite cliff
-
-  clamp check: no HP clamp exists; 3 of 8 levels contain an entity above the
-  Elite threshold, and 1 produces an enemy that cannot be killed with every
-  round on the level.
-
-## Self-sustain by archetype (normal, mid-campaign loadout)
-
-  regular    0.56       edgeCase   11.6  ⚠      elite   0.00  ⚠
-
-## Difficulty sweep — combined clear ratio
-
-level      easy   normal    hard
-    5       0.98     0.53    0.25   ✗ unclearable on all three
-    7       1.84     0.99    0.46   ⚠
-  (hard compounds 1.5x HP with 0.7x ammoDropRate, so its column is ~4x easy's)
+  X  combined clear ratio below 1.0 -- NOT clearable even counting every drop
+  !  combined clear ratio below 1.2 -- no margin for a missed shot
+     'nofarm' counts only what you carried in plus what is on the floor.
 ```
 
-That output would tell you, in one screen: which level is broken, which entity
-broke it, that no clamp is protecting you, and that the Edge Case drop rule is
-leaking ammo. Those are four distinct fixes, each pointed at a specific constant.
+Two things the demo campaign shows immediately. Ratios run **1.45x to 47.9x** —
+nothing is close to starved, which is the same conclusion the 450-run campaign
+reached from the other direction, and it is why `loot.ts`'s drop amounts were cut
+~30%. And level 16 (`.h`, a bonus level) sits at 47.9x while level 17 sits at 2.86x
+with 77 enemies, so the curve's shape is set almost entirely by what the source
+files happen to contain.
 
-## 6. Implementation plan
+The remaining sections (`## Threat and survival`, `## Self-sustain by archetype`,
+`## Enemy HP outliers`) print alongside it, and `--all-difficulties` adds a
+comparison table.
 
-Ordered, each step shippable on its own. After every step: it builds, `vitest run`
-passes, and telemetry stays off by default.
+### 5.4 Real output — the event report
 
-**Step 0 — the smallest useful thing, and it needs no engine change at all.**
-`scripts/lib/levelSolver.mjs` + `scripts/report-level-budget.mjs`, computing the
-static enemy budget, the pre-placed and expected-drop loot budgets, per-weapon TTK,
-`selfSustain`, `clearRatio` and the **complexity→HP outlier check** over
-`demo-campaign/`. Uses only what is already exported: `MapGenerator` and `WEAPONS`
-via `loadEngineModules`, plus `loot.ts` and `difficulty.ts` added to its entry stub.
-Extends `analyzeStaticLevel` rather than replacing it. Adds `balancing:budget`.
-*This alone answers the outlier question, which is the highest-value output in the
-whole design.*
+`npm run balancing:events`, over a 3-attempt, 6-level capture (2136 events). This
+is the half that could not exist before the log did:
 
-**Step 1 — export the `enemyAi.ts` combat constants.** Unlocks `incomingDps`,
-`survivalWindow` and `threatScore`. No behaviour change, no hash change (they are
-not yet in `SIMULATION_BALANCE`).
+```
+| weapon        | pulls | pellets fired | pellet hits | pellet hit rate | pulls that hit | kill share |
+| echo pistol   |   261 |           261 |         156 |           59.8% |          59.8% |      26.4% |
+| Regex Shotgun |    39 |           273 |         114 |           41.8% |          87.2% |      14.2% |
+| gdb           |   193 |           193 |         101 |           52.3% |          52.3% |      23.6% |
+| Friday Hotfix |     7 |            42 |          11 |           26.2% |          42.9% |       2.0% |
 
-**Step 2 — pin the gameplay seed.** A `?seed=` URL parameter and a
-`CODEENSTEIN_TELEMETRY_SEED` env var feeding `main.ts:2569`'s `randomSeed()` call.
-Makes the drop half of the economy reproducible between runs — see §7.2. Small, and
-it makes every later A/B sharper.
+Hit rate by engagement distance
+| Regex Shotgun | 0-2  |  35 | 27 | 77.1% |
+| Regex Shotgun | 2-4  | 154 | 59 | 38.3% |
+| Friday Hotfix | 0-2  |  18 | 11 | 61.1% |
+| Friday Hotfix | 2-4  |  24 |  0 |  0.0% |
 
-**Step 3 — fix `ROCKET_TRAVEL_SPEED` and guard the mirror.** §7.3. One value, plus
-a test in `scripts/lib/` asserting the mirrored `WEAPON_STATS` and the engine-speed
-constants agree with `src/engine/weapons.ts` and `rockets.ts`. `scripts/**` is
-outside the coverage denominator but still executed by `vitest run`, so the guard
-runs in CI. Note this changes bot behaviour, so it needs the matched-scale A/B from
-*Matched-scale verification* above — it is not a free fix.
+Overkill (damage wasted on the killing blow)
+| SIGKILL Knife |  45 kills | mean 24.8 | max 38 |
+| Toolchain     |   5 kills | mean 60.2 | max 68 |
 
-**Step 4 — the corpus.** `scripts/fetch-balancing-corpus.mjs` plus a corpus mode for
-the budget report, and the committed pathological fixture. First point at which the
-solver answers questions about repos nobody has played.
+reliance on drops                     79.6%
+health pickups that granted nothing   19 of 50
+drops spawned by archetype            edgeCase 93, normal 70
 
-**Step 5 — the event log, minimum viable slice.** Engine-side buffer,
-`drainEvents()` hook, NDJSON writer in the bot, and only four events:
-`levelStart`, `kill`, `damageDealt`, `levelEnd`. That is enough for overkill, real
-TTK distributions, and the nominal-vs-actual budget gap. **The render-loop-adjacent
-diff for this step should be empty** — worth showing separately anyway, precisely to
-demonstrate that it is.
+Self-sustain, measured
+| normal   | 61 kills | mean HP 119 | ratio  1.09 |
+| edgeCase | 87 kills | mean HP  13 | ratio 10.57 |
+```
 
-**Step 6 — the rest of the events.** Loot (`lootDropped`, `lootCollected` with
-`source` and `fromArch`), `damageTaken` with archetype, `shot`/`hit`,
-`weaponSwitch`/`weaponGranted`, `playerDeath`. This is what makes §2.2 measurable
-rather than predicted.
+Four readings worth acting on, none of which the aggregate counters can produce:
 
-**Step 7 — the log reader.** `scripts/report-balancing-events.mjs`, deriving §2's
-empirical metrics from an NDJSON run and printing the markdown report. Cross-checks
-the analytic numbers from Step 0 against observed play; disagreements are findings.
+- **The measured self-sustain matches the solver's independent prediction.**
+  Observed 1.09 and 10.57; predicted from the drop tables alone, 0.76–2.33 and
+  8.1–13.8. Two models built on the same constants but from opposite directions —
+  one from the weight tables, one from the rolls that actually happened — agreeing
+  is what makes the Edge Case finding trustworthy rather than an artifact.
+- **Friday Hotfix is dead content.** 2.0% of kills, 0.5% of damage, and a hit rate
+  that goes 61.1% → **0.0%** between the 0–2 and 2–4 tile buckets. Its 3.5-tile
+  `maxRange` bites well inside the range the bot actually fires at.
+- **The shotgun's cone is doing exactly what it was designed to**, 77.1% → 38.3%
+  across the same boundary — now measured rather than asserted.
+- **Toolchain wastes 60.2 of its 80 damage per kill.** It is a safety net, so
+  overkill is expected; the size of it is not, and it is the first evidence that
+  the 2x-the-knife damage buys very little against this roster.
 
-**Step 8 — optional, and deliberately last.** Fold the Step-1 constants into
-`SIMULATION_BALANCE`, closing the hole its own comment documents. This moves
-`balanceHash` and invalidates every shipped replay, so it must come after every
-other simulation change and be followed by a single `defaultHighscore.ts`
-regeneration — per *"Land every simulation change first, then generate once"* above.
+## 6. Implementation plan — what shipped
+
+Ordered smallest-useful-first, each step its own commit, each leaving the build
+green, the suite passing and the telemetry path off by default.
+
+| Step | What | State |
+|---|---|---|
+| 0 | `levelSolver.mjs` + `report-level-budget.mjs` + `balancing:budget`. No engine change at all — reuses `loadEngineModules` and extends `analyzeStaticLevel`. | **done** |
+| 1 | `combatConstants.ts`: lift the enemy/player/projectile scalars out of `enemyAi.ts`, `projectiles.ts`, `rockets.ts` and `engine.ts` into a dependency-free module the solver can bundle. Unlocks incoming DPS, survival window, threat score. | **done** |
+| 2 | `?seed=` / `CODEENSTEIN_TELEMETRY_SEED` — pin the gameplay seed so loot rolls are reproducible. | **done** |
+| 3 | Fix `ROCKET_TRAVEL_SPEED` and pin every bot mirror against the engine with `constantMirrors.test.mjs`. | **done**, see §7.3 for the gate |
+| 4 | `fetch-balancing-corpus.mjs`, recursive level collection via the real `workspace.ts` helpers, and the committed pathological fixture. | **done** |
+| 5 | `events.ts` + `drainEvents()` hook + NDJSON writer; `levelStart`, `damageDealt`, `kill`, `levelEnd`. | **done** |
+| 6 | The rest: `shot`, `hit`, `damageTaken`, `playerDeath`, `lootDropped`, `lootCollected`. | **done** |
+| 7 | `eventMetrics.mjs` + `report-balancing-events.mjs` — derive the empirical catalog back out of the log. | **done** |
+| 8 | Fold the Step-1 constants into `SIMULATION_BALANCE`, closing the gap its own comment documents. | **not done, deliberately** |
+
+**Step 8 is left undone on purpose.** Folding those constants into the hash moves
+`balanceHash`, which invalidates **every shipped replay** and demands a multi-hour
+`defaultHighscore.ts` regeneration. That is a release-shaped decision, not a
+refactor, and the existing rule above — *land every simulation change first, then
+generate once* — says it goes last. The constants now live somewhere it can be done
+cheaply when someone decides to; nothing else depends on it.
+
+**The render-loop diff for steps 5 and 6 is empty.** Not "small" — empty. No
+emission point sits in `simulate()`, `render()`, `renderNormalFrame()`,
+`handleMovement`, `updateEnemyAi` or `collectLoot`'s per-frame scan. That was the
+design property §3.4 committed to, and it is the one worth checking on any future
+change to this path.
 
 ## 7. Open questions and blockers
 
