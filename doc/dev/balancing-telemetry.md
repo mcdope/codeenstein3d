@@ -1432,19 +1432,47 @@ engagements before scoring ever runs. Fixing the scorer while the hard gate does
 the excluding is fixing the wrong layer — which is only obvious once engagement
 distance is measured, and that took the event log.
 
-**Where a next attempt should aim.** `ROCKET_SAFE_DISTANCE` is 4 while the engine's
-actual blast radius is `ROCKET_BLAST_RADIUS = 2.6`, beyond which a rocket does
-*literally zero* damage to the firer (`rockets.ts`'s falloff is 0 at and past the
-radius). So the gate sits 1.4 tiles beyond any real danger, and the risk *gradient*
-extends to 8 tiles — three times the blast radius. Bringing the gate toward ~3 is
-the change the data points at. It is also the riskiest of the three, since it is
-the one actually holding self-damage at zero, and the last time rocket selection
-was widened `selfRocket` went from 0 across a campaign to 84 and 99 in consecutive
-runs. Do not ship it without the same A/B, and read `selfRocket` damage as the
-guard metric.
+**A second attempt also failed, and the pair of failures is the useful record.**
+The follow-up widened three more constants together — `ROCKET_SAFE_DISTANCE` 4→3
+(the engine's real `ROCKET_BLAST_RADIUS` is 2.6, past which the firer takes
+*literally zero* damage, so 4 sat 1.4 tiles beyond any danger),
+`ROCKET_CLUSTER_MIN_DIST` 5→4, plus the scoring fix from the first attempt. Before
+launching, a probe confirmed the two sides genuinely differed: base and candidate
+picked different weapons in the 4–4.5 tile band.
 
-The patch for the reverted attempt is worth keeping to hand — it is correct as far
-as it goes, and becomes useful the moment gate 1 moves.
+| | base | cand |
+|---|---:|---:|
+| ghidra shots | 5 | 11 (of ~4,400 pulls) |
+| ghidra kills | 1 | **0** |
+| **min rocket firing range** | 4.95 | **5.13** |
+| `selfRocket` damage | 0 | 0 |
+| deaths / campaigns completed | 8 / 0 | 8 / 0 |
+
+**The min firing range is the whole story: not one rocket was fired in the 4–4.5
+band the change existed to open.** Reverted.
+
+**Stop guessing at the cause; instrument it.** Two attempts have now been designed
+off a synthetic probe of `pickRangedWeapon` and both were null, because the probe
+supplies an idealised threat (a 4-strong cluster of non-Edge-Case enemies) that
+real play rarely presents. The most likely remaining blocker is the cluster
+fast-path's own `!threat.edgeCase` test — untouched by either attempt, and Edge
+Cases are 62–78% of the roster on exactly these levels while moving 2.2× faster, so
+they are usually the selected threat. But that is a hypothesis, and two hypotheses
+have already failed.
+
+The cheap way to settle it is to record the threat's archetype and distance on the
+`shot` event (or a dedicated `weaponChoice` event carrying the rejected
+alternatives). Then the question "what actually blocks ghidra, at what range,
+against what" is a query rather than a guess — which is what the event log is for,
+and what turned the engagement-distance question from an argument into a table.
+
+Also worth stating plainly: it is entirely possible ghidra is simply the wrong
+weapon for this bot. It fights at a 3.64-tile median; the weapon needs 4–5 tiles to
+be safe *and* worth its ammo. Making it useful may be a change to how the bot
+positions, not to how it scores weapons — and that is a much larger piece of work
+than any constant.
+
+Both reverted patches are preserved and are correct as far as they go.
 
 **7.4 — Cross-weapon hit rate is not comparable today.** `recordShot` counts
 trigger-pulls (`engine.ts:4349`); `recordHit` counts **pellets** (`:4371`). For the
