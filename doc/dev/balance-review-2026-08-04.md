@@ -24,7 +24,7 @@ that shapes what its numbers mean.
 
 | # | Finding | Evidence | Where it lives |
 |---|---|---|---|
-| 1 | **Hard collapses in the back half of the campaign.** Not "harder" — a cliff. | Carried ammo peaks at level 9 and hits **zero by level 14**; levels 15 and 17 are unclearable *counting every drop* (0.30 and 0.92) | `difficulty.ts` |
+| 1 | **Hard is unfinishable, and it fails at two specific levels — but not through ammo.** | 0 of 16 runs completed; death rate 64% on level 15 and 100% on level 17, against 0–6% on levels 10–14. Ammo never runs short (see §4) | `enemies.ts`, `difficulty.ts` |
 | 2 | **Killing pays for itself on easy and normal; only Hard has a floor.** | Edge Cases return **8.5–13.5×** the damage they cost across every repo; on Hard that halves to 4.7× — still net-positive | `loot.ts`, `enemies.ts` |
 | 3 | **A repo is mostly trivial functions, and the generator prices them as full enemies.** | **81.5%** of enemies come from complexity-1 entities; **65%** of the roster is Edge Cases; 47% of regular enemies sit at the 25 HP floor | `enemies.ts` |
 | 4 | **The Elite threshold is a cliff, and past it HP is unbounded.** | c=39 → 244 HP, c=40 → **2000 HP**. On Hard, demo level 15 has two Elites that individually exceed all obtainable damage | `enemies.ts:89-101` |
@@ -152,39 +152,90 @@ does no work, on every difficulty.
 
 ---
 
-## 4. Difficulty is a cliff, not a slope
+## 4. Hard fails at two levels, and not for the reason I first reported
 
-Combined clear ratio (drops included), demo campaign:
+**This section replaces an earlier version that was wrong twice over, and the
+correction is more useful than the original claim.** It reported that Hard's
+carried ammo fell to zero by level 14 and that levels 15 and 17 were unclearable
+at 0.30 and 0.92. Both numbers came from a bug in the solver's own campaign carry
+model, which charged each level for its whole roster while banking none of its
+drops — so every level was credited with its own drops and denied all previous
+ones. Fixed (`levelSolver.mjs`'s `killRate`, default 0.71 measured from play), and
+verified against a 17-level capture that flatly contradicts the original.
+
+### What a full 17-level Hard capture shows
+
+Pooled over **16 Gamer/hard runs**, all 17 levels, no level cap:
+
+| level | reached | died | death rate | forced-melee shots |
+|---:|---:|---:|---:|---:|
+| 10 | 16 | 1 | 6% | 0.0% |
+| 11–14 | 15 | 0 | **0%** | 0.0% |
+| **15** | 14 | 9 | **64%** | 0.0% |
+| 16 | 5 | 0 | 0% | 0.0% |
+| **17** | 5 | 5 | **100%** | 1.2% |
+
+**Zero of 16 runs finished the campaign.** So Hard *is* unfinishable for this bot,
+and the failure is sharply localised — levels 1–14 are close to free, and then two
+walls.
+
+### Ammo is not the mechanism
+
+Carried ammo, measured per level across the capture, stays **flat at 6,000–7,400
+damage from level 1 to level 17**. It never trends down, and **forced-melee shots
+are 0.0% on every level except 1.2% on 17** — the player is never dry. The
+"attrition collapse" does not exist at any point.
+
+What does happen is damage:
+
+| level | enemies | damage taken/run | min HP | deaths |
+|---:|---:|---:|---:|---:|
+| 1–14 | 6–20 | 2–72 | 72–98 | ~0 |
+| **15** | 13 | **92** | **33** | 9 |
+| 16 | 11 | 22 | 82 | 0 |
+| **17** | **77** | **166** | **0** | 5 |
+
+Two different walls:
+
+- **Level 15 is Elite-driven.** Only 13 enemies, but two Elites of 3,525 and 3,075
+  HP on Hard, each dealing 2× damage. The survival window against one is 2.0s.
+- **Level 17 is swarm-driven.** 77 enemies, and `enemyMelee` damage (291) exceeds
+  `enemyRanged` (149) — you get surrounded.
+
+### The analytic model localised this correctly
+
+With the carry bug fixed, the solver ranks those two levels as the campaign's
+tightest on Hard — **2.84 at level 15 and 2.12 at level 17**, against 5–50
+elsewhere. Corrected for observed hit rates of 40–70%, a 2.12 lands near 1.2:
+right at the edge. The original model's *magnitudes* were an artifact; its
+*ranking* pointed at exactly the two levels that kill.
+
+### Difficulty sweep
+
+Combined clear ratio, corrected model:
 
 | Level | easy | normal | hard |
 |---:|---:|---:|---:|
 | 1 | 20.3 | 13.6 | 8.8 |
-| 5 | 34.2 | 19.4 | 9.3 |
-| 9 | 46.9 | 24.1 | 9.4 |
-| 11 | 22.6 | 11.2 | 3.7 |
-| 12 | 12.6 | 6.2 | 2.0 |
-| 13 | 13.4 | 6.2 | 1.5 |
-| **15** | 7.3 | 3.0 | **0.30** |
-| 16 (bonus) | 142.3 | 47.9 | 6.8 |
-| **17** | 6.5 | 2.9 | **0.92** |
+| 9 | 78.6 | 44.5 | 20.1 |
+| 12 | 21.3 | 11.9 | 5.1 |
+| **15** | 14.4 | 7.7 | **2.8** |
+| 16 (bonus) | 306.7 | 157.6 | 50.0 |
+| **17** | 11.0 | 5.8 | **2.1** |
 
-Easy→hard is 2.3× at level 1 and **24× at level 15**. The two multipliers compound
-through carryover rather than applying per level: enemies get 1.5× HP *and* pickups
-give 0.7×, so the deficit accumulates.
+Nothing is unclearable on any difficulty. Hard is genuinely the tightest — its
+back half runs 2.1–5.2 against 8–20 in the front half — and it is the only setting
+with an economy at all (§3). But the cliff is in *incoming damage on two levels*,
+not in the ammo budget.
 
-Carried ammo, in damage, without farming:
+### The confound
 
-- **normal**: 3,894 → plateaus around 11,000. Never runs out.
-- **hard**: 4,769 → peaks 6,414 at level 9 → **1,930 → 0 → 116 → 0** at levels 13–16.
-
-Hard's back half is played on drops alone. The solver's `combined` column still
-counts those drops, and levels 15 and 17 fail anyway.
-
-**Survival windows** (full health, no armour): 1 regular enemy 7.0/6.0/4.0s, three
-at once 2.3/2.0/1.3s, one Elite 3.5/3.0/2.0s. Level 17 alone fields **846 enemy
-DPS**.
-
----
+These death rates measure **this bot** as much as the levels. On level 15 it walks
+in holding **8–17 unused rockets** and takes **72% of its kills with melee**,
+closing to contact with the two things on the level that hit hardest. §5 and
+`balancing-telemetry.md` §7.3 cover why it never fires the rocket launcher. Until
+that is fixed, the 64% and 100% figures are an upper bound on the levels'
+difficulty, not a measurement of it.
 
 ## 5. Weapons
 

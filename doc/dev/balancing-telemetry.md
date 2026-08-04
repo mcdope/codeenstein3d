@@ -1401,6 +1401,51 @@ Two consequences:
   `scoreRangedWeapon`'s ammo-economy or self-harm terms against a 4-rocket
   reserve. Worth its own investigation; not this one.
 
+**7.3a — Why the bot never fires ghidra: root-caused, and one fix attempt failed.**
+Three gates stack, and they are not equally to blame.
+
+| # | Gate | Effect |
+|---|---|---|
+| 1 | `rocketAimUnsafe` hard-excludes ghidra below `ROCKET_SAFE_DISTANCE` (4 tiles), *before any score is computed* | The bot fights at a **median of 3.64 tiles** — measured over 4,825 aimed shots. Only 46.9% of shots are at ≥4 tiles, 36.3% at ≥5 (`ROCKET_CLUSTER_MIN_DIST`), and **0.7% at ≥8**, where self-harm risk reaches zero. |
+| 2 | `SELF_HARM_PENALTY_SEC = 25`, scaled by risk | `scoreRangedWeapon` is denominated in seconds-to-kill and a real kill takes 1–3s. A 25s penalty dominates any comparison the moment risk is nonzero: at 5 tiles ghidra scored **21.0 against the pistol's 1.3**. |
+| 3 | The scorer models ghidra as single-target | Its single-target DPS (136) ties gdb's (133), so the model sees a slower, scarcer, self-damaging weapon with no upside. Splash — its entire reason to exist — has no term. |
+
+**The fix attempt, and why it is not in the tree.** Gates 2 and 3 were addressed
+(`SELF_HARM_PENALTY_SEC` 25→5; a `ROCKET_MAX_EFFECTIVE_TARGETS` splash divisor;
+the blanket "never rocket an Edge Case" guard made cluster-aware), both tied to one
+constant so the A/B was a single-binary flip. Unit-level the change worked exactly
+as intended — `pickRangedWeapon` began returning ghidra for clustered regulars and
+for clustered Elites, and left lone weak targets alone.
+
+**In play it did nothing.** A/B on Gamer/hard, 8 attempts a side, all 17 levels:
+
+| | base | cand |
+|---|---:|---:|
+| ghidra shots | 2 | **1** |
+| ghidra kills | 0 | 0 |
+| `selfRocket` damage | 0 | 0 |
+| deaths (all levels) | 7 | 8 |
+
+Reverted. The reason is gate 1, which fires first and which neither change touched:
+the bot plays at knife range, so ghidra is excluded from over half of all
+engagements before scoring ever runs. Fixing the scorer while the hard gate does
+the excluding is fixing the wrong layer — which is only obvious once engagement
+distance is measured, and that took the event log.
+
+**Where a next attempt should aim.** `ROCKET_SAFE_DISTANCE` is 4 while the engine's
+actual blast radius is `ROCKET_BLAST_RADIUS = 2.6`, beyond which a rocket does
+*literally zero* damage to the firer (`rockets.ts`'s falloff is 0 at and past the
+radius). So the gate sits 1.4 tiles beyond any real danger, and the risk *gradient*
+extends to 8 tiles — three times the blast radius. Bringing the gate toward ~3 is
+the change the data points at. It is also the riskiest of the three, since it is
+the one actually holding self-damage at zero, and the last time rocket selection
+was widened `selfRocket` went from 0 across a campaign to 84 and 99 in consecutive
+runs. Do not ship it without the same A/B, and read `selfRocket` damage as the
+guard metric.
+
+The patch for the reverted attempt is worth keeping to hand — it is correct as far
+as it goes, and becomes useful the moment gate 1 moves.
+
 **7.4 — Cross-weapon hit rate is not comparable today.** `recordShot` counts
 trigger-pulls (`engine.ts:4349`); `recordHit` counts **pellets** (`:4371`). For the
 7-pellet shotgun `hits/shotsFired` can reach 7.0, and `accuracyPct`
