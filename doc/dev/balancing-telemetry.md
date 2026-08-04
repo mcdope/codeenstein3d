@@ -978,6 +978,30 @@ top-up).
 The two † arrays are the "nominal vs actual budget" sweep — together they give the
 gap between what the generator placed and what the run actually had access to.
 
+### 3.3a What the log does and does not record — verified, not assumed
+
+Cross-checked against the aggregate counters over a 4-attempt Gamer/hard capture,
+since the two are recorded by independent code in the same run: **shots, hits and
+kills match exactly for all seven weapons, and every damage source matches to the
+unit.** Internal conservation also holds — `hpBefore - amt == hpAfter` on all 2,649
+damage records, spawned enemies equal kills plus survivors on all 64 level-visits,
+all 528 kills pair with a lethal damage record, no drop was collected without a
+matching spawn, and nothing was lost to the buffer cap.
+
+Two gaps remain, both deliberate and both worth knowing before reading a number:
+
+- **`weaponSwitch` and `weaponGranted` are never emitted.** They appear in the
+  schema above and in §7's blocked-metrics table; nothing currently depends on them.
+- **A splash weapon emits no `hit`.** `fire()` returns before the pellet loop for
+  `isRocket`, so a rocket's damage arrives later as `damageDealt` from the blast
+  and never as a per-pellet hit. Ghidra accordingly showed 17 shots, 15 damage
+  records and 0 hits — a *structural* zero that an earlier version of the balance
+  review printed as though it measured accuracy. `shot.splash` now flags it and
+  `weaponUsage` returns `null` rather than a rate. Emitting hits from the blast
+  would not fix it: one round can strike several enemies, which is the same
+  >100% class of error that separating `shot` from `hit` fixed for the shotgun.
+  Judge splash weapons on damage and kill share.
+
 ### 3.4 Buffering, gating and crash behaviour
 
 **Gate: the existing one, unchanged.** Events are pushed behind the already-computed
