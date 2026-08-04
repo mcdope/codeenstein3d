@@ -559,6 +559,14 @@ export function carryForward(solved, constants) {
   const next = {};
   let remainingHp = solved.enemies.totalHp;
 
+  // Pools are drained in `AMMO_TYPES` order — bullets, then rockets, then
+  // smg, then gas. The *total* damage carried forward is the same whatever
+  // order is used (the level costs a fixed amount of damage and this subtracts
+  // it), so this only decides the split across pools. It matters in exactly
+  // one case: when the next level unlocks a weapon and re-prices a pool. Fixed
+  // order keeps that reproducible, and draining bullets before rockets matches
+  // how the reserve is actually spent — rockets are the scarce pool nobody
+  // burns first.
   for (const kind of AMMO_KINDS) {
     const gained = Object.entries(solved.prePlaced.byKind)
       .filter(([k]) => k === kind)

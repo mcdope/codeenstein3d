@@ -1355,17 +1355,51 @@ it**: no UI field, no CLI flag, no env var in any balancing runner. So today,
 "same repo + same seed + same version = same level" holds for the *level* and not
 for the *run*. Step 2 fixes it.
 
-**7.3 — A mirrored constant has already drifted, exactly as predicted.**
+**7.3 — A mirrored constant had already drifted, exactly as predicted — and the
+gate for fixing it turned out to be unrunnable.**
 `scripts/lib/combatPolicy.mjs:300` defines `ROCKET_TRAVEL_SPEED: 5` with a comment
 saying it mirrors `projectiles.ts`'s `PROJECTILE_SPEED` — but it is used at
 `combatPolicy.mjs:1120` to model the **player's own ghidra rocket** flight time, and
 the real player-rocket speed is `ROCKET_SPEED = 18` (`rockets.ts:20`). The constant
-is named after the rocket and sourced from the enemy bolt. The bot overestimates
-rocket flight time by **3.6×**, so `rocketDetonationDistanceAfterClosing` reports
-threats as far closer at detonation than they will be, making the bot measurably
-more rocket-shy than the game warrants. `doc/dev/adding-a-weapon.md:105` already
+is named after the rocket and sourced from the enemy bolt. The bot overestimated
+rocket flight time by **3.6×**, so `rocketDetonationDistanceAfterClosing` reported
+threats as far closer at detonation than they would be, making the bot more
+rocket-shy than the game warrants. Fixed, and every mirrored weapon stat and
+engine scalar is now pinned against the real module by
+`scripts/lib/constantMirrors.test.mjs` (verified red against the old value). `doc/dev/adding-a-weapon.md:105` already
 warns that "nothing links the two, and nothing fails when they drift" — this is that
 failure, realised. It is also the concrete argument for §4.2's rule.
+
+**The A/B that should have gated the fix cannot see it, and finding that out is the
+more useful result.** The documented recipe (`LEVEL_LIMIT=8`, the constant flipped
+via `CODEENSTEIN_TELEMETRY_TUNING`) was set up and then abandoned once the event
+log answered a cheaper question first: *does the bot ever fire a rocket at all?*
+Measured with `?eventLog=1` on a **Pro** run — the profile whose `weaponPriority`
+**leads with ghidra** — reaching level 12 across four attempts:
+
+| | |
+|---|---|
+| ghidra owned from | level 8 (forced unlock), 4 rockets in the pool |
+| shots fired, levels 1–12 | 1961 |
+| **ghidra shots** | **0** |
+| gdb shots over the same span | 1102 |
+
+So `rocketDetonationDistanceAfterClosing` — the only consumer of
+`ROCKET_TRAVEL_SPEED` — never executes in a single-player bot run. The A/B would
+have come back "no significant difference", and that would have meant nothing: the
+branch under test never ran. One scoped capture settled it instead of two hours of
+A/B wall clock.
+
+Two consequences:
+
+- **The fix is correctness-only and cannot be regression-tested by behaviour**, so
+  `constantMirrors.test.mjs` is the whole guard — which is why it pins every
+  mirrored value rather than only this one.
+- **Ghidra is dead content for the bot**, by the same threshold §2.1 defines. Note
+  the fix should have made it *less* rocket-shy, and the measurement above was
+  taken *with* the fix already in — so something else gates the choice, in
+  `scoreRangedWeapon`'s ammo-economy or self-harm terms against a 4-rocket
+  reserve. Worth its own investigation; not this one.
 
 **7.4 — Cross-weapon hit rate is not comparable today.** `recordShot` counts
 trigger-pulls (`engine.ts:4349`); `recordHit` counts **pellets** (`:4371`). For the
