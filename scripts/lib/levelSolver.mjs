@@ -530,14 +530,29 @@ export function guaranteedLoadout(campaignLevelIndex, constants) {
 /**
  * Solve a whole campaign, carrying ammo forward the way the engine does.
  *
- * The carry model is deliberately conservative: a level's leftover ammo is
- * what it started with plus everything on the floor, minus the perfect-accuracy
- * cost of clearing it — no drops. Counting drops here would let the campaign
- * bootstrap itself into an ever-growing surplus on paper, which is precisely
- * the failure mode the pre-placed/dropped split exists to expose rather than
- * launder. Drops still appear in each level's own `clearRatio.dropsOnly`.
+ * `killRate` is the fraction of a level's roster the player is assumed to
+ * fight. It drives both the HP they pay and the drops they bank, and getting it
+ * wrong silently corrupts every level after the first.
+ *
+ * **This was a real bug, caught by checking the model against play.** The carry
+ * originally excluded drops entirely, on the reasoning that counting them would
+ * let the campaign bootstrap itself into a paper surplus. But `clearRatio` adds
+ * that level's drops back in — so a level was credited with its own drops while
+ * being denied every previous level's, which double-penalises deep levels and
+ * compounds down the campaign. On the demo campaign at hard it manufactured a
+ * collapse that does not exist: carry-in fell to 0 by level 14 and levels 15 and
+ * 17 reported as unclearable at 0.30 and 0.92. Measured against a real 12-level
+ * capture, carry-in is *flat* at 5,400–6,800 over the same span. At a measured
+ * rate the same levels read 2.53 and 1.79 — tight, not impossible.
+ *
+ * The default of **0.71** is measured, not chosen: over a 12-level hard capture
+ * the bot killed 71% of the roster and collected 99% of what dropped. Pass `1`
+ * for a completionist run who clears every level. Note the old model is not
+ * reachable by any single value here, because it was not self-consistent: it
+ * charged for the whole roster (a kill rate of 1) while banking none of the
+ * drops (a rate of 0).
  */
-export function solveCampaign({ levels, constants, difficulty }) {
+export function solveCampaign({ levels, constants, difficulty, killRate = DEFAULT_KILL_RATE }) {
   const results = [];
   let carried = null;
   for (const [i, level] of levels.entries()) {
@@ -545,19 +560,44 @@ export function solveCampaign({ levels, constants, difficulty }) {
     const ownedWeapons = guaranteedLoadout(campaignLevelIndex, constants);
     const solved = solveLevel({ map: level.map, constants, difficulty, ownedWeapons, carriedAmmo: carried, campaignLevelIndex });
     results.push({ ...solved, filename: level.filename });
-    carried = carryForward(solved, constants);
+    carried = carryForward(solved, constants, killRate);
   }
   return results;
 }
 
-/** Ammo left after clearing a level at perfect accuracy with the most
- * ammo-efficient owned weapon per pool — see `solveCampaign`'s note on why
- * drops are excluded from the carry. Never negative: a pool that runs dry
- * carries zero, and the level's own ratio is what reports that it did. */
-export function carryForward(solved, constants) {
+/**
+ * Fraction of a level's roster a route-following player is assumed to fight.
+ *
+ * It governs both sides of the ledger at once — the HP paid for and the drops
+ * banked — because you only get a drop by making the kill. Decoupling them is
+ * precisely the bug described on `solveCampaign`.
+ *
+ * Measured over a 12-level Gamer/hard capture: 790 enemies spawned, 232 left
+ * alive (71% killed), and 615 of 624 spawned drops collected (99%). So the
+ * binding constraint is how much of the roster gets fought, not how much of
+ * what drops gets picked up.
+ */
+export const DEFAULT_KILL_RATE = 0.71;
+
+/**
+ * Ammo left after a level, at perfect accuracy with the most ammo-efficient
+ * owned weapon per pool.
+ *
+ * Spends the HP the player actually fights (`killRate` of the roster —
+ * the same fraction whose drops they collect, since you only get a drop by
+ * making the kill) and banks that share of the level's drops. Never negative:
+ * a pool that runs dry carries zero, and the level's own ratio is what reports
+ * that it did. See `solveCampaign` for why the rate matters so much.
+ */
+export function carryForward(solved, constants, killRate = DEFAULT_KILL_RATE) {
   const poolValue = poolDamageValues(constants.profiles, solved.ownedWeapons);
   const next = {};
-  let remainingHp = solved.enemies.totalHp;
+  let remainingHp = solved.enemies.totalHp * killRate;
+  // Banked as bullets: the pools a drop actually lands in depend on roll order,
+  // which this model does not simulate, and bullets is both the commonest drop
+  // and the pool every loadout can spend. Overstating bullets slightly against
+  // rockets is immaterial to a damage total.
+  const bankedDamage = solved.drops.damage * killRate;
 
   // Pools are drained in `AMMO_TYPES` order — bullets, then rockets, then
   // smg, then gas. The *total* damage carried forward is the same whatever
@@ -581,6 +621,9 @@ export function carryForward(solved, constants) {
     const spent = Math.min(available, unitsNeeded);
     remainingHp -= spent * value;
     next[kind] = available - spent;
+  }
+  if (bankedDamage > 0 && (poolValue.bullets ?? 0) > 0) {
+    next.bullets = (next.bullets ?? 0) + bankedDamage / poolValue.bullets;
   }
   return next;
 }

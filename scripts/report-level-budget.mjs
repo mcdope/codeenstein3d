@@ -13,6 +13,7 @@
  * npm run balancing:budget -- --difficulty hard
  * npm run balancing:budget -- --all-difficulties    # sweep, comparison table
  * npm run balancing:budget -- --json out.json       # machine-readable
+ * npm run balancing:budget -- --kill-rate 1          # a completionist run
  * ```
  *
  * Exits non-zero when any level contains an enemy that cannot be killed with
@@ -29,7 +30,7 @@ import path from "node:path";
 
 import { loadEngineModules, REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { loadWorkspaceModule } from "./lib/loadWorkspaceModule.mjs";
-import { solveCampaign, weaponProfiles } from "./lib/levelSolver.mjs";
+import { DEFAULT_KILL_RATE, solveCampaign, weaponProfiles } from "./lib/levelSolver.mjs";
 
 const DIFFICULTIES = ["easy", "normal", "hard"];
 
@@ -40,7 +41,7 @@ const RATIO_WARN = 1.2;
 const RATIO_FAIL = 1.0;
 
 function parseArgs(argv) {
-  const args = { dir: path.join(REPO_ROOT, "demo-campaign"), difficulties: ["normal"], json: null, maxLevels: Infinity };
+  const args = { dir: path.join(REPO_ROOT, "demo-campaign"), difficulties: ["normal"], json: null, maxLevels: Infinity, killRate: DEFAULT_KILL_RATE };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--dir") args.dir = path.resolve(argv[++i]);
@@ -48,6 +49,7 @@ function parseArgs(argv) {
     else if (arg === "--all-difficulties") args.difficulties = [...DIFFICULTIES];
     else if (arg === "--json") args.json = path.resolve(argv[++i]);
     else if (arg === "--max-levels") args.maxLevels = Number(argv[++i]);
+    else if (arg === "--kill-rate") args.killRate = Number(argv[++i]);
     else {
       console.error(`unknown argument: ${arg}`);
       process.exit(2);
@@ -283,12 +285,14 @@ async function main() {
 
   console.log(`# Balance budget -- ${path.relative(REPO_ROOT, args.dir) || args.dir}`);
   console.log(`# ${levels.length} levels, perfect-accuracy lower bound on cost`);
+  console.log(`# kill rate ${args.killRate} — the share of each roster assumed fought, which sets both`);
+  console.log("# the ammo spent and the drops carried on. Override with --kill-rate.");
   if (skipped.length > 0) console.log(`# skipped, no parser matched (${skipped.length}): ${skipped.slice(0, 8).join(", ")}${skipped.length > 8 ? ", ..." : ""}`);
   printWeaponTable(profiles);
 
   const byDifficulty = new Map();
   for (const difficulty of args.difficulties) {
-    const results = solveCampaign({ levels, constants, difficulty });
+    const results = solveCampaign({ levels, constants, difficulty, killRate: args.killRate });
     byDifficulty.set(difficulty, results);
     console.log(`\n\n===== difficulty: ${difficulty} =====\n`);
     printBudgetTable(results);

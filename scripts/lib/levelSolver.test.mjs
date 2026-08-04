@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   archetypeOf,
+  DEFAULT_KILL_RATE,
   carryForward,
   dropBudget,
   enemyBudget,
@@ -417,27 +418,46 @@ describe("solveLevel", () => {
 });
 
 describe("carryForward / solveCampaign", () => {
-  it("spends the most efficient pool first and never carries a negative", () => {
-    const solved = solveLevel({
-      map: { enemies: [enemy(1000)], ammoPickups: [], bonusLevel: false },
+  const levelOf = (hp, ammo) =>
+    solveLevel({
+      map: { enemies: [enemy(hp)], ammoPickups: [], bonusLevel: false },
       constants,
       difficulty: "normal",
       ownedWeapons: [0, 1, 2],
-      carriedAmmo: { bullets: 8, rockets: 0, smg: 0, gas: 0 },
+      carriedAmmo: { bullets: ammo, rockets: 0, smg: 0, gas: 0 },
     });
-    // 8 bullets at 25 damage is 200 against 1000 HP -- the pool empties.
-    expect(carryForward(solved, constants).bullets).toBe(0);
+
+  it("drains the pool on a level it cannot afford, then banks only what it earned", () => {
+    // 8 bullets at 25 damage is 200 against 1000 HP, so the spend empties the
+    // pool outright. What comes back is the dead enemy's own drop and nothing
+    // else -- strictly less than was carried in, and never negative.
+    const left = carryForward(levelOf(1000, 8), constants, 1).bullets;
+    expect(left).toBeGreaterThan(0);
+    expect(left).toBeLessThan(8);
   });
 
   it("leaves the surplus when the level costs less than what was carried", () => {
-    const solved = solveLevel({
-      map: { enemies: [enemy(50)], ammoPickups: [], bonusLevel: false },
-      constants,
-      difficulty: "normal",
-      ownedWeapons: [0, 1, 2],
-      carriedAmmo: { bullets: 10, rockets: 0, smg: 0, gas: 0 },
-    });
-    expect(carryForward(solved, constants).bullets).toBeCloseTo(8, 10);
+    // 50 HP costs 2 bullets of 10; the enemy's own drop is banked on top, so
+    // the carry lands above the 8 the spend alone would leave.
+    const left = carryForward(levelOf(50, 10), constants, 1).bullets;
+    expect(left).toBeGreaterThan(8);
+  });
+
+  it("banks and charges on the same rate, which is the whole point", () => {
+    // The bug this exists to fix: the old model charged for the whole roster
+    // while banking none of its drops, which double-penalises every later
+    // level and, on the real campaign, manufactured a collapse play does not
+    // show. Fighting more must cost more *and* return more.
+    const solved = levelOf(1000, 100);
+    const none = carryForward(solved, constants, 0).bullets;
+    const half = carryForward(solved, constants, 0.5).bullets;
+    const all = carryForward(solved, constants, 1).bullets;
+    expect(none).toBe(100); // fought nothing: spent nothing, banked nothing
+    expect(half).toBeLessThan(none); // this roster is a net loss to fight
+    expect(all).toBeLessThan(half);
+    // and the drops really are in there -- the spend alone would leave less
+    const spendOnly = 100 - (1000 * 0.5) / 25;
+    expect(half).toBeGreaterThan(spendOnly);
   });
 
   it("carries ammo across a campaign instead of restarting each level", () => {
@@ -445,11 +465,20 @@ describe("carryForward / solveCampaign", () => {
       { filename: "a", map: { enemies: [enemy(50)], ammoPickups: [], bonusLevel: false } },
       { filename: "b", map: { enemies: [enemy(50)], ammoPickups: [], bonusLevel: false } },
     ];
-    const results = solveCampaign({ levels, constants, difficulty: "normal" });
+    const results = solveCampaign({ levels, constants, difficulty: "normal", killRate: 1 });
     expect(results[0].carried.fromStartingFormula).toBe(true);
     expect(results[1].carried.fromStartingFormula).toBe(false);
-    // Level 1 spent 50 HP worth of the 100 starting bullets at 25/round.
-    expect(results[1].carried.ammo.bullets).toBeCloseTo(98, 10);
+    // 100 starting bullets, 50 HP costs 2 at 25 damage, plus the banked drop.
+    expect(results[1].carried.ammo.bullets).toBeGreaterThan(98);
+  });
+
+  it("defaults to the measured kill rate", () => {
+    const levels = [{ filename: "a", map: { enemies: [enemy(500)], ammoPickups: [], bonusLevel: false } }];
+    const dflt = solveCampaign({ levels, constants, difficulty: "normal" });
+    const explicit = solveCampaign({ levels, constants, difficulty: "normal", killRate: DEFAULT_KILL_RATE });
+    expect(dflt[0].carried.damage).toBe(explicit[0].carried.damage);
+    expect(DEFAULT_KILL_RATE).toBeGreaterThan(0);
+    expect(DEFAULT_KILL_RATE).toBeLessThan(1);
   });
 
   it("unlocks a forced weapon partway through the campaign", () => {
