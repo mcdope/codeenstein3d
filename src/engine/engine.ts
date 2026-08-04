@@ -3542,7 +3542,12 @@ export class RaycasterEngine {
         const dy = drop.y - p.player.posY;
         if (dx * dx + dy * dy >= r2) continue;
         this.drops.splice(i, 1);
+        const beforeHealth = p.health;
+        const beforeSwap = p.swap;
         applyLootDrop(drop, p.lootCtx);
+        if (this.eventLog) {
+          this.recordLootCollectedEvent(drop.kind, "drop", p, beforeHealth, beforeSwap, { did: drop.id });
+        }
         break;
       }
     }
@@ -3557,6 +3562,8 @@ export class RaycasterEngine {
         if (dx * dx + dy * dy >= r2) continue;
         pickup.collected = true;
         audio.playPickup();
+        const beforeHealth = p.health;
+        const beforeSwap = p.swap;
         if (pickup.kind === "weapon") {
           // Own message/amount logic (unlock vs. already-owned top-up) — the
           // generic "+N kind found" log below doesn't apply to it.
@@ -3578,6 +3585,12 @@ export class RaycasterEngine {
         else if (pickup.kind === "swap") p.swap = Math.min(MAX_SWAP, p.swap + amount);
         else p.ammo[pickup.kind] += amount;
         if (p.telemetry) recordLootCollected(p.telemetry, "static", pickup.kind, amount);
+        if (this.eventLog) {
+          this.recordLootCollectedEvent(pickup.kind, "preplaced", p, beforeHealth, beforeSwap, {
+            pid: this.map.ammoPickups.indexOf(pickup),
+            amount,
+          });
+        }
         console.log(`%c[pickup] +${amount} ${pickup.kind} found`, "color:#3fd0e0");
         break;
       }
@@ -3589,6 +3602,39 @@ export class RaycasterEngine {
    * down on Hard can never zero out a pickup entirely. */
   private scaledLootAmount(baseAmount: number): number {
     return Math.max(1, Math.round(baseAmount * this.difficultyMultipliers.ammoDropRate));
+  }
+
+  /**
+   * One `lootCollected` record: what a pickup actually granted this player.
+   *
+   * The grant is measured as the real change in the player's pools rather than
+   * taken from the drop's nominal amount, because that is the only way
+   * overflow becomes visible. Health and swap clamp at their maxima, so a
+   * 20-point health drop taken at 95 stability grants 5 — the other 15 is
+   * waste, and a reader recovers it by differencing this against the nominal
+   * amount already in `lootDropped`/`levelStart`. Ammo has no cap at all
+   * (`engine.ts`'s `CHEAT_MAX_AMMO` comment), so ammo overflow cannot exist
+   * and only health/swap placement can be wrong.
+   *
+   * `source` is the field the whole pre-placed-vs-dropped split rests on, and
+   * it cannot be reconstructed after the fact from anything else in the log.
+   */
+  private recordLootCollectedEvent(
+    kind: LootKind,
+    source: "preplaced" | "drop",
+    p: PlayerState,
+    beforeHealth: number,
+    beforeSwap: number,
+    extra: Record<string, unknown>,
+  ): void {
+    if (!this.eventLog) return;
+    recordEvent(this.eventLog, "lootCollected", this.levelTime, {
+      kind,
+      source,
+      grantedHealth: p.health - beforeHealth,
+      grantedSwap: p.swap - beforeSwap,
+      ...extra,
+    });
   }
 
   /** The real amount a fresh (not-already-owned) drop of `kind` will actually
@@ -3637,6 +3683,22 @@ export class RaycasterEngine {
     this.drops.push(drop);
     const amount = this.scaledLootAmount(drop.amount ?? this.defaultLootAmountFor(drop.kind));
     if (this.teamTelemetry) recordLootRolled(this.teamTelemetry, drop.kind, amount);
+    // Emitted at *spawn*, so a drop nobody ever walks over is still visible.
+    // `fromArch` is what makes self-sustain measurable rather than merely
+    // predicted: without it the log can say how much loot appeared but not
+    // which archetype paid for it. It costs nothing here -- `pushLootDrop`
+    // already receives the enemy.
+    if (this.eventLog) {
+      recordEvent(this.eventLog, "lootDropped", this.levelTime, {
+        did: drop.id,
+        kind: drop.kind,
+        amount,
+        fromEid: enemyIndex,
+        fromArch: enemyCategory(enemy),
+        x: drop.x,
+        y: drop.y,
+      });
+    }
   }
 
   /**
@@ -3784,9 +3846,26 @@ export class RaycasterEngine {
       remaining -= absorbed;
     }
     p.health -= remaining;
+    if (this.eventLog) {
+      recordEvent(this.eventLog, "damageTaken", this.levelTime, {
+        src: source,
+        amt: amount,
+        absorbedBySwap: amount - remaining,
+        healthAfter: Math.max(0, p.health),
+        swapAfter: p.swap,
+        // Which archetype dealt it is deliberately not recorded yet: melee
+        // damage arrives from `updateEnemies` already summed per player, and a
+        // bolt carries no reference to the enemy that fired it, so attributing
+        // it means changing both of those return shapes on the AI hot path.
+        // Tracked in `doc/dev/balancing-telemetry.md`'s blocked-metrics table
+        // rather than guessed at here.
+        arch: null,
+      });
+    }
     if (p.health <= 0) {
       p.health = 0;
       if (p.telemetry) recordFatalDamage(p.telemetry, source);
+      if (this.eventLog) recordEvent(this.eventLog, "playerDeath", this.levelTime, { src: source });
       this.killPlayer(p);
     }
   }
@@ -4388,6 +4467,19 @@ export class RaycasterEngine {
     // still knows the ammo state *before* this shot.
     const forcedMelee = w.meleeRange !== undefined && shooter.ammo.bullets === 0 && shooter.ammo.smg === 0 && shooter.ammo.gas === 0;
     if (shooter.telemetry) recordShot(shooter.telemetry, weaponIndex);
+    // One record per *trigger-pull*, with the pellet count alongside. The
+    // aggregate counters conflate these: `recordShot` counts pulls while
+    // `recordHit` counts pellets, so `hits/shotsFired` reaches 7.0 for the
+    // shotgun and reads as 700% accuracy. Keeping them as separate events is
+    // what makes a cross-weapon hit rate meaningful at all.
+    if (this.eventLog) {
+      recordEvent(this.eventLog, "shot", this.levelTime, {
+        w: weaponIndex,
+        pellets: w.isRocket ? 1 : w.pellets,
+        ammoAfter: w.ammoType ? shooter.ammo[w.ammoType] : null,
+        forcedMelee,
+      });
+    }
 
     audio.playShoot(w.viewKind);
     // Kick the viewmodel: full recoil, easing back over the next frames. No
@@ -4410,6 +4502,16 @@ export class RaycasterEngine {
     for (const outcome of resolution.pellets) {
       if (outcome.kind === "enemy") {
         if (shooter.telemetry) recordHit(shooter.telemetry, weaponIndex);
+        // One per connecting pellet, carrying the range it connected at --
+        // the Cone of Fire's deviation grows with the cube of range, so hit
+        // rate is only interpretable bucketed by distance.
+        if (this.eventLog) {
+          recordEvent(this.eventLog, "hit", this.levelTime, {
+            w: weaponIndex,
+            eid: this.enemies.indexOf(outcome.target),
+            dist: Math.hypot(outcome.target.x - shooter.player.posX, outcome.target.y - shooter.player.posY),
+          });
+        }
         this.damageEnemy(outcome.target, w.damagePerPellet, w.lifesteal, isFlame, weaponIndex, forcedMelee, shooter);
       } else if (outcome.kind === "mine") {
         this.destroyMine(outcome.target, shooter);

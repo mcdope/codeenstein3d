@@ -1392,15 +1392,17 @@ hand-maintained `isWall()` mirrors documented above — same failure mode, same 
 
 ### Blocked metrics
 
-| Metric | Blocked by | Unblocked in |
+| Metric | Blocked by | Status |
 |---|---|---|
-| `incomingDps`, `survivalWindow`, `threatScore` | `enemyAi.ts` constants are module-private | Step 1 |
-| `selfSustain` measured (rather than predicted) | `lootCollected` has no dropping-archetype field | Step 6 |
-| `overkill` | `damageEnemy` discards the pre-clamp negative HP | Step 5 |
-| `damageTakenByArchetype` | `damageBySource` has no archetype dimension | Step 6 |
-| `hitRateByDistance` | no distance is recorded on a shot or hit | Step 6 |
-| Reproducible drop economy | gameplay seed cannot be pinned | Step 2 |
-| Anything about repos other than `demo-campaign/` | no corpus | Step 4 |
+| `incomingDps`, `survivalWindow`, `threatScore` | `enemyAi.ts` constants were module-private | **done** — moved to `combatConstants.ts` |
+| `overkill` | `damageEnemy` discarded the pre-clamp negative HP | **done** — `damageDealt.hpAfter` |
+| `selfSustain` measured (rather than predicted) | no dropping-archetype field | **done** — `lootDropped.fromArch` |
+| `hitRateByDistance` | no distance recorded on a shot or hit | **done** — `hit.dist` |
+| Cross-weapon hit rate | pellets and trigger-pulls were one counter | **done** — separate `shot`/`hit` events |
+| Reproducible drop economy | gameplay seed could not be pinned | **done** — `?seed=` |
+| Anything about repos other than `demo-campaign/` | no corpus | **done** — `balancing:corpus` |
+| **`damageTakenByArchetype`** | melee damage arrives from `updateEnemies` already summed per player, and a bolt carries no reference to the enemy that fired it | **open** — needs both return shapes changed on the AI hot path; `damageTaken.arch` is `null` until then, deliberately not guessed |
+| **`weaponSwitch` / `weaponGranted`** | the drop path grants through `lootApply.ts`, which has no engine reference | **open** — low value next to the above; switch *frequency* is a bot-policy signal, not a balance one |
 
 ### Genuinely open design questions
 
