@@ -67,7 +67,9 @@ function printWeapons(events, profiles) {
   console.log("\n## Weapon usage\n");
   console.log("Trigger-pulls and pellets are counted separately on purpose: the aggregate");
   console.log("`weaponEfficiency` divides pellet hits by trigger-pulls, which reads over 100%");
-  console.log("for any multi-pellet weapon.\n");
+  console.log("for any multi-pellet weapon. A splash weapon shows `--` for hit rate: a rocket");
+  console.log("resolves as blast damage and never emits a per-pellet hit, so any ratio would");
+  console.log("be a structural zero. Judge those on damage and kill share.\n");
   console.log("| weapon | pulls | pellets fired | pellet hits | pellet hit rate | pulls that hit | damage share | kill share |");
   console.log("|---|---:|---:|---:|---:|---:|---:|---:|");
   const usage = weaponUsage(events);

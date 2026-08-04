@@ -77,6 +77,25 @@ describe("weaponUsage", () => {
     expect(usage.find((u) => u.w === 1).shareOfKills).toBe(1);
   });
 
+  it("reports no hit rate for a splash weapon, rather than a structural zero", () => {
+    // A rocket never emits `hit` -- it resolves as damageDealt from the blast --
+    // so hits/pellets would read 0% however well it performed. That artifact was
+    // reported as a measurement once. Damage and kills still count.
+    const usage = weaponUsage([
+      { e: "shot", w: 4, pellets: 1, splash: true },
+      { e: "damageDealt", w: 4, amt: 150, hpBefore: 200, hpAfter: 50 },
+      { e: "kill", w: 4, arch: "normal" },
+    ]);
+    expect(usage[0].pelletHitRate).toBeNull();
+    expect(usage[0].triggerHitRate).toBeNull();
+    expect(usage[0]).toMatchObject({ pulls: 1, damage: 150, kills: 1 });
+  });
+
+  it("still reports a hit rate for hitscan weapons", () => {
+    const usage = weaponUsage([{ e: "shot", w: 1, pellets: 4 }, { e: "hit", w: 1 }]);
+    expect(usage[0].pelletHitRate).toBe(0.25);
+  });
+
   it("ignores damage with no weapon, so splash and traps do not skew weapon share", () => {
     const usage = weaponUsage([{ e: "damageDealt", w: null, amt: 50, hpBefore: 60, hpAfter: 10 }]);
     expect(usage).toEqual([]);

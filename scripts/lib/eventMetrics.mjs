@@ -69,7 +69,7 @@ export function weaponUsage(events) {
   const byWeapon = new Map();
   const get = (w) => {
     if (!byWeapon.has(w)) {
-      byWeapon.set(w, { w, pulls: 0, pelletsFired: 0, pelletHits: 0, pullsThatHit: 0, damage: 0, kills: 0, overkill: [] });
+      byWeapon.set(w, { w, pulls: 0, pelletsFired: 0, pelletHits: 0, pullsThatHit: 0, damage: 0, kills: 0, overkill: [], splash: false });
     }
     return byWeapon.get(w);
   };
@@ -83,6 +83,7 @@ export function weaponUsage(events) {
       const stats = get(event.w);
       stats.pulls += 1;
       stats.pelletsFired += event.pellets ?? 1;
+      if (event.splash) stats.splash = true;
       currentPull = { w: event.w, landed: false };
     } else if (event.e === "hit") {
       const stats = get(event.w);
@@ -105,8 +106,13 @@ export function weaponUsage(events) {
   return [...byWeapon.values()]
     .map((s) => ({
       ...s,
-      pelletHitRate: s.pelletsFired > 0 ? s.pelletHits / s.pelletsFired : null,
-      triggerHitRate: s.pulls > 0 ? s.pullsThatHit / s.pulls : null,
+      // `null` for a splash weapon rather than a number: a projectile never
+      // emits `hit` (it resolves as `damageDealt` from the blast), so the ratio
+      // would be a structural zero -- and even with hit events one round can
+      // strike several enemies, so pellets-landed-over-pellets-fired is not a
+      // rate at all. Judge those on damage and kills instead.
+      pelletHitRate: s.splash ? null : s.pelletsFired > 0 ? s.pelletHits / s.pelletsFired : null,
+      triggerHitRate: s.splash ? null : s.pulls > 0 ? s.pullsThatHit / s.pulls : null,
       overkill: summarize(s.overkill),
       shareOfDamage: totalDamage > 0 ? s.damage / totalDamage : null,
       shareOfKills: totalKills > 0 ? s.kills / totalKills : null,

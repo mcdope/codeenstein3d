@@ -4487,6 +4487,15 @@ export class RaycasterEngine {
       recordEvent(this.eventLog, "shot", this.levelTime, {
         w: weaponIndex,
         pellets: w.isRocket ? 1 : w.pellets,
+        // A rocket resolves as a projectile that detonates later, so it never
+        // runs the pellet loop below and never emits a `hit`. Its damage
+        // arrives as `damageDealt` from the splash instead. Without this flag a
+        // reader computes hits/pellets and gets a structural 0% for ghidra --
+        // which was reported as a measurement once already. Splash cannot use
+        // the same rate anyway: one "pellet" can hit several enemies, which is
+        // the >100% class of bug that separating `shot` from `hit` fixed for
+        // the shotgun.
+        splash: Boolean(w.isRocket),
         // What the shot was aimed at: range, archetype and HP of whatever is
         // under the crosshair. All three are `null` when nothing is targeted,
         // which the reader excludes rather than treating as zero.
