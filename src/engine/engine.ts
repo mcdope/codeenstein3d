@@ -220,6 +220,24 @@ export function isTestHooksActive(): boolean {
     new URLSearchParams(window.location.search).get("testHooks") === "1"
   );
 }
+/**
+ * Whether to buffer the raw balancing event log this run (`?eventLog=1`).
+ *
+ * A *separate* gate from `?testHooks=1`, deliberately. Every bot run sets
+ * `testHooks`, but almost none of them want the event stream — and buffering
+ * six figures of records that nobody drains is pure waste. Requiring its own
+ * flag means the ordinary telemetry campaign pays exactly nothing for this
+ * feature, which is the same "zero cost when disabled" bar `PLAYER_STATS_ENABLED`
+ * is held to. `run-balancing-telemetry.mjs` adds it to the URL only when
+ * `CODEENSTEIN_TELEMETRY_EVENT_LOG` is set.
+ *
+ * Implies test hooks: the log can only be read back through
+ * `__codeensteinTestHooks.drainEvents()`, so recording without them would
+ * buffer records nothing can ever collect.
+ */
+export function isEventLogActive(): boolean {
+  return isTestHooksActive() && new URLSearchParams(window.location.search).get("eventLog") === "1";
+}
 /** IDKFA's ammo grant — a clearly-a-cheat round number; ammo otherwise has no
  * upper cap at all (only loot/pickups increment it). */
 const CHEAT_MAX_AMMO = 999;
@@ -1044,7 +1062,7 @@ export class RaycasterEngine {
     this.telemetryEnabled = PLAYER_STATS_ENABLED || isTestHooksActive();
     if (this.telemetryEnabled) {
       this.teamTelemetry = createTeamTelemetryState();
-      this.eventLog = createEventLog();
+      if (isEventLogActive()) this.eventLog = createEventLog();
     }
 
     this.localPlayerId = localPlayerId;
@@ -1194,13 +1212,9 @@ export class RaycasterEngine {
         // every level boundary and once at run end, which is what bounds the
         // buffer and decides how much a crashed browser loses.
         //
-        // `this.eventLog` is guaranteed set here rather than checked: it is
-        // created whenever `telemetryEnabled` is, and `telemetryEnabled` is
-        // `PLAYER_STATS_ENABLED || isTestHooksActive()` — so inside this
-        // `isTestHooksActive()` block it cannot be undefined. Same reasoning
-        // (and same non-null assertion) as `p.telemetry` at the recording call
-        // sites.
-        drainEvents: () => drainEvents(this.eventLog!),
+        // Returns an empty batch when `?eventLog=1` was not passed, so a
+        // caller that drains unconditionally needs no branch of its own.
+        drainEvents: () => (this.eventLog ? drainEvents(this.eventLog) : { events: [], dropped: 0 }),
       };
     }
   }
@@ -3545,9 +3559,7 @@ export class RaycasterEngine {
         const beforeHealth = p.health;
         const beforeSwap = p.swap;
         applyLootDrop(drop, p.lootCtx);
-        if (this.eventLog) {
-          this.recordLootCollectedEvent(drop.kind, "drop", p, beforeHealth, beforeSwap, { did: drop.id });
-        }
+        this.recordLootCollectedEvent(drop.kind, "drop", p, beforeHealth, beforeSwap, { did: drop.id });
         break;
       }
     }
@@ -3585,12 +3597,10 @@ export class RaycasterEngine {
         else if (pickup.kind === "swap") p.swap = Math.min(MAX_SWAP, p.swap + amount);
         else p.ammo[pickup.kind] += amount;
         if (p.telemetry) recordLootCollected(p.telemetry, "static", pickup.kind, amount);
-        if (this.eventLog) {
-          this.recordLootCollectedEvent(pickup.kind, "preplaced", p, beforeHealth, beforeSwap, {
-            pid: this.map.ammoPickups.indexOf(pickup),
-            amount,
-          });
-        }
+        this.recordLootCollectedEvent(pickup.kind, "preplaced", p, beforeHealth, beforeSwap, {
+          pid: this.map.ammoPickups.indexOf(pickup),
+          amount,
+        });
         console.log(`%c[pickup] +${amount} ${pickup.kind} found`, "color:#3fd0e0");
         break;
       }
@@ -4617,7 +4627,11 @@ export class RaycasterEngine {
       recordEvent(this.eventLog, "damageDealt", this.levelTime, {
         eid: enemyIndex,
         arch: enemyCategory(enemy),
-        w: weaponIndex ?? null,
+        // Both `damageEnemy` call sites always pass a real index; left
+        // undefined-able only because the parameter type is. `JSON.stringify`
+        // drops an undefined field and the reader treats absent as "no
+        // weapon", so no `?? null` fallback is needed.
+        w: weaponIndex,
         amt: amount,
         hpBefore,
         hpAfter: enemy.hp,
@@ -4643,7 +4657,7 @@ export class RaycasterEngine {
         eid: enemyIndex,
         arch: enemyCategory(enemy),
         maxHp: enemy.maxHp,
-        w: weaponIndex ?? null,
+        w: weaponIndex,
         forcedMelee,
         // Closes the TTK window inline, so a reader never needs the separate
         // ttkRecords array to compute a time-to-kill distribution.

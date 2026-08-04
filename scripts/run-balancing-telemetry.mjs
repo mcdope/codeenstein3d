@@ -361,7 +361,11 @@ async function runOneAttempt(browser, profileName, profile, difficulty, levelPla
     if (!HEADED) await installVirtualClock(page); // headed mode runs on the real clock so a human can follow along
     await installDifficulty(page, difficulty);
     const seedParam = GAMEPLAY_SEED === null ? "" : `&seed=${GAMEPLAY_SEED}`;
-    await page.goto(`${DEV_SERVER_URL}/?testHooks=1&botRotSpeedMul=${profile.rotSpeedMultiplier}${seedParam}`);
+    // `?eventLog=1` only when a destination was actually configured — the
+    // engine buffers nothing without it, so an ordinary campaign pays nothing
+    // for the feature.
+    const eventLogParam = EVENT_LOG_DIR === null ? "" : "&eventLog=1";
+    await page.goto(`${DEV_SERVER_URL}/?testHooks=1&botRotSpeedMul=${profile.rotSpeedMultiplier}${seedParam}${eventLogParam}`);
     await page.click("#tab-demo");
     await page.click("#launch-demo-campaign");
     await waitForTestHooks(page);

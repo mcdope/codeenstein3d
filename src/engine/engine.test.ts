@@ -5143,7 +5143,7 @@ describe("balancing event log", () => {
    * the hooks object — same shape as the other hook tests in this file. */
   function withTestHooks(body: (getHooks: () => Record<string, (...args: unknown[]) => unknown>) => void): void {
     const original = window.location;
-    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1&eventLog=1" }, configurable: true });
     try {
       body(() => (window as unknown as { __codeensteinTestHooks: Record<string, (...args: unknown[]) => unknown> }).__codeensteinTestHooks);
     } finally {
@@ -5236,6 +5236,89 @@ describe("balancing event log", () => {
       // lists against levelStart's are the nominal-vs-actual budget gap.
       expect(end!.prePlacedUncollected).toEqual([expect.objectContaining({ pid: 0, kind: "bullets", amount: 11 })]);
       expect(end!.enemiesAlive).toEqual([expect.objectContaining({ eid: 0, arch: "normal" })]);
+    });
+  });
+
+  it("buffers nothing without ?eventLog=1, so an ordinary bot run pays no cost", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      makeEngine(fakeMap({ enemies: [fakeEnemy({ x: 6.5, y: 5.5 })] }));
+      const hooks = (window as unknown as { __codeensteinTestHooks: Record<string, (...args: unknown[]) => unknown> })
+        .__codeensteinTestHooks;
+      // Every telemetry campaign sets ?testHooks=1 and almost none of them
+      // want the stream; buffering records nobody drains would be pure waste.
+      expect(hooks.drainEvents()).toEqual({ events: [], dropped: 0 });
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+      delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+    }
+  });
+
+  it("records damage taken, and both sides of the loot economy", () => {
+    withTestHooks((getHooks) => {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][5] = 2; // HAZARD_TILE, under the spawn
+      const map = fakeMap(
+        {
+          grid: g,
+          hazards: [{ x: 5, y: 5 }],
+          // Point-blank, 1 HP, so one pistol shot kills it and its drop lands
+          // inside the 0.5-tile pickup radius of the player standing still.
+          enemies: [fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 1 })],
+          ammoPickups: [{ x: 5.5, y: 5.5, kind: "bullets", amount: 11, collected: false }],
+        },
+        size,
+      );
+      const { engine, input } = makeEngine(map);
+      getHooks().drainEvents();
+
+      engine.advance(0.5); // standing in acid: damageTaken, and the pickup underfoot
+      input.fireQueued = true;
+      engine.advance(0.016); // kill -> lootDropped
+      for (let i = 0; i < 5; i++) engine.advance(0.016); // walk over it -> lootCollected
+
+      const events = (getHooks().drainEvents() as Drained).events;
+      const types = new Set(events.map((e) => e.e));
+      expect(types.has("damageTaken"), "standing in acid must record damage taken").toBe(true);
+      expect(types.has("shot"), "firing must record a trigger-pull").toBe(true);
+      expect(types.has("lootDropped"), "a kill must record its drop at spawn time").toBe(true);
+
+      // The enemy spawns 0.4 tiles away -- inside melee range -- so it bites
+      // too; pick the acid record specifically rather than "the first one".
+      const taken = events.find((e) => e.e === "damageTaken" && e.src === "hazard");
+      expect(taken, "standing in acid must record a hazard damage event").toBeDefined();
+      expect(taken).toMatchObject({ arch: null });
+      expect(events.some((e) => e.e === "damageTaken" && e.src === "enemyMelee")).toBe(true);
+
+      // The pre-placed pickup sat under the spawn, so it is collected on the
+      // first frame -- this is the `source: "preplaced"` half of the split.
+      const preplaced = events.find((e) => e.e === "lootCollected" && e.source === "preplaced");
+      expect(preplaced, "the pickup underfoot must record as pre-placed").toBeDefined();
+
+      const dropped = events.find((e) => e.e === "lootDropped");
+      expect(dropped).toMatchObject({ fromEid: 0, fromArch: "normal" });
+    });
+  });
+
+  it("records the player's death", () => {
+    withTestHooks((getHooks) => {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][5] = 2; // HAZARD_TILE under the spawn: 18 dps, so ~6s kills outright
+      const { engine, handlers } = makeEngine(fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }] }, size));
+      getHooks().drainEvents();
+      for (let i = 0; i < 20 && handlers.onGameOver.mock.calls.length === 0; i++) engine.advance(0.5);
+      expect(handlers.onGameOver).toHaveBeenCalledTimes(1);
+
+      const events = (getHooks().drainEvents() as Drained).events;
+      const death = events.find((e) => e.e === "playerDeath");
+      expect(death, "dying must record a playerDeath event").toBeDefined();
+      expect(death).toMatchObject({ src: "hazard" });
+      // The level closes as died, not cleared -- which is what separates a run
+      // that spent its budget from one that was cut short.
+      expect(events.find((e) => e.e === "levelEnd")).toMatchObject({ outcome: "died" });
     });
   });
 });
