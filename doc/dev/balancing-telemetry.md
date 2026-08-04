@@ -988,10 +988,32 @@ damage records, spawned enemies equal kills plus survivors on all 64 level-visit
 all 528 kills pair with a lethal damage record, no drop was collected without a
 matching spawn, and nothing was lost to the buffer cap.
 
-Two gaps remain, both deliberate and both worth knowing before reading a number:
+**One real data-loss bug was found this way, after the checks above had already
+passed.** Three `stuck` return paths in `playRun` returned before
+`pullLevelResult`, so that level's buffered events were never drained and were
+discarded with the page. The balanced `levelStart`/`levelEnd` counts *hid* it: a
+lost level drops both records together, so the totals stay consistent. Proven in
+both directions by forcing stuck runs with
+`CODEENSTEIN_TELEMETRY_TUNING='{"MAX_TICKS_PER_WAYPOINT":1}'` — with the fix, two
+stuck runs yield 2 `levelStart`, 11 shots, 2 kills and their loot; without it, **no
+event file is written at all**. Fixed by `drainEventsInto`, which drains without
+pulling a snapshot, since a stuck level has no usable snapshot and must not enter
+`levelSnapshots`.
+
+The bias mattered more than the volume: a stuck run's last level is exactly the
+level that caused the problem, so the events most worth reading were the ones being
+dropped. Anything about wedges or hard-level failures collected before this fix is
+missing its most interesting level.
+
+Three gaps remain, all deliberate and all worth knowing before reading a number:
 
 - **`weaponSwitch` and `weaponGranted` are never emitted.** They appear in the
   schema above and in §7's blocked-metrics table; nothing currently depends on them.
+- **Multiplayer emits no events at all.** `run-balancing-telemetry-multiplayer.mjs`
+  never sets `?eventLog=1` and never drains, so the whole event stream is
+  single-player only. The engine side would work unchanged — every emission point
+  is shared — but each peer would record its own copy, so a reader would need to
+  de-duplicate by roster id first.
 - **A splash weapon emits no `hit`.** `fire()` returns before the pellet loop for
   `isRocket`, so a rocket's damage arrives later as `damageDealt` from the blast
   and never as a per-pellet hit. Ghidra accordingly showed 17 shots, 15 damage

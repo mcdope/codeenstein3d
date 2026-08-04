@@ -467,6 +467,7 @@ export async function playRun(page, profile, levelPlans, label = "") {
 
     const player0 = await bot.readState();
     if (player0.state !== "playing") {
+      await drainEventsInto(page, eventBatches, i);
       return { reachedExitForLevel, levelSnapshots, eventBatches, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: player0.state === "over" ? "died" : "stuck" };
     }
     const prevExit = await page.evaluate(() => window.__codeensteinTestHooks.getExit());
@@ -498,6 +499,7 @@ export async function playRun(page, profile, levelPlans, label = "") {
       return { reachedExitForLevel, levelSnapshots, eventBatches, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "died" };
     }
     if (legOutcome.state === "stuck") {
+      await drainEventsInto(page, eventBatches, i);
       bot.reportAnomalies(label, i);
       return { reachedExitForLevel, levelSnapshots, eventBatches, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "stuck" };
     }
@@ -516,6 +518,7 @@ export async function playRun(page, profile, levelPlans, label = "") {
         return { reachedExitForLevel, levelSnapshots, eventBatches, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "died" };
       }
       if (pushed.state !== "won") {
+        await drainEventsInto(page, eventBatches, i);
         bot.reportAnomalies(label, i);
         return { reachedExitForLevel, levelSnapshots, eventBatches, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "stuck" };
       }
@@ -560,6 +563,29 @@ export async function playRun(page, profile, levelPlans, label = "") {
     await dismissOverlay(page); // next level's briefing
   }
   return { reachedExitForLevel, levelSnapshots, eventBatches, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: null, reason: "campaign-complete" };
+}
+
+/**
+ * Drain the in-page event buffer into `eventBatches` without pulling a
+ * telemetry snapshot.
+ *
+ * Exists for the failure paths. A run that ends `stuck` returns before
+ * `pullLevelResult`, deliberately — that level has no usable snapshot and must
+ * not enter `levelSnapshots`. But its *events* are still real, and without this
+ * they were silently discarded along with the level's own `levelStart`, so the
+ * log simply had no trace the level was ever played. Balanced counts of
+ * `levelStart`/`levelEnd` hid it: a lost level drops both records together.
+ *
+ * The bias mattered more than the volume. A stuck run's final level is exactly
+ * the level that caused the problem, so the events most worth reading were the
+ * ones being dropped.
+ */
+async function drainEventsInto(page, eventBatches, levelIndex) {
+  if (EVENT_LOG_DIR === null) return;
+  const drained = await page
+    .evaluate(() => window.__codeensteinTestHooks?.drainEvents() ?? null)
+    .catch(() => null); // a wedged/closed page must not take the attempt down
+  if (drained) eventBatches.push({ levelIndex, ...drained });
 }
 
 async function pullLevelResult(page, drainEventLog = false) {
