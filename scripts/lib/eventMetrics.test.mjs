@@ -11,6 +11,7 @@ import {
   summarize,
   survivability,
   timeToKillByArchetype,
+  weaponChoiceByTarget,
   weaponUsage,
 } from "./eventMetrics.mjs";
 
@@ -217,5 +218,34 @@ describe("levelPacing", () => {
     expect(levels[0]).toMatchObject({ lvl: 1, visits: 2, outcomes: { cleared: 1, died: 1 } });
     expect(levels[0].time.mean).toBe(50);
     expect(levels[1].lvl).toBe(2);
+  });
+});
+
+describe("weaponChoiceByTarget", () => {
+  const shot = (w, targetArch, dist) => ({ e: "shot", w, targetArch, dist, pellets: 1 });
+
+  it("splits weapon choice by the target's archetype and the range fired at", () => {
+    const rows = weaponChoiceByTarget(
+      [shot(3, "normal", 5), shot(3, "normal", 5), shot(4, "normal", 5), shot(3, "edgeCase", 1)],
+      { 3: "gdb", 4: "ghidra" },
+    );
+    const far = rows.find((r) => r.arch === "normal" && r.bucket === "4-7");
+    expect(far).toMatchObject({ total: 3, byWeapon: { gdb: 2, ghidra: 1 } });
+    expect(rows.find((r) => r.arch === "edgeCase")).toMatchObject({ bucket: "0-2", total: 1 });
+  });
+
+  it("is the query two failed A/Bs needed: which weapon at rocket-legal range", () => {
+    // If ghidra is absent from the >=4 tile rows against non-Edge-Case
+    // targets, the blocker is weapon *selection*, not the safety gate.
+    const rows = weaponChoiceByTarget([shot(3, "normal", 6), shot(3, "elite", 6)], { 3: "gdb" });
+    expect(rows.every((r) => !("ghidra" in r.byWeapon))).toBe(true);
+  });
+
+  it("excludes shots with no crosshair target rather than bucketing them", () => {
+    expect(weaponChoiceByTarget([shot(0, null, 5), shot(0, "normal", null)], {})).toEqual([]);
+  });
+
+  it("falls back to an index label for an unnamed weapon", () => {
+    expect(weaponChoiceByTarget([shot(9, "normal", 5)], {})[0].byWeapon).toEqual({ "#9": 1 });
   });
 });

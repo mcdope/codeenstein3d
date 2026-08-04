@@ -4483,15 +4483,35 @@ export class RaycasterEngine {
     // shotgun and reads as 700% accuracy. Keeping them as separate events is
     // what makes a cross-weapon hit rate meaningful at all.
     if (this.eventLog) {
+      const aimedAt = this.target;
       recordEvent(this.eventLog, "shot", this.levelTime, {
         w: weaponIndex,
         pellets: w.isRocket ? 1 : w.pellets,
-        // Range to whatever is under the crosshair, so hit rate can be
-        // bucketed by distance -- the Cone of Fire's deviation grows with the
-        // cube of range, so an unbucketed hit rate averages a weapon's good
-        // and useless ranges into one meaningless number. `null` when nothing
-        // is targeted, which the reader excludes rather than bucketing as 0.
-        dist: this.target ? Math.hypot(this.target.x - shooter.player.posX, this.target.y - shooter.player.posY) : null,
+        // What the shot was aimed at: range, archetype and HP of whatever is
+        // under the crosshair. All three are `null` when nothing is targeted,
+        // which the reader excludes rather than treating as zero.
+        //
+        // `dist` exists so hit rate can be bucketed by distance — the Cone of
+        // Fire's deviation grows with the cube of range, so an unbucketed hit
+        // rate averages a weapon's good and useless ranges into one
+        // meaningless number.
+        //
+        // `targetArch` and `targetHp` exist to answer why a weapon is or is
+        // not chosen, which twice now could not be settled from the log. Both
+        // are direct inputs to `combatPolicy.mjs`'s `scoreRangedWeapon`
+        // (`targetHp`) and to the guards around it (`targetArch` — the cluster
+        // fast-path refuses a rocket outright when the threat is an Edge
+        // Case). With them, "at 4-5 tiles against a non-Edge-Case target,
+        // which weapon actually got picked" is a query over the log instead of
+        // a hypothesis tested by a 55-minute A/B. Two such hypotheses were
+        // wrong; see `doc/dev/balancing-telemetry.md` §7.3a.
+        //
+        // Note this is the *engine's* crosshair target, not the bot's own
+        // `threat` — they are usually the same enemy but chosen by different
+        // code, so a disagreement between them is itself worth seeing.
+        dist: aimedAt ? Math.hypot(aimedAt.x - shooter.player.posX, aimedAt.y - shooter.player.posY) : null,
+        targetArch: aimedAt ? enemyCategory(aimedAt) : null,
+        targetHp: aimedAt ? aimedAt.hp : null,
         ammoAfter: w.ammoType ? shooter.ammo[w.ammoType] : null,
         forcedMelee,
       });

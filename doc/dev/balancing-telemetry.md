@@ -1451,7 +1451,38 @@ picked different weapons in the 4–4.5 tile band.
 **The min firing range is the whole story: not one rocket was fired in the 4–4.5
 band the change existed to open.** Reverted.
 
-**Stop guessing at the cause; instrument it.** Two attempts have now been designed
+**Instrumented, and it refuted the remaining hypothesis too.** `shot` now carries
+`targetArch` and `targetHp` alongside `dist`, and
+`eventMetrics.mjs`'s `weaponChoiceByTarget` turns "what does the bot reach for,
+against what, at what range" into a table. One 4-attempt Gamer/hard capture
+settled in minutes what two 55-minute A/Bs could not:
+
+| target | range | shots | weapons chosen |
+|---|---|---:|---|
+| normal | 4–7 | **826** | gdb 63%, pistol 34%, shotgun 3%, **ghidra 0%** |
+| normal | 7–10 | 75 | pistol 55%, gdb 44%, ghidra 1% |
+| elite | 4–7 | **5** | shotgun 100% |
+| elite | 2–4 | 7 | Friday Hotfix 71%, shotgun 29% |
+| elite | **0–2** | **87** | **knife 86%**, Toolchain 9%, Friday Hotfix 5% |
+
+**The Edge Case guard was never the blocker.** At 4–7 tiles against `normal`
+targets — the largest bucket in the capture — ghidra is chosen 0% of the time, and
+that guard does not apply there at all. Both the fast-path's `!threat.edgeCase` and
+the scoring-loop copy of it are irrelevant to why ghidra goes unused.
+
+**The answer is in the Elite rows.** Of 99 shots taken at an Elite, **88% are
+inside 2 tiles**, and 86% of those are the SIGKILL Knife. The bot closes to contact
+on precisely the targets a rocket is for — so the range at which ghidra is legal is
+a range at which it has already stopped shooting Elites. No constant fixes that:
+it is what the profile's `engageRadius`, the route planner and the melee fallback
+add up to.
+
+That also re-frames §7.1's level-15 deaths. The bot is not dying because it lacks
+firepower; it is dying because it walks up to two 3,500 HP enemies that deal double
+damage and stabs them. `killsForcedByMelee` reads zero throughout — this is chosen
+melee, not desperation.
+
+**The methodological point, which is the durable part.** Two attempts have now been designed
 off a synthetic probe of `pickRangedWeapon` and both were null, because the probe
 supplies an idealised threat (a 4-strong cluster of non-Edge-Case enemies) that
 real play rarely presents. The most likely remaining blocker is the cluster

@@ -34,6 +34,7 @@ import {
   measuredSelfSustain,
   survivability,
   timeToKillByArchetype,
+  weaponChoiceByTarget,
   weaponUsage,
 } from "./lib/eventMetrics.mjs";
 import { poolDamageValues, weaponProfiles } from "./lib/levelSolver.mjs";
@@ -102,6 +103,26 @@ function printHitRateByDistance(events, profiles) {
   console.log("|---|---|---:|---:|---:|");
   for (const r of rows) {
     console.log(`| ${profiles[r.w]?.name ?? `#${r.w}`} | ${r.bucket} | ${r.fired} | ${r.hits} | ${pct(r.rate)} |`);
+  }
+}
+
+function printWeaponChoice(events, profiles) {
+  const names = Object.fromEntries(profiles.map((p) => [p.index, p.name]));
+  const rows = weaponChoiceByTarget(events, names);
+  if (rows.length === 0) return;
+  console.log("\n## Weapon chosen, by target archetype and range\n");
+  console.log("What the bot actually reaches for. The `>=4` tile rows against `normal` and");
+  console.log("`elite` targets are where a rocket would be legal — see");
+  console.log("`doc/dev/balancing-telemetry.md` 7.3a for why that question kept needing a");
+  console.log("55-minute A/B to answer badly.\n");
+  console.log("| target | range | shots | weapons chosen |");
+  console.log("|---|---|---:|---|");
+  for (const r of rows) {
+    const mix = Object.entries(r.byWeapon)
+      .sort((a, b) => b[1] - a[1])
+      .map(([n, c]) => `${n} ${Math.round((100 * c) / r.total)}%`)
+      .join(", ");
+    console.log(`| ${r.arch} | ${r.bucket} | ${r.total} | ${mix} |`);
   }
 }
 
@@ -209,6 +230,7 @@ async function main() {
 
     printWeapons(events, profiles);
     printHitRateByDistance(events, profiles);
+    printWeaponChoice(events, profiles);
     printEconomy(events, damagePerAmmo);
     printCombat(events);
     printPacing(events);

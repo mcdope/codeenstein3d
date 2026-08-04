@@ -272,3 +272,41 @@ export function levelPacing(events) {
     .map((s) => ({ ...s, time: summarize(s.times), killCount: summarize(s.kills) }))
     .sort((a, b) => a.lvl - b.lvl);
 }
+
+/**
+ * Which weapon the bot chose, broken down by the target's archetype and the
+ * range it fired at.
+ *
+ * This exists to make weapon-selection a query rather than a hypothesis. Two
+ * attempts to get the bot to use ghidra were designed off a synthetic probe of
+ * `pickRangedWeapon`, and both produced a null A/B after ~55 minutes each,
+ * because the probe supplied an idealised threat that real play rarely
+ * presents. The blocking suspicion — that the cluster fast-path refuses a
+ * rocket whenever the threat is an Edge Case, and Edge Cases are 62-78% of the
+ * roster on the levels in question — is answerable directly from `shot` events
+ * once they carry `targetArch`: look at the `>=4` tile rows for `normal` and
+ * `elite` targets and see what actually got fired.
+ *
+ * Shots with no crosshair target are excluded rather than bucketed, same as
+ * everywhere else in this module.
+ */
+export function weaponChoiceByTarget(events, weaponNames = {}) {
+  const table = new Map();
+  for (const event of events) {
+    if (event.e !== "shot") continue;
+    if (event.targetArch === null || event.targetArch === undefined) continue;
+    if (event.dist === null || event.dist === undefined) continue;
+    const bucket = bucketFor(event.dist).label;
+    const key = `${event.targetArch}|${bucket}`;
+    if (!table.has(key)) table.set(key, { arch: event.targetArch, bucket, total: 0, byWeapon: {} });
+    const cell = table.get(key);
+    cell.total += 1;
+    const name = weaponNames[event.w] ?? `#${event.w}`;
+    cell.byWeapon[name] = (cell.byWeapon[name] ?? 0) + 1;
+  }
+  return [...table.values()].sort(
+    (a, b) =>
+      a.arch.localeCompare(b.arch) ||
+      DISTANCE_BUCKETS.findIndex((d) => d.label === a.bucket) - DISTANCE_BUCKETS.findIndex((d) => d.label === b.bucket),
+  );
+}
