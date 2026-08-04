@@ -80,3 +80,20 @@ export const PROJECTILE_SPEED = 5;
 export const PROJECTILE_DAMAGE = 8;
 /** Bolt collision half-size, in tiles. */
 export const PROJECTILE_RADIUS = 0.15;
+
+/** Rocket travel speed, in tiles per second — much slower than a hitscan
+ * pellet (instant) so it's a real, dodgeable projectile in flight.
+ *
+ * Note this is the *player's* rocket (ghidra), four times faster than
+ * `PROJECTILE_SPEED`, which is an enemy bolt. `combatPolicy.mjs` mirrored the
+ * wrong one of those two for the bot's own self-splash avoidance and was out
+ * by 3.6x as a result; `constantMirrors.test.mjs` now pins both. */
+export const ROCKET_SPEED = 18;
+/** Radius (tiles) of a rocket's blast; damage falls off with distance inside
+ * it, and is 0 entirely outside it. */
+export const ROCKET_BLAST_RADIUS = 2.6;
+/** Floor on the falloff curve so even an edge-of-blast hit stays meaningful. */
+export const ROCKET_DAMAGE_FALLOFF_FLOOR = 0.3;
+/** How close a rocket has to get to a living enemy to detonate — bigger than
+ * a precise hitbox check so a near-miss still reads as a hit. */
+export const ROCKET_ENEMY_TRIGGER_RADIUS = 0.4;

@@ -14,18 +14,18 @@
 import { isWall, type Player } from "./player";
 import { collectOrbBillboards, type BillboardJob } from "./sprites";
 import type { GameMap } from "../map/types";
+import {
+  ROCKET_BLAST_RADIUS,
+  ROCKET_DAMAGE_FALLOFF_FLOOR,
+  ROCKET_ENEMY_TRIGGER_RADIUS,
+  ROCKET_SPEED,
+} from "./combatConstants";
 
-/** Rocket travel speed, in tiles per second — much slower than a hitscan
- * pellet (instant) so it's a real, dodgeable projectile in flight. */
-const ROCKET_SPEED = 18;
-/** Radius (tiles) of a rocket's blast; damage falls off with distance inside
- * it, and is 0 entirely outside it. */
-export const ROCKET_BLAST_RADIUS = 2.6;
-/** Floor on the falloff curve so even an edge-of-blast hit stays meaningful. */
-const ROCKET_DAMAGE_FALLOFF_FLOOR = 0.3;
-/** How close a rocket has to get to a living enemy to detonate — bigger than
- * a precise hitbox check so a near-miss still reads as a hit. */
-const ROCKET_ENEMY_TRIGGER_RADIUS = 0.4;
+// Re-exported because `engine.ts` and the sprite layer already import it from
+// here; the value itself now lives in `combatConstants.ts` so plain-Node
+// consumers can read it without bundling the renderer.
+export { ROCKET_BLAST_RADIUS };
+
 
 /** One in-flight rocket, in world (tile) space. */
 export interface Rocket {

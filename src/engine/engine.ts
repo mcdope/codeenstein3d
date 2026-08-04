@@ -128,6 +128,7 @@ import {
 import { HEALTH_DROP_AMOUNT, MAX_SWAP, REGULAR_KILL_NO_DROP_CHANCE, SWAP_DROP_AMOUNT, rollBonusWeaponDrop, rollLoot } from "./loot";
 import { AMMO_META, AMMO_TYPES, startingAmmo, type AmmoPools } from "./ammo";
 import { MAX_HEALTH } from "./combatConstants";
+import { createEventLog, drainEvents, recordEvent, type EventLogState } from "./events";
 import { applyLootDrop, dropEliteLoot, grantOrTopUpWeapon, rollMissChanceToolchain, type LootContext } from "./lootApply";
 import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, ROCKET_BLAST_RADIUS, type Rocket } from "./rockets";
 import { EnemySpatialGrid } from "./spatialGrid";
@@ -137,6 +138,7 @@ import { FramePerfLogger } from "./perfDebug";
 import {
   createTeamTelemetryState,
   createTelemetryState,
+  enemyCategory,
   recordDamage,
   recordEnemyAggro,
   recordEnemyBoltFired,
@@ -907,6 +909,12 @@ export class RaycasterEngine {
    * per-player-attributable (damage taken, shots/hits, loot collected, …)
    * lives on each `PlayerState.telemetry` instead — see `createPlayerState`. */
   private readonly teamTelemetry?: TeamTelemetryState;
+  /** Raw per-occurrence balancing events — see `events.ts`. Created under
+   * exactly the same `telemetryEnabled` gate as `teamTelemetry`, so it adds no
+   * new branch to shipped play, and drained by the harness via
+   * `__codeensteinTestHooks.drainEvents()`. Every `recordEvent` call site is
+   * event-rate, never per-frame. */
+  private readonly eventLog?: EventLogState;
   /** Whether telemetry recording is on at all this run — computed once in
    * the constructor from the same `PLAYER_STATS_ENABLED`/`?testHooks=1` gate
    * `this.teamTelemetry`'s doc comment describes, and reused by
@@ -1036,12 +1044,35 @@ export class RaycasterEngine {
     this.telemetryEnabled = PLAYER_STATS_ENABLED || isTestHooksActive();
     if (this.telemetryEnabled) {
       this.teamTelemetry = createTeamTelemetryState();
+      this.eventLog = createEventLog();
     }
 
     this.localPlayerId = localPlayerId;
     this.players = new Map([
       [localPlayerId, this.createPlayerState(localPlayerId, inputSource ?? new InputController(canvas), carryover, localSpawn)],
     ]);
+
+    // One `levelStart` per level, carrying the static budget the run is about
+    // to spend. It is what makes the log self-contained: uncollected pre-placed
+    // loot and the value of enemies left alive are both differences against
+    // this record, so a reader never has to re-run the generator to compute
+    // them. One record per level, so its size is irrelevant.
+    if (this.eventLog) {
+      const local = this.players.get(localPlayerId)!;
+      recordEvent(this.eventLog, "levelStart", 0, {
+        difficulty: this.difficultyLevel,
+        campaignLevelIndex: local.campaignLevelIndex,
+        bonusLevel: Boolean(this.map.bonusLevel),
+        walkableTiles: this.totalWalkableTiles,
+        gameplaySeed,
+        startHealth: local.health,
+        startSwap: local.swap,
+        startAmmo: { ...local.ammo },
+        ownedWeapons: [...local.ownedWeapons],
+        enemies: this.enemies.map((e, eid) => ({ eid, arch: enemyCategory(e), maxHp: e.maxHp, x: e.x, y: e.y })),
+        prePlaced: this.map.ammoPickups.map((p, pid) => ({ pid, kind: p.kind, amount: p.amount, x: p.x, y: p.y })),
+      });
+    }
 
     // Opt-in frame-timing/entity-count diagnostics — see `perfDebug.ts`'s doc
     // comment and `this.perf`'s. Deliberately a separate gate from
@@ -1159,6 +1190,17 @@ export class RaycasterEngine {
         // it. See `scripts/run-balancing-telemetry.mjs`'s `maybeDetourForLoot`.
         getKeys: () => this.map.keys.filter((k) => !k.collected).map((k) => ({ x: k.x, y: k.y })),
         getTelemetrySnapshot: () => this.buildTelemetrySnapshotFor(this.localPlayerId),
+        // Hands over the raw event buffer and resets it. The harness drains at
+        // every level boundary and once at run end, which is what bounds the
+        // buffer and decides how much a crashed browser loses.
+        //
+        // `this.eventLog` is guaranteed set here rather than checked: it is
+        // created whenever `telemetryEnabled` is, and `telemetryEnabled` is
+        // `PLAYER_STATS_ENABLED || isTestHooksActive()` — so inside this
+        // `isTestHooksActive()` block it cannot be undefined. Same reasoning
+        // (and same non-null assertion) as `p.telemetry` at the recording call
+        // sites.
+        drainEvents: () => drainEvents(this.eventLog!),
       };
     }
   }
@@ -4458,7 +4500,21 @@ export class RaycasterEngine {
     const enemyIndex = this.enemies.indexOf(enemy);
     (this.enemyAssists.get(enemyIndex) ?? this.enemyAssists.set(enemyIndex, new Set()).get(enemyIndex)!).add(shooter.id);
 
+    const hpBefore = enemy.hp;
     enemy.hp -= amount;
+    // `hpAfter` is the *pre-clamp* value, so it goes negative on a killing
+    // blow -- that negative is the overkill the catalog asks for, and it is
+    // discarded two lines below when `enemy.hp` is clamped to 0.
+    if (this.eventLog) {
+      recordEvent(this.eventLog, "damageDealt", this.levelTime, {
+        eid: enemyIndex,
+        arch: enemyCategory(enemy),
+        w: weaponIndex ?? null,
+        amt: amount,
+        hpBefore,
+        hpAfter: enemy.hp,
+      });
+    }
     if (enemy.hp > 0) {
       console.log(`[hit] ${enemy.entity.name}() — HP ${enemy.hp}/${enemy.maxHp}`);
       return;
@@ -4473,6 +4529,19 @@ export class RaycasterEngine {
     this.registerKillForStreak(shooter);
     if (this.target === enemy) this.target = null;
     if (this.teamTelemetry) recordEnemyDeath(this.teamTelemetry, this.enemyTtkIndex, enemy, this.levelTime);
+    if (this.eventLog) {
+      const ttk = this.enemyTtkIndex.get(enemy);
+      recordEvent(this.eventLog, "kill", this.levelTime, {
+        eid: enemyIndex,
+        arch: enemyCategory(enemy),
+        maxHp: enemy.maxHp,
+        w: weaponIndex ?? null,
+        forcedMelee,
+        // Closes the TTK window inline, so a reader never needs the separate
+        // ttkRecords array to compute a time-to-kill distribution.
+        aggroAt: ttk?.aggroAtLevelTime ?? null,
+      });
+    }
     if (weaponIndex !== undefined && shooter.telemetry) {
       recordKill(shooter.telemetry, weaponIndex);
       if (forcedMelee) recordKillForcedByMelee(shooter.telemetry);
@@ -4585,6 +4654,37 @@ export class RaycasterEngine {
    * see main.ts). `advance()` does that itself, once, after the frame is
    * fully rendered.
    */
+  /**
+   * One `levelEnd` per level, carrying the two sweeps that turn the log's
+   * cumulative totals into a *budget* comparison: which pre-placed pickups
+   * were never collected, and which enemies were left alive. Against
+   * `levelStart`'s roster and pickup list, those give the gap between what the
+   * generator placed and what the run actually had access to — the difference
+   * between the generator's nominal budget and its effective one.
+   *
+   * Called from `endGame` and from the level transition, so a level that was
+   * cleared and a level the run died on both close their record.
+   */
+  private recordLevelEnd(outcome: "cleared" | "died" | "abandoned"): void {
+    if (!this.eventLog) return;
+    const local = this.players.get(this.localPlayerId);
+    recordEvent(this.eventLog, "levelEnd", this.levelTime, {
+      outcome,
+      killCount: local?.kills ?? 0,
+      healthEnd: local?.health ?? 0,
+      swapEnd: local?.swap ?? 0,
+      ammoEnd: local ? { ...local.ammo } : null,
+      enemiesAlive: this.enemies
+        .map((e, eid) => ({ eid, arch: enemyCategory(e), maxHp: e.maxHp, alive: e.alive }))
+        .filter((e) => e.alive)
+        .map(({ eid, arch, maxHp }) => ({ eid, arch, maxHp })),
+      prePlacedUncollected: this.map.ammoPickups
+        .map((p, pid) => ({ pid, kind: p.kind, amount: p.amount, collected: p.collected }))
+        .filter((p) => !p.collected)
+        .map(({ pid, kind, amount }) => ({ pid, kind, amount })),
+    });
+  }
+
   private endGame(state: "over" | "won"): void {
     // Not reachable via any current call site: `checkExit()` already gates
     // itself on `this.state === "playing"` before ever calling this, and
@@ -4598,6 +4698,7 @@ export class RaycasterEngine {
     /* v8 ignore next -- @preserve */
     if (this.state !== "playing") return;
     this.state = state;
+    this.recordLevelEnd(state === "won" ? "cleared" : "died");
   }
 
   /** Snapshot the live stats consumed by both the native HUD and the host —

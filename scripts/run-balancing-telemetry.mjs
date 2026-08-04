@@ -31,6 +31,7 @@ import { chromium } from "playwright";
 import fs from "node:fs";
 import path from "node:path";
 import { loadEngineModules, REPO_ROOT } from "./lib/loadEngineModules.mjs";
+import { appendEvents } from "./lib/eventLog.mjs";
 import { planRoute } from "./lib/routePlanner.mjs";
 import { analyzeStaticLevel } from "./lib/staticLevelAnalysis.mjs";
 import {
@@ -142,6 +143,25 @@ const REQUIRED_QUALIFYING_RUNS = process.env.CODEENSTEIN_TELEMETRY_QUALIFYING_TA
   ? Number(process.env.CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET)
   : 3;
 const QUALIFY_LEVEL_INDEX = 3; // 0-based — "level 4" in 1-based campaign numbering
+
+/**
+ * Directory for the raw per-occurrence event log (`doc/dev/balancing-telemetry.md`'s
+ * "The balance model"), one NDJSON file per profile/difficulty combo.
+ *
+ * Off by default. The aggregate telemetry above answers the questions the
+ * existing reports ask; this is for inventing a *new* metric after the data
+ * was collected, which the pre-summed counters cannot support. It costs real
+ * disk (single-digit MB per run) and a drain round-trip per level, so it is
+ * opt-in rather than something every campaign pays for.
+ */
+const EVENT_LOG_DIR = process.env.CODEENSTEIN_TELEMETRY_EVENT_LOG
+  ? path.resolve(process.env.CODEENSTEIN_TELEMETRY_EVENT_LOG)
+  : null;
+/** One id per process invocation, so events from two concurrent campaign lanes
+ * writing to the same directory stay separable. Not a timestamp: two lanes can
+ * start inside the same millisecond. */
+const EVENT_SESSION_ID = `${process.pid.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+let eventAttemptCounter = 0;
 
 /**
  * Pins every attempt's gameplay seed (`?seed=`), making loot rolls, enemy fire
@@ -267,6 +287,7 @@ async function main() {
         // — a consumer comparing two captures has to know whether either side
         // was pinned, the same reason `compareRunFlags` exists at all.
         gameplaySeed: GAMEPLAY_SEED,
+        eventLog: EVENT_LOG_DIR !== null,
       },
     },
     profiles: {},
@@ -302,6 +323,33 @@ async function main() {
  * mostly I/O-bound (`page.evaluate()` round-trips against a virtual clock,
  * no real rendering work at real speed), so running several at once scales
  * well without needing real parallel CPU work. */
+/**
+ * Writes one attempt's drained event batches to
+ * `<EVENT_LOG_DIR>/<profile>-<difficulty>.ndjson`.
+ *
+ * Appends rather than truncating, and one file per combo rather than per
+ * attempt: concurrent attempts within a combo interleave their lines, which is
+ * fine because every record carries its own `rid`, and it keeps the directory
+ * to one file per combo instead of one per attempt. `appendFileSync` of a
+ * whole batch is a single write, so two concurrent attempts cannot interleave
+ * *within* a line.
+ *
+ * Called after `context.close()`, so it never competes with the page for the
+ * event loop.
+ */
+function writeEventBatches(profileName, difficulty, batches) {
+  if (EVENT_LOG_DIR === null || !batches || batches.length === 0) return;
+  const runId = `${EVENT_SESSION_ID}-${(eventAttemptCounter++).toString(36)}`;
+  const filePath = path.join(EVENT_LOG_DIR, `${profileName}-${difficulty}.ndjson`);
+  for (const batch of batches) {
+    appendEvents(
+      filePath,
+      { sid: EVENT_SESSION_ID, rid: runId, lvl: batch.levelIndex + 1, profile: profileName, difficulty },
+      batch,
+    );
+  }
+}
+
 async function runOneAttempt(browser, profileName, profile, difficulty, levelPlans) {
   let context;
   try {
@@ -321,6 +369,7 @@ async function runOneAttempt(browser, profileName, profile, difficulty, levelPla
 
     const run = await playRun(page, profile, levelPlans, `${profileName}/${difficulty}`);
     await context.close();
+    writeEventBatches(profileName, difficulty, run.eventBatches);
     return run;
   } catch (err) {
     // A single flaky Chromium context/page (crash, closed target mid-eval)
@@ -385,6 +434,10 @@ async function runCombo(browser, profileName, profile, difficulty, levelPlans) {
 export async function playRun(page, profile, levelPlans, label = "") {
   const reachedExitForLevel = new Array(levelPlans.length).fill(false);
   const levelSnapshots = [];
+  /** One drained batch per level reached, in level order — written to NDJSON
+   * by `runOneAttempt` once the attempt finishes. Empty unless
+   * `CODEENSTEIN_TELEMETRY_EVENT_LOG` is set. */
+  const eventBatches = [];
   const weaponFirstOwnedAtLevel = {};
   const knownOwned = new Set(STARTING_WEAPONS);
 
@@ -410,7 +463,7 @@ export async function playRun(page, profile, levelPlans, label = "") {
 
     const player0 = await bot.readState();
     if (player0.state !== "playing") {
-      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: player0.state === "over" ? "died" : "stuck" };
+      return { reachedExitForLevel, levelSnapshots, eventBatches, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: player0.state === "over" ? "died" : "stuck" };
     }
     const prevExit = await page.evaluate(() => window.__codeensteinTestHooks.getExit());
 
@@ -433,15 +486,16 @@ export async function playRun(page, profile, levelPlans, label = "") {
     }
 
     if (legOutcome.state === "over") {
-      const deathResult = await pullLevelResult(page);
-      levelSnapshots.push({ levelIndex: i, ...deathResult, incomplete: true });
+      const deathResult = await pullLevelResult(page, EVENT_LOG_DIR !== null);
+      if (deathResult.events) eventBatches.push({ levelIndex: i, ...deathResult.events });
+      levelSnapshots.push({ levelIndex: i, snapshot: deathResult.snapshot, player: deathResult.player, incomplete: true });
       if (VERBOSE) logDeathDetail(i, deathResult);
       bot.reportAnomalies(label, i);
-      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "died" };
+      return { reachedExitForLevel, levelSnapshots, eventBatches, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "died" };
     }
     if (legOutcome.state === "stuck") {
       bot.reportAnomalies(label, i);
-      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "stuck" };
+      return { reachedExitForLevel, levelSnapshots, eventBatches, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "stuck" };
     }
     if (legOutcome.state === "playing") {
       const exitCenter = { x: map.exit.x + 0.5, y: map.exit.y + 0.5 };
@@ -450,22 +504,24 @@ export async function playRun(page, profile, levelPlans, label = "") {
       // not the same as finishing the level. See `Bot#driveToExit`.
       const pushed = await bot.driveToExit(exitCenter, FINAL_APPROACH_TICKS);
       if (pushed.state === "over") {
-        const deathResult = await pullLevelResult(page);
-        levelSnapshots.push({ levelIndex: i, ...deathResult, incomplete: true });
+        const deathResult = await pullLevelResult(page, EVENT_LOG_DIR !== null);
+        if (deathResult.events) eventBatches.push({ levelIndex: i, ...deathResult.events });
+        levelSnapshots.push({ levelIndex: i, snapshot: deathResult.snapshot, player: deathResult.player, incomplete: true });
         if (VERBOSE) logDeathDetail(i, deathResult);
         bot.reportAnomalies(label, i);
-        return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "died" };
+        return { reachedExitForLevel, levelSnapshots, eventBatches, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "died" };
       }
       if (pushed.state !== "won") {
         bot.reportAnomalies(label, i);
-        return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "stuck" };
+        return { reachedExitForLevel, levelSnapshots, eventBatches, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: i, reason: "stuck" };
       }
     }
     // else legOutcome.state === "won" already — fall through.
     bot.reportAnomalies(label, i);
 
-    const result = await pullLevelResult(page);
-    levelSnapshots.push({ levelIndex: i, ...result, incomplete: false });
+    const result = await pullLevelResult(page, EVENT_LOG_DIR !== null);
+    if (result.events) eventBatches.push({ levelIndex: i, ...result.events });
+    levelSnapshots.push({ levelIndex: i, snapshot: result.snapshot, player: result.player, incomplete: false });
     reachedExitForLevel[i] = true;
     for (const w of result.player.ownedWeapons) {
       if (!knownOwned.has(w)) {
@@ -492,21 +548,28 @@ export async function playRun(page, profile, levelPlans, label = "") {
       .catch(() => "timeout");
 
     if (advance === "campaign-complete") {
-      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: null, reason: "campaign-complete" };
+      return { reachedExitForLevel, levelSnapshots, eventBatches, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: null, reason: "campaign-complete" };
     }
     if (advance !== "advanced") {
-      return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: null, reason: "stuck" };
+      return { reachedExitForLevel, levelSnapshots, eventBatches, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: null, reason: "stuck" };
     }
     await dismissOverlay(page); // next level's briefing
   }
-  return { reachedExitForLevel, levelSnapshots, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: null, reason: "campaign-complete" };
+  return { reachedExitForLevel, levelSnapshots, eventBatches, weaponFirstOwnedAtLevel, anomalyTally: bot.anomalyTally, anomalyDecisions: bot.anomalyDecisions, diedAtLevelIndex: null, reason: "campaign-complete" };
 }
 
-async function pullLevelResult(page) {
-  return page.evaluate(() => {
+async function pullLevelResult(page, drainEventLog = false) {
+  return page.evaluate((drain) => {
     const hooks = window.__codeensteinTestHooks;
-    return { snapshot: hooks.getTelemetrySnapshot(), player: hooks.getPlayerState() };
-  });
+    return {
+      snapshot: hooks.getTelemetrySnapshot(),
+      player: hooks.getPlayerState(),
+      // Drained at the level boundary rather than on a timer: that keeps the
+      // flush off any hot path and bounds the in-page buffer at one level's
+      // events, which is also exactly how much a crashed browser can lose.
+      events: drain ? hooks.drainEvents() : null,
+    };
+  }, drainEventLog);
 }
 
 /** VERBOSE-only diagnostic for a death — see `CODEENSTEIN_TELEMETRY_VERBOSE`. */

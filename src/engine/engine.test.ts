@@ -5137,3 +5137,105 @@ describe("RaycasterEngine — lag-compensated hit resolution (multiplayer only)"
     expect(enemy.hp).toBeLessThan(30);
   });
 });
+
+describe("balancing event log", () => {
+  /** Runs `body` with `?testHooks=1` active, then restores the URL and removes
+   * the hooks object — same shape as the other hook tests in this file. */
+  function withTestHooks(body: (getHooks: () => Record<string, (...args: unknown[]) => unknown>) => void): void {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      body(() => (window as unknown as { __codeensteinTestHooks: Record<string, (...args: unknown[]) => unknown> }).__codeensteinTestHooks);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+      delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+    }
+  }
+
+  type Drained = { events: { e: string; t: number; [k: string]: unknown }[]; dropped: number };
+
+  it("records a levelStart carrying the static budget the run is about to spend", () => {
+    withTestHooks((getHooks) => {
+      const map = fakeMap({
+        enemies: [fakeEnemy({ x: 6.5, y: 5.5 })],
+        ammoPickups: [{ x: 3.5, y: 3.5, kind: "bullets", amount: 11, collected: false }],
+      });
+      makeEngine(map, makeHandlers(), { seed: 4242 });
+      const drained = getHooks().drainEvents() as Drained;
+      const start = drained.events.find((e) => e.e === "levelStart");
+      expect(start).toBeDefined();
+      expect(start).toMatchObject({ t: 0, gameplaySeed: 4242, walkableTiles: expect.any(Number) });
+      // The roster and pickup list are what make the log self-contained --
+      // uncollected loot and surviving enemies are differences against these.
+      expect(start!.enemies).toEqual([expect.objectContaining({ eid: 0, arch: "normal" })]);
+      expect(start!.prePlaced).toEqual([expect.objectContaining({ pid: 0, kind: "bullets", amount: 11 })]);
+    });
+  });
+
+  it("empties the buffer on drain, so a second drain returns nothing", () => {
+    withTestHooks((getHooks) => {
+      makeEngine(fakeMap());
+      expect((getHooks().drainEvents() as Drained).events.length).toBeGreaterThan(0);
+      expect(getHooks().drainEvents()).toEqual({ events: [], dropped: 0 });
+    });
+  });
+
+  it("records the pre-clamp negative HP on a killing blow, which is the overkill", () => {
+    withTestHooks((getHooks) => {
+      // 1 HP against the pistol's 22, so the killing blow overshoots by 21 and
+      // `hpAfter` is -21. The engine clamps `enemy.hp` to 0 on the very next
+      // line, discarding exactly this number -- which is why the event has to
+      // carry it.
+      const enemy = fakeEnemy({ x: 6.5, y: 5.5, hp: 1, maxHp: 1 });
+      const { engine, input } = makeEngine(fakeMap({ enemies: [enemy] }));
+      getHooks().drainEvents();
+      input.fireQueued = true;
+      engine.advance(0.016);
+      expect(enemy.alive).toBe(false);
+
+      const events = (getHooks().drainEvents() as Drained).events;
+      const damage = events.find((e) => e.e === "damageDealt");
+      expect(damage, "the kill must have emitted a damageDealt event").toBeDefined();
+      expect(damage).toMatchObject({ eid: 0, arch: "normal", hpBefore: 1, hpAfter: -21 });
+
+      const kill = events.find((e) => e.e === "kill");
+      expect(kill, "the kill must have emitted a kill event").toBeDefined();
+      expect(kill).toMatchObject({ eid: 0, arch: "normal", maxHp: 1 });
+    });
+  });
+
+  it("closes the level with what was left uncollected and left alive", () => {
+    withTestHooks((getHooks) => {
+      const size = 12;
+      const map = fakeMap(
+        {
+          // Spawning on the exit wins immediately, which is the cheapest real
+          // path to endGame -- no debug hook involved.
+          spawn: { x: size - 2, y: size - 2 },
+          exit: { x: size - 2, y: size - 2 },
+          // Its home rectangle excludes the exit tile on both axes, so it
+          // survives the level without gating the exit -- see "exit gating by
+          // the exit room's own alive enemies" above.
+          enemies: [fakeEnemy({ x: 3.5, y: 3.5, home: { x: 0, y: 0, w: 4, h: 4 } })],
+          ammoPickups: [
+            { x: 3.5, y: 4.5, kind: "bullets", amount: 11, collected: false },
+            { x: 9.5, y: 9.5, kind: "rockets", amount: 3, collected: true },
+          ],
+        },
+        size,
+      );
+      const { engine, handlers } = makeEngine(map);
+      getHooks().drainEvents();
+      engine.advance(0.016);
+      expect(handlers.onWin).toHaveBeenCalledTimes(1);
+
+      const end = (getHooks().drainEvents() as Drained).events.find((e) => e.e === "levelEnd");
+      expect(end, "winning must have emitted a levelEnd event").toBeDefined();
+      expect(end).toMatchObject({ outcome: "cleared" });
+      // Only the uncollected pickup, and only the surviving enemy. These two
+      // lists against levelStart's are the nominal-vs-actual budget gap.
+      expect(end!.prePlacedUncollected).toEqual([expect.objectContaining({ pid: 0, kind: "bullets", amount: 11 })]);
+      expect(end!.enemiesAlive).toEqual([expect.objectContaining({ eid: 0, arch: "normal" })]);
+    });
+  });
+});

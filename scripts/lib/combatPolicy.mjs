@@ -295,9 +295,17 @@ export const DEFAULT_TUNING = {
   // flight time a target spends closing the gap.
   ENEMY_CHASE_SPEED: 1.7,
   EDGE_CASE_CHASE_SPEED: 3.74,
-  // Mirrors `src/engine/projectiles.ts`'s PROJECTILE_SPEED — a rocket is not
+  // Mirrors `src/engine/combatConstants.ts`'s ROCKET_SPEED — a rocket is not
   // instantaneous, and everything below turns on that.
-  ROCKET_TRAVEL_SPEED: 5,
+  //
+  // Was 5 until 2026-08-04, mirroring `PROJECTILE_SPEED` instead: that is the
+  // *enemy bolt's* speed, not the player's own ghidra rocket. The comment even
+  // said so, which is how it survived review. The bot therefore modelled its
+  // own rocket as 3.6x slower than it is, so
+  // `rocketDetonationDistanceAfterClosing` believed a chasing enemy would
+  // close 3.6x further during the flight and refused shots that were in fact
+  // safe. Pinned against the engine by `constantMirrors.test.mjs`.
+  ROCKET_TRAVEL_SPEED: 18,
   // Seconds-equivalent of firing a rocket with no safety margin at all, before
   // the profile's `selfHarmAversion` multiplier.
   SELF_HARM_PENALTY_SEC: 25,

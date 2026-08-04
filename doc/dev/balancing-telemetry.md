@@ -1153,6 +1153,15 @@ Elite (c=40),  player damaged             cost 2000 dmg  →  self-sustain 0.00 
 Elite (c=40),  player at full health      cost 2000 dmg  →  self-sustain 0.10   ⚠
 ```
 
+**Measured against real generated levels** once the solver shipped, these predictions
+held and sharpened. On the demo campaign (normal): Edge Cases 8.1–13.8×, regular
+enemies **above 1.0 on 11 of 17 levels** peaking at 2.33, Elites 0.00. Across
+ripgrep's first 25 levels the regular figure runs **0.67–6.74** — real repositories
+are full of trivial functions, which floor at `HP_PER_COMPLEXITY` (25 HP) while
+still paying a full-sized drop, so the more ordinary code a repo contains the more
+free ammo it prints. Carried ammo climbs from 10,456 to 53,293 damage over those 25
+levels without ever being spent down.
+
 Three things fall straight out, and all three are actionable:
 
 - **Edge Cases are a self-sustain engine at 11.6×.** They take the regular drop
@@ -1305,10 +1314,24 @@ Its room is capped at 18 tiles a side (`geometry.ts:21-27`), so the arena does n
 grow with it. Regular packs self-limit — per-member HP asymptotes to 250 — but
 Elites do not. This cliff has already caused one live incident: `enemies.ts:22-37`
 records a complexity-44 function producing 4400 HP and killing the bot 12/12 runs,
-and the fix lowered `ELITE_HP_MULTIPLIER` 4→2 rather than adding a bound. **Open
-question: should there be a cap, and against what — total obtainable damage on the
-level, or an absolute ceiling?** A cap against obtainable damage is self-balancing
-but makes HP depend on pickup placement, which currently it does not.
+and the fix lowered `ELITE_HP_MULTIPLIER` 4→2 rather than adding a bound.
+
+**Measured, and it corrected this entry's original claim.** The committed fixture
+`scripts/fixtures/pathological-repo/` holds a complexity-**805** function, which
+becomes a **40,250 HP** Elite. As *level 1* the solver reports it killable — because
+`startingAmmo` derives the player's bullets from the level's own total enemy HP
+(`ammo.ts:86-94`), so an unbounded Elite quietly funds its own counter-play. That
+compensation exists only at campaign position 1. From level 2 on, carryover replaces
+the starting formula (`engine.ts:1179-1182`) and **nothing scales with what the level
+contains**: the same function at position 2 is **31.9× all obtainable damage on its
+level**, a clear ratio of 0.03. The fixture therefore ships a trivial level that
+sorts first, so it pins the case that actually bites.
+
+**Open question: should there be a cap, and against what — total obtainable damage
+on the level, or an absolute ceiling?** A cap against obtainable damage is
+self-balancing but makes HP depend on pickup placement, which currently it does not.
+Note the measurement above narrows the question: the danger is not "a big Elite", it
+is "a big Elite anywhere except level 1".
 
 **7.2 — Drops are seeded but not reproducible.** Map generation is fully
 deterministic and content-addressed. Gameplay randomness, including every loot roll,
