@@ -4476,6 +4476,12 @@ export class RaycasterEngine {
       recordEvent(this.eventLog, "shot", this.levelTime, {
         w: weaponIndex,
         pellets: w.isRocket ? 1 : w.pellets,
+        // Range to whatever is under the crosshair, so hit rate can be
+        // bucketed by distance -- the Cone of Fire's deviation grows with the
+        // cube of range, so an unbucketed hit rate averages a weapon's good
+        // and useless ranges into one meaningless number. `null` when nothing
+        // is targeted, which the reader excludes rather than bucketing as 0.
+        dist: this.target ? Math.hypot(this.target.x - shooter.player.posX, this.target.y - shooter.player.posY) : null,
         ammoAfter: w.ammoType ? shooter.ammo[w.ammoType] : null,
         forcedMelee,
       });
