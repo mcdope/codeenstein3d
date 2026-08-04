@@ -374,3 +374,1024 @@ Separately, at the report's top level (not part of the combo matrix — the scen
 **A mine-corridor stall — root-caused and fixed (applies to single-player too).** A uniform-Casual 2-player pair reproducibly hit a `stall`/`healthDrainFrozen` anomaly sequence around a mined corridor on `demo-campaign/main.c` (three real mines clustered within a few tiles of each other, ~pos `(37.5, 49.3)`). Root cause, confirmed via a live position/health/mine-state trace: `findDangerousMine`'s own "retreat now" trigger only fires once a mine is *already* within its blast radius — but a mine's fuse (`MINE_FUSE_SECONDS`, 0.9s) ticks in real time regardless of how often the bot re-evaluates, and `MultiplayerBot`'s own real decision window (`DEFAULT_STEP_MS`, 400ms) is long enough that a mine already armed by the *other* mine in the cluster (or by this same bot's own earlier approach) could finish its fuse and detonate entirely within one held decision — the bot correctly saw itself as "safe" (beyond blast radius, aiming at a *different*, farther mine as a disarm target) right up until the explosion it had no chance to react to. Fixed in shared `bot.mjs`: `findDangerousMine` now takes a `reactionBufferTiles` parameter — a real, decision-window-scaled reaction margin (`ENGINE_MOVE_SPEED × ENGINE_SPRINT_MULTIPLIER × stepMs`) rather than a fixed tile count, mirroring the existing `MELEE_CLOSE_MIN_DISTANCE` fix's own pattern. At single-player's much shorter decision windows (`WATCH_STEP_MS` 130ms, `VIRTUAL_STEP_MS` 50ms) this rounds to well under a tile — a harmless, mostly-no-op widening; multiplayer's much longer window gets a buffer that actually matters (~2.5 tiles). Verified live: the same `stall`+`healthDrainFrozen` compound pattern near the mine cluster is gone, and `Casual/normal/2p` — previously stuck there — qualified 2/2 on the very next full run. Some mine damage in that corridor is still possible (mines are hazards by design) — what's fixed is the bot getting physically stuck there taking damage it had no chance to react to, not mines being risky at all.
 
 **A far more severe stall — root-caused and fixed.** The same runs also hit one much longer stall — ~596 ticks (vs. ~40-45 for the mine-corridor one above, and suspiciously close to `MAX_TICKS_PER_WAYPOINT`'s own value of 600), at a *different* position (~pos `(15.8, 16.8)`), with no mine or threat nearby. Root cause, confirmed via live repro: `checkExit()` (`engine.ts`) starts the level-transition countdown the moment *any single* alive player touches the exit — a real, intended co-op mechanic ("exit touch is a shared simulation event"), not a bug — and once it elapses, the *whole* roster is carried to the next level's spawn, including a teammate who's still mid-route. That teammate's own `Bot` instance had no way to notice: it kept walking its pre-planned waypoint list against a live position that had moved to an entirely different level, using its own now-stale map for every navigation decision (which is exactly why `(15.8, 16.8)` read as solid wall against `main.c`'s own grid — it was never on `main.c` at all). Fixed in `bot.mjs`'s shared `driveLegs`/`driveTowardWithReplan`/`maybeDetourForLoot`: a mid-route `"teleported"` result (already detected, previously silently ignored) now stops the walk immediately instead of continuing. `driveOneBot` maps this into a new `"levelAdvanced"` outcome — exactly as real a team success as personally reaching the exit tile, and now counted as such in `teamOutcome`. Verified for real: the exact combo that had never once qualified across every earlier test run in this investigation (`Casual/normal/2p`) qualified on its very first attempt after the fix.
+
+---
+
+## The balance model: offline solver and event log
+
+**Status: design only. Nothing in this part is implemented yet.** Everything above
+this line describes tooling that exists and runs; everything below describes what
+is proposed and why. The two halves are deliberately separated so nobody reads a
+plan as a feature.
+
+The problem this part exists to solve: levels are generated from *arbitrary
+repositories*, so no amount of playtesting the bundled `demo-campaign/` produces
+confidence about a repo nobody has ever opened. The bot harness above answers "how
+does this campaign play"; it cannot answer "is this level clearable at all" for a
+level that does not exist yet. That needs a solver which reads a generated level
+and the real combat constants and computes the answer without anyone playing.
+
+Two additions, in priority order:
+
+1. **An offline solver** — generate a level, compute its enemy budget, its loot
+   budget, per-weapon TTK and the resulting ratios. No browser, no bot, no play.
+2. **A raw event log** — per-occurrence records written alongside (never instead
+   of) the existing aggregates, so a metric can be invented after the data was
+   collected instead of requiring re-instrumentation.
+
+## 1. Baseline
+
+### 1.1 The telemetry that exists today is aggregate, end to end
+
+Every field of `TelemetryState` and `TeamTelemetryState` (`src/engine/telemetry.ts`)
+is a scalar accumulator: `state.damageBySource[source] += amount`,
+`tallyFor(state, weaponIndex).shotsFired += 1`. Once recorded, an event's
+timestamp, position, actor and identity are gone — `damageBySource.enemyMelee = 412`
+cannot be decomposed into which enemy, when, or how much per bite.
+
+Raw per-occurrence data exists at exactly two points, and neither reaches disk:
+
+- **`ttkRecords`** (`telemetry.ts:89-90`) is genuinely one record per enemy that
+  ever aggroed, carrying `{category, aggroAtLevelTime, deathAtLevelTime}`, and it
+  survives into the snapshot verbatim (`engine.ts:1679`). It is then destroyed by
+  the *first* aggregation step: `run-balancing-telemetry.mjs:599-605` reduces each
+  record to a bare duration in `ttkByCategory[category]`, discarding enemy identity
+  and absolute timing. What lands in `balancing_telemetry.json` is an unordered bag
+  of durations.
+- **The bot's per-decision trace** (`bot.mjs:778`, appended at `:863-866`) is a
+  real event log, gated off by default, consumed in-process by the anomaly
+  detectors, and thrown away when the next `startLevel()` reallocates it.
+  `CODEENSTEIN_TELEMETRY_TRACE_DUMP=1` prints a *fragment* of it as formatted text.
+
+There is no NDJSON, no CSV and no append-only log anywhere in `src/` or the
+balancing scripts. `src/engine/replay.ts` is the closest thing that exists — one
+`ReplayFrame {dt, input}` per simulated frame plus `gameplaySeed`, and by
+construction it reproduces a run exactly — but it records **inputs, not outcomes**,
+carries no damage/kill/loot event, lives in `localStorage`, and no balancing tool
+reads it. The proposed event log is its outcome-side counterpart.
+
+**Gating.** `this.telemetryEnabled = PLAYER_STATS_ENABLED || isTestHooksActive()`
+(`engine.ts:1037`). `PLAYER_STATS_ENABLED` is `false` (`playerStats.ts:29`) and
+`isTestHooksActive()` (`engine.ts:215`) requires `?testHooks=1`. So in shipped
+play nothing is recorded at all: `teamTelemetry` stays `undefined`, every
+`PlayerState.telemetry` stays `undefined`, and every call site is a guarded no-op.
+
+**Existing per-frame cost when telemetry *is* on** — worth writing down so a future
+reader does not attribute it to the event log:
+
+| Cost | Site |
+|---|---|
+| `updateMinHealth` + `updateTelemetryPerFrame`, per living player | `engine.ts:2600-2611` |
+| Full `this.enemies` scan for `peakAggroedCount` / `combatTimeSec` | `engine.ts:3325-3332` |
+| Two `Object.values(...).reduce(...)` over `weaponTallies` in `buildStats()`, which runs once per rendered frame | `engine.ts:4616-4617`, called from `render()` |
+
+`PLAYER_STATS_ENABLED`'s own doc comment (`playerStats.ts:19-28`) records that
+recording on every real playthrough "measurably slowed gameplay down", and that
+the ~20 `record*` call sites were the remaining cost after the derived stats were
+already gated to level-end. That is the strongest available evidence that this path
+must not widen, and it is why §3 adds no per-frame work whatsoever.
+
+### 1.2 Balance constants
+
+**There is no single constants module.** Numbers live across ~14 files in two
+layers. `SIMULATION_BALANCE` (`engine.ts:308-322`) is a partial aggregator feeding
+`computeBalanceHash`, and it is explicitly incomplete — its own comment
+(`engine.ts:300-306`) names `ELITE_DAMAGE_MULTIPLIER`, `EDGE_CASE_SPEED_MULTIPLIER`,
+`SPIKE_DPS`, `MINE_DAMAGE_FALLOFF_FLOOR` and `PROJECTILE_SPEED` as *not* covered.
+
+#### Weapons — `src/engine/weapons.ts:150-292`
+
+| # | `name` | Dmg/pellet | Pellets | `spreadPx` | Fire interval | Auto | Ammo/shot | Pool | Kind | Range limit | Lifesteal |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | echo pistol | 22 | 1 | 0 | 0.15 s | — | 1 | bullets | hitscan | — | — |
+| 1 | Regex Shotgun | 25 | 7 | 70 | 0.85 s | — | 4 | bullets | hitscan | — | — |
+| 2 | SIGKILL Knife | 40 | 1 | 0 | (default 0.15 s) | — | 0 | *none* | melee | `meleeRange` 1.5 | 1 |
+| 3 | gdb | 12 | 1 | 0 | 0.09 s | yes | 1 | smg | hitscan | — | — |
+| 4 | ghidra | 150 | 1 | 0 | 1.1 s | — | 1 | rockets | **projectile** | blast 2.6 | — |
+| 5 | Friday Hotfix | 8 | 6 | 45 | 0.1 s | yes | 2.5 | gas | hitscan | `maxRange` 3.5 | — |
+| 6 | Toolchain | 80 | 1 | 0 | 0.35 s | yes | 0 | *none* | melee | `meleeRange` 1.5 | 3 |
+
+gdb overrides `maxConeDeviationPx` to 20 (`weapons.ts:230`); everything else uses
+the shared `MAX_CONE_DEVIATION_PX = 38` (`engine.ts:338`).
+
+**There are no magazines, no reload, and no weapon switch/draw time anywhere in the
+codebase.** Ammo is a flat continuous pool per type, decremented directly at
+`fire()` (`engine.ts:4340`); switching is instant (`consumeWeaponRequest` → `equip`,
+no timer). **Ammo has no upper cap** — `engine.ts:222-223` states it outright; only
+the IDKFA cheat's `CHEAT_MAX_AMMO = 999` bounds anything.
+
+**Hitscan weapons have no damage falloff.** Damage is flat per pellet at any range.
+What falls off is *accuracy* — the Cone of Fire, `engine.ts:4268-4270`:
+
+```
+rangeFraction = min(1, zBuffer[col] / FOG_FAR)          // FOG_FAR = 14 tiles
+deviation     = (rng()*2 - 1) * rangeFraction**3 * (weapon.maxConeDeviationPx ?? 38)
+```
+
+Cubic in range, in **screen pixels**, resolved against the per-column z-buffer.
+Melee is exempt. This is the single reason hit probability is not cleanly
+computable offline — see §4.4.
+
+Ghidra is the one projectile: `ROCKET_SPEED = 18` t/s, `ROCKET_BLAST_RADIUS = 2.6`,
+damage `150 * max(0.3, 1 - d/2.6)`, and it damages the firer too (`rockets.ts:20-121`).
+
+Starting ammo (`ammo.ts:86-104`), before carryover:
+
+```
+bullets = max(28, round(shotsToClear * 1.7 + enemies.length * 2.5) + 10)
+          where shotsToClear = Σ ceil(enemy.maxHp / 22)      // 22 = pistol damage
+rockets = 4    smg = 40    gas = 40
+```
+
+Note this is computed *after* difficulty HP scaling (`createPlayerState` at
+`engine.ts:1044` runs after the rescale at `:1016-1020`), so it scales with
+difficulty for free. It also means **level 1 already ships with a guaranteed
+bullets-only clear margin**: the `× 1.7` applies to the perfect-accuracy shot count,
+the per-enemy `ceil` rounds each enemy's cost up on top of that, and the miss buffer
+and `+10` add more — so the real starting ratio lands closer to 2.3–2.4× for a
+typical roster, not 1.7×. That is worth knowing before reading any level-1 economy
+number as evidence of anything.
+
+From level 2 on, carryover overrides starting ammo entirely
+(`engine.ts:1179-1182`), so the economy is a **campaign running balance**, not a
+per-level independent quantity. The solver must model it that way or every level
+after the first will read as far poorer than it plays.
+
+#### Enemy archetypes
+
+Three archetypes, distinguished by two booleans on `Enemy`, not by a stat table.
+**Only HP is computed from the repo; every other combat stat is a shared constant.**
+
+| | Regular | Elite | Edge Case |
+|---|---|---|---|
+| Trigger | function/method entity | same, `complexity ≥ 40` | corridor dressing |
+| HP | `max(25, round(c*25/count))` | `c * 25 * 2` | 10–15 uniform |
+| Melee dmg | 10 | 20 | 4 |
+| Bolt dmg | 8 | 16 | 3.2 |
+| Melee interval | 0.8 s | 0.8 s | 0.8 s |
+| Ranged interval | 1.2–2.6 s uniform | same | same |
+| Aggro radius | 7.5 | 7.5 | 7.5 |
+| Melee radius | 0.5 | 0.5 | 0.5 |
+| Ranged range | 8 | 8 | 8 |
+| Chase speed | 1.7 | 1.7 | 3.74 |
+| Roam speed | 0.8 | 0.8 | 1.76 |
+
+Sources: `enemyAi.ts:26-62` (`AGGRO_RADIUS`, `MOVEMENT_SPEED`, `RANGED_RANGE`,
+`FIRE_COOLDOWN_MIN/MAX`, `ROAM_SPEED`, `ATTACK_RADIUS`, `ATTACK_COOLDOWN`,
+`ATTACK_DAMAGE`, `ELITE_DAMAGE_MULTIPLIER`, `EDGE_CASE_SPEED_MULTIPLIER`,
+`EDGE_CASE_DAMAGE_MULTIPLIER`), `projectiles.ts:15-19` (`PROJECTILE_SPEED` 5,
+`PROJECTILE_DAMAGE` 8, `PROJECTILE_RADIUS` 0.15), `enemies.ts:11-68`.
+
+**Every one of those `enemyAi.ts` constants is module-private.** That is the
+solver's one real blocker for incoming-DPS and threat-score metrics — see §7.
+
+Aggro needs proximity **and** line of sight (`enemyAi.ts:173-182`) and is sticky;
+being shot sets it unconditionally, bypassing LOS (`engine.ts:4454`). There is no
+telegraph on either attack. Bolts do not home.
+
+#### Player — `src/engine/engine.ts`
+
+`MAX_HEALTH` 100 (`:203`), `MOVE_SPEED` 3.2 (`:182`), `SPRINT_MULTIPLIER` 2.0
+(`:184`), `ROT_SPEED` 2.6 rad/s (`:186`), collision radius 0.2 (`player.ts:23`).
+Strafe is the *same* speed as forward (`player.ts:80-84`) and reversing is too.
+
+Armour is `swap`, starts at 0, caps at `MAX_SWAP = 100` (`loot.ts:167`), and
+absorbs **1:1 before health** (`engine.ts:3739-3745`). There is no percentage
+reduction, no resistance and no invulnerability frames — so effective HP is exactly
+`health + swap`.
+
+No in-level respawn exists. Death ends a single-player run; in coop a dead player
+revives at the next level transition at `REVIVE_HEALTH = 50` (`engine.ts:394`).
+
+Environmental damage: `HAZARD_DPS` 18 (`engine.ts:275`), `SPIKE_DPS` 20
+(`traps.ts:14`), mine `32 * max(0.35, 1 - d/2.4)` (`traps.ts:32-36`), rocket
+self-splash at full strength.
+
+#### Difficulty — `src/difficulty.ts:50-54`
+
+| | `hp` | `damage` | `ammoDropRate` | `enemyAimSpreadDeg` |
+|---|---|---|---|---|
+| easy | 0.7 | 0.85 | 1.3 | 10° |
+| normal | 1 | 1 | 1 | 4° |
+| hard | 1.5 | 1.5 | 0.7 | 0° |
+
+`damage` covers enemy melee and bolts only — not traps, hazards or rocket
+self-damage. `ammoDropRate` scales **both** dropped and pre-placed pickup amounts
+(`scaledLootAmount`, `engine.ts:3549-3551`), which matters for the solver: the
+pre-placed budget is difficulty-dependent too.
+
+Multiplayer adds an Elite-only rescale, `hp × (1 + 0.5·(players−1))` and
+`damage × (1 + 0.25·(players−1))` (`multiplayerScaling.ts:33-47`), unbounded in
+player count.
+
+### 1.3 Drop rules — they exist, and they dominate
+
+A regular kill fires **up to four independent rolls** (`engine.ts:4490-4539`):
+
+| Roll | Guaranteed? | Rate | Yields |
+|---|---|---|---|
+| Health top-up | yes, if `health < MAX_HEALTH` | 100% | 20 (×`ammoDropRate`) |
+| Weighted ammo/swap | no | 80% (`REGULAR_KILL_NO_DROP_CHANCE = 0.2`) | one kind from the table below |
+| Miss-consolation Toolchain | only on the 20% miss | 5% of misses = **1% of kills** | Toolchain, if level ≥ 4 and unowned |
+| Bonus weapon | independent, stacks | 1% (`NORMAL_KILL_WEAPON_DROP_CHANCE`) | a random still-locked index from `[3,4,5]` |
+
+An Elite kill takes a completely separate path (`lootApply.ts:160-177`) — the
+`if (enemy.elite) dropEliteLoot(...) else {...}` split is total, so an Elite never
+rolls the miss chance:
+
+| Roll | Rate | Yields |
+|---|---|---|
+| Guaranteed drop | 100% | health 50; or, at full health, a 50/50 between bullets 18 and swap 30 |
+| Bonus weapon | 60% (`ELITE_BONUS_WEAPON_DROP_CHANCE`) | a still-locked index, **plus** Toolchain if level ≥ 4 |
+
+Loot-kind weights (`loot.ts:19-51`), re-normalised after filtering:
+
+| Kind | base (easy/hard) | normal | bonus level |
+|---|---|---|---|
+| bullets | 40 | 46 | 24 |
+| smg | 18 | 20 | 20 |
+| gas | 18 | 20 | 20 |
+| rockets | 10 | 12 | 20 |
+| health | 16 | 11 | 20 |
+| swap | 16 | 11 | 16 |
+
+Filters (`loot.ts:102-109`): `rockets`/`smg`/`gas` are removed entirely unless the
+matching weapon is owned, and `health` is *always* removed because the engine passes
+`healthHandledSeparately = true` — health is its own unconditional check now.
+
+Drop amounts (`loot.ts:131-165`): bullets 4, rockets 1, smg 21, gas 21, health 20,
+swap 11; elite fallbacks bullets 18, rockets 6, smg 80, gas 80, swap 30, health 50.
+
+Three things the brief asked about, answered explicitly:
+
+- **The kill method does not affect drops.** The drop block reads only
+  `enemy.elite`, `shooter.health`, `shooter.ownedWeapons`, `map.bonusLevel`,
+  `difficultyLevel` and `this.rng`. `weaponIndex`, `forcedMelee` and `lifesteal` are
+  consumed earlier, for telemetry and the lifesteal heal, and never reach it.
+  Killing with the knife, a rocket or the flamethrower yields identical
+  distributions.
+- **Leftover magazine contents do not carry over**, because there are no magazines.
+  Enemies carry no inventory at all — a drop's contents come entirely from the
+  weighted roll.
+- **Edge Cases take the regular path with no special-casing.** A 10 HP Edge Case
+  has exactly the same expected drop as a 500 HP regular enemy. That is the single
+  most suspicious line in this whole section, and §2.2's self-sustain ratio is
+  designed to quantify it.
+
+### 1.4 Pre-placed loot — the budget the generator actually controls
+
+| Source | Contents | Cap / rate |
+|---|---|---|
+| Scattered ammo (`pickups.ts:11-25`) | bullets 11, or rockets 3 at 30% if ghidra owned | Bernoulli(0.22) per non-spawn room; bonus levels 0.65 and ×1.5 |
+| Secret rooms (`secretRooms.ts:15-22`) | health 60, rockets 4, swap 40, one weapon | `MAX_SECRET_ROOMS = 5` |
+| Vendor depots (`vendorDepots.ts:27-37`) | bullets 12, rockets 3, smg 30, gas 30 — each gated on ownership | `floor(importCount/4)`, max 4 |
+| Exception zones (`exceptionZones.ts:42-71`) | catch: health 45, swap 35; finally: bullets 14, rockets 3 | `MAX_EXCEPTION_ZONES = 3` |
+
+All amounts are scaled by `ammoDropRate` at collection, not at placement.
+
+**Note what pre-placed ammo scales with: room count, i.e. entity count.** Not enemy
+HP, not enemy count, not walkable area. See §7 finding 5.
+
+### 1.5 Generator mapping rules
+
+**A file is a level. Folders contribute only ordering** (`main.ts:2893
+flattenParsableFiles`). Within a file, one room per `CodeEntity`, in `startLine`
+order — but only `function`/`method` entities produce enemies. Classes, interfaces
+and traits get a room and no enemy; globals become acid pools.
+
+Complexity is `1 + decisionPoints + smellBonus` (`genericParser.ts:175`), where the
+smell bonus adds 2 per parameter beyond 5 and 3 per nesting level beyond 3
+(`astUtils.ts:108-117`).
+
+The enemy mapping, verbatim (`enemies.ts:92-101`):
+
+```ts
+const complexity = Math.max(1, room.entity.complexityScore);
+const elite = complexity >= ELITE_COMPLEXITY_THRESHOLD;          // 40
+const count = elite ? 1 : 1 + Math.floor(complexity / COMPLEXITY_PER_EXTRA_ENEMY);  // 10
+const hp = elite
+  ? complexity * HP_PER_COMPLEXITY * ELITE_HP_MULTIPLIER          // 25 * 2
+  : Math.max(HP_PER_COMPLEXITY, Math.round((complexity * HP_PER_COMPLEXITY) / count));
+```
+
+**There is no clamp, cap or normalisation on enemy HP.** The only `clamp()` near
+complexity is on *room geometry* (`geometry.ts:21-27`, side capped at 18 tiles),
+and the only repo-size normalisation in the whole generator is map dimension
+(`ROOM_SPREAD × √roomArea + ROCK_RESERVE`, clamped 48..160,
+`mapGenerator.ts:431-458`) — geometry only. See §7 finding 1 for what that means.
+
+Walkable area is computable but awkward: `countWalkableTiles` (`engine.ts:4788`) is
+module-private, and `staticLevelAnalysis.mjs:17-31` already keeps a hand-copied
+mirror of it and `isWalkableTile`.
+
+### 1.6 Determinism
+
+**Map generation is fully deterministic and content-addressed.** `mulberry32(seedFrom(parsed))`
+(`mapGenerator.ts:209`), where `seedFrom` is FNV-1a over
+`language:linesOfCode:kind/name/complexityScore,…` (`seed.ts:8-18`). Zero
+`Math.random()` exists under `src/map/` or `src/parser/`. One shared stream threaded
+through every subsystem in a fixed order, so the *order of generation passes is
+part of the contract*.
+
+Two caveats worth recording: the seed signature omits `nestingDepth` and comment
+text, so it is not a complete fingerprint of what generation actually reads (two
+files can share a seed and still generate different maps — determinism holds, the
+seed just is not a complete identifier); and `GenerateOptions` (weapon ownership,
+`missingWeaponIndices`, `bonusLevel`, `maxPlayers`) also feed generation, so the
+same file at a different campaign position produces different pickups and grid.
+
+**Gameplay randomness is seeded but not pinnable.** Loot rolls, enemy AI timing,
+weapon spread and enemy aim all draw from one `createResumablePrng(gameplaySeed)`
+stream (`engine.ts:1000-1001`). So drops *are* deterministic given a seed — but the
+seed comes from `randomSeed()` (`main.ts:2569`), the one sanctioned `Math.random()`
+(`prng.ts:69-71`), and **there is no way to supply one**: no UI field, no CLI flag,
+no env var in any balancing runner. See §7 finding 2.
+
+One direct `Math.random()` sits on the combat path — `engine.ts:4456`,
+`baseBloodCount` inside `damageEnemy` — sizing a blood-particle burst. It touches no
+simulation state, but it is the only one in `engine.ts`, whose own field comment at
+`:715` says "Never `Math.random()` directly". Recorded here so a future determinism
+audit does not have to rediscover that it is benign.
+
+## 2. Stat catalog
+
+Marker key: **A** = analytic (computable offline from level data + constants),
+**E** = empirical (needs play), **A+E** = both, and the two should agree — where
+they disagree, that gap is itself the finding.
+
+Nothing is listed for completeness. Every entry states what you would *change* if
+it came out bad; anything without such an answer is in §2.6 instead.
+
+### 2.1 Weapon performance
+
+| Metric | Kind | Definition / computation | Needs | Bad when |
+|---|---|---|---|---|
+| `ttkAnalytic[w][arch]` | A | `shotsToKill × fireIntervalSec`. No reload term — there are no magazines. | constants + roster | > 8 s vs a normal enemy (matches the existing `NORMAL_TTK_HIGH_SEC`) |
+| `ttkObserved[arch]` | E | aggro→death window; already collected as `avgTtkByCategory` | `kill` | ≫ analytic (means the weapon is unusable at real range, not merely slow) |
+| `shotsToKill[w][arch]` | A | `ceil(hp / (damagePerPellet × pellets))`, pellets=1 for ghidra | constants + roster | any weapon needing > total obtainable ammo for that pool |
+| `overkill[w]` | E | mean `−hpAfter` on the killing blow ÷ damage dealt | `damageDealt{hpBefore,hpAfter}` | > 30% — the weapon's granularity is wrong for this roster |
+| `dpsSustained[w]` | A | `damagePerPellet × pellets / fireIntervalSec` | constants | — (a comparison axis, not a threshold) |
+| **`damagePerAmmo[w]`** | A | `damagePerPellet × pellets / ammoPerShot`; ∞ for melee | constants | a weapon both below the pistol *and* slower than it has no reason to be fed |
+| `pelletHitRate[w]` | E | pellets connected ÷ pellets fired | `shot{pellets}`, `hit` | — |
+| `triggerHitRate[w]` | E | trigger-pulls landing ≥1 pellet ÷ trigger-pulls | `shot`, `hit` | — |
+| `hitRateByDistance[w][bucket]` | E | `hit`/`shot` bucketed by `dist` (0–2, 2–4, 4–7, 7–10, 10–14 tiles) | `shot{dist}`, `hit{dist}` | a weapon whose rate collapses inside its own usable range |
+| `switchesPerEngagement` | E | `weaponSwitch` count between first aggro and last kill of a fight | `weaponSwitch`, `kill` | — (bot-policy signal, see §2.6 on why the *cost* half is cut) |
+| `share.shots/damage/kills[w]` | E | per-weapon fraction of each total | `shot`, `damageDealt`, `kill` | **< 2% of kills for an owned weapon = dead content**, reported as a first-class line, not a footnote |
+
+`damagePerAmmo` is the number that decides whether a weapon is worth feeding, and
+it is worth precomputing here because the current values are not intuitive:
+
+| Weapon | dmg/trigger | ammo/shot | **dmg per ammo unit** | dps |
+|---|---|---|---|---|
+| echo pistol | 22 | 1 | **22.0** | 147 |
+| Regex Shotgun | 175 (7×25) | 4 | **43.8** | 206 |
+| gdb | 12 | 1 | **12.0** | 133 |
+| ghidra | 150 | 1 | **150.0** | 136 |
+| Friday Hotfix | 48 (6×8) | 2.5 | **19.2** | 480 |
+
+Read against §1.3's drop weights this already predicts something the solver should
+confirm per level: the shotgun is twice as ammo-efficient as the pistol *out of the
+same pool*, so a bullets-starved level should be shot-gunned, while gdb's own pool
+is fed by 21-round drops precisely because it is the least efficient per round.
+These are the perfect-accuracy figures — §4.4.
+
+### 2.2 Loot economy
+
+Every quantity here is reported **three ways: pre-placed only, dropped only, and
+combined.** Pre-placed is a fixed budget the generator controls; dropped is a
+feedback loop that scales with how much you fight. Summing them hides which knob is
+wrong, and this game has already been burned by exactly that: a 450-run campaign
+found dropped loot was **93–100% of everything actually consumed, every resource
+type, every combo** (see `loot.ts:119-130`), which is what motivated the ~30% drop
+cut and `REGULAR_KILL_NO_DROP_CHANCE`.
+
+| Metric | Kind | Definition / computation | Needs | Bad when |
+|---|---|---|---|---|
+| **`clearRatio[source]`** | A | (Σ damage obtainable from ammo of that source + starting loadout) ÷ Σ enemy HP, per weapon and overall. Ammo → damage via `damagePerAmmo`. | constants + roster + pickup list + drop model | pre-placed-only < 1.0 means the level is unclearable without farming; combined < 1.2 means no margin for a miss |
+| **`selfSustain[arch]`** | A | expected damage-worth of one kill's drop ÷ damage needed to kill it. Expected drop = 0.8 × Σ(weightᵢ/Σweight × amountᵢ × `damagePerAmmo`ᵢ), plus the guaranteed health grant valued separately. | drop tables + weights + constants | **> 1.0 = fighting is free ammo and the economy has no floor**; ≪ 1.0 = every fight is a net loss |
+| `incomeVsExpenditure` | E | cumulative ammo gained and spent over level time, both curves, split by source | `lootCollected`, `shot` | income curve flat while expenditure climbs — starvation that a total would hide |
+| `starvationEvents` | E | intervals at zero ammo in the preferred pool; count, duration, and the fallback used. Attributed: "no pre-placed nearby" vs "drops came up empty" via the last `lootDropped`/`lootCollected` in the window | `shot`, `lootCollected`, `lootDropped` | any forced-melee stretch > 10 s |
+| `overflow[source]` | E | amount collected while already at cap. Only health and swap can overflow — **ammo has no cap** | `lootCollected{granted,wasted}` | pre-placed overflow is a *placement* bug; drop overflow is a *rate* problem |
+| `uncollectedPrePlaced` | E | pickups still `collected === false` at level end, valued in damage | `levelStart{prePlaced}`, `levelEnd` | the generator's effective budget is lower than its nominal one — the gap is the number to tune against |
+| `unrealisedDrops` | A+E | expected drop value of enemies left alive at level end | `levelEnd{enemiesAlive}` + drop model | with the line above, gives nominal-vs-actual economy |
+| `scarcity[pool][source]` | A+E | per-pool obtainable damage ÷ damage the pool is asked to deliver | as `clearRatio` | tells whether a gun is starved by *placement* or by *drop tables* — different fixes |
+| `relianceRatio` | E | share of consumed ammo that came from drops | `lootCollected{source}` | > 0.9 means the level is only clearable by engaging optional enemies |
+
+The origin split already half-exists: `recordLootCollected(state, origin, kind, amount)`
+(`engine.ts:1285`) distinguishes `dynamic` from `static`. What it does not carry is
+**which archetype dropped it**, and without that `selfSustain` cannot be measured
+empirically at all — only predicted. That is the one field that must be right from
+day one (§3.3).
+
+### 2.3 Survivability economy
+
+| Metric | Kind | Definition / computation | Needs | Bad when |
+|---|---|---|---|---|
+| `incomingDps[arch]` | A | melee `dmg/0.8` at contact + ranged `dmg/1.9` (mean of the 1.2–2.6 s window) within 8 tiles, × difficulty `damage` | `enemyAi.ts` constants (**currently private**) | — |
+| `survivalWindow(N)` | A | `(MAX_HEALTH + swap) ÷ (N × incomingDps)` for N = 1…peak observed | as above | < 3 s at the level's observed `peakSimultaneousAggroed` |
+| `healthIncomeVsTaken[source]` | A+E | health granted vs damage taken, split pre-placed / dropped | `lootCollected`, `damageTaken` | dropped health ≥ damage taken means fighting is self-sustaining and the level has no attrition |
+| **`damageTakenByArchetype`** | E | damage attributed to the archetype that dealt it | `damageTaken{archetype}` | an Edge Case tier out-damaging regulars means the "harmless nuisance" design intent is not holding |
+| `deaths`, `nearDeath`, `timeBelowThreshold` | E | deaths per level; dips below 25% that recovered; time below it | `damageTaken`, `playerDeath` | zero near-deaths across a campaign = no stakes (this is exactly how Easy's damage floor got raised) |
+
+`damageBySource` exists today with six sources (`telemetry.ts:28`) but no archetype
+attribution — `enemyMelee` merges an Elite's 20-damage bite with an Edge Case's 4.
+The archetype split is new and is what makes threat scoring checkable.
+
+### 2.4 Encounter and pacing
+
+| Metric | Kind | Definition / computation | Needs | Bad when |
+|---|---|---|---|---|
+| `enemyCount`, `enemyHpTotal`, `enemyDpsTotal` | A | roster sums | roster + constants | — |
+| the same three per walkable tile | A | ÷ `countWalkableTiles` | roster + grid | > 1.5× the campaign mean (matches the existing `DENSITY_OUTLIER_MULTIPLIER`) |
+| **`threatScore[arch]`** | A | `incomingDps × √hp × rangeFactor × speedFactor`, normalised so a regular enemy = 1.0. `rangeFactor` = ranged reach ÷ 8; `speedFactor` = chase speed ÷ 1.7 | constants | lets archetypes be ranked at all — today Elite-vs-EdgeCase is a judgement call |
+| `combatVsExploration`, `levelTimeSec`, `distanceTraveled` | E | already collected | existing | — |
+| `backtracking` | E | tiles walked over an already-visited tile ÷ total | `levelEnd` + existing distance | > 0.4 means the layout is asking for re-walks |
+| `difficultyCurve` | A+E | per-level `clearRatio` and `enemyDpsTotal` across the campaign, as a series | per-level solver output | a spike > 2× its neighbours |
+
+### 2.5 Generator sanity — the repo-specific part
+
+This is the group that only matters because levels come from source code, and it is
+the reason the solver exists.
+
+| Metric | Kind | Definition / computation | Needs | Bad when |
+|---|---|---|---|---|
+| **`complexityToHpCurve`** | A | every entity's `(complexityScore, resulting HP, archetype)`, plotted | parse + roster | see below |
+| **`hpOutliers`** | A | entities whose single-enemy HP exceeds the level's *total obtainable damage* | roster + `clearRatio` | **any hit is a hard failure — that enemy cannot be killed with everything on the level** |
+| `clampEffectiveness` | A | how many entities hit a clamp, and which | parse + generator | currently always zero for HP, because no HP clamp exists |
+| `perLevelBudget` | A | one line per level: enemy HP total, enemy DPS total, ammo damage (pre/drop/combined), health (pre/drop/combined), ratios | all of the above | the tuning table |
+| `corpusDistribution` | A | the same budget report over N repos of varying size and language | corpus | shows the spread rather than one sample |
+
+The curve is the point. `hp = complexity × 25 × 2` for Elites is **linear and
+unbounded**, so its outliers are not a tail — they are a ray. Regular packs, by
+contrast, self-limit: per-member HP is `25c / (1 + ⌊c/10⌋)`, which asymptotes to
+250 as complexity rises. Plotting both on one axis makes the discontinuity at
+`c = 40` visible as what it is: at `c = 39` the entity spawns four enemies of 244 HP
+(976 total); at `c = 40` it spawns **one enemy of 2000 HP**. One extra point of
+complexity doubles the entity's total HP and multiplies its *single-enemy* HP by
+8.2× — and a single 2000 HP target cannot be split, kited or partially cleared the
+way a four-pack can.
+
+### 2.6 Deliberately excluded
+
+Standard shooter metrics that do not apply to *this* game, listed so nobody adds
+them back for completeness:
+
+| Excluded | Why |
+|---|---|
+| Magazine size, reload time, reload-adjusted TTK | No magazines and no reload exist anywhere in the codebase. |
+| Burst DPS vs sustained DPS | Same reason — with no magazine to empty, the two collapse to one number. |
+| Weapon draw / switch **cost** | Switching is instant. Switch *frequency* is kept in §2.1 as a bot-policy signal; the cost half would measure a constant zero. |
+| Hitscan damage falloff | Does not exist. Damage is flat with range; *accuracy* falls off cubically, and §2.1 measures that instead. |
+| Armour as a separate pool with its own curve | `swap` absorbs 1:1 with no reduction, so effective HP is exactly `health + swap` and a second model adds nothing. |
+| Headshot / hit-location stats | There are no hit locations — a pellet either connects with a sprite column or does not. |
+| Movement/aim heatmaps | The player here is a bot with a route planner; its position distribution describes `routePlanner.mjs`, not the level. |
+
+## 3. Event schema
+
+### 3.1 Why NDJSON
+
+**NDJSON — one JSON object per line, appended.** Against the alternatives:
+
+- **vs. a single JSON document** (what `balancing_telemetry.json` is today, written
+  by one `JSON.stringify(output, null, 2)` at process end,
+  `run-balancing-telemetry.mjs:263`): a killed campaign loses that file entirely.
+  An event log must survive a SIGKILL — and the campaign orchestrator *does*
+  SIGKILL invocations, by design (`laneOrchestrator.mjs`'s watchdog). With NDJSON a
+  truncated final line is discarded and everything before it is intact; a truncated
+  JSON array is unparseable.
+- **vs. CSV**: events are heterogeneous — a `shot` and a `levelEnd` share almost no
+  fields. A single CSV needs a wide sparse header, and one file per event type
+  loses the interleaved ordering that makes timeline metrics possible.
+- **Dependency cost: zero.** `JSON.parse` per line, `fs.appendFileSync` to write.
+  No parser, no schema library. That matters given `doc/dev/decisions.md`'s
+  Dependency Minimalism section.
+
+`perf_runs/*.json` already sets the precedent for keeping raw arrays (`rawDeltas`,
+one float per frame) next to the summaries computed from them.
+
+One file per run: `balancing_events/<profile>-<difficulty>-<runId>.ndjson`,
+gitignored alongside the existing `balancing_runs*/` entries.
+
+### 3.2 Envelope
+
+Every line carries exactly five envelope fields, kept short because they repeat on
+every record:
+
+| Field | Meaning |
+|---|---|
+| `v` | schema version integer — bump on any breaking field change |
+| `e` | event type |
+| `sid` | session id (one process invocation) |
+| `rid` | run id (one campaign attempt) |
+| `lvl` | campaign level index |
+| `t` | `levelTime` in seconds, monotonic within a level |
+
+The **level fingerprint** does not repeat per line — it lives once in `levelStart`,
+and it reuses identifiers that already exist rather than inventing a new one:
+`astHash` (parsed source + campaign name), `balanceHash`
+(`computeBalanceHash(map, SIMULATION_BALANCE)`, `balanceHash.ts:114` — the enemy
+roster plus the simulation constants in force) and `seed` (the gameplay seed).
+Together these answer "same repo, same commit, same constants, same universe?"
+without a new mechanism, and `balanceHash` in particular already exists precisely
+to catch the case where a constant moved but no source byte did.
+
+### 3.3 Events
+
+Fields marked † exist **only** to make a named metric computable; if that metric is
+dropped, the field goes with it.
+
+**`levelStart`** — once per level. Makes the log self-contained, so uncollected-loot
+and unrealised-drop analysis needs no re-run of the generator.
+
+```
+file, astHash, balanceHash, seed, difficulty, campaignLevelIndex,
+walkableTiles†,                       // enemy/HP per unit area (§2.4)
+ownedWeapons[], startHealth, startSwap, startAmmo{bullets,rockets,smg,gas},
+enemies[]:   {eid, arch, maxHp, x, y}        // roster; unrealised drops (§2.2)
+prePlaced[]: {pid, kind, amount, x, y}       // pre-placed budget (§2.2)
+```
+
+**`shot`** — one per trigger-pull.
+`w` (weapon index), `pellets`†, `ammoAfter`, `forcedMelee`, `dist`† (range to the
+crosshair target, or null).
+`pellets` and `dist` exist for `pelletHitRate` and `hitRateByDistance` (§2.1); note
+that separating this from `hit` is what fixes the >100% accuracy problem in §7.4.
+
+**`hit`** — one per pellet that connects.
+`w`, `eid` (or `mine`), `dist`†.
+
+**`damageDealt`** — one per HP change on an enemy.
+`w`, `eid`, `arch`, `amt`, `hpBefore`†, `hpAfter`†, `splash`†.
+`hpBefore`/`hpAfter` exist solely for `overkill` (§2.1) — on the killing blow,
+`hpAfter` is the pre-clamp negative value, which `engine.ts:4462-4467` currently
+computes and immediately discards.
+
+**`kill`** — `eid`, `arch`, `maxHp`, `w`, `forcedMelee`, `aggroAt`† (closes the TTK
+window without needing the separate `ttkRecords` array).
+
+**`damageTaken`** — `src` (the six existing `DamageSource` values), `arch`† (null
+for traps/hazards/self-splash), `amt`, `healthAfter`, `swapAfter`.
+`arch` is new and is what makes `damageTakenByArchetype` (§2.3) possible at all.
+
+**`lootDropped`** — at spawn time, so drops that are never collected stay visible.
+`did`, `kind`, `amount`, `x`, `y`, `fromEid`†, `fromArch`†, `elite`†.
+
+**`lootCollected`** — `did` or `pid`, `kind`, **`source`** (`preplaced` | `drop`),
+`fromArch`† (drops only), `amount`, `granted`†, `wasted`†.
+
+> **`source` and `fromArch` are the two fields that must be right from day one.**
+> Without `source` the pre-placed/dropped split of §2.2 is not reconstructible after
+> the fact; without `fromArch` the self-sustain ratio — the most useful number in
+> the whole catalog — can only ever be predicted, never measured. Both are cheap:
+> the origin split already exists in the collect path
+> (`recordLootCollected(state, origin, kind, amount)`, `engine.ts:1285`), and
+> `pushLootDrop(drop, enemy)` (`engine.ts:3591`) already receives the dropping
+> enemy, so the archetype is in scope with no new plumbing.
+>
+> `granted`/`wasted` split the amount that actually applied from the amount lost to
+> a cap — needed for `overflow` (§2.2), and only ever nonzero for health and swap,
+> since ammo has no cap.
+
+**`weaponSwitch`** — `from`, `to`, `reason` (`manual` | `granted` | `autoEquip`).
+
+**`weaponGranted`** — `w`, `via` (`secret` | `eliteBonus` | `missChance` |
+`normalBonus` | `forcedUnlock`), `duplicate`† (whether it fell back to an ammo
+top-up).
+
+**`playerDeath`** — `src`, `arch`†, `t`.
+
+**`levelEnd`** — `outcome` (`cleared` | `died` | `abandoned`), `killCount`, `score`,
+`healthEnd`, `swapEnd`, `ammoEnd{}`, `distanceTraveled`,
+`enemiesAlive[]: {eid, arch, maxHp}`†, `prePlacedUncollected[]: {pid, kind, amount}`†.
+The two † arrays are the "nominal vs actual budget" sweep — together they give the
+gap between what the generator placed and what the run actually had access to.
+
+### 3.4 Buffering, gating and crash behaviour
+
+**Gate: the existing one, unchanged.** Events are pushed behind the already-computed
+`this.telemetryEnabled` boolean (`engine.ts:1037`). No new flag, no new branch in
+shipped play, and no possibility of this reaching a real player's session.
+
+**Every emission point is event-rate, not frame-rate.** Nothing is added to
+`simulate()` (`engine.ts:2323`), `render()` (`:2649`), `renderNormalFrame()`
+(`:2831`), `renderScene`, `handleMovement`, `updateEnemyAi`, `collectLoot` or any
+other per-frame function. The emission sites are exactly:
+
+| Event | Site |
+|---|---|
+| `shot` | `fire()` — `engine.ts:4332` |
+| `hit`, `damageDealt`, `kill` | `damageEnemy()` — `engine.ts:4434` |
+| `damageTaken`, `playerDeath` | `damage()` — `engine.ts:3732`, `killPlayer()` — `:3782` |
+| `lootDropped` | `pushLootDrop()` — `engine.ts:3591` |
+| `lootCollected` | the loot-drop branch at `:3504` and the static-pickup branch at `:3517` |
+| `weaponSwitch`, `weaponGranted` | the weapon-request handler and `grantOrTopUpWeapon` |
+| `levelStart`, `levelEnd` | engine construction and `endGame()` — `engine.ts:4589` |
+
+**So the render-loop-adjacent diff for this work should be empty.** That is a
+design property, not an aspiration — if a later step needs a per-frame sample,
+that is the moment to stop and re-read `playerStats.ts:19-28`.
+
+**Buffer.** A plain array on the engine, preallocated at construction only when
+telemetry is enabled. Objects are pushed, not serialised — `JSON.stringify` happens
+in Node, off the browser's clock entirely.
+
+**Flush.** A new `__codeensteinTestHooks.drainEvents()` returns the buffer and
+resets it, mirroring the existing `getTelemetrySnapshot()` hook (`engine.ts:1162`).
+The bot drains at every level boundary and once more at run end; Node
+`appendFileSync`s the lines. Draining at a level boundary — not on a timer — keeps
+the flush off any hot path and bounds the buffer at one level's events.
+
+**On crash:** everything up to the last drain is on disk. The current level's
+undrained tail is lost. That is the deliberate trade — the alternative, flushing
+per event across the Playwright boundary, would cost a round-trip per shot. A
+partially-written final line is discarded by the reader, which is the whole reason
+for NDJSON over a JSON array.
+
+**Volume sanity.** A campaign level runs roughly 60–200 s with a few hundred kills'
+worth of activity; at ~10–40 events/second of combat this is single-digit MB per
+run uncompressed. Not a concern, but the reader should stream lines rather than
+`JSON.parse` a whole file.
+
+## 4. The offline solver
+
+`scripts/lib/levelSolver.mjs` (pure, unit-testable, no I/O) plus
+`scripts/report-level-budget.mjs` (CLI, formatting, exit codes) — the same split as
+the existing `abReport.mjs` / `report-balancing-ab.mjs` and
+`profileSeparation.mjs` / `report-profile-separation.mjs` pairs.
+
+### 4.1 How it hooks into the generator
+
+It does not reimplement anything. `scripts/lib/loadEngineModules.mjs` already
+esbuild-bundles the real `src/parser/registry.ts` and `src/map/mapGenerator.ts` for
+plain Node — including the `?url` grammar-wasm rewrite — and
+`verify-demo-campaign.mjs` and `generate-default-highscore.mjs` Phase 0 already use
+it to produce real `GameMap`s headlessly. The solver walks a directory, calls
+`parseFile` then `MapGenerator.generate()` per file, and analyses the result.
+
+`scripts/lib/staticLevelAnalysis.mjs`'s `analyzeStaticLevel(map, route)` already
+computes enemy counts, per-category tallies, walkable tiles, density and a
+pre-placed ammo summary. The solver **extends** that rather than replacing it — the
+existing function keeps its current callers and shape.
+
+### 4.2 Single source of truth for constants
+
+This is a hard constraint, and this repo has already been bitten by ignoring it —
+see §7.3. The rule: **the solver imports every number from the module that owns it.**
+
+`loadEngineModules()`'s entry stub gains re-exports from `src/engine/loot.ts`
+(weights, drop amounts, `REGULAR_KILL_NO_DROP_CHANCE`,
+`NORMAL_KILL_WEAPON_DROP_CHANCE`, `ELITE_BONUS_WEAPON_DROP_CHANCE`),
+`src/difficulty.ts` (`DIFFICULTY_MULTIPLIERS`) and `src/engine/ammo.ts`
+(`startingAmmo`, `AMMO_META`). It already re-exports the real `WEAPONS`. All of
+these are pure data modules with no DOM dependency, so bundling them costs nothing
+— exactly the argument `loadEngineModules`'s own doc comment already makes for
+`UNLOCKABLE_WEAPONS`.
+
+**The one gap: `src/engine/enemyAi.ts`'s combat constants are module-private.**
+`ATTACK_DAMAGE`, `ATTACK_COOLDOWN`, `FIRE_COOLDOWN_MIN/MAX`, `AGGRO_RADIUS`,
+`RANGED_RANGE`, `MOVEMENT_SPEED`, `ELITE_DAMAGE_MULTIPLIER`,
+`EDGE_CASE_DAMAGE_MULTIPLIER`, `EDGE_CASE_SPEED_MULTIPLIER` — none are exported, so
+`incomingDps`, `survivalWindow` and `threatScore` (§2.3, §2.4) cannot be computed
+without exporting them. Copying them into the solver is not an option; that is
+precisely the failure §7.3 documents.
+
+Exporting them is a two-line change, but it has a tail: five of those constants are
+the ones `SIMULATION_BALANCE`'s comment (`engine.ts:300-306`) already names as
+uncovered, and the honest move once they are exported is to fold them in — which
+**moves `balanceHash` and invalidates every shipped replay**, i.e. a multi-hour
+`defaultHighscore.ts` regeneration. So the two halves are sequenced apart:
+exporting is early and cheap, folding into `SIMULATION_BALANCE` is last, after every
+other simulation change has landed. That ordering is the existing rule from *"Land
+every simulation change first, then generate once"* above, and the 2026-08-02 layout
+rework already paid for learning it.
+
+### 4.3 What it computes
+
+Per level, from the generated `GameMap` plus the constants:
+
+- **Enemy budget** — count and HP total by archetype, DPS total, per walkable tile.
+- **Loot budget, three ways** — pre-placed (walk `map.ammoPickups`, convert to
+  damage via `damagePerAmmo`), potential drops (expected value over the weight
+  tables, gated by which weapons are owned at that campaign position, times
+  `ammoDropRate`), and combined; health likewise.
+- **Per-weapon TTK and shots-to-kill** against every distinct HP value on the level.
+- **`selfSustain` per archetype** and **`clearRatio` per source**.
+- **The complexity→HP curve and its outliers**, including the hard-failure check:
+  any single enemy whose HP exceeds the level's total obtainable damage.
+
+Across a campaign it carries ammo forward the way the engine does (`startingAmmo`
+only applies where there is no carryover), so the ratios are a running balance
+rather than eight independent levels.
+
+Difficulty is a parameter — the same level solved at easy/normal/hard gives three
+budgets, because `ammoDropRate` and `hp` both move.
+
+### 4.4 The one analytic limit, stated plainly
+
+**Per-shot hit probability is not cleanly computable offline.** The Cone of Fire
+deviates by `(rng()*2-1) × rangeFraction³ × maxConeDeviationPx` in *screen pixels*
+against the per-column z-buffer (`engine.ts:4268-4270`), so whether a pellet
+connects depends on the raycast geometry of the specific tile the enemy is standing
+on and the sprite's projected width at that distance.
+
+So the solver reports **perfect-accuracy TTK and perfect-accuracy `clearRatio` as a
+lower bound on cost**, labelled as such in the output, and leaves real hit rate to
+the empirical half (§2.1). A level whose *perfect-accuracy* `clearRatio` is below
+1.0 is definitively unclearable; a level above 1.0 is not thereby proven clearable.
+That asymmetry is useful and honest, and it is a better contract than a fabricated
+accuracy coefficient that would quietly mean nothing.
+
+(There is a partial in-engine model already — `engine.ts:1794-1796` computes a
+worst-case deviation for the bot's effective-range estimate. It is a *bound*, not a
+probability, and it is not a substitute.)
+
+### 4.5 The corpus
+
+`scripts/fetch-balancing-corpus.mjs`, shaped like the existing
+`fetch-online-wads.mjs`: idempotent (skip any destination that already exists),
+gitignored destination, no credentials. One deliberate difference — **it degrades
+on failure instead of `process.exit(1)`**. That exact failure mode is already
+logged against `fetch-online-wads.mjs` in `notes`, where it takes `npm run dev` and
+`npm run build` down with it; there is no reason to reproduce it.
+
+Selection criteria: pinned commits (so a corpus run is reproducible), permissive
+licences, and coverage of both axes that matter — size and language, chosen from
+what the parser already supports (bash, C, C++, C#, Go, Java, JavaScript, Objective-C,
+PHP, Python, Ruby, Rust, Scala, TypeScript).
+
+| Bucket | Target | Why |
+|---|---|---|
+| tiny | 1–5 files, a few hundred LOC | the degenerate case — does a 2-room level even have a viable budget |
+| small | ~20 files, one language | the common "someone points it at their side project" case |
+| medium | ~200 files, mixed | the case the demo campaign approximates |
+| large | 1000+ files | where the per-level ratios diverge most, and where an unbounded Elite is most likely |
+| pathological | a file with one very high-complexity function | the §7.1 case, deliberately included as a fixture rather than hoped for |
+
+The pathological entry should be a **committed fixture** under `scripts/fixtures/`,
+not a fetched repo — it is a regression test for the outlier check, and it must not
+depend on some upstream project keeping its worst function.
+
+## 5. What the report would look like
+
+Two halves. The **worked examples** below are computed from the real constant
+tables in §1 and are therefore already true — they are what the solver would print
+on day one. The **per-level table** uses mocked numbers, because it needs a real
+generated map; its purpose is to let you judge the format before it is built.
+
+### 5.1 Worked example — self-sustain (real numbers, normal difficulty)
+
+Expected ammo value of one kill's drop, as a fraction of the damage that kill cost.
+Weights from `NORMAL_LOOT_WEIGHTS` with `health` filtered out
+(`healthHandledSeparately`), times the 80% `REGULAR_KILL_NO_DROP_CHANCE` hit rate,
+valued through `damagePerAmmo`.
+
+```
+Regular enemy, all weapons owned          cost 250 dmg   →  self-sustain 0.56
+Regular enemy, pistol + shotgun only      cost 250 dmg   →  self-sustain 0.23
+Edge Case,     all weapons owned          cost  12 dmg   →  self-sustain 11.6   ⚠
+Elite (c=40),  player damaged             cost 2000 dmg  →  self-sustain 0.00   ⚠
+Elite (c=40),  player at full health      cost 2000 dmg  →  self-sustain 0.10   ⚠
+```
+
+Three things fall straight out, and all three are actionable:
+
+- **Edge Cases are a self-sustain engine at 11.6×.** They take the regular drop
+  path with no special-casing (§1.3), so a 12 HP nuisance yields the same expected
+  loot as a 250 HP regular enemy. Corridor dressing places 1–3 of them per breakup
+  room. Whatever ammo scarcity the rest of the design is aiming for, this bypasses
+  it. The fix is a drop-scaling term tied to `maxHp`, or excluding Edge Cases from
+  the ammo roll the way `health` already is.
+- **Elites are a pure ammo sink.** The guaranteed drop is *health* unless you are
+  already at full, so a 2000 HP fight typically returns no ammo at all. That is
+  defensible as design — a boss should cost something — but it should be a
+  deliberate choice, and right now it is a side effect of `dropEliteLoot`'s
+  health-first branch.
+- **Early game is 2.4× harsher than late game**, because `rollLoot` filters out
+  `rockets`/`smg`/`gas` until the matching weapon is owned and redistributes their
+  share across a much smaller table. That is the intended behaviour
+  (`loot.ts:73-77`), but nothing currently measures its size.
+
+### 5.2 Worked example — weapon efficiency (real numbers)
+
+```
+weapon           dmg/trigger   ammo   dmg/ammo   dps     pool
+echo pistol           22        1.0      22.0    147     bullets
+Regex Shotgun        175        4.0      43.8    206     bullets   ← 2.0x the pistol, same pool
+gdb                   12        1.0      12.0    133     smg
+ghidra               150        1.0     150.0    136     rockets
+Friday Hotfix         48        2.5      19.2    480     gas
+SIGKILL Knife         40         --        inf   267     --
+Toolchain             80         --        inf   229     --
+```
+
+*Perfect accuracy — see §4.4. Melee dps assumes contact is maintained; the knife
+defines no `fireIntervalSec` and is semi-auto, so its figure additionally assumes
+mashing at the engine's 0.15 s default floor, while Toolchain genuinely fires
+continuously while held.*
+
+### 5.3 Mocked — per-level budget report
+
+```
+# Balance budget — demo-campaign @ 4a9f1c2, normal, campaign carryover on
+# solver v1 · 8 levels · perfect-accuracy lower bound
+
+level  file             enemies  HP tot  DPS tot  ammo dmg (pre/drop/comb)  ratio (pre/comb)  health (pre/drop)
+    1  main.c                14    1806     37.5     4290 /  1512 /  5802     2.38 / 3.21       0 /  240
+    2  parser.c              21    3140     58.1      968 /  2268 /  3236     0.31 / 1.03  ⚠    60 /  360
+    3  tokenizer.c           17    2455     44.9     1892 /  1836 /  3728     0.77 / 1.52       0 /  300
+    4  emit.c                26    4020     70.2     2464 /  2808 /  5272     0.61 / 1.31      45 /  420
+    5  optimise.c            19    6890     52.6     1584 /  2052 /  3636     0.23 / 0.53  ✗   105 /  340
+    6  vm.c                  31    5117     83.4     3212 /  3348 /  6560     0.63 / 1.28       0 /  520
+    7  gc.c                  22    3702     59.8     1276 /  2376 /  3652     0.34 / 0.99  ⚠    60 /  380
+    8  main.h (bonus)        12     980     31.2     6435 /  1296 /  7731     6.57 / 7.89       0 /  200
+
+⚠  combined clear ratio below 1.2 — no margin for a missed shot
+✗  combined clear ratio below 1.0 — NOT CLEARABLE without carryover
+
+## Enemy HP outliers (complexity -> HP)
+
+level  entity                   complexity  archetype   HP   vs level ammo
+    5  optimise_peephole()             112   elite     5600   1.54x  ✗ exceeds all obtainable damage
+    5  fold_constants()                 47   elite     2350   0.65x
+    6  vm_dispatch()                    58   elite     2900   0.44x
+    4  emit_switch()                    39   pack(4)     244  0.05x   <- one point below the Elite cliff
+
+  clamp check: no HP clamp exists; 3 of 8 levels contain an entity above the
+  Elite threshold, and 1 produces an enemy that cannot be killed with every
+  round on the level.
+
+## Self-sustain by archetype (normal, mid-campaign loadout)
+
+  regular    0.56       edgeCase   11.6  ⚠      elite   0.00  ⚠
+
+## Difficulty sweep — combined clear ratio
+
+level      easy   normal    hard
+    5       0.98     0.53    0.25   ✗ unclearable on all three
+    7       1.84     0.99    0.46   ⚠
+  (hard compounds 1.5x HP with 0.7x ammoDropRate, so its column is ~4x easy's)
+```
+
+That output would tell you, in one screen: which level is broken, which entity
+broke it, that no clamp is protecting you, and that the Edge Case drop rule is
+leaking ammo. Those are four distinct fixes, each pointed at a specific constant.
+
+## 6. Implementation plan
+
+Ordered, each step shippable on its own. After every step: it builds, `vitest run`
+passes, and telemetry stays off by default.
+
+**Step 0 — the smallest useful thing, and it needs no engine change at all.**
+`scripts/lib/levelSolver.mjs` + `scripts/report-level-budget.mjs`, computing the
+static enemy budget, the pre-placed and expected-drop loot budgets, per-weapon TTK,
+`selfSustain`, `clearRatio` and the **complexity→HP outlier check** over
+`demo-campaign/`. Uses only what is already exported: `MapGenerator` and `WEAPONS`
+via `loadEngineModules`, plus `loot.ts` and `difficulty.ts` added to its entry stub.
+Extends `analyzeStaticLevel` rather than replacing it. Adds `balancing:budget`.
+*This alone answers the outlier question, which is the highest-value output in the
+whole design.*
+
+**Step 1 — export the `enemyAi.ts` combat constants.** Unlocks `incomingDps`,
+`survivalWindow` and `threatScore`. No behaviour change, no hash change (they are
+not yet in `SIMULATION_BALANCE`).
+
+**Step 2 — pin the gameplay seed.** A `?seed=` URL parameter and a
+`CODEENSTEIN_TELEMETRY_SEED` env var feeding `main.ts:2569`'s `randomSeed()` call.
+Makes the drop half of the economy reproducible between runs — see §7.2. Small, and
+it makes every later A/B sharper.
+
+**Step 3 — fix `ROCKET_TRAVEL_SPEED` and guard the mirror.** §7.3. One value, plus
+a test in `scripts/lib/` asserting the mirrored `WEAPON_STATS` and the engine-speed
+constants agree with `src/engine/weapons.ts` and `rockets.ts`. `scripts/**` is
+outside the coverage denominator but still executed by `vitest run`, so the guard
+runs in CI. Note this changes bot behaviour, so it needs the matched-scale A/B from
+*Matched-scale verification* above — it is not a free fix.
+
+**Step 4 — the corpus.** `scripts/fetch-balancing-corpus.mjs` plus a corpus mode for
+the budget report, and the committed pathological fixture. First point at which the
+solver answers questions about repos nobody has played.
+
+**Step 5 — the event log, minimum viable slice.** Engine-side buffer,
+`drainEvents()` hook, NDJSON writer in the bot, and only four events:
+`levelStart`, `kill`, `damageDealt`, `levelEnd`. That is enough for overkill, real
+TTK distributions, and the nominal-vs-actual budget gap. **The render-loop-adjacent
+diff for this step should be empty** — worth showing separately anyway, precisely to
+demonstrate that it is.
+
+**Step 6 — the rest of the events.** Loot (`lootDropped`, `lootCollected` with
+`source` and `fromArch`), `damageTaken` with archetype, `shot`/`hit`,
+`weaponSwitch`/`weaponGranted`, `playerDeath`. This is what makes §2.2 measurable
+rather than predicted.
+
+**Step 7 — the log reader.** `scripts/report-balancing-events.mjs`, deriving §2's
+empirical metrics from an NDJSON run and printing the markdown report. Cross-checks
+the analytic numbers from Step 0 against observed play; disagreements are findings.
+
+**Step 8 — optional, and deliberately last.** Fold the Step-1 constants into
+`SIMULATION_BALANCE`, closing the hole its own comment documents. This moves
+`balanceHash` and invalidates every shipped replay, so it must come after every
+other simulation change and be followed by a single `defaultHighscore.ts`
+regeneration — per *"Land every simulation change first, then generate once"* above.
+
+## 7. Open questions and blockers
+
+### Findings from the baseline audit
+
+**7.1 — Elite HP has no clamp, and this is the highest-value thing the solver will
+find.** `hp = complexity × 25 × 2` with `count = 1` for any `complexity ≥ 40`
+(`enemies.ts:93-100`) is linear and unbounded. A complexity-200 function produces a
+**10,000 HP** enemy dealing double damage: 15,000 on Hard, 37,500 in 4-player coop.
+Its room is capped at 18 tiles a side (`geometry.ts:21-27`), so the arena does not
+grow with it. Regular packs self-limit — per-member HP asymptotes to 250 — but
+Elites do not. This cliff has already caused one live incident: `enemies.ts:22-37`
+records a complexity-44 function producing 4400 HP and killing the bot 12/12 runs,
+and the fix lowered `ELITE_HP_MULTIPLIER` 4→2 rather than adding a bound. **Open
+question: should there be a cap, and against what — total obtainable damage on the
+level, or an absolute ceiling?** A cap against obtainable damage is self-balancing
+but makes HP depend on pickup placement, which currently it does not.
+
+**7.2 — Drops are seeded but not reproducible.** Map generation is fully
+deterministic and content-addressed. Gameplay randomness, including every loot roll,
+runs through one seeded `mulberry32` stream — so drops *are* reproducible given a
+seed. But the seed comes from `randomSeed()` (`main.ts:2569`) and **nothing can pin
+it**: no UI field, no CLI flag, no env var in any balancing runner. So today,
+"same repo + same seed + same version = same level" holds for the *level* and not
+for the *run*. Step 2 fixes it.
+
+**7.3 — A mirrored constant has already drifted, exactly as predicted.**
+`scripts/lib/combatPolicy.mjs:300` defines `ROCKET_TRAVEL_SPEED: 5` with a comment
+saying it mirrors `projectiles.ts`'s `PROJECTILE_SPEED` — but it is used at
+`combatPolicy.mjs:1120` to model the **player's own ghidra rocket** flight time, and
+the real player-rocket speed is `ROCKET_SPEED = 18` (`rockets.ts:20`). The constant
+is named after the rocket and sourced from the enemy bolt. The bot overestimates
+rocket flight time by **3.6×**, so `rocketDetonationDistanceAfterClosing` reports
+threats as far closer at detonation than they will be, making the bot measurably
+more rocket-shy than the game warrants. `doc/dev/adding-a-weapon.md:105` already
+warns that "nothing links the two, and nothing fails when they drift" — this is that
+failure, realised. It is also the concrete argument for §4.2's rule.
+
+**7.4 — Cross-weapon hit rate is not comparable today.** `recordShot` counts
+trigger-pulls (`engine.ts:4349`); `recordHit` counts **pellets** (`:4371`). For the
+7-pellet shotgun `hits/shotsFired` can reach 7.0, and `accuracyPct`
+(`playerStats.ts:63`) is unclamped, so a shotgun-heavy run reports over 100%
+accuracy. Harmless in shipped play only because `PLAYER_STATS_ENABLED` is `false`,
+but `weaponEfficiency` in the balancing report reads the same ratio, so any
+cross-weapon accuracy comparison drawn from it so far is wrong. §3.3's separate
+`shot`/`hit` events fix it; the existing counters are left alone per the
+alongside-not-instead rule, so **the old ratio stays wrong and should be read as
+"pellets per trigger-pull", not accuracy.**
+
+**7.5 — Pre-placed ammo does not scale with what it has to kill.** Placement is one
+Bernoulli(0.22) trial per non-spawn room (`pickups.ts:46-63`), so it tracks *entity
+count*. Enemies come only from `function`/`method` entities, so a file full of
+classes and interfaces gets rooms and pickups but no enemies, while a file of dense
+functions gets the same pickup rate against far more HP. Meanwhile `startingAmmo`
+*does* scale with total enemy HP (`ammo.ts:86-94`) — but carryover overrides it from
+level 2 on. **Open question: should pre-placed ammo scale with the level's enemy HP
+the way starting ammo does?** The solver's `clearRatio (pre-placed)` column is
+exactly the evidence needed to decide.
+
+**7.6 — Terminology, for anyone reading the original brief.** "Enemies per
+folder/file" — **a file is a level**; folders contribute only ordering
+(`main.ts:2893`). Classes, interfaces and traits produce a room but no enemy;
+globals become acid pools; only functions and methods produce enemies.
+
+**7.7 — One `Math.random()` sits on the combat path.** `engine.ts:4456`,
+`baseBloodCount` inside `damageEnemy`. Cosmetic particle count only, touching no
+simulation state — but it is the only direct one in `engine.ts`, whose own comment
+at `:715` says "Never `Math.random()` directly". Recorded so a future determinism
+audit does not have to rediscover it is benign.
+
+**7.8 — `countWalkableTiles` is module-private** (`engine.ts:4788`), and
+`staticLevelAnalysis.mjs:17-31` already hand-mirrors it and `isWalkableTile`. The
+per-unit-area metrics in §2.4 need one of the two. This joins the three
+hand-maintained `isWall()` mirrors documented above — same failure mode, same fix.
+
+### Blocked metrics
+
+| Metric | Blocked by | Unblocked in |
+|---|---|---|
+| `incomingDps`, `survivalWindow`, `threatScore` | `enemyAi.ts` constants are module-private | Step 1 |
+| `selfSustain` measured (rather than predicted) | `lootCollected` has no dropping-archetype field | Step 6 |
+| `overkill` | `damageEnemy` discards the pre-clamp negative HP | Step 5 |
+| `damageTakenByArchetype` | `damageBySource` has no archetype dimension | Step 6 |
+| `hitRateByDistance` | no distance is recorded on a shot or hit | Step 6 |
+| Reproducible drop economy | gameplay seed cannot be pinned | Step 2 |
+| Anything about repos other than `demo-campaign/` | no corpus | Step 4 |
+
+### Genuinely open design questions
+
+1. **Should Elite HP be capped, and against what?** (§7.1)
+2. **Should Edge Cases drop like a 250 HP enemy?** The 11.6× self-sustain in §5.1
+   says no; the counter-argument is that they are placed for pacing, not economy,
+   and nerfing their drops makes corridor dressing feel like a chore.
+3. **Should pre-placed ammo scale with enemy HP?** (§7.5)
+4. **Should the solver's verdict gate anything?** It could exit non-zero on an
+   unclearable level, which would make it usable as a check on a generated campaign
+   — but "unclearable at perfect accuracy" is a hard failure while "clearable at
+   perfect accuracy" proves nothing (§4.4), so only the failing direction is
+   trustworthy as a gate.
+5. **How much does multiplayer change the budget?** Elite HP scales with player
+   count while loot does not obviously scale to match. Out of scope for the first
+   solver, but the asymmetry is visible in `multiplayerScaling.ts` and deserves its
+   own pass.
