@@ -34,6 +34,7 @@ import { downloadBlob } from "./ui/download";
 import { RESPONSIVE_CANVAS_SCALING_ENABLED, watchCanvasSizing } from "./ui/canvasFit";
 import { DEFAULT_GORE_LEVEL, type GoreLevel } from "./engine/effects";
 import {
+  FORCED_UNLOCK_LEVELS,
   FRIDAY_HOTFIX_WEAPON_INDEX,
   GDB_WEAPON_INDEX,
   GHIDRA_WEAPON_INDEX,
@@ -2663,16 +2664,6 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
     },
   );
 }
-
-/** Weapon indices force-unlocked once the player reaches the given campaign
- * level, regardless of whether an Elite has actually dropped them yet — a
- * progression safety net so a long, loot-unlucky run doesn't leave
- * gdb/ghidra/Friday Hotfix permanently unreachable. */
-const FORCED_UNLOCK_LEVELS: { level: number; weaponIndex: number; name: string }[] = [
-  { level: 4, weaponIndex: GDB_WEAPON_INDEX, name: "gdb" },
-  { level: 8, weaponIndex: GHIDRA_WEAPON_INDEX, name: "ghidra" },
-  { level: 12, weaponIndex: FRIDAY_HOTFIX_WEAPON_INDEX, name: "Friday Hotfix" },
-];
 
 /** Union `owned` with whichever `FORCED_UNLOCK_LEVELS` entries `levelIndex`
  * has reached — never removes anything, so a weapon already earned by

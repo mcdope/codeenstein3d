@@ -58,6 +58,25 @@ const BONUS_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[
  * report flagged as making dynamic supply overwhelm static placement. */
 export const REGULAR_KILL_NO_DROP_CHANCE = 0.2;
 
+/** Which weight table a kill's loot roll draws from, given the level and
+ * difficulty. Bonus-level odds take priority over Normal's own table, matching
+ * the precedence `rollLoot` has always applied.
+ *
+ * Split out of `rollLoot` (which now calls it) so the offline balance solver
+ * can value an enemy's expected drop from the *real* weights instead of
+ * mirroring them — see `doc/dev/balancing-telemetry.md`'s "Single source of
+ * truth for constants". A mirrored copy of a weight table is exactly the
+ * failure `ROCKET_TRAVEL_SPEED` already demonstrated. Returns the shared
+ * array, not a copy: every caller treats it as read-only, and the type says
+ * so. */
+export function lootWeightsFor(
+  bonusLevel: boolean,
+  difficulty: DifficultyLevel,
+): readonly { kind: Exclude<LootKind, "weapon">; weight: number }[] {
+  if (bonusLevel) return BONUS_LOOT_WEIGHTS;
+  return difficulty === "normal" ? NORMAL_LOOT_WEIGHTS : LOOT_WEIGHTS;
+}
+
 /** Roll a random loot kind for a regular (non-elite) enemy kill, weighted by
  * `LOOT_WEIGHTS` (`NORMAL_LOOT_WEIGHTS` on Normal difficulty specifically, or
  * `BONUS_LOOT_WEIGHTS` on a bonus level, which takes priority over both).
@@ -94,11 +113,7 @@ export function rollLoot(
   hasFridayHotfix = true,
   healthHandledSeparately = false,
 ): Exclude<LootKind, "weapon"> {
-  const weights = bonusLevel
-    ? BONUS_LOOT_WEIGHTS
-    : difficulty === "normal"
-      ? NORMAL_LOOT_WEIGHTS
-      : LOOT_WEIGHTS;
+  const weights = lootWeightsFor(bonusLevel, difficulty);
   let usable = weights.filter(
     (w) =>
       (w.kind !== "rockets" || hasRocketLauncher) &&

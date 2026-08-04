@@ -341,6 +341,22 @@ export const UNLOCKABLE_WEAPONS: readonly number[] = [
   FRIDAY_HOTFIX_WEAPON_INDEX,
 ];
 
+/** Weapon indices force-unlocked once the player reaches the given 1-based
+ * campaign level, regardless of whether an Elite has actually dropped them yet
+ * — a progression safety net so a long, loot-unlucky run doesn't leave
+ * gdb/ghidra/Friday Hotfix permanently unreachable.
+ *
+ * Lives here rather than in `main.ts` for the same reason `UNLOCKABLE_WEAPONS`
+ * does (see its comment): more than one consumer needs it, and a second copy
+ * would drift. `main.ts` owns *applying* it; the offline balance solver reads
+ * it to derive the loadout a run is guaranteed to have at each campaign level,
+ * which is what makes its scarcity figures a floor rather than a guess. */
+export const FORCED_UNLOCK_LEVELS: readonly { level: number; weaponIndex: number; name: string }[] = [
+  { level: 4, weaponIndex: GDB_WEAPON_INDEX, name: "gdb" },
+  { level: 8, weaponIndex: GHIDRA_WEAPON_INDEX, name: "ghidra" },
+  { level: 12, weaponIndex: FRIDAY_HOTFIX_WEAPON_INDEX, name: "Friday Hotfix" },
+];
+
 /**
  * `WEAPONS` indices in number-key order: the Nth entry here is what the
  * (N+1)th number key (`1`, `2`, …) switches to, via `RaycasterEngine`'s
