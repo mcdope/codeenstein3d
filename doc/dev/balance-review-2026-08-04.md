@@ -13,7 +13,8 @@ npm run balancing:events -- ev/
 
 **Scope.** The analytic half covers the 17-level `demo-campaign/` at all three
 difficulties plus 8 real repositories (6,700 generated enemies in total). The
-empirical half is a scoped bot capture, sample sizes stated in §7. Read §8 before
+empirical half is four 12-level bot captures — Casual/Gamer/Pro on normal and
+Gamer on hard, 5 attempts each: **2,162 kills, 8,718 trigger-pulls**. Read §8 before
 acting on anything: the solver is deliberately optimistic in one direction and
 that shapes what its numbers mean.
 
@@ -24,10 +25,10 @@ that shapes what its numbers mean.
 | # | Finding | Evidence | Where it lives |
 |---|---|---|---|
 | 1 | **Hard collapses in the back half of the campaign.** Not "harder" — a cliff. | Carried ammo peaks at level 9 and hits **zero by level 14**; levels 15 and 17 are unclearable *counting every drop* (0.30 and 0.92) | `difficulty.ts` |
-| 2 | **Killing things pays for itself, so ammo has no floor.** | Edge Cases return **8.5–13.5×** the damage they cost, across every repo tested; regular enemies exceed 1.0 on 5 of 8 | `loot.ts`, `enemies.ts` |
+| 2 | **Killing pays for itself on easy and normal; only Hard has a floor.** | Edge Cases return **8.5–13.5×** the damage they cost across every repo; on Hard that halves to 4.7× — still net-positive | `loot.ts`, `enemies.ts` |
 | 3 | **A repo is mostly trivial functions, and the generator prices them as full enemies.** | **81.5%** of enemies come from complexity-1 entities; **65%** of the roster is Edge Cases; 47% of regular enemies sit at the 25 HP floor | `enemies.ts` |
 | 4 | **The Elite threshold is a cliff, and past it HP is unbounded.** | c=39 → 244 HP, c=40 → **2000 HP**. On Hard, demo level 15 has two Elites that individually exceed all obtainable damage | `enemies.ts:89-101` |
-| 5 | **Two weapons are dead content for the bot.** | ghidra: **0 shots in 5,897**, owned on 71 level-visits. Friday Hotfix: **25 pulls** and 1.4% of kills across 1,049 kills | `weapons.ts`, `combatPolicy.mjs` |
+| 5 | **ghidra is never used, and melee wastes most of its damage.** | ghidra: **2 pulls in 8,718, zero kills**, owned on 122 level-visits. Toolchain wastes **60 of its 80** damage per kill | `weapons.ts`, `combatPolicy.mjs` |
 
 ---
 
@@ -112,22 +113,42 @@ reason one layer down: 47% of them are 25 HP floor enemies paying a full-sized
 drop.
 
 The analytic prediction (from the drop tables) and the empirical measurement (from
-observed rolls) agree closely, and the measurement is stable across profiles —
-Casual and Gamer land at 0.98/0.95 for regulars and 10.64/11.05 for Edge Cases over
-1,049 kills, against predictions of 0.76–2.33 and 8.1–13.8. Two models built from
-opposite directions landing together is what makes this a finding rather than an
-artifact of either.
+observed rolls) agree, and the measurement barely moves across skill tiers:
+
+| Capture (12 levels, 5 attempts) | kills | regular | Edge Case | reliance on drops |
+|---|---:|---:|---:|---:|
+| Casual, normal | 495 | 0.98 | 10.64 | 83.9% |
+| Gamer, normal | 554 | 0.95 | 11.05 | 84.2% |
+| Pro, normal | 555 | 1.12 | 12.13 | 84.1% |
+| **Gamer, hard** | 558 | **0.45** | **4.73** | 84.6% |
+
+2,162 kills across four captures, against predictions of 0.76–2.33 and 8.1–13.8.
+Two models built from opposite directions landing together — and a result this
+insensitive to who is playing — makes this a property of the drop tables rather
+than an artifact of either model or of one bot's habits.
+
+**Hard is the one setting that has an economy at all, and the mechanism is exact.**
+Self-sustain halves — 0.95 → 0.45 for regulars, 11.05 → 4.73 for Edge Cases —
+because enemies carry 1.5× HP while pickups give 0.7×. `0.7 / 1.5 = 0.467`, and
+`0.95 × 0.467 = 0.44` against the 0.45 measured. That compounding is the same
+mechanism that empties the reserve in §4; it is doing exactly what it was designed
+to, and only Hard gets it.
+
+Note reliance on drops is **~84% on all four**, unchanged by difficulty: Hard makes
+each drop smaller, not rarer, so the pre-placed share stays a fifth of the economy
+regardless.
 
 ### Where the loot actually comes from
 
-Measured, demo campaign: **83.9–84.2%** of everything collected came from drops
+Measured, demo campaign: **83.9–84.2%** of everything collected came from drops (see
+the table above)
 rather than from the floor. Pre-placed placement is ~16% of the economy, so tuning
 it moves almost nothing — which matches the earlier campaign finding of 93–100%
 and is why the drop amounts were cut ~30%.
 
-**Also measured: 101 of 288 health pickups granted nothing at all** (31% and 39%
-across the two profiles), collected at full stability — over a third of health
-placement doing no work.
+**Also measured: 195 of 579 health pickups granted nothing at all** — 27–40%
+across the four captures — collected at full stability. A third of health placement
+does no work, on every difficulty.
 
 ---
 
@@ -185,37 +206,38 @@ prices the reserve at pistol efficiency) is roughly twice as generous as it read
 
 ### Observed
 
-Aggregated over two 12-level captures (Casual and Gamer, normal, 5 attempts each):
-**1,049 kills, 3,936 trigger-pulls**. The two profiles have different aim
-tolerances (`fireAngleEps` 0.08 vs 0.05), so the hit rates are a blend.
+Aggregated over four 12-level captures (Casual/Gamer/Pro on normal, Gamer on hard;
+5 attempts each): **2,162 kills, 8,718 trigger-pulls**. Hit rates blend skill tiers
+with different aim tolerances (`fireAngleEps` 0.08 → 0.03).
 
 | Weapon | pulls | pellet hit rate | 0–2 | 2–4 | 4–7 | kill share | overkill/kill |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| echo pistol | 1,225 | 61.0% | 78.8% | 75.2% | 70.3% | 19.5% | 9.7 |
-| Regex Shotgun | 321 | 40.1% | 57.5% | 48.9% | **35.0%** | 17.9% | 13.1 |
-| gdb | 1,851 | 53.4% | 78.4% | 72.0% | 67.7% | 25.1% | 5.3 |
-| SIGKILL Knife | 274 | 100% | 100% | — | — | 16.9% | **24.9** |
-| Toolchain | 240 | 100% | 100% | — | — | 19.2% | **60.4** |
-| **Friday Hotfix** | **25** | 54.0% | 77.8% | 52.0% | — | **1.4%** | 2.5 |
-| **ghidra** | **0** | — | — | — | — | **0%** | — |
+| gdb | 4,183 | 56.8% | 79.2% | 70.3% | 71.1% | **28.5%** | 5.3 |
+| echo pistol | 2,521 | 66.0% | 84.2% | 79.1% | 74.0% | 14.6% | 9.8 |
+| SIGKILL Knife | 780 | 100% | 100% | — | — | 21.1% | **24.5** |
+| Regex Shotgun | 630 | 40.3% | 58.5% | 48.9% | **31.2%** | 18.4% | 11.1 |
+| Toolchain | 377 | 100% | 100% | — | — | 14.1% | **60.0** |
+| Friday Hotfix | 225 | 64.0% | 75.4% | 64.4% | — | 3.3% | 3.5 |
+| **ghidra** | **2** | 0% | — | — | 0% | **0%** | — |
 
-- **ghidra is never fired.** **Zero shots in 5,897**, across **71 level-visits
-  where it was owned** and every profile including the one whose weapon priority
-  *leads* with it. Something in `scoreRangedWeapon` rejects it against a 4-rocket
-  reserve.
-- **Friday Hotfix is dead content**: **25 trigger-pulls in the whole capture** and
-  1.4% of kills. Its accuracy is fine at the range it is used (77.8% inside 2
-  tiles); the problem is that it is almost never chosen. *An earlier, much smaller
-  capture showed 0% beyond 2 tiles — that was 0/24 pellets and did not survive a
-  4× larger sample, which now reads 52%. The dead-content finding stands; the
-  range-cliff one does not.*
-- **Melee wastes most of its damage.** Toolchain averages 60.2 wasted of an
-  80-damage swing; the knife 24.8 of 40. Against a roster that is 65% 10–15 HP
-  Edge Cases, doubling the knife's damage bought almost nothing.
-- **The cone is visible in the gradient.** The shotgun degrades 57.5% → 48.9% →
-  35.0% across the three near buckets while the pistol holds 78.8% → 75.2% →
-  70.3%. Both fall with range, as the cubic deviation predicts; the shotgun falls
-  roughly three times faster, which is the spread doing its job.
+- **ghidra is effectively unfired.** **2 trigger-pulls in 8,718** (0.02%), **zero
+  kills**, across **122 level-visits where it was owned** with rockets in the pool
+  — including the profile whose weapon priority *leads* with it. Something in
+  `scoreRangedWeapon` rejects it against a 4-rocket reserve. This is the one
+  unambiguous dead-content result.
+- **Melee does the heavy lifting, and wastes most of its damage.** Knife and
+  Toolchain together take **35% of all kills**. Toolchain averages **60.0 wasted of
+  an 80-damage swing** and the knife 24.5 of 40 — against a roster that is 65%
+  10–15 HP Edge Cases, doubling the knife's damage bought almost nothing.
+- **The cone is visible in the gradient.** The shotgun falls 58.5% → 48.9% →
+  31.2% across the three near buckets while the pistol holds 84.2% → 79.1% →
+  74.0%. Both decay with range as the cubic deviation predicts; the shotgun decays
+  about three times faster, which is the spread doing its job.
+- **Friday Hotfix is niche, not dead** — 3.3% of kills at a healthy 64% hit rate.
+  Two earlier readings of this weapon did **not** survive larger samples and are
+  retracted here rather than quietly dropped: a 24-pellet sample showed 0% beyond
+  2 tiles (now 64.4%), and a 25-pull sample put it at 1.4% of kills (now 3.3%).
+  Small per-weapon samples on a rarely-chosen weapon move a lot.
 
 ---
 
@@ -287,9 +309,14 @@ Ordered by effect per unit of risk. Each names the constant.
   a ratio near 2 is genuinely tight.
 - **The carry model excludes drops**, so the carry curve in §4 is the pessimistic
   end. The `combined` ratios do include drops.
-- **The empirical half is a scoped capture on `normal`**, not a full campaign, and
-  it measures *this bot* — which is why §5's usage numbers are as much a statement
-  about `combatPolicy.mjs` as about the weapons.
+- **The empirical half stops at level 12** (`LEVEL_LIMIT=12`), so it does not reach
+  the levels finding 1 is about. Every capture hit that cap rather than a death
+  wall: across 234 level-plays, every profile cleared to 12 with **one death in
+  total — including on hard**. That corroborates the analytic result for levels
+  1–12, where §4 shows ratios never dropping below 1.5 even on hard. But **the Hard
+  collapse at levels 13–17 is an analytic result only** and has not been observed.
+- It also measures *this bot*, which is why §5's usage numbers are as much a
+  statement about `combatPolicy.mjs` as about the weapons.
 - **Damage is not attributed by attacking archetype** yet (open item in
   `balancing-telemetry.md`), so §4's survival windows are analytic only.
 - **Multiplayer is out of scope.** Elite HP scales with player count while loot
