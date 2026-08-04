@@ -978,7 +978,60 @@ top-up).
 The two † arrays are the "nominal vs actual budget" sweep — together they give the
 gap between what the generator placed and what the run actually had access to.
 
-### 3.3a What the log does and does not record — verified, not assumed
+### 3.3a Verifying the log — `npm run verify:event-log`
+
+`scripts/verify-event-log.mjs` runs every consistency check over a log
+directory and exits non-zero on failure, so this is repeatable rather than a
+spot-check someone remembers to do. It is deliberately a script: "is the
+telemetry right?" was asked three times, and two of those turned up a real
+defect *after* an ad-hoc check had already passed. Ad-hoc checks answer the
+question you thought to ask.
+
+Three tiers, weakest to strongest, and the script says which is which:
+
+1. **Structural** — parseable lines, nothing dropped by the buffer cap,
+   envelope complete on every record.
+2. **Conservation** — `hpBefore - amt == hpAfter`; spawned enemies equal kills
+   plus survivors per level-visit; every collected drop references a real spawn.
+   Catches corruption, not a consistently wrong value.
+3. **Cross-site agreement** — an enemy's archetype is emitted independently at
+   five call sites, and all five must match the roster `levelStart` recorded.
+   Catches a mislabel at one site, not one shared by all.
+
+**Verified against injected faults, not just against good data.** Three
+mutations — an archetype relabelled on one `lootDropped`, seven HP added to one
+`hpAfter`, one `kill` removed — are each caught and named:
+`lootDropped.fromArch agrees with the roster: 1 failure(s), e.g. {"eid":9,
+"said":"normal","roster":"edgeCase"}`. A checker that has only ever seen
+passing input is not known to check anything.
+
+A check that never ran is printed as `0` rather than omitted, since a silently
+absent row reads as a pass — `targetArch` only exists in logs captured after
+that field was added.
+
+### What external validation exists
+
+Internal consistency cannot tell you the roster itself is right; every site
+agreeing on the same wrong answer looks identical to every site being correct.
+Two independent sources close that:
+
+- **The roster, against a separate runtime.** `npm run balancing:budget --json`
+  generates the same campaign through Node/esbuild rather than the browser.
+  Measured on the demo campaign: the archetype-and-HP multiset is **identical on
+  all 12 captured levels**, difficulty scaling included, computed by two
+  different code paths.
+- **`targetArch`, against what was actually hit.** For a single-pellet weapon
+  the pellet flies dead-centre, so the crosshair archetype should be the
+  archetype hit: measured **99.9% over 1,135 single-pellet shots and 100% over
+  749 multi-pellet ones**. The single outlier is a gdb shot recorded against an
+  Edge Case that landed on a regular — one frame of staleness, since
+  `this.target` is set during the previous frame's render and Edge Cases cross
+  the reticle at 3.74 tiles/sec.
+- **The counters, against the events.** Shots, hits and kills match exactly for
+  all seven weapons and every damage source matches to the unit — two
+  independent recording paths in the same run.
+
+### What the log does not record
 
 Cross-checked against the aggregate counters over a 4-attempt Gamer/hard capture,
 since the two are recorded by independent code in the same run: **shots, hits and

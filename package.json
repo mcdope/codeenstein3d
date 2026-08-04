@@ -33,6 +33,7 @@
     "balancing:budget": "node scripts/report-level-budget.mjs",
     "balancing:corpus": "node scripts/fetch-balancing-corpus.mjs",
     "balancing:events": "node scripts/report-balancing-events.mjs",
+    "verify:event-log": "node scripts/verify-event-log.mjs",
     "perf:bench": "node scripts/run-perf-benchmark.mjs",
     "perf:report": "node scripts/build-perf-report.mjs",
     "poc:cross-browser-determinism": "node scripts/poc-cross-browser-determinism.mjs",
