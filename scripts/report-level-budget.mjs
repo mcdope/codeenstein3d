@@ -28,6 +28,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { loadEngineModules, REPO_ROOT } from "./lib/loadEngineModules.mjs";
+import { loadWorkspaceModule } from "./lib/loadWorkspaceModule.mjs";
 import { solveCampaign, weaponProfiles } from "./lib/levelSolver.mjs";
 
 const DIFFICULTIES = ["easy", "normal", "hard"];
@@ -39,13 +40,14 @@ const RATIO_WARN = 1.2;
 const RATIO_FAIL = 1.0;
 
 function parseArgs(argv) {
-  const args = { dir: path.join(REPO_ROOT, "demo-campaign"), difficulties: ["normal"], json: null };
+  const args = { dir: path.join(REPO_ROOT, "demo-campaign"), difficulties: ["normal"], json: null, maxLevels: Infinity };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--dir") args.dir = path.resolve(argv[++i]);
     else if (arg === "--difficulty") args.difficulties = [argv[++i]];
     else if (arg === "--all-difficulties") args.difficulties = [...DIFFICULTIES];
     else if (arg === "--json") args.json = path.resolve(argv[++i]);
+    else if (arg === "--max-levels") args.maxLevels = Number(argv[++i]);
     else {
       console.error(`unknown argument: ${arg}`);
       process.exit(2);
@@ -60,11 +62,34 @@ function parseArgs(argv) {
   return args;
 }
 
-/** Campaign order is plain case-insensitive filename sort, the same ordering
- * `verify-demo-campaign.mjs` uses and `main.ts`'s own flattened file list
- * produces. */
-function campaignOrder(filenames) {
-  return [...filenames].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+/**
+ * Every file that becomes a level, in the order the game would play them.
+ *
+ * This is not a convenience — it decides which source file is level 1, and so
+ * what every per-level number below is *about*. It therefore uses the real
+ * `src/fs/workspace.ts` helpers (`isIgnoredDirectoryName`, `isIgnoredFileName`,
+ * `compareNodes`) rather than a second copy of the same rules, recursing the
+ * way `flattenParsableFiles` does in `main.ts`: directories before files at
+ * each level, then case-insensitive alphabetical, depth-first.
+ *
+ * A flat directory like `demo-campaign/` reduces to exactly the plain sorted
+ * list it always was.
+ */
+function collectSourceFiles(dir, workspace, relativeTo = dir) {
+  const { isIgnoredDirectoryName, isIgnoredFileName, compareNodes } = workspace;
+  const nodes = fs
+    .readdirSync(dir, { withFileTypes: true })
+    .filter((e) => (e.isDirectory() ? !isIgnoredDirectoryName(e.name) : e.isFile() && !isIgnoredFileName(e.name)))
+    .map((e) => ({ name: e.name, kind: e.isDirectory() ? "directory" : "file" }))
+    .sort(compareNodes);
+
+  const out = [];
+  for (const node of nodes) {
+    const full = path.join(dir, node.name);
+    if (node.kind === "directory") out.push(...collectSourceFiles(full, workspace, relativeTo));
+    else out.push({ absolute: full, relative: path.relative(relativeTo, full) });
+  }
+  return out;
 }
 
 /**
@@ -78,17 +103,21 @@ function campaignOrder(filenames) {
  * deliberately does) would inflate the pre-placed budget of every early level
  * with ammo a real run cannot use yet.
  */
-async function generateLevels(dir, modules) {
+async function generateLevels(dir, modules, workspace, levelCap = Infinity) {
   const { parseFile, extensionOf, MapGenerator, STARTING_WEAPONS, FORCED_UNLOCK_LEVELS, UNLOCKABLE_WEAPONS } = modules;
   const generator = new MapGenerator();
-  const filenames = campaignOrder(fs.readdirSync(dir).filter((f) => fs.statSync(path.join(dir, f)).isFile()));
+  const sourceFiles = collectSourceFiles(dir, workspace);
 
   const levels = [];
   const skipped = [];
-  for (const filename of filenames) {
-    const parsed = await parseFile(filename, fs.readFileSync(path.join(dir, filename), "utf8"));
+  for (const source of sourceFiles) {
+    if (levels.length >= levelCap) break;
+    const filename = path.basename(source.absolute);
+    // `parseFile` dispatches on the basename's extension, but the report shows
+    // the path so two `main.go`s in different packages stay distinguishable.
+    const parsed = await parseFile(filename, fs.readFileSync(source.absolute, "utf8"));
     if (!parsed) {
-      skipped.push(filename);
+      skipped.push(source.relative);
       continue;
     }
     const campaignLevelIndex = levels.length + 1;
@@ -103,7 +132,7 @@ async function generateLevels(dir, modules) {
       hasGas: owned.has(modules.FRIDAY_HOTFIX_WEAPON_INDEX),
       missingWeaponIndices: UNLOCKABLE_WEAPONS.filter((i) => !owned.has(i)),
     });
-    levels.push({ filename, map });
+    levels.push({ filename: source.relative, map });
   }
   return { levels, skipped };
 }
@@ -122,11 +151,11 @@ function ratioFlag(ratio) {
 }
 
 function printBudgetTable(results) {
-  console.log("level  file                       enemies   HP tot   ammo dmg (carry/pre/drop)      ratio (nofarm/comb)");
+  console.log("level  file                                 enemies   HP tot   ammo dmg (carry/pre/drop)      ratio (nofarm/comb)");
   for (const r of results) {
     const flag = ratioFlag(r.clearRatio.combined);
     console.log(
-      `${String(r.campaignLevelIndex).padStart(5)}  ${r.filename.padEnd(26).slice(0, 26)}` +
+      `${String(r.campaignLevelIndex).padStart(5)}  ${r.filename.padEnd(36).slice(-36)}` +
         `${String(r.enemies.totalCount).padStart(7)}  ${String(Math.round(r.enemies.totalHp)).padStart(7)}   ` +
         `${String(Math.round(r.carried.damage)).padStart(7)} /${String(Math.round(r.prePlaced.damage)).padStart(7)} /${String(Math.round(r.drops.damage)).padStart(7)}   ` +
         `${fmt(r.clearRatio.withoutFarming).padStart(8)} /${fmt(r.clearRatio.combined).padStart(7)} ${flag}`,
@@ -228,8 +257,8 @@ async function main() {
     process.exit(2);
   }
 
-  const modules = await loadEngineModules();
-  const { levels, skipped } = await generateLevels(args.dir, modules);
+  const [modules, workspace] = await Promise.all([loadEngineModules(), loadWorkspaceModule()]);
+  const { levels, skipped } = await generateLevels(args.dir, modules, workspace, args.maxLevels);
   if (levels.length === 0) {
     console.error(`no parsable files in ${args.dir}`);
     process.exit(2);
@@ -254,7 +283,7 @@ async function main() {
 
   console.log(`# Balance budget -- ${path.relative(REPO_ROOT, args.dir) || args.dir}`);
   console.log(`# ${levels.length} levels, perfect-accuracy lower bound on cost`);
-  if (skipped.length > 0) console.log(`# skipped (no parser matched): ${skipped.join(", ")}`);
+  if (skipped.length > 0) console.log(`# skipped, no parser matched (${skipped.length}): ${skipped.slice(0, 8).join(", ")}${skipped.length > 8 ? ", ..." : ""}`);
   printWeaponTable(profiles);
 
   const byDifficulty = new Map();

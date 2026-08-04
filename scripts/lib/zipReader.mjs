@@ -95,3 +95,27 @@ export function extractFileFromZip(zipBuf, entryPath) {
   }
   return extractEntry(zipBuf, entry);
 }
+
+/**
+ * Every file entry in a ZIP `Buffer`, as `{ name, data }`.
+ *
+ * Directory entries (a trailing `/`, which ZIP stores as zero-length records)
+ * are skipped — a caller wanting the tree back on disk reconstructs it from
+ * the file paths anyway, and returning empty buffers for them would just be
+ * something every caller has to filter.
+ *
+ * Added for `fetch-balancing-corpus.mjs`, which pulls whole GitHub source
+ * archives rather than the single-file lookups `extractFileFromZip` was
+ * written for. `entryFilter` is applied *before* decompression so an archive
+ * of a large repository does not inflate thousands of files nobody wants.
+ */
+export function extractAllFromZip(zipBuf, entryFilter = () => true) {
+  const eocd = findEndOfCentralDirectory(zipBuf);
+  const out = [];
+  for (const entry of parseCentralDirectory(zipBuf, eocd)) {
+    if (entry.name.endsWith("/")) continue;
+    if (!entryFilter(entry.name)) continue;
+    out.push({ name: entry.name, data: extractEntry(zipBuf, entry) });
+  }
+  return out;
+}

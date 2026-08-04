@@ -12,6 +12,9 @@ multiplayer_balancing_telemetry.json
 multiplayer_balancing_telemetry_pre-*.json
 balancing_runs/
 balancing_runs_*/
+# Fetched source repos the offline balance solver runs against, see
+# scripts/fetch-balancing-corpus.mjs -- reproducible from its pinned manifest.
+balancing_corpus/
 perf_runs/
 perf-report.html
 scripts/fixtures/perf-har/
