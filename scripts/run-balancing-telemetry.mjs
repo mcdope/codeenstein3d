@@ -143,6 +143,29 @@ const REQUIRED_QUALIFYING_RUNS = process.env.CODEENSTEIN_TELEMETRY_QUALIFYING_TA
   : 3;
 const QUALIFY_LEVEL_INDEX = 3; // 0-based — "level 4" in 1-based campaign numbering
 
+/**
+ * Pins every attempt's gameplay seed (`?seed=`), making loot rolls, enemy fire
+ * cadence and weapon spread reproducible between runs.
+ *
+ * Off by default, and it should stay off for ordinary data collection: the
+ * whole point of a 50-run sample is to average over the dice. Turn it on for
+ * an A/B whose change touches a drop constant, where an unpinned run cannot
+ * distinguish the change from a different roll of the same dice — and for
+ * reproducing one specific bad run.
+ *
+ * Note every concurrent attempt in a batch then shares the seed, so they are
+ * no longer independent samples. That is the intended trade when it is set,
+ * and the reason it is not the default.
+ */
+const GAMEPLAY_SEED = process.env.CODEENSTEIN_TELEMETRY_SEED ? Number(process.env.CODEENSTEIN_TELEMETRY_SEED) : null;
+if (GAMEPLAY_SEED !== null && (!Number.isInteger(GAMEPLAY_SEED) || GAMEPLAY_SEED < 0 || GAMEPLAY_SEED > 0xffffffff)) {
+  // A hard exit rather than a warning, for the same reason
+  // CODEENSTEIN_TELEMETRY_TUNING rejects invalid JSON: silently falling back
+  // to an unpinned run would produce a comparison that looks pinned.
+  console.error(`CODEENSTEIN_TELEMETRY_SEED must be an integer in 0..0xffffffff, got: ${process.env.CODEENSTEIN_TELEMETRY_SEED}`);
+  process.exit(1);
+}
+
 // How many ticks the final push toward the exit tile gets, once the route's
 // own legs are exhausted — see `playRun`'s final `driveToward` call.
 const FINAL_APPROACH_TICKS = 80;
@@ -239,6 +262,11 @@ async function main() {
         anomalyScan: ANOMALY_SCAN,
         navDiag: NAV_DIAG,
         headed: HEADED,
+        // `null` for an ordinary unpinned run. Recorded because a pinned
+        // capture's attempts are not independent samples of the loot economy
+        // — a consumer comparing two captures has to know whether either side
+        // was pinned, the same reason `compareRunFlags` exists at all.
+        gameplaySeed: GAMEPLAY_SEED,
       },
     },
     profiles: {},
@@ -284,7 +312,8 @@ async function runOneAttempt(browser, profileName, profile, difficulty, levelPla
 
     if (!HEADED) await installVirtualClock(page); // headed mode runs on the real clock so a human can follow along
     await installDifficulty(page, difficulty);
-    await page.goto(`${DEV_SERVER_URL}/?testHooks=1&botRotSpeedMul=${profile.rotSpeedMultiplier}`);
+    const seedParam = GAMEPLAY_SEED === null ? "" : `&seed=${GAMEPLAY_SEED}`;
+    await page.goto(`${DEV_SERVER_URL}/?testHooks=1&botRotSpeedMul=${profile.rotSpeedMultiplier}${seedParam}`);
     await page.click("#tab-demo");
     await page.click("#launch-demo-campaign");
     await waitForTestHooks(page);
