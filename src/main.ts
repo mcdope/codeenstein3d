@@ -2185,24 +2185,46 @@ const ENTRYPOINT_SCAN_CHUNK_SIZE = 20;
 /**
  * Fallback when no file matches a standard entrypoint filename: parse every
  * file in `files` and score it by summing `complexityScore` across all its
- * entities — a general, language-agnostic "how much real work does this file
- * do" signal (no longer restricted to the C family, so this also newly
- * covers conventions like C#'s capitalized `Main`). Tracks the
- * highest-complexity file that defines a `main`/`Main` function/method
- * entity, and separately the highest-complexity file overall; returns the
- * former if any file had one, else the latter, else `null` if nothing in
- * `files` parsed successfully at all. A file that fails to read or parse is
- * skipped, same as everywhere else in this app. Yields to the event loop
- * every `ENTRYPOINT_SCAN_CHUNK_SIZE` files, same pattern as
- * `computeCodebaseStats`. `signal`, when given and already aborted by the
- * time a given file is reached, stops the scan right there instead of
- * working through the rest of `files`.
+ * entities — a general, language-agnostic "how much work does this file do"
+ * signal (not restricted to the C family, so it also covers conventions like
+ * C#'s capitalized `Main`). Tracks the **least**-complex file that defines a
+ * `main`/`Main` function/method entity, and separately the least-complex file
+ * overall; returns the former if any file had one, else the latter, else the
+ * first file that parsed at all, else `null`.
+ *
+ * **This picks the least complex file, and it used to pick the most.** The
+ * entrypoint is not just "which file is most representative" — it is
+ * *campaign level 1*, the first thing anyone plays. Scoring by highest
+ * complexity therefore opened every repo without a conventional entrypoint
+ * name on its single hardest map. Measured on `id-Software/wolf3d`
+ * (2026-08-05): the scan chose `WL_ACT2.C`, a **446-enemy, 4,742-DPS,
+ * 13,686-tile** level, as the opening. Complexity is exactly what the
+ * generator turns into enemies and HP, so "most complex" and "most brutal"
+ * are the same ordering — the old rule reliably picked the worst possible
+ * introduction to a codebase.
+ *
+ * The `main()` preference is kept ahead of raw score, because a `main`
+ * function is a real convention signal rather than a difficulty heuristic —
+ * only the tie-break within each bucket is inverted. Files scoring 0 are
+ * skipped for the same reason the old rule skipped nothing: a file with no
+ * entities generates a level with no enemies, which is a worse opening than a
+ * small one. `firstParsed` preserves the old contract that `null` means
+ * "nothing here parsed", not "nothing scored".
+ *
+ * A file that fails to read or parse is skipped, same as everywhere else in
+ * this app. Yields to the event loop every `ENTRYPOINT_SCAN_CHUNK_SIZE`
+ * files, same pattern as `computeCodebaseStats`. `signal`, when given and
+ * already aborted by the time a given file is reached, stops the scan right
+ * there instead of working through the rest of `files`.
  */
 async function findEntrypointByScanning(files: TreeNode[], signal?: AbortSignal): Promise<EntrypointMatch | null> {
   let bestWithMain: EntrypointMatch | null = null;
-  let bestWithMainComplexity = -1;
+  let bestWithMainComplexity = Infinity;
   let bestOverall: EntrypointMatch | null = null;
-  let bestOverallComplexity = -1;
+  let bestOverallComplexity = Infinity;
+  /** Absolute fallback: every file parsed to zero entities, so nothing was
+   * eligible for scoring but the tree is not empty either. */
+  let firstParsed: EntrypointMatch | null = null;
 
   for (let i = 0; i < files.length; i++) {
     // `autoLaunchInitialLevel` has already given up and fallen back to the
@@ -2222,11 +2244,14 @@ async function findEntrypointByScanning(files: TreeNode[], signal?: AbortSignal)
           (e) => (e.kind === "function" || e.kind === "method") && e.name.toLowerCase() === "main",
         );
 
-        if (complexity > bestOverallComplexity) {
+        firstParsed ??= { file, parsed };
+        // `> 0` rather than `>= 0`: a file with no entities scores 0 and would
+        // otherwise win every time, opening the campaign on an empty level.
+        if (complexity > 0 && complexity < bestOverallComplexity) {
           bestOverall = { file, parsed };
           bestOverallComplexity = complexity;
         }
-        if (hasMain && complexity > bestWithMainComplexity) {
+        if (hasMain && complexity > 0 && complexity < bestWithMainComplexity) {
           bestWithMain = { file, parsed };
           bestWithMainComplexity = complexity;
         }
@@ -2240,7 +2265,7 @@ async function findEntrypointByScanning(files: TreeNode[], signal?: AbortSignal)
     }
   }
 
-  return bestWithMain ?? bestOverall;
+  return bestWithMain ?? bestOverall ?? firstParsed;
 }
 
 /** Every file node in `tree`, depth-first in the same directories-first order
