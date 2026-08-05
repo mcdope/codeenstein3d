@@ -9,17 +9,26 @@ Durable rationale ("why is the code like this?") belongs in [`doc/dev/decisions.
 ## Open
 
 - [ ] **Elites are far too strong, and they are NOT rare — scale the HP down; the "make them occur" half is already solved by real code (2026-08-05, corrected same day).** Original measurement covered the 8-repo `balancing_corpus/`. Extending it to `wolf3d`/`stb`/`curl`/`laravel`/`ripgrep` (2,535 levels, 63,232 enemies, 28,178 callable entities) **refuted the rarity half outright**, so the numbers below replace an earlier version of this item rather than refining it.
-  - **The first corpus was a biased sample, not a finding.** It reported **4 Elites in 11,615 enemies (0.03%), max 3,600 HP**, and concluded that clamping Elite HP would fix something that "happens four times in eight repositories". Those 8 repos are all modern, small-function code. Older C and single-header libraries are nothing like it:
+  - **It is procedural style, not language, age or size — measured across 19 repos.** The first corpus reported **4 Elites in 11,615 enemies (0.03%), max 3,600 HP** and concluded a clamp would fix something happening four times in eight repositories. Those 8 were all modern, method-decomposed code. Elites per 1,000 enemies across the full corpus:
 
-    | repo | levels | enemies | Elites | max Elite HP (hard) |
-    |---|---:|---:|---:|---:|
-    | wolf3d | 70 | 2,789 | 12 | 16,725 |
-    | stb | 36 | 3,855 | 24 | **25,800** |
-    | curl | 648 | 13,995 | **77** | 11,850 |
-    | laravel | 1,694 | 36,123 | 1 | 25,050 |
-    | ripgrep | 87 | 6,470 | 1 | 3,525 |
+    | repo | lang | per 1k | max Elite HP (hard) |
+    |---|---|---:|---:|
+    | vim | C | **10.9** | **50,400** |
+    | stb | C headers | 6.2 | 25,800 |
+    | curl | C | 5.5 | 11,850 |
+    | wolf3d | C 1992 | 4.3 | 16,725 |
+    | doom | C 1993 | 3.8 | 8,925 |
+    | **codeenstein3d** | **TypeScript** | **3.1** | 6,150 |
+    | git | C | 2.5 | 13,575 |
+    | quake | C 1996 | 2.2 | 7,125 |
+    | commons-lang / django | Java / Python | 0.7 / 0.5 | ~5,000 |
+    | ripgrep / laravel | Rust / PHP | 0.2 / 0.0 | 3,525 / 25,050 |
+    | leveldb, sinatra, serilog, flask | C++, Ruby, C#, Python | **0.0** | — |
 
-  - **115 Elites, and the ceiling is 7x what was reported.** For scale: the player's entire rocket reserve on hard is worth ~**2,130 damage**, and `demo-campaign`'s level 17 — which kills 100% of bot runs reaching it — carries 9,675 Elite HP *across three of them*. A single **25,800 HP** enemy dealing double damage is ~12x the whole reserve. Worst offenders: `stb_log2_floor` (c=344, `deprecated/stb.h`), `getPluralIndex` (c=334, laravel), `ScanInfoPlane` (c=223, `WOLFSRC/WL_GAME.C`), `opt_bool` (c=158, curl).
+    Seven of the top eight are C. Everything decomposed into methods sits at or near zero **including the mature and enormous** — django is 935 levels at 0.5, laravel 1,694 levels with a single Elite. So the driver is long procedural functions, not age (leveldb and commons-lang are mature and produce ~none) and not scale.
+  - **The ceiling is 50,400 HP, not 3,600.** `vim`'s `nfa_emit_equi_class` (`src/regexp_nfa.c`) is complexity **672**, and vim holds 7 of the 10 largest enemies the generator can produce from real code. For scale: the player's entire rocket reserve is worth ~**2,130 damage**, and `demo-campaign` level 17 — which kills 100% of bot runs reaching it — carries 9,675 Elite HP *spread across three*. One vim function is **24x the whole reserve**.
+  - **This is not someone else's problem: your own repo ranks 6th.** `codeenstein3d` generates 12 Elites from its own source at 3.1 per 1k — ahead of git, Quake, Java and Python — topped by `runMultiplayerSessionAsGuest` at 6,150 HP, with `simulate` (engine.ts) and `renderMinimap`/`renderScene` (raycaster.ts) close behind. Six of those come from the bundled `demo-campaign/` fixtures; the engine-code-only figure is ~1.6 per 1k, still above Java, Python and Rust.
+  - **A whole class of repos generates nothing at all.** `microsoft/MS-DOS` is 85% Assembly and there is no `.asm` adapter, so it produces almost no levels. Worth deciding whether that is acceptable or whether historic/assembly repos deserve a story.
   - **The threshold is not the problem; the multiplier and the missing ceiling are.** Complexity distributions, old corpus vs these five:
 
     | | median | p99 | max | c>=40 | HP at c=40 (hard) |

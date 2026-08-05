@@ -87,6 +87,40 @@ const CORPUS = [
   { id: "stb", owner: "nothings", repo: "stb", ref: "2c980bb59875", bucket: "small", language: "C", note: "single-header libs — almost every file is .h, which `planLevels` turns into a *bonus* level, so this generates an all-bonus campaign" },
   { id: "curl", owner: "curl", repo: "curl", ref: "curl-8_21_0", bucket: "large", language: "C", note: "its most-recently-created tag is a `tiny-curl-*` variant, not a release — pin the `curl-*` one deliberately" },
   { id: "laravel", owner: "laravel", repo: "framework", ref: "v13.24.0", bucket: "huge", language: "PHP", note: "~2.5k parsable files; the largest thing the solver has been pointed at" },
+  // Added 2026-08-05 to separate two explanations that the corpus had left
+  // perfectly confounded. The original 8 repos produced 4 Elites; wolf3d/stb/
+  // curl/laravel/ripgrep produced 115. That difference could be *language*
+  // (C vs modern JS/Python) or *era and density* (1992 C and mature libraries
+  // vs modern small-function style), and which one it is decides whether an
+  // Elite HP clamp is a niche fix or a universal one. These pair mature/dense
+  // and modern/small-function codebases across five languages the parser
+  // supports but the corpus had never covered.
+  { id: "commons-lang", owner: "apache", repo: "commons-lang", ref: "rel/commons-lang-3.20.0", bucket: "medium", language: "Java", note: "first Java entry; mature and method-heavy — the dense end of the hypothesis" },
+  { id: "django", owner: "django", repo: "django", ref: "6.1", bucket: "huge", language: "Python", note: "mature Python at scale, against click/flask's small modern style" },
+  { id: "leveldb", owner: "google", repo: "leveldb", ref: "v1.20", bucket: "small", language: "C++", note: "first C++ entry" },
+  { id: "gin", owner: "gin-gonic", repo: "gin", ref: "v1.12.0", bucket: "small", language: "Go", note: "modern small-function Go — predicted few Elites" },
+  { id: "serilog", owner: "serilog", repo: "serilog", ref: "v2234", bucket: "small", language: "C#", note: "first C# entry; modern small-function — predicted few Elites" },
+  { id: "sinatra", owner: "sinatra", repo: "sinatra", ref: "v4.2.1", bucket: "small", language: "Ruby", note: "first Ruby entry" },
+  { id: "codeenstein3d", owner: "mcdope", repo: "codeenstein3d", ref: "beta-6", bucket: "medium", language: "TypeScript", note: "the game generating levels from its own source. Note it carries its own demo-campaign/ into the corpus copy, so a handful of its levels are the authored campaign rather than engine code" },
+  // The style hypothesis at its extreme. Elite density turned out to track
+  // long procedural functions rather than language or age — the top three were
+  // stb/curl/wolf3d at 4-6 per 1k enemies, while mature-but-decomposed
+  // commons-lang, django and leveldb sat at 0.7, 0.5 and 0.0. git and vim are
+  // the archetypes of the dense-procedural end, so they are the sharpest
+  // available prediction: if the hypothesis holds they should be at or above
+  // the C repos, despite being neither the oldest nor the smallest.
+  { id: "git", owner: "git", repo: "git", ref: "v2.55.0", bucket: "huge", language: "C" },
+  { id: "vim", owner: "vim", repo: "vim", ref: "v9.2.0914", bucket: "huge", language: "C" },
+  // The id Software archives, for the same hypothesis and because a raycaster
+  // that builds levels out of source code should be pointed at the source of
+  // the games it descends from.
+  //
+  // Worth recording what is NOT here: `microsoft/MS-DOS` is 85% Assembly and
+  // there is no `.asm` adapter, so it would generate almost nothing. Neither
+  // would most historic archives for the same reason — the corpus can only
+  // reach the era's C, not its assembly.
+  { id: "doom", owner: "id-Software", repo: "DOOM", ref: "a77dfb96cb91", bucket: "medium", language: "C", note: "1993 linuxdoom source" },
+  { id: "quake", owner: "id-Software", repo: "Quake", ref: "bf4ac424ce75", bucket: "medium", language: "C", note: "1996 source; 13% assembly is simply skipped" },
 ];
 
 /** 7-40 hex characters and nothing else — GitHub's own abbreviation floor is 7,

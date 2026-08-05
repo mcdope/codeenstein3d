@@ -52,13 +52,20 @@ const CAMPAIGN_DIR = path.join(REPO_ROOT, "demo-campaign");
 const DEFAULT_SLOTS = 15;
 
 function parseArgs(argv) {
-  const args = { repo: null, solved: null, slots: DEFAULT_SLOTS, difficulty: "hard", dryRun: false };
+  const args = { repo: null, solved: null, slots: DEFAULT_SLOTS, difficulty: "hard", dryRun: false, exclude: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--repo") args.repo = path.resolve(argv[++i]);
     else if (a === "--solved") args.solved = path.resolve(argv[++i]);
     else if (a === "--slots") args.slots = Number(argv[++i]);
     else if (a === "--difficulty") args.difficulty = argv[++i];
+    // Repeatable path-substring filter. Needed because a repo can carry code
+    // that is not *its* code: `mcdope/codeenstein3d` ships `demo-campaign/`,
+    // the authored 17-file showcase, and 6 of the 12 Elites it generates come
+    // from those fixtures rather than from the engine. Staging them would have
+    // the game partly playing its own test data and would overstate what the
+    // real source produces.
+    else if (a === "--exclude") args.exclude.push(argv[++i]);
     else if (a === "--dry-run") args.dryRun = true;
     else {
       console.error(`unknown argument: ${a}`);
@@ -74,9 +81,18 @@ function parseArgs(argv) {
 
 /** Pick the slice. Difficulty only affects the *ordering* metrics, not which
  * files exist — the same files are levels at every difficulty. */
-function select(levels, slots) {
-  const pool = levels.filter((l) => !l.bonusLevel);
-  if (pool.length === 0) throw new Error("every level in this repo is a bonus level — nothing worth staging");
+function select(levels, slots, complexity) {
+  // Three exclusions, all matching a rule the engine already enforces:
+  //   - bonus levels (.h/.H) get boosted ammo and are trivial by construction
+  //   - zero-enemy levels are a walk to the exit with nothing in them
+  //   - zero-complexity levels are SKIPPED by `findEntrypointByScanning`, so
+  //     one in slot 1 would leave the browser opening on slot 2 while
+  //     `planLevels` plans from slot 1 — the silent desync that wedged the
+  //     first wolf3d pilot for 60 runs. `codeenstein3d`'s own
+  //     `defaultHighscore.ts` is exactly this: complexity 0, but 2 Edge Cases
+  //     from corridor dressing, so the enemy count alone would not catch it.
+  const pool = levels.filter((l) => !l.bonusLevel && l.enemies.totalCount > 0 && (complexity.get(l.filename) ?? 0) > 0);
+  if (pool.length === 0) throw new Error("no non-bonus, non-empty, non-trivial level here — nothing worth staging");
   if (pool.length <= slots) return pool.slice().sort(byDps);
 
   const dpsOf = (l) => l.enemies.totalDps;
@@ -207,11 +223,15 @@ async function complexityByFile(repoDir, levels) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const solved = JSON.parse(fs.readFileSync(args.solved, "utf8"));
-  const levels = solved[args.difficulty];
-  if (!levels) throw new Error(`no "${args.difficulty}" section in ${args.solved}`);
+  const all = solved[args.difficulty];
+  if (!all) throw new Error(`no "${args.difficulty}" section in ${args.solved}`);
+  const levels = all.filter((l) => !args.exclude.some((x) => l.filename.includes(x)));
+  if (args.exclude.length > 0) {
+    console.log(`Excluded ${all.length - levels.length} level(s) matching: ${args.exclude.join(", ")}`);
+  }
 
-  const selected = select(levels, args.slots);
-  const complexity = await complexityByFile(args.repo, selected);
+  const complexity = await complexityByFile(args.repo, levels);
+  const selected = select(levels, args.slots, complexity);
   const picked = order(selected, complexity);
 
   console.log(`Staging ${picked.length} of ${levels.length} levels from ${path.relative(REPO_ROOT, args.repo)}`);
