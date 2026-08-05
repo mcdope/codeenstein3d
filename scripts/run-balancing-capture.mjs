@@ -55,7 +55,7 @@ import { promisify } from "node:util";
 
 import { LocalRunner, runLaneOrchestrator } from "./lib/laneOrchestrator.mjs";
 import { REPO_ROOT } from "./lib/loadEngineModules.mjs";
-import { buildSshRunners } from "./lib/sshRunner.mjs";
+import { buildSshRunners, readHostList } from "./lib/sshRunner.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -171,7 +171,23 @@ async function main() {
   fs.mkdirSync(LOGS_DIR, { recursive: true });
 
   const combos = PROFILES.flatMap((profile) => DIFFICULTIES.map((difficulty) => ({ profile, difficulty })));
-  const runners = [new LocalRunner({ cwd: REPO_ROOT }), ...(await buildSshRunners())];
+  const sshRunners = await buildSshRunners();
+  const configuredHosts = readHostList().length;
+
+  // Losing every lane turns a 5-hour sweep back into a 14-hour one, and the
+  // only evidence of it is one word on the `Lanes:` line. Refuse rather than
+  // let that happen unnoticed — a capture is a long, unattended commitment
+  // and this is the last cheap moment to notice.
+  if (configuredHosts > 0 && sshRunners.length === 0 && process.env.CODEENSTEIN_CAPTURE_LOCAL_ONLY !== "1") {
+    console.error(
+      `\nRefusing to start: ${configuredHosts} lane host(s) are configured but none is usable (see the [ssh] lines above).\n` +
+        `Running on the local lane alone would take roughly ${configuredHosts + 1}x as long as you are expecting.\n` +
+        `Fix the hosts, or set CODEENSTEIN_CAPTURE_LOCAL_ONLY=1 to accept local-only deliberately.`,
+    );
+    process.exit(1);
+  }
+
+  const runners = [new LocalRunner({ cwd: REPO_ROOT }), ...sshRunners];
 
   const banked = combos.reduce((sum, combo) => sum + scanExisting(combo).qualifying, 0);
   const wanted = combos.length * TARGET_ATTEMPTS;

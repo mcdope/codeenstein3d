@@ -354,9 +354,50 @@ export class SshRunner {
  * that's unreachable or fails any bootstrap step is logged as a warning and
  * simply left out, never thrown as a fatal error (an empty/missing
  * `ssh-hosts.env` is the common case: local-only, zero SSH lanes). */
+/**
+ * Whether `HEAD` exists on any remote — the precondition every SSH lane
+ * silently depends on.
+ *
+ * `bootstrapHost` clones from `origin` over https and then
+ * `git checkout --force <local HEAD sha>`. An unpushed commit is simply not
+ * there, so that checkout dies with "reference is not a tree object" and the
+ * host is excluded. With every host excluded the run continues on the local
+ * lane alone — which is the worst shape this failure could take: the thing
+ * you turned lanes on for silently does not happen, and the only evidence is
+ * a `Lanes: local` line among a wall of bootstrap output.
+ *
+ * Checked against remote-tracking refs rather than the network, so it costs
+ * nothing and cannot hang. That can be stale in the direction of *thinking*
+ * something is unpushed when a fetch would say otherwise — a false alarm that
+ * tells you to push something already pushed, which is cheap and obvious.
+ * The opposite error is the expensive one, and stale refs cannot produce it.
+ */
+export async function headIsPushed() {
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-list", "--count", "HEAD", "--not", "--remotes"], { cwd: REPO_ROOT });
+    return Number(stdout.trim()) === 0;
+  } catch {
+    return true; // no remotes configured at all — not this check's problem
+  }
+}
+
 export async function buildSshRunners() {
   const hosts = readHostList();
   if (hosts.length === 0) return [];
+
+  if (!(await headIsPushed())) {
+    // Bail before bootstrapping rather than after: each doomed host would
+    // otherwise spend minutes on a clone and `npm ci` before failing on the
+    // checkout, and report it as a hundred-line dump of the whole ssh command
+    // with the actual reason buried in it.
+    const { stdout: unpushed } = await execFileAsync("git", ["rev-list", "--count", "HEAD", "--not", "--remotes"], { cwd: REPO_ROOT });
+    console.log(
+      `[ssh] SKIPPING all ${hosts.length} lane host(s): HEAD is not on any remote (${unpushed.trim()} unpushed commit(s)).\n` +
+        `[ssh] Lane hosts clone from origin and check out this exact commit, so they cannot run it.\n` +
+        `[ssh] Push the branch to use them — otherwise this runs on the local lane alone.`,
+    );
+    return [];
+  }
 
   const { stdout: originUrl } = await execFileAsync("git", ["remote", "get-url", "origin"], { cwd: REPO_ROOT });
   const { stdout: headSha } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT });
