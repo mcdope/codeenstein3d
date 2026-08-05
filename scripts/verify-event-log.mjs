@@ -56,14 +56,24 @@ function num(n) {
   return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
+/** Every `.ndjson` at or under `target`, recursively.
+ *
+ * Recursive because a lane-parallel capture keeps one directory per
+ * invocation (`events/<combo>-<seq>/`) — `writeEventBatches` names its file
+ * from profile+difficulty alone, so two invocations of one combo can only be
+ * kept apart by their parent directory. A flat listing found nothing there
+ * and exited "no .ndjson logs", which reads like an empty capture rather than
+ * a verifier that did not look. */
 function collectLogs(target) {
   const stat = fs.statSync(target);
   if (stat.isFile()) return [target];
-  return fs
-    .readdirSync(target)
-    .filter((f) => f.endsWith(".ndjson"))
-    .map((f) => path.join(target, f))
-    .sort();
+  const found = [];
+  for (const entry of fs.readdirSync(target, { withFileTypes: true })) {
+    const full = path.join(target, entry.name);
+    if (entry.isDirectory()) found.push(...collectLogs(full));
+    else if (entry.name.endsWith(".ndjson")) found.push(full);
+  }
+  return found.sort();
 }
 
 /** One counter pair per named check, so the report states its own denominator

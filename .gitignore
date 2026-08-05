@@ -12,6 +12,11 @@ multiplayer_balancing_telemetry.json
 multiplayer_balancing_telemetry_pre-*.json
 balancing_runs/
 balancing_runs_*/
+# Fixed-denominator lane-parallel captures, see scripts/run-balancing-capture.mjs.
+# Hundreds of MB of NDJSON per sweep -- the analysis output is what gets
+# committed, never the raw events.
+balancing_capture/
+balancing_capture_*/
 # Fetched source repos the offline balance solver runs against, see
 # scripts/fetch-balancing-corpus.mjs -- reproducible from its pinned manifest.
 balancing_corpus/

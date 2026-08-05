@@ -50,6 +50,10 @@ export class LocalRunner {
     this.cwd = cwd;
   }
 
+  /** `outputPath`/`eventLogPath` are accepted and ignored: a local child
+   * already writes straight to whatever `env` names, so there is nothing to
+   * bring back. `SshRunner` needs both to rewrite the paths for the remote
+   * side and to fetch the results — see its own implementation. */
   runInvocation({ scriptPath, env, logPath, prefix, watchdogMs, sigtermGraceMs }) {
     return new Promise((resolve) => {
       const logStream = fs.createWriteStream(logPath, { flags: "a" });
@@ -107,7 +111,7 @@ export class LocalRunner {
  * `driveCombo`. Every lane calls this same function, so local and remote
  * lanes are interchangeable from the shared queue's point of view. */
 async function driveCombo(combo, opts) {
-  const { comboKey, scanExisting, targetQualifying, outputPathFor, logPathFor, envFor, scriptPath, runner, watchdogMs, sigtermGraceMs, formatElapsed, log, maxInvocations } = opts;
+  const { comboKey, scanExisting, targetQualifying, outputPathFor, logPathFor, eventLogPathFor, envFor, scriptPath, runner, watchdogMs, sigtermGraceMs, formatElapsed, log, maxInvocations } = opts;
   const key = comboKey(combo);
   // Invocations this call has actually spawned. Deliberately NOT `fileCount`:
   // a *crashing* invocation writes no output file, so `fileCount` never
@@ -138,12 +142,16 @@ async function driveCombo(combo, opts) {
     const sequence = fileCount + 1;
     const outputPath = outputPathFor(combo, sequence);
     const logPath = logPathFor(combo, sequence);
-    const env = envFor(combo, sequence, outputPath);
+    // Optional: only a capture that actually wants per-event data supplies
+    // this. A campaign that only reads aggregates leaves it undefined and
+    // nothing changes for it.
+    const eventLogPath = eventLogPathFor ? eventLogPathFor(combo, sequence) : undefined;
+    const env = envFor(combo, sequence, outputPath, eventLogPath);
     const prefix = `[${key} #${sequence}] `;
     log(`[${key}] starting invocation #${sequence} (${qualifying}/${target} qualifying so far) via ${runner.label}`);
 
     spawned += 1;
-    const result = await runner.runInvocation({ scriptPath, env, logPath, prefix, watchdogMs, sigtermGraceMs, outputPath });
+    const result = await runner.runInvocation({ scriptPath, env, logPath, prefix, watchdogMs, sigtermGraceMs, outputPath, eventLogPath });
 
     if (result.killedForTimeout) {
       log(`[${key}] invocation #${sequence} KILLED by watchdog after ${formatElapsed(result.elapsedMs)} — retrying`);
@@ -192,8 +200,15 @@ async function runLane(queue, driveComboFn) {
  *   (a remote `Runner` is responsible for scp/rsync-ing it there itself).
  * @param {(combo, sequence) => string} params.logPathFor - absolute local
  *   path for this invocation's own log file.
- * @param {(combo, sequence, outputPath) => object} params.envFor - builds
- *   the full env object for one invocation.
+ * @param {(combo, sequence) => string} [params.eventLogPathFor] - absolute
+ *   local *directory* this invocation's NDJSON event log must exist in once
+ *   `runInvocation` resolves. Omit for a run that only reads aggregates. One
+ *   directory per invocation rather than one shared one, because
+ *   `writeEventBatches` names the file from profile+difficulty alone: two
+ *   invocations of the same combo would otherwise collide on the way back,
+ *   and a shared remote directory would be re-copied in full every time.
+ * @param {(combo, sequence, outputPath, eventLogPath) => object} params.envFor -
+ *   builds the full env object for one invocation.
  * @param {string} params.scriptPath - path to the underlying script entry
  *   point (interpreted by each `Runner` in its own way — a local runner
  *   resolves it directly, an SSH runner resolves the equivalent path inside
@@ -213,6 +228,7 @@ export async function runLaneOrchestrator(params) {
     targetQualifying,
     outputPathFor,
     logPathFor,
+    eventLogPathFor,
     envFor,
     scriptPath,
     runners,
@@ -230,7 +246,7 @@ export async function runLaneOrchestrator(params) {
   await Promise.all(
     runners.map((runner) =>
       runLane(queue, (combo) =>
-        driveCombo(combo, { comboKey, scanExisting, targetQualifying, outputPathFor, logPathFor, envFor, scriptPath, runner, watchdogMs, sigtermGraceMs, formatElapsed, log, maxInvocations }),
+        driveCombo(combo, { comboKey, scanExisting, targetQualifying, outputPathFor, logPathFor, eventLogPathFor, envFor, scriptPath, runner, watchdogMs, sigtermGraceMs, formatElapsed, log, maxInvocations }),
       ),
     ),
   );

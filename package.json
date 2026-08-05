@@ -30,6 +30,7 @@
     "balancing:watch": "node scripts/watch-bot-sessions.mjs",
     "balancing:scan": "CODEENSTEIN_TELEMETRY_ANOMALY_SCAN=1 CODEENSTEIN_TELEMETRY_LEVEL_LIMIT=8 CODEENSTEIN_TELEMETRY_ATTEMPT_CAP=5 CODEENSTEIN_TELEMETRY_DIFFICULTY=normal CODEENSTEIN_TELEMETRY_CONCURRENCY=6 node scripts/run-balancing-telemetry.mjs",
     "balancing:campaign": "node scripts/run-balancing-campaign.mjs",
+    "balancing:capture": "node scripts/run-balancing-capture.mjs",
     "balancing:budget": "node scripts/report-level-budget.mjs",
     "balancing:corpus": "node scripts/fetch-balancing-corpus.mjs",
     "balancing:events": "node scripts/report-balancing-events.mjs",

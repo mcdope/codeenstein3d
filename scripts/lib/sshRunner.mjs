@@ -250,23 +250,38 @@ export class SshRunner {
    * naturally inherits (that would leak this machine's own `PATH`/`HOME`/etc
    * across the wire, none of which apply to the remote shell's own login
    * environment). */
-  runInvocation({ scriptPath, env, logPath, prefix, watchdogMs, sigtermGraceMs, outputPath }) {
+  runInvocation({ scriptPath, env, logPath, prefix, watchdogMs, sigtermGraceMs, outputPath, eventLogPath }) {
     return new Promise((resolve) => {
       const logStream = fs.createWriteStream(logPath, { flags: "a" });
       const startedAt = Date.now();
 
       const remoteScriptPath = toRemotePath(scriptPath);
       const remoteOutputPath = toRemotePath(outputPath);
+      // Any env value naming a *local* path has to be rewritten, or the
+      // remote writes to a path that means nothing on its own filesystem.
+      // `outputPath` was always handled; `eventLogPath` joins it, which is
+      // what lets a capture collect per-event data from a remote lane at all.
+      const remoteEventLogPath = eventLogPath ? toRemotePath(eventLogPath) : null;
+      const remapped = new Map([[outputPath, remoteOutputPath]]);
+      if (eventLogPath) remapped.set(eventLogPath, remoteEventLogPath);
       const envAssignments = Object.entries(env)
         .filter(([key]) => key.startsWith("CODEENSTEIN_"))
-        .map(([key, value]) => `${key}=${shellQuote(value === outputPath ? remoteOutputPath : value)}`)
+        .map(([key, value]) => `${key}=${shellQuote(remapped.get(value) ?? value)}`)
         .join(" ");
       // The prelude has to be here too, not just in `bootstrapHost`: each
       // invocation is its own SSH session and inherits nothing from the
       // bootstrap's shell, so a host whose Node is nvm-only would pass the
       // bootstrap check and then fail on this bare `node`.
       const remoteCommand = withRemoteNodePath(
-        `mkdir -p ${path.posix.dirname(remoteOutputPath)} && cd ${REMOTE_DIR} && ${envAssignments} node ${remoteScriptPath}`,
+        [
+          `mkdir -p ${path.posix.dirname(remoteOutputPath)}`,
+          // The event-log directory has to exist before the run, not after:
+          // `writeEventBatches` appends per attempt, and a missing parent
+          // would lose the whole cell's events one attempt at a time while
+          // the run itself still exited zero.
+          ...(remoteEventLogPath ? [`mkdir -p ${remoteEventLogPath}`] : []),
+          `cd ${REMOTE_DIR} && ${envAssignments} node ${remoteScriptPath}`,
+        ].join(" && "),
       );
 
       let settled = false;
@@ -298,14 +313,29 @@ export class SshRunner {
         settled = true;
         clearTimeout(watchdog);
         logStream.end();
+        let fetchFailed = false;
         if (code === 0) {
           try {
             await execFileAsync("scp", ["-o", "BatchMode=yes", `${this.userHost}:${remoteOutputPath}`, outputPath]);
+            if (remoteEventLogPath) {
+              // `-r` because the remote path is the directory
+              // `writeEventBatches` names its file inside.
+              fs.mkdirSync(eventLogPath, { recursive: true });
+              await execFileAsync("scp", ["-o", "BatchMode=yes", "-r", `${this.userHost}:${remoteEventLogPath}/.`, eventLogPath]);
+            }
           } catch (err) {
             console.log(`${prefix}scp of remote result failed: ${err.message}`);
+            // Reported as a failed invocation rather than a zero exit with
+            // missing data. For a capture the NDJSON *is* the result, so a
+            // run whose events never came home is not a run that succeeded —
+            // and `driveCombo`'s own existsSync check only guards the
+            // aggregate, which may well have arrived before the event log
+            // did. Without this the lane would look productive while
+            // banking nothing the analysis can read.
+            fetchFailed = true;
           }
         }
-        resolve({ code, signal, killedForTimeout, elapsedMs: Date.now() - startedAt });
+        resolve({ code: fetchFailed ? 1 : code, signal, killedForTimeout, elapsedMs: Date.now() - startedAt });
       });
 
       child.on("error", (err) => {

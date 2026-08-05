@@ -1,0 +1,216 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
+
+/**
+ * Fixed-denominator, lane-parallel, event-log-first balance capture.
+ *
+ * **Why this exists alongside `balancing:campaign`.** That orchestrator runs
+ * each combo until N runs *qualify*, which is the wrong knob for any rate:
+ * it stops early on easy combos and never terminates on impossible ones, so
+ * the denominator is whatever the bot happened to need. A death rate needs a
+ * denominator you chose in advance. `doc/dev/balancing-telemetry.md` has said
+ * so for a while, and its advice was to drive `run-balancing-telemetry.mjs`
+ * directly per combo — which works, and costs you every lane host you own.
+ * The 2026-08-04 capture took **14.5 hours on one machine** for exactly that
+ * reason. This script is that advice plus the lane orchestrator.
+ *
+ * Three things it does that the campaign orchestrator does not:
+ *
+ * - **Counts attempts, not qualifying runs.** Progress is distinct `rid`s in
+ *   the event logs — the only count that reflects attempts which actually
+ *   produced data. Deliberately not the telemetry script's own `attemptsUsed`,
+ *   which counts attempts *started*: it read 60 on a 2026-08-04 cell where a
+ *   dying browser produced 38.
+ * - **Collects event logs, including from remote lanes.** The campaign never
+ *   set `CODEENSTEIN_TELEMETRY_EVENT_LOG` at all, and `SshRunner` used to
+ *   fetch only the aggregate JSON — so every per-event metric (death rate by
+ *   level, damage attribution, hit rate by range, loot economy) was
+ *   unavailable from a lane. One event-log directory per invocation, because
+ *   `writeEventBatches` names its file from profile+difficulty alone and two
+ *   invocations of one combo would otherwise collide on the way back.
+ * - **Chunks each cell across invocations.** One browser does not survive a
+ *   60-attempt invocation (2026-08-04: it died at ~38 and the remaining 22
+ *   failed instantly on `browser.newContext()`), so the per-invocation cap is
+ *   the chunk size and the orchestrator's own retry loop supplies the rest.
+ *
+ * Pooling across lanes is safe: `rid` is `${pid}-${random}-${counter}`, unique
+ * per invocation, so NDJSONs from different hosts concatenate without
+ * collision. It is only *sound* if every lane ran the same commit —
+ * `bootstrapHost` force-checks-out the local HEAD sha, and this script
+ * asserts the tree is clean before starting rather than trusting that.
+ *
+ * ```sh
+ * npm run balancing:capture
+ * CODEENSTEIN_CAPTURE_ATTEMPTS=60 CODEENSTEIN_CAPTURE_DIFFICULTIES=hard npm run balancing:capture
+ * ```
+ *
+ * Output: `balancing_capture/` (gitignored), with `events/<combo>-<seq>/`
+ * holding the NDJSON each invocation produced. Resumable: re-running counts
+ * what is already banked and only asks for the shortfall.
+ */
+import { execFile } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { promisify } from "node:util";
+
+import { LocalRunner, runLaneOrchestrator } from "./lib/laneOrchestrator.mjs";
+import { REPO_ROOT } from "./lib/loadEngineModules.mjs";
+import { buildSshRunners } from "./lib/sshRunner.mjs";
+
+const execFileAsync = promisify(execFile);
+
+const OUT_DIR = path.join(REPO_ROOT, process.env.CODEENSTEIN_CAPTURE_OUT ?? "balancing_capture");
+const EVENTS_DIR = path.join(OUT_DIR, "events");
+const LOGS_DIR = path.join(OUT_DIR, "logs");
+const TELEMETRY_SCRIPT = path.join(REPO_ROOT, "scripts", "run-balancing-telemetry.mjs");
+
+const PROFILES = (process.env.CODEENSTEIN_CAPTURE_PROFILES ?? "Casual,Gamer,Pro").split(",").map((s) => s.trim()).filter(Boolean);
+const DIFFICULTIES = (process.env.CODEENSTEIN_CAPTURE_DIFFICULTIES ?? "normal,hard").split(",").map((s) => s.trim()).filter(Boolean);
+/** The denominator. Every rate this capture produces is out of this. */
+const TARGET_ATTEMPTS = Number(process.env.CODEENSTEIN_CAPTURE_ATTEMPTS ?? 60);
+/** Attempts per invocation — one fresh browser each. 20 is comfortably inside
+ * the ~38 where a browser was observed to die, and at the measured ~0.4
+ * attempts/min is roughly a 50-minute invocation. */
+const CHUNK = Number(process.env.CODEENSTEIN_CAPTURE_CHUNK ?? 20);
+const CONCURRENCY_PER_LANE = Number(process.env.CODEENSTEIN_CAPTURE_CONCURRENCY ?? 10);
+/** Sized against a chunk's real cost with headroom, not guessed: 20 attempts
+ * at the measured rate is ~50 min, and the 2026-08-04 run showed a watchdog
+ * cutting a *working* invocation is far more expensive than one that runs
+ * long, because the whole chunk is lost. */
+const WATCHDOG_MS = Number(process.env.CODEENSTEIN_CAPTURE_WATCHDOG_MS ?? 130 * 60 * 1000);
+/** Per-combo spawn ceiling. A cell needing more invocations than this to reach
+ * its target is failing in a way more attempts will not fix. */
+const MAX_INVOCATIONS = Number(process.env.CODEENSTEIN_CAPTURE_MAX_INVOCATIONS ?? 8);
+const SIGTERM_GRACE_MS = 5000;
+
+const comboKey = (combo) => `${combo.profile}-${combo.difficulty}`;
+const eventsDirFor = (combo, sequence) => path.join(EVENTS_DIR, `${comboKey(combo)}-${String(sequence).padStart(3, "0")}`);
+const outputPathFor = (combo, sequence) => path.join(OUT_DIR, `${comboKey(combo)}-${String(sequence).padStart(3, "0")}.json`);
+const logPathFor = (combo, sequence) => path.join(LOGS_DIR, `${comboKey(combo)}-${String(sequence).padStart(3, "0")}.log`);
+
+/**
+ * Distinct `rid`s banked for one combo, across every invocation directory.
+ *
+ * Streaming line-by-line rather than `JSON.parse` per file would be nicer;
+ * this is deliberately the simple version, because it runs once per lane
+ * iteration (seconds apart at most) against files that are tens of MB, and
+ * being obviously correct matters more here than being fast — this number is
+ * the denominator of every rate the capture exists to produce.
+ */
+function scanExisting(combo) {
+  const prefix = `${comboKey(combo)}-`;
+  const rids = new Set();
+  let fileCount = 0;
+  if (!fs.existsSync(EVENTS_DIR)) return { qualifying: 0, fileCount: 0 };
+  for (const entry of fs.readdirSync(EVENTS_DIR)) {
+    if (!entry.startsWith(prefix)) continue;
+    fileCount += 1;
+    const dir = path.join(EVENTS_DIR, entry);
+    if (!fs.statSync(dir).isDirectory()) continue;
+    for (const file of fs.readdirSync(dir)) {
+      if (!file.endsWith(".ndjson")) continue;
+      let text;
+      try {
+        text = fs.readFileSync(path.join(dir, file), "utf8");
+      } catch {
+        continue; // a half-fetched log counts as nothing, and gets re-run
+      }
+      for (const line of text.split("\n")) {
+        if (!line) continue;
+        try {
+          const rid = JSON.parse(line).rid;
+          if (rid) rids.add(rid);
+        } catch {
+          // A truncated final line is the SIGKILL-mid-write case NDJSON
+          // exists for — skip it, keep everything before it.
+        }
+      }
+    }
+  }
+  return { qualifying: rids.size, fileCount };
+}
+
+function envFor(combo, sequence, outputPath, eventLogPath) {
+  const env = {
+    ...process.env,
+    CODEENSTEIN_TELEMETRY_PROFILE: combo.profile,
+    CODEENSTEIN_TELEMETRY_DIFFICULTY: combo.difficulty,
+    // The cap *is* the chunk here, not a safety net: this script wants a
+    // known number of attempts, not "however many it took to qualify".
+    CODEENSTEIN_TELEMETRY_ATTEMPT_CAP: String(CHUNK),
+    // Never stop early. Qualification is a campaign concept and would
+    // truncate a chunk the moment enough runs cleared level 4.
+    CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET: "999",
+    CODEENSTEIN_TELEMETRY_CONCURRENCY: String(CONCURRENCY_PER_LANE),
+    CODEENSTEIN_TELEMETRY_ANOMALY_SCAN: "1",
+    CODEENSTEIN_TELEMETRY_EVENT_LOG: eventLogPath,
+    CODEENSTEIN_TELEMETRY_OUTPUT_FILE: outputPath,
+  };
+  delete env.CODEENSTEIN_TELEMETRY_LEVEL_LIMIT; // always the full campaign
+  return env;
+}
+
+/** Lanes may run on different machines, so they must run the same code.
+ * `bootstrapHost` checks out this repo's HEAD sha remotely — which is only
+ * meaningful if HEAD actually describes the working tree. */
+async function assertCleanTree() {
+  const { stdout } = await execFileAsync("git", ["status", "--porcelain"], { cwd: REPO_ROOT });
+  if (stdout.trim().length === 0) return;
+  console.error(
+    "Refusing to start: the working tree is dirty.\n" +
+      "Remote lanes check out HEAD, so uncommitted changes would run locally and not remotely —\n" +
+      "the pooled event logs would silently mix two different builds. Commit or stash first.\n\n" +
+      stdout,
+  );
+  process.exit(1);
+}
+
+async function main() {
+  await assertCleanTree();
+  fs.mkdirSync(EVENTS_DIR, { recursive: true });
+  fs.mkdirSync(LOGS_DIR, { recursive: true });
+
+  const combos = PROFILES.flatMap((profile) => DIFFICULTIES.map((difficulty) => ({ profile, difficulty })));
+  const runners = [new LocalRunner({ cwd: REPO_ROOT }), ...(await buildSshRunners())];
+
+  const banked = combos.reduce((sum, combo) => sum + scanExisting(combo).qualifying, 0);
+  const wanted = combos.length * TARGET_ATTEMPTS;
+  console.log(`Capture: ${combos.length} combos x ${TARGET_ATTEMPTS} attempts = ${wanted} (${banked} already banked)`);
+  console.log(`Lanes: ${runners.map((r) => r.label).join(", ")}`);
+  console.log(`Chunk ${CHUNK}/invocation, concurrency ${CONCURRENCY_PER_LANE}, watchdog ${Math.round(WATCHDOG_MS / 60000)}m`);
+  console.log(`Output: ${OUT_DIR}\n`);
+
+  await runLaneOrchestrator({
+    combos,
+    comboKey,
+    scanExisting,
+    targetQualifying: TARGET_ATTEMPTS,
+    outputPathFor,
+    logPathFor,
+    eventLogPathFor: eventsDirFor,
+    envFor,
+    scriptPath: TELEMETRY_SCRIPT,
+    runners,
+    watchdogMs: WATCHDOG_MS,
+    maxInvocations: MAX_INVOCATIONS > 0 ? MAX_INVOCATIONS : null,
+    sigtermGraceMs: SIGTERM_GRACE_MS,
+  });
+
+  console.log("\n=== Capture complete ===");
+  let short = false;
+  for (const combo of combos) {
+    const { qualifying } = scanExisting(combo);
+    const flag = qualifying >= TARGET_ATTEMPTS ? "" : "  <-- SHORT";
+    if (qualifying < TARGET_ATTEMPTS) short = true;
+    console.log(`  ${comboKey(combo).padEnd(16)} ${qualifying}/${TARGET_ATTEMPTS}${flag}`);
+  }
+  console.log(`\nVerify before using: npm run verify:event-log -- ${path.relative(REPO_ROOT, EVENTS_DIR)}`);
+  // A short cell is not a crash, but pooling it with full ones as though the
+  // denominators matched is exactly the error this script exists to prevent.
+  if (short) console.log("At least one cell is short of target — state its real denominator rather than pooling it as if it were full.");
+}
+
+main().catch((err) => {
+  console.error("run-balancing-capture failed:", err.message);
+  process.exit(1);
+});
