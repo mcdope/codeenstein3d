@@ -255,6 +255,35 @@ export const DEFAULT_TUNING = {
   MINE_REALIGN_STALL_TICKS: 15,
   CRITICAL_HEALTH_FRACTION: 0.2,
   MELEE_RANGE: 1.5,
+  // Refuse to trade swings with a target holding more than this much HP, as
+  // long as a gun still has ammo. `Infinity` is the shipped behaviour and
+  // makes this inert — it exists to be turned on for one measurement:
+  //
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"MELEE_MAX_TARGET_HP":500}'
+  //
+  // Why it exists. The 2026-08-04 capture found 83% of Elite engagements
+  // happening inside 2 tiles at a median of 0.5, and levels 15/17 (the only
+  // two multi-Elite levels) killing 46% and 98% of the runs that reached them.
+  // An Elite carries 3,000-3,500 HP on hard and deals double melee damage, so
+  // a 40-damage knife needs ~83 swings to fell one — a trade nothing about the
+  // bot's policy currently declines, because `shouldCloseToMelee` only ever
+  // asks how far away the target is, never how big it is.
+  //
+  // The open question that measurement cannot currently answer is whether
+  // those two levels are genuinely brutal or whether the bot simply fights
+  // them badly, and no amount of re-tuning enemy HP settles it. Running the
+  // same six cells with this set turns it into an A/B against the same binary.
+  //
+  // Scope, deliberately narrow: this stops the bot *closing* on a big target.
+  // It does not add kiting — there is no behaviour here that restores distance
+  // once an enemy has walked into contact, and adding one is a much larger
+  // change than a diagnostic warrants. Read a null result as "closing is not
+  // the mechanism", not as "the bot fights these levels fine".
+  //
+  // The `hasAnyRangedAmmo` guard in `shouldCloseToMelee` keeps the last-resort
+  // case intact: dry is still dry, and standing in front of a threat pulling a
+  // dead trigger is worse than any trade.
+  MELEE_MAX_TARGET_HP: Infinity,
   // Below this distance, stop trying to close the last bit of distance
   // during an in-progress melee engagement — see `decide`'s melee branch,
   // which actually gates on `max(this, ENGINE_MOVE_SPEED * stepMs/1000)`,
@@ -948,6 +977,12 @@ export function shouldCloseToMelee(threat, player, profile, tuning = DEFAULT_TUN
   // 32 enemies are <=15 HP Edge Cases, so it fires constantly, and the mines
   // that kill are unspotted — the bot must not route around what it has not
   // seen, so no guard can save it.
+  // Off by default (`MELEE_MAX_TARGET_HP` is Infinity) — see its own comment
+  // in DEFAULT_TUNING for what this is for and what it deliberately is not.
+  // Checked before the range test so it also suppresses the "keep closing the
+  // last bit of distance" step in `decide`'s melee branch, which is the part
+  // that actually produces the 0.5-tile median against Elites.
+  if (hasAnyRangedAmmo(player) && threat.hp > tuning.MELEE_MAX_TARGET_HP) return false;
   return threat.dist <= tuning.MELEE_RANGE || !hasAnyRangedAmmo(player);
 }
 
