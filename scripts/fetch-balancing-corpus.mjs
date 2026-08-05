@@ -81,10 +81,28 @@ const CORPUS = [
   { id: "flask", owner: "pallets", repo: "flask", ref: "3.0.3", bucket: "medium", language: "Python" },
   { id: "axios", owner: "axios", repo: "axios", ref: "v1.7.7", bucket: "medium", language: "JavaScript" },
   { id: "ripgrep", owner: "BurntSushi", repo: "ripgrep", ref: "14.1.1", bucket: "large", language: "Rust" },
+  // Added 2026-08-05 for the five-repo balance run. Two of these have no tags
+  // at all, which is what forced `archiveUrl` to learn commit shas below.
+  { id: "wolf3d", owner: "id-Software", repo: "wolf3d", ref: "05167784ef00", bucket: "small", language: "C", note: "the original 1992 source; archived 2012, so the sha is stable by nature" },
+  { id: "stb", owner: "nothings", repo: "stb", ref: "2c980bb59875", bucket: "small", language: "C", note: "single-header libs — almost every file is .h, which `planLevels` turns into a *bonus* level, so this generates an all-bonus campaign" },
+  { id: "curl", owner: "curl", repo: "curl", ref: "curl-8_21_0", bucket: "large", language: "C", note: "its most-recently-created tag is a `tiny-curl-*` variant, not a release — pin the `curl-*` one deliberately" },
+  { id: "laravel", owner: "laravel", repo: "framework", ref: "v13.24.0", bucket: "huge", language: "PHP", note: "~2.5k parsable files; the largest thing the solver has been pointed at" },
 ];
 
+/** 7-40 hex characters and nothing else — GitHub's own abbreviation floor is 7,
+ * so anything shorter is a tag that merely looks hex-ish. */
+const COMMIT_SHA = /^[0-9a-f]{7,40}$/;
+
 function archiveUrl(entry) {
-  const ref = entry.ref === "master" || entry.ref === "main" ? `refs/heads/${entry.ref}` : `refs/tags/${entry.ref}`;
+  // codeload serves `/zip/<sha>` bare, but `/zip/refs/tags/<sha>` 404s — which
+  // is what this used to build for anything that was not `master`/`main`. The
+  // manifest's own doc promised commits were allowed and the URL builder could
+  // not honour it; two of the repos above have no tags, so it has to now.
+  const ref = COMMIT_SHA.test(entry.ref)
+    ? entry.ref
+    : entry.ref === "master" || entry.ref === "main"
+      ? `refs/heads/${entry.ref}`
+      : `refs/tags/${entry.ref}`;
   return `https://codeload.github.com/${entry.owner}/${entry.repo}/zip/${ref}`;
 }
 

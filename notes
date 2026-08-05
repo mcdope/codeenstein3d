@@ -8,24 +8,31 @@ Durable rationale ("why is the code like this?") belongs in [`doc/dev/decisions.
 
 ## Open
 
-- [ ] **Elites are simultaneously too strong and too rare — scale the HP down and make them actually occur without engineered levels (2026-08-05).** Two asks, and the corpus data says they are mostly *one* lever. Measured with `balancing:budget --dir` across all 8 `balancing_corpus/` repos (321 levels, 11,615 enemies) plus a complexity histogram over 6,225 parsed callable entities.
-  - **They barely exist in real code.** The whole corpus produces **4 Elites in 11,615 enemies (0.03%)**, and **half the repos (cJSON, flask, kilo, ms) produce none at all** — no repo produces more than one. `demo-campaign` has 7 across 17 levels, which is authored, not representative. So every empirical claim about Elites to date rests on levels built to contain them.
-  - **`ELITE_COMPLEXITY_THRESHOLD = 40` is far out in the tail.** Corpus complexity is **median 1, p90 5, p99 19, max 93**. Candidate counts by threshold, with the single-enemy HP that complexity would produce (`complexity * HP_PER_COMPLEXITY * ELITE_HP_MULTIPLIER`, before the difficulty multiplier):
+- [ ] **Elites are far too strong, and they are NOT rare — scale the HP down; the "make them occur" half is already solved by real code (2026-08-05, corrected same day).** Original measurement covered the 8-repo `balancing_corpus/`. Extending it to `wolf3d`/`stb`/`curl`/`laravel`/`ripgrep` (2,535 levels, 63,232 enemies, 28,178 callable entities) **refuted the rarity half outright**, so the numbers below replace an earlier version of this item rather than refining it.
+  - **The first corpus was a biased sample, not a finding.** It reported **4 Elites in 11,615 enemies (0.03%), max 3,600 HP**, and concluded that clamping Elite HP would fix something that "happens four times in eight repositories". Those 8 repos are all modern, small-function code. Older C and single-header libraries are nothing like it:
 
-    | threshold | entities | share | HP at threshold |
-    |---:|---:|---:|---:|
-    | c>=40 (today) | 10 | 0.16% | 2,000 |
-    | c>=30 | 27 | 0.43% | 1,500 |
-    | c>=20 | 60 | 0.96% | 1,000 |
-    | c>=15 | 111 | 1.78% | 750 |
-    | c>=10 | 230 | 3.69% | 500 |
+    | repo | levels | enemies | Elites | max Elite HP (hard) |
+    |---|---:|---:|---:|---:|
+    | wolf3d | 70 | 2,789 | 12 | 16,725 |
+    | stb | 36 | 3,855 | 24 | **25,800** |
+    | curl | 648 | 13,995 | **77** | 11,850 |
+    | laravel | 1,694 | 36,123 | 1 | 25,050 |
+    | ripgrep | 87 | 6,470 | 1 | 3,525 |
 
-  - **Lowering the threshold does both jobs at once, which is the useful part.** Elite HP is complexity-derived, so newly-caught entities are *by construction* the weaker ones: at `c>=15` the typical Elite is a 750 HP enemy appearing ~28x more often, against today's 2,000+ appearing almost never. (a) and (b) are not in tension — the same constant moves both.
-  - **But the tail still needs its own bound, and that is the separate half of (a).** The formula stays linear and uncapped, so the corpus's max complexity of **93** implies a **4,650 HP** Elite (**6,975** on hard) is reachable from real code. Observed Elites topped out at 3,600 HP on hard — worth checking why the c=93 entity did not produce one (it may not have become a level, or may not be callable) before assuming the cap is unnecessary. A ceiling, or a fraction of the level's obtainable damage, bounds this without touching the common case.
-  - **Do not lower the threshold without addressing the cliff.** `ELITE_HP_MULTIPLIER` stacks on *un-split* HP, so crossing the threshold always doubles a room's total and concentrates it into one target — c=39 spawns a 4-enemy 976 HP pack, c=40 spawns one 2,000 HP enemy. Making Elites 28x more common makes that discontinuity 28x more common too. The ramp idea (soften between ~30 and ~50) stops being cosmetic once they are no longer rare.
+  - **115 Elites, and the ceiling is 7x what was reported.** For scale: the player's entire rocket reserve on hard is worth ~**2,130 damage**, and `demo-campaign`'s level 17 — which kills 100% of bot runs reaching it — carries 9,675 Elite HP *across three of them*. A single **25,800 HP** enemy dealing double damage is ~12x the whole reserve. Worst offenders: `stb_log2_floor` (c=344, `deprecated/stb.h`), `getPluralIndex` (c=334, laravel), `ScanInfoPlane` (c=223, `WOLFSRC/WL_GAME.C`), `opt_bool` (c=158, curl).
+  - **The threshold is not the problem; the multiplier and the missing ceiling are.** Complexity distributions, old corpus vs these five:
+
+    | | median | p99 | max | c>=40 | HP at c=40 (hard) |
+    |---|---:|---:|---:|---:|---:|
+    | original 8 repos | 1 | 19 | 93 | 0.16% | 3,000 |
+    | these 5 repos | 1 | **35** | **348** | **0.77%** | 3,000 |
+
+    Elites already occur at ~5x the assumed rate and the tail runs to complexity **348**, so **(b) needs no change at all** — lowering `ELITE_COMPLEXITY_THRESHOLD` would now make a bad problem far worse rather than solving anything. The remaining work is entirely (a): `hp = complexity * 25 * 2 * difficulty` is linear and **uncapped**, and real code supplies the complexity to exploit it. A ceiling, or a fraction of the level's obtainable damage, is the whole fix.
+  - **A related mapping quirk this surfaced**: `.h`/`.H` files become *bonus* levels (boosted ammo, trivial — demo's one bonus level is 0% deaths at clear ratio 49.95). That makes **wolf3d 63% bonus levels and stb 69%**, since uppercase `.H` lowercases to `h`. Most of the original Wolfenstein source therefore generates trivial levels. Worth deciding whether a header should really be a bonus level, or whether that rule was meant for something narrower.
+  - **Do not lower the threshold without addressing the cliff.** `ELITE_HP_MULTIPLIER` stacks on *un-split* HP, so crossing the threshold always doubles a room's total and concentrates it into one target — c=39 spawns a 4-enemy 976 HP pack, c=40 spawns one 2,000 HP enemy. That discontinuity is already firing 217 times across these five repos, so the ramp idea (soften between ~30 and ~50) was never cosmetic — it is load-bearing today, not conditional on some future threshold change.
   - **History worth not repeating**: `ELITE_HP_MULTIPLIER` was already cut **4 -> 2** on 2026-07-30 after the bot died 12/12 on level 12's Elite (`enemies.ts:26-37`). That fixed level 12 — it is at 0% deaths across 156 runs now — and did nothing for levels 15/17. A second HP cut alone would likely repeat that pattern.
   - **Levers**: `ELITE_COMPLEXITY_THRESHOLD`, `ELITE_HP_MULTIPLIER`, `HP_PER_COMPLEXITY` (all `src/map/generation/enemies.ts:11-38`), composing multiplicatively with `DIFFICULTY_MULTIPLIERS.hard.hp` (1.5, `src/difficulty.ts`).
-  - **Acceptance is measurable without a bot run**: re-run the corpus sweep and require Elites to appear in **every** repo (today: 4 of 8) at a per-repo rate that is no longer a rounding error, with no single Elite exceeding the chosen ceiling. `verify:campaign` and `balancing:budget`'s non-zero exit (an enemy unkillable with obtainable damage) both stay green — all 8 repos pass that gate today.
+  - **Acceptance is measurable without a bot run**: re-run the corpus sweep across all 12 repos and require **no single Elite above the chosen ceiling** (today's worst is 25,800 HP on hard, against a ~2,130-damage rocket reserve). Occurrence needs no target — they already appear in every repo tested here. `verify:campaign` and `balancing:budget`'s non-zero exit (an enemy unkillable with obtainable damage) both stay green — all 8 repos pass that gate today.
   - **Related and deliberately separate**: the corpus's real outlier is **level size, not Elite HP** — 45 of 321 levels carry more incoming DPS than `demo-campaign` level 17 (which kills 100% of bot runs reaching it), topping out at ripgrep's `flags/defs.rs` at **432 enemies / 8,061 DPS** while the solver rates it comfortably supplied at ratio 9.10. That wants its own item; it is not fixed by anything here.
 
 - [ ] **Flamethrower (Friday Hotfix): give it real reach and replace the hard cutoff with distance falloff (2026-08-05).** Today `maxRange: 3.5` (`weapons.ts:272`) is a **binary gate**, not a range curve: in `resolveShot` a pellet whose target is beyond it becomes `{kind: "miss"}` outright (`engine.ts:4495-4499`), so the weapon deals full 8-per-pellet damage at 3.4 tiles and literally nothing at 3.6. A flame jet should thin out, not stop at a wall.
