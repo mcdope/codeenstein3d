@@ -131,6 +131,17 @@ function scanExisting(combo) {
 }
 
 function envFor(combo, sequence, outputPath, eventLogPath) {
+  // Called immediately before each invocation, which makes it the one place
+  // that reliably runs on *every* attempt including retries — and a retry can
+  // land on this same directory, because `driveCombo`'s sequence number comes
+  // from results that made it back and a watchdog-killed invocation produces
+  // none. `writeEventBatches` appends, so a stale partial log here would be
+  // pooled with the retry's runs and inflate the denominator with truncated
+  // data. `SshRunner` does the same on the remote side, where the writing
+  // actually happens for a remote lane.
+  fs.rmSync(eventLogPath, { recursive: true, force: true });
+  fs.mkdirSync(eventLogPath, { recursive: true });
+
   const env = {
     ...process.env,
     CODEENSTEIN_TELEMETRY_PROFILE: combo.profile,

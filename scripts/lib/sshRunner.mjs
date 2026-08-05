@@ -279,7 +279,17 @@ export class SshRunner {
           // `writeEventBatches` appends per attempt, and a missing parent
           // would lose the whole cell's events one attempt at a time while
           // the run itself still exited zero.
-          ...(remoteEventLogPath ? [`mkdir -p ${remoteEventLogPath}`] : []),
+          //
+          // Emptied as well as created, because a retry can land on the same
+          // directory. `driveCombo` derives its sequence number from files
+          // that made it *back*, so an invocation killed by the watchdog —
+          // which scp's nothing — leaves the sequence unchanged and the retry
+          // reuses this path. `appendEvents` never truncates, so without this
+          // the retry's runs would be appended to the dead run's partial ones
+          // and the cell would overshoot its denominator with truncated data.
+          // Measured: a killed invocation left 2 partial runs behind and the
+          // retry's 3 made it "5/3".
+          ...(remoteEventLogPath ? [`mkdir -p ${remoteEventLogPath}`, `rm -f ${remoteEventLogPath}/*.ndjson`] : []),
           `cd ${REMOTE_DIR} && ${envAssignments} node ${remoteScriptPath}`,
         ].join(" && "),
       );
