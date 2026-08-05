@@ -1,22 +1,42 @@
 # Balance review — 2026-08-04
 
-First review produced with the offline solver and the event log
+Produced with the offline solver and the event log
 (`doc/dev/balancing-telemetry.md`, "The balance model"). Every number here is
 reproducible from a clean checkout:
 
 ```sh
 npm run balancing:budget -- --all-difficulties --json demo-all.json
 npm run balancing:corpus && npm run balancing:budget -- --dir balancing_corpus/<id>
-CODEENSTEIN_TELEMETRY_EVENT_LOG=ev npm run balancing:telemetry   # scoped, see §7
+CODEENSTEIN_TELEMETRY_EVENT_LOG=ev npm run balancing:telemetry
 npm run balancing:events -- ev/
+npm run verify:event-log -- ev/
 ```
 
 **Scope.** The analytic half covers the 17-level `demo-campaign/` at all three
-difficulties plus 8 real repositories (6,700 generated enemies in total). The
-empirical half is four 12-level bot captures — Casual/Gamer/Pro on normal and
-Gamer on hard, 5 attempts each: **2,162 kills, 8,718 trigger-pulls**. Read §8 before
-acting on anything: the solver is deliberately optimistic in one direction and
-that shapes what its numbers mean.
+difficulties plus 8 real repositories (6,700 generated enemies). The empirical
+half is a **360-run capture of the full 17-level campaign** — Casual/Gamer/Pro ×
+{normal, hard}, 60 runs per cell, no level cap: **45,596 kills, 205,746
+trigger-pulls, 820,785 events**. Easy was not captured and rests on analytic
+numbers only.
+
+**Every rate below carries its denominator and a 95% Wilson interval.** That is
+not decoration. An earlier draft of this document reported a level-15 death rate
+of 64% from n=14; the same quantity came in at 67% and 88% on two other small
+captures, and now measures 46.2% [41–52] at n=318. Nothing at n<30 in this domain
+means what it appears to mean.
+
+Read §7 before acting on anything: the solver is deliberately optimistic in one
+direction, and this capture found exactly where that matters.
+
+**Data provenance.** Verified before use, in four steps: internal consistency
+(`verify:event-log`, 820,785 events, 0 failures across 14 checks); an external
+roster cross-check against an independently generated Node roster (5,507
+level-visit rosters, all matching, and fault-proved by injecting a 1-HP error);
+denominator sanity (60 distinct run ids in every cell); and an aggregate-counter
+cross-check on one chunk. That last one found two discrepancies, both explained
+and both in the event log's favour — it captures a stuck level-visit the
+aggregate never snapshots, and splash weapons emit no `hit` event at all. The
+event log is therefore the primary source throughout.
 
 ---
 
@@ -24,11 +44,11 @@ that shapes what its numbers mean.
 
 | # | Finding | Evidence | Where it lives |
 |---|---|---|---|
-| 1 | **Hard is unfinishable, and it fails at two specific levels — but not through ammo.** | 0 of 16 runs completed; death rate 64% on level 15 and 100% on level 17, against 0–6% on levels 10–14. Ammo never runs short (see §4) | `enemies.ts`, `difficulty.ts` |
-| 2 | **Killing pays for itself on easy and normal; only Hard has a floor.** | Edge Cases return **8.5–13.5×** the damage they cost across every repo; on Hard that halves to 4.7× — still net-positive | `loot.ts`, `enemies.ts` |
-| 3 | **A repo is mostly trivial functions, and the generator prices them as full enemies.** | **81.5%** of enemies come from complexity-1 entities; **65%** of the roster is Edge Cases; 47% of regular enemies sit at the 25 HP floor | `enemies.ts` |
-| 4 | **The Elite threshold is a cliff, and past it HP is unbounded.** | c=39 → 244 HP, c=40 → **2000 HP**. On Hard, demo level 15 has two Elites that individually exceed all obtainable damage | `enemies.ts:89-101` |
-| 5 | **ghidra is never used, and melee wastes most of its damage.** | ghidra: **2 pulls in 8,718, zero kills**, owned on 122 level-visits. Toolchain wastes **60 of its 80** damage per kill | `weapons.ts`, `combatPolicy.mjs` |
+| 1 | **The campaign is effectively unfinishable, and neither difficulty nor skill fixes it.** | 3 completions in 360 runs (0.83% [0.3–2.4]) — all three from one cell. Level 17 kills **163 of 166** [95–99]; on hard, 70 of 70 | `enemies.ts`, `difficulty.ts` |
+| 2 | **Two levels do all the killing, and they are the two with Elites.** | Levels 1–14 kill almost nobody; level 15 is 46.2% [41–52], level 17 is 98.2%. Levels 14 and 16 have no Elites and a 0% death rate | `enemies.ts:89-101` |
+| 3 | **The rocket launcher cannot solve those levels even if perfectly used.** | Hard level 15: ~14 rockets carried in (2,130 damage) against **6,600 Elite HP**. Killing one Elite needs 24 rockets | `weapons.ts`, `enemies.ts` |
+| 4 | **On hard, killing regular enemies costs more ammo than it returns.** | Self-sustain 0.48–0.50 on hard vs 1.04–1.06 on normal. Edge Cases still pay 5.3× (hard) and 11.8× (normal) | `loot.ts`, `enemies.ts` |
+| 5 | **A repo is mostly trivial functions, and the generator prices them as full enemies.** | **81.5%** of enemies come from complexity-1 entities; **65%** of the roster is Edge Cases; 47% of regular enemies sit at the 25 HP floor | `enemies.ts` |
 
 ---
 
@@ -80,162 +100,178 @@ One point of complexity multiplies single-enemy HP by **8.2×** and doubles the
 room's total. Past the threshold `hp = complexity × 25 × 2` is linear and
 **unbounded** — there is no clamp, cap or normalisation anywhere in the generator.
 
-It is rare (0.13% of enemies) but not hypothetical: it already caused one live
-incident (`enemies.ts:22-37`, a complexity-44 function killing the bot 12/12 runs),
-and on Hard it makes demo level 15 unwinnable outright.
+It is rare (0.13% of enemies) but not hypothetical. It already caused one live
+incident (`enemies.ts:22-37`, a complexity-44 function killing the bot 12/12
+runs), and §4 shows it is the single mechanism behind every death that matters in
+this capture.
 
 ---
 
-## 3. The loot economy has no floor
+## 3. The loot economy
 
-**Self-sustain** is the damage-worth of what an enemy drops, over the damage it
-costs to kill. Above 1.0, fighting is net-positive ammo.
+**Self-sustain** is the damage-worth of what an enemy drops over the damage it
+costs to kill. Above 1.0, fighting is net-positive ammo. Measured over all 360
+runs:
 
-| Repo | regular | Edge Case |
+| difficulty | regular | Edge Case |
 |---|---:|---:|
-| axios | 2.07 | 13.0 |
-| chi | 2.70 | 13.0 |
-| click | 2.75 | 13.5 |
-| flask | 2.86 | 13.4 |
-| ripgrep | 2.43 | 13.3 |
-| cJSON | 0.96 | 10.4 |
-| kilo | 0.77 | 9.1 |
-| ms | 0.66 | 8.5 |
-| *demo campaign, **measured*** | ***0.95–0.98*** | ***10.6–11.1*** |
+| normal | **1.04–1.06** | 11.4–11.8 |
+| hard | **0.48–0.50** | 5.25–5.34 |
 
-**Edge Cases are an ammo printer.** They take the regular drop path with no
-special-casing, so a 12 HP nuisance is valued identically to a 250 HP enemy —
-and they are 65% of the roster. At 8.5–13.5× return they invalidate any scarcity
-the rest of the design is aiming for.
+The profile axis is silent here — all three profiles agree to within 0.02 — so
+this is a property of the difficulty settings, not of how well anyone plays.
 
-**Regular enemies are net-positive too** on the five larger repos, for the same
-reason one layer down: 47% of them are 25 HP floor enemies paying a full-sized
-drop.
+**On hard, regular enemies are a net ammo loss** (0.5×), and on normal they are
+break-even to the decimal (1.05×). Neither is obviously wrong on its own. What
+makes the economy loose is that **Edge Cases pay 5–12× what they cost**, and Edge
+Cases are 65% of the roster. The pacing filler is funding the campaign.
 
-The analytic prediction (from the drop tables) and the empirical measurement (from
-observed rolls) agree, and the measurement barely moves across skill tiers:
+That shows up directly in where supplies come from: **85.6% of everything
+collected is a drop**, not pre-placed loot. The level designer's placed ammo is a
+rounding error against what the roster hands out.
 
-| Capture (12 levels, 5 attempts) | kills | regular | Edge Case | reliance on drops |
-|---|---:|---:|---:|---:|
-| Casual, normal | 495 | 0.98 | 10.64 | 83.9% |
-| Gamer, normal | 554 | 0.95 | 11.05 | 84.2% |
-| Pro, normal | 555 | 1.12 | 12.13 | 84.1% |
-| **Gamer, hard** | 558 | **0.45** | **4.73** | 84.6% |
+And it never runs short. Across 205,746 trigger-pulls, **forced-melee shots
+number exactly 0** — the state "wanted to shoot, had nothing to shoot with" did
+not occur once in the entire capture, at either difficulty.
 
-2,162 kills across four captures, against predictions of 0.76–2.33 and 8.1–13.8.
-Two models built from opposite directions landing together — and a result this
-insensitive to who is playing — makes this a property of the drop tables rather
-than an artifact of either model or of one bot's habits.
+### Carry-in damage across the campaign
 
-**Hard is the one setting that has an economy at all, and the mechanism is exact.**
-Self-sustain halves — 0.95 → 0.45 for regulars, 11.05 → 4.73 for Edge Cases —
-because enemies carry 1.5× HP while pickups give 0.7×. `0.7 / 1.5 = 0.467`, and
-`0.95 × 0.467 = 0.44` against the 0.45 measured. That compounding is the same
-mechanism that empties the reserve in §4; it is doing exactly what it was designed
-to, and only Hard gets it.
+Mean damage-worth of ammunition carried into each level, pooled per difficulty:
 
-Note reliance on drops is **~84% on all four**, unchanged by difficulty: Hard makes
-each drop smaller, not rarer, so the pre-placed share stays a fifth of the economy
-regardless.
+| difficulty | L1 | L5 | L9 | L13 | L17 |
+|---|---:|---:|---:|---:|---:|
+| normal | 5,742 | 8,645 | 13,565 | 17,716 | **19,760** |
+| hard | 6,617 | 6,218 | 7,376 | 7,739 | **8,409** |
 
-### Where the loot actually comes from
+On normal the reserve **triples** over the campaign. On hard it is flat, drifting
+up by 27% from start to finish. Neither curve declines anywhere.
 
-Measured, demo campaign: **83.9–84.2%** of everything collected came from drops (see
-the table above)
-rather than from the floor. Pre-placed placement is ~16% of the economy, so tuning
-it moves almost nothing — which matches the earlier campaign finding of 93–100%
-and is why the drop amounts were cut ~30%.
+**This retires the "Hard collapses through attrition" claim for good.** An earlier
+version of this document reported that hard's carried ammo fell to zero by level
+14 and that levels 15 and 17 were unclearable at 0.30 and 0.92. Those numbers came
+from a bug in the solver's campaign carry model, which charged each level for its
+whole roster while banking none of its drops. Fixed (`levelSolver.mjs`'s
+`killRate`, default 0.71 measured from play). The claim is now contradicted by
+three independent measurements: the corrected model, a flat carry curve over 360
+runs, and zero forced-melee shots.
 
-**Also measured: 195 of 579 health pickups granted nothing at all** — 27–40%
-across the four captures — collected at full stability. A third of health placement
-does no work, on every difficulty.
+**Health placement is wasteful.** 3,417 of 12,695 health pickups (**26.9%**) were
+collected at full health and granted nothing.
 
 ---
 
-## 4. Hard fails at two levels, and not for the reason I first reported
+## 4. Two walls, and neither knob moves them
 
-**This section replaces an earlier version that was wrong twice over, and the
-correction is more useful than the original claim.** It reported that Hard's
-carried ammo fell to zero by level 14 and that levels 15 and 17 were unclearable
-at 0.30 and 0.92. Both numbers came from a bug in the solver's own campaign carry
-model, which charged each level for its whole roster while banking none of its
-drops — so every level was credited with its own drops and denied all previous
-ones. Fixed (`levelSolver.mjs`'s `killRate`, default 0.71 measured from play), and
-verified against a 17-level capture that flatly contradicts the original.
+This is the section the 360-run capture was built to settle, and it overturns the
+previous draft's framing rather than refining it.
 
-### What a full 17-level Hard capture shows
+### Where runs die
 
-Pooled over **16 Gamer/hard runs**, all 17 levels, no level cap:
+Conditional death rate — deaths among runs that reached the level:
 
-| level | reached | died | death rate | forced-melee shots |
-|---:|---:|---:|---:|---:|
-| 10 | 16 | 1 | 6% | 0.0% |
-| 11–14 | 15 | 0 | **0%** | 0.0% |
-| **15** | 14 | 9 | **64%** | 0.0% |
-| 16 | 5 | 0 | 0% | 0.0% |
-| **17** | 5 | 5 | **100%** | 1.2% |
+| level | Ca/n | Ga/n | Pr/n | Ca/h | Ga/h | Pr/h |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1–9 | 0–3% | 0% | 0% | 0% | 0–2% | 0–2% |
+| 10 | 21% | 0% | 0% | 17% | 7% | 0% |
+| 11 | 2% | 0% | 0% | 10% | 2% | 3% |
+| 12–14 | 0% | 0% | 0% | 0% | 0% | 0% |
+| **15** | **41%** | **42%** | **34%** | **58%** | **57%** | **47%** |
+| 16 | 0% | 0% | 0% | 0% | 0% | 0% |
+| **17** | **100%** | **100%** | **92%** | **100%** | **100%** | **100%** |
 
-**Zero of 16 runs finished the campaign.** So Hard *is* unfinishable for this bot,
-and the failure is sharply localised — levels 1–14 are close to free, and then two
-walls.
+Pooled, with intervals:
 
-### Ammo is not the mechanism
+| level | normal | hard | all |
+|---:|---|---|---|
+| 15 | 38.9% [32–47] (63/162) | 53.8% [46–61] (84/156) | 46.2% [41–52] (147/318) |
+| 17 | 96.9% [91–99] (93/96) | **100% [95–100] (70/70)** | 98.2% [95–99] (163/166) |
 
-Carried ammo, measured per level across the capture, stays **flat at 6,000–7,400
-damage from level 1 to level 17**. It never trends down, and **forced-melee shots
-are 0.0% on every level except 1.2% on 17** — the player is never dry. The
-"attrition collapse" does not exist at any point.
+### Completion
 
-What does happen is damage:
+| difficulty | completions | rate |
+|---|---|---|
+| normal | 3 / 180 | 1.67% [0.6–4.8] |
+| hard | 0 / 180 | 0% [0.0–2.1] |
+| **all** | **3 / 360** | **0.83% [0.3–2.4]** |
 
-| level | enemies | damage taken/run | min HP | deaths |
-|---:|---:|---:|---:|---:|
-| 1–14 | 6–20 | 2–72 | 72–98 | ~0 |
-| **15** | 13 | **92** | **33** | 9 |
-| 16 | 11 | 22 | 82 | 0 |
-| **17** | **77** | **166** | **0** | 5 |
+All three completions are Pro/normal. Every other cell is 0 for 60.
 
-Two different walls:
+> **A correction worth keeping.** At 202 runs this capture had zero completions
+> and level 17 stood at 90/90, and I wrote that the campaign "cannot be completed
+> at normal or hard by any profile tested." The next 60 runs produced three. The
+> zero-completion interval was [0.0–1.9] and the true rate of 0.83% sits inside
+> it — the interval was right and the prose was wrong, because I read a point
+> estimate of zero as "impossible" rather than "rarer than we can resolve." That
+> is the exact error this document's interval discipline exists to prevent.
 
-- **Level 15 is Elite-driven.** Only 13 enemies, but two Elites of 3,525 and 3,075
-  HP on Hard, each dealing 2× damage. The survival window against one is 2.0s.
-- **Level 17 is swarm-driven.** 77 enemies, and `enemyMelee` damage (291) exceeds
-  `enemyRanged` (149) — you get surrounded.
+### Neither axis the player controls changes the outcome
 
-### The analytic model localised this correctly
+The game exposes two knobs: difficulty, and (implicitly) skill. This capture
+varies both.
 
-With the carry bug fixed, the solver ranks those two levels as the campaign's
-tightest on Hard — **2.84 at level 15 and 2.12 at level 17**, against 5–50
-elsewhere. Corrected for observed hit rates of 40–70%, a 2.12 lands near 1.2:
-right at the edge. The original model's *magnitudes* were an artifact; its
-*ranking* pointed at exactly the two levels that kill.
+- **Skill changes how far you get, not what happens when you arrive.** Runs
+  reaching level 17 rise cleanly with profile — 30% → 38% → 48% on hard, 40% →
+  57% → 63% on normal — while the conditional death rate at 15 and 17 barely
+  responds. The profile axis is a live instrument (Casual dies at level 10 where
+  Pro never does), which is what makes its silence at 15 and 17 a finding rather
+  than an insensitive measurement.
+- **Difficulty softens level 15 and does not touch level 17.** Level 15 falls from
+  53.8% to 38.9% between hard and normal — a real effect, non-overlapping
+  intervals. Level 17 goes from 100% to 96.9%, and the three survivors needed the
+  strongest profile *and* the lower difficulty.
 
-### Difficulty sweep
+**So the previous framing — "Hard fails at two levels" — is wrong.** Hard is not
+where this breaks; the back half of the campaign is unfinishable at normal too.
+The accurate statement is that levels 15 and 17 are walls at every setting
+measured, and difficulty and skill only buy the odds of reaching them.
 
-Combined clear ratio, corrected model:
+### The mechanism is Elite HP
 
-| Level | easy | normal | hard |
-|---:|---:|---:|---:|
-| 1 | 20.3 | 13.6 | 8.8 |
-| 9 | 78.6 | 44.5 | 20.1 |
-| 12 | 21.3 | 11.9 | 5.1 |
-| **15** | 14.4 | 7.7 | **2.8** |
-| 16 (bonus) | 306.7 | 157.6 | 50.0 |
-| **17** | 11.0 | 5.8 | **2.1** |
+| difficulty | level | enemies | total HP | Elite HP | Elites | clear ratio | death rate |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| hard | 14 | 9 | 1,148 | 0 | 0 | 16.99 | 0% |
+| hard | **15** | 13 | 7,207 | **6,600** | 2 | 2.84 | 53.8% |
+| hard | 16 | 11 | 346 | 0 | 0 | 49.95 | 0% |
+| hard | **17** | 77 | 13,343 | **9,675** | 3 | 2.12 | 100% |
 
-Nothing is unclearable on any difficulty. Hard is genuinely the tightest — its
-back half runs 2.1–5.2 against 8–20 in the front half — and it is the only setting
-with an economy at all (§3). But the cliff is in *incoming damage on two levels*,
-not in the ammo budget.
+Death rate tracks **Elite count**, not enemy count and not clear ratio. Level 16
+has 11 enemies and kills nobody; level 15 has 13 and kills half. The two lethal
+levels are exactly the two whose HP is 73–92% Elite.
 
-### The confound
+The two levels fail differently, though:
 
-These death rates measure **this bot** as much as the levels. On level 15 it walks
-in holding **8–17 unused rockets** and takes **72% of its kills with melee**,
-closing to contact with the two things on the level that hit hardest. §5 and
-`balancing-telemetry.md` §7.3 cover why it never fires the rocket launcher. Until
-that is fixed, the 64% and 100% figures are an upper bound on the levels'
-difficulty, not a measurement of it.
+- **Level 15 is a wall of HP.** 13 enemies, two of them Elites at 3,525 and 3,075
+  HP on hard, each dealing 2× damage. Damage taken splits evenly — 5,643 melee
+  against 5,532 ranged.
+- **Level 17 is a wall of DPS.** 77 enemies totalling 1,268 incoming DPS on hard,
+  with melee damage (6,345) exceeding ranged (4,682). You get surrounded. This is
+  why it is the harder of the two despite a comparable clear ratio.
+
+### Why the rocket launcher is not the answer
+
+The previous draft ended §4 with a caveat: because the bot never fires ghidra, the
+death rates were "an upper bound on the levels' difficulty, not a measurement of
+it." **That caveat is now retired by measurement.**
+
+| difficulty / level | rockets carried in | Elite HP present | rockets to kill one Elite |
+|---|---:|---|---:|
+| hard / 15 | 14.2 | 3,075 + 3,525 | **24** |
+| hard / 17 | 16.2 | 3,000 + 3,300 + 3,375 | **22** |
+| normal / 15 | 16.4 | 2,050 + 2,350 | 16 |
+| normal / 17 | 18.5 | 2,000 + 2,200 + 2,250 | 15 |
+
+On hard level 15 the player arrives with about 14 rockets — 2,130 damage — facing
+6,600 Elite HP. Spending every rocket perfectly, on nothing but Elites, kills
+**0.6 of one of the two**. The ammunition to solve these levels is not on them.
+Fixing the bot's weapon selection would change the death rates somewhat; it cannot
+change the outcome.
+
+There is also a natural experiment in the profile table. **Casual cannot fire
+ghidra at all** — it is absent from that profile's `weaponPriority` by design
+(`profiles.mjs`) — while Pro fired 21 rockets on hard. Both die at level 17 100%
+of the time.
+
+---
 
 ## 5. Weapons
 
@@ -255,40 +291,70 @@ The shotgun is **2× the pistol per round out of the same pool** — so a
 bullets-starved level should always be shot-gunned, and `startingBullets` (which
 prices the reserve at pistol efficiency) is roughly twice as generous as it reads.
 
-### Observed
+### Observed, over 205,746 trigger-pulls
 
-Aggregated over four 12-level captures (Casual/Gamer/Pro on normal, Gamer on hard;
-5 attempts each): **2,162 kills, 8,718 trigger-pulls**. Hit rates blend skill tiers
-with different aim tolerances (`fireAngleEps` 0.08 → 0.03).
+| Weapon | pulls | pellet hit rate | kill share | overkill/kill |
+|---|---:|---:|---:|---:|
+| gdb | 95,699 | 57.3% | **26.3%** | 5.4 |
+| echo pistol | 50,135 | 65.3% | 13.9% | 8.7 |
+| SIGKILL Knife | 24,042 | 100% | **24.5%** | **23.8** |
+| Regex Shotgun | 14,204 | 41.6% | 16.5% | 9.6 |
+| Friday Hotfix | 11,874 | 64.6% | 5.4% | 3.7 |
+| Toolchain | 9,730 | 100% | 13.3% | **58.7** |
+| **ghidra** | **62** | — (splash) | 0.05% | 44.2 |
 
-| Weapon | pulls | pellet hit rate | 0–2 | 2–4 | 4–7 | kill share | overkill/kill |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| gdb | 4,183 | 56.8% | 79.2% | 70.3% | 71.1% | **28.5%** | 5.3 |
-| echo pistol | 2,521 | 66.0% | 84.2% | 79.1% | 74.0% | 14.6% | 9.8 |
-| SIGKILL Knife | 780 | 100% | 100% | — | — | 21.1% | **24.5** |
-| Regex Shotgun | 630 | 40.3% | 58.5% | 48.9% | **31.2%** | 18.4% | 11.1 |
-| Toolchain | 377 | 100% | 100% | — | — | 14.1% | **60.0** |
-| Friday Hotfix | 225 | 64.0% | 75.4% | 64.4% | — | 3.3% | 3.5 |
-| **ghidra** | **2** | 0% | — | — | 0% | **0%** | — |
+Splash weapons show no hit rate rather than 0%: rockets never emit a `hit` event,
+and an earlier draft published ghidra's "0% hit rate" as if it were a measurement.
+It was an artifact of the instrument.
 
-- **ghidra is effectively unfired.** **2 trigger-pulls in 8,718** (0.02%), **zero
-  kills**, across **122 level-visits where it was owned** with rockets in the pool
-  — including the profile whose weapon priority *leads* with it. Something in
-  `scoreRangedWeapon` rejects it against a 4-rocket reserve. This is the one
-  unambiguous dead-content result.
-- **Melee does the heavy lifting, and wastes most of its damage.** Knife and
-  Toolchain together take **35% of all kills**. Toolchain averages **60.0 wasted of
-  an 80-damage swing** and the knife 24.5 of 40 — against a roster that is 65%
-  10–15 HP Edge Cases, doubling the knife's damage bought almost nothing.
-- **The cone is visible in the gradient.** The shotgun falls 58.5% → 48.9% →
-  31.2% across the three near buckets while the pistol holds 84.2% → 79.1% →
-  74.0%. Both decay with range as the cubic deviation predicts; the shotgun decays
-  about three times faster, which is the spread doing its job.
-- **Friday Hotfix is niche, not dead** — 3.3% of kills at a healthy 64% hit rate.
-  Two earlier readings of this weapon did **not** survive larger samples and are
-  retracted here rather than quietly dropped: a 24-pellet sample showed 0% beyond
-  2 tiles (now 64.4%), and a 25-pull sample put it at 1.4% of kills (now 3.3%).
-  Small per-weapon samples on a rarely-chosen weapon move a lot.
+- **ghidra is 0.03% of all trigger-pulls, but it works when fired.** 62 pulls
+  across **3,212 level-visits where it was owned** — yet those 62 pulls produced
+  **25 kills**, 0.40 kills per pull, the best of any weapon. The problem is not
+  that the rocket is weak or mis-scored; it is that the bot almost never reaches a
+  situation it judges suitable. See the engagement ranges below.
+- **Melee does a third of the killing and wastes most of its damage.** Knife and
+  Toolchain together take **37.8%** of all kills. Toolchain averages **58.7 wasted
+  of an 80-damage swing** (73%) and the knife 23.8 of 40 (60%) — against a roster
+  that is 65% 10–15 HP Edge Cases. Doubling the knife's damage would buy almost
+  nothing.
+- **Friday Hotfix is niche, not dead** — 5.4% of kills at 64.6%. Two earlier
+  readings of this weapon did not survive larger samples and stay retracted: a
+  24-pellet sample showed 0% beyond 2 tiles, and a 25-pull sample put it at 1.4%
+  of kills. Both were small-sample noise.
+
+### The Cone of Fire is visible
+
+Pellet hit rate by engagement range, charged to the shot that fired it:
+
+| weapon | 0–2 t | 2–4 t | 4–6 t | 6–9 t |
+|---|---:|---:|---:|---:|
+| Regex Shotgun | 62% | 48% | **33%** | **24%** |
+| echo pistol | 81% | 77% | 73% | 66% |
+| gdb | 71% | 71% | 74% | 69% |
+| Friday Hotfix | 76% | 66% | 33%¹ | — |
+
+¹ n=30; the Hotfix's `maxRange: 3.5` means it barely reaches this bucket.
+
+The shotgun loses **38 points** across four buckets while the pistol loses 15 and
+gdb is flat. That is the cubic deviation doing exactly what it should, and it is
+the clearest empirical confirmation that the spread model works.
+
+Between 8% and 23% of each weapon's pellets are fired with no crosshair target and
+have no range to bucket by; those are excluded from both numerator and
+denominator here rather than silently dropped from one.
+
+### Where fights actually happen
+
+| target | shots | median range | inside 2 t | beyond 6 t |
+|---|---:|---:|---:|---:|
+| Elite | 8,842 | **0.5 t** | **83%** | 2% |
+| Edge Case | 47,855 | 2.7 t | 37% | 16% |
+| regular | 118,689 | 4.6 t | 19% | 26% |
+
+**83% of Elite engagements happen inside two tiles**, at a median of half a tile.
+The bot closes to knife range on precisely the targets a rocket is for. This is
+the root cause of ghidra's non-use, and it now holds across all three profiles
+rather than the single one it was first observed on.
 
 ---
 
@@ -319,56 +385,144 @@ mostly trivial functions producing cheap, full-drop-paying enemies.
 (ripgrep's `flags/defs.rs`); `click` produces a 311-enemy level. Nothing caps
 enemies per level any more than it caps HP per enemy.
 
+Read against §4, this is the more worrying half of the review. The demo campaign
+is *authored*, and its back half is still unfinishable. An arbitrary repo is
+ordered by accident of filename, so a 432-enemy level or a complexity-60 Elite can
+land anywhere, including level 1.
+
 ---
 
-## 7. What I would change
+## 7. What this does not measure
 
-Ordered by effect per unit of risk. Each names the constant.
+- **The solver assumes perfect accuracy**, and the Cone of Fire deviates with the
+  cube of range against the z-buffer. Every ratio here is an **upper bound on how
+  well-supplied you are**: "below 1.0" is a hard result, "above 1.0" proves
+  nothing. Measured hit rates are 24–81% (§5), so a ratio near 2 is genuinely
+  tight.
+- **The solver models ammunition, never survival — and this capture found the gap
+  empirically.** It passes hard level 17 as clearable at ratio 2.12, meaning every
+  enemy can be killed with the damage obtainable there. The bot then died on that
+  level 70 times out of 70. Both are correct: you have enough bullets and you
+  still die, because nothing in the offline model represents 1,268 incoming DPS.
+  **Clearability is not survivability**, and for a game whose premise is confidence
+  about repos nobody can playtest, that is the most important limitation on this
+  page.
+- **It measures *this bot*.** §5's usage numbers are as much a statement about
+  `combatPolicy.mjs` as about the weapons — though §4 now shows the walls survive
+  the bot's biggest known weakness.
+- **Easy was not captured.** Everything about easy here is analytic.
+- **Multiplayer emits no telemetry at all.** Elite HP scales with player count
+  while loot does not obviously scale to match; that asymmetry is unmeasured.
+- **Damage is not attributed by attacking archetype** (`damageTaken.arch` is
+  null), so "which enemy killed you" is inferred from level composition rather
+  than recorded.
 
-1. **Scale drops by what the enemy cost.** Multiply the drop roll's *amount* by
+---
+
+## 8. Follow-up investigation
+
+Where this capture narrows a question without closing it. Each names the next
+measurement rather than the next opinion.
+
+1. **Is level 17 survivable by anyone, or only by this bot's standards?** The
+   sharpest open question. 163 of 166 deaths is not a bot artifact — but three
+   Pro/normal runs did finish, so it is not literally impossible either. The
+   measurement: a human playthrough of levels 15–17 recorded with `?eventLog=1`,
+   compared against the bot's damage-taken profile. If a human also dies, the
+   level is the problem; if not, the gap localises the bot's weakness.
+2. **Does the Elite clamp actually fix it?** §9's first recommendation is the only
+   one §4 supports, and it is untested. Clamp Elite HP, re-run the same six cells,
+   and compare completion rate. This capture is the baseline; the comparison is
+   `report-balancing-ab.mjs`. **Do not point that tool at a directory of chunk
+   files** — its `loadSide` merges last-file-wins and would silently report one
+   chunk as the whole cell.
+3. **Why does level 10 kill Casual (17–21%) and never Pro (0%)?** The only level
+   where the profile axis separates cleanly, and it has no Elites at all —
+   `stage10_kernel_module.rs`, 20 enemies, ratio 9.57 on hard. Whatever kills
+   Casual there is a different mechanism from §4's, and it is the one place this
+   capture shows skill mattering directly.
+4. **Would a rocket-capable bot change the level-15 number?** §4 shows it cannot
+   change level 17. Level 15 is closer: 2,130 rocket damage against 6,600 Elite HP
+   is not enough to win, but might be enough to move 53.8% measurably. The
+   measurement is a bot variant that opens Elite engagements beyond 6 tiles rather
+   than a scoring tweak — §5 shows the issue is engagement range (83% inside 2
+   tiles), not weapon choice at a given range. **Two previous A/Bs on the rocket
+   constants both came back null**, because both were designed from a probe of
+   `pickRangedWeapon` in isolation; a probe of a pure function proves the function
+   changed, not that the situation it needs ever occurs.
+5. **Is easy finishable?** Untested here, and the one cell that might have a
+   non-zero completion rate. Analytically its clear ratios are the loosest in the
+   campaign (11–306). Three cells, ~10h at the measured throughput.
+6. **Does the economy hold on a real repo?** §3's self-sustain numbers are from
+   the authored campaign; §6 says real repos are 8–127× looser analytically, but
+   no bot has ever played one. The measurement now exists —
+   `doc/dev/capturing-another-campaign.md` — and needs a staged flat campaign.
+7. **Splash weapons still have no hit rate.** ghidra's effectiveness is inferred
+   from 25 kills over 62 pulls. A `splashHit` event carrying the enemies caught
+   would make it directly measurable, and would close the one remaining hole in
+   §5's table.
+
+---
+
+## 9. Balancing changes
+
+Ordered by effect per unit of risk, each naming the constant and what evidence
+would show it worked. **Split by what this capture actually supports.**
+
+### Supported by data — a measured problem of measured size
+
+1. **Clamp Elite HP.** The single change §4 supports. Either an absolute ceiling
+   or a fraction of the level's obtainable damage. Hard level 15 puts 6,600 Elite
+   HP against a total rocket reserve of 2,130 damage; level 17 puts 9,675 against
+   2,430. Note the danger is specifically *not* level 1, where `startingAmmo`
+   scales with the level's own enemy HP and an unbounded Elite funds its own
+   counter-play — from level 2 on, carryover replaces that and nothing scales.
+   *Worked when:* completion rate rises above 0.83% [0.3–2.4] and level 17's death
+   rate drops below 98.2% [95–99], on a re-run of the same six cells.
+
+2. **Cap incoming DPS per level, or thin level 17's roster.** Level 17 is a
+   different failure from level 15: 77 enemies, 1,268 DPS on hard, melee damage
+   exceeding ranged. Clamping Elite HP alone may not save it, because its problem
+   is arrival rate rather than any single enemy's health. *Worked when:* level 17's
+   death rate separates from 100% by more than its interval — and note §6 shows
+   real repos generate 432-enemy levels, so a per-level enemy cap has value well
+   beyond the demo campaign.
+
+3. **Scale drops by what the enemy cost.** Multiply the drop roll's amount by
    something like `maxHp / 100`, or exclude Edge Cases from the ammo roll the way
-   `health` already is (`healthHandledSeparately` in `loot.ts`). This is finding 2
-   and most of finding 3; nothing else moves the economy as much. Edge Cases exist
-   for pacing, not supply.
-2. **Clamp Elite HP.** Either an absolute ceiling, or a fraction of the level's
-   obtainable damage. Note the danger is specifically *not* level 1 —
-   `startingAmmo` scales with the level's own enemy HP there, so an unbounded
-   Elite funds its own counter-play. From level 2 on, carryover replaces that and
-   nothing scales. Fixes finding 4, and Hard's level 15.
-3. **Soften the c=40 cliff.** An 8.2× single-enemy jump for one point of
-   complexity is a discontinuity in the game's central mapping. A ramp between
-   ~30 and ~50 would keep the "boss tier" idea without the edge.
-4. **Give Hard a floor.** `ammoDropRate: 0.7` compounding with `hp: 1.5` through
-   carryover is what empties the reserve by level 14. Either stop compounding
-   (scale drops but not carryover), or lift `ammoDropRate` and take the difficulty
-   out of enemy damage instead.
-5. **Decide what Friday Hotfix and ghidra are for.** Both are effectively unused.
-   Friday Hotfix's `maxRange: 3.5` is tighter than the range fights actually happen
-   at; ghidra is never selected at all. Neither is a balance tweak — both are "is
-   this weapon reachable" questions.
-6. **Trim health placement.** 38% of health pickups granted nothing. Either place
-   fewer, or make the pickup conditional on the player being below full.
+   `health` already is (`healthHandledSeparately` in `loot.ts`). Edge Cases return
+   5.3–11.8× their cost and are 65% of the roster; 85.6% of all collected supply
+   is drops. *Worked when:* drop reliance falls below 85.6% and hard's regular
+   self-sustain rises off 0.5 without normal's exceeding ~1.2.
 
----
+4. **Trim health placement.** 26.9% of health pickups (3,417 of 12,695) granted
+   nothing. Either place fewer, or make the pickup conditional on the player being
+   below full. *Worked when:* that share drops without total healing falling.
 
-## 8. What this does not measure
+### Permitted but unconfirmed — plausible, and this capture cannot settle them
 
-- **The solver assumes perfect accuracy.** The Cone of Fire deviates with the cube
-  of range against the z-buffer, which the solver deliberately does not model. So
-  every ratio here is an **upper bound on how well-supplied you are**: "below 1.0"
-  is a hard result, "above 1.0" proves nothing. Real hit rates are 40–70% (§5), so
-  a ratio near 2 is genuinely tight.
-- **The carry model excludes drops**, so the carry curve in §4 is the pessimistic
-  end. The `combined` ratios do include drops.
-- **The empirical half stops at level 12** (`LEVEL_LIMIT=12`), so it does not reach
-  the levels finding 1 is about. Every capture hit that cap rather than a death
-  wall: across 234 level-plays, every profile cleared to 12 with **one death in
-  total — including on hard**. That corroborates the analytic result for levels
-  1–12, where §4 shows ratios never dropping below 1.5 even on hard. But **the Hard
-  collapse at levels 13–17 is an analytic result only** and has not been observed.
-- It also measures *this bot*, which is why §5's usage numbers are as much a
-  statement about `combatPolicy.mjs` as about the weapons.
-- **Damage is not attributed by attacking archetype** yet (open item in
-  `balancing-telemetry.md`), so §4's survival windows are analytic only.
-- **Multiplayer is out of scope.** Elite HP scales with player count while loot
-  does not obviously scale to match; that asymmetry deserves its own pass.
+5. **Soften the c=40 cliff.** An 8.2× single-enemy jump for one point of
+   complexity is a discontinuity in the game's central mapping, and a ramp between
+   ~30 and ~50 would keep the boss-tier idea without the edge. But the capture
+   never varies complexity — it plays one fixed campaign — so this rests entirely
+   on §2's generator analysis. It is a design argument, not a measured one.
+
+6. **Decide what ghidra is for.** It is 0.03% of trigger-pulls across 3,212
+   level-visits where it was owned. But it lands 0.40 kills per pull, the best in
+   the game, and §4 proves the rockets could not have saved the levels anyway. So
+   "ghidra is broken" is not supported; "ghidra is unreachable given how this bot
+   fights" is. Whether a *human* reaches for it is unmeasured — see §8.1.
+
+7. **Reconsider Friday Hotfix's `maxRange: 3.5`.** Fights against regular enemies
+   happen at a median of 4.6 tiles, outside its reach, which is consistent with
+   its 5.4% kill share. But this weapon has already had two readings retracted for
+   small-sample error, and 11,874 pulls still only puts 30 pellets in the 4–6 tile
+   bucket. Suggestive, not established.
+
+8. **Give hard a floor.** `ammoDropRate: 0.7` compounding with `hp: 1.5` is the
+   obvious candidate for hard's 0.5× self-sustain. **The original form of this
+   recommendation is withdrawn:** it claimed the compounding "empties the reserve
+   by level 14", and §3 shows the hard carry curve is flat and rises 27% across the
+   campaign, with zero forced-melee shots in 205,746 pulls. There is no starvation
+   to fix. Whether 0.5× self-sustain is *wrong* is a design question this capture
+   cannot answer — the players who died were not short of ammunition.
