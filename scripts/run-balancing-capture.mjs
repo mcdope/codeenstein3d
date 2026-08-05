@@ -142,13 +142,25 @@ function envFor(combo, sequence, outputPath, eventLogPath) {
   fs.rmSync(eventLogPath, { recursive: true, force: true });
   fs.mkdirSync(eventLogPath, { recursive: true });
 
+  // Ask for the shortfall, not a full chunk. A chunk rarely yields exactly
+  // CHUNK runs — an attempt whose browser dies produces no `rid` at all — so
+  // the loop comes back for more, and a fixed CHUNK on that final pass
+  // overshoots: a cell at 5 of 6 ran three more attempts and finished at 8.
+  // Harmless to the data (those are complete runs, unlike the retry-append
+  // case) but not free: at CHUNK=20 the worst case is 19 wasted attempts,
+  // about 50 minutes on a real cell. Clamping also makes the denominator
+  // land exactly on target instead of "at least".
+  const remaining = Math.max(1, TARGET_ATTEMPTS - scanExisting(combo).qualifying);
+  const cap = Math.min(CHUNK, remaining);
+
   const env = {
     ...process.env,
     CODEENSTEIN_TELEMETRY_PROFILE: combo.profile,
     CODEENSTEIN_TELEMETRY_DIFFICULTY: combo.difficulty,
-    // The cap *is* the chunk here, not a safety net: this script wants a
-    // known number of attempts, not "however many it took to qualify".
-    CODEENSTEIN_TELEMETRY_ATTEMPT_CAP: String(CHUNK),
+    // The cap is what this invocation should contribute, not a safety net:
+    // this script wants a known number of attempts, not "however many it took
+    // to qualify".
+    CODEENSTEIN_TELEMETRY_ATTEMPT_CAP: String(cap),
     // Never stop early. Qualification is a campaign concept and would
     // truncate a chunk the moment enough runs cleared level 4.
     CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET: "999",
