@@ -49,7 +49,12 @@ export interface EnemyAiEvents {
    * trigger only — damage-aggro is set directly by the engine, see
    * `RaycasterEngine.damageEnemy`, and records its own matching event there). */
   onAggro?: (enemy: Enemy) => void;
-  onMeleeAttack?: (enemy: Enemy) => void;
+  /** `eid` is the enemy's index in the array passed to `updateEnemies`, and
+   * `amount` the pre-difficulty-multiplier bite. Both exist so a caller can
+   * attribute the frame's melee damage per attacker without `updateEnemies`
+   * having to return anything richer than its per-player sum — see
+   * `RaycasterEngine.damage`'s `by` parameter. */
+  onMeleeAttack?: (enemy: Enemy, eid: number, targetId: string, amount: number) => void;
   onRangedFire?: (enemy: Enemy) => void;
 }
 
@@ -94,9 +99,13 @@ export function updateEnemies(
   eliteDamageScale = 1,
 ): Map<string, number> {
   const damage = new Map<string, number>();
-  for (const enemy of enemies) {
+  // Indexed rather than for-of purely so each enemy's `eid` (its index here,
+  // the same one the engine's own `hit`/`kill` events use) can be handed to
+  // the telemetry hooks. Same iteration order, so no behaviour change.
+  for (let eid = 0; eid < enemies.length; eid++) {
+    const enemy = enemies[eid];
     if (!enemy.alive) continue;
-    const hit = updateEnemy(enemy, targets, map, dt, projectiles, pathFields, rng, events, aimSpreadDeg, eliteDamageScale);
+    const hit = updateEnemy(enemy, eid, targets, map, dt, projectiles, pathFields, rng, events, aimSpreadDeg, eliteDamageScale);
     if (hit) damage.set(hit.id, (damage.get(hit.id) ?? 0) + hit.amount);
   }
   return damage;
@@ -106,6 +115,9 @@ export function updateEnemies(
  * much, or `null` if it didn't land a melee hit. */
 function updateEnemy(
   enemy: Enemy,
+  /** This enemy's index in `updateEnemies`' array — telemetry attribution
+   * only, never read by the simulation. */
+  eid: number,
   targets: readonly EnemyTarget[],
   map: GameMap,
   dt: number,
@@ -170,15 +182,16 @@ function updateEnemy(
   if (dist <= ATTACK_RADIUS) {
     if (enemy.attackCooldown === 0) {
       enemy.attackCooldown = ATTACK_COOLDOWN;
-      events?.onMeleeAttack?.(enemy);
-      return { id: nearest.id, amount: ATTACK_DAMAGE * damageMultiplier(enemy, eliteDamageScale) };
+      const amount = ATTACK_DAMAGE * damageMultiplier(enemy, eliteDamageScale);
+      events?.onMeleeAttack?.(enemy, eid, nearest.id, amount);
+      return { id: nearest.id, amount };
     }
     return null;
   }
 
   // At range: occasionally lob a bolt at the nearest target if there's a clear shot.
   if (enemy.fireCooldown === 0 && dist <= RANGED_RANGE && los()) {
-    spawnProjectile(projectiles, enemy.x, enemy.y, nearest.player.posX, nearest.player.posY, nearest.id, damageMultiplier(enemy, eliteDamageScale), aimSpreadDeg, rng);
+    spawnProjectile(projectiles, enemy.x, enemy.y, nearest.player.posX, nearest.player.posY, nearest.id, damageMultiplier(enemy, eliteDamageScale), aimSpreadDeg, rng, eid);
     enemy.fireCooldown = FIRE_COOLDOWN_MIN + rng() * (FIRE_COOLDOWN_MAX - FIRE_COOLDOWN_MIN);
     events?.onRangedFire?.(enemy);
   }

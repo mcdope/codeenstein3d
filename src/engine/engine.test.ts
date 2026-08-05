@@ -5290,7 +5290,21 @@ describe("balancing event log", () => {
       const taken = events.find((e) => e.e === "damageTaken" && e.src === "hazard");
       expect(taken, "standing in acid must record a hazard damage event").toBeDefined();
       expect(taken).toMatchObject({ arch: null });
-      expect(events.some((e) => e.e === "damageTaken" && e.src === "enemyMelee")).toBe(true);
+      // Acid has no attacker, so it must not invent one.
+      expect(taken!.by, "hazard damage has no attacker to attribute").toBeNull();
+
+      // Enemy-dealt damage does, and `by` is the whole point of schema 2 --
+      // "which archetype killed you" was unanswerable before it.
+      const bitten = events.find((e) => e.e === "damageTaken" && e.src === "enemyMelee");
+      expect(bitten, "the enemy in melee range must record a bite").toBeDefined();
+      const by = bitten!.by as { eid: number; arch: string; amt: number }[];
+      expect(Array.isArray(by), "melee damage must carry a per-attacker breakdown").toBe(true);
+      expect(by.length).toBeGreaterThan(0);
+      for (const entry of by) {
+        expect(Number.isInteger(entry.eid) && entry.eid >= 0, "eid must index the levelStart roster").toBe(true);
+        expect(["normal", "elite", "edgeCase"]).toContain(entry.arch);
+        expect(entry.amt).toBeGreaterThan(0);
+      }
 
       // The pre-placed pickup sat under the spawn, so it is collected on the
       // first frame -- this is the `source: "preplaced"` half of the split.

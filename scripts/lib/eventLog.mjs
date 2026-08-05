@@ -28,7 +28,7 @@ import path from "node:path";
 /** Kept in step with `src/engine/events.ts`'s own constant. Asserted equal by
  * `eventLog.test.mjs`, so the two cannot drift the way a mirrored constant
  * silently can. */
-export const BALANCE_EVENT_SCHEMA_VERSION = 1;
+export const BALANCE_EVENT_SCHEMA_VERSION = 2;
 
 /**
  * Append one drained batch to `filePath`, stamping the envelope onto each

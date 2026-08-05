@@ -159,6 +159,7 @@ import {
   updateMinHealth,
   updatePerFrame as updateTelemetryPerFrame,
   type DamageSource,
+  type EnemyCategory,
   type EnemyTtkRecord,
   type HealSource,
   type TeamTelemetryState,
@@ -962,13 +963,53 @@ export class RaycasterEngine {
     onAggro: (enemy) => {
       if (this.teamTelemetry) recordEnemyAggro(this.teamTelemetry, this.enemyTtkIndex, enemy, this.levelTime);
     },
-    onMeleeAttack: () => {
+    onMeleeAttack: (enemy, eid, targetId, amount) => {
       if (this.teamTelemetry) recordEnemyMeleeAttack(this.teamTelemetry);
+      if (this.eventLog) this.noteDamageSource(targetId, eid, enemy, amount);
     },
     onRangedFire: () => {
       if (this.teamTelemetry) recordEnemyBoltFired(this.teamTelemetry);
     },
   };
+
+  /**
+   * Per-frame melee/bolt damage attribution, keyed by player then by enemy
+   * index — drained by `damage()` into the `damageTaken` event and cleared
+   * immediately after.
+   *
+   * This exists because both `updateEnemies` and `updateProjectiles` hand the
+   * engine one *summed* figure per player, and `damage()` is deliberately
+   * called once with that sum: swap absorbs damage 1:1 before health does, so
+   * splitting one 30-point call into three 10-point calls would change the
+   * absorption arithmetic and could change who dies on which frame. Recording
+   * the breakdown alongside, rather than splitting the call, keeps the
+   * simulation byte-identical while still answering "which enemy dealt this".
+   *
+   * Only populated when `eventLog` is on (`?eventLog=1`), so an ordinary
+   * session allocates nothing here.
+   */
+  private readonly pendingDamageBy = new Map<PlayerId, Map<number, { arch: EnemyCategory; amt: number }>>();
+
+  /** Accumulate one attacker's contribution to a player's damage this frame. */
+  private noteDamageSource(targetId: PlayerId, eid: number, enemy: Pick<Enemy, "elite" | "edgeCase">, amount: number): void {
+    let perEnemy = this.pendingDamageBy.get(targetId);
+    if (!perEnemy) {
+      perEnemy = new Map();
+      this.pendingDamageBy.set(targetId, perEnemy);
+    }
+    const existing = perEnemy.get(eid);
+    if (existing) existing.amt += amount;
+    else perEnemy.set(eid, { arch: enemyCategory(enemy), amt: amount });
+  }
+
+  /** Drain whatever attackers were recorded for `playerId` this frame. */
+  private takeDamageBy(playerId: PlayerId): { eid: number; arch: EnemyCategory; amt: number }[] | undefined {
+    const perEnemy = this.pendingDamageBy.get(playerId);
+    if (!perEnemy || perEnemy.size === 0) return undefined;
+    const out = [...perEnemy].map(([eid, v]) => ({ eid, arch: v.arch, amt: v.amt }));
+    perEnemy.clear();
+    return out;
+  }
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -3374,7 +3415,7 @@ export class RaycasterEngine {
       // <= 0 today; kept as a defensive guard against a future change to
       // either invariant.
       /* v8 ignore next -- @preserve */
-      if (dmg > 0) this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyMelee");
+      if (dmg > 0) this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyMelee", this.takeDamageBy(id));
     }
 
     if (this.teamTelemetry) {
@@ -3398,7 +3439,21 @@ export class RaycasterEngine {
     // lands (always `p.damage` from `spawnProjectile`, always positive — see
     // `PROJECTILE_DAMAGE`/`damageMultiplier`), so `dmg` here is always > 0;
     // no `dmg <= 0` guard needed.
-    const damageByPlayer = updateProjectiles(this.projectiles, targets, this.map, dt);
+    const damageByPlayer = updateProjectiles(
+      this.projectiles,
+      targets,
+      this.map,
+      dt,
+      // A bolt fired by an enemy that has since died still attributes fine:
+      // `enemies` is never spliced, so the index stays valid for the level.
+      this.eventLog
+        ? (srcEid, targetId, amount) => {
+            if (srcEid === undefined) return;
+            const shooter = this.enemies[srcEid];
+            if (shooter) this.noteDamageSource(targetId, srcEid, shooter, amount);
+          }
+        : undefined,
+    );
     for (const [id, dmg] of damageByPlayer) {
       const victim = this.players.get(id)!;
       // One increment per victim per frame, not per bolt — two bolts landing
@@ -3408,7 +3463,7 @@ export class RaycasterEngine {
       // from `updateProjectiles()`'s own per-player return value instead of
       // threading a new id through a dedicated callback.
       if (victim.telemetry) recordEnemyBoltHit(victim.telemetry);
-      this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyRanged");
+      this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyRanged", this.takeDamageBy(id));
     }
   }
 
@@ -3842,7 +3897,16 @@ export class RaycasterEngine {
    * teammate hears a hit exactly when that teammate is actually hit, not for
    * every roster player's damage indiscriminately.
    */
-  private damage(playerId: PlayerId, amount: number, source: DamageSource): void {
+  private damage(
+    playerId: PlayerId,
+    amount: number,
+    source: DamageSource,
+    /** Per-attacker breakdown for the `damageTaken` event, when the source is
+     * one the engine can attribute (enemy melee and bolts). Telemetry only —
+     * it never affects how much damage lands. Traps, hazards and rocket
+     * splash have no attacker and pass nothing. */
+    by?: { eid: number; arch: EnemyCategory; amt: number }[],
+  ): void {
     const p = this.players.get(playerId)!;
     if (p.godMode || amount <= 0 || p.status !== "alive") return;
     if (p.telemetry) recordDamage(p.telemetry, source, amount);
@@ -3863,12 +3927,19 @@ export class RaycasterEngine {
         absorbedBySwap: amount - remaining,
         healthAfter: Math.max(0, p.health),
         swapAfter: p.swap,
-        // Which archetype dealt it is deliberately not recorded yet: melee
-        // damage arrives from `updateEnemies` already summed per player, and a
-        // bolt carries no reference to the enemy that fired it, so attributing
-        // it means changing both of those return shapes on the AI hot path.
-        // Tracked in `doc/dev/balancing-telemetry.md`'s blocked-metrics table
-        // rather than guessed at here.
+        // Per-attacker breakdown, `null` for sources with no attacker (traps,
+        // hazards, rocket splash). Each entry's `eid` indexes the same roster
+        // `levelStart` records, so `arch` here is cross-checkable against it
+        // rather than having to be trusted — `verify-event-log.mjs` does
+        // exactly that for `damageDealt`/`kill` already.
+        //
+        // Note this is a *breakdown of one summed application*, not one event
+        // per attacker: `amt` above is what actually hit the player after swap
+        // absorption ordering, and the entries sum to the pre-multiplier
+        // total. Read `by` for attribution, `amt` for magnitude.
+        by: by ?? null,
+        // Kept as an always-`null` field so a reader written against schema 1
+        // does not see a missing key. Superseded by `by`.
         arch: null,
       });
     }

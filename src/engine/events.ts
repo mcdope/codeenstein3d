@@ -33,8 +33,16 @@
  */
 
 /** Bumped on any breaking field change, so a reader can refuse a log it does
- * not understand rather than silently misinterpreting a renamed field. */
-export const BALANCE_EVENT_SCHEMA_VERSION = 1;
+ * not understand rather than silently misinterpreting a renamed field.
+ *
+ * 2 (2026-08-05) — `damageTaken` gained `by`: a per-attacker breakdown of who
+ * dealt the damage (`{eid, arch, amt}[]`, `null` for trap/hazard/self
+ * sources). Strictly additive, and `arch` is retained as an always-`null`
+ * field, so a schema-1 reader still finds every key it knew; the bump is so a
+ * *consumer* can tell a log that can answer "which archetype killed you" from
+ * one that structurally cannot. Every capture before this date, including
+ * `balancing_runs_overnight-2026-08-04/`, is schema 1 and cannot. */
+export const BALANCE_EVENT_SCHEMA_VERSION = 2;
 
 export type BalanceEventType =
   | "levelStart"

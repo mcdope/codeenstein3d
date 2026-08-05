@@ -144,6 +144,28 @@ function verifyLog(filePath, checker) {
         checker.note("lootDropped.fromArch agrees with the roster", r?.arch === event.fromArch, { eid: event.fromEid, said: event.fromArch, roster: r?.arch });
         break;
       }
+      case "damageTaken": {
+        // `by` is schema 2+; schema-1 logs have only the always-null `arch`
+        // and are skipped rather than failed.
+        if (Array.isArray(event.by)) {
+          for (const entry of event.by) {
+            const r = ref(entry.eid);
+            checker.note("damageTaken.by[].arch agrees with the roster", r?.arch === entry.arch, { eid: entry.eid, said: entry.arch, roster: r?.arch });
+            checker.note("damageTaken.by[].amt is positive", entry.amt > 0, entry);
+          }
+          // Deliberately no sum-vs-`amt` assertion: `amt` is
+          // difficulty-scaled and `by[].amt` are not, and reconstructing the
+          // multiplier here would mirror `DIFFICULTY_MULTIPLIERS` into a
+          // second place — the exact drift this repo has been bitten by
+          // before. The per-entry roster agreement is the real check.
+          checker.note("attributable damage carries a non-empty breakdown", event.by.length > 0, event);
+        }
+        // Only enemy-dealt damage has an attacker; the rest must not invent one.
+        if (event.src !== "enemyMelee" && event.src !== "enemyRanged") {
+          checker.note("unattributable damage sources carry no breakdown", event.by === null || event.by === undefined, { src: event.src, by: event.by });
+        }
+        break;
+      }
       case "levelEnd":
         ended.add(k);
         for (const alive of event.enemiesAlive ?? []) {

@@ -958,9 +958,23 @@ computes and immediately discards.
 **`kill`** — `eid`, `arch`, `maxHp`, `w`, `forcedMelee`, `aggroAt`† (closes the TTK
 window without needing the separate `ttkRecords` array).
 
-**`damageTaken`** — `src` (the six existing `DamageSource` values), `arch`† (null
-for traps/hazards/self-splash), `amt`, `healthAfter`, `swapAfter`.
-`arch` is new and is what makes `damageTakenByArchetype` (§2.3) possible at all.
+**`damageTaken`** — `src` (the six existing `DamageSource` values), `by`† (a
+`{eid, arch, amt}[]` per-attacker breakdown, `null` for traps/hazards/self-splash),
+`amt`, `healthAfter`, `swapAfter`. `by` is what makes `damageTakenByArchetype`
+(§2.3) possible at all.
+
+Read `by` for attribution and `amt` for magnitude — they answer different
+questions and do not have to agree. One event covers **one summed application**
+of damage, because `damage()` is deliberately called once per player per frame:
+swap absorbs 1:1 before health, so splitting a 30-point call into three 10-point
+calls would change the absorption arithmetic. `amt` is therefore the difficulty-
+scaled figure that actually landed, while `by[].amt` are the pre-multiplier
+contributions that produced it.
+
+Each `by[].eid` indexes the same roster `levelStart` records, so its `arch` is
+cross-checkable rather than merely trusted — `verify-event-log.mjs` does exactly
+that for `damageDealt`/`kill` already. `arch` survives as an always-`null`
+field so a schema-1 reader finds every key it knew.
 
 **`lootDropped`** — at spawn time, so drops that are never collected stay visible.
 `did`, `kind`, `amount`, `x`, `y`, `fromEid`†, `fromArch`†, `elite`†.
@@ -1669,7 +1683,7 @@ hand-maintained `isWall()` mirrors documented above — same failure mode, same 
 | Cross-weapon hit rate | pellets and trigger-pulls were one counter | **done** — separate `shot`/`hit` events |
 | Reproducible drop economy | gameplay seed could not be pinned | **done** — `?seed=` |
 | Anything about repos other than `demo-campaign/` | no corpus | **done** — `balancing:corpus` |
-| **`damageTakenByArchetype`** | melee damage arrives from `updateEnemies` already summed per player, and a bolt carries no reference to the enemy that fired it | **open** — needs both return shapes changed on the AI hot path; `damageTaken.arch` is `null` until then, deliberately not guessed |
+| **`damageTakenByArchetype`** | melee damage arrives from `updateEnemies` already summed per player, and a bolt carries no reference to the enemy that fired it | **done (2026-08-05, schema 2)** — `damageTaken.by`, a `{eid, arch, amt}[]` breakdown. Neither return shape had to change: melee rides the `onMeleeAttack` hook that already carried the biting enemy, and bolts carry a new `Projectile.srcEid` set at spawn. `damage()` is still called **once** per player per frame with the summed amount — splitting it would change swap-absorption arithmetic and could change who dies on which frame |
 | **`weaponSwitch` / `weaponGranted`** | the drop path grants through `lootApply.ts`, which has no engine reference | **open** — low value next to the above; switch *frequency* is a bot-policy signal, not a balance one |
 
 ### Genuinely open design questions
