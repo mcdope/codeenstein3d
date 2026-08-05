@@ -50,7 +50,7 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { REPO_ROOT } from "./lib/loadEngineModules.mjs";
-import { NODE_MIN_MAJOR, REMOTE_DIR, appendHostIfMissing, readHostList, shellQuote, toHttpsCloneUrl } from "./lib/sshRunner.mjs";
+import { NODE_MIN_MAJOR, REMOTE_DIR, appendHostIfMissing, readHostList, shellQuote, toHttpsCloneUrl, withRemoteNodePath } from "./lib/sshRunner.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -74,26 +74,40 @@ function runInteractiveSsh(userHost, remoteCommand) {
 }
 
 function buildSetupCommand(originUrl) {
-  return [
-    // Same "install only if actually needed" shape as sshRunner.mjs's own
-    // per-run check, just with real installs on the missing/inadequate
-    // branch instead of failing — this is the one place in the whole
-    // toolchain allowed to do that.
-    `command -v git >/dev/null 2>&1 || (sudo apt-get update -y && sudo apt-get install -y git)`,
-    `(command -v node >/dev/null 2>&1 && [ "$(node -v | sed 's/^v//' | cut -d. -f1)" -ge ${NODE_MIN_MAJOR} ]) || ` +
-      `(curl -fsSL https://deb.nodesource.com/setup_${NODE_INSTALL_MAJOR}.x | sudo -E bash - && sudo apt-get install -y nodejs)`,
-    `mkdir -p ${REMOTE_DIR}`,
-    `if [ -d ${REMOTE_DIR}/.git ]; then git -C ${REMOTE_DIR} fetch origin; else git clone ${shellQuote(originUrl)} ${REMOTE_DIR}; fi`,
-    `cd ${REMOTE_DIR} && npm ci`,
-    // Real system dependencies (fonts, X11/graphics libs, etc.) — the whole
-    // reason this step needs its own script; see the top doc comment.
-    `cd ${REMOTE_DIR} && sudo npx playwright install-deps chromium`,
-    // The browser binary itself, too — not strictly required here (the
-    // automated per-run bootstrap does this too), but doing it now means
-    // the very first real campaign run against this host doesn't also pay
-    // for a browser download on top of everything else.
-    `cd ${REMOTE_DIR} && npx playwright install chromium`,
-  ].join(" && ");
+  return withRemoteNodePath(
+    [
+      // Same "install only if actually needed" shape as sshRunner.mjs's own
+      // per-run check, just with real installs on the missing/inadequate
+      // branch instead of failing — this is the one place in the whole
+      // toolchain allowed to do that.
+      //
+      // The nvm prelude wrapping this list is what makes "actually needed"
+      // true: without it a host whose Node came from nvm reads as having none
+      // over SSH, and this script would `apt-get install nodejs` a second
+      // Node on top of a working one. See `NVM_PATH_PRELUDE`.
+      `command -v git >/dev/null 2>&1 || (sudo apt-get update -y && sudo apt-get install -y git)`,
+      `(command -v node >/dev/null 2>&1 && [ "$(node -v | sed 's/^v//' | cut -d. -f1)" -ge ${NODE_MIN_MAJOR} ]) || ` +
+        `(curl -fsSL https://deb.nodesource.com/setup_${NODE_INSTALL_MAJOR}.x | sudo -E bash - && sudo apt-get install -y nodejs)`,
+      `mkdir -p ${REMOTE_DIR}`,
+      `if [ -d ${REMOTE_DIR}/.git ]; then git -C ${REMOTE_DIR} fetch origin; else git clone ${shellQuote(originUrl)} ${REMOTE_DIR}; fi`,
+      `cd ${REMOTE_DIR} && npm ci`,
+      // Real system dependencies (fonts, X11/graphics libs, etc.) — the whole
+      // reason this step needs its own script; see the top doc comment.
+      //
+      // `sudo env "PATH=$PATH"` rather than a bare `sudo`, because sudoers
+      // ships a `secure_path` default on Debian/Ubuntu that *replaces* PATH
+      // for the command it runs. The nvm prelude fixes this shell's PATH, and
+      // sudo would then throw it away and report `npx: command not found` on
+      // exactly the hosts this whole change exists for.
+      `cd ${REMOTE_DIR} && sudo env "PATH=$PATH" npx playwright install-deps chromium`,
+      // The browser binary itself, too — not strictly required here (the
+      // automated per-run bootstrap does this too), but doing it now means
+      // the very first real campaign run against this host doesn't also pay
+      // for a browser download on top of everything else. No sudo: this one
+      // writes into the invoking user's own cache.
+      `cd ${REMOTE_DIR} && npx playwright install chromium`,
+    ].join(" && "),
+  );
 }
 
 async function main() {

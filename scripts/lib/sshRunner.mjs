@@ -129,6 +129,51 @@ async function runSsh(userHost, remoteCommand, { timeoutMs } = {}) {
 // this side only ever *checks* against it, never installs.
 export const NODE_MIN_MAJOR = 18;
 
+/**
+ * Shell prelude that puts an nvm-installed Node on `PATH`, prepended to every
+ * remote command this project runs.
+ *
+ * **Why it is needed at all.** `ssh host 'cmd'` runs a *non-interactive*
+ * shell, and nvm works purely by editing `PATH` from `~/.bashrc` — which
+ * Debian/Ubuntu's stock `~/.bashrc` guards with an early
+ * `case $- in *i*) ;; *) return;; esac`, so the nvm lines never execute. A
+ * host where Node exists *only* via nvm therefore looks, over SSH, exactly
+ * like a host with no Node at all. That misdiagnosis reached all three call
+ * sites: setup tried to `apt-get install nodejs` over the top of a perfectly
+ * good nvm install, the per-run bootstrap refused the host and told the
+ * operator to run the setup that had already run, and the campaign
+ * invocation itself would have failed on a bare `node`. `npm`/`npx` share
+ * the same bin directory and so were equally unavailable.
+ *
+ * **Why it does not source `nvm.sh`.** That script is bash/zsh-only and the
+ * remote login shell is not guaranteed to be either — under `dash` sourcing
+ * it fails outright. Adding the version directory to `PATH` is plain POSIX
+ * sh and needs nvm's own machinery not at all.
+ *
+ * **Selection rule**: only consulted when the `PATH` Node is missing or
+ * older than `NODE_MIN_MAJOR`, so a host with an adequate system Node keeps
+ * using it and nothing silently changes underneath an already-working
+ * machine. Among nvm's installed versions it takes the **newest that clears
+ * the floor** rather than nvm's `default` alias, which can hold an
+ * unresolved label (`lts/*`, `20`) that only nvm itself can expand.
+ *
+ * `sort -V` is coreutils; this whole family is Debian/Ubuntu-only by design
+ * (see this module's doc comment).
+ */
+export const NVM_PATH_PRELUDE =
+  `if ! command -v node >/dev/null 2>&1 || [ "$(node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1)" -lt ${NODE_MIN_MAJOR} ]; then ` +
+  `NVM_DIR="\${NVM_DIR:-$HOME/.nvm}"; ` +
+  `for v in $(ls -1 "$NVM_DIR/versions/node" 2>/dev/null | sort -rV); do ` +
+  `if [ -x "$NVM_DIR/versions/node/$v/bin/node" ] && [ "$(echo "$v" | sed 's/^v//' | cut -d. -f1)" -ge ${NODE_MIN_MAJOR} ]; then ` +
+  `PATH="$NVM_DIR/versions/node/$v/bin:$PATH"; export PATH; break; fi; done; fi`;
+
+/** Prepend {@link NVM_PATH_PRELUDE} to a remote command. Joined with `;`, not
+ * `&&`: the prelude finding no nvm is the ordinary case on a host with a
+ * system Node, and must not abort the command it is preparing for. */
+export function withRemoteNodePath(remoteCommand) {
+  return `${NVM_PATH_PRELUDE}; ${remoteCommand}`;
+}
+
 /** One remote host's own bootstrap for a single automated run — safe to
  * redo unattended on every invocation, unlike the one-time
  * `setup-ssh-lane-host.mjs` step this assumes already ran. Checks git and
@@ -152,7 +197,7 @@ async function bootstrapHost(userHost, originUrl, headSha) {
     // job (see this module's own doc comment for why that split exists).
     `cd ${REMOTE_DIR} && npx playwright install chromium`,
   ].join(" && ");
-  await runSsh(userHost, cmd, { timeoutMs: 15 * 60 * 1000 }); // no apt/NodeSource install possible here anymore — a first-time clone+npm ci+browser download is still real but much shorter than before
+  await runSsh(userHost, withRemoteNodePath(cmd), { timeoutMs: 15 * 60 * 1000 }); // no apt/NodeSource install possible here anymore — a first-time clone+npm ci+browser download is still real but much shorter than before
 }
 
 /** Remote-host lane — see this module's own doc comment for the bootstrap
@@ -179,7 +224,13 @@ export class SshRunner {
         .filter(([key]) => key.startsWith("CODEENSTEIN_"))
         .map(([key, value]) => `${key}=${shellQuote(value === outputPath ? remoteOutputPath : value)}`)
         .join(" ");
-      const remoteCommand = `mkdir -p ${path.posix.dirname(remoteOutputPath)} && cd ${REMOTE_DIR} && ${envAssignments} node ${remoteScriptPath}`;
+      // The prelude has to be here too, not just in `bootstrapHost`: each
+      // invocation is its own SSH session and inherits nothing from the
+      // bootstrap's shell, so a host whose Node is nvm-only would pass the
+      // bootstrap check and then fail on this bare `node`.
+      const remoteCommand = withRemoteNodePath(
+        `mkdir -p ${path.posix.dirname(remoteOutputPath)} && cd ${REMOTE_DIR} && ${envAssignments} node ${remoteScriptPath}`,
+      );
 
       let settled = false;
       let killedForTimeout = false;
