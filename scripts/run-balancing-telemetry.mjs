@@ -45,11 +45,29 @@ import {
   STARTING_WEAPONS,
 } from "./lib/bot.mjs";
 import { runQualifyLoop } from "./lib/qualifyLoop.mjs";
+import { ensureDevServer } from "./lib/devServer.mjs";
 import { installVirtualClock } from "./lib/virtualClock.mjs";
 
 const CAMPAIGN_DIR = path.join(REPO_ROOT, "demo-campaign");
 const CAMPAIGN_NAME = "demo-campaign";
-export const DEV_SERVER_URL = process.env.CODEENSTEIN_DEV_URL ?? "http://localhost:5173";
+/** An explicitly configured server, or `null` to start one of our own. */
+const CONFIGURED_DEV_URL = process.env.CODEENSTEIN_DEV_URL ?? null;
+/** Port used when starting our own — deliberately not 5173, which belongs to
+ * whoever is sitting at the keyboard. */
+const OWN_DEV_PORT = Number(process.env.CODEENSTEIN_TELEMETRY_DEV_PORT ?? 5199);
+
+/**
+ * The server attempts actually navigate to. Reassigned by `main()` once
+ * `ensureDevServer` has resolved, which is why this is `let` and not `const`
+ * — module exports are live bindings, so importers see the resolved value.
+ *
+ * It used to default to `:5173` and assume something was already there. That
+ * is true at a developer's keyboard and false everywhere else, which is how
+ * single-player SSH lanes came to have never worked: a remote invocation got
+ * `ERR_CONNECTION_REFUSED` on every attempt, then wrote its aggregate and
+ * exited zero, so it looked like a 2-second success that banked nothing.
+ */
+export let DEV_SERVER_URL = CONFIGURED_DEV_URL ?? `http://localhost:${OWN_DEV_PORT}`;
 // Overridable so multiple concurrent invocations (e.g. a multi-lane campaign
 // orchestrator spawning several of these as separate processes) can each
 // write to their own unique path instead of racing to overwrite the same
@@ -260,6 +278,11 @@ async function main() {
   const profileNames = PROFILE_FILTER ? [PROFILE_FILTER] : Object.keys(PROFILES);
   const difficulties = DIFFICULTY_FILTER ? [DIFFICULTY_FILTER] : DIFFICULTIES;
 
+  // Before the browser: a run with nowhere to navigate is a run that burns
+  // its whole attempt cap on `ERR_CONNECTION_REFUSED` and still exits zero.
+  const server = await ensureDevServer({ url: CONFIGURED_DEV_URL, port: OWN_DEV_PORT, label: "balancing" });
+  DEV_SERVER_URL = server.url;
+
   const browser = await chromium.launch({ headless: !HEADED });
   const output = {
     meta: {
@@ -308,6 +331,9 @@ async function main() {
   }
 
   await browser.close();
+  // No-op for a server we did not start, so an externally-provided one (a
+  // developer's own, or a lane's shared instance) is never killed from here.
+  server.stop();
 
   fs.writeFileSync(OUTPUT_FILE, JSON.stringify(output, null, 2));
   console.log("Telemetry saved");
