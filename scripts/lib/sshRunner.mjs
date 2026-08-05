@@ -125,9 +125,40 @@ async function runSsh(userHost, remoteCommand, { timeoutMs } = {}) {
   return execFileAsync("ssh", ["-tt", "-o", "BatchMode=yes", userHost, remoteCommand], { timeout: timeoutMs, maxBuffer: 1024 * 1024 * 64 });
 }
 
-// Kept in sync with `scripts/setup-ssh-lane-host.mjs`'s own install target —
-// this side only ever *checks* against it, never installs.
-export const NODE_MIN_MAJOR = 18;
+/**
+ * Lowest Node major this repo can actually run, read from `package.json`'s
+ * own `engines.node` rather than hardcoded.
+ *
+ * It *was* hardcoded, at 18, and drifted: `engines` moved on and the constant
+ * did not, so a lane host with the distro's Node 18 passed every check this
+ * toolchain makes and then failed on `playwright install-deps` ("Playwright
+ * requires Node.js 20 or higher") after a full clone and `npm ci`. Deriving it
+ * means the check cannot disagree with the manifest again.
+ *
+ * Takes the minimum major across the range's `||` alternatives — for
+ * `^22.22.2 || ^24.15.0 || >=26.0.0` that is 22 — because any one of them
+ * satisfies npm. Major-only is deliberate: npm's own `EBADENGINE` is a
+ * warning rather than an error, so the binding constraint in practice is
+ * Playwright's, and a host one patch under the manifest is worth a warning,
+ * not a refusal to run.
+ */
+function lowestSupportedNodeMajor() {
+  const FALLBACK = 20;
+  try {
+    const range = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8")).engines?.node;
+    if (!range) return FALLBACK;
+    const majors = range
+      .split("||")
+      .map((clause) => clause.match(/(\d+)/)?.[1])
+      .filter(Boolean)
+      .map(Number);
+    return majors.length > 0 ? Math.min(...majors) : FALLBACK;
+  } catch {
+    return FALLBACK;
+  }
+}
+
+export const NODE_MIN_MAJOR = lowestSupportedNodeMajor();
 
 /**
  * Shell prelude that puts an nvm-installed Node on `PATH`, prepended to every
@@ -186,7 +217,13 @@ export function withRemoteNodePath(remoteCommand) {
 async function bootstrapHost(userHost, originUrl, headSha) {
   const cmd = [
     `(command -v git >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && [ "$(node -v | sed 's/^v//' | cut -d. -f1)" -ge ${NODE_MIN_MAJOR} ]) || ` +
-      `{ echo "missing git/Node ${NODE_MIN_MAJOR}+ — run 'node scripts/setup-ssh-lane-host.mjs ${userHost}' from your own machine first" >&2; exit 1; }`,
+      // Names the nvm route explicitly, because the setup script's own
+      // install path goes through sudo + NodeSource, and a host that denies
+      // sudo over SSH (some hardened PAM configs refuse when the parent
+      // process is sshd) would otherwise leave the operator bouncing between
+      // two commands that both say "run the other one". `nvm install` needs
+      // no root at all, and the prelude above finds what it puts down.
+      `{ echo "missing git/Node ${NODE_MIN_MAJOR}+ — run 'node scripts/setup-ssh-lane-host.mjs ${userHost}' from your own machine, or install Node ${NODE_MIN_MAJOR}+ on the host directly (nvm works and needs no sudo: 'nvm install ${NODE_MIN_MAJOR}')" >&2; exit 1; }`,
     `mkdir -p ${REMOTE_DIR}`,
     // Clone only if this is genuinely the first time; otherwise fetch —
     // avoids re-cloning the whole repo on every campaign invocation.

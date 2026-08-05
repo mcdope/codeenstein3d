@@ -54,9 +54,15 @@ import { NODE_MIN_MAJOR, REMOTE_DIR, appendHostIfMissing, readHostList, shellQuo
 
 const execFileAsync = promisify(execFile);
 
-// A recent LTS — comfortably clears NODE_MIN_MAJOR, matching sshRunner.mjs's
-// own per-run check.
-const NODE_INSTALL_MAJOR = 20;
+// What NodeSource is asked to install when a host has nothing adequate.
+// Derived from `NODE_MIN_MAJOR` (itself read from `package.json`'s `engines`)
+// rather than being its own constant: this was hardcoded to 20 while the
+// checker was hardcoded to 18 and the manifest had moved past both, so setup
+// could "succeed" at installing a Node the repo cannot run. One source of
+// truth, and NodeSource's `setup_<major>.x` always lands that major's latest
+// patch — which is what satisfies a `^22.22.2`-style floor the major-only
+// check cannot itself express.
+const NODE_INSTALL_MAJOR = NODE_MIN_MAJOR;
 
 /** Runs `remoteCommand` over a real interactive `ssh -t` session — stdio is
  * inherited wholesale (not piped/captured), so the user sees every prompt
