@@ -60,9 +60,11 @@ event log is therefore the primary source throughout.
 > **Status after Part II.** Finding 1 holds for this campaign but does not
 > generalise — sinatra completes 88% of runs. Finding 2 is **falsified as
 > stated**: levels 12 and 13 also hold Elites and kill 0 of 156 each (§11).
-> Finding 3 is **confounded** — the bot fires ghidra twice across 25 Elite
-> deaths, so it was never tested against a bot that uses the weapon (§14).
-> Findings 4 and 5 hold and generalise.
+> Finding 3 **stands, after briefly being marked confounded here** — the doubt
+> was that the bot fired ghidra twice across 25 Elite deaths, so the claim had
+> never been tested against a bot that used the weapon. The standoff arm made
+> it use the weapon and the finding survived (§14). Findings 4 and 5 hold and
+> generalise.
 
 | # | Finding | Evidence | Where it lives |
 |---|---|---|---|
@@ -958,6 +960,58 @@ also records that **two prior rocket A/Bs came back null** because they probed
 `pickRangedWeapon` in isolation — *"a probe of a pure function proves the function
 changed, not that the situation it needs ever occurs."* This A/B avoided that by
 measuring engagement distance in real runs; any successor must do the same.
+
+### Arm 2: the standoff was built, and it settles the question
+
+`STANDOFF_MIN_TARGET_HP` (`combatPolicy.mjs`, shipped inert at `Infinity`)
+retreats from a target too big to burst down, reusing the critical-health
+break-contact body with its own branch label. Same staged wolf3d campaign, same
+three cells, 20 runs each, capped at level 9 because the baseline never got past
+8 and the question is only about slot 8. Event log verified.
+
+| | baseline | arm 1 · melee gate | **arm 2 · standoff** |
+|---|---:|---:|---:|
+| median Elite engagement | 0.54t | 1.25t | **5.10t** |
+| within 2 tiles | 82% | 66% | **0%** |
+| knife swings at the Elite | 305 | 0 | **0** |
+| **ghidra shots / damage** | 2 / 135 (0.5%) | 1 / 145 | **21 / 1,951 (22.3%)** |
+| level-8 deaths | 100% (25/25) | 89% (24/27) | 97% (30/31) |
+| **Elite kills** | **0** | **0** | **0** |
+| runs reaching level 8 | 25/60 | — | 31/60 |
+
+**Everything the fix was supposed to do, it did.** The bot stopped closing,
+stopped knifing entirely, held station at 5.1 tiles, and — the point of the
+whole exercise — **started firing the rocket: 2 shots to 21, 0.5% of Elite
+damage to 22.3%.** Positioning was genuinely broken and is now genuinely fixed.
+
+**And it changes nothing that matters.** The Elite died zero times, again.
+Level-8 lethality moved 100% → 97%, and runs reaching level 8 went 25/60 →
+31/60 at **Fisher p = 0.36** — not significant. (Median campaign depth reads
+4 → 8, which looks dramatic and is not: it is 25/60 versus 31/60 crossing the
+halfway mark, nothing more. The same trap as arm 1's median.)
+
+**Because the constraint was never tactical.** Measured in this arm: ghidra
+deals **93 damage per shot**, and the bot carries a median of **4 rockets** into
+that level. That is **372 damage against a 3,000 HP Elite — about 32 rockets
+short.** No amount of positioning or weapon selection closes that gap.
+
+So the three arms together say something cleaner than any of them alone. The bot
+*was* fighting Elites in the worst available way, and two real defects were found
+and one was fixed — but neither was why the runs were lost. §1's finding 3 was
+right from the start: the rocket launcher cannot solve these levels even when
+the bot finally uses it.
+
+**What this leaves for §11's negative result.** It removes the bot as the
+explanation for *why lethality is unpredictable* — engagement distance moved by
+a factor of nine and the outcome barely moved, so the variance across
+near-identical Elite levels is not bot policy either. That still points at
+encounter geometry, and it is now the only candidate left standing.
+
+**Still open**: the bot picks a shotgun over a rocket ~60% of the time even at
+5 tiles, because `pickRangedWeapon`'s cluster branch returns before the
+HP-aware scoring runs. That is a real correctness defect with its own backlog
+item — but per the arithmetic above, expect it to buy a cheaper fight, not a
+dead Elite.
 
 ---
 
