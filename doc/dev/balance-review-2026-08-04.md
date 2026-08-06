@@ -753,6 +753,44 @@ mechanism is "could not kill it in time" — but "in time" is not set by its HP.
 one.** With nine Elite levels observed, any rule with two free parameters can be
 made to fit and would mean nothing, so no such rule is offered here.
 
+### A candidate that survives all nine: open space around the Elite
+
+Measured statically from the generated maps (`scratchpad/elite-geometry.mjs`),
+counting walkable tiles reachable within 10 steps of the Elite — the room it is
+fought in, not the level it is in:
+
+| encounter | open r10 | level enemies | observed |
+|---|---:|---:|---|
+| laravel s14 | 209 | 18 | 100% |
+| demo L17 | 122 | 77 | 98% |
+| wolf3d s8 | 120 | 40 | 100% |
+| codeenstein3d s13 | 118 | 57 | 97% |
+| demo L15 | 117 | 13 | 46% |
+| **curl s13** | **93** | **7** | **100%** |
+| demo L13 | 73 | 20 | **0%** |
+| demo L12 | 64 | 18 | **0%** |
+| *codeenstein3d s15* | *178* | *268* | *cleared, n=1* |
+
+**≥93 kills, ≤73 kills nobody — 8 of 9**, the exception being the lone n=1 clear
+that has been an outlier for every metric in this section.
+
+It is **not level size in disguise**, which is what makes it worth anything:
+curl s13 has **7** enemies and is lethal, demo L13 has **20** and is harmless, so
+enemy count — the strongest solver-side metric at ρ=0.55 — gets that pair
+backwards. It also has a mechanism consistent with §14: in a large open space
+there is nothing to break line of sight against a *ranged* Elite, which is why
+arm 2's standoff moved engagement distance ninefold and lethality not at all.
+
+**Stated at its real strength.** One threshold fitted to nine points is one free
+parameter, and this document has already retracted a metric fitted to eight. It
+is reported because it is the first quantity to survive the whole set and
+because it is computable statically with no bot involved — not because it is
+established. **Validate it out of sample on the Stage C re-measure rather than
+fitting it further** (`remediation-order-2026-08-06.md`).
+
+If it holds, it changes what Stage D should do: the lever would be *where Elites
+are placed and what cover surrounds them*, not `ELITE_HP_MULTIPLIER`.
+
 **Where the variable actually lives.** Not in the solver's model. §14 is the
 strongest candidate: the bot knife-trades every Elite it meets, so survival
 depends on the encounter's geometry and on bot policy — neither of which the
