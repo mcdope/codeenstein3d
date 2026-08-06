@@ -230,6 +230,46 @@ describe("csharp", () => {
       "private",
     );
   });
+
+  it("no modifiers inside an INTERFACE -> public, not private", () => {
+    // Interface members are implicitly public in C#. Getting this wrong made
+    // every method of an interface a lockable room: Serilog's ILogger.cs
+    // produced 640 doors and 321 keys from 136 methods, and `planRoute` gave up
+    // at its 200-iteration cap, so the level could not be played at all.
+    const root = parse(cs, "interface I { void D(); }");
+    expect(csharp.refine!(find(root, "method_declaration"), stubEntity({ kind: "method" })).visibility).toBe(
+      "public",
+    );
+  });
+
+  it("an explicit modifier still wins inside an interface (C# 8+)", () => {
+    const root = parse(cs, "interface I { private void D() {} }");
+    expect(csharp.refine!(find(root, "method_declaration"), stubEntity({ kind: "method" })).visibility).toBe(
+      "private",
+    );
+  });
+
+  it("no identifiable enclosing type -> public, not private", () => {
+    // The case that actually bit: tree-sitter-c-sharp fails on Serilog's
+    // ILogger.cs (its #if directives yield an ERROR tree), so 134 of 136
+    // methods had ERROR as their immediate parent and no interface above them.
+    // Defaulting those to private made every one a lockable room — 640 doors,
+    // 321 keys, and a level planRoute could not solve. `private` must require
+    // positive evidence.
+    const root = parse(cs, "interface I {\n#if FEATURE\n    private static readonly object[] X = new object[0];\n#endif\n    void D();\n}");
+    expect(csharp.refine!(find(root, "method_declaration"), stubEntity({ kind: "method" })).visibility).toBe(
+      "public",
+    );
+  });
+
+  it("a class nested in an interface goes back to the private default", () => {
+    // The ancestor walk stops at the first type declaration, so a nested type
+    // does not inherit the interface's rule.
+    const root = parse(cs, "interface I { class N { void D() {} } }");
+    expect(csharp.refine!(find(root, "method_declaration"), stubEntity({ kind: "method" })).visibility).toBe(
+      "private",
+    );
+  });
 });
 
 describe("scala", () => {
