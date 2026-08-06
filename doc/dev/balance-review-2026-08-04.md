@@ -1025,35 +1025,63 @@ completions. Slot 12 logs **743 `stall` anomalies**; slot-13 stalls read
 enemy that is neither killing it nor being killed. ripgrep lost 13 of 45 runs and
 curl 29 of 60 the same way.
 
-**Oscillation — curl, 58 of 58 runs on level 1.** The first curl capture never
-produced a single `levelEnd`. Two different shell-script slot-1 files were tried,
-with an identical signature both times:
+**Not oscillation — curl, 58 of 58 runs on level 1, was a harness bug.** The
+first curl capture never produced a single `levelEnd`, and the anomaly scan
+called it oscillation:
 
 ```
 oscillation (2400 ticks) activity=route travelled=120.3t net=0.36t
 ratio=332.9x signFlips=800/2399 navDist=0.71t  hpFrac 0.90->0.90
 ```
 
-`navDist=0.71` is **√2/2**, the diagonal offset between tile centres, against an
-`ARRIVE_EPS` of **0.15** (`combatPolicy.mjs:164`). The bot orbits a waypoint one
-diagonal step away, at full health, for 2,400 ticks — walking 120 tiles to achieve
-0.36 tiles of progress. Both levels are *tiny* (226 and 265 walkable tiles), so
-this is geometry, not scale. Excluding `.sh` produced a campaign whose first three
-levels clear normally, so **curl's capture excludes 26 shell levels as a
-workaround for a bot bug, not a balance decision.** Evidence is preserved at
-`balancing_capture_curl_WEDGED_lvl1/`.
+That reading was wrong, and it took a grid-level diff to see it. **The bot was
+walking into a wall its route planner believed was floor.** Dumping the engine's
+live grid (`__codeensteinTestHooks.getGrid()`) beside the planner's map at the
+wedge point showed **205 differing tiles** — and an exact, zero-diff match
+against a *different* staged level:
 
-Both are the open backlog item *"Bot circles in open space and beside armed spikes
-— oscillation up ~50%"*, filed as navigation tuning measured in ticks per 1,000
-decisions. **That framing is wrong by an order of magnitude**: this is the sole
-reason a repository scores 0% completion with zero deaths, and it costs more runs
-across the sweep than every balance problem combined.
+| | planner (`planLevels`) | browser (`findEntrypointByScanning`) |
+|---|---|---|
+| rule | filename order, slot 1 | lowest complexity, **requiring `complexity > 0`** (`main.ts:2250`) |
+| level 1 | `01_projects_OS400_make-docs.sh` — 2 enemies, 89 walkable | `03_docs_examples_pop3-stat.c` — 2 enemies, 239 walkable |
 
-**A pre-flight lesson.** The entrypoint check used `CODEENSTEIN_TELEMETRY_LEVEL_LIMIT=1`
-and proved only that the right map *loaded*. It now uses `LEVEL_LIMIT=3` and
-asserts a `levelEnd` with outcome `cleared` — proving a level can be **finished**,
-not merely entered. The first curl capture burned 58 runs because the old check
-could not tell the difference.
+Shell scripts parse to complexity **0**, so the browser's entrypoint scan skips
+them while `planLevels` does not. The bot therefore drove a route computed for
+`make-docs.sh` around a map that was actually `pop3-stat.c`, and ground against
+a wall at (21,32) — floor in the planner, wall in the engine — with `y` pinned
+at exactly 31.75 while `x` slid west, which is textbook axis-separated collision
+sliding rather than a heading oscillation.
+
+**Excluding `.sh` did not work around a bot bug — it accidentally removed the
+zero-complexity files and re-aligned the two enumerations.** curl's capture is
+valid; the reason recorded for the exclusion was not.
+
+**The pre-flight that let this through.** The entrypoint check compares the
+browser's level-1 **enemy count** against planned slot 1. Both files here hold
+exactly 2 enemies, so it passed. *Enemy count cannot detect this class of
+mismatch; only comparing the grids can.* Any future check should diff
+`getGrid()` against the planned map — a single cheap equality test that would
+have caught it before 58 runs were spent.
+
+Evidence preserved at `balancing_capture_curl_WEDGED_lvl1/`.
+
+**Only the stall is the backlog item.** *"Bot circles in open space and beside
+armed spikes — oscillation up ~50%"* is filed as navigation tuning measured in
+ticks per 1,000 decisions, and the serilog/ripgrep/curl stalls above show that
+framing understates it: it is the sole reason serilog scores 0% completion with
+zero deaths, and stalls cost **121 of 405 runs** across the sweep. The curl
+level-1 wedge, by contrast, is **not** this item and should not be counted
+toward it — see above.
+
+**Two pre-flight lessons, both learned the expensive way.** The entrypoint check
+originally used `CODEENSTEIN_TELEMETRY_LEVEL_LIMIT=1`, which proved only that a
+map *loaded*; it now uses `LEVEL_LIMIT=3` and asserts a `levelEnd` with outcome
+`cleared`, proving a level can be **finished**. That alone is still not enough:
+the check compares *enemy counts*, and the two curl candidates both had 2
+enemies. **The only sufficient test is grid equality** — diff
+`__codeensteinTestHooks.getGrid()` against the planned map before trusting a
+capture. Between them these two gaps cost 58 runs and an afternoon of chasing a
+navigation bug that was not there.
 
 ---
 
