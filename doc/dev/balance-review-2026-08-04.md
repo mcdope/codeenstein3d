@@ -132,9 +132,10 @@ this capture.
 > enemies (vim) with a single enemy at **50,325 HP**, and 0.13% reflects the
 > original 8-repo corpus, which was uniformly modern method-decomposed code
 > (§13). And Elites are **not** the mechanism behind every death that matters:
-> across 405 runs on real repositories, Edge Cases deal 56–91% of all lethal
-> damage (§10). Both halves of this paragraph were true of `demo-campaign` and
-> false of the corpus.
+> across 405 runs on real repositories they account for at most a quarter of all
+> damage taken, with regular and Edge Case enemies doing 75–100% of the
+> wearing-down (§10). Both halves of this paragraph were true of `demo-campaign`
+> and false of the corpus.
 
 ---
 
@@ -625,20 +626,46 @@ harness records as `reason: "stuck"` (`run-balancing-telemetry.mjs:497,530`). A
 campaign that is too hard and a bot that cannot navigate one look identical in a
 completion rate.
 
-| repo | runs | completed | **died** | **stuck** | Elite | Edge Case | normal |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| wolf3d | 60 | 0 | **60** | 0 | 39% | **57%** | 4% |
-| ripgrep | 45 | 0 | 32 | **13** | **0%** | **91%** | 9% |
-| codeenstein3d | 60 | 1 | **59** | 0 | 33% | **56%** | 11% |
-| **sinatra** | 60 | **53** | **1** | 6 | — | 20% | 80% |
-| **serilog** | 60 | **0** | **0** | **60** | — | — | — |
-| laravel | 60 | 0 | 47 | 13 | **98%** | 2% | — |
-| curl | 60 | 0 | 31 | **29** | 95% | 5% | — |
-| **total** | **405** | **54** | **230** | **121** | | | |
+| repo | runs | completed | **died** | **stuck** |
+|---|---:|---:|---:|---:|
+| wolf3d | 60 | 0 | **60** | 0 |
+| ripgrep | 45 | 0 | 32 | **13** |
+| codeenstein3d | 60 | 1 | **59** | 0 |
+| **sinatra** | 60 | **53** | **1** | 6 |
+| **serilog** | 60 | **0** | **0** | **60** |
+| laravel | 60 | 0 | 47 | 13 |
+| curl | 60 | 0 | 31 | **29** |
+| **total** | **405** | **54** | **230** | **121** |
 
-Archetype columns are the share of *lethal* damage, blank where nothing died.
 Stuck slots: ripgrep 8×10; sinatra 12/14/15; serilog 14×44 and 12×16;
 laravel 13×13; curl 12×20, 11×8.
+
+### Who deals the damage, and who ends the run — two different answers
+
+`damageTaken.by` allows both, and they must be reported separately, because
+**health carries between levels**. Damage taken in the level where a run ends is
+only the final instalment; on attrition deaths most of the damage was dealt
+levels earlier. Pooling raw damage (never averaging percentages):
+
+| repo | \_\_\_\_ whole run \_\_\_\_ ||| \_\_ level where the run ended \_\_ |||
+|---|---:|---:|---:|---:|---:|---:|
+| | Elite | Edge Case | normal | Elite | Edge Case | normal |
+| wolf3d | 24.8% | 35.9% | **39.4%** | **83.8%** | 14.1% | 2.1% |
+| ripgrep | 0% | **61.6%** | 38.4% | 0% | **86.0%** | 14.0% |
+| codeenstein3d | 21.3% | **58.8%** | 20.0% | **62.5%** | 19.7% | 17.7% |
+| sinatra | 0% | 28.3% | **71.7%** | 0% | 20.3% | **79.7%** |
+| serilog | 0% | 29.7% | **70.3%** | *(no deaths)* | | |
+| laravel | 10.4% | 36.3% | **53.2%** | **97.5%** | 2.5% | 0% |
+| curl | 10.0% | 24.2% | **65.8%** | **71.7%** | 6.2% | 22.1% |
+
+**Elites are never more than a quarter of the damage a run takes, and are 62–98%
+of the damage in the level where it ends.** They are not the attrition; they are
+the full stop. Regular and Edge Case enemies do 75–100% of the wearing-down in
+every repository, including the Elite-driven ones.
+
+That distinction matters for what to change. A clamp on Elite HP addresses the
+full stop and leaves the attrition untouched — and in ripgrep, which has no Elite
+mechanism at all, it would do nothing whatever.
 
 **Four findings, in descending order of how much they should change what you do.**
 
@@ -649,17 +676,19 @@ serilog **never dies at all** — every `levelEnd` it emits is `cleared`, 748 of
 them — and still never finishes, because the bot wedges on slot 14. serilog's
 campaign is not hard; it is unnavigable. See §15.
 
-**2. Edge Cases do the bulk of the killing.** 56–91% of lethal damage in every
-repository that killed anyone. This is broad attrition across *many* slots, and
-it is the mechanism with **no backlog item**. ripgrep is the pure case: 0% Elite
-damage, its single Elite never reached, and it still lost every run.
+**2. Regular and Edge Case enemies do the wearing-down; nobody has an item for
+it.** They account for **75–100% of all damage taken** in every repository, and
+Elites for at most a quarter. ripgrep is the pure case — 0% Elite damage, its
+single Elite never reached — and it still lost every run. The Edge Case
+mechanism has **no backlog entry**.
 
-**3. Elites kill rarely but absolutely.** Elite damage concentrates on a single
-slot per repository — wolf3d s8 (94% on that slot), codeenstein3d s13 (69%),
-laravel s14 (98%), curl s13 (95%) — and those slots kill 100%, 97%, 100%, 100%.
-laravel is the starkest: thirteen slots kill nobody, *including one with 394
-enemies at 6,372 DPS*, and then an 18-enemy slot holding a 25,050 HP Elite kills
-47 of 47.
+**3. Elites do not do the damage; they end the run.** Elite damage concentrates
+into a single slot per repository — wolf3d s8, codeenstein3d s13, laravel s14,
+curl s13 — and in the level where a run ends, Elites account for **62–98%** of
+the damage. Those slots kill 100%, 97%, 100% and 100% of everyone who reaches
+them, with the Elite still alive in every death. laravel is the starkest:
+thirteen slots kill nobody, *including one with 394 enemies at 6,372 DPS*, and
+then an 18-enemy slot holding a 25,050 HP Elite kills 47 of 47.
 
 **4. Both zero-Elite repositories are effectively non-lethal.** sinatra and
 serilog are the only campaigns here with 0 Elite HP on every slot, and between
@@ -1014,9 +1043,10 @@ cleared.
 **6. Soften the Elite HP cliff between complexity ~30 and ~50.** Real and firing
 217 times across the corpus, but no capture has isolated its effect.
 
-**7. Write an Edge Case attrition item.** Edge Cases deal 56–91% of all lethal
-damage and have no backlog entry. This is a hypothesis about what to investigate,
-not a measured fix.
+**7. Write an Edge Case / regular-enemy attrition item.** Together they deal
+**75–100% of all damage taken** in every repository and have no backlog entry,
+while the one archetype that does have an item accounts for at most a quarter.
+This is a hypothesis about what to investigate, not a measured fix.
 
 ### Overlap with the open backlog
 
