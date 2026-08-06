@@ -47,12 +47,13 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { loadEngineModules, REPO_ROOT } from "./lib/loadEngineModules.mjs";
+import { solveCampaign, weaponProfiles } from "./lib/levelSolver.mjs";
 
 const CAMPAIGN_DIR = path.join(REPO_ROOT, "demo-campaign");
 const DEFAULT_SLOTS = 15;
 
 function parseArgs(argv) {
-  const args = { repo: null, solved: null, slots: DEFAULT_SLOTS, difficulty: "hard", dryRun: false, exclude: [] };
+  const args = { repo: null, solved: null, slots: DEFAULT_SLOTS, difficulty: "hard", dryRun: false, exclude: [], solvedOut: null, allowPickDrift: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--repo") args.repo = path.resolve(argv[++i]);
@@ -67,6 +68,8 @@ function parseArgs(argv) {
     // real source produces.
     else if (a === "--exclude") args.exclude.push(argv[++i]);
     else if (a === "--dry-run") args.dryRun = true;
+    else if (a === "--solved-out") args.solvedOut = path.resolve(argv[++i]);
+    else if (a === "--allow-pick-drift") args.allowPickDrift = true;
     else {
       console.error(`unknown argument: ${a}`);
       process.exit(2);
@@ -220,6 +223,74 @@ async function complexityByFile(repoDir, levels) {
   return out;
 }
 
+
+/**
+ * Re-solve the campaign this script is about to emit, in its own slot order.
+ *
+ * The `--solved` JSON is a *full-repo* solve: every level carries the ammo it
+ * would have banked at its position in the whole repository's enumeration. The
+ * emitted campaign is ~15 levels, so those numbers describe a campaign nobody
+ * plays. Measured on curl: one level read clear ratio **261.43** full-repo and
+ * **6.39** re-solved in staged order — a 41x overstatement, on the exact level
+ * being cited as evidence.
+ *
+ * Only the min-clear-ratio must-include is affected. Max-DPS and max-Elite-HP
+ * are level-local (`enemies.totalDps`, `enemies.byArchetype.elite.hp` are
+ * functions of the roster and difficulty alone) and survive restaging unchanged;
+ * so do the DPS-based fill and the complexity-based ordering.
+ *
+ * Maps are regenerated rather than reused, because generation itself is
+ * position-dependent — `hasRocketLauncher`/`hasSmg`/`hasGas`/
+ * `missingWeaponIndices` come from the campaign index and change secret-room
+ * and exception-zone loot. Mirrors `report-level-budget.mjs`'s own
+ * `generateLevels`/`constants` so the numbers are comparable to
+ * `npm run balancing:budget`.
+ */
+async function resolveStagedOrder(picked, repoDir, difficulty) {
+  const modules = await loadEngineModules();
+  const { parseFile, extensionOf, MapGenerator, STARTING_WEAPONS, FORCED_UNLOCK_LEVELS, UNLOCKABLE_WEAPONS } = modules;
+  const generator = new MapGenerator();
+
+  const levels = [];
+  for (const [i, level] of picked.entries()) {
+    const abs = path.join(repoDir, level.filename);
+    const name = path.basename(level.filename);
+    const parsed = await parseFile(name, fs.readFileSync(abs, "utf8"));
+    if (!parsed) throw new Error(`re-solve: ${level.filename} no longer parses`);
+    const campaignLevelIndex = i + 1;
+    const owned = new Set(STARTING_WEAPONS);
+    for (const { level: unlockAt, weaponIndex } of FORCED_UNLOCK_LEVELS) {
+      if (campaignLevelIndex >= unlockAt) owned.add(weaponIndex);
+    }
+    const map = generator.generate(parsed, {
+      bonusLevel: extensionOf(name) === "h",
+      hasRocketLauncher: owned.has(modules.GHIDRA_WEAPON_INDEX),
+      hasSmg: owned.has(modules.GDB_WEAPON_INDEX),
+      hasGas: owned.has(modules.FRIDAY_HOTFIX_WEAPON_INDEX),
+      missingWeaponIndices: UNLOCKABLE_WEAPONS.filter((k) => !owned.has(k)),
+    });
+    levels.push({ filename: level.filename, map });
+  }
+
+  const profiles = weaponProfiles(modules.WEAPONS);
+  const constants = {
+    ...modules,
+    profiles,
+    dropAmounts: {
+      bullets: modules.BULLETS_DROP_AMOUNT,
+      rockets: modules.ROCKETS_DROP_AMOUNT,
+      smg: modules.SMG_DROP_AMOUNT,
+      gas: modules.GAS_DROP_AMOUNT,
+      health: modules.HEALTH_DROP_AMOUNT,
+      swap: modules.SWAP_DROP_AMOUNT,
+      eliteHealth: modules.ELITE_HEALTH_DROP_AMOUNT,
+      eliteBullets: modules.ELITE_BULLETS_DROP_AMOUNT,
+      eliteSwap: modules.ELITE_SWAP_DROP_AMOUNT,
+    },
+  };
+  return solveCampaign({ levels, constants, difficulty });
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const solved = JSON.parse(fs.readFileSync(args.solved, "utf8"));
@@ -251,6 +322,40 @@ async function main() {
     );
     staged.push({ from: path.join(args.repo, level.filename), to: path.join(CAMPAIGN_DIR, flat) });
   });
+
+  // The picks were made against the full-repo solve; check them against the
+  // campaign actually being emitted. See `resolveStagedOrder`.
+  const stagedSolve = await resolveStagedOrder(picked, args.repo, args.difficulty);
+  const ratio = (r) => r.clearRatio?.combined ?? Infinity;
+  let worst = 0;
+  for (let i = 1; i < stagedSolve.length; i++) if (ratio(stagedSolve[i]) < ratio(stagedSolve[worst])) worst = i;
+  const claimed = picked.findIndex((l) => ratio(l) === Math.min(...picked.map(ratio)));
+
+  console.log(`\nStaged-order re-solve (${args.difficulty}) — clear ratio per slot:`);
+  console.log(stagedSolve.map((r, i) => `  ${String(i + 1).padStart(2, "0")} ${ratio(r).toFixed(2)}`).join(""));
+  console.log(`  tightest in staged order:   slot ${worst + 1} (${ratio(stagedSolve[worst]).toFixed(2)}) — ${stagedSolve[worst].filename}`);
+  console.log(`  full-repo pick was:       slot ${claimed + 1} (${ratio(picked[claimed]).toFixed(2)}) — ${picked[claimed].filename}`);
+
+  if (args.solvedOut) {
+    fs.writeFileSync(args.solvedOut, JSON.stringify({ [args.difficulty]: stagedSolve }, null, 1));
+    console.log(`  wrote stagedSolve-order solve to ${path.relative(REPO_ROOT, args.solvedOut)}`);
+  }
+
+  if (worst !== claimed) {
+    const msg =
+      `\nRefusing to stage: the min-clear-ratio pick does not survive restaging.\n` +
+      `  Chosen on the full-repo solve: ${picked[claimed].filename} (ratio ${ratio(picked[claimed]).toFixed(2)})\n` +
+      `  Actually tightest once staged:  ${stagedSolve[worst].filename} (ratio ${ratio(stagedSolve[worst]).toFixed(2)})\n` +
+      `  The full-repo solve credits each level with ammo banked across the whole\n` +
+      `  repository, which this 15-level campaign never accumulates — on curl that\n` +
+      `  was a 41x overstatement. The recorded rationale for that slot would be wrong.\n` +
+      `  Re-run with --allow-pick-drift if the curation is deliberate.`;
+    if (!args.allowPickDrift) {
+      console.error(msg);
+      process.exit(1);
+    }
+    console.log(`${msg}\n  (--allow-pick-drift set: continuing anyway)`);
+  }
 
   if (args.dryRun) {
     console.log("\n--dry-run: nothing written.");
