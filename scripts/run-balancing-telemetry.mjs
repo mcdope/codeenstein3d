@@ -45,6 +45,7 @@ import {
   STARTING_WEAPONS,
 } from "./lib/bot.mjs";
 import { runQualifyLoop } from "./lib/qualifyLoop.mjs";
+import { assertPlanMatchesEngine } from "./lib/planEngineMatch.mjs";
 import { ensureDevServer } from "./lib/devServer.mjs";
 import { installVirtualClock } from "./lib/virtualClock.mjs";
 
@@ -489,6 +490,11 @@ export async function playRun(page, profile, levelPlans, label = "") {
     // static AmmoPickup positions are per-map; a fresh engine per level makes
     // prior "visited" state meaningless here — `startLevel` resets it.
     bot.startLevel(map);
+    // Before anything drives: is this the level we planned? See
+    // `planEngineMatch.mjs` for why grid equality and not enemy count, and why
+    // it has to happen here rather than later. Kills the process on a mismatch
+    // — every subsequent attempt would be routing against the wrong map.
+    await assertPlanMatchesEngine(page, map, { levelNo: i + 1, levelPlans });
     const route = routePlain;
 
     const player0 = await bot.readState();
