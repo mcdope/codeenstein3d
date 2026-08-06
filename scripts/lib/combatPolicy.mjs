@@ -284,6 +284,47 @@ export const DEFAULT_TUNING = {
   // case intact: dry is still dry, and standing in front of a threat pulling a
   // dead trigger is worse than any trade.
   MELEE_MAX_TARGET_HP: Infinity,
+  // Break contact with a target too big to burst down, the way the bot already
+  // breaks contact at critical health. Off by default (`Infinity`), same
+  // single-variable switch shape as `MELEE_MAX_TARGET_HP`:
+  //
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"STANDOFF_MIN_TARGET_HP":500}'
+  //
+  // Why it exists. `MELEE_MAX_TARGET_HP` was run as an A/B on the wolf3d
+  // capture and came back null: it removed the knife trade completely (305
+  // swings against a 3,000 HP Elite -> 0) and moved level-8 lethality not at
+  // all (100% -> 89%, Fisher p=0.24). Its own comment predicted why — it stops
+  // the bot *closing*, and nothing there stops the Elite closing. Engagement
+  // settled at 1.25 tiles, still inside `ROCKET_SAFE_DISTANCE`, so ghidra
+  // stayed unusable and the Elite was never killed in either arm.
+  //
+  // This is the missing half: once something big is inside
+  // `STANDOFF_DISTANCE`, retreat along the escape vector instead of standing
+  // in it. The retreat itself is the existing critical-health behaviour,
+  // reused verbatim — sprinting backwards along the away-vector while staying
+  // aimed at the threat — only the gate is new.
+  //
+  // Feasibility, since a standoff nothing can hold is worthless: the player
+  // sprints at `ENGINE_MOVE_SPEED * ENGINE_SPRINT_MULTIPLIER` = 6.4 t/s and a
+  // regular-archetype Elite chases at `ENEMY_CHASE_SPEED` 1.7, so opening
+  // range is not in question. Edge Cases chase at 3.74 — still under a sprint.
+  //
+  // Self-limiting by construction, so there is no runaway-retreat mode: the
+  // gate stops firing the moment the target is beyond `STANDOFF_DISTANCE`, and
+  // normal ranged selection resumes. That is the whole point — 5 tiles is
+  // outside `ROCKET_SAFE_DISTANCE` (4) far enough that
+  // `rocketDetonationDistanceAfterClosing` still clears it against a 1.7 t/s
+  // chaser (5 - 1.7*(5/18) = 4.53), so ghidra becomes legal exactly when the
+  // bot stops backing up.
+  //
+  // Gated on `hasAnyRangedAmmo` for the same reason `shouldCloseToMelee` is:
+  // backing away from something you have no ammo to shoot is worse than any
+  // trade. And it reads `threat.hp`, not `maxHp`, so a half-killed Elite stops
+  // being worth avoiding once it drops under the threshold.
+  STANDOFF_MIN_TARGET_HP: Infinity,
+  // How far to hold off a `STANDOFF_MIN_TARGET_HP` target. Inert while that is
+  // `Infinity`. See above for why 5 and not 4.
+  STANDOFF_DISTANCE: 5,
   // Below this distance, stop trying to close the last bit of distance
   // during an in-progress melee engagement — see `decide`'s melee branch,
   // which actually gates on `max(this, ENGINE_MOVE_SPEED * stepMs/1000)`,
@@ -1368,8 +1409,24 @@ export function decide(world, memory, config) {
 
   const threat = ignoreThreats ? null : pickThreat(enemies, player, profile, map, tuning);
 
-  // Critical health: break contact instead of trading hits.
-  if (threat && player.healthFraction < tuning.CRITICAL_HEALTH_FRACTION) {
+  // Break contact instead of trading hits — for two independent reasons that
+  // want the identical movement, so they share one branch body and differ only
+  // in the label they report.
+  //
+  //   criticalHealth — almost dead, disengage from anything.
+  //   standoff       — healthy, but this target is too big to burst down and
+  //                    is inside the range where the rocket is unusable.
+  //
+  // `standoff` is inert unless `STANDOFF_MIN_TARGET_HP` is set; see its comment
+  // in DEFAULT_TUNING for why it exists and why the distance is 5.
+  const criticalHealth = !!threat && player.healthFraction < tuning.CRITICAL_HEALTH_FRACTION;
+  const standoff = !!threat
+    && !criticalHealth
+    && hasAnyRangedAmmo(player)
+    && threat.hp > tuning.STANDOFF_MIN_TARGET_HP
+    && threat.dist < tuning.STANDOFF_DISTANCE;
+  if (threat && (criticalHealth || standoff)) {
+    const breakContactBranch = criticalHealth ? "criticalHealth" : "standoff";
     const currentAngle = Math.atan2(player.dirY, player.dirX);
     const awayAngle = Math.atan2(player.y - threat.y, player.x - threat.x);
     const delta = angleDelta(currentAngle, awayAngle);
@@ -1427,8 +1484,8 @@ export function decide(world, memory, config) {
     // tick converges toward genuinely-away without stalling.
     const turnBurst = moveBurstMs(10, true, moveCtx);
     return uniformIntent(moveKeys, turnBurst, stepMs, {
-      branch: "criticalHealth",
-      trace: { branch: "criticalHealth", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: threat.dist, mineDist: null, delta: navDelta, navDist, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false },
+      branch: breakContactBranch,
+      trace: { branch: breakContactBranch, x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: threat.dist, mineDist: null, delta: navDelta, navDist, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false },
     });
   }
 

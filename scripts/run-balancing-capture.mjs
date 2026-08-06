@@ -78,6 +78,10 @@ const CONCURRENCY_PER_LANE = Number(process.env.CODEENSTEIN_CAPTURE_CONCURRENCY 
  * cutting a *working* invocation is far more expensive than one that runs
  * long, because the whole chunk is lost. */
 const WATCHDOG_MS = Number(process.env.CODEENSTEIN_CAPTURE_WATCHDOG_MS ?? 130 * 60 * 1000);
+// Unset = full campaign, which is what a capture is normally for. See `envFor`.
+const LEVEL_LIMIT = process.env.CODEENSTEIN_CAPTURE_LEVEL_LIMIT
+  ? Number(process.env.CODEENSTEIN_CAPTURE_LEVEL_LIMIT)
+  : null;
 /** Per-combo spawn ceiling. A cell needing more invocations than this to reach
  * its target is failing in a way more attempts will not fix. */
 const MAX_INVOCATIONS = Number(process.env.CODEENSTEIN_CAPTURE_MAX_INVOCATIONS ?? 8);
@@ -169,7 +173,22 @@ function envFor(combo, sequence, outputPath, eventLogPath) {
     CODEENSTEIN_TELEMETRY_EVENT_LOG: eventLogPath,
     CODEENSTEIN_TELEMETRY_OUTPUT_FILE: outputPath,
   };
-  delete env.CODEENSTEIN_TELEMETRY_LEVEL_LIMIT; // always the full campaign
+  // Full campaign by default: a capture exists to measure a whole progression,
+  // and a stray `CODEENSTEIN_TELEMETRY_LEVEL_LIMIT` in the caller's shell would
+  // otherwise silently truncate every cell and produce a denominator that looks
+  // fine and means nothing.
+  //
+  // `CODEENSTEIN_CAPTURE_LEVEL_LIMIT` is the deliberate opt-in, for a targeted
+  // A/B on one encounter rather than a campaign measurement. It exists because
+  // the standoff arm only asks about wolf3d slot 8: the baseline never got past
+  // level 8 anyway, so capping the treatment at 9 keeps the two arms comparable
+  // *and* stops a successful run wandering through the remaining six levels at
+  // several minutes each.
+  //
+  // Recorded in the output so an analysis cannot mistake a bounded capture for
+  // a full one — the whole point of the default.
+  delete env.CODEENSTEIN_TELEMETRY_LEVEL_LIMIT;
+  if (LEVEL_LIMIT) env.CODEENSTEIN_TELEMETRY_LEVEL_LIMIT = String(LEVEL_LIMIT);
   return env;
 }
 
@@ -217,6 +236,9 @@ async function main() {
   console.log(`Capture: ${combos.length} combos x ${TARGET_ATTEMPTS} attempts = ${wanted} (${banked} already banked)`);
   console.log(`Lanes: ${runners.map((r) => r.label).join(", ")}`);
   console.log(`Chunk ${CHUNK}/invocation, concurrency ${CONCURRENCY_PER_LANE}, watchdog ${Math.round(WATCHDOG_MS / 60000)}m`);
+  // Loud, because a bounded capture that is later read as a full one is the
+  // exact mistake this flag makes possible.
+  if (LEVEL_LIMIT) console.log(`LEVEL LIMIT ${LEVEL_LIMIT} — bounded capture, NOT a full campaign`);
   console.log(`Output: ${OUT_DIR}\n`);
 
   await runLaneOrchestrator({

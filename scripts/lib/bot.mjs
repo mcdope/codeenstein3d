@@ -176,7 +176,7 @@ const TELEPORT_JUMP_TILES = 4;
 // motion under them is combat cost no matter what errand it interrupted.
 // `main` is deliberately absent — it covers both plain navigation and an
 // active firefight, and `threatDist` is what tells those apart.
-const ENGAGED_BRANCHES = new Set(["criticalHealth", "mineRetreat"]);
+const ENGAGED_BRANCHES = new Set(["criticalHealth", "standoff", "mineRetreat"]);
 
 const OSCILLATION_TICKS_THRESHOLD = 30;
 // Positions must stay inside this radius of the run's anchor. Wider than a

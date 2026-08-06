@@ -416,6 +416,84 @@ describe("decide — branch selection", () => {
     expect(intent.fire).toBe(false);
   });
 
+  // `STANDOFF_MIN_TARGET_HP` shares the critical-health branch body, so these
+  // cover the gate rather than the movement — the movement is already asserted
+  // by the critical-health test above.
+  const standoffOn = { ...DEFAULT_TUNING, STANDOFF_MIN_TARGET_HP: 500 };
+
+  it("holds range from a target too big to burst down", () => {
+    const intent = decide(
+      // 3,000 HP at 1.5 tiles: the wolf3d level-8 Elite, at the distance the
+      // bot actually fought it (measured median 0.54t, 82% inside 2t).
+      { player: makePlayer(), enemies: [makeEnemy({ hp: 3000, maxHp: 3000, elite: true, x: 12.0 })], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig({ tuning: standoffOn }),
+    );
+    expect(intent.branch).toBe("standoff");
+    expect(keysOf(intent)).toContain("ShiftLeft");
+  });
+
+  it("stops holding range once the target is beyond STANDOFF_DISTANCE", () => {
+    // Self-limiting is the whole design: past 5 tiles the gate releases and
+    // normal ranged selection resumes, which is what makes ghidra legal again.
+    const intent = decide(
+      { player: makePlayer(), enemies: [makeEnemy({ hp: 3000, maxHp: 3000, elite: true, x: 16.5 })], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig({ tuning: standoffOn }),
+    );
+    expect(intent.branch).not.toBe("standoff");
+  });
+
+  it("does not hold range from something it can actually kill", () => {
+    const intent = decide(
+      { player: makePlayer(), enemies: [makeEnemy({ hp: 30, x: 12.0 })], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig({ tuning: standoffOn }),
+    );
+    expect(intent.branch).not.toBe("standoff");
+  });
+
+  it("does not back away from a big target it has no ammo to shoot", () => {
+    // Same last-resort carve-out `shouldCloseToMelee` makes: dry is still dry,
+    // and retreating from something you cannot shoot just loses the level
+    // slowly instead of quickly.
+    const intent = decide(
+      {
+        player: makePlayer({ ammo: { bullets: 0, smg: 0, rockets: 0, gas: 0 } }),
+        enemies: [makeEnemy({ hp: 3000, maxHp: 3000, elite: true, x: 12.0 })],
+        mines: [], navTarget: null, map: makeMap(),
+      },
+      freshMemory(),
+      makeConfig({ tuning: standoffOn }),
+    );
+    expect(intent.branch).not.toBe("standoff");
+  });
+
+  it("critical health still wins over standoff, and still reports its own branch", () => {
+    // Both gates are satisfied here. The label matters: `criticalHealth` and
+    // `standoff` are separate rows in every anomaly and engaged-tile readout,
+    // and conflating them would silently re-attribute existing measurements.
+    const intent = decide(
+      { player: makePlayer({ healthFraction: 0.1 }), enemies: [makeEnemy({ hp: 3000, maxHp: 3000, elite: true, x: 12.0 })], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig({ tuning: standoffOn }),
+    );
+    expect(intent.branch).toBe("criticalHealth");
+  });
+
+  it("REGRESSION GUARD: shipped defaults leave the standoff inert", () => {
+    // The shipped value is Infinity, exactly like MELEE_MAX_TARGET_HP. If this
+    // ever fails, every telemetry baseline recorded before the change is no
+    // longer comparable to anything recorded after it.
+    expect(DEFAULT_TUNING.STANDOFF_MIN_TARGET_HP).toBe(Infinity);
+    const intent = decide(
+      { player: makePlayer(), enemies: [makeEnemy({ hp: 3000, maxHp: 3000, elite: true, x: 12.0 })], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(intent.branch).not.toBe("standoff");
+  });
+
   it("retreats from a mine it is standing too close to", () => {
     const intent = decide(
       { player: makePlayer(), enemies: [], mines: [{ x: 11.5, y: 10.5, alive: true, visible: true }], navTarget: null, map: makeMap() },
