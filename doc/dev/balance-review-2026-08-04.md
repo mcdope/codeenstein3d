@@ -12,12 +12,27 @@ npm run balancing:events -- ev/
 npm run verify:event-log -- ev/
 ```
 
-**Scope.** The analytic half covers the 17-level `demo-campaign/` at all three
-difficulties plus 8 real repositories (6,700 generated enemies). The empirical
-half is a **360-run capture of the full 17-level campaign** — Casual/Gamer/Pro ×
-{normal, hard}, 60 runs per cell, no level cap: **45,596 kills, 205,746
-trigger-pulls, 820,785 events**. Easy was not captured and rests on analytic
-numbers only.
+**Scope.** This document has two halves, added at different times.
+
+**Part I (§1–§9), 2026-08-04.** The analytic half covers the 17-level
+`demo-campaign/` at all three difficulties plus 8 real repositories (6,700
+generated enemies). The empirical half is a **360-run capture of the full
+17-level campaign** — Casual/Gamer/Pro × {normal, hard}, 60 runs per cell, no
+level cap: **45,596 kills, 205,746 trigger-pulls, 820,785 events**. Easy was not
+captured and rests on analytic numbers only.
+
+**Part II (§10–§16), 2026-08-06.** A **multi-repository sweep**: seven real
+codebases staged into 15-level campaigns and captured end to end
+(wolf3d, ripgrep, codeenstein3d, sinatra, serilog, laravel, curl) at
+Casual/Gamer/Pro × hard, 20 runs per cell — **405 runs** — plus a paired bot
+A/B on wolf3d and an analytic sweep over **23 repositories**.
+
+**Part II changes what Part I means.** `demo-campaign/` turns out not to be
+representative of real repositories, two of Part I's five ranked findings do not
+survive, and one whole class of Part I's conclusions is confounded by bot
+behaviour rather than balance. Part I is kept intact — it is the regression
+baseline and the only campaign measured at n=360 — but **read §10 before acting
+on anything in §1–§9.** Claims that Part II overturns are marked inline.
 
 **Every rate below carries its denominator and a 95% Wilson interval.** That is
 not decoration. An earlier draft of this document reported a level-15 death rate
@@ -42,10 +57,17 @@ event log is therefore the primary source throughout.
 
 ## 1. The five findings, ranked
 
+> **Status after Part II.** Finding 1 holds for this campaign but does not
+> generalise — sinatra completes 88% of runs. Finding 2 is **falsified as
+> stated**: levels 12 and 13 also hold Elites and kill 0 of 156 each (§11).
+> Finding 3 is **confounded** — the bot fires ghidra twice across 25 Elite
+> deaths, so it was never tested against a bot that uses the weapon (§14).
+> Findings 4 and 5 hold and generalise.
+
 | # | Finding | Evidence | Where it lives |
 |---|---|---|---|
-| 1 | **The campaign is effectively unfinishable, and neither difficulty nor skill fixes it.** | 3 completions in 360 runs (0.83% [0.3–2.4]) — all three from one cell. Level 17 kills **163 of 166** [95–99]; on hard, 70 of 70 | `enemies.ts`, `difficulty.ts` |
-| 2 | **Two levels do all the killing, and they are the two with Elites.** | Levels 1–14 kill almost nobody; level 15 is 46.2% [41–52], level 17 is 98.2%. Levels 14 and 16 have no Elites and a 0% death rate | `enemies.ts:89-101` |
+| 1 | **The campaign is effectively unfinishable, and neither difficulty nor skill fixes it.** *(does not generalise — §10)* | 3 completions in 360 runs (0.83% [0.3–2.4]) — all three from one cell. Level 17 kills **163 of 166** [95–99]; on hard, 70 of 70 | `enemies.ts`, `difficulty.ts` |
+| 2 | ~~**Two levels do all the killing, and they are the two with Elites.**~~ **Falsified — §11.** Four levels hold Elites; two of them kill nobody | Levels 1–14 kill almost nobody; level 15 is 46.2% [41–52], level 17 is 98.2%. Levels 14 and 16 have no Elites and a 0% death rate | `enemies.ts:89-101` |
 | 3 | **The rocket launcher cannot solve those levels even if perfectly used.** | Hard level 15: ~14 rockets carried in (2,130 damage) against **6,600 Elite HP**. Killing one Elite needs 24 rockets | `weapons.ts`, `enemies.ts` |
 | 4 | **On hard, killing regular enemies costs more ammo than it returns.** | Self-sustain 0.48–0.50 on hard vs 1.04–1.06 on normal. Edge Cases still pay 5.3× (hard) and 11.8× (normal) | `loot.ts`, `enemies.ts` |
 | 5 | **A repo is mostly trivial functions, and the generator prices them as full enemies.** | **81.5%** of enemies come from complexity-1 entities; **65%** of the roster is Edge Cases; 47% of regular enemies sit at the 25 HP floor | `enemies.ts` |
@@ -104,6 +126,15 @@ It is rare (0.13% of enemies) but not hypothetical. It already caused one live
 incident (`enemies.ts:22-37`, a complexity-44 function killing the bot 12/12
 runs), and §4 shows it is the single mechanism behind every death that matters in
 this capture.
+
+> **Both claims in that last sentence are revised by Part II.** Elites are **not
+> rare in real code** — across 23 repositories they run to 10.9 per 1,000
+> enemies (vim) with a single enemy at **50,325 HP**, and 0.13% reflects the
+> original 8-repo corpus, which was uniformly modern method-decomposed code
+> (§13). And Elites are **not** the mechanism behind every death that matters:
+> across 405 runs on real repositories, Edge Cases deal 56–91% of all lethal
+> damage (§10). Both halves of this paragraph were true of `demo-campaign` and
+> false of the corpus.
 
 ---
 
@@ -237,6 +268,26 @@ measured, and difficulty and skill only buy the odds of reaching them.
 Death rate tracks **Elite count**, not enemy count and not clear ratio. Level 16
 has 11 enemies and kills nobody; level 15 has 13 and kills half. The two lethal
 levels are exactly the two whose HP is 73–92% Elite.
+
+> **Correction (2026-08-06). "Death rate tracks Elite count" is false, and the
+> counterexample was already in this capture.** The table above starts at level
+> 14, which is exactly the window in which the claim looks true. Levels 12 and
+> 13 each carry an Elite and kill nobody:
+>
+> | level | file | enemies | total HP | Elite HP | Elites | clear ratio | deaths |
+> |---:|---|---:|---:|---:|---:|---:|---:|
+> | 12 | `stage12_render_engine.cpp` | 18 | 3,993 | **3,300** | 1 | 5.06 | **0 / 156** |
+> | 13 | `stage13_batch_job.scala` | 20 | 3,992 | **3,075** | 1 | 5.18 | **0 / 156** |
+> | 15 | `stage15_god_object.java` | 13 | 7,207 | 6,600 | 2 | 2.84 | 46.2% [41–52] |
+> | 17 | `stage17_the_monolith.php` | 77 | 13,343 | 9,675 | 3 | 2.12 | 98.2% [95–99] |
+>
+> Four levels hold Elites; two kill nobody in 156 runs each. That was a
+> selection error in the reporting, not a property of the data. §11 shows the
+> narrower reading — that lethality tracks Elite *HP concentration* — does not
+> survive the multi-repo sweep either.
+>
+> Note level 12's 0% is *earned*: `ELITE_HP_MULTIPLIER` was cut 4→2 on
+> 2026-07-30 because it killed 12/12, halving its Elite from 6,600 to 3,300.
 
 The two levels fail differently, though:
 
@@ -410,12 +461,21 @@ land anywhere, including level 1.
 - **It measures *this bot*.** §5's usage numbers are as much a statement about
   `combatPolicy.mjs` as about the weapons — though §4 now shows the walls survive
   the bot's biggest known weakness.
+  > **Revised 2026-08-06, and this is the most important limitation on the
+  > page.** The clause after the dash is wrong. §14 shows the bot knife-trades
+  > Elites — 305 knife swings against a 3,000 HP Elite, 2 rocket shots across 25
+  > deaths, ending each level holding *more* rockets than it started. Every
+  > Elite death rate in this document is an upper bound produced by a bot
+  > fighting those encounters in the worst available way. Separately, **30% of
+  > all runs in the Part II sweep (121 of 405) ended in a bot wedge rather than
+  > a death**, which no completion-rate figure here distinguishes.
 - **Easy was not captured.** Everything about easy here is analytic.
 - **Multiplayer emits no telemetry at all.** Elite HP scales with player count
   while loot does not obviously scale to match; that asymmetry is unmeasured.
-- **Damage is not attributed by attacking archetype** (`damageTaken.arch` is
-  null), so "which enemy killed you" is inferred from level composition rather
-  than recorded.
+- ~~**Damage is not attributed by attacking archetype**~~ — **fixed 2026-08-06.**
+  The event log is now schema 2 and `damageTaken.by` carries per-attacker
+  archetype and amount, so "which enemy killed you" is recorded rather than
+  inferred. Every archetype share in Part II rests on it.
 
 ---
 
@@ -526,3 +586,472 @@ would show it worked. **Split by what this capture actually supports.**
    campaign, with zero forced-melee shots in 205,746 pulls. There is no starvation
    to fix. Whether 0.5× self-sustain is *wrong* is a design question this capture
    cannot answer — the players who died were not short of ammunition.
+
+---
+
+# Part II — the multi-repository sweep (2026-08-06)
+
+Part I measured **one campaign**. Everything it concluded about *the generator*
+was inferred from `demo-campaign/`'s behaviour. Part II stages seven real
+codebases into 15-level campaigns and captures each end to end, which is the
+first test of whether any of it generalises.
+
+**Method.** For each repository, `scripts/stage-campaign.mjs` selects ~15 levels
+(cheapest-first, with three must-includes: max DPS, max Elite HP, min clear
+ratio), commits them to a `capture/<repo>` branch, and
+`scripts/run-balancing-capture.mjs` runs Casual/Gamer/Pro × hard × 20 attempts
+across three machines. **405 runs**, every event log passed
+`verify:event-log`. Archetype attribution uses event-log schema 2
+(`damageTaken.by`), shipped for this sweep.
+
+Reproduce any single repository with:
+
+```sh
+node scripts/stage-campaign.mjs --repo balancing_corpus/<id> --solved <solved.json>
+npm run balancing:budget -- --dir demo-campaign --all-difficulties
+CODEENSTEIN_CAPTURE_OUT=balancing_capture_<id> \
+CODEENSTEIN_CAPTURE_PROFILES=Casual,Gamer,Pro CODEENSTEIN_CAPTURE_DIFFICULTIES=hard \
+CODEENSTEIN_CAPTURE_ATTEMPTS=20 node scripts/run-balancing-capture.mjs
+npm run verify:event-log -- balancing_capture_<id>/events
+```
+
+---
+
+## 10. What actually kills, per repository
+
+**A run can fail two unrelated ways, and pooling them hides the finding.** It can
+*die*, or it can get *stuck* — wedge on a level it never finishes, which the
+harness records as `reason: "stuck"` (`run-balancing-telemetry.mjs:497,530`). A
+campaign that is too hard and a bot that cannot navigate one look identical in a
+completion rate.
+
+| repo | runs | completed | **died** | **stuck** | Elite | Edge Case | normal |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| wolf3d | 60 | 0 | **60** | 0 | 39% | **57%** | 4% |
+| ripgrep | 45 | 0 | 32 | **13** | **0%** | **91%** | 9% |
+| codeenstein3d | 60 | 1 | **59** | 0 | 33% | **56%** | 11% |
+| **sinatra** | 60 | **53** | **1** | 6 | — | 20% | 80% |
+| **serilog** | 60 | **0** | **0** | **60** | — | — | — |
+| laravel | 60 | 0 | 47 | 13 | **98%** | 2% | — |
+| curl | 60 | 0 | 31 | **29** | 95% | 5% | — |
+| **total** | **405** | **54** | **230** | **121** | | | |
+
+Archetype columns are the share of *lethal* damage, blank where nothing died.
+Stuck slots: ripgrep 8×10; sinatra 12/14/15; serilog 14×44 and 12×16;
+laravel 13×13; curl 12×20, 11×8.
+
+**Four findings, in descending order of how much they should change what you do.**
+
+**1. 30% of all runs (121 of 405) ended in a bot wedge, not a death.** No
+completion-rate figure anywhere in Part I distinguishes these. serilog's `0/60`
+and wolf3d's `0/60` are opposite results: wolf3d dies 60 times out of 60, while
+serilog **never dies at all** — every `levelEnd` it emits is `cleared`, 748 of
+them — and still never finishes, because the bot wedges on slot 14. serilog's
+campaign is not hard; it is unnavigable. See §15.
+
+**2. Edge Cases do the bulk of the killing.** 56–91% of lethal damage in every
+repository that killed anyone. This is broad attrition across *many* slots, and
+it is the mechanism with **no backlog item**. ripgrep is the pure case: 0% Elite
+damage, its single Elite never reached, and it still lost every run.
+
+**3. Elites kill rarely but absolutely.** Elite damage concentrates on a single
+slot per repository — wolf3d s8 (94% on that slot), codeenstein3d s13 (69%),
+laravel s14 (98%), curl s13 (95%) — and those slots kill 100%, 97%, 100%, 100%.
+laravel is the starkest: thirteen slots kill nobody, *including one with 394
+enemies at 6,372 DPS*, and then an 18-enemy slot holding a 25,050 HP Elite kills
+47 of 47.
+
+**4. Both zero-Elite repositories are effectively non-lethal.** sinatra and
+serilog are the only campaigns here with 0 Elite HP on every slot, and between
+them they produced **one death in 120 runs**. Every repository that killed anyone
+in bulk has Elites. That is the cleanest evidence in this document that the Elite
+mechanism is real — and note it arrives through *deaths*, not completions,
+because serilog's completion rate is destroyed by an unrelated bot bug.
+
+**The spread is the headline.** Same generator, same difficulty, same bot: one
+repository is completed by **88%** of runs and four by ~0–2%, for **three
+different reasons** — Elite walls, Edge Case attrition, and navigation failure.
+Whatever is wrong is not a global constant that one multiplier moves, and any
+change validated only against `demo-campaign` is tuned against a single point in
+a very wide distribution.
+
+---
+
+## 11. Elite HP does not order lethality
+
+This section was expected to produce a survivable-HP threshold. It produces the
+opposite, and that is worth more.
+
+Every observed Elite level, sorted by Elite HP:
+
+| repo / level | Elite HP | Elites | other enemies | total DPS | clear ratio | deaths |
+|---|---:|---:|---:|---:|---:|---|
+| wolf3d s8 `OLDSCALE.C` | **3,000** | 1 | 39 | 592 | 4.78 | **100%** (25/25) |
+| demo L13 | 3,075 | 1 | 19 | 301 | 5.18 | **0%** (0/156) |
+| demo L12 | 3,300 | 1 | 17 | 266 | 5.06 | **0%** (0/156) |
+| curl s13 `chkspeed.c` | **3,825** | 1 | **6** | **125** | 3.07 | **100%** (26/26) |
+| codeenstein3d s15 | 4,275 | 1 | 267 | 4,111 | 4.79 | cleared (n=1) |
+| demo L15 | 6,600 | 2 | 11 | 256 | 2.84 | 46.2% [41–52] |
+| codeenstein3d s13 | 7,425 | 2 | 55 | 817 | 3.02 | 97% (28/29) |
+| demo L17 | 9,675 | 3 | 74 | 1,268 | 2.12 | 98.2% [95–99] |
+| laravel s14 | **25,050** | 1 | 17 | 296 | 26.74 | **100%** (47/47) |
+
+**The smallest Elite in the table is among the deadliest.** wolf3d's 3,000 HP
+Elite kills every run that reaches it while demo-campaign's *larger* 3,075 and
+3,300 HP Elites kill nobody across 156 runs each. In every lethal case the Elite
+was **still alive when the player died** (25/25, 26/26, 28/28, 47/47), so the
+mechanism is "could not kill it in time" — but "in time" is not set by its HP.
+
+### Every candidate metric was tested, and every one fails
+
+- **Elite HP** — fails on rows 1–4 above.
+- **Crowd size / crowd DPS.** The hypothesis that the Elite tanks while the crowd
+  kills fitted wolf3d (39 others, 592 DPS) against demo L12 (17, 266). **curl s13
+  destroys it**: six other enemies and 125 total DPS, and it still kills 100%
+  with 95% of lethal damage from the Elite.
+- **`Elite HP × total DPS`.** Fitted on eight points, it ordered nine of ten and
+  correctly predicted laravel s14 out-of-sample. curl s13 then scored **0.48M** —
+  *lower* than demo L12's 0.88M, which kills nobody — and killed everybody.
+  **Retracted.**
+- **`Elite HP × Elite DPS`.** Elite DPS is a flat 50 per Elite, so this adds no
+  information: wolf3d s8 and demo L13 both score 0.15M, with outcomes 100% and 0%.
+- **Clear ratio.** "Below ~5 is lethal" fits every row until laravel s14 kills
+  100% at **26.74**.
+
+**No quantity the solver computes separates a lethal Elite level from a harmless
+one.** With nine Elite levels observed, any rule with two free parameters can be
+made to fit and would mean nothing, so no such rule is offered here.
+
+**Where the variable actually lives.** Not in the solver's model. §14 is the
+strongest candidate: the bot knife-trades every Elite it meets, so survival
+depends on the encounter's geometry and on bot policy — neither of which the
+solver represents, and both of which vary wildly between two levels with
+identical Elite statistics. **Until §14's bot fix lands, none of these lethality
+numbers can be attributed to level design with confidence.**
+
+---
+
+## 12. Level size is not the axis
+
+The open backlog carries a drafted item asserting that "the corpus's real outlier
+is level size, not Elite HP", citing ripgrep's `flags/defs.rs` at 432 enemies /
+8,061 DPS. **The sweep refutes it.**
+
+| level | enemies | total DPS | clear ratio | deaths |
+|---|---:|---:|---:|---|
+| sinatra s15 `base.rb` | **439** | 7,184 | 5.47 | **0%** (0/54) |
+| laravel s12 `Eloquent/Model.php` | **394** | 6,372 | 80.37 | **0%** (0/60) |
+| curl s12 `libssh2.c` | 213 | 3,655 | 12.68 | **0%** (0/46) |
+| ripgrep s3 `core/logger.rs` | **17** | 231 | 6.39 | **33%** (15/45) |
+| curl s13 `chkspeed.c` | **7** | 125 | 3.07 | **100%** (26/26) |
+
+The three largest levels in the sweep kill nobody. The two smallest levels in
+this table kill 33% and 100%. Enemy count correlates with death rate at ρ = 0.57
+pooled, but that is survivorship — deeper slots are reached only by stronger runs
+— and it **inverts within repositories**, which is where it would have to hold.
+
+Density does not rescue it either. `levelStart.walkableTiles` has been logged all
+along, so enemies-per-walkable-tile is computable from captures already on disk:
+
+| metric | pooled | wolf3d | ripgrep | codeenstein3d |
+|---|---:|---:|---:|---:|
+| enemies / tile | 0.110 | **0.690** | 0.146 | −0.044 |
+| Edge Cases / tile | 0.115 | **0.762** | 0.024 | −0.226 |
+| `clearRatio` | −0.708 | **−0.024** | −0.505 | −0.871 |
+
+Density does not generalise (pooled ρ = 0.11; sinatra's *densest* slot killed one
+player in 57 visits) — but it is the strongest signal available on wolf3d, which
+is precisely where `clearRatio` is blind. **The two metrics succeed on disjoint
+repositories.** At 8–15 slots per repository that is suggestive, not established.
+
+---
+
+## 13. What the solver can and cannot see
+
+### `clearRatio` works — but only if you solve the campaign you actually played
+
+An error worth recording, because it nearly produced a much stronger and wholly
+wrong claim. Per-slot death rates were first joined to the **full-repo** solver
+output. But a staged campaign is 15 levels drawn from a repository's full
+enumeration, and the solver models ammunition as accumulating across the campaign
+it is given. ripgrep's `crates/core/logger.rs` sits at `campaignLevelIndex: 27`
+in the 87-level solve and at **slot 3** in what the bot played:
+
+| `crates/core/logger.rs`, hard | clear ratio |
+|---|---:|
+| full-repo solve (index 27) | **261.43** |
+| staged-order solve (slot 3) | **6.39** |
+
+A 41× overstatement, on the exact level being cited as the headline
+counterexample. Re-solving each staged campaign in its own order corrects it.
+
+Spearman ρ against observed death rate, 43 slots with n ≥ 5, **staged-order**:
+
+| metric | pooled | wolf3d | ripgrep | codeenstein3d |
+|---|---:|---:|---:|---:|
+| **`clearRatio`** | **−0.708** | −0.024 | −0.505 | −0.871 |
+| total HP | +0.625 | +0.048 | +0.288 | +0.852 |
+| total DPS | +0.538 | −0.024 | +0.450 | +0.802 |
+
+`clearRatio` is the strongest single metric available and points the right way.
+**It fails on exactly one repository — wolf3d, the Elite-driven one** — where a
+*better*-supplied level (4.78) kills 100% against demo L15's 2.84 killing 46%.
+
+**Live tooling bug this exposed:** `stage-campaign.mjs` selects and orders levels
+using full-repo metadata. Its max-DPS and max-Elite-HP must-includes are
+level-local and unaffected, but **the min-clear-ratio pick is chosen on a number
+observed to be 41× off**. No capture is corrupted — the bot played real levels
+honestly — but that slot's recorded rationale is unreliable.
+
+### Sustain is a constant of the generator
+
+`healthSecs` = (pre-placed + expected drop health) ÷ total enemy DPS — how many
+seconds of sustained full contact a level's own health supply buys. Across 59
+staged slots: **median 1.11, with 45 of 59 between 0.95 and 1.50.** The 14
+outliers are near-empty levels where a single pickup dominates. It does not scale
+with size — the two largest levels in the sweep read 0.80 and 0.92.
+
+Health drops scale with kills and kills scale with enemy count, so **the generator
+cannot produce a level meaningfully better or worse supplied with health than any
+other.** This is a property of solver output, not of the runs, so it carries no
+survivorship confound. It is why ammunition is the binding constraint the solver
+can see — and why anything that kills faster than attrition is invisible to it.
+
+### Elite occurrence is procedural style, not language, age or size
+
+Elites per 1,000 enemies across 23 repositories:
+
+| repo | lang | per 1k | max Elite HP (hard) |
+|---|---|---:|---:|
+| vim | C | **10.9** | **50,325** |
+| stb | C headers | 6.2 | 25,800 |
+| curl | C | 5.5 | 23,025 |
+| wolf3d | C (1992) | 4.3 | 16,725 |
+| doom | C (1993) | 3.8 | 8,925 |
+| **codeenstein3d** | TypeScript | 3.1 | 7,425 |
+| git | C | 2.5 | 13,575 |
+| quake | C (1996) | 2.2 | 7,125 |
+| commons-lang / django | Java / Python | 0.7 / 0.5 | ~5,000 |
+| ripgrep / laravel | Rust / PHP | 0.2 / ~0.0 | 3,525 / 25,050 |
+| leveldb, sinatra, serilog, flask | C++, Ruby, C#, Python | **0.0** | — |
+
+Seven of the top eight are C. Everything decomposed into methods sits at or near
+zero **including the mature and enormous** — django is 935 levels at 0.5, laravel
+1,694 levels with a single Elite. So the driver is long procedural functions, not
+age and not scale. Part I's 0.13% figure came from a corpus that was uniformly
+modern method-decomposed code.
+
+**Nothing in any of the 23 repositories is analytically unkillable.**
+`balancing:budget`'s gate passes everywhere. vim's worst level (`src/regexp_bt.c`,
+six Elites totalling 134,025 HP) sits at clear ratio 4.85, and its 50,325 HP Elite
+is 7.1% of that level's obtainable damage. Framing these as "arithmetic
+impossibilities" is wrong; the case against them is time-to-kill under fire, which
+is §14's territory.
+
+---
+
+## 14. The Elite death rates measure bot policy
+
+**Read this before acting on anything Elite-related, here or in Part I.**
+
+The bot does not fight Elites. It knife-trades with them. wolf3d slot 8, pooled
+over all 25 deaths:
+
+| weapon used against the 3,000 HP Elite | shots | damage |
+|---|---:|---:|
+| **SIGKILL Knife** | **305** | **12,200** |
+| Toolchain | 88 | 7,040 |
+| Friday Hotfix | 73 | 3,328 |
+| Regex Shotgun | 44 | 4,275 |
+| gdb | 9 | 120 |
+| **ghidra (rockets)** | **2** | **135** |
+
+- Median engagement distance against the Elite: **0.54 tiles**; 82% of shots
+  inside 2 tiles. (codeenstein3d s13: 0.82t, 78%.)
+- **84%** of the bot's outgoing damage on that level went into the Elite. It
+  killed it **0 times in 25**.
+- At death, **24 of 29 Edge Cases and all 10 normals were still alive.**
+- **94%** of the damage the bot took came from the Elite it was standing on.
+- It **has** the rockets and does not fire them: median **4 at level start, 5 at
+  level end**, ghidra owned in all 25 runs.
+
+**Why, in code.** `shouldCloseToMelee` "only ever asks how far away the target is,
+never how big it is" (`combatPolicy.mjs:269-270`) — nothing declines a knife trade
+against 3,000 HP. Having closed to ~0.5t, `rocketAimUnsafe` blocks every rocket
+inside `ROCKET_SAFE_DISTANCE` (4 tiles, `:314`, enforced `:1170`) and
+`pickRangedWeapon` "never selects ghidra within ROCKET_SAFE_DISTANCE". **The bot
+disables its own best anti-Elite weapon by closing**, then grinds 3,000 HP with a
+40-damage knife while taking doubled melee damage.
+
+### The A/B
+
+`MELEE_MAX_TARGET_HP` exists for exactly this question, shipped inert at
+`Infinity`, and had never been run. Its comment states the question verbatim:
+*"whether those two levels are genuinely brutal or whether the bot simply fights
+them badly, and no amount of re-tuning enemy HP settles it."*
+
+Same staged wolf3d campaign, same three cells, 20 runs each, event log verified.
+The knob is surgically scoped: across wolf3d levels 1–8 the **only** enemy above
+500 HP is that single Elite (0 of 5,319 normals, 0 of 13,016 Edge Cases).
+
+| | baseline | `MELEE_MAX_TARGET_HP:500` |
+|---|---:|---:|
+| median Elite engagement | 0.54t | **1.25t** |
+| knife swings at the Elite | 305 | **0** |
+| ghidra shots | 2 | 1 |
+| rockets held, start → end | 4 → 5 | 4 → 5 |
+| level-8 deaths | 100% [87–100] 25/25 | 89% [72–96] 24/27 |
+| **Elite kills** | **0** | **0** |
+| damage dealt / taken, Elite share | 84% / 94% | 64% / 85% |
+
+**The knob bound and the lethality result is null.** Level-8 survival goes 0/25 →
+3/27 (**Fisher p = 0.236**), and runs reaching level 9+ go 0/60 → 3/60
+(**p = 0.244**). Median campaign depth appears to move 4 → 6, but p25 (3) and p75
+(8) are identical in both arms — the distribution is bimodal and the median is a
+poor summary. **Three runs getting further is not an effect.**
+
+**Why it is null was predicted before the run.** The knob stops the bot *closing*;
+it does not stop the Elite closing. Engagement settles at 1.25t — still inside
+`ROCKET_SAFE_DISTANCE` — so ghidra stayed blocked and the Elite was never killed
+in either arm. The bot lands in a **dead zone**: too far to knife, too close to
+rocket, left with shotgun and Friday Hotfix against 3,000 HP.
+
+Per the knob's own comment, read this as **"closing is not the whole mechanism"**
+— not as "the bot fights these levels fine."
+
+**What the real fix has to be.** Hold range from a target you cannot burst down.
+The only retreat that exists, `NAV_BACKPEDAL_RETREAT`, is gated on
+`CRITICAL_HEALTH_FRACTION: 0.2` — it fires below 20% health, which against doubled
+melee damage is a hit or two from death. There is no "this target is too big, keep
+distance" rule anywhere. That is a code change, not a knob, and §8.4 already named
+the target: *"a bot variant that opens Elite engagements beyond 6 tiles."* §8.4
+also records that **two prior rocket A/Bs came back null** because they probed
+`pickRangedWeapon` in isolation — *"a probe of a pure function proves the function
+changed, not that the situation it needs ever occurs."* This A/B avoided that by
+measuring engagement distance in real runs; any successor must do the same.
+
+---
+
+## 15. The bot wedges, and it costs more than any balance issue
+
+**121 of 405 runs (30%) ended stuck, not dead.** Two distinct failure signatures.
+
+**Stall — serilog, 60 of 60 runs.** Zero deaths across all 15 slots and zero
+completions. Slot 12 logs **743 `stall` anomalies**; slot-13 stalls read
+`activity=loot threatDist≈1.25 hpFrac 1.00->1.00` — wedged mid-loot beside an
+enemy that is neither killing it nor being killed. ripgrep lost 13 of 45 runs and
+curl 29 of 60 the same way.
+
+**Oscillation — curl, 58 of 58 runs on level 1.** The first curl capture never
+produced a single `levelEnd`. Two different shell-script slot-1 files were tried,
+with an identical signature both times:
+
+```
+oscillation (2400 ticks) activity=route travelled=120.3t net=0.36t
+ratio=332.9x signFlips=800/2399 navDist=0.71t  hpFrac 0.90->0.90
+```
+
+`navDist=0.71` is **√2/2**, the diagonal offset between tile centres, against an
+`ARRIVE_EPS` of **0.15** (`combatPolicy.mjs:164`). The bot orbits a waypoint one
+diagonal step away, at full health, for 2,400 ticks — walking 120 tiles to achieve
+0.36 tiles of progress. Both levels are *tiny* (226 and 265 walkable tiles), so
+this is geometry, not scale. Excluding `.sh` produced a campaign whose first three
+levels clear normally, so **curl's capture excludes 26 shell levels as a
+workaround for a bot bug, not a balance decision.** Evidence is preserved at
+`balancing_capture_curl_WEDGED_lvl1/`.
+
+Both are the open backlog item *"Bot circles in open space and beside armed spikes
+— oscillation up ~50%"*, filed as navigation tuning measured in ticks per 1,000
+decisions. **That framing is wrong by an order of magnitude**: this is the sole
+reason a repository scores 0% completion with zero deaths, and it costs more runs
+across the sweep than every balance problem combined.
+
+**A pre-flight lesson.** The entrypoint check used `CODEENSTEIN_TELEMETRY_LEVEL_LIMIT=1`
+and proved only that the right map *loaded*. It now uses `LEVEL_LIMIT=3` and
+asserts a `levelEnd` with outcome `cleared` — proving a level can be **finished**,
+not merely entered. The first curl capture burned 58 runs because the old check
+could not tell the difference.
+
+---
+
+## 16. Conclusions and follow-up
+
+### What to fix, ranked
+
+**1. Give the bot a threat-sized standoff, and re-measure every Elite level.**
+(§14) First because it gates everything else: while it stands, no Elite lethality
+number in this document measures level difficulty. `MELEE_MAX_TARGET_HP:500` works
+as designed and is not sufficient — the fix is holding range beyond ~4.5t (§8.4
+says beyond 6t), which is a code change.
+*Acceptance:* median Elite engagement above 4.5t, ghidra shots per Elite fight
+above zero (baseline: 2 across 25 deaths), then re-run wolf3d s8 and demo 15/17.
+
+**2. Fix the stall and oscillation bugs.** (§15) They cost **121 of 405 runs**,
+more than every balance issue combined, and they are the cheapest completion-rate
+win available because nothing about the balance needs to change.
+*Acceptance:* serilog completes at a rate comparable to sinatra's 88%; curl runs
+without excluding `.sh`.
+
+**3. Fix `stage-campaign.mjs` to select on staged-order metadata.** (§13) Cheap,
+and it invalidates the recorded rationale for one of three must-include slots in
+every campaign staged so far.
+
+**4. Cap Elite HP — supported, but not first.** Justified by *practical*
+killability, not by "arithmetic impossibility" (§13 retracts that framing: nothing
+is analytically unkillable). The controlled comparison is laravel s14 versus demo
+L12 — crowd held at ~18 enemies and ~280 DPS, **3,300 HP kills 0/156 while 25,050
+HP kills 47/47**. But §11 shows HP does not order lethality generally, and §14
+shows the measurement is contaminated by bot policy, so **the size of any clamp's
+benefit cannot be read off these numbers.** *Do not lower
+`ELITE_COMPLEXITY_THRESHOLD`* — Elites already occur at ~5× the assumed rate.
+
+**5. Do not write the "level size is the real outlier" backlog item as drafted.**
+(§12) Its headline example is refuted by a level of the same size that every run
+cleared.
+
+### Permitted but not confirmed
+
+**6. Soften the Elite HP cliff between complexity ~30 and ~50.** Real and firing
+217 times across the corpus, but no capture has isolated its effect.
+
+**7. Write an Edge Case attrition item.** Edge Cases deal 56–91% of all lethal
+damage and have no backlog entry. This is a hypothesis about what to investigate,
+not a measured fix.
+
+### Overlap with the open backlog
+
+| # | Backlog item | Relationship | Action |
+|---|---|---|---|
+| 1 | **Elites too strong, and not rare** | Confirms "not rare" (23 repos); **substantially weakens "too strong"** — §11 shows HP does not order lethality, §14 shows bot contamination, §13 shows nothing is analytically unkillable | Keep; rewrite the justification, **delete the "arithmetic impossibility" framing**, demote below the bot fixes |
+| 2 | its *"acceptance is measurable without a bot run"* | **Partly contradicted.** A sweep can verify a ceiling; it cannot verify a lethality change — on the Elite repo, solver output has ρ = −0.02 against observed deaths | Split the criterion: sweep for the ceiling, bot capture for any lethality claim |
+| 3 | its *"the real outlier is level size … wants its own item"* | **Refuted** (§12) | Delete the bullet; write the Edge Case item in its place |
+| 4 | its *"do not lower the threshold without addressing the cliff"* | **Reinforced** — the 23-repo sweep raises the c≥40 share to 0.77% | Unchanged |
+| 5 | **Bot circles in open space / oscillation (NOT fixed)** | **Strong overlap, and the item understates it by an order of magnitude** (§15) — this wedged 60/60 serilog runs and 58/58 curl runs | **Re-scope and re-prioritise.** It is not navigation polish; it is the top completion-rate blocker |
+| 6 | **Lane parallelism idles** | No finding overlap, but it gates follow-up 3 below | Cross-reference |
+| 7 | **Flamethrower reach/falloff** | No overlap; its evidence is the Part I capture | Unchanged |
+| 8 | **`fetch-online-wads.mjs` should degrade** | No overlap | Unchanged |
+
+### Recommended further investigation
+
+1. **Re-solve every capture in staged order before trusting any solver-derived
+   number.** (§13) ~20 s per repository, and it is the error that nearly produced
+   a wrong headline here.
+2. **Log the geometry density cannot capture** — chokepoint width, sightline
+   length from spawn, spawn clustering. The cheap spatial metric already exists
+   and is not sufficient (§12). *Acceptance:* |ρ| > 0.6 on wolf3d **and**
+   non-negative on codeenstein3d — one number that works where both current ones
+   fail.
+3. **Capture `normal` alongside `hard`.** Near-free in wall-clock (lanes idle
+   ~50% of a run), and **zero** `normal` data exists for any real repository, so
+   every Part II statement is hard-only.
+4. **Isolate the wolf3d/curl inversion** (§11) — the highest-value single
+   experiment. A 3,000 HP Elite kills 25/25 and a 3,825 HP one kills 26/26, while
+   3,075 and 3,300 HP Elites kill 0/156. Compare the encounters directly: room
+   dimensions, spawn distance, whether the Elite is reachable before it reaches
+   you, cover, and weapons held on arrival.
+5. **Re-run the Part I demo capture after any clamp** — it is the only campaign at
+   n=360 and the regression baseline.
+6. **Record `n` and profile mix beside every per-slot rate.** Deep slots are
+   reached almost exclusively by Pro, biasing every pooled per-slot number toward
+   "safe". The per-repo tables in §10 split on profile; the pooled correlations in
+   §12 and §13 do not, and that limitation should not have to be rediscovered.
