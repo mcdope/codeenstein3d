@@ -1080,18 +1080,36 @@ against a *different* staged level:
 
 | | planner (`planLevels`) | browser (`findEntrypointByScanning`) |
 |---|---|---|
-| rule | filename order, slot 1 | lowest complexity, **requiring `complexity > 0`** (`main.ts:2250`) |
-| level 1 | `01_projects_OS400_make-docs.sh` — 2 enemies, 89 walkable | `03_docs_examples_pop3-stat.c` — 2 enemies, 239 walkable |
+| rule | filename order, slot 1 | **cheapest file containing a `main`/`Main`**, falling back to cheapest overall (`main.ts:2243-2257, 2268`) |
+| level 1 | `01_projects_OS400_make-docs.sh` — complexity **1**, no `main` | `03_docs_examples_pop3-stat.c` — complexity **4**, `int main(void)` at line 38 |
 
-Shell scripts parse to complexity **0**, so the browser's entrypoint scan skips
-them while `planLevels` does not. The bot therefore drove a route computed for
-`make-docs.sh` around a map that was actually `pop3-stat.c`, and ground against
-a wall at (21,32) — floor in the planner, wall in the engine — with `y` pinned
-at exactly 31.75 while `x` slid west, which is textbook axis-separated collision
-sliding rather than a heading oscillation.
+> **Corrected 2026-08-06 (second pass).** This section first said shell scripts
+> parse to complexity **0** and are therefore skipped. **That is wrong and was
+> published in three places.** Measured directly: `make-docs.sh` scores **1**,
+> not 0 — tree-sitter-bash emits top-level `variable_assignment` nodes that
+> `GLOBAL_CONTAINER` matches. It is not skipped at all.
+>
+> The real rule is `bestWithMain ?? bestOverall ?? firstParsed`: the browser
+> prefers the cheapest file that *has a `main` function*, and only falls back to
+> cheapest-overall when none does. `pop3-stat.c` won because it has one, despite
+> being four times more complex. Excluding `.sh` re-aligned the two enumerations
+> by changing which file sorted first, not by removing zero-complexity files.
+>
+> This matters beyond bookkeeping: `stage-campaign.mjs`'s ordering guard ("slot
+> 1 must remain the global complexity minimum") models only the `bestOverall`
+> branch, so **it cannot prevent this desync** — any campaign whose cheapest
+> file lacks `main` while another has one will diverge. Staging-time prevention
+> would have to model `hasMain` too; the runtime grid gate does not care either
+> way, which is the argument for having it.
 
-**Excluding `.sh` did not work around a bot bug — it accidentally removed the
-zero-complexity files and re-aligned the two enumerations.** curl's capture is
+The bot therefore drove a route computed for `make-docs.sh` around a map that
+was actually `pop3-stat.c`, and ground against a wall at (21,32) — floor in the
+planner, wall in the engine — with `y` pinned at exactly 31.75 while `x` slid
+west, which is textbook axis-separated collision sliding rather than a heading
+oscillation.
+
+**Excluding `.sh` did not work around a bot bug — it re-aligned the two
+enumerations.** curl's capture is
 valid; the reason recorded for the exclusion was not.
 
 **The pre-flight that let this through.** The entrypoint check compares the
