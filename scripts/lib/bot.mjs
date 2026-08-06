@@ -772,7 +772,18 @@ export class Bot {
    * kept in separate slots, and why `abandoned` is scoped per-level).
    */
   startLevel(map) {
-    this.map = map;
+    // Take our own copy of the grid. `#refreshGridIfChanged` writes the
+    // engine's live grid into `this.map.grid` as doors open, and `map` here is
+    // the caller's *plan* object — `levelPlans[i].map`, built once and reused
+    // for every attempt. Sharing it meant attempt 1 permanently rewrote the
+    // plan, so attempt 2 routed against attempt 1's end-of-level grid with
+    // every door it had opened already open, and attempt 3 against attempt 2's.
+    //
+    // Caught by the plan/engine alignment check on a two-attempt serilog run:
+    // attempt 1 clean, attempt 2 mismatching on levels 6, 9, 11, 12 and 15 (up
+    // to 62 tiles). Every capture runs many attempts, so every attempt after
+    // the first was planning against a map that no longer existed.
+    this.map = { ...map, grid: map.grid.map((row) => [...row]) };
     this.mineMemory = {
       retreatKey: null,
       retreatTicks: 0,

@@ -165,6 +165,24 @@ describe("driveToward's no-progress bail", () => {
   });
 });
 
+describe("startLevel", () => {
+  it("does not write the engine's live grid back into the caller's plan", async () => {
+    // `levelPlans[i].map` is built once and reused for every attempt, and
+    // `#refreshGridIfChanged` assigns into `this.map.grid` as doors open. When
+    // those were the same object, attempt 1 rewrote the plan and attempt 2
+    // routed against attempt 1's end-of-level grid. Found on a two-attempt
+    // serilog run: attempt 1 clean, attempt 2 mismatching on five levels.
+    const plan = openMap();
+    const before = plan.grid.map((row) => [...row]);
+    const bot = new FakeBot({});
+    bot.startLevel(plan);
+    // Simulate the live-grid refresh opening a door.
+    bot.map.grid[1][1] = 3;
+    expect(plan.grid).toEqual(before);
+    expect(bot.map.grid[1][1]).toBe(3);
+  });
+});
+
 describe("driveLegs", () => {
   it("reports a stuck route with both state and reason", async () => {
     // The transition script branched on `reason` and every other caller on
