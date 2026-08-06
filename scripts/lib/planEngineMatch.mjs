@@ -40,15 +40,40 @@
  * precisely the invariant asserted here.
  */
 
-/** Tiles differing between a planned grid and the engine's live grid. */
+/** Tile values the engine treats as solid — `isWall` in `src/engine/player.ts`:
+ * wall, locked door, unopened secret wall, lore terminal, unopened branch door.
+ * Everything else is walkable, including acid (2) and spike traps (5). */
+const SOLID_TILES = new Set([1, 3, 6, 7, 8]);
+
+/**
+ * Tiles differing between a planned grid and the engine's live grid, split by
+ * whether the difference can affect a route.
+ *
+ * The split is load-bearing. Comparing raw values flags differences that do not
+ * matter: `planLevels` generates every level with a *fixed* loadout
+ * (`hasRocketLauncher: false`, all weapons missing) while the engine generates
+ * against the player's real progression, and that moves a handful of spike
+ * traps. Measured on serilog level 12 — 8 tiles differ, all of them 0<->5, and
+ * **none** change traversability. Killing a capture for that would be a false
+ * positive; the routes are identical.
+ *
+ * `solid` is what actually breaks a run: a tile the planner thinks is floor and
+ * the engine thinks is wall is how the bot walks into a wall it believes is
+ * open, which is the failure this module exists to catch.
+ */
 export function gridDiffCount(plannedGrid, liveGrid) {
-  let diffs = 0;
+  let total = 0;
+  let solid = 0;
   for (let y = 0; y < plannedGrid.length; y++) {
     for (let x = 0; x < plannedGrid[y].length; x++) {
-      if (plannedGrid[y][x] !== liveGrid?.[y]?.[x]) diffs++;
+      const a = plannedGrid[y][x];
+      const b = liveGrid?.[y]?.[x];
+      if (a === b) continue;
+      total++;
+      if (SOLID_TILES.has(a) !== SOLID_TILES.has(b)) solid++;
     }
   }
-  return diffs;
+  return { total, solid };
 }
 
 /**
@@ -58,8 +83,11 @@ export function gridDiffCount(plannedGrid, liveGrid) {
  */
 export function scorePlansAgainstGrid(levelPlans, liveGrid) {
   return levelPlans
-    .map((plan, index) => ({ index, filename: plan.filename, diffs: gridDiffCount(plan.map.grid, liveGrid) }))
-    .sort((a, b) => a.diffs - b.diffs);
+    .map((plan, index) => {
+      const { total, solid } = gridDiffCount(plan.map.grid, liveGrid);
+      return { index, filename: plan.filename, diffs: total, solidDiffs: solid };
+    })
+    .sort((a, b) => a.solidDiffs - b.solidDiffs || a.diffs - b.diffs);
 }
 
 /**
@@ -74,21 +102,24 @@ export function scorePlansAgainstGrid(levelPlans, liveGrid) {
  */
 export async function checkPlanMatchesEngine(page, map, { levelNo = null, levelPlans = null } = {}) {
   const liveGrid = await page.evaluate(() => window.__codeensteinTestHooks.getGrid());
-  const diffs = gridDiffCount(map.grid, liveGrid);
-  if (diffs === 0) return { ok: true, diffs: 0 };
+  const { total: diffs, solid } = gridDiffCount(map.grid, liveGrid);
+  // Only a traversability difference means the bot is routing against a map it
+  // is not standing on. Value-only differences are reported by the caller if it
+  // cares, but they do not invalidate a route — see `gridDiffCount`.
+  if (solid === 0) return { ok: true, diffs, solid: 0 };
 
   const scored = levelPlans ? scorePlansAgainstGrid(levelPlans, liveGrid) : null;
   const best = scored?.[0];
   const where = levelNo === null ? "" : ` on level ${levelNo}`;
   const lines = [
     `Refusing to continue: the engine is not playing the level the bot is routing${where}.`,
-    `  ${diffs} grid tiles differ between the planned map and the engine's live grid.`,
+    `  ${solid} of ${diffs} differing tiles change whether a tile can be walked through.`,
   ];
   if (best) {
     lines.push(
-      best.diffs === 0
+      best.solidDiffs === 0
         ? `  The engine is actually playing planned index ${best.index}: ${best.filename}`
-        : `  No planned level matches exactly; closest is index ${best.index} (${best.diffs} diffs): ${best.filename}`,
+        : `  No planned level matches; closest is index ${best.index} (${best.solidDiffs} solid diffs): ${best.filename}`,
     );
   }
   lines.push(
@@ -96,7 +127,7 @@ export async function checkPlanMatchesEngine(page, map, { levelNo = null, levelP
     "  cheapest file containing a main()/Main. Every route from here is planned for a",
     "  map that is not loaded, so the run would wedge rather than fail — fix the staging.",
   );
-  return { ok: false, diffs, scored, message: lines.join("\n") };
+  return { ok: false, diffs, solid, scored, message: lines.join("\n") };
 }
 
 /**

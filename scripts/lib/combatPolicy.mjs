@@ -171,6 +171,34 @@ export const DEFAULT_TUNING = {
   // See `maybeDetourForLoot`'s doc comment — caps how far (straight-line)
   // the bot will detour for a single uncollected pickup.
   MAX_LOOT_DETOUR_TILES: 20,
+  // Per-level ceiling on loot detouring, as a multiple of the level's planned
+  // route length. 1.0 means "walk at most as far collecting as travelling".
+  //
+  // Exists because the detour had no termination condition at all.
+  // `maybeDetourForLoot` is called once per *waypoint* (`driveLegs` calls it
+  // before each leg and again inside the waypoint loop), re-picks from scratch
+  // every time, and will walk `MAX_LOOT_DETOUR_TILES` for whatever is nearest
+  // — while kills keep creating fresh drops. Measured on serilog level 9:
+  // 88,791 decisions and 14,268 tiles walked on a 72x72 map, of which **87%**
+  // was loot detouring against 12% on the route. Every one of that repo's 60
+  // capture runs wedged, with zero deaths.
+  //
+  // A fraction rather than a fixed tile count so it scales with the level: the
+  // same number cannot be right for a 15-tile route and a 300-tile one.
+  //
+  // Urgent health detours deliberately ignore this — see `maybeDetourForLoot`.
+  LOOT_BUDGET_FRACTION: 1.0,
+  // Give up on one drop after this many approaches that fail to collect it.
+  //
+  // Same shape as `MINE_TARGET_GIVEUP_TICKS`, for the same reason: without it a
+  // target the bot cannot actually reach is re-selected forever. That was not
+  // hypothetical — the bot walks to a drop's *tile centre* while the engine
+  // collects within `AMMO_PICKUP_RADIUS` (0.5) of the drop itself, and
+  // centre-to-corner is 0.707, so ~21.5% of a tile was unreachable. Dynamic
+  // drops are never added to `visitedPickups` either, so such a drop was both
+  // uncollectable and permanently re-picked. Walking to the drop coordinate
+  // fixes the geometry; this bounds whatever the geometry does not.
+  LOOT_TARGET_GIVEUP_ATTEMPTS: 3,
   // How far (in tiles) the bot's actual position may be from an upcoming
   // waypoint before it's considered "displaced" and worth a fresh BFS
   // re-plan — see `driveTowardWithReplan`'s doc comment.
@@ -285,10 +313,25 @@ export const DEFAULT_TUNING = {
   // dead trigger is worse than any trade.
   MELEE_MAX_TARGET_HP: Infinity,
   // Break contact with a target too big to burst down, the way the bot already
-  // breaks contact at critical health. Off by default (`Infinity`), same
-  // single-variable switch shape as `MELEE_MAX_TARGET_HP`:
+  // breaks contact at critical health. **On** since 2026-08-06; set to
+  // `Infinity` to restore the old stand-and-trade behaviour:
   //
-  //   CODEENSTEIN_TELEMETRY_TUNING='{"STANDOFF_MIN_TARGET_HP":500}'
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"STANDOFF_MIN_TARGET_HP":1e999}'
+  //
+  // Measured before enabling, on the same staged wolf3d campaign, 20 runs per
+  // profile: engagement distance against a 3,000 HP Elite went **0.54t ->
+  // 5.10t**, knife swings into it **305 -> 0**, ghidra shots **2 -> 21** (0.5%
+  // -> 22.3% of the damage dealt to it). Level-8 lethality did *not* move —
+  // 100% -> 89%, Fisher p = 0.24 — because the constraint there is arithmetic:
+  // ghidra deals ~93 damage a shot and the bot carries a median of 4 rockets,
+  // so 372 damage against 3,000 HP.
+  //
+  // Enabled anyway, because the point is instrument quality rather than
+  // lethality. A bot that knife-trades a 3,000 HP Elite 305 times is not a
+  // usable measuring device for level difficulty, and every Elite death rate
+  // recorded before this was an upper bound produced by the worst available
+  // tactic. Known cost: `selfRocket` damage appeared at 3% of damage taken on
+  // that level, having been 0% before.
   //
   // Why it exists. `MELEE_MAX_TARGET_HP` was run as an A/B on the wolf3d
   // capture and came back null: it removed the knife trade completely (305
@@ -321,7 +364,7 @@ export const DEFAULT_TUNING = {
   // backing away from something you have no ammo to shoot is worse than any
   // trade. And it reads `threat.hp`, not `maxHp`, so a half-killed Elite stops
   // being worth avoiding once it drops under the threshold.
-  STANDOFF_MIN_TARGET_HP: Infinity,
+  STANDOFF_MIN_TARGET_HP: 500,
   // How far to hold off a `STANDOFF_MIN_TARGET_HP` target. Inert while that is
   // `Infinity`. See above for why 5 and not 4.
   STANDOFF_DISTANCE: 5,

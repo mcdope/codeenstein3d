@@ -21,18 +21,31 @@ const B = [
 
 describe("gridDiffCount", () => {
   it("is zero for identical grids", () => {
-    expect(gridDiffCount(A, A.map((r) => [...r]))).toBe(0);
+    expect(gridDiffCount(A, A.map((r) => [...r]))).toEqual({ total: 0, solid: 0 });
   });
 
-  it("counts every differing tile", () => {
-    expect(gridDiffCount(A, B)).toBe(2);
+  it("counts every differing tile, and how many change traversability", () => {
+    expect(gridDiffCount(A, B)).toEqual({ total: 2, solid: 2 });
+  });
+
+  it("does not count a walkable-to-walkable change as solid", () => {
+    // The false positive this split exists for: `planLevels` generates with a
+    // fixed loadout while the engine uses the real progression, which moves a
+    // few spike traps (0<->5). Measured 8 such tiles on serilog level 12, none
+    // affecting a route. Killing a capture for that would be wrong.
+    const spikes = [
+      [1, 1, 1],
+      [1, 5, 1],
+      [1, 1, 1],
+    ];
+    expect(gridDiffCount(A, spikes)).toEqual({ total: 1, solid: 0 });
   });
 
   it("treats a missing row or column as differing rather than throwing", () => {
     // A truncated live grid is a real possibility if the engine hands back a
     // smaller map; it must register as a mismatch, not crash the capture.
-    expect(gridDiffCount(A, [[1, 1, 1]])).toBe(6);
-    expect(gridDiffCount(A, undefined)).toBe(9);
+    expect(gridDiffCount(A, [[1, 1, 1]])).toMatchObject({ total: 6 });
+    expect(gridDiffCount(A, undefined)).toMatchObject({ total: 9 });
   });
 });
 
@@ -40,7 +53,7 @@ describe("scorePlansAgainstGrid", () => {
   it("ranks an exact match first and names it", () => {
     const plans = [planOf("00_planned.c", A), planOf("01_other.c", B)];
     const scored = scorePlansAgainstGrid(plans, B);
-    expect(scored[0]).toMatchObject({ index: 1, filename: "01_other.c", diffs: 0 });
+    expect(scored[0]).toMatchObject({ index: 1, filename: "01_other.c", diffs: 0, solidDiffs: 0 });
     expect(scored[1].diffs).toBe(2);
   });
 });
@@ -50,6 +63,18 @@ describe("checkPlanMatchesEngine", () => {
     const result = await checkPlanMatchesEngine(fakePage(A.map((r) => [...r])), { grid: A });
     expect(result.ok).toBe(true);
     expect(result.diffs).toBe(0);
+  });
+
+  it("passes when the only differences are walkable-to-walkable", async () => {
+    const spikes = [
+      [1, 1, 1],
+      [1, 5, 1],
+      [1, 1, 1],
+    ];
+    const result = await checkPlanMatchesEngine(fakePage(spikes), { grid: A });
+    expect(result.ok).toBe(true);
+    expect(result.diffs).toBe(1);
+    expect(result.solid).toBe(0);
   });
 
   it("fails and names the level the engine is actually playing", async () => {
@@ -71,7 +96,7 @@ describe("checkPlanMatchesEngine", () => {
     const result = await checkPlanMatchesEngine(fakePage(B), { grid: A });
     expect(result.ok).toBe(false);
     expect(result.scored).toBeNull();
-    expect(result.message).toContain("2 grid tiles differ");
+    expect(result.message).toContain("2 of 2 differing tiles");
   });
 
   it("says so explicitly when nothing matches exactly", async () => {
@@ -83,6 +108,6 @@ describe("checkPlanMatchesEngine", () => {
     const plans = [planOf("a.c", A), planOf("b.c", B)];
     const result = await checkPlanMatchesEngine(fakePage(live), plans[0].map, { levelPlans: plans });
     expect(result.ok).toBe(false);
-    expect(result.message).toContain("No planned level matches exactly");
+    expect(result.message).toContain("No planned level matches");
   });
 });

@@ -481,17 +481,19 @@ describe("decide — branch selection", () => {
     expect(intent.branch).toBe("criticalHealth");
   });
 
-  it("REGRESSION GUARD: shipped defaults leave the standoff inert", () => {
-    // The shipped value is Infinity, exactly like MELEE_MAX_TARGET_HP. If this
-    // ever fails, every telemetry baseline recorded before the change is no
-    // longer comparable to anything recorded after it.
-    expect(DEFAULT_TUNING.STANDOFF_MIN_TARGET_HP).toBe(Infinity);
+  it("REGRESSION GUARD: the standoff is enabled by default", () => {
+    // Inverted on 2026-08-06 when the knob was turned on. It shipped inert
+    // while it was a diagnostic; the arm-2 A/B measured what it does (see its
+    // comment in DEFAULT_TUNING) and it is now the shipped behaviour. If this
+    // ever flips back, every telemetry baseline recorded after that date stops
+    // being comparable to anything recorded before it.
+    expect(DEFAULT_TUNING.STANDOFF_MIN_TARGET_HP).toBe(500);
     const intent = decide(
       { player: makePlayer(), enemies: [makeEnemy({ hp: 3000, maxHp: 3000, elite: true, x: 12.0 })], mines: [], navTarget: null, map: makeMap() },
       freshMemory(),
       makeConfig(),
     );
-    expect(intent.branch).not.toBe("standoff");
+    expect(intent.branch).toBe("standoff");
   });
 
   it("retreats from a mine it is standing too close to", () => {

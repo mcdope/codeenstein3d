@@ -93,6 +93,10 @@ export const BRANCH_DOOR_TILE = 8; // src/map/types.ts's Tile enum
  * approached through more of it. */
 const LOOT_DETOUR_AVOID_TILES = new Set([HAZARD_TILE, SPIKE_TRAP_TILE]);
 
+/** Stable identity for a pickup. `getDrops()` exposes no id and drops do not
+ * move, so the coordinate is both sufficient and all there is. */
+const lootKey = (p) => `${p.x},${p.y}`;
+
 /** How many "stand on the exit, then go kill whatever is keeping it inert"
  * rounds `driveToExit` will run before giving up. More than one because
  * `exitRoomHasAliveEnemy()` is satisfied by *any* living exit-room enemy and
@@ -778,6 +782,21 @@ export class Bot {
       trace: this.logger.trace ? [] : undefined,
     };
     this.visitedPickups = new Set();
+    // Loot-detour state, per level like `visitedPickups` above.
+    //
+    // `lootAbandoned` is the dynamic-drop analogue of `mineMemory.abandoned`:
+    // a drop walked to `LOOT_TARGET_GIVEUP_ATTEMPTS` times without being
+    // collected is written off for the rest of the level. Keyed by coordinate
+    // because `getDrops()` exposes no id — drops do not move, so that is a
+    // stable identity and the only one available.
+    //
+    // `lootBudgetTiles` is set by `driveLegs` once it knows the route length;
+    // `Infinity` here so any caller driving waypoints without a planned route
+    // behaves exactly as it did before.
+    this.lootAbandoned = new Set();
+    this.lootAttempts = new Map();
+    this.lootTarget = null;
+    this.lootBudgetTiles = Infinity;
     // Last `gridVersion` seen from the engine — see `#refreshGridIfChanged`.
     // Reset per level, because the engine's counter is per level too.
     this.lastGridVersion = null;
@@ -1006,12 +1025,23 @@ export class Bot {
     if (uncollected.length === 0) return { state: "playing" };
 
     const urgent = player.healthFraction < this.profile.healthDetourThreshold;
-    const healthOnly = uncollected.filter((p) => p.kind === "health");
-    const pool = urgent && healthOnly.length > 0 ? healthOnly : uncollected;
+    // A detour for health when close to death is survival, not shopping, so it
+    // ignores the budget entirely — and, via `healthOnly`, everything else too.
+    const reachable = uncollected.filter((p) => !this.lootAbandoned.has(lootKey(p)));
+    if (reachable.length === 0) return { state: "playing" };
+    const healthOnly = reachable.filter((p) => p.kind === "health");
+    if (!urgent && this.lootBudgetTiles <= 0) return { state: "playing" };
+    const pool = urgent && healthOnly.length > 0 ? healthOnly : reachable;
+
+    // Stick with the current target while it is still on offer. Without this
+    // the nearest-path scan re-runs on every waypoint and the bot re-decides
+    // mid-approach, which is most of how 87% of a level's distance became loot.
+    const committed = this.lootTarget && pool.find((p) => lootKey(p) === this.lootTarget);
+    const candidates = committed ? [committed] : pool;
 
     let best = null;
     let bestPath = null;
-    for (const p of pool) {
+    for (const p of candidates) {
       if (Math.hypot(p.x - player.x, p.y - player.y) > this.tuning.MAX_LOOT_DETOUR_TILES) continue;
       const path = bfsPath(
         this.map,
@@ -1028,10 +1058,29 @@ export class Bot {
     }
     // Leave it uncollected rather than mark it visited — a later check, once
     // the route naturally passes closer, can still pick it up.
-    if (!best) return { state: "playing" };
+    if (!best) {
+      this.lootTarget = null;
+      return { state: "playing" };
+    }
     if (staticUncollected.includes(best)) this.visitedPickups.add(`${best.x},${best.y}`);
 
+    // Count approaches per target and write one off once it has had its
+    // chances. `readLootSources` stops offering a collected pickup, so a target
+    // still on offer after an approach was not collected.
+    const key = lootKey(best);
+    const attempts = (this.lootAttempts.get(key) ?? 0) + 1;
+    this.lootAttempts.set(key, attempts);
+    if (attempts > this.tuning.LOOT_TARGET_GIVEUP_ATTEMPTS) {
+      this.lootAbandoned.add(key);
+      this.lootTarget = null;
+      return { state: "playing" };
+    }
+    this.lootTarget = key;
+
     const path = bestPath;
+    // Charged on the walk, not on arrival: a detour that ends stuck still cost
+    // the distance. Urgent health spends nothing.
+    if (!urgent) this.lootBudgetTiles -= Math.max(0, path.length - 1);
     // `hp` and `urgent` are logged because loot detours turned out to be 24% of
     // all distance walked (see `summarizeActivityDistance`), and whether a given
     // detour was *worth* walking depends on the resource level at the time —
@@ -1041,7 +1090,14 @@ export class Bot {
       `[wpdebug] loot-detour from (${player.x.toFixed(1)},${player.y.toFixed(1)}) to best=(${best.x},${best.y}) kind=${best.kind} pathLen=${path.length} hp=${player.healthFraction.toFixed(2)} urgent=${urgent}`,
     );
     return this.#withActivity("loot", async () => {
-      for (const wp of pathToWaypoints(path)) {
+      // The last hop targets the drop's own coordinate rather than its tile
+      // centre. The engine collects within `AMMO_PICKUP_RADIUS` (0.5) of the
+      // drop, `ARRIVE_EPS` is 0.15, and centre-to-corner is 0.707 — so a drop
+      // near a corner was unreachable from the centre, about 21.5% of the
+      // tile's area. Arriving at the drop itself makes collection certain.
+      const waypoints = pathToWaypoints(path);
+      waypoints[waypoints.length - 1] = { x: best.x, y: best.y };
+      for (const wp of waypoints) {
         this.logger.wpDebug?.(`[wpdebug]   loot wp=(${wp.x},${wp.y})`);
         // Re-planning, the same as a route leg — see `driveTowardWithReplan`.
         // This call site kept the bare straight-line `driveToward` after the
@@ -1191,6 +1247,13 @@ export class Bot {
    * own stale `this.map` can no longer even BFS a path to). */
   async driveLegs(legs) {
     const openedDoors = this.openedDoors;
+    // Set the level's loot budget from the route it is a detour *from*. A
+    // fraction of the planned route rather than a fixed count, so the same
+    // number works for a 15-tile level and a 300-tile one. Only set here:
+    // `startLevel` leaves it `Infinity`, so a caller driving waypoints without
+    // a planned route keeps the old unbounded behaviour.
+    const routeTiles = legs.reduce((n, leg) => n + (leg.waypoints?.length ?? 1), 0);
+    this.lootBudgetTiles = routeTiles * this.tuning.LOOT_BUDGET_FRACTION;
 
     for (const leg of legs) {
       const detour = await this.maybeDetourForLoot(openedDoors);
