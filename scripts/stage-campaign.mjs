@@ -303,7 +303,62 @@ async function main() {
 
   const complexity = await complexityByFile(args.repo, levels);
   const selected = select(levels, args.slots, complexity);
-  const picked = order(selected, complexity);
+
+  // --- converge the min-clear-ratio pick on the campaign actually emitted ----
+  //
+  // `select` chose that pick from the *full-repo* solve, where every level
+  // carries ammo banked across the whole repository. This campaign is ~15
+  // levels and never accumulates it, so the pick routinely names the wrong slot
+  // — it did on four of the five repos captured on 2026-08-06 (curl claimed
+  // chkspeed.c at ratio 3.07; the real tightest was tool_getparam.c at 1.44).
+  //
+  // Re-picking is a fixed-point search, not one correction: the pick sits in
+  // `MUST_INCLUDE`, which `order` uses as its last bucket, so changing it
+  // changes slot positions, which changes carried ammo, which can change which
+  // slot is tightest. The *set* of levels never changes — only their order — so
+  // there are at most `slots` states and a seen-set detects a cycle exactly.
+  const ratio = (r) => r.clearRatio?.combined ?? Infinity;
+  const minRatioOf = (list) => list.reduce((a, b) => (ratio(b) < ratio(a) ? b : a));
+
+  let ratioPick = minRatioOf(selected).filename;
+  let picked = order(selected, complexity);
+  let stagedSolve = await resolveStagedOrder(picked, args.repo, args.difficulty);
+  // Every ordering visited, so a cycle can be resolved on merit rather than by
+  // giving up. Keyed by the pick that produced it.
+  const states = new Map([[ratioPick, { picked, stagedSolve, tightest: ratio(minRatioOf(stagedSolve)) }]]);
+  const chain = [ratioPick];
+  let cycled = false;
+
+  for (;;) {
+    const tightestPick = minRatioOf(stagedSolve).filename;
+    if (tightestPick === ratioPick) break;
+    if (states.has(tightestPick)) {
+      // No fixed point: two or more orderings each make the other's pick the
+      // tightest. Real — serilog is a 2-cycle and ripgrep a rho — so settle it
+      // rather than refuse. Among the orderings seen, take the one whose
+      // tightest slot is *lowest*: guaranteeing coverage of the most
+      // supply-stressed level is precisely what this must-include is for, and
+      // "lowest" is deterministic where "last visited" is an artifact of
+      // iteration order.
+      chain.push(`${tightestPick} (cycle)`);
+      cycled = true;
+      let best = null;
+      for (const [pick, st] of states) if (!best || st.tightest < best.st.tightest) best = { pick, st };
+      MUST_INCLUDE.delete(ratioPick);
+      MUST_INCLUDE.add(best.pick);
+      ratioPick = best.pick;
+      picked = best.st.picked;
+      stagedSolve = best.st.stagedSolve;
+      break;
+    }
+    MUST_INCLUDE.delete(ratioPick);
+    MUST_INCLUDE.add(tightestPick);
+    ratioPick = tightestPick;
+    chain.push(tightestPick);
+    picked = order(selected, complexity);
+    stagedSolve = await resolveStagedOrder(picked, args.repo, args.difficulty);
+    states.set(ratioPick, { picked, stagedSolve, tightest: ratio(minRatioOf(stagedSolve)) });
+  }
 
   console.log(`Staging ${picked.length} of ${levels.length} levels from ${path.relative(REPO_ROOT, args.repo)}`);
   console.log(`(${levels.filter((l) => l.bonusLevel).length} bonus levels excluded — .h/.H gets boosted ammo and is trivial)\n`);
@@ -316,45 +371,33 @@ async function main() {
     // can hold the same filename, and a silent overwrite would drop a level.
     const flat = `${slot}_${level.filename.replace(/[\\/]/g, "_")}`;
     const e = level.enemies;
+    // The ratio column is the *staged-order* one — the full-repo figure was off
+    // by 41x on curl and is what made the picks wrong in the first place.
     console.log(
       `${slot.padEnd(5)}${level.filename.slice(0, 39).padEnd(40)}${String(complexity.get(level.filename)).padStart(6)}${String(e.totalCount).padStart(5)}${String(Math.round(e.totalDps)).padStart(7)}` +
-        `${String(e.byArchetype.elite.hp).padStart(9)}${(level.clearRatio?.combined ?? 0).toFixed(2).padStart(8)}${MUST_INCLUDE.has(level.filename) ? "  <-- under test" : ""}`,
+        `${String(e.byArchetype.elite.hp).padStart(9)}${ratio(stagedSolve[i]).toFixed(2).padStart(8)}${MUST_INCLUDE.has(level.filename) ? "  <-- under test" : ""}`,
     );
     staged.push({ from: path.join(args.repo, level.filename), to: path.join(CAMPAIGN_DIR, flat) });
   });
 
-  // The picks were made against the full-repo solve; check them against the
-  // campaign actually being emitted. See `resolveStagedOrder`.
-  const stagedSolve = await resolveStagedOrder(picked, args.repo, args.difficulty);
-  const ratio = (r) => r.clearRatio?.combined ?? Infinity;
-  let worst = 0;
-  for (let i = 1; i < stagedSolve.length; i++) if (ratio(stagedSolve[i]) < ratio(stagedSolve[worst])) worst = i;
-  const claimed = picked.findIndex((l) => ratio(l) === Math.min(...picked.map(ratio)));
-
-  console.log(`\nStaged-order re-solve (${args.difficulty}) — clear ratio per slot:`);
-  console.log(stagedSolve.map((r, i) => `  ${String(i + 1).padStart(2, "0")} ${ratio(r).toFixed(2)}`).join(""));
-  console.log(`  tightest in staged order:   slot ${worst + 1} (${ratio(stagedSolve[worst]).toFixed(2)}) — ${stagedSolve[worst].filename}`);
-  console.log(`  full-repo pick was:       slot ${claimed + 1} (${ratio(picked[claimed]).toFixed(2)}) — ${picked[claimed].filename}`);
+  if (chain.length > 1) {
+    console.log(`\nMin-clear-ratio pick re-picked against the staged campaign (${chain.length - 1} swap(s)):`);
+    console.log(`  ${chain.join("\n    -> ")}`);
+  } else {
+    console.log(`\nMin-clear-ratio pick already correct for the staged campaign.`);
+  }
 
   if (args.solvedOut) {
     fs.writeFileSync(args.solvedOut, JSON.stringify({ [args.difficulty]: stagedSolve }, null, 1));
-    console.log(`  wrote stagedSolve-order solve to ${path.relative(REPO_ROOT, args.solvedOut)}`);
+    console.log(`  wrote staged-order solve to ${path.relative(REPO_ROOT, args.solvedOut)}`);
   }
 
-  if (worst !== claimed) {
-    const msg =
-      `\nRefusing to stage: the min-clear-ratio pick does not survive restaging.\n` +
-      `  Chosen on the full-repo solve: ${picked[claimed].filename} (ratio ${ratio(picked[claimed]).toFixed(2)})\n` +
-      `  Actually tightest once staged:  ${stagedSolve[worst].filename} (ratio ${ratio(stagedSolve[worst]).toFixed(2)})\n` +
-      `  The full-repo solve credits each level with ammo banked across the whole\n` +
-      `  repository, which this 15-level campaign never accumulates — on curl that\n` +
-      `  was a 41x overstatement. The recorded rationale for that slot would be wrong.\n` +
-      `  Re-run with --allow-pick-drift if the curation is deliberate.`;
-    if (!args.allowPickDrift) {
-      console.error(msg);
-      process.exit(1);
-    }
-    console.log(`${msg}\n  (--allow-pick-drift set: continuing anyway)`);
+  if (cycled) {
+    console.log(
+      `  No fixed point — the orderings above each make the other's pick tightest.\n` +
+      `  Settled on ${ratioPick} (tightest slot ${ratio(minRatioOf(stagedSolve)).toFixed(2)}), the most\n` +
+      `  supply-stressed of the orderings visited. Worth a look, but the staging is valid.`,
+    );
   }
 
   if (args.dryRun) {
