@@ -322,6 +322,36 @@ async function main() {
       calls.length = 0;
       say(`  --- level ${levelNo} is ${filename} (${map.grid[0].length}x${map.grid.length}), legs=${routePlain.legs?.length} ---`);
       bot.startLevel(map);
+      // Is the bot routing around the map it is actually standing on?
+      //
+      // `planLevels` enumerates in filename order; the game picks its entry
+      // point with `findEntrypointByScanning` (lowest complexity, and only
+      // among files scoring >0). A staged campaign whose slot 1 parses to
+      // complexity 0 desynchronises them, and then every route is valid for a
+      // level nobody is playing.
+      //
+      // This is checked by *grid equality* and not by enemy count, because
+      // enemy count is what missed it: curl's planner slot 1 and the level the
+      // browser actually loaded both held exactly 2 enemies, the count check
+      // passed, and 58 runs went into a wall the planner believed was floor.
+      // The mismatch is silent from every other angle — the run just wedges.
+      {
+        const liveGrid = await page.evaluate(() => window.__codeensteinTestHooks.getGrid());
+        let diffs = 0;
+        for (let y = 0; y < map.grid.length; y++) {
+          for (let x = 0; x < map.grid[y].length; x++) if (map.grid[y][x] !== liveGrid[y]?.[x]) diffs++;
+        }
+        if (diffs) {
+          say(`  *** PLAN/ENGINE MAP MISMATCH on level ${levelNo}: ${diffs} tiles differ ***`);
+          const scores = levelPlans.map((pl, k) => {
+            let d = 0;
+            for (let y = 0; y < pl.map.grid.length; y++) for (let x = 0; x < pl.map.grid[y].length; x++) if (pl.map.grid[y][x] !== liveGrid[y]?.[x]) d++;
+            return { k, d, filename: pl.filename };
+          }).sort((a, b) => a.d - b.d);
+          say(`      engine is actually playing: ${scores[0].d === 0 ? `idx ${scores[0].k} ${scores[0].filename}` : `(no exact match; closest idx ${scores[0].k} at ${scores[0].d} diffs)`}`);
+          say(`      every route from here is planned for a map that is not loaded — stop and fix the staging.`);
+        }
+      }
       const route = routePlain;
       const p0 = await bot.readState();
       if (p0.state !== "playing") { say(`  level ${levelNo}: run ended (${p0.state})`); break; }
