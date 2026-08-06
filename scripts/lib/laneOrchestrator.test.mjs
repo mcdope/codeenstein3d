@@ -4,9 +4,8 @@
 /**
  * Tests for the campaign lane orchestrator's cost bound.
  *
- * `driveCombo`'s retry loop is `for (;;)` — it keeps asking for another
- * invocation until the combo reaches its qualifying target. Two ways that
- * never terminates, both observed for real:
+ * The scheduler keeps asking for another invocation until a combo reaches its
+ * qualifying target. Two ways that never terminates, both observed for real:
  * - a combo the bot cannot clear (the 2026-07-24 multiplayer campaign's Hard
  *   cells, rescued by hand-lowering the target mid-run), and
  * - an invocation that *crashes*, which writes no output file — so a cap
@@ -140,5 +139,164 @@ describe("runLaneOrchestrator cost bound", () => {
       }),
     );
     expect(runner.calls).toHaveLength(0);
+  });
+});
+
+/**
+ * Chunk stealing.
+ *
+ * Lanes used to own a whole combo, so with combos <= lanes a finished lane had
+ * nothing left to take and stopped working while the run continued — 115 idle
+ * minutes of a 132-minute ripgrep capture, roughly half of all lane-time
+ * across the run. These pin the scheduler that replaced it.
+ */
+describe("runLaneOrchestrator chunk stealing", () => {
+  /** A runner that blocks until the test releases it, so several lanes can be
+   * observed genuinely in flight at once rather than racing to completion. */
+  function gatedRunner(label) {
+    const calls = [];
+    const release = [];
+    return {
+      label,
+      calls,
+      releaseAll(result = { code: 0, signal: null, killedForTimeout: false, elapsedMs: 1 }) {
+        const pending = release.splice(0);
+        for (const r of pending) r(result);
+      },
+      runInvocation(args) {
+        calls.push(args);
+        return new Promise((resolve) => release.push(resolve));
+      },
+    };
+  }
+
+  it("keeps a second lane working after the only other combo is finished", async () => {
+    // The exact idle-lane shape: two lanes, two combos, one of which is
+    // already satisfied. Under combo ownership the second lane took the
+    // finished combo, found nothing to do and exited for the rest of the run.
+    const banked = { a: 0, b: 10 };
+    const runners = [fakeRunner(() => ({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 1 })), fakeRunner(() => ({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 1 }))];
+    await runLaneOrchestrator(
+      baseParams({
+        combos: [{ id: "a" }, { id: "b" }],
+        scanExisting: (c) => ({ qualifying: banked[c.id], fileCount: 0 }),
+        runners,
+        maxInvocations: 4,
+        maxConcurrentPerCombo: 2,
+      }),
+    );
+    // Combo `b` needs nothing; every invocation went to `a`, and BOTH lanes
+    // contributed rather than one sitting idle.
+    const all = [...runners[0].calls, ...runners[1].calls];
+    expect(all).toHaveLength(4);
+    expect(runners[0].calls.length).toBeGreaterThan(0);
+    expect(runners[1].calls.length).toBeGreaterThan(0);
+  });
+
+  it("never gives two concurrent invocations the same sequence number", async () => {
+    // They would overwrite each other's output file, log and event-log
+    // directory — silently losing a whole chunk of a capture.
+    const runner = gatedRunner("l1");
+    const runner2 = gatedRunner("l2");
+    const done = runLaneOrchestrator(
+      baseParams({
+        scanExisting: () => ({ qualifying: 0, fileCount: 0 }),
+        runners: [runner, runner2],
+        maxInvocations: 2,
+        maxConcurrentPerCombo: 2,
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    const paths = [...runner.calls, ...runner2.calls].map((c) => c.outputPath);
+    expect(paths).toHaveLength(2);
+    expect(new Set(paths).size).toBe(2);
+    runner.releaseAll();
+    runner2.releaseAll();
+    await done;
+  });
+
+  it("tells each invocation how many of its combo were already in flight", async () => {
+    // A caller sizing a chunk from "target minus what is on disk" must
+    // subtract the work concurrent lanes were already asked for, or every
+    // extra lane re-runs the same shortfall.
+    const runner = gatedRunner("l1");
+    const runner2 = gatedRunner("l2");
+    const seen = [];
+    const done = runLaneOrchestrator(
+      baseParams({
+        scanExisting: () => ({ qualifying: 0, fileCount: 0 }),
+        envFor: (_c, _seq, _out, _ev, ctx) => {
+          seen.push(ctx.inFlightBefore);
+          return {};
+        },
+        runners: [runner, runner2],
+        maxInvocations: 2,
+        maxConcurrentPerCombo: 2,
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    expect(seen).toEqual([0, 1]);
+    runner.releaseAll();
+    runner2.releaseAll();
+    await done;
+  });
+
+  it("honours a concurrency limit that shrinks as work is banked", async () => {
+    // ceil(remaining / chunk): 5 remaining at chunk 2 admits 3 lanes, but once
+    // 4 are banked only one more invocation is worth starting.
+    let qualifying = 0;
+    const runner = fakeRunner(() => {
+      qualifying += 2;
+      return { code: 0, signal: null, killedForTimeout: false, elapsedMs: 1 };
+    });
+    await runLaneOrchestrator(
+      baseParams({
+        scanExisting: () => ({ qualifying, fileCount: 0 }),
+        targetQualifying: 5,
+        runners: [runner],
+        maxInvocations: 10,
+        maxConcurrentPerCombo: (_c, ctx) => Math.ceil(Math.max(0, ctx.target - ctx.qualifying) / 2),
+      }),
+    );
+    expect(runner.calls).toHaveLength(3); // 0->2, 2->4, 4->6 >= 5
+  });
+
+  it("parks a lane with nothing to claim instead of exiting the run", async () => {
+    // The deadlock/early-exit hazard: lane 2 finds the only combo already at
+    // its concurrency limit. It must wait for lane 1 to land and then take the
+    // next invocation — not decide the run is over and leave.
+    const gated = gatedRunner("slow");
+    const fast = fakeRunner(() => ({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 1 }));
+    let qualifying = 0;
+    const done = runLaneOrchestrator(
+      baseParams({
+        scanExisting: () => ({ qualifying, fileCount: 0 }),
+        targetQualifying: 2,
+        runners: [gated, fast],
+        maxInvocations: 5,
+        maxConcurrentPerCombo: 1, // only one at a time, so one lane must park
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    // Exactly one lane got work; the other is parked, not returned.
+    expect(gated.calls.length + fast.calls.length).toBe(1);
+    qualifying = 2; // the in-flight one will satisfy the target
+    gated.releaseAll();
+    await done; // must terminate, not hang
+  });
+
+  it("reports per-lane utilisation so idle time is never invisible again", async () => {
+    const runner = fakeRunner(() => ({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 1000 }));
+    const summary = await runLaneOrchestrator(
+      baseParams({
+        scanExisting: () => ({ qualifying: 0, fileCount: 0 }),
+        runners: [runner],
+        maxInvocations: 2,
+      }),
+    );
+    expect(summary.lanes).toHaveLength(1);
+    expect(summary.lanes[0]).toMatchObject({ label: "fake", invocations: 2, busyMs: 2000 });
+    expect(summary.idleFraction).toBeGreaterThanOrEqual(0);
+    expect(summary.idleFraction).toBeLessThanOrEqual(1);
   });
 });

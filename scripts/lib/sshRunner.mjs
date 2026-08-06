@@ -281,10 +281,10 @@ export class SshRunner {
           // the run itself still exited zero.
           //
           // Emptied as well as created, because a retry can land on the same
-          // directory. `driveCombo` derives its sequence number from files
-          // that made it *back*, so an invocation killed by the watchdog —
-          // which scp's nothing — leaves the sequence unchanged and the retry
-          // reuses this path. `appendEvents` never truncates, so without this
+          // directory: the orchestrator's sequence counter skips whatever is
+          // already on disk, and an invocation killed by the watchdog scp's
+          // nothing back, so a retry can be handed a path a dead run already
+          // wrote to remotely. `appendEvents` never truncates, so without this
           // the retry's runs would be appended to the dead run's partial ones
           // and the cell would overshoot its denominator with truncated data.
           // Measured: a killed invocation left 2 partial runs behind and the
@@ -338,7 +338,7 @@ export class SshRunner {
             // Reported as a failed invocation rather than a zero exit with
             // missing data. For a capture the NDJSON *is* the result, so a
             // run whose events never came home is not a run that succeeded —
-            // and `driveCombo`'s own existsSync check only guards the
+            // and the orchestrator's own existsSync check only guards the
             // aggregate, which may well have arrived before the event log
             // did. Without this the lane would look productive while
             // banking nothing the analysis can read.

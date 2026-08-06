@@ -25,7 +25,9 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 
-function defaultFormatElapsed(ms) {
+/** Exported so a caller can render the utilisation summary this module returns
+ * in the same units its own progress lines already use. */
+export function defaultFormatElapsed(ms) {
   const totalSec = Math.round(ms / 1000);
   const min = Math.floor(totalSec / 60);
   const sec = totalSec % 60;
@@ -103,85 +105,70 @@ export class LocalRunner {
   }
 }
 
-/** One combo's own drive loop: repeatedly scans existing output for this
- * combo, and — while still short of its qualifying target — asks its
- * assigned `runner` for one more invocation, retrying on any failure
- * (watchdog kill, non-zero exit, or a missing output file despite a zero
- * exit) exactly like the original `run-balancing-campaign.mjs`'s
- * `driveCombo`. Every lane calls this same function, so local and remote
- * lanes are interchangeable from the shared queue's point of view. */
-async function driveCombo(combo, opts) {
-  const { comboKey, scanExisting, targetQualifying, outputPathFor, logPathFor, eventLogPathFor, envFor, scriptPath, runner, watchdogMs, sigtermGraceMs, formatElapsed, log, maxInvocations } = opts;
-  const key = comboKey(combo);
-  // Invocations this call has actually spawned. Deliberately NOT `fileCount`:
-  // a *crashing* invocation writes no output file, so `fileCount` never
-  // advances and a file-based cap would never fire — the loop would retry the
-  // same failing invocation forever, which is the exact wedge observed on
-  // 2026-07-30 (a Gamer/hard/4p probe whose browser died on every attempt
-  // re-ran invocation #1 indefinitely, appending to one log). Counting spawns
-  // bounds broken invocations and unclearable combos alike.
-  let spawned = 0;
-  for (;;) {
-    const { qualifying, fileCount } = scanExisting(combo);
-    const target = typeof targetQualifying === "function" ? targetQualifying(combo) : targetQualifying;
-    if (qualifying >= target) {
-      log(`[${key}] done — ${qualifying}/${target} qualifying across ${fileCount} files`);
-      return;
-    }
-    // Cost bound. Without this the loop is unbounded: a combo the bot simply
-    // cannot clear never reaches `target`, so the lane respawns invocations
-    // forever. That is not hypothetical — the 2026-07-24 multiplayer campaign
-    // hit it on the Hard cells (Gamer/hard/2p banked 1 qualifying run across
-    // 6 invocations) and had to be rescued by hand-lowering the target
-    // mid-run. Giving up loudly and moving on leaves the partial data intact
-    // and resumable; the combo just reports short of target.
-    if (maxInvocations != null && spawned >= maxInvocations) {
-      log(`[${key}] giving up — ${qualifying}/${target} qualifying after ${spawned} invocation(s) this run (${fileCount} file(s) on disk), at the ${maxInvocations}-invocation cap`);
-      return;
-    }
-    const sequence = fileCount + 1;
-    const outputPath = outputPathFor(combo, sequence);
-    const logPath = logPathFor(combo, sequence);
-    // Optional: only a capture that actually wants per-event data supplies
-    // this. A campaign that only reads aggregates leaves it undefined and
-    // nothing changes for it.
-    const eventLogPath = eventLogPathFor ? eventLogPathFor(combo, sequence) : undefined;
-    const env = envFor(combo, sequence, outputPath, eventLogPath);
-    const prefix = `[${key} #${sequence}] `;
-    log(`[${key}] starting invocation #${sequence} (${qualifying}/${target} qualifying so far) via ${runner.label}`);
-
-    spawned += 1;
-    const result = await runner.runInvocation({ scriptPath, env, logPath, prefix, watchdogMs, sigtermGraceMs, outputPath, eventLogPath });
-
-    if (result.killedForTimeout) {
-      log(`[${key}] invocation #${sequence} KILLED by watchdog after ${formatElapsed(result.elapsedMs)} — retrying`);
-      continue;
-    }
-    if (result.code !== 0) {
-      log(
-        `[${key}] invocation #${sequence} exited with code ${result.code}${result.signal ? ` (signal ${result.signal})` : ""} after ${formatElapsed(result.elapsedMs)}${result.spawnError ? ` — ${result.spawnError}` : ""} — retrying`,
-      );
-      continue;
-    }
-    const written = fs.existsSync(outputPath);
-    log(`[${key}] invocation #${sequence} finished in ${formatElapsed(result.elapsedMs)}${written ? "" : " (no output file — treating as failed, retrying)"}`);
-  }
+/**
+ * The scheduler's per-combo bookkeeping.
+ *
+ * `spawned` is deliberately NOT `fileCount`: a *crashing* invocation writes no
+ * output file, so `fileCount` never advances and a file-based cap would never
+ * fire — the loop would retry the same failing invocation forever, which is
+ * the exact wedge observed on 2026-07-30 (a Gamer/hard/4p probe whose browser
+ * died on every attempt re-ran invocation #1 indefinitely, appending to one
+ * log). Counting spawns bounds broken invocations and unclearable combos
+ * alike.
+ *
+ * `inFlight` and `nextSequence` are what make chunk stealing safe; see
+ * `claimSequence` and `runLaneOrchestrator`'s `maxConcurrentPerCombo`.
+ */
+function makeState(combo, key) {
+  return { combo, key, spawned: 0, inFlight: 0, nextSequence: 0, retired: false };
 }
 
-async function runLane(queue, driveComboFn) {
-  for (;;) {
-    const combo = queue.shift();
-    if (!combo) return;
-    await driveComboFn(combo);
-  }
+/**
+ * Reserves a sequence number for one invocation.
+ *
+ * The old code used `fileCount + 1`, which is correct only while a combo has
+ * at most one invocation running: two concurrent invocations both see the same
+ * `fileCount` and both pick the same number, so they would overwrite each
+ * other's output file, log and event-log directory — silently losing a whole
+ * chunk of a capture.
+ *
+ * A monotonic per-combo counter fixes the collision; the `fileCount + 1` floor
+ * and the existence scan keep the old resumability property, where a re-run
+ * picks up after whatever is already on disk rather than clobbering it.
+ *
+ * Runs to completion synchronously, with no `await` inside, so two lanes can
+ * never interleave inside it.
+ */
+function claimSequence(state, fileCount, outputPathFor) {
+  let seq = Math.max(state.nextSequence, fileCount + 1);
+  while (fs.existsSync(outputPathFor(state.combo, seq))) seq += 1;
+  state.nextSequence = seq + 1;
+  return seq;
 }
 
 /**
  * Runs every combo in `combos` to its qualifying target, `runners.length`
- * lanes at a time (one per configured `Runner`, local or SSH), each lane
- * pulling the next not-yet-satisfied combo off one shared queue as it frees
- * up — mirrors `run-balancing-campaign.mjs`'s original `LANES`-workers-over-
- * one-queue design, generalized to a mixed local/remote runner list.
+ * lanes at a time (one per configured `Runner`, local or SSH).
+ *
+ * **Lanes claim invocations, not combos.** The original design gave a lane a
+ * whole combo and let it drive that combo to completion. With as many combos
+ * as lanes — the normal case — nothing is left to pick up the moment a lane
+ * finishes, so it stops working while the run continues. Measured on the
+ * ripgrep capture of 2026-08-06: three lanes, 132 minutes, and one lane's last
+ * event write was at minute 17. It was **idle for 115 of 132 minutes**, and
+ * roughly half of all available lane-time produced nothing. A five-repo sweep
+ * pays that five times.
+ *
+ * So a lane now takes the next *invocation* of whichever combo is furthest
+ * from its target and has room for another (`maxConcurrentPerCombo`), which is
+ * what lets a free lane help finish someone else's combo. Two things make that
+ * safe and neither is optional: sequence numbers come from a per-combo counter
+ * rather than `fileCount + 1` (concurrent invocations would otherwise pick the
+ * same number and overwrite each other — see `claimSequence`), and `envFor`
+ * receives `inFlightBefore` so a caller sizing a chunk from remaining work
+ * does not hand the same work to two lanes.
+ *
+ * Returns a utilisation summary; see the bottom of this function.
  *
  * @param {object} params
  * @param {Array} params.combos - opaque combo objects; only `comboKey` below
@@ -207,8 +194,22 @@ async function runLane(queue, driveComboFn) {
  *   `writeEventBatches` names the file from profile+difficulty alone: two
  *   invocations of the same combo would otherwise collide on the way back,
  *   and a shared remote directory would be re-copied in full every time.
- * @param {(combo, sequence, outputPath, eventLogPath) => object} params.envFor -
- *   builds the full env object for one invocation.
+ *   Note this separation only holds while sequence numbers are unique per
+ *   invocation — which is `claimSequence`'s job, and is what makes it safe to
+ *   run two invocations of one combo at once.
+ * @param {(combo, sequence, outputPath, eventLogPath, ctx) => object} params.envFor -
+ *   builds the full env object for one invocation. `ctx.inFlightBefore` is how
+ *   many invocations of this same combo were already running when this one was
+ *   claimed — a caller that derives an attempt cap from "target minus what is
+ *   on disk" must subtract the work those are already doing, or every extra
+ *   lane overshoots the target by one chunk.
+ * @param {number|((combo, ctx) => number)} [params.maxConcurrentPerCombo=1] -
+ *   how many invocations of one combo may run at once; `ctx` is
+ *   `{qualifying, target, fileCount, inFlight}`. Left at 1, lanes cannot help
+ *   each other and a run with combos <= lanes idles as described above. A
+ *   capture that splits a combo into fixed-size chunks wants roughly
+ *   `ceil((target - qualifying) / chunk)` — never more invocations than there
+ *   is work left to do.
  * @param {string} params.scriptPath - path to the underlying script entry
  *   point (interpreted by each `Runner` in its own way — a local runner
  *   resolves it directly, an SSH runner resolves the equivalent path inside
@@ -237,17 +238,169 @@ export async function runLaneOrchestrator(params) {
     log = (msg) => console.log(msg),
     formatElapsed = defaultFormatElapsed,
     // Per-combo invocation ceiling. `null`/omitted keeps the historical
-    // unbounded behaviour; see `driveCombo` for why every campaign should
+    // unbounded behaviour; see `makeState` for why every campaign should
     // set it.
     maxInvocations = null,
+    // How many invocations of ONE combo may run at once. The default of 1 is
+    // the historical behaviour — a combo is worked serially — and with it a
+    // run with as many combos as lanes still leaves every finished lane idle,
+    // which is the whole problem. Raise it to let free lanes steal chunks of
+    // a combo someone else is already working.
+    maxConcurrentPerCombo = 1,
   } = params;
 
-  const queue = [...combos];
-  await Promise.all(
-    runners.map((runner) =>
-      runLane(queue, (combo) =>
-        driveCombo(combo, { comboKey, scanExisting, targetQualifying, outputPathFor, logPathFor, eventLogPathFor, envFor, scriptPath, runner, watchdogMs, sigtermGraceMs, formatElapsed, log, maxInvocations }),
-      ),
-    ),
-  );
+  const states = combos.map((combo) => makeState(combo, comboKey(combo)));
+  const targetFor = (combo) => (typeof targetQualifying === "function" ? targetQualifying(combo) : targetQualifying);
+  const concurrencyFor = (combo, ctx) =>
+    Math.max(1, typeof maxConcurrentPerCombo === "function" ? maxConcurrentPerCombo(combo, ctx) : maxConcurrentPerCombo);
+
+  let inFlightTotal = 0;
+  // Lanes park here when there is nothing claimable but work is still running.
+  // Every completing invocation wakes all of them to re-decide.
+  let waiters = [];
+  const wakeAll = () => {
+    const pending = waiters;
+    waiters = [];
+    for (const resolve of pending) resolve();
+  };
+  const nextCompletion = () => new Promise((resolve) => waiters.push(resolve));
+
+  // `scanExisting` is expensive for a capture — it re-parses every NDJSON the
+  // combo has produced, tens of MB by the end of a cell — and the scheduler
+  // has to consult *every* combo to decide where a free lane goes, where the
+  // old code only ever looked at the one combo the lane owned. Since nothing
+  // that changes a scheduling decision happens between invocation
+  // completions, one scan per combo per generation is enough: several lanes
+  // woken by the same completion share it instead of each re-reading the
+  // whole capture. Counts do drift mid-flight as running invocations append,
+  // but scheduling on a slightly stale count is exactly what the old code did
+  // too — it read the same disk between spawns.
+  let scanCache = new Map();
+  const scanOf = (state) => {
+    if (!scanCache.has(state.key)) scanCache.set(state.key, scanExisting(state.combo));
+    return scanCache.get(state.key);
+  };
+
+  /**
+   * Picks the next invocation to run, or `null` if nothing may start right now.
+   *
+   * Entirely synchronous — see `claimSequence`. Two lanes cannot interleave
+   * inside it, so `inFlight`/`spawned`/`nextSequence` need no locking.
+   */
+  function claim() {
+    let best = null;
+    for (const state of states) {
+      if (state.retired) continue;
+      const { qualifying, fileCount } = scanOf(state);
+      const target = targetFor(state.combo);
+
+      // Satisfied, or out of budget. Either way nothing more may start; the
+      // combo is only *retired* (and reported) once its in-flight work lands,
+      // so the final message reflects what actually got banked.
+      const satisfied = qualifying >= target;
+      const exhausted = maxInvocations != null && state.spawned >= maxInvocations;
+      if (satisfied || exhausted) {
+        if (state.inFlight === 0) {
+          state.retired = true;
+          log(
+            satisfied
+              ? `[${state.key}] done — ${qualifying}/${target} qualifying across ${fileCount} files`
+              : `[${state.key}] giving up — ${qualifying}/${target} qualifying after ${state.spawned} invocation(s) this run (${fileCount} file(s) on disk), at the ${maxInvocations}-invocation cap`,
+          );
+        }
+        continue;
+      }
+
+      const limit = concurrencyFor(state.combo, { qualifying, target, fileCount, inFlight: state.inFlight });
+      if (state.inFlight >= limit) continue;
+      // Spread lanes across combos before doubling up on one: fewest in-flight
+      // first, then whichever is furthest from its target. Without this the
+      // first combo in the list would absorb every free lane and the last one
+      // would still be starting when everything else had finished.
+      const score = [state.inFlight, -(target - qualifying)];
+      if (best === null || score[0] < best.score[0] || (score[0] === best.score[0] && score[1] < best.score[1])) {
+        best = { state, qualifying, target, fileCount, score };
+      }
+    }
+    if (best === null) return null;
+
+    const { state, qualifying, target, fileCount } = best;
+    const sequence = claimSequence(state, fileCount, outputPathFor);
+    state.spawned += 1;
+    state.inFlight += 1;
+    inFlightTotal += 1;
+    return { state, sequence, qualifying, target };
+  }
+
+  const startedAt = Date.now();
+  const laneStats = runners.map((runner) => ({ label: runner.label, invocations: 0, busyMs: 0 }));
+
+  async function runLane(runner, stats) {
+    for (;;) {
+      const work = claim();
+      if (!work) {
+        // Nothing claimable. If nothing is running either, no future claim can
+        // ever succeed — every combo is satisfied, retired or capped — so the
+        // whole run is over. Otherwise park until an invocation lands and
+        // changes the picture. No `await` between `claim()` and `nextCompletion()`,
+        // so a completion cannot slip past an unregistered waiter.
+        if (inFlightTotal === 0) return;
+        await nextCompletion();
+        continue;
+      }
+
+      const { state, sequence, qualifying, target } = work;
+      const outputPath = outputPathFor(state.combo, sequence);
+      const logPath = logPathFor(state.combo, sequence);
+      // Optional: only a capture that actually wants per-event data supplies
+      // this. A campaign that only reads aggregates leaves it undefined and
+      // nothing changes for it.
+      const eventLogPath = eventLogPathFor ? eventLogPathFor(state.combo, sequence) : undefined;
+      // `inFlightBefore` excludes this invocation. A caller that sizes a chunk
+      // from remaining work needs it: without it, two concurrent invocations
+      // both read the same `qualifying` off disk and both run a full chunk,
+      // overshooting the target by a chunk per extra lane.
+      const env = envFor(state.combo, sequence, outputPath, eventLogPath, { inFlightBefore: state.inFlight - 1 });
+      const prefix = `[${state.key} #${sequence}] `;
+      log(`[${state.key}] starting invocation #${sequence} (${qualifying}/${target} qualifying so far) via ${runner.label}`);
+
+      let result;
+      try {
+        result = await runner.runInvocation({ scriptPath, env, logPath, prefix, watchdogMs, sigtermGraceMs, outputPath, eventLogPath });
+      } finally {
+        state.inFlight -= 1;
+        inFlightTotal -= 1;
+        // New results on disk: every cached count is now stale. Invalidate
+        // before waking anyone, so no lane decides against a pre-completion
+        // view of the world.
+        scanCache = new Map();
+      }
+      stats.invocations += 1;
+      stats.busyMs += result?.elapsedMs ?? 0;
+
+      if (result.killedForTimeout) {
+        log(`[${state.key}] invocation #${sequence} KILLED by watchdog after ${formatElapsed(result.elapsedMs)} — retrying`);
+      } else if (result.code !== 0) {
+        log(
+          `[${state.key}] invocation #${sequence} exited with code ${result.code}${result.signal ? ` (signal ${result.signal})` : ""} after ${formatElapsed(result.elapsedMs)}${result.spawnError ? ` — ${result.spawnError}` : ""} — retrying`,
+        );
+      } else {
+        const written = fs.existsSync(outputPath);
+        log(`[${state.key}] invocation #${sequence} finished in ${formatElapsed(result.elapsedMs)}${written ? "" : " (no output file — treating as failed, retrying)"}`);
+      }
+      // A lane freeing up changes what every parked lane may claim.
+      wakeAll();
+    }
+  }
+
+  await Promise.all(runners.map((runner, i) => runLane(runner, laneStats[i])));
+
+  // Idle lane-time was invisible before 2026-08-06, and that is exactly how a
+  // lane sat idle for 115 of a 132-minute capture without anyone noticing —
+  // the only symptom is a quiet machine. Report it every run.
+  const wallMs = Date.now() - startedAt;
+  const lanes = laneStats.map((s) => ({ ...s, idleMs: Math.max(0, wallMs - s.busyMs) }));
+  const idleMs = lanes.reduce((sum, l) => sum + l.idleMs, 0);
+  const totalMs = wallMs * Math.max(1, lanes.length);
+  return { wallMs, lanes, idleMs, laneTimeMs: totalMs, idleFraction: totalMs > 0 ? idleMs / totalMs : 0 };
 }

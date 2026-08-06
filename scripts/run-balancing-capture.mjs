@@ -53,7 +53,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { LocalRunner, runLaneOrchestrator } from "./lib/laneOrchestrator.mjs";
+import { defaultFormatElapsed as formatElapsed, LocalRunner, runLaneOrchestrator } from "./lib/laneOrchestrator.mjs";
 import { REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { buildSshRunners, readHostList } from "./lib/sshRunner.mjs";
 
@@ -134,12 +134,12 @@ function scanExisting(combo) {
   return { qualifying: rids.size, fileCount };
 }
 
-function envFor(combo, sequence, outputPath, eventLogPath) {
+function envFor(combo, sequence, outputPath, eventLogPath, { inFlightBefore = 0 } = {}) {
   // Called immediately before each invocation, which makes it the one place
   // that reliably runs on *every* attempt including retries — and a retry can
-  // land on this same directory, because `driveCombo`'s sequence number comes
-  // from results that made it back and a watchdog-killed invocation produces
-  // none. `writeEventBatches` appends, so a stale partial log here would be
+  // land on this same directory, because the orchestrator's sequence number
+  // skips whatever is already on disk and a watchdog-killed invocation
+  // produces nothing. `writeEventBatches` appends, so a stale partial log here would be
   // pooled with the retry's runs and inflate the denominator with truncated
   // data. `SshRunner` does the same on the remote side, where the writing
   // actually happens for a remote lane.
@@ -154,7 +154,14 @@ function envFor(combo, sequence, outputPath, eventLogPath) {
   // case) but not free: at CHUNK=20 the worst case is 19 wasted attempts,
   // about 50 minutes on a real cell. Clamping also makes the denominator
   // land exactly on target instead of "at least".
-  const remaining = Math.max(1, TARGET_ATTEMPTS - scanExisting(combo).qualifying);
+  //
+  // With chunk stealing, other lanes may already be working this same combo.
+  // Their attempts are not on disk yet, so `qualifying` does not see them —
+  // subtract what they were already asked to produce, or every extra lane
+  // re-runs the same shortfall and the overshoot scales with lane count
+  // instead of being bounded by one chunk.
+  const claimedInFlight = inFlightBefore * CHUNK;
+  const remaining = Math.max(1, TARGET_ATTEMPTS - scanExisting(combo).qualifying - claimedInFlight);
   const cap = Math.min(CHUNK, remaining);
 
   const env = {
@@ -241,7 +248,7 @@ async function main() {
   if (LEVEL_LIMIT) console.log(`LEVEL LIMIT ${LEVEL_LIMIT} — bounded capture, NOT a full campaign`);
   console.log(`Output: ${OUT_DIR}\n`);
 
-  await runLaneOrchestrator({
+  const utilisation = await runLaneOrchestrator({
     combos,
     comboKey,
     scanExisting,
@@ -255,6 +262,13 @@ async function main() {
     watchdogMs: WATCHDOG_MS,
     maxInvocations: MAX_INVOCATIONS > 0 ? MAX_INVOCATIONS : null,
     sigtermGraceMs: SIGTERM_GRACE_MS,
+    // Let a free lane steal a chunk of a combo another lane is already
+    // working, but never start more chunks than there is work left: at
+    // CHUNK=20 a combo 45 attempts short can absorb three lanes, one 5 short
+    // can absorb one. Without this a run whose combo count equals its lane
+    // count leaves every finished lane idle for the rest of the capture —
+    // measured at 115 of 132 minutes on one ripgrep lane.
+    maxConcurrentPerCombo: (_combo, { qualifying, target }) => Math.ceil(Math.max(0, target - qualifying) / CHUNK),
   });
 
   console.log("\n=== Capture complete ===");
@@ -265,6 +279,17 @@ async function main() {
     if (qualifying < TARGET_ATTEMPTS) short = true;
     console.log(`  ${comboKey(combo).padEnd(16)} ${qualifying}/${TARGET_ATTEMPTS}${flag}`);
   }
+  // Idle lane-time used to be invisible, which is how half a capture's
+  // capacity went unused for several runs without anyone noticing — the only
+  // symptom is a quiet machine. Printed after the cell table so the numbers
+  // the capture exists to produce stay first.
+  const pct = (ms) => `${Math.round((100 * ms) / Math.max(1, utilisation.wallMs))}%`;
+  console.log(
+    `\nLanes over ${formatElapsed(utilisation.wallMs)}: ` +
+      utilisation.lanes.map((l) => `${l.label} ${pct(l.busyMs)} busy (${l.invocations} inv)`).join(", "),
+  );
+  console.log(`  idle lane-time: ${formatElapsed(utilisation.idleMs)} of ${formatElapsed(utilisation.laneTimeMs)} (${Math.round(100 * utilisation.idleFraction)}%)`);
+
   console.log(`\nVerify before using: npm run verify:event-log -- ${path.relative(REPO_ROOT, EVENTS_DIR)}`);
   // A short cell is not a crash, but pooling it with full ones as though the
   // denominators matched is exactly the error this script exists to prevent.

@@ -72,7 +72,7 @@ const LANES = process.env.CODEENSTEIN_MP_CAMPAIGN_LANES ? Number(process.env.COD
 const WATCHDOG_MS = process.env.CODEENSTEIN_MP_CAMPAIGN_WATCHDOG_MS ? Number(process.env.CODEENSTEIN_MP_CAMPAIGN_WATCHDOG_MS) : 4 * 60 * 60 * 1000;
 // Per-combo invocation ceiling — the campaign's cost bound. A combo the bot
 // cannot clear never reaches TARGET_QUALIFYING, and without this the lane
-// respawns invocations for it forever (see `driveCombo`). Defaults to 3, so a
+// respawns invocations for it forever (see `makeState`). Defaults to 3, so a
 // stubborn combo costs at most 3 x ATTEMPT_CAP attempts and then reports short
 // of target instead of eating the whole campaign. Set to `0` for the old
 // unbounded behaviour.
