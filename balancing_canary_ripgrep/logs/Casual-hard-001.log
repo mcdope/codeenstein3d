@@ -1,0 +1,13 @@
+Loading engine modules + planning routes in Node...
+15 levels planned.
+
+[balancing] starting vite on :5199
+=== Casual / hard ===
+
+Refusing to continue: the engine is not playing the level the bot is routing on level 1.
+  531 of 537 differing tiles change whether a tile can be walked through.
+  The engine is actually playing planned index 2: 03_crates_ignore_examples_walk.rs
+  planLevels() enumerates demo-campaign/ in filename order; the game picks the
+  cheapest file containing a main()/Main. Every route from here is planned for a
+  map that is not loaded, so the run would wedge rather than fail — fix the staging.
+
