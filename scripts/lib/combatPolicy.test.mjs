@@ -400,7 +400,7 @@ describe("decide — branch selection", () => {
     // circled at 0.16-0.75 tiles until the acid killed it.
     const map = makeMap({ tiles: [[10, 10, 2]] });
     const near = decide(
-      { player: makePlayer({ dirX: 1, dirY: 0 }), enemies: [], mines: [], navTarget: { x: 10.6, y: 10.75 }, map },
+      { player: makePlayer({ dirX: 1, dirY: 0 }), enemies: [], mines: [], navTarget: { x: 10.55, y: 10.55 }, map },
       freshMemory(),
       makeConfig(),
     );
@@ -414,8 +414,29 @@ describe("decide — branch selection", () => {
     // distance-capped burst can tell them apart.
     expect(near.durationMs).toBeLessThan(far.durationMs);
     // And the step must not exceed the remaining distance.
-    const sprintSpeed = 3.2 * 2.0; // ENGINE_MOVE_SPEED * ENGINE_SPRINT_MULTIPLIER
-    expect((near.durationMs / 1000) * sprintSpeed).toBeLessThanOrEqual(Math.hypot(0.1, 0.25) + 1e-6);
+    // Walking speed: the branch drops the sprint while turning, because a
+    // sprint doubles the turn radius and a target inside that radius can never
+    // be reached. The cap only bites under ENGINE_MOVE_SPEED * stepMs = 0.16
+    // tiles, which is exactly serilog's 0.16 and why it could not help
+    // wolf3d's 1.4.
+    expect((near.durationMs / 1000) * 3.2).toBeLessThanOrEqual(Math.hypot(0.05, 0.05) + 1e-6);
+  });
+
+  it("does not sprint while turning, so the turn radius stays inside the target", () => {
+    // Measured on a wolf3d level-2 death trace: dir advanced 0.26 rad per 50ms
+    // decision (w = 5.2 rad/s) while sprinting at 6.4 tiles/s, giving a turn
+    // radius of 1.23 tiles against a nav target 0.87-1.4 tiles away. A target
+    // inside the turn circle is geometrically unreachable, so the bot orbited
+    // it at full health until the acid killed it. Walking halves the radius.
+    const map = makeMap({ tiles: [[10, 10, 2]] });
+    const turning = decide(
+      { player: makePlayer({ dirX: 1, dirY: 0 }), enemies: [], mines: [], navTarget: { x: 10.5, y: 12.5 }, map },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(turning.branch).toBe("hazard");
+    expect(keysOf(turning)).toContain("KeyW");
+    expect(keysOf(turning)).not.toContain("ShiftLeft");
   });
 
   it("never adds a strafe key in the hazard branch", () => {

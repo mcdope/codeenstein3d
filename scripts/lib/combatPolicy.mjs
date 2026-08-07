@@ -1433,9 +1433,27 @@ export function decide(world, memory, config) {
     const targetAngle = Math.atan2(navTarget.y - player.y, navTarget.x - player.x);
     const delta = angleDelta(currentAngle, targetAngle);
     const dist = Math.hypot(navTarget.x - player.x, navTarget.y - player.y);
-    const moveKeys = new Set(["KeyW", "ShiftLeft"]);
+    // Don't sprint while turning: a sprint doubles the speed and therefore
+    // doubles the turn radius, and a target inside that radius can never be
+    // reached — the bot just orbits it.
+    //
+    // The geometry, measured off a wolf3d level-2 death trace: `dir` advances
+    // 0.26 rad per 50ms decision, so w = 5.2 rad/s, and sprinting moves
+    // ENGINE_MOVE_SPEED * ENGINE_SPRINT_MULTIPLIER = 6.4 tiles/s. Turn radius
+    // r = v/w = **1.23 tiles**, against a nav target sitting 0.87-1.4 tiles
+    // away — inside the circle, so it orbited at full health until the acid
+    // killed it. Walking halves the radius to 0.62 and puts those targets back
+    // outside it.
+    //
+    // This is the same failure as serilog's, one scale up: there the target
+    // was 0.16 tiles away and the fix was to stop overshooting it (the
+    // distance-capped burst below). Both are needed — the cap alone cannot
+    // help at 1.4 tiles, where `moveBurstMs` returns 219ms and is clamped to
+    // the 50ms step long before it bites.
+    const turning = Math.abs(delta) > tuning.TURN_MOVE_EPS;
+    const moveKeys = new Set(turning ? ["KeyW"] : ["KeyW", "ShiftLeft"]);
     let turnBurst;
-    if (Math.abs(delta) > tuning.TURN_MOVE_EPS) {
+    if (turning) {
       moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
       // Deliberately no `diagonalStrafeKey` here — see its doc comment's
       // "confirmed regression" note. Reverted from every branch except
@@ -1458,7 +1476,7 @@ export function decide(world, memory, config) {
       // the minimum keeps the turn as fast as it was whenever the target is
       // far, and shortens the step to land inside the arrival radius when it
       // is near.
-      turnBurst = Math.min(turnBurstMs(delta, profile.rotSpeedMultiplier, currentAngle, burstCtx), moveBurstMs(dist, true, moveCtx));
+      turnBurst = Math.min(turnBurstMs(delta, profile.rotSpeedMultiplier, currentAngle, burstCtx), moveBurstMs(dist, false, moveCtx));
     } else {
       turnBurst = moveBurstMs(dist, true, moveCtx);
     }
