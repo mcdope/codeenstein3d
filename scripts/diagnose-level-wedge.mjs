@@ -361,7 +361,26 @@ async function main() {
         if (pushed.state !== "won") outcome = { state: pushed.state === "over" ? "over" : "stuck" };
       }
 
-      if (outcome.state === "over") { say(`  level ${levelNo}: DIED`); attempts.push({ attempt, levelNo, outcome: "died", ...levelDigest(bot) }); break; }
+      if (outcome.state === "over") {
+        say(`  level ${levelNo}: DIED`);
+        attempts.push({ attempt, levelNo, outcome: "died", ...levelDigest(bot) });
+        // Dump the same evidence a wedge gets. This path used to `break`
+        // straight past the trace-persist below, so a *death* left nothing to
+        // read — no positions, no branch, nothing. That is precisely the gap
+        // that made the 2026-08-07 hazard-death investigation two blind
+        // guesses, both of which measured worse than the bug they targeted.
+        if (perLevel.length > 0) {
+          const p = path.join(OUT, `death-L${levelNo}-a${attempt}-trace.log`);
+          fs.writeFileSync(p, perLevel.join("\n"));
+          say(`  --- wrote ${perLevel.length} trace lines to ${path.basename(p)} ---`);
+        }
+        const dead = await bot.readState();
+        say(`\n--- driveToward calls on level ${levelNo} (last 15) ---`);
+        for (const c of calls.slice(-15)) say(`  ${JSON.stringify(c)}`);
+        say(`\n--- grid where it died ---`);
+        say(dumpGrid(map, dead.x, dead.y));
+        break;
+      }
       if (outcome.state === "stuck") {
         say(`  level ${levelNo}: STUCK`);
         attempts.push({ attempt, levelNo, outcome: "stuck", ...levelDigest(bot) });

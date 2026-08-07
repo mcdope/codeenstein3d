@@ -1444,6 +1444,17 @@ export function decide(world, memory, config) {
     } else {
       turnBurst = moveBurstMs(dist, true, moveCtx);
     }
+    // Logging only, no behaviour change — and load-bearing for diagnosis. The
+    // general `[nav]` line is emitted far below, *after* this branch returns,
+    // so the per-decision trace went silent for exactly the decisions where
+    // the bot is standing in damage. Three fix attempts on 2026-08-07 were
+    // guesses because of that gap, and all three measured worse than the bug.
+    // This line is what finally showed the mechanism; keep it.
+    logger?.debugNav?.(
+      `[hazard] pos=(${player.x.toFixed(2)},${player.y.toFixed(2)}) dir=${currentAngle.toFixed(2)} hpFrac=${player.healthFraction.toFixed(2)} ` +
+        `navTarget=(${navTarget.x.toFixed(2)},${navTarget.y.toFixed(2)}) dist=${dist.toFixed(2)} delta=${delta.toFixed(2)} ` +
+        `turnBurst=${turnBurst} keys=${[...moveKeys].join("+")}`,
+    );
     return uniformIntent(moveKeys, turnBurst, stepMs, {
       branch: "hazard",
       trace: { branch: "hazard", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: null, mineDist: null, delta: navDelta, navDist, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false },
