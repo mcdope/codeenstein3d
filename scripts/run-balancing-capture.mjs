@@ -86,6 +86,24 @@ const LEVEL_LIMIT = process.env.CODEENSTEIN_CAPTURE_LEVEL_LIMIT
 /** Per-combo spawn ceiling. A cell needing more invocations than this to reach
  * its target is failing in a way more attempts will not fix. */
 const MAX_INVOCATIONS = Number(process.env.CODEENSTEIN_CAPTURE_MAX_INVOCATIONS ?? 8);
+/**
+ * The cap, adjusted for how many invocations the work actually needs.
+ *
+ * Per-lane chunk sizing means a slow lane is deliberately asked for a *small*
+ * chunk, which takes more invocations to reach the same target — so a fixed
+ * ceiling that was generous under one-size-fits-all chunks can now bite before
+ * the target is met. Measured: a cell asking for 30 attempts in chunks of 3
+ * stopped at 24/30 having spent all 8, and reported SHORT. A cell that is short
+ * because of an accounting ceiling looks exactly like a cell that is short
+ * because the bot could not clear it, which is the one confusion this whole
+ * capture exists to avoid.
+ *
+ * The floor stays whatever the operator asked for; this only raises it to what
+ * the smallest legitimate chunk implies, plus slack for retries.
+ */
+function invocationCapFor(target) {
+  return Math.max(MAX_INVOCATIONS, Math.ceil(target / Math.max(1, MIN_CHUNK)) + 3);
+}
 /** How long one invocation should take, whichever lane runs it. Chunk size is
  * derived from this and the lane's measured rate, so a slow host gets fewer
  * attempts rather than holding a full-size chunk while every other lane idles.
@@ -371,7 +389,7 @@ async function main() {
     scriptPath: TELEMETRY_SCRIPT,
     runners,
     watchdogMs: WATCHDOG_MS,
-    maxInvocations: MAX_INVOCATIONS > 0 ? MAX_INVOCATIONS : null,
+    maxInvocations: MAX_INVOCATIONS > 0 ? invocationCapFor(TARGET_ATTEMPTS) : null,
     sigtermGraceMs: SIGTERM_GRACE_MS,
     // Let a free lane steal a chunk of a combo another lane is already
     // working, but never start more chunks than there is work left: at
