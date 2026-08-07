@@ -161,12 +161,26 @@ function loadRatesFile() {
   }
 }
 
-function loadLaneRates() {
-  return loadRatesFile().lanes;
+/**
+ * Lane rates for THIS campaign.
+ *
+ * Rates are attempts per minute, and an attempt's cost depends entirely on the
+ * levels being played — so a rate learned on one campaign is meaningless on
+ * another. Measured the hard way on 2026-08-07: rates learned from a smoke run
+ * capped at 2 levels were carried into a full ripgrep capture, every lane was
+ * handed a full 20-attempt chunk on the strength of them, and the "45 minute"
+ * invocation was still running after three hours.
+ *
+ * Keyed like the combo costs, and for the same reason. A machine's *ratio* to
+ * its peers is stable across campaigns, but the absolute number that chunk
+ * sizing needs is not.
+ */
+function loadLaneRates(key) {
+  return loadRatesFile().campaigns[key]?.lanes ?? {};
 }
 
 function loadComboCost(key) {
-  return loadRatesFile().campaigns[key] ?? {};
+  return loadRatesFile().campaigns[key]?.combos ?? {};
 }
 
 function writeRatesFile(next) {
@@ -189,6 +203,10 @@ function writeRatesFile(next) {
  */
 function recordLaneRate(label, attemptsPerMin) {
   const file = loadRatesFile();
+  const entry = file.campaigns[CAMPAIGN_KEY] ?? {};
+  entry.lanes = { ...(entry.lanes ?? {}), [label]: attemptsPerMin };
+  file.campaigns[CAMPAIGN_KEY] = entry;
+  // Kept for a human reading the file — never used for sizing.
   file.lanes[label] = attemptsPerMin;
   writeRatesFile(file);
 }
@@ -196,7 +214,9 @@ function recordLaneRate(label, attemptsPerMin) {
 /** Per-campaign, for the reason `campaignKey` gives. */
 function recordComboCost(key, combo, relCost) {
   const file = loadRatesFile();
-  file.campaigns[key] = { ...(file.campaigns[key] ?? {}), [combo]: relCost };
+  const entry = file.campaigns[key] ?? {};
+  entry.combos = { ...(entry.combos ?? {}), [combo]: relCost };
+  file.campaigns[key] = entry;
   writeRatesFile(file);
 }
 
@@ -208,7 +228,15 @@ function recordComboCost(key, combo, relCost) {
  * host look slow for the rest of the capture.
  */
 function chunkFor(_combo, { remaining, ratePerMin }) {
-  if (!ratePerMin || ratePerMin <= 0) return Math.min(CHUNK, Math.max(1, remaining));
+  // Unknown lane on this campaign: ask for a CALIBRATION chunk, not a full one.
+  //
+  // The old fallback was the full CHUNK, on the reasoning that guessing low
+  // would make a fast host look slow. That is backwards when the campaign's
+  // cost is also unknown: on ripgrep a full 20-attempt chunk was still running
+  // after three hours, so nothing was learned and nothing could be resized
+  // until it finished. A small first chunk costs a little throughput once and
+  // buys a real measurement within minutes.
+  if (!ratePerMin || ratePerMin <= 0) return Math.min(MIN_CHUNK, CHUNK, Math.max(1, remaining));
   const sized = Math.round(ratePerMin * TARGET_CHUNK_MIN);
   return Math.min(Math.max(MIN_CHUNK, sized), CHUNK, Math.max(1, remaining));
 }
@@ -404,7 +432,7 @@ async function main() {
     // measured at 115 of 132 minutes on one ripgrep lane.
     maxConcurrentPerCombo: (_combo, { qualifying, target }) => Math.ceil(Math.max(0, target - qualifying) / CHUNK),
     chunkFor,
-    initialLaneRates: loadLaneRates(),
+    initialLaneRates: loadLaneRates(CAMPAIGN_KEY),
     onLaneRate: recordLaneRate,
     initialComboCost: loadComboCost(CAMPAIGN_KEY),
     onComboCost: (combo, relCost) => recordComboCost(CAMPAIGN_KEY, combo, relCost),
