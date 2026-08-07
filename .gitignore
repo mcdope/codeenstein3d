@@ -17,6 +17,10 @@ balancing_runs_*/
 # committed, never the raw events.
 balancing_capture/
 balancing_capture_*/
+# Same convention — short verification runs. NOT ignoring these once cost a
+# canary its own output: a driver doing `git add -A` between repos committed
+# the results onto one branch, and the next `git checkout -B` deleted them.
+balancing_canary_*/
 # Fetched source repos the offline balance solver runs against, see
 # scripts/fetch-balancing-corpus.mjs -- reproducible from its pinned manifest.
 balancing_corpus/
