@@ -21,6 +21,11 @@ balancing_capture_*/
 # canary its own output: a driver doing `git add -A` between repos committed
 # the results onto one branch, and the next `git checkout -B` deleted them.
 balancing_canary_*/
+# Any other balancing_* scratch directory. Listing each prefix separately meant
+# a new one (canary, then recheck) arrived ungitignored and dirtied the tree,
+# which the capture's own clean-tree guard then refuses to start on. No tracked
+# path begins with `balancing_`, so the wildcard is safe.
+balancing_*/
 # Learned per-lane throughput, rebuilt by any capture that runs.
 lane-speed.json
 # Fetched source repos the offline balance solver runs against, see
