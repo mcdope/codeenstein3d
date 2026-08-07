@@ -120,7 +120,10 @@ export class LocalRunner {
  * `claimSequence` and `runLaneOrchestrator`'s `maxConcurrentPerCombo`.
  */
 function makeState(combo, key) {
-  return { combo, key, spawned: 0, inFlight: 0, nextSequence: 0, retired: false, reserved: 0 };
+  // `relCost` is how expensive this combo is per attempt *relative to the
+  // lane that ran it* — dimensionless, so it does not smuggle lane speed into
+  // a combo property. 1 means "average work for that host".
+  return { combo, key, spawned: 0, inFlight: 0, nextSequence: 0, retired: false, reserved: 0, relCost: 1 };
 }
 
 /**
@@ -264,9 +267,19 @@ export async function runLaneOrchestrator(params) {
     // in the summary, and a run killed part-way — which happens a lot during
     // investigation — takes everything it learned with it.
     onLaneRate = null,
+    // Seed per-combo relative cost, keyed by `comboKey`. Learned within a run
+    // otherwise. Deliberately NOT persisted across runs by the capture driver:
+    // cost is a property of the *staged levels*, so carrying it from one
+    // repository to the next would be actively wrong.
+    initialComboCost = {},
   } = params;
 
-  const states = combos.map((combo) => makeState(combo, comboKey(combo)));
+  const states = combos.map((combo) => {
+    const state = makeState(combo, comboKey(combo));
+    const seed = initialComboCost[state.key];
+    if (typeof seed === "number" && seed > 0) state.relCost = seed;
+    return state;
+  });
   const targetFor = (combo) => (typeof targetQualifying === "function" ? targetQualifying(combo) : targetQualifying);
   const concurrencyFor = (combo, ctx) =>
     Math.max(1, typeof maxConcurrentPerCombo === "function" ? maxConcurrentPerCombo(combo, ctx) : maxConcurrentPerCombo);
@@ -305,7 +318,7 @@ export async function runLaneOrchestrator(params) {
    * inside it, so `inFlight`/`spawned`/`nextSequence` need no locking.
    */
   function claim(runner) {
-    let best = null;
+    const candidates = [];
     for (const state of states) {
       if (state.retired) continue;
       const { qualifying, fileCount } = scanOf(state);
@@ -335,11 +348,67 @@ export async function runLaneOrchestrator(params) {
       // first combo in the list would absorb every free lane and the last one
       // would still be starting when everything else had finished.
       const score = [state.inFlight, -(target - qualifying)];
-      if (best === null || score[0] < best.score[0] || (score[0] === best.score[0] && score[1] < best.score[1])) {
-        best = { state, qualifying, target, fileCount, score };
-      }
+      candidates.push({ state, qualifying, target, fileCount, score, limit });
     }
-    if (best === null) return null;
+    if (candidates.length === 0) return null;
+
+    // Tail guard: with fewer startable units than there are faster lanes, the
+    // slow ones stand down and let the fast ones finish.
+    //
+    // This is the worst case the whole lane-speed effort exists for. Measured
+    // 2026-08-07: a host roughly 4x slower than the others took one of the
+    // last chunks and held every other lane idle for over an hour. Chunk
+    // sizing shrinks that chunk; this stops it being handed out at all.
+    //
+    // Conditional on something being in flight, or the run could hang: if no
+    // other lane is working, refusing means nobody ever claims. Then the slow
+    // lane takes it, which is correct — a slow lane beats an idle one.
+    const rank = laneRankOf(runner.label);
+    if (inFlightTotal > 0 && rank > 0 && chunkFor) {
+      // Stand down only when the faster lanes can finish everything left
+      // without this one — i.e. the remaining work fits in one of this lane's
+      // chunks per faster lane. Anything more than that and helping still
+      // pays, however slow this host is.
+      //
+      // Deliberately measured in WORK, not in concurrency headroom: a combo 40
+      // attempts short with one invocation running is mid-run, not a tail, and
+      // an earlier version that counted headroom stood lanes down constantly.
+      //
+      // Conditional on something being in flight, or the run could hang: if no
+      // other lane is working, refusing means nobody claims at all. A slow lane
+      // beats an idle one.
+      const remainingTotal = candidates.reduce((sum, c) => sum + Math.max(0, c.target - c.qualifying - c.state.reserved), 0);
+      const probe = candidates[0];
+      const myChunk = Math.max(
+        1,
+        Math.round(
+          chunkFor(probe.state.combo, {
+            remaining: Math.max(0, probe.target - probe.qualifying - probe.state.reserved),
+            laneLabel: runner.label,
+            ratePerMin: (laneRates.get(runner.label) ?? 0) * 60000,
+            qualifying: probe.qualifying,
+            target: probe.target,
+          }),
+        ),
+      );
+      if (remainingTotal <= rank * myChunk) return null;
+    }
+
+    // Cost-ranked matching, applied only among the least-loaded combos so the
+    // existing spread-across-combos property is preserved.
+    //
+    // Work units are not interchangeable: a Casual/hard run that dies on level
+    // 2 is cheap, a Pro/normal run that completes all 15 levels is not. Pair
+    // the most expensive available unit with the fastest lane and the cheapest
+    // with the slowest, so a slow host is never the one grinding through the
+    // costliest combo.
+    //
+    // Inert until there is something to rank: with equal `relCost` and no
+    // measured rates this picks the same candidate the old scoring did.
+    const minInFlight = Math.min(...candidates.map((c) => c.score[0]));
+    const leastLoaded = candidates.filter((c) => c.score[0] === minInFlight);
+    leastLoaded.sort((a, b) => b.state.relCost - a.state.relCost || a.score[1] - b.score[1]);
+    const best = leastLoaded[Math.min(rank, leastLoaded.length - 1)];
 
     const { state, qualifying, target, fileCount } = best;
     const sequence = claimSequence(state, fileCount, outputPathFor);
@@ -376,6 +445,23 @@ export async function runLaneOrchestrator(params) {
   // than trusting a stale file.
   const laneRates = new Map(Object.entries(initialLaneRates).map(([k, perMin]) => [k, perMin / 60000]));
   const RATE_ALPHA = 0.4;
+
+  /**
+   * This lane's position among all lanes, fastest first (0 = fastest).
+   *
+   * A lane with no measured rate ranks first on purpose: it needs a
+   * calibration invocation, and holding it back would leave it unmeasured for
+   * the whole run.
+   */
+  function laneRankOf(label) {
+    const mine = laneRates.get(label);
+    if (mine == null) return 0;
+    let faster = 0;
+    for (const [other, rate] of laneRates) {
+      if (other !== label && rate > mine) faster += 1;
+    }
+    return faster;
+  }
 
   // Set once any lane produces an output file — the evidence that separates
   // "this lane is broken" from "this work is broken". See the lane-health
@@ -466,6 +552,15 @@ export async function runLaneOrchestrator(params) {
         if (chunkAttempts && result.elapsedMs > 0) {
           const observed = chunkAttempts / result.elapsedMs;
           const prev = laneRates.get(runner.label);
+          // How expensive this combo is per attempt, relative to what this
+          // lane manages on average. Computed against the rate as it stood
+          // BEFORE this observation, or the two would partly cancel and every
+          // combo would drift toward 1. Dimensionless, so lane speed never
+          // leaks into a combo property.
+          if (prev != null && prev > 0) {
+            const relative = prev / observed;
+            state.relCost = state.relCost * (1 - RATE_ALPHA) + relative * RATE_ALPHA;
+          }
           const next = prev == null ? observed : prev * (1 - RATE_ALPHA) + observed * RATE_ALPHA;
           laneRates.set(runner.label, next);
           // Report immediately rather than at the end of the run. Never let a
@@ -512,5 +607,8 @@ export async function runLaneOrchestrator(params) {
   }));
   const idleMs = lanes.reduce((sum, l) => sum + l.idleMs, 0);
   const totalMs = wallMs * Math.max(1, lanes.length);
-  return { wallMs, lanes, idleMs, laneTimeMs: totalMs, idleFraction: totalMs > 0 ? idleMs / totalMs : 0 };
+  // `comboCost` is reported for diagnosis — it explains why a lane was given
+  // what it was given, which is otherwise invisible.
+  const comboCost = Object.fromEntries(states.map((st) => [st.key, Number(st.relCost.toFixed(2))]));
+  return { wallMs, lanes, idleMs, laneTimeMs: totalMs, idleFraction: totalMs > 0 ? idleMs / totalMs : 0, comboCost };
 }

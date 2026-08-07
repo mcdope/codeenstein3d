@@ -355,6 +355,11 @@ async function main() {
     // Already persisted per invocation by `recordLaneRate`; this only reports.
     console.log(`  measured speed: ${rates.map((l) => `${l.label} ${l.attemptsPerMin}/min`).join(", ")}`);
   }
+  if (utilisation.comboCost) {
+    // Relative per-attempt cost, so a surprising assignment can be explained
+    // after the fact instead of looking arbitrary.
+    console.log(`  relative combo cost: ${Object.entries(utilisation.comboCost).map(([k, v]) => `${k} ${v}x`).join(", ")}`);
+  }
 
   console.log(`\nVerify before using: npm run verify:event-log -- ${path.relative(REPO_ROOT, EVENTS_DIR)}`);
   // A short cell is not a crash, but pooling it with full ones as though the

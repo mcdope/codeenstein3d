@@ -483,6 +483,113 @@ describe("runLaneOrchestrator chunk stealing", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it("gives the expensive combo to the fast lane and the cheap one to the slow lane", async () => {
+    // Work units are not interchangeable: a Casual/hard run dying on level 2 is
+    // cheap, a Pro/normal run completing 15 levels is not. A slow host must not
+    // be the one grinding the costliest combo.
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lane-cost-"));
+    const took = [];
+    const mk = (label, ms) => ({
+      label,
+      runInvocation({ outputPath, env }) {
+        took.push({ label, combo: env.COMBO });
+        fs.writeFileSync(outputPath, "{}");
+        return Promise.resolve({ code: 0, signal: null, killedForTimeout: false, elapsedMs: ms });
+      },
+    });
+    await runLaneOrchestrator(
+      baseParams({
+        combos: [{ id: "cheap" }, { id: "pricey" }],
+        outputPathFor: (c, seq) => path.join(dir, `${c.id}-${seq}.json`),
+        scanExisting: () => ({ qualifying: 0, fileCount: 0 }),
+        envFor: (c) => ({ COMBO: c.id }),
+        targetQualifying: 200,
+        runners: [mk("fast", 1000), mk("slow", 4000)],
+        maxInvocations: 1,
+        maxConcurrentPerCombo: 1,
+        initialLaneRates: { fast: 20, slow: 5 },
+        chunkFor: (_c, { ratePerMin }) => ratePerMin,
+        // `pricey` costs 4x per attempt. Seeded, because otherwise both start
+        // equal and the very first pair of claims has nothing to rank on.
+        initialComboCost: { pricey: 4, cheap: 1 },
+      }),
+    );
+    expect(took.find((t) => t.label === "fast").combo).toBe("pricey");
+    expect(took.find((t) => t.label === "slow").combo).toBe("cheap");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("learns which combo is expensive from what it observes", async () => {
+    // The ranking is decoration unless cost is measured. Same lane, same chunk
+    // size, one combo taking 4x the wall time: its relative cost must rise
+    // above the cheap one's.
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lane-learn-"));
+    const picks = [];
+    const runner = {
+      label: "only",
+      runInvocation({ outputPath, env }) {
+        picks.push(env.COMBO);
+        fs.writeFileSync(outputPath, "{}");
+        // `pricey` genuinely takes longer for the same number of attempts.
+        return Promise.resolve({ code: 0, signal: null, killedForTimeout: false, elapsedMs: env.COMBO === "pricey" ? 40000 : 10000 });
+      },
+    };
+    const summary = await runLaneOrchestrator(
+      baseParams({
+        combos: [{ id: "cheap" }, { id: "pricey" }],
+        outputPathFor: (c, seq) => path.join(dir, `${c.id}-${seq}.json`),
+        scanExisting: () => ({ qualifying: 0, fileCount: 0 }),
+        envFor: (c) => ({ COMBO: c.id }),
+        targetQualifying: 500,
+        runners: [runner],
+        maxInvocations: 3,
+        chunkFor: () => 10,
+        initialLaneRates: { only: 30 },
+      }),
+    );
+    expect(summary.comboCost.pricey).toBeGreaterThan(summary.comboCost.cheap);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a slow lane still takes the work when no other lane is running", async () => {
+    // The deadlock the tail guard must never cause: standing down is only safe
+    // while someone else is working. With nothing in flight, refusing means
+    // nobody ever claims and the run hangs. A slow lane beats an idle one.
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lane-tail-"));
+    const slow = {
+      label: "slow",
+      calls: [],
+      runInvocation({ outputPath }) {
+        this.calls.push(1);
+        fs.writeFileSync(outputPath, "{}");
+        return Promise.resolve({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 60000 });
+      },
+    };
+    await runLaneOrchestrator(
+      baseParams({
+        outputPathFor: (c, seq) => path.join(dir, `${c.id}-${seq}.json`),
+        scanExisting: () => ({ qualifying: 0, fileCount: 0 }),
+        targetQualifying: 3,
+        runners: [slow],
+        maxInvocations: 2,
+        chunkFor: () => 5,
+        // Ranked slowest of a pool that includes absent, faster lanes.
+        initialLaneRates: { slow: 1, ghostA: 50, ghostB: 50 },
+      }),
+    );
+    expect(slow.calls.length).toBeGreaterThan(0); // must not hang or starve
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("reports per-lane utilisation so idle time is never invisible again", async () => {
     const runner = fakeRunner(() => ({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 1000 }));
     const summary = await runLaneOrchestrator(
