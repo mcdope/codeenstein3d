@@ -6,7 +6,7 @@ import { mulberry32 } from "../../prng";
 import type { CodeEntity } from "../../parser/types";
 import { BRANCH_DOOR_TILE, DOOR_TILE, type Enemy, type Point, type Room, type Tile } from "../types";
 import { carveRoom, makeRoom } from "./geometry";
-import { carveHLine } from "./corridors";
+import { carveHLine, carveVLine } from "./corridors";
 import { placeDoors, placeKeys } from "./doorsKeys";
 import { reachableTiles } from "./pathing";
 import { key } from "./util";
@@ -18,6 +18,80 @@ function entity(overrides: Partial<CodeEntity> = {}): CodeEntity {
 function grid(size: number): Tile[][] {
   return Array.from({ length: size }, () => Array.from({ length: size }, () => 1 as Tile));
 }
+
+describe("placeDoors — the gate budget", () => {
+  /** N private rooms in a row, each hanging off one shared corridor. */
+  const manyRooms = (n: number) => {
+    const g = grid(12 + n * 5);
+    const spawnRoom = makeRoom(1, 1, 3, 3, entity());
+    carveRoom(g, spawnRoom);
+    const rooms = [spawnRoom];
+    for (let i = 0; i < n; i++) {
+      const r = makeRoom(6 + i * 5, 1, 3, 3, entity({ kind: "method", visibility: "private" }));
+      carveRoom(g, r);
+      rooms.push(r);
+    }
+    carveHLine(g, 3, 6 + n * 5, 2);
+    return { g, rooms };
+  };
+
+  it("caps the number of gates however many rooms qualify", () => {
+    // The defect: `isLockableRoom` fires on every private method, so a large
+    // source file produced a level made of gates. Measured on ripgrep — level 8
+    // carried 64 doors and 38 keys and chained into a 120-leg route that
+    // stopped 16 of 18 capture runs there; level 15 reached 2,653 doors.
+    const { g, rooms } = manyRooms(30);
+    const doors = placeDoors(rooms, g, { maxGates: 6 });
+    expect(doors.length).toBeGreaterThan(0);
+    expect(doors.length).toBeLessThanOrEqual(6);
+  });
+
+  it("prefers the bigger room when it has to choose", () => {
+    // A locked door should be worth opening; locking a bare alcove is a chore
+    // with no payoff. Both rooms hang off the corridor as dead ends, so each
+    // costs exactly one doorway and only worth separates them.
+    const g = grid(30);
+    const spawnRoom = makeRoom(1, 1, 3, 3, entity());
+    const small = makeRoom(8, 6, 2, 2, entity({ kind: "method", visibility: "private" }));
+    const big = makeRoom(16, 6, 6, 6, entity({ kind: "method", visibility: "private" }));
+    for (const r of [spawnRoom, small, big]) carveRoom(g, r);
+    carveHLine(g, 3, 25, 2); // spine
+    carveVLine(g, 3, 6, 8); // stub down to `small`
+    carveVLine(g, 3, 6, 16); // stub down to `big`
+    const doors = placeDoors([spawnRoom, small, big], g, { maxGates: 1 });
+    expect(doors).toHaveLength(1);
+    expect(doors[0].x).toBeGreaterThanOrEqual(15); // the big room's mouth
+  });
+
+  it("keeps a gate on the critical path so progression still needs a key", () => {
+    // Otherwise a capped level can put every gate on a side branch and the
+    // player walks to the exit never touching a key. Note a room the path runs
+    // *through* has two mouths — in and out — so it costs two of the budget,
+    // which is why this asks for three rather than one.
+    const g = grid(30);
+    const spawnRoom = makeRoom(1, 1, 3, 3, entity());
+    const gateRoom = makeRoom(8, 1, 3, 3, entity({ kind: "method", visibility: "private" }));
+    const sideRoom = makeRoom(4, 10, 8, 8, entity({ kind: "method", visibility: "private" })); // bigger, but a dead end
+    for (const r of [spawnRoom, gateRoom, sideRoom]) carveRoom(g, r);
+    carveHLine(g, 3, 8, 2); // spawn -> gateRoom
+    carveHLine(g, 11, 24, 2); // gateRoom -> exit, the only way through
+    carveVLine(g, 3, 12, 2); // spawn -> sideRoom, a dead end
+    const doors = placeDoors([spawnRoom, gateRoom, sideRoom], g, {
+      spawn: { x: 2, y: 2 },
+      exit: { x: 23, y: 2 },
+      maxGates: 3,
+    });
+    // The through-room is locked, so the exit cannot be reached without a key.
+    const lockedTheGate = doors.some((d) => d.y <= 4 && d.x >= 6 && d.x <= 12);
+    expect(lockedTheGate).toBe(true);
+  });
+
+  it("never locks the spawn room", () => {
+    const { g, rooms } = manyRooms(3);
+    const doors = placeDoors(rooms, g, { maxGates: 6 });
+    for (const d of doors) expect(d.x).toBeGreaterThan(4);
+  });
+});
 
 describe("placeDoors", () => {
   it("never locks the spawn room (index 0), even if it's a private method", () => {

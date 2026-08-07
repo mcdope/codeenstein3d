@@ -5,25 +5,124 @@
  * solvable-in-key-order key scatter. */
 import { DOOR_TILE, type Enemy, type ExceptionZone, type KeyItem, type Point, type Rect, type Room, type Tile } from "../types";
 import { breakupTileKeys } from "./breakup";
-import { doorwayTiles, isLockableRoom } from "./geometry";
+import { doorwayRunCount, doorwayTiles, isLockableRoom } from "./geometry";
 import { reachableTiles } from "./pathing";
 import { key, neighbors } from "./util";
 
 /**
- * Lock each private/protected-method room by turning its corridor mouths (the
- * open floor tiles just outside the room that lead into it) into door tiles.
- * The spawn room is never locked. Returns the door tiles placed.
+ * How many gates a level may carry, at most.
+ *
+ * Every gate is a mandatory "go and find its key" detour, so this budgets the
+ * player's patience, not the map's size — a bigger level does not make a
+ * seventh key hunt more welcome, it just makes it longer.
+ *
+ * Unbounded before, which is the defect this fixes: `isLockableRoom` fires on
+ * every private/protected method, so a large source file produced a level made
+ * of gates. Measured 2026-08-07 across the staged corpora — ripgrep's level 8
+ * carried 64 doors and 38 keys and chained into a **120-leg** route that
+ * stopped 16 of 18 capture runs at exactly that level; its level 15 reached
+ * 2,653 doors and 771 keys, and laravel peaked at 101 legs.
  */
-export function placeDoors(rooms: Room[], grid: Tile[][]): Point[] {
+export const MAX_GATES = 6;
+
+/** How many of the highest-worth candidates are probed for gating the exit. */
+const GATE_PROBE_LIMIT = 24;
+
+/**
+ * Lock a bounded, deliberately-chosen subset of the private/protected-method
+ * rooms by turning their corridor mouth into a door tile. The spawn room is
+ * never locked. Returns the door tiles placed.
+ *
+ * **The budget is counted in doorways, not rooms**, because a doorway is what
+ * costs a key: the engine charges one per doorway (`openDoorAhead`, mirrored by
+ * `assertAllRoomsReachable`), so a six-mouth room is six key hunts for one
+ * space. Ranking divides worth by that cost, so a one-mouth room wins over an
+ * equally good six-mouth one and most gates end up costing a single key. A room
+ * is locked wholly or not at all — leaving one mouth open would make the other
+ * locks pointless — so a room only fits if all of its doorways fit the budget.
+ *
+ * Requiring *only* single-doorway rooms was tried and is too strict: it left
+ * ripgrep's levels with zero gates, removing the mechanic rather than bounding
+ * it. Charging one key per room instead was tried too, and breaks the engine's
+ * own key economy — `assertAllRoomsReachable` then reports rooms unreachable,
+ * because the engine really does spend a key per doorway. Making a key open a
+ * whole room needs door-to-room identity in the engine, which is a bigger
+ * change than this one.
+ *
+ * Selection, in order:
+ *
+ * 1. **One gate on the critical path**, if any candidate offers one — the
+ *    highest-worth room whose locking alone would cut the exit off from spawn.
+ *    Without it a capped level can put every gate on a side branch and the
+ *    player walks to the exit never needing a key.
+ * 2. **Then the most rewarding rooms**, largest first with enemy and pickup
+ *    density folded in. A locked door should be worth opening; locking a bare
+ *    3x3 alcove is a chore with no payoff.
+ */
+export function placeDoors(
+  rooms: Room[],
+  grid: Tile[][],
+  opts: { spawn?: Point; exit?: Point; enemies?: readonly Point[]; pickups?: readonly Point[]; maxGates?: number } = {},
+): Point[] {
+  const { spawn, exit, enemies = [], pickups = [], maxGates = MAX_GATES } = opts;
+  const candidates = rooms
+    .map((room, index) => ({ room, index }))
+    .filter(({ room, index }) => isLockableRoom(room, index));
+  if (candidates.length === 0) return [];
+
+  const inside = (room: Room, p: Point): boolean => p.x >= room.x && p.x < room.x + room.w && p.y >= room.y && p.y < room.y + room.h;
+  // Area dominates, with occupants as a tie-breaker: a big room is the reward,
+  // and enemies/pickups inside it are what make it worth the key.
+  const worth = (room: Room): number =>
+    room.w * room.h + 4 * enemies.filter((e) => inside(room, { x: Math.floor(e.x), y: Math.floor(e.y) })).length + 6 * pickups.filter((p) => inside(room, p)).length;
+  // A room is locked wholly or not at all, so its price is all of its mouths.
+  const cost = (room: Room): number => Math.max(1, doorwayRunCount(room, grid));
+  const ranked = candidates.slice().sort((a, b) => worth(b.room) / cost(b.room) - worth(a.room) / cost(a.room));
+
+  const chosen: typeof ranked = [];
+  let spent = 0;
+  if (spawn && exit) {
+    // Only the best few are probed: each probe is a flood fill and a level can
+    // offer hundreds of candidates.
+    for (const candidate of ranked.slice(0, GATE_PROBE_LIMIT)) {
+      if (cost(candidate.room) <= maxGates && gatesTheExit(candidate.room, grid, spawn, exit)) {
+        chosen.push(candidate);
+        spent += cost(candidate.room);
+        break;
+      }
+    }
+  }
+  for (const candidate of ranked) {
+    if (spent >= maxGates) break;
+    if (chosen.includes(candidate)) continue;
+    const price = cost(candidate.room);
+    if (spent + price > maxGates) continue; // take a cheaper room rather than overshoot
+    chosen.push(candidate);
+    spent += price;
+  }
+
   const doors: Point[] = [];
-  rooms.forEach((room, index) => {
-    if (!isLockableRoom(room, index)) return; // spawn room and public rooms stay open
+  // Lock in map order rather than rank order, so placement does not depend on
+  // how the ranking happened to sort equal-worth rooms.
+  for (const { room } of chosen.slice().sort((a, b) => a.index - b.index)) {
     for (const mouth of roomMouths(room, grid)) {
       grid[mouth.y][mouth.x] = DOOR_TILE;
       doors.push(mouth);
     }
-  });
+  }
   return doors;
+}
+
+/**
+ * Would locking this room alone put the exit out of reach from spawn?
+ *
+ * Probed on a scratch copy so the real grid is untouched — the answer only
+ * decides which room earns the critical-path guarantee.
+ */
+function gatesTheExit(room: Room, grid: Tile[][], spawn: Point, exit: Point): boolean {
+  const scratch = grid.map((row) => row.slice());
+  for (const mouth of roomMouths(room, scratch)) scratch[mouth.y][mouth.x] = DOOR_TILE;
+  return !reachableTiles(scratch, spawn, new Set()).has(key(exit));
 }
 
 /** Floor tiles just outside `room` that connect into it (corridor mouths). */
