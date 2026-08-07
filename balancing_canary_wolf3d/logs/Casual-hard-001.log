@@ -1,0 +1,74 @@
+Loading engine modules + planning routes in Node...
+15 levels planned.
+
+[balancing] starting vite on :5199
+=== Casual / hard ===
+  [anomaly] Casual/hard level 1: stall (25 ticks, decisions 83-107) pos=(26.65,25.75) branch=main activity=route hpFrac 1.00->1.00 threatDist=1.3673911259552336 mineDist=none
+  [anomaly] Casual/hard level 1: stall (37 ticks, decisions 314-350) pos=(43.68,25.22) branch=main activity=exitHunt hpFrac 1.00->1.00 threatDist=1.3574839273217996 mineDist=none
+  [anomaly] Casual/hard level 1: stall (38 ticks, decisions 351-388) pos=(43.73,25.20) branch=main activity=exitHunt hpFrac 1.00->1.00 threatDist=1.2622229834482492 mineDist=none
+  [anomaly] Casual/hard level 1: stall (36 ticks, decisions 389-424) pos=(43.78,25.20) branch=main activity=exitHunt hpFrac 1.00->1.00 threatDist=1.1791912875391068 mineDist=none
+  [anomaly] Casual/hard level 2: oscillation (31 ticks, decisions 322-352) pos=(44.52,36.21) branch=hazard activity=route travelled=8.8t net=1.77t ratio=5.0x hpFrac 0.91->0.68 |delta| 1.423->1.896 (min 0.796 max 2.239) signFlips=0/30 navDist=1.19t
+  [anomaly] Casual/hard level 2: oscillation (37 ticks, decisions 373-409) pos=(43.98,36.74) branch=hazard activity=route travelled=10.6t net=1.98t ratio=5.3x hpFrac 0.54->0.27 |delta| 1.388->1.563 (min 0.682 max 2.186) signFlips=0/36 navDist=1.31t
+  [anomaly] Casual/hard level 2: healthDrainFrozen (2 ticks, decisions 176-177) pos=(45.66,38.44) branch=main activity=loot hpFrac 1.00->0.97
+  [anomaly] Casual/hard level 2: stall (34 ticks, decisions 65-98) pos=(37.80,39.77) branch=main activity=route hpFrac 0.90->0.90 threatDist=1.350770897676623 mineDist=none
+  [anomaly] Casual/hard level 2: oscillation (119 ticks, decisions 409-527) pos=(43.43,36.43) branch=hazard activity=route travelled=34.6t net=0.99t ratio=34.8x hpFrac 0.88->0.00 |delta| 1.565->1.499 (min 0.885 max 2.235) signFlips=0/118 navDist=1.15t
+  [anomaly] Casual/hard level 2: healthDrainFrozen (15 ticks, decisions 163-177) pos=(46.31,37.28) branch=main activity=loot hpFrac 1.00->0.78
+  [anomaly] Casual/hard level 3: oscillation (126 ticks, decisions 344-469) pos=(83.44,79.32) branch=hazard activity=loot travelled=36.8t net=1.31t ratio=28.0x hpFrac 0.95->0.00 |delta| 1.549->1.588 (min 0.852 max 2.222) signFlips=0/125 navDist=1.14t
+  [anomaly] Casual/hard level 3: oscillation (140 ticks, decisions 435-574) pos=(83.53,80.01) branch=hazard activity=route travelled=40.2t net=1.33t ratio=30.3x hpFrac 0.93->0.00 |delta| 1.529->1.530 (min 0.112 max 2.449) signFlips=0/139 navDist=1.15t
+  [anomaly] Casual/hard level 3: oscillation (31 ticks, decisions 442-472) pos=(83.95,79.68) branch=hazard activity=route travelled=8.6t net=1.91t ratio=4.5x hpFrac 0.83->0.62 |delta| 1.460->1.829 (min 0.714 max 2.161) signFlips=0/30 navDist=1.14t
+  [anomaly] Casual/hard level 3: stall (26 ticks, decisions 47-72) pos=(61.20,66.80) branch=main activity=loot hpFrac 1.00->1.00 threatDist=1.239822088670904 mineDist=none
+  [anomaly] Casual/hard level 3: stall (27 ticks, decisions 825-851) pos=(108.75,92.35) branch=main activity=route hpFrac 1.00->1.00 threatDist=1.3197107391769916 mineDist=none
+  [anomaly] Casual/hard level 4: stall (56 ticks, decisions 267-322) pos=(64.25,68.49) branch=main activity=route hpFrac 1.00->1.00 threatDist=1.333979685616214 mineDist=none
+  [anomaly] Casual/hard level 4: oscillation (99 ticks, decisions 495-593) pos=(78.74,81.36) branch=hazard activity=route travelled=21.2t net=1.98t ratio=10.7x hpFrac 0.84->0.36 |delta| 1.569->2.417 (min 0.624 max 3.141) signFlips=2/98 navDist=1.48t
+  [anomaly] Casual/hard level 4: oscillation (36 ticks, decisions 747-782) pos=(78.95,80.81) branch=hazard activity=route travelled=10.0t net=1.99t ratio=5.0x hpFrac 0.32->0.08 |delta| 1.774->1.523 (min 0.508 max 2.375) signFlips=0/35 navDist=0.97t
+  [anomaly] Casual/hard level 7: stall (23 ticks, decisions 1500-1522) pos=(137.22,127.36) branch=main activity=route hpFrac 0.92->0.92 threatDist=1.4362185711896793 mineDist=none
+  [anomaly] Casual/hard level 7: stall (25 ticks, decisions 1523-1547) pos=(137.20,127.41) branch=main activity=route hpFrac 0.92->0.92 threatDist=1.3342356499895152 mineDist=none
+  [anomaly] Casual/hard level 7: stall (25 ticks, decisions 1548-1572) pos=(137.20,127.46) branch=main activity=route hpFrac 0.92->0.92 threatDist=1.238586527956643 mineDist=none
+  [anomaly] Casual/hard level 7: stall (33 ticks, decisions 591-623) pos=(88.80,87.45) branch=main activity=route hpFrac 1.00->1.00 threatDist=1.2149158861203968 mineDist=none
+  [anomaly] Casual/hard level 7: stall (23 ticks, decisions 624-646) pos=(88.80,87.40) branch=main activity=route hpFrac 1.00->1.00 threatDist=1.099225591862926 mineDist=none
+  [anomaly] Casual/hard level 8: healthDrainFrozen (4 ticks, decisions 349-352) pos=(33.57,56.09) branch=main activity=route hpFrac 0.88->0.87
+  [anomaly] Casual/hard level 8: healthDrainFrozen (8 ticks, decisions 1397-1404) pos=(76.82,44.50) branch=standoff activity=route hpFrac 0.84->0.60
+  [anomaly] Casual/hard level 8: healthDrainFrozen (16 ticks, decisions 1452-1467) pos=(81.77,41.46) branch=standoff activity=route hpFrac 0.60->0.36
+  [anomaly] Casual/hard level 8: healthDrainFrozen (15 ticks, decisions 1486-1500) pos=(81.77,41.28) branch=standoff activity=route hpFrac 0.36->0.12
+  [anomaly] Casual/hard level 8: healthDrainFrozen (3 ticks, decisions 1766-1768) pos=(91.70,51.95) branch=standoff activity=route hpFrac 0.30->0.06
+  [Casual/hard] still working — attempt 10, qualifying 2/999
+  [anomaly] Casual/hard level 2: oscillation (83 ticks, decisions 327-409) pos=(45.11,37.34) branch=hazard activity=route travelled=24.0t net=1.64t ratio=14.6x hpFrac 0.61->0.00 |delta| 1.580->1.455 (min 1.030 max 2.165) signFlips=0/82 navDist=1.06t
+  [anomaly] Casual/hard level 2: oscillation (39 ticks, decisions 504-542) pos=(45.87,36.90) branch=hazard activity=route travelled=11.0t net=1.71t ratio=6.4x hpFrac 0.29->0.01 |delta| 1.729->1.582 (min 0.632 max 2.287) signFlips=0/38 navDist=1.01t
+  [anomaly] Casual/hard level 2: healthDrainFrozen (6 ticks, decisions 224-229) pos=(45.14,38.44) branch=main activity=loot hpFrac 0.90->0.87
+  [anomaly] Casual/hard level 2: healthDrainFrozen (3 ticks, decisions 231-233) pos=(45.07,38.49) branch=main activity=loot hpFrac 0.87->0.83
+  [anomaly] Casual/hard level 2: healthDrainFrozen (2 ticks, decisions 244-245) pos=(45.55,38.74) branch=main activity=loot hpFrac 0.95->0.91
+  [anomaly] Casual/hard level 2: stall (34 ticks, decisions 847-880) pos=(54.76,4.82) branch=main activity=route hpFrac 0.95->0.95 threatDist=1.4691954588705847 mineDist=none
+  [anomaly] Casual/hard level 2: healthDrainFrozen (2 ticks, decisions 232-233) pos=(45.63,38.52) branch=main activity=loot hpFrac 1.00->0.95
+  [anomaly] Casual/hard level 2: healthDrainFrozen (13 ticks, decisions 616-628) pos=(44.37,25.20) branch=main activity=route hpFrac 0.55->0.52
+  [anomaly] Casual/hard level 3: oscillation (147 ticks, decisions 440-586) pos=(83.25,79.84) branch=hazard activity=loot travelled=42.6t net=0.55t ratio=76.8x hpFrac 0.97->0.01 |delta| 1.583->1.547 (min 0.873 max 2.266) signFlips=0/146 navDist=1.12t
+  [anomaly] Casual/hard level 3: stall (51 ticks, decisions 863-913) pos=(115.77,96.78) branch=main activity=route hpFrac 1.00->1.00 threatDist=1.421981415691654 mineDist=none
+  [anomaly] Casual/hard level 3: stall (32 ticks, decisions 1277-1308) pos=(110.32,111.97) branch=main activity=loot hpFrac 1.00->1.00 threatDist=8.771679773207605 mineDist=none
+  [anomaly] Casual/hard level 3: stall (32 ticks, decisions 1309-1340) pos=(110.32,111.92) branch=main activity=loot hpFrac 1.00->1.00 threatDist=6.071471208009966 mineDist=none
+  [anomaly] Casual/hard level 3: stall (24 ticks, decisions 1341-1364) pos=(110.32,111.87) branch=main activity=loot hpFrac 1.00->1.00 threatDist=3.383412086805947 mineDist=none
+  [anomaly] Casual/hard level 3: healthDrainFrozen (2 ticks, decisions 1367-1368) pos=(110.28,111.91) branch=main activity=loot hpFrac 1.00->0.88
+  [anomaly] Casual/hard level 3: stall (53 ticks, decisions 1145-1197) pos=(110.21,113.77) branch=main activity=route hpFrac 1.00->1.00 threatDist=1.3488383613265713 mineDist=none
+  [anomaly] Casual/hard level 3: stall (21 ticks, decisions 1198-1218) pos=(110.20,113.82) branch=main activity=route hpFrac 1.00->1.00 threatDist=1.2380545220460453 mineDist=none
+  [anomaly] Casual/hard level 4: oscillation (139 ticks, decisions 367-505) pos=(77.83,80.62) branch=hazard activity=loot travelled=40.6t net=1.57t ratio=25.9x hpFrac 1.00->0.00 |delta| 1.527->1.535 (min 0.783 max 2.203) signFlips=0/138 navDist=1.17t
+  [anomaly] Casual/hard level 4: oscillation (39 ticks, decisions 394-432) pos=(77.84,80.65) branch=hazard activity=route travelled=10.9t net=1.98t ratio=5.5x hpFrac 0.91->0.63 |delta| 1.455->1.407 (min 0.488 max 2.413) signFlips=0/38 navDist=1.23t
+  [anomaly] Casual/hard level 4: oscillation (37 ticks, decisions 465-501) pos=(78.05,81.32) branch=hazard activity=route travelled=10.6t net=1.98t ratio=5.3x hpFrac 0.39->0.12 |delta| 1.384->1.566 (min 0.649 max 2.219) signFlips=0/36 navDist=1.32t
+  [anomaly] Casual/hard level 5: healthDrainFrozen (16 ticks, decisions 1321-1336) pos=(77.71,93.91) branch=main activity=route hpFrac 1.00->0.96
+  [anomaly] Casual/hard level 6: stall (37 ticks, decisions 315-351) pos=(77.21,53.22) branch=main activity=route hpFrac 1.00->1.00 threatDist=1.5094910944221382 mineDist=none
+  [anomaly] Casual/hard level 6: stall (20 ticks, decisions 1087-1106) pos=(115.30,31.23) branch=main activity=route hpFrac 0.99->0.99 threatDist=1.4719235215335742 mineDist=none
+  [anomaly] Casual/hard level 6: stall (23 ticks, decisions 1107-1129) pos=(115.35,31.20) branch=main activity=route hpFrac 0.99->0.99 threatDist=1.363520567474639 mineDist=none
+  [anomaly] Casual/hard level 6: stall (24 ticks, decisions 1130-1153) pos=(115.40,31.20) branch=main activity=route hpFrac 0.99->0.99 threatDist=1.2755241403948507 mineDist=none
+  [anomaly] Casual/hard level 6: stall (26 ticks, decisions 2118-2143) pos=(115.36,101.75) branch=main activity=route hpFrac 1.00->1.00 threatDist=1.4293491242491767 mineDist=none
+  [anomaly] Casual/hard level 6: stall (46 ticks, decisions 2144-2189) pos=(115.31,101.80) branch=main activity=route hpFrac 1.00->1.00 threatDist=1.2402259019663644 mineDist=none
+  [anomaly] Casual/hard level 6: healthDrainFrozen (2 ticks, decisions 1258-1259) pos=(115.81,31.41) branch=main activity=route hpFrac 0.89->0.87
+  [anomaly] Casual/hard level 7: stall (20 ticks, decisions 1197-1216) pos=(137.34,127.38) branch=main activity=route hpFrac 0.77->0.77 threatDist=1.498755458798131 mineDist=none
+  [anomaly] Casual/hard level 7: stall (20 ticks, decisions 1217-1236) pos=(137.29,127.42) branch=main activity=route hpFrac 0.77->0.77 threatDist=1.3876265940020374 mineDist=none
+  [anomaly] Casual/hard level 7: stall (26 ticks, decisions 1237-1262) pos=(137.24,127.46) branch=main activity=route hpFrac 0.77->0.77 threatDist=1.2803632777843053 mineDist=none
+  [anomaly] Casual/hard level 7: stall (26 ticks, decisions 1263-1288) pos=(137.20,127.51) branch=main activity=route hpFrac 0.77->0.77 threatDist=1.1613892078100965 mineDist=none
+  [anomaly] Casual/hard level 7: stall (58 ticks, decisions 1348-1405) pos=(136.55,128.76) branch=main activity=route hpFrac 1.00->1.00 threatDist=1.5485490437727931 mineDist=none
+  [anomaly] Casual/hard level 7: stall (62 ticks, decisions 1406-1467) pos=(136.60,128.80) branch=main activity=route hpFrac 1.00->1.00 threatDist=1.1929102821785673 mineDist=none
+  [anomaly] Casual/hard level 8: oscillation (135 ticks, decisions 229-363) pos=(33.63,42.26) branch=hazard activity=route travelled=38.8t net=1.78t ratio=21.8x hpFrac 0.98->0.01 |delta| 1.469->1.509 (min 0.024 max 2.835) signFlips=2/134 navDist=1.21t
+  [anomaly] Casual/hard level 8: stall (35 ticks, decisions 177-211) pos=(31.21,44.21) branch=main activity=route hpFrac 1.00->1.00 threatDist=1.3448473777546817 mineDist=none
+  [anomaly] Casual/hard level 8: healthDrainFrozen (4 ticks, decisions 1979-1982) pos=(67.66,53.79) branch=standoff activity=route hpFrac 0.74->0.50
+  [anomaly] Casual/hard level 8: healthDrainFrozen (3 ticks, decisions 2015-2017) pos=(67.46,53.79) branch=standoff activity=route hpFrac 0.50->0.26
+  [Casual/hard] still working — attempt 20, qualifying 4/999
+  qualifying runs: 4/999 (attempts used: 20)
+Telemetry saved

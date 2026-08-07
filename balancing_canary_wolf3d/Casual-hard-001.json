@@ -1,0 +1,4739 @@
+{
+  "meta": {
+    "generatedAt": "2026-08-07T14:14:45.446Z",
+    "campaign": "demo-campaign",
+    "levelCount": 15,
+    "difficulties": [
+      "easy",
+      "normal",
+      "hard"
+    ],
+    "profiles": {
+      "Casual": {
+        "fireAngleEps": 0.08,
+        "fireCooldownMs": 220,
+        "engageRadius": 9.5,
+        "weaponPriority": [
+          0,
+          1,
+          3,
+          5
+        ],
+        "healthDetourThreshold": 0.75,
+        "proactiveMineDisarm": true,
+        "rocketForDistantClusters": false,
+        "ammoThrift": 1.6,
+        "selfHarmAversion": 2.2,
+        "rotSpeedMultiplier": 2
+      },
+      "Gamer": {
+        "fireAngleEps": 0.05,
+        "fireCooldownMs": 160,
+        "engageRadius": 9.5,
+        "weaponPriority": [
+          3,
+          0,
+          1,
+          5,
+          4
+        ],
+        "healthDetourThreshold": 0.5,
+        "proactiveMineDisarm": true,
+        "rocketForDistantClusters": true,
+        "ammoThrift": 0.4,
+        "selfHarmAversion": 0.9,
+        "rotSpeedMultiplier": 3.5
+      },
+      "Pro": {
+        "fireAngleEps": 0.03,
+        "fireCooldownMs": 120,
+        "engageRadius": 9.5,
+        "weaponPriority": [
+          4,
+          3,
+          0,
+          1,
+          5
+        ],
+        "healthDetourThreshold": 0.25,
+        "proactiveMineDisarm": true,
+        "rocketForDistantClusters": true,
+        "ammoThrift": 0.2,
+        "selfHarmAversion": 0.5,
+        "rotSpeedMultiplier": 5
+      }
+    },
+    "flags": {
+      "levelLimit": null,
+      "attemptCap": 20,
+      "concurrency": 10,
+      "qualifyingTarget": 999,
+      "anomalyScan": true,
+      "navDiag": false,
+      "headed": false,
+      "gameplaySeed": null,
+      "eventLog": true
+    }
+  },
+  "profiles": {
+    "Casual": {
+      "hard": {
+        "attemptsUsed": 20,
+        "qualifyingRunCount": 4,
+        "trueQualifyingCount": 4,
+        "failureReasons": [
+          {
+            "attempt": 2,
+            "reason": "died",
+            "diedAtLevelIndex": 1
+          },
+          {
+            "attempt": 3,
+            "reason": "died",
+            "diedAtLevelIndex": 1
+          },
+          {
+            "attempt": 4,
+            "reason": "died",
+            "diedAtLevelIndex": 3
+          },
+          {
+            "attempt": 5,
+            "reason": "died",
+            "diedAtLevelIndex": 3
+          },
+          {
+            "attempt": 7,
+            "reason": "died",
+            "diedAtLevelIndex": 2
+          },
+          {
+            "attempt": 8,
+            "reason": "died",
+            "diedAtLevelIndex": 2
+          },
+          {
+            "attempt": 9,
+            "reason": "died",
+            "diedAtLevelIndex": 1
+          },
+          {
+            "attempt": 10,
+            "reason": "died",
+            "diedAtLevelIndex": 2
+          },
+          {
+            "attempt": 11,
+            "reason": "died",
+            "diedAtLevelIndex": 1
+          },
+          {
+            "attempt": 12,
+            "reason": "died",
+            "diedAtLevelIndex": 1
+          },
+          {
+            "attempt": 13,
+            "reason": "died",
+            "diedAtLevelIndex": 1
+          },
+          {
+            "attempt": 14,
+            "reason": "died",
+            "diedAtLevelIndex": 1
+          },
+          {
+            "attempt": 17,
+            "reason": "died",
+            "diedAtLevelIndex": 3
+          },
+          {
+            "attempt": 18,
+            "reason": "died",
+            "diedAtLevelIndex": 1
+          },
+          {
+            "attempt": 19,
+            "reason": "died",
+            "diedAtLevelIndex": 3
+          },
+          {
+            "attempt": 20,
+            "reason": "died",
+            "diedAtLevelIndex": 2
+          }
+        ],
+        "weaponFirstOwnedAtLevel": {
+          "3": 4,
+          "4": 3,
+          "5": 6,
+          "6": 4
+        },
+        "weaponAcquisitionRate": {
+          "3": {
+            "count": 4,
+            "rate": 1
+          },
+          "4": {
+            "count": 4,
+            "rate": 1
+          },
+          "5": {
+            "count": 1,
+            "rate": 0.25
+          },
+          "6": {
+            "count": 3,
+            "rate": 0.75
+          }
+        },
+        "finalScoreReached": {
+          "mean": 34937.25,
+          "samples": [
+            34258,
+            36568,
+            36085,
+            32838
+          ]
+        },
+        "anomalySummary": {
+          "oscillation": {
+            "findings": 2,
+            "ticks": 166,
+            "findingsPerRun": 0.5,
+            "ticksPerRun": 41.5,
+            "ticksPerKiloDecision": 3.5423157355639963
+          },
+          "stall": {
+            "findings": 22,
+            "ticks": 716,
+            "findingsPerRun": 5.5,
+            "ticksPerRun": 179,
+            "ticksPerKiloDecision": 15.278904016047118
+          },
+          "healthDrainFrozen": {
+            "findings": 10,
+            "ticks": 86,
+            "findingsPerRun": 2.5,
+            "ticksPerRun": 21.5,
+            "ticksPerKiloDecision": 1.8351756220391788
+          }
+        },
+        "levels": [
+          {
+            "levelIndex": 0,
+            "filename": "01_WOLFSRC_DETECT.C",
+            "static": {
+              "totalEnemies": 2,
+              "enemyCounts": {
+                "normal": 2,
+                "elite": 0,
+                "edgeCase": 0
+              },
+              "avgNormalEnemyHp": 162.5,
+              "walkableTileCount": 486,
+              "enemyDensity": 0.00411522633744856,
+              "prePlacedAmmo": {
+                "bullets": 0,
+                "rockets": 0,
+                "health": 120,
+                "swap": 0,
+                "weaponUnlocks": 0
+              },
+              "secretRoomCount": 2,
+              "mineCount": 0,
+              "spikeTrapCount": 0,
+              "shortestPathTiles": 31,
+              "plannedRouteTiles": 31,
+              "routeOk": true
+            },
+            "runtime": {
+              "sampleCount": 4,
+              "incompleteSampleCount": 0,
+              "mapDensityEnemyDemographics": {
+                "killsObserved": {
+                  "mean": 2,
+                  "samples": [
+                    2,
+                    2,
+                    2,
+                    2
+                  ]
+                }
+              },
+              "combatPacing": {
+                "avgTtkByCategory": {
+                  "normal": {
+                    "mean": 2.1525202246503268,
+                    "samples": [
+                      2.0345511569226487,
+                      2.729927494752907,
+                      2.3920744461718644,
+                      0.7468044018434856,
+                      2.1543478179228734,
+                      1.3229998094601907,
+                      1.8689956715267355,
+                      3.970460998601907
+                    ]
+                  },
+                  "elite": {
+                    "mean": 0,
+                    "samples": []
+                  },
+                  "edgeCase": {
+                    "mean": 0,
+                    "samples": []
+                  }
+                },
+                "combatVsExplorationRatio": {
+                  "mean": 0.28390583621216653,
+                  "samples": [
+                    0.2920345319754509,
+                    0.22850170281478066,
+                    0.19714781484492092,
+                    0.41793929521351364
+                  ]
+                },
+                "levelTimeSec": {
+                  "mean": 15.797105674961974,
+                  "samples": [
+                    16.657203580583527,
+                    14.17441886917017,
+                    18.145509906853565,
+                    14.211290343240643
+                  ]
+                },
+                "peakSimultaneousAggroed": {
+                  "max": 1,
+                  "samples": [
+                    1,
+                    1,
+                    1,
+                    1
+                  ]
+                }
+              },
+              "aiEffectivenessDanger": {
+                "enemyAccuracy": {
+                  "mean": 0.20833333333333331,
+                  "samples": [
+                    0.3333333333333333,
+                    0,
+                    0.5,
+                    0
+                  ]
+                },
+                "meleeVsRangedAttackRatio": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "minHealthReached": {
+                  "min": 88,
+                  "samples": [
+                    88,
+                    100,
+                    88,
+                    100
+                  ]
+                },
+                "timeBelow25PctHealthSec": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                }
+              },
+              "damageHealingBreakdown": {
+                "damageBySource": {
+                  "enemyMelee": 0,
+                  "enemyRanged": 6,
+                  "trapSpike": 0,
+                  "trapMine": 0,
+                  "hazard": 0,
+                  "selfRocket": 0
+                },
+                "healingBySource": {
+                  "pickupHealth": 0,
+                  "pickupSwap": 0,
+                  "lifesteal": 0.5
+                },
+                "fatalDamageSourceCounts": {}
+              },
+              "weaponEfficiency": {
+                "0": {
+                  "shotsFired": 10,
+                  "hits": 6,
+                  "kills": 1
+                },
+                "1": {
+                  "shotsFired": 13,
+                  "hits": 43,
+                  "kills": 1
+                },
+                "2": {
+                  "shotsFired": 23,
+                  "hits": 23,
+                  "kills": 6
+                }
+              },
+              "economyLootStarvation": {
+                "lootRolled": {
+                  "bullets": 15,
+                  "rockets": 0,
+                  "smg": 0,
+                  "gas": 0,
+                  "health": 28,
+                  "swap": 8,
+                  "weapon": 0
+                },
+                "consumed": {
+                  "dynamic": {
+                    "bullets": 12,
+                    "rockets": 0,
+                    "smg": 0,
+                    "gas": 0,
+                    "health": 28,
+                    "swap": 8,
+                    "weapon": 0
+                  },
+                  "static": {
+                    "bullets": 0,
+                    "rockets": 0,
+                    "smg": 0,
+                    "gas": 0,
+                    "health": 0,
+                    "swap": 0,
+                    "weapon": 0
+                  },
+                  "total": {
+                    "bullets": 12,
+                    "rockets": 0,
+                    "smg": 0,
+                    "gas": 0,
+                    "health": 28,
+                    "swap": 8,
+                    "weapon": 0
+                  }
+                },
+                "pctRegularKillLootMisses": {
+                  "mean": 0.25,
+                  "samples": [
+                    0,
+                    0.5,
+                    0,
+                    0.5
+                  ]
+                },
+                "desperation": {
+                  "timeAtZeroRangedAmmoSec": {
+                    "mean": 0,
+                    "samples": [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  },
+                  "pctKillsForcedMelee": {
+                    "mean": 0,
+                    "samples": [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  }
+                }
+              },
+              "navigationMapFlow": {
+                "routeEfficiencyScore": {
+                  "mean": 0.48829272703343896,
+                  "samples": [
+                    0.4624374929026513,
+                    0.4994387332710734,
+                    0.4496765000022658,
+                    0.5416181819577655
+                  ]
+                },
+                "routeFollowingOverhead": {
+                  "mean": 2.058710505445279,
+                  "samples": [
+                    2.162454418916487,
+                    2.0022475899105805,
+                    2.2238209023486024,
+                    1.8463191106054457
+                  ]
+                },
+                "distanceTraveled": {
+                  "mean": 63.82002566880365,
+                  "samples": [
+                    67.0360869864111,
+                    62.069675287227994,
+                    68.93844797280667,
+                    57.23589242876882
+                  ]
+                },
+                "mapCoveragePct": {
+                  "mean": 0.5972222222222222,
+                  "samples": [
+                    0.5864197530864198,
+                    0.6646090534979424,
+                    0.5802469135802469,
+                    0.5576131687242798
+                  ]
+                },
+                "secretRoomsOpened": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "minesTriggered": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "minesDisarmed": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                }
+              },
+              "score": {
+                "mean": 1827.25,
+                "samples": [
+                  1818,
+                  1832,
+                  1827,
+                  1832
+                ]
+              },
+              "flags": []
+            }
+          },
+          {
+            "levelIndex": 1,
+            "filename": "02_WOLFSRC_WOLFHACK.C",
+            "static": {
+              "totalEnemies": 38,
+              "enemyCounts": {
+                "normal": 5,
+                "elite": 0,
+                "edgeCase": 33
+              },
+              "avgNormalEnemyHp": 100.2,
+              "walkableTileCount": 1527,
+              "enemyDensity": 0.024885396201702686,
+              "prePlacedAmmo": {
+                "bullets": 11,
+                "rockets": 0,
+                "health": 60,
+                "swap": 0,
+                "weaponUnlocks": 0
+              },
+              "secretRoomCount": 1,
+              "mineCount": 4,
+              "spikeTrapCount": 4,
+              "shortestPathTiles": 69,
+              "plannedRouteTiles": 77,
+              "routeOk": true
+            },
+            "runtime": {
+              "sampleCount": 4,
+              "incompleteSampleCount": 0,
+              "mapDensityEnemyDemographics": {
+                "killsObserved": {
+                  "mean": 16.25,
+                  "samples": [
+                    16,
+                    17,
+                    16,
+                    16
+                  ]
+                }
+              },
+              "combatPacing": {
+                "avgTtkByCategory": {
+                  "normal": {
+                    "mean": 1.4674518119060351,
+                    "samples": [
+                      1.4699451352552337,
+                      0.30000000000000426,
+                      3.5167408317502353,
+                      1.4481096868385208,
+                      0.224433189764369,
+                      2.400233476705541,
+                      0.5499999999999687,
+                      2.981782245440982,
+                      0.3158217413994606
+                    ]
+                  },
+                  "elite": {
+                    "mean": 0,
+                    "samples": []
+                  },
+                  "edgeCase": {
+                    "mean": 1.0179678926843132,
+                    "samples": [
+                      0.3500000000000003,
+                      1.7116971986130483,
+                      0.6927375417115123,
+                      0.5927375417115126,
+                      1.4407135222532812,
+                      1.3407135222532816,
+                      1.5958826126729475,
+                      2.0458826126729566,
+                      0.25000000000000355,
+                      0.20000000000000284,
+                      0.30000000000000426,
+                      0.3499999999999801,
+                      0.7999999999999545,
+                      0.8499999999999517,
+                      0.3500000000000003,
+                      1.1471826379256391,
+                      0.06761916780253152,
+                      1.367619167802527,
+                      1.8176191678025253,
+                      1.9676191678025248,
+                      2.5500000000000087,
+                      3.1500000000000146,
+                      0.25000000000000355,
+                      0.15000000000000213,
+                      1.0576868339171277,
+                      0.3477154930446389,
+                      0.9137667942053938,
+                      0.8946995758643226,
+                      0.6156243677132337,
+                      1.2937606513886268,
+                      0.09298484531161755,
+                      0.09298484531161755,
+                      1.4549551954205562,
+                      1.654955195420559,
+                      2.6549551954205732,
+                      2.361970350108953,
+                      0.4181583045982151,
+                      0.5500000000000078,
+                      1.4590534150531518,
+                      0.3499999999999801,
+                      0.7770708849447132,
+                      1.0494225753207118,
+                      0.3500000000000003,
+                      1.7606557798271818,
+                      0.2499999999999991,
+                      0,
+                      1.3489852181962911,
+                      1.3489852181962911,
+                      1.4514581164139244,
+                      2.1514581164139344,
+                      1.4278745609199959,
+                      1.550068630243537,
+                      0.38320118129531977,
+                      0.3499999999999801,
+                      0.29999999999998295,
+                      0.9557267847468864
+                    ]
+                  }
+                },
+                "combatVsExplorationRatio": {
+                  "mean": 0.25638110560671795,
+                  "samples": [
+                    0.19853165319862756,
+                    0.2985392848344914,
+                    0.24976058203808582,
+                    0.278692902355667
+                  ]
+                },
+                "levelTimeSec": {
+                  "mean": 42.54720382379267,
+                  "samples": [
+                    38.92338990805631,
+                    43.39955437035974,
+                    44.35349973716108,
+                    43.51237127959355
+                  ]
+                },
+                "peakSimultaneousAggroed": {
+                  "max": 6,
+                  "samples": [
+                    6,
+                    5,
+                    5,
+                    5
+                  ]
+                }
+              },
+              "aiEffectivenessDanger": {
+                "enemyAccuracy": {
+                  "mean": 0.28888888888888886,
+                  "samples": [
+                    0.26666666666666666,
+                    0.3333333333333333,
+                    0.1111111111111111,
+                    0.4444444444444444
+                  ]
+                },
+                "meleeVsRangedAttackRatio": {
+                  "mean": 0.0937828947368421,
+                  "samples": [
+                    0.0625,
+                    0.16,
+                    0.1,
+                    0.05263157894736842
+                  ]
+                },
+                "minHealthReached": {
+                  "min": 75.8,
+                  "samples": [
+                    99.8,
+                    78.4,
+                    95.2,
+                    75.8
+                  ]
+                },
+                "timeBelow25PctHealthSec": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                }
+              },
+              "damageHealingBreakdown": {
+                "damageBySource": {
+                  "enemyMelee": 12,
+                  "enemyRanged": 33.6,
+                  "trapSpike": 0,
+                  "trapMine": 0,
+                  "hazard": 1.35,
+                  "selfRocket": 0
+                },
+                "healingBySource": {
+                  "pickupHealth": 0,
+                  "pickupSwap": 0,
+                  "lifesteal": 2.5
+                },
+                "fatalDamageSourceCounts": {}
+              },
+              "weaponEfficiency": {
+                "0": {
+                  "shotsFired": 66,
+                  "hits": 34,
+                  "kills": 19
+                },
+                "1": {
+                  "shotsFired": 20,
+                  "hits": 50,
+                  "kills": 22
+                },
+                "2": {
+                  "shotsFired": 24,
+                  "hits": 24,
+                  "kills": 24
+                }
+              },
+              "economyLootStarvation": {
+                "lootRolled": {
+                  "bullets": 96,
+                  "rockets": 0,
+                  "smg": 0,
+                  "gas": 0,
+                  "health": 308,
+                  "swap": 168,
+                  "weapon": 0
+                },
+                "consumed": {
+                  "dynamic": {
+                    "bullets": 96,
+                    "rockets": 0,
+                    "smg": 0,
+                    "gas": 0,
+                    "health": 308,
+                    "swap": 168,
+                    "weapon": 0
+                  },
+                  "static": {
+                    "bullets": 0,
+                    "rockets": 0,
+                    "smg": 0,
+                    "gas": 0,
+                    "health": 0,
+                    "swap": 0,
+                    "weapon": 0
+                  },
+                  "total": {
+                    "bullets": 96,
+                    "rockets": 0,
+                    "smg": 0,
+                    "gas": 0,
+                    "health": 308,
+                    "swap": 168,
+                    "weapon": 0
+                  }
+                },
+                "pctRegularKillLootMisses": {
+                  "mean": 0.18474264705882354,
+                  "samples": [
+                    0.25,
+                    0.17647058823529413,
+                    0.0625,
+                    0.25
+                  ]
+                },
+                "desperation": {
+                  "timeAtZeroRangedAmmoSec": {
+                    "mean": 0,
+                    "samples": [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  },
+                  "pctKillsForcedMelee": {
+                    "mean": 0,
+                    "samples": [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  }
+                }
+              },
+              "navigationMapFlow": {
+                "routeEfficiencyScore": {
+                  "mean": 0.40700307781735,
+                  "samples": [
+                    0.4377180176049764,
+                    0.4082516857750934,
+                    0.38655605826796874,
+                    0.3954865496213616
+                  ]
+                },
+                "routeFollowingOverhead": {
+                  "mean": 2.206549006193823,
+                  "samples": [
+                    2.0472172952967065,
+                    2.194979046816628,
+                    2.3181732039566123,
+                    2.2658264787053444
+                  ]
+                },
+                "distanceTraveled": {
+                  "mean": 169.90427347692435,
+                  "samples": [
+                    157.6357317378464,
+                    169.01338660488037,
+                    178.49933670465916,
+                    174.4686388603115
+                  ]
+                },
+                "mapCoveragePct": {
+                  "mean": 0.28421741977734116,
+                  "samples": [
+                    0.27177472167648986,
+                    0.29404060248853964,
+                    0.29404060248853964,
+                    0.2770137524557957
+                  ]
+                },
+                "secretRoomsOpened": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "minesTriggered": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "minesDisarmed": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                }
+              },
+              "score": {
+                "mean": 6133,
+                "samples": [
+                  6015,
+                  6896,
+                  5968,
+                  5653
+                ]
+              },
+              "flags": []
+            }
+          },
+          {
+            "levelIndex": 2,
+            "filename": "03_WOLFSRC_ID_VL.C",
+            "static": {
+              "totalEnemies": 95,
+              "enemyCounts": {
+                "normal": 28,
+                "elite": 0,
+                "edgeCase": 67
+              },
+              "avgNormalEnemyHp": 55.357142857142854,
+              "walkableTileCount": 4157,
+              "enemyDensity": 0.022853019004089488,
+              "prePlacedAmmo": {
+                "bullets": 101,
+                "rockets": 0,
+                "health": 60,
+                "swap": 40,
+                "weaponUnlocks": 2
+              },
+              "secretRoomCount": 4,
+              "mineCount": 4,
+              "spikeTrapCount": 4,
+              "shortestPathTiles": 108,
+              "plannedRouteTiles": 108,
+              "routeOk": true
+            },
+            "runtime": {
+              "sampleCount": 4,
+              "incompleteSampleCount": 0,
+              "mapDensityEnemyDemographics": {
+                "killsObserved": {
+                  "mean": 17,
+                  "samples": [
+                    17,
+                    17,
+                    18,
+                    16
+                  ]
+                }
+              },
+              "combatPacing": {
+                "avgTtkByCategory": {
+                  "normal": {
+                    "mean": 1.3100735763691762,
+                    "samples": [
+                      2.427333305081241,
+                      1.5040868128643297,
+                      0.7195945962191388,
+                      1.476698633323302,
+                      0.8075206074307388,
+                      1.892706700586082,
+                      1.5627703524527377,
+                      1.1970924702281707,
+                      0.36828857425800265,
+                      2.880396390290265,
+                      0.31827402328816845,
+                      0.5661204504079365
+                    ]
+                  },
+                  "elite": {
+                    "mean": 0,
+                    "samples": []
+                  },
+                  "edgeCase": {
+                    "mean": 0.7637945816912133,
+                    "samples": [
+                      1.043931504053457,
+                      1.043931504053457,
+                      0.23513343520442476,
+                      1.4932365397985894,
+                      0.30000000000000426,
+                      0.7301921744717959,
+                      0.3872634458415831,
+                      0.3872634458415831,
+                      0.3872634458415831,
+                      0.5799228753580508,
+                      0,
+                      0.5861332210523642,
+                      0.39999999999997726,
+                      0.9930508256135582,
+                      1.043931504053457,
+                      1.043931504053457,
+                      1.0421232370055797,
+                      0.9015106410689455,
+                      0.3457560181675561,
+                      0.7082119277578087,
+                      0.3499999999999801,
+                      0.3499999999999801,
+                      0.8220325588790303,
+                      0.3460959537602406,
+                      1.094454551972781,
+                      1.2944545519727697,
+                      0.7927067005861446,
+                      0.8427067005861417,
+                      1.043931504053457,
+                      1.043931504053457,
+                      0.25000000000000355,
+                      1.8288667744900948,
+                      0.30000000000000426,
+                      0.7424060054480321,
+                      0.38015429277644586,
+                      0.38015429277644586,
+                      0.6539477745004874,
+                      0.39999999999997726,
+                      1.2440375336834322,
+                      1.5440375336834151,
+                      0.39999999999997726,
+                      0.39999999999997726,
+                      1.0439315040534787,
+                      1.3349352643023673,
+                      1.8945114943464532,
+                      1.5378510374810332,
+                      0.350000000000005,
+                      0.350000000000005,
+                      0.3331588791766755,
+                      0.38315887917667624,
+                      0.7717900518942038,
+                      0.3325296420041681,
+                      1.1825296420041198,
+                      1.4325296420041056,
+                      0.7507727330697804,
+                      0.9180923227353546
+                    ]
+                  }
+                },
+                "combatVsExplorationRatio": {
+                  "mean": 0.2002699654155049,
+                  "samples": [
+                    0.20393365776742464,
+                    0.1974835730357308,
+                    0.2058474247930807,
+                    0.19381520606578345
+                  ]
+                },
+                "levelTimeSec": {
+                  "mean": 52.57780600347948,
+                  "samples": [
+                    54.22450641992488,
+                    48.94485875843618,
+                    63.73111252672586,
+                    43.41074630883101
+                  ]
+                },
+                "peakSimultaneousAggroed": {
+                  "max": 3,
+                  "samples": [
+                    3,
+                    3,
+                    3,
+                    3
+                  ]
+                }
+              },
+              "aiEffectivenessDanger": {
+                "enemyAccuracy": {
+                  "mean": 0.3194014447884417,
+                  "samples": [
+                    0.47058823529411764,
+                    0.06666666666666667,
+                    0.47368421052631576,
+                    0.26666666666666666
+                  ]
+                },
+                "meleeVsRangedAttackRatio": {
+                  "mean": 0.015625,
+                  "samples": [
+                    0,
+                    0.0625,
+                    0,
+                    0
+                  ]
+                },
+                "minHealthReached": {
+                  "min": 55.61080973952303,
+                  "samples": [
+                    55.61080973952303,
+                    100,
+                    78.9609185067729,
+                    100
+                  ]
+                },
+                "timeBelow25PctHealthSec": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                }
+              },
+              "damageHealingBreakdown": {
+                "damageBySource": {
+                  "enemyMelee": 3.75,
+                  "enemyRanged": 33,
+                  "trapSpike": 0,
+                  "trapMine": 0,
+                  "hazard": 18.190820668675094,
+                  "selfRocket": 0
+                },
+                "healingBySource": {
+                  "pickupHealth": 0,
+                  "pickupSwap": 0,
+                  "lifesteal": 0.25
+                },
+                "fatalDamageSourceCounts": {}
+              },
+              "weaponEfficiency": {
+                "0": {
+                  "shotsFired": 39,
+                  "hits": 23,
+                  "kills": 10
+                },
+                "1": {
+                  "shotsFired": 27,
+                  "hits": 84,
+                  "kills": 33
+                },
+                "2": {
+                  "shotsFired": 25,
+                  "hits": 25,
+                  "kills": 25
+                }
+              },
+              "economyLootStarvation": {
+                "lootRolled": {
+                  "bullets": 129,
+                  "rockets": 0,
+                  "smg": 0,
+                  "gas": 0,
+                  "health": 140,
+                  "swap": 88,
+                  "weapon": 1
+                },
+                "consumed": {
+                  "dynamic": {
+                    "bullets": 129,
+                    "rockets": 0,
+                    "smg": 0,
+                    "gas": 0,
+                    "health": 140,
+                    "swap": 88,
+                    "weapon": 1
+                  },
+                  "static": {
+                    "bullets": 64,
+                    "rockets": 0,
+                    "smg": 0,
+                    "gas": 0,
+                    "health": 0,
+                    "swap": 0,
+                    "weapon": 0
+                  },
+                  "total": {
+                    "bullets": 193,
+                    "rockets": 0,
+                    "smg": 0,
+                    "gas": 0,
+                    "health": 140,
+                    "swap": 88,
+                    "weapon": 1
+                  }
+                },
+                "pctRegularKillLootMisses": {
+                  "mean": 0.208843954248366,
+                  "samples": [
+                    0.23529411764705882,
+                    0.17647058823529413,
+                    0.1111111111111111,
+                    0.3125
+                  ]
+                },
+                "desperation": {
+                  "timeAtZeroRangedAmmoSec": {
+                    "mean": 0,
+                    "samples": [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  },
+                  "pctKillsForcedMelee": {
+                    "mean": 0,
+                    "samples": [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  }
+                }
+              },
+              "navigationMapFlow": {
+                "routeEfficiencyScore": {
+                  "mean": 0.5268741578358892,
+                  "samples": [
+                    0.493609701710473,
+                    0.5598421347403655,
+                    0.43886554917859305,
+                    0.6151792457141252
+                  ]
+                },
+                "routeFollowingOverhead": {
+                  "mean": 1.9290636515683743,
+                  "samples": [
+                    2.0258921097676286,
+                    1.786217824536847,
+                    2.27860218664158,
+                    1.6255424853274418
+                  ]
+                },
+                "distanceTraveled": {
+                  "mean": 208.33887436938443,
+                  "samples": [
+                    218.79634785490387,
+                    192.91152504997947,
+                    246.08903615729065,
+                    175.55858841536372
+                  ]
+                },
+                "mapCoveragePct": {
+                  "mean": 0.12857830165985085,
+                  "samples": [
+                    0.12677411594900168,
+                    0.12773634832812125,
+                    0.1330286264132788,
+                    0.12677411594900168
+                  ]
+                },
+                "secretRoomsOpened": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "minesTriggered": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "minesDisarmed": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                }
+              },
+              "score": {
+                "mean": 10230.5,
+                "samples": [
+                  9990,
+                  11192,
+                  10293,
+                  9447
+                ]
+              },
+              "flags": []
+            }
+          },
+          {
+            "levelIndex": 3,
+            "filename": "04_WOLFSRC_ID_MM.C",
+            "static": {
+              "totalEnemies": 59,
+              "enemyCounts": {
+                "normal": 18,
+                "elite": 0,
+                "edgeCase": 41
+              },
+              "avgNormalEnemyHp": 126.38888888888889,
+              "walkableTileCount": 3223,
+              "enemyDensity": 0.018305926155755506,
+              "prePlacedAmmo": {
+                "bullets": 22,
+                "rockets": 0,
+                "health": 120,
+                "swap": 0,
+                "weaponUnlocks": 1
+              },
+              "secretRoomCount": 3,
+              "mineCount": 4,
+              "spikeTrapCount": 8,
+              "shortestPathTiles": 102,
+              "plannedRouteTiles": 102,
+              "routeOk": true
+            },
+            "runtime": {
+              "sampleCount": 4,
+              "incompleteSampleCount": 0,
+              "mapDensityEnemyDemographics": {
+                "killsObserved": {
+                  "mean": 7,
+                  "samples": [
+                    6,
+                    7,
+                    8,
+                    7
+                  ]
+                }
+              },
+              "combatPacing": {
+                "avgTtkByCategory": {
+                  "normal": {
+                    "mean": 3.0839137221219244,
+                    "samples": [
+                      3.0074833407019455,
+                      2.5929039335456423,
+                      4.555389168308352,
+                      2.334118175246843,
+                      3.088004602187823,
+                      3.0007123285397768,
+                      3.1439142674190386,
+                      2.948783961025974
+                    ]
+                  },
+                  "elite": {
+                    "mean": 0,
+                    "samples": []
+                  },
+                  "edgeCase": {
+                    "mean": 0.6816068245517205,
+                    "samples": [
+                      0.5928454037883846,
+                      0.33950956088174067,
+                      0.5625004430672647,
+                      0.6125004430672654,
+                      1.6600623936677845,
+                      0.08022003949040624,
+                      0.3277721985786144,
+                      0.6873927976540202,
+                      0.637392797654023,
+                      1.1022899074882275,
+                      0.6231436018425249,
+                      1.1909775561990585,
+                      0.6308212789372689,
+                      0.6808212789372661,
+                      0.8308212789372575,
+                      0.7735574419103024,
+                      0.4580758195070729,
+                      0.32993306428570435,
+                      0.5807495925701218,
+                      0.9307495925701019
+                    ]
+                  }
+                },
+                "combatVsExplorationRatio": {
+                  "mean": 0.21295256415732208,
+                  "samples": [
+                    0.19931414202630673,
+                    0.22396295975907252,
+                    0.2254918195152241,
+                    0.20304133532868493
+                  ]
+                },
+                "levelTimeSec": {
+                  "mean": 41.35537351245032,
+                  "samples": [
+                    35.14920240922225,
+                    42.940951417650325,
+                    44.95040794378153,
+                    42.380932279147174
+                  ]
+                },
+                "peakSimultaneousAggroed": {
+                  "max": 3,
+                  "samples": [
+                    3,
+                    3,
+                    3,
+                    3
+                  ]
+                }
+              },
+              "aiEffectivenessDanger": {
+                "enemyAccuracy": {
+                  "mean": 0.21805555555555556,
+                  "samples": [
+                    0.25,
+                    0.3,
+                    0.1,
+                    0.2222222222222222
+                  ]
+                },
+                "meleeVsRangedAttackRatio": {
+                  "mean": 0.022727272727272728,
+                  "samples": [
+                    0,
+                    0.09090909090909091,
+                    0,
+                    0
+                  ]
+                },
+                "minHealthReached": {
+                  "min": 67.46866860530773,
+                  "samples": [
+                    99.2,
+                    67.46866860530773,
+                    92.39999999999995,
+                    88
+                  ]
+                },
+                "timeBelow25PctHealthSec": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                }
+              },
+              "damageHealingBreakdown": {
+                "damageBySource": {
+                  "enemyMelee": 1.5,
+                  "enemyRanged": 16.8,
+                  "trapSpike": 0,
+                  "trapMine": 0,
+                  "hazard": 6.088768480928165,
+                  "selfRocket": 0
+                },
+                "healingBySource": {
+                  "pickupHealth": 0,
+                  "pickupSwap": 0,
+                  "lifesteal": 0.75
+                },
+                "fatalDamageSourceCounts": {}
+              },
+              "weaponEfficiency": {
+                "0": {
+                  "shotsFired": 67,
+                  "hits": 31,
+                  "kills": 8
+                },
+                "1": {
+                  "shotsFired": 11,
+                  "hits": 34,
+                  "kills": 4
+                },
+                "2": {
+                  "shotsFired": 8,
+                  "hits": 8,
+                  "kills": 8
+                },
+                "3": {
+                  "shotsFired": 36,
+                  "hits": 24,
+                  "kills": 6
+                },
+                "6": {
+                  "shotsFired": 2,
+                  "hits": 2,
+                  "kills": 2
+                }
+              },
+              "economyLootStarvation": {
+                "lootRolled": {
+                  "bullets": 33,
+                  "rockets": 1,
+                  "smg": 75,
+                  "gas": 0,
+                  "health": 140,
+                  "swap": 16,
+                  "weapon": 2
+                },
+                "consumed": {
+                  "dynamic": {
+                    "bullets": 33,
+                    "rockets": 1,
+                    "smg": 75,
+                    "gas": 0,
+                    "health": 140,
+                    "swap": 16,
+                    "weapon": 2
+                  },
+                  "static": {
+                    "bullets": 0,
+                    "rockets": 0,
+                    "smg": 0,
+                    "gas": 0,
+                    "health": 0,
+                    "swap": 0,
+                    "weapon": 0
+                  },
+                  "total": {
+                    "bullets": 33,
+                    "rockets": 1,
+                    "smg": 75,
+                    "gas": 0,
+                    "health": 140,
+                    "swap": 16,
+                    "weapon": 2
+                  }
+                },
+                "pctRegularKillLootMisses": {
+                  "mean": 0.33482142857142855,
+                  "samples": [
+                    0.5,
+                    0.14285714285714285,
+                    0.125,
+                    0.5714285714285714
+                  ]
+                },
+                "desperation": {
+                  "timeAtZeroRangedAmmoSec": {
+                    "mean": 0,
+                    "samples": [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  },
+                  "pctKillsForcedMelee": {
+                    "mean": 0,
+                    "samples": [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  }
+                }
+              },
+              "navigationMapFlow": {
+                "routeEfficiencyScore": {
+                  "mean": 0.610942150173414,
+                  "samples": [
+                    0.7015012629174203,
+                    0.5777187291957236,
+                    0.5762364182321171,
+                    0.5883121903483951
+                  ]
+                },
+                "routeFollowingOverhead": {
+                  "mean": 1.647909233630239,
+                  "samples": [
+                    1.4255141834544616,
+                    1.7309461325447402,
+                    1.7353988195816952,
+                    1.6997777989400589
+                  ]
+                },
+                "distanceTraveled": {
+                  "mean": 168.08674183028438,
+                  "samples": [
+                    145.40244671235507,
+                    176.5565055195635,
+                    177.0106795973329,
+                    173.37733549188602
+                  ]
+                },
+                "mapCoveragePct": {
+                  "mean": 0.1599441514117282,
+                  "samples": [
+                    0.1542041576171269,
+                    0.15761712690040336,
+                    0.168166304685076,
+                    0.15978901644430654
+                  ]
+                },
+                "secretRoomsOpened": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "minesTriggered": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "minesDisarmed": {
+                  "mean": 1,
+                  "samples": [
+                    1,
+                    1,
+                    1,
+                    1
+                  ]
+                }
+              },
+              "score": {
+                "mean": 12628.75,
+                "samples": [
+                  12618,
+                  13496,
+                  12689,
+                  11712
+                ]
+              },
+              "flags": []
+            }
+          },
+          {
+            "levelIndex": 4,
+            "filename": "05_WOLFSRC_WL_ACT1.C",
+            "static": {
+              "totalEnemies": 70,
+              "enemyCounts": {
+                "normal": 23,
+                "elite": 0,
+                "edgeCase": 47
+              },
+              "avgNormalEnemyHp": 128.3913043478261,
+              "walkableTileCount": 3822,
+              "enemyDensity": 0.018315018315018316,
+              "prePlacedAmmo": {
+                "bullets": 46,
+                "rockets": 0,
+                "health": 0,
+                "swap": 0,
+                "weaponUnlocks": 1
+              },
+              "secretRoomCount": 1,
+              "mineCount": 10,
+              "spikeTrapCount": 9,
+              "shortestPathTiles": 133,
+              "plannedRouteTiles": 135,
+              "routeOk": true
+            },
+            "runtime": {
+              "sampleCount": 4,
+              "incompleteSampleCount": 0,
+              "mapDensityEnemyDemographics": {
+                "killsObserved": {
+                  "mean": 20.5,
+                  "samples": [
+                    19,
+                    22,
+                    20,
+                    21
+                  ]
+                }
+              },
+              "combatPacing": {
+                "avgTtkByCategory": {
+                  "normal": {
+                    "mean": 2.821105497712804,
+                    "samples": [
+                      0.9157016803519049,
+                      4.848548885015479,
+                      0.5869715652013916,
+                      3.712141030737275,
+                      4.510866886193135,
+                      4.555944597264453,
+                      3.5923670323889283,
+                      0.8873649427908914,
+                      3.075999686031352,
+                      3.1411942120619187,
+                      0.7408329626119325,
+                      3.6261608558372878,
+                      3.204979408689166,
+                      2.096403222804142
+                    ]
+                  },
+                  "elite": {
+                    "mean": 0,
+                    "samples": []
+                  },
+                  "edgeCase": {
+                    "mean": 0.7361672443884666,
+                    "samples": [
+                      0.16745525036609615,
+                      0.3874385349406805,
+                      1.0381645677421893,
+                      0.3705934390191441,
+                      0.6330872474330906,
+                      0.6830872474330913,
+                      0.14999999999999147,
+                      0.5722459761726455,
+                      0.8221765991044947,
+                      0.2499999999999858,
+                      0.522051988445952,
+                      0.656411875427267,
+                      0.3685379925418033,
+                      0.6636604955031018,
+                      1.034569933956,
+                      1.2154978829906895,
+                      0.9787237411826339,
+                      0.16745525036609615,
+                      0.3867799361216897,
+                      0.22612100235987143,
+                      0.6182635002038825,
+                      0.718263500203884,
+                      1.024246863685244,
+                      0.39999999999997726,
+                      0.39999999999997726,
+                      1.4999999999999147,
+                      0.19999999999998863,
+                      0.19999999999998863,
+                      0.6042346132561178,
+                      0.348827509168224,
+                      0.7400275301313286,
+                      0.9748933307693619,
+                      0.5848658006380134,
+                      1.4213935412724794,
+                      1.1987796755624882,
+                      1.2790463976643232,
+                      0.25559744191560085,
+                      0.6193686789339203,
+                      0.3193686789339161,
+                      1.355997827685135,
+                      0.21601015529500955,
+                      0.5998253382311631,
+                      0.36873574724730673,
+                      0.6054071760653983,
+                      0.6054071760653983,
+                      0.4799333100562819,
+                      0.3478051831223823,
+                      0.8811803110558074,
+                      0.856916655841502,
+                      1.4280107032922587,
+                      0.9938881673086826,
+                      0.26745525036609613,
+                      0.8991211866459348,
+                      0.24613660688896566,
+                      1.0669999655878772,
+                      1.466999965587883,
+                      1.8669999655878886,
+                      0.14999999999999147,
+                      0.649999999999963,
+                      1.7499999999999005,
+                      0.3285043127997014,
+                      0.6878021596285038,
+                      0.5687554326085404,
+                      0.2499999999999858,
+                      0.39999999999997726,
+                      1.423414666001051,
+                      2.023414666001017,
+                      2.5734146660009856
+                    ]
+                  }
+                },
+                "combatVsExplorationRatio": {
+                  "mean": 0.2584379618160941,
+                  "samples": [
+                    0.21994101701821112,
+                    0.2694487862406741,
+                    0.23149249783748452,
+                    0.3128695461680065
+                  ]
+                },
+                "levelTimeSec": {
+                  "mean": 64.36955217385041,
+                  "samples": [
+                    60.59912339554899,
+                    70.19855948629466,
+                    63.69399909073733,
+                    62.98652672282064
+                  ]
+                },
+                "peakSimultaneousAggroed": {
+                  "max": 5,
+                  "samples": [
+                    3,
+                    3,
+                    4,
+                    5
+                  ]
+                }
+              },
+              "aiEffectivenessDanger": {
+                "enemyAccuracy": {
+                  "mean": 0.19805468654152864,
+                  "samples": [
+                    0.15789473684210525,
+                    0.11538461538461539,
+                    0.22727272727272727,
+                    0.2916666666666667
+                  ]
+                },
+                "meleeVsRangedAttackRatio": {
+                  "mean": 0.08603896103896103,
+                  "samples": [
+                    0,
+                    0.07142857142857142,
+                    0,
+                    0.2727272727272727
+                  ]
+                },
+                "minHealthReached": {
+                  "min": 71,
+                  "samples": [
+                    95.2,
+                    77,
+                    83.2,
+                    71
+                  ]
+                },
+                "timeBelow25PctHealthSec": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                }
+              },
+              "damageHealingBreakdown": {
+                "damageBySource": {
+                  "enemyMelee": 21,
+                  "enemyRanged": 37.8,
+                  "trapSpike": 0,
+                  "trapMine": 0,
+                  "hazard": 0,
+                  "selfRocket": 0
+                },
+                "healingBySource": {
+                  "pickupHealth": 0,
+                  "pickupSwap": 0,
+                  "lifesteal": 10.25
+                },
+                "fatalDamageSourceCounts": {}
+              },
+              "weaponEfficiency": {
+                "0": {
+                  "shotsFired": 11,
+                  "hits": 7,
+                  "kills": 5
+                },
+                "1": {
+                  "shotsFired": 23,
+                  "hits": 56,
+                  "kills": 15
+                },
+                "2": {
+                  "shotsFired": 42,
+                  "hits": 42,
+                  "kills": 29
+                },
+                "3": {
+                  "shotsFired": 201,
+                  "hits": 141,
+                  "kills": 17
+                },
+                "6": {
+                  "shotsFired": 20,
+                  "hits": 20,
+                  "kills": 16
+                }
+              },
+              "economyLootStarvation": {
+                "lootRolled": {
+                  "bullets": 90,
+                  "rockets": 3,
+                  "smg": 270,
+                  "gas": 0,
+                  "health": 420,
+                  "swap": 120,
+                  "weapon": 1
+                },
+                "consumed": {
+                  "dynamic": {
+                    "bullets": 90,
+                    "rockets": 3,
+                    "smg": 270,
+                    "gas": 0,
+                    "health": 420,
+                    "swap": 120,
+                    "weapon": 1
+                  },
+                  "static": {
+                    "bullets": 0,
+                    "rockets": 0,
+                    "smg": 0,
+                    "gas": 0,
+                    "health": 0,
+                    "swap": 0,
+                    "weapon": 0
+                  },
+                  "total": {
+                    "bullets": 90,
+                    "rockets": 3,
+                    "smg": 270,
+                    "gas": 0,
+                    "health": 420,
+                    "swap": 120,
+                    "weapon": 1
+                  }
+                },
+                "pctRegularKillLootMisses": {
+                  "mean": 0.1963630667578036,
+                  "samples": [
+                    0.2631578947368421,
+                    0.18181818181818182,
+                    0.15,
+                    0.19047619047619047
+                  ]
+                },
+                "desperation": {
+                  "timeAtZeroRangedAmmoSec": {
+                    "mean": 0,
+                    "samples": [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  },
+                  "pctKillsForcedMelee": {
+                    "mean": 0,
+                    "samples": [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  }
+                }
+              },
+              "navigationMapFlow": {
+                "routeEfficiencyScore": {
+                  "mean": 0.5228145322892714,
+                  "samples": [
+                    0.53649843774741,
+                    0.48548377303729834,
+                    0.5183255246622921,
+                    0.5509503937100851
+                  ]
+                },
+                "routeFollowingOverhead": {
+                  "mean": 1.8886183149075353,
+                  "samples": [
+                    1.8363244249539128,
+                    2.029285508394317,
+                    1.9007074479441641,
+                    1.7881558783377476
+                  ]
+                },
+                "distanceTraveled": {
+                  "mean": 254.96347251251728,
+                  "samples": [
+                    247.9037973687782,
+                    273.9535436332328,
+                    256.59550547246215,
+                    241.40104357559593
+                  ]
+                },
+                "mapCoveragePct": {
+                  "mean": 0.18655154369440083,
+                  "samples": [
+                    0.1870748299319728,
+                    0.18759811616954475,
+                    0.18445839874411302,
+                    0.1870748299319728
+                  ]
+                },
+                "secretRoomsOpened": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "minesTriggered": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "minesDisarmed": {
+                  "mean": 1,
+                  "samples": [
+                    1,
+                    1,
+                    1,
+                    1
+                  ]
+                }
+              },
+              "score": {
+                "mean": 18442.75,
+                "samples": [
+                  17550,
+                  19151,
+                  18754,
+                  18316
+                ]
+              },
+              "flags": []
+            }
+          },
+          {
+            "levelIndex": 5,
+            "filename": "06_WOLFSRC_ID_IN.C",
+            "static": {
+              "totalEnemies": 110,
+              "enemyCounts": {
+                "normal": 36,
+                "elite": 0,
+                "edgeCase": 74
+              },
+              "avgNormalEnemyHp": 94.55555555555556,
+              "walkableTileCount": 4867,
+              "enemyDensity": 0.022601191699198685,
+              "prePlacedAmmo": {
+                "bullets": 99,
+                "rockets": 0,
+                "health": 0,
+                "swap": 0,
+                "weaponUnlocks": 1
+              },
+              "secretRoomCount": 1,
+              "mineCount": 4,
+              "spikeTrapCount": 6,
+              "shortestPathTiles": 223,
+              "plannedRouteTiles": 225,
+              "routeOk": true
+            },
+            "runtime": {
+              "sampleCount": 4,
+              "incompleteSampleCount": 0,
+              "mapDensityEnemyDemographics": {
+                "killsObserved": {
+                  "mean": 29.75,
+                  "samples": [
+                    29,
+                    29,
+                    30,
+                    31
+                  ]
+                }
+              },
+              "combatPacing": {
+                "avgTtkByCategory": {
+                  "normal": {
+                    "mean": 2.2983694044874317,
+                    "samples": [
+                      2.5655409954145796,
+                      0.9847374884049529,
+                      1.7660272966906945,
+                      0.7571799492383349,
+                      3.0316566081062746,
+                      4.181656608106209,
+                      2.4238827904700315,
+                      0.6844245705600684,
+                      2.1564802012452446,
+                      0.6000000000001364,
+                      2.2034322142068845,
+                      0.8074569848761257,
+                      2.2330503016923906,
+                      1.0673265491842798,
+                      0.967849804970264,
+                      0.5801768197502497,
+                      2.8383075848043404,
+                      6.585204398021858,
+                      4.479225255840674,
+                      3.499999999999801,
+                      0.4603646214461463,
+                      3.5002568025018235,
+                      1.6840402302421467,
+                      3.5708743398046465,
+                      0.5400202156566536,
+                      2.2303641679164414,
+                      1.0644709502423666,
+                      1.5663887248835877,
+                      0.5455717212807798,
+                      4.1816923703702145,
+                      7.6921418914227075,
+                      8.425214725090484,
+                      1.725143528236572,
+                      1.326226428778483,
+                      0.6659121311721066,
+                      0.7999999999999545,
+                      1.5352956470454018,
+                      2.869347016301049,
+                      1.0697402977787078,
+                      1.3548309607207862,
+                      0.6688946423382944,
+                      0.9826496722482929,
+                      0.5428259528012376,
+                      4.31790584518761,
+                      7.09588022109736,
+                      4.449181896684394,
+                      1.3483327052824166,
+                      3.215532748038285,
+                      0.5554943837966846,
+                      3.2076826342093625,
+                      2.922521660558303,
+                      0.7629024873093329,
+                      0.522260395807848
+                    ]
+                  },
+                  "elite": {
+                    "mean": 0,
+                    "samples": []
+                  },
+                  "edgeCase": {
+                    "mean": 0.7780503859651312,
+                    "samples": [
+                      0.18161370181950043,
+                      0.6816137018195009,
+                      1.0121667316817338,
+                      0.3364583682107032,
+                      0.28645836821070336,
+                      0.6278098726445727,
+                      0.8088014968800099,
+                      1.4367833706274276,
+                      0.2750490703889561,
+                      0.56510306961151,
+                      0.9651030696114873,
+                      0.9024873554478461,
+                      0.29999999999998295,
+                      0.29999999999998295,
+                      0.4499999999999744,
+                      0.39999999999997726,
+                      1.138069269609474,
+                      0.21851296268464654,
+                      0.26851296268464653,
+                      0.7685129626846469,
+                      0.6999999999999975,
+                      0.4999999999999982,
+                      1.5499999999999945,
+                      1.1272914909682257,
+                      1.525577156770792,
+                      1.4281926125631035,
+                      0.35713038974817835,
+                      0.45614614810693155,
+                      0.2856531839958478,
+                      0.6502839671322391,
+                      2.2162632734582672,
+                      2.2162632734582672,
+                      1.4447114661905545,
+                      0.1821596435663232,
+                      0.7904649545308499,
+                      0.6583053109645267,
+                      0.3999999999999986,
+                      0.3999999999999986,
+                      0.8942278416397427,
+                      0.83415380905417,
+                      1.5677137369834835,
+                      1.5677137369834835,
+                      0.5319694543091273,
+                      0.6319694543091217,
+                      0.19999999999998863,
+                      0.712500771757874,
+                      0.9930606272303351,
+                      0.09292964586306596,
+                      1.817079534462394,
+                      0.17985885427484755,
+                      0.22985885427484753,
+                      0.8137864459566194,
+                      0.6499999999999977,
+                      1.1999999999999957,
+                      1.4000000000000012,
+                      1.9000000000000066,
+                      0.46567881808634404,
+                      1.1370077130822338,
+                      0.29850239373270426,
+                      0.6869557712543966,
+                      0.44540404478399864,
+                      0.3194016334101093,
+                      0.8194016334100809,
+                      0.5662920878267954,
+                      1.4534921668868606,
+                      0.1308672380546625
+                    ]
+                  }
+                },
+                "combatVsExplorationRatio": {
+                  "mean": 0.19164962964400054,
+                  "samples": [
+                    0.1528936181438318,
+                    0.2175478825779885,
+                    0.19485244952984837,
+                    0.20130456832433352
+                  ]
+                },
+                "levelTimeSec": {
+                  "mean": 177.78061676542598,
+                  "samples": [
+                    179.44224158163073,
+                    173.42301804830885,
+                    170.7758658049815,
+                    187.48134162678272
+                  ]
+                },
+                "peakSimultaneousAggroed": {
+                  "max": 4,
+                  "samples": [
+                    3,
+                    4,
+                    4,
+                    4
+                  ]
+                }
+              },
+              "aiEffectivenessDanger": {
+                "enemyAccuracy": {
+                  "mean": 0.2675258684405026,
+                  "samples": [
+                    0.30303030303030304,
+                    0.3170731707317073,
+                    0.225,
+                    0.225
+                  ]
+                },
+                "meleeVsRangedAttackRatio": {
+                  "mean": 0.06633657906346505,
+                  "samples": [
+                    0.08333333333333333,
+                    0.046511627906976744,
+                    0.024390243902439025,
+                    0.1111111111111111
+                  ]
+                },
+                "minHealthReached": {
+                  "min": 68,
+                  "samples": [
+                    76,
+                    68,
+                    76,
+                    76
+                  ]
+                },
+                "timeBelow25PctHealthSec": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                }
+              },
+              "damageHealingBreakdown": {
+                "damageBySource": {
+                  "enemyMelee": 21,
+                  "enemyRanged": 101.99999999999999,
+                  "trapSpike": 0,
+                  "trapMine": 0,
+                  "hazard": 12.283886102791266,
+                  "selfRocket": 0
+                },
+                "healingBySource": {
+                  "pickupHealth": 0,
+                  "pickupSwap": 0,
+                  "lifesteal": 9.45
+                },
+                "fatalDamageSourceCounts": {}
+              },
+              "weaponEfficiency": {
+                "0": {
+                  "shotsFired": 43,
+                  "hits": 32,
+                  "kills": 15
+                },
+                "1": {
+                  "shotsFired": 44,
+                  "hits": 128,
+                  "kills": 20
+                },
+                "2": {
+                  "shotsFired": 36,
+                  "hits": 36,
+                  "kills": 27
+                },
+                "3": {
+                  "shotsFired": 449,
+                  "hits": 301,
+                  "kills": 36
+                },
+                "5": {
+                  "shotsFired": 16,
+                  "hits": 58,
+                  "kills": 3
+                },
+                "6": {
+                  "shotsFired": 25,
+                  "hits": 25,
+                  "kills": 18
+                }
+              },
+              "economyLootStarvation": {
+                "lootRolled": {
+                  "bullets": 153,
+                  "rockets": 7,
+                  "smg": 285,
+                  "gas": 15,
+                  "health": 546,
+                  "swap": 120,
+                  "weapon": 2
+                },
+                "consumed": {
+                  "dynamic": {
+                    "bullets": 153,
+                    "rockets": 7,
+                    "smg": 285,
+                    "gas": 15,
+                    "health": 546,
+                    "swap": 120,
+                    "weapon": 2
+                  },
+                  "static": {
+                    "bullets": 72,
+                    "rockets": 4,
+                    "smg": 0,
+                    "gas": 0,
+                    "health": 0,
+                    "swap": 0,
+                    "weapon": 0
+                  },
+                  "total": {
+                    "bullets": 225,
+                    "rockets": 11,
+                    "smg": 285,
+                    "gas": 15,
+                    "health": 546,
+                    "swap": 120,
+                    "weapon": 2
+                  }
+                },
+                "pctRegularKillLootMisses": {
+                  "mean": 0.2171023359288098,
+                  "samples": [
+                    0.2413793103448276,
+                    0.06896551724137931,
+                    0.3,
+                    0.25806451612903225
+                  ]
+                },
+                "desperation": {
+                  "timeAtZeroRangedAmmoSec": {
+                    "mean": 0,
+                    "samples": [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  },
+                  "pctKillsForcedMelee": {
+                    "mean": 0,
+                    "samples": [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  }
+                }
+              },
+              "navigationMapFlow": {
+                "routeEfficiencyScore": {
+                  "mean": 0.3054841760512326,
+                  "samples": [
+                    0.29542711651568776,
+                    0.3160334478050961,
+                    0.3150758195887182,
+                    0.2954003202954284
+                  ]
+                },
+                "routeFollowingOverhead": {
+                  "mean": 3.2479275025130696,
+                  "samples": [
+                    3.35484136595322,
+                    3.136095618974952,
+                    3.1456273363181295,
+                    3.3551456888059765
+                  ]
+                },
+                "distanceTraveled": {
+                  "mean": 730.7836880654406,
+                  "samples": [
+                    754.8393073394745,
+                    705.6215142693642,
+                    707.7661506715791,
+                    754.9077799813447
+                  ]
+                },
+                "mapCoveragePct": {
+                  "mean": 0.25333881241010886,
+                  "samples": [
+                    0.2570371892336141,
+                    0.26155742757345385,
+                    0.2521060201356071,
+                    0.24265461269776042
+                  ]
+                },
+                "secretRoomsOpened": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "minesTriggered": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "minesDisarmed": {
+                  "mean": 1,
+                  "samples": [
+                    1,
+                    1,
+                    1,
+                    1
+                  ]
+                }
+              },
+              "score": {
+                "mean": 25285.5,
+                "samples": [
+                  24180,
+                  26250,
+                  25861,
+                  24851
+                ]
+              },
+              "flags": []
+            }
+          },
+          {
+            "levelIndex": 6,
+            "filename": "07_WOLFSRC_ID_PM.C",
+            "static": {
+              "totalEnemies": 119,
+              "enemyCounts": {
+                "normal": 37,
+                "elite": 0,
+                "edgeCase": 82
+              },
+              "avgNormalEnemyHp": 115.62162162162163,
+              "walkableTileCount": 6865,
+              "enemyDensity": 0.017334304442825927,
+              "prePlacedAmmo": {
+                "bullets": 66,
+                "rockets": 0,
+                "health": 0,
+                "swap": 40,
+                "weaponUnlocks": 0
+              },
+              "secretRoomCount": 1,
+              "mineCount": 4,
+              "spikeTrapCount": 4,
+              "shortestPathTiles": 196,
+              "plannedRouteTiles": 198,
+              "routeOk": true
+            },
+            "runtime": {
+              "sampleCount": 4,
+              "incompleteSampleCount": 0,
+              "mapDensityEnemyDemographics": {
+                "killsObserved": {
+                  "mean": 22,
+                  "samples": [
+                    22,
+                    22,
+                    22,
+                    22
+                  ]
+                }
+              },
+              "combatPacing": {
+                "avgTtkByCategory": {
+                  "normal": {
+                    "mean": 3.2252483269187007,
+                    "samples": [
+                      3.782187740654038,
+                      4.2142977812066675,
+                      5.967801201977089,
+                      1.249422404683017,
+                      1.565804843209186,
+                      2.9572510204316416,
+                      4.645808759738145,
+                      1.1250472041797508,
+                      3.06105235409391,
+                      3.944179632564449,
+                      4.3473359995894185,
+                      1.4401176433701153,
+                      4.166934689375392,
+                      3.7923019143606354,
+                      4.375616421581853,
+                      0.9688136196838997
+                    ]
+                  },
+                  "elite": {
+                    "mean": 0,
+                    "samples": []
+                  },
+                  "edgeCase": {
+                    "mean": 0.8705805347840498,
+                    "samples": [
+                      0.34466385444044034,
+                      0.7446638544404389,
+                      0.8916981935962074,
+                      1.5680260456195274,
+                      1.776900762002704,
+                      1.3100417446324304,
+                      1.710041744632436,
+                      0.31966918380623,
+                      0.2696691838062293,
+                      1.3922427358949392,
+                      0.4352714648597811,
+                      0.04999999999999716,
+                      1.5047214454863322,
+                      0.5350733856430026,
+                      0.9350733856429798,
+                      1.4777974667681661,
+                      1.549999999999912,
+                      1.6999999999999034,
+                      0.29999999999999893,
+                      0.2716993596861714,
+                      0.32169935968617125,
+                      0.21703098370705476,
+                      0.4886338790804796,
+                      0.9886338790804867,
+                      1.9556648627875521,
+                      0.9068274533629417,
+                      1.1657186873232845,
+                      0.5179667557883718,
+                      1.1060591024189144,
+                      0.5076313406158306,
+                      0.14999999999999147,
+                      0.22168776710383042,
+                      0.49066392824087757,
+                      1.6212980026392358,
+                      1.3707300872077894,
+                      1.4657281544438234,
+                      0.38566933550569127,
+                      0.46793151689710655,
+                      0.4131222761963129,
+                      0.4500000000000064,
+                      1.5442306790983622,
+                      1.112762520392149,
+                      1.7942306790983658,
+                      0.30000000000000426,
+                      0.8249214659773951,
+                      0.9784348560412877,
+                      0.9290326956985631,
+                      0.04999999999999716,
+                      1.2115563100769577,
+                      0.5732394238040186,
+                      0.9732394238039959,
+                      1.9291968558935082,
+                      0.6228822055465102,
+                      1.2684640523068254,
+                      0.4715883175227775,
+                      0.8715883175227761,
+                      1.0215883175227756,
+                      1.366918650016789,
+                      0.7801109057993258,
+                      1.043596910762556,
+                      2.2301109057993465,
+                      0.350000000000005,
+                      0.5744211939293962,
+                      0.6744211939293976,
+                      0.17548139913095184,
+                      0,
+                      0.09219549008778927,
+                      0.3873603212684813,
+                      0.93736032126845,
+                      1.1069637108513248,
+                      0.7155747745252654,
+                      1.470375423732655
+                    ]
+                  }
+                },
+                "combatVsExplorationRatio": {
+                  "mean": 0.28715467425827845,
+                  "samples": [
+                    0.3159267729896582,
+                    0.23368434967505786,
+                    0.3178184124520027,
+                    0.281189161916395
+                  ]
+                },
+                "levelTimeSec": {
+                  "mean": 82.528283747295,
+                  "samples": [
+                    84.40130692558819,
+                    88.93386641164344,
+                    76.23086304692826,
+                    80.54709860502012
+                  ]
+                },
+                "peakSimultaneousAggroed": {
+                  "max": 4,
+                  "samples": [
+                    4,
+                    3,
+                    4,
+                    4
+                  ]
+                }
+              },
+              "aiEffectivenessDanger": {
+                "enemyAccuracy": {
+                  "mean": 0.34260283324799456,
+                  "samples": [
+                    0.3225806451612903,
+                    0.36,
+                    0.42857142857142855,
+                    0.25925925925925924
+                  ]
+                },
+                "meleeVsRangedAttackRatio": {
+                  "mean": 0.14248643970630387,
+                  "samples": [
+                    0.18421052631578946,
+                    0.10714285714285714,
+                    0.0967741935483871,
+                    0.18181818181818182
+                  ]
+                },
+                "minHealthReached": {
+                  "min": 64,
+                  "samples": [
+                    73,
+                    83.2,
+                    64,
+                    79
+                  ]
+                },
+                "timeBelow25PctHealthSec": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                }
+              },
+              "damageHealingBreakdown": {
+                "damageBySource": {
+                  "enemyMelee": 30.75,
+                  "enemyRanged": 64.8,
+                  "trapSpike": 0,
+                  "trapMine": 8.760288937300837,
+                  "hazard": 0,
+                  "selfRocket": 0
+                },
+                "healingBySource": {
+                  "pickupHealth": 0,
+                  "pickupSwap": 0,
+                  "lifesteal": 15.95
+                },
+                "fatalDamageSourceCounts": {}
+              },
+              "weaponEfficiency": {
+                "0": {
+                  "shotsFired": 40,
+                  "hits": 16,
+                  "kills": 9
+                },
+                "1": {
+                  "shotsFired": 18,
+                  "hits": 47,
+                  "kills": 8
+                },
+                "2": {
+                  "shotsFired": 19,
+                  "hits": 19,
+                  "kills": 19
+                },
+                "3": {
+                  "shotsFired": 276,
+                  "hits": 166,
+                  "kills": 18
+                },
+                "5": {
+                  "shotsFired": 11,
+                  "hits": 21,
+                  "kills": 3
+                },
+                "6": {
+                  "shotsFired": 35,
+                  "hits": 35,
+                  "kills": 31
+                }
+              },
+              "economyLootStarvation": {
+                "lootRolled": {
+                  "bullets": 69,
+                  "rockets": 7,
+                  "smg": 285,
+                  "gas": 15,
+                  "health": 490,
+                  "swap": 120,
+                  "weapon": 2
+                },
+                "consumed": {
+                  "dynamic": {
+                    "bullets": 66,
+                    "rockets": 7,
+                    "smg": 285,
+                    "gas": 15,
+                    "health": 476,
+                    "swap": 120,
+                    "weapon": 2
+                  },
+                  "static": {
+                    "bullets": 0,
+                    "rockets": 0,
+                    "smg": 0,
+                    "gas": 0,
+                    "health": 0,
+                    "swap": 0,
+                    "weapon": 0
+                  },
+                  "total": {
+                    "bullets": 66,
+                    "rockets": 7,
+                    "smg": 285,
+                    "gas": 15,
+                    "health": 476,
+                    "swap": 120,
+                    "weapon": 2
+                  }
+                },
+                "pctRegularKillLootMisses": {
+                  "mean": 0.26136363636363635,
+                  "samples": [
+                    0.18181818181818182,
+                    0.2727272727272727,
+                    0.4090909090909091,
+                    0.18181818181818182
+                  ]
+                },
+                "desperation": {
+                  "timeAtZeroRangedAmmoSec": {
+                    "mean": 0,
+                    "samples": [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  },
+                  "pctKillsForcedMelee": {
+                    "mean": 0,
+                    "samples": [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  }
+                }
+              },
+              "navigationMapFlow": {
+                "routeEfficiencyScore": {
+                  "mean": 0.625834296099912,
+                  "samples": [
+                    0.6213595881921428,
+                    0.579453600775781,
+                    0.6871887045389896,
+                    0.6153352908927349
+                  ]
+                },
+                "routeFollowingOverhead": {
+                  "mean": 1.587667410009253,
+                  "samples": [
+                    1.5931177513154973,
+                    1.7083317604268893,
+                    1.4405053275185569,
+                    1.608714800776068
+                  ]
+                },
+                "distanceTraveled": {
+                  "mean": 314.358147181832,
+                  "samples": [
+                    315.43731476046844,
+                    338.2496885645241,
+                    285.22005484867424,
+                    318.5255305536615
+                  ]
+                },
+                "mapCoveragePct": {
+                  "mean": 0.14446467589220685,
+                  "samples": [
+                    0.14289876183539693,
+                    0.1462490895848507,
+                    0.14464675892206846,
+                    0.1440640932265113
+                  ]
+                },
+                "secretRoomsOpened": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "minesTriggered": {
+                  "mean": 0.5,
+                  "samples": [
+                    1,
+                    0,
+                    1,
+                    0
+                  ]
+                },
+                "minesDisarmed": {
+                  "mean": 0.75,
+                  "samples": [
+                    1,
+                    1,
+                    1,
+                    0
+                  ]
+                }
+              },
+              "score": {
+                "mean": 31531.25,
+                "samples": [
+                  30684,
+                  32437,
+                  31999,
+                  31005
+                ]
+              },
+              "flags": []
+            }
+          },
+          {
+            "levelIndex": 7,
+            "filename": "08_WOLFSRC_CONTIGSC.C",
+            "static": {
+              "totalEnemies": 41,
+              "enemyCounts": {
+                "normal": 9,
+                "elite": 1,
+                "edgeCase": 31
+              },
+              "avgNormalEnemyHp": 164,
+              "walkableTileCount": 1919,
+              "enemyDensity": 0.02136529442417926,
+              "prePlacedAmmo": {
+                "bullets": 33,
+                "rockets": 0,
+                "health": 0,
+                "swap": 0,
+                "weaponUnlocks": 1
+              },
+              "secretRoomCount": 1,
+              "mineCount": 4,
+              "spikeTrapCount": 4,
+              "shortestPathTiles": 154,
+              "plannedRouteTiles": 160,
+              "routeOk": true
+            },
+            "runtime": {
+              "sampleCount": 4,
+              "incompleteSampleCount": 4,
+              "mapDensityEnemyDemographics": {
+                "killsObserved": {
+                  "mean": 12.75,
+                  "samples": [
+                    15,
+                    16,
+                    16,
+                    4
+                  ]
+                }
+              },
+              "combatPacing": {
+                "avgTtkByCategory": {
+                  "normal": {
+                    "mean": 2.9129122207209073,
+                    "samples": [
+                      2.400000000000034,
+                      3.970318884475315,
+                      3.149667312464306,
+                      1.4303890521338474,
+                      4.591454213839782,
+                      2.4466445979044593,
+                      4.426532504940468,
+                      1.1861539525536493,
+                      2.6150494681763057
+                    ]
+                  },
+                  "elite": {
+                    "mean": 0,
+                    "samples": []
+                  },
+                  "edgeCase": {
+                    "mean": 0.7670329370551056,
+                    "samples": [
+                      1.1194869231492053,
+                      1.3994493956314389,
+                      1.005736468102838,
+                      0.29999999999998295,
+                      0.6251054477920661,
+                      0.8987001983242422,
+                      0.39999999999997726,
+                      0.8678316102167116,
+                      1.4338747345466842,
+                      0.24107437129585207,
+                      0.19107437129585492,
+                      0.6755858082191182,
+                      1.369465774033044,
+                      1.4194657740330439,
+                      0.8214137556889884,
+                      1.1392978192426968,
+                      0.08668601791874408,
+                      0.13668601791874124,
+                      0.2866860179187327,
+                      0.6655524124169858,
+                      0.7655524124169801,
+                      1.8580823638915476,
+                      0.6866360814422023,
+                      0.7366360814421995,
+                      0.7866360814421967,
+                      0.2743211732666244,
+                      0.33248237905267075,
+                      1.0983968806611513,
+                      0.9647814839962763,
+                      0.41645481825943875,
+                      0.19999999999998863,
+                      0.19999999999998863,
+                      0,
+                      0.902637907590325,
+                      1.0475481504215338,
+                      0.19999999999998863,
+                      0.8977818701018876,
+                      1.2563804825385532,
+                      1.4317066995143535,
+                      0.4219859485896871,
+                      1.51698774662625,
+                      1.1372018773156416
+                    ]
+                  }
+                },
+                "combatVsExplorationRatio": {
+                  "mean": 0.30820320904327275,
+                  "samples": [
+                    0.3558171848033817,
+                    0.365503575025003,
+                    0.32257864077300324,
+                    0.1889134355717031
+                  ]
+                },
+                "levelTimeSec": {
+                  "mean": 68.49065070949464,
+                  "samples": [
+                    89.05033193039961,
+                    71.38645482399232,
+                    95.58152375126355,
+                    17.944292332323155
+                  ]
+                },
+                "peakSimultaneousAggroed": {
+                  "max": 4,
+                  "samples": [
+                    3,
+                    3,
+                    4,
+                    3
+                  ]
+                }
+              },
+              "aiEffectivenessDanger": {
+                "enemyAccuracy": {
+                  "mean": 0.24538461538461537,
+                  "samples": [
+                    0.23076923076923078,
+                    0.32,
+                    0.23076923076923078,
+                    0.2
+                  ]
+                },
+                "meleeVsRangedAttackRatio": {
+                  "mean": 0.03673178673178673,
+                  "samples": [
+                    0.07142857142857142,
+                    0.038461538461538464,
+                    0.037037037037037035,
+                    0
+                  ]
+                },
+                "minHealthReached": {
+                  "min": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "timeBelow25PctHealthSec": {
+                  "mean": 1.449999999999999,
+                  "samples": [
+                    3.5499999999999954,
+                    0.49999999999999994,
+                    0.05,
+                    1.7000000000000008
+                  ]
+                }
+              },
+              "damageHealingBreakdown": {
+                "damageBySource": {
+                  "enemyMelee": 26.25,
+                  "enemyRanged": 90.60000000000001,
+                  "trapSpike": 1.5,
+                  "trapMine": 0,
+                  "hazard": 32.00442079169434,
+                  "selfRocket": 0
+                },
+                "healingBySource": {
+                  "pickupHealth": 0,
+                  "pickupSwap": 0,
+                  "lifesteal": 3
+                },
+                "fatalDamageSourceCounts": {
+                  "enemyRanged": 1,
+                  "enemyMelee": 2,
+                  "hazard": 1
+                }
+              },
+              "weaponEfficiency": {
+                "0": {
+                  "shotsFired": 15,
+                  "hits": 8,
+                  "kills": 4
+                },
+                "1": {
+                  "shotsFired": 14,
+                  "hits": 43,
+                  "kills": 10
+                },
+                "2": {
+                  "shotsFired": 22,
+                  "hits": 22,
+                  "kills": 14
+                },
+                "3": {
+                  "shotsFired": 149,
+                  "hits": 101,
+                  "kills": 6
+                },
+                "5": {
+                  "shotsFired": 1,
+                  "hits": 1,
+                  "kills": 0
+                },
+                "6": {
+                  "shotsFired": 21,
+                  "hits": 21,
+                  "kills": 17
+                }
+              },
+              "economyLootStarvation": {
+                "lootRolled": {
+                  "bullets": 57,
+                  "rockets": 6,
+                  "smg": 75,
+                  "gas": 15,
+                  "health": 196,
+                  "swap": 48,
+                  "weapon": 0
+                },
+                "consumed": {
+                  "dynamic": {
+                    "bullets": 57,
+                    "rockets": 5,
+                    "smg": 75,
+                    "gas": 15,
+                    "health": 196,
+                    "swap": 48,
+                    "weapon": 0
+                  },
+                  "static": {
+                    "bullets": 0,
+                    "rockets": 0,
+                    "smg": 0,
+                    "gas": 0,
+                    "health": 0,
+                    "swap": 0,
+                    "weapon": 0
+                  },
+                  "total": {
+                    "bullets": 57,
+                    "rockets": 5,
+                    "smg": 75,
+                    "gas": 15,
+                    "health": 196,
+                    "swap": 48,
+                    "weapon": 0
+                  }
+                },
+                "pctRegularKillLootMisses": {
+                  "mean": 0.22395833333333331,
+                  "samples": [
+                    0.3333333333333333,
+                    0.3125,
+                    0.25,
+                    0
+                  ]
+                },
+                "desperation": {
+                  "timeAtZeroRangedAmmoSec": {
+                    "mean": 0,
+                    "samples": [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  },
+                  "pctKillsForcedMelee": {
+                    "mean": 0,
+                    "samples": [
+                      0,
+                      0,
+                      0,
+                      0
+                    ]
+                  }
+                }
+              },
+              "navigationMapFlow": {
+                "routeEfficiencyScore": {
+                  "mean": 0.6247842175320075,
+                  "samples": [
+                    0.499419030441078,
+                    0.5816336371686799,
+                    0.41808420251827233,
+                    1
+                  ]
+                },
+                "routeFollowingOverhead": {
+                  "mean": 1.5991598800926836,
+                  "samples": [
+                    1.9272393347725199,
+                    1.654821761487747,
+                    2.302167826965273,
+                    0.512410597145195
+                  ]
+                },
+                "distanceTraveled": {
+                  "mean": 255.8655808148294,
+                  "samples": [
+                    308.3582935636032,
+                    264.7714818380395,
+                    368.34685231444365,
+                    81.9856955432312
+                  ]
+                },
+                "mapCoveragePct": {
+                  "mean": 0.3310317873892652,
+                  "samples": [
+                    0.47212089630015636,
+                    0.4106305367378843,
+                    0.3976029181865555,
+                    0.04377279833246483
+                  ]
+                },
+                "secretRoomsOpened": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "minesTriggered": {
+                  "mean": 0,
+                  "samples": [
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "minesDisarmed": {
+                  "mean": 1.25,
+                  "samples": [
+                    1,
+                    2,
+                    2,
+                    0
+                  ]
+                }
+              },
+              "score": {
+                "mean": 34937.25,
+                "samples": [
+                  34258,
+                  36568,
+                  36085,
+                  32838
+                ]
+              },
+              "flags": []
+            }
+          },
+          {
+            "levelIndex": 8,
+            "filename": "09_WOLFSRC_OLDSCALE.C",
+            "static": {
+              "totalEnemies": 40,
+              "enemyCounts": {
+                "normal": 10,
+                "elite": 1,
+                "edgeCase": 29
+              },
+              "avgNormalEnemyHp": 160.3,
+              "walkableTileCount": 1918,
+              "enemyDensity": 0.020855057351407715,
+              "prePlacedAmmo": {
+                "bullets": 0,
+                "rockets": 0,
+                "health": 0,
+                "swap": 80,
+                "weaponUnlocks": 0
+              },
+              "secretRoomCount": 2,
+              "mineCount": 4,
+              "spikeTrapCount": 4,
+              "shortestPathTiles": 99,
+              "plannedRouteTiles": 123,
+              "routeOk": true
+            },
+            "runtime": {
+              "sampleCount": 0,
+              "incompleteSampleCount": 0,
+              "flags": []
+            }
+          },
+          {
+            "levelIndex": 9,
+            "filename": "10_WOLFSRC_WL_DEBUG.C",
+            "static": {
+              "totalEnemies": 49,
+              "enemyCounts": {
+                "normal": 17,
+                "elite": 1,
+                "edgeCase": 31
+              },
+              "avgNormalEnemyHp": 122.11764705882354,
+              "walkableTileCount": 2676,
+              "enemyDensity": 0.018310911808669655,
+              "prePlacedAmmo": {
+                "bullets": 76,
+                "rockets": 0,
+                "health": 120,
+                "swap": 80,
+                "weaponUnlocks": 0
+              },
+              "secretRoomCount": 4,
+              "mineCount": 6,
+              "spikeTrapCount": 6,
+              "shortestPathTiles": 227,
+              "plannedRouteTiles": 231,
+              "routeOk": true
+            },
+            "runtime": {
+              "sampleCount": 0,
+              "incompleteSampleCount": 0,
+              "flags": []
+            }
+          },
+          {
+            "levelIndex": 10,
+            "filename": "11_WOLFSRC_ID_US_1.C",
+            "static": {
+              "totalEnemies": 91,
+              "enemyCounts": {
+                "normal": 23,
+                "elite": 1,
+                "edgeCase": 67
+              },
+              "avgNormalEnemyHp": 95.73913043478261,
+              "walkableTileCount": 3751,
+              "enemyDensity": 0.02426019728072514,
+              "prePlacedAmmo": {
+                "bullets": 54,
+                "rockets": 0,
+                "health": 0,
+                "swap": 40,
+                "weaponUnlocks": 0
+              },
+              "secretRoomCount": 1,
+              "mineCount": 4,
+              "spikeTrapCount": 11,
+              "shortestPathTiles": 83,
+              "plannedRouteTiles": 83,
+              "routeOk": true
+            },
+            "runtime": {
+              "sampleCount": 0,
+              "incompleteSampleCount": 0,
+              "flags": []
+            }
+          },
+          {
+            "levelIndex": 11,
+            "filename": "12_WOLFSRC_ID_SD.C",
+            "static": {
+              "totalEnemies": 149,
+              "enemyCounts": {
+                "normal": 59,
+                "elite": 1,
+                "edgeCase": 89
+              },
+              "avgNormalEnemyHp": 89.01694915254237,
+              "walkableTileCount": 9178,
+              "enemyDensity": 0.016234473741555896,
+              "prePlacedAmmo": {
+                "bullets": 250,
+                "rockets": 0,
+                "health": 60,
+                "swap": 40,
+                "weaponUnlocks": 2
+              },
+              "secretRoomCount": 4,
+              "mineCount": 8,
+              "spikeTrapCount": 9,
+              "shortestPathTiles": 208,
+              "plannedRouteTiles": 226,
+              "routeOk": true
+            },
+            "runtime": {
+              "sampleCount": 0,
+              "incompleteSampleCount": 0,
+              "flags": []
+            }
+          },
+          {
+            "levelIndex": 12,
+            "filename": "13_WOLFSRC_WL_MENU.C",
+            "static": {
+              "totalEnemies": 206,
+              "enemyCounts": {
+                "normal": 81,
+                "elite": 3,
+                "edgeCase": 122
+              },
+              "avgNormalEnemyHp": 103.1604938271605,
+              "walkableTileCount": 11883,
+              "enemyDensity": 0.01733568964066313,
+              "prePlacedAmmo": {
+                "bullets": 342,
+                "rockets": 0,
+                "health": 60,
+                "swap": 80,
+                "weaponUnlocks": 0
+              },
+              "secretRoomCount": 3,
+              "mineCount": 12,
+              "spikeTrapCount": 9,
+              "shortestPathTiles": 148,
+              "plannedRouteTiles": 148,
+              "routeOk": true
+            },
+            "runtime": {
+              "sampleCount": 0,
+              "incompleteSampleCount": 0,
+              "flags": []
+            }
+          },
+          {
+            "levelIndex": 13,
+            "filename": "14_WOLFSRC_WL_GAME.C",
+            "static": {
+              "totalEnemies": 73,
+              "enemyCounts": {
+                "normal": 23,
+                "elite": 1,
+                "edgeCase": 49
+              },
+              "avgNormalEnemyHp": 118.43478260869566,
+              "walkableTileCount": 3409,
+              "enemyDensity": 0.02141390437078322,
+              "prePlacedAmmo": {
+                "bullets": 57,
+                "rockets": 0,
+                "health": 0,
+                "swap": 40,
+                "weaponUnlocks": 1
+              },
+              "secretRoomCount": 2,
+              "mineCount": 6,
+              "spikeTrapCount": 7,
+              "shortestPathTiles": 103,
+              "plannedRouteTiles": 105,
+              "routeOk": true
+            },
+            "runtime": {
+              "sampleCount": 0,
+              "incompleteSampleCount": 0,
+              "flags": []
+            }
+          },
+          {
+            "levelIndex": 14,
+            "filename": "15_WOLFSRC_WL_ACT2.C",
+            "static": {
+              "totalEnemies": 446,
+              "enemyCounts": {
+                "normal": 18,
+                "elite": 0,
+                "edgeCase": 428
+              },
+              "avgNormalEnemyHp": 47.22222222222222,
+              "walkableTileCount": 13686,
+              "enemyDensity": 0.03258804617857665,
+              "prePlacedAmmo": {
+                "bullets": 33,
+                "rockets": 0,
+                "health": 0,
+                "swap": 0,
+                "weaponUnlocks": 1
+              },
+              "secretRoomCount": 1,
+              "mineCount": 6,
+              "spikeTrapCount": 4,
+              "shortestPathTiles": 152,
+              "plannedRouteTiles": 156,
+              "routeOk": true
+            },
+            "runtime": {
+              "sampleCount": 0,
+              "incompleteSampleCount": 0,
+              "flags": []
+            }
+          }
+        ],
+        "campaignAggregate": {
+          "sampleCount": 32,
+          "incompleteSampleCount": 4,
+          "mapDensityEnemyDemographics": {
+            "killsObserved": {
+              "mean": 15.90625,
+              "samples": [
+                2,
+                16,
+                17,
+                6,
+                19,
+                29,
+                22,
+                15,
+                2,
+                17,
+                17,
+                7,
+                22,
+                29,
+                22,
+                16,
+                2,
+                16,
+                18,
+                8,
+                20,
+                30,
+                22,
+                16,
+                2,
+                16,
+                16,
+                7,
+                21,
+                31,
+                22,
+                4
+              ]
+            }
+          },
+          "combatPacing": {
+            "avgTtkByCategory": {
+              "normal": {
+                "mean": 2.4027027862074646,
+                "samples": [
+                  2.0345511569226487,
+                  2.729927494752907,
+                  1.4699451352552337,
+                  0.30000000000000426,
+                  2.427333305081241,
+                  1.5040868128643297,
+                  0.7195945962191388,
+                  3.0074833407019455,
+                  2.5929039335456423,
+                  0.9157016803519049,
+                  4.848548885015479,
+                  2.5655409954145796,
+                  0.9847374884049529,
+                  1.7660272966906945,
+                  0.7571799492383349,
+                  3.0316566081062746,
+                  4.181656608106209,
+                  2.4238827904700315,
+                  0.6844245705600684,
+                  2.1564802012452446,
+                  0.6000000000001364,
+                  2.2034322142068845,
+                  0.8074569848761257,
+                  3.782187740654038,
+                  4.2142977812066675,
+                  5.967801201977089,
+                  1.249422404683017,
+                  2.400000000000034,
+                  3.970318884475315,
+                  3.149667312464306,
+                  2.3920744461718644,
+                  0.7468044018434856,
+                  3.5167408317502353,
+                  1.4481096868385208,
+                  0.224433189764369,
+                  1.476698633323302,
+                  0.8075206074307388,
+                  1.892706700586082,
+                  4.555389168308352,
+                  2.334118175246843,
+                  0.5869715652013916,
+                  3.712141030737275,
+                  4.510866886193135,
+                  4.555944597264453,
+                  3.5923670323889283,
+                  2.2330503016923906,
+                  1.0673265491842798,
+                  0.967849804970264,
+                  0.5801768197502497,
+                  2.8383075848043404,
+                  6.585204398021858,
+                  4.479225255840674,
+                  3.499999999999801,
+                  0.4603646214461463,
+                  3.5002568025018235,
+                  1.6840402302421467,
+                  3.5708743398046465,
+                  0.5400202156566536,
+                  1.565804843209186,
+                  2.9572510204316416,
+                  4.645808759738145,
+                  1.1250472041797508,
+                  1.4303890521338474,
+                  4.591454213839782,
+                  2.4466445979044593,
+                  2.1543478179228734,
+                  1.3229998094601907,
+                  2.400233476705541,
+                  0.5499999999999687,
+                  1.5627703524527377,
+                  1.1970924702281707,
+                  0.36828857425800265,
+                  2.880396390290265,
+                  3.088004602187823,
+                  3.0007123285397768,
+                  0.8873649427908914,
+                  3.075999686031352,
+                  3.1411942120619187,
+                  2.2303641679164414,
+                  1.0644709502423666,
+                  1.5663887248835877,
+                  0.5455717212807798,
+                  4.1816923703702145,
+                  7.6921418914227075,
+                  8.425214725090484,
+                  1.725143528236572,
+                  1.326226428778483,
+                  0.6659121311721066,
+                  0.7999999999999545,
+                  1.5352956470454018,
+                  2.869347016301049,
+                  1.0697402977787078,
+                  3.06105235409391,
+                  3.944179632564449,
+                  4.3473359995894185,
+                  1.4401176433701153,
+                  4.426532504940468,
+                  1.1861539525536493,
+                  2.6150494681763057,
+                  1.8689956715267355,
+                  3.970460998601907,
+                  2.981782245440982,
+                  0.3158217413994606,
+                  0.31827402328816845,
+                  0.5661204504079365,
+                  3.1439142674190386,
+                  2.948783961025974,
+                  0.7408329626119325,
+                  3.6261608558372878,
+                  3.204979408689166,
+                  2.096403222804142,
+                  1.3548309607207862,
+                  0.6688946423382944,
+                  0.9826496722482929,
+                  0.5428259528012376,
+                  4.31790584518761,
+                  7.09588022109736,
+                  4.449181896684394,
+                  1.3483327052824166,
+                  3.215532748038285,
+                  0.5554943837966846,
+                  3.2076826342093625,
+                  2.922521660558303,
+                  0.7629024873093329,
+                  0.522260395807848,
+                  4.166934689375392,
+                  3.7923019143606354,
+                  4.375616421581853,
+                  0.9688136196838997
+                ]
+              },
+              "elite": {
+                "mean": 0,
+                "samples": []
+              },
+              "edgeCase": {
+                "mean": 0.8150492500235382,
+                "samples": [
+                  0.3500000000000003,
+                  1.7116971986130483,
+                  0.6927375417115123,
+                  0.5927375417115126,
+                  1.4407135222532812,
+                  1.3407135222532816,
+                  1.5958826126729475,
+                  2.0458826126729566,
+                  0.25000000000000355,
+                  0.20000000000000284,
+                  0.30000000000000426,
+                  0.3499999999999801,
+                  0.7999999999999545,
+                  0.8499999999999517,
+                  1.043931504053457,
+                  1.043931504053457,
+                  0.23513343520442476,
+                  1.4932365397985894,
+                  0.30000000000000426,
+                  0.7301921744717959,
+                  0.3872634458415831,
+                  0.3872634458415831,
+                  0.3872634458415831,
+                  0.5799228753580508,
+                  0,
+                  0.5861332210523642,
+                  0.39999999999997726,
+                  0.9930508256135582,
+                  0.5928454037883846,
+                  0.33950956088174067,
+                  0.5625004430672647,
+                  0.6125004430672654,
+                  0.16745525036609615,
+                  0.3874385349406805,
+                  1.0381645677421893,
+                  0.3705934390191441,
+                  0.6330872474330906,
+                  0.6830872474330913,
+                  0.14999999999999147,
+                  0.5722459761726455,
+                  0.8221765991044947,
+                  0.2499999999999858,
+                  0.522051988445952,
+                  0.656411875427267,
+                  0.3685379925418033,
+                  0.6636604955031018,
+                  1.034569933956,
+                  1.2154978829906895,
+                  0.9787237411826339,
+                  0.18161370181950043,
+                  0.6816137018195009,
+                  1.0121667316817338,
+                  0.3364583682107032,
+                  0.28645836821070336,
+                  0.6278098726445727,
+                  0.8088014968800099,
+                  1.4367833706274276,
+                  0.2750490703889561,
+                  0.56510306961151,
+                  0.9651030696114873,
+                  0.9024873554478461,
+                  0.29999999999998295,
+                  0.29999999999998295,
+                  0.4499999999999744,
+                  0.39999999999997726,
+                  1.138069269609474,
+                  0.34466385444044034,
+                  0.7446638544404389,
+                  0.8916981935962074,
+                  1.5680260456195274,
+                  1.776900762002704,
+                  1.3100417446324304,
+                  1.710041744632436,
+                  0.31966918380623,
+                  0.2696691838062293,
+                  1.3922427358949392,
+                  0.4352714648597811,
+                  0.04999999999999716,
+                  1.5047214454863322,
+                  0.5350733856430026,
+                  0.9350733856429798,
+                  1.4777974667681661,
+                  1.549999999999912,
+                  1.6999999999999034,
+                  1.1194869231492053,
+                  1.3994493956314389,
+                  1.005736468102838,
+                  0.29999999999998295,
+                  0.6251054477920661,
+                  0.8987001983242422,
+                  0.39999999999997726,
+                  0.8678316102167116,
+                  1.4338747345466842,
+                  0.24107437129585207,
+                  0.19107437129585492,
+                  0.6755858082191182,
+                  0.3500000000000003,
+                  1.1471826379256391,
+                  0.06761916780253152,
+                  1.367619167802527,
+                  1.8176191678025253,
+                  1.9676191678025248,
+                  2.5500000000000087,
+                  3.1500000000000146,
+                  0.25000000000000355,
+                  0.15000000000000213,
+                  1.0576868339171277,
+                  0.3477154930446389,
+                  0.9137667942053938,
+                  0.8946995758643226,
+                  1.043931504053457,
+                  1.043931504053457,
+                  1.0421232370055797,
+                  0.9015106410689455,
+                  0.3457560181675561,
+                  0.7082119277578087,
+                  0.3499999999999801,
+                  0.3499999999999801,
+                  0.8220325588790303,
+                  0.3460959537602406,
+                  1.094454551972781,
+                  1.2944545519727697,
+                  0.7927067005861446,
+                  0.8427067005861417,
+                  1.6600623936677845,
+                  0.08022003949040624,
+                  0.3277721985786144,
+                  0.6873927976540202,
+                  0.637392797654023,
+                  0.16745525036609615,
+                  0.3867799361216897,
+                  0.22612100235987143,
+                  0.6182635002038825,
+                  0.718263500203884,
+                  1.024246863685244,
+                  0.39999999999997726,
+                  0.39999999999997726,
+                  1.4999999999999147,
+                  0.19999999999998863,
+                  0.19999999999998863,
+                  0.6042346132561178,
+                  0.348827509168224,
+                  0.7400275301313286,
+                  0.9748933307693619,
+                  0.5848658006380134,
+                  1.4213935412724794,
+                  0.21851296268464654,
+                  0.26851296268464653,
+                  0.7685129626846469,
+                  0.6999999999999975,
+                  0.4999999999999982,
+                  1.5499999999999945,
+                  1.1272914909682257,
+                  1.525577156770792,
+                  1.4281926125631035,
+                  0.35713038974817835,
+                  0.45614614810693155,
+                  0.2856531839958478,
+                  0.6502839671322391,
+                  2.2162632734582672,
+                  2.2162632734582672,
+                  1.4447114661905545,
+                  0.29999999999999893,
+                  0.2716993596861714,
+                  0.32169935968617125,
+                  0.21703098370705476,
+                  0.4886338790804796,
+                  0.9886338790804867,
+                  1.9556648627875521,
+                  0.9068274533629417,
+                  1.1657186873232845,
+                  0.5179667557883718,
+                  1.1060591024189144,
+                  0.5076313406158306,
+                  0.14999999999999147,
+                  0.22168776710383042,
+                  0.49066392824087757,
+                  1.6212980026392358,
+                  1.3707300872077894,
+                  1.4657281544438234,
+                  1.369465774033044,
+                  1.4194657740330439,
+                  0.8214137556889884,
+                  1.1392978192426968,
+                  0.08668601791874408,
+                  0.13668601791874124,
+                  0.2866860179187327,
+                  0.6655524124169858,
+                  0.7655524124169801,
+                  1.8580823638915476,
+                  0.6866360814422023,
+                  0.7366360814421995,
+                  0.7866360814421967,
+                  0.6156243677132337,
+                  1.2937606513886268,
+                  0.09298484531161755,
+                  0.09298484531161755,
+                  1.4549551954205562,
+                  1.654955195420559,
+                  2.6549551954205732,
+                  2.361970350108953,
+                  0.4181583045982151,
+                  0.5500000000000078,
+                  1.4590534150531518,
+                  0.3499999999999801,
+                  0.7770708849447132,
+                  1.0494225753207118,
+                  1.043931504053457,
+                  1.043931504053457,
+                  0.25000000000000355,
+                  1.8288667744900948,
+                  0.30000000000000426,
+                  0.7424060054480321,
+                  0.38015429277644586,
+                  0.38015429277644586,
+                  0.6539477745004874,
+                  0.39999999999997726,
+                  1.2440375336834322,
+                  1.5440375336834151,
+                  0.39999999999997726,
+                  0.39999999999997726,
+                  1.1022899074882275,
+                  0.6231436018425249,
+                  1.1909775561990585,
+                  0.6308212789372689,
+                  0.6808212789372661,
+                  0.8308212789372575,
+                  1.1987796755624882,
+                  1.2790463976643232,
+                  0.25559744191560085,
+                  0.6193686789339203,
+                  0.3193686789339161,
+                  1.355997827685135,
+                  0.21601015529500955,
+                  0.5998253382311631,
+                  0.36873574724730673,
+                  0.6054071760653983,
+                  0.6054071760653983,
+                  0.4799333100562819,
+                  0.3478051831223823,
+                  0.8811803110558074,
+                  0.856916655841502,
+                  1.4280107032922587,
+                  0.9938881673086826,
+                  0.1821596435663232,
+                  0.7904649545308499,
+                  0.6583053109645267,
+                  0.3999999999999986,
+                  0.3999999999999986,
+                  0.8942278416397427,
+                  0.83415380905417,
+                  1.5677137369834835,
+                  1.5677137369834835,
+                  0.5319694543091273,
+                  0.6319694543091217,
+                  0.19999999999998863,
+                  0.712500771757874,
+                  0.9930606272303351,
+                  0.09292964586306596,
+                  1.817079534462394,
+                  0.38566933550569127,
+                  0.46793151689710655,
+                  0.4131222761963129,
+                  0.4500000000000064,
+                  1.5442306790983622,
+                  1.112762520392149,
+                  1.7942306790983658,
+                  0.30000000000000426,
+                  0.8249214659773951,
+                  0.9784348560412877,
+                  0.9290326956985631,
+                  0.04999999999999716,
+                  1.2115563100769577,
+                  0.5732394238040186,
+                  0.9732394238039959,
+                  1.9291968558935082,
+                  0.6228822055465102,
+                  1.2684640523068254,
+                  0.2743211732666244,
+                  0.33248237905267075,
+                  1.0983968806611513,
+                  0.9647814839962763,
+                  0.41645481825943875,
+                  0.19999999999998863,
+                  0.19999999999998863,
+                  0,
+                  0.902637907590325,
+                  1.0475481504215338,
+                  0.19999999999998863,
+                  0.8977818701018876,
+                  1.2563804825385532,
+                  0.3500000000000003,
+                  1.7606557798271818,
+                  0.2499999999999991,
+                  0,
+                  1.3489852181962911,
+                  1.3489852181962911,
+                  1.4514581164139244,
+                  2.1514581164139344,
+                  1.4278745609199959,
+                  1.550068630243537,
+                  0.38320118129531977,
+                  0.3499999999999801,
+                  0.29999999999998295,
+                  0.9557267847468864,
+                  1.0439315040534787,
+                  1.3349352643023673,
+                  1.8945114943464532,
+                  1.5378510374810332,
+                  0.350000000000005,
+                  0.350000000000005,
+                  0.3331588791766755,
+                  0.38315887917667624,
+                  0.7717900518942038,
+                  0.3325296420041681,
+                  1.1825296420041198,
+                  1.4325296420041056,
+                  0.7507727330697804,
+                  0.9180923227353546,
+                  0.7735574419103024,
+                  0.4580758195070729,
+                  0.32993306428570435,
+                  0.5807495925701218,
+                  0.9307495925701019,
+                  0.26745525036609613,
+                  0.8991211866459348,
+                  0.24613660688896566,
+                  1.0669999655878772,
+                  1.466999965587883,
+                  1.8669999655878886,
+                  0.14999999999999147,
+                  0.649999999999963,
+                  1.7499999999999005,
+                  0.3285043127997014,
+                  0.6878021596285038,
+                  0.5687554326085404,
+                  0.2499999999999858,
+                  0.39999999999997726,
+                  1.423414666001051,
+                  2.023414666001017,
+                  2.5734146660009856,
+                  0.17985885427484755,
+                  0.22985885427484753,
+                  0.8137864459566194,
+                  0.6499999999999977,
+                  1.1999999999999957,
+                  1.4000000000000012,
+                  1.9000000000000066,
+                  0.46567881808634404,
+                  1.1370077130822338,
+                  0.29850239373270426,
+                  0.6869557712543966,
+                  0.44540404478399864,
+                  0.3194016334101093,
+                  0.8194016334100809,
+                  0.5662920878267954,
+                  1.4534921668868606,
+                  0.1308672380546625,
+                  0.4715883175227775,
+                  0.8715883175227761,
+                  1.0215883175227756,
+                  1.366918650016789,
+                  0.7801109057993258,
+                  1.043596910762556,
+                  2.2301109057993465,
+                  0.350000000000005,
+                  0.5744211939293962,
+                  0.6744211939293976,
+                  0.17548139913095184,
+                  0,
+                  0.09219549008778927,
+                  0.3873603212684813,
+                  0.93736032126845,
+                  1.1069637108513248,
+                  0.7155747745252654,
+                  1.470375423732655,
+                  1.4317066995143535,
+                  0.4219859485896871,
+                  1.51698774662625,
+                  1.1372018773156416
+                ]
+              }
+            },
+            "combatVsExplorationRatio": {
+              "mean": 0.2498693682691697,
+              "samples": [
+                0.2920345319754509,
+                0.19853165319862756,
+                0.20393365776742464,
+                0.19931414202630673,
+                0.21994101701821112,
+                0.1528936181438318,
+                0.3159267729896582,
+                0.3558171848033817,
+                0.22850170281478066,
+                0.2985392848344914,
+                0.1974835730357308,
+                0.22396295975907252,
+                0.2694487862406741,
+                0.2175478825779885,
+                0.23368434967505786,
+                0.365503575025003,
+                0.19714781484492092,
+                0.24976058203808582,
+                0.2058474247930807,
+                0.2254918195152241,
+                0.23149249783748452,
+                0.19485244952984837,
+                0.3178184124520027,
+                0.32257864077300324,
+                0.41793929521351364,
+                0.278692902355667,
+                0.19381520606578345,
+                0.20304133532868493,
+                0.3128695461680065,
+                0.20130456832433352,
+                0.281189161916395,
+                0.1889134355717031
+              ]
+            },
+            "levelTimeSec": {
+              "mean": 68.1808240513438,
+              "samples": [
+                16.657203580583527,
+                38.92338990805631,
+                54.22450641992488,
+                35.14920240922225,
+                60.59912339554899,
+                179.44224158163073,
+                84.40130692558819,
+                89.05033193039961,
+                14.17441886917017,
+                43.39955437035974,
+                48.94485875843618,
+                42.940951417650325,
+                70.19855948629466,
+                173.42301804830885,
+                88.93386641164344,
+                71.38645482399232,
+                18.145509906853565,
+                44.35349973716108,
+                63.73111252672586,
+                44.95040794378153,
+                63.69399909073733,
+                170.7758658049815,
+                76.23086304692826,
+                95.58152375126355,
+                14.211290343240643,
+                43.51237127959355,
+                43.41074630883101,
+                42.380932279147174,
+                62.98652672282064,
+                187.48134162678272,
+                80.54709860502012,
+                17.944292332323155
+              ]
+            },
+            "peakSimultaneousAggroed": {
+              "max": 6,
+              "samples": [
+                1,
+                6,
+                3,
+                3,
+                3,
+                3,
+                4,
+                3,
+                1,
+                5,
+                3,
+                3,
+                3,
+                4,
+                3,
+                3,
+                1,
+                5,
+                3,
+                3,
+                4,
+                4,
+                4,
+                4,
+                1,
+                5,
+                3,
+                3,
+                5,
+                4,
+                4,
+                3
+              ]
+            }
+          },
+          "aiEffectivenessDanger": {
+            "enemyAccuracy": {
+              "mean": 0.26103090327260753,
+              "samples": [
+                0.3333333333333333,
+                0.26666666666666666,
+                0.47058823529411764,
+                0.25,
+                0.15789473684210525,
+                0.30303030303030304,
+                0.3225806451612903,
+                0.23076923076923078,
+                0,
+                0.3333333333333333,
+                0.06666666666666667,
+                0.3,
+                0.11538461538461539,
+                0.3170731707317073,
+                0.36,
+                0.32,
+                0.5,
+                0.1111111111111111,
+                0.47368421052631576,
+                0.1,
+                0.22727272727272727,
+                0.225,
+                0.42857142857142855,
+                0.23076923076923078,
+                0,
+                0.4444444444444444,
+                0.26666666666666666,
+                0.2222222222222222,
+                0.2916666666666667,
+                0.225,
+                0.25925925925925924,
+                0.2
+              ]
+            },
+            "meleeVsRangedAttackRatio": {
+              "mean": 0.05796611675057894,
+              "samples": [
+                0,
+                0.0625,
+                0,
+                0,
+                0,
+                0.08333333333333333,
+                0.18421052631578946,
+                0.07142857142857142,
+                0,
+                0.16,
+                0.0625,
+                0.09090909090909091,
+                0.07142857142857142,
+                0.046511627906976744,
+                0.10714285714285714,
+                0.038461538461538464,
+                0,
+                0.1,
+                0,
+                0,
+                0,
+                0.024390243902439025,
+                0.0967741935483871,
+                0.037037037037037035,
+                0,
+                0.05263157894736842,
+                0,
+                0,
+                0.2727272727272727,
+                0.1111111111111111,
+                0.18181818181818182,
+                0
+              ]
+            },
+            "minHealthReached": {
+              "min": 0,
+              "samples": [
+                88,
+                99.8,
+                55.61080973952303,
+                99.2,
+                95.2,
+                76,
+                73,
+                0,
+                100,
+                78.4,
+                100,
+                67.46866860530773,
+                77,
+                68,
+                83.2,
+                0,
+                88,
+                95.2,
+                78.9609185067729,
+                92.39999999999995,
+                83.2,
+                76,
+                64,
+                0,
+                100,
+                75.8,
+                100,
+                88,
+                71,
+                76,
+                79,
+                0
+              ]
+            },
+            "timeBelow25PctHealthSec": {
+              "mean": 0.18124999999999988,
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                3.5499999999999954,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0.49999999999999994,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0.05,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1.7000000000000008
+              ]
+            }
+          },
+          "damageHealingBreakdown": {
+            "damageBySource": {
+              "enemyMelee": 14.53125,
+              "enemyRanged": 48.075,
+              "trapSpike": 0.1875,
+              "trapMine": 1.0950361171626046,
+              "hazard": 8.739737005511108,
+              "selfRocket": 0
+            },
+            "healingBySource": {
+              "pickupHealth": 0,
+              "pickupSwap": 0,
+              "lifesteal": 5.33125
+            },
+            "fatalDamageSourceCounts": {
+              "enemyRanged": 1,
+              "enemyMelee": 2,
+              "hazard": 1
+            }
+          },
+          "weaponEfficiency": {
+            "0": {
+              "shotsFired": 291,
+              "hits": 157,
+              "kills": 71
+            },
+            "1": {
+              "shotsFired": 170,
+              "hits": 485,
+              "kills": 113
+            },
+            "2": {
+              "shotsFired": 199,
+              "hits": 199,
+              "kills": 152
+            },
+            "3": {
+              "shotsFired": 1111,
+              "hits": 733,
+              "kills": 83
+            },
+            "5": {
+              "shotsFired": 28,
+              "hits": 80,
+              "kills": 6
+            },
+            "6": {
+              "shotsFired": 103,
+              "hits": 103,
+              "kills": 84
+            }
+          },
+          "economyLootStarvation": {
+            "lootRolled": {
+              "bullets": 642,
+              "rockets": 24,
+              "smg": 990,
+              "gas": 45,
+              "health": 2268,
+              "swap": 688,
+              "weapon": 8
+            },
+            "consumed": {
+              "dynamic": {
+                "bullets": 636,
+                "rockets": 23,
+                "smg": 990,
+                "gas": 45,
+                "health": 2254,
+                "swap": 688,
+                "weapon": 8
+              },
+              "static": {
+                "bullets": 136,
+                "rockets": 4,
+                "smg": 0,
+                "gas": 0,
+                "health": 0,
+                "swap": 0,
+                "weapon": 0
+              },
+              "total": {
+                "bullets": 772,
+                "rockets": 27,
+                "smg": 990,
+                "gas": 45,
+                "health": 2254,
+                "swap": 688,
+                "weapon": 8
+              }
+            },
+            "pctRegularKillLootMisses": {
+              "mean": 0.23464942528277513,
+              "samples": [
+                0,
+                0.25,
+                0.23529411764705882,
+                0.5,
+                0.2631578947368421,
+                0.2413793103448276,
+                0.18181818181818182,
+                0.3333333333333333,
+                0.5,
+                0.17647058823529413,
+                0.17647058823529413,
+                0.14285714285714285,
+                0.18181818181818182,
+                0.06896551724137931,
+                0.2727272727272727,
+                0.3125,
+                0,
+                0.0625,
+                0.1111111111111111,
+                0.125,
+                0.15,
+                0.3,
+                0.4090909090909091,
+                0.25,
+                0.5,
+                0.25,
+                0.3125,
+                0.5714285714285714,
+                0.19047619047619047,
+                0.25806451612903225,
+                0.18181818181818182,
+                0
+              ]
+            },
+            "desperation": {
+              "timeAtZeroRangedAmmoSec": {
+                "mean": 0,
+                "samples": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ]
+              },
+              "pctKillsForcedMelee": {
+                "mean": 0,
+                "samples": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          },
+          "navigationMapFlow": {
+            "routeEfficiencyScore": {
+              "mean": 0.4704362379253547,
+              "samples": [
+                0.4586059957082101,
+                0.465383160511192,
+                0.44396550864289536,
+                0.5137902868391216
+              ]
+            },
+            "routeFollowingOverhead": {
+              "mean": 2.0908501968339923,
+              "samples": [
+                2.138425990660078,
+                2.107285058655224,
+                2.2089440769683866,
+                1.9087456610522815
+              ]
+            },
+            "distanceTraveled": {
+              "mean": 270.76510049000206,
+              "samples": [
+                67.0360869864111,
+                157.6357317378464,
+                218.79634785490387,
+                145.40244671235507,
+                247.9037973687782,
+                754.8393073394745,
+                315.43731476046844,
+                308.3582935636032,
+                62.069675287227994,
+                169.01338660488037,
+                192.91152504997947,
+                176.5565055195635,
+                273.9535436332328,
+                705.6215142693642,
+                338.2496885645241,
+                264.7714818380395,
+                68.93844797280667,
+                178.49933670465916,
+                246.08903615729065,
+                177.0106795973329,
+                256.59550547246215,
+                707.7661506715791,
+                285.22005484867424,
+                368.34685231444365,
+                57.23589242876882,
+                174.4686388603115,
+                175.55858841536372,
+                173.37733549188602,
+                241.40104357559593,
+                754.9077799813447,
+                318.5255305536615,
+                81.9856955432312
+              ]
+            },
+            "mapCoveragePct": {
+              "mean": 0.2606686143071405,
+              "samples": [
+                0.5864197530864198,
+                0.27177472167648986,
+                0.12677411594900168,
+                0.1542041576171269,
+                0.1870748299319728,
+                0.2570371892336141,
+                0.14289876183539693,
+                0.47212089630015636,
+                0.6646090534979424,
+                0.29404060248853964,
+                0.12773634832812125,
+                0.15761712690040336,
+                0.18759811616954475,
+                0.26155742757345385,
+                0.1462490895848507,
+                0.4106305367378843,
+                0.5802469135802469,
+                0.29404060248853964,
+                0.1330286264132788,
+                0.168166304685076,
+                0.18445839874411302,
+                0.2521060201356071,
+                0.14464675892206846,
+                0.3976029181865555,
+                0.5576131687242798,
+                0.2770137524557957,
+                0.12677411594900168,
+                0.15978901644430654,
+                0.1870748299319728,
+                0.24265461269776042,
+                0.1440640932265113,
+                0.04377279833246483
+              ]
+            },
+            "secretRoomsOpened": {
+              "mean": 0,
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            "minesTriggered": {
+              "mean": 0.0625,
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            "minesDisarmed": {
+              "mean": 0.625,
+              "samples": [
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
+                2,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
+                2,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                0,
+                0
+              ]
+            }
+          },
+          "score": {
+            "mean": 17627.03125,
+            "samples": [
+              1818,
+              6015,
+              9990,
+              12618,
+              17550,
+              24180,
+              30684,
+              34258,
+              1832,
+              6896,
+              11192,
+              13496,
+              19151,
+              26250,
+              32437,
+              36568,
+              1827,
+              5968,
+              10293,
+              12689,
+              18754,
+              25861,
+              31999,
+              36085,
+              1832,
+              5653,
+              9447,
+              11712,
+              18316,
+              24851,
+              31005,
+              32838
+            ]
+          },
+          "flags": []
+        }
+      },
+      "crossDifficultyFlags": []
+    }
+  }
+}
