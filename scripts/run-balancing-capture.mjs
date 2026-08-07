@@ -85,6 +85,39 @@ const LEVEL_LIMIT = process.env.CODEENSTEIN_CAPTURE_LEVEL_LIMIT
 /** Per-combo spawn ceiling. A cell needing more invocations than this to reach
  * its target is failing in a way more attempts will not fix. */
 const MAX_INVOCATIONS = Number(process.env.CODEENSTEIN_CAPTURE_MAX_INVOCATIONS ?? 8);
+/** How long one invocation should take, whichever lane runs it. Chunk size is
+ * derived from this and the lane's measured rate, so a slow host gets fewer
+ * attempts rather than holding a full-size chunk while every other lane idles.
+ * 45 min keeps a comfortable margin under the 130-minute watchdog even if a
+ * lane turns out slower than its stored rate. */
+const TARGET_CHUNK_MIN = Number(process.env.CODEENSTEIN_CAPTURE_TARGET_CHUNK_MIN ?? 45);
+/** Never below this: a chunk pays a fixed browser+vite startup cost, so tiny
+ * chunks spend most of their time on overhead. */
+const MIN_CHUNK = Number(process.env.CODEENSTEIN_CAPTURE_MIN_CHUNK ?? 5);
+/** Learned lane speeds, carried between runs. Gitignored scratch — losing it
+ * only costs one round of recalibration. */
+const RATES_FILE = path.join(REPO_ROOT, "lane-speed.json");
+
+function loadLaneRates() {
+  try {
+    return JSON.parse(fs.readFileSync(RATES_FILE, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Attempts to ask this lane for.
+ *
+ * Without a measured rate, fall back to the fixed CHUNK — the first invocation
+ * on an unknown host is the calibration run, and guessing low would make a fast
+ * host look slow for the rest of the capture.
+ */
+function chunkFor(_combo, { remaining, ratePerMin }) {
+  if (!ratePerMin || ratePerMin <= 0) return Math.min(CHUNK, Math.max(1, remaining));
+  const sized = Math.round(ratePerMin * TARGET_CHUNK_MIN);
+  return Math.min(Math.max(MIN_CHUNK, sized), CHUNK, Math.max(1, remaining));
+}
 const SIGTERM_GRACE_MS = 5000;
 
 const comboKey = (combo) => `${combo.profile}-${combo.difficulty}`;
@@ -134,7 +167,7 @@ function scanExisting(combo) {
   return { qualifying: rids.size, fileCount };
 }
 
-function envFor(combo, sequence, outputPath, eventLogPath, { inFlightBefore = 0 } = {}) {
+function envFor(combo, sequence, outputPath, eventLogPath, { inFlightBefore = 0, chunkAttempts = null, reservedAttempts = inFlightBefore * CHUNK } = {}) {
   // Called immediately before each invocation, which makes it the one place
   // that reliably runs on *every* attempt including retries — and a retry can
   // land on this same directory, because the orchestrator's sequence number
@@ -158,11 +191,15 @@ function envFor(combo, sequence, outputPath, eventLogPath, { inFlightBefore = 0 
   // With chunk stealing, other lanes may already be working this same combo.
   // Their attempts are not on disk yet, so `qualifying` does not see them —
   // subtract what they were already asked to produce, or every extra lane
-  // re-runs the same shortfall and the overshoot scales with lane count
-  // instead of being bounded by one chunk.
-  const claimedInFlight = inFlightBefore * CHUNK;
-  const remaining = Math.max(1, TARGET_ATTEMPTS - scanExisting(combo).qualifying - claimedInFlight);
-  const cap = Math.min(CHUNK, remaining);
+  // re-runs the same shortfall and the overshoot scales with lane count.
+  //
+  // `reservedAttempts` comes from the orchestrator and is the real sum of what
+  // in-flight invocations were asked for. This used to be `inFlightBefore *
+  // CHUNK`, which is only correct while every lane gets an identical chunk —
+  // and lanes no longer do, because chunk size is now proportional to each
+  // lane's measured speed.
+  const remaining = Math.max(1, TARGET_ATTEMPTS - scanExisting(combo).qualifying - reservedAttempts);
+  const cap = Math.min(chunkAttempts ?? CHUNK, remaining);
 
   const env = {
     ...process.env,
@@ -269,6 +306,8 @@ async function main() {
     // count leaves every finished lane idle for the rest of the capture —
     // measured at 115 of 132 minutes on one ripgrep lane.
     maxConcurrentPerCombo: (_combo, { qualifying, target }) => Math.ceil(Math.max(0, target - qualifying) / CHUNK),
+    chunkFor,
+    initialLaneRates: loadLaneRates(),
   });
 
   console.log("\n=== Capture complete ===");
@@ -289,6 +328,15 @@ async function main() {
       utilisation.lanes.map((l) => `${l.label} ${pct(l.busyMs)} busy (${l.invocations} inv)`).join(", "),
   );
   console.log(`  idle lane-time: ${formatElapsed(utilisation.idleMs)} of ${formatElapsed(utilisation.laneTimeMs)} (${Math.round(100 * utilisation.idleFraction)}%)`);
+  const rates = utilisation.lanes.filter((l) => l.attemptsPerMin != null);
+  if (rates.length > 0) {
+    console.log(`  measured speed: ${rates.map((l) => `${l.label} ${l.attemptsPerMin}/min`).join(", ")}`);
+    // Persist for the next run, so it starts with sized chunks instead of
+    // spending its first round discovering which hosts are slow.
+    const merged = { ...loadLaneRates() };
+    for (const l of rates) merged[l.label] = l.attemptsPerMin;
+    fs.writeFileSync(RATES_FILE, `${JSON.stringify(merged, null, 2)}\n`);
+  }
 
   console.log(`\nVerify before using: npm run verify:event-log -- ${path.relative(REPO_ROOT, EVENTS_DIR)}`);
   // A short cell is not a crash, but pooling it with full ones as though the

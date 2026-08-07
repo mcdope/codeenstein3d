@@ -21,6 +21,8 @@ balancing_capture_*/
 # canary its own output: a driver doing `git add -A` between repos committed
 # the results onto one branch, and the next `git checkout -B` deleted them.
 balancing_canary_*/
+# Learned per-lane throughput, rebuilt by any capture that runs.
+lane-speed.json
 # Fetched source repos the offline balance solver runs against, see
 # scripts/fetch-balancing-corpus.mjs -- reproducible from its pinned manifest.
 balancing_corpus/

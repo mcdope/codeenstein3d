@@ -343,6 +343,79 @@ describe("runLaneOrchestrator chunk stealing", () => {
     expect(broken.calls).toHaveLength(5); // the cap, not the lane-health rule
   });
 
+  it("sizes each lane's chunk from its own measured rate", async () => {
+    // A fixed chunk makes the run end when the SLOWEST lane finishes its last
+    // full-size chunk, with every other lane idle. Measured spread across the
+    // configured hosts is about 2x.
+    const asked = [];
+    const mk = (label) => ({
+      label,
+      calls: [],
+      runInvocation({ env }) {
+        this.calls.push(1);
+        asked.push({ label, cap: env.CAP });
+        return Promise.resolve({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 1000 });
+      },
+    });
+    const fast = mk("fast");
+    const slow = mk("slow");
+    let qualifying = 0;
+    await runLaneOrchestrator(
+      baseParams({
+        scanExisting: () => ({ qualifying, fileCount: 0 }),
+        envFor: (_c, _s, _o, _e, ctx) => ({ CAP: String(ctx.chunkAttempts) }),
+        targetQualifying: 40,
+        runners: [fast, slow],
+        maxInvocations: 2,
+        maxConcurrentPerCombo: 2,
+        initialLaneRates: { fast: 10, slow: 2 },
+        chunkFor: (_c, { ratePerMin }) => ratePerMin * 2,
+      }),
+    );
+    // 2 minutes of work each: the fast lane is asked for 20, the slow one 4.
+    expect(asked.find((a) => a.label === "fast").cap).toBe("20");
+    expect(asked.find((a) => a.label === "slow").cap).toBe("4");
+  });
+
+  it("reserves the attempts actually claimed, not a constant chunk", async () => {
+    // The trap this replaces: the caller reserved `inFlightBefore * CHUNK`,
+    // which is only right while every lane gets an identical chunk. With
+    // per-lane sizing that over- or under-counts and the combo overshoots its
+    // target.
+    const seen = [];
+    const gate = [];
+    const mk = (label) => ({
+      label,
+      calls: [],
+      runInvocation({ env }) {
+        this.calls.push(1);
+        seen.push({ label, cap: Number(env.CAP), reserved: Number(env.RESERVED) });
+        return new Promise((r) => gate.push(r));
+      },
+    });
+    const a = mk("fast");
+    const b = mk("slow");
+    const done = runLaneOrchestrator(
+      baseParams({
+        scanExisting: () => ({ qualifying: 0, fileCount: 0 }),
+        envFor: (_c, _s, _o, _e, ctx) => ({ CAP: String(ctx.chunkAttempts), RESERVED: String(ctx.reservedAttempts) }),
+        targetQualifying: 100,
+        runners: [a, b],
+        maxInvocations: 2,
+        maxConcurrentPerCombo: 2,
+        initialLaneRates: { fast: 10, slow: 2 },
+        chunkFor: (_c, { ratePerMin }) => ratePerMin * 2,
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    // First claim sees nothing reserved; the second sees exactly what the
+    // first actually asked for — 20, not a constant.
+    expect(seen[0].reserved).toBe(0);
+    expect(seen[1].reserved).toBe(seen[0].cap);
+    gate.forEach((r) => r({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 1000 }));
+    await done;
+  });
+
   it("reports per-lane utilisation so idle time is never invisible again", async () => {
     const runner = fakeRunner(() => ({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 1000 }));
     const summary = await runLaneOrchestrator(

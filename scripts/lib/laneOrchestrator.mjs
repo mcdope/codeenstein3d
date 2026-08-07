@@ -120,7 +120,7 @@ export class LocalRunner {
  * `claimSequence` and `runLaneOrchestrator`'s `maxConcurrentPerCombo`.
  */
 function makeState(combo, key) {
-  return { combo, key, spawned: 0, inFlight: 0, nextSequence: 0, retired: false };
+  return { combo, key, spawned: 0, inFlight: 0, nextSequence: 0, retired: false, reserved: 0 };
 }
 
 /**
@@ -251,6 +251,14 @@ export async function runLaneOrchestrator(params) {
     // but only while some *other* lane is producing. See the lane-health block
     // in `runLane` for why that condition is what makes this safe.
     laneFailureLimit = 3,
+    // Sizes one invocation's work for the lane about to run it. Omit and every
+    // lane gets whatever the caller's own env builder decides, i.e. the old
+    // fixed-chunk behaviour.
+    chunkFor = null,
+    // Seed rates (attempts per minute, by lane label) from what a previous run
+    // measured, so a capture does not spend its first round relearning which
+    // hosts are fast. See the summary this function returns.
+    initialLaneRates = {},
   } = params;
 
   const states = combos.map((combo) => makeState(combo, comboKey(combo)));
@@ -291,7 +299,7 @@ export async function runLaneOrchestrator(params) {
    * Entirely synchronous — see `claimSequence`. Two lanes cannot interleave
    * inside it, so `inFlight`/`spawned`/`nextSequence` need no locking.
    */
-  function claim() {
+  function claim(runner) {
     let best = null;
     for (const state of states) {
       if (state.retired) continue;
@@ -330,13 +338,40 @@ export async function runLaneOrchestrator(params) {
 
     const { state, qualifying, target, fileCount } = best;
     const sequence = claimSequence(state, fileCount, outputPathFor);
+
+    // Size this invocation for THIS lane.
+    //
+    // A fixed chunk makes every lane's invocation cost whatever that host
+    // happens to take, so the run ends when the slowest lane finishes its last
+    // full-size chunk while everything else sits idle. Measured spread across
+    // the configured hosts is about 2x. Sizing by measured rate makes an
+    // invocation cost roughly the same wall time everywhere, which is what
+    // shortens the tail.
+    //
+    // `reserved` is the attempts already promised to in-flight invocations of
+    // this combo. It has to be tracked rather than derived: the old caller-side
+    // reservation multiplied `inFlightBefore` by a constant CHUNK, which is
+    // simply wrong once chunks differ per lane, and the combo would overshoot
+    // its target by the difference.
+    const remaining = Math.max(0, target - qualifying - state.reserved);
+    const ratePerMin = (laneRates.get(runner.label) ?? 0) * 60000;
+    const chunkAttempts = chunkFor ? Math.max(1, Math.round(chunkFor(state.combo, { remaining, laneLabel: runner.label, ratePerMin, qualifying, target }))) : null;
+    const claimed = chunkAttempts == null ? 0 : Math.min(chunkAttempts, Math.max(1, remaining));
+
     state.spawned += 1;
     state.inFlight += 1;
+    state.reserved += claimed;
     inFlightTotal += 1;
-    return { state, sequence, qualifying, target };
+    return { state, sequence, qualifying, target, chunkAttempts: claimed || chunkAttempts, claimed };
   }
 
   const startedAt = Date.now();
+  // Attempts per millisecond, per lane label. Seeded from the caller and
+  // updated by EWMA as invocations land, so a long run keeps adapting rather
+  // than trusting a stale file.
+  const laneRates = new Map(Object.entries(initialLaneRates).map(([k, perMin]) => [k, perMin / 60000]));
+  const RATE_ALPHA = 0.4;
+
   // Set once any lane produces an output file — the evidence that separates
   // "this lane is broken" from "this work is broken". See the lane-health
   // block in `runLane`.
@@ -346,7 +381,7 @@ export async function runLaneOrchestrator(params) {
   async function runLane(runner, stats) {
     const health = { consecutiveFailures: 0, charged: [] };
     for (;;) {
-      const work = claim();
+      const work = claim(runner);
       if (!work) {
         // Nothing claimable. If nothing is running either, no future claim can
         // ever succeed — every combo is satisfied, retired or capped — so the
@@ -358,7 +393,7 @@ export async function runLaneOrchestrator(params) {
         continue;
       }
 
-      const { state, sequence, qualifying, target } = work;
+      const { state, sequence, qualifying, target, chunkAttempts, claimed } = work;
       const outputPath = outputPathFor(state.combo, sequence);
       const logPath = logPathFor(state.combo, sequence);
       // Optional: only a capture that actually wants per-event data supplies
@@ -369,7 +404,7 @@ export async function runLaneOrchestrator(params) {
       // from remaining work needs it: without it, two concurrent invocations
       // both read the same `qualifying` off disk and both run a full chunk,
       // overshooting the target by a chunk per extra lane.
-      const env = envFor(state.combo, sequence, outputPath, eventLogPath, { inFlightBefore: state.inFlight - 1 });
+      const env = envFor(state.combo, sequence, outputPath, eventLogPath, { inFlightBefore: state.inFlight - 1, chunkAttempts, reservedAttempts: state.reserved - claimed });
       const prefix = `[${state.key} #${sequence}] `;
       log(`[${state.key}] starting invocation #${sequence} (${qualifying}/${target} qualifying so far) via ${runner.label}`);
 
@@ -378,6 +413,7 @@ export async function runLaneOrchestrator(params) {
         result = await runner.runInvocation({ scriptPath, env, logPath, prefix, watchdogMs, sigtermGraceMs, outputPath, eventLogPath });
       } finally {
         state.inFlight -= 1;
+        state.reserved -= claimed;
         inFlightTotal -= 1;
         // New results on disk: every cached count is now stale. Invalidate
         // before waking anyone, so no lane decides against a pre-completion
@@ -420,6 +456,13 @@ export async function runLaneOrchestrator(params) {
       // before.
       if (produced) {
         anyLaneProduced = true;
+        // Rate is attempts asked for over wall time taken. Only successful
+        // invocations count: a crash is fast and would read as blazing speed.
+        if (chunkAttempts && result.elapsedMs > 0) {
+          const observed = chunkAttempts / result.elapsedMs;
+          const prev = laneRates.get(runner.label);
+          laneRates.set(runner.label, prev == null ? observed : prev * (1 - RATE_ALPHA) + observed * RATE_ALPHA);
+        }
         health.consecutiveFailures = 0;
         health.charged = [];
       } else {
@@ -447,7 +490,13 @@ export async function runLaneOrchestrator(params) {
   // lane sat idle for 115 of a 132-minute capture without anyone noticing —
   // the only symptom is a quiet machine. Report it every run.
   const wallMs = Date.now() - startedAt;
-  const lanes = laneStats.map((s) => ({ ...s, idleMs: Math.max(0, wallMs - s.busyMs) }));
+  const lanes = laneStats.map((s) => ({
+    ...s,
+    idleMs: Math.max(0, wallMs - s.busyMs),
+    // Attempts per minute, so the next run can seed `initialLaneRates` with
+    // what this one learned instead of paying to rediscover it.
+    attemptsPerMin: laneRates.has(s.label) ? Number((laneRates.get(s.label) * 60000).toFixed(2)) : null,
+  }));
   const idleMs = lanes.reduce((sum, l) => sum + l.idleMs, 0);
   const totalMs = wallMs * Math.max(1, lanes.length);
   return { wallMs, lanes, idleMs, laneTimeMs: totalMs, idleFraction: totalMs > 0 ? idleMs / totalMs : 0 };
