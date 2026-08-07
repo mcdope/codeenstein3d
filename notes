@@ -122,18 +122,25 @@ Durable rationale ("why is the code like this?") belongs in [`doc/dev/decisions.
   - **Warning for the next attempt: do not trust `diagnose-level-wedge` at n=8.** It reported 3/8, 4/8 and 6/8 deaths for baseline and two attempts — noise that looked like signal. The 60-run capture showed 50%, 100%, 100%. Use the capture harness for any verdict here.
   - Related: this is the same *class* as the loot treadmill below — a bot defect wearing the costume of a balance result.
 
-- [ ] **A large source file generates an unplayable level: 2,653 doors and 771 keys on one 160x160 map.** Found 2026-08-07 when the Stage C sweep's first repo (ripgrep) proved uncapturable. `doorsKeys.ts` locks every private/protected-method room and issues one key per doorway — sound for an ordinary file, unbounded for a big one. Measured across ripgrep's staged campaign:
+- [ ] **Locked doors on the critical path turn a level into a 120-objective slog — it blocks 2 of 7 repos and it is why the Stage C sweep was stopped (2026-08-07).** `doorsKeys.ts` locks every private/protected-method room and issues one key per doorway, unbounded. On a large file that produces gates the route planner must chain in sequence.
+  - **The predictive metric is route LEGS, not key count.** Two wrong turns before that landed, both worth recording so nobody repeats them: key count alone says nothing (sinatra L15 has **134 keys and a 1-leg route** — its locked rooms are optional side rooms, and it captured at 91%), and an earlier scan reported bogus route failures because `stage-campaign --dry-run` truncates its filename column at 43 chars, so long paths became "file not found". Read filenames from the `--solved-out` JSON, which is untruncated.
+  - **Measured across all 7 staged campaigns** (0 parse failures, 0 route failures):
 
-  | lvl | size | enemies | doors | keys |
-  |---|---|---|---|---|
-  | 8 | 76x76 | 74 | 64 | 38 |
-  | 14 | 160x160 | 420 | 367 | 165 |
-  | 15 | 160x160 | 432 | **2,653** | **771** |
+    | repo | legs L1..L15 | worst in L1-8 | worst |
+    |---|---|---|---|
+    | ripgrep | 1,1,1,12,1,1,24,**120**,1,1,53,1,1,237,1 | **120** | 237 |
+    | laravel | 1,1,1,4,**52**,1,1,4,4,1,58,**101**,1,14,1 | **52** | 101 |
+    | codeenstein3d | 1,1,1,1,1,1,1,16,1,1,1,1,36,1,1 | 16 | 36 |
+    | sinatra | 1,1,1,1,1,1,1,1,1,1,1,112,1,31,1 | 1 | 112 |
+    | serilog | 1,1,1,1,1,1,1,1,1,1,1,4,28,1,1 | 1 | 28 |
+    | wolf3d | all 1 | 1 | 1 |
+    | curl | all 1 | 1 | 1 |
 
-  - **Consequence**: every key is a mandatory route objective, so level 8's 38 keys give a **120-leg route** (serilog's worst is 36, the demo campaign's monolith 36). 16 of 18 captured runs stopped at exactly level 8, 83% wedged, 0 completed, and a single attempt cost ~9 minutes — the fastest lane managed 10 attempts in 89 minutes. Level 15 would ask a player to collect 771 keys behind 2,653 doors, i.e. ~10% of the map is door tiles.
-  - **This is a game-design decision, not a mechanical bug.** Capping the number of locked gates changes gameplay, moves the balance hash and invalidates existing replays and `defaultHighscore.ts`, so it needs a deliberate choice about what the cap should be and which rooms keep their locks (most central? highest-value? a fixed budget scaled to walkable area?).
-  - **It blocks Stage C for ripgrep** and probably for any repo with a very large file. curl, laravel and codeenstein3d are the likely other candidates — worth measuring before the next sweep rather than discovering it eight hours in.
-  - Related: the C# `private`-by-default bug fixed earlier the same day produced 640 doors / 321 keys from a single interface. Same symptom, different cause — that one was a parser error, this one is the generator behaving as designed on input it was never sized for.
+  - **Why it blocks**: every gate on the critical path is a mandatory objective. ripgrep L8 (120 legs) stopped 16 of 18 captured runs at exactly that level, 83% wedged, 0 completed, ~9 min per attempt. A level whose gates are *off* the path is harmless however many keys it has.
+  - **Latent**: sinatra's 112 legs at L12 never mattered because runs died earlier. The bot now goes much deeper (serilog 51% -> 100%), so depth-gated problems like this one can start biting where they never did.
+  - **A cap is a design decision, not a mechanical fix** — it moves the balance hash and invalidates replays and `defaultHighscore.ts`, and needs a choice about which rooms keep their locks. But note the sequencing argument that *"balance changes come after Stage C"* no longer applies cleanly: nobody chose 120 mandatory gates, so this is unbounded scaling like the C# `private` bug, not a tuned number like Elite HP.
+
+- [ ] **The locked-door/key mechanic never appears for C sources at all.** wolf3d and curl generate **zero** doors and **zero** keys on all 15 staged levels, and every route is 1 leg. Almost certainly visibility detection finding no private/protected members in C. It is a silent content gap — nothing errors — and it means any cross-repo balance comparison is comparing games with different mechanics present. Worth checking what the C/C++ refinements actually classify before reading anything into wolf3d or curl numbers.
 
 - [x] **Lanes differ ~2x in speed — DONE 2026-08-07: measurement, per-lane chunk sizing, cost-ranked assignment and a tail guard all landed.** Chunk stealing (2026-08-07) stopped lanes idling *mid*-run, but not the tail: the last chunks are handed out blind, so a slow host can hold one while every other lane sits finished. Measured on the Stage C serilog capture — local 8 invocations, the laptop 7, mcdope.org 4, for the same 20-attempt chunks; that is a ~2x spread already being papered over by stealing. A fourth host (`tbaumer@46...`) and `nas.lan` are now in the pool too, so the spread will only widen.
   - **Measure**: attempts banked / elapsed, per invocation, per lane label. `laneStats` already carries `busyMs` and `invocations`; what is missing is how many attempts each invocation actually produced, which is a `scanExisting` diff around the call (or a read of the invocation's own output file). Persist an EWMA in a gitignored `lane-speed.json` keyed by label, so a run starts with what the last run learned instead of relearning it every time. Seed an unknown host from one calibration chunk rather than assuming it is fast.
