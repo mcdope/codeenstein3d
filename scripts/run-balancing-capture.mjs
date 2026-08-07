@@ -102,7 +102,12 @@ const MAX_INVOCATIONS = Number(process.env.CODEENSTEIN_CAPTURE_MAX_INVOCATIONS ?
  * the smallest legitimate chunk implies, plus slack for retries.
  */
 function invocationCapFor(target) {
-  return Math.max(MAX_INVOCATIONS, Math.ceil(target / Math.max(1, MIN_CHUNK)) + 3);
+  // The smallest chunk actually issuable is the floor bounded by the ceiling:
+  // `chunkFor` clamps to CHUNK from above and MIN_CHUNK from below, so when
+  // CHUNK < MIN_CHUNK the real minimum is CHUNK. Using MIN_CHUNK alone left a
+  // cell short at 27/30 for exactly that reason.
+  const smallestChunk = Math.max(1, Math.min(MIN_CHUNK, CHUNK));
+  return Math.max(MAX_INVOCATIONS, Math.ceil(target / smallestChunk) + 3);
 }
 /** How long one invocation should take, whichever lane runs it. Chunk size is
  * derived from this and the lane's measured rate, so a slow host gets fewer
