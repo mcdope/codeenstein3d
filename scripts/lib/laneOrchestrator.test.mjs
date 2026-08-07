@@ -557,6 +557,40 @@ describe("runLaneOrchestrator chunk stealing", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it("reports each combo cost as it is learned, so an interrupted run keeps it", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lane-costcb-"));
+    const seen = [];
+    const runner = {
+      label: "only",
+      runInvocation({ outputPath, env }) {
+        fs.writeFileSync(outputPath, "{}");
+        return Promise.resolve({ code: 0, signal: null, killedForTimeout: false, elapsedMs: env.COMBO === "pricey" ? 40000 : 10000 });
+      },
+    };
+    await runLaneOrchestrator(
+      baseParams({
+        combos: [{ id: "cheap" }, { id: "pricey" }],
+        outputPathFor: (c, seq) => path.join(dir, `${c.id}-${seq}.json`),
+        scanExisting: () => ({ qualifying: 0, fileCount: 0 }),
+        envFor: (c) => ({ COMBO: c.id }),
+        targetQualifying: 500,
+        runners: [runner],
+        maxInvocations: 3,
+        chunkFor: () => 10,
+        initialLaneRates: { only: 30 },
+        onComboCost: (combo, relCost) => seen.push({ combo, relCost }),
+      }),
+    );
+    expect(seen.length).toBeGreaterThan(0);
+    const pricey = seen.filter((x) => x.combo === "pricey").at(-1);
+    const cheap = seen.filter((x) => x.combo === "cheap").at(-1);
+    expect(pricey.relCost).toBeGreaterThan(cheap.relCost);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("a slow lane still takes the work when no other lane is running", async () => {
     // The deadlock the tail guard must never cause: standing down is only safe
     // while someone else is working. With nothing in flight, refusing means

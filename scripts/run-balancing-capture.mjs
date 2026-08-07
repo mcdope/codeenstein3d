@@ -49,6 +49,7 @@
  * what is already banked and only asks for the shortfall.
  */
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -98,14 +99,57 @@ const MIN_CHUNK = Number(process.env.CODEENSTEIN_CAPTURE_MIN_CHUNK ?? 5);
  * only costs one round of recalibration. */
 const RATES_FILE = path.join(REPO_ROOT, "lane-speed.json");
 
-function loadLaneRates() {
+/**
+ * Identity of the campaign currently staged in `demo-campaign/`.
+ *
+ * Per-combo cost is a property of the *levels*, not of the machine or the
+ * repository name — a repo re-staged with different slots is a different
+ * campaign and its old costs are wrong. Hashing the staged filenames and sizes
+ * is what actually identifies it, and it fails safe: change the staging and the
+ * key changes, so the costs are simply relearned rather than silently misapplied.
+ */
+function campaignKey() {
+  const dir = path.join(REPO_ROOT, "demo-campaign");
+  const entries = fs
+    .readdirSync(dir)
+    .filter((f) => fs.statSync(path.join(dir, f)).isFile())
+    .sort()
+    .map((f) => `${f}:${fs.statSync(path.join(dir, f)).size}`);
+  return createHash("sha1").update(entries.join("\n")).digest("hex").slice(0, 12);
+}
+
+/**
+ * `{ lanes: {label: attemptsPerMin}, campaigns: {key: {combo: relCost}} }`.
+ *
+ * Accepts the older flat shape (lane rates at the top level) so an existing
+ * file is not thrown away on upgrade.
+ */
+function loadRatesFile() {
   try {
-    return JSON.parse(fs.readFileSync(RATES_FILE, "utf8"));
+    const raw = JSON.parse(fs.readFileSync(RATES_FILE, "utf8"));
+    if (raw && typeof raw === "object" && (raw.lanes || raw.campaigns)) {
+      return { lanes: raw.lanes ?? {}, campaigns: raw.campaigns ?? {} };
+    }
+    return { lanes: raw ?? {}, campaigns: {} };
   } catch {
     // Missing or corrupt both mean the same thing: measure it again. A
     // half-written file must never be able to stop a capture starting.
-    return {};
+    return { lanes: {}, campaigns: {} };
   }
+}
+
+function loadLaneRates() {
+  return loadRatesFile().lanes;
+}
+
+function loadComboCost(key) {
+  return loadRatesFile().campaigns[key] ?? {};
+}
+
+function writeRatesFile(next) {
+  const tmp = `${RATES_FILE}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`);
+  fs.renameSync(tmp, RATES_FILE);
 }
 
 /**
@@ -121,10 +165,16 @@ function loadLaneRates() {
  * contents or the new ones.
  */
 function recordLaneRate(label, attemptsPerMin) {
-  const merged = { ...loadLaneRates(), [label]: attemptsPerMin };
-  const tmp = `${RATES_FILE}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(merged, null, 2)}\n`);
-  fs.renameSync(tmp, RATES_FILE);
+  const file = loadRatesFile();
+  file.lanes[label] = attemptsPerMin;
+  writeRatesFile(file);
+}
+
+/** Per-campaign, for the reason `campaignKey` gives. */
+function recordComboCost(key, combo, relCost) {
+  const file = loadRatesFile();
+  file.campaigns[key] = { ...(file.campaigns[key] ?? {}), [combo]: relCost };
+  writeRatesFile(file);
 }
 
 /**
@@ -140,6 +190,9 @@ function chunkFor(_combo, { remaining, ratePerMin }) {
   return Math.min(Math.max(MIN_CHUNK, sized), CHUNK, Math.max(1, remaining));
 }
 const SIGTERM_GRACE_MS = 5000;
+/** Computed once at startup: the staged campaign never changes mid-capture —
+ * the clean-tree guard and the plan/engine gate both depend on that. */
+const CAMPAIGN_KEY = campaignKey();
 
 const comboKey = (combo) => `${combo.profile}-${combo.difficulty}`;
 const eventsDirFor = (combo, sequence) => path.join(EVENTS_DIR, `${comboKey(combo)}-${String(sequence).padStart(3, "0")}`);
@@ -330,6 +383,8 @@ async function main() {
     chunkFor,
     initialLaneRates: loadLaneRates(),
     onLaneRate: recordLaneRate,
+    initialComboCost: loadComboCost(CAMPAIGN_KEY),
+    onComboCost: (combo, relCost) => recordComboCost(CAMPAIGN_KEY, combo, relCost),
   });
 
   console.log("\n=== Capture complete ===");

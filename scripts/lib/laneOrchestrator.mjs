@@ -272,6 +272,11 @@ export async function runLaneOrchestrator(params) {
     // cost is a property of the *staged levels*, so carrying it from one
     // repository to the next would be actively wrong.
     initialComboCost = {},
+    // Called with (comboKey, relCost) whenever a combo's cost estimate is
+    // revised, so a caller can persist it per staged campaign. Same reasoning
+    // as `onLaneRate`: a run that is interrupted should not throw away what it
+    // learned.
+    onComboCost = null,
   } = params;
 
   const states = combos.map((combo) => {
@@ -560,6 +565,11 @@ export async function runLaneOrchestrator(params) {
           if (prev != null && prev > 0) {
             const relative = prev / observed;
             state.relCost = state.relCost * (1 - RATE_ALPHA) + relative * RATE_ALPHA;
+            try {
+              onComboCost?.(state.key, Number(state.relCost.toFixed(3)));
+            } catch (err) {
+              log(`[${state.key}] could not record measured cost: ${err.message}`);
+            }
           }
           const next = prev == null ? observed : prev * (1 - RATE_ALPHA) + observed * RATE_ALPHA;
           laneRates.set(runner.label, next);
