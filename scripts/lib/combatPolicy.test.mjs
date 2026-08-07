@@ -391,35 +391,22 @@ describe("decide — branch selection", () => {
     expect(intent.fire).toBe(false);
   });
 
-  it("shortens its step so it can actually land on a near waypoint", () => {
-    // The killer, measured: `KeyW` is held while the burst is sized for the
-    // TURN, so one sprinting decision covers ~0.32 tiles against an
-    // ARRIVE_EPS of 0.15 — the bot steps over its own waypoint and can never
-    // register arrival. Across 1,035 hazard decisions from eight serilog
-    // level-10 death traces, `dist < ARRIVE_EPS` was true zero times; it
-    // circled at 0.16-0.75 tiles until the acid killed it.
+  it("pivots in place when the target is inside its own turn radius", () => {
+    // A forward-moving body cannot approach anything nearer than its turn
+    // radius — the bearing changes at least as fast as it can rotate — so it
+    // orbits. Measured on a wolf3d death with the sprint already off: radius
+    // 0.62 tiles, target at 0.42, and the distance GROWING to 0.78 as the bot
+    // spiralled outward. Inside that circle it must rotate, not drive.
     const map = makeMap({ tiles: [[10, 10, 2]] });
-    const near = decide(
-      { player: makePlayer({ dirX: 1, dirY: 0 }), enemies: [], mines: [], navTarget: { x: 10.55, y: 10.55 }, map },
+    const intent = decide(
+      { player: makePlayer({ dirX: 1, dirY: 0 }), enemies: [], mines: [], navTarget: { x: 10.5, y: 10.9 }, map },
       freshMemory(),
       makeConfig(),
     );
-    const far = decide(
-      { player: makePlayer({ dirX: 1, dirY: 0 }), enemies: [], mines: [], navTarget: { x: 10.6, y: 16.5 }, map },
-      freshMemory(),
-      makeConfig(),
-    );
-    expect(near.branch).toBe("hazard");
-    // Same turn either way; only the distance differs, so only a
-    // distance-capped burst can tell them apart.
-    expect(near.durationMs).toBeLessThan(far.durationMs);
-    // And the step must not exceed the remaining distance.
-    // Walking speed: the branch drops the sprint while turning, because a
-    // sprint doubles the turn radius and a target inside that radius can never
-    // be reached. The cap only bites under ENGINE_MOVE_SPEED * stepMs = 0.16
-    // tiles, which is exactly serilog's 0.16 and why it could not help
-    // wolf3d's 1.4.
-    expect((near.durationMs / 1000) * 3.2).toBeLessThanOrEqual(Math.hypot(0.05, 0.05) + 1e-6);
+    expect(intent.branch).toBe("hazard");
+    expect(keysOf(intent)).not.toContain("KeyW");
+    expect(keysOf(intent)).not.toContain("ShiftLeft");
+    expect(keysOf(intent)).toContain("KeyE");
   });
 
   it("does not sprint while turning, so the turn radius stays inside the target", () => {
