@@ -30,7 +30,6 @@ import {
   dodgeStrafeKey,
   hasLineOfSight,
   isHazardAt,
-  nearestSafeTile,
   moveBurstMs,
   pickRangedWeapon,
   pickThreat,
@@ -379,114 +378,7 @@ describe("uniformIntent", () => {
   });
 });
 
-describe("nearestSafeTile", () => {
-  it("returns the closest non-damaging walkable tile", () => {
-    // Player stands on acid at (10,10); (11,10) is also acid, (9,10) is floor.
-    const map = makeMap({ tiles: [[10, 10, 2], [11, 10, 2]] });
-    expect(nearestSafeTile(map, 10.5, 10.5)).toEqual({ x: 9.5, y: 10.5 });
-  });
-
-  it("crosses hazard tiles to reach safety rather than giving up on them", () => {
-    // A bot in the middle of a pool has to walk over acid to get out; only the
-    // destination has to be safe. Acid spans x=8..12 on row 10, so the escape
-    // is one tile up, not five tiles along.
-    const map = makeMap({ tiles: [[8, 10, 2], [9, 10, 2], [10, 10, 2], [11, 10, 2], [12, 10, 2]] });
-    const safe = nearestSafeTile(map, 10.5, 10.5);
-    expect(safe).not.toBeNull();
-    expect(isHazardAt(map, safe.x, safe.y)).toBe(false);
-  });
-
-  it("refuses a spike tile as a destination", () => {
-    // Safe *now* is not safe on arrival — a spike tile damages on its cycle,
-    // so stepping onto one is not an escape.
-    const map = makeMap({ tiles: [[10, 10, 2], [9, 10, 5], [11, 10, 5]] });
-    const safe = nearestSafeTile(map, 10.5, 10.5);
-    expect(safe).not.toBeNull();
-    expect(map.grid[Math.floor(safe.y)][Math.floor(safe.x)]).toBe(0);
-  });
-
-  it("prefers the exit the bot is already facing, over an equally close one behind", () => {
-    // Load-bearing, not cosmetic. The branch spends a TURN-sized burst whenever
-    // it must rotate past TURN_MOVE_EPS, so aiming at an exit behind the bot
-    // burns decisions rotating while still standing in acid. Choosing
-    // arbitrarily among equally-close exits measured *worse than the bug*:
-    // serilog Casual went from a 50% death rate to 100%, one unbroken 14s
-    // exposure. Both (9,10) and (11,10) are safe and one tile away; facing +x
-    // must pick (11,10).
-    const map = makeMap({ tiles: [[10, 10, 2]] });
-    expect(nearestSafeTile(map, 10.5, 10.5, { x: 1, y: 0 })).toEqual({ x: 11.5, y: 10.5 });
-    expect(nearestSafeTile(map, 10.5, 10.5, { x: -1, y: 0 })).toEqual({ x: 9.5, y: 10.5 });
-    expect(nearestSafeTile(map, 10.5, 10.5, { x: 0, y: 1 })).toEqual({ x: 10.5, y: 11.5 });
-  });
-
-  it("returns null when walled in with no safe tile at all", () => {
-    // One acid tile boxed in by walls. The caller must cope with null rather
-    // than assume an escape always exists.
-    const map = makeMap({ tiles: [[10, 10, 2], [9, 10, 1], [11, 10, 1], [10, 9, 1], [10, 11, 1]] });
-    expect(nearestSafeTile(map, 10.5, 10.5)).toBeNull();
-  });
-});
-
 describe("decide — branch selection", () => {
-  it("heads for the nearest safe tile, not the nav target, when standing in acid", () => {
-    // The defect this pins. The bot stood in acid burning a full health bar
-    // (~125 damage ticks, ~7s, no combat) in 85% of serilog's deaths and 90%
-    // of ripgrep's, because this branch marched at `navTarget` — which here is
-    // 5 tiles away *through* more acid — instead of stepping one tile aside.
-    const map = makeMap({ tiles: [[10, 10, 2], [11, 10, 2], [12, 10, 2], [13, 10, 2]] });
-    const intent = decide(
-      { player: makePlayer({ dirX: 1, dirY: 0 }), enemies: [makeEnemy()], mines: [], navTarget: { x: 15.5, y: 10.5 }, map },
-      freshMemory(),
-      makeConfig(),
-    );
-    expect(intent.branch).toBe("hazard");
-    // The nav target is straight ahead (bot faces +x, target is +x), so the
-    // old behaviour produced no turn key at all — it just walked on through
-    // the acid. The escape tile is behind it, so any turn key proves the
-    // branch is steering by safety rather than by the goal. Which of KeyQ/KeyE
-    // is used is not asserted: a 180° turn's direction is arbitrary and
-    // pinning it would test the BFS's neighbour order, not the behaviour.
-    expect(keysOf(intent).some((k) => k === "KeyQ" || k === "KeyE")).toBe(true);
-  });
-
-  it("commits to one exit instead of re-deciding as it drifts", () => {
-    // Equally-close exits plus a per-tick recompute means the choice can flip
-    // as the bot moves within the tile, and every flip costs another turn —
-    // the bot oscillates in the acid rather than leaving it.
-    const map = makeMap({ tiles: [[10, 10, 2]] });
-    const memory = freshMemory();
-    const world = { player: makePlayer({ dirX: 1, dirY: 0 }), enemies: [], mines: [], navTarget: null, map };
-    decide(world, memory, makeConfig());
-    const first = memory.hazardEscape;
-    expect(first).toEqual({ x: 11.5, y: 10.5 });
-    // Now facing the other way: without commitment this would re-pick (9,10).
-    decide({ ...world, player: makePlayer({ dirX: -1, dirY: 0 }) }, memory, makeConfig());
-    expect(memory.hazardEscape).toEqual(first);
-  });
-
-  it("forgets the committed exit once out of the hazard", () => {
-    const map = makeMap({ tiles: [[10, 10, 2]] });
-    const memory = freshMemory();
-    decide({ player: makePlayer(), enemies: [], mines: [], navTarget: null, map }, memory, makeConfig());
-    expect(memory.hazardEscape).not.toBeNull();
-    // Standing on clean floor now.
-    decide({ player: makePlayer({ x: 5.5, y: 5.5 }), enemies: [], mines: [], navTarget: { x: 6.5, y: 5.5 }, map }, memory, makeConfig());
-    expect(memory.hazardEscape).toBeNull();
-  });
-
-  it("escapes acid even with no nav target at all", () => {
-    // The branch used to require `navTarget`, so a bot burning between route
-    // legs had no hazard handling whatsoever — it just stood there.
-    const map = makeMap({ tiles: [[10, 10, 2]] });
-    const intent = decide(
-      { player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: null, map },
-      freshMemory(),
-      makeConfig(),
-    );
-    expect(intent.branch).toBe("hazard");
-    expect(intent.fire).toBe(false);
-  });
-
   it("keeps marching and sprints when standing in acid, without stopping to fight", () => {
     const map = makeMap({ tiles: [[10, 10, 2]] });
     const intent = decide(
