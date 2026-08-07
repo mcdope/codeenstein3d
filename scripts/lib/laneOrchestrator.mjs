@@ -259,6 +259,11 @@ export async function runLaneOrchestrator(params) {
     // measured, so a capture does not spend its first round relearning which
     // hosts are fast. See the summary this function returns.
     initialLaneRates = {},
+    // Called with (laneLabel, attemptsPerMin) each time a rate is revised, so a
+    // caller can persist as it goes. Without it the rates only reach the caller
+    // in the summary, and a run killed part-way — which happens a lot during
+    // investigation — takes everything it learned with it.
+    onLaneRate = null,
   } = params;
 
   const states = combos.map((combo) => makeState(combo, comboKey(combo)));
@@ -461,7 +466,15 @@ export async function runLaneOrchestrator(params) {
         if (chunkAttempts && result.elapsedMs > 0) {
           const observed = chunkAttempts / result.elapsedMs;
           const prev = laneRates.get(runner.label);
-          laneRates.set(runner.label, prev == null ? observed : prev * (1 - RATE_ALPHA) + observed * RATE_ALPHA);
+          const next = prev == null ? observed : prev * (1 - RATE_ALPHA) + observed * RATE_ALPHA;
+          laneRates.set(runner.label, next);
+          // Report immediately rather than at the end of the run. Never let a
+          // caller's persistence problem kill a capture that is otherwise fine.
+          try {
+            onLaneRate?.(runner.label, Number((next * 60000).toFixed(2)));
+          } catch (err) {
+            log(`[lane ${runner.label}] could not record measured speed: ${err.message}`);
+          }
         }
         health.consecutiveFailures = 0;
         health.charged = [];

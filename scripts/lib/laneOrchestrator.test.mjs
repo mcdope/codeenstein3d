@@ -416,6 +416,73 @@ describe("runLaneOrchestrator chunk stealing", () => {
     await done;
   });
 
+  it("reports each measured rate as it happens, not only at the end", async () => {
+    // A run that is interrupted must not lose what it learned — otherwise the
+    // next one pays the calibration round again. Several runs were killed
+    // mid-investigation on 2026-08-07 and would each have discarded it.
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lane-rate-"));
+    const seen = [];
+    const runner = {
+      label: "fake",
+      calls: [],
+      runInvocation({ outputPath }) {
+        this.calls.push(1);
+        fs.writeFileSync(outputPath, "{}");
+        return Promise.resolve({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 60000 });
+      },
+    };
+    await runLaneOrchestrator(
+      baseParams({
+        outputPathFor: (c, seq) => path.join(dir, `${c.id}-${seq}.json`),
+        scanExisting: () => ({ qualifying: 0, fileCount: 0 }),
+        runners: [runner],
+        maxInvocations: 2,
+        chunkFor: () => 10,
+        onLaneRate: (label, perMin) => seen.push({ label, perMin }),
+      }),
+    );
+    // 10 attempts in 60s = 10/min, reported after each invocation rather than
+    // once at the end.
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toEqual({ label: "fake", perMin: 10 });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("does not let a persistence failure kill the capture", async () => {
+    // The rates file is a convenience; a capture is hours of machine time.
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lane-rate-fail-"));
+    const runner = {
+      label: "fake",
+      calls: [],
+      runInvocation({ outputPath }) {
+        this.calls.push(1);
+        fs.writeFileSync(outputPath, "{}");
+        return Promise.resolve({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 1000 });
+      },
+    };
+    const summary = await runLaneOrchestrator(
+      baseParams({
+        outputPathFor: (c, seq) => path.join(dir, `${c.id}-${seq}.json`),
+        scanExisting: () => ({ qualifying: 0, fileCount: 0 }),
+        runners: [runner],
+        maxInvocations: 2,
+        chunkFor: () => 10,
+        onLaneRate: () => {
+          throw new Error("disk full");
+        },
+      }),
+    );
+    expect(runner.calls).toHaveLength(2);
+    expect(summary.lanes[0].attemptsPerMin).toBeGreaterThan(0);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("reports per-lane utilisation so idle time is never invisible again", async () => {
     const runner = fakeRunner(() => ({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 1000 }));
     const summary = await runLaneOrchestrator(

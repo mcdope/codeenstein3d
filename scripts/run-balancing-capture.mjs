@@ -102,8 +102,29 @@ function loadLaneRates() {
   try {
     return JSON.parse(fs.readFileSync(RATES_FILE, "utf8"));
   } catch {
+    // Missing or corrupt both mean the same thing: measure it again. A
+    // half-written file must never be able to stop a capture starting.
     return {};
   }
+}
+
+/**
+ * Record one lane's measured speed, immediately.
+ *
+ * Written after every invocation rather than at the end of the run, because a
+ * capture that is interrupted — killed, watchdogged, cancelled mid-sweep —
+ * would otherwise discard everything it had learned and make the next run pay
+ * the calibration round again.
+ *
+ * Write-then-rename so a kill mid-write cannot leave a truncated file behind:
+ * `rename` is atomic within a filesystem, so a reader sees either the old
+ * contents or the new ones.
+ */
+function recordLaneRate(label, attemptsPerMin) {
+  const merged = { ...loadLaneRates(), [label]: attemptsPerMin };
+  const tmp = `${RATES_FILE}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(merged, null, 2)}\n`);
+  fs.renameSync(tmp, RATES_FILE);
 }
 
 /**
@@ -308,6 +329,7 @@ async function main() {
     maxConcurrentPerCombo: (_combo, { qualifying, target }) => Math.ceil(Math.max(0, target - qualifying) / CHUNK),
     chunkFor,
     initialLaneRates: loadLaneRates(),
+    onLaneRate: recordLaneRate,
   });
 
   console.log("\n=== Capture complete ===");
@@ -330,12 +352,8 @@ async function main() {
   console.log(`  idle lane-time: ${formatElapsed(utilisation.idleMs)} of ${formatElapsed(utilisation.laneTimeMs)} (${Math.round(100 * utilisation.idleFraction)}%)`);
   const rates = utilisation.lanes.filter((l) => l.attemptsPerMin != null);
   if (rates.length > 0) {
+    // Already persisted per invocation by `recordLaneRate`; this only reports.
     console.log(`  measured speed: ${rates.map((l) => `${l.label} ${l.attemptsPerMin}/min`).join(", ")}`);
-    // Persist for the next run, so it starts with sized chunks instead of
-    // spending its first round discovering which hosts are slow.
-    const merged = { ...loadLaneRates() };
-    for (const l of rates) merged[l.label] = l.attemptsPerMin;
-    fs.writeFileSync(RATES_FILE, `${JSON.stringify(merged, null, 2)}\n`);
   }
 
   console.log(`\nVerify before using: npm run verify:event-log -- ${path.relative(REPO_ROOT, EVENTS_DIR)}`);
