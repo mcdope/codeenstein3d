@@ -247,6 +247,10 @@ export async function runLaneOrchestrator(params) {
     // which is the whole problem. Raise it to let free lanes steal chunks of
     // a combo someone else is already working.
     maxConcurrentPerCombo = 1,
+    // Consecutive no-output failures before a lane is dropped from the pool —
+    // but only while some *other* lane is producing. See the lane-health block
+    // in `runLane` for why that condition is what makes this safe.
+    laneFailureLimit = 3,
   } = params;
 
   const states = combos.map((combo) => makeState(combo, comboKey(combo)));
@@ -333,9 +337,14 @@ export async function runLaneOrchestrator(params) {
   }
 
   const startedAt = Date.now();
+  // Set once any lane produces an output file — the evidence that separates
+  // "this lane is broken" from "this work is broken". See the lane-health
+  // block in `runLane`.
+  let anyLaneProduced = false;
   const laneStats = runners.map((runner) => ({ label: runner.label, invocations: 0, busyMs: 0 }));
 
   async function runLane(runner, stats) {
+    const health = { consecutiveFailures: 0, charged: [] };
     for (;;) {
       const work = claim();
       if (!work) {
@@ -378,6 +387,7 @@ export async function runLaneOrchestrator(params) {
       stats.invocations += 1;
       stats.busyMs += result?.elapsedMs ?? 0;
 
+      let produced = false;
       if (result.killedForTimeout) {
         log(`[${state.key}] invocation #${sequence} KILLED by watchdog after ${formatElapsed(result.elapsedMs)} — retrying`);
       } else if (result.code !== 0) {
@@ -385,8 +395,46 @@ export async function runLaneOrchestrator(params) {
           `[${state.key}] invocation #${sequence} exited with code ${result.code}${result.signal ? ` (signal ${result.signal})` : ""} after ${formatElapsed(result.elapsedMs)}${result.spawnError ? ` — ${result.spawnError}` : ""} — retrying`,
         );
       } else {
-        const written = fs.existsSync(outputPath);
-        log(`[${state.key}] invocation #${sequence} finished in ${formatElapsed(result.elapsedMs)}${written ? "" : " (no output file — treating as failed, retrying)"}`);
+        produced = fs.existsSync(outputPath);
+        log(`[${state.key}] invocation #${sequence} finished in ${formatElapsed(result.elapsedMs)}${produced ? "" : " (no output file — treating as failed, retrying)"}`);
+      }
+
+      // Lane health. A lane that fails everything must not eat the combos'
+      // invocation budget.
+      //
+      // Measured 2026-08-07: an SSH host whose inotify watch limit was
+      // exhausted could never start vite, so every invocation died after ~63s
+      // — and `bootstrapHost` had reported it "ready". It burned **7 of one
+      // combo's 8 invocations**, and that combo then gave up at 15 of 60 runs.
+      // The result reads as a balance finding rather than a dead machine,
+      // which is the dangerous part.
+      //
+      // The cap itself stays exactly as it was — it exists to bound a combo
+      // the bot genuinely cannot clear, and a *crashing* invocation writes no
+      // output, which is precisely why it counts spawns rather than files.
+      // The discriminator is **whether any other lane has produced anything**:
+      // if some lane works and this one has failed repeatedly, the fault is
+      // the lane, so retire it and hand its spent budget back. If nothing
+      // anywhere has ever succeeded, the fault may well be the build or the
+      // content, every lane keeps its failures, and the cap ends the run as
+      // before.
+      if (produced) {
+        anyLaneProduced = true;
+        health.consecutiveFailures = 0;
+        health.charged = [];
+      } else {
+        health.consecutiveFailures += 1;
+        health.charged.push(state);
+        if (anyLaneProduced && health.consecutiveFailures >= laneFailureLimit) {
+          for (const charged of health.charged) charged.spawned = Math.max(0, charged.spawned - 1);
+          log(
+            `[lane ${runner.label}] DROPPED after ${health.consecutiveFailures} consecutive failures with no output, while other lanes are producing — ` +
+              `refunding ${health.charged.length} invocation(s) to their combos. This lane is broken, not the work.`,
+          );
+          health.charged = [];
+          wakeAll();
+          return;
+        }
       }
       // A lane freeing up changes what every parked lane may claim.
       wakeAll();

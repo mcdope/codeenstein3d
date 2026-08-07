@@ -55,6 +55,12 @@ export const HOSTS_FILE = path.join(REPO_ROOT, "ssh-hosts.env");
  * checkout lives. */
 export const REMOTE_DIR = "/tmp/codeenstein3d-ssh-lane";
 
+/** Port for `bootstrapHost`'s vite smoke test. Deliberately not the capture's
+ * own 5199: the probe must never collide with a run already in flight on a
+ * shared host, and the failure it catches (vite unable to start at all) does
+ * not depend on which port is asked for. */
+const VITE_PROBE_PORT = 5399;
+
 /** Exported for `scripts/setup-ssh-lane-host.mjs` — same host list either
  * script reads, so "which hosts does this apply to" never needs asking
  * twice. */
@@ -233,6 +239,31 @@ async function bootstrapHost(userHost, originUrl, headSha) {
     // Browser binary only, no sudo — system deps are `setup-ssh-lane-host.mjs`'s
     // job (see this module's own doc comment for why that split exists).
     `cd ${REMOTE_DIR} && npx playwright install chromium`,
+    // Prove vite can actually START here, not merely that the toolchain
+    // installed. "Ready" used to mean "git, Node and npm ci all worked", which
+    // is not the same thing.
+    //
+    // The failure this exists for, 2026-08-07: a lane host with an exhausted
+    // inotify watch limit could not start vite at all — `ENOSPC` on `watch`,
+    // then "vite did not come up on :5199 within 60s" — and failed **every**
+    // invocation after ~63s. `bootstrapHost` had called it ready, so it kept
+    // taking work and burned 7 of one combo's 8 invocations; that combo then
+    // reported 15 of 60 runs, which reads as a balance result rather than as a
+    // dead machine. Starting a real vite is precisely the operation that
+    // failed, so a host in that state now fails here instead.
+    //
+    // **What it cannot catch**: a host that is healthy at bootstrap and
+    // degrades under load later. This probe runs once, on an idle host. That
+    // case is covered instead by the orchestrator's lane-health rule, which
+    // drops a lane that keeps failing while other lanes are producing — the
+    // two are complementary and neither replaces the other.
+    //
+    // A distinct port from the capture's own 5199, so the probe can never
+    // collide with a run in flight on a shared host.
+    `cd ${REMOTE_DIR} && (npx vite --port ${VITE_PROBE_PORT} --strictPort >/tmp/codeenstein3d-vite-probe.log 2>&1 & echo $! >/tmp/codeenstein3d-vite-probe.pid); ` +
+      `probe_ok=0; for i in $(seq 1 30); do sleep 2; if curl -sf -o /dev/null http://localhost:${VITE_PROBE_PORT}/; then probe_ok=1; break; fi; done; ` +
+      `kill "$(cat /tmp/codeenstein3d-vite-probe.pid 2>/dev/null)" 2>/dev/null; ` +
+      `if [ "$probe_ok" != 1 ]; then echo "vite failed to start on this host — last lines of its log:" >&2; tail -5 /tmp/codeenstein3d-vite-probe.log >&2; exit 1; fi`,
   ].join(" && ");
   await runSsh(userHost, withRemoteNodePath(cmd), { timeoutMs: 15 * 60 * 1000 }); // no apt/NodeSource install possible here anymore — a first-time clone+npm ci+browser download is still real but much shorter than before
 }

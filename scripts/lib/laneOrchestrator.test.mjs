@@ -285,6 +285,64 @@ describe("runLaneOrchestrator chunk stealing", () => {
     await done; // must terminate, not hang
   });
 
+  it("drops a lane that fails everything, and refunds the budget it ate", async () => {
+    // Measured 2026-08-07: an SSH host whose inotify watch limit was exhausted
+    // could never start vite, so every invocation died after ~63s — and
+    // `bootstrapHost` had called it "ready". It burned 7 of one combo's 8
+    // invocations and that combo gave up at 15 of 60 runs, which reads as a
+    // balance finding rather than as a dead machine.
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lane-health-"));
+    let good = 0;
+    const working = {
+      label: "good",
+      calls: [],
+      runInvocation({ outputPath }) {
+        this.calls.push(1);
+        good += 1;
+        fs.writeFileSync(outputPath, "{}");
+        return Promise.resolve({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 1 });
+      },
+    };
+    const broken = fakeRunner(() => ({ code: 1, signal: null, killedForTimeout: false, elapsedMs: 1 }));
+    await runLaneOrchestrator(
+      baseParams({
+        outputPathFor: (c, seq) => path.join(dir, `${c.id}-${seq}.json`),
+        scanExisting: () => ({ qualifying: 0, fileCount: good }),
+        targetQualifying: 99,
+        runners: [working, broken],
+        maxInvocations: 4,
+        maxConcurrentPerCombo: 2,
+        laneFailureLimit: 2,
+      }),
+    );
+    // The broken lane is dropped on its 2nd consecutive no-output failure…
+    expect(broken.calls).toHaveLength(2);
+    // …and its spend was refunded, so the working lane got the budget instead
+    // of the combo giving up at the cap with a dead machine to blame.
+    expect(good).toBeGreaterThan(2);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("does NOT drop a lane when nothing anywhere has succeeded", async () => {
+    // The discriminator. With no lane producing anything, the fault may be the
+    // build or the content rather than the machine — so every failure still
+    // counts and the invocation cap ends the run exactly as before. This is
+    // what keeps the 2026-07-30 crashing-invocation protection intact.
+    const broken = fakeRunner(() => ({ code: 1, signal: null, killedForTimeout: false, elapsedMs: 1 }));
+    await runLaneOrchestrator(
+      baseParams({
+        scanExisting: () => ({ qualifying: 0, fileCount: 0 }),
+        runners: [broken],
+        maxInvocations: 5,
+        laneFailureLimit: 2,
+      }),
+    );
+    expect(broken.calls).toHaveLength(5); // the cap, not the lane-health rule
+  });
+
   it("reports per-lane utilisation so idle time is never invisible again", async () => {
     const runner = fakeRunner(() => ({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 1000 }));
     const summary = await runLaneOrchestrator(
