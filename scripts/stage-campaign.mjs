@@ -45,6 +45,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { loadEngineModules, REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { solveCampaign, weaponProfiles } from "./lib/levelSolver.mjs";
@@ -163,7 +164,7 @@ const MUST_INCLUDE = new Set();
  * Falls back to plain complexity order in the degenerate case where the
  * least-complex file is itself a must-include — correctness of slot 1 wins.
  */
-function order(selected, complexity) {
+export function order(selected, complexity, withMain = new Set()) {
   const cx = (l) => complexity.get(l.filename);
   const byCx = (a, b) => cx(a) - cx(b);
   const hasElite = (l) => l.enemies.byArchetype.elite.count > 0;
@@ -184,11 +185,20 @@ function order(selected, complexity) {
   const bucket = (l) => (MUST_INCLUDE.has(l.filename) ? 2 : hasElite(l) ? 1 : 0);
   const ordered = sorted.slice().sort((a, b) => bucket(a) - bucket(b) || cx(a) - cx(b));
 
-  // Slot 1 must still be the global complexity minimum, or the browser opens
-  // on a different level than `planLevels` planned. In practice safe — an
-  // Elite needs complexity >= 40, so the least-complex level is almost never
-  // one — but checked rather than assumed.
-  return cx(ordered[0]) === cx(sorted[0]) ? ordered : sorted;
+  // Slot 1 must be the level the BROWSER will open, or the bot routes one map
+  // with another's plan and every run wedges.
+  //
+  // That is not simply the complexity minimum. `findEntrypointByScanning`
+  // returns `bestWithMain ?? bestOverall ?? firstParsed` — the cheapest file
+  // *containing a `main`/`Main` function*, falling back to cheapest-overall
+  // only when none has one. Staging modelled the fallback branch alone, so any
+  // repo where some staged file declares a `main` while a cheaper one does not
+  // desynced on every single run. Measured 2026-08-07: ripgrep and curl banked
+  // **zero** runs, each invocation exiting on the plan/engine gate at level 1
+  // until the cap. Rust's `fn main` and C's `int main` make that the norm, not
+  // an edge case.
+  const entry = sorted.find((l) => withMain.has(l.filename)) ?? sorted[0];
+  return [entry, ...ordered.filter((l) => l !== entry)];
 }
 
 /**
@@ -206,7 +216,7 @@ function order(selected, complexity) {
  * corridor dressing, not parsed entities), so "close enough" is not good
  * enough here.
  */
-async function complexityByFile(repoDir, levels) {
+async function complexityByFile(repoDir, levels, withMain = new Set()) {
   const { parseFile } = await loadEngineModules();
   const out = new Map();
   for (const level of levels) {
@@ -214,7 +224,15 @@ async function complexityByFile(repoDir, levels) {
     let total = 0;
     try {
       const parsed = await parseFile(path.basename(level.filename), fs.readFileSync(abs, "utf8"));
-      if (parsed) total = parsed.entities.reduce((sum, e) => sum + (e.complexityScore ?? 0), 0);
+      if (parsed) {
+        total = parsed.entities.reduce((sum, e) => sum + (e.complexityScore ?? 0), 0);
+        // Byte-for-byte the predicate `findEntrypointByScanning` uses. The
+        // game prefers the cheapest file *containing a main* over the cheapest
+        // file overall, and staging that ignored this put slot 1 somewhere the
+        // browser never opened — ripgrep and curl banked ZERO runs on
+        // 2026-08-07, every invocation killed by the plan/engine gate.
+        if (parsed.entities.some((e) => (e.kind === "function" || e.kind === "method") && e.name.toLowerCase() === "main")) withMain.add(level.filename);
+      }
     } catch {
       total = 0;
     }
@@ -301,7 +319,8 @@ async function main() {
     console.log(`Excluded ${all.length - levels.length} level(s) matching: ${args.exclude.join(", ")}`);
   }
 
-  const complexity = await complexityByFile(args.repo, levels);
+  const withMain = new Set();
+  const complexity = await complexityByFile(args.repo, levels, withMain);
   const selected = select(levels, args.slots, complexity);
 
   // --- converge the min-clear-ratio pick on the campaign actually emitted ----
@@ -321,7 +340,7 @@ async function main() {
   const minRatioOf = (list) => list.reduce((a, b) => (ratio(b) < ratio(a) ? b : a));
 
   let ratioPick = minRatioOf(selected).filename;
-  let picked = order(selected, complexity);
+  let picked = order(selected, complexity, withMain);
   let stagedSolve = await resolveStagedOrder(picked, args.repo, args.difficulty);
   // Every ordering visited, so a cycle can be resolved on merit rather than by
   // giving up. Keyed by the pick that produced it.
@@ -355,7 +374,7 @@ async function main() {
     MUST_INCLUDE.add(tightestPick);
     ratioPick = tightestPick;
     chain.push(tightestPick);
-    picked = order(selected, complexity);
+    picked = order(selected, complexity, withMain);
     stagedSolve = await resolveStagedOrder(picked, args.repo, args.difficulty);
     states.set(ratioPick, { picked, stagedSolve, tightest: ratio(minRatioOf(stagedSolve)) });
   }
@@ -430,7 +449,12 @@ async function main() {
   console.log("Lane hosts clone from origin, so this must be committed AND pushed before capturing.");
 }
 
-main().catch((err) => {
-  console.error("stage-campaign failed:", err.message);
-  process.exit(1);
-});
+// Only when run as a command. `order()` is exported for testing, and importing
+// a module must not stage a campaign as a side effect — the import alone would
+// overwrite `demo-campaign/`.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error("stage-campaign failed:", err.message);
+    process.exit(1);
+  });
+}
