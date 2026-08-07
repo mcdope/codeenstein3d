@@ -391,31 +391,39 @@ describe("decide — branch selection", () => {
     expect(intent.fire).toBe(false);
   });
 
-  it("shortens its step so it can actually land on a near waypoint", () => {
-    // The killer, measured: `KeyW` is held while the burst is sized for the
-    // TURN, so one sprinting decision covers ~0.32 tiles against an
-    // ARRIVE_EPS of 0.15 — the bot steps over its own waypoint and can never
-    // register arrival. Across 1,035 hazard decisions from eight serilog
-    // level-10 death traces, `dist < ARRIVE_EPS` was true zero times; it
-    // circled at 0.16-0.75 tiles until the acid killed it.
+  it("pivots in place when the target is inside its own turn radius", () => {
+    // A forward-moving body cannot approach anything nearer than its turn
+    // radius — the bearing changes at least as fast as it can rotate — so it
+    // orbits. Measured on a wolf3d death with the sprint already off: radius
+    // 0.62 tiles, target at 0.42, and the distance GROWING to 0.78 as the bot
+    // spiralled outward. Inside that circle it must rotate, not drive.
     const map = makeMap({ tiles: [[10, 10, 2]] });
-    const near = decide(
-      { player: makePlayer({ dirX: 1, dirY: 0 }), enemies: [], mines: [], navTarget: { x: 10.6, y: 10.75 }, map },
+    const intent = decide(
+      { player: makePlayer({ dirX: 1, dirY: 0 }), enemies: [], mines: [], navTarget: { x: 10.5, y: 10.9 }, map },
       freshMemory(),
       makeConfig(),
     );
-    const far = decide(
-      { player: makePlayer({ dirX: 1, dirY: 0 }), enemies: [], mines: [], navTarget: { x: 10.6, y: 16.5 }, map },
+    expect(intent.branch).toBe("hazard");
+    expect(keysOf(intent)).not.toContain("KeyW");
+    expect(keysOf(intent)).not.toContain("ShiftLeft");
+    expect(keysOf(intent)).toContain("KeyE");
+  });
+
+  it("does not sprint while turning, so the turn radius stays inside the target", () => {
+    // Measured on a wolf3d level-2 death trace: dir advanced 0.26 rad per 50ms
+    // decision (w = 5.2 rad/s) while sprinting at 6.4 tiles/s, giving a turn
+    // radius of 1.23 tiles against a nav target 0.87-1.4 tiles away. A target
+    // inside the turn circle is geometrically unreachable, so the bot orbited
+    // it at full health until the acid killed it. Walking halves the radius.
+    const map = makeMap({ tiles: [[10, 10, 2]] });
+    const turning = decide(
+      { player: makePlayer({ dirX: 1, dirY: 0 }), enemies: [], mines: [], navTarget: { x: 10.5, y: 12.5 }, map },
       freshMemory(),
       makeConfig(),
     );
-    expect(near.branch).toBe("hazard");
-    // Same turn either way; only the distance differs, so only a
-    // distance-capped burst can tell them apart.
-    expect(near.durationMs).toBeLessThan(far.durationMs);
-    // And the step must not exceed the remaining distance.
-    const sprintSpeed = 3.2 * 2.0; // ENGINE_MOVE_SPEED * ENGINE_SPRINT_MULTIPLIER
-    expect((near.durationMs / 1000) * sprintSpeed).toBeLessThanOrEqual(Math.hypot(0.1, 0.25) + 1e-6);
+    expect(turning.branch).toBe("hazard");
+    expect(keysOf(turning)).toContain("KeyW");
+    expect(keysOf(turning)).not.toContain("ShiftLeft");
   });
 
   it("never adds a strafe key in the hazard branch", () => {

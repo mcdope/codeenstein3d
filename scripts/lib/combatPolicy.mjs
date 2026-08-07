@@ -161,6 +161,14 @@ export const DEFAULT_TUNING = {
   // always just ended on the exit, so round 0 has nothing to path around.
   BOT_EXIT_BACKTRACK_TILES: 0,
   TURN_MOVE_EPS: 0.2,
+  // Below this distance (tiles) the hazard branch pivots instead of driving.
+  // It is the bot's turn radius: v/w with v = ENGINE_MOVE_SPEED 3.2 tiles/s
+  // (walking — the branch drops the sprint while turning) and w measured at
+  // 5.2 rad/s, giving 0.62. A target inside that circle cannot be approached
+  // while moving forward at any speed; the bot orbits it instead. Measured
+  // directly on a wolf3d death: target at 0.42 tiles, distance *growing* to
+  // 0.78 as the bot spiralled outward.
+  HAZARD_PIVOT_DIST: 0.7,
   ARRIVE_EPS: 0.15,
   TIGHT_ARRIVE_EPS: 0.05,
   // Any single-tick position jump larger than this is physically impossible
@@ -1433,32 +1441,56 @@ export function decide(world, memory, config) {
     const targetAngle = Math.atan2(navTarget.y - player.y, navTarget.x - player.x);
     const delta = angleDelta(currentAngle, targetAngle);
     const dist = Math.hypot(navTarget.x - player.x, navTarget.y - player.y);
-    const moveKeys = new Set(["KeyW", "ShiftLeft"]);
+    // Don't sprint while turning: a sprint doubles the speed and therefore
+    // doubles the turn radius, and a target inside that radius can never be
+    // reached — the bot just orbits it.
+    //
+    // The geometry, measured off a wolf3d level-2 death trace: `dir` advances
+    // 0.26 rad per 50ms decision, so w = 5.2 rad/s, and sprinting moves
+    // ENGINE_MOVE_SPEED * ENGINE_SPRINT_MULTIPLIER = 6.4 tiles/s. Turn radius
+    // r = v/w = **1.23 tiles**, against a nav target sitting 0.87-1.4 tiles
+    // away — inside the circle, so it orbited at full health until the acid
+    // killed it. Walking halves the radius to 0.62 and puts those targets back
+    // outside it.
+    //
+    // This is the same failure as serilog's, one scale up: there the target
+    // was 0.16 tiles away and the fix was to stop overshooting it (the
+    // distance-capped burst below). Both are needed — the cap alone cannot
+    // help at 1.4 tiles, where `moveBurstMs` returns 219ms and is clamped to
+    // the 50ms step long before it bites.
+    // …and inside the turn radius, stop driving altogether and pivot.
+    //
+    // A forward-moving body cannot approach anything closer than its own turn
+    // radius: the bearing to a near target changes at least as fast as the bot
+    // can rotate, so it circles. Measured with the sprint already removed, on
+    // a wolf3d level-2 death: steps of 0.16 tiles (3.2 tiles/s, correct for
+    // walking), `dir` still advancing 0.26 rad per decision, radius 0.62
+    // tiles — and a target at **0.42 tiles** with the distance *growing*
+    // 0.42 -> 0.78 as it spiralled outward. Halving the radius was not enough
+    // because the target was inside the smaller circle too.
+    //
+    // So when the target is nearer than the turn radius, rotate in place and
+    // do not hold KeyW. A pivot of ~1.8 rad at 5.2 rad/s costs about seven
+    // decisions; the orbit it replaces cost over a hundred and ended in death.
+    // Deliberately gated on *distance*: an earlier attempt pivoted on bearing
+    // error alone, fired in 48% of hazard decisions, and measured worse.
+    const turning = Math.abs(delta) > tuning.TURN_MOVE_EPS;
+    const pivotInPlace = turning && dist < tuning.HAZARD_PIVOT_DIST;
+    const moveKeys = new Set(pivotInPlace ? [] : turning ? ["KeyW"] : ["KeyW", "ShiftLeft"]);
     let turnBurst;
-    if (Math.abs(delta) > tuning.TURN_MOVE_EPS) {
+    if (turning) {
       moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
       // Deliberately no `diagonalStrafeKey` here — see its doc comment's
       // "confirmed regression" note. Reverted from every branch except
       // plain navigation.
-      // Cap the burst by the distance as well as the turn. `KeyW` is held
-      // here, so a turn-sized burst walks a turn-sized *distance* — unrelated
-      // to how far the target actually is. At `VIRTUAL_STEP_MS` that is ~0.32
-      // tiles of sprint against an `ARRIVE_EPS` of 0.15, so the bot steps
-      // clean over its own waypoint and can never register arrival.
-      //
-      // Measured on serilog level 10: across 1,035 hazard decisions from eight
-      // death traces, `dist < ARRIVE_EPS` was true **0 times**. The bot hovers
-      // at 0.16-0.75 tiles, overshooting on every step — `delta` flipping
-      // -0.43 to -2.65 in one decision — and circles there until the acid
-      // kills it. 5.4-5.8 full rotations, 33-38 tiles walked, under 2 tiles of
-      // net progress.
-      //
-      // `moveBurstMs` already sizes a burst to travel exactly `dist`, which is
-      // why the aligned branch below converges and this one does not. Taking
-      // the minimum keeps the turn as fast as it was whenever the target is
-      // far, and shortens the step to land inside the arrival radius when it
-      // is near.
-      turnBurst = Math.min(turnBurstMs(delta, profile.rotSpeedMultiplier, currentAngle, burstCtx), moveBurstMs(dist, true, moveCtx));
+      // No distance cap on the burst. An earlier fix capped it by
+      // `moveBurstMs(dist)` to stop the bot stepping over its own waypoint —
+      // that was real (on serilog `dist < ARRIVE_EPS` was true 0 times in
+      // 1,035 hazard decisions) but the cap only bites below
+      // ENGINE_MOVE_SPEED * stepMs = 0.16 tiles, which now lies entirely
+      // inside the pivot radius above. Pivoting supersedes it, so the cap
+      // would be unreachable code.
+      turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, currentAngle, burstCtx);
     } else {
       turnBurst = moveBurstMs(dist, true, moveCtx);
     }
