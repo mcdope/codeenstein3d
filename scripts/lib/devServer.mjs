@@ -62,8 +62,28 @@ export async function ensureDevServer({ url: explicitUrl, port = 5199, label = "
     return { url, stop: () => {}, owned: false };
   }
 
-  const url = `http://localhost:${port}`;
-  if (await urlAlive(url)) {
+  // Try every way of naming this machine, not just `localhost`.
+  //
+  // Measured 2026-08-07 on a lane host: vite bound IPv6 only while `localhost`
+  // resolved to IPv4, so `http://localhost:5199` was unreachable from Node's
+  // fetch even though vite had reported "ready in 735 ms". Every invocation on
+  // that host died with "vite did not come up within 60s" and the host looked
+  // broken or slow — it was neither, we simply could not address it. curl hid
+  // the problem by falling back between families; Node's fetch does not.
+  //
+  // Whichever candidate answers is the URL returned, because the caller hands
+  // it to Playwright and that has to be an address which actually works.
+  const candidates = [`http://localhost:${port}`, `http://127.0.0.1:${port}`, `http://[::1]:${port}`];
+  const firstAlive = async () => {
+    for (const candidate of candidates) {
+      if (await urlAlive(candidate)) return candidate;
+    }
+    return null;
+  };
+
+  const already = await firstAlive();
+  if (already) {
+    const url = already;
     console.log(`[${label}] reusing already-running server at ${url}`);
     return { url, stop: () => {}, owned: false };
   }
@@ -81,9 +101,15 @@ export async function ensureDevServer({ url: explicitUrl, port = 5199, label = "
 
   const deadline = Date.now() + STARTUP_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (await urlAlive(url)) return { url, stop: () => child.kill("SIGTERM"), owned: true };
+    const alive = await firstAlive();
+    if (alive) {
+      if (alive !== candidates[0]) console.log(`[${label}] reachable at ${alive} (localhost did not resolve to it)`);
+      return { url: alive, stop: () => child.kill("SIGTERM"), owned: true };
+    }
     await new Promise((r) => setTimeout(r, 500));
   }
   child.kill("SIGTERM");
-  throw new Error(`${label}: vite did not come up on :${port} within ${STARTUP_TIMEOUT_MS / 1000}s`);
+  throw new Error(
+    `${label}: vite did not come up on :${port} within ${STARTUP_TIMEOUT_MS / 1000}s (tried ${candidates.join(", ")})`,
+  );
 }
