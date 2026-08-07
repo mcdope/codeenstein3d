@@ -542,13 +542,14 @@ export function isHazardAt(map, x, y) {
  * wider than 24 tiles in every direction is not something stepping aside
  * solves anyway.
  */
-export function nearestSafeTile(map, x, y, maxRadius = 24) {
+export function nearestSafeTile(map, x, y, facing = null, maxRadius = 24) {
   const sx = Math.floor(x);
   const sy = Math.floor(y);
   const seen = new Set([`${sx},${sy}`]);
   let frontier = [[sx, sy]];
   for (let depth = 0; depth < maxRadius && frontier.length > 0; depth++) {
     const next = [];
+    const found = [];
     for (const [cx, cy] of frontier) {
       for (const [dx, dy] of [
         [1, 0],
@@ -566,9 +567,37 @@ export function nearestSafeTile(map, x, y, maxRadius = 24) {
         // Spike tiles are `5` in the grid, so a periodically-damaging tile is
         // rejected as a destination without consulting the trap cycle — a tile
         // that is safe now but spikes on arrival is not an escape.
-        if (tile !== HAZARD_TILE && tile !== SPIKE_TRAP_TILE) return { x: nx + 0.5, y: ny + 0.5 };
-        next.push([nx, ny]);
+        if (tile !== HAZARD_TILE && tile !== SPIKE_TRAP_TILE) found.push({ x: nx + 0.5, y: ny + 0.5 });
+        else next.push([nx, ny]);
       }
+    }
+    // Collect the whole ring before choosing. Returning the first hit in
+    // neighbour order picked an arbitrary one of several equally-close exits,
+    // and *which* exit is chosen turns out to matter enormously — see below.
+    if (found.length > 0) {
+      if (!facing) return found[0];
+      // Prefer the exit that needs the least turning.
+      //
+      // This is not a refinement, it is the difference between the fix working
+      // and making things worse. The branch below spends a *turn-sized* burst
+      // whenever it has to rotate more than `TURN_MOVE_EPS`, and a movement
+      // burst otherwise. Aim at an exit behind the bot and it burns its
+      // decisions rotating on the spot, still standing in the acid. Measured:
+      // choosing arbitrarily took serilog Casual from a 50% death rate to
+      // **100%**, with a single unbroken 14s exposure — worse than the bug
+      // being fixed. Choosing the aligned exit costs no turn at all when the
+      // bot is already heading out.
+      let best = found[0];
+      let bestDot = -Infinity;
+      for (const cand of found) {
+        const len = Math.hypot(cand.x - x, cand.y - y) || 1;
+        const dot = ((cand.x - x) / len) * facing.x + ((cand.y - y) / len) * facing.y;
+        if (dot > bestDot) {
+          bestDot = dot;
+          best = cand;
+        }
+      }
+      return best;
     }
     frontier = next;
   }
@@ -1494,7 +1523,26 @@ export function decide(world, memory, config) {
   // back to the old nav-target behaviour only when the map offers nothing
   // better.
   const standingInDamage = map && (isHazardAt(map, player.x, player.y) || activeSpikeAt(map, player.x, player.y, player.levelTime));
-  const escapeTarget = standingInDamage ? (nearestSafeTile(map, player.x, player.y) ?? navTarget) : null;
+  let escapeTarget = null;
+  if (standingInDamage) {
+    // Commit to one exit for the duration of the exposure. Recomputing every
+    // tick lets the choice flip between equally-close exits as the bot drifts
+    // across a tile boundary, and each flip costs another turn — the bot
+    // oscillates instead of leaving. Recompute only once the committed exit is
+    // no longer safe (a door closed, a spike came round).
+    // `memory` is absent when `faceAngle` decides before `startLevel` has run,
+    // so the commitment is best-effort: without it the choice is simply
+    // recomputed, which is still correct, just less stable.
+    const held = memory?.hazardEscape;
+    escapeTarget =
+      held && !isHazardAt(map, held.x, held.y) && !activeSpikeAt(map, held.x, held.y, player.levelTime)
+        ? held
+        : nearestSafeTile(map, player.x, player.y, { x: player.dirX, y: player.dirY });
+    if (memory) memory.hazardEscape = escapeTarget;
+    escapeTarget = escapeTarget ?? navTarget;
+  } else if (memory) {
+    memory.hazardEscape = null;
+  }
   if (escapeTarget) {
     const currentAngle = Math.atan2(player.dirY, player.dirX);
     const targetAngle = Math.atan2(escapeTarget.y - player.y, escapeTarget.x - player.x);

@@ -405,6 +405,20 @@ describe("nearestSafeTile", () => {
     expect(map.grid[Math.floor(safe.y)][Math.floor(safe.x)]).toBe(0);
   });
 
+  it("prefers the exit the bot is already facing, over an equally close one behind", () => {
+    // Load-bearing, not cosmetic. The branch spends a TURN-sized burst whenever
+    // it must rotate past TURN_MOVE_EPS, so aiming at an exit behind the bot
+    // burns decisions rotating while still standing in acid. Choosing
+    // arbitrarily among equally-close exits measured *worse than the bug*:
+    // serilog Casual went from a 50% death rate to 100%, one unbroken 14s
+    // exposure. Both (9,10) and (11,10) are safe and one tile away; facing +x
+    // must pick (11,10).
+    const map = makeMap({ tiles: [[10, 10, 2]] });
+    expect(nearestSafeTile(map, 10.5, 10.5, { x: 1, y: 0 })).toEqual({ x: 11.5, y: 10.5 });
+    expect(nearestSafeTile(map, 10.5, 10.5, { x: -1, y: 0 })).toEqual({ x: 9.5, y: 10.5 });
+    expect(nearestSafeTile(map, 10.5, 10.5, { x: 0, y: 1 })).toEqual({ x: 10.5, y: 11.5 });
+  });
+
   it("returns null when walled in with no safe tile at all", () => {
     // One acid tile boxed in by walls. The caller must cope with null rather
     // than assume an escape always exists.
@@ -433,6 +447,31 @@ describe("decide — branch selection", () => {
     // is used is not asserted: a 180° turn's direction is arbitrary and
     // pinning it would test the BFS's neighbour order, not the behaviour.
     expect(keysOf(intent).some((k) => k === "KeyQ" || k === "KeyE")).toBe(true);
+  });
+
+  it("commits to one exit instead of re-deciding as it drifts", () => {
+    // Equally-close exits plus a per-tick recompute means the choice can flip
+    // as the bot moves within the tile, and every flip costs another turn —
+    // the bot oscillates in the acid rather than leaving it.
+    const map = makeMap({ tiles: [[10, 10, 2]] });
+    const memory = freshMemory();
+    const world = { player: makePlayer({ dirX: 1, dirY: 0 }), enemies: [], mines: [], navTarget: null, map };
+    decide(world, memory, makeConfig());
+    const first = memory.hazardEscape;
+    expect(first).toEqual({ x: 11.5, y: 10.5 });
+    // Now facing the other way: without commitment this would re-pick (9,10).
+    decide({ ...world, player: makePlayer({ dirX: -1, dirY: 0 }) }, memory, makeConfig());
+    expect(memory.hazardEscape).toEqual(first);
+  });
+
+  it("forgets the committed exit once out of the hazard", () => {
+    const map = makeMap({ tiles: [[10, 10, 2]] });
+    const memory = freshMemory();
+    decide({ player: makePlayer(), enemies: [], mines: [], navTarget: null, map }, memory, makeConfig());
+    expect(memory.hazardEscape).not.toBeNull();
+    // Standing on clean floor now.
+    decide({ player: makePlayer({ x: 5.5, y: 5.5 }), enemies: [], mines: [], navTarget: { x: 6.5, y: 5.5 }, map }, memory, makeConfig());
+    expect(memory.hazardEscape).toBeNull();
   });
 
   it("escapes acid even with no nav target at all", () => {
