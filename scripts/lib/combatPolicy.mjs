@@ -1440,7 +1440,25 @@ export function decide(world, memory, config) {
       // Deliberately no `diagonalStrafeKey` here — see its doc comment's
       // "confirmed regression" note. Reverted from every branch except
       // plain navigation.
-      turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, currentAngle, burstCtx);
+      // Cap the burst by the distance as well as the turn. `KeyW` is held
+      // here, so a turn-sized burst walks a turn-sized *distance* — unrelated
+      // to how far the target actually is. At `VIRTUAL_STEP_MS` that is ~0.32
+      // tiles of sprint against an `ARRIVE_EPS` of 0.15, so the bot steps
+      // clean over its own waypoint and can never register arrival.
+      //
+      // Measured on serilog level 10: across 1,035 hazard decisions from eight
+      // death traces, `dist < ARRIVE_EPS` was true **0 times**. The bot hovers
+      // at 0.16-0.75 tiles, overshooting on every step — `delta` flipping
+      // -0.43 to -2.65 in one decision — and circles there until the acid
+      // kills it. 5.4-5.8 full rotations, 33-38 tiles walked, under 2 tiles of
+      // net progress.
+      //
+      // `moveBurstMs` already sizes a burst to travel exactly `dist`, which is
+      // why the aligned branch below converges and this one does not. Taking
+      // the minimum keeps the turn as fast as it was whenever the target is
+      // far, and shortens the step to land inside the arrival radius when it
+      // is near.
+      turnBurst = Math.min(turnBurstMs(delta, profile.rotSpeedMultiplier, currentAngle, burstCtx), moveBurstMs(dist, true, moveCtx));
     } else {
       turnBurst = moveBurstMs(dist, true, moveCtx);
     }
