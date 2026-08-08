@@ -1471,11 +1471,40 @@ contains**: the same function at position 2 is **31.9× all obtainable damage on
 level**, a clear ratio of 0.03. The fixture therefore ships a trivial level that
 sorts first, so it pins the case that actually bites.
 
-**Open question: should there be a cap, and against what — total obtainable damage
-on the level, or an absolute ceiling?** A cap against obtainable damage is
-self-balancing but makes HP depend on pickup placement, which currently it does not.
-Note the measurement above narrows the question: the danger is not "a big Elite", it
-is "a big Elite anywhere except level 1".
+**Answered 2026-08-08: an absolute ceiling, set from measured kills, applied
+per enemy rather than per room.** The Stage C event logs settle it — across seven
+repositories **1,332 Elites spawned and 2 died**, both ~2,000 HP on `normal` and
+taking 22-24s; **none at all on `hard`**, where the largest enemy ever killed is
+**338 HP** in 112,311 kills. Kill rate runs 21-26% up to ~500 runtime HP and
+0.15% above 2,000, with the band between them **empty by construction**: the old
+`ELITE_HP_MULTIPLIER` stacked on un-split HP, so complexity 39 gave 4 × 244 and
+complexity 40 gave 1 × 2,000. Every one of the 514 cleared runs on an
+Elite-bearing level left the Elite alive. Reproduce any of this with
+`killRateByHpBand` (`eventMetrics.mjs`), surfaced by `balancing:events`.
+
+The fix keeps the 2x room budget but caps and re-splits it
+(`ELITE_MEMBER_HP_CAP = 350`, `ELITE_MAX_MEMBERS = 8`, so a room tops out at
+2,800 base / 4,200 on Hard, and vim's complexity-672 function drops from 33,600
+in one target to that). Two details worth not re-deriving:
+
+- **The ceiling is stated in runtime HP but applied to base HP.** 350 base is 525
+  after Hard's 1.5x, which is the top of the band the data covers. Setting the
+  constant to the measured 500 directly would put Hard at 750 — past every
+  observation, in a range nothing has ever spawned in.
+- **The cap against *obtainable damage* was the other candidate and is still not
+  what shipped**, because `spawnEnemies` runs per room and has no view of the
+  level's pickups. It is also no longer the interesting axis: `balancing:budget`
+  already passed its every-enemy-is-killable gate on all 23 repos *before* this
+  change. The binding constraint was never ammo, it was time-to-kill under fire —
+  which is precisely what splitting one target into a pack addresses and what the
+  solver cannot see (§13: solver output vs observed death rate, ρ = −0.02).
+
+**Still unverified, and the narrowed re-run is the test.** A 525 HP enemy on Hard
+sits above the 338 ever killed there — not because 525 was tried and failed, but
+because the 500-2,000 band never existed to sample. Interpolation says ~5s TTK
+against 3.4s at 250-499, but that is an extrapolation and should be named as one.
+Success is **not** "the fatal levels clear" — a level can clear by walking past
+its Elite — it is a non-zero kill rate above 500 HP.
 
 **7.2 — Drops are seeded but not reproducible.** Map generation is fully
 deterministic and content-addressed. Gameplay randomness, including every loot roll,
@@ -1688,7 +1717,9 @@ hand-maintained `isWall()` mirrors documented above — same failure mode, same 
 
 ### Genuinely open design questions
 
-1. **Should Elite HP be capped, and against what?** (§7.1)
+1. ~~**Should Elite HP be capped, and against what?**~~ **Answered 2026-08-08** —
+   an absolute per-enemy ceiling from measured kills, with the room's budget
+   split across a pack rather than concentrated. See §7.1.
 2. **Should Edge Cases drop like a 250 HP enemy?** The 11.6× self-sustain in §5.1
    says no; the counter-argument is that they are placed for pacing, not economy,
    and nerfing their drops makes corridor dressing feel like a chore.

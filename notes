@@ -8,6 +8,33 @@ Durable rationale ("why is the code like this?") belongs in [`doc/dev/decisions.
 
 ## Open
 
+- [ ] **An Elite fight has never been won. 1,332 spawned across Stage C, 2 died (2026-08-08).** Both kills were `normal`-difficulty ~2,000 HP enemies taking 22-24s; **zero on `hard`, at any HP**. Measured from the existing event logs with the new `killRateByHpBand` — no new capture.
+
+  | max HP | spawned | killed | rate |
+  |---|---:|---:|---:|
+  | <250 | 857,568 | 223,637 | 26.1% |
+  | 250-499 | 16,931 | 3,551 | 21.0% |
+  | **500-1,999** | **0** | 0 | — |
+  | 2,000-2,999 | 664 | 2 | **0.3%** |
+  | 3,000-4,999 | 655 | 0 | **0.0%** |
+  | 5,000+ | 13 | 0 | **0.0%** |
+
+  - **This retires the "encounter geometry" hypothesis, which had the wrong premise.** The four "survivable" contrast levels are not levels with winnable Elite fights — **all 514 of their cleared runs left the Elite alive**, as did 2 of wolf3d L8's 3 lucky clears. There has never been a won Elite fight to compare a lost one against, so no amount of comparing room shape, cover or sightlines could have found anything. Elite HP, level number and `clearRatio` failed to separate fatal from survivable because none of them was the variable.
+  - **The 500-1,999 void is the mechanism**, and it is the cliff `enemies.ts:22-38` already documents: `ELITE_HP_MULTIPLIER` stacks on *un-split* HP, so complexity 39 is a 4-enemy / 976 HP pack (244 each, well inside the killable band) and complexity 40 is one 2,000 HP enemy, well outside it. Nothing is ever generated in between, on any repo.
+  - **What *does* separate fatal from survivable, cleanly: whether the planned route walks inside `AGGRO_RADIUS` (7.5t) of the Elite.** Verified by regenerating all 7 levels offline and matching them against the capture's recorded static block, so these are provably the maps the bot played:
+
+    | | route enters aggro? | closest approach |
+    |---|---|---:|
+    | wolf3d 8, curl 12, laravel 14 (**fatal**) | **YES** | 0.0t, 0.0t, 3.0t |
+    | ripgrep 13, codeenstein3d 12/13/15 (survivable) | no | 13.4-44.1t |
+
+    Zero overlap and a wide margin. On wolf3d 8 and curl 12 the route runs straight *through* the Elite's tile. curl 12 is forced twice over: its Elite's `home` also contains the exit (so `exitRoomHasAliveEnemy` gates it) **and** blocking that rect disconnects spawn from exit — in a 316-tile map, the smallest in the corpus.
+  - **This is diagnosis, not the fix. Routing around Elites is explicitly not an option (user, 2026-08-08): they must be killable.** The metric's job is to predict *which* levels a fix must improve, and to verify it afterwards. Note an Elite chases at `MOVEMENT_SPEED` 1.7 against the player's 3.2, so it can always be outrun — "avoidable" was never the same as "safe".
+  - **Fix shipped**: split the pack and cap the HP (`ELITE_MEMBER_HP_CAP = 350`, `ELITE_MAX_MEMBERS = 8` in `enemies.ts`), so every generated enemy sits inside the measured killable band while an Elite room keeps its 2x budget. Corpus-wide the largest enemy the generator can emit drops from **50,400 HP to 525** (Hard). Only the anchor keeps `Enemy.elite`: the damage multiplier is per enemy, so flagging the whole pack would multiply the room's DPS by its size.
+  - **The cap is in *base* HP but the evidence is in *runtime* HP — this is the easy mistake and I made it first.** 500 base reads as "the measured band" but becomes **750 on Hard**, past every observation. 350 base is 525 on Hard, the top of the band the data covers. Related: the largest enemy ever killed *on Hard* is **338** (112,311 kills); the 2,200 figure is a `normal`-difficulty kill.
+  - **Still an extrapolation, and the narrowed re-run is the test.** 525 on Hard is above anything ever killed there — not because it was tried and failed, but because the 500-2,000 band never existed to sample. Success is **not** "the levels clear" (a level can clear by walking past) but a non-zero kill rate above 500 HP.
+  - **Follow-up worth one pass**: pack members carry the elevated HP but not the `elite` flag, so they render as ordinary enemies that take ~3x longer to kill than a normal one. Mechanically intended; visually it reads as an unexplained sponge. A tint/scale for "Elite pack member" without the damage multiplier would fix it — that needs a third flag or an `Enemy` field, which is why it is not in this change.
+
 - [ ] **Lane idle is 18-42% and it is almost entirely the tail — the fix is a smaller work unit, and measurement says that is nearly free.** Researched 2026-08-08 (not implemented).
   - **Measured idle, per Stage C capture**: ripgrep 21% (442 of 2,064 lane-min), curl 24%, serilog 18%, sinatra 26%, wolf3d **42%**, codeenstein3d **29%**. codeenstein3d is the important one: it is the first capture that ran **with** the tail-packing and yield-based-rate fixes, and idle went *up*, not down. Those fixes did not address this; do not read them as having done so. wolf3d's outlier is explained — four of its six combos retired early on the old invocation cap, leaving two cells for five lanes; that cap is fixed, so 18-26% is the honest baseline.
   - **The cause is unit granularity, not scheduling.** A work unit is one invocation = a chunk of attempts on **one** combo. Concurrency per combo is `ceil(remaining / CHUNK)` with `CHUNK = 20`, so once a cell needs fewer than 20 attempts it collapses to **one** unit — and at the tail, with two cells short, only two lanes can have work no matter how many are free. Everything else is idle by construction.
