@@ -43,6 +43,7 @@
  * highest incoming DPS, its largest single Elite, and its tightest clear
  * ratio. The rest fill in evenly across the DPS range.
  */
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -54,7 +55,7 @@ const CAMPAIGN_DIR = path.join(REPO_ROOT, "demo-campaign");
 const DEFAULT_SLOTS = 15;
 
 function parseArgs(argv) {
-  const args = { repo: null, solved: null, slots: DEFAULT_SLOTS, difficulty: "hard", dryRun: false, exclude: [], solvedOut: null, allowPickDrift: false };
+  const args = { repo: null, solved: null, slots: DEFAULT_SLOTS, difficulty: "hard", dryRun: false, exclude: [], solvedOut: null, allowPickDrift: false, preflight: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--repo") args.repo = path.resolve(argv[++i]);
@@ -71,13 +72,14 @@ function parseArgs(argv) {
     else if (a === "--dry-run") args.dryRun = true;
     else if (a === "--solved-out") args.solvedOut = path.resolve(argv[++i]);
     else if (a === "--allow-pick-drift") args.allowPickDrift = true;
+    else if (a === "--preflight") args.preflight = true;
     else {
       console.error(`unknown argument: ${a}`);
       process.exit(2);
     }
   }
   if (!args.repo || !args.solved) {
-    console.error("usage: node scripts/stage-campaign.mjs --repo <dir> --solved <budget.json> [--slots 15] [--dry-run]");
+    console.error("usage: node scripts/stage-campaign.mjs --repo <dir> --solved <budget.json> [--slots 15] [--dry-run]\n       node scripts/stage-campaign.mjs --preflight   # check the tree is safe for `git checkout -B`");
     process.exit(2);
   }
   return args;
@@ -164,6 +166,66 @@ const MUST_INCLUDE = new Set();
  * Falls back to plain complexity order in the degenerate case where the
  * least-complex file is itself a must-include — correctness of slot 1 wins.
  */
+/**
+ * Tracked files a stage would trample, from `git status --porcelain` output.
+ *
+ * Staging is destructive and a capture sweep runs `git checkout -B
+ * capture/<repo> <base>` before each repo. Local modifications to tracked files
+ * make that checkout **fail**, which kills the sweep — and it fails even when
+ * the modifications are byte-identical to what is already on the remote, since
+ * git compares against HEAD rather than against origin. That is not
+ * hypothetical: on 2026-08-08 two files left modified after being landed via a
+ * worktree aborted a seven-repo sweep with `FATAL ... checkout failed`, and five
+ * machines sat idle for 13 minutes before anyone noticed.
+ *
+ * `demo-campaign/` is excluded because staging owns it, and untracked entries
+ * (`??`) are ignored — capture output, scratch directories and the corpus all
+ * live there and none of them block a checkout.
+ */
+/**
+ * Refuse to continue while tracked files are modified outside `demo-campaign/`.
+ *
+ * A capture sweep runs `git checkout -B capture/<repo> <base>` before each repo,
+ * and that checkout **fails** on local modifications — even ones byte-identical
+ * to what is already pushed, since git compares against HEAD rather than origin.
+ * On 2026-08-08 two files left modified after being landed via a worktree
+ * aborted a seven-repo sweep with `FATAL ... checkout failed`, and five machines
+ * idled for 13 minutes before it was noticed.
+ *
+ * A driver should call `stage-campaign.mjs --preflight` *before* its checkout,
+ * because by the time staging runs the checkout has already failed.
+ */
+export function assertCheckoutSafe() {
+  let porcelain;
+  try {
+    porcelain = execFileSync("git", ["status", "--porcelain"], { cwd: REPO_ROOT, encoding: "utf8" });
+  } catch {
+    return; // not a git checkout, or git unavailable — nothing to protect
+  }
+  const blocking = blockingWorkingTreeChanges(porcelain);
+  if (blocking.length === 0) return;
+  console.error(
+    `\nRefusing to continue: ${blocking.length} tracked file(s) are modified outside demo-campaign/.\n` +
+      "A capture sweep runs `git checkout -B capture/<repo> <base>` before each repo, and that fails\n" +
+      "on local modifications — even ones identical to what is already pushed, because git compares\n" +
+      "against HEAD, not against origin. Commit them, or `git checkout --` them if they were already\n" +
+      "landed elsewhere (e.g. via a worktree).\n\n" +
+      blocking.map((p) => `  ${p}`).join("\n"),
+  );
+  process.exit(1);
+}
+
+export function blockingWorkingTreeChanges(porcelain) {
+  return porcelain
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .filter((line) => !line.startsWith("??"))
+    .map((line) => line.slice(3).trim())
+    // A rename reads as "old -> new"; the destination is what matters.
+    .map((p) => (p.includes(" -> ") ? p.split(" -> ")[1] : p))
+    .filter((p) => p.length > 0 && !p.startsWith("demo-campaign/"));
+}
+
 export function order(selected, complexity, withMain = new Set()) {
   const cx = (l) => complexity.get(l.filename);
   const byCx = (a, b) => cx(a) - cx(b);
@@ -310,6 +372,13 @@ async function resolveStagedOrder(picked, repoDir, difficulty) {
 }
 
 async function main() {
+  // Checked before `parseArgs`, which requires --repo/--solved and exits with
+  // usage otherwise. A preflight needs neither.
+  if (process.argv.includes("--preflight")) {
+    assertCheckoutSafe();
+    console.log("preflight: working tree is safe for `git checkout -B`.");
+    return;
+  }
   const args = parseArgs(process.argv.slice(2));
   const solved = JSON.parse(fs.readFileSync(args.solved, "utf8"));
   const all = solved[args.difficulty];
@@ -435,6 +504,12 @@ async function main() {
     ? fs.readFileSync(path.join(REPO_ROOT, ".git", "HEAD"), "utf8").trim()
     : "";
   const branch = head.startsWith("ref: refs/heads/") ? head.slice("ref: refs/heads/".length) : head;
+
+  // Also enforced here for a direct invocation; a sweep driver should call
+  // `--preflight` BEFORE its own `git checkout -B`, which is the step that
+  // actually fails. See `assertCheckoutSafe`.
+  assertCheckoutSafe();
+
   if (branch === "master" || branch === "main") {
     console.error(`\nRefusing to overwrite demo-campaign/ on "${branch}". Use a throwaway branch (e.g. capture/<repo>).`);
     process.exit(1);

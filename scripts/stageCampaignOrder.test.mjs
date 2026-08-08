@@ -17,7 +17,7 @@
  * case, which is why it is pinned here.
  */
 import { describe, expect, it } from "vitest";
-import { order } from "./stage-campaign.mjs";
+import { blockingWorkingTreeChanges, order } from "./stage-campaign.mjs";
 
 const lvl = (filename, elite = 0) => ({ filename, enemies: { byArchetype: { elite: { count: elite } } } });
 const cx = (entries) => new Map(entries);
@@ -45,5 +45,44 @@ describe("stage-campaign slot ordering", () => {
     const picked = order(levels, complexity, new Set(["c.rs"]));
     expect(picked[0].filename).toBe("c.rs");
     expect(picked.map((l) => l.filename).sort()).toEqual(["a.rs", "b.rs", "c.rs", "d.rs"]);
+  });
+});
+
+/**
+ * The guard that would have saved a seven-repo sweep.
+ *
+ * Staging is destructive and a sweep runs `git checkout -B capture/<repo>` before
+ * each repo. Local modifications to tracked files make that checkout fail — even
+ * ones byte-identical to what is already pushed, because git compares against
+ * HEAD, not origin. On 2026-08-08 two such files aborted a sweep with
+ * `FATAL ... checkout failed` and five machines idled for 13 minutes.
+ */
+describe("blockingWorkingTreeChanges", () => {
+  it("reports tracked modifications that would break the next checkout", () => {
+    const porcelain = " M scripts/lib/laneOrchestrator.mjs\n M notes\n";
+    expect(blockingWorkingTreeChanges(porcelain)).toEqual(["scripts/lib/laneOrchestrator.mjs", "notes"]);
+  });
+
+  it("ignores untracked paths — capture output and scratch never block a checkout", () => {
+    const porcelain = "?? balancing_capture_stagec_ripgrep/\n?? .verify-tmp/\n";
+    expect(blockingWorkingTreeChanges(porcelain)).toEqual([]);
+  });
+
+  it("ignores demo-campaign, which staging owns", () => {
+    const porcelain = " M demo-campaign/01_main.rs\n D demo-campaign/09_old.rs\n";
+    expect(blockingWorkingTreeChanges(porcelain)).toEqual([]);
+  });
+
+  it("takes the destination of a rename", () => {
+    expect(blockingWorkingTreeChanges("R  old/path.mjs -> new/path.mjs\n")).toEqual(["new/path.mjs"]);
+  });
+
+  it("is empty for a clean tree", () => {
+    expect(blockingWorkingTreeChanges("")).toEqual([]);
+  });
+
+  it("still reports a staged-but-uncommitted change", () => {
+    // `git add`ed and not committed is exactly the state that bit us.
+    expect(blockingWorkingTreeChanges("M  scripts/run-balancing-capture.mjs\n")).toEqual(["scripts/run-balancing-capture.mjs"]);
   });
 });
