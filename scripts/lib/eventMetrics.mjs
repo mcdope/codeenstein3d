@@ -245,6 +245,141 @@ export function timeToKillByArchetype(events) {
   return Object.fromEntries(Object.entries(byArch).map(([arch, values]) => [arch, summarize(values)]));
 }
 
+/**
+ * HP bands for `killRateByHpBand`. Chosen to straddle the Elite threshold: a
+ * pack member at complexity 39 is 244 HP and an Elite at 40 is 2,000, so the
+ * bands in between exist precisely to show whether anything is generated there
+ * at all. Do not collapse them because they look empty — an empty band *is* the
+ * finding.
+ */
+const HP_BANDS = [
+  { label: "<250", max: 250 },
+  { label: "250-499", max: 500 },
+  { label: "500-999", max: 1000 },
+  { label: "1000-1999", max: 2000 },
+  { label: "2000-2999", max: 3000 },
+  { label: "3000-4999", max: 5000 },
+  { label: "5000+", max: Infinity },
+];
+
+function hpBandFor(hp) {
+  return HP_BANDS.find((b) => hp < b.max) ?? HP_BANDS[HP_BANDS.length - 1];
+}
+
+/**
+ * How often an enemy of a given size actually dies — spawned vs killed, banded
+ * by max HP.
+ *
+ * This is the metric that settles whether a tough enemy is a hard fight or an
+ * unwinnable one, and neither half works alone: a kill count of 0 is
+ * meaningless without knowing how many spawned, and a spawn count says nothing
+ * about whether the fight is survivable. `levelStart.enemies[]` carries the
+ * full roster with `maxHp`, so the denominator is exact rather than inferred.
+ *
+ * Beware one thing when reading `rate`: an enemy that is never engaged counts
+ * as not-killed, so a low rate means "does not die", not "cannot be killed".
+ * The <250 band sits at ~26% for exactly that reason — most of the roster is
+ * walked past, not fought. The signal is the *contrast* between bands, and
+ * `ttk` alongside it: a band that is fought and won has a finite median TTK.
+ */
+export function killRateByHpBand(events) {
+  const bands = new Map(HP_BANDS.map((b) => [b.label, { band: b.label, spawned: 0, killed: 0, ttk: [] }]));
+  let maxHpKilled = null;
+
+  for (const event of events) {
+    if (event.e === "levelStart") {
+      for (const enemy of event.enemies ?? []) bands.get(hpBandFor(enemy.maxHp ?? 0).label).spawned += 1;
+    } else if (event.e === "kill") {
+      const hp = event.maxHp ?? 0;
+      const cell = bands.get(hpBandFor(hp).label);
+      cell.killed += 1;
+      if (event.aggroAt !== null && event.aggroAt !== undefined) cell.ttk.push(event.t - event.aggroAt);
+      if (maxHpKilled === null || hp > maxHpKilled.maxHp) {
+        maxHpKilled = { maxHp: hp, arch: event.arch, lvl: event.lvl, difficulty: event.difficulty, w: event.w };
+      }
+    }
+  }
+
+  return {
+    bands: [...bands.values()].map((cell) => ({
+      band: cell.band,
+      spawned: cell.spawned,
+      killed: cell.killed,
+      rate: cell.spawned > 0 ? cell.killed / cell.spawned : null,
+      ttk: summarize(cell.ttk),
+    })),
+    maxHpKilled,
+  };
+}
+
+/**
+ * Who hurt the player, from `damageTaken.by`.
+ *
+ * `survivability` answers "what kind of thing hurt me" (`src`); this answers
+ * "which enemy". That distinction is what turns "the player died on level 12"
+ * into "one Elite dealt 93% of the damage on level 12", which no aggregate over
+ * `src` can express.
+ *
+ * Two schema facts drive the shape here, both from `engine.ts:3939-3946`:
+ * `by` is `null` for traps, hazards and splash — those are reported as
+ * `unattributed` rather than dropped — and `by[].amt` sums to the *pre*-
+ * multiplier total, so it is a set of shares, not magnitudes. Each event's own
+ * `amt` is therefore split across its attackers in proportion to their `by`
+ * shares; summing `by[].amt` directly would under-report by the multiplier.
+ *
+ * `eid` is only unique within a (level, run), and a level's roster is stable
+ * across runs because the map is generated deterministically — so attackers are
+ * keyed `lvl:eid`, which aggregates the same enemy across runs of a level
+ * without colliding with the same index on another level.
+ */
+export function damageTakenByAttacker(events, { topAttackers = 10 } = {}) {
+  const byArch = {};
+  const byEnemy = new Map();
+  let totalAmt = 0;
+  let attributedAmt = 0;
+
+  for (const event of events) {
+    if (event.e !== "damageTaken") continue;
+    const amt = event.amt ?? 0;
+    totalAmt += amt;
+    const attackers = event.by ?? [];
+    if (attackers.length === 0) continue;
+
+    const shareTotal = attackers.reduce((sum, a) => sum + (a.amt ?? 0), 0);
+    attributedAmt += amt;
+    for (const attacker of attackers) {
+      const share = shareTotal > 0 ? (attacker.amt ?? 0) / shareTotal : 1 / attackers.length;
+      const dealt = amt * share;
+
+      const arch = (byArch[attacker.arch] ??= { amt: 0, hits: 0 });
+      arch.amt += dealt;
+      arch.hits += 1;
+
+      const key = `${event.lvl}:${attacker.eid}`;
+      if (!byEnemy.has(key)) byEnemy.set(key, { lvl: event.lvl, eid: attacker.eid, arch: attacker.arch, amt: 0, hits: 0 });
+      const enemy = byEnemy.get(key);
+      enemy.amt += dealt;
+      enemy.hits += 1;
+    }
+  }
+
+  const share = (amt) => (totalAmt > 0 ? amt / totalAmt : null);
+  return {
+    totalAmt,
+    attributedAmt,
+    unattributedAmt: totalAmt - attributedAmt,
+    byArch: Object.fromEntries(
+      Object.entries(byArch)
+        .map(([arch, stats]) => [arch, { ...stats, share: share(stats.amt) }])
+        .sort((a, b) => b[1].amt - a[1].amt),
+    ),
+    topAttackers: [...byEnemy.values()]
+      .sort((a, b) => b.amt - a.amt)
+      .slice(0, topAttackers)
+      .map((enemy) => ({ ...enemy, share: share(enemy.amt) })),
+  };
+}
+
 /** Damage taken by source, and how many runs ended in a death. */
 export function survivability(events) {
   const bySource = {};

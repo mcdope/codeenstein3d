@@ -4,7 +4,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  damageTakenByAttacker,
   hitRateByDistance,
+  killRateByHpBand,
   levelPacing,
   lootEconomy,
   measuredSelfSustain,
@@ -224,6 +226,87 @@ describe("survivability", () => {
     ]);
     expect(result.bySource).toEqual({ enemyRanged: 16, trapMine: 30 });
     expect(result.deaths).toBe(1);
+  });
+});
+
+describe("damageTakenByAttacker", () => {
+  it("splits an event's damage across its attackers in proportion to their pre-multiplier shares", () => {
+    // `by[].amt` sums to 20 while `amt` is 30 — the difficulty multiplier lives
+    // between them. Summing `by[].amt` directly would under-report by a third.
+    const result = damageTakenByAttacker([
+      { e: "damageTaken", lvl: 3, src: "enemyMelee", amt: 30, by: [{ eid: 1, arch: "elite", amt: 15 }, { eid: 2, arch: "normal", amt: 5 }] },
+    ]);
+    expect(result.byArch.elite.amt).toBeCloseTo(22.5);
+    expect(result.byArch.normal.amt).toBeCloseTo(7.5);
+    expect(result.totalAmt).toBe(30);
+  });
+
+  it("reports trap and hazard damage as unattributed rather than dropping it", () => {
+    const result = damageTakenByAttacker([
+      { e: "damageTaken", lvl: 1, src: "hazard", amt: 12, by: null },
+      { e: "damageTaken", lvl: 1, src: "enemyRanged", amt: 8, by: [{ eid: 0, arch: "normal", amt: 8 }] },
+    ]);
+    expect(result.totalAmt).toBe(20);
+    expect(result.attributedAmt).toBe(8);
+    expect(result.unattributedAmt).toBe(12);
+  });
+
+  it("keys attackers by level so the same eid on two levels is two enemies", () => {
+    const hit = (lvl, eid, amt) => ({ e: "damageTaken", lvl, src: "enemyMelee", amt, by: [{ eid, arch: "elite", amt }] });
+    const result = damageTakenByAttacker([hit(8, 1, 100), hit(12, 1, 40)]);
+    expect(result.topAttackers).toHaveLength(2);
+    expect(result.topAttackers[0]).toMatchObject({ lvl: 8, eid: 1, amt: 100 });
+  });
+
+  it("surfaces a single enemy that is the whole level", () => {
+    // The Stage C reading in one shape: one Elite at 93% of all damage taken.
+    const elite = { e: "damageTaken", lvl: 12, src: "enemyMelee", amt: 93, by: [{ eid: 1, arch: "elite", amt: 93 }] };
+    const chaff = { e: "damageTaken", lvl: 12, src: "enemyMelee", amt: 7, by: [{ eid: 2, arch: "edgeCase", amt: 7 }] };
+    const result = damageTakenByAttacker([elite, chaff]);
+    expect(result.topAttackers[0].share).toBeCloseTo(0.93);
+  });
+
+  it("splits evenly when the shares are all zero rather than dividing by zero", () => {
+    const result = damageTakenByAttacker([
+      { e: "damageTaken", lvl: 1, src: "enemyMelee", amt: 10, by: [{ eid: 0, arch: "normal", amt: 0 }, { eid: 1, arch: "normal", amt: 0 }] },
+    ]);
+    expect(result.byArch.normal.amt).toBeCloseTo(10);
+    expect(result.topAttackers.map((a) => a.amt)).toEqual([5, 5]);
+  });
+});
+
+describe("killRateByHpBand", () => {
+  const spawn = (...hps) => ({ e: "levelStart", enemies: hps.map((maxHp, eid) => ({ eid, maxHp, arch: "normal" })) });
+  const kill = (maxHp, extra = {}) => ({ e: "kill", maxHp, arch: "normal", t: 10, aggroAt: 7, lvl: 1, ...extra });
+
+  it("counts the roster as the denominator, so zero kills of zero spawns is not a zero rate", () => {
+    // A kill count of 0 is meaningless without knowing how many existed —
+    // an empty band reports null, a populated one that never dies reports 0%.
+    const { bands } = killRateByHpBand([spawn(100, 100), kill(100)]);
+    const small = bands.find((b) => b.band === "<250");
+    const huge = bands.find((b) => b.band === "5000+");
+    expect(small).toMatchObject({ spawned: 2, killed: 1, rate: 0.5 });
+    expect(huge).toMatchObject({ spawned: 0, killed: 0, rate: null });
+  });
+
+  it("separates an enemy that is fought and won from one that only ever spawns", () => {
+    const { bands } = killRateByHpBand([spawn(200, 200, 3000), kill(200), kill(200)]);
+    expect(bands.find((b) => b.band === "<250").rate).toBe(1);
+    expect(bands.find((b) => b.band === "3000-4999")).toMatchObject({ spawned: 1, killed: 0, rate: 0 });
+  });
+
+  it("reports median TTK per band, so a band that is 'won' slowly is visible", () => {
+    const { bands } = killRateByHpBand([spawn(2500), kill(2500, { t: 30, aggroAt: 6 })]);
+    expect(bands.find((b) => b.band === "2000-2999").ttk.p50).toBe(24);
+  });
+
+  it("names the largest enemy ever killed, which is the ceiling the generator may not exceed", () => {
+    const { maxHpKilled } = killRateByHpBand([spawn(100, 2200), kill(100), kill(2200, { arch: "elite", difficulty: "normal", lvl: 11 })]);
+    expect(maxHpKilled).toMatchObject({ maxHp: 2200, arch: "elite", lvl: 11, difficulty: "normal" });
+  });
+
+  it("returns no ceiling at all when nothing was killed", () => {
+    expect(killRateByHpBand([spawn(3000)]).maxHpKilled).toBeNull();
   });
 });
 

@@ -28,7 +28,9 @@ import path from "node:path";
 import { loadEngineModules, REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { readEventLog } from "./lib/eventLog.mjs";
 import {
+  damageTakenByAttacker,
   hitRateByDistance,
+  killRateByHpBand,
   levelPacing,
   lootEconomy,
   measuredSelfSustain,
@@ -176,8 +178,53 @@ function printCombat(events) {
     console.log(`| ${source} | ${fmt(total, 0)} |`);
   }
   console.log(`\nDeaths: **${survival.deaths}**.`);
-  console.log("\n*(Attribution by attacking archetype is not recorded yet — see the");
-  console.log("blocked-metrics table in `doc/dev/balancing-telemetry.md`.)*");
+
+  const attribution = damageTakenByAttacker(events);
+  console.log("\n### ...by attacking enemy\n");
+  console.log("| archetype | damage | share | hits |");
+  console.log("|---|---:|---:|---:|");
+  for (const [arch, stats] of Object.entries(attribution.byArch)) {
+    console.log(`| ${arch} | ${fmt(stats.amt, 0)} | ${pct(stats.share)} | ${stats.hits} |`);
+  }
+  console.log(
+    `\nUnattributed (traps, hazards, splash — \`by\` is null for those): **${fmt(attribution.unattributedAmt, 0)}**` +
+      ` of ${fmt(attribution.totalAmt, 0)}.`,
+  );
+  if (attribution.topAttackers.length > 0) {
+    console.log("\nSingle enemies doing the most damage — a lone entry near 100% means one enemy *is* the level:\n");
+    console.log("| level | eid | archetype | damage | share of all damage taken |");
+    console.log("|---:|---:|---|---:|---:|");
+    for (const a of attribution.topAttackers) {
+      console.log(`| ${a.lvl} | ${a.eid} | ${a.arch} | ${fmt(a.amt, 0)} | ${pct(a.share)} |`);
+    }
+  }
+}
+
+/**
+ * Whether an enemy of a given size ever actually dies. The contrast between
+ * bands is the reading, not any single rate — most of the roster is walked past
+ * rather than fought, so even a healthy band sits well under 100%.
+ */
+function printEnemyViability(events) {
+  const { bands, maxHpKilled } = killRateByHpBand(events);
+  if (bands.every((b) => b.spawned === 0)) return;
+  console.log("\n## Enemy viability by size\n");
+  console.log("| max HP | spawned | killed | kill rate | median TTK |");
+  console.log("|---|---:|---:|---:|---:|");
+  for (const band of bands) {
+    const ttk = band.ttk ? `${fmt(band.ttk.p50)}s` : "--";
+    console.log(`| ${band.band} | ${band.spawned} | ${band.killed} | ${pct(band.rate)} | ${ttk} |`);
+  }
+  if (maxHpKilled) {
+    console.log(
+      `\nLargest enemy ever killed: **${maxHpKilled.maxHp} HP** (${maxHpKilled.arch},` +
+        ` level ${maxHpKilled.lvl}, ${maxHpKilled.difficulty}).`,
+    );
+  }
+  const empty = bands.filter((b) => b.spawned === 0).map((b) => b.band);
+  if (empty.length > 0) {
+    console.log(`\n> No enemy is ever generated in ${empty.join(", ")} — that gap is structural, not a sampling artefact.`);
+  }
 }
 
 function printPacing(events) {
@@ -235,6 +282,7 @@ async function main() {
     printWeaponChoice(events, profiles);
     printEconomy(events, damagePerAmmo);
     printCombat(events);
+    printEnemyViability(events);
     printPacing(events);
   }
 }
