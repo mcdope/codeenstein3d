@@ -54,6 +54,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { createBankedRunScanner } from "./lib/bankedRuns.mjs";
 import { defaultFormatElapsed as formatElapsed, LocalRunner, runLaneOrchestrator } from "./lib/laneOrchestrator.mjs";
 import { REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { buildSshRunners, readHostList } from "./lib/sshRunner.mjs";
@@ -261,43 +262,16 @@ const logPathFor = (combo, sequence) => path.join(LOGS_DIR, `${comboKey(combo)}-
 /**
  * Distinct `rid`s banked for one combo, across every invocation directory.
  *
- * Streaming line-by-line rather than `JSON.parse` per file would be nicer;
- * this is deliberately the simple version, because it runs once per lane
- * iteration (seconds apart at most) against files that are tens of MB, and
- * being obviously correct matters more here than being fast — this number is
- * the denominator of every rate the capture exists to produce.
+ * This number is the denominator of every rate the capture exists to produce,
+ * and the scheduler reads it for *every* combo each time a lane frees up. The
+ * counting itself lives in `bankedRuns.mjs`, which caches per invocation
+ * directory — a finished invocation's log never changes again, so only the
+ * directories still being written are re-parsed. See that module for why the
+ * cache cannot go stale.
  */
+const scanBanked = createBankedRunScanner(EVENTS_DIR);
 function scanExisting(combo) {
-  const prefix = `${comboKey(combo)}-`;
-  const rids = new Set();
-  let fileCount = 0;
-  if (!fs.existsSync(EVENTS_DIR)) return { qualifying: 0, fileCount: 0 };
-  for (const entry of fs.readdirSync(EVENTS_DIR)) {
-    if (!entry.startsWith(prefix)) continue;
-    fileCount += 1;
-    const dir = path.join(EVENTS_DIR, entry);
-    if (!fs.statSync(dir).isDirectory()) continue;
-    for (const file of fs.readdirSync(dir)) {
-      if (!file.endsWith(".ndjson")) continue;
-      let text;
-      try {
-        text = fs.readFileSync(path.join(dir, file), "utf8");
-      } catch {
-        continue; // a half-fetched log counts as nothing, and gets re-run
-      }
-      for (const line of text.split("\n")) {
-        if (!line) continue;
-        try {
-          const rid = JSON.parse(line).rid;
-          if (rid) rids.add(rid);
-        } catch {
-          // A truncated final line is the SIGKILL-mid-write case NDJSON
-          // exists for — skip it, keep everything before it.
-        }
-      }
-    }
-  }
-  return { qualifying: rids.size, fileCount };
+  return scanBanked(`${comboKey(combo)}-`);
 }
 
 function envFor(combo, sequence, outputPath, eventLogPath, { inFlightBefore = 0, chunkAttempts = null, reservedAttempts = inFlightBefore * CHUNK } = {}) {
