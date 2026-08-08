@@ -156,15 +156,22 @@ describe("runLaneOrchestrator chunk stealing", () => {
   function gatedRunner(label) {
     const calls = [];
     const release = [];
+    // Once released, stay released: the cap counts invocations that made no
+    // progress, which is only known at completion, so a lane may claim one
+    // more than the cap while others are still in flight. A latch that only
+    // fires once would leave that extra invocation hanging forever.
+    let opened = null;
     return {
       label,
       calls,
       releaseAll(result = { code: 0, signal: null, killedForTimeout: false, elapsedMs: 1 }) {
+        opened = result;
         const pending = release.splice(0);
         for (const r of pending) r(result);
       },
       runInvocation(args) {
         calls.push(args);
+        if (opened) return Promise.resolve(opened);
         return new Promise((resolve) => release.push(resolve));
       },
     };
@@ -187,8 +194,15 @@ describe("runLaneOrchestrator chunk stealing", () => {
     );
     // Combo `b` needs nothing; every invocation went to `a`, and BOTH lanes
     // contributed rather than one sitting idle.
+    //
+    // The bound is `maxInvocations + lanes - 1`, not equality: the cap counts
+    // invocations that made no progress, which is only known once one
+    // finishes, so concurrent claims can overshoot by up to one per extra
+    // lane. Counting at claim time was exact but cut off combos that were
+    // still delivering — see `state.barren`.
     const all = [...runners[0].calls, ...runners[1].calls];
-    expect(all).toHaveLength(4);
+    expect(all.length).toBeGreaterThanOrEqual(4);
+    expect(all.length).toBeLessThanOrEqual(5);
     expect(runners[0].calls.length).toBeGreaterThan(0);
     expect(runners[1].calls.length).toBeGreaterThan(0);
   });
@@ -384,12 +398,14 @@ describe("runLaneOrchestrator chunk stealing", () => {
     // target.
     const seen = [];
     const gate = [];
+    let opened = null; // same latch reasoning as `gatedRunner`
     const mk = (label) => ({
       label,
       calls: [],
       runInvocation({ env }) {
         this.calls.push(1);
         seen.push({ label, cap: Number(env.CAP), reserved: Number(env.RESERVED) });
+        if (opened) return Promise.resolve(opened);
         return new Promise((r) => gate.push(r));
       },
     });
@@ -412,7 +428,8 @@ describe("runLaneOrchestrator chunk stealing", () => {
     // first actually asked for — 20, not a constant.
     expect(seen[0].reserved).toBe(0);
     expect(seen[1].reserved).toBe(seen[0].cap);
-    gate.forEach((r) => r({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 1000 }));
+    opened = { code: 0, signal: null, killedForTimeout: false, elapsedMs: 1000 };
+    gate.forEach((r) => r(opened));
     await done;
   });
 

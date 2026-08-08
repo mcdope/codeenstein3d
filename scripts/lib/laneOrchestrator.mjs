@@ -106,6 +106,14 @@ export class LocalRunner {
 }
 
 /**
+ * Multiple of `maxInvocations` at which a combo is abandoned regardless of
+ * progress. Only a runaway backstop — the real bound is barren invocations, so
+ * this exists purely to stop an unbounded loop if something pathological banks
+ * one attempt per invocation forever.
+ */
+const RUNAWAY_FACTOR = 6;
+
+/**
  * The scheduler's per-combo bookkeeping.
  *
  * `spawned` is deliberately NOT `fileCount`: a *crashing* invocation writes no
@@ -123,7 +131,7 @@ function makeState(combo, key) {
   // `relCost` is how expensive this combo is per attempt *relative to the
   // lane that ran it* — dimensionless, so it does not smuggle lane speed into
   // a combo property. 1 means "average work for that host".
-  return { combo, key, spawned: 0, inFlight: 0, nextSequence: 0, retired: false, reserved: 0, relCost: 1 };
+  return { combo, key, spawned: 0, barren: 0, inFlight: 0, nextSequence: 0, retired: false, reserved: 0, relCost: 1 };
 }
 
 /**
@@ -340,14 +348,25 @@ export async function runLaneOrchestrator(params) {
       // combo is only *retired* (and reported) once its in-flight work lands,
       // so the final message reflects what actually got banked.
       const satisfied = qualifying >= target;
-      const exhausted = maxInvocations != null && state.spawned >= maxInvocations;
+      // The cap counts CONSECUTIVE BARREN invocations — ones that did not move
+      // the combo forward — not every invocation.
+      //
+      // Its job is to stop a combo that cannot progress, and a combo banking
+      // attempts three at a time is progressing. Counting all spawns cut
+      // sinatra off at 27 of 30 on 2026-08-08: every cell hit a 9-invocation
+      // cap while still delivering, and reported SHORT — which is exactly the
+      // "accounting ceiling looks like an unclearable cell" confusion this
+      // capture exists to avoid. The absolute ceiling below still bounds a
+      // runaway, generously.
+      const exhausted =
+        maxInvocations != null && (state.barren >= maxInvocations || state.spawned >= maxInvocations * RUNAWAY_FACTOR);
       if (satisfied || exhausted) {
         if (state.inFlight === 0) {
           state.retired = true;
           log(
             satisfied
               ? `[${state.key}] done — ${qualifying}/${target} qualifying across ${fileCount} files`
-              : `[${state.key}] giving up — ${qualifying}/${target} qualifying after ${state.spawned} invocation(s) this run (${fileCount} file(s) on disk), at the ${maxInvocations}-invocation cap`,
+              : `[${state.key}] giving up — ${qualifying}/${target} qualifying after ${state.spawned} invocation(s) this run, ${state.barren} of them banking nothing (${fileCount} file(s) on disk), at the ${maxInvocations}-barren-invocation cap`,
           );
         }
         continue;
@@ -527,6 +546,20 @@ export async function runLaneOrchestrator(params) {
       }
       stats.invocations += 1;
       stats.busyMs += result?.elapsedMs ?? 0;
+
+      // Did this invocation move the combo forward at all?
+      //
+      // This, not "did it write a file", is what the cap should count. A combo
+      // banking attempts three at a time is progressing and must not be cut
+      // off — sinatra lost 3 of every 30 runs that way on 2026-08-08, every
+      // cell reporting SHORT while still delivering. A combo whose invocations
+      // change nothing is the case the cap exists for, and it is detected here
+      // regardless of whether the invocation crashed, wrote an empty file, or
+      // wrote a file full of runs that do not count.
+      scanCache = new Map();
+      const after = scanExisting(state.combo).qualifying;
+      if (after <= qualifying) state.barren += 1;
+      else state.barren = 0;
 
       let produced = false;
       let delivered = null;
