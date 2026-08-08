@@ -467,6 +467,20 @@ async function main() {
       utilisation.lanes.map((l) => `${l.label} ${pct(l.busyMs)} busy (${l.invocations} inv)`).join(", "),
   );
   console.log(`  idle lane-time: ${formatElapsed(utilisation.idleMs)} of ${formatElapsed(utilisation.laneTimeMs)} (${Math.round(100 * utilisation.idleFraction)}%)`);
+  // The shape the percentage above cannot show. 36% idle spread thinly across
+  // a run and 36% idle because one cell ran single-threaded for half an hour
+  // are different problems with different fixes, and only the second is worth
+  // acting on. Printed whenever it happened at all, flagged when it is the
+  // dominant story.
+  if (utilisation.soleWorker?.episodes > 0) {
+    const { totalMs, longestMs, episodes } = utilisation.soleWorker;
+    console.log(
+      `  one lane working while others waited: ${formatElapsed(totalMs)} across ${episodes} spell(s), longest ${formatElapsed(longestMs)}`,
+    );
+    if (longestMs > 10 * 60 * 1000) {
+      console.log("    ^ over 10 minutes in a single spell — capacity was refused, not merely unused. See `concurrencyByRemaining`.");
+    }
+  }
   const rates = utilisation.lanes.filter((l) => l.attemptsPerMin != null);
   if (rates.length > 0) {
     // Already persisted per invocation by `recordLaneRate`; this only reports.

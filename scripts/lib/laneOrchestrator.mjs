@@ -531,6 +531,37 @@ export async function runLaneOrchestrator(params) {
   let anyLaneProduced = false;
   const laneStats = runners.map((runner) => ({ label: runner.label, invocations: 0, busyMs: 0 }));
 
+  /**
+   * Time spent with exactly one invocation running while another lane is
+   * parked wanting work — the failure the mean idle figure hides.
+   *
+   * Mean idle cannot distinguish "36% idle spread thinly across the run"
+   * from "36% idle because the last cell ran single-threaded for half an
+   * hour", and those need completely different fixes. It is also why this
+   * went unnoticed for so long: the only symptom is a quiet machine, and
+   * on 2026-08-09 the user spotted it before any instrument did.
+   *
+   * `parkedLanes` is the load-bearing part of the definition. One lane
+   * working alone is perfectly fine when there is nothing else to do —
+   * lanes only park when they asked for work and were refused, so this
+   * counts *refused* capacity, not merely unused capacity.
+   */
+  let parkedLanes = 0;
+  let soleWorkerSince = null;
+  const soleWorker = { totalMs: 0, longestMs: 0, episodes: 0 };
+  function noteOccupancy() {
+    const stalled = inFlightTotal === 1 && parkedLanes > 0;
+    if (stalled && soleWorkerSince === null) {
+      soleWorkerSince = Date.now();
+    } else if (!stalled && soleWorkerSince !== null) {
+      const ms = Date.now() - soleWorkerSince;
+      soleWorker.totalMs += ms;
+      soleWorker.longestMs = Math.max(soleWorker.longestMs, ms);
+      soleWorker.episodes += 1;
+      soleWorkerSince = null;
+    }
+  }
+
   async function runLane(runner, stats) {
     const health = { consecutiveFailures: 0, charged: [] };
     for (;;) {
@@ -542,9 +573,17 @@ export async function runLaneOrchestrator(params) {
         // changes the picture. No `await` between `claim()` and `nextCompletion()`,
         // so a completion cannot slip past an unregistered waiter.
         if (inFlightTotal === 0) return;
-        await nextCompletion();
+        parkedLanes += 1;
+        noteOccupancy();
+        try {
+          await nextCompletion();
+        } finally {
+          parkedLanes -= 1;
+          noteOccupancy();
+        }
         continue;
       }
+      noteOccupancy();
 
       const { state, sequence, qualifying, target, chunkAttempts, claimed } = work;
       const outputPath = outputPathFor(state.combo, sequence);
@@ -568,6 +607,7 @@ export async function runLaneOrchestrator(params) {
         state.inFlight -= 1;
         state.reserved -= claimed;
         inFlightTotal -= 1;
+        noteOccupancy();
         // New results on disk: every cached count is now stale. Invalidate
         // before waking anyone, so no lane decides against a pre-completion
         // view of the world.
@@ -708,5 +748,18 @@ export async function runLaneOrchestrator(params) {
   // `comboCost` is reported for diagnosis — it explains why a lane was given
   // what it was given, which is otherwise invisible.
   const comboCost = Object.fromEntries(states.map((st) => [st.key, Number(st.relCost.toFixed(2))]));
-  return { wallMs, lanes, idleMs, laneTimeMs: totalMs, idleFraction: totalMs > 0 ? idleMs / totalMs : 0, comboCost };
+  // Close an episode still open at the end — a run whose final cell went
+  // single-threaded right through to the finish is the common case, and
+  // dropping it would hide precisely the worst instance.
+  parkedLanes = 0;
+  noteOccupancy();
+  return {
+    wallMs,
+    lanes,
+    idleMs,
+    laneTimeMs: totalMs,
+    idleFraction: totalMs > 0 ? idleMs / totalMs : 0,
+    comboCost,
+    soleWorker,
+  };
 }

@@ -769,3 +769,69 @@ describe("runLaneOrchestrator tail", () => {
     expect(runners[1].calls.length).toBeGreaterThan(0);
   });
 });
+
+describe("runLaneOrchestrator sole-worker accounting", () => {
+  const done = { code: 0, signal: null, killedForTimeout: false, elapsedMs: 1 };
+
+  /** Blocks until released, so one lane can be held genuinely in flight while
+   * another asks for work and is refused. */
+  function heldRunner(label) {
+    const release = [];
+    let opened = null;
+    return {
+      label,
+      releaseAll(result) {
+        opened = result;
+        for (const r of release.splice(0)) r(result);
+      },
+      runInvocation() {
+        if (opened) return Promise.resolve(opened);
+        return new Promise((resolve) => release.push(resolve));
+      },
+    };
+  }
+
+  it("reports nothing when a single lane works because there is nothing else to do", () => {
+    // The false positive to avoid: one lane working alone is normal when no
+    // other lane wanted work. Only *refused* capacity counts.
+    return runLaneOrchestrator(
+      baseParams({
+        combos: [{ id: "a" }],
+        runners: [fakeRunner(() => done)],
+        scanExisting: (() => {
+          let n = 0;
+          return () => ({ qualifying: (n += 5), fileCount: 0 });
+        })(),
+        maxInvocations: 4,
+      }),
+    ).then((u) => {
+      expect(u.soleWorker.episodes).toBe(0);
+      expect(u.soleWorker.totalMs).toBe(0);
+    });
+  });
+
+  it("records a spell where one lane worked while another was refused work", async () => {
+    // One combo, one attempt short, two lanes: the second asks for work, is
+    // refused because the cell admits only one, and parks. That is the tail.
+    let banked = 9;
+    const gated = heldRunner("slow");
+    const idler = fakeRunner(() => done);
+    const run = runLaneOrchestrator(
+      baseParams({
+        combos: [{ id: "a" }],
+        targetQualifying: 10,
+        scanExisting: () => ({ qualifying: banked, fileCount: 0 }),
+        runners: [gated, idler],
+        maxInvocations: 3,
+        maxConcurrentPerCombo: 1,
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    banked = 10; // the slow invocation finally lands the last attempt
+    gated.releaseAll(done);
+    const u = await run;
+    expect(u.soleWorker.episodes).toBeGreaterThan(0);
+    expect(u.soleWorker.longestMs).toBeGreaterThan(0);
+    expect(u.soleWorker.totalMs).toBeGreaterThanOrEqual(u.soleWorker.longestMs);
+  });
+});
