@@ -624,6 +624,72 @@ describe("runLaneOrchestrator chunk stealing", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it("does not credit speed to an invocation that banked nothing", async () => {
+    // A run that fails fast still writes its output file, so it used to count
+    // as a success at the rate it was ASKED for. Measured 2026-08-08: a
+    // 45-second invocation banking zero pushed one lane to 2.02 attempts/min
+    // against a true ~0.2, which then earned it oversized chunks and starved
+    // the other lanes.
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lane-yield-"));
+    const rates = [];
+    let call = 0;
+    const runner = {
+      label: "flaky",
+      calls: [],
+      runInvocation({ outputPath }) {
+        this.calls.push(1);
+        fs.writeFileSync(outputPath, "{}"); // writes output either way
+        call += 1;
+        return Promise.resolve({ code: 0, signal: null, killedForTimeout: false, elapsedMs: call === 1 ? 750 : 60000 });
+      },
+    };
+    await runLaneOrchestrator(
+      baseParams({
+        outputPathFor: (c, seq) => path.join(dir, `${c.id}-${seq}.json`),
+        scanExisting: () => ({ qualifying: 0, fileCount: 0 }),
+        runners: [runner],
+        maxInvocations: 2,
+        chunkFor: () => 10,
+        // First invocation banks nothing despite "succeeding"; second banks 10.
+        measureYield: () => (call === 1 ? 0 : 10),
+        onLaneRate: (_l, perMin) => rates.push(perMin),
+      }),
+    );
+    // The 0.75s empty invocation would have read as 800/min. Only the honest
+    // one is counted: 10 attempts in 60s.
+    expect(rates).toEqual([10]);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("never takes more than an even share of what is left", async () => {
+    // The tail is where idle accrues: with long chunks whoever grabs the last
+    // one runs alone while every other lane sits finished.
+    const asked = [];
+    const mk = (label) => ({
+      label,
+      runInvocation({ env }) {
+        asked.push(Number(env.CAP));
+        return Promise.resolve({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 1000 });
+      },
+    });
+    await runLaneOrchestrator(
+      baseParams({
+        scanExisting: () => ({ qualifying: 0, fileCount: 0 }),
+        envFor: (_c, _s, _o, _e, ctx) => ({ CAP: String(ctx.chunkAttempts) }),
+        targetQualifying: 12,
+        runners: [mk("a"), mk("b"), mk("c")],
+        maxInvocations: 1,
+        maxConcurrentPerCombo: 3,
+        chunkFor: (_c, { remaining, laneCount }) => Math.min(100, Math.ceil(remaining / laneCount)),
+      }),
+    );
+    // 12 left over 3 lanes: nobody takes more than 4, so all three share it.
+    expect(Math.max(...asked)).toBeLessThanOrEqual(4);
+  });
+
   it("reports per-lane utilisation so idle time is never invisible again", async () => {
     const runner = fakeRunner(() => ({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 1000 }));
     const summary = await runLaneOrchestrator(

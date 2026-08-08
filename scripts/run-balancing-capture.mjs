@@ -227,7 +227,15 @@ function recordComboCost(key, combo, relCost) {
  * on an unknown host is the calibration run, and guessing low would make a fast
  * host look slow for the rest of the capture.
  */
-function chunkFor(_combo, { remaining, ratePerMin }) {
+function chunkFor(_combo, { remaining, ratePerMin, laneCount = 1 }) {
+  // Never take more of what is left than an even share across the lanes.
+  //
+  // The tail is where idle time actually accrues: with long chunks, whoever
+  // grabs the last one runs alone while every other lane sits finished. On the
+  // ripgrep capture that was 442 idle lane-minutes of 2,064 (21%), and the two
+  // least-busy lanes were at 61% and 69%. Splitting the remainder lets them
+  // finish together instead.
+  const evenShare = Math.max(1, Math.ceil(remaining / Math.max(1, laneCount)));
   // Unknown lane on this campaign: ask for a CALIBRATION chunk, not a full one.
   //
   // The old fallback was the full CHUNK, on the reasoning that guessing low
@@ -236,9 +244,9 @@ function chunkFor(_combo, { remaining, ratePerMin }) {
   // after three hours, so nothing was learned and nothing could be resized
   // until it finished. A small first chunk costs a little throughput once and
   // buys a real measurement within minutes.
-  if (!ratePerMin || ratePerMin <= 0) return Math.min(MIN_CHUNK, CHUNK, Math.max(1, remaining));
+  if (!ratePerMin || ratePerMin <= 0) return Math.min(MIN_CHUNK, CHUNK, evenShare, Math.max(1, remaining));
   const sized = Math.round(ratePerMin * TARGET_CHUNK_MIN);
-  return Math.min(Math.max(MIN_CHUNK, sized), CHUNK, Math.max(1, remaining));
+  return Math.min(Math.max(MIN_CHUNK, sized), CHUNK, evenShare, Math.max(1, remaining));
 }
 const SIGTERM_GRACE_MS = 5000;
 /** Computed once at startup: the staged campaign never changes mid-capture —
@@ -436,6 +444,31 @@ async function main() {
     onLaneRate: recordLaneRate,
     initialComboCost: loadComboCost(CAMPAIGN_KEY),
     onComboCost: (combo, relCost) => recordComboCost(CAMPAIGN_KEY, combo, relCost),
+    // What this invocation actually banked — its own event directory, so it is
+    // unaffected by whatever other lanes are doing to the same combo.
+    measureYield: (_combo, _sequence, _outputPath, eventLogPath) => {
+      if (!eventLogPath || !fs.existsSync(eventLogPath)) return 0;
+      const rids = new Set();
+      for (const file of fs.readdirSync(eventLogPath)) {
+        if (!file.endsWith(".ndjson")) continue;
+        let text;
+        try {
+          text = fs.readFileSync(path.join(eventLogPath, file), "utf8");
+        } catch {
+          continue;
+        }
+        for (const line of text.split("\n")) {
+          if (!line) continue;
+          try {
+            const rid = JSON.parse(line).rid;
+            if (rid) rids.add(rid);
+          } catch {
+            // truncated final line — same tolerance as `scanExisting`
+          }
+        }
+      }
+      return rids.size;
+    },
   });
 
   console.log("\n=== Capture complete ===");

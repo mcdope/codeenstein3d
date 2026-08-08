@@ -277,6 +277,13 @@ export async function runLaneOrchestrator(params) {
     // as `onLaneRate`: a run that is interrupted should not throw away what it
     // learned.
     onComboCost = null,
+    // Attempts an invocation actually delivered, as opposed to what it was
+    // asked for. Without it a run that fails fast still reports a rate, and a
+    // fast failure reads as blazing speed. Measured 2026-08-08: a 45-second
+    // invocation that banked nothing pushed one lane's rate to 2.02/min
+    // against a true ~0.2, which then earned it oversized chunks and starved
+    // the others.
+    measureYield = null,
   } = params;
 
   const states = combos.map((combo) => {
@@ -434,7 +441,9 @@ export async function runLaneOrchestrator(params) {
     // its target by the difference.
     const remaining = Math.max(0, target - qualifying - state.reserved);
     const ratePerMin = (laneRates.get(runner.label) ?? 0) * 60000;
-    const chunkAttempts = chunkFor ? Math.max(1, Math.round(chunkFor(state.combo, { remaining, laneLabel: runner.label, ratePerMin, qualifying, target }))) : null;
+    const chunkAttempts = chunkFor
+      ? Math.max(1, Math.round(chunkFor(state.combo, { remaining, laneLabel: runner.label, ratePerMin, qualifying, target, laneCount: runners.length })))
+      : null;
     const claimed = chunkAttempts == null ? 0 : Math.min(chunkAttempts, Math.max(1, remaining));
 
     state.spawned += 1;
@@ -520,6 +529,7 @@ export async function runLaneOrchestrator(params) {
       stats.busyMs += result?.elapsedMs ?? 0;
 
       let produced = false;
+      let delivered = null;
       if (result.killedForTimeout) {
         log(`[${state.key}] invocation #${sequence} KILLED by watchdog after ${formatElapsed(result.elapsedMs)} — retrying`);
       } else if (result.code !== 0) {
@@ -528,7 +538,20 @@ export async function runLaneOrchestrator(params) {
         );
       } else {
         produced = fs.existsSync(outputPath);
-        log(`[${state.key}] invocation #${sequence} finished in ${formatElapsed(result.elapsedMs)}${produced ? "" : " (no output file — treating as failed, retrying)"}`);
+        if (produced && measureYield) {
+          // An invocation that writes its output file but banks nothing is a
+          // failure wearing a success's clothes: it must not count toward the
+          // lane's speed, and the lane deserves the same scrutiny as an
+          // outright crash.
+          try {
+            delivered = measureYield(state.combo, sequence, outputPath, eventLogPath);
+          } catch {
+            delivered = null;
+          }
+          if (delivered === 0) produced = false;
+        }
+        const yieldNote = delivered == null ? "" : ` (${delivered} attempt(s) banked)`;
+        log(`[${state.key}] invocation #${sequence} finished in ${formatElapsed(result.elapsedMs)}${yieldNote}${produced ? "" : " — banked nothing, treating as failed, retrying"}`);
       }
 
       // Lane health. A lane that fails everything must not eat the combos'
@@ -554,8 +577,11 @@ export async function runLaneOrchestrator(params) {
         anyLaneProduced = true;
         // Rate is attempts asked for over wall time taken. Only successful
         // invocations count: a crash is fast and would read as blazing speed.
-        if (chunkAttempts && result.elapsedMs > 0) {
-          const observed = chunkAttempts / result.elapsedMs;
+        // Rate from what was DELIVERED where that is known, not from what was
+        // requested.
+        const counted = delivered ?? chunkAttempts;
+        if (counted && result.elapsedMs > 0) {
+          const observed = counted / result.elapsedMs;
           const prev = laneRates.get(runner.label);
           // How expensive this combo is per attempt, relative to what this
           // lane manages on average. Computed against the rate as it stood
