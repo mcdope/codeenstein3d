@@ -26,6 +26,24 @@ Durable rationale ("why is the code like this?") belongs in [`doc/dev/decisions.
     - **Validate it before trusting it**: benchmark score against measured median attempts/min across the five hosts. If they do not rank the same, the benchmark is exercising the wrong thing (this workload is single-thread-latency bound — one headless Chromium pinning one core — so a multi-core or GPU-weighted benchmark would mislead; note nas has 20 cores and is slower than 12-core mcdope.org).
   - **Acceptance**: idle lane-time under 10% on a capture whose combos all reach target, reported in the same summary line that already prints it.
 
+- [ ] **Narrowed re-run target: the 7 levels that decide Elite lethality, 3 fatal and 4 survivable (Stage C, 2026-08-08).** Recorded so a verification run after any Elite change can hit exactly these instead of re-sweeping 7 repos for ~20 hours.
+
+  | repo | level | elite HP (hard) | clearRatio | outcome |
+  |---|---|---|---|---|
+  | wolf3d | **8** | 3,000 | 4.91 | **0% completion**, 161 runs |
+  | curl | **12** | 3,825 | 6.99 | **0% completion**, 180 runs |
+  | laravel | **14** | 25,050 | 2.54 | **0% completion**, 15 runs (stopped early) |
+  | ripgrep | 13 | 3,525 | 6.67 | repo completes 94% |
+  | codeenstein3d | 12 | 3,075 | 5.72 | repo completes 96% |
+  | codeenstein3d | 13 | 9,675 (3 elites) | 2.32 | repo completes 96% |
+  | codeenstein3d | 15 | 4,275 | 4.56 | repo completes 96% |
+
+  - **The four survivable rows are the point.** It is tempting — I did exactly this mid-sweep — to read "one Elite deals 81-99% of damage at each wall level" as *the Elite is the wall*. The contrast levels refute it: **matched pairs on every axis available have opposite outcomes.** clearRatio 4.91 fails while 4.56 completes; 6.99 fails while 6.67 completes; 2.54 fails while **2.32 completes with three Elites and 9,675 HP between them**. Elite HP, level number and the solver's clearRatio all fail to separate fatal from survivable.
+  - **Not a new finding — the old one re-confirmed on better data.** Review §11 already recorded that *nothing the solver computes orders Elite lethality*, with encounter geometry the only surviving explanation. Stage C reproduces it on a clean bot (wolf3d: **zero wedges in 161 runs** — the bot played correctly and lost), which removes the "bot defect wearing balance clothing" confound that invalidated every earlier attempt. It does **not** identify the cause.
+  - **What IS established**: at each fatal level a single Elite deals **81% (wolf3d), 97% (curl), 99% (laravel)** of all damage taken, and Edge Case density is *anti*-correlated with death — levels holding 74/82/89/122 Edge Cases kill nobody while the fatal ones hold 31/5/12. The damage attribution is not in doubt; only why those particular encounters are unwinnable.
+  - **Next measurement, since the numeric axes are exhausted**: compare the *geometry* of the fatal levels against the survivable ones — room size and shape where the Elite sits, sightlines, corridor width, distance from the player's approach, whether cover exists, how much walkable space the fight has. `render-level-maps.mjs` already renders floor plans, so this is a visual diff of 7 levels.
+  - **Running it narrowed**: `CODEENSTEIN_CAPTURE_LEVEL_LIMIT` truncates from the *start*, so wolf3d L8 means playing 1-8 (cheap) while laravel L14 means playing 1-14 (not). For the deep ones, stage a custom slice ending at the target level. Elite HP scales with difficulty — laravel L14 reads 16,700 on one combo and 25,050 on another — so quote the combo alongside any HP number.
+
 - [ ] **A truncated GitHub tree is invisible to the player — it only reaches `console.warn`.** `fetchGithubTree` (`src/fs/github.ts:108`) detects `truncated: true` from the API and warns; that is the whole of the signalling. The campaign then plays happily from whatever subset arrived — fewer levels, possibly a different entrypoint, and no indication anything is missing.
   - **The in-game console sidebar does not help, contrary to what one would assume.** `consoleSidebar.ts` patches **`console.log` only** (line 58), so a `console.warn` is never mirrored. The one place a player might plausibly notice it does not show it, and `doc/user/troubleshooting.md`'s advice ("the console says so") means opening devtools.
   - **This is NOT a docs gap — the docs already exist and are good.** `troubleshooting.md` has *"A big GitHub repo loaded, but it seems incomplete"*, `getting-started.md` links to it and warns that large repos take tens of seconds (naming `magento/magento2` as the deliberate worst case), and `privacy.md` covers the unauthenticated rate limit. The problem is that they document a workaround for something the UI should simply say.
