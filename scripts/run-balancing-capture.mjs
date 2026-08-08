@@ -55,7 +55,12 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { createBankedRunScanner } from "./lib/bankedRuns.mjs";
-import { defaultFormatElapsed as formatElapsed, LocalRunner, runLaneOrchestrator } from "./lib/laneOrchestrator.mjs";
+import {
+  concurrencyByRemaining,
+  defaultFormatElapsed as formatElapsed,
+  LocalRunner,
+  runLaneOrchestrator,
+} from "./lib/laneOrchestrator.mjs";
 import { REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { buildSshRunners, readHostList } from "./lib/sshRunner.mjs";
 
@@ -407,12 +412,11 @@ async function main() {
     maxInvocations: MAX_INVOCATIONS > 0 ? invocationCapFor(TARGET_ATTEMPTS) : null,
     sigtermGraceMs: SIGTERM_GRACE_MS,
     // Let a free lane steal a chunk of a combo another lane is already
-    // working, but never start more chunks than there is work left: at
-    // CHUNK=20 a combo 45 attempts short can absorb three lanes, one 5 short
-    // can absorb one. Without this a run whose combo count equals its lane
-    // count leaves every finished lane idle for the rest of the capture —
-    // measured at 115 of 132 minutes on one ripgrep lane.
-    maxConcurrentPerCombo: (_combo, { qualifying, target }) => Math.ceil(Math.max(0, target - qualifying) / CHUNK),
+    // working, but never start more chunks than there is work left. This used
+    // to divide by CHUNK, which silently pinned the end of every cell to a
+    // single lane — see `concurrencyByRemaining` for the measurements.
+    maxConcurrentPerCombo: (_combo, { qualifying, target }) =>
+      concurrencyByRemaining(target - qualifying, { laneCount: runners.length }),
     chunkFor,
     initialLaneRates: loadLaneRates(CAMPAIGN_KEY),
     onLaneRate: recordLaneRate,

@@ -17,7 +17,7 @@
  * regression this file exists to pin.
  */
 import { describe, expect, it } from "vitest";
-import { runLaneOrchestrator } from "./laneOrchestrator.mjs";
+import { concurrencyByRemaining, runLaneOrchestrator } from "./laneOrchestrator.mjs";
 
 /** A `Runner` stand-in: records every invocation and reports whatever the
  * caller wants, without spawning anything. */
@@ -720,5 +720,52 @@ describe("runLaneOrchestrator chunk stealing", () => {
     expect(summary.lanes[0]).toMatchObject({ label: "fake", invocations: 2, busyMs: 2000 });
     expect(summary.idleFraction).toBeGreaterThanOrEqual(0);
     expect(summary.idleFraction).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("concurrencyByRemaining", () => {
+  it("admits one lane per attempt still needed", () => {
+    expect(concurrencyByRemaining(2, { laneCount: 5 })).toBe(2);
+    expect(concurrencyByRemaining(45, { laneCount: 5 })).toBe(5);
+  });
+
+  it("admits nobody once the cell is satisfied", () => {
+    expect(concurrencyByRemaining(0, { laneCount: 5 })).toBe(0);
+    expect(concurrencyByRemaining(-3, { laneCount: 5 })).toBe(0);
+  });
+
+  it("is what the old ceil(remaining / CHUNK) policy got wrong at the tail", () => {
+    // The regression, stated as arithmetic: a cell two attempts short read as
+    // "one chunk of work left", so exactly one lane could touch it while four
+    // sat idle. Every cell in the 2026-08-09 capture ended this way.
+    const CHUNK = 20;
+    expect(Math.ceil(2 / CHUNK)).toBe(1);
+    expect(concurrencyByRemaining(2, { laneCount: 5 })).toBe(2);
+  });
+});
+
+describe("runLaneOrchestrator tail", () => {
+  it("puts a second lane on the last few attempts instead of leaving it idle", async () => {
+    // The shape measured on curl: one combo, 18 of 20 banked, one lane already
+    // working it and four free. Under ceil(remaining/CHUNK) the free lanes were
+    // refused and the cell finished single-threaded.
+    let banked = 18;
+    const runners = [
+      fakeRunner(() => ({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 1 })),
+      fakeRunner(() => ({ code: 0, signal: null, killedForTimeout: false, elapsedMs: 1 })),
+    ];
+    await runLaneOrchestrator(
+      baseParams({
+        combos: [{ id: "a" }],
+        targetQualifying: 20,
+        scanExisting: () => ({ qualifying: banked++, fileCount: 0 }),
+        runners,
+        maxInvocations: 6,
+        maxConcurrentPerCombo: (_c, { qualifying, target }) =>
+          concurrencyByRemaining(target - qualifying, { laneCount: runners.length }),
+      }),
+    );
+    expect(runners[0].calls.length).toBeGreaterThan(0);
+    expect(runners[1].calls.length).toBeGreaterThan(0);
   });
 });

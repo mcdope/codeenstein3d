@@ -25,6 +25,35 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 
+/**
+ * A `maxConcurrentPerCombo` policy: one lane per attempt still needed, capped
+ * by how many lanes exist.
+ *
+ * The obvious policy — `ceil(remaining / CHUNK)` — is what produced the tail
+ * this exists to remove. It reads as "how many full chunks of work are left",
+ * but at the end of a cell that is always **one**: with `CHUNK = 20`, a combo
+ * two attempts short computes `ceil(2/20) = 1`, so exactly one lane may work
+ * it however many are sitting idle. Measured 2026-08-09 across four repos, the
+ * end of every single cell looked the same — five of six combos finished, the
+ * sixth held by one lane, everyone else stopped. wolf3d idled 36% of its total
+ * lane-time (232m of 648m) on a run where every cell reached target.
+ *
+ * Sizing chunks smaller does not fix it, which is worth stating because it is
+ * the intuitive answer and it is wrong: those tail invocations were *already*
+ * down to one attempt each (the last one banked 1 attempt in 3m57s). The
+ * binding constraint was never the size of the piece, it was permission to
+ * start a second one.
+ *
+ * Spreading lanes across combos does not depend on this cap and is not
+ * weakened by raising it — `claim` already scores by fewest-in-flight first, so
+ * lanes fan out across combos on their own and only double up once there are
+ * more lanes than unsatisfied combos, which is exactly when doubling up is what
+ * you want.
+ */
+export function concurrencyByRemaining(remaining, { laneCount = Infinity } = {}) {
+  return Math.min(laneCount, Math.max(0, remaining));
+}
+
 /** Exported so a caller can render the utilisation summary this module returns
  * in the same units its own progress lines already use. */
 export function defaultFormatElapsed(ms) {
