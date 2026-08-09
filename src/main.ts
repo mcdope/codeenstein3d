@@ -505,6 +505,56 @@ let isReplaying = false;
  * never end up orphaned, driving a stale engine after the canvas has moved on
  * to a real level or a different replay. */
 let stopActiveReplay: (() => void) | null = null;
+/**
+ * What a replay viewing actually did, for `scripts/verify-replay.mjs` — the
+ * only way to tell "played back exactly as recorded" from "played back
+ * wrongly" from outside the page.
+ *
+ * None of it is observable otherwise: the win/death overlays are drawn onto
+ * the canvas, and a natural end and a mid-run failure both funnel into the
+ * same `returnToHighscores`, so the DOM cannot distinguish them. `endReason`
+ * in particular is the whole point — a replay that diverges runs out of
+ * recorded input before the level concludes, which is a silent, on-screen-only
+ * message today.
+ *
+ * Written only by `startReplay`, and read only through the DEV-gated
+ * `__codeensteinReplayTestHooks` below. `probe` is a closure over that
+ * function's own `levelIndex`/`frameIndex` rather than a per-frame mirror, so
+ * `step()`'s hot loop pays nothing for it.
+ */
+interface ReplayLevelResult {
+  levelIndex: number;
+  filePath: string;
+  outcome: "won" | "over";
+  /** Frames actually consumed, against the segment's recorded total. A
+   * faithful playback ends on the last recorded frame — `simulate()` records
+   * a frame *before* the end-of-run check fires, so the terminal frame is
+   * part of the recording — which makes equality here a sharper divergence
+   * check than the score. */
+  framesConsumed: number;
+  framesRecorded: number;
+  score: number;
+  health: number;
+  swap: number;
+  bullets: number;
+  rockets: number;
+  smg: number;
+  gas: number;
+  ownedWeapons: number[];
+}
+interface ReplayDebugState {
+  active: boolean;
+  ended: boolean;
+  endReason: string | null;
+  levels: ReplayLevelResult[];
+}
+const replayDebug: ReplayDebugState & { probe: (() => { levelIndex: number; frameIndex: number; framesRecorded: number }) | null } = {
+  active: false,
+  ended: false,
+  endReason: null,
+  levels: [],
+  probe: null,
+};
 /** Name of the picked workspace root, for the campaign name and the save file.
  * The File System Access API only grants a handle to the picked directory
  * itself — there's no way to walk up to its parent — so the "or parent
@@ -1919,7 +1969,26 @@ multiplayerLobbyDialog.addEventListener("close", () => {
 // build never ships the code path that lets a player fake invulnerability or
 // desync state through the console, not just a URL param it happens to
 // ignore.
+//
+// `__codeensteinReplayTestHooks` below is a *third* separate global for the
+// same reason this one is separate from `__codeensteinTestHooks`: the test
+// suite treats the presence of that object as "an engine has been
+// constructed", and anything installed at module-import time would make that
+// check trivially true before any engine exists.
 if (isTestHooksActive()) {
+  (window as unknown as { __codeensteinReplayTestHooks?: unknown }).__codeensteinReplayTestHooks = {
+    /** A structured-clone-safe snapshot — `probe` is a live closure and can't
+     * cross the Playwright boundary, so it's called here rather than
+     * exposed. Absent while no replay is running, which is itself the
+     * signal `verify-replay.mjs` waits on. */
+    getState: (): ReplayDebugState & { probe: { levelIndex: number; frameIndex: number; framesRecorded: number } | null } => ({
+      active: replayDebug.active,
+      ended: replayDebug.ended,
+      endReason: replayDebug.endReason,
+      levels: replayDebug.levels.map((l) => ({ ...l, ownedWeapons: [...l.ownedWeapons] })),
+      probe: replayDebug.probe?.() ?? null,
+    }),
+  };
   (
     window as unknown as {
       __codeensteinMultiplayerTestHooks?: {
@@ -3589,6 +3658,10 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
     activeHud = hud;
     isReplaying = true;
 
+    replayDebug.active = true;
+    replayDebug.ended = false;
+    replayDebug.endReason = null;
+    replayDebug.levels = [];
     let levelIndex = 0;
     let replayInput: ReplayPlaybackInput | null = null;
     let frameIndex = 0;
@@ -3619,6 +3692,32 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
      * scratch without re-reading/re-parsing/re-hashing the file again. */
     let currentParsed: ParsedFile | null = null;
     let currentSegment: ReplayLevelSegment | null = null;
+    // A live view of the loop's own counters — see `replayDebug`. Installed
+    // here, below every binding it closes over, so it can never be called
+    // into a temporal dead zone.
+    replayDebug.probe = () => ({ levelIndex, frameIndex, framesRecorded: currentSegment?.frames.length ?? 0 });
+
+    /** Records how one replayed level actually turned out — see
+     * `replayDebug`. `levelIndex` has already been advanced past this
+     * segment by `loadLevel`, so it reports the 1-based index of the level
+     * that just ended. */
+    const recordReplayLevelResult = (segment: ReplayLevelSegment, outcome: "won" | "over", stats: EngineStats): void => {
+      replayDebug.levels.push({
+        levelIndex,
+        filePath: segment.filePath,
+        outcome,
+        framesConsumed: frameIndex,
+        framesRecorded: segment.frames.length,
+        score: stats.score,
+        health: stats.health,
+        swap: stats.swap,
+        bullets: stats.bullets,
+        rockets: stats.rockets,
+        smg: stats.smg,
+        gas: stats.gas,
+        ownedWeapons: [...stats.ownedWeapons],
+      });
+    };
 
     /** Begins capturing the canvas as a webm video — forces 1x playback
      * speed (a `MediaRecorder` captures in real wall-clock time, so any
@@ -3667,6 +3766,8 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
 
     const teardown = (): void => {
       isReplaying = false;
+      replayDebug.active = false;
+      replayDebug.probe = null; // the loop's bindings are about to go stale
       stopActiveReplay = null;
       cancelAnimationFrame(rafId);
       window.removeEventListener("keydown", onStopKey);
@@ -3697,6 +3798,8 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
       // tool limitation.
       /* v8 ignore next -- @preserve */
       if (!isReplaying) return;
+      replayDebug.ended = true;
+      replayDebug.endReason = reason;
       window.removeEventListener("keydown", onStopKey); // avoid double-handling Escape against the dialog's own listener
       hud.showReplayEnded(reason, returnToHighscores);
     };
@@ -3749,11 +3852,15 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
         {
           onGameOver: (stats) => {
             levelEnded = true;
+            recordReplayLevelResult(segment, "over", stats);
+            replayDebug.ended = true;
             hud.showKernelPanic(statsScreenInfo(stats.runScoreBreakdown, stats.runPlayerStats), returnToHighscores);
           },
           onWin: (stats) => {
             levelEnded = true;
+            recordReplayLevelResult(segment, "won", stats);
             if (levelIndex >= payload.levels.length) {
+              replayDebug.ended = true;
               hud.showBuildSuccessful(statsScreenInfo(stats.runScoreBreakdown, stats.runPlayerStats), returnToHighscores);
             } else {
               advanceLevel();

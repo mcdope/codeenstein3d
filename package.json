@@ -25,6 +25,7 @@
     "fetch:online-wads": "node scripts/fetch-online-wads.mjs",
     "verify:campaign": "node scripts/verify-demo-campaign.mjs",
     "verify:campaign:playthrough": "node scripts/verify-campaign-playthrough.mjs",
+    "verify:replay": "node scripts/verify-replay.mjs",
     "generate:default-highscore": "node scripts/generate-default-highscore.mjs",
     "balancing:telemetry": "node scripts/run-balancing-telemetry.mjs",
     "balancing:watch": "node scripts/watch-bot-sessions.mjs",

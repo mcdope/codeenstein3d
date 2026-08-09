@@ -11,6 +11,25 @@ That second category is why this file is kept rather than deleted. Most entries 
 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
+- [x] **Every shipped replay played back wrong — the bot's rotation multiplier was a simulation input the replay format didn't carry. FIXED 2026-08-09.** "Watch Replay" on any of the three bundled entries pointed the view where the run never looked, shot at nothing and died in seconds. It played; it never errored.
+
+  `createPlayerState` read `rotSpeedMultiplier` from the `?botRotSpeedMul` URL param under `isTestHooksActive()`, and `generate-default-highscore.mjs` records at 2.0/3.5/5.0 per bot profile. A player watching has neither the param nor test hooks, so playback ran at 1.0 and every recorded turn under-rotated by 2-5x. `ReplayLevelSegment` carried `filePath, bonusLevel, gameplaySeed, difficulty, gore, astHash, balanceHash, frames` — every simulation input except that one — and playback is blind input replay, so it could not reproduce what it was never told.
+
+  Pre-existing but made fatal by the turn-split (`6e45951`): a turn used to be held ~50ms and still rotated ~0.13rad at 1x, drifting slowly; a ~3ms burst at 1x rotates ~0.008rad, so the aim was simply gone. Reverting the turn-split would only have hidden it.
+
+  **The board did not need regenerating, contrary to the parked handoff's "they cannot be salvaged".** `main()` pushes `keptEntries` in `Object.entries(PROFILES)` order and `PROFILES_HASH` pins that those profiles haven't moved, so entry *i* was provably played by profile *i* — the value was recoverable, not lost. `generate-default-highscore.mjs --backfill-rot-speed` stamps all 51 segments in seconds, and `verify:replay` is what proves the mapping right rather than assumed. That avoided a ~33-minute regeneration that is itself wedge-prone at demo-campaign L6.
+
+  **No `replayCodec.ts` change was needed either**, also contrary to the handoff: `packBoardForStorage` builds its header as the whole board JSON with only `frames` emptied, so per-segment scalars round-trip for free. The `PACKED_BOOLS`/`bin1:`-bump rule applies only to per-frame `InputSnapshot` fields.
+
+  Two adjacent record/playback asymmetries were found in the same path and fixed with it:
+
+  - **Every replay recorded on easy or hard was refused outright** as "recorded under different game balance". `computeBalanceHash` snapshots the roster synchronously before its first `await`; recording hashes *before* `new RaycasterEngine`, playback hashed *after* — and the constructor rescales `hp`/`maxHp` in place by the difficulty multipliers, one of the four hashed fields. Normal is 1x, so the normal-only bundled board never showed it, and every existing replay test used normal.
+  - **Playback never ran `primeForPlay()`**, so it skipped the spawn-tile reveal live play gets from `start()`. Latent rather than active — `markVisitedAround` floors to the tile, the player cannot leave the spawn tile in one frame, and `mapCompletionBonus` is a threshold — but a genuine asymmetry in the "100% Clear" numerator. Fixed with `startReplayDriven()`, deliberately *not* `startExternallyDriven()`, whose wall-clock FPS measurement the replay viewer is excluded from.
+
+  **Nothing could have caught any of it**: there was no replay-playback verification at all. `astHash` guards level content and `balanceHash` guards "same game", but nothing asserted a replay still *plays back* as recorded, and CI was fully green with the board broken. `npm run verify:replay` (`scripts/verify-replay.mjs`) closes that: it clicks the real "Watch" button, drives playback under the virtual clock, and asserts `endReason === null`, `framesConsumed === framesRecorded` per level, and the carryover ladder — `advanceToNextLevel` writes `priorScore: stats.score` into the next level's carryover, so a recorded payload is its own per-level expected-value table and needs no fixture. It reproduced the bug before the fix (level 1 died after 1,351 of 2,893 frames, scoring 806 against a recorded 1,898) and passes frame-for-frame after. This also closes the scope note in `verify-campaign-playthrough.mjs`, which verifies payload structure and explicitly does not re-simulate.
+
+  Caveat recorded in the script: score parity holds under `?testHooks=1` only, since `PLAYER_STATS_ENABLED` is `false` and the accuracy bonus reads `p.telemetry`. Simulation parity — frame counts, win/death, the ladder — is unconditional, which is why the frame-count check leads.
+
 - [x] **An Elite fight has never been won. 1,332 spawned across Stage C, 2 died (2026-08-08).** Both kills were `normal`-difficulty ~2,000 HP enemies taking 22-24s; **zero on `hard`, at any HP**. Measured from the existing event logs with the new `killRateByHpBand` — no new capture.
 
   | max HP | spawned | killed | rate |

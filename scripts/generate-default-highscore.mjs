@@ -286,7 +286,76 @@ async function runOneAttempt(browser, profileName, profile, levelPlans) {
   }
 }
 
+/**
+ * `--backfill-rot-speed`: stamps `rotSpeedMultiplier` onto an already-shipped
+ * board's segments instead of replaying the whole campaign to regenerate it.
+ *
+ * The field was added to `ReplayLevelSegment` after this board was recorded,
+ * and without it every one of these replays plays back at 1.0 while having
+ * been recorded at its profile's 2.0/3.5/5.0 — the view points where the run
+ * never looked and the run dies in seconds. The value is *recoverable* rather
+ * than lost, though: `main()` below pushes `keptEntries` in
+ * `Object.entries(PROFILES)` order, one entry per profile, and `PROFILES_HASH`
+ * pins that those profiles haven't moved since. So entry *i* was provably
+ * played by profile *i*, and its multiplier is `PROFILES[i].rotSpeedMultiplier`.
+ *
+ * That is an argument from write-order, not from data in the file, which is
+ * the one thing that could make it wrong. It is also exactly what
+ * `npm run verify:replay` checks — a back-filled board either reproduces its
+ * own recorded scores frame-for-frame or it does not. Run it afterwards; if it
+ * fails, regenerate for real rather than guessing at the mapping.
+ *
+ * Saves a ~33-minute regeneration that is itself wedge-prone, and (unlike one)
+ * changes nothing about the runs themselves — same frames, same seeds, same
+ * scores.
+ */
+async function backfillRotSpeed() {
+  const { unpackBoardFromStorage } = await loadEngineModules();
+  const source = fs.readFileSync(OUTPUT_FILE, "utf8");
+  const match = source.match(/DEFAULT_HIGHSCORE_ENTRIES_COMPRESSED = "([^"]+)"/);
+  if (!match) {
+    console.error(`Could not find DEFAULT_HIGHSCORE_ENTRIES_COMPRESSED in ${OUTPUT_FILE}.`);
+    process.exit(1);
+  }
+
+  const entries = await unpackBoardFromStorage(match[1]);
+  const profiles = Object.entries(PROFILES);
+  if (entries.length !== profiles.length) {
+    console.error(
+      `Board has ${entries.length} entries but there are ${profiles.length} profiles — the index-to-profile mapping this back-fill relies on does not hold. Regenerate instead.`,
+    );
+    process.exit(1);
+  }
+
+  const expectedHash = profilesHash();
+  const shippedHash = source.match(/PROFILES_HASH = "([^"]+)"/)?.[1];
+  if (shippedHash !== expectedHash) {
+    console.error(
+      `PROFILES_HASH in ${OUTPUT_FILE} is ${shippedHash} but the profiles now hash to ${expectedHash} — this board was recorded by profiles that have since changed, so the multipliers below would be the wrong ones. Regenerate instead.`,
+    );
+    process.exit(1);
+  }
+
+  let stamped = 0;
+  entries.forEach((entry, i) => {
+    const [profileName, profile] = profiles[i];
+    for (const segment of entry.replay?.levels ?? []) {
+      segment.rotSpeedMultiplier = profile.rotSpeedMultiplier;
+      stamped += 1;
+    }
+    console.log(`  entry ${i} (${profileName}, score ${entry.score}): ${entry.replay?.levels?.length ?? 0} segment(s) at ${profile.rotSpeedMultiplier}x`);
+  });
+
+  await writeDefaultHighscoreFile(entries);
+  console.log(`\nStamped ${stamped} segment(s) across ${entries.length} entries — wrote ${OUTPUT_FILE}.`);
+  console.log("Now run `npm run verify:replay` (with a dev server up) to confirm the board actually plays back.");
+}
+
 async function main() {
+  if (process.argv.includes("--backfill-rot-speed")) {
+    await backfillRotSpeed();
+    return;
+  }
   const levelPlans = await planLevels();
   const reachableCount = levelPlans.filter((l) => l.routePlain.ok).length;
   console.log(`${reachableCount}/${levelPlans.length} levels have a planned route (bot may still die to combat before reaching some of them).\n`);
