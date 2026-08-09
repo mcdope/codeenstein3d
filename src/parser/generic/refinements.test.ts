@@ -242,6 +242,18 @@ describe("csharp", () => {
     );
   });
 
+  it("defaults to public for a method with no enclosing type at all", () => {
+    // The walk up the ancestors finds no class/struct/record and no interface,
+    // falls off the top of the tree and reports "not private by default". A
+    // method outside any type is not legal C#, but tree-sitter is error
+    // tolerant and the corpus is full of files that do not compile — vim's
+    // headers alone parse to ERROR trees while still yielding entities.
+    const root = parse(cs, "namespace N { void Orphan() {} }");
+    expect(csharp.refine!(find(root, "method_declaration"), stubEntity({ kind: "method" })).visibility).toBe(
+      "public",
+    );
+  });
+
   it("an explicit modifier still wins inside an interface (C# 8+)", () => {
     const root = parse(cs, "interface I { private void D() {} }");
     expect(csharp.refine!(find(root, "method_declaration"), stubEntity({ kind: "method" })).visibility).toBe(

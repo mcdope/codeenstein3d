@@ -1797,7 +1797,19 @@ async function startMultiplayerSessionAsGuest(): Promise<void> {
       result,
       onMultiplayerSessionEnded,
       peerConnection,
+      // Two one-line adapters from session callback to UI. Both targets are
+      // covered directly; what is not is the wiring, because firing it needs a
+      // *live* guest session to hit a corrupt level-transition payload
+      // (`onTransitionStatus`) or outlive a peer's removal grace period
+      // (`onRosterChange`). `multiplayerSessionGuest.test.ts` drives both
+      // against its own callbacks, and the `multiplayer-transition` Playwright
+      // job drives them through this exact call with two real peers — neither
+      // of which the vitest coverage gate can see. Reproducing a two-peer
+      // session inside jsdom to execute two forwarding calls would be a
+      // harness far more likely to break than the lines it guards.
+      /* v8 ignore next -- covered by the multiplayer Playwright tier; see above @preserve */
       (msg) => setMultiplayerStatus(msg, true),
+      /* v8 ignore next -- covered by the multiplayer Playwright tier; see above @preserve */
       (connected) => updateMultiplayerGuestLiveCountDisplay(connected, totalPlayers),
     );
   } catch (err) {

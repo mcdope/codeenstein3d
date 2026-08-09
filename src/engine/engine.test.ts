@@ -5316,6 +5316,33 @@ describe("balancing event log", () => {
     });
   });
 
+  it("attributes a bolt to the enemy that fired it, long after it left the muzzle", () => {
+    // The melee case above cannot reach this path. A bite is attributed inline
+    // because the biting enemy is right there; a bolt is not — it resolves
+    // frames later, by which time the only link back to its shooter is the
+    // `srcEid` the projectile carries. That indirection is the whole reason
+    // `damageTaken.by` works for ranged damage at all, and nothing exercised it.
+    withTestHooks((getHooks) => {
+      // Far enough that ATTACK_RADIUS can never apply, close enough for
+      // RANGED_RANGE (8). Hard difficulty aims with zero spread, so the bolt
+      // cannot miss and make this flaky.
+      const map = fakeMap({ enemies: [fakeEnemy({ x: 5.5, y: 10.5, aggroed: true, discovered: true, fireCooldown: 0 })] });
+      const { engine } = makeEngine(map, makeHandlers(), { difficulty: "hard", seed: 7 });
+      // A bolt travels PROJECTILE_SPEED (5) tiles/sec across ~5 tiles, so step
+      // well past its flight time; the enemy chases at 1.7 tiles/sec and still
+      // cannot close to melee in that window.
+      for (let i = 0; i < 120; i++) engine.simulate(0.016);
+
+      const { events } = getHooks().drainEvents() as Drained;
+      const shot = events.find((e) => e.e === "damageTaken" && e.src === "enemyRanged");
+      expect(shot, "an aggroed enemy in ranged band must land a bolt").toBeDefined();
+      const by = shot!.by as { eid: number; arch: string; amt: number }[] | null;
+      expect(by, "a bolt must name its shooter, not report null like a hazard").not.toBeNull();
+      expect(by![0]).toMatchObject({ eid: 0, arch: "normal" });
+      expect(by![0].amt).toBeGreaterThan(0);
+    });
+  });
+
   it("records the player's death", () => {
     withTestHooks((getHooks) => {
       const size = 12;
