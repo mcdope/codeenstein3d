@@ -320,6 +320,27 @@ export const DEFAULT_TUNING = {
   // case intact: dry is still dry, and standing in front of a threat pulling a
   // dead trigger is worse than any trade.
   MELEE_MAX_TARGET_HP: Infinity,
+  // Consecutive engaged decisions against one threat with **no progress at all**
+  // before the bot stops picking it. Mines have had this since forever
+  // (`MINE_TARGET_GIVEUP_TICKS`); threats had nothing, so an aggroed enemy the
+  // bot could neither reach, hit, nor be hit by held it in combat until the
+  // route's waypoint budget expired and the whole attempt was abandoned — the
+  // wedge signature (`branch=main`, flat `hpFrac`, a threat at constant
+  // distance, thousands of decisions at one spot).
+  //
+  // "Progress" deliberately excludes *moving*: the pre-existing
+  // `combatStallTicks` counted an unchanged position, so the stall-strafe it
+  // triggered moved the bot ~0.1 tiles and reset the very counter that fired
+  // it. This one only resets on something that actually advances the fight.
+  THREAT_GIVEUP_TICKS: 60,
+  // How long a given-up threat stays ignored, in decisions. Deliberately a
+  // cooldown rather than a permanent abandon, unlike mines: a mine is optional
+  // and a threat may not be. `exitRoomHasAliveEnemy` gates the exit on the
+  // exit room's enemies being dead, so permanently refusing to fight one would
+  // trade a wedge for an unclearable level. ~10s at a 50ms decision is long
+  // enough for routing to carry the bot out of `engageRadius`, which is what
+  // actually breaks the lock.
+  THREAT_GIVEUP_COOLDOWN_TICKS: 200,
   // Whether the turn key gets its own (short) hold while movement keys run the
   // whole decision — see `turnSplitIntent`. Single-variable switch so the
   // change can be A/B'd against the *same binary*, which is the only way to
@@ -880,13 +901,20 @@ export function combatStrafeKey(ticks, map, player, travelDist, levelTime, { tun
  * implementation's stability guarantee for it is the kind of thing that
  * silently stops being true.
  */
-export function pickThreat(enemies, player, profile, map, tuning = DEFAULT_TUNING) {
+export function pickThreat(enemies, player, profile, map, tuning = DEFAULT_TUNING, memory = null) {
+  // A threat given up on stays ignored until its cooldown expires — see
+  // `THREAT_GIVEUP_TICKS`. Keyed by enemy index, which is stable for a level.
+  const givenUp = memory?.threatCooldown;
   // `i` is the enemy's index in the engine's own `this.enemies` array
   // (stable for a whole level) — used by `decide` to recognize "same
   // enemy as last tick" for the last-visible-position freeze.
   const candidates = enemies
     .map((e, i) => ({ ...e, i }))
     .filter((e) => e.alive && e.aggroed)
+    // `e.i` is the enemy's index in the engine's own array, not this list's
+    // position — the list has already been filtered, so a positional index
+    // here would give up on the wrong enemy as soon as one died.
+    .filter((e) => !givenUp || !(givenUp.get(e.i) > (memory.decisionTicks ?? 0)))
     .map((e) => ({
       ...e,
       dist: Math.hypot(e.x - player.x, e.y - player.y),
@@ -1583,7 +1611,7 @@ export function decide(world, memory, config) {
     });
   }
 
-  const threat = ignoreThreats ? null : pickThreat(enemies, player, profile, map, tuning);
+  const threat = ignoreThreats ? null : pickThreat(enemies, player, profile, map, tuning, memory);
 
   // Break contact instead of trading hits — for two independent reasons that
   // want the identical movement, so they share one branch body and differ only
@@ -2198,6 +2226,39 @@ export function decide(world, memory, config) {
   // A real attack attempt counts as progress even if position doesn't
   // change, so only an unchanging position with no attack counts toward
   // the stall.
+  // Give-up bookkeeping, deliberately separate from `combatStallTicks` below.
+  // That one resets on any position change, so the stall-strafe it triggers
+  // resets it — which is why a wedge could run for thousands of decisions
+  // while a counter aimed at exactly that state sat near zero. This one asks
+  // "is the fight advancing", and moving is not advancing.
+  if (memory) {
+    memory.decisionTicks = (memory.decisionTicks ?? 0) + 1;
+    memory.threatCooldown ??= new Map();
+    if (threat) {
+      const sameTarget = memory.giveUpThreatId === threat.i;
+      // Advancing = we shot at it, or its health actually went down. Nothing
+      // else counts, and in particular neither movement nor aiming does.
+      const hurtIt = sameTarget && threat.hp < (memory.giveUpThreatHp ?? Infinity);
+      if (!sameTarget) {
+        memory.giveUpThreatId = threat.i;
+        memory.giveUpTicks = 0;
+      } else if (fire || useMelee || hurtIt) {
+        memory.giveUpTicks = 0;
+      } else {
+        memory.giveUpTicks = (memory.giveUpTicks ?? 0) + 1;
+        if (memory.giveUpTicks >= tuning.THREAT_GIVEUP_TICKS) {
+          memory.threatCooldown.set(threat.i, memory.decisionTicks + tuning.THREAT_GIVEUP_COOLDOWN_TICKS);
+          memory.giveUpTicks = 0;
+          memory.giveUpThreatId = null;
+        }
+      }
+      memory.giveUpThreatHp = threat.hp;
+    } else {
+      memory.giveUpThreatId = null;
+      memory.giveUpTicks = 0;
+    }
+  }
+
   if (threat && memory) {
     const posKey = `${player.x.toFixed(2)},${player.y.toFixed(2)}`;
     if (!fire && memory.combatStallPos === posKey) {
