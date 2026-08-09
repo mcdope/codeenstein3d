@@ -8,6 +8,7 @@ import { installRaf, type RafController } from "../../test/mocks/raf";
 import type { AmmoPickup, Enemy, GameMap, KeyItem, LootDrop, Mine, SpikeTrap, Teleporter, Tile } from "../map/types";
 import { BRANCH_DOOR_TILE, DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, TELEPORTER_TILE } from "../map/types";
 import { audio } from "./audio";
+import { computeBalanceHash } from "./balanceHash";
 import type { InputSnapshot, InputSource } from "./input";
 import { INPUT_DELAY_TICKS } from "./lagCompensationConstants";
 import { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "./reconciliationConstants";
@@ -23,6 +24,7 @@ import { GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX } from "./weapons";
 // all other top-level code. Stub the canvas context first, then
 // dynamically import engine.ts. Same gotcha as raycaster.ts/textures.ts.
 let RaycasterEngine: typeof import("./engine").RaycasterEngine;
+let SIMULATION_BALANCE: typeof import("./engine").SIMULATION_BALANCE;
 let REVIVE_HEALTH: number;
 type EngineStats = import("./engine").EngineStats;
 type EngineHandlers = import("./engine").EngineHandlers;
@@ -30,7 +32,7 @@ type EngineCarryover = import("./engine").EngineCarryover;
 
 beforeAll(async () => {
   stubCanvasGetContext(document.createElement("canvas"));
-  ({ RaycasterEngine, REVIVE_HEALTH } = await import("./engine"));
+  ({ RaycasterEngine, REVIVE_HEALTH, SIMULATION_BALANCE } = await import("./engine"));
 });
 
 const WIDTH = 200;
@@ -259,6 +261,7 @@ function makeEngine(
     seed?: number;
     input?: ScriptedInput;
     playerCount?: number;
+    rotSpeedMultiplier?: number;
   } = {},
 ): { engine: InstanceType<typeof RaycasterEngine>; input: ScriptedInput; handlers: ReturnType<typeof makeHandlers> } {
   const canvas = makeCanvas();
@@ -276,6 +279,7 @@ function makeEngine(
     undefined,
     undefined,
     opts.playerCount,
+    opts.rotSpeedMultiplier,
   );
   return { engine, input, handlers };
 }
@@ -362,6 +366,30 @@ describe("RaycasterEngine — construction", () => {
     const { engine } = makeEngine(fakeMap({ enemies: [enemy] }), makeHandlers(), { difficulty: "normal" });
     engine.advance(0);
     expect(enemy.maxHp).toBe(100);
+  });
+
+  it.each(["easy", "hard"] as const)(
+    "on %s, that in-place rescale changes the balance fingerprint — so both record and playback must hash before constructing",
+    async (difficulty) => {
+      // Characterization of *why* `main.ts` snapshots the roster before
+      // building a replay's engine. `maxHp` is one of the four fields
+      // `computeBalanceHash` covers, and the constructor rewrites it in
+      // place, so hashing the same map object before vs. after construction
+      // yields two different digests. Recording hashes before; playback used
+      // to hash after, and refused every easy/hard replay as balance drift.
+      const map = fakeMap({ enemies: [fakeEnemy({ hp: 100, maxHp: 100 })] });
+      const before = await computeBalanceHash(map, SIMULATION_BALANCE);
+      makeEngine(map, makeHandlers(), { difficulty });
+      const after = await computeBalanceHash(map, SIMULATION_BALANCE);
+      expect(after).not.toBe(before);
+    },
+  );
+
+  it("on normal, the fingerprint is unchanged by construction — which is why the normal-only board hid that ordering", async () => {
+    const map = fakeMap({ enemies: [fakeEnemy({ hp: 100, maxHp: 100 })] });
+    const before = await computeBalanceHash(map, SIMULATION_BALANCE);
+    makeEngine(map, makeHandlers(), { difficulty: "normal" });
+    expect(await computeBalanceHash(map, SIMULATION_BALANCE)).toBe(before);
   });
 
   it("leaves Elite HP untouched at the default single-player playerCount (1)", () => {
@@ -630,6 +658,74 @@ describe("RaycasterEngine — startExternallyDriven() (multiplayer/headless)", (
     engine.advance(1 / 30);
     expect(handlers.onStats.mock.calls.length).toBe(before + 1); // render()'s own onStats push
     expect(() => engine.stop()).not.toThrow(); // rafId was never assigned; cancelAnimationFrame(0) must still be safe
+  });
+});
+
+describe("RaycasterEngine — startReplayDriven() (replay playback)", () => {
+  it("primes like startExternallyDriven, but without the externally-driven FPS measurement", () => {
+    const { engine, input, handlers } = makeEngine(fakeMap());
+    engine.startReplayDriven();
+    expect(input.attach).toHaveBeenCalledTimes(1);
+    expect(handlers.onStats).toHaveBeenCalledTimes(1);
+    expect(raf.flush(1)).toBe(0); // no competing internal loop
+    // Unlike startExternallyDriven(), this leaves `externallyDriven` unset —
+    // the replay viewer seeks by replaying whole seconds of recorded input in
+    // one synchronous burst, which would report a meaningless four-figure FPS
+    // if it were measured like a paced session. That flag is private and only
+    // surfaces in the FPS overlay, so the guarantee asserted here is the one
+    // that is observable: driving advance() directly still works.
+    expect(() => engine.advance(1 / 60)).not.toThrow();
+  });
+
+  it("reveals the spawn tile before the first step, matching what live play gets from start()", () => {
+    const map = fakeMap();
+    const { engine } = makeEngine(map);
+    expect(map.visited[map.spawn.y][map.spawn.x]).toBe(false); // construction alone reveals nothing
+    engine.startReplayDriven();
+    expect(map.visited[map.spawn.y][map.spawn.x]).toBe(true);
+  });
+
+  it("is idempotent, same as start()", () => {
+    const { engine, input } = makeEngine(fakeMap());
+    engine.startReplayDriven();
+    engine.startReplayDriven();
+    expect(input.attach).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("RaycasterEngine — rotSpeedMultiplier", () => {
+  /** Rotates for a fixed simulated duration with the turn key held, and
+   * reports how far the view actually swung. */
+  function turnFor(rotSpeedMultiplier: number | undefined): number {
+    const input = new ScriptedInput();
+    const { engine } = makeEngine(fakeMap(), makeHandlers(), { input, rotSpeedMultiplier });
+    engine.startReplayDriven();
+    const facing = (): { dirX: number; dirY: number } => engine.getPlayerFacing("local")!;
+    const before = Math.atan2(facing().dirY, facing().dirX);
+    input.keys.add("KeyE");
+    for (let i = 0; i < 10; i++) engine.advance(0.01);
+    const after = Math.atan2(facing().dirY, facing().dirX);
+    let diff = after - before;
+    while (diff > Math.PI) diff -= 2 * Math.PI;
+    while (diff < -Math.PI) diff += 2 * Math.PI;
+    return Math.abs(diff);
+  }
+
+  it("scales rotation by the override, so a replay can reproduce the speed it was recorded at", () => {
+    const base = turnFor(undefined);
+    // ROT_SPEED 2.6 * 0.1s = 0.26rad at 1x. The override is what a replay
+    // segment carries; without it playback runs at 1x and every recorded turn
+    // under-rotates, which is the bug this parameter exists for.
+    expect(base).toBeCloseTo(0.26, 6);
+    expect(turnFor(2.5)).toBeCloseTo(0.65, 6);
+  });
+
+  it("clamps a hostile or corrupt recorded value instead of trusting it", () => {
+    // A segment reaches the constructor from localStorage or an imported
+    // replay file, so this is untrusted input, not just a URL param.
+    expect(turnFor(1e9)).toBeCloseTo(2.6, 6); // clamped to 10x
+    expect(turnFor(0)).toBeCloseTo(0.26, 6); // clamped up to 1x
+    expect(turnFor(Number.NaN)).toBeCloseTo(0.26, 6);
   });
 });
 

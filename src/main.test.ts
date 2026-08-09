@@ -18,6 +18,7 @@ import { hashRun, loadHighscores, recordHighscore } from "./engine/highscores";
 import type { InputSnapshot } from "./engine/input";
 import type { ReplayLevelSegment } from "./engine/replay";
 import type { EngineCarryover } from "./engine/engine";
+import type { DifficultyLevel } from "./difficulty";
 import { GHIDRA_WEAPON_INDEX } from "./engine/weapons";
 import { COUNTDOWN_TICKS } from "./engine/transitionConstants";
 
@@ -5915,7 +5916,17 @@ async function recordNavigatedSegment(options: {
   target: (map: { spawn: { x: number; y: number }; exit: { x: number; y: number }; hazards: { x: number; y: number }[] }) => { x: number; y: number };
   godMode: boolean;
   extraStandingFrames?: number;
-}): Promise<ReplayLevelSegment> {
+  /** Records at a non-1x bot rotation multiplier, the way the balancing bot
+   * (and therefore the shipped board) does — see `ReplayLevelSegment`'s own
+   * field. Passed to the recording engine *and* written into the segment, so
+   * a replay of the result can be checked for reproducing it. */
+  rotSpeedMultiplier?: number;
+  /** Records on a non-normal difficulty. Load-bearing for the balance-hash
+   * ordering: easy (0.7x) and hard (1.5x) rescale enemy `maxHp`, which is one
+   * of the four fields the fingerprint covers, while normal (1x) leaves it
+   * untouched — which is why normal-only coverage hid the ordering bug. */
+  difficulty?: DifficultyLevel;
+}): Promise<{ segment: ReplayLevelSegment; finalState: ReturnType<NonNullable<ReturnType<typeof testHooks>>["getPlayerState"]> }> {
   enableTestHooks();
   // engine.ts (via textures.ts) imports a real *value* — `export const
   // textures = new TextureManager()` — that calls `canvas.getContext("2d")`
@@ -5952,12 +5963,25 @@ async function recordNavigatedSegment(options: {
     ownedWeapons: [GHIDRA_WEAPON_INDEX],
     godMode: options.godMode,
   };
+  const difficulty = options.difficulty ?? "normal";
   recorder.startLevel(
-    { filePath: "recorded.c", bonusLevel: false, gameplaySeed, difficulty: "normal", gore: "normal", carryover },
+    {
+      filePath: "recorded.c",
+      bonusLevel: false,
+      gameplaySeed,
+      rotSpeedMultiplier: options.rotSpeedMultiplier,
+      difficulty,
+      gore: "normal",
+      carryover,
+    },
     Promise.resolve("placeholder-hash"),
     // The *real* balance hash, not a placeholder: playback recomputes it from
     // the map it regenerates and refuses the replay on a mismatch, which is
     // the whole point of the guard.
+    //
+    // Computed here, *above* the constructor below, for the same load-bearing
+    // reason `launchLevel` does: the constructor rescales enemy hp/maxHp in
+    // place by the difficulty multipliers, and `maxHp` is hashed.
     computeBalanceHash(map, SIMULATION_BALANCE),
   );
 
@@ -5967,16 +5991,32 @@ async function recordNavigatedSegment(options: {
     {},
     carryover,
     "normal",
-    "normal",
+    difficulty,
     gameplaySeed,
     input,
     recorder,
+    undefined, // localPlayerId
+    undefined, // localSpawn
+    undefined, // playerCount
+    options.rotSpeedMultiplier,
   );
+  // Live play primes via `start()`; this standalone recording engine drives
+  // `advance()` directly, exactly as replay playback does. Both sides must
+  // prime the same way or the spawn-tile reveal lands on a different frame
+  // and the recorded/replayed frame counts stop matching by construction.
+  engine.startReplayDriven();
 
   const targetTile = options.target(map);
   const path = bfsPath(map.grid, map.spawn, targetTile);
   expect(path.length).toBeGreaterThan(0);
   const dt = 0.05;
+  // "Close enough to walk forward" has to stay wider than a single frame's
+  // rotation (`ROT_SPEED 2.6 * multiplier * dt`), or the driver overshoots
+  // every correction and oscillates in place forever instead of ever holding
+  // KeyW. At 1x that is 0.13 against the 0.15 below — a margin thin enough
+  // that any multiplier at all breaks it, so it scales with one. This is the
+  // same overshoot the real bot's turn-burst sizing exists to avoid.
+  const turnThreshold = 0.15 * (options.rotSpeedMultiplier ?? 1);
   let targetIndex = 0;
   for (let frame = 0; frame < 800 && targetIndex < path.length; frame++) {
     const state = testHooks()!.getPlayerState();
@@ -5996,7 +6036,7 @@ async function recordNavigatedSegment(options: {
     while (diff > Math.PI) diff -= 2 * Math.PI;
     while (diff < -Math.PI) diff += 2 * Math.PI;
     input.keys.clear();
-    input.keys.add(Math.abs(diff) > 0.15 ? (diff > 0 ? "KeyE" : "KeyQ") : "KeyW");
+    input.keys.add(Math.abs(diff) > turnThreshold ? (diff > 0 ? "KeyE" : "KeyQ") : "KeyW");
     engine.advance(dt);
   }
 
@@ -6007,10 +6047,15 @@ async function recordNavigatedSegment(options: {
     engine.advance(dt);
   }
 
+  // Captured before returning, while this recording engine's own test hooks
+  // are still the ones installed on `window` — every caller clears them right
+  // afterward so a replay's engine can install its own.
+  const finalState = testHooks()!.getPlayerState();
+
   const payload = await recorder.finish();
   const segment = payload?.levels[0];
   expect(segment).toBeDefined();
-  return segment!;
+  return { segment: segment!, finalState };
 }
 
 /** Seeds a real (compressed, via the real `recordHighscore`) localStorage
@@ -6346,7 +6391,7 @@ describe("main.ts — replay playback (startReplay)", () => {
     // through the same seedAndOpenReplay flow every other test in this
     // block uses, this time actually letting it run to completion instead
     // of just checking the transport bar/mechanics.
-    const recordedSegment = await recordNavigatedSegment({
+    const { segment: recordedSegment } = await recordNavigatedSegment({
       sourceContent: NAVIGABLE_FIXTURE_C,
       target: (map) => map.exit,
       godMode: true, // prove navigation reaches the exit, not survive incidental combat
@@ -6394,6 +6439,124 @@ describe("main.ts — replay playback (startReplay)", () => {
     expect(testHooks()!.getPlayerState().state).toBe("won");
   });
 
+  /** Records a real win at 2.5x bot rotation, then replays it — optionally
+   * after stripping the recorded multiplier back off the segment, which is
+   * what every segment recorded before that field existed looks like.
+   *
+   * The two arms are the point: the "kept" arm proves playback reproduces the
+   * recorded rotation, and the "stripped" arm proves the field is what makes
+   * that possible, rather than the run being reproducible anyway. Without the
+   * second arm this test would still pass if the multiplier stopped being
+   * applied at *both* ends. */
+  async function replayRotationRecording(keepMultiplier: boolean): Promise<{
+    recordedEnd: { x: number; y: number; dirX: number; dirY: number; state: string };
+    replayedEnd: { x: number; y: number; dirX: number; dirY: number; state: string };
+  }> {
+    const { segment: recordedSegment, finalState: recordedEnd } = await recordNavigatedSegment({
+      sourceContent: NAVIGABLE_FIXTURE_C,
+      target: (map) => map.exit,
+      godMode: true,
+      // Well above 1x, and not a whole number, so a playback that silently
+      // fell back to 1 (or rounded) cannot coincidentally match.
+      rotSpeedMultiplier: 2.5,
+    });
+    expect(recordedSegment.rotSpeedMultiplier).toBe(2.5);
+    expect(recordedEnd.state).toBe("won");
+    delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+
+    await importMain();
+    enableTestHooks();
+    stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": NAVIGABLE_FIXTURE_C }));
+    const parsed = (await parseFile("main.c", NAVIGABLE_FIXTURE_C))!;
+    const astHash = await hashRun(JSON.stringify(parsed), REPLAY_CAMPAIGN_NAME);
+    const segment: ReplayLevelSegment = { ...recordedSegment, filePath: `${REPLAY_CAMPAIGN_NAME}/main.c`, astHash };
+    if (!keepMultiplier) delete segment.rotSpeedMultiplier;
+
+    await seedAndOpenReplay([segment]);
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    await waitUntil(() => !!testHooks(), 8000);
+
+    // Run every recorded frame, or until the replayed run reaches its own
+    // conclusion. The stripped arm is expected to run out of input without
+    // ever winning, so this cannot wait on "won" alone.
+    let flushed = 0;
+    await waitUntil(() => {
+      flushed += raf.flush(1, 16);
+      return testHooks()!.getPlayerState().state !== "playing" || flushed > 1200;
+    }, 20000);
+    return { recordedEnd, replayedEnd: testHooks()!.getPlayerState() };
+  }
+
+  it("reproduces a run recorded at a non-1x bot rotation multiplier", { timeout: 45000 }, async () => {
+    const { recordedEnd, replayedEnd } = await replayRotationRecording(true);
+    expect(replayedEnd.state).toBe("won");
+    // Trajectory, not just outcome. Every pre-existing replay test in this
+    // block asserts only "won"/"over", which is exactly why a playback that
+    // rotated 2.5x too slowly could ship: a *different* run can still reach
+    // the exit. Bit-exactness is the real contract — same inputs, same seed,
+    // same simulation.
+    expect(replayedEnd.x).toBeCloseTo(recordedEnd.x, 9);
+    expect(replayedEnd.y).toBeCloseTo(recordedEnd.y, 9);
+    expect(replayedEnd.dirX).toBeCloseTo(recordedEnd.dirX, 9);
+    expect(replayedEnd.dirY).toBeCloseTo(recordedEnd.dirY, 9);
+  });
+
+  it("diverges from a 2.5x recording when the segment carries no multiplier — the pre-fix behaviour", { timeout: 45000 }, async () => {
+    // Pins that the recorded field is load-bearing. A segment without it
+    // replays at 1x, so every recorded turn under-rotates by 2.5x and the run
+    // simply does not go where it went — which is what every shipped replay
+    // did before the field existed.
+    const { recordedEnd, replayedEnd } = await replayRotationRecording(false);
+    const drift = Math.hypot(replayedEnd.x - recordedEnd.x, replayedEnd.y - recordedEnd.y);
+    expect(drift).toBeGreaterThan(1);
+  });
+
+  it.each(["easy", "hard"] as const)(
+    "plays back a run recorded on %s instead of refusing it as balance drift",
+    { timeout: 45000 },
+    async (difficulty) => {
+      // The engine constructor rescales enemy hp/maxHp in place by the
+      // difficulty multipliers (easy 0.7x, hard 1.5x), and `maxHp` is one of
+      // the four fields `computeBalanceHash` covers. Recording hashes before
+      // constructing; playback used to hash after, so these were refused
+      // outright with "recorded under different game balance". Normal is 1x,
+      // which is why every other replay test here missed it.
+      const { segment: recordedSegment, finalState: recordedEnd } = await recordNavigatedSegment({
+        sourceContent: NAVIGABLE_FIXTURE_C,
+        target: (map) => map.exit,
+        godMode: true,
+        difficulty,
+      });
+      expect(recordedEnd.state).toBe("won");
+      delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+
+      await importMain();
+      enableTestHooks();
+      stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": NAVIGABLE_FIXTURE_C }));
+      const parsed = (await parseFile("main.c", NAVIGABLE_FIXTURE_C))!;
+      const astHash = await hashRun(JSON.stringify(parsed), REPLAY_CAMPAIGN_NAME);
+      const segment: ReplayLevelSegment = { ...recordedSegment, filePath: `${REPLAY_CAMPAIGN_NAME}/main.c`, astHash };
+      expect(segment.difficulty).toBe(difficulty);
+
+      await seedAndOpenReplay([segment]);
+      await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+      // The refusal path tears the viewing down instead of ever constructing
+      // an engine, so "test hooks appeared at all" is itself the assertion
+      // that the replay was not rejected.
+      await waitUntil(() => !!testHooks(), 8000);
+
+      let flushed = 0;
+      await waitUntil(() => {
+        flushed += raf.flush(1, 16);
+        return testHooks()!.getPlayerState().state !== "playing" || flushed > 1200;
+      }, 20000);
+      const replayedEnd = testHooks()!.getPlayerState();
+      expect(replayedEnd.state).toBe("won");
+      expect(replayedEnd.x).toBeCloseTo(recordedEnd.x, 9);
+      expect(replayedEnd.y).toBeCloseTo(recordedEnd.y, 9);
+    },
+  );
+
   // Does three sequential real-time state transitions (~3x the work of the
   // single-transition onWin/onGameOver tests below), so it needs a taller
   // timeout ceiling than those to keep the same margin on a loaded runner.
@@ -6406,13 +6569,13 @@ describe("main.ts — replay playback (startReplay)", () => {
     // generation is deterministic per source content, so recording against
     // it twice (once per file name) is simpler than sourcing a second,
     // distinct winnable fixture.
-    const firstLevelSegment = await recordNavigatedSegment({
+    const { segment: firstLevelSegment } = await recordNavigatedSegment({
       sourceContent: NAVIGABLE_FIXTURE_C,
       target: (map) => map.exit,
       godMode: true,
     });
     delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
-    const secondLevelSegment = await recordNavigatedSegment({
+    const { segment: secondLevelSegment } = await recordNavigatedSegment({
       sourceContent: NAVIGABLE_FIXTURE_C,
       target: (map) => map.exit,
       godMode: true,
@@ -6469,7 +6632,7 @@ describe("main.ts — replay playback (startReplay)", () => {
     // Same technique as the win test above, but navigate to a hazard tile
     // without god mode and linger there until it kills — exercises
     // buildEngineFor's onGameOver instead of its onWin.
-    const recordedSegment = await recordNavigatedSegment({
+    const { segment: recordedSegment } = await recordNavigatedSegment({
       sourceContent: HAZARD_FIXTURE_C,
       target: (map) => map.hazards[0],
       godMode: false,
