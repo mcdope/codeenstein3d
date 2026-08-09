@@ -50,7 +50,8 @@ export interface DifficultyMultipliers {
 export const DIFFICULTY_MULTIPLIERS: Record<DifficultyLevel, DifficultyMultipliers> = {
   easy: { hp: 0.7, damage: 0.85, ammoDropRate: 1.3, enemyAimSpreadDeg: 10 },
   normal: { hp: 1, damage: 1, ammoDropRate: 1, enemyAimSpreadDeg: 4 },
-  hard: { hp: 1.5, damage: 1.5, ammoDropRate: 0.7, enemyAimSpreadDeg: 0 },
+  // A/B ARM ONLY — enemyAimSpreadDeg 0 -> 3. Do not merge.
+  hard: { hp: 1.5, damage: 1.5, ammoDropRate: 0.7, enemyAimSpreadDeg: 3 },
 };
 
 export const DEFAULT_DIFFICULTY: DifficultyLevel = "normal";
