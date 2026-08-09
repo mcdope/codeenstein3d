@@ -242,6 +242,60 @@ jobs:
   # virtual clock, so it cannot see anything that depends on the real transport
   # delay or on the transition itself. Three of the six bugs above were
   # invisible to it.
+  # Replays a shipped highscore entry and asserts it reproduces the run it
+  # recorded, frame for frame. Its own job so its wall clock runs concurrently
+  # with the rest, and chromium-only on purpose: transcendental math is not
+  # bit-identical across browser engines (that is what
+  # verify:multiplayer-determinism measures), so a firefox/webkit leg here
+  # would be testing float behaviour rather than replay fidelity and a failure
+  # would be unattributable. See scripts/verify-replay.mjs's doc comment.
+  #
+  # A PR checks the first 3 levels of one entry (~1 min); master checks all
+  # three entries end to end, including the 5x Pro one.
+  verify-replay:
+    name: verify (replay)
+    runs-on: ubuntu-latest
+    # Full board is ~186k advance() calls of real simulate+render; SwiftShader
+    # on a CI runner has no GPU, so budget several times the local figure.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browser binary
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium
+      - name: Install Playwright OS dependencies
+        run: npx playwright install-deps chromium
+      - name: Cache online WAD assets
+        uses: actions/cache@v6
+        with:
+          path: public/wads
+          key: online-wads-${{ hashFiles('src/wad/onlineWadCatalog.ts') }}
+      - name: Start dev server
+        run: |
+          npm run dev -- --port 5173 --strictPort &
+          for i in $(seq 1 30); do
+            curl -s -o /dev/null http://localhost:5173/ && break
+            sleep 1
+          done
+      - run: npm run verify:replay
+        env:
+          CODEENSTEIN_DEV_URL: "http://localhost:5173"
+          CODEENSTEIN_VERIFY_BROWSER: chromium
+          CODEENSTEIN_REPLAY_ENTRIES: ${{ github.event_name == 'pull_request' && '0' || 'all' }}
+          CODEENSTEIN_REPLAY_LEVEL_LIMIT: ${{ github.event_name == 'pull_request' && '3' || '' }}
+          CODEENSTEIN_REPLAY_CONCURRENCY: 3
+
   verify-multiplayer-transition:
     name: verify (multiplayer-transition)
     runs-on: ubuntu-latest
