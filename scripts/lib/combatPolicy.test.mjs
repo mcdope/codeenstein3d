@@ -36,6 +36,7 @@ import {
   segmentBlocked,
   pickIncomingBolt,
   segmentsFor,
+  turnSplitIntent,
   strafeIsSafe,
   turnBurstMs,
   uniformIntent,
@@ -1498,5 +1499,68 @@ describe("movementVectorFor", () => {
     const v = movementVectorFor(["KeyD"], facingNorth);
     expect(v.x).toBeCloseTo(-1);
     expect(v.y).toBeCloseTo(0);
+  });
+});
+
+describe("turnSplitIntent", () => {
+  const TURN = "KeyE";
+
+  it("gives the turn key its own short hold while movement runs the whole decision", () => {
+    // The decoupling itself. A widened decision (the stall-strafe needs 50ms
+    // of displacement) must not hold the turn key for 50ms too.
+    const intent = turnSplitIntent(new Set([TURN, "KeyA", "ShiftLeft"]), 50, 3, 50, {});
+    expect(intent.holds.get(TURN)).toBe(3);
+    expect(intent.holds.get("KeyA")).toBe(50);
+    expect(intent.holds.get("ShiftLeft")).toBe(50);
+    expect(intent.durationMs).toBe(50);
+  });
+
+  it("dispatches as two phases: turn+move, then move alone", () => {
+    // `segmentsFor` is what realises it, and it has only ever seen one phase.
+    const intent = turnSplitIntent(new Set([TURN, "KeyA"]), 50, 3, 50, {});
+    const phases = segmentsFor(intent.holds, intent.durationMs, 0);
+    expect(phases).toHaveLength(2);
+    expect(phases[0]).toEqual({ keys: [TURN, "KeyA"], ms: 3 });
+    expect(phases[1]).toEqual({ keys: ["KeyA"], ms: 47 });
+    expect(phases.reduce((sum, p) => sum + p.ms, 0)).toBe(50);
+  });
+
+  it("is identical to uniformIntent when the turn wants the whole decision", () => {
+    // The common case must not change: an unwidened decision is one phase, so
+    // this cannot alter behaviour where there was nothing to decouple.
+    const intent = turnSplitIntent(new Set([TURN, "KeyW"]), 12, 12, 50, {});
+    expect(segmentsFor(intent.holds, intent.durationMs, 0)).toEqual([{ keys: [TURN, "KeyW"], ms: 12 }]);
+  });
+
+  it("never extends a turn past the decision, nor shortens movement below it", () => {
+    // `Math.min` guards the widened case; a turn hold longer than the decision
+    // would otherwise produce a phase with negative remainder.
+    const intent = turnSplitIntent(new Set([TURN, "KeyW"]), 20, 999, 50, {});
+    expect(intent.holds.get(TURN)).toBe(20);
+    expect(intent.holds.get("KeyW")).toBe(20);
+  });
+
+  it("falls back to a uniform hold when no separate turn hold was recorded", () => {
+    const intent = turnSplitIntent(new Set([TURN, "KeyW"]), 50, null, 50, {});
+    expect(intent.holds.get(TURN)).toBe(50);
+    expect(intent.holds.get("KeyW")).toBe(50);
+  });
+
+  it("keeps the overshoot inside fireAngleEps for every profile", () => {
+    // The property the whole change exists for, stated in the units that
+    // matter. Before: a widened decision turned ENGINE_ROT_SPEED * rotMult *
+    // 50ms regardless of how small the correction was.
+    const ROT = DEFAULT_TUNING.ENGINE_ROT_SPEED;
+    for (const [name, rotMult, eps] of [["Casual", 2.0, 0.08], ["Gamer", 3.5, 0.05], ["Pro", 5.0, 0.03]]) {
+      const wantedRad = eps / 2; // a correction finer than the fire tolerance
+      const burst = turnBurstMs(wantedRad, rotMult, 0, { tuning: DEFAULT_TUNING, stepMs: 50, memory: null });
+      const intent = turnSplitIntent(new Set(["KeyE", "KeyA"]), 50, burst, 50, {});
+      const heldMs = intent.holds.get("KeyE");
+      const actualRad = ROT * rotMult * (heldMs / 1000);
+      expect(actualRad, `${name} overshoots its own fireAngleEps`).toBeLessThanOrEqual(eps);
+      // And the strafe still gets the full decision — the half the 2026-07-29
+      // A/B lost when it removed the widening instead.
+      expect(intent.holds.get("KeyA")).toBe(50);
+    }
   });
 });

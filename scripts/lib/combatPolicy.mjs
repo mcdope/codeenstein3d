@@ -1384,6 +1384,39 @@ export function pickRangedWeapon(player, profile, enemies, threat, mineTarget, t
  * while still holding keys (the ranged approach with no turn key, for one), and
  * those hold for the entire window.
  */
+/**
+ * Like `uniformIntent`, but lets the turn key finish early while the movement
+ * keys run the whole decision.
+ *
+ * This is what `segmentsFor` was built for and never given: with differing
+ * holds it emits two phases — turn+move, then move alone — so a small aim
+ * correction lands as a small rotation even while the bot is strafing.
+ *
+ * Before this, one scalar served both. The combat branch widens `turnBurst` to
+ * a movement-sized burst so the stall-strafe actually displaces the bot, and
+ * that widening held the *turn* key for the full decision too: 0.26/0.455/0.65
+ * rad for Casual/Gamer/Pro against `fireAngleEps` of 0.08/0.05/0.03, a 3x to
+ * 22x overshoot. Since the stall-strafe fires precisely *because* the bot has
+ * stalled in combat, the remedy was producing the aim failure that kept the
+ * stall alive.
+ *
+ * The 2026-07-29 A/B could only trade one against the other — it removed the
+ * widening, killed the overshoot, and cost 15pp of Gamer/normal qualify rate
+ * because the strafe then moved the bot ~0.02 tiles. Decoupling is the option
+ * that experiment could not express.
+ */
+export function turnSplitIntent(moveKeys, durationMs, turnHoldMs, stepMs, rest) {
+  const total = durationMs ?? stepMs;
+  const holds = new Map();
+  for (const key of moveKeys) {
+    const isTurnKey = key === "KeyQ" || key === "KeyE";
+    // `Math.min` matters: a widened decision must not *extend* a turn, and an
+    // unwidened one must not shorten the movement keys below the turn itself.
+    holds.set(key, isTurnKey && turnHoldMs != null ? Math.min(turnHoldMs, total) : total);
+  }
+  return { holds, durationMs, fire: false, useMelee: false, weaponSwitchIndex: null, firedSemiAuto: false, ...rest };
+}
+
 export function uniformIntent(keys, durationMs, stepMs, rest) {
   const hold = durationMs ?? stepMs;
   const holds = new Map();
@@ -1754,6 +1787,13 @@ export function decide(world, memory, config) {
   const currentAngle = Math.atan2(player.dirY, player.dirX);
   const moveKeys = new Set();
   let turnBurst;
+  // The turn key's OWN hold, kept apart from `turnBurst` because the branches
+  // below widen that to a movement-sized burst so the stall-strafe actually
+  // displaces the bot. One scalar cannot serve both: widening it holds the turn
+  // key for the whole decision too, which is the aim overshoot the
+  // `[nav-warn] implausible rotation` line reports. `turnSplitIntent` below
+  // dispatches the two as separate phases.
+  let turnHoldMs = null;
   let fire = false;
   // True when the bot was aimed, aligned, and otherwise ready to fire, but
   // held back purely by cadence — either `profile.fireCooldownMs` or the
@@ -1790,6 +1830,7 @@ export function decide(world, memory, config) {
       if (!player.meleeWouldHit) {
         moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
         turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, currentAngle, burstCtx);
+        turnHoldMs = turnBurst;
         // Also keep closing the last bit of distance, not just re-aiming
         // in place — the enemy's own chase AI is still walking between
         // MELEE_CLOSE_MIN_DISTANCE and MELEE_RANGE. Never closer than one
@@ -1827,24 +1868,30 @@ export function decide(world, memory, config) {
         }
         if (stallStrafeKey) {
           moveKeys.add(stallStrafeKey);
-          // NOTE: this also widens the *turn* key's hold, because
-          // `uniformIntent` applies one scalar to every key. When a turn key is
-          // present a small correction executes as a full decision's rotation —
-          // measured at 8.3x (0.055rad needed, 0.455rad performed), and it is
-          // the origin of the "[nav-warn] implausible rotation" log line:
-          // 0.45rad is exactly one 50ms decision at Gamer's 9.1rad/s, 0.65rad
-          // likewise at Pro's 13rad/s. Casual's 0.26rad falls under the
-          // detector's 0.3 floor, which is why Casual never warns.
+          // Widens the *decision*, which the strafe needs: held for a
+          // turn-sized burst it displaces the bot ~0.02 tiles and stops being a
+          // dodge at all.
           //
-          // Gating this on "no turn key held" was tried and **reverted**
-          // (2026-07-29) after a matched-scale A/B: it removed the overshoot
-          // completely (8.3x -> 1.0x, nav-warns 15 -> 0) but `enemyAccuracy`
-          // rose on all three combos (+1.6/+0.6/+4.9%) and Gamer/normal
-          // `qualifyRate` fell 15pp, breaching the pre-registered guard. The
-          // widening is load-bearing for *dodging*, not aiming: without it the
-          // stall-strafe key is held for a turn-sized burst and moves the bot
-          // ~0.02 tiles, so it stops strafing and gets hit more. Don't "fix"
-          // this without re-running that A/B.
+          // It used to widen the turn key's hold with it, because
+          // `uniformIntent` applied one scalar to every key — a small
+          // correction then executed as a full decision's rotation, measured at
+          // 8.3x (0.055rad needed, 0.455rad performed), and the origin of the
+          // "[nav-warn] implausible rotation" line. 0.455rad is exactly one
+          // 50ms decision at Gamer's 9.1rad/s, 0.65rad likewise at Pro's
+          // 13rad/s; Casual's 0.26rad sits under the detector's 0.3 floor,
+          // which is why Casual never warned despite overshooting its own
+          // `fireAngleEps` 3x. Since this strafe fires precisely *because* the
+          // bot has stalled in combat, the remedy was producing the aim failure
+          // that kept the stall alive.
+          //
+          // Gating the widening on "no turn key held" was tried and reverted
+          // (2026-07-29): it removed the overshoot (8.3x -> 1.0x, nav-warns
+          // 15 -> 0) but `enemyAccuracy` rose on all three combos and
+          // Gamer/normal `qualifyRate` fell 15pp. That A/B could only trade
+          // aiming against dodging, because both rode one field. `turnHoldMs`
+          // now carries the turn's own hold and `turnSplitIntent` dispatches
+          // them as separate phases, so the widening below applies to the
+          // strafe alone.
           turnBurst = Math.max(turnBurst ?? 0, moveBurstMs(10, false, moveCtx));
         }
       } else {
@@ -1865,6 +1912,7 @@ export function decide(world, memory, config) {
         if (Math.abs(delta) > (mineNotReady ? tuning.MINE_REALIGN_EPS : profile.fireAngleEps)) {
           moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
           turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, currentAngle, burstCtx);
+          turnHoldMs = turnBurst;
         }
         // Keep closing distance while lining up a ranged shot (threat-only,
         // not while aiming at a mine, and only outside melee range).
@@ -2056,6 +2104,7 @@ export function decide(world, memory, config) {
     if (Math.abs(delta) > tuning.TURN_MOVE_EPS) {
       moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
       turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, currentAngle, burstCtx);
+      turnHoldMs = turnBurst;
       // Walk while still correcting heading, capped to angular errors
       // under MAX_WALK_WHILE_TURNING_RAD so a sharp corridor doubling-back
       // doesn't send the bot walking the wrong way while it turns around.
@@ -2160,7 +2209,7 @@ export function decide(world, memory, config) {
     memory.combatStrafeTicks = 0;
   }
 
-  return uniformIntent(moveKeys, turnBurst, stepMs, {
+  return turnSplitIntent(moveKeys, turnBurst, turnHoldMs, stepMs, {
     fire,
     useMelee,
     weaponSwitchIndex: weaponSwitch,
