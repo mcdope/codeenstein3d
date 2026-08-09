@@ -69,6 +69,12 @@
  * Requires a dev server (`npm run dev`) — `?testHooks=1` is DEV-only by
  * design, so this cannot run against a built bundle.
  *
+ * **Measured, not estimated** (local, headless Chromium, 2026-08-09): all
+ * three entries end to end — 51 segments, 186,430 recorded frames, 450 checks
+ * — is **360s** at `CONCURRENCY=3`. One entry at `LEVEL_LIMIT=2` is **28s**.
+ * A CI runner has no GPU (SwiftShader), so budget several times that; the job
+ * is capped at 45 minutes.
+ *
  * Env knobs:
  *  - `CODEENSTEIN_DEV_URL` (default `http://localhost:5183`)
  *  - `CODEENSTEIN_REPLAY_ENTRIES` (default `0`) — comma-separated board
@@ -79,6 +85,7 @@
  *  - `CODEENSTEIN_REPLAY_SPEED` (default 1) — 1/2/4, via the transport bar.
  *    Same total `advance()` count, fewer rAF ticks.
  *  - `CODEENSTEIN_CONSOLE_FORWARD=1` — forward page console output.
+ *  - `CODEENSTEIN_REPLAY_TRACE=1` — one progress line per pump chunk.
  */
 import { installVirtualClock } from "./lib/virtualClock.mjs";
 import { resolveBrowserEngine } from "./lib/browserEngine.mjs";
@@ -88,6 +95,9 @@ const LEVEL_LIMIT = process.env.CODEENSTEIN_REPLAY_LEVEL_LIMIT ? Number(process.
 const CONCURRENCY = Number(process.env.CODEENSTEIN_REPLAY_CONCURRENCY ?? 2);
 const SPEED = Number(process.env.CODEENSTEIN_REPLAY_SPEED ?? 1);
 const CONSOLE_FORWARD = process.env.CODEENSTEIN_CONSOLE_FORWARD === "1";
+/** Per-chunk progress lines — the trace to read when a run stops concluding,
+ * rather than reasoning about it from the final counters. */
+const TRACE = process.env.CODEENSTEIN_REPLAY_TRACE === "1";
 
 /** One recorded frame per rAF tick at 1x, so the pump step is a frame's worth
  * of virtual time. The value only has to be *a* fixed step — playback advances
@@ -181,7 +191,18 @@ async function playEntry(page, rowIndex, expected) {
   let stalled = 0;
   let lastProgress = "";
   let ticks = 0;
-  const tickBudget = expected.levels.reduce((sum, l) => sum + l.framesRecorded, 0) * 1.05 + 5000;
+  let chunks = 0;
+  // Budgeted on *frames consumed*, not on ticks pumped. Those are not the same
+  // thing: a level transition re-reads, re-parses and re-hashes its file
+  // asynchronously, and every pump chunk that lands during one advances the
+  // clock without consuming a recorded frame. With 16 transitions at
+  // PUMP_CHUNK_TICKS each, a tick budget sized off the frame count is
+  // exceeded by the transitions alone — which is a property of the harness,
+  // not of the replay, and made a correct playback look like a runaway.
+  // Genuine hangs are the stall watchdog's job; this bounds the other
+  // runaway, a replay that somehow keeps consuming frames forever.
+  const totalRecorded = expected.levels.reduce((sum, l) => sum + l.framesRecorded, 0);
+  const frameBudget = totalRecorded * 1.05 + 5000;
 
   for (;;) {
     const state = await page.evaluate(
@@ -192,9 +213,17 @@ async function playEntry(page, rowIndex, expected) {
       { chunkTicks: PUMP_CHUNK_TICKS, stepMs: PUMP_STEP_MS },
     );
     ticks += PUMP_CHUNK_TICKS;
+    chunks += 1;
 
     if (state.ended) return state;
     if (LEVEL_LIMIT !== null && state.levels.length >= LEVEL_LIMIT) return { ...state, truncatedByLimit: true };
+
+    const consumed = state.levels.reduce((sum, l) => sum + l.framesConsumed, 0) + (state.probe?.frameIndex ?? 0);
+    if (TRACE) {
+      console.log(
+        `    [entry ${rowIndex}] chunk ${chunks}: level ${state.probe?.levelIndex}, frame ${state.probe?.frameIndex}/${state.probe?.framesRecorded}, ${consumed}/${totalRecorded} frames, ${ticks} ticks`,
+      );
+    }
 
     const progress = `${state.probe?.levelIndex}:${state.probe?.frameIndex}`;
     if (progress === lastProgress) {
@@ -207,13 +236,21 @@ async function playEntry(page, rowIndex, expected) {
       stalled = 0;
       lastProgress = progress;
     }
-    if (ticks > tickBudget) return { ...state, budgetExhausted: true, ticks };
+    if (consumed > frameBudget) return { ...state, budgetExhausted: true, consumed, totalRecorded };
   }
 }
 
 function verifyEntry(index, expected, state) {
   log.push(`\n--- Entry ${index}: ${expected.campaignName}, ${expected.levelsCleared} levels, score ${expected.score} ---`);
 
+  if (state.crashed) {
+    check(
+      `Entry ${index} ran to completion`,
+      false,
+      `${state.crashed}${state.crashed.includes("Execution context was destroyed") ? " — if you edited anything under src/ while this ran, that is Vite hot-reloading the page; re-run without touching it" : ""}`,
+    );
+    return;
+  }
   if (state.missingButton) {
     check(`Entry ${index} renders a "Watch" button`, false, "no .replay-btn in that row — the board shipped without a usable replay payload");
     return;
@@ -225,7 +262,7 @@ function verifyEntry(index, expected, state) {
     return;
   }
   if (state.budgetExhausted) {
-    check(`Entry ${index} finished within its recorded frame budget`, false, `${state.ticks} ticks without concluding`);
+    check(`Entry ${index} finished within its recorded frame budget`, false, `consumed ${state.consumed} of ${state.totalRecorded} recorded frames without concluding`);
     return;
   }
 
@@ -321,6 +358,12 @@ async function main() {
       // recorded difficulty, not whatever preference the page happens to hold.
       try {
         results.push({ index, state: await playEntry(page, index, board[index]) });
+      } catch (err) {
+        // One entry blowing up must not take the other two with it — and the
+        // message matters, because the most common cause is self-inflicted:
+        // editing anything under `src/` while this runs makes Vite hot-reload
+        // the page, which destroys the execution context mid-`evaluate`.
+        results.push({ index, state: { crashed: err.message } });
       } finally {
         await context.close();
       }
