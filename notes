@@ -60,7 +60,26 @@ Durable rationale ("why is the code like this?") belongs in [`doc/dev/decisions.
   - **The walls that remain are NOT Elite walls, and this is the Stage D finding.** At every level still clearing under 50%, `normal` enemies dominate and the Elite is incidental: vim L9 **normal 91% / elite 7%** (80 enemies), curl L10 normal 78% / elite 16% (58 enemies), wolf3d L10 normal 75% / elite 11%. laravel L14 is the only one where the Elite is still a real share (24%), and it has the smallest roster (21). So the next balance question is **roster density and attrition**, which the Elite ceiling does not touch and was never meant to. Note most of these levels were *never reachable before*, so they are first observations rather than regressions.
   - **Follow-up worth one pass**: pack members carry the elevated HP but not the `elite` flag, so they render as ordinary enemies that take ~3x longer to kill than a normal one. Mechanically intended; visually it reads as an unexplained sponge. A tint/scale for "Elite pack member" without the damage multiplier would fix it — that needs a third flag or an `Enemy` field, which is why it is not in this change.
 
-- [ ] **The bot can never aim: its smallest possible turn is 3-22x its own fire tolerance. Root-caused 2026-08-09 from the curl wedges.** The wedges were the symptom; this is the mechanism, and it is general — curl only supplies the enemy density to hit it often.
+- [x] **FIXED 2026-08-09 (`6e45951`), guard re-run below. The turn key inherited the strafe's widened hold, so aim corrections overshot 3-22x. Root-caused from the curl wedges.**
+  - **Guard result — curl, normal, 45 attempts per arm, same binary via `TURN_SPLIT_PHASES`:**
+
+    | criterion | OFF | ON | reading |
+    |---|---:|---:|---|
+    | nav-warns | 4,327 | **0** | mechanism fixed, unambiguous |
+    | shots/run | 29 | **35** | +21% — the aim now settles, so the trigger actually pulls |
+    | damage taken/run | 16 | **16** | dodging preserved; the 2026-07-29 failure did NOT recur |
+    | deaths | 20 | 18 | — |
+    | levels cleared | 96.0% | 96.6% | — |
+    | wedge rate | 3.46% | 2.59% | p=0.47, **not significant** |
+    | `enemyAccuracy` | 0.2383 | 0.2671 | **breached** its guard (+12% rel.) |
+    | `qualifyRate` | 100% | 100% | **saturated — could not detect harm** |
+
+  - **Kept despite the breached guard, deliberately.** `enemyAccuracy` is a proxy for "the bot still dodges"; damage taken per run is the quantity itself and is *identical*. Enemies land a higher fraction of fewer shots because fights end sooner. Overriding a pre-registered guard on a more direct measurement is a judgement call and is recorded as one.
+  - **Two reasons this test is weaker than it looks.** `qualifyRate` sat at 100% in both arms — on curl/normal it had no headroom, so "no drop" is not evidence of safety, and damage-taken is carrying that argument instead. And the wedges, the whole motivation, improved only directionally. A hard-difficulty or multi-repo arm would settle both.
+  - **Scope, corrected from the first write-up.** `intent.durationMs` *is* the decision length, so an unwidened aiming decision was already short and correct. This only ever affected decisions where something widened the burst — which is the combat-stall state, since the stall-strafe fires *because* the bot has stalled. The remedy was producing the aim failure that kept the stall alive.
+  - **Still open, and cheap: threats have no give-up.** Mines abandon a target after `MINE_TARGET_GIVEUP_TICKS` 40; a threat gets `COMBAT_STALL_TICKS_THRESHOLD` 40 -> a strafe and nothing else. `combatStallTicks` also resets whenever position changes by 0.01 (`posKey` is 2 decimals), so the strafe it triggers resets the counter that triggered it. And `pickThreat` uses `visible` only as a *sort* key, so an aggroed enemy behind a wall is still selected as the threat.
+
+- [ ] **(superseded by the entry above, kept for its measurements) The bot can never aim: its smallest possible turn is 3-22x its own fire tolerance.** The wedges were the symptom; this is the mechanism, and it is general — curl only supplies the enemy density to hit it often.
   - **The numbers.** A decision is `VIRTUAL_STEP_MS` 50ms and `ENGINE_ROT_SPEED` is 2.6 rad/s, so the *smallest* turn a profile can make is `2.6 x rotSpeedMultiplier x 0.05`:
 
     | profile | rotMult | smallest turn | `fireAngleEps` | overshoot | nav-warns/invocation |
