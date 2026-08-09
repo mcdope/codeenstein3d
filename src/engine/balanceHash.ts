@@ -36,14 +36,22 @@
  * weapon-ownership options (`hasRocketLauncher`/`hasSmg`/`hasGas`/
  * `missingWeaponIndices`) leave the enemy roster byte-identical but *do*
  * change `ammoPickups` and the grid — Vendor Depots stock what you already
- * own. And those options are not stable across record and playback: at record
- * time `main.ts` generates the map from `carryover`, while the segment stores
- * `effectiveCarryover`, which force-adds gdb/ghidra/Friday Hotfix at campaign
- * levels 4/8/12. So hashing pickups or layout would refuse perfectly good
- * replays whenever that safety net fires. (That asymmetry means playback
- * already rebuilds a slightly different map than was recorded — a real,
- * pre-existing issue tracked separately in `notes`; this guard is deliberately
- * scoped not to depend on it either way.)
+ * own, and the weapon-ownership options additionally shift the seeded RNG
+ * draw sequence. Record and playback do now derive those options identically
+ * (both go through `main.ts`'s one `mapGenerationOptionsFor`, from the same
+ * recorded `effectiveCarryover`), so this is no longer a live asymmetry —
+ * but the scope stays roster-only regardless, because widening it would buy
+ * nothing and would couple this guard to that derivation staying in step.
+ *
+ * **Hash the roster as generated, not as the engine left it.** The
+ * `RaycasterEngine` constructor rescales every enemy's `hp`/`maxHp` in place
+ * by the difficulty (and Elite/player-count) multipliers, and `maxHp` is one
+ * of the four fields hashed below. Both call sites therefore have to
+ * fingerprint *before* an engine touches the map: `launchLevel` gets that for
+ * free by hashing above its own `new RaycasterEngine`, and `buildEngineFor`
+ * snapshots the roster explicitly. Getting that ordering wrong on one side
+ * only is not a subtle drift — it refuses every easy (0.7x) and hard (1.5x)
+ * replay outright while leaving normal (1x) working.
  *
  * **What it deliberately does not cover.** Difficulty and gore are already
  * recorded per segment and applied at playback, so they are not balance drift.

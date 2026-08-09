@@ -43,6 +43,28 @@ export interface ReplayLevelSegment {
    * targets, weapon spread) — NOT the map layout, which is deterministic from
    * the parsed AST alone and needs no separate seed (see `mapGenerator.ts`). */
   gameplaySeed: number;
+  /**
+   * The bot rotation-speed multiplier this level was recorded at — the
+   * `?botRotSpeedMul` override (see `engine.ts`'s
+   * `resolveBotRotSpeedMultiplier`), which scales how far every turn input
+   * actually rotates the view.
+   *
+   * A simulation input like `gameplaySeed`, and for a long time the *only*
+   * one this format didn't carry. The generator records the shipped board at
+   * 2.0/3.5/5.0 (one per bot profile) while a player watching a replay has
+   * neither the URL param nor test hooks, so playback ran at 1.0 and every
+   * recorded turn under-rotated by 2-5x — the view pointed in directions the
+   * run never faced within seconds. Blind input replay cannot reproduce what
+   * it wasn't told.
+   *
+   * Optional because runs recorded before this field existed have none.
+   * Absent is deliberately *not* coerced to 1.0 here: `buildEngineFor` passes
+   * it straight through, so the engine's own fallback decides — 1.0 in a
+   * production build (which is what those legacy runs really were, since the
+   * override needs `import.meta.env.DEV`), while still honouring
+   * `?botRotSpeedMul` in dev so a legacy board can be diagnosed by hand.
+   */
+  rotSpeedMultiplier?: number;
   /** SHA-256 hex digest of this level's parsed AST JSON + campaign name (see
    * `highscores.ts`'s `hashRun`) — lets "Watch Replay" verify a re-parsed file
    * is really the same source before trusting it to regenerate the map.
