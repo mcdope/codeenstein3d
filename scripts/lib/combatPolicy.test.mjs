@@ -1546,6 +1546,16 @@ describe("turnSplitIntent", () => {
     expect(intent.holds.get("KeyW")).toBe(50);
   });
 
+  it("reproduces the old one-scalar behaviour when the switch is off", () => {
+    // The A/B arm. Without this the change could only be compared against a
+    // different commit, which would confound it with everything else that
+    // landed since.
+    const off = { ...DEFAULT_TUNING, TURN_SPLIT_PHASES: false };
+    const intent = turnSplitIntent(new Set(["KeyE", "KeyA"]), 50, 3, 50, {}, off);
+    expect(intent.holds.get("KeyE")).toBe(50);
+    expect(segmentsFor(intent.holds, intent.durationMs, 0)).toHaveLength(1);
+  });
+
   it("keeps the overshoot inside fireAngleEps for every profile", () => {
     // The property the whole change exists for, stated in the units that
     // matter. Before: a widened decision turned ENGINE_ROT_SPEED * rotMult *

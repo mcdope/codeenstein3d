@@ -320,6 +320,13 @@ export const DEFAULT_TUNING = {
   // case intact: dry is still dry, and standing in front of a threat pulling a
   // dead trigger is worse than any trade.
   MELEE_MAX_TARGET_HP: Infinity,
+  // Whether the turn key gets its own (short) hold while movement keys run the
+  // whole decision — see `turnSplitIntent`. Single-variable switch so the
+  // change can be A/B'd against the *same binary*, which is the only way to
+  // isolate it from anything else that landed since the last capture:
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"TURN_SPLIT_PHASES":false}'
+  // False reproduces the old one-scalar-per-decision behaviour exactly.
+  TURN_SPLIT_PHASES: true,
   // Break contact with a target too big to burst down, the way the bot already
   // breaks contact at critical health. **On** since 2026-08-06; set to
   // `Infinity` to restore the old stand-and-trade behaviour:
@@ -1405,11 +1412,11 @@ export function pickRangedWeapon(player, profile, enemies, threat, mineTarget, t
  * because the strafe then moved the bot ~0.02 tiles. Decoupling is the option
  * that experiment could not express.
  */
-export function turnSplitIntent(moveKeys, durationMs, turnHoldMs, stepMs, rest) {
+export function turnSplitIntent(moveKeys, durationMs, turnHoldMs, stepMs, rest, tuning = DEFAULT_TUNING) {
   const total = durationMs ?? stepMs;
   const holds = new Map();
   for (const key of moveKeys) {
-    const isTurnKey = key === "KeyQ" || key === "KeyE";
+    const isTurnKey = tuning.TURN_SPLIT_PHASES && (key === "KeyQ" || key === "KeyE");
     // `Math.min` matters: a widened decision must not *extend* a turn, and an
     // unwidened one must not shorten the movement keys below the turn itself.
     holds.set(key, isTurnKey && turnHoldMs != null ? Math.min(turnHoldMs, total) : total);
@@ -2231,5 +2238,5 @@ export function decide(world, memory, config) {
       delta: navDelta,
       navDist,
     },
-  });
+  }, tuning);
 }
