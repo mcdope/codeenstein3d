@@ -395,6 +395,4 @@ Each of these cost real time at least once.
 
 - [`balancing-telemetry.md`](balancing-telemetry.md) — the bot, its profiles, the
   full env-var surface, the event schema, and the balance model
-- [`balance-review-2026-08-04.md`](balance-review-2026-08-04.md) — a worked
-  example of the output of all of the above, on the demo campaign
 - [`testing.md`](testing.md) — the verify scripts and what the suite cannot catch

@@ -53,3 +53,12 @@ wedge-diagnosis/
 
 # Rendered level floor plans + metrics (scripts/render-level-maps.mjs)
 level_maps/
+
+# Coverage output from ad-hoc verification runs (scripts write here, CI does not)
+.verify-tmp/
+
+# One-shot balance analyses. Written to be read once and acted on; the durable
+# findings land in doc/dev/decisions.md, doc/dev/history.md or `notes` instead,
+# so the dated write-up itself does not belong in the repo.
+doc/dev/balance-review-*.md
+doc/dev/remediation-order-*.md
