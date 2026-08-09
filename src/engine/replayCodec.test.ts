@@ -169,6 +169,21 @@ describe("replayCodec — board container", () => {
     expect(back[0].replay?.levels[0].astHash).toBe("ast0");
   });
 
+  it("round-trips rotSpeedMultiplier, and an absent one, with no frame-format change", async () => {
+    // Pins the reason this field needed no `PACKED_BOOLS` entry and no
+    // `bin1:` prefix bump: per-segment scalars ride in the header JSON, which
+    // is the whole board with only `frames` emptied. Only per-frame
+    // `InputSnapshot` fields are positional in the binary blocks.
+    const board = [entryWith([{ frames: [frame(0.016)] }, { frames: [frame(0.016)] }])];
+    board[0].replay!.levels[0].rotSpeedMultiplier = 3.5;
+    // Left absent on the second level — a legacy segment must decode as
+    // `undefined`, not as 0 or 1, so the engine's own fallback still decides.
+    const back = await unpackBoardFromStorage(await packBoardForStorage(board));
+    expect(back[0].replay?.levels[0].rotSpeedMultiplier).toBe(3.5);
+    expect(back[0].replay?.levels[1].rotSpeedMultiplier).toBeUndefined();
+    expect(back).toEqual(board);
+  });
+
   it("handles an entry with no replay at all", async () => {
     const board: HighscoreEntry[] = [
       { score: 7, campaignName: "c", levelName: "l", levelsCleared: 1, hash: "h", achievedAt: 1 },

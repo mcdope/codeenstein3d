@@ -222,6 +222,31 @@ export function isTestHooksActive(): boolean {
     new URLSearchParams(window.location.search).get("testHooks") === "1"
   );
 }
+/** The range `rotSpeedMultiplier` is allowed to take, applied to *both* the
+ * URL override and a value read back out of a recorded replay. The replay
+ * side matters as much as the URL one: a segment reaches this from
+ * `localStorage` or an imported replay file, so a hand-edited (or corrupt)
+ * `1e9` would otherwise turn playback into a spin machine. Anything absent or
+ * non-finite reads as 1 — genuine human runs really are 1x. */
+export function clampRotSpeedMultiplier(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(10, Math.max(1, n));
+}
+/**
+ * The bot rotation-speed override from `?botRotSpeedMul`, or 1 when it isn't
+ * set (every real player, always) — see `isTestHooksActive` for the gate.
+ *
+ * Exported so the *one* place that reads the URL is shared between the engine
+ * (which applies it) and `main.ts`'s recorder (which writes it into
+ * `ReplayLevelSegment.rotSpeedMultiplier`). Two independent reads is exactly
+ * how the multiplier ended up applied at record time and silently dropped at
+ * playback.
+ */
+export function resolveBotRotSpeedMultiplier(): number {
+  if (!isTestHooksActive()) return 1;
+  return clampRotSpeedMultiplier(new URLSearchParams(window.location.search).get("botRotSpeedMul"));
+}
 /**
  * Whether to buffer the raw balancing event log this run (`?eventLog=1`).
  *
@@ -497,6 +522,19 @@ interface PlayerState {
   meleeRecoil: number;
   muzzleFrames: number;
   viewOffsets: { horizonShift: number; bobX: number; bobY: number };
+  /**
+   * Scales how far a turn input rotates this player's view
+   * (`ROT_SPEED * rotSpeedMultiplier * dt`). Always 1 for a real player, and
+   * only ever non-1 for the *local* peer: it exists so the headless balancing
+   * bot, which steers in short keyboard bursts rather than with a mouse, can
+   * aim as precisely per decision as a human does — `scripts/lib/profiles.mjs`
+   * gives each skill tier its own value (2.0/3.5/5.0), which makes it a real
+   * balance-measurement knob rather than a debug toggle.
+   *
+   * Resolved once at construction from either the recorded replay value or
+   * `?botRotSpeedMul` — see `RaycasterEngine`'s `rotSpeedMultiplierOverride`
+   * parameter for why the recorded one has to win.
+   */
   rotSpeedMultiplier: number;
   /** A drift correction's render-only smoothing — `null` when this player's
    * rendered position matches its simulated one exactly (the overwhelming
@@ -1064,6 +1102,22 @@ export class RaycasterEngine {
      * `mapGenerator.generate()` already takes a `maxPlayers` param instead of
      * inferring it from generated state). */
     playerCount = 1,
+    /** Replay playback only: the rotation-speed multiplier the run being
+     * replayed was recorded at (`ReplayLevelSegment.rotSpeedMultiplier`).
+     * `undefined` — every caller except `startReplay`'s `buildEngineFor` —
+     * falls back to `resolveBotRotSpeedMultiplier()`, i.e. the URL param,
+     * which is what the multiplayer/telemetry/perf harnesses depend on.
+     *
+     * Deliberately *not* gated on `isTestHooksActive()` like the URL read is:
+     * a shipped replay has to reproduce its recorded rotation in a production
+     * build, and not doing so is the entire bug this field exists to fix.
+     *
+     * A constructor parameter rather than a setter on purpose —
+     * `rotSpeedMultiplier` is read on every `advance()`, so a setter would
+     * create a "must be called before the first advance" ordering contract,
+     * which is the same implicit-ordering trap that made playback hash a
+     * post-rescale enemy roster (see `main.ts`'s `buildEngineFor`). */
+    private readonly rotSpeedMultiplierOverride?: number,
   ) {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2D canvas context unavailable");
@@ -1296,11 +1350,11 @@ export class RaycasterEngine {
     let weaponIndex = 0;
     if (carryover?.weaponIndex !== undefined) weaponIndex = carryover.weaponIndex;
     // See `PlayerState.rotSpeedMultiplier`'s doc comment — only ever applies
-    // to the local peer (the only one a headless bot ever drives).
+    // to the local peer (the only one a headless bot ever drives, and the
+    // only one a replay records).
     let rotSpeedMultiplier = 1;
-    if (id === this.localPlayerId && isTestHooksActive()) {
-      const rotMul = Number(new URLSearchParams(window.location.search).get("botRotSpeedMul"));
-      if (Number.isFinite(rotMul)) rotSpeedMultiplier = Math.min(10, Math.max(1, rotMul));
+    if (id === this.localPlayerId) {
+      rotSpeedMultiplier = clampRotSpeedMultiplier(this.rotSpeedMultiplierOverride ?? resolveBotRotSpeedMultiplier());
     }
 
     const state = {} as PlayerState;
@@ -2361,6 +2415,24 @@ export class RaycasterEngine {
   startExternallyDriven(): void {
     if (this.running) return;
     this.externallyDriven = true;
+    this.primeForPlay();
+  }
+
+  /**
+   * `startExternallyDriven()` minus the `externallyDriven` flag — for the
+   * replay viewer (`main.ts`'s `startReplay`), which drives `advance()` itself
+   * but must not be measured like a paced session: seeking replays whole
+   * seconds of recorded input in one synchronous `burstTo()` burst, which
+   * would report a meaningless four-figure FPS. That exclusion is already
+   * documented on `externallyDriven` itself; this is the entry point that
+   * honours it.
+   *
+   * Without this, playback skipped `primeForPlay()` entirely and never
+   * revealed the spawn tile before its first step, while the recording did —
+   * a record/playback asymmetry in the "100% Clear" numerator.
+   */
+  startReplayDriven(): void {
+    if (this.running) return;
     this.primeForPlay();
   }
 

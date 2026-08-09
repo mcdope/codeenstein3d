@@ -18,7 +18,7 @@ import { extensionOf, isParsable, parseFile } from "./parser/registry";
 import { MapGenerator, type GenerateOptions } from "./map/mapGenerator";
 import { STYLE_SET_IDS, type GameMap } from "./map/types";
 import { renderExportMap } from "./map/exportView";
-import { RaycasterEngine, SIMULATION_BALANCE, isTestHooksActive } from "./engine/engine";
+import { RaycasterEngine, SIMULATION_BALANCE, isTestHooksActive, resolveBotRotSpeedMultiplier } from "./engine/engine";
 import { audio } from "./engine/audio";
 import { bgm } from "./engine/bgm";
 import { textures, type WadLoadSummary } from "./engine/textures";
@@ -45,7 +45,7 @@ import {
 import { DEFAULT_DIFFICULTY, type DifficultyLevel } from "./difficulty";
 import { randomSeed } from "./prng";
 import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelSegment } from "./engine/replay";
-import { balanceHashMatches, computeBalanceHash } from "./engine/balanceHash";
+import { balanceHashMatches, computeBalanceHash, type BalanceRelevantEnemy } from "./engine/balanceHash";
 import type { ParsedFile } from "./parser/types";
 import type { EngineCarryover, EngineStats, PlayerId, RosterSnapshotEntry } from "./engine/engine";
 import { createSession, fetchIceServers, fetchSession, fetchSessionAsHost, postAnswer, updateSession } from "./multiplayer/signalingClient";
@@ -2619,6 +2619,10 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
       filePath: path,
       bonusLevel,
       gameplaySeed,
+      // Always written, even when it's the 1 every real player records, so
+      // that an *absent* field unambiguously means "recorded before this
+      // field existed" rather than "recorded at 1x".
+      rotSpeedMultiplier: resolveBotRotSpeedMultiplier(),
       difficulty: currentDifficulty,
       gore: currentGoreLevel,
       carryover: effectiveCarryover,
@@ -2627,6 +2631,14 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
     // `map` is the freshly generated one for this level, which is what
     // `computeBalanceHash` requires — see its module comment on why a
     // mid-run map would fold live state into the fingerprint.
+    //
+    // Load-bearing ordering: this runs *before* `new RaycasterEngine` below,
+    // and `computeBalanceHash` snapshots the roster synchronously before its
+    // first `await`, so the fingerprint covers the map as generated. The
+    // constructor then rescales every enemy's hp/maxHp in place by the
+    // difficulty multipliers, so hashing after it would fingerprint a
+    // different roster on easy/hard — see `buildEngineFor`, which has to
+    // reproduce this same ordering to match.
     computeBalanceHash(map, SIMULATION_BALANCE),
   );
 
@@ -3709,11 +3721,22 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
     };
 
     /** Builds a fresh engine for `segment`/`parsed`, wired the same way for
-     * both a normal level load and an in-place restart (seeking backward). */
-    const buildEngineFor = (segment: ReplayLevelSegment, parsed: ParsedFile): GameMap => {
+     * both a normal level load and an in-place restart (seeking backward).
+     *
+     * Returns the enemy roster *as generated*, alongside the map, because the
+     * `RaycasterEngine` constructor rescales every enemy's `hp`/`maxHp` in
+     * place by the difficulty multipliers — and `maxHp` is one of the four
+     * fields `computeBalanceHash` fingerprints. `launchLevel` hashes before
+     * constructing its engine, so playback has to hash the pre-rescale roster
+     * too or easy (0.7x) and hard (1.5x) runs fingerprint differently from
+     * how they were recorded and get refused as balance drift. Normal is 1x,
+     * which is why this went unnoticed: the bundled board is normal-only. */
+    const buildEngineFor = (segment: ReplayLevelSegment, parsed: ParsedFile): { map: GameMap; balanceRoster: BalanceRelevantEnemy[] } => {
       // Same derivation as `launchLevel`'s, from the same carryover it
       // recorded — see `mapGenerationOptionsFor`.
       const map = mapGenerator.generate(parsed, mapGenerationOptionsFor(segment.carryover, segment.carryover?.campaignLevelIndex ?? 1, segment.bonusLevel));
+      // Snapshotted here, before the constructor below mutates the roster.
+      const balanceRoster = map.enemies.map((e) => ({ x: e.x, y: e.y, maxHp: e.maxHp, elite: e.elite }));
       currentParsed = parsed;
       currentSegment = segment;
       replayInput = new ReplayPlaybackInput();
@@ -3743,8 +3766,25 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
         segment.gameplaySeed,
         replayInput,
         undefined, // never record a replay of a replay
+        undefined, // localPlayerId — single-player default
+        undefined, // localSpawn — map.spawn
+        undefined, // playerCount — single-player default
+        // The recorded rotation-speed multiplier. Passed through as-is,
+        // `undefined` and all: a segment recorded before this field existed
+        // lets the engine fall back to `?botRotSpeedMul`, which is 1 in a
+        // production build (what those runs really were) while still letting
+        // a legacy board be diagnosed by hand in dev.
+        segment.rotSpeedMultiplier,
       );
-      return map;
+      // Live play gets the spawn-tile reveal, input attach and initial stats
+      // push from `start()`; playback drives `advance()` itself and would
+      // otherwise skip all three, leaving the recorded and replayed
+      // `visitedWalkableCount` (the "100% Clear" numerator) out of step by
+      // whatever frame 1 reveals. Not `startExternallyDriven()` — see that
+      // method and `externallyDriven`'s doc comment on why the replay viewer
+      // is deliberately excluded from the wall-clock FPS measurement.
+      activeEngine.startReplayDriven();
+      return { map, balanceRoster };
     };
 
     // Loads `payload.levels[levelIndex]`, advances `levelIndex` past it, and
@@ -3783,14 +3823,15 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
         return;
       }
 
-      const builtMap = buildEngineFor(segment, parsed);
-      // Balance drift, checked after the map exists. Distinct from the
-      // `astHash` check above: the source file can be byte-identical while
+      const { balanceRoster } = buildEngineFor(segment, parsed);
+      // Balance drift, checked against the roster as generated. Distinct from
+      // the `astHash` check above: the source file can be byte-identical while
       // the world it generates is not (enemy HP is generated *from* the AST,
       // not part of it), which would otherwise replay the recorded inputs
       // against a differently balanced game and silently show a run that no
-      // longer matches its own score.
-      const currentBalance = await computeBalanceHash(builtMap, SIMULATION_BALANCE);
+      // longer matches its own score. See `buildEngineFor` on why this uses
+      // the snapshot rather than the map the engine has since rescaled.
+      const currentBalance = await computeBalanceHash({ enemies: balanceRoster }, SIMULATION_BALANCE);
       if (!balanceHashMatches(segment.balanceHash, currentBalance)) {
         endReplay(`"${segment.filePath}" was recorded under different game balance — this replay can't be trusted to match its score anymore.`);
         return;
