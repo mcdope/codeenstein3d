@@ -3692,10 +3692,16 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
      * scratch without re-reading/re-parsing/re-hashing the file again. */
     let currentParsed: ParsedFile | null = null;
     let currentSegment: ReplayLevelSegment | null = null;
+    /** The active level's recorded frame count, mirrored out of
+     * `currentSegment` by `buildEngineFor` rather than read through it in the
+     * probe below — an optional chain there would be a branch nothing can
+     * cover, since the only window in which it is null is between
+     * `startReplay` installing the probe and the first level loading. */
+    let framesRecorded = 0;
     // A live view of the loop's own counters — see `replayDebug`. Installed
     // here, below every binding it closes over, so it can never be called
     // into a temporal dead zone.
-    replayDebug.probe = () => ({ levelIndex, frameIndex, framesRecorded: currentSegment?.frames.length ?? 0 });
+    replayDebug.probe = () => ({ levelIndex, frameIndex, framesRecorded });
 
     /** Records how one replayed level actually turned out — see
      * `replayDebug`. `levelIndex` has already been advanced past this
@@ -3842,6 +3848,7 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
       const balanceRoster = map.enemies.map((e) => ({ x: e.x, y: e.y, maxHp: e.maxHp, elite: e.elite }));
       currentParsed = parsed;
       currentSegment = segment;
+      framesRecorded = segment.frames.length;
       replayInput = new ReplayPlaybackInput();
       frameIndex = 0;
       levelEnded = false;

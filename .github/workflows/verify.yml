@@ -250,8 +250,9 @@ jobs:
   # would be testing float behaviour rather than replay fidelity and a failure
   # would be unattributable. See scripts/verify-replay.mjs's doc comment.
   #
-  # A PR checks the first 3 levels of one entry (~1 min); master checks all
-  # three entries end to end, including the 5x Pro one.
+  # A PR checks the first 3 levels of one entry; master checks all three
+  # entries end to end, including the 5x Pro one — 51 segments, 186,430
+  # recorded frames, 450 checks, measured at 360s locally at concurrency 3.
   verify-replay:
     name: verify (replay)
     runs-on: ubuntu-latest

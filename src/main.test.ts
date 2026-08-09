@@ -6448,9 +6448,27 @@ describe("main.ts — replay playback (startReplay)", () => {
    * that possible, rather than the run being reproducible anyway. Without the
    * second arm this test would still pass if the multiplier stopped being
    * applied at *both* ends. */
+  /** The replay-observation hook `scripts/verify-replay.mjs` drives — a
+   * separate global from `__codeensteinTestHooks` for the reason `main.ts`
+   * documents: this suite treats that object's presence as "an engine
+   * exists". */
+  function replayTestHooks(): {
+    getState: () => {
+      active: boolean;
+      ended: boolean;
+      endReason: string | null;
+      levels: { levelIndex: number; filePath: string; outcome: string; framesConsumed: number; framesRecorded: number; score: number }[];
+      probe: { levelIndex: number; frameIndex: number; framesRecorded: number } | null;
+    };
+  } {
+    return (window as unknown as { __codeensteinReplayTestHooks: ReturnType<typeof replayTestHooks> }).__codeensteinReplayTestHooks;
+  }
+
   async function replayRotationRecording(keepMultiplier: boolean): Promise<{
     recordedEnd: { x: number; y: number; dirX: number; dirY: number; state: string };
     replayedEnd: { x: number; y: number; dirX: number; dirY: number; state: string };
+    debug: ReturnType<ReturnType<typeof replayTestHooks>["getState"]>;
+    recordedSegment: ReplayLevelSegment;
   }> {
     const { segment: recordedSegment, finalState: recordedEnd } = await recordNavigatedSegment({
       sourceContent: NAVIGABLE_FIXTURE_C,
@@ -6466,6 +6484,12 @@ describe("main.ts — replay playback (startReplay)", () => {
 
     await importMain();
     enableTestHooks();
+    // Before any viewing has started: no probe to read, and nothing claimed
+    // to have happened. `verify-replay.mjs` polls this exact shape to decide
+    // when a replay is actually running, so the idle state is part of the
+    // contract rather than an incidental default.
+    expect(replayTestHooks().getState().probe).toBeNull();
+    expect(replayTestHooks().getState().active).toBe(false);
     stubShowDirectoryPicker(fakeDirectoryHandle(REPLAY_CAMPAIGN_NAME, { "main.c": NAVIGABLE_FIXTURE_C }));
     const parsed = (await parseFile("main.c", NAVIGABLE_FIXTURE_C))!;
     const astHash = await hashRun(JSON.stringify(parsed), REPLAY_CAMPAIGN_NAME);
@@ -6484,12 +6508,21 @@ describe("main.ts — replay playback (startReplay)", () => {
       flushed += raf.flush(1, 16);
       return testHooks()!.getPlayerState().state !== "playing" || flushed > 1200;
     }, 20000);
-    return { recordedEnd, replayedEnd: testHooks()!.getPlayerState() };
+    return { recordedEnd, replayedEnd: testHooks()!.getPlayerState(), debug: replayTestHooks().getState(), recordedSegment };
   }
 
   it("reproduces a run recorded at a non-1x bot rotation multiplier", { timeout: 45000 }, async () => {
-    const { recordedEnd, replayedEnd } = await replayRotationRecording(true);
+    const { recordedEnd, replayedEnd, debug, recordedSegment } = await replayRotationRecording(true);
     expect(replayedEnd.state).toBe("won");
+    // Through the same hook `scripts/verify-replay.mjs` reads, so the contract
+    // it depends on is pinned here rather than only exercised by a script that
+    // needs a dev server.
+    expect(debug.endReason).toBeNull();
+    expect(debug.levels).toHaveLength(1);
+    expect(debug.levels[0].outcome).toBe("won");
+    // A faithful playback ends on the last recorded frame — `simulate()`
+    // records a frame before the end-of-run check fires.
+    expect(debug.levels[0].framesConsumed).toBe(recordedSegment.frames.length);
     // Trajectory, not just outcome. Every pre-existing replay test in this
     // block asserts only "won"/"over", which is exactly why a playback that
     // rotated 2.5x too slowly could ship: a *different* run can still reach
