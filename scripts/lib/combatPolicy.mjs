@@ -406,8 +406,18 @@ export const DEFAULT_TUNING = {
   ROCKET_SAFE_DISTANCE: 4,
   // Mirrors src/engine/rockets.ts's ROCKET_ENEMY_TRIGGER_RADIUS.
   ROCKET_ENEMY_TRIGGER_RADIUS: 0.4,
-  // Matches Friday Hotfix's real maxRange (weapons.ts).
-  FRIDAY_HOTFIX_MAX_RANGE: 3.5,
+  // Matches Friday Hotfix's real maxRange (weapons.ts) — the distance past
+  // which a pellet does not arrive at all.
+  FRIDAY_HOTFIX_MAX_RANGE: 6.5,
+  // Matches its `fullDamageRange`: the end of the plateau, past which damage
+  // decays toward zero at `FRIDAY_HOTFIX_MAX_RANGE`.
+  //
+  // This, not the max range, is what `pickRangedWeapon`'s cluster fast-path
+  // should compare against. Picking the flamethrower anywhere inside its reach
+  // would hand it fights at 6 tiles where it lands ~12 damage a pull, which is
+  // exactly the "burning gas on a target it cannot reach" failure the hard
+  // cutoff was added to stop — the cutoff moved, the failure did not.
+  FRIDAY_HOTFIX_FULL_DAMAGE_RANGE: 2.5,
   // How far a clustered threat needs to be before rocket splash is worth
   // preferring — see `pickRangedWeapon`.
   ROCKET_CLUSTER_MIN_DIST: 5, // ROCKET_SAFE_DISTANCE + 1
@@ -996,10 +1006,11 @@ export const WEAPON_STATS = {
   // despite low per-shot damage (`maxConeDeviationPx` in weapons.ts).
   [GDB_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 12, ammoPerShot: 1, ammoType: "smg", spreadPx: 0, fireIntervalSec: 0.09, maxConeDeviationPx: 20 },
   [GHIDRA_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 150, ammoPerShot: 1, ammoType: "rockets", spreadPx: 0, fireIntervalSec: 1.1 },
-  // `maxRange` mirrors `src/engine/weapons.ts` — Friday Hotfix is the only
-  // weapon with a hard cutoff (a flame jet, not a falloff curve). Past it the
-  // shot simply does not reach, so it must not be scored as a candidate.
-  [FRIDAY_HOTFIX_WEAPON_INDEX]: { pellets: 6, damagePerPellet: 8, ammoPerShot: 2.5, ammoType: "gas", spreadPx: 45, fireIntervalSec: 0.1, maxRange: 3.5 },
+  // `maxRange`/`fullDamageRange` mirror `src/engine/weapons.ts` — Friday Hotfix
+  // is the only weapon with a range curve. Full damage to the plateau, decaying
+  // to zero at the max, past which the shot does not reach at all and must not
+  // be scored as a candidate. `rangeDamageScale` below applies the decay.
+  [FRIDAY_HOTFIX_WEAPON_INDEX]: { pellets: 6, damagePerPellet: 8, ammoPerShot: 2.5, ammoType: "gas", spreadPx: 45, fireIntervalSec: 0.1, fullDamageRange: 2.5, maxRange: 6.5 },
 };
 
 /**
@@ -1099,11 +1110,32 @@ export function ammoHeldFor(player, weaponIndex) {
  * derivation of it — its job is to rank weapons against each other, and the
  * A/B is what validates the ranking.
  */
+/**
+ * Fraction of `damagePerPellet` that lands at `dist` — mirrors
+ * `rangeDamageScale` in `src/engine/weapons.ts`.
+ *
+ * Without this the bot scores the flamethrower at full strength anywhere
+ * inside its (now much longer) reach, which is worse than the old bug it
+ * replaces: the hard cutoff at least made the weapon score zero where it could
+ * not reach, whereas a silently-unmirrored curve makes it score 48 a pull at 6
+ * tiles where it really lands 12. `constantMirrors.test.mjs` pins the numbers;
+ * this pins the shape.
+ */
+function rangeDamageScale(w, dist) {
+  if (w.fullDamageRange === undefined || w.maxRange === undefined || w.maxRange <= w.fullDamageRange) return 1;
+  if (dist <= w.fullDamageRange) return 1;
+  if (dist >= w.maxRange) return 0;
+  return (w.maxRange - dist) / (w.maxRange - w.fullDamageRange);
+}
+
 export function expectedDamagePerShot(weaponIndex, dist, tuning = DEFAULT_TUNING, target = null) {
   const w = WEAPON_STATS[weaponIndex];
   if (!w) return 0;
   if (w.maxRange !== undefined && (dist ?? 0) > w.maxRange) return 0;
   const d = Math.max(0.1, dist ?? 0);
+  // Range falloff multiplies whatever the cone model works out below.
+  const falloff = rangeDamageScale(w, d);
+  if (falloff <= 0) return 0;
 
   // How wide the target actually is on screen, from `projectEnemy`:
   // `size = |SCENE_HEIGHT / depth| * ENEMY_SIZE * scale`, so half-width in
@@ -1127,7 +1159,7 @@ export function expectedDamagePerShot(weaponIndex, dist, tuning = DEFAULT_TUNING
   // the total scatter. An approximation of the engine's per-pellet raycast,
   // not a derivation of it — its job is to rank weapons against each other.
   const hitFraction = scatterPx <= 0 ? 1 : Math.max(0, Math.min(1, halfWidthPx / scatterPx));
-  return w.pellets * w.damagePerPellet * hitFraction;
+  return w.pellets * w.damagePerPellet * hitFraction * falloff;
 }
 
 /**
@@ -1279,7 +1311,7 @@ export function pickRangedWeapon(player, profile, enemies, threat, mineTarget, t
   if (threat) {
     const clusterCount = enemies.filter((e) => e.alive && e.aggroed && Math.hypot(e.x - threat.x, e.y - threat.y) <= tuning.CLUSTER_RADIUS).length;
     if (clusterCount >= 2) {
-      if (threat.dist <= tuning.FRIDAY_HOTFIX_MAX_RANGE) {
+      if (threat.dist <= tuning.FRIDAY_HOTFIX_FULL_DAMAGE_RANGE) {
         if (player.ownedWeapons.includes(FRIDAY_HOTFIX_WEAPON_INDEX) && hasAmmoFor(player, FRIDAY_HOTFIX_WEAPON_INDEX)) {
           return player.weaponIndex === FRIDAY_HOTFIX_WEAPON_INDEX ? null : FRIDAY_HOTFIX_WEAPON_INDEX;
         }

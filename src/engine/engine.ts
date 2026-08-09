@@ -123,6 +123,7 @@ import {
   WEAPONS,
   currentMeleeWeapon,
   pelletOffsets,
+  rangeDamageScale,
   type Weapon,
 } from "./weapons";
 import { HEALTH_DROP_AMOUNT, MAX_SWAP, REGULAR_KILL_NO_DROP_CHANCE, SWAP_DROP_AMOUNT, rollBonusWeaponDrop, rollLoot } from "./loot";
@@ -548,7 +549,14 @@ interface PlayerState {
 }
 
 /** One ranged pellet's resolved outcome — see `resolveShot`. */
-type PelletOutcome = { kind: "enemy"; target: Enemy } | { kind: "mine"; target: Mine } | { kind: "miss" };
+type PelletOutcome =
+  /** `damageScale` is the weapon's range falloff at the distance this pellet
+   * connected at — 1 for everything without a `fullDamageRange`. Carried on
+   * the outcome rather than recomputed at the damage site so the distance is
+   * measured once, at the moment the pellet resolved. */
+  | { kind: "enemy"; target: Enemy; damageScale: number }
+  | { kind: "mine"; target: Mine }
+  | { kind: "miss" };
 
 /** `resolveShot`'s full result for one trigger pull — `fire()` applies ammo
  * cost, damage, loot, telemetry, traces, and audio on top of this. */
@@ -4493,11 +4501,12 @@ export class RaycasterEngine {
         // sightline; Friday Hotfix's `maxRange` is the same idea for a
         // flamethrower's genuinely short reach.
         const rangeLimit = weapon.meleeRange ?? weapon.maxRange;
-        if (rangeLimit !== undefined && Math.hypot(enemy.x - camera.posX, enemy.y - camera.posY) > rangeLimit) {
+        const range = Math.hypot(enemy.x - camera.posX, enemy.y - camera.posY);
+        if (rangeLimit !== undefined && range > rangeLimit) {
           pellets.push({ kind: "miss" });
           continue;
         }
-        pellets.push({ kind: "enemy", target: enemy });
+        pellets.push({ kind: "enemy", target: enemy, damageScale: rangeDamageScale(weapon, range) });
         continue;
       }
 
@@ -4628,7 +4637,7 @@ export class RaycasterEngine {
             dist: Math.hypot(outcome.target.x - shooter.player.posX, outcome.target.y - shooter.player.posY),
           });
         }
-        this.damageEnemy(outcome.target, w.damagePerPellet, w.lifesteal, isFlame, weaponIndex, forcedMelee, shooter);
+        this.damageEnemy(outcome.target, w.damagePerPellet * outcome.damageScale, w.lifesteal, isFlame, weaponIndex, forcedMelee, shooter);
       } else if (outcome.kind === "mine") {
         this.destroyMine(outcome.target, shooter);
       }

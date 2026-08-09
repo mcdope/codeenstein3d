@@ -1315,10 +1315,23 @@ describe("number-key weapon mapping", () => {
 describe("hard weapon range limits", () => {
   const owner = () => makePlayer({ ownedWeapons: [0, 1, 2, 3, 4, 5, 6], ammo: { bullets: 200, smg: 700, rockets: 19, gas: 600 } });
   it("never picks Friday Hotfix beyond its maxRange, however good its DPS looks", () => {
-    const far = { ...makeEnemy(), dist: 6, hp: 4400, maxHp: 4400, i: 0 };
+    const far = { ...makeEnemy(), dist: 7, hp: 4400, maxHp: 4400, i: 0 };
     expect(pickRangedWeapon(owner(), PROFILE, [], far, null)).not.toBe(FRIDAY_HOTFIX_WEAPON_INDEX);
-    expect(scoreRangedWeapon(FRIDAY_HOTFIX_WEAPON_INDEX, { targetHp: 4400, dist: 6, player: owner(), profile: PROFILE, tuning: DEFAULT_TUNING })).toBe(Infinity);
+    expect(scoreRangedWeapon(FRIDAY_HOTFIX_WEAPON_INDEX, { targetHp: 4400, dist: 7, player: owner(), profile: PROFILE, tuning: DEFAULT_TUNING })).toBe(Infinity);
   });
+  it("models the range falloff, so it is not scored at full strength across its whole reach", () => {
+    // The mirrored half of `rangeDamageScale`. Leaving it out would be worse
+    // than the hard cutoff it replaced: the cutoff at least scored zero where
+    // the weapon could not reach, whereas an unmirrored curve scores a full 48
+    // a pull at 6 tiles where the engine really lands about 12.
+    const at = (dist) => expectedDamagePerShot(FRIDAY_HOTFIX_WEAPON_INDEX, dist, DEFAULT_TUNING, makeEnemy());
+    expect(at(2.0)).toBeCloseTo(at(2.5), 6);        // plateau: the curve must not bite yet
+    expect(at(4.5)).toBeLessThan(at(2.5));           // then decay, monotonically
+    expect(at(6.0)).toBeLessThan(at(4.5));
+    expect(at(6.5)).toBe(0);                         // nothing at the far end
+    expect(at(4.5) / at(2.5)).toBeCloseTo(0.5, 2);   // half-way along is half damage
+  });
+
   it("is a candidate again inside that range, rather than scoring Infinity", () => {
     // The pair with the test above: out of reach it is not a candidate at all
     // (Infinity), inside reach it is scored on its merits. Whether it then

@@ -664,6 +664,15 @@ int f(void) { return 0; }`);
     expect(countTopLevelImports(root, [], ["call_expression"], /^require\(/, JS_BLOCK_NODE_TYPE_SET)).toBe(2);
   });
 
+  it("ignores a top-level call that is not an import, however call-shaped it is", () => {
+    // The pair with "counts call-shaped imports by their text": the node type
+    // alone is not enough, because in a grammar with no import statement every
+    // call looks identical to `require(...)` until the pattern is applied. A
+    // plain top-level call must not inflate the file's dependency count.
+    const root = parseJs(`const a = require("a");\nconsole.log("hi");\nsetup();`);
+    expect(countTopLevelImports(root, [], ["call_expression"], /^require\(/, JS_BLOCK_NODE_TYPE_SET)).toBe(1);
+  });
+
   it("ignores a call-shaped import buried inside a function body", () => {
     // Depth 4+ (program > function > body > statement > call) is past the
     // top-level allowance — a lazily-required module isn't a file dependency.

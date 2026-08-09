@@ -2209,7 +2209,7 @@ describe("RaycasterEngine — firing", () => {
     // destroyed" result would just as easily mean "never even hit",
     // proving nothing about the maxRange check itself.
     const size = 20;
-    const mine: Mine = { x: 9.1, y: 10.5, alive: true, visible: true, closeTimer: 0 }; // 3.6 tiles out, past maxRange (3.5)
+    const mine: Mine = { x: 12.1, y: 10.5, alive: true, visible: true, closeTimer: 0 }; // 7.1 tiles out, past maxRange (6.5)
     const map = fakeMap({ spawn: { x: 5, y: 10 }, mines: [mine] }, size);
     const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
       carryover: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 999, ownedWeapons: [0, 1, 2, 5] },
@@ -2221,6 +2221,25 @@ describe("RaycasterEngine — firing", () => {
     input.fireHeld = true;
     for (let i = 0; i < 20; i++) engine.advance(0.016);
     expect(mine.alive).toBe(true);
+  });
+
+  it("destroys a mine that the old 3.5-tile cutoff would have spared", () => {
+    // The positive control for the test above, and the change itself: at 5
+    // tiles a pellet used to be discarded outright. Without this, "still
+    // alive" out at 7.1 would be just as consistent with pellets never landing
+    // at that distance at all, which would make the range assertion vacuous.
+    const size = 20;
+    const mine: Mine = { x: 10, y: 10.5, alive: true, visible: true, closeTimer: 0 }; // 5 tiles out
+    const map = fakeMap({ spawn: { x: 5, y: 10 }, mines: [mine] }, size);
+    const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 999, ownedWeapons: [0, 1, 2, 5] },
+    });
+    input.weaponRequest = 4;
+    engine.advance(0.016);
+    expect(lastStats(handlers).weaponIndex).toBe(5);
+    input.fireHeld = true;
+    for (let i = 0; i < 20; i++) engine.advance(0.016);
+    expect(mine.alive).toBe(false);
   });
 
   it("getPlayerState().wouldMineHit is true for a mine within Friday Hotfix's maxRange", () => {
