@@ -54,12 +54,58 @@ describe("spawnEnemies", () => {
     for (const e of enemies) expect(e.elite).toBe(false);
   });
 
-  it("spawns a single Elite instead of a pack at/above the complexity threshold", () => {
+  it("spawns an Elite pack at/above the complexity threshold, at twice the pack budget", () => {
     const room = makeRoom(1, 1, 10, 10, entity({ complexityScore: 40 }));
     const enemies = spawnEnemies([room], { x: 99, y: 99 }, mulberry32(1));
-    expect(enemies).toHaveLength(1);
-    expect(enemies[0].elite).toBe(true);
-    expect(enemies[0].hp).toBe(40 * 25 * 2); // ELITE_HP_MULTIPLIER, lowered 4 -> 2 (see its doc comment)
+    expect(enemies).toHaveLength(6); // 40*25*2 = 2000, split by the 350 HP member cap
+    for (const e of enemies) expect(e.hp).toBe(333);
+    expect(enemies.reduce((sum, e) => sum + e.hp, 0)).toBe(1998); // 2000, minus rounding
+  });
+
+  it("flags only the anchor as Elite, because the damage multiplier is per-enemy", () => {
+    // `damageMultiplierFor` (`enemyAi.ts`) applies ELITE_DAMAGE_MULTIPLIER to
+    // every flagged enemy, so flagging the whole pack would multiply the room's
+    // incoming DPS by its size. It also keeps "one Elite per Elite room" true
+    // for every report that counts the archetype.
+    const room = makeRoom(1, 1, 10, 10, entity({ complexityScore: 100 }));
+    const enemies = spawnEnemies([room], { x: 99, y: 99 }, mulberry32(1));
+    expect(enemies.filter((e) => e.elite)).toHaveLength(1);
+    expect(enemies[0].elite).toBe(true); // the anchor, which sits at the room center
+  });
+
+  it("never generates an enemy the player cannot kill, whatever the source file does", () => {
+    // The ceiling is empirical and stated in *runtime* HP: the bot kills up to
+    // ~500 reliably, and the largest it has ever killed on Hard is 338. 350
+    // base is 525 after Hard's 1.5x. vim's `nfa_emit_equi_class` is complexity
+    // 672 and used to produce a single 33,600 HP enemy.
+    for (const complexityScore of [40, 41, 60, 100, 672]) {
+      const room = makeRoom(1, 1, 18, 18, entity({ complexityScore }));
+      const enemies = spawnEnemies([room], { x: 99, y: 99 }, mulberry32(1));
+      for (const e of enemies) expect(e.hp).toBeLessThanOrEqual(350);
+      expect(enemies.length).toBeLessThanOrEqual(8);
+    }
+  });
+
+  it("caps an Elite room's total HP rather than letting it grow with complexity", () => {
+    const of = (complexityScore: number) =>
+      spawnEnemies([makeRoom(1, 1, 18, 18, entity({ complexityScore }))], { x: 99, y: 99 }, mulberry32(1)).reduce(
+        (sum, e) => sum + e.hp,
+        0,
+      );
+    expect(of(100)).toBe(2800);
+    expect(of(672)).toBe(2800); // 33,600 before the cap
+  });
+
+  it("closes the HP-per-enemy cliff at the threshold that made Elites unkillable", () => {
+    // Complexity 39 was a 4-enemy / 976 HP pack (244 each) and 40 was a single
+    // 2,000 HP enemy — so nothing was ever generated between 500 and 2,000 HP,
+    // and 1,332 Elites spawned across the corpus for 2 kills. The room's budget
+    // still doubles across the boundary, as intended; what no longer jumps is
+    // the size of any individual enemy in it.
+    const perMember = (complexityScore: number) =>
+      spawnEnemies([makeRoom(1, 1, 18, 18, entity({ complexityScore }))], { x: 99, y: 99 }, mulberry32(1))[0].hp;
+    expect(perMember(39)).toBe(244);
+    expect(perMember(40)).toBe(333); // was 2000
   });
 
   it("aggregates enemies across multiple rooms", () => {

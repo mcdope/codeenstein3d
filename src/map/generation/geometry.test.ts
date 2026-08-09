@@ -393,6 +393,26 @@ describe("sideCandidateFits", () => {
     expect(sideCandidateFits(c, g, 32, corridor)).toBe(false);
   });
 
+  it("rejects a connector blocked BEYOND the footprint's own margin ring", () => {
+    // The previous case can be decided by the margin check alone, because a
+    // short connector's tiles sit inside the ring the footprint already
+    // inspects. The corridor loop only earns its place when a tile is outside
+    // that ring — that is the one a long connector can hit and nothing else
+    // looks at.
+    const g = rockGrid(32);
+    const c = sideCandidates(anchor, 2, 2, 4).find((x) => x.side === "top")!;
+    const corridor = connectorTiles(c, 4);
+    const outside = corridor.find(
+      (t) =>
+        !(t.x === c.wall.x && t.y === c.wall.y) &&
+        (t.x < c.x0 - 1 || t.x > c.x1 + 1 || t.y < c.y0 - 1 || t.y > c.y1 + 1),
+    );
+    expect(outside, "no connector tile lies outside the margin ring — the test proves nothing").toBeDefined();
+    expect(sideCandidateFits(c, g, 32, corridor)).toBe(true); // rock everywhere: passes
+    g[outside!.y][outside!.x] = 0;
+    expect(sideCandidateFits(c, g, 32, corridor)).toBe(false);
+  });
+
   it("accepts a connector made entirely of untouched rock", () => {
     const g = rockGrid(32);
     const c = sideCandidates(anchor, 2, 2, 2).find((x) => x.side === "top")!;

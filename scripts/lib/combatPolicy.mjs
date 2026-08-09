@@ -161,6 +161,14 @@ export const DEFAULT_TUNING = {
   // always just ended on the exit, so round 0 has nothing to path around.
   BOT_EXIT_BACKTRACK_TILES: 0,
   TURN_MOVE_EPS: 0.2,
+  // Below this distance (tiles) the hazard branch pivots instead of driving.
+  // It is the bot's turn radius: v/w with v = ENGINE_MOVE_SPEED 3.2 tiles/s
+  // (walking — the branch drops the sprint while turning) and w measured at
+  // 5.2 rad/s, giving 0.62. A target inside that circle cannot be approached
+  // while moving forward at any speed; the bot orbits it instead. Measured
+  // directly on a wolf3d death: target at 0.42 tiles, distance *growing* to
+  // 0.78 as the bot spiralled outward.
+  HAZARD_PIVOT_DIST: 0.7,
   ARRIVE_EPS: 0.15,
   TIGHT_ARRIVE_EPS: 0.05,
   // Any single-tick position jump larger than this is physically impossible
@@ -171,6 +179,34 @@ export const DEFAULT_TUNING = {
   // See `maybeDetourForLoot`'s doc comment — caps how far (straight-line)
   // the bot will detour for a single uncollected pickup.
   MAX_LOOT_DETOUR_TILES: 20,
+  // Per-level ceiling on loot detouring, as a multiple of the level's planned
+  // route length. 1.0 means "walk at most as far collecting as travelling".
+  //
+  // Exists because the detour had no termination condition at all.
+  // `maybeDetourForLoot` is called once per *waypoint* (`driveLegs` calls it
+  // before each leg and again inside the waypoint loop), re-picks from scratch
+  // every time, and will walk `MAX_LOOT_DETOUR_TILES` for whatever is nearest
+  // — while kills keep creating fresh drops. Measured on serilog level 9:
+  // 88,791 decisions and 14,268 tiles walked on a 72x72 map, of which **87%**
+  // was loot detouring against 12% on the route. Every one of that repo's 60
+  // capture runs wedged, with zero deaths.
+  //
+  // A fraction rather than a fixed tile count so it scales with the level: the
+  // same number cannot be right for a 15-tile route and a 300-tile one.
+  //
+  // Urgent health detours deliberately ignore this — see `maybeDetourForLoot`.
+  LOOT_BUDGET_FRACTION: 1.0,
+  // Give up on one drop after this many approaches that fail to collect it.
+  //
+  // Same shape as `MINE_TARGET_GIVEUP_TICKS`, for the same reason: without it a
+  // target the bot cannot actually reach is re-selected forever. That was not
+  // hypothetical — the bot walks to a drop's *tile centre* while the engine
+  // collects within `AMMO_PICKUP_RADIUS` (0.5) of the drop itself, and
+  // centre-to-corner is 0.707, so ~21.5% of a tile was unreachable. Dynamic
+  // drops are never added to `visitedPickups` either, so such a drop was both
+  // uncollectable and permanently re-picked. Walking to the drop coordinate
+  // fixes the geometry; this bounds whatever the geometry does not.
+  LOOT_TARGET_GIVEUP_ATTEMPTS: 3,
   // How far (in tiles) the bot's actual position may be from an upcoming
   // waypoint before it's considered "displaced" and worth a fresh BFS
   // re-plan — see `driveTowardWithReplan`'s doc comment.
@@ -255,6 +291,98 @@ export const DEFAULT_TUNING = {
   MINE_REALIGN_STALL_TICKS: 15,
   CRITICAL_HEALTH_FRACTION: 0.2,
   MELEE_RANGE: 1.5,
+  // Refuse to trade swings with a target holding more than this much HP, as
+  // long as a gun still has ammo. `Infinity` is the shipped behaviour and
+  // makes this inert — it exists to be turned on for one measurement:
+  //
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"MELEE_MAX_TARGET_HP":500}'
+  //
+  // Why it exists. The 2026-08-04 capture found 83% of Elite engagements
+  // happening inside 2 tiles at a median of 0.5, and levels 15/17 (the only
+  // two multi-Elite levels) killing 46% and 98% of the runs that reached them.
+  // An Elite carries 3,000-3,500 HP on hard and deals double melee damage, so
+  // a 40-damage knife needs ~83 swings to fell one — a trade nothing about the
+  // bot's policy currently declines, because `shouldCloseToMelee` only ever
+  // asks how far away the target is, never how big it is.
+  //
+  // The open question that measurement cannot currently answer is whether
+  // those two levels are genuinely brutal or whether the bot simply fights
+  // them badly, and no amount of re-tuning enemy HP settles it. Running the
+  // same six cells with this set turns it into an A/B against the same binary.
+  //
+  // Scope, deliberately narrow: this stops the bot *closing* on a big target.
+  // It does not add kiting — there is no behaviour here that restores distance
+  // once an enemy has walked into contact, and adding one is a much larger
+  // change than a diagnostic warrants. Read a null result as "closing is not
+  // the mechanism", not as "the bot fights these levels fine".
+  //
+  // The `hasAnyRangedAmmo` guard in `shouldCloseToMelee` keeps the last-resort
+  // case intact: dry is still dry, and standing in front of a threat pulling a
+  // dead trigger is worse than any trade.
+  MELEE_MAX_TARGET_HP: Infinity,
+  // Whether the turn key gets its own (short) hold while movement keys run the
+  // whole decision — see `turnSplitIntent`. Single-variable switch so the
+  // change can be A/B'd against the *same binary*, which is the only way to
+  // isolate it from anything else that landed since the last capture:
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"TURN_SPLIT_PHASES":false}'
+  // False reproduces the old one-scalar-per-decision behaviour exactly.
+  TURN_SPLIT_PHASES: true,
+  // Break contact with a target too big to burst down, the way the bot already
+  // breaks contact at critical health. **On** since 2026-08-06; set to
+  // `Infinity` to restore the old stand-and-trade behaviour:
+  //
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"STANDOFF_MIN_TARGET_HP":1e999}'
+  //
+  // Measured before enabling, on the same staged wolf3d campaign, 20 runs per
+  // profile: engagement distance against a 3,000 HP Elite went **0.54t ->
+  // 5.10t**, knife swings into it **305 -> 0**, ghidra shots **2 -> 21** (0.5%
+  // -> 22.3% of the damage dealt to it). Level-8 lethality did *not* move —
+  // 100% -> 89%, Fisher p = 0.24 — because the constraint there is arithmetic:
+  // ghidra deals ~93 damage a shot and the bot carries a median of 4 rockets,
+  // so 372 damage against 3,000 HP.
+  //
+  // Enabled anyway, because the point is instrument quality rather than
+  // lethality. A bot that knife-trades a 3,000 HP Elite 305 times is not a
+  // usable measuring device for level difficulty, and every Elite death rate
+  // recorded before this was an upper bound produced by the worst available
+  // tactic. Known cost: `selfRocket` damage appeared at 3% of damage taken on
+  // that level, having been 0% before.
+  //
+  // Why it exists. `MELEE_MAX_TARGET_HP` was run as an A/B on the wolf3d
+  // capture and came back null: it removed the knife trade completely (305
+  // swings against a 3,000 HP Elite -> 0) and moved level-8 lethality not at
+  // all (100% -> 89%, Fisher p=0.24). Its own comment predicted why — it stops
+  // the bot *closing*, and nothing there stops the Elite closing. Engagement
+  // settled at 1.25 tiles, still inside `ROCKET_SAFE_DISTANCE`, so ghidra
+  // stayed unusable and the Elite was never killed in either arm.
+  //
+  // This is the missing half: once something big is inside
+  // `STANDOFF_DISTANCE`, retreat along the escape vector instead of standing
+  // in it. The retreat itself is the existing critical-health behaviour,
+  // reused verbatim — sprinting backwards along the away-vector while staying
+  // aimed at the threat — only the gate is new.
+  //
+  // Feasibility, since a standoff nothing can hold is worthless: the player
+  // sprints at `ENGINE_MOVE_SPEED * ENGINE_SPRINT_MULTIPLIER` = 6.4 t/s and a
+  // regular-archetype Elite chases at `ENEMY_CHASE_SPEED` 1.7, so opening
+  // range is not in question. Edge Cases chase at 3.74 — still under a sprint.
+  //
+  // Self-limiting by construction, so there is no runaway-retreat mode: the
+  // gate stops firing the moment the target is beyond `STANDOFF_DISTANCE`, and
+  // normal ranged selection resumes. That is the whole point — 5 tiles is
+  // outside `ROCKET_SAFE_DISTANCE` (4) far enough that
+  // `rocketDetonationDistanceAfterClosing` still clears it against a 1.7 t/s
+  // chaser (5 - 1.7*(5/18) = 4.53), so ghidra becomes legal exactly when the
+  // bot stops backing up.
+  //
+  // Gated on `hasAnyRangedAmmo` for the same reason `shouldCloseToMelee` is:
+  // backing away from something you have no ammo to shoot is worse than any
+  // trade. And it reads `threat.hp`, not `maxHp`, so a half-killed Elite stops
+  // being worth avoiding once it drops under the threshold.
+  STANDOFF_MIN_TARGET_HP: 500,
+  // How far to hold off a `STANDOFF_MIN_TARGET_HP` target. Inert while that is
+  // `Infinity`. See above for why 5 and not 4.
+  STANDOFF_DISTANCE: 5,
   // Below this distance, stop trying to close the last bit of distance
   // during an in-progress melee engagement — see `decide`'s melee branch,
   // which actually gates on `max(this, ENGINE_MOVE_SPEED * stepMs/1000)`,
@@ -285,8 +413,18 @@ export const DEFAULT_TUNING = {
   ROCKET_SAFE_DISTANCE: 4,
   // Mirrors src/engine/rockets.ts's ROCKET_ENEMY_TRIGGER_RADIUS.
   ROCKET_ENEMY_TRIGGER_RADIUS: 0.4,
-  // Matches Friday Hotfix's real maxRange (weapons.ts).
-  FRIDAY_HOTFIX_MAX_RANGE: 3.5,
+  // Matches Friday Hotfix's real maxRange (weapons.ts) — the distance past
+  // which a pellet does not arrive at all.
+  FRIDAY_HOTFIX_MAX_RANGE: 6.5,
+  // Matches its `fullDamageRange`: the end of the plateau, past which damage
+  // decays toward zero at `FRIDAY_HOTFIX_MAX_RANGE`.
+  //
+  // This, not the max range, is what `pickRangedWeapon`'s cluster fast-path
+  // should compare against. Picking the flamethrower anywhere inside its reach
+  // would hand it fights at 6 tiles where it lands ~12 damage a pull, which is
+  // exactly the "burning gas on a target it cannot reach" failure the hard
+  // cutoff was added to stop — the cutoff moved, the failure did not.
+  FRIDAY_HOTFIX_FULL_DAMAGE_RANGE: 2.5,
   // How far a clustered threat needs to be before rocket splash is worth
   // preferring — see `pickRangedWeapon`.
   ROCKET_CLUSTER_MIN_DIST: 5, // ROCKET_SAFE_DISTANCE + 1
@@ -295,9 +433,17 @@ export const DEFAULT_TUNING = {
   // flight time a target spends closing the gap.
   ENEMY_CHASE_SPEED: 1.7,
   EDGE_CASE_CHASE_SPEED: 3.74,
-  // Mirrors `src/engine/projectiles.ts`'s PROJECTILE_SPEED — a rocket is not
+  // Mirrors `src/engine/combatConstants.ts`'s ROCKET_SPEED — a rocket is not
   // instantaneous, and everything below turns on that.
-  ROCKET_TRAVEL_SPEED: 5,
+  //
+  // Was 5 until 2026-08-04, mirroring `PROJECTILE_SPEED` instead: that is the
+  // *enemy bolt's* speed, not the player's own ghidra rocket. The comment even
+  // said so, which is how it survived review. The bot therefore modelled its
+  // own rocket as 3.6x slower than it is, so
+  // `rocketDetonationDistanceAfterClosing` believed a chasing enemy would
+  // close 3.6x further during the flight and refused shots that were in fact
+  // safe. Pinned against the engine by `constantMirrors.test.mjs`.
+  ROCKET_TRAVEL_SPEED: 18,
   // Seconds-equivalent of firing a rocket with no safety margin at all, before
   // the profile's `selfHarmAversion` multiplier.
   SELF_HARM_PENALTY_SEC: 25,
@@ -867,10 +1013,11 @@ export const WEAPON_STATS = {
   // despite low per-shot damage (`maxConeDeviationPx` in weapons.ts).
   [GDB_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 12, ammoPerShot: 1, ammoType: "smg", spreadPx: 0, fireIntervalSec: 0.09, maxConeDeviationPx: 20 },
   [GHIDRA_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 150, ammoPerShot: 1, ammoType: "rockets", spreadPx: 0, fireIntervalSec: 1.1 },
-  // `maxRange` mirrors `src/engine/weapons.ts` — Friday Hotfix is the only
-  // weapon with a hard cutoff (a flame jet, not a falloff curve). Past it the
-  // shot simply does not reach, so it must not be scored as a candidate.
-  [FRIDAY_HOTFIX_WEAPON_INDEX]: { pellets: 6, damagePerPellet: 8, ammoPerShot: 2.5, ammoType: "gas", spreadPx: 45, fireIntervalSec: 0.1, maxRange: 3.5 },
+  // `maxRange`/`fullDamageRange` mirror `src/engine/weapons.ts` — Friday Hotfix
+  // is the only weapon with a range curve. Full damage to the plateau, decaying
+  // to zero at the max, past which the shot does not reach at all and must not
+  // be scored as a candidate. `rangeDamageScale` below applies the decay.
+  [FRIDAY_HOTFIX_WEAPON_INDEX]: { pellets: 6, damagePerPellet: 8, ammoPerShot: 2.5, ammoType: "gas", spreadPx: 45, fireIntervalSec: 0.1, fullDamageRange: 2.5, maxRange: 6.5 },
 };
 
 /**
@@ -940,6 +1087,12 @@ export function shouldCloseToMelee(threat, player, profile, tuning = DEFAULT_TUN
   // 32 enemies are <=15 HP Edge Cases, so it fires constantly, and the mines
   // that kill are unspotted — the bot must not route around what it has not
   // seen, so no guard can save it.
+  // Off by default (`MELEE_MAX_TARGET_HP` is Infinity) — see its own comment
+  // in DEFAULT_TUNING for what this is for and what it deliberately is not.
+  // Checked before the range test so it also suppresses the "keep closing the
+  // last bit of distance" step in `decide`'s melee branch, which is the part
+  // that actually produces the 0.5-tile median against Elites.
+  if (hasAnyRangedAmmo(player) && threat.hp > tuning.MELEE_MAX_TARGET_HP) return false;
   return threat.dist <= tuning.MELEE_RANGE || !hasAnyRangedAmmo(player);
 }
 
@@ -964,11 +1117,32 @@ export function ammoHeldFor(player, weaponIndex) {
  * derivation of it — its job is to rank weapons against each other, and the
  * A/B is what validates the ranking.
  */
+/**
+ * Fraction of `damagePerPellet` that lands at `dist` — mirrors
+ * `rangeDamageScale` in `src/engine/weapons.ts`.
+ *
+ * Without this the bot scores the flamethrower at full strength anywhere
+ * inside its (now much longer) reach, which is worse than the old bug it
+ * replaces: the hard cutoff at least made the weapon score zero where it could
+ * not reach, whereas a silently-unmirrored curve makes it score 48 a pull at 6
+ * tiles where it really lands 12. `constantMirrors.test.mjs` pins the numbers;
+ * this pins the shape.
+ */
+function rangeDamageScale(w, dist) {
+  if (w.fullDamageRange === undefined || w.maxRange === undefined || w.maxRange <= w.fullDamageRange) return 1;
+  if (dist <= w.fullDamageRange) return 1;
+  if (dist >= w.maxRange) return 0;
+  return (w.maxRange - dist) / (w.maxRange - w.fullDamageRange);
+}
+
 export function expectedDamagePerShot(weaponIndex, dist, tuning = DEFAULT_TUNING, target = null) {
   const w = WEAPON_STATS[weaponIndex];
   if (!w) return 0;
   if (w.maxRange !== undefined && (dist ?? 0) > w.maxRange) return 0;
   const d = Math.max(0.1, dist ?? 0);
+  // Range falloff multiplies whatever the cone model works out below.
+  const falloff = rangeDamageScale(w, d);
+  if (falloff <= 0) return 0;
 
   // How wide the target actually is on screen, from `projectEnemy`:
   // `size = |SCENE_HEIGHT / depth| * ENEMY_SIZE * scale`, so half-width in
@@ -992,7 +1166,7 @@ export function expectedDamagePerShot(weaponIndex, dist, tuning = DEFAULT_TUNING
   // the total scatter. An approximation of the engine's per-pellet raycast,
   // not a derivation of it — its job is to rank weapons against each other.
   const hitFraction = scatterPx <= 0 ? 1 : Math.max(0, Math.min(1, halfWidthPx / scatterPx));
-  return w.pellets * w.damagePerPellet * hitFraction;
+  return w.pellets * w.damagePerPellet * hitFraction * falloff;
 }
 
 /**
@@ -1144,7 +1318,7 @@ export function pickRangedWeapon(player, profile, enemies, threat, mineTarget, t
   if (threat) {
     const clusterCount = enemies.filter((e) => e.alive && e.aggroed && Math.hypot(e.x - threat.x, e.y - threat.y) <= tuning.CLUSTER_RADIUS).length;
     if (clusterCount >= 2) {
-      if (threat.dist <= tuning.FRIDAY_HOTFIX_MAX_RANGE) {
+      if (threat.dist <= tuning.FRIDAY_HOTFIX_FULL_DAMAGE_RANGE) {
         if (player.ownedWeapons.includes(FRIDAY_HOTFIX_WEAPON_INDEX) && hasAmmoFor(player, FRIDAY_HOTFIX_WEAPON_INDEX)) {
           return player.weaponIndex === FRIDAY_HOTFIX_WEAPON_INDEX ? null : FRIDAY_HOTFIX_WEAPON_INDEX;
         }
@@ -1217,6 +1391,39 @@ export function pickRangedWeapon(player, profile, enemies, threat, mineTarget, t
  * while still holding keys (the ranged approach with no turn key, for one), and
  * those hold for the entire window.
  */
+/**
+ * Like `uniformIntent`, but lets the turn key finish early while the movement
+ * keys run the whole decision.
+ *
+ * This is what `segmentsFor` was built for and never given: with differing
+ * holds it emits two phases — turn+move, then move alone — so a small aim
+ * correction lands as a small rotation even while the bot is strafing.
+ *
+ * Before this, one scalar served both. The combat branch widens `turnBurst` to
+ * a movement-sized burst so the stall-strafe actually displaces the bot, and
+ * that widening held the *turn* key for the full decision too: 0.26/0.455/0.65
+ * rad for Casual/Gamer/Pro against `fireAngleEps` of 0.08/0.05/0.03, a 3x to
+ * 22x overshoot. Since the stall-strafe fires precisely *because* the bot has
+ * stalled in combat, the remedy was producing the aim failure that kept the
+ * stall alive.
+ *
+ * The 2026-07-29 A/B could only trade one against the other — it removed the
+ * widening, killed the overshoot, and cost 15pp of Gamer/normal qualify rate
+ * because the strafe then moved the bot ~0.02 tiles. Decoupling is the option
+ * that experiment could not express.
+ */
+export function turnSplitIntent(moveKeys, durationMs, turnHoldMs, stepMs, rest, tuning = DEFAULT_TUNING) {
+  const total = durationMs ?? stepMs;
+  const holds = new Map();
+  for (const key of moveKeys) {
+    const isTurnKey = tuning.TURN_SPLIT_PHASES && (key === "KeyQ" || key === "KeyE");
+    // `Math.min` matters: a widened decision must not *extend* a turn, and an
+    // unwidened one must not shorten the movement keys below the turn itself.
+    holds.set(key, isTurnKey && turnHoldMs != null ? Math.min(turnHoldMs, total) : total);
+  }
+  return { holds, durationMs, fire: false, useMelee: false, weaponSwitchIndex: null, firedSemiAuto: false, ...rest };
+}
+
 export function uniformIntent(keys, durationMs, stepMs, rest) {
   const hold = durationMs ?? stepMs;
   const holds = new Map();
@@ -1306,17 +1513,70 @@ export function decide(world, memory, config) {
     const targetAngle = Math.atan2(navTarget.y - player.y, navTarget.x - player.x);
     const delta = angleDelta(currentAngle, targetAngle);
     const dist = Math.hypot(navTarget.x - player.x, navTarget.y - player.y);
-    const moveKeys = new Set(["KeyW", "ShiftLeft"]);
+    // Don't sprint while turning: a sprint doubles the speed and therefore
+    // doubles the turn radius, and a target inside that radius can never be
+    // reached — the bot just orbits it.
+    //
+    // The geometry, measured off a wolf3d level-2 death trace: `dir` advances
+    // 0.26 rad per 50ms decision, so w = 5.2 rad/s, and sprinting moves
+    // ENGINE_MOVE_SPEED * ENGINE_SPRINT_MULTIPLIER = 6.4 tiles/s. Turn radius
+    // r = v/w = **1.23 tiles**, against a nav target sitting 0.87-1.4 tiles
+    // away — inside the circle, so it orbited at full health until the acid
+    // killed it. Walking halves the radius to 0.62 and puts those targets back
+    // outside it.
+    //
+    // This is the same failure as serilog's, one scale up: there the target
+    // was 0.16 tiles away and the fix was to stop overshooting it (the
+    // distance-capped burst below). Both are needed — the cap alone cannot
+    // help at 1.4 tiles, where `moveBurstMs` returns 219ms and is clamped to
+    // the 50ms step long before it bites.
+    // …and inside the turn radius, stop driving altogether and pivot.
+    //
+    // A forward-moving body cannot approach anything closer than its own turn
+    // radius: the bearing to a near target changes at least as fast as the bot
+    // can rotate, so it circles. Measured with the sprint already removed, on
+    // a wolf3d level-2 death: steps of 0.16 tiles (3.2 tiles/s, correct for
+    // walking), `dir` still advancing 0.26 rad per decision, radius 0.62
+    // tiles — and a target at **0.42 tiles** with the distance *growing*
+    // 0.42 -> 0.78 as it spiralled outward. Halving the radius was not enough
+    // because the target was inside the smaller circle too.
+    //
+    // So when the target is nearer than the turn radius, rotate in place and
+    // do not hold KeyW. A pivot of ~1.8 rad at 5.2 rad/s costs about seven
+    // decisions; the orbit it replaces cost over a hundred and ended in death.
+    // Deliberately gated on *distance*: an earlier attempt pivoted on bearing
+    // error alone, fired in 48% of hazard decisions, and measured worse.
+    const turning = Math.abs(delta) > tuning.TURN_MOVE_EPS;
+    const pivotInPlace = turning && dist < tuning.HAZARD_PIVOT_DIST;
+    const moveKeys = new Set(pivotInPlace ? [] : turning ? ["KeyW"] : ["KeyW", "ShiftLeft"]);
     let turnBurst;
-    if (Math.abs(delta) > tuning.TURN_MOVE_EPS) {
+    if (turning) {
       moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
       // Deliberately no `diagonalStrafeKey` here — see its doc comment's
       // "confirmed regression" note. Reverted from every branch except
       // plain navigation.
+      // No distance cap on the burst. An earlier fix capped it by
+      // `moveBurstMs(dist)` to stop the bot stepping over its own waypoint —
+      // that was real (on serilog `dist < ARRIVE_EPS` was true 0 times in
+      // 1,035 hazard decisions) but the cap only bites below
+      // ENGINE_MOVE_SPEED * stepMs = 0.16 tiles, which now lies entirely
+      // inside the pivot radius above. Pivoting supersedes it, so the cap
+      // would be unreachable code.
       turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, currentAngle, burstCtx);
     } else {
       turnBurst = moveBurstMs(dist, true, moveCtx);
     }
+    // Logging only, no behaviour change — and load-bearing for diagnosis. The
+    // general `[nav]` line is emitted far below, *after* this branch returns,
+    // so the per-decision trace went silent for exactly the decisions where
+    // the bot is standing in damage. Three fix attempts on 2026-08-07 were
+    // guesses because of that gap, and all three measured worse than the bug.
+    // This line is what finally showed the mechanism; keep it.
+    logger?.debugNav?.(
+      `[hazard] pos=(${player.x.toFixed(2)},${player.y.toFixed(2)}) dir=${currentAngle.toFixed(2)} hpFrac=${player.healthFraction.toFixed(2)} ` +
+        `navTarget=(${navTarget.x.toFixed(2)},${navTarget.y.toFixed(2)}) dist=${dist.toFixed(2)} delta=${delta.toFixed(2)} ` +
+        `turnBurst=${turnBurst} keys=${[...moveKeys].join("+")}`,
+    );
     return uniformIntent(moveKeys, turnBurst, stepMs, {
       branch: "hazard",
       trace: { branch: "hazard", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: null, mineDist: null, delta: navDelta, navDist, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false },
@@ -1325,8 +1585,24 @@ export function decide(world, memory, config) {
 
   const threat = ignoreThreats ? null : pickThreat(enemies, player, profile, map, tuning);
 
-  // Critical health: break contact instead of trading hits.
-  if (threat && player.healthFraction < tuning.CRITICAL_HEALTH_FRACTION) {
+  // Break contact instead of trading hits — for two independent reasons that
+  // want the identical movement, so they share one branch body and differ only
+  // in the label they report.
+  //
+  //   criticalHealth — almost dead, disengage from anything.
+  //   standoff       — healthy, but this target is too big to burst down and
+  //                    is inside the range where the rocket is unusable.
+  //
+  // `standoff` is inert unless `STANDOFF_MIN_TARGET_HP` is set; see its comment
+  // in DEFAULT_TUNING for why it exists and why the distance is 5.
+  const criticalHealth = !!threat && player.healthFraction < tuning.CRITICAL_HEALTH_FRACTION;
+  const standoff = !!threat
+    && !criticalHealth
+    && hasAnyRangedAmmo(player)
+    && threat.hp > tuning.STANDOFF_MIN_TARGET_HP
+    && threat.dist < tuning.STANDOFF_DISTANCE;
+  if (threat && (criticalHealth || standoff)) {
+    const breakContactBranch = criticalHealth ? "criticalHealth" : "standoff";
     const currentAngle = Math.atan2(player.dirY, player.dirX);
     const awayAngle = Math.atan2(player.y - threat.y, player.x - threat.x);
     const delta = angleDelta(currentAngle, awayAngle);
@@ -1384,8 +1660,8 @@ export function decide(world, memory, config) {
     // tick converges toward genuinely-away without stalling.
     const turnBurst = moveBurstMs(10, true, moveCtx);
     return uniformIntent(moveKeys, turnBurst, stepMs, {
-      branch: "criticalHealth",
-      trace: { branch: "criticalHealth", x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: threat.dist, mineDist: null, delta: navDelta, navDist, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false },
+      branch: breakContactBranch,
+      trace: { branch: breakContactBranch, x: player.x, y: player.y, hpFrac: player.healthFraction, threatDist: threat.dist, mineDist: null, delta: navDelta, navDist, waitingOnSpike: false, moveKeys: [...moveKeys], turnBurst, fire: false },
     });
   }
 
@@ -1518,6 +1794,13 @@ export function decide(world, memory, config) {
   const currentAngle = Math.atan2(player.dirY, player.dirX);
   const moveKeys = new Set();
   let turnBurst;
+  // The turn key's OWN hold, kept apart from `turnBurst` because the branches
+  // below widen that to a movement-sized burst so the stall-strafe actually
+  // displaces the bot. One scalar cannot serve both: widening it holds the turn
+  // key for the whole decision too, which is the aim overshoot the
+  // `[nav-warn] implausible rotation` line reports. `turnSplitIntent` below
+  // dispatches the two as separate phases.
+  let turnHoldMs = null;
   let fire = false;
   // True when the bot was aimed, aligned, and otherwise ready to fire, but
   // held back purely by cadence — either `profile.fireCooldownMs` or the
@@ -1554,6 +1837,7 @@ export function decide(world, memory, config) {
       if (!player.meleeWouldHit) {
         moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
         turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, currentAngle, burstCtx);
+        turnHoldMs = turnBurst;
         // Also keep closing the last bit of distance, not just re-aiming
         // in place — the enemy's own chase AI is still walking between
         // MELEE_CLOSE_MIN_DISTANCE and MELEE_RANGE. Never closer than one
@@ -1591,24 +1875,30 @@ export function decide(world, memory, config) {
         }
         if (stallStrafeKey) {
           moveKeys.add(stallStrafeKey);
-          // NOTE: this also widens the *turn* key's hold, because
-          // `uniformIntent` applies one scalar to every key. When a turn key is
-          // present a small correction executes as a full decision's rotation —
-          // measured at 8.3x (0.055rad needed, 0.455rad performed), and it is
-          // the origin of the "[nav-warn] implausible rotation" log line:
-          // 0.45rad is exactly one 50ms decision at Gamer's 9.1rad/s, 0.65rad
-          // likewise at Pro's 13rad/s. Casual's 0.26rad falls under the
-          // detector's 0.3 floor, which is why Casual never warns.
+          // Widens the *decision*, which the strafe needs: held for a
+          // turn-sized burst it displaces the bot ~0.02 tiles and stops being a
+          // dodge at all.
           //
-          // Gating this on "no turn key held" was tried and **reverted**
-          // (2026-07-29) after a matched-scale A/B: it removed the overshoot
-          // completely (8.3x -> 1.0x, nav-warns 15 -> 0) but `enemyAccuracy`
-          // rose on all three combos (+1.6/+0.6/+4.9%) and Gamer/normal
-          // `qualifyRate` fell 15pp, breaching the pre-registered guard. The
-          // widening is load-bearing for *dodging*, not aiming: without it the
-          // stall-strafe key is held for a turn-sized burst and moves the bot
-          // ~0.02 tiles, so it stops strafing and gets hit more. Don't "fix"
-          // this without re-running that A/B.
+          // It used to widen the turn key's hold with it, because
+          // `uniformIntent` applied one scalar to every key — a small
+          // correction then executed as a full decision's rotation, measured at
+          // 8.3x (0.055rad needed, 0.455rad performed), and the origin of the
+          // "[nav-warn] implausible rotation" line. 0.455rad is exactly one
+          // 50ms decision at Gamer's 9.1rad/s, 0.65rad likewise at Pro's
+          // 13rad/s; Casual's 0.26rad sits under the detector's 0.3 floor,
+          // which is why Casual never warned despite overshooting its own
+          // `fireAngleEps` 3x. Since this strafe fires precisely *because* the
+          // bot has stalled in combat, the remedy was producing the aim failure
+          // that kept the stall alive.
+          //
+          // Gating the widening on "no turn key held" was tried and reverted
+          // (2026-07-29): it removed the overshoot (8.3x -> 1.0x, nav-warns
+          // 15 -> 0) but `enemyAccuracy` rose on all three combos and
+          // Gamer/normal `qualifyRate` fell 15pp. That A/B could only trade
+          // aiming against dodging, because both rode one field. `turnHoldMs`
+          // now carries the turn's own hold and `turnSplitIntent` dispatches
+          // them as separate phases, so the widening below applies to the
+          // strafe alone.
           turnBurst = Math.max(turnBurst ?? 0, moveBurstMs(10, false, moveCtx));
         }
       } else {
@@ -1629,6 +1919,7 @@ export function decide(world, memory, config) {
         if (Math.abs(delta) > (mineNotReady ? tuning.MINE_REALIGN_EPS : profile.fireAngleEps)) {
           moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
           turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, currentAngle, burstCtx);
+          turnHoldMs = turnBurst;
         }
         // Keep closing distance while lining up a ranged shot (threat-only,
         // not while aiming at a mine, and only outside melee range).
@@ -1820,6 +2111,7 @@ export function decide(world, memory, config) {
     if (Math.abs(delta) > tuning.TURN_MOVE_EPS) {
       moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
       turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, currentAngle, burstCtx);
+      turnHoldMs = turnBurst;
       // Walk while still correcting heading, capped to angular errors
       // under MAX_WALK_WHILE_TURNING_RAD so a sharp corridor doubling-back
       // doesn't send the bot walking the wrong way while it turns around.
@@ -1924,7 +2216,7 @@ export function decide(world, memory, config) {
     memory.combatStrafeTicks = 0;
   }
 
-  return uniformIntent(moveKeys, turnBurst, stepMs, {
+  return turnSplitIntent(moveKeys, turnBurst, turnHoldMs, stepMs, {
     fire,
     useMelee,
     weaponSwitchIndex: weaponSwitch,
@@ -1946,5 +2238,5 @@ export function decide(world, memory, config) {
       delta: navDelta,
       navDist,
     },
-  });
+  }, tuning);
 }

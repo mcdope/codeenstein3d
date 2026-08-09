@@ -13,29 +13,66 @@ const HP_PER_COMPLEXITY = 25;
 /** Extra enemies spawned per this many complexity points, beyond the first. */
 const COMPLEXITY_PER_EXTRA_ENEMY = 10;
 /**
- * Complexity at/above which a function spawns as a single Elite enemy instead
- * of a pack — this is exactly the complexity a pack would hit 5 members at
+ * Complexity at/above which a function spawns an Elite pack instead of a plain
+ * one — this is exactly the complexity a plain pack would hit 5 members at
  * (`1 + floor(40/10)`), so "extreme complexity" means "would otherwise be the
- * biggest kind of pack, so make it one boss-tier threat instead."
+ * biggest kind of pack, so make it a boss-tier encounter instead."
+ *
+ * The threshold itself is *not* the lever to reach for. Measured across 19
+ * repositories, Elites are far from rare — 10.9 per 1,000 enemies in vim, 3.1 in
+ * this repo's own source — so lowering it would multiply an already-common
+ * encounter, and the earlier assumption that it fires four times in eight
+ * repositories was wrong. See `ELITE_HP_MULTIPLIER` for what the actual problem
+ * was and how it is bounded now.
  */
 const ELITE_COMPLEXITY_THRESHOLD = 40;
 /**
- * An Elite's HP is this multiple of what a *single* (non-pack) enemy would have
- * at the same complexity — not the pack's already-split-down HP.
+ * An Elite room's *total* HP is this multiple of what a single (non-pack) enemy
+ * would have at the same complexity — not the pack's already-split-down HP.
  *
  * Lowered 4 -> 2 after playtesting (2026-07-30) confirmed the level-12 Elite was
- * badly overpowered. Because the multiplier stacks on *un-split* HP, crossing
- * the threshold was a cliff rather than a ramp: one point of complexity turned a
- * 4-enemy, 976 HP pack into a single 4000 HP enemy that also deals
- * `ELITE_DAMAGE_MULTIPLIER` (2x) damage — quadrupling a room's total HP and
- * concentrating it. `stage12_render_engine.cpp`'s `computeVisibility`
- * (complexity 44) produced 4400 HP against the 1100 its pack would have had, and
- * the automated playtest bot died there on 12 of 12 full-campaign attempts.
+ * badly overpowered. That helped and did not go far enough: because the
+ * multiplier stacked on *un-split* HP and nothing then re-split it, crossing the
+ * threshold concentrated the whole room into one target. Complexity 39 spawned a
+ * 4-enemy / 976 HP pack (244 each); complexity 40 spawned a single 2,000 HP
+ * enemy. Nothing was ever generated in between, on any repo in the corpus.
  *
- * At 2x an Elite is still clearly tougher than the pack it replaces (2x its
- * total HP, in one target, hitting twice as hard) without the 4x cliff.
+ * The Stage C event logs settled what that cost (2026-08-08): across seven
+ * repositories **1,332 Elites spawned and 2 died** — both `normal`-difficulty
+ * ~2,000 HP enemies, taking 22-24 seconds each, and none at all on `hard`. Kill
+ * rate is 21-26% up to 499 HP and 0.15% above 2,000, with the band between them
+ * empty by construction. An Elite was not a hard fight, it was terrain: every
+ * one of the 514 cleared runs on an Elite-bearing level left the Elite alive.
+ *
+ * So the multiplier survives — an Elite room really is 2x the pack it replaces —
+ * but the total is now capped and re-split across a pack whose members each stay
+ * inside the measured killable band. See `ELITE_MEMBER_HP_CAP`.
  */
 const ELITE_HP_MULTIPLIER = 2;
+/**
+ * No enemy this generator produces may exceed this, whatever the source file
+ * does. Straight from measurement, with one conversion that is easy to get
+ * wrong: the observed killable band is **runtime** HP, and HP here is **base**
+ * HP, which `DIFFICULTY_MULTIPLIERS` then scales. The bot kills enemies up to
+ * ~500 runtime HP reliably (21%, median TTK 3.4s over 3,551 kills) and the
+ * largest it has ever killed on `hard` is **338**, across 112,311 kills there.
+ * So the ceiling that matters is 500 *after* Hard's 1.5x — hence 350 here, or
+ * 525 on Hard, which is the top of the band the data actually covers.
+ *
+ * This is the ceiling `doc/dev/balancing-telemetry.md` §7.1 asks for, answered
+ * empirically rather than by arithmetic: the case against a huge Elite was never
+ * that it is unkillable in principle (`balancing:budget` confirms every enemy is
+ * killable with the damage its level supplies) but that time-to-kill under fire
+ * exceeds how long the player survives.
+ */
+const ELITE_MEMBER_HP_CAP = 350;
+/**
+ * Upper bound on an Elite pack, so complexity 672 (vim's `nfa_emit_equi_class`,
+ * the worst real code produces) is a fight rather than a swarm. With the cap
+ * above this also fixes the room's total at 2,800 — deliberately derived rather
+ * than a third independent knob to tune.
+ */
+const ELITE_MAX_MEMBERS = 8;
 
 /**
  * Chebyshev tiles kept clear of enemies around the exit. 2 leaves a 5x5 box.
@@ -70,10 +107,11 @@ const EDGE_CASE_HP_MAX = 15;
 /**
  * Populate rooms with enemies. Classes, interfaces, and traits get rooms but no
  * enemy — only callable entities are "monsters". A room's total HP scales with
- * the entity's cyclomatic complexity; highly complex functions split that into
- * a pack (one extra enemy per 10 complexity points) rather than a single boss
- * — unless complexity crosses `ELITE_COMPLEXITY_THRESHOLD`, in which case it's
- * a single Elite instead of the biggest packs (see `Enemy.elite`). Placements
+ * the entity's cyclomatic complexity and is always split into a pack, so that no
+ * single enemy ever leaves the band the player can actually kill. Below
+ * `ELITE_COMPLEXITY_THRESHOLD` that is one extra enemy per 10 complexity points;
+ * at or above it the room gets a bigger, capped budget split into an Elite pack,
+ * with only the anchor flagged `Enemy.elite` (see `ELITE_MEMBER_HP_CAP`). Placements
  * avoid the exit tile so the 'return' marker stays visible, and — for a
  * multiplayer session — every point in `multiplayerSpawns` too, since a pack's
  * first member always anchors exactly on its room's center (see
@@ -91,17 +129,24 @@ export function spawnEnemies(
 
     const complexity = Math.max(1, room.entity.complexityScore);
     const elite = complexity >= ELITE_COMPLEXITY_THRESHOLD;
-    const count = elite ? 1 : 1 + Math.floor(complexity / COMPLEXITY_PER_EXTRA_ENEMY);
-    // Split the room's HP budget across the pack so total toughness is stable
-    // — an Elite instead gets a flat multiple of a single enemy's HP at this
-    // complexity, since it's replacing the pack entirely, not just its first
-    // member.
+    // Split the room's HP budget across the pack so total toughness is stable.
+    // An Elite room gets a larger budget (`ELITE_HP_MULTIPLIER`), capped, and
+    // then splits it the same way — the cap and the member ceiling between them
+    // decide the pack size, so no member can land outside the killable band and
+    // the room's total stops growing with complexity once it hits 2,800.
+    const eliteTotal = Math.min(
+      complexity * HP_PER_COMPLEXITY * ELITE_HP_MULTIPLIER,
+      ELITE_MAX_MEMBERS * ELITE_MEMBER_HP_CAP,
+    );
+    const count = elite
+      ? Math.ceil(eliteTotal / ELITE_MEMBER_HP_CAP)
+      : 1 + Math.floor(complexity / COMPLEXITY_PER_EXTRA_ENEMY);
     const hp = elite
-      ? complexity * HP_PER_COMPLEXITY * ELITE_HP_MULTIPLIER
+      ? Math.round(eliteTotal / count)
       : Math.max(HP_PER_COMPLEXITY, Math.round((complexity * HP_PER_COMPLEXITY) / count));
     const home = { x: room.x, y: room.y, w: room.w, h: room.h };
 
-    for (const pos of enemyPositions(room, count, exit, rng, multiplayerSpawns)) {
+    for (const [index, pos] of enemyPositions(room, count, exit, rng, multiplayerSpawns).entries()) {
       enemies.push({
         x: pos.x,
         y: pos.y,
@@ -117,7 +162,15 @@ export function spawnEnemies(
         roamY: pos.y,
         fireCooldown: rng() * 2, // stagger initial shots across the pack
         entity: room.entity,
-        elite,
+        // Only the anchor — which `enemyPositions` always puts at the room
+        // center — carries the flag, so an Elite room reads as one boss with
+        // guards rather than a wall of bosses. That is not cosmetic:
+        // `damageMultiplierFor` (`enemyAi.ts:220`) applies
+        // `ELITE_DAMAGE_MULTIPLIER` per *enemy*, so flagging all eight would
+        // multiply the room's incoming DPS by the pack size and trade an
+        // unwinnable fight for an unsurvivable one. It also keeps "one Elite
+        // per Elite room" true for every report that counts the archetype.
+        elite: elite && index === 0,
         edgeCase: false,
       });
     }

@@ -776,7 +776,7 @@ describe("main.ts — findEntrypoint", () => {
     expect(match?.file.path).toBe("root/real.c");
   });
 
-  it("scored scan prefers the highest-complexity file that defines main()", async () => {
+  it("scored scan still prefers a file defining main(), regardless of score", async () => {
     const { findEntrypoint } = await importMain();
     const tree = dirNode("root", [
       fileNode("root/complex_no_main.c", VALID_COMPLEX_C),
@@ -786,14 +786,30 @@ describe("main.ts — findEntrypoint", () => {
     expect(match?.file.path).toBe("root/entry.c");
   });
 
-  it("scored scan falls back to the highest-complexity file overall when nothing defines main()", async () => {
+  it("scored scan falls back to the LEAST-complex file when nothing defines main()", async () => {
+    // Inverted 2026-08-05. The entrypoint is campaign level 1, and complexity
+    // is what the generator turns into enemies and HP — so "most complex" and
+    // "hardest map" are the same ordering. Scoring by highest opened wolf3d on
+    // a 446-enemy, 4,742-DPS level.
     const { findEntrypoint } = await importMain();
     const tree = dirNode("root", [
       fileNode("root/simple.c", VALID_HELPER_C),
       fileNode("root/complex.c", VALID_COMPLEX_C),
     ]);
     const match = await findEntrypoint(tree);
-    expect(match?.file.path).toBe("root/complex.c");
+    expect(match?.file.path).toBe("root/simple.c");
+  });
+
+  it("scored scan skips zero-entity files rather than opening on an empty level", async () => {
+    const { findEntrypoint } = await importMain();
+    const tree = dirNode("root", [
+      // Parses fine, defines nothing — scores 0, and would win a naive
+      // least-complex comparison.
+      fileNode("root/empty.c", "/* just a comment */\n"),
+      fileNode("root/simple.c", VALID_HELPER_C),
+    ]);
+    const match = await findEntrypoint(tree);
+    expect(match?.file.path).toBe("root/simple.c");
   });
 
   it("returns null when nothing in the tree parses at all", async () => {

@@ -197,6 +197,21 @@ full setup exchange, per guest, after its data channels open and before any tick
    reliable channel — routine once planned, a mid-implementation surprise
    otherwise. `visited` is omitted from the wire entirely: it's all-`false` at
    generation time by definition, so each peer just constructs it locally.
+   **The guest never generates this map itself, and that is a guarantee worth
+   stating.** It is easy to read "multiplayer requires a GitHub repo or the Demos
+   campaign" as "both peers fetch the same source and generate the same level" —
+   they do not. The guest never fetches the repository, never parses source and
+   never runs `MapGenerator`; it plays the host's already-generated map. So
+   **workspace differences between peers cannot desync a session**: if the host's
+   file listing came back truncated (`src/fs/github.ts` warns about this — the
+   GitHub API truncates large repos), the host simply hosts a shorter campaign
+   and the guest inherits exactly the same shorter campaign. There is only ever
+   one generator run. §7's level transitions ship each subsequent map the same
+   way, so this holds for the whole session rather than just level 1. The
+   GitHub/Demos restriction is a *privacy* measure, not a consistency one —
+   generated level data embeds verbatim source text, so multiplayer is limited to
+   sources that are already public (`multiplayer-research.md` §1).
+
    **Firing every chunk synchronously with nothing watching
    `bufferedAmount` is a real bug, not a theoretical one** — confirmed
    directly as the cause of a real, reproducible CI failure (WebKit's own

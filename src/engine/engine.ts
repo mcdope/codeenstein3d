@@ -123,10 +123,13 @@ import {
   WEAPONS,
   currentMeleeWeapon,
   pelletOffsets,
+  rangeDamageScale,
   type Weapon,
 } from "./weapons";
 import { HEALTH_DROP_AMOUNT, MAX_SWAP, REGULAR_KILL_NO_DROP_CHANCE, SWAP_DROP_AMOUNT, rollBonusWeaponDrop, rollLoot } from "./loot";
 import { AMMO_META, AMMO_TYPES, startingAmmo, type AmmoPools } from "./ammo";
+import { MAX_HEALTH } from "./combatConstants";
+import { createEventLog, drainEvents, recordEvent, type EventLogState } from "./events";
 import { applyLootDrop, dropEliteLoot, grantOrTopUpWeapon, rollMissChanceToolchain, type LootContext } from "./lootApply";
 import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, ROCKET_BLAST_RADIUS, type Rocket } from "./rockets";
 import { EnemySpatialGrid } from "./spatialGrid";
@@ -136,6 +139,7 @@ import { FramePerfLogger } from "./perfDebug";
 import {
   createTeamTelemetryState,
   createTelemetryState,
+  enemyCategory,
   recordDamage,
   recordEnemyAggro,
   recordEnemyBoltFired,
@@ -156,6 +160,7 @@ import {
   updateMinHealth,
   updatePerFrame as updateTelemetryPerFrame,
   type DamageSource,
+  type EnemyCategory,
   type EnemyTtkRecord,
   type HealSource,
   type TeamTelemetryState,
@@ -199,8 +204,6 @@ const MAX_DT = 0.05;
 /** How often (seconds) the FPS overlay's averaged reading recomputes — often
  * enough to feel live, slow enough not to jitter every frame. */
 const FPS_UPDATE_INTERVAL = 0.5;
-/** Starting / maximum System Stability (health), as a percentage. */
-const MAX_HEALTH = 100;
 /** Gate for every `?testHooks=1` automation hook (headless bot introspection,
  * `debugSetGodMode`/`injectDesync`, the bot rotation-speed override) — unlike
  * `?perfDebug=1` (a real diagnostic real players may be handed a URL for),
@@ -218,6 +221,24 @@ export function isTestHooksActive(): boolean {
     typeof window !== "undefined" &&
     new URLSearchParams(window.location.search).get("testHooks") === "1"
   );
+}
+/**
+ * Whether to buffer the raw balancing event log this run (`?eventLog=1`).
+ *
+ * A *separate* gate from `?testHooks=1`, deliberately. Every bot run sets
+ * `testHooks`, but almost none of them want the event stream — and buffering
+ * six figures of records that nobody drains is pure waste. Requiring its own
+ * flag means the ordinary telemetry campaign pays exactly nothing for this
+ * feature, which is the same "zero cost when disabled" bar `PLAYER_STATS_ENABLED`
+ * is held to. `run-balancing-telemetry.mjs` adds it to the URL only when
+ * `CODEENSTEIN_TELEMETRY_EVENT_LOG` is set.
+ *
+ * Implies test hooks: the log can only be read back through
+ * `__codeensteinTestHooks.drainEvents()`, so recording without them would
+ * buffer records nothing can ever collect.
+ */
+export function isEventLogActive(): boolean {
+  return isTestHooksActive() && new URLSearchParams(window.location.search).get("eventLog") === "1";
 }
 /** IDKFA's ammo grant — a clearly-a-cheat round number; ammo otherwise has no
  * upper cap at all (only loot/pickups increment it). */
@@ -528,7 +549,14 @@ interface PlayerState {
 }
 
 /** One ranged pellet's resolved outcome — see `resolveShot`. */
-type PelletOutcome = { kind: "enemy"; target: Enemy } | { kind: "mine"; target: Mine } | { kind: "miss" };
+type PelletOutcome =
+  /** `damageScale` is the weapon's range falloff at the distance this pellet
+   * connected at — 1 for everything without a `fullDamageRange`. Carried on
+   * the outcome rather than recomputed at the damage site so the distance is
+   * measured once, at the moment the pellet resolved. */
+  | { kind: "enemy"; target: Enemy; damageScale: number }
+  | { kind: "mine"; target: Mine }
+  | { kind: "miss" };
 
 /** `resolveShot`'s full result for one trigger pull — `fire()` applies ammo
  * cost, damage, loot, telemetry, traces, and audio on top of this. */
@@ -908,6 +936,12 @@ export class RaycasterEngine {
    * per-player-attributable (damage taken, shots/hits, loot collected, …)
    * lives on each `PlayerState.telemetry` instead — see `createPlayerState`. */
   private readonly teamTelemetry?: TeamTelemetryState;
+  /** Raw per-occurrence balancing events — see `events.ts`. Created under
+   * exactly the same `telemetryEnabled` gate as `teamTelemetry`, so it adds no
+   * new branch to shipped play, and drained by the harness via
+   * `__codeensteinTestHooks.drainEvents()`. Every `recordEvent` call site is
+   * event-rate, never per-frame. */
+  private readonly eventLog?: EventLogState;
   /** Whether telemetry recording is on at all this run — computed once in
    * the constructor from the same `PLAYER_STATS_ENABLED`/`?testHooks=1` gate
    * `this.teamTelemetry`'s doc comment describes, and reused by
@@ -937,13 +971,53 @@ export class RaycasterEngine {
     onAggro: (enemy) => {
       if (this.teamTelemetry) recordEnemyAggro(this.teamTelemetry, this.enemyTtkIndex, enemy, this.levelTime);
     },
-    onMeleeAttack: () => {
+    onMeleeAttack: (enemy, eid, targetId, amount) => {
       if (this.teamTelemetry) recordEnemyMeleeAttack(this.teamTelemetry);
+      if (this.eventLog) this.noteDamageSource(targetId, eid, enemy, amount);
     },
     onRangedFire: () => {
       if (this.teamTelemetry) recordEnemyBoltFired(this.teamTelemetry);
     },
   };
+
+  /**
+   * Per-frame melee/bolt damage attribution, keyed by player then by enemy
+   * index — drained by `damage()` into the `damageTaken` event and cleared
+   * immediately after.
+   *
+   * This exists because both `updateEnemies` and `updateProjectiles` hand the
+   * engine one *summed* figure per player, and `damage()` is deliberately
+   * called once with that sum: swap absorbs damage 1:1 before health does, so
+   * splitting one 30-point call into three 10-point calls would change the
+   * absorption arithmetic and could change who dies on which frame. Recording
+   * the breakdown alongside, rather than splitting the call, keeps the
+   * simulation byte-identical while still answering "which enemy dealt this".
+   *
+   * Only populated when `eventLog` is on (`?eventLog=1`), so an ordinary
+   * session allocates nothing here.
+   */
+  private readonly pendingDamageBy = new Map<PlayerId, Map<number, { arch: EnemyCategory; amt: number }>>();
+
+  /** Accumulate one attacker's contribution to a player's damage this frame. */
+  private noteDamageSource(targetId: PlayerId, eid: number, enemy: Pick<Enemy, "elite" | "edgeCase">, amount: number): void {
+    let perEnemy = this.pendingDamageBy.get(targetId);
+    if (!perEnemy) {
+      perEnemy = new Map();
+      this.pendingDamageBy.set(targetId, perEnemy);
+    }
+    const existing = perEnemy.get(eid);
+    if (existing) existing.amt += amount;
+    else perEnemy.set(eid, { arch: enemyCategory(enemy), amt: amount });
+  }
+
+  /** Drain whatever attackers were recorded for `playerId` this frame. */
+  private takeDamageBy(playerId: PlayerId): { eid: number; arch: EnemyCategory; amt: number }[] | undefined {
+    const perEnemy = this.pendingDamageBy.get(playerId);
+    if (!perEnemy || perEnemy.size === 0) return undefined;
+    const out = [...perEnemy].map(([eid, v]) => ({ eid, arch: v.arch, amt: v.amt }));
+    perEnemy.clear();
+    return out;
+  }
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -1037,12 +1111,35 @@ export class RaycasterEngine {
     this.telemetryEnabled = PLAYER_STATS_ENABLED || isTestHooksActive();
     if (this.telemetryEnabled) {
       this.teamTelemetry = createTeamTelemetryState();
+      if (isEventLogActive()) this.eventLog = createEventLog();
     }
 
     this.localPlayerId = localPlayerId;
     this.players = new Map([
       [localPlayerId, this.createPlayerState(localPlayerId, inputSource ?? new InputController(canvas), carryover, localSpawn)],
     ]);
+
+    // One `levelStart` per level, carrying the static budget the run is about
+    // to spend. It is what makes the log self-contained: uncollected pre-placed
+    // loot and the value of enemies left alive are both differences against
+    // this record, so a reader never has to re-run the generator to compute
+    // them. One record per level, so its size is irrelevant.
+    if (this.eventLog) {
+      const local = this.players.get(localPlayerId)!;
+      recordEvent(this.eventLog, "levelStart", 0, {
+        difficulty: this.difficultyLevel,
+        campaignLevelIndex: local.campaignLevelIndex,
+        bonusLevel: Boolean(this.map.bonusLevel),
+        walkableTiles: this.totalWalkableTiles,
+        gameplaySeed,
+        startHealth: local.health,
+        startSwap: local.swap,
+        startAmmo: { ...local.ammo },
+        ownedWeapons: [...local.ownedWeapons],
+        enemies: this.enemies.map((e, eid) => ({ eid, arch: enemyCategory(e), maxHp: e.maxHp, x: e.x, y: e.y })),
+        prePlaced: this.map.ammoPickups.map((p, pid) => ({ pid, kind: p.kind, amount: p.amount, x: p.x, y: p.y })),
+      });
+    }
 
     // Opt-in frame-timing/entity-count diagnostics — see `perfDebug.ts`'s doc
     // comment and `this.perf`'s. Deliberately a separate gate from
@@ -1160,6 +1257,13 @@ export class RaycasterEngine {
         // it. See `scripts/run-balancing-telemetry.mjs`'s `maybeDetourForLoot`.
         getKeys: () => this.map.keys.filter((k) => !k.collected).map((k) => ({ x: k.x, y: k.y })),
         getTelemetrySnapshot: () => this.buildTelemetrySnapshotFor(this.localPlayerId),
+        // Hands over the raw event buffer and resets it. The harness drains at
+        // every level boundary and once at run end, which is what bounds the
+        // buffer and decides how much a crashed browser loses.
+        //
+        // Returns an empty batch when `?eventLog=1` was not passed, so a
+        // caller that drains unconditionally needs no branch of its own.
+        drainEvents: () => (this.eventLog ? drainEvents(this.eventLog) : { events: [], dropped: 0 }),
       };
     }
   }
@@ -3319,7 +3423,7 @@ export class RaycasterEngine {
       // <= 0 today; kept as a defensive guard against a future change to
       // either invariant.
       /* v8 ignore next -- @preserve */
-      if (dmg > 0) this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyMelee");
+      if (dmg > 0) this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyMelee", this.takeDamageBy(id));
     }
 
     if (this.teamTelemetry) {
@@ -3343,7 +3447,21 @@ export class RaycasterEngine {
     // lands (always `p.damage` from `spawnProjectile`, always positive — see
     // `PROJECTILE_DAMAGE`/`damageMultiplier`), so `dmg` here is always > 0;
     // no `dmg <= 0` guard needed.
-    const damageByPlayer = updateProjectiles(this.projectiles, targets, this.map, dt);
+    const damageByPlayer = updateProjectiles(
+      this.projectiles,
+      targets,
+      this.map,
+      dt,
+      // A bolt fired by an enemy that has since died still attributes fine:
+      // `enemies` is never spliced, so the index stays valid for the level.
+      this.eventLog
+        ? (srcEid, targetId, amount) => {
+            if (srcEid === undefined) return;
+            const shooter = this.enemies[srcEid];
+            if (shooter) this.noteDamageSource(targetId, srcEid, shooter, amount);
+          }
+        : undefined,
+    );
     for (const [id, dmg] of damageByPlayer) {
       const victim = this.players.get(id)!;
       // One increment per victim per frame, not per bolt — two bolts landing
@@ -3353,7 +3471,7 @@ export class RaycasterEngine {
       // from `updateProjectiles()`'s own per-player return value instead of
       // threading a new id through a dedicated callback.
       if (victim.telemetry) recordEnemyBoltHit(victim.telemetry);
-      this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyRanged");
+      this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyRanged", this.takeDamageBy(id));
     }
   }
 
@@ -3501,7 +3619,10 @@ export class RaycasterEngine {
         const dy = drop.y - p.player.posY;
         if (dx * dx + dy * dy >= r2) continue;
         this.drops.splice(i, 1);
+        const beforeHealth = p.health;
+        const beforeSwap = p.swap;
         applyLootDrop(drop, p.lootCtx);
+        this.recordLootCollectedEvent(drop.kind, "drop", p, beforeHealth, beforeSwap, { did: drop.id });
         break;
       }
     }
@@ -3516,6 +3637,8 @@ export class RaycasterEngine {
         if (dx * dx + dy * dy >= r2) continue;
         pickup.collected = true;
         audio.playPickup();
+        const beforeHealth = p.health;
+        const beforeSwap = p.swap;
         if (pickup.kind === "weapon") {
           // Own message/amount logic (unlock vs. already-owned top-up) — the
           // generic "+N kind found" log below doesn't apply to it.
@@ -3537,6 +3660,10 @@ export class RaycasterEngine {
         else if (pickup.kind === "swap") p.swap = Math.min(MAX_SWAP, p.swap + amount);
         else p.ammo[pickup.kind] += amount;
         if (p.telemetry) recordLootCollected(p.telemetry, "static", pickup.kind, amount);
+        this.recordLootCollectedEvent(pickup.kind, "preplaced", p, beforeHealth, beforeSwap, {
+          pid: this.map.ammoPickups.indexOf(pickup),
+          amount,
+        });
         console.log(`%c[pickup] +${amount} ${pickup.kind} found`, "color:#3fd0e0");
         break;
       }
@@ -3548,6 +3675,39 @@ export class RaycasterEngine {
    * down on Hard can never zero out a pickup entirely. */
   private scaledLootAmount(baseAmount: number): number {
     return Math.max(1, Math.round(baseAmount * this.difficultyMultipliers.ammoDropRate));
+  }
+
+  /**
+   * One `lootCollected` record: what a pickup actually granted this player.
+   *
+   * The grant is measured as the real change in the player's pools rather than
+   * taken from the drop's nominal amount, because that is the only way
+   * overflow becomes visible. Health and swap clamp at their maxima, so a
+   * 20-point health drop taken at 95 stability grants 5 — the other 15 is
+   * waste, and a reader recovers it by differencing this against the nominal
+   * amount already in `lootDropped`/`levelStart`. Ammo has no cap at all
+   * (`engine.ts`'s `CHEAT_MAX_AMMO` comment), so ammo overflow cannot exist
+   * and only health/swap placement can be wrong.
+   *
+   * `source` is the field the whole pre-placed-vs-dropped split rests on, and
+   * it cannot be reconstructed after the fact from anything else in the log.
+   */
+  private recordLootCollectedEvent(
+    kind: LootKind,
+    source: "preplaced" | "drop",
+    p: PlayerState,
+    beforeHealth: number,
+    beforeSwap: number,
+    extra: Record<string, unknown>,
+  ): void {
+    if (!this.eventLog) return;
+    recordEvent(this.eventLog, "lootCollected", this.levelTime, {
+      kind,
+      source,
+      grantedHealth: p.health - beforeHealth,
+      grantedSwap: p.swap - beforeSwap,
+      ...extra,
+    });
   }
 
   /** The real amount a fresh (not-already-owned) drop of `kind` will actually
@@ -3596,6 +3756,22 @@ export class RaycasterEngine {
     this.drops.push(drop);
     const amount = this.scaledLootAmount(drop.amount ?? this.defaultLootAmountFor(drop.kind));
     if (this.teamTelemetry) recordLootRolled(this.teamTelemetry, drop.kind, amount);
+    // Emitted at *spawn*, so a drop nobody ever walks over is still visible.
+    // `fromArch` is what makes self-sustain measurable rather than merely
+    // predicted: without it the log can say how much loot appeared but not
+    // which archetype paid for it. It costs nothing here -- `pushLootDrop`
+    // already receives the enemy.
+    if (this.eventLog) {
+      recordEvent(this.eventLog, "lootDropped", this.levelTime, {
+        did: drop.id,
+        kind: drop.kind,
+        amount,
+        fromEid: enemyIndex,
+        fromArch: enemyCategory(enemy),
+        x: drop.x,
+        y: drop.y,
+      });
+    }
   }
 
   /**
@@ -3729,7 +3905,16 @@ export class RaycasterEngine {
    * teammate hears a hit exactly when that teammate is actually hit, not for
    * every roster player's damage indiscriminately.
    */
-  private damage(playerId: PlayerId, amount: number, source: DamageSource): void {
+  private damage(
+    playerId: PlayerId,
+    amount: number,
+    source: DamageSource,
+    /** Per-attacker breakdown for the `damageTaken` event, when the source is
+     * one the engine can attribute (enemy melee and bolts). Telemetry only —
+     * it never affects how much damage lands. Traps, hazards and rocket
+     * splash have no attacker and pass nothing. */
+    by?: { eid: number; arch: EnemyCategory; amt: number }[],
+  ): void {
     const p = this.players.get(playerId)!;
     if (p.godMode || amount <= 0 || p.status !== "alive") return;
     if (p.telemetry) recordDamage(p.telemetry, source, amount);
@@ -3743,9 +3928,33 @@ export class RaycasterEngine {
       remaining -= absorbed;
     }
     p.health -= remaining;
+    if (this.eventLog) {
+      recordEvent(this.eventLog, "damageTaken", this.levelTime, {
+        src: source,
+        amt: amount,
+        absorbedBySwap: amount - remaining,
+        healthAfter: Math.max(0, p.health),
+        swapAfter: p.swap,
+        // Per-attacker breakdown, `null` for sources with no attacker (traps,
+        // hazards, rocket splash). Each entry's `eid` indexes the same roster
+        // `levelStart` records, so `arch` here is cross-checkable against it
+        // rather than having to be trusted — `verify-event-log.mjs` does
+        // exactly that for `damageDealt`/`kill` already.
+        //
+        // Note this is a *breakdown of one summed application*, not one event
+        // per attacker: `amt` above is what actually hit the player after swap
+        // absorption ordering, and the entries sum to the pre-multiplier
+        // total. Read `by` for attribution, `amt` for magnitude.
+        by: by ?? null,
+        // Kept as an always-`null` field so a reader written against schema 1
+        // does not see a missing key. Superseded by `by`.
+        arch: null,
+      });
+    }
     if (p.health <= 0) {
       p.health = 0;
       if (p.telemetry) recordFatalDamage(p.telemetry, source);
+      if (this.eventLog) recordEvent(this.eventLog, "playerDeath", this.levelTime, { src: source });
       this.killPlayer(p);
     }
   }
@@ -4292,11 +4501,12 @@ export class RaycasterEngine {
         // sightline; Friday Hotfix's `maxRange` is the same idea for a
         // flamethrower's genuinely short reach.
         const rangeLimit = weapon.meleeRange ?? weapon.maxRange;
-        if (rangeLimit !== undefined && Math.hypot(enemy.x - camera.posX, enemy.y - camera.posY) > rangeLimit) {
+        const range = Math.hypot(enemy.x - camera.posX, enemy.y - camera.posY);
+        if (rangeLimit !== undefined && range > rangeLimit) {
           pellets.push({ kind: "miss" });
           continue;
         }
-        pellets.push({ kind: "enemy", target: enemy });
+        pellets.push({ kind: "enemy", target: enemy, damageScale: rangeDamageScale(weapon, range) });
         continue;
       }
 
@@ -4347,6 +4557,54 @@ export class RaycasterEngine {
     // still knows the ammo state *before* this shot.
     const forcedMelee = w.meleeRange !== undefined && shooter.ammo.bullets === 0 && shooter.ammo.smg === 0 && shooter.ammo.gas === 0;
     if (shooter.telemetry) recordShot(shooter.telemetry, weaponIndex);
+    // One record per *trigger-pull*, with the pellet count alongside. The
+    // aggregate counters conflate these: `recordShot` counts pulls while
+    // `recordHit` counts pellets, so `hits/shotsFired` reaches 7.0 for the
+    // shotgun and reads as 700% accuracy. Keeping them as separate events is
+    // what makes a cross-weapon hit rate meaningful at all.
+    if (this.eventLog) {
+      const aimedAt = this.target;
+      recordEvent(this.eventLog, "shot", this.levelTime, {
+        w: weaponIndex,
+        pellets: w.isRocket ? 1 : w.pellets,
+        // A rocket resolves as a projectile that detonates later, so it never
+        // runs the pellet loop below and never emits a `hit`. Its damage
+        // arrives as `damageDealt` from the splash instead. Without this flag a
+        // reader computes hits/pellets and gets a structural 0% for ghidra --
+        // which was reported as a measurement once already. Splash cannot use
+        // the same rate anyway: one "pellet" can hit several enemies, which is
+        // the >100% class of bug that separating `shot` from `hit` fixed for
+        // the shotgun.
+        splash: Boolean(w.isRocket),
+        // What the shot was aimed at: range, archetype and HP of whatever is
+        // under the crosshair. All three are `null` when nothing is targeted,
+        // which the reader excludes rather than treating as zero.
+        //
+        // `dist` exists so hit rate can be bucketed by distance — the Cone of
+        // Fire's deviation grows with the cube of range, so an unbucketed hit
+        // rate averages a weapon's good and useless ranges into one
+        // meaningless number.
+        //
+        // `targetArch` and `targetHp` exist to answer why a weapon is or is
+        // not chosen, which twice now could not be settled from the log. Both
+        // are direct inputs to `combatPolicy.mjs`'s `scoreRangedWeapon`
+        // (`targetHp`) and to the guards around it (`targetArch` — the cluster
+        // fast-path refuses a rocket outright when the threat is an Edge
+        // Case). With them, "at 4-5 tiles against a non-Edge-Case target,
+        // which weapon actually got picked" is a query over the log instead of
+        // a hypothesis tested by a 55-minute A/B. Two such hypotheses were
+        // wrong; see `doc/dev/balancing-telemetry.md` §7.3a.
+        //
+        // Note this is the *engine's* crosshair target, not the bot's own
+        // `threat` — they are usually the same enemy but chosen by different
+        // code, so a disagreement between them is itself worth seeing.
+        dist: aimedAt ? Math.hypot(aimedAt.x - shooter.player.posX, aimedAt.y - shooter.player.posY) : null,
+        targetArch: aimedAt ? enemyCategory(aimedAt) : null,
+        targetHp: aimedAt ? aimedAt.hp : null,
+        ammoAfter: w.ammoType ? shooter.ammo[w.ammoType] : null,
+        forcedMelee,
+      });
+    }
 
     audio.playShoot(w.viewKind);
     // Kick the viewmodel: full recoil, easing back over the next frames. No
@@ -4369,7 +4627,17 @@ export class RaycasterEngine {
     for (const outcome of resolution.pellets) {
       if (outcome.kind === "enemy") {
         if (shooter.telemetry) recordHit(shooter.telemetry, weaponIndex);
-        this.damageEnemy(outcome.target, w.damagePerPellet, w.lifesteal, isFlame, weaponIndex, forcedMelee, shooter);
+        // One per connecting pellet, carrying the range it connected at --
+        // the Cone of Fire's deviation grows with the cube of range, so hit
+        // rate is only interpretable bucketed by distance.
+        if (this.eventLog) {
+          recordEvent(this.eventLog, "hit", this.levelTime, {
+            w: weaponIndex,
+            eid: this.enemies.indexOf(outcome.target),
+            dist: Math.hypot(outcome.target.x - shooter.player.posX, outcome.target.y - shooter.player.posY),
+          });
+        }
+        this.damageEnemy(outcome.target, w.damagePerPellet * outcome.damageScale, w.lifesteal, isFlame, weaponIndex, forcedMelee, shooter);
       } else if (outcome.kind === "mine") {
         this.destroyMine(outcome.target, shooter);
       }
@@ -4459,7 +4727,25 @@ export class RaycasterEngine {
     const enemyIndex = this.enemies.indexOf(enemy);
     (this.enemyAssists.get(enemyIndex) ?? this.enemyAssists.set(enemyIndex, new Set()).get(enemyIndex)!).add(shooter.id);
 
+    const hpBefore = enemy.hp;
     enemy.hp -= amount;
+    // `hpAfter` is the *pre-clamp* value, so it goes negative on a killing
+    // blow -- that negative is the overkill the catalog asks for, and it is
+    // discarded two lines below when `enemy.hp` is clamped to 0.
+    if (this.eventLog) {
+      recordEvent(this.eventLog, "damageDealt", this.levelTime, {
+        eid: enemyIndex,
+        arch: enemyCategory(enemy),
+        // Both `damageEnemy` call sites always pass a real index; left
+        // undefined-able only because the parameter type is. `JSON.stringify`
+        // drops an undefined field and the reader treats absent as "no
+        // weapon", so no `?? null` fallback is needed.
+        w: weaponIndex,
+        amt: amount,
+        hpBefore,
+        hpAfter: enemy.hp,
+      });
+    }
     if (enemy.hp > 0) {
       console.log(`[hit] ${enemy.entity.name}() — HP ${enemy.hp}/${enemy.maxHp}`);
       return;
@@ -4474,6 +4760,19 @@ export class RaycasterEngine {
     this.registerKillForStreak(shooter);
     if (this.target === enemy) this.target = null;
     if (this.teamTelemetry) recordEnemyDeath(this.teamTelemetry, this.enemyTtkIndex, enemy, this.levelTime);
+    if (this.eventLog) {
+      const ttk = this.enemyTtkIndex.get(enemy);
+      recordEvent(this.eventLog, "kill", this.levelTime, {
+        eid: enemyIndex,
+        arch: enemyCategory(enemy),
+        maxHp: enemy.maxHp,
+        w: weaponIndex,
+        forcedMelee,
+        // Closes the TTK window inline, so a reader never needs the separate
+        // ttkRecords array to compute a time-to-kill distribution.
+        aggroAt: ttk?.aggroAtLevelTime ?? null,
+      });
+    }
     if (weaponIndex !== undefined && shooter.telemetry) {
       recordKill(shooter.telemetry, weaponIndex);
       if (forcedMelee) recordKillForcedByMelee(shooter.telemetry);
@@ -4586,6 +4885,37 @@ export class RaycasterEngine {
    * see main.ts). `advance()` does that itself, once, after the frame is
    * fully rendered.
    */
+  /**
+   * One `levelEnd` per level, carrying the two sweeps that turn the log's
+   * cumulative totals into a *budget* comparison: which pre-placed pickups
+   * were never collected, and which enemies were left alive. Against
+   * `levelStart`'s roster and pickup list, those give the gap between what the
+   * generator placed and what the run actually had access to — the difference
+   * between the generator's nominal budget and its effective one.
+   *
+   * Called from `endGame` and from the level transition, so a level that was
+   * cleared and a level the run died on both close their record.
+   */
+  private recordLevelEnd(outcome: "cleared" | "died" | "abandoned"): void {
+    if (!this.eventLog) return;
+    const local = this.players.get(this.localPlayerId);
+    recordEvent(this.eventLog, "levelEnd", this.levelTime, {
+      outcome,
+      killCount: local?.kills ?? 0,
+      healthEnd: local?.health ?? 0,
+      swapEnd: local?.swap ?? 0,
+      ammoEnd: local ? { ...local.ammo } : null,
+      enemiesAlive: this.enemies
+        .map((e, eid) => ({ eid, arch: enemyCategory(e), maxHp: e.maxHp, alive: e.alive }))
+        .filter((e) => e.alive)
+        .map(({ eid, arch, maxHp }) => ({ eid, arch, maxHp })),
+      prePlacedUncollected: this.map.ammoPickups
+        .map((p, pid) => ({ pid, kind: p.kind, amount: p.amount, collected: p.collected }))
+        .filter((p) => !p.collected)
+        .map(({ pid, kind, amount }) => ({ pid, kind, amount })),
+    });
+  }
+
   private endGame(state: "over" | "won"): void {
     // Not reachable via any current call site: `checkExit()` already gates
     // itself on `this.state === "playing"` before ever calling this, and
@@ -4599,6 +4929,7 @@ export class RaycasterEngine {
     /* v8 ignore next -- @preserve */
     if (this.state !== "playing") return;
     this.state = state;
+    this.recordLevelEnd(state === "won" ? "cleared" : "died");
   }
 
   /** Snapshot the live stats consumed by both the native HUD and the host —

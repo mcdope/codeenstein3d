@@ -10,6 +10,7 @@ import {
   MELEE_WEAPON,
   NUMBER_KEY_WEAPONS,
   pelletOffsets,
+  rangeDamageScale,
   PISTOL_WEAPON_INDEX,
   SHOTGUN_WEAPON_INDEX,
   STARTING_WEAPONS,
@@ -120,5 +121,57 @@ describe("pelletOffsets", () => {
   it("evenly spaces pellets for a 2-pellet weapon at exactly -spread and +spread", () => {
     const twoPellet = { ...WEAPONS[0], pellets: 2, spreadPx: 10 };
     expect(pelletOffsets(twoPellet)).toEqual([-10, 10]);
+  });
+});
+
+describe("rangeDamageScale", () => {
+  const flame = WEAPONS[FRIDAY_HOTFIX_WEAPON_INDEX];
+
+  it("leaves every weapon without a range curve untouched", () => {
+    // Only the flamethrower opts in. A plain `maxRange` (melee) keeps its
+    // all-or-nothing behaviour, and the caller stays responsible for rejecting
+    // anything past it.
+    for (const w of WEAPONS) {
+      if (w.fullDamageRange !== undefined) continue;
+      expect(rangeDamageScale(w, 0)).toBe(1);
+      expect(rangeDamageScale(w, 99)).toBe(1);
+    }
+  });
+
+  it("gives full damage across the plateau and nothing at the far end", () => {
+    expect(rangeDamageScale(flame, 0)).toBe(1);
+    expect(rangeDamageScale(flame, flame.fullDamageRange!)).toBe(1);
+    expect(rangeDamageScale(flame, flame.maxRange!)).toBe(0);
+    expect(rangeDamageScale(flame, flame.maxRange! + 5)).toBe(0);
+  });
+
+  it("decays linearly between the two, so half-way along is half damage", () => {
+    const mid = (flame.fullDamageRange! + flame.maxRange!) / 2;
+    expect(rangeDamageScale(flame, mid)).toBeCloseTo(0.5, 6);
+    // Monotonic, which is the property that makes "thins out" true rather than
+    // just "stops somewhere else".
+    let previous = 1;
+    for (let d = flame.fullDamageRange!; d <= flame.maxRange!; d += 0.25) {
+      const scale = rangeDamageScale(flame, d);
+      expect(scale).toBeLessThanOrEqual(previous);
+      previous = scale;
+    }
+  });
+
+  it("replaces a binary gate: the old cutoff distance now still does real damage", () => {
+    // The whole point of the item. At 3.5 tiles the weapon used to deal full
+    // damage and at 3.6 literally nothing; now 3.5 is partway down a curve and
+    // the band beyond it is reachable at all.
+    expect(rangeDamageScale(flame, 3.5)).toBeGreaterThan(0);
+    expect(rangeDamageScale(flame, 3.5)).toBeLessThan(1);
+    expect(rangeDamageScale(flame, 4.6)).toBeGreaterThan(0); // the median range regular enemies fight at
+  });
+
+  it("is a redistribution, not a buff: close range gives some back", () => {
+    // The plateau deliberately ends short of the old 3.5 cutoff, so the reach
+    // is paid for rather than added on top of the highest-DPS profile in the
+    // table.
+    expect(flame.fullDamageRange!).toBeLessThan(3.5);
+    expect(rangeDamageScale(flame, 3.0)).toBeLessThan(1);
   });
 });

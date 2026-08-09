@@ -49,6 +49,7 @@ import path from "node:path";
 import { loadEngineModules, REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { Bot } from "./lib/bot.mjs";
 import { runQualifyLoop } from "./lib/qualifyLoop.mjs";
+import { assertPlanMatchesEngine } from "./lib/planEngineMatch.mjs";
 import { planRoute } from "./lib/routePlanner.mjs";
 import { installVirtualClock } from "./lib/virtualClock.mjs";
 import { DEV_SERVER_URL, PROFILES, planLevels, waitForTestHooks, dismissOverlay, installDifficulty } from "./run-balancing-telemetry.mjs";
@@ -165,6 +166,10 @@ async function driveFullCampaign(bot, page, levelPlans) {
   for (let i = 0; i < levelPlans.length; i++) {
     const { map, routePlain } = levelPlans[i];
     bot.startLevel(map);
+    // The generated highscore is only meaningful if the bot played the campaign
+    // it planned; a plan/engine entrypoint mismatch would bake a run against the
+    // wrong maps into `defaultHighscore.ts`. See `planEngineMatch.mjs`.
+    await assertPlanMatchesEngine(page, map, { levelNo: i + 1, levelPlans });
     const route = routePlain;
 
     const player0 = await bot.readState();

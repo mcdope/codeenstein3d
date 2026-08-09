@@ -93,14 +93,55 @@ export const java: Refinement = {
 
 // ---------------------------------------------------------------------------
 // C# — each modifier keyword is its own `modifier` node (plural nodes, not
-// one combined-text node like Java). Default member accessibility in C# is
-// `private`, unlike Java's package-private default.
+// one combined-text node like Java). Default member accessibility is `private`
+// inside a class or struct (unlike Java's package-private default) and *public*
+// inside an interface, where members are implicitly public and, before C# 8,
+// could not carry an access modifier at all. When the enclosing body cannot be
+// identified at all — a failed parse — the default is public; see
+// `inCSharpPrivateByDefaultBody`.
+//
+// Getting that second case wrong was expensive. Defaulting interface members to
+// `private` made every one of them a lockable room — `isLockableRoom`
+// (`map/generation/geometry.ts`) locks private/protected *method* rooms and
+// `placeDoors` turns every corridor mouth of a locked room into a door. On
+// Serilog's `ILogger.cs`, 136 interface methods therefore produced **640 doors
+// and 321 keys**, about 4.6 doors per room against 0.19 on the class-bearing
+// file beside it. `planRoute` opens one door per iteration and gives up at 200,
+// so the level could not be routed at all and the bot wedged there with zero
+// decisions — 1 of 105 staged levels across the whole capture corpus.
 // ---------------------------------------------------------------------------
+/**
+ * Does an unmodified C# method sit in a body whose default is `private`?
+ *
+ * Only a class, struct or record makes `private` the default. An interface
+ * makes it *public*, and so — deliberately — does "we could not tell": this
+ * returns false unless it can positively see an enclosing type declaration.
+ *
+ * That last case is not hypothetical padding. `tree-sitter-c-sharp` fails
+ * outright on Serilog's `ILogger.cs` — its `#if FEATURE_DEFAULT_INTERFACE`
+ * directives produce an ERROR tree, and **134 of its 136 methods have `ERROR`
+ * as their immediate parent**, with no `interface_declaration` anywhere above
+ * them. Defaulting those to `private` is what produced 640 doors and 321 keys
+ * on one level and made it unroutable. Requiring evidence for `private` makes
+ * an unparseable file degrade to "public, unlocked" rather than to a locked
+ * maze.
+ */
+function inCSharpPrivateByDefaultBody(node: Node): boolean {
+  for (let p = node.parent; p; p = p.parent) {
+    if (p.type === "class_declaration" || p.type === "struct_declaration" || p.type === "record_declaration") return true;
+    // A nested type re-establishes its own default, so stop at the first one.
+    if (p.type === "interface_declaration") return false;
+  }
+  return false;
+}
+
 export const csharp: Refinement = {
   refine: (node, entity) => {
     if (entity.kind !== "method") return entity;
     const mods = node.namedChildren.filter((c) => c.type === "modifier").map((c) => c.text);
-    let visibility: Visibility = "private";
+    // Explicit modifiers always win — C# 8+ does allow them on interface
+    // members — so this only changes what "no modifier" means.
+    let visibility: Visibility = inCSharpPrivateByDefaultBody(node) ? "private" : "public";
     if (mods.includes("public")) visibility = "public";
     else if (mods.includes("protected")) visibility = "protected";
     else if (mods.includes("private")) visibility = "private";

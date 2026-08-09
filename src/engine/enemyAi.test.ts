@@ -328,7 +328,12 @@ describe("updateEnemies", () => {
     const onRangedFire = vi.fn();
     updateEnemies([e], targetsFor(player), map, 0.016, [], pathFieldsFor(map, player), noRng, { onAggro, onMeleeAttack, onRangedFire });
     expect(onAggro).toHaveBeenCalledWith(e);
-    expect(onMeleeAttack).toHaveBeenCalledWith(e);
+    // The bite hook also carries what the engine needs to attribute the
+    // damage: this enemy's index in the array passed above (the same `eid`
+    // the `levelStart` roster uses), who it bit, and the pre-difficulty
+    // amount. Asserted in full rather than loosely, since attribution being
+    // silently wrong is exactly the failure `damageTaken.by` exists to avoid.
+    expect(onMeleeAttack).toHaveBeenCalledWith(e, 0, "p1", 10); // ATTACK_DAMAGE, no elite multiplier
     expect(onRangedFire).not.toHaveBeenCalled();
   });
 

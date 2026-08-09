@@ -9,6 +9,15 @@ Play a campaign as a coop team, 2-4 players, in real time. There's no deathmatch
 ## Hosting a session
 
 1. Load a workspace the same way you would for single-player — a GitHub repo or the Demos campaign (a locally-picked folder can't be hosted, see [Privacy](privacy.md)).
+
+   Only the host needs the workspace. Everyone else receives the finished level
+   from the host over the connection — nobody else downloads the repo, and nobody
+   else re-builds the level from it. That means it doesn't matter if your friends
+   couldn't load that repo themselves, or if GitHub returned a
+   [partial file listing](troubleshooting.md#a-big-github-repo-loaded-but-it-seems-incomplete)
+   for a very large one: you all play exactly the campaign the host has, however
+   long or short that turned out to be.
+
 2. Open the **Multiplayer** tab, then the **Host** sub-tab.
 3. Pick how many players you want (2-4) from the **Max players** dropdown, optionally give the session a display name, and click **Create Session**.
 4. Share the short code your browser shows you with whoever you want to play with — it's just letters and digits, easy to read out loud or paste into a chat.

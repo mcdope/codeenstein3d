@@ -304,7 +304,9 @@ export class MapGenerator {
 
     // Lock private/protected-method rooms behind doors, then scatter one key
     // per door in areas reachable before that door (keeps every level solvable).
-    const doors = placeDoors(rooms, grid);
+    // `spawn`/`exit` let it keep one gate on the critical path; enemies and
+    // pickups are what make a locked room worth its key. See `placeDoors`.
+    const doors = placeDoors(rooms, grid, { spawn, exit, enemies, pickups: vendor.pickups });
     const keys = placeKeys(grid, spawn, exit, enemies, doors, breakupRooms, rng, exception.zones);
 
     // Glowing "lore terminals" from large source comments, and hidden secret

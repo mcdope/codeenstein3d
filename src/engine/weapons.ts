@@ -54,14 +54,30 @@ export interface Weapon {
    */
   meleeRange?: number;
   /**
-   * Ranged weapons only: hard max distance in tiles a pellet can actually
-   * connect at, layered on top of the Cone of Fire's soft accuracy falloff
-   * (see `fire()`'s doc comment) — for a weapon whose real-world reach is
-   * short enough that "wide spread" alone doesn't sell it. Only Friday
-   * Hotfix uses this; every other ranged weapon omits it and relies on
-   * spread/falloff the way `fire()` already handles range.
+   * Ranged weapons only: max distance in tiles a pellet can connect at,
+   * layered on top of the Cone of Fire's soft accuracy falloff (see `fire()`'s
+   * doc comment) — for a weapon whose real-world reach is short enough that
+   * "wide spread" alone doesn't sell it. Only Friday Hotfix uses this; every
+   * other ranged weapon omits it and relies on spread/falloff the way `fire()`
+   * already handles range.
+   *
+   * Paired with `fullDamageRange`, this is the *end* of a decay curve rather
+   * than a wall: damage is already zero when it gets here. See
+   * `rangeDamageScale`.
    */
   maxRange?: number;
+  /**
+   * Ranged weapons only, and only meaningful alongside `maxRange`: the
+   * distance out to which a pellet does its full `damagePerPellet`. Past it,
+   * damage decays linearly to zero at `maxRange`.
+   *
+   * Exists because a hard `maxRange` alone is a binary gate, not a range
+   * curve: the flamethrower dealt its full 8 per pellet at 3.4 tiles and
+   * literally nothing at 3.6. A flame jet should thin out, not stop at an
+   * invisible wall — which is also what `FlameStream`'s narrow-at-muzzle,
+   * wide-at-tip visual has always implied.
+   */
+  fullDamageRange?: number;
   /** Stability restored to the player on every kill with this weapon. */
   lifesteal?: number;
   /** True for the rocket launcher: `fire()` spawns a real, slow-traveling
@@ -250,13 +266,13 @@ export const WEAPONS: readonly Weapon[] = [
   },
   {
     name: "Friday Hotfix",
-    // The hard 3.5-tile `maxRange` (not a wide cone) is what actually enforces
-    // its short reach — playtesting showed relying on cone-spread alone still
-    // let it connect from further out than a real flamethrower should ever
-    // reach. `spreadPx` is deliberately narrower than the shotgun's 70px now:
-    // a tight jet that only fans out near `maxRange` (see `FlameStream`'s
-    // visual, drawn narrow-at-muzzle/wide-at-tip to match), not a wide blast
-    // from the nozzle.
+    // Reach is enforced by the damage curve below, not by a wide cone —
+    // playtesting showed relying on cone-spread alone let it connect from
+    // further out than a real flamethrower should ever reach. `spreadPx` is
+    // deliberately narrower than the shotgun's 70px: a tight jet that only
+    // fans out near its tip (see `FlameStream`'s visual, drawn
+    // narrow-at-muzzle/wide-at-tip to match), not a wide blast from the
+    // nozzle.
     pellets: 6,
     spreadPx: 45,
     damagePerPellet: 8,
@@ -269,7 +285,21 @@ export const WEAPONS: readonly Weapon[] = [
     viewKind: "flamethrower",
     auto: true,
     fireIntervalSec: 0.1,
-    maxRange: 3.5,
+    // Full damage to 2.5 tiles, decaying to nothing at 6.5, replacing a flat
+    // 3.5-tile cutoff. Deliberately a *redistribution* rather than a buff: the
+    // plateau ends short of the old cutoff so close range gives a little back,
+    // paying for reach the weapon never had. Measured over the 2026-08-04
+    // capture, it was locked to the wrong band — fights against regular
+    // enemies happen at a median 4.6 tiles, outside its reach entirely, while
+    // Edge Cases (10-15 HP trash) sit at 2.7. Only 30 pellets out of ~71,000
+    // ever landed in the 4-6 tile bucket.
+    //
+    // The pairing matters: at 48 damage per trigger-pull and a 0.1s interval
+    // this is already the highest-DPS weapon in the game, which is what
+    // `ammoPerShot: 2.5` exists to pay for. Extending reach *without* decay
+    // would be a straight buff to the strongest damage profile in the table.
+    fullDamageRange: 2.5,
+    maxRange: 6.5,
   },
   {
     // Not in `UNLOCKABLE_WEAPONS` — deliberately excluded from the ordinary
@@ -341,6 +371,22 @@ export const UNLOCKABLE_WEAPONS: readonly number[] = [
   FRIDAY_HOTFIX_WEAPON_INDEX,
 ];
 
+/** Weapon indices force-unlocked once the player reaches the given 1-based
+ * campaign level, regardless of whether an Elite has actually dropped them yet
+ * — a progression safety net so a long, loot-unlucky run doesn't leave
+ * gdb/ghidra/Friday Hotfix permanently unreachable.
+ *
+ * Lives here rather than in `main.ts` for the same reason `UNLOCKABLE_WEAPONS`
+ * does (see its comment): more than one consumer needs it, and a second copy
+ * would drift. `main.ts` owns *applying* it; the offline balance solver reads
+ * it to derive the loadout a run is guaranteed to have at each campaign level,
+ * which is what makes its scarcity figures a floor rather than a guess. */
+export const FORCED_UNLOCK_LEVELS: readonly { level: number; weaponIndex: number; name: string }[] = [
+  { level: 4, weaponIndex: GDB_WEAPON_INDEX, name: "gdb" },
+  { level: 8, weaponIndex: GHIDRA_WEAPON_INDEX, name: "ghidra" },
+  { level: 12, weaponIndex: FRIDAY_HOTFIX_WEAPON_INDEX, name: "Friday Hotfix" },
+];
+
 /**
  * `WEAPONS` indices in number-key order: the Nth entry here is what the
  * (N+1)th number key (`1`, `2`, …) switches to, via `RaycasterEngine`'s
@@ -394,4 +440,26 @@ export function pelletOffsets(weapon: Weapon): number[] {
     offsets.push((t * 2 - 1) * weapon.spreadPx); // -spread..+spread
   }
   return offsets;
+}
+
+/**
+ * Fraction of `damagePerPellet` a pellet delivers at `distance` tiles.
+ *
+ * 1 for every weapon that declares no `fullDamageRange` — a plain `maxRange`
+ * (melee, or any future short-reach weapon) keeps its old all-or-nothing
+ * behaviour, and the caller is still responsible for rejecting anything beyond
+ * it. Only a weapon opting into a curve gets one.
+ *
+ * Same shape as `rocketDamageAt` in `rockets.ts`, minus the floor: a rocket's
+ * splash keeps a minimum bite at the edge of its radius because a near miss
+ * should still hurt, whereas a flame that has thinned out to nothing should
+ * deal nothing rather than a guaranteed chip.
+ */
+export function rangeDamageScale(weapon: Weapon, distance: number): number {
+  const full = weapon.fullDamageRange;
+  const max = weapon.maxRange;
+  if (full === undefined || max === undefined || max <= full) return 1;
+  if (distance <= full) return 1;
+  if (distance >= max) return 0;
+  return (max - distance) / (max - full);
 }

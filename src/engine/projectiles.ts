@@ -10,13 +10,8 @@
 import { isWall, type Player } from "./player";
 import { collectOrbBillboards, type BillboardJob } from "./sprites";
 import type { GameMap } from "../map/types";
+import { PROJECTILE_DAMAGE, PROJECTILE_RADIUS, PROJECTILE_SPEED } from "./combatConstants";
 
-/** Bolt travel speed, in tiles per second (dodgeable, but faster than a chase). */
-const PROJECTILE_SPEED = 5;
-/** Stability the player loses when a bolt connects. */
-const PROJECTILE_DAMAGE = 8;
-/** Bolt collision half-size, in tiles. */
-const PROJECTILE_RADIUS = 0.15;
 
 /** One in-flight enemy bolt, in world (tile) space. `targetId` locks the bolt
  * to whichever player it was fired at — see `updateProjectiles`' own doc
@@ -29,6 +24,21 @@ export interface Projectile {
   vy: number;
   damage: number;
   targetId: string;
+  /**
+   * Index into the engine's `enemies` array of whoever fired this bolt, so a
+   * landing hit can say which enemy dealt the damage. Purely for telemetry
+   * attribution — nothing in the simulation reads it, so it changes no
+   * behaviour and consumes no RNG.
+   *
+   * An index rather than a reference: that array is assigned once at engine
+   * construction and never spliced, so indices are stable for a level's whole
+   * lifetime, and it is the same `eid` the `hit`/`kill`/`damageDealt` events
+   * already use — which lets the `levelStart` roster resolve it to an
+   * archetype without this field having to carry one.
+   *
+   * Optional because tests construct `Projectile` literals directly.
+   */
+  srcEid?: number;
 }
 
 /** Spawn a bolt at (x,y) heading toward (tx,ty) — the position of the player
@@ -51,6 +61,10 @@ export function spawnProjectile(
   damageMultiplier = 1,
   aimSpreadDeg = 0,
   rng: () => number = Math.random,
+  /** See `Projectile.srcEid` — telemetry attribution only. Deliberately last,
+   * *after* `rng`, so every existing positional call site keeps passing its
+   * seeded stream in the same slot: this must not perturb RNG consumption. */
+  srcEid?: number,
 ): void {
   const dx = tx - x;
   const dy = ty - y;
@@ -73,6 +87,7 @@ export function spawnProjectile(
     vy: dirY * PROJECTILE_SPEED,
     damage: PROJECTILE_DAMAGE * damageMultiplier,
     targetId,
+    srcEid,
   });
 }
 
@@ -103,6 +118,11 @@ export function updateProjectiles(
   targets: readonly ProjectileTarget[],
   map: GameMap,
   dt: number,
+  /** Fired once per bolt that actually lands, carrying which enemy fired it
+   * (`Projectile.srcEid`) and how much it dealt. A callback rather than a
+   * richer return type so the summed `Map` every caller already destructures
+   * keeps its shape — the same reason `EnemyAiEvents` exists next door. */
+  onHit?: (srcEid: number | undefined, targetId: string, amount: number) => void,
 ): Map<string, number> {
   const damage = new Map<string, number>();
   const targetsById = new Map(targets.map((t) => [t.id, t]));
@@ -117,6 +137,7 @@ export function updateProjectiles(
       const reach = target.player.radius + PROJECTILE_RADIUS;
       if (Math.abs(p.x - target.player.posX) < reach && Math.abs(p.y - target.player.posY) < reach) {
         damage.set(target.id, (damage.get(target.id) ?? 0) + p.damage);
+        onHit?.(p.srcEid, target.id, p.damage);
         list.splice(i, 1);
         continue;
       }

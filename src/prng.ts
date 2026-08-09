@@ -65,7 +65,50 @@ export function createResumablePrng(seed: number): { next: () => number; getStat
  * allowed to enter an otherwise fully-seeded run: picking which deterministic
  * universe this playthrough's combat/loot/AI timing will be (recorded for the
  * replay system so the same universe can be reproduced later).
+ *
+ * **Unless `?seed=` pins it.** Map generation has always been deterministic
+ * and content-addressed (`seedFrom` in `mapGenerator.ts`), so "same repo, same
+ * commit, same version" already reproduced the same *level* — but not the same
+ * *run*, because every loot roll, enemy fire cadence and weapon-spread draw
+ * comes off this seed and nothing could supply one. That made the drop half of
+ * the economy unreproducible between runs, which is a problem for balancing
+ * specifically: an A/B that changes a drop constant cannot tell the change
+ * apart from a different roll of the same dice. `?seed=` closes that. See
+ * `doc/dev/balancing-telemetry.md`.
+ *
+ * Deliberately *not* persisted anywhere and not surfaced in the UI: it is a
+ * debugging and balancing affordance, and a real player's run should keep
+ * getting a fresh universe. An unparsable or out-of-range value is ignored
+ * rather than treated as 0, so a typo cannot silently pin every run to the
+ * same universe.
  */
 export function randomSeed(): number {
-  return (Math.random() * 0xffffffff) >>> 0;
+  const pinned = pinnedSeed();
+  if (pinned === null) return (Math.random() * 0xffffffff) >>> 0;
+  // Successive calls must not all return the same number. A campaign asks for
+  // one seed per level, and handing every level the identical seed would make
+  // the first loot roll of every level draw the same value — a systematic
+  // artifact across exactly the runs this exists to measure. Deriving each
+  // seed from a `mulberry32` stream rooted at the pinned value keeps the whole
+  // sequence reproducible while leaving the levels independent.
+  pinnedStream ??= mulberry32(pinned);
+  return (pinnedStream() * 0xffffffff) >>> 0;
+}
+
+/** Lazily created on the first pinned `randomSeed()` call, then reused for the
+ * lifetime of the page — one page load is one campaign attempt, so restarting
+ * the sequence per level is exactly what we are avoiding. */
+let pinnedStream: (() => number) | null = null;
+
+/** The `?seed=` override, or `null` when absent/unusable. Accepts decimal or
+ * `0x`-prefixed hex, and only a finite non-negative integer inside the 32-bit
+ * range. Exported for `main.ts`'s own startup log — a pinned run should say so
+ * out loud, since every subsequent number in it is a consequence. */
+export function pinnedSeed(): number | null {
+  if (typeof window === "undefined") return null;
+  const raw = new URLSearchParams(window.location.search).get("seed");
+  if (raw === null || raw.trim() === "") return null;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) return null;
+  return value >>> 0;
 }

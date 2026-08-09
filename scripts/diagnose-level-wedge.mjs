@@ -49,6 +49,7 @@ import { REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { Bot, detectAnomalies, detectHeldKeyNoMovement, detectOscillation, summarizeActivityDistance } from "./lib/bot.mjs";
 import { planRoute } from "./lib/routePlanner.mjs";
 import { installVirtualClock } from "./lib/virtualClock.mjs";
+import { checkPlanMatchesEngine } from "./lib/planEngineMatch.mjs";
 import { DEV_SERVER_URL, PROFILES, planLevels, waitForTestHooks, dismissOverlay, installDifficulty } from "./run-balancing-telemetry.mjs";
 
 const arg = (name, dflt) => {
@@ -322,6 +323,20 @@ async function main() {
       calls.length = 0;
       say(`  --- level ${levelNo} is ${filename} (${map.grid[0].length}x${map.grid.length}), legs=${routePlain.legs?.length} ---`);
       bot.startLevel(map);
+      // Same check the capture pre-flight runs, but reporting instead of
+      // exiting — a diagnostic that dies on the first mismatch cannot show you
+      // what else is wrong. See `planEngineMatch.mjs` for the mechanism.
+      const alignment = await checkPlanMatchesEngine(page, map, { levelNo, levelPlans });
+      if (!alignment.ok) {
+        say(`  *** PLAN/ENGINE MAP MISMATCH on level ${levelNo}: ${alignment.diffs} tiles differ ***`);
+        const best = alignment.scored?.[0];
+        if (best) {
+          say(best.diffs === 0
+            ? `      engine is actually playing: idx ${best.index} ${best.filename}`
+            : `      (no exact match; closest idx ${best.index} at ${best.diffs} diffs)`);
+        }
+        say(`      every route from here is planned for a map that is not loaded — stop and fix the staging.`);
+      }
       const route = routePlain;
       const p0 = await bot.readState();
       if (p0.state !== "playing") { say(`  level ${levelNo}: run ended (${p0.state})`); break; }
@@ -346,7 +361,26 @@ async function main() {
         if (pushed.state !== "won") outcome = { state: pushed.state === "over" ? "over" : "stuck" };
       }
 
-      if (outcome.state === "over") { say(`  level ${levelNo}: DIED`); attempts.push({ attempt, levelNo, outcome: "died", ...levelDigest(bot) }); break; }
+      if (outcome.state === "over") {
+        say(`  level ${levelNo}: DIED`);
+        attempts.push({ attempt, levelNo, outcome: "died", ...levelDigest(bot) });
+        // Dump the same evidence a wedge gets. This path used to `break`
+        // straight past the trace-persist below, so a *death* left nothing to
+        // read — no positions, no branch, nothing. That is precisely the gap
+        // that made the 2026-08-07 hazard-death investigation two blind
+        // guesses, both of which measured worse than the bug they targeted.
+        if (perLevel.length > 0) {
+          const p = path.join(OUT, `death-L${levelNo}-a${attempt}-trace.log`);
+          fs.writeFileSync(p, perLevel.join("\n"));
+          say(`  --- wrote ${perLevel.length} trace lines to ${path.basename(p)} ---`);
+        }
+        const dead = await bot.readState();
+        say(`\n--- driveToward calls on level ${levelNo} (last 15) ---`);
+        for (const c of calls.slice(-15)) say(`  ${JSON.stringify(c)}`);
+        say(`\n--- grid where it died ---`);
+        say(dumpGrid(map, dead.x, dead.y));
+        break;
+      }
       if (outcome.state === "stuck") {
         say(`  level ${levelNo}: STUCK`);
         attempts.push({ attempt, levelNo, outcome: "stuck", ...levelDigest(bot) });

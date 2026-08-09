@@ -21,45 +21,24 @@ import { collidesWithWall, isWall, type Player } from "./player";
 import type { PathField } from "./pathField";
 import { spawnProjectile, type Projectile } from "./projectiles";
 import type { Enemy, GameMap } from "../map/types";
-
-/** Distance (tiles) within which an enemy notices and chases the player. */
-const AGGRO_RADIUS = 7.5;
-/** Enemy chase speed in tiles per second (slower than the player's 3.2). */
-const MOVEMENT_SPEED = 1.7;
-/** Max distance (tiles) at which a chasing enemy will take a ranged shot. */
-const RANGED_RANGE = 8;
-/** Min / max seconds between an enemy's ranged shots (randomized each time). */
-const FIRE_COOLDOWN_MIN = 1.2;
-const FIRE_COOLDOWN_MAX = 2.6;
-/** Enemy roam (idle wander) speed — a relaxed stroll. */
-const ROAM_SPEED = 0.8;
-/** Distance (tiles) from a roam target at which the enemy picks a new one. */
-const ROAM_ARRIVE = 0.25;
-/** Distance (tiles) at which an enemy stops chasing and melees instead. */
-const ATTACK_RADIUS = 0.5;
-/** Seconds between successive melee bites from a single enemy. */
-const ATTACK_COOLDOWN = 0.8;
-/** Stability (health) the player loses per melee bite. */
-const ATTACK_DAMAGE = 10;
-/** Half-width of an enemy's collision box, in tiles. */
-const ENEMY_RADIUS = 0.3;
-/** Melee/ranged damage multiplier for an Elite (boss-tier) enemy — see
- * `Enemy.elite`. Its HP scaling already lives in `mapGenerator.ts`; this is
- * the "high damage" half of the spec. */
-const ELITE_DAMAGE_MULTIPLIER = 2;
-/** Chase/roam speed multiplier for an Edge Case enemy — see `Enemy.edgeCase`.
- * "Very high movement speed": noticeably faster than the player can react to. */
-const EDGE_CASE_SPEED_MULTIPLIER = 2.2;
-/** Melee/ranged damage multiplier for an Edge Case enemy — "low melee
- * damage": a nuisance, not a threat. */
-const EDGE_CASE_DAMAGE_MULTIPLIER = 0.4;
-/** Average per-second chance an Edge Case enemy abandons its current roam
- * target early (before arriving) — the core of its erratic roaming. */
-const EDGE_CASE_RETARGET_RATE = 2.0;
-/** Random heading wobble (radians) applied to an Edge Case enemy's roam step,
- * on top of its retargeting — reads as visibly twitchy/darting rather than a
- * smooth glide even between retargets. */
-const EDGE_CASE_ROAM_JITTER_RAD = 0.9;
+import {
+  AGGRO_RADIUS,
+  ATTACK_COOLDOWN,
+  ATTACK_DAMAGE,
+  ATTACK_RADIUS,
+  EDGE_CASE_DAMAGE_MULTIPLIER,
+  EDGE_CASE_RETARGET_RATE,
+  EDGE_CASE_ROAM_JITTER_RAD,
+  EDGE_CASE_SPEED_MULTIPLIER,
+  ELITE_DAMAGE_MULTIPLIER,
+  ENEMY_RADIUS,
+  FIRE_COOLDOWN_MAX,
+  FIRE_COOLDOWN_MIN,
+  MOVEMENT_SPEED,
+  RANGED_RANGE,
+  ROAM_ARRIVE,
+  ROAM_SPEED,
+} from "./combatConstants";
 
 /** Optional balancing-telemetry observation hooks — see `telemetry.ts`. Every
  * call site (including every existing test) that omits this trailing
@@ -70,7 +49,12 @@ export interface EnemyAiEvents {
    * trigger only — damage-aggro is set directly by the engine, see
    * `RaycasterEngine.damageEnemy`, and records its own matching event there). */
   onAggro?: (enemy: Enemy) => void;
-  onMeleeAttack?: (enemy: Enemy) => void;
+  /** `eid` is the enemy's index in the array passed to `updateEnemies`, and
+   * `amount` the pre-difficulty-multiplier bite. Both exist so a caller can
+   * attribute the frame's melee damage per attacker without `updateEnemies`
+   * having to return anything richer than its per-player sum — see
+   * `RaycasterEngine.damage`'s `by` parameter. */
+  onMeleeAttack?: (enemy: Enemy, eid: number, targetId: string, amount: number) => void;
   onRangedFire?: (enemy: Enemy) => void;
 }
 
@@ -115,9 +99,13 @@ export function updateEnemies(
   eliteDamageScale = 1,
 ): Map<string, number> {
   const damage = new Map<string, number>();
-  for (const enemy of enemies) {
+  // Indexed rather than for-of purely so each enemy's `eid` (its index here,
+  // the same one the engine's own `hit`/`kill` events use) can be handed to
+  // the telemetry hooks. Same iteration order, so no behaviour change.
+  for (let eid = 0; eid < enemies.length; eid++) {
+    const enemy = enemies[eid];
     if (!enemy.alive) continue;
-    const hit = updateEnemy(enemy, targets, map, dt, projectiles, pathFields, rng, events, aimSpreadDeg, eliteDamageScale);
+    const hit = updateEnemy(enemy, eid, targets, map, dt, projectiles, pathFields, rng, events, aimSpreadDeg, eliteDamageScale);
     if (hit) damage.set(hit.id, (damage.get(hit.id) ?? 0) + hit.amount);
   }
   return damage;
@@ -127,6 +115,9 @@ export function updateEnemies(
  * much, or `null` if it didn't land a melee hit. */
 function updateEnemy(
   enemy: Enemy,
+  /** This enemy's index in `updateEnemies`' array — telemetry attribution
+   * only, never read by the simulation. */
+  eid: number,
   targets: readonly EnemyTarget[],
   map: GameMap,
   dt: number,
@@ -191,15 +182,16 @@ function updateEnemy(
   if (dist <= ATTACK_RADIUS) {
     if (enemy.attackCooldown === 0) {
       enemy.attackCooldown = ATTACK_COOLDOWN;
-      events?.onMeleeAttack?.(enemy);
-      return { id: nearest.id, amount: ATTACK_DAMAGE * damageMultiplier(enemy, eliteDamageScale) };
+      const amount = ATTACK_DAMAGE * damageMultiplier(enemy, eliteDamageScale);
+      events?.onMeleeAttack?.(enemy, eid, nearest.id, amount);
+      return { id: nearest.id, amount };
     }
     return null;
   }
 
   // At range: occasionally lob a bolt at the nearest target if there's a clear shot.
   if (enemy.fireCooldown === 0 && dist <= RANGED_RANGE && los()) {
-    spawnProjectile(projectiles, enemy.x, enemy.y, nearest.player.posX, nearest.player.posY, nearest.id, damageMultiplier(enemy, eliteDamageScale), aimSpreadDeg, rng);
+    spawnProjectile(projectiles, enemy.x, enemy.y, nearest.player.posX, nearest.player.posY, nearest.id, damageMultiplier(enemy, eliteDamageScale), aimSpreadDeg, rng, eid);
     enemy.fireCooldown = FIRE_COOLDOWN_MIN + rng() * (FIRE_COOLDOWN_MAX - FIRE_COOLDOWN_MIN);
     events?.onRangedFire?.(enemy);
   }

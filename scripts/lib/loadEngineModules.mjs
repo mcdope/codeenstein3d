@@ -55,7 +55,8 @@ function urlImportAsPathPlugin() {
  * Bundles the real parser registry + map generator for plain Node and
  * imports the result. Returns `{ parseFile, extensionOf, MapGenerator,
  * UNLOCKABLE_WEAPONS, packBoardForStorage, unpackBoardFromStorage,
- * isBinaryBoard }`.
+ * isBinaryBoard }`, plus the weapon/loot/ammo/difficulty constants the
+ * offline balance solver reads (see the paragraph on those below).
  *
  * The replay codec is bundled here for the same reason as
  * `UNLOCKABLE_WEAPONS`: `generate-default-highscore.mjs` has to read the
@@ -77,18 +78,38 @@ function urlImportAsPathPlugin() {
  * mirror in `combatPolicy.mjs` exists because that module is deliberately
  * kept liftable into `src/engine/`; this one had no such excuse, and
  * `weapons.ts` is pure data with no imports, so bundling it costs nothing.
+ *
+ * The **balance constants** (`WEAPONS` itself, `loot.ts`'s weight accessor
+ * and drop amounts, `ammo.ts`'s `startingAmmo`, `difficulty.ts`'s
+ * multipliers) are re-exported for the same reason, one step further:
+ * `scripts/lib/levelSolver.mjs` computes damage-per-ammo, TTK and expected
+ * drop value, and a second copy of any of those numbers would drift the way
+ * `combatPolicy.mjs`'s `ROCKET_TRAVEL_SPEED` already did — modelling the
+ * player's own rocket at the enemy bolt's speed for a 3.6x error nothing
+ * could catch. All four modules are pure data with no DOM dependency, so
+ * they bundle for Node unchanged; deliberately *not* `engine.ts`, which
+ * would drag the renderer in.
  */
 export async function loadEngineModules() {
   const registryPath = path.join(REPO_ROOT, "src/parser/registry.ts");
   const mapGeneratorPath = path.join(REPO_ROOT, "src/map/mapGenerator.ts");
   const weaponsPath = path.join(REPO_ROOT, "src/engine/weapons.ts");
   const replayCodecPath = path.join(REPO_ROOT, "src/engine/replayCodec.ts");
+  const lootPath = path.join(REPO_ROOT, "src/engine/loot.ts");
+  const ammoPath = path.join(REPO_ROOT, "src/engine/ammo.ts");
+  const difficultyPath = path.join(REPO_ROOT, "src/difficulty.ts");
+  const combatConstantsPath = path.join(REPO_ROOT, "src/engine/combatConstants.ts");
 
   const entryContents = [
     `export { parseFile, extensionOf } from ${JSON.stringify(registryPath)};`,
     `export { MapGenerator } from ${JSON.stringify(mapGeneratorPath)};`,
-    `export { UNLOCKABLE_WEAPONS } from ${JSON.stringify(weaponsPath)};`,
+    `export { UNLOCKABLE_WEAPONS, STARTING_WEAPONS, WEAPONS, PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, KNIFE_WEAPON_INDEX, GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX, TOOLCHAIN_WEAPON_INDEX, TOOLCHAIN_MIN_LEVEL, FORCED_UNLOCK_LEVELS } from ${JSON.stringify(weaponsPath)};`,
     `export { packBoardForStorage, unpackBoardFromStorage, isBinaryBoard } from ${JSON.stringify(replayCodecPath)};`,
+    // The balance solver's constants — see the note above this function.
+    `export { lootWeightsFor, REGULAR_KILL_NO_DROP_CHANCE, NORMAL_KILL_WEAPON_DROP_CHANCE, ELITE_BONUS_WEAPON_DROP_CHANCE, BULLETS_DROP_AMOUNT, ROCKETS_DROP_AMOUNT, SMG_DROP_AMOUNT, GAS_DROP_AMOUNT, HEALTH_DROP_AMOUNT, SWAP_DROP_AMOUNT, ELITE_HEALTH_DROP_AMOUNT, ELITE_BULLETS_DROP_AMOUNT, ELITE_ROCKETS_DROP_AMOUNT, ELITE_SMG_DROP_AMOUNT, ELITE_GAS_DROP_AMOUNT, ELITE_SWAP_DROP_AMOUNT, MAX_SWAP } from ${JSON.stringify(lootPath)};`,
+    `export { startingAmmo, AMMO_TYPES, AMMO_META } from ${JSON.stringify(ammoPath)};`,
+    `export { DIFFICULTY_MULTIPLIERS, DEFAULT_DIFFICULTY } from ${JSON.stringify(difficultyPath)};`,
+    `export * as COMBAT from ${JSON.stringify(combatConstantsPath)};`,
   ].join("\n");
 
   const result = await build({

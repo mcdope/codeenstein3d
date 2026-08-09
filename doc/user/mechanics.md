@@ -13,7 +13,7 @@ Codeenstein 3D parses your source into an AST and turns its structure into a pla
 | Function, method, class or global | A room of that level |
 | Function | An enemy in its room — HP scales with its cyclomatic complexity |
 | Function with more than 5 params or more than 3 nesting levels | A tougher enemy (a "code smell" bonus on top of complexity) |
-| Function at extreme complexity (≥40) | A single **Elite** enemy instead of a pack — 2× HP, 2× damage, gold-tinted, 60% chance of an extra weapon drop |
+| Function at extreme complexity (≥40) | An **Elite pack** — 2× the room's usual HP budget, led by a gold-tinted Elite dealing 2× damage with a 60% chance of an extra weapon drop |
 | Global variable | An acid pool (hazard terrain) |
 | Private/protected method | A locked room, gated behind a key placed somewhere already reachable |
 | `goto`/label pair | A linked teleporter pad pair |
@@ -45,10 +45,10 @@ Corridors aren't left as bare tubes. Rooms are placed next to each other, so the
 | SIGKILL Knife | `Space` only | Melee | Starting weapon, infinite ammo, heals 1 HP per kill, not on the number row |
 | gdb | 3 | Full-auto hitscan | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 4 |
 | ghidra | 4 | Rocket / splash damage | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 8 |
-| Friday Hotfix | 5 | Full-auto 6-pellet cone, 3.5-tile max range | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 12 |
+| Friday Hotfix | 5 | Full-auto 6-pellet cone; full damage to 2.5 tiles, thinning out to nothing by 6.5 | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 12 |
 | Toolchain | `Space` only | Full-auto melee | Infinite ammo, 2× the knife's damage, a bigger lifesteal heal, fires as long as you hold the key — permanently replaces the knife on Space once picked up. Found in a secret room, dropped by an Elite kill, or a small chance on any regular kill whose loot roll comes up empty — all gated to campaign level 4 on; **no forced unlock** — a loot-unlucky run can still finish without ever finding it |
 
-Ranged weapons draw from four separate ammo pools: **Bullets** (echo pistol/Regex Shotgun), **SMG Ammo** (gdb only), **Rockets** (ghidra only), and **Gas** (Friday Hotfix only). SMG/rocket/gas ammo won't drop or spawn on the map at all until you actually own the matching weapon. Hitscan pellets deviate more the further away the target is, so point-blank shots are reliable and very long-range ones can miss. Friday Hotfix additionally enforces a hard 3.5-tile max range on top of that — a genuine flamethrower's reach, not just a wide cone that happens to scatter — and fires a fanning flame stream instead of the thin tracer line every other gun draws.
+Ranged weapons draw from four separate ammo pools: **Bullets** (echo pistol/Regex Shotgun), **SMG Ammo** (gdb only), **Rockets** (ghidra only), and **Gas** (Friday Hotfix only). SMG/rocket/gas ammo won't drop or spawn on the map at all until you actually own the matching weapon. Hitscan pellets deviate more the further away the target is, so point-blank shots are reliable and very long-range ones can miss. Friday Hotfix additionally thins out with distance on top of that — full damage out to about 2.5 tiles, fading to nothing by 6.5 — so it has a genuine flamethrower's reach rather than a wide cone that happens to scatter, and fires a fanning flame stream instead of the thin tracer line every other gun draws. It used to stop dead at 3.5 tiles, which meant full damage at 3.4 and none at all at 3.6.
 
 Every gun also has its own **cadence**, and clicking faster can't beat it. The Regex Shotgun is the one you'll feel: it's pump-action, so it cycles for 0.85s after each blast — you'll hear it rack — and that pause is exactly what buys its huge burst damage up close. The echo pistol cycles far quicker (~6.6 shots/sec) but still has a floor. The cadence is tracked per *player*, not per weapon, so switching guns mid-cycle won't let you shoot any sooner; quick-melee on `Space` is always available though, which is your out while a pump finishes.
 

@@ -36,6 +36,7 @@ import {
   segmentBlocked,
   pickIncomingBolt,
   segmentsFor,
+  turnSplitIntent,
   strafeIsSafe,
   turnBurstMs,
   uniformIntent,
@@ -391,6 +392,41 @@ describe("decide — branch selection", () => {
     expect(intent.fire).toBe(false);
   });
 
+  it("pivots in place when the target is inside its own turn radius", () => {
+    // A forward-moving body cannot approach anything nearer than its turn
+    // radius — the bearing changes at least as fast as it can rotate — so it
+    // orbits. Measured on a wolf3d death with the sprint already off: radius
+    // 0.62 tiles, target at 0.42, and the distance GROWING to 0.78 as the bot
+    // spiralled outward. Inside that circle it must rotate, not drive.
+    const map = makeMap({ tiles: [[10, 10, 2]] });
+    const intent = decide(
+      { player: makePlayer({ dirX: 1, dirY: 0 }), enemies: [], mines: [], navTarget: { x: 10.5, y: 10.9 }, map },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(intent.branch).toBe("hazard");
+    expect(keysOf(intent)).not.toContain("KeyW");
+    expect(keysOf(intent)).not.toContain("ShiftLeft");
+    expect(keysOf(intent)).toContain("KeyE");
+  });
+
+  it("does not sprint while turning, so the turn radius stays inside the target", () => {
+    // Measured on a wolf3d level-2 death trace: dir advanced 0.26 rad per 50ms
+    // decision (w = 5.2 rad/s) while sprinting at 6.4 tiles/s, giving a turn
+    // radius of 1.23 tiles against a nav target 0.87-1.4 tiles away. A target
+    // inside the turn circle is geometrically unreachable, so the bot orbited
+    // it at full health until the acid killed it. Walking halves the radius.
+    const map = makeMap({ tiles: [[10, 10, 2]] });
+    const turning = decide(
+      { player: makePlayer({ dirX: 1, dirY: 0 }), enemies: [], mines: [], navTarget: { x: 10.5, y: 12.5 }, map },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(turning.branch).toBe("hazard");
+    expect(keysOf(turning)).toContain("KeyW");
+    expect(keysOf(turning)).not.toContain("ShiftLeft");
+  });
+
   it("never adds a strafe key in the hazard branch", () => {
     // The 72%-regression rule: a lateral key next to KeyW costs 29% of the
     // forward component (engine.ts's diagonalScale), and here forward *is* the
@@ -414,6 +450,86 @@ describe("decide — branch selection", () => {
     expect(intent.branch).toBe("criticalHealth");
     expect(keysOf(intent)).toContain("ShiftLeft");
     expect(intent.fire).toBe(false);
+  });
+
+  // `STANDOFF_MIN_TARGET_HP` shares the critical-health branch body, so these
+  // cover the gate rather than the movement — the movement is already asserted
+  // by the critical-health test above.
+  const standoffOn = { ...DEFAULT_TUNING, STANDOFF_MIN_TARGET_HP: 500 };
+
+  it("holds range from a target too big to burst down", () => {
+    const intent = decide(
+      // 3,000 HP at 1.5 tiles: the wolf3d level-8 Elite, at the distance the
+      // bot actually fought it (measured median 0.54t, 82% inside 2t).
+      { player: makePlayer(), enemies: [makeEnemy({ hp: 3000, maxHp: 3000, elite: true, x: 12.0 })], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig({ tuning: standoffOn }),
+    );
+    expect(intent.branch).toBe("standoff");
+    expect(keysOf(intent)).toContain("ShiftLeft");
+  });
+
+  it("stops holding range once the target is beyond STANDOFF_DISTANCE", () => {
+    // Self-limiting is the whole design: past 5 tiles the gate releases and
+    // normal ranged selection resumes, which is what makes ghidra legal again.
+    const intent = decide(
+      { player: makePlayer(), enemies: [makeEnemy({ hp: 3000, maxHp: 3000, elite: true, x: 16.5 })], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig({ tuning: standoffOn }),
+    );
+    expect(intent.branch).not.toBe("standoff");
+  });
+
+  it("does not hold range from something it can actually kill", () => {
+    const intent = decide(
+      { player: makePlayer(), enemies: [makeEnemy({ hp: 30, x: 12.0 })], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig({ tuning: standoffOn }),
+    );
+    expect(intent.branch).not.toBe("standoff");
+  });
+
+  it("does not back away from a big target it has no ammo to shoot", () => {
+    // Same last-resort carve-out `shouldCloseToMelee` makes: dry is still dry,
+    // and retreating from something you cannot shoot just loses the level
+    // slowly instead of quickly.
+    const intent = decide(
+      {
+        player: makePlayer({ ammo: { bullets: 0, smg: 0, rockets: 0, gas: 0 } }),
+        enemies: [makeEnemy({ hp: 3000, maxHp: 3000, elite: true, x: 12.0 })],
+        mines: [], navTarget: null, map: makeMap(),
+      },
+      freshMemory(),
+      makeConfig({ tuning: standoffOn }),
+    );
+    expect(intent.branch).not.toBe("standoff");
+  });
+
+  it("critical health still wins over standoff, and still reports its own branch", () => {
+    // Both gates are satisfied here. The label matters: `criticalHealth` and
+    // `standoff` are separate rows in every anomaly and engaged-tile readout,
+    // and conflating them would silently re-attribute existing measurements.
+    const intent = decide(
+      { player: makePlayer({ healthFraction: 0.1 }), enemies: [makeEnemy({ hp: 3000, maxHp: 3000, elite: true, x: 12.0 })], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig({ tuning: standoffOn }),
+    );
+    expect(intent.branch).toBe("criticalHealth");
+  });
+
+  it("REGRESSION GUARD: the standoff is enabled by default", () => {
+    // Inverted on 2026-08-06 when the knob was turned on. It shipped inert
+    // while it was a diagnostic; the arm-2 A/B measured what it does (see its
+    // comment in DEFAULT_TUNING) and it is now the shipped behaviour. If this
+    // ever flips back, every telemetry baseline recorded after that date stops
+    // being comparable to anything recorded before it.
+    expect(DEFAULT_TUNING.STANDOFF_MIN_TARGET_HP).toBe(500);
+    const intent = decide(
+      { player: makePlayer(), enemies: [makeEnemy({ hp: 3000, maxHp: 3000, elite: true, x: 12.0 })], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      makeConfig(),
+    );
+    expect(intent.branch).toBe("standoff");
   });
 
   it("retreats from a mine it is standing too close to", () => {
@@ -1200,10 +1316,23 @@ describe("number-key weapon mapping", () => {
 describe("hard weapon range limits", () => {
   const owner = () => makePlayer({ ownedWeapons: [0, 1, 2, 3, 4, 5, 6], ammo: { bullets: 200, smg: 700, rockets: 19, gas: 600 } });
   it("never picks Friday Hotfix beyond its maxRange, however good its DPS looks", () => {
-    const far = { ...makeEnemy(), dist: 6, hp: 4400, maxHp: 4400, i: 0 };
+    const far = { ...makeEnemy(), dist: 7, hp: 4400, maxHp: 4400, i: 0 };
     expect(pickRangedWeapon(owner(), PROFILE, [], far, null)).not.toBe(FRIDAY_HOTFIX_WEAPON_INDEX);
-    expect(scoreRangedWeapon(FRIDAY_HOTFIX_WEAPON_INDEX, { targetHp: 4400, dist: 6, player: owner(), profile: PROFILE, tuning: DEFAULT_TUNING })).toBe(Infinity);
+    expect(scoreRangedWeapon(FRIDAY_HOTFIX_WEAPON_INDEX, { targetHp: 4400, dist: 7, player: owner(), profile: PROFILE, tuning: DEFAULT_TUNING })).toBe(Infinity);
   });
+  it("models the range falloff, so it is not scored at full strength across its whole reach", () => {
+    // The mirrored half of `rangeDamageScale`. Leaving it out would be worse
+    // than the hard cutoff it replaced: the cutoff at least scored zero where
+    // the weapon could not reach, whereas an unmirrored curve scores a full 48
+    // a pull at 6 tiles where the engine really lands about 12.
+    const at = (dist) => expectedDamagePerShot(FRIDAY_HOTFIX_WEAPON_INDEX, dist, DEFAULT_TUNING, makeEnemy());
+    expect(at(2.0)).toBeCloseTo(at(2.5), 6);        // plateau: the curve must not bite yet
+    expect(at(4.5)).toBeLessThan(at(2.5));           // then decay, monotonically
+    expect(at(6.0)).toBeLessThan(at(4.5));
+    expect(at(6.5)).toBe(0);                         // nothing at the far end
+    expect(at(4.5) / at(2.5)).toBeCloseTo(0.5, 2);   // half-way along is half damage
+  });
+
   it("is a candidate again inside that range, rather than scoring Infinity", () => {
     // The pair with the test above: out of reach it is not a candidate at all
     // (Infinity), inside reach it is scored on its merits. Whether it then
@@ -1370,5 +1499,78 @@ describe("movementVectorFor", () => {
     const v = movementVectorFor(["KeyD"], facingNorth);
     expect(v.x).toBeCloseTo(-1);
     expect(v.y).toBeCloseTo(0);
+  });
+});
+
+describe("turnSplitIntent", () => {
+  const TURN = "KeyE";
+
+  it("gives the turn key its own short hold while movement runs the whole decision", () => {
+    // The decoupling itself. A widened decision (the stall-strafe needs 50ms
+    // of displacement) must not hold the turn key for 50ms too.
+    const intent = turnSplitIntent(new Set([TURN, "KeyA", "ShiftLeft"]), 50, 3, 50, {});
+    expect(intent.holds.get(TURN)).toBe(3);
+    expect(intent.holds.get("KeyA")).toBe(50);
+    expect(intent.holds.get("ShiftLeft")).toBe(50);
+    expect(intent.durationMs).toBe(50);
+  });
+
+  it("dispatches as two phases: turn+move, then move alone", () => {
+    // `segmentsFor` is what realises it, and it has only ever seen one phase.
+    const intent = turnSplitIntent(new Set([TURN, "KeyA"]), 50, 3, 50, {});
+    const phases = segmentsFor(intent.holds, intent.durationMs, 0);
+    expect(phases).toHaveLength(2);
+    expect(phases[0]).toEqual({ keys: [TURN, "KeyA"], ms: 3 });
+    expect(phases[1]).toEqual({ keys: ["KeyA"], ms: 47 });
+    expect(phases.reduce((sum, p) => sum + p.ms, 0)).toBe(50);
+  });
+
+  it("is identical to uniformIntent when the turn wants the whole decision", () => {
+    // The common case must not change: an unwidened decision is one phase, so
+    // this cannot alter behaviour where there was nothing to decouple.
+    const intent = turnSplitIntent(new Set([TURN, "KeyW"]), 12, 12, 50, {});
+    expect(segmentsFor(intent.holds, intent.durationMs, 0)).toEqual([{ keys: [TURN, "KeyW"], ms: 12 }]);
+  });
+
+  it("never extends a turn past the decision, nor shortens movement below it", () => {
+    // `Math.min` guards the widened case; a turn hold longer than the decision
+    // would otherwise produce a phase with negative remainder.
+    const intent = turnSplitIntent(new Set([TURN, "KeyW"]), 20, 999, 50, {});
+    expect(intent.holds.get(TURN)).toBe(20);
+    expect(intent.holds.get("KeyW")).toBe(20);
+  });
+
+  it("falls back to a uniform hold when no separate turn hold was recorded", () => {
+    const intent = turnSplitIntent(new Set([TURN, "KeyW"]), 50, null, 50, {});
+    expect(intent.holds.get(TURN)).toBe(50);
+    expect(intent.holds.get("KeyW")).toBe(50);
+  });
+
+  it("reproduces the old one-scalar behaviour when the switch is off", () => {
+    // The A/B arm. Without this the change could only be compared against a
+    // different commit, which would confound it with everything else that
+    // landed since.
+    const off = { ...DEFAULT_TUNING, TURN_SPLIT_PHASES: false };
+    const intent = turnSplitIntent(new Set(["KeyE", "KeyA"]), 50, 3, 50, {}, off);
+    expect(intent.holds.get("KeyE")).toBe(50);
+    expect(segmentsFor(intent.holds, intent.durationMs, 0)).toHaveLength(1);
+  });
+
+  it("keeps the overshoot inside fireAngleEps for every profile", () => {
+    // The property the whole change exists for, stated in the units that
+    // matter. Before: a widened decision turned ENGINE_ROT_SPEED * rotMult *
+    // 50ms regardless of how small the correction was.
+    const ROT = DEFAULT_TUNING.ENGINE_ROT_SPEED;
+    for (const [name, rotMult, eps] of [["Casual", 2.0, 0.08], ["Gamer", 3.5, 0.05], ["Pro", 5.0, 0.03]]) {
+      const wantedRad = eps / 2; // a correction finer than the fire tolerance
+      const burst = turnBurstMs(wantedRad, rotMult, 0, { tuning: DEFAULT_TUNING, stepMs: 50, memory: null });
+      const intent = turnSplitIntent(new Set(["KeyE", "KeyA"]), 50, burst, 50, {});
+      const heldMs = intent.holds.get("KeyE");
+      const actualRad = ROT * rotMult * (heldMs / 1000);
+      expect(actualRad, `${name} overshoots its own fireAngleEps`).toBeLessThanOrEqual(eps);
+      // And the strafe still gets the full decision — the half the 2026-07-29
+      // A/B lost when it removed the widening instead.
+      expect(intent.holds.get("KeyA")).toBe(50);
+    }
   });
 });

@@ -55,6 +55,12 @@ export const HOSTS_FILE = path.join(REPO_ROOT, "ssh-hosts.env");
  * checkout lives. */
 export const REMOTE_DIR = "/tmp/codeenstein3d-ssh-lane";
 
+/** Port for `bootstrapHost`'s vite smoke test. Deliberately not the capture's
+ * own 5199: the probe must never collide with a run already in flight on a
+ * shared host, and the failure it catches (vite unable to start at all) does
+ * not depend on which port is asked for. */
+const VITE_PROBE_PORT = 5399;
+
 /** Exported for `scripts/setup-ssh-lane-host.mjs` — same host list either
  * script reads, so "which hosts does this apply to" never needs asking
  * twice. */
@@ -125,9 +131,85 @@ async function runSsh(userHost, remoteCommand, { timeoutMs } = {}) {
   return execFileAsync("ssh", ["-tt", "-o", "BatchMode=yes", userHost, remoteCommand], { timeout: timeoutMs, maxBuffer: 1024 * 1024 * 64 });
 }
 
-// Kept in sync with `scripts/setup-ssh-lane-host.mjs`'s own install target —
-// this side only ever *checks* against it, never installs.
-export const NODE_MIN_MAJOR = 18;
+/**
+ * Lowest Node major this repo can actually run, read from `package.json`'s
+ * own `engines.node` rather than hardcoded.
+ *
+ * It *was* hardcoded, at 18, and drifted: `engines` moved on and the constant
+ * did not, so a lane host with the distro's Node 18 passed every check this
+ * toolchain makes and then failed on `playwright install-deps` ("Playwright
+ * requires Node.js 20 or higher") after a full clone and `npm ci`. Deriving it
+ * means the check cannot disagree with the manifest again.
+ *
+ * Takes the minimum major across the range's `||` alternatives — for
+ * `^22.22.2 || ^24.15.0 || >=26.0.0` that is 22 — because any one of them
+ * satisfies npm. Major-only is deliberate: npm's own `EBADENGINE` is a
+ * warning rather than an error, so the binding constraint in practice is
+ * Playwright's, and a host one patch under the manifest is worth a warning,
+ * not a refusal to run.
+ */
+function lowestSupportedNodeMajor() {
+  const FALLBACK = 20;
+  try {
+    const range = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8")).engines?.node;
+    if (!range) return FALLBACK;
+    const majors = range
+      .split("||")
+      .map((clause) => clause.match(/(\d+)/)?.[1])
+      .filter(Boolean)
+      .map(Number);
+    return majors.length > 0 ? Math.min(...majors) : FALLBACK;
+  } catch {
+    return FALLBACK;
+  }
+}
+
+export const NODE_MIN_MAJOR = lowestSupportedNodeMajor();
+
+/**
+ * Shell prelude that puts an nvm-installed Node on `PATH`, prepended to every
+ * remote command this project runs.
+ *
+ * **Why it is needed at all.** `ssh host 'cmd'` runs a *non-interactive*
+ * shell, and nvm works purely by editing `PATH` from `~/.bashrc` — which
+ * Debian/Ubuntu's stock `~/.bashrc` guards with an early
+ * `case $- in *i*) ;; *) return;; esac`, so the nvm lines never execute. A
+ * host where Node exists *only* via nvm therefore looks, over SSH, exactly
+ * like a host with no Node at all. That misdiagnosis reached all three call
+ * sites: setup tried to `apt-get install nodejs` over the top of a perfectly
+ * good nvm install, the per-run bootstrap refused the host and told the
+ * operator to run the setup that had already run, and the campaign
+ * invocation itself would have failed on a bare `node`. `npm`/`npx` share
+ * the same bin directory and so were equally unavailable.
+ *
+ * **Why it does not source `nvm.sh`.** That script is bash/zsh-only and the
+ * remote login shell is not guaranteed to be either — under `dash` sourcing
+ * it fails outright. Adding the version directory to `PATH` is plain POSIX
+ * sh and needs nvm's own machinery not at all.
+ *
+ * **Selection rule**: only consulted when the `PATH` Node is missing or
+ * older than `NODE_MIN_MAJOR`, so a host with an adequate system Node keeps
+ * using it and nothing silently changes underneath an already-working
+ * machine. Among nvm's installed versions it takes the **newest that clears
+ * the floor** rather than nvm's `default` alias, which can hold an
+ * unresolved label (`lts/*`, `20`) that only nvm itself can expand.
+ *
+ * `sort -V` is coreutils; this whole family is Debian/Ubuntu-only by design
+ * (see this module's doc comment).
+ */
+export const NVM_PATH_PRELUDE =
+  `if ! command -v node >/dev/null 2>&1 || [ "$(node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1)" -lt ${NODE_MIN_MAJOR} ]; then ` +
+  `NVM_DIR="\${NVM_DIR:-$HOME/.nvm}"; ` +
+  `for v in $(ls -1 "$NVM_DIR/versions/node" 2>/dev/null | sort -rV); do ` +
+  `if [ -x "$NVM_DIR/versions/node/$v/bin/node" ] && [ "$(echo "$v" | sed 's/^v//' | cut -d. -f1)" -ge ${NODE_MIN_MAJOR} ]; then ` +
+  `PATH="$NVM_DIR/versions/node/$v/bin:$PATH"; export PATH; break; fi; done; fi`;
+
+/** Prepend {@link NVM_PATH_PRELUDE} to a remote command. Joined with `;`, not
+ * `&&`: the prelude finding no nvm is the ordinary case on a host with a
+ * system Node, and must not abort the command it is preparing for. */
+export function withRemoteNodePath(remoteCommand) {
+  return `${NVM_PATH_PRELUDE}; ${remoteCommand}`;
+}
 
 /** One remote host's own bootstrap for a single automated run — safe to
  * redo unattended on every invocation, unlike the one-time
@@ -141,7 +223,13 @@ export const NODE_MIN_MAJOR = 18;
 async function bootstrapHost(userHost, originUrl, headSha) {
   const cmd = [
     `(command -v git >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && [ "$(node -v | sed 's/^v//' | cut -d. -f1)" -ge ${NODE_MIN_MAJOR} ]) || ` +
-      `{ echo "missing git/Node ${NODE_MIN_MAJOR}+ — run 'node scripts/setup-ssh-lane-host.mjs ${userHost}' from your own machine first" >&2; exit 1; }`,
+      // Names the nvm route explicitly, because the setup script's own
+      // install path goes through sudo + NodeSource, and a host that denies
+      // sudo over SSH (some hardened PAM configs refuse when the parent
+      // process is sshd) would otherwise leave the operator bouncing between
+      // two commands that both say "run the other one". `nvm install` needs
+      // no root at all, and the prelude above finds what it puts down.
+      `{ echo "missing git/Node ${NODE_MIN_MAJOR}+ — run 'node scripts/setup-ssh-lane-host.mjs ${userHost}' from your own machine, or install Node ${NODE_MIN_MAJOR}+ on the host directly (nvm works and needs no sudo: 'nvm install ${NODE_MIN_MAJOR}')" >&2; exit 1; }`,
     `mkdir -p ${REMOTE_DIR}`,
     // Clone only if this is genuinely the first time; otherwise fetch —
     // avoids re-cloning the whole repo on every campaign invocation.
@@ -151,8 +239,33 @@ async function bootstrapHost(userHost, originUrl, headSha) {
     // Browser binary only, no sudo — system deps are `setup-ssh-lane-host.mjs`'s
     // job (see this module's own doc comment for why that split exists).
     `cd ${REMOTE_DIR} && npx playwright install chromium`,
+    // Prove vite can actually START here, not merely that the toolchain
+    // installed. "Ready" used to mean "git, Node and npm ci all worked", which
+    // is not the same thing.
+    //
+    // The failure this exists for, 2026-08-07: a lane host with an exhausted
+    // inotify watch limit could not start vite at all — `ENOSPC` on `watch`,
+    // then "vite did not come up on :5199 within 60s" — and failed **every**
+    // invocation after ~63s. `bootstrapHost` had called it ready, so it kept
+    // taking work and burned 7 of one combo's 8 invocations; that combo then
+    // reported 15 of 60 runs, which reads as a balance result rather than as a
+    // dead machine. Starting a real vite is precisely the operation that
+    // failed, so a host in that state now fails here instead.
+    //
+    // **What it cannot catch**: a host that is healthy at bootstrap and
+    // degrades under load later. This probe runs once, on an idle host. That
+    // case is covered instead by the orchestrator's lane-health rule, which
+    // drops a lane that keeps failing while other lanes are producing — the
+    // two are complementary and neither replaces the other.
+    //
+    // A distinct port from the capture's own 5199, so the probe can never
+    // collide with a run in flight on a shared host.
+    `cd ${REMOTE_DIR} && (npx vite --port ${VITE_PROBE_PORT} --strictPort >/tmp/codeenstein3d-vite-probe.log 2>&1 & echo $! >/tmp/codeenstein3d-vite-probe.pid); ` +
+      `probe_ok=0; for i in $(seq 1 30); do sleep 2; if curl -sf -o /dev/null http://localhost:${VITE_PROBE_PORT}/; then probe_ok=1; break; fi; done; ` +
+      `kill "$(cat /tmp/codeenstein3d-vite-probe.pid 2>/dev/null)" 2>/dev/null; ` +
+      `if [ "$probe_ok" != 1 ]; then echo "vite failed to start on this host — last lines of its log:" >&2; tail -5 /tmp/codeenstein3d-vite-probe.log >&2; exit 1; fi`,
   ].join(" && ");
-  await runSsh(userHost, cmd, { timeoutMs: 15 * 60 * 1000 }); // no apt/NodeSource install possible here anymore — a first-time clone+npm ci+browser download is still real but much shorter than before
+  await runSsh(userHost, withRemoteNodePath(cmd), { timeoutMs: 15 * 60 * 1000 }); // no apt/NodeSource install possible here anymore — a first-time clone+npm ci+browser download is still real but much shorter than before
 }
 
 /** Remote-host lane — see this module's own doc comment for the bootstrap
@@ -168,18 +281,49 @@ export class SshRunner {
    * naturally inherits (that would leak this machine's own `PATH`/`HOME`/etc
    * across the wire, none of which apply to the remote shell's own login
    * environment). */
-  runInvocation({ scriptPath, env, logPath, prefix, watchdogMs, sigtermGraceMs, outputPath }) {
+  runInvocation({ scriptPath, env, logPath, prefix, watchdogMs, sigtermGraceMs, outputPath, eventLogPath }) {
     return new Promise((resolve) => {
       const logStream = fs.createWriteStream(logPath, { flags: "a" });
       const startedAt = Date.now();
 
       const remoteScriptPath = toRemotePath(scriptPath);
       const remoteOutputPath = toRemotePath(outputPath);
+      // Any env value naming a *local* path has to be rewritten, or the
+      // remote writes to a path that means nothing on its own filesystem.
+      // `outputPath` was always handled; `eventLogPath` joins it, which is
+      // what lets a capture collect per-event data from a remote lane at all.
+      const remoteEventLogPath = eventLogPath ? toRemotePath(eventLogPath) : null;
+      const remapped = new Map([[outputPath, remoteOutputPath]]);
+      if (eventLogPath) remapped.set(eventLogPath, remoteEventLogPath);
       const envAssignments = Object.entries(env)
         .filter(([key]) => key.startsWith("CODEENSTEIN_"))
-        .map(([key, value]) => `${key}=${shellQuote(value === outputPath ? remoteOutputPath : value)}`)
+        .map(([key, value]) => `${key}=${shellQuote(remapped.get(value) ?? value)}`)
         .join(" ");
-      const remoteCommand = `mkdir -p ${path.posix.dirname(remoteOutputPath)} && cd ${REMOTE_DIR} && ${envAssignments} node ${remoteScriptPath}`;
+      // The prelude has to be here too, not just in `bootstrapHost`: each
+      // invocation is its own SSH session and inherits nothing from the
+      // bootstrap's shell, so a host whose Node is nvm-only would pass the
+      // bootstrap check and then fail on this bare `node`.
+      const remoteCommand = withRemoteNodePath(
+        [
+          `mkdir -p ${path.posix.dirname(remoteOutputPath)}`,
+          // The event-log directory has to exist before the run, not after:
+          // `writeEventBatches` appends per attempt, and a missing parent
+          // would lose the whole cell's events one attempt at a time while
+          // the run itself still exited zero.
+          //
+          // Emptied as well as created, because a retry can land on the same
+          // directory: the orchestrator's sequence counter skips whatever is
+          // already on disk, and an invocation killed by the watchdog scp's
+          // nothing back, so a retry can be handed a path a dead run already
+          // wrote to remotely. `appendEvents` never truncates, so without this
+          // the retry's runs would be appended to the dead run's partial ones
+          // and the cell would overshoot its denominator with truncated data.
+          // Measured: a killed invocation left 2 partial runs behind and the
+          // retry's 3 made it "5/3".
+          ...(remoteEventLogPath ? [`mkdir -p ${remoteEventLogPath}`, `rm -f ${remoteEventLogPath}/*.ndjson`] : []),
+          `cd ${REMOTE_DIR} && ${envAssignments} node ${remoteScriptPath}`,
+        ].join(" && "),
+      );
 
       let settled = false;
       let killedForTimeout = false;
@@ -210,14 +354,29 @@ export class SshRunner {
         settled = true;
         clearTimeout(watchdog);
         logStream.end();
+        let fetchFailed = false;
         if (code === 0) {
           try {
             await execFileAsync("scp", ["-o", "BatchMode=yes", `${this.userHost}:${remoteOutputPath}`, outputPath]);
+            if (remoteEventLogPath) {
+              // `-r` because the remote path is the directory
+              // `writeEventBatches` names its file inside.
+              fs.mkdirSync(eventLogPath, { recursive: true });
+              await execFileAsync("scp", ["-o", "BatchMode=yes", "-r", `${this.userHost}:${remoteEventLogPath}/.`, eventLogPath]);
+            }
           } catch (err) {
             console.log(`${prefix}scp of remote result failed: ${err.message}`);
+            // Reported as a failed invocation rather than a zero exit with
+            // missing data. For a capture the NDJSON *is* the result, so a
+            // run whose events never came home is not a run that succeeded —
+            // and the orchestrator's own existsSync check only guards the
+            // aggregate, which may well have arrived before the event log
+            // did. Without this the lane would look productive while
+            // banking nothing the analysis can read.
+            fetchFailed = true;
           }
         }
-        resolve({ code, signal, killedForTimeout, elapsedMs: Date.now() - startedAt });
+        resolve({ code: fetchFailed ? 1 : code, signal, killedForTimeout, elapsedMs: Date.now() - startedAt });
       });
 
       child.on("error", (err) => {
@@ -236,9 +395,50 @@ export class SshRunner {
  * that's unreachable or fails any bootstrap step is logged as a warning and
  * simply left out, never thrown as a fatal error (an empty/missing
  * `ssh-hosts.env` is the common case: local-only, zero SSH lanes). */
+/**
+ * Whether `HEAD` exists on any remote — the precondition every SSH lane
+ * silently depends on.
+ *
+ * `bootstrapHost` clones from `origin` over https and then
+ * `git checkout --force <local HEAD sha>`. An unpushed commit is simply not
+ * there, so that checkout dies with "reference is not a tree object" and the
+ * host is excluded. With every host excluded the run continues on the local
+ * lane alone — which is the worst shape this failure could take: the thing
+ * you turned lanes on for silently does not happen, and the only evidence is
+ * a `Lanes: local` line among a wall of bootstrap output.
+ *
+ * Checked against remote-tracking refs rather than the network, so it costs
+ * nothing and cannot hang. That can be stale in the direction of *thinking*
+ * something is unpushed when a fetch would say otherwise — a false alarm that
+ * tells you to push something already pushed, which is cheap and obvious.
+ * The opposite error is the expensive one, and stale refs cannot produce it.
+ */
+export async function headIsPushed() {
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-list", "--count", "HEAD", "--not", "--remotes"], { cwd: REPO_ROOT });
+    return Number(stdout.trim()) === 0;
+  } catch {
+    return true; // no remotes configured at all — not this check's problem
+  }
+}
+
 export async function buildSshRunners() {
   const hosts = readHostList();
   if (hosts.length === 0) return [];
+
+  if (!(await headIsPushed())) {
+    // Bail before bootstrapping rather than after: each doomed host would
+    // otherwise spend minutes on a clone and `npm ci` before failing on the
+    // checkout, and report it as a hundred-line dump of the whole ssh command
+    // with the actual reason buried in it.
+    const { stdout: unpushed } = await execFileAsync("git", ["rev-list", "--count", "HEAD", "--not", "--remotes"], { cwd: REPO_ROOT });
+    console.log(
+      `[ssh] SKIPPING all ${hosts.length} lane host(s): HEAD is not on any remote (${unpushed.trim()} unpushed commit(s)).\n` +
+        `[ssh] Lane hosts clone from origin and check out this exact commit, so they cannot run it.\n` +
+        `[ssh] Push the branch to use them — otherwise this runs on the local lane alone.`,
+    );
+    return [];
+  }
 
   const { stdout: originUrl } = await execFileAsync("git", ["remote", "get-url", "origin"], { cwd: REPO_ROOT });
   const { stdout: headSha } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT });
