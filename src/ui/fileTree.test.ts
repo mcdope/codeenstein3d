@@ -37,6 +37,24 @@ describe("renderFileTree", () => {
     expect(container.querySelectorAll(".tree-row")).toHaveLength(0);
   });
 
+  it("marks a truncated listing above the tree, and leaves a complete one unmarked", () => {
+    // The marker has to be persistent rather than a load-time message: the
+    // whole defect being fixed here is that GitHub's truncation only ever
+    // reached `console.warn`, where nothing in the UI mirrors it.
+    const container = document.createElement("div");
+    const root = dirNode("root", [fileNode("a.c")]);
+    renderFileTree(container, root, { onSelectFile: vi.fn() });
+    expect(container.querySelector(".tree-notice")).toBeNull();
+
+    renderFileTree(container, { ...root, truncated: true }, { onSelectFile: vi.fn() });
+    const notice = container.querySelector(".tree-notice")!;
+    expect(notice).not.toBeNull();
+    expect(notice.textContent).toContain("Partial listing");
+    expect(notice.textContent).toContain("Local tab"); // the actual fix, per troubleshooting.md
+    // Above the tree, not buried under it.
+    expect(notice.nextElementSibling).toBe(container.querySelector("ul.tree-list"));
+  });
+
   it("renders a file row with a file icon and its own title tooltip", () => {
     const container = document.createElement("div");
     const root = dirNode("root", [fileNode("main.c", "root/main.c")]);

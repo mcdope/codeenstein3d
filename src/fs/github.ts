@@ -61,7 +61,13 @@ class GithubFileHandle implements RemoteFileHandle {
     if (this.cached === null) {
       const res = await fetch(this.rawUrl);
       if (!res.ok) {
-        throw new Error(`Failed to fetch "${this.rawUrl}" (${res.status} ${res.statusText})`);
+        // This one fires *mid-session*, long after the tree loaded fine —
+        // the next level's source is fetched only when it's about to be
+        // played — so it needs to name its own cause just as much as the
+        // initial load does. `false`: raw.githubusercontent.com's rate-limit
+        // headers are not CORS-exposed, so a 403 has to be read as a rate
+        // limit rather than confirmed as one (see `isRateLimited`).
+        throw new Error(describeHttpFailure(res, `Failed to fetch "${this.rawUrl}"`, false));
       }
       this.cached = await res.text();
     }
@@ -101,18 +107,79 @@ export async function fetchGithubTree(
     { signal },
   );
   if (!treeRes.ok) {
-    throw new Error(`Failed to fetch repository tree (${treeRes.status} ${treeRes.statusText})`);
+    throw new Error(describeHttpFailure(treeRes, "Failed to fetch repository tree"));
   }
   const treeJson = await readJsonWithProgress<{ tree: GithubTreeEntry[]; truncated?: boolean }>(treeRes, onTreeBytes);
 
+  const tree = buildTree(ref, branch, treeJson.tree);
+
   if (treeJson.truncated) {
-    console.warn(
+    tree.truncated = true;
+    // `console.log`, not `console.warn`, on purpose: the in-game console
+    // sidebar mirrors `console.log` only (`consoleSidebar.ts`), and this is
+    // a line the *player* needs — a warning that only reaches devtools is
+    // how this stayed invisible. The persistent marker `renderFileTree`
+    // draws from `tree.truncated` is the other half.
+    console.log(
       `[github] The tree for "${ref.owner}/${ref.repo}" was truncated by the GitHub API — ` +
-        "this repo is large enough that some files may be missing.",
+        "this repo is large enough that some files are missing. The campaign still plays, " +
+        "built from whatever GitHub returned; clone the repo and use the Local tab to get all of it.",
     );
   }
 
-  return buildTree(ref, branch, treeJson.tree);
+  return tree;
+}
+
+/**
+ * Turns a failed response into a message that names the actual cause when it
+ * can. Requests here are unauthenticated, so a burst of browsing runs into
+ * GitHub's public rate limit and every subsequent call fails — as a `403`
+ * (the REST API's historical shape) or a `429`, in both cases with
+ * `x-ratelimit-remaining: 0`. "Failed to fetch repository tree (403
+ * Forbidden)" reads like a permissions problem the player can't fix;
+ * "you've hit GitHub's rate limit, wait a few minutes" is something they
+ * can act on. A 403 *without* the exhausted-budget header is left alone —
+ * it really is an access problem then.
+ */
+function describeHttpFailure(res: Response, whatFailed: string, budgetHeadersReadable = true): string {
+  if (isRateLimited(res, budgetHeadersReadable)) {
+    // Deliberately replaces `whatFailed` rather than prefixing it: which
+    // request failed is not the useful half here, and "Repository … not
+    // found or inaccessible: you've hit the rate limit" reads as two
+    // contradictory diagnoses of the same failure.
+    return `GitHub's public rate limit reached${formatRateLimitReset(res)}. ` +
+      "Requests from this app are unauthenticated, so a lot of browsing runs the limit down. " +
+      "Waiting is the fix — or load a local folder from the Local tab in the meantime.";
+  }
+  return `${whatFailed} (${res.status} ${res.statusText})`;
+}
+
+/**
+ * `budgetHeadersReadable` is about CORS, not about GitHub. `api.github.com`
+ * sends `Access-Control-Expose-Headers: … X-RateLimit-Remaining,
+ * X-RateLimit-Reset …`, so the browser lets this code read them and the
+ * check can be exact. `raw.githubusercontent.com` sends no
+ * `Access-Control-Expose-Headers` at all (verified against both hosts), so
+ * every rate-limit header it sends is invisible from a page however present
+ * it is on the wire — a header-gated check there is not conservative, it is
+ * dead. A `403` from that host is a rate limit in practice: a file in a
+ * public repo answers `200` or `404`, and there is no permissions dimension
+ * to get a `403` from.
+ */
+function isRateLimited(res: Response, budgetHeadersReadable: boolean): boolean {
+  if (res.status !== 403 && res.status !== 429) return false;
+  if (!budgetHeadersReadable) return true;
+  return res.headers?.get("x-ratelimit-remaining") === "0";
+}
+
+/** " — it resets in about 7 minutes", when the response says when. GitHub
+ * sends `x-ratelimit-reset` as a Unix timestamp in seconds. */
+function formatRateLimitReset(res: Response): string {
+  const reset = Number(res.headers?.get("x-ratelimit-reset"));
+  if (!Number.isFinite(reset) || reset <= 0) return "";
+  const minutes = Math.ceil((reset * 1000 - Date.now()) / 60_000);
+  if (minutes <= 0) return "";
+  return ` — it resets in about ${minutes} minute${minutes === 1 ? "" : "s"}`;
 }
 
 /**
@@ -149,7 +216,7 @@ async function resolveDefaultBranch(ref: GithubRepoRef, signal?: AbortSignal): P
   const res = await fetch(`${GITHUB_API}/repos/${ref.owner}/${ref.repo}`, { signal });
   if (!res.ok) {
     throw new Error(
-      `Repository "${ref.owner}/${ref.repo}" not found or inaccessible (${res.status} ${res.statusText}).`,
+      describeHttpFailure(res, `Repository "${ref.owner}/${ref.repo}" not found or inaccessible`),
     );
   }
   const json = (await res.json()) as { default_branch: string };
