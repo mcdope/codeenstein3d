@@ -45,10 +45,17 @@
 import type { GameMap } from "../map/types";
 import { ChunkReassembler, isValidMapDimensions } from "./chunkedTransfer";
 import { checkBuildVersionMatch } from "./buildVersionCheck";
-import { onJsonMessage, sendJsonWithBackpressure } from "./dataChannelMessaging";
+import { onJsonMessage, sendJsonSequence } from "./dataChannelMessaging";
 import { FIXED_DT, INPUT_DELAY_TICKS, MAX_TRANSFERRED_MAP_DIMENSION, TICK_RATE_HZ } from "./netcodeConstants";
 import { checkNetcodeConstantsMatch } from "./netcodeConstantsCheck";
-import { SessionSetupError, type BuildVersionMessage, type SessionSetupMessage, type SessionSetupResult } from "./sessionSetupTypes";
+import {
+  SessionSetupError,
+  type BuildVersionMessage,
+  type PlayerNameMessage,
+  type SessionSetupMessage,
+  type SessionSetupResult,
+} from "./sessionSetupTypes";
+import { sanitizePlayerName } from "../engine/playerNames";
 import type { MultiplayerChannels } from "./types";
 
 type PendingResult = Omit<SessionSetupResult, "map">;
@@ -68,7 +75,14 @@ type PendingResult = Omit<SessionSetupResult, "map">;
  * needs this value). */
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 
-export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<SessionSetupResult> {
+/**
+ * `chosenName` is this guest's own display name, exactly as typed (unset ⇒
+ * `""` on the wire, which the host resolves with the shared fallback). It
+ * rides the *reply* to the host's build-version, never a send of its own —
+ * an eager send is the race this module's doc comment is entirely about, and
+ * a second message here would reintroduce it for nothing.
+ */
+export function runGuestSessionSetup(channels: MultiplayerChannels, chosenName?: string): Promise<SessionSetupResult> {
   return new Promise((resolve, reject) => {
     const channel = channels.reconciliation;
     let pending: PendingResult | null = null;
@@ -120,7 +134,13 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
           // `RTCDataChannel.send()` failure here must settle this module's
           // own `Promise` instead of escaping as an uncaught exception.
           const ownVersion: BuildVersionMessage = { type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ };
-          sendJsonWithBackpressure(channel, ownVersion).catch((err) => {
+          // Sent together with the version, as one reply — the host's phase A
+          // waits for both before it can merge the roster's names. Sanitized
+          // here as well as on arrival: it costs nothing, and it means the
+          // wire carries what will actually be displayed rather than
+          // something that only becomes equal to it after processing.
+          const ownName: PlayerNameMessage = { type: "player-name", name: sanitizePlayerName(chosenName) };
+          sendJsonSequence(channel, [ownVersion, ownName]).catch((err) => {
             clearHandshakeTimeout();
             reject(err);
           });
@@ -157,6 +177,10 @@ export function runGuestSessionSetup(channels: MultiplayerChannels): Promise<Ses
             gameplaySeed: message.gameplaySeed,
             difficulty: message.difficulty,
             playerCount: message.playerCount,
+            // A host on this build always sends this; `?? {}` covers the
+            // shape, not a real peer — an older host would fail the
+            // build-version check long before reaching here.
+            displayNames: message.displayNames ?? {},
           };
           reassembler = new ChunkReassembler();
           return;

@@ -48,6 +48,7 @@ export function buildIndexDom(): void {
             <button id="launch-demo-campaign" type="button">Launch Demo Campaign</button>
           </div>
           <div id="tab-panel-multiplayer" class="tab-panel" role="tabpanel" hidden>
+            <input id="multiplayer-player-name-input" type="text" maxlength="24" />
             <div id="multiplayer-subtabs" role="tablist">
               <button id="multiplayer-subtab-host" class="tab-btn" type="button" role="tab" aria-selected="true" aria-controls="multiplayer-subtab-panel-host">Host</button>
               <button id="multiplayer-subtab-join" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="multiplayer-subtab-panel-join">Join</button>

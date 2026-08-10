@@ -223,12 +223,17 @@ export function collectEnemyBillboards(
 export interface OtherPlayerBillboard {
   player: Player;
   color: string;
+  /** Already resolved and sanitized upstream (`PlayerState.displayName`) —
+   * this is drawn as-is, never re-derived from a roster id here. */
+  name: string;
 }
 
 /** Collect every other connected, living player as a billboard draw job,
  * occluded by the wall z-buffer — the same vertical-stripe fill
  * `collectEnemyBillboards` uses, tinted per player instead of by hit-flash/
- * Elite state, with no HP bar/name overlay (not asked for by the spec). */
+ * Elite state, with that player's name above it and no HP bar (a teammate's
+ * health is already on the HUD's roster, and repeating it in the world would
+ * read as an enemy's). */
 export function collectPlayerBillboards(
   ctx: CanvasRenderingContext2D,
   viewer: Player,
@@ -239,9 +244,9 @@ export function collectPlayerBillboards(
   const height = ctx.canvas.height;
 
   return others
-    .map(({ player, color }) => ({ color, proj: projectPoint(viewer, player.posX, player.posY, width, height) }))
+    .map(({ player, color, name }) => ({ color, name, proj: projectPoint(viewer, player.posX, player.posY, width, height) }))
     .filter(({ proj }) => proj.depth > SPRITE_NEAR)
-    .map(({ color, proj }) => ({
+    .map(({ color, name, proj }) => ({
       depth: proj.depth,
       draw: () => {
         const startX = Math.max(0, Math.floor(proj.left));
@@ -255,8 +260,42 @@ export function collectPlayerBillboards(
           if (proj.depth >= zBuffer[x]) continue;
           ctx.fillRect(x, startY, 1, spriteH);
         }
+
+        // Same rule the enemy overlay uses: only label a sprite whose center
+        // column isn't wall-occluded, so a name never floats over the wall a
+        // teammate is standing behind.
+        const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
+        if (proj.depth < zBuffer[centerCol]) drawPlayerNameLabel(ctx, name, color, proj);
       },
     }));
+}
+
+/** Deliberately built to `drawEnemyOverlay`'s conventions — same 10px
+ * monospace, same centered alignment, same translucent black plate for
+ * legibility against any wall, same restore of `textAlign` on the way out —
+ * so a teammate's label and an enemy's read as one game rather than two
+ * people's ideas of a label. It sits where the enemy's *name* line sits
+ * (`top - 13`), not where the HP bar does; teammates have no bar, so nothing
+ * occupies the row between. Tinted with the player's own marker color, which
+ * is what ties the label to the dot on the automap and minimap. */
+function drawPlayerNameLabel(ctx: CanvasRenderingContext2D, name: string, color: string, proj: EnemyProjection): void {
+  ctx.font = "10px monospace";
+  // Sized to the *text*, not to the sprite the way `drawEnemyOverlay`'s HP
+  // bar is — that bar is a gauge whose width means something, whereas this
+  // plate exists only to keep the text readable against a wall. Measured
+  // rather than estimated: a distant teammate's sprite is a few pixels wide,
+  // so a sprite-width plate leaves most of the name sitting on bare wall
+  // (seen directly, which is why this doesn't just copy the enemy version).
+  const plateWidth = ctx.measureText(name).width + 8;
+  const plateX = proj.screenX - plateWidth / 2;
+  const plateY = proj.top - 13;
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(0,0,0,0.6)";
+  ctx.fillRect(plateX, plateY, plateWidth, 11);
+  ctx.fillStyle = color;
+  ctx.fillText(name, proj.screenX, plateY + 9);
+  ctx.textAlign = "start";
 }
 
 function drawEnemyOverlay(

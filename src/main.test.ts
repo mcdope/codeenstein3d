@@ -583,18 +583,29 @@ describe("main.ts — multiplayerResultRows", () => {
     total: 0,
   };
 
-  it("labels a live roster player with capitalized id, points, and kills", async () => {
+  it("labels a live roster player with their display name, points, and kills", async () => {
     const { multiplayerResultRows } = await importMain();
     const comparison = new Map([
-      ["host", { status: "alive" as const, health: 100, killScore: 400, kills: 5, distanceTraveled: 12, breakdown: { ...zeroBreakdown, total: 1234 } }],
+      ["host", { displayName: "Host", status: "alive" as const, health: 100, killScore: 400, kills: 5, distanceTraveled: 12, breakdown: { ...zeroBreakdown, total: 1234 } }],
     ]);
     expect(multiplayerResultRows(comparison)).toEqual([["Host", "1234 pts · 5 kills"]]);
+  });
+
+  it("uses a chosen name over the roster id it falls back to", async () => {
+    // The label is whatever the engine resolved, not something recomputed
+    // here — the capitalize-the-id logic this function used to own now lives
+    // in `resolvePlayerDisplayName`, as its fallback.
+    const { multiplayerResultRows } = await importMain();
+    const comparison = new Map([
+      ["guest-1", { displayName: "Tobi", status: "alive" as const, health: 80, killScore: 10, kills: 1, distanceTraveled: 3, breakdown: { ...zeroBreakdown, total: 42 } }],
+    ]);
+    expect(multiplayerResultRows(comparison)).toEqual([["Tobi", "42 pts · 1 kills"]]);
   });
 
   it("appends a disconnected suffix for a roster player whose status is 'disconnected'", async () => {
     const { multiplayerResultRows } = await importMain();
     const comparison = new Map([
-      ["guest", { status: "disconnected" as const, health: 0, killScore: 200, kills: 3, distanceTraveled: 4, breakdown: { ...zeroBreakdown, total: 987 } }],
+      ["guest", { displayName: "Guest", status: "disconnected" as const, health: 0, killScore: 200, kills: 3, distanceTraveled: 4, breakdown: { ...zeroBreakdown, total: 987 } }],
     ]);
     expect(multiplayerResultRows(comparison)).toEqual([["Guest", "987 pts · 3 kills (disconnected)"]]);
   });
@@ -3365,6 +3376,7 @@ describe("main.ts — multiplayer connect flow", () => {
     function multiplayerHooks(): {
       getConnectionState: () => unknown;
       getSimTick: () => number | null;
+      getPlayerDisplayName: (id: string) => string | null;
       getPlayerPosition: (id: string) => { x: number; y: number } | null;
       getPlayerFacing: (id: string) => { dirX: number; dirY: number } | null;
       getRngState: () => number | null;
@@ -3395,6 +3407,7 @@ describe("main.ts — multiplayer connect flow", () => {
           __codeensteinMultiplayerTestHooks: {
             getConnectionState: () => unknown;
             getSimTick: () => number | null;
+            getPlayerDisplayName: (id: string) => string | null;
             getPlayerPosition: (id: string) => { x: number; y: number } | null;
             getPlayerFacing: (id: string) => { dirX: number; dirY: number } | null;
             getRngState: () => number | null;
@@ -3546,6 +3559,7 @@ describe("main.ts — multiplayer connect flow", () => {
         expect(multiplayerHooks().hasActiveRenderOffset("host")).toBe(false);
         expect(multiplayerHooks().getLastReconciliationRngState()).toBeNull();
         expect(multiplayerHooks().getPlayerStatus("host")).toBeNull();
+        expect(multiplayerHooks().getPlayerDisplayName("host")).toBeNull();
         expect(multiplayerHooks().getLootDrops()).toEqual([]);
         expect(multiplayerHooks().getMapExit()).toBeNull();
         expect(multiplayerHooks().getMapGrid()).toBeNull();
@@ -3573,6 +3587,11 @@ describe("main.ts — multiplayer connect flow", () => {
         const reconciliation = pc.createdDataChannels.find((c) => c.label === "reconciliation")!;
         reconciliation.dispatchEvent(
           new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ }) }),
+        );
+        // The other half of a guest's phase-A reply — the host cannot build
+        // any `session-init` until every guest has named itself.
+        reconciliation.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify({ type: "player-name", name: "" }) }),
         );
         await waitUntil(() => FakeTickWorker.instances.length > 0);
 
@@ -3832,6 +3851,11 @@ describe("main.ts — multiplayer connect flow", () => {
         reconciliation.dispatchEvent(
           new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ }) }),
         );
+        // The other half of a guest's phase-A reply — the host cannot build
+        // any `session-init` until every guest has named itself.
+        reconciliation.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify({ type: "player-name", name: "" }) }),
+        );
         await waitUntil(() => FakeTickWorker.instances.length > 0);
         const worker = FakeTickWorker.instances.at(-1)!;
         worker.onmessage?.({ data: { type: "tick", tick: 0 } } as MessageEvent);
@@ -3943,6 +3967,11 @@ describe("main.ts — multiplayer connect flow", () => {
         reconciliation.dispatchEvent(
           new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ }) }),
         );
+        // The other half of a guest's phase-A reply — the host cannot build
+        // any `session-init` until every guest has named itself.
+        reconciliation.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify({ type: "player-name", name: "" }) }),
+        );
         await waitUntil(() => FakeTickWorker.instances.length > 0);
         // Both Join and Host Create must be disabled for the lifetime of a
         // live session — left enabled, either could re-trigger mid-session
@@ -4005,6 +4034,7 @@ describe("main.ts — multiplayer connect flow", () => {
       reconciliation.dispatchEvent(
         new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ }) }),
       );
+      reconciliation.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "player-name", name: "" }) }));
       await waitUntil(() => FakeTickWorker.instances.length > 0);
       const worker = FakeTickWorker.instances.at(-1)!;
       expect(document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.disabled).toBe(true);
@@ -4440,6 +4470,11 @@ describe("main.ts — multiplayer connect flow", () => {
         reconciliation.dispatchEvent(
           new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ }) }),
         );
+        // The other half of a guest's phase-A reply — the host cannot build
+        // any `session-init` until every guest has named itself.
+        reconciliation.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify({ type: "player-name", name: "" }) }),
+        );
         await waitUntil(() => FakeTickWorker.instances.length > 0);
 
         // beginMultiplayerLevel's own stopActiveReplay?.() had a real,
@@ -4486,6 +4521,7 @@ describe("main.ts — multiplayer connect flow", () => {
       reconciliation.dispatchEvent(
         new MessageEvent("message", { data: JSON.stringify({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ }) }),
       );
+      reconciliation.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "player-name", name: "" }) }));
 
       await waitUntil(() => !startButton.disabled);
       expect(document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent).toBe(

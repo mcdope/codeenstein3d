@@ -48,6 +48,10 @@ import {
 
 const DISCONNECT_GRACE_MS = 10_000; // netcodeConstants.ts's own value — kept in sync manually, same as every sibling script.
 const DISCONNECT_DETECT_TIMEOUT_MS = 90_000; // same generous real-ICE-detection budget as verify-multiplayer-disconnect.mjs.
+/** Index-aligned with `["host", "guest-1", "guest-2"]`. The empty one is the
+ * point: a player who types nothing must come out as `"Guest-2"`, resolved
+ * once by `resolvePlayerDisplayName` rather than by each peer separately. */
+const PLAYER_NAMES = ["Tobi", "Kim", ""];
 const TARGET_TICK = 60; // 2s of real ticking at TICK_RATE_HZ(30) — comfortably past session bootstrap.
 // eliteScalingFor(3): extra = 2, hp = 1 + 2*0.5 = 2 (src/engine/multiplayerScaling.ts).
 // ELITE_HP_MULTIPLIER = 4 is baked into an Elite's own maxHp at map-generation
@@ -195,11 +199,35 @@ async function runAttempt(browser, engineName, attempt) {
       engineName,
       playerCount: 3,
       targetTick: TARGET_TICK,
+      // guest-2 deliberately types nothing, so this session covers both a
+      // chosen name and the capitalized-roster-id fallback at once.
+      playerNames: PLAYER_NAMES,
       log: (msg) => console.log(msg),
     });
     check("all three peers connected, roster finalized, ticking past target", true);
     const { hostPage, guestPages } = session;
     const [guest1Page, guest2Page] = guestPages;
+
+    // N=3 is where the handshake's phase split earns itself: the host cannot
+    // send *any* guest its `session-init` until *every* guest has replied
+    // with its own name, because that message carries the whole roster's.
+    // A merge that raced would show up here as a peer missing another's name.
+    const expectedNames = { host: PLAYER_NAMES[0], "guest-1": PLAYER_NAMES[1], "guest-2": "Guest-2" };
+    for (const [label, page] of [["host", hostPage], ["guest-1", guest1Page], ["guest-2", guest2Page]]) {
+      const seen = await page.evaluate(() => {
+        const hooks = window.__codeensteinMultiplayerTestHooks;
+        return {
+          host: hooks.getPlayerDisplayName("host"),
+          "guest-1": hooks.getPlayerDisplayName("guest-1"),
+          "guest-2": hooks.getPlayerDisplayName("guest-2"),
+        };
+      });
+      check(
+        `${label}: sees every player's name, including the one who chose none`,
+        JSON.stringify(seen) === JSON.stringify(expectedNames),
+        `expected ${JSON.stringify(expectedNames)}, got ${JSON.stringify(seen)}`,
+      );
+    }
 
     // Real combat starts ticking immediately (the bundled demo campaign is a
     // real, fully-populated 18-enemy level, no cheats — permanently disabled

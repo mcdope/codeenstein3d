@@ -115,7 +115,9 @@ Durable rationale ("why is the code like this?") belongs in [`doc/dev/decisions.
 - [ ] **MP campaign re-run parked 2026-07-30** (user's call — the machines are in their room and an hours-long run puts out too much heat; measured cost is ~13 min/attempt at 2p, i.e. ~28h single-lane for a Hard-only sweep, and only one lane is currently usable). Resume needs lanes restored: the laptop's non-interactive `PATH` needs Node 20 (its `~/.bashrc` nvm block sits below the interactivity guard), and `# mcdope@nas.lan` is commented out in `ssh-hosts.env`. The 2026-07-24 Hard conclusions stay unverified against the fixed bot until then
 
 - [ ] fog of war for minimap, same as automap (never applies to compass, always points to exit)
-- [ ] player name config, for highscores (to be abused in default highscores, profile name will be "player name"). will also become multiplayer name later.
+- [ ] player name config, for highscores (to be abused in default highscores, profile name will be "player name").
+  - **The multiplayer half shipped 2026-08-10** — a "Your name" field in the Multiplayer tab, rendered above that player's character and on the comparison table (`resolvePlayerDisplayName`, `src/engine/playerNames.ts`, which already owns the fallback and the sanitizing). What is left here is the *persistent* half: it is not stored, so it must be retyped every session, and highscores still know nothing about it.
+  - Deliberately not done there: storing it needs the localStorage **version tag / migration** story from the UI-intro item below, and half of that (a key written with no version) is worse than none. Do the two together.
 - [ ] UI intro, with popouts from elements, showing how to do stuff. skippable. only to be run if no localStorage is present. while we are onto it also add a version tag to the localStorage which we can use to detect if a migration is needed.
 - [ ] decouple bot decisions from engine, for more performance. should also help with aim oszilattion etc. maybe even thread the bot(s)?
 - [ ] objects on walls (properly sized, not simply "slap a texture on the whole wall")

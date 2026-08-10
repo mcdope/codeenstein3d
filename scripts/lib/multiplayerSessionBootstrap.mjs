@@ -244,6 +244,11 @@ export async function bootstrapMultiplayerSession(browser, options) {
     // host's `difficulty` wins, propagated via `session-init`), but setting
     // it everywhere keeps every context's local UI state consistent too.
     difficulty,
+    // Per-player chosen display name, index-aligned with `playerIds`
+    // (`["host", "guest-1", ...]`). Undefined/empty for a player means it
+    // types nothing, which is the fallback path — so the default (every
+    // existing caller) drives exactly the pre-names behaviour.
+    playerNames = [],
     log = () => {},
     logBrowserConsole = false,
   } = options;
@@ -297,6 +302,15 @@ export async function bootstrapMultiplayerSession(browser, options) {
   // reliably connection-refuse them (see verify-multiplayer-connect.mjs's
   // own comment for the original finding).
   for (const [i, page] of pages.entries()) await makeEligible(page, engineName, devServerUrl, botRotSpeedMuls[i]);
+
+  // Typed before Create/Join, because that is when each side reads it — the
+  // host at "Start Session", a guest at connect time.
+  for (const [i, page] of pages.entries()) {
+    if (!playerNames[i]) continue;
+    await page.click("#tab-multiplayer");
+    await page.fill("#multiplayer-player-name-input", playerNames[i]);
+    log(`${playerIds[i]}: chose the name "${playerNames[i]}"`);
+  }
 
   log(`Host: selecting maxPlayers=${playerCount} and creating a session...`);
   await hostPage.click("#tab-multiplayer");

@@ -28,6 +28,10 @@ import { FIREFOX_LAUNCH_OPTIONS, makeEligible, waitForConnected } from "./lib/mu
 const DEV_SERVER_URL = process.env.CODEENSTEIN_DEV_URL ?? "http://localhost:5173";
 const TICKING_TIMEOUT_MS = 30_000;
 const TARGET_TICK = 60; // 2s of real ticking at TICK_RATE_HZ(30) — comfortably past session bootstrap.
+// Deliberately not ASCII-plain: a name crosses the wire as JSON and is drawn
+// with `fillText`, and both should survive a character outside Latin-1.
+const HOST_NAME = "Tobi ⚡";
+const GUEST_NAME = "Kim";
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -143,15 +147,23 @@ async function main() {
     check("host: Multiplayer tab enabled", true);
     check("guest: Multiplayer tab enabled", true);
 
-    console.log("Host: creating a session...");
+    // Chosen display names, typed before Create/Join because that is when
+    // each side reads the field. Asserted cross-peer further down: names are
+    // exchanged by a real handshake between two real browsers, so nothing in
+    // the unit suite can see them actually arrive.
+    console.log("Both peers: choosing display names...");
     await hostPage.click("#tab-multiplayer");
+    await hostPage.fill("#multiplayer-player-name-input", HOST_NAME);
+    await guestPage.click("#tab-multiplayer");
+    await guestPage.fill("#multiplayer-player-name-input", GUEST_NAME);
+
+    console.log("Host: creating a session...");
     await hostPage.click("#multiplayer-host-create");
     await hostPage.waitForSelector("#multiplayer-host-code-wrap:not([hidden])", { timeout: 15_000 });
     const code = (await hostPage.textContent("#multiplayer-host-code")).trim();
     console.log(`Host code: ${code}`);
 
     console.log("Guest: joining with the host's code...");
-    await guestPage.click("#tab-multiplayer");
     await guestPage.click("#multiplayer-subtab-join");
     await guestPage.fill("#multiplayer-join-code-input", code);
     await guestPage.click("#multiplayer-join-connect");
@@ -169,6 +181,32 @@ async function main() {
       captureEarliestSnapshot(hostPage, "host"),
       captureEarliestSnapshot(guestPage, "guest"),
     ]);
+    // Every peer's engine must know every peer's name — the guest learns
+    // them from `session-init`, the host from each guest's phase-A reply, so
+    // asserting both directions is what proves the two-phase handshake
+    // actually carries them rather than each side just knowing its own.
+    const readNames = (page) =>
+      page.evaluate(() => {
+        const hooks = window.__codeensteinMultiplayerTestHooks;
+        return { host: hooks.getPlayerDisplayName("host"), guest: hooks.getPlayerDisplayName("guest-1") };
+      });
+    const [hostViewOfNames, guestViewOfNames] = await Promise.all([readNames(hostPage), readNames(guestPage)]);
+    check(
+      "host: sees the guest's own chosen name",
+      hostViewOfNames.guest === GUEST_NAME,
+      `expected ${JSON.stringify(GUEST_NAME)}, got ${JSON.stringify(hostViewOfNames.guest)}`,
+    );
+    check(
+      "guest: sees the host's own chosen name",
+      guestViewOfNames.host === HOST_NAME,
+      `expected ${JSON.stringify(HOST_NAME)}, got ${JSON.stringify(guestViewOfNames.host)}`,
+    );
+    check(
+      "both peers agree on every name (the same map reached both sides)",
+      hostViewOfNames.host === guestViewOfNames.host && hostViewOfNames.guest === guestViewOfNames.guest,
+      `host-side=${JSON.stringify(hostViewOfNames)} guest-side=${JSON.stringify(guestViewOfNames)}`,
+    );
+
     check("host: reached its first applied tick", true, `tick ${hostEarly.tick}`);
     check("guest: reached its first applied tick", true, `tick ${guestEarly.tick}`);
     check(

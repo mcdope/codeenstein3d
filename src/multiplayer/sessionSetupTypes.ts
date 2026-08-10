@@ -40,6 +40,25 @@ export interface BuildVersionMessage extends BuildVersion {
   type: "build-version";
 }
 
+/**
+ * A guest's own chosen display name, sent alongside its build-version reply
+ * in phase A of the handshake — never eagerly, for exactly the reason
+ * `sessionSetupGuest.ts`'s doc comment gives (a message sent before the host
+ * attaches its listener is lost forever, and `RTCDataChannel` does not replay
+ * it). `""` means "I didn't pick one", which the host resolves with the same
+ * fallback everyone else uses rather than each peer inventing its own — see
+ * `resolvePlayerDisplayName`.
+ *
+ * This is what forces the handshake into two phases at all: every guest's
+ * `session-init` has to carry the *complete* `displayNames` map, and the
+ * host fans its per-guest setup out concurrently, so it cannot know guest B's
+ * name while building guest A's `session-init` from a single-pass exchange.
+ */
+export interface PlayerNameMessage {
+  type: "player-name";
+  name: string;
+}
+
 /** `tickRateHz`/`fixedDt`/`inputDelayTicks` are the host's own compiled
  * `netcodeConstants.ts` values — a guest independently checks these against
  * its own local values on arrival (`checkNetcodeConstantsMatch`, called from
@@ -61,6 +80,12 @@ export interface SessionInitMessage {
   gameplaySeed: number;
   difficulty: DifficultyLevel;
   playerCount: number;
+  /** Every roster member's chosen name, keyed by roster id — host's own plus
+   * every guest's, merged by the host after phase A. A player who chose none
+   * is present with `""`; the fallback is applied once, on arrival, by
+   * `resolvePlayerDisplayName`, so no peer has to agree with another about
+   * how to spell it. */
+  displayNames: Record<PlayerId, string>;
 }
 
 export interface MapChunkMessage {
@@ -74,7 +99,12 @@ export interface MapEndMessage {
   totalChunks: number;
 }
 
-export type SessionSetupMessage = BuildVersionMessage | SessionInitMessage | MapChunkMessage | MapEndMessage;
+export type SessionSetupMessage =
+  | BuildVersionMessage
+  | PlayerNameMessage
+  | SessionInitMessage
+  | MapChunkMessage
+  | MapEndMessage;
 
 /** What a completed session-setup handshake resolves both peers to — the
  * same shape on the host and the guest, so downstream (engine construction)
@@ -88,6 +118,12 @@ export interface SessionSetupResult {
   gameplaySeed: number;
   difficulty: DifficultyLevel;
   playerCount: number;
+  /** Every roster member's chosen name, keyed by roster id — see
+   * `SessionInitMessage.displayNames`. Raw as chosen (`""` for unset), not
+   * yet resolved to a fallback: `buildSessionEngine` hands each one to the
+   * engine, which resolves and sanitizes at the single point names enter the
+   * game. */
+  displayNames: Record<PlayerId, string>;
   /** `visited` is reconstructed locally (all-false, matching `width`/
    * `height`) rather than sent over the wire — it's all-false at generation
    * time by definition, same reasoning `mapGenerator.ts` itself starts every

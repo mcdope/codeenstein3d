@@ -146,6 +146,7 @@ function fakeResult(overrides: Partial<SessionSetupResult> = {}): SessionSetupRe
     gameplaySeed: 1,
     difficulty: "normal",
     playerCount: 2,
+    displayNames: {},
     map: fakeMap(),
     ...overrides,
   };
@@ -798,6 +799,10 @@ describe("runMultiplayerSessionAsGuest", () => {
 
     expect(handle.getPlayerStatus("host")).toBe("alive");
     expect(handle.getPlayerStatus("guest")).toBe("alive");
+    // Names come from the same engine the statuses do — `fakeResult()` sets
+    // none, so both resolve through the fallback.
+    expect(handle.getPlayerDisplayName("host")).toBe("Host");
+    expect(handle.getPlayerDisplayName("nobody")).toBeNull();
   });
 
   describe("host-disconnect handling (step 8, guest side)", () => {
