@@ -94,6 +94,17 @@ const QUALIFY_LEVEL_INDEX_BY_PROFILE = { Casual: 3, Gamer: 4, Pro: 5 };
 // run-balancing-telemetry.mjs's much shorter per-attempt cost — kept lower
 // than that script's default concurrency to avoid oversubscribing a single
 // machine's headless Chromium.
+//
+// **Per profile, and all profiles now run at once**, so the real figure in
+// flight is this times the profile count (3 x 4 = 12). Sized against a
+// measurement rather than a guess: a 16-core box sat at **31% busy** running
+// one profile's four attempts, so three profiles' worth is roughly 93% —
+// measured at 91% in practice. That is full but not oversubscribed, and the
+// machine stays usable while it runs (confirmed by the box's owner, streaming
+// video throughout) — which is the constraint that actually matters, since
+// this runs on a desktop rather than a build server. Do not lower the default
+// on the strength of the number alone; lower it if your machine has fewer
+// cores. The wall-clock floor is one profile's own qualify loop either way.
 const ATTEMPT_CONCURRENCY = process.env.CODEENSTEIN_HIGHSCORE_CONCURRENCY ? Number(process.env.CODEENSTEIN_HIGHSCORE_CONCURRENCY) : 4;
 
 const VIRTUAL_STEP_MS = 50;
@@ -420,14 +431,19 @@ async function main() {
   const reachableCount = levelPlans.filter((l) => l.routePlain.ok).length;
   console.log(`${reachableCount}/${levelPlans.length} levels have a planned route (bot may still die to combat before reaching some of them).\n`);
 
-  console.log(`Launching headless Chromium (concurrency ${ATTEMPT_CONCURRENCY})...\n`);
+  console.log(
+    `Launching headless Chromium — ${Object.keys(PROFILES).length} profiles in parallel, ` +
+      `${ATTEMPT_CONCURRENCY}-way attempt concurrency each (${Object.keys(PROFILES).length * ATTEMPT_CONCURRENCY} attempts in flight)...\n`,
+  );
   const browser = await chromium.launch();
-  const keptEntries = [];
 
-  for (const [profileName, profile] of Object.entries(PROFILES)) {
+  /** One profile's qualify loop, start to kept entry. Returns `null` when the
+   * profile never qualified — the caller turns that into the refuse-to-ship
+   * check below, exactly as the serial version did. */
+  const runProfile = async ([profileName, profile]) => {
     const qualifyLevelIndex = QUALIFY_LEVEL_INDEX_BY_PROFILE[profileName];
     const profileStart = Date.now();
-    console.log(`${"=".repeat(72)}\n${profileName} — qualifying = reach level ${qualifyLevelIndex + 1} — started ${clock()}\n${"=".repeat(72)}`);
+    console.log(`${profileName} — qualifying = reach level ${qualifyLevelIndex + 1} — started ${clock()}`);
 
     const { qualifyingRuns, attemptsUsed, failureReasons } = await runQualifyLoop({
       runAttempt: () => runOneAttempt(browser, profileName, profile, levelPlans),
@@ -460,7 +476,7 @@ async function main() {
       console.error(`  ${profileName}: NO qualifying run in ${attemptsUsed} attempts (cap ${ATTEMPT_CAP}).`);
       console.error(`    failures: ${summary.join(", ") || "(none recorded)"}`);
       console.error(`    A single level dominating that list is the campaign blocking the bot, not bad luck.\n`);
-      continue;
+      return null;
     }
 
     const best = qualifyingRuns.reduce((a, b) => (b.entry.score > a.entry.score ? b : a));
@@ -468,8 +484,23 @@ async function main() {
       `  ${profileName}: kept score=${best.entry.score} levelsCleared=${best.entry.levelsCleared} levelName=${best.entry.levelName} ` +
         `(best of ${qualifyingRuns.length} qualifying runs, ${attemptsUsed} attempts, ${since(profileStart)})\n`,
     );
-    keptEntries.push(best.entry);
-  }
+    return best.entry;
+  };
+
+  // Profiles are independent samples — nothing one produces feeds another — so
+  // running them serially left the machine idle. Measured on a 16-core box
+  // during a real batch: 31% busy at `ATTEMPT_CONCURRENCY` 4, i.e. roughly
+  // three profiles' worth of headroom sitting unused while the run took ~40
+  // minutes. The ceiling here is the profile count (3), because each profile
+  // stops the moment it has its qualifying runs; adding lanes past that would
+  // idle them.
+  //
+  // `Promise.all` preserves input order in its result, which is load-bearing
+  // rather than incidental: `keptEntries` must stay in `Object.entries(PROFILES)`
+  // order, because both `--backfill-*` modes and `verify:replay` identify an
+  // entry's profile purely by its index in the shipped board.
+  const settled = await Promise.all(Object.entries(PROFILES).map(runProfile));
+  const keptEntries = settled.filter((entry) => entry !== null);
 
   await browser.close();
 
