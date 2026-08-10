@@ -148,6 +148,16 @@ function tileOf(pos) {
  * on a level a player can finish. (Observed on `stage13_batch_job.scala`: 3
  * keys spent, 3 doors opened, no fourth key reachable, while the generator's
  * own order completes.) */
+/** Which gate owns door tile `d`, or -1 — the script-side twin of
+ * `src/map/gates.ts`'s `gateIdAt`, kept simple because a level has a handful of
+ * gates and this runs once per planning iteration, not per frame. */
+function gateIdOfDoor(map, d) {
+  for (const gate of map.gates ?? []) {
+    if (gate.doors.some((t) => t.x === d.x && t.y === d.y)) return gate.id;
+  }
+  return -1;
+}
+
 function findReachableDoor(grid, reachable, tileValue, preferredOrder = null) {
   if (preferredOrder) {
     for (const door of preferredOrder) {
@@ -197,7 +207,11 @@ function planRouteWithAvoidSet(map, from) {
   const grid = map.grid.map((row) => [...row]);
   const workingMap = { width: map.width, height: map.height, grid };
   const collectedKeyIndices = new Set();
-  let openedDoorCount = 0;
+  /** Gate ids whose key has been collected. A key is permanent inventory now,
+   * so this only ever grows — the old `collectedKeyIndices.size - openedDoorCount`
+   * arithmetic modelled a balance that was spent down, and would refuse to open
+   * a door the player can walk straight through. */
+  const heldGates = new Set();
   const legs = [];
   let pos = { x: from?.x ?? map.spawn.x, y: from?.y ?? map.spawn.y };
   let crossesHazard = false;
@@ -267,26 +281,28 @@ function planRouteWithAvoidSet(map, from) {
       if (pathCrossesHazard(workingMap, best.path)) crossesHazard = true;
       legs.push({ kind: "walk", waypoints: pathToWaypoints(best.path) });
       collectedKeyIndices.add(best.idx);
+      heldGates.add(map.keys[best.idx].gateId);
       pos = { x: best.target.x + 0.5, y: best.target.y + 0.5 };
       continue;
     }
 
-    const heldKeys = collectedKeyIndices.size - openedDoorCount;
-    if (heldKeys > 0) {
-      const found = findReachableDoor(grid, reachable, DOOR_TILE, map.doors);
+    {
+      // Only doors of a gate whose key is held. Ordering still follows
+      // `map.doors` (see `findReachableDoor`), so this keeps replaying the
+      // generator's own greedy simulation.
+      const openable = map.doors.filter((d) => heldGates.has(gateIdOfDoor(map, d)));
+      const found = findReachableDoor(grid, reachable, DOOR_TILE, openable);
       if (found) {
         const path = findPath(start, found.from);
         if (!path) return { ok: false, reason: "door-approach-reachable-but-no-bfs-path (inconsistent)", legs };
         legs.push({ kind: "walk", waypoints: pathToWaypoints(path) });
         const approachDir = { dx: found.door.x - found.from.x, dy: found.door.y - found.from.y };
         legs.push({ kind: "openDoor", doorTile: found.door, approachDir });
-        // Mirror `openDoorAhead()`: one key opens the whole doorway, i.e. the
-        // 4-connected run of door tiles, not just the one pushed. Keeping this
-        // in step with the engine is what makes `openedDoorCount` a real key
-        // count — bill per tile and the planner thinks it needs five keys for
-        // a gate the player opens with one.
+        // Mirror `openDoorAhead()`: pushing a door opens the whole doorway —
+        // the 4-connected run of door tiles — but *not* the gate's other
+        // doorways, which the player would have to walk round and push
+        // separately. Nothing is spent either way; the key stays held.
         for (const tile of doorwayTiles(grid, found.door)) grid[tile.y][tile.x] = 0;
-        openedDoorCount += 1;
         pos = { x: found.door.x + 0.5, y: found.door.y + 0.5 };
         continue;
       }

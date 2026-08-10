@@ -39,8 +39,8 @@ function fakeStats(overrides: Partial<EngineStats> = {}): EngineStats {
     rockets: 2,
     smg: 20,
     gas: 30,
-    keysHeld: 1,
-    keysTotal: 3,
+    heldGates: [],
+    gateColors: [],
     cheatsUsed: false,
     score: 500,
     kills: 4,
@@ -175,17 +175,17 @@ describe("drawAcidOverflowToast", () => {
 });
 
 describe("drawLockedDoorToast", () => {
-  it("draws the fixed message and clamps alpha into [0,1]", () => {
+  it("names the gate's colour and clamps alpha into [0,1]", () => {
     const c = ctx();
-    drawLockedDoorToast(asCtx(c), 5);
-    expect(c.fillText).toHaveBeenCalledWith("You need a key!", expect.any(Number), expect.any(Number));
+    drawLockedDoorToast(asCtx(c), 5, 1);
+    expect(c.fillText).toHaveBeenCalledWith("You need the blue key!", expect.any(Number), expect.any(Number));
     expect(c.globalAlpha).toBe(1);
     expect(c.textAlign).toBe("start");
     expect(c.save).toHaveBeenCalledTimes(1);
     expect(c.restore).toHaveBeenCalledTimes(1);
 
     const c2 = ctx();
-    drawLockedDoorToast(asCtx(c2), -1);
+    drawLockedDoorToast(asCtx(c2), -1, 1);
     expect(c2.globalAlpha).toBe(0);
   });
 
@@ -202,29 +202,32 @@ describe("drawLockedDoorToast", () => {
     };
     const ammo = boxOf((c) => drawOutOfAmmoToast(c, 1));
     const acid = boxOf((c) => drawAcidOverflowToast(c, 1));
-    const door = boxOf((c) => drawLockedDoorToast(c, 1));
+    const door = boxOf((c) => drawLockedDoorToast(c, 1, 1));
 
     expect(acid.top).toBeGreaterThanOrEqual(ammo.bottom);
     expect(door.top).toBeGreaterThanOrEqual(acid.bottom);
   });
 
-  it("uses the locked door's own minimap blue, not the acid orange or the ammo red", () => {
+  it("uses the pushed gate's own colour, not the acid orange or the ammo red", () => {
     // The colour is the cue: it matches the door the player just bounced off,
     // as it's painted on the minimap and automap.
     const c = ctx();
     let textColor = "";
-    let borderColor = "";
     c.fillText.mockImplementation(() => {
       textColor = String(c.fillStyle);
     });
-    c.fillRect.mockImplementation(() => {
-      const style = String(c.fillStyle);
-      if (style.includes("86,142,190")) borderColor = style;
+    drawLockedDoorToast(asCtx(c), 1, 1);
+    expect(textColor.toLowerCase()).toBe("#3470d6"); // gate 1 = blue
+    expect(String(c.strokeStyle).toLowerCase()).toBe("#3470d6"); // border matches
+    expect(c.strokeRect).not.toHaveBeenCalled(); // outlineRect, per renderCost
+
+    // A different gate gets a different colour — that is the entire cue.
+    const red = ctx();
+    red.fillText.mockImplementation(() => {
+      textColor = String(red.fillStyle);
     });
-    drawLockedDoorToast(asCtx(c), 1);
-    expect(textColor.toLowerCase()).toBe("#568ebe");
-    expect(borderColor).toContain("86,142,190");
-    expect(c.strokeRect).not.toHaveBeenCalled();
+    drawLockedDoorToast(asCtx(red), 1, 0);
+    expect(textColor.toLowerCase()).toBe("#d63a30");
   });
 });
 
@@ -497,12 +500,25 @@ describe("drawHud", () => {
     expect(c.fillText).toHaveBeenCalledWith("∞", 275, expect.any(Number));
   });
 
-  it("shows keys held/total and the right-aligned score", () => {
+  it("draws one key pip per gate, filled only for the ones held", () => {
     const c = ctx();
-    drawHud(asCtx(c), fakeStats({ keysHeld: 2, keysTotal: 5, score: 1234 }));
-    expect(c.fillText).toHaveBeenCalledWith("2/5", 375, expect.any(Number));
+    const filled: string[] = [];
+    c.fillRect.mockImplementation(() => filled.push(c.fillStyle as string));
+    // Three gates, holding the first and third.
+    drawHud(asCtx(c), fakeStats({ heldGates: [0, 2], gateColors: [0, 1, 2], score: 1234 }));
+    // Filled pips use fillRect in the gate's colour; the unheld one is an
+    // outline, so its colour reaches strokeStyle instead.
+    expect(filled).toContain("#d63a30"); // gate 0, held
+    expect(filled).toContain("#34b25c"); // gate 2, held
     expect(c.fillText).toHaveBeenCalledWith("1234", 800 - 12, expect.any(Number));
     expect(c.textAlign).toBe("left"); // reset after the right-aligned score
+  });
+
+  it("shows a dash instead of pips on a level with no gates at all", () => {
+    // Most levels: C sources produce no private/protected members, so no gates.
+    const c = ctx();
+    drawHud(asCtx(c), fakeStats({ heldGates: [], gateColors: [] }));
+    expect(c.fillText).toHaveBeenCalledWith("—", 375, expect.any(Number));
   });
 });
 

@@ -146,7 +146,7 @@ function fakeMap(overrides: Partial<GameMap> = {}, size = 12): GameMap {
     width: size, height: size, grid: grid(size),
     visited: Array.from({ length: size }, () => new Array(size).fill(true) as boolean[]),
     rooms: [], breakupRooms: [], spawn: { x: 1, y: 1 }, enemies: [],
-    exit: { x: size - 1, y: size - 1 }, shortestPathTiles: 0, hazards: [], doors: [],
+    exit: { x: size - 1, y: size - 1 }, shortestPathTiles: 0, hazards: [], doors: [], gates: [],
     keys: [], decorations: [], teleporters: [], spikeTraps: [], mines: [], ammoPickups: [],
     loreTerminals: [], bonusLevel: false, styleSet: "stone", secretRoomCount: 0,
     switchboardRooms: [], exceptionZones: [], vendorDepots: [], acidOverflows: [],
@@ -227,7 +227,7 @@ describe("per-frame renderers issue no rasterising path geometry", () => {
     R.drawCrosshair(asCtx(c), true, 12);
     R.drawHud(asCtx(c), {
       health: 55, maxHealth: 100, swap: 3, bullets: 40, rockets: 2, smg: 10, gas: 8,
-      keysHeld: 1, keysTotal: 2, score: 1234, kills: 7, weaponIndex: 0, ownedWeapons: [0],
+      heldGates: [0], gateColors: [0, 1], score: 1234, kills: 7, weaponIndex: 0, ownedWeapons: [0],
       godMode: false, noClip: false, showFps: false, status: "alive", spectateTargetId: null,
     } as never);
     expectNoRasterisingCalls(c, "drawHud + drawCrosshair");
@@ -238,7 +238,7 @@ describe("per-frame renderers issue no rasterising path geometry", () => {
     R.drawCheatToast(asCtx(c), "IDKFA — Full arsenal", 1);
     R.drawOutOfAmmoToast(asCtx(c), 1);
     R.drawAcidOverflowToast(asCtx(c), 1);
-    R.drawLockedDoorToast(asCtx(c), 1);
+    R.drawLockedDoorToast(asCtx(c), 1, 1);
     R.drawKillStreakToast(asCtx(c), "ULTRA KILL!", 1, true);
     R.drawExitCountdownToast(asCtx(c), 90);
     R.drawSpectatingBanner(asCtx(c), "guest-1");
@@ -271,7 +271,7 @@ describe("per-frame renderers issue no rasterising path geometry", () => {
       ...R.collectLootBillboards(asCtx(c), p, [{ x: p.posX + 3, y: p.posY, kind: "weapon" }], z),
       ...R.collectTeleporterBillboards(asCtx(c), p, [{ x: p.posX + 3, y: p.posY, targetX: 0, targetY: 0, label: "goto" }], z),
       ...R.collectMineBillboards(asCtx(c), p, [{ x: p.posX + 3, y: p.posY, alive: true, visible: true, closeTimer: 0 } as Mine], z),
-      ...R.collectKeyBillboards(asCtx(c), p, [{ x: p.posX + 3, y: p.posY, collected: false } as never], z),
+      ...R.collectKeyBillboards(asCtx(c), p, [{ x: p.posX + 3, y: p.posY, collected: false, gateId: 0 } as never], z),
       ...R.collectExitBillboard(asCtx(c), p, { x: Math.floor(p.posX) + 3, y: Math.floor(p.posY) }, z),
     ];
     expect(jobs.length).toBeGreaterThan(0);

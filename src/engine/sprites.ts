@@ -85,6 +85,16 @@ export function enemyColor(kind: EntityKind): string {
   }
 }
 
+/** Gate tones for key sprites — a dark bezel plus the gate's own face colour,
+ * by value rather than shared import, following the same convention as every
+ * other colour table in the renderers. Indexed by `Gate.colorIndex`. */
+const KEY_GATE_COLORS = [
+  { back: "#40100c", fill: "#d63a30" }, // red
+  { back: "#0c1c40", fill: "#3470d6" }, // blue
+  { back: "#0c3018", fill: "#34b25c" }, // green
+  { back: "#2c0c40", fill: "#a848d6" }, // violet
+];
+
 /** An elite's tint overrides its normal kind color entirely — a deep,
  * unmistakable gold that no regular enemy ever shows. */
 const ELITE_COLOR = "#f2c230";
@@ -627,15 +637,23 @@ export function collectKeyBillboards(
   player: Player,
   keys: KeyItem[],
   zBuffer: Float64Array,
+  gateColors: readonly number[] = [],
 ): BillboardJob[] {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
 
   return keys
     .filter((k) => !k.collected)
-    .map((item) => ({ proj: projectPoint(player, item.x, item.y, width, height, 0.28) }))
+    .map((item) => ({
+      // The key is drawn in its own gate's colour — the whole point being that
+      // you can tell from across the room which door it fits. `?? 1` covers a
+      // map with no gate table (test fixtures), landing on the old blue-ish
+      // reading rather than crashing.
+      tone: KEY_GATE_COLORS[gateColors[item.gateId] ?? 1],
+      proj: projectPoint(player, item.x, item.y, width, height, 0.28),
+    }))
     .filter(({ proj }) => proj.depth > MARKER_NEAR)
-    .map(({ proj }) => ({
+    .map(({ proj, tone }) => ({
       depth: proj.depth,
       draw: () => {
         const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
@@ -645,9 +663,9 @@ export function collectKeyBillboards(
         const cx = proj.screenX;
         // Float the card at roughly waist height, not the floor.
         const cy = height / 2 + size * 0.4;
-        ctx.fillStyle = "#8a6d12";
+        ctx.fillStyle = tone.back;
         ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
-        ctx.fillStyle = "#f2d64b";
+        ctx.fillStyle = tone.fill;
         ctx.fillRect(cx - size / 2 + size * 0.15, cy - size / 2 + size * 0.15, size * 0.7, size * 0.7);
       },
     }));
@@ -671,8 +689,6 @@ function lootColors(kind: LootDrop["kind"]): { back: string; fill: string } {
       return { back: "#101c40", fill: "#4a7fff" }; // blue shard
     case "weapon":
       return { back: "#3a1040", fill: "#e06aff" }; // violet — a rare, special drop
-    case "key":
-      return { back: "#403610", fill: "#f2d64b" }; // gold — matches the HUD key icon
   }
 }
 

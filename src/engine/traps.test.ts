@@ -29,6 +29,7 @@ function fakeMap(spawn = { x: 5, y: 5 }): GameMap {
     shortestPathTiles: 0,
     hazards: [],
     doors: [],
+    gates: [],
     keys: [],
     decorations: [],
     teleporters: [],

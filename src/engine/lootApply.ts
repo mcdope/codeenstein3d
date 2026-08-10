@@ -38,7 +38,6 @@ export interface LootContext {
    * `LootKind`'s doc comment). Never used by single-player play, which never
    * spawns a `"key"` `LootDrop` (keys are only awarded via `collectKeys`
    * reading `GameMap.keys` directly). */
-  addKey: (amount: number) => void;
   /** True at full stability — steers an Elite's guaranteed drop away from a
    * health pack that would be wasted. */
   healthAtMax: () => boolean;
@@ -96,13 +95,6 @@ export function applyLootDrop(drop: LootDrop, ctx: LootContext): void {
     ctx.addSwap(amount);
     ctx.recordApplied?.("swap", amount, "dynamic");
     console.log(`%c[loot] +${amount} swap`, "color:#4a7fff");
-    return;
-  }
-  if (kind === "key") {
-    const amount = drop.amount ?? 1;
-    ctx.addKey(amount);
-    ctx.recordApplied?.("key", amount, "dynamic");
-    console.log(`%c[loot] +${amount} dependency key(s) recovered`, "color:#f2d64b");
     return;
   }
   const meta = AMMO_META[kind];

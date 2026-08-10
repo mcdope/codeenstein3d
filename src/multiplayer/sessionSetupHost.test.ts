@@ -60,6 +60,7 @@ function bigFakeMap(size = 150): GameMap {
     shortestPathTiles: 4,
     hazards: [],
     doors: [],
+    gates: [],
     keys: [],
     decorations: [],
     teleporters: [],

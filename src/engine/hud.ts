@@ -151,21 +151,31 @@ export function drawAcidOverflowToast(ctx: CanvasRenderingContext2D, alpha: numb
   ctx.restore();
 }
 
+/** Gate tones for HUD use, by value rather than shared import — the same
+ * "each renderer keeps its own thematically-matched constants" convention the
+ * minimap and automap colours follow. Indexed by `Gate.colorIndex`; deliberately
+ * no yellow, which already means "keyless branch door". */
+const HUD_GATE_COLORS = ["#d63a30", "#3470d6", "#34b25c", "#a848d6"];
+/** Matches `GATE_COLOR_NAMES` in `gateColors.ts` — the words a player reads. */
+const HUD_GATE_NAMES = ["red", "blue", "green", "violet"];
+
 /**
- * "You need a key!" — walked into a key-locked door holding no dependency key
+ * "You need the blue key!" — walked into a locked door without that gate's key
  * (see `RaycasterEngine.cueLockedDoorHint`). Same pill shape and fade
- * convention as the two toasts above, in the locked door's own `#568ebe` —
- * the exact colour that door is already painted on the minimap and automap,
- * so the toast's colour points straight at what's blocking.
+ * convention as the two toasts above, drawn in **that gate's** colour, which is
+ * the exact colour the door itself is painted in the world, on the minimap and
+ * on the automap. Naming the colour is most of the legibility this mechanic
+ * buys: the message tells you which key, and the colour tells you which door.
  *
  * Third row (y=86), below the acid warning rather than sharing either of the
  * rows above it. Dry-firing while shoving a door is an entirely ordinary
  * thing to do, so this and `drawOutOfAmmoToast` genuinely land in the same
  * second — the same collision `drawAcidOverflowToast` was moved down to avoid.
  */
-export function drawLockedDoorToast(ctx: CanvasRenderingContext2D, alpha: number): void {
+export function drawLockedDoorToast(ctx: CanvasRenderingContext2D, alpha: number, colorIndex: number): void {
   const w = ctx.canvas.width;
-  const text = "You need a key!";
+  const text = `You need the ${HUD_GATE_NAMES[colorIndex]} key!`;
+  const tone = HUD_GATE_COLORS[colorIndex];
   ctx.save();
   ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
   ctx.textAlign = "center";
@@ -174,10 +184,10 @@ export function drawLockedDoorToast(ctx: CanvasRenderingContext2D, alpha: number
   const boxX = w / 2 - boxW / 2;
   ctx.fillStyle = "rgba(4,8,10,0.7)";
   ctx.fillRect(boxX, 86, boxW, 24);
-  ctx.strokeStyle = "rgba(86,142,190,0.6)";
+  ctx.strokeStyle = tone;
   ctx.lineWidth = 1;
   outlineRect(ctx, boxX + 0.5, 86.5, boxW - 1, 23);
-  ctx.fillStyle = "#568ebe";
+  ctx.fillStyle = tone;
   ctx.fillText(text, w / 2, 102);
   ctx.textAlign = "start";
   ctx.restore();
@@ -530,9 +540,27 @@ export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void
     drawValue(ctx, "∞", 275, valueY, "#d8dde3", 22);
   }
 
-  // --- Keys ---
+  // --- Keys: one pip per gate on the level, filled once held ---
+  //
+  // A held/total count stopped meaning anything when keys became permanent
+  // per-gate inventory: it degrades into "collected / collectable", a
+  // completionist stat wearing a resource's clothes. Which *colours* you hold
+  // is the thing that decides whether the door in front of you opens.
   drawLabel(ctx, "KEYS", 375, labelY);
-  drawValue(ctx, `${stats.keysHeld}/${stats.keysTotal}`, 375, valueY, "#f2d64b", 22);
+  const held = new Set(stats.heldGates);
+  stats.gateColors.forEach((colorIndex, gateId) => {
+    const x = 375 + gateId * 16;
+    const y = valueY - 12;
+    ctx.fillStyle = HUD_GATE_COLORS[colorIndex];
+    if (held.has(gateId)) {
+      ctx.fillRect(x, y, 12, 12);
+    } else {
+      ctx.strokeStyle = ctx.fillStyle;
+      ctx.lineWidth = 1;
+      outlineRect(ctx, x + 0.5, y + 0.5, 11, 11);
+    }
+  });
+  if (stats.gateColors.length === 0) drawValue(ctx, "—", 375, valueY, "#5a6a8a", 22);
 
   // --- Score (right-aligned) ---
   ctx.textAlign = "right";

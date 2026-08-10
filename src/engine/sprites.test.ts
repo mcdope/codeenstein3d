@@ -47,6 +47,7 @@ function fakeMap(): GameMap {
     shortestPathTiles: 0,
     hazards: [],
     doors: [],
+    gates: [],
     keys: [],
     decorations: [],
     teleporters: [],
@@ -506,14 +507,14 @@ describe("collectKeyBillboards", () => {
   it("filters out a collected key", () => {
     const player = facingPlayer();
     const c = ctx();
-    const jobs = collectKeyBillboards(asCtx(c), player, [{ x: player.posX + 3, y: player.posY, collected: true } as KeyItem], clearZBuffer(Infinity));
+    const jobs = collectKeyBillboards(asCtx(c), player, [{ x: player.posX + 3, y: player.posY, collected: true, gateId: 0 } as KeyItem], clearZBuffer(Infinity));
     expect(jobs).toHaveLength(0);
   });
 
   it("draws an uncollected, unoccluded key", () => {
     const player = facingPlayer();
     const c = ctx();
-    const jobs = collectKeyBillboards(asCtx(c), player, [{ x: player.posX + 3, y: player.posY, collected: false }], clearZBuffer(Infinity));
+    const jobs = collectKeyBillboards(asCtx(c), player, [{ x: player.posX + 3, y: player.posY, collected: false, gateId: 0 }], clearZBuffer(Infinity));
     jobs[0].draw();
     expect(c.fillRect.mock.calls.length).toBeGreaterThan(0);
   });
@@ -521,14 +522,14 @@ describe("collectKeyBillboards", () => {
   it("draws nothing for an occluded key", () => {
     const player = facingPlayer();
     const c = ctx();
-    const jobs = collectKeyBillboards(asCtx(c), player, [{ x: player.posX + 3, y: player.posY, collected: false }], clearZBuffer(0.5));
+    const jobs = collectKeyBillboards(asCtx(c), player, [{ x: player.posX + 3, y: player.posY, collected: false, gateId: 0 }], clearZBuffer(0.5));
     jobs[0].draw();
     expect(c.fillRect).not.toHaveBeenCalled();
   });
 });
 
 describe("collectLootBillboards", () => {
-  const kinds: LootDrop["kind"][] = ["bullets", "rockets", "smg", "gas", "health", "swap", "weapon", "key"];
+  const kinds: LootDrop["kind"][] = ["bullets", "rockets", "smg", "gas", "health", "swap", "weapon", "swap"];
 
   for (const kind of kinds) {
     it(`draws a "${kind}" drop without throwing`, () => {

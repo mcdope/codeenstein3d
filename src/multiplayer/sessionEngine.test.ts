@@ -51,6 +51,7 @@ function fakeMap(overrides: Partial<GameMap> = {}, size = 12): GameMap {
     shortestPathTiles: 4,
     hazards: [],
     doors: [],
+    gates: [],
     keys: [],
     decorations: [],
     teleporters: [],

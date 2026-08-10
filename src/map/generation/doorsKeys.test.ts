@@ -19,6 +19,11 @@ function grid(size: number): Tile[][] {
   return Array.from({ length: size }, () => Array.from({ length: size }, () => 1 as Tile));
 }
 
+/** Door tiles across every gate — what `placeDoors` used to return directly. */
+function doorTilesOf(gates: { doors: { x: number; y: number }[] }[]) {
+  return gates.flatMap((g) => g.doors);
+}
+
 describe("placeDoors — the gate budget", () => {
   /** N private rooms in a row, each hanging off one shared corridor. */
   const manyRooms = (n: number) => {
@@ -41,9 +46,12 @@ describe("placeDoors — the gate budget", () => {
     // carried 64 doors and 38 keys and chained into a 120-leg route that
     // stopped 16 of 18 capture runs there; level 15 reached 2,653 doors.
     const { g, rooms } = manyRooms(30);
-    const doors = placeDoors(rooms, g, { maxGates: 6 });
-    expect(doors.length).toBeGreaterThan(0);
-    expect(doors.length).toBeLessThanOrEqual(6);
+    const gates = placeDoors(rooms, g, { maxGates: 6 });
+    expect(gates.length).toBeGreaterThan(0);
+    // Counted in rooms, not door tiles: a room costs one key however many
+    // mouths it has, so six gates can legitimately be more than six tiles.
+    expect(gates.length).toBeLessThanOrEqual(6);
+    expect(doorTilesOf(gates).length).toBeGreaterThanOrEqual(gates.length);
   });
 
   it("prefers the bigger room when it has to choose", () => {
@@ -58,7 +66,8 @@ describe("placeDoors — the gate budget", () => {
     carveHLine(g, 3, 25, 2); // spine
     carveVLine(g, 3, 6, 8); // stub down to `small`
     carveVLine(g, 3, 6, 16); // stub down to `big`
-    const doors = placeDoors([spawnRoom, small, big], g, { maxGates: 1 });
+    const gates = placeDoors([spawnRoom, small, big], g, { maxGates: 1 });
+    const doors = doorTilesOf(gates);
     expect(doors).toHaveLength(1);
     expect(doors[0].x).toBeGreaterThanOrEqual(15); // the big room's mouth
   });
@@ -76,11 +85,12 @@ describe("placeDoors — the gate budget", () => {
     carveHLine(g, 3, 8, 2); // spawn -> gateRoom
     carveHLine(g, 11, 24, 2); // gateRoom -> exit, the only way through
     carveVLine(g, 3, 12, 2); // spawn -> sideRoom, a dead end
-    const doors = placeDoors([spawnRoom, gateRoom, sideRoom], g, {
+    const gates = placeDoors([spawnRoom, gateRoom, sideRoom], g, {
       spawn: { x: 2, y: 2 },
       exit: { x: 23, y: 2 },
       maxGates: 3,
     });
+    const doors = doorTilesOf(gates);
     // The through-room is locked, so the exit cannot be reached without a key.
     const lockedTheGate = doors.some((d) => d.y <= 4 && d.x >= 6 && d.x <= 12);
     expect(lockedTheGate).toBe(true);
@@ -88,7 +98,8 @@ describe("placeDoors — the gate budget", () => {
 
   it("never locks the spawn room", () => {
     const { g, rooms } = manyRooms(3);
-    const doors = placeDoors(rooms, g, { maxGates: 6 });
+    const gates = placeDoors(rooms, g, { maxGates: 6 });
+    const doors = doorTilesOf(gates);
     for (const d of doors) expect(d.x).toBeGreaterThan(4);
   });
 });
@@ -98,7 +109,8 @@ describe("placeDoors", () => {
     const g = grid(20);
     const spawnRoom = makeRoom(1, 1, 5, 5, entity({ kind: "method", visibility: "private" }));
     carveRoom(g, spawnRoom);
-    const doors = placeDoors([spawnRoom], g);
+    const gates = placeDoors([spawnRoom], g);
+    const doors = doorTilesOf(gates);
     expect(doors).toEqual([]);
   });
 
@@ -109,7 +121,8 @@ describe("placeDoors", () => {
     carveRoom(g, spawnRoom);
     carveRoom(g, lockedRoom);
     carveHLine(g, 3, 10, 2); // corridor connecting the two, through lockedRoom's left mouth
-    const doors = placeDoors([spawnRoom, lockedRoom], g);
+    const gates = placeDoors([spawnRoom, lockedRoom], g);
+    const doors = doorTilesOf(gates);
     expect(doors.length).toBeGreaterThan(0);
     for (const d of doors) expect(g[d.y][d.x]).toBe(DOOR_TILE);
   });
@@ -165,7 +178,8 @@ describe("placeDoors", () => {
     g[12][9] = 0; // bottom
     g[9][7] = 0; // left
     g[9][12] = 0; // right
-    const doors = placeDoors([spawnRoom, room], g);
+    const gates = placeDoors([spawnRoom, room], g);
+    const doors = doorTilesOf(gates);
     expect(doors).toHaveLength(4);
   });
 });
@@ -173,7 +187,7 @@ describe("placeDoors", () => {
 describe("placeKeys", () => {
   it("returns [] when there are no doors", () => {
     const g = grid(20);
-    expect(placeKeys(g, { x: 1, y: 1 }, { x: 5, y: 5 }, [], [], [], mulberry32(1))).toEqual([]);
+    expect(placeKeys(g, { x: 1, y: 1 }, { x: 5, y: 5 }, [], [], [], mulberry32(1))).toEqual({ keys: [], gates: [] });
   });
 
   it("places one key per door, reachable before that door opens", () => {
@@ -183,10 +197,11 @@ describe("placeKeys", () => {
     carveRoom(g, spawnRoom);
     carveRoom(g, lockedRoom);
     carveHLine(g, 3, 10, 2);
-    const doors = placeDoors([spawnRoom, lockedRoom], g);
+    const gates = placeDoors([spawnRoom, lockedRoom], g);
+    const doors = doorTilesOf(gates);
     expect(doors.length).toBeGreaterThan(0);
 
-    const keys = placeKeys(g, spawnRoom.center, lockedRoom.center, [], doors, [], mulberry32(1));
+    const { keys } = placeKeys(g, spawnRoom.center, lockedRoom.center, [], gates, [], mulberry32(1));
     expect(keys).toHaveLength(doors.length);
     for (const k of keys) expect(k.collected).toBe(false);
   });
@@ -217,9 +232,11 @@ describe("placeKeys", () => {
     g[8][8] = 0; // shaft -> catch
     g[11][8] = 0; // catch -> finally
 
-    const doors = placeDoors([spawnRoom, lockedRoom], g);
+    const gates = placeDoors([spawnRoom, lockedRoom], g);
+
+    const doors = doorTilesOf(gates);
     expect(doors.length).toBeGreaterThan(0);
-    const keys = placeKeys(g, spawnRoom.center, lockedRoom.center, [], doors, [], mulberry32(5), [zone]);
+    const { keys } = placeKeys(g, spawnRoom.center, lockedRoom.center, [], gates, [], mulberry32(5), [zone]);
 
     expect(keys.length).toBeGreaterThan(0);
     const inside = (x: number, y: number, r: { x: number; y: number; w: number; h: number }): boolean =>
@@ -243,9 +260,9 @@ describe("placeKeys", () => {
       catchRect: { x: 8, y: 9, w: 2, h: 2 },
       finallyRect: { x: 7, y: 12, w: 3, h: 3 },
     };
-    const doors = placeDoors([spawnRoom, lockedRoom], g);
-    const without = placeKeys(g, spawnRoom.center, lockedRoom.center, [], doors, [], mulberry32(5));
-    const with_ = placeKeys(g, spawnRoom.center, lockedRoom.center, [], doors, [], mulberry32(5), [zone]);
+    const gates = placeDoors([spawnRoom, lockedRoom], g);
+    const { keys: without } = placeKeys(g, spawnRoom.center, lockedRoom.center, [], gates, [], mulberry32(5));
+    const { keys: with_ } = placeKeys(g, spawnRoom.center, lockedRoom.center, [], gates, [], mulberry32(5), [zone]);
     expect(with_).toHaveLength(without.length);
   });
 
@@ -256,12 +273,12 @@ describe("placeKeys", () => {
     carveRoom(g, spawnRoom);
     carveRoom(g, lockedRoom);
     carveHLine(g, 3, 10, 2);
-    const doors = placeDoors([spawnRoom, lockedRoom], g);
+    const gates = placeDoors([spawnRoom, lockedRoom], g);
     const enemy = { x: spawnRoom.center.x + 0.5, y: spawnRoom.center.y + 0.5 } as Enemy;
 
-    const keys = placeKeys(g, spawnRoom.center, lockedRoom.center, [enemy], doors, [], mulberry32(3));
+    const { keys } = placeKeys(g, spawnRoom.center, lockedRoom.center, [enemy], gates, [], mulberry32(3));
     for (const k of keys) {
-      expect(k).not.toEqual({ x: spawnRoom.center.x + 0.5, y: spawnRoom.center.y + 0.5, collected: false });
+      expect(k).not.toEqual({ x: spawnRoom.center.x + 0.5, y: spawnRoom.center.y + 0.5, collected: false, gateId: 0 });
     }
   });
 
@@ -269,21 +286,46 @@ describe("placeKeys", () => {
     const g = grid(20);
     const spawnRoom = makeRoom(1, 1, 3, 3, entity());
     carveRoom(g, spawnRoom);
-    // A "door" placed with no connecting corridor at all — never on the
-    // reachable frontier.
-    const doors = [{ x: 15, y: 15 }];
-    const keys = placeKeys(g, spawnRoom.center, spawnRoom.center, [], doors, [], mulberry32(1));
+    // A gate with no connecting corridor at all — never on the reachable
+    // frontier, so it can never be keyed. It is un-gated rather than shipped
+    // as a door nobody can open.
+    g[15][15] = DOOR_TILE;
+    const orphan = { id: 0, colorIndex: 0, room: { x: 15, y: 15, w: 1, h: 1 }, doors: [{ x: 15, y: 15 }] };
+    const { keys, gates: survivors } = placeKeys(g, spawnRoom.center, spawnRoom.center, [], [orphan], [], mulberry32(1));
     expect(keys).toEqual([]);
+    expect(survivors).toEqual([]);
+    expect(g[15][15]).toBe(0); // reverted to floor
   });
 
-  it("skips placing a key (but still opens the door) when every reachable tile is already used", () => {
+  it("un-gates a room rather than ship a door whose key it cannot place", () => {
     const g = grid(10);
     g[1][1] = 0; // the only floor tile reachable before the door opens
     g[1][2] = DOOR_TILE;
-    // spawn === exit === the only reachable tile, so it's fully "used" —
-    // pickKeySpot finds zero candidates and returns null.
-    const keys = placeKeys(g, { x: 1, y: 1 }, { x: 1, y: 1 }, [], [{ x: 2, y: 1 }], [], mulberry32(1));
+    // spawn === exit === the only reachable tile, and both are hard-excluded,
+    // so every tier of the widened search comes up empty. Stranding the room
+    // is the one outcome that is not acceptable: un-gate instead.
+    const gate = { id: 0, colorIndex: 0, room: { x: 3, y: 1, w: 1, h: 1 }, doors: [{ x: 2, y: 1 }] };
+    const { keys, gates: survivors } = placeKeys(g, { x: 1, y: 1 }, { x: 1, y: 1 }, [], [gate], [], mulberry32(1));
     expect(keys).toEqual([]);
+    expect(survivors).toEqual([]);
+    expect(g[1][2]).toBe(0); // the door is gone, so the room is still enterable
+  });
+
+  it("finds a spot by relaxing enemy/breakup exclusions rather than giving up", () => {
+    // Two reachable floor tiles: spawn (hard-excluded) and one holding an
+    // enemy (a convenience exclusion). An enemy standing on a key does not
+    // stop a player walking over it, so tier 3 uses that tile instead of
+    // stranding the room.
+    const g = grid(10);
+    g[1][1] = 0;
+    g[1][2] = 0;
+    g[1][3] = DOOR_TILE;
+    const enemy = { x: 2.5, y: 1.5 } as never;
+    const gate = { id: 0, colorIndex: 0, room: { x: 4, y: 1, w: 1, h: 1 }, doors: [{ x: 3, y: 1 }] };
+    const { keys, gates: survivors } = placeKeys(g, { x: 1, y: 1 }, { x: 9, y: 9 }, [enemy], [gate], [], mulberry32(1));
+    expect(keys).toHaveLength(1);
+    expect(survivors).toHaveLength(1);
+    expect(g[1][3]).toBe(DOOR_TILE); // still gated
   });
 
   it("is deterministic for the same rng seed", () => {
@@ -294,8 +336,8 @@ describe("placeKeys", () => {
       carveRoom(g, spawnRoom);
       carveRoom(g, lockedRoom);
       carveHLine(g, 3, 10, 2);
-      const doors = placeDoors([spawnRoom, lockedRoom], g);
-      return placeKeys(g, spawnRoom.center, lockedRoom.center, [], doors, [], mulberry32(77));
+      const gates = placeDoors([spawnRoom, lockedRoom], g);
+      return placeKeys(g, spawnRoom.center, lockedRoom.center, [], gates, [], mulberry32(77));
     };
     expect(build()).toEqual(build());
   });
@@ -310,9 +352,10 @@ describe("placeKeys", () => {
     for (const r of rooms) carveRoom(g, r);
     carveHLine(g, 3, 10, 2);
     carveHLine(g, 13, 20, 2);
-    const doors = placeDoors(rooms, g);
+    const gates = placeDoors(rooms, g);
+    const doors = doorTilesOf(gates);
     expect(doors.length).toBeGreaterThanOrEqual(2);
-    const keys = placeKeys(g, rooms[0].center, rooms[2].center, [], doors, [], mulberry32(5));
+    const { keys } = placeKeys(g, rooms[0].center, rooms[2].center, [], gates, [], mulberry32(5));
     expect(keys.length).toBeGreaterThan(0);
   });
 
@@ -326,14 +369,15 @@ describe("placeKeys", () => {
     for (const r of rooms) carveRoom(g, r);
     carveHLine(g, 3, 10, 2);
     carveHLine(g, 13, 20, 2);
-    const doors = placeDoors(rooms, g);
+    const gates = placeDoors(rooms, g);
+    const doors = doorTilesOf(gates);
     expect(doors.length).toBeGreaterThanOrEqual(2);
 
     // Snapshot of what's reachable before any door opens at all — under the
     // old cumulative-pool bug, later keys could land back in here.
     const initialReachable = reachableTiles(g, rooms[0].center, new Set());
 
-    const keys = placeKeys(g, rooms[0].center, rooms[2].center, [], doors, [], mulberry32(5));
+    const { keys } = placeKeys(g, rooms[0].center, rooms[2].center, [], gates, [], mulberry32(5));
     expect(keys.length).toBeGreaterThan(1);
     for (const k of keys.slice(1)) {
       const tileKey = key({ x: Math.floor(k.x), y: Math.floor(k.y) });
@@ -355,13 +399,14 @@ describe("placeKeys", () => {
     g[1][4] = DOOR_TILE; // door1
     g[1][5] = 0; // enemy-occupied floor (door1's newly-opened area)
     g[1][6] = DOOR_TILE; // door2
-    const doors = [
-      { x: 4, y: 1 },
-      { x: 6, y: 1 },
+    // Two separate gates, so two keys — one each, not one per doorway.
+    const twoGates = [
+      { id: 0, colorIndex: 0, room: { x: 5, y: 1, w: 1, h: 1 }, doors: [{ x: 4, y: 1 }] },
+      { id: 1, colorIndex: 1, room: { x: 7, y: 1, w: 1, h: 1 }, doors: [{ x: 6, y: 1 }] },
     ];
     const enemy = { x: 5.5, y: 1.5 } as Enemy;
 
-    const keys = placeKeys(g, { x: 1, y: 1 }, { x: 9, y: 9 }, [enemy], doors, [], mulberry32(1));
+    const { keys } = placeKeys(g, { x: 1, y: 1 }, { x: 9, y: 9 }, [enemy], twoGates, [], mulberry32(1));
     expect(keys).toHaveLength(2);
   });
 });
@@ -385,7 +430,9 @@ describe("placeDoors — Switchboard branch doors", () => {
     g[10][7] = BRANCH_DOOR_TILE;
     g[11][7] = 0;
 
-    const doors = placeDoors([spawnRoom, room], g);
+    const gates = placeDoors([spawnRoom, room], g);
+
+    const doors = doorTilesOf(gates);
     expect(doors).toContainEqual({ x: 7, y: 5 });
     expect(doors).not.toContainEqual({ x: 7, y: 10 });
     expect(g[10][7]).toBe(BRANCH_DOOR_TILE);
@@ -409,11 +456,12 @@ describe("placeKeys — one key per doorway", () => {
       g[y][8] = DOOR_TILE;
       doors.push({ x: 8, y });
     }
-    const keys = placeKeys(g, { x: 3, y: 5 }, { x: 14, y: 11 }, [], doors, [], mulberry32(1));
+    const oneGate = [{ id: 0, colorIndex: 0, room: { x: 9, y: 4, w: 6, h: 10 }, doors }];
+    const { keys } = placeKeys(g, { x: 3, y: 5 }, { x: 14, y: 11 }, [], oneGate, [], mulberry32(1));
     expect(keys).toHaveLength(1);
   });
 
-  it("places one key per doorway when there are two separate ones", () => {
+  it("places ONE key for a room with two separate doorways — the defect this fixes", () => {
     const size = 20;
     const g: Tile[][] = Array.from({ length: size }, () => Array.from({ length: size }, () => 1 as Tile));
     for (let y = 4; y <= 14; y++) for (let x = 2; x <= 7; x++) g[y][x] = 0;
@@ -423,8 +471,12 @@ describe("placeKeys — one key per doorway", () => {
       g[y][8] = DOOR_TILE;
       doors.push({ x: 8, y });
     }
-    // (8,6)-(8,7) and (8,11)-(8,12) are two runs separated by wall.
-    const keys = placeKeys(g, { x: 3, y: 5 }, { x: 14, y: 13 }, [], doors, [], mulberry32(2));
-    expect(keys).toHaveLength(2);
+    // (8,6)-(8,7) and (8,11)-(8,12) are two runs separated by wall — two
+    // doorways into one room. That used to cost two keys, which is exactly the
+    // "pay twice to enter one space" complaint; one room is now one key.
+    const oneGate = [{ id: 0, colorIndex: 0, room: { x: 9, y: 4, w: 7, h: 11 }, doors }];
+    const { keys } = placeKeys(g, { x: 3, y: 5 }, { x: 14, y: 13 }, [], oneGate, [], mulberry32(2));
+    expect(keys).toHaveLength(1);
+    expect(keys[0].gateId).toBe(0);
   });
 });

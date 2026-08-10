@@ -105,6 +105,8 @@ import {
 } from "./effects";
 import { audio } from "./audio";
 import { computeScore, killPoints, sumScoreBreakdowns, zeroScoreBreakdown, type ScoreBreakdown } from "./scoring";
+import { gateIdAt } from "../map/gates";
+import { gateColorName } from "./gateColors";
 import { resolvePlayerDisplayName } from "./playerNames";
 import {
   PLAYER_STATS_ENABLED,
@@ -517,7 +519,15 @@ interface PlayerState {
   readonly campaignLevelIndex: number;
   weaponCooldown: number;
   meleeCooldown: number;
-  keysHeld: number;
+  /** Gate ids whose key this player holds. Never removed: a key is permanent
+   * inventory and opens every door of its own gate, as many times as the room
+   * has mouths. Granted team-wide (see `collectKeys`), so in coop every peer
+   * holds the same set — one key per gate would otherwise strand every teammate
+   * but the one who happened to walk over it. */
+  readonly heldGates: Set<number>;
+  /** Which gate the live "you need a key" toast is about, so it can name the
+   * colour. Meaningless while `lockedDoorToastFrames` is 0. */
+  lockedDoorGateId: number;
   kills: number;
   killScore: number;
   recentKillTimes: number[];
@@ -649,10 +659,15 @@ export interface EngineStats {
   /** Friday Hotfix's own ammo remaining — a separate pool from `bullets`/
    * `smg`/`rockets` (see `AmmoType`). */
   gas: number;
-  /** Dependency keys currently held (unused, in inventory). */
-  keysHeld: number;
-  /** Total keys placed on this level. */
-  keysTotal: number;
+  /** Gate ids whose key the local player holds, sorted — the HUD fills one pip
+   * per gate on the level and leaves the rest outlined. Replaces a bare
+   * held/total count, which stopped meaning anything once keys became permanent
+   * per-gate inventory: "collected / collectable" is a completionist stat, not
+   * a resource. */
+  heldGates: number[];
+  /** Every gate's colour index, indexed by gate id — what the pips are drawn
+   * in. Its length is the number of gates on the level. */
+  gateColors: number[];
   /** Running campaign score: points banked from every level already cleared
    * this run (see `EngineCarryover.priorScore`), plus the current level's own
    * kill points and bonuses for remaining health/ammo, completion speed, and
@@ -931,7 +946,6 @@ export class RaycasterEngine {
    * source alone isn't a unique id on its own. Multiplayer-reconciliation-only
    * bookkeeping — never read in single-player. */
   private readonly dropSeqByEnemyIndex = new Map<number, number>();
-  private readonly dropSeqByPlayerId = new Map<PlayerId, number>();
   /** Live weapon bullet tracers, fading over a few frames. Team-shared VFX. */
   private readonly traces: BulletTrace[] = [];
   /** Live flamethrower flame streams (Friday Hotfix's tracer replacement),
@@ -1426,7 +1440,8 @@ export class RaycasterEngine {
       campaignLevelIndex,
       weaponCooldown: 0,
       meleeCooldown: 0,
-      keysHeld: 0,
+      heldGates: new Set<number>(),
+      lockedDoorGateId: -1,
       kills: 0,
       killScore: 0,
       recentKillTimes: [],
@@ -1479,9 +1494,6 @@ export class RaycasterEngine {
       },
       addSwap: (amount) => {
         state.swap = Math.min(MAX_SWAP, state.swap + amount);
-      },
-      addKey: (amount) => {
-        state.keysHeld += amount;
       },
       healthAtMax: () => state.health >= MAX_HEALTH,
       ownedWeapons: state.ownedWeapons,
@@ -2128,7 +2140,7 @@ export class RaycasterEngine {
         swap: p.swap,
         ammo: { ...p.ammo },
         weaponIndex: p.weaponIndex,
-        keysHeld: p.keysHeld,
+        heldGates: [...p.heldGates].sort((a, b) => a - b),
         ownedWeapons: [...p.ownedWeapons].sort((a, b) => a - b),
         alive: p.status === "alive",
         killScore: p.killScore,
@@ -2229,7 +2241,8 @@ export class RaycasterEngine {
       p.swap = ps.swap;
       Object.assign(p.ammo, ps.ammo);
       p.weaponIndex = ps.weaponIndex;
-      p.keysHeld = ps.keysHeld;
+      p.heldGates.clear();
+      for (const g of ps.heldGates) p.heldGates.add(g);
       p.ownedWeapons.clear();
       for (const w of ps.ownedWeapons) p.ownedWeapons.add(w);
       // Diagnostic-only (never behavior-changing): an early-warning signal
@@ -2406,17 +2419,8 @@ export class RaycasterEngine {
           source: "disconnect",
         });
       }
-      for (let i = 0; i < p.keysHeld; i++) {
-        this.drops.push({
-          x: p.player.posX,
-          y: p.player.posY,
-          kind: "key",
-          amount: 1,
-          id: `disconnect:${id}:${dropSeq++}`,
-          source: "disconnect",
-        });
-      }
-      p.keysHeld = 0;
+      // No key drop, for the same reason as `killPlayer`: keys are team-wide
+      // and permanent, so nothing this player held is missing from anyone else.
     }
     if ([...this.players.values()].every((q) => q.status !== "alive")) {
       this.logTeamEliminationRosterDump("applyRosterRemoval");
@@ -3201,7 +3205,11 @@ export class RaycasterEngine {
     // lower still, since dry-firing while shoving a locked door puts this and
     // the out-of-ammo toast on screen in the same second.
     if (local.lockedDoorToastFrames > 0) {
-      drawLockedDoorToast(this.ctx, local.lockedDoorToastFrames / LOCKED_DOOR_TOAST_FRAMES);
+      drawLockedDoorToast(
+        this.ctx,
+        local.lockedDoorToastFrames / LOCKED_DOOR_TOAST_FRAMES,
+        this.map.gates[local.lockedDoorGateId]?.colorIndex ?? 1,
+      );
     }
     // Multiplayer-only (see `checkExit()`) — a quiet, standing readout
     // (unlike the transient toasts above) while any player counts down to
@@ -3725,11 +3733,15 @@ export class RaycasterEngine {
         const dy = item.y - p.player.posY;
         if (dx * dx + dy * dy < KEY_PICKUP_RADIUS * KEY_PICKUP_RADIUS) {
           item.collected = true;
-          p.keysHeld += 1;
-          console.log(
-            `%c[key] dependency key acquired — ${p.keysHeld} in inventory`,
-            "color:#f2d64b",
-          );
+          // Granted to the whole team, not just whoever walked over it. There
+          // is exactly one key per gate, so a per-player grant would leave
+          // every other player permanently unable to open that room — and the
+          // bots plan routes with no model of a teammate's inventory, so a coop
+          // session would wedge at the door rather than merely slow down.
+          // Deterministic: every peer simulates every player, and in
+          // single-player it is indistinguishable from granting it to one.
+          for (const holder of this.players.values()) holder.heldGates.add(item.gateId);
+          console.log(`%c[key] ${gateColorName(this.map, item.gateId)} key acquired`, "color:#f2d64b");
           break;
         }
       }
@@ -3860,11 +3872,6 @@ export class RaycasterEngine {
     if (kind === "weapon") return 1;
     if (kind === "health") return HEALTH_DROP_AMOUNT;
     if (kind === "swap") return SWAP_DROP_AMOUNT;
-    // Unreachable: "key" drops are only ever pushed directly by killPlayer()
-    // (see pushLootDrop's doc comment), never via pushLootDrop, so this
-    // branch has no live caller — kept only for LootKind exhaustiveness.
-    /* v8 ignore next -- @preserve */
-    if (kind === "key") return 1;
     return AMMO_META[kind].dropAmount;
   }
 
@@ -3936,8 +3943,9 @@ export class RaycasterEngine {
       const tile = this.map.grid[cy]?.[cx];
 
       const locked = tile === DOOR_TILE;
-      if (locked && p.keysHeld <= 0) {
-        this.cueLockedDoorHint(p);
+      const gateId = locked ? gateIdAt(this.map, cx, cy) : -1;
+      if (locked && !p.heldGates.has(gateId)) {
+        this.cueLockedDoorHint(p, gateId);
         continue;
       }
       if (!locked && tile !== BRANCH_DOOR_TILE) continue;
@@ -3957,9 +3965,11 @@ export class RaycasterEngine {
       }
       this.gridVersion += 1;
       if (locked) {
-        p.keysHeld -= 1;
+        // The key is not spent: it opens every doorway of its own gate, as many
+        // times as the room has mouths. Paying again for a door you already
+        // opened the other side of is the defect this replaced.
         console.log(
-          `%c[door] unlocked with a dependency key — ${p.keysHeld} left`,
+          `%c[door] opened with the ${gateColorName(this.map, gateId)} key`,
           "color:#568ebe;font-weight:bold",
         );
       } else {
@@ -4125,12 +4135,9 @@ export class RaycasterEngine {
    */
   private killPlayer(p: PlayerState): void {
     p.status = "dead";
-    if (p.keysHeld > 0) {
-      const dropSeq = this.dropSeqByPlayerId.get(p.id) ?? 0;
-      this.dropSeqByPlayerId.set(p.id, dropSeq + 1);
-      this.drops.push({ x: p.player.posX, y: p.player.posY, kind: "key", amount: p.keysHeld, id: `player:${p.id}:${dropSeq}` });
-      p.keysHeld = 0;
-    }
+    // No key drop: keys are granted team-wide and never spent, so every
+    // surviving teammate already holds every gate this player did. Dropping
+    // them would be handing over something nobody is missing.
     this.cycleSpectateTarget(p);
     // A strict generalization of the old `every(status === "dead")` check —
     // identical for the no-disconnect case, but also correctly ends the run
@@ -4287,29 +4294,36 @@ export class RaycasterEngine {
    * `simulate()` — so peers that cue differently stay in lockstep and no
    * recorded replay is affected (see `balanceHash.ts`'s rendering exemption).
    */
-  private cueLockedDoorHint(p: PlayerState): void {
+  private cueLockedDoorHint(p: PlayerState, gateId: number): void {
     if (p.id !== this.localPlayerId) return;
     if (p.keyPingFrames > 0) return;
 
     p.lockedDoorToastFrames = LOCKED_DOOR_TOAST_FRAMES;
+    p.lockedDoorGateId = gateId;
     p.keyPingFrames = KEY_PING_FRAMES;
-    p.keyPingTarget = this.nearestReachableKey(p);
+    p.keyPingTarget = this.keyForGate(p, gateId);
     p.keyPingBeatFrames = KEY_PING_LEAD_FRAMES;
     audio.playLockedDoor();
     // No coordinates, deliberately: `consoleSidebar.ts` mirrors these strings
     // straight onto the screen, and key/exit/secret locations never go into
     // one. The minimap is where "where" gets answered.
-    console.log("%c[door] locked — you need a dependency key", "color:#568ebe;font-weight:bold");
+    console.log(`%c[door] locked — you need the ${gateColorName(this.map, gateId)} key`, "color:#568ebe;font-weight:bold");
   }
 
   /**
-   * The uncollected key with the shortest *walking* distance from `p` — not
-   * the shortest straight line. Reuses the player-rooted BFS field the chase
-   * AI already maintains (`PathField`), whose `isWall` counts a still-locked
-   * `DOOR_TILE` as solid, so a key sitting behind another locked door is
-   * skipped instead of pointed at. Pointing the player at the key behind the
-   * very door they just failed to open is the exact failure this avoids, and
-   * a `Math.hypot` scan would do it routinely.
+   * `gateId`'s own uncollected key, if it can actually be walked to.
+   *
+   * This used to be "the nearest uncollected key of any kind", because keys
+   * were fungible and any of them opened the door being pushed. Now exactly one
+   * key opens it, so pointing at the nearest is pointing at the wrong one —
+   * confidently, and at a key that will not help.
+   *
+   * Still measured by *walking* distance rather than straight line, via the
+   * player-rooted BFS field the chase AI already maintains (`PathField`), whose
+   * `isWall` counts a still-locked `DOOR_TILE` as solid. So a key sitting
+   * behind another locked door is skipped instead of pointed at — and with one
+   * key per gate, `null` ("it is behind something else") is the honest answer
+   * rather than a reason to fall back to some other key.
    *
    * `ensure` is idempotent and re-floods only when the player crossed a tile
    * or the grid mutated — and `updateEnemyAi` calls it with these very
@@ -4322,7 +4336,7 @@ export class RaycasterEngine {
    * `null` when every remaining key is walled off, or none is left — the
    * denial and the toast still fire, there is simply nothing to point at.
    */
-  private nearestReachableKey(p: PlayerState): Point | null {
+  private keyForGate(p: PlayerState, gateId: number): Point | null {
     p.pathField.ensure(
       this.map,
       Math.floor(p.player.posX),
@@ -4332,11 +4346,11 @@ export class RaycasterEngine {
     let best: Point | null = null;
     let bestDist = Infinity;
     for (const key of this.map.keys) {
-      if (key.collected) continue;
+      if (key.collected || key.gateId !== gateId) continue;
       const dist = p.pathField.distAt(Math.floor(key.x), Math.floor(key.y));
-      // `-1` is `PathField`'s "unreached". Ties break on `map.keys` order,
-      // which is `placeKeys`' push order — stable across runs, so which key
-      // gets pinged is deterministic.
+      // `-1` is `PathField`'s "unreached". There is exactly one key per gate,
+      // so this loop finds at most one candidate and the comparison is really
+      // just "is it reachable at all".
       if (dist < 0 || dist >= bestDist) continue;
       bestDist = dist;
       best = { x: key.x, y: key.y };
@@ -5193,8 +5207,8 @@ export class RaycasterEngine {
       rockets: local.ammo.rockets,
       smg: local.ammo.smg,
       gas: local.ammo.gas,
-      keysHeld: local.keysHeld,
-      keysTotal: this.map.keys.length,
+      heldGates: [...local.heldGates].sort((a, b) => a - b),
+      gateColors: this.map.gates.map((g) => g.colorIndex),
       score: local.priorScore + levelScoreBreakdown.total,
       kills: local.kills,
       weaponIndex: local.weaponIndex,
