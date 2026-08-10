@@ -502,6 +502,14 @@ interface PlayerState {
   health: number;
   swap: number;
   godMode: boolean;
+  /** Latched true the moment any cheat fires, and never cleared within a run
+   * — unlike `godMode`, which IDDQD toggles. Carried across levels via
+   * `EngineCarryover.cheatsUsed`, because the consequence it stands for is
+   * campaign-wide: `main.ts`'s `recordRunHighscore` refuses a cheated run's
+   * leaderboard entry (and its replay) however many clean levels follow. Read
+   * only by the HUD badge — the recording gate itself reads `main.ts`'s own
+   * latch, set from the same `onCheatActivated` handler. */
+  cheatsUsed: boolean;
   readonly ammo: AmmoPools;
   readonly startingAmmoRef: AmmoPools;
   weaponIndex: number;
@@ -655,6 +663,9 @@ export interface EngineStats {
   score: number;
   /** Enemies defeated this level ("bugs squashed" for the commit summary). */
   kills: number;
+  /** True once any cheat has fired this run — drives the HUD's persistent
+   * "run not recorded" badge. See `PlayerState.cheatsUsed`. */
+  cheatsUsed: boolean;
   /** Index into `WEAPONS` of the currently-equipped weapon. */
   weaponIndex: number;
   /** Indices into `WEAPONS` the player currently owns/can switch to. */
@@ -766,6 +777,11 @@ export interface EngineCarryover {
    * equivalent field — its effect already persists via `bullets`/`rockets`/
    * `smg`/`gas`/`ownedWeapons` above. */
   godMode?: boolean;
+  /** Whether a cheat has already fired earlier in this campaign — so the
+   * HUD's badge survives a level transition, matching the recording gate it
+   * warns about (`main.ts` refuses the whole run, not the level it happened
+   * on). Defaults to false for a genuinely fresh run. */
+  cheatsUsed?: boolean;
   noClip?: boolean;
   /** Whether the FPS/frame-time overlay (Right-Ctrl) was showing — carried
    * across a level transition for the same reason the cheat flags above are:
@@ -1402,6 +1418,7 @@ export class RaycasterEngine {
       health,
       swap,
       godMode: carryover?.godMode ?? false,
+      cheatsUsed: carryover?.cheatsUsed ?? false,
       ammo,
       startingAmmoRef,
       weaponIndex,
@@ -4197,6 +4214,9 @@ export class RaycasterEngine {
       default:
         return;
     }
+    // Latched before the handler, so a cheat that fires is visible on the
+    // HUD from this frame on whether or not anything is listening.
+    p.cheatsUsed = true;
     this.handlers.onCheatActivated?.(code);
   }
 
@@ -5180,6 +5200,7 @@ export class RaycasterEngine {
       weaponIndex: local.weaponIndex,
       ownedWeapons: [...local.ownedWeapons],
       godMode: local.godMode,
+      cheatsUsed: local.cheatsUsed,
       noClip: local.player.noClip,
       showFps: local.showFps,
       levelScoreBreakdown: local.telemetry ? levelScoreBreakdown : undefined,

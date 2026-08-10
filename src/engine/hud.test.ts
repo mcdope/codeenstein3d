@@ -41,6 +41,7 @@ function fakeStats(overrides: Partial<EngineStats> = {}): EngineStats {
     gas: 30,
     keysHeld: 1,
     keysTotal: 3,
+    cheatsUsed: false,
     score: 500,
     kills: 4,
     weaponIndex: 0, // pistol -> bullets
@@ -392,6 +393,29 @@ describe("drawHud", () => {
     });
     return log;
   }
+
+  it("draws the cheated-run badge only once a cheat has fired", () => {
+    const clean = ctx();
+    drawHud(asCtx(clean), fakeStats({ cheatsUsed: false }));
+    expect(clean.fillText.mock.calls.map((call) => call[0]).join(" ")).not.toContain("NOT RECORDED");
+
+    const cheated = ctx();
+    drawHud(asCtx(cheated), fakeStats({ cheatsUsed: true }));
+    const texts = cheated.fillText.mock.calls.map((call) => call[0] as string);
+    expect(texts.some((t) => t.includes("CHEATS USED") && t.includes("RUN NOT RECORDED"))).toBe(true);
+  });
+
+  it("keeps the badge clear of the HUD panel and of the transient toasts' top-centre strip", () => {
+    // The two places it must not be: among the HUD's own slots (their spacing
+    // varies with canvas width) or where drawCheatToast/drawOutOfAmmoToast sit.
+    const c = ctx(800, 600);
+    drawHud(asCtx(c), fakeStats({ cheatsUsed: true }));
+    const badge = c.fillText.mock.calls.find((call) => String(call[0]).includes("CHEATS USED"))!;
+    const badgeY = badge[2] as number;
+    const panelTop = 600 - HUD_HEIGHT;
+    expect(badgeY).toBeLessThan(panelTop);
+    expect(badgeY).toBeGreaterThan(50); // below the toast strip (y 26-50)
+  });
 
   it("fills the stability bar red at/below 30%", () => {
     const c = ctx();

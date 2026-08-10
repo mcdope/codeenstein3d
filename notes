@@ -114,7 +114,7 @@ Durable rationale ("why is the code like this?") belongs in [`doc/dev/decisions.
 
 - [ ] **MP campaign re-run parked 2026-07-30** (user's call — the machines are in their room and an hours-long run puts out too much heat; measured cost is ~13 min/attempt at 2p, i.e. ~28h single-lane for a Hard-only sweep, and only one lane is currently usable). Resume needs lanes restored: the laptop's non-interactive `PATH` needs Node 20 (its `~/.bashrc` nvm block sits below the interactivity guard), and `# mcdope@nas.lan` is commented out in `ssh-hosts.env`. The 2026-07-24 Hard conclusions stay unverified against the fixed bot until then
 
-- [ ] fog of war for minimap, same as automap (never applies to compass, always points to exit)
+- [ ] **DELAYED UNTIL WE LEAVE BETA (user, 2026-08-10).** fog of war for minimap, same as automap (never applies to compass, always points to exit)
 - [ ] UI intro, with popouts from elements, showing how to do stuff. skippable. only to be run if no localStorage is present. while we are onto it also add a version tag to the localStorage which we can use to detect if a migration is needed.
 - [ ] decouple bot decisions from engine, for more performance. should also help with aim oszilattion etc. maybe even thread the bot(s)?
 - [ ] objects on walls (properly sized, not simply "slap a texture on the whole wall")

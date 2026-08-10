@@ -2755,6 +2755,40 @@ describe("RaycasterEngine — cheats", () => {
     expect(lastStats(handlers).godMode).toBe(false);
   });
 
+  it("latches cheatsUsed on the first cheat and never clears it, unlike godMode", () => {
+    const { engine, input, handlers } = makeEngine(fakeMap());
+    engine.advance(0.016); // onStats only reports from the first frame on
+    expect(lastStats(handlers).cheatsUsed).toBe(false);
+
+    input.cheat = "IDDQD";
+    engine.advance(0.016);
+    expect(lastStats(handlers).cheatsUsed).toBe(true);
+
+    // Toggling god mode back off does not un-cheat the run — the recording
+    // gate this flag warns about is not reversible either.
+    input.cheat = "IDDQD";
+    engine.advance(0.016);
+    expect(lastStats(handlers).godMode).toBe(false);
+    expect(lastStats(handlers).cheatsUsed).toBe(true);
+  });
+
+  it("does not latch cheatsUsed for an unrecognized code", () => {
+    const { engine, input, handlers } = makeEngine(fakeMap());
+    input.cheat = "IDBEHOLD"; // a real Doom code this game does not implement
+    engine.advance(0.016);
+
+    expect(lastStats(handlers).cheatsUsed).toBe(false);
+    expect(handlers.onCheatActivated).not.toHaveBeenCalled();
+  });
+
+  it("carries cheatsUsed in from a carryover, so the badge survives a level transition", () => {
+    const { engine, handlers } = makeEngine(fakeMap(), makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 10, rockets: 0, smg: 0, gas: 0, cheatsUsed: true },
+    });
+    engine.advance(0.016);
+    expect(lastStats(handlers).cheatsUsed).toBe(true);
+  });
+
   it("god mode makes damage a no-op", () => {
     const size = 12;
     const g = walledRoom(size);

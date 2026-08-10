@@ -539,6 +539,45 @@ export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void
   drawLabel(ctx, "SCORE", w - 12, labelY);
   drawValue(ctx, String(stats.score), w - 12, valueY, "#4cff6a", 22);
   ctx.textAlign = "left";
+
+  if (stats.cheatsUsed) drawCheatedRunBadge(ctx, y0);
+}
+
+/**
+ * Persistent "this run no longer counts" badge, drawn for the rest of the
+ * campaign once any cheat has fired — distinct from `drawCheatToast`, which
+ * confirms the keystroke and fades in about a second.
+ *
+ * It exists because the consequence used to be invisible until the run ended:
+ * `recordRunHighscore` drops a cheated run *and its replay* entirely, and said
+ * so only in a console line printed at game over. A playtest was lost to
+ * exactly that. The game knows the moment the cheat fires; this is it saying
+ * so.
+ *
+ * Sits on the HUD panel's own top edge rather than in the panel: every slot
+ * inside it is spoken for, and the width between them varies with canvas size,
+ * so anything placed among them would collide on some viewport. Top-center is
+ * taken too — that is where the transient toasts appear, and this must not
+ * compete with the very toast that precedes it.
+ */
+function drawCheatedRunBadge(ctx: CanvasRenderingContext2D, y0: number): void {
+  const text = "⚠ CHEATS USED — RUN NOT RECORDED";
+  const w = ctx.canvas.width;
+  ctx.save();
+  ctx.font = "bold 9px ui-monospace, monospace";
+  ctx.textAlign = "right";
+  const boxW = ctx.measureText(text).width + 12;
+  const boxH = 13;
+  const boxY = y0 - boxH - 2;
+  ctx.fillStyle = "rgba(4,8,10,0.8)";
+  ctx.fillRect(w - 12 - boxW, boxY, boxW, boxH);
+  ctx.strokeStyle = "rgba(255,90,74,0.6)";
+  ctx.lineWidth = 1;
+  outlineRect(ctx, w - 12 - boxW + 0.5, boxY + 0.5, boxW - 1, boxH - 1);
+  ctx.fillStyle = "#ff5a4a";
+  ctx.fillText(text, w - 18, boxY + 9);
+  ctx.textAlign = "left";
+  ctx.restore();
 }
 
 /** Small uppercase caption; honors the current `textAlign`. */
