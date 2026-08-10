@@ -28,6 +28,17 @@ const DISPLAY_HASH_LENGTH = 12;
 export interface HighscoreEntry {
   score: number;
   campaignName: string;
+  /** Who set this run, as typed in the Player name setting — absent when the
+   * player never set one, and absent on every entry recorded before the
+   * setting existed. Both render the same way (see `renderHighscoreTable`),
+   * so the fallback lives at the display end rather than being baked into
+   * stored data: a player who names themselves later shouldn't find their
+   * older runs permanently stamped "Player".
+   *
+   * The shipped default board (`./defaultHighscore.ts`) uses this to say
+   * which *bot profile* set each entry — "Casual"/"Gamer"/"Pro" — since those
+   * runs have no human behind them. */
+  playerName?: string;
   /** The file the run ended on — died on, or the last one cleared before the
    * campaign ran out of files. */
   levelName: string;
@@ -141,7 +152,16 @@ export async function loadHighscoresForDisplay(): Promise<HighscoreEntry[]> {
   const real = await loadHighscores();
   if (real.length > 0) return real;
   const { DEFAULT_HIGHSCORE_ENTRIES_COMPRESSED } = await import("./defaultHighscore");
-  return (await readBoard(DEFAULT_HIGHSCORE_ENTRIES_COMPRESSED)) as HighscoreEntry[];
+  // Sorted here rather than in the shipped file, which stays in bot-profile
+  // order on purpose: `generate-default-highscore.mjs` writes one entry per
+  // profile in `PROFILES` order, and both its `--backfill-*` modes and
+  // `verify:replay`'s entry indices rely on that mapping. A real board is
+  // already sorted at record time (`recordHighscore`), so this only ever
+  // reorders the shipped fallback — which was being rendered in whatever
+  // order the profiles happen to sit in, making the rank column disagree
+  // with the scores beside it for every first-time visitor.
+  const shipped = (await readBoard(DEFAULT_HIGHSCORE_ENTRIES_COMPRESSED)) as HighscoreEntry[];
+  return [...shipped].sort((a, b) => b.score - a.score);
 }
 
 /** Insert `entry` into the board, keep it sorted best-first, truncate to the

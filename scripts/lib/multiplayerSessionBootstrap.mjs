@@ -304,11 +304,12 @@ export async function bootstrapMultiplayerSession(browser, options) {
   for (const [i, page] of pages.entries()) await makeEligible(page, engineName, devServerUrl, botRotSpeedMuls[i]);
 
   // Typed before Create/Join, because that is when each side reads it — the
-  // host at "Start Session", a guest at connect time.
+  // host at "Start Session", a guest at connect time. It lives in the general
+  // settings (it also names your highscore entries), so it needs no tab click
+  // and is reachable whichever tab is showing.
   for (const [i, page] of pages.entries()) {
     if (!playerNames[i]) continue;
-    await page.click("#tab-multiplayer");
-    await page.fill("#multiplayer-player-name-input", playerNames[i]);
+    await page.fill("#player-name-input", playerNames[i]);
     log(`${playerIds[i]}: chose the name "${playerNames[i]}"`);
   }
 

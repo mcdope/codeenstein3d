@@ -24,6 +24,7 @@ import { bgm } from "./engine/bgm";
 import { textures, type WadLoadSummary } from "./engine/textures";
 import { ONLINE_WAD_CATALOG, type OnlineWadEntry } from "./wad/onlineWadCatalog";
 import { hashRun, loadHighscoresForDisplay, recordHighscore, type HighscoreEntry } from "./engine/highscores";
+import { sanitizePlayerName } from "./engine/playerNames";
 import { renderHighscoreTable } from "./ui/highscorePanel";
 import { GameHud, type StatsScreenInfo } from "./ui/gameHud";
 import type { ScoreBreakdown } from "./engine/scoring";
@@ -107,6 +108,10 @@ const SCENE_HEIGHT = 400;
  * just the C header today, the only header-file extension this app parses. */
 const BONUS_LEVEL_EXTENSIONS = new Set(["h"]);
 
+/** localStorage key for the standing player name (see `loadPlayerName`) —
+ * same "declared next to the thing that reads it" placement as the gore and
+ * difficulty keys below. */
+const PLAYER_NAME_KEY = "codeenstein-player-name";
 /** localStorage key for the standing gore-level preference (see `loadGoreLevel`
  * below) — declared up here, not next to `loadGoreLevel`/`saveGoreLevel`
  * themselves, because `currentGoreLevel`'s module-level initializer calls
@@ -177,10 +182,12 @@ const multiplayerSubtabPanelJoin = requireElement<HTMLElement>("#multiplayer-sub
 // per-player one is `multiplayerPlayerNameInput` below; the two sit in
 // different places in the panel for exactly this reason.
 const multiplayerDisplayNameInput = requireElement<HTMLInputElement>("#multiplayer-display-name-input");
-/** This peer's own in-game name, used whichever role it ends up playing —
- * read at "Start Session" time by the host and at connect time by a guest,
- * never stored, so editing it right up to that moment works. */
-const multiplayerPlayerNameInput = requireElement<HTMLInputElement>("#multiplayer-player-name-input");
+/** The player's own name, one value for the whole game: it labels their
+ * highscore entries and, in multiplayer, floats above their character. Lives
+ * in the general settings rather than the Multiplayer tab because
+ * single-player is where most of its uses are. Persisted (`PLAYER_NAME_KEY`),
+ * unlike every other multiplayer field. */
+const playerNameInput = requireElement<HTMLInputElement>("#player-name-input");
 const multiplayerPublicCheckbox = requireElement<HTMLInputElement>("#multiplayer-public-checkbox");
 const multiplayerMaxPlayersSelect = requireElement<HTMLSelectElement>("#multiplayer-max-players");
 const multiplayerHostCreateButton = requireElement<HTMLButtonElement>("#multiplayer-host-create");
@@ -666,6 +673,13 @@ difficultySelect.addEventListener("change", () => {
   currentDifficulty = difficultySelect.value as DifficultyLevel;
   saveDifficulty(currentDifficulty);
 });
+
+// Same standing-preference shape as gore/difficulty, on "input" rather than
+// "change" so a name typed and then immediately used (hosting a session,
+// finishing a run) is already stored — a text field's "change" only fires on
+// blur, which is easy to never do.
+playerNameInput.value = loadPlayerName();
+playerNameInput.addEventListener("input", () => savePlayerName(playerNameInput.value));
 
 if (!isFileSystemAccessSupported()) {
   selectButton.disabled = true;
@@ -1735,7 +1749,7 @@ async function startMultiplayerSessionAsHost(): Promise<void> {
     // last guest has told us its own (see `sessionSetupHost.ts`).
     const guestEntries = [...links.entries()];
     const guestNames = await Promise.all(guestEntries.map(([, link]) => runHostSessionSetupPhaseA(link.channels)));
-    const displayNames: Record<PlayerId, string> = { [HOST_PLAYER_ID]: multiplayerPlayerNameInput.value };
+    const displayNames: Record<PlayerId, string> = { [HOST_PLAYER_ID]: playerNameInput.value };
     guestEntries.forEach(([guestId], i) => (displayNames[guestId] = guestNames[i]));
 
     const setupOptions: HostSessionSetupOptions = {
@@ -1864,7 +1878,7 @@ async function startMultiplayerSessionAsGuest(): Promise<void> {
   if (!activeMultiplayerConnection || activeMultiplayerConnection.role !== "guest") return;
   const { channels, peerConnection } = activeMultiplayerConnection;
   try {
-    const result = await runGuestSessionSetup(channels, multiplayerPlayerNameInput.value);
+    const result = await runGuestSessionSetup(channels, playerNameInput.value);
     beginMultiplayerLevel();
     const totalPlayers = result.roster.length;
     updateMultiplayerGuestLiveCountDisplay(totalPlayers, totalPlayers);
@@ -3368,6 +3382,27 @@ function persistProgress(stats: EngineStats): void {
 // GORE_KEY itself is declared near the top of the file — see its doc comment
 // for why it can't live down here next to the functions that use it.
 
+/** Read the saved player name, or `""` when none was ever set or storage is
+ * unavailable — same "never throw" philosophy as `loadGoreLevel`. Sanitized
+ * on the way out as well as in: a value edited by hand in devtools, or left
+ * by an older build, gets the same treatment a freshly-typed one does. */
+function loadPlayerName(): string {
+  try {
+    return sanitizePlayerName(localStorage.getItem(PLAYER_NAME_KEY) ?? "");
+  } catch {
+    // Fall through to "no name chosen".
+  }
+  return "";
+}
+
+function savePlayerName(name: string): void {
+  try {
+    localStorage.setItem(PLAYER_NAME_KEY, name);
+  } catch (err) {
+    console.warn("[settings] Failed to save player name:", err);
+  }
+}
+
 /** Read the saved gore level, falling back to `DEFAULT_GORE_LEVEL` on any
  * missing/invalid value or if storage is unavailable (e.g. private browsing) —
  * same "never throw" philosophy as `loadCampaignSave`. */
@@ -3482,9 +3517,15 @@ async function recordRunHighscore(
     // falls back to the single ended-on file's AST if the background
     // aggregation genuinely never finished in time (see `CodebaseStats.hash`).
     const hash = codebaseStats?.hash ?? (await hashRun(JSON.stringify(parsed), campaignName()));
+    const playerName = loadPlayerName();
     await recordHighscore({
       score: stats.score,
       campaignName: campaignName(),
+      // Read at record time, not run-start: the setting is a standing
+      // preference, and a name typed mid-run is still this player's name.
+      // Omitted entirely when unset, so "never named themselves" and "played
+      // before the setting existed" stay the same case.
+      ...(playerName ? { playerName } : {}),
       levelName,
       levelsCleared,
       hash,

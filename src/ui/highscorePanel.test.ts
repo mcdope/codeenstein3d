@@ -39,6 +39,18 @@ describe("renderHighscoreTable — empty state", () => {
   });
 });
 
+/** A row's cell for the column headed `header`, resolved through the table's
+ * own `<thead>` rather than by a hard-coded index — adding the Player column
+ * shifted every index in this file at once, which is exactly the failure this
+ * avoids next time. */
+function cell(container: HTMLElement, header: string, rowIndex = 0): HTMLTableCellElement {
+  const headers = [...container.querySelectorAll("thead th")].map((th) => th.textContent);
+  const column = headers.indexOf(header);
+  if (column === -1) throw new Error(`No "${header}" column — headers are: ${headers.join(", ")}`);
+  const row = container.querySelectorAll("tbody tr")[rowIndex];
+  return row.querySelectorAll("td")[column] as HTMLTableCellElement;
+}
+
 describe("renderHighscoreTable — populated board", () => {
   it("renders one row per entry, ranked from 1", () => {
     const container = document.createElement("div");
@@ -52,23 +64,21 @@ describe("renderHighscoreTable — populated board", () => {
   it("formats the score with locale grouping", () => {
     const container = document.createElement("div");
     renderHighscoreTable(container, [entry({ score: 1234567 })]);
-    const cells = container.querySelectorAll("tbody td");
-    expect(cells[1].textContent).toBe((1234567).toLocaleString());
+    expect(cell(container, "Score").textContent).toBe((1234567).toLocaleString());
   });
 
   it("shows the campaign name, levels cleared, and level name", () => {
     const container = document.createElement("div");
     renderHighscoreTable(container, [entry({ campaignName: "acme/widgets", levelsCleared: 5, levelName: "stage05.py" })]);
-    const cells = container.querySelectorAll("tbody td");
-    expect(cells[2].textContent).toBe("acme/widgets");
-    expect(cells[5].textContent).toBe("5");
-    expect(cells[6].textContent).toBe("stage05.py");
+    expect(cell(container, "Campaign").textContent).toBe("acme/widgets");
+    expect(cell(container, "Levels").textContent).toBe("5");
+    expect(cell(container, "Ended On").textContent).toBe("stage05.py");
   });
 
   it("shows the truncated hash with the full hash as a tooltip", () => {
     const container = document.createElement("div");
     renderHighscoreTable(container, [entry({ hash: "abcdef0123456789fullhash" })]);
-    const hashCell = container.querySelectorAll("tbody td")[7] as HTMLTableCellElement;
+    const hashCell = cell(container, "Hash");
     expect(hashCell.textContent).toBe("abcdef0123456789fullhash".slice(0, 12));
     expect(hashCell.title).toBe("abcdef0123456789fullhash");
   });
@@ -76,26 +86,43 @@ describe("renderHighscoreTable — populated board", () => {
   it("formats codebase lines-of-code and complexity when present", () => {
     const container = document.createElement("div");
     renderHighscoreTable(container, [entry({ codebaseLinesOfCode: 50000, codebaseComplexity: 1234 })]);
-    const cells = container.querySelectorAll("tbody td");
-    expect(cells[3].textContent).toBe((50000).toLocaleString());
-    expect(cells[4].textContent).toBe((1234).toLocaleString());
-    expect(cells[3].className).not.toBe("muted");
+    expect(cell(container, "Lines").textContent).toBe((50000).toLocaleString());
+    expect(cell(container, "Complexity").textContent).toBe((1234).toLocaleString());
+    expect(cell(container, "Lines").className).not.toBe("muted");
   });
 
   it("shows a muted em-dash for absent lines-of-code and complexity", () => {
     const container = document.createElement("div");
     renderHighscoreTable(container, [entry()]);
-    const cells = container.querySelectorAll("tbody td");
-    expect(cells[3].textContent).toBe("—");
-    expect(cells[3].className).toBe("muted");
-    expect(cells[4].textContent).toBe("—");
-    expect(cells[4].className).toBe("muted");
+    expect(cell(container, "Lines").textContent).toBe("—");
+    expect(cell(container, "Lines").className).toBe("muted");
+    expect(cell(container, "Complexity").textContent).toBe("—");
+    expect(cell(container, "Complexity").className).toBe("muted");
+  });
+
+  it("shows the player's own name when the entry has one", () => {
+    const container = document.createElement("div");
+    renderHighscoreTable(container, [entry({ playerName: "Tobi" })]);
+    expect(cell(container, "Player").textContent).toBe("Tobi");
+    expect(cell(container, "Player").className).not.toContain("muted");
+  });
+
+  it("falls back to a muted 'Player' for an entry with no name", () => {
+    // Both cases render identically on purpose: an entry recorded before the
+    // setting existed, and one whose player never named themselves. The
+    // fallback is display-only, so naming yourself later doesn't leave older
+    // runs stamped with it.
+    const container = document.createElement("div");
+    renderHighscoreTable(container, [entry(), entry({ playerName: "" })]);
+    expect(cell(container, "Player").textContent).toBe("Player");
+    expect(cell(container, "Player").className).toContain("muted");
+    expect(cell(container, "Player", 1).textContent).toBe("Player");
   });
 });
 
 describe("renderHighscoreTable — Watch Replay button", () => {
   function replayCell(container: HTMLElement): HTMLTableCellElement {
-    return container.querySelectorAll("tbody td")[8] as HTMLTableCellElement;
+    return cell(container, "Replay");
   }
 
   it("renders no button when the entry has no replay at all", () => {

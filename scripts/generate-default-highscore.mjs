@@ -52,7 +52,7 @@ import { runQualifyLoop } from "./lib/qualifyLoop.mjs";
 import { assertPlanMatchesEngine } from "./lib/planEngineMatch.mjs";
 import { planRoute } from "./lib/routePlanner.mjs";
 import { installVirtualClock } from "./lib/virtualClock.mjs";
-import { DEV_SERVER_URL, PROFILES, planLevels, waitForTestHooks, dismissOverlay, installDifficulty } from "./run-balancing-telemetry.mjs";
+import { DEV_SERVER_URL, PROFILES, planLevels, waitForTestHooks, dismissOverlay, installDifficulty, installPlayerName } from "./run-balancing-telemetry.mjs";
 import { profilesHash } from "./lib/profiles.mjs";
 
 const CAMPAIGN_DIR = path.join(REPO_ROOT, "demo-campaign");
@@ -262,6 +262,9 @@ async function runOneAttempt(browser, profileName, profile, levelPlans) {
 
     await installVirtualClock(page);
     await installDifficulty(page, "normal");
+    // The recorded entry's own `playerName`, so the shipped board says which
+    // bot profile set each row — see `installPlayerName`'s doc comment.
+    await installPlayerName(page, profileName);
     await page.goto(`${DEV_SERVER_URL}/?testHooks=1&botRotSpeedMul=${profile.rotSpeedMultiplier}`);
     await page.click("#tab-demo");
     await page.click("#launch-demo-campaign");
@@ -351,9 +354,66 @@ async function backfillRotSpeed() {
   console.log("Now run `npm run verify:replay` (with a dev server up) to confirm the board actually plays back.");
 }
 
+/**
+ * `--backfill-player-name`: stamps `playerName` onto the already-shipped
+ * board's three entries instead of replaying the whole campaign.
+ *
+ * Same recoverable-by-write-order argument as `--backfill-rot-speed` above,
+ * and the same two guards on it: one entry per profile in
+ * `Object.entries(PROFILES)` order, with `PROFILES_HASH` pinning that those
+ * profiles have not moved. Unlike that back-fill, this one cannot break
+ * playback if the mapping were somehow wrong — a name is cosmetic, it feeds
+ * no simulation input — but the mapping is the same one, so it is checked the
+ * same way rather than trusted because the stakes are lower.
+ *
+ * Regenerating instead would cost ~33 minutes, is wedge-prone at
+ * demo-campaign L6, and would replace three runs that are otherwise perfectly
+ * good with three different ones purely to add a label.
+ */
+async function backfillPlayerName() {
+  const { unpackBoardFromStorage } = await loadEngineModules();
+  const source = fs.readFileSync(OUTPUT_FILE, "utf8");
+  const match = source.match(/DEFAULT_HIGHSCORE_ENTRIES_COMPRESSED = "([^"]+)"/);
+  if (!match) {
+    console.error(`Could not find DEFAULT_HIGHSCORE_ENTRIES_COMPRESSED in ${OUTPUT_FILE}.`);
+    process.exit(1);
+  }
+
+  const entries = await unpackBoardFromStorage(match[1]);
+  const profiles = Object.entries(PROFILES);
+  if (entries.length !== profiles.length) {
+    console.error(
+      `Board has ${entries.length} entries but there are ${profiles.length} profiles — the index-to-profile mapping this back-fill relies on does not hold. Regenerate instead.`,
+    );
+    process.exit(1);
+  }
+
+  const expectedHash = profilesHash();
+  const shippedHash = source.match(/PROFILES_HASH = "([^"]+)"/)?.[1];
+  if (shippedHash !== expectedHash) {
+    console.error(
+      `PROFILES_HASH in ${OUTPUT_FILE} is ${shippedHash} but the profiles now hash to ${expectedHash} — this board was recorded by profiles that have since changed, so the names below would be the wrong ones. Regenerate instead.`,
+    );
+    process.exit(1);
+  }
+
+  entries.forEach((entry, i) => {
+    const [profileName] = profiles[i];
+    entry.playerName = profileName;
+    console.log(`  entry ${i} (score ${entry.score}): playerName = ${profileName}`);
+  });
+
+  await writeDefaultHighscoreFile(entries);
+  console.log(`\nStamped ${entries.length} entries — wrote ${OUTPUT_FILE}.`);
+}
+
 async function main() {
   if (process.argv.includes("--backfill-rot-speed")) {
     await backfillRotSpeed();
+    return;
+  }
+  if (process.argv.includes("--backfill-player-name")) {
+    await backfillPlayerName();
     return;
   }
   const levelPlans = await planLevels();

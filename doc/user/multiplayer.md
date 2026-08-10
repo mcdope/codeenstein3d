@@ -18,11 +18,12 @@ Play a campaign as a coop team, 2-4 players, in real time. There's no deathmatch
    for a very large one: you all play exactly the campaign the host has, however
    long or short that turned out to be.
 
-2. Open the **Multiplayer** tab, then the **Host** sub-tab.
-3. Pick how many players you want (2-4) from the **Max players** dropdown, optionally give the session a display name, and click **Create Session**.
-4. Share the short code your browser shows you with whoever you want to play with — it's just letters and digits, easy to read out loud or paste into a chat.
-5. As each friend joins with that code, they connect automatically — you don't need to generate a new code or do anything between joins. A live "N/max players connected" line shows who's in so far.
-6. Click **Start Session** whenever you're ready — you don't have to wait for every slot to fill; the game starts with however many players have joined at that moment.
+2. Optionally set your **Player name** in the Gameplay settings first — it floats above your character so your teammates can tell who is who, and it labels your own highscore entries. It's remembered, so this is a one-time thing. Blank is fine: you show up as "Host" or "Guest-1".
+3. Open the **Multiplayer** tab, then the **Host** sub-tab.
+4. Pick how many players you want (2-4) from the **Max players** dropdown, optionally give the session a display name (that one names the *session* in the public lobby, not you), and click **Create Session**.
+5. Share the short code your browser shows you with whoever you want to play with — it's just letters and digits, easy to read out loud or paste into a chat.
+6. As each friend joins with that code, they connect automatically — you don't need to generate a new code or do anything between joins. A live "N/max players connected" line shows who's in so far.
+7. Click **Start Session** whenever you're ready — you don't have to wait for every slot to fill; the game starts with however many players have joined at that moment.
 
 ## Joining a session
 

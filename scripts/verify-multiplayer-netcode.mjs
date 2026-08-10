@@ -152,18 +152,18 @@ async function main() {
     // exchanged by a real handshake between two real browsers, so nothing in
     // the unit suite can see them actually arrive.
     console.log("Both peers: choosing display names...");
-    await hostPage.click("#tab-multiplayer");
-    await hostPage.fill("#multiplayer-player-name-input", HOST_NAME);
-    await guestPage.click("#tab-multiplayer");
-    await guestPage.fill("#multiplayer-player-name-input", GUEST_NAME);
+    await hostPage.fill("#player-name-input", HOST_NAME);
+    await guestPage.fill("#player-name-input", GUEST_NAME);
 
     console.log("Host: creating a session...");
+    await hostPage.click("#tab-multiplayer");
     await hostPage.click("#multiplayer-host-create");
     await hostPage.waitForSelector("#multiplayer-host-code-wrap:not([hidden])", { timeout: 15_000 });
     const code = (await hostPage.textContent("#multiplayer-host-code")).trim();
     console.log(`Host code: ${code}`);
 
     console.log("Guest: joining with the host's code...");
+    await guestPage.click("#tab-multiplayer");
     await guestPage.click("#multiplayer-subtab-join");
     await guestPage.fill("#multiplayer-join-code-input", code);
     await guestPage.click("#multiplayer-join-connect");
