@@ -620,6 +620,24 @@ a.settings-btn {
   color: var(--text);
 }
 
+/* "This listing is partial" — drawn above the tree by `renderFileTree` when
+ * GitHub truncated the file list. Sticky so it stays readable while
+ * scrolling a big tree; it's a property of the whole listing, not of the
+ * rows currently in view. */
+.tree-notice {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 8px 8px;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--error);
+  background: var(--bg-panel);
+  border: 1px solid var(--error);
+  border-radius: 3px;
+}
+
 .tree-list {
   list-style: none;
   margin: 0;

@@ -18,9 +18,27 @@ export function renderFileTree(
 ): void {
   container.textContent = "";
 
+  // A partial listing is a property of the tree, so it stays on screen for
+  // as long as the tree does — a one-off message at load time is exactly
+  // what the player misses. Only `fetchGithubTree` ever sets this.
+  if (root.truncated) container.appendChild(buildTruncatedNotice());
+
   // The root's children are the top-level entries of the workspace.
   const list = buildList(root.children ?? [], callbacks);
   container.appendChild(list);
+}
+
+/** The wording deliberately matches `doc/user/troubleshooting.md`'s
+ * "A big GitHub repo loaded, but it seems incomplete" entry, down to the
+ * advice — cloning and using the **Local** tab is the only real fix, since
+ * the truncation happens inside GitHub's API before anything here sees it. */
+function buildTruncatedNotice(): HTMLElement {
+  const notice = document.createElement("p");
+  notice.className = "tree-notice";
+  notice.textContent =
+    "⚠ Partial listing — GitHub truncated the file list for this repo, so some files are " +
+    "missing. Clone it and use the Local tab for the whole thing.";
+  return notice;
 }
 
 function buildList(nodes: TreeNode[], callbacks: FileTreeCallbacks): HTMLUListElement {

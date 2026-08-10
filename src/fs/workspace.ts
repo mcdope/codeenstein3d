@@ -29,6 +29,16 @@ export interface TreeNode {
   handle: FileSystemFileHandle | FileSystemDirectoryHandle | RemoteFileHandle;
   /** Populated for directories; undefined for files. */
   children?: TreeNode[];
+  /**
+   * Set on the **root** only, and only by `fetchGithubTree`, when GitHub's
+   * API reported that it truncated the file listing for a very large repo —
+   * i.e. "this listing is incomplete, through no fault of anything here".
+   * A local directory read is never partial, so it never sets this. Carried
+   * on the tree rather than reported out-of-band because the incompleteness
+   * outlives the load: `renderFileTree` marks the tree for as long as it is
+   * on screen, instead of a message the player has already scrolled past.
+   */
+  truncated?: boolean;
 }
 
 /**

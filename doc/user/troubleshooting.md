@@ -59,11 +59,18 @@ A file whose parse simply *fails* is also skipped rather than ending the run, wi
 ## "A big GitHub repo loaded, but it seems incomplete"
 
 GitHub's API truncates the file listing for very large repositories, and there is nothing
-this app can do about it from the browser. When that happens the console says so:
+this app can do about it from the browser. You don't have to guess when it happened: a
+marker sits above the file tree for as long as that repo is loaded —
+
+> ⚠ Partial listing — GitHub truncated the file list for this repo, so some files are
+> missing. Clone it and use the Local tab for the whole thing.
+
+— and the console panel says the same thing in more words:
 
 ```
 [github] The tree for "owner/repo" was truncated by the GitHub API — this repo is
-large enough that some files may be missing.
+large enough that some files are missing. The campaign still plays, built from
+whatever GitHub returned; clone the repo and use the Local tab to get all of it.
 ```
 
 The campaign still plays; it's just built from whatever GitHub returned. For a repo that
@@ -71,7 +78,18 @@ size, cloning it and using the **Local** tab gets you the whole thing.
 
 Note also that GitHub requests here are unauthenticated, so they're subject to the normal
 public rate limit. If loads start failing after a lot of browsing, that's usually it —
-waiting is the fix.
+waiting is the fix, and the app now says so outright rather than reporting a bare `403`:
+
+```
+Failed to fetch repository tree: you've hit GitHub's public rate limit — it resets in
+about 7 minutes. Requests from this app are unauthenticated, so a lot of browsing runs
+the limit down. Waiting is the fix — or load a local folder from the Local tab in the
+meantime.
+```
+
+The same message can appear **mid-session**, when a level's source file is fetched — file
+contents are loaded one at a time as you reach them, not all at once with the listing, so a
+repo that loaded fine ten minutes ago can start failing partway through a campaign.
 
 ## "Select Workspace is greyed out"
 

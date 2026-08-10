@@ -15,6 +15,28 @@ function jsonResponse(body: unknown, ok = true, status = 200, statusText = "OK")
   } as unknown as Response;
 }
 
+/** A failed Response carrying real `Headers`, so the rate-limit detection
+ * (which reads `x-ratelimit-remaining`/`x-ratelimit-reset`) sees the same
+ * shape a real one has. `jsonResponse` deliberately has no `headers` at all,
+ * which is also a case worth covering — a mid-session `raw.githubusercontent`
+ * failure is constructed that way in the tests below. */
+function errorResponse(status: number, statusText: string, headers: Record<string, string> = {}): Response {
+  return {
+    ok: false,
+    status,
+    statusText,
+    headers: new Headers(headers),
+    json: async () => null,
+    body: null,
+  } as unknown as Response;
+}
+
+/** Unix-seconds timestamp `minutes` from now, as GitHub sends
+ * `x-ratelimit-reset`. */
+function resetInMinutes(minutes: number): string {
+  return String(Math.floor((Date.now() + minutes * 60_000) / 1000));
+}
+
 /** A fake streaming Response whose body yields `chunks` one at a time via
  * ReadableStreamDefaultReader-shaped `.read()` calls. */
 function streamResponse(chunks: Uint8Array[]): Response {
@@ -199,21 +221,82 @@ describe("fetchGithubTree", () => {
     expect(lib.children![0].path).toBe("widgets/src/lib/util.c");
   });
 
-  it("warns when the API reports the tree was truncated, and stays silent otherwise", async () => {
+  it("marks the tree and logs when the API reports it was truncated, and stays silent otherwise", async () => {
+    // `console.log`, not `console.warn` — the in-game console sidebar only
+    // mirrors `log`, and a warning that reaches devtools alone is how this
+    // stayed invisible to players. Asserted here so a revert to `warn`
+    // fails rather than silently un-mirroring it.
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
       .mockResolvedValueOnce(jsonResponse({ tree: [], truncated: true }));
-    await fetchGithubTree(ref);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls[0][0]).toContain("truncated");
+    const truncatedTree = await fetchGithubTree(ref);
+    expect(truncatedTree.truncated).toBe(true);
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy.mock.calls[0][0]).toContain("truncated");
+    expect(warnSpy).not.toHaveBeenCalled();
 
-    warnSpy.mockClear();
+    logSpy.mockClear();
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
       .mockResolvedValueOnce(jsonResponse({ tree: [] })); // truncated omitted
-    await fetchGithubTree(ref);
-    expect(warnSpy).not.toHaveBeenCalled();
+    const wholeTree = await fetchGithubTree(ref);
+    expect(wholeTree.truncated).toBeUndefined();
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+
+  // Requests here are unauthenticated, so hitting the public rate limit is a
+  // routine outcome of browsing, not an exotic one — and "(403 Forbidden)"
+  // reads like a permissions problem the player cannot do anything about.
+  describe("rate-limit reporting", () => {
+    it("names the rate limit, and when it resets, on a 403 with the budget exhausted", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+        .mockResolvedValueOnce(
+          errorResponse(403, "Forbidden", {
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": resetInMinutes(7),
+          }),
+        );
+      await expect(fetchGithubTree(ref)).rejects.toThrow(
+        /^GitHub's public rate limit reached — it resets in about 7 minutes\./,
+      );
+    });
+
+    it("says 'minute' rather than 'minutes' when only one is left", async () => {
+      fetchMock.mockResolvedValueOnce(
+        errorResponse(403, "Forbidden", {
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": resetInMinutes(0.5),
+        }),
+      );
+      await expect(fetchGithubTree(ref)).rejects.toThrow("resets in about 1 minute.");
+    });
+
+    it("reports a 429 the same way", async () => {
+      fetchMock.mockResolvedValueOnce(errorResponse(429, "Too Many Requests", { "x-ratelimit-remaining": "0" }));
+      await expect(fetchGithubTree(ref)).rejects.toThrow(/^GitHub's public rate limit reached\. Requests/);
+    });
+
+    it("omits the reset clause when the header is missing, unparseable, or already past", async () => {
+      const cases: Record<string, string>[] = [
+        { "x-ratelimit-remaining": "0" },
+        { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "not-a-number" },
+        { "x-ratelimit-remaining": "0", "x-ratelimit-reset": resetInMinutes(-5) },
+      ];
+      for (const headers of cases) {
+        fetchMock.mockResolvedValueOnce(errorResponse(403, "Forbidden", headers));
+        await expect(fetchGithubTree(ref)).rejects.toThrow(/^GitHub's public rate limit reached\. Requests from this app/);
+      }
+    });
+
+    it("leaves a 403 that is NOT a spent budget as a plain access failure", async () => {
+      // A real permissions/blocked-repo 403 must not be mislabelled as "wait
+      // a few minutes" — the budget header is what distinguishes them.
+      fetchMock.mockResolvedValueOnce(errorResponse(403, "Forbidden", { "x-ratelimit-remaining": "37" }));
+      await expect(fetchGithubTree(ref)).rejects.toThrow("not found or inaccessible (403 Forbidden)");
+    });
   });
 
   it("threads the abort signal through both underlying fetch calls", async () => {
@@ -285,8 +368,28 @@ describe("GithubFileHandle (via a fetched tree's file node)", () => {
     const tree = await fetchGithubTree(ref);
     const handle = tree.children![0].handle as RemoteFileHandle;
 
+    // No `headers` on this one at all, which some fetch mocks (and older
+    // runtimes) really do produce — the rate-limit check must not throw on it.
     fetchMock.mockResolvedValueOnce({ ok: false, status: 404, statusText: "Not Found" } as unknown as Response);
     await expect(handle.getFile()).rejects.toThrow("404 Not Found");
+  });
+
+  it("names the rate limit on a mid-session 403, without needing the budget headers", async () => {
+    // File content is fetched lazily, level by level, so this failure lands
+    // long after the tree loaded fine — a generic 403 there is even less
+    // interpretable than one during the initial load. It also can't be
+    // *confirmed* the way an api.github.com one can: raw.githubusercontent
+    // sends no `Access-Control-Expose-Headers`, so its rate-limit headers
+    // are invisible to a page. A header-gated check would therefore never
+    // fire here at all — hence no headers on this mock, deliberately.
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ default_branch: "main" }))
+      .mockResolvedValueOnce(jsonResponse({ tree: [{ path: "main.c", type: "blob" }] }));
+    const tree = await fetchGithubTree(ref);
+    const handle = tree.children![0].handle as RemoteFileHandle;
+
+    fetchMock.mockResolvedValueOnce(errorResponse(403, "Forbidden"));
+    await expect(handle.getFile()).rejects.toThrow("GitHub's public rate limit reached.");
   });
 
   it("the synthesized root/directory nodes' handle always rejects getFile()", async () => {
