@@ -13,6 +13,18 @@
  * `predev`/`prebuild` hooks in `package.json`. `public/wads/` is gitignored
  * — these are real-world game data files fetched fresh per machine/CI run
  * rather than committed to the repo.
+ *
+ * **Nothing here is load-bearing, so a failure must not be fatal by
+ * default.** The game ships procedural default textures and a missing pack
+ * already degrades cleanly at runtime (the sidebar's online-pack list is
+ * simply shorter), whereas exiting non-zero from a `predev`/`prebuild` hook
+ * means a clone with no network — or one dead catalog URL — can neither
+ * start the dev server nor build at all. So a download/extract/parse failure
+ * warns, the run continues with whatever it managed to fetch, and the exit
+ * code stays 0. Pass `--strict` (or set `CODEENSTEIN_WADS_STRICT=1`) to get
+ * the old fail-hard behaviour — that is what CI uses, since CI *should*
+ * notice a catalog entry that has gone 404 rather than silently shipping a
+ * shorter list.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -34,12 +46,29 @@ function toArrayBuffer(buf) {
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
+/** `--strict` restores the fail-hard behaviour this script used to have
+ * unconditionally; the env var exists so a CI step can turn it on without
+ * having to route flags through an npm lifecycle hook. */
+const STRICT =
+  process.argv.slice(2).includes("--strict") ||
+  ["1", "true", "yes"].includes((process.env.CODEENSTEIN_WADS_STRICT ?? "").toLowerCase());
+
+function fail(failures, message) {
+  failures.push(message);
+  console.log(`  [${STRICT ? "FAIL" : "WARN"}] ${message}`);
+}
+
 async function main() {
   const { ONLINE_WAD_CATALOG } = await loadOnlineWadCatalogModule();
   const wad = await loadWadModule();
 
   const downloadCache = new Map();
-  let failures = 0;
+  /** Source URLs whose download already failed once — every later entry
+   * sharing that URL is skipped rather than re-attempting a host that is
+   * plainly unreachable, which is what makes an offline run fast instead of
+   * one timeout per catalog entry. */
+  const deadSources = new Set();
+  const failures = [];
 
   for (const entry of ONLINE_WAD_CATALOG) {
     console.log(`\n${entry.name} (${entry.id})`);
@@ -50,9 +79,20 @@ async function main() {
       continue;
     }
 
+    if (deadSources.has(entry.sourceUrl)) {
+      fail(failures, `${entry.id}: skipped, ${entry.sourceUrl} already failed above`);
+      continue;
+    }
+
     let rawBuf = downloadCache.get(entry.sourceUrl);
     if (!rawBuf) {
-      rawBuf = await downloadFile(entry.sourceUrl);
+      try {
+        rawBuf = await downloadFile(entry.sourceUrl);
+      } catch (err) {
+        deadSources.add(entry.sourceUrl);
+        fail(failures, `${entry.id}: download failed — ${err instanceof Error ? err.message : err}`);
+        continue;
+      }
       downloadCache.set(entry.sourceUrl, rawBuf);
     } else {
       console.log(`  Reusing already-downloaded ${entry.sourceUrl}`);
@@ -63,8 +103,7 @@ async function main() {
       try {
         wadBytes = extractFileFromZip(rawBuf, entry.zipEntryPath);
       } catch (err) {
-        failures += 1;
-        console.log(`  [FAIL] extract "${entry.zipEntryPath}": ${err instanceof Error ? err.message : err}`);
+        fail(failures, `${entry.id}: extract "${entry.zipEntryPath}" — ${err instanceof Error ? err.message : err}`);
         continue;
       }
       console.log(`  Extracted "${entry.zipEntryPath}" (${(wadBytes.length / 1024 / 1024).toFixed(1)} MB)`);
@@ -78,8 +117,12 @@ async function main() {
 
     const result = wad.loadWadTextures(toArrayBuffer(wadBytes));
     if (!result.ok) {
-      failures += 1;
-      console.log(`  [FAIL] loadWadTextures reported an error: ${result.error}`);
+      // Leaving the unparseable file on disk would make the failure
+      // *permanent*: the skip-if-present check at the top of the loop would
+      // never re-fetch it, and the game would serve a broken pack forever.
+      // Removing it is what lets the next run with a working network heal.
+      fs.rmSync(destPath, { force: true });
+      fail(failures, `${entry.id}: loadWadTextures reported an error — ${result.error}`);
       continue;
     }
     // Per-styleset detail lives in `report-wad-styleset-coverage.mjs`; this
@@ -88,11 +131,27 @@ async function main() {
     console.log(`  [OK] ${summary.matched}/${summary.total} texture slots matched`);
   }
 
-  console.log(`\n${failures === 0 ? "All entries fetched and verified." : `${failures} entrie(s) FAILED.`}`);
-  process.exit(failures === 0 ? 0 : 1);
+  if (failures.length === 0) {
+    console.log("\nAll entries fetched and verified.");
+    process.exit(0);
+  }
+
+  console.log(`\n${failures.length} entrie(s) FAILED:`);
+  for (const message of failures) console.log(`  - ${message}`);
+  if (STRICT) process.exit(1);
+  console.log(
+    "\nContinuing anyway — online texture packs are optional (the game ships procedural\n" +
+      "default textures, and public/wads/ is gitignored). The sidebar's online-pack list\n" +
+      "will be short until a later run with working network fills it in. Run with\n" +
+      "--strict to treat this as an error instead.",
+  );
+  process.exit(0);
 }
 
 main().catch((err) => {
   console.error(err);
-  process.exit(1);
+  // Same reasoning as a per-entry failure: an unexpected crash in an
+  // optional-asset fetcher must not be what stops `npm run dev` from
+  // starting. `--strict` (CI) still reports it.
+  process.exit(STRICT ? 1 : 0);
 });
