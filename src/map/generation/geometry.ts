@@ -60,7 +60,7 @@ export function centeredRoom(entity: CodeEntity | undefined, size: number): Room
 }
 
 /**
- * Whether `placeDoors` will lock this room — a private or protected method's
+ * Whether `placeDoors` will lock this room — a private or protected *callable's*
  * room, never the spawn room at index 0.
  *
  * Shared rather than re-spelled at each site because the two callers have to
@@ -69,11 +69,29 @@ export function centeredRoom(entity: CodeEntity | undefined, size: number): Room
  * an additional corridor into one silently adds a key-fetch to the level's
  * critical path. `connectLoops` uses this to leave locked rooms strictly
  * alone: a shortcut into a vault isn't a shortcut, it's another key.
+ *
+ * **A plain `function` counts, not only a `method`.** The rule read
+ * `kind === "method"` until 2026-08-11, which quietly scoped the whole mechanic
+ * to languages that put their callables inside classes. Encapsulation is not
+ * actually a property of class membership: a `static` C function and an
+ * unexported Go function are every bit as unreachable from outside as a private
+ * Java method, and both come back here as `kind: "function"`. The old rule made
+ * `.c`/`.h` levels unable to lock anything at all, and let Go lock a
+ * lowercase method while leaving the lowercase function beside it open. What
+ * makes a room worth locking is that the code inside it is not reachable from
+ * outside — which is exactly what `visibility` already says — so the kind test
+ * only has to separate callables from rooms that are types or globals.
+ *
+ * `function || method` is how the rest of the codebase already spells "is a
+ * callable" — `pickSpawnAndExit`, both parsers' entity filters and `main.ts`'s
+ * entrypoint search all use exactly this pair. This was the one place that
+ * said `method` alone.
  */
 export function isLockableRoom(room: Room, index: number): boolean {
   if (index === 0) return false;
-  const visibility = room.entity.visibility;
-  return room.entity.kind === "method" && (visibility === "private" || visibility === "protected");
+  const { kind, visibility } = room.entity;
+  const isCallable = kind === "method" || kind === "function";
+  return isCallable && (visibility === "private" || visibility === "protected");
 }
 
 /**

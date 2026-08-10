@@ -20,6 +20,34 @@ describe("CParserAdapter", () => {
     expect(fn?.endLine).toBe(3);
   });
 
+  it("reports a static function as private — C's own spelling of encapsulation", async () => {
+    // Internal linkage is the only access control C has, and without this the
+    // map layer can never lock a `.c`/`.h` room (see `hasStaticStorageClass`).
+    const result = await new CParserAdapter().parse("static int helper(int a) {\n  return a;\n}\n");
+    expect(result.entities.find((e) => e.name === "helper")?.visibility).toBe("private");
+  });
+
+  it("leaves a non-static function's visibility absent, not 'public'", async () => {
+    // Matches the wider convention that an entity omits what it has nothing to
+    // say about; `isLockableRoom` only ever tests for private/protected.
+    const result = await new CParserAdapter().parse("int add(int a, int b) {\n  return a + b;\n}\n");
+    expect(result.entities.find((e) => e.name === "add")).not.toHaveProperty("visibility");
+  });
+
+  it("does not let a function-local static variable make the function private", async () => {
+    // `static` inside a body is a storage duration for one variable, an
+    // unrelated construct — which is why the check does not recurse.
+    const result = await new CParserAdapter().parse("int counter(void) {\n  static int n = 0;\n  return ++n;\n}\n");
+    expect(result.entities.find((e) => e.name === "counter")).not.toHaveProperty("visibility");
+  });
+
+  it("does not mark a static global as private — it is not a callable", async () => {
+    const result = await new CParserAdapter().parse("static int shared_count = 0;\n");
+    const global = result.entities.find((e) => e.name === "shared_count");
+    expect(global?.kind).toBe("global");
+    expect(global).not.toHaveProperty("visibility");
+  });
+
   it("resolves a pointer-returning function's name through the nested declarator", async () => {
     const result = await new CParserAdapter().parse("int *foo(int x) {\n  return &x;\n}\n");
     expect(result.entities.find((e) => e.name === "foo")?.kind).toBe("function");
