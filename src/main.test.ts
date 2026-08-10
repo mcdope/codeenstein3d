@@ -295,6 +295,11 @@ describe("main.ts — module import / initial DOM wiring", () => {
     expect(() => masterVolumeInput.dispatchEvent(new Event("input"))).not.toThrow();
     expect(warnSpy).toHaveBeenCalledWith("[settings] Failed to save volume:", expect.any(Error));
 
+    const playerNameInput = document.querySelector<HTMLInputElement>("#player-name-input")!;
+    playerNameInput.value = "Tobi";
+    expect(() => playerNameInput.dispatchEvent(new Event("input"))).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith("[settings] Failed to save player name:", expect.any(Error));
+
     setItemSpy.mockRestore();
   });
 
@@ -312,6 +317,27 @@ describe("main.ts — module import / initial DOM wiring", () => {
     await importMain();
     expect(document.querySelector<HTMLSelectElement>("#gore-select")!.value).toBe("normal");
     expect(document.querySelector<HTMLSelectElement>("#difficulty-select")!.value).toBe("normal");
+  });
+
+  it("restores a saved player name, and persists an edit as it is typed", async () => {
+    localStorage.setItem("codeenstein-player-name", "Tobi");
+    await importMain();
+    const input = document.querySelector<HTMLInputElement>("#player-name-input")!;
+    expect(input.value).toBe("Tobi");
+
+    // "input", not "change": a text field's change event only fires on blur,
+    // and hosting a session right after typing must already see the name.
+    input.value = "Kim";
+    input.dispatchEvent(new Event("input"));
+    expect(localStorage.getItem("codeenstein-player-name")).toBe("Kim");
+  });
+
+  it("starts the player name empty when none was ever saved, and sanitizes a hand-edited one", async () => {
+    localStorage.setItem("codeenstein-player-name", `  Tobi\u0000${"x".repeat(80)}  `);
+    await importMain();
+    // Storage is not a trusted source either — a value put there by devtools
+    // or an older build gets the same treatment a freshly-typed one does.
+    expect(document.querySelector<HTMLInputElement>("#player-name-input")!.value).toBe(`Tobi${"x".repeat(20)}`);
   });
 
   it("honors a saved 'extreme' gore preference now that extreme is enabled", async () => {
@@ -5500,6 +5526,10 @@ describe("main.ts — reaching a natural win/death via real navigation", () => {
       }
       expect(entries[0].campaignName).toBe("owner/repo");
       expect(entries[0].source).toBe("github");
+      // The Player name setting was left empty for this run, so the entry
+      // carries no name at all rather than a baked-in fallback — the
+      // leaderboard applies that at render time.
+      expect(entries[0].playerName).toBeUndefined();
     },
   );
 
@@ -5541,6 +5571,11 @@ describe("main.ts — reaching a natural win/death via real navigation", () => {
           }),
         };
       });
+      // Set before the module loads, so this run is recorded with a name —
+      // the positive counterpart to the GitHub win test above, which leaves
+      // it unset. Riding an existing win test rather than adding another:
+      // reaching a real recorded entry costs a full navigated playthrough.
+      localStorage.setItem("codeenstein-player-name", "Tobi");
       const { loadCampaignSave } = await importMain();
       const logSpy = vi.spyOn(console, "log");
       enableTestHooks();
@@ -5570,6 +5605,7 @@ describe("main.ts — reaching a natural win/death via real navigation", () => {
       }
       expect(entries[0].campaignName).toBe("demo-campaign");
       expect(entries[0].source).toBe("demo");
+      expect(entries[0].playerName).toBe("Tobi");
       vi.doUnmock("./fs/demoCampaign");
     },
   );

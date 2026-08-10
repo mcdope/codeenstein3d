@@ -11,7 +11,19 @@ That second category is why this file is kept rather than deleted. Most entries 
 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
-- [x] **Players can name themselves in multiplayer, and the name floats above their character. SHIPPED 2026-08-10.** Built from the plan parked in `player-names-state.md` (deleted with this entry, per the scoped-state-file convention). There was no per-player identity concept anywhere in the codebase before this — the existing "Display name" field names the *session* in the public lobby listing, which is why the new field sits above the Host/Join subtabs rather than inside either panel.
+- [x] **Players can name themselves, once, for the whole game. SHIPPED 2026-08-10.** Started as a multiplayer-only field (see the entry this replaced, folded in below); the user's own framing corrected it mid-build: the name is wanted for **single-player highscores** too, and to say which bot profile set each shipped default entry — which is what the backlog's "player name config, for highscores" item had asked for all along. So it is a general setting, persisted, not a multiplayer lobby field.
+
+  **`codeenstein-player-name`, alongside gore/difficulty/volume**, with the same never-throw load/save shape. Sanitized on read as well as write, because storage is not a trusted source either — a value left by devtools or an older build gets the same treatment a freshly-typed one does. Saved on `input`, not `change`: a text field's `change` only fires on blur, and hosting a session immediately after typing must already see it.
+
+  **The highscore entry carries `playerName` only when one was set.** The fallback ("Player", greyed) is applied at render, not baked into stored data — otherwise naming yourself later would leave your older runs permanently stamped with the fallback, and an entry recorded before the setting existed would differ from a new unnamed one for no reason.
+
+  **The shipped board names its bot.** `installPlayerName` sets the profile name in localStorage before each generated run, so a regenerated board carries "Casual"/"Gamer"/"Pro" for free. The already-shipped board was **back-filled** (`--backfill-player-name`) rather than regenerated: same write-order-plus-`PROFILES_HASH` argument as `--backfill-rot-speed`, saving a ~33-minute wedge-prone regeneration to add a cosmetic label. `verify:replay` was run afterwards and the board still replays frame-for-frame.
+
+  **A pre-existing bug surfaced the moment the rows became distinguishable**: the shipped fallback board was rendered in bot-profile order, which happens to be *ascending* by score, so the rank column told every first-time visitor that the worst run was #1. A real board has always been sorted at record time; the fallback never was. Fixed at display time in `loadHighscoresForDisplay`, deliberately not in the file — the generator's back-fill modes and `verify:replay`'s entry indices both rely on the file staying in `PROFILES` order.
+
+  **The highscore panel tests indexed cells positionally**, so one new column broke seven of them at once; they now resolve a cell through the table's own `<thead>`. That is the fix for the next column too.
+
+  The multiplayer half, built first and still true: Built from the plan parked in `player-names-state.md` (deleted with this entry, per the scoped-state-file convention). There was no per-player identity concept anywhere in the codebase before this — the existing "Display name" field names the *session* in the public lobby listing, which is why the new field sits above the Host/Join subtabs rather than inside either panel.
 
   **One field, not two.** The plan called for an input in both the Host and the Join panel; a single one above the subtabs is who you are in either role, and two inputs for one value can disagree. The session-listing name stays exactly where it was.
 

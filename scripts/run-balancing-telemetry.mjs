@@ -677,6 +677,21 @@ export async function installDifficulty(page, difficulty) {
   await page.addInitScript((d) => localStorage.setItem("codeenstein-difficulty", d), difficulty);
 }
 
+/**
+ * Sets the standing Player name preference before the page boots, the same
+ * way `installDifficulty` sets difficulty — so a highscore the bot records
+ * carries the name of the *profile* that played it.
+ *
+ * That is what the shipped default board wants: those three entries have no
+ * human behind them, and "Casual"/"Gamer"/"Pro" says which bot set each one
+ * rather than leaving all three anonymous. The backlog item asking for a
+ * player-name setting called this out from the start ("to be abused in
+ * default highscores, profile name will be player name").
+ */
+export async function installPlayerName(page, name) {
+  await page.addInitScript((n) => localStorage.setItem("codeenstein-player-name", n), name);
+}
+
 // ---------------------------------------------------------------------------
 // Aggregation
 // ---------------------------------------------------------------------------

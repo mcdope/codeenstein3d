@@ -205,7 +205,10 @@ body {
 }
 
 #github-repo-input,
-.multiplayer-text-input {
+/* Every single-line text field in the sidebar — the session code and lobby
+ * listing name in the Multiplayer tab, and the Player name setting. Named for
+ * where it is used rather than for multiplayer, which is where it started. */
+.settings-text-input {
   width: 100%;
   padding: 6px 8px;
   font: inherit;

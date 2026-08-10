@@ -4,6 +4,11 @@
 /** Renders the top-10 leaderboard into the Highscores `<dialog>` (see main.ts). */
 import { truncateHash, type HighscoreEntry } from "../engine/highscores";
 
+/** Shown for an entry with no name of its own — greyed, so a board mixing
+ * named and unnamed runs reads as "nobody set a name here" rather than as a
+ * player who is actually called Player. */
+const DEFAULT_PLAYER_LABEL = "Player";
+
 export interface HighscoreTableOptions {
   /** Called with an entry's own `replay` payload when its "Watch Replay"
    * button is clicked — only rendered for entries that actually have one
@@ -36,7 +41,7 @@ export function renderHighscoreTable(
 
   const thead = document.createElement("thead");
   thead.innerHTML =
-    '<tr><th>#</th><th>Score</th><th class="wrap">Campaign</th><th>Lines</th><th>Complexity</th><th>Levels</th><th class="wrap">Ended On</th><th>Hash</th><th>Replay</th></tr>';
+    '<tr><th>#</th><th class="wrap">Player</th><th>Score</th><th class="wrap">Campaign</th><th>Lines</th><th>Complexity</th><th>Levels</th><th class="wrap">Ended On</th><th>Hash</th><th>Replay</th></tr>';
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
@@ -45,6 +50,14 @@ export function renderHighscoreTable(
 
     const rank = document.createElement("td");
     rank.textContent = String(i + 1);
+
+    // The fallback lives here rather than in stored data (see
+    // `HighscoreEntry.playerName`), so an entry recorded before the setting
+    // existed and one whose player never named themselves read identically.
+    const player = document.createElement("td");
+    player.className = "wrap";
+    player.textContent = entry.playerName || DEFAULT_PLAYER_LABEL;
+    if (!entry.playerName) player.classList.add("muted");
 
     const score = document.createElement("td");
     score.textContent = entry.score.toLocaleString();
@@ -109,7 +122,7 @@ export function renderHighscoreTable(
       replay.textContent = "—";
     }
 
-    row.append(rank, score, campaign, loc, complexity, levels, level, hash, replay);
+    row.append(rank, player, score, campaign, loc, complexity, levels, level, hash, replay);
     tbody.appendChild(row);
   });
   table.appendChild(tbody);

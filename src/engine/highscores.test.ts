@@ -126,6 +126,21 @@ describe("loadHighscoresForDisplay", () => {
     const displayed = await loadHighscoresForDisplay();
     expect(displayed.length).toBeGreaterThan(0);
   }, 30000);
+
+  it("sorts the shipped fallback best-score-first, so the rank column agrees with the scores", async () => {
+    // The file itself stays in bot-profile order (the generator's back-fill
+    // modes and verify:replay index into it), and that order is not the score
+    // order — so an unsorted fallback ranked the *lowest* score first for
+    // every first-time visitor.
+    const displayed = await loadHighscoresForDisplay();
+    const scores = displayed.map((e) => e.score);
+    expect(scores).toEqual([...scores].sort((a, b) => b - a));
+  }, 30000);
+
+  it("names the shipped entries after the bot profile that set them", async () => {
+    const displayed = await loadHighscoresForDisplay();
+    expect(displayed.map((e) => e.playerName).sort()).toEqual(["Casual", "Gamer", "Pro"]);
+  }, 30000);
 });
 
 describe("recordHighscore", () => {
