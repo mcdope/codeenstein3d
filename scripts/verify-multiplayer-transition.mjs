@@ -219,6 +219,75 @@ async function dumpExitGate(hostPage, bot, map) {
   console.log(`  [diag] => exitRoomHasAliveEnemy = ${gate.some((g) => live.enemies[g.i]?.alive)}`);
 }
 
+/**
+ * Wall-clock ceiling for the host's navigation, and the reason this exists.
+ *
+ * Every budget inside the bot is counted in *decisions*, not seconds, and at
+ * this harness's real 300-400ms decision window the legal worst case is
+ * enormous: `driveTowardWithReplan` allows 160 decisions per waypoint times
+ * three re-plans, so a 40-waypoint route is bounded at over two hours.
+ * Measured against that, a healthy level-1 host drive costs ~806 decisions
+ * (`diagnose-level-wedge.mjs --mp-shape`, ~5 minutes here).
+ *
+ * On 2026-08-09 a run sat 19.5 minutes in this phase and died on the *job's*
+ * 20-minute timeout — reported as `cancelled`, with no assertion, no trace
+ * and nothing to distinguish "stuck at a waypoint" from "walking a very long
+ * way". That is roughly 3.6x the normal decision count: unlucky, but legal,
+ * and nothing in the bot was ever going to stop it. `BOT_NAV_STALL_BAIL_TICKS`
+ * is not the missing guard people expect it to be — it fires only when the
+ * bot stops *moving*, and a bot grinding through re-planned waypoints is
+ * moving the whole time.
+ *
+ * So this bounds the phase in the unit that actually matters here, and — far
+ * more usefully — turns a silent job kill into a failure that carries the
+ * per-decision anomaly dump and activity breakdown. Sized at roughly 2x the
+ * measured healthy cost, which still leaves the 20-minute job room for the
+ * guest phases and the diagnostics themselves.
+ *
+ * It is **one budget shared by both drive phases**, not one each: the route
+ * and the exit push are the same journey, a run can spend its time lopsidedly
+ * across them, and two independent ceilings would sum to the job's entire
+ * timeout — reinventing the failure this exists to prevent.
+ *
+ * `CODEENSTEIN_TRANSITION_NAV_DEADLINE_MS` overrides it, which is not a
+ * tuning knob but a test hook: a guard nobody has watched fire is a guard
+ * nobody knows works, and the only honest way to exercise this one is to set
+ * the budget below what a healthy run costs and confirm the failure carries
+ * the trace it promises. Done that way when it landed.
+ */
+const HOST_NAV_DEADLINE_MS = Number(process.env.CODEENSTEIN_TRANSITION_NAV_DEADLINE_MS ?? 9 * 60 * 1000);
+
+/**
+ * Runs `work()` against an absolute wall-clock deadline (epoch ms). On breach
+ * the bot is still running — it is mid-`await` inside the browser — but its
+ * trace is a plain array this side can read immediately, which is what makes
+ * the dump meaningful rather than a bare "timed out". The process exits
+ * shortly after via the thrown error, so the abandoned drive never outlives
+ * it.
+ *
+ * A phase entered with the budget already spent fails immediately rather than
+ * being handed a negative timeout, which `setTimeout` would treat as zero and
+ * report as the same thing less clearly.
+ */
+async function withDeadline(label, deadlineAt, work, onTimeout) {
+  const ms = deadlineAt - Date.now();
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`DEADLINE: ${label} exceeded the host navigation budget of ${(HOST_NAV_DEADLINE_MS / 1000).toFixed(0)}s`)),
+      Math.max(0, ms),
+    );
+  });
+  try {
+    return await Promise.race([work(), deadline]);
+  } catch (err) {
+    if (String(err.message).startsWith("DEADLINE:")) await onTimeout();
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function driveHostToExit(hostPage, map) {
   const hostSpawn = await hostPage.evaluate(() => {
     const pos = window.__codeensteinMultiplayerTestHooks.getPlayerPosition("host");
@@ -248,7 +317,13 @@ async function driveHostToExit(hostPage, map) {
   const bot = new MultiplayerBot(hostPage, BOT_PROFILE, "host", { logger: { trace: true, navDiag: true }, ignoreThreats: true });
   bot.startLevel(map);
 
-  const legOutcome = await bot.driveLegs(route.legs);
+  // One budget for the whole journey, started here — see HOST_NAV_DEADLINE_MS.
+  const navDeadlineAt = Date.now() + HOST_NAV_DEADLINE_MS;
+  const legOutcome = await withDeadline("host route", navDeadlineAt, () => bot.driveLegs(route.legs), async () => {
+    console.log(`  [diag] host route exceeded its wall-clock deadline — ${route.legs.length} planned leg(s)`);
+    bot.reportAnomalies("host-route-deadline", 0);
+    await dumpExitGate(hostPage, bot, map);
+  });
   if (legOutcome.state === "over") throw new Error(`host died despite god mode — the debugSetGodMode call itself must have failed: ${JSON.stringify(legOutcome)}`);
   // `state`, not `reason` — `driveLegs` reports a stuck route as
   // `state: "stuck"`, which is what every other caller branches on. Checking
@@ -295,7 +370,11 @@ async function driveHostToExit(hostPage, map) {
   // the hunt's combat (79.6 tiles of `exitHunt` across all six rounds, no
   // kill); `driveToExit` with the hunt able to fight -> cleared.
   const exitCenter = { x: map.exit.x + 0.5, y: map.exit.y + 0.5 };
-  const pushed = await bot.driveToExit(exitCenter, FINAL_APPROACH_TICKS);
+  const pushed = await withDeadline("host exit push", navDeadlineAt, () => bot.driveToExit(exitCenter, FINAL_APPROACH_TICKS), async () => {
+    console.log("  [diag] host exit push exceeded its wall-clock deadline");
+    bot.reportAnomalies("host-exit-deadline", 0);
+    await dumpExitGate(hostPage, bot, map);
+  });
   if (pushed.state === "over") throw new Error(`host died despite god mode — the debugSetGodMode call itself must have failed: ${JSON.stringify(pushed)}`);
   // `arrived` is the multiplayer signal (`MultiplayerBot.exitAccepted`); the
   // single-player `"won"` can't happen here but is accepted rather than
