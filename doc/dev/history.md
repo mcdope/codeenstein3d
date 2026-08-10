@@ -11,6 +11,21 @@ That second category is why this file is kept rather than deleted. Most entries 
 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
+- [x] **C sources can finally have locked doors — and the cause was not the C parser (2026-08-11).** The backlog item read "the locked-door/key mechanic never appears for C sources at all… almost certainly visibility detection finding no private/protected members in C". Half right: `cParser.ts` never mentioned `visibility`, so every C entity came back without one. But fixing only that would have changed nothing, because the *map* rule was the real gate.
+
+  **Two changes, one on each side of the parser/map boundary.**
+
+  1. **The parser reports the fact.** C has no access modifiers, but it does have the concept and spells it as linkage: `static` at file scope means internal linkage, reachable only from this translation unit, while a non-static function is the API other files call through a header. `hasStaticStorageClass` maps that onto `visibility: "private"`. Deliberately does not recurse — a `static` inside a body is a function-local variable's storage duration, an unrelated construct, and must not mark its function private.
+  2. **The map layer decides what it means.** `isLockableRoom` required `kind === "method"`, which quietly scoped the entire mechanic to languages that nest their callables inside classes. Encapsulation is not a property of class membership: a `static` C function and an unexported Go function are as unreachable from outside as a private Java method, and both arrive as `kind: "function"`. Now any private/protected **callable** locks.
+
+  **The second half was the bigger bug, and it was not only C.** Go already marked lowercase `function_declaration`s private (`goVisibility`), so Go was locking a lowercase *method* while leaving the lowercase *function* beside it wide open. `function || method` is how the rest of the codebase already spells "is a callable" — `pickSpawnAndExit`, both parsers' entity filters and `main.ts`'s entrypoint search all use exactly that pair; `isLockableRoom` was the only place that said `method` alone.
+
+  **Measured before/after with `npm run report:gate-budget`.** Demo campaign: `stage09_worker.go` **0 → 2** gated rooms, `stage16_hardware.h` **0 → 1**, every other level byte-identical; levels gating at least one room 9 → 11, and the budget distribution did not move (p50 2, p90 4, max 4 — still inside `MAX_GATE_ROOMS`). On real C: wolf3d's `WOLFSRC` now gates on 1 of 12 levels, curl's `lib` on 4 of 12 — each of those four hitting the cap of 4, which is the 2026-08-10 cap earning its keep on a repo carrying **3,086** `static` definitions across 373 `.c` files.
+
+  **`demo-campaign/main.c` still gates nothing, and that is correct** — it contains no `static` functions at all. Level 1 is unchanged. The demo campaign's C representation of the mechanic comes from `stage16_hardware.h`.
+
+  Regenerating `defaultHighscore.ts` was mandatory, not tidiness: door and key placement draw from the level's shared `mulberry32` stream, so adding a gate shifts every later draw while `balanceHash` stays silent. `verify:replay` was run *before* regenerating to confirm it would actually catch this — it failed at exactly level 9, the Go level, with levels 1-8 replaying perfectly.
+
 - [x] **A key opens its room, not one doorway — coloured keys shipped 2026-08-10.** `openDoorAhead` spent one key per *doorway*, so a locked room with six mouths cost six keys for one space, and opening a door you had already come through from the other side charged you again. `MAX_GATES` (2026-08-08) bounded the damage by pricing rooms in doorways and preferring one-mouth rooms, which penalised a shape that now costs nothing extra.
 
   A key belongs to a **gate** (one locked room), carries a colour, and opens every door of that gate. It is **permanent inventory** — never spent — so pushing a room's second mouth is free.

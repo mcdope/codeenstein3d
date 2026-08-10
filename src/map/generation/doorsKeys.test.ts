@@ -54,6 +54,43 @@ describe("placeDoors — the gate budget", () => {
     expect(doorTilesOf(gates).length).toBeGreaterThanOrEqual(gates.length);
   });
 
+  it("locks a private plain function too, not only a private method", () => {
+    // Until 2026-08-11 `isLockableRoom` required `kind === "method"`, which
+    // scoped the whole mechanic to languages that nest callables in classes:
+    // no `.c`/`.h` level could lock anything at all (C's `static` is a private
+    // *function*), and Go locked a lowercase method while leaving the
+    // lowercase function beside it wide open.
+    const g = grid(14);
+    const spawnRoom = makeRoom(1, 1, 3, 3, entity());
+    const fnRoom = makeRoom(7, 1, 3, 3, entity({ kind: "function", visibility: "private" }));
+    carveRoom(g, spawnRoom);
+    carveRoom(g, fnRoom);
+    carveHLine(g, 3, 7, 2);
+    expect(placeDoors([spawnRoom, fnRoom], g, { maxGates: 4 }).length).toBe(1);
+  });
+
+  it("still leaves a public function's room open", () => {
+    const g = grid(14);
+    const spawnRoom = makeRoom(1, 1, 3, 3, entity());
+    const fnRoom = makeRoom(7, 1, 3, 3, entity({ kind: "function", visibility: "public" }));
+    carveRoom(g, spawnRoom);
+    carveRoom(g, fnRoom);
+    carveHLine(g, 3, 7, 2);
+    expect(placeDoors([spawnRoom, fnRoom], g, { maxGates: 4 })).toEqual([]);
+  });
+
+  it("never locks a private room that is not a callable", () => {
+    // A type or a global is a room, but "you cannot call this from outside"
+    // is not a statement about it — only callables carry that meaning.
+    const g = grid(14);
+    const spawnRoom = makeRoom(1, 1, 3, 3, entity());
+    const classRoom = makeRoom(7, 1, 3, 3, entity({ kind: "class", visibility: "private" }));
+    carveRoom(g, spawnRoom);
+    carveRoom(g, classRoom);
+    carveHLine(g, 3, 7, 2);
+    expect(placeDoors([spawnRoom, classRoom], g, { maxGates: 4 })).toEqual([]);
+  });
+
   it("prefers the bigger room when it has to choose", () => {
     // A locked door should be worth opening; locking a bare alcove is a chore
     // with no payoff. Both rooms hang off the corridor as dead ends, so each

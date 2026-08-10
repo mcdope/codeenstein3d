@@ -174,6 +174,7 @@ export class CParserAdapter implements CodeParserAdapter {
           endLine: node.endPosition.row + 1,
           complexityScore: 1 + countDecisionPoints(node, DECISION_NODE_TYPES, LOGICAL_OPERATORS) + smellBonus,
           nestingDepth,
+          ...(kind === "function" && hasStaticStorageClass(node) ? { visibility: "private" as const } : {}),
           // Absent rather than present-and-zero when there's nothing to report
           // — see the same convention in `genericParser.ts`.
           ...(switchBranches ? { switchBranches } : {}),
@@ -244,6 +245,32 @@ export class CParserAdapter implements CodeParserAdapter {
       tree.delete();
     }
   }
+}
+
+/**
+ * Whether a `function_definition` is declared `static` — C's own notion of
+ * "private", and the reason this adapter reports visibility at all.
+ *
+ * C has no access modifiers, so for years every C entity came back with
+ * `visibility` absent and the map layer's `isLockableRoom` could never lock a
+ * C room: no `.c`/`.h` level has ever had a locked door or a key. The language
+ * does have the concept, it just spells it as linkage — `static` at file scope
+ * means internal linkage, reachable only from this translation unit, while a
+ * non-static function is the API other files call through a header. That maps
+ * onto private/public exactly, and it is what a C programmer already reads the
+ * keyword as.
+ *
+ * Only functions are reported. `static` on a *global* means the same thing,
+ * but a global is not a callable and `isLockableRoom` only ever considers
+ * callables, so reporting it there would add a field with no reader.
+ *
+ * The keyword is a `storage_class_specifier` child of the definition itself
+ * rather than part of the declarator, so this deliberately does not recurse —
+ * a `static` buried in the body (a function-local static variable) is a
+ * different construct entirely and must not mark the function private.
+ */
+function hasStaticStorageClass(def: Node): boolean {
+  return def.namedChildren.some((child) => child.type === "storage_class_specifier" && child.text === "static");
 }
 
 /** Name of a struct/union/enum specifier, or null when anonymous. */
