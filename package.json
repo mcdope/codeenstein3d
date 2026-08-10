@@ -20,6 +20,7 @@
     "verify:wad-parser": "node scripts/verify-wad-parser.mjs",
     "verify:wad-textures": "node scripts/verify-wad-textures.mjs",
     "report:wad-stylesets": "node scripts/report-wad-styleset-coverage.mjs",
+    "report:gate-budget": "node scripts/report-gate-budget.mjs",
     "report:level-maps": "node scripts/render-level-maps.mjs",
     "verify:zip-reader": "node scripts/verify-zip-reader.mjs",
     "fetch:online-wads": "node scripts/fetch-online-wads.mjs",
