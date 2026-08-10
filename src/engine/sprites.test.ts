@@ -275,7 +275,7 @@ describe("collectPlayerBillboards", () => {
     const teammate = new Player(fakeMap());
     teammate.posX = viewer.posX;
     teammate.posY = viewer.posY;
-    const jobs = collectPlayerBillboards(asCtx(ctx()), viewer, [{ player: teammate, color: "#60a5fa" }], clearZBuffer(Infinity));
+    const jobs = collectPlayerBillboards(asCtx(ctx()), viewer, [{ player: teammate, color: "#60a5fa", name: "Guest-1" }], clearZBuffer(Infinity));
     expect(jobs).toHaveLength(0);
   });
 
@@ -289,7 +289,7 @@ describe("collectPlayerBillboards", () => {
     c.fillRect.mockImplementation(() => {
       log.push(c.fillStyle as string);
     });
-    const jobs = collectPlayerBillboards(asCtx(c), viewer, [{ player: teammate, color: "#60a5fa" }], clearZBuffer(Infinity));
+    const jobs = collectPlayerBillboards(asCtx(c), viewer, [{ player: teammate, color: "#60a5fa", name: "Guest-1" }], clearZBuffer(Infinity));
     expect(jobs).toHaveLength(1);
     jobs[0].draw();
     expect(c.fillRect).toHaveBeenCalled();
@@ -302,7 +302,7 @@ describe("collectPlayerBillboards", () => {
     teammate.posX = viewer.posX + 3;
     teammate.posY = viewer.posY;
     const c = ctx();
-    const jobs = collectPlayerBillboards(asCtx(c), viewer, [{ player: teammate, color: "#60a5fa" }], clearZBuffer(0.5));
+    const jobs = collectPlayerBillboards(asCtx(c), viewer, [{ player: teammate, color: "#60a5fa", name: "Guest-1" }], clearZBuffer(0.5));
     jobs[0].draw();
     expect(c.fillRect.mock.calls.length).toBe(0); // fully occluded — zBuffer (0.5) < depth (3) everywhere
   });

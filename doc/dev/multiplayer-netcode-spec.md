@@ -159,12 +159,25 @@ The first pass said only "`FIXED_DT`, sent once alongside the `GameMap`" — eno
 of an underspecification to hide a guaranteed desync (difficulty, below). The
 full setup exchange, per guest, after its data channels open and before any tick:
 
-1. **Build-version handshake, both directions, first.** Peers exchange
-   `__BUILD_REF__`/`__BUILD_TIME__` (already baked into every bundle by
-   `vite.config.ts`'s `define`) and the host refuses the join on mismatch. Two
-   peers on different cached bundles run *different simulation code* — a desync
-   source no amount of reconciliation can paper over, and near-impossible to
-   diagnose from symptoms. Cheapest check in this entire document.
+**The exchange runs in two phases**, because one field of it — every player's
+display name — cannot be known per guest. Phase A is step 1 below, run
+concurrently per guest; the host then merges what every guest replied and runs
+phase B (steps 2-7) concurrently per guest. Both phases still begin with a host
+send, so the guest stays purely reply-driven and the eager-send race
+`sessionSetupGuest.ts` documents is not reintroduced.
+
+1. **Build-version handshake, both directions, first — plus the joiner's own
+   display name.** Peers exchange `__BUILD_REF__`/`__BUILD_TIME__` (already
+   baked into every bundle by `vite.config.ts`'s `define`) and the host refuses
+   the join on mismatch. Two peers on different cached bundles run *different
+   simulation code* — a desync source no amount of reconciliation can paper
+   over, and near-impossible to diagnose from symptoms. Cheapest check in this
+   entire document. The guest's reply carries a `player-name` message alongside
+   its version (`""` when the player typed none), which is what makes phase B's
+   complete roster of names possible: every guest's `session-init` carries
+   *all* the names, and the per-guest handshakes run concurrently, so a
+   single-pass exchange could not know the last guest's name while building the
+   first guest's message.
 2. **Roster**: the full sorted `playerId` list and the joiner's own assigned id.
 3. **Tick constants**: `TICK_RATE_HZ`/`FIXED_DT`, `INPUT_DELAY_TICKS`.
 4. **The level-1 `gameplaySeed`** — §7 already specifies per-level reseeding at
@@ -189,6 +202,15 @@ full setup exchange, per guest, after its data channels open and before any tick
    particle counts) and never feeds the simulation.
 6. **The session's player count** for elite scaling (game-state §4), fixed per
    level per §5's no-mid-level-recompute rule.
+6b. **Every player's display name**, keyed by roster id, as chosen (`""` for a
+   player who chose none). Purely cosmetic — it names a teammate's billboard
+   and the end-of-run comparison table, and feeds no simulation state, so it
+   needs none of difficulty's host-authoritative treatment. The empty-string
+   convention matters though: the fallback ("Host", "Guest-1", …) is applied
+   once by `resolvePlayerDisplayName` where a name enters the engine, so two
+   peers cannot disagree about how to spell a missing name. A name is untrusted
+   input from another peer and is sanitized (control characters stripped,
+   length capped) at the same boundary.
 7. **The `GameMap` — chunked, with `visited` stripped, and backpressure-aware.**
    An `RTCDataChannel` message has a practical cross-browser size floor around
    64 KiB; a 160×160 map's JSON crosses that on grid data alone (~50 KB before

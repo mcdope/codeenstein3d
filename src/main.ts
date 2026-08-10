@@ -62,7 +62,12 @@ import {
 import { runMultiplayerSessionAsHost, type FindNextLevel, type MultiplayerSessionHandle } from "./multiplayer/multiplayerSessionHost";
 import { runMultiplayerSessionAsGuest } from "./multiplayer/multiplayerSessionGuest";
 import type { SessionEndReason } from "./multiplayer/sessionEngine";
-import { buildHostSessionSetupResult, runHostSessionSetup, type HostSessionSetupOptions } from "./multiplayer/sessionSetupHost";
+import {
+  buildHostSessionSetupResult,
+  runHostSessionSetupPhaseA,
+  runHostSessionSetupPhaseB,
+  type HostSessionSetupOptions,
+} from "./multiplayer/sessionSetupHost";
 import { runGuestSessionSetup } from "./multiplayer/sessionSetupGuest";
 import { guestPlayerId, HOST_PLAYER_ID } from "./multiplayer/sessionSetupTypes";
 
@@ -168,7 +173,14 @@ const multiplayerSubtabHost = requireElement<HTMLButtonElement>("#multiplayer-su
 const multiplayerSubtabJoin = requireElement<HTMLButtonElement>("#multiplayer-subtab-join");
 const multiplayerSubtabPanelHost = requireElement<HTMLElement>("#multiplayer-subtab-panel-host");
 const multiplayerSubtabPanelJoin = requireElement<HTMLElement>("#multiplayer-subtab-panel-join");
+// The *session*'s name in the public lobby listing — not a player's. The
+// per-player one is `multiplayerPlayerNameInput` below; the two sit in
+// different places in the panel for exactly this reason.
 const multiplayerDisplayNameInput = requireElement<HTMLInputElement>("#multiplayer-display-name-input");
+/** This peer's own in-game name, used whichever role it ends up playing —
+ * read at "Start Session" time by the host and at connect time by a guest,
+ * never stored, so editing it right up to that moment works. */
+const multiplayerPlayerNameInput = requireElement<HTMLInputElement>("#multiplayer-player-name-input");
 const multiplayerPublicCheckbox = requireElement<HTMLInputElement>("#multiplayer-public-checkbox");
 const multiplayerMaxPlayersSelect = requireElement<HTMLSelectElement>("#multiplayer-max-players");
 const multiplayerHostCreateButton = requireElement<HTMLButtonElement>("#multiplayer-host-create");
@@ -1615,16 +1627,17 @@ const MULTIPLAYER_RESULT_THEME: Record<SessionEndReason, { title: string; color:
 
 /** Builds the comparison table's rows from `RaycasterEngine.rosterSnapshot()`
  * — one row per roster player, `breakdown.total` (the cumulative *run* score,
- * see `rosterSnapshot()`'s own doc comment) plus kills, labeled with the
- * roster id capitalized (`"host"` -> "Host", `"guest-1"` -> "Guest-1", etc. —
- * see `sessionSetupTypes.ts`'s `HOST_PLAYER_ID`/`guestPlayerId()`) and
- * suffixed `" (disconnected)"` per `multiplayer-netcode-spec.md` §5's "score
- * preserved, not erased, labeled disconnected" rule. */
+ * see `rosterSnapshot()`'s own doc comment) plus kills, labeled with that
+ * player's own display name and suffixed `" (disconnected)"` per
+ * `multiplayer-netcode-spec.md` §5's "score preserved, not erased, labeled
+ * disconnected" rule. The label used to be the capitalized roster id computed
+ * right here; that is now `resolvePlayerDisplayName`'s fallback, applied once
+ * where a name enters the engine, so a session where nobody typed one still
+ * reads exactly as it did before. */
 export function multiplayerResultRows(comparison: ReadonlyMap<PlayerId, RosterSnapshotEntry>): [string, string][] {
-  return [...comparison].map(([id, entry]) => {
-    const label = id.charAt(0).toUpperCase() + id.slice(1);
+  return [...comparison].map(([, entry]) => {
     const disconnectedSuffix = entry.status === "disconnected" ? " (disconnected)" : "";
-    return [label, `${entry.breakdown.total} pts · ${entry.kills} kills${disconnectedSuffix}`];
+    return [entry.displayName, `${entry.breakdown.total} pts · ${entry.kills} kills${disconnectedSuffix}`];
   });
 }
 
@@ -1713,12 +1726,26 @@ async function startMultiplayerSessionAsHost(): Promise<void> {
       hasSmg: false,
       hasGas: false,
     });
-    const setupOptions: HostSessionSetupOptions = { map, difficulty: currentDifficulty, roster, gameplaySeed: randomSeed() };
-    // Every guest's own handshake+map-transfer is an independent chunked
-    // transfer with its own backpressure wait — fanned out concurrently, not
-    // sequentially, for the same reason `multiplayerSessionHost.ts`'s own
-    // level-transition broadcast is (see that module's doc comment).
-    await Promise.all([...links.entries()].map(([guestId, link]) => runHostSessionSetup(link.channels, guestId, setupOptions)));
+    // Two waves, both fanned out concurrently — each guest's handshake and
+    // map transfer is an independent chunked transfer with its own
+    // backpressure wait, for the same reason `multiplayerSessionHost.ts`'s
+    // own level-transition broadcast is (see that module's doc comment). The
+    // barrier between them is real and unavoidable: every guest's
+    // `session-init` carries *all* the names, so none can be sent until the
+    // last guest has told us its own (see `sessionSetupHost.ts`).
+    const guestEntries = [...links.entries()];
+    const guestNames = await Promise.all(guestEntries.map(([, link]) => runHostSessionSetupPhaseA(link.channels)));
+    const displayNames: Record<PlayerId, string> = { [HOST_PLAYER_ID]: multiplayerPlayerNameInput.value };
+    guestEntries.forEach(([guestId], i) => (displayNames[guestId] = guestNames[i]));
+
+    const setupOptions: HostSessionSetupOptions = {
+      map,
+      difficulty: currentDifficulty,
+      roster,
+      gameplaySeed: randomSeed(),
+      displayNames,
+    };
+    await Promise.all(guestEntries.map(([guestId, link]) => runHostSessionSetupPhaseB(link.channels, guestId, setupOptions)));
     const result = buildHostSessionSetupResult(setupOptions);
     beginMultiplayerLevel();
     const worker = new Worker(new URL("./multiplayer/tickClockWorker.ts", import.meta.url), { type: "module" });
@@ -1837,7 +1864,7 @@ async function startMultiplayerSessionAsGuest(): Promise<void> {
   if (!activeMultiplayerConnection || activeMultiplayerConnection.role !== "guest") return;
   const { channels, peerConnection } = activeMultiplayerConnection;
   try {
-    const result = await runGuestSessionSetup(channels);
+    const result = await runGuestSessionSetup(channels, multiplayerPlayerNameInput.value);
     beginMultiplayerLevel();
     const totalPlayers = result.roster.length;
     updateMultiplayerGuestLiveCountDisplay(totalPlayers, totalPlayers);
@@ -2003,6 +2030,7 @@ if (isTestHooksActive()) {
         hasActiveRenderOffset: (id: string) => boolean;
         getLastReconciliationRngState: () => number | null;
         getPlayerStatus: (id: string) => string | null;
+        getPlayerDisplayName: (id: string) => string | null;
         getLootDrops: () => readonly unknown[];
         getMapExit: () => { x: number; y: number } | null;
         getMapGrid: () => readonly (readonly number[])[] | null;
@@ -2119,6 +2147,7 @@ if (isTestHooksActive()) {
     // `scripts/verify-multiplayer-disconnect.mjs` to observe a peer's status
     // flipping to `"disconnected"` and its inventory converting to loot.
     getPlayerStatus: (id) => activeMultiplayerSession?.getPlayerStatus(id) ?? null,
+    getPlayerDisplayName: (id) => activeMultiplayerSession?.getPlayerDisplayName(id) ?? null,
     getLootDrops: () => activeMultiplayerSession?.getLootDrops() ?? [],
     // Both added in step 8 (level transitions) — read-only introspection for
     // `scripts/verify-multiplayer-transition.mjs` to compute its own real,

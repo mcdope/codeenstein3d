@@ -549,6 +549,7 @@ export function runMultiplayerSessionAsGuest(
     // above; the `?? null`/`?? []` fallbacks are defensive-only.
     /* v8 ignore next -- @preserve */
     getPlayerStatus: (id) => engine?.getPlayerStatus(id) ?? null,
+    getPlayerDisplayName: (id) => engine?.getPlayerDisplayName(id) ?? null,
     /* v8 ignore next -- @preserve */
     getLootDrops: () => engine?.getLootDrops() ?? [],
     /* v8 ignore next -- @preserve */

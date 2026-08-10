@@ -3732,6 +3732,21 @@ describe("RaycasterEngine — addPlayer / roster (N-player)", () => {
     expect(engine.getPlayerStatus("nope")).toBeNull();
   });
 
+  it("getPlayerDisplayName reads any roster player's resolved name, or null if absent", () => {
+    const { engine } = makeEngine(fakeMap());
+    // Single-player: nothing ever displays this, but it resolves rather than
+    // being empty — the fallback is the capitalized roster id.
+    expect(engine.getPlayerDisplayName("local")).toBe("Local");
+    expect(engine.getPlayerDisplayName("nope")).toBeNull();
+
+    engine.addPlayer("guest-1", new ScriptedInput(), undefined, undefined, "  Tobi  ");
+    // Sanitized and resolved once, at the point the name entered the engine.
+    expect(engine.getPlayerDisplayName("guest-1")).toBe("Tobi");
+
+    engine.addPlayer("guest-2", new ScriptedInput());
+    expect(engine.getPlayerDisplayName("guest-2")).toBe("Guest-2");
+  });
+
   it("getMapExit/getMapGrid read this level's exit tile and walkable grid", () => {
     const map = fakeMap({ exit: { x: 6, y: 7 } });
     const { engine } = makeEngine(map);

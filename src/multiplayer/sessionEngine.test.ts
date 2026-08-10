@@ -79,6 +79,7 @@ function fakeResult(overrides: Partial<SessionSetupResult> = {}): SessionSetupRe
     gameplaySeed: 1,
     difficulty: "normal",
     playerCount: 2,
+    displayNames: {},
     map: fakeMap(),
     ...overrides,
   };

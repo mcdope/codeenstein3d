@@ -105,6 +105,7 @@ import {
 } from "./effects";
 import { audio } from "./audio";
 import { computeScore, killPoints, sumScoreBreakdowns, zeroScoreBreakdown, type ScoreBreakdown } from "./scoring";
+import { resolvePlayerDisplayName } from "./playerNames";
 import {
   PLAYER_STATS_ENABLED,
   buildPlayerFacingStats,
@@ -463,6 +464,11 @@ export type PlayerStatus = "alive" | "dead" | "disconnected";
  * method's own doc comment for what each field means and why `breakdown` is
  * a cumulative run total, not a single level's. */
 export interface RosterSnapshotEntry {
+  /** This player's resolved display name — see `PlayerState.displayName`.
+   * Carried here so the end-of-run comparison table has one source for it
+   * rather than re-deriving the fallback from the roster id itself, which is
+   * what it did before names existed. */
+  displayName: string;
   status: PlayerStatus;
   health: number;
   killScore: number;
@@ -478,6 +484,13 @@ export interface RosterSnapshotEntry {
  * `createPlayerState`. */
 interface PlayerState {
   readonly id: PlayerId;
+  /** What this player is called on screen — already resolved (chosen name or
+   * capitalized roster id) and already sanitized, once, at construction time
+   * via `resolvePlayerDisplayName`. Resolved rather than stored raw so no
+   * consumer has to re-apply the fallback: a teammate billboard and
+   * `rosterSnapshot()` both just draw the string. Single-player never shows
+   * it (nothing billboards the local player, who is the camera). */
+  readonly displayName: string;
   readonly player: Player;
   readonly input: InputSource;
   status: PlayerStatus;
@@ -1118,6 +1131,16 @@ export class RaycasterEngine {
      * which is the same implicit-ordering trap that made playback hash a
      * post-rescale enemy roster (see `main.ts`'s `buildEngineFor`). */
     private readonly rotSpeedMultiplierOverride?: number,
+    /** The name this peer's own player chose, if any — every *other* roster
+     * member's arrives through `addPlayer`'s own `chosenName` parameter
+     * instead. Unset (single-player, replay, every harness) falls back to the
+     * capitalized roster id, which nothing in single-player ever displays.
+     *
+     * Appended last, well away from `localSpawn`/`localPlayerId` it belongs
+     * with, because every one of this constructor's arguments is positional:
+     * inserting it where it reads best would silently reinterpret the
+     * arguments of every existing call site. */
+    localChosenName?: string,
   ) {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2D canvas context unavailable");
@@ -1170,7 +1193,10 @@ export class RaycasterEngine {
 
     this.localPlayerId = localPlayerId;
     this.players = new Map([
-      [localPlayerId, this.createPlayerState(localPlayerId, inputSource ?? new InputController(canvas), carryover, localSpawn)],
+      [
+        localPlayerId,
+        this.createPlayerState(localPlayerId, inputSource ?? new InputController(canvas), carryover, localSpawn, localChosenName),
+      ],
     ]);
 
     // One `levelStart` per level, carrying the static budget the run is about
@@ -1329,7 +1355,13 @@ export class RaycasterEngine {
    * (`map`, `enemies`, `rng`, `drops`, …) is built once in the constructor,
    * outside this method.
    */
-  private createPlayerState(id: PlayerId, inputSource: InputSource, carryover?: EngineCarryover, spawn?: Point): PlayerState {
+  private createPlayerState(
+    id: PlayerId,
+    inputSource: InputSource,
+    carryover?: EngineCarryover,
+    spawn?: Point,
+    chosenName?: string,
+  ): PlayerState {
     const player = new Player(this.map, {}, spawn);
     player.noClip = carryover?.noClip ?? false;
     const startingAmmoRef = startingAmmo(this.map.enemies);
@@ -1360,6 +1392,9 @@ export class RaycasterEngine {
     const state = {} as PlayerState;
     Object.assign(state, {
       id,
+      // Resolved once, here, so nothing downstream re-applies the fallback or
+      // forgets to sanitize — see `PlayerState.displayName`.
+      displayName: resolvePlayerDisplayName(id, chosenName),
       player,
       input: inputSource,
       status: "alive" as PlayerStatus,
@@ -1458,9 +1493,9 @@ export class RaycasterEngine {
    * session passes one of `GameMap.multiplayerSpawns`'s spread-out points
    * instead, per `multiplayer-game-state-spec.md` §2's assignment rule.
    */
-  addPlayer(id: PlayerId, inputSource: InputSource, carryover?: EngineCarryover, spawn?: Point): void {
+  addPlayer(id: PlayerId, inputSource: InputSource, carryover?: EngineCarryover, spawn?: Point, chosenName?: string): void {
     if (this.players.has(id)) throw new Error(`RaycasterEngine.addPlayer: "${id}" already present`);
-    this.players.set(id, this.createPlayerState(id, inputSource, carryover, spawn));
+    this.players.set(id, this.createPlayerState(id, inputSource, carryover, spawn, chosenName));
   }
 
   /** Determinism primitive every per-player simulation loop uses — iterating
@@ -1593,6 +1628,7 @@ export class RaycasterEngine {
       const p = this.players.get(id)!;
       const breakdown = sumScoreBreakdowns(p.priorScoreBreakdown, this.computeLevelScoreBreakdown(p));
       snapshot.set(id, {
+        displayName: p.displayName,
         status: p.status,
         health: p.health,
         killScore: p.killScore,
@@ -1631,6 +1667,16 @@ export class RaycasterEngine {
    * observe a peer flipping from `"alive"` to `"disconnected"`. */
   getPlayerStatus(id: PlayerId): PlayerStatus | null {
     return this.players.get(id)?.status ?? null;
+  }
+
+  /** A specific roster player's resolved display name, or `null` if `id`
+   * isn't a connected player — read-only introspection, same spirit as
+   * `getPlayerStatus`. This is what lets a verify script assert that a name
+   * actually crossed the wire and reached the *other* peer's engine, which
+   * no unit test can see: names are exchanged during a real handshake
+   * between two real browsers. */
+  getPlayerDisplayName(id: PlayerId): string | null {
+    return this.players.get(id)?.displayName ?? null;
   }
 
   /** Every currently-live loot drop, world-space, read-only. Lets
@@ -3247,7 +3293,7 @@ export class RaycasterEngine {
       if (id === viewerId) continue;
       const p = this.players.get(id)!;
       if (p.status !== "alive") continue;
-      others.push({ player: p.player, color: colorForPlayer(id) });
+      others.push({ player: p.player, color: colorForPlayer(id), name: p.displayName });
     }
     return others;
   }

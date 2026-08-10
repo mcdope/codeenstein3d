@@ -7,7 +7,19 @@ import { MapGenerator } from "../map/mapGenerator";
 import type { CodeEntity, ParsedFile } from "../parser/types";
 import { FIXED_DT, INPUT_DELAY_TICKS, TICK_RATE_HZ } from "./netcodeConstants";
 import { runGuestSessionSetup } from "./sessionSetupGuest";
-import { runHostSessionSetup } from "./sessionSetupHost";
+import { runHostSessionSetupPhaseA, runHostSessionSetupPhaseB, type HostSessionSetupOptions } from "./sessionSetupHost";
+
+/** Both host phases for one guest, back to back — see the identical helper in
+ * `sessionSetupHost.test.ts`. These tests drive the guest, so the host side
+ * only needs to behave like a real one. */
+async function runHostSetup(
+  channels: MultiplayerChannels,
+  assignedId: string,
+  options: Omit<HostSessionSetupOptions, "displayNames">,
+): Promise<void> {
+  const guestName = await runHostSessionSetupPhaseA(channels);
+  await runHostSessionSetupPhaseB(channels, assignedId, { ...options, displayNames: { [assignedId]: guestName } });
+}
 import { SessionSetupError, type SessionSetupMessage } from "./sessionSetupTypes";
 import type { MultiplayerChannels } from "./types";
 
@@ -105,6 +117,7 @@ describe("runGuestSessionSetup — netcode-constants mismatch (finding 8)", () =
       gameplaySeed: 1,
       difficulty: "normal",
       playerCount: 2,
+      displayNames: {},
     });
 
     await expect(guestPromise).rejects.toMatchObject({ code: "netcode-constants-mismatch" });
@@ -115,7 +128,7 @@ describe("runGuestSessionSetup — netcode-constants mismatch (finding 8)", () =
     const channels = linkedChannels();
     const options = { map: new MapGenerator().generate(parsedFile()), difficulty: "normal" as const, roster: ["guest", "host"], gameplaySeed: 1 };
 
-    const [guestResult] = await Promise.all([runGuestSessionSetup(channels.guest), runHostSessionSetup(channels.host, "guest", options)]);
+    const [guestResult] = await Promise.all([runGuestSessionSetup(channels.guest), runHostSetup(channels.host, "guest", options)]);
 
     expect(guestResult.tickRateHz).toBe(TICK_RATE_HZ);
     expect(guestResult.fixedDt).toBe(FIXED_DT);
@@ -153,6 +166,7 @@ describe("runGuestSessionSetup — overall handshake timeout (finding 9)", () =>
       gameplaySeed: 1,
       difficulty: "normal",
       playerCount: 2,
+      displayNames: {},
     });
 
     // Attached before advancing the timer — `guestPromise` only actually
@@ -171,7 +185,7 @@ describe("runGuestSessionSetup — overall handshake timeout (finding 9)", () =>
     const channels = linkedChannels();
     const options = { map: new MapGenerator().generate(parsedFile()), difficulty: "normal" as const, roster: ["guest", "host"], gameplaySeed: 1 };
 
-    const [guestResult] = await Promise.all([runGuestSessionSetup(channels.guest), runHostSessionSetup(channels.host, "guest", options)]);
+    const [guestResult] = await Promise.all([runGuestSessionSetup(channels.guest), runHostSetup(channels.host, "guest", options)]);
     // Even letting the timeout's own window fully elapse afterward must not
     // retroactively reject an already-resolved handshake.
     await vi.advanceTimersByTimeAsync(HANDSHAKE_TIMEOUT_MS);
@@ -197,7 +211,7 @@ describe("runGuestSessionSetup — overall handshake timeout (finding 9)", () =>
     // The host finally starts — the handshake must still complete normally,
     // proving the guest was never rejected by the earlier lobby-wait.
     const options = { map: new MapGenerator().generate(parsedFile()), difficulty: "normal" as const, roster: ["guest", "host"], gameplaySeed: 1 };
-    const [guestResult] = await Promise.all([guestPromise, runHostSessionSetup(channels.host, "guest", options)]);
+    const [guestResult] = await Promise.all([guestPromise, runHostSetup(channels.host, "guest", options)]);
 
     expect(guestResult.roster).toEqual(["guest", "host"]);
   });
@@ -224,6 +238,7 @@ describe("runGuestSessionSetup — protocol errors", () => {
       gameplaySeed: 1,
       difficulty: "normal",
       playerCount: 2,
+      displayNames: {},
     });
     send({ type: "map-chunk", index: 0, data: "{}" });
     send({ type: "map-end", totalChunks: 2 });
@@ -248,6 +263,7 @@ describe("runGuestSessionSetup — protocol errors", () => {
       gameplaySeed: 1,
       difficulty: "normal",
       playerCount: 2,
+      displayNames: {},
     });
     // A tiny, well-formed payload declaring absurd dimensions — passes every
     // chunk-count/byte cap (those bound wire size, not declared dimensions).
@@ -266,7 +282,7 @@ describe("runGuestSessionSetup — protocol errors", () => {
 
     const send = (message: SessionSetupMessage): void => channels.host.reconciliation.send(JSON.stringify(message));
     send({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ });
-    send({ type: "session-init", roster: ["guest", "host"], assignedId: "guest", tickRateHz: 30, fixedDt: 1 / 30, inputDelayTicks: 3, gameplaySeed: 1, difficulty: "normal", playerCount: 2 });
+    send({ type: "session-init", roster: ["guest", "host"], assignedId: "guest", tickRateHz: 30, fixedDt: 1 / 30, inputDelayTicks: 3, gameplaySeed: 1, difficulty: "normal", playerCount: 2, displayNames: {} });
     // A chunk whose `data` is not a string — push() rejects it (the H1
     // NaN-poisoning vector). Must be caught + logged, not escape the handler.
     send({ type: "map-chunk", index: 0, data: 0 } as unknown as SessionSetupMessage);
@@ -284,7 +300,7 @@ describe("runGuestSessionSetup — protocol errors", () => {
 
     const send = (message: SessionSetupMessage): void => channels.host.reconciliation.send(JSON.stringify(message));
     send({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ });
-    send({ type: "session-init", roster: ["guest", "host"], assignedId: "guest", tickRateHz: 30, fixedDt: 1 / 30, inputDelayTicks: 3, gameplaySeed: 1, difficulty: "normal", playerCount: 2 });
+    send({ type: "session-init", roster: ["guest", "host"], assignedId: "guest", tickRateHz: 30, fixedDt: 1 / 30, inputDelayTicks: 3, gameplaySeed: 1, difficulty: "normal", playerCount: 2, displayNames: {} });
     // A valid (string) chunk that is nonetheless not valid JSON once
     // reassembled — finish()'s JSON.parse throws; it must become a clean
     // protocol-error rejection rather than an uncaught throw in the listener.
@@ -309,13 +325,13 @@ describe("runGuestSessionSetup — visited reconstruction", () => {
     // guards against.
     const [guestResult] = await Promise.all([
       runGuestSessionSetup(channels.guest),
-      runHostSessionSetup(channels.host, "guest", { map, difficulty: "normal", roster: ["guest", "host"], gameplaySeed: 1 }),
+      runHostSetup(channels.host, "guest", { map, difficulty: "normal", roster: ["guest", "host"], gameplaySeed: 1 }),
     ]);
 
     expect(guestResult.map.visited).toHaveLength(map.height);
     for (const row of guestResult.map.visited) {
       expect(row).toHaveLength(map.width);
-      expect(row.every((v) => v === false)).toBe(true);
+      expect(row.every((v: boolean) => v === false)).toBe(true);
     }
     expect(guestResult.map.visited).toEqual(map.visited); // map.visited is itself freshly all-false at generation time
   });

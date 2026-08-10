@@ -128,6 +128,8 @@ export interface MultiplayerSessionHandle {
   getLastReconciliationRngState(): number | null;
   /** Read-only — see `RaycasterEngine.getPlayerStatus`'s doc comment. */
   getPlayerStatus(id: PlayerId): PlayerStatus | null;
+  /** Read-only — see `RaycasterEngine.getPlayerDisplayName`'s doc comment. */
+  getPlayerDisplayName(id: PlayerId): string | null;
   /** Read-only — see `RaycasterEngine.getLootDrops`'s doc comment. */
   getLootDrops(): readonly LootDrop[];
   /** Read-only — see `RaycasterEngine.getMapExit`'s doc comment. `null`
@@ -724,6 +726,7 @@ export function runMultiplayerSessionAsHost(
     hasActiveRenderOffset: (id) => engine!.hasActiveRenderOffset(id),
     getLastReconciliationRngState: () => lastReconciliationRngState,
     getPlayerStatus: (id) => engine?.getPlayerStatus(id) ?? null,
+    getPlayerDisplayName: (id) => engine?.getPlayerDisplayName(id) ?? null,
     // `engine` is always defined by the time any of these handle methods
     // can be called (assigned synchronously by `startLevel(currentResult)`
     // before this function ever returns) — the `?? []` fallback is the same

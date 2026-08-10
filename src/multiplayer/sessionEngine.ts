@@ -160,11 +160,16 @@ export function buildSessionEngine(options: SessionEngineOptions): SessionEngine
     myRosterId,
     spawnFor(result, myRosterId),
     result.roster.length,
+    // No rotation-speed override — that is replay playback's parameter, and
+    // it only exists here because every argument is positional and the name
+    // that follows it had to be appended last (see the constructor).
+    undefined,
+    result.displayNames[myRosterId],
   );
   for (const id of otherRosterIds) {
     const input = new NetworkInputSource();
     otherInputs.set(id, input);
-    engine.addPlayer(id, input, options.carryovers?.[id], spawnFor(result, id));
+    engine.addPlayer(id, input, options.carryovers?.[id], spawnFor(result, id), result.displayNames[id]);
   }
   engine.startExternallyDriven();
   localSampler.attach();

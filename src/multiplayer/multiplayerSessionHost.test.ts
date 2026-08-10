@@ -172,6 +172,7 @@ function fakeResult(overrides: Partial<SessionSetupResult> = {}): SessionSetupRe
     gameplaySeed: 1,
     difficulty: "normal",
     playerCount: 2,
+    displayNames: {},
     map: fakeMap(),
     ...overrides,
   };
@@ -390,6 +391,21 @@ describe("runMultiplayerSessionAsHost", () => {
     expect(handle.getPlayerStatus("host")).toBe("alive");
     expect(handle.getPlayerStatus("nope")).toBeNull();
     expect(handle.getLootDrops()).toEqual([]);
+  });
+
+  it("getPlayerDisplayName delegates to the underlying engine, chosen name or fallback", () => {
+    const channels = linkedChannels();
+    const worker = fakeWorker();
+    const handle = runMultiplayerSessionAsHost(
+      channels.links,
+      makeCanvas(),
+      fakeResult({ displayNames: { host: "Tobi" } }),
+      worker,
+    );
+    expect(handle.getPlayerDisplayName("host")).toBe("Tobi");
+    // In the roster but chose nothing — falls back to the capitalized id.
+    expect(handle.getPlayerDisplayName("guest")).toBe("Guest");
+    expect(handle.getPlayerDisplayName("nope")).toBeNull();
   });
 
   it("forwards onSessionEnded once game-over fires, after tearing down the worker", () => {
