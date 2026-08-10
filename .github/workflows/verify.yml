@@ -34,6 +34,14 @@ jobs:
         with:
           path: public/wads
           key: online-wads-${{ hashFiles('src/wad/onlineWadCatalog.ts') }}
+      # The fetcher itself warns-and-continues by default, so that a clone
+      # with no network can still run `npm run dev`/`npm run build` (the
+      # packs are optional; the game ships procedural textures). CI is the
+      # one place that *should* fail on a catalog entry that has gone 404 or
+      # started serving something unparseable — hence `--strict` here,
+      # ahead of the `prebuild` hook, which then finds everything present
+      # and skips it.
+      - run: npm run fetch:online-wads -- --strict
       # `build` chains `tsc --noEmit && vite build`, so this is the one CI
       # step that catches a type error or a Vite build break before it lands
       # on master — the other jobs run Vitest (transpiles via esbuild, no
