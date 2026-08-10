@@ -2945,6 +2945,12 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
           showFps: stats.showFps,
           godMode: stats.godMode,
           noClip: stats.noClip,
+          // Carried so the HUD's "run not recorded" badge survives the
+          // transition — the recording gate it warns about is campaign-wide,
+          // so the warning has to be too. `cheatsUsed` (module scope) is the
+          // gate's own latch and is set from the same handler; this keeps the
+          // engine's copy of it in step across levels.
+          cheatsUsed: stats.cheatsUsed,
         };
         // Persist immediately at the transition (not just the throttled
         // in-play autosave) so a tab closed right after advancing still
