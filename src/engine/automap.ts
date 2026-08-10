@@ -22,6 +22,7 @@ import {
   type GameMap,
   type LootDrop,
 } from "../map/types";
+import { gateIdAt } from "../map/gates";
 import { activeSpikeTileKeys } from "./traps";
 import type { Player } from "./player";
 import { drawRotatedGlyph, type Glyph } from "./pathSprites";
@@ -41,7 +42,12 @@ const MARGIN = 12;
 const WALL_COLOR = "#c8c8ce";
 /** Explored, still-locked doors — a cooler mid-grey, distinguishable from
  * plain wall by tone alone. */
-const DOOR_COLOR = "#9aa0ab";
+/** Gate tones on the automap, indexed by `Gate.colorIndex` — desaturated
+ * relative to the minimap's, because the automap is otherwise greyscale and
+ * reserves accents for danger and goals. A gate *is* a goal signal: it tells
+ * you which key to go and find. By value, not shared import, as with every
+ * other colour here. */
+const GATE_COLORS = ["#b4685f", "#5f7fb4", "#5fa878", "#8f68b4"];
 /** Explored, unopened Switchboard branch doors — a warm tone against the
  * key-locked door's cool one, so "needs a key" and "just push it" read apart
  * at a glance even on the desaturated automap. */
@@ -158,7 +164,7 @@ export function drawAutomap(
         ctx.fillStyle = LORE_COLOR;
         ctx.fillRect(px, py, CELL_PX, CELL_PX);
       } else if (tile === DOOR_TILE) {
-        ctx.fillStyle = DOOR_COLOR;
+        ctx.fillStyle = GATE_COLORS[map.gates[gateIdAt(map, x, y)]?.colorIndex ?? 1];
         ctx.fillRect(px, py, CELL_PX, CELL_PX);
       } else if (tile === BRANCH_DOOR_TILE) {
         // Its own colour, not the key-locked door's: the whole point of the

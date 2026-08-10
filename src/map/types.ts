@@ -224,9 +224,13 @@ export interface GameMap {
    * Overflow tiles are deliberately NOT listed here — they live only in the
    * grid, see `acidOverflows` and `src/engine/acidOverflow.ts`. */
   hazards: Point[];
-  /** Locked-door tiles guarding private/protected-method rooms. */
+  /** Locked-door tiles guarding private/protected-method rooms — the flat
+   * union of every `gates[].doors`, in the same order. */
   doors: Point[];
-  /** Collectible dependency keys scattered in reachable public areas. */
+  /** The locked rooms, one per key. See `Gate`. */
+  gates: Gate[];
+  /** Collectible dependency keys scattered in reachable public areas — exactly
+   * one per entry in `gates`. */
   keys: KeyItem[];
   /** Cosmetic, non-blocking props scattered in larger rooms (set dressing). */
   decorations: Decoration[];
@@ -347,7 +351,7 @@ export interface AcidOverflow {
  * death position (held dependency keys are level-scoped and one-per-door, so
  * a dead player holding one until revive would soft-lock a door — see
  * `RaycasterEngine.killPlayer`), collectible by any living player. */
-export type LootKind = "bullets" | "rockets" | "smg" | "gas" | "health" | "swap" | "weapon" | "key";
+export type LootKind = "bullets" | "rockets" | "smg" | "gas" | "health" | "swap" | "weapon";
 
 /**
  * A dynamic loot drop left at a defeated enemy's death position. Spawned at
@@ -415,12 +419,48 @@ export interface LoreTerminal {
   text: string;
 }
 
-/** A collectible "dependency key" (opens one locked door). */
+/** A collectible "dependency key" — opens every door of its own gate, and is
+ * never spent (see `Gate`). */
 export interface KeyItem {
   /** World position in fractional tile units (tile center). */
   x: number;
   y: number;
   collected: boolean;
+  /** Which `Gate` this key belongs to — its `id`, i.e. its index in
+   * `GameMap.gates`. Exactly one key exists per gate; `placeKeys` guarantees
+   * it, and `assertAllRoomsReachable` relies on it. */
+  gateId: number;
+}
+
+/** How many distinct gate colours exist. The gate cap is kept at or below this
+ * so no level ever reuses one — "the blue door is the way on" has to stay true
+ * within a level. The map layer only knows the *count* and an index; the
+ * engine owns which pixels each index means, exactly as it does for
+ * `StyleSetId`. */
+export const GATE_COLOR_COUNT = 4;
+
+/**
+ * One locked room, and the single key that opens it.
+ *
+ * A key belongs to a *room*, not a doorway. Before this existed the engine
+ * spent one key per doorway, so a room with six mouths cost six keys for one
+ * space, and re-opening a door from the other side charged again — which reads
+ * as a bug to anyone playing it. `MAX_GATE_ROOMS` now budgets rooms, and a
+ * player holding this gate's key can push open any of its doors, permanently.
+ *
+ * `doors` is a partition of `GameMap.doors`, in the same order, so anything
+ * iterating the flat list (the minimap, the route planner's greedy order) is
+ * unaffected by gates existing.
+ */
+export interface Gate {
+  /** Index into `GameMap.gates`. */
+  id: number;
+  /** 0..`GATE_COLOR_COUNT`-1, distinct within a level. */
+  colorIndex: number;
+  /** The gated room's rect. */
+  room: Rect;
+  /** Every door tile of this gate. */
+  doors: Point[];
 }
 
 /** Visual flavor of a decorative prop; purely cosmetic, no gameplay effect. */

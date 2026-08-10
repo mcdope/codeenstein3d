@@ -26,6 +26,7 @@ function fakeMap(grid: Tile[][], spawn = { x: 1, y: 1 }): GameMap {
     shortestPathTiles: 0,
     hazards: [],
     doors: [],
+    gates: [],
     keys: [],
     decorations: [],
     teleporters: [],

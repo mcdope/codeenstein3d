@@ -303,11 +303,19 @@ export class MapGenerator {
     const decorations = DECORATIONS_ENABLED ? placeDecorations(rooms, grid, avoidPoints, rng) : [];
 
     // Lock private/protected-method rooms behind doors, then scatter one key
-    // per door in areas reachable before that door (keeps every level solvable).
-    // `spawn`/`exit` let it keep one gate on the critical path; enemies and
-    // pickups are what make a locked room worth its key. See `placeDoors`.
-    const doors = placeDoors(rooms, grid, { spawn, exit, enemies, pickups: vendor.pickups });
-    const keys = placeKeys(grid, spawn, exit, enemies, doors, breakupRooms, rng, exception.zones);
+    // per *gate* in an area reachable before that gate opens (keeps every level
+    // solvable in key order). `spawn`/`exit` let it keep one gate on the
+    // critical path; enemies and pickups are what make a locked room worth its
+    // key. See `placeDoors`.
+    //
+    // `placeKeys` returns the surviving gates: it un-gates a room rather than
+    // ship a door whose key it could not place anywhere, which is what makes
+    // "every gate has exactly one key" a total invariant. `doors` is derived
+    // from the survivors, in gate order, so the flat list every renderer and the
+    // route planner iterate stays exactly what it was.
+    const placedGates = placeDoors(rooms, grid, { spawn, exit, enemies, pickups: vendor.pickups });
+    const { keys, gates } = placeKeys(grid, spawn, exit, enemies, placedGates, breakupRooms, rng, exception.zones);
+    const doors = gates.flatMap((g) => g.doors);
 
     // Glowing "lore terminals" from large source comments, and hidden secret
     // rooms carved behind fake walls from unreachable ("dead") code — both
@@ -396,7 +404,7 @@ export class MapGenerator {
     // `connectRooms`'s doc comment), but logs loudly instead of silently
     // shipping an unreachable room if some future change breaks that
     // invariant some other way (notes:155).
-    assertAllRoomsReachable(grid, spawn, rooms, doors, keys);
+    assertAllRoomsReachable(grid, spawn, rooms, gates, keys);
 
     return {
       width: size,
@@ -412,6 +420,7 @@ export class MapGenerator {
       shortestPathTiles: shortestPath(grid, spawn, exit),
       hazards,
       doors,
+      gates,
       keys,
       decorations,
       teleporters,

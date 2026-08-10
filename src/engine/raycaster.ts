@@ -24,6 +24,7 @@ import {
 import type { Player } from "./player";
 import { drawGlyph, drawRotatedGlyph, outlineRect, type Glyph } from "./pathSprites";
 import { EDGE_CASE_COLOR, enemyColor } from "./sprites";
+import { gateIdAt } from "../map/gates";
 import { LORE_BASE, type LevelStyle, type TextureBitmap } from "./textures";
 import { activeSpikeTileKeys } from "./traps";
 
@@ -42,6 +43,22 @@ const SECRET_WALL_OVERLAY = "rgba(20,40,90,0.12)";
  * (a player has to be able to tell "just push it" from "needs a key you may
  * not have" on sight), but not animated: unlike a lore terminal, a door needs
  * no "come interact with me" pulse. */
+/**
+ * Per-gate washes over the shared door texture, indexed by `Gate.colorIndex`.
+ *
+ * Alpha is above `BRANCH_DOOR_OVERLAY`'s deliberately: this has to carry
+ * four-way discrimination against five styleset door tones *and* an arbitrary
+ * WAD-loaded door hue, where the branch door only ever needed to read as "not
+ * the blue one". No yellow — that is the branch door's amber, and keeping the
+ * two door kinds tellable apart is a standing constraint (`textures.ts`).
+ */
+const GATE_DOOR_OVERLAYS = [
+  "rgba(214,58,48,0.55)", // red
+  "rgba(52,112,214,0.55)", // blue
+  "rgba(52,178,92,0.55)", // green
+  "rgba(168,72,214,0.55)", // violet
+];
+
 const BRANCH_DOOR_OVERLAY = "rgba(190,146,66,0.42)";
 /** Shared empty default for `renderScene`/`renderMinimap`'s `readTerminals`
  * param — one instance reused across calls rather than a fresh `Set` every
@@ -326,6 +343,14 @@ export function renderScene(
       } else if (hitTile === BRANCH_DOOR_TILE) {
         ctx.globalAlpha = 1;
         ctx.fillStyle = BRANCH_DOOR_OVERLAY;
+        ctx.fillRect(x, solidStart, 1, solidEnd - solidStart);
+      } else if (hitTile === DOOR_TILE) {
+        // Per-gate wash over the shared door texture — the same "shared texture
+        // + identifying tint" split branch doors and secret walls already use,
+        // which keeps a WAD-sourced door correct for free. One typed-array read
+        // per door column (`gateIdAt`), the same shape as the lore lookup below.
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = GATE_DOOR_OVERLAYS[map.gates[gateIdAt(map, mapX, mapY)]?.colorIndex ?? 1];
         ctx.fillRect(x, solidStart, 1, solidEnd - solidStart);
       } else if (hitTile === LORE_TILE && !readTerminals.has(`${mapX},${mapY}`)) {
         // Once read, the terminal keeps its distinct wall texture (still
@@ -642,6 +667,11 @@ const MINIMAP_WALL_FALLBACK = "#4a4a55";
  * key-locked door's cool `#568ebe`. Matches `drawAutomap`'s own branch-door
  * tone by value, not by shared import, following the same "each renderer keeps
  * its own thematically-matched constants" convention as every colour here. */
+/** Gate tones on the minimap, indexed by `Gate.colorIndex` — matching the
+ * in-world wash and the automap by value, not by shared import, following the
+ * same convention as `MINIMAP_BRANCH_DOOR_COLOR` below. */
+const MINIMAP_GATE_COLORS = ["#d63a30", "#568ebe", "#34b25c", "#a848d6"];
+
 const MINIMAP_BRANCH_DOOR_COLOR = "#b39a72";
 
 /** One outward sweep of the key ping's sonar ring, in milliseconds. Wall
@@ -797,9 +827,14 @@ export function renderMinimap(
 
   // Locked doors still closed (grid is the source of truth once opened).
   ctx.fillStyle = "#568ebe";
-  for (const door of map.doors) {
-    if (map.grid[door.y][door.x] === DOOR_TILE) {
-      ctx.fillRect(pad + door.x * cell, pad + door.y * cell, cell, cell);
+  // Per gate rather than per door tile: one `fillStyle` write each instead of
+  // one for the whole set, and the marker now says *which* key it wants.
+  for (const gate of map.gates) {
+    ctx.fillStyle = MINIMAP_GATE_COLORS[gate.colorIndex];
+    for (const door of gate.doors) {
+      if (map.grid[door.y][door.x] === DOOR_TILE) {
+        ctx.fillRect(pad + door.x * cell, pad + door.y * cell, cell, cell);
+      }
     }
   }
 

@@ -66,6 +66,7 @@ function fakeMap(overrides: Partial<GameMap> = {}, size = 12): GameMap {
     shortestPathTiles: 4,
     hazards: [],
     doors: [],
+    gates: [],
     keys: [],
     decorations: [],
     teleporters: [],
@@ -1361,13 +1362,48 @@ describe("RaycasterEngine — keys and doors", () => {
     const size = 12;
     const g = walledRoom(size);
     g[5][7] = DOOR_TILE; // directly east of spawn
-    return fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+    return fakeMap(
+      {
+        grid: g,
+        keys: [{ x: 5.5, y: 5.5, collected: false, gateId: 0 }],
+        doors: [{ x: 7, y: 5 }],
+        gates: [{ id: 0, colorIndex: 0, room: { x: 8, y: 4, w: 3, h: 3 }, doors: [{ x: 7, y: 5 }] }],
+      },
+      size,
+    );
   }
+
+  it("holds both gates' keys at once, reported in sorted order", () => {
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][7] = DOOR_TILE;
+    const map = fakeMap(
+      {
+        grid: g,
+        // Two keys within pickup radius of spawn, deliberately listed with the
+        // higher gate first so the sort has something to do.
+        keys: [
+          { x: 5.5, y: 5.5, collected: false, gateId: 1 },
+          { x: 5.4, y: 5.4, collected: false, gateId: 0 },
+        ],
+        doors: [{ x: 7, y: 5 }],
+        gates: [
+          { id: 0, colorIndex: 0, room: { x: 8, y: 4, w: 3, h: 3 }, doors: [{ x: 7, y: 5 }] },
+          { id: 1, colorIndex: 1, room: { x: 1, y: 1, w: 2, h: 2 }, doors: [] },
+        ],
+      },
+      size,
+    );
+    const { engine, handlers } = makeEngine(map);
+    engine.advance(0.016);
+    expect(lastStats(handlers).heldGates).toEqual([0, 1]);
+    expect(lastStats(handlers).gateColors).toEqual([0, 1]);
+  });
 
   it("collects a nearby key", () => {
     const { engine, handlers } = makeEngine(doorMap());
     engine.advance(0.016);
-    expect(lastStats(handlers).keysHeld).toBe(1);
+    expect(lastStats(handlers).heldGates).toHaveLength(1);
   });
 
   it("opens a door ahead when holding a key and walking into it", () => {
@@ -1377,7 +1413,10 @@ describe("RaycasterEngine — keys and doors", () => {
     input.keys.add("KeyW"); // push toward the door (spawn faces +X by default)
     for (let i = 0; i < 20; i++) engine.advance(0.1);
     expect(map.grid[5][7]).toBe(0);
-    expect(lastStats(handlers).keysHeld).toBe(0);
+    // The key is NOT spent: it opens every doorway of its own gate, as often
+    // as the room has mouths. Paying again for a door you already opened from
+    // the other side is the defect this replaced.
+    expect(lastStats(handlers).heldGates).toEqual([0]);
   });
 
   it("does not open a door without a key", () => {
@@ -1415,14 +1454,23 @@ describe("RaycasterEngine — keys and doors", () => {
     const size = 12;
     const g = walledRoom(size);
     for (let y = 3; y <= 7; y++) g[y][7] = DOOR_TILE;
-    const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+    const runDoors = [3, 4, 5, 6, 7].map((y) => ({ x: 7, y }));
+    const map = fakeMap(
+      {
+        grid: g,
+        keys: [{ x: 5.5, y: 5.5, collected: false, gateId: 0 }],
+        doors: runDoors,
+        gates: [{ id: 0, colorIndex: 0, room: { x: 8, y: 3, w: 3, h: 5 }, doors: runDoors }],
+      },
+      size,
+    );
     const { engine, input, handlers } = makeEngine(map);
     engine.advance(0.016); // collect the one key
-    expect(lastStats(handlers).keysHeld).toBe(1);
+    expect(lastStats(handlers).heldGates).toHaveLength(1);
     input.keys.add("KeyW"); // push into the doorway at (7,5)
     for (let i = 0; i < 20; i++) engine.advance(0.1);
     for (let y = 3; y <= 7; y++) expect(map.grid[y][7]).toBe(0);
-    expect(lastStats(handlers).keysHeld).toBe(0);
+    expect(lastStats(handlers).heldGates).toEqual([0]); // still held — never spent
   });
 
   it("emits a grid delta for every tile of an opened doorway", () => {
@@ -1432,7 +1480,16 @@ describe("RaycasterEngine — keys and doors", () => {
     const size = 12;
     const g = walledRoom(size);
     for (let y = 3; y <= 7; y++) g[y][7] = DOOR_TILE;
-    const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+    const runDoors = [3, 4, 5, 6, 7].map((y) => ({ x: 7, y }));
+    const map = fakeMap(
+      {
+        grid: g,
+        keys: [{ x: 5.5, y: 5.5, collected: false, gateId: 0 }],
+        doors: runDoors,
+        gates: [{ id: 0, colorIndex: 0, room: { x: 8, y: 3, w: 3, h: 5 }, doors: runDoors }],
+      },
+      size,
+    );
     const { engine, input } = makeEngine(map);
     engine.advance(0.016);
     input.keys.add("KeyW");
@@ -1449,7 +1506,17 @@ describe("RaycasterEngine — keys and doors", () => {
     g[4][7] = DOOR_TILE;
     g[5][7] = DOOR_TILE;
     g[7][7] = DOOR_TILE; // separated from the pair above by plain wall at y=6
-    const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+    const bothDoorways = [{ x: 7, y: 4 }, { x: 7, y: 5 }, { x: 7, y: 7 }];
+    const map = fakeMap(
+      {
+        grid: g,
+        keys: [{ x: 5.5, y: 5.5, collected: false, gateId: 0 }],
+        doors: bothDoorways,
+        // One gate, two doorways — the case that used to cost two keys.
+        gates: [{ id: 0, colorIndex: 0, room: { x: 8, y: 3, w: 3, h: 6 }, doors: bothDoorways }],
+      },
+      size,
+    );
     const { engine, input } = makeEngine(map);
     engine.advance(0.016);
     input.keys.add("KeyW");
@@ -1467,20 +1534,21 @@ describe("RaycasterEngine — keys and doors", () => {
     input.keys.add("KeyW");
     for (let i = 0; i < 20; i++) engine.advance(0.1);
     expect(map.grid[5][7]).toBe(0);
-    expect(lastStats(handlers).keysHeld).toBe(0);
+    // A branch door is keyless by design, so nothing was ever held.
+    expect(lastStats(handlers).heldGates).toEqual([]);
   });
 
   it("doesn't spend a key when opening a branch door", () => {
     const size = 12;
     const g = walledRoom(size);
     g[5][7] = BRANCH_DOOR_TILE;
-    const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+    const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false, gateId: 0 }] }, size);
     const { engine, input, handlers } = makeEngine(map);
     engine.advance(0.016); // collect the key
     input.keys.add("KeyW");
     for (let i = 0; i < 20; i++) engine.advance(0.1);
     expect(map.grid[5][7]).toBe(0);
-    expect(lastStats(handlers).keysHeld).toBe(1);
+    expect(lastStats(handlers).heldGates).toHaveLength(1);
   });
 
   it("blocks movement through a branch door until it's pushed open", () => {
@@ -1542,7 +1610,15 @@ describe("RaycasterEngine — keys and doors", () => {
     const size = 12;
     const g = walledRoom(size);
     g[5][3] = DOOR_TILE; // west of spawn — behind the player's default +X facing
-    const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+    const map = fakeMap(
+      {
+        grid: g,
+        keys: [{ x: 5.5, y: 5.5, collected: false, gateId: 0 }],
+        doors: [{ x: 3, y: 5 }],
+        gates: [{ id: 0, colorIndex: 0, room: { x: 1, y: 4, w: 2, h: 3 }, doors: [{ x: 3, y: 5 }] }],
+      },
+      size,
+    );
     const { engine, input } = makeEngine(map);
     engine.advance(0.016); // collect the key first
     input.keys.add("KeyS"); // push backward, toward the door behind
@@ -1567,16 +1643,25 @@ describe("RaycasterEngine — locked-door hint", () => {
     return hintPlayers(engine).get(id)!;
   }
 
-  /** A locked door directly east of spawn, so plain `KeyW` walks into it. */
+  /** A locked door directly east of spawn, so plain `KeyW` walks into it. The
+   * door belongs to gate 0, which is what the hint now names and pings. */
   function lockedDoorMap(overrides: Partial<GameMap> = {}): GameMap {
     const size = 12;
     const g = walledRoom(size);
     g[5][7] = DOOR_TILE;
-    return fakeMap({ grid: g, ...overrides }, size);
+    return fakeMap(
+      {
+        grid: g,
+        doors: [{ x: 7, y: 5 }],
+        gates: [{ id: 0, colorIndex: 0, room: { x: 8, y: 4, w: 3, h: 3 }, doors: [{ x: 7, y: 5 }] }],
+        ...overrides,
+      },
+      size,
+    );
   }
 
   /** Far enough from spawn that `collectKeys` never picks it up mid-test. */
-  const FAR_KEY: KeyItem = { x: 2.5, y: 2.5, collected: false };
+  const FAR_KEY: KeyItem = { x: 2.5, y: 2.5, collected: false, gateId: 0 };
 
   function doorLogs(log: { mock: { calls: unknown[][] } }): unknown[][] {
     return log.mock.calls.filter((c: unknown[]) => typeof c[0] === "string" && c[0].includes("[door] locked"));
@@ -1621,7 +1706,7 @@ describe("RaycasterEngine — locked-door hint", () => {
   });
 
   it("does not cue the hint when the player actually holds a key", () => {
-    const map = lockedDoorMap({ keys: [{ x: 5.5, y: 5.5, collected: false }] });
+    const map = lockedDoorMap({ keys: [{ x: 5.5, y: 5.5, collected: false, gateId: 0 }] });
     const { engine, input } = makeEngine(map);
     const { denial } = silenceAudio();
 
@@ -1676,10 +1761,42 @@ describe("RaycasterEngine — locked-door hint", () => {
     expect(denial).toHaveBeenCalledTimes(2);
   });
 
-  it("pings the walking-nearest key, not the straight-line-nearest one", () => {
-    // The whole point of routing this through `PathField`: a key sealed in a
-    // pocket two tiles away must lose to one five tiles away down open floor.
-    // A `Math.hypot` scan picks the pocket every time.
+  it("pings THIS gate's key, even when another gate's key is much nearer", () => {
+    // The payoff of door-to-key identity. It used to ping the nearest
+    // uncollected key of any kind, which is now confidently the wrong one:
+    // only one key opens the door being pushed, so pointing at a closer key
+    // sends the player to fetch something that will not help.
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][7] = DOOR_TILE; // gate 0, directly east of spawn
+    const mine: KeyItem = { x: 2.5, y: 9.5, collected: false, gateId: 0 }; // far
+    const other: KeyItem = { x: 5.5, y: 5.5, collected: false, gateId: 1 }; // right here
+    const map = fakeMap(
+      {
+        grid: g,
+        keys: [mine, other],
+        doors: [{ x: 7, y: 5 }],
+        gates: [
+          { id: 0, colorIndex: 0, room: { x: 8, y: 4, w: 3, h: 3 }, doors: [{ x: 7, y: 5 }] },
+          { id: 1, colorIndex: 1, room: { x: 1, y: 1, w: 2, h: 2 }, doors: [] },
+        ],
+      },
+      size,
+    );
+    const { engine, input } = makeEngine(map);
+    silenceAudio();
+
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+
+    // Gate 1's key sits on the spawn tile and is collected instantly; gate 0's
+    // is across the room. The ping still points at gate 0's.
+    expect(hintState(engine).keyPingTarget).toEqual({ x: 2.5, y: 9.5 });
+  });
+
+  it("pings nothing when this gate's key is itself unreachable", () => {
+    // `null` is the honest answer — falling back to some other key is exactly
+    // the behaviour that made the old hint misleading.
     const size = 12;
     const g = walledRoom(size);
     g[5][7] = DOOR_TILE;
@@ -1688,17 +1805,24 @@ describe("RaycasterEngine — locked-door hint", () => {
       g[4][x] = 1;
     }
     g[3][4] = 1;
-    g[3][6] = 1; // (5,3) is now a sealed one-tile pocket
-    const sealed: KeyItem = { x: 5.5, y: 3.5, collected: false }; // euclidean 2.0
-    const reachable: KeyItem = { x: 2.5, y: 7.5, collected: false }; // euclidean ~3.6, BFS 5
-    const map = fakeMap({ grid: g, keys: [sealed, reachable] }, size);
+    g[3][6] = 1; // (5,3) is a sealed one-tile pocket
+    const sealed: KeyItem = { x: 5.5, y: 3.5, collected: false, gateId: 0 };
+    const map = fakeMap(
+      {
+        grid: g,
+        keys: [sealed],
+        doors: [{ x: 7, y: 5 }],
+        gates: [{ id: 0, colorIndex: 0, room: { x: 8, y: 4, w: 3, h: 3 }, doors: [{ x: 7, y: 5 }] }],
+      },
+      size,
+    );
     const { engine, input } = makeEngine(map);
     silenceAudio();
 
     input.keys.add("KeyW");
     for (let i = 0; i < 20; i++) engine.advance(0.1);
 
-    expect(hintState(engine).keyPingTarget).toEqual({ x: 2.5, y: 7.5 });
+    expect(hintState(engine).keyPingTarget).toBeNull();
   });
 
   it("skips an already-collected key when choosing what to ping", () => {
@@ -1706,8 +1830,8 @@ describe("RaycasterEngine — locked-door hint", () => {
     // just flagged, and pinging it would send the player to bare floor.
     const map = lockedDoorMap({
       keys: [
-        { x: 4.5, y: 5.5, collected: true }, // one tile away, already taken
-        { x: 2.5, y: 2.5, collected: false },
+        { x: 4.5, y: 5.5, collected: true, gateId: 0 }, // one tile away, already taken
+        { x: 2.5, y: 2.5, collected: false, gateId: 0 },
       ],
     });
     const { engine, input } = makeEngine(map);
@@ -1729,7 +1853,7 @@ describe("RaycasterEngine — locked-door hint", () => {
     }
     g[3][4] = 1;
     g[3][6] = 1;
-    const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 3.5, collected: false }] }, size);
+    const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 3.5, collected: false, gateId: 0 }] }, size);
     const { engine, input } = makeEngine(map);
     const { denial, ping } = silenceAudio();
 
@@ -3850,8 +3974,8 @@ describe("RaycasterEngine — addPlayer / roster (N-player)", () => {
     const map = fakeMap({
       spawn: { x: 5, y: 5 },
       keys: [
-        { x: 6, y: 6, collected: false },
-        { x: 7, y: 7, collected: true },
+        { x: 6, y: 6, collected: false, gateId: 0 },
+        { x: 7, y: 7, collected: true, gateId: 0 },
       ],
     });
     const { engine } = makeEngine(map, makeHandlers(), { input: new ScriptedInput() });
@@ -4054,14 +4178,14 @@ describe("RaycasterEngine — death, spectate, and revive (N-player)", () => {
     return fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }] }, size);
   }
 
-  it("a player who dies drops their held keys at their death position; a living teammate can then collect them", () => {
+  it("a player who dies drops NO key — every teammate already holds it", () => {
     const original = window.location;
     Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
     try {
       const size = 14;
       const g = walledRoom(size);
       g[5][5] = HAZARD_TILE;
-      const map = fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }], keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+      const map = fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }], keys: [{ x: 5.5, y: 5.5, collected: false, gateId: 0 }] }, size);
       const { engine } = makeEngine(map);
       const p2Input = new ScriptedInput();
       engine.addPlayer("p2", p2Input);
@@ -4077,15 +4201,14 @@ describe("RaycasterEngine — death, spectate, and revive (N-player)", () => {
       // The team isn't over — p2 is still alive.
       expect(engine.rosterSnapshot().get("p2")!.status).toBe("alive");
 
+      // There is exactly one key per gate, so it is granted to the whole team
+      // on pickup. p2 already holds gate 0 — dropping a key here would be
+      // handing over something nobody is missing, and a teammate who could not
+      // pick it up in time would be locked out of that room for the level.
       const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> }).__codeensteinTestHooks;
-      let drops = hooks!.getDrops() as { x: number; y: number; kind: string }[];
-      expect(drops).toContainEqual(expect.objectContaining({ kind: "key", x: 5.5, y: 5.5 }));
-
-      p2Input.keys.add("KeyS"); // walk back to the death position
-      for (let i = 0; i < 15; i++) engine.advance(0.1);
-      p2Input.keys.delete("KeyS");
-      drops = hooks!.getDrops() as { x: number; y: number; kind: string }[];
-      expect(drops.some((d) => d.kind === "key")).toBe(false); // p2 collected it
+      const drops = hooks!.getDrops() as { x: number; y: number; kind: string }[];
+      expect(drops.some((d) => d.kind === "key")).toBe(false);
+      expect(engine.rosterSnapshot().get("p2")!.status).toBe("alive");
     } finally {
       Object.defineProperty(window, "location", { value: original, configurable: true });
       delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
@@ -4238,7 +4361,7 @@ describe("RaycasterEngine — death, spectate, and revive (N-player)", () => {
       {
         grid: g,
         hazards: [{ x: 5, y: 5 }],
-        keys: [{ x: 17.5, y: 17.5, collected: false }],
+        keys: [{ x: 17.5, y: 17.5, collected: false, gateId: 0 }],
         ammoPickups: [pickup],
         enemies: [enemy],
         mines: [mine],
@@ -4448,8 +4571,8 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
         { x: 2, y: 2, kind: "bullets", amount: 5, collected: false },
       ];
       const keys: KeyItem[] = [
-        { x: 3, y: 3, collected: true },
-        { x: 4, y: 3, collected: false },
+        { x: 3, y: 3, collected: true, gateId: 0 },
+        { x: 4, y: 3, collected: false, gateId: 0 },
       ];
       const map = fakeMap({ ammoPickups: pickups, keys });
       const { engine } = makeEngine(map);
@@ -4473,7 +4596,15 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
       const size = 12;
       const g = walledRoom(size);
       g[5][7] = DOOR_TILE; // directly east of spawn
-      const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+      const map = fakeMap(
+        {
+          grid: g,
+          keys: [{ x: 5.5, y: 5.5, collected: false, gateId: 0 }],
+          doors: [{ x: 7, y: 5 }],
+          gates: [{ id: 0, colorIndex: 0, room: { x: 8, y: 4, w: 3, h: 3 }, doors: [{ x: 7, y: 5 }] }],
+        },
+        size,
+      );
       const { engine, input } = makeEngine(map);
       engine.advance(0.016); // collect the key first
       input.keys.add("KeyW"); // push toward the door
@@ -4493,7 +4624,15 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
       const size = 12;
       const g = walledRoom(size);
       g[5][7] = DOOR_TILE;
-      const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+      const map = fakeMap(
+        {
+          grid: g,
+          keys: [{ x: 5.5, y: 5.5, collected: false, gateId: 0 }],
+          doors: [{ x: 7, y: 5 }],
+          gates: [{ id: 0, colorIndex: 0, room: { x: 8, y: 4, w: 3, h: 3 }, doors: [{ x: 7, y: 5 }] }],
+        },
+        size,
+      );
       const { engine, input } = makeEngine(map);
       engine.advance(0.016);
       input.keys.add("KeyW");
@@ -4518,7 +4657,15 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
       const size = 12;
       const g = walledRoom(size);
       g[5][7] = DOOR_TILE;
-      const map = fakeMap({ grid: g, keys: [{ x: 5.5, y: 5.5, collected: false }] }, size);
+      const map = fakeMap(
+        {
+          grid: g,
+          keys: [{ x: 5.5, y: 5.5, collected: false, gateId: 0 }],
+          doors: [{ x: 7, y: 5 }],
+          gates: [{ id: 0, colorIndex: 0, room: { x: 8, y: 4, w: 3, h: 3 }, doors: [{ x: 7, y: 5 }] }],
+        },
+        size,
+      );
       const { engine, input } = makeEngine(map);
       engine.advance(0.016);
       input.keys.add("KeyW");
@@ -4728,7 +4875,7 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
     it("ignores an out-of-range pickupsCollected/keysCollected index instead of throwing (a mismatched/malicious host payload)", () => {
       const map = fakeMap({
         ammoPickups: [{ x: 1, y: 1, kind: "bullets", amount: 5, collected: false }],
-        keys: [{ x: 2, y: 2, collected: false }],
+        keys: [{ x: 2, y: 2, collected: false, gateId: 0 }],
       });
       const { engine } = makeEngine(map);
 
@@ -4788,7 +4935,7 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
 
     it("marks pickups/keys collected by index", () => {
       const pickups: AmmoPickup[] = [{ x: 1, y: 1, kind: "bullets", amount: 5, collected: false }];
-      const keys: KeyItem[] = [{ x: 3, y: 3, collected: false }];
+      const keys: KeyItem[] = [{ x: 3, y: 3, collected: false, gateId: 0 }];
       const map = fakeMap({ ammoPickups: pickups, keys });
       const { engine } = makeEngine(map);
 
@@ -4832,7 +4979,7 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
                 swap: 0,
                 ammo: { bullets: 0, rockets: 0, smg: 0, gas: 0 },
                 weaponIndex: 0,
-                keysHeld: 0,
+                heldGates: [],
                 ownedWeapons: [],
                 alive: true,
                 killScore: 0,
@@ -5072,7 +5219,7 @@ describe("RaycasterEngine — multiplayer disconnect (step 8)", () => {
     swap: number;
     ammo: { bullets: number; rockets: number; smg: number; gas: number };
     ownedWeapons: Set<number>;
-    keysHeld: number;
+    heldGates: Set<number>;
   };
   function mpPlayersOf(engine: InstanceType<typeof RaycasterEngine>): Map<string, MpPlayerState> {
     return (engine as unknown as { players: Map<string, MpPlayerState> }).players;
@@ -5089,7 +5236,9 @@ describe("RaycasterEngine — multiplayer disconnect (step 8)", () => {
       host.ammo.gas = 3;
       host.ownedWeapons.add(GDB_WEAPON_INDEX);
       host.ownedWeapons.add(GHIDRA_WEAPON_INDEX);
-      host.keysHeld = 2;
+      host.heldGates.add(1);
+      host.heldGates.add(0); // out of order on purpose — the wire must be sorted
+      expect(engine.captureReconciliationSnapshot(1).players.host.heldGates).toEqual([0, 1]);
 
       engine.applyRosterRemoval(["host"]);
 
@@ -5101,21 +5250,21 @@ describe("RaycasterEngine — multiplayer disconnect (step 8)", () => {
         { kind: "gas", amount: 3, weaponIndex: undefined, id: "disconnect:host:2", source: "disconnect" },
         { kind: "weapon", amount: undefined, weaponIndex: GDB_WEAPON_INDEX, id: "disconnect:host:3", source: "disconnect" },
         { kind: "weapon", amount: undefined, weaponIndex: GHIDRA_WEAPON_INDEX, id: "disconnect:host:4", source: "disconnect" },
-        { kind: "key", amount: 1, weaponIndex: undefined, id: "disconnect:host:5", source: "disconnect" },
-        { kind: "key", amount: 1, weaponIndex: undefined, id: "disconnect:host:6", source: "disconnect" },
       ]);
     });
 
-    it("never drops health or swap, and clears keysHeld", () => {
+    it("never drops health, swap, or keys — keys are team-wide and unspent", () => {
       const engine = makeMpEngine(fakeMap());
       engine.addPlayer("guest", new ScriptedInput());
       const host = mpPlayersOf(engine).get("host")!;
       host.health = 50;
       host.swap = 20;
-      host.keysHeld = 1;
+      host.heldGates.add(0);
       engine.applyRosterRemoval(["host"]);
       expect(dropsOf(engine).some((d) => d.kind === "health" || d.kind === "swap")).toBe(false);
-      expect(mpPlayersOf(engine).get("host")!.keysHeld).toBe(0);
+      // The gate stays held rather than being cleared and dropped: every
+      // teammate holds it too, so there is nothing to hand over.
+      expect([...mpPlayersOf(engine).get("host")!.heldGates]).toEqual([0]);
     });
 
     it("only drops owned weapons not already in STARTING_WEAPONS", () => {

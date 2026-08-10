@@ -118,6 +118,7 @@ function fakeMap(overrides: Partial<GameMap> = {}, size = 12): GameMap {
     shortestPathTiles: 4,
     hazards: [],
     doors: [],
+    gates: [],
     keys: [],
     decorations: [],
     teleporters: [],
@@ -196,7 +197,7 @@ function fakePlayerSnapshot(overrides: Partial<PlayerSnapshot> = {}): PlayerSnap
     swap: 0,
     ammo: { bullets: 0, rockets: 0, smg: 0, gas: 0 },
     weaponIndex: 0,
-    keysHeld: 0,
+    heldGates: [],
     ownedWeapons: [0, 1, 2],
     alive: true,
     killScore: 0,
@@ -438,7 +439,7 @@ describe("runMultiplayerSessionAsGuest", () => {
   });
 
   it("getDropsSnapshot/getKeysSnapshot delegate to the underlying engine", () => {
-    const map = fakeMap({ keys: [{ x: 6, y: 6, collected: false }] });
+    const map = fakeMap({ keys: [{ x: 6, y: 6, collected: false, gateId: 0 }] });
     const channels = linkedChannels();
     const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult({ map }));
     expect(handle.getDropsSnapshot()).toEqual([]);

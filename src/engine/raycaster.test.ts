@@ -104,6 +104,7 @@ function fakeMap(overrides: Partial<GameMap> = {}, size = 8): GameMap {
     shortestPathTiles: 0,
     hazards: [],
     doors: [],
+    gates: [],
     keys: [],
     decorations: [],
     teleporters: [],
@@ -523,7 +524,7 @@ describe("renderMinimap", () => {
         spikeTraps: [{ x: 5, y: 5, period: 4, phase: 0 }],
         mines: [{ x: 3, y: 5, alive: true, visible: true, closeTimer: 0 }],
         teleporters: [{ x: 5, y: 2, targetX: 1, targetY: 1, label: "goto label" }],
-        keys: [{ x: 6, y: 5, collected: false }],
+        keys: [{ x: 6, y: 5, collected: false, gateId: 0 }],
         enemies: [
           {
             x: 4,

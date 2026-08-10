@@ -23,6 +23,7 @@ function fakeMap(grid: Tile[][]): GameMap {
     shortestPathTiles: 0,
     hazards: [],
     doors: [],
+    gates: [],
     keys: [],
     decorations: [],
     teleporters: [],

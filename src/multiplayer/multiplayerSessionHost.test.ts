@@ -144,6 +144,7 @@ function fakeMap(overrides: Partial<GameMap> = {}, size = 12): GameMap {
     shortestPathTiles: 4,
     hazards: [],
     doors: [],
+    gates: [],
     keys: [],
     decorations: [],
     teleporters: [],
@@ -378,7 +379,7 @@ describe("runMultiplayerSessionAsHost", () => {
   it("getDropsSnapshot/getKeysSnapshot delegate to the underlying engine", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();
-    const map = fakeMap({ keys: [{ x: 6, y: 6, collected: false }] });
+    const map = fakeMap({ keys: [{ x: 6, y: 6, collected: false, gateId: 0 }] });
     const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult({ map }), worker);
     expect(handle.getDropsSnapshot()).toEqual([]);
     expect(handle.getKeysSnapshot()).toEqual([{ x: 6, y: 6 }]);
@@ -1416,6 +1417,7 @@ describe("runMultiplayerSessionAsHost", () => {
 
 function emptySnapshot() {
   return {
+    gates: [],
     keys: [],
     mouseDX: 0,
     fireQueued: false,

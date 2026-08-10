@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 /** Grid reachability / shortest-path helpers over the finished tile grid. */
-import { DOOR_TILE, LORE_TILE, SECRET_WALL_TILE, type Point, type Room, type Tile } from "../types";
+import { DOOR_TILE, LORE_TILE, SECRET_WALL_TILE, type Gate, type KeyItem, type Point, type Room, type Tile } from "../types";
 import { doorwayTiles } from "./geometry";
 import { key, neighbors } from "./util";
 
@@ -69,42 +69,48 @@ export function shortestPath(grid: Tile[][], spawn: Point, exit: Point): number 
  * far more work than that, paid once per level load rather than per frame.
  *
  * Every room's center should be reachable from spawn under the *real*
- * key-gated unlock model — collect any reachable key, spend
- * one to open a reachable still-locked door, repeat — not "if every door
- * were already open." That looser check used to be this function's whole
- * strategy (doors counted as opened regardless of key state), on the
- * assumption that generation always guarantees every door is eventually
- * openable — but `placeKeys` has one accepted fallback path (see its own
- * doc comment: "skips placing a key... when every reachable tile is already
- * used") that could in principle leave a door with no matching key anywhere
- * in `keys`. A real-world sweep of 600+ diverse third-party files across 11
- * languages found zero cases of this actually stranding a room, so it's
- * evidently rare — but "evidently rare" isn't the same as "structurally
- * impossible," which is what this function exists to catch. Should never
- * actually fire; logs a spoiler-free count (no coordinates) if it does, so a
- * future generation regression is loud instead of silently shipping an
- * unreachable (or truly unsolvable) room.
+ * key-gated unlock model — collect any reachable key, open any gate whose key
+ * you now hold, repeat — not "if every door were already open." That looser
+ * check used to be this function's whole strategy, on the assumption that
+ * generation always guarantees every door is eventually openable.
+ *
+ * **Stricter since keys became per-gate (2026-08-10).** The old simulation
+ * counted keys as fungible: a surplus key from one gate paid for another whose
+ * own key was never found, so a mis-assigned or missing key was invisible here.
+ * A gate now opens only when *its* key has been collected, which is exactly the
+ * generator bug this function exists to catch. `placeKeys` guarantees one key
+ * per gate (un-gating a room rather than shipping a keyless door), so this
+ * should never fire — it logs a spoiler-free count, no coordinates, so a future
+ * generation regression is loud instead of silently shipping an unreachable
+ * room.
  */
-export function assertAllRoomsReachable(grid: Tile[][], spawn: Point, rooms: Room[], doors: Point[], keys: readonly Point[]): void {
+export function assertAllRoomsReachable(
+  grid: Tile[][],
+  spawn: Point,
+  rooms: Room[],
+  gates: readonly Gate[],
+  keys: readonly KeyItem[],
+): void {
   const opened = new Set<string>();
-  const collectedKeys = new Set<string>();
-  let keysHeld = 0;
-  for (let i = 0; i <= doors.length; i++) {
+  const held = new Set<number>();
+  const openedGates = new Set<number>();
+  for (let i = 0; i <= gates.length; i++) {
     const reachable = reachableTiles(grid, spawn, opened);
     for (const k of keys) {
-      const tileKey = key({ x: Math.floor(k.x), y: Math.floor(k.y) });
-      if (!collectedKeys.has(tileKey) && reachable.has(tileKey)) {
-        collectedKeys.add(tileKey);
-        keysHeld++;
-      }
+      if (reachable.has(key({ x: Math.floor(k.x), y: Math.floor(k.y) }))) held.add(k.gateId);
     }
-    const frontierDoor = doors.find((d) => !opened.has(key(d)) && neighbors(d).some((n) => reachable.has(key(n))));
-    if (!frontierDoor || keysHeld <= 0) break;
-    // One key opens the whole doorway (see `doorwayTiles`) — this simulation
-    // has to spend keys exactly the way `openDoorAhead` does, or it would
-    // declare a level unsolvable that the engine can actually finish.
-    for (const tile of doorwayTiles(grid, frontierDoor)) opened.add(key(tile));
-    keysHeld--;
+    // Skip an unpayable gate and try the next, rather than stopping at the
+    // first one on the frontier. With fungible keys any frontier door was
+    // payable, so taking the first was safe; now it would report a level
+    // unreachable that the player can finish by opening a different gate.
+    const frontier = gates.find(
+      (g) => !openedGates.has(g.id) && held.has(g.id) && g.doors.some((d) => neighbors(d).some((n) => reachable.has(key(n)))),
+    );
+    if (!frontier) break;
+    // A key is never spent and opens every door of its own gate, so opening the
+    // whole set here is the fixpoint of the player pushing each mouth in turn.
+    openedGates.add(frontier.id);
+    for (const door of frontier.doors) for (const tile of doorwayTiles(grid, door)) opened.add(key(tile));
   }
   const reachable = reachableTiles(grid, spawn, opened);
   const unreachable = rooms.filter((r) => !reachable.has(key(r.center))).length;

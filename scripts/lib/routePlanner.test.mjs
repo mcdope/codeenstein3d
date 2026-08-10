@@ -35,7 +35,11 @@ function corridorMap(width, doorsAt = []) {
     Array.from({ length: width }, () => WALL),
   ];
   for (const x of doorsAt) grid[1][x] = DOOR;
-  return { width, height: 3, grid, doors: doorsAt.map((x) => ({ x, y: 1 })), keys: [] };
+  // One gate per door position — these fixtures are single-doorway rooms, so
+  // gates and doors line up one-to-one and key `gateId`s index them directly.
+  const doors = doorsAt.map((x) => ({ x, y: 1 }));
+  const gates = doors.map((d, i) => ({ id: i, colorIndex: i % 4, room: { x: d.x, y: 1, w: 1, h: 1 }, doors: [d] }));
+  return { width, height: 3, grid, doors, gates, keys: [] };
 }
 
 /** Tile a walk leg finishes on, as a `"x,y"` string. */
@@ -44,7 +48,7 @@ function endOf(leg) {
   return `${Math.floor(last.x)},${Math.floor(last.y)}`;
 }
 
-const keyAt = (x) => ({ x: x + 0.5, y: 1.5, collected: false });
+const keyAt = (x, gateId = 0) => ({ x: x + 0.5, y: 1.5, collected: false, gateId });
 
 describe("planRoute key ordering", () => {
   it("collects the nearest reachable key first, not the first one in map.keys order", () => {
@@ -97,7 +101,7 @@ describe("planRoute key ordering", () => {
     const map = corridorMap(19, [5, 13]);
     map.spawn = { x: 9, y: 1 };
     map.exit = { x: 17, y: 1 };
-    map.keys = [keyAt(8), keyAt(10)];
+    map.keys = [keyAt(8, 0), keyAt(10, 1)]; // one key per gate
     // The exit is east, and door x=13 is the nearer one from spawn, but
     // `map.doors` lists x=5 first. Key ordering is a walking-cost choice; door
     // ordering is the generator's solvability guarantee and must not follow it.

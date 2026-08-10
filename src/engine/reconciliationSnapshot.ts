@@ -46,7 +46,10 @@ export interface PlayerSnapshot {
    * added — see `doc/dev/adding-a-weapon.md`. */
   ammo: AmmoPools;
   weaponIndex: number;
-  keysHeld: number;
+  /** Gate ids whose key this player holds, sorted — permanent inventory, not a
+   * count. Sorted for the same reason `ownedWeapons` is: a Set's iteration
+   * order must never reach the wire. */
+  heldGates: number[];
   ownedWeapons: number[];
   alive: boolean;
   /** Drift-*permanent* accumulators — a kill credited differently during a
