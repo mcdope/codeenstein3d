@@ -70,6 +70,35 @@ What changed is what it places, and why. The original vocabulary had two entries
 
 Every treatment that turns cells back into wall (a baffle, a colonnade, a gateway neck, a plaza's corners) records which cells of its footprint were *already* floor and refuses to seal one. That rule is not theoretical: sealing a cell an unrelated corridor was routing through once isolated 3 rooms from spawn on a real campaign level, with no route existing at all afterward.
 
+## A Key Opens Its Room, and Is Never Spent
+
+A dependency key belongs to a **gate** — one locked room — carries a colour, and
+opens every door of that gate, permanently. It is not consumed.
+
+The engine used to charge one key per *doorway*, which made a six-mouth room six
+key hunts for one space and charged again for a door you had already opened from
+the other side. `MAX_GATES` bounded that by pricing rooms in doorways and
+preferring one-mouth rooms; per-room keys remove the reason for that penalty, so
+the budget is now `MAX_GATE_ROOMS` (rooms) and ranking is worth alone.
+
+Three constraints hold this together, and none is optional:
+
+- **The generator and the engine must change together.** Issuing one key per room
+  while `openDoorAhead` still spent per doorway was tried on 2026-08-08;
+  `assertAllRoomsReachable` reported rooms unreachable, correctly.
+- **Every gate has exactly one key.** `placeKeys` widens its search through tiers
+  of *convenience* exclusions before it will give up, and un-gates the room
+  rather than shipping a door with no key. Exception-zone tiles are never
+  relaxed: that exclusion is a measured gameplay decision, not a convenience.
+- **Gate identity is a side table on `GameMap`, never new `Tile` values.** `Tile`
+  is a closed union mirrored by five hand-maintained solid-tile sets across the
+  engine and scripts; a value per colour would multiply all of them.
+
+In coop the key is granted **team-wide** on pickup. With one key per gate, a
+per-player grant strands every teammate but the one who walked over it, and the
+bots plan routes with no model of a teammate's inventory — so a session wedges at
+the door rather than slowing down. That is also why there is no key loot drop.
+
 ## Room Connectivity Is a Hard Guarantee, Corridor Length Isn't
 
 Every room being reachable from spawn was assumed to follow automatically from `connectRooms` chaining rooms 0..n-1, but two gaps meant it didn't always hold: `placeRooms` could end a level with a single room (an empty file, or one entity that's the only one that fits), and `connectRooms` only carves a corridor once a *second* room exists, so that lone room silently got zero corridors; separately, `carveLabyrinth`'s recursive-division maze (for any entity nested ≥2 deep) kept exactly one connecting gap per split, but a child split's own later wall could land on the exact cell a parent split's gap depended on to reach it, sealing off part of a room despite every individual split "keeping a gap" — confirmed empirically at roughly 9% of seeds across the room shapes/nesting depths generation actually produces. Fixed with a room-count floor (`placeFillerRoom`, topping a level up to at least 2 rooms; the synthetic filler/fallback entity uses `kind: "class"` rather than `"function"` so it can never spawn an enemy whose nameplate would show a placeholder name) and a post-carve labyrinth connectivity repair (flood-fill the room's floor into components, bridge the closest pair via a shortest wall-crossing BFS, repeat until one component remains) — both deterministic, no extra RNG draws, so neither perturbs existing replay determinism. A permanent dev-time BFS assertion (`assertAllRoomsReachable`, end of every `generate()` call) now also checks this invariant and logs loudly if it's ever violated again rather than shipping a silently broken level. This is a deliberately different guarantee level from [Corridor Dressing: A Vocabulary, Best-Effort](#corridor-dressing-a-vocabulary-best-effort) above: a corridor's *length* staying under the nominal cap is still explicitly best-effort, but a corridor *existing at all* between every room and the exit is now a hard invariant, not a probabilistic one. `connectLoops`' shortcuts are held to the same line — they only ever add edges, so they cannot weaken the invariant, and `assertAllRoomsReachable` still runs after them. `[notes: sometimes rooms without exit are generated item]`
