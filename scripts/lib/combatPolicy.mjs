@@ -340,9 +340,13 @@ export const DEFAULT_TUNING = {
   // remaining hypothesis — the enemy re-steers at the player every frame, so
   // the bearing rate goes as `v_tangential / dist` and a straight-line
   // prediction should err most close in, which is the observed shape. It is a
-  // hypothesis, not a finding. **Measure the predictor's own error against the
-  // archived captures before building a third fix** — the data is on disk and
-  // no new capture is needed.
+  // hypothesis, not a finding. **Measuring it needs instrumentation that does
+  // not exist yet** — an earlier version of this comment said the archived
+  // captures would do and no new capture was needed, which is wrong: the event
+  // log has no enemy-position time series at all, only `shot` rows carrying
+  // `dist` and `targetArch`. Scoring a predictor means logging predicted vs
+  // actual enemy positions per decision, so a third fix costs engine-side
+  // logging plus a fresh capture before it can even be aimed.
   BOT_AIM_LEAD: false,
   // Whether the fire gate is the tighter of `profile.fireAngleEps` and the
   // angle the target actually subtends, instead of the profile constant alone.
