@@ -76,11 +76,16 @@ describe("placeLoreTerminals", () => {
     expect(result.terminals).toEqual([]);
   });
 
-  it("places a spike trap encounter for a TODO comment (seed found empirically)", () => {
+  // The three outcome tests below pick their outcome by the comment's *text*,
+  // not by hunting a seed that happens to produce it. That is the change: the
+  // encounter kind is `fnv1a(comment.text) % 3`, so it is stable against every
+  // unrelated edit to the shared PRNG stream — which is exactly what used to
+  // silently delete an outcome from the showcase campaign.
+  it("places a spike trap encounter for a TODO comment whose text hashes to it", () => {
     const g = grid(20);
     const room = makeRoom(5, 5, 6, 6, entity());
     carveRoom(g, room);
-    const todoComment = comment({ text: "TODO: fix this", startLine: 6 });
+    const todoComment = comment({ text: "TODO: drop the shim", startLine: 6 });
     const result = placeLoreTerminals([room], g, [todoComment], mulberry32(1), { x: 1, y: 1 });
     expect(result.todoTraps).toHaveLength(1);
     const t = result.todoTraps[0];
@@ -89,7 +94,7 @@ describe("placeLoreTerminals", () => {
     expect(result.todoEnemies).toEqual([]);
   });
 
-  it("places a mine encounter for a TODO comment (seed found empirically)", () => {
+  it("places a mine encounter for a TODO comment whose text hashes to it", () => {
     const g = grid(20);
     const room = makeRoom(5, 5, 6, 6, entity());
     carveRoom(g, room);
@@ -102,17 +107,33 @@ describe("placeLoreTerminals", () => {
     expect(result.todoEnemies).toEqual([]);
   });
 
-  it("places a 'Bug' enemy encounter for a TODO comment (seed found empirically)", () => {
+  it("places a 'Bug' enemy encounter for a TODO comment whose text hashes to it", () => {
     const g = grid(20);
     const room = makeRoom(5, 5, 6, 6, entity());
     carveRoom(g, room);
-    const todoComment = comment({ text: "TODO: fix this", startLine: 6 });
+    const todoComment = comment({ text: "TODO: fix the parser", startLine: 6 });
     const result = placeLoreTerminals([room], g, [todoComment], mulberry32(3), { x: 1, y: 1 });
     expect(result.todoEnemies).toHaveLength(1);
     expect(result.todoEnemies[0].entity.name).toBe("Bug");
     expect(result.todoEnemies[0].hp).toBe(10);
     expect(result.todoTraps).toEqual([]);
     expect(result.todoMines).toEqual([]);
+  });
+
+  it("gives the same outcome under different seeds — the property the change exists for", () => {
+    // The regression this prevents: an unrelated change shifts the shared PRNG
+    // stream and the showcase campaign silently stops demonstrating one of the
+    // three outcomes. Three different seeds, one comment, one outcome.
+    const outcomes = [1, 2, 3, 999].map((seed) => {
+      const g = grid(20);
+      const room = makeRoom(5, 5, 6, 6, entity());
+      carveRoom(g, room);
+      const todoComment = comment({ text: "TODO: fix the parser", startLine: 6 });
+      const r = placeLoreTerminals([room], g, [todoComment], mulberry32(seed), { x: 1, y: 1 });
+      return `${r.todoTraps.length}/${r.todoMines.length}/${r.todoEnemies.length}`;
+    });
+    expect(new Set(outcomes).size).toBe(1);
+    expect(outcomes[0]).toBe("0/0/1");
   });
 
   it("skips the TODO encounter (but keeps the terminal) when every candidate is too close to spawn", () => {
