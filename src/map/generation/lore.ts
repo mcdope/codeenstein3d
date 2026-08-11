@@ -7,6 +7,7 @@ import type { CodeComment, CodeEntity } from "../../parser/types";
 import { isTodoFlagged } from "../../parser/astUtils";
 import { LORE_TILE, SPIKE_TRAP_TILE, type Enemy, type LoreTerminal, type Mine, type Point, type Room, type SpikeTrap, type Tile } from "../types";
 import { roomForLine } from "./geometry";
+import { fnv1a } from "./seed";
 import { SPIKE_PERIOD_MAX, SPIKE_PERIOD_MIN, TRAP_SPACING } from "./trapsHazards";
 import { dist, key, neighbors, shuffle } from "./util";
 
@@ -115,8 +116,34 @@ function placeTodoEncounter(
   const p = free[0];
   claimedFloor.add(key(p));
 
-  const roll = rng();
-  if (roll < 1 / 3) {
+  // Which of the three outcomes this TODO gets is derived from the comment's
+  // own text, NOT from `rng()`.
+  //
+  // **Why this is not a roll.** Each TODO used to draw `rng()` and split it
+  // into thirds, so the campaign's mix of trap/mine/Bug was a property of the
+  // shared PRNG stream — and therefore re-rolled by any change that shifted
+  // that stream, however unrelated. `verify:campaign` asserts all three
+  // outcomes appear somewhere in the demo campaign (it is the showcase
+  // campaign; a mechanic that stops being demonstrated is a real regression),
+  // and with the 8 TODO encounters the campaign actually carries, the chance
+  // some outcome went missing was ~12% for *any* rng-shifting edit. It duly
+  // fired: the coloured-keys change deleted the trap outcome outright, and was
+  // only rescued by authoring another TODO.
+  //
+  // Hashing the text removes the coupling rather than reducing it. The mix is
+  // now a fixed property of the campaign's own source comments: it cannot be
+  // disturbed by a change to keys, weapons, enemies or anything else that
+  // draws from `rng`, and if an author does need a different outcome they edit
+  // that comment's wording and it stays edited.
+  //
+  // Measured on the real campaign before landing: trap 4 / mine 3 / Bug 1
+  // across its 8 TODO comments, so the coverage check passes with all three
+  // present. (The backlog's own proposal — cycle the outcomes per level —
+  // could not have worked: it guarantees all three only on a level holding
+  // three TODOs, and no level holds more than two. Cycling from a fixed start
+  // would have given seven levels a trap and produced no Bug enemy at all.)
+  const outcome = fnv1a(comment.text) % 3;
+  if (outcome === 0) {
     grid[p.y][p.x] = SPIKE_TRAP_TILE;
     return {
       trap: {
@@ -128,7 +155,7 @@ function placeTodoEncounter(
     };
   }
 
-  if (roll < 2 / 3) {
+  if (outcome === 1) {
     // Mines stay on plain floor (tile 0) — same as `placeTraps`' own mines,
     // invisible until triggered, so nothing marks the grid tile itself.
     return { mine: { x: p.x + 0.5, y: p.y + 0.5, alive: true, visible: false, closeTimer: 0 } };
