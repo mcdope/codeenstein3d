@@ -368,6 +368,17 @@ export const DEFAULT_TUNING = {
   // measurable, and the bot is destined to become a deathmatch opponent that
   // will take longer shots than this campaign ever offers.
   BOT_ANGULAR_FIRE_GATE: true,
+  // Whether `expectedDamagePerShot` models a multi-pellet cone by integrating
+  // each pellet's own hit probability (see `pelletHitFraction`) instead of
+  // dividing the target's width by a mis-derived scatter. Single-variable
+  // switch, as above:
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_PELLET_CONE_MODEL":false}'
+  //
+  // The old model claimed a flat 7 of 7 shotgun pellets out to 4 tiles; the
+  // engine delivers 7 at 1 tile and 2.96 at 4. It therefore over-valued the
+  // shotgun against pistol/gdb everywhere in `pickRangedWeapon`, not just in
+  // the cluster branch.
+  BOT_PELLET_CONE_MODEL: true,
   // Longest gap between two decisions that still yields a usable velocity
   // estimate for `trackEnemyMotion`. Past this the samples are too far apart
   // to describe the target's *current* heading (an enemy rounds a corner in
@@ -1341,6 +1352,64 @@ export function leadTarget(target, memory, leadMs, tuning = DEFAULT_TUNING) {
   return { ...target, x: target.x + v.vx * lead, y: target.y + v.vy * lead };
 }
 
+/**
+ * Screen-x offsets of a weapon's pellets, mirroring `weapons.ts`'s
+ * `pelletOffsets`: evenly spread across **±spreadPx**, so the cone's full width
+ * is `2 * spreadPx`. Single-pellet weapons fire straight ahead.
+ */
+function pelletOffsetsFor(w) {
+  if ((w.pellets ?? 1) <= 1) return [0];
+  const spread = w.spreadPx ?? 0;
+  return Array.from({ length: w.pellets }, (_, i) => ((i / (w.pellets - 1)) * 2 - 1) * spread);
+}
+
+/**
+ * Fraction of a multi-pellet weapon's pellets that land on a target whose
+ * projected half-width is `halfWidthPx`, given the shot is on target.
+ *
+ * **Derived from the engine, not fitted to it.** `resolveShot` puts pellet `i`
+ * at screen column `center + offset_i + deviation`, where `deviation` is
+ * uniform over `±maxConeDeviationPx`, and `findTargetInProjections` counts it a
+ * hit when that column falls inside `[screenX - size/2, screenX + size/2]`. So
+ * pellet `i` hits with probability `|[-hw-o_i, hw-o_i] ∩ [-D, D]| / 2D`, and the
+ * fraction is the mean of that over the pellets. No free parameters.
+ *
+ * Validated against the engine itself (2026-08-12): a probe fired the real
+ * shotgun at a centred enemy across a distance sweep and counted pellets from
+ * damage dealt. Derived vs measured, in pellets of 7 — 1t 7.00/7.00, 2t
+ * 5.61/5.63, 3t 4.00/3.92, 4t 3.00/2.96, 6t 2.00/2.04, 8t 1.54/1.59. Within
+ * ±0.10 across the range, against a previous model that predicted a flat 7 out
+ * to 4 tiles.
+ *
+ * **Two things the old model got wrong**, both fixed here: it used `spreadPx / 2`
+ * as the cone half-width when the engine spreads pellets across `±spreadPx`
+ * (2x too narrow, so 2x too generous), and it scaled the deviation by the
+ * *enemy's* distance when the engine scales it by `zBuffer[column]` — the depth
+ * of whatever is behind the target. In an open room that saturates at the
+ * maximum, which is what this assumes: the bot cannot cheaply raycast the wall
+ * behind each candidate target, and saturating is both the common case and the
+ * conservative one for a weapon it currently over-values.
+ *
+ * Single-pellet weapons return 1 by construction, and that is not a special
+ * case bolted on: this function answers "given the shot connected, how much of
+ * its damage lands", and for one pellet the answer is all of it. The measured
+ * data agrees — pistol and gdb both sit at exactly 1.00 damage-per-hit against
+ * prediction at every range, which is why that path must not change.
+ */
+export function pelletHitFraction(halfWidthPx, w, tuning = DEFAULT_TUNING) {
+  if ((w.pellets ?? 1) <= 1) return 1;
+  const D = w.maxConeDeviationPx ?? tuning.MAX_CONE_DEVIATION_PX;
+  const offsets = pelletOffsetsFor(w);
+  if (D <= 0) return offsets.filter((o) => Math.abs(o) <= halfWidthPx).length / offsets.length;
+  let total = 0;
+  for (const o of offsets) {
+    const lo = Math.max(-halfWidthPx - o, -D);
+    const hi = Math.min(halfWidthPx - o, D);
+    total += Math.max(0, Math.min(1, (hi - lo) / (2 * D)));
+  }
+  return total / offsets.length;
+}
+
 export function expectedDamagePerShot(weaponIndex, dist, tuning = DEFAULT_TUNING, target = null) {
   const w = WEAPON_STATS[weaponIndex];
   if (!w) return 0;
@@ -1367,10 +1436,17 @@ export function expectedDamagePerShot(weaponIndex, dist, tuning = DEFAULT_TUNING
   const spreadHalfPx = (w.spreadPx ?? 0) / 2;
   const scatterPx = spreadHalfPx + coneDeviationPx;
 
-  // Fraction of pellets expected to land: the target's angular width against
-  // the total scatter. An approximation of the engine's per-pellet raycast,
-  // not a derivation of it — its job is to rank weapons against each other.
-  const hitFraction = scatterPx <= 0 ? 1 : Math.max(0, Math.min(1, halfWidthPx / scatterPx));
+  // The old term, kept verbatim for single-pellet weapons and for the A/B's
+  // base arm. For one pellet it is doing a different job — standing in for the
+  // *probability* the shot lands rather than the fraction of it that does —
+  // and it is the only thing modelling gdb's deliberately tighter cone
+  // (`maxConeDeviationPx: 20`) against the pistol's 38. Measurement says
+  // nothing against it there: pistol and gdb both sit at exactly 1.00
+  // damage-per-hit versus prediction. So this change deliberately does not
+  // touch it. The mixed semantics between the two paths are a pre-existing
+  // wart, called out rather than silently rebalanced inside a shotgun fix.
+  const widthOverScatter = scatterPx <= 0 ? 1 : Math.max(0, Math.min(1, halfWidthPx / scatterPx));
+  const hitFraction = tuning.BOT_PELLET_CONE_MODEL && (w.pellets ?? 1) > 1 ? pelletHitFraction(halfWidthPx, w, tuning) : widthOverScatter;
   return w.pellets * w.damagePerPellet * hitFraction * falloff;
 }
 
