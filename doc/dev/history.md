@@ -11,6 +11,7 @@ That second category is why this file is kept rather than deleted. Most entries 
 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
+
 - [x] **In-room teleporters are an exception now, not the rule (2026-08-12).** The backlog complaint: a `goto` used for "harmless" error handling — C's `goto out;` — put both pads of a teleporter pair in the same room, warping the player a few tiles across the room they were already standing in. Disorienting rather than a shortcut, and asked to be kept as an occasional joke about `goto` being evil rather than removed.
 
   **It was not occasional, and the demo campaign badly understated it.** The campaign has exactly two teleporter pairs and both are in-room, which reads as a small curiosity. Measuring the corpus instead: in-room pairs are **68-100% of every pair generated** — curl 17/17, doom 20/20, vim 445/544, git 251/369, quake 37/53 — and a single vim level produced **39** of them.
@@ -24,6 +25,10 @@ Entries are newest-first, in the format the `notes` backlog uses. Nothing here i
   One kept rather than zero is deliberate and load-bearing: `verify:campaign` requires at least two levels demonstrating the mechanic, and the campaign's only two teleporter levels are both in-room. A cap of zero would have deleted the mechanic from the showcase campaign entirely.
 
   Verified: 2,888 src tests (3 new/rewritten teleporter cases, including one asserting a link that fails to place does not spend the cap), `tsc --noEmit`, `verify:campaign` (both goto/teleporter checks, same two levels), `verify:replay` (full 17-level board, unchanged).
+- [x] **CLOSED 2026-08-11: `media.peerconnection.ice.loopback` does not work either — the Firefox CI skip stays.** It was the one option the skip's ruled-out list never mentioned and the best fit on paper (loopback candidates are sufficient when both peers are two contexts in one Playwright process on one machine, and it sidesteps the default-route discovery heuristic instead of satisfying it). Tested where it had to be tested — on CI, with the pref set and the four Firefox multiplayer steps un-skipped: the host generated a session code, so signaling is fine, and the guest then died on "Data channels were not received within 15000ms". Reverted.
+  - **The local test was worthless and that was established before trusting it.** Firefox passes `verify:multiplayer-connect` on this dev box *with and without* the pref, because UDP egress works here — the control was run first for exactly that reason. This box has never been able to reproduce the runner's no-routable-default-route shape, and the 2026-08-03 correction to that effect is now confirmed rather than assumed.
+  - **What was NOT measured, and is the first thing to do if anyone reopens it**: whether the pref changed candidate gathering at all. `installIceDiagnostics()` is opt-in behind `CODEENSTEIN_MULTIPLAYER_DEBUG_ICE=1` and off in CI, so "still fails" is all this shows — not "still gathers zero". Turn it on before trying a sixth option. Full write-up in `doc/dev/testing.md`'s cross-browser section.
+
 - [x] **A TODO's encounter is now a property of its own comment text, not of the PRNG stream (2026-08-11).** `placeTodoEncounter` drew `rng()` and split it into thirds, so which TODO became a trap, a mine or a "Bug" enemy rode the shared per-level stream — and was therefore re-rolled by any change that shifted it, however unrelated. `verify:campaign` asserts all three outcomes appear somewhere in the showcase campaign, and the coloured-keys change had already deleted the trap outcome outright, rescued only by authoring another TODO. The outcome is now `fnv1a(comment.text) % 3`.
 
   **The backlog's own proposed fix would have made it worse, and measuring first is what caught that.** The item said to cycle the outcomes instead of rolling them, "which guarantees all three whenever a level has three". Counting the campaign's actual TODO terminals — `1,0,0,1,0,1,0,0,1,0,1,0,0,1,0,0,2`, eight in total — **no level has three, and only one has two**. Cycling from a fixed start would have given a trap to all seven single-TODO levels and stage17 a trap and a mine, producing **no Bug enemy anywhere** and failing the very check it was meant to protect. The item's quoted ~8% fragility was also stale: it was computed against 9 encounters, and at the 8 the campaign now carries the chance of losing an outcome was ~12%.
@@ -990,6 +995,328 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
 
 - [x] doc pass for the four items above — `doc/dev/architecture.md`'s Feature Flags table gained both new rows; `CHANGELOG.md` got the carryover fix and a note that both new flags temporarily revert their features to the pre-existing look/behavior; `README.md`'s Completion Status table got matching rows (carryover fix as shipped, both flags as "⏸️ disabled pending perf measurement", mirroring the existing player-stats-screen row's pattern).
 
+- [x] **Multiplayer steps 1-7, shipped 2026-07-18/19 — moved here from `notes` on 2026-08-12.** Steps 8-11 below were moved when they completed and steps 1-7 were not, so the backlog carried ~320 lines of finished work for three weeks while `history.md` held only half the story. The write-ups are verbatim; only their indentation changed. The three lines above them (`server/client architecture`, `direct ip/dns connect`, `lobby for online games`) are the original checklist items those steps satisfied.
+
+- [x] server/client architecture - one hosts the session, other players connect. IMPORTANT: only transfer generated level data and sync stuff, never sourcecode or AST
+- [x] direct ip/dns connect — **superseded**: the research pass (`multiplayer-research.md`) deliberately chose a short-code-via-signaling-server design over raw IP/DNS connect (simpler for non-technical friends, works across NAT without port-forwarding) — this line describes a rejected alternative, not a gap.
+- [x] lobby for online games — **shipped**: `GET /lobby` (`multiplayer-server-spec.md` §2) + `main.ts`'s "Browse Lobby" dialog, since multiplayer step 1/2. (The top-level `multiplayer support` box stays open for the other still-real items in this list.)
+- [x] step 1 of the implementation plan (`multiplayer-research.md`) shipped 2026-07-18:
+  the WebRTC signaling + lobby server, `scripts/multiplayer-server.mjs` — a single
+  dependency-free Node script (`node:http`/`node:crypto`/`node:url` only) implementing
+  `doc/dev/multiplayer-server-spec.md`'s four endpoints (session mailbox + public lobby
+  list), plus `--install`/`--uninstall`/`--dry-run` systemd-unit management per
+  `multiplayer-research.md`'s "Self-hosting" section. Two real gaps found and resolved
+  during implementation, not silently papered over: the spec's "32-symbol code alphabet"
+  excluding `{0,O,1,I,L}` from the 36-char uppercase-alphanumeric set was an arithmetic
+  slip (36-5=31, not 32) — resolved by adopting Crockford's Base32 alphabet verbatim
+  (a real, proven 32-symbol standard for exactly this purpose) instead of inventing a
+  different one-off set; and `PUT /session`'s documented `429` error was never actually
+  implemented against any budget — added its own dedicated, lighter rate-limit map
+  (`PUT_SESSION_RATE_LIMIT_MAX_REQUESTS`, separate from the guess-sensitive budget, since
+  publishing an offer isn't a guessing vector). Verified via a new
+  `scripts/verify-multiplayer-server.mjs` (51 checks: full endpoint round trip, every
+  documented error case, all four rate-limit budgets and their independence from each
+  other, exponential backoff, TTL sliding/sweep semantics, `--dry-run` install/uninstall
+  output) — pure Node, spawns the real server as a child process, wired into CI's
+  no-browser `verify` job (`npm run verify:multiplayer-server`). Confirmed no orphaned
+  processes survive even a deliberately-failed run. Real (non-dry-run) `--install` is
+  not exercised by CI (mutates root-owned system state) — verification there is manual,
+  on the actual VPS, once, post-merge. No `src/` changes — this step is fully
+  independent of the engine/netcode work still ahead.
+  Follow-up same day: added `GET /stats` + a `--stats` CLI client mode for monitoring
+  (session/rate-limit counts only — no IPs, codes, or tokens; every value a plain number
+  except the Node version string), entirely opt-in behind `CODEENSTEIN_MULTIPLAYER_STATS_TOKEN`
+  — unset or wrong-token requests get the same indistinguishable `404` as an unknown
+  route, never a `401`/`403` confirming the feature exists. Also added `--help`/`-?`,
+  documenting every flag and env var (each shown with its currently-effective value, not
+  a static default, so the output can't drift from the real config it's describing). Two
+  test-writing mistakes caught by running the suite, not by review — a substring check for
+  "answer" false-positived on the legitimate `answered`/`awaitingAnswer` count fields, and
+  an exact-key blocklist including `hostToken` false-positived on a legitimate rate-limit
+  *bucket label* (`rateLimiting.trackedIps.hostToken`, sibling to `guess`/`lobby`/
+  `putSession`) — replaced both with a direct structural check ("every leaf value is a
+  number, except the one expected string") that can't false-positive on a field name.
+  79 checks total now. `doc/dev/multiplayer-server-spec.md` gained a `GET /stats` section
+  alongside the other four endpoints (unlike `--install`/`--uninstall`, which stay
+  deployment-only detail outside the spec, `/stats` is real protocol surface).
+- [x] step 2 of the implementation plan shipped 2026-07-19: client connect flow —
+  Host/Join UI, signaling client, and WebRTC data-channel setup (`src/multiplayer/`).
+  Two real browsers now reach a connected `RTCDataChannel` via a short code; no
+  session-setup payload, map transfer, or gameplay yet (steps 3+). Found and fixed a
+  real ordering deadlock in the guest's own handshake while manually verifying in two
+  live browsers, not by review: awaiting the incoming data channels before the answer
+  had even been sent back to the host — `ondatachannel` can't fire until that round
+  trip completes, so it deadlocked every guest connection. Verified via
+  `scripts/verify-multiplayer-connect.mjs` (two real Playwright browser *contexts*,
+  all three engines) plus full unit coverage (`src/multiplayer/*.test.ts`,
+  `test/mocks/webrtc.ts`).
+- [x] step 3 of the implementation plan shipped 2026-07-19: engine `simulate()`/`render()`
+  split (`engine.ts`), the prerequisite for step 4's N-player model — `advance(dt)` used to
+  fuse input/simulation/rendering into one call, incompatible with a fixed-tick sim decoupled
+  from each peer's own render rate. `render()` re-derives its own overlay choice from state
+  rather than trusting `simulate()`'s return value, so it stays safely callable repeatedly with
+  no intervening `simulate()`. Also extracted `castWallDistances`/`castWallRay` in
+  `raycaster.ts` so `fire()` can refresh its own zBuffer fresh from the player's current
+  position, regardless of which tick's `simulate()` called it. Two real gaps found beyond the
+  plan: the dt-integrated particle-effect updates (blood/explosions/burn embers) had the same
+  "no dt in render()" problem as the viewmodel bob and moved into `simulate()` too; and the
+  lore-dismiss frame's old one-frame blank-overlay flash quietly went away as a side effect of
+  `render()` deriving state honestly — not a regression. Verified byte-identical via this
+  project's map-snapshot/replay-digest recipe, the full coverage suite (zero existing-test
+  edits), 4 new targeted tests, and a real playthrough verify run.
+- [x] step 4 of the implementation plan shipped 2026-07-19: engine N-player model
+  (`engine.ts` plus `enemyAi.ts`/`projectiles.ts`/`rockets.ts`/`traps.ts`/`lootApply.ts`/
+  `sprites.ts`) — `this.player`/`this.health`/etc. became `players: Map<PlayerId, PlayerState>`
+  + `localPlayerId`; single-player is the N=1 case of the same shape now, not a separate code
+  path. Camera-parameterized `resolveShot()` replaces render-pass-dependent hit detection; enemy
+  AI targets the nearest living player with per-player `PathField`s; every world interaction
+  becomes any-living-player; friendly fire excluded by construction (hitscan never targets
+  players, rocket splash spares teammates, mines hit everyone). A dead player's camera resolves
+  separately at render time rather than overwriting their frozen `Player`, since every
+  world-interaction loop trusts `status` alone. Kill points split across contributors via an
+  assist `Map`; kill/streak credit goes only to the finishing blow — a gap the design review
+  caught and resolved explicitly rather than leaving ambiguous. Telemetry/audio deliberately
+  stay single-instance/unscoped for now (flagged, revisit if a later step needs them). Verified
+  via the same byte-identical-at-N=1 gate as step 3, plus new tests built by actually
+  constructing 2-3-player engines directly — this refactor touches nearly every method in the
+  class, so unlike step 3 it needed real new coverage, not just structural reshuffling.
+- [x] step 5 of the implementation plan shipped 2026-07-19: map generation multi-spawn
+  (`multiplayer-game-state-spec.md` §2) — a new `pickMultiplayerSpawns(rooms, exit, count)`
+  in `spawnExit.ts` (greedy farthest-point dispersal over room centers, excluding the exit's
+  own room, drawing nothing from `rng`), wired into `mapGenerator.ts` behind a new trailing
+  `maxPlayers = 1` parameter on `generate()` (inert by default — every one of the 18 existing
+  call sites needed zero edits). Threaded the resulting spawn points through every system that
+  could otherwise place something lethal on top of one: `enemyPositions`/`spawnEnemies` now
+  reroll (then corner-fallback) off a multiplayer spawn tile the same way they already do for
+  the exit tile; `clearCriticalTiles` force-clears them to floor; `fillHazards` protects them
+  at both the room level (skip flooding a `"global"`-kind room whose center is a spawn) and
+  the tile level (belt-and-suspenders carve-out), since a multiplayer spawn — unlike the
+  single-player `spawn` — can land in any room, including a global-variable one. Confirmed by
+  reading `breakup.ts` directly, not assumed: `spawnEdgeCaseEnemies` needs none of this — a
+  breakup room is only ever injected where it doesn't overlap any real room, and a multiplayer
+  spawn is always a real room's center, so the two can never coincide. `GameMap.multiplayerSpawns?`
+  is `undefined` for every single-player call, so this is purely additive. Assigning
+  `playerId -> spawn index` (with wraparound for a shortfall) is documented as the session
+  layer's job, out of scope here. Verified via new/extended tests in `spawnExit.test.ts`,
+  `enemies.test.ts`, `geometry.test.ts`, `trapsHazards.test.ts`, and `mapGenerator.test.ts`
+  (including an explicit N=1 exactness gate — `generate(parsed)` vs `generate(parsed, false,
+  true, [], 1)` — `toEqual`), the 100%-coverage suite (no existing test edited), and
+  `npm run verify:campaign` over every real bundled campaign file at the default `maxPlayers`.
+  Skipped the heavier map-snapshot/replay-digest recipe used for steps 3/4 — every new branch
+  here is gated behind a default parameter that resolves to an empty array, provably a no-op
+  by inspection, not just by test.
+- [x] step 6 of the implementation plan ("netcode core") turned out markedly larger than its own
+  sizing note implied, and was split into three sub-steps (6a/6b/6c, each its own branch/PR),
+  decided with the user rather than assumed. **6a shipped 2026-07-19: tick/delay-buffer
+  infrastructure.** Reading the engine directly (not just `multiplayer-netcode-spec.md`)
+  surfaced a real, previously-uncaught correctness bug before any netcode existed to trigger
+  it: `RaycasterEngine` hardcoded its own player's map key to the literal string `"local"` with
+  no override, so two peers looking at "the same two physical players" would each substitute a
+  *different* one of the two real ids with `"local"` before `sortedPlayerIds()` sorts them —
+  opposite relative iteration order on the two peers, meaning opposite PRNG-draw order,
+  meaning an instant, permanent desync from tick 1, entirely invisible until real multiplayer
+  combat existed to expose it. Fixed with a new trailing `localPlayerId = LOCAL_PLAYER_ID`
+  constructor parameter (mirrors step 5's `maxPlayers = 1` pattern — every existing call site
+  omits it, byte-identical single-player behavior), plus reordering the constructor's own
+  field assignments so `this.localPlayerId` is set before the first `createPlayerState` call
+  needs to read it, plus fixing one stale `id === LOCAL_PLAYER_ID` comparison (a bot-rotation
+  test hook) to compare against the instance field instead. Regression-tested directly: two
+  engines constructed with swapped `localPlayerId`/`addPlayer` roles for the same two real ids
+  now produce identical `sortedPlayerIds()` output. Also exported `replay.ts`'s previously-
+  private `EMPTY_SNAPSHOT` (needed by 6c's `NetworkInputSource`, the same "loaded snapshot"
+  pattern `ReplayPlaybackInput` already uses) and deduped `engine.test.ts`'s own copy into an
+  import. New `src/multiplayer/` modules, every one pure/host-agnostic and unit-tested without
+  any WebRTC/DOM/Worker runtime: `netcodeConstants.ts` (`TICK_RATE_HZ`/`FIXED_DT`/
+  `INPUT_DELAY_TICKS`/`MAP_CHUNK_SIZE_BYTES`), `netcodeTypes.ts` (`TickInput`/`TickInputBundle`
+  wire shapes — type-only, added to `vitest.config.ts`'s coverage exclude list alongside
+  `parser/types.ts`, same "0/0 statements reports as a literal 0%" reasoning), `tickAccumulator.ts`
+  (a fixed-tick scheduler over injected timestamps), `tickClockWorker.ts` (the first Web Worker
+  in this project — thin glue wiring the accumulator to `self.postMessage`, unit-tested by
+  stubbing `self` and importing the raw module rather than excluded from coverage),
+  `inputDelayBuffer.ts` (host-side per-tick bundle finalization with held-last-input fallback),
+  `chunkedTransfer.ts` (splits/reassembles a large JSON payload for the ~64 KiB `RTCDataChannel`
+  message-size floor), and `buildVersionCheck.ts`. Found and fixed a second, genuine bug while
+  building `tickAccumulator.ts`, caught by its own test suite rather than assumed correct:
+  repeatedly subtracting `FIXED_DT_MS` (`1000/30`, a non-terminating binary fraction) from a
+  banked-remainder accumulator compounds floating-point rounding error and can land one ULP
+  short of an exact boundary, silently dropping a due tick — confirmed concretely (`100 -
+  33.333333333333336 - 33.333333333333336` evaluates to `33.33333333333332`, just under the
+  interval). Fixed by tracking only-ever-additive total elapsed time and recomputing
+  `Math.floor(totalElapsedMs / fixedDtMs)` fresh each call instead of repeated subtraction — no
+  compounding error possible. Verified via `npm run typecheck`, the full 1761-test/100%-coverage
+  suite, and no Playwright verification (nothing in 6a touches WebRTC/DOM/a real engine — that's
+  6c's job). 6b/6c continued on the same `multiplayer-step6` branch (one PR for all of step 6),
+  not separate branches as first planned.
+- [x] **6b shipped 2026-07-19: session-setup handshake + chunked map transfer**, per
+  `multiplayer-netcode-spec.md`'s "Session setup" section — what the host sends a guest, over
+  the already-open `reconciliation` data channel (by elimination: `netcodeTypes.ts` already
+  reserves `input` for per-tick traffic only), before any tick traffic: a build-version
+  handshake both directions first (host *and* guest each independently reject on mismatch,
+  not just trusting the other's judgment), roster assignment, tick constants, a freshly-
+  generated `gameplaySeed`, host-authoritative difficulty, player count, and the `GameMap`
+  itself chunked via 6a's `chunkedTransfer.ts` with `visited` stripped (reconstructed locally
+  on the guest as a fresh all-`false` grid — `visited` is all-false at generation time by
+  definition, so there's nothing to transfer). New `sessionSetupTypes.ts` (wire message union +
+  fixed `"host"`/`"guest"` roster ids — right-sized for step 2's connect flow, which only ever
+  supports exactly one guest slot; a typed `SessionSetupError` mirroring `signalingClient.ts`'s
+  existing `SignalingError` pattern, not a bare `Error`), `dataChannelMessaging.ts`
+  (`sendJson`/`onJsonMessage`, factored out since 6c's tick loop needs the identical
+  send/receive shape over the `input` channel), `sessionSetupHost.ts` (drives: sends its own
+  map directly to itself, no round-trip needed), `sessionSetupGuest.ts` (purely receive-driven,
+  dispatches on message `type`). Extended `test/mocks/webrtc.ts`'s `FakeRTCDataChannel` with a
+  `link()`/`send()` pair (additive-only, confirmed `webrtcConnection.test.ts` untouched) so
+  tests can drive a real host+guest exchange in-process — this is what step 2's own mock never
+  needed, since it only ever proved the channels reach `"open"`. Verified via
+  `sessionSetupHost.test.ts`/`sessionSetupGuest.test.ts`: a real round-trip over a >16 KiB
+  fixture map (genuinely exercises multi-chunk transfer, not just a single-chunk happy path),
+  independent mismatch rejection on both sides (a hand-crafted rogue message, not two real
+  calls disagreeing), a protocol-error rejection when `map-end` arrives before every chunk was
+  received, and a `visited`-reconstruction check against a *real* `MapGenerator`-produced map.
+  `npm run typecheck` clean, full 1775-test/100%-coverage suite green, no `main.ts` changes —
+  nothing calls either function yet outside tests, that's 6c's job.
+- [x] **6c shipped 2026-07-19: engine integration + `main.ts` wiring + end-to-end verify** —
+  the piece that actually gets two connected peers playing a level in lockstep. Four small,
+  additive engine prerequisites found by reading the engine directly against the design
+  (`engine.ts`/`player.ts`): `startExternallyDriven()` (primes a player without scheduling
+  `start()`'s internal rAF loop, so a session driver's own `advance(FIXED_DT)` calls are the
+  only thing ticking the sim), `getPlayerPosition(id)` (the only public way to read a
+  *specific*, possibly non-local player's position), a threaded-through `spawn?: Point`
+  (constructor/`addPlayer`/`Player`) fixing a real spawn-stacking bug (nothing assigned step
+  5's `multiplayerSpawns` to actual player positions — every added player landed on the
+  constructor's own spawn tile), and a `localPlayerId`-gated bypass of `simulate()`'s
+  lore-terminal early-return (that freeze was local-player-scoped, so either peer opening a
+  terminal desynced the other's tick count instantly). New `src/multiplayer/` input layer —
+  `networkInputSource.ts` (byte-for-byte `ReplayPlaybackInput` mirror), `localInputSampler.ts`
+  (drains a real `InputController`, force-neutralizes `escape`/`blur`/`pointerUnlock`/`click`
+  before they ever reach the shared stream — the netcode spec's pause/blur desync fix, applied
+  at the sampling layer) — then `sessionEngine.ts` (shared engine-construction helper, spawn
+  assignment from the sorted roster), `multiplayerSessionHost.ts` (worker-paced ticking,
+  `InputDelayBuffer`-driven bundle finalize+broadcast, an `ended` idempotency guard for
+  `TickAccumulator`'s already-queued-message re-entrancy on teardown), `multiplayerSessionGuest.ts`
+  (bundle-arrival-paced, no worker). `main.ts` gained a "Start Session" button (host only —
+  guest auto-starts session setup on connect) and `?testHooks=1`-gated `getSimTick`/
+  `getPlayerPosition` hooks. **Deliberate, user-confirmed scope decision**: renders at the
+  ~30Hz simulation tick rate (`engine.advance(FIXED_DT)` reused wholesale, unmodified) rather
+  than decoupling rendering to native display rate — no render-interpolation exists yet to
+  make decoupling buy any visible smoothness, so full decoupling is explicitly deferred,
+  **flagged for revisit once step 7 (reconciliation/interpolation) lands**, not a forgotten
+  shortcut. New `scripts/verify-multiplayer-netcode.mjs` (two real Playwright contexts, past
+  "connected" through a real "Start Session" click: first-applied-tick + spawn-spread, both
+  peers' exact position agreement at tick 60, real held-`KeyW` cross-peer propagation, a
+  final settled-position lockstep re-check), wired into CI the same `!= firefox` way as
+  `verify:multiplayer-connect` (same confirmed CI-only WebRTC ICE limitation, not a new one).
+  **This real end-to-end run — not any mocked-channel unit test — found two genuine protocol
+  bugs no amount of test-driven message ordering could have caught**: the guest's
+  `runGuestSessionSetup` used to send its own build-version *eagerly* on connect, racing the
+  host's own listener attach (only wired up once the user clicks "Start Session," an
+  arbitrarily later moment) — `RTCDataChannel` doesn't replay a message to a listener attached
+  after it already fired, so a real guest's early message was silently lost forever, wedging
+  the host in "Starting session…" indefinitely; fixed by flipping the guest to purely
+  receive-driven (listens immediately, only replies once the host's own build-version
+  arrives), which also required reordering the two existing setup unit-test files' own
+  `Promise.all([...])` calls (guest-first) since they'd coincidentally relied on the old,
+  backwards ordering too. Separately, the host was broadcasting its own delayed `TickInput`
+  over `channels.input` in addition to the real `TickInputBundle` — a stray message shape the
+  guest's listener never expected (`bundle.inputs[...]` off a `TickInput`, which has no
+  `.inputs` field, threw "Cannot read properties of undefined (reading 'guest')" on *every*
+  tick) — fixed by recording the host's own input into its `InputDelayBuffer` locally only
+  (it was never network-dependent in the first place; it reaches the guest properly shaped
+  inside the next finalized bundle regardless). `npm run typecheck` clean, full
+  1827-test/100%-coverage suite green, `verify:multiplayer-netcode` run twice locally against
+  a real dev+signaling server pair (isolated on alternate ports, the user's own dev server on
+  5173 left untouched) — clean both times after the two fixes above.
+- [x] **step 7 ("Reconciliation") shipped 2026-07-19: periodic host-authoritative snapshots,
+  PRNG-stream resync, drift correction (snap + render smoothing)**, per
+  `multiplayer-netcode-spec.md` §3/§4 — the fix for the confirmed-real drift lockstep alone
+  can't prevent (`scripts/poc-cross-browser-determinism.mjs`'s cross-engine `Math.sin`/`cos`
+  ULP divergence, plus `InputDelayBuffer`'s held-last-input fallback). Landed as one PR for
+  3 sub-steps (7a engine primitives, 7b wire wiring, 7c test hooks + e2e verify), same
+  one-branch precedent as step 6. `src/prng.ts`'s `mulberry32` is now defined *in terms of* a
+  new `createResumablePrng(seed)` (`{next, getState, setState}`) rather than duplicating the
+  algorithm — `RaycasterEngine.rng` stays a plain `() => number` at every existing call site,
+  unchanged, while a parallel `rngHandle` field gives `captureReconciliationSnapshot`/
+  `applyReconciliationSnapshot` read/resume access to the stream's raw 32-bit counter. New
+  `src/engine/reconciliationSnapshot.ts` (`ReconciliationSnapshot`/`PlayerSnapshot`/
+  `EnemySnapshot`/`MineSnapshot`/`LootDropSnapshot`/`TileMutation`) and
+  `src/engine/reconciliationConstants.ts` (`CORRECTION_SMOOTH_MS`/`SNAP_THRESHOLD_TILES`)
+  **live in `src/engine/`, not `src/multiplayer/`** — the engine layer never imports from the
+  multiplayer layer (only the reverse, same rule `PlayerId` already follows) —
+  `src/multiplayer/reconciliationTypes.ts`/`netcodeConstants.ts` just re-export them. Found
+  this the hard way, not by inspection: an early draft put the constants as plain exports on
+  `engine.ts` itself and had `netcodeConstants.ts` re-export from there, which transitively
+  dragged `engine.ts`'s own `textures.ts` import (a module-load-time `document.createElement`
+  call) into `tickClockWorker.ts` (a real Web Worker, no DOM) and broke
+  `netcodeConstants.test.ts` under plain-Node — fixed by giving the constants their own
+  tiny, dependency-free file instead of exporting them from `engine.ts` proper. Two new
+  `RaycasterEngine` methods: `captureReconciliationSnapshot(tick)` (host-only; drains a new
+  `pendingGridDelta` tile-mutation log fed by `tryOpenSecretWall()`/`openDoorAhead()`) and
+  `applyReconciliationSnapshot(snapshot)` (guest-only; every field snaps immediately and
+  fully — continuing to simulate from a known-wrong value even one more tick compounds *more*
+  drift via the same `sin`/`cos` calls that caused the problem in the first place). Position
+  corrections additionally get a `PlayerState.renderOffset`/`enemyRenderOffsets` side-map
+  entry when the delta is below `SNAP_THRESHOLD_TILES` (decayed by real elapsed
+  `performance.now()` time over `CORRECTION_SMOOTH_MS`, applied only at render time via a new
+  `applyRenderOffsets()`/restore wrapper around `render()`) or none at all when at/above it
+  (an instant, unsmoothed snap — a mismatch that large means something categorically worse
+  than float drift happened). **Real gap found and fixed along the way**: `killPlayer()`'s own
+  key-drop-on-death push bypassed `pushLootDrop` entirely (a pre-existing, deliberate design,
+  not a bug) and so never got the same id-tagging scheme `pushLootDrop`'s enemy-kill drops
+  needed for the reconciliation payload's loot-drop diff — fixed with a parallel
+  `player:${playerId}:${dropSeq}` id scheme and a `LootContext.pushDrop` signature change
+  (now takes the source `Enemy`, not just the drop, so the engine can derive `${enemyIndex}:
+  ${dropSeq}` from it — `dropEliteLoot`'s 3 call sites and `lootApply.test.ts`'s assertions
+  updated to match). **Deliberate decision, confirmed with the user**: rendering stays
+  tick-locked (called once per 30Hz sim tick, exactly as step 6c shipped it) rather than
+  decoupling to a real independent rAF loop — the decay math is still genuinely wall-clock-
+  time-based (correct, just sampled at 30fps instead of native refresh rate), and full
+  decoupling would first require moving `tickEffects()`'s frame-counted decay (muzzle flash/
+  cheat-toast/hit-flash) into `simulate()`, real separate engine surgery this step doesn't
+  otherwise need — deferred again, this time with a concrete trigger (revisit once the
+  coarser smoothing is a real, felt problem). New `?testHooks=1` hooks on
+  `__codeensteinMultiplayerTestHooks`: `getRngState()` (read-only), `hasActiveRenderOffset(id)`
+  (read-only), and `injectDesync(...)` — the first *mutating* test hook in the project (every
+  earlier one is read-only introspection or a permanent no-op like `consumeCheat()`),
+  deliberately so `scripts/verify-multiplayer-reconciliation.mjs` can force a real, known
+  divergence and prove the correction converges it, since real cross-engine float drift
+  doesn't reliably appear within a short end-to-end run (the PoC's own divergence took
+  roughly the first 1% of a 500k-iteration *stress* loop to surface, not a couple seconds of
+  ordinary play). That script proves, over a real WebRTC connection: a small
+  (below-threshold) position injection reconverges via the smoothed path; a large
+  (at/above-threshold) one snaps instantly; and an injected extra `rng()` draw — the spec's
+  own most-emphasized failure mode, a PRNG *stream-position* desync, not just a bad value —
+  fully resyncs, including subsequent draws matching again. `npm run typecheck` clean, full
+  1871-test/100%-coverage suite green, both `verify:multiplayer-reconciliation` and a
+  re-run of `verify:multiplayer-netcode` (regression check) run locally against a real
+  dev+signaling server pair (isolated on alternate ports, the user's own dev server on 5173
+  left untouched) — clean every time.
+  Follow-up same day: PR #22's own CI caught two real, independent flakes on the `webkit`
+  leg specifically — one in the new `verify:multiplayer-reconciliation` script (PRNG-resync
+  check), one in the pre-existing `verify:multiplayer-netcode` script from step 6c (post-
+  movement lockstep check, previously always green). Both traced to the same root cause, not
+  two separate bugs: WebKit's cross-engine float divergence (already confirmed present but
+  slowest-to-surface on Chromium/Firefox by `scripts/poc-cross-browser-determinism.mjs`) is
+  measurably *fastest* on WebKit, and both scripts asserted exact cross-peer state equality
+  once, after a single fixed wait — since reconciliation only corrects drift once a second,
+  a downstream read can land in the gap where a fresh, genuine divergence has already
+  reappeared but the next correction hasn't arrived. One failure showed a real, non-synthetic
+  ~0.1-tile position gap after a few seconds of real movement — not a synthetic injection.
+  Fixed in both scripts by polling for the first moment two peers' state agrees
+  (`pollUntilConverged()`) instead of checking once at a fixed later instant; also replaced an
+  unfounded "PRNG streams start in sync" assertion (false in a real level with 18 roaming
+  enemies continuously drawing from the shared stream) with a new
+  `MultiplayerSessionHandle.getLastReconciliationRngState()` (each peer's own *frozen*
+  last-broadcast/last-applied snapshot value, immune to the same live-state race). Verified
+  clean 3-4x per script running against real `webkit` locally, plus Chromium regression runs,
+  before re-pushing — all green on CI's full matrix afterward. Full writeup, including the
+  general "poll for convergence, never assert-once-after-a-fixed-wait" lesson for any future
+  cross-peer verify script, in `doc/dev/testing.md`'s "Cross-browser verification" section.
+  Discussed explicitly with the user whether this pattern (WebKit consistently needing the
+  most cross-browser accommodation across this whole multiplayer effort) warranted declaring
+  WebKit unsupported for multiplayer — declined: both flakes were test-script bugs (racy
+  live-state comparison), not WebKit defects or app bugs, and real sessions self-correct
+  within about a second regardless of which peer's browser diverges first, invisible to an
+  actual player.
+
 - [x] multiplayer step 8: session lifecycle (disconnects, host-disconnect, level transitions with countdown, MP-rules cleanup) — shipped 2026-07-19/20, per plan `~/.claude/plans/let-s-start-with-step5-bubbly-star.md`, landed in three staged commits (disconnects; level-transition mechanism; the E2E bot infra + two real bugs it found).
   - **Part A — disconnects**: `PlayerStatus` gained a third value, `"disconnected"`, never a literal roster removal — every multiplayer-relevant engine loop already gated on `status === "alive"`, so the new value is automatically excluded from rendering/interaction everywhere for free. `applyRosterRemoval(ids)` converts a disconnected player's inventory to `LootDrop`s (`source: "disconnect"`) at their last known position, skipping health/starting weapons. Detection is a real `RTCPeerConnection.connectionState` watch (`ConnectionStateSource`, injected for testability) with a `DISCONNECT_GRACE_MS` (10s) timer — host applies the roster-removal synchronously with the next tick's broadcast bundle so every peer (host included) applies it from the identical tick; a guest whose host disconnects has no roster-removal machinery of its own (a bundle just stops arriving) and instead ends its own session locally after the same grace period with a provisional, explicitly-not-authoritative view (`SessionEndReason: "host-disconnected"`). Multiplayer's lore-terminal overlay became static/dismiss-only (Escape only, never click — a mousedown also queues a fire) instead of reusing single-player's W/S-scroll-while-simulation-still-runs behavior, a real bug found while implementing this (holding W/S to "scroll" was actually moving the player in the live shared simulation). New `scripts/verify-multiplayer-disconnect.mjs`: real `guestContext.close()`/`hostContext.close()` (an actual transport teardown, not a faked signal) for both directions, run against a real signaling server. Found and fixed two real production bugs building it: `page.waitForFunction()`'s 2-argument form silently discards its own timeout for Playwright's built-in 30s default (see `doc/dev/testing.md`, was already silently broken in every step 6c/7 verify script, just invisible until step 8 needed a timeout genuinely over 30s) — fixed everywhere by always using the explicit 3-argument form; and `RTCDataChannel.send()` throwing synchronously once a peer's channel closes was aborting the host's own tick handler *before* `engine.advance()` ever ran, permanently stalling its simulation the instant a guest disconnected — fixed with `readyState === "open"` guards before every send.
   - **Part B — level transitions**: multiplayer's own exit countdown (`COUNTDOWN_TICKS`, 150 ticks/5s at 30Hz) — first touch of `map.exit` starts it, position stops mattering once it's running, `endGame("won")` only fires at zero; single-player's own exit stays byte-identical (immediate win). New `RaycasterEngine.captureCarryoverFor(id)` generalizes the existing single-player carryover capture to an arbitrary roster id. The host, on win, captures every connected player's own carryover (reviving anyone `"dead"` at `REVIVE_HEALTH`), asks a new `findNextMultiplayerLevel` (`main.ts`, mirrors `advanceToNextLevel`'s own file-tree traversal) for the next level, and either broadcasts a chunked `LevelTransitionMessage` sequence (reusing the session-setup transfer's own chunking machinery) once every guest acks (or `TRANSITION_ACK_TIMEOUT_MS` elapses — a guest that never acks in time falls into Part A's own disconnect path) or ends the session as `"campaign-complete"` once the workspace is exhausted. Both session drivers refactored so the level-scoped engine/inputs/sampler are rebindable (`startLevel()`, called once for the initial level and again per transition) while the worker/channels/`InputDelayBuffer` stay alive across the swap. Also shipped the "Build finishing in Ns…" HUD countdown overlay the countdown getter was originally built for but never got (`hud.ts`'s `drawExitCountdownToast`) — found missing while scoping the E2E verification for this step.
@@ -1031,6 +1358,8 @@ Follow-up (2026-07-16, user-reported, same day): two problems with that first sh
   - **Post-Phase-3 fix** (`73a835b`): found while writing Phase 4 docs — neither fork had actually wired Phase 2a's new engine hook into the *report*; the script's own doc comment still described the pre-Phase-2a "coarse" shape. Exported `run-balancing-telemetry.mjs`'s `aggregateLevelRuntime()` (its 7-category report builder, unchanged) and reused it directly for a new `perPlayerTelemetry` report section — the multiplayer snapshot shape matches single-player's field-for-field, since both are built from the same `buildTelemetrySnapshotFor`.
   - **Verified**: `npm run typecheck` clean throughout; full Vitest suite green (299 files, 6094 tests) after the Phase 2a/2b merge; real live multiplayer smoke tests at every phase against real, isolated signaling+dev server pairs (never a developer's own manual session); single-player's own `balancing:telemetry`/`getTelemetrySnapshot()` re-confirmed unaffected (additive-only, same "N=1 is a case of the general shape" discipline this project applies everywhere else).
   - **Follow-up: both real findings root-caused and fixed, on request** (including "does this affect single-player too, if so fix it everywhere" — it did, for one of the two, and both fixes now live in shared `bot.mjs` where single-player automatically benefits too). (1) **The severe ~596-tick stall**: `checkExit()` (`engine.ts`) starts the level-transition countdown once *any single* alive player touches the exit (a real, intended co-op mechanic — "exit touch is a shared simulation event" — not a bug), and once it elapses the whole roster (including a still-mid-route teammate) gets carried to the next level's spawn. That teammate's `Bot` instance had no way to notice — it kept walking its pre-planned waypoint list against a live position that had moved to a different level entirely, using its own stale map for every navigation decision (exactly why the stall position read as solid wall against the original level's grid — it was never really there). Fixed in `bot.mjs`'s shared `driveLegs`/`driveTowardWithReplan`/`maybeDetourForLoot`: a mid-route `"teleported"` result (already detected, previously silently ignored and continued past) now stops the walk immediately. `run-balancing-telemetry-multiplayer.mjs`'s `driveOneBot` maps this into a new `"levelAdvanced"` outcome, counted the same as `"reachedExit"` in `teamOutcome`. Multiplayer-only in practice — single-player has no "teammate finishes first" scenario at all. (2) **The mine-corridor stall**: `findDangerousMine`'s "retreat now" trigger only fired once already inside a mine's blast radius, but a mine's real fuse (0.9s) ticks regardless of bot decision cadence — `MultiplayerBot`'s own real ~400ms decision window is long enough that a mine armed by the *other* nearby mine in a cluster (or by the bot's own earlier approach) could finish its fuse and detonate entirely within one held decision, with no chance to react. Fixed by giving `findDangerousMine` a `reactionBufferTiles` parameter scaled to a real decision's own max travel distance (`ENGINE_MOVE_SPEED × ENGINE_SPRINT_MULTIPLIER × stepMs`), mirroring the already-existing `MELEE_CLOSE_MIN_DISTANCE` fix's exact pattern — genuinely shared: single-player's much shorter decision windows (130ms headed, 50ms virtual) make this a near-no-op there, multiplayer's much longer window gets a buffer that actually matters. Verified live for both: the exact combo that had never once qualified across every earlier test run in this whole investigation (`Casual/normal/2p`) qualified on its very first attempt after fix (1), then 2/2 after fix (2) — with no more `stall`+`healthDrainFrozen` compound pattern near the mine cluster (occasional mine damage there is still expected — mines are hazards by design — what's fixed is getting physically stuck taking damage with no chance to react).
+
+- [x] **Should be resumable — shipped 2026-07-22.** `npm run balancing:campaign-multiplayer` (`scripts/run-balancing-campaign-multiplayer.mjs`) now covers this: one OS process per combo, each writing its own file under `balancing_runs_multiplayer/`, resumable purely by scanning what's already on disk — see the SSH-host-parallelism `## Done` entry above for the full write-up (the same underlying change also added SSH-lane support). `run-balancing-telemetry-multiplayer.mjs` itself is unchanged (still one-shot) — same relationship single-player's `balancing:telemetry` (one-shot) has to `balancing:campaign` (resumable).
 
 - [x] SSH-host parallelism for compute-bound verify/balancing scripts, plus a resumable orchestrator for multiplayer telemetry — shipped 2026-07-22. `scripts/lib/laneOrchestrator.mjs` extracts `run-balancing-campaign.mjs`'s own proven queue/resumability/watchdog design (a `Runner` interface, `LocalRunner` preserving today's exact `child_process` behavior); `scripts/lib/sshRunner.mjs`'s `SshRunner`/`buildSshRunners()` add SSH-host lanes on top, reading a very simple gitignored `ssh-hosts.env` (one `user@host` per line, `ssh-hosts.env.dist` ships the template) — auth stays entirely external (a pre-unlocked `ssh-agent` key), and every configured host is auto-bootstrapped upfront (clone-or-fetch into `/tmp/codeenstein3d-ssh-lane`, force-checkout the exact local commit, `npm ci`, Playwright install) rather than assuming any manual pre-provisioning; a host that fails bootstrap is excluded with a warning, never fatal to the whole run. New `scripts/run-balancing-campaign-multiplayer.mjs` gives `run-balancing-telemetry-multiplayer.mjs` the same resumable per-combo-file design `balancing:campaign` already has for single-player — closing that script's own "no incremental persistence" gap (see the multiplayer-telemetry-enhancements item below) as the same underlying change as adding parallelism, not two separate efforts. Needed a new `CODEENSTEIN_MP_TELEMETRY_COMBO_PROFILES` env var on the underlying script to pin one *exact* combo (including a specific mixed-skill one) per spawned invocation — a bare profile filter could only express a uniform combo. Local lane count for the multiplayer campaign defaults to 1, not 2: concurrent local invocations would collide on `multiplayerTestServers.mjs`'s fixed ports — real parallelism there is meant to come from SSH lanes instead. Known, documented gap: a local watchdog-triggered kill only best-effort propagates to a remote host's own process (`ssh -tt`), not a guarantee. See `doc/dev/balancing-telemetry.md`'s new "SSH-host parallelism" section for the full write-up.
   - **Follow-up, same day**: bootstrap now also installs `git`/a modern-enough Node+npm itself via `apt`/NodeSource if either is missing or too old (Debian/Ubuntu-only by design, needs passwordless `sudo` on the remote host) — user confirmed all hosts they'll actually use are Debian/Ubuntu-based, so no manual pre-provisioning is needed beyond SSH access + sudo now. Confirmed ARM hosts work fine too — nothing in `sshRunner.mjs` is architecture-specific, and Playwright's Chromium build has genuine Linux ARM64 support.
