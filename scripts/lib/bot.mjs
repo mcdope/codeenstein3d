@@ -1392,7 +1392,9 @@ export class Bot {
       if (round > 0 || far) {
         const back = await this.#withActivity("exitBacktrack", () => this.#walkPathTo({ x: this.map.exit.x, y: this.map.exit.y }, openedDoors));
         if (back.state !== "playing") return back;
-        if (back.reason === "teleported") return back;
+        // Same reasoning as the final push below: a pad on the way back is
+        // something to re-plan around, not a reason to abandon the exit.
+        if (back.reason === "teleported" && (await this.exitAccepted())) return back;
       }
       last = await this.#withActivity("exit", () => this.driveToward(exitCenter, this.tuning.TIGHT_ARRIVE_EPS, finalApproachTicks));
       // "won" (exit accepted) or "over" (died on the way) — either way, done.
@@ -1410,13 +1412,40 @@ export class Bot {
       // carried along" keep that distinction. See
       // `run-balancing-telemetry-multiplayer.mjs`'s `levelAdvanced` outcome.
       if (last.reason === "arrived" && (await this.exitAccepted())) return { state: "playing", reason: "arrived" };
-      // A teleport during the final push is the caller's to interpret, not
-      // something to fall through into the blocker check — that would report
-      // it as `stuck` and lose the distinction entirely. It means either a
-      // teleporter pad, or the level transitioning underneath this bot because
-      // someone reached the exit; `driveToExit` cannot tell which, and the
-      // two callers that care classify it differently.
-      if (last.reason === "teleported") return last;
+      // A teleport during the final push means one of two things, and this
+      // used to return `teleported` for both because the comment here claimed
+      // the bot "cannot tell which". It can: `exitAccepted()` is exactly that
+      // question. A running countdown, or an exit tile that is no longer the
+      // one we were driving at, means the level really is transitioning;
+      // neither means a teleporter pad picked the bot up mid-route and put it
+      // somewhere else on the *same* level.
+      //
+      // Giving up in the second case was a real navigation gap, not a
+      // theoretical one. A pad sitting on the route to the exit made
+      // `verify (multiplayer-transition)` fail 2 of 2 CI runs and 1 of 3 local
+      // ones: the host was warped off-route, `driveToExit` reported
+      // `teleported`, and the countdown it had never triggered duly never
+      // appeared. A player in that situation simply walks back.
+      //
+      // Falling through to the next round is what walking back looks like
+      // here: `round > 0` re-plans with `#walkPathTo` from wherever the pad
+      // dropped the bot, which is a fresh BFS rather than the stale route.
+      // `EXIT_CLEAR_ROUNDS` still bounds the whole thing, so a pad the bot
+      // keeps stepping back onto terminates instead of looping.
+      //
+      // Single-player is unaffected by construction: `Bot.exitAccepted()`
+      // returns false there, and a single-player exit resolves as `won`, never
+      // `teleported` — so every teleport it sees really is a pad.
+      //
+      // `continue`, not a fall-through: the blocker check below is about an
+      // *inert* exit the bot is standing on, and after a pad warp the bot is
+      // not standing on it. Falling through reported `stuck` from across the
+      // level instead of walking back — caught by the test below, which is
+      // why it is written against the outcome rather than the branch.
+      if (last.reason === "teleported") {
+        if (await this.exitAccepted()) return last;
+        continue;
+      }
 
       const { player, enemies } = await this.readFull();
       // Exactly `exitRoomHasAliveEnemy()`'s predicate, not a proxy for it.
