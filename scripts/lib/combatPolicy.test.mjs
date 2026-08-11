@@ -61,6 +61,7 @@ import {
   movementKeysFor,
   movementVectorFor,
   angularHalfWidth,
+  pelletHitFraction,
   trackEnemyMotion,
   leadTarget,
 } from "./combatPolicy.mjs";
@@ -1158,7 +1159,14 @@ describe("ranged weapon economics", () => {
     // `null` would mean "nothing was picked" rather than the early
     // already-equipped return — and the two `not.toBe`s would pass vacuously
     // against it. The `not.toBeNull` pins that down.
-    const far = pickRangedWeapon(owner({ weaponIndex: 3 }), PROFILE, [], target({ dist: 7, hp: 4400, maxHp: 4400, elite: true }), null);
+    //
+    // Equipping the *pistol* here, not ghidra as this used to. Ghidra is index
+    // 3, so the old fixture equipped the very weapon that wins this scenario
+    // once the shotgun stops being over-valued — `pickRangedWeapon` then
+    // correctly returns null ("keep what you have") and the assertion below
+    // read that as a failure. Under the corrected pellet model the shotgun is
+    // worth 43.4 at 7 tiles rather than 88.1, and ghidra wins outright.
+    const far = pickRangedWeapon(owner({ weaponIndex: PISTOL_WEAPON_INDEX }), PROFILE, [], target({ dist: 7, hp: 4400, maxHp: 4400, elite: true }), null);
     expect(far).not.toBeNull();
     expect(far).not.toBe(FRIDAY_HOTFIX_WEAPON_INDEX);
     expect(far).not.toBe(PISTOL_WEAPON_INDEX);
@@ -1329,11 +1337,21 @@ describe("hard weapon range limits", () => {
     // the weapon could not reach, whereas an unmirrored curve scores a full 48
     // a pull at 6 tiles where the engine really lands about 12.
     const at = (dist) => expectedDamagePerShot(FRIDAY_HOTFIX_WEAPON_INDEX, dist, DEFAULT_TUNING, makeEnemy());
-    expect(at(2.0)).toBeCloseTo(at(2.5), 6);        // plateau: the curve must not bite yet
+    // No plateau any more, and its absence is the fix rather than a
+    // regression: the old flat stretch was `hitFraction` clamping at 1 while
+    // the engine was already dropping pellets. Measured on the shotgun, the
+    // engine delivers 7 of 7 pellets at 1 tile and 5.63 at 2 — it decays
+    // continuously from about 1.5 tiles out, so the model must too.
+    expect(at(2.0)).toBeGreaterThan(at(2.5));
     expect(at(4.5)).toBeLessThan(at(2.5));           // then decay, monotonically
     expect(at(6.0)).toBeLessThan(at(4.5));
     expect(at(6.5)).toBe(0);                         // nothing at the far end
-    expect(at(4.5) / at(2.5)).toBeCloseTo(0.5, 2);   // half-way along is half damage
+    // 0.5 would be the *pure* `rangeDamageScale` ramp — which is what this
+    // used to measure, because the cone term was clamped at 1 across the whole
+    // stretch and contributed nothing. The cone now decays as well, so the two
+    // compound and the drop is steeper. Pinned as the property rather than the
+    // new constant: the combined falloff must beat range falloff alone.
+    expect(at(4.5) / at(2.5)).toBeLessThan(0.5);
   });
 
   it("is a candidate again inside that range, rather than scoring Infinity", () => {
@@ -1741,5 +1759,68 @@ describe("the fire gate", () => {
     const stale = decideTwice({ enemy: crossing, player: makePlayer(aimedAhead) });
     expect(stale.fire).toBe(false);
     expect([...stale.holds.keys()]).toContain("KeyQ");
+  });
+});
+
+describe("pelletHitFraction — the multi-pellet cone", () => {
+  const shotgun = WEAPON_STATS[SHOTGUN_WEAPON_INDEX];
+  /** The engine's own projected half-width: `size = SCENE_HEIGHT * ENEMY_SIZE / depth`. */
+  const halfWidthAt = (d) => (DEFAULT_TUNING.SCENE_HEIGHT_PX * DEFAULT_TUNING.ENEMY_SPRITE_SIZE) / (2 * d);
+
+  it("reproduces the engine's measured pellet counts across the range", () => {
+    // Measured 2026-08-12 by firing the real shotgun at a centred enemy in an
+    // open room and counting pellets from damage dealt (60-200 shots per
+    // distance). These are the numbers the model exists to predict; the old
+    // one claimed a flat 7 out to 4 tiles.
+    const measured = { 1: 7.0, 1.5: 6.63, 2: 5.63, 3: 3.92, 4: 2.96, 5: 2.38, 6: 2.04, 8: 1.59 };
+    for (const [dist, pellets] of Object.entries(measured)) {
+      const got = pelletHitFraction(halfWidthAt(Number(dist)), shotgun) * shotgun.pellets;
+      expect(Math.abs(got - pellets), `${dist}t: modelled ${got.toFixed(2)} vs measured ${pellets}`).toBeLessThan(0.15);
+    }
+  });
+
+  it("is 1 for a single-pellet weapon at every range", () => {
+    // Not a special case bolted on: this answers "given the shot connected, how
+    // much of its damage lands", and one pellet lands all of it. The measured
+    // data agrees — pistol and gdb sit at exactly 1.00 damage-per-hit against
+    // prediction at every range, so this path must not move.
+    for (const d of [1, 4, 8, 12]) {
+      expect(pelletHitFraction(halfWidthAt(d), WEAPON_STATS[PISTOL_WEAPON_INDEX])).toBe(1);
+      expect(pelletHitFraction(halfWidthAt(d), WEAPON_STATS[GDB_WEAPON_INDEX])).toBe(1);
+    }
+  });
+
+  it("falls off with distance and never leaves [0, 1]", () => {
+    const at = (d) => pelletHitFraction(halfWidthAt(d), shotgun);
+    expect(at(1)).toBe(1);
+    for (const d of [1, 2, 3, 4, 6, 8, 12, 20]) {
+      expect(at(d)).toBeGreaterThanOrEqual(0);
+      expect(at(d)).toBeLessThanOrEqual(1);
+    }
+    expect(at(2)).toBeGreaterThan(at(4));
+    expect(at(4)).toBeGreaterThan(at(8));
+  });
+
+  it("degenerates to a plain offset count when the cone deviation is zero", () => {
+    // The near-wall case the probe also measured: with no deviation a pellet
+    // hits exactly when its own offset is inside the target.
+    const noDev = { ...shotgun, maxConeDeviationPx: 0 };
+    expect(pelletHitFraction(halfWidthAt(2), noDev)).toBe(1); // all 7 offsets within +/-70px
+    expect(pelletHitFraction(halfWidthAt(8), noDev) * 7).toBe(1); // only the centre pellet
+  });
+
+  it("the shipped model values the shotgun below the old one at every range past point blank", () => {
+    // The consequence that matters: the shotgun was over-valued against
+    // pistol/gdb everywhere in `pickRangedWeapon`, not just the cluster branch.
+    const off = { ...DEFAULT_TUNING, BOT_PELLET_CONE_MODEL: false };
+    for (const d of [2, 3, 4, 6, 8]) {
+      const now = expectedDamagePerShot(SHOTGUN_WEAPON_INDEX, d, DEFAULT_TUNING);
+      const before = expectedDamagePerShot(SHOTGUN_WEAPON_INDEX, d, off);
+      expect(now, `${d}t`).toBeLessThan(before);
+    }
+    // ...and leaves the single-pellet weapons exactly where they were.
+    for (const d of [2, 4, 8]) {
+      expect(expectedDamagePerShot(PISTOL_WEAPON_INDEX, d, DEFAULT_TUNING)).toBe(expectedDamagePerShot(PISTOL_WEAPON_INDEX, d, off));
+    }
   });
 });
