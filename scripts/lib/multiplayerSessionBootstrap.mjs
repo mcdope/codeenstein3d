@@ -56,24 +56,6 @@ export const FIREFOX_LAUNCH_OPTIONS = {
     "media.peerconnection.ice.obfuscate_host_addresses": false,
     "media.navigator.streams.fake": true,
     "media.navigator.permission.disabled": true,
-    // Lets Firefox gather candidates on the loopback interface, which is all
-    // this setup needs: host and guest are two contexts in one Playwright
-    // process on one machine, so a routable interface is never required. It is
-    // what Mozilla's own WebRTC tests use for exactly this shape.
-    //
-    // Aimed at the CI-only failure — on GitHub Actions Firefox gathers *zero*
-    // candidates, because it finds its default-route interface by `connect()`ing
-    // a UDP socket toward a public IP purely to ask the OS which interface
-    // would be used, and the runner has no internet-routable default route
-    // (Mozilla bug 1659672, closed RESOLVED INVALID). This pref sidesteps the
-    // discovery heuristic rather than satisfying it.
-    //
-    // **This dev box cannot test that.** Firefox here passes the connect verify
-    // with or without this pref (checked both ways, 2026-08-11) because UDP
-    // egress works locally — so the local run only establishes that the pref is
-    // harmless where things already work, never that it fixes where they don't.
-    // The real read is the `firefox` leg of the `verify-browser` matrix.
-    "media.peerconnection.ice.loopback": true,
   },
 };
 
