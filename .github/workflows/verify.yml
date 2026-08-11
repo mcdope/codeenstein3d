@@ -167,40 +167,45 @@ jobs:
         env:
           CODEENSTEIN_DEV_URL: "http://localhost:5173"
           CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
-      # Runs on chromium/webkit, not the full matrix — unlike
-      # verify:campaign:playthrough above, it doesn't touch OPFS/
-      # `showDirectoryPicker`, so WebKit's `navigator.storage` gap doesn't
-      # apply here; but Firefox specifically has a confirmed, real WebRTC
-      # ICE-gathering limitation in this exact sandboxed-container network
-      # shape (no internet-routable default route for Firefox's own
-      # interface-discovery heuristic to find — a genuine Mozilla WONTFIX,
-      # not something app code can work around) — see
-      # scripts/verify-multiplayer-connect.mjs's own doc comment and
-      # doc/dev/testing.md's cross-browser section for the full
-      # investigation.
+      # Runs on the full matrix, Firefox included since 2026-08-11. It doesn't
+      # touch OPFS/`showDirectoryPicker`, so WebKit's `navigator.storage` gap
+      # (see verify:campaign:playthrough above) doesn't apply here.
+      #
+      # Firefox was skipped until now for a real, correctly-diagnosed reason:
+      # on this runner shape it gathers *zero* ICE candidates, because it finds
+      # its default-route interface by `connect()`ing a UDP socket toward a
+      # public IP purely to ask the OS which interface would be used, and the
+      # runner has no internet-routable default route (Mozilla bug 1659672,
+      # RESOLVED INVALID). What did not follow is the conclusion "therefore
+      # unfixable": `media.peerconnection.ice.loopback` (now in
+      # FIREFOX_LAUNCH_OPTIONS) sidesteps that discovery heuristic instead of
+      # satisfying it, and loopback candidates are sufficient here because both
+      # peers are two contexts in one Playwright process on one machine.
+      #
+      # This job IS the experiment — the dev box cannot run it, since Firefox
+      # passes there with or without the pref (UDP egress works locally). If
+      # this leg goes red, revert this commit rather than re-diagnosing: it
+      # means the pref does not reach the case, and that result belongs in
+      # doc/dev/testing.md's cross-browser section.
       - run: npm run verify:multiplayer-connect
-        if: matrix.browser != 'firefox'
         env:
           CODEENSTEIN_DEV_URL: "http://localhost:5173"
           CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
-      # Same CI-only WebRTC ICE-gathering limitation as verify:multiplayer-connect
-      # above (not a new one) — see that step's own comment.
+      # Same WebRTC ICE story as verify:multiplayer-connect above, including the
+      # Firefox pref that un-skipped it — see that step's own comment.
       - run: npm run verify:multiplayer-netcode
-        if: matrix.browser != 'firefox'
         env:
           CODEENSTEIN_DEV_URL: "http://localhost:5173"
           CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
-      # Same CI-only WebRTC ICE-gathering limitation as verify:multiplayer-connect
-      # above (not a new one) — see that step's own comment.
+      # Same WebRTC ICE story as verify:multiplayer-connect above, including the
+      # Firefox pref that un-skipped it — see that step's own comment.
       - run: npm run verify:multiplayer-reconciliation
-        if: matrix.browser != 'firefox'
         env:
           CODEENSTEIN_DEV_URL: "http://localhost:5173"
           CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
-      # Same CI-only WebRTC ICE-gathering limitation as verify:multiplayer-connect
-      # above (not a new one) — see that step's own comment.
+      # Same WebRTC ICE story as verify:multiplayer-connect above, including the
+      # Firefox pref that un-skipped it — see that step's own comment.
       - run: npm run verify:multiplayer-disconnect
-        if: matrix.browser != 'firefox'
         env:
           CODEENSTEIN_DEV_URL: "http://localhost:5173"
           CODEENSTEIN_VERIFY_BROWSER: ${{ matrix.browser }}
