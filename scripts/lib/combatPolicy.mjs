@@ -233,6 +233,14 @@ export const DEFAULT_TUNING = {
   EDGE_CASE_SPRITE_SCALE: 0.55,
   FOG_FAR_TILES: 14,
   MAX_CONE_DEVIATION_PX: 38,
+  // The other half of the camera, needed to turn a projected pixel width back
+  // into the *angle* it subtends — see `angularHalfWidth`. Mirrors
+  // engine.ts's SCENE_WIDTH 640 and player.ts's FOV_PLANE 0.66. Both are
+  // module-private `const`s the scripts layer never loads, so they are
+  // duplicated by value like every other mirror in this block rather than
+  // imported (`scripts/report-aim-error.mjs` carries the same two).
+  SCENE_WIDTH_PX: 640,
+  FOV_PLANE: 0.66,
   // Seconds-equivalent of burning an entire ammo reserve on one target, before
   // the profile's own `ammoThrift` multiplier. Sets the exchange rate between
   // "kill it faster" and "still have ammo later".
@@ -285,6 +293,37 @@ export const DEFAULT_TUNING = {
   // hazard-free route exists. Single-variable switch, as above:
   //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_HAZARD_ROUTE_FALLBACK":false}'
   BOT_HAZARD_ROUTE_FALLBACK: true,
+  // Whether the bot aims where a moving target *will* be when its shot
+  // resolves, instead of where the target was when it decided. Single-variable
+  // switch, as above:
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_AIM_LEAD":false}'
+  //
+  // The lag is structural, not a tuning accident. `simulate()` runs
+  // `updateEnemyAi(dt)` (engine.ts:~2804) and only then `updateFiring(dt)`
+  // (~2868), while the bot samples enemy positions *after* a pump completes —
+  // so every shot resolves against positions one engine frame newer than the
+  // ones it was aimed at. See `leadTarget` for the arithmetic and
+  // `doc/dev/decisions.md` for the measurement that found it.
+  BOT_AIM_LEAD: true,
+  // Whether the fire gate is the tighter of `profile.fireAngleEps` and the
+  // angle the target actually subtends, instead of the profile constant alone.
+  // Single-variable switch, as above:
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_ANGULAR_FIRE_GATE":false}'
+  BOT_ANGULAR_FIRE_GATE: true,
+  // Longest gap between two decisions that still yields a usable velocity
+  // estimate for `trackEnemyMotion`. Past this the samples are too far apart
+  // to describe the target's *current* heading (an enemy rounds a corner in
+  // well under a second), so the bot aims at the live position instead of
+  // extrapolating from a stale one. Generous against the ~50ms single-player
+  // and ~200ms multiplayer decision windows, tight against a level
+  // transition or a long blocking maneuver.
+  AIM_TRACK_MAX_GAP_MS: 400,
+  // Floor under the angular fire gate, so it can never demand better
+  // alignment than the bot can actually dispatch — `turnBurstMs` bottoms out
+  // at a 1ms hold, i.e. ~0.003rad at Casual's rotation rate. Pure insurance:
+  // inside `engageRadius` the narrowest real target (an Edge Case at 9.5
+  // tiles) still subtends 0.017rad, so this does not bind in play.
+  MIN_FIRE_ANGLE_EPS: 0.01,
   // Once stuck realigning on the same mine this many ticks, force a shot at
   // the current best-effort alignment instead of freezing until the much
   // later full give-up — see `decide`'s mine-realignment comment.
@@ -1135,6 +1174,115 @@ function rangeDamageScale(w, dist) {
   return (w.maxRange - dist) / (w.maxRange - w.fullDamageRange);
 }
 
+/** A target's sprite scale — Elites project larger, Edge Cases smaller. */
+function spriteScaleFor(target, tuning) {
+  return target?.elite ? tuning.ELITE_SPRITE_SCALE : target?.edgeCase ? tuning.EDGE_CASE_SPRITE_SCALE : 1;
+}
+
+/**
+ * The **angular** half-width of a target at `dist`, in radians: the largest
+ * heading error that can still put a centre-column shot on it, and therefore
+ * the quantity a fire gate has to be compared against.
+ *
+ * `profile.fireAngleEps` is a constant while this falls off as `1/dist`, so
+ * the two cross — at ~5.8 tiles for Gamer against a normal enemy — and past
+ * that point a fixed tolerance permits shots the geometry cannot land. That
+ * crossing is visible in the data as a hit rate decaying 94% -> 49% from 0-2
+ * to 12+ tiles; see `npm run report:aim-error`, whose `angularHalfWidth` this
+ * mirrors exactly (same formula, same constants — they must agree, or the
+ * measurement stops describing the gate it motivated).
+ *
+ * `projectPoint` maps a screen offset back to an angle through
+ * `screenX - W/2 = (W/2) * tan(theta) / FOV_PLANE`, so the projected pixel
+ * half-width inverts to `atan(halfWidthPx * FOV_PLANE / (W/2))`.
+ */
+export function angularHalfWidth(dist, target, tuning = DEFAULT_TUNING) {
+  const d = Math.max(0.1, dist ?? 0);
+  const halfWidthPx = (tuning.SCENE_HEIGHT_PX * tuning.ENEMY_SPRITE_SIZE * spriteScaleFor(target, tuning)) / (2 * d);
+  return Math.atan((halfWidthPx * tuning.FOV_PLANE) / (tuning.SCENE_WIDTH_PX / 2));
+}
+
+/**
+ * Record where every enemy is this decision, and derive each one's velocity
+ * from where it was last decision. Mutates `memory` — the per-level object
+ * `Bot#startLevel` builds — and is a no-op without one.
+ *
+ * Enemy indices are stable for a whole level (see `pickThreat`), which is what
+ * makes a bare array keyed by index a safe identity: `memory` is rebuilt per
+ * level, so indices can never carry across one.
+ *
+ * Deliberately conservative about when it will report a velocity at all. It
+ * needs two samples separated by a real, short interval, and it clamps the
+ * result to the archetype's own top chase speed — a teleporter warp, a respawn
+ * reusing a slot, or a decision the bot spent blocked would otherwise produce a
+ * velocity of hundreds of tiles per second and throw the aim clean off the
+ * target. Anything it cannot vouch for reports `null`, and `leadTarget` then
+ * aims at the live position, which is exactly today's behaviour.
+ */
+export function trackEnemyMotion(enemies, memory, simTimeMs, tuning = DEFAULT_TUNING) {
+  if (!memory || !Array.isArray(enemies)) return;
+  const prev = memory.enemyMotion;
+  const dtMs = prev ? simTimeMs - prev.atMs : 0;
+  const usable = Boolean(prev) && dtMs > 0 && dtMs <= tuning.AIM_TRACK_MAX_GAP_MS;
+  const dtSec = dtMs / 1000;
+  const pos = [];
+  const vel = [];
+  for (let i = 0; i < enemies.length; i++) {
+    const e = enemies[i];
+    if (!e?.alive) {
+      pos.push(null);
+      vel.push(null);
+      continue;
+    }
+    pos.push({ x: e.x, y: e.y });
+    const was = usable ? prev.pos[i] : null;
+    if (!was) {
+      vel.push(null);
+      continue;
+    }
+    const vx = (e.x - was.x) / dtSec;
+    const vy = (e.y - was.y) / dtSec;
+    const speed = Math.hypot(vx, vy);
+    const maxSpeed = e.edgeCase ? tuning.EDGE_CASE_CHASE_SPEED : tuning.ENEMY_CHASE_SPEED;
+    // A hair of headroom over the nominal chase speed: the engine integrates
+    // movement per frame, so a sample that straddles a frame boundary can read
+    // marginally fast without anything being wrong.
+    vel.push(speed > maxSpeed * 1.5 ? null : { vx, vy });
+  }
+  memory.enemyMotion = { atMs: simTimeMs, pos, vel };
+}
+
+/**
+ * Where `target` will be when this decision's shot actually resolves.
+ *
+ * **Why a lead is needed at all.** One `simulate()` tick runs `updateEnemyAi`
+ * before `updateFiring`, and the bot reads enemy positions only once a pump has
+ * finished — so between the snapshot `decide()` aimed at and the frame that
+ * resolves the shot, every enemy has moved by exactly one engine frame. It is
+ * one frame, not a jittery fraction of one: `leadMs` is the caller's own
+ * sub-step (`Bot#recordStepMs`, 50ms in `run-balancing-telemetry.mjs`, ~16.7ms
+ * under `generate-default-highscore.mjs`), which is the `dt` that frame carries.
+ *
+ * **Why it matters most for the fastest archetype.** Displacement and sprite
+ * half-width are both world quantities divided by the same distance when
+ * projected, so their ratio survives projection and reduces to
+ * `speedMultiplier / spriteScale` — 4.0 for an Edge Case against 1.0 for a
+ * normal and 0.67 for an Elite. An Edge Case therefore covers up to 97% of its
+ * own sprite half-width in a single 50ms window, which is why its hit rate sat
+ * at a flat 48-51% in *every* distance bucket: a range-independent miss, which
+ * an aim-precision problem cannot produce.
+ *
+ * Returns `target` itself when there is no usable velocity, so the caller needs
+ * no branch of its own.
+ */
+export function leadTarget(target, memory, leadMs, tuning = DEFAULT_TUNING) {
+  if (!tuning.BOT_AIM_LEAD || !target || target.i === undefined) return target;
+  const v = memory?.enemyMotion?.vel?.[target.i];
+  if (!v) return target;
+  const lead = leadMs / 1000;
+  return { ...target, x: target.x + v.vx * lead, y: target.y + v.vy * lead };
+}
+
 export function expectedDamagePerShot(weaponIndex, dist, tuning = DEFAULT_TUNING, target = null) {
   const w = WEAPON_STATS[weaponIndex];
   if (!w) return 0;
@@ -1148,8 +1296,7 @@ export function expectedDamagePerShot(weaponIndex, dist, tuning = DEFAULT_TUNING
   // `size = |SCENE_HEIGHT / depth| * ENEMY_SIZE * scale`, so half-width in
   // pixels is that over two. Elites project larger and Edge Cases smaller,
   // which is a real part of how hard each is to hit.
-  const scale = target?.elite ? tuning.ELITE_SPRITE_SCALE : target?.edgeCase ? tuning.EDGE_CASE_SPRITE_SCALE : 1;
-  const halfWidthPx = (tuning.SCENE_HEIGHT_PX * tuning.ENEMY_SPRITE_SIZE * scale) / (2 * d);
+  const halfWidthPx = (tuning.SCENE_HEIGHT_PX * tuning.ENEMY_SPRITE_SIZE * spriteScaleFor(target, tuning)) / (2 * d);
 
   // Cone of Fire, exactly as the engine computes it: deviation grows with
   // `(range / FOG_FAR)³` up to the weapon's own maximum. Cubic, so medium
@@ -1502,9 +1649,16 @@ export function decide(world, memory, config) {
   // diagnosis chasing the wrong call path entirely.
   const navDelta = navTarget ? angleDelta(Math.atan2(player.dirY, player.dirX), Math.atan2(navTarget.y - player.y, navTarget.x - player.x)) : null;
   const navDist = navTarget ? Math.hypot(navTarget.x - player.x, navTarget.y - player.y) : null;
-  const { profile, tuning, stepMs, ignoreThreats, simTimeMs, lastFireSimTimeMs, minDecisionMs = 0, logger, selfId = null } = config;
+  const { profile, tuning, stepMs, ignoreThreats, simTimeMs, lastFireSimTimeMs, minDecisionMs = 0, logger, selfId = null, aimLeadMs = stepMs } = config;
   const burstCtx = { tuning, stepMs, memory };
   const moveCtx = { tuning, stepMs };
+
+  // Before any early return below: the velocity estimate is built from
+  // *consecutive* samples, so it has to be fed on every decision, including the
+  // ones that never reach the combat branch. Skipping the hazard/retreat
+  // decisions would leave a gap exactly when the bot is about to need the aim —
+  // those branches end with a threat still on the bot.
+  trackEnemyMotion(enemies, memory, simTimeMs, tuning);
 
   // Currently standing on a damaging ground tile: don't stop to fight —
   // just keep marching toward wherever the bot was already headed.
@@ -1777,6 +1931,13 @@ export function decide(world, memory, config) {
     // else: aggroed without this specific enemy ever having been seen yet
     // — no memory to fall back on, aim at the live position.
   }
+  // Aim where the target will be when the shot resolves, not where it was when
+  // this decision read the world — see `leadTarget`. Applied only to a live,
+  // visible threat: the occluded fallback above is a *frozen* position by
+  // design, and extrapolating forward from a stale point would walk the aim
+  // away from the last place the enemy was actually seen, which is the one
+  // thing that branch knows to be true.
+  if (threatAim === threat) threatAim = leadTarget(threatAim, memory, aimLeadMs, tuning);
   const aimTarget = threatAim ?? mineTarget;
   // Read the stall counter as last decision left it (updated at the bottom of
   // this function, after `fire` is known).
@@ -1915,8 +2076,26 @@ export function decide(world, memory, config) {
       // unless realignment has stalled long enough to just take the shot.
       const mineRealignStalled = Boolean(memory) && memory.shootTicks > tuning.MINE_REALIGN_STALL_TICKS;
       const mineNotReady = !threat && !player.wouldMineHit && !mineRealignStalled;
-      if (Math.abs(delta) > profile.fireAngleEps || !hasLos || mineNotReady) {
-        if (Math.abs(delta) > (mineNotReady ? tuning.MINE_REALIGN_EPS : profile.fireAngleEps)) {
+      // The heading tolerance this shot actually has to meet. `fireAngleEps` is
+      // a profile constant while the angle a target subtends falls off as
+      // `1/dist`, so past the range where they cross (~5.8 tiles for Gamer
+      // against a normal enemy) the constant alone permits shots the geometry
+      // cannot land — see `angularHalfWidth`. Taking the tighter of the two
+      // keeps the profile's skill ladder intact up close, where it is the
+      // binding term, and lets geometry bind beyond it.
+      //
+      // Enemies only: a mine has its own gate (`player.wouldMineHit`), and the
+      // sprite math here does not describe one.
+      const fireEps =
+        threat && tuning.BOT_ANGULAR_FIRE_GATE
+          ? Math.max(tuning.MIN_FIRE_ANGLE_EPS, Math.min(profile.fireAngleEps, angularHalfWidth(threat.dist, threat, tuning)))
+          : profile.fireAngleEps;
+      if (Math.abs(delta) > fireEps || !hasLos || mineNotReady) {
+        // Realign against the *same* tolerance the shot is gated on. Tightening
+        // only the gate would leave the bot inside `fireAngleEps` but outside
+        // `fireEps` with no turn key held — aligned enough to stop correcting,
+        // not aligned enough to ever fire.
+        if (Math.abs(delta) > (mineNotReady ? tuning.MINE_REALIGN_EPS : fireEps)) {
           moveKeys.add(delta > 0 ? "KeyE" : "KeyQ");
           turnBurst = turnBurstMs(delta, profile.rotSpeedMultiplier, currentAngle, burstCtx);
           turnHoldMs = turnBurst;
