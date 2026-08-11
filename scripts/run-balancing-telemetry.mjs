@@ -241,19 +241,68 @@ const DENSITY_OUTLIER_MULTIPLIER = 1.5;
 const NORMAL_TTK_HIGH_SEC = 8;
 const CROSS_DIFFICULTY_FLAT_THRESHOLD = 0.15; // relative change below this = "barely scales"
 
-/** Phase 0: parse + generate + route-plan every campaign level in Node,
- * before any browser launches. Exported so other scripts (e.g. the headed
- * watch-session driver) can reuse the exact same level plans instead of
- * duplicating this. */
+/**
+ * The campaign's levels, in the order the *game* will actually play them —
+ * asked of the browser rather than derived a second time here.
+ *
+ * **Why this is a browser round-trip and not a `readdirSync`.** It used to be
+ * the latter, sorted by filename, and the game does not play in that order.
+ * The browser starts at `findEntrypoint`'s pick — the cheapest file containing
+ * a `main`/`Main`, falling back to cheapest-overall — and then walks *forward*
+ * in tree order (`advanceToNextLevel` -> `findNextParsableFile`), so every file
+ * alphabetically before the entrypoint is never played at all. Measured on
+ * curl: this planner's slot 1 was `01_projects_OS400_make-docs.sh` while the
+ * engine loaded `03_docs_examples_pop3-stat.c` — 205 differing tiles, a bot
+ * driving a route for a map it was not standing on, and 58 runs lost before
+ * `planEngineMatch` existed to notice.
+ *
+ * The demo campaign never showed it, because `main.c` happens to sort first;
+ * every staged real-world campaign is where it bites.
+ *
+ * `planEngineMatch` still runs at level start and is still worth keeping — but
+ * it detects a disagreement, and this removes the possibility of one, which is
+ * the difference between a gate and a fix.
+ *
+ * Deliberately throws rather than falling back to filename order. A fallback
+ * here would silently reinstate exactly the bug this exists to delete, and a
+ * run planned against the wrong maps is not a degraded run, it is a void one.
+ */
+export async function readCampaignLevelOrder() {
+  const server = await ensureDevServer({ url: CONFIGURED_DEV_URL, port: OWN_DEV_PORT, label: "plan-order" });
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.goto(`${server.url}/?testHooks=1`);
+    await page.click("#tab-demo");
+    await page.click("#launch-demo-campaign");
+    await page.waitForFunction(() => Boolean(window.__codeensteinCampaignTestHooks), undefined, { timeout: 30_000 });
+    await page.waitForSelector(".canvas-area:not([hidden])", { timeout: 30_000 });
+    const paths = await page.evaluate(() => window.__codeensteinCampaignTestHooks.getLevelOrder());
+    if (!Array.isArray(paths) || paths.length === 0) {
+      throw new Error("the campaign level-order hook returned nothing — cannot plan routes for a campaign the game has not agreed to play");
+    }
+    // The hook reports workspace-tree paths (`demo-campaign/main.c`); this
+    // module works in bare filenames and rebuilds the same `filePath` itself.
+    return paths.map((p) => p.slice(p.lastIndexOf("/") + 1));
+  } finally {
+    await browser.close();
+    server.stop();
+  }
+}
+
+/** Phase 0: parse + generate + route-plan every campaign level in Node.
+ * Exported so other scripts (e.g. the headed watch-session driver) can reuse
+ * the exact same level plans instead of duplicating this.
+ *
+ * No longer "before any browser launches" — `readCampaignLevelOrder` needs one
+ * briefly to ask which levels the game will actually play, and it is stopped
+ * again before the caller starts its own. Planning itself is still pure Node. */
 export async function planLevels() {
   console.log("Loading engine modules + planning routes in Node...");
   const { parseFile, extensionOf, MapGenerator, UNLOCKABLE_WEAPONS } = await loadEngineModules();
   const generator = new MapGenerator();
 
-  const filenames = fs
-    .readdirSync(CAMPAIGN_DIR)
-    .filter((f) => fs.statSync(path.join(CAMPAIGN_DIR, f)).isFile())
-    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  const filenames = await readCampaignLevelOrder();
   const limitedFilenames = Number.isFinite(LEVEL_LIMIT) ? filenames.slice(0, LEVEL_LIMIT) : filenames;
 
   const levelPlans = [];
