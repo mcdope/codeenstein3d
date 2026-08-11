@@ -106,12 +106,66 @@ describe("placeTeleporters", () => {
   });
 
   it("handles multiple goto links, producing 2 teleporters each", () => {
-    const g = grid(20);
-    const room = makeRoom(1, 1, 15, 15, entity({ startLine: 1, endLine: 40 }));
-    carveRoom(g, room);
-    const links = [link({ gotoLine: 3, labelLine: 8 }), link({ label: "again", gotoLine: 12, labelLine: 20 })];
-    const teleporters = placeTeleporters([room], g, [], links, mulberry32(2));
+    // Two rooms, and every link crosses between them. Cross-room pairs are the
+    // ones that actually shortcut a level and are never capped — this used to
+    // use one room for both links, which now exercises the in-room cap instead
+    // (see the test below) rather than the "one pair per link" rule it means.
+    const g = grid(30);
+    const a = makeRoom(1, 1, 10, 10, entity({ startLine: 1, endLine: 10 }));
+    const b = makeRoom(15, 1, 10, 10, entity({ name: "g", startLine: 20, endLine: 30 }));
+    carveRoom(g, a);
+    carveRoom(g, b);
+    const links = [link({ gotoLine: 3, labelLine: 22 }), link({ label: "again", gotoLine: 5, labelLine: 25 })];
+    const teleporters = placeTeleporters([a, b], g, [], links, mulberry32(2));
     expect(teleporters).toHaveLength(4);
+  });
+
+  it("caps pairs whose two pads land in the same room, and never caps cross-room ones", () => {
+    // The complaint this implements: a `goto` whose label is in the same
+    // function (C's `goto out;` error handling) warps you a few tiles across
+    // the room you are already in, which reads as disorienting rather than as a
+    // shortcut. Measured across the corpus it is 68-100% of every pair
+    // generated, and one vim level produced 39 of them. One is kept on purpose
+    // — the mechanic is a joke about `goto` being evil and the joke should still
+    // land occasionally.
+    const g = grid(30);
+    const a = makeRoom(1, 1, 12, 12, entity({ startLine: 1, endLine: 10 }));
+    const b = makeRoom(16, 1, 12, 12, entity({ name: "g", startLine: 20, endLine: 30 }));
+    carveRoom(g, a);
+    carveRoom(g, b);
+    const inRoom = [
+      link({ gotoLine: 2, labelLine: 4 }),
+      link({ label: "two", gotoLine: 5, labelLine: 7 }),
+      link({ label: "three", gotoLine: 6, labelLine: 8 }),
+    ];
+    expect(placeTeleporters([a, b], g, [], inRoom, mulberry32(3))).toHaveLength(2);
+
+    const g2 = grid(30);
+    const a2 = makeRoom(1, 1, 12, 12, entity({ startLine: 1, endLine: 10 }));
+    const b2 = makeRoom(16, 1, 12, 12, entity({ name: "g", startLine: 20, endLine: 30 }));
+    carveRoom(g2, a2);
+    carveRoom(g2, b2);
+    const crossRoom = [
+      link({ gotoLine: 2, labelLine: 22 }),
+      link({ label: "two", gotoLine: 5, labelLine: 25 }),
+      link({ label: "three", gotoLine: 6, labelLine: 27 }),
+    ];
+    expect(placeTeleporters([a2, b2], g2, [], crossRoom, mulberry32(3))).toHaveLength(6);
+  });
+
+  it("does not spend the cap on an in-room link that could not be placed", () => {
+    // A link whose second pad has nowhere to go costs nothing and must not use
+    // up the single in-room slot — otherwise a level's one allowed joke is
+    // silently eaten by a link that placed nothing at all.
+    const g = grid(20);
+    const tiny = makeRoom(1, 1, 1, 1, entity({ startLine: 1, endLine: 10 }));
+    const room = makeRoom(5, 5, 10, 10, entity({ name: "g", startLine: 20, endLine: 30 }));
+    carveRoom(g, tiny);
+    carveRoom(g, room);
+    const links = [link({ gotoLine: 2, labelLine: 4 }), link({ label: "two", gotoLine: 22, labelLine: 24 })];
+    // The 1x1 room cannot fit two pads, so the first link places nothing; the
+    // second (in the roomy one) still gets its pair.
+    expect(placeTeleporters([tiny, room], g, [], links, mulberry32(4))).toHaveLength(2);
   });
 
   it("is deterministic for the same rng seed", () => {
