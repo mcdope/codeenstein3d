@@ -2017,6 +2017,34 @@ multiplayerLobbyDialog.addEventListener("close", () => {
 // constructed", and anything installed at module-import time would make that
 // check trivially true before any engine exists.
 if (isTestHooksActive()) {
+  // A *fourth* separate global, for the same module-import-time reason the
+  // other three are separate (see the comment above).
+  //
+  // **Why this exists at all.** Three different things used to decide which
+  // source file is "level 1": this module, `scripts/lib/levelSolver.mjs`, and
+  // `planLevels` in `run-balancing-telemetry.mjs` — which enumerated in plain
+  // filename order and handed the bot a route for slot 1. The browser does not
+  // play slot 1. It starts at `findEntrypoint`'s pick and then walks *forward*
+  // in tree order (`advanceToNextLevel` -> `findNextParsableFile`), so every
+  // file before the entrypoint is never played at all. On curl the planner's
+  // slot 1 was `01_projects_OS400_make-docs.sh` while the engine loaded
+  // `03_docs_examples_pop3-stat.c`: 205 differing tiles, and a bot driving a
+  // route for a map it was not standing on. That cost 58 runs before
+  // `planEngineMatch` was built to *detect* it.
+  //
+  // This hook removes the guess instead of checking it. The planner asks which
+  // levels the game will play, in order, rather than deriving it a second time
+  // — so the two cannot disagree, because there is only one answer.
+  //
+  // Composed from the real `findEntrypoint` and the real `flattenParsableFiles`
+  // rather than reimplementing either; the only logic here is the slice, which
+  // mirrors `autoLaunchInitialLevel` starting at the entrypoint and
+  // `advanceToNextLevel` walking forward from it. `findIndex` returning -1
+  // clamps to 0, which is deliberately the same "first parsable file in tree
+  // order" fallback `autoLaunchInitialLevel` uses when detection finds nothing.
+  (window as unknown as { __codeensteinCampaignTestHooks?: unknown }).__codeensteinCampaignTestHooks = {
+    getLevelOrder: (): Promise<string[]> => campaignLevelOrder(workspaceTree),
+  };
   (window as unknown as { __codeensteinReplayTestHooks?: unknown }).__codeensteinReplayTestHooks = {
     /** A structured-clone-safe snapshot — `probe` is a live closure and can't
      * cross the Playwright boundary, so it's called here rather than
@@ -3225,6 +3253,48 @@ function withTimeout<T>(promise: Promise<T> | null, ms: number): Promise<T | und
       /* v8 ignore stop */
     );
   });
+}
+
+/**
+ * Every level this workspace will play, in order: the entrypoint first, then
+ * each parsable file after it in tree order — exactly what
+ * `autoLaunchInitialLevel` and repeated `advanceToNextLevel` calls produce,
+ * expressed once so a caller can have the whole sequence up front.
+ *
+ * Files *before* the entrypoint are deliberately absent, because the game
+ * never reaches them: `advanceToNextLevel` only ever walks forward.
+ *
+ * Exists for `scripts/run-balancing-telemetry.mjs`'s `readCampaignLevelOrder`,
+ * which used to derive this itself from a sorted `readdirSync` and get it wrong
+ * for any campaign whose entrypoint is not the alphabetically first file —
+ * planning routes for maps the bot would never stand on. Exported (and reached
+ * in the browser through `__codeensteinCampaignTestHooks`) so there is one
+ * answer to "which file is level 1" rather than three.
+ *
+ * A `findIndex` miss clamps to 0, matching `autoLaunchInitialLevel`'s own
+ * "first parsable file in tree order" fallback for an undetectable entrypoint.
+ *
+ * Takes `null` (no workspace loaded yet) rather than making its one caller
+ * branch: the hook that exposes this is installed at module-import time, long
+ * before any workspace exists, so "not loaded" is an ordinary state here and
+ * an empty campaign is the honest answer to it.
+ */
+export async function campaignLevelOrder(tree: TreeNode | null): Promise<string[]> {
+  if (!tree) return [];
+  const files = await flattenParsableFiles(tree);
+  const entry = await findEntrypoint(tree);
+  // `findEntrypoint` returning null with parsable files present is reachable
+  // only for a *remote, non-demo* workspace, where it bails before scoring
+  // (see its doc comment) — every local workspace with anything parsable in it
+  // gets an answer, because `partitionEntrypointCandidates` puts every file in
+  // primary or secondary and the scan's last resort is `firstParsed`. No unit
+  // test builds a remote tree, and the planner only ever asks about the
+  // bundled demo campaign, which is exempt from that bail. Index 0 is the
+  // right answer there regardless: it is `autoLaunchInitialLevel`'s own
+  // "first parsable file in tree order" fallback.
+  /* v8 ignore next -- @preserve */
+  const start = entry ? files.findIndex((f) => f.path === entry.file.path) : 0;
+  return files.slice(Math.max(0, start)).map((f) => f.path);
 }
 
 /** The parsable file immediately after `afterPath` in tree order, or `null`

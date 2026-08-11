@@ -208,6 +208,7 @@ beforeEach(() => {
   // `__codeensteinTestHooks` above — `main.ts`'s own multiplayer test hooks
   // (see its doc comment) live on this separate global.
   delete (window as unknown as { __codeensteinMultiplayerTestHooks?: unknown }).__codeensteinMultiplayerTestHooks;
+  delete (window as unknown as { __codeensteinCampaignTestHooks?: unknown }).__codeensteinCampaignTestHooks;
 });
 
 afterEach(async () => {
@@ -779,6 +780,69 @@ const VALID_HELPER_C = "int add(int a, int b) {\n  return a + b;\n}\n";
 // so the "best overall" scan-fallback tests can tell them apart.
 const VALID_COMPLEX_C =
   "int classify(int x) {\n  if (x < 0) return -1;\n  if (x == 0) return 0;\n  if (x > 100) return 2;\n  return 1;\n}\n";
+
+describe("main.ts — campaignLevelOrder", () => {
+  it("starts at the entrypoint and drops every file before it", async () => {
+    // The regression the demo campaign cannot show, because its `main.c`
+    // happens to sort first. On curl it did: the planner's slot 1 was
+    // `01_projects_OS400_make-docs.sh` while the engine loaded a later `.c`
+    // with a real `main`, so the bot drove a route for a map it was not
+    // standing on and 58 runs were lost to it.
+    const { campaignLevelOrder } = await importMain();
+    const tree = dirNode("root", [
+      fileNode("root/aaa_first.c", VALID_HELPER_C),
+      fileNode("root/bbb_entry.c", VALID_MAIN_C),
+      fileNode("root/ccc_later.c", VALID_HELPER_C),
+    ]);
+    expect(await campaignLevelOrder(tree)).toEqual(["root/bbb_entry.c", "root/ccc_later.c"]);
+  });
+
+  it("is reachable through the campaign test-hook global the planner reads, and only under ?testHooks=1", async () => {
+    // `scripts/run-balancing-telemetry.mjs` gets the level order through this
+    // global and nothing else, so the wiring is worth pinning: a rename here
+    // would not fail a single other test, it would just make every staged
+    // campaign plan the wrong maps again.
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      await importMain();
+      const hooks = (window as unknown as { __codeensteinCampaignTestHooks?: { getLevelOrder: () => Promise<string[]> } })
+        .__codeensteinCampaignTestHooks;
+      expect(hooks).toBeDefined();
+      // No workspace loaded in this context — the empty campaign, through the
+      // real hook rather than the exported function directly.
+      expect(await hooks!.getLevelOrder()).toEqual([]);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
+  it("reports an empty campaign before a workspace is loaded", async () => {
+    // The hook exposing this is installed at module-import time, so it is
+    // reachable before any workspace exists.
+    const { campaignLevelOrder } = await importMain();
+    expect(await campaignLevelOrder(null)).toEqual([]);
+  });
+
+  it("returns every parsable file when the entrypoint is already first", async () => {
+    const { campaignLevelOrder } = await importMain();
+    const tree = dirNode("root", [
+      fileNode("root/main.c", VALID_MAIN_C),
+      fileNode("root/zzz_later.c", VALID_HELPER_C),
+    ]);
+    expect(await campaignLevelOrder(tree)).toEqual(["root/main.c", "root/zzz_later.c"]);
+  });
+
+  it("falls back to the whole tree order when no entrypoint is detectable", async () => {
+    // Mirrors `autoLaunchInitialLevel`'s own fallback rather than returning
+    // nothing — a campaign with no detectable entrypoint still plays, starting
+    // at the first parsable file.
+    const { campaignLevelOrder } = await importMain();
+    const tree = dirNode("root", [fileNode("root/a.txt", "not source"), fileNode("root/b.c", VALID_HELPER_C)]);
+    const order = await campaignLevelOrder(tree);
+    expect(order[0]).toBe("root/b.c");
+  });
+});
 
 describe("main.ts — findEntrypoint", () => {
   it("matches a conventional entrypoint filename in real source", async () => {
