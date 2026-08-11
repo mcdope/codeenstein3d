@@ -311,19 +311,38 @@ export const DEFAULT_TUNING = {
   // 2-4 (z=-2.8) and 3.9pp at 4-6 (z=-2.1), while normals moved by nothing
   // coherent. Every sign negative, and worse the closer the target.
   //
-  // Why it fails on exactly the archetype it was built for: a lead's angular
-  // size and a sprite's angular size both carry the same `1/dist`, so their
-  // ratio is `speedMultiplier / spriteScale` — 4.0 for an Edge Case against 1.0
-  // for a normal. An Edge Case therefore eats four times the penalty when the
-  // predicted direction is wrong, and it is wrong often: `updateEnemyAi`
-  // returns early inside `ATTACK_RADIUS` (enemyAi.ts:~182), so an enemy that
-  // was closing at full speed last window stops dead this one to bite, and the
-  // lead walks the aim off a stationary target.
+  // Why the penalty lands on that archetype: a lead's angular size and a
+  // sprite's angular size both carry the same `1/dist`, so their ratio is
+  // `speedMultiplier / spriteScale` — 4.0 for an Edge Case against 1.0 for a
+  // normal. An Edge Case eats four times the penalty whenever the predicted
+  // direction is wrong.
   //
-  // A future attempt needs the enemy's *current* velocity rather than a
-  // differenced estimate of its last one — `getEnemies()` could carry it, since
-  // the engine already knows it. Left switched off rather than deleted so that
-  // experiment has this one to compare against.
+  // **What makes it wrong is NOT established, and two answers written here on
+  // the day have since been withdrawn (2026-08-11, same day).** Both were
+  // plausible and both are measurably false; they are kept as text because the
+  // next reader will otherwise re-derive them:
+  //
+  //  - *"The enemy stops dead inside `ATTACK_RADIUS` to bite, so the lead walks
+  //    off a stationary target."* The stop is real (`updateEnemyAi` returns
+  //    early, enemyAi.ts:~182) but `ATTACK_RADIUS` is **0.5 tiles**, and only
+  //    7.1% of the 0-2 bucket's shots — 1.41% of all 71,259 — were fired inside
+  //    it. Far too rare to move that bucket by 8.9pp.
+  //  - *"Use the engine's real velocity via `getEnemies()` instead of a
+  //    differenced estimate."* These are the same number.
+  //    `run-balancing-telemetry.mjs` never passes `recordStepMs`, so
+  //    `subStepMs == stepMs` and one pump is exactly one 50ms engine frame —
+  //    the difference between consecutive snapshots IS that frame's
+  //    displacement. The experiment would measure nothing.
+  //
+  // What survives: the regression is real, replicated across both arm pairs,
+  // Edge-Case-specific, and decays with range (-8.9/-4.4/-3.9/-1.5pp across
+  // 0-2/2-4/4-6/6-8 tiles). A linear extrapolation of a *curving* path is the
+  // remaining hypothesis — the enemy re-steers at the player every frame, so
+  // the bearing rate goes as `v_tangential / dist` and a straight-line
+  // prediction should err most close in, which is the observed shape. It is a
+  // hypothesis, not a finding. **Measure the predictor's own error against the
+  // archived captures before building a third fix** — the data is on disk and
+  // no new capture is needed.
   BOT_AIM_LEAD: false,
   // Whether the fire gate is the tighter of `profile.fireAngleEps` and the
   // angle the target actually subtends, instead of the profile constant alone.
