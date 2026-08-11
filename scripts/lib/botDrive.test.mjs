@@ -260,13 +260,41 @@ describe("driveToExit", () => {
     expect(result.reason).toBe("teleported");
   });
 
-  it("still reports a teleport as a failure when the exit was not accepted", async () => {
+  it("still fails when a teleport keeps happening and the exit is never accepted", async () => {
+    // Unchanged intent, sharper assertion: a pad the bot cannot get past must
+    // terminate rather than loop, and must not be mistaken for arrival.
     const bot = new FakeBot();
     bot.startLevel(openMap());
     bot.driveToward = async () => ({ state: "playing", reason: "teleported" });
     bot.exitAccepted = async () => false;
     const result = await bot.driveToExit({ x: 5.5, y: 5.5 }, 80);
     expect(result.reason).not.toBe("arrived");
+    expect(result.reason).toBe("stuck");
+  });
+
+  it("re-plans past a teleporter pad instead of abandoning the exit", async () => {
+    // The regression this exists for. A pad on the route to the exit warped
+    // the host mid-drive; `driveToExit` reported `teleported` and stopped, so
+    // the exit was never touched and the countdown never started —
+    // `verify (multiplayer-transition)` failed 2 of 2 CI runs that way.
+    //
+    // A pad is distinguishable from a real transition, which is the whole
+    // point: `exitAccepted()` is false for a pad (no countdown, exit tile
+    // unchanged) and true for a transition. False means walk back and carry
+    // on, which is what a player would do.
+    const bot = new FakeBot();
+    bot.startLevel(openMap());
+    let drives = 0;
+    bot.driveToward = async () => {
+      drives += 1;
+      return drives === 1 ? { state: "playing", reason: "teleported" } : { state: "playing", reason: "arrived" };
+    };
+    // False while the pad warp is being classified, true once the bot has
+    // actually reached and taken the exit.
+    bot.exitAccepted = async () => drives > 1;
+    const result = await bot.driveToExit({ x: 5.5, y: 5.5 }, 80);
+    expect(result.reason).toBe("arrived");
+    expect(drives).toBeGreaterThan(1);
   });
 
   it("fights a blocker that is already adjacent, where there is no path to walk", async () => {
