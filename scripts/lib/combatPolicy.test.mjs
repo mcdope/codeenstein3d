@@ -60,6 +60,9 @@ import {
   visibleMineNear,
   movementKeysFor,
   movementVectorFor,
+  angularHalfWidth,
+  trackEnemyMotion,
+  leadTarget,
 } from "./combatPolicy.mjs";
 
 const SIZE = 20;
@@ -1572,5 +1575,168 @@ describe("turnSplitIntent", () => {
       // A/B lost when it removed the widening instead.
       expect(intent.holds.get("KeyA")).toBe(50);
     }
+  });
+});
+
+describe("aim geometry", () => {
+  it("angularHalfWidth falls off as 1/dist and crosses fireAngleEps where the report says it does", () => {
+    // The crossing is the whole reason the fixed gate is wrong: inside it the
+    // profile constant binds, outside it the geometry does. `report-aim-error`
+    // put Gamer's crossing against a normal enemy at ~5.8 tiles.
+    const eps = PROFILES.Gamer.fireAngleEps;
+    expect(angularHalfWidth(5.7, makeEnemy())).toBeGreaterThan(eps);
+    expect(angularHalfWidth(5.9, makeEnemy())).toBeLessThan(eps);
+    // 1/dist, so doubling the range halves the angle (to within atan's own
+    // curvature, which is negligible at these magnitudes).
+    expect(angularHalfWidth(8, makeEnemy())).toBeCloseTo(angularHalfWidth(4, makeEnemy()) / 2, 3);
+  });
+
+  it("angularHalfWidth scales with the archetype's sprite", () => {
+    const at = (over) => angularHalfWidth(6, makeEnemy(over));
+    expect(at({ elite: true })).toBeGreaterThan(at({}));
+    expect(at({ edgeCase: true })).toBeLessThan(at({}));
+    // The Edge Case is the narrowest thing the bot shoots at, and even at the
+    // edge of `engageRadius` it stays clear of the gate's own floor — the
+    // reason `MIN_FIRE_ANGLE_EPS` is insurance rather than a live term.
+    expect(angularHalfWidth(PROFILES.Gamer.engageRadius, makeEnemy({ edgeCase: true }))).toBeGreaterThan(DEFAULT_TUNING.MIN_FIRE_ANGLE_EPS);
+  });
+
+  it("trackEnemyMotion needs two samples before it reports a velocity", () => {
+    const memory = freshMemory();
+    trackEnemyMotion([makeEnemy({ x: 10 })], memory, 0);
+    expect(memory.enemyMotion.vel[0]).toBeNull();
+    trackEnemyMotion([makeEnemy({ x: 10.05 })], memory, 50);
+    // 0.05 tiles in 50ms = 1 tile/sec.
+    expect(memory.enemyMotion.vel[0].vx).toBeCloseTo(1, 6);
+    expect(memory.enemyMotion.vel[0].vy).toBeCloseTo(0, 6);
+  });
+
+  it("trackEnemyMotion refuses a velocity it cannot vouch for", () => {
+    // A teleport, a slot reused by a respawn, or simply a long gap between
+    // decisions would each otherwise yield a huge bogus velocity — and an aim
+    // thrown metres off the target is strictly worse than no lead at all.
+    const teleported = freshMemory();
+    trackEnemyMotion([makeEnemy({ x: 10 })], teleported, 0);
+    trackEnemyMotion([makeEnemy({ x: 18 })], teleported, 50);
+    expect(teleported.enemyMotion.vel[0]).toBeNull();
+
+    const stale = freshMemory();
+    trackEnemyMotion([makeEnemy({ x: 10 })], stale, 0);
+    trackEnemyMotion([makeEnemy({ x: 10.05 })], stale, DEFAULT_TUNING.AIM_TRACK_MAX_GAP_MS + 50);
+    expect(stale.enemyMotion.vel[0]).toBeNull();
+
+    const dead = freshMemory();
+    trackEnemyMotion([makeEnemy({ x: 10 })], dead, 0);
+    trackEnemyMotion([makeEnemy({ x: 10.05, alive: false })], dead, 50);
+    expect(dead.enemyMotion.vel[0]).toBeNull();
+  });
+
+  it("trackEnemyMotion allows an Edge Case its own higher top speed", () => {
+    // 3.74 tiles/sec against a normal's 1.7 — a displacement that is honest
+    // for one archetype and impossible for the other.
+    const perWindow = (DEFAULT_TUNING.EDGE_CASE_CHASE_SPEED * 50) / 1000;
+    const fast = freshMemory();
+    trackEnemyMotion([makeEnemy({ x: 10, edgeCase: true })], fast, 0);
+    trackEnemyMotion([makeEnemy({ x: 10 + perWindow, edgeCase: true })], fast, 50);
+    expect(fast.enemyMotion.vel[0].vx).toBeCloseTo(DEFAULT_TUNING.EDGE_CASE_CHASE_SPEED, 6);
+
+    const slow = freshMemory();
+    trackEnemyMotion([makeEnemy({ x: 10 })], slow, 0);
+    trackEnemyMotion([makeEnemy({ x: 10 + perWindow })], slow, 50);
+    expect(slow.enemyMotion.vel[0]).toBeNull();
+  });
+
+  it("leadTarget extrapolates by exactly one frame, and returns the target untouched without one", () => {
+    const memory = freshMemory();
+    trackEnemyMotion([makeEnemy({ x: 10, y: 10 })], memory, 0);
+    trackEnemyMotion([makeEnemy({ x: 10, y: 10.1 })], memory, 50); // 2 tiles/sec on +y
+    const target = { i: 0, x: 10, y: 10.1 };
+    expect(leadTarget(target, memory, 50).y).toBeCloseTo(10.2, 6);
+    // Half the frame, half the lead — the arithmetic is linear in `leadMs`,
+    // which is what lets `Bot#aimLeadMs` describe two very different harnesses.
+    expect(leadTarget(target, memory, 25).y).toBeCloseTo(10.15, 6);
+    // No index (a mine), no memory, and the A/B arm all pass the target through.
+    expect(leadTarget({ x: 3, y: 4 }, memory, 50)).toEqual({ x: 3, y: 4 });
+    expect(leadTarget(target, null, 50)).toBe(target);
+    expect(leadTarget(target, memory, 50, { ...DEFAULT_TUNING, BOT_AIM_LEAD: false })).toBe(target);
+  });
+
+  it("leadTarget does not mutate the target it leads", () => {
+    // `decide` hands the result straight into the aim math while `threat` stays
+    // live for distance and weapon choice — a shared object here would move the
+    // target under everything else that reads it.
+    const memory = freshMemory();
+    trackEnemyMotion([makeEnemy({ x: 10, y: 10 })], memory, 0);
+    trackEnemyMotion([makeEnemy({ x: 10.1, y: 10 })], memory, 50);
+    const target = { i: 0, x: 10.1, y: 10 };
+    const led = leadTarget(target, memory, 50);
+    expect(target.x).toBe(10.1);
+    expect(led).not.toBe(target);
+  });
+});
+
+describe("the fire gate", () => {
+  /** Drive two decisions so the motion tracker has the pair it needs, and
+   * return the second one's intent. */
+  function decideTwice({ enemy, player = makePlayer(), tuning = DEFAULT_TUNING, config = {} }) {
+    const memory = freshMemory();
+    const world = (e) => ({ player, enemies: [e], mines: [], navTarget: null, map: makeMap(), projectiles: [] });
+    decide(world(enemy.at(0)), memory, makeConfig({ tuning, simTimeMs: 0, ...config }));
+    return decide(world(enemy.at(1)), memory, makeConfig({ tuning, simTimeMs: 50, ...config }));
+  }
+  /** An enemy standing still at `dist` tiles, `offsetRad` off the player's heading. */
+  const still = (dist, offsetRad = 0, over = {}) => {
+    const e = makeEnemy({ x: 10.5 + dist * Math.cos(offsetRad), y: 10.5 + dist * Math.sin(offsetRad), ...over });
+    return { at: () => e };
+  };
+
+  it("refuses a shot the geometry cannot land, and keeps turning until it can", () => {
+    // 0.045rad off at 8 tiles: inside Gamer's 0.05 constant, outside the
+    // 0.036rad the target actually subtends there.
+    const far = decideTwice({ enemy: still(8, 0.045) });
+    expect(far.fire).toBe(false);
+    // Still correcting — the gate and the realign threshold have to move
+    // together, or the bot settles into an angle it will never fire from.
+    expect([...far.holds.keys()]).toContain("KeyE");
+  });
+
+  it("fires at the same heading error up close, where the profile constant is the binding term", () => {
+    // Same 0.045rad, 2 tiles out: the target subtends 0.14rad, so
+    // `fireAngleEps` is what binds and the skill ladder is untouched.
+    expect(decideTwice({ enemy: still(2, 0.045) }).fire).toBe(true);
+  });
+
+  it("reproduces the old fixed-tolerance behaviour when the switch is off", () => {
+    // The A/B arm. Without it this change could only be compared against a
+    // different commit, which would confound it with the aim lead landing
+    // alongside it.
+    const off = { ...DEFAULT_TUNING, BOT_ANGULAR_FIRE_GATE: false };
+    expect(decideTwice({ enemy: still(8, 0.045), tuning: off }).fire).toBe(true);
+  });
+
+  it("aims at where a crossing target will be, not where it is", () => {
+    // An Edge Case crossing at its own chase speed 4 tiles out, with the bot
+    // already pointed at the position one frame ahead of it. That heading is
+    // 0.047rad off the target's *current* bearing, wider than the 0.040rad it
+    // subtends — so the two arms disagree about the same world: leading, the
+    // bot is on target and shoots; not leading, it reads itself as misaligned
+    // and turns back onto a position the shot will no longer find.
+    const step = (DEFAULT_TUNING.EDGE_CASE_CHASE_SPEED * 50) / 1000;
+    const crossing = { at: (n) => makeEnemy({ x: 14.5, y: 10.5 + n * step, edgeCase: true, hp: 15, maxHp: 15 }) };
+    // The second decision sees the enemy one step along, so the position it
+    // will occupy when that decision's shot resolves is two steps out.
+    const ahead = Math.atan2(2 * step, 4);
+    const aimedAhead = { dirX: Math.cos(ahead), dirY: Math.sin(ahead) };
+
+    const led = decideTwice({ enemy: crossing, player: makePlayer(aimedAhead) });
+    expect(led.fire).toBe(true);
+
+    const stale = decideTwice({
+      enemy: crossing,
+      player: makePlayer(aimedAhead),
+      tuning: { ...DEFAULT_TUNING, BOT_AIM_LEAD: false },
+    });
+    expect(stale.fire).toBe(false);
+    expect([...stale.holds.keys()]).toContain("KeyQ");
   });
 });

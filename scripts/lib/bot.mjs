@@ -662,6 +662,20 @@ export class Bot {
     this.tuning = { ...DEFAULT_TUNING, ...(profile?.tuning ?? {}), ...opts.tuning };
     this.stepMs = opts.stepMs ?? (this.realtime ? this.tuning.WATCH_STEP_MS : this.tuning.VIRTUAL_STEP_MS);
     this.recordStepMs = opts.recordStepMs ?? this.stepMs;
+    // How far ahead `decide()` has to lead a moving target: exactly the `dt`
+    // carried by the engine frame that resolves this decision's shot.
+    // `simulate()` runs `updateEnemyAi` before `updateFiring`, and the enemy
+    // snapshot is read only once a pump has finished, so precisely one frame of
+    // enemy movement falls between the positions aimed at and the shot — see
+    // `combatPolicy.mjs`'s `leadTarget`.
+    //
+    // Under the virtual clock that frame is `dispatchSegment`'s own sub-step,
+    // `min(recordStepMs, phase ms)`, and a phase never exceeds one decision.
+    // Realtime mode has no such control — the page renders on its own rAF
+    // cadence — so it assumes a 60Hz display, deliberately the *smaller*
+    // estimate: under-leading costs part of the correction, over-leading aims
+    // off a target that was never going to move that far.
+    this.aimLeadMs = this.realtime ? 1000 / 60 : Math.min(this.recordStepMs, this.stepMs);
     this.logger = {
       debugNav: opts.logger?.debugNav,
       wpDebug: opts.logger?.wpDebug,
@@ -1586,6 +1600,7 @@ export class Bot {
         simTimeMs: this.simTimeMs,
         lastFireSimTimeMs: this.lastFireSimTimeMs,
         minDecisionMs: this.minDecisionMs,
+        aimLeadMs: this.aimLeadMs,
         logger: this.logger,
         // Only `MultiplayerBot` has a roster id. A bolt is locked to one
         // target for its whole life, so multiplayer must ignore shots aimed at
