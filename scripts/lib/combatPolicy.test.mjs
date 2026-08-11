@@ -1578,6 +1578,12 @@ describe("turnSplitIntent", () => {
   });
 });
 
+// `BOT_AIM_LEAD` ships **off** — the 2026-08-11 A/B measured it as a regression
+// (see its doc comment in `combatPolicy.mjs`). The machinery is kept for a
+// future attempt against the engine's real velocity rather than a differenced
+// estimate, so these pin what it does when switched on.
+const LEAD_ON = { ...DEFAULT_TUNING, BOT_AIM_LEAD: true };
+
 describe("aim geometry", () => {
   it("angularHalfWidth falls off as 1/dist and crosses fireAngleEps where the report says it does", () => {
     // The crossing is the whole reason the fixed gate is wrong: inside it the
@@ -1651,14 +1657,15 @@ describe("aim geometry", () => {
     trackEnemyMotion([makeEnemy({ x: 10, y: 10 })], memory, 0);
     trackEnemyMotion([makeEnemy({ x: 10, y: 10.1 })], memory, 50); // 2 tiles/sec on +y
     const target = { i: 0, x: 10, y: 10.1 };
-    expect(leadTarget(target, memory, 50).y).toBeCloseTo(10.2, 6);
+    expect(leadTarget(target, memory, 50, LEAD_ON).y).toBeCloseTo(10.2, 6);
     // Half the frame, half the lead — the arithmetic is linear in `leadMs`,
     // which is what lets `Bot#aimLeadMs` describe two very different harnesses.
-    expect(leadTarget(target, memory, 25).y).toBeCloseTo(10.15, 6);
-    // No index (a mine), no memory, and the A/B arm all pass the target through.
-    expect(leadTarget({ x: 3, y: 4 }, memory, 50)).toEqual({ x: 3, y: 4 });
-    expect(leadTarget(target, null, 50)).toBe(target);
-    expect(leadTarget(target, memory, 50, { ...DEFAULT_TUNING, BOT_AIM_LEAD: false })).toBe(target);
+    expect(leadTarget(target, memory, 25, LEAD_ON).y).toBeCloseTo(10.15, 6);
+    // No index (a mine), no memory, and the shipped default all pass the
+    // target through untouched.
+    expect(leadTarget({ x: 3, y: 4 }, memory, 50, LEAD_ON)).toEqual({ x: 3, y: 4 });
+    expect(leadTarget(target, null, 50, LEAD_ON)).toBe(target);
+    expect(leadTarget(target, memory, 50)).toBe(target);
   });
 
   it("leadTarget does not mutate the target it leads", () => {
@@ -1669,7 +1676,7 @@ describe("aim geometry", () => {
     trackEnemyMotion([makeEnemy({ x: 10, y: 10 })], memory, 0);
     trackEnemyMotion([makeEnemy({ x: 10.1, y: 10 })], memory, 50);
     const target = { i: 0, x: 10.1, y: 10 };
-    const led = leadTarget(target, memory, 50);
+    const led = leadTarget(target, memory, 50, LEAD_ON);
     expect(target.x).toBe(10.1);
     expect(led).not.toBe(target);
   });
@@ -1728,14 +1735,10 @@ describe("the fire gate", () => {
     const ahead = Math.atan2(2 * step, 4);
     const aimedAhead = { dirX: Math.cos(ahead), dirY: Math.sin(ahead) };
 
-    const led = decideTwice({ enemy: crossing, player: makePlayer(aimedAhead) });
+    const led = decideTwice({ enemy: crossing, player: makePlayer(aimedAhead), tuning: LEAD_ON });
     expect(led.fire).toBe(true);
 
-    const stale = decideTwice({
-      enemy: crossing,
-      player: makePlayer(aimedAhead),
-      tuning: { ...DEFAULT_TUNING, BOT_AIM_LEAD: false },
-    });
+    const stale = decideTwice({ enemy: crossing, player: makePlayer(aimedAhead) });
     expect(stale.fire).toBe(false);
     expect([...stale.holds.keys()]).toContain("KeyQ");
   });

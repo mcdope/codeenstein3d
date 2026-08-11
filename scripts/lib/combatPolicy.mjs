@@ -294,21 +294,56 @@ export const DEFAULT_TUNING = {
   //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_HAZARD_ROUTE_FALLBACK":false}'
   BOT_HAZARD_ROUTE_FALLBACK: true,
   // Whether the bot aims where a moving target *will* be when its shot
-  // resolves, instead of where the target was when it decided. Single-variable
-  // switch, as above:
-  //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_AIM_LEAD":false}'
+  // resolves, instead of where the target was when it decided.
   //
-  // The lag is structural, not a tuning accident. `simulate()` runs
+  // **OFF, and it is off because it was measured, not because it was never
+  // tried.** Turn it on to reproduce the arm:
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_AIM_LEAD":true}'
+  //
+  // The lag it corrects is real and structural: `simulate()` runs
   // `updateEnemyAi(dt)` (engine.ts:~2804) and only then `updateFiring(dt)`
-  // (~2868), while the bot samples enemy positions *after* a pump completes —
-  // so every shot resolves against positions one engine frame newer than the
-  // ones it was aimed at. See `leadTarget` for the arithmetic and
-  // `doc/dev/decisions.md` for the measurement that found it.
-  BOT_AIM_LEAD: true,
+  // (~2868), while the bot samples enemy positions *after* a pump completes, so
+  // every shot resolves against positions one engine frame newer than the ones
+  // it was aimed at. What the A/B refutes is not that lag — it is that the
+  // *previous* window's velocity predicts the next one well enough to correct
+  // for it. Four arms x four combos, ~29k single-pellet shots (2026-08-11):
+  // leading cost Edge Cases 8.9pp of hit rate at 0-2 tiles (z=-3.5), 4.4pp at
+  // 2-4 (z=-2.8) and 3.9pp at 4-6 (z=-2.1), while normals moved by nothing
+  // coherent. Every sign negative, and worse the closer the target.
+  //
+  // Why it fails on exactly the archetype it was built for: a lead's angular
+  // size and a sprite's angular size both carry the same `1/dist`, so their
+  // ratio is `speedMultiplier / spriteScale` — 4.0 for an Edge Case against 1.0
+  // for a normal. An Edge Case therefore eats four times the penalty when the
+  // predicted direction is wrong, and it is wrong often: `updateEnemyAi`
+  // returns early inside `ATTACK_RADIUS` (enemyAi.ts:~182), so an enemy that
+  // was closing at full speed last window stops dead this one to bite, and the
+  // lead walks the aim off a stationary target.
+  //
+  // A future attempt needs the enemy's *current* velocity rather than a
+  // differenced estimate of its last one — `getEnemies()` could carry it, since
+  // the engine already knows it. Left switched off rather than deleted so that
+  // experiment has this one to compare against.
+  BOT_AIM_LEAD: false,
   // Whether the fire gate is the tighter of `profile.fireAngleEps` and the
   // angle the target actually subtends, instead of the profile constant alone.
   // Single-variable switch, as above:
   //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_ANGULAR_FIRE_GATE":false}'
+  //
+  // **On, but on principle rather than on a demonstrated win** — say so plainly
+  // rather than let a later reader mistake a null for a result. In the same
+  // 2026-08-11 A/B every cell came back inside noise (largest |z| = 1.4,
+  // signs mixed, guards clean), and that is roughly what the geometry predicts
+  // for this harness: the gate only binds past the range where a constant
+  // tolerance and the target's own angular width cross — 3.6 tiles for Casual,
+  // 5.8 for Gamer, 9.6 for Pro, i.e. beyond `engageRadius` for Pro entirely —
+  // and this campaign's shots are mostly closer than that. So the measurement
+  // is underpowered where the change acts, not evidence that it does nothing.
+  //
+  // It is kept because a fixed angular tolerance is dimensionally wrong against
+  // a target whose angular width falls off as `1/dist`, it costs nothing
+  // measurable, and the bot is destined to become a deathmatch opponent that
+  // will take longer shots than this campaign ever offers.
   BOT_ANGULAR_FIRE_GATE: true,
   // Longest gap between two decisions that still yields a usable velocity
   // estimate for `trackEnemyMotion`. Past this the samples are too far apart
