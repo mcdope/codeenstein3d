@@ -11,6 +11,34 @@ That second category is why this file is kept rather than deleted. Most entries 
 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
+- [x] **The bot's stale aim was fixed, measured, and the fix reverted — the lag is real, the correction for it was worse than the lag (2026-08-11).** `report:aim-error` had split the ~30% ranged miss rate into a dimensionally-wrong fire gate (defect 1) and an aim one decision window stale (defect 2), and called defect 2 the dominant term. Both fixes were built; only defect 1's survived contact with an A/B.
+
+  **Reading the engine sharpened the diagnosis before anything was written.** The item said a shot resolves "0-50ms" after the positions it was aimed at. It is not a range: `simulate()` runs `updateEnemyAi(dt)` (`engine.ts:~2804`) and only then `updateFiring(dt)` (`~2868`), while the bot samples enemy positions only once a pump has completed — so the lag is **exactly one engine frame**. That happens to be 50ms under `run-balancing-telemetry.mjs` (where `recordStepMs == stepMs`), which is why the report's "97% of a sprite half-width per window" arithmetic came out right, but it is ~16.7ms under `generate-default-highscore.mjs`. `Bot#aimLeadMs` derives it per harness rather than assuming.
+
+  **Four arms, not two, and that is what made the result readable.** A 70-second smoke showed the arms diverging but with the candidate *worse* (75.9% vs 81.1% raw hit rate, n≈180, ~1.4σ), so the two switches were run separately — `base` / `lead` / `gate` / `both` x the four standard combos, `LEVEL_LIMIT=8 ATTEMPT_CAP=20 CONCURRENCY=6 QUALIFYING_TARGET=999`, 16 runs, 2h00m. Fused into one arm the regression below would have been unattributable.
+
+  **The aim lead is a regression, replicated across both pairs that flip only it** (`base->lead` and `gate->both`), single-pellet weapons only since a pellet cone forgives exactly the error under test:
+
+  | target | range | lead off | lead on | delta | z |
+  |---|---|---|---|---|---|
+  | edgeCase | 0-2 | 64.4% (459/713) | 55.5% (432/779) | **-8.9pp** | -3.51 |
+  | edgeCase | 2-4 | 55.3% (1159/2097) | 50.9% (1062/2087) | **-4.4pp** | -2.84 |
+  | edgeCase | 4-6 | 49.5% (770/1556) | 45.6% (646/1418) | **-3.9pp** | -2.14 |
+  | edgeCase | 6-8 | 52.4% (930/1774) | 50.9% (772/1516) | -1.5pp | -0.86 |
+  | normal | 2-4 | 89.0% | 90.2% | +1.1pp | 1.84 |
+  | normal | 4-6 | 80.1% | 78.7% | -1.4pp | -2.27 |
+  | normal | 6-8 | 70.1% | 71.7% | +1.6pp | 2.13 |
+
+  Every Edge Case sign negative, monotonically worse the closer the target; normals move by nothing coherent. Pooled over everything it reads as a clean null (78.7% base vs 79.0% lead), which is exactly how a real effect hides when the archetype it acts on is a minority of the sample — the pooled number was the first thing computed and the least informative thing produced.
+
+  **Why it fails on the archetype it was built for.** A lead's angular size and a sprite's angular size both carry the same `1/dist`, so their ratio is `speedMultiplier / spriteScale` — 4.0 for an Edge Case against 1.0 for a normal. That ratio was the argument *for* the fix; it is equally the argument against it, because an Edge Case eats four times the penalty when the predicted direction is wrong. And it is wrong often: `updateEnemyAi` returns early inside `ATTACK_RADIUS` (`enemyAi.ts:~182`), so an enemy closing at full speed one window stops dead the next to bite, and a lead built from the previous window walks the aim off a now-stationary target. That is the 0-2 bucket, where the penalty is largest.
+
+  **The angular fire gate is a null and ships anyway, on principle** — every cell inside noise, largest |z| = 1.4, signs mixed, guards clean. That is roughly what the geometry predicts for this test case: the gate binds only past 3.6 tiles (Casual) / 5.8 (Gamer) / 9.6 (Pro, i.e. beyond `engageRadius`), and the demo campaign's shots are mostly closer. Underpowered where it acts rather than shown inert. Kept because a fixed angular tolerance is dimensionally wrong against a target whose width falls off as `1/dist`, and because the bot is destined to become a deathmatch opponent taking longer shots than this campaign offers — but recorded here, and in its own doc comment, as a null rather than a win.
+
+  **The guard half of the protocol was unfalsifiable, and that is the finding with the longest reach.** All four arms cleared **20/20 at every level with a 0.000 death rate**, so `qualifyRate` and the per-level conditional death rate could not have breached their pre-registered thresholds whatever the change did. The demo campaign at `LEVEL_LIMIT=8` currently validates win metrics only. Any future bot A/B needs a deeper level limit or a repo that actually kills the bot, or its guards are decoration.
+
+  Verified: 154 tests in `combatPolicy.test.mjs` (16 new, covering both switches' on and off arms), full `scripts`/`src` suites, `tsc --noEmit`. Archive, including the run script and log: `balancing_capture_ab_aimlead_democampaign/`.
+
 - [x] **C sources can finally have locked doors — and the cause was not the C parser (2026-08-11).** The backlog item read "the locked-door/key mechanic never appears for C sources at all… almost certainly visibility detection finding no private/protected members in C". Half right: `cParser.ts` never mentioned `visibility`, so every C entity came back without one. But fixing only that would have changed nothing, because the *map* rule was the real gate.
 
   **Two changes, one on each side of the parser/map boundary.**
