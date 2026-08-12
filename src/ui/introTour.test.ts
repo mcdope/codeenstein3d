@@ -254,6 +254,36 @@ describe("DEFAULT_TOUR_STEPS", () => {
     expect(ids).toContain("tab-multiplayer");
   });
 
+  it("explains what the player name is actually for", () => {
+    // Both halves matter and neither is guessable from a text box labelled
+    // "Player name": it floats above your character in co-op, and it labels
+    // your highscore entries (doc/user/multiplayer.md, privacy.md).
+    const name = DEFAULT_TOUR_STEPS.find((s) => s.targetId === "player-name-input");
+    expect(name?.body).toMatch(/co-op|teammates/i);
+    expect(name?.body).toMatch(/highscore/i);
+  });
+
+  it("teaches the texture pack, including that it is session-only", () => {
+    // The one detail a player would otherwise be surprised by: gore and
+    // difficulty persist, the WAD does not (doc/user/hud-and-ui.md). There is
+    // an open backlog item to make it persist; when that lands, this wording
+    // and this assertion both have to change, which is the point of pinning it.
+    const wad = DEFAULT_TOUR_STEPS.find((s) => s.targetId === "wad-tabs");
+    expect(wad?.body).toMatch(/\.wad/i);
+    expect(wad?.body).toMatch(/session/i);
+  });
+
+  it("walks the sidebar top to bottom", () => {
+    // Each step scrolls its target into view, so an order that jumped between
+    // the top and bottom of a sidebar taller than the viewport would yank the
+    // page around under the reader.
+    const order = DEFAULT_TOUR_STEPS.map((s) => s.targetId);
+    expect(order.indexOf("player-name-input")).toBeLessThan(order.indexOf("difficulty-select"));
+    expect(order.indexOf("difficulty-select")).toBeLessThan(order.indexOf("wad-tabs"));
+    expect(order.indexOf("wad-tabs")).toBeLessThan(order.indexOf("view-highscores"));
+    expect(order.indexOf("view-highscores")).toBeLessThan(order.indexOf("file-tree"));
+  });
+
   it("covers the two multiplayer facts a newcomer otherwise learns by failing", () => {
     // Both come from doc/user/multiplayer.md, and both were corrected against
     // main.ts after the first browser run: joining needs no workspace at all
