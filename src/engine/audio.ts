@@ -39,6 +39,7 @@
 
 import type { WeaponViewKind } from "./weapons";
 import { clamp01 } from "../mathUtil";
+import { isAutomated } from "../automation";
 
 /** Grab whatever AudioContext constructor the environment exposes, if any. */
 type AudioContextCtor = new () => AudioContext;
@@ -50,13 +51,6 @@ function audioContextCtor(): AudioContextCtor | null {
   return g.AudioContext ?? g.webkitAudioContext ?? null;
 }
 
-/** True when the page is running under browser automation — Playwright,
- * Puppeteer, and Selenium all set `navigator.webdriver` on the browser they
- * control, so this needs no cooperation from the harness/caller. */
-function isAutomated(): boolean {
-  const nav = (globalThis as unknown as { navigator?: { webdriver?: boolean } }).navigator;
-  return nav?.webdriver === true;
-}
 
 /** Default gain values for the three user-facing volume sliders (see
  * `setMasterVolume`/`setSfxVolume`/`setBgmVolume`), applied at context

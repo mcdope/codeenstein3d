@@ -45,6 +45,7 @@ import {
 } from "./engine/weapons";
 import { DEFAULT_DIFFICULTY, type DifficultyLevel } from "./difficulty";
 import { migrateStorage } from "./storageSchema";
+import { isAutomated } from "./automation";
 import { createIntroTour, DEFAULT_TOUR_STEPS } from "./ui/introTour";
 import { randomSeed } from "./prng";
 import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelSegment } from "./engine/replay";
@@ -472,7 +473,14 @@ function runIntroTour(): void {
   }).start();
 }
 takeTourButton.addEventListener("click", runIntroTour);
-if (storageStateAtStartup.kind === "first-run") requestAnimationFrame(runIntroTour);
+// Not for robots. Every Playwright-driven harness here — the whole `verify:*`
+// suite, the balancing bot, the highscore generator — loads this page with an
+// empty `localStorage`, which is a first run by definition, and the tour's
+// backdrop then swallows the very clicks they are trying to make. CI caught it
+// as five red browser legs, all of them `page.click('#tab-demo')` timing out.
+// The manual button is deliberately *not* gated: an explicit click is an
+// explicit request, whoever is doing the clicking.
+if (storageStateAtStartup.kind === "first-run" && !isAutomated()) requestAnimationFrame(runIntroTour);
 // Whether closed via the button above, Escape, or a backdrop click, hand
 // keyboard focus back to the canvas so a running level's WASD doesn't go
 // silently nowhere afterward — same reasoning as `canvas.focus()` elsewhere.
