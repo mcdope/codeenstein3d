@@ -181,7 +181,9 @@ The lane-parallel capture orchestrator. Every one of these was undocumented unti
 
 ### Validation: there mostly isn't any
 
-Exactly one variable in the codebase validates its input: `CODEENSTEIN_TELEMETRY_SEED` range-checks `0..0xffffffff` and exits non-zero naming the bad value. Every other numeric knob above is a bare `Number(process.env.X ?? default)`, so a typo yields `NaN` and propagates silently — `CODEENSTEIN_MULTIPLAYER_PORT=abc` does not fail, it just produces a `NaN` port. Check a value took effect rather than assuming a bad one would have been rejected.
+Two variables validate their input, both in `run-balancing-telemetry.mjs`: `CODEENSTEIN_TELEMETRY_SEED` range-checks `0..0xffffffff` and exits non-zero naming the bad value, and `CODEENSTEIN_TELEMETRY_TUNING` rejects both malformed JSON and a non-object. Both guard a value whose corruption would be *invisible* — a bad seed or a silently-ignored tuning override produces a run that looks fine and measures the wrong thing.
+
+Every other numeric knob above is a bare `Number(process.env.X ?? default)`, so a typo yields `NaN` and propagates silently — `CODEENSTEIN_MULTIPLAYER_PORT=abc` does not fail, it just produces a `NaN` port. Check a value took effect rather than assuming a bad one would have been rejected.
 
 ## Anomaly scanning (`npm run balancing:scan`)
 

@@ -190,7 +190,7 @@ npm run build      # Production build to dist/
 npm run preview    # Serve production build locally
 ```
 
-There are 16 further `npm run verify:*` scripts driving the real app through Playwright, plus the balancing-bot harness. They need a dev server you started yourself and, for the multiplayer ones, a signaling server started *before* it — see [Testing](doc/dev/testing.md#running-the-verify-scripts-locally), which is the file to read before running any of them.
+There are 16 further `npm run verify:*` scripts — 10 of them driving the real app through Playwright, the rest pure Node — plus the balancing-bot harness. They need a dev server you started yourself and, for the multiplayer ones, a signaling server started *before* it — see [Testing](doc/dev/testing.md#running-the-verify-scripts-locally), which is the file to read before running any of them.
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/) with a scope — `fix(multiplayer):`, `refactor(map):`, `docs:`. Player-visible changes get a line under `## Unreleased` in [`CHANGELOG.md`](CHANGELOG.md), in player-facing voice.
 
