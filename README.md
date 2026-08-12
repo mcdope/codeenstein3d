@@ -27,7 +27,7 @@ and level generation happen entirely in the browser, and nothing is uploaded any
 | A file | A level |
 | A folder | Nothing of its own — the tree order (directories first, then alphabetical) is the order you play the levels in |
 | A function, method, class or global inside that file | A room of that level |
-| A function/method (HP = `cyclomatic_complexity × 25`) | An enemy — higher complexity means more health, pack spawns, or a gold-tinted elite boss |
+| A function/method (HP = `cyclomatic_complexity × 25`, split across its pack) | An enemy — higher complexity means more health, more enemies, or a gold-tinted Elite pack |
 | A function with code smells (>5 params, >3 nesting levels) | A tougher enemy (scaled bonus complexity) |
 | A global variable | An acid pool (hazard terrain) |
 | A private/protected method | A locked room, gated behind a key found elsewhere in the level |
@@ -48,7 +48,7 @@ See [How It Works](#how-it-works) below for the full detail behind each of these
 
 ### Core Gameplay
 - ✅ **Multi-language support** — PHP, C/C++, JavaScript/TypeScript, Python, Java, Go, Rust, Ruby, C#, Bash, Scala, Objective-C
-- ✅ **Smart entrypoint detection** — finds `main`, highest complexity, or any parsable file
+- ✅ **Smart entrypoint detection** — finds `main`, else the *least*-complex scoring file, else any parsable file (level 1 shouldn't be the hardest map in the repo)
 - ✅ **Full arsenal** — echo pistol, Regex Shotgun, gdb (machine gun), ghidra (rocket launcher), Friday Hotfix (flamethrower), and two melee weapons (the SIGKILL Knife, later replaced by the unlockable Toolchain chainsaw)
 - ✅ **Procedural maps** — rooms packed into a connected complex, corridors that vary in width and shape, loops and junctions rather than only dead ends, pillars, secret rooms, traps, teleporters
 - ✅ **Advanced enemy AI** — roaming, chasing, melee, ranged attacks (packed or elite bosses)
@@ -109,7 +109,7 @@ Each stage only consumes the data structure from the previous stage — language
 
 ### Level Generation
 - **Functions → Enemies** carrying `cyclomatic_complexity × 25` HP *between them* — one enemy below complexity 10, then one more per 10 on top, splitting that pool rather than inflating a single body
-  - High complexity = more health, pack spawns, or a single elite boss (2× HP, gold tint, 2× damage)
+  - At complexity ≥ 40 the room becomes an **Elite pack** instead: 2× the room's HP budget, capped and split across up to 8 members, led by a gold-tinted Elite dealing 2× damage
   - Functions with code smells (more than 5 params, more than 3 nesting levels) get scaled bonus complexity
   
 - **Global variables → Acid pools** (hazard terrain)
@@ -190,7 +190,7 @@ npm run build      # Production build to dist/
 npm run preview    # Serve production build locally
 ```
 
-There are 14 further `npm run verify:*` scripts driving the real app through Playwright, plus the balancing-bot harness. They need a dev server you started yourself and, for the multiplayer ones, a signaling server started *before* it — see [Testing](doc/dev/testing.md#running-the-verify-scripts-locally), which is the file to read before running any of them.
+There are 16 further `npm run verify:*` scripts driving the real app through Playwright, plus the balancing-bot harness. They need a dev server you started yourself and, for the multiplayer ones, a signaling server started *before* it — see [Testing](doc/dev/testing.md#running-the-verify-scripts-locally), which is the file to read before running any of them.
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/) with a scope — `fix(multiplayer):`, `refactor(map):`, `docs:`. Player-visible changes get a line under `## Unreleased` in [`CHANGELOG.md`](CHANGELOG.md), in player-facing voice.
 
@@ -248,8 +248,8 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/) with
 
 Feature-complete and playable end to end: parsing for 14 languages, procedural map generation,
 the full arsenal, multi-level campaigns, deterministic replays, highscores, WAD texturing, and
-2-4 player coop — all covered by a ~99.9%-coverage unit suite plus 14 Playwright verify scripts
-in CI.
+2-4 player coop — all covered by a ~99.9%-coverage unit suite plus 14 verify scripts in CI
+(10 of them Playwright-driven).
 
 Two features are implemented but shipped **off** behind source flags, both after playtest
 feedback: room decorations (billboarding reads as visibly wrong on boxy shapes) and the
@@ -418,6 +418,6 @@ The sidebar's "Or pick an online texture pack" list offers free, redistributable
 | [DOOM (Shareware)](https://doomwiki.org/wiki/DOOM) | id Software Shareware License — free redistribution, no fee for the WAD | [id Software](https://doomwiki.org/wiki/DOOM) | [doomwiki.org](https://doomwiki.org/wiki/DOOM) |
 | [HACX 1.2](https://doomwiki.org/wiki/HACX) | **Freeware (Banjo Software / id Software) — non-commercial use only** | [Banjo Software, Inc.](https://doomwiki.org/wiki/HACX) | [doomwiki.org](https://doomwiki.org/wiki/HACX) |
 
-Every entry above has been verified against this project's own `loadWadTextures` parser and resolves most or all of the 20 texture slots it looks for — three structural slots (wall/floor/door) for each of the five per-level stylesets, plus five shared gameplay-signal slots (see `src/wad/onlineWadCatalog.ts`'s doc comment; `npm run report:wad-stylesets` prints the full matrix) — two earlier candidates, Blasphemer (a Heretic-engine WAD with no matching lump names) and OTEX (a texture-only resource pack, no playable levels), were dropped after resolving 0/10 and 4/10 slots respectively. HACX's license permits free redistribution but for non-commercial use only, same tier as OTEX before it — included because this project is non-commercial; a commercial fork would need to drop it.
+Every entry above has been verified against this project's own `loadWadTextures` parser and resolves most or all of the 20 texture slots it looks for — three structural slots (wall/floor/door) for each of the five per-level stylesets, plus five shared gameplay-signal slots (see `src/wad/onlineWadCatalog.ts`'s doc comment; `npm run report:wad-stylesets` prints the full matrix) — two earlier candidates, Blasphemer (a Heretic-engine WAD with no matching lump names) and OTEX (a texture-only resource pack, no playable levels), were dropped after resolving 0 and 4 slots respectively, of the 10 the allowlist had at the time. HACX's license permits free redistribution but for non-commercial use only, same tier as OTEX before it — included because this project is non-commercial; a commercial fork would need to drop it.
 
 If you believe any of these assets shouldn't be redistributed here, please [open an issue](https://github.com/mcdope/codeenstein3d/issues) and it will be removed promptly.

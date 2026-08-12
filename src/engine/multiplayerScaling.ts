@@ -15,9 +15,13 @@
  */
 
 export interface EliteScalingMultipliers {
-  /** Multiplies an Elite's `hp`/`maxHp` once, at engine construction —
-   * stacks with (multiplies on top of) `ELITE_HP_MULTIPLIER`'s own base 4x,
-   * which is already baked into `enemy.maxHp` at map-generation time. */
+  /** Multiplies an Elite's `hp`/`maxHp` once, at engine construction — on top
+   * of whatever map generation already baked into `enemy.maxHp`. Note what
+   * that is: `ELITE_HP_MULTIPLIER` (base 2x, lowered from 4x in 2026-07)
+   * scales the *room's* HP budget, which is then capped at
+   * `ELITE_MAX_MEMBERS * ELITE_MEMBER_HP_CAP` and re-split across the pack —
+   * so the per-enemy figure this multiplies is the capped member share, not
+   * the raw multiplier. */
   hp: number;
   /** Multiplies an Elite's melee/ranged damage output, on top of
    * `ELITE_DAMAGE_MULTIPLIER`'s own base 2x. */

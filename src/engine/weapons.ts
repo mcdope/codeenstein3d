@@ -144,11 +144,12 @@ export interface Weapon {
  *   for the reverse-engineering tool — was called "Rocket Launcher" through
  *   Task 30.)
  * - **Friday Hotfix**: fully automatic flamethrower — a tight jet (narrower
- *   than the shotgun's own cone) enforced by a hard 3.5-tile `maxRange`, so
- *   it melts anything at point-blank range but genuinely cannot reach past a
- *   couple of tiles no matter how the Cone of Fire spread happens to land.
- *   Draws from its own `"gas"` ammo pool. The latest and heaviest unlock
- *   (forced at campaign level 12, one past ghidra's 8).
+ *   than the shotgun's own cone) whose reach is set by a damage curve rather
+ *   than a hard cutoff: full damage out to 2.5 tiles, decaying linearly to
+ *   nothing at 6.5. That replaced a flat 3.5-tile `maxRange`, and is a
+ *   redistribution rather than a buff — see its entry below for the
+ *   measurement behind it. Draws from its own `"gas"` ammo pool. The latest
+ *   and heaviest unlock (forced at campaign level 12, one past ghidra's 8).
  * - **Toolchain**: a second, stronger melee weapon — infinite ammo like the
  *   knife, double its damage, a bigger lifesteal heal, and fires repeatedly
  *   while Space is held instead of once per press (see `auto`). Has no

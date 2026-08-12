@@ -165,7 +165,7 @@ export function spawnEnemies(
         // Only the anchor — which `enemyPositions` always puts at the room
         // center — carries the flag, so an Elite room reads as one boss with
         // guards rather than a wall of bosses. That is not cosmetic:
-        // `damageMultiplierFor` (`enemyAi.ts:220`) applies
+        // `damageMultiplier` (`enemyAi.ts`) applies
         // `ELITE_DAMAGE_MULTIPLIER` per *enemy*, so flagging all eight would
         // multiply the room's incoming DPS by the pack size and trade an
         // unwinnable fight for an unsurvivable one. It also keeps "one Elite
