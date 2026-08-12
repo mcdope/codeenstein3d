@@ -109,7 +109,8 @@ All scoping/debug flags are read once at module load, so they must be set in the
 | `CODEENSTEIN_CONSOLE_FORWARD` | Forwards the browser's own `console` output to Node (`[console] ...` lines) — the engine already logs key pickups/door unlocks; often more reliable ground truth than bot-side telemetry when a freeze's cause is ambiguous. |
 | `CODEENSTEIN_WPDEBUG` | Per-waypoint drive-loop trace (`[wpdebug] leg-walk wp=... -> result=...`). |
 | `CODEENSTEIN_DRIFTDEBUG` | Traces `driveTowardWithReplan`'s off-route drift/re-plan decisions. |
-| `CODEENSTEIN_DEV_URL` | Override the dev server URL (default `http://localhost:5173`). |
+| `CODEENSTEIN_DEV_URL` | Override the dev server URL. **The built-in default is not uniform** — `http://localhost:5173` here and for the multiplayer verifiers, but `http://localhost:5183` for `verify:replay` and `verify:campaign:playthrough`, deliberately, so those don't collide with a manual dev session. [Testing](testing.md#running-the-verify-scripts-locally) has the full per-script table and is the authority. |
+| `CODEENSTEIN_TELEMETRY_DEV_PORT` | Port for the dev server this tool starts *itself* when `CODEENSTEIN_DEV_URL` is unset (default 5199). Deliberately not 5173, so a run never collides with a dev server you started yourself. `run-perf-benchmark.mjs` uses `CODEENSTEIN_PERF_PORT` for the same purpose, with the same default. |
 | `CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET` | Override `REQUIRED_QUALIFYING_RUNS` (default 3) — how many qualifying runs a combo needs before its retry loop stops. Used by `balancing:campaign` to set a small per-invocation batch size. **Set it to `999` for any A/B**, so the loop runs to `ATTEMPT_CAP` instead of exiting the moment enough runs qualify — that early exit, not concurrency, is what controls the failure-sample denominator. See [Matched-scale verification](#matched-scale-verification). |
 | `CODEENSTEIN_TELEMETRY_OUTPUT_FILE` | Override the output path (default `balancing_telemetry.json` at repo root). Used by `balancing:campaign` so concurrent invocations each write to their own file instead of racing to overwrite the same one. |
 
@@ -122,6 +123,65 @@ Not a telemetry tool, but it drives the same `Bot` against the same dev server a
 | `CODEENSTEIN_HIGHSCORE_QUALIFYING_RUNS` | Qualifying runs collected per profile before the highest-scoring one is baked in (default 3). |
 | `CODEENSTEIN_HIGHSCORE_ATTEMPT_CAP` | Cap attempts per profile (default unbounded) — the only way to bound an otherwise open-ended run. |
 | `CODEENSTEIN_HIGHSCORE_CONCURRENCY` | Attempts run concurrently per profile (default 4). |
+
+### `run-balancing-capture.mjs` (`npm run balancing:capture`)
+
+The lane-parallel capture orchestrator. Every one of these was undocumented until a 2026-08-12 doc audit; the defaults below are read straight from the constant declarations at the top of the script.
+
+| Var | Default | Effect |
+|---|---|---|
+| `CODEENSTEIN_CAPTURE_OUT` | `balancing_capture` | Output directory, relative to the repo root. All `balancing_*` paths are gitignored. |
+| `CODEENSTEIN_CAPTURE_PROFILES` | `Casual,Gamer,Pro` | Comma-separated profile list. |
+| `CODEENSTEIN_CAPTURE_DIFFICULTIES` | `normal,hard` | Comma-separated difficulty list. Note `easy` is not in the default sweep. |
+| `CODEENSTEIN_CAPTURE_ATTEMPTS` | `60` | Fixed attempts per cell — this is the *denominator*, not a target. |
+| `CODEENSTEIN_CAPTURE_CHUNK` | `20` | Attempts claimed per lane per scheduling decision. |
+| `CODEENSTEIN_CAPTURE_MIN_CHUNK` | `5` | Floor on that chunk as a cell drains. |
+| `CODEENSTEIN_CAPTURE_TARGET_CHUNK_MIN` | `45` | Target minutes of work per claim, which is what the chunk size is solved for. |
+| `CODEENSTEIN_CAPTURE_CONCURRENCY` | `10` | Attempts in flight per lane. |
+| `CODEENSTEIN_CAPTURE_MAX_INVOCATIONS` | `8` | Hard cap on bot invocations, as a runaway backstop. |
+| `CODEENSTEIN_CAPTURE_WATCHDOG_MS` | `7_800_000` (130 min) | Per-invocation watchdog. |
+| `CODEENSTEIN_CAPTURE_LEVEL_LIMIT` | unset | Cap campaign levels per attempt. |
+| `CODEENSTEIN_CAPTURE_LOCAL_ONLY` | unset (`"1"` to enable) | Run without SSH lane hosts. Without it, a run that has hosts configured but reaches none is an error rather than a silent local-only fallback. |
+
+### `run-balancing-campaign.mjs` (`npm run balancing:campaign`)
+
+| Var | Default | Effect |
+|---|---|---|
+| `CODEENSTEIN_CAMPAIGN_TARGET` | `50` | Qualifying runs wanted per combo. |
+| `CODEENSTEIN_CAMPAIGN_BATCH_SIZE` | `5` | Qualifying runs per bot invocation. |
+| `CODEENSTEIN_CAMPAIGN_ATTEMPT_CAP` | `80` | Attempts per invocation. |
+| `CODEENSTEIN_CAMPAIGN_CONCURRENCY` | `8` | Attempts in flight per lane. |
+| `CODEENSTEIN_CAMPAIGN_LANES` | `2` | Lanes. |
+| `CODEENSTEIN_CAMPAIGN_MAX_INVOCATIONS` | `6` | Runaway backstop. |
+| `CODEENSTEIN_CAMPAIGN_WATCHDOG_MS` | `5_400_000` (90 min) | Per-invocation watchdog. |
+| `CODEENSTEIN_CAMPAIGN_PROFILE` / `_DIFFICULTY` | unset | Restrict the matrix. |
+
+`run-balancing-campaign-multiplayer.mjs` takes the same eight knobs under a `CODEENSTEIN_MP_CAMPAIGN_` prefix, **with different defaults** — target `10`, batch `2`, attempt cap `30`, concurrency `1`, lanes `1`, max invocations `3`, watchdog `14_400_000` (4 h) — plus `CODEENSTEIN_MP_CAMPAIGN_PLAYER_COUNTS` (comma-separated) and `CODEENSTEIN_MP_CAMPAIGN_MIN_LEVEL` (default `4`, read by `verify-multiplayer-campaign.mjs`).
+
+### Everything else
+
+| Var | Default | Effect |
+|---|---|---|
+| `CODEENSTEIN_REPLAY_SPEED` | `1` | Playback speed multiplier for `verify:replay`. |
+| `CODEENSTEIN_REPLAY_TRACE` | unset (`"1"`) | Per-frame replay trace. |
+| `CODEENSTEIN_REPLAY_LEVEL_LIMIT` / `_CONCURRENCY` / `_ENTRIES` | unset / `2` / `0` | Scope, parallelism and which board entries to replay. |
+| `CODEENSTEIN_PERF_HEADLESS` | unset (truthy) | Run `perf:bench` headless. Measurements are not comparable across this flag. |
+| `CODEENSTEIN_PERF_HAR_RECORD` | unset (truthy) | Record a HAR alongside the benchmark. |
+| `CODEENSTEIN_TRANSITION_NAV_DEADLINE_MS` | `540_000` (9 min) | Wall-clock budget for the host-navigation phase of `verify:multiplayer-transition`. Bounded in wall clock precisely because every other budget on that path is bounded in *decisions*, which at a real 300-400 ms decision window admits a legal worst case of over two hours. |
+| `CODEENSTEIN_TRANSITION_CLEAR_EXIT_ROOM` | unset (`"1"`) | Test hook that clears the exit room's enemies. |
+| `CODEENSTEIN_VITE_NO_WATCH` | unset (truthy) | Disables Vite's file watcher (`vite.config.ts`). For harnesses that hold the tree open for a long time. |
+| `CODEENSTEIN_VERIFY_BROWSER` | `chromium` | Browser for the `verify:*` scripts. |
+| `CODEENSTEIN_WADS_STRICT` | unset | Equivalent to `fetch-online-wads.mjs --strict`. |
+| `CODEENSTEIN_EXTRA_WADS` | unset | Colon-separated extra WAD paths for `report:wad-stylesets`. |
+| `CODEENSTEIN_WATCH_DIFFICULTY` | `normal` | Difficulty for `balancing:watch`. |
+| `CODEENSTEIN_MULTIPLAYER_DEBUG_ICE` | unset (`"1"`) | ICE-candidate trace in the multiplayer verify scripts. |
+| `POC_SEED` / `POC_ITERATIONS` / `POC_SAMPLE_EVERY` | `0xc0ffee` / `500_000` / `500` | Cross-browser determinism proof. |
+
+**The signaling server's own ~25 `CODEENSTEIN_MULTIPLAYER_*` variables are deliberately not listed here.** `node scripts/multiplayer-server.mjs --help` prints every one of them *with its currently-effective value*, generated at invocation time — so unlike every table above, it cannot drift. Read that instead, and see [Multiplayer Server Deployment](multiplayer-deployment.md) for the ones that matter in production.
+
+### Validation: there mostly isn't any
+
+Exactly one variable in the codebase validates its input: `CODEENSTEIN_TELEMETRY_SEED` range-checks `0..0xffffffff` and exits non-zero naming the bad value. Every other numeric knob above is a bare `Number(process.env.X ?? default)`, so a typo yields `NaN` and propagates silently — `CODEENSTEIN_MULTIPLAYER_PORT=abc` does not fail, it just produces a `NaN` port. Check a value took effect rather than assuming a bad one would have been rejected.
 
 ## Anomaly scanning (`npm run balancing:scan`)
 
@@ -397,7 +457,7 @@ What runs today:
 
 | Command | What it does |
 |---|---|
-| `npm run balancing:budget` | Solve a campaign's budget offline — no browser, no bot. `--dir` any repo, `--all-difficulties`, `--json`. Exits non-zero on an enemy that outlasts every round on its level. |
+| `npm run balancing:budget` | Solve a campaign's budget offline — no browser, no bot. Six flags: `--dir <path>` (default `demo-campaign`), `--difficulty <d>`, `--all-difficulties`, `--json <path>`, `--max-levels <n>`, `--kill-rate <n>`. **It has no `--help`** — passing one is an `unknown argument` error. Exits non-zero on an enemy that outlasts every round on its level. |
 | `npm run balancing:corpus` | Fetch the pinned corpus of real repositories to solve against. |
 | `npm run balancing:events` | Turn a raw event log into a markdown report. |
 | `CODEENSTEIN_TELEMETRY_EVENT_LOG=<dir>` | Turn on raw event recording for a telemetry run. Off by default. |

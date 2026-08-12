@@ -53,7 +53,10 @@ jobs:
       - run: npm run verify:multiplayer-server
 
   test:
-    name: unit tests (Vitest, 100% coverage gate)
+    # Thresholds live in vitest.config.ts and are deliberately not repeated here —
+    # a number in a job name is a mirror with no link. They are currently
+    # 99.9/99.9/99.5/99.5, not 100%; see that file for why.
+    name: unit tests (Vitest, coverage gate)
     runs-on: ubuntu-latest
     # Vitest/jsdom, no real browser at all — same reasoning as the `verify`
     # job above.

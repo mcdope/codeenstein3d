@@ -301,6 +301,28 @@ the native install: a signaling server on `127.0.0.1:8787` and a relay on the
 host's network. Container-level details live in
 [`docker/README.md`](../../docker/README.md).
 
+**The two deployments use different names for the same settings**, which is easy
+to trip over when moving between §1 and §6 or reading a support thread. `.env`
+holds short, unprefixed names; the server itself only ever reads
+`CODEENSTEIN_MULTIPLAYER_*`. `docker-compose.yml` is where the two meet — it is
+the mapping, and neither name is "the" name:
+
+| `docker/.env` | Server environment variable | Notes |
+|---|---|---|
+| `ALLOWED_ORIGIN` | `CODEENSTEIN_MULTIPLAYER_ALLOWED_ORIGIN` | Required — compose fails to start without it |
+| `SIGNALING_HOST_PORT` | `CODEENSTEIN_MULTIPLAYER_PORT` | Published port; the container's own stays 8787 |
+| `SIGNALING_SUBNET` | `CODEENSTEIN_MULTIPLAYER_TRUSTED_PROXY_IPS` | One value feeds both the bridge definition and the trusted list, so they cannot drift |
+| `STATS_TOKEN` | `CODEENSTEIN_MULTIPLAYER_STATS_TOKEN` | Unset disables the stats endpoint entirely |
+| `TURN_SECRET` | `CODEENSTEIN_MULTIPLAYER_TURN_SECRET` | Shared with coturn; unset leaves the credentials route a 404 |
+| `TURN_URLS` | `CODEENSTEIN_MULTIPLAYER_TURN_URLS` | Comma-separated |
+| `TURN_TTL_SECONDS` | `CODEENSTEIN_MULTIPLAYER_TURN_TTL_SECONDS` | Default 3600 |
+
+The remaining `TURN_*` keys in `.env` (realm, ports, certs, quotas) are coturn's
+own configuration and never reach the signaling server. Everything the server
+reads — all ~25 variables, with their currently-effective values — is printed by
+`node scripts/multiplayer-server.mjs --help`, which generates that list at
+invocation time rather than repeating it, so it cannot go stale.
+
 **6.1 Prerequisites.** Docker Engine with the Compose plugin, and a clone of
 this repo on the VPS — images are built there, nothing is pulled from a
 registry:

@@ -51,7 +51,7 @@ See [How It Works](#how-it-works) below for the full detail behind each of these
 - ✅ **Smart entrypoint detection** — finds `main`, else the *least*-complex scoring file, else any parsable file (level 1 shouldn't be the hardest map in the repo)
 - ✅ **Full arsenal** — echo pistol, Regex Shotgun, gdb (machine gun), ghidra (rocket launcher), Friday Hotfix (flamethrower), and two melee weapons (the SIGKILL Knife, later replaced by the unlockable Toolchain chainsaw)
 - ✅ **Procedural maps** — rooms packed into a connected complex, corridors that vary in width and shape, loops and junctions rather than only dead ends, pillars, secret rooms, traps, teleporters
-- ✅ **Advanced enemy AI** — roaming, chasing, melee, ranged attacks (packed or elite bosses)
+- ✅ **Advanced enemy AI** — roaming, chasing, melee, ranged attacks (ordinary packs or Elite packs)
 - ✅ **Multi-level campaigns** — chain together all parsable files; save & continue progress
 - ✅ **Multiplayer co-op** — host or join a real-time session (2-4 players) via a short code or public lobby; WebRTC peer-to-peer, lockstep netcode with drift reconciliation; see [`doc/user/multiplayer.md`](doc/user/multiplayer.md)
 
@@ -176,7 +176,7 @@ npm run dev
 
 Open the printed `localhost` URL, click **Select Workspace**, pick a folder with source code, and click a supported file to drop into its level.
 
-The first `npm run dev` (or `npm run build`) also fetches the online WAD/texture-pack catalog — about 170 MB from three external hosts, into the gitignored `public/wads/`. It's idempotent, so it only happens once per checkout, but it does mean **the first run needs network access**. Everything the catalog feeds is optional: the game ships procedural textures and plays fine without it.
+The first `npm run dev` (or `npm run build`) also fetches the online WAD/texture-pack catalog — about 47 MB of downloads from three external hosts, extracting to roughly 99 MB in the gitignored `public/wads/`. It's idempotent, so it only happens once per checkout, but it does mean **the first run needs network access**. Everything the catalog feeds is optional: the game ships procedural textures and plays fine without it.
 
 Multiplayer is the one feature a plain local build can't show you — its tab stays hidden until the build is pointed at a signaling server. See [Multiplayer Server Deployment](doc/dev/multiplayer-deployment.md) if you want it locally, or just use the [hosted build](https://codeenstein3d.mcdope.org).
 
@@ -256,6 +256,11 @@ feedback: room decorations (billboarding reads as visibly wrong on boxy shapes) 
 level-end player stats screen (a measurable frame-time cost). See
 [Feature Flags](doc/dev/architecture.md#feature-flags) for the current defaults and the
 reasoning behind each.
+
+Releases are git tags (`beta-1` … `beta-6`) — that tag is the only release identity there is.
+`package.json`'s `version` is deliberately unused (`0.0.0`, `private: true`), and nothing in the
+running app reports a version, so "which build is this?" is answered by the tag or the commit,
+not by the app.
 
 - **[`CHANGELOG.md`](CHANGELOG.md)** — what's new, release by release.
 - **[`doc/dev/history.md`](doc/dev/history.md)** — the full record, including the approaches
