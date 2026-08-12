@@ -49,9 +49,14 @@ const POPOUT_WIDTH = 280;
 const VIEWPORT_MARGIN = 8;
 
 /**
- * The steps the tour ships with. Worded from `doc/user/getting-started.md` and
- * `doc/user/multiplayer.md` so the tour and the written guide cannot drift into
- * saying different things.
+ * The steps the tour ships with. Worded from `doc/user/getting-started.md`,
+ * `multiplayer.md` and `hud-and-ui.md` so the tour and the written guide cannot
+ * drift into saying different things.
+ *
+ * **Ordered by position in the sidebar, top to bottom**, not by importance.
+ * Each step scrolls its target into view, so an order that jumped between the
+ * top and the bottom of a sidebar taller than the viewport would yank the page
+ * around under the reader.
  */
 export const DEFAULT_TOUR_STEPS: readonly TourStep[] = [
   {
@@ -70,19 +75,29 @@ export const DEFAULT_TOUR_STEPS: readonly TourStep[] = [
     body: "Host a session and share the short code, or join with someone else's — joining needs no workspace of your own at all. Only the host loads the code; everyone else receives the finished level over the connection. A locally-picked folder can't be hosted, so host from Demos or GitHub.",
   },
   {
+    targetId: "player-name-input",
+    title: "Say who you are (optional)",
+    body: "Set a name and it floats above your character in co-op so teammates can tell who's who, and it labels your own highscore entries. It's remembered between sessions, and it only ever goes to the people in your session — never to a server.",
+  },
+  {
     targetId: "difficulty-select",
     title: "Set the rules first",
     body: "Difficulty and gore apply to the next level you launch, so pick them before you start. Both are remembered between sessions.",
   },
   {
-    targetId: "file-tree",
-    title: "Your code, as levels",
-    body: "Once a workspace loads, its files appear here and each one is a playable level. The game picks a sensible starting point on its own, but you can click any file to drop straight into it.",
+    targetId: "wad-tabs",
+    title: "Bring your own textures",
+    body: "Point it at a DOOM .wad and the walls, doors and floors come from that instead of the built-in look — it picks broadly-compatible textures out of the file for you. Or take one from the curated online list, no download or file picker needed, each with its license and credits shown. Either way it lasts for the session, not forever.",
   },
   {
     targetId: "view-highscores",
     title: "Scores stay on your machine",
     body: "Runs are scored and kept locally — nothing is uploaded. Every entry on the board can be replayed from here, exactly as it was played.",
+  },
+  {
+    targetId: "file-tree",
+    title: "Your code, as levels",
+    body: "Once a workspace loads, its files appear here and each one is a playable level. The game picks a sensible starting point on its own, but you can click any file to drop straight into it.",
   },
   {
     targetId: "console-sidebar",
