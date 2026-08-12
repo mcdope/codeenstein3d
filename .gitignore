@@ -62,3 +62,10 @@ level_maps/
 # so the dated write-up itself does not belong in the repo.
 doc/dev/balance-review-*.md
 doc/dev/remediation-order-*.md
+# Same rule, same reason: a documentation audit's phase reports (inventory,
+# ground-truth baseline, drift ledger, remediation plan, closeout). The
+# corrections land in the docs themselves and the open items in `notes`, so the
+# working papers are read once and then are just a snapshot of a tree that has
+# since moved. Ignored rather than deleted so a run in progress keeps a clean
+# tree for the capture guard.
+docs-audit/
