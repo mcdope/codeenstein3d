@@ -1062,3 +1062,71 @@ a.settings-btn {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+
+/* --- First-run intro tour ------------------------------------------------ */
+/* A fixed full-viewport layer rather than a <dialog>: the tour has to dim the
+   page *and* leave the highlighted control visually legible underneath, which
+   a modal dialog's backdrop cannot do without fighting the top layer. */
+.intro-tour {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgb(0 0 0 / 55%);
+}
+
+/* Sits over the dimmer and punches the target back out of it — a huge spread
+   shadow is the one way to darken everything *except* this box without
+   compositing a second element per side. */
+.intro-tour-highlight {
+  position: fixed;
+  border: 2px solid var(--accent, #78c8d2);
+  border-radius: 4px;
+  box-shadow: 0 0 0 9999px rgb(0 0 0 / 55%);
+  pointer-events: none;
+}
+
+.intro-tour-popout {
+  position: fixed;
+  width: 280px;
+  padding: 12px 14px;
+  color: var(--text);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 45%);
+}
+
+.intro-tour-title {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
+.intro-tour-body {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.intro-tour-progress {
+  margin: 0 0 8px;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.intro-tour-controls {
+  display: flex;
+  gap: 6px;
+}
+
+/* Overrides .settings-btn's full width and top margin, which are meant for the
+   stacked sidebar column rather than a row of three. */
+.intro-tour-btn {
+  width: auto;
+  margin-top: 0;
+  flex: 1;
+}
+
+.intro-tour-btn--skip {
+  flex: 0 0 auto;
+  opacity: 0.75;
+}

@@ -187,6 +187,13 @@ const ORIGINAL_WINDOW_LOCATION = window.location;
 beforeEach(() => {
   Object.defineProperty(window, "location", { value: ORIGINAL_WINDOW_LOCATION, configurable: true });
   localStorage.clear();
+  // Stamp the storage schema so an ordinary test imports `main` as a *returning*
+  // player. Without this every one of these tests is a first run, and each would
+  // schedule the intro tour — an overlay that steals focus and outlives the test
+  // that spawned it, because the `requestAnimationFrame` it is scheduled on can
+  // fire during the next one. The two tests that are about the tour set their own
+  // storage state explicitly.
+  localStorage.setItem("codeenstein-schema-version", "1");
   // jsdom's built-in `crypto` global has no SubtleCrypto implementation —
   // swap in Node's real webcrypto so highscores.ts's hashRun()/
   // crypto.subtle.digest() call (reached via launchLevel's replay-recorder
@@ -1292,6 +1299,44 @@ describe("main.ts — BGM folder loading", () => {
     expect(document.querySelector<HTMLParagraphElement>("#bgm-status")!.textContent).toBe(
       'No .mp3/.ogg/.wav files found in "tracks"',
     );
+  });
+});
+
+describe("main.ts — first-run intro tour", () => {
+  it("starts unprompted on a genuine first run", async () => {
+    // The shared setup stamps the schema so ordinary tests are not first runs;
+    // clearing it here is what makes this one.
+    localStorage.clear();
+    await importMain();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    expect(document.querySelector(".intro-tour-popout")).not.toBeNull();
+    expect(document.querySelector(".intro-tour-title")?.textContent).toBe("Five ways in");
+  });
+
+  it("does not start unprompted when storage already has data", async () => {
+    // The distinction `storageSchema` exists for: an existing player has keys
+    // and no version stamp, which is `legacy`, not `first-run`. Starting the
+    // tour for them means starting it for someone mid-campaign.
+    localStorage.clear();
+    localStorage.setItem("codeenstein-difficulty", "hard");
+    await importMain();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    expect(document.querySelector(".intro-tour-popout")).toBeNull();
+  });
+
+  it("runs the tour on demand and re-enables the button when it ends", async () => {
+    await importMain();
+    const button = document.querySelector<HTMLButtonElement>("#take-tour")!;
+    expect(button.disabled).toBe(false);
+
+    button.click();
+    expect(document.querySelector(".intro-tour-popout")).not.toBeNull();
+    // Disabled while running, so a second click cannot stack a second overlay.
+    expect(button.disabled).toBe(true);
+
+    document.querySelector<HTMLButtonElement>(".intro-tour-btn--skip")!.click();
+    expect(document.querySelector(".intro-tour-popout")).toBeNull();
+    expect(button.disabled).toBe(false);
   });
 });
 
