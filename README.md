@@ -176,7 +176,7 @@ npm run dev
 
 Open the printed `localhost` URL, click **Select Workspace**, pick a folder with source code, and click a supported file to drop into its level.
 
-The first `npm run dev` (or `npm run build`) also fetches the online WAD/texture-pack catalog — about 47 MB of downloads from three external hosts, extracting to roughly 99 MB in the gitignored `public/wads/`. It's idempotent, so it only happens once per checkout, but it does mean **the first run needs network access**. Everything the catalog feeds is optional: the game ships procedural textures and plays fine without it.
+The first `npm run dev` (or `npm run build`) also fetches the online WAD/texture-pack catalog — about 47 MB of downloads from three external hosts, extracting to roughly 99 MB in the gitignored `public/wads/`. It's idempotent, so it only happens once per checkout. **It does not need to succeed**: a download or parse failure warns and the run continues with whatever it got, because everything the catalog feeds is optional — the game ships procedural textures and plays fine without any of it, so a clone with no network still starts and builds. CI passes `--strict` to turn those warnings back into errors, which is what catches a catalog URL that has gone 404.
 
 Multiplayer is the one feature a plain local build can't show you — its tab stays hidden until the build is pointed at a signaling server. See [Multiplayer Server Deployment](doc/dev/multiplayer-deployment.md) if you want it locally, or just use the [hosted build](https://codeenstein3d.mcdope.org).
 
@@ -355,9 +355,9 @@ src/
 
 ## Browser Requirements
 
-The [File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/Window/showDirectoryPicker) is required and is currently only available in **Chromium-based browsers** (Chrome, Edge, Brave) served over `localhost` or HTTPS.
+**Loading a local folder** needs the [File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/Window/showDirectoryPicker), which is currently only available in **Chromium-based browsers** (Chrome, Edge, Brave) served over `localhost` or HTTPS. That is the only feature gated on it: the Demos and GitHub tabs, and everything downstream of them, work in any modern browser.
 
-The app detects unsupported browsers and disables the picker with a message.
+The app detects unsupported browsers and disables the workspace picker with a message, leaving the other tabs usable.
 
 ---
 
