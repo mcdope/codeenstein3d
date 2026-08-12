@@ -16,7 +16,17 @@ Entries are newest-first, in the format the `notes` backlog uses. Nothing here i
 
   **Derived from the engine, not fitted to it.** A throwaway probe fired the real shotgun at a centred enemy across a distance sweep and counted pellets from damage dealt. `pelletHitFraction` then integrates each pellet's own hit probability over the engine's uniform deviation — pellet `i` lands with probability `|[-hw-o_i, hw-o_i] ∩ [-D, D]| / 2D`, no free parameters. Derived vs measured, in pellets of 7: 1t 7.00/7.00, 2t 5.61/5.63, 3t 4.00/3.92, 4t 3.00/2.96, 6t 2.00/2.04, 8t 1.54/1.59.
 
-  Two errors underneath it: `pelletOffsets` spreads pellets across **±spreadPx** while the model used `spreadPx / 2`; and the engine scales cone deviation by `zBuffer[column]` — the depth *behind* the target, which saturates in an open room — where the model used the target's own distance. Before trusting any of the sweep, the harness was checked for a distortion that would have invalidated it: `resolveShot` projects with the `SCENE_WIDTH`/`SCENE_HEIGHT` constants, not the 200x150 test canvas.
+  Two errors underneath it: `pelletOffsets` spreads pellets across **±spreadPx** while the model used `spreadPx / 2`; and the engine scales cone deviation by `zBuffer[column]` — the depth *behind* the target, which saturates in an open room — where the model used the target's own distance.
+
+  **The control that isolated the second error, kept because it is the evidence and not just the conclusion.** The same sweep was run twice: once in an open room (the wall ~34 tiles behind the target, so `rangeFraction` saturates and every shot takes the full ±38px) and once with the wall immediately behind it (deviation ≈ 0). If the deviation were driven by the *target's* distance, as the old model assumed, the two would be identical. They are not:
+
+  | d (tiles) | 0.6 | 1 | 1.5 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | far wall (open room) | 7.00 | 7.00 | 6.63 | 5.63 | 3.92 | 2.96 | 2.38 | 2.04 | 1.84 | 1.59 |
+  | near wall | 7.00 | 7.00 | **7.00** | **7.00** | 4.45 | **3.00** | **3.00** | 2.25 | 1.77 | 1.68 |
+  | old model | 7 | 7 | 7 | 7 | 7 | 7 | 5.6 | 4.7 | 4.0 | 3.5 |
+
+  Two tiles goes 5.63 → 7.00 pellets purely by moving the wall behind the target, and five tiles 2.38 → 3.00. The near-wall row also matches a plain count of pellet offsets inside the sprite, which is what the geometry predicts once the deviation is removed — so both terms are confirmed independently. The open-room row is the honest modelling target, because the bot cannot cheaply raycast the wall behind each candidate target. Before trusting any of the sweep, the harness was checked for a distortion that would have invalidated it: `resolveShot` projects with the `SCENE_WIDTH`/`SCENE_HEIGHT` constants, not the 200x150 test canvas.
 
   **The A/B: behaviour moved as intended, performance did not move at all.** Weapon selection over 50k+ ranged shots per arm went shotgun 6.3% -> 3.6%, pistol 22.6% -> 28.2%, ghidra unchanged. But across **four combos at n=60 (240 attempts per arm)** every metric's sign is mixed — `enemyAccuracy` -9.4/+8.4/+2.7/+4.6%, `dmg.enemyRangedPerSec` -11.1/+6.9/-1.7/+4.3% — with only `levelTimeSec` consistently signed and then by 0.0-0.7%, far below readable. Guards passed on all four, and on all four of an earlier n=20 pass and a full-campaign pass.
 
