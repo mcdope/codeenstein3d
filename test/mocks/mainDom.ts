@@ -117,6 +117,7 @@ export function buildIndexDom(): void {
           </div>
           <p id="wad-status" class="muted">Using built-in default textures</p>
           <button id="view-highscores" class="settings-btn" type="button">Highscores</button>
+          <button id="take-tour" class="settings-btn" type="button">🧭 Take the Tour</button>
           <a id="player-guide-link" class="settings-btn" href="#" target="_blank" rel="noopener noreferrer">Player Guide</a>
         </header>
         <nav id="file-tree" aria-label="File tree"></nav>

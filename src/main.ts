@@ -45,6 +45,7 @@ import {
 } from "./engine/weapons";
 import { DEFAULT_DIFFICULTY, type DifficultyLevel } from "./difficulty";
 import { migrateStorage } from "./storageSchema";
+import { createIntroTour, DEFAULT_TOUR_STEPS } from "./ui/introTour";
 import { randomSeed } from "./prng";
 import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelSegment } from "./engine/replay";
 import { balanceHashMatches, computeBalanceHash, type BalanceRelevantEnemy } from "./engine/balanceHash";
@@ -116,11 +117,10 @@ const BONUS_LEVEL_EXTENSIONS = new Set(["h"]);
  *
  * The return value — the state found *before* stamping — is the only moment
  * "has this browser ever run the game?" is answerable, since stamping erases
- * it. It is discarded here because nothing consumes it yet; the first-run
- * intro will capture it at this call site rather than re-reading storage that
- * has by then been written to.
+ * it, so the first-run tour is gated on this value rather than on a later read
+ * of storage that has by then been written to.
  */
-migrateStorage();
+const storageStateAtStartup = migrateStorage();
 
 /** localStorage key for the standing player name (see `loadPlayerName`) —
  * same "declared next to the thing that reads it" placement as the gore and
@@ -451,6 +451,28 @@ async function openHighscoreDialog(): Promise<void> {
 
 viewHighscoresButton.addEventListener("click", () => void openHighscoreDialog());
 closeHighscoresButton.addEventListener("click", () => highscoreDialog.close());
+
+/**
+ * The first-run guided tour, and the button that replays it.
+ *
+ * Started only when nothing had ever been persisted on this origin — an
+ * existing player has keys but no version stamp and is `legacy`, not
+ * `first-run` (see `storageSchema.ts`), so this cannot re-show the tour to
+ * someone with a campaign already in progress.
+ *
+ * Deferred a frame so the sidebar has been laid out before anything measures
+ * it: every popout is positioned from `getBoundingClientRect`, and at module
+ * evaluation time those rects are all zero.
+ */
+const takeTourButton = requireElement<HTMLButtonElement>("#take-tour");
+function runIntroTour(): void {
+  takeTourButton.disabled = true;
+  createIntroTour(DEFAULT_TOUR_STEPS, () => {
+    takeTourButton.disabled = false;
+  }).start();
+}
+takeTourButton.addEventListener("click", runIntroTour);
+if (storageStateAtStartup.kind === "first-run") requestAnimationFrame(runIntroTour);
 // Whether closed via the button above, Escape, or a backdrop click, hand
 // keyboard focus back to the canvas so a running level's WASD doesn't go
 // silently nowhere afterward — same reasoning as `canvas.focus()` elsewhere.
