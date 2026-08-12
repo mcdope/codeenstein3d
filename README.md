@@ -27,7 +27,7 @@ and level generation happen entirely in the browser, and nothing is uploaded any
 | A file | A level |
 | A folder | Nothing of its own — the tree order (directories first, then alphabetical) is the order you play the levels in |
 | A function, method, class or global inside that file | A room of that level |
-| A function/method (HP = `cyclomatic_complexity × 25`, split across its pack) | An enemy — higher complexity means more health, more enemies, or a gold-tinted Elite pack |
+| A function/method (HP = `cyclomatic_complexity × 25`, split across its pack — doubled and capped for an Elite) | An enemy — higher complexity means more health, more enemies, or a gold-tinted Elite pack |
 | A function with code smells (>5 params, >3 nesting levels) | A tougher enemy (scaled bonus complexity) |
 | A global variable | An acid pool (hazard terrain) |
 | A private/protected method | A locked room, gated behind a key found elsewhere in the level |
