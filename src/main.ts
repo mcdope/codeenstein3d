@@ -44,6 +44,7 @@ import {
   UNLOCKABLE_WEAPONS,
 } from "./engine/weapons";
 import { DEFAULT_DIFFICULTY, type DifficultyLevel } from "./difficulty";
+import { migrateStorage } from "./storageSchema";
 import { randomSeed } from "./prng";
 import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelSegment } from "./engine/replay";
 import { balanceHashMatches, computeBalanceHash, type BalanceRelevantEnemy } from "./engine/balanceHash";
@@ -107,6 +108,19 @@ const SCENE_HEIGHT = 400;
 /** Extensions treated as a "bonus" restock-arena level (see `launchLevel`) —
  * just the C header today, the only header-file extension this app parses. */
 const BONUS_LEVEL_EXTENSIONS = new Set(["h"]);
+
+/**
+ * Bring persisted data up to the current schema and stamp it, *before* any of
+ * the `load*` helpers below read a key — a migration that ran afterwards would
+ * be transforming values this module had already parsed.
+ *
+ * The return value — the state found *before* stamping — is the only moment
+ * "has this browser ever run the game?" is answerable, since stamping erases
+ * it. It is discarded here because nothing consumes it yet; the first-run
+ * intro will capture it at this call site rather than re-reading storage that
+ * has by then been written to.
+ */
+migrateStorage();
 
 /** localStorage key for the standing player name (see `loadPlayerName`) —
  * same "declared next to the thing that reads it" placement as the gore and
