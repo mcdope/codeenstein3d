@@ -154,9 +154,24 @@ The lane-parallel capture orchestrator. Every one of these was undocumented unti
 | `CODEENSTEIN_CAMPAIGN_LANES` | `2` | Lanes. |
 | `CODEENSTEIN_CAMPAIGN_MAX_INVOCATIONS` | `6` | Runaway backstop. |
 | `CODEENSTEIN_CAMPAIGN_WATCHDOG_MS` | `5_400_000` (90 min) | Per-invocation watchdog. |
-| `CODEENSTEIN_CAMPAIGN_PROFILE` / `_DIFFICULTY` | unset | Restrict the matrix. |
+| `CODEENSTEIN_CAMPAIGN_PROFILE` | unset | Restrict the matrix to one profile. |
+| `CODEENSTEIN_CAMPAIGN_DIFFICULTY` | unset | Restrict the matrix to one difficulty. |
 
-`run-balancing-campaign-multiplayer.mjs` takes the same eight knobs under a `CODEENSTEIN_MP_CAMPAIGN_` prefix, **with different defaults** — target `10`, batch `2`, attempt cap `30`, concurrency `1`, lanes `1`, max invocations `3`, watchdog `14_400_000` (4 h) — plus `CODEENSTEIN_MP_CAMPAIGN_PLAYER_COUNTS` (comma-separated) and `CODEENSTEIN_MP_CAMPAIGN_MIN_LEVEL` (default `4`, read by `verify-multiplayer-campaign.mjs`).
+`run-balancing-campaign-multiplayer.mjs` takes the same knobs under a `CODEENSTEIN_MP_CAMPAIGN_` prefix, **with different defaults**. Spelled out in full rather than as a prefix note, so grepping for one of these actually finds it:
+
+| Var | Default | vs. single-player |
+|---|---|---|
+| `CODEENSTEIN_MP_CAMPAIGN_TARGET` | `10` | 50 |
+| `CODEENSTEIN_MP_CAMPAIGN_BATCH_SIZE` | `2` | 5 |
+| `CODEENSTEIN_MP_CAMPAIGN_ATTEMPT_CAP` | `30` | 80 |
+| `CODEENSTEIN_MP_CAMPAIGN_CONCURRENCY` | `1` | 8 |
+| `CODEENSTEIN_MP_CAMPAIGN_LANES` | `1` | 2 |
+| `CODEENSTEIN_MP_CAMPAIGN_MAX_INVOCATIONS` | `3` | 6 |
+| `CODEENSTEIN_MP_CAMPAIGN_WATCHDOG_MS` | `14_400_000` (4 h) | 5_400_000 (90 min) |
+| `CODEENSTEIN_MP_CAMPAIGN_PROFILE` | unset | same |
+| `CODEENSTEIN_MP_CAMPAIGN_DIFFICULTY` | unset | same |
+| `CODEENSTEIN_MP_CAMPAIGN_PLAYER_COUNTS` | unset | no equivalent — comma-separated list |
+| `CODEENSTEIN_MP_CAMPAIGN_MIN_LEVEL` | `4` | no equivalent — read by `verify-multiplayer-campaign.mjs`, not the campaign runner |
 
 ### Everything else
 
