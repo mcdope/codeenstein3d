@@ -289,6 +289,19 @@ export const DEFAULT_TUNING = {
   // than straight-line. Single-variable switch, as above:
   //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_WALKING_DISTANCE_BLOCKERS":false}'
   BOT_WALKING_DISTANCE_BLOCKERS: true,
+  // Whether `pickThreat` measures an *occluded* candidate by walking distance
+  // rather than straight-line, for both its `engageRadius` gate and its
+  // ordering. The sibling of `BOT_WALKING_DISTANCE_BLOCKERS` above, at the
+  // other of the two sites the walking-distance audit found; visible enemies
+  // are untouched, since a shot does not have to walk anywhere.
+  //
+  // **On because straight-line is the dimensionally wrong measure for a
+  // decision about travel, NOT because it has been shown to help** — same
+  // standing as `BOT_ANGULAR_FIRE_GATE` below, and it should carry that
+  // caveat until an A/B on a substrate that can discriminate says otherwise.
+  // Single-variable switch, as above:
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_WALKING_DISTANCE_THREATS":false}'
+  BOT_WALKING_DISTANCE_THREATS: true,
   // Whether `#walkPathTo` retries without the spike/acid avoid-set when no
   // hazard-free route exists. Single-variable switch, as above:
   //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_HAZARD_ROUTE_FALLBACK":false}'
@@ -683,6 +696,77 @@ export function isWallTile(map, x, y) {
   return tile === undefined || tile === 1 || tile === 6 || tile === 7;
 }
 
+/** 4-directional neighbour offsets, as an array rather than any unordered
+ * collection — this module's determinism rule covers iteration order too. */
+const NEIGHBOUR_OFFSETS = [
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
+];
+
+/**
+ * Walking distance, in 4-directional tile steps, from `origin` to every tile
+ * reachable within `maxSteps`. Returns a `Map` keyed by `"x,y"`, the same key
+ * shape `pathfind.mjs`'s `reachableTiles` uses; a tile absent from it is
+ * either unreachable or beyond the bound, which the only caller treats
+ * identically.
+ *
+ * Bounds come from `map.grid` rather than `map.width`/`map.height` because
+ * every other map reader in this module does the same — the engine's real
+ * `GameMap` carries both, but nothing here has ever needed the scalars, and
+ * depending on them would make this the one helper that cannot run against a
+ * bare grid.
+ *
+ * **Why a flood fill rather than a path per enemy.** One bounded fill answers
+ * every candidate at once, so the cost is a function of `maxSteps` alone
+ * (~2*maxSteps^2 tiles, ~340 at today's radius) instead of scaling with the
+ * number of enemies in the room. `pickThreat` runs up to three times per
+ * decision at 20 decisions/sec, so a BFS *per candidate per call* was not
+ * affordable; this is.
+ *
+ * **Why it is deliberately more permissive than `bfsPath`.** Only structural
+ * walls block here — exactly `isWallTile`'s set, i.e. the same tiles that
+ * block line of sight. Closed doors, hazards and spikes are all treated as
+ * passable, which `bfsPath` and `rankExitBlockers` do not do. That asymmetry
+ * is the point: `rankExitBlockers` plans a route the bot must really walk, so
+ * it has to be honest about what it would cost, whereas this only decides
+ * whether a candidate is worth considering at all. Every generosity here
+ * keeps a candidate that today's straight-line gate would also keep, so the
+ * failure mode is "unchanged behaviour" rather than "a threat silently
+ * dropped because the bot had already opened that door". It also keeps
+ * `pickThreat` free of an opened-doors parameter it has no way to obtain.
+ *
+ * Local rather than imported from `pathfind.mjs` for the reason in this
+ * module's header — it must stay liftable into `src/engine/` — and following
+ * the precedent `STRAFE_BLOCKED_TILES` already sets.
+ */
+export function walkDistances(map, origin, maxSteps) {
+  const height = map.grid.length;
+  const width = map.grid[0]?.length ?? 0;
+  const start = { x: Math.floor(origin.x), y: Math.floor(origin.y) };
+  const dist = new Map();
+  if (start.x < 0 || start.y < 0 || start.x >= width || start.y >= height) return dist;
+  dist.set(`${start.x},${start.y}`, 0);
+  const queue = [{ ...start, step: 0 }];
+  let head = 0;
+  while (head < queue.length) {
+    const cur = queue[head++];
+    if (cur.step >= maxSteps) continue;
+    for (const [dx, dy] of NEIGHBOUR_OFFSETS) {
+      const nx = cur.x + dx;
+      const ny = cur.y + dy;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      const nk = `${nx},${ny}`;
+      if (dist.has(nk)) continue;
+      if (isWallTile(map, nx + 0.5, ny + 0.5)) continue;
+      dist.set(nk, cur.step + 1);
+      queue.push({ x: nx, y: ny, step: cur.step + 1 });
+    }
+  }
+  return dist;
+}
+
 // ---------------------------------------------------------------------------
 // Burst timing
 // ---------------------------------------------------------------------------
@@ -969,6 +1053,12 @@ export function combatStrafeKey(ticks, map, player, travelDist, levelTime, { tun
 // Target selection
 // ---------------------------------------------------------------------------
 
+/** How much slack `pickThreat`'s walking-distance gate allows over
+ * `engageRadius`, to cancel the most a 4-directional step count can
+ * overestimate real travel. Derived, not tuned: `|dx| + |dy|` peaks at exactly
+ * sqrt(2) times `hypot(dx, dy)`, at 45 degrees. See `pickThreat`. */
+const WALK_DISTANCE_GATE_SLACK = Math.SQRT2;
+
 /**
  * Aggressive targeting: prioritize whichever aggroed enemy can be finished
  * off fastest (already in melee range, or an Edge Case) over strictly
@@ -987,6 +1077,31 @@ export function combatStrafeKey(ticks, map, player, travelDist, levelTime, { tun
  * requirement (see this module's doc comment), and leaning on an
  * implementation's stability guarantee for it is the kind of thing that
  * silently stops being true.
+ *
+ * ## Occluded candidates are measured by walking distance
+ *
+ * `dist` is straight-line, and straight-line is the wrong measure for an
+ * enemy the bot would have to *travel* to: one 7 tiles away through a wall
+ * can be 25 tiles by corridor, and it used to both pass the `engageRadius`
+ * gate and sort ahead of an enemy genuinely closer to hand. This is the
+ * second of the two sites the walking-distance audit found; the first was
+ * `driveToExit`'s blocker choice, fixed by `rankExitBlockers`.
+ *
+ * **Only occluded candidates are re-measured, and that is the whole design.**
+ * A visible enemy is engaged by shooting it, which costs no travel at all, so
+ * for those the straight-line distance is not an approximation of the right
+ * answer — it *is* the right answer. Applying walking distance to them would
+ * be a second, unrelated behaviour change smuggled in under the same flag.
+ *
+ * **The `WALK_DISTANCE_GATE_SLACK` factor is what keeps this a narrow fix.**
+ * A 4-directional step count overestimates true travel by up to sqrt(2) — the
+ * 45-degree case, where `|dx| + |dy|` is sqrt(2) times `hypot(dx, dy)` — so
+ * gating raw step counts on `engageRadius` would also reject occluded enemies
+ * standing in *open floor* on a diagonal, which has nothing to do with the
+ * defect. Budgeting `engageRadius * sqrt(2)` cancels that worst case exactly,
+ * which means open floor can never lose a candidate today's gate keeps and
+ * only a genuine detour around geometry can. Note the direction of the whole
+ * change: it can only ever *remove* candidates, never add one.
  */
 export function pickThreat(enemies, player, profile, map, tuning = DEFAULT_TUNING) {
   // `i` is the enemy's index in the engine's own `this.enemies` array
@@ -1001,15 +1116,35 @@ export function pickThreat(enemies, player, profile, map, tuning = DEFAULT_TUNIN
       visible: !map || hasLineOfSight(map, player.x, player.y, e.x, e.y),
     }))
     .filter((e) => e.dist < profile.engageRadius);
-  candidates.sort((a, b) => {
+
+  // Skipped outright when every candidate is visible — the common case, and
+  // the reason the flood fill costs nothing on a typical decision.
+  const walkBudget = profile.engageRadius * WALK_DISTANCE_GATE_SLACK;
+  const walk =
+    map && tuning.BOT_WALKING_DISTANCE_THREATS && candidates.some((e) => !e.visible)
+      ? walkDistances(map, player, Math.ceil(walkBudget))
+      : null;
+  const ranked = walk
+    ? candidates
+        .map((e) => (e.visible ? e : { ...e, walkTiles: walk.get(`${Math.floor(e.x)},${Math.floor(e.y)}`) ?? Infinity }))
+        .filter((e) => e.visible || e.walkTiles <= walkBudget)
+    : candidates;
+
+  ranked.sort((a, b) => {
     const aQuick = a.dist <= tuning.MELEE_RANGE || a.edgeCase;
     const bQuick = b.dist <= tuning.MELEE_RANGE || b.edgeCase;
     if (aQuick !== bQuick) return aQuick ? -1 : 1;
     if (a.visible !== b.visible) return a.visible ? -1 : 1;
-    if (a.dist !== b.dist) return a.dist - b.dist;
+    // Both sides share a visibility by the time this runs, so it always
+    // compares like with like — straight-line against straight-line, walking
+    // against walking — and never one of each. Moving the `visible`
+    // comparison below this one would silently break that.
+    const ad = a.visible ? a.dist : (a.walkTiles ?? a.dist);
+    const bd = b.visible ? b.dist : (b.walkTiles ?? b.dist);
+    if (ad !== bd) return ad - bd;
     return a.i - b.i;
   });
-  return candidates[0];
+  return ranked[0];
 }
 
 /**
