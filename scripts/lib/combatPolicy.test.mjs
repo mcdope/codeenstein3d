@@ -64,6 +64,7 @@ import {
   pelletHitFraction,
   trackEnemyMotion,
   leadTarget,
+  walkDistances,
 } from "./combatPolicy.mjs";
 
 const SIZE = 20;
@@ -254,6 +255,100 @@ describe("pickThreat", () => {
     // With a huge MELEE_RANGE both count as "quick", so it falls through to
     // nearest-first and picks the closer one.
     expect(pickThreat(enemies, player, PROFILE, undefined, { ...DEFAULT_TUNING, MELEE_RANGE: 99 }).i).toBe(1);
+  });
+});
+
+describe("walkDistances", () => {
+  it("measures 4-directional steps, not straight lines", () => {
+    const d = walkDistances(makeMap(), { x: 10.5, y: 10.5 }, 20);
+    expect(d.get("10,10")).toBe(0);
+    expect(d.get("14,10")).toBe(4);
+    // The diagonal is 4.24 tiles apart but 6 steps — the overestimate
+    // WALK_DISTANCE_GATE_SLACK exists to absorb.
+    expect(d.get("13,13")).toBe(6);
+  });
+
+  it("walks around walls rather than through them", () => {
+    // A stub wall at x=13, y=8..12; (14,10) is 4 tiles away but 10 steps.
+    const map = makeMap({ tiles: Array.from({ length: 5 }, (_, k) => [13, k + 8, 1]) });
+    expect(walkDistances(map, { x: 10.5, y: 10.5 }, 20).get("14,10")).toBe(10);
+  });
+
+  it("omits tiles past maxSteps entirely, so a caller cannot read a truncated distance as a real one", () => {
+    const d = walkDistances(makeMap(), { x: 10.5, y: 10.5 }, 3);
+    expect(d.get("13,10")).toBe(3);
+    expect(d.has("14,10")).toBe(false);
+  });
+
+  it("omits sealed-off tiles", () => {
+    // Box (14,10) in on all four sides.
+    const map = makeMap({
+      tiles: [
+        [13, 10, 1],
+        [15, 10, 1],
+        [14, 9, 1],
+        [14, 11, 1],
+      ],
+    });
+    expect(walkDistances(map, { x: 10.5, y: 10.5 }, 40).has("14,10")).toBe(false);
+  });
+});
+
+describe("pickThreat walking distance", () => {
+  // A full-height wall at x=13 whose only gap is at y=1. An enemy just past it
+  // is 4 tiles away in a straight line and 22 by the only corridor there is.
+  const walledOff = () => makeMap({ tiles: Array.from({ length: 17 }, (_, k) => [13, k + 2, 1]) });
+  const farByCorridor = () => makeEnemy({ x: 14.5, y: 10.5 });
+  const offTuning = { ...DEFAULT_TUNING, BOT_WALKING_DISTANCE_THREATS: false };
+
+  it("drops an occluded enemy that is only near in a straight line", () => {
+    expect(pickThreat([farByCorridor()], makePlayer(), PROFILE, walledOff())).toBeUndefined();
+  });
+
+  it("keeps that enemy with the flag off, so the arm is a real A/B arm", () => {
+    expect(pickThreat([farByCorridor()], makePlayer(), PROFILE, walledOff(), offTuning).i).toBe(0);
+  });
+
+  it("keeps that enemy when no map is supplied, since there is nothing to measure against", () => {
+    expect(pickThreat([farByCorridor()], makePlayer(), PROFILE, undefined).i).toBe(0);
+  });
+
+  it("never re-measures a visible enemy — a shot does not have to walk", () => {
+    // Same wall, but the enemy is on the player's own side of it. Its walking
+    // distance is irrelevant and it stays the pick.
+    const near = makeEnemy({ x: 6.5, y: 10.5 });
+    expect(pickThreat([near], makePlayer(), PROFILE, walledOff()).i).toBe(0);
+  });
+
+  it("orders two occluded enemies by corridor distance, reversing the straight-line answer", () => {
+    // P: 4 tiles away, 10 steps around a wall stub. Q: 6 away, 8 steps around
+    // a single pillar. Straight-line ranks P first; walking ranks Q first.
+    const map = makeMap({ tiles: [...Array.from({ length: 5 }, (_, k) => [13, k + 8, 1]), [10, 7, 1]] });
+    const enemies = [makeEnemy({ x: 14.5, y: 10.5 }), makeEnemy({ x: 10.5, y: 4.5 })];
+    expect(pickThreat(enemies, makePlayer(), PROFILE, map, offTuning).i).toBe(0);
+    expect(pickThreat(enemies, makePlayer(), PROFILE, map).i).toBe(1);
+  });
+
+  it("keeps an occluded enemy on a clear diagonal, which is what the sqrt(2) slack is for", () => {
+    // 8.49 tiles away (inside engageRadius) but 12 steps — over engageRadius
+    // as a raw step count, and kept only because the budget allows for the
+    // 4-directional overestimate. One pillar on the sightline occludes it
+    // without lengthening any of the routes around it.
+    const map = makeMap({ tiles: [[13, 13, 1]] });
+    expect(pickThreat([makeEnemy({ x: 16.5, y: 16.5 })], makePlayer(), PROFILE, map).i).toBe(0);
+  });
+
+  it("breaks equal corridor distances by index, so the ordering stays total", () => {
+    // Two pillars, mirrored: both enemies are 6 tiles out and 8 steps around.
+    const map = makeMap({
+      tiles: [
+        [10, 7, 1],
+        [10, 13, 1],
+      ],
+    });
+    const enemies = [makeEnemy({ x: 10.5, y: 4.5 }), makeEnemy({ x: 10.5, y: 16.5 })];
+    expect(pickThreat(enemies, makePlayer(), PROFILE, map).i).toBe(0);
+    expect(pickThreat([enemies[1], enemies[0]], makePlayer(), PROFILE, map).i).toBe(0);
   });
 });
 
