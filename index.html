@@ -302,7 +302,7 @@
               <h3>How it works</h3>
               <ul class="intro-mapping">
                 <li><span class="intro-mapping-from">File</span><span class="intro-mapping-arrow">→</span><span class="intro-mapping-to">Level</span></li>
-                <li><span class="intro-mapping-from">Function</span><span class="intro-mapping-arrow">→</span><span class="intro-mapping-to">Room + Enemy (HP = complexity)</span></li>
+                <li><span class="intro-mapping-from">Function</span><span class="intro-mapping-arrow">→</span><span class="intro-mapping-to">Room + Enemy (HP scales with complexity)</span></li>
                 <li><span class="intro-mapping-from">Global variable</span><span class="intro-mapping-arrow">→</span><span class="intro-mapping-to">Acid pool</span></li>
                 <li><span class="intro-mapping-from">Private/protected method</span><span class="intro-mapping-arrow">→</span><span class="intro-mapping-to">Locked door</span></li>
                 <li><span class="intro-mapping-from">goto / label</span><span class="intro-mapping-arrow">→</span><span class="intro-mapping-to">Teleporter</span></li>
@@ -314,8 +314,9 @@
             <section class="intro-card">
               <h3>What you'll do</h3>
               <p>
-                Shoot your way from start to exit with the echo pistol, the Regex Shotgun, gdb
-                (machine gun), ghidra (rocket launcher), and the SIGKILL Knife for melee.
+                Shoot your way from start to exit with the echo pistol, the Regex Shotgun and
+                the SIGKILL Knife to start — four more to unlock, including gdb (machine gun),
+                ghidra (rocket launcher) and Friday Hotfix (flamethrower).
                 Higher-complexity functions hit harder and soak
                 more damage. Read lore terminals, grab keys for locked rooms, dodge acid pools
                 and spike traps, and reach the green <code>return</code> tile to clear the
@@ -336,8 +337,11 @@
                 machine — no backend, no account, no analytics.
               </p>
               <p>
-                The only network calls this app ever makes are the ones you opt into on the
-                <strong>GitHub</strong> tab, to fetch the repo you asked for.
+                Network calls only happen for the features that need them: loading a repo from
+                the <strong>GitHub</strong> tab, hosting or joining a <strong>Multiplayer</strong>
+                session (which contacts a signaling server, and a relay if your network blocks a
+                direct connection), and picking an online texture pack (served from this site).
+                A local workspace never touches the network at all.
                 <a
                   href="https://github.com/mcdope/codeenstein3d/blob/master/doc/user/privacy.md"
                   target="_blank"

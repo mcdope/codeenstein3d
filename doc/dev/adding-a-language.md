@@ -59,12 +59,20 @@ new GenericParserAdapter({ id: "mylang", extensions: ["ml", "mli"], wasmUrl: myW
 **No edit needed** in `src/parser/registry.ts`: it spreads `GENERIC_ADAPTERS` and derives its
 extension map from each adapter's own `extensions`.
 
+**Adapters and languages are not the same count, and the docs use both.** There are **15
+adapters** (2 bespoke + 13 generic) covering **14 languages**: TSX gets its own adapter but is
+not its own language, so `registry.ts`/`languages.ts` say 15/13 while README's four
+enumerations and §7 below say 14/12. Both are correct — say which one you mean. When adding a
+language that needs more than one grammar (as TypeScript does), the language counts stay put
+and only the adapter counts move.
+
 ## 3. Refinements (optional, usually wanted)
 
 `src/parser/generic/refinements.ts` — per-language overrides on top of the shared traversal:
 real method-vs-function distinction, visibility modifiers, and whatever else the grammar
-words differently. Ten languages have one; `bash` deliberately doesn't. Start without one,
-look at what the generic pass produces, and add only what's actually wrong.
+words differently. Ten refinement bundles cover twelve of the thirteen generic adapters
+(`javascriptLike` serves JavaScript, TypeScript and TSX alike); `bash` deliberately has none.
+Start without one, look at what the generic pass produces, and add only what's actually wrong.
 
 ## 4. The shared vocabulary tables — where a language goes quietly missing
 
@@ -74,7 +82,7 @@ of them:
 
 | Table | Feature it drives | Absent means |
 |---|---|---|
-| `TRY_NODE_TYPES` / `CATCH_NODE_TYPES` / `FINALLY_NODE_TYPES` | Exception Handling Zones | No gauntlets. Legitimate for a language with no exception construct (Go, Rust, Bash) — say so in the table comment rather than leaving it ambiguous. |
+| `TRY_NODE_TYPES` / `CATCH_NODE_TYPES` / `FINALLY_NODE_TYPES` | Exception Handling Zones | No gauntlets. Legitimate for a language with no exception construct (Go, Rust, Bash, and plain C) — say so in the table comment rather than leaving it ambiguous. |
 | `IMPORT_NODE_TYPES` / `CALL_SHAPED_IMPORT_NODE_TYPES` | Vendor Depots | No spawn-room supply alcoves. |
 | `ALLOCATION_NODE_TYPES` / `CALL_NODE_TYPES` / `ARRAY_DECLARATOR_NODE_TYPES` | Acid Overflow rooms | No flooding rooms. Note `ALLOCATOR_NAME_PATTERN` matches on *callee name*, so a language can qualify through `CALL_NODE_TYPES` alone without an allocation keyword. |
 | `GOTO_NODE_TYPE` | Teleporter pads | No teleporters. Only the C-family and Go have `goto` at all. |
