@@ -64,6 +64,14 @@ const ELITE_HP_MULTIPLIER = 2;
  * that it is unkillable in principle (`balancing:budget` confirms every enemy is
  * killable with the damage its level supplies) but that time-to-kill under fire
  * exceeds how long the player survives.
+ *
+ * **This bounds the generator, not the runtime, and coop deliberately exceeds
+ * it.** `RaycasterEngine`'s constructor applies `eliteScalingFor(playerCount)`
+ * to Elites on top of everything here, so a four-player Hard session meets an
+ * anchor around 1,313 HP rather than 525. That is intentional — an Elite sized
+ * for one player is trivial for four — so do not "fix" it by clamping the
+ * product against this constant. See `multiplayerScaling.ts` and
+ * `decisions.md`'s Enemy Scaling entry.
  */
 const ELITE_MEMBER_HP_CAP = 350;
 /**

@@ -33,7 +33,20 @@ export interface EliteScalingMultipliers {
  * HP a solo Elite would have, and a quarter more bite"), not validated ones;
  * see `doc/dev/balancing-telemetry.md` for the process that should tune
  * these once real multiplayer sessions can generate telemetry from, same as
- * every other balance constant in this codebase. */
+ * every other balance constant in this codebase.
+ *
+ * **What they are for**: making an Elite pack a fight the team has to commit
+ * to together. An Elite calibrated for one player is trivial for four, and an
+ * encounter anybody can solo is not a coop encounter. Overshooting
+ * `ELITE_MEMBER_HP_CAP`'s solo-calibrated ceiling is therefore the mechanism
+ * rather than a bug in it — at four players on Hard the anchor lands near
+ * 1,313 HP against that ceiling's 525. Deliberate, and deliberately not
+ * clamped; see `decisions.md`'s Enemy Scaling entry before changing it.
+ *
+ * The purpose is settled; the *numbers* are not. Nothing here rests on
+ * measurement — no coop telemetry campaign has run at anything like the
+ * 112,311-kill scale behind the single-player cap — so treat `1 + 0.5n` as a
+ * placeholder with a clear job, not as a tuned value. */
 const ELITE_HP_SCALE_PER_EXTRA_PLAYER = 0.5;
 const ELITE_DAMAGE_SCALE_PER_EXTRA_PLAYER = 0.25;
 
