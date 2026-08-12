@@ -1324,6 +1324,26 @@ describe("main.ts — first-run intro tour", () => {
     expect(document.querySelector(".intro-tour-popout")).toBeNull();
   });
 
+  it("does not start unprompted under browser automation, but the button still works", async () => {
+    // The five red CI legs this exists for: every Playwright-driven harness —
+    // the verify suite, the balancing bot, the highscore generator — loads the
+    // page with empty storage, which is a first run, and the tour's backdrop
+    // then swallows the clicks they are trying to make. The manual button is
+    // deliberately not gated: an explicit click is an explicit request.
+    localStorage.clear();
+    Object.defineProperty(navigator, "webdriver", { value: true, configurable: true });
+    try {
+      await importMain();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      expect(document.querySelector(".intro-tour-popout")).toBeNull();
+
+      document.querySelector<HTMLButtonElement>("#take-tour")!.click();
+      expect(document.querySelector(".intro-tour-popout")).not.toBeNull();
+    } finally {
+      Object.defineProperty(navigator, "webdriver", { value: false, configurable: true });
+    }
+  });
+
   it("runs the tour on demand and re-enables the button when it ends", async () => {
     await importMain();
     const button = document.querySelector<HTMLButtonElement>("#take-tour")!;
