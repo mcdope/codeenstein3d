@@ -1,5 +1,19 @@
 # Phase 3b — Code-Bug Candidates
 
+> **Resolved 2026-08-12 — F25 is not a bug.** The maintainer's answer: the coop
+> overshoot is **intentional, for now, to promote actual cooperation in coop.**
+> `ELITE_MEMBER_HP_CAP` bounds the generator; `eliteScalingFor` is a separate
+> axis layered above it, and exceeding the solo-calibrated ceiling is the
+> mechanism rather than a defect in it — an Elite sized for one player is
+> trivial for four. So the code is right and the **player-facing docs** were the
+> loose ones. `decisions.md` (Enemy Scaling), `game-design.md`,
+> `enemies.ts:53`'s docblock and `multiplayerScaling.ts` now all record it,
+> including an explicit "do not clamp this" for the next reader who finds the
+> same apparent contradiction. What remains open is only that `1 + 0.5n` is a
+> placeholder: no coop telemetry has run at anything like the 112,311-kill scale
+> behind the single-player cap. **F26 is also retracted** (see `07`); F27 stands
+> and is in `notes`.
+
 Cases where the documentation appears **correct** and the implementation appears
 wrong. **Report only.** No fixes, no patches, no suggested diffs. Each entry
 states the documented intent, the implemented behaviour, and the risk of

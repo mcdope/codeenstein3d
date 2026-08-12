@@ -1,12 +1,13 @@
 # Phase 7 — Deferred Findings Closeout
 
-All 14 findings deferred at Phase 5 are now disposed of. Two of the four blocking
-decisions were resolved **by checking rather than by asking**, and the pass
-retracted **four findings** as invalid — three of them because Phase 3 filed a
-`MISSING` claim without reading the doc that already covered it.
+All 14 findings deferred at Phase 5 are now disposed of. **All four blocking
+decisions are answered** — two resolved by checking rather than asking, one by
+treating it as documentation, and D3 by the maintainer. The pass also retracted
+**three findings as invalid** and reclassified two more, all because Phase 3
+filed claims without reading the doc that already covered them.
 
-Final state: **19 of 30 findings fixed, 5 retracted as invalid, 4 recorded as
-open work, 2 left alone deliberately.**
+Final state across all 30: **24 fixed, 3 retracted as invalid, 1 open in
+`notes`, 2 left alone deliberately.**
 
 ---
 
@@ -17,11 +18,11 @@ open work, 2 left alone deliberately.**
 | **D2** | Does branch protection reference the CI job name? | `gh api …/branches/master/protection` → **404 Branch not protected**; `…/rulesets` → **`[]`**. Nothing references it. Rename is safe, and F11 was never actually blocked |
 | **D4** | Is the missing `--version` aspirational? | Treated as documentation, not a feature request: README now records that the tag *is* the release identity. Building a real `--version` remains available and is not implied by this edit |
 | **D5** | Re-measure or annotate the WAD slot figures? | Annotated as historical (Batch 2, already shipped) |
-| **D3** | What does `ELITE_MEMBER_HP_CAP` bound? | **Still yours.** Recorded in `notes` with both readings and the replay/lockstep constraint, rather than guessed at |
+| **D3** | What does `ELITE_MEMBER_HP_CAP` bound? | **Answered: generator output.** The coop overshoot is intentional, to promote actual cooperation in coop — see below |
 
 ---
 
-## Retractions — 5 findings were wrong
+## Retractions — 3 invalid, 2 reclassified
 
 This is the part of the audit that most needs saying plainly.
 
@@ -70,7 +71,7 @@ notes the absent `--help`.
 
 ### Why this happened, and what it costs
 
-Four of five retractions share one cause: **Phase 3 located `MISSING` findings by
+Every one of these shares one cause: **Phase 3 located `MISSING` findings by
 grepping for identifiers, then asserted absence without reading the prose that
 would have contained them.** Grep proves a *name* is absent; it does not prove a
 *fact* is undocumented. The `MISSING` class was the least reliable output of this
@@ -115,17 +116,45 @@ parked it no longer applies.**
 
 ---
 
-## Recorded as open work — 2
+## F25 — answered, and it turned the finding inside out
 
-Appended to `notes`, which is where this repo keeps open items:
+**D3's answer: the coop overshoot is intentional, for now, to promote actual
+cooperation in coop.**
 
-- **`ELITE_MEMBER_HP_CAP`'s meaning** (was F25) — both readings, the 1,313-HP
-  arithmetic, and the explicit warning that enemy `maxHp` is lockstep simulation
-  state, so changing it desyncs mixed-build sessions and invalidates every
-  multiplayer replay carrying an Elite.
-- **Unvalidated numeric env vars** (was F27) — one of ~60 validates.
+That resolves the ambiguity in the direction where **the code was right and the
+player-facing documentation was the loose part** — the opposite of where the
+audit's instinct pointed. `ELITE_MEMBER_HP_CAP` bounds what the generator emits,
+exactly as its comment says. `eliteScalingFor` is a separate axis layered above
+it, and overshooting the solo-calibrated ceiling is the *mechanism*: an Elite
+sized for one player is trivial for four, and an encounter anybody can solo is
+not a coop encounter.
 
-`notes` was appended to, never rewritten; no existing line was touched.
+Documented in four places, because a reader can arrive at this contradiction
+from any of them:
+
+| Surface | What it now says |
+|---|---|
+| `decisions.md` → Enemy Scaling | The full rationale, plus an explicit **"do not fix this by clamping the product"** — naming this audit as the thing that flagged it, so the next person to spot it stops there |
+| `game-design.md` | "no enemy is ever bigger than *one* player can actually kill", with coop named as the deliberate exception |
+| `enemies.ts:53` docblock | "This bounds the generator, not the runtime, and coop deliberately exceeds it" |
+| `multiplayerScaling.ts` | What the constants are *for*, which was the one thing the file never said |
+
+**What stays open is narrower than the finding was.** The purpose is settled;
+the numbers are not. `1 + 0.5n` rests on no measurement — no coop telemetry
+campaign has run at anything near the 112,311-kill scale behind the
+single-player cap — so it is a placeholder with a clear job, and every doc above
+says so rather than implying it was tuned. That is a balance question waiting on
+data, not a correctness one.
+
+The lockstep constraint still holds and is recorded: enemy `maxHp` is simulation
+state, so any change here moves with a build-version bump or not at all.
+
+## Recorded as open work — 1
+
+- **Unvalidated numeric env vars** (was F27) — one of ~60 validates. In `notes`.
+
+`notes` was appended to and then had the answered F25 item removed once D3
+landed; no pre-existing line was ever touched.
 
 ---
 
@@ -157,10 +186,15 @@ the Phase 6 prevention work happens, the CI surface is **larger than
 
 | Outcome | Count | IDs |
 |---|---|---|
-| **Fixed** | **19** | F01-F15, F17-F19, F21-F24, F28 (see 05 for the first 16) |
-| **Retracted as invalid** | **5** | F16, F20, F26, F23-partial, + F19's `MISSING` classification |
-| **Open work in `notes`** | **2** | F25, F27 |
+| **Fixed** | **24** | Phase 5: F01-F10, F12-F14, F18, F21, F24 (16). Phase 7: F11, F15, F17, F19, F22, F23, F25, F28 (8) |
+| **Retracted as invalid** | **3** | F16, F20, F26 |
+| **Open work in `notes`** | **1** | F27 |
 | **Left alone deliberately** | **2** | F29, F30 |
 
-No finding remains deferred. One decision (**D3**) remains yours, and it is a
-design question about behaviour, not about documentation.
+Two of the 24 carry a correction as well as a fix: **F19** was `MISSING` and is
+really `INCOMPLETE` (half its flags were documented), and **F23** was half
+invalid (the `"Bug"` instance was correct; only `README.md:54` was real).
+
+**No finding remains deferred and no decision remains open.** F25's resolution
+was the one that mattered most, and it went the way the audit did not expect:
+the code was right, and the documentation around it was the loose part.
