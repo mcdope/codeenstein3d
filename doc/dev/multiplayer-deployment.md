@@ -310,7 +310,7 @@ the mapping, and neither name is "the" name:
 | `docker/.env` | Server environment variable | Notes |
 |---|---|---|
 | `ALLOWED_ORIGIN` | `CODEENSTEIN_MULTIPLAYER_ALLOWED_ORIGIN` | Required — compose fails to start without it |
-| `SIGNALING_HOST_PORT` | `CODEENSTEIN_MULTIPLAYER_PORT` | Published port; the container's own stays 8787 |
+| `SIGNALING_HOST_PORT` | *(none — see note)* | The **host** side of the port publish only. The container's `CODEENSTEIN_MULTIPLAYER_PORT` is a literal `8787` in the compose file, so changing this changes where the reverse proxy connects, **not** what the server binds inside the container |
 | `SIGNALING_SUBNET` | `CODEENSTEIN_MULTIPLAYER_TRUSTED_PROXY_IPS` | One value feeds both the bridge definition and the trusted list, so they cannot drift |
 | `STATS_TOKEN` | `CODEENSTEIN_MULTIPLAYER_STATS_TOKEN` | Unset disables the stats endpoint entirely |
 | `TURN_SECRET` | `CODEENSTEIN_MULTIPLAYER_TURN_SECRET` | Shared with coturn; unset leaves the credentials route a 404 |
