@@ -857,7 +857,7 @@ the compatibility surface (the replay viewer and every harness call `advance()`
 directly and expect a rendered frame per step). Three existing tools gate it,
 none new:
 
-1. The full Vitest suite (100%-coverage gate) passes unchanged.
+1. The full Vitest suite passes unchanged, clearing `vitest.config.ts`'s coverage gate (99.9/99.9/99.5/99.5, not 100% — see that file).
 2. **Existing recorded replays still play back correctly** — the strongest
    available proof, since replay playback fails visibly if the PRNG draw sequence
    or any simulation math shifted by even one call.

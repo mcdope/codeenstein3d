@@ -324,7 +324,9 @@ cost/concurrency assumptions carry over.
 ## Verification (once implemented)
 
 - `npm run typecheck` clean; unit tests for any new engine-side per-player
-  telemetry code, at 100% coverage (this project's standing bar).
+  telemetry code, clearing the coverage gate in `vitest.config.ts` (this
+  project's standing bar — 99.9/99.9/99.5/99.5, not 100%; see that file for
+  the measurement bug that stopped it being 100%).
 - `balancing:scan-multiplayer` run locally against a real, isolated dev +
   dedicated signaling server pair before being trusted as a regression gate.
 - Confirm single-player's own `getTelemetrySnapshot()`/`balancing:scan`
