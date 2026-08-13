@@ -409,8 +409,9 @@ export const DEFAULT_TUNING = {
   // identical configurations at p=0.048. **The gate binds on 45.4% of
   // Casual's shots and still changes nothing measurable.** Kept because it
   // costs nothing and is dimensionally right, not because it was shown to
-  // work — removing it would be defensible on the Stage 6 precedent. See
-  // `history.md`.
+  // work — a deliberate call, not an oversight, so do not remove it as a dead
+  // flag. Rationale in `decisions.md` under *Two Measured No-Ops, Kept
+  // Deliberately*; numbers in `history.md`.
   BOT_ANGULAR_FIRE_GATE: true,
   // Whether `expectedDamagePerShot` models a multi-pellet cone by integrating
   // each pellet's own hit probability (see `pelletHitFraction`) instead of
