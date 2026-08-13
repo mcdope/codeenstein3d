@@ -186,6 +186,18 @@ The balancing bot's movement and combat logic is unusually easy to "obviously im
 
 The recurring lesson across all of these: **a bot-behaviour change is not validated by the metric it was designed to move**, because that metric is itself measured through the bot. Guard metrics (`qualifyRate`, per-level conditional death rate) are pre-registered in `abReport.mjs` for exactly this reason — see [Balancing Telemetry](balancing-telemetry.md).
 
+## Two Measured No-Ops, Kept Deliberately (user, 2026-08-13)
+
+`BOT_WALKING_DISTANCE_THREATS` and `BOT_ANGULAR_FIRE_GATE` were both measured against a staged curl campaign and both moved nothing — full numbers in [history.md](history.md), including the powered three-arm re-run that retracted the one cell which had looked significant. **Both stay ON, and that is a decision rather than an oversight**, so do not re-open it as "two dead flags nobody removed".
+
+The reasoning, which the measurements do not touch:
+
+- **Each replaces a dimensionally wrong quantity with a right one.** Straight-line distance is the wrong measure for a decision about *travel*; a fixed angular tolerance is the wrong measure against a target whose angular width falls off as `1/dist`. A null says the wrong quantity happened not to cost anything on this campaign, not that it was the right quantity.
+- **Neither costs anything measurable** — no perf signal, and each is a small expression inside a decision that already exists rather than a new mechanism. This is the substantive difference from **Stage 6**, which was reverted: that added a whole engagement path for a gate that could open on 0.99% of decisions. These two fire constantly (the walking-distance rule changes the answer at 16.1% of candidate-bearing positions, 33.2% on the wall level; the angular gate binds on 45.4% of Casual's shots) and are nearly free.
+- **The instrument cannot see the reason they exist.** The bot is destined to become a deathmatch opponent, where "tracks you through a wall" and "takes a long shot it cannot land" are things a *human* notices. No bot harness measures how a fight feels, so a null here is silent on that question rather than evidence against it.
+
+What the nulls *did* retire is the "unproven" label. Neither may be described as awaiting evidence; both are **measured neutral on curl/hard**, which is weaker than "they work" and stronger than "untested".
+
 ## UI/DOM Gotchas
 
 **A CSS class that sets `display` silently defeats the `hidden` attribute.** Show/hide in this app is done by toggling the `hidden` attribute, which works because the UA stylesheet carries `[hidden] { display: none }`. But that is a *user-agent origin* rule, and any author-origin declaration beats it — so the moment a class on the same element sets `display` (`flex`, `grid`, `block`, anything), the element stays visible with `hidden` set, with no error and nothing in the console to hint at it. The fix is an explicit override per class:
