@@ -28,6 +28,21 @@ Entries are newest-first, in the format the `notes` backlog uses. Nothing here i
 
   **Incidental: 10 attempts crashed on `#launch-demo-campaign` "resolved to ... element is not visible"**, all inside a single invocation (`gatecasual_offB/Casual-hard-003`), self-healed by the orchestrator's retry. Not the first-run tour blocking the button — that would hit attempt 1 of every invocation, and it hit exactly one. Filed as a harness-flake signature; the "resolved but not visible" wording is the useful part if it recurs.
 
+  **ripgrep, the third mechanism: 0 wedges in 105 runs, and its wall turns out to be a skill gradient rather than a blockage.** This was the cell most likely to surprise — its historic failure was the locked-door/gate blockage that stopped **16 of 18 runs at L8, 83% wedged, 0 completed**, capped since by `MAX_GATES = 6`, and neither curl nor serilog exercises that path.
+
+  | profile | runs | died | cleared | **stuck** | clear % |
+  |---|---:|---:|---:|---:|---:|
+  | Casual | 40 | 39 | 1 | **0** | 3% |
+  | Gamer | 40 | 20 | 20 | **0** | 50% |
+  | Pro | 25 | 2 | 23 | **0** | 92% |
+  | **total** | **105** | 61 | 44 | **0** | 42% |
+
+  **3% -> 50% -> 92% across the skill ladder is the finding**, and it is the opposite of a blockage: a wedge does not care which profile is driving, and this cares enormously. An early Casual-heavy sample read as "L7 is a 9% wall for everyone", which was a sampling artefact of the order the lanes happened to run — worth remembering that the per-profile split is where a wedge and a difficulty spike become distinguishable.
+
+  **Stopped deliberately at 105 of a planned 120**, because the marginal 15 attempts were worth ~0.3pp: `0/105` bounds the true wedge rate under **2.8%** at 95%, `0/120` under 2.5%, and Pro was running at 0.16 attempts/min because it *clears* the campaign and a full 15-level clear is slow. Recorded as 105 rather than presented as the plan.
+
+  **One analysis trap the stop itself created.** Killing the orchestrator mid-flight orphans in-progress lane runs, and an in-progress run looks exactly like a wedge — no `playerDeath`, never reached the last level. The counts above are therefore restricted to **banked invocations only** (an events directory with a matching cell JSON), which excluded exactly the two invocations that were in flight (`Pro-hard-003`, `Pro-hard-006`) and reconciles to the same 105 the cell files report. Anyone re-running this must apply the same filter or they will invent wedges that are really just an interrupted capture.
+
   **serilog is also a warning about substrate choice**: at 96.7% completion and 14.94 of 15 levels per attempt it is saturated at the *ceiling*, exactly as the demo campaign is, and would have been useless as an A/B substrate. curl sits mid-band. Two real repos, opposite failure modes — so the recipe recorded in the entry below needs its caveat honoured: **pilot every candidate**, never assume "real repo" implies "discriminating".
 
 - [x] **Two unproven bot flags measured against a real repo, and the substrate question answered on the way (2026-08-13).** `BOT_WALKING_DISTANCE_THREATS` and `BOT_ANGULAR_FIRE_GATE` both shipped ON and explicitly unproven, because the demo campaign clears 100% with zero deaths and cannot discriminate anything. This is the staged-real-repo capture the backlog had been asking for. **400 attempts total, ~2.5h, four lanes.** Archives `balancing_capture_ab_walkthreat_{off,on}` and `balancing_capture_ab_anglegate_{off,on}`.
