@@ -296,10 +296,15 @@ export const DEFAULT_TUNING = {
   // are untouched, since a shot does not have to walk anywhere.
   //
   // **On because straight-line is the dimensionally wrong measure for a
-  // decision about travel, NOT because it has been shown to help** — same
-  // standing as `BOT_ANGULAR_FIRE_GATE` below, and it should carry that
-  // caveat until an A/B on a substrate that can discriminate says otherwise.
-  // Single-variable switch, as above:
+  // decision about travel — and now MEASURED NEUTRAL rather than merely
+  // unproven.** 240 attempts on a staged curl campaign (Casual/Gamer/Pro x
+  // hard, 2026-08-13): L9 clear rate 58% both arms (p=1.000), L10 48% -> 55%
+  // (p=0.496), levels-per-attempt mixed in sign. It is a null from a
+  // mechanism that *fires* — the static sweep puts the answer-change rate at
+  // 16.1% of candidate-bearing positions on those very levels, 33.2% on
+  // level 9 — which is what separates it from Stage 6's dead gate. Kept on
+  // the dimensional argument; do not re-file it as untested. See
+  // `history.md`. Single-variable switch, as above:
   //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_WALKING_DISTANCE_THREATS":false}'
   BOT_WALKING_DISTANCE_THREATS: true,
   // Whether `#walkPathTo` retries without the spike/acid avoid-set when no
@@ -380,6 +385,19 @@ export const DEFAULT_TUNING = {
   // a target whose angular width falls off as `1/dist`, it costs nothing
   // measurable, and the bot is destined to become a deathmatch opponent that
   // will take longer shots than this campaign ever offers.
+  //
+  // **RE-RUN 2026-08-13 on the long-shot substrate the paragraph above asks
+  // for, and the answer is still "not established" — but for a better reason
+  // than underpowering.** Staged curl does contain the shots: 45.4% of
+  // Casual's and 23.5% of Gamer's exceed their binding radius (Pro: 19 of
+  // 17,528, so Pro was excluded from the A/B by construction). Casual L9
+  // clear rate moved 27% -> 50% (p=0.043) — and that is *not* claimed as a
+  // win, because below the binding radius the two arms are identical code and
+  // therefore a free null control: hit rate moved +2.4pp there against
+  // +2.5pp in the binding zone, a difference-in-differences of **+0.1pp**.
+  // A gate that worked by refusing unlandable shots had to move the binding
+  // zone more, and it did not. Gamer moved exactly 0.0pp. To settle it:
+  // Casual-only, n>=120/arm, with a real null-control arm. See `history.md`.
   BOT_ANGULAR_FIRE_GATE: true,
   // Whether `expectedDamagePerShot` models a multi-pellet cone by integrating
   // each pellet's own hit probability (see `pelletHitFraction`) instead of

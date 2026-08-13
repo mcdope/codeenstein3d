@@ -12,6 +12,32 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **Two unproven bot flags measured against a real repo, and the substrate question answered on the way (2026-08-13).** `BOT_WALKING_DISTANCE_THREATS` and `BOT_ANGULAR_FIRE_GATE` both shipped ON and explicitly unproven, because the demo campaign clears 100% with zero deaths and cannot discriminate anything. This is the staged-real-repo capture the backlog had been asking for. **400 attempts total, ~2.5h, four lanes.** Archives `balancing_capture_ab_walkthreat_{off,on}` and `balancing_capture_ab_anglegate_{off,on}`.
+
+  **The substrate had to be found by pilot, because every per-repo number on record was stale.** Stage C's 0%/94%/96% column predates the Elite cap by one day; the 2026-08-09 mid-band figures (curl 41%, wolf3d L9 30%) predate the angular gate, the level-1 planner desync fix, the teleporter-pad give-up and the pellet-cone model — the same window over which demo-campaign Pro/hard went from 1-of-42 clearing L15 to 20 of 20. A 20-attempt pilot on staged curl found the live shape: **L1-L8 at 100%, L9 at 45%, L10 at 33%, nothing past L11.** So curl discriminates, but **campaign completion is 0% and was excluded as a metric in advance** rather than reported later as a null. wolf3d was piloted too and dropped: it runs at ~0.29 attempts/min against curl's 1.96, roughly 7x the cost for the same question. Note the staging is **not** reproducible from the 2026-08-09 archives — re-staging curl today picks different files at slots 7/10/12/14, so none of these numbers compare to the old 24/58.
+
+  **`BOT_WALKING_DISTANCE_THREATS`: a null, from a mechanism that fired constantly.** Casual/Gamer/Pro x hard, 40 per combo per arm.
+
+  | cell | OFF | ON | delta | Fisher p |
+  |---|---|---|---|---|
+  | L9 pooled | 69/119 (58%) | 69/118 (58%) | +0.5pp | 1.000 |
+  | L10 pooled | 33/69 (48%) | 38/69 (55%) | +7.2pp | 0.496 |
+
+  Levels-cleared-per-attempt moved -0.11 / +0.07 / +0.08 on Casual/Gamer/Pro — mixed signs. **The largest single movement is Pro's L10 at +20.4pp (p=0.231, n=23 vs 22), and it is worth naming because it becomes the noise-floor estimate for everything below**: this harness produced a 20pp swing at n~20 from a lever otherwise measured flat, and Casual's L10 moved -4.2pp on the same level in the same run. This is a null *from a mechanism that fired*, which is what distinguishes it from Stage 6: the static sweep re-run against the staged curl levels puts the answer-change rate at **16.1% of positions with an in-radius candidate** and **33.2% on level 9**, the level the difficulty lives on. The lever was pulled thousands of times per run and nothing moved.
+
+  **`BOT_ANGULAR_FIRE_GATE`: availability finally confirmed, effect still not established.** The standing note said settling this needs "a test case that actually contains long shots", and curl is that case — measured from the walking-distance capture, **45.4% of Casual's 18,003 shots exceed the 3.6t binding radius and 23.5% of Gamer's 17,113 exceed 5.8t**. **Pro was excluded by construction**: only **19 of its 17,528 shots (0.1%)** exceed 9.6t, so a Pro arm buys 80 attempts of guaranteed noise. Binding radii were verified directly off `angularHalfWidth` rather than taken from the note.
+
+  | cell | OFF | ON | delta | Fisher p |
+  |---|---|---|---|---|
+  | Casual L9 | 12/45 (27%) | 20/40 (50%) | +23.3pp | **0.043** |
+  | Casual L10 | 5/12 (42%) | 13/20 (65%) | +23.3pp | 0.277 |
+  | Gamer L9 | 21/40 (53%) | 21/40 (53%) | 0.0pp | 1.000 |
+  | Gamer L10 | 8/21 (38%) | 7/21 (33%) | -4.8pp | 1.000 |
+
+  **The nominally-significant Casual L9 cell is NOT being claimed as a win, and the reason is a control the capture supplies for free.** Below its binding radius the gate is *identical code* in both arms, so that zone is a built-in null control. Hit rate moved **+2.4pp below the radius (z=5.57)** and **+2.5pp above it (z=3.28)** — the difference-in-differences is **+0.1pp**. If the gate worked by refusing shots geometry cannot land, the binding zone had to improve *more* than the zone where the arms run the same code, and it did not; the hit-rate gain is a global shift between arms, not something the gate did. Gamer, at 23.5% binding, moved exactly **0.0pp** at L9. And p=0.043 is one cell out of twelve tested across the two A/Bs, against a harness whose own noise floor in this very session was a 20.4pp swing at comparable n. Suggestive, unconfirmed.
+
+  **Both flags stay ON, and what changes is the label, not the default.** Straight-line is the dimensionally wrong measure for a travel decision and a fixed angular tolerance is dimensionally wrong for a shot; neither shows harm at this n. They are no longer "unproven" — they are *measured neutral on curl/hard*, which is a different and weaker claim than "they work". **To settle the angular gate properly**: Casual-only, n>=120 per arm, plus a true null control arm (identical code both sides) to establish this substrate's noise floor directly instead of borrowing it from the other A/B. **Neither result bears on the deathmatch-opponent case** for either flag — "an opponent that tracks you through a wall reads as cheating" is a claim about a human observer and no bot harness measures it.
+
 - [x] **`pickThreat` measures an occluded enemy by walking distance — the walking-distance audit's second and last site, closed (2026-08-12).** `dist` was `Math.hypot`, and `pickThreat` both *gated* on it (`.filter(e => e.dist < profile.engageRadius)`) and ranked on it, so an enemy 7 tiles away through a wall and 25 by corridor read as "close" and could be picked over one genuinely to hand. Same defect and same measure as `driveToExit`'s blocker choice, fixed by `rankExitBlockers` on 2026-07-31; that entry is below and this closes the pair.
 
   **Only occluded candidates are re-measured, and that is the design rather than a shortcut.** A visible enemy is engaged by shooting it, which costs no travel, so for those straight-line distance is not an approximation of the right answer — it *is* the right answer. This is the one substantive difference from `rankExitBlockers`, whose blockers must all be walked to.
