@@ -12,6 +12,25 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **Attrition sized: regular + Edge Case do 88-100% of enemy damage, and Elites are individually lethal but numerically a rounding error (2026-08-13).** The backlog item had deliberately refused to size itself until the bot fixes landed, because the pre-fix numbers were contaminated by a bot walking 14,000 tiles for loot and knife-trading Elites. Those fixes landed 2026-08-06; this reads **~1,000 post-fix runs** already on disk across staged curl, serilog and ripgrep. No new machine time.
+
+  | | curl | serilog | ripgrep |
+  |---|---:|---:|---:|
+  | normal | **72.7%** | 70.2% | 56.9% |
+  | edgeCase | 15.7% | 29.8% | 43.1% |
+  | elite | **11.6%** | none staged | none staged |
+  | **regular + edgeCase** | **88.4%** | **100%** | **100%** |
+
+  **The hypothesis survives its own re-measure, which is the part worth noting.** curl's Elite share is **11.6%** post-fix against **10.0%** in the pre-fix sweep — so the contamination this item spent a week waiting out barely moved this metric. The claim was right for reasons that did not depend on the bot's defects.
+
+  **Per-enemy is where the mechanism shows.** curl damage-per-spawn: Elite **17.4**, normal **3.6**, Edge Case **0.7** — an Elite is ~5x deadlier than a regular and ~25x an Edge Case. Against 1,536 Elites, **46,309** normals and **49,151** Edge Cases. So "the full stop, not the attrition" is now measured rather than inferred: Elites are dangerous per encounter and irrelevant per campaign.
+
+  **One of the two metrics the item asked for is uninformative, recorded so nobody re-runs it.** "The share of deaths where no Elite was present at all" comes out at 0.5% on curl — but only because nearly every staged curl level *has* an Elite, so the number measures staging rather than lethality. Damage share discriminates; roster presence does not. serilog and ripgrep answer it trivially at 100% and 98.4%, having no Elites at all.
+
+  **Unasked-for and the most actionable thing here: environmental damage varies enormously by repo.** 5.0% on curl, 7.6% on serilog, **29.7% on ripgrep** — mines 16.3% plus acid 12.1%. A third of all damage taken on the repo whose Casual arm clears 3% comes from level furniture rather than from enemies. Any look at ripgrep difficulty should start there and not at its roster.
+
+  **Schema traps, verified before use rather than assumed** — both would produce quietly wrong shares. `by[]` is populated *only* for enemy sources (its empty count matches `trapSpike + hazard + trapMine + selfRocket` exactly), so enemy-vs-environment has to come from `src`; and `by[].amt` is a consistent **2/3** of `amt` in this hard-difficulty data, i.e. a pre-scaling quantity, so the two must never be mixed in one ratio. curl's figures pool the walking-distance and angular-gate A/B arms, which is defensible only because both were measured neutral.
+
 - [x] **The bot wedge re-measured: curl 0 in 787, serilog 96.7% full-campaign completion against a pre-fix 60/60 wedged (2026-08-13).** The backlog had carried this as "a campaign, not an afternoon" since 2026-08-06, and the `121 of 405 runs (30%)` headline with it. It does not survive. ripgrep is still running at time of writing and is appended below when it lands.
 
   **curl cost nothing — the answer was already on disk.** Eight captures from the flag A/Bs had banked **797 attempts** on staged curl, so the rate came out of existing data rather than a new run. Per-run outcomes reconstructed from the event logs: **787 runs died, 0 ended any other way, 0 wedges.** The 10 missing attempts reconcile exactly against 10 crashes (below), so nothing is unaccounted for.
