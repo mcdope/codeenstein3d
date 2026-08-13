@@ -396,8 +396,21 @@ export const DEFAULT_TUNING = {
   // therefore a free null control: hit rate moved +2.4pp there against
   // +2.5pp in the binding zone, a difference-in-differences of **+0.1pp**.
   // A gate that worked by refusing unlandable shots had to move the binding
-  // zone more, and it did not. Gamer moved exactly 0.0pp. To settle it:
-  // Casual-only, n>=120/arm, with a real null-control arm. See `history.md`.
+  // zone more, and it did not. Gamer moved exactly 0.0pp.
+  //
+  // **SETTLED the same day by the powered re-run, and the answer is no
+  // effect.** Casual-only, three arms of 120 on identical staging, two of them
+  // (`offA`/`offB`) the same code so the noise floor is measured rather than
+  // argued: null control moved +2.0pp at L9 and **-7.8pp at L10**, and
+  // levels-per-attempt spread **0.68 between identical arms** — more than the
+  // treatment's +0.44. Treatment L9 +5.7pp (p=0.316), L10 +1.1pp (p=1.000).
+  // The earlier +23.3pp was one unlucky OFF draw: that arm read 12/45 (26.7%)
+  // where the powered baseline reads 102/239 (42.7%), a 16.0pp gap between
+  // identical configurations at p=0.048. **The gate binds on 45.4% of
+  // Casual's shots and still changes nothing measurable.** Kept because it
+  // costs nothing and is dimensionally right, not because it was shown to
+  // work — removing it would be defensible on the Stage 6 precedent. See
+  // `history.md`.
   BOT_ANGULAR_FIRE_GATE: true,
   // Whether `expectedDamagePerShot` models a multi-pellet cone by integrating
   // each pellet's own hit probability (see `pelletHitFraction`) instead of
