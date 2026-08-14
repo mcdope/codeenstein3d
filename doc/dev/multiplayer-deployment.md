@@ -315,7 +315,20 @@ the mapping, and neither name is "the" name:
 | `STATS_TOKEN` | `CODEENSTEIN_MULTIPLAYER_STATS_TOKEN` | Unset disables the stats endpoint entirely |
 | `TURN_SECRET` | `CODEENSTEIN_MULTIPLAYER_TURN_SECRET` | Shared with coturn; unset leaves the credentials route a 404 |
 | `TURN_URLS` | `CODEENSTEIN_MULTIPLAYER_TURN_URLS` | Comma-separated |
-| `TURN_TTL_SECONDS` | `CODEENSTEIN_MULTIPLAYER_TURN_TTL_SECONDS` | Default 3600 |
+| `TURN_TTL_SECONDS` | `CODEENSTEIN_MULTIPLAYER_TURN_TTL_SECONDS` | Default 3600. Must be a positive whole number — see the note below |
+
+**A numeric variable that is not a number now stops the server, deliberately.**
+Every numeric knob used to be read as a bare `Number(...)`, and `Number("abc")`
+is `NaN` — so a typo did not fail, it propagated: a `NaN` port bound
+unpredictably, and a `NaN` TTL or rate limit makes every comparison against it
+false, quietly disabling the guard it was meant to configure. The server now
+refuses to start and names the variable and the value it got.
+
+For a deployment this means one thing at upgrade time: a container that has
+been running happily with a typo'd value will **fail on its next restart**
+rather than carry on with a wrong number. `TURN_TTL_SECONDS` is the only
+numeric variable this table exposes, so that is the one to check in your
+`.env` before pulling — a bare integer like `3600`, not `3600s` or `1h`.
 
 The remaining `TURN_*` keys in `.env` (realm, ports, certs, quotas) are coturn's
 own configuration and never reach the signaling server. Everything the server
