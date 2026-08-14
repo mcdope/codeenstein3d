@@ -75,6 +75,7 @@ import { FIREFOX_LAUNCH_OPTIONS, makeEligible, waitForConnected } from "./lib/mu
 import { MultiplayerBot } from "./lib/multiplayerBot.mjs";
 import { planRoute } from "./lib/routePlanner.mjs";
 import { PROFILES } from "./run-balancing-telemetry.mjs";
+import { envNumber } from "./lib/envNumber.mjs";
 
 const DEV_SERVER_URL = process.env.CODEENSTEIN_DEV_URL ?? "http://localhost:5173";
 const TICKING_TIMEOUT_MS = 30_000;
@@ -255,7 +256,7 @@ async function dumpExitGate(hostPage, bot, map) {
  * the budget below what a healthy run costs and confirm the failure carries
  * the trace it promises. Done that way when it landed.
  */
-const HOST_NAV_DEADLINE_MS = Number(process.env.CODEENSTEIN_TRANSITION_NAV_DEADLINE_MS ?? 9 * 60 * 1000);
+const HOST_NAV_DEADLINE_MS = envNumber("CODEENSTEIN_TRANSITION_NAV_DEADLINE_MS", 9 * 60 * 1000, { integer: true, min: 0 });
 
 /**
  * Runs `work()` against an absolute wall-clock deadline (epoch ms). On breach

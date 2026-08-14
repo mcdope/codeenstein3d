@@ -89,11 +89,12 @@
  */
 import { installVirtualClock } from "./lib/virtualClock.mjs";
 import { resolveBrowserEngine } from "./lib/browserEngine.mjs";
+import { envNumber } from "./lib/envNumber.mjs";
 
 const DEV_SERVER_URL = process.env.CODEENSTEIN_DEV_URL ?? "http://localhost:5183";
-const LEVEL_LIMIT = process.env.CODEENSTEIN_REPLAY_LEVEL_LIMIT ? Number(process.env.CODEENSTEIN_REPLAY_LEVEL_LIMIT) : null;
-const CONCURRENCY = Number(process.env.CODEENSTEIN_REPLAY_CONCURRENCY ?? 2);
-const SPEED = Number(process.env.CODEENSTEIN_REPLAY_SPEED ?? 1);
+const LEVEL_LIMIT = envNumber("CODEENSTEIN_REPLAY_LEVEL_LIMIT", null, { integer: true, min: 1 });
+const CONCURRENCY = envNumber("CODEENSTEIN_REPLAY_CONCURRENCY", 2, { integer: true, min: 1 });
+const SPEED = envNumber("CODEENSTEIN_REPLAY_SPEED", 1, { min: 0.01 });
 const CONSOLE_FORWARD = process.env.CODEENSTEIN_CONSOLE_FORWARD === "1";
 /** Per-chunk progress lines — the trace to read when a run stops concluding,
  * rather than reasoning about it from the final counters. */

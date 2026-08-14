@@ -41,6 +41,7 @@ import { LocalRunner, runLaneOrchestrator } from "./lib/laneOrchestrator.mjs";
 import { buildSshRunners } from "./lib/sshRunner.mjs";
 import { PROFILES, DIFFICULTIES } from "./run-balancing-telemetry.mjs";
 import { curateMixedProfiles } from "./run-balancing-telemetry-multiplayer.mjs";
+import { envNumber } from "./lib/envNumber.mjs";
 
 const TELEMETRY_SCRIPT = path.join(REPO_ROOT, "scripts/run-balancing-telemetry-multiplayer.mjs");
 const RUNS_DIR = path.join(REPO_ROOT, "balancing_runs_multiplayer");
@@ -51,32 +52,32 @@ const LOGS_DIR = path.join(RUNS_DIR, "logs");
 // wall-clock cost per attempt here (no virtual clock, real Web-Worker-timer
 // pacing) is on the order of minutes, not near-free, per
 // run-balancing-telemetry-multiplayer.mjs's own doc comment.
-const TARGET_QUALIFYING = process.env.CODEENSTEIN_MP_CAMPAIGN_TARGET ? Number(process.env.CODEENSTEIN_MP_CAMPAIGN_TARGET) : 10;
+const TARGET_QUALIFYING = envNumber("CODEENSTEIN_MP_CAMPAIGN_TARGET", 10, { integer: true, min: 1 });
 // Qualifying runs collected per single spawned invocation/file.
-const BATCH_SIZE = process.env.CODEENSTEIN_MP_CAMPAIGN_BATCH_SIZE ? Number(process.env.CODEENSTEIN_MP_CAMPAIGN_BATCH_SIZE) : 2;
+const BATCH_SIZE = envNumber("CODEENSTEIN_MP_CAMPAIGN_BATCH_SIZE", 2, { integer: true, min: 1 });
 // Real lesson from this session: an unbounded attempt cap let one genuinely
 // low-qualifying-rate combo (Casual/Hard/2p) run 50+ real attempts before
 // anyone could tell it apart from a hang. A real cap here means a combo
 // that blows through it just resumes on the next invocation instead of
 // silently consuming the whole campaign's wall-clock budget.
-const ATTEMPT_CAP = process.env.CODEENSTEIN_MP_CAMPAIGN_ATTEMPT_CAP ? Number(process.env.CODEENSTEIN_MP_CAMPAIGN_ATTEMPT_CAP) : 30;
+const ATTEMPT_CAP = envNumber("CODEENSTEIN_MP_CAMPAIGN_ATTEMPT_CAP", 30, { integer: true, min: 1 });
 // Internal attempt concurrency *within* one spawned invocation — kept at the
 // underlying script's own conservative default (1); see its own doc comment
 // on why raising this is a real, unmeasured resource-contention risk.
-const CONCURRENCY_PER_LANE = process.env.CODEENSTEIN_MP_CAMPAIGN_CONCURRENCY ? Number(process.env.CODEENSTEIN_MP_CAMPAIGN_CONCURRENCY) : 1;
+const CONCURRENCY_PER_LANE = envNumber("CODEENSTEIN_MP_CAMPAIGN_CONCURRENCY", 1, { integer: true, min: 1 });
 // See this file's own top doc comment for why this defaults to 1, not 2.
-const LANES = process.env.CODEENSTEIN_MP_CAMPAIGN_LANES ? Number(process.env.CODEENSTEIN_MP_CAMPAIGN_LANES) : 1;
+const LANES = envNumber("CODEENSTEIN_MP_CAMPAIGN_LANES", 1, { integer: true, min: 1 });
 // Real per-attempt cost (minutes) × ATTEMPT_CAP means a single invocation's
 // worst-case legitimate runtime is measured in hours, not the single-player
 // campaign's ~50 minutes — a generous ceiling above that.
-const WATCHDOG_MS = process.env.CODEENSTEIN_MP_CAMPAIGN_WATCHDOG_MS ? Number(process.env.CODEENSTEIN_MP_CAMPAIGN_WATCHDOG_MS) : 4 * 60 * 60 * 1000;
+const WATCHDOG_MS = envNumber("CODEENSTEIN_MP_CAMPAIGN_WATCHDOG_MS", 4 * 60 * 60 * 1000, { integer: true, min: 1 });
 // Per-combo invocation ceiling — the campaign's cost bound. A combo the bot
 // cannot clear never reaches TARGET_QUALIFYING, and without this the lane
 // respawns invocations for it forever (see `makeState`). Defaults to 3, so a
 // stubborn combo costs at most 3 x ATTEMPT_CAP attempts and then reports short
 // of target instead of eating the whole campaign. Set to `0` for the old
 // unbounded behaviour.
-const MAX_INVOCATIONS = process.env.CODEENSTEIN_MP_CAMPAIGN_MAX_INVOCATIONS ? Number(process.env.CODEENSTEIN_MP_CAMPAIGN_MAX_INVOCATIONS) : 3;
+const MAX_INVOCATIONS = envNumber("CODEENSTEIN_MP_CAMPAIGN_MAX_INVOCATIONS", 3, { integer: true, min: 1 });
 const SIGTERM_GRACE_MS = 5000;
 
 function playerCountLabel(n) {

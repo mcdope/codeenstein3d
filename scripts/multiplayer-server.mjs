@@ -41,7 +41,44 @@ import { execFileSync } from "node:child_process";
 // why 8787 and the production game origin were chosen as defaults.
 // ---------------------------------------------------------------------------
 
-const PORT = Number(process.env.CODEENSTEIN_MULTIPLAYER_PORT ?? 8787);
+/**
+ * Numeric knob that refuses to become `NaN`.
+ *
+ * `--help` promises "all optional, sane defaults otherwise". That is true for
+ * *unset* and says nothing about *invalid*: `Number("abc")` is `NaN`, so
+ * `CODEENSTEIN_MULTIPLAYER_PORT=abc` did not fail, it listened somewhere
+ * unpredictable — and a `NaN` TTL or rate limit is worse, because it makes
+ * every comparison against it false and quietly disables the guard.
+ *
+ * **Deliberately duplicated from `scripts/lib/envNumber.mjs` rather than
+ * imported.** This file is a single dependency-free script: `docker/signaling/
+ * Dockerfile` copies it alone, with no `node_modules` and no build step, and
+ * says so in its own comment. An import here would break the deployed image at
+ * runtime while passing every local test. If you are consolidating these two,
+ * update the Dockerfile in the same change or don't.
+ *
+ * A deployment already running with a typo'd value now fails at its next
+ * restart instead of continuing with a wrong number. That is the intent.
+ */
+function envNumber(name, fallback, { integer = false, min, max } = {}) {
+  // Trimmed first: `Number("")` and `Number("   ")` are both 0, not NaN, so a
+  // blank variable would otherwise silently mean zero — the one bad value a
+  // plain `Number()` gets wrong without leaving a NaN behind to notice.
+  const raw = process.env[name]?.trim();
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  const fail = (why) => {
+    console.error(`${name} ${why}, got: ${JSON.stringify(raw)}`);
+    process.exit(1);
+  };
+  if (!Number.isFinite(value)) fail("must be a number");
+  if (integer && !Number.isInteger(value)) fail("must be an integer");
+  if (min !== undefined && value < min) fail(`must be >= ${min}`);
+  if (max !== undefined && value > max) fail(`must be <= ${max}`);
+  return value;
+}
+
+const PORT = envNumber("CODEENSTEIN_MULTIPLAYER_PORT", 8787, { integer: true, min: 1, max: 65535 });
 const ALLOWED_ORIGIN =
   process.env.CODEENSTEIN_MULTIPLAYER_ALLOWED_ORIGIN ?? "https://codeenstein3d.mcdope.org";
 /** Interface to bind. Defaults to `127.0.0.1` — the topology the spec assumes
@@ -53,13 +90,13 @@ const ALLOWED_ORIGIN =
  * the peer is no longer structurally guaranteed to be loopback. */
 const BIND_HOST = process.env.CODEENSTEIN_MULTIPLAYER_BIND_HOST ?? "127.0.0.1";
 
-const SESSION_TTL_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_SESSION_TTL_MS ?? 5 * 60 * 1000);
-const SWEEP_INTERVAL_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_SWEEP_INTERVAL_MS ?? 30_000);
-const MAX_CONCURRENT_SESSIONS = Number(process.env.CODEENSTEIN_MULTIPLAYER_MAX_CONCURRENT_SESSIONS ?? 500);
+const SESSION_TTL_MS = envNumber("CODEENSTEIN_MULTIPLAYER_SESSION_TTL_MS", 5 * 60 * 1000, { integer: true, min: 1 });
+const SWEEP_INTERVAL_MS = envNumber("CODEENSTEIN_MULTIPLAYER_SWEEP_INTERVAL_MS", 30_000, { integer: true, min: 1 });
+const MAX_CONCURRENT_SESSIONS = envNumber("CODEENSTEIN_MULTIPLAYER_MAX_CONCURRENT_SESSIONS", 500, { integer: true, min: 1 });
 
-const RATE_LIMIT_WINDOW_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_RATE_LIMIT_WINDOW_MS ?? 60_000);
-const RATE_LIMIT_MAX_REQUESTS = Number(process.env.CODEENSTEIN_MULTIPLAYER_RATE_LIMIT_MAX_REQUESTS ?? 20);
-const HOST_TOKEN_MAX_REQUESTS = Number(process.env.CODEENSTEIN_MULTIPLAYER_HOST_TOKEN_MAX_REQUESTS ?? 120);
+const RATE_LIMIT_WINDOW_MS = envNumber("CODEENSTEIN_MULTIPLAYER_RATE_LIMIT_WINDOW_MS", 60_000, { integer: true, min: 1 });
+const RATE_LIMIT_MAX_REQUESTS = envNumber("CODEENSTEIN_MULTIPLAYER_RATE_LIMIT_MAX_REQUESTS", 20, { integer: true, min: 1 });
+const HOST_TOKEN_MAX_REQUESTS = envNumber("CODEENSTEIN_MULTIPLAYER_HOST_TOKEN_MAX_REQUESTS", 120, { integer: true, min: 1 });
 const LOBBY_RATE_LIMIT_MAX_REQUESTS = Number(
   process.env.CODEENSTEIN_MULTIPLAYER_LOBBY_RATE_LIMIT_MAX_REQUESTS ?? 60,
 );
@@ -90,7 +127,7 @@ const PUT_SESSION_RATE_LIMIT_MAX_REQUESTS = Number(
 const ANSWER_PER_CODE_RATE_LIMIT_MAX_REQUESTS = Number(
   process.env.CODEENSTEIN_MULTIPLAYER_ANSWER_PER_CODE_RATE_LIMIT_MAX_REQUESTS ?? 10,
 );
-const BASE_COOLDOWN_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_BASE_COOLDOWN_MS ?? 5_000);
+const BASE_COOLDOWN_MS = envNumber("CODEENSTEIN_MULTIPLAYER_BASE_COOLDOWN_MS", 5_000, { integer: true, min: 0 });
 
 /** Caps how many distinct keys each of the rate-limit maps below will ever
  * track at once — without this, an attacker (real, or via a spoofed
@@ -138,9 +175,9 @@ const TRUSTED_PROXY_IPS = parseTrustedProxies(
  * reverse proxy) — a shared secret is the one mechanism that works
  * regardless of network path. */
 const STATS_TOKEN = process.env.CODEENSTEIN_MULTIPLAYER_STATS_TOKEN;
-const MAX_COOLDOWN_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_MAX_COOLDOWN_MS ?? 60 * 60_000);
+const MAX_COOLDOWN_MS = envNumber("CODEENSTEIN_MULTIPLAYER_MAX_COOLDOWN_MS", 60 * 60_000, { integer: true, min: 0 });
 
-const MAX_BODY_BYTES = Number(process.env.CODEENSTEIN_MULTIPLAYER_MAX_BODY_BYTES ?? 8192);
+const MAX_BODY_BYTES = envNumber("CODEENSTEIN_MULTIPLAYER_MAX_BODY_BYTES", 8192, { integer: true, min: 1 });
 
 /** Explicit `http.Server` timeouts, rather than relying entirely on Node's
  * own built-in defaults — mild Slowloris-style exposure otherwise (many
@@ -153,8 +190,8 @@ const MAX_BODY_BYTES = Number(process.env.CODEENSTEIN_MULTIPLAYER_MAX_BODY_BYTES
  * to finish sending its request headers; `REQUEST_TIMEOUT_MS` bounds the
  * entire request (headers + body) and must be `>= HEADERS_TIMEOUT_MS`, since
  * headers are part of the request it's timing. */
-const HEADERS_TIMEOUT_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_HEADERS_TIMEOUT_MS ?? 20_000);
-const REQUEST_TIMEOUT_MS = Number(process.env.CODEENSTEIN_MULTIPLAYER_REQUEST_TIMEOUT_MS ?? 30_000);
+const HEADERS_TIMEOUT_MS = envNumber("CODEENSTEIN_MULTIPLAYER_HEADERS_TIMEOUT_MS", 20_000, { integer: true, min: 0 });
+const REQUEST_TIMEOUT_MS = envNumber("CODEENSTEIN_MULTIPLAYER_REQUEST_TIMEOUT_MS", 30_000, { integer: true, min: 0 });
 
 const MAX_OFFER_ANSWER_BYTES = 4096;
 const MAX_DISPLAY_NAME_CHARS = 100;
@@ -183,7 +220,7 @@ const TURN_URLS = (process.env.CODEENSTEIN_MULTIPLAYER_TURN_URLS ?? "")
   .split(",")
   .map((url) => url.trim())
   .filter(Boolean);
-const TURN_TTL_SECONDS = Number(process.env.CODEENSTEIN_MULTIPLAYER_TURN_TTL_SECONDS ?? 3600);
+const TURN_TTL_SECONDS = envNumber("CODEENSTEIN_MULTIPLAYER_TURN_TTL_SECONDS", 3600, { integer: true, min: 1 });
 /** The feature is live only when both a secret and at least one advertised URL
  * are configured — either missing means "off" and the route 404s. */
 const TURN_ENABLED = typeof TURN_SECRET === "string" && TURN_SECRET.length > 0 && TURN_URLS.length > 0;

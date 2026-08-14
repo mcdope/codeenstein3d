@@ -43,6 +43,7 @@ import { REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { LocalRunner, runLaneOrchestrator } from "./lib/laneOrchestrator.mjs";
 import { buildSshRunners } from "./lib/sshRunner.mjs";
 import { PROFILES, DIFFICULTIES } from "./run-balancing-telemetry.mjs";
+import { envNumber } from "./lib/envNumber.mjs";
 
 const TELEMETRY_SCRIPT = path.join(REPO_ROOT, "scripts/run-balancing-telemetry.mjs");
 const RUNS_DIR = path.join(REPO_ROOT, "balancing_runs");
@@ -50,18 +51,18 @@ const LOGS_DIR = path.join(RUNS_DIR, "logs");
 
 // How many qualifying (level-4+) full-campaign runs each combo needs before
 // it's considered done.
-const TARGET_QUALIFYING = process.env.CODEENSTEIN_CAMPAIGN_TARGET ? Number(process.env.CODEENSTEIN_CAMPAIGN_TARGET) : 50;
+const TARGET_QUALIFYING = envNumber("CODEENSTEIN_CAMPAIGN_TARGET", 50, { integer: true, min: 1 });
 // Qualifying runs collected per single spawned invocation/file — keeps each
 // saved file a meaningful sample while bounding how many times the fixed
 // per-invocation overhead (Node/Chromium startup, level parsing) is paid.
-const BATCH_SIZE = process.env.CODEENSTEIN_CAMPAIGN_BATCH_SIZE ? Number(process.env.CODEENSTEIN_CAMPAIGN_BATCH_SIZE) : 5;
+const BATCH_SIZE = envNumber("CODEENSTEIN_CAMPAIGN_BATCH_SIZE", 5, { integer: true, min: 1 });
 // Secondary safety net independent of the wall-clock watchdog: bounds a
 // single invocation's total attempts so a combo with an unexpectedly low
 // qualifying rate over a full (non-level-limited) campaign can't spin
 // unboundedly within one invocation. If hit before BATCH_SIZE qualifying
 // runs accumulate, the invocation still exits normally with fewer runs than
 // hoped — the resumability scan below just tries again on the next pass.
-const ATTEMPT_CAP = process.env.CODEENSTEIN_CAMPAIGN_ATTEMPT_CAP ? Number(process.env.CODEENSTEIN_CAMPAIGN_ATTEMPT_CAP) : 80;
+const ATTEMPT_CAP = envNumber("CODEENSTEIN_CAMPAIGN_ATTEMPT_CAP", 80, { integer: true, min: 1 });
 // Internal browser-context concurrency *within* one spawned invocation.
 // Lower than run-balancing-telemetry.mjs's own default (12) since LANES of
 // these run concurrently as separate processes — see the doc comment above.
@@ -73,9 +74,9 @@ const ATTEMPT_CAP = process.env.CODEENSTEIN_CAMPAIGN_ATTEMPT_CAP ? Number(proces
 // BATCH_SIZE/CONCURRENCY_PER_LANE (5/8=62.5%) rather than measuring the real
 // rate. Use each file's trueQualifyingCount field (untrimmed) for an honest
 // per-attempt rate, not qualifyingRunCount.
-const CONCURRENCY_PER_LANE = process.env.CODEENSTEIN_CAMPAIGN_CONCURRENCY ? Number(process.env.CODEENSTEIN_CAMPAIGN_CONCURRENCY) : 8;
+const CONCURRENCY_PER_LANE = envNumber("CODEENSTEIN_CAMPAIGN_CONCURRENCY", 8, { integer: true, min: 1 });
 // How many combos to process concurrently (each as its own child process).
-const LANES = process.env.CODEENSTEIN_CAMPAIGN_LANES ? Number(process.env.CODEENSTEIN_CAMPAIGN_LANES) : 2;
+const LANES = envNumber("CODEENSTEIN_CAMPAIGN_LANES", 2, { integer: true, min: 1 });
 // Wall-clock ceiling per spawned invocation before it's presumed hung and
 // killed. Calibrated 2026-07-15 on the actual campaign machine (Ryzen
 // 5800X): one real, production-representative invocation (full 17-level
@@ -85,11 +86,11 @@ const LANES = process.env.CODEENSTEIN_CAMPAIGN_LANES ? Number(process.env.CODEEN
 // case roughly 50 minutes of legitimate (not hung) work. 90 minutes gives
 // real headroom above that estimate while still being a meaningful ceiling.
 // Re-calibrate (a single-combo run, no LEVEL_LIMIT) if hardware changes.
-const WATCHDOG_MS = process.env.CODEENSTEIN_CAMPAIGN_WATCHDOG_MS ? Number(process.env.CODEENSTEIN_CAMPAIGN_WATCHDOG_MS) : 90 * 60 * 1000;
+const WATCHDOG_MS = envNumber("CODEENSTEIN_CAMPAIGN_WATCHDOG_MS", 90 * 60 * 1000, { integer: true, min: 1 });
 // Per-combo invocation ceiling — see `makeState` in lib/laneOrchestrator.mjs.
 // Without it a combo that never reaches its qualifying target respawns
 // invocations forever. Set to `0` for the old unbounded behaviour.
-const MAX_INVOCATIONS = process.env.CODEENSTEIN_CAMPAIGN_MAX_INVOCATIONS ? Number(process.env.CODEENSTEIN_CAMPAIGN_MAX_INVOCATIONS) : 6;
+const MAX_INVOCATIONS = envNumber("CODEENSTEIN_CAMPAIGN_MAX_INVOCATIONS", 6, { integer: true, min: 1 });
 // Grace period between SIGTERM and SIGKILL when the watchdog fires, so
 // Playwright gets a chance to close its Chromium subprocesses cleanly
 // before a hard kill.

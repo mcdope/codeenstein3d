@@ -54,6 +54,7 @@ import { planRoute } from "./lib/routePlanner.mjs";
 import { installVirtualClock } from "./lib/virtualClock.mjs";
 import { DEV_SERVER_URL, PROFILES, planLevels, waitForTestHooks, dismissOverlay, installDifficulty, installPlayerName } from "./run-balancing-telemetry.mjs";
 import { profilesHash } from "./lib/profiles.mjs";
+import { envNumber } from "./lib/envNumber.mjs";
 
 const CAMPAIGN_DIR = path.join(REPO_ROOT, "demo-campaign");
 const CAMPAIGN_NAME = "demo-campaign";
@@ -67,9 +68,7 @@ const OUTPUT_FILE = path.join(REPO_ROOT, "src/engine/defaultHighscore.ts");
 // regenerations is wide: Gamer measured 48774-63089 across two runs), at
 // roughly proportional cost. Env var rather than a bumped default because
 // the default is what keeps a routine regeneration cheap.
-const REQUIRED_QUALIFYING_RUNS = process.env.CODEENSTEIN_HIGHSCORE_QUALIFYING_RUNS
-  ? Number(process.env.CODEENSTEIN_HIGHSCORE_QUALIFYING_RUNS)
-  : 3;
+const REQUIRED_QUALIFYING_RUNS = envNumber("CODEENSTEIN_HIGHSCORE_QUALIFYING_RUNS", 3, { integer: true, min: 1 });
 // Bounded, deliberately. This was `Infinity` on the reasoning that a manual,
 // hand-reviewed tool can afford to "keep retrying until 3 qualifying runs
 // land, however long that takes" — but an unbounded retry loop cannot fail,
@@ -82,9 +81,7 @@ const REQUIRED_QUALIFYING_RUNS = process.env.CODEENSTEIN_HIGHSCORE_QUALIFYING_RU
 // the per-profile summary below). Generous enough that a merely unlucky run
 // still succeeds — the historical worst case needed well under half of it —
 // and overridable for the rare case where someone genuinely wants to grind.
-const ATTEMPT_CAP = process.env.CODEENSTEIN_HIGHSCORE_ATTEMPT_CAP
-  ? Number(process.env.CODEENSTEIN_HIGHSCORE_ATTEMPT_CAP)
-  : 40;
+const ATTEMPT_CAP = envNumber("CODEENSTEIN_HIGHSCORE_ATTEMPT_CAP", 40, { integer: true, min: 1 });
 // 0-based — "level 4/5/6" in 1-based campaign numbering. Casual only needs
 // to prove it survives the unarmed early game (the same threshold
 // run-balancing-telemetry.mjs uses for every profile); Gamer/Pro raise the
@@ -105,7 +102,7 @@ const QUALIFY_LEVEL_INDEX_BY_PROFILE = { Casual: 3, Gamer: 4, Pro: 5 };
 // this runs on a desktop rather than a build server. Do not lower the default
 // on the strength of the number alone; lower it if your machine has fewer
 // cores. The wall-clock floor is one profile's own qualify loop either way.
-const ATTEMPT_CONCURRENCY = process.env.CODEENSTEIN_HIGHSCORE_CONCURRENCY ? Number(process.env.CODEENSTEIN_HIGHSCORE_CONCURRENCY) : 4;
+const ATTEMPT_CONCURRENCY = envNumber("CODEENSTEIN_HIGHSCORE_CONCURRENCY", 4, { integer: true, min: 1 });
 
 const VIRTUAL_STEP_MS = 50;
 const RECORD_STEP_MS = 1000 / 60; // see module doc comment
