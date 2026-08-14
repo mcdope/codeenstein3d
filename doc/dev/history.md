@@ -12,6 +12,28 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **Oscillation: `ARRIVE_EPS` swept both ways and refuted as the lever, and the number that motivated the whole item turns out to be inside the noise (2026-08-14).** 5 arms, 404 attempts, staged curl, Casual+Gamer x hard. Archives `balancing_capture_osc_{baseA,baseB,tight05,tight08,wide}`. All five passed `verify:event-log`.
+
+  **The null control is the headline.** `baseA` and `baseB` are identical code:
+
+  | arm | ARRIVE_EPS | n | osc tk/1k | vs base | x floor | levels/attempt |
+  |---|---|---:|---:|---:|---:|---:|
+  | baseA | 0.15 | 80 | 4.69 | -1.26 | 0.5 | 8.68 |
+  | baseB | 0.15 | 80 | 7.21 | +1.26 | 0.5 | 8.72 |
+  | tight08 | 0.08 | 84 | 4.44 | -1.50 | 0.6 | 8.45 |
+  | wide | 0.30 | 80 | 19.96 | **+14.02** | 5.6 | 8.61 |
+  | tight05 | 0.05 | 80 | 56.59 | **+50.64** | **20.1** | **7.40** |
+
+  Noise floor from the identical pair: **2.52 tk/1k** on oscillation, **0.05** on levels-per-attempt.
+
+  **So the item's motivating measurement does not survive.** It reported the layout rework pushing oscillation `4.4 -> 6.6 ticks/1k` — a 2.2-point move from an n=1 reading. Two arms of the *same code* here differ by 2.52. That finding was never distinguishable from noise, and the item that grew out of it was chasing a number, not an effect.
+
+  **`ARRIVE_EPS` is already in the trough of a steep U**, which is a genuine negative result rather than a null: 0.08 is inside noise, 0.30 is 3.4x worse, and 0.05 is 10x worse *and* breaches the guard (levels-per-attempt 8.70 -> 7.40, 26x the guard's own noise). The hypothesis in the backlog — "bot navigation tuning (turn rate vs walk speed vs arrival epsilon)" — is refuted for the arrival-epsilon third. **Do not re-tune it.** Moving one knob in both directions without improving the total is the wrong-lever-class signature this project has been burned by before.
+
+  **A mechanism for the 0.05 collapse, offered as hypothesis not measurement**: one movement step is `ENGINE_MOVE_SPEED * stepMs = 0.16` tiles (the figure `combatPolicy.mjs`'s own burst-cap comment already cites), so a 0.05-tile arrival radius is smaller than the bot's step granularity and arrival becomes luck — it orbits the waypoint until the tick budget forces a replan. That would also explain why `TIGHT_ARRIVE_EPS = 0.05` is safe where it is actually used (doors, exit: single targets with their own generous budgets) and catastrophic as a global default.
+
+  **What the next attempt should start from, measured on 905 findings rather than 22.** The item says "15 of 22 are circling, not ping-pong". Pooled across every curl/serilog/ripgrep capture on disk it is the **inverse**: **80% ping-pong** (`signFlips` >= 70%), **18% circling**. The bot sits a **median 0.14 tiles** from its nav target — **55% of findings are inside `ARRIVE_EPS`** — while carrying a median heading error of **1.37 rad**. So it is steering hard at a point it is standing on, and the instability lives *below* the arrival threshold where widening or tightening that threshold cannot reach it. Oscillation is also strongly repo-dependent (serilog **2.90**, curl **5.45**, ripgrep **10.97** tk/1k), so "the oscillation rate" is not one number.
+
 - [x] **Attrition sized: regular + Edge Case do 88-100% of enemy damage, and Elites are individually lethal but numerically a rounding error (2026-08-13).** The backlog item had deliberately refused to size itself until the bot fixes landed, because the pre-fix numbers were contaminated by a bot walking 14,000 tiles for loot and knife-trading Elites. Those fixes landed 2026-08-06; this reads **~1,000 post-fix runs** already on disk across staged curl, serilog and ripgrep. No new machine time.
 
   | | curl | serilog | ripgrep |
