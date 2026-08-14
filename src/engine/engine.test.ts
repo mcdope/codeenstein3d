@@ -5629,6 +5629,44 @@ describe("balancing event log", () => {
     });
   });
 
+  it("records the target's two preceding positions on a shot, oldest-first", () => {
+    // `shot.tgt` exists to score an aim predictor offline, and the only thing
+    // that can silently ruin it is the ordering: swap `px` with `ppx` and every
+    // reconstructed velocity points backwards, which would read as a confident
+    // wrong answer rather than as a broken field. So this pins the *direction*
+    // of travel rather than merely asserting the keys exist.
+    withTestHooks((getHooks) => {
+      // The player spawns at 5.5,5.5 facing +x (`dirX = 1`), and `tgt` is
+      // populated from the engine's *crosshair* target — so the enemy has to
+      // sit along +x or nothing is aimed at and the field is null. Aggroed and
+      // far enough that it keeps walking toward the player for the whole
+      // sample, so consecutive frames are genuinely distinct positions.
+      const map = fakeMap({ enemies: [fakeEnemy({ x: 9.5, y: 5.5, aggroed: true, discovered: true })] });
+      const { engine, input } = makeEngine(map, makeHandlers(), { difficulty: "hard", seed: 7 });
+
+      // Three AI steps so the trail is fully populated before the shot; a
+      // freshly-seeded trail reports the same position three times and would
+      // pass an ordering check vacuously.
+      for (let i = 0; i < 3; i++) engine.advance(0.05);
+      input.fireQueued = true;
+      engine.advance(0.05);
+
+      const shot = (getHooks().drainEvents() as Drained).events.find((e) => e.e === "shot" && e.tgt);
+      expect(shot, "a shot at a visible enemy must carry its target's trail").toBeDefined();
+      const t = shot!.tgt as { x: number; y: number; px: number; py: number; ppx: number; ppy: number };
+
+      // The enemy chases the player at 5.5,5.5 from 9.5,5.5, i.e. straight
+      // along -x. Every frame must therefore be strictly nearer than the one
+      // before it, which fixes oldest -> newest as ppx > px > x.
+      expect(t.ppx, "ppx is the oldest sample and must be furthest away").toBeGreaterThan(t.px);
+      expect(t.px, "px is the snapshot the bot aimed at, one frame behind x/y").toBeGreaterThan(t.x);
+
+      // And the reconstructed one-frame displacement must match the direction
+      // of travel, which is what a reader extrapolates from.
+      expect(t.px - t.ppx, "the previous frame's displacement must point the way the enemy is moving").toBeLessThan(0);
+    });
+  });
+
   it("attributes a bolt to the enemy that fired it, long after it left the muzzle", () => {
     // The melee case above cannot reach this path. A bite is attributed inline
     // because the biting enemy is right there; a bolt is not — it resolves
