@@ -52,7 +52,23 @@ import { runQualifyLoop } from "./lib/qualifyLoop.mjs";
 import { assertPlanMatchesEngine } from "./lib/planEngineMatch.mjs";
 import { planRoute } from "./lib/routePlanner.mjs";
 import { installVirtualClock } from "./lib/virtualClock.mjs";
-import { DEV_SERVER_URL, PROFILES, planLevels, waitForTestHooks, dismissOverlay, installDifficulty, installPlayerName } from "./run-balancing-telemetry.mjs";
+import { DEV_SERVER_URL, PROFILES, devServerOptions, planLevels, waitForTestHooks, dismissOverlay, installDifficulty, installPlayerName } from "./run-balancing-telemetry.mjs";
+import { ensureDevServer } from "./lib/devServer.mjs";
+
+/**
+ * The server attempts navigate to. Starts as the imported default and is
+ * reassigned by `main()` once `ensureDevServer` resolves — the same shape
+ * `run-balancing-telemetry.mjs` uses for its own `DEV_SERVER_URL`.
+ *
+ * **This script used to skip that step**, importing the URL but never starting
+ * anything. `planLevels()` starts a server for route planning and stops it
+ * again, so by the time the bot phase ran there was nothing listening: every
+ * attempt died on `ERR_CONNECTION_REFUSED` and the qualify loop reported
+ * "browser appears dead: 3 consecutive fully-crashed batches" — three batches
+ * and several minutes after the actual cause, naming the wrong thing entirely.
+ * It only worked when someone happened to have a dev server already up.
+ */
+let devUrl = DEV_SERVER_URL;
 import { profilesHash } from "./lib/profiles.mjs";
 
 const CAMPAIGN_DIR = path.join(REPO_ROOT, "demo-campaign");
@@ -276,7 +292,7 @@ async function runOneAttempt(browser, profileName, profile, levelPlans) {
     // The recorded entry's own `playerName`, so the shipped board says which
     // bot profile set each row — see `installPlayerName`'s doc comment.
     await installPlayerName(page, profileName);
-    await page.goto(`${DEV_SERVER_URL}/?testHooks=1&botRotSpeedMul=${profile.rotSpeedMultiplier}`);
+    await page.goto(`${devUrl}/?testHooks=1&botRotSpeedMul=${profile.rotSpeedMultiplier}`);
     await page.click("#tab-demo");
     await page.click("#launch-demo-campaign");
     await waitForTestHooks(page);
@@ -435,6 +451,27 @@ async function main() {
     `Launching headless Chromium — ${Object.keys(PROFILES).length} profiles in parallel, ` +
       `${ATTEMPT_CONCURRENCY}-way attempt concurrency each (${Object.keys(PROFILES).length * ATTEMPT_CONCURRENCY} attempts in flight)...\n`,
   );
+  // Start (or adopt) the server the attempts will navigate to. `planLevels()`
+  // above ran its own and stopped it again, so without this there is nothing
+  // listening. `stop()` is a no-op for a server we did not start, so an
+  // explicitly configured `CODEENSTEIN_DEV_URL` is never shut down under its
+  // owner.
+  const server = await ensureDevServer(devServerOptions("highscore"));
+  devUrl = server.url;
+  // Released on `exit` rather than only on the happy path. The qualify loop
+  // throws on a dead browser, and `main()` also `process.exit(1)`s on a partial
+  // set — a `finally` would cover the first and be skipped by the second, so
+  // neither alone is enough. Leaking here is worse than it looks: the *next*
+  // run would find :5199 already answering, "reuse" that stale server, and
+  // quietly play a build from before whatever change prompted the re-run —
+  // which reads as bad data rather than as a leaked process.
+  //
+  // Safe as a plain `exit` handler because `stop()` is synchronous
+  // (`child.kill`, see `devServer.mjs`) — an async teardown would silently not
+  // run here. Does **not** cover SIGTERM/Ctrl-C, which terminate without
+  // running exit handlers; that case still leaves vite up, and the next run's
+  // "reusing already-running server" line is the tell.
+  process.on("exit", () => void server.stop?.());
   const browser = await chromium.launch();
 
   /** One profile's qualify loop, start to kept entry. Returns `null` when the

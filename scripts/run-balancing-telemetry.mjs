@@ -69,6 +69,23 @@ const OWN_DEV_PORT = Number(process.env.CODEENSTEIN_TELEMETRY_DEV_PORT ?? 5199);
  * exited zero, so it looked like a 2-second success that banked nothing.
  */
 export let DEV_SERVER_URL = CONFIGURED_DEV_URL ?? `http://localhost:${OWN_DEV_PORT}`;
+
+/**
+ * The `ensureDevServer` options this module resolves from the environment, for
+ * a sibling script that needs the *same* server contract.
+ *
+ * Exported as a function rather than as the two constants so a caller cannot
+ * take one and forget the other: `CODEENSTEIN_DEV_URL` ("use that server, and
+ * never stop it") and `CODEENSTEIN_TELEMETRY_DEV_PORT` ("start our own here")
+ * only mean the right thing together.
+ *
+ * Added because `generate-default-highscore.mjs` imported `DEV_SERVER_URL`
+ * without ever starting a server — the same assumption the comment above
+ * records having already broken SSH lanes for *this* script.
+ */
+export function devServerOptions(label) {
+  return { url: CONFIGURED_DEV_URL, port: OWN_DEV_PORT, label };
+}
 // Overridable so multiple concurrent invocations (e.g. a multi-lane campaign
 // orchestrator spawning several of these as separate processes) can each
 // write to their own unique path instead of racing to overwrite the same
