@@ -4800,6 +4800,17 @@ export class RaycasterEngine {
         // `threat` — they are usually the same enemy but chosen by different
         // code, so a disagreement between them is itself worth seeing.
         dist: aimedAt ? Math.hypot(aimedAt.x - shooter.player.posX, aimedAt.y - shooter.player.posY) : null,
+        // Shooter position and facing, so `tgt`'s positions can be turned into
+        // *bearings*. Distance alone cannot: the thing that decides whether a
+        // shot lands is angular error against the target's angular width, and
+        // decomposing a target's motion into the radial part (which costs no
+        // re-aim) and the perpendicular part (which does) is impossible without
+        // knowing where the shooter stood. Two decimal places would not do —
+        // the angles involved are ~0.05 rad.
+        sx: shooter.player.posX,
+        sy: shooter.player.posY,
+        sdx: shooter.player.dirX,
+        sdy: shooter.player.dirY,
         targetArch: aimedAt ? enemyCategory(aimedAt) : null,
         targetHp: aimedAt ? aimedAt.hp : null,
         // The target's position now and over the two preceding frames, so a
