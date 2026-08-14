@@ -840,6 +840,30 @@ export class RaycasterEngine {
    * recording for a real multi-peer run is a later netcode step's job. */
   private readonly replayRecorder?: CampaignReplayRecorder;
   private readonly enemies: Enemy[];
+  /**
+   * Two frames of position history per enemy, index-aligned with `enemies`, as
+   * `[ppx, ppy, px, py]` quads — where `px/py` is where the enemy stood at the
+   * start of the *previous* frame and `ppx/ppy` the frame before that.
+   *
+   * **Why this exists.** The bot's shot lag is exactly one engine frame:
+   * `simulate()` runs `updateEnemyAi` before `updateFiring`, so a shot resolves
+   * against positions one AI step newer than the snapshot the bot aimed at.
+   * Whether *leading* that frame helps depends on how straight the enemy's path
+   * is, and scoring that needs predicted-vs-actual positions per shot — which
+   * the event log could not supply, because `shot` rows carried only `dist` and
+   * `targetArch`. A single previous position is not enough either: the
+   * predictor the bot would use estimates velocity from the *previous*
+   * displacement, so reconstructing it offline needs two.
+   *
+   * **Deliberately not fields on `Enemy`.** That type is plain data shared with
+   * the map layer and is serialized for replays; widening it to carry
+   * diagnostic state would put this in the replay digest and the save format
+   * for no gameplay reason. An index-aligned side array keeps `Enemy` clean —
+   * the same split `acidOverflows` already uses.
+   *
+   * `null` unless an event log is attached, so normal play does no extra work.
+   */
+  private enemyTrail: Float64Array | null = null;
   /** Per-`GameMap.acidOverflows` runtime state, index-aligned. Plain data the
    * `acidOverflow.ts` free functions mutate — the same split enemies and traps
    * already use. */
@@ -3543,6 +3567,31 @@ export class RaycasterEngine {
       targets.push({ id, player: p.player });
       pathFields.set(id, p.pathField);
     }
+    // Shift each enemy's position history one frame *before* the AI moves
+    // them, so `enemyTrail` always describes the two frames preceding the
+    // current positions. Gated on the event log: no cost in normal play, and
+    // the array is allocated on first use rather than at level load because
+    // that keeps the whole feature inside this one diagnostic path.
+    if (this.eventLog) {
+      if (!this.enemyTrail || this.enemyTrail.length !== this.enemies.length * 4) {
+        this.enemyTrail = new Float64Array(this.enemies.length * 4);
+        for (let i = 0; i < this.enemies.length; i++) {
+          const e = this.enemies[i];
+          this.enemyTrail[i * 4] = e.x;
+          this.enemyTrail[i * 4 + 1] = e.y;
+          this.enemyTrail[i * 4 + 2] = e.x;
+          this.enemyTrail[i * 4 + 3] = e.y;
+        }
+      } else {
+        for (let i = 0; i < this.enemies.length; i++) {
+          const t = i * 4;
+          this.enemyTrail[t] = this.enemyTrail[t + 2];
+          this.enemyTrail[t + 1] = this.enemyTrail[t + 3];
+          this.enemyTrail[t + 2] = this.enemies[i].x;
+          this.enemyTrail[t + 3] = this.enemies[i].y;
+        }
+      }
+    }
     const beforeShots = this.projectiles.length;
     const damageByPlayer = updateEnemies(
       this.enemies,
@@ -4751,8 +4800,49 @@ export class RaycasterEngine {
         // `threat` — they are usually the same enemy but chosen by different
         // code, so a disagreement between them is itself worth seeing.
         dist: aimedAt ? Math.hypot(aimedAt.x - shooter.player.posX, aimedAt.y - shooter.player.posY) : null,
+        // Shooter position and facing, so `tgt`'s positions can be turned into
+        // *bearings*. Distance alone cannot: the thing that decides whether a
+        // shot lands is angular error against the target's angular width, and
+        // decomposing a target's motion into the radial part (which costs no
+        // re-aim) and the perpendicular part (which does) is impossible without
+        // knowing where the shooter stood. Two decimal places would not do —
+        // the angles involved are ~0.05 rad.
+        sx: shooter.player.posX,
+        sy: shooter.player.posY,
+        sdx: shooter.player.dirX,
+        sdy: shooter.player.dirY,
         targetArch: aimedAt ? enemyCategory(aimedAt) : null,
         targetHp: aimedAt ? aimedAt.hp : null,
+        // The target's position now and over the two preceding frames, so a
+        // reader can score a predictor offline instead of guessing at one.
+        //
+        // The whole point is the *shape* of the path. `x/y` is where the enemy
+        // is as the shot resolves; `px/py` is where the bot's snapshot saw it
+        // (one `updateEnemyAi` earlier — the documented one-frame lag); and
+        // `ppx/ppy` is what makes the bot's own velocity estimate
+        // reconstructable, since `trackEnemyMotion` differences consecutive
+        // snapshots. With all three, "would leading by one frame have helped
+        // this shot" is arithmetic over the log rather than another A/B: a
+        // linear predictor says `p + (p - pp)`, and the error against `x/y` is
+        // directly comparable to the no-lead error `|p - xy|`.
+        //
+        // `null` when nothing is targeted or before two frames have elapsed on
+        // a level, which the reader must exclude rather than read as zero.
+        // One guard, not three: `indexOf` already returns -1 for "no target"
+        // and for "target is not in this roster", and the no-target case is
+        // the common one, so folding them keeps this branch exercised rather
+        // than leaving an unreachable defensive arm behind.
+        tgt: ((i = aimedAt && this.enemyTrail ? this.enemies.indexOf(aimedAt) : -1) =>
+          i < 0
+            ? null
+            : {
+                x: aimedAt!.x,
+                y: aimedAt!.y,
+                px: this.enemyTrail![i * 4 + 2],
+                py: this.enemyTrail![i * 4 + 3],
+                ppx: this.enemyTrail![i * 4],
+                ppy: this.enemyTrail![i * 4 + 1],
+              })(),
         ammoAfter: w.ammoType ? shooter.ammo[w.ammoType] : null,
         forcedMelee,
       });

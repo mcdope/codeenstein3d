@@ -1696,6 +1696,11 @@ describe("turnSplitIntent", () => {
 // future attempt against the engine's real velocity rather than a differenced
 // estimate, so these pin what it does when switched on.
 const LEAD_ON = { ...DEFAULT_TUNING, BOT_AIM_LEAD: true };
+/** The lead is ON by default since 2026-08-14, so the *off* arm now has to say
+ * so explicitly. These tests contrast the two arms, and a contrast that leans
+ * on whichever way the default happens to point silently stops contrasting
+ * anything the moment it flips — which is exactly what happened here. */
+const LEAD_OFF = { ...DEFAULT_TUNING, BOT_AIM_LEAD: false };
 
 describe("aim geometry", () => {
   it("angularHalfWidth falls off as 1/dist and crosses fireAngleEps where the report says it does", () => {
@@ -1778,7 +1783,34 @@ describe("aim geometry", () => {
     // target through untouched.
     expect(leadTarget({ x: 3, y: 4 }, memory, 50, LEAD_ON)).toEqual({ x: 3, y: 4 });
     expect(leadTarget(target, null, 50, LEAD_ON)).toBe(target);
-    expect(leadTarget(target, memory, 50)).toBe(target);
+    // Explicitly the off arm: the shipped default now leads (2026-08-14), so
+    // omitting tuning here would assert the opposite of what it reads as.
+    expect(leadTarget(target, memory, 50, LEAD_OFF)).toBe(target);
+  });
+
+  it("leadTarget refuses to lead a close target, and MIN_DIST 0 reproduces the original arm", () => {
+    // The 2026-08-11 arm lost because leading demands 4.6x more re-aim than
+    // accuracy inside 2 tiles (see `leadTarget`). The gate is the fix, so pin
+    // both sides of the cliff and the escape hatch that restores the old
+    // behaviour for a single-variable comparison.
+    const memory = freshMemory();
+    trackEnemyMotion([makeEnemy({ x: 10, y: 10 })], memory, 0);
+    trackEnemyMotion([makeEnemy({ x: 10, y: 10.1 })], memory, 50);
+
+    const near = { i: 0, x: 10, y: 10.1, dist: 1.5 };
+    const far = { i: 0, x: 10, y: 10.1, dist: 5 };
+    expect(leadTarget(near, memory, 50, LEAD_ON), "inside 2 tiles the target passes through untouched").toBe(near);
+    expect(leadTarget(far, memory, 50, LEAD_ON).y, "beyond the gate it still leads by a full frame").toBeCloseTo(10.2, 6);
+    expect(
+      leadTarget(near, memory, 50, { ...LEAD_ON, BOT_AIM_LEAD_MIN_DIST: 0 }).y,
+      "MIN_DIST 0 must reproduce the un-gated 2026-08-11 arm exactly",
+    ).toBeCloseTo(10.2, 6);
+
+    // A target with no `dist` falls through and is led — deliberate, because
+    // the only real caller (`pickThreat`'s threat) always carries one, and
+    // failing closed here would silently disable the lead everywhere if that
+    // ever changed. Pinned so the fall-through is a decision, not a surprise.
+    expect(leadTarget({ i: 0, x: 10, y: 10.1 }, memory, 50, LEAD_ON).y).toBeCloseTo(10.2, 6);
   });
 
   it("leadTarget does not mutate the target it leads", () => {
@@ -1851,7 +1883,7 @@ describe("the fire gate", () => {
     const led = decideTwice({ enemy: crossing, player: makePlayer(aimedAhead), tuning: LEAD_ON });
     expect(led.fire).toBe(true);
 
-    const stale = decideTwice({ enemy: crossing, player: makePlayer(aimedAhead) });
+    const stale = decideTwice({ enemy: crossing, player: makePlayer(aimedAhead), tuning: LEAD_OFF });
     expect(stale.fire).toBe(false);
     expect([...stale.holds.keys()]).toContain("KeyQ");
   });

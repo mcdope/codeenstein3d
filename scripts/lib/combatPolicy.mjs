@@ -314,9 +314,21 @@ export const DEFAULT_TUNING = {
   // Whether the bot aims where a moving target *will* be when its shot
   // resolves, instead of where the target was when it decided.
   //
-  // **OFF, and it is off because it was measured, not because it was never
-  // tried.** Turn it on to reproduce the arm:
-  //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_AIM_LEAD":true}'
+  // **ON since 2026-08-14, and only because the retry was measured — the
+  // first attempt genuinely lost and the paragraphs below are kept as the
+  // record of why.** Turn it off with:
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_AIM_LEAD":false}'
+  //
+  // What changed is `BOT_AIM_LEAD_MIN_DIST` below, not the prediction. Once
+  // engine-side position logging could score the predictor against where
+  // enemies actually went, leading turned out to be *more* accurate at every
+  // range — so the "curving path" diagnosis this comment used to carry was
+  // wrong. The loss was the re-aim it demanded up close. Gated at 2 tiles and
+  // re-run on staged curl, hit rate moves **+2.8pp at 6-8 tiles (z=3.69)**
+  // against a null-control swing of +0.3pp, is unchanged at 0-2 (+0.1pp,
+  // which the gate forces by construction), and levels-per-attempt moves
+  // +0.51 against a 0.35 null spread. It replicates: an earlier run on the
+  // demo campaign gave +3.6pp (z=6.34) at the same band.
   //
   // The lag it corrects is real and structural: `simulate()` runs
   // `updateEnemyAi(dt)` (engine.ts:~2804) and only then `updateFiring(dt)`
@@ -365,7 +377,17 @@ export const DEFAULT_TUNING = {
   // `dist` and `targetArch`. Scoring a predictor means logging predicted vs
   // actual enemy positions per decision, so a third fix costs engine-side
   // logging plus a fresh capture before it can even be aimed.
-  BOT_AIM_LEAD: false,
+  BOT_AIM_LEAD: true,
+  // Below this range `leadTarget` returns the target untouched, however the
+  // switch above is set. **Read off measured data, not tuned** — see
+  // `leadTarget`: engine-side position logging showed the lead is more
+  // accurate at every range, but at 0-2 tiles it demands 4.6x more re-aim than
+  // the accuracy it buys, against ~1.2x beyond 2 tiles. That cliff sits at 2.
+  //
+  // It exists as its own knob so the retry is single-variable against the
+  // original: setting `BOT_AIM_LEAD_MIN_DIST` to 0 reproduces the 2026-08-11
+  // arm exactly.
+  BOT_AIM_LEAD_MIN_DIST: 2.0,
   // Whether the fire gate is the tighter of `profile.fireAngleEps` and the
   // angle the target actually subtends, instead of the profile constant alone.
   // Single-variable switch, as above:
@@ -1513,6 +1535,27 @@ export function trackEnemyMotion(enemies, memory, simTimeMs, tuning = DEFAULT_TU
  */
 export function leadTarget(target, memory, leadMs, tuning = DEFAULT_TUNING) {
   if (!tuning.BOT_AIM_LEAD || !target || target.i === undefined) return target;
+  // **Never lead a close target, and this is the whole reason the first
+  // attempt lost.** Engine-side position logging (2026-08-14) scored the
+  // predictor directly against where enemies actually ended up: leading is
+  // *more* accurate at every range, including 0-2 tiles, where it cuts angular
+  // error 0.0328 -> 0.0248 rad. So the original "linear extrapolation of a
+  // curving path errs most close in" diagnosis was wrong — prediction was
+  // never the problem.
+  //
+  // What is the problem is the *re-aim* it demands. Bearing rate goes as
+  // `v_perp / dist`, so the same world-space lead is a far larger angle up
+  // close: at 0-2 tiles it asks for **0.0366 rad of extra turning to buy
+  // 0.0080 rad of accuracy — 4.6x more turn than benefit** — against ~1.2x
+  // beyond 2 tiles. The bot's aim is keyboard-quantised (see this module's
+  // header), and its measured facing error at 0-2 is already 0.0859 rad,
+  // *above* even Casual's `fireAngleEps`; adding turn it cannot converge on
+  // means firing mid-correction. That 4.6 / 1.3 / 1.2 / 1.2 ratio profile
+  // tracks the 2026-08-11 A/B's measured damage (-8.9 / -4.4 / -3.9 / -1.5pp)
+  // closely enough to be the same phenomenon.
+  //
+  // The threshold is read off that cliff rather than tuned.
+  if (target.dist !== undefined && target.dist < tuning.BOT_AIM_LEAD_MIN_DIST) return target;
   const v = memory?.enemyMotion?.vel?.[target.i];
   if (!v) return target;
   const lead = leadMs / 1000;
