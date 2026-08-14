@@ -1781,6 +1781,31 @@ describe("aim geometry", () => {
     expect(leadTarget(target, memory, 50)).toBe(target);
   });
 
+  it("leadTarget refuses to lead a close target, and MIN_DIST 0 reproduces the original arm", () => {
+    // The 2026-08-11 arm lost because leading demands 4.6x more re-aim than
+    // accuracy inside 2 tiles (see `leadTarget`). The gate is the fix, so pin
+    // both sides of the cliff and the escape hatch that restores the old
+    // behaviour for a single-variable comparison.
+    const memory = freshMemory();
+    trackEnemyMotion([makeEnemy({ x: 10, y: 10 })], memory, 0);
+    trackEnemyMotion([makeEnemy({ x: 10, y: 10.1 })], memory, 50);
+
+    const near = { i: 0, x: 10, y: 10.1, dist: 1.5 };
+    const far = { i: 0, x: 10, y: 10.1, dist: 5 };
+    expect(leadTarget(near, memory, 50, LEAD_ON), "inside 2 tiles the target passes through untouched").toBe(near);
+    expect(leadTarget(far, memory, 50, LEAD_ON).y, "beyond the gate it still leads by a full frame").toBeCloseTo(10.2, 6);
+    expect(
+      leadTarget(near, memory, 50, { ...LEAD_ON, BOT_AIM_LEAD_MIN_DIST: 0 }).y,
+      "MIN_DIST 0 must reproduce the un-gated 2026-08-11 arm exactly",
+    ).toBeCloseTo(10.2, 6);
+
+    // A target with no `dist` falls through and is led — deliberate, because
+    // the only real caller (`pickThreat`'s threat) always carries one, and
+    // failing closed here would silently disable the lead everywhere if that
+    // ever changed. Pinned so the fall-through is a decision, not a surprise.
+    expect(leadTarget({ i: 0, x: 10, y: 10.1 }, memory, 50, LEAD_ON).y).toBeCloseTo(10.2, 6);
+  });
+
   it("leadTarget does not mutate the target it leads", () => {
     // `decide` hands the result straight into the aim math while `threat` stays
     // live for distance and weapon choice — a shared object here would move the

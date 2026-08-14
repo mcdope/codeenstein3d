@@ -366,6 +366,16 @@ export const DEFAULT_TUNING = {
   // actual enemy positions per decision, so a third fix costs engine-side
   // logging plus a fresh capture before it can even be aimed.
   BOT_AIM_LEAD: false,
+  // Below this range `leadTarget` returns the target untouched, however the
+  // switch above is set. **Read off measured data, not tuned** — see
+  // `leadTarget`: engine-side position logging showed the lead is more
+  // accurate at every range, but at 0-2 tiles it demands 4.6x more re-aim than
+  // the accuracy it buys, against ~1.2x beyond 2 tiles. That cliff sits at 2.
+  //
+  // It exists as its own knob so the retry is single-variable against the
+  // original: setting `BOT_AIM_LEAD_MIN_DIST` to 0 reproduces the 2026-08-11
+  // arm exactly.
+  BOT_AIM_LEAD_MIN_DIST: 2.0,
   // Whether the fire gate is the tighter of `profile.fireAngleEps` and the
   // angle the target actually subtends, instead of the profile constant alone.
   // Single-variable switch, as above:
@@ -1513,6 +1523,27 @@ export function trackEnemyMotion(enemies, memory, simTimeMs, tuning = DEFAULT_TU
  */
 export function leadTarget(target, memory, leadMs, tuning = DEFAULT_TUNING) {
   if (!tuning.BOT_AIM_LEAD || !target || target.i === undefined) return target;
+  // **Never lead a close target, and this is the whole reason the first
+  // attempt lost.** Engine-side position logging (2026-08-14) scored the
+  // predictor directly against where enemies actually ended up: leading is
+  // *more* accurate at every range, including 0-2 tiles, where it cuts angular
+  // error 0.0328 -> 0.0248 rad. So the original "linear extrapolation of a
+  // curving path errs most close in" diagnosis was wrong — prediction was
+  // never the problem.
+  //
+  // What is the problem is the *re-aim* it demands. Bearing rate goes as
+  // `v_perp / dist`, so the same world-space lead is a far larger angle up
+  // close: at 0-2 tiles it asks for **0.0366 rad of extra turning to buy
+  // 0.0080 rad of accuracy — 4.6x more turn than benefit** — against ~1.2x
+  // beyond 2 tiles. The bot's aim is keyboard-quantised (see this module's
+  // header), and its measured facing error at 0-2 is already 0.0859 rad,
+  // *above* even Casual's `fireAngleEps`; adding turn it cannot converge on
+  // means firing mid-correction. That 4.6 / 1.3 / 1.2 / 1.2 ratio profile
+  // tracks the 2026-08-11 A/B's measured damage (-8.9 / -4.4 / -3.9 / -1.5pp)
+  // closely enough to be the same phenomenon.
+  //
+  // The threshold is read off that cliff rather than tuned.
+  if (target.dist !== undefined && target.dist < tuning.BOT_AIM_LEAD_MIN_DIST) return target;
   const v = memory?.enemyMotion?.vel?.[target.i];
   if (!v) return target;
   const lead = leadMs / 1000;
