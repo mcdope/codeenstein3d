@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+
+## beta-7
+
 - New: **a guided tour the first time you open the game.** Seven popouts over the launch screen point at the controls that actually start something — the launch tabs, Demos as the zero-setup path, co-op, difficulty and gore, the file tree, the highscore board and the console. Skippable, Escape closes it, arrows move between steps, and it never appears again once dismissed. There was a static intro screen and a link to the written guide before, and neither pointed at anything you could click
 - New: **locked doors are colour-coded, and so is everything that points at them.** The door in the world, its dot on the minimap and automap, the key sprite, the "You need the blue key!" message and a row of key pips on the HUD all share one colour per room — so you can see from across a room which door your key fits, and a door you cannot open yet becomes a landmark telling you where to come back to. Deliberately no yellow: amber already means a switchboard door you can just push
 - New: **you can name yourself.** A "Player name" setting, remembered between sessions, that labels your runs on the leaderboard — which now has a Player column — and, in multiplayer, floats above your character in the 3D view in your own marker colour (the same colour your dot already has on the automap and minimap). It also replaces "Host"/"Guest-1" on the end-of-run comparison table. Leave it blank and everything reads as it did before
