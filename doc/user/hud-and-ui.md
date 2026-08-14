@@ -9,10 +9,12 @@ The bottom status bar shows:
 - **System Stability** — your health, as a bar and percentage
 - **Swap** — your armor-like buffer, absorbs damage 1:1 before health, capped at 100
 - **Ammo** — the current weapon's ammo count (or ∞ for a melee weapon — the knife, or Toolchain once it replaces it)
-- **Keys** — how many of the level's keys you're holding, out of the total
+- **Keys** — one pip per locked room on the level, in that room's own colour: hollow while you still need it, filled once you're holding it. A key is permanent and opens every door of its room, so a held/total count would only tell you how much collecting you had left — which colours you have is what decides whether the door in front of you opens. A level with nothing locked shows a dash
 - **Score** — your running total, updated live
 
 The crosshair turns red over a valid target, and shows tick marks for weapons that fire in a spread cone. Pulling the trigger on an empty weapon shows a fading "Out of ammo!" toast instead of just doing nothing.
+
+If you enter a cheat code, a badge appears here and stays for the rest of the campaign — a cheated run can't post a score or a replay, and this says so while you're still playing rather than only once the run is over.
 
 Three warning toasts share the top of the screen, each on its own row so they never cover each other when more than one fires at once: "Out of ammo!" on the first, "Memory leak — acid rising!" on the second, and "You need a key!" — walking into a key-locked door empty-handed — on the third, in that door's own blue.
 
@@ -28,6 +30,7 @@ Press `Tab` to open the automap — a translucent overlay, Diablo-style, that do
 
 ## Sidebar Settings
 
+- **Player name** — labels your runs on the leaderboard, and in multiplayer floats above your character in the 3D view in your own marker colour. Remembered between sessions. Leave it blank and everything reads as it did before you set one.
 - **Gore** — None / Normal / More / Extreme, controls blood-particle volume and how long stains linger.
 - **Difficulty** — Easy / Normal / Hard, scales enemy HP, enemy damage, and pickup scarcity. See [Mechanics](mechanics.md#difficulty) for exact numbers.
 - **Master / SFX / Music** volume sliders, persisted across sessions.
@@ -39,9 +42,9 @@ Gore, Difficulty, and the volume sliders are standing preferences, independent o
 
 ## Highscores
 
-The **Highscores** button opens a top-10 leaderboard with columns for score, level/campaign name, the codebase's total lines/complexity, levels cleared, when the run ended, and an AST hash of the *whole workspace* (so you can compare runs against the exact same code, regardless of which level either run happened to end on). Entries with a recorded replay show **Watch** and **Export** buttons.
+The **Highscores** button opens a top-10 leaderboard with columns for player, score, level/campaign name, the codebase's total lines/complexity, levels cleared, when the run ended, and an AST hash of the *whole workspace* (so you can compare runs against the exact same code, regardless of which level either run happened to end on). Entries with a recorded replay show **Watch** and **Export** buttons.
 
-If you haven't set any scores of your own yet, the board shows 3 example entries from the bundled Demo Campaign instead of an empty list, each watchable — these disappear the moment you set a real score of your own.
+If you haven't set any scores of your own yet, the board shows 3 example entries from the bundled Demo Campaign instead of an empty list, each watchable — these disappear the moment you set a real score of your own. They're named **Casual**, **Gamer** and **Pro** after the playtest bot's own skill profiles, which is what makes their scores differ.
 
 ### Replay playback
 

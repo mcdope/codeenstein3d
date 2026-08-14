@@ -14,6 +14,12 @@ game is, how source code maps onto the dungeon (files → levels, functions → 
 an enemy inside, and so on), and what to expect once you're inside a level. It's replaced the moment a
 level launches and won't reappear for the rest of the session.
 
+The very first time you open the game, a short guided tour points at the controls this page
+describes — the launch tabs, **Demos** as the path that needs no setup, co-op, difficulty and
+gore, the file tree, the highscore board and the console. Use the arrow keys or **Back**/**Next**
+to move through it, **Skip** or **Escape** to dismiss it. It won't come back once dismissed;
+everything it covers is written out below and in the rest of this guide.
+
 The sidebar has five tabs. Four of them start a single-player run; the fifth, **Multiplayer**, is covered in its own [guide](multiplayer.md).
 
 - **Local** — click **Select Workspace** and pick a folder on your machine. Anything with source code works, from a single script to a large repo.
@@ -21,7 +27,7 @@ The sidebar has five tabs. Four of them start a single-player run; the fifth, **
 - **GitHub** — type an `owner/repo` reference and click **Load from GitHub** to pull any public repository over the network instead of picking a local folder. Four "Suggested repos" quick-pick buttons (Easy/Medium/Hard/Nightmare) below the input fill in and load a known repo of increasing size/complexity if you don't have one in mind.
 - **Demos** — click **Launch Demo Campaign** for a bundled, multi-language showcase campaign that ships with the app itself. No local files or network access needed — every level is baked into the app at build time, so it also works offline.
 
-Once a workspace loads, the game looks for a sensible starting point — a `main` function, `index.php`, the highest-complexity file, or just the first parsable file it finds — and launches straight into it. You don't need to manually pick a file to begin, though you can also click any file in the sidebar's file tree to jump into it directly. A spinner with a status line (fetching the tree, scanning for an entrypoint, parsing, generating the world) shows in the viewport while this is in progress — for a large repository this can take tens of seconds over GitHub — the built-in **Nightmare** suggestion (`magento/magento2`) is deliberately about as slow as it gets. If a repo that size comes up short, see [Troubleshooting](troubleshooting.md#a-big-github-repo-loaded-but-it-seems-incomplete).
+Once a workspace loads, the game looks for a sensible starting point — a `main` function, `index.php`, otherwise the *least* complex file it can parse, since complexity is what becomes enemies and health and level 1 shouldn't be the hardest map in the repository — and launches straight into it. You don't need to manually pick a file to begin, though you can also click any file in the sidebar's file tree to jump into it directly. A spinner with a status line (fetching the tree, scanning for an entrypoint, parsing, generating the world) shows in the viewport while this is in progress — for a large repository this can take tens of seconds over GitHub — the built-in **Nightmare** suggestion (`magento/magento2`) is deliberately about as slow as it gets. If a repo that size comes up short, see [Troubleshooting](troubleshooting.md#a-big-github-repo-loaded-but-it-seems-incomplete).
 
 ## The first level
 
