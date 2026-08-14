@@ -12,6 +12,34 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **The aim lead ships, gated at 2 tiles — the first attempt lost to re-aim cost, not to bad prediction (2026-08-14).** `BOT_AIM_LEAD` had been off since 2026-08-11 with the diagnosis "linear extrapolation of a *curving* path errs most close in", and the backlog recorded that settling it needed engine-side position logging that did not exist. Built it, and the diagnosis was wrong.
+
+  **New instrumentation.** `shot` events now carry `tgt` — the target's position now plus its two preceding frames — and `sx/sy/sdx/sdy`, the shooter's position and facing. Two previous frames rather than one, because the predictor being scored estimates velocity from the *previous* displacement, so one frame is not enough to reconstruct it. Held in an engine-side array index-aligned with `enemies` rather than as fields on `Enemy`: that type is plain data shared with the map layer and serialized for replays, and widening it would put diagnostics into the replay digest for no gameplay reason. Allocated only when an event log is attached, so normal play pays nothing.
+
+  **The predictor was never the problem.** Scored against where enemies actually ended up, leading is *more* accurate at every range — it beats no-lead on **93.8%** of shots and cuts positional error 38-60%:
+
+  | range | ang err no-lead | ang err lead | gain | re-aim demanded | ratio |
+  |---|---:|---:|---:|---:|---:|
+  | 0-2 | 0.0328 | 0.0248 | 0.0080 | **0.0366** | **4.6x** |
+  | 2-4 | 0.0162 | 0.0106 | 0.0056 | 0.0074 | 1.3x |
+  | 4-6 | 0.0085 | 0.0044 | 0.0041 | 0.0050 | 1.2x |
+  | 6-8 | 0.0069 | 0.0033 | 0.0036 | 0.0045 | 1.2x |
+
+  **The cost is the re-aim.** Bearing rate goes as `v_perp / dist`, so the same world-space lead is a far larger angle up close: at 0-2 tiles it demands **4.6x more turning than the accuracy it buys**. The bot's aim is keyboard-quantised, and its measured facing error at 0-2 is already **0.0859 rad** — above even Casual's `fireAngleEps` — so it is firing mid-correction and the lead hands it more correction to do. That 4.6 / 1.3 / 1.2 / 1.2 ratio profile tracks the original arm's measured damage (**-8.9 / -4.4 / -3.9 / -1.5pp**) closely enough to be the same phenomenon.
+
+  **Fix and result.** `BOT_AIM_LEAD_MIN_DIST = 2.0`, read off that cliff rather than tuned; setting it to 0 reproduces the 2026-08-11 arm exactly, which keeps the retry single-variable against the original. Three arms of 80 on staged curl, Casual+Gamer x hard, with two identical `lead-off` arms as a measured null control:
+
+  | range | pooled off | gated | delta | null-control delta | z |
+  |---|---:|---:|---:|---:|---:|
+  | 0-2 | 97.9% (18,212) | 98.0% (10,654) | +0.1pp | -0.0pp | 0.60 |
+  | 2-4 | 78.7% (12,206) | 78.5% (6,805) | -0.2pp | -0.7pp | -0.39 |
+  | 4-6 | 71.2% (16,106) | 72.3% (8,628) | +1.2pp | +0.3pp | 1.94 |
+  | 6-8 | 66.5% (11,105) | **69.4%** (5,772) | **+2.8pp** | +0.3pp | **3.69** |
+
+  Guard clean: levels-per-attempt **8.86** against a pooled 8.35 with a 0.35 null spread. **0-2 being unchanged is a mechanism check rather than a null** — the gate disables the lead inside 2 tiles, so anything else there would mean the gate was not working. And it **replicates**: an earlier run of the same three arms gave **+3.6pp (z=6.34)** at 6-8 on a different substrate. Default flipped ON.
+
+  **A process failure worth more than the result, because it nearly shipped a wrong conclusion.** That earlier run was on the *wrong substrate*. `stage-campaign.mjs` refuses when the tree is not safe for `git checkout -B`; it refused because `engine.ts` was uncommitted at that moment; and its output went to `tail -1` unread — so all three arms played the 17-level demo campaign while everything downstream said curl. It surfaced only because `levels/attempt` read **16.5**, which is impossible on a 15-level campaign. That run's guard was therefore saturated and worthless, which is the exact failure mode this file already documents twice. **Two cheap checks now, and both belong in any staged capture: `ls demo-campaign | wc -l` immediately after staging, and an ssh check that every lane is on the expected sha *and* carries the expected level count.** The lane half matters on its own — an earlier smoke capture emitted no `tgt` at all because a lane was running a stale checkout, and note that `CODEENSTEIN_CAPTURE_LOCAL_ONLY=1` does **not** prevent lane use, it only suppresses the refusal.
+
 - [x] **Attrition sized: regular + Edge Case do 88-100% of enemy damage, and Elites are individually lethal but numerically a rounding error (2026-08-13).** The backlog item had deliberately refused to size itself until the bot fixes landed, because the pre-fix numbers were contaminated by a bot walking 14,000 tiles for loot and knife-trading Elites. Those fixes landed 2026-08-06; this reads **~1,000 post-fix runs** already on disk across staged curl, serilog and ripgrep. No new machine time.
 
   | | curl | serilog | ripgrep |
