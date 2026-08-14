@@ -45,6 +45,7 @@ import { planRoute } from "./lib/routePlanner.mjs";
 import { PROFILES } from "./run-balancing-telemetry.mjs";
 import { bootstrapMultiplayerSession, closeMultiplayerSession } from "./lib/multiplayerSessionBootstrap.mjs";
 import { startIsolatedMultiplayerServers } from "./lib/multiplayerTestServers.mjs";
+import { envNumber } from "./lib/envNumber.mjs";
 
 const PLAYER_COUNT = 2;
 const DIFFICULTY = "easy";
@@ -55,7 +56,7 @@ const LEVEL_BOUNDARY_TIMEOUT_MS = 30_000; // countdown (5s) + chunked broadcast 
 
 // Pass/fail bar, not a stopping point — see this file's own top doc comment.
 // Overridable only for fast local smoke-testing of this script itself.
-const MIN_LEVEL_INDEX = process.env.CODEENSTEIN_MP_CAMPAIGN_MIN_LEVEL ? Number(process.env.CODEENSTEIN_MP_CAMPAIGN_MIN_LEVEL) : 4;
+const MIN_LEVEL_INDEX = envNumber("CODEENSTEIN_MP_CAMPAIGN_MIN_LEVEL", 4, { integer: true, min: 1 });
 // The real bundled demo campaign is exactly 17 levels (`demo-campaign/`) —
 // this is a runaway-loop backstop, not a real target, and should never bind.
 const MAX_LEVEL_ITERATIONS = 20;

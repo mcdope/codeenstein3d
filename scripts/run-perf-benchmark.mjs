@@ -58,9 +58,10 @@ import { fileURLToPath } from "node:url";
 import { chromium, firefox, webkit } from "playwright";
 import { installPerfSampler, readSampler, resetSampler } from "./lib/perfSampler.mjs";
 import { createPerfLogCollector, numberStats, percentileSorted, summarizeFrameEntries } from "./lib/perfConsoleParse.mjs";
+import { envNumber } from "./lib/envNumber.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PERF_PORT = Number(process.env.CODEENSTEIN_PERF_PORT ?? 5199);
+const PERF_PORT = envNumber("CODEENSTEIN_PERF_PORT", 5199, { integer: true, min: 1, max: 65535 });
 const EXTERNAL_URL = process.env.CODEENSTEIN_PERF_URL;
 
 const BROWSERS = { chromium, firefox, webkit };

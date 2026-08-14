@@ -55,7 +55,7 @@ const CAMPAIGN_NAME = "demo-campaign";
 const CONFIGURED_DEV_URL = process.env.CODEENSTEIN_DEV_URL ?? null;
 /** Port used when starting our own — deliberately not 5173, which belongs to
  * whoever is sitting at the keyboard. */
-const OWN_DEV_PORT = Number(process.env.CODEENSTEIN_TELEMETRY_DEV_PORT ?? 5199);
+const OWN_DEV_PORT = envNumber("CODEENSTEIN_TELEMETRY_DEV_PORT", 5199, { integer: true, min: 1, max: 65535 });
 
 /**
  * The server attempts actually navigate to. Reassigned by `main()` once
@@ -79,11 +79,11 @@ const OUTPUT_FILE = process.env.CODEENSTEIN_TELEMETRY_OUTPUT_FILE
 
 // --- Scoped-run env vars (permanent — useful for future debugging, not just
 // this file's own smoke test) -----------------------------------------------
-const LEVEL_LIMIT = process.env.CODEENSTEIN_TELEMETRY_LEVEL_LIMIT ? Number(process.env.CODEENSTEIN_TELEMETRY_LEVEL_LIMIT) : Infinity;
+const LEVEL_LIMIT = envNumber("CODEENSTEIN_TELEMETRY_LEVEL_LIMIT", Infinity, { integer: true, min: 1 });
 // Unbounded by default — "run until 3 qualifying runs, however long that
 // takes." Only set for scoped smoke-testing, where a small explicit value
 // keeps the run fast and bounded.
-const ATTEMPT_CAP = process.env.CODEENSTEIN_TELEMETRY_ATTEMPT_CAP ? Number(process.env.CODEENSTEIN_TELEMETRY_ATTEMPT_CAP) : Infinity;
+const ATTEMPT_CAP = envNumber("CODEENSTEIN_TELEMETRY_ATTEMPT_CAP", Infinity, { integer: true, min: 1 });
 const PROFILE_FILTER = process.env.CODEENSTEIN_TELEMETRY_PROFILE || null;
 const DIFFICULTY_FILTER = process.env.CODEENSTEIN_TELEMETRY_DIFFICULTY || null;
 const PROGRESS_LOG_INTERVAL = 5; // attempts between "still working" heartbeats on an uncapped run
@@ -94,7 +94,7 @@ const PROGRESS_LOG_INTERVAL = 5; // attempts between "still working" heartbeats 
 // cores without needing true multi-process parallelism. Default chosen to
 // be a meaningful speedup without assuming a huge machine; raise it freely
 // on a beefier box.
-const ATTEMPT_CONCURRENCY = process.env.CODEENSTEIN_TELEMETRY_CONCURRENCY ? Number(process.env.CODEENSTEIN_TELEMETRY_CONCURRENCY) : 12;
+const ATTEMPT_CONCURRENCY = envNumber("CODEENSTEIN_TELEMETRY_CONCURRENCY", 12, { integer: true, min: 1 });
 // Off by default (keeps normal output to just heartbeats + "Telemetry saved")
 // — set to debug a combo that's burning through attempts without qualifying.
 const VERBOSE = process.env.CODEENSTEIN_TELEMETRY_VERBOSE === "1";
@@ -158,9 +158,7 @@ const TUNING_OVERRIDE = (() => {
 // Overridable so a large-scale data-collection campaign can raise the target
 // (e.g. 50) per invocation without touching this default — every existing
 // caller (balancing:scan, ad-hoc smoke tests) is unaffected when unset.
-const REQUIRED_QUALIFYING_RUNS = process.env.CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET
-  ? Number(process.env.CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET)
-  : 3;
+const REQUIRED_QUALIFYING_RUNS = envNumber("CODEENSTEIN_TELEMETRY_QUALIFYING_TARGET", 3, { integer: true, min: 1 });
 const QUALIFY_LEVEL_INDEX = 3; // 0-based — "level 4" in 1-based campaign numbering
 
 /**
@@ -196,14 +194,12 @@ let eventAttemptCounter = 0;
  * no longer independent samples. That is the intended trade when it is set,
  * and the reason it is not the default.
  */
-const GAMEPLAY_SEED = process.env.CODEENSTEIN_TELEMETRY_SEED ? Number(process.env.CODEENSTEIN_TELEMETRY_SEED) : null;
-if (GAMEPLAY_SEED !== null && (!Number.isInteger(GAMEPLAY_SEED) || GAMEPLAY_SEED < 0 || GAMEPLAY_SEED > 0xffffffff)) {
-  // A hard exit rather than a warning, for the same reason
-  // CODEENSTEIN_TELEMETRY_TUNING rejects invalid JSON: silently falling back
-  // to an unpinned run would produce a comparison that looks pinned.
-  console.error(`CODEENSTEIN_TELEMETRY_SEED must be an integer in 0..0xffffffff, got: ${process.env.CODEENSTEIN_TELEMETRY_SEED}`);
-  process.exit(1);
-}
+// A hard exit rather than a warning, for the same reason
+// CODEENSTEIN_TELEMETRY_TUNING rejects invalid JSON: silently falling back to
+// an unpinned run would produce a comparison that looks pinned. This used to
+// be its own hand-rolled check — one of only two knobs that validated at all —
+// and `envNumber` expresses the same bounds, so it is no longer a special case.
+const GAMEPLAY_SEED = envNumber("CODEENSTEIN_TELEMETRY_SEED", null, { integer: true, min: 0, max: 0xffffffff });
 
 // How many ticks the final push toward the exit tile gets, once the route's
 // own legs are exhausted — see `playRun`'s final `driveToward` call.
@@ -222,6 +218,7 @@ const TELEPORT_REPLAN_LIMIT = 4;
 // without creating a local binding, so this module could no longer see
 // `PROFILES` itself even though every importer of it still could.
 import { AGGRO_RADIUS, ENGAGE_RADIUS, NAVIGATION_PROFILE, PROFILES } from "./lib/profiles.mjs";
+import { envNumber } from "./lib/envNumber.mjs";
 export { AGGRO_RADIUS, ENGAGE_RADIUS, NAVIGATION_PROFILE, PROFILES };
 
 export const DIFFICULTIES = ["easy", "normal", "hard"];

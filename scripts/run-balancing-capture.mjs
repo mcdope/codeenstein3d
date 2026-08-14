@@ -63,6 +63,7 @@ import {
 } from "./lib/laneOrchestrator.mjs";
 import { REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { buildSshRunners, readHostList } from "./lib/sshRunner.mjs";
+import { envNumber } from "./lib/envNumber.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -74,24 +75,22 @@ const TELEMETRY_SCRIPT = path.join(REPO_ROOT, "scripts", "run-balancing-telemetr
 const PROFILES = (process.env.CODEENSTEIN_CAPTURE_PROFILES ?? "Casual,Gamer,Pro").split(",").map((s) => s.trim()).filter(Boolean);
 const DIFFICULTIES = (process.env.CODEENSTEIN_CAPTURE_DIFFICULTIES ?? "normal,hard").split(",").map((s) => s.trim()).filter(Boolean);
 /** The denominator. Every rate this capture produces is out of this. */
-const TARGET_ATTEMPTS = Number(process.env.CODEENSTEIN_CAPTURE_ATTEMPTS ?? 60);
+const TARGET_ATTEMPTS = envNumber("CODEENSTEIN_CAPTURE_ATTEMPTS", 60, { integer: true, min: 1 });
 /** Attempts per invocation — one fresh browser each. 20 is comfortably inside
  * the ~38 where a browser was observed to die, and at the measured ~0.4
  * attempts/min is roughly a 50-minute invocation. */
-const CHUNK = Number(process.env.CODEENSTEIN_CAPTURE_CHUNK ?? 20);
-const CONCURRENCY_PER_LANE = Number(process.env.CODEENSTEIN_CAPTURE_CONCURRENCY ?? 10);
+const CHUNK = envNumber("CODEENSTEIN_CAPTURE_CHUNK", 20, { integer: true, min: 1 });
+const CONCURRENCY_PER_LANE = envNumber("CODEENSTEIN_CAPTURE_CONCURRENCY", 10, { integer: true, min: 1 });
 /** Sized against a chunk's real cost with headroom, not guessed: 20 attempts
  * at the measured rate is ~50 min, and the 2026-08-04 run showed a watchdog
  * cutting a *working* invocation is far more expensive than one that runs
  * long, because the whole chunk is lost. */
-const WATCHDOG_MS = Number(process.env.CODEENSTEIN_CAPTURE_WATCHDOG_MS ?? 130 * 60 * 1000);
+const WATCHDOG_MS = envNumber("CODEENSTEIN_CAPTURE_WATCHDOG_MS", 130 * 60 * 1000, { integer: true, min: 1 });
 // Unset = full campaign, which is what a capture is normally for. See `envFor`.
-const LEVEL_LIMIT = process.env.CODEENSTEIN_CAPTURE_LEVEL_LIMIT
-  ? Number(process.env.CODEENSTEIN_CAPTURE_LEVEL_LIMIT)
-  : null;
+const LEVEL_LIMIT = envNumber("CODEENSTEIN_CAPTURE_LEVEL_LIMIT", null, { integer: true, min: 1 });
 /** Per-combo spawn ceiling. A cell needing more invocations than this to reach
  * its target is failing in a way more attempts will not fix. */
-const MAX_INVOCATIONS = Number(process.env.CODEENSTEIN_CAPTURE_MAX_INVOCATIONS ?? 8);
+const MAX_INVOCATIONS = envNumber("CODEENSTEIN_CAPTURE_MAX_INVOCATIONS", 8, { integer: true, min: 1 });
 /**
  * The cap, adjusted for how many invocations the work actually needs.
  *
@@ -120,10 +119,10 @@ function invocationCapFor(target) {
  * attempts rather than holding a full-size chunk while every other lane idles.
  * 45 min keeps a comfortable margin under the 130-minute watchdog even if a
  * lane turns out slower than its stored rate. */
-const TARGET_CHUNK_MIN = Number(process.env.CODEENSTEIN_CAPTURE_TARGET_CHUNK_MIN ?? 45);
+const TARGET_CHUNK_MIN = envNumber("CODEENSTEIN_CAPTURE_TARGET_CHUNK_MIN", 45, { integer: true, min: 1 });
 /** Never below this: a chunk pays a fixed browser+vite startup cost, so tiny
  * chunks spend most of their time on overhead. */
-const MIN_CHUNK = Number(process.env.CODEENSTEIN_CAPTURE_MIN_CHUNK ?? 5);
+const MIN_CHUNK = envNumber("CODEENSTEIN_CAPTURE_MIN_CHUNK", 5, { integer: true, min: 1 });
 /** Learned lane speeds, carried between runs. Gitignored scratch — losing it
  * only costs one round of recalibration. */
 const RATES_FILE = path.join(REPO_ROOT, "lane-speed.json");

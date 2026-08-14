@@ -95,6 +95,7 @@ import { MultiplayerBot, MULTIPLAYER_TUNING_DEFAULTS } from "./lib/multiplayerBo
 import { runQualifyLoop } from "./lib/qualifyLoop.mjs";
 import { bootstrapMultiplayerSession, closeMultiplayerSession } from "./lib/multiplayerSessionBootstrap.mjs";
 import { startIsolatedMultiplayerServers } from "./lib/multiplayerTestServers.mjs";
+import { envNumber } from "./lib/envNumber.mjs";
 
 const OUTPUT_FILE = process.env.CODEENSTEIN_MP_TELEMETRY_OUTPUT_FILE
   ? path.resolve(process.env.CODEENSTEIN_MP_TELEMETRY_OUTPUT_FILE)
@@ -123,15 +124,13 @@ const COMBO_PROFILES_FILTER = process.env.CODEENSTEIN_MP_TELEMETRY_COMBO_PROFILE
 // legs at MultiplayerBot's real ~400ms/decision pace) means even a "small"
 // target here is a genuinely meaningful sample — see this file's own doc
 // comment for why these are much smaller than single-player's own defaults.
-const REQUIRED_QUALIFYING_RUNS = process.env.CODEENSTEIN_MP_TELEMETRY_QUALIFYING_TARGET
-  ? Number(process.env.CODEENSTEIN_MP_TELEMETRY_QUALIFYING_TARGET)
-  : 2;
-const ATTEMPT_CAP = process.env.CODEENSTEIN_MP_TELEMETRY_ATTEMPT_CAP ? Number(process.env.CODEENSTEIN_MP_TELEMETRY_ATTEMPT_CAP) : Infinity;
+const REQUIRED_QUALIFYING_RUNS = envNumber("CODEENSTEIN_MP_TELEMETRY_QUALIFYING_TARGET", 2, { integer: true, min: 1 });
+const ATTEMPT_CAP = envNumber("CODEENSTEIN_MP_TELEMETRY_ATTEMPT_CAP", Infinity, { integer: true, min: 1 });
 // Modest by default (sequential) — several concurrent real multiplayer
 // sessions against one dedicated signaling+dev server pair is a real
 // resource-contention risk this tool hasn't been measured against; raise
 // deliberately, not by copying single-player's cheap virtual-time default.
-const CONCURRENCY = process.env.CODEENSTEIN_MP_TELEMETRY_CONCURRENCY ? Number(process.env.CODEENSTEIN_MP_TELEMETRY_CONCURRENCY) : 1;
+const CONCURRENCY = envNumber("CODEENSTEIN_MP_TELEMETRY_CONCURRENCY", 1, { integer: true, min: 1 });
 const VERBOSE = process.env.CODEENSTEIN_MP_TELEMETRY_VERBOSE === "1";
 const NAV_DIAG = process.env.CODEENSTEIN_MP_TELEMETRY_NAV_DIAG === "1";
 // Same "free anomaly detection" wiring `run-balancing-telemetry.mjs` uses —
