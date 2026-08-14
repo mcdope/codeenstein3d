@@ -4828,22 +4828,21 @@ export class RaycasterEngine {
         //
         // `null` when nothing is targeted or before two frames have elapsed on
         // a level, which the reader must exclude rather than read as zero.
-        tgt:
-          aimedAt && this.enemyTrail
-            ? (() => {
-                const i = this.enemies.indexOf(aimedAt);
-                if (i < 0) return null;
-                const t = i * 4;
-                return {
-                  x: aimedAt.x,
-                  y: aimedAt.y,
-                  px: this.enemyTrail[t + 2],
-                  py: this.enemyTrail[t + 3],
-                  ppx: this.enemyTrail[t],
-                  ppy: this.enemyTrail[t + 1],
-                };
-              })()
-            : null,
+        // One guard, not three: `indexOf` already returns -1 for "no target"
+        // and for "target is not in this roster", and the no-target case is
+        // the common one, so folding them keeps this branch exercised rather
+        // than leaving an unreachable defensive arm behind.
+        tgt: ((i = aimedAt && this.enemyTrail ? this.enemies.indexOf(aimedAt) : -1) =>
+          i < 0
+            ? null
+            : {
+                x: aimedAt!.x,
+                y: aimedAt!.y,
+                px: this.enemyTrail![i * 4 + 2],
+                py: this.enemyTrail![i * 4 + 3],
+                ppx: this.enemyTrail![i * 4],
+                ppy: this.enemyTrail![i * 4 + 1],
+              })(),
         ammoAfter: w.ammoType ? shooter.ammo[w.ammoType] : null,
         forcedMelee,
       });
