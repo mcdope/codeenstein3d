@@ -12,6 +12,18 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **Numeric env knobs fail loudly instead of becoming `NaN` (2026-08-14).** All **53** numeric `CODEENSTEIN_*` knobs were a bare `Number(process.env.X ?? default)`. `Number("abc")` is `NaN` and `NaN` propagates silently: `CODEENSTEIN_MULTIPLAYER_PORT=abc` did not fail, it listened somewhere unpredictable, and `CODEENSTEIN_CAPTURE_ATTEMPTS=6o` (the o/0 slip) produced a capture whose denominator — and therefore every rate — was `NaN`, discoverable only hours later. Exactly **two** validated, and both guarded a value whose corruption would have been *invisible*; that was the argument for doing the rest, not against it.
+
+  New `scripts/lib/envNumber.mjs` with optional `integer`/`min`/`max`, used by all ten tooling scripts: ports bounded to 1..65535, counts and durations to integers >= 1 (>= 0 where zero is meaningful), replay speed to a positive fraction. `CODEENSTEIN_TELEMETRY_SEED`'s hand-rolled `0..0xffffffff` check is now expressed the same way and is no longer a special case.
+
+  **It trims before testing for emptiness, and that is the subtle half.** `Number("")` and `Number("   ")` are both **0**, not `NaN` — so a variable a shell left blank is the one bad value a plain `Number()` gets wrong *without* leaving a `NaN` behind to notice. Everything else at least fails loudly downstream eventually; a silent zero does not.
+
+  **`scripts/multiplayer-server.mjs` carries its own copy rather than importing, deliberately.** That file is a single dependency-free script — `docker/signaling/Dockerfile` copies it alone, with no `node_modules` and no build step, and says so in its own comment. An import would have broken the deployed image *at runtime* while passing every local test. Both copies carry that warning so a later DRY pass has to notice it.
+
+  **Deploy note for the signaling backend**: a server already running with a typo'd value now fails at its next restart rather than continuing with a wrong number. That is the intent, and it is the one behavioural change here.
+
+  Verified by running the entry points rather than only the tests — the class of check `notes` already records learning the hard way. The server rejects `PORT=abc` with exit 1 and still starts and serves on a valid port; the capture rejects `ATTEMPTS=6o` with exit 1 and, with a valid value, proceeds to its own clean-tree refusal.
+
 - [x] **The aim lead ships, gated at 2 tiles — the first attempt lost to re-aim cost, not to bad prediction (2026-08-14).** `BOT_AIM_LEAD` had been off since 2026-08-11 with the diagnosis "linear extrapolation of a *curving* path errs most close in", and the backlog recorded that settling it needed engine-side position logging that did not exist. Built it, and the diagnosis was wrong.
 
   **New instrumentation.** `shot` events now carry `tgt` — the target's position now plus its two preceding frames — and `sx/sy/sdx/sdy`, the shooter's position and facing. Two previous frames rather than one, because the predictor being scored estimates velocity from the *previous* displacement, so one frame is not enough to reconstruct it. Held in an engine-side array index-aligned with `enemies` rather than as fields on `Enemy`: that type is plain data shared with the map layer and serialized for replays, and widening it would put diagnostics into the replay digest for no gameplay reason. Allocated only when an event log is attached, so normal play pays nothing.
