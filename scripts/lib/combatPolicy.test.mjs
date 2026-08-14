@@ -1696,6 +1696,11 @@ describe("turnSplitIntent", () => {
 // future attempt against the engine's real velocity rather than a differenced
 // estimate, so these pin what it does when switched on.
 const LEAD_ON = { ...DEFAULT_TUNING, BOT_AIM_LEAD: true };
+/** The lead is ON by default since 2026-08-14, so the *off* arm now has to say
+ * so explicitly. These tests contrast the two arms, and a contrast that leans
+ * on whichever way the default happens to point silently stops contrasting
+ * anything the moment it flips — which is exactly what happened here. */
+const LEAD_OFF = { ...DEFAULT_TUNING, BOT_AIM_LEAD: false };
 
 describe("aim geometry", () => {
   it("angularHalfWidth falls off as 1/dist and crosses fireAngleEps where the report says it does", () => {
@@ -1778,7 +1783,9 @@ describe("aim geometry", () => {
     // target through untouched.
     expect(leadTarget({ x: 3, y: 4 }, memory, 50, LEAD_ON)).toEqual({ x: 3, y: 4 });
     expect(leadTarget(target, null, 50, LEAD_ON)).toBe(target);
-    expect(leadTarget(target, memory, 50)).toBe(target);
+    // Explicitly the off arm: the shipped default now leads (2026-08-14), so
+    // omitting tuning here would assert the opposite of what it reads as.
+    expect(leadTarget(target, memory, 50, LEAD_OFF)).toBe(target);
   });
 
   it("leadTarget refuses to lead a close target, and MIN_DIST 0 reproduces the original arm", () => {
@@ -1876,7 +1883,7 @@ describe("the fire gate", () => {
     const led = decideTwice({ enemy: crossing, player: makePlayer(aimedAhead), tuning: LEAD_ON });
     expect(led.fire).toBe(true);
 
-    const stale = decideTwice({ enemy: crossing, player: makePlayer(aimedAhead) });
+    const stale = decideTwice({ enemy: crossing, player: makePlayer(aimedAhead), tuning: LEAD_OFF });
     expect(stale.fire).toBe(false);
     expect([...stale.holds.keys()]).toContain("KeyQ");
   });

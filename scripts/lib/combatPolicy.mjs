@@ -314,9 +314,21 @@ export const DEFAULT_TUNING = {
   // Whether the bot aims where a moving target *will* be when its shot
   // resolves, instead of where the target was when it decided.
   //
-  // **OFF, and it is off because it was measured, not because it was never
-  // tried.** Turn it on to reproduce the arm:
-  //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_AIM_LEAD":true}'
+  // **ON since 2026-08-14, and only because the retry was measured — the
+  // first attempt genuinely lost and the paragraphs below are kept as the
+  // record of why.** Turn it off with:
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"BOT_AIM_LEAD":false}'
+  //
+  // What changed is `BOT_AIM_LEAD_MIN_DIST` below, not the prediction. Once
+  // engine-side position logging could score the predictor against where
+  // enemies actually went, leading turned out to be *more* accurate at every
+  // range — so the "curving path" diagnosis this comment used to carry was
+  // wrong. The loss was the re-aim it demanded up close. Gated at 2 tiles and
+  // re-run on staged curl, hit rate moves **+2.8pp at 6-8 tiles (z=3.69)**
+  // against a null-control swing of +0.3pp, is unchanged at 0-2 (+0.1pp,
+  // which the gate forces by construction), and levels-per-attempt moves
+  // +0.51 against a 0.35 null spread. It replicates: an earlier run on the
+  // demo campaign gave +3.6pp (z=6.34) at the same band.
   //
   // The lag it corrects is real and structural: `simulate()` runs
   // `updateEnemyAi(dt)` (engine.ts:~2804) and only then `updateFiring(dt)`
@@ -365,7 +377,7 @@ export const DEFAULT_TUNING = {
   // `dist` and `targetArch`. Scoring a predictor means logging predicted vs
   // actual enemy positions per decision, so a third fix costs engine-side
   // logging plus a fresh capture before it can even be aimed.
-  BOT_AIM_LEAD: false,
+  BOT_AIM_LEAD: true,
   // Below this range `leadTarget` returns the target untouched, however the
   // switch above is set. **Read off measured data, not tuned** — see
   // `leadTarget`: engine-side position logging showed the lead is more
