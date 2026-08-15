@@ -138,3 +138,64 @@ describe("BgmPlayer.stop()", () => {
     expect(bgm.trackCount).toBe(1);
   });
 });
+
+describe("BgmPlayer.pause()/resume()", () => {
+  /** `pause()`/`play()` are both mocked to no-ops here, so `el.paused` never
+   * moves on its own — the whole point of these tests is what the player does
+   * with that flag, so it is driven directly. */
+  function stubPaused(paused: boolean): void {
+    vi.spyOn(HTMLMediaElement.prototype, "paused", "get").mockReturnValue(paused);
+  }
+
+  it("silences playing music and starts it again on resume", async () => {
+    const pauseSpy = vi.spyOn(HTMLMediaElement.prototype, "pause");
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, "play");
+    await bgm.loadFolder(dir({ "a.mp3": "A" }));
+    stubPaused(false);
+    playSpy.mockClear();
+
+    bgm.pause();
+    expect(pauseSpy).toHaveBeenCalledTimes(1);
+
+    bgm.resume();
+    expect(playSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves music alone that was not playing in the first place", async () => {
+    const pauseSpy = vi.spyOn(HTMLMediaElement.prototype, "pause");
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, "play");
+    await bgm.loadFolder(dir({ "a.mp3": "A" }));
+    stubPaused(true); // e.g. no folder loaded, or the player paused it themselves
+    pauseSpy.mockClear();
+    playSpy.mockClear();
+
+    bgm.pause();
+    bgm.resume();
+
+    expect(pauseSpy).not.toHaveBeenCalled();
+    expect(playSpy).not.toHaveBeenCalled();
+  });
+
+  it("only resumes once, however many times resume is called", async () => {
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, "play");
+    await bgm.loadFolder(dir({ "a.mp3": "A" }));
+    stubPaused(false);
+    playSpy.mockClear();
+
+    bgm.pause();
+    bgm.resume();
+    bgm.resume();
+
+    expect(playSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not throw when the resumed play() is rejected", async () => {
+    await bgm.loadFolder(dir({ "a.mp3": "A" }));
+    stubPaused(false);
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockRejectedValue(new Error("not allowed"));
+
+    bgm.pause();
+    expect(() => bgm.resume()).not.toThrow();
+    await vi.waitFor(() => expect(HTMLMediaElement.prototype.play).toHaveBeenCalled());
+  });
+});

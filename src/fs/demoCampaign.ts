@@ -24,6 +24,21 @@ const demoFileContents = import.meta.glob("../../demo-campaign/*", {
   eager: true,
 }) as Record<string, string>;
 
+/**
+ * Raw text of one bundled demo-campaign file by its bare filename, or `null`
+ * if there is no such file.
+ *
+ * Exists for consumers that want the *text* without a level, a handle or a
+ * tree — the boss screen's fallback disguise (`src/ui/bossScreen.ts`), which
+ * has to show something on the launch screen and on a multiplayer guest,
+ * neither of which has a source file in memory. Costs nothing: these strings
+ * are inlined into the bundle either way.
+ */
+export function demoFileText(fileName: string): string | null {
+  const entry = Object.entries(demoFileContents).find(([modulePath]) => modulePath.endsWith(`/${fileName}`));
+  return entry ? entry[1] : null;
+}
+
 /** A directory node's `handle` is never actually called (only `kind` is
  * checked before deciding to recurse) — same reasoning as `DIRECTORY_STUB` in
  * `src/fs/github.ts`. */

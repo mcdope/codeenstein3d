@@ -1130,3 +1130,107 @@ a.settings-btn {
   flex: 0 0 auto;
   opacity: 0.75;
 }
+
+/* --- Boss screen (F9) ----------------------------------------------------
+   A plain code-editor surface covering the entire page. Same mechanism as
+   .intro-tour above (a fixed layer rather than a <dialog>, so nothing about
+   it reads as a game overlay), one stacking level higher: the tour's z-index
+   50 was the highest in this file, and the boss screen must sit over
+   everything including the tour itself.
+
+   Deliberately none of the app's own palette — no --accent, no --bg. The
+   whole point is that this does not look like the thing it is covering, so it
+   carries its own neutral editor colours instead of inheriting the game's. */
+.boss-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  background: #1f2023;
+  color: #c9ccd1;
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none; /* it is focused on open purely to take focus off the canvas */
+}
+
+.boss-screen-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 6px 12px;
+  background: #17181a;
+  border-bottom: 1px solid #2c2e33;
+  flex: 0 0 auto;
+}
+
+.boss-screen-tab {
+  padding: 3px 10px;
+  background: #1f2023;
+  border-top: 1px solid #3a3d44;
+  color: #e4e6eb;
+}
+
+.boss-screen-crumb {
+  color: #6f757e;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.boss-screen-code {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 8px 0 24px;
+}
+
+.boss-line {
+  display: flex;
+  align-items: flex-start;
+  white-space: pre;
+}
+
+.boss-line-no {
+  flex: 0 0 auto;
+  width: 52px;
+  padding-right: 16px;
+  text-align: right;
+  color: #4d525a;
+  user-select: none;
+}
+
+/* pre-wrap rather than pre so a very long line wraps instead of forcing the
+   whole page to scroll sideways — the same treatment .console-line gets. */
+.boss-line-code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.boss-tok--comment {
+  color: #6a9955;
+}
+
+.boss-tok--string {
+  color: #ce9178;
+}
+
+.boss-tok--number {
+  color: #b5cea8;
+}
+
+.boss-tok--keyword {
+  color: #7aa2f7;
+}
+
+.boss-screen-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 12px;
+  background: #17181a;
+  border-top: 1px solid #2c2e33;
+  color: #6f757e;
+  font-size: 11px;
+  flex: 0 0 auto;
+}

@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { RemoteFileHandle } from "./workspace";
-import { DEMO_CAMPAIGN_NAME, loadDemoCampaignTree } from "./demoCampaign";
+import { DEMO_CAMPAIGN_NAME, demoFileText, loadDemoCampaignTree } from "./demoCampaign";
 
 describe("loadDemoCampaignTree", () => {
   it("builds a root directory node named/pathed after the demo campaign", () => {
@@ -49,5 +49,22 @@ describe("loadDemoCampaignTree", () => {
     const first = loadDemoCampaignTree();
     const second = loadDemoCampaignTree();
     expect(second.children!.map((c) => c.name)).toEqual(first.children!.map((c) => c.name));
+  });
+});
+
+describe("demoFileText", () => {
+  it("returns a bundled file's raw text by bare filename", () => {
+    const text = demoFileText("main.c");
+    expect(text).toContain("int main()");
+  });
+
+  it("returns null for a file the campaign does not contain", () => {
+    expect(demoFileText("nope.c")).toBeNull();
+  });
+
+  it("matches on the whole filename, not a suffix of one", () => {
+    // "ain.c" is a suffix of "main.c" — the lookup must not accept it, or a
+    // caller could get a file it did not ask for.
+    expect(demoFileText("ain.c")).toBeNull();
   });
 });

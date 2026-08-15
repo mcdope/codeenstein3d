@@ -31,8 +31,17 @@
 | `F` | Toggle fullscreen |
 | `Escape` | Pause / unpause |
 | `Right Ctrl` | Toggle the FPS / frame-time readout |
+| `F9` | Boss key — hide the game behind a code editor, press again to bring it back |
 
 Losing window focus (alt-tab, clicking outside the browser) pauses the game automatically.
+
+### The boss key
+
+`F9` covers the whole page with a plain editor showing the source file the current level was built from, leaves fullscreen if you were in it, silences the music and changes the tab title and icon. The game pauses while it is up.
+
+Press `F9` again to go back. The game is revealed **still paused** — deliberately, so you are not dropped straight back into a fight — and resumes on your next click, the same as any other pause. `Escape` does nothing while the editor is up; only `F9` dismisses it.
+
+Two things it does not do, both because a web page is not allowed to: it cannot minimise or close the browser window, and in a co-op session it cannot pause anything, so the session keeps running while you are hidden — the same as alt-tabbing out of co-op today.
 
 ## Gamepad
 

@@ -27,6 +27,9 @@ export class BgmPlayer {
   /** The currently-playing track's object URL, revoked as soon as it's
    * superseded so a long session doesn't leak one per track played. */
   private currentUrl: string | null = null;
+  /** Set by `pause()` so `resume()` only restarts music that was actually
+   * playing — see `pause()`. */
+  private wasPlayingBeforePause = false;
 
   constructor() {
     this.el = new Audio();
@@ -63,6 +66,35 @@ export class BgmPlayer {
   /** Stop playback without discarding the loaded playlist. */
   stop(): void {
     this.el.pause();
+  }
+
+  /**
+   * Silence the music but remember it was playing, so `resume()` can put it
+   * back exactly as it was — including leaving it alone if nothing was
+   * playing in the first place (no folder loaded, or the player had already
+   * paused it).
+   *
+   * Added for the boss key (`src/ui/bossScreen.ts`): BGM is the one sound in
+   * this app that does *not* stop by itself when the game freezes. Procedural
+   * SFX all do — every one is a bounded one-shot with an explicit stop time —
+   * but real audio files keep playing straight through a pause, a blur and a
+   * level transition, because nothing ever calls `stop()`. Under a disguise
+   * that is the loudest possible tell.
+   *
+   * Deliberately narrow: this does **not** change what happens on an ordinary
+   * pause. Wiring music to `onFreezeChange` would be a real behaviour change
+   * for every alt-tab and is its own decision.
+   */
+  pause(): void {
+    this.wasPlayingBeforePause = !this.el.paused;
+    if (this.wasPlayingBeforePause) this.el.pause();
+  }
+
+  /** Undo a `pause()`. A no-op unless that call actually stopped something. */
+  resume(): void {
+    if (!this.wasPlayingBeforePause) return;
+    this.wasPlayingBeforePause = false;
+    void this.el.play().catch(() => undefined);
   }
 
   private async playCurrent(): Promise<void> {

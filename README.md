@@ -218,6 +218,7 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/) with
 - **F** — Toggle fullscreen
 - **Esc** — Pause (freezes action under "PAUSED" overlay)
 - **Right-Ctrl** — Toggle FPS/frame-time display (top-right)
+- **F9** — Boss key: hide the game behind a code editor (pauses, leaves fullscreen, silences music); press again to bring it back
 
 ### Gamepad
 - **Left stick** — Move/strafe
