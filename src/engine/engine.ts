@@ -649,8 +649,11 @@ export interface EngineStats {
   maxHealth: number;
   /** Swap points, absorbed 1:1 before health on any hit (see `damage()`). */
   swap: number;
-  /** Bullets remaining (pistol/shotgun). */
+  /** Bullets remaining (echo pistol). */
   bullets: number;
+  /** Shells remaining (Regex Shotgun) — its own pool since the shotgun stopped
+   * spending 4 bullets a pull (see `AmmoType`). */
+  shells: number;
   /** Rockets remaining (ghidra). */
   rockets: number;
   /** gdb's own ammo remaining — a separate pool from `bullets` (see
@@ -746,6 +749,10 @@ export interface EngineCarryover {
   health: number;
   swap: number;
   bullets: number;
+  /** Optional so a save or a level-transition payload written before the
+   * shotgun had its own pool still loads — `createPlayerState` falls back to
+   * the level's starting reserve, exactly as it does for a fresh run. */
+  shells?: number;
   rockets: number;
   smg: number;
   gas: number;
@@ -1421,6 +1428,7 @@ export class RaycasterEngine {
     const startingAmmoRef = startingAmmo(this.map.enemies);
     const ammo: AmmoPools = {
       bullets: carryover?.bullets ?? startingAmmoRef.bullets,
+      shells: carryover?.shells ?? startingAmmoRef.shells,
       rockets: carryover?.rockets ?? startingAmmoRef.rockets,
       smg: carryover?.smg ?? startingAmmoRef.smg,
       gas: carryover?.gas ?? startingAmmoRef.gas,
@@ -2873,7 +2881,10 @@ export class RaycasterEngine {
       for (const id of this.sortedPlayerIds()) {
         const p = this.players.get(id)!;
         updateMinHealth(p.telemetry!, p.health);
-        updateTelemetryPerFrame(p.telemetry!, dt, p.health / MAX_HEALTH, p.ammo.bullets + p.ammo.smg + p.ammo.gas);
+        // Rockets are deliberately outside this sum (ghidra is situational and
+        // usually held back), but every *routine* ranged pool belongs in it —
+        // including the shotgun's own, now that it has one.
+        updateTelemetryPerFrame(p.telemetry!, dt, p.health / MAX_HEALTH, p.ammo.bullets + p.ammo.shells + p.ammo.smg + p.ammo.gas);
       }
     }
     this.updateLowHealthAlarm(dt);
@@ -4756,7 +4767,8 @@ export class RaycasterEngine {
     // ranged pool was empty at the moment of firing — telemetry-only (see
     // `killsForcedByMelee`), computed here since this is the only place that
     // still knows the ammo state *before* this shot.
-    const forcedMelee = w.meleeRange !== undefined && shooter.ammo.bullets === 0 && shooter.ammo.smg === 0 && shooter.ammo.gas === 0;
+    const forcedMelee =
+      w.meleeRange !== undefined && shooter.ammo.bullets === 0 && shooter.ammo.shells === 0 && shooter.ammo.smg === 0 && shooter.ammo.gas === 0;
     if (shooter.telemetry) recordShot(shooter.telemetry, weaponIndex);
     // One record per *trigger-pull*, with the pellet count alongside. The
     // aggregate counters conflate these: `recordShot` counts pulls while
@@ -5193,10 +5205,12 @@ export class RaycasterEngine {
       finalHealth: p.health,
       maxHealth: MAX_HEALTH,
       finalBullets: p.ammo.bullets,
+      finalShells: p.ammo.shells,
       finalRockets: p.ammo.rockets,
       finalSmg: p.ammo.smg,
       finalGas: p.ammo.gas,
       startingBullets: p.startingAmmoRef.bullets,
+      startingShells: p.startingAmmoRef.shells,
       startingRockets: p.startingAmmoRef.rockets,
       startingSmg: p.startingAmmoRef.smg,
       startingGas: p.startingAmmoRef.gas,
@@ -5244,6 +5258,7 @@ export class RaycasterEngine {
       health: Math.ceil(p.health),
       swap: Math.ceil(p.swap),
       bullets: p.ammo.bullets,
+      shells: p.ammo.shells,
       rockets: p.ammo.rockets,
       smg: p.ammo.smg,
       gas: p.ammo.gas,
@@ -5294,6 +5309,7 @@ export class RaycasterEngine {
       maxHealth: MAX_HEALTH,
       swap: Math.ceil(local.swap),
       bullets: local.ammo.bullets,
+      shells: local.ammo.shells,
       rockets: local.ammo.rockets,
       smg: local.ammo.smg,
       gas: local.ammo.gas,

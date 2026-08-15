@@ -14,7 +14,7 @@
  * different guns at once and made "10 bullets" pickups feel wrong for a
  * full-auto weapon that burns through them in under a second. `"gas"` is
  * Friday Hotfix's own pool, for the same reason. */
-export type AmmoType = "bullets" | "rockets" | "smg" | "gas";
+export type AmmoType = "bullets" | "shells" | "rockets" | "smg" | "gas";
 
 /** Distinct viewmodel silhouette drawn at the bottom of the screen — see
  * `drawWeapon` in `viewmodel.ts`. */
@@ -135,8 +135,9 @@ export interface Weapon {
  *   quick-melee handling. Wielded on Space until Toolchain is unlocked,
  *   which permanently replaces it there (see `currentMeleeWeapon`).
  * - **gdb**: fully automatic, high fire rate, moderate damage per round —
- *   draws from its own `"smg"` ammo pool rather than sharing `"bullets"`
- *   with the pistol/shotgun (see `AmmoType`). (Named for the GNU debugger —
+ *   draws from its own `"smg"` ammo pool, as every ranged weapon now does —
+ *   the pistol keeps `"bullets"` and the shotgun has its own `"shells"`
+ *   (see `AmmoType`). (Named for the GNU debugger —
  *   was called "MP" through Task 30.)
  * - **ghidra**: one slow, visible projectile per trigger-pull that explodes
  *   for splash damage — devastating against packs, but scarce ammo and a
@@ -191,8 +192,10 @@ export const WEAPONS: readonly Weapon[] = [
     // 18 -> 25, together with the `fireIntervalSec` below and *because* of it.
     // The pump cap alone would have left the shotgun at 7x18/0.85s = 148 DPS
     // point-blank against the pistol's 147 — identical output for 4x the
-    // ammo, out of the same shared "bullets" pool, and only at contact range
-    // where the whole cone connects. That erases the reason to ever pick it.
+    // ammo, out of what was then a shared "bullets" pool, and only at contact
+    // range where the whole cone connects. That erases the reason to ever pick
+    // it. (The pool is no longer shared — see `ammoPerShot` below — but the
+    // damage reasoning stands on the DPS comparison, not on the pool.)
     // At 25 it lands 7x25/0.85s = 206 DPS, ~1.4x the pistol, so "devastating
     // up close, useless at range" survives the cadence cap.
     //
@@ -201,8 +204,17 @@ export const WEAPONS: readonly Weapon[] = [
     // shotgun felt weaker than the pistol despite firing 7 pellets, since its
     // wide cone means only a fraction connect outside point-blank range.)
     damagePerPellet: 25,
-    ammoPerShot: 4,
-    ammoType: "bullets",
+    // One shell per pull, out of the shotgun's **own** pool.
+    //
+    // It used to spend 4 from the shared `bullets` pool, which made every
+    // trigger-pull cost four pistol shots and put the two weapons in direct
+    // competition for one resource. Splitting the pool is what lets a
+    // magazine mean anything here: "2 rounds loaded" is now two shells and
+    // two shots, rather than 8 bullets that the pistol also wants. The
+    // damage numbers below are unchanged — this is a change to what a shot
+    // *costs*, not to what it does.
+    ammoPerShot: 1,
+    ammoType: "shells",
     // A pump-action cycle: ~1.2 shots/sec. The one weapon this whole cap
     // existed to fix — 7 pellets and 175 damage a blast turned into an
     // automatic weapon by nothing more than clicking fast. Paired with

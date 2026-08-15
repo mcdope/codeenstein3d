@@ -15,9 +15,18 @@ import type { LootKind } from "../map/types";
  * smg/gas (gdb's/Friday Hotfix's own pools, see `AmmoType`) sit between the
  * two — each is drawn down fast by its full-auto weapon but each drop is a
  * full "magazine" (see `SMG_DROP_AMOUNT`/`GAS_DROP_AMOUNT`), not a scarce
- * high-value item like rockets; health and swap sit in between. */
+ * high-value item like rockets; health and swap sit in between.
+ *
+ * **`bullets` and `shells` split what used to be one weight.** When both
+ * starting weapons drew from `bullets`, that single number governed the
+ * supply for both; now it governs the pistol alone. The split is 70/30 in
+ * the pistol's favour across all three tables below, because it is the
+ * workhorse — 1 round a shot at ~7 shots/sec against the shotgun's 1 shell
+ * at ~1.2/sec — while the shotgun is a burst tool whose drop is worth a
+ * whole magazine. The totals are unchanged, so no other kind's share moves. */
 const LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[] = [
-  { kind: "bullets", weight: 40 },
+  { kind: "bullets", weight: 28 },
+  { kind: "shells", weight: 12 },
   { kind: "smg", weight: 18 },
   { kind: "gas", weight: 18 },
   { kind: "rockets", weight: 10 },
@@ -25,13 +34,14 @@ const LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[] = [
   { kind: "swap", weight: 16 },
 ];
 
-/** Normal difficulty only: a slightly higher ammo (bullets/rockets/smg/gas)
- * share than the base `LOOT_WEIGHTS`, trimmed from health/swap — Easy/Hard
+/** Normal difficulty only: a slightly higher overall ammo share than the base
+ * `LOOT_WEIGHTS`, trimmed from health/swap — Easy/Hard
  * already have their own scarcity curve via `DifficultyMultipliers.ammoDropRate`
  * (the *amount* per drop), so this only tweaks Normal's drop *kind* odds, per
  * playtest feedback that ammo ran too scarce there specifically. */
 const NORMAL_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[] = [
-  { kind: "bullets", weight: 46 },
+  { kind: "bullets", weight: 32 },
+  { kind: "shells", weight: 14 },
   { kind: "smg", weight: 20 },
   { kind: "gas", weight: 20 },
   { kind: "rockets", weight: 12 },
@@ -42,7 +52,8 @@ const NORMAL_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }
 /** On a bonus (restock-arena) level, kills lean harder toward the scarcer,
  * higher-value drops — it's meant to feel like a resupply stop. */
 const BONUS_LOOT_WEIGHTS: { kind: Exclude<LootKind, "weapon">; weight: number }[] = [
-  { kind: "bullets", weight: 24 },
+  { kind: "bullets", weight: 17 },
+  { kind: "shells", weight: 7 },
   { kind: "smg", weight: 20 },
   { kind: "gas", weight: 20 },
   { kind: "rockets", weight: 20 },
@@ -144,6 +155,17 @@ export function rollLoot(
  * part of the "every regular kill floods you" problem this cut addresses.
  * See also `REGULAR_KILL_NO_DROP_CHANCE`. */
 export const BULLETS_DROP_AMOUNT = 4;
+/** One full shotgun magazine per drop.
+ *
+ * Sized against what this drop used to be worth. Before the shotgun had its
+ * own pool it spent 4 bullets a pull, so a single `BULLETS_DROP_AMOUNT` was
+ * *exactly one* shotgun shot — and it competed with the pistol for that. Two
+ * shells is deliberately a little more than that one shot, because a shells
+ * drop is also rolled less often than the old bullets drop was (the weight
+ * that covered both weapons is now split — see `LOOT_WEIGHTS`), and because
+ * a drop that reloads the gun exactly once reads better than one that
+ * half-fills it. Unmeasured: only a staged-repo capture settles it. */
+export const SHELLS_DROP_AMOUNT = 2;
 /** Already the scarcest/highest-value drop by design (see `LOOT_WEIGHTS`) —
  * the same ~30% cut rounds 2 down to 1, a proportionally bigger reduction
  * than the other pools get purely from rounding at this small a base value,
@@ -174,6 +196,10 @@ export const ELITE_HEALTH_DROP_AMOUNT = 50;
  * (player already at full health) — same "bigger than a regular drop" scale
  * as `ELITE_HEALTH_DROP_AMOUNT` is to `HEALTH_DROP_AMOUNT`. */
 export const ELITE_BULLETS_DROP_AMOUNT = 18;
+/** Four magazines. `ELITE_BULLETS_DROP_AMOUNT` was worth 4.5 shotgun shots
+ * back when the pools were shared, so this is the same order — rounded to a
+ * whole number of magazines. */
+export const ELITE_SHELLS_DROP_AMOUNT = 8;
 export const ELITE_ROCKETS_DROP_AMOUNT = 6;
 export const ELITE_SMG_DROP_AMOUNT = 80;
 export const ELITE_GAS_DROP_AMOUNT = 80;

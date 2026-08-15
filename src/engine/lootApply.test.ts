@@ -8,7 +8,7 @@ import { TOOLCHAIN_MIN_LEVEL, TOOLCHAIN_WEAPON_INDEX, UNLOCKABLE_WEAPONS } from 
 
 function fakeContext(overrides: Partial<LootContext> = {}): LootContext {
   return {
-    ammo: { bullets: 0, rockets: 0, smg: 0, gas: 0 },
+    ammo: { bullets: 0, shells: 0, rockets: 0, smg: 0, gas: 0 },
     scaledAmount: (base) => base,
     heal: vi.fn(),
     addSwap: vi.fn(),

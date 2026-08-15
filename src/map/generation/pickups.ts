@@ -26,7 +26,17 @@ const BONUS_AMMO_AMOUNT_MULTIPLIER = 1.5;
 
 /**
  * Scatter a sparse handful of statically-placed ammo pickups (bullets or
- * rockets) across the map — one candidate roll per non-spawn room, each
+ * rockets) across the map.
+ *
+ * **Deliberately still only those two, with no `shells`.** Choosing a third
+ * kind here means either an extra `rng()` draw or a restructured one, and
+ * every draw in this module shares the generator's single seeded stream — so
+ * either version shifts every subsequent draw and silently re-rolls the layout
+ * of every level ever generated. That is a steep price for a source the
+ * balance telemetry measured at a few percent of everything actually consumed
+ * (see `AMMO_PICKUP_ROOM_CHANCE`): the shotgun is supplied by kill drops and
+ * by Vendor Depots, both of which carry shells. Revisit only alongside a
+ * change that is already re-rolling layouts — one candidate roll per non-spawn room, each
  * independently likely to actually get one. A backup source, not the primary
  * one (see `AMMO_PICKUP_ROOM_CHANCE`'s doc comment) — except on a bonus level,
  * where both the odds and the amounts are boosted (see `BONUS_AMMO_ROOM_CHANCE`).

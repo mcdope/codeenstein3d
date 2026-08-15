@@ -13,9 +13,11 @@ import {
   ELITE_BULLETS_DROP_AMOUNT,
   ELITE_GAS_DROP_AMOUNT,
   ELITE_ROCKETS_DROP_AMOUNT,
+  ELITE_SHELLS_DROP_AMOUNT,
   ELITE_SMG_DROP_AMOUNT,
   GAS_DROP_AMOUNT,
   ROCKETS_DROP_AMOUNT,
+  SHELLS_DROP_AMOUNT,
   SMG_DROP_AMOUNT,
 } from "./loot";
 import { PISTOL_WEAPON_INDEX, WEAPONS, type AmmoType } from "./weapons";
@@ -25,8 +27,14 @@ export type AmmoPools = Record<AmmoType, number>;
 
 /** Every pool in one fixed order — loops over the pools must iterate this,
  * never `Object.keys`, so iteration order is a compile-time constant rather
- * than an object-shape accident (replay determinism). */
-export const AMMO_TYPES: readonly AmmoType[] = ["bullets", "rockets", "smg", "gas"];
+ * than an object-shape accident (replay determinism).
+ *
+ * **A new pool is appended, never inserted**, for the same reason: this order
+ * decides the sequence of drops a disconnecting multiplayer player's
+ * inventory is converted into (`engine.ts`), so inserting `shells` in its
+ * "natural" place next to `bullets` would silently change that sequence for
+ * every existing recording. It reads out of order here on purpose. */
+export const AMMO_TYPES: readonly AmmoType[] = ["bullets", "rockets", "smg", "gas", "shells"];
 
 /** Per-pool display/drop metadata. `label`/`logColor` are kept byte-identical
  * to the console-log strings the old per-pool branches produced. */
@@ -39,13 +47,21 @@ export interface AmmoMeta {
   dropAmount: number;
   /** Elite-sized top-up when a duplicate weapon grant falls back to ammo. */
   eliteTopUp: number;
+  /** Colour of the HUD's ammo readout while this pool is the active weapon's.
+   * Deliberately separate from `logColor`: the console line and the HUD
+   * number were picked against different backgrounds and have never matched
+   * (bullets read `#3fd0e0` in the log and `#4cff6a` on the HUD). The HUD
+   * label itself is `label.toUpperCase()`, which is where those strings
+   * already came from. */
+  hudColor: string;
 }
 
 export const AMMO_META: Record<AmmoType, AmmoMeta> = {
-  bullets: { label: "bullets", logColor: "#3fd0e0", dropAmount: BULLETS_DROP_AMOUNT, eliteTopUp: ELITE_BULLETS_DROP_AMOUNT },
-  rockets: { label: "rockets", logColor: "#ff9d3f", dropAmount: ROCKETS_DROP_AMOUNT, eliteTopUp: ELITE_ROCKETS_DROP_AMOUNT },
-  smg: { label: "smg ammo", logColor: "#3fa9ff", dropAmount: SMG_DROP_AMOUNT, eliteTopUp: ELITE_SMG_DROP_AMOUNT },
-  gas: { label: "gas", logColor: "#ff5a1a", dropAmount: GAS_DROP_AMOUNT, eliteTopUp: ELITE_GAS_DROP_AMOUNT },
+  bullets: { label: "bullets", logColor: "#3fd0e0", hudColor: "#4cff6a", dropAmount: BULLETS_DROP_AMOUNT, eliteTopUp: ELITE_BULLETS_DROP_AMOUNT },
+  shells: { label: "shells", logColor: "#ffb547", hudColor: "#ffb547", dropAmount: SHELLS_DROP_AMOUNT, eliteTopUp: ELITE_SHELLS_DROP_AMOUNT },
+  rockets: { label: "rockets", logColor: "#ff9d3f", hudColor: "#ff9d3f", dropAmount: ROCKETS_DROP_AMOUNT, eliteTopUp: ELITE_ROCKETS_DROP_AMOUNT },
+  smg: { label: "smg ammo", logColor: "#3fa9ff", hudColor: "#3fa9ff", dropAmount: SMG_DROP_AMOUNT, eliteTopUp: ELITE_SMG_DROP_AMOUNT },
+  gas: { label: "gas", logColor: "#ff5a1a", hudColor: "#ff8a4a", dropAmount: GAS_DROP_AMOUNT, eliteTopUp: ELITE_GAS_DROP_AMOUNT },
 };
 
 /**
@@ -72,6 +88,20 @@ const STARTING_SMG_AMMO = 40;
 const STARTING_GAS_AMMO = 40;
 
 /**
+ * Six shotgun magazines. Flat rather than scaled to the level, like the three
+ * pools above — but for the opposite reason: those weapons have to be earned
+ * first, whereas the shotgun is a starting weapon and this is simply the
+ * shotgun's own share of a supply that used to come out of `bullets`.
+ *
+ * Sized from what the shared pool actually afforded: at 4 bullets a pull, a
+ * typical starting reserve bought somewhere around a dozen shotgun shots *if
+ * the player spent all of it there and left the pistol dry*. Twelve keeps
+ * that ceiling while removing the trade-off, which is the point of the split.
+ * Unmeasured — see `SHELLS_DROP_AMOUNT`.
+ */
+export const STARTING_SHELLS = 12;
+
+/**
  * Give the player enough bullets to clear the level with the pistol, plus a
  * generous margin, so the fight itself never grinds to a halt for lack of
  * ammo — but scattered ammo pickups are still meant to matter across a real
@@ -79,9 +109,15 @@ const STARTING_GAS_AMMO = 40;
  * not just be a nice-to-have. Scales with both total enemy HP (`shotsToClear`,
  * the theoretical perfect-accuracy cost) and raw enemy count (`missBuffer`,
  * covering the missed shots/repositioning a pack of separate encounters
- * costs that a flat HP-total multiplier alone wouldn't capture). The shotgun
- * (and MP) trade bullet efficiency for burst/rate-of-fire, so this
- * undercounts their cost.
+ * costs that a flat HP-total multiplier alone wouldn't capture).
+ *
+ * **This pool now feeds the pistol alone.** It used to be shared with the
+ * shotgun (4 bullets a pull), which is what the old note here meant by
+ * "undercounts their cost" — so the same formula is strictly *more* generous
+ * than it was, by whatever share of it a player used to spend on the shotgun.
+ * Left unchanged deliberately rather than trimmed by a guess: it is one half
+ * of a balance change that only a staged-repo capture can settle, and
+ * trimming it here would confound that measurement with this one.
  */
 function startingBullets(enemies: Enemy[]): number {
   const pistolDamage = WEAPONS[PISTOL_WEAPON_INDEX].damagePerPellet;
@@ -99,6 +135,7 @@ function startingBullets(enemies: Enemy[]): number {
 export function startingAmmo(enemies: Enemy[]): AmmoPools {
   return {
     bullets: startingBullets(enemies),
+    shells: STARTING_SHELLS,
     rockets: STARTING_ROCKETS,
     smg: STARTING_SMG_AMMO,
     gas: STARTING_GAS_AMMO,

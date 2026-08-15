@@ -2212,15 +2212,15 @@ describe("RaycasterEngine — firing", () => {
   it("refuses a second shotgun blast inside its pump cycle, then fires again once it's over", () => {
     const map = fakeMap({}, 12);
     const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
-      carryover: { health: 100, swap: 0, bullets: 40, rockets: 0, smg: 0, gas: 0 },
+      carryover: { health: 100, swap: 0, bullets: 40, shells: 8, rockets: 0, smg: 0, gas: 0 },
     });
     input.weaponRequest = 1; // shotgun
     engine.advance(0.016);
 
     input.fireQueued = true;
     engine.advance(0.016);
-    const afterFirst = lastStats(handlers).bullets;
-    expect(afterFirst).toBe(36); // one blast, 4 bullets
+    const afterFirst = lastStats(handlers).shells;
+    expect(afterFirst).toBe(7); // one blast, one shell
 
     // Spam the trigger for the rest of the pump cycle: every one of these
     // pulls is swallowed, so not a single extra bullet leaves the tube.
@@ -2228,12 +2228,45 @@ describe("RaycasterEngine — firing", () => {
       input.fireQueued = true;
       engine.advance(0.016); // 20 frames = 0.32s, well inside the 0.85s cycle
     }
-    expect(lastStats(handlers).bullets).toBe(afterFirst);
+    expect(lastStats(handlers).shells).toBe(afterFirst);
 
     engine.advance(0.85); // cycle complete
     input.fireQueued = true;
     engine.advance(0.016);
-    expect(lastStats(handlers).bullets).toBe(32); // a second blast, finally
+    expect(lastStats(handlers).shells).toBe(6); // a second blast, finally
+  });
+
+  it("spends the shotgun's own shells and never the pistol's bullets", () => {
+    // The whole point of the split: before it, one shotgun pull cost 4 rounds
+    // out of the pool the pistol also drew from, so a player who liked the
+    // shotgun disarmed their pistol.
+    const map = fakeMap({}, 12);
+    const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 40, shells: 3, rockets: 0, smg: 0, gas: 0 },
+    });
+    input.weaponRequest = 1; // shotgun
+    engine.advance(0.016);
+
+    input.fireQueued = true;
+    engine.advance(0.016);
+
+    expect(lastStats(handlers).shells).toBe(2); // one shell, not four bullets
+    expect(lastStats(handlers).bullets).toBe(40); // untouched
+  });
+
+  it("refuses to fire the shotgun on an empty shell reserve even with bullets to spare", () => {
+    const map = fakeMap({}, 12);
+    const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 40, shells: 0, rockets: 0, smg: 0, gas: 0 },
+    });
+    input.weaponRequest = 1; // shotgun
+    engine.advance(0.016);
+
+    input.fireQueued = true;
+    engine.advance(0.016);
+
+    expect(lastStats(handlers).bullets).toBe(40); // it cannot fall back on these
+    expect(lastStats(handlers).shells).toBe(0);
   });
 
   it("caps pistol click-spam at its own fire interval", () => {
@@ -2254,22 +2287,25 @@ describe("RaycasterEngine — firing", () => {
   it("shares the fire cooldown across a weapon switch, so the shotgun's pump can't be switch-cancelled", () => {
     const map = fakeMap({}, 12);
     const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
-      carryover: { health: 100, swap: 0, bullets: 40, rockets: 0, smg: 0, gas: 0 },
+      carryover: { health: 100, swap: 0, bullets: 40, shells: 8, rockets: 0, smg: 0, gas: 0 },
     });
     input.weaponRequest = 1; // shotgun
     engine.advance(0.016);
     input.fireQueued = true;
     engine.advance(0.016);
-    expect(lastStats(handlers).bullets).toBe(36);
+    expect(lastStats(handlers).shells).toBe(7);
 
     // Switch to the pistol mid-pump and pull. `weaponCooldown` lives on the
     // player, not the weapon, so this buys nothing — deliberately (see
-    // `updateFiring`'s doc comment).
+    // `updateFiring`'s doc comment). The two weapons draw from separate pools
+    // now, which makes the assertion sharper than it was: an untouched
+    // `bullets` can only mean the pistol never fired.
     input.weaponRequest = 0;
     engine.advance(0.016);
     input.fireQueued = true;
     engine.advance(0.016);
-    expect(lastStats(handlers).bullets).toBe(36); // still nothing spent
+    expect(lastStats(handlers).bullets).toBe(40); // the pistol never got its shot
+    expect(lastStats(handlers).shells).toBe(7); // and nothing else was spent
   });
 
   it("swings the knife via quick-melee (Space) independent of the equipped ranged weapon", () => {
@@ -2846,7 +2882,7 @@ describe("RaycasterEngine — enemy death, loot, and elites", () => {
       const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 1 });
       const map = fakeMap({ enemies: [enemy] });
       const { engine, input } = makeEngine(map, makeHandlers(), {
-        carryover: { health: 50, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0, ownedWeapons: [0, 1, 2, 3, 4] },
+        carryover: { health: 50, swap: 0, bullets: 0, shells: 0, rockets: 0, smg: 0, gas: 0, ownedWeapons: [0, 1, 2, 3, 4] },
       });
       engine.advance(0.016); // warm-up frame — see the quick-melee test above for why
       input.melee = true;
@@ -4977,7 +5013,7 @@ describe("RaycasterEngine — multiplayer reconciliation (step 7)", () => {
                 planeY: 1,
                 health: 100,
                 swap: 0,
-                ammo: { bullets: 0, rockets: 0, smg: 0, gas: 0 },
+                ammo: { bullets: 0, shells: 0, rockets: 0, smg: 0, gas: 0 },
                 weaponIndex: 0,
                 heldGates: [],
                 ownedWeapons: [],
@@ -5217,7 +5253,7 @@ describe("RaycasterEngine — multiplayer disconnect (step 8)", () => {
     status: string;
     health: number;
     swap: number;
-    ammo: { bullets: number; rockets: number; smg: number; gas: number };
+    ammo: { bullets: number; shells: number; rockets: number; smg: number; gas: number };
     ownedWeapons: Set<number>;
     heldGates: Set<number>;
   };
@@ -5234,6 +5270,7 @@ describe("RaycasterEngine — multiplayer disconnect (step 8)", () => {
       host.ammo.rockets = 0; // zero pool — must NOT produce a drop
       host.ammo.smg = 5;
       host.ammo.gas = 3;
+      host.ammo.shells = 2; // last in AMMO_TYPES, so last in the drop order
       host.ownedWeapons.add(GDB_WEAPON_INDEX);
       host.ownedWeapons.add(GHIDRA_WEAPON_INDEX);
       host.heldGates.add(1);
@@ -5248,8 +5285,9 @@ describe("RaycasterEngine — multiplayer disconnect (step 8)", () => {
         { kind: "bullets", amount: 10, weaponIndex: undefined, id: "disconnect:host:0", source: "disconnect" },
         { kind: "smg", amount: 5, weaponIndex: undefined, id: "disconnect:host:1", source: "disconnect" },
         { kind: "gas", amount: 3, weaponIndex: undefined, id: "disconnect:host:2", source: "disconnect" },
-        { kind: "weapon", amount: undefined, weaponIndex: GDB_WEAPON_INDEX, id: "disconnect:host:3", source: "disconnect" },
-        { kind: "weapon", amount: undefined, weaponIndex: GHIDRA_WEAPON_INDEX, id: "disconnect:host:4", source: "disconnect" },
+        { kind: "shells", amount: 2, weaponIndex: undefined, id: "disconnect:host:3", source: "disconnect" },
+        { kind: "weapon", amount: undefined, weaponIndex: GDB_WEAPON_INDEX, id: "disconnect:host:4", source: "disconnect" },
+        { kind: "weapon", amount: undefined, weaponIndex: GHIDRA_WEAPON_INDEX, id: "disconnect:host:5", source: "disconnect" },
       ]);
     });
 

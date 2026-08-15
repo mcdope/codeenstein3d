@@ -19,6 +19,7 @@ import { MapGenerator, type GenerateOptions } from "./map/mapGenerator";
 import { STYLE_SET_IDS, type GameMap } from "./map/types";
 import { renderExportMap } from "./map/exportView";
 import { RaycasterEngine, SIMULATION_BALANCE, isTestHooksActive, resolveBotRotSpeedMultiplier } from "./engine/engine";
+import { STARTING_SHELLS } from "./engine/ammo";
 import { audio } from "./engine/audio";
 import { bgm } from "./engine/bgm";
 import { textures, type WadLoadSummary } from "./engine/textures";
@@ -657,6 +658,7 @@ interface ReplayLevelResult {
   health: number;
   swap: number;
   bullets: number;
+  shells: number;
   rockets: number;
   smg: number;
   gas: number;
@@ -1029,6 +1031,7 @@ continueButton.addEventListener("click", async () => {
         health: save.health,
         swap: save.swap,
         bullets: save.bullets,
+        shells: save.shells,
         rockets: save.rockets,
         smg: save.smg,
         gas: save.gas,
@@ -2196,7 +2199,7 @@ if (isTestHooksActive()) {
           healthFraction: number;
           swap: number;
           state: "playing" | "over";
-          ammo: { bullets: number; rockets: number; smg: number; gas: number };
+          ammo: { bullets: number; shells: number; rockets: number; smg: number; gas: number };
           weaponIndex: number;
           meleeWouldHit: boolean;
           wouldMineHit: boolean;
@@ -3083,6 +3086,7 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
           health: stats.health,
           swap: stats.swap,
           bullets: stats.bullets,
+          shells: stats.shells,
           rockets: stats.rockets,
           smg: stats.smg,
           gas: stats.gas,
@@ -3121,6 +3125,9 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
             health: carryover.health,
             swap: carryover.swap,
             bullets: carryover.bullets,
+            // From `stats`, not `carryover`: the carryover field is optional so a
+            // pre-`shells` payload can still load, while the save's is required.
+            shells: stats.shells,
             rockets: carryover.rockets,
             smg: carryover.smg,
             gas: carryover.gas,
@@ -3481,6 +3488,15 @@ interface CampaignSave {
   health: number;
   swap: number;
   bullets: number;
+  /** The Regex Shotgun's own ammo pool (see `AmmoType`). Back-filled for
+   * saves written while the shotgun still spent 4 bullets a pull — and
+   * back-filled to a **full starting reserve**, not to 0 the way `smg`/`gas`
+   * below are. Those two belong to weapons that must be unlocked, so a dry
+   * resume reads as "you never found it"; the shotgun is a starting weapon,
+   * and the bullets figure in an old save already covers what that player
+   * would have spent on it. Zeroing it would silently take a weapon away
+   * from a run in progress. */
+  shells: number;
   rockets: number;
   /** gdb's own ammo pool (see `AmmoType`). Defaulted to 0 for saves written
    * before this field existed (see `loadCampaignSave`) — a resumed run with
@@ -3528,9 +3544,10 @@ export function loadCampaignSave(): CampaignSave | null {
     return {
       ...save,
       swap,
-      // `smg`/`gas` are fields new to this save schema — see their doc comments above.
+      // `smg`/`gas`/`shells` are fields new to this save schema — see their doc comments above.
       smg: typeof save.smg === "number" ? save.smg : 0,
       gas: typeof save.gas === "number" ? save.gas : 0,
+      shells: typeof save.shells === "number" ? save.shells : STARTING_SHELLS,
       levelIndex: typeof save.levelIndex === "number" ? save.levelIndex : 1,
     } as CampaignSave;
   } catch {
@@ -3566,6 +3583,7 @@ function persistProgress(stats: EngineStats): void {
     health: stats.health,
     swap: stats.swap,
     bullets: stats.bullets,
+    shells: stats.shells,
     rockets: stats.rockets,
     smg: stats.smg,
     gas: stats.gas,
@@ -3986,6 +4004,7 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
         health: stats.health,
         swap: stats.swap,
         bullets: stats.bullets,
+        shells: stats.shells,
         rockets: stats.rockets,
         smg: stats.smg,
         gas: stats.gas,
