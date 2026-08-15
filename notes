@@ -101,7 +101,6 @@ Items recording a *measurement* rather than a code claim (the demo-campaign diff
     - [ ] flares/lamps with lightning and shadow effects
     - [ ] if room behind wall: window into next room (incl. LOS for enemy aggro - enemies should aggro when they see player through window)
     - [ ] posters (showing what? dev tools? images in the sourcetree?)
-- [ ] if user set a online-wad, store it in prefs and restore automatically (add a button to clear wad textures / resetting the pref)
 - [ ] Add three multiplayer coop demo campaigns
     - [ ] 1x finishable in 5-15min
     - [ ] 1x finishable in 10-30min
