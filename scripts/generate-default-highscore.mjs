@@ -468,6 +468,16 @@ async function main() {
   // run here. Does **not** cover SIGTERM/Ctrl-C, which terminate without
   // running exit handlers; that case still leaves vite up, and the next run's
   // "reusing already-running server" line is the tell.
+  //
+  // **And it is not sufficient on its own, which is why the happy path stops
+  // the server explicitly at the end of `main()`.** `ensureDevServer` spawns
+  // vite with piped stdio, and those pipes are live handles: node will not
+  // exit while they are open. So on a successful run this handler waits for an
+  // exit that waits for this handler — the script wrote its output, had no
+  // browser left, and then sat at 0% CPU until it was killed. Measured at ~13
+  // minutes of work followed by an indefinite hang. Every `process.exit(1)`
+  // path above is unaffected, because an explicit exit does run this handler,
+  // which is exactly why the bug only ever showed up on success.
   process.on("exit", () => void server.stop?.());
   const browser = await chromium.launch();
 
@@ -588,6 +598,10 @@ async function main() {
 
   await writeDefaultHighscoreFile(keptEntries);
   console.log(`\nWrote ${OUTPUT_FILE} — review with \`git diff\` before committing.`);
+
+  // The one path that reaches here without calling `process.exit` — so it is
+  // the one path where the `exit` handler above cannot run. See its comment.
+  server.stop?.();
 }
 
 // A qualifying run's replay can carry tens of thousands of recorded frames
