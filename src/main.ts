@@ -11,7 +11,7 @@ import {
   type TreeNode,
 } from "./fs/workspace";
 import { fetchGithubTree, parseGithubRepoInput } from "./fs/github";
-import { DEMO_CAMPAIGN_NAME, loadDemoCampaignTree } from "./fs/demoCampaign";
+import { DEMO_CAMPAIGN_NAME, demoFileText, loadDemoCampaignTree } from "./fs/demoCampaign";
 import { renderFileTree } from "./ui/fileTree";
 import { initConsoleSidebar } from "./ui/consoleSidebar";
 import { extensionOf, isParsable, parseFile } from "./parser/registry";
@@ -47,6 +47,7 @@ import { DEFAULT_DIFFICULTY, type DifficultyLevel } from "./difficulty";
 import { migrateStorage } from "./storageSchema";
 import { isAutomated } from "./automation";
 import { createIntroTour, DEFAULT_TOUR_STEPS } from "./ui/introTour";
+import { createBossScreen } from "./ui/bossScreen";
 import { randomSeed } from "./prng";
 import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelSegment } from "./engine/replay";
 import { balanceHashMatches, computeBalanceHash, type BalanceRelevantEnemy } from "./engine/balanceHash";
@@ -525,6 +526,55 @@ viewport.appendChild(canvasArea);
 
 if (RESPONSIVE_CANVAS_SCALING_ENABLED) watchCanvasSizing(canvas, canvasArea, SCENE_WIDTH, SCENE_HEIGHT);
 
+/** Bundled file the boss screen falls back to, and the path it is presented
+ * under. The campaign filename (`stage17_…`) would give the game away in the
+ * tab title and the breadcrumb, so it is shown as what its own contents
+ * describe: a fifteen-year-old billing monolith. Nothing else in the app
+ * reads either constant. */
+const FALLBACK_DISGUISE_FILE = "stage17_the_monolith.php";
+const FALLBACK_DISGUISE_PATH = "src/Legacy/TheMonolith.php";
+
+/**
+ * The boss key (F9) — see `./ui/bossScreen.ts` for what it does and why every
+ * part of it is shaped the way it is.
+ *
+ * **Bound on `window`, in the capture phase, and never unbound.** Capture
+ * because the press that *closes* the overlay has to beat the overlay's own
+ * swallow-list; `window` because `InputController` binds keydown to the
+ * canvas, so a canvas-scoped boss key would work exactly once — the overlay
+ * takes focus away from the canvas, and the second press would never arrive.
+ * Never unbound because it is deliberately live everywhere: on the launch
+ * screen (which shows the game's own branding and file tree, and is exactly
+ * as incriminating as gameplay), in a menu, and mid-level.
+ *
+ * The handler stays synchronous all the way through, because entering and
+ * leaving fullscreen is only permitted from a real user gesture.
+ */
+const bossScreen = createBossScreen({
+  canvas,
+  bgm,
+  getContent: () => {
+    if (currentLevelPath && currentLevelSource !== null) return { path: currentLevelPath, source: currentLevelSource };
+    // No level running (the launch screen), or a multiplayer guest, which
+    // receives a map but never a source file. A bundled demo-campaign file
+    // stands in — it is real, ordinary-looking code that is already in the
+    // bundle, shown under a plausible path rather than its campaign filename.
+    // `?? ""` is unreachable while that file exists; the boss key degrading to
+    // an empty editor is still better than it throwing.
+    /* v8 ignore next -- @preserve */
+    return { path: FALLBACK_DISGUISE_PATH, source: demoFileText(FALLBACK_DISGUISE_FILE) ?? "" };
+  },
+});
+window.addEventListener(
+  "keydown",
+  (event) => {
+    if (event.code !== "F9" || event.repeat) return;
+    event.preventDefault();
+    bossScreen.toggle();
+  },
+  true,
+);
+
 const consoleSidebar = initConsoleSidebar(
   canvas,
   requireElement<HTMLElement>("#console-sidebar"),
@@ -548,6 +598,13 @@ let currentLevelPath: string | null = null;
  * though it isn't nested in `launchLevel`'s closure the way `onGameOver`/
  * `onWin` are. */
 let currentParsedFile: ParsedFile | null = null;
+/** Raw text of the level currently running, kept only so the boss key
+ * (`./ui/bossScreen.ts`) can show the file this level was generated from.
+ * Retaining it is the whole reason `launchLevel` takes a `source` argument:
+ * the text used to die with the local it was read into, and `ParsedFile`
+ * carries no copy of it. `null` on a multiplayer guest, which never receives
+ * one (only a serialised `GameMap` crosses the wire). */
+let currentLevelSource: string | null = null;
 /** Records this *run's* input, across every level it spans, for the replay
  * system — `null` when replaying (a replay never re-records itself). A new
  * one is created only at the start of a genuinely fresh run (see
@@ -968,7 +1025,7 @@ continueButton.addEventListener("click", async () => {
       console.log(`%c[continue] resuming at ${match.path}`, "color:#8effa0;font-weight:bold");
       setLoadingStatus("Generating world…");
       await yieldToMainThread(); // let the status above paint before the synchronous map generation below
-      launchLevel(match.path, parsed, {
+      launchLevel(match.path, parsed, text, {
         health: save.health,
         swap: save.swap,
         bullets: save.bullets,
@@ -1900,6 +1957,9 @@ function findNextMultiplayerLevel(initialLevelPath: string): FindNextLevel {
           afterPath = next.path;
           currentLevelPath = next.path;
           currentParsedFile = parsed;
+          // Host only — a guest never sees this path, so its boss screen
+          // shows the bundled fallback (see `currentLevelSource`).
+          currentLevelSource = text;
           return { map: nextMap, gameplaySeed: randomSeed() };
         }
       } catch (err) {
@@ -2285,7 +2345,7 @@ async function handleFileSelected(node: TreeNode): Promise<void> {
       console.group(`[parse] ${node.path}`);
       console.log(parsed);
       console.groupEnd();
-      if (parsed) launchLevel(node.path, parsed);
+      if (parsed) launchLevel(node.path, parsed, text);
       return;
     }
 
@@ -2626,10 +2686,20 @@ async function autoLaunchInitialLevel(tree: TreeNode): Promise<void> {
   }
 
   try {
+    // `source` is only for the boss key's disguise (see `currentLevelSource`),
+    // never for generation. The entrypoint scan hands back a `ParsedFile`
+    // without the text it came from, so that branch re-reads — cheap, since
+    // demo files are already bundled strings, `GithubFileHandle` memoises,
+    // and a local file was read seconds ago and is page-cached. Failure is
+    // tolerated: a boss screen falling back to its bundled file is not a
+    // reason to fail a level launch.
+    let source: string | null = null;
     if (!parsed) {
       setLoadingStatus(`Parsing ${target.name}…`);
-      const text = await readFileText(target.handle as FileSystemFileHandle);
-      parsed = await parseFile(target.name, text);
+      source = await readFileText(target.handle as FileSystemFileHandle);
+      parsed = await parseFile(target.name, source);
+    } else {
+      source = await readFileText(target.handle as FileSystemFileHandle).catch(() => null);
     }
     if (parsed) {
       console.log(`%c[entrypoint] auto-starting at ${target.path} (${how})`, "color:#8effa0;font-weight:bold");
@@ -2638,7 +2708,7 @@ async function autoLaunchInitialLevel(tree: TreeNode): Promise<void> {
       // for a large/complex file, potentially slow) map generation below
       // blocks the main thread — see `yieldToMainThread`'s doc comment.
       await yieldToMainThread();
-      launchLevel(target.path, parsed);
+      launchLevel(target.path, parsed, source);
     } else {
       showFileTreePlaceholder();
     }
@@ -2654,8 +2724,14 @@ async function autoLaunchInitialLevel(tree: TreeNode): Promise<void> {
  * save) is passed when this isn't a fresh pick from the file tree. The engine
  * itself isn't started until the level-start briefing is acknowledged — see
  * `GameHud.showLevelStart`.
+ *
+ * `source` is the raw file text `parsed` came from — held only for the boss
+ * key's disguise (see `currentLevelSource`), never read by generation. Every
+ * caller already has it in scope one line above its own `parseFile` call, so
+ * it is required rather than optional: a new call site that genuinely has no
+ * text should say so by passing `null`.
  */
-function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryover): void {
+function launchLevel(path: string, parsed: ParsedFile, source: string | null, carryover?: EngineCarryover): void {
   // End any replay still playing — its own requestAnimationFrame loop is
   // independent of `activeEngine`/this function, so it would otherwise keep
   // running orphaned once this real level takes over the canvas (see
@@ -2716,6 +2792,7 @@ function launchLevel(path: string, parsed: ParsedFile, carryover?: EngineCarryov
 
   currentLevelPath = path;
   currentParsedFile = parsed;
+  currentLevelSource = source;
 
   // Tear down any level already running before starting the new one — a
   // live multiplayer session included: nothing else ever called .stop() on
@@ -3053,7 +3130,7 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
             levelIndex: campaignLevelIndex,
           });
         }
-        launchLevel(next.path, parsed, carryover);
+        launchLevel(next.path, parsed, text, carryover);
         return;
       }
     } catch (err) {
@@ -3382,6 +3459,7 @@ function resetToFileTree(): void {
   activeHud = null;
   currentLevelPath = null;
   currentParsedFile = null;
+  currentLevelSource = null;
   consoleSidebar.setHintsActive(false);
   showFileTreePlaceholder();
 }

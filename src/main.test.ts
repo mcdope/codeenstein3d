@@ -424,6 +424,86 @@ describe("main.ts — module import / initial DOM wiring", () => {
   });
 });
 
+/**
+ * Grabs the boss key's own window listener out of *this* import, rather than
+ * dispatching a real event.
+ *
+ * `importMain()` re-imports the module per test while `window` persists for
+ * the whole file, so every earlier import's F9 listener is still attached —
+ * a dispatched keydown would toggle a dozen stale boss screens at once, each
+ * with its own saved title. Calling the freshly-registered handler directly
+ * keeps the assertions about one instance. Same pattern as
+ * `importMainAndCaptureBeforeUnload` further down.
+ */
+async function importMainAndCaptureBossKey(): Promise<(event: KeyboardEvent) => void> {
+  const addSpy = vi.spyOn(window, "addEventListener");
+  await importMain();
+  const call = addSpy.mock.calls.find((c) => c[0] === "keydown" && c[2] === true);
+  addSpy.mockRestore();
+  return call![1] as (event: KeyboardEvent) => void;
+}
+
+function pressF9(onKey: (event: KeyboardEvent) => void, init: KeyboardEventInit = {}): void {
+  onKey(new KeyboardEvent("keydown", { code: "F9", ...init }));
+}
+
+describe("main.ts — boss key (F9)", () => {
+  it("covers the page with a bundled file when no level is running", async () => {
+    const onKey = await importMainAndCaptureBossKey();
+
+    pressF9(onKey);
+
+    // The launch screen has no source file of its own, and the campaign
+    // filename would give the game away — so the stand-in is presented under
+    // a path that matches what its contents actually describe.
+    expect(document.querySelector(".boss-screen-crumb")?.textContent).toBe("src/Legacy/TheMonolith.php");
+    expect(document.title).toBe("TheMonolith.php");
+    expect(document.querySelector(".boss-screen-code")?.textContent).toContain("class TheMonolith");
+
+    pressF9(onKey);
+    expect(document.querySelector(".boss-screen")).toBeNull();
+    expect(document.title).toContain("Codeenstein 3D");
+  });
+
+  it("shows the running level's own source file", async () => {
+    const onKey = await importMainAndCaptureBossKey();
+    document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+    await waitUntil(() => document.querySelector(".map-caption") !== null, 8000);
+
+    pressF9(onKey);
+
+    expect(document.querySelector(".boss-screen-crumb")?.textContent).toBe("demo-campaign/main.c");
+    expect(document.querySelector(".boss-screen-code")?.textContent).toContain("int main()");
+    pressF9(onKey);
+  });
+
+  it("still has the source after switching levels from the file tree", async () => {
+    const onKey = await importMainAndCaptureBossKey();
+    document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+    await waitUntil(() => document.querySelector(".map-caption") !== null, 8000);
+    document.querySelector<HTMLButtonElement>('.tree-row--file[title="demo-campaign/stage06_pipeline.py"]')!.click();
+    await waitUntil(() => document.querySelector<HTMLElement>(".map-caption")!.textContent!.includes("stage06_pipeline.py"), 8000);
+
+    pressF9(onKey);
+
+    expect(document.querySelector(".boss-screen-crumb")?.textContent).toBe("demo-campaign/stage06_pipeline.py");
+    // Hash comments are Python's, so the highlighter was told the language.
+    expect(document.querySelector(".boss-tok--comment")?.textContent?.startsWith("#")).toBe(true);
+    pressF9(onKey);
+  });
+
+  it("ignores other keys and auto-repeat", async () => {
+    const onKey = await importMainAndCaptureBossKey();
+
+    onKey(new KeyboardEvent("keydown", { code: "F8" }));
+    expect(document.querySelector(".boss-screen")).toBeNull();
+
+    // Holding F9 down must not flicker the overlay open and shut.
+    pressF9(onKey, { repeat: true });
+    expect(document.querySelector(".boss-screen")).toBeNull();
+  });
+});
+
 describe("main.ts — campaign persistence (loadCampaignSave/saveCampaign/clearCampaignSave)", () => {
   it("round-trips a save through save/load", async () => {
     const { saveCampaign, loadCampaignSave } = await importMain();

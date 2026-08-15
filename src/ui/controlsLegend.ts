@@ -88,6 +88,7 @@ const ROWS: Chip[][] = [
     { keys: ["Tab"], label: "map" },
     { keys: ["Esc"], label: "pause" },
     { keys: ["R-Ctrl"], label: "FPS counter", gapBefore: true },
+    { keys: ["F9"], label: "boss key" },
   ],
 ];
 

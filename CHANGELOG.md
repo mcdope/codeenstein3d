@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- New: **a boss key.** `F9` drops a plain code editor over the whole page — showing the actual source file the level you are playing was generated from, syntax-highlighted — and takes everything else with it: the game pauses, fullscreen is dropped, the music stops, and the browser tab's title and icon become the file's. Press `F9` again and it all comes back, revealing the game **still paused**, so you are not dropped straight back into a fight; your next click resumes as usual. `Escape` is ignored while it is up, so a reflex press can't undo it. Two honest limits: a web page cannot minimise its own window, which is why the disguise happens inside the page; and in co-op it can only hide you, not pause the session — the same as alt-tabbing out of co-op already does
+
 
 ## beta-7
 
