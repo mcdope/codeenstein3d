@@ -149,6 +149,10 @@ const BGM_VOLUME_KEY = "codeenstein-bgm-volume";
  * module setup, so a `const` declared down next to `loadCampaignSave` itself
  * would still be in its temporal dead zone at that point and throw. */
 const SAVE_KEY = "codeenstein-campaign-save";
+/** localStorage key for the online texture pack to restore on load — stores a
+ * catalog *id*, never a URL or the WAD itself. Same "declared up here"
+ * reasoning as `GORE_KEY` above. */
+const WAD_PACK_KEY = "codeenstein-wad-pack";
 
 const tabLocal = requireElement<HTMLButtonElement>("#tab-local");
 const tabContinue = requireElement<HTMLButtonElement>("#tab-continue");
@@ -182,6 +186,7 @@ const bgmStatus = requireElement<HTMLParagraphElement>("#bgm-status");
 const loadWadTexturesButton = requireElement<HTMLButtonElement>("#load-wad-textures");
 const wadFileInput = requireElement<HTMLInputElement>("#wad-file-input");
 const wadStatus = requireElement<HTMLParagraphElement>("#wad-status");
+const clearWadTexturesButton = requireElement<HTMLButtonElement>("#clear-wad-textures");
 const wadTabLocalButton = requireElement<HTMLButtonElement>("#wad-tab-local");
 const wadTabOnlineButton = requireElement<HTMLButtonElement>("#wad-tab-online");
 const wadTabPanelLocal = requireElement<HTMLElement>("#wad-tab-panel-local");
@@ -328,6 +333,47 @@ function describeWadStatus(result: WadLoadSummary, fileName: string): string {
   return `Using WAD textures: ${result.matchedSlots}/${result.totalSlots} slots — ${parts}${missing}`;
 }
 
+/**
+ * Read the remembered online texture pack, or `null`.
+ *
+ * Validated against the live catalog rather than trusted: a pack can be
+ * removed from `ONLINE_WAD_CATALOG` (a license re-check, a dead upstream) in a
+ * build a player already has a preference for, and a stored id that no longer
+ * resolves must read as "no preference" rather than as a fetch of a file that
+ * is no longer served.
+ */
+function loadWadPackPreference(): OnlineWadEntry | null {
+  try {
+    const raw = localStorage.getItem(WAD_PACK_KEY);
+    return ONLINE_WAD_CATALOG.find((entry) => entry.id === raw) ?? null;
+  } catch {
+    return null; // storage unavailable reads as no preference — same as every other setting here
+  }
+}
+
+function saveWadPackPreference(id: string): void {
+  try {
+    localStorage.setItem(WAD_PACK_KEY, id);
+  } catch (err) {
+    console.warn("[settings] Failed to save texture pack preference:", err);
+  }
+}
+
+function clearWadPackPreference(): void {
+  try {
+    localStorage.removeItem(WAD_PACK_KEY);
+  } catch (err) {
+    console.warn("[settings] Failed to clear texture pack preference:", err);
+  }
+}
+
+/** The revert button only makes sense while something is actually loaded, so
+ * it appears with the first pack and disappears when the textures go back to
+ * the built-in ones. */
+function setWadLoaded(loaded: boolean): void {
+  clearWadTexturesButton.hidden = !loaded;
+}
+
 loadWadTexturesButton.addEventListener("click", () => wadFileInput.click());
 wadFileInput.addEventListener("change", async () => {
   const file = wadFileInput.files?.[0];
@@ -338,10 +384,23 @@ wadFileInput.addEventListener("change", async () => {
     const bytes = await file.arrayBuffer();
     const result = textures.loadFromWad(bytes);
     wadStatus.textContent = describeWadStatus(result, file.name);
+    setWadLoaded(true);
+    // A local file cannot be remembered (a `File` is not a durable handle), so
+    // picking one also forgets any online pack — otherwise the next reload
+    // would silently restore the *online* pack over the file the player just
+    // chose, which reads as the choice being ignored.
+    clearWadPackPreference();
   } catch (err) {
     console.error("[wad] Failed to load WAD file:", err);
     wadStatus.textContent = err instanceof Error ? err.message : "Failed to load WAD file.";
   }
+});
+
+clearWadTexturesButton.addEventListener("click", () => {
+  textures.resetToDefaults();
+  clearWadPackPreference();
+  wadStatus.textContent = "Using built-in default textures";
+  setWadLoaded(false);
 });
 
 // --- Online WAD/texture-pack catalog ----------------------------------------
@@ -351,7 +410,14 @@ wadFileInput.addEventListener("change", async () => {
 // same-origin — a direct browser fetch of the original sources isn't
 // possible (none of them send usable CORS headers).
 
-async function loadOnlineWad(entry: OnlineWadEntry): Promise<void> {
+/**
+ * Fetch and apply one catalog pack.
+ *
+ * `remember` is false only for the restore-on-load path below: re-saving the
+ * id that was just read changes nothing, and writing to storage during module
+ * init is worth avoiding on a browser that throws there.
+ */
+async function loadOnlineWad(entry: OnlineWadEntry, { remember = true } = {}): Promise<void> {
   wadStatus.textContent = `Loading ${entry.name}…`;
   try {
     const res = await fetch(`/${entry.servedPath}`);
@@ -359,10 +425,28 @@ async function loadOnlineWad(entry: OnlineWadEntry): Promise<void> {
     const bytes = await res.arrayBuffer();
     const result = textures.loadFromWad(bytes);
     wadStatus.textContent = describeWadStatus(result, entry.name);
+    setWadLoaded(true);
+    if (remember) saveWadPackPreference(entry.id);
   } catch (err) {
     console.error("[wad] Failed to load online WAD:", err);
     wadStatus.textContent = err instanceof Error ? err.message : "Failed to load online WAD.";
   }
+}
+
+/**
+ * Re-apply the remembered pack, once, at startup.
+ *
+ * Deliberately fire-and-forget: the pack is cosmetic, the fetch is a real
+ * network round-trip for a file of tens of megabytes, and nothing about
+ * launching a level depends on it. A failure leaves the built-in textures up
+ * and says so in the status line, exactly as a failed manual pick does — and
+ * **the preference is kept**, because the usual cause is being offline, which
+ * is not a reason to forget what the player chose.
+ */
+function restoreWadPackPreference(): void {
+  const entry = loadWadPackPreference();
+  if (!entry) return;
+  void loadOnlineWad(entry, { remember: false });
 }
 
 function renderOnlineWadCatalog(): void {
@@ -407,6 +491,7 @@ function renderOnlineWadCatalog(): void {
 }
 
 renderOnlineWadCatalog();
+restoreWadPackPreference();
 
 // --- WAD source sub-tabs (Local File / Online) ------------------------------
 // A small secondary tab pair, same interaction pattern as the top-level

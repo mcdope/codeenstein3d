@@ -558,11 +558,28 @@ export class TextureManager {
     return this.active[id];
   }
 
+  /**
+   * Drop back to the procedural textures this manager was built with.
+   *
+   * The defaults were never discarded — `loadFromWad` swaps `active` and
+   * leaves `defaults` alone, precisely so a WAD can be un-loaded without
+   * rebuilding every bitmap. Cheap enough to call at any time; the next
+   * frame simply samples the other set.
+   */
+  resetToDefaults(): void {
+    this.active = this.defaults;
+  }
+
   /** Parses `bytes` as a DOOM WAD and swaps in whichever slots it has a
    * matching allowlisted texture/flat for (see `src/wad/textureAllowlist.ts`).
-   * A fatal parse failure leaves the active styles untouched. Session-only:
-   * not persisted, matching the existing "Select BGM Folder" precedent — a
-   * fresh page load always starts back on the procedural defaults. */
+   * A fatal parse failure leaves the active styles untouched.
+   *
+   * **The manager itself stays session-only** — it persists nothing and starts
+   * every page on the procedural defaults. What is remembered is one level up:
+   * `main.ts` stores the *catalog id* of an online pack and re-requests it on
+   * load. A local file cannot be remembered that way (a `File` is not a
+   * durable handle), so it stays a per-session choice, matching the "Select
+   * BGM Folder" precedent. */
   loadFromWad(bytes: ArrayBuffer): WadLoadSummary {
     const result = loadWadTextures(bytes);
     const summary = emptySummary(result.error);

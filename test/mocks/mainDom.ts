@@ -115,6 +115,7 @@ export function buildIndexDom(): void {
           <div id="wad-tab-panel-online" class="tab-panel" role="tabpanel" hidden>
             <ul id="online-wad-list" class="online-wad-list"></ul>
           </div>
+          <button id="clear-wad-textures" class="settings-btn" type="button" hidden>↺ Use built-in textures</button>
           <p id="wad-status" class="muted">Using built-in default textures</p>
           <button id="view-highscores" class="settings-btn" type="button">Highscores</button>
           <button id="take-tour" class="settings-btn" type="button">🧭 Take the Tour</button>

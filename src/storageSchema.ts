@@ -4,10 +4,10 @@
 /**
  * Versioning for everything this game persists in `localStorage`.
  *
- * **Why this exists.** Eight keys are written across `main.ts` and
+ * **Why this exists.** Nine keys are written across `main.ts` and
  * `highscores.ts` (`codeenstein-player-name`, `-gore-level`, `-difficulty`,
  * `-master-volume`, `-sfx-volume`, `-bgm-volume`, `-campaign-save`,
- * `-highscores`) and none of them carried a version. A shape change to any of
+ * `-highscores`, `-wad-pack`) and none of them carried a version. A shape change to any of
  * them — a new field in the campaign save, a different highscore packing —
  * would have been indistinguishable from data written by the current build, so
  * the only safe migration would have been to guess from the contents. This
@@ -31,7 +31,10 @@ export const SCHEMA_VERSION_KEY = `${STORAGE_KEY_PREFIX}schema-version`;
  * changes**, and add the matching case to `migrateStorage`.
  *
  * 1 — the shape as of 2026-08-12: the eight keys listed above, unversioned
- *     until now.
+ *     until now. `-wad-pack` was added on 2026-08-15 **without a bump**: a new
+ *     key is not a shape change to an existing value, its absence already
+ *     means "no pack", and nothing written before it needs interpreting
+ *     differently. Bump for a changed *value shape*, not for a new key.
  */
 export const STORAGE_SCHEMA_VERSION = 1;
 
