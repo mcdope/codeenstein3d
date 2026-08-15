@@ -38,7 +38,11 @@
  *   node scripts/run-perf-benchmark.mjs --resume perf_runs/2026-07-18T...
  * Options: --runs N (default 5), --duration SECS (default 30; s2 uses 60),
  *   --browser chromium|firefox|webkit, --headless (or CODEENSTEIN_PERF_HEADLESS=1),
- *   --warmup SECS (default 5).
+ *   --warmup SECS (default 5), --channel chrome (chromium only: measure on the
+ *   installed system Chrome — the actual 60fps target — instead of the bundled
+ *   build; the version lands in manifest.json), --no-sampler / --no-perfdebug
+ *   (overhead A/Bs: disable one instrument and read the run through the other;
+ *   both at once is refused).
  *
  * HEADLESS IS NOT A FREE CHOICE. It is correct for busy-time A/Bs and wrong
  * for anything touching draw-call shape: headless Chromium rasterises the
@@ -57,6 +61,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, firefox, webkit } from "playwright";
 import { installPerfSampler, readSampler, resetSampler } from "./lib/perfSampler.mjs";
+import { installOpfsWorkspace } from "./lib/opfsWorkspace.mjs";
 import { createPerfLogCollector, numberStats, percentileSorted, summarizeFrameEntries } from "./lib/perfConsoleParse.mjs";
 import { envNumber } from "./lib/envNumber.mjs";
 
@@ -82,12 +87,33 @@ const FLAG_DEFS = {
 // All run on the REAL clock (no virtual-clock install, ever, in this harness).
 // ---------------------------------------------------------------------------
 
+/** Invocation-wide instrumentation switches for the overhead A/Bs
+ * (`--no-sampler` / `--no-perfdebug`). Module state set once in main()
+ * before any cell runs — the harness is strictly single-invocation. */
+const RUNTIME = { sampler: true, perfDebug: true };
+
+/** Page URL with the perfDebug gate applied per RUNTIME (plus any extra
+ * query params a scenario needs). */
+function perfUrl(baseUrl, extra = "") {
+  const params = [RUNTIME.perfDebug ? "perfDebug=1" : "", extra].filter(Boolean).join("&");
+  return `${baseUrl}/${params ? `?${params}` : ""}`;
+}
+
+/** With --no-perfdebug there is no console line to wait for; readiness
+ * degrades to a fixed settle. Only setup latency gets less precise — the
+ * capture window still starts after the warmup reset either way. */
+const NO_PERFDEBUG_SETTLE_MS = 8000;
+
 /** Readiness = the `[perf] level:` line perfDebug prints once map generation
  * finishes. Deliberately NOT `?testHooks=1`/`__codeensteinTestHooks`: that
  * flag switches real telemetry recording on (engine.ts constructor), which
  * would add measurable per-event work normal play doesn't have — the bench
  * must measure normal-play conditions. */
 async function waitForLevelReady(collector, timeoutMs = 60000) {
+  if (!RUNTIME.perfDebug) {
+    await new Promise((r) => setTimeout(r, NO_PERFDEBUG_SETTLE_MS));
+    return;
+  }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (collector.entries.some((e) => e.kind === "level")) return;
@@ -109,7 +135,7 @@ async function dismissOverlay(page) {
 }
 
 async function launchDemoCampaign(page, baseUrl, collector) {
-  await page.goto(`${baseUrl}/?perfDebug=1`);
+  await page.goto(perfUrl(baseUrl));
   await page.click("#tab-demo");
   await page.click("#launch-demo-campaign");
   await waitForLevelReady(collector);
@@ -207,9 +233,64 @@ function levelLineCount(collector) {
   return collector.entries.filter((e) => e.kind === "level").length;
 }
 
+/** Slow aim sweep shared by the "idle look-around" cells: a 500ms KeyE turn
+ * burst every 2s, so the view keeps crossing fresh geometry/sprites without
+ * the player moving. */
+async function startLookSweep(page) {
+  await page.evaluate(() => {
+    const canvas = document.querySelector("canvas");
+    window.__perfLook = setInterval(() => {
+      canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyE" }));
+      setTimeout(() => canvas.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyE" })), 500);
+    }, 2000);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Corpus worst-case levels (frame-budget audit Phase 0). Selected by
+// scripts/dump-level-density.mjs over the five balancing-corpus repos the
+// audit names; numbers are that sweep's output (2026-08-15):
+//   c1: stb/stb_vorbis.c            — 160x160, walkable 12963, wallAdj 6475,
+//       202 enemies. Highest wall-adjacency-to-enemy ratio of the max-area
+//       levels: long sightlines, raycast-dominated.
+//   c2: laravel .../Query/Builder.php — 160x160, walkable 15936, wallAdj 7646,
+//       522 enemies (311 edge-case) — the max enemy count across all 5 repos.
+// The gameplay seed is pinned (`?seed=`): map layout is content-addressed
+// anyway; the pin makes loot rolls/fire cadence repeatable too. Input macros
+// are wall-clock-timed, so corpus runs are statistically stationary but not
+// tick-identical — s2-replay remains the fully deterministic anchor.
+// ---------------------------------------------------------------------------
+
+const CORPUS_SEED = "0xc0de";
+const CORPUS_FILES = {
+  c1: "stb/stb_vorbis.c",
+  c2: "laravel/src/Illuminate/Database/Query/Builder.php",
+};
+
+/** Load ONE corpus source file as a single-file local workspace via the OPFS
+ * picker stub — the workspace auto-launches straight into that level. Real
+ * clock, no testHooks: measurement-neutral (see scripts/lib/opfsWorkspace.mjs). */
+async function launchCorpusLevel(page, baseUrl, collector, corpusRelPath) {
+  const abs = path.join(ROOT, "balancing_corpus", corpusRelPath);
+  if (!fs.existsSync(abs)) {
+    throw new Error(`${path.relative(ROOT, abs)} missing — fetch the corpus first: npm run balancing:corpus`);
+  }
+  const name = path.basename(abs);
+  await installOpfsWorkspace(page, { dirName: `perf-${name}`, files: { [name]: fs.readFileSync(abs, "utf8") } });
+  await page.goto(perfUrl(baseUrl, `seed=${CORPUS_SEED}`));
+  await page.click("#select-workspace");
+  // Map generation for a 160x160 monster takes a few seconds.
+  await waitForLevelReady(collector, 120000);
+  await dismissOverlay(page);
+}
+
 /** Wait for the NEXT `[perf] level:` line beyond `alreadySeen` — level loads
  * after the first one need a count check, not an existence check. */
 async function waitForNextLevel(collector, alreadySeen, timeoutMs = 300000) {
+  if (!RUNTIME.perfDebug) {
+    await new Promise((r) => setTimeout(r, NO_PERFDEBUG_SETTLE_MS));
+    return;
+  }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (levelLineCount(collector) > alreadySeen) return;
@@ -225,7 +306,7 @@ async function loadMagentoWorkspace(page, baseUrl, collector) {
   }
   fs.mkdirSync(path.dirname(HAR_PATH), { recursive: true });
   await page.routeFromHAR(HAR_PATH, { url: /github/, update: record });
-  await page.goto(`${baseUrl}/?perfDebug=1`);
+  await page.goto(perfUrl(baseUrl));
   await page.click("#tab-github");
   await page.fill("#github-repo-input", "magento/magento2");
   await page.click("#load-github-repo");
@@ -255,15 +336,14 @@ const SCENARIOS = {
   /** S2: deterministic combat — "Watch Replay" of the bundled default
    * highscore (exact recorded input through the real engine + rendering).
    * No Space presses after start: the replay transport listens for keys.
-   * `busyAccumulates`: the replay viewer drives `engine.advance()` from its
-   * own rAF loop and never calls `perf.beginFrame()` (findings queue F21),
-   * so phase sums grow monotonically — the harness recovers true per-frame
-   * busy time by differencing successive snapshot values. */
+   * (The old `busyAccumulates` differencing workaround is gone: F21 was
+   * fixed by moving `perf.beginFrame()` into `advance()` itself
+   * (engine.ts, commit 2257071), so replay frames reset phases like any
+   * other driver and snapshots are already per-frame.) */
   "s2-replay": {
     defaultDurationSec: 60,
-    busyAccumulates: true,
     async setup(page, baseUrl, collector) {
-      await page.goto(`${baseUrl}/?perfDebug=1`);
+      await page.goto(perfUrl(baseUrl));
       await page.click("#view-highscores");
       await page.click('#highscore-list .replay-btn:text("Watch")');
       await waitForLevelReady(collector);
@@ -297,13 +377,45 @@ const SCENARIOS = {
     async setup(page, baseUrl, collector) {
       await loadMagentoWorkspace(page, baseUrl, collector);
       await typeCheat(page, "IDDQD"); // idle cells die to melee without it (see s1)
-      await page.evaluate(() => {
-        const canvas = document.querySelector("canvas");
-        window.__perfLook = setInterval(() => {
-          canvas.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyE" }));
-          setTimeout(() => canvas.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyE" })), 500);
-        }, 2000);
-      });
+      await startLookSweep(page);
+    },
+  },
+  /** C1: corpus raycast/geometry worst case — stb_vorbis.c (see CORPUS_FILES).
+   * Idle + look sweep so the per-column wall pass crosses fresh long
+   * sightlines; enemy count is the lowest of the max-area corpus levels, so
+   * what this cell moves is `raycast-walls`, not sprites. */
+  "c1-raycast": {
+    defaultDurationSec: 30,
+    async setup(page, baseUrl, collector) {
+      await launchCorpusLevel(page, baseUrl, collector, CORPUS_FILES.c1);
+      await typeCheat(page, "IDDQD"); // idle cells die to melee without it (see s1)
+      await startLookSweep(page);
+    },
+  },
+  /** C2: corpus sprite/entity worst case — laravel Query/Builder.php,
+   * 522 enemies. Idle + look sweep: stresses billboard collection/sort/draw
+   * (`billboards+targeting`) and per-frame AI over the max roster. */
+  "c2-sprites": {
+    defaultDurationSec: 30,
+    async setup(page, baseUrl, collector) {
+      await launchCorpusLevel(page, baseUrl, collector, CORPUS_FILES.c2);
+      await typeCheat(page, "IDDQD");
+      await startLookSweep(page);
+    },
+  },
+  /** C3: the deliberate stress case — C2's level plus extreme gore (16x
+   * particle spawns), full arsenal and the sustained rocket/flame fire
+   * macro (s3's recipe on the worst corpus map). Phase 0 requires this cell
+   * to actually drop frames headed; if it doesn't, escalate the scenario
+   * before accepting it as the stress baseline. */
+  "c3-stress": {
+    defaultDurationSec: 30,
+    async setup(page, baseUrl, collector) {
+      await page.addInitScript(() => localStorage.setItem("codeenstein-gore-level", "extreme"));
+      await launchCorpusLevel(page, baseUrl, collector, CORPUS_FILES.c2);
+      await typeCheat(page, "IDKFA");
+      await typeCheat(page, "IDDQD"); // survive point-blank splash + the aggroed horde (see s3)
+      await startFireMacro(page, { weaponSlots: ["Digit3", "Digit4", "Digit5"], pressEveryMs: 350 });
     },
   },
   /** S4-fire: magento2 map + IDKFA + sustained fire — the reported case. */
@@ -556,42 +668,33 @@ async function measureRun(browser, scenarioId, baseUrl, { warmupSec, durationSec
     const collector = createPerfLogCollector();
     page.on("console", collector.onConsole);
     page.on("pageerror", (err) => console.log(`  [pageerror] ${err.message}`));
-    await installPerfSampler(page);
+    if (RUNTIME.sampler) await installPerfSampler(page);
 
     const startedAt = new Date().toISOString();
     await scenario.setup(page, baseUrl, collector);
     await page.waitForTimeout(warmupSec * 1000);
 
     const meta = collector.entries.filter((e) => e.kind === "env" || e.kind === "level");
-    await resetSampler(page);
+    if (RUNTIME.sampler) await resetSampler(page);
     await page.evaluate(() => window.__codeensteinPerfStats?.reset());
     collector.reset();
     await page.waitForTimeout(durationSec * 1000);
 
-    const { frames, heapSamples } = await readSampler(page);
+    const sampled = RUNTIME.sampler ? await readSampler(page) : null;
+    const frames = sampled?.frames ?? null;
+    const heapSamples = sampled?.heapSamples ?? null;
+    const observations = sampled?.observations ?? null;
     // A background/occluded window gets rAF-throttled to ~1Hz — such a run
     // measures the throttle, not the game. Flag it loudly instead of letting
     // it pool silently into the medians (a locked screen once contaminated
     // three whole batches this way).
-    const intervalCheck = summarizeIntervals(frames.deltas);
-    const presented = summarizePresented(frames.deltas, { headless: Boolean(headless) });
+    const intervalCheck = frames ? summarizeIntervals(frames.deltas) : null;
+    const presented = frames ? summarizePresented(frames.deltas, { headless: Boolean(headless) }) : null;
     const throttled = Boolean(intervalCheck && intervalCheck.median > 100);
     if (throttled) console.log(`[perf:bench]   WARNING: median interval ${intervalCheck.median.toFixed(0)}ms — window throttled/occluded, run INVALID`);
     // Per-frame busy time from the ?perfDebug=1 stats hook — every frame, not
     // just the rate-limited console snapshots; this is the A/B metric.
     const stats = await page.evaluate(() => window.__codeensteinPerfStats?.snapshot() ?? null);
-    // Replay mode never resets phases between frames (F21) — recover each
-    // frame's true cost from the monotonic series. Negative deltas mark a
-    // level transition (fresh engine/logger) and are dropped.
-    if (stats && scenario.busyAccumulates) {
-      const diffed = [];
-      for (let i = 1; i < stats.busyMs.length; i += 1) {
-        const d = stats.busyMs[i] - stats.busyMs[i - 1];
-        if (d >= 0) diffed.push(d);
-      }
-      stats.busyMs = diffed;
-      stats.phases = null; // per-phase running sums are equally accumulated — meaningless here
-    }
     return {
       startedAt,
       warmupSec,
@@ -600,9 +703,15 @@ async function measureRun(browser, scenarioId, baseUrl, { warmupSec, durationSec
       meta,
       intervals: intervalCheck,
       presented,
-      frameCount: frames.total,
-      rawDeltas: frames.deltas, // kept raw for the report's histograms/CDFs
+      frameCount: frames ? frames.total : null,
+      rawDeltas: frames ? frames.deltas : null, // kept raw for the report's histograms/CDFs
+      rawHeapBytes: frames ? frames.heapBytes : null, // index-aligned with rawDeltas; 0 = unavailable
       heapSamples,
+      // PerformanceObserver captures (E1): which entry types this browser
+      // supports, plus every longtask / long-animation-frame entry in the
+      // capture window. Empty arrays on a clean run are a RESULT (no long
+      // tasks), null means the sampler was disabled (--no-sampler).
+      observations,
       perfLog: summarizeFrameEntries(collector.entries),
       busyPerFrame: stats ? numberStats(stats.busyMs) : null,
       rawBusyMs: stats ? stats.busyMs : null, // raw for report histograms
@@ -657,13 +766,18 @@ async function runCell(browser, cell, baseUrl, outDir, manifest) {
       // Presented-frame health first, busy time second: a regression that
       // leaves busy flat and drops a third of the frames is a real and
       // already-observed failure mode, so the metric that can see it leads.
-      console.log(
-        `[perf:bench]   presented: ${pr.fps.toFixed(1)}fps dropped=${pr.droppedCount}/${pr.frames} ` +
-          `(${pr.droppedPct.toFixed(1)}%)${pr.meaningful ? "" : " [HEADLESS — cannot see raster cost]"}`,
-      );
+      if (pr) {
+        const lt = run.observations?.longTasks?.length ?? "n/a";
+        console.log(
+          `[perf:bench]   presented: ${pr.fps.toFixed(1)}fps dropped=${pr.droppedCount}/${pr.frames} ` +
+            `(${pr.droppedPct.toFixed(1)}%) longtasks=${lt}${pr.meaningful ? "" : " [HEADLESS — cannot see raster cost]"}`,
+        );
+      } else {
+        console.log("[perf:bench]   presented: n/a (--no-sampler)");
+      }
       console.log(
         `[perf:bench]   busy(med)=${busy ? busy.median.toFixed(2) : "n/a"}ms busyN=${busy ? busy.n : 0} ` +
-          `interval med=${iv.median.toFixed(2)}ms p95=${iv.p95.toFixed(2)}ms slow=${run.perfLog.slowCount}`,
+          `interval med=${iv ? iv.median.toFixed(2) : "n/a"}ms p95=${iv ? iv.p95.toFixed(2) : "n/a"}ms slow=${run.perfLog.slowCount}`,
       );
     } finally {
       if (flagDef) restoreFlag(flagDef);
@@ -679,15 +793,31 @@ async function runCell(browser, cell, baseUrl, outDir, manifest) {
  * cells alternate per run index (A,B,A,B,...) — see runMatrix. */
 function buildCells(opts) {
   const cells = [];
+  // Cell ids must stay unique within one out dir across substrates and
+  // instrumentation variants: `--channel chrome` labels cells "chrome" (vs
+  // bundled "chromium"), and the overhead-A/B switches get their own suffix.
+  const browserLabel = opts.channel ?? opts.browser;
+  const instr = [opts.noSampler ? "nosampler" : "", opts.noPerfDebug ? "noperfdebug" : ""].filter(Boolean).join("-");
+  const label = instr ? `${browserLabel}.${instr}` : browserLabel;
   for (const scenario of opts.scenarios) {
     const durationSec = opts.durationSec ?? SCENARIOS[scenario]?.defaultDurationSec ?? 30;
-    const base = { scenario, browser: opts.browser, runs: opts.runs, durationSec, warmupSec: opts.warmupSec, headless: opts.headless };
+    const base = {
+      scenario,
+      browser: opts.browser,
+      channel: opts.channel,
+      noSampler: opts.noSampler,
+      noPerfDebug: opts.noPerfDebug,
+      runs: opts.runs,
+      durationSec,
+      warmupSec: opts.warmupSec,
+      headless: opts.headless,
+    };
     if (opts.flag) {
       const flaggedLabel = `${opts.flag}-${FLAG_DEFS[opts.flag].invert ? "off" : "on"}`;
-      cells.push({ ...base, id: `${scenario}.${opts.browser}.baseline`, flag: opts.flag, variant: "baseline" });
-      cells.push({ ...base, id: `${scenario}.${opts.browser}.${flaggedLabel}`, flag: opts.flag, variant: "flagged" });
+      cells.push({ ...base, id: `${scenario}.${label}.baseline`, flag: opts.flag, variant: "baseline" });
+      cells.push({ ...base, id: `${scenario}.${label}.${flaggedLabel}`, flag: opts.flag, variant: "flagged" });
     } else {
-      cells.push({ ...base, id: `${scenario}.${opts.browser}.baseline`, flag: null, variant: "baseline" });
+      cells.push({ ...base, id: `${scenario}.${label}.baseline`, flag: null, variant: "baseline" });
     }
   }
   return cells;
@@ -720,15 +850,24 @@ function coefficientOfVariation(values) {
   return { mean: m, sd, cov: m ? sd / m : 0 };
 }
 
-function writeCalibration(outDir) {
-  const runs = fs
-    .readdirSync(outDir)
-    .filter((f) => f.startsWith("s1-idle.") && f.includes(".run"))
-    .map((f) => JSON.parse(fs.readFileSync(path.join(outDir, f), "utf8")));
+/** Noise floor from THIS invocation's s1-idle cells only — enumerated from
+ * the cell list instead of globbing the directory, so a `--resume` into a dir
+ * holding unrelated s1-idle runs (different flags, different day) can no
+ * longer silently widen the CoV. */
+function writeCalibration(outDir, manifest, cells) {
+  const runs = [];
+  for (const cell of cells) {
+    if (cell.scenario !== "s1-idle") continue;
+    const runsDone = manifest.cells[cell.id]?.runsDone ?? 0;
+    for (let i = 1; i <= runsDone; i += 1) {
+      const file = path.join(outDir, `${cell.id}.run${i}.json`);
+      if (fs.existsSync(file)) runs.push(JSON.parse(fs.readFileSync(file, "utf8")));
+    }
+  }
   const metrics = {
-    intervalMedianMs: runs.map((r) => r.intervals.median),
-    intervalP95Ms: runs.map((r) => r.intervals.p95),
-    presentedDroppedPct: runs.map((r) => r.presented?.droppedPct).filter((v) => v !== undefined),
+    intervalMedianMs: runs.map((r) => r.intervals?.median).filter((v) => v !== undefined && v !== null),
+    intervalP95Ms: runs.map((r) => r.intervals?.p95).filter((v) => v !== undefined && v !== null),
+    presentedDroppedPct: runs.map((r) => r.presented?.droppedPct).filter((v) => v !== undefined && v !== null),
     busyMedianMs: runs.map((r) => (r.busyPerFrame ?? r.perfLog.busyMs)?.median).filter((v) => v !== undefined),
   };
   const calibration = {};
@@ -753,10 +892,13 @@ function parseArgs(argv) {
     durationSec: undefined,
     warmupSec: 5,
     browser: "chromium",
+    channel: null,
     headless: Boolean(process.env.CODEENSTEIN_PERF_HEADLESS),
     flag: null,
     calibrate: false,
     resume: null,
+    noSampler: false,
+    noPerfDebug: false,
   };
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -766,14 +908,19 @@ function parseArgs(argv) {
     else if (arg === "--duration") opts.durationSec = Number(next());
     else if (arg === "--warmup") opts.warmupSec = Number(next());
     else if (arg === "--browser") opts.browser = next();
+    else if (arg === "--channel") opts.channel = next();
     else if (arg === "--headless") opts.headless = true;
     else if (arg === "--flag") opts.flag = next();
     else if (arg === "--calibrate") opts.calibrate = true;
     else if (arg === "--resume") opts.resume = next();
+    else if (arg === "--no-sampler") opts.noSampler = true;
+    else if (arg === "--no-perfdebug") opts.noPerfDebug = true;
     else throw new Error(`unknown argument: ${arg}`);
   }
   if (opts.flag && !FLAG_DEFS[opts.flag]) throw new Error(`--flag must be one of: ${Object.keys(FLAG_DEFS).join(", ")}`);
   if (!BROWSERS[opts.browser]) throw new Error(`--browser must be one of: ${Object.keys(BROWSERS).join(", ")}`);
+  if (opts.channel && opts.browser !== "chromium") throw new Error("--channel is only meaningful with --browser chromium");
+  if (opts.noSampler && opts.noPerfDebug) throw new Error("--no-sampler with --no-perfdebug leaves no metric at all");
   if (opts.calibrate) {
     opts.scenarios = ["s1-idle"];
     opts.runs = 10;
@@ -804,18 +951,26 @@ async function main() {
         "[perf:bench]           doc/dev/perf-review-2026-08-02.md.",
     );
   }
+  RUNTIME.sampler = !opts.noSampler;
+  RUNTIME.perfDebug = !opts.noPerfDebug;
   const browser = await BROWSERS[opts.browser].launch({
     headless: opts.headless,
+    channel: opts.channel ?? undefined,
     args:
       opts.browser === "chromium"
         ? ["--enable-precise-memory-info", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows"]
         : [],
   });
+  // The substrate is part of the measurement: an auto-updated Chrome is a
+  // different baseline. Recorded per invocation so later A/Bs can refuse to
+  // compare across versions.
+  manifest.browser = { engine: opts.browser, channel: opts.channel, version: browser.version(), headless: opts.headless };
   try {
     const cells = buildCells(opts);
+    console.log(`[perf:bench] browser: ${opts.channel ?? opts.browser} ${browser.version()}${opts.headless ? " (headless)" : ""}`);
     console.log(`[perf:bench] output: ${path.relative(ROOT, outDir)} — cells: ${cells.map((c) => c.id).join(", ")}`);
     await runMatrix(browser, cells, server.url, outDir, manifest);
-    if (opts.calibrate) writeCalibration(outDir);
+    if (opts.calibrate) writeCalibration(outDir, manifest, cells);
     console.log(`[perf:bench] done — ${path.relative(ROOT, outDir)}`);
   } finally {
     await browser.close().catch(() => {});

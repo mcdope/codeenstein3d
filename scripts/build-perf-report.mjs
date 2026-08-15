@@ -165,18 +165,33 @@ function parseArgs(argv) {
 /** Loads every `*.run<N>.json` in a directory (skips manifest.json /
  * calibration.json) plus calibration.json if present. Never throws on a
  * malformed individual run file — it's logged and skipped so one bad
- * capture doesn't sink the whole report. */
+ * capture doesn't sink the whole report.
+ *
+ * Runs the harness flagged `throttled: true` (median interval >100ms — a
+ * backgrounded/occluded/locked window measuring the rAF throttle, not the
+ * game) are EXCLUDED from every aggregate here, with a per-cell count on
+ * stderr. They used to pool silently into the medians. */
 function loadRunDir(dir) {
   const abs = path.resolve(process.cwd(), dir);
   if (!fs.existsSync(abs)) throw new Error(`run directory not found: ${abs}`);
   const files = fs.readdirSync(abs).filter((f) => /\.run\d+\.json$/.test(f));
   const runs = [];
+  const throttledByCell = new Map();
   for (const f of files) {
     try {
-      runs.push(JSON.parse(fs.readFileSync(path.join(abs, f), "utf8")));
+      const run = JSON.parse(fs.readFileSync(path.join(abs, f), "utf8"));
+      if (run.throttled) {
+        const id = run.cell?.id ?? f;
+        throttledByCell.set(id, (throttledByCell.get(id) ?? 0) + 1);
+        continue;
+      }
+      runs.push(run);
     } catch (err) {
       console.error(`[perf:report] skipping unreadable run file ${path.join(dir, f)}: ${err.message}`);
     }
+  }
+  for (const [id, n] of throttledByCell) {
+    console.error(`[perf:report] ${dir}: excluded ${n} throttled run(s) from cell ${id}`);
   }
   let calibration = null;
   const calPath = path.join(abs, "calibration.json");

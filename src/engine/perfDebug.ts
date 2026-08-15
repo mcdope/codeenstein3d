@@ -227,10 +227,15 @@ export class FramePerfLogger {
 
   /** Start timing a new frame — `rawDtMs` is the *unclamped* frame-to-frame
    * wall-clock delta (see `RaycasterEngine.frame`'s own `rawDt`), since a
-   * clamped `dt` would hide exactly the stalls this exists to catch. */
+   * clamped `dt` would hide exactly the stalls this exists to catch.
+   *
+   * `phases`/`phaseOrder` are persistent and cleared in place (truncate the
+   * order array; stale keys in `phases` are never read because every reader
+   * iterates `phaseOrder`). A fresh `{}`+`[]` per frame here used to be the
+   * profiler's own steady-state allocation — GC pressure added by the very
+   * tool measuring GC-shaped stalls. */
   beginFrame(rawDtMs: number): void {
-    this.phases = {};
-    this.phaseOrder = [];
+    this.phaseOrder.length = 0;
     this.rawDtMs = rawDtMs;
     this.wallClock += rawDtMs;
     this.frameStart = performance.now();
@@ -239,12 +244,17 @@ export class FramePerfLogger {
 
   /** Record elapsed time since the previous `mark()` (or `beginFrame()`)
    * under `phase`. Call once per named phase per frame, in order — phases
-   * are summed in case a name is ever reused, but every call site today uses
-   * a distinct name per frame. */
+   * are summed in case a name is ever reused (membership = `phaseOrder`, an
+   * allocation-free scan over at most the ~9 phase names), but every call
+   * site today uses a distinct name per frame. */
   mark(phase: string): void {
     const now = performance.now();
-    if (!(phase in this.phases)) this.phaseOrder.push(phase);
-    this.phases[phase] = (this.phases[phase] ?? 0) + (now - this.lastMark);
+    if (this.phaseOrder.includes(phase)) {
+      this.phases[phase] += now - this.lastMark;
+    } else {
+      this.phaseOrder.push(phase);
+      this.phases[phase] = now - this.lastMark;
+    }
     this.lastMark = now;
   }
 
