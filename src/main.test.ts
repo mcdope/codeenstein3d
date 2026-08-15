@@ -1346,6 +1346,121 @@ describe("main.ts — Online WAD catalog", () => {
     expect(status).toContain("stone (STARTAN3/");
   });
 
+  it("remembers the picked pack and re-applies it on the next load", async () => {
+    await importMain();
+    clickOnlineWadTab();
+    fetchMock.mockResolvedValueOnce({ ok: true, arrayBuffer: () => Promise.resolve(buildTestWad()) });
+    document.querySelector<HTMLButtonElement>('#online-wad-list li[data-wad-id="freedoom-phase1"] .online-wad-select-btn')!.click();
+    await flushAsync();
+    expect(localStorage.getItem("codeenstein-wad-pack")).toBe("freedoom-phase1");
+
+    // A fresh import is a fresh page load: the pack is re-requested without
+    // the player touching anything.
+    fetchMock.mockResolvedValueOnce({ ok: true, arrayBuffer: () => Promise.resolve(buildTestWad()) });
+    await importMain();
+    await flushAsync();
+    expect(fetchMock).toHaveBeenLastCalledWith("/wads/freedoom1.wad");
+    expect(document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent).toContain("Using WAD textures:");
+  });
+
+  it("keeps the preference when the restore fetch fails, and says so", async () => {
+    // The usual cause is being offline, which is not a reason to forget what
+    // the player chose — the built-in textures just stay up this session.
+    localStorage.setItem("codeenstein-wad-pack", "freedoom-phase1");
+    fetchMock.mockRejectedValueOnce(new Error("network down"));
+    await importMain();
+    await flushAsync();
+    expect(document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent).toBe("network down");
+    expect(localStorage.getItem("codeenstein-wad-pack")).toBe("freedoom-phase1");
+  });
+
+  it("ignores a stored id the catalog no longer offers", async () => {
+    // A pack can be dropped from the catalog (a license re-check, a dead
+    // upstream) in a build someone already has a preference for. That must
+    // read as "no preference", not as a fetch of a file nobody serves.
+    localStorage.setItem("codeenstein-wad-pack", "some-pack-that-was-removed");
+    await importMain();
+    await flushAsync();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent).toBe("Using built-in default textures");
+  });
+
+  it("reverts to the built-in textures and forgets the pack", async () => {
+    await importMain();
+    clickOnlineWadTab();
+    const clearButton = document.querySelector<HTMLButtonElement>("#clear-wad-textures")!;
+    expect(clearButton.hidden).toBe(true); // nothing loaded yet, nothing to revert
+
+    fetchMock.mockResolvedValueOnce({ ok: true, arrayBuffer: () => Promise.resolve(buildTestWad()) });
+    document.querySelector<HTMLButtonElement>('#online-wad-list li[data-wad-id="freedoom-phase1"] .online-wad-select-btn')!.click();
+    await flushAsync();
+    expect(clearButton.hidden).toBe(false);
+
+    clearButton.click();
+    expect(localStorage.getItem("codeenstein-wad-pack")).toBeNull();
+    expect(document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent).toBe("Using built-in default textures");
+    expect(clearButton.hidden).toBe(true);
+  });
+
+  it("forgets the online pack when a local file is loaded instead", async () => {
+    // A `File` cannot be remembered, so leaving the online preference in place
+    // would silently restore *it* on the next load, over the file the player
+    // just picked.
+    await importMain();
+    clickOnlineWadTab();
+    fetchMock.mockResolvedValueOnce({ ok: true, arrayBuffer: () => Promise.resolve(buildTestWad()) });
+    document.querySelector<HTMLButtonElement>('#online-wad-list li[data-wad-id="freedoom-phase1"] .online-wad-select-btn')!.click();
+    await flushAsync();
+    expect(localStorage.getItem("codeenstein-wad-pack")).toBe("freedoom-phase1");
+
+    const input = document.querySelector<HTMLInputElement>("#wad-file-input")!;
+    setInputFiles(input, [new File([buildTestWad()], "local.wad")]);
+    input.dispatchEvent(new Event("change"));
+    await flushAsync();
+
+    expect(localStorage.getItem("codeenstein-wad-pack")).toBeNull();
+  });
+
+  it("warns instead of throwing when storage refuses the preference", async () => {
+    // Same treatment every other setting here gets: Safari private mode and
+    // policy-disabled storage throw from `setItem`/`removeItem`, and losing a
+    // cosmetic preference must never take the picker down with it.
+    await importMain();
+    clickOnlineWadTab();
+    const warnSpy = vi.spyOn(console, "warn");
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota exceeded");
+    });
+    fetchMock.mockResolvedValueOnce({ ok: true, arrayBuffer: () => Promise.resolve(buildTestWad()) });
+
+    document.querySelector<HTMLButtonElement>('#online-wad-list li[data-wad-id="freedoom-phase1"] .online-wad-select-btn')!.click();
+    await flushAsync();
+
+    expect(warnSpy).toHaveBeenCalledWith("[settings] Failed to save texture pack preference:", expect.any(Error));
+    // The pack itself still applied — only remembering it failed.
+    expect(document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent).toContain("Using WAD textures:");
+    setItemSpy.mockRestore();
+
+    const removeSpy = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new Error("storage disabled");
+    });
+    expect(() => document.querySelector<HTMLButtonElement>("#clear-wad-textures")!.click()).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith("[settings] Failed to clear texture pack preference:", expect.any(Error));
+    // And the revert itself happened regardless.
+    expect(document.querySelector<HTMLParagraphElement>("#wad-status")!.textContent).toBe("Using built-in default textures");
+    removeSpy.mockRestore();
+  });
+
+  it("treats unreadable storage as no preference", async () => {
+    const getItemSpy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("storage disabled");
+    });
+    await importMain();
+    await flushAsync();
+    expect(fetchMock).not.toHaveBeenCalled();
+    getItemSpy.mockRestore();
+  });
+
   it("reports an HTTP failure status when the fetch itself doesn't 404 but returns non-ok", async () => {
     await importMain();
     clickOnlineWadTab();

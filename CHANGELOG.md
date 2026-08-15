@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- New: **the game remembers your texture pack.** Pick one from the Online list and it comes back on its own next time, instead of resetting to the built-in look on every reload. A new **Use built-in textures** button reverts whenever you want, and forgets the choice. Two deliberate limits: a *local* `.wad` file still can't be remembered — a browser gives a page no durable handle to one — so choosing a file also clears a remembered online pack rather than letting it override your choice on the next load; and if the pack can't be fetched (offline, usually), the built-in textures stay up for that session and your choice is kept
+
 - New: **weapons reload.** Every gun but the flamethrower now holds a magazine — 9 rounds for the echo pistol, **2 shells** for the Regex Shotgun, 45 for gdb, a single rocket for ghidra — and empties into a reload instead of firing forever from one undifferentiated pile of ammo. Fire it dry and it reloads itself; press **R** to top it up early, before a fight rather than during one. The HUD shows what is loaded against what is left in reserve, and a reload only ever *moves* ammo, so nothing is lost by reloading a half-empty gun. Switching weapons cancels a reload, so you can always swap to something loaded instead of waiting — and quick-melee still works throughout, which is exactly what it is for. It changes how the arsenal feels most at the extremes: the shotgun's two barrels are now a real decision, and ghidra reloads after every rocket
 - Changed: **`R` reloads, so interact moved to `F` and fullscreen to `Alt`+`Enter`.** Three bindings shuffled to make room for the genre-standard reload key. `F` now reads lore terminals and opens fake walls
 

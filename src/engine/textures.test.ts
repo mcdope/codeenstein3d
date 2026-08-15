@@ -272,6 +272,36 @@ describe("TextureManager.loadFromWad — success", () => {
   });
 });
 
+describe("TextureManager.resetToDefaults", () => {
+  it("puts the procedural textures back, byte-identically", () => {
+    const manager = new TextureManager();
+    // Captured before any WAD is applied — the exact objects a fresh manager
+    // hands out, which is what "back to the built-in textures" has to mean.
+    const before = STYLE_SET_IDS.map((id) => manager.getStyle(id).textures.wall);
+
+    const result = emptyWadResult();
+    for (const id of STYLE_SET_IDS) {
+      result.styles[id] = { wall: wadSlot(`WALL_${id}`), floor: wadSlot(`FLAT_${id}`), door: wadSlot(`DOOR_${id}`) };
+    }
+    loadWadTexturesMock.mockReturnValueOnce(result);
+    expect(manager.loadFromWad(new ArrayBuffer(0)).ok).toBe(true);
+    expect(manager.getStyle("stone").textures.wall).not.toBe(before[0]);
+
+    manager.resetToDefaults();
+
+    // Identity, not equality: the defaults were never rebuilt, which is the
+    // whole reason this is cheap enough to call from a button.
+    STYLE_SET_IDS.forEach((id, i) => expect(manager.getStyle(id).textures.wall).toBe(before[i]));
+  });
+
+  it("is a no-op on a manager that never loaded a WAD", () => {
+    const manager = new TextureManager();
+    const before = manager.getStyle("stone").textures.wall;
+    manager.resetToDefaults();
+    expect(manager.getStyle("stone").textures.wall).toBe(before);
+  });
+});
+
 describe("TextureManager.getStyle", () => {
   it("returns a fully-populated style for every id", () => {
     const manager = new TextureManager();
