@@ -65,6 +65,14 @@ export interface TelemetryState {
   lootCollectedDynamic: Partial<Record<LootKind, number>>;
   lootCollectedStatic: Partial<Record<LootKind, number>>;
   timeAtZeroRangedAmmoSec: number;
+  /** Seconds spent with a reload in progress, i.e. holding a gun that cannot
+   * fire. The cost side of magazines — pairs with `timeAtZeroRangedAmmoSec`,
+   * which measures the same kind of helplessness for a different reason. */
+  timeReloadingSec: number;
+  /** Trigger-pulls refused because the magazine was empty *and* the reserve
+   * had nothing to refill it with. Deliberately not incremented for a pull
+   * during a reload — those never reach `fire()` at all. */
+  shotsBlockedByEmptyMag: number;
   killsForcedByMelee: number;
   minesDisarmed: number;
   /** Which of the 6 damage sources landed the killing blow, if the level
@@ -107,6 +115,8 @@ export function createTelemetryState(): TelemetryState {
     lootCollectedDynamic: {},
     lootCollectedStatic: {},
     timeAtZeroRangedAmmoSec: 0,
+    timeReloadingSec: 0,
+    shotsBlockedByEmptyMag: 0,
     killsForcedByMelee: 0,
     minesDisarmed: 0,
     fatalDamageSource: null,
@@ -180,6 +190,14 @@ export function recordMineTriggered(state: TeamTelemetryState): void {
 
 export function recordMineDisarmed(state: TelemetryState): void {
   state.minesDisarmed += 1;
+}
+
+export function recordReloading(state: TelemetryState, dt: number): void {
+  state.timeReloadingSec += dt;
+}
+
+export function recordShotBlockedByEmptyMag(state: TelemetryState): void {
+  state.shotsBlockedByEmptyMag += 1;
 }
 
 export function recordKillForcedByMelee(state: TelemetryState): void {

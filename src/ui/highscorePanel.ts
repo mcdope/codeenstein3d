@@ -19,6 +19,17 @@ export interface HighscoreTableOptions {
    * when a real replay payload exists); starts the same viewing but with
    * recording auto-started (see `startReplay`'s `autoRecord` option). */
   onExportReplay?: (entry: HighscoreEntry) => void;
+  /**
+   * Whether an entry's stored replay can still reproduce its own score under
+   * the rules this build plays by — see `simulationHashMatches`.
+   *
+   * A run whose replay exists but no longer matches keeps its row (the score
+   * was really scored) and loses its buttons, rather than offering a Watch
+   * that ends in "recorded under different game balance". Defaults to
+   * "everything playable" so a caller that doesn't care — and every existing
+   * test — behaves exactly as before.
+   */
+  isReplayPlayable?: (entry: HighscoreEntry) => boolean;
 }
 
 export function renderHighscoreTable(
@@ -101,7 +112,8 @@ export function renderHighscoreTable(
     // single-level shape (no `levels` array) despite what the type claims, so
     // this checks the actual runtime shape rather than trusting it blindly.
     const hasReplay = entry.replay?.version === 2 && entry.replay.levels?.length > 0;
-    if (hasReplay && options.onWatchReplay) {
+    const playable = hasReplay && (options.isReplayPlayable?.(entry) ?? true);
+    if (playable && options.onWatchReplay) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "replay-btn";
@@ -109,7 +121,7 @@ export function renderHighscoreTable(
       button.addEventListener("click", () => options.onWatchReplay?.(entry));
       replay.appendChild(button);
     }
-    if (hasReplay && options.onExportReplay) {
+    if (playable && options.onExportReplay) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "replay-btn";
@@ -117,9 +129,14 @@ export function renderHighscoreTable(
       button.addEventListener("click", () => options.onExportReplay?.(entry));
       replay.appendChild(button);
     }
-    if (!hasReplay) {
+    if (!playable) {
       replay.className = "muted";
-      replay.textContent = "—";
+      // Two different absences, deliberately worded apart: a run that never
+      // recorded one, and a run whose recording the current build's rules
+      // have outlived. The second is the more confusing of the two if it just
+      // showed a dash.
+      replay.textContent = hasReplay ? "rules changed" : "—";
+      if (hasReplay) replay.title = "Recorded before a gameplay change — it would no longer match this score.";
     }
 
     row.append(rank, player, score, campaign, loc, complexity, levels, level, hash, replay);

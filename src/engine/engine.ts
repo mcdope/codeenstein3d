@@ -159,7 +159,9 @@ import {
   recordMineDisarmed,
   recordMineTriggered,
   recordRegularKillLootRoll,
+  recordReloading,
   recordShot,
+  recordShotBlockedByEmptyMag,
   updateMinHealth,
   updatePerFrame as updateTelemetryPerFrame,
   type DamageSource,
@@ -462,6 +464,46 @@ export const LOCAL_PLAYER_ID: PlayerId = "local";
  * gone. Never single-player: nothing there ever sets this value. */
 export type PlayerStatus = "alive" | "dead" | "disconnected";
 
+/**
+ * What a headless bot/harness may read about one player — the return of
+ * `RaycasterEngine.getBotPlayerState` and of the multiplayer sessions' own
+ * pass-throughs of it.
+ *
+ * **Exported so there is exactly one copy.** It was hand-written out in four
+ * places (here, both session classes, and `main.ts`'s test-hook type), and the
+ * copy in `multiplayerSessionHost.ts` already carried a comment warning that a
+ * spelled-out shape "silently stops matching reality when a fifth pool is
+ * added". Adding the magazine fields would have made that four edits with no
+ * failure if one were missed.
+ */
+export interface BotPlayerState {
+  x: number;
+  y: number;
+  dirX: number;
+  dirY: number;
+  health: number;
+  healthFraction: number;
+  swap: number;
+  state: "playing" | "over";
+  ammo: AmmoPools;
+  /** Rounds in the equipped weapon and its capacity (0/0 for a weapon with no
+   * magazine), whether a reload is running and how much is left of it, and the
+   * shared fire cooldown. A bot that can see a reload but not a cooldown still
+   * has to guess half the firing cadence, so both are here — see
+   * `scripts/lib/combatPolicy.mjs`. */
+  magazine: number;
+  magazineSize: number;
+  reloading: boolean;
+  reloadRemainingSec: number;
+  weaponCooldown: number;
+  weaponIndex: number;
+  meleeWouldHit: boolean;
+  wouldMineHit: boolean;
+  ownedWeapons: number[];
+  levelTime: number;
+  distanceTraveled: number;
+}
+
 /** One roster player's row in `RaycasterEngine.rosterSnapshot()` — see that
  * method's own doc comment for what each field means and why `breakdown` is
  * a cumulative run total, not a single level's. */
@@ -519,6 +561,28 @@ interface PlayerState {
   readonly campaignLevelIndex: number;
   weaponCooldown: number;
   meleeCooldown: number;
+  /**
+   * Rounds currently loaded in each weapon, indexed by `WEAPONS` index — the
+   * first *per-weapon* mutable state in the engine (everything else here is
+   * per-player and weapon-agnostic). Entries for weapons with no
+   * `magazineSize` are unused and stay 0.
+   *
+   * These rounds have already left `ammo`, so the total a player owns of a
+   * pool is `ammo[type] + loaded[i]` for every weapon on that pool — see
+   * `pooledAmmo`, which every place that *reports* or *persists* ammo goes
+   * through. Getting that wrong would quietly destroy a magazine's worth of
+   * ammo at each level transition.
+   */
+  readonly loaded: number[];
+  /** Seconds left on the reload in progress, or 0. Counted down against `dt`
+   * next to `weaponCooldown`, never in frames — a gameplay duration has to be
+   * framerate-independent to stay replay-deterministic. */
+  reloadRemaining: number;
+  /** Which weapon the in-progress reload will fill. Needed separately from
+   * `weaponIndex` because that can change out from under the timer — a
+   * multiplayer reconciliation pass assigns it directly, with no local input
+   * involved. */
+  reloadingWeaponIndex: number | null;
   /** Gate ids whose key this player holds. Never removed: a key is permanent
    * inventory and opens every door of its own gate, as many times as the room
    * has mouths. Granted team-wide (see `collectKeys`), so in coop every peer
@@ -662,6 +726,15 @@ export interface EngineStats {
   /** Friday Hotfix's own ammo remaining — a separate pool from `bullets`/
    * `smg`/`rockets` (see `AmmoType`). */
   gas: number;
+  /** Rounds loaded in the equipped weapon, and how many it holds — both 0 for
+   * a weapon with no magazine (melee, Friday Hotfix). The pool fields above
+   * are the *total* owned, so the reserve the HUD shows beside this is
+   * `bullets - magazine` for the pistol, and so on. */
+  magazine: number;
+  magazineSize: number;
+  /** Whether a reload is in progress, i.e. the trigger currently does
+   * nothing. */
+  reloading: boolean;
   /** Gate ids whose key the local player holds, sorted — the HUD fills one pip
    * per gate on the level and leaves the rest outlined. Replaces a bare
    * held/total count, which stopped meaning anything once keys became permanent
@@ -1328,6 +1401,10 @@ export class RaycasterEngine {
             swap: p.swap,
             state: this.state,
             ammo: { ...p.ammo },
+            ...this.magazineOf(p),
+            reloading: p.reloadRemaining > 0,
+            reloadRemainingSec: p.reloadRemaining,
+            weaponCooldown: p.weaponCooldown,
             weaponIndex: p.weaponIndex,
             meleeWouldHit,
             wouldMineHit,
@@ -1472,6 +1549,12 @@ export class RaycasterEngine {
       campaignLevelIndex,
       weaponCooldown: 0,
       meleeCooldown: 0,
+      // Magazines are filled below, once the state object exists — the fill
+      // moves rounds out of `ammo`, so it needs the same object every later
+      // reload will draw from.
+      loaded: WEAPONS.map(() => 0),
+      reloadRemaining: 0,
+      reloadingWeaponIndex: null,
       heldGates: new Set<number>(),
       lockedDoorGateId: -1,
       kills: 0,
@@ -1517,6 +1600,14 @@ export class RaycasterEngine {
       showFps: carryover?.showFps ?? false,
       telemetry: this.telemetryEnabled ? createTelemetryState() : undefined,
     });
+
+    // Start every reloadable weapon loaded, drawing from the reserve that was
+    // just resolved above. Nothing is created: a carryover of 40 bullets
+    // becomes 9 in the pistol and 31 in reserve, and `pooledAmmo` reports 40
+    // either way. Weapons the player doesn't own yet are filled too — it costs
+    // nothing, and it means a gdb picked up mid-level is ready rather than
+    // spending its first trigger-pull on a reload.
+    for (let i = 0; i < WEAPONS.length; i++) this.loadMagazine(state, i);
 
     const lootCtx: LootContext = {
       ammo: state.ammo,
@@ -1849,23 +1940,7 @@ export class RaycasterEngine {
    * exit needs to watch for that separately (e.g. `getExitCountdownRemaining()`)
    * once navigation itself completes. Returns `null` if `id` isn't a
    * connected player. */
-  getBotPlayerState(id: PlayerId): {
-    x: number;
-    y: number;
-    dirX: number;
-    dirY: number;
-    health: number;
-    healthFraction: number;
-    swap: number;
-    state: "playing" | "over";
-    ammo: AmmoPools;
-    weaponIndex: number;
-    meleeWouldHit: boolean;
-    wouldMineHit: boolean;
-    ownedWeapons: number[];
-    levelTime: number;
-    distanceTraveled: number;
-  } | null {
+  getBotPlayerState(id: PlayerId): BotPlayerState | null {
     const p = this.players.get(id);
     if (!p) return null;
     const { meleeWouldHit, wouldMineHit } = this.computeMeleeAndMineHitChecks(id);
@@ -1879,6 +1954,10 @@ export class RaycasterEngine {
       swap: p.swap,
       state: p.status === "alive" ? "playing" : "over",
       ammo: { ...p.ammo },
+      ...this.magazineOf(p),
+      reloading: p.reloadRemaining > 0,
+      reloadRemainingSec: p.reloadRemaining,
+      weaponCooldown: p.weaponCooldown,
       weaponIndex: p.weaponIndex,
       meleeWouldHit,
       wouldMineHit,
@@ -1916,6 +1995,8 @@ export class RaycasterEngine {
     lootCollectedDynamic: Partial<Record<LootKind, number>>;
     lootCollectedStatic: Partial<Record<LootKind, number>>;
     timeAtZeroRangedAmmoSec: number;
+    timeReloadingSec: number;
+    shotsBlockedByEmptyMag: number;
     killsForcedByMelee: number;
     minesTriggered: number;
     minesDisarmed: number;
@@ -1957,6 +2038,8 @@ export class RaycasterEngine {
       lootCollectedDynamic: { ...t.lootCollectedDynamic },
       lootCollectedStatic: { ...t.lootCollectedStatic },
       timeAtZeroRangedAmmoSec: t.timeAtZeroRangedAmmoSec,
+      timeReloadingSec: t.timeReloadingSec,
+      shotsBlockedByEmptyMag: t.shotsBlockedByEmptyMag,
       killsForcedByMelee: t.killsForcedByMelee,
       minesTriggered: team.minesTriggered,
       minesDisarmed: t.minesDisarmed,
@@ -2816,6 +2899,7 @@ export class RaycasterEngine {
         p.input.consumeWeaponRequest();
         p.input.consumeMapToggle();
         p.input.consumeInteract();
+        p.input.consumeReload();
         p.input.consumeMelee();
         p.input.consumeWheelSteps();
         p.input.consumeFpsToggle();
@@ -3153,6 +3237,12 @@ export class RaycasterEngine {
         bobY: view.bobY,
         recoil: meleeOverlayActive ? local.meleeRecoil : local.recoil,
         flash: meleeOverlayActive ? false : local.muzzleFrames > 0,
+        // 0 -> 1 across the reload, and forced to 0 while the melee overlay
+        // is up: that swing draws a different weapon entirely, and animating
+        // the knife as though *it* were reloading would be nonsense. A reload
+        // and a quick-melee can genuinely overlap, since melee is deliberately
+        // not gated by the reload.
+        reloadProgress: meleeOverlayActive ? 0 : this.reloadProgressOf(local),
         kind: meleeOverlayActive ? currentMeleeWeapon(local.ownedWeapons).viewKind : WEAPONS[local.weaponIndex].viewKind,
       });
 
@@ -4275,6 +4365,11 @@ export class RaycasterEngine {
       case "IDKFA":
         for (let i = 0; i < WEAPONS.length; i++) p.ownedWeapons.add(i);
         for (const type of AMMO_TYPES) p.ammo[type] = CHEAT_MAX_AMMO;
+        // And top every magazine up, so "full arsenal" doesn't hand the
+        // player a gun that immediately stops to reload. Note the reported
+        // total is then `CHEAT_MAX_AMMO` *plus* what is in the magazines —
+        // the reserve is what gets maxed, and ammo has no upper cap anyway.
+        for (let i = 0; i < WEAPONS.length; i++) this.loadMagazine(p, i);
         p.swap = MAX_SWAP;
         this.showCheatToast(p, "IDKFA — Full arsenal");
         break;
@@ -4604,13 +4699,140 @@ export class RaycasterEngine {
    *   empty trigger-pull also rate-limits the out-of-ammo toast instead of
    *   re-triggering it every frame.
    */
+  /**
+   * Total of a pool the player actually owns: the reserve plus whatever is
+   * sitting in magazines drawing on it.
+   *
+   * Every place that *reports* ammo (`EngineStats`, the score's ammo bonus)
+   * or *persists* it (`captureCarryoverFor`, and through it the campaign save
+   * and the multiplayer level-transition payload) must go through this rather
+   * than reading `p.ammo` directly, or a magazine's worth of ammo silently
+   * evaporates at every level boundary. The HUD subtracts the loaded rounds
+   * back out to show the familiar "9 / 31" split.
+   */
+  /**
+   * How far through its reload the equipped weapon is, 0 (not reloading) to 1
+   * (just finished). Derived rather than stored, so nothing has to keep a
+   * second copy of the timer in step with `reloadRemaining`.
+   */
+  private reloadProgressOf(p: PlayerState): number {
+    if (p.reloadRemaining <= 0 || p.reloadingWeaponIndex === null) return 0;
+    const total = WEAPONS[p.reloadingWeaponIndex].reloadSec;
+    // Unreachable: a reload only ever starts for a weapon with both a
+    // `magazineSize` and a `reloadSec` (see `canReload`).
+    /* v8 ignore next -- @preserve */
+    if (!total) return 0;
+    return 1 - p.reloadRemaining / total;
+  }
+
+  /** The equipped weapon's magazine state, as the HUD and the bot hooks both
+   * report it — `0/0` for a weapon that has no magazine. One helper rather
+   * than the same two expressions at three call sites, which is also what
+   * keeps the "no magazine" case covered by one test instead of three. */
+  private magazineOf(p: PlayerState): { magazine: number; magazineSize: number } {
+    return { magazine: p.loaded[p.weaponIndex], magazineSize: WEAPONS[p.weaponIndex].magazineSize ?? 0 };
+  }
+
+  private pooledAmmo(p: PlayerState): AmmoPools {
+    const pooled = { ...p.ammo };
+    for (let i = 0; i < WEAPONS.length; i++) {
+      const w = WEAPONS[i];
+      if (w.ammoType && w.magazineSize !== undefined) pooled[w.ammoType] += p.loaded[i];
+    }
+    return pooled;
+  }
+
+  /**
+   * Top `index`'s magazine up from its reserve, moving as many rounds as both
+   * allow. Returns how many moved (0 if the weapon has no magazine, is already
+   * full, or the reserve is dry).
+   */
+  private loadMagazine(p: PlayerState, index: number): number {
+    const w = WEAPONS[index];
+    if (!w.ammoType || w.magazineSize === undefined) return 0;
+    const room = w.magazineSize - p.loaded[index];
+    const moved = Math.min(room, p.ammo[w.ammoType]);
+    if (moved <= 0) return 0;
+    p.ammo[w.ammoType] -= moved;
+    p.loaded[index] += moved;
+    return moved;
+  }
+
+  /** Whether a reload would achieve anything right now: there is a magazine,
+   * it isn't full, and there is something in reserve to put in it. */
+  private canReload(p: PlayerState, index: number): boolean {
+    const w = WEAPONS[index];
+    if (!w.ammoType || w.magazineSize === undefined) return false;
+    return p.loaded[index] < w.magazineSize && p.ammo[w.ammoType] > 0;
+  }
+
+  /** Start a reload of the equipped weapon, if one is worth starting. */
+  private beginReload(p: PlayerState): void {
+    // Unreachable from `updateFiring`, which returns before ever calling this
+    // while a reload is running — kept because this is the natural entry point
+    // for any future caller (a pickup, a script), and "starting" a reload that
+    // is already running must never restart its timer.
+    /* v8 ignore next -- @preserve */
+    if (p.reloadRemaining > 0) return;
+    if (!this.canReload(p, p.weaponIndex)) return;
+    // `?? 0` is unreachable: `canReload` above already established that this
+    // weapon has a `magazineSize`, and every weapon that has one has a
+    // `reloadSec` beside it.
+    /* v8 ignore next -- @preserve */
+    p.reloadRemaining = WEAPONS[p.weaponIndex].reloadSec ?? 0;
+    p.reloadingWeaponIndex = p.weaponIndex;
+    // Local player only, unlike `playShoot` — which deliberately fires for
+    // every shooter, because a teammate's gunfire is information. A reload is
+    // not: it is a personal state change that happens constantly, and this
+    // engine has no positional audio to place someone else's in the room.
+    // The sequence is scheduled ahead on the audio clock and cannot be
+    // cancelled, which is fine because it is started exactly once, here.
+    if (p.id === this.localPlayerId) audio.playReload(WEAPONS[p.weaponIndex].viewKind);
+  }
+
+  /**
+   * Advance any reload in progress, completing or cancelling it.
+   *
+   * **A weapon switch cancels the reload**, deliberately breaking the
+   * neighbouring "the cooldown survives a switch" rule. That rule exists so
+   * the shotgun's pump can't be switch-cancelled — you are working the pump
+   * whichever gun is in your hands. A reload is the opposite: switching away
+   * means you stopped loading that gun, and the rounds you had not yet put in
+   * are still in reserve, so nothing is gained or lost by it.
+   */
+  private updateReload(p: PlayerState, dt: number): void {
+    if (p.reloadRemaining <= 0) return;
+    if (p.reloadingWeaponIndex !== p.weaponIndex) {
+      p.reloadRemaining = 0;
+      p.reloadingWeaponIndex = null;
+      return;
+    }
+    if (p.telemetry) recordReloading(p.telemetry, Math.min(dt, p.reloadRemaining));
+    p.reloadRemaining = Math.max(0, p.reloadRemaining - dt);
+    if (p.reloadRemaining > 0) return;
+    this.loadMagazine(p, p.reloadingWeaponIndex);
+    p.reloadingWeaponIndex = null;
+  }
+
   private updateFiring(dt: number): void {
     for (const id of this.sortedPlayerIds()) {
       const p = this.players.get(id)!;
       if (p.status !== "alive") continue;
       if (p.weaponCooldown > 0) p.weaponCooldown = Math.max(0, p.weaponCooldown - dt);
+      this.updateReload(p, dt);
       const weapon = WEAPONS[p.weaponIndex];
       const pressed = p.input.consumeFire();
+      // Drained unconditionally, like `pressed` above: a reload key held down
+      // through a reload must not queue a second one for the moment it ends.
+      const reloadRequested = p.input.consumeReload();
+
+      // The gate. After `consumeFire()` above, so a click that lands during a
+      // reload is spent rather than saved up to fire itself the instant the
+      // reload finishes. Quick-melee is untouched: it lives in its own loop in
+      // `simulate()`, so a player mid-reload always still has something to
+      // swing — the same promise this method's doc comment already makes about
+      // the fire cooldown.
+      if (p.reloadRemaining > 0) continue;
 
       if (weapon.auto) {
         if (p.input.isFireHeld() && p.weaponCooldown <= 0) {
@@ -4632,6 +4854,18 @@ export class RaycasterEngine {
         /* v8 ignore next -- @preserve */
         p.weaponCooldown = weapon.fireIntervalSec ?? 0;
       }
+
+      // Checked *after* firing, so the shot that empties a magazine starts its
+      // own reload on the same frame rather than a frame later — at 20 ticks a
+      // second that lag is invisible, but it makes "fired the last round" and
+      // "is reloading" two different states for one tick, which any observer
+      // (the HUD, the telemetry, the bot) would have to know to ignore.
+      //
+      // An empty magazine reloads itself, so the player never has to ask for
+      // the reload they obviously want; an explicit press starts one early.
+      // Both no-op when there is nothing to gain (magazine full, or reserve
+      // dry), so a mashed reload key can't interrupt firing.
+      if (reloadRequested || p.loaded[p.weaponIndex] < weapon.ammoPerShot) this.beginReload(p);
     }
   }
 
@@ -4753,22 +4987,40 @@ export class RaycasterEngine {
    */
   private fire(shooter: PlayerState, weapon?: Weapon): void {
     const w = weapon ?? WEAPONS[shooter.weaponIndex];
+    const weaponIndex = WEAPONS.indexOf(w);
     if (w.ammoType) {
-      if (shooter.ammo[w.ammoType] < w.ammoPerShot) {
-        console.log(`[${w.name}] out of ${w.ammoType} — need ${w.ammoPerShot}`);
-        this.showOutOfAmmoToast(shooter);
-        return;
+      // A weapon with a magazine spends *that*, never the reserve directly —
+      // its rounds already left the reserve when they were loaded. A weapon
+      // without one (Friday Hotfix) still streams straight from the reserve.
+      if (w.magazineSize !== undefined) {
+        if (shooter.loaded[weaponIndex] < w.ammoPerShot) {
+          // Reaching here means the magazine is empty *and* `updateFiring`
+          // could not start a reload, i.e. the reserve is dry too — a real
+          // out-of-ammo, not a reload in progress, which is gated earlier.
+          console.log(`[${w.name}] out of ${w.ammoType} — need ${w.ammoPerShot}`);
+          if (shooter.telemetry) recordShotBlockedByEmptyMag(shooter.telemetry);
+          this.showOutOfAmmoToast(shooter);
+          return;
+        }
+        shooter.loaded[weaponIndex] -= w.ammoPerShot;
+      } else {
+        if (shooter.ammo[w.ammoType] < w.ammoPerShot) {
+          console.log(`[${w.name}] out of ${w.ammoType} — need ${w.ammoPerShot}`);
+          this.showOutOfAmmoToast(shooter);
+          return;
+        }
+        shooter.ammo[w.ammoType] -= w.ammoPerShot;
       }
-      shooter.ammo[w.ammoType] -= w.ammoPerShot;
     }
 
-    const weaponIndex = WEAPONS.indexOf(w);
     // "Forced melee": true only when a melee weapon fires because every
     // ranged pool was empty at the moment of firing — telemetry-only (see
     // `killsForcedByMelee`), computed here since this is the only place that
-    // still knows the ammo state *before* this shot.
-    const forcedMelee =
-      w.meleeRange !== undefined && shooter.ammo.bullets === 0 && shooter.ammo.shells === 0 && shooter.ammo.smg === 0 && shooter.ammo.gas === 0;
+    // still knows the ammo state *before* this shot. Reads the *pooled*
+    // totals: a full magazine with an empty reserve is not "dry", and calling
+    // it so would have counted a deliberate knife swing as a forced one.
+    const pooled = this.pooledAmmo(shooter);
+    const forcedMelee = w.meleeRange !== undefined && pooled.bullets === 0 && pooled.shells === 0 && pooled.smg === 0 && pooled.gas === 0;
     if (shooter.telemetry) recordShot(shooter.telemetry, weaponIndex);
     // One record per *trigger-pull*, with the pellet count alongside. The
     // aggregate counters conflate these: `recordShot` counts pulls while
@@ -5200,15 +5452,18 @@ export class RaycasterEngine {
   private computeLevelScoreBreakdown(p: PlayerState): ScoreBreakdown {
     const weaponShotsFired = p.telemetry ? Object.values(p.telemetry.weaponTallies).reduce((sum, t) => sum + t.shotsFired, 0) : 0;
     const weaponHits = p.telemetry ? Object.values(p.telemetry.weaponTallies).reduce((sum, t) => sum + t.hits, 0) : 0;
+    const finalAmmo = this.pooledAmmo(p);
     return computeScore({
       killPoints: p.killScore,
       finalHealth: p.health,
       maxHealth: MAX_HEALTH,
-      finalBullets: p.ammo.bullets,
-      finalShells: p.ammo.shells,
-      finalRockets: p.ammo.rockets,
-      finalSmg: p.ammo.smg,
-      finalGas: p.ammo.gas,
+      // Pooled, not the bare reserve: ammo sitting in a magazine has not been
+      // spent, so conserving it should score as conserving it.
+      finalBullets: finalAmmo.bullets,
+      finalShells: finalAmmo.shells,
+      finalRockets: finalAmmo.rockets,
+      finalSmg: finalAmmo.smg,
+      finalGas: finalAmmo.gas,
       startingBullets: p.startingAmmoRef.bullets,
       startingShells: p.startingAmmoRef.shells,
       startingRockets: p.startingAmmoRef.rockets,
@@ -5254,14 +5509,20 @@ export class RaycasterEngine {
       const levelPlayerStats = buildPlayerFacingStats(p.telemetry, this.levelTime, p.kills);
       priorPlayerStats = mergePlayerFacingStats(p.priorPlayerStats, levelPlayerStats);
     }
+    const carried = this.pooledAmmo(p);
     return {
       health: Math.ceil(p.health),
       swap: Math.ceil(p.swap),
-      bullets: p.ammo.bullets,
-      shells: p.ammo.shells,
-      rockets: p.ammo.rockets,
-      smg: p.ammo.smg,
-      gas: p.ammo.gas,
+      // Pooled: the rounds in each magazine come back out into the reserve at
+      // a level boundary, and the next level loads its magazines from it. That
+      // is what keeps the total conserved without `EngineCarryover` (and with
+      // it the campaign save and the multiplayer transition payload) needing a
+      // per-weapon field.
+      bullets: carried.bullets,
+      shells: carried.shells,
+      rockets: carried.rockets,
+      smg: carried.smg,
+      gas: carried.gas,
       priorScore: p.priorScore + levelScoreBreakdown.total,
       priorScoreBreakdown,
       priorPlayerStats,
@@ -5304,15 +5565,22 @@ export class RaycasterEngine {
       runPlayerStats = atLevelEnd ? mergePlayerFacingStats(local.priorPlayerStats, levelPlayerStats) : local.priorPlayerStats;
     }
 
+    // Pooled, so the number the HUD and the campaign save see is everything
+    // the player owns. The HUD subtracts `magazine` back out to draw the
+    // "loaded / in reserve" split; the save just stores the total.
+    const statsAmmo = this.pooledAmmo(local);
+
     return {
       health: Math.ceil(local.health),
       maxHealth: MAX_HEALTH,
       swap: Math.ceil(local.swap),
-      bullets: local.ammo.bullets,
-      shells: local.ammo.shells,
-      rockets: local.ammo.rockets,
-      smg: local.ammo.smg,
-      gas: local.ammo.gas,
+      bullets: statsAmmo.bullets,
+      shells: statsAmmo.shells,
+      rockets: statsAmmo.rockets,
+      smg: statsAmmo.smg,
+      gas: statsAmmo.gas,
+      ...this.magazineOf(local),
+      reloading: local.reloadRemaining > 0,
       heldGates: [...local.heldGates].sort((a, b) => a - b),
       gateColors: this.map.gates.map((g) => g.colorIndex),
       score: local.priorScore + levelScoreBreakdown.total,

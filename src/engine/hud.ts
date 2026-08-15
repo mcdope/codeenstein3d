@@ -552,12 +552,21 @@ export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void
   const weapon = WEAPONS[stats.weaponIndex];
   if (weapon.ammoType) {
     const meta = AMMO_META[weapon.ammoType];
-    const remaining = ammoRemaining(stats, weapon.ammoType);
-    drawLabel(ctx, meta.label.toUpperCase(), 275, labelY);
+    const owned = ammoRemaining(stats, weapon.ammoType);
     // Friday Hotfix's ammoPerShot is fractional (2.5/shot), so its pool can
     // land on a half-unit — floored here rather than showing "37.5". Every
     // other pool is integral, so this is a no-op for them.
-    drawValue(ctx, String(Math.floor(remaining)), 275, valueY, remaining <= 0 ? "#ff5a4a" : meta.hudColor, 22);
+    //
+    // `stats` reports the *total* owned, so the reserve shown beside the
+    // magazine is that total minus what is already in the gun — the familiar
+    // "9 / 31" split. A weapon with no magazine (Friday Hotfix) keeps the
+    // single bare number it always had.
+    const value = stats.magazineSize > 0 ? `${stats.magazine} / ${Math.floor(owned - stats.magazine)}` : String(Math.floor(owned));
+    drawLabel(ctx, stats.reloading ? "RELOADING" : meta.label.toUpperCase(), 275, labelY);
+    // Dry means "nothing left to fire *and* nothing to reload with", not
+    // merely an empty magazine — an empty gun with a full reserve is a
+    // one-second problem, and colouring it as critical would cry wolf.
+    drawValue(ctx, value, 275, valueY, owned <= 0 ? "#ff5a4a" : meta.hudColor, 22);
   } else {
     drawLabel(ctx, "MELEE", 275, labelY);
     drawValue(ctx, "∞", 275, valueY, "#d8dde3", 22);

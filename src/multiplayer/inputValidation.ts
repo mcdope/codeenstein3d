@@ -46,6 +46,7 @@ export function isValidInputSnapshot(x: unknown): x is InputSnapshot {
     (s.weaponRequest === null || (typeof s.weaponRequest === "number" && Number.isInteger(s.weaponRequest))) &&
     typeof s.mapToggle === "boolean" &&
     typeof s.interact === "boolean" &&
+    typeof s.reload === "boolean" &&
     typeof s.melee === "boolean" &&
     typeof s.meleeHeld === "boolean" &&
     Number.isInteger(s.wheelSteps) &&

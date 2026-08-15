@@ -17,7 +17,7 @@ Codeenstein 3D parses your source into an AST and turns its structure into a pla
 | Global variable | An acid pool (hazard terrain) |
 | Private/protected method | A locked room, gated behind a key placed somewhere already reachable |
 | `goto`/label pair | A linked teleporter pad pair |
-| Large comment | A glowing lore terminal — press `R` to read it |
+| Large comment | A glowing lore terminal — press `F` to read it |
 | Comment flagged `TODO`/`FIXME` | Also a lore terminal, plus a small "technical debt" encounter nearby: a spike trap, a proximity mine, or a weak enemy (equally likely) |
 | Dead/unreachable code, an empty (swallowed-exception) catch block, a `@deprecated`/`[Obsolete]` marker, a commented-out code block, or a magic-number/blob literal (long Base64-ish string, `0xDEADBEEF`-style hex constant) | A secret room hidden behind a fake wall (very slightly tinted if you look closely), holding one guaranteed pickup — mega-health, a fat rockets stash, a big Swap top-up, or (if you haven't unlocked it yet) gdb/ghidra/Friday Hotfix outright, or, from campaign level 4 on, the Toolchain chainsaw |
 | `switch`/`match` with several cases | A **Switchboard**: that function's room becomes a junction hub with one short dead-end spur per `case`, each behind an amber branch door. Every spur holds a small encounter — an Edge Case enemy, a trap or mine, or a little ammo. The `default` branch gets no spur; it's the corridor you were already on |

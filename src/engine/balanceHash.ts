@@ -142,3 +142,38 @@ export async function computeBalanceHash(
 export function balanceHashMatches(recorded: string | undefined, current: string): boolean {
   return recorded === undefined || recorded === current;
 }
+
+/**
+ * Fingerprint of the simulation constants alone — the same `simulation` half
+ * of `computeBalanceHash`, with the per-level enemy roster left out.
+ *
+ * Exists so the *leaderboard* can tell, at render time, whether a stored
+ * replay is still playable. `computeBalanceHash` cannot answer that: it needs
+ * a freshly generated map, and the board has ten entries and no maps. This
+ * half is map-independent and constant for a whole session, so it is computed
+ * once and compared against what each entry recorded.
+ *
+ * It is deliberately *coarser* than the full hash — it cannot see a changed
+ * enemy roster — so it gates the buttons while `balanceHashMatches` stays the
+ * backstop at playback. Coarse in the safe direction: everything it rejects,
+ * the full check would reject too.
+ */
+export async function computeSimulationHash(simulation: Readonly<Record<string, unknown>>): Promise<string> {
+  return sha256Hex(stableStringify({ simulation }));
+}
+
+/**
+ * Whether a recorded `simulationHash` still describes the rules in force.
+ *
+ * **Absent counts as a mismatch here**, the opposite of `balanceHashMatches`
+ * above, and the difference is deliberate. That function decides whether to
+ * *refuse a replay the player already asked to watch*, where being lenient
+ * costs nothing worse than the pre-guard behaviour. This one decides whether
+ * to *offer* the button at all, and a replay with no hash predates the guard
+ * entirely — which now means it predates magazines, and its recorded inputs
+ * demonstrably do not reproduce its score. Offering a button that produces a
+ * visibly wrong run is worse than not offering it.
+ */
+export function simulationHashMatches(recorded: string | undefined, current: string): boolean {
+  return recorded !== undefined && recorded === current;
+}

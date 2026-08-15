@@ -4,8 +4,8 @@
 /**
  * First-person weapon viewmodel, drawn natively with Canvas 2D primitives
  * (`fillRect` + path `lineTo`) — no image assets. The engine computes the live
- * bob/recoil state (see head-bob and recoil handling in engine.ts) and passes
- * it in each frame; this module is a pure renderer. Each weapon gets its own
+ * bob/recoil/reload state (see head-bob, recoil and reload handling in
+ * engine.ts) and passes it in each frame; this module is a pure renderer. Each weapon gets its own
  * silhouette (see `WeaponViewKind`) so switching weapons is visible even
  * before the HUD's ammo label catches up. Every body shape gets a thin dark
  * outline stroke plus a top-highlight/bottom-shadow pair rather than one flat
@@ -32,6 +32,8 @@ export interface WeaponView {
   recoil: number;
   /** Whether to draw the muzzle flash this frame (never true for melee). */
   flash: boolean;
+  /** 0 while not reloading; otherwise how far through the reload we are, 0 -> 1. */
+  reloadProgress: number;
   /** Which weapon's silhouette to draw. */
   kind: WeaponViewKind;
 }
@@ -48,6 +50,17 @@ export interface WeaponView {
 const WEAPON_CENTER_BIAS = 0.5;
 const RECOIL_DOWN_PX = 18;
 const RECOIL_BACK_PX = 8;
+
+/** How far the weapon dips below its resting baseline, and how far across, at
+ * the midpoint of a reload. The down offset is deliberately larger than every
+ * receiver's own height (the tallest is the shotgun's 96px), so the body of
+ * the weapon really does leave the screen at the bottom of the dip and only
+ * the barrel stays in frame — a smaller dip reads as a stumble rather than as
+ * the weapon being taken out of the fight. The sideways component pushes
+ * toward the grip side, so the dip reads as lowering the weapon to the hip
+ * rather than as the whole viewport sliding. */
+const RELOAD_DOWN_PX = 96;
+const RELOAD_SIDE_PX = 24;
 
 /** Thin dark outline stroke shared by every weapon's body shapes — gives
  * flat canvas-primitive fills a defined edge against the dark backdrop
@@ -87,12 +100,38 @@ export function drawWeapon(ctx: CanvasRenderingContext2D, v: WeaponView): void {
   const cx = w * WEAPON_CENTER_BIAS + v.bobX; // gun center, matching the tracer's fixed x origin
   const baseY = h + v.bobY + recoilDown; // resting baseline sits on the bottom edge
 
+  // A reload dips the weapon out of view and brings it back: one smooth
+  // down-and-up over the progress range, peaking at the halfway point.
+  // `Math.sin(p * PI)` gives that in one term, and gives it *zero slope at
+  // both ends*, so the pose the dip starts from and returns to is exactly the
+  // resting pose — no visible jump on the frame the reload begins or ends.
+  //
+  // Like `recoil` above, the normalized progress is converted to pixels once
+  // here and each draw* function receives an already-offset anchor; none of
+  // them ever sees `reloadProgress` itself. That is what makes the three
+  // magazine-less weapons (knife, chainsaw, flamethrower) *structurally*
+  // immune to this field rather than merely ignoring it by convention.
+  //
+  // The motion is a pure translation of that anchor on purpose. A tilt, or a
+  // magazine swinging out of the well, would change a weapon's *geometry* per
+  // frame, and by this module's perf rule that means pre-rendering every
+  // affected shape at every quantised step (the `flameNozzleGlyph` treatment).
+  // Translating the anchor costs nothing at all — the live rectangles take a
+  // different origin and the pre-rendered glyphs blit to a different point.
+  const reloading = v.reloadProgress > 0;
+  const dip = reloading ? Math.sin(Math.min(v.reloadProgress, 1) * Math.PI) : 0;
+  const reloadCx = cx + dip * RELOAD_SIDE_PX;
+  const reloadBaseY = baseY + dip * RELOAD_DOWN_PX;
+  // A weapon that is being reloaded is by definition not firing, so a flash
+  // arriving in the same frame as a reload is stale state, not a shot.
+  const reloadFlash = v.flash && !reloading;
+
   ctx.save();
   ctx.lineJoin = "round";
 
   switch (v.kind) {
     case "shotgun":
-      drawShotgun(ctx, cx, baseY, recoilBack, v.flash);
+      drawShotgun(ctx, reloadCx, reloadBaseY, recoilBack, reloadFlash);
       break;
     case "knife":
       drawKnife(ctx, cx, baseY, v.recoil);
@@ -101,17 +140,17 @@ export function drawWeapon(ctx: CanvasRenderingContext2D, v: WeaponView): void {
       drawChainsaw(ctx, cx, baseY, v.recoil);
       break;
     case "mp":
-      drawMp(ctx, cx, baseY, recoilBack, v.flash);
+      drawMp(ctx, reloadCx, reloadBaseY, recoilBack, reloadFlash);
       break;
     case "rocket":
-      drawRocketLauncher(ctx, cx, baseY, recoilBack, v.flash);
+      drawRocketLauncher(ctx, reloadCx, reloadBaseY, recoilBack, reloadFlash);
       break;
     case "flamethrower":
       drawFlamethrower(ctx, cx, baseY, recoilBack, v.flash);
       break;
     case "pistol":
     default:
-      drawPistol(ctx, cx, baseY, recoilBack, v.flash);
+      drawPistol(ctx, reloadCx, reloadBaseY, recoilBack, reloadFlash);
       break;
   }
 

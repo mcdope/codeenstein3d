@@ -73,6 +73,13 @@ const PACKED_BOOLS = [
   "blur",
   "pointerUnlock",
   "click",
+  // Appended, never inserted — see this list's doc comment. Appending is
+  // backward compatible: the writer already emits two boolean bytes whenever
+  // any flag is set (11 bits of 16 used before this one), so a board recorded
+  // before reloading existed still decodes, with `reload` false throughout.
+  // That is why `BINARY_PREFIX` does *not* need bumping here, and why the
+  // shipped `defaultHighscore.ts` board still reads.
+  "reload",
 ] as const satisfies readonly (keyof InputSnapshot)[];
 
 /** Sentinel for `weaponRequest: null` in the one byte it occupies — a real
@@ -225,6 +232,7 @@ function decodeReplayFramesAt(r: ByteReader): ReplayFrame[] {
       weaponRequest: null,
       mapToggle: false,
       interact: false,
+      reload: false,
       melee: false,
       meleeHeld: false,
       wheelSteps: 0,

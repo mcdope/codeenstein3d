@@ -43,6 +43,7 @@ import {
   scoreRangedWeapon,
   expectedDamagePerShot,
   shouldCloseToMelee,
+  hasAmmoFor,
   hasAnyRangedAmmo,
   meleeDamage,
   WEAPON_STATS,
@@ -88,7 +89,15 @@ function makePlayer(over = {}) {
     healthFraction: 1,
     swap: 0,
     state: "playing",
-    ammo: { bullets: 50, smg: 50, rockets: 5, gas: 50 },
+    ammo: { bullets: 50, shells: 8, smg: 50, rockets: 5, gas: 50 },
+    // The engine reports the magazine separately from the reserve; a bot
+    // player with a loaded gun is the default, since that is what every real
+    // level start produces.
+    magazine: 9,
+    magazineSize: 9,
+    reloading: false,
+    reloadRemainingSec: 0,
+    weaponCooldown: 0,
     weaponIndex: 0,
     meleeWouldHit: false,
     wouldMineHit: false,
@@ -594,7 +603,7 @@ describe("decide — branch selection", () => {
     // slowly instead of quickly.
     const intent = decide(
       {
-        player: makePlayer({ ammo: { bullets: 0, smg: 0, rockets: 0, gas: 0 } }),
+        player: makePlayer({ ammo: { bullets: 0, shells: 0, smg: 0, rockets: 0, gas: 0 }, magazine: 0 }),
         enemies: [makeEnemy({ hp: 3000, maxHp: 3000, elite: true, x: 12.0 })],
         mines: [], navTarget: null, map: makeMap(),
       },
@@ -785,6 +794,101 @@ describe("decide — navigation", () => {
   });
 });
 
+describe("reloading", () => {
+  it("holds fire while the engine says the weapon is reloading", () => {
+    // Same world and same cadence config as the semi-auto cooldown test below,
+    // so the only thing separating the two calls is the reload flag.
+    const config = makeConfig({ simTimeMs: 10000, lastFireSimTimeMs: 0 });
+    const shot = decide({ player: makePlayer(), enemies: [makeEnemy()], mines: [], navTarget: null, map: makeMap() }, freshMemory(), config);
+    expect(shot.fire).toBe(true);
+
+    const reloading = decide(
+      { player: makePlayer({ reloading: true, magazine: 0 }), enemies: [makeEnemy()], mines: [], navTarget: null, map: makeMap() },
+      freshMemory(),
+      config,
+    );
+    expect(reloading.fire).toBe(false);
+    // Not merely "don't fire". `fireOnCooldown` rides the trace, which is what
+    // `bot.mjs`'s `detectAnomalies` reads (`r.fire || r.fireOnCooldown`) to
+    // decide whether a bot standing still is stalled or legitimately waiting
+    // out a cadence. Narrowing that exclusion once cost a 473-anomaly
+    // regression, so a reload must land inside it.
+    expect(shot.trace.fireOnCooldown).toBe(false);
+    expect(reloading.trace.fireOnCooldown).toBe(true);
+    // And no phantom shot is reported to the caller, which is what would put
+    // the bot's own fire clock permanently out of phase with the engine.
+    expect(reloading.firedSemiAuto).toBeFalsy();
+  });
+
+  it("counts the loaded magazine as ammo, so a full gun over an empty reserve is not dry", () => {
+    const emptyReserve = makePlayer({ ammo: { bullets: 0, shells: 0, smg: 0, rockets: 0, gas: 0 }, magazine: 9 });
+    expect(hasAmmoFor(emptyReserve, PISTOL_WEAPON_INDEX)).toBe(true);
+    expect(hasAnyRangedAmmo(emptyReserve)).toBe(true);
+
+    const trulyDry = makePlayer({ ammo: { bullets: 0, shells: 0, smg: 0, rockets: 0, gas: 0 }, magazine: 0 });
+    expect(hasAmmoFor(trulyDry, PISTOL_WEAPON_INDEX)).toBe(false);
+    expect(hasAnyRangedAmmo(trulyDry)).toBe(false);
+  });
+
+  it("only credits the magazine to the weapon actually equipped", () => {
+    // `magazine` describes the equipped weapon; a shotgun's loaded shells say
+    // nothing about whether the pistol can fire.
+    const shotgunLoaded = makePlayer({
+      weaponIndex: SHOTGUN_WEAPON_INDEX,
+      ammo: { bullets: 0, shells: 0, smg: 0, rockets: 0, gas: 0 },
+      magazine: 2,
+    });
+    expect(hasAmmoFor(shotgunLoaded, SHOTGUN_WEAPON_INDEX)).toBe(true);
+    expect(hasAmmoFor(shotgunLoaded, PISTOL_WEAPON_INDEX)).toBe(false);
+  });
+
+  it("charges reload time into a weapon's estimated kill time", () => {
+    // A 2-shell shotgun pays a whole 1.2s pump-out to land a multi-shot kill;
+    // a 45-round gdb pays nothing over the same fight. Without this the bot
+    // valued the shotgun about a reload better than it really is.
+    //
+    // A/B'd against the mirror itself rather than asserting an absolute
+    // number, so this still means something if the weapon is retuned.
+    const opts = {
+      player: makePlayer({ ownedWeapons: [0, 1, 2, 3, 4, 5, 6] }),
+      profile: PROFILE,
+      tuning: DEFAULT_TUNING,
+      dist: 2,
+      targetHp: 200,
+      enemies: [],
+    };
+    const real = WEAPON_STATS[SHOTGUN_WEAPON_INDEX].reloadSec;
+    const withReload = scoreRangedWeapon(SHOTGUN_WEAPON_INDEX, opts);
+    try {
+      WEAPON_STATS[SHOTGUN_WEAPON_INDEX].reloadSec = 0;
+      const withoutReload = scoreRangedWeapon(SHOTGUN_WEAPON_INDEX, opts);
+      expect(withReload).toBeGreaterThan(withoutReload);
+    } finally {
+      WEAPON_STATS[SHOTGUN_WEAPON_INDEX].reloadSec = real;
+    }
+  });
+
+  it("charges nothing to a weapon with no magazine", () => {
+    const opts = {
+      player: makePlayer({ ownedWeapons: [0, 1, 2, 3, 4, 5, 6] }),
+      profile: PROFILE,
+      tuning: DEFAULT_TUNING,
+      dist: 2,
+      targetHp: 200,
+      enemies: [],
+    };
+    const before = scoreRangedWeapon(FRIDAY_HOTFIX_WEAPON_INDEX, opts);
+    WEAPON_STATS[FRIDAY_HOTFIX_WEAPON_INDEX].reloadSec = 5;
+    try {
+      // Friday Hotfix has no `magazineSize`, so no number of reload seconds
+      // can be charged to it — it streams straight from the reserve.
+      expect(scoreRangedWeapon(FRIDAY_HOTFIX_WEAPON_INDEX, opts)).toBe(before);
+    } finally {
+      delete WEAPON_STATS[FRIDAY_HOTFIX_WEAPON_INDEX].reloadSec;
+    }
+  });
+});
+
 describe("decide — combat", () => {
   it("swings at a threat already in melee reach rather than shooting into it", () => {
     // Load-bearing: firing at contact range can detonate a nearby mine onto
@@ -800,7 +904,7 @@ describe("decide — combat", () => {
   });
 
   it("swings only once every ranged weapon is dry", () => {
-    const dry = makePlayer({ meleeWouldHit: true, ammo: { bullets: 0, smg: 0, rockets: 0, gas: 0 } });
+    const dry = makePlayer({ meleeWouldHit: true, ammo: { bullets: 0, shells: 0, smg: 0, rockets: 0, gas: 0 }, magazine: 0 });
     const intent = decide(
       { player: dry, enemies: [makeEnemy({ x: 11.4 })], mines: [], navTarget: null, map: makeMap() },
       freshMemory(),
@@ -1354,7 +1458,7 @@ describe("melee as last resort / for trivial targets", () => {
   });
 
   it("closes on anything once every ranged weapon is dry", () => {
-    const dry = owner({ ammo: { bullets: 0, smg: 0, rockets: 0, gas: 0 } });
+    const dry = owner({ ammo: { bullets: 0, shells: 0, smg: 0, rockets: 0, gas: 0 }, magazine: 0 });
     expect(hasAnyRangedAmmo(dry)).toBe(false);
     expect(shouldCloseToMelee(at(6, { hp: 900 }), dry, PROFILE, DEFAULT_TUNING)).toBe(true);
   });

@@ -1299,7 +1299,7 @@ export function visibleMineNear(mines, x, y, tuning = DEFAULT_TUNING) {
  * deliberately absent — `pickRangedWeapon` only ever chooses among ranged ones.
  */
 export const WEAPON_STATS = {
-  [PISTOL_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 22, ammoPerShot: 1, ammoType: "bullets", spreadPx: 0, fireIntervalSec: 0.15 },
+  [PISTOL_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 22, ammoPerShot: 1, ammoType: "bullets", spreadPx: 0, fireIntervalSec: 0.15, magazineSize: 9, reloadSec: 1.1 },
   // 25, not 18: the pump cap below would otherwise have left the shotgun at
   // 7x18/0.85s = 148 DPS against the pistol's 22/0.15s = 147, i.e. identical
   // output for 4x what was then the same "bullets" pool. At 25 it lands
@@ -1310,11 +1310,11 @@ export const WEAPON_STATS = {
   // bullets when the pools were split. `scoreRangedWeapon` reads both fields,
   // so a stale copy here would have the bot valuing the shotgun against the
   // pistol's reserve.
-  [SHOTGUN_WEAPON_INDEX]: { pellets: 7, damagePerPellet: 25, ammoPerShot: 1, ammoType: "shells", spreadPx: 70, fireIntervalSec: 0.85 },
+  [SHOTGUN_WEAPON_INDEX]: { pellets: 7, damagePerPellet: 25, ammoPerShot: 1, ammoType: "shells", spreadPx: 70, fireIntervalSec: 0.85, magazineSize: 2, reloadSec: 1.2 },
   // gdb tightens the shared cone deliberately, so it stays usable at range
   // despite low per-shot damage (`maxConeDeviationPx` in weapons.ts).
-  [GDB_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 12, ammoPerShot: 1, ammoType: "smg", spreadPx: 0, fireIntervalSec: 0.09, maxConeDeviationPx: 20 },
-  [GHIDRA_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 150, ammoPerShot: 1, ammoType: "rockets", spreadPx: 0, fireIntervalSec: 1.1 },
+  [GDB_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 12, ammoPerShot: 1, ammoType: "smg", spreadPx: 0, fireIntervalSec: 0.09, maxConeDeviationPx: 20, magazineSize: 45, reloadSec: 2.0 },
+  [GHIDRA_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 150, ammoPerShot: 1, ammoType: "rockets", spreadPx: 0, fireIntervalSec: 1.1, magazineSize: 1, reloadSec: 1.6 },
   // `maxRange`/`fullDamageRange` mirror `src/engine/weapons.ts` — Friday Hotfix
   // is the only weapon with a range curve. Full damage to the plateau, decaying
   // to zero at the max, past which the shot does not reach at all and must not
@@ -1707,7 +1707,15 @@ export function scoreRangedWeapon(weaponIndex, { targetHp, dist, player, profile
   const engineSec = w.fireIntervalSec ?? 0;
   const dispatchSec = AUTO_RANGED_WEAPON_INDICES.has(weaponIndex) ? 0 : (profile.fireCooldownMs ?? tuning.VIRTUAL_STEP_MS) / 1000;
   const secPerShot = Math.max(engineSec, dispatchSec);
-  const killSec = shots * secPerShot;
+  // Reloads are part of what a kill costs in *time*, which is the currency
+  // this whole score is denominated in. Charged per magazine emptied rather
+  // than per shot, and only for the whole magazines the kill would consume:
+  // a 2-shell shotgun kill pays a full 1.2s pump-out, while a 45-round gdb
+  // rarely pays anything. Ignoring it would leave the scorer preferring the
+  // shotgun and ghidra by roughly a reload each.
+  const magazineSize = w.magazineSize ?? 0;
+  const reloadsNeeded = magazineSize > 0 ? Math.floor((shots * w.ammoPerShot) / magazineSize) : 0;
+  const killSec = shots * secPerShot + reloadsNeeded * (w.reloadSec ?? 0);
 
   // Self-inflicted damage is a cost like any other: a weapon that takes 84 HP
   // off you is not "efficient", however few rockets it spends. Graded rather
@@ -1739,7 +1747,15 @@ export function hasAmmoFor(player, weaponIndex) {
   // it wrong is silent: the bot simply believes it can fire when it cannot.
   const type = WEAPON_STATS[weaponIndex]?.ammoType;
   if (!type) return true; // melee, or a weapon that costs nothing
-  return (player.ammo?.[type] ?? 0) > 0;
+  // Reserve *plus* whatever is loaded in that weapon. The engine reports the
+  // reserve and the magazine separately, and a gun holding its last magazine
+  // over an empty reserve is very much still able to shoot — reading only the
+  // reserve would send the bot to melee with a loaded weapon in its hands.
+  // `magazine` describes the *equipped* weapon only, so it is added for that
+  // weapon alone; every other weapon's rounds show up in its own reserve
+  // once it is picked up.
+  const loaded = weaponIndex === player.weaponIndex ? (player.magazine ?? 0) : 0;
+  return (player.ammo?.[type] ?? 0) + loaded > 0;
 }
 
 /**
@@ -2262,7 +2278,13 @@ export function decide(world, memory, config) {
       : null;
   if (mineTarget && memory) {
     const key = `${mineTarget.x},${mineTarget.y}`;
-    memory.shootTicks = memory.shootKey === key ? memory.shootTicks + 1 : 1;
+    // Ticks spent reloading are not evidence that the mine is unshootable, so
+    // they must not spend this budget. The counter exists to give up on a mine
+    // the bot cannot hit — a wall in the way — and a reload looks identical to
+    // that from here while being guaranteed to end. Without this skip, a gdb
+    // reload alone (2s, ~40 ticks) exhausts the whole 40-tick budget and the
+    // bot permanently abandons a mine it was about to shoot.
+    if (player.reloading !== true) memory.shootTicks = memory.shootKey === key ? memory.shootTicks + 1 : 1;
     memory.shootKey = key;
     if (memory.shootTicks > tuning.MINE_TARGET_GIVEUP_TICKS) {
       memory.abandoned.add(key); // e.g. a wall blocks line of fire — stop trying, in either mode, for the rest of the level
@@ -2571,8 +2593,24 @@ export function decide(world, memory, config) {
         const isAutoRanged = AUTO_RANGED_WEAPON_INDICES.has(effectiveWeapon);
         const engineIntervalMs = (WEAPON_STATS[effectiveWeapon]?.fireIntervalSec ?? 0) * 1000;
         const requiredGapMs = Math.max(profile.fireCooldownMs, engineIntervalMs);
-        const fireReady = isAutoRanged || simTimeMs - lastFireSimTimeMs >= requiredGapMs;
+        // A trigger-pull into a reload does nothing at all, so treating one as
+        // a shot would put this whole cadence model permanently out of phase
+        // with the engine — the bot would "fire", start counting the gap from
+        // a shot that never happened, and pull again mid-reload forever. The
+        // engine reports the reload directly (`reloading`), so this reads it
+        // rather than trying to infer it from ammo.
+        //
+        // Note it deliberately does NOT check whether the *switch target's*
+        // magazine is empty: `pickRangedWeapon` may return a weapon the bot is
+        // not holding yet, and switching to an empty gun is exactly the case
+        // the auto-reload handles. What matters is that the bot doesn't
+        // *count* the lost pull.
+        const reloading = player.reloading === true;
+        const fireReady = !reloading && (isAutoRanged || simTimeMs - lastFireSimTimeMs >= requiredGapMs);
         fire = !rocketUnsafe && fireReady;
+        // A reload counts as "on cooldown" — aimed and willing, held back only
+        // by cadence — which is precisely what this flag already means, and
+        // what keeps `detectAnomalies` from reading a reloading bot as stalled.
         fireOnCooldown = !rocketUnsafe && !fireReady;
         firedSemiAuto = fire && !isAutoRanged;
         // Keep moving while shooting. This branch used to hold no keys at all

@@ -51,9 +51,9 @@ import { createIntroTour, DEFAULT_TOUR_STEPS } from "./ui/introTour";
 import { createBossScreen } from "./ui/bossScreen";
 import { randomSeed } from "./prng";
 import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelSegment } from "./engine/replay";
-import { balanceHashMatches, computeBalanceHash, type BalanceRelevantEnemy } from "./engine/balanceHash";
+import { balanceHashMatches, computeBalanceHash, computeSimulationHash, simulationHashMatches, type BalanceRelevantEnemy } from "./engine/balanceHash";
 import type { ParsedFile } from "./parser/types";
-import type { EngineCarryover, EngineStats, PlayerId, RosterSnapshotEntry } from "./engine/engine";
+import type { BotPlayerState, EngineCarryover, EngineStats, PlayerId, RosterSnapshotEntry } from "./engine/engine";
 import { createSession, fetchIceServers, fetchSession, fetchSessionAsHost, postAnswer, updateSession } from "./multiplayer/signalingClient";
 import { fetchLobbyEntries } from "./multiplayer/lobby";
 import { createGuestAnswer, createHostOffer, waitForChannelsOpen } from "./multiplayer/webrtcConnection";
@@ -439,7 +439,14 @@ function activateWadTab(tab: WadTab): void {
  * viewer back where they launched it from instead of the plain file-tree
  * placeholder. */
 async function openHighscoreDialog(): Promise<void> {
+  const simulationHash = await currentSimulationHash;
   renderHighscoreTable(highscoreList, await loadHighscoresForDisplay(), {
+    // Whether a stored replay can still be trusted to reproduce its own
+    // score. Checked here, at render, rather than only when the player clicks
+    // — offering a button that ends in "recorded under different game
+    // balance" is a worse experience than not offering it, and a hash-less
+    // replay (recorded before this guard existed) is in exactly that state.
+    isReplayPlayable: (entry) => simulationHashMatches(entry.replay?.simulationHash, simulationHash),
     onWatchReplay: (entry) => {
       highscoreDialog.close();
       void startReplay(entry);
@@ -599,6 +606,18 @@ let currentLevelPath: string | null = null;
  * though it isn't nested in `launchLevel`'s closure the way `onGameOver`/
  * `onWin` are. */
 let currentParsedFile: ParsedFile | null = null;
+/**
+ * Fingerprint of the simulation constants this build plays under, resolved
+ * once for the whole session — they cannot change while the page is open.
+ *
+ * Two consumers: every replay records it (so a later build can tell whether
+ * the run is still reproducible), and the leaderboard compares it to decide
+ * whether to offer "Watch Replay" at all. Kept as the promise rather than an
+ * awaited value because module scope cannot await, and both consumers are
+ * already async or already deferred.
+ */
+const currentSimulationHash = computeSimulationHash(SIMULATION_BALANCE);
+
 /** Raw text of the level currently running, kept only so the boss key
  * (`./ui/bossScreen.ts`) can show the file this level was generated from.
  * Retaining it is the whole reason `launchLevel` takes a `source` argument:
@@ -2190,23 +2209,7 @@ if (isTestHooksActive()) {
         getProjectilesSnapshot: () => { x: number; y: number; vx: number; vy: number; damage: number; targetId: string }[];
         getDropsSnapshot: () => { x: number; y: number; kind: string }[];
         getKeysSnapshot: () => { x: number; y: number }[];
-        getBotPlayerState: (id: string) => {
-          x: number;
-          y: number;
-          dirX: number;
-          dirY: number;
-          health: number;
-          healthFraction: number;
-          swap: number;
-          state: "playing" | "over";
-          ammo: { bullets: number; shells: number; rockets: number; smg: number; gas: number };
-          weaponIndex: number;
-          meleeWouldHit: boolean;
-          wouldMineHit: boolean;
-          ownedWeapons: number[];
-          levelTime: number;
-          distanceTraveled: number;
-        } | null;
+        getBotPlayerState: (id: string) => BotPlayerState | null;
         // Step 11 Phase 2b — real network/netcode-quality telemetry, see
         // `MultiplayerSessionHandle`'s own doc comments on each.
         getConnectionStats: (id: string) => Promise<{ rttMs: number | null } | null>;
@@ -2876,7 +2879,7 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
   // one (see `advanceToNextLevel`) reuses the same recorder instead, so one
   // run's replay ends up spanning every level it actually visited.
   if (!carryover || !currentReplayRecorder) {
-    currentReplayRecorder = new CampaignReplayRecorder(campaignName());
+    currentReplayRecorder = new CampaignReplayRecorder(campaignName(), currentSimulationHash);
   }
   currentReplayRecorder.startLevel(
     {

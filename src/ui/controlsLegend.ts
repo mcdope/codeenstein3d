@@ -74,13 +74,13 @@ const ROWS: Chip[][] = [
     { keys: ["Q"], label: "turn" },
     { keys: ["W"], label: "move" },
     { keys: ["E"], label: "turn" },
-    { keys: ["R"], label: "read / open", gapBefore: true },
+    { keys: ["R"], label: "reload", gapBefore: true },
   ],
   [
     { keys: ["A"], label: "strafe" },
     { keys: ["S"], label: "move" },
     { keys: ["D"], label: "strafe" },
-    { keys: ["F"], label: "fullscreen", gapBefore: true },
+    { keys: ["F"], label: "read / open", gapBefore: true },
   ],
   [
     { keys: ["Shift"], label: "sprint" },
@@ -89,6 +89,7 @@ const ROWS: Chip[][] = [
     { keys: ["Esc"], label: "pause" },
     { keys: ["R-Ctrl"], label: "FPS counter", gapBefore: true },
     { keys: ["F9"], label: "boss key" },
+    { keys: ["Alt", "Enter"], label: "fullscreen" },
   ],
 ];
 

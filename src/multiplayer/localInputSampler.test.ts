@@ -16,6 +16,7 @@ class ScriptedInput implements InputSource {
   weaponRequest: number | null = null;
   mapToggle = false;
   interact = false;
+  reload = false;
   melee = false;
   meleeHeld = false;
   wheelSteps = 0;
@@ -62,6 +63,11 @@ class ScriptedInput implements InputSource {
   consumeInteract(): boolean {
     const v = this.interact;
     this.interact = false;
+    return v;
+  }
+  consumeReload(): boolean {
+    const v = this.reload;
+    this.reload = false;
     return v;
   }
   consumeMelee(): boolean {
@@ -125,6 +131,7 @@ class ScriptedInput implements InputSource {
       weaponRequest: this.weaponRequest,
       mapToggle: this.mapToggle,
       interact: this.interact,
+      reload: this.reload,
       melee: this.melee,
       meleeHeld: this.meleeHeld,
       wheelSteps: this.wheelSteps,

@@ -162,6 +162,7 @@ function emptySnapshot(overrides: Partial<InputSnapshot> = {}): InputSnapshot {
     weaponRequest: null,
     mapToggle: false,
     interact: false,
+    reload: false,
     melee: false,
     meleeHeld: false,
     wheelSteps: 0,

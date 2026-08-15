@@ -12,7 +12,7 @@
  * moves the hash" and "an option that only reshuffles pickups does not".
  */
 import { describe, expect, it } from "vitest";
-import { balanceHashMatches, computeBalanceHash, sha256Hex, stableStringify, type BalanceRelevantEnemy } from "./balanceHash";
+import { balanceHashMatches, computeBalanceHash, computeSimulationHash, sha256Hex, simulationHashMatches, stableStringify, type BalanceRelevantEnemy } from "./balanceHash";
 
 const enemy = (over: Partial<BalanceRelevantEnemy> = {}): BalanceRelevantEnemy => ({ x: 3, y: 4, maxHp: 100, elite: false, ...over });
 const SIM = { MOVE_SPEED: 3.2, MAX_HEALTH: 100 } as const;
@@ -134,5 +134,40 @@ describe("balanceHashMatches", () => {
   it("accepts a matching hash and refuses a stale one", () => {
     expect(balanceHashMatches("abc", "abc")).toBe(true);
     expect(balanceHashMatches("abc", "def")).toBe(false);
+  });
+});
+
+describe("computeSimulationHash / simulationHashMatches", () => {
+  it("ignores the enemy roster the full balance hash folds in", async () => {
+    // The whole reason it exists: the leaderboard has no maps to hash, and
+    // this half is the same for every level of a session.
+    const sim = { MOVE_SPEED: 3.2 };
+    const a = await computeSimulationHash(sim);
+    const b = await computeSimulationHash({ ...sim });
+    expect(a).toBe(b);
+    // And it does still notice the constants themselves changing.
+    expect(await computeSimulationHash({ MOVE_SPEED: 3.3 })).not.toBe(a);
+  });
+
+  it("is a different fingerprint from the full balance hash", async () => {
+    // They must not be interchangeable: one answers "can this level still be
+    // reproduced", the other "do the rules still match".
+    const sim = { MOVE_SPEED: 3.2 };
+    const full = await computeBalanceHash({ enemies: [] }, sim);
+    expect(await computeSimulationHash(sim)).not.toBe(full);
+  });
+
+  it("refuses a run with no hash at all, unlike balanceHashMatches", async () => {
+    // The deliberate asymmetry. `balanceHashMatches` is lenient because it
+    // decides whether to refuse a replay already asked for; this decides
+    // whether to *offer* one, and a hash-less recording predates the guard —
+    // which now means it predates magazines and cannot reproduce its score.
+    expect(simulationHashMatches(undefined, "abc")).toBe(false);
+    expect(balanceHashMatches(undefined, "abc")).toBe(true);
+  });
+
+  it("accepts a matching hash and refuses a stale one", () => {
+    expect(simulationHashMatches("abc", "abc")).toBe(true);
+    expect(simulationHashMatches("abc", "def")).toBe(false);
   });
 });

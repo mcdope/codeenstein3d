@@ -8,7 +8,7 @@ the list of things it does silently.
 
 **The console is your friend.** Every skip below prints a reason. You don't need DevTools:
 the console panel beside the canvas mirrors the same lines (it's hidden while the canvas is
-fullscreen — press `F` to come back out).
+fullscreen — press `Alt`+`Enter` to come back out).
 
 ## "I picked a folder and nothing happened"
 
