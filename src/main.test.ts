@@ -15,6 +15,7 @@ import { FakeRTCDataChannel, FakeRTCPeerConnection } from "../test/mocks/webrtc"
 import type { TreeNode } from "./fs/workspace";
 import { parseFile } from "./parser/registry";
 import { hashRun, loadHighscores, recordHighscore } from "./engine/highscores";
+import { computeSimulationHash } from "./engine/balanceHash";
 import type { InputSnapshot } from "./engine/input";
 import type { ReplayLevelSegment } from "./engine/replay";
 import type { EngineCarryover } from "./engine/engine";
@@ -103,6 +104,23 @@ function throwingFileHandle(name: string): FileSystemFileHandle {
     kind: "file",
     name,
     getFile: () => Promise.reject(new Error("disk read failed")),
+  } as unknown as FileSystemFileHandle;
+}
+
+/** A file that reads correctly once and then fails — the shape needed to
+ * exercise a *re-read*, which is what the entrypoint path does for the boss
+ * key's source text after the scanner has already parsed the file. */
+function readOnceThenThrowingHandle(name: string, content: string): FileSystemFileHandle {
+  let reads = 0;
+  return {
+    kind: "file",
+    name,
+    getFile: () => {
+      reads += 1;
+      return reads === 1
+        ? Promise.resolve({ text: () => Promise.resolve(content) })
+        : Promise.reject(new Error("disk read failed"));
+    },
   } as unknown as FileSystemFileHandle;
 }
 
@@ -599,6 +617,34 @@ describe("main.ts — campaign persistence (loadCampaignSave/saveCampaign/clearC
     expect(save?.smg).toBe(0);
     expect(save?.gas).toBe(0);
     expect(save?.levelIndex).toBe(1);
+  });
+
+  it("back-fills a pre-shells save with a full shotgun reserve, not an empty one", async () => {
+    const { loadCampaignSave } = await importMain();
+    localStorage.setItem(
+      "codeenstein-campaign-save",
+      JSON.stringify({
+        workspaceName: "ws",
+        filePath: "a.c",
+        health: 100,
+        swap: 0,
+        bullets: 40,
+        rockets: 0,
+        smg: 0,
+        gas: 0,
+        score: 0,
+        weaponIndex: 0,
+        ownedWeapons: [],
+        levelIndex: 3,
+      }),
+    );
+
+    // Unlike `smg`/`gas` above, which default to 0: those belong to weapons a
+    // resumed run may never have unlocked, so a dry resume reads as "you never
+    // found it". The shotgun is a *starting* weapon, and this save's `bullets`
+    // figure already covers what that player would have spent on it — zeroing
+    // it would silently take a working gun away mid-run.
+    expect(loadCampaignSave()?.shells).toBeGreaterThan(0);
   });
 
   it("clearCampaignSave removes the save and hides the Continue tab", async () => {
@@ -1534,6 +1580,19 @@ describe("main.ts — local workspace pick", () => {
     await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false);
   });
 
+  it("still launches when the boss key's source re-read fails", async () => {
+    // The entrypoint scanner parses the file, then the launch path reads it a
+    // second time purely to keep the text for the boss screen. That second
+    // read is allowed to fail — a boss screen falling back to its bundled file
+    // is not a reason to refuse to start the level.
+    await importMain();
+    stubShowDirectoryPicker(directoryHandleWithEntries("ws", [readOnceThenThrowingHandle("main.c", VALID_MAIN_C)]));
+
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "ws");
+
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+  });
   it("does nothing when the picker is cancelled", async () => {
     await importMain();
     stubShowDirectoryPicker(undefined);
@@ -3689,6 +3748,7 @@ describe("main.ts — multiplayer connect flow", () => {
         weaponRequest: null,
         mapToggle: false,
         interact: false,
+        reload: false,
         melee: false,
         meleeHeld: false,
         wheelSteps: 0,
@@ -6040,6 +6100,7 @@ const EMPTY_INPUT_SNAPSHOT: InputSnapshot = {
   weaponRequest: null,
   mapToggle: false,
   interact: false,
+  reload: false,
   melee: false,
   meleeHeld: false,
   wheelSteps: 0,
@@ -6128,6 +6189,9 @@ class MinimalScriptedInput {
   consumeInteract(): boolean {
     return false;
   }
+  consumeReload(): boolean {
+    return false;
+  }
   consumeMelee(): boolean {
     return false;
   }
@@ -6173,6 +6237,7 @@ class MinimalScriptedInput {
       weaponRequest: null,
       mapToggle: false,
       interact: false,
+      reload: false,
       melee: false,
       meleeHeld: false,
       wheelSteps: 0,
@@ -6355,6 +6420,18 @@ async function recordNavigatedSegment(options: {
  * highscore entry with a `replay.version: 2` payload, then opens the
  * Highscores dialog and clicks the entry's "Watch Replay" button — the only
  * way `onWatchReplay`/`startReplay` are reachable at all. */
+/** The hash the running build would stamp on a fresh recording. Seeded
+ * replays have to carry it or the leaderboard correctly refuses to offer them
+ * a Watch button — see `simulationHashMatches`. */
+async function currentSimulationHash(): Promise<string> {
+  // Imported lazily, not at the top of the file: `engine.ts` pulls in
+  // `textures.ts`, which builds procedural textures against a real 2D context
+  // at module scope — before this suite has stubbed `getContext`. Every other
+  // engine-side import here is dynamic for the same reason.
+  const { SIMULATION_BALANCE } = await import("./engine/engine");
+  return computeSimulationHash(SIMULATION_BALANCE);
+}
+
 async function seedAndOpenReplay(segments: ReplayLevelSegment[]): Promise<void> {
   await recordHighscore({
     score: 100,
@@ -6363,7 +6440,7 @@ async function seedAndOpenReplay(segments: ReplayLevelSegment[]): Promise<void> 
     levelsCleared: 1,
     hash: "irrelevant-workspace-hash",
     achievedAt: Date.now(),
-    replay: { version: 2, campaignName: REPLAY_CAMPAIGN_NAME, levels: segments },
+    replay: { version: 2, campaignName: REPLAY_CAMPAIGN_NAME, simulationHash: await currentSimulationHash(), levels: segments },
   });
   document.querySelector<HTMLButtonElement>("#view-highscores")!.click();
   // Scoped to the dialog specifically — an already-active replay's own
@@ -6387,7 +6464,7 @@ async function seedAndOpenReplayFor(campaignName: string, source: "github" | "de
     hash: "irrelevant-workspace-hash",
     achievedAt: Date.now(),
     source,
-    replay: { version: 2, campaignName, levels: segments },
+    replay: { version: 2, campaignName, simulationHash: await currentSimulationHash(), levels: segments },
   });
   document.querySelector<HTMLButtonElement>("#view-highscores")!.click();
   // Scoped to the dialog specifically — an already-active replay's own
@@ -7276,7 +7353,7 @@ describe("main.ts — replay playback (startReplay)", () => {
       levelsCleared: 1,
       hash: "irrelevant-workspace-hash",
       achievedAt: Date.now(),
-      replay: { version: 2, campaignName: REPLAY_CAMPAIGN_NAME, levels: [segment] },
+      replay: { version: 2, campaignName: REPLAY_CAMPAIGN_NAME, simulationHash: await currentSimulationHash(), levels: [segment] },
     });
     document.querySelector<HTMLButtonElement>("#view-highscores")!.click();
     await waitUntil(() => document.querySelector("#highscore-dialog .replay-btn") !== null, 8000);
@@ -7316,7 +7393,7 @@ describe("main.ts — replay playback (startReplay)", () => {
       levelsCleared: 1,
       hash: "irrelevant-workspace-hash",
       achievedAt: Date.now(),
-      replay: { version: 2, campaignName: REPLAY_CAMPAIGN_NAME, levels: [segment] },
+      replay: { version: 2, campaignName: REPLAY_CAMPAIGN_NAME, simulationHash: await currentSimulationHash(), levels: [segment] },
     });
     document.querySelector<HTMLButtonElement>("#view-highscores")!.click();
     await waitUntil(() => document.querySelector("#highscore-dialog .replay-btn") !== null, 8000);

@@ -42,6 +42,21 @@ export interface Weapon {
   /** Ammo pool this weapon draws from; omitted entirely for the knife
    * (infinite, no pool to deplete). */
   ammoType?: AmmoType;
+  /**
+   * Rounds this weapon holds before it has to be reloaded, in the same units
+   * as `ammoPerShot` and the reserve pool — so `magazineSize / ammoPerShot`
+   * is how many shots a full magazine is good for. Every reloadable weapon
+   * spends exactly 1 per pull today, so the two are the same number.
+   *
+   * Omitted for weapons that have no magazine at all: the melee weapons, and
+   * Friday Hotfix, which streams gas straight out of the reserve. A weapon
+   * with no `magazineSize` never reloads and never blocks its own trigger —
+   * `updateFiring` treats "no magazine" and "magazine full" identically.
+   */
+  magazineSize?: number;
+  /** Seconds a reload takes, during which this weapon cannot fire. Present
+   * exactly when `magazineSize` is. */
+  reloadSec?: number;
   /** Tracer line color (a CSS color string) — lets each weapon's shots read
    * as visually distinct at a glance. */
   tracerColor: string;
@@ -177,6 +192,10 @@ export const WEAPONS: readonly Weapon[] = [
     damagePerPellet: 22,
     ammoPerShot: 1,
     ammoType: "bullets",
+    // Nine rounds and a brisk reload — the workhorse, so the pause is short
+    // enough to take mid-fight rather than something to retreat for.
+    magazineSize: 9,
+    reloadSec: 1.1,
     // ~6.6 shots/sec: a fast but genuinely human semi-auto trigger-pull rate.
     // Before this existed, the pistol's rate was whatever the player's mouse
     // hand (or an autoclicker, or a bot dispatching one keydown per decision
@@ -215,6 +234,13 @@ export const WEAPONS: readonly Weapon[] = [
     // *costs*, not to what it does.
     ammoPerShot: 1,
     ammoType: "shells",
+    // Two shells. The shortest magazine in the game by a wide margin, which
+    // is the whole character of the weapon: two devastating point-blank
+    // blasts, then a real decision about whether you have room to work the
+    // pump. Note the reload is *longer* than the `fireIntervalSec` pump cycle
+    // below, so emptying it costs meaningfully more than firing twice.
+    magazineSize: 2,
+    reloadSec: 1.2,
     // A pump-action cycle: ~1.2 shots/sec. The one weapon this whole cap
     // existed to fix — 7 pellets and 175 damage a blast turned into an
     // automatic weapon by nothing more than clicking fast. Paired with
@@ -249,6 +275,11 @@ export const WEAPONS: readonly Weapon[] = [
     damagePerPellet: 12,
     ammoPerShot: 1,
     ammoType: "smg",
+    // 45 rounds at ~11/sec is about four seconds of held trigger, against the
+    // longest reload of the three bullet weapons — full-auto convenience paid
+    // for in downtime rather than in damage.
+    magazineSize: 45,
+    reloadSec: 2.0,
     tracerColor: "#3fa9ff",
     viewKind: "mp",
     auto: true,
@@ -272,6 +303,13 @@ export const WEAPONS: readonly Weapon[] = [
     damagePerPellet: 150,
     ammoPerShot: 1,
     ammoType: "rockets",
+    // Single-shot: every rocket is followed by a reload, which is why this is
+    // the second-longest one. Its 1.1s `fireIntervalSec` already gated the
+    // cadence; the reload roughly doubles the real gap between rockets, so
+    // this is a genuine nerf to sustained rocket fire and the number to
+    // revisit first if ghidra reads as too weak.
+    magazineSize: 1,
+    reloadSec: 1.6,
     tracerColor: "#ff6a2a",
     viewKind: "rocket",
     isRocket: true,

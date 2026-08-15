@@ -63,6 +63,9 @@ export class NetworkInputSource implements InputSource {
   consumeInteract(): boolean {
     return this.current.interact;
   }
+  consumeReload(): boolean {
+    return this.current.reload;
+  }
 
   consumeMelee(): boolean {
     return this.current.melee;

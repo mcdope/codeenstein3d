@@ -65,6 +65,10 @@ export class LocalInputSampler {
     this.controller.consumeWeaponRequest();
     this.controller.consumeMapToggle();
     this.controller.consumeInteract();
+    // Drained but NOT neutralized below: a reload is a real simulation input,
+    // so it has to reach every peer the same way `interact` does. Only the
+    // local-only concerns (escape/blur/pointerUnlock/click) get zeroed.
+    this.controller.consumeReload();
     this.controller.consumeMelee();
     this.controller.consumeWheelSteps();
     this.controller.consumeFpsToggle();

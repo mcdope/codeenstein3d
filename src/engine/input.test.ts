@@ -16,8 +16,10 @@ function setFullscreenElement(el: Element | null): void {
   Object.defineProperty(document, "fullscreenElement", { value: el, configurable: true });
 }
 
-function kd(code: string, key: string, opts: { repeat?: boolean } = {}): void {
-  canvas.dispatchEvent(new KeyboardEvent("keydown", { code, key, repeat: opts.repeat ?? false, bubbles: true, cancelable: true }));
+function kd(code: string, key: string, opts: { repeat?: boolean; altKey?: boolean } = {}): void {
+  canvas.dispatchEvent(
+    new KeyboardEvent("keydown", { code, key, repeat: opts.repeat ?? false, altKey: opts.altKey ?? false, bubbles: true, cancelable: true }),
+  );
 }
 
 function ku(code: string, key: string): void {
@@ -212,17 +214,48 @@ describe("InputController Tab (automap toggle)", () => {
   });
 });
 
-describe("InputController R (interact)", () => {
+describe("InputController R (reload)", () => {
   beforeEach(() => controller.attach());
 
-  it("queues an interact request on a non-repeat R press", () => {
+  it("queues a reload request on a non-repeat R press", () => {
     kd("KeyR", "r");
-    expect(controller.consumeInteract()).toBe(true);
+    expect(controller.consumeReload()).toBe(true);
   });
 
   it("does not re-queue on auto-repeat", () => {
     kd("KeyR", "r", { repeat: true });
+    expect(controller.consumeReload()).toBe(false);
+  });
+
+  it("is consumed once", () => {
+    kd("KeyR", "r");
+    expect(controller.consumeReload()).toBe(true);
+    expect(controller.consumeReload()).toBe(false);
+  });
+
+  it("no longer interacts — that moved to F", () => {
+    kd("KeyR", "r");
     expect(controller.consumeInteract()).toBe(false);
+  });
+});
+
+describe("InputController F (interact)", () => {
+  beforeEach(() => controller.attach());
+
+  it("queues an interact request on a non-repeat F press", () => {
+    kd("KeyF", "f");
+    expect(controller.consumeInteract()).toBe(true);
+  });
+
+  it("does not re-queue on auto-repeat", () => {
+    kd("KeyF", "f", { repeat: true });
+    expect(controller.consumeInteract()).toBe(false);
+  });
+
+  it("no longer toggles fullscreen — that moved to Alt+Enter", () => {
+    kd("KeyF", "f");
+    expect(canvas.requestFullscreen).not.toHaveBeenCalled();
+    expect(document.exitFullscreen).not.toHaveBeenCalled();
   });
 });
 
@@ -285,11 +318,11 @@ describe("InputController Backquote (undocumented automation fire key)", () => {
   });
 });
 
-describe("InputController F (fullscreen toggle)", () => {
+describe("InputController Alt+Enter (fullscreen toggle)", () => {
   beforeEach(() => controller.attach());
 
   it("requests fullscreen when not currently fullscreen, and prevents default", () => {
-    const e = new KeyboardEvent("keydown", { code: "KeyF", key: "f", bubbles: true, cancelable: true });
+    const e = new KeyboardEvent("keydown", { code: "Enter", key: "Enter", altKey: true, bubbles: true, cancelable: true });
     canvas.dispatchEvent(e);
     expect(e.defaultPrevented).toBe(true);
     expect(canvas.requestFullscreen).toHaveBeenCalledTimes(1);
@@ -298,15 +331,34 @@ describe("InputController F (fullscreen toggle)", () => {
 
   it("exits fullscreen when already fullscreen", () => {
     setFullscreenElement(canvas);
-    kd("KeyF", "f");
+    kd("Enter", "Enter", { altKey: true });
     expect(document.exitFullscreen).toHaveBeenCalledTimes(1);
     expect(canvas.requestFullscreen).not.toHaveBeenCalled();
   });
 
   it("does nothing on auto-repeat", () => {
-    kd("KeyF", "f", { repeat: true });
+    kd("Enter", "Enter", { altKey: true, repeat: true });
     expect(canvas.requestFullscreen).not.toHaveBeenCalled();
     expect(document.exitFullscreen).not.toHaveBeenCalled();
+  });
+
+  it("ignores Enter without the modifier, so overlay-dismiss keeps working", () => {
+    // `GameHud`'s overlays listen for a bare Enter on `window`. If this branch
+    // fired without the modifier, dismissing a level-start briefing would also
+    // throw the player into fullscreen.
+    kd("Enter", "Enter");
+    expect(canvas.requestFullscreen).not.toHaveBeenCalled();
+    expect(document.exitFullscreen).not.toHaveBeenCalled();
+  });
+
+  it("**cannot** be verified end-to-end by any harness here", () => {
+    // Deliberately a documentation test, not a behavioural one. Chromium under
+    // Playwright does not honour the Fullscreen API at all (see
+    // doc/dev/testing.md), and a synthetic KeyboardEvent cannot tell us
+    // whether a window manager eats Alt+Enter before the page sees it — the
+    // same blind spot that let Ctrl+W close the tab mid-swing. This binding
+    // was checked by hand, and must be re-checked by hand if it moves.
+    expect(true).toBe(true);
   });
 });
 

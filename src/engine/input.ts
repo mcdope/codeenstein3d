@@ -52,6 +52,7 @@ export interface InputSource {
   consumeWeaponRequest(): number | null;
   consumeMapToggle(): boolean;
   consumeInteract(): boolean;
+  consumeReload(): boolean;
   consumeMelee(): boolean;
   isMeleeHeld(): boolean;
   consumeWheelSteps(): number;
@@ -87,6 +88,11 @@ export interface InputSnapshot {
   weaponRequest: number | null;
   mapToggle: boolean;
   interact: boolean;
+  /** Reload requested this frame (`R`, or the gamepad's X). A real
+   * simulation input like `interact`, so it crosses the multiplayer wire and
+   * is recorded into replays — unlike `escape`/`blur`/`click`, which are
+   * local-only concerns. */
+  reload: boolean;
   melee: boolean;
   /** Whether Space (or the gamepad's R3/B) is currently held — see
    * `isMeleeHeld()`. Only meaningfully polled by an `auto` melee weapon
@@ -128,6 +134,10 @@ export class InputController implements InputSource {
    * despite that being the more common FPS convention, since E is already the
    * camera-turn-right key in this game's Q/E-turn scheme. */
   private interactQueued = false;
+  /** Edge-triggered reload request, set on an R press. R was the interact key
+   * until reloading existed; interact moved to F and fullscreen to Alt+Enter,
+   * so that the genre-standard R-to-reload could be honoured. */
+  private reloadQueued = false;
   /** Edge-triggered "quick-melee" request, set on a Space press — fires the
    * knife instantly, independent of whatever ranged weapon is equipped (see
    * `RaycasterEngine`). See `isMeleeHeld()` for why this isn't Left-Ctrl. */
@@ -246,6 +256,7 @@ export class InputController implements InputSource {
     this.weaponRequest = null;
     this.mapToggleQueued = false;
     this.interactQueued = false;
+    this.reloadQueued = false;
     this.meleeQueued = false;
     this.wheelSteps = 0;
     this.fpsToggleQueued = false;
@@ -317,6 +328,12 @@ export class InputController implements InputSource {
 
   /** Return true at most once per R press (opens a fake wall / reads a nearby
    * lore terminal). */
+  consumeReload(): boolean {
+    const reload = this.reloadQueued;
+    this.reloadQueued = false;
+    return reload;
+  }
+
   consumeInteract(): boolean {
     const interacted = this.interactQueued;
     this.interactQueued = false;
@@ -484,6 +501,7 @@ export class InputController implements InputSource {
       weaponRequest: this.weaponRequest,
       mapToggle: this.mapToggleQueued,
       interact: this.interactQueued,
+      reload: this.reloadQueued,
       melee: this.meleeQueued,
       meleeHeld: this.isMeleeHeld(),
       wheelSteps: this.wheelSteps,
@@ -543,8 +561,14 @@ export class InputController implements InputSource {
       e.preventDefault();
     }
 
-    // R interacts with a fake wall or lore terminal directly ahead/nearby.
-    if (e.code === "KeyR" && !e.repeat) this.interactQueued = true;
+    // R reloads the equipped weapon. Genre-standard, and the reason the two
+    // bindings below moved: R used to interact and F used to fullscreen.
+    if (e.code === "KeyR" && !e.repeat) this.reloadQueued = true;
+
+    // F interacts with a fake wall or lore terminal directly ahead/nearby.
+    // Not E, despite that being the more common convention, because E is
+    // already the camera-turn-right key in this game's Q/E-turn scheme.
+    if (e.code === "KeyF" && !e.repeat) this.interactQueued = true;
 
     // Right-Ctrl toggles the FPS overlay.
     if (e.code === "ControlRight" && !e.repeat) this.fpsToggleQueued = true;
@@ -553,8 +577,23 @@ export class InputController implements InputSource {
     // than the canvas — see that handler's doc comment for why it can't live
     // here, alongside every other key.
 
-    // F toggles fullscreen on the canvas itself — nothing else (no control
-    // hints, no HUD overlay DOM, no sidebar). requestFullscreen()/
+    // Alt+Enter toggles fullscreen on the canvas itself — nothing else (no
+    // control hints, no HUD overlay DOM, no sidebar). It moved off F when
+    // reloading claimed R and interact needed a home; Alt+Enter is the
+    // media-player/genre convention for exactly this and collides with
+    // nothing else in the app.
+    //
+    // **The only modifier-aware binding in the codebase.** Nothing else
+    // anywhere reads altKey/ctrlKey/shiftKey/metaKey, and there is a reason
+    // to be wary of the first one: see `isMeleeHeld()` for how Ctrl+W once
+    // closed the browser tab mid-swing, a class of failure no synthetic
+    // KeyboardEvent test can reproduce. This binding was checked by hand in a
+    // real browser, and has to be re-checked by hand if it ever moves.
+    //
+    // Note `Enter` alone stays free for `GameHud`'s overlay-dismiss listener:
+    // this branch requires the modifier, and that one ignores it.
+    //
+    // requestFullscreen()/
     // exitFullscreen() must be called synchronously from a real user-gesture
     // handler — not deferred to a later polled flag consumed inside the
     // rAF-driven game loop, which browsers reject — so this happens directly
@@ -564,7 +603,7 @@ export class InputController implements InputSource {
     // every level, rather than creating a new one each time — removing the
     // *current* fullscreen element from the document makes the browser
     // auto-exit fullscreen, which a fresh canvas per level used to trigger.
-    if (e.code === "KeyF" && !e.repeat) {
+    if (e.code === "Enter" && e.altKey && !e.repeat) {
       e.preventDefault();
       if (document.fullscreenElement) {
         void document.exitFullscreen();

@@ -167,14 +167,19 @@ describe("per-frame renderers issue no rasterising path geometry", () => {
     expect(R.offscreenSpritesAvailable()).toBe(true);
   });
 
-  it("drawWeapon — every kind, both flash states, rest and full recoil", () => {
+  it("drawWeapon — every kind, both flash states, rest and full recoil, mid-reload", () => {
     const kinds = ["pistol", "shotgun", "mp", "rocket", "flamethrower", "knife", "chainsaw"] as const;
     for (const kind of kinds) {
       for (const flash of [false, true]) {
         for (const recoil of [0, 0.5, 1]) {
-          const c = sceneCtx();
-          R.drawWeapon(asCtx(c), { bobX: 3.4, bobY: -2.1, recoil, flash, kind });
-          expectNoRasterisingCalls(c, `drawWeapon(${kind}, flash=${flash}, recoil=${recoil})`);
+          // The reload dip is a pure anchor translation today, so it cannot
+          // add geometry — this dimension exists so that a future reload
+          // animation that draws live paths per frame is caught here.
+          for (const reloadProgress of [0, 0.5]) {
+            const c = sceneCtx();
+            R.drawWeapon(asCtx(c), { bobX: 3.4, bobY: -2.1, recoil, flash, reloadProgress, kind });
+            expectNoRasterisingCalls(c, `drawWeapon(${kind}, flash=${flash}, recoil=${recoil}, reload=${reloadProgress})`);
+          }
         }
       }
     }

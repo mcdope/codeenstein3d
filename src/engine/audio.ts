@@ -35,6 +35,10 @@
  * like an identical clone-stamped loop — cosmetic randomness only, per
  * `doc/dev/architecture.md`'s Determinism section (SFX pitch must never draw
  * from the seeded replay PRNG).
+ *
+ * `playReload(kind)` dispatches the same way, over the four weapons that
+ * actually have a magazine, giving each a short scheduled sequence of
+ * mechanical clacks (see `playClack`) instead of one shared click.
  */
 
 import type { WeaponViewKind } from "./weapons";
@@ -60,6 +64,32 @@ function audioContextCtor(): AudioContextCtor | null {
 const DEFAULT_MASTER_VOLUME = 0.5;
 const DEFAULT_SFX_VOLUME = 1;
 const DEFAULT_BGM_VOLUME = 0.5;
+
+/**
+ * One scheduled mechanical "clack" — a struck-object body under a narrow
+ * bandpassed noise click. See `AudioManager.playClack` for the recipe and
+ * `playShotgunPump` for the argument behind it. All times are in seconds.
+ */
+interface Clack {
+  /** Offset from the start of the sequence this clack belongs to. */
+  at: number;
+  /** Body pitch, swept `from` down to `to` — both in the 50-350Hz register
+   * this project's mechanical sounds live in, never a bright chirp. */
+  from: number;
+  to: number;
+  /** Body gain peak, kept well under the weapon's own shot so a sequence
+   * reads as the mechanism working, not as more shots. */
+  peak: number;
+  /** Centre frequency of the bandpassed noise click over the body. */
+  noiseHz: number;
+  noisePeak: number;
+  /** Optional shaping — heavier parts sweep further and ring longer. */
+  sweep?: number;
+  bodyDecay?: number;
+  noiseDecay?: number;
+  /** Bandpass Q; lower widens the click from a dry knock towards a scrape. */
+  q?: number;
+}
 
 class AudioManager {
   private ctx: AudioContext | null = null;
@@ -283,36 +313,52 @@ class AudioManager {
    */
   private playShotgunPump(ctx: AudioContext, sfx: GainNode, at: number): void {
     // Rack back, then slam forward — the slam is the heavier, lower of the two.
-    const clacks = [
-      { offset: 0, from: 110, to: 60, peak: 0.2, noiseHz: 340, noisePeak: 0.11 },
-      { offset: 0.16, from: 85, to: 48, peak: 0.24, noiseHz: 260, noisePeak: 0.13 },
-    ];
+    this.playClacks(ctx, sfx, at, [
+      { at: 0, from: 110, to: 60, peak: 0.2, noiseHz: 340, noisePeak: 0.11 },
+      { at: 0.16, from: 85, to: 48, peak: 0.24, noiseHz: 260, noisePeak: 0.13 },
+    ]);
+  }
 
-    for (const clack of clacks) {
-      const start = at + clack.offset;
+  /**
+   * One mechanical clack, scheduled at the absolute context time `start`: a
+   * `triangle` body (a struck object, where a square would read as a tone)
+   * swept downward, under a narrow bandpassed noise click (a lowpass would
+   * leave hiss instead of a dry knock). The shared recipe behind
+   * `playShotgunPump` and every `playReload` sequence — see the pump's doc
+   * comment above for why these are scheduled off `ctx.currentTime` with
+   * explicit offsets rather than triggered per frame from the engine.
+   */
+  private playClack(ctx: AudioContext, sfx: GainNode, start: number, clack: Clack): void {
+    const sweep = clack.sweep ?? 0.04;
+    const bodyDecay = clack.bodyDecay ?? 0.05;
+    const noiseDecay = clack.noiseDecay ?? 0.03;
 
-      const body = ctx.createOscillator();
-      body.type = "triangle";
-      body.frequency.setValueAtTime(clack.from, start);
-      body.frequency.exponentialRampToValueAtTime(clack.to, start + 0.04);
-      const bodyGain = envelope(ctx, clack.peak, 0.001, 0.05, start);
-      body.connect(bodyGain).connect(sfx);
-      body.start(start);
-      body.stop(start + 0.08);
+    const body = ctx.createOscillator();
+    body.type = "triangle";
+    body.frequency.setValueAtTime(clack.from, start);
+    body.frequency.exponentialRampToValueAtTime(clack.to, start + sweep);
+    const bodyGain = envelope(ctx, clack.peak, 0.001, bodyDecay, start);
+    body.connect(bodyGain).connect(sfx);
+    body.start(start);
+    body.stop(start + bodyDecay + 0.03);
 
-      // The same cached 0.12s buffer the blast above already allocated,
-      // windowed down to a click by the envelope and the early `stop`.
-      const noise = ctx.createBufferSource();
-      noise.buffer = this.noiseBuffer(ctx, 0.12);
-      const noiseFilter = ctx.createBiquadFilter();
-      noiseFilter.type = "bandpass";
-      noiseFilter.frequency.setValueAtTime(clack.noiseHz, start);
-      noiseFilter.Q.value = 7;
-      const noiseGain = envelope(ctx, clack.noisePeak, 0.001, 0.03, start);
-      noise.connect(noiseFilter).connect(noiseGain).connect(sfx);
-      noise.start(start);
-      noise.stop(start + 0.05);
-    }
+    // The same cached 0.12s buffer the shotgun blast already allocates,
+    // windowed down to a click by the envelope and the early `stop`.
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer(ctx, 0.12);
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = "bandpass";
+    noiseFilter.frequency.setValueAtTime(clack.noiseHz, start);
+    noiseFilter.Q.value = clack.q ?? 7;
+    const noiseGain = envelope(ctx, clack.noisePeak, 0.001, noiseDecay, start);
+    noise.connect(noiseFilter).connect(noiseGain).connect(sfx);
+    noise.start(start);
+    noise.stop(start + noiseDecay + 0.02);
+  }
+
+  /** A whole sequence of `playClack`s, each at its own `at` offset from `from`. */
+  private playClacks(ctx: AudioContext, sfx: GainNode, from: number, clacks: Clack[]): void {
+    for (const clack of clacks) this.playClack(ctx, sfx, from + clack.at, clack);
   }
 
   /** gdb: a short, cheap, low-pitched tick — fires up to ~11x/sec, so this
@@ -420,6 +466,157 @@ class AudioManager {
     osc.connect(this.distortionNode(ctx)).connect(gain).connect(sfx);
     osc.start(t);
     osc.stop(t + 0.16);
+  }
+
+  /**
+   * Weapon reload, dispatched by `kind` exactly like `playShoot` — the same
+   * "`viewKind` IS the sound identity" rule (see this file's header comment),
+   * so each reloadable weapon's mechanism sounds like its own hardware rather
+   * than one shared click.
+   *
+   * Each voice is a short sequence of clacks scheduled off `ctx.currentTime`
+   * (see `playClack`), laid out to roughly span that weapon's reload duration
+   * — so the reload reads as the gun being worked rather than as a single
+   * blip followed by dead air — and finishing a little early, leaving a beat
+   * of "loaded and waiting" the way `playShotgunPump` does.
+   *
+   * Friday Hotfix, SIGKILL Knife and Toolchain have no magazine to swap, so
+   * they never reload and deliberately have no voice here. Like `playShoot`,
+   * there's no `default` case: a newly added `WeaponViewKind` has to be
+   * listed here (even if only to fall through silently) or this fails to
+   * compile, rather than shipping a silent reload nobody notices.
+   */
+  playReload(kind: WeaponViewKind): void {
+    const ctx = this.resume();
+    if (!ctx || !this.sfx) return;
+    const sfx = this.sfx;
+    switch (kind) {
+      case "pistol":
+        return this.playPistolReload(ctx, sfx);
+      case "shotgun":
+        return this.playShotgunReload(ctx, sfx);
+      case "mp":
+        return this.playSmgReload(ctx, sfx);
+      case "rocket":
+        return this.playRocketReload(ctx, sfx);
+      case "flamethrower":
+      case "knife":
+      case "chainsaw":
+        return; // no magazine — see the doc comment above
+    }
+  }
+
+  /** echo pistol, reloading (~1.1s): magazine out, magazine in, slide
+   * release — three light, quick clicks, the highest and shortest of the four
+   * reload voices since it's the smallest mechanism. Peaks 0.14-0.19 against
+   * the pistol shot's 0.5. */
+  private playPistolReload(ctx: AudioContext, sfx: GainNode): void {
+    this.playClacks(ctx, sfx, ctx.currentTime, [
+      // Magazine catch pressed, empty mag drops free.
+      { at: 0, from: 190, to: 105, peak: 0.14, noiseHz: 420, noisePeak: 0.09 },
+      // Fresh magazine seated — the heaviest of the three.
+      { at: 0.36, from: 150, to: 80, peak: 0.19, noiseHz: 340, noisePeak: 0.11 },
+      // Slide released: the crispest, shortest click of the three.
+      {
+        at: 0.82,
+        from: 220,
+        to: 120,
+        peak: 0.17,
+        noiseHz: 560,
+        noisePeak: 0.12,
+        sweep: 0.03,
+        bodyDecay: 0.04,
+        noiseDecay: 0.025,
+      },
+    ]);
+  }
+
+  /** Regex Shotgun, reloading (~1.2s): two shells shoved into the tube — long,
+   * soft, low, wide-Q shoves rather than snaps — then the pump racking closed.
+   * The rack reuses `playShotgunPump` outright: it's the same physical action
+   * the shot already cycles, and duplicating it would let the two drift. */
+  private playShotgunReload(ctx: AudioContext, sfx: GainNode): void {
+    const t = ctx.currentTime;
+    // Wide-Q and long-decayed: a shell being shoved home, not a snap.
+    const shell = { noisePeak: 0.1, bodyDecay: 0.07, q: 4 };
+    this.playClacks(ctx, sfx, t, [
+      { ...shell, at: 0, from: 95, to: 58, peak: 0.16, noiseHz: 300 },
+      { ...shell, at: 0.28, from: 90, to: 54, peak: 0.17, noiseHz: 280 },
+    ]);
+    // Racked closed once both shells are in; silent again by ~0.9s.
+    this.playShotgunPump(ctx, sfx, t + 0.66);
+  }
+
+  /** gdb, reloading (~2.0s): a much heavier box magazine — five low clunks
+   * spread over the full cycle (catch, mag out, fresh mag seated hard, bolt
+   * back, bolt released) instead of the pistol's three light clicks, all of
+   * them longer-ringing and lower. */
+  private playSmgReload(ctx: AudioContext, sfx: GainNode): void {
+    this.playClacks(ctx, sfx, ctx.currentTime, [
+      { at: 0, from: 130, to: 70, peak: 0.15, noiseHz: 260, noisePeak: 0.09, bodyDecay: 0.07 },
+      { at: 0.45, from: 110, to: 58, peak: 0.13, noiseHz: 220, noisePeak: 0.08, bodyDecay: 0.07 },
+      // Seated hard — the heaviest hit of the sequence.
+      {
+        at: 0.95,
+        from: 95,
+        to: 50,
+        peak: 0.2,
+        noiseHz: 190,
+        noisePeak: 0.12,
+        sweep: 0.05,
+        bodyDecay: 0.09,
+      },
+      // Bolt hauled back, then let go: the tight pair that ends the cycle.
+      { at: 1.45, from: 150, to: 85, peak: 0.16, noiseHz: 340, noisePeak: 0.11 },
+      { at: 1.68, from: 105, to: 55, peak: 0.22, noiseHz: 240, noisePeak: 0.13, bodyDecay: 0.06 },
+    ]);
+  }
+
+  /** ghidra, reloading (~1.6s): the slowest and heaviest of the four — the
+   * breech swung open, a long low thunk as the rocket slides down the tube,
+   * then a crisp latch snapping shut, high and short against the two thunks
+   * so the sequence has an audible "sealed" beat at the end. */
+  private playRocketReload(ctx: AudioContext, sfx: GainNode): void {
+    this.playClacks(ctx, sfx, ctx.currentTime, [
+      {
+        at: 0,
+        from: 90,
+        to: 48,
+        peak: 0.18,
+        noiseHz: 200,
+        noisePeak: 0.1,
+        sweep: 0.06,
+        bodyDecay: 0.1,
+        noiseDecay: 0.05,
+        q: 3,
+      },
+      // The rocket bottoming out in the tube: the lowest, longest hit in here.
+      {
+        at: 0.55,
+        from: 70,
+        to: 40,
+        peak: 0.22,
+        noiseHz: 160,
+        noisePeak: 0.11,
+        sweep: 0.08,
+        bodyDecay: 0.14,
+        noiseDecay: 0.06,
+        q: 3,
+      },
+      // Latch: short, dry and well above everything before it.
+      {
+        at: 1.25,
+        from: 200,
+        to: 110,
+        peak: 0.17,
+        noiseHz: 380,
+        noisePeak: 0.13,
+        sweep: 0.03,
+        bodyDecay: 0.04,
+        noiseDecay: 0.025,
+        q: 9,
+      },
+    ]);
   }
 
   /** Enemy hit: a low, brief triangle-wave "thud". */

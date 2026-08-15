@@ -32,7 +32,7 @@ and level generation happen entirely in the browser, and nothing is uploaded any
 | A global variable | An acid pool (hazard terrain) |
 | A private/protected method | A locked room, gated behind a key found elsewhere in the level |
 | A `goto`/label pair | A pair of linked teleporter pads |
-| A large comment block | A lore terminal (press R to read) |
+| A large comment block | A lore terminal (press F to read) |
 | Dead code, empty catch blocks, deprecated tags, commented-out code, magic-number/blob literals | A secret room hidden behind a fake wall |
 | A `switch`/`match` with several cases | A **Switchboard** junction — one short dead-end spur per `case`, each behind a keyless amber door |
 | A `try`/`catch`/`finally` | An **Exception Handling Zone** — an acid gauntlet that corrodes away behind you, a guaranteed health-and-Swap alcove, then a safe loot room |
@@ -77,7 +77,7 @@ See [How It Works](#how-it-works) below for the full detail behind each of these
 - ✅ **Acid pools** — global variables become hazardous terrain
 - ✅ **Locked doors & keys** — private/protected methods gated behind dependency keys
 - ✅ **Teleporters** — `goto` statements become linked warp pads
-- ✅ **Lore terminals** — large code comments appear as glowing walls (press R to read)
+- ✅ **Lore terminals** — large code comments appear as glowing walls (press F to read)
 - ✅ **Secret rooms** — dead code, swallowed exceptions, deprecated tags, commented-out code, and magic-number/blob literals hidden behind fake walls  
 - ✅ **Timed spike traps & proximity mines** — corridor hazards at choke points
 - ✅ **Code smells** — functions with more than 5 params or more than 3 nesting levels get tougher
@@ -118,7 +118,7 @@ Each stage only consumes the data structure from the previous stage — language
   
 - **`goto`/label pairs → Teleporter pads** (linked, step on one to warp to the other)
   
-- **Large comments → Lore terminals** (glowing walls; press R to read, W/S to scroll)
+- **Large comments → Lore terminals** (glowing walls; press F to read, W/S to scroll)
   
 - **Dead code, empty catches, deprecated tags, commented-out code, magic blobs → Secret rooms** (hidden behind near-invisible fake walls)
   
@@ -213,9 +213,10 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/) with
 - **Space** — Quick-melee (SIGKILL Knife, infinite ammo, heals on kill — permanently replaced by the Toolchain chainsaw once found)
 
 ### Interaction & Navigation
-- **R** — Read nearby lore terminal (hold W/S to scroll) OR open fake wall to reveal secret
+- **R** — Reload the equipped weapon (also happens automatically when a magazine runs dry)
+- **F** — Read nearby lore terminal (hold W/S to scroll) OR open fake wall to reveal secret
 - **Tab** — Toggle automap (non-blocking — keep moving/fighting while open; only reveals explored areas)
-- **F** — Toggle fullscreen
+- **Alt+Enter** — Toggle fullscreen
 - **Esc** — Pause (freezes action under "PAUSED" overlay)
 - **Right-Ctrl** — Toggle FPS/frame-time display (top-right)
 - **F9** — Boss key: hide the game behind a code editor (pauses, leaves fullscreen, silences music); press again to bring it back

@@ -6,6 +6,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeRTCDataChannel } from "../../test/mocks/webrtc";
 import { createMockCanvasContext, stubCanvasGetContext } from "../../test/mocks/canvas";
 import type { EngineCarryover, PlayerId } from "../engine/engine";
+import type { InputSnapshot } from "../engine/input";
 import { COUNTDOWN_TICKS } from "../engine/transitionConstants";
 import type { GameMap, Tile } from "../map/types";
 import type { LevelTransitionAckMessage, LevelTransitionMessage } from "./levelTransitionTypes";
@@ -1415,9 +1416,13 @@ describe("runMultiplayerSessionAsHost", () => {
   });
 });
 
-function emptySnapshot() {
+/** Explicitly typed, and no longer carrying a stray `gates: []` that
+ * `InputSnapshot` has never had. Untyped, this helper silently produced a
+ * snapshot missing any newly-added field — the type error landed on each of
+ * its call sites instead, or nowhere at all if a call site happened to be
+ * untyped too. */
+function emptySnapshot(): InputSnapshot {
   return {
-    gates: [],
     keys: [],
     mouseDX: 0,
     fireQueued: false,
@@ -1425,6 +1430,7 @@ function emptySnapshot() {
     weaponRequest: null,
     mapToggle: false,
     interact: false,
+    reload: false,
     melee: false,
     meleeHeld: false,
     wheelSteps: 0,

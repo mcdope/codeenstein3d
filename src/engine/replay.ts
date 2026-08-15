@@ -107,6 +107,18 @@ export interface ReplayPayload {
    * comment. */
   version: 2;
   campaignName: string;
+  /**
+   * Fingerprint of the simulation constants this run was played under — see
+   * `computeSimulationHash`. One per run rather than per level, because those
+   * constants don't change mid-campaign.
+   *
+   * The leaderboard reads it to decide whether to offer "Watch Replay" at
+   * all, which the per-segment `balanceHash` cannot answer without
+   * regenerating each level's map. Optional because a payload stored before
+   * this field existed has none — and is treated as unplayable for it (see
+   * `simulationHashMatches`).
+   */
+  simulationHash?: string;
   /** One entry per level actually played this run, spawn to the one the run
    * ended on, in order. */
   levels: ReplayLevelSegment[];
@@ -214,7 +226,12 @@ export class CampaignReplayRecorder {
   private readonly levels: LevelRecorder[] = [];
   private current: LevelRecorder | null = null;
 
-  constructor(private readonly campaignName: string) {}
+  /** Resolved once and awaited at `finish()`, the same shape the per-level
+   * hashes already use — the caller has the constants but hashing is async. */
+  constructor(
+    private readonly campaignName: string,
+    private readonly simulationHashPromise?: Promise<string>,
+  ) {}
 
   /** Start recording a new level, becoming the target of every subsequent
    * `record()` call until the next `startLevel()`. Silently stops recording
@@ -274,7 +291,8 @@ export class CampaignReplayRecorder {
         "color:#e0a04a",
       );
     }
-    return { version: 2, campaignName: this.campaignName, levels };
+    const simulationHash = await this.simulationHashPromise;
+    return { version: 2, campaignName: this.campaignName, simulationHash, levels };
   }
 }
 
@@ -291,6 +309,7 @@ export const EMPTY_SNAPSHOT: InputSnapshot = {
   weaponRequest: null,
   mapToggle: false,
   interact: false,
+  reload: false,
   melee: false,
   meleeHeld: false,
   wheelSteps: 0,
@@ -359,6 +378,9 @@ export class ReplayPlaybackInput implements InputSource {
 
   consumeInteract(): boolean {
     return this.current.interact;
+  }
+  consumeReload(): boolean {
+    return this.current.reload;
   }
 
   consumeMelee(): boolean {

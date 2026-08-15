@@ -14,6 +14,7 @@ const VALID_SNAPSHOT: InputSnapshot = {
   weaponRequest: null,
   mapToggle: false,
   interact: false,
+  reload: false,
   melee: false,
   meleeHeld: false,
   wheelSteps: 0,

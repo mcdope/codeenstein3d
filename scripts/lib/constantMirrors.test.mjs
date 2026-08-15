@@ -111,6 +111,15 @@ describe("WEAPON_STATS mirrors the real ranged weapons", () => {
     expect(mirror.ammoPerShot).toBe(engine.ammoPerShot);
   });
 
+  it.each(RANGED)("weapon %i agrees on its magazine and reload time", (index) => {
+    // `scoreRangedWeapon` charges reload time into its kill-time estimate, so
+    // a stale copy here makes the bot mis-rank the shotgun and ghidra by about
+    // a reload each. Friday Hotfix has neither field; `undefined === undefined`
+    // is the assertion that keeps it that way in both tables.
+    expect(WEAPON_STATS[index].magazineSize).toBe(WEAPONS[index].magazineSize);
+    expect(WEAPON_STATS[index].reloadSec).toBe(WEAPONS[index].reloadSec);
+  });
+
   it.each(RANGED)("weapon %i agrees on which pool it draws from", (index) => {
     // Was not asserted until the shotgun moved off the shared `bullets` pool.
     // Nothing else links the two tables, and the failure is silent in the

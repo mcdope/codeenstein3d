@@ -25,15 +25,22 @@
 
 | Input | Action |
 |---|---|
-| `R` | Read a nearby lore terminal, or open a fake wall to reveal a secret room |
+| `R` | Reload the equipped weapon |
+| `F` | Read a nearby lore terminal, or open a fake wall to reveal a secret room |
 | `W` / `S` (while reading) | Scroll a lore terminal's text if it overflows the box |
 | `Tab` | Toggle the automap (does not pause — you can keep moving and fighting while it's open) |
-| `F` | Toggle fullscreen |
+| `Alt`+`Enter` | Toggle fullscreen |
 | `Escape` | Pause / unpause |
 | `Right Ctrl` | Toggle the FPS / frame-time readout |
 | `F9` | Boss key — hide the game behind a code editor, press again to bring it back |
 
 Losing window focus (alt-tab, clicking outside the browser) pauses the game automatically.
+
+### Reloading
+
+Every gun except the flamethrower now holds a magazine: **9** rounds for the echo pistol, **2** shells for the Regex Shotgun, **45** for gdb and a single rocket for ghidra. Fire it dry and it reloads itself; press `R` to top it up early, before a fight rather than during one. The HUD shows `loaded / in reserve`, and says **RELOADING** while the trigger is doing nothing.
+
+A reload only moves ammo, it never costs you any — and switching weapons cancels one in progress, so you can always swap to something loaded instead of waiting. The knife and chainsaw are unaffected: quick-melee still works mid-reload, which is the point of having it.
 
 ### The boss key
 

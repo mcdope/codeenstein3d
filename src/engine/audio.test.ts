@@ -210,6 +210,134 @@ describe("AudioManager.playShoot() dispatch", () => {
   });
 });
 
+describe("AudioManager.playReload() dispatch", () => {
+  it("does nothing when audio is unavailable", () => {
+    expect(() => audio.playReload("pistol")).not.toThrow();
+  });
+
+  // One clack = one triangle body + one bandpassed noise click, so the two
+  // counts always match; the shotgun's total includes `playShotgunPump`'s
+  // two, reused rather than duplicated for the final rack.
+  const cases: Array<{ kind: WeaponViewKind; clacks: number }> = [
+    { kind: "pistol", clacks: 3 }, // mag out, mag in, slide release
+    { kind: "shotgun", clacks: 4 }, // two shells + the pump's rack and slam
+    { kind: "mp", clacks: 5 }, // catch, mag out, mag in, bolt back, bolt release
+    { kind: "rocket", clacks: 3 }, // breech, tube thunk, latch
+  ];
+
+  for (const { kind, clacks } of cases) {
+    it(`plays a ${clacks}-clack mechanical sequence for "${kind}"`, () => {
+      vi.stubGlobal("AudioContext", MockAudioContext);
+      const ctx = audio.resume() as unknown as MockAudioContext;
+      audio.playReload(kind);
+      expect(ctx.createOscillator).toHaveBeenCalledTimes(clacks);
+      expect(ctx.createBufferSource).toHaveBeenCalledTimes(clacks);
+
+      const bodies = ctx.createOscillator.mock.results.map((r) => r.value);
+      // Struck objects, not tones — and every noise layer a dry bandpassed
+      // knock rather than the hiss a lowpass would leave.
+      expect(bodies.every((o: { type: string }) => o.type === "triangle")).toBe(true);
+      const filters = ctx.createBiquadFilter.mock.results.map((r) => r.value.type);
+      expect(filters).toEqual(Array(clacks).fill("bandpass"));
+    });
+
+    it(`schedules "${kind}"'s clacks in order off ctx.currentTime, each with a stop`, () => {
+      vi.stubGlobal("AudioContext", MockAudioContext);
+      const ctx = audio.resume() as unknown as MockAudioContext;
+      ctx.currentTime = 2; // not zero, so a missing `+ t` would show up
+      audio.playReload(kind);
+
+      const sources = [
+        ...ctx.createOscillator.mock.results,
+        ...ctx.createBufferSource.mock.results,
+      ].map((r) => r.value);
+
+      for (const src of sources) {
+        const start = src.start.mock.calls[0][0];
+        expect(start).toBeGreaterThanOrEqual(2); // absolute, not an offset
+        expect(src.stop.mock.calls[0][0]).toBeGreaterThan(start); // never open-ended
+      }
+
+      // A sequence of separate hits, not one long tone: the bodies step
+      // forward in time and the last one lands within the weapon's reload.
+      const starts: number[] = ctx.createOscillator.mock.results.map(
+        (r) => r.value.start.mock.calls[0][0],
+      );
+      expect([...starts].sort((a, b) => a - b)).toEqual(starts);
+      expect(starts[starts.length - 1]).toBeGreaterThan(starts[0] + 0.5);
+    });
+  }
+
+  it("keeps every reload body in the low mechanical register (50-350Hz)", () => {
+    // The house rule this file's mechanical voices follow — see
+    // `playShotgunPump`'s doc comment. A bright chirp here would read as a
+    // UI beep rather than as hardware being worked.
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const ctx = audio.resume() as unknown as MockAudioContext;
+    for (const kind of ["pistol", "shotgun", "mp", "rocket"] as const) audio.playReload(kind);
+    expect(ctx.createOscillator).toHaveBeenCalledTimes(15); // 3+4+5+3 — the loop below bites
+
+    for (const { value: osc } of ctx.createOscillator.mock.results) {
+      const [from] = osc.frequency.setValueAtTime.mock.calls.at(-1) ?? [];
+      const [to] = osc.frequency.exponentialRampToValueAtTime.mock.calls.at(-1) ?? [];
+      expect(from).toBeLessThanOrEqual(350); // the register ceiling
+      expect(to).toBeLessThan(from); // sinks, like every struck thing in here
+      expect(to).toBeGreaterThanOrEqual(35); // but still a body, not sub-bass
+    }
+  });
+
+  it("keeps the pistol's reload well below its own shot, so it reads as mechanism", () => {
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const ctx = audio.resume() as unknown as MockAudioContext;
+    audio.playShoot("pistol");
+    // `envelope()`'s first exponential ramp is the peak it opens up to.
+    const peakOf = (g: { exponentialRampToValueAtTime: { mock: { calls: number[][] } } }): number =>
+      g.exponentialRampToValueAtTime.mock.calls[0][0];
+    const shotPeak = peakOf(ctx.createGain.mock.results.at(-1)?.value.gain);
+
+    ctx.createGain.mockClear();
+    audio.playReload("pistol");
+    const peaks = ctx.createGain.mock.results.map((r) => peakOf(r.value.gain));
+    expect(Math.max(...peaks)).toBeLessThan(shotPeak * 0.5);
+  });
+
+  it("is a no-op for the magazine-less weapons", () => {
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const ctx = audio.resume() as unknown as MockAudioContext;
+    for (const kind of ["flamethrower", "knife", "chainsaw"] as const) {
+      expect(() => audio.playReload(kind)).not.toThrow();
+    }
+    expect(ctx.createOscillator).not.toHaveBeenCalled();
+    expect(ctx.createBufferSource).not.toHaveBeenCalled();
+  });
+
+  it("stays silent under browser automation", () => {
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    vi.stubGlobal("navigator", { webdriver: true });
+    expect(audio.isSilenced()).toBe(true);
+    expect(() => audio.playReload("mp")).not.toThrow();
+    expect(audio.getContextState()).toBe("none"); // no context was ever built
+  });
+
+  it("does not count as a shot", () => {
+    // `getShotCount` is the perf profiler's shot proxy (see its doc comment);
+    // reloads must not inflate it.
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    audio.resume();
+    audio.playReload("shotgun");
+    expect(audio.getShotCount()).toBe(0);
+  });
+
+  it("reuses the cached 0.12s noise buffer every clack shares", () => {
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const ctx = audio.resume() as unknown as MockAudioContext;
+    audio.playReload("mp"); // five clacks, one buffer
+    audio.playReload("rocket");
+    audio.playShoot("shotgun"); // the same 0.12s key
+    expect(ctx.createBuffer).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("AudioManager diagnostics (getShotCount/getContextState)", () => {
   it("counts every playShoot call, even when audio is unavailable", () => {
     expect(audio.getShotCount()).toBe(0);

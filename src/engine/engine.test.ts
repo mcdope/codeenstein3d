@@ -119,6 +119,7 @@ class ScriptedInput implements InputSource {
   weaponRequest: number | null = null;
   mapToggle = false;
   interact = false;
+  reload = false;
   melee = false;
   meleeHeld = false;
   wheelSteps = 0;
@@ -165,6 +166,11 @@ class ScriptedInput implements InputSource {
   consumeInteract(): boolean {
     const v = this.interact;
     this.interact = false;
+    return v;
+  }
+  consumeReload(): boolean {
+    const v = this.reload;
+    this.reload = false;
     return v;
   }
   consumeMelee(): boolean {
@@ -2269,6 +2275,209 @@ describe("RaycasterEngine — firing", () => {
     expect(lastStats(handlers).shells).toBe(0);
   });
 
+  it("empties the magazine, reloads itself, and conserves the total across it", () => {
+    const map = fakeMap({}, 12);
+    const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 40, shells: 0, rockets: 0, smg: 0, gas: 0 },
+    });
+    engine.advance(0.016);
+    // 40 owned: 9 in the pistol, 31 in reserve. The *total* is what `stats`
+    // reports, and it must not move except by firing.
+    expect(lastStats(handlers).magazine).toBe(9);
+    expect(lastStats(handlers).bullets).toBe(40);
+
+    for (let i = 0; i < 9; i++) {
+      input.fireQueued = true;
+      engine.advance(0.16); // one pistol fire interval per pull
+    }
+    expect(lastStats(handlers).magazine).toBe(0);
+    expect(lastStats(handlers).bullets).toBe(31); // nine spent, none lost
+    expect(lastStats(handlers).reloading).toBe(true); // started itself
+
+    engine.advance(1.2); // longer than the pistol's 1.1s reload
+    expect(lastStats(handlers).reloading).toBe(false);
+    expect(lastStats(handlers).magazine).toBe(9);
+    expect(lastStats(handlers).bullets).toBe(31); // a reload moves ammo, never creates it
+  });
+
+  it("refuses to fire while reloading, and does not bank the trigger-pull", () => {
+    const map = fakeMap({}, 12);
+    const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 40, shells: 0, rockets: 0, smg: 0, gas: 0 },
+    });
+    engine.advance(0.016);
+    input.reload = true;
+    engine.advance(0.016);
+    expect(lastStats(handlers).reloading).toBe(false); // full magazine: nothing to do
+
+    input.fireQueued = true;
+    engine.advance(0.16);
+    expect(lastStats(handlers).magazine).toBe(8);
+    input.reload = true;
+    engine.advance(0.016);
+    expect(lastStats(handlers).reloading).toBe(true);
+
+    // Spam the trigger through the middle of the reload — 15 x 0.05s = 0.75s,
+    // well inside the pistol's 1.1s — and not one round leaves the gun.
+    for (let i = 0; i < 15; i++) {
+      input.fireQueued = true;
+      engine.advance(0.05);
+    }
+    expect(lastStats(handlers).reloading).toBe(true);
+    expect(lastStats(handlers).magazine).toBe(8);
+    expect(lastStats(handlers).bullets).toBe(39); // exactly the one shot above
+
+    engine.advance(0.5); // let it finish, trigger released
+    expect(lastStats(handlers).magazine).toBe(9);
+    expect(lastStats(handlers).bullets).toBe(39);
+
+    // And every pull that landed during the reload was spent, not banked — the
+    // next frame fires nothing on its own.
+    engine.advance(0.016);
+    expect(lastStats(handlers).magazine).toBe(9);
+  });
+
+  it("ignores a reload request while one is already running", () => {
+    // Mashing R must not restart the timer — that would be a way to reload
+    // forever, and the sound is scheduled once per start.
+    const map = fakeMap({}, 12);
+    const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 40, shells: 0, rockets: 0, smg: 0, gas: 0 },
+    });
+    engine.advance(0.016);
+    input.fireQueued = true;
+    engine.advance(0.16);
+
+    input.reload = true;
+    engine.advance(0.016);
+    expect(lastStats(handlers).reloading).toBe(true);
+    // Keep asking, all the way through what should be the last of it.
+    for (let i = 0; i < 25; i++) {
+      input.reload = true;
+      engine.advance(0.05);
+    }
+    expect(lastStats(handlers).reloading).toBe(false); // finished on schedule
+    expect(lastStats(handlers).magazine).toBe(9);
+  });
+
+  it("cancels a reload when the player switches weapons, losing nothing", () => {
+    const map = fakeMap({}, 12);
+    const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 40, shells: 4, rockets: 0, smg: 0, gas: 0 },
+    });
+    engine.advance(0.016);
+    input.fireQueued = true;
+    engine.advance(0.16);
+    input.reload = true;
+    engine.advance(0.016);
+    expect(lastStats(handlers).reloading).toBe(true);
+
+    input.weaponRequest = 1; // shotgun, mid-reload
+    engine.advance(0.016);
+    expect(lastStats(handlers).reloading).toBe(false);
+    // The pistol keeps the 8 it had; the rounds it had not taken yet are
+    // still in reserve. Deliberately unlike the fire cooldown, which is
+    // *not* switch-cancellable — see `updateReload`'s doc comment.
+    expect(lastStats(handlers).bullets).toBe(39);
+
+    input.weaponRequest = 0;
+    engine.advance(0.016);
+    expect(lastStats(handlers).magazine).toBe(8);
+  });
+
+  it("does not reload when there is nothing in reserve to load", () => {
+    const map = fakeMap({}, 12);
+    const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 2, shells: 0, rockets: 0, smg: 0, gas: 0 },
+    });
+    engine.advance(0.016);
+    expect(lastStats(handlers).magazine).toBe(2); // all of it fits in the magazine
+
+    for (let i = 0; i < 2; i++) {
+      input.fireQueued = true;
+      engine.advance(0.16);
+    }
+    expect(lastStats(handlers).bullets).toBe(0);
+    input.reload = true;
+    engine.advance(0.016);
+    expect(lastStats(handlers).reloading).toBe(false); // genuinely dry, not reloading forever
+  });
+
+  it("still lets a player quick-melee while reloading", () => {
+    // The promise `updateFiring`'s doc comment already made about the fire
+    // cooldown: a player who can't shoot always has something to swing.
+    const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 1 });
+    const map = fakeMap({ enemies: [enemy] });
+    const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 40, shells: 0, rockets: 0, smg: 0, gas: 0 },
+    });
+    engine.advance(0.016);
+    input.fireQueued = true;
+    engine.advance(0.16);
+    input.reload = true;
+    engine.advance(0.016);
+    expect(lastStats(handlers).reloading).toBe(true);
+
+    input.melee = true;
+    engine.advance(0.016);
+    expect(enemy.hp).toBeLessThanOrEqual(0);
+  });
+
+  it("counts a trigger-pull refused by a genuinely dry magazine in telemetry", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const map = fakeMap({}, 12);
+      // Two rounds total: both load into the magazine, leaving no reserve, so
+      // once they are fired there is nothing to reload with and the next pull
+      // is a real refusal rather than a wait.
+      const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+        carryover: { health: 100, swap: 0, bullets: 2, shells: 0, rockets: 0, smg: 0, gas: 0 },
+      });
+      engine.advance(0.016);
+      for (let i = 0; i < 3; i++) {
+        input.fireQueued = true;
+        engine.advance(0.16);
+      }
+      expect(lastStats(handlers).magazine).toBe(0);
+
+      const hooks = (window as unknown as { __codeensteinTestHooks?: { getTelemetrySnapshot: () => Record<string, number> } }).__codeensteinTestHooks;
+      expect(hooks!.getTelemetrySnapshot().shotsBlockedByEmptyMag).toBe(1);
+      // Time spent reloading is tracked too, and this run never got to reload.
+      expect(hooks!.getTelemetrySnapshot().timeReloadingSec).toBe(0);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
+  it("keeps the old out-of-ammo path for a weapon with no magazine", () => {
+    // Friday Hotfix is the one ranged weapon that streams straight from its
+    // reserve, so it never reloads and keeps the original "check the pool,
+    // refuse, log, toast" branch rather than the magazine one.
+    const map = fakeMap({}, 12);
+    const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 0, shells: 0, rockets: 0, smg: 0, gas: 4, ownedWeapons: [0, 1, 2, 3, 4, 5] },
+    });
+    input.weaponRequest = 4; // Friday Hotfix — a number-key *slot*, not a WEAPONS index
+    engine.advance(0.016);
+    expect(lastStats(handlers).magazineSize).toBe(0); // no magazine at all
+    expect(lastStats(handlers).reloading).toBe(false);
+
+    // It is `auto`, so it burns while the trigger is held: 4 gas at 2.5 a
+    // shot is one shot, and the second pull finds the pool short.
+    input.fireHeld = true;
+    engine.advance(0.05);
+    expect(lastStats(handlers).gas).toBe(1.5);
+
+    const logSpy = vi.spyOn(console, "log");
+    engine.advance(0.5);
+    expect(lastStats(handlers).gas).toBe(1.5); // refused, not driven negative
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("out of gas"));
+    // And still no reload — there is no magazine to fill.
+    expect(lastStats(handlers).reloading).toBe(false);
+    logSpy.mockRestore();
+  });
+
   it("caps pistol click-spam at its own fire interval", () => {
     const map = fakeMap({}, 12);
     const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
@@ -2977,7 +3186,12 @@ describe("RaycasterEngine — cheats", () => {
     input.cheat = "IDKFA";
     engine.advance(0.016);
     const stats = lastStats(handlers);
-    expect(stats.bullets).toBe(999);
+    // The reserve is what the cheat maxes; the reported figure is the total
+    // owned, so it also carries whatever the magazines hold.
+    expect(stats.bullets).toBeGreaterThanOrEqual(999);
+    // And the equipped gun is actually loaded — a "full arsenal" that has to
+    // stop and reload before its first shot would be a poor cheat.
+    expect(stats.magazine).toBe(stats.magazineSize);
     expect(stats.ownedWeapons.length).toBeGreaterThan(3);
     expect(handlers.onCheatActivated).toHaveBeenCalledWith("IDKFA");
   });

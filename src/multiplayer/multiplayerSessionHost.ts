@@ -41,9 +41,9 @@
  * genuinely per-guest (`graceTimers`/`rosterRemovalsToApply`), not just
  * per-session, so one guest disconnecting can never affect another's.
  */
-import type { AmmoPools } from "../engine/ammo";
 import {
   REVIVE_HEALTH,
+  type BotPlayerState,
   type EngineCarryover,
   type EngineStats,
   type PlayerId,
@@ -164,27 +164,7 @@ export interface MultiplayerSessionHandle {
   /** Read-only — see `RaycasterEngine.getBotPlayerState`'s doc comment.
    * `null` before any level has started, or if `id` isn't a connected
    * player. */
-  getBotPlayerState(id: PlayerId): {
-    x: number;
-    y: number;
-    dirX: number;
-    dirY: number;
-    health: number;
-    healthFraction: number;
-    swap: number;
-    state: "playing" | "over";
-    // `AmmoPools`, not a spelled-out four-field literal: the producer is
-    // pool-agnostic (`{ ...local.ammo }`), so a hand-written shape here
-    // silently stops matching reality when a fifth pool is added — see
-    // `doc/dev/adding-a-weapon.md`.
-    ammo: AmmoPools;
-    weaponIndex: number;
-    meleeWouldHit: boolean;
-    wouldMineHit: boolean;
-    ownedWeapons: number[];
-    levelTime: number;
-    distanceTraveled: number;
-  } | null;
+  getBotPlayerState(id: PlayerId): BotPlayerState | null;
   /** Test-only, mutating — see `RaycasterEngine.debugInjectDesync`'s doc
    * comment. */
   debugInjectDesync(injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }): void;

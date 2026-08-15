@@ -37,6 +37,9 @@ function fakeStats(overrides: Partial<EngineStats> = {}): EngineStats {
     swap: 0,
     bullets: 10,
     shells: 4,
+    magazine: 9,
+    magazineSize: 9,
+    reloading: false,
     rockets: 2,
     smg: 20,
     gas: 30,
@@ -449,24 +452,55 @@ describe("drawHud", () => {
     expect(c.fillText).toHaveBeenCalledWith("5", 205, expect.any(Number));
   });
 
-  it("shows BULLETS for a bullets-type weapon, red when empty", () => {
+  it("shows BULLETS as loaded / in reserve for a bullets-type weapon", () => {
     const c = ctx();
-    drawHud(asCtx(c), fakeStats({ weaponIndex: 0, bullets: 0 }));
+    // `bullets` is everything owned; 9 of it is in the magazine, so the
+    // reserve shown beside it is the remaining 31.
+    drawHud(asCtx(c), fakeStats({ weaponIndex: 0, bullets: 40, magazine: 9, magazineSize: 9 }));
     expect(c.fillText).toHaveBeenCalledWith("BULLETS", 275, expect.any(Number));
-    expect(c.fillText).toHaveBeenCalledWith("0", 275, expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("9 / 31", 275, expect.any(Number));
+  });
+
+  it("shows a part-spent magazine and an empty one without calling either dry", () => {
+    const c = ctx();
+    drawHud(asCtx(c), fakeStats({ weaponIndex: 0, bullets: 40, magazine: 3, magazineSize: 9 }));
+    expect(c.fillText).toHaveBeenCalledWith("3 / 37", 275, expect.any(Number));
+
+    const empty = ctx();
+    drawHud(asCtx(empty), fakeStats({ weaponIndex: 0, bullets: 31, magazine: 0, magazineSize: 9 }));
+    expect(empty.fillText).toHaveBeenCalledWith("0 / 31", 275, expect.any(Number));
+  });
+
+  it("says RELOADING in place of the pool name while reloading", () => {
+    const c = ctx();
+    drawHud(asCtx(c), fakeStats({ weaponIndex: 0, bullets: 40, magazine: 0, magazineSize: 9, reloading: true }));
+    expect(c.fillText).toHaveBeenCalledWith("RELOADING", 275, expect.any(Number));
+    expect(c.fillText).not.toHaveBeenCalledWith("BULLETS", 275, expect.any(Number));
+  });
+
+  it("colors the readout red only when nothing is left to load either", () => {
+    // An empty magazine with a reserve behind it is a one-second problem, not
+    // a crisis — only a genuinely dry pool turns red.
+    const notDry = ctx();
+    drawHud(asCtx(notDry), fakeStats({ weaponIndex: 0, bullets: 31, magazine: 0, magazineSize: 9 }));
+    expect(notDry.fillStyle).not.toBe("#ff5a4a");
+
+    const dry = ctx();
+    drawHud(asCtx(dry), fakeStats({ weaponIndex: 0, bullets: 0, magazine: 0, magazineSize: 9 }));
+    expect(dry.fillText).toHaveBeenCalledWith("0 / 0", 275, expect.any(Number));
   });
 
   it("shows ROCKETS for a rockets-type weapon", () => {
     const c = ctx();
-    drawHud(asCtx(c), fakeStats({ weaponIndex: 4, rockets: 3 }));
+    drawHud(asCtx(c), fakeStats({ weaponIndex: 4, rockets: 3, magazine: 1, magazineSize: 1 }));
     expect(c.fillText).toHaveBeenCalledWith("ROCKETS", 275, expect.any(Number));
-    expect(c.fillText).toHaveBeenCalledWith("3", 275, expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("1 / 2", 275, expect.any(Number));
   });
 
   it("colors rockets red once empty", () => {
     const c = ctx();
-    drawHud(asCtx(c), fakeStats({ weaponIndex: 4, rockets: 0 }));
-    expect(c.fillText).toHaveBeenCalledWith("0", 275, expect.any(Number));
+    drawHud(asCtx(c), fakeStats({ weaponIndex: 4, rockets: 0, magazine: 0, magazineSize: 1 }));
+    expect(c.fillText).toHaveBeenCalledWith("0 / 0", 275, expect.any(Number));
   });
 
   it("shows SMG AMMO for an smg-type weapon", () => {
@@ -477,20 +511,21 @@ describe("drawHud", () => {
 
   it("colors smg ammo red once empty", () => {
     const c = ctx();
-    drawHud(asCtx(c), fakeStats({ weaponIndex: 3, smg: 0 }));
-    expect(c.fillText).toHaveBeenCalledWith("0", 275, expect.any(Number));
+    drawHud(asCtx(c), fakeStats({ weaponIndex: 3, smg: 0, magazine: 0, magazineSize: 45 }));
+    expect(c.fillText).toHaveBeenCalledWith("0 / 0", 275, expect.any(Number));
   });
 
   it("shows GAS for a gas-type weapon, floored for a fractional value", () => {
     const c = ctx();
-    drawHud(asCtx(c), fakeStats({ weaponIndex: 5, gas: 37.5 }));
+    // Friday Hotfix has no magazine, so it keeps the single bare number.
+    drawHud(asCtx(c), fakeStats({ weaponIndex: 5, gas: 37.5, magazine: 0, magazineSize: 0 }));
     expect(c.fillText).toHaveBeenCalledWith("GAS", 275, expect.any(Number));
     expect(c.fillText).toHaveBeenCalledWith("37", 275, expect.any(Number));
   });
 
   it("colors gas red once empty", () => {
     const c = ctx();
-    drawHud(asCtx(c), fakeStats({ weaponIndex: 5, gas: 0 }));
+    drawHud(asCtx(c), fakeStats({ weaponIndex: 5, gas: 0, magazine: 0, magazineSize: 0 }));
     expect(c.fillText).toHaveBeenCalledWith("0", 275, expect.any(Number));
   });
 

@@ -132,6 +132,38 @@ describe("renderHighscoreTable — Watch Replay button", () => {
     expect(replayCell(container).textContent).toBe("—");
   });
 
+  it("hides both buttons, with a reason, when the rules have moved on since the recording", () => {
+    const container = document.createElement("div");
+    renderHighscoreTable(container, [entry({ replay: replay() })], {
+      onWatchReplay: vi.fn(),
+      onExportReplay: vi.fn(),
+      isReplayPlayable: () => false,
+    });
+
+    expect(replayCell(container).querySelector("button")).toBeNull();
+    // Deliberately not the same "—" a run with no replay at all shows: this
+    // one *has* a recording, it just can no longer reproduce its own score.
+    expect(replayCell(container).textContent).toBe("rules changed");
+    expect(replayCell(container).title).toContain("gameplay change");
+  });
+
+  it("keeps both buttons when the recording still matches the current rules", () => {
+    const container = document.createElement("div");
+    renderHighscoreTable(container, [entry({ replay: replay() })], {
+      onWatchReplay: vi.fn(),
+      onExportReplay: vi.fn(),
+      isReplayPlayable: () => true,
+    });
+    expect(replayCell(container).querySelectorAll("button")).toHaveLength(2);
+  });
+
+  it("treats a caller that does not care about playability as before", () => {
+    // The option is optional, and omitting it must not start hiding buttons.
+    const container = document.createElement("div");
+    renderHighscoreTable(container, [entry({ replay: replay() })], { onWatchReplay: vi.fn() });
+    expect(replayCell(container).querySelector("button")).not.toBeNull();
+  });
+
   it("renders no button for a legacy (non-v2) replay shape", () => {
     const container = document.createElement("div");
     const legacyReplay = { ...replay(), version: 1 } as unknown as ReplayPayload;
