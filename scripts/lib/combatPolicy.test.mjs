@@ -1691,10 +1691,12 @@ describe("turnSplitIntent", () => {
   });
 });
 
-// `BOT_AIM_LEAD` ships **off** — the 2026-08-11 A/B measured it as a regression
-// (see its doc comment in `combatPolicy.mjs`). The machinery is kept for a
-// future attempt against the engine's real velocity rather than a differenced
-// estimate, so these pin what it does when switched on.
+// `BOT_AIM_LEAD` ships **on**, gated at 2 tiles by `BOT_AIM_LEAD_MIN_DIST` — the
+// 2026-08-11 A/B measured the *ungated* lead as a regression and the 2026-08-14
+// re-run traced that to re-aim cost rather than to the prediction (see its doc
+// comment in `combatPolicy.mjs`). This alias is explicit for the same reason
+// `LEAD_OFF` below is: a contrast that leans on the default stops contrasting
+// anything the moment the default flips.
 const LEAD_ON = { ...DEFAULT_TUNING, BOT_AIM_LEAD: true };
 /** The lead is ON by default since 2026-08-14, so the *off* arm now has to say
  * so explicitly. These tests contrast the two arms, and a contrast that leans
