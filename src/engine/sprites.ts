@@ -677,6 +677,13 @@ function lootColors(kind: LootDrop["kind"]): { back: string; fill: string } {
   switch (kind) {
     case "bullets":
       return { back: "#0e3540", fill: "#3fd0e0" }; // cyan "RAM chip", unchanged
+    case "shells":
+      // Deliberately far from the bullets cyan next to it: these are two
+      // separate pools now, and a drop you can only use with one of your two
+      // starting weapons has to read as different at a glance. Amber, matching
+      // its own HUD readout rather than the shotgun's orange tracer, which is
+      // already the rockets colour.
+      return { back: "#402f10", fill: "#ffb547" };
     case "rockets":
       return { back: "#402210", fill: "#ff8a3f" }; // hot orange
     case "smg":

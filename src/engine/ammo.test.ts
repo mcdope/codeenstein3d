@@ -9,9 +9,11 @@ import {
   ELITE_BULLETS_DROP_AMOUNT,
   ELITE_GAS_DROP_AMOUNT,
   ELITE_ROCKETS_DROP_AMOUNT,
+  ELITE_SHELLS_DROP_AMOUNT,
   ELITE_SMG_DROP_AMOUNT,
   GAS_DROP_AMOUNT,
   ROCKETS_DROP_AMOUNT,
+  SHELLS_DROP_AMOUNT,
   SMG_DROP_AMOUNT,
 } from "./loot";
 import { WEAPONS } from "./weapons";
@@ -39,8 +41,11 @@ function enemy(overrides: Partial<Enemy> = {}): Enemy {
 }
 
 describe("AMMO_TYPES", () => {
-  it("is the fixed 4-pool order", () => {
-    expect(AMMO_TYPES).toEqual(["bullets", "rockets", "smg", "gas"]);
+  it("is the fixed pool order, with shells appended rather than inserted", () => {
+    // `shells` reads out of place next to `bullets` on purpose: this order
+    // decides the sequence a disconnecting player's inventory is converted
+    // into drops, so a new pool goes on the end. See AMMO_TYPES' doc comment.
+    expect(AMMO_TYPES).toEqual(["bullets", "rockets", "smg", "gas", "shells"]);
   });
 });
 
@@ -49,24 +54,35 @@ describe("AMMO_META", () => {
     expect(AMMO_META.bullets).toEqual({
       label: "bullets",
       logColor: "#3fd0e0",
+      hudColor: "#4cff6a",
       dropAmount: BULLETS_DROP_AMOUNT,
       eliteTopUp: ELITE_BULLETS_DROP_AMOUNT,
+    });
+    expect(AMMO_META.shells).toEqual({
+      label: "shells",
+      logColor: "#ffb547",
+      hudColor: "#ffb547",
+      dropAmount: SHELLS_DROP_AMOUNT,
+      eliteTopUp: ELITE_SHELLS_DROP_AMOUNT,
     });
     expect(AMMO_META.rockets).toEqual({
       label: "rockets",
       logColor: "#ff9d3f",
+      hudColor: "#ff9d3f",
       dropAmount: ROCKETS_DROP_AMOUNT,
       eliteTopUp: ELITE_ROCKETS_DROP_AMOUNT,
     });
     expect(AMMO_META.smg).toEqual({
       label: "smg ammo",
       logColor: "#3fa9ff",
+      hudColor: "#3fa9ff",
       dropAmount: SMG_DROP_AMOUNT,
       eliteTopUp: ELITE_SMG_DROP_AMOUNT,
     });
     expect(AMMO_META.gas).toEqual({
       label: "gas",
       logColor: "#ff5a1a",
+      hudColor: "#ff8a4a",
       dropAmount: GAS_DROP_AMOUNT,
       eliteTopUp: ELITE_GAS_DROP_AMOUNT,
     });
@@ -74,8 +90,9 @@ describe("AMMO_META", () => {
 });
 
 describe("startingAmmo", () => {
-  it("gives flat starting reserves for rockets/smg/gas regardless of enemies", () => {
+  it("gives flat starting reserves for shells/rockets/smg/gas regardless of enemies", () => {
     const ammo = startingAmmo([]);
+    expect(ammo.shells).toBe(12);
     expect(ammo.rockets).toBe(4);
     expect(ammo.smg).toBe(40);
     expect(ammo.gas).toBe(40);

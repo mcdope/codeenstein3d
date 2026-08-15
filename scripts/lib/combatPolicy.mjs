@@ -1302,10 +1302,15 @@ export const WEAPON_STATS = {
   [PISTOL_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 22, ammoPerShot: 1, ammoType: "bullets", spreadPx: 0, fireIntervalSec: 0.15 },
   // 25, not 18: the pump cap below would otherwise have left the shotgun at
   // 7x18/0.85s = 148 DPS against the pistol's 22/0.15s = 147, i.e. identical
-  // output for 4x the ammo out of the same "bullets" pool. At 25 it lands
+  // output for 4x what was then the same "bullets" pool. At 25 it lands
   // 7x25/0.85s = 206 DPS. Mirrors weapons.ts, where the two numbers are
   // explicitly tuned against each other.
-  [SHOTGUN_WEAPON_INDEX]: { pellets: 7, damagePerPellet: 25, ammoPerShot: 4, ammoType: "bullets", spreadPx: 70, fireIntervalSec: 0.85 },
+  //
+  // One "shells" per pull, from the shotgun's own pool — it stopped spending 4
+  // bullets when the pools were split. `scoreRangedWeapon` reads both fields,
+  // so a stale copy here would have the bot valuing the shotgun against the
+  // pistol's reserve.
+  [SHOTGUN_WEAPON_INDEX]: { pellets: 7, damagePerPellet: 25, ammoPerShot: 1, ammoType: "shells", spreadPx: 70, fireIntervalSec: 0.85 },
   // gdb tightens the shared cone deliberately, so it stays usable at range
   // despite low per-shot damage (`maxConeDeviationPx` in weapons.ts).
   [GDB_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 12, ammoPerShot: 1, ammoType: "smg", spreadPx: 0, fireIntervalSec: 0.09, maxConeDeviationPx: 20 },
@@ -1728,11 +1733,13 @@ export function scoreRangedWeapon(weaponIndex, { targetHp, dist, player, profile
 }
 
 export function hasAmmoFor(player, weaponIndex) {
-  if (weaponIndex === 0 || weaponIndex === 1) return player.ammo.bullets > 0;
-  if (weaponIndex === GDB_WEAPON_INDEX) return player.ammo.smg > 0;
-  if (weaponIndex === GHIDRA_WEAPON_INDEX) return player.ammo.rockets > 0;
-  if (weaponIndex === FRIDAY_HOTFIX_WEAPON_INDEX) return player.ammo.gas > 0;
-  return true;
+  // Off `WEAPON_STATS[...].ammoType` rather than a hand-written index->pool
+  // chain. The chain had the pistol and shotgun sharing `bullets`, which was
+  // true until the shotgun got its own pool — and the failure mode of getting
+  // it wrong is silent: the bot simply believes it can fire when it cannot.
+  const type = WEAPON_STATS[weaponIndex]?.ammoType;
+  if (!type) return true; // melee, or a weapon that costs nothing
+  return (player.ammo?.[type] ?? 0) > 0;
 }
 
 /**

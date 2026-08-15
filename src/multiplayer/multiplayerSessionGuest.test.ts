@@ -195,7 +195,7 @@ function fakePlayerSnapshot(overrides: Partial<PlayerSnapshot> = {}): PlayerSnap
     planeY: 1,
     health: 100,
     swap: 0,
-    ammo: { bullets: 0, rockets: 0, smg: 0, gas: 0 },
+    ammo: { bullets: 0, shells: 0, rockets: 0, smg: 0, gas: 0 },
     weaponIndex: 0,
     heldGates: [],
     ownedWeapons: [0, 1, 2],

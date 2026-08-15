@@ -29,9 +29,9 @@ export function killPoints(enemy: Enemy): number {
 
 /** Max points awarded for finishing at full health. */
 const HEALTH_BONUS_MAX = 500;
-/** Max points split four ways between remaining bullets/rockets/smg/gas ammo
- * (each contributes up to a quarter), relative to what the level started the
- * player out with. */
+/** Max points split evenly between every ammo pool's remaining reserve
+ * (bullets/shells/rockets/smg/gas — a fifth each), relative to what the level
+ * started the player out with. */
 const AMMO_BONUS_MAX = 250;
 /** Max points for finishing quickly. */
 const SPEED_BONUS_MAX = 400;
@@ -70,12 +70,14 @@ export interface ScoreInput {
   finalHealth: number;
   maxHealth: number;
   finalBullets: number;
+  finalShells: number;
   finalRockets: number;
   finalSmg: number;
   finalGas: number;
-  /** Bullets/rockets/smg/gas ammo the level started the player out with — the
-   * baseline remaining ammo is scored against (see `AMMO_BONUS_MAX`). */
+  /** Ammo the level started the player out with, per pool — the baseline
+   * remaining ammo is scored against (see `AMMO_BONUS_MAX`). */
   startingBullets: number;
+  startingShells: number;
   startingRockets: number;
   startingSmg: number;
   startingGas: number;
@@ -124,10 +126,14 @@ export function computeScore(input: ScoreInput): ScoreBreakdown {
   const healthBonus = Math.round(healthFrac * HEALTH_BONUS_MAX);
 
   const bulletsFrac = input.startingBullets > 0 ? clamp01(input.finalBullets / input.startingBullets) : 0;
+  const shellsFrac = input.startingShells > 0 ? clamp01(input.finalShells / input.startingShells) : 0;
   const rocketsFrac = input.startingRockets > 0 ? clamp01(input.finalRockets / input.startingRockets) : 0;
   const smgFrac = input.startingSmg > 0 ? clamp01(input.finalSmg / input.startingSmg) : 0;
   const gasFrac = input.startingGas > 0 ? clamp01(input.finalGas / input.startingGas) : 0;
-  const ammoBonus = Math.round(((bulletsFrac + rocketsFrac + smgFrac + gasFrac) / 4) * AMMO_BONUS_MAX);
+  // Five pools now, so each is worth a fifth rather than a quarter. This
+  // does move scores: a run that finishes with a full shotgun scores its
+  // conservation where before those shells were counted inside `bullets`.
+  const ammoBonus = Math.round(((bulletsFrac + shellsFrac + rocketsFrac + smgFrac + gasFrac) / 5) * AMMO_BONUS_MAX);
 
   const speedFrac = clamp01(1 - Math.max(0, input.levelTimeSec - SPEED_TARGET_SEC) / SPEED_TARGET_SEC);
   const speedBonus = Math.round(speedFrac * SPEED_BONUS_MAX);

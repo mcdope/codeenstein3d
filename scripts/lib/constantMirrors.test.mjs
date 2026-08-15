@@ -111,6 +111,15 @@ describe("WEAPON_STATS mirrors the real ranged weapons", () => {
     expect(mirror.ammoPerShot).toBe(engine.ammoPerShot);
   });
 
+  it.each(RANGED)("weapon %i agrees on which pool it draws from", (index) => {
+    // Was not asserted until the shotgun moved off the shared `bullets` pool.
+    // Nothing else links the two tables, and the failure is silent in the
+    // worst way: `hasAmmoFor` reads this field, so a stale copy makes the bot
+    // believe it can fire a weapon whose real pool is empty — or refuse to
+    // fire one that is full.
+    expect(WEAPON_STATS[index].ammoType).toBe(WEAPONS[index].ammoType);
+  });
+
   it("covers every ranged weapon, so a newly added one cannot be silently ignored", () => {
     const rangedIndices = WEAPONS.map((w, i) => (w.meleeRange === undefined ? i : null)).filter((i) => i !== null);
     expect(Object.keys(WEAPON_STATS).map(Number).sort((a, b) => a - b)).toEqual(rangedIndices);

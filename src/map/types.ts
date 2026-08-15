@@ -351,7 +351,7 @@ export interface AcidOverflow {
  * death position (held dependency keys are level-scoped and one-per-door, so
  * a dead player holding one until revive would soft-lock a door — see
  * `RaycasterEngine.killPlayer`), collectible by any living player. */
-export type LootKind = "bullets" | "rockets" | "smg" | "gas" | "health" | "swap" | "weapon";
+export type LootKind = "bullets" | "shells" | "rockets" | "smg" | "gas" | "health" | "swap" | "weapon";
 
 /**
  * A dynamic loot drop left at a defeated enemy's death position. Spawned at
@@ -397,7 +397,7 @@ export interface AmmoPickup {
   /** World position in fractional tile units (tile center). */
   x: number;
   y: number;
-  kind: "bullets" | "rockets" | "smg" | "gas" | "health" | "swap" | "weapon";
+  kind: "bullets" | "shells" | "rockets" | "smg" | "gas" | "health" | "swap" | "weapon";
   /** Unused (0) for a `"weapon"` pickup — see `weaponIndex` instead. */
   amount: number;
   /** Only set for a `"weapon"` pickup: which `WEAPONS` index it grants (or,

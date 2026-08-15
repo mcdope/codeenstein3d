@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Changed: **the shotgun has its own ammo.** It used to spend 4 bullets a shot out of the same pool the pistol draws from, so your two starting weapons were rivals from the first minute of every run — every shell you fired was four pistol shots you no longer had, and the shotgun quietly punished you for using it. It now takes one **shell** from its own reserve, and shells drop, restock in Vendor Depots and count toward your end-of-level ammo bonus like every other pool. The shotgun's damage and its pump cadence are untouched: what changed is what a shot *costs*, not what it does
+
 - New: **a boss key.** `F9` drops a plain code editor over the whole page — showing the actual source file the level you are playing was generated from, syntax-highlighted — and takes everything else with it: the game pauses, fullscreen is dropped, the music stops, and the browser tab's title and icon become the file's. Press `F9` again and it all comes back, revealing the game **still paused**, so you are not dropped straight back into a fight; your next click resumes as usual. `Escape` is ignored while it is up, so a reflex press can't undo it. Two honest limits: a web page cannot minimise its own window, which is why the disguise happens inside the page; and in co-op it can only hide you, not pause the session — the same as alt-tabbing out of co-op already does
 
 

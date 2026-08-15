@@ -94,13 +94,15 @@ describe("placeVendorDepots", () => {
     expect(pickups).toHaveLength(expected);
   });
 
-  it("only stocks bullets when the player owns none of the other weapons", () => {
+  it("stocks only the two starting weapons' ammo when the player owns nothing else", () => {
+    // Bullets and shells are the ungated pair — the pistol and the shotgun are
+    // both starting weapons, so neither can ever be dead loot.
     const g = grid(32);
     const room = spawnRoom();
     carve(g, room);
     const { pickups } = placeVendorDepots(room, g, 32, 400, mulberry32(6), false, false, false);
     expect(pickups.length).toBeGreaterThan(0);
-    expect(pickups.every((p) => p.kind === "bullets")).toBe(true);
+    expect(pickups.every((p) => p.kind === "bullets" || p.kind === "shells")).toBe(true);
   });
 
   it("can stock smg and gas once those weapons are owned", () => {

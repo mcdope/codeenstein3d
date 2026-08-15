@@ -32,6 +32,10 @@ const DEPOT_MAX_SIZE = 2;
 /** Depot stock amounts. Deliberately around one magazine each — a depot is a
  * head start, not a substitute for playing the level. */
 const VENDOR_BULLETS_AMOUNT = 12;
+/** Four shells — two full shotgun magazines. The other pools are "about one
+ * magazine"; two is the closer parallel here, because a shotgun magazine is
+ * only 2 rounds and one of those would read as an empty alcove. */
+const VENDOR_SHELLS_AMOUNT = 4;
 const VENDOR_ROCKETS_AMOUNT = 3;
 const VENDOR_SMG_AMOUNT = 30;
 const VENDOR_GAS_AMOUNT = 30;
@@ -53,7 +57,9 @@ interface VendorStock {
  * why they need no corridor of their own.
  *
  * `hasRocketLauncher`/`hasSmg`/`hasGas` gate which ammo pools are worth
- * stocking: a magazine for a gun the player hasn't unlocked is dead loot. The
+ * stocking: a magazine for a gun the player hasn't unlocked is dead loot.
+ * Bullets and shells need no gate — the pistol and the shotgun are both
+ * starting weapons. The
  * stock is then picked uniformly among whatever's actually available, the same
  * pattern `placeSecretRooms` uses for its guaranteed pickup, so "always
  * bullets" can't happen once anything else is in the running.
@@ -76,7 +82,13 @@ export function placeVendorDepots(
   // whole downstream draw sequence exactly as it was.
   if (wanted === 0) return { depots: [], pickups: [] };
 
-  const stockCandidates: VendorStock[] = [{ kind: "bullets", amount: VENDOR_BULLETS_AMOUNT }];
+  // Adding a candidate changes *which* stock a given roll lands on, but not
+  // how many rolls happen — the pick below is one draw whatever the list
+  // length — so no depot moves and no downstream generation draw shifts.
+  const stockCandidates: VendorStock[] = [
+    { kind: "bullets", amount: VENDOR_BULLETS_AMOUNT },
+    { kind: "shells", amount: VENDOR_SHELLS_AMOUNT },
+  ];
   if (hasRocketLauncher) stockCandidates.push({ kind: "rockets", amount: VENDOR_ROCKETS_AMOUNT });
   if (hasSmg) stockCandidates.push({ kind: "smg", amount: VENDOR_SMG_AMOUNT });
   if (hasGas) stockCandidates.push({ kind: "gas", amount: VENDOR_GAS_AMOUNT });

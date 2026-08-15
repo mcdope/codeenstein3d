@@ -2,7 +2,7 @@
 
 A weapon is *data* — one entry in `WEAPONS` (`src/engine/weapons.ts`) — but roughly a dozen other places enumerate that table independently, and only a few of them are enforced by the compiler or a test. Skipping one doesn't break the build; it produces a weapon that fires silently, or draws a pistol, or that the playtest bot never picks up. Every previous addition (gdb, ghidra, Friday Hotfix, Toolchain) rediscovered this list by hand. This is that list.
 
-For *why the arsenal is shaped the way it is* — four ammo pools, why Toolchain has no forced unlock, why fire cadence is a design axis — see [Game Design](game-design.md#weapon-and-economy-intent) and [Design Decisions](decisions.md). This document is the procedure, not the rationale.
+For *why the arsenal is shaped the way it is* — five ammo pools, why Toolchain has no forced unlock, why fire cadence is a design axis — see [Game Design](game-design.md#weapon-and-economy-intent) and [Design Decisions](decisions.md). This document is the procedure, not the rationale.
 
 ## Three decisions before you touch anything
 

@@ -33,10 +33,12 @@ function input(overrides: Partial<ScoreInput> = {}): ScoreInput {
     finalHealth: 50,
     maxHealth: 100,
     finalBullets: 50,
+    finalShells: 6,
     finalRockets: 5,
     finalSmg: 20,
     finalGas: 10,
     startingBullets: 100,
+    startingShells: 12,
     startingRockets: 10,
     startingSmg: 40,
     startingGas: 20,
@@ -84,11 +86,13 @@ describe("computeScore", () => {
     expect(computeScore(input({ finalHealth: -10, maxHealth: 100 })).healthBonus).toBe(0);
   });
 
-  it("splits the ammo bonus four ways across bullets/rockets/smg/gas", () => {
+  it("splits the ammo bonus evenly across every pool", () => {
     const result = computeScore(
       input({
         finalBullets: 100,
+        finalShells: 12,
         startingBullets: 100,
+        startingShells: 12,
         finalRockets: 10,
         startingRockets: 10,
         finalSmg: 40,
@@ -97,7 +101,7 @@ describe("computeScore", () => {
         startingGas: 20,
       }),
     );
-    expect(result.ammoBonus).toBe(250); // all four pools full -> max bonus
+    expect(result.ammoBonus).toBe(250); // every pool full -> max bonus
   });
 
   it("treats a zero starting-ammo pool as contributing zero to the ammo bonus", () => {
@@ -105,6 +109,8 @@ describe("computeScore", () => {
       input({
         finalBullets: 0,
         startingBullets: 0,
+        finalShells: 0,
+        startingShells: 0,
         finalRockets: 0,
         startingRockets: 0,
         finalSmg: 0,
@@ -121,6 +127,8 @@ describe("computeScore", () => {
       input({
         finalBullets: 999,
         startingBullets: 100,
+        finalShells: 0,
+        startingShells: 0,
         finalRockets: 0,
         startingRockets: 0,
         finalSmg: 0,
@@ -129,7 +137,7 @@ describe("computeScore", () => {
         startingGas: 0,
       }),
     );
-    expect(result.ammoBonus).toBe(63); // round((1 + 0 + 0 + 0) / 4 * 250)
+    expect(result.ammoBonus).toBe(50); // round((1 + 0 + 0 + 0 + 0) / 5 * 250)
   });
 
   it("awards full speed bonus for finishing at/under the target time", () => {
@@ -193,6 +201,8 @@ describe("computeScore", () => {
         maxHealth: 100,
         finalBullets: 0,
         startingBullets: 0,
+        finalShells: 0,
+        startingShells: 0,
         finalRockets: 0,
         startingRockets: 0,
         finalSmg: 0,

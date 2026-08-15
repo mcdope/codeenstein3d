@@ -62,7 +62,7 @@ describe("rollLoot", () => {
 
   it("defaults rng to Math.random when omitted", () => {
     const kind = rollLoot();
-    expect(["bullets", "rockets", "smg", "gas", "health", "swap"]).toContain(kind);
+    expect(["bullets", "shells", "rockets", "smg", "gas", "health", "swap"]).toContain(kind);
   });
 });
 

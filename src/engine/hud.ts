@@ -6,10 +6,34 @@
  * Both are drawn natively onto the 2D context after the 3D scene; only the
  * end-of-run overlays remain in the DOM (see src/ui/gameHud.ts).
  */
+import { AMMO_META } from "./ammo";
 import type { EngineStats, PlayerId } from "./engine";
 import { drawRotatedGlyph, outlineRect, type Glyph } from "./pathSprites";
 import { COUNTDOWN_DISPLAY_HZ } from "./transitionConstants";
-import { WEAPONS } from "./weapons";
+import { WEAPONS, type AmmoType } from "./weapons";
+
+/**
+ * How much of `type` the player has left, out of `EngineStats`.
+ *
+ * `EngineStats` spells its pools out as flat sibling fields rather than
+ * carrying an `AmmoPools`, so a pool cannot be looked up by name — this is the
+ * one place that mapping is needed, and being a `switch` over `AmmoType` means
+ * a future pool fails to compile here rather than silently reading nothing.
+ */
+function ammoRemaining(stats: EngineStats, type: AmmoType): number {
+  switch (type) {
+    case "bullets":
+      return stats.bullets;
+    case "shells":
+      return stats.shells;
+    case "rockets":
+      return stats.rockets;
+    case "smg":
+      return stats.smg;
+    case "gas":
+      return stats.gas;
+  }
+}
 
 /** Same one-line capitalization `main.ts`'s `multiplayerResultRows` uses for
  * a `PlayerId` — duplicated here rather than imported, since `main.ts`
@@ -520,21 +544,20 @@ export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void
   // otherwise the label/value swap to BULLETS, ROCKETS, SMG AMMO, or GAS as
   // the player switches weapons, so what's on screen always matches what
   // firing spends. ---
+  // One readout driven by the active weapon's own pool, rather than a branch
+  // per pool. It was four hand-written branches that differed only in which
+  // `stats` field they read and which two strings they passed; adding a fifth
+  // pool for the shotgun would have made it five. `AMMO_META` already owned
+  // the label and now owns the colour too.
   const weapon = WEAPONS[stats.weaponIndex];
-  if (weapon.ammoType === "rockets") {
-    drawLabel(ctx, "ROCKETS", 275, labelY);
-    drawValue(ctx, String(stats.rockets), 275, valueY, stats.rockets <= 0 ? "#ff5a4a" : "#ff9d3f", 22);
-  } else if (weapon.ammoType === "bullets") {
-    drawLabel(ctx, "BULLETS", 275, labelY);
-    drawValue(ctx, String(stats.bullets), 275, valueY, stats.bullets <= 0 ? "#ff5a4a" : "#4cff6a", 22);
-  } else if (weapon.ammoType === "smg") {
-    drawLabel(ctx, "SMG AMMO", 275, labelY);
-    drawValue(ctx, String(stats.smg), 275, valueY, stats.smg <= 0 ? "#ff5a4a" : "#3fa9ff", 22);
-  } else if (weapon.ammoType === "gas") {
-    drawLabel(ctx, "GAS", 275, labelY);
-    // Friday Hotfix's ammoPerShot is fractional (2.5/shot), so stats.gas can
-    // land on a half-unit — floor it here rather than showing "37.5".
-    drawValue(ctx, String(Math.floor(stats.gas)), 275, valueY, stats.gas <= 0 ? "#ff5a4a" : "#ff8a4a", 22);
+  if (weapon.ammoType) {
+    const meta = AMMO_META[weapon.ammoType];
+    const remaining = ammoRemaining(stats, weapon.ammoType);
+    drawLabel(ctx, meta.label.toUpperCase(), 275, labelY);
+    // Friday Hotfix's ammoPerShot is fractional (2.5/shot), so its pool can
+    // land on a half-unit — floored here rather than showing "37.5". Every
+    // other pool is integral, so this is a no-op for them.
+    drawValue(ctx, String(Math.floor(remaining)), 275, valueY, remaining <= 0 ? "#ff5a4a" : meta.hudColor, 22);
   } else {
     drawLabel(ctx, "MELEE", 275, labelY);
     drawValue(ctx, "∞", 275, valueY, "#d8dde3", 22);

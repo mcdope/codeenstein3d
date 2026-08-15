@@ -39,7 +39,7 @@ const MELEE_FALLBACK_INTERVAL_SEC = 0.15;
 
 /** Loot kinds that convert to damage via a weapon, as opposed to effective
  * health. `weapon` and `key` are neither and are counted separately. */
-const AMMO_KINDS = ["bullets", "rockets", "smg", "gas"];
+const AMMO_KINDS = ["bullets", "rockets", "smg", "gas", "shells"];
 
 /** Loot kinds that convert to effective health. `swap` absorbs damage 1:1
  * before health with no reduction curve (`engine.ts`'s `damage`), so one point
