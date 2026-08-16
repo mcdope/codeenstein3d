@@ -102,12 +102,30 @@ body {
   padding: 6px 4px;
   font: inherit;
   font-size: 12px;
+  /* Pinned (it was the computed `normal` anyway) so the strip's height is set
+   * here and only here — the settings gear and the ▶/❚❚ marker both render at
+   * their own font-size and would otherwise each grow the whole row. */
+  line-height: 15px;
   font-weight: 600;
   color: var(--muted);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
   cursor: pointer;
+}
+
+/* The one tab whose label is an icon, not a word: sized to the glyph instead
+ * of taking an equal `flex: 1` share, which handed ~43px to a gear and took it
+ * from the tabs that actually have text to fit. Bigger than the 12px labels
+ * because a gear at text size reads as a speck rather than a control — the
+ * strip's height is pinned by `.tab-btn`'s line-height, so this can't grow it. */
+#tab-settings {
+  /* Shrinks like the rest when the strip is tight, but never *grows*: a
+   * `flex: 1` share handed ~43px to a gear and took it from the tabs that
+   * have text to fit. */
+  flex: 0 1 auto;
+  padding: 6px 8px;
+  font-size: 17px;
 }
 
 .tab-btn:hover:not(:disabled):not([aria-selected="true"]) {
@@ -628,7 +646,11 @@ a.settings-btn {
 .tab-btn--loaded::before {
   content: "▶ ";
   font-size: 9px;
-  vertical-align: 1px;
+  /* Optical centring against the 12px label. Relative, not `vertical-align`:
+   * that grows the line box, and the line box is what sets the strip's
+   * height (measured — it cost 1px on every marked state). */
+  position: relative;
+  top: -1px;
 }
 
 /* Paused, lore-frozen, briefing still up, or no level running at all.
