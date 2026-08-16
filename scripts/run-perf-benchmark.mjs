@@ -376,6 +376,25 @@ async function loadMagentoWorkspace(page, baseUrl, collector) {
   await dismissOverlay(page);
 }
 
+/** Shared body of the two particle-stress cells: the same demo level, cheats
+ * and fire macro at a given gore tier, so `s3-stress` and `s3-splatter`
+ * differ by exactly one variable. `goreLevel` is written straight to the
+ * preference key the app reads at launch (`codeenstein-gore-level`); it must
+ * be a tier `loadGoreLevel` recognizes or the run silently measures Normal. */
+async function particleStressSetup(page, baseUrl, collector, goreLevel) {
+  await page.addInitScript((level) => localStorage.setItem("codeenstein-gore-level", level), goreLevel);
+  await launchDemoCampaign(page, baseUrl, collector);
+  await typeCheat(page, "IDKFA");
+  // God mode is load-bearing, not a convenience: point-blank rockets
+  // self-damage and sustained fire aggroes every enemy onto a stationary
+  // player — without IDDQD the player dies seconds in and the rest of the
+  // capture measures the Kernel Panic screen.
+  await typeCheat(page, "IDDQD");
+  // Ranged slots are contiguous (melee excluded): Digit4=ghidra rockets,
+  // Digit5=Friday Hotfix flamethrower.
+  await startFireMacro(page, { weaponSlots: ["Digit4", "Digit5"], pressEveryMs: 350 });
+}
+
 const SCENARIOS = {
   /** S1: demo campaign level 1, player standing still — pure render/AI idle
    * baseline and the calibration workload. God mode is required even here:
@@ -406,26 +425,27 @@ const SCENARIOS = {
       await page.waitForTimeout(1000);
     },
   },
-  /** S3: max-particle stress ceiling — IDKFA, then sustained rocket/flame
-   * fire into walls/enemies with aim sweeps. Approximate by design; this
-   * cell measures the ceiling, not an exact repro. */
+  /** S3: particle stress at the *Extreme* gore tier — IDKFA, then sustained
+   * rocket/flame fire into walls/enemies with aim sweeps. Approximate by
+   * design; this cell measures a tier, not an exact repro.
+   *
+   * Deliberately pinned to `extreme` even though it is no longer the top
+   * tier: its budget history goes back further than the Excessive/Absurd
+   * tiers do, and re-pointing it would silently break that comparison.
+   * `s3-splatter` below is the cell that tracks the current ceiling. */
   "s3-stress": {
     defaultDurationSec: 30,
-    async setup(page, baseUrl, collector) {
-      // Extreme gore = 16× particle spawn counts — this cell measures the
-      // particle ceiling, so crank the dial the way a worst-case player can.
-      await page.addInitScript(() => localStorage.setItem("codeenstein-gore-level", "extreme"));
-      await launchDemoCampaign(page, baseUrl, collector);
-      await typeCheat(page, "IDKFA");
-      // God mode is load-bearing, not a convenience: point-blank rockets
-      // self-damage and sustained fire aggroes every enemy onto a stationary
-      // player — without IDDQD the player dies seconds in and the rest of
-      // the capture measures the Kernel Panic screen.
-      await typeCheat(page, "IDDQD");
-      // Ranged slots are contiguous (melee excluded): Digit4=ghidra rockets,
-      // Digit5=Friday Hotfix flamethrower.
-      await startFireMacro(page, { weaponSlots: ["Digit4", "Digit5"], pressEveryMs: 350 });
-    },
+    setup: (page, baseUrl, collector) => particleStressSetup(page, baseUrl, collector, "extreme"),
+  },
+  /** S3-splatter: the current worst case a player can select — `absurd`
+   * (24x spawn counts, a 1200-particle cap and stains that never expire, vs
+   * extreme's 16x/300/6s). Same macro as `s3-stress`, so the pair is a
+   * direct read on what the top tier costs per frame. `renderBlood` and
+   * `updateBlood` are both O(live particles), so the cap is the axis that
+   * moves this cell. */
+  "s3-splatter": {
+    defaultDurationSec: 30,
+    setup: (page, baseUrl, collector) => particleStressSetup(page, baseUrl, collector, "absurd"),
   },
   /** S4 (Task 241 shape): magento2 map, idle look-around only. */
   "s4-magento": {
@@ -459,11 +479,16 @@ const SCENARIOS = {
       await startLookSweep(page);
     },
   },
-  /** C3: the deliberate stress case — C2's level plus extreme gore (16x
+  /** C3: the deliberate stress case — C2's level plus Extreme gore (16x
    * particle spawns), full arsenal and the sustained rocket/flame fire
    * macro (s3's recipe on the worst corpus map). Phase 0 requires this cell
    * to actually drop frames headed; if it doesn't, escalate the scenario
-   * before accepting it as the stress baseline. */
+   * before accepting it as the stress baseline.
+   *
+   * Pinned to `extreme` for the same reason `s3-stress` is: this cell's
+   * budget history predates the Excessive/Absurd tiers, and it is a
+   * corpus-map cell rather than the gore-ceiling cell. `s3-splatter` tracks
+   * the top tier. */
   "c3-stress": {
     defaultDurationSec: 30,
     async setup(page, baseUrl, collector) {
