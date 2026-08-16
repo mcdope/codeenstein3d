@@ -112,9 +112,12 @@ describe("drawDamageFlash", () => {
 });
 
 describe("makeBulletTrace / drawBulletTraces", () => {
-  it("anchors the trace at bottom-center of the screen, aimed at the impact point", () => {
+  it("anchors the trace at bottom-center, stored as screen FRACTIONS of the spawn-space size", () => {
+    // Normalized on purpose: fire() computes columns in the fixed 640×400
+    // sim space while the live canvas can be 1280×800 (Sharp) — raw pixels
+    // replayed there displaced every tracer into the top-left quadrant.
     const trace = makeBulletTrace(WIDTH, HEIGHT, 50, 20, "#ff0000");
-    expect(trace).toEqual({ x1: WIDTH / 2, y1: HEIGHT, x2: 50, y2: 20, frames: BULLET_TRACE_FRAMES, color: "#ff0000" });
+    expect(trace).toEqual({ x1: 0.5, y1: 1, x2: 50 / WIDTH, y2: 20 / HEIGHT, frames: BULLET_TRACE_FRAMES, color: "#ff0000" });
   });
 
   // Tracers are rasterised as `fillRect` runs rather than stroked (see
@@ -132,9 +135,24 @@ describe("makeBulletTrace / drawBulletTraces", () => {
     // (dy 100 vs dx 30), so it steps per row and every row between the two
     // endpoints is covered exactly once.
     const rows = c.fillRect.mock.calls.map((call) => call[1] as number);
-    expect(Math.min(...rows)).toBe(Math.min(trace.y1, trace.y2));
-    expect(Math.max(...rows)).toBe(Math.max(trace.y1, trace.y2));
+    expect(Math.min(...rows)).toBe(Math.min(trace.y1, trace.y2) * HEIGHT);
+    expect(Math.max(...rows)).toBe(Math.max(trace.y1, trace.y2) * HEIGHT);
     expect(new Set(rows).size).toBe(rows.length); // no overlap — see `fillLine`
+  });
+
+  it("scales the same trace to whatever canvas it is drawn on (the Sharp displacement regression)", () => {
+    const trace = makeBulletTrace(WIDTH, HEIGHT, 50, 20, "#ff0000");
+    const small = ctx();
+    drawBulletTraces(asCtx(small), [trace]);
+    const big = createMockCanvasContext({ width: WIDTH * 2, height: HEIGHT * 2 } as unknown as HTMLCanvasElement);
+    drawBulletTraces(big as unknown as CanvasRenderingContext2D, [trace]);
+    const rowsSmall = small.fillRect.mock.calls.map((call) => call[1] as number);
+    const rowsBig = big.fillRect.mock.calls.map((call) => call[1] as number);
+    // Same endpoints relative to the screen: the double-size canvas draws
+    // from double the row down to double the row — not parked at the
+    // sim-space pixels in the top-left quadrant.
+    expect(Math.max(...rowsBig)).toBe(Math.max(...rowsSmall) * 2);
+    expect(Math.min(...rowsBig)).toBe(Math.min(...rowsSmall) * 2);
   });
 
   it("fades a near-expired trace toward transparent", () => {
@@ -146,11 +164,11 @@ describe("makeBulletTrace / drawBulletTraces", () => {
 });
 
 describe("spawnFlameStream / tickFlameStreams / drawFlameStreams", () => {
-  it("spawns a stream centered vertically at half height", () => {
-    const stream = spawnFlameStream(HEIGHT, 10, 90, "#ffaa00");
-    expect(stream.y2).toBe(HEIGHT / 2);
-    expect(stream.leftX).toBe(10);
-    expect(stream.rightX).toBe(90);
+  it("spawns a stream centered vertically at half height, edges as width fractions", () => {
+    const stream = spawnFlameStream(WIDTH, 10, 90, "#ffaa00");
+    expect(stream.y2).toBe(0.5);
+    expect(stream.leftX).toBe(10 / WIDTH);
+    expect(stream.rightX).toBe(90 / WIDTH);
   });
 
   it("ages streams and drops expired ones", () => {
@@ -198,8 +216,8 @@ describe("spawnFlameStream / tickFlameStreams / drawFlameStreams", () => {
     // `y2` on a half-pixel rounds the first row to just past the cone's tip,
     // which would otherwise extrapolate the taper beyond t=1.
     const c = ctx();
-    const stream = spawnFlameStream(400, 10, 90, "#ffaa00");
-    stream.y2 = 200.4;
+    const stream = spawnFlameStream(WIDTH, 10, 90, "#ffaa00");
+    stream.y2 = 200.4 / 400; // fraction of the 400px canvas below
     drawFlameStreams(asCtx(c), WIDTH, 400, [stream]);
     const rows = c.fillRect.mock.calls.map((call) => call[1] as number);
     expect(rows).not.toContain(200); // outside the jet, skipped
