@@ -5362,32 +5362,33 @@ describe("main.ts — per-tab file trees", () => {
     expect(childList.hidden).toBe(false);
   });
 
-  it("switches the active source when a file is clicked in another tab's tree, not when the tab is switched", async () => {
+  it("loads one workspace at a time — a second load clears the first tab's tree", async () => {
     await importMain();
     stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
     document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
     await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
-    await loadDemo();
 
     const tabLocal = document.querySelector<HTMLButtonElement>("#tab-local")!;
     const tabDemo = document.querySelector<HTMLButtonElement>("#tab-demo")!;
     const hostSubtab = document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!;
-    expect(tabDemo.classList.contains("tab-btn--playing")).toBe(true);
+    expect(tabLocal.classList.contains("tab-btn--playing")).toBe(true);
+    // Local and Continue share a slot, so both carry the marker together.
+    expect(document.querySelector<HTMLButtonElement>("#tab-continue")!.classList.contains("tab-btn--playing")).toBe(true);
+    expect(hostSubtab.disabled).toBe(true); // a locally-picked folder can't be hosted
+
+    await loadDemo();
+
+    // Nothing of the local workspace is left claiming to be loaded — a tree on
+    // screen always means "this is the loaded workspace".
+    expect(document.querySelectorAll("#file-tree-local .tree-row").length).toBe(0);
     expect(tabLocal.classList.contains("tab-btn--playing")).toBe(false);
+    expect(tabDemo.classList.contains("tab-btn--playing")).toBe(true);
     expect(hostSubtab.disabled).toBe(false); // the demo campaign is hostable
 
-    // Merely looking at the other tab changes nothing about what is playing.
     tabLocal.click();
-    expect(tabDemo.classList.contains("tab-btn--playing")).toBe(true);
-    expect(hostSubtab.disabled).toBe(false);
-
-    document.querySelector<HTMLButtonElement>('.tree-row--file[title="ws/main.c"]')!.click();
-    await flushAsync();
-    expect(tabLocal.classList.contains("tab-btn--playing")).toBe(true);
-    // Local and Continue share a slot, so both light up.
-    expect(document.querySelector<HTMLButtonElement>("#tab-continue")!.classList.contains("tab-btn--playing")).toBe(true);
-    expect(tabDemo.classList.contains("tab-btn--playing")).toBe(false);
-    expect(hostSubtab.disabled).toBe(true); // a locally-picked folder can't be hosted
+    expect(paneHidden("#file-tree-local")).toBe(true);
+    expect(emptyHint()).toContain("No workspace picked yet");
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("No workspace selected");
   });
 
   it("keeps a failed load's error on its own tab", async () => {

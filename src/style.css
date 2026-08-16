@@ -606,13 +606,13 @@ a.settings-btn {
   line-height: 1.5;
 }
 
-/* Which tab's workspace the engine is actually playing from. With a tree per
- * tab there is otherwise nothing saying which source the running level came
- * from once you switch away from it. */
+/* Which tab the loaded workspace came from — readable from any tab, including
+ * the two that never show a tree. A play triangle rather than a dot: a dot
+ * next to a label reads as a record indicator, which is the wrong verb. */
 .tab-btn--playing::after {
-  content: " ●";
-  font-size: 8px;
-  vertical-align: 2px;
+  content: " ▶";
+  font-size: 9px;
+  vertical-align: 1px;
 }
 
 .sidebar-footer {
