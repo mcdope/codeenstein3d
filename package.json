@@ -84,6 +84,6 @@
     "vitest": "4.1.10"
   },
   "dependencies": {
-    "web-tree-sitter": "^0.26.10"
+    "web-tree-sitter": "^0.26.12"
   }
 }
