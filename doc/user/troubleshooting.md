@@ -60,7 +60,7 @@ A file whose parse simply *fails* is also skipped rather than ending the run, wi
 
 GitHub's API truncates the file listing for very large repositories, and there is nothing
 this app can do about it from the browser. You don't have to guess when it happened: a
-marker sits above the file tree for as long as that repo is loaded —
+marker sits above that repo's file tree, under the GitHub tab, for as long as it is loaded —
 
 > ⚠ Partial listing — GitHub truncated the file list for this repo, so some files are
 > missing. Clone it and use the Local tab for the whole thing.

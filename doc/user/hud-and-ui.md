@@ -43,6 +43,12 @@ All of the game's settings live behind the gear (⚙) tab in the sidebar's tab b
 
 Gore, Difficulty, Render quality, the volume sliders and your **online texture pack** are standing preferences, independent of any specific campaign run — pick a pack from the Online list and it is restored automatically on your next visit. The BGM folder and a **local** `.wad` file stay session-only: a browser gives a page no durable handle to a file you picked, so neither the chosen music folder nor a local WAD survives a reload (only the BGM *volume* persists, not which folder is loaded). Picking a local file therefore also clears a remembered online pack, rather than letting it override your choice next time.
 
+## The file tree
+
+The bottom of the sidebar lists the files of the workspace loaded under the tab you are currently looking at — **each tab keeps its own**. Load the Demos campaign, switch to **GitHub** and load a repository, and both are still there: switch between the two tabs and each shows its own files, with the folders you expanded still expanded. **Local** and **Continue** share one, since both are the same local folder on your machine. **Settings** and **Multiplayer** have no workspace of their own and say so rather than showing you another tab's files.
+
+Switching tabs is purely a change of view — it never disturbs the level you are playing. A small dot on a tab marks the workspace the game is actually running from, so you can tell at a glance even while looking at a different one. Clicking a **file** is what switches: it drops you into that file's level and the rest of that workspace becomes the campaign you are playing, exactly as loading it fresh would, which also means it starts that campaign from the beginning.
+
 ## Highscores
 
 The **Highscores** button opens a top-10 leaderboard with columns for player, score, level/campaign name, the codebase's total lines/complexity, levels cleared, when the run ended, and an AST hash of the *whole workspace* (so you can compare runs against the exact same code, regardless of which level either run happened to end on). Entries with a recorded replay show **Watch** and **Export** buttons.
