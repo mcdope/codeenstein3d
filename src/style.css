@@ -608,9 +608,10 @@ a.settings-btn {
 
 /* Which tab the loaded workspace came from — readable from any tab, including
  * the two that never show a tree. A play triangle rather than a dot: a dot
- * next to a label reads as a record indicator, which is the wrong verb. */
-.tab-btn--playing::after {
-  content: " ▶";
+ * next to a label reads as a record indicator, which is the wrong verb. It
+ * leads the label like any other icon; trailing it read as a footnote marker. */
+.tab-btn--playing::before {
+  content: "▶ ";
   font-size: 9px;
   vertical-align: 1px;
 }
