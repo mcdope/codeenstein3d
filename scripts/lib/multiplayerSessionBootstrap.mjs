@@ -304,12 +304,17 @@ export async function bootstrapMultiplayerSession(browser, options) {
   for (const [i, page] of pages.entries()) await makeEligible(page, engineName, devServerUrl, botRotSpeedMuls[i]);
 
   // Typed before Create/Join, because that is when each side reads it — the
-  // host at "Start Session", a guest at connect time. It lives in the general
-  // settings (it also names your highscore entries), so it needs no tab click
-  // and is reachable whichever tab is showing.
+  // host at "Start Session", a guest at connect time. The field lives inside
+  // the Settings tab's panel since the settings moved behind their own tab,
+  // so filling it needs that tab active (Playwright actionability requires
+  // visibility) — and the previously selected tab is restored afterwards so
+  // the rest of the flow sees the page exactly as before.
   for (const [i, page] of pages.entries()) {
     if (!playerNames[i]) continue;
+    const previousTab = await page.getAttribute('#launch-tabs [role="tab"][aria-selected="true"]', "id");
+    await page.click("#tab-settings");
     await page.fill("#player-name-input", playerNames[i]);
+    if (previousTab) await page.click(`#${previousTab}`);
     log(`${playerIds[i]}: chose the name "${playerNames[i]}"`);
   }
 

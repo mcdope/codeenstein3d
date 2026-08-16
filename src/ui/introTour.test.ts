@@ -243,15 +243,38 @@ describe("placePopout", () => {
 });
 
 describe("DEFAULT_TOUR_STEPS", () => {
-  it("points only at ids that are always present, never at a panel behind a tab", () => {
-    // The tour must not switch a launch tab to reveal a panel — that is
-    // switch-and-revert on persistent UI state. Anchoring to the tabs
-    // themselves is what keeps it honest, so pin that here.
+  it("every step either anchors to an always-visible control or declares the tab it needs", () => {
+    // The original blanket "never switch a launch tab" rule was relaxed
+    // (2026-08-16) for the Settings walk-through — but only declaratively:
+    // a step inside a tab panel MUST carry `activateTabId` (or it would
+    // anchor to a zero-size rect inside the hidden panel), and no step may
+    // target a panel element itself. The restore guarantee lives in the
+    // behavioral tests above.
+    const settingsPanelTargets = ["player-name-input", "difficulty-select", "render-quality-select", "wad-tabs"];
+    for (const step of DEFAULT_TOUR_STEPS) {
+      expect(step.targetId).not.toMatch(/^tab-panel-/);
+      if (settingsPanelTargets.includes(step.targetId)) {
+        expect(step.activateTabId).toBe("tab-settings");
+      } else {
+        expect(step.activateTabId).toBeUndefined();
+      }
+    }
     const ids = DEFAULT_TOUR_STEPS.map((s) => s.targetId);
-    expect(ids).not.toContain("tab-panel-demo");
-    expect(ids).not.toContain("tab-panel-multiplayer");
     expect(ids).toContain("tab-demo");
     expect(ids).toContain("tab-multiplayer");
+    expect(ids).toContain("tab-settings");
+  });
+
+  it("explains why Render quality exists, not just that it does", () => {
+    // The backlog item's own requirement: without the why, a "Classic/Sharp"
+    // select reads as an arbitrary graphics toggle, and the one setting that
+    // answers the 120Hz framedrop report goes undiscovered by exactly the
+    // players who need it. Worded from doc/user/hud-and-ui.md.
+    const rq = DEFAULT_TOUR_STEPS.find((s) => s.targetId === "render-quality-select");
+    expect(rq?.body).toMatch(/retro/i);
+    expect(rq?.body).toMatch(/640/);
+    expect(rq?.body).toMatch(/120\s?Hz/i);
+    expect(rq?.body).toMatch(/next level/i);
   });
 
   it("explains what the player name is actually for", () => {
@@ -278,8 +301,10 @@ describe("DEFAULT_TOUR_STEPS", () => {
     // the top and bottom of a sidebar taller than the viewport would yank the
     // page around under the reader.
     const order = DEFAULT_TOUR_STEPS.map((s) => s.targetId);
+    expect(order.indexOf("tab-settings")).toBeLessThan(order.indexOf("player-name-input"));
     expect(order.indexOf("player-name-input")).toBeLessThan(order.indexOf("difficulty-select"));
-    expect(order.indexOf("difficulty-select")).toBeLessThan(order.indexOf("wad-tabs"));
+    expect(order.indexOf("difficulty-select")).toBeLessThan(order.indexOf("render-quality-select"));
+    expect(order.indexOf("render-quality-select")).toBeLessThan(order.indexOf("wad-tabs"));
     expect(order.indexOf("wad-tabs")).toBeLessThan(order.indexOf("view-highscores"));
     expect(order.indexOf("view-highscores")).toBeLessThan(order.indexOf("file-tree"));
   });
@@ -292,5 +317,90 @@ describe("DEFAULT_TOUR_STEPS", () => {
     const mp = DEFAULT_TOUR_STEPS.find((s) => s.targetId === "tab-multiplayer");
     expect(mp?.body).toMatch(/joining needs no workspace/i);
     expect(mp?.body).toMatch(/locally-picked folder can't be hosted/i);
+  });
+});
+
+describe("createIntroTour — declarative tab switching (activateTabId)", () => {
+  /** A miniature launch-tab bar with the same contract as main.ts's
+   * `activateLaunchTab`: clicking a tab button flips aria-selected and the
+   * panels' hidden state. The tour drives it purely through button clicks,
+   * so the fixture must actually switch. */
+  function mountTabbed(): void {
+    document.body.innerHTML = `
+      <div id="launch-tabs" role="tablist">
+        <button id="tab-a" role="tab" aria-selected="true">A</button>
+        <button id="tab-settings" role="tab" aria-selected="false">S</button>
+      </div>
+      <div id="panel-a"><button id="outside">outside</button></div>
+      <div id="panel-settings" hidden><button id="inside">inside</button></div>`;
+    const tabs: readonly (readonly [string, string])[] = [
+      ["tab-a", "panel-a"],
+      ["tab-settings", "panel-settings"],
+    ];
+    for (const [tabId] of tabs) {
+      document.getElementById(tabId)!.addEventListener("click", () => {
+        for (const [t, p] of tabs) {
+          const active = t === tabId;
+          document.getElementById(t)!.setAttribute("aria-selected", String(active));
+          (document.getElementById(p) as HTMLElement).hidden = !active;
+        }
+      });
+    }
+  }
+
+  const TABBED_STEPS: TourStep[] = [
+    { targetId: "outside", title: "Out", body: "out" },
+    { targetId: "inside", activateTabId: "tab-settings", title: "In", body: "in" },
+  ];
+
+  const selected = () => document.querySelector('#launch-tabs [role="tab"][aria-selected="true"]')?.id;
+
+  it("opens a step's declared tab, and a tabless step restores the initial tab (Back across the boundary)", () => {
+    mountTabbed();
+    stubRects();
+    createIntroTour(TABBED_STEPS, () => {}).start();
+    expect(selected()).toBe("tab-a");
+
+    button("Next")!.click();
+    expect(selected()).toBe("tab-settings");
+    expect(document.getElementById("panel-settings")!.hidden).toBe(false);
+
+    button("Back")!.click();
+    expect(selected()).toBe("tab-a");
+    expect(document.getElementById("panel-settings")!.hidden).toBe(true);
+  });
+
+  it("restores the initial tab when the tour finishes on an in-panel step", () => {
+    mountTabbed();
+    stubRects();
+    createIntroTour(TABBED_STEPS, () => {}).start();
+    button("Next")!.click();
+    expect(selected()).toBe("tab-settings");
+    button("Done")!.click();
+    expect(selected()).toBe("tab-a");
+    expect(document.querySelector(".intro-tour-popout")).toBeNull();
+  });
+
+  it("restores the initial tab on Escape too — every exit path funnels through stop()", () => {
+    mountTabbed();
+    stubRects();
+    createIntroTour(TABBED_STEPS, () => {}).start();
+    button("Next")!.click();
+    expect(selected()).toBe("tab-settings");
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(selected()).toBe("tab-a");
+  });
+
+  it("starting the tour FROM the settings tab keeps it as the tab to restore", () => {
+    mountTabbed();
+    stubRects();
+    document.getElementById("tab-settings")!.click();
+    createIntroTour(TABBED_STEPS, () => {}).start();
+    // First step is tabless -> the tour re-activates the initial tab, which
+    // IS the settings tab here: no switch away, and Done keeps it.
+    expect(selected()).toBe("tab-settings");
+    button("Next")!.click();
+    button("Done")!.click();
+    expect(selected()).toBe("tab-settings");
   });
 });

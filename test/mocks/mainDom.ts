@@ -28,6 +28,7 @@ export function buildIndexDom(): void {
             <button id="tab-github" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-github">GitHub</button>
             <button id="tab-demo" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-demo">Demos</button>
             <button id="tab-multiplayer" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-multiplayer" disabled title="Multiplayer requires a GitHub-loaded repo or the Demos campaign">Multiplayer</button>
+            <button id="tab-settings" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-settings" aria-label="Settings" title="Settings">⚙</button>
           </div>
           <div id="tab-panel-local" class="tab-panel" role="tabpanel">
             <button id="select-workspace" type="button">📁 Select Workspace</button>
@@ -81,7 +82,7 @@ export function buildIndexDom(): void {
             <p id="multiplayer-status" class="muted"></p>
             <p id="multiplayer-guest-live-count" class="muted" hidden></p>
           </div>
-          <p id="workspace-name" class="muted">No workspace selected</p>
+          <div id="tab-panel-settings" class="tab-panel" role="tabpanel" hidden>
           <label id="gore-label" for="gore-select">Gore</label>
           <input id="player-name-input" type="text" maxlength="24" />
           <select id="gore-select">
@@ -95,6 +96,11 @@ export function buildIndexDom(): void {
             <option value="easy">Easy</option>
             <option value="normal" selected>Normal</option>
             <option value="hard">Hard</option>
+          </select>
+          <label id="render-quality-label" for="render-quality-select">Render quality</label>
+          <select id="render-quality-select">
+            <option value="classic" selected>Classic (640×400)</option>
+            <option value="sharp">Sharp (1280×800)</option>
           </select>
           <label id="master-vol-label" for="master-vol">Master Volume</label>
           <input id="master-vol" class="volume-slider" type="range" min="0" max="100" value="50" />
@@ -117,6 +123,8 @@ export function buildIndexDom(): void {
           </div>
           <button id="clear-wad-textures" class="settings-btn" type="button" hidden>↺ Use built-in textures</button>
           <p id="wad-status" class="muted">Using built-in default textures</p>
+          </div>
+          <p id="workspace-name" class="muted">No workspace selected</p>
           <button id="view-highscores" class="settings-btn" type="button">Highscores</button>
           <button id="take-tour" class="settings-btn" type="button">🧭 Take the Tour</button>
           <a id="player-guide-link" class="settings-btn" href="#" target="_blank" rel="noopener noreferrer">Player Guide</a>

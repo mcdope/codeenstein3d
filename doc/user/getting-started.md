@@ -15,12 +15,14 @@ an enemy inside, and so on), and what to expect once you're inside a level. It's
 level launches and won't reappear for the rest of the session.
 
 The very first time you open the game, a short guided tour points at the controls this page
-describes — the launch tabs, **Demos** as the path that needs no setup, co-op, difficulty and
-gore, the file tree, the highscore board and the console. Use the arrow keys or **Back**/**Next**
-to move through it, **Skip** or **Escape** to dismiss it. It won't come back once dismissed;
-everything it covers is written out below and in the rest of this guide.
+describes — the launch tabs, **Demos** as the path that needs no setup, co-op, the file tree,
+the highscore board and the console. Along the way it opens the **Settings** tab and walks
+through its controls (difficulty, gore, render quality and the rest), then returns you to the
+tab you were on. Use the arrow keys or **Back**/**Next** to move through it, **Skip** or
+**Escape** to dismiss it. It won't come back once dismissed; everything it covers is written
+out below and in the rest of this guide.
 
-The sidebar has five tabs. Four of them start a single-player run; the fifth, **Multiplayer**, is covered in its own [guide](multiplayer.md).
+The sidebar has six tabs. Five of them are ways to start a run — four single-player, plus **Multiplayer**, covered in its own [guide](multiplayer.md) — and the sixth, the gear (⚙), holds the game's settings, covered in [HUD & UI](hud-and-ui.md#the-settings-tab).
 
 - **Local** — click **Select Workspace** and pick a folder on your machine. Anything with source code works, from a single script to a large repo.
 - **Continue** — only appears once you have a saved run. Click **Continue Run** to resume exactly where you left off (health, ammo, weapons, and campaign position all restored).

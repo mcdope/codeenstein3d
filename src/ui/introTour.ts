@@ -16,12 +16,15 @@
  * running, so everything in `doc/user/hud-and-ui.md` — HUD, minimap, compass,
  * automap — has nothing on screen to anchor to. This teaches how to *start*.
  *
- * **It never touches the app's own state.** No step switches a launch tab to
- * reveal the panel behind it: switch-and-revert on persistent UI state is the
- * thing this project has decided overlays must not do, and a tour that left the
- * player on a different tab than they started on would be exactly that. Steps
- * therefore anchor to the tabs themselves, which are always present, never to
- * the panels they reveal.
+ * **Tab switching is declarative and always restored.** The blanket "no step
+ * may switch a launch tab" rule was relaxed (user decision, 2026-08-16) when
+ * the settings moved behind their own tab: a step may carry `activateTabId`
+ * to have its tab opened for it (the Settings walk-through needs the panel
+ * visible to anchor to), every step *without* one re-activates the tab that
+ * was selected when the tour began, and `stop()` restores that initial tab on
+ * every exit path (Done, Skip, Escape). What remains banned is the original
+ * sin: ending the tour on a different tab than the player started on —
+ * switch-without-restore on persistent UI state.
  */
 
 /** One stop on the tour. `targetId` is an element id in `index.html`. */
@@ -29,6 +32,11 @@ export interface TourStep {
   targetId: string;
   title: string;
   body: string;
+  /** Launch-tab button id (e.g. `"tab-settings"`) this step needs active —
+   * the tour clicks it before measuring the target, and re-activates the
+   * tour's initial tab for steps without one. See the module doc for the
+   * restore guarantee. */
+  activateTabId?: string;
 }
 
 export interface IntroTour {
@@ -61,8 +69,8 @@ const VIEWPORT_MARGIN = 8;
 export const DEFAULT_TOUR_STEPS: readonly TourStep[] = [
   {
     targetId: "launch-tabs",
-    title: "Five ways in",
-    body: "Four of these tabs load source code to play — from your machine, a saved run, GitHub, or the bundled demos. The fifth hosts co-op. Every file you load becomes a level.",
+    title: "Six tabs, five ways in",
+    body: "Four of these tabs load source code to play — from your machine, a saved run, GitHub, or the bundled demos. The fifth hosts co-op, and the gear holds the settings. Every file you load becomes a level.",
   },
   {
     targetId: "tab-demo",
@@ -75,17 +83,31 @@ export const DEFAULT_TOUR_STEPS: readonly TourStep[] = [
     body: "Host a session and share the short code, or join with someone else's — joining needs no workspace of your own at all. Only the host loads the code; everyone else receives the finished level over the connection. A locally-picked folder can't be hosted, so host from Demos or GitHub.",
   },
   {
+    targetId: "tab-settings",
+    title: "Everything you can tweak",
+    body: "The gear tab collects the game's settings — who you are, how it plays, how it sounds, how it looks. Everything in it is remembered between sessions. Let's step through it.",
+  },
+  {
     targetId: "player-name-input",
+    activateTabId: "tab-settings",
     title: "Say who you are (optional)",
     body: "Set a name and it floats above your character in co-op so teammates can tell who's who, and it labels your own highscore entries. It's remembered between sessions, and it only ever goes to the people in your session — never to a server.",
   },
   {
     targetId: "difficulty-select",
+    activateTabId: "tab-settings",
     title: "Set the rules first",
     body: "Difficulty and gore apply to the next level you launch, so pick them before you start. Both are remembered between sessions.",
   },
   {
+    targetId: "render-quality-select",
+    activateTabId: "tab-settings",
+    title: "Classic look, or Sharp",
+    body: "Classic keeps the game's intended 640×400 retro look — the default. Sharp doubles the internal resolution for crisper walls and sprites, paired with a half-resolution floor so it stays fast — worth trying on a 120Hz display. Applies at the next level you launch; aiming is identical in both.",
+  },
+  {
     targetId: "wad-tabs",
+    activateTabId: "tab-settings",
     title: "Bring your own textures",
     body: "Point it at a DOOM .wad and the walls, doors and floors come from that instead of the built-in look — it picks broadly-compatible textures out of the file for you. Or take one from the curated online list, no download or file picker needed, each with its license and credits shown. Either way it lasts for the session, not forever.",
   },
@@ -129,6 +151,22 @@ export function createIntroTour(steps: readonly TourStep[], onFinish: () => void
   let index = 0;
   let root: HTMLDivElement | null = null;
   let previouslyFocused: Element | null = null;
+  /** The launch tab that was selected when the tour started — re-activated
+   * for every step without its own `activateTabId`, and restored on every
+   * exit path. Null when no tab bar exists (some unit fixtures). */
+  let initialTabId: string | null = null;
+
+  /** Activate the launch tab `tabId` names by clicking its button — reusing
+   * the app's own switcher listener keeps aria/hidden handling in one place.
+   * No-ops when the tab is already selected (a click would be harmless, but
+   * re-clicking on every render is noise) or the id resolves to nothing. */
+  function activateTab(tabId: string | null): void {
+    if (!tabId) return;
+    const button = document.getElementById(tabId);
+    if (!(button instanceof HTMLElement)) return;
+    if (button.getAttribute("aria-selected") === "true") return;
+    button.click();
+  }
 
   /**
    * Steps whose target is absent or invisible are dropped rather than thrown on
@@ -154,6 +192,11 @@ export function createIntroTour(steps: readonly TourStep[], onFinish: () => void
     window.removeEventListener("keydown", onKey, true);
     root.remove();
     root = null;
+    // The restore half of the module's tab-switching guarantee: whatever tab
+    // the player was on when the tour began is the tab they end on — on
+    // every exit path (Done, Skip, Escape all funnel through here).
+    activateTab(initialTabId);
+    initialTabId = null;
     // Restore focus to whatever had it before the tour stole it — otherwise a
     // keyboard user is dumped at the top of the document.
     if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus();
@@ -200,6 +243,13 @@ export function createIntroTour(steps: readonly TourStep[], onFinish: () => void
 
   function render(entry: { step: TourStep; target: HTMLElement }, total: number): void {
     root!.replaceChildren();
+
+    // A step inside a tab panel declares the tab it needs; every other step
+    // gets the tour's initial tab back, so stepping Back across the settings
+    // boundary (or past it) never leaves the wrong panel showing. Must happen
+    // before the rect measurement below — a target inside a hidden panel
+    // measures as a zero-size rect.
+    activateTab(entry.step.activateTabId ?? initialTabId);
 
     // Bring the control into view *before* measuring it. The sidebar is taller
     // than most viewports — `#file-tree` and `#view-highscores` sit below the
@@ -278,6 +328,7 @@ export function createIntroTour(steps: readonly TourStep[], onFinish: () => void
         return;
       }
       previouslyFocused = document.activeElement;
+      initialTabId = document.querySelector('#launch-tabs [role="tab"][aria-selected="true"]')?.id ?? null;
       index = 0;
       root = document.createElement("div");
       root.className = "intro-tour";

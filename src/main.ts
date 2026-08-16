@@ -122,14 +122,59 @@ function resolveRenderRes(): { width: number; height: number } {
   return parseRenderRes(new URLSearchParams(window.location.search).get("renderRes"));
 }
 
+/** `?renderRes=WxH` shape — shared by `parseRenderRes` (fall back to the
+ * default on mismatch) and `urlRenderResOverride` (report "no override"). */
+const RENDER_RES_RE = /^(\d{2,4})x(\d{2,4})$/;
+
 /** The pure half of `resolveRenderRes`, exported for direct unit tests (the
  * URL read above runs once at module init, so its non-default branch can't
  * be re-entered from a test without a second module instance). */
 export function parseRenderRes(raw: string | null): { width: number; height: number } {
-  const m = raw ? /^(\d{2,4})x(\d{2,4})$/.exec(raw) : null;
+  const m = raw ? RENDER_RES_RE.exec(raw) : null;
   if (!m) return { width: SCENE_WIDTH, height: SCENE_HEIGHT };
   const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
   return { width: clamp(Number(m[1]), 160, 2560), height: clamp(Number(m[2]), 100, 1600) };
+}
+
+/** The `?renderRes=` measurement override, or null when the param is absent
+ * or malformed — distinct from `parseRenderRes`'s default-on-mismatch
+ * contract, because the render-quality setting needs to know whether the URL
+ * actually overrode anything (an explicit `?renderRes=640x400` must beat a
+ * "sharp" preference, exactly like every other value; the perf bench relies
+ * on this). */
+function urlRenderResOverride(): { width: number; height: number } | null {
+  const raw = new URLSearchParams(window.location.search).get("renderRes");
+  if (!raw || !RENDER_RES_RE.test(raw)) return null;
+  return parseRenderRes(raw);
+}
+
+/** Sharp mode's internal resolution — exactly 2× the classic 640×400, same
+ * 8:5 aspect (so `watchCanvasSizing`'s captured ratio stays valid), paired
+ * automatically with the half-res floor by the renderer (see
+ * `AUTO_HALF_RES_FLOOR_ENABLED` in raycaster.ts). */
+const SHARP_RENDER_WIDTH = 1280;
+const SHARP_RENDER_HEIGHT = 800;
+
+/**
+ * Size the shared canvas for the current render-quality preference (the
+ * `?renderRes=` measurement override wins). Called immediately before every
+ * engine construction — and ONLY there, never mid-level: each player's
+ * zBuffer is sized from the canvas width at engine construction
+ * (engine.ts), so a mid-level change would leave sprites z-testing against
+ * stale entries. Render-only either way: simulation shot/aim resolution
+ * stays on the fixed scene size, so replays and multiplayer peers at
+ * different qualities stay deterministic.
+ */
+function applyRenderResolution(): void {
+  const target =
+    urlRenderResOverride() ??
+    (currentRenderQuality === "sharp"
+      ? { width: SHARP_RENDER_WIDTH, height: SHARP_RENDER_HEIGHT }
+      : { width: SCENE_WIDTH, height: SCENE_HEIGHT });
+  // Assigning canvas.width clears the canvas even when the value is equal —
+  // only touch it on a real change.
+  if (canvas.width !== target.width) canvas.width = target.width;
+  if (canvas.height !== target.height) canvas.height = target.height;
 }
 
 /** Extensions treated as a "bonus" restock-arena level (see `launchLevel`) —
@@ -176,17 +221,29 @@ const SAVE_KEY = "codeenstein-campaign-save";
  * catalog *id*, never a URL or the WAD itself. Same "declared up here"
  * reasoning as `GORE_KEY` above. */
 const WAD_PACK_KEY = "codeenstein-wad-pack";
+/** The two render-quality modes: `classic` = the intended 640×400 retro look;
+ * `sharp` = 1280×800 internal resolution, automatically paired with the
+ * half-res floor-cast (see `AUTO_HALF_RES_FLOOR_ENABLED` in raycaster.ts) —
+ * the only high-res configuration the 2026-08 frame-budget audit measured as
+ * staying inside the frame budget. Render-only either way: shot/aim
+ * resolution stays on the fixed simulation-side scene size. */
+type RenderQuality = "classic" | "sharp";
+/** localStorage key for the standing render-quality preference — same
+ * "declared up here" reasoning as `GORE_KEY` above. */
+const RENDER_QUALITY_KEY = "codeenstein-render-quality";
 
 const tabLocal = requireElement<HTMLButtonElement>("#tab-local");
 const tabContinue = requireElement<HTMLButtonElement>("#tab-continue");
 const tabGithub = requireElement<HTMLButtonElement>("#tab-github");
 const tabDemo = requireElement<HTMLButtonElement>("#tab-demo");
 const tabMultiplayer = requireElement<HTMLButtonElement>("#tab-multiplayer");
+const tabSettings = requireElement<HTMLButtonElement>("#tab-settings");
 const tabPanelLocal = requireElement<HTMLElement>("#tab-panel-local");
 const tabPanelContinue = requireElement<HTMLElement>("#tab-panel-continue");
 const tabPanelGithub = requireElement<HTMLElement>("#tab-panel-github");
 const tabPanelDemo = requireElement<HTMLElement>("#tab-panel-demo");
 const tabPanelMultiplayer = requireElement<HTMLElement>("#tab-panel-multiplayer");
+const tabPanelSettings = requireElement<HTMLElement>("#tab-panel-settings");
 const selectButton = requireElement<HTMLButtonElement>("#select-workspace");
 const continueButton = requireElement<HTMLButtonElement>("#continue-run");
 const githubRepoInput = requireElement<HTMLInputElement>("#github-repo-input");
@@ -201,6 +258,7 @@ const loadingScreen = requireElement<HTMLElement>("#loading-screen");
 const loadingStatus = requireElement<HTMLParagraphElement>("#loading-status");
 const goreSelect = requireElement<HTMLSelectElement>("#gore-select");
 const difficultySelect = requireElement<HTMLSelectElement>("#difficulty-select");
+const renderQualitySelect = requireElement<HTMLSelectElement>("#render-quality-select");
 const masterVolumeInput = requireElement<HTMLInputElement>("#master-vol");
 const sfxVolumeInput = requireElement<HTMLInputElement>("#sfx-vol");
 const bgmVolumeInput = requireElement<HTMLInputElement>("#bgm-vol");
@@ -254,8 +312,11 @@ const closeMultiplayerLobbyButton = requireElement<HTMLButtonElement>("#close-mu
 // Select Workspace, Continue Run, Load from GitHub, and the bundled demo
 // campaign are four different ways to start the same game loop; grouped into
 // tabs so only one is shown at a time instead of stacking all four
-// permanently in the sidebar.
-type LaunchTab = "local" | "continue" | "github" | "demo" | "multiplayer";
+// permanently in the sidebar. The Settings tab is the one member that does
+// NOT start a run: it holds the standing preferences (gameplay, audio,
+// texture pack) that used to sit permanently below the tabs, so the file
+// tree gets that vertical space back.
+type LaunchTab = "local" | "continue" | "github" | "demo" | "multiplayer" | "settings";
 
 const launchTabs: Record<LaunchTab, { button: HTMLButtonElement; panel: HTMLElement }> = {
   local: { button: tabLocal, panel: tabPanelLocal },
@@ -263,6 +324,7 @@ const launchTabs: Record<LaunchTab, { button: HTMLButtonElement; panel: HTMLElem
   github: { button: tabGithub, panel: tabPanelGithub },
   demo: { button: tabDemo, panel: tabPanelDemo },
   multiplayer: { button: tabMultiplayer, panel: tabPanelMultiplayer },
+  settings: { button: tabSettings, panel: tabPanelSettings },
 };
 
 function activateLaunchTab(tab: LaunchTab): void {
@@ -903,6 +965,19 @@ difficultySelect.value = currentDifficulty;
 difficultySelect.addEventListener("change", () => {
   currentDifficulty = difficultySelect.value as DifficultyLevel;
   saveDifficulty(currentDifficulty);
+});
+
+/** Standing render-quality preference — same "independent standing
+ * preference" shape as gore/difficulty above. Consumed by
+ * `applyRenderResolution()` immediately before every engine construction,
+ * never mid-level (the panel says so): each player's zBuffer is sized from
+ * the canvas width at engine construction. */
+let currentRenderQuality: RenderQuality = loadRenderQuality();
+
+renderQualitySelect.value = currentRenderQuality;
+renderQualitySelect.addEventListener("change", () => {
+  currentRenderQuality = renderQualitySelect.value as RenderQuality;
+  saveRenderQuality(currentRenderQuality);
 });
 
 // Same standing-preference shape as gore/difficulty, on "input" rather than
@@ -1995,6 +2070,7 @@ async function startMultiplayerSessionAsHost(): Promise<void> {
     const result = buildHostSessionSetupResult(setupOptions);
     beginMultiplayerLevel();
     const worker = new Worker(new URL("./multiplayer/tickClockWorker.ts", import.meta.url), { type: "module" });
+    applyRenderResolution();
     activeMultiplayerSession = runMultiplayerSessionAsHost(
       links,
       canvas,
@@ -2117,6 +2193,7 @@ async function startMultiplayerSessionAsGuest(): Promise<void> {
     beginMultiplayerLevel();
     const totalPlayers = result.roster.length;
     updateMultiplayerGuestLiveCountDisplay(totalPlayers, totalPlayers);
+    applyRenderResolution();
     activeMultiplayerSession = runMultiplayerSessionAsGuest(
       channels,
       canvas,
@@ -3018,6 +3095,7 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
     computeBalanceHash(map, SIMULATION_BALANCE),
   );
 
+  applyRenderResolution();
   activeEngine = new RaycasterEngine(
     canvas,
     map,
@@ -3752,6 +3830,28 @@ function saveGoreLevel(level: GoreLevel): void {
   }
 }
 
+/** Read the saved render quality, falling back to `"classic"` on any
+ * missing/invalid value or if storage is unavailable — same shape as
+ * `loadGoreLevel`. An unknown value (a newer build's mode after a rollback)
+ * reads as classic rather than throwing. */
+function loadRenderQuality(): RenderQuality {
+  try {
+    const raw = localStorage.getItem(RENDER_QUALITY_KEY);
+    if (raw === "classic" || raw === "sharp") return raw;
+  } catch {
+    // Fall through to the default.
+  }
+  return "classic";
+}
+
+function saveRenderQuality(quality: RenderQuality): void {
+  try {
+    localStorage.setItem(RENDER_QUALITY_KEY, quality);
+  } catch (err) {
+    console.warn("[settings] Failed to save render quality:", err);
+  }
+}
+
 /** Read the saved difficulty, falling back to `DEFAULT_DIFFICULTY` on any
  * missing/invalid value or if storage is unavailable — same shape as
  * `loadGoreLevel`. */
@@ -4252,6 +4352,7 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
       frameIndex = 0;
       levelEnded = false;
       updateHint();
+      applyRenderResolution();
       activeEngine = new RaycasterEngine(
         canvas,
         map,

@@ -1558,7 +1558,7 @@ describe("main.ts — first-run intro tour", () => {
     await importMain();
     await new Promise((resolve) => requestAnimationFrame(resolve));
     expect(document.querySelector(".intro-tour-popout")).not.toBeNull();
-    expect(document.querySelector(".intro-tour-title")?.textContent).toBe("Five ways in");
+    expect(document.querySelector(".intro-tour-title")?.textContent).toBe("Six tabs, five ways in");
   });
 
   it("does not start unprompted when storage already has data", async () => {
@@ -7644,5 +7644,91 @@ describe("main.ts — parseRenderRes (?renderRes= measurement override)", () => 
     expect(parseRenderRes("1280x800")).toEqual({ width: 1280, height: 800 });
     expect(parseRenderRes("9999x9999")).toEqual({ width: 2560, height: 1600 });
     expect(parseRenderRes("10x10")).toEqual({ width: 160, height: 100 });
+  });
+});
+
+describe("main.ts — Settings tab & render quality", () => {
+  it("reveals the settings panel via its tab and yields to a launch tab like any other", async () => {
+    await importMain();
+    const tabSettings = document.querySelector<HTMLButtonElement>("#tab-settings")!;
+    const panelSettings = document.querySelector<HTMLElement>("#tab-panel-settings")!;
+    const tabLocal = document.querySelector<HTMLButtonElement>("#tab-local")!;
+
+    expect(panelSettings.hidden).toBe(true);
+    tabSettings.click();
+    expect(tabSettings.getAttribute("aria-selected")).toBe("true");
+    expect(panelSettings.hidden).toBe(false);
+    expect(tabLocal.getAttribute("aria-selected")).toBe("false");
+
+    tabLocal.click();
+    expect(panelSettings.hidden).toBe(true);
+  });
+
+  it("initializes the render-quality select to classic and persists a change", async () => {
+    await importMain();
+    const select = document.querySelector<HTMLSelectElement>("#render-quality-select")!;
+    expect(select.value).toBe("classic");
+    select.value = "sharp";
+    select.dispatchEvent(new Event("change"));
+    expect(localStorage.getItem("codeenstein-render-quality")).toBe("sharp");
+  });
+
+  it("restores a saved preference on the next import and reads corrupt values as classic", async () => {
+    localStorage.setItem("codeenstein-render-quality", "sharp");
+    await importMain();
+    expect(document.querySelector<HTMLSelectElement>("#render-quality-select")!.value).toBe("sharp");
+
+    localStorage.setItem("codeenstein-render-quality", "ultra-hd-9000");
+    await importMain();
+    expect(document.querySelector<HTMLSelectElement>("#render-quality-select")!.value).toBe("classic");
+  });
+
+  it("logs a warning instead of throwing when saving the render quality fails", async () => {
+    await importMain();
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota exceeded");
+    });
+    const warnSpy = vi.spyOn(console, "warn");
+    const select = document.querySelector<HTMLSelectElement>("#render-quality-select")!;
+    select.value = "sharp";
+    select.dispatchEvent(new Event("change"));
+    expect(warnSpy).toHaveBeenCalledWith("[settings] Failed to save render quality:", expect.any(Error));
+  });
+
+  it("sizes the canvas per quality at level launch — sharp becomes 1280×800, and only at launch", async () => {
+    await importMain();
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    expect(canvas.width).toBe(640);
+
+    const select = document.querySelector<HTMLSelectElement>("#render-quality-select")!;
+    select.value = "sharp";
+    select.dispatchEvent(new Event("change"));
+    // Changing the preference alone must not resize anything: the zBuffer is
+    // sized from the canvas at engine construction, so resolution applies
+    // only at the next launch (the settings panel says so).
+    expect(canvas.width).toBe(640);
+
+    document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    expect(canvas.width).toBe(1280);
+    expect(canvas.height).toBe(800);
+  });
+
+  it("an explicit ?renderRes= URL override beats the sharp preference at launch", async () => {
+    await importMain();
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?renderRes=320x200" }, configurable: true });
+    try {
+      const select = document.querySelector<HTMLSelectElement>("#render-quality-select")!;
+      select.value = "sharp";
+      select.dispatchEvent(new Event("change"));
+      document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+      await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+      const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+      expect(canvas.width).toBe(320);
+      expect(canvas.height).toBe(200);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
   });
 });

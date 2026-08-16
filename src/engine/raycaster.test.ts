@@ -1171,6 +1171,58 @@ describe("renderBackgroundHalfRes — sanity (visible-change probe, not an equiv
   });
 });
 
+describe("renderScene — halfResFloor param and >640 auto-pairing (AUTO_HALF_RES_FLOOR_ENABLED)", () => {
+  /** Positional call with everything defaulted except the trailing `halfResFloor`. */
+  function render(c: MockCanvasContext, map: GameMap, player: Player, zBuffer: Float64Array, halfResFloor?: boolean): void {
+    renderScene(asCtx(c), map, player, zBuffer, fakeStyle(), 0, 0, undefined, false, true, true, true, true, halfResFloor);
+  }
+
+  function wideCtx(): MockCanvasContext {
+    // Wider than the classic 640 — the auto-pairing threshold.
+    return createMockCanvasContext({ width: 1300, height: 800 } as unknown as HTMLCanvasElement);
+  }
+
+  it("default at width<=640: floor goes through the full-res fast path (no upscale blit)", () => {
+    const map = fakeMap();
+    const player = centeredPlayer(map);
+    const c = ctx();
+    render(c, map, player, new Float64Array(WIDTH));
+    expect(c.putImageData).toHaveBeenCalledTimes(1); // fast path's full-frame blit
+    expect(c.drawImage).toHaveBeenCalledTimes(WIDTH); // walls only — no half-res upscale
+  });
+
+  it("default at width>640: auto-pairing dispatches the floor to the half-res path", () => {
+    const map = fakeMap();
+    const player = centeredPlayer(map);
+    const c = wideCtx();
+    render(c, map, player, new Float64Array(1300));
+    // The floor paints before the walls, so call 0 is the upscale blit:
+    // source rect = half buffer (650x400), dest rect = full canvas.
+    expect(c.drawImage.mock.calls[0].slice(1)).toEqual([0, 0, 650, 400, 0, 0, 1300, 800]);
+    expect(c.drawImage).toHaveBeenCalledTimes(1300 + 1); // walls + the upscale blit
+    expect(c.putImageData).not.toHaveBeenCalled(); // full-res fast path skipped
+  });
+
+  it("explicit halfResFloor=false on a wide canvas forces full-res (overrides the auto-pairing)", () => {
+    const map = fakeMap();
+    const player = centeredPlayer(map);
+    const c = wideCtx();
+    render(c, map, player, new Float64Array(1300), false);
+    expect(c.putImageData).toHaveBeenCalledTimes(1);
+    expect(c.drawImage).toHaveBeenCalledTimes(1300); // walls only — no upscale blit
+  });
+
+  it("explicit halfResFloor=true at classic size forces the half-res path", () => {
+    const map = fakeMap();
+    const player = centeredPlayer(map);
+    const c = ctx();
+    render(c, map, player, new Float64Array(WIDTH), true);
+    expect(c.drawImage.mock.calls[0].slice(1)).toEqual([0, 0, WIDTH / 2, HEIGHT / 2, 0, 0, WIDTH, HEIGHT]);
+    expect(c.drawImage).toHaveBeenCalledTimes(WIDTH + 1);
+    expect(c.putImageData).not.toHaveBeenCalled();
+  });
+});
+
 describe("renderScene — measurement ablation params (drawFloor/drawWalls/drawShading)", () => {
   it("drawFloor=false paints flat ceiling+floor fills and skips the floor-cast blit", () => {
     const map = fakeMap();
