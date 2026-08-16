@@ -45,9 +45,11 @@ Gore, Difficulty, Render quality, the volume sliders and your **online texture p
 
 ## The file tree
 
-The bottom of the sidebar lists the files of the workspace loaded under the tab you are currently looking at — **each tab keeps its own**. Load the Demos campaign, switch to **GitHub** and load a repository, and both are still there: switch between the two tabs and each shows its own files, with the folders you expanded still expanded. **Local** and **Continue** share one, since both are the same local folder on your machine. **Settings** and **Multiplayer** have no workspace of their own and say so rather than showing you another tab's files.
+The bottom of the sidebar lists the files of the loaded workspace, **under the tab you loaded it from** — load a repository and its files are under **GitHub**; launch the demo campaign and its files are under **Demos**. The other tabs say what they'd load instead of showing you someone else's files. **Local** and **Continue** share one, since both are the same local folder on your machine, and **Settings** and **Multiplayer** never show a tree at all.
 
-Switching tabs is purely a change of view — it never disturbs the level you are playing. A small dot on a tab marks the workspace the game is actually running from, so you can tell at a glance even while looking at a different one. Clicking a **file** is what switches: it drops you into that file's level and the rest of that workspace becomes the campaign you are playing, exactly as loading it fresh would, which also means it starts that campaign from the beginning.
+One workspace is loaded at a time, as it always has been: loading a repository replaces the demo campaign rather than sitting beside it, so a tree on screen always means "this is what's loaded". To go back you load it again — instant for **Demos**, a re-fetch for **GitHub**, re-picking the folder for **Local**.
+
+Switching tabs is purely a change of view: it never disturbs the level you're playing, and the folders you expanded stay expanded when you come back. A small **▶** marks the tab the game is running from, so you can tell at a glance from anywhere — including the tabs that show no tree.
 
 ## Highscores
 

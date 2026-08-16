@@ -970,22 +970,26 @@ function beginWorkspaceLoad(): number {
 }
 
 // --- Per-tab workspace slots -----------------------------------------------
-// The tabs used to pick only a *loading method*: one `#file-tree` and one set
-// of workspace globals meant the demo campaign's files sat under the GitHub
-// tab too, and a failed GitHub load overwrote the name of the campaign you
-// were playing. A slot is one loaded workspace per *source* — Local and
-// Continue both pick a local folder through `pickWorkspace()`, so they share
-// one. Switching tabs is display-only: it swaps which pane and which name line
-// are visible and never touches the running game. A slot becomes *active* (the
-// one the engine plays from — i.e. the `workspace*` globals above) only when
-// it is loaded, or when a file inside its own tree is clicked.
+// The tabs used to pick only a *loading method*: one `#file-tree` sitting
+// outside every panel meant the demo campaign's files were listed under the
+// GitHub tab too, and a failed GitHub load overwrote the name of the campaign
+// you were playing. Each workspace *source* now has its own tree pane and its
+// own status line — Local and Continue share one, since both pick a local
+// folder through `pickWorkspace()` — and switching tabs only swaps which is on
+// screen; it never touches the running game.
+//
+// Exactly ONE workspace is loaded at a time, as before: a load clears whatever
+// another tab was showing, so a tree on screen always means "this is the
+// workspace that is loaded", never "this is one of several you could pick
+// from". Keeping several live was tried first and read as a lie — three tabs
+// each presenting a loaded workspace when only one of them was.
 
 type WorkspaceSlotKey = "local" | "github" | "demo";
 
 /** Which slot each tab displays. `null` for the two tabs that own no workspace
  * of their own: Settings holds standing preferences, and Multiplayer's Join
  * side works with nothing loaded at all while its Host side is gated on the
- * *active* workspace (`isMultiplayerEligibleWorkspace`), not on a tab. Both
+ * loaded workspace (`isMultiplayerEligibleWorkspace`), not on a tab. Both
  * show `EMPTY_SLOT_HINTS` in the tree area instead. */
 const SLOT_FOR_TAB: Record<LaunchTab, WorkspaceSlotKey | null> = {
   local: "local",
@@ -997,7 +1001,8 @@ const SLOT_FOR_TAB: Record<LaunchTab, WorkspaceSlotKey | null> = {
 };
 
 /** Shown in the tree area whenever the visible tab has no tree to show —
- * either its slot hasn't loaded anything yet, or the tab has no slot at all. */
+ * either it isn't the tab the loaded workspace came from, or it has no slot at
+ * all. */
 const EMPTY_SLOT_HINTS: Record<LaunchTab, string> = {
   local: "No workspace picked yet — use Select Workspace above.",
   continue: "No workspace picked yet — use Continue Run above.",
@@ -1008,50 +1013,43 @@ const EMPTY_SLOT_HINTS: Record<LaunchTab, string> = {
 };
 
 interface WorkspaceSlot {
-  /** This slot's own rendered tree. Panes are toggled, never re-rendered, so
-   * each tree keeps its expanded folders and scroll position for the whole
-   * session — `renderFileTree` wipes its container and rebuilds every row
-   * collapsed, so re-rendering on each tab switch would throw that away. */
+  /** Where this source's tree is rendered. Only the slot named by
+   * `loadedWorkspaceSlot` ever holds one; the panes are then toggled rather
+   * than re-rendered, so the tree keeps its expanded folders and scroll
+   * position across tab switches (`renderFileTree` wipes its container and
+   * rebuilds every row collapsed). */
   pane: HTMLElement;
-  tree: TreeNode | null;
-  rootName: string | null;
-  isRemote: boolean;
-  isDemo: boolean;
-  /** The tab this slot was last loaded *from*. "local" and "continue" both
-   * land in the local slot but stay distinguishable here, because
-   * `resetToFileTreeAfterMultiplayerSession` restores this value verbatim. */
-  launchTab: LaunchTab;
-  codebaseStats: Promise<CodebaseStats> | null;
   /** What `#workspace-name` reads while this slot is the visible one — the
    * workspace's name, or this slot's own load error. Per-slot precisely so a
-   * failed load in one tab can't relabel another tab's workspace. */
+   * failed load in one tab can't relabel the workspace under another. */
   statusText: string;
   statusIsError: boolean;
+  /** What `statusText` falls back to once this slot is cleared. Normally "No
+   * workspace selected"; the local slot overwrites it with the
+   * File-System-Access-unsupported message, which outlives any load. */
+  defaultStatusText: string;
+  defaultStatusIsError: boolean;
 }
 
-function emptyWorkspaceSlot(pane: HTMLElement, launchTab: LaunchTab): WorkspaceSlot {
+function makeWorkspaceSlot(pane: HTMLElement): WorkspaceSlot {
   return {
     pane,
-    tree: null,
-    rootName: null,
-    isRemote: false,
-    isDemo: false,
-    launchTab,
-    codebaseStats: null,
     statusText: "No workspace selected",
     statusIsError: false,
+    defaultStatusText: "No workspace selected",
+    defaultStatusIsError: false,
   };
 }
 
 const workspaceSlots: Record<WorkspaceSlotKey, WorkspaceSlot> = {
-  local: emptyWorkspaceSlot(fileTreePaneLocal, "local"),
-  github: emptyWorkspaceSlot(fileTreePaneGithub, "github"),
-  demo: emptyWorkspaceSlot(fileTreePaneDemo, "demo"),
+  local: makeWorkspaceSlot(fileTreePaneLocal),
+  github: makeWorkspaceSlot(fileTreePaneGithub),
+  demo: makeWorkspaceSlot(fileTreePaneDemo),
 };
 
-/** The slot the engine is playing from — the one mirrored into the `workspace*`
- * globals. `null` until the first load. */
-let activeWorkspaceSlot: WorkspaceSlotKey | null = null;
+/** Which source the one loaded workspace came from — the only slot with a tree
+ * in it, and the only tab that shows one. `null` until the first load. */
+let loadedWorkspaceSlot: WorkspaceSlotKey | null = null;
 
 /** Everything a load hands to `commitWorkspaceSlot` — the same block of values
  * all four loading entry points used to assign to the globals one by one. */
@@ -1063,51 +1061,55 @@ interface LoadedWorkspaceInit {
   launchTab: LaunchTab;
 }
 
-/** Stores a freshly loaded workspace in its slot, renders its tree into that
- * slot's own pane, and makes it the active workspace. */
+/** Makes `init` the loaded workspace: clears whatever another tab was showing,
+ * renders the new tree into this source's own pane, and points the `workspace*`
+ * globals — and therefore the engine, campaign progression, autosave
+ * eligibility and the highscore board — at it. The single writer of those
+ * globals. */
 function commitWorkspaceSlot(key: WorkspaceSlotKey, init: LoadedWorkspaceInit): void {
-  const slot = workspaceSlots[key];
-  slot.tree = init.tree;
-  slot.rootName = init.rootName;
-  slot.isRemote = init.isRemote;
-  slot.isDemo = init.isDemo;
-  slot.launchTab = init.launchTab;
-  slot.codebaseStats = startCodebaseStats(init.tree, init.isRemote, init.rootName);
-  renderFileTree(slot.pane, init.tree, {
-    onSelectFile: (node) => void handleFileSelected(key, node),
-  });
-  adoptWorkspaceSlot(key, true);
-  setSlotStatus(key, init.rootName);
-  showWorkspacePaneFor(visibleLaunchTab);
-}
-
-/** Points the `workspace*` globals — and therefore the engine, campaign
- * progression, autosave eligibility and the highscore board — at `key`.
- * Called on every load (`force`), and by `handleFileSelected` when a file is
- * clicked in a tab whose workspace isn't the one currently playing: clicking a
- * file is what switches sources, exactly as loading one does.
- *
- * Deliberately does NOT call `clearCampaignSave()` the way the GitHub and demo
- * *load* paths do. Starting a fresh remote campaign is an explicit act; merely
- * clicking a file in the Demos tree is not, and the save isn't stale either —
- * it records a folder name and file path that "Continue Run" re-picks from
- * scratch regardless of what is loaded elsewhere. */
-function adoptWorkspaceSlot(key: WorkspaceSlotKey, force = false): void {
-  if (activeWorkspaceSlot === key && !force) return;
-  const slot = workspaceSlots[key];
-  activeWorkspaceSlot = key;
-  workspaceTree = slot.tree;
-  workspaceRootName = slot.rootName;
-  workspaceIsRemote = slot.isRemote;
-  workspaceIsDemo = slot.isDemo;
-  workspaceLaunchTab = slot.launchTab;
-  codebaseStatsPromise = slot.codebaseStats;
-  // A different codebase is a different campaign. (The Continue Run path
-  // overwrites `campaignLevelIndex` from the save straight after this.)
+  for (const name of Object.keys(workspaceSlots) as WorkspaceSlotKey[]) {
+    if (name !== key) clearWorkspaceSlot(name);
+  }
+  loadedWorkspaceSlot = key;
+  workspaceTree = init.tree;
+  workspaceRootName = init.rootName;
+  workspaceIsRemote = init.isRemote;
+  workspaceIsDemo = init.isDemo;
+  workspaceLaunchTab = init.launchTab;
+  codebaseStatsPromise = startCodebaseStats(init.tree, init.isRemote, init.rootName);
+  // A fresh load always starts a new campaign. (Continue Run overwrites
+  // `campaignLevelIndex` from the save straight after this.)
   campaignLevelIndex = 1;
   cheatsUsed = false;
   updateMultiplayerTabEnabled();
-  updateActiveSourceMarker();
+
+  renderFileTree(workspaceSlots[key].pane, init.tree, { onSelectFile: handleFileSelected });
+  setSlotStatus(key, init.rootName);
+  updateLoadedSourceMarker();
+  showWorkspacePaneFor(visibleLaunchTab);
+}
+
+/** Marks the tab holding the loaded workspace with a ▶, so which source the
+ * game is running from is readable from any tab — including Settings and
+ * Multiplayer, which show no tree at all. Local and Continue share a slot, so
+ * both carry it together. */
+function updateLoadedSourceMarker(): void {
+  for (const tab of Object.keys(launchTabs) as LaunchTab[]) {
+    launchTabs[tab].button.classList.toggle(
+      "tab-btn--playing",
+      loadedWorkspaceSlot !== null && SLOT_FOR_TAB[tab] === loadedWorkspaceSlot,
+    );
+  }
+}
+
+/** Drops the tree a previous load left under another tab. Its status line goes
+ * back to that slot's default, so a stale name can't outlive the workspace it
+ * named. */
+function clearWorkspaceSlot(key: WorkspaceSlotKey): void {
+  const slot = workspaceSlots[key];
+  slot.pane.textContent = "";
+  slot.statusText = slot.defaultStatusText;
+  slot.statusIsError = slot.defaultStatusIsError;
 }
 
 /** Records what `#workspace-name` should say for `key`, and shows it now if
@@ -1124,32 +1126,18 @@ function applySlotStatusToNameLine(slot: WorkspaceSlot): void {
   workspaceName.classList.toggle("error", slot.statusIsError);
 }
 
-/** Shows `tab`'s tree pane and name line, hiding every other slot's. A tab
- * with no slot, or whose slot has nothing loaded, gets the hint instead. */
+/** Shows the loaded workspace's tree and name line if `tab` is the one it came
+ * from; every other tab gets its hint instead. */
 function showWorkspacePaneFor(tab: LaunchTab): void {
   const key = SLOT_FOR_TAB[tab];
-  const slot = key === null ? null : workspaceSlots[key];
-  const showTree = slot !== null && slot.tree !== null;
+  const showTree = key !== null && key === loadedWorkspaceSlot;
   for (const name of Object.keys(workspaceSlots) as WorkspaceSlotKey[]) {
     workspaceSlots[name].pane.hidden = !(showTree && name === key);
   }
   fileTreeEmpty.hidden = showTree;
   fileTreeEmpty.textContent = showTree ? "" : EMPTY_SLOT_HINTS[tab];
-  workspaceName.hidden = slot === null;
-  if (slot !== null) applySlotStatusToNameLine(slot);
-}
-
-/** Marks the tab(s) showing the workspace the engine is actually playing from.
- * With a tree per tab there is otherwise nothing saying which source the
- * running level came from once you switch away from it. Local and Continue
- * share a slot, so both light up together. */
-function updateActiveSourceMarker(): void {
-  for (const tab of Object.keys(launchTabs) as LaunchTab[]) {
-    launchTabs[tab].button.classList.toggle(
-      "tab-btn--playing",
-      activeWorkspaceSlot !== null && SLOT_FOR_TAB[tab] === activeWorkspaceSlot,
-    );
-  }
+  workspaceName.hidden = key === null;
+  if (key !== null) applySlotStatusToNameLine(workspaceSlots[key]);
 }
 
 showWorkspacePaneFor(visibleLaunchTab);
@@ -1197,11 +1185,12 @@ playerNameInput.addEventListener("input", () => savePlayerName(playerNameInput.v
 if (!isFileSystemAccessSupported()) {
   selectButton.disabled = true;
   continueButton.disabled = true;
-  setSlotStatus(
-    "local",
-    "This browser does not support the File System Access API. Use Chrome, Edge, or Brave.",
-    true,
-  );
+  // The local slot's *default* too, not just its current text: this outlives
+  // any load, so it must come back when a GitHub/demo load clears the slot.
+  const unsupported = "This browser does not support the File System Access API. Use Chrome, Edge, or Brave.";
+  workspaceSlots.local.defaultStatusText = unsupported;
+  workspaceSlots.local.defaultStatusIsError = true;
+  setSlotStatus("local", unsupported, true);
 }
 
 if (loadCampaignSave()) tabContinue.style.display = "";
@@ -2722,18 +2711,11 @@ window.addEventListener("beforeunload", () => {
  * On file click: parse supported languages into normalized JSON and log that;
  * for everything else fall back to logging raw text.
  */
-async function handleFileSelected(slot: WorkspaceSlotKey, node: TreeNode): Promise<void> {
+async function handleFileSelected(node: TreeNode): Promise<void> {
   // Unreachable given the single call site: renderFileTree/fileTree.ts only
   // ever wires onSelectFile to file rows, never directory rows.
   /* v8 ignore next -- @preserve */
   if (node.kind !== "file") return;
-  // Clicking a file is what switches the active source — switching tabs on its
-  // own is display-only. A no-op when this slot is already the active one, so
-  // picking another file in the workspace you're already playing still doesn't
-  // count as campaign progression. (`launchLevel` below tears down a live
-  // multiplayer session, as it always has — the Multiplayer tab shows no tree,
-  // so reaching this from one takes a deliberate tab switch first.)
-  adoptWorkspaceSlot(slot);
   try {
     const text = await readFileText(node.handle as FileSystemFileHandle);
 
