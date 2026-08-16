@@ -2150,6 +2150,20 @@ describe("RaycasterEngine — firing", () => {
     expect(lastStats(handlers).kills).toBe(1);
   });
 
+  it("falls back to the default gore tier for a level name this build doesn't know", () => {
+    // A replay segment stores `gore` as a bare string and hands it straight
+    // back to the constructor at playback, so a payload recorded on a newer
+    // build (or edited in devtools) reaches here as an unknown tier. Without
+    // the fallback the multiplier lookup is `undefined` and the first hit
+    // throws on `.count` — the shot below is what would have thrown.
+    const enemy = fakeEnemy({ x: 6.5, y: 5.5, hp: 1, maxHp: 1 });
+    const map = fakeMap({ enemies: [enemy] });
+    const { engine, input } = makeEngine(map, makeHandlers(), { gore: "ultra-splatter-9000" as GoreLevel });
+    input.fireQueued = true;
+    expect(() => engine.advance(0.016)).not.toThrow();
+    expect(enemy.alive).toBe(false);
+  });
+
   it("damages without killing on a hit that doesn't drop the enemy to 0 HP", () => {
     const enemy = fakeEnemy({ x: 6.5, y: 5.5, hp: 30, maxHp: 30 }); // pistol does 22/hit, so this survives one
     const map = fakeMap({ enemies: [enemy] });

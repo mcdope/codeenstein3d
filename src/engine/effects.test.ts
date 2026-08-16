@@ -34,6 +34,7 @@ import {
   type Explosion,
   type ExplosionParticle,
   type FlameStream,
+  type GoreLevel,
 } from "./effects";
 import { Player } from "./player";
 
@@ -492,6 +493,31 @@ describe("spawnBlood / updateBlood", () => {
     expect(list[0].x).toBe(5); // the 5 oldest (x: 0-4) were evicted to make room
     expect(list.filter((p) => p.x === 999)).toHaveLength(5); // the new spawn survives intact
   });
+
+  it("evicts against the tier's own cap, not the 300 default", () => {
+    // The whole point of `maxParticles` being per-tier: at the default cap
+    // `absurd`'s spawns would evict its own never-expiring stains almost
+    // immediately, and the tier would show *less* blood than `extreme`.
+    const list: BloodParticle[] = Array.from({ length: 400 }, (_, i) => ({
+      x: i, y: 0, z: 0, vx: 0, vy: 0, vz: 0, life: 1, settled: false,
+    }));
+    spawnBlood(list, 999, 0, 10, GORE_MULTIPLIERS.absurd.maxParticles);
+    expect(list).toHaveLength(410); // nothing evicted — 410 is well under absurd's 1200
+    spawnBlood(list, 999, 0, 10, GORE_MULTIPLIERS.extreme.maxParticles);
+    expect(list).toHaveLength(300); // same list, a tier with a lower cap trims it
+  });
+
+  it("never expires a landed particle at a tier whose stains do not fade", () => {
+    // `absurd`'s `stainDuration: Infinity` is what "the room stays painted"
+    // means mechanically — FIFO eviction becomes the only thing that removes
+    // a stain, which is what bounds the tier.
+    const list: BloodParticle[] = [{ x: 0, y: 0, z: 0.02, vx: 0, vy: 0, vz: -5, life: 0.1, settled: false }];
+    updateBlood(list, 0.1, GORE_MULTIPLIERS.absurd.stainDuration);
+    expect(list[0].settled).toBe(true);
+    expect(list[0].life).toBe(Infinity);
+    for (let i = 0; i < 1000; i++) updateBlood(list, 1, GORE_MULTIPLIERS.absurd.stainDuration);
+    expect(list).toHaveLength(1); // still there after a simulated ~17 minutes
+  });
 });
 
 describe("renderBlood", () => {
@@ -534,6 +560,67 @@ describe("renderBlood", () => {
     const [, , w, h] = c.fillRect.mock.calls[0];
     expect(w).toBe(Math.round(HEIGHT * 0.06)); // clamped, not the ~hundreds-of-px the raw formula would give here
     expect(h).toBe(w);
+  });
+
+  it("applies settledSize to a landed particle only, never to an airborne one", () => {
+    const player = facingPlayer();
+    const at = (settled: boolean, settledSize: number) => {
+      const c = ctx();
+      renderBlood(
+        asCtx(c),
+        player,
+        [{ x: player.posX + 4, y: player.posY, z: 0, vx: 0, vy: 0, vz: 0, life: 1, settled }],
+        clearZBuffer(Infinity),
+        1,
+        settledSize,
+      );
+      return c.fillRect.mock.calls[0][2] as number;
+    };
+    // Airborne is the "mountain of blood" failure mode, so it must not grow.
+    expect(at(false, GORE_MULTIPLIERS.absurd.settledSize)).toBe(at(false, 1));
+    expect(at(true, GORE_MULTIPLIERS.absurd.settledSize)).toBeGreaterThan(at(true, 1));
+  });
+
+  it("still clamps a settled splat to the same fraction of canvas height", () => {
+    // `settledSize` multiplies *into* the clamp, it does not bypass it — this
+    // is why raising it cannot reopen the shipped oversized-particle bug.
+    const c = ctx();
+    const player = facingPlayer();
+    renderBlood(
+      asCtx(c),
+      player,
+      [{ x: player.posX + 0.21, y: player.posY, z: 0, vx: 0, vy: 0, vz: 0, life: 1, settled: true }],
+      clearZBuffer(Infinity),
+      GORE_MULTIPLIERS.absurd.size,
+      GORE_MULTIPLIERS.absurd.settledSize,
+    );
+    expect(c.fillRect.mock.calls[0][2]).toBe(Math.round(HEIGHT * 0.06));
+  });
+});
+
+describe("GORE_MULTIPLIERS", () => {
+  it("escalates monotonically on the axes that actually gate a tier", () => {
+    const ladder: GoreLevel[] = ["normal", "more", "extreme", "excessive", "absurd"];
+    for (let i = 1; i < ladder.length; i++) {
+      const prev = GORE_MULTIPLIERS[ladder[i - 1]];
+      const next = GORE_MULTIPLIERS[ladder[i]];
+      expect(next.count).toBeGreaterThan(prev.count);
+      expect(next.stainDuration).toBeGreaterThan(prev.stainDuration);
+      expect(next.maxParticles).toBeGreaterThanOrEqual(prev.maxParticles);
+    }
+  });
+
+  it("leaves `size` alone above extreme — that axis is the mountain-of-blood one", () => {
+    expect(GORE_MULTIPLIERS.excessive.size).toBe(GORE_MULTIPLIERS.extreme.size);
+    expect(GORE_MULTIPLIERS.absurd.size).toBe(GORE_MULTIPLIERS.extreme.size);
+  });
+
+  it("raises the cap for the two tiers whose count would otherwise be inert", () => {
+    // A hit spawns (3..5) x count. At extreme that is 48-80, so 4-6 hits fill
+    // 300 — without a bigger cap a higher count only evicts its own blood.
+    expect(GORE_MULTIPLIERS.extreme.maxParticles).toBe(300);
+    expect(GORE_MULTIPLIERS.excessive.maxParticles).toBeGreaterThan(300);
+    expect(GORE_MULTIPLIERS.absurd.maxParticles).toBeGreaterThan(GORE_MULTIPLIERS.excessive.maxParticles);
   });
 });
 
