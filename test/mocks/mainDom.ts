@@ -90,6 +90,8 @@ export function buildIndexDom(): void {
             <option value="normal" selected>Normal</option>
             <option value="more">More</option>
             <option value="extreme">Extreme</option>
+            <option value="excessive">Excessive</option>
+            <option value="absurd">Absurd</option>
           </select>
           <label id="difficulty-label" for="difficulty-select">Difficulty</label>
           <select id="difficulty-select" class="settings-select">

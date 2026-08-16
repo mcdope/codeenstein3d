@@ -56,15 +56,30 @@ const EXPLOSION_PARTICLE_COUNT = 16;
  * `main.ts` and read once per level launch (see `RaycasterEngine`'s
  * constructor); not part of `EngineCarryover` since it's a standing
  * preference, not carried-over run state. */
-export type GoreLevel = "none" | "normal" | "more" | "extreme";
+export type GoreLevel = "none" | "normal" | "more" | "extreme" | "excessive" | "absurd";
 
 export interface GoreMultipliers {
   /** Multiplies `spawnBlood`'s particle count. */
   count: number;
   /** Multiplies rendered particle size (see `renderBlood`). */
   size: number;
-  /** Multiplies how long a landed particle lingers (see `updateBlood`). */
+  /** Multiplies how long a landed particle lingers (see `updateBlood`).
+   * `Infinity` means a landed particle never expires — the tier's
+   * `maxParticles` FIFO becomes its lifetime instead. */
   stainDuration: number;
+  /** This tier's ceiling on live particles (see `MAX_BLOOD_PARTICLES` for why
+   * there is a ceiling at all). Per-tier rather than global because it is the
+   * axis that actually gates a tier above `extreme`: a hit spawns
+   * `(3..5) x count`, so at 16x four to six hits already fill 300 and a
+   * higher `count` alone only evicts the tier's own older blood sooner. */
+  maxParticles: number;
+  /** Extra size multiplier applied to *settled* particles only (see
+   * `renderBlood`), so a floor stain can read as a splat rather than a
+   * droplet. Deliberately not applied to airborne particles: an oversized
+   * particle near the camera is exactly what produced the shipped "mountain
+   * of blood" bug, and `BLOOD_MAX_SIZE_FRACTION` still clamps this
+   * absolutely. */
+  settledSize: number;
 }
 
 /** Per-level multipliers. None/Normal/More are a uniform 0x/1x/3x across all
@@ -79,10 +94,22 @@ export interface GoreMultipliers {
  * (count 0 means no particles ever spawn) but filled in defensively rather
  * than left unused. */
 export const GORE_MULTIPLIERS: Record<GoreLevel, GoreMultipliers> = {
-  none: { count: 0, size: 1, stainDuration: 1 },
-  normal: { count: 1, size: 1, stainDuration: 1 },
-  more: { count: 3, size: 3, stainDuration: 3 },
-  extreme: { count: 16, size: 4, stainDuration: 4 },
+  none: { count: 0, size: 1, stainDuration: 1, maxParticles: 300, settledSize: 1 },
+  normal: { count: 1, size: 1, stainDuration: 1, maxParticles: 300, settledSize: 1 },
+  more: { count: 3, size: 3, stainDuration: 3, maxParticles: 300, settledSize: 1 },
+  extreme: { count: 16, size: 4, stainDuration: 4, maxParticles: 300, settledSize: 1 },
+  // The two tiers above `extreme` move the cap and the stain clock, never
+  // `size` — see `GoreMultipliers.maxParticles` for why `count` alone is inert
+  // up here, and the "mountain of blood" note above for why `size` is not
+  // touched. Excessive is the requested "one third more": +33% on the cap
+  // (300 -> 400) and on the stain clock (6s -> 8.25s), with a matching count
+  // bump so the higher cap actually gets filled.
+  excessive: { count: 20, size: 4, stainDuration: 5.5, maxParticles: 400, settledSize: 1 },
+  // Absurd is a different thing rather than more of the same: landed blood
+  // never expires, so a room you cleared stays painted for the rest of the
+  // level, and settled splats render larger. The 1200 cap is what bounds it —
+  // FIFO eviction is the only thing that ever removes a stain here.
+  absurd: { count: 24, size: 4, stainDuration: Infinity, maxParticles: 1200, settledSize: 1.6 },
 };
 
 /** Hard ceiling on a single rendered blood particle's on-screen size, as a
@@ -94,14 +121,20 @@ export const GORE_MULTIPLIERS: Record<GoreLevel, GoreMultipliers> = {
  * always read as floor-level debris, never approach enemy-sprite scale. */
 const BLOOD_MAX_SIZE_FRACTION = 0.06;
 
-/** Hard ceiling on how many `BloodParticle`s can be alive at once, across
- * every gore tier — `spawnBlood` is called on *every hit*, not just kills,
- * and Multi Kill/Ultra Kill streaks (see `RaycasterEngine.registerKillForStreak`)
- * can chain several enemies' worth of hits within a few seconds. The size
- * clamp above bounds one particle's footprint but not how many can pile up
- * at once; this bounds that directly. Enforced in `spawnBlood` by evicting
- * the oldest particles first — they're also the ones closest to their own
- * natural expiry already, so trimming them reads the least jarring. */
+/** Default ceiling on how many `BloodParticle`s can be alive at once —
+ * `spawnBlood` is called on *every hit*, not just kills, and Multi Kill/Ultra
+ * Kill streaks (see `RaycasterEngine.registerKillForStreak`) can chain several
+ * enemies' worth of hits within a few seconds. The size clamp above bounds one
+ * particle's footprint but not how many can pile up at once; this bounds that
+ * directly. Enforced in `spawnBlood` by evicting the oldest particles first —
+ * they're also the ones closest to their own natural expiry already, so
+ * trimming them reads the least jarring.
+ *
+ * Every tier through `extreme` uses this value; `excessive` and `absurd`
+ * override it via `GoreMultipliers.maxParticles`, which is the axis that
+ * actually makes them heavier. It stays the parameter default so a caller with
+ * no tier in hand (and the tests that predate the per-tier cap) behaves exactly
+ * as before. */
 const MAX_BLOOD_PARTICLES = 300;
 
 export const DEFAULT_GORE_LEVEL: GoreLevel = "normal";
@@ -530,14 +563,15 @@ export function tickBulletTraces(traces: BulletTrace[]): void {
 }
 
 /** Spawn a burst of `count` blood pixels bursting out from (x,y) at body
- * height, then trims `list` back down to `MAX_BLOOD_PARTICLES` if this burst
- * pushed it over — oldest particles evicted first (see that constant's doc
+ * height, then trims `list` back down to `maxParticles` if this burst pushed
+ * it over — oldest particles evicted first (see `MAX_BLOOD_PARTICLES`'s doc
  * comment for why). */
 export function spawnBlood(
   list: BloodParticle[],
   x: number,
   y: number,
   count: number,
+  maxParticles: number = MAX_BLOOD_PARTICLES,
 ): void {
   for (let i = 0; i < count; i++) {
     const angle = Math.random() * Math.PI * 2;
@@ -553,7 +587,7 @@ export function spawnBlood(
       settled: false,
     });
   }
-  if (list.length > MAX_BLOOD_PARTICLES) list.splice(0, list.length - MAX_BLOOD_PARTICLES);
+  if (list.length > maxParticles) list.splice(0, list.length - maxParticles);
 }
 
 /**
@@ -591,13 +625,19 @@ export function updateBlood(list: BloodParticle[], dt: number, stainDurationMult
  * but never past `BLOOD_MAX_SIZE_FRACTION` of the canvas height — `tilePx`
  * (pixels per world tile) grows unbounded as a particle's depth approaches
  * the close-range cutoff below, so without this clamp a point-blank particle
- * could otherwise render several times taller than the canvas itself. */
+ * could otherwise render several times taller than the canvas itself.
+ *
+ * `settledSizeMultiplier` scales *landed* particles further (`absurd`'s
+ * splats). Airborne ones are left alone on purpose — an oversized particle
+ * near the camera is the "mountain of blood" failure mode — and the clamp
+ * above still applies to the product, so this cannot reopen it either. */
 export function renderBlood(
   ctx: CanvasRenderingContext2D,
   player: Player,
   list: BloodParticle[],
   zBuffer: Float64Array,
   sizeMultiplier: number,
+  settledSizeMultiplier = 1,
 ): void {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
@@ -611,7 +651,8 @@ export function renderBlood(
 
     const tilePx = proj.bottom - proj.top; // pixels per world tile at this depth
     const sy = proj.bottom - p.z * tilePx; // lift off the floor by the particle height
-    const s = Math.min(maxSizePx, Math.max(1, Math.round(tilePx * 0.05 * sizeMultiplier)));
+    const sizeMul = p.settled ? sizeMultiplier * settledSizeMultiplier : sizeMultiplier;
+    const s = Math.min(maxSizePx, Math.max(1, Math.round(tilePx * 0.05 * sizeMul)));
     ctx.fillRect(Math.round(proj.screenX) - (s >> 1), Math.round(sy) - (s >> 1), s, s);
   }
 }

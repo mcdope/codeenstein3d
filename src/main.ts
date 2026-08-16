@@ -34,7 +34,7 @@ import type { PlayerFacingStats } from "./engine/playerStats";
 import { buildControlsLegend } from "./ui/controlsLegend";
 import { downloadBlob } from "./ui/download";
 import { RESPONSIVE_CANVAS_SCALING_ENABLED, watchCanvasSizing } from "./ui/canvasFit";
-import { DEFAULT_GORE_LEVEL, type GoreLevel } from "./engine/effects";
+import { DEFAULT_GORE_LEVEL, GORE_MULTIPLIERS, type GoreLevel } from "./engine/effects";
 import {
   FORCED_UNLOCK_LEVELS,
   FRIDAY_HOTFIX_WEAPON_INDEX,
@@ -4029,7 +4029,13 @@ function savePlayerName(name: string): void {
 function loadGoreLevel(): GoreLevel {
   try {
     const raw = localStorage.getItem(GORE_KEY);
-    if (raw === "none" || raw === "normal" || raw === "more" || raw === "extreme") return raw;
+    // Membership is derived from the multiplier table rather than a
+    // hand-written list of the tier names. The list this replaces was the one
+    // line in a new-gore-tier change that `tsc` could not see: adding a tier
+    // to `GoreLevel` and forgetting it here saved fine and silently reverted
+    // to Normal on the next reload. `Object.hasOwn` (not `in`) so a stored
+    // "constructor"/"toString" can't pass as a tier.
+    if (raw !== null && Object.hasOwn(GORE_MULTIPLIERS, raw)) return raw as GoreLevel;
   } catch {
     // Fall through to the default.
   }

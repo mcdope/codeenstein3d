@@ -9,6 +9,7 @@ import type { AmmoPickup, Enemy, GameMap, KeyItem, LootDrop, Mine, SpikeTrap, Te
 import { BRANCH_DOOR_TILE, DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, TELEPORTER_TILE } from "../map/types";
 import { audio } from "./audio";
 import { computeBalanceHash } from "./balanceHash";
+import type { GoreLevel } from "./effects";
 import type { InputSnapshot, InputSource } from "./input";
 import { INPUT_DELAY_TICKS } from "./lagCompensationConstants";
 import { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "./reconciliationConstants";
@@ -263,7 +264,7 @@ function makeEngine(
   handlers: ReturnType<typeof makeHandlers> = makeHandlers(),
   opts: {
     carryover?: EngineCarryover;
-    gore?: "none" | "normal" | "more" | "extreme";
+    gore?: GoreLevel;
     difficulty?: "easy" | "normal" | "hard";
     seed?: number;
     input?: ScriptedInput;
