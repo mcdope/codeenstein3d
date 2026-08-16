@@ -607,13 +607,24 @@ a.settings-btn {
 }
 
 /* Which tab the loaded workspace came from — readable from any tab, including
- * the two that never show a tree. A play triangle rather than a dot: a dot
+ * the two that never show a tree. A transport glyph rather than a dot: a dot
  * next to a label reads as a record indicator, which is the wrong verb. It
- * leads the label like any other icon; trailing it read as a footnote marker. */
-.tab-btn--playing::before {
+ * leads the label like any other icon; trailing it read as a footnote marker.
+ * The glyph doubles as the run state — see `updateLoadedSourceMarker`. */
+.tab-btn--loaded::before {
   content: "▶ ";
   font-size: 9px;
   vertical-align: 1px;
+}
+
+/* Paused, lore-frozen, briefing still up, or no level running at all.
+ * Two bars rather than U+23F8 PAUSE: at this size that glyph renders as a
+ * solid block — indistinguishable from the record dot this marker started as,
+ * and no clearer at 13px. Checked in a browser, not assumed. */
+.tab-btn--loaded.tab-btn--paused::before {
+  content: "❚❚ ";
+  font-size: 11px;
+  letter-spacing: 1px;
 }
 
 .sidebar-footer {

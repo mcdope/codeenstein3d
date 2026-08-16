@@ -49,7 +49,7 @@ The bottom of the sidebar lists the files of the loaded workspace, **under the t
 
 One workspace is loaded at a time, as it always has been: loading a repository replaces the demo campaign rather than sitting beside it, so a tree on screen always means "this is what's loaded". To go back you load it again — instant for **Demos**, a re-fetch for **GitHub**, re-picking the folder for **Local**.
 
-Switching tabs is purely a change of view: it never disturbs the level you're playing, and the folders you expanded stay expanded when you come back. A small **▶** marks the tab the game is running from, so you can tell at a glance from anywhere — including the tabs that show no tree.
+Switching tabs is purely a change of view: it never disturbs the level you're playing, and the folders you expanded stay expanded when you come back. The tab the game is running from is marked, so you can tell at a glance from anywhere — including the tabs that show no tree — and the mark doubles as a transport readout: **▶** while the level is running, **❚❚** whenever it isn't, which covers a pause, reading a lore terminal, a briefing overlay you haven't dismissed yet, and sitting back at the file tree between levels.
 
 ## Highscores
 
