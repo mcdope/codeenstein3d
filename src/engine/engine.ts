@@ -1321,7 +1321,13 @@ export class RaycasterEngine {
     this.decayableAcid = decayableTiles(map.exceptionZones, map.grid);
     this.acidDecayState = createAcidDecayState();
     this.totalWalkableTiles = countWalkableTiles(map);
-    this.goreMultipliers = GORE_MULTIPLIERS[gore];
+    // `?? DEFAULT` because `gore` is not always a value this build knows: a
+    // replay segment stores it as a bare string (`replay.ts`) and hands it
+    // straight back here at playback, so a payload recorded on a newer build —
+    // or edited in devtools — would otherwise yield `undefined` and throw on
+    // the first `.count`. Same "storage is not a trusted source" rule the
+    // preference loaders in `main.ts` already follow.
+    this.goreMultipliers = GORE_MULTIPLIERS[gore] ?? GORE_MULTIPLIERS[DEFAULT_GORE_LEVEL];
     this.difficultyMultipliers = DIFFICULTY_MULTIPLIERS[difficulty];
     this.difficultyLevel = difficulty;
     // Enemy HP is "baked in" data on the map's Enemy objects (set once at
@@ -3286,7 +3292,14 @@ export class RaycasterEngine {
     // in `simulate()` (right after `updateFiring`) — this only draws
     // whatever that left behind.
     if (!this.ablated("effects")) {
-      renderBlood(this.ctx, camera, this.blood, local.zBuffer, this.goreMultipliers.size);
+      renderBlood(
+        this.ctx,
+        camera,
+        this.blood,
+        local.zBuffer,
+        this.goreMultipliers.size,
+        this.goreMultipliers.settledSize,
+      );
       drawBulletTraces(this.ctx, this.traces);
       drawFlameStreams(this.ctx, width, height, this.flameStreams);
       renderExplosions(this.ctx, camera, this.explosions, local.zBuffer);
@@ -5305,7 +5318,13 @@ export class RaycasterEngine {
     enemy.aggroed = true;
     if (this.teamTelemetry) recordEnemyAggro(this.teamTelemetry, this.enemyTtkIndex, enemy, this.levelTime);
     const baseBloodCount = 3 + Math.floor(Math.random() * 3);
-    spawnBlood(this.blood, enemy.x, enemy.y, Math.round(baseBloodCount * this.goreMultipliers.count));
+    spawnBlood(
+      this.blood,
+      enemy.x,
+      enemy.y,
+      Math.round(baseBloodCount * this.goreMultipliers.count),
+      this.goreMultipliers.maxParticles,
+    );
 
     const enemyIndex = this.enemies.indexOf(enemy);
     (this.enemyAssists.get(enemyIndex) ?? this.enemyAssists.set(enemyIndex, new Set()).get(enemyIndex)!).add(shooter.id);
