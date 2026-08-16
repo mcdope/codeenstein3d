@@ -164,4 +164,4 @@ Items recording a *measurement* rather than a code claim (the demo-campaign diff
 - [ ] add dedicated deathmatch demo campaign
 - [ ] coop multiplayer should spawn additional random enemies, like the edge case - but called "Hacker", having a distinct color, roaming the whole map (not limitted to their room), movement speed like normal enemies
 - [ ] explain mapcolors and drop color/appearance in user docs. should include screenshots of dropped keys/items.
-- [ ] add two more gore levels, one being one third more intense then the current max, and one "absurd" one - at which point it will become splatter
+- [ ] auto-reloading is barely player-aware (manual also only because of the keypress lol) - only a hint in the hud bar. should have anim, sound and maybe even a toast
