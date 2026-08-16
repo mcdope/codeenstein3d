@@ -84,7 +84,8 @@ const FLAG_DEFS = {
   // so like `fog` its flagged arm turns it OFF — measuring what it saves.
   floorfast: { file: "src/engine/raycaster.ts", name: "FLOOR_FAST_PATH_ENABLED", invert: true },
   floorhalf: { file: "src/engine/raycaster.ts", name: "FLOOR_HALF_RES_ENABLED" },
-  ctxalpha: { file: "src/engine/engine.ts", name: "CONTEXT_ALPHA_OPAQUE_ENABLED" },
+  // ctxalpha ({alpha:false} display context) was A/B'd 2026-08-16 and removed:
+  // no measurable effect on busy or pacing.
 };
 
 // ---------------------------------------------------------------------------
