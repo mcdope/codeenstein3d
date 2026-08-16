@@ -108,6 +108,11 @@ export const DEFAULT_GORE_LEVEL: GoreLevel = "normal";
 
 /** A weapon tracer: a fading screen-space line from the muzzle to the impact. */
 export interface BulletTrace {
+  /** Endpoints as FRACTIONS of the screen (0..1), not pixels: `fire()`
+   * computes its columns in the fixed simulation-space 640×400, but the live
+   * canvas can be 1280×800 (Sharp render quality) — a tracer stored in raw
+   * sim pixels replayed on the bigger canvas landed every shot's flash in
+   * the top-left quadrant. `drawBulletTraces` scales by the live canvas. */
   x1: number;
   y1: number;
   x2: number;
@@ -123,9 +128,11 @@ export interface BulletTrace {
  * hitscan weapon draws (see `BulletTrace`) — a continuous flame stream reads
  * nothing like a bullet tracer. */
 export interface FlameStream {
+  /** Cone edges and spread height as FRACTIONS of the screen (0..1) — same
+   * sim-space-vs-live-canvas reasoning as `BulletTrace`. */
   leftX: number;
   rightX: number;
-  /** Screen y the cone's spread is measured at (crosshair height). */
+  /** Screen y fraction the cone's spread is measured at (crosshair height). */
   y2: number;
   /** Frames of life remaining; fades linearly to 0. */
   frames: number;
@@ -218,7 +225,7 @@ export function makeBulletTrace(
   toY: number,
   color: string,
 ): BulletTrace {
-  return { x1: width / 2, y1: height, x2: toX, y2: toY, frames: BULLET_TRACE_FRAMES, color };
+  return { x1: 0.5, y1: 1, x2: toX / width, y2: toY / height, frames: BULLET_TRACE_FRAMES, color };
 }
 
 /** Width, in canvas pixels, of a tracer line. */
@@ -229,18 +236,20 @@ const TRACE_WIDTH = 2;
  * in a frame costs ~10ms of frame budget on a GPU-accelerated canvas (see
  * `pathSprites.ts`), and a shotgun blast puts seven of them on screen at once. */
 export function drawBulletTraces(ctx: CanvasRenderingContext2D, traces: BulletTrace[]): void {
+  const w = ctx.canvas.width;
+  const h = ctx.canvas.height;
   for (const t of traces) {
     const alpha = 0.9 * Math.max(0, t.frames / BULLET_TRACE_FRAMES);
     ctx.fillStyle = withAlpha(t.color, alpha);
-    fillLine(ctx, t.x1, t.y1, t.x2, t.y2, TRACE_WIDTH);
+    fillLine(ctx, t.x1 * w, t.y1 * h, t.x2 * w, t.y2 * h, TRACE_WIDTH);
   }
 }
 
 /** Create a flame stream spanning `leftX`..`rightX` (the widest and narrowest
  * columns any of this shot's pellets actually landed on, post-Cone-of-Fire
  * deviation — see `RaycasterEngine.fire()`) at crosshair height. */
-export function spawnFlameStream(height: number, leftX: number, rightX: number, color: string): FlameStream {
-  return { leftX, rightX, y2: height / 2, frames: FLAME_STREAM_FRAMES, color };
+export function spawnFlameStream(width: number, leftX: number, rightX: number, color: string): FlameStream {
+  return { leftX: leftX / width, rightX: rightX / width, y2: 0.5, frames: FLAME_STREAM_FRAMES, color };
 }
 
 /** Age flame streams by one frame, dropping expired ones (in place). */
@@ -264,14 +273,18 @@ export function drawFlameStreams(ctx: CanvasRenderingContext2D, width: number, h
 
   for (const f of list) {
     const alpha = 0.85 * Math.max(0, f.frames / FLAME_STREAM_FRAMES);
+    // Fractions -> live-canvas pixels (see the FlameStream doc comment).
+    const leftPx = f.leftX * width;
+    const rightPx = f.rightX * width;
+    const spreadY = f.y2 * height;
 
     ctx.fillStyle = withAlpha(f.color, alpha * 0.9);
-    flameJet(ctx, baseX, baseY, f.leftX + jitter(), f.rightX + jitter(), f.y2, 3);
+    flameJet(ctx, baseX, baseY, leftPx + jitter(), rightPx + jitter(), spreadY, 3);
 
     ctx.fillStyle = `rgba(255,220,120,${(alpha * 0.85).toFixed(3)})`;
-    const coreLeft = baseX + (f.leftX - baseX) * 0.5 + jitter();
-    const coreRight = baseX + (f.rightX - baseX) * 0.5 + jitter();
-    flameJet(ctx, baseX, baseY, coreLeft, coreRight, f.y2, 4);
+    const coreLeft = baseX + (leftPx - baseX) * 0.5 + jitter();
+    const coreRight = baseX + (rightPx - baseX) * 0.5 + jitter();
+    flameJet(ctx, baseX, baseY, coreLeft, coreRight, spreadY, 4);
   }
 }
 

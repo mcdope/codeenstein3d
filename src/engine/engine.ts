@@ -5229,7 +5229,7 @@ export class RaycasterEngine {
       for (const col of resolution.traceColumns) this.traces.push(makeBulletTrace(SCENE_WIDTH, SCENE_HEIGHT, col, SCENE_HEIGHT / 2, w.tracerColor));
     }
     if (isFlame && resolution.flameRight >= resolution.flameLeft) {
-      this.flameStreams.push(spawnFlameStream(SCENE_HEIGHT, resolution.flameLeft, resolution.flameRight, w.tracerColor));
+      this.flameStreams.push(spawnFlameStream(SCENE_WIDTH, resolution.flameLeft, resolution.flameRight, w.tracerColor));
     }
   }
 
