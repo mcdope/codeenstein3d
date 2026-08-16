@@ -108,8 +108,35 @@ function fogShade(dist: number): number {
   return brightness * brightness * (3 - 2 * brightness); // smoothstep
 }
 
+/**
+ * Perf A/B flag (frame-budget audit Phase 2): rewrite the floor-cast inner
+ * loop with one 32-bit write per pixel (little-endian ABGR view over the same
+ * ImageData buffer), a flat `fillRect` for the ceiling instead of per-pixel
+ * byte stores, and a dirty-rect `putImageData` covering only the floor rows.
+ * Output is visually identical (channel values can differ by at most 1/255
+ * from the Uint8Clamped rounding the byte path gets for free). Default off
+ * until measured; flipped by `perf:bench --flag floorfast`.
+ */
+export const FLOOR_FAST_PATH_ENABLED = false;
+
+/**
+ * Perf A/B flag (frame-budget audit Phase 2): floor-cast at half resolution
+ * into an offscreen buffer and upscale with one `drawImage` (smoothing off,
+ * matching the game's chunky-pixel look). A VISIBLE change — floor texels get
+ * twice as chunky — measured to price the fidelity/cost trade, not to ship
+ * silently. Default off; flipped by `perf:bench --flag floorhalf`.
+ */
+export const FLOOR_HALF_RES_ENABLED = false;
+
 /** Reusable floor-cast frame buffer, re-created only when the size changes. */
 let floorImage: ImageData | null = null;
+/** Uint32 view over `floorImage`'s buffer (fast path only). */
+let floorU32: Uint32Array | null = null;
+/** Half-res floor buffer + its canvas (half-res flag only). */
+let halfFloorCanvas: HTMLCanvasElement | null = null;
+let halfFloorCtx: CanvasRenderingContext2D | null = null;
+let halfFloorImage: ImageData | null = null;
+let halfFloorU32: Uint32Array | null = null;
 
 /**
  * Exact shaded color of one texel at a given screen row, read straight from
@@ -442,6 +469,14 @@ function renderBackground(
   style: LevelStyle,
   fog: boolean,
 ): void {
+  if (FLOOR_HALF_RES_ENABLED) {
+    renderBackgroundHalfRes(ctx, map, player, width, height, horizon, levelTime, style, fog);
+    return;
+  }
+  if (FLOOR_FAST_PATH_ENABLED) {
+    renderBackgroundFast(ctx, map, player, width, height, horizon, levelTime, style, fog);
+    return;
+  }
   if (!floorImage || floorImage.width !== width || floorImage.height !== height) {
     floorImage = ctx.createImageData(width, height);
   }
@@ -522,6 +557,178 @@ function renderBackground(
   }
 
   ctx.putImageData(floorImage, 0, 0);
+}
+
+/**
+ * `FLOOR_FAST_PATH_ENABLED` variant of `renderBackground` — identical row
+ * math and texture selection, three mechanical changes: (1) ceiling is one
+ * flat `fillRect` instead of per-pixel byte stores; (2) each floor pixel is a
+ * single little-endian ABGR `Uint32Array` write instead of four
+ * `Uint8ClampedArray` stores; (3) `putImageData` blits only the floor rows
+ * (dirty rect). `+0.5 | 0` reproduces the clamped array's rounding to within
+ * 1/255 (values are already in range, so no clamping is needed).
+ */
+function renderBackgroundFast(
+  ctx: CanvasRenderingContext2D,
+  map: GameMap,
+  player: Player,
+  width: number,
+  height: number,
+  horizon: number,
+  levelTime: number,
+  style: LevelStyle,
+  fog: boolean,
+): void {
+  if (!floorImage || floorImage.width !== width || floorImage.height !== height || !floorU32) {
+    floorImage = ctx.createImageData(width, height);
+    floorU32 = new Uint32Array(floorImage.data.buffer);
+  }
+  const textureSet = style.textures;
+  const halfH = horizon;
+  const ceiling = style.ceiling;
+  const floorTex = textureSet.floor;
+  const activeSpikes = activeSpikeTileKeys(map.spikeTraps, levelTime);
+
+  const rayDir0X = player.dirX - player.planeX;
+  const rayDir0Y = player.dirY - player.planeY;
+  const rayDir1X = player.dirX + player.planeX;
+  const rayDir1Y = player.dirY + player.planeY;
+  const posZ = 0.5 * height;
+
+  const floorStartRow = Math.min(height, Math.max(0, Math.ceil(halfH)));
+  ctx.fillStyle = `rgb(${ceiling[0]},${ceiling[1]},${ceiling[2]})`;
+  ctx.fillRect(0, 0, width, floorStartRow);
+
+  const u32 = floorU32;
+  let idx = floorStartRow * width;
+  for (let y = floorStartRow; y < height; y++) {
+    const rowDistance = posZ / (y - halfH);
+    const stepX = (rowDistance * (rayDir1X - rayDir0X)) / width;
+    const stepY = (rowDistance * (rayDir1Y - rayDir0Y)) / width;
+    let floorX = player.posX + rowDistance * rayDir0X;
+    let floorY = player.posY + rowDistance * rayDir0Y;
+
+    const shade = fog ? fogShade(rowDistance) : 1;
+
+    for (let x = 0; x < width; x++) {
+      const cx = Math.floor(floorX);
+      const cy = Math.floor(floorY);
+      const tile =
+        cx >= 0 && cy >= 0 && cx < map.width && cy < map.height ? map.grid[cy][cx] : -1;
+      const tex =
+        tile === TELEPORTER_TILE
+          ? textureSet.teleporterFloor
+          : tile === HAZARD_TILE
+            ? textureSet.hazardFloor
+            : tile === SPIKE_TRAP_TILE
+              ? activeSpikes.has(`${cx},${cy}`)
+                ? textureSet.spikeActiveFloor
+                : textureSet.spikeSafeFloor
+              : floorTex;
+      const u = Math.min(tex.width - 1, Math.floor((floorX - cx) * tex.width));
+      const v = Math.min(tex.height - 1, Math.floor((floorY - cy) * tex.height));
+      const i = (v * tex.width + u) * 4;
+      const r = (tex.pixels[i] * shade + 0.5) | 0;
+      const g = (tex.pixels[i + 1] * shade + 0.5) | 0;
+      const b = (tex.pixels[i + 2] * shade + 0.5) | 0;
+      u32[idx++] = 0xff000000 | (b << 16) | (g << 8) | r;
+      floorX += stepX;
+      floorY += stepY;
+    }
+  }
+
+  if (floorStartRow < height) {
+    ctx.putImageData(floorImage, 0, 0, 0, floorStartRow, width, height - floorStartRow);
+  }
+}
+
+/**
+ * `FLOOR_HALF_RES_ENABLED` variant of `renderBackground` — the whole
+ * background (ceiling included) cast at half resolution into an offscreen
+ * buffer, upscaled with one nearest-neighbor `drawImage` (the engine sets
+ * `imageSmoothingEnabled = false` once at construction). Row math projects
+ * from full-resolution screen coordinates (`y = y2 * 2`), so perspective is
+ * unchanged — only the texel granularity doubles.
+ */
+function renderBackgroundHalfRes(
+  ctx: CanvasRenderingContext2D,
+  map: GameMap,
+  player: Player,
+  width: number,
+  height: number,
+  horizon: number,
+  levelTime: number,
+  style: LevelStyle,
+  fog: boolean,
+): void {
+  const hw = Math.ceil(width / 2);
+  const hh = Math.ceil(height / 2);
+  if (!halfFloorCanvas || halfFloorCanvas.width !== hw || halfFloorCanvas.height !== hh || !halfFloorCtx || !halfFloorImage || !halfFloorU32) {
+    halfFloorCanvas = document.createElement("canvas");
+    halfFloorCanvas.width = hw;
+    halfFloorCanvas.height = hh;
+    halfFloorCtx = halfFloorCanvas.getContext("2d")!;
+    halfFloorImage = halfFloorCtx.createImageData(hw, hh);
+    halfFloorU32 = new Uint32Array(halfFloorImage.data.buffer);
+  }
+  const textureSet = style.textures;
+  const halfH = horizon;
+  const ceiling = style.ceiling;
+  const ceilingU32 = 0xff000000 | (ceiling[2] << 16) | (ceiling[1] << 8) | ceiling[0];
+  const floorTex = textureSet.floor;
+  const activeSpikes = activeSpikeTileKeys(map.spikeTraps, levelTime);
+
+  const rayDir0X = player.dirX - player.planeX;
+  const rayDir0Y = player.dirY - player.planeY;
+  const rayDir1X = player.dirX + player.planeX;
+  const rayDir1Y = player.dirY + player.planeY;
+  const posZ = 0.5 * height;
+
+  const u32 = halfFloorU32;
+  let idx = 0;
+  for (let y2 = 0; y2 < hh; y2++) {
+    const y = y2 * 2;
+    if (y < halfH) {
+      for (let x2 = 0; x2 < hw; x2++) u32[idx++] = ceilingU32;
+      continue;
+    }
+    const rowDistance = posZ / (y - halfH);
+    const stepX = ((rowDistance * (rayDir1X - rayDir0X)) / width) * 2;
+    const stepY = ((rowDistance * (rayDir1Y - rayDir0Y)) / width) * 2;
+    let floorX = player.posX + rowDistance * rayDir0X;
+    let floorY = player.posY + rowDistance * rayDir0Y;
+
+    const shade = fog ? fogShade(rowDistance) : 1;
+
+    for (let x2 = 0; x2 < hw; x2++) {
+      const cx = Math.floor(floorX);
+      const cy = Math.floor(floorY);
+      const tile =
+        cx >= 0 && cy >= 0 && cx < map.width && cy < map.height ? map.grid[cy][cx] : -1;
+      const tex =
+        tile === TELEPORTER_TILE
+          ? textureSet.teleporterFloor
+          : tile === HAZARD_TILE
+            ? textureSet.hazardFloor
+            : tile === SPIKE_TRAP_TILE
+              ? activeSpikes.has(`${cx},${cy}`)
+                ? textureSet.spikeActiveFloor
+                : textureSet.spikeSafeFloor
+              : floorTex;
+      const u = Math.min(tex.width - 1, Math.floor((floorX - cx) * tex.width));
+      const v = Math.min(tex.height - 1, Math.floor((floorY - cy) * tex.height));
+      const i = (v * tex.width + u) * 4;
+      const r = (tex.pixels[i] * shade + 0.5) | 0;
+      const g = (tex.pixels[i + 1] * shade + 0.5) | 0;
+      const b = (tex.pixels[i + 2] * shade + 0.5) | 0;
+      u32[idx++] = 0xff000000 | (b << 16) | (g << 8) | r;
+      floorX += stepX;
+      floorY += stepY;
+    }
+  }
+
+  halfFloorCtx.putImageData(halfFloorImage, 0, 0);
+  ctx.drawImage(halfFloorCanvas, 0, 0, hw, hh, 0, 0, width, height);
 }
 
 /** The minimap panel's outer bounding box in canvas pixels, as returned by

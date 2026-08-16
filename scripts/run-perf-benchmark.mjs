@@ -80,6 +80,10 @@ const FLAG_DEFS = {
   // invert: default is `true`, so the "flagged" variant flips it OFF —
   // measures what the distance fog costs, not what enabling it would cost.
   fog: { file: "src/engine/raycaster.ts", name: "DISTANCE_FOG_ENABLED", invert: true },
+  // Phase 2 floor-cast spikes (default false → "flagged" turns each ON).
+  floorfast: { file: "src/engine/raycaster.ts", name: "FLOOR_FAST_PATH_ENABLED" },
+  floorhalf: { file: "src/engine/raycaster.ts", name: "FLOOR_HALF_RES_ENABLED" },
+  ctxalpha: { file: "src/engine/engine.ts", name: "CONTEXT_ALPHA_OPAQUE_ENABLED" },
 };
 
 // ---------------------------------------------------------------------------

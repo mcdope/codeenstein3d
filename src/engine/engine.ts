@@ -288,6 +288,15 @@ function resolveAblations(): ReadonlySet<string> | null {
   const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
   return parts.length ? new Set(parts) : null;
 }
+/**
+ * Perf A/B flag (frame-budget audit Phase 2): create the display context with
+ * `{alpha: false}` — an opaque backing store lets the compositor skip
+ * blending the canvas against the page. Every frame paints the full canvas
+ * (floor-cast + walls cover every pixel), so opacity changes nothing
+ * visually. Default off until measured; flipped by `perf:bench --flag
+ * ctxalpha`.
+ */
+export const CONTEXT_ALPHA_OPAQUE_ENABLED = false;
 /** IDKFA's ammo grant — a clearly-a-cheat round number; ammo otherwise has no
  * upper cap at all (only loot/pickups increment it). */
 const CHEAT_MAX_AMMO = 999;
@@ -1302,7 +1311,7 @@ export class RaycasterEngine {
      * arguments of every existing call site. */
     localChosenName?: string,
   ) {
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", CONTEXT_ALPHA_OPAQUE_ENABLED ? { alpha: false } : undefined);
     if (!ctx) throw new Error("2D canvas context unavailable");
     this.ctx = ctx;
     // Nearest-neighbor scaling for wall/door texture columns — cheaper than
