@@ -438,7 +438,7 @@ const SCENARIOS = {
     setup: (page, baseUrl, collector) => particleStressSetup(page, baseUrl, collector, "extreme"),
   },
   /** S3-splatter: the current worst case a player can select — `absurd`
-   * (36x spawn counts, an 1800-particle cap and stains that never expire, vs
+   * (45x spawn counts, an 1800-particle cap and stains that never expire, vs
    * extreme's 16x/300/6s). Same macro as `s3-stress`, so the pair is a
    * direct read on what the top tier costs per frame. `renderBlood` and
    * `updateBlood` are both O(live particles), so the cap is the axis that

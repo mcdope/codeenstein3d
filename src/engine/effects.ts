@@ -116,7 +116,7 @@ export const GORE_MULTIPLIERS: Record<GoreLevel, GoreMultipliers> = {
   // ever removes a stain here, so it is also the tier's real ceiling — a long
   // enough fight walks the floor up to 1800 live particles, six times what
   // every tier shared before this.
-  absurd: { count: 36, size: 4, stainDuration: Infinity, maxParticles: 1800, settledSize: 1.6 },
+  absurd: { count: 45, size: 4, stainDuration: Infinity, maxParticles: 1800, settledSize: 1.6 },
 };
 
 /** Hard ceiling on a single rendered blood particle's on-screen size, as a
