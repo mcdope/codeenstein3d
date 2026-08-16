@@ -109,20 +109,23 @@ function fogShade(dist: number): number {
 }
 
 /**
- * Perf A/B flag (frame-budget audit Phase 2): rewrite the floor-cast with one
- * 32-bit write per pixel (little-endian ABGR view over the same ImageData
- * buffer) — ceiling rows included, as a constant-u32 fill — and one full
- * `putImageData`, exactly like the classic path's blit. Output is visually
- * identical (channel values can differ by at most 1/255 from the
- * Uint8Clamped rounding the byte path gets for free). Default off until
- * measured; flipped by `perf:bench --flag floorfast`.
+ * ON by default since the 2026-08 frame-budget audit (Phase 6, fix 1):
+ * the floor-cast writes one 32-bit word per pixel (little-endian ABGR view
+ * over the same ImageData buffer) — ceiling rows included, as a constant-u32
+ * fill — and blits with one full `putImageData`, exactly like the classic
+ * path. Output is visually identical (channel values can differ by at most
+ * 1/255 from the Uint8Clamped rounding the byte path gets for free; proven
+ * by the equivalence tests in raycaster.test.ts). Measured −0.5ms/frame at
+ * 640×400 and −1.4ms at 1280×800 on clock-equalized A/Bs — busy-ms A/Bs on
+ * this path MUST be clock-equalized (`perf:bench --flag floorfast --scenario
+ * c2-2bg`): a plain light-duty A/B once read this win as a +1.3ms
+ * regression purely from a schedutil frequency bin.
  *
- * v1 of this spike used a flat ceiling `fillRect` + dirty-rect
- * `putImageData` instead; measured +1.3ms at 640×400 (a REGRESSION) vs
- * −1.8ms at 1280×800 — the dirty-rect blit is the suspected slow path in
- * Chromium, hence this full-blit v2.
+ * The classic byte-store path is retained one flip away. A v1 of the fast
+ * path (flat ceiling `fillRect` + dirty-rect `putImageData`) measured no
+ * better than this full-blit form and was dropped.
  */
-export const FLOOR_FAST_PATH_ENABLED = false;
+export const FLOOR_FAST_PATH_ENABLED = true;
 
 /**
  * Perf A/B flag (frame-budget audit Phase 2): floor-cast at half resolution
