@@ -152,7 +152,12 @@ async function main() {
     // exchanged by a real handshake between two real browsers, so nothing in
     // the unit suite can see them actually arrive.
     console.log("Both peers: choosing display names...");
+    // The name field lives inside the Settings tab's panel now — open the
+    // tab first (fill needs visibility); the very next step clicks another
+    // launch tab anyway, so no restore is needed here.
+    await hostPage.click("#tab-settings");
     await hostPage.fill("#player-name-input", HOST_NAME);
+    await guestPage.click("#tab-settings");
     await guestPage.fill("#player-name-input", GUEST_NAME);
 
     console.log("Host: creating a session...");

@@ -335,6 +335,7 @@ async function main() {
 
   // --- online WAD catalog: a real fetched-at-build-time entry loads too ---
   console.log("\nOnline WAD catalog (Freedoom: Phase 2):");
+  await page.click("#tab-settings"); // the WAD controls live inside the Settings tab's panel now
   await page.click("#wad-tab-online"); // switch off the Local File sub-tab first — its panel is otherwise hidden
   await page.click('#online-wad-list li[data-wad-id="freedoom-phase2"] .online-wad-select-btn');
   await page.waitForFunction(

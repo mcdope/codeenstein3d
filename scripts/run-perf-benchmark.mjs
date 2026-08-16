@@ -84,6 +84,10 @@ const FLAG_DEFS = {
   // so like `fog` its flagged arm turns it OFF — measuring what it saves.
   floorfast: { file: "src/engine/raycaster.ts", name: "FLOOR_FAST_PATH_ENABLED", invert: true },
   floorhalf: { file: "src/engine/raycaster.ts", name: "FLOOR_HALF_RES_ENABLED" },
+  // Auto-pairing of the half-res floor at >640-wide canvases ships default-ON,
+  // so the flagged arm turns it OFF — measuring the unpaired combo (e.g.
+  // 1280x800 with a full-res floor) that the app itself never exposes.
+  floorhalfauto: { file: "src/engine/raycaster.ts", name: "AUTO_HALF_RES_FLOOR_ENABLED", invert: true },
   // ctxalpha ({alpha:false} display context) was A/B'd 2026-08-16 and removed:
   // no measurable effect on busy or pacing.
 };
@@ -579,6 +583,9 @@ const SCENARIOS = {
 for (const [id, ablate] of Object.entries(LADDER)) SCENARIOS[id] = ablationScenario(ablate);
 for (const [id, ablate] of Object.entries(INDIVIDUAL)) SCENARIOS[id] = ablationScenario(ablate);
 // Internal-resolution probes: full frame at half/double the 640x400 backing store.
+// res-double now measures the PAIRED Sharp config by default (the auto half-res
+// floor kicks in at 1280x800); the unpaired 14.5ms full-res-floor case needs
+// `--flag floorhalfauto`.
 SCENARIOS["res-half"] = ablationScenario("", "renderRes=320x200");
 SCENARIOS["res-double"] = ablationScenario("", "renderRes=1280x800");
 // Display-size probes: full frame, canvas CSS-upscaled into a bigger window

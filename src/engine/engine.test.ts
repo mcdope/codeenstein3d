@@ -6049,3 +6049,70 @@ describe("RaycasterEngine — ?ablate= measurement kill switches (frame-budget a
     });
   });
 });
+
+describe("RaycasterEngine — crosshair targeting vs shot resolution at Sharp resolution (1280×800)", () => {
+  /** The render-quality backlog check: crosshair highlighting reads the LIVE
+   * canvas width while shots resolve on the fixed simulation-side scene
+   * width — both compute the center ray as width/2 → cameraX 0, so they must
+   * agree on what sits dead ahead at any canvas size. Pinned at classic and
+   * Sharp sizes; the Sharp case also proves the zBuffer is sized to the
+   * wider canvas (billboard columns past x=640 draw at all only when the
+   * z-test reads real entries, not out-of-bounds undefined). */
+  function engineSizedAt(width: number, height: number) {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    const canvas = { width, height } as unknown as HTMLCanvasElement;
+    const ctx = createMockCanvasContext(canvas);
+    canvas.getContext = vi.fn(() => ctx) as unknown as typeof canvas.getContext;
+    const enemy = fakeEnemy({ x: 6.5, y: 5.5 }); // dead ahead of the (5,5) spawn, facing +x
+    const map = fakeMap({ enemies: [enemy] });
+    const input = new ScriptedInput();
+    const engine = new RaycasterEngine(canvas, map, makeHandlers(), undefined, undefined, undefined, 12345, input);
+    const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> }).__codeensteinTestHooks!;
+    return {
+      engine,
+      input,
+      ctx,
+      hooks,
+      restore: () => {
+        Object.defineProperty(window, "location", { value: original, configurable: true });
+        delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+      },
+    };
+  }
+
+  for (const [width, height] of [
+    [640, 400],
+    [1280, 800],
+  ] as const) {
+    it(`highlights and hits the same dead-center enemy at ${width}×${height}`, () => {
+      const { engine, input, ctx, hooks, restore } = engineSizedAt(width, height);
+      try {
+        engine.advance(0.016);
+        // Crosshair highlight (live canvas width) found the enemy…
+        const target = (engine as unknown as { target: { x: number; y: number } | null }).target;
+        expect(target).not.toBeNull();
+        // The enemy AI already moved it a fraction of a tile this frame —
+        // identity is what matters, pinned loosely by position.
+        expect(target!.x).toBeCloseTo(6.5, 0);
+        expect(target!.y).toBeCloseTo(5.5, 0);
+
+        // …and an actual shot (fixed simulation-side resolution) hits it too.
+        const hpBefore = (hooks.getEnemies() as { hp: number }[])[0].hp;
+        input.fireQueued = true;
+        engine.advance(0.016);
+        const hpAfter = (hooks.getEnemies() as { hp: number }[])[0].hp;
+        expect(hpAfter).toBeLessThan(hpBefore);
+
+        if (width > 640) {
+          // Billboard columns beyond the classic 640 boundary really drew —
+          // the z-test read real zBuffer entries, not out-of-bounds holes.
+          const wideColumns = ctx.fillRect.mock.calls.filter((c) => typeof c[0] === "number" && c[0] > 640);
+          expect(wideColumns.length).toBeGreaterThan(0);
+        }
+      } finally {
+        restore();
+      }
+    });
+  }
+});

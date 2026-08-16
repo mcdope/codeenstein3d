@@ -136,6 +136,20 @@ export const FLOOR_FAST_PATH_ENABLED = true;
  */
 export const FLOOR_HALF_RES_ENABLED = false;
 
+/**
+ * Pairs the half-res floor automatically whenever the canvas is wider than
+ * the classic 640: the frame-budget audit measured 1280x800 with a FULL-res
+ * floor at 14.5ms busy (dropped frames) vs 5.5ms paired, so the app never
+ * exposes the unpaired combo — the "Sharp" render-quality setting is
+ * structurally 1280x800 + half-res floor. Bench-flippable
+ * (`perf:bench --flag floorhalfauto`) so the unpaired case stays measurable.
+ */
+export const AUTO_HALF_RES_FLOOR_ENABLED = true;
+
+/** Documented copy of the engine's SCENE_WIDTH (same precedent as engine.ts's
+ * own private copy), used only for the auto-pairing threshold above. */
+const CLASSIC_SCENE_WIDTH = 640;
+
 /** Reusable floor-cast frame buffer, re-created only when the size changes. */
 let floorImage: ImageData | null = null;
 /** Uint32 view over `floorImage`'s buffer (fast path only). */
@@ -294,6 +308,10 @@ export function renderScene(
   drawFloor = true,
   drawWalls = true,
   drawShading = true,
+  // Runtime override for the half-res floor (render-quality setting). When
+  // omitted, the compile-time bench flag applies, plus the automatic pairing
+  // for wide canvases (see AUTO_HALF_RES_FLOOR_ENABLED).
+  halfResFloor?: boolean,
 ): void {
   const textureSet = style.textures;
   const width = ctx.canvas.width;
@@ -308,7 +326,9 @@ export function renderScene(
   // variation, so it's retired (see renderBackground's doc comment).
   // Ablated: flat fills only, so the wall pass still draws on a clean frame.
   if (drawFloor) {
-    renderBackground(ctx, map, player, width, height, horizon, levelTime, style, fog);
+    const useHalfResFloor =
+      halfResFloor ?? (FLOOR_HALF_RES_ENABLED || (AUTO_HALF_RES_FLOOR_ENABLED && width > CLASSIC_SCENE_WIDTH));
+    renderBackground(ctx, map, player, width, height, horizon, levelTime, style, fog, useHalfResFloor);
   } else {
     ctx.fillStyle = `rgb(${style.ceiling[0]},${style.ceiling[1]},${style.ceiling[2]})`;
     ctx.fillRect(0, 0, width, Math.max(0, horizon));
@@ -476,14 +496,15 @@ function renderBackground(
   levelTime: number,
   style: LevelStyle,
   fog: boolean,
+  halfRes: boolean,
 ): void {
-  /* v8 ignore start -- compile-time variant dispatch: the consts cannot be
-     flipped from a test without a textual source edit (the perf bench's
-     --flag mechanism); every variant is itself tested directly. @preserve */
-  if (FLOOR_HALF_RES_ENABLED) {
+  if (halfRes) {
     renderBackgroundHalfRes(ctx, map, player, width, height, horizon, levelTime, style, fog);
     return;
   }
+  /* v8 ignore start -- compile-time variant dispatch: the const cannot be
+     flipped from a test without a textual source edit (the perf bench's
+     --flag mechanism); the classic variant is itself tested directly. @preserve */
   if (!FLOOR_FAST_PATH_ENABLED) {
     renderBackgroundClassic(ctx, map, player, width, height, horizon, levelTime, style, fog);
     return;

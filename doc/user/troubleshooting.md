@@ -166,7 +166,12 @@ no message for this on purpose. Backtrack and finish the fight — see [Tips](ti
 
 ## "The game feels choppy"
 
-Add `?perfDebug=1` to the URL and reload. Frame timings and a per-frame breakdown appear in
+First: if **Render quality** is set to **Sharp** in the Settings tab (the gear ⚙), switch it back
+to **Classic** — Sharp renders at double the internal resolution and is aimed at machines with
+headroom to spare and high-refresh displays; Classic is the intended look and the fast path.
+The change takes effect on the next level you launch.
+
+Still choppy? Add `?perfDebug=1` to the URL and reload. Frame timings and a per-frame breakdown appear in
 the console panel, updating every couple of seconds and immediately whenever a frame is
 genuinely slow. Nothing is transmitted anywhere — a screen recording of the panel is enough
 to diagnose a framedrop. See [HUD & UI](hud-and-ui.md#performance-diagnostics-perfdebug1).
