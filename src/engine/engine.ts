@@ -270,6 +270,24 @@ export function resolveBotRotSpeedMultiplier(): number {
 export function isEventLogActive(): boolean {
   return isTestHooksActive() && new URLSearchParams(window.location.search).get("eventLog") === "1";
 }
+/**
+ * Measurement-only subsystem kill switches from `?ablate=a,b,c` — the
+ * frame-budget audit's ablation ladder (see doc/dev/performance.md once the
+ * audit lands). Recognized names: `render` (clear-only frames), `floor`,
+ * `walls`, `shade` (raycaster parts), `sprites`, `effects`, `viewmodel`,
+ * `hud` (draw-pass groups), `sim` (skip the world simulation after input
+ * polling). Returns null when the param is absent — the everyday case — so
+ * every per-frame check short-circuits on one null compare. Like
+ * `?perfDebug=1` this is deliberately NOT gated on `import.meta.env.DEV`:
+ * the switches must exist in the exact build being measured.
+ */
+function resolveAblations(): ReadonlySet<string> | null {
+  if (typeof window === "undefined") return null;
+  const raw = new URLSearchParams(window.location.search).get("ablate");
+  if (!raw) return null;
+  const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  return parts.length ? new Set(parts) : null;
+}
 /** IDKFA's ammo grant — a clearly-a-cheat round number; ammo otherwise has no
  * upper cap at all (only loot/pickups increment it). */
 const CHEAT_MAX_AMMO = 999;
@@ -1105,6 +1123,14 @@ export class RaycasterEngine {
    * (replay viewer, headless), which then falls back to its own `dt`. */
   private perfRawDtMs: number | undefined;
 
+  /** `?ablate=` kill switches (see `resolveAblations`); null in every normal
+   * session, so `ablated()` is one null compare per call site per frame. */
+  private readonly ablations: ReadonlySet<string> | null = resolveAblations();
+
+  private ablated(name: string): boolean {
+    return this.ablations !== null && this.ablations.has(name);
+  }
+
   /** Balancing telemetry — populated when `?testHooks=1` gates it on (for
    * the bot) or when `PLAYER_STATS_ENABLED` is flipped on (for the
    * player-facing stats screen — off by default, see its doc comment: even
@@ -1580,7 +1606,11 @@ export class RaycasterEngine {
       viewOffsets: { horizonShift: 0, bobX: 0, bobY: 0 },
       renderOffset: null,
       rotSpeedMultiplier,
-      zBuffer: new Float64Array(SCENE_WIDTH),
+      // Sim-side casts always use the first SCENE_WIDTH entries; the render
+      // side fills up to the live canvas width, which a `?renderRes=` wider
+      // than SCENE_WIDTH would otherwise silently overrun (typed-array OOB
+      // writes are dropped), leaving sprites z-testing against stale data.
+      zBuffer: new Float64Array(Math.max(SCENE_WIDTH, this.ctx.canvas.width)),
       pathField: new PathField(),
       suppressTeleportAt: null,
       alarmCountdown: 0,
@@ -2712,6 +2742,12 @@ export class RaycasterEngine {
     if (cheat) this.applyCheat(local, cheat);
     this.perf?.mark("input-poll");
 
+    // `?ablate=sim`: the audit ladder's sim-off rung — input polling and
+    // cheats above still run (so IDDQD works in ablation cells), everything
+    // from pause handling through particle integration is skipped. The world
+    // freezes; `render()` keeps drawing the frozen state every frame.
+    if (this.ablated("sim")) return true;
+
     // A blur (window losing focus entirely, or the canvas losing focus to
     // some other on-page control) or a pointer-lock release always forces a
     // pause — never a toggle, you can't "un-blur" by pressing something while
@@ -3195,17 +3231,48 @@ export class RaycasterEngine {
     const camera = this.effectiveCameraFor(this.localPlayerId);
     const view = local.viewOffsets;
     const { width, height } = this.ctx.canvas;
-    renderScene(this.ctx, this.map, camera, local.zBuffer, textures.getStyle(this.map.styleSet), view.horizonShift, this.levelTime, this.loreRead);
-    this.perf?.mark("raycast-walls");
-    this.renderWorldBillboards(camera, local.zBuffer);
 
-    this.target = findTargetUnderCrosshair(
+    // `?ablate=render`: the audit ladder's platform-floor rung — clear only,
+    // nothing drawn. Stats still build and flow to onStats so the app shell
+    // behaves normally around the empty frames.
+    if (this.ablated("render")) {
+      this.ctx.fillStyle = "#000";
+      this.ctx.fillRect(0, 0, width, height);
+      this.target = null;
+      const stats = this.buildStats();
+      this.handlers.onStats?.(stats);
+      return stats;
+    }
+
+    renderScene(
+      this.ctx,
+      this.map,
       camera,
-      this.enemies,
       local.zBuffer,
-      width,
-      height,
+      textures.getStyle(this.map.styleSet),
+      view.horizonShift,
+      this.levelTime,
+      this.loreRead,
+      undefined,
+      undefined,
+      !this.ablated("floor"),
+      !this.ablated("walls"),
+      !this.ablated("shade"),
     );
+    this.perf?.mark("raycast-walls");
+    if (!this.ablated("sprites")) {
+      this.renderWorldBillboards(camera, local.zBuffer);
+
+      this.target = findTargetUnderCrosshair(
+        camera,
+        this.enemies,
+        local.zBuffer,
+        width,
+        height,
+      );
+    } else {
+      this.target = null;
+    }
     this.perf?.mark("billboards+targeting");
 
     // In-world impact effects (above sprites): falling "digital blood", the
@@ -3213,16 +3280,18 @@ export class RaycasterEngine {
     // rocket-blast VFX circles. The physics integration for these already ran
     // in `simulate()` (right after `updateFiring`) — this only draws
     // whatever that left behind.
-    renderBlood(this.ctx, camera, this.blood, local.zBuffer, this.goreMultipliers.size);
-    drawBulletTraces(this.ctx, this.traces);
-    drawFlameStreams(this.ctx, width, height, this.flameStreams);
-    renderExplosions(this.ctx, camera, this.explosions, local.zBuffer);
-    renderExplosionParticles(this.ctx, camera, this.explosionParticles, local.zBuffer);
-    renderBurnParticles(this.ctx, camera, this.burnParticles, local.zBuffer);
+    if (!this.ablated("effects")) {
+      renderBlood(this.ctx, camera, this.blood, local.zBuffer, this.goreMultipliers.size);
+      drawBulletTraces(this.ctx, this.traces);
+      drawFlameStreams(this.ctx, width, height, this.flameStreams);
+      renderExplosions(this.ctx, camera, this.explosions, local.zBuffer);
+      renderExplosionParticles(this.ctx, camera, this.explosionParticles, local.zBuffer);
+      renderBurnParticles(this.ctx, camera, this.burnParticles, local.zBuffer);
+    }
     this.perf?.mark("particle-effects");
 
     // Full-screen red flash when the player is taking damage.
-    drawDamageFlash(this.ctx, local.flashFrames / DAMAGE_FLASH_FRAMES);
+    if (!this.ablated("effects")) drawDamageFlash(this.ctx, local.flashFrames / DAMAGE_FLASH_FRAMES);
 
     // First-person weapon and corner minimap/compass: visual clutter the
     // automap would immediately cover, so they're skipped while it's open
@@ -3230,7 +3299,7 @@ export class RaycasterEngine {
     // briefly overlays the knife's viewmodel on top of whatever ranged
     // weapon is actually equipped — weaponIndex, ammo, and the HUD are
     // untouched throughout (see `meleeRecoil`'s doc comment).
-    if (!local.isMapActive) {
+    if (!local.isMapActive && !this.ablated("viewmodel")) {
       const meleeOverlayActive = local.meleeRecoil > 0.02;
       drawWeapon(this.ctx, {
         bobX: view.bobX,
@@ -3245,7 +3314,9 @@ export class RaycasterEngine {
         reloadProgress: meleeOverlayActive ? 0 : this.reloadProgressOf(local),
         kind: meleeOverlayActive ? currentMeleeWeapon(local.ownedWeapons).viewKind : WEAPONS[local.weaponIndex].viewKind,
       });
+    }
 
+    if (!local.isMapActive && !this.ablated("hud")) {
       const minimapPanel = renderMinimap(
         this.ctx,
         this.map,
@@ -3272,19 +3343,20 @@ export class RaycasterEngine {
 
     // Diablo-style automap overlay: drawn on top of the still-live 3D scene
     // (sim never stops for it, unlike `isPaused`/`loreText`) — see automap.ts.
-    if (local.isMapActive) {
+    if (local.isMapActive && !this.ablated("hud")) {
       drawAutomap(this.ctx, this.map, camera, this.levelTime, this.isMultiplayerSession() ? this.drops : []);
     }
 
     // Crosshair stays visible (and on top of the automap, not dimmed by its
     // translucent panel) even with the map open — the player can still aim
     // and fire while it's up, so the aim point should still be shown.
-    drawCrosshair(this.ctx, this.target !== null, WEAPONS[local.weaponIndex].spreadPx);
+    if (!this.ablated("hud")) drawCrosshair(this.ctx, this.target !== null, WEAPONS[local.weaponIndex].spreadPx);
 
     // Native HUD sits on top of the whole scene, automap included, so
-    // health/ammo/keys always stay visible and live.
+    // health/ammo/keys always stay visible and live. Stats always build —
+    // `onStats` (autosave, app shell) is not part of the `hud` ablation.
     const stats = this.buildStats();
-    drawHud(this.ctx, stats);
+    if (!this.ablated("hud")) drawHud(this.ctx, stats);
     // Multiplayer-only: in single-player, `killPlayer()`/`endGame("over")`
     // fire on this same terminal frame (see `endGame()`'s doc comment for
     // why the state flip and the game-over handoff are split), so `stats`
@@ -3299,19 +3371,19 @@ export class RaycasterEngine {
     // each other. The countdown wins: it's the more urgent, time-bounded
     // signal, and a dead player already knows they're dead by the time it
     // appears.
-    if (this.isMultiplayerSession() && stats.status === "dead" && this.exitCountdownRemaining === null) {
+    if (this.isMultiplayerSession() && stats.status === "dead" && this.exitCountdownRemaining === null && !this.ablated("hud")) {
       drawSpectatingBanner(this.ctx, stats.spectateTargetId);
     }
-    if (local.showFps) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
+    if (local.showFps && !this.ablated("hud")) drawFpsOverlay(this.ctx, this.displayFps, this.displayFrameMs);
     // Transient feedback only — not drawn in the paused/automap/lore render
     // branches, unlike the FPS overlay, since a 2-second confirmation
     // toast isn't meant to persist across those states the way a standing
     // debug readout is.
-    if (local.cheatToastText && local.cheatToastFrames > 0) {
+    if (local.cheatToastText && local.cheatToastFrames > 0 && !this.ablated("hud")) {
       drawCheatToast(this.ctx, local.cheatToastText, local.cheatToastFrames / CHEAT_TOAST_FRAMES);
     }
     // Same "transient feedback only" treatment as the cheat toast above.
-    if (local.killStreakText && local.killStreakFrames > 0) {
+    if (local.killStreakText && local.killStreakFrames > 0 && !this.ablated("hud")) {
       drawKillStreakToast(
         this.ctx,
         local.killStreakText,
@@ -3320,16 +3392,16 @@ export class RaycasterEngine {
       );
     }
     // Same "transient feedback only" treatment as the other toasts above.
-    if (local.outOfAmmoToastFrames > 0) {
+    if (local.outOfAmmoToastFrames > 0 && !this.ablated("hud")) {
       drawOutOfAmmoToast(this.ctx, local.outOfAmmoToastFrames / OUT_OF_AMMO_TOAST_FRAMES);
     }
-    if (local.acidOverflowToastFrames > 0) {
+    if (local.acidOverflowToastFrames > 0 && !this.ablated("hud")) {
       drawAcidOverflowToast(this.ctx, local.acidOverflowToastFrames / ACID_OVERFLOW_TOAST_FRAMES);
     }
     // Same "transient feedback only" treatment again — and it sits a row
     // lower still, since dry-firing while shoving a locked door puts this and
     // the out-of-ammo toast on screen in the same second.
-    if (local.lockedDoorToastFrames > 0) {
+    if (local.lockedDoorToastFrames > 0 && !this.ablated("hud")) {
       drawLockedDoorToast(
         this.ctx,
         local.lockedDoorToastFrames / LOCKED_DOOR_TOAST_FRAMES,
@@ -3342,7 +3414,7 @@ export class RaycasterEngine {
     // toasts above — automap/lore/paused each render through their own
     // separate branch below and skip it, matching this file's existing
     // convention for every other transient/standing overlay.
-    if (this.exitCountdownRemaining !== null) {
+    if (this.exitCountdownRemaining !== null && !this.ablated("hud")) {
       drawExitCountdownToast(this.ctx, this.exitCountdownRemaining);
     }
     this.handlers.onStats?.(stats);

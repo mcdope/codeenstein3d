@@ -109,6 +109,23 @@ export function statsScreenInfo(
 const SCENE_WIDTH = 640;
 const SCENE_HEIGHT = 400;
 
+/**
+ * Measurement-only internal-resolution override, `?renderRes=WxH` (e.g.
+ * `320x200`) — the frame-budget audit's resolution-scaling probe. Applies to
+ * the canvas backing store only: the engine's *simulation*-side shot
+ * resolution stays on its own fixed `SCENE_WIDTH` (see engine.ts's constant
+ * doc), so this never crosses the determinism boundary. Absent → exactly
+ * `SCENE_WIDTH`×`SCENE_HEIGHT`, as always. Clamped to sane bounds so a typo
+ * can't allocate a gigapixel floor-cast buffer.
+ */
+function resolveRenderRes(): { width: number; height: number } {
+  const raw = new URLSearchParams(window.location.search).get("renderRes");
+  const m = raw ? /^(\d{2,4})x(\d{2,4})$/.exec(raw) : null;
+  if (!m) return { width: SCENE_WIDTH, height: SCENE_HEIGHT };
+  const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+  return { width: clamp(Number(m[1]), 160, 2560), height: clamp(Number(m[2]), 100, 1600) };
+}
+
 /** Extensions treated as a "bonus" restock-arena level (see `launchLevel`) —
  * just the C header today, the only header-file extension this app parses. */
 const BONUS_LEVEL_EXTENSIONS = new Set(["h"]);
@@ -607,8 +624,9 @@ highscoreDialog.addEventListener("close", () => {
  * the doc comment above used to describe for `canvas.hidden`.
  */
 const canvas = document.createElement("canvas");
-canvas.width = SCENE_WIDTH;
-canvas.height = SCENE_HEIGHT;
+const renderRes = resolveRenderRes();
+canvas.width = renderRes.width;
+canvas.height = renderRes.height;
 canvas.className = "scene-canvas";
 canvas.tabIndex = 0; // focusable so it can grab keyboard input on click
 const canvasArea = document.createElement("div");
@@ -617,7 +635,7 @@ canvasArea.hidden = true; // not shown until a level is actually running
 canvasArea.appendChild(canvas);
 viewport.appendChild(canvasArea);
 
-if (RESPONSIVE_CANVAS_SCALING_ENABLED) watchCanvasSizing(canvas, canvasArea, SCENE_WIDTH, SCENE_HEIGHT);
+if (RESPONSIVE_CANVAS_SCALING_ENABLED) watchCanvasSizing(canvas, canvasArea, renderRes.width, renderRes.height);
 
 /** Bundled file the boss screen falls back to, and the path it is presented
  * under. The campaign filename (`stage17_…`) would give the game away in the

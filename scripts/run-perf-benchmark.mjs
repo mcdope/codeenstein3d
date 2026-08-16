@@ -269,19 +269,65 @@ const CORPUS_FILES = {
 
 /** Load ONE corpus source file as a single-file local workspace via the OPFS
  * picker stub — the workspace auto-launches straight into that level. Real
- * clock, no testHooks: measurement-neutral (see scripts/lib/opfsWorkspace.mjs). */
-async function launchCorpusLevel(page, baseUrl, collector, corpusRelPath) {
+ * clock, no testHooks: measurement-neutral (see scripts/lib/opfsWorkspace.mjs).
+ * `extraQuery` carries the Phase 1 measurement params (`ablate=`, `renderRes=`). */
+async function launchCorpusLevel(page, baseUrl, collector, corpusRelPath, extraQuery = "") {
   const abs = path.join(ROOT, "balancing_corpus", corpusRelPath);
   if (!fs.existsSync(abs)) {
     throw new Error(`${path.relative(ROOT, abs)} missing — fetch the corpus first: npm run balancing:corpus`);
   }
   const name = path.basename(abs);
   await installOpfsWorkspace(page, { dirName: `perf-${name}`, files: { [name]: fs.readFileSync(abs, "utf8") } });
-  await page.goto(perfUrl(baseUrl, `seed=${CORPUS_SEED}`));
+  await page.goto(perfUrl(baseUrl, [`seed=${CORPUS_SEED}`, extraQuery].filter(Boolean).join("&")));
   await page.click("#select-workspace");
   // Map generation for a 160x160 monster takes a few seconds.
   await waitForLevelReady(collector, 120000);
   await dismissOverlay(page);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 ablation ladder + scaling probes. All on the c2 scene (the richest:
+// 160x160, 522 enemies) with IDDQD and a STATIC view — no look sweep, so the
+// rungs differ only by the `?ablate=` set. Ladder = cumulative build-up;
+// `only-*` = full frame minus one subsystem (the individual costs); the two
+// probes vary internal resolution / window size on the full frame.
+// ---------------------------------------------------------------------------
+
+/** Cumulative rungs: what stays ABLATED at each rung (l0 = everything off →
+ * platform floor; l8 = nothing off → full frame). */
+const LADDER = {
+  "l0-empty": "render,sim",
+  "l1-floor": "walls,shade,sprites,effects,viewmodel,hud,sim", // + floor-cast only
+  "l2-walls": "shade,sprites,effects,viewmodel,hud,sim", // + wall columns
+  "l3-shade": "sprites,effects,viewmodel,hud,sim", // + per-column shading (= full raycast)
+  "l4-sprites": "effects,viewmodel,hud,sim", // + billboards/targeting
+  "l5-effects": "viewmodel,hud,sim", // + particles/traces/flash
+  "l6-viewmodel": "hud,sim", // + first-person weapon
+  "l7-hud": "sim", // + minimap/HUD/toasts (= full render)
+  "l8-full": "", // + full simulation (= the game)
+};
+
+/** Individual costs: full frame minus exactly one subsystem. */
+const INDIVIDUAL = {
+  "only-nofloor": "floor",
+  "only-nowalls": "walls,shade",
+  "only-noshade": "shade",
+  "only-nosprites": "sprites",
+  "only-noeffects": "effects",
+  "only-noviewmodel": "viewmodel",
+  "only-nohud": "hud",
+  "only-nosim": "sim",
+};
+
+function ablationScenario(ablate, extraQuery = "") {
+  return {
+    defaultDurationSec: 30,
+    async setup(page, baseUrl, collector) {
+      const q = [ablate ? `ablate=${ablate}` : "", extraQuery].filter(Boolean).join("&");
+      await launchCorpusLevel(page, baseUrl, collector, CORPUS_FILES.c2, q);
+      await typeCheat(page, "IDDQD"); // works even with sim ablated (cheats consume pre-gate)
+    },
+  };
 }
 
 /** Wait for the NEXT `[perf] level:` line beyond `alreadySeen` — level loads
@@ -522,6 +568,24 @@ const SCENARIOS = {
   },
 };
 
+// Phase 1 cells (see LADDER/INDIVIDUAL above): registered programmatically so
+// the ladder stays one table instead of seventeen hand-written scenarios.
+for (const [id, ablate] of Object.entries(LADDER)) SCENARIOS[id] = ablationScenario(ablate);
+for (const [id, ablate] of Object.entries(INDIVIDUAL)) SCENARIOS[id] = ablationScenario(ablate);
+// Internal-resolution probes: full frame at half/double the 640x400 backing store.
+SCENARIOS["res-half"] = ablationScenario("", "renderRes=320x200");
+SCENARIOS["res-double"] = ablationScenario("", "renderRes=1280x800");
+// Display-size probes: full frame, canvas CSS-upscaled into a bigger window
+// (the GPU-side compositing dimension; the primary display here is 6144x3456).
+SCENARIOS["view-1080"] = { ...ablationScenario(""), viewport: { width: 1920, height: 1080 } };
+SCENARIOS["view-4k"] = { ...ablationScenario(""), viewport: { width: 3840, height: 2160 } };
+SCENARIOS["view-6k"] = { ...ablationScenario(""), viewport: { width: 6100, height: 3380 } };
+// Desktop-load probes: full frame while N busy-loop node processes burn cores —
+// quantifies the headroom cliff that background desktop load pushes frames over.
+SCENARIOS["load-2bg"] = { ...ablationScenario(""), backgroundLoad: 2 };
+SCENARIOS["load-4bg"] = { ...ablationScenario(""), backgroundLoad: 4 };
+SCENARIOS["load-8bg"] = { ...ablationScenario(""), backgroundLoad: 8 };
+
 // ---------------------------------------------------------------------------
 // Dev server management
 // ---------------------------------------------------------------------------
@@ -662,7 +726,14 @@ async function measureRun(browser, scenarioId, baseUrl, { warmupSec, durationSec
   const scenario = SCENARIOS[scenarioId];
   if (!scenario) throw new Error(`unknown scenario "${scenarioId}" (have: ${Object.keys(SCENARIOS).join(", ")})`);
 
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  // Desktop-load probe: N busy-loop node processes for the WHOLE run
+  // (setup+warmup+capture), killed unconditionally afterwards.
+  const burners = [];
+  for (let i = 0; i < (scenario.backgroundLoad ?? 0); i += 1) {
+    burners.push(spawn(process.execPath, ["-e", "for(;;);"], { stdio: "ignore" }));
+  }
+
+  const context = await browser.newContext({ viewport: scenario.viewport ?? { width: 1280, height: 800 } });
   try {
     const page = await context.newPage();
     const collector = createPerfLogCollector();
@@ -723,6 +794,7 @@ async function measureRun(browser, scenarioId, baseUrl, { warmupSec, durationSec
     };
   } finally {
     await context.close().catch(() => {});
+    for (const b of burners) b.kill("SIGKILL");
   }
 }
 

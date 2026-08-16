@@ -254,6 +254,11 @@ export function renderScene(
   readTerminals: ReadonlySet<string> = NO_READ_TERMINALS,
   antialiasing = WALL_EDGE_ANTIALIASING_ENABLED,
   fog = DISTANCE_FOG_ENABLED,
+  // Measurement-only ablation switches (frame-budget audit): defaults leave
+  // behavior byte-identical; the engine passes false only under `?ablate=`.
+  drawFloor = true,
+  drawWalls = true,
+  drawShading = true,
 ): void {
   const textureSet = style.textures;
   const width = ctx.canvas.width;
@@ -266,7 +271,21 @@ export function renderScene(
   // to be skipped in favor of two flat `fillRect`s on maps with no hazards/
   // teleporters/traps, but that fast path can't show floor texture
   // variation, so it's retired (see renderBackground's doc comment).
-  renderBackground(ctx, map, player, width, height, horizon, levelTime, style, fog);
+  // Ablated: flat fills only, so the wall pass still draws on a clean frame.
+  if (drawFloor) {
+    renderBackground(ctx, map, player, width, height, horizon, levelTime, style, fog);
+  } else {
+    ctx.fillStyle = `rgb(${style.ceiling[0]},${style.ceiling[1]},${style.ceiling[2]})`;
+    ctx.fillRect(0, 0, width, Math.max(0, horizon));
+    ctx.fillStyle = "#222";
+    ctx.fillRect(0, Math.max(0, horizon), width, height - Math.max(0, horizon));
+  }
+
+  if (!drawWalls) {
+    // Sprites z-test against the buffer — no walls means nothing occludes.
+    zBuffer.fill(Infinity);
+    return;
+  }
 
   // Lore terminal walls sample a real texture (see `tex` below) plus a thin
   // pulsing tint overlay on top, so the "this is interactive, walk up to it"
@@ -329,7 +348,7 @@ export function renderScene(
     // With fog on this always draws (even alpha-0 close columns — kept
     // byte-identical to the pre-flag behavior); with fog off, fully-lit
     // columns skip the overlay entirely (only SIDE_SHADE'd y-sides draw).
-    if (solidEnd > solidStart && (fog || shade < 1)) {
+    if (drawShading && solidEnd > solidStart && (fog || shade < 1)) {
       // Alpha-blending black at (1-shade) over an opaque pixel reproduces
       // the old flat-fill era's `base*shade` multiply exactly, and composes
       // for free with the `drawImage` scale above.
