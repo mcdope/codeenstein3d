@@ -585,6 +585,11 @@ SCENARIOS["view-6k"] = { ...ablationScenario(""), viewport: { width: 6100, heigh
 SCENARIOS["load-2bg"] = { ...ablationScenario(""), backgroundLoad: 2 };
 SCENARIOS["load-4bg"] = { ...ablationScenario(""), backgroundLoad: 4 };
 SCENARIOS["load-8bg"] = { ...ablationScenario(""), backgroundLoad: 8 };
+// GPU-contention probe: CPU burners caused zero drops, so the remaining
+// candidate for the observed desktop-load drops (1.0% on s1 while Firefox
+// played DRM video) is GPU-side raster/composite contention — approximated
+// here by a second window repainting a full 4K canvas every rAF.
+SCENARIOS["gpu-bg"] = { ...ablationScenario(""), backgroundGpu: true };
 
 // ---------------------------------------------------------------------------
 // Dev server management
@@ -733,6 +738,30 @@ async function measureRun(browser, scenarioId, baseUrl, { warmupSec, durationSec
     burners.push(spawn(process.execPath, ["-e", "for(;;);"], { stdio: "ignore" }));
   }
 
+  // GPU-contention probe: a second window repainting a full 4K canvas every
+  // rAF — raster + composite load in the GPU process, next to no main-thread
+  // JS. Own context so it gets its own window and viewport.
+  let gpuContext = null;
+  if (scenario.backgroundGpu) {
+    gpuContext = await browser.newContext({ viewport: { width: 3840, height: 2160 } });
+    const gpuPage = await gpuContext.newPage();
+    await gpuPage.setContent(`<canvas id="c"></canvas><script>
+      const c = document.getElementById("c");
+      c.width = 3840; c.height = 2160;
+      const ctx = c.getContext("2d");
+      let t = 0;
+      (function tick() {
+        t += 1;
+        const g = ctx.createLinearGradient(0, 0, 3840, 2160);
+        g.addColorStop(0, "hsl(" + (t % 360) + ",80%,50%)");
+        g.addColorStop(1, "hsl(" + ((t * 7) % 360) + ",80%,30%)");
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, 3840, 2160);
+        requestAnimationFrame(tick);
+      })();
+    </scr` + `ipt>`);
+  }
+
   const context = await browser.newContext({ viewport: scenario.viewport ?? { width: 1280, height: 800 } });
   try {
     const page = await context.newPage();
@@ -794,6 +823,7 @@ async function measureRun(browser, scenarioId, baseUrl, { warmupSec, durationSec
     };
   } finally {
     await context.close().catch(() => {});
+    if (gpuContext) await gpuContext.close().catch(() => {});
     for (const b of burners) b.kill("SIGKILL");
   }
 }
