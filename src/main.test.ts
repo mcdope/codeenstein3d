@@ -265,6 +265,29 @@ describe("main.ts — module import / initial DOM wiring", () => {
     expect(document.querySelector<HTMLSelectElement>("#gore-select")!.value).toBe("extreme");
   });
 
+  // Every tier has to survive a round trip through storage. `loadGoreLevel`'s
+  // membership check and the `<option>` list are two separate hand-maintained
+  // places that `tsc` cannot connect: miss the first and the value silently
+  // reverts to Normal on reload, miss the second and the `<select>` refuses
+  // the value and reads as empty. Both fail without an error either way.
+  for (const level of ["none", "normal", "more", "extreme", "excessive", "absurd"]) {
+    it(`offers the '${level}' gore option and round-trips it through storage`, async () => {
+      localStorage.setItem("codeenstein-gore-level", level);
+      await importMain();
+      expect(document.querySelector(`#gore-select option[value="${level}"]`)).not.toBeNull();
+      expect(document.querySelector<HTMLSelectElement>("#gore-select")!.value).toBe(level);
+    });
+  }
+
+  it("does not accept an inherited Object property name as a gore level", async () => {
+    // `loadGoreLevel` derives its membership check from GORE_MULTIPLIERS, so
+    // it uses Object.hasOwn rather than `in` — "constructor" is on every
+    // object's prototype chain and must not read as a tier.
+    localStorage.setItem("codeenstein-gore-level", "constructor");
+    await importMain();
+    expect(document.querySelector<HTMLSelectElement>("#gore-select")!.value).toBe("normal");
+  });
+
   it("switches launch tabs on click, toggling aria-selected and panel hidden state", async () => {
     await importMain();
     const tabGithub = document.querySelector<HTMLButtonElement>("#tab-github")!;
