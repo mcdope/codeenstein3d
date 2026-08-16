@@ -3299,6 +3299,7 @@ export class RaycasterEngine {
         local.zBuffer,
         this.goreMultipliers.size,
         this.goreMultipliers.settledSize,
+        this.goreMultipliers.settledClamp,
       );
       drawBulletTraces(this.ctx, this.traces);
       drawFlameStreams(this.ctx, width, height, this.flameStreams);
