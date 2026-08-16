@@ -5279,6 +5279,149 @@ describe("main.ts — file tree selection", () => {
   });
 });
 
+describe("main.ts — per-tab file trees", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    // A second, independent read on whether `adoptWorkspaceSlot` really moved
+    // the active-workspace globals: the Host sub-tab is gated on
+    // `workspaceIsRemote || workspaceIsDemo`, not on any of the tree DOM.
+    vi.stubEnv("VITE_MULTIPLAYER_SERVER_URL", "https://mp.example.test");
+  });
+
+  function githubJson(body: unknown, ok = true, status = 200, statusText = "OK"): Response {
+    return { ok, status, statusText, json: async () => body, body: null } as unknown as Response;
+  }
+
+  /** Loads the bundled demo campaign and waits for its auto-launched level to
+   * settle — the cheapest workspace that is remote/demo-eligible. */
+  async function loadDemo(): Promise<void> {
+    document.querySelector<HTMLButtonElement>("#launch-demo-campaign")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+  }
+
+  function paneHidden(id: string): boolean {
+    return document.querySelector<HTMLElement>(id)!.hasAttribute("hidden");
+  }
+
+  function emptyHint(): string {
+    return document.querySelector<HTMLParagraphElement>("#file-tree-empty")!.textContent ?? "";
+  }
+
+  it("keeps a loaded workspace's files under its own tab — the reported bug", async () => {
+    await importMain();
+    await loadDemo();
+    expect(paneHidden("#file-tree-demo")).toBe(false);
+    expect(paneHidden("#file-tree-empty")).toBe(true);
+
+    document.querySelector<HTMLButtonElement>("#tab-github")!.click();
+    // Before this existed, the demo's rows were still sitting here.
+    expect(paneHidden("#file-tree-demo")).toBe(true);
+    expect(paneHidden("#file-tree-github")).toBe(true);
+    expect(paneHidden("#file-tree-empty")).toBe(false);
+    expect(emptyHint()).toContain("No repository loaded yet");
+
+    document.querySelector<HTMLButtonElement>("#tab-demo")!.click();
+    expect(paneHidden("#file-tree-demo")).toBe(false);
+    expect(paneHidden("#file-tree-empty")).toBe(true);
+  });
+
+  it("shows a hint, and no workspace name, for the tabs that own no workspace", async () => {
+    await importMain();
+    await loadDemo();
+
+    document.querySelector<HTMLButtonElement>("#tab-settings")!.click();
+    expect(paneHidden("#file-tree-demo")).toBe(true);
+    expect(emptyHint()).toContain("This tab has no workspace");
+    expect(document.querySelector<HTMLElement>("#workspace-name")!.hasAttribute("hidden")).toBe(true);
+
+    document.querySelector<HTMLButtonElement>("#tab-demo")!.click();
+    expect(document.querySelector<HTMLElement>("#workspace-name")!.hasAttribute("hidden")).toBe(false);
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("demo-campaign");
+  });
+
+  it("keeps each tree's expanded folders across a tab switch", async () => {
+    await importMain();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { lib: { "helper.c": VALID_HELPER_C }, "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector('.tree-row--directory[title="ws/lib"]') !== null);
+
+    const dirRow = document.querySelector<HTMLButtonElement>('.tree-row--directory[title="ws/lib"]')!;
+    const childList = dirRow.parentElement!.querySelector("ul")!;
+    expect(childList.hidden).toBe(true);
+    dirRow.click();
+    expect(childList.hidden).toBe(false);
+
+    document.querySelector<HTMLButtonElement>("#tab-github")!.click();
+    document.querySelector<HTMLButtonElement>("#tab-local")!.click();
+    // Panes are toggled, never re-rendered — `renderFileTree` would have
+    // rebuilt every row collapsed.
+    expect(document.querySelector<HTMLElement>('.tree-row--directory[title="ws/lib"]')).toBe(dirRow);
+    expect(childList.hidden).toBe(false);
+  });
+
+  it("switches the active source when a file is clicked in another tab's tree, not when the tab is switched", async () => {
+    await importMain();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    await loadDemo();
+
+    const tabLocal = document.querySelector<HTMLButtonElement>("#tab-local")!;
+    const tabDemo = document.querySelector<HTMLButtonElement>("#tab-demo")!;
+    const hostSubtab = document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!;
+    expect(tabDemo.classList.contains("tab-btn--playing")).toBe(true);
+    expect(tabLocal.classList.contains("tab-btn--playing")).toBe(false);
+    expect(hostSubtab.disabled).toBe(false); // the demo campaign is hostable
+
+    // Merely looking at the other tab changes nothing about what is playing.
+    tabLocal.click();
+    expect(tabDemo.classList.contains("tab-btn--playing")).toBe(true);
+    expect(hostSubtab.disabled).toBe(false);
+
+    document.querySelector<HTMLButtonElement>('.tree-row--file[title="ws/main.c"]')!.click();
+    await flushAsync();
+    expect(tabLocal.classList.contains("tab-btn--playing")).toBe(true);
+    // Local and Continue share a slot, so both light up.
+    expect(document.querySelector<HTMLButtonElement>("#tab-continue")!.classList.contains("tab-btn--playing")).toBe(true);
+    expect(tabDemo.classList.contains("tab-btn--playing")).toBe(false);
+    expect(hostSubtab.disabled).toBe(true); // a locally-picked folder can't be hosted
+  });
+
+  it("keeps a failed load's error on its own tab", async () => {
+    await importMain();
+    await loadDemo();
+
+    fetchMock.mockResolvedValueOnce(githubJson(null, false, 404, "Not Found"));
+    setGithubRepoInput("owner/repo");
+    document.querySelector<HTMLButtonElement>("#load-github-repo")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#github-status")!.classList.contains("error"));
+    expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(true);
+
+    // The demo campaign it was played against is untouched — before this, the
+    // GitHub failure relabelled the running campaign.
+    document.querySelector<HTMLButtonElement>("#tab-demo")!.click();
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("demo-campaign");
+    expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(false);
+    expect(paneHidden("#file-tree-demo")).toBe(false);
+  });
+
+  it("renders a Continue Run into the Local tab's slot, since both pick a local folder", async () => {
+    localStorage.setItem("codeenstein-campaign-save", campaignSave({ filePath: "ws/main.c" }));
+    await importMain();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#continue-run")!.click();
+    await waitUntil(() => document.querySelector('#file-tree-local .tree-row--file[title="ws/main.c"]') !== null);
+    expect(paneHidden("#file-tree-local")).toBe(false); // shown under the Continue tab it was started from
+
+    document.querySelector<HTMLButtonElement>("#tab-local")!.click();
+    expect(paneHidden("#file-tree-local")).toBe(false); // and under Local, where the same folder belongs
+    expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("ws");
+  });
+});
+
 describe("main.ts — starting a level and driving live gameplay", () => {
   let raf: RafController;
 
