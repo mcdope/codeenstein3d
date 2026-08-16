@@ -101,15 +101,22 @@ export const GORE_MULTIPLIERS: Record<GoreLevel, GoreMultipliers> = {
   // The two tiers above `extreme` move the cap and the stain clock, never
   // `size` — see `GoreMultipliers.maxParticles` for why `count` alone is inert
   // up here, and the "mountain of blood" note above for why `size` is not
-  // touched. Excessive is the requested "one third more": +33% on the cap
-  // (300 -> 400) and on the stain clock (6s -> 8.25s), with a matching count
-  // bump so the higher cap actually gets filled.
-  excessive: { count: 20, size: 4, stainDuration: 5.5, maxParticles: 400, settledSize: 1 },
+  // touched. Excessive is "Extreme and a half again": 2x the cap (300 -> 600),
+  // a longer stain clock (6s -> 8.25s), and a count high enough to fill it.
+  //
+  // `count` and `maxParticles` are raised together on purpose. Measured with
+  // the real functions over a 12-hit fight: at cap 400 this tier sat at ~340
+  // live particles whether `count` was 20 or 30 — the cap was the binding
+  // constraint, so the spawn bump alone was invisible. At cap 600 the same
+  // fight holds ~530, which is the increase actually showing up on screen.
+  excessive: { count: 30, size: 4, stainDuration: 5.5, maxParticles: 600, settledSize: 1 },
   // Absurd is a different thing rather than more of the same: landed blood
   // never expires, so a room you cleared stays painted for the rest of the
-  // level, and settled splats render larger. The 1200 cap is what bounds it —
-  // FIFO eviction is the only thing that ever removes a stain here.
-  absurd: { count: 24, size: 4, stainDuration: Infinity, maxParticles: 1200, settledSize: 1.6 },
+  // level, and settled splats render larger. The cap is the only thing that
+  // ever removes a stain here, so it is also the tier's real ceiling — a long
+  // enough fight walks the floor up to 1800 live particles, six times what
+  // every tier shared before this.
+  absurd: { count: 36, size: 4, stainDuration: Infinity, maxParticles: 1800, settledSize: 1.6 },
 };
 
 /** Hard ceiling on a single rendered blood particle's on-screen size, as a
