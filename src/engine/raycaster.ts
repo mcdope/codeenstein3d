@@ -109,13 +109,18 @@ function fogShade(dist: number): number {
 }
 
 /**
- * Perf A/B flag (frame-budget audit Phase 2): rewrite the floor-cast inner
- * loop with one 32-bit write per pixel (little-endian ABGR view over the same
- * ImageData buffer), a flat `fillRect` for the ceiling instead of per-pixel
- * byte stores, and a dirty-rect `putImageData` covering only the floor rows.
- * Output is visually identical (channel values can differ by at most 1/255
- * from the Uint8Clamped rounding the byte path gets for free). Default off
- * until measured; flipped by `perf:bench --flag floorfast`.
+ * Perf A/B flag (frame-budget audit Phase 2): rewrite the floor-cast with one
+ * 32-bit write per pixel (little-endian ABGR view over the same ImageData
+ * buffer) — ceiling rows included, as a constant-u32 fill — and one full
+ * `putImageData`, exactly like the classic path's blit. Output is visually
+ * identical (channel values can differ by at most 1/255 from the
+ * Uint8Clamped rounding the byte path gets for free). Default off until
+ * measured; flipped by `perf:bench --flag floorfast`.
+ *
+ * v1 of this spike used a flat ceiling `fillRect` + dirty-rect
+ * `putImageData` instead; measured +1.3ms at 640×400 (a REGRESSION) vs
+ * −1.8ms at 1280×800 — the dirty-rect blit is the suspected slow path in
+ * Chromium, hence this full-blit v2.
  */
 export const FLOOR_FAST_PATH_ENABLED = false;
 
@@ -561,12 +566,13 @@ function renderBackground(
 
 /**
  * `FLOOR_FAST_PATH_ENABLED` variant of `renderBackground` — identical row
- * math and texture selection, three mechanical changes: (1) ceiling is one
- * flat `fillRect` instead of per-pixel byte stores; (2) each floor pixel is a
- * single little-endian ABGR `Uint32Array` write instead of four
- * `Uint8ClampedArray` stores; (3) `putImageData` blits only the floor rows
- * (dirty rect). `+0.5 | 0` reproduces the clamped array's rounding to within
- * 1/255 (values are already in range, so no clamping is needed).
+ * math, texture selection, and full-frame `putImageData`; the one mechanical
+ * change is a single little-endian ABGR `Uint32Array` write per pixel
+ * (ceiling rows as one `fill()` of a constant) instead of four
+ * `Uint8ClampedArray` stores. `+0.5 | 0` reproduces the clamped array's
+ * rounding to within 1/255 (values are already in range, so no clamping is
+ * needed). See the flag's doc comment for the measured v1 (dirty-rect)
+ * regression this replaces.
  */
 export function renderBackgroundFast(
   ctx: CanvasRenderingContext2D,
@@ -596,10 +602,10 @@ export function renderBackgroundFast(
   const posZ = 0.5 * height;
 
   const floorStartRow = Math.min(height, Math.max(0, Math.ceil(halfH)));
-  ctx.fillStyle = `rgb(${ceiling[0]},${ceiling[1]},${ceiling[2]})`;
-  ctx.fillRect(0, 0, width, floorStartRow);
+  const ceilingU32 = 0xff000000 | (ceiling[2] << 16) | (ceiling[1] << 8) | ceiling[0];
 
   const u32 = floorU32;
+  u32.fill(ceilingU32, 0, floorStartRow * width);
   let idx = floorStartRow * width;
   for (let y = floorStartRow; y < height; y++) {
     const rowDistance = posZ / (y - halfH);
@@ -637,9 +643,7 @@ export function renderBackgroundFast(
     }
   }
 
-  if (floorStartRow < height) {
-    ctx.putImageData(floorImage, 0, 0, 0, floorStartRow, width, height - floorStartRow);
-  }
+  ctx.putImageData(floorImage, 0, 0);
 }
 
 /**

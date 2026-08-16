@@ -982,8 +982,11 @@ describe("renderBackgroundFast — equivalence with the classic floor-cast (fram
     const c = ctx();
     renderBackgroundFast(asCtx(c), map, player, WIDTH, HEIGHT, horizon, 0, style, true);
     expect(c.putImageData).toHaveBeenCalledTimes(1);
-    const [fastImg, dx, dy, dirtyX, dirtyY, dirtyW, dirtyH] = c.putImageData.mock.calls[0];
-    expect([dx, dy, dirtyX, dirtyY, dirtyW, dirtyH]).toEqual([0, 0, 0, horizon, WIDTH, HEIGHT - horizon]);
+    const [fastImg, dx, dy] = c.putImageData.mock.calls[0];
+    // Full-frame blit, same as the classic path (v2 — the v1 dirty-rect blit
+    // measured as a regression at 640x400 and was dropped).
+    expect([dx, dy]).toEqual([0, 0]);
+    expect(c.putImageData.mock.calls[0].length).toBe(3);
 
     let maxDiff = 0;
     for (let y = horizon; y < HEIGHT; y++) {
@@ -997,7 +1000,7 @@ describe("renderBackgroundFast — equivalence with the classic floor-cast (fram
     expect(maxDiff).toBeLessThanOrEqual(1);
   });
 
-  it("replaces the classic per-pixel ceiling with one equivalent flat fillRect", () => {
+  it("writes ceiling rows byte-identical to the classic per-pixel ceiling", () => {
     const map = variedMap();
     const player = centeredPlayer(map);
     const ceiling: [number, number, number] = [11, 13, 22];
@@ -1005,19 +1008,19 @@ describe("renderBackgroundFast — equivalence with the classic floor-cast (fram
     const horizon = HEIGHT / 2;
     const classic = classicFloorImage(map, player, style);
 
-    // Classic path: every ceiling row pixel is exactly the flat ceiling color.
-    for (let y = 0; y < horizon; y++) {
-      const i = y * WIDTH * 4;
-      expect([classic.data[i], classic.data[i + 1], classic.data[i + 2]]).toEqual(ceiling);
-    }
-
     const c = ctx();
     renderBackgroundFast(asCtx(c), map, player, WIDTH, HEIGHT, horizon, 0, style, true);
-    const ceilRect = c.fillRect.mock.calls[0];
-    expect(ceilRect).toEqual([0, 0, WIDTH, horizon]);
-    // The fast path sets fillStyle exactly once (the ceiling color) before
-    // its one fillRect, and nothing after — so the mock still holds it.
-    expect((c as unknown as { fillStyle: string }).fillStyle).toBe(`rgb(${ceiling[0]},${ceiling[1]},${ceiling[2]})`);
+    const fastImg = c.putImageData.mock.calls[0][0] as ImageData;
+    // Every ceiling pixel exactly the flat ceiling color, in both paths.
+    for (let y = 0; y < horizon; y++) {
+      for (let x = 0; x < WIDTH; x++) {
+        const i = (y * WIDTH + x) * 4;
+        expect([classic.data[i], classic.data[i + 1], classic.data[i + 2], classic.data[i + 3]]).toEqual([...ceiling, 255]);
+        expect([fastImg.data[i], fastImg.data[i + 1], fastImg.data[i + 2], fastImg.data[i + 3]]).toEqual([...ceiling, 255]);
+      }
+    }
+    // No stray draw calls: the fast path is pixel writes + one blit only.
+    expect(c.fillRect).not.toHaveBeenCalled();
   });
 
   it("handles a fractional horizon (head-bob) with the same first floor row as the classic path", () => {
@@ -1031,9 +1034,10 @@ describe("renderBackgroundFast — equivalence with the classic floor-cast (fram
 
     const c = ctx();
     renderBackgroundFast(asCtx(c), map, player, WIDTH, HEIGHT, horizon, 0, style, true);
-    const call = c.putImageData.mock.calls[0];
-    expect(call[4]).toBe(firstFloorRow); // dirty-rect y
-    const fastImg = call[0] as ImageData;
+    const fastImg = c.putImageData.mock.calls[0][0] as ImageData;
+    // The row above firstFloorRow is still ceiling in both paths.
+    const lastCeilIdx = (firstFloorRow - 1) * WIDTH * 4;
+    expect(fastImg.data[lastCeilIdx]).toBe(classic.data[lastCeilIdx]);
     let maxDiff = 0;
     for (let y = firstFloorRow; y < HEIGHT; y++) {
       for (let x = 0; x < WIDTH; x++) {
