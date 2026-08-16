@@ -155,7 +155,7 @@
                 List in public lobby
               </label>
               <label id="multiplayer-max-players-label" for="multiplayer-max-players" class="settings-label">Max players</label>
-              <select id="multiplayer-max-players">
+              <select id="multiplayer-max-players" class="settings-select">
                 <option value="2">2 (you + 1 guest)</option>
                 <option value="3">3 (you + 2 guests)</option>
                 <option value="4">4 (you + 3 guests)</option>
@@ -190,7 +190,7 @@
             <!-- One name for the whole game: it labels your highscore entries
                  and, in multiplayer, floats above your character. Persisted,
                  unlike the multiplayer-only field this replaced. -->
-            <label id="player-name-label" for="player-name-input" class="muted">Player name</label>
+            <label id="player-name-label" for="player-name-input" class="settings-label">Player name</label>
             <input
               id="player-name-input"
               class="settings-text-input"
@@ -200,15 +200,15 @@
               autocomplete="off"
               spellcheck="false"
             />
-            <label id="gore-label" for="gore-select" class="muted">Gore</label>
-            <select id="gore-select">
+            <label id="gore-label" for="gore-select" class="settings-label">Gore</label>
+            <select id="gore-select" class="settings-select">
               <option value="none">None</option>
               <option value="normal" selected>Normal</option>
               <option value="more">More</option>
               <option value="extreme">Extreme</option>
             </select>
-            <label id="difficulty-label" for="difficulty-select" class="muted">Difficulty</label>
-            <select id="difficulty-select">
+            <label id="difficulty-label" for="difficulty-select" class="settings-label">Difficulty</label>
+            <select id="difficulty-select" class="settings-select">
               <option value="easy">Easy</option>
               <option value="normal" selected>Normal</option>
               <option value="hard">Hard</option>
@@ -217,8 +217,8 @@
                  Sharp = 1280x800 internal + half-res floor, the only measured
                  configuration that stays inside the frame budget. There is
                  deliberately no separate resolution / floor-detail knob. -->
-            <label id="render-quality-label" for="render-quality-select" class="muted">Render quality</label>
-            <select id="render-quality-select">
+            <label id="render-quality-label" for="render-quality-select" class="settings-label">Render quality</label>
+            <select id="render-quality-select" class="settings-select">
               <option value="classic" selected>Classic (640×400)</option>
               <option value="sharp">Sharp (1280×800)</option>
             </select>

@@ -60,7 +60,7 @@ export function buildIndexDom(): void {
                 List in public lobby
               </label>
               <label id="multiplayer-max-players-label" for="multiplayer-max-players">Max players</label>
-              <select id="multiplayer-max-players">
+              <select id="multiplayer-max-players" class="settings-select">
                 <option value="2">2 (you + 1 guest)</option>
                 <option value="3">3 (you + 2 guests)</option>
                 <option value="4">4 (you + 3 guests)</option>
@@ -85,20 +85,20 @@ export function buildIndexDom(): void {
           <div id="tab-panel-settings" class="tab-panel" role="tabpanel" hidden>
           <label id="gore-label" for="gore-select">Gore</label>
           <input id="player-name-input" type="text" maxlength="24" />
-          <select id="gore-select">
+          <select id="gore-select" class="settings-select">
             <option value="none">None</option>
             <option value="normal" selected>Normal</option>
             <option value="more">More</option>
             <option value="extreme">Extreme</option>
           </select>
           <label id="difficulty-label" for="difficulty-select">Difficulty</label>
-          <select id="difficulty-select">
+          <select id="difficulty-select" class="settings-select">
             <option value="easy">Easy</option>
             <option value="normal" selected>Normal</option>
             <option value="hard">Hard</option>
           </select>
           <label id="render-quality-label" for="render-quality-select">Render quality</label>
-          <select id="render-quality-select">
+          <select id="render-quality-select" class="settings-select">
             <option value="classic" selected>Classic (640×400)</option>
             <option value="sharp">Sharp (1280×800)</option>
           </select>
