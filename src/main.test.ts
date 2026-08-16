@@ -2238,9 +2238,13 @@ describe("main.ts — multiplayer connect flow", () => {
         Promise.resolve(fakeDirectoryHandle("local-ws", { "main.c": VALID_MAIN_C }));
       document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
       await waitUntil(() => document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!.disabled);
-      // The outer Multiplayer tab itself stays reachable/selected — Join has
-      // no workspace dependency — only the Host sub-tab bounces to Join.
-      expect(document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.getAttribute("aria-selected")).toBe("true");
+      // The outer Multiplayer tab stays *reachable* — Join has no workspace
+      // dependency — but it is no longer the selected one: every loader claims
+      // its own tab up front so the tree and status line it writes are the
+      // ones on screen. Unreachable by hand (#select-workspace only exists
+      // inside the Local panel); this drives the button directly.
+      expect(document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.disabled).toBe(false);
+      expect(document.querySelector<HTMLButtonElement>("#tab-local")!.getAttribute("aria-selected")).toBe("true");
       expect(document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.getAttribute("aria-selected")).toBe(
         "true",
       );

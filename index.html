@@ -272,7 +272,19 @@
             >📖 Player Guide</a
           >
         </header>
-        <nav id="file-tree" aria-label="File tree"></nav>
+        <!-- One pane per workspace *source*, not per tab: Local and Continue
+             both pick a local folder, so they share `#file-tree-local`. Only
+             the pane for the visible tab is shown (`showWorkspacePaneFor` in
+             main.ts) — panes are toggled, never re-rendered, so each tree
+             keeps its own expanded folders and scroll position for the
+             session. `#file-tree` itself stays the scroll container (and the
+             intro tour's anchor). -->
+        <nav id="file-tree" aria-label="File tree">
+          <div id="file-tree-local" class="file-tree-pane"></div>
+          <div id="file-tree-github" class="file-tree-pane" hidden></div>
+          <div id="file-tree-demo" class="file-tree-pane" hidden></div>
+          <p id="file-tree-empty" class="file-tree-empty muted" hidden></p>
+        </nav>
         <footer id="sidebar-footer" class="sidebar-footer">
           <p>
             © 2026 Tobias Bäumer<br />
