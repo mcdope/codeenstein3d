@@ -1085,20 +1085,37 @@ function commitWorkspaceSlot(key: WorkspaceSlotKey, init: LoadedWorkspaceInit): 
 
   renderFileTree(workspaceSlots[key].pane, init.tree, { onSelectFile: handleFileSelected });
   setSlotStatus(key, init.rootName);
-  updateLoadedSourceMarker();
+  setGameRunning(false); // nothing is launched yet — the marker starts paused
   showWorkspacePaneFor(visibleLaunchTab);
 }
 
-/** Marks the tab holding the loaded workspace with a ▶, so which source the
- * game is running from is readable from any tab — including Settings and
- * Multiplayer, which show no tree at all. Local and Continue share a slot, so
- * both carry it together. */
+/** Whether the loaded workspace's level is actually advancing — picks ▶ over
+ * ⏸ on the marked tab. False whenever the simulation isn't running: paused or
+ * lore-frozen (the engine's `onFreezeChange`), a briefing overlay still up, or
+ * no level running at all.
+ *
+ * Multiplayer deliberately doesn't drive this — `sessionEngine.ts` wires
+ * `onFreezeChange` to a no-op on purpose (one peer's pause must not freeze the
+ * shared sim), so a session leaves the marker wherever single-player left it.
+ * That is invisible in practice: a session is driven from the Multiplayer tab,
+ * which never carries the marker. */
+let gameIsRunning = false;
+
+function setGameRunning(running: boolean): void {
+  gameIsRunning = running;
+  updateLoadedSourceMarker();
+}
+
+/** Marks the tab holding the loaded workspace, so which source the game runs
+ * from is readable from any tab — including Settings and Multiplayer, which
+ * show no tree at all. Local and Continue share a slot, so both carry it
+ * together. The glyph is the state: ▶ while the level is advancing, ⏸ while it
+ * isn't. */
 function updateLoadedSourceMarker(): void {
   for (const tab of Object.keys(launchTabs) as LaunchTab[]) {
-    launchTabs[tab].button.classList.toggle(
-      "tab-btn--playing",
-      loadedWorkspaceSlot !== null && SLOT_FOR_TAB[tab] === loadedWorkspaceSlot,
-    );
+    const marked = loadedWorkspaceSlot !== null && SLOT_FOR_TAB[tab] === loadedWorkspaceSlot;
+    launchTabs[tab].button.classList.toggle("tab-btn--loaded", marked);
+    launchTabs[tab].button.classList.toggle("tab-btn--paused", marked && !gameIsRunning);
   }
 }
 
@@ -3117,6 +3134,11 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
   // `stopActiveReplay`'s doc comment).
   stopActiveReplay?.();
 
+  // Nothing advances between here and the briefing overlay's Start button —
+  // teardown, map generation and engine construction all happen with the sim
+  // stopped, so the tab marker stays ⏸ until that click.
+  setGameRunning(false);
+
   // Header (or equivalent) files make small, single-purpose "bonus levels" —
   // a distinct visual theme and a boosted loot rate, treating them as restock
   // arenas rather than normal combat levels (see `MapGenerator.generate`).
@@ -3325,6 +3347,7 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
       },
       onFreezeChange: (frozen) => {
         consoleSidebar.setPaused(frozen);
+        setGameRunning(!frozen);
       },
     },
     effectiveCarryover,
@@ -3346,6 +3369,7 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
     () => {
       activeEngine?.start();
       consoleSidebar.setPaused(false);
+      setGameRunning(true);
       consoleSidebar.setHintsActive(true);
       // The overlay focuses its own "Start" button (so Enter/Space dismiss
       // it) and never gives focus back — without this, WASD silently does
@@ -3847,6 +3871,7 @@ function resetToFileTree(): void {
   currentParsedFile = null;
   currentLevelSource = null;
   consoleSidebar.setHintsActive(false);
+  setGameRunning(false); // back at the file tree with no level running
   showFileTreePlaceholder();
 }
 

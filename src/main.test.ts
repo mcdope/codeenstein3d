@@ -5371,9 +5371,9 @@ describe("main.ts — per-tab file trees", () => {
     const tabLocal = document.querySelector<HTMLButtonElement>("#tab-local")!;
     const tabDemo = document.querySelector<HTMLButtonElement>("#tab-demo")!;
     const hostSubtab = document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!;
-    expect(tabLocal.classList.contains("tab-btn--playing")).toBe(true);
+    expect(tabLocal.classList.contains("tab-btn--loaded")).toBe(true);
     // Local and Continue share a slot, so both carry the marker together.
-    expect(document.querySelector<HTMLButtonElement>("#tab-continue")!.classList.contains("tab-btn--playing")).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>("#tab-continue")!.classList.contains("tab-btn--loaded")).toBe(true);
     expect(hostSubtab.disabled).toBe(true); // a locally-picked folder can't be hosted
 
     await loadDemo();
@@ -5381,8 +5381,8 @@ describe("main.ts — per-tab file trees", () => {
     // Nothing of the local workspace is left claiming to be loaded — a tree on
     // screen always means "this is the loaded workspace".
     expect(document.querySelectorAll("#file-tree-local .tree-row").length).toBe(0);
-    expect(tabLocal.classList.contains("tab-btn--playing")).toBe(false);
-    expect(tabDemo.classList.contains("tab-btn--playing")).toBe(true);
+    expect(tabLocal.classList.contains("tab-btn--loaded")).toBe(false);
+    expect(tabDemo.classList.contains("tab-btn--loaded")).toBe(true);
     expect(hostSubtab.disabled).toBe(false); // the demo campaign is hostable
 
     tabLocal.click();
@@ -5478,20 +5478,29 @@ describe("main.ts — starting a level and driving live gameplay", () => {
     expect(() => raf.flush(1, 16)).not.toThrow();
   });
 
-  it("Escape pauses the sim, reaching the engine's onFreezeChange -> consoleSidebar.setPaused wiring", async () => {
+  it("Escape pauses the sim, flipping the loaded tab's marker to ⏸ and back", async () => {
     await importMain();
+    const tabDemo = document.querySelector<HTMLButtonElement>("#tab-demo")!;
     await launchAndReachBriefing();
+    // The briefing counts as paused — nothing is advancing until Start.
+    expect(tabDemo.classList.contains("tab-btn--loaded")).toBe(true);
+    expect(tabDemo.classList.contains("tab-btn--paused")).toBe(true);
+
     dismissBriefing();
     raf.flush(1, 16);
+    expect(tabDemo.classList.contains("tab-btn--paused")).toBe(false);
 
-    // onFreezeChange has no directly observable DOM signal (setPaused just
-    // tracks an internal flag gating the hint-scheduling timer) — reaching
-    // this without throwing across the pause AND a following resume is the
-    // assertion, exercising both the true and false edges of the closure.
+    // `consoleSidebar.setPaused` only tracks an internal flag gating the
+    // hint timer, so the marker is the observable end of the engine's
+    // onFreezeChange wiring — both edges of that closure are exercised here.
     window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" }));
-    expect(() => raf.flush(1, 16)).not.toThrow(); // pause edge
+    raf.flush(1, 16); // pause edge
+    expect(tabDemo.classList.contains("tab-btn--paused")).toBe(true);
+    expect(tabDemo.classList.contains("tab-btn--loaded")).toBe(true); // still the loaded workspace
+
     window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" }));
-    expect(() => raf.flush(1, 16)).not.toThrow(); // resume edge
+    raf.flush(1, 16); // resume edge
+    expect(tabDemo.classList.contains("tab-btn--paused")).toBe(false);
   });
 });
 
