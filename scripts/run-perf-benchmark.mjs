@@ -594,6 +594,12 @@ SCENARIOS["load-8bg"] = { ...ablationScenario(""), backgroundLoad: 8 };
 // played DRM video) is GPU-side raster/composite contention — approximated
 // here by a second window repainting a full 4K canvas every rAF.
 SCENARIOS["gpu-bg"] = { ...ablationScenario(""), backgroundGpu: true };
+// Clock-equalized A/B cell: two burners pin the package in its boost bins for
+// BOTH arms, so a busy-ms A/B can't be sign-flipped by schedutil dropping a
+// frequency bin on whichever arm happens to be lighter (observed: floorfast
+// read +1.3ms at 640x400 while clearly winning at 1280x800 where duty pins
+// the clocks anyway — the DVFS signature, not a per-pixel truth).
+SCENARIOS["c2-2bg"] = { ...ablationScenario(""), backgroundLoad: 2 };
 
 // ---------------------------------------------------------------------------
 // Dev server management
