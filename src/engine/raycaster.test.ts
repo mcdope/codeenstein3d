@@ -30,10 +30,12 @@ import type { LevelStyle, TextureBitmap, TextureSet } from "./textures";
 let FOG_FAR: number;
 let renderMinimap: typeof import("./raycaster").renderMinimap;
 let renderScene: typeof import("./raycaster").renderScene;
+let renderBackgroundFast: typeof import("./raycaster").renderBackgroundFast;
+let renderBackgroundHalfRes: typeof import("./raycaster").renderBackgroundHalfRes;
 
 beforeAll(async () => {
   stubCanvasGetContext(document.createElement("canvas"));
-  ({ FOG_FAR, renderMinimap, renderScene } = await import("./raycaster"));
+  ({ FOG_FAR, renderMinimap, renderScene, renderBackgroundFast, renderBackgroundHalfRes } = await import("./raycaster"));
 });
 
 const WIDTH = 40;
@@ -926,5 +928,135 @@ describe("renderMinimap — wall-layer cache keying", () => {
     const createSpy = vi.spyOn(document, "createElement");
     renderMinimap(asCtx(ctx()), map, player, 0, 40, new Set(), 7); // smaller panel -> different cell
     expect(createSpy.mock.calls.filter((a: unknown[]) => a[0] === "canvas").length).toBe(1);
+  });
+});
+
+describe("renderBackgroundFast — equivalence with the classic floor-cast (frame-budget audit Phase 2)", () => {
+  /** Gradient texture so the u/v texel sampling actually varies per pixel —
+   * a uniform color would let a broken UV computation pass unnoticed. */
+  function gradientTexture(w = 4, h = 4): TextureBitmap {
+    const pixels = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        pixels[i] = 30 + x * 40;
+        pixels[i + 1] = 20 + y * 50;
+        pixels[i + 2] = 200 - x * 30 - y * 20;
+        pixels[i + 3] = 255;
+      }
+    }
+    return { canvas: {} as HTMLCanvasElement, pixels, width: w, height: h };
+  }
+
+  function variedMap(): GameMap {
+    const size = 12;
+    const g = walledRoom(size);
+    // A hazard pool and a teleporter pad inside the room, so the sweep
+    // crosses texture-dispatch boundaries, not just one flat floor.
+    g[7][7] = HAZARD_TILE;
+    g[8][7] = HAZARD_TILE;
+    g[4][8] = TELEPORTER_TILE;
+    return fakeMap({ grid: g }, size);
+  }
+
+  function texturesWithGradients(): TextureSet {
+    const t = fakeTextureSet();
+    t.floor = gradientTexture();
+    t.hazardFloor = gradientTexture();
+    return t;
+  }
+
+  function classicFloorImage(map: GameMap, player: Player, style: LevelStyle, horizonShift = 0): ImageData {
+    const c = ctx();
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), style, horizonShift);
+    return c.putImageData.mock.calls[0][0] as ImageData;
+  }
+
+  it("floor rows match the classic path within the documented 1/255 rounding difference", () => {
+    const map = variedMap();
+    const player = centeredPlayer(map);
+    const style = fakeStyle(texturesWithGradients());
+    const horizon = HEIGHT / 2; // integer here; fractional case below
+    const classic = classicFloorImage(map, player, style);
+
+    const c = ctx();
+    renderBackgroundFast(asCtx(c), map, player, WIDTH, HEIGHT, horizon, 0, style, true);
+    expect(c.putImageData).toHaveBeenCalledTimes(1);
+    const [fastImg, dx, dy, dirtyX, dirtyY, dirtyW, dirtyH] = c.putImageData.mock.calls[0];
+    expect([dx, dy, dirtyX, dirtyY, dirtyW, dirtyH]).toEqual([0, 0, 0, horizon, WIDTH, HEIGHT - horizon]);
+
+    let maxDiff = 0;
+    for (let y = horizon; y < HEIGHT; y++) {
+      for (let x = 0; x < WIDTH; x++) {
+        const i = (y * WIDTH + x) * 4;
+        for (let ch = 0; ch < 4; ch++) {
+          maxDiff = Math.max(maxDiff, Math.abs(classic.data[i + ch] - (fastImg as ImageData).data[i + ch]));
+        }
+      }
+    }
+    expect(maxDiff).toBeLessThanOrEqual(1);
+  });
+
+  it("replaces the classic per-pixel ceiling with one equivalent flat fillRect", () => {
+    const map = variedMap();
+    const player = centeredPlayer(map);
+    const ceiling: [number, number, number] = [11, 13, 22];
+    const style = fakeStyle(texturesWithGradients(), "stone", ceiling);
+    const horizon = HEIGHT / 2;
+    const classic = classicFloorImage(map, player, style);
+
+    // Classic path: every ceiling row pixel is exactly the flat ceiling color.
+    for (let y = 0; y < horizon; y++) {
+      const i = y * WIDTH * 4;
+      expect([classic.data[i], classic.data[i + 1], classic.data[i + 2]]).toEqual(ceiling);
+    }
+
+    const c = ctx();
+    renderBackgroundFast(asCtx(c), map, player, WIDTH, HEIGHT, horizon, 0, style, true);
+    const ceilRect = c.fillRect.mock.calls[0];
+    expect(ceilRect).toEqual([0, 0, WIDTH, horizon]);
+    // The fast path sets fillStyle exactly once (the ceiling color) before
+    // its one fillRect, and nothing after — so the mock still holds it.
+    expect((c as unknown as { fillStyle: string }).fillStyle).toBe(`rgb(${ceiling[0]},${ceiling[1]},${ceiling[2]})`);
+  });
+
+  it("handles a fractional horizon (head-bob) with the same first floor row as the classic path", () => {
+    const map = variedMap();
+    const player = centeredPlayer(map);
+    const style = fakeStyle(texturesWithGradients());
+    const horizonShift = 0.4;
+    const horizon = HEIGHT / 2 + horizonShift;
+    const firstFloorRow = Math.ceil(horizon);
+    const classic = classicFloorImage(map, player, style, horizonShift);
+
+    const c = ctx();
+    renderBackgroundFast(asCtx(c), map, player, WIDTH, HEIGHT, horizon, 0, style, true);
+    const call = c.putImageData.mock.calls[0];
+    expect(call[4]).toBe(firstFloorRow); // dirty-rect y
+    const fastImg = call[0] as ImageData;
+    let maxDiff = 0;
+    for (let y = firstFloorRow; y < HEIGHT; y++) {
+      for (let x = 0; x < WIDTH; x++) {
+        const i = (y * WIDTH + x) * 4;
+        for (let ch = 0; ch < 4; ch++) {
+          maxDiff = Math.max(maxDiff, Math.abs(classic.data[i + ch] - fastImg.data[i + ch]));
+        }
+      }
+    }
+    expect(maxDiff).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("renderBackgroundHalfRes — sanity (visible-change probe, not an equivalence claim)", () => {
+  it("casts into a half-size buffer and upscales with one drawImage", () => {
+    const map = fakeMap();
+    const player = centeredPlayer(map);
+    const style = fakeStyle();
+    const c = ctx();
+    renderBackgroundHalfRes(asCtx(c), map, player, WIDTH, HEIGHT, HEIGHT / 2, 0, style, true);
+    expect(c.drawImage).toHaveBeenCalledTimes(1);
+    const args = c.drawImage.mock.calls[0];
+    // source rect = half buffer, dest rect = full canvas
+    expect(args.slice(1)).toEqual([0, 0, WIDTH / 2, HEIGHT / 2, 0, 0, WIDTH, HEIGHT]);
   });
 });

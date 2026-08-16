@@ -568,7 +568,7 @@ function renderBackground(
  * (dirty rect). `+0.5 | 0` reproduces the clamped array's rounding to within
  * 1/255 (values are already in range, so no clamping is needed).
  */
-function renderBackgroundFast(
+export function renderBackgroundFast(
   ctx: CanvasRenderingContext2D,
   map: GameMap,
   player: Player,
@@ -650,7 +650,7 @@ function renderBackgroundFast(
  * from full-resolution screen coordinates (`y = y2 * 2`), so perspective is
  * unchanged — only the texel granularity doubles.
  */
-function renderBackgroundHalfRes(
+export function renderBackgroundHalfRes(
   ctx: CanvasRenderingContext2D,
   map: GameMap,
   player: Player,
