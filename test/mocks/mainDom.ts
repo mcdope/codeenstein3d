@@ -129,7 +129,12 @@ export function buildIndexDom(): void {
           <button id="take-tour" class="settings-btn" type="button">🧭 Take the Tour</button>
           <a id="player-guide-link" class="settings-btn" href="#" target="_blank" rel="noopener noreferrer">Player Guide</a>
         </header>
-        <nav id="file-tree" aria-label="File tree"></nav>
+        <nav id="file-tree" aria-label="File tree">
+          <div id="file-tree-local" class="file-tree-pane"></div>
+          <div id="file-tree-github" class="file-tree-pane" hidden></div>
+          <div id="file-tree-demo" class="file-tree-pane" hidden></div>
+          <p id="file-tree-empty" class="file-tree-empty muted" hidden></p>
+        </nav>
         <footer id="sidebar-footer"></footer>
       </aside>
       <main id="viewport">
