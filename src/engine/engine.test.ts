@@ -5966,3 +5966,86 @@ describe("balancing event log", () => {
     });
   });
 });
+
+describe("RaycasterEngine — ?ablate= measurement kill switches (frame-budget audit)", () => {
+  /** Stub the URL param, build an engine, hand back its mock ctx too. */
+  function withAblate<T>(ablate: string, body: (helpers: { engine: InstanceType<typeof RaycasterEngine>; input: ScriptedInput; ctx: MockCanvasContext; handlers: ReturnType<typeof makeHandlers> }) => T, map: GameMap = fakeMap()): T {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: `?testHooks=1&ablate=${ablate}` }, configurable: true });
+    try {
+      const handlers = makeHandlers();
+      const { engine, input } = makeEngine(map, handlers);
+      // TS-private, runtime-reachable — same cast trick the multiplayer tests use.
+      const ctx = (engine as unknown as { ctx: MockCanvasContext }).ctx;
+      return body({ engine, input, ctx, handlers });
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+      delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+    }
+  }
+
+  it("ablate=render clears the canvas, draws nothing else, and still reports stats", () => {
+    withAblate("render", ({ engine, ctx, handlers }) => {
+      engine.advance(0.016);
+      expect(ctx.fillRect).toHaveBeenCalledWith(0, 0, WIDTH, HEIGHT);
+      expect(ctx.drawImage).not.toHaveBeenCalled();
+      expect(ctx.putImageData).not.toHaveBeenCalled();
+      expect(handlers.onStats).toHaveBeenCalled();
+    });
+  });
+
+  it("ablate=sim freezes the world (held movement key moves nobody) but cheats still apply", () => {
+    withAblate("sim", ({ engine, input }) => {
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> }).__codeensteinTestHooks;
+      const before = hooks!.getPlayerState() as { x: number; y: number };
+      input.keys.add("KeyW");
+      input.cheat = "IDKFA";
+      for (let i = 0; i < 10; i += 1) engine.advance(0.016);
+      const after = hooks!.getPlayerState() as { x: number; y: number; ammo: { bullets: number } };
+      expect(after.x).toBe(before.x);
+      expect(after.y).toBe(before.y);
+      // The cheat path sits before the sim gate, deliberately (ablation
+      // cells in the perf bench type cheats even with sim off) — IDKFA's
+      // ammo grant is visible through the hooks where godMode is not.
+      expect(after.ammo.bullets).toBe(999);
+    });
+  });
+
+  it("ablate=sprites skips billboards and crosshair targeting", () => {
+    const map = fakeMap({ enemies: [fakeEnemy({ x: 6.5, y: 5.5 })] });
+    // Control: same scene without the switch draws more than the 40 wall
+    // columns (enemy billboard stripes on top).
+    const control = makeEngine(map);
+    control.engine.advance(0.016);
+    const controlFillRects = (control.engine as unknown as { ctx: MockCanvasContext }).ctx.fillRect.mock.calls.length;
+    withAblate("sprites", ({ engine, ctx }) => {
+      engine.advance(0.016);
+      expect(ctx.fillRect.mock.calls.length).toBeLessThan(controlFillRects);
+    }, fakeMap({ enemies: [fakeEnemy({ x: 6.5, y: 5.5 })] }));
+  });
+
+  it("ablate=effects, viewmodel and hud each render a frame without their pass", () => {
+    // Control: an unablated frame on the same map, for differential counts.
+    const control = makeEngine(fakeMap());
+    control.engine.advance(0.016);
+    const controlCtx = (control.engine as unknown as { ctx: MockCanvasContext }).ctx;
+    const controlFillText = controlCtx.fillText.mock.calls.length;
+    for (const which of ["effects", "viewmodel", "hud"]) {
+      withAblate(which, ({ engine, ctx, handlers }) => {
+        engine.advance(0.016);
+        expect(handlers.onStats).toHaveBeenCalled();
+        // fillText is not exclusively HUD's (the exit billboard draws its
+        // "return" label as a sprite), so the HUD check is differential.
+        if (which === "hud") expect(ctx.fillText.mock.calls.length).toBeLessThan(controlFillText);
+        if (which === "viewmodel") expect(ctx.drawImage.mock.calls.length).toBeGreaterThan(0); // walls still draw
+      });
+    }
+  });
+
+  it("a malformed ?ablate= value (empty after trim) leaves every system on", () => {
+    withAblate("%20,%20", ({ engine, ctx }) => {
+      engine.advance(0.016);
+      expect(ctx.putImageData).toHaveBeenCalled(); // floor-cast ran -> render not ablated
+    });
+  });
+});

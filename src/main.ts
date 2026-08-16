@@ -119,7 +119,13 @@ const SCENE_HEIGHT = 400;
  * can't allocate a gigapixel floor-cast buffer.
  */
 function resolveRenderRes(): { width: number; height: number } {
-  const raw = new URLSearchParams(window.location.search).get("renderRes");
+  return parseRenderRes(new URLSearchParams(window.location.search).get("renderRes"));
+}
+
+/** The pure half of `resolveRenderRes`, exported for direct unit tests (the
+ * URL read above runs once at module init, so its non-default branch can't
+ * be re-entered from a test without a second module instance). */
+export function parseRenderRes(raw: string | null): { width: number; height: number } {
   const m = raw ? /^(\d{2,4})x(\d{2,4})$/.exec(raw) : null;
   if (!m) return { width: SCENE_WIDTH, height: SCENE_HEIGHT };
   const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));

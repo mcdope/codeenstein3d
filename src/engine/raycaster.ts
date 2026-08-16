@@ -477,14 +477,38 @@ function renderBackground(
   style: LevelStyle,
   fog: boolean,
 ): void {
+  /* v8 ignore start -- compile-time variant dispatch: the consts cannot be
+     flipped from a test without a textual source edit (the perf bench's
+     --flag mechanism); every variant is itself tested directly. @preserve */
   if (FLOOR_HALF_RES_ENABLED) {
     renderBackgroundHalfRes(ctx, map, player, width, height, horizon, levelTime, style, fog);
     return;
   }
-  if (FLOOR_FAST_PATH_ENABLED) {
-    renderBackgroundFast(ctx, map, player, width, height, horizon, levelTime, style, fog);
+  if (!FLOOR_FAST_PATH_ENABLED) {
+    renderBackgroundClassic(ctx, map, player, width, height, horizon, levelTime, style, fog);
     return;
   }
+  /* v8 ignore stop -- @preserve */
+  renderBackgroundFast(ctx, map, player, width, height, horizon, levelTime, style, fog);
+}
+
+/**
+ * The classic byte-store floor-cast — the shipped path before the 2026-08
+ * audit's u32 fast path (see `FLOOR_FAST_PATH_ENABLED`), retained as the
+ * reference implementation the fast path's equivalence tests compare
+ * against, and as the one-flip-away fallback.
+ */
+export function renderBackgroundClassic(
+  ctx: CanvasRenderingContext2D,
+  map: GameMap,
+  player: Player,
+  width: number,
+  height: number,
+  horizon: number,
+  levelTime: number,
+  style: LevelStyle,
+  fog: boolean,
+): void {
   if (!floorImage || floorImage.width !== width || floorImage.height !== height) {
     floorImage = ctx.createImageData(width, height);
   }

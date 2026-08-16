@@ -32,10 +32,11 @@ let renderMinimap: typeof import("./raycaster").renderMinimap;
 let renderScene: typeof import("./raycaster").renderScene;
 let renderBackgroundFast: typeof import("./raycaster").renderBackgroundFast;
 let renderBackgroundHalfRes: typeof import("./raycaster").renderBackgroundHalfRes;
+let renderBackgroundClassic: typeof import("./raycaster").renderBackgroundClassic;
 
 beforeAll(async () => {
   stubCanvasGetContext(document.createElement("canvas"));
-  ({ FOG_FAR, renderMinimap, renderScene, renderBackgroundFast, renderBackgroundHalfRes } = await import("./raycaster"));
+  ({ FOG_FAR, renderMinimap, renderScene, renderBackgroundFast, renderBackgroundHalfRes, renderBackgroundClassic } = await import("./raycaster"));
 });
 
 const WIDTH = 40;
@@ -966,11 +967,27 @@ describe("renderBackgroundFast — equivalence with the classic floor-cast (fram
     return t;
   }
 
+  /** The classic byte-store reference, called directly — since the fast path
+   * shipped default-on, going through renderScene would compare fast to fast
+   * (a vacuous test; the coverage gate caught exactly that). */
   function classicFloorImage(map: GameMap, player: Player, style: LevelStyle, horizonShift = 0): ImageData {
     const c = ctx();
-    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), style, horizonShift);
+    renderBackgroundClassic(asCtx(c), map, player, WIDTH, HEIGHT, HEIGHT / 2 + horizonShift, 0, style, true);
     return c.putImageData.mock.calls[0][0] as ImageData;
   }
+
+  it("renderScene dispatches the floor to the shipped fast path", () => {
+    const map = variedMap();
+    const player = centeredPlayer(map);
+    const style = fakeStyle(texturesWithGradients());
+    const viaScene = ctx();
+    renderScene(asCtx(viaScene), map, player, new Float64Array(WIDTH), style);
+    const direct = ctx();
+    renderBackgroundFast(asCtx(direct), map, player, WIDTH, HEIGHT, HEIGHT / 2, 0, style, true);
+    const a = (viaScene.putImageData.mock.calls[0][0] as ImageData).data;
+    const b = (direct.putImageData.mock.calls[0][0] as ImageData).data;
+    expect(Buffer.from(a.buffer).equals(Buffer.from(b.buffer))).toBe(true);
+  });
 
   it("floor rows match the classic path within the documented 1/255 rounding difference", () => {
     const map = variedMap();
@@ -1051,6 +1068,95 @@ describe("renderBackgroundFast — equivalence with the classic floor-cast (fram
   });
 });
 
+describe("renderBackground variants — full tile/fog arm coverage (classic vs fast, every floor kind)", () => {
+  /** Every special floor kind placed INSIDE the floor sweep's cone (player
+   * at (1.5, 5.5) facing +X: nearby rows sample cx 2-3, cy 4-7, all within
+   * the fog's full-brightness radius so exact texture colors survive), plus
+   * a spike tile WITH a trap entry (active arm at levelTime=2) and one
+   * WITHOUT (always safe arm). The map edge behind the player gives far rows
+   * out-of-bounds samples for the `-1` arm. A first version of this test put
+   * the tiles outside the cone — the arms were simply never taken and the
+   * diff-based assertion could not tell; hence the containsColor checks. */
+  function kitchenSinkMap(): GameMap {
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][2] = TELEPORTER_TILE;
+    g[6][2] = HAZARD_TILE;
+    g[5][3] = SPIKE_TRAP_TILE; // matching entry -> active at levelTime=2
+    g[6][3] = SPIKE_TRAP_TILE; // no entry -> safe arm
+    const map = fakeMap({ grid: g }, size);
+    map.spikeTraps = [{ x: 3, y: 5, period: 4, phase: 0 }];
+    return map;
+  }
+
+  function edgePlayer(map: GameMap): Player {
+    return new Player({ ...map, spawn: { x: 1, y: 5 } });
+  }
+
+  function has(data: Uint8ClampedArray, [r, g, b]: [number, number, number]): boolean {
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] === r && data[i + 1] === g && data[i + 2] === b) return true;
+    }
+    return false;
+  }
+
+  for (const fog of [true, false]) {
+    it(`classic and fast agree within 1/255 over every tile kind (fog=${fog})`, () => {
+      const map = kitchenSinkMap();
+      const player = edgePlayer(map);
+      const style = fakeStyle();
+      const horizon = HEIGHT / 2;
+      const a = ctx();
+      renderBackgroundClassic(asCtx(a), map, player, WIDTH, HEIGHT, horizon, 2, style, fog);
+      const classic = a.putImageData.mock.calls[0][0] as ImageData;
+      const b = ctx();
+      renderBackgroundFast(asCtx(b), map, player, WIDTH, HEIGHT, horizon, 2, style, fog);
+      const fast = b.putImageData.mock.calls[0][0] as ImageData;
+      let maxDiff = 0;
+      for (let i = 0; i < classic.data.length; i += 1) maxDiff = Math.max(maxDiff, Math.abs(classic.data[i] - fast.data[i]));
+      expect(maxDiff).toBeLessThanOrEqual(1);
+      // Prove the sweep actually sampled every special kind (see the map
+      // helper's comment): each texture's unique color appears in BOTH
+      // outputs, so the agreement above cannot be vacuous.
+      for (const img of [classic, fast]) {
+        expect(has(img.data, [130, 70, 220])).toBe(true); // teleporterFloor
+        expect(has(img.data, [64, 196, 72])).toBe(true); // hazardFloor
+        expect(has(img.data, [220, 40, 30])).toBe(true); // spikeActiveFloor
+        expect(has(img.data, [90, 90, 96])).toBe(true); // spikeSafeFloor
+      }
+    });
+  }
+
+  it("classic reallocates its buffer when the canvas size changes", () => {
+    const map = kitchenSinkMap();
+    const player = edgePlayer(map);
+    const style = fakeStyle();
+    const small = createMockCanvasContext({ width: 20, height: 16 } as unknown as HTMLCanvasElement);
+    renderBackgroundClassic(small as unknown as CanvasRenderingContext2D, map, player, 20, 16, 8, 0, style, true);
+    expect(small.createImageData).toHaveBeenCalledWith(20, 16);
+    // And back at the shared test size, so later tests see a matching buffer.
+    const normal = ctx();
+    renderBackgroundClassic(asCtx(normal), map, player, WIDTH, HEIGHT, HEIGHT / 2, 0, style, true);
+    expect(normal.putImageData).toHaveBeenCalled();
+  });
+
+  it("half-res walks the same tile arms and reallocates on size change", () => {
+    const map = kitchenSinkMap();
+    const player = edgePlayer(map);
+    const style = fakeStyle();
+    const c1 = ctx();
+    renderBackgroundHalfRes(asCtx(c1), map, player, WIDTH, HEIGHT, HEIGHT / 2, 2, style, true);
+    expect(c1.drawImage).toHaveBeenCalledTimes(1);
+    const c2 = createMockCanvasContext({ width: 20, height: 16 } as unknown as HTMLCanvasElement);
+    renderBackgroundHalfRes(c2 as unknown as CanvasRenderingContext2D, map, player, 20, 16, 8, 0, style, false);
+    expect(c2.drawImage.mock.calls[0].slice(1)).toEqual([0, 0, 10, 8, 0, 0, 20, 16]);
+    // Same-size second call reuses the cached half buffer.
+    const c3 = createMockCanvasContext({ width: 20, height: 16 } as unknown as HTMLCanvasElement);
+    renderBackgroundHalfRes(c3 as unknown as CanvasRenderingContext2D, map, player, 20, 16, 8, 0, style, false);
+    expect(c3.drawImage).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("renderBackgroundHalfRes — sanity (visible-change probe, not an equivalence claim)", () => {
   it("casts into a half-size buffer and upscales with one drawImage", () => {
     const map = fakeMap();
@@ -1062,5 +1168,42 @@ describe("renderBackgroundHalfRes — sanity (visible-change probe, not an equiv
     const args = c.drawImage.mock.calls[0];
     // source rect = half buffer, dest rect = full canvas
     expect(args.slice(1)).toEqual([0, 0, WIDTH / 2, HEIGHT / 2, 0, 0, WIDTH, HEIGHT]);
+  });
+});
+
+describe("renderScene — measurement ablation params (drawFloor/drawWalls/drawShading)", () => {
+  it("drawFloor=false paints flat ceiling+floor fills and skips the floor-cast blit", () => {
+    const map = fakeMap();
+    const player = centeredPlayer(map);
+    const c = ctx();
+    renderScene(asCtx(c), map, player, new Float64Array(WIDTH), fakeStyle(), 0, 0, undefined, false, true, false);
+    expect(c.putImageData).not.toHaveBeenCalled();
+    // Two flat fills (ceiling color, dark floor), then the wall pass on top.
+    expect(c.fillRect.mock.calls[0]).toEqual([0, 0, WIDTH, HEIGHT / 2]);
+    expect(c.fillRect.mock.calls[1]).toEqual([0, HEIGHT / 2, WIDTH, HEIGHT - HEIGHT / 2]);
+    expect(c.drawImage).toHaveBeenCalledTimes(WIDTH); // walls still draw
+  });
+
+  it("drawWalls=false skips the column loop and marks every zBuffer entry unoccluded", () => {
+    const map = fakeMap();
+    const player = centeredPlayer(map);
+    const zBuffer = new Float64Array(WIDTH);
+    const c = ctx();
+    renderScene(asCtx(c), map, player, zBuffer, fakeStyle(), 0, 0, undefined, false, true, true, false);
+    expect(c.drawImage).not.toHaveBeenCalled();
+    expect(Array.from(zBuffer).every((d) => d === Infinity)).toBe(true);
+  });
+
+  it("drawShading=false skips the per-column shading overlay entirely", () => {
+    const map = fakeMap();
+    const player = centeredPlayer(map);
+    // AA off so shading fillRects would be the only fillRects of the wall
+    // pass; floor handled by the fast path (putImageData, no fillRect).
+    const withShading = ctx();
+    renderScene(asCtx(withShading), map, player, new Float64Array(WIDTH), fakeStyle(), 0, 0, undefined, false, true, true, true, true);
+    const without = ctx();
+    renderScene(asCtx(without), map, player, new Float64Array(WIDTH), fakeStyle(), 0, 0, undefined, false, true, true, true, false);
+    expect(withShading.fillRect.mock.calls.length).toBeGreaterThan(0);
+    expect(without.fillRect).not.toHaveBeenCalled();
   });
 });

@@ -282,6 +282,8 @@ export function isEventLogActive(): boolean {
  * the switches must exist in the exact build being measured.
  */
 function resolveAblations(): ReadonlySet<string> | null {
+  /* v8 ignore next -- jsdom always provides window; the guard exists for the
+     multiplayer tick worker's importers, same as isTestHooksActive. @preserve */
   if (typeof window === "undefined") return null;
   const raw = new URLSearchParams(window.location.search).get("ablate");
   if (!raw) return null;

@@ -7627,3 +7627,22 @@ describe("main.ts — beforeunload autosave", () => {
     await waitUntil(() => !!testHooks(), 8000);
   });
 });
+
+describe("main.ts — parseRenderRes (?renderRes= measurement override)", () => {
+  it("absent or malformed input falls back to the shipped 640x400", async () => {
+    const { parseRenderRes } = await importMain();
+    expect(parseRenderRes(null)).toEqual({ width: 640, height: 400 });
+    expect(parseRenderRes("")).toEqual({ width: 640, height: 400 });
+    expect(parseRenderRes("banana")).toEqual({ width: 640, height: 400 });
+    expect(parseRenderRes("640x")).toEqual({ width: 640, height: 400 });
+    expect(parseRenderRes("99999x99999")).toEqual({ width: 640, height: 400 }); // >4 digits fails the regex
+  });
+
+  it("parses WxH and clamps to sane bounds (no gigapixel floor-cast from a typo)", async () => {
+    const { parseRenderRes } = await importMain();
+    expect(parseRenderRes("320x200")).toEqual({ width: 320, height: 200 });
+    expect(parseRenderRes("1280x800")).toEqual({ width: 1280, height: 800 });
+    expect(parseRenderRes("9999x9999")).toEqual({ width: 2560, height: 1600 });
+    expect(parseRenderRes("10x10")).toEqual({ width: 160, height: 100 });
+  });
+});
