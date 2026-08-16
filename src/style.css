@@ -64,6 +64,12 @@ body {
 .launch-tabs,
 .subtabs {
   display: flex;
+  /* Six tabs (Continue *and* Multiplayer both showing) don't fit 287px even
+   * with no marker — the Settings gear was cut off past the sidebar edge, and
+   * `.tab-btn`'s nowrap would widen that. A second row is the honest failure
+   * mode: every tab stays reachable instead of one silently leaving the
+   * sidebar. Four and five tabs are unaffected; they still fit one row. */
+  flex-wrap: wrap;
   gap: 4px;
   margin-bottom: 10px;
 }
@@ -85,6 +91,14 @@ body {
 
 .tab-btn {
   flex: 1;
+  /* Load-bearing for the ▶/❚❚ marker (see `.tab-btn--loaded`). The space
+   * between glyph and label is a break opportunity, so without this a flex
+   * item's min-content width is just its longest *word* — flexbox then leaves
+   * the tab at its equal share and the label wraps under the glyph instead of
+   * the tab growing. With nowrap, `min-width: auto` floors the item at the
+   * whole string and the marked tab takes the width it needs from its
+   * neighbours. Measured across every tab-count/marker combination. */
+  white-space: nowrap;
   padding: 6px 4px;
   font: inherit;
   font-size: 12px;
