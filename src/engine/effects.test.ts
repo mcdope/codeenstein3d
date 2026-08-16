@@ -581,9 +581,30 @@ describe("renderBlood", () => {
     expect(at(true, GORE_MULTIPLIERS.absurd.settledSize)).toBeGreaterThan(at(true, 1));
   });
 
-  it("still clamps a settled splat to the same fraction of canvas height", () => {
-    // `settledSize` multiplies *into* the clamp, it does not bypass it — this
-    // is why raising it cannot reopen the shipped oversized-particle bug.
+  it("clamps a settled splat to the tier's own ceiling, and an airborne one to the global 6%", () => {
+    // The split is the whole safety argument for a bigger splat: a stain
+    // lying at z=0 may grow, a particle in flight near the camera may not —
+    // that one is the shipped "mountain of blood" bug.
+    const player = facingPlayer();
+    const pointBlank = (settled: boolean) => {
+      const c = ctx();
+      renderBlood(
+        asCtx(c),
+        player,
+        [{ x: player.posX + 0.21, y: player.posY, z: settled ? 0 : 0.5, vx: 0, vy: 0, vz: 0, life: 1, settled }],
+        clearZBuffer(Infinity),
+        GORE_MULTIPLIERS.absurd.size,
+        GORE_MULTIPLIERS.absurd.settledSize,
+        GORE_MULTIPLIERS.absurd.settledClamp,
+      );
+      return c.fillRect.mock.calls[0][2] as number;
+    };
+    expect(pointBlank(true)).toBe(Math.round(HEIGHT * GORE_MULTIPLIERS.absurd.settledClamp));
+    expect(pointBlank(false)).toBe(Math.round(HEIGHT * 0.06)); // unchanged by the tier
+    expect(pointBlank(true)).toBeGreaterThan(pointBlank(false));
+  });
+
+  it("defaults the settled clamp to the global 6% when a caller passes no tier", () => {
     const c = ctx();
     const player = facingPlayer();
     renderBlood(
@@ -613,6 +634,13 @@ describe("GORE_MULTIPLIERS", () => {
   it("leaves `size` alone above extreme — that axis is the mountain-of-blood one", () => {
     expect(GORE_MULTIPLIERS.excessive.size).toBe(GORE_MULTIPLIERS.extreme.size);
     expect(GORE_MULTIPLIERS.absurd.size).toBe(GORE_MULTIPLIERS.extreme.size);
+  });
+
+  it("only lets the top tier past the 6% settled clamp", () => {
+    for (const tier of ["none", "normal", "more", "extreme", "excessive"] as GoreLevel[]) {
+      expect(GORE_MULTIPLIERS[tier].settledClamp).toBe(0.06);
+    }
+    expect(GORE_MULTIPLIERS.absurd.settledClamp).toBeGreaterThan(0.06);
   });
 
   it("raises the cap for the two tiers whose count would otherwise be inert", () => {

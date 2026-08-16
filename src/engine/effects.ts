@@ -77,10 +77,28 @@ export interface GoreMultipliers {
    * `renderBlood`), so a floor stain can read as a splat rather than a
    * droplet. Deliberately not applied to airborne particles: an oversized
    * particle near the camera is exactly what produced the shipped "mountain
-   * of blood" bug, and `BLOOD_MAX_SIZE_FRACTION` still clamps this
-   * absolutely. */
+   * of blood" bug, and `settledClamp` below still bounds this absolutely. */
   settledSize: number;
+  /** This tier's ceiling on a *settled* particle's on-screen size, as a
+   * fraction of canvas height. Per-tier because `BLOOD_MAX_SIZE_FRACTION` is
+   * what actually caps how much screen a floor of blood covers, and
+   * `settledSize` cannot get past it: measured, at `settledSize` 1.6 every
+   * particle within 5.3 tiles is already pinned at the clamp, so raising the
+   * multiplier further only widens the band that is pinned. Airborne
+   * particles are NOT covered by this and always use
+   * `BLOOD_MAX_SIZE_FRACTION` — a big square near the camera is the
+   * "mountain of blood" failure, and a floor stain at `z = 0` is not that. */
+  settledClamp: number;
 }
+
+/** Hard ceiling on a single rendered blood particle's on-screen size, as a
+ * fraction of canvas height — independent of gore tier or distance. Without
+ * this, `renderBlood`'s `tilePx * 0.05 * sizeMultiplier` formula is
+ * unbounded: `tilePx` alone can reach several times the canvas height at
+ * true point-blank range (near the `depth <= 0.2` render cutoff), so a
+ * single close-range particle could dwarf the screen. A blood pixel should
+ * always read as floor-level debris, never approach enemy-sprite scale. */
+const BLOOD_MAX_SIZE_FRACTION = 0.06;
 
 /** Per-level multipliers. None/Normal/More are a uniform 0x/1x/3x across all
  * three axes; Extreme deliberately is not — a uniform 10x/10x/10x
@@ -94,10 +112,10 @@ export interface GoreMultipliers {
  * (count 0 means no particles ever spawn) but filled in defensively rather
  * than left unused. */
 export const GORE_MULTIPLIERS: Record<GoreLevel, GoreMultipliers> = {
-  none: { count: 0, size: 1, stainDuration: 1, maxParticles: 300, settledSize: 1 },
-  normal: { count: 1, size: 1, stainDuration: 1, maxParticles: 300, settledSize: 1 },
-  more: { count: 3, size: 3, stainDuration: 3, maxParticles: 300, settledSize: 1 },
-  extreme: { count: 16, size: 4, stainDuration: 4, maxParticles: 300, settledSize: 1 },
+  none: { count: 0, size: 1, stainDuration: 1, maxParticles: 300, settledSize: 1, settledClamp: BLOOD_MAX_SIZE_FRACTION },
+  normal: { count: 1, size: 1, stainDuration: 1, maxParticles: 300, settledSize: 1, settledClamp: BLOOD_MAX_SIZE_FRACTION },
+  more: { count: 3, size: 3, stainDuration: 3, maxParticles: 300, settledSize: 1, settledClamp: BLOOD_MAX_SIZE_FRACTION },
+  extreme: { count: 16, size: 4, stainDuration: 4, maxParticles: 300, settledSize: 1, settledClamp: BLOOD_MAX_SIZE_FRACTION },
   // The two tiers above `extreme` move the cap and the stain clock, never
   // `size` — see `GoreMultipliers.maxParticles` for why `count` alone is inert
   // up here, and the "mountain of blood" note above for why `size` is not
@@ -109,24 +127,25 @@ export const GORE_MULTIPLIERS: Record<GoreLevel, GoreMultipliers> = {
   // live particles whether `count` was 20 or 30 — the cap was the binding
   // constraint, so the spawn bump alone was invisible. At cap 600 the same
   // fight holds ~530, which is the increase actually showing up on screen.
-  excessive: { count: 30, size: 4, stainDuration: 5.5, maxParticles: 600, settledSize: 1 },
+  excessive: { count: 30, size: 4, stainDuration: 5.5, maxParticles: 600, settledSize: 1, settledClamp: BLOOD_MAX_SIZE_FRACTION },
   // Absurd is a different thing rather than more of the same: landed blood
   // never expires, so a room you cleared stays painted for the rest of the
   // level, and settled splats render larger. The cap is the only thing that
   // ever removes a stain here, so it is also the tier's real ceiling — a long
   // enough fight walks the floor up to 1800 live particles, six times what
   // every tier shared before this.
-  absurd: { count: 45, size: 4, stainDuration: Infinity, maxParticles: 1800, settledSize: 1.6 },
+  //
+  // `settledClamp` is what makes it read as absurd rather than merely dense,
+  // and this was measured the hard way. Past ~1800 live particles the extra
+  // blood lands on floor that is already red: cap 1800 -> 3000 moved *drawn*
+  // squares 1201 -> 1235 and screen coverage 23.3% -> 23.4%, i.e. nothing,
+  // while costing frame time linearly — which is why the cap stayed at 1800.
+  // Splat *size* was the axis with headroom, and `settledSize` alone could not
+  // reach it either (everything within ~5 tiles was already pinned at the 6%
+  // clamp). Raising the settled clamp to 10% took the same fight from 17.7% to
+  // 45.7% coverage. Airborne particles keep the 6% clamp; see `settledClamp`.
+  absurd: { count: 45, size: 4, stainDuration: Infinity, maxParticles: 1800, settledSize: 2.6, settledClamp: 0.1 },
 };
-
-/** Hard ceiling on a single rendered blood particle's on-screen size, as a
- * fraction of canvas height — independent of gore tier or distance. Without
- * this, `renderBlood`'s `tilePx * 0.05 * sizeMultiplier` formula is
- * unbounded: `tilePx` alone can reach several times the canvas height at
- * true point-blank range (near the `depth <= 0.2` render cutoff), so a
- * single close-range particle could dwarf the screen. A blood pixel should
- * always read as floor-level debris, never approach enemy-sprite scale. */
-const BLOOD_MAX_SIZE_FRACTION = 0.06;
 
 /** Default ceiling on how many `BloodParticle`s can be alive at once —
  * `spawnBlood` is called on *every hit*, not just kills, and Multi Kill/Ultra
@@ -635,9 +654,13 @@ export function updateBlood(list: BloodParticle[], dt: number, stainDurationMult
  * could otherwise render several times taller than the canvas itself.
  *
  * `settledSizeMultiplier` scales *landed* particles further (`absurd`'s
- * splats). Airborne ones are left alone on purpose — an oversized particle
- * near the camera is the "mountain of blood" failure mode — and the clamp
- * above still applies to the product, so this cannot reopen it either. */
+ * splats), and `settledClampFraction` is the ceiling they clamp against
+ * instead of `BLOOD_MAX_SIZE_FRACTION`. Airborne particles get neither, on
+ * purpose: a big square near the camera is the "mountain of blood" failure
+ * mode, and a stain lying at `z = 0` is not that. The multiplier alone could
+ * not have made splats bigger anyway — measured, at `settledSize` 1.6
+ * everything within 5.3 tiles is already pinned at the 6% clamp, so the
+ * clamp is what actually governs how much screen a floor of blood covers. */
 export function renderBlood(
   ctx: CanvasRenderingContext2D,
   player: Player,
@@ -645,10 +668,12 @@ export function renderBlood(
   zBuffer: Float64Array,
   sizeMultiplier: number,
   settledSizeMultiplier = 1,
+  settledClampFraction = BLOOD_MAX_SIZE_FRACTION,
 ): void {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
   const maxSizePx = Math.round(height * BLOOD_MAX_SIZE_FRACTION);
+  const maxSettledPx = Math.round(height * settledClampFraction);
   ctx.fillStyle = "#c81e1e";
   for (const p of list) {
     const proj = projectPoint(player, p.x, p.y, width, height, 1);
@@ -659,7 +684,8 @@ export function renderBlood(
     const tilePx = proj.bottom - proj.top; // pixels per world tile at this depth
     const sy = proj.bottom - p.z * tilePx; // lift off the floor by the particle height
     const sizeMul = p.settled ? sizeMultiplier * settledSizeMultiplier : sizeMultiplier;
-    const s = Math.min(maxSizePx, Math.max(1, Math.round(tilePx * 0.05 * sizeMul)));
+    const cap = p.settled ? maxSettledPx : maxSizePx;
+    const s = Math.min(cap, Math.max(1, Math.round(tilePx * 0.05 * sizeMul)));
     ctx.fillRect(Math.round(proj.screenX) - (s >> 1), Math.round(sy) - (s >> 1), s, s);
   }
 }
