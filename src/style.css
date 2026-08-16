@@ -159,14 +159,10 @@ body {
   font-size: 12px;
 }
 
-#gore-label {
-  display: block;
-  margin: 12px 0 4px;
-}
-
-#gore-select,
-#difficulty-select,
-#multiplayer-max-players {
+/* Every dropdown in the settings/multiplayer panels — the class replaces a
+   per-id selector list that silently skipped any newly added select (the
+   Render quality select shipped unstyled exactly that way). */
+.settings-select {
   width: 100%;
   padding: 6px 8px;
   font: inherit;
@@ -178,14 +174,9 @@ body {
   cursor: pointer;
 }
 
-#multiplayer-max-players:disabled {
+.settings-select:disabled {
   color: var(--border);
   cursor: not-allowed;
-}
-
-#difficulty-label {
-  display: block;
-  margin: 12px 0 4px;
 }
 
 .error {
