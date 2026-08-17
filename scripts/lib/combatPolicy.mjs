@@ -589,6 +589,37 @@ export const DEFAULT_TUNING = {
   COMBAT_STALL_STRAFE_FLIP_TICKS: 20,
   CRITICAL_STALL_TICKS_THRESHOLD: 15,
   CRITICAL_STALL_STRAFE_FLIP_TICKS: 10,
+  // How far the player may drift and still count as "not escaping", for the
+  // cornered-retreat guard above.
+  //
+  // This exists because the guard used to compare positions as `x.toFixed(2)`
+  // strings, and exact equality is the wrong test for "has this bot moved".
+  // A player pinned against geometry does not sit perfectly still — it wobbles
+  // by a hundredth of a tile as opposing strafes cancel — so the anchor
+  // changed on essentially every decision, the counter reset to 0 with it, and
+  // the escalation it gates could never fire. Measured on the decision core:
+  // held perfectly still the counter reaches 199 over 200 decisions and
+  // escalates 185 times; wobbling by 0.01 it never leaves **0** and escalates
+  // **never**. That inert guard is the demo-campaign L6 wedge.
+  //
+  // Radius rather than equality also matches how every other stall test in
+  // this codebase already works (`BOT_NAV_STALL_RADIUS_TILES`, and the offline
+  // anomaly detectors that correctly flagged this wedge as a stall while the
+  // guard disagreed). 0.35 is comfortably above the jitter and comfortably
+  // below one real escaping step, so a bot that is genuinely getting away
+  // still resets it on the first decision.
+  CRITICAL_STALL_RADIUS_TILES: 0.35,
+  // Stalled decisions in the break-contact branch before the bot stops trying
+  // to flee at all, and how long that give-up lasts before it re-arms.
+  //
+  // 60 decisions is ~3s of sim at the 50ms step — four times the escalation's
+  // own threshold, so the sideways nudge gets a full, fair chance to work
+  // before this concludes it has not. Both are `CODEENSTEIN_TELEMETRY_TUNING`
+  // keys so the pair can be A/B'd without a worktree; set
+  // `CRITICAL_RETREAT_GIVEUP_TICKS` absurdly high to disable the behaviour
+  // outright, which is what the OFF arm of its validation run does.
+  CRITICAL_RETREAT_GIVEUP_TICKS: 60,
+  CRITICAL_RETREAT_GIVEUP_MS: 4000,
   // How close two aggroed enemies have to be to each other to count as
   // "clustered" — see `pickRangedWeapon`.
   CLUSTER_RADIUS: 3,
@@ -2131,7 +2162,46 @@ export function decide(world, memory, config) {
     && hasAnyRangedAmmo(player)
     && threat.hp > tuning.STANDOFF_MIN_TARGET_HP
     && threat.dist < tuning.STANDOFF_DISTANCE;
-  if (threat && (criticalHealth || standoff)) {
+  // Give up on breaking contact once it has *provably* failed, for a bounded
+  // window, then try again.
+  //
+  // Retreat has no exit condition of its own: health does not regenerate and a
+  // threat that never closes never stops qualifying, so a bot that cannot
+  // physically get away stays in this branch forever. That is the
+  // demo-campaign L6 wedge — 6,802 consecutive held-key ticks with the player
+  // pinned, its health frozen (nothing was even attacking it) and a threat
+  // parked 4.35 tiles away.
+  //
+  // The escalation above is not enough and was measured not to be: fixing its
+  // counter made it fire (the anomaly key traces go from `[ShiftLeft,KeyS,
+  // KeyA]` to `[ShiftLeft,KeyS,KeyD,KeyA]`, 241 runs to 2,284) and moved the
+  // wedge rate not at all, 2/6 against a 1/3 baseline. Flipping between
+  // opposite strafes on the spot is a symmetric wiggle; in a corner where both
+  // laterals are blocked it cannot produce net displacement however long it
+  // runs.
+  //
+  // **Bounded and self-healing on purpose.** `8390c8e` reverted a blanket
+  // threat give-up that suppressed these wedges and cost half a campaign of
+  // survival (clear rate 85.4% vs 93.4%, Fisher p = 0.0001) — because it
+  // applied whenever a threat was inconvenient, not only when fleeing had
+  // stopped working. This one is gated on `criticalStallTicks`, which only
+  // accumulates while the player is provably not moving, and it expires, so it
+  // can never become "this bot no longer retreats". While it holds, the bot
+  // resumes ordinary navigation and combat — which at 4.35 tiles with ammo in
+  // hand is a better answer than cowering into a wall regardless.
+  if (memory && (memory.criticalStallTicks ?? 0) >= tuning.CRITICAL_RETREAT_GIVEUP_TICKS && memory.retreatGaveUpAtMs === undefined) {
+    memory.retreatGaveUpAtMs = simTimeMs;
+  }
+  const retreatGivenUp = memory?.retreatGaveUpAtMs !== undefined
+    && simTimeMs - memory.retreatGaveUpAtMs < tuning.CRITICAL_RETREAT_GIVEUP_MS;
+  if (memory?.retreatGaveUpAtMs !== undefined && !retreatGivenUp) {
+    // Window expired — re-arm from a clean slate, so the next retreat gets its
+    // full escalation before this can trigger again.
+    memory.retreatGaveUpAtMs = undefined;
+    memory.criticalStallAnchor = undefined;
+    memory.criticalStallTicks = 0;
+  }
+  if (threat && (criticalHealth || standoff) && !retreatGivenUp) {
     const breakContactBranch = criticalHealth ? "criticalHealth" : "standoff";
     const currentAngle = Math.atan2(player.dirY, player.dirX);
     const awayAngle = Math.atan2(player.y - threat.y, player.x - threat.x);
@@ -2172,11 +2242,16 @@ export function decide(world, memory, config) {
     // combatStallTicks bookkeeping ever runs, so it needs its own
     // same-position tracking.
     if (memory) {
-      const posKey = `${player.x.toFixed(2)},${player.y.toFixed(2)}`;
-      if (memory.criticalStallPos === posKey) {
+      // Anchor-and-radius, not string equality. A cornered player wobbles by a
+      // hundredth of a tile as opposing strafes cancel, which under the old
+      // `toFixed(2)` comparison read as "it moved" and reset this counter on
+      // every decision — so the escalation below could never fire and the bot
+      // stayed pinned indefinitely. See `CRITICAL_STALL_RADIUS_TILES`.
+      const anchor = memory.criticalStallAnchor;
+      if (anchor && Math.hypot(player.x - anchor.x, player.y - anchor.y) <= tuning.CRITICAL_STALL_RADIUS_TILES) {
         memory.criticalStallTicks = (memory.criticalStallTicks ?? 0) + 1;
       } else {
-        memory.criticalStallPos = posKey;
+        memory.criticalStallAnchor = { x: player.x, y: player.y };
         memory.criticalStallTicks = 0;
       }
       if (memory.criticalStallTicks >= tuning.CRITICAL_STALL_TICKS_THRESHOLD) {

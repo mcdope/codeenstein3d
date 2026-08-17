@@ -1602,6 +1602,136 @@ describe("critical-health retreat backpedals instead of turning (Stage 7)", () =
     expect(keysOf(intent).some((k) => k === "KeyE" || k === "KeyQ")).toBe(false);
   });
 
+  it("escalates a cornered retreat even when the player wobbles instead of sitting perfectly still", () => {
+    // The demo-campaign L6 wedge. `driveToExit`'s cornered-retreat escalation
+    // is gated on a stall counter, and that counter used to compare positions
+    // as `toFixed(2)` strings. A player pinned against geometry does not sit
+    // *exactly* still — opposing strafes cancel to a wobble of about a
+    // hundredth of a tile — so the anchor changed on essentially every
+    // decision, the counter reset with it, and the escape it gates could
+    // never fire. The bot then held a movement key against a wall for
+    // thousands of ticks (6,342 in the captured trace) until the run was
+    // killed.
+    //
+    // Both arms below must escalate. The stationary one is the case that
+    // always worked, and is here so a future change cannot "fix" the wobble by
+    // breaking the thing it was modelled on.
+    const escalationsOver = (jitter) => {
+      const memory = freshMemory();
+      let escalations = 0;
+      for (let i = 0; i < 60; i++) {
+        const x = 10 + (jitter ? (i % 2) * 0.01 : 0);
+        // Threat dead ahead and never closing — the shape that holds the
+        // branch open indefinitely.
+        const world = {
+          player: makePlayer({ x, y: 10, healthFraction: 0.12 }),
+          enemies: [makeEnemy({ x: x + 4.35, y: 10 })],
+          mines: [],
+          navTarget: null,
+          map: makeMap(),
+        };
+        decide(world, memory, makeConfig());
+        if ((memory.criticalStallTicks ?? 0) >= DEFAULT_TUNING.CRITICAL_STALL_TICKS_THRESHOLD) escalations += 1;
+      }
+      return escalations;
+    };
+    expect(escalationsOver(false)).toBeGreaterThan(0);
+    expect(escalationsOver(true)).toBeGreaterThan(0);
+    // And the same, not merely non-zero: a wobble must be indistinguishable
+    // from standing still as far as this guard is concerned.
+    expect(escalationsOver(true)).toBe(escalationsOver(false));
+  });
+
+  it("gives up on retreating once fleeing has provably failed, then re-arms", () => {
+    // Retreat has no exit condition of its own — health does not regenerate
+    // and a threat that never closes never stops qualifying — so a bot that
+    // physically cannot get away stays in this branch forever. That is the L6
+    // wedge: 6,802 held-key ticks pinned against geometry, health frozen
+    // because nothing was even attacking it.
+    //
+    // The assertion is the *cycle*, not just "it stops": bounded and
+    // self-healing is the whole design. `8390c8e` reverted a blanket threat
+    // give-up that suppressed these wedges and cost half a campaign of
+    // survival, precisely because it applied whenever a threat was
+    // inconvenient rather than only when fleeing had stopped working.
+    const memory = freshMemory();
+    const branches = [];
+    for (let i = 0; i < 400; i++) {
+      const x = 10 + (i % 2) * 0.01; // pinned, wobbling — never escaping
+      const intent = decide(
+        {
+          player: makePlayer({ x, y: 10, healthFraction: 0.12 }),
+          enemies: [makeEnemy({ x: x + 4.35, y: 10 })],
+          mines: [],
+          navTarget: { x: 18, y: 10 },
+          map: makeMap(),
+        },
+        memory,
+        makeConfig({ simTimeMs: 100000 + i * 50 }),
+      );
+      branches.push(intent.branch);
+    }
+    // It let go...
+    expect(branches).toContain("criticalHealth");
+    expect(branches.filter((b) => b !== "criticalHealth").length).toBeGreaterThan(0);
+    // ...and it came back, more than once — a give-up that never re-arms is
+    // the blanket one that was reverted.
+    let armings = 0;
+    for (let i = 1; i < branches.length; i++) {
+      if (branches[i] === "criticalHealth" && branches[i - 1] !== "criticalHealth") armings += 1;
+    }
+    expect(armings).toBeGreaterThanOrEqual(2);
+    // And it spends a real minority of its time cowering, rather than almost
+    // all of it: before this, the answer was 100%.
+    const cowering = branches.filter((b) => b === "criticalHealth").length;
+    expect(cowering).toBeLessThan(branches.length * 0.6);
+  });
+
+  it("never gives up retreating while the bot is actually escaping", () => {
+    // The survival half. A bot that is getting away must keep getting away —
+    // the give-up is gated on the stall counter, which a real step resets, so
+    // this must stay in the branch for every one of these decisions.
+    const memory = freshMemory();
+    for (let i = 0; i < 200; i++) {
+      const x = 10 + i * 0.02; // moving, slowly but genuinely
+      const intent = decide(
+        {
+          player: makePlayer({ x, y: 10, healthFraction: 0.12 }),
+          enemies: [makeEnemy({ x: x + 4.35, y: 10 })],
+          mines: [],
+          navTarget: { x: 18, y: 10 },
+          map: makeMap(),
+        },
+        memory,
+        makeConfig({ simTimeMs: 100000 + i * 50 }),
+      );
+      expect(intent.branch).toBe("criticalHealth");
+    }
+  });
+
+  it("still resets the cornered-retreat counter when the bot genuinely escapes", () => {
+    // The other half, and the reason this is a radius rather than "never
+    // reset": a bot actually getting away must not accumulate toward an
+    // escalation it does not need. One real step is far larger than the
+    // radius, so the counter should stay pinned at 0.
+    const memory = freshMemory();
+    for (let i = 0; i < 40; i++) {
+      const x = 10 + i * 0.5; // a real escaping step per decision
+      decide(
+        {
+          player: makePlayer({ x, y: 10, healthFraction: 0.12 }),
+          enemies: [makeEnemy({ x: x + 4.35, y: 10 })],
+          mines: [],
+          navTarget: null,
+          map: makeMap(),
+        },
+        memory,
+        makeConfig(),
+      );
+      expect(memory.criticalStallTicks).toBe(0);
+    }
+  });
+
   it("still sprints, whichever way the escape runs", () => {
     for (const at of [{ x: 13, y: 10 }, { x: 7, y: 10 }, { x: 10, y: 13 }]) {
       expect(keysOf(decide(fleeing(at), freshMemory(), makeConfig()))).toContain("ShiftLeft");
