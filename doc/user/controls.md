@@ -38,7 +38,7 @@ Losing window focus (alt-tab, clicking outside the browser) pauses the game auto
 
 ### Reloading
 
-Every gun except the flamethrower now holds a magazine: **9** rounds for the echo pistol, **2** shells for the Regex Shotgun, **45** for gdb and a single rocket for ghidra. Fire it dry and it reloads itself; press `R` to top it up early, before a fight rather than during one. The HUD shows `loaded / in reserve`, and says **RELOADING** while the trigger is doing nothing.
+Every gun except the flamethrower now holds a magazine: **9** rounds for the echo pistol, **2** shells for the Regex Shotgun, **45** for gdb and a single rocket for ghidra. Fire it dry and it reloads itself; press `R` to top it up early, before a fight rather than during one. The HUD shows `loaded / in reserve`, and says **RELOADING** while the trigger is doing nothing. You should also see and hear it: the weapon swings down and out of frame and back, and each gun has its own reload sound — three light clicks for the pistol, shells shoved into the tube and the pump racked for the shotgun, a heavier five-part cycle for gdb, ghidra's breech swinging open and latching shut.
 
 A reload only moves ammo, it never costs you any — and switching weapons cancels one in progress, so you can always swap to something loaded instead of waiting. The knife and chainsaw are unaffected: quick-melee still works mid-reload, which is the point of having it.
 
