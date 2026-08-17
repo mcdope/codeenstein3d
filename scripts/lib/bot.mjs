@@ -1337,6 +1337,50 @@ export class Bot {
         const staged = await this.#withActivity("door", () => this.driveTowardWithReplan(stagingPoint, openedDoors, this.tuning.TIGHT_ARRIVE_EPS));
         if (staged.state !== "playing") return staged;
         if (staged.reason === "teleported") return staged;
+        // A staging drive that went stuck must not fall through into "face the
+        // door and push". `driveTowardWithReplan` reports exhaustion as
+        // `{ state: "playing", reason: "stuck" }` — `state` stays `"playing"`
+        // because the *player* is still alive — so checking only `state` reads
+        // a total failure as success. The route branch above checks the reason
+        // for exactly this, and says so at length; this branch did not, which
+        // is the same defect one `else if` later.
+        //
+        // What it cost: the bot pushed forward from wherever it actually was,
+        // into a wall, for `DOOR_OPEN_TICKS` — and then added the door to
+        // `openedDoors` regardless, so every subsequent BFS on the level
+        // routed happily through a door that is still shut. That false world
+        // model is the more expensive half, because it outlives the leg.
+        //
+        // This is the demo-campaign L6 wedge, and it is the same tile every
+        // run: `activity=door` with the position frozen at ~(14.2,50.2) for
+        // 6,342 / 6,802 / 6,705 consecutive decisions across three separate
+        // captures, health draining 1.00 -> 0.12 while it was eaten where it
+        // stood. Everything downstream of that — the critical-health retreat
+        // spiral that dominates the anomaly counts — only happens because the
+        // bot is pinned here first.
+        //
+        // But "stuck" here is not automatically fatal, and treating it as
+        // fatal would throw away most of the recoveries. `openDoorAhead`
+        // (engine.ts) does not care where the bot is standing: it probes a
+        // single point `radius + 0.15` = **0.35 tiles** ahead of the player
+        // along its facing, and opens whatever door tile that lands on. The
+        // staging point exists only to make that probe land right, and it is
+        // a much weaker requirement than arriving within `TIGHT_ARRIVE_EPS`
+        // (0.05) of a specific coordinate.
+        //
+        // In the captured wedge the bot was already there. Pinned at
+        // (14.24,50.20) facing up, its probe lands on (14.24,49.85) — tile
+        // (14,49), the door itself. Meanwhile the staging point it could not
+        // reach, (14.5,50.5), probes to (14.5,50.15): floor, *not* the door.
+        // It spent thousands of decisions failing to walk away from a spot
+        // where the door was already openable, toward one where it was not.
+        //
+        // So: ask the engine's own question instead of the harness's. If the
+        // door is openable from where the bot actually is, carry on to
+        // face-and-push. Only give up when it genuinely is not.
+        if (staged.reason === "stuck" && !(await this.#doorOpenableFrom(leg))) {
+          return { state: "stuck", reason: "stuck" };
+        }
         const targetAngle = Math.atan2(leg.approachDir.dy, leg.approachDir.dx);
         const faced = await this.#withActivity("door", () => this.faceAngle(targetAngle, this.tuning.MAX_TICKS_PER_WAYPOINT));
         if (faced.state !== "playing") return faced;
@@ -1764,6 +1808,32 @@ export class Bot {
    * wall makes every boundary tile its own door — so mirror that by flooding
    * same-valued neighbours. A branch door (8) is always a single tile.
    */
+  /**
+   * Whether `leg`'s door could be opened from where the bot is standing right
+   * now — the engine's own test, not the harness's.
+   *
+   * `openDoorAhead` (engine.ts) probes exactly one point, `radius + 0.15`
+   * ahead of the player along its facing, and opens whatever door tile that
+   * lands on. Nothing about the player's distance from a staging coordinate
+   * enters into it. Mirrored here by value rather than shared, the same way
+   * every other engine constant this harness depends on is (`ENGINE_MOVE_SPEED`
+   * and friends in `DEFAULT_TUNING`) — with `constantMirrors.test.mjs` as the
+   * backstop against the two drifting apart.
+   *
+   * Uses the *approach direction* rather than the bot's live facing, because
+   * this is asked before `faceAngle` has run: the question is "if I turn to the
+   * door from here, does the probe land on it", which is what the leg is about
+   * to do anyway.
+   */
+  async #doorOpenableFrom(leg) {
+    const player = await this.readState();
+    if (player.state !== "playing") return false;
+    const reach = this.tuning.ENGINE_PLAYER_RADIUS + this.tuning.ENGINE_DOOR_REACH_MARGIN;
+    const px = player.x + leg.approachDir.dx * reach;
+    const py = player.y + leg.approachDir.dy * reach;
+    return Math.floor(px) === leg.doorTile.x && Math.floor(py) === leg.doorTile.y;
+  }
+
   #noteDoorUnderFoot(player) {
     const x = Math.floor(player.x);
     const y = Math.floor(player.y);

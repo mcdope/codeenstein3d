@@ -61,6 +61,8 @@ describe("engine scalars mirrored in DEFAULT_TUNING", () => {
     ["ENGINE_MOVE_SPEED", 3.2, "engine.ts MOVE_SPEED"],
     ["ENGINE_SPRINT_MULTIPLIER", 2.0, "engine.ts SPRINT_MULTIPLIER"],
     ["ENGINE_ROT_SPEED", 2.6, "engine.ts ROT_SPEED"],
+    ["ENGINE_PLAYER_RADIUS", 0.2, "player.ts DEFAULT_CONFIG.radius"],
+    ["ENGINE_DOOR_REACH_MARGIN", 0.15, "engine.ts openDoorAhead's reach margin"],
   ])("%s matches %s", (key, expected) => {
     // engine.ts cannot be imported here -- it is the whole game, DOM and all --
     // so these three are pinned against the literal instead. Weaker than the
