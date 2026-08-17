@@ -216,6 +216,15 @@ export const DEFAULT_TUNING = {
   // Mirrors src/engine/engine.ts's MOVE_SPEED/SPRINT_MULTIPLIER.
   ENGINE_MOVE_SPEED: 3.2,
   ENGINE_SPRINT_MULTIPLIER: 2.0,
+  // Mirrors the player's collision half-width (`player.ts` DEFAULT_CONFIG) and
+  // the extra margin `openDoorAhead` (engine.ts) adds to it. Together they are
+  // that probe's reach: it looks exactly `radius + margin` tiles ahead along
+  // the player's facing and opens whatever door tile it lands on. `driveLegs`
+  // asks the same question via `#doorOpenableFrom`, so that a door leg can
+  // tell "I cannot open this from here" apart from "I did not arrive at my
+  // staging coordinate" — conflating those is the demo-campaign L6 wedge.
+  ENGINE_PLAYER_RADIUS: 0.2,
+  ENGINE_DOOR_REACH_MARGIN: 0.15,
   // How much more rotation than `turnBurstMs`'s own math predicts still
   // counts as "plausible" before `#checkRotationAnomaly` flags it — see that
   // method's doc comment.

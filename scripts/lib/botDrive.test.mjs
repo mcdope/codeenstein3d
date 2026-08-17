@@ -195,6 +195,74 @@ describe("driveLegs", () => {
     const outcome = await bot.driveLegs([{ kind: "walk", waypoints: [{ x: 2.5, y: 1.5 }] }]);
     expect(outcome).toEqual({ state: "stuck", reason: "stuck" });
   });
+
+  it("reports a stuck door-staging drive instead of pushing at a door it never reached", async () => {
+    // The same defect as the test above, one `else if` later, and the one that
+    // actually cost something: the walk branch checked `reason`, the openDoor
+    // branch checked only `state`. `driveTowardWithReplan` reports exhaustion
+    // as `{ state: "playing", reason: "stuck" }` — `playing` because the
+    // *player* lives — so the door branch read a total failure as success,
+    // faced the door angle from wherever it actually was, and pushed into a
+    // wall.
+    //
+    // This is the demo-campaign L6 wedge: `activity=door`, position frozen at
+    // the same tile across three separate captures for 6,342 / 6,802 / 6,705
+    // decisions, health draining 1.00 -> 0.12 while an enemy ate the bot where
+    // it stood.
+    const bot = new FakeBot();
+    bot.startLevel(openMap());
+    bot.driveTowardWithReplan = async () => ({ state: "playing", reason: "stuck" });
+    bot.maybeDetourForLoot = async () => ({ state: "playing" });
+    let pushed = false;
+    bot.faceAngle = async () => { pushed = true; return { state: "playing" }; };
+    const outcome = await bot.driveLegs([
+      { kind: "openDoor", doorTile: { x: 3, y: 1 }, approachDir: { dx: 1, dy: 0 } },
+    ]);
+    expect(outcome).toEqual({ state: "stuck", reason: "stuck" });
+    expect(pushed).toBe(false);
+  });
+
+  it("pushes the door anyway when it is already openable from where the staging drive died", async () => {
+    // The recovery half, and the actual shape of the L6 wedge. `openDoorAhead`
+    // probes 0.35 tiles ahead and opens whatever door tile it hits — it does
+    // not care where the bot is relative to a staging coordinate. In the
+    // capture the bot was pinned at (14.24,50.20) facing a door at (14,49):
+    // its probe lands on (14.24,49.85), the door itself, while the staging
+    // point it could not reach probes to floor. Giving up there would throw
+    // away a door the engine would have opened.
+    const bot = new FakeBot();
+    bot.startLevel(openMap());
+    bot.driveTowardWithReplan = async () => ({ state: "playing", reason: "stuck" });
+    bot.maybeDetourForLoot = async () => ({ state: "playing" });
+    // Standing just below the door, facing up — probe reaches (14.24, 49.85).
+    bot.readState = async () => ({ ...PLAYER, x: 14.24, y: 50.2, dirX: 0, dirY: -1 });
+    let pushed = false;
+    bot.faceAngle = async () => { pushed = true; return { state: "playing" }; };
+    bot.holdForwardFine = async () => ({ state: "playing" });
+    const outcome = await bot.driveLegs([{ kind: "openDoor", doorTile: { x: 14, y: 49 }, approachDir: { dx: 0, dy: -1 } }]);
+    expect(pushed).toBe(true);
+    expect(outcome.state).toBe("playing");
+    // Recorded only because it really was pushed open from a position the
+    // engine's own probe accepts.
+    expect([...bot.openedDoors]).toEqual(["14,49"]);
+  });
+
+  it("does not record a door as opened when it never got to it", async () => {
+    // The half that outlives the leg. `openedDoors` feeds every later BFS on
+    // the level, so marking a still-shut door as open leaves the bot routing
+    // confidently through it for the rest of the run — a corrupted world model
+    // rather than one failed leg.
+    const bot = new FakeBot();
+    bot.startLevel(openMap());
+    bot.driveTowardWithReplan = async () => ({ state: "playing", reason: "stuck" });
+    bot.maybeDetourForLoot = async () => ({ state: "playing" });
+    bot.faceAngle = async () => ({ state: "playing" });
+    // Far from the door, facing away — the engine's probe could not reach it,
+    // so the leg must not claim it opened one.
+    bot.readState = async () => ({ ...PLAYER, x: 1.5, y: 1.5, dirX: 1, dirY: 0 });
+    await bot.driveLegs([{ kind: "openDoor", doorTile: { x: 3, y: 1 }, approachDir: { dx: 1, dy: 0 } }]);
+    expect([...bot.openedDoors]).toEqual([]);
+  });
 });
 
 describe("driveToExit", () => {
