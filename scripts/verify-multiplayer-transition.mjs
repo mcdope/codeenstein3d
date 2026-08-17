@@ -206,18 +206,40 @@ async function dumpExitGate(hostPage, bot, map) {
   const planned = map.enemies ?? [];
   const gate = planned.map((e, i) => ({ i, home: e.home, exitRoom: inExitRoom(e.home) })).filter((e) => e.exitRoom);
 
+  // `getMapExit()` returns `this.map.exit` and `getMap().exit` is the same
+  // field, so these two disagreeing is not a detail to notice further down a
+  // wall of diagnostics — it means the engine swapped maps under the drive
+  // (the level advanced) and every plan-derived line below is about a level
+  // that is no longer running. Say so first and say it plainly; it was buried
+  // here once and read past.
+  const mapChanged = !!live.exit && (live.exit.x !== ex || live.exit.y !== ey);
+  if (mapChanged) {
+    console.log(`  [diag] *** THE MAP CHANGED UNDER THE DRIVE *** planned exit (${ex},${ey}) vs live exit ${JSON.stringify(live.exit)} — the level advanced, so this drive was aiming at a level that no longer exists. Everything below is about the OLD map.`);
+  }
   console.log(`  [diag] exit gate at (${ex},${ey}); live exit tile ${JSON.stringify(live.exit)}, countdown ${live.countdown}`);
   console.log(`  [diag] host at (${live.pos.x.toFixed(2)},${live.pos.y.toFixed(2)}), ${Math.hypot(live.pos.x - (ex + 0.5), live.pos.y - (ey + 0.5)).toFixed(2)} tiles from the exit centre, on tile (${Math.floor(live.pos.x)},${Math.floor(live.pos.y)})`);
   // A length mismatch means the bot's `map.enemies[i]` and the engine's roster
   // are not the same records, which silently breaks the whole blocker mirror.
   console.log(`  [diag] roster: live ${live.enemies.length} (${live.enemies.filter((e) => e.alive).length} alive) vs planned ${planned.length}${live.enemies.length === planned.length ? "" : "  *** LENGTH MISMATCH ***"}`);
   console.log(`  [diag] planned enemies carrying a home rect: ${planned.filter((e) => !!e.home).length}/${planned.length}`);
+  // Below this point every line indexes the LIVE roster with an index derived
+  // from the PLANNED one, which is only meaningful while the two are the same
+  // records — exactly what the length check above tests. When they are not,
+  // these lines name arbitrary enemies, and reading them as fact is a mistake
+  // that has already been made once on this very dump (a conclusion of "the
+  // exit room was blocked, so the run was unwinnable anyway" that the data
+  // could not support). Refuse to print a number rather than print a wrong one.
+  const rosterAligned = live.enemies.length === planned.length;
   console.log(`  [diag] exit-room indices: ${gate.map((g) => g.i).join(", ") || "(none)"}`);
-  for (const g of gate) {
-    const l = live.enemies[g.i];
-    console.log(`  [diag]   #${g.i}: ${l ? `alive=${l.alive} at (${l.x.toFixed(1)},${l.y.toFixed(1)}) aggroed=${l.aggroed} hp=${l.hp}/${l.maxHp}` : "MISSING FROM LIVE ROSTER"}`);
+  if (!rosterAligned) {
+    console.log(`  [diag] exit-gate detail SUPPRESSED — planned and live rosters are different records (${planned.length} vs ${live.enemies.length}), so index lookups below would name the wrong enemies. Fix the desync before trusting any exit-gate reading from this dump.`);
+  } else {
+    for (const g of gate) {
+      const l = live.enemies[g.i];
+      console.log(`  [diag]   #${g.i}: ${l ? `alive=${l.alive} at (${l.x.toFixed(1)},${l.y.toFixed(1)}) aggroed=${l.aggroed} hp=${l.hp}/${l.maxHp}` : "MISSING FROM LIVE ROSTER"}`);
+    }
+    console.log(`  [diag] => exitRoomHasAliveEnemy = ${gate.some((g) => live.enemies[g.i]?.alive)}`);
   }
-  console.log(`  [diag] => exitRoomHasAliveEnemy = ${gate.some((g) => live.enemies[g.i]?.alive)}`);
 }
 
 /**

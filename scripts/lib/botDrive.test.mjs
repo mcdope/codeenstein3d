@@ -213,6 +213,53 @@ describe("driveToExit", () => {
     expect(await new FakeBot().exitAccepted()).toBe(false);
   });
 
+  it("defaults levelAdvancedUnderUs to false, leaving single-player behaviour unchanged", async () => {
+    expect(await new FakeBot().levelAdvancedUnderUs()).toBe(false);
+  });
+
+  it("stops immediately when the level advanced under a bot that is stuck, not moving", async () => {
+    // The `verify (multiplayer-transition)` failure of 2026-08-17 (CI run
+    // 32044599072). Every other `exitAccepted()` check fires only after a
+    // drive reports `teleported` — a jump no legal step explains. A bot that
+    // is *stuck* never produces one, so nothing asked whether the level had
+    // already moved on, and the loop drove at a dead exit until a 9-minute
+    // wall-clock deadline killed a run that had in fact already won.
+    //
+    // Note what makes this test the one that would have caught it: the drive
+    // never returns `teleported`. Every pre-existing test in this block hands
+    // the loop a teleport or an arrival, which is exactly the path that
+    // already worked.
+    const bot = new FakeBot();
+    bot.startLevel(openMap());
+    let drives = 0;
+    bot.driveToward = async () => {
+      drives += 1;
+      return { state: "playing", reason: "stuck" };
+    };
+    bot.levelAdvancedUnderUs = async () => true;
+    const result = await bot.driveToExit({ x: 5.5, y: 5.5 }, 80);
+    expect(result).toEqual({ state: "playing", reason: "teleported" });
+    // Round 0 bails before driving at all — the whole point is that no budget
+    // is spent on a level that no longer exists.
+    expect(drives).toBe(0);
+  });
+
+  it("keeps driving to a real arrival when a countdown is running but the level has NOT advanced", async () => {
+    // The distinction `levelAdvancedUnderUs` exists to draw, and the reason it
+    // is not just `exitAccepted()`. A running countdown makes `exitAccepted()`
+    // true while this level is still the live one — the bot can and should go
+    // on to reach the exit and report `arrived`. Bailing here would report a
+    // legitimate arrival as a teleport, and downstream
+    // (`run-balancing-telemetry-multiplayer.mjs`) that is the difference
+    // between `reachedExit` and `levelAdvanced`.
+    const bot = new FakeBot();
+    bot.startLevel(openMap());
+    bot.driveToward = async () => ({ state: "playing", reason: "arrived" });
+    bot.exitAccepted = async () => true;
+    bot.levelAdvancedUnderUs = async () => false;
+    expect(await bot.driveToExit({ x: 5.5, y: 5.5 }, 80)).toEqual({ state: "playing", reason: "arrived" });
+  });
+
   it("does not backtrack on round 0 by default, however far away it is", async () => {
     // Single-player's caller always ends its legs on the exit, so round 0 has
     // nothing to path around and this must stay exactly as it was.
