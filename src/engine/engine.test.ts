@@ -451,6 +451,58 @@ describe("RaycasterEngine — construction", () => {
     }
   });
 
+  // The four staging hooks used by `scripts/capture-doc-screenshots.mjs`.
+  // Unlike every other hook, these mutate — so each one is pinned to exactly
+  // what it is allowed to do.
+  it("stages drops, keys, map reveal and enemy clearing for the screenshot capture", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      // A mostly-solid grid with one small carved chamber around the spawn.
+      // `walledRoom`'s border is a single tile thick, so *every* wall tile in
+      // it touches floor and it cannot tell "revealed the level" apart from
+      // "revealed everything" — which is the distinction under test.
+      const size = 12;
+      const solid: Tile[][] = Array.from({ length: size }, () => new Array(size).fill(1) as Tile[]);
+      for (let y = 4; y <= 6; y++) for (let x = 4; x <= 6; x++) solid[y][x] = 0;
+      const map = fakeMap({ grid: solid, spawn: { x: 5, y: 5 }, enemies: [fakeEnemy({ x: 7.5, y: 5.5 })] }, size);
+      const { engine } = makeEngine(map);
+      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, (arg?: unknown) => unknown> })
+        .__codeensteinTestHooks;
+
+      // A "rockets" drop is the point of the hook existing: `rollLoot` filters
+      // it out entirely until ghidra is owned, so it can never appear on a
+      // level-1 map by any in-game route.
+      hooks!.debugSpawnDrop({ x: 6.6, y: 5.5, kind: "rockets" });
+      expect(hooks!.getDrops()).toEqual([{ x: 6.6, y: 5.5, kind: "rockets" }]);
+
+      hooks!.debugSpawnKey({ x: 6.6, y: 6.5, gateId: 3 });
+      expect(hooks!.getKeys()).toEqual([{ x: 6.6, y: 6.5 }]);
+      // Spawned uncollected, so it is a thing you could still walk over.
+      expect(map.keys[0].collected).toBe(false);
+
+      // Reveals the carved level and the wall right around it, but NOT the
+      // solid rock the generator never carved — flooding everything would draw
+      // a grey field on the automap that no real playthrough could produce.
+      expect(map.visited.every((row) => row.every((v) => !v))).toBe(true);
+      hooks!.debugRevealMap();
+      expect(map.visited[5][5]).toBe(true); // the chamber itself
+      expect(map.visited[3][3]).toBe(true); // the wall right against it
+      expect(map.visited[0][0]).toBe(false); // untouched rock, two tiles clear
+      expect(map.visited[11][11]).toBe(false);
+
+      expect((hooks!.getEnemies() as { alive: boolean }[]).some((e) => e.alive)).toBe(true);
+      hooks!.debugClearEnemies();
+      expect((hooks!.getEnemies() as { alive: boolean }[]).every((e) => !e.alive)).toBe(true);
+
+      // Still a working engine afterwards — staging must not wedge the frame.
+      engine.advance(0.016);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+      delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
+    }
+  });
+
   it("exposes window.__codeensteinTestHooks only when ?testHooks=1 is on the URL", () => {
     const original = window.location;
     Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });

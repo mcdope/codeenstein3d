@@ -163,5 +163,4 @@ Items recording a *measurement* rather than a code claim (the demo-campaign diff
 - [ ] deeplink support for github/demo and file path
 - [ ] add dedicated deathmatch demo campaign
 - [ ] coop multiplayer should spawn additional random enemies, like the edge case - but called "Hacker", having a distinct color, roaming the whole map (not limitted to their room), movement speed like normal enemies
-- [ ] explain mapcolors and drop color/appearance in user docs. should include screenshots of dropped keys/items.
 - [ ] rooms need more (and visually/behavirol diverse) enemies. raise hp per complexity and split into packs?
