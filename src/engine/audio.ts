@@ -513,17 +513,17 @@ class AudioManager {
   private playPistolReload(ctx: AudioContext, sfx: GainNode): void {
     this.playClacks(ctx, sfx, ctx.currentTime, [
       // Magazine catch pressed, empty mag drops free.
-      { at: 0, from: 190, to: 105, peak: 0.14, noiseHz: 420, noisePeak: 0.09 },
+      { at: 0, from: 190, to: 105, peak: 0.22, noiseHz: 420, noisePeak: 0.14 },
       // Fresh magazine seated — the heaviest of the three.
-      { at: 0.36, from: 150, to: 80, peak: 0.19, noiseHz: 340, noisePeak: 0.11 },
+      { at: 0.36, from: 150, to: 80, peak: 0.3, noiseHz: 340, noisePeak: 0.18 },
       // Slide released: the crispest, shortest click of the three.
       {
         at: 0.82,
         from: 220,
         to: 120,
-        peak: 0.17,
+        peak: 0.27,
         noiseHz: 560,
-        noisePeak: 0.12,
+        noisePeak: 0.19,
         sweep: 0.03,
         bodyDecay: 0.04,
         noiseDecay: 0.025,
@@ -538,10 +538,10 @@ class AudioManager {
   private playShotgunReload(ctx: AudioContext, sfx: GainNode): void {
     const t = ctx.currentTime;
     // Wide-Q and long-decayed: a shell being shoved home, not a snap.
-    const shell = { noisePeak: 0.1, bodyDecay: 0.07, q: 4 };
+    const shell = { noisePeak: 0.16, bodyDecay: 0.07, q: 4 };
     this.playClacks(ctx, sfx, t, [
-      { ...shell, at: 0, from: 95, to: 58, peak: 0.16, noiseHz: 300 },
-      { ...shell, at: 0.28, from: 90, to: 54, peak: 0.17, noiseHz: 280 },
+      { ...shell, at: 0, from: 95, to: 58, peak: 0.26, noiseHz: 300 },
+      { ...shell, at: 0.28, from: 90, to: 54, peak: 0.27, noiseHz: 280 },
     ]);
     // Racked closed once both shells are in; silent again by ~0.9s.
     this.playShotgunPump(ctx, sfx, t + 0.66);
@@ -553,22 +553,22 @@ class AudioManager {
    * them longer-ringing and lower. */
   private playSmgReload(ctx: AudioContext, sfx: GainNode): void {
     this.playClacks(ctx, sfx, ctx.currentTime, [
-      { at: 0, from: 130, to: 70, peak: 0.15, noiseHz: 260, noisePeak: 0.09, bodyDecay: 0.07 },
-      { at: 0.45, from: 110, to: 58, peak: 0.13, noiseHz: 220, noisePeak: 0.08, bodyDecay: 0.07 },
+      { at: 0, from: 130, to: 70, peak: 0.24, noiseHz: 260, noisePeak: 0.14, bodyDecay: 0.07 },
+      { at: 0.45, from: 110, to: 58, peak: 0.21, noiseHz: 220, noisePeak: 0.13, bodyDecay: 0.07 },
       // Seated hard — the heaviest hit of the sequence.
       {
         at: 0.95,
         from: 95,
         to: 50,
-        peak: 0.2,
+        peak: 0.32,
         noiseHz: 190,
-        noisePeak: 0.12,
+        noisePeak: 0.19,
         sweep: 0.05,
         bodyDecay: 0.09,
       },
       // Bolt hauled back, then let go: the tight pair that ends the cycle.
-      { at: 1.45, from: 150, to: 85, peak: 0.16, noiseHz: 340, noisePeak: 0.11 },
-      { at: 1.68, from: 105, to: 55, peak: 0.22, noiseHz: 240, noisePeak: 0.13, bodyDecay: 0.06 },
+      { at: 1.45, from: 150, to: 85, peak: 0.26, noiseHz: 340, noisePeak: 0.18 },
+      { at: 1.68, from: 105, to: 55, peak: 0.35, noiseHz: 240, noisePeak: 0.21, bodyDecay: 0.06 },
     ]);
   }
 
@@ -582,9 +582,9 @@ class AudioManager {
         at: 0,
         from: 90,
         to: 48,
-        peak: 0.18,
+        peak: 0.29,
         noiseHz: 200,
-        noisePeak: 0.1,
+        noisePeak: 0.16,
         sweep: 0.06,
         bodyDecay: 0.1,
         noiseDecay: 0.05,
@@ -595,9 +595,9 @@ class AudioManager {
         at: 0.55,
         from: 70,
         to: 40,
-        peak: 0.22,
+        peak: 0.35,
         noiseHz: 160,
-        noisePeak: 0.11,
+        noisePeak: 0.18,
         sweep: 0.08,
         bodyDecay: 0.14,
         noiseDecay: 0.06,
@@ -608,9 +608,9 @@ class AudioManager {
         at: 1.25,
         from: 200,
         to: 110,
-        peak: 0.17,
+        peak: 0.27,
         noiseHz: 380,
-        noisePeak: 0.13,
+        noisePeak: 0.21,
         sweep: 0.03,
         bodyDecay: 0.04,
         noiseDecay: 0.025,
