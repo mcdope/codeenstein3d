@@ -148,6 +148,18 @@ describe("drawWeapon — reload dip", () => {
       expect(mid.left).toBeGreaterThan(rest.left); // pushed toward the grip side
     });
 
+    it(`"${kind}" travels far enough sideways at mid-reload to actually read`, () => {
+      // A direction-only assertion is what let this animation be technically
+      // correct and invisible in play: the downward travel saturates once the
+      // weapon clears the HUD bar (measured — 59px of dip already changes as
+      // much of the visible strip as the full 96px does), so the sideways
+      // component is the half that happens in screen area the player can see.
+      // At 24px it read as a twitch. Pin the magnitude, not just the sign.
+      const rest = drawnCorner(drawn(kind));
+      const mid = drawnCorner(drawn(kind, { reloadProgress: 0.5 }));
+      expect(mid.left - rest.left).toBeGreaterThanOrEqual(64);
+    });
+
     it(`"${kind}" dips furthest at the halfway point and symmetrically either side`, () => {
       const quarter = drawnCorner(drawn(kind, { reloadProgress: 0.25 })).top;
       const half = drawnCorner(drawn(kind, { reloadProgress: 0.5 })).top;

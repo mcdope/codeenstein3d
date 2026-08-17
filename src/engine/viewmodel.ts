@@ -60,12 +60,27 @@ const RECOIL_BACK_PX = 8;
  * toward the grip side, so the dip reads as lowering the weapon to the hip
  * rather than as the whole viewport sliding. */
 const RELOAD_DOWN_PX = 96;
-const RELOAD_SIDE_PX = 24;
+/** Measured, after a player reported never having seen a reload: the *downward*
+ * travel saturates long before it reaches `RELOAD_DOWN_PX`. Sampling the
+ * weapon's visible strip across a real reload, the fraction of it that changes
+ * is 13% at 59px of dip, 12.5% at 73px and 11.7% at the 96px peak — flat,
+ * because `HUD_HEIGHT` is 58 and the weapon only clears the bar by ~72px, so
+ * everything past that is travel into a region the HUD already covers. The
+ * sideways component is the half that moves inside visible screen area, so it
+ * is what carries the motion; it used to be 24px, which read as a twitch. */
+const RELOAD_SIDE_PX = 96;
 
-/** Thin dark outline stroke shared by every weapon's body shapes — gives
- * flat canvas-primitive fills a defined edge against the dark backdrop
- * instead of reading as a flat cutout. */
-const OUTLINE_COLOR = "#0a0a0d";
+/** Thin outline stroke shared by every weapon's body shapes — gives flat
+ * canvas-primitive fills a defined edge against the dark backdrop instead of
+ * reading as a flat cutout.
+ *
+ * It was `#0a0a0d`, which could not do that job: measured against the demo
+ * campaign's floor, the weapon strip averages luminance ~30/255 and the
+ * outline sat at ~10, so the silhouette dissolved into the floor and every
+ * motion it made — the reload dip especially — went with it. Lifted to read
+ * as an edge on a dark floor while still being far darker than any body fill,
+ * so it still reads as a drawn outline rather than a highlight. */
+const OUTLINE_COLOR = "#4a505a";
 const OUTLINE_WIDTH = 1.5;
 
 /** A weapon's barrel/tube/nozzle length (from `baseY` up to its structural
