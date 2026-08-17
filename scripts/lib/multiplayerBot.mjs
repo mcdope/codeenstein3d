@@ -290,6 +290,24 @@ export class MultiplayerBot extends Bot {
   }
 
   /**
+   * See `Bot.levelAdvancedUnderUs`. The second clause of `exitAccepted()`
+   * above, on its own and without the countdown clause.
+   *
+   * `getMapExit()` returns the engine's `this.map.exit`, and the exit this bot
+   * planned against came from the same field — so the two differing at all
+   * means the engine is running a different map than the drive was planned
+   * for. There is no in-between state to worry about: a level swap replaces
+   * the whole `GameMap` at once.
+   */
+  async levelAdvancedUnderUs() {
+    if (!this.map?.exit) return false;
+    return this.page.evaluate((expected) => {
+      const live = window.__codeensteinMultiplayerTestHooks.getMapExit();
+      return live !== null && (live.x !== expected.x || live.y !== expected.y);
+    }, this.map.exit);
+  }
+
+  /**
    * See `Bot.readLootSources`. Only the *inputs* differ here — the multiplayer
    * hooks, in a single merged round trip, behind the real-time cooldown gate
    * (see this module's own doc comment's last bullet for why both are needed

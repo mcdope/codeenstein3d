@@ -780,6 +780,25 @@ export class Bot {
   }
 
   /**
+   * Whether the level running right now is no longer the one this bot planned
+   * against — i.e. it advanced while a drive was in progress.
+   *
+   * Strictly narrower than `exitAccepted()`, and the two must not be confused.
+   * `exitAccepted()` is also true while a countdown is merely *running*, which
+   * is still this level: a bot in that state can go on to reach the exit and
+   * should report `arrived`. This predicate is true only once the level is
+   * genuinely gone, when continuing to drive is meaningless because the target
+   * no longer exists.
+   *
+   * Single-player has no such state — a level change there ends the run
+   * outright, which `driveToward` already reports as `state !== "playing"` —
+   * so this is `false` here and every single-player drive is unaffected.
+   */
+  async levelAdvancedUnderUs() {
+    return false;
+  }
+
+  /**
    * Resets all per-level state — call once at the start of each campaign
    * level. `mineMemory` mirrors the original script's per-level object
    * exactly (see its doc comment there for why retreat/shoot tracking are
@@ -1369,6 +1388,49 @@ export class Bot {
   async driveToExit(exitCenter, finalApproachTicks, openedDoors = this.openedDoors) {
     let last = { state: "playing", reason: "stuck" };
     for (let round = 0; round < EXIT_CLEAR_ROUNDS; round++) {
+      // Has the level already moved on? Ask before doing any work this round.
+      //
+      // Deliberately NOT `exitAccepted()`, which merges two facts that need
+      // opposite handling: "a countdown is running" (still this level — the
+      // bot can and should go on to `arrive`, which is what the caller wants
+      // to hear) and "the exit tile is not the one we planned against" (this
+      // level is over). Only the second means there is nothing left to drive
+      // to. Using the merged predicate here regressed three `botDrive` tests
+      // by reporting a legitimate arrival as a teleport.
+      //
+      // Every other `exitAccepted()` call below is reached only *after* a
+      // drive reports `teleported` — i.e. only when the bot noticed a jump no
+      // legal step explains. That covers the common transition, where winning
+      // respawns the player somewhere else. It does not cover a bot that is
+      // **stuck**: no movement means no jump, so nothing ever asks the
+      // question, and the loop spends every remaining round driving at an exit
+      // that no longer exists.
+      //
+      // That is the shape of the `verify (multiplayer-transition)` failure on
+      // 2026-08-17 (CI run `32044599072`). The dump is unambiguous once read
+      // properly: `exit gate at (46,44)` — the exit this drive was planned
+      // against — versus `live exit tile {"x":47,"y":49}` straight from the
+      // engine, plus a roster that had grown 11 -> 13. `getMapExit()` returns
+      // `this.map.exit`, so those two disagreeing at all means the engine was
+      // running a *different map*: the host had already won and the level had
+      // advanced underneath the drive. It then ground out `exitBacktrack` and
+      // `exitHunt` on the new level for nine minutes, holding movement keys
+      // against geometry it had never planned against, until the wall-clock
+      // deadline killed the job — on a run that had in fact already succeeded.
+      //
+      // Free in single-player: `Bot.levelAdvancedUnderUs()` is a literal
+      // `false` there, so this branch cannot fire and the loop is byte-for-byte
+      // what it always was. In multiplayer it costs one hook read per round.
+      //
+      // `teleported` rather than `arrived` deliberately — it is the established
+      // vocabulary for "the player moved in a way stepping cannot explain, and
+      // the caller must decide what it meant". Both consumers already handle
+      // it: `verify-multiplayer-transition.mjs` treats it as a possible
+      // completed transition and lets its own countdown/new-level checks rule,
+      // and `run-balancing-telemetry-multiplayer.mjs` maps it to
+      // `levelAdvanced`. `arrived` would claim *this* bot took the exit, which
+      // is exactly the attribution `driveToExit` must not invent.
+      if (await this.levelAdvancedUnderUs()) return { state: "playing", reason: "teleported" };
       // BFS back to the exit tile before the tight final nudge. `driveToward`
       // walks a straight line with no pathfinding, and after a hunt the bot
       // can be most of a room away with walls in between — an earlier version
