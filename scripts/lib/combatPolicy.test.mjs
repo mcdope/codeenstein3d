@@ -29,6 +29,7 @@ import {
   combatStrafeKey,
   dodgeStrafeKey,
   hasLineOfSight,
+  isWallTile,
   isHazardAt,
   moveBurstMs,
   pickRangedWeapon,
@@ -158,6 +159,38 @@ describe("geometry", () => {
     expect(activeSpikeAt(map, 5.5, 5.5, 1.9)).toBe(false);
     expect(activeSpikeAt(map, 5.5, 5.5, 2.1)).toBe(true);
     expect(activeSpikeAt(map, 5.5, 5.5, 3.9)).toBe(true);
+  });
+
+  it("hasLineOfSight is blocked by a closed door, which the engine treats as solid", () => {
+    // `player.ts`'s `isWall` — what a bullet and a body actually hit — counts
+    // DOOR_TILE and BRANCH_DOOR_TILE as solid. The walking predicate
+    // deliberately does not, because a door is passable terrain to a route
+    // planner. Sight must follow the engine, not the route planner.
+    expect(hasLineOfSight(makeMap({ tiles: [[12, 10, 3]] }), 10.5, 10.5, 15.5, 10.5)).toBe(false);
+    expect(hasLineOfSight(makeMap({ tiles: [[12, 10, 8]] }), 10.5, 10.5, 15.5, 10.5)).toBe(false);
+    // Still passable to the walking flood — the whole reason the two
+    // predicates are separate.
+    expect(isWallTile(makeMap({ tiles: [[12, 10, 3]] }), 12.5, 10.5)).toBe(false);
+  });
+
+  it("hasLineOfSight does not leak through a diagonal wall corner", () => {
+    // The demo-campaign L6 wedge. A ray that passes exactly through the point
+    // where four tiles meet jumps between the two diagonal cells without
+    // landing inside either tile wedged between them — so point sampling alone
+    // reports a clear view through a solid corner, at any resolution.
+    //
+    // The real geometry, shifted into this fixture's 20x20 grid: the bot at
+    // (14.2,10.2), an enemy at (13.7,9.7) 0.71 tiles away, a wall at (13,10)
+    // and a closed door at (14,9). The segment is a precise 45 degrees and
+    // crosses (14.0,10.0) dead on.
+    const corner = makeMap({ tiles: [[13, 10, 1], [14, 9, 3]] });
+    expect(hasLineOfSight(corner, 14.2, 10.2, 13.7, 9.7)).toBe(false);
+    // Either flanking tile alone is enough to stop it.
+    expect(hasLineOfSight(makeMap({ tiles: [[13, 10, 1]] }), 14.2, 10.2, 13.7, 9.7)).toBe(false);
+    expect(hasLineOfSight(makeMap({ tiles: [[14, 9, 1]] }), 14.2, 10.2, 13.7, 9.7)).toBe(false);
+    // But an open diagonal still sees through — this must not become "all
+    // diagonals are blocked".
+    expect(hasLineOfSight(makeMap({}), 14.2, 10.2, 13.7, 9.7)).toBe(true);
   });
 
   it("hasLineOfSight is blocked by walls but not by acid", () => {

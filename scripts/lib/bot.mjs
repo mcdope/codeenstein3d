@@ -25,7 +25,9 @@ import {
   // binding, so anything this module *uses* has to appear here too.
   activeSpikeAt,
   angleDelta,
+  BRANCH_DOOR_TILE,
   decide,
+  LOCKED_DOOR_TILE,
   DEFAULT_TUNING,
   hasLineOfSight,
   HAZARD_TILE,
@@ -80,8 +82,10 @@ export {
 
 // Door tile values, needed locally by the opened-door bookkeeping in
 // `#noteDoorUnderFoot`/`#allDoorTiles` (the decision core has no use for them).
-export const LOCKED_DOOR_TILE = 3; // src/map/types.ts's Tile enum
-export const BRANCH_DOOR_TILE = 8; // src/map/types.ts's Tile enum
+// Re-exported from the decision core, which is where the tile vocabulary now
+// lives — `isSightBlockingTile` needs these and cannot import from this module
+// without a cycle. Kept as exports here so existing importers are unaffected.
+export { LOCKED_DOOR_TILE, BRANCH_DOOR_TILE } from "./combatPolicy.mjs";
 
 /**
  * Tiles a *loot detour* refuses to route through. Mirrors `routePlanner.mjs`'s
