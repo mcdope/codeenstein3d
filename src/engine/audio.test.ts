@@ -286,7 +286,29 @@ describe("AudioManager.playReload() dispatch", () => {
     }
   });
 
-  it("keeps the pistol's reload well below its own shot, so it reads as mechanism", () => {
+  it("gives every reload voice, not just the pistol's, an audible peak", () => {
+    // The pistol bound below is the one that was re-argued, but all four
+    // voices were mixed down together and all four were inaudible under
+    // gunfire — so guard all four against drifting back down.
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const ctx = audio.resume() as unknown as MockAudioContext;
+    for (const kind of ["pistol", "shotgun", "mp", "rocket"] as const) {
+      ctx.createGain.mockClear();
+      audio.playReload(kind);
+      const peaks = ctx.createGain.mock.results.map(
+        (r) => r.value.gain.exponentialRampToValueAtTime.mock.calls[0][0] as number,
+      );
+      expect(Math.max(...peaks)).toBeGreaterThan(0.2);
+    }
+  });
+
+  // The bound here used to be `shotPeak * 0.5`, chosen so a reload "reads as
+  // mechanism". It did — and it also meant the reload was inaudible under
+  // gunfire, which is the whole reason a player reported never noticing one.
+  // Re-argued rather than merely renumbered: a reload must still be plainly
+  // quieter than a shot (it is not an event you aim), but it has to survive
+  // being mixed against one, so the ceiling is now 0.8 rather than 0.5.
+  it("keeps the pistol's reload below its own shot, while still audible over one", () => {
     vi.stubGlobal("AudioContext", MockAudioContext);
     const ctx = audio.resume() as unknown as MockAudioContext;
     audio.playShoot("pistol");
@@ -298,7 +320,8 @@ describe("AudioManager.playReload() dispatch", () => {
     ctx.createGain.mockClear();
     audio.playReload("pistol");
     const peaks = ctx.createGain.mock.results.map((r) => peakOf(r.value.gain));
-    expect(Math.max(...peaks)).toBeLessThan(shotPeak * 0.5);
+    expect(Math.max(...peaks)).toBeLessThan(shotPeak * 0.8);
+    expect(Math.max(...peaks)).toBeGreaterThan(shotPeak * 0.4); // and not back to inaudible
   });
 
   it("is a no-op for the magazine-less weapons", () => {
