@@ -1380,6 +1380,40 @@ describe("RaycasterEngine — keys and doors", () => {
     );
   }
 
+  // Regression: `collectKeyBillboards` defaults `gateColors` to `[]`, and the
+  // engine used to call it without that argument — so every key in the world
+  // fell through the `?? 1` fixture fallback and drew blue, whatever gate it
+  // belonged to. `sprites.test.ts` could not see it: every test there passes
+  // its own `gateColors` (or deliberately omits it), so the bug lived entirely
+  // in the *wiring*. This asserts the gate table actually reaches the renderer.
+  it("draws an uncollected key in its own gate's colour, not the fallback blue", () => {
+    const size = 12;
+    const map = fakeMap(
+      {
+        // Dead ahead of the spawn (5.5, 5.5) facing +x, well inside the room
+        // so no wall occludes it, and far enough not to be auto-collected.
+        keys: [{ x: 8.5, y: 5.5, collected: false, gateId: 0 }],
+        gates: [{ id: 0, colorIndex: 2, room: { x: 9, y: 4, w: 2, h: 3 }, doors: [] }],
+      },
+      size,
+    );
+    const { engine } = makeEngine(map);
+    const ctx = (engine as unknown as { ctx: MockCanvasContext }).ctx;
+    const styles: string[] = [];
+    ctx.fillRect.mockImplementation(() => {
+      styles.push(ctx.fillStyle as string);
+    });
+    engine.advance(0.016);
+    // Assert on the key sprite's *bezel* tones, not its face. The face colours
+    // are shared with the HUD key pips (`HUD_GATE_COLORS`), which draw a pip
+    // for this same gate every frame — so "a green fillStyle appeared" passes
+    // even with the bug present, and proves nothing. The bezels in
+    // `KEY_GATE_COLORS` appear nowhere else in the game, so they isolate the
+    // one renderer under test.
+    expect(styles).toContain("#0c3018"); // green key bezel — gate colorIndex 2
+    expect(styles).not.toContain("#0c1c40"); // never the blue fixture fallback
+  });
+
   it("holds both gates' keys at once, reported in sorted order", () => {
     const size = 12;
     const g = walledRoom(size);

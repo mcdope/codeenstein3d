@@ -630,8 +630,11 @@ export function collectExitBillboard(
   ];
 }
 
-/** Collect uncollected keys as small floating gold "keycard" billboard draw
- * jobs. */
+/** Collect uncollected keys as small floating "keycard" billboard draw jobs,
+ * each in its own gate's colour (`gateColors`, indexed by `KeyItem.gateId`).
+ * A caller that omits `gateColors` gets the `?? 1` fallback for *every* key,
+ * which reads as "all keys are blue" rather than as a missing argument — see
+ * the call site in `engine.ts`, where exactly that went unnoticed. */
 export function collectKeyBillboards(
   ctx: CanvasRenderingContext2D,
   player: Player,

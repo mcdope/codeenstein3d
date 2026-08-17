@@ -526,6 +526,49 @@ describe("collectKeyBillboards", () => {
     jobs[0].draw();
     expect(c.fillRect).not.toHaveBeenCalled();
   });
+
+  // Same fillStyle-logging technique as the enemy hit-flash test above: the
+  // bezel is painted first and the face second, so the *face* colour is the
+  // last style logged and is the one that carries the gate's identity.
+  const KEY_FACES = ["#d63a30", "#3470d6", "#34b25c", "#a848d6"]; // red, blue, green, violet
+
+  for (const [colorIndex, face] of KEY_FACES.entries()) {
+    it(`draws a key whose gate maps to colour index ${colorIndex} in ${face}`, () => {
+      const player = facingPlayer();
+      const c = ctx();
+      const log: string[] = [];
+      c.fillRect.mockImplementation(() => {
+        log.push(c.fillStyle as string);
+      });
+      const jobs = collectKeyBillboards(
+        asCtx(c),
+        player,
+        [{ x: player.posX + 3, y: player.posY, collected: false, gateId: 7 }],
+        clearZBuffer(Infinity),
+        // gateId 7 deliberately, so this can only pass by actually indexing
+        // `gateColors` — a lookup that ignored gateId would read index 0.
+        { 7: colorIndex } as unknown as readonly number[],
+      );
+      jobs[0].draw();
+      expect(log).toContain(face);
+    });
+  }
+
+  // The regression this suite previously could not see: every existing test
+  // above omits `gateColors`, so they all passed while the real call site
+  // omitted it too and painted every key blue. Pin the fallback explicitly so
+  // "no gate table" stays a deliberate behaviour rather than an accident.
+  it("falls back to blue only when no gate table is supplied", () => {
+    const player = facingPlayer();
+    const c = ctx();
+    const log: string[] = [];
+    c.fillRect.mockImplementation(() => {
+      log.push(c.fillStyle as string);
+    });
+    const jobs = collectKeyBillboards(asCtx(c), player, [{ x: player.posX + 3, y: player.posY, collected: false, gateId: 2 }], clearZBuffer(Infinity));
+    jobs[0].draw();
+    expect(log).toContain("#3470d6");
+  });
 });
 
 describe("collectLootBillboards", () => {

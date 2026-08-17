@@ -3561,7 +3561,18 @@ export class RaycasterEngine {
       ...collectEnemyBillboards(this.ctx, camera, this.enemies, zBuffer),
       ...collectProjectileBillboards(this.ctx, camera, this.projectiles, zBuffer),
       ...collectRocketBillboards(this.ctx, camera, this.rockets, zBuffer),
-      ...collectKeyBillboards(this.ctx, camera, this.map.keys, zBuffer),
+      // The gate table has to be threaded in explicitly: `collectKeyBillboards`
+      // defaults it to `[]` for fixtures with no gates, and omitting it here
+      // silently sent every key down that fallback — so every key in the world
+      // drew blue regardless of its gate, while the door, the minimap dot, the
+      // automap dot and the HUD pip all had it right.
+      ...collectKeyBillboards(
+        this.ctx,
+        camera,
+        this.map.keys,
+        zBuffer,
+        this.map.gates.map((g) => g.colorIndex),
+      ),
       ...collectLootBillboards(this.ctx, camera, this.drops, zBuffer),
       ...collectLootBillboards(
         this.ctx,
