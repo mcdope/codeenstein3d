@@ -33,6 +33,26 @@ Items recording a *measurement* rather than a code claim (the demo-campaign diff
   - **So the give-up is a real trade, not a no-op.** It suppresses generator-harness wedges *and* it costs half a campaign of survival: demo-campaign hard, 45 runs per arm, level-visits 309 vs 667 and clear rate 85.4% vs 93.4%, Fisher **p = 0.0001**. Reverted (`8390c8e`) because dying earlier is worse than a wedge in one tooling path — but the revert message's claim that it "never did the job it was written for" is **wrong** and is corrected here.
   - **The rule this cost**: before running an A/B, confirm the phenomenon under test actually occurs in the harness you are running it in. Measure the base rate in the control arm *first* — a control that shows zero occurrences cannot demonstrate anything about a fix, however clean the statistics look afterwards.
   - **Still open**: the generator harness wedges at demo-campaign L6 without the give-up, which makes `defaultHighscore.ts` regeneration slow and occasionally cap-bound. A future fix must be validated on **death rate in the capture harness** *and* **wedge rate in the generator harness** — neither alone is sufficient, which is the whole lesson.
+  - **MEASURED PROPERLY 2026-08-18, and the answer is a clean null: five real defects were fixed and the wedge rate did not move.** 120 attempts per arm, master vs the fixes, 12 workers against one shared dev server (`src/` identical in both arms, so only the bot differed; the bot's virtual clock means CPU contention changes wall time but not decisions, which is what made 12-way parallelism safe).
+
+    | metric | base | fixed | diff | p |
+    |---|---|---|---|---|
+    | wedge rate | 20.0% (24/120) | 20.8% (25/120) | +0.8pp | **0.873** |
+    | death rate | 8.3% | 6.7% | -1.7pp | 0.624 |
+    | clear rate | 71.7% | 72.5% | +0.8pp | — |
+    | stuck cost, median decisions | 21,250 | **10,379** | **-51%** | — |
+    | clear cost, median decisions | 1,893 | 1,896 | ~0 | *control* |
+
+  - **The baseline wedge rate is 20%, not 33%.** Every earlier figure in this item's investigation, mine included, came from n<=6 — and n=3 read 33%. This item's own lesson is about underpowered arms and I reproduced it before catching it. Separating 20% from 10% needs ~115 attempts per arm; anything smaller cannot see this effect at all.
+  - **What did move, and it is the harm this item actually names.** A wedged attempt now costs **half** as many decisions (21,250 -> 10,379 median), while a cleared attempt costs the same to three significant figures — that identical clear cost is the control proving the saving is specific to the failure path rather than a general speedup. Mean decisions per attempt fall ~38%. "Regeneration is slow and occasionally cap-bound" is addressed; "the bot wedges" is not.
+  - **And nothing was paid for it.** Death rate unchanged at p=0.62 — the contrast that matters, since `8390c8e`'s blanket give-up bought wedge suppression at 8pp of clear rate, p=0.0001. The five fixes landed on their own merits (`fix/door-leg-swallowed-stuck`), each with a test that fails without it:
+    1. the `openDoor` leg swallowed `driveTowardWithReplan`'s `{state:"playing", reason:"stuck"}` — the identical defect the walk leg one `else if` above documents at length;
+    2. it recorded doors as opened that it never reached, corrupting every later BFS on the level;
+    3. its staging demanded `TIGHT_ARRIVE_EPS` (0.05) at a point *further from the door* than `openDoorAhead`'s own 0.35-tile probe requires — the captured wedge sat where the door was already openable, straining to walk away from it;
+    4. the cornered-retreat stall guard compared positions as `toFixed(2)` strings, so a 0.01 wobble reset it every decision (185 escalations when perfectly still, **0** when wobbling);
+    5. the break-contact branch had no exit condition at all.
+  - **So the cause is still open, and it is now the only thing left open.** The wedge is reproducible, located and cheap to observe: demo-campaign L6, `activity=door`, the same tile every run, ~20% of attempts. What it is *not* is any of the five things above. Next attempt should start by asking why the staging drive cannot cross the last 0.4 tiles to (14.5,50.5) in a one-tile gap — `#doorOpenableFrom` now makes that survivable, so the bot recovers, but something still stops it walking there.
+
 
 - [ ] **demo-campaign measured with a correct bot (2026-08-09): 14 of its 17 levels are free, and L15 is the entire campaign. Measurement only — no content changed.**
   - **SUPERSEDED 2026-08-12: the campaign no longer kills the bot at all, and L15 is not the wall any more.** Measured while A/B'ing the pellet-cone model at `LEVEL_LIMIT=17`: **160 attempts across 8 combos (4 profile x difficulty cells x 2 arms), zero failures**, with 19-20 of 20 reaching **both** L15 and L17 in every cell. Pro/hard specifically went from the 1-of-42 clearing L15 recorded above to **20 of 20**.
