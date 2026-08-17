@@ -40,7 +40,9 @@
  *   --window-histogram  bucket the dispatched decision windows
  *   --exit-drive driveToExit|driveToward   which final approach to use
  *
- * Everything lands in `wedge-diagnosis/` (gitignored scratch).
+ * Everything lands in `wedge-diagnosis/` (gitignored scratch), or in
+ * `CODEENSTEIN_WEDGE_OUT` if set — several workers in parallel need separate
+ * output directories.
  */
 import { chromium } from "playwright";
 import fs from "node:fs";
@@ -137,7 +139,14 @@ class MpShapedBot extends Bot {
   }
 }
 
-const OUT = path.join(REPO_ROOT, "wedge-diagnosis");
+// Overridable so several workers can run at once without trampling each
+// other's screenshots and trace — which is what a properly powered wedge-rate
+// measurement needs: at n=6 a 33% rate and a 17% one are indistinguishable, so
+// settling one costs ~115 attempts per arm and that is only affordable in
+// parallel. Defaults to the old path, so a single interactive run is unchanged.
+const OUT = process.env.CODEENSTEIN_WEDGE_OUT
+  ? path.resolve(process.env.CODEENSTEIN_WEDGE_OUT)
+  : path.join(REPO_ROOT, "wedge-diagnosis");
 fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
 
