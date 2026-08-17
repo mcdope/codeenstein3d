@@ -60,7 +60,10 @@ Standard Xbox-style layout:
 | Right stick | Turn |
 | RT | Fire (held for automatic weapons; semi-auto ones still need a fresh pull per shot, and every weapon is capped at its own fire rate) |
 | LB / RB | Previous / next weapon |
-| R3 (stick click) or B | Quick-melee |
+| R3 (right stick click) or B | Quick-melee |
+| X | Reload the equipped weapon |
+| A | Read a nearby lore terminal, or open a fake wall to reveal a secret room |
+| L3 (left stick click) | Sprint, held — the same 2× move speed as `Shift` |
 | Any button | Dismiss level-start/commit-summary/end overlays (after the 1.2s lock) |
 
 Gamepad and keyboard/mouse input both work at the same time — nothing needs to be switched.

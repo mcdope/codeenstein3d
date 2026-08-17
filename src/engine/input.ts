@@ -26,6 +26,15 @@ const GAMEPAD_BUTTON_LB = 4;
 const GAMEPAD_BUTTON_RB = 5;
 const GAMEPAD_BUTTON_B = 1;
 const GAMEPAD_BUTTON_R3 = 11;
+/** A≈Cross, X≈Square, L3 = left stick click. These three cover the actions a
+ * pad had no binding for at all: a gamepad player could not reload early,
+ * could not read a lore terminal or open a fake wall (so secret rooms were
+ * unreachable), and could not sprint. Face-button choices follow the genre —
+ * X reloads, A interacts — and `InputSnapshot`'s own doc comment already
+ * claimed reload was on X before any code implemented it. */
+const GAMEPAD_BUTTON_A = 0;
+const GAMEPAD_BUTTON_X = 2;
+const GAMEPAD_BUTTON_L3 = 10;
 /** Stick deflection below this magnitude reads as zero — cheap analog stick
  * drift is common enough that skipping this would cause a slow, uncommanded
  * drift/turn at rest. */
@@ -87,6 +96,8 @@ export interface InputSnapshot {
   fireHeld: boolean;
   weaponRequest: number | null;
   mapToggle: boolean;
+  /** Interact requested this frame (`F`, or the gamepad's A) — reads a lore
+   * terminal, opens a fake wall. Recorded and networked like `reload`. */
   interact: boolean;
   /** Reload requested this frame (`R`, or the gamepad's X). A real
    * simulation input like `interact`, so it crosses the multiplayer wire and
@@ -189,13 +200,22 @@ export class InputController implements InputSource {
   private gamepadFireHeld = false;
   /** Whether R3/B is currently held — merged into `isMeleeHeld()`. */
   private gamepadMeleeHeld = false;
+  /** Whether L3 is currently held — merged into `isDown()` for both Shift
+   * codes, which is how the engine asks about sprint, rather than as a new
+   * `InputSnapshot` field: `RECORDED_KEYS` already carries Shift across the
+   * multiplayer wire and into replays, so routing the pad through the same
+   * key makes gamepad sprint recorded and networked for free. */
+  private gamepadSprintHeld = false;
   /** Previous-frame button states, so `pollGamepad` can edge-trigger the
-   * one-shot actions (fire/cycle-weapon/melee) the same way key/mouse presses
-   * do, instead of re-firing every frame a button stays held. */
+   * one-shot actions (fire/cycle-weapon/melee/reload/interact) the same way
+   * key/mouse presses do, instead of re-firing every frame a button stays
+   * held. */
   private prevGpFire = false;
   private prevGpLB = false;
   private prevGpRB = false;
   private prevGpMelee = false;
+  private prevGpReload = false;
+  private prevGpInteract = false;
 
   constructor(private readonly canvas: HTMLCanvasElement) {}
 
@@ -271,13 +291,20 @@ export class InputController implements InputSource {
     this.gamepadTurnX = 0;
     this.gamepadFireHeld = false;
     this.gamepadMeleeHeld = false;
+    this.gamepadSprintHeld = false;
     this.prevGpFire = false;
     this.prevGpLB = false;
     this.prevGpRB = false;
     this.prevGpMelee = false;
+    this.prevGpReload = false;
+    this.prevGpInteract = false;
   }
 
   isDown(code: string): boolean {
+    // L3 answers the sprint question as if Shift were held — see
+    // `gamepadSprintHeld`. Deliberately not written into `this.keys`: a real
+    // Shift release would then also clear the pad's state, and vice versa.
+    if (this.gamepadSprintHeld && (code === "ShiftLeft" || code === "ShiftRight")) return true;
     return this.keys.has(code);
   }
 
@@ -434,8 +461,9 @@ export class InputController implements InputSource {
 
   /**
    * Refresh gamepad axis/button state for this frame and edge-trigger its
-   * one-shot actions (RT fire, bumpers cycle weapons, R3/B quick-melee) into
-   * the same queues a key/mouse press would use. Must be called once per
+   * one-shot actions (RT fire, bumpers cycle weapons, R3/B quick-melee, X
+   * reload, A interact) into the same queues a key/mouse press would use;
+   * L3 is held rather than edge-triggered and stands in for Shift. Must be called once per
    * frame by the game loop — see this class's doc comment for why (the
    * Gamepad API has no per-axis/button change events to listen for instead).
    * A no-op, and zeroes every analog reading, when no gamepad is connected.
@@ -458,6 +486,7 @@ export class InputController implements InputSource {
       this.gamepadTurnX = 0;
       this.gamepadFireHeld = false;
       this.gamepadMeleeHeld = false;
+      this.gamepadSprintHeld = false;
       return;
     }
 
@@ -483,6 +512,21 @@ export class InputController implements InputSource {
     if (meleeDown && !this.prevGpMelee) this.meleeQueued = true;
     this.gamepadMeleeHeld = meleeDown;
     this.prevGpMelee = meleeDown;
+
+    // Both of these feed the same queues the `R`/`F` keys do, so they are real
+    // simulation inputs — recorded into replays and sent across the
+    // multiplayer wire — rather than a local shortcut.
+    const reloadDown = pad.buttons[GAMEPAD_BUTTON_X]?.pressed ?? false;
+    if (reloadDown && !this.prevGpReload) this.reloadQueued = true;
+    this.prevGpReload = reloadDown;
+
+    const interactDown = pad.buttons[GAMEPAD_BUTTON_A]?.pressed ?? false;
+    if (interactDown && !this.prevGpInteract) this.interactQueued = true;
+    this.prevGpInteract = interactDown;
+
+    // Held, not edge-triggered: sprint is a modifier, like the Shift it
+    // stands in for.
+    this.gamepadSprintHeld = pad.buttons[GAMEPAD_BUTTON_L3]?.pressed ?? false;
   }
 
   /**
@@ -494,7 +538,9 @@ export class InputController implements InputSource {
    */
   captureSnapshot(): InputSnapshot {
     return {
-      keys: RECORDED_KEYS.filter((code) => this.keys.has(code)),
+      // `isDown`, not `this.keys`, so a gamepad sprint (L3) is recorded and
+      // networked exactly like a Shift press — see `gamepadSprintHeld`.
+      keys: RECORDED_KEYS.filter((code) => this.isDown(code)),
       mouseDX: this.mouseDX,
       fireQueued: this.fireQueued,
       fireHeld: this.isFireHeld(),

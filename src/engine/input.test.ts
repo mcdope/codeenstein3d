@@ -548,6 +548,75 @@ describe("InputController.pollGamepad()", () => {
     expect(controller.consumeFire()).toBe(false); // release doesn't queue a fire
   });
 
+  /** Buttons by standard-mapping index, padded so a short array can't make a
+   * "not pressed" assertion pass for the wrong reason. */
+  const buttonsWith = (...indices: number[]) =>
+    Array.from({ length: 12 }, (_, i) => ({ pressed: indices.includes(i) }));
+
+  for (const { name, index, consume } of [
+    { name: "reload on X", index: 2, consume: () => controller.consumeReload() },
+    { name: "interact on A", index: 0, consume: () => controller.consumeInteract() },
+  ]) {
+    it(`edge-triggers ${name}, and not again while it stays held`, () => {
+      let pad = fakeGamepad({ buttons: buttonsWith() });
+      (navigator as unknown as { getGamepads: () => (Gamepad | null)[] }).getGamepads = () => [pad];
+      controller.pollGamepad();
+      expect(consume()).toBe(false);
+
+      pad = fakeGamepad({ buttons: buttonsWith(index) });
+      controller.pollGamepad();
+      expect(consume()).toBe(true);
+
+      controller.pollGamepad(); // still held
+      expect(consume()).toBe(false);
+
+      pad = fakeGamepad({ buttons: buttonsWith() }); // released
+      controller.pollGamepad();
+      expect(consume()).toBe(false); // a release is not a press
+    });
+  }
+
+  it("reads L3 as sprint, on both Shift codes, and lets go when released", () => {
+    // The engine asks for sprint as `isDown("ShiftLeft") || isDown("ShiftRight")`,
+    // so the pad has to answer that question rather than introduce a new one.
+    let pad = fakeGamepad({ buttons: buttonsWith() });
+    (navigator as unknown as { getGamepads: () => (Gamepad | null)[] }).getGamepads = () => [pad];
+    controller.pollGamepad();
+    expect(controller.isDown("ShiftLeft")).toBe(false);
+
+    pad = fakeGamepad({ buttons: buttonsWith(10) });
+    controller.pollGamepad();
+    expect(controller.isDown("ShiftLeft")).toBe(true);
+    expect(controller.isDown("ShiftRight")).toBe(true);
+    expect(controller.isDown("KeyW")).toBe(false); // and nothing else
+
+    pad = fakeGamepad({ buttons: buttonsWith() });
+    controller.pollGamepad();
+    expect(controller.isDown("ShiftLeft")).toBe(false);
+  });
+
+  it("records a gamepad sprint into the snapshot, so it survives a replay", () => {
+    // Without this the pad would sprint in live play and walk in playback —
+    // the class of bug that shipped once already with `botRotSpeedMul`.
+    (navigator as unknown as { getGamepads: () => (Gamepad | null)[] }).getGamepads = () => [
+      fakeGamepad({ buttons: buttonsWith(10) }),
+    ];
+    controller.pollGamepad();
+    expect(controller.captureSnapshot().keys).toContain("ShiftLeft");
+  });
+
+  it("drops a gamepad sprint when the pad disconnects mid-hold", () => {
+    (navigator as unknown as { getGamepads: () => (Gamepad | null)[] }).getGamepads = () => [
+      fakeGamepad({ buttons: buttonsWith(10) }),
+    ];
+    controller.pollGamepad();
+    expect(controller.isDown("ShiftLeft")).toBe(true);
+
+    (navigator as unknown as { getGamepads: () => (Gamepad | null)[] }).getGamepads = () => [null];
+    controller.pollGamepad();
+    expect(controller.isDown("ShiftLeft")).toBe(false); // not stuck sprinting forever
+  });
+
   it("treats a missing RT/LB/RB/R3/B button entry as not pressed", () => {
     (navigator as unknown as { getGamepads: () => (Gamepad | null)[] }).getGamepads = () => [
       fakeGamepad({ buttons: [{ pressed: false }] }), // way shorter than every button index this code reads
