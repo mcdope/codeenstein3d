@@ -109,6 +109,8 @@ export function numberKeyCodeFor(weaponIndex) {
 export const AUTO_RANGED_WEAPON_INDICES = new Set([GDB_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX]);
 export const HAZARD_TILE = 2; // src/map/types.ts's Tile enum
 export const SPIKE_TRAP_TILE = 5; // src/map/types.ts's Tile enum
+export const LOCKED_DOOR_TILE = 3; // src/map/types.ts's Tile enum
+export const BRANCH_DOOR_TILE = 8; // src/map/types.ts's Tile enum
 
 // Floor for `forwardScanTiles` — the fixed look-ahead the forward hazard/
 // spike checks used before sprinting made one decision's travel variable.
@@ -778,16 +780,86 @@ export function hasLineOfSight(map, x0, y0, x1, y1) {
   const dy = y1 - y0;
   const dist = Math.hypot(dx, dy);
   const steps = Math.ceil(dist / 0.1);
+  // Previous cell, so a *diagonal* cell change can be spotted. Point sampling
+  // alone leaks through lattice corners: a ray that passes exactly through the
+  // point where four tiles meet jumps from one diagonal cell to the other
+  // without ever landing inside the two tiles wedged between them, and reports
+  // a clear view through what is, to the engine, a solid corner.
+  //
+  // Not a hypothetical. On demo-campaign L6 the bot sits at (14.20,50.20) and
+  // an enemy at (13.7,49.7): the segment is an exact 45 degrees and crosses
+  // (14.0,50.0) dead on, so the samples step (14,50) -> (13,49) and skip both
+  // the wall at (13,50) and the closed door at (14,49). The bot then engages a
+  // target no bullet of its could reach — and since combat preempts
+  // navigation, the door leg it was in the middle of never advances while its
+  // health drains where it stands.
+  //
+  // Denser sampling cannot fix this: the corner is a single point, so a ray
+  // through it lands inside neither tile at any resolution. The crossing has
+  // to be recognised for what it is, which is what the flanking test below
+  // does — blocking if *either* flanking tile is solid, matching what a body
+  // or a bullet would actually hit.
+  let px = Math.floor(x0);
+  let py = Math.floor(y0);
   for (let i = 1; i < steps; i++) {
     const t = i / steps;
-    if (isWallTile(map, x0 + dx * t, y0 + dy * t)) return false;
+    const sx = x0 + dx * t;
+    const sy = y0 + dy * t;
+    const cx = Math.floor(sx);
+    const cy = Math.floor(sy);
+    if (cx !== px && cy !== py) {
+      if (isSightBlockingTile(map, cx + 0.5, py + 0.5)) return false;
+      if (isSightBlockingTile(map, px + 0.5, cy + 0.5)) return false;
+    }
+    px = cx;
+    py = cy;
+    if (isSightBlockingTile(map, sx, sy)) return false;
   }
   return true;
 }
 
+/**
+ * Tiles that block *walking*, for the walking-distance flood.
+ *
+ * A closed door is deliberately **not** here: you can open one, so it is
+ * passable terrain to a route planner, which is why `bfsPath` tracks
+ * `openedDoors` rather than treating doors as walls. Do not use this to answer
+ * "can I see/shoot through here" — see `isSightBlockingTile`.
+ */
 export function isWallTile(map, x, y) {
   const tile = map.grid[Math.floor(y)]?.[Math.floor(x)];
   return tile === undefined || tile === 1 || tile === 6 || tile === 7;
+}
+
+/**
+ * Tiles that block *sight*. Everything `isWallTile` blocks, plus closed doors.
+ *
+ * The two questions are not the same one, and conflating them was a real bug.
+ * `player.ts`'s `isWall` — the engine's own test, which decides what a bullet
+ * and a body actually hit — counts `DOOR_TILE` and `BRANCH_DOOR_TILE` as
+ * solid. `isWallTile` does not, because a door is passable terrain to a route
+ * planner. Routing this predicate's *sight* callers through the walking one
+ * therefore told the bot it could see and shoot straight through a shut door.
+ *
+ * Measured consequence, on demo-campaign L6: with the bot pinned at
+ * (14.20,50.20) and an enemy at (13.7,49.7) — 0.71 tiles away, behind the
+ * closed door at (14,49) — `hasLineOfSight` returned **true**. The bot engaged
+ * a target the engine would never let it hit, and combat preempts navigation,
+ * so the door leg it was in the middle of never advanced while its health went
+ * 1.00 -> 0.12 where it stood.
+ *
+ * A door the bot has actually opened reads as `0` here, because the engine
+ * rewrites the tile and `#refreshGridIfChanged` copies that back — so this
+ * only blocks doors that really are shut. Where the live grid is momentarily
+ * stale the error is pessimistic (an open door reads as opaque, so the bot
+ * walks closer before engaging), which is the safe direction; the optimistic
+ * error is the bug above.
+ */
+export function isSightBlockingTile(map, x, y) {
+  const tile = map.grid[Math.floor(y)]?.[Math.floor(x)];
+  return (
+    tile === undefined || tile === 1 || tile === 6 || tile === 7 || tile === LOCKED_DOOR_TILE || tile === BRANCH_DOOR_TILE
+  );
 }
 
 /** 4-directional neighbour offsets, as an array rather than any unordered
