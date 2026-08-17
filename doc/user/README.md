@@ -8,6 +8,7 @@ Codeenstein 3D turns a folder of source code into a playable retro raycaster dun
 - [Controls](controls.md) — keyboard, mouse, gamepad, and cheat codes
 - [HUD & UI](hud-and-ui.md) — the status bar, automap, the Settings tab, and highscores
 - [Game Mechanics](mechanics.md) — how code becomes a level, weapons, loot, enemies, traps, and scoring
+- [Colours & Pickups](colors-and-pickups.md) — what every colour on the minimap, the automap and an exported map means, and how to tell a dropped item or key apart at a glance
 - [Designing Your Own Levels](level-design.md) — write (or ask a coding agent to write) a source file that produces the level you want
 - [Multiplayer](multiplayer.md) — host or join a real-time coop session with a friend
 - [Tips](tips.md) — practical advice for staying alive
