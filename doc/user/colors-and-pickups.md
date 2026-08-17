@@ -10,6 +10,8 @@ Everything here is fixed. It never changes with the level's styleset, the diffic
 
 The always-on panel in the corner. No fog-of-war: the layout is all there from the moment the level loads.
 
+![The corner minimap, with four gold key markers, an orange acid pool at the top left, violet teleporter pads, cyan lore terminals, coloured door tiles, the green exit at the bottom right, and the compass badge on its corner](img/minimap.png)
+
 | What you see | Colour | Meaning |
 |---|---|---|
 | Walls | the level's own muted wall tone | varies by styleset — it's the one colour here that does |
@@ -38,6 +40,10 @@ Walking into a locked door with no key **pings** the nearest key you can actuall
 `Tab` opens the automap. Same tiles, a different palette, and two real differences in what's on it.
 
 Structural things go greyscale here so the map doesn't fight the live game still rendering behind it; danger and goals keep their accent colours.
+
+![The Tab automap, drawn in greyscale over the live 3D view: the level's rooms and corridors in light grey, an orange acid pool at the top left, the gold player arrow in the middle, and red, blue and green locked-door tiles](img/automap.png)
+
+That shot is of a level that has been walked from end to end. Early on you'd see far less of it — and the game showing through behind is not an artefact of the picture: the automap really is translucent, and really does leave you able to walk and fight while it's up.
 
 | What you see | Colour | Meaning |
 |---|---|---|
@@ -81,16 +87,20 @@ Worth knowing when you look at one:
 
 Here's the thing to know before the table: **every pickup in the game is the same object.** A small dark square with a brighter square inside it, floating at about waist height. There is no health cross, no ammo box, no distinct shape per kind — colour is the *only* thing that tells them apart.
 
-| Drop | Colour | What it's for |
-|---|---|---|
-| Bullets | cyan | echo pistol and Regex Shotgun |
-| Shells | amber | Regex Shotgun's own pool |
-| SMG ammo | bright blue | gdb |
-| Rockets | hot orange | ghidra |
-| Gas | fiery orange | Friday Hotfix |
-| Health | green | System Stability |
-| Swap | deep blue | the armour buffer that soaks damage before your health does |
-| Weapon | violet, **with a pulsing ring** | a gun you don't own yet |
+Here is the whole set side by side, exactly as the game draws them:
+
+![All eight pickup kinds in a row against a stone wall: green, deep blue, cyan, amber, orange, bright blue, a second orange, and a violet one framed by a glowing ring](img/pickups-all.png)
+
+| Drop | | Colour | What it's for |
+|---|---|---|---|
+| Health | <img src="img/pickup-health.png" width="52" alt="A green pickup"> | green | System Stability |
+| Swap | <img src="img/pickup-swap.png" width="52" alt="A deep blue pickup"> | deep blue | the armour buffer that soaks damage before your health does |
+| Bullets | <img src="img/pickup-bullets.png" width="52" alt="A cyan pickup"> | cyan | echo pistol and Regex Shotgun |
+| Shells | <img src="img/pickup-shells.png" width="52" alt="An amber pickup"> | amber | Regex Shotgun's own pool |
+| Rockets | <img src="img/pickup-rockets.png" width="52" alt="A hot orange pickup"> | hot orange | ghidra |
+| SMG ammo | <img src="img/pickup-smg.png" width="52" alt="A bright blue pickup"> | bright blue | gdb |
+| Gas | <img src="img/pickup-gas.png" width="52" alt="A fiery orange pickup"> | fiery orange | Friday Hotfix |
+| Weapon | <img src="img/pickup-weapon.png" width="52" alt="A violet pickup framed by a glowing ring"> | violet, **with a pulsing ring** | a gun you don't own yet |
 
 And the things you'd otherwise work out the hard way:
 
@@ -105,6 +115,8 @@ And the things you'd otherwise work out the hard way:
 
 A keycard: the same two-square shape as a pickup, slightly larger, floating at waist height — and in its own door's colour.
 
+![The four keycards side by side on the floor: red, blue, green and violet](img/keys-all-colours.png)
+
 | Key | Opens |
 |---|---|
 | Red | the red room |
@@ -112,11 +124,15 @@ A keycard: the same two-square shape as a pickup, slightly larger, floating at w
 | Green | the green room |
 | Violet | the violet room |
 
+The HUD carries the same four colours, one pip per locked room. Here three are still out there and the blue one has been picked up:
+
+![The KEYS section of the HUD showing four small squares — red, blue, green and violet — with only the blue one filled in](img/hud-key-pips.png)
+
 That's the whole system, and it's deliberately small:
 
 - **At most four rooms are locked per level**, so a colour never repeats. The colour *is* the room's identity — there's never a "which red door did this one mean?"
 - **A key opens every door of its room and is never spent.** Once you have it, that room is open for good, however many ways in it has.
-- **The HUD shows one pip per locked room**, in that room's colour: hollow while you still need it, filled once you're holding it. A level with nothing locked shows a dash. There's no held/total count, because which *colours* you have is the only thing that decides whether the door in front of you opens.
+- **Hollow means still out there, filled means you have it** — and a level with nothing locked shows a dash instead of pips. There's no held/total count, because which *colours* you have is the only thing that decides whether the door in front of you opens.
 - **There's no yellow key**, which will look odd if you know Doom. Amber already means "Switchboard branch door — no key, just push it", and keeping those two apart matters more than matching a 1993 key set.
 
 In co-op, keys are held by the **team**: whoever picks one up opens that room for everybody.

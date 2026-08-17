@@ -1519,6 +1519,64 @@ export class RaycasterEngine {
         // Returns an empty batch when `?eventLog=1` was not passed, so a
         // caller that drains unconditionally needs no branch of its own.
         drainEvents: () => (this.eventLog ? drainEvents(this.eventLog) : { events: [], dropped: 0 }),
+
+        // --- Staging hooks, for `scripts/capture-doc-screenshots.mjs` ------
+        //
+        // Everything above this line observes; these four *place* things. They
+        // exist because the documentation screenshots need a specific item in
+        // a specific spot, and no amount of observation gets you there:
+        // `rollLoot` filters rockets/smg/gas out entirely until the matching
+        // weapon is owned, and the generator decides that at map-build time
+        // from the *previous* level's carryover — so a fresh level 1 simply
+        // cannot contain those three, however the fixture is written, and no
+        // cheat helps because IDKFA grants weapons long after generation.
+        //
+        // Deliberately NOT a bot affordance: the balancing harness must keep
+        // playing the game the player plays, and a bot that could conjure ammo
+        // would silently invalidate every economy number it reports. Nothing
+        // under `scripts/lib/` calls these.
+        //
+        // Same inertness as every hook above — the whole object is behind
+        // `isTestHooksActive()`, which is `import.meta.env.DEV && …`, so Vite
+        // eliminates the entire block from a built bundle.
+        debugSpawnDrop: (drop: { x: number; y: number; kind: LootKind; weaponIndex?: number }) => {
+          this.drops.push({ ...drop });
+        },
+        debugSpawnKey: (key: { x: number; y: number; gateId: number }) => {
+          this.map.keys.push({ ...key, collected: false });
+        },
+        /**
+         * Marks the level explored, for an automap shot that isn't mostly fog.
+         *
+         * Deliberately *not* every tile. `MapGenerator` allocates a full solid
+         * grid and carves the level out of it, so flooding `visited` wholesale
+         * makes the automap draw the untouched rock too — a screenshot that is
+         * mostly a grey field, and one no amount of real play could ever
+         * produce. Marking open tiles and the walls immediately around them is
+         * exactly what a level you have walked every corridor of looks like.
+         *
+         * Nothing reads `visited` as a gate on gameplay — it only decides what
+         * the automap and the loot markers draw.
+         */
+        debugRevealMap: () => {
+          for (let y = 0; y < this.map.height; y++) {
+            for (let x = 0; x < this.map.width; x++) {
+              if (this.map.grid[y][x] === 1) continue;
+              for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                  const ny = y + dy;
+                  const nx = x + dx;
+                  if (ny >= 0 && ny < this.map.height && nx >= 0 && nx < this.map.width) this.map.visited[ny][nx] = true;
+                }
+              }
+            }
+          }
+        },
+        /** Clears the level so a framed shot has no enemy wandering through it.
+         * Composition, not determinism — the sim is already deterministic. */
+        debugClearEnemies: () => {
+          for (const e of this.enemies) e.alive = false;
+        },
       };
     }
   }
