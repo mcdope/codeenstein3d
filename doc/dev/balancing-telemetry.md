@@ -222,6 +222,10 @@ Three numbers, all real time, all per decision:
 
 **Never ablate `sprites`, `walls` or `shade`.** The `sprites` branch is what sets `this.target` from `findTargetUnderCrosshair`, and its `else` sets `this.target = null`; `walls` fills the z-buffer that targeting reads. Ablating either stops the bot being able to shoot at all — a silent, total behavioural change wearing the costume of a rendering flag.
 
+**End to end it is worth 11.5%, not the 4.2x the engine numbers suggest.** Three interleaved reps, seed pinned, identical decision counts (92,724) in every run: control **196.7s** (199/192/199), ablated **174.0s** (176/178/168). Interleaved on purpose — the governor here is `schedutil` and this repo has a recorded case of DVFS flipping the sign of a light-duty comparison. Transport *grew* as the engine got cheaper (11.06 -> 13.17ms/decision): the bottleneck moved onto the shared CDP connection rather than disappearing.
+
+**A consequence worth acting on separately: the harness is no longer CPU-bound.** Load sat at 10.9 on 16 cores at concurrency 12 *before* ablation, and ablation removes ~76% of the engine work. The default of 12 was chosen against the old constraint, so the optimal concurrency is now an open question rather than a settled default.
+
 **What this leaves for the in-page-decision-loop idea.** Transport is the half an in-page loop would delete, and at production concurrency (12) it is already the larger half — and it *grows* once the engine gets cheaper, because the bottleneck moves onto the shared CDP connection rather than disappearing. So the decoupling idea survives, but for the transport, not for the decisions, and it should be judged against the ablation as the cheaper alternative that ships today.
 
 ## A capture directory is not an A/B input

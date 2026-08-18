@@ -2290,7 +2290,12 @@ export class Bot {
       // `WEAPONS` — see `numberKeyCodeFor`.
       { desiredKeys: [...keys], fire, weaponSwitchCode: weaponSwitchIndex == null ? null : numberKeyCodeFor(weaponSwitchIndex), useMelee, stepMs: ms, subStepMs, headed, isFirst, isLast, timing: !!this.timing },
     );
-    if (this.timing) {
+    // Headless only. Headed mode installs no virtual clock, so there is no
+    // `__realNow` to measure the page side with — `inPageMs` would come back 0
+    // and the whole call would be attributed to transport, reporting a
+    // confident 100% that means nothing. Better to report no numbers than
+    // wrong ones, and headed mode exists for watching rather than measuring.
+    if (this.timing && !headed) {
       this.timing.evalWallMs += performance.now() - evalStartedAt;
       this.timing.inPageMs += dispatched.inPageMs ?? 0;
       this.timing.pumpMs += dispatched.pumpMs ?? 0;
