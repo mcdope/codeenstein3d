@@ -12,6 +12,40 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **Where the balancing harness's wall clock actually goes — measured, and it refutes the backlog item that asked for it (2026-08-18).** `notes` carried "decouple bot decisions from engine, **for more performance**" since before the bot rework. **The bot's decision costs 0.2-0.3% of the harness's wall clock.** There is no version of that item that pays, because the decisions are already free. Shipped as `CODEENSTEIN_BOT_TIMING=1`, off by default and reading no clock when off.
+
+  **Nothing had ever measured this, and one line was in the way.** `perfDebug.ts` has no bot phase and could not acquire one: `installVirtualClock` replaces `performance.now`, so every in-page phase timing reads **0** under this harness. The installer now stashes `window.__realNow` before patching — the only real clock left inside the page, and inert to everything else.
+
+  | per decision, real time | `decide()` | engine frame | CDP transport |
+  |---|---:|---:|---:|
+  | concurrency 1 | 0.024ms (0.3%) | 5.12ms (63%) | 2.88ms (36%) |
+  | concurrency 12 | 0.028ms (0.2%) | 8.66ms (46%) | 11.06ms (54%) |
+
+  **The real cost is a raycast frame per decision that nobody ever looks at.** `advance()` is unconditionally `simulate(dt)` **then `render()`**, and the harness pumps one rAF per decision — so a full floor-cast/walls/sprites/effects/viewmodel/HUD pass runs ~30,000 times per attempt into a canvas no one reads. `?ablate=floor,effects,viewmodel,hud` already ships (`resolveAblations`, `engine.ts`) and its own comment says it is deliberately **not** DEV-gated, "the switches must exist in the exact build being measured".
+
+  **Ablation, measured properly — 3 interleaved reps, seed pinned, identical decision counts (92,724) in every run:**
+
+  | arm | wall clock (mean of 3) | reps | engine ms/decision | transport ms/decision |
+  |---|---:|---|---:|---:|
+  | control | 196.7s | 199 / 192 / 199 | 8.66 | 11.06 |
+  | ablated | **174.0s** | 176 / 178 / 168 | **2.06** | 13.17 |
+
+  Interleaved A/B/A/B deliberately: the governor here is `schedutil`, and this repo has a recorded case of DVFS turning a -0.5ms win into a +1.3ms "regression" on a light-duty comparison. The ranges do not overlap (192-199 vs 168-178).
+
+  **It is gameplay-neutral, verified rather than argued.** At a pinned seed the two arms produced **byte-identical telemetry payloads** — 18,773 bytes over 4 levels x 3 attempts at concurrency 1, and **81,080 bytes over 8 levels x 12 attempts** at concurrency 12. That check is the point: "it only skips drawing" is exactly the kind of claim that is obviously true until it isn't.
+
+  **Never ablate `sprites`, `walls` or `shade`.** The `sprites` branch is what sets `this.target` from `findTargetUnderCrosshair` and its `else` sets `this.target = null`; `walls` fills the z-buffer targeting reads. Ablating either stops the bot being able to shoot at all — a total behavioural change wearing the costume of a rendering flag.
+
+  **The surprise is the size of the win: 11.5%, not the 4.2x the engine numbers suggest.** Transport was already the larger half at production concurrency and it *grew* as the engine got cheaper (11.06 -> 13.17ms/decision). The bottleneck did not disappear, it moved onto the shared CDP connection — twelve contexts share one Chromium process and one connection. Two consequences worth carrying forward: the in-page-decision-loop idea survives **for the transport rather than the decisions**, and the harness has stopped being CPU-bound (load 10.9 on 16 cores at c=12), so the default concurrency of 12 was chosen under a constraint that no longer applies.
+
+  **Also landed, both inert by default: the machinery a `VIRTUAL_STEP_MS` A/B needs.** `deriveTuningForStep` rescales the 11 tick-denominated tuning budgets so they keep the same duration in simulated time — an explicit key list, not a name test, because `COMBAT_TICK_BUDGET_MULTIPLIER` contains "TICK" and is a ratio. A completeness test asserts every tick-ish key is declared in one list or the other, and caught `TICK_BUDGET_SCALING` itself on its first run.
+
+  **The second half of that confound has no env-var escape hatch and would have been missed.** Five detector thresholds are module constants in `bot.mjs` (`OSCILLATION_TICKS_THRESHOLD` 30, `STALL_TICKS_THRESHOLD` 20, `HELD_KEY_NO_MOVEMENT_TICKS_THRESHOLD` 10, `HP_DRAIN_FROZEN_TICKS_THRESHOLD` 2, `EXIT_FIGHT_CHUNK_TICKS` 10), unreachable by `CODEENSTEIN_TELEMETRY_TUNING`. Left fixed while the window shrinks, `detectOscillation`'s 30-*decision* span covers proportionally less simulated time, shorter real episodes start qualifying, and **the metric rises with no change in behaviour** — the same mistake as the two oscillation fixes reverted on a number that was counting the bot's ordinary gait. `Bot#ticksScale` corrects it; the tests show a 40-decision run qualifying at the tuned window, correctly ceasing to qualify at half of it, and qualifying again at 60, so the guard cannot pass by being switched off.
+
+  **And an unexamined property of every balance number on record, now at least testable.** `recordStepMs` has always defaulted to the decision window, so the harness integrates the engine at **50ms per frame — exactly `MAX_DT`**, the slowest step it will ever take, while a player runs at 60-120fps. `RECORD_STEP_MS` exposes that single-variable. Note it also shrinks `Bot#aimLeadMs`, correctly by construction (the lead *is* the dt of the frame that resolves the shot), so an arm that wins on it needs a `{"BOT_AIM_LEAD":false}` pair to separate the two.
+
+  **Two reporting traps found while scoping, verified by reading, not fixed** — they decide whether an A/B can be *read*. `report-balancing-ab.mjs`'s `loadSide` spreads at the difficulty level, so pointed at a chunked capture **the last file silently replaces every earlier one**, with no error and normal-looking output. And `report-balancing-events.mjs`'s `collectLogPaths` does not recurse, so a capture's `events/<combo>-<seq>/` logs are invisible to it. Both are in `notes`.
+
 - [x] **The bot and the engine now share their tile and sight predicates instead of each carrying a copy (2026-08-18).** New `src/engine/mapPredicates.ts`; `player.ts`, `enemyAi.ts`, `combatPolicy.mjs` and `pathfind.mjs` all call into it. Net −132 lines against +202 of shared module and tests. Proven behaviour-neutral: a seeded corpus of **196,200 predicate and `decide()` outcomes** digests to `2a791439` before and after.
 
   **The cost this repays was paid the day before.** The L6 wedge (entry below) was open eleven days across seven wrong root causes, and its root cause *was* this duplication — the bot's sight test was built on its own route-planner passability rule, so closed doors were transparent to it. `combatConstants.ts` already records the same class paid for once, with a mirrored `ROCKET_TRAVEL_SPEED` wrong by 3.6x. There were only ever **two** distinct tile sets, hand-copied across five modules: `{1,3,6,7,8}` (solid to a body or a bullet — `player.ts`'s `isWall`, `combatPolicy.mjs`'s `isSightBlockingTile`, `pathfind.mjs`'s `BLOCKED_TILES`, `combatPolicy.mjs`'s `STRAFE_BLOCKED_TILES`) and `{1,6,7}` (solid to a route planner, doors passable — `combatPolicy.mjs`'s `isWallTile`). The first two of those were byte-for-byte the same predicate in two languages, with nothing in the build comparing them.
