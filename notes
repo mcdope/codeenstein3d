@@ -193,14 +193,6 @@ Items recording a *measurement* rather than a code claim (the demo-campaign diff
   - **Possible perf upside, to measure not assume.** `perf-review-2026-08-02.md` found the expensive class is "geometry Skia cannot emit as axis-aligned quads", and the HUD draws text and shapes every frame. A pre-composited bar blitted with one `drawImage` may be *cheaper* than what is there. Directly measurable — the HUD already has its own `?ablate=hud` group and `perf:bench` has scenarios.
   - **A full-width bezel costs viewport.** DOOM's bar eats ~20% of the screen; this renderer draws the 3D scene to a canvas sized independently of it. Check what shrinking the scene does to both feel and frame time before committing to the layout.
   - **Licensing, same split as the WAD-audio item**: the player's own WAD is settled precedent from textures; catalog WADs in `public/wads/` are served from the deployed site, so shipping their HUD art is redistribution — check `onlineWadCatalog.ts`'s bar for that case.
-## Not yet thought through
-
-One-liners that have never been checked against the code — kept at the end so it
-is obvious at a glance which items are ideas rather than plans. Everything above
-carries at least a dated finding. Refining one usually means discovering that the
-premise moved: of the last six done this way, three turned out to be already
-implemented, already refuted, or impossible as written.
-
 - [ ] **objects on walls (properly sized, not simply "slap a texture on the whole wall")** — scoped 2026-08-19, now **posters and flat fixtures only**; lamps and windows are their own items below. This is the *wall-surface* half of decoration, the floor-standing half being the "rooms need deco" item above.
   - **The mechanism, shared with the deco item: a new tile kind plus a texture slot.** `raycaster.ts` already dispatches wall texture by tile kind (`hitTile === DOOR_TILE || BRANCH_DOOR_TILE : LORE_TILE : ...`), so a `POSTER_TILE` drops into that chain exactly as a `RACK_TILE` would for solid props. **And it is what "properly sized" asks for**: the fixture is drawn *within* the wall texture at correct proportions rather than stretched across it — precisely how DOOM does wall fixtures.
   - **One caveat to design around:** a tile kind textures *all four faces* of that block, so a poster would appear on every side. The renderer already distinguishes the hit side (it dims y-side walls to fake directional lighting), so per-face selection is reachable — but it has to be built deliberately, not assumed.
@@ -217,6 +209,16 @@ implemented, already refuted, or impossible as written.
   - **The simulation half is smaller but genuinely new**: a window is **solid to bodies and bullets, transparent to sight** — a *third* category beyond the two `src/engine/mapPredicates.ts` has (`isWall` = solid to a body or a bullet, `isRouteBlocking` = solid to a route planner). The engine and the bot need it *differently*: an enemy should aggro through a window, while the bot must not try to shoot through one. That module already expresses exactly this kind of divergence as an argument (`sealedCorner`), so it is the right home.
   - **Then decide whether the player can shoot through.** If yes it is a firing port and changes tactics; if no, "I can see him but cannot hit him" has to be legible from the art alone.
   - **Cheaper things that get most of the feel**, worth pricing against the above before committing: a full-height barred opening (no banding needed, still a window fictionally), or a purely decorative lit alcove with no sight line at all.
+
+
+## Not yet thought through
+
+One-liners that have never been checked against the code — kept at the end so it
+is obvious at a glance which items are ideas rather than plans. Everything above
+carries at least a dated finding. Refining one usually means discovering that the
+premise moved: of the last six done this way, three turned out to be already
+implemented, already refuted, or impossible as written.
+
 - [ ] Add three multiplayer coop demo campaigns
     - [ ] 1x finishable in 5-15min
     - [ ] 1x finishable in 10-30min
