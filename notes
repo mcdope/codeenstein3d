@@ -201,11 +201,17 @@ carries at least a dated finding. Refining one usually means discovering that th
 premise moved: of the last six done this way, three turned out to be already
 implemented, already refuted, or impossible as written.
 
-- [ ] objects on walls (properly sized, not simply "slap a texture on the whole wall")
-    - [ ] flares/lamps with lightning and shadow effects
-    - [ ] if room behind wall: window into next room (incl. LOS for enemy aggro - enemies should aggro when they see player through window)
-    - [ ] posters (showing what? dev tools? images in the sourcetree?)
-
+- [ ] **objects on walls (properly sized, not simply "slap a texture on the whole wall")** — scoped 2026-08-19. **This is the *wall-surface* half of decoration; the floor-standing half is the "rooms need deco" item above.** They share one mechanism and differ in geometry, and one of the three sub-items below is far bigger than the other two.
+  - **The mechanism, shared with the deco item: a new tile kind plus a texture slot.** `raycaster.ts` already dispatches wall texture by tile kind (`hitTile === DOOR_TILE || BRANCH_DOOR_TILE : LORE_TILE : ...`), so a `POSTER_TILE`/`LAMP_TILE` drops into that chain exactly as `RACK_TILE` would for solid props. **And it is what "properly sized" asks for**: the fixture is drawn *within* the wall texture at correct proportions, not stretched across it — which is precisely how DOOM does wall fixtures.
+    - **One caveat to design around:** a tile kind textures *all four faces* of that block, so a poster would appear on every side. The renderer already distinguishes the hit side (it dims y-side walls to fake directional lighting), so per-face selection is reachable — but it has to be built deliberately, not assumed.
+  - **Lamps: there is no lighting model to hang this on.** The renderer has distance fog plus a fixed y-side dim, and nothing else — no point lights, no light sources of any kind. So split the sub-item:
+    - **Glow is cheap.** An emissive texture plus a local brightness boost, modulating the existing `fogBrightness` scalar by proximity to the light. Per-column arithmetic on a value already computed.
+    - **Shadows are a different renderer.** Real occlusion means testing each light against each column, in the loop that `perf-review-2026-08-02.md` measures at ~93% of frame time. Decline it, or scope it alone with a perf budget agreed up front.
+  - **The window is a much larger feature and should become its own item when picked up.** Two independent costs, either of which dwarfs the rest of this entry:
+    - **Rendering:** the DDA stops at the first solid tile and has no compositing. Seeing *through* a tile means collecting multiple hits and drawing them back-to-front — a restructure of the hottest loop in the renderer.
+    - **Simulation, and this is the interesting part:** a window is **solid to bodies and bullets but transparent to sight** — a *third* category beyond the two `src/engine/mapPredicates.ts` now has (`isWall` = solid to a body or a bullet, `isRouteBlocking` = solid to a route planner). The engine and the bot need it *differently*: an enemy should aggro through a window, while the bot must not try to shoot through one. That module already expresses exactly this kind of divergence as an argument (`sealedCorner`), so it is the right home — but it is a real semantic addition, not a texture.
+    - **Then decide whether the player can shoot through it.** If yes it is a firing port and changes tactics; if no, "I can see him but cannot hit him" has to be legible from the art alone.
+  - **Posters: showing what?** The thematically right answer is *derived from the source*, which is the whole conceit. Free today: the file's own name/path, the entity's signature, the language. **Images from the source tree — the original suggestion — are cheap for a local workspace and currently impossible for a GitHub one**: `RemoteFileHandle.getFile()` returns `{ text(): Promise<string> }` and nothing else, so a repo-loaded workspace cannot supply bytes without extending that interface. Nothing in the codebase decodes images at all today, though `createImageBitmap` needs no dependency. Needs a size cap and a rule for *which* images.
 - [ ] Add three multiplayer coop demo campaigns
     - [ ] 1x finishable in 5-15min
     - [ ] 1x finishable in 10-30min
