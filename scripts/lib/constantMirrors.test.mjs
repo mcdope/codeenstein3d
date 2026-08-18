@@ -5,7 +5,8 @@
  * Pins the bot's hand-maintained mirrors of engine constants against the real
  * `src/` modules.
  *
- * **Why this exists.** `src/` cannot import from `scripts/`, and
+ * **Why this exists.** `src/` cannot import from `scripts/` (the converse is
+ * fine, and is what this file and `combatPolicy.mjs` both do), and
  * `combatPolicy.mjs` is deliberately kept liftable back into
  * `src/engine/combatPolicy.ts` as the basis of an in-game deathmatch opponent
  * — so it mirrors the weapon table and a set of engine scalars as plain
@@ -31,6 +32,9 @@
  * is excluded from the `src/` coverage denominator but is still executed by
  * `vitest run`, so this runs in CI.
  */
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -65,7 +69,7 @@ describe("engine scalars mirrored in DEFAULT_TUNING", () => {
     ["ENGINE_DOOR_REACH_MARGIN", 0.15, "engine.ts openDoorAhead's reach margin"],
   ])("%s matches %s", (key, expected) => {
     // engine.ts cannot be imported here -- it is the whole game, DOM and all --
-    // so these three are pinned against the literal instead. Weaker than the
+    // so these five are pinned against the literal instead. Weaker than the
     // imports below, but it still fails loudly if someone retunes one side.
     expect(DEFAULT_TUNING[key]).toBe(expected);
   });
@@ -156,5 +160,40 @@ describe("archetype damage multipliers the bot reasons about", () => {
     expect(ELITE_DAMAGE_MULTIPLIER).toBe(2);
     expect(EDGE_CASE_DAMAGE_MULTIPLIER).toBe(0.4);
     expect(ATTACK_DAMAGE).toBe(10);
+  });
+});
+
+describe("the shared predicates stay reachable from a real Node process", () => {
+  // The guard this suite could not previously have. `combatPolicy.mjs` now
+  // *imports* `src/engine/mapPredicates.ts` rather than re-typing its
+  // predicates, and the balancing harness runs under plain `node`, not Vitest.
+  //
+  // Those two resolve differently. Vitest goes through Vite, which happily
+  // resolves an extensionless specifier; Node ESM does not, so a value import
+  // written `from "../map/types"` inside the shared module would pass every
+  // test here and then break `npm run balancing:telemetry` at launch. Node also
+  // only strips *erasable* syntax — an `enum`, a `namespace` or a parameter
+  // property anywhere in that import graph fails the same way.
+  //
+  // So this asserts the thing the rest of the suite structurally cannot see, by
+  // spawning the real interpreter. ~200ms, and it is the exact failure mode the
+  // new convention introduces.
+  it("imports mapPredicates.ts and combatPolicy.mjs under bare node", () => {
+    const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
+    const probe = [
+      'const p = await import("./src/engine/mapPredicates.ts");',
+      'const c = await import("./scripts/lib/combatPolicy.mjs");',
+      // Exercise both, so a module that loads but exports nothing useful still fails.
+      'if (typeof p.hasLineOfSight !== "function") throw new Error("mapPredicates lost hasLineOfSight");',
+      'if (c.HAZARD_TILE !== 2) throw new Error("combatPolicy lost its re-exported tile constants");',
+      'console.log("ok");',
+    ].join("\n");
+    const run = spawnSync(process.execPath, ["--input-type=module", "-e", probe], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    expect(run.stderr).toBe("");
+    expect(run.status).toBe(0);
+    expect(run.stdout.trim()).toBe("ok");
   });
 });

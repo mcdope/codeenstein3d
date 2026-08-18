@@ -19,6 +19,9 @@
  *    the basis of a real in-game deathmatch opponent. `src/` cannot import from
  *    `scripts/`, so the move has to be a copy — and a copy is only mechanical if
  *    this file never acquires a dependency that `src/engine/` couldn't satisfy.
+ *    Note the converse *does* work and is used below: this file imports real
+ *    `src/` modules directly (Node strips TS types natively). Every predicate
+ *    or constant taken that way is one less thing the lift has to carry.
  *
  * ## Rules this file must keep (they exist to keep rule 2 true)
  *
@@ -62,6 +65,28 @@
  * keys carry *different* durations is the next change, and it is what fixes the
  * bot standing still while shooting — see `segmentsFor`.
  */
+// The tile and sight predicates are *imported from the engine*, not re-typed
+// here any more. This is a plain `.mjs` importing a `.ts` module, which works
+// because Node strips TypeScript types natively (>=22.18; this repo's floor is
+// `^22.22.2` and every CI job pins 24) — the explicit `.ts` extension is
+// required because Node ESM does no extensionless resolution, and is legal for
+// Vite/tsc because `allowImportingTsExtensions` is already set.
+//
+// This does not weaken the "stay liftable into `src/engine/`" rule in the
+// header above — it strengthens it. The rule exists so a future copy is
+// mechanical; importing what the engine already exports means there is that
+// much less left to copy, and no second definition that can silently drift.
+// `mapPredicates.ts` is DOM-free and imports only `../map/types.ts`, so it
+// loads in bare Node — `constantMirrors.test.mjs` asserts that in a real
+// subprocess, since Vitest resolves through Vite and would not notice.
+import {
+  hasLineOfSight as sharedLineOfSight,
+  isHazardAt as sharedIsHazardAt,
+  isRouteBlockingAt,
+  isWallAt,
+  SOLID_TILES,
+} from "../../src/engine/mapPredicates.ts";
+import { isSpikeActive } from "../../src/engine/traps.ts";
 
 // Mirrors src/engine/weapons.ts's WEAPONS array indices — plain literals
 // rather than importing that TS module (this is a plain Node script, not
@@ -107,10 +132,13 @@ export function numberKeyCodeFor(weaponIndex) {
 // `decide`, which takes the max of that interval and the profile's own
 // dispatch cooldown). See `profile.fireCooldownMs`'s doc comment.
 export const AUTO_RANGED_WEAPON_INDICES = new Set([GDB_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX]);
-export const HAZARD_TILE = 2; // src/map/types.ts's Tile enum
-export const SPIKE_TRAP_TILE = 5; // src/map/types.ts's Tile enum
-export const LOCKED_DOOR_TILE = 3; // src/map/types.ts's Tile enum
-export const BRANCH_DOOR_TILE = 8; // src/map/types.ts's Tile enum
+// The real `Tile` values, re-exported from where the map layer defines them
+// rather than re-typed as literals here. `LOCKED_DOOR_TILE` keeps its bot-side
+// name (the map layer calls the same tile `DOOR_TILE`) because it reads at
+// every call site as "the door that still needs a key", which is the property
+// the route planner cares about.
+export { BRANCH_DOOR_TILE, HAZARD_TILE, SPIKE_TRAP_TILE } from "../../src/map/types.ts";
+export { DOOR_TILE as LOCKED_DOOR_TILE } from "../../src/map/types.ts";
 
 // Floor for `forwardScanTiles` — the fixed look-ahead the forward hazard/
 // spike checks used before sprinting made one decision's travel variable.
@@ -728,7 +756,7 @@ export const DEFAULT_TUNING = {
  * `BLOCKED_TILES` (wall / locked door / unopened secret / lore / branch door) —
  * deliberately wider than `isWallTile`'s `{1,6,7}`, since a closed door is not
  * something to strafe into even though a bullet ignores it. */
-const STRAFE_BLOCKED_TILES = new Set([1, 3, 6, 7, 8]);
+const STRAFE_BLOCKED_TILES = SOLID_TILES;
 
 // ---------------------------------------------------------------------------
 // Geometry
@@ -758,89 +786,39 @@ export function diagonalStrafeKey(delta) {
 }
 
 export function isHazardAt(map, x, y) {
-  return map.grid[Math.floor(y)]?.[Math.floor(x)] === HAZARD_TILE;
+  return sharedIsHazardAt(map, x, y);
 }
 
-/** Mirrors src/engine/traps.ts's isSpikeActive — whether the spike trap (if
- * any) at (x,y) is in its damaging half of the cycle at `levelTime`. */
+/** Whether the spike trap (if any) at (x,y) is in its damaging half of the
+ * cycle at `levelTime`. The phase arithmetic is the engine's own
+ * `isSpikeActive` rather than a copy of it — only the tile lookup is bot-side,
+ * because the engine indexes traps by list and the bot by position. */
 export function activeSpikeAt(map, x, y, levelTime) {
   const cx = Math.floor(x);
   const cy = Math.floor(y);
   const trap = map.spikeTraps.find((t) => t.x === cx && t.y === cy);
-  if (!trap) return false;
-  const cyclePos = (levelTime + trap.phase) % trap.period;
-  return cyclePos >= trap.period / 2;
-}
-
-/** Mirrors the engine's own hasLineOfSight (src/engine/enemyAi.ts): samples
- * every ~0.1 tiles along the line and fails if any sample lands on a
- * wall/unopened-secret/lore tile. */
-export function hasLineOfSight(map, x0, y0, x1, y1) {
-  const dx = x1 - x0;
-  const dy = y1 - y0;
-  const dist = Math.hypot(dx, dy);
-  const steps = Math.ceil(dist / 0.1);
-  // Previous cell, so a *diagonal* cell change can be spotted. Point sampling
-  // alone leaks through lattice corners: a ray that passes exactly through the
-  // point where four tiles meet jumps from one diagonal cell to the other
-  // without ever landing inside the two tiles wedged between them, and reports
-  // a clear view through what is, to the engine, a solid corner.
-  //
-  // Not a hypothetical. On demo-campaign L6 the bot sits at (14.20,50.20) and
-  // an enemy at (13.7,49.7): the segment is an exact 45 degrees and crosses
-  // (14.0,50.0) dead on, so the samples step (14,50) -> (13,49) and skip both
-  // the wall at (13,50) and the closed door at (14,49). The bot then engages a
-  // target no bullet of its could reach — and since combat preempts
-  // navigation, the door leg it was in the middle of never advances while its
-  // health drains where it stands.
-  //
-  // Denser sampling cannot fix this: the corner is a single point, so a ray
-  // through it lands inside neither tile at any resolution. The crossing has
-  // to be recognised for what it is, which is what the flanking test below
-  // does — blocking if *either* flanking tile is solid, matching what a body
-  // or a bullet would actually hit.
-  let px = Math.floor(x0);
-  let py = Math.floor(y0);
-  for (let i = 1; i < steps; i++) {
-    const t = i / steps;
-    const sx = x0 + dx * t;
-    const sy = y0 + dy * t;
-    const cx = Math.floor(sx);
-    const cy = Math.floor(sy);
-    if (cx !== px && cy !== py) {
-      // **Both** flanking tiles, not either. A corner sealed by two solid
-      // tiles genuinely cannot be seen through; a corner with one solid and
-      // one open is a diagonal graze, and the engine lets the shot through —
-      // it occludes sprites with the render z-buffer, not a tile test, so an
-      // enemy diagonally past a single wall corner is on screen and hittable.
-      //
-      // Blocking on *either* was measured to be far too strict: it made a
-      // blocker standing diagonally in a doorway unshootable, so
-      // `driveToExit`'s hunt drove at it forever without ever firing and both
-      // `verify (multiplayer-transition)` and `verify (Playwright/webkit)` ran
-      // into their CI timeouts. The L6 wedge is unaffected by the narrowing —
-      // there the wall at (13,50) and the closed door at (14,49) are both
-      // solid, which is exactly the sealed case this still blocks.
-      if (isSightBlockingTile(map, cx + 0.5, py + 0.5) && isSightBlockingTile(map, px + 0.5, cy + 0.5)) return false;
-    }
-    px = cx;
-    py = cy;
-    if (isSightBlockingTile(map, sx, sy)) return false;
-  }
-  return true;
+  return trap ? isSpikeActive(trap, levelTime) : false;
 }
 
 /**
- * Tiles that block *walking*, for the walking-distance flood.
+ * Can the bot see from (x0,y0) to (x1,y1)?
  *
- * A closed door is deliberately **not** here: you can open one, so it is
- * passable terrain to a route planner, which is why `bfsPath` tracks
- * `openedDoors` rather than treating doors as walls. Do not use this to answer
- * "can I see/shoot through here" — see `isSightBlockingTile`.
+ * One line of delegation to `src/engine/mapPredicates.ts` — the same function
+ * the engine's own `enemyAi.ts` calls, differing only in `sealedCorner`. That
+ * argument, and the eleven days of L6 wedge behind it, are documented there.
+ *
+ * The bot passes `true` because it is asking whether a *bullet* can reach:
+ * a corner sealed by two solid tiles cannot be shot through even though a
+ * point-sampled ray slips between them. The engine passes `false` because it
+ * is asking a different question — whether an enemy notices the player — and
+ * changing that is a gameplay change, not a refactor.
  */
+export function hasLineOfSight(map, x0, y0, x1, y1) {
+  return sharedLineOfSight(map, x0, y0, x1, y1, true);
+}
+
 export function isWallTile(map, x, y) {
-  const tile = map.grid[Math.floor(y)]?.[Math.floor(x)];
-  return tile === undefined || tile === 1 || tile === 6 || tile === 7;
+  return isRouteBlockingAt(map, x, y);
 }
 
 /**
@@ -868,10 +846,7 @@ export function isWallTile(map, x, y) {
  * error is the bug above.
  */
 export function isSightBlockingTile(map, x, y) {
-  const tile = map.grid[Math.floor(y)]?.[Math.floor(x)];
-  return (
-    tile === undefined || tile === 1 || tile === 6 || tile === 7 || tile === LOCKED_DOOR_TILE || tile === BRANCH_DOOR_TILE
-  );
+  return isWallAt(map, x, y);
 }
 
 /** 4-directional neighbour offsets, as an array rather than any unordered

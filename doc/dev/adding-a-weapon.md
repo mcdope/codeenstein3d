@@ -103,7 +103,9 @@ It would *not*, however, have been dropped on the wire: the producer spreads eve
 
 ### 7. The playtest bot's mirror — the step everyone misses
 
-`scripts/lib/combatPolicy.mjs` is a **hand-maintained plain-JS copy** of the weapon table. `src/` cannot import from `scripts/` and the module is deliberately kept liftable back into `src/engine/combatPolicy.ts` later, so this duplication is intentional — but it means nothing links the two, and nothing fails when they drift.
+`scripts/lib/combatPolicy.mjs` is a **hand-maintained plain-JS copy** of the weapon table, so nothing links the two and nothing fails when they drift. `constantMirrors.test.mjs` pins it, which is why that suite fails until the mirror is updated.
+
+Note the justification for the copy has narrowed since it was written. It used to be "`src/` cannot import from `scripts/`" — true, but the sharing direction is the other one, and since 2026-08-18 `combatPolicy.mjs` *does* import real `src/` modules (see `mapPredicates.ts` for the rule that makes it work). The weapon table could follow and be derived from `WEAPONS` rather than copied; it has not been done yet only because the pin already catches drift.
 
 - `WEAPON_STATS` (ranged) / `MELEE_WEAPON_STATS` (melee) — the mirrored numbers.
 - The `*_WEAPON_INDEX` constants and `STARTING_WEAPONS`.
