@@ -23,6 +23,7 @@
     "report:gate-budget": "node scripts/report-gate-budget.mjs",
     "report:damage-model": "node scripts/report-damage-model.mjs",
     "report:aim-error": "node scripts/report-aim-error.mjs",
+    "report:capture-survival": "node scripts/report-capture-survival.mjs",
     "report:level-maps": "node scripts/render-level-maps.mjs",
     "report:doc-screenshots": "node scripts/capture-doc-screenshots.mjs",
     "verify:zip-reader": "node scripts/verify-zip-reader.mjs",
