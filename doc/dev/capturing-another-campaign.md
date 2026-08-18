@@ -147,10 +147,62 @@ and would silently ignore every nested directory the game descends into.
 names is the one shape where all three rules agree, and it is what the harness has
 always actually assumed.
 
+### The other failure mode: your campaign starts most of the way down the list
+
+**`campaignLevelOrder` returns `files.slice(entrypointIndex)`.** Files *before* the
+detected entrypoint are deliberately absent, because `advanceToNextLevel` only ever
+walks forward and the game never reaches them. That is correct for the bundled campaign,
+whose entrypoint is `main.c` and therefore first.
+
+It is a trap for anything else. A real project's files are rarely ordered so that the
+entrypoint comes first, and `findEntrypoint` falls back to *scoring* when nothing
+contains a `main`. The score depends on the whole candidate set, so **the number of
+levels you get is not monotonic in the number of files you stage**. Measured on curl's
+`lib/`, which has no `main()` anywhere:
+
+| files staged | levels actually played | level 1 |
+|---:|---:|---|
+| 17 | 13 | `05_bufref.c` |
+| 24 | **2** | `23_curl_endian.c` |
+
+Nothing errors, and the run is not wrong — it is a perfectly valid capture of a
+two-level campaign. It is simply not the campaign you thought you staged, and at 60
+attempts a combo you find out hours later.
+
+**So pin level 1: stage a file that actually contains an entrypoint as `01_`.** For curl
+that is `src/tool_main.c` rather than anything under `lib/`, and it takes 17 files back
+to 17 levels.
+
+**And check it before spending anything**, by asking the game rather than inferring —
+this is the same hook the planner itself uses, so it is the authority:
+
+```sh
+node -e 'import("./scripts/run-balancing-telemetry.mjs").then(async (m) => {
+  const order = await m.readCampaignLevelOrder();
+  console.log(order.length + " levels, starting at " + order[0]);
+  process.exit(0);
+});'
+```
+
+Note this also retires the older worry in the previous section. `planLevels` no longer
+derives its own order — it calls `readCampaignLevelOrder`, which asks the browser — so
+the planner and the game **cannot** disagree about which file is which level. The three
+enumerations still differ, but only the game's answer is ever used.
+
 ### Staging
 
 Work on a scratch branch or a `git worktree` — you are about to overwrite a
 directory the repo's tests assert on, and you must never commit that state.
+
+Two exceptions to "never commit", both learned the hard way. **A capture that uses SSH
+lanes must commit the staging and push it**, because lanes clone from origin and check
+out HEAD's exact sha — they refuse outright with "HEAD is not on any remote" otherwise.
+Use a `capture/` branch marked DO NOT MERGE. And **`ssh-hosts.env` is gitignored**, so a
+fresh worktree does not have one: without it the capture reports `Lanes: local` and runs
+single-machine at roughly a fifth of the speed, with no warning. Copy it in.
+
+A worktree also needs its own `npm ci`. Symlinking the main tree's `node_modules` looks
+like a shortcut and shares Vite's cache between two checkouts of different content.
 
 ```sh
 git worktree add ../shooter-capture -b capture/some-project
