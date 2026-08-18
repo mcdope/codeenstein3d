@@ -125,6 +125,28 @@ const DEBUG_NAV = process.env.CODEENSTEIN_TELEMETRY_DEBUG_NAV === "1";
 // `Bot` appends a lightweight per-decision record to its trace and `playRun`
 // runs anomaly detection against it after each level, logging any findings.
 const ANOMALY_SCAN = process.env.CODEENSTEIN_TELEMETRY_ANOMALY_SCAN === "1";
+// Real-time attribution of where a run's wall clock goes — see `Bot#timing`.
+// Answers the question the "decouple bot decisions from engine, for more
+// performance" backlog item rests on and that nothing has ever measured:
+// is the Node<->browser round trip the cost, or is it the full raycast frame
+// `advance()` renders per decision that nobody ever looks at?
+const BOT_TIMING = process.env.CODEENSTEIN_BOT_TIMING === "1";
+// Extra query parameters appended to the page URL, e.g.
+//   CODEENSTEIN_TELEMETRY_EXTRA_QUERY='&ablate=floor,effects,viewmodel,hud'
+// `?ablate=` is a real, shipped, deliberately un-DEV-gated engine switch
+// (`resolveAblations`, engine.ts) that skips draw-pass groups. Since the
+// harness never looks at a rendered frame, ablating the ones that do not feed
+// gameplay is a candidate throughput lever costing no fidelity — but that is a
+// claim to *verify* per arm (same seed, identical level snapshots), not to
+// assume. **Never ablate `sprites`, `walls` or `shade`**: the `sprites` branch
+// is what sets `this.target` from `findTargetUnderCrosshair`, and `walls`
+// fills the z-buffer it reads, so ablating either stops the bot shooting.
+const EXTRA_QUERY = process.env.CODEENSTEIN_TELEMETRY_EXTRA_QUERY ?? "";
+// Every attempt's `Bot#timing` object, collected at construction rather than
+// threaded through `playRun`'s five return paths. The objects are mutated in
+// place by the bot, so holding the reference is enough. Empty unless
+// `CODEENSTEIN_BOT_TIMING=1`.
+const TIMING_SAMPLES = [];
 // Implies ANOMALY_SCAN (the trace has to exist to analyze it). Runs a much
 // more precise, tick-by-tick pass over the same per-decision trace, looking
 // specifically for "a movement key (W/A/D) was held this tick, but position
@@ -399,8 +421,84 @@ async function main() {
   // developer's own, or a lane's shared instance) is never killed from here.
   server.stop();
 
+  const phaseTiming = summarizeTiming();
+  if (phaseTiming) {
+    output.meta.phaseTiming = phaseTiming;
+    reportTiming(phaseTiming);
+  }
+
   fs.writeFileSync(OUTPUT_FILE, JSON.stringify(output, null, 2));
   console.log("Telemetry saved");
+}
+
+// ---------------------------------------------------------------------------
+// Wall-clock attribution
+// ---------------------------------------------------------------------------
+
+/**
+ * Pool every attempt's `Bot#timing` into one picture, or null when the flag is
+ * off.
+ *
+ * The two derived numbers are the point:
+ *
+ * - **`transportMs`** = `evalWallMs - inPageMs`. Node measured the whole
+ *   `page.evaluate`; the page measured its own body. The difference is CDP
+ *   round trip plus argument/result serialisation — precisely the cost an
+ *   in-page decision loop would delete, and precisely what the "decouple bot
+ *   decisions from engine, for more performance" backlog item assumes
+ *   dominates.
+ * - **`pumpMs`** is the engine's own frames. `advance()` is `simulate(dt)` +
+ *   `render()` unconditionally, so this includes a full raycast frame per
+ *   decision that no one ever looks at. An in-page loop would *not* delete it;
+ *   `?ablate=` might.
+ *
+ * If `pumpMs` dominates `transportMs`, the item's premise is refuted and the
+ * cheap lever is the ablation, not an architecture change. Report both shares
+ * rather than a verdict.
+ */
+function summarizeTiming() {
+  if (TIMING_SAMPLES.length === 0) return null;
+  const total = { decideMs: 0, evalWallMs: 0, inPageMs: 0, pumpMs: 0, decisions: 0, dispatches: 0 };
+  for (const t of TIMING_SAMPLES) for (const k of Object.keys(total)) total[k] += t[k];
+  if (total.decisions === 0) return null;
+  const transportMs = Math.max(0, total.evalWallMs - total.inPageMs);
+  // Everything the bot spent inside its own decide/dispatch path. Deliberately
+  // not the process's wall clock: page setup, level transitions and the
+  // qualify loop are real but are not what this item is about.
+  const accountedMs = total.decideMs + total.evalWallMs;
+  return {
+    ...total,
+    transportMs,
+    accountedMs,
+    attemptCount: TIMING_SAMPLES.length,
+    perDecisionMs: {
+      decide: total.decideMs / total.decisions,
+      pump: total.pumpMs / total.decisions,
+      transport: transportMs / total.decisions,
+    },
+    share: {
+      decide: total.decideMs / accountedMs,
+      pump: total.pumpMs / accountedMs,
+      transport: transportMs / accountedMs,
+    },
+    concurrency: HEADED ? 1 : ATTEMPT_CONCURRENCY,
+    extraQuery: EXTRA_QUERY,
+  };
+}
+
+/** One block, printed once per process. Shares are of `accountedMs`, so they
+ * do not sum to 1 — `pump` is a subset of the same `page.evaluate` that
+ * `transport` is the overhead of. */
+function reportTiming(t) {
+  const pct = (v) => `${(v * 100).toFixed(1)}%`;
+  const ms = (v) => `${v.toFixed(3)}ms`;
+  console.log("");
+  console.log(`[phase-timing] ${t.decisions} decisions / ${t.dispatches} dispatches over ${t.attemptCount} attempts, concurrency ${t.concurrency}`);
+  if (t.extraQuery) console.log(`[phase-timing] extra query: ${t.extraQuery}`);
+  console.log(`[phase-timing]   decide()   ${ms(t.perDecisionMs.decide)}/decision   ${pct(t.share.decide)} of accounted`);
+  console.log(`[phase-timing]   engine     ${ms(t.perDecisionMs.pump)}/decision   ${pct(t.share.pump)} of accounted   <- simulate + render, per pumped frame`);
+  console.log(`[phase-timing]   transport  ${ms(t.perDecisionMs.transport)}/decision   ${pct(t.share.transport)} of accounted   <- CDP round trip + serialisation`);
+  console.log(`[phase-timing] transport is what an in-page decision loop deletes; engine is what it does not.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -455,7 +553,7 @@ async function runOneAttempt(browser, profileName, profile, difficulty, levelPla
     // engine buffers nothing without it, so an ordinary campaign pays nothing
     // for the feature.
     const eventLogParam = EVENT_LOG_DIR === null ? "" : "&eventLog=1";
-    await page.goto(`${DEV_SERVER_URL}/?testHooks=1&botRotSpeedMul=${profile.rotSpeedMultiplier}${seedParam}${eventLogParam}`);
+    await page.goto(`${DEV_SERVER_URL}/?testHooks=1&botRotSpeedMul=${profile.rotSpeedMultiplier}${seedParam}${eventLogParam}${EXTRA_QUERY}`);
     await page.click("#tab-demo");
     await page.click("#launch-demo-campaign");
     await waitForTestHooks(page);
@@ -538,6 +636,7 @@ export async function playRun(page, profile, levelPlans, label = "") {
   const bot = new Bot(page, profile, {
     realtime: HEADED,
     tuning: TUNING_OVERRIDE,
+    timing: BOT_TIMING,
     logger: {
       debugNav: DEBUG_NAV ? (msg) => console.log(msg) : undefined,
       wpDebug: process.env.CODEENSTEIN_WPDEBUG ? (msg) => console.log(msg) : undefined,
@@ -547,6 +646,7 @@ export async function playRun(page, profile, levelPlans, label = "") {
       traceDump: TRACE_DUMP,
     },
   });
+  if (bot.timing) TIMING_SAMPLES.push(bot.timing);
 
   for (let i = 0; i < levelPlans.length; i++) {
     const { map, routePlain } = levelPlans[i];

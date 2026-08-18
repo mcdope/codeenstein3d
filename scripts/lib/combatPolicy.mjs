@@ -162,6 +162,29 @@ const SEGMENT_SAMPLE_TILES = 0.25;
 export const DEFAULT_TUNING = {
   VIRTUAL_STEP_MS: 50,
   WATCH_STEP_MS: 130,
+  // Whether tick-denominated budgets and detector thresholds are rescaled when
+  // the decision window is not the 50ms one they were tuned at. **Off by
+  // default, so every existing run is byte-identical.** Turn it on for an arm
+  // that changes `VIRTUAL_STEP_MS`, or the arm measures the shortened timeouts
+  // rather than the finer decisions:
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"VIRTUAL_STEP_MS":25,"TICK_BUDGET_SCALING":true}'
+  // See `deriveTuningForStep` and `bot.mjs`'s `scaleTicks` — the confound has
+  // two halves and only one of them lives in this object.
+  TICK_BUDGET_SCALING: false,
+  // Sub-step handed to `__pumpVirtualTime`, i.e. the `dt` the engine actually
+  // integrates at. `null` means "the decision window itself", which is what
+  // every balancing run has always done — and that means the harness has
+  // always simulated at **50ms per frame, exactly `MAX_DT`**, the slowest step
+  // the engine will ever take, while a player runs at 60-120fps. Exposed as a
+  // knob so that can be tested single-variable (decisions unchanged, engine
+  // integration finer) rather than remaining an unexamined property of every
+  // number on record:
+  //   CODEENSTEIN_TELEMETRY_TUNING='{"RECORD_STEP_MS":16.666666666666668}'
+  // Note it also shrinks `Bot#aimLeadMs`, which is correct by construction —
+  // the lead *is* the dt of the frame that resolves the shot — but means the
+  // arm is not quite single-variable. Separate with `{"BOT_AIM_LEAD":false}`
+  // on both sides if it wins.
+  RECORD_STEP_MS: null,
   MAX_TICKS_PER_WAYPOINT: 600,
   // How far past `MAX_TICKS_PER_WAYPOINT` a waypoint drive may run when the
   // extra decisions are spent in combat rather than on navigation — see
@@ -2084,6 +2107,76 @@ export function segmentsFor(holds, durationMs, minPhaseMs = 0) {
     return [{ keys: allKeys, ms: Math.min(durationMs, ...holds.values()) }];
   }
   return phases;
+}
+
+/**
+ * Tuning keys whose unit is *decisions*, not seconds or tiles.
+ *
+ * An explicit list rather than a name test, because a name test gets this
+ * wrong: `COMBAT_TICK_BUDGET_MULTIPLIER` contains "TICK" and is a dimensionless
+ * ratio that must never be scaled. `tickTuningKeysAreComplete` in
+ * `combatPolicy.test.mjs` asserts every `TICK`-ish key in `DEFAULT_TUNING` is
+ * either in here or in the excluded list, so a key added later cannot be
+ * silently missed.
+ */
+export const TICK_DENOMINATED_TUNING_KEYS = [
+  "MAX_TICKS_PER_WAYPOINT",
+  "BOT_NAV_STALL_BAIL_TICKS",
+  "DOOR_OPEN_TICKS",
+  "MINE_TARGET_GIVEUP_TICKS",
+  "MINE_REALIGN_STALL_TICKS",
+  "COMBAT_STALL_TICKS_THRESHOLD",
+  "COMBAT_STALL_STRAFE_FLIP_TICKS",
+  "CRITICAL_STALL_TICKS_THRESHOLD",
+  "CRITICAL_STALL_STRAFE_FLIP_TICKS",
+  "CRITICAL_RETREAT_GIVEUP_TICKS",
+  "COMBAT_STRAFE_FLIP_TICKS",
+];
+
+/** Tick-ish names that are deliberately *not* durations. Listed so the
+ * completeness test can tell "excluded on purpose" from "forgotten" — and it
+ * earned its keep immediately: `TICK_BUDGET_SCALING` is the boolean that turns
+ * this machinery on, and scaling it would have coerced a flag to a number. */
+export const DIMENSIONLESS_TICK_TUNING_KEYS = ["COMBAT_TICK_BUDGET_MULTIPLIER", "TICK_BUDGET_SCALING"];
+
+/**
+ * Rescale the tick-denominated budgets for a decision window other than the
+ * 50ms one they were tuned at, so they keep the same duration in *simulated*
+ * time.
+ *
+ * **Why this has to exist before any `VIRTUAL_STEP_MS` A/B is run.** Every key
+ * above is a count of decisions standing in for a duration —
+ * `combatPolicy.mjs` spells one out itself, "same total push duration as
+ * `DOOR_OPEN_TICKS * VIRTUAL_STEP_MS` (500ms)". Cut `stepMs` to a third and
+ * all eleven fire three times sooner in sim time, so an arm that changed only
+ * `VIRTUAL_STEP_MS` would really be measuring "finer decisions **and** every
+ * budget shortened" and its result would be uninterpretable.
+ *
+ * Identity at `stepMs === baseStepMs`, by construction rather than by care:
+ * the factor is exactly 1 and every value round-trips. That is asserted in the
+ * tests, because it is what keeps this inert on the default path.
+ *
+ * **This is only half the confound.** `bot.mjs` carries five more
+ * tick-denominated thresholds as module-level constants that
+ * `CODEENSTEIN_TELEMETRY_TUNING` cannot reach at all — the anomaly *detectors*.
+ * See `Bot#ticksScale`; without that half, a shorter window makes the
+ * oscillation metric rise mechanically, which is exactly the "the detector was
+ * wrong, not the bot" trap already recorded in `decisions.md`.
+ *
+ * `Math.max(1, ...)` because a budget of zero would disable the behaviour
+ * rather than shorten it — except where it is *already* zero, which means
+ * "off" and must stay off.
+ */
+export function deriveTuningForStep(tuning, stepMs, baseStepMs = DEFAULT_TUNING.VIRTUAL_STEP_MS) {
+  if (!stepMs || stepMs === baseStepMs) return tuning;
+  const factor = baseStepMs / stepMs;
+  const out = { ...tuning };
+  for (const key of TICK_DENOMINATED_TUNING_KEYS) {
+    const value = tuning[key];
+    if (typeof value !== "number" || value === 0) continue;
+    out[key] = Math.max(1, Math.round(value * factor));
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
