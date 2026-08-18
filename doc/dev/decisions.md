@@ -272,6 +272,19 @@ The same audit investigated a real user-reported bug (drastic framedrops on a la
 
 One finding was closed as a deliberate non-fix rather than left open indefinitely: a WebKit-specific rendering discrepancy found during the audit was scoped out as wontfix — Safari/WebKit is exercised in CI for correctness (`verify.yml`'s browser matrix) but isn't a target for perf-tuning effort, a user decision rather than a technical dead end.
 
+## Repo Hosts Are API Adapters, Not a Git Client
+
+The workspace can load a repository from GitHub, and the backlog long carried "should support any http(s) available git repo". **That second half is out of scope, by decision (user, 2026-08-19)** — not deferred, not blocked on effort. Adding more *hosts* (GitLab, Gitea/Forgejo, Bitbucket) stays open and is unaffected.
+
+**Why the general form is not a bigger version of the specific one.** Loading GitHub is two HTTP calls against a JSON API. "Any git repo over http(s)" is git's smart-HTTP protocol — `GET /info/refs?service=git-upload-pack`, then `POST /git-upload-pack` returning packfiles — and it fails in a browser for two independent reasons, either of which is fatal on its own:
+
+- **CORS.** Git hosts do not send `Access-Control-Allow-Origin` on those endpoints, so `fetch` cannot read the response at all. isomorphic-git, the only serious browser git client, **ships its own CORS proxy** — that is the tell that this is structural rather than incidental.
+- **It needs a real git client**: packfile parsing and delta resolution, against a project that hand-rolls a ZIP reader and a WAD decoder rather than take a dependency (see [Dependency Minimalism](#dependency-minimalism)).
+
+**The workaround this project already uses does not transfer.** The online WAD catalog hit exactly this wall — none of its upstream hosts send usable CORS headers — and solved it by moving acquisition *out of the runtime* into `scripts/fetch-online-wads.mjs` at build time. That works because the catalog is fixed and known in advance. A player picks their repo at runtime, so there is nothing to pre-fetch.
+
+**Which leaves a proxy the app controls, and that is the part being declined.** There is a server already (`scripts/multiplayer-server.mjs`), but turning it into an open fetch proxy means an SSRF surface, unbounded third-party bandwidth billed to whoever hosts it, and an availability commitment for a feature that is otherwise entirely client-side. The cost is operational and permanent; the benefit over supporting the three or four hosts people actually use is small. **Add hosts, do not add a proxy.**
+
 ## Dependency Minimalism
 
 The project deliberately avoids adding a new npm dependency where a built-in browser API already covers the need: `crypto.subtle.digest('SHA-256', ...)` is used for the AST/campaign hash shown in highscores instead of a bundled hash library, and highscore-board compression uses `CompressionStream`/`DecompressionStream` instead of a bundled compression library. The same principle drove the parser architecture: rather than pull in a second parsing library to cover additional languages, every non-bespoke language (12 of 14) is handled by one data-driven adapter built on the same Tree-sitter grammars already in use — see [Architecture](architecture.md#parser--source--normalized-ast-data). `[notes: Task 23, 35, 44]`
