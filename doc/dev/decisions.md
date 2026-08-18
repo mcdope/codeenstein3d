@@ -272,6 +272,18 @@ The same audit investigated a real user-reported bug (drastic framedrops on a la
 
 One finding was closed as a deliberate non-fix rather than left open indefinitely: a WebKit-specific rendering discrepancy found during the audit was scoped out as wontfix — Safari/WebKit is exercised in CI for correctness (`verify.yml`'s browser matrix) but isn't a target for perf-tuning effort, a user decision rather than a technical dead end.
 
+## The Backend Updates Itself by Pulling; CI Never Pushes to It
+
+The multiplayer backend is updated by a systemd timer on its own host running `docker/update.sh`, installed by `update.sh --install`. **CI is not involved at all** (user, 2026-08-19).
+
+**Why CI is the wrong side to drive it.** The obvious shape — the deploy workflow reaches into the backend host and updates it — means a deploy key held as a GitHub secret that can run arbitrary commands on that machine, plus inbound SSH. That is a permanent remote-code-execution path onto the box, added so a rarely-changing signaling server updates a few hours sooner. Pulling extends trust only to the git remote, which the host already trusts by virtue of running code from it.
+
+**Why not the file-drop the backlog originally described** (deploy writes `.update-backend`, backend watches it with inotify): the frontend deploys by **FTPS to a webhost**, and the backend is a **different machine** running `docker/docker-compose.yml`. There is no shared filesystem for inotify to watch. The cross-machine version would be polling a published URL, which needs a version artifact that does not exist — and buys nothing over just pulling, since `git pull` already answers "is there anything new".
+
+**And the container cannot restart itself anyway.** `docker compose up -d --build` runs on the host, from outside the container, so the actor was always going to be a host-level agent rather than the signaling process.
+
+**Two constraints any implementation inherits.** `update.sh` runs as the deploy user and escalates only for the docker calls, because a root `git pull` leaves the repo root-owned — so running it from a timer needs a `NOPASSWD` sudoers entry scoped to those commands, there being no TTY to prompt on. And restarting signaling drops open lobbies and pending joins (`sessions` is an in-memory `Map` on a 5-minute TTL) while leaving established peer connections alone, since peers talk directly after the handshake — which is why the timer belongs at a quiet hour rather than running frequently.
+
 ## Repo Hosts Are API Adapters, Not a Git Client
 
 The workspace can load a repository from GitHub, and the backlog long carried "should support any http(s) available git repo". **That second half is out of scope, by decision (user, 2026-08-19)** — not deferred, not blocked on effort. Adding more *hosts* (GitLab, Gitea/Forgejo, Bitbucket) stays open and is unaffected.
