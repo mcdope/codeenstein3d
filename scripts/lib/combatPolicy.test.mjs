@@ -67,6 +67,9 @@ import {
   trackEnemyMotion,
   leadTarget,
   walkDistances,
+  deriveTuningForStep,
+  TICK_DENOMINATED_TUNING_KEYS,
+  DIMENSIONLESS_TICK_TUNING_KEYS,
 } from "./combatPolicy.mjs";
 
 const SIZE = 20;
@@ -2222,5 +2225,71 @@ describe("pelletHitFraction — the multi-pellet cone", () => {
     for (const d of [2, 4, 8]) {
       expect(expectedDamagePerShot(PISTOL_WEAPON_INDEX, d, DEFAULT_TUNING)).toBe(expectedDamagePerShot(PISTOL_WEAPON_INDEX, d, off));
     }
+  });
+});
+
+describe("deriveTuningForStep", () => {
+  it("is the identity at the window everything was tuned at", () => {
+    // The property that keeps this inert on every existing run: the factor is
+    // exactly 1, so the object is returned unchanged rather than rebuilt.
+    expect(deriveTuningForStep(DEFAULT_TUNING, 50)).toBe(DEFAULT_TUNING);
+    expect(deriveTuningForStep(DEFAULT_TUNING, DEFAULT_TUNING.VIRTUAL_STEP_MS)).toBe(DEFAULT_TUNING);
+  });
+
+  it("keeps each budget's duration constant when the window shrinks", () => {
+    const third = deriveTuningForStep(DEFAULT_TUNING, 50 / 3);
+    for (const key of TICK_DENOMINATED_TUNING_KEYS) {
+      const before = DEFAULT_TUNING[key];
+      if (before === 0) continue;
+      // ticks x window = the same simulated milliseconds, within rounding.
+      expect(third[key] * (50 / 3)).toBeCloseTo(before * 50, 6);
+    }
+  });
+
+  it("leaves the dimensionless ratio alone", () => {
+    // `COMBAT_TICK_BUDGET_MULTIPLIER` has "TICK" in its name and is a ratio,
+    // which is exactly why the key list is explicit rather than a name test.
+    const half = deriveTuningForStep(DEFAULT_TUNING, 25);
+    for (const key of DIMENSIONLESS_TICK_TUNING_KEYS) {
+      expect(half[key]).toBe(DEFAULT_TUNING[key]);
+    }
+  });
+
+  it("leaves a budget that is already off switched off", () => {
+    // 0 means "disabled", not "a very short budget" — scaling it to 1 would
+    // silently switch a behaviour on in one arm of an A/B.
+    expect(DEFAULT_TUNING.BOT_NAV_STALL_BAIL_TICKS).toBe(0);
+    expect(deriveTuningForStep(DEFAULT_TUNING, 25).BOT_NAV_STALL_BAIL_TICKS).toBe(0);
+  });
+
+  it("never rounds a live budget down to nothing", () => {
+    // A long window scales budgets *down*; `Math.max(1, ...)` stops a small one
+    // reaching zero and disabling its branch outright.
+    const long = deriveTuningForStep(DEFAULT_TUNING, 4000);
+    for (const key of TICK_DENOMINATED_TUNING_KEYS) {
+      if (DEFAULT_TUNING[key] === 0) continue;
+      expect(long[key]).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it("touches nothing outside the two declared lists", () => {
+    const scaled = deriveTuningForStep(DEFAULT_TUNING, 25);
+    for (const key of Object.keys(DEFAULT_TUNING)) {
+      if (TICK_DENOMINATED_TUNING_KEYS.includes(key)) continue;
+      expect(scaled[key]).toBe(DEFAULT_TUNING[key]);
+    }
+  });
+
+  it("accounts for every tick-ish key in DEFAULT_TUNING", () => {
+    // The completeness guard. A tick-denominated key added later and left out
+    // of the list would silently reintroduce the confound this exists to
+    // remove, and no other test would notice — the A/B would just quietly
+    // measure the wrong thing.
+    const declared = new Set([...TICK_DENOMINATED_TUNING_KEYS, ...DIMENSIONLESS_TICK_TUNING_KEYS]);
+    const tickish = Object.keys(DEFAULT_TUNING).filter((k) => k.includes("TICK"));
+    expect(tickish.length).toBeGreaterThan(0);
+    expect(tickish.filter((k) => !declared.has(k))).toEqual([]);
+    // And nothing declared that no longer exists.
+    expect([...declared].filter((k) => !(k in DEFAULT_TUNING))).toEqual([]);
   });
 });

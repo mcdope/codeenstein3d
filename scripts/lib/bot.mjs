@@ -29,6 +29,7 @@ import {
   decide,
   LOCKED_DOOR_TILE,
   DEFAULT_TUNING,
+  deriveTuningForStep,
   hasLineOfSight,
   HAZARD_TILE,
   pickThreat,
@@ -187,6 +188,30 @@ const TELEPORT_JUMP_TILES = 4;
 const ENGAGED_BRANCHES = new Set(["criticalHealth", "standoff", "mineRetreat"]);
 
 const OSCILLATION_TICKS_THRESHOLD = 30;
+
+/**
+ * A detector threshold, in decisions, adjusted for a decision window other
+ * than the 50ms one every one of them was tuned at.
+ *
+ * The thresholds above are the *other half* of the tick confound —
+ * `deriveTuningForStep` handles the eleven in `DEFAULT_TUNING`, but these five
+ * are module constants that `CODEENSTEIN_TELEMETRY_TUNING` cannot reach, so an
+ * A/B on `VIRTUAL_STEP_MS` would leave them fixed. That is not a small
+ * omission: `detectOscillation` qualifies a run of >= 30 *decisions*, so at a
+ * third of the window it spans a third of the simulated time and shorter real
+ * episodes start qualifying — the metric rises with no change in behaviour.
+ *
+ * This repo has already paid for that mistake once from the other direction:
+ * two oscillation "fixes" were reverted on a metric that turned out to be
+ * counting the bot's ordinary gait, and the fix in the end was to the detector
+ * (`decisions.md`). A measurement artefact that moves the number the
+ * experiment is judged on is the same failure wearing a different hat.
+ *
+ * Exactly 1 at the default window, so this is inert unless an arm asks for it.
+ */
+export function scaleTicks(ticks, ticksScale) {
+  return ticksScale === 1 ? ticks : Math.max(1, Math.round(ticks * ticksScale));
+}
 // Positions must stay inside this radius of the run's anchor. Wider than a
 // combat sidestep's amplitude (~1.3 tiles at the flip period) so a firefight
 // isn't the dominant finding, but far under a corridor's length.
@@ -344,7 +369,7 @@ export function summarizeActivityDistance(trace) {
  *
  * Returns `{type, startTick, endTick, ticks, detail}[]`.
  */
-export function detectAnomalies(trace) {
+export function detectAnomalies(trace, ticksScale = 1) {
   const findings = [];
   if (!trace || trace.length === 0) return findings;
   let runStart = 0;
@@ -366,7 +391,7 @@ export function detectAnomalies(trace) {
         const mostlyWaitingOnSpike = spikeFraction(runSlice) >= SPIKE_WAIT_DOMINANCE;
         const engagedTicks = runSlice.filter((r) => r.fire || r.fireOnCooldown).length;
         const mostlyFiring = engagedTicks / runLen > 0.5;
-        if (runLen >= STALL_TICKS_THRESHOLD && !mostlyWaitingOnSpike && !mostlyFiring) {
+        if (runLen >= scaleTicks(STALL_TICKS_THRESHOLD, ticksScale) && !mostlyWaitingOnSpike && !mostlyFiring) {
           findings.push({
             type: "stall",
             startTick: runStart,
@@ -375,7 +400,7 @@ export function detectAnomalies(trace) {
             detail: `pos=(${first.x.toFixed(2)},${first.y.toFixed(2)}) branch=${first.branch} activity=${first.activity ?? "?"} hpFrac ${first.hpFrac.toFixed(2)}->${last.hpFrac.toFixed(2)} threatDist=${first.threatDist ?? "none"} mineDist=${first.mineDist ?? "none"}`,
           });
         }
-        if (runLen >= HP_DRAIN_FROZEN_TICKS_THRESHOLD && last.hpFrac < first.hpFrac - 0.001 && !mostlyFiring) {
+        if (runLen >= scaleTicks(HP_DRAIN_FROZEN_TICKS_THRESHOLD, ticksScale) && last.hpFrac < first.hpFrac - 0.001 && !mostlyFiring) {
           findings.push({
             type: "healthDrainFrozen",
             startTick: runStart,
@@ -496,9 +521,9 @@ function reachedTargets(slice) {
  * Returns `{type, startTick, endTick, ticks, detail}[]`, the same shape the
  * other detectors use so `reportAnomalies` can print them uniformly.
  */
-export function detectOscillation(trace) {
+export function detectOscillation(trace, ticksScale = 1) {
   const findings = [];
-  if (!trace || trace.length < OSCILLATION_TICKS_THRESHOLD) return findings;
+  if (!trace || trace.length < scaleTicks(OSCILLATION_TICKS_THRESHOLD, ticksScale)) return findings;
 
   let runStart = 0;
   let anchor = trace[0];
@@ -511,7 +536,7 @@ export function detectOscillation(trace) {
 
     const runEnd = i; // exclusive
     const runLen = runEnd - runStart;
-    if (runLen >= OSCILLATION_TICKS_THRESHOLD) {
+    if (runLen >= scaleTicks(OSCILLATION_TICKS_THRESHOLD, ticksScale)) {
       const slice = trace.slice(runStart, runEnd);
       const engagedTicks = slice.filter((r) => r.threatDist !== null && r.threatDist !== undefined).length;
       const mostlyEngaged = engagedTicks / runLen > 0.5;
@@ -556,7 +581,7 @@ export function detectOscillation(trace) {
  * tick was under TRACE_POS_EPS — i.e. the engine's own collision resolution
  * rejected the translation outright, every single tick, for the whole run.
  */
-export function detectHeldKeyNoMovement(trace) {
+export function detectHeldKeyNoMovement(trace, ticksScale = 1) {
   const findings = [];
   if (!trace || trace.length < 2) return findings;
   let runStart = null;
@@ -572,7 +597,7 @@ export function detectHeldKeyNoMovement(trace) {
     if (runStart !== null) {
       const runEnd = i; // exclusive
       const runLen = runEnd - runStart;
-      if (runLen >= HELD_KEY_NO_MOVEMENT_TICKS_THRESHOLD) {
+      if (runLen >= scaleTicks(HELD_KEY_NO_MOVEMENT_TICKS_THRESHOLD, ticksScale)) {
         const first = trace[runStart];
         const last = trace[runEnd - 1];
         const heldKeys = new Set(trace.slice(runStart, runEnd).flatMap((r) => r.moveKeys ?? []));
@@ -665,7 +690,29 @@ export class Bot {
     // depends on.
     this.tuning = { ...DEFAULT_TUNING, ...(profile?.tuning ?? {}), ...opts.tuning };
     this.stepMs = opts.stepMs ?? (this.realtime ? this.tuning.WATCH_STEP_MS : this.tuning.VIRTUAL_STEP_MS);
-    this.recordStepMs = opts.recordStepMs ?? this.stepMs;
+    // A decision window other than the 50ms one everything was tuned at makes
+    // every *tick-denominated* budget mean a different duration. Rescale them
+    // so an arm that changes `VIRTUAL_STEP_MS` measures decision granularity
+    // and not "granularity plus eleven shortened timeouts" — see
+    // `deriveTuningForStep`. Identity at the default window, so this line is
+    // inert on every existing run.
+    //
+    // Deliberately *after* the merge above, so an explicit
+    // `CODEENSTEIN_TELEMETRY_TUNING` override of one of those keys is taken at
+    // face value and then scaled with the rest, rather than being silently
+    // reverted to a scaled default.
+    //
+    // `TICK_BUDGET_SCALING` defaults false: `MultiplayerBot` runs at a
+    // hand-tuned 400ms window with its own `MAX_TICKS_PER_WAYPOINT: 40`, which
+    // was measured at that window and must not be multiplied by 8.
+    if (this.tuning.TICK_BUDGET_SCALING) {
+      this.tuning = deriveTuningForStep(this.tuning, this.stepMs);
+    }
+    // The same correction for the five detector thresholds that live as module
+    // constants here and so cannot be reached by the tuning override at all.
+    // See `scaleTicks`. 1 unless scaling was asked for.
+    this.ticksScale = this.tuning.TICK_BUDGET_SCALING ? DEFAULT_TUNING.VIRTUAL_STEP_MS / this.stepMs : 1;
+    this.recordStepMs = opts.recordStepMs ?? this.tuning.RECORD_STEP_MS ?? this.stepMs;
     // How far ahead `decide()` has to lead a moving target: exactly the `dt`
     // carried by the engine frame that resolves this decision's shot.
     // `simulate()` runs `updateEnemyAi` before `updateFiring`, and the enemy
@@ -709,6 +756,28 @@ export class Bot {
     this.anomalyTally = {};
     // Denominator for `anomalyTally` — see `#tallyDecisions`.
     this.anomalyDecisions = 0;
+    // Real-time attribution of where a run's wall clock actually goes, behind
+    // `CODEENSTEIN_BOT_TIMING=1` (`opts.timing`). Off, every field stays 0 and
+    // not one extra clock is read, so a normal run is unaffected.
+    //
+    // Why it exists: the backlog carries "decouple bot decisions from engine,
+    // for more performance", and **nothing in this repo has ever measured what
+    // a bot decision costs.** `perfDebug.ts` has no bot phase. The premise is
+    // that the Node<->browser round trip dominates; the rival explanation is
+    // that `advance()` renders a full raycast frame per decision that nobody
+    // looks at. These four numbers separate them:
+    //
+    //   decideMs   Node-side, the pure `decide()` call
+    //   evalWallMs Node-side, the whole `page.evaluate` including transport
+    //   inPageMs   in-page real time for the same call's body
+    //   pumpMs     in-page real time inside `__pumpVirtualTime` alone, i.e.
+    //              the engine's own frames
+    //
+    // `evalWallMs - inPageMs` is the CDP round trip plus serialisation — the
+    // part an in-page decision loop would delete. `pumpMs` is the part it
+    // would not. If `pumpMs` dominates, the answer is `?ablate=` and not an
+    // architecture change.
+    this.timing = opts.timing ? { decideMs: 0, evalWallMs: 0, inPageMs: 0, pumpMs: 0, decisions: 0, dispatches: 0 } : null;
     // What errand the bot is currently on, stamped onto every trace record so
     // travelled distance can be attributed to intent rather than only to a
     // combat branch — see `summarizeActivityDistance` and `#withActivity`.
@@ -960,19 +1029,19 @@ export class Bot {
     if (!this.mineMemory?.trace) return;
     this.#tallyDecisions();
     if (this.logger.navDiag) {
-      for (const f of detectHeldKeyNoMovement(this.mineMemory.trace)) {
+      for (const f of detectHeldKeyNoMovement(this.mineMemory.trace, this.ticksScale)) {
         this.#tallyAnomaly(f);
         console.log(`  [anomaly] ${label} level ${levelIndex + 1}: ${f.type} (${f.ticks} ticks, decisions ${f.startTick}-${f.endTick}) ${f.detail}`);
       }
     }
-    for (const f of detectAnomalies(this.mineMemory.trace)) {
+    for (const f of detectAnomalies(this.mineMemory.trace, this.ticksScale)) {
       this.#tallyAnomaly(f);
       console.log(`  [anomaly] ${label} level ${levelIndex + 1}: ${f.type} (${f.ticks} ticks, decisions ${f.startTick}-${f.endTick}) ${f.detail}`);
     }
     // Deliberately not `navDiag`-gated: a bot that paces instead of freezing is
     // exactly the case `balancing:scan` used to miss entirely, so it has to fire
     // on the default scan rather than only when someone already suspects it.
-    const oscillations = detectOscillation(this.mineMemory.trace);
+    const oscillations = detectOscillation(this.mineMemory.trace, this.ticksScale);
     for (const f of oscillations) {
       this.#tallyAnomaly(f);
       console.log(`  [anomaly] ${label} level ${levelIndex + 1}: ${f.type} (${f.ticks} ticks, decisions ${f.startTick}-${f.endTick}) ${f.detail}`);
@@ -992,7 +1061,7 @@ export class Bot {
     // single stall row, and vice versa. Classifying the scan's idle stalls
     // needed exactly those rows — 14 clusters of them sat next to spike traps
     // and only one happened to overlap an oscillation window that got dumped.
-    const dumpable = [...detectAnomalies(this.mineMemory.trace), ...oscillations];
+    const dumpable = [...detectAnomalies(this.mineMemory.trace, this.ticksScale), ...oscillations];
     const longestByType = new Map();
     for (const f of dumpable) {
       const cur = longestByType.get(f.type);
@@ -1728,6 +1797,9 @@ export class Bot {
    */
   async tick(player, enemies, mines, navTarget, map, projectiles = []) {
     this.#checkRotationAnomaly(player, Math.atan2(player.dirY, player.dirX));
+    // Bracketed only when timing is on; `t0` stays undefined otherwise, so the
+    // default path reads no clock at all.
+    const t0 = this.timing ? performance.now() : undefined;
     const intent = decide(
       { player, enemies, mines, navTarget, map, projectiles },
       this.mineMemory,
@@ -1747,6 +1819,10 @@ export class Bot {
         selfId: this.playerId ?? null,
       },
     );
+    if (this.timing) {
+      this.timing.decideMs += performance.now() - t0;
+      this.timing.decisions += 1;
+    }
     // The semi-auto fire clock is per-`Bot`, not per-decision, so the policy
     // reports that it pulled the trigger and the bot owns the timestamp — see
     // `profile.fireCooldownMs`. It must be stamped before `applyAction`
@@ -2168,8 +2244,16 @@ export class Bot {
     // to protect. Only a full-length decision (the common case) actually
     // gets subdivided into multiple `recordStepMs`-sized replay frames.
     const subStepMs = Math.min(this.recordStepMs, ms);
+    const evalStartedAt = this.timing ? performance.now() : undefined;
     const dispatched = await this.page.evaluate(
-      ({ desiredKeys, fire, weaponSwitchCode, useMelee, stepMs, subStepMs, headed, isFirst, isLast }) => {
+      ({ desiredKeys, fire, weaponSwitchCode, useMelee, stepMs, subStepMs, headed, isFirst, isLast, timing }) => {
+        // `__realNow` is stashed by `installVirtualClock` before it replaces
+        // `performance.now` — under the virtual clock there is no other way to
+        // read real time from in here. Absent in headed mode (no virtual clock
+        // installed), where this branch is not reached anyway.
+        const realNow = timing ? window.__realNow : null;
+        const bodyStartedAt = realNow ? realNow() : 0;
+        let pumpMs = 0;
         const canvas = document.querySelector("canvas");
         const hooks = window.__codeensteinTestHooks;
         const desired = new Set(desiredKeys);
@@ -2188,14 +2272,30 @@ export class Bot {
         const fireCode = fire ? (useMelee ? "Space" : "Backquote") : null;
         if (fireCode && isFirst) canvas.dispatchEvent(new KeyboardEvent("keydown", { code: fireCode }));
         if (headed) return { fireCode: isLast ? fireCode : null };
+        // The engine's own frames run inside this call and nowhere else, so
+        // this is the whole cost of simulating *and rendering* one decision.
+        const pumpStartedAt = realNow ? realNow() : 0;
         window.__pumpVirtualTime(stepMs, subStepMs);
+        if (realNow) pumpMs = realNow() - pumpStartedAt;
         if (fireCode && isLast) canvas.dispatchEvent(new KeyboardEvent("keyup", { code: fireCode }));
-        return { player: hooks.getPlayerState(), enemies: hooks.getEnemies(), mines: hooks.getMines(), projectiles: hooks.getProjectiles?.() ?? [] };
+        return {
+          player: hooks.getPlayerState(),
+          enemies: hooks.getEnemies(),
+          mines: hooks.getMines(),
+          projectiles: hooks.getProjectiles?.() ?? [],
+          ...(realNow ? { pumpMs, inPageMs: realNow() - bodyStartedAt } : {}),
+        };
       },
       // Resolved here in Node: a digit indexes `NUMBER_KEY_WEAPONS`, not
       // `WEAPONS` — see `numberKeyCodeFor`.
-      { desiredKeys: [...keys], fire, weaponSwitchCode: weaponSwitchIndex == null ? null : numberKeyCodeFor(weaponSwitchIndex), useMelee, stepMs: ms, subStepMs, headed, isFirst, isLast },
+      { desiredKeys: [...keys], fire, weaponSwitchCode: weaponSwitchIndex == null ? null : numberKeyCodeFor(weaponSwitchIndex), useMelee, stepMs: ms, subStepMs, headed, isFirst, isLast, timing: !!this.timing },
     );
+    if (this.timing) {
+      this.timing.evalWallMs += performance.now() - evalStartedAt;
+      this.timing.inPageMs += dispatched.inPageMs ?? 0;
+      this.timing.pumpMs += dispatched.pumpMs ?? 0;
+      this.timing.dispatches += 1;
+    }
     if (!headed) return dispatched;
     await this.page.waitForTimeout(ms);
     return this.page.evaluate((fireCode) => {

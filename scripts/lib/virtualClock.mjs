@@ -17,6 +17,18 @@ export async function installVirtualClock(page) {
     const epochStart = Date.now();
     let pending = [];
     let rafId = 0;
+    // The real clock, captured before it is replaced below.
+    //
+    // Everything in the page that wants to know how long something *actually*
+    // took loses the ability the moment `performance.now` becomes the virtual
+    // clock — including `perfDebug.ts`, whose phase timings therefore read 0
+    // under this harness. Without this line there is no way to measure, from
+    // inside the page, how much of a `page.evaluate` is engine work and how
+    // much is Playwright round trip.
+    //
+    // Inert by itself: nothing in `src/` reads it, and it does not affect a
+    // single simulated millisecond.
+    window.__realNow = window.performance.now.bind(window.performance);
     window.performance.now = () => vNow;
     Date.now = () => epochStart + vNow;
     window.requestAnimationFrame = (cb) => {

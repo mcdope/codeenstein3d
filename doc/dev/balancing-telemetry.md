@@ -105,6 +105,8 @@ All scoping/debug flags are read once at module load, so they must be set in the
 | `CODEENSTEIN_TELEMETRY_ANOMALY_SCAN` | Enables the stall/health-drain-frozen detector — see below. |
 | `CODEENSTEIN_TELEMETRY_NAV_DIAG` | Extra per-decision trace bookkeeping (superset used alongside anomaly scan trace recording). |
 | `CODEENSTEIN_TELEMETRY_TRACE_DUMP` | Prints the raw per-decision rows of each level's *longest* oscillation run — position, bearing error and distance to the nav target, keys held, burst, threat/mine distance, branch. Implies the trace. **Run with `CONCURRENCY=1`**: concurrent attempts interleave their rows into a misleadingly coherent-looking mess. Added because aggregates over this detector's own findings produced two wrong diagnoses in a row; reading one run end to end settled it in minutes. |
+| `CODEENSTEIN_BOT_TIMING` | Attributes the run's real wall clock across `decide()`, the engine's own frames, and the Node<->browser round trip — see [Where the harness's wall clock goes](#where-the-harnesss-wall-clock-goes). Prints one `[phase-timing]` block and adds `meta.phaseTiming`. Off by default and reads no clock when off. |
+| `CODEENSTEIN_TELEMETRY_EXTRA_QUERY` | Appended verbatim to the page URL. Exists for `&ablate=floor,effects,viewmodel,hud` (a real, shipped, deliberately un-DEV-gated engine switch) — see the same section. **Never ablate `sprites`, `walls` or `shade`**: the `sprites` branch is what sets `this.target` from `findTargetUnderCrosshair` and `walls` fills the z-buffer it reads, so ablating either stops the bot being able to shoot. |
 | `CODEENSTEIN_TELEMETRY_HEADED` | Real, visible browser + real wall-clock timing instead of the virtual clock. See [Headed vs. headless](#headed-vs-headless-read-this-before-touching-turnburstms-math). |
 | `CODEENSTEIN_CONSOLE_FORWARD` | Forwards the browser's own `console` output to Node (`[console] ...` lines) — the engine already logs key pickups/door unlocks; often more reliable ground truth than bot-side telemetry when a freeze's cause is ambiguous. |
 | `CODEENSTEIN_WPDEBUG` | Per-waypoint drive-loop trace (`[wpdebug] leg-walk wp=... -> result=...`). |
@@ -199,6 +201,34 @@ The lane-parallel capture orchestrator. Every one of these was undocumented unti
 Two variables validate their input, both in `run-balancing-telemetry.mjs`: `CODEENSTEIN_TELEMETRY_SEED` range-checks `0..0xffffffff` and exits non-zero naming the bad value, and `CODEENSTEIN_TELEMETRY_TUNING` rejects both malformed JSON and a non-object. Both guard a value whose corruption would be *invisible* — a bad seed or a silently-ignored tuning override produces a run that looks fine and measures the wrong thing.
 
 Every other numeric knob above is a bare `Number(process.env.X ?? default)`, so a typo yields `NaN` and propagates silently — `CODEENSTEIN_MULTIPLAYER_PORT=abc` does not fail, it just produces a `NaN` port. Check a value took effect rather than assuming a bad one would have been rejected.
+
+## Where the harness's wall clock goes
+
+Measured 2026-08-18 with `CODEENSTEIN_BOT_TIMING=1`, because the `notes` backlog carried "decouple bot decisions from engine, **for more performance**" and **nothing had ever measured what a bot decision costs.** `perfDebug.ts` has no bot phase, and it cannot acquire one under this harness: `installVirtualClock` replaces `performance.now`, so every in-page phase timing reads 0. That is why the installer now stashes `window.__realNow` before patching — it is the only real clock left inside the page.
+
+Three numbers, all real time, all per decision:
+
+| | `decide()` | engine frame | CDP transport |
+|---|---:|---:|---:|
+| what it is | the bot's actual decision logic | `simulate(dt)` **+ `render()`**, inside `__pumpVirtualTime` | round trip + serialisation across `page.evaluate` |
+| concurrency 1 | 0.024ms (0.3%) | 5.12ms (63%) | 2.88ms (36%) |
+| concurrency 12 | 0.028ms (0.2%) | 8.40ms (46%) | 9.91ms (54%) |
+
+**The item's premise, read literally, is refuted.** The bot's decision costs **0.2-0.3%** of the accounted wall clock. There is no version of "decouple bot decisions for more performance" that pays, because the decisions are free. What costs is everything around them.
+
+**The engine renders a frame per decision that nobody ever looks at.** `advance()` is unconditionally `simulate(dt)` then `render()`, and the harness pumps one rAF per decision — so a full raycast pass (floor cast, walls, sprites, effects, viewmodel, HUD) runs ~30,000 times per attempt into a canvas no one reads. `?ablate=floor,effects,viewmodel,hud` (`resolveAblations`, `engine.ts`, deliberately **not** DEV-gated so the switches exist in the exact build being measured) removes about three quarters of it: engine time **5.12ms -> 1.28ms** at concurrency 1, **8.40ms -> 1.97ms** at 12.
+
+**And it is gameplay-neutral — verified, not assumed.** At a pinned `CODEENSTEIN_TELEMETRY_SEED`, the ablated and control arms produced **byte-identical telemetry payloads** — 18,773 bytes over 4 levels x 3 attempts at concurrency 1, and **81,080 bytes over 8 levels x 12 attempts at concurrency 12** — with identical decision counts (92,724 both arms) on the larger pair. That check is the point: an ablation that changed a single hit would invalidate every number the run produced, and "it only skips drawing" is exactly the kind of claim that is obviously true until it isn't.
+
+**Never ablate `sprites`, `walls` or `shade`.** The `sprites` branch is what sets `this.target` from `findTargetUnderCrosshair`, and its `else` sets `this.target = null`; `walls` fills the z-buffer that targeting reads. Ablating either stops the bot being able to shoot at all — a silent, total behavioural change wearing the costume of a rendering flag.
+
+**What this leaves for the in-page-decision-loop idea.** Transport is the half an in-page loop would delete, and at production concurrency (12) it is already the larger half — and it *grows* once the engine gets cheaper, because the bottleneck moves onto the shared CDP connection rather than disappearing. So the decoupling idea survives, but for the transport, not for the decisions, and it should be judged against the ablation as the cheaper alternative that ships today.
+
+## A capture directory is not an A/B input
+
+`report-balancing-ab.mjs`'s `loadSide` merges a directory's `*.json` with `{ ...merged.profiles[name], ...profile }` — a spread at the **difficulty** level. A capture writes one file per chunk (`Casual-hard-001.json`, `-002`, ...), each carrying the same `profiles.Casual.hard` key, so **the last chunk read silently replaces every earlier one** rather than pooling them. There is no error and the output looks entirely normal; it is simply computed from a fraction of the data.
+
+It is built for the 4-combo telemetry protocol, where one file per side is the whole side. For a capture, read `report-aim-error.mjs` (which does pool across capture dirs) and the event log, and run guards from their own small telemetry run.
 
 ## Anomaly scanning (`npm run balancing:scan`)
 

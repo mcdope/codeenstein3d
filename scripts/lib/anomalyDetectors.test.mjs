@@ -428,3 +428,45 @@ describe("pathAvoidingHazardsIfPossible", () => {
     expect(r.viaHazard).toBe(false);
   });
 });
+
+describe("ticksScale keeps a detector threshold meaning the same duration", () => {
+  // The other half of the decision-window confound, and the half that has no
+  // env-var escape hatch: these thresholds are module constants in `bot.mjs`,
+  // so `CODEENSTEIN_TELEMETRY_TUNING` cannot reach them. Left fixed while
+  // `VIRTUAL_STEP_MS` moves, `detectOscillation`'s 30-*decision* window covers
+  // proportionally less simulated time, shorter real episodes start
+  // qualifying, and the metric rises with no change in behaviour at all.
+  //
+  // That is not a hypothetical failure mode here. Two oscillation "fixes" were
+  // built, measured and reverted on a number that turned out to be counting
+  // the bot's ordinary gait; the fix in the end was to the detector, not the
+  // bot (`decisions.md`). An A/B whose own instrument drifts with the
+  // independent variable is the same mistake with better lighting.
+  //
+  // `ticksScale` is `50 / stepMs`, so a *shorter* window scales thresholds
+  // *up*: 30 decisions at 50ms is 1.5s, and 1.5s at 25ms is 60 decisions.
+  const qualifying = [...pingPong(40), rec({ x: 99, y: 99 })];
+
+  it("fires on a 40-decision run at the window it was tuned for", () => {
+    expect(detectOscillation(qualifying, 1).length).toBe(1);
+  });
+
+  it("stops firing on the same run once the window halves", () => {
+    // 40 decisions at 25ms is 1.0s — genuinely shorter than the 1.5s the
+    // detector is meant to flag, so *not* firing is the correct answer.
+    expect(detectOscillation(qualifying, 2).length).toBe(0);
+  });
+
+  it("fires again once the run is as long in simulated time", () => {
+    // 60 decisions at 25ms is the same 1.5s. Without this case the pair above
+    // would also pass a detector that had simply been switched off.
+    const longer = [...pingPong(60), rec({ x: 99, y: 99 })];
+    expect(detectOscillation(longer, 2).length).toBe(1);
+  });
+
+  it("defaults to 1, so every existing caller is unaffected", () => {
+    expect(detectOscillation(qualifying).length).toBe(detectOscillation(qualifying, 1).length);
+    expect(detectAnomalies(qualifying).length).toBe(detectAnomalies(qualifying, 1).length);
+    expect(detectHeldKeyNoMovement(qualifying).length).toBe(detectHeldKeyNoMovement(qualifying, 1).length);
+  });
+});
