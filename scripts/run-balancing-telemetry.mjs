@@ -147,6 +147,8 @@ const EXTRA_QUERY = process.env.CODEENSTEIN_TELEMETRY_EXTRA_QUERY ?? "";
 // place by the bot, so holding the reference is enough. Empty unless
 // `CODEENSTEIN_BOT_TIMING=1`.
 const TIMING_SAMPLES = [];
+/** What the first constructed `Bot` actually resolved — see `meta.flags`. */
+const EFFECTIVE_BOT_CONFIG = {};
 // Implies ANOMALY_SCAN (the trace has to exist to analyze it). Runs a much
 // more precise, tick-by-tick pass over the same per-decision trace, looking
 // specifically for "a movement key (W/A/D) was held this tick, but position
@@ -397,6 +399,28 @@ async function main() {
         // was pinned, the same reason `compareRunFlags` exists at all.
         gameplaySeed: GAMEPLAY_SEED,
         eventLog: EVENT_LOG_DIR !== null,
+        // The tuning override, and — separately — what the bot *actually ran
+        // with* once `deriveTuningForStep` had its say.
+        //
+        // Recording the override alone is not enough, and the distinction is
+        // the whole lesson: an env var that was mistyped, or scoped to the
+        // wrong line of a chained command, produces a run that looks entirely
+        // normal and measures the arm you thought you were not running. This
+        // repo has already spent a 240-attempt A/B on the wrong substrate that
+        // way. `effectiveStepMs`/`effectiveTicksScale` are read off the
+        // constructed `Bot`, so they are the state rather than the intent —
+        // a `TICK_BUDGET_SCALING` arm that silently failed to apply shows up
+        // here as a `ticksScale` of 1 instead of being invisible.
+        //
+        // `compareRunFlags` diffs every key here, so for a deliberate
+        // single-variable A/B the right outcome is exactly one mismatch.
+        tuningOverride: TUNING_OVERRIDE ?? null,
+        extraQuery: EXTRA_QUERY || null,
+        // `effective*` are folded in after the runs, not here: this object is
+        // built before the first `Bot` exists, so spreading them at this point
+        // silently recorded `undefined` for all of them. Found by smoke-testing
+        // the arm config before booking the capture, which is the entire reason
+        // to smoke-test an instrument rather than trust it.
       },
     },
     profiles: {},
@@ -420,6 +444,11 @@ async function main() {
   // No-op for a server we did not start, so an externally-provided one (a
   // developer's own, or a lane's shared instance) is never killed from here.
   server.stop();
+
+  // What the bot actually resolved, recorded next to what was asked for. See
+  // `meta.flags`' own comment: the point is to be able to *prove* an arm ran
+  // the configuration it was labelled with.
+  Object.assign(output.meta.flags, EFFECTIVE_BOT_CONFIG);
 
   const phaseTiming = summarizeTiming();
   if (phaseTiming) {
@@ -647,6 +676,14 @@ export async function playRun(page, profile, levelPlans, label = "") {
     },
   });
   if (bot.timing) TIMING_SAMPLES.push(bot.timing);
+  // Every attempt builds an identically-configured `Bot`, so the first one
+  // describes the run.
+  if (EFFECTIVE_BOT_CONFIG.effectiveStepMs === undefined) {
+    EFFECTIVE_BOT_CONFIG.effectiveStepMs = bot.stepMs;
+    EFFECTIVE_BOT_CONFIG.effectiveRecordStepMs = bot.recordStepMs;
+    EFFECTIVE_BOT_CONFIG.effectiveTicksScale = bot.ticksScale;
+    EFFECTIVE_BOT_CONFIG.effectiveMaxTicksPerWaypoint = bot.tuning.MAX_TICKS_PER_WAYPOINT;
+  }
 
   for (let i = 0; i < levelPlans.length; i++) {
     const { map, routePlain } = levelPlans[i];
