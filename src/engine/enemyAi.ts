@@ -18,6 +18,7 @@
  * player.
  */
 import { collidesWithWall, isWall, type Player } from "./player";
+import { hasLineOfSight as sharedLineOfSight } from "./mapPredicates.ts";
 import type { PathField } from "./pathField";
 import { spawnProjectile, type Projectile } from "./projectiles";
 import type { Enemy, GameMap } from "../map/types";
@@ -225,17 +226,16 @@ function speedFor(base: number, enemy: Enemy): number {
   return enemy.edgeCase ? base * EDGE_CASE_SPEED_MULTIPLIER : base;
 }
 
-/** True if a straight line from (x0,y0) to (x1,y1) crosses no wall tile. */
+/** True if a straight line from (x0,y0) to (x1,y1) crosses no wall tile.
+ *
+ * Deliberately `sealedCorner: false` — plain point sampling, exactly as this
+ * function has always behaved. The bot passes `true` (see `mapPredicates.ts`),
+ * because a *bullet* cannot cross a corner sealed by two solid tiles even
+ * though a sampled ray can. Enemy aggro is a different question from whether a
+ * shot can land, and turning this on would change how the game plays: it wants
+ * its own A/B, not a silent ride-along on a de-duplication. */
 function hasLineOfSight(map: GameMap, x0: number, y0: number, x1: number, y1: number): boolean {
-  const dx = x1 - x0;
-  const dy = y1 - y0;
-  const dist = Math.hypot(dx, dy);
-  const steps = Math.ceil(dist / 0.1); // sample every ~0.1 tiles
-  for (let i = 1; i < steps; i++) {
-    const t = i / steps;
-    if (isWall(map, Math.floor(x0 + dx * t), Math.floor(y0 + dy * t))) return false;
-  }
-  return true;
+  return sharedLineOfSight(map, x0, y0, x1, y1, false);
 }
 
 /**

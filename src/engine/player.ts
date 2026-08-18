@@ -13,7 +13,8 @@
  * (a square of half-width `radius`) so the player slides along walls instead
  * of sticking, and can never enter a solid cell.
  */
-import { BRANCH_DOOR_TILE, DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, type GameMap, type Point } from "../map/types";
+import { type GameMap, type Point } from "../map/types";
+import { collidesWithWall } from "./mapPredicates.ts";
 
 export interface PlayerConfig {
   /** Half-width of the player's collision box, in tiles. */
@@ -99,42 +100,12 @@ export class Player {
   }
 }
 
-/**
- * AABB-vs-grid test: does a box of half-width `radius` centered at (px,py)
- * overlap any solid (wall or still-locked door) cell? Shared by the player and
- * the enemy AI so both resolve collisions against the tile matrix identically.
- */
-export function collidesWithWall(
-  map: GameMap,
-  px: number,
-  py: number,
-  radius: number,
-): boolean {
-  const minX = Math.floor(px - radius);
-  const maxX = Math.floor(px + radius);
-  const minY = Math.floor(py - radius);
-  const maxY = Math.floor(py + radius);
-  for (let cy = minY; cy <= maxY; cy++) {
-    for (let cx = minX; cx <= maxX; cx++) {
-      if (isWall(map, cx, cy)) return true;
-    }
-  }
-  return false;
-}
-
-/** A cell is solid if it's out of bounds or a wall (1). */
-export function isWall(map: GameMap, cx: number, cy: number): boolean {
-  if (cx < 0 || cy < 0 || cx >= map.width || cy >= map.height) return true;
-  const tile = map.grid[cy][cx];
-  // Walls (1), still-locked doors (3), unopened fake walls (6), lore terminal
-  // walls (7), and unopened branch doors (8) are all solid; acid (2) and floor
-  // (0) are not. A branch door needs no key, but it still has to be pushed
-  // open before anyone walks through it.
-  return tile === 1 || tile === DOOR_TILE || tile === SECRET_WALL_TILE || tile === LORE_TILE || tile === BRANCH_DOOR_TILE;
-}
-
-/** True if the cell is a hazard (acid) tile — walkable, but it drains health. */
-export function isHazard(map: GameMap, cx: number, cy: number): boolean {
-  if (cx < 0 || cy < 0 || cx >= map.width || cy >= map.height) return false;
-  return map.grid[cy][cx] === HAZARD_TILE;
-}
+// `isWall`, `isHazard` and `collidesWithWall` moved to `mapPredicates.ts` so
+// the playtest bot can import the *same* predicate instead of re-typing it in
+// plain JavaScript — see that module's header for why (the L6 wedge). They are
+// re-exported here because every existing caller in `src/` reaches for them at
+// this path, and the move is meant to change nothing but the definition site.
+// Imported as well as re-exported, not merely re-exported: `export … from`
+// creates no local binding, and `PlayerState#collides` below calls it.
+export { isHazard, isWall } from "./mapPredicates.ts";
+export { collidesWithWall };

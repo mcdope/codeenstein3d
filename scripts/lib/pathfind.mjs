@@ -7,12 +7,16 @@
  * walk the real player from spawn to a target tile without any maze-solving
  * logic living in the browser itself.
  *
- * Blocked tiles mirror `isWall()` in src/engine/player.ts: wall (1), locked
+ * Blocked tiles are `isWall()`'s own set, imported from
+ * `src/engine/mapPredicates.ts` rather than mirrored: wall (1), locked
  * door (3), unopened secret wall (6), lore terminal (7), unopened Switchboard
  * branch door (8). Hazard (2), floor (0), teleporter (4), and spike trap (5)
  * are all walkable.
  */
-const BLOCKED_TILES = new Set([1, 3, 6, 7, 8]);
+// The engine's own solid-tile set, imported rather than re-typed — see
+// `src/engine/mapPredicates.ts` for why a `.mjs` may import a `.ts` here, and
+// for the measurement behind that module keeping a separate fast path.
+import { SOLID_TILES as BLOCKED_TILES } from "../../src/engine/mapPredicates.ts";
 
 /** Shortest tile path from `start` to `target` (inclusive of both ends), or
  * `null` if unreachable. Each returned point is an integer tile coordinate.
