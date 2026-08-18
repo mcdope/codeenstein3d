@@ -272,6 +272,20 @@ The same audit investigated a real user-reported bug (drastic framedrops on a la
 
 One finding was closed as a deliberate non-fix rather than left open indefinitely: a WebKit-specific rendering discrepancy found during the audit was scoped out as wontfix — Safari/WebKit is exercised in CI for correctness (`verify.yml`'s browser matrix) but isn't a target for perf-tuning effort, a user decision rather than a technical dead end.
 
+## Highscores Stay on the Device
+
+Public highscore boards for public GitHub repos were scoped and **scrapped** (user, 2026-08-19). `highscores.ts` writes to `localStorage` and makes no network call, and that is the intended end state rather than a stage on the way to something.
+
+**The consequence is worth stating positively**: the app has *no outbound user data at all*. The only network traffic it originates is the signaling server during multiplayer, which a player opts into by joining a session, and the online WAD catalog's same-origin `fetch` of files the build already placed in `public/wads/`. That makes the standing audit item's assertion simple enough to be worth enforcing as an invariant: a `fetch` to anywhere else is a regression.
+
+**Why it was declined rather than deferred**, since the pieces to build it genuinely exist and the idea keeps looking cheap:
+
+- **Consent could not carry the privacy question.** A `HighscoreEntry` carries `campaignName` (an `owner/repo`), `codebaseLinesOfCode` and `codebaseComplexity`. For a local or private workspace, publishing that discloses the name and the size and complexity of code that is not public — so the feature needs a "is this repo actually public?" gate on top of opt-in, and the failure mode of getting that wrong is disclosing someone's private codebase metrics.
+- **An unverified board is not worth having, and a verified one is a service.** Client-submitted scores are trivially forged. This project *can* do better than most — a run carries a deterministic `replay`, an `astHash` and a `balanceHash`, and `verify-replay.mjs` already re-simulates a run end to end — but recomputing a submitted score means running the engine headless per submission, which is CPU per request and an abuse vector in its own right.
+- **The hosting commitment is the real cost.** The signaling server is deliberately ephemeral: in-memory `Map`s on a 5-minute TTL, nothing to back up, nothing to moderate. A scores board needs durable storage, backups, and a moderation and takedown path for free-text player names on a public surface. That is a different kind of thing to operate than a stateless relay.
+
+**If it is ever revisited**, revisit the hosting commitment first — the client-side work is small and the server-side work is permanent.
+
 ## The Backend Updates Itself by Pulling; CI Never Pushes to It
 
 The multiplayer backend is updated by a systemd timer on its own host running `docker/update.sh`, installed by `update.sh --install`. **CI is not involved at all** (user, 2026-08-19).
