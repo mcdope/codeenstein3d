@@ -174,7 +174,18 @@ Items recording a *measurement* rather than a code claim (the demo-campaign diff
     - **AMMO / HEALTH** — fine. Both exist (`stats.health`, and the current weapon's pool via `ammoRemaining`).
     - **ARMS** — maps *better* than expected. DOOM shows 2-7 because slot 1 is fists/chainsaw; here `NUMBER_KEY_WEAPONS` filters out `meleeRange` weapons, giving **5 non-melee** for the grid and **2 melee** (knife, Toolchain) as the "slot 1" equivalent. Fills 5 of 6 boxes. **Bind the grid to `NUMBER_KEY_WEAPONS`, never to `WEAPONS` array order** — they differ, and `numberKeyCodeFor` already documents that trap.
     - **ARMOR — settled: the panel keeps DOOM's shape and this game's word.** There is no armor mechanic and none is being invented; **`SWAP` goes in that slot, labelled SWAP** (user, 2026-08-19). That is the rule for the whole bar: borrow the *layout*, keep our vocabulary — so the HEALTH panel reads `SYSTEM STABILITY`, not HEALTH, and the ammo rows use `AMMO_META`'s own names.
-    - **But our words are longer than DOOM's, and the bezel is fixed-width.** `SYSTEM STABILITY` against `HEALTH`; `smg ammo` against `CELL`. DOOM's panel labels are 4-6 characters by design, which is what lets them sit under a big numeral. Either abbreviate per panel (and pick those abbreviations deliberately, once, somewhere shared) or widen the panels and accept a different silhouette. This is the single biggest craft constraint in the whole item and it is easy to discover too late.
+    - **Our words are longer than DOOM's, so they get shorthands** (user, 2026-08-19). DOOM's labels are 4-6 characters *by design* — that is what lets them sit under a big numeral in a fixed-width panel (`AMMO`/`HEALTH`/`ARMS`/`ARMOR`, and `BULL`/`SHEL`/`RCKT`/`CELL` in the table). A proposed set, to accept or override rather than to invent at draw time:
+
+      | panel | our term | shorthand |
+      |---|---|---|
+      | AMMO | ammo | `AMMO` |
+      | HEALTH | System Stability | `STABIL` |
+      | ARMS | the weapons, which are dev tools | `TOOLS` |
+      | ARMOR | Swap | `SWAP` |
+      | table rows | bullets / shells / smg ammo / rockets / gas | `BULL` / `SHEL` / `SMG` / `RCKT` / `GAS` |
+
+      `STAB` is deliberately not the health shorthand — four characters and it fits, but it reads as a melee verb in a shooter. `TOOLS` over `ARMS` because the weapons genuinely are dev tools and it costs nothing to say so.
+    - **Put the shorthands in one shared place, not inline in `hud.ts`.** The ammo ones belong beside `AMMO_META`'s existing `label`, which the HUD already derives from (`label.toUpperCase()`, per its own comment) and the console log also uses — a `short` field there keeps the pairing that comment exists to protect. The panel labels can be named constants in `hud.ts`, but named, so a future rename moves one string.
     - **Keys — the one that genuinely breaks.** DOOM has exactly 3 colours x card/skull. This game generates a key per locked room, coloured by `gateColors.ts`, in a *variable* count (one bad parse produced 321). A fixed slot strip cannot represent it; needs a count, a scroll, or a different idiom.
     - **Ammo table** — DOOM lists 4 types with current/max. This game has **5 pools** (bullets, shells, smg, rockets, gas), and the shotgun additionally has a *magazine* on top of its pool, so "current / max" does not mean the same thing. Needs a 5th row and a decision about which number is which.
   - **The face is the one element needing new engine state.** `STFACE` reacts to health *and the direction damage came from*, and nothing tracks damage direction today. The user's reference swaps the avatar art anyway ("besides the player avatar lol"), so the art is free — the *behaviour* is an engine change and should be costed as one, or the face can simply react to health alone.
