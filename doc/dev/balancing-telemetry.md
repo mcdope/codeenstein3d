@@ -224,7 +224,18 @@ Three numbers, all real time, all per decision:
 
 **End to end it is worth 11.5%, not the 4.2x the engine numbers suggest.** Three interleaved reps, seed pinned, identical decision counts (92,724) in every run: control **196.7s** (199/192/199), ablated **174.0s** (176/178/168). Interleaved on purpose — the governor here is `schedutil` and this repo has a recorded case of DVFS flipping the sign of a light-duty comparison. Transport *grew* as the engine got cheaper (11.06 -> 13.17ms/decision): the bottleneck moved onto the shared CDP connection rather than disappearing.
 
-**A consequence worth acting on separately: the harness is no longer CPU-bound.** Load sat at 10.9 on 16 cores at concurrency 12 *before* ablation, and ablation removes ~76% of the engine work. The default of 12 was chosen against the old constraint, so the optimal concurrency is now an open question rather than a settled default.
+**And concurrency cannot buy past it — the transport is saturated.** Swept ablated at 24 attempts per point (n=1 each, so read the spread, not the ranking):
+
+| concurrency | wall | attempts/min | engine ms/dec | transport ms/dec |
+|---:|---:|---:|---:|---:|
+| 8 | 319s | 4.51 | 1.96 | 7.94 |
+| 12 | 331s | 4.34 | 2.00 | 12.93 |
+| 16 | 328s | 4.38 | 2.02 | 14.38 |
+| 20 | 341s | 4.22 | 2.02 | 19.47 |
+
+Throughput varies **6.4%** across the whole sweep, which is the same size as the run-to-run spread measured on the A/B above (168-178s on identical config, 6%). So this is a **null: no readable difference between 8 and 20.** Meanwhile per-decision transport rises **2.5x** — each round trip gets steadily slower and exactly as many more are in flight, which is what saturation looks like. **Do not re-tune `CODEENSTEIN_TELEMETRY_CONCURRENCY` hoping for throughput; 12 is fine and so is 8.**
+
+That is the useful part of the null: the harness is at the ceiling of this architecture, and no *setting* escapes it. The only remaining lever is issuing **fewer round trips**, not faster or more concurrent ones.
 
 **What this leaves for the in-page-decision-loop idea.** Transport is the half an in-page loop would delete, and at production concurrency (12) it is already the larger half — and it *grows* once the engine gets cheaper, because the bottleneck moves onto the shared CDP connection rather than disappearing. So the decoupling idea survives, but for the transport, not for the decisions, and it should be judged against the ablation as the cheaper alternative that ships today.
 
