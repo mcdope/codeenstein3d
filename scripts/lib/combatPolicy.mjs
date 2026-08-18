@@ -808,8 +808,20 @@ export function hasLineOfSight(map, x0, y0, x1, y1) {
     const cx = Math.floor(sx);
     const cy = Math.floor(sy);
     if (cx !== px && cy !== py) {
-      if (isSightBlockingTile(map, cx + 0.5, py + 0.5)) return false;
-      if (isSightBlockingTile(map, px + 0.5, cy + 0.5)) return false;
+      // **Both** flanking tiles, not either. A corner sealed by two solid
+      // tiles genuinely cannot be seen through; a corner with one solid and
+      // one open is a diagonal graze, and the engine lets the shot through —
+      // it occludes sprites with the render z-buffer, not a tile test, so an
+      // enemy diagonally past a single wall corner is on screen and hittable.
+      //
+      // Blocking on *either* was measured to be far too strict: it made a
+      // blocker standing diagonally in a doorway unshootable, so
+      // `driveToExit`'s hunt drove at it forever without ever firing and both
+      // `verify (multiplayer-transition)` and `verify (Playwright/webkit)` ran
+      // into their CI timeouts. The L6 wedge is unaffected by the narrowing —
+      // there the wall at (13,50) and the closed door at (14,49) are both
+      // solid, which is exactly the sealed case this still blocks.
+      if (isSightBlockingTile(map, cx + 0.5, py + 0.5) && isSightBlockingTile(map, px + 0.5, cy + 0.5)) return false;
     }
     px = cx;
     py = cy;

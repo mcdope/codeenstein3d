@@ -185,9 +185,13 @@ describe("geometry", () => {
     // crosses (14.0,10.0) dead on.
     const corner = makeMap({ tiles: [[13, 10, 1], [14, 9, 3]] });
     expect(hasLineOfSight(corner, 14.2, 10.2, 13.7, 9.7)).toBe(false);
-    // Either flanking tile alone is enough to stop it.
-    expect(hasLineOfSight(makeMap({ tiles: [[13, 10, 1]] }), 14.2, 10.2, 13.7, 9.7)).toBe(false);
-    expect(hasLineOfSight(makeMap({ tiles: [[14, 9, 1]] }), 14.2, 10.2, 13.7, 9.7)).toBe(false);
+    // But only a *sealed* corner blocks. One solid flank and one open is a
+    // diagonal graze, and the engine lets that shot through — it occludes
+    // sprites with the render z-buffer, not a tile test. Blocking these too
+    // made a blocker standing diagonally in a doorway unshootable and hung two
+    // CI jobs on their timeouts.
+    expect(hasLineOfSight(makeMap({ tiles: [[13, 10, 1]] }), 14.2, 10.2, 13.7, 9.7)).toBe(true);
+    expect(hasLineOfSight(makeMap({ tiles: [[14, 9, 1]] }), 14.2, 10.2, 13.7, 9.7)).toBe(true);
     // But an open diagonal still sees through — this must not become "all
     // diagonals are blocked".
     expect(hasLineOfSight(makeMap({}), 14.2, 10.2, 13.7, 9.7)).toBe(true);
