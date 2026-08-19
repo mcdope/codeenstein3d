@@ -278,7 +278,7 @@ describe("collectProjectileBillboards", () => {
     const jobs = collectProjectileBillboards(asCtx(ctx()), player, bolts, clearZBuffer(Infinity));
     expect(jobs).toHaveLength(3);
 
-    const centers = jobs.map((job, i) => {
+    const centers = jobs.map((_job, i) => {
       const c = ctx();
       // Re-collect per bolt so each draw writes into its own mock context;
       // `draw()` closes over the ctx the job was built with.
