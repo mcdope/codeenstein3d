@@ -4553,8 +4553,8 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
      *
      * Returns the enemy roster *as generated*, alongside the map, because the
      * `RaycasterEngine` constructor rescales every enemy's `hp`/`maxHp` in
-     * place by the difficulty multipliers — and `maxHp` is one of the four
-     * fields `computeBalanceHash` fingerprints. `launchLevel` hashes before
+     * place by the difficulty multipliers — and `maxHp` is one of the fields
+     * `computeBalanceHash` fingerprints. `launchLevel` hashes before
      * constructing its engine, so playback has to hash the pre-rescale roster
      * too or easy (0.7x) and hard (1.5x) runs fingerprint differently from
      * how they were recorded and get refused as balance drift. Normal is 1x,
@@ -4564,7 +4564,7 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
       // recorded — see `mapGenerationOptionsFor`.
       const map = mapGenerator.generate(parsed, mapGenerationOptionsFor(segment.carryover, segment.carryover?.campaignLevelIndex ?? 1, segment.bonusLevel));
       // Snapshotted here, before the constructor below mutates the roster.
-      const balanceRoster = map.enemies.map((e) => ({ x: e.x, y: e.y, maxHp: e.maxHp, elite: e.elite }));
+      const balanceRoster = map.enemies.map((e) => ({ x: e.x, y: e.y, maxHp: e.maxHp, elite: e.elite, edgeCase: e.edgeCase }));
       currentParsed = parsed;
       currentSegment = segment;
       framesRecorded = segment.frames.length;
