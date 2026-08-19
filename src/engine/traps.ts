@@ -138,3 +138,24 @@ export function updateMines(mines: Mine[], players: readonly Player[], dt: numbe
   }
   return detonations;
 }
+
+/**
+ * Every balance scalar in this module, as one object, folded into
+ * `SIMULATION_BALANCE` wholesale — see `COMBAT_BALANCE` in
+ * `combatConstants.ts` for the reasoning and `simulationBalanceCoverage.test.ts`
+ * for the guard that keeps this list honest.
+ *
+ * The constants themselves stay module-private: nothing outside needs to read
+ * a spike's DPS, and exporting four numbers just to hash them would trade one
+ * maintained list for another. `MINE_BLAST_RADIUS` is the exception and is
+ * exported on its own merits (the engine draws with it).
+ */
+export const TRAP_BALANCE = {
+  SPIKE_DPS,
+  MINE_SIGHT_RADIUS,
+  MINE_FUSE_RADIUS,
+  MINE_FUSE_SECONDS,
+  MINE_BLAST_RADIUS,
+  MINE_MAX_DAMAGE,
+  MINE_DAMAGE_FALLOFF_FLOOR,
+} as const;

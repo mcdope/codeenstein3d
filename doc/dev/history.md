@@ -12,6 +12,36 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **Enemies have weapons now, and `SIMULATION_BALANCE` covers them — one regeneration paid for both (2026-08-19).** Closes the "cheapest high-payoff fix" bullet of the enemy-diversity item. Read the second half before retuning any of these numbers: the DPS invariant is what makes the change measurable, and it is easy to break by accident.
+
+  **The gap first, because shipping the table through it would have been the bug.** `balanceHash` exists so a tuned simulation constant cannot silently change how a recorded replay plays back. It did not cover the enemy half — not `PROJECTILE_SPEED`/`DAMAGE`/`RADIUS`, not `ELITE_DAMAGE_MULTIPLIER`, not any `EDGE_CASE_*`, and not the traps. `SIMULATION_BALANCE`'s own comment named five of them as uncovered and deferred the work to *"worth doing if one of them is ever tuned"*; a per-archetype weapon table tunes exactly those.
+
+  Covered as whole tables (`COMBAT_BALANCE`, `TRAP_BALANCE`) rather than five named scalars — the same "hash the output, not a maintained list of inputs" reasoning the enemy roster and `WEAPONS` already get, so the *next* enemy constant needs no edit in `engine.ts`. The old comment had itself gone stale in the way that argues the point: two of the five constants it located in `enemyAi.ts`/`projectiles.ts` had since moved to `combatConstants.ts` while the comment still read as authoritative.
+
+  A table of scalars is still a maintained list, so the property is enforced: `simulationBalanceCoverage.test.ts` enumerates each module's value-carrying exports — **tables included, not just numbers**, which is what stops the next `ENEMY_WEAPONS`-shaped addition from slipping past — and fails naming the missing constant. Mutation-tested both ways.
+
+  **The table, and the invariant that makes it measurable.**
+
+  | | damage | speed | cooldown window | scatter |
+  |---|---|---|---|---|
+  | normal | 8 | 5.0 | 1.2-2.6s | 0° |
+  | elite | 32 | 3.6 | 2.4-5.2s | 0° |
+  | edgeCase | 1.6 | 7.5 | 0.6-1.3s | 7° |
+
+  **Mean ranged DPS per archetype is unchanged, exactly** — Elite doubles both terms, Edge Case halves both. `enemyWeapons.test.ts` computes the legacy side from the raw constants rather than reusing the table's own expression, so it is a second opinion rather than the same arithmetic twice.
+
+  That invariant is not fastidiousness. Three prior A/Bs left total damage taken invariant at 122/127/126 while redistributing it, and the measured difficulty driver is exposure-time x enemy count. A table that also raised DPS would have been indistinguishable from that history. What changed is the *shape*: an Elite now lands one telegraphed 32-damage shell slowly enough to step out of, and an Edge Case sprays chip damage it is hard to dodge deliberately.
+
+  **`radius` is per-weapon but identical across all three, on purpose.** It feeds the hit test, so varying it moves effective DPS without touching either term the invariant compares. It sits in the table so spending that budget later is a one-line change with a visible consequence — and a test pins the current uniformity so it cannot be spent by accident.
+
+  **Two seams that would square the archetype ladder if got wrong**, both pinned by tests: `damageMultiplier()` in `enemyAi.ts` is melee-only now (`weapon.damage` already carries the ladder — applying both gives an Elite 4x), and multiplayer's player-count Elite scaling still applies on top, Elite-only, with a test asserting an Edge Case does not pick it up.
+
+  **What it did not buy, stated because the backlog item could be misread as closed.** `edgeCase` is still spawned only into corridor breakup rooms, so a normal entity room is still uniformly one archetype. Distinct weapons do nothing about distribution, and density is untouched. The diversity item stays open on exactly those two.
+
+  **Costs and consequences.** RNG consumption is now weapon-dependent — a draw happens only when total spread is above zero, so an Edge Case consumes one where it previously consumed none on Hard — which shifts the seeded stream on top of the hash move. Both invalidate the shipped board, so `defaultHighscore.ts` was regenerated once, at the end, after all of it. That single-regeneration sequencing is what `combatConstants.ts` had documented as the reason to leave the hash gap open until something needed it.
+
+  Verified: `tsc` clean; 3,177 `src` tests and 588 `scripts` tests; `verify:campaign:playthrough` and `verify:replay` against the real bundled app on a dev server. `verify:replay` was also run on this branch *before* the regeneration and on master in a worktree, to confirm the board really was invalidated (branch: no replay button at entry 0; master: all checks pass, 226s) rather than assuming it. The real-app bolt observation only ever saw the `normal` archetype — demo-campaign level 1 has no Elite — so elite/edgeCase behaviour rests on unit tests against the real `spawnProjectile`/`updateEnemies`, not on live play.
+
 - [x] **The rocket tunnelling bug invalidated nothing measurable, and the item that said otherwise had the mechanism backwards (2026-08-19).** This closes "re-check every rocket/ghidra conclusion drawn before 2026-08-19". It cost no machine time: the whole answer is on disk already. Read this before booking a capture to re-measure ghidra — three separate reasons say it would measure noise.
 
   **The item's own premise, checked and wrong.** It reasoned that "the *scoring* was always optimistic while the *engine* was pessimistic, and the two errors partly cancelled", on the grounds that `ROCKET_TRAVEL_SPEED` and `rocketDetonationDistanceAfterClosing` carry no hit-probability term. Those two functions are not where a hit probability would live. `expectedDamagePerShot` is, and it applies `widthOverScatter` to ghidra like any other single-pellet weapon — which is a *cone* discount, and a rocket has no cone (`fire()` returns at `if (w.isRocket)` before `resolveShot` ever runs). Below ~10 tiles that term saturates at 1.0, so in the band the bot actually fires rockets the scorer's damage is a flat 150 with no discount of any kind. There was nothing there to cancel against.

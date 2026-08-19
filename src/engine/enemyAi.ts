@@ -33,12 +33,12 @@ import {
   EDGE_CASE_SPEED_MULTIPLIER,
   ELITE_DAMAGE_MULTIPLIER,
   ENEMY_RADIUS,
-  FIRE_COOLDOWN_MAX,
-  FIRE_COOLDOWN_MIN,
+  ENEMY_WEAPONS,
   MOVEMENT_SPEED,
   RANGED_RANGE,
   ROAM_ARRIVE,
   ROAM_SPEED,
+  type EnemyWeapon,
 } from "./combatConstants";
 
 /** Optional balancing-telemetry observation hooks — see `telemetry.ts`. Every
@@ -190,10 +190,20 @@ function updateEnemy(
     return null;
   }
 
-  // At range: occasionally lob a bolt at the nearest target if there's a clear shot.
+  // At range: occasionally lob a bolt at the nearest target if there's a clear
+  // shot. Which bolt depends on the archetype now — an Elite's slow heavy
+  // shell and an Edge Case's fast spray are different weapons, not the same
+  // one at a different volume (see `ENEMY_WEAPONS`). The cooldown comes from
+  // that weapon too, which is what keeps each archetype's mean ranged DPS
+  // exactly where it was.
   if (enemy.fireCooldown === 0 && dist <= RANGED_RANGE && los()) {
-    spawnProjectile(projectiles, enemy.x, enemy.y, nearest.player.posX, nearest.player.posY, nearest.id, damageMultiplier(enemy, eliteDamageScale), aimSpreadDeg, rng, eid);
-    enemy.fireCooldown = FIRE_COOLDOWN_MIN + rng() * (FIRE_COOLDOWN_MAX - FIRE_COOLDOWN_MIN);
+    const weapon = weaponFor(enemy);
+    // Only multiplayer's Elite scaling is left to apply: the archetype ladder
+    // is already baked into `weapon.damage`, so passing `damageMultiplier`
+    // here would square it.
+    const damageScale = enemy.elite ? eliteDamageScale : 1;
+    spawnProjectile(projectiles, enemy.x, enemy.y, nearest.player.posX, nearest.player.posY, nearest.id, weapon, damageScale, aimSpreadDeg, rng, eid);
+    enemy.fireCooldown = weapon.cooldownMin + rng() * (weapon.cooldownMax - weapon.cooldownMin);
     events?.onRangedFire?.(enemy);
   }
 
@@ -211,14 +221,25 @@ function updateEnemy(
   return null;
 }
 
-/** Melee/ranged damage multiplier for `enemy` — the one elite/edgeCase ladder
- * shared by both attack paths (an Elite hits harder, an Edge Case softer).
+/** Melee damage multiplier for `enemy` — the elite/edgeCase ladder.
+ *
+ * **Melee only since the per-archetype weapon table landed.** It used to be
+ * shared by both attack paths; the ranged half now reads `ENEMY_WEAPONS`,
+ * whose `damage` already has this ladder baked in. Applying both would square
+ * it — 4x for an Elite instead of 2x.
  * `eliteDamageScale` (default 1, single-player's permanent value) is the
  * player-count Elite scaling from `multiplayerScaling.ts` — deliberately
  * multiplied only into the Elite branch, never Edge Case's: player-count
  * scaling is Elite-only, per `multiplayer-game-state-spec.md` §4. */
 function damageMultiplier(enemy: Enemy, eliteDamageScale = 1): number {
   return enemy.elite ? ELITE_DAMAGE_MULTIPLIER * eliteDamageScale : enemy.edgeCase ? EDGE_CASE_DAMAGE_MULTIPLIER : 1;
+}
+
+/** The ranged weapon `enemy`'s archetype fires — see `ENEMY_WEAPONS`. Elite
+ * wins over edgeCase if an enemy were ever flagged both, matching the order
+ * `damageMultiplier` has always resolved them in. */
+function weaponFor(enemy: Enemy): EnemyWeapon {
+  return enemy.elite ? ENEMY_WEAPONS.elite : enemy.edgeCase ? ENEMY_WEAPONS.edgeCase : ENEMY_WEAPONS.normal;
 }
 
 /** `base` movement speed scaled for an Edge Case enemy's much faster darting. */

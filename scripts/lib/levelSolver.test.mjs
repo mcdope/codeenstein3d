@@ -77,6 +77,15 @@ const COMBAT = {
   ELITE_DAMAGE_MULTIPLIER: 2,
   EDGE_CASE_DAMAGE_MULTIPLIER: 0.4,
   EDGE_CASE_SPEED_MULTIPLIER: 2.2,
+  // Fixture weapons, holding the same 2x/0.5x-on-both-terms relationship the
+  // real `ENEMY_WEAPONS` does, so `incomingDps`'s ranged half still comes out
+  // at `PROJECTILE_DAMAGE * archetypeMultiplier / meanCooldown` and the
+  // expectations below stay readable arithmetic rather than magic numbers.
+  ENEMY_WEAPONS: {
+    normal: { damage: 8, cooldownMin: 1, cooldownMax: 3 },
+    elite: { damage: 32, cooldownMin: 2, cooldownMax: 6 },
+    edgeCase: { damage: 1.6, cooldownMin: 0.5, cooldownMax: 1.5 },
+  },
 };
 
 const constants = {

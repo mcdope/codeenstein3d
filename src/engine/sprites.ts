@@ -548,21 +548,28 @@ export interface OrbPalette {
  * the z-buffer — the one shared draw routine behind
  * `collectProjectileBillboards` (enemy bolts) and `collectRocketBillboards`
  * (player rockets), which differ only in palette. See `BillboardJob`.
+ *
+ * `palette` may be a function of the point rather than a single value, which
+ * is what lets one call colour each enemy bolt by the archetype that fired it
+ * without grouping the list into a temporary array per archetype first. The
+ * plain-object form is unchanged and still the common case (rockets, and any
+ * caller with one colour).
  */
-export function collectOrbBillboards(
+export function collectOrbBillboards<P extends Point>(
   ctx: CanvasRenderingContext2D,
   player: Player,
-  points: readonly Point[],
+  points: readonly P[],
   zBuffer: Float64Array,
-  palette: OrbPalette,
+  palette: OrbPalette | ((point: P) => OrbPalette),
 ): BillboardJob[] {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
+  const paletteFor = typeof palette === "function" ? palette : () => palette;
 
   return points
-    .map((p) => ({ proj: projectPoint(player, p.x, p.y, width, height, 0.3) }))
+    .map((p) => ({ proj: projectPoint(player, p.x, p.y, width, height, 0.3), palette: paletteFor(p) }))
     .filter(({ proj }) => proj.depth > ORB_NEAR)
-    .map(({ proj }) => ({
+    .map(({ proj, palette }) => ({
       depth: proj.depth,
       draw: () => {
         const col = clamp(Math.round(proj.screenX), 0, width - 1);

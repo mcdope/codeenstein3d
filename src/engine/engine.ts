@@ -131,13 +131,13 @@ import {
 } from "./weapons";
 import { HEALTH_DROP_AMOUNT, MAX_SWAP, REGULAR_KILL_NO_DROP_CHANCE, SWAP_DROP_AMOUNT, rollBonusWeaponDrop, rollLoot } from "./loot";
 import { AMMO_META, AMMO_TYPES, startingAmmo, type AmmoPools } from "./ammo";
-import { MAX_HEALTH } from "./combatConstants";
+import { COMBAT_BALANCE, MAX_HEALTH } from "./combatConstants";
 import { createEventLog, drainEvents, recordEvent, type EventLogState } from "./events";
 import { applyLootDrop, dropEliteLoot, grantOrTopUpWeapon, rollMissChanceToolchain, type LootContext } from "./lootApply";
 import { collectRocketBillboards, rocketDamageAt, spawnRocket, updateRockets, ROCKET_BLAST_RADIUS, type Rocket } from "./rockets";
 import { EnemySpatialGrid } from "./spatialGrid";
 import { PathField } from "./pathField";
-import { detonateMine, mineDamageAt, spikeDamage, updateMines, MINE_BLAST_RADIUS } from "./traps";
+import { detonateMine, mineDamageAt, spikeDamage, updateMines, MINE_BLAST_RADIUS, TRAP_BALANCE } from "./traps";
 import { FramePerfLogger } from "./perfDebug";
 import {
   createTeamTelemetryState,
@@ -368,13 +368,26 @@ const HAZARD_DPS = 18;
  * to. That is what widened `computeBalanceHash`'s parameter from `number` to
  * `unknown` values.
  *
- * Values that matter but still live in sibling modules
- * (`ELITE_DAMAGE_MULTIPLIER` and `EDGE_CASE_SPEED_MULTIPLIER` in
- * `enemyAi.ts`, `SPIKE_DPS` and `MINE_DAMAGE_FALLOFF_FLOOR` in `traps.ts`,
- * `PROJECTILE_SPEED` in `projectiles.ts`) are **not** covered — adding them
- * means exporting each and extending this object. Worth doing if one of them
- * is ever tuned; not worth pre-emptively exporting four constants to guard
- * against edits nobody has made.
+ * **The enemy and trap halves are now covered too, and wholesale.** This
+ * comment used to name `ELITE_DAMAGE_MULTIPLIER`, `EDGE_CASE_SPEED_MULTIPLIER`,
+ * `SPIKE_DPS`, `MINE_DAMAGE_FALLOFF_FLOOR` and `PROJECTILE_SPEED` as uncovered
+ * and deferred them to "worth doing if one of them is ever tuned". The
+ * per-archetype enemy weapon table tunes exactly those, so rather than adding
+ * five named scalars, `combatConstants.ts` and `traps.ts` each expose one
+ * object of everything they own (`COMBAT_BALANCE`, `TRAP_BALANCE`) and those go
+ * in whole — the same reasoning `WEAPONS` gets, and it means the *next* enemy
+ * constant needs no edit here at all.
+ *
+ * Two of those five had also moved module since the old comment was written
+ * (to `combatConstants.ts`), which is the other argument against naming
+ * individual constants from a sibling module: the list goes stale silently
+ * while reading as authoritative. `simulationBalanceCoverage.test.ts` now
+ * fails if a scalar in either module is missing from its table.
+ *
+ * **What is still deliberately outside.** Anything that changes only
+ * rendering, and the map generator's own constants — the generated roster is
+ * hashed as *output* by `computeBalanceHash`, which covers them by
+ * construction and is strictly better than listing them.
  */
 export const SIMULATION_BALANCE: Readonly<Record<string, unknown>> = {
   MOVE_SPEED,
@@ -390,6 +403,12 @@ export const SIMULATION_BALANCE: Readonly<Record<string, unknown>> = {
   // the constant belongs in it even though nothing about the map moved.
   ACID_DECAY_SECONDS,
   WEAPONS,
+  // Whole tables rather than picked scalars — see the comment above. Nested
+  // objects are fine: `stableStringify` recurses and sorts keys, so these
+  // serialize deterministically and a cosmetic reorder inside either module
+  // invalidates nothing.
+  COMBAT_BALANCE,
+  TRAP_BALANCE,
 };
 /**
  * Cone-of-Fire: maximum screen-px of random aim deviation, reached only at

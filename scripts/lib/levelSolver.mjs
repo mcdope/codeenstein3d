@@ -232,13 +232,24 @@ export function scaleRosterForDifficulty(enemies, difficulty, DIFFICULTY_MULTIPL
 /**
  * Damage per second one enemy of an archetype puts out, split by attack.
  *
- * Melee is `ATTACK_DAMAGE / ATTACK_COOLDOWN` at contact; ranged is
- * `PROJECTILE_DAMAGE` over the *mean* of the randomised
- * `FIRE_COOLDOWN_MIN..MAX` window. Both go through the archetype's damage
- * multiplier and then the difficulty's, matching `enemyAi.ts`'s
- * `damageMultiplier` and the `damage` multiplier the engine applies to
- * enemy-dealt damage only (traps and self-splash are excluded there, and so
- * are excluded here).
+ * Melee is `ATTACK_DAMAGE / ATTACK_COOLDOWN` at contact, through the
+ * archetype's damage multiplier and then the difficulty's — matching
+ * `enemyAi.ts`'s `damageMultiplier` and the `damage` multiplier the engine
+ * applies to enemy-dealt damage only (traps and self-splash are excluded
+ * there, and so are excluded here).
+ *
+ * **Ranged reads the archetype's own weapon** (`ENEMY_WEAPONS`), not
+ * `PROJECTILE_DAMAGE` times a multiplier: each archetype has its own damage
+ * *and* its own cooldown window since the weapon table landed, and only the
+ * ratio of the two is meaningful. It deliberately does not apply the archetype
+ * multiplier again — `weapon.damage` already carries it, and doing both would
+ * square it. The difficulty multiplier still applies, because that is engine
+ * behaviour applied at damage time rather than a property of the weapon.
+ *
+ * The table holds each archetype's mean ranged DPS at exactly what the old
+ * single-bolt model produced, so this rewrite changes no number today. It will
+ * the moment either field is retuned, which is the reason to read the table
+ * rather than mirror one constant out of it.
  *
  * `sustained` is melee + ranged, which is the correct read for an enemy in
  * contact: nothing in `enemyAi.ts` stops a melee-range enemy from also taking
@@ -251,8 +262,9 @@ export function incomingDps(archetype, constants, difficulty) {
   const difficultyMultiplier = constants.DIFFICULTY_MULTIPLIERS[difficulty].damage;
   const scale = damageMultiplier * difficultyMultiplier;
   const melee = (C.ATTACK_DAMAGE / C.ATTACK_COOLDOWN) * scale;
-  const meanFireInterval = (C.FIRE_COOLDOWN_MIN + C.FIRE_COOLDOWN_MAX) / 2;
-  const ranged = (C.PROJECTILE_DAMAGE / meanFireInterval) * scale;
+  const weapon = C.ENEMY_WEAPONS[archetype] ?? C.ENEMY_WEAPONS.normal;
+  const meanFireInterval = (weapon.cooldownMin + weapon.cooldownMax) / 2;
+  const ranged = (weapon.damage / meanFireInterval) * difficultyMultiplier;
   return { melee, ranged, sustained: melee + ranged };
 }
 

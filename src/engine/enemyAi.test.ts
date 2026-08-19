@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Enemy, GameMap, Tile } from "../map/types";
 import { updateEnemies, type EnemyTarget } from "./enemyAi";
 import { PathField } from "./pathField";
+import { ENEMY_WEAPONS } from "./combatConstants";
 import { Player } from "./player";
 import type { Projectile } from "./projectiles";
 
@@ -293,7 +294,35 @@ describe("updateEnemies", () => {
     const projectiles: Projectile[] = [];
     updateEnemies([e], targetsFor(player), map, 0.016, projectiles, pathFieldsFor(map, player), () => 0.5, undefined, 0, 1.5);
     expect(projectiles).toHaveLength(1);
-    expect(projectiles[0].damage).toBe(24); // PROJECTILE_DAMAGE(8) * ELITE_DAMAGE_MULTIPLIER(2) * 1.5
+    // ENEMY_WEAPONS.elite.damage(32) * 1.5. Was 24 — PROJECTILE_DAMAGE(8) *
+    // ELITE_DAMAGE_MULTIPLIER(2) * 1.5 — before the weapon table, which gave
+    // the Elite twice the damage on twice the cooldown. Its mean DPS is
+    // unchanged (see enemyWeapons.test.ts); the per-bolt figure is not, and
+    // that is the point of the change.
+    expect(projectiles[0].damage).toBe(ENEMY_WEAPONS.elite.damage * 1.5);
+    expect(projectiles[0].damage).toBe(48);
+    // The archetype ladder must not be applied twice — 8 * 2 * 2 * 1.5 = 48
+    // by coincidence of the doubling, so pin the weapon it actually fired.
+    expect(projectiles[0].archetype).toBe("elite");
+    expect(e.fireCooldown).toBeGreaterThanOrEqual(ENEMY_WEAPONS.elite.cooldownMin);
+    expect(e.fireCooldown).toBeLessThanOrEqual(ENEMY_WEAPONS.elite.cooldownMax);
+  });
+
+  it("gives an Edge Case its own fast, weak, scattering bolt", () => {
+    const map = fakeMap(openGrid(20));
+    const player = new Player(map);
+    player.posX = 9;
+    player.posY = 5;
+    const e = enemy({ x: 5, y: 5, aggroed: true, fireCooldown: 0, edgeCase: true });
+    const projectiles: Projectile[] = [];
+    updateEnemies([e], targetsFor(player), map, 0.016, projectiles, pathFieldsFor(map, player), () => 0.5, undefined, 0, 1.5);
+    expect(projectiles).toHaveLength(1);
+    // No eliteDamageScale despite 1.5 being passed: player-count scaling is
+    // Elite-only, and an Edge Case must not pick it up.
+    expect(projectiles[0].damage).toBe(ENEMY_WEAPONS.edgeCase.damage);
+    expect(projectiles[0].archetype).toBe("edgeCase");
+    expect(Math.hypot(projectiles[0].vx, projectiles[0].vy)).toBeCloseTo(ENEMY_WEAPONS.edgeCase.speed);
+    expect(e.fireCooldown).toBeLessThanOrEqual(ENEMY_WEAPONS.edgeCase.cooldownMax);
   });
 
   it("an Edge Case deals reduced melee damage", () => {
