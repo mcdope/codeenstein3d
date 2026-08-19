@@ -392,10 +392,16 @@ function nearestFloorInRect(grid: Tile[][], rect: Rect, p: Point): Point {
  * "Edge Case" enemies — small, fast, low-HP nuisances that break up the
  * "endless walk" feeling of a long corridor stretch. Modeled directly on
  * `placeTodoEncounter`'s enemy branch: a synthetic `CodeEntity` stands in for
- * the (nonexistent) parsed entity a breakup room would otherwise need. Never
- * spawns in a normal AST-derived room, and normal enemies never spawn here —
- * both are guaranteed structurally, since `spawnEnemies` only ever iterates
- * `rooms: Room[]` and this only ever iterates `breakupRooms: Rect[]`.
+ * the (nonexistent) parsed entity a breakup room would otherwise need.
+ *
+ * **One half of the old structural guarantee here is gone.** It used to read
+ * "never spawns in a normal AST-derived room, and normal enemies never spawn
+ * here — both are guaranteed structurally". The second half still holds, for
+ * exactly the reason it always did: this only ever iterates
+ * `breakupRooms: Rect[]` and `spawnEnemies` only ever iterates `rooms: Room[]`.
+ * The first half does not — `spawnEnemies` may now flag a `switch`-heavy room's
+ * tail member `edgeCase`. Nothing about *this* function changed; read
+ * `Enemy.edgeCase` as an archetype rather than as a location.
  *
  * No `multiplayerSpawns` avoid-list needed here, unlike `spawnEnemies`: a
  * breakup room is only ever injected where it doesn't overlap any real room
