@@ -236,11 +236,17 @@ const SKIRMISHERS_PER_PACK = 1;
  *
  * Pure function of the entity: no `rng` parameter, which is how the
  * zero-extra-draw property is enforced rather than asserted.
+ *
+ * `nestingDepth` is read directly rather than through a `?? 0`, matching every
+ * other call site in this layer: it is a required field on `CodeEntity`, so the
+ * fallback was unreachable — a branch no test could ever cover, which is
+ * exactly how it was found (the coverage gate has about one branch of slack).
+ * `switchBranches` genuinely is optional, so that `??` stays.
  */
 function wantsSkirmisher(entity: CodeEntity, count: number): boolean {
   if (count < SKIRMISHER_MIN_PACK) return false;
   if ((entity.switchBranches?.caseCount ?? 0) < SKIRMISHER_MIN_CASE_BRANCHES) return false;
-  return (entity.nestingDepth ?? 0) < MAZE_THRESHOLD;
+  return entity.nestingDepth < MAZE_THRESHOLD;
 }
 
 /**
