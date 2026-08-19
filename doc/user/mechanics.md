@@ -88,7 +88,7 @@ Enemies roam randomly within their home room until they notice you — which req
 
 Over time each type deals about the same damage per second as it always did — what changed is how that damage arrives, so an Elite is a threat you react to and an Edge Case is one you tolerate.
 
-**Edge Cases** are a separate, small breed found only inside the widenings and alcoves dressed into a corridor (never in a normal room): a jarring cyan tint and a noticeably smaller silhouette make them easy to tell apart from a real enemy at a glance. They have very little HP, dart around erratically rather than roaming smoothly, move faster than any other enemy in the game (though not faster than your own sprint), and hit for much less than a normal enemy's melee — a nuisance to swat on your way through, not a real threat.
+**Edge Cases** are a separate, small breed, found mostly inside the widenings and alcoves dressed into a corridor — and, occasionally, mixed into the pack of a `switch`-heavy function's room: a jarring cyan tint and a noticeably smaller silhouette make them easy to tell apart from a real enemy at a glance. They have very little HP, dart around erratically rather than roaming smoothly, move faster than any other enemy in the game (though not faster than your own sprint), and hit for much less than a normal enemy's melee — a nuisance to swat on your way through, not a real threat.
 
 ## Traps
 
