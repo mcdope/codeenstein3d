@@ -81,6 +81,23 @@ jobs:
   verify-browser:
     name: verify (Playwright/${{ matrix.browser }})
     runs-on: ubuntu-latest
+    # Playwright's own image: all three browsers and every OS library already
+    # baked in, so neither `playwright install` nor — the point of this —
+    # `playwright install-deps`, which is an apt-get against Azure's mirrors.
+    # That step ran 7x per workflow at 210-442s total, and its variance was the
+    # real problem rather than its mean: the same firefox leg measured 18s and
+    # 283s on two consecutive green runs, and it intermittently hung.
+    #
+    # The tag must move in lockstep with the `playwright` npm package, since the
+    # image bakes in specific browser builds; `scripts/assert-browsers-present.mjs`
+    # is the guard, and its header explains the coupling.
+    #
+    # `--user 1001` (pwuser) rather than the default root: Chromium's sandbox
+    # cannot start as root under the runner's default seccomp profile. This is
+    # the combination Playwright documents for GitHub Actions.
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.1-noble
+      options: --user 1001
     strategy:
       fail-fast: false
       matrix:
@@ -116,20 +133,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Cache Playwright browsers
-        id: playwright-cache
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ matrix.browser }}-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      # Browser binary download (~100+MB) is skipped on a cache hit; OS
-      # library deps (apt packages) aren't covered by the cache above since
-      # every run gets a fresh VM, so those always need (re)installing.
-      - name: Install Playwright browser binary
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: npx playwright install ${{ matrix.browser }}
-      - name: Install Playwright OS dependencies
-        run: npx playwright install-deps ${{ matrix.browser }}
+      - name: Browsers come from the container image, not a download
+        run: node scripts/assert-browsers-present.mjs ${{ matrix.browser }}
       # `npm run dev`'s own `predev` hook fetches the online WAD catalog if
       # not already present — same cache as the `verify` job above, shared
       # across this matrix's legs by key (not by job), so at most one leg
@@ -267,6 +272,10 @@ jobs:
   verify-replay:
     name: verify (replay)
     runs-on: ubuntu-latest
+    # Playwright's image — see `verify-browser` above for the reasoning.
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.1-noble
+      options: --user 1001
     # Full board is ~186k advance() calls of real simulate+render; SwiftShader
     # on a CI runner has no GPU, so budget several times the local figure.
     timeout-minutes: 45
@@ -277,17 +286,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Cache Playwright browsers
-        id: playwright-cache
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browser binary
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: npx playwright install chromium
-      - name: Install Playwright OS dependencies
-        run: npx playwright install-deps chromium
+      - name: Browsers come from the container image, not a download
+        run: node scripts/assert-browsers-present.mjs chromium
       - name: Cache online WAD assets
         uses: actions/cache@v6
         with:
@@ -311,6 +311,10 @@ jobs:
   verify-multiplayer-transition:
     name: verify (multiplayer-transition)
     runs-on: ubuntu-latest
+    # Playwright's image — see `verify-browser` above for the reasoning.
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.1-noble
+      options: --user 1001
     # A wedge used to be able to outlast the job it ran in (one waypoint could
     # burn 240 real seconds, times four re-plans). The budgets are bounded now,
     # so anything past this is a new failure mode and should fail fast rather
@@ -323,17 +327,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Cache Playwright browsers
-        id: playwright-cache
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browser binary
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: npx playwright install chromium
-      - name: Install Playwright OS dependencies
-        run: npx playwright install-deps chromium
+      - name: Browsers come from the container image, not a download
+        run: node scripts/assert-browsers-present.mjs chromium
       - name: Cache online WAD assets
         uses: actions/cache@v6
         with:
@@ -375,6 +370,10 @@ jobs:
   verify-multiplayer-multiguest:
     name: verify (multiplayer-multiguest)
     runs-on: ubuntu-latest
+    # Playwright's image — see `verify-browser` above for the reasoning.
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.1-noble
+      options: --user 1001
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -382,17 +381,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Cache Playwright browsers
-        id: playwright-cache
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browser binary
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: npx playwright install chromium
-      - name: Install Playwright OS dependencies
-        run: npx playwright install-deps chromium
+      - name: Browsers come from the container image, not a download
+        run: node scripts/assert-browsers-present.mjs chromium
       - name: Cache online WAD assets
         uses: actions/cache@v6
         with:
@@ -432,6 +422,10 @@ jobs:
   verify-determinism:
     name: verify (cross-browser determinism)
     runs-on: ubuntu-latest
+    # Playwright's image — see `verify-browser` above for the reasoning.
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.1-noble
+      options: --user 1001
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -439,15 +433,6 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Cache Playwright browsers
-        id: playwright-cache
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-all-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browser binaries (chromium, firefox, webkit)
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: npx playwright install chromium firefox webkit
-      - name: Install Playwright OS dependencies
-        run: npx playwright install-deps chromium firefox webkit
+      - name: Browsers come from the container image, not a download
+        run: node scripts/assert-browsers-present.mjs chromium firefox webkit
       - run: npm run verify:multiplayer-determinism
