@@ -12,6 +12,35 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **The rocket tunnelling bug invalidated nothing measurable, and the item that said otherwise had the mechanism backwards (2026-08-19).** This closes "re-check every rocket/ghidra conclusion drawn before 2026-08-19". It cost no machine time: the whole answer is on disk already. Read this before booking a capture to re-measure ghidra — three separate reasons say it would measure noise.
+
+  **The item's own premise, checked and wrong.** It reasoned that "the *scoring* was always optimistic while the *engine* was pessimistic, and the two errors partly cancelled", on the grounds that `ROCKET_TRAVEL_SPEED` and `rocketDetonationDistanceAfterClosing` carry no hit-probability term. Those two functions are not where a hit probability would live. `expectedDamagePerShot` is, and it applies `widthOverScatter` to ghidra like any other single-pellet weapon — which is a *cone* discount, and a rocket has no cone (`fire()` returns at `if (w.isRocket)` before `resolveShot` ever runs). Below ~10 tiles that term saturates at 1.0, so in the band the bot actually fires rockets the scorer's damage is a flat 150 with no discount of any kind. There was nothing there to cancel against.
+
+  **Which way the residual actually points.** Re-implementing `updateRockets` (both variants) and `rocketDamageAt` outside the repo, self-checked against the two figures `dtInvariance.test.ts` asserts — 11.1% of positions missed pre-fix, 0% post-fix — and sweeping lateral aim error over the fire gate against longitudinal phase over one 50ms step:
+
+  | | primary-target damage per rocket |
+  |---|---|
+  | what `expectedDamagePerShot` claims | **150** |
+  | engine, post-fix | **~131** |
+  | engine, pre-fix, 1 tile of floor behind the target | 111-129 |
+  | engine, pre-fix, 4 tiles of floor behind the target | 87-119 |
+
+  So the fix moved engine truth **toward** the model without reaching it, and the model stays **~13% optimistic**. The tunnelling loss per rocket was **3-38%** depending on how much open floor sat behind the target — larger than the headline 11.1% in an open room, smaller in a corridor, because a tunnelled rocket still detonates on the wall behind and the 2.6-tile blast radius reaches back. That splash cushion is why the bug was survivable and why "understates ghidra by roughly a ninth of its shots" understated the variance in both directions.
+
+  **Why no archived conclusion needs re-running: ghidra is not in the numbers.** Across every capture on disk — 1,575 run logs, 67 capture directories, 3,300,756 `shot` events:
+
+  - ghidra is **3,466 shots, 0.105%** of all shots;
+  - at ~14 HP lost per rocket, the bug removed **~48.5k HP, or 0.086% of all modelled ranged damage** in the archive;
+  - that is two orders of magnitude below this harness's own measured 20.4pp noise floor.
+
+  Rocket range is tightly clustered — p10/p50/p90 of **5.0/6.0/7.3** tiles, max 12.73, only **2** shots ever beyond 10 tiles — which is what makes the long-range half of the model's error harmless too.
+
+  **And weapon *choice* could not have been affected at all.** `scoreRangedWeapon` contains no term derived from rocket collision, so the two ~55-minute null A/Bs that tried to get the bot to use ghidra were measuring a selection rule the bug never touched. The bug changed the payoff of rockets the bot had already decided to fire. Re-running those A/Bs "now that ghidra works" is not justified by this fix.
+
+  **Availability is not the constraint either**, which is the finding that reframes the whole thread: the bot owns ghidra **with ammo** on **40.9%** of level-visits (26,875 of 65,781) and fires **0.13 rockets per owning level-visit**. It is holding the weapon and declining it.
+
+  **Two defects found on the way, both left open in `notes`** rather than fixed here, since one changes weapon choice and the other changes a report: the 150-vs-131 model error above, and `report:damage-model`'s ghidra rows, which report **100% miss and 0.0 damage/shot** on every capture because the report joins damage to shots by timestamp and a rocket's damage arrives seconds later. That script's header doc claims a 2026-08-06 capture measured "ghidra 93 against 150"; run against the captures of that date it prints 0.0. Relatedly, **0 of 3,248,140 `hit` events in the archive are ghidra** — rockets never reach `resolveShot`, so they emit none.
+
 - [x] **CI's browser jobs moved into Playwright's container image — a deliberate trade of ~30s of mean for the removal of a 98-minute tail (2026-08-19).** Read this before "optimising" the container away: on a good run it is *slightly slower*, and that is not a regression.
 
   `npx playwright install-deps` is an apt-get against Azure's mirrors, and it ran seven times per workflow (the three-browser matrix plus four chromium-only jobs). Its **mean was never the problem**. Provisioning cost across three pre-container master runs: **210s, 5903s, 206s**. In one run of three, the four slowest steps in the entire workflow were all apt — 2358s, 2119s, 865s, 493s — for a command whose typical cost is 18-85s. That is the hang the item started from, measured.
